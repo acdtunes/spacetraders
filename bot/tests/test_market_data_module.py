@@ -1,17 +1,12 @@
 #!/usr/bin/env python3
-"""Unit tests for lib.market_data helper functions."""
+"""Unit tests for market_data helper functions."""
 
-import sys
 from datetime import datetime, timedelta
-from pathlib import Path
 
 import pytest
 
-# Ensure lib package is importable
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from lib.database import Database, _db_instances
-from lib.market_data import (
+from spacetraders_bot.core.database import Database, get_database  # type: ignore
+from spacetraders_bot.core.market_data import (
     find_markets_buying,
     find_markets_selling,
     get_recent_updates,
@@ -25,10 +20,11 @@ from lib.market_data import (
 @pytest.fixture()
 def temp_database(tmp_path):
     db_path = tmp_path / "market_test.db"
-    database = Database(str(db_path))
+    database = Database(db_path)
     yield database
-    normalized_path = str(db_path.resolve())
-    _db_instances.pop(normalized_path, None)
+    # Remove cached instance
+    cache = getattr(get_database, "_db_instances", {})
+    cache.pop(str(db_path.resolve()), None)
 
 
 def _seed_market_entry(

@@ -9,12 +9,12 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).parent.parent
-LIB_DIR = REPO_ROOT / "lib"
 
+src_dir = REPO_ROOT / "src"
+if str(src_dir) not in sys.path:
+    sys.path.insert(0, str(src_dir))
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
-if str(LIB_DIR) not in sys.path:
-    sys.path.insert(0, str(LIB_DIR))
 
 # Provide lightweight MCP stubs if the real package isn't available.
 if "mcp.server" not in sys.modules:
@@ -64,7 +64,7 @@ if "mcp.server" not in sys.modules:
     sys.modules["mcp.types"] = types_mod
 
 mcp_server = importlib.import_module("mcp_server")
-market_data = importlib.import_module("lib.market_data")
+market_data = importlib.import_module("spacetraders_bot.core.market_data")
 
 
 @pytest.mark.asyncio
