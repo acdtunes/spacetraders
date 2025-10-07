@@ -1,0 +1,998 @@
+#!/usr/bin/env python3
+"""
+Scout Coordinator - Multi-ship continuous market scouting
+
+Manages multiple scout ships with non-overlapping subtours for
+continuous market intelligence gathering.
+"""
+
+import sys
+import json
+import time
+import signal
+from pathlib import Path
+from typing import List, Dict, Tuple, Set, Optional
+from datetime import datetime
+from dataclasses import dataclass
+
+sys.path.insert(0, str(Path(__file__).parent))
+
+from api_client import APIClient
+from routing import GraphBuilder, TourOptimizer
+from daemon_manager import DaemonManager
+from assignment_manager import AssignmentManager
+
+
+@dataclass
+class SubtourAssignment:
+    """Assignment of markets to a ship"""
+    ship: str
+    markets: List[str]
+    tour_time_seconds: float
+    daemon_id: str
+
+
+class ScoutCoordinator:
+    """
+    Coordinates multiple scout ships for continuous market scouting
+
+    Features:
+    - Partitions markets into non-overlapping subtours
+    - Balances tour times across ships (not just market count)
+    - Continuous operation (restarts immediately after completion)
+    - Graceful reconfiguration (add/remove ships without data gaps)
+    - Monitors scout health and restarts on failure
+    """
+
+    def __init__(self, system: str, ships: List[str], token: str, player_id: int,
+                 algorithm: str = '2opt', config_file: Optional[str] = None):
+        """
+        Initialize scout coordinator
+
+        Args:
+            system: System symbol (e.g., X1-HU87)
+            ships: List of ship symbols
+            token: Agent token
+            player_id: Player ID for daemon management
+            algorithm: Optimization algorithm (greedy or 2opt)
+            config_file: Optional config file path for reconfiguration
+        """
+        self.system = system
+        self.ships = set(ships)
+        self.token = token
+        self.player_id = player_id
+        self.algorithm = algorithm
+        self.config_file = config_file or f"agents/scout_config_{system}.json"
+
+        self.api = APIClient(token)
+        self.daemon_manager = DaemonManager(player_id)
+        self.assignment_manager = AssignmentManager(player_id=player_id)
+
+        # State
+        self.graph = None
+        self.markets = []
+        self.assignments: Dict[str, SubtourAssignment] = {}
+        self.running = True
+        self.reconfigure_requested = False
+
+        # Load graph
+        self._load_or_build_graph()
+
+        # Setup signal handlers
+        signal.signal(signal.SIGTERM, self._handle_signal)
+        signal.signal(signal.SIGINT, self._handle_signal)
+
+    def _handle_signal(self, signum, frame):
+        """Handle shutdown signals gracefully"""
+        print(f"\n⚠️  Received signal {signum}, shutting down gracefully...")
+        self.running = False
+
+    def _load_or_build_graph(self):
+        """Load or build navigation graph"""
+        builder = GraphBuilder(self.api)
+
+        # Try loading from database first
+        self.graph = builder.load_system_graph(self.system)
+
+        if self.graph:
+            print(f"📊 Loaded graph for {self.system} from database")
+        else:
+            print(f"📊 Building graph for {self.system}...")
+            self.graph = builder.build_system_graph(self.system)
+
+            if not self.graph:
+                raise RuntimeError(f"Failed to build graph for {self.system}")
+
+        # Extract markets
+        self.markets = TourOptimizer.get_markets_from_graph(self.graph)
+        print(f"✅ Found {len(self.markets)} markets: {', '.join(self.markets)}")
+
+    def partition_markets_greedy(self) -> Dict[str, List[str]]:
+        """
+        Greedy assignment: assign each market to the scout with shortest current tour time
+
+        This naturally balances workload from the start
+        """
+        # Get all market coordinates
+        market_coords = {}
+        for market in self.markets:
+            wp = self.graph['waypoints'].get(market)
+            if wp:
+                market_coords[market] = (wp['x'], wp['y'])
+
+        # Initialize partitions
+        partitions = {ship: [] for ship in self.ships}
+        tour_times = {ship: 0.0 for ship in self.ships}
+
+        # Sort markets by some order (by X coordinate for consistency)
+        sorted_markets = sorted(market_coords.keys(), key=lambda m: market_coords[m][0])
+
+        # Assign each market to scout with minimum tour time
+        for market in sorted_markets:
+            # Find scout with minimum tour time
+            min_ship = min(tour_times.keys(), key=lambda s: tour_times[s])
+
+            # Assign market
+            partitions[min_ship].append(market)
+
+            # Recalculate tour time for this scout (quick estimate)
+            coords = [market_coords[m] for m in partitions[min_ship]]
+            if len(coords) == 1:
+                est_dist = 0
+            elif len(coords) == 2:
+                est_dist = 2 * ((coords[1][0]-coords[0][0])**2 + (coords[1][1]-coords[0][1])**2)**0.5
+            else:
+                # Nearest neighbor estimate
+                total = 0
+                for i in range(len(coords)-1):
+                    total += ((coords[i+1][0]-coords[i][0])**2 + (coords[i+1][1]-coords[i][1])**2)**0.5
+                total += ((coords[0][0]-coords[-1][0])**2 + (coords[0][1]-coords[-1][1])**2)**0.5
+                est_dist = total
+
+            # Rough time estimate (distance * 26 / 9 + overhead)
+            tour_times[min_ship] = round((est_dist * 26) / 9) + len(partitions[min_ship]) * 22
+
+        print(f"\n✅ Greedy assignment complete")
+        return partitions
+
+    def partition_markets_kmeans(self) -> Dict[str, List[str]]:
+        """
+        Partition markets using K-means clustering for spatially compact groups
+
+        This avoids the empty partition problem of linear slicing
+        """
+        import random
+
+        # Get market coordinates
+        coords = []
+        markets = []
+        for market in self.markets:
+            wp = self.graph['waypoints'].get(market)
+            if wp:
+                coords.append([wp['x'], wp['y']])
+                markets.append(market)
+
+        if not coords:
+            return {ship: [] for ship in self.ships}
+
+        # K-means clustering
+        k = len(self.ships)
+
+        # Initialize centroids randomly
+        random.seed(42)  # Reproducible
+        centroids = random.sample(coords, k)
+
+        max_iterations = 50
+        for iteration in range(max_iterations):
+            # Assign each market to nearest centroid
+            clusters = [[] for _ in range(k)]
+            for i, coord in enumerate(coords):
+                distances = [((coord[0] - c[0])**2 + (coord[1] - c[1])**2)**0.5 for c in centroids]
+                nearest = distances.index(min(distances))
+                clusters[nearest].append(i)
+
+            # Update centroids
+            new_centroids = []
+            for cluster in clusters:
+                if cluster:
+                    avg_x = sum(coords[i][0] for i in cluster) / len(cluster)
+                    avg_y = sum(coords[i][1] for i in cluster) / len(cluster)
+                    new_centroids.append([avg_x, avg_y])
+                else:
+                    # Keep old centroid if cluster is empty
+                    new_centroids.append(centroids[len(new_centroids)])
+
+            # Check convergence
+            if new_centroids == centroids:
+                break
+            centroids = new_centroids
+
+        # Create partitions
+        partitions = {}
+        for ship_idx, ship in enumerate(self.ships):
+            if ship_idx < len(clusters):
+                partitions[ship] = [markets[i] for i in clusters[ship_idx]]
+            else:
+                partitions[ship] = []
+
+        print(f"\n✅ K-means clustering converged in {iteration + 1} iterations")
+        return partitions
+
+    def partition_markets_geographic(self) -> Dict[str, List[str]]:
+        """
+        Partition markets into subtours using geographic clustering
+
+        Returns:
+            Dict mapping ship symbol to list of markets
+        """
+        # Handle empty markets
+        if not self.markets:
+            return {ship: [] for ship in self.ships}
+
+        if len(self.ships) == 1:
+            # Single ship gets all markets
+            return {list(self.ships)[0]: self.markets}
+
+        # Get market positions
+        positions = {}
+        for market in self.markets:
+            wp = self.graph['waypoints'].get(market)
+            if wp:
+                positions[market] = (wp['x'], wp['y'])
+
+        # Handle case where no positions found
+        if not positions:
+            return {ship: [] for ship in self.ships}
+
+        # Calculate bounding box
+        min_x = min(pos[0] for pos in positions.values())
+        max_x = max(pos[0] for pos in positions.values())
+        min_y = min(pos[1] for pos in positions.values())
+        max_y = max(pos[1] for pos in positions.values())
+
+        # Determine partitioning strategy based on shape
+        width = max_x - min_x
+        height = max_y - min_y
+
+        num_ships = len(self.ships)
+        ship_list = sorted(self.ships)  # Consistent ordering
+
+        if width == 0 and height == 0:
+            # All markets at same position - distribute evenly
+            return self._distribute_evenly(list(positions.keys()), ship_list)
+        elif width > height:
+            # Partition vertically (by X)
+            return self._partition_by_x(positions, ship_list, min_x, max_x)
+        else:
+            # Partition horizontally (by Y)
+            return self._partition_by_y(positions, ship_list, min_y, max_y)
+
+    def _distribute_evenly(self, markets: List[str], ship_list: List[str]) -> Dict[str, List[str]]:
+        """Distribute markets evenly when geographic partitioning not possible"""
+        partitions = {ship: [] for ship in ship_list}
+
+        for i, market in enumerate(markets):
+            ship_idx = i % len(ship_list)
+            partitions[ship_list[ship_idx]].append(market)
+
+        return partitions
+
+    def _partition_by_x(self, positions: Dict[str, Tuple[int, int]],
+                        ship_list: List[str], min_x: int, max_x: int) -> Dict[str, List[str]]:
+        """Partition markets by X coordinate (vertical slices)"""
+        width = max_x - min_x
+        num_ships = len(ship_list)
+
+        # Handle zero width - distribute evenly
+        if width == 0:
+            return self._distribute_evenly(list(positions.keys()), ship_list)
+
+        slice_width = width / num_ships
+
+        partitions = {ship: [] for ship in ship_list}
+
+        for market, (x, y) in positions.items():
+            # Determine which slice this market belongs to
+            slice_idx = min(int((x - min_x) / slice_width), num_ships - 1)
+            partitions[ship_list[slice_idx]].append(market)
+
+        return partitions
+
+    def _partition_by_y(self, positions: Dict[str, Tuple[int, int]],
+                        ship_list: List[str], min_y: int, max_y: int) -> Dict[str, List[str]]:
+        """Partition markets by Y coordinate (horizontal slices)"""
+        height = max_y - min_y
+        num_ships = len(ship_list)
+
+        # Handle zero height - distribute evenly
+        if height == 0:
+            return self._distribute_evenly(list(positions.keys()), ship_list)
+
+        slice_height = height / num_ships
+
+        partitions = {ship: [] for ship in ship_list}
+
+        for market, (x, y) in positions.items():
+            # Determine which slice this market belongs to
+            slice_idx = min(int((y - min_y) / slice_height), num_ships - 1)
+            partitions[ship_list[slice_idx]].append(market)
+
+        return partitions
+
+    def balance_tour_times(self, partitions: Dict[str, List[str]],
+                          max_iterations: int = 20,
+                          variance_threshold: float = 0.3,
+                          min_markets: int = 2,
+                          use_tsp: bool = False) -> Dict[str, List[str]]:
+        """
+        Rebalance partitions to equalize tour times across ships
+
+        Args:
+            partitions: Initial market partitions
+            max_iterations: Maximum rebalancing iterations
+            variance_threshold: Stop if tour time variance < this (0.3 = 30%)
+            min_markets: Minimum markets per scout (default: 2, no 1-market tours)
+
+        Returns:
+            Rebalanced partitions with roughly equal tour times
+        """
+        print(f"\n⚖️  Balancing tour times (target variance: {variance_threshold*100:.0f}%, min {min_markets} markets/scout)...")
+
+        # Calculate tour times for each partition
+        tour_times = {}
+        ship_data_cache = {}
+
+        # Pre-load all ship data to avoid cache misses later
+        for ship in partitions.keys():
+            ship_data_cache[ship] = self.api.get_ship(ship)
+
+        for ship, markets in partitions.items():
+            if not markets:
+                tour_times[ship] = 0.0
+                continue
+
+            ship_data = ship_data_cache.get(ship)
+            if not ship_data:
+                print(f"⚠️  Could not get data for {ship}, skipping")
+                tour_times[ship] = 0.0
+                continue
+
+            # Calculate tour time - use fast estimate by default, TSP if requested
+            if use_tsp:
+                tour_time = self._calculate_partition_tour_time(markets, ship_data)
+            else:
+                tour_time = self._estimate_partition_tour_time(markets, ship_data)
+            tour_times[ship] = tour_time
+
+        # Print initial distribution
+        print("\nInitial tour times:")
+        for ship in sorted(partitions.keys()):
+            markets_count = len(partitions[ship])
+            time_min = tour_times[ship] / 60
+            print(f"  {ship}: {markets_count:2d} markets, {time_min:6.1f} min")
+
+        # PRE-BALANCING: Ensure all scouts have at least min_markets and not all co-located
+        print(f"\n🔧 Pre-balancing: Ensuring all scouts have at least {min_markets} markets and diverse coordinates...")
+
+        for ship in sorted(partitions.keys()):
+            # First, ensure minimum market count
+            while len(partitions[ship]) < min_markets:
+                # Find scout with most markets
+                richest_ship = max(partitions.keys(), key=lambda s: len(partitions[s]))
+
+                if len(partitions[richest_ship]) <= min_markets:
+                    print(f"⚠️  Cannot ensure minimum: richest scout has only {len(partitions[richest_ship])} markets")
+                    break
+
+                market_to_move = self._find_boundary_market(partitions[richest_ship], partitions[ship])
+
+                if not market_to_move:
+                    print(f"⚠️  No suitable market to move to {ship}")
+                    break
+
+                partitions[richest_ship].remove(market_to_move)
+                partitions[ship].append(market_to_move)
+                print(f"  Moved {market_to_move} from {richest_ship} to {ship} ({len(partitions[ship])} markets)")
+
+            # Then, ensure not all markets are co-located (all same coordinates)
+            current_coords = set()
+            for m in partitions[ship]:
+                wp = self.graph['waypoints'].get(m)
+                if wp:
+                    current_coords.add((wp['x'], wp['y']))
+
+            # If all markets at same coordinates, add one from different location
+            if len(current_coords) == 1 and len(partitions[ship]) >= min_markets:
+                print(f"  ⚠️  {ship} has all markets co-located, adding diverse market...")
+                richest_ship = max(partitions.keys(), key=lambda s: len(partitions[s]))
+
+                # Find market with different coordinates
+                market_to_move = None
+                for m in partitions[richest_ship]:
+                    wp = self.graph['waypoints'].get(m)
+                    if wp and (wp['x'], wp['y']) not in current_coords:
+                        market_to_move = m
+                        break
+
+                if market_to_move:
+                    partitions[richest_ship].remove(market_to_move)
+                    partitions[ship].append(market_to_move)
+                    print(f"  Moved {market_to_move} from {richest_ship} to {ship} (now {len(partitions[ship])} markets with {len(current_coords)+1} unique locations)")
+
+        # Recalculate tour times after pre-balancing (use same method as initial)
+        for ship, markets in partitions.items():
+            if markets:
+                ship_data = ship_data_cache[ship]
+                if use_tsp:
+                    tour_times[ship] = self._calculate_partition_tour_time(markets, ship_data)
+                else:
+                    tour_times[ship] = self._estimate_partition_tour_time(markets, ship_data)
+            else:
+                tour_times[ship] = 0.0
+
+        print("\nAfter pre-balancing:")
+        for ship in sorted(partitions.keys()):
+            markets_count = len(partitions[ship])
+            time_min = tour_times[ship] / 60
+            print(f"  {ship}: {markets_count:2d} markets, {time_min:6.1f} min")
+
+        # Iterative rebalancing
+        for iteration in range(max_iterations):
+            # Calculate variance
+            times = [t for t in tour_times.values() if t > 0]
+            if not times:
+                break
+
+            avg_time = sum(times) / len(times)
+            variance = max(abs(t - avg_time) / avg_time for t in times) if avg_time > 0 else 0
+
+            print(f"\nIteration {iteration + 1}: variance = {variance*100:.1f}%")
+
+            if variance < variance_threshold:
+                print(f"✅ Converged! Variance below {variance_threshold*100:.0f}%")
+                break
+
+            # Find ship with longest tour and ship with shortest tour
+            longest_ship = max(tour_times.keys(), key=lambda s: tour_times[s])
+            shortest_ship = min(tour_times.keys(), key=lambda s: tour_times[s] if len(partitions[s]) < len(self.markets) else float('inf'))
+
+            # Allow reducing below min_markets only if variance is extreme (>40%)
+            if len(partitions[longest_ship]) <= min_markets:
+                if variance < 0.4:  # 40% threshold for extreme imbalance
+                    print(f"⚠️  Cannot rebalance further (longest partition has only {min_markets} markets, variance acceptable)")
+                    break
+                else:
+                    print(f"  ⚠️  Variance {variance*100:.0f}% is extreme, allowing reduction below {min_markets} markets")
+
+            # Find market in longest tour that's closest to shortest ship's region
+            market_to_move = self._find_boundary_market(
+                partitions[longest_ship],
+                partitions[shortest_ship]
+            )
+
+            if not market_to_move:
+                print("⚠️  No suitable market to move")
+                break
+
+            # Detect oscillation: don't move a market that was just moved
+            if iteration > 0 and 'last_moved' in locals():
+                if market_to_move == last_moved:
+                    print(f"⚠️  Detected oscillation ({market_to_move} moving back and forth), stopping")
+                    break
+
+            # Move market
+            partitions[longest_ship].remove(market_to_move)
+            partitions[shortest_ship].append(market_to_move)
+            last_moved = market_to_move  # Track for oscillation detection
+
+            # Recalculate tour times for affected ships (use fast estimate or TSP)
+            for affected_ship in [longest_ship, shortest_ship]:
+                if partitions[affected_ship]:
+                    ship_data = ship_data_cache[affected_ship]
+                    if use_tsp:
+                        tour_times[affected_ship] = self._calculate_partition_tour_time(
+                            partitions[affected_ship], ship_data
+                        )
+                    else:
+                        tour_times[affected_ship] = self._estimate_partition_tour_time(
+                            partitions[affected_ship], ship_data
+                        )
+                else:
+                    tour_times[affected_ship] = 0.0
+
+            print(f"  Moved {market_to_move} from {longest_ship} to {shortest_ship}")
+            print(f"    {longest_ship}: {tour_times[longest_ship]/60:.1f} min → {len(partitions[longest_ship])} markets")
+            print(f"    {shortest_ship}: {tour_times[shortest_ship]/60:.1f} min → {len(partitions[shortest_ship])} markets")
+
+        # Print final distribution
+        print("\n" + "="*70)
+        print("FINAL BALANCED TOUR TIMES")
+        print("="*70)
+        total_time = 0
+        for ship in sorted(partitions.keys()):
+            markets_count = len(partitions[ship])
+            time_min = tour_times[ship] / 60
+            total_time += tour_times[ship]
+            print(f"  {ship}: {markets_count:2d} markets, {time_min:6.1f} min")
+
+        avg_time = total_time / len([s for s in partitions if partitions[s]]) if partitions else 0
+        print(f"\nAverage tour time: {avg_time/60:.1f} min")
+        print("="*70 + "\n")
+
+        return partitions
+
+    def _estimate_partition_tour_time(self, markets: List[str], ship_data: Dict) -> float:
+        """
+        Fast estimate of tour time using bounding box with proper game formula
+
+        Uses actual SpaceTraders travel time formula: round((distance × mode_multiplier) / engine_speed)
+        Estimates tour distance as perimeter of bounding box (better than diagonal)
+        Adds overhead for dock/orbit/API cycles at each market
+        """
+        if not markets:
+            return 0.0
+
+        # Get all coordinates
+        coords = []
+        for market in markets:
+            wp = self.graph['waypoints'].get(market)
+            if wp:
+                coords.append((wp['x'], wp['y']))
+
+        if not coords:
+            return 0.0
+
+        # Estimate tour distance as sum of nearest-neighbor distances
+        # This gives a reasonable approximation without full TSP
+        if len(coords) == 1:
+            estimated_distance = 0
+        elif len(coords) == 2:
+            # Just the round-trip distance
+            estimated_distance = 2 * ((coords[1][0] - coords[0][0])**2 + (coords[1][1] - coords[0][1])**2)**0.5
+        else:
+            # Greedy nearest neighbor tour estimate
+            visited = set()
+            current = 0
+            visited.add(0)
+            total_dist = 0
+
+            for _ in range(len(coords) - 1):
+                nearest = None
+                nearest_dist = float('inf')
+
+                for i in range(len(coords)):
+                    if i not in visited:
+                        dist = ((coords[i][0] - coords[current][0])**2 + (coords[i][1] - coords[current][1])**2)**0.5
+                        if dist < nearest_dist:
+                            nearest_dist = dist
+                            nearest = i
+
+                if nearest is not None:
+                    total_dist += nearest_dist
+                    visited.add(nearest)
+                    current = nearest
+
+            # Return to start
+            total_dist += ((coords[0][0] - coords[current][0])**2 + (coords[0][1] - coords[current][1])**2)**0.5
+            estimated_distance = total_dist
+
+        # Use actual game formula: round((distance × mode_multiplier) / engine_speed)
+        ship_speed = ship_data.get('engine', {}).get('speed', 9)
+        drift_multiplier = 26  # Empirically measured: 166 units in 476s = mult ~26
+        travel_time_seconds = round((estimated_distance * drift_multiplier) / ship_speed)
+
+        # Add overhead for each market visit:
+        # - Dock: ~10 seconds
+        # - Get market data API: ~2 seconds
+        # - Orbit: ~10 seconds
+        # Total: ~22 seconds per market
+        overhead_per_market = 22
+        total_overhead = len(markets) * overhead_per_market
+
+        total_time_seconds = travel_time_seconds + total_overhead
+        return total_time_seconds
+
+    def _calculate_partition_tour_time(self, markets: List[str], ship_data: Dict) -> float:
+        """
+        Calculate tour time for a partition starting from its centroid
+
+        This gives a fair estimate of tour time independent of ship's current position.
+        Represents the actual recurring scouting work, not one-time repositioning.
+        """
+        if not markets:
+            return 0.0
+
+        # Calculate partition centroid
+        positions = []
+        for market in markets:
+            wp = self.graph['waypoints'].get(market)
+            if wp:
+                positions.append((wp['x'], wp['y']))
+
+        if not positions:
+            return 0.0
+
+        centroid_x = sum(p[0] for p in positions) / len(positions)
+        centroid_y = sum(p[1] for p in positions) / len(positions)
+
+        # Find market closest to centroid to use as virtual starting position
+        def dist_to_centroid(market):
+            wp = self.graph['waypoints'].get(market)
+            if not wp:
+                return float('inf')
+            return ((wp['x'] - centroid_x)**2 + (wp['y'] - centroid_y)**2)**0.5
+
+        start_market = min(markets, key=dist_to_centroid)
+
+        # Create virtual ship data at the centroid
+        virtual_ship = ship_data.copy()
+        virtual_ship['nav'] = virtual_ship['nav'].copy()
+        virtual_ship['nav']['waypointSymbol'] = start_market
+        virtual_ship['fuel'] = {'current': virtual_ship['fuel']['capacity'], 'capacity': virtual_ship['fuel']['capacity']}
+
+        # Calculate tour using TourOptimizer
+        optimizer = TourOptimizer(self.graph, virtual_ship)
+
+        if self.algorithm == '2opt':
+            greedy_tour = optimizer.solve_nearest_neighbor(
+                start_market, markets,
+                virtual_ship['fuel']['current'],
+                return_to_start=True
+            )
+            tour = optimizer.two_opt_improve(greedy_tour, max_iterations=100)
+        else:
+            tour = optimizer.solve_nearest_neighbor(
+                start_market, markets,
+                virtual_ship['fuel']['current'],
+                return_to_start=True
+            )
+
+        return tour['total_time'] if tour else 0.0
+
+    def _find_boundary_market(self, from_markets: List[str], to_markets: List[str]) -> Optional[str]:
+        """
+        Find market in from_markets that's closest to to_markets region
+
+        This finds "boundary" markets that can be moved without breaking locality too much.
+        """
+        if not from_markets:
+            return None
+
+        if not to_markets:
+            # If target has no markets, just take first market from source
+            return from_markets[0]
+
+        # Get positions
+        from_positions = {}
+        to_positions = {}
+
+        for market in from_markets:
+            wp = self.graph['waypoints'].get(market)
+            if wp:
+                from_positions[market] = (wp['x'], wp['y'])
+
+        for market in to_markets:
+            wp = self.graph['waypoints'].get(market)
+            if wp:
+                to_positions[market] = (wp['x'], wp['y'])
+
+        if not from_positions or not to_positions:
+            return from_markets[0] if from_markets else None
+
+        # Calculate centroid of target region
+        to_centroid_x = sum(pos[0] for pos in to_positions.values()) / len(to_positions)
+        to_centroid_y = sum(pos[1] for pos in to_positions.values()) / len(to_positions)
+
+        # Find market in source closest to target centroid
+        def distance_to_centroid(market: str) -> float:
+            if market not in from_positions:
+                return float('inf')
+            x, y = from_positions[market]
+            return ((x - to_centroid_x)**2 + (y - to_centroid_y)**2)**0.5
+
+        return min(from_markets, key=distance_to_centroid)
+
+    def optimize_subtour(self, ship: str, markets: List[str]) -> Optional[Dict]:
+        """
+        Optimize a subtour for a ship using TSP
+
+        Args:
+            ship: Ship symbol
+            markets: List of markets to visit
+
+        Returns:
+            Tour dict with optimized route
+        """
+        if not markets:
+            return None
+
+        # Get ship data
+        ship_data = self.api.get_ship(ship)
+        if not ship_data:
+            print(f"❌ Failed to get ship data for {ship}")
+            return None
+
+        current_location = ship_data['nav']['waypointSymbol']
+
+        # Initialize optimizer
+        optimizer = TourOptimizer(self.graph, ship_data)
+
+        # Optimize tour
+        if self.algorithm == '2opt':
+            # Greedy first, then improve
+            greedy_tour = optimizer.solve_nearest_neighbor(
+                current_location, markets,
+                ship_data['fuel']['current'],
+                return_to_start=True  # Return to start for continuous loop
+            )
+            tour = optimizer.two_opt_improve(greedy_tour, max_iterations=100)
+        else:
+            # Greedy only
+            tour = optimizer.solve_nearest_neighbor(
+                current_location, markets,
+                ship_data['fuel']['current'],
+                return_to_start=True
+            )
+
+        return tour
+
+    def start_scout_daemon(self, ship: str, markets: List[str]) -> Optional[str]:
+        """
+        Start continuous scout daemon for a ship
+
+        Args:
+            ship: Ship symbol
+            markets: Markets to scout (subtour)
+
+        Returns:
+            Daemon ID if successful
+        """
+        # CHECK: Is ship already assigned to another daemon?
+        if not self.assignment_manager.is_available(ship):
+            existing = self.assignment_manager.get_assignment(ship)
+            old_daemon = existing.get('daemon_id')
+
+            print(f"⚠️  Ship {ship} already assigned to daemon {old_daemon}")
+            print(f"   Stopping old daemon before starting new one...")
+
+            # Stop old daemon
+            if not self.daemon_manager.stop(old_daemon, timeout=15):
+                print(f"❌ Failed to stop old daemon {old_daemon}, aborting")
+                return None
+
+            # Release ship assignment
+            self.assignment_manager.release(ship, reason="redeployment")
+
+        # Generate unique daemon ID with timestamp to avoid collisions
+        timestamp = int(time.time())
+        daemon_id = f"scout-{ship.split('-')[-1]}-{timestamp}"
+
+        # Build command for continuous scouting
+        command = [
+            "python3", "spacetraders_bot.py",
+            "scout-markets",
+            "--player-id", str(self.player_id),
+            "--ship", ship,
+            "--system", self.system,
+            "--algorithm", self.algorithm,
+            "--return-to-start",
+            "--continuous",
+            "--markets-list", ','.join(markets)  # Pass the specific markets assigned to this ship
+        ]
+
+        # Start daemon
+        success = self.daemon_manager.start(daemon_id, command)
+
+        if success:
+            # REGISTER: Assign ship to this daemon
+            assigned = self.assignment_manager.assign(
+                ship=ship,
+                operator="scout_coordinator",
+                daemon_id=daemon_id,
+                operation="scout-markets",
+                metadata={'system': self.system, 'markets': markets}
+            )
+
+            if not assigned:
+                print(f"⚠️  Warning: Daemon started but assignment failed for {ship}")
+
+            print(f"✅ Started scout daemon: {daemon_id} for {ship}")
+            print(f"   Markets: {len(markets)} - {', '.join(markets)}")
+            return daemon_id
+        else:
+            print(f"❌ Failed to start daemon for {ship}")
+            return None
+
+    def partition_and_start(self):
+        """Partition markets and start all scout daemons"""
+        print(f"\n🔄 Partitioning {len(self.markets)} markets for {len(self.ships)} ship(s)...")
+
+        # Initial geographic partition
+        partitions = self.partition_markets_geographic()
+
+        # Balance tour times
+        partitions = self.balance_tour_times(partitions)
+
+        # Optimize and start each subtour
+        self.assignments = {}
+
+        for ship, ship_markets in partitions.items():
+            if not ship_markets:
+                print(f"⚠️  No markets assigned to {ship}, skipping")
+                continue
+
+            print(f"\n📍 {ship}: {len(ship_markets)} markets")
+            print(f"   {', '.join(ship_markets)}")
+
+            # Optimize subtour
+            tour = self.optimize_subtour(ship, ship_markets)
+
+            if not tour:
+                print(f"❌ Failed to optimize subtour for {ship}")
+                continue
+
+            # Start daemon
+            daemon_id = self.start_scout_daemon(ship, ship_markets)
+
+            if daemon_id:
+                self.assignments[ship] = SubtourAssignment(
+                    ship=ship,
+                    markets=ship_markets,
+                    tour_time_seconds=tour['total_time'],
+                    daemon_id=daemon_id
+                )
+
+                tour_time_min = tour['total_time'] / 60
+                print(f"   Estimated tour time: {tour_time_min:.1f} minutes")
+
+    def monitor_and_restart(self):
+        """Monitor scout daemons and restart if they stop (continuous mode)"""
+        print(f"\n🔄 Monitoring scout daemons (continuous mode)...")
+        print(f"   Check interval: 30 seconds")
+        print(f"   Config file: {self.config_file}")
+        print(f"   Press Ctrl+C to stop\n")
+
+        check_interval = 30  # Check every 30 seconds
+
+        while self.running:
+            # Check for reconfiguration request
+            if self._check_reconfigure_signal():
+                self._handle_reconfiguration()
+
+            # Monitor each scout daemon
+            for ship, assignment in list(self.assignments.items()):
+                daemon_id = assignment.daemon_id
+
+                # Check if daemon is running
+                if not self.daemon_manager.is_running(daemon_id):
+                    print(f"⚠️  Daemon {daemon_id} stopped, restarting...")
+
+                    # Restart daemon
+                    new_daemon_id = self.start_scout_daemon(ship, assignment.markets)
+
+                    if new_daemon_id:
+                        assignment.daemon_id = new_daemon_id
+                    else:
+                        print(f"❌ Failed to restart {daemon_id}")
+
+            # Sleep
+            time.sleep(check_interval)
+
+        print("\n🛑 Monitoring stopped")
+
+    def _check_reconfigure_signal(self) -> bool:
+        """Check if reconfiguration was requested"""
+        config_path = Path(self.config_file)
+
+        if not config_path.exists():
+            return False
+
+        try:
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+
+            return config.get('reconfigure', False)
+        except:
+            return False
+
+    def _handle_reconfiguration(self):
+        """Handle graceful reconfiguration"""
+        print("\n🔄 Reconfiguration requested...")
+
+        # Load new configuration
+        with open(self.config_file, 'r') as f:
+            config = json.load(f)
+
+        new_ships = set(config.get('ships', []))
+
+        if new_ships == self.ships:
+            print("⚠️  No ship changes detected")
+            # Clear reconfigure flag
+            config['reconfigure'] = False
+            with open(self.config_file, 'w') as f:
+                json.dump(config, f, indent=2)
+            return
+
+        added = new_ships - self.ships
+        removed = self.ships - new_ships
+
+        print(f"   Added ships: {added if added else 'None'}")
+        print(f"   Removed ships: {removed if removed else 'None'}")
+
+        # Wait for current tours to complete
+        print("⏳ Waiting for current tours to complete...")
+        self._wait_for_tours_complete()
+
+        # Stop removed daemons
+        for ship in removed:
+            if ship in self.assignments:
+                daemon_id = self.assignments[ship].daemon_id
+                print(f"🛑 Stopping daemon {daemon_id} for removed ship {ship}")
+                self.daemon_manager.stop(daemon_id)
+                del self.assignments[ship]
+
+        # Update ship pool
+        self.ships = new_ships
+
+        # Repartition and restart
+        print(f"\n🔄 Repartitioning {len(self.markets)} markets for {len(self.ships)} ship(s)...")
+        self.partition_and_start()
+
+        # Clear reconfigure flag
+        config['reconfigure'] = False
+        with open(self.config_file, 'w') as f:
+            json.dump(config, f, indent=2)
+
+        print("✅ Reconfiguration complete\n")
+
+    def _wait_for_tours_complete(self, timeout: int = 300):
+        """Wait for current tours to complete (max timeout)"""
+        start_time = time.time()
+
+        while time.time() - start_time < timeout:
+            all_complete = True
+
+            for assignment in self.assignments.values():
+                if self.daemon_manager.is_running(assignment.daemon_id):
+                    all_complete = False
+                    break
+
+            if all_complete:
+                print("✅ All tours complete")
+                return
+
+            time.sleep(5)
+
+        print(f"⚠️  Timeout waiting for tours to complete ({timeout}s)")
+
+    def stop_all(self):
+        """Stop all scout daemons and release ship assignments"""
+        print("\n🛑 Stopping all scout daemons...")
+
+        for ship, assignment in self.assignments.items():
+            daemon_id = assignment.daemon_id
+            print(f"   Stopping {daemon_id}...")
+            self.daemon_manager.stop(daemon_id)
+
+            # Release ship assignment
+            self.assignment_manager.release(ship, reason="coordinator_shutdown")
+
+        print("✅ All scouts stopped and ships released")
+
+    def save_config(self):
+        """Save current configuration"""
+        config = {
+            'system': self.system,
+            'ships': sorted(list(self.ships)),
+            'algorithm': self.algorithm,
+            'reconfigure': False,
+            'last_updated': datetime.utcnow().isoformat()
+        }
+
+        config_path = Path(self.config_file)
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with open(config_path, 'w') as f:
+            json.dump(config, f, indent=2)
+
+        print(f"💾 Configuration saved to {config_path}")
