@@ -1,0 +1,53 @@
+# Dependencies
+node_modules/
+.venv/
+__pycache__/
+
+# Build outputs
+build/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+
+# Logs
+*.log
+*.err
+
+# Environment
+.env
+.env.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+.coverage
+.pytest_cache/
+htmlcov/
+*.cover
+
+# Database files (runtime data)
+*.db
+*.db-shm
+*.db-wal
+bot/data/*.db
+bot/data/*.db-*
+
+# Daemon runtime files
+bot/operations/daemons/logs/
+bot/operations/daemons/pids/
+
+# Operation state files (checkpoints)
+bot/operations/state/
+
+# Agent runtime data
+bot/agents/*/logs/
+bot/agents/*/market_intelligence.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
