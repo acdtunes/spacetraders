@@ -1,0 +1,51 @@
+{
+  "system": "X1-HU87",
+  "waypoints": {
+    "X1-HU87-B7": {
+      "type": "PLANET",
+      "x": 100,
+      "y": 0,
+      "traits": [
+        "MARKETPLACE"
+      ],
+      "has_fuel": true,
+      "orbitals": []
+    },
+    "X1-HU87-B9": {
+      "type": "ASTEROID",
+      "x": 150,
+      "y": 0,
+      "traits": [],
+      "has_fuel": false,
+      "orbitals": []
+    },
+    "X1-HU87-C5": {
+      "type": "ASTEROID",
+      "x": 300,
+      "y": 0,
+      "traits": [],
+      "has_fuel": false,
+      "orbitals": []
+    }
+  },
+  "edges": [
+    {
+      "from": "X1-HU87-B7",
+      "to": "X1-HU87-B9",
+      "distance": 50.0,
+      "type": "normal"
+    },
+    {
+      "from": "X1-HU87-B7",
+      "to": "X1-HU87-C5",
+      "distance": 200.0,
+      "type": "normal"
+    },
+    {
+      "from": "X1-HU87-B9",
+      "to": "X1-HU87-C5",
+      "distance": 150.0,
+      "type": "normal"
+    }
+  ]
+}
