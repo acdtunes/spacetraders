@@ -559,10 +559,16 @@ class SpaceTradersBotServer {
       }
       case "bot_run_mining": {
         this.ensureArgs(name, args, ["player_id", "ship", "asteroid", "market"]);
+        // Auto-generate daemon ID if not provided
+        const daemonId = `mine-${String(args.ship)}-${Date.now()}`;
         command.push(
-          "mine",
+          "daemon",
+          "start",
           "--player-id",
           String(args.player_id),
+          "--daemon-id",
+          daemonId,
+          "mine",
           "--ship",
           String(args.ship),
           "--asteroid",
@@ -583,10 +589,16 @@ class SpaceTradersBotServer {
           "buy_from",
           "sell_to",
         ]);
+        // Auto-generate daemon ID if not provided
+        const daemonId = `trade-${String(args.ship)}-${Date.now()}`;
         command.push(
-          "trade",
+          "daemon",
+          "start",
           "--player-id",
           String(args.player_id),
+          "--daemon-id",
+          daemonId,
+          "trade",
           "--ship",
           String(args.ship),
           "--good",
@@ -649,10 +661,16 @@ class SpaceTradersBotServer {
       }
       case "bot_multileg_trade": {
         this.ensureArgs(name, args, ["player_id", "ship"]);
+        // Auto-generate daemon ID if not provided
+        const daemonId = `multileg-${String(args.ship)}-${Date.now()}`;
         command.push(
-          "trade",
+          "daemon",
+          "start",
           "--player-id",
           String(args.player_id),
+          "--daemon-id",
+          daemonId,
+          "trade",
           "--ship",
           String(args.ship)
         );
@@ -683,10 +701,16 @@ class SpaceTradersBotServer {
       }
       case "bot_fulfill_contract": {
         this.ensureArgs(name, args, ["player_id", "ship", "contract_id"]);
+        // Auto-generate daemon ID if not provided
+        const daemonId = `contract-${String(args.ship)}-${Date.now()}`;
         command.push(
-          "contract",
+          "daemon",
+          "start",
           "--player-id",
           String(args.player_id),
+          "--daemon-id",
+          daemonId,
+          "contract",
           "--ship",
           String(args.ship),
           "--contract-id",

@@ -98,7 +98,7 @@ export const botToolDefinitions: Tool[] = [
   },
   {
     "name": "bot_run_mining",
-    "description": "Start the autonomous mining workflow for a ship between an asteroid and market.",
+    "description": "Start the autonomous mining workflow for a ship between an asteroid and market. RUNS AS BACKGROUND DAEMON - returns immediately with daemon_id. Monitor with bot_daemon_status and bot_daemon_logs.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -133,7 +133,7 @@ export const botToolDefinitions: Tool[] = [
   },
   {
     "name": "bot_run_trading",
-    "description": "Run the trading automation loop for a ship with the supplied route and targets.",
+    "description": "Run the trading automation loop for a ship with the supplied route and targets. RUNS AS BACKGROUND DAEMON - returns immediately with daemon_id. Monitor with bot_daemon_status and bot_daemon_logs.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -266,7 +266,7 @@ export const botToolDefinitions: Tool[] = [
   },
   {
     "name": "bot_multileg_trade",
-    "description": "Run autonomous multi-leg trading optimizer to find and execute the most profitable trade route. Supports looping with --cycles or --duration.",
+    "description": "Run autonomous multi-leg trading optimizer to find and execute the most profitable trade route. Supports looping with --cycles or --duration. RUNS AS BACKGROUND DAEMON - returns immediately with daemon_id. Monitor with bot_daemon_status and bot_daemon_logs.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -465,7 +465,7 @@ export const botToolDefinitions: Tool[] = [
   },
   {
     "name": "bot_fulfill_contract",
-    "description": "Fulfil an accepted contract, including buying or mining cargo as required.",
+    "description": "Fulfil an accepted contract by PURCHASING cargo from markets. RUNS AS BACKGROUND DAEMON - returns immediately with daemon_id. Monitor with bot_daemon_status and bot_daemon_logs. IMPORTANT: Only purchases from markets, never mines. If resource not available in discovered markets, operation will wait and retry periodically (up to 1 hour) for scouts to discover sellers.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -483,7 +483,7 @@ export const botToolDefinitions: Tool[] = [
         },
         "buy_from": {
           "type": "string",
-          "description": "Optional: Specific market waypoint to purchase resources from (e.g., X1-HU87-B7). If omitted, finds nearest market automatically."
+          "description": "Optional: Specific market waypoint to purchase resources from (e.g., X1-HU87-B7). If omitted, auto-discovers cheapest market in system. If resource not available, operation waits for scout coordinator to discover markets."
         }
       },
       "required": [
