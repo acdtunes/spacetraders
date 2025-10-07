@@ -170,13 +170,6 @@ export interface Market {
   tradeGoods?: MarketTradeGood[]; // optional full list
 }
 
-export interface TradeOpportunity {
-  good: string;
-  profitPerUnit: number;
-  buyLocation: string;
-  sellLocation: string;
-}
-
 // Position tracking
 export interface ShipTrailPoint {
   shipSymbol: string;

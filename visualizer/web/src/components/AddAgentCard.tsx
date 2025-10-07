@@ -1,34 +1,11 @@
-import { useState } from 'react';
-import { useStore } from '../store/useStore';
-import { addAgent as apiAddAgent } from '../services/api';
+import { useAgentForm } from '../hooks/useAgentActions';
 
 const AddAgentCard = () => {
-  const { addAgent } = useStore();
-  const [token, setToken] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState('');
+  const { token, setToken, submit, isSubmitting, error } = useAgentForm();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-
-    if (!token.trim()) {
-      setError('Please enter a valid token');
-      return;
-    }
-
-    setIsLoading(true);
-    setError('');
-
-    try {
-      const agent = await apiAddAgent(token.trim());
-      addAgent(agent);
-      setToken('');
-      setError('');
-    } catch (err: any) {
-      setError(err.message || 'Failed to add agent. Please check your token.');
-    } finally {
-      setIsLoading(false);
-    }
+    await submit();
   };
 
   return (
@@ -49,7 +26,7 @@ const AddAgentCard = () => {
             onChange={(e) => setToken(e.target.value)}
             placeholder="eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9..."
             className="w-full px-4 py-3 bg-gray-900 border border-gray-600 rounded-lg text-white focus:outline-none focus:border-blue-500 font-mono text-sm"
-            disabled={isLoading}
+            disabled={isSubmitting}
           />
           <p className="text-xs text-gray-500 mt-2">
             Get your token at{' '}
@@ -72,10 +49,10 @@ const AddAgentCard = () => {
 
         <button
           type="submit"
-          disabled={isLoading || !token.trim()}
+          disabled={isSubmitting || !token.trim()}
           className="w-full px-6 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed rounded-lg font-medium transition-colors"
         >
-          {isLoading ? 'Adding Agent...' : 'Add Agent'}
+          {isSubmitting ? 'Adding Agent...' : 'Add Agent'}
         </button>
       </form>
 

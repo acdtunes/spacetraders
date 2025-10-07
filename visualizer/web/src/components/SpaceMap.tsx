@@ -1,9 +1,9 @@
-import { useEffect, useRef, useState, forwardRef, useImperativeHandle, useMemo } from 'react';
-import { Stage, Layer, Shape, Group, Circle, Text, Line } from 'react-konva';
+import { useEffect, useRef, useState, forwardRef, useImperativeHandle, useMemo, useCallback } from 'react';
+import { Stage, Layer, Shape, Group, Circle, Text, Line, Label, Tag } from 'react-konva';
 import Konva from 'konva';
 import { useStore } from '../store/useStore';
 import { getWaypoints } from '../services/api';
-import { getWaypointOpportunities, formatOpportunity } from '../services/marketAnalysis';
+import { getWaypointOpportunities, formatOpportunity } from '../domain/market';
 import { Ship, Waypoint, ShipQueries, WaypointQueries, ViewportBounds } from '../domain';
 import { VIEWPORT_CONSTANTS } from '../constants/viewport';
 import { drawWaypoint } from '../services/canvas/WaypointRenderer';
@@ -79,18 +79,15 @@ const TRAIL_VISUAL_CONFIG: Record<FlightMode, TrailVisualSettings> = {
 
 const TRAIL_SAMPLE_RATE = 4;
 
-type ShipLabelData = {
-  key: string;
-  text: string;
-  left: number;
-  top: number;
-};
+const SHIP_LABEL_FONT_SIZE = 10;
+const SHIP_LABEL_PADDING_X = 6;
+const SHIP_LABEL_PADDING_Y = 3;
+const SHIP_LABEL_MIN_WIDTH = 56;
+const SHIP_LABEL_SCREEN_OFFSET_X = 16;
+const SHIP_LABEL_SCREEN_OFFSET_Y = 14;
 
-const SHIP_LABEL_FONT_SIZE = 6;
-const SHIP_LABEL_PADDING_X = 3;
-const SHIP_LABEL_PADDING_Y = 2;
-const SHIP_LABEL_HORIZONTAL_OFFSET = 8;
-const SHIP_LABEL_VERTICAL_OFFSET = 6;
+const SHIP_TOOLTIP_OFFSET_X = 12;
+const SHIP_TOOLTIP_OFFSET_Y = 12;
 
 type RGB = { r: number; g: number; b: number };
 
@@ -776,6 +773,29 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
   // Get waypoint tooltip data
   const activeShipTooltipSymbol = hoveredShip ?? (selectedObject?.type === 'ship' ? selectedObject.symbol : null);
 
+  const projectToScreen = useCallback(
+    (point: { x: number; y: number }) => {
+      const layer = layerRef.current;
+      if (!layer) return null;
+
+      const transform = layer.getAbsoluteTransform().copy();
+      return transform.point(point);
+    },
+    []
+  );
+
+  const projectToWorld = useCallback(
+    (point: { x: number; y: number }) => {
+      const layer = layerRef.current;
+      if (!layer) return null;
+
+      const transform = layer.getAbsoluteTransform().copy();
+      transform.invert();
+      return transform.point(point);
+    },
+    []
+  );
+
   const shipTooltip = activeShipTooltipSymbol ? (() => {
     const ship = ships.find((s) => s.symbol === activeShipTooltipSymbol);
     if (!ship) return null;
@@ -848,21 +868,17 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
     const position = Ship.getPosition(ship, waypoints);
     if (position.x === 0 && position.y === 0) return null;
 
-    const transform = layer.getAbsoluteTransform().copy();
-    const screenPos = transform.point({ x: position.x, y: position.y });
+    const screenPos = projectToScreen(position);
+    if (!screenPos) return null;
 
     return {
-      left: screenPos.x - SHIP_LABEL_HORIZONTAL_OFFSET,
-      top: screenPos.y - SHIP_LABEL_VERTICAL_OFFSET,
+      left: screenPos.x - SHIP_TOOLTIP_OFFSET_X,
+      top: screenPos.y - SHIP_TOOLTIP_OFFSET_Y,
     };
-  }, [activeShipTooltipSymbol, ships, waypoints, animationFrame]);
+  }, [activeShipTooltipSymbol, ships, waypoints, animationFrame, projectToScreen]);
 
   const selectionOverlay = useMemo(() => {
     if (!selectedObject) return null;
-    const layer = layerRef.current;
-    if (!layer) return null;
-
-    const transform = layer.getAbsoluteTransform().copy();
 
     let worldX = selectedObject.x;
     let worldY = selectedObject.y;
@@ -881,7 +897,8 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
       worldY = waypoint.y;
     }
 
-    const screenPos = transform.point({ x: worldX, y: worldY });
+    const screenPos = projectToScreen({ x: worldX, y: worldY });
+    if (!screenPos) return null;
     const size = selectedObject.type === 'waypoint' ? 15 : 12;
 
     return {
@@ -889,37 +906,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
       top: screenPos.y,
       size,
     };
-  }, [selectedObject, ships, waypoints, animationFrame]);
-
-  const shipLabelData = useMemo<ShipLabelData[]>(() => {
-    const layer = layerRef.current;
-    if (!layer) return [];
-
-    const transform = layer.getAbsoluteTransform().copy();
-
-    return filteredShips.flatMap<ShipLabelData>((ship: any) => {
-      const position = Ship.getPosition(ship, waypoints);
-      if (position.x === 0 && position.y === 0) return [];
-
-      const screenPos = transform.point({ x: position.x, y: position.y });
-
-      const shipNumber = ship.symbol.split('-').pop() ?? ship.symbol;
-      const shipTypeRaw = ship.registration.role || 'UNKNOWN';
-      const shipType = shipTypeRaw
-        .split('_')
-        .map((part: string) => part.charAt(0) + part.slice(1).toLowerCase())
-        .join(' ');
-
-      const labelHeight = SHIP_LABEL_FONT_SIZE + SHIP_LABEL_PADDING_Y * 2;
-
-      return [{
-        key: ship.symbol,
-        text: `${shipType} ${shipNumber}`,
-        left: screenPos.x + SHIP_LABEL_HORIZONTAL_OFFSET,
-        top: screenPos.y - (labelHeight + SHIP_LABEL_VERTICAL_OFFSET),
-      }];
-    });
-  }, [filteredShips, waypoints, animationFrame]);
+  }, [selectedObject, ships, waypoints, animationFrame, projectToScreen]);
 
   const waypointTooltip = hoveredWaypoint ? (() => {
     const waypoint = waypoints.get(hoveredWaypoint);
@@ -1180,38 +1167,104 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
               }
             }
 
+            const shipNumber = ship.symbol.split('-').pop() ?? ship.symbol;
+            const shipTypeRaw = ship.registration.role || 'UNKNOWN';
+            const shipType = shipTypeRaw
+              .split('_')
+              .map((part: string) => part.charAt(0) + part.slice(1).toLowerCase())
+              .join(' ');
+            const labelText = `${shipType} ${shipNumber}`;
+            const labelHeight = SHIP_LABEL_FONT_SIZE + SHIP_LABEL_PADDING_Y * 2;
+            const estimatedTextWidth = labelText.length * (SHIP_LABEL_FONT_SIZE * 0.6);
+            const labelWidth = Math.max(
+              SHIP_LABEL_MIN_WIDTH,
+              estimatedTextWidth + SHIP_LABEL_PADDING_X * 2
+            );
+            const labelScale = 1 / currentScale;
+
+            const screenPos = projectToScreen(position);
+            if (!screenPos) {
+              return null;
+            }
+
+            const labelTargetScreen = {
+              x: screenPos.x + SHIP_LABEL_SCREEN_OFFSET_X,
+              y: screenPos.y - SHIP_LABEL_SCREEN_OFFSET_Y,
+            };
+
+            const labelWorldPos = projectToWorld(labelTargetScreen);
+            if (!labelWorldPos) {
+              return null;
+            }
+
+            const labelOffsetX = labelWorldPos.x - position.x;
+            const labelOffsetY = labelWorldPos.y - position.y;
+
             return (
-              <Group key={ship.symbol} x={position.x} y={position.y} rotation={rotation}>
-                {/* Hit area - invisible circle for easier clicking */}
-                <Circle
-                  radius={15}
-                  fill="transparent"
-                  onClick={() => {
-                    setSelectedObject({ type: 'ship', symbol: ship.symbol, x: position.x, y: position.y });
-                    setSelectedShip(ship);
-                    setSelectedWaypoint(null);
-                  }}
-                  onMouseEnter={(e) => {
-                    setHoveredShip(ship.symbol);
-                    setHoveredWaypoint(null);
+              <Group key={ship.symbol} x={position.x} y={position.y}>
+                <Group rotation={rotation}>
+                  {/* Hit area - invisible circle for easier clicking */}
+                  <Circle
+                    radius={15}
+                    fill="transparent"
+                    onClick={() => {
+                      setSelectedObject({ type: 'ship', symbol: ship.symbol, x: position.x, y: position.y });
+                      setSelectedShip(ship);
+                      setSelectedWaypoint(null);
+                    }}
+                    onMouseEnter={(e) => {
+                      setHoveredShip(ship.symbol);
+                      setHoveredWaypoint(null);
 
-                    const container = e.target.getStage()?.container();
-                    if (container) container.style.cursor = 'pointer';
-                  }}
-                  onMouseLeave={(e) => {
-                    setHoveredShip(null);
+                      const container = e.target.getStage()?.container();
+                      if (container) container.style.cursor = 'pointer';
+                    }}
+                    onMouseLeave={(e) => {
+                      setHoveredShip(null);
 
-                    const container = e.target.getStage()?.container();
-                    if (container) container.style.cursor = 'default';
-                  }}
-                />
-                {/* Ship shape */}
-                <Shape
-                  sceneFunc={(context, _shape) => {
-                    drawShipShape(context._context as CanvasRenderingContext2D, ship.registration.role, shipColor);
-                  }}
+                      const container = e.target.getStage()?.container();
+                      if (container) container.style.cursor = 'default';
+                    }}
+                  />
+                  {/* Ship shape */}
+                  <Shape
+                    sceneFunc={(context, _shape) => {
+                      drawShipShape(context._context as CanvasRenderingContext2D, ship.registration.role, shipColor);
+                    }}
+                    listening={false}
+                  />
+                </Group>
+
+                {/* Ship label */}
+                <Group
                   listening={false}
-                />
+                  x={labelOffsetX}
+                  y={labelOffsetY}
+                >
+                  <Group scale={{ x: labelScale, y: labelScale }} listening={false}>
+                    <Label>
+                      <Tag
+                        width={labelWidth}
+                        height={labelHeight}
+                        fill="rgba(0, 0, 0, 0.82)"
+                        stroke="#ff4d4f"
+                        strokeWidth={1}
+                        cornerRadius={3}
+                      />
+                      <Text
+                        x={SHIP_LABEL_PADDING_X}
+                        y={SHIP_LABEL_PADDING_Y / 1.5}
+                        width={labelWidth - SHIP_LABEL_PADDING_X * 2}
+                        height={labelHeight - SHIP_LABEL_PADDING_Y}
+                        fontSize={SHIP_LABEL_FONT_SIZE}
+                        fontStyle="bold"
+                        fill="#ffd7d7"
+                        align="center"
+                        text={labelText}
+                      />
+                    </Label>
+                  </Group>
+                </Group>
               </Group>
             );
           })}
@@ -1255,21 +1308,6 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
       </Stage>
       )}
 
-      {shipLabelData.map((label: ShipLabelData) => (
-        <div
-          key={label.key}
-          className="absolute pointer-events-none z-10 inline-flex items-center justify-center rounded-sm border border-red-500 bg-black/80 text-red-200 font-semibold leading-none shadow-[0_0_6px_rgba(255,77,79,0.3)] whitespace-nowrap"
-          style={{
-            left: `${label.left}px`,
-            top: `${label.top}px`,
-            fontSize: `${SHIP_LABEL_FONT_SIZE}px`,
-            padding: `${SHIP_LABEL_PADDING_Y}px ${SHIP_LABEL_PADDING_X}px`,
-          }}
-        >
-          {label.text}
-        </div>
-      ))}
-
       {selectionOverlay && (
         <div
           className="absolute pointer-events-none z-20"
@@ -1305,24 +1343,21 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
       {/* Ship tooltip */}
       {shipTooltip && shipTooltipPosition && (
         <div
-          className="absolute bg-black bg-opacity-80 border border-red-500 rounded-lg p-3 text-xs min-w-[260px] max-w-[340px] pointer-events-none z-30 shadow-xl backdrop-blur-sm"
+          className="absolute bg-black bg-opacity-80 border border-red-500 rounded-lg p-2.5 text-xs min-w-[220px] max-w-[300px] pointer-events-none z-30 shadow-xl backdrop-blur-sm"
           style={{
             left: `${shipTooltipPosition.left}px`,
             top: `${shipTooltipPosition.top}px`,
             transform: 'translate(-100%, -100%)',
           }}
         >
-          <div className="flex items-start justify-between gap-3 mb-3">
-            <div>
-              <div className="text-sm font-bold text-white leading-snug">{shipTooltip.symbol}</div>
-              <div className="text-[10px] uppercase tracking-wide text-red-300">{shipTooltip.registrationName}</div>
-            </div>
-            <span className="text-[10px] font-semibold text-red-300 bg-red-500/10 border border-red-500/40 rounded-full px-2 py-0.5 whitespace-nowrap">
+          <div className="flex items-start justify-between gap-2 mb-2">
+            <div className="text-sm font-bold text-white leading-snug">{shipTooltip.symbol}</div>
+            <span className="text-[10px] font-semibold text-red-300 bg-red-500/10 border border-red-500/40 rounded-full px-1.5 py-0.5 whitespace-nowrap">
               {shipTooltip.role}
             </span>
           </div>
 
-          <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-gray-200">
+          <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-gray-200">
             <div>
               <div className="text-[10px] uppercase text-gray-400">Status</div>
               <div className="text-xs font-semibold">{shipTooltip.statusText}</div>

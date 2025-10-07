@@ -1,41 +1,33 @@
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import { useStore } from '../store/useStore';
-import { addAgent as apiAddAgent, deleteAgent as apiDeleteAgent } from '../services/api';
+import { useAgentActions, useAgentForm } from '../hooks/useAgentActions';
 
 const AgentManager = () => {
-  const { agents, addAgent, removeAgent } = useStore();
+  const { agents } = useStore();
+  const { removeAgent: deleteAgent } = useAgentActions();
+  const { token, setToken, submit, isSubmitting, error, clearError } = useAgentForm();
   const [isOpen, setIsOpen] = useState(false);
-  const [newToken, setNewToken] = useState('');
-  const [isAdding, setIsAdding] = useState(false);
-  const [error, setError] = useState('');
 
-  const handleAddAgent = async () => {
-    if (!newToken.trim()) {
-      setError('Token is required');
-      return;
-    }
+  const handleToggle = useCallback(() => {
+    setIsOpen((prev) => {
+      const next = !prev;
+      if (!next) {
+        clearError();
+        setToken('');
+      }
+      return next;
+    });
+  }, [clearError, setToken]);
 
-    setIsAdding(true);
-    setError('');
-
-    try {
-      const agent = await apiAddAgent(newToken.trim());
-      addAgent(agent);
-      setNewToken('');
-      setError('');
-    } catch (err: any) {
-      setError(err.message || 'Failed to add agent');
-    } finally {
-      setIsAdding(false);
-    }
-  };
+  const handleAddAgent = useCallback(async () => {
+    await submit();
+  }, [submit]);
 
   const handleDeleteAgent = async (id: string) => {
     if (!confirm('Are you sure you want to remove this agent?')) return;
 
     try {
-      await apiDeleteAgent(id);
-      removeAgent(id);
+      await deleteAgent(id);
     } catch (err: any) {
       alert(`Failed to delete agent: ${err.message}`);
     }
@@ -44,7 +36,7 @@ const AgentManager = () => {
   return (
     <div className="relative">
       <button
-        onClick={() => setIsOpen(!isOpen)}
+        onClick={handleToggle}
         className="px-4 py-2 bg-purple-600 hover:bg-purple-700 rounded text-white font-medium flex items-center gap-2"
       >
         <span>👥</span>
@@ -59,18 +51,18 @@ const AgentManager = () => {
             <input
               type="text"
               placeholder="Paste agent token here..."
-              value={newToken}
-              onChange={(e) => setNewToken(e.target.value)}
+              value={token}
+              onChange={(e) => setToken(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && handleAddAgent()}
               className="w-full px-3 py-2 bg-gray-900 border border-gray-600 rounded text-white mb-2 font-mono text-sm"
             />
             {error && <div className="text-red-400 text-sm mb-2">{error}</div>}
             <button
               onClick={handleAddAgent}
-              disabled={isAdding}
+              disabled={isSubmitting || !token.trim()}
               className="w-full px-4 py-2 bg-green-600 hover:bg-green-700 disabled:bg-gray-600 rounded text-white font-medium"
             >
-              {isAdding ? 'Adding...' : 'Add Agent'}
+              {isSubmitting ? 'Adding...' : 'Add Agent'}
             </button>
           </div>
 
