@@ -826,6 +826,10 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
       ? Math.round((ship.fuel.current / ship.fuel.capacity) * 100)
       : 0;
 
+    const cargoPercent = ship.cargo.capacity > 0
+      ? Math.round((ship.cargo.units / ship.cargo.capacity) * 100)
+      : 0;
+
     const cargoEntries = ship.cargo.inventory.slice(0, 4).map((item) => ({
       icon: getCargoIcon(item.symbol),
       label: getCargoLabel(item.symbol),
@@ -851,6 +855,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
       fuelPercent,
       cargoUnits: ship.cargo.units,
       cargoCapacity: ship.cargo.capacity,
+      cargoPercent,
       cargoEntries,
       extraCargoCount,
       cooldownSeconds,
@@ -1372,10 +1377,18 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
               <div className="text-xs">{shipTooltip.location}</div>
             </div>
 
-            <div>
-              <div className="text-[10px] uppercase text-gray-400">Cargo Capacity</div>
-              <div className="text-xs font-semibold text-red-200">
-                {shipTooltip.cargoUnits} / {shipTooltip.cargoCapacity}
+            <div className="col-span-2">
+              <div className="flex items-center justify-between text-[10px] uppercase text-gray-400">
+                <span>Cargo</span>
+                <span className="text-xs text-red-200 font-semibold">
+                  {shipTooltip.cargoUnits} / {shipTooltip.cargoCapacity} ({shipTooltip.cargoPercent}%)
+                </span>
+              </div>
+              <div className="w-full bg-red-900/40 h-1.5 rounded-full mt-1">
+                <div
+                  className="bg-red-500 h-1.5 rounded-full"
+                  style={{ width: `${Math.min(100, Math.max(0, shipTooltip.cargoPercent))}%` }}
+                />
               </div>
             </div>
 
