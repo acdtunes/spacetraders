@@ -49,9 +49,6 @@ interface AppState {
   setViewMode: (mode: 'system' | 'galaxy') => void;
 
   // UI state
-  showLabels: boolean;
-  toggleLabels: () => void;
-
   filterStatus: Set<string>;
   toggleStatusFilter: (status: string) => void;
 
@@ -162,10 +159,6 @@ export const useStore = create<AppState>((set) => ({
   setSystems: (systems) => set({ systems }),
   viewMode: 'system',
   setViewMode: (mode) => set({ viewMode: mode }),
-
-  // UI state
-  showLabels: true,
-  toggleLabels: () => set((state) => ({ showLabels: !state.showLabels })),
 
   filterStatus: new Set(['IN_TRANSIT', 'DOCKED', 'IN_ORBIT']),
   toggleStatusFilter: (status) =>

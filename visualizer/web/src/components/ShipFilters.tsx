@@ -2,8 +2,6 @@ import { useStore } from '../store/useStore';
 
 const ShipFilters = () => {
   const {
-    showLabels,
-    toggleLabels,
     showMarkets,
     toggleMarkets,
     filterStatus,
@@ -50,15 +48,6 @@ const ShipFilters = () => {
       <div>
         <h3 className="font-semibold mb-1.5 text-xs uppercase text-gray-400">Display</h3>
         <div className="space-y-1.5">
-          <label className="flex items-center gap-2 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={showLabels}
-              onChange={toggleLabels}
-              className="w-3 h-3"
-            />
-            <span className="text-xs">Ship Labels</span>
-          </label>
           <label className="flex items-center gap-2 cursor-pointer">
             <input
               type="checkbox"
