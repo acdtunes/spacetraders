@@ -22,7 +22,13 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["lib", "operations"]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["spacetraders_bot*", "lib*"]
+exclude = ["tests*"]
 
 [project.scripts]
-spacetraders-mcp = "mcp_server:main"
+spacetraders-bot = "spacetraders_bot.cli:main"
+spacetraders-mcp = "spacetraders_bot.integrations.mcp_bridge:main"

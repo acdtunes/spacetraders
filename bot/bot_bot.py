@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""Wrapper entrypoint for MCP server commands."""
+"""Backward-compatible entry point for the unified bot CLI."""
 
-from spacetraders_bot import main
-
+from spacetraders_bot.cli.main import main
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

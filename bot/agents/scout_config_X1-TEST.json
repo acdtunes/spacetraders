@@ -1,8 +1,0 @@
-{
-  "system": "X1-TEST",
-  "ships": [
-    "SHIP-1"
-  ],
-  "algorithm": "2opt",
-  "reconfigure": false
-}
