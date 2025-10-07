@@ -34,18 +34,18 @@ const Sidebar = ({
       {/* Toggle Button */}
       <button
         onClick={onToggleSidebar}
-        className={`fixed top-1/2 -translate-y-1/2 bg-gray-800 border-2 border-gray-700 rounded-l-lg p-2 shadow-lg hover:bg-gray-700 transition-all z-20 ${
-          isOpen ? 'right-80' : 'right-0'
+        className={`fixed top-1/2 -translate-y-1/2 bg-gray-800 border-2 border-gray-700 rounded-r-lg p-2 shadow-lg hover:bg-gray-700 transition-all z-20 ${
+          isOpen ? 'left-80' : 'left-0'
         }`}
         title={isOpen ? 'Close Sidebar' : 'Open Sidebar'}
       >
-        <span className="text-lg">{isOpen ? '→' : '←'}</span>
+        <span className="text-lg">{isOpen ? '←' : '→'}</span>
       </button>
 
       {/* Sidebar */}
       <div
-        className={`fixed top-0 right-0 h-full bg-gray-800 border-l-2 border-gray-700 shadow-2xl transition-transform duration-300 z-10 ${
-          isOpen ? 'translate-x-0' : 'translate-x-full'
+        className={`fixed top-0 left-0 h-full bg-gray-800 border-r-2 border-gray-700 shadow-2xl transition-transform duration-300 z-10 ${
+          isOpen ? 'translate-x-0' : '-translate-x-full'
         }`}
         style={{ width: '320px' }}
       >

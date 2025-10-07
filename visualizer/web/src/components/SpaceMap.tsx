@@ -991,51 +991,6 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
             );
           })}
 
-          {/* Ship destination lines */}
-          {filteredShips.map((ship: any) => {
-            if (ship.nav.status !== 'IN_TRANSIT' || !ship.nav.route?.destination) return null;
-
-            const position = Ship.getPosition(ship, waypoints);
-            const dest = ship.nav.route.destination;
-
-            if (!dest.x || !dest.y || (position.x === 0 && position.y === 0)) return null;
-
-            const shipColor = ship.agentColor || '#ff6b6b';
-
-            return (
-              <Shape
-                key={`line-${ship.symbol}`}
-                sceneFunc={(context, _shape) => {
-                  const ctx = context._context as CanvasRenderingContext2D;
-                  const dx = dest.x - position.x;
-                  const dy = dest.y - position.y;
-                  const distance = Math.sqrt(dx * dx + dy * dy);
-                  const segments = Math.floor(distance / 10);
-
-                  ctx.strokeStyle = shipColor;
-                  ctx.globalAlpha = 0.3;
-                  ctx.lineWidth = 1;
-
-                  for (let i = 0; i < segments; i += 2) {
-                    const t1 = i / segments;
-                    const t2 = Math.min((i + 1) / segments, 1);
-                    const x1 = position.x + dx * t1;
-                    const y1 = position.y + dy * t1;
-                    const x2 = position.x + dx * t2;
-                    const y2 = position.y + dy * t2;
-
-                    ctx.beginPath();
-                    ctx.moveTo(x1, y1);
-                    ctx.lineTo(x2, y2);
-                    ctx.stroke();
-                  }
-                  ctx.globalAlpha = 1;
-                }}
-                listening={false}
-              />
-            );
-          })}
-
           {/* Ships */}
           {filteredShips.map((ship: any) => {
             const position = Ship.getPosition(ship, waypoints);

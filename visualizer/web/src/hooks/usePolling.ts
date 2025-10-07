@@ -3,7 +3,7 @@ import { useStore } from '../store/useStore';
 import { pollingService } from '../services/polling';
 
 export function usePolling() {
-  const { agents, setShips, setPolling, setLastUpdate } = useStore();
+  const { agents, setAgents, setShips, setPolling, setLastUpdate } = useStore();
 
   useEffect(() => {
     if (agents.length === 0) {
@@ -15,7 +15,9 @@ export function usePolling() {
     setPolling(true);
 
     pollingService.start(
-      agents,
+      (latestAgents) => {
+        setAgents(latestAgents);
+      },
       (ships) => {
         setShips(ships);
         setLastUpdate(Date.now());
@@ -30,5 +32,5 @@ export function usePolling() {
       pollingService.stop();
       setPolling(false);
     };
-  }, [agents, setShips, setPolling, setLastUpdate]);
+  }, [agents.length, setAgents, setShips, setPolling, setLastUpdate]);
 }

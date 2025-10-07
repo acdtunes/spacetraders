@@ -7,6 +7,7 @@ export const VIEWPORT_CONSTANTS = {
   MIN_ZOOM: 0.1,
   MAX_ZOOM: 50,
   DEFAULT_ZOOM: 1,
+  SHIP_FOCUS_ZOOM: 4, // Comfortable zoom level when centering on a ship
 
   // Zoom factors for controls
   ZOOM_IN_FACTOR: 1.4,

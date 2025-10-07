@@ -1,6 +1,8 @@
 import type { Ship as ShipType, Waypoint as WaypointType } from '../types/spacetraders';
 import { Ship } from './ship';
 
+type ShipWithAgent = ShipType & { agentId?: string };
+
 /**
  * Ship query and filter operations
  */
@@ -15,7 +17,7 @@ export const ShipQueries = {
   /**
    * Filter ships by agent ID (exclude hidden agents)
    */
-  filterByAgent(ships: ShipType[] & { agentId?: string }[], hiddenAgentIds: Set<string>): ShipType[] {
+  filterByAgent(ships: ShipWithAgent[], hiddenAgentIds: Set<string>): ShipType[] {
     return ships.filter(ship => !ship.agentId || !hiddenAgentIds.has(ship.agentId));
   },
 
@@ -30,7 +32,7 @@ export const ShipQueries = {
    * Filter ships by multiple criteria
    */
   filter(
-    ships: ShipType[] & { agentId?: string }[],
+    ships: ShipWithAgent[],
     options: {
       systemSymbol?: string;
       statuses?: Set<string>;

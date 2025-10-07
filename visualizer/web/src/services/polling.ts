@@ -1,4 +1,4 @@
-import { getAgentShips } from './api';
+import { getAgentShips, getAgents } from './api';
 import type { TaggedShip, Agent } from '../types/spacetraders';
 import { API_CONSTANTS } from '../constants/api';
 
@@ -34,8 +34,8 @@ class ShipPollingService {
   }
 
   start(
-    agents: Agent[],
-    onUpdate: (ships: TaggedShip[]) => void,
+    onAgentsUpdate: (agents: Agent[]) => void,
+    onShipsUpdate: (ships: TaggedShip[]) => void,
     onError?: (error: Error) => void
   ) {
     if (this.isRunning) {
@@ -47,8 +47,10 @@ class ShipPollingService {
 
     const poll = async () => {
       try {
+        const agents = await getAgents();
+        onAgentsUpdate(agents);
         const ships = await this.fetchAllShips(agents);
-        onUpdate(ships);
+        onShipsUpdate(ships);
       } catch (error) {
         console.error('Polling error:', error);
         onError?.(error as Error);

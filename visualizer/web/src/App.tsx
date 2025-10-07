@@ -6,7 +6,6 @@ import SpaceMap, { SpaceMapRef } from './components/SpaceMap';
 import GalaxyView from './components/GalaxyView';
 import AgentManager from './components/AgentManager';
 import SystemSelector from './components/SystemSelector';
-import ShipFilters from './components/ShipFilters';
 import AddAgentCard from './components/AddAgentCard';
 import ServerStatus from './components/ServerStatus';
 import Sidebar from './components/Sidebar';
@@ -16,7 +15,6 @@ import KeyboardShortcuts from './components/KeyboardShortcuts';
 function App() {
   const { agents, setAgents, viewMode, setViewMode } = useStore();
   const spaceMapRef = useRef<SpaceMapRef>(null);
-  const [isLeftSidebarOpen, setIsLeftSidebarOpen] = useState(true);
   const [isRightSidebarOpen, setIsRightSidebarOpen] = useState(true);
   const [rightSidebarTab, setRightSidebarTab] = useState<'ships' | 'details' | 'search'>('ships');
 
@@ -111,37 +109,6 @@ function App() {
 
         {/* Main content */}
         <div className="flex-1 relative overflow-hidden">
-          {/* Left Sidebar Toggle Button */}
-          <button
-            onClick={() => setIsLeftSidebarOpen(!isLeftSidebarOpen)}
-            className={`fixed top-1/2 -translate-y-1/2 bg-gray-800 border-2 border-gray-700 rounded-r-lg p-2 shadow-lg hover:bg-gray-700 transition-all z-20 ${
-              isLeftSidebarOpen ? 'left-56' : 'left-0'
-            }`}
-            title={isLeftSidebarOpen ? 'Close Filters' : 'Open Filters'}
-          >
-            <span className="text-lg">{isLeftSidebarOpen ? '←' : '→'}</span>
-          </button>
-
-          {/* Left Sidebar */}
-          <aside
-            className={`fixed left-0 top-[73px] bottom-0 w-56 bg-gray-800 border-r-2 border-gray-700 shadow-2xl transition-transform duration-300 z-10 ${
-              isLeftSidebarOpen ? 'translate-x-0' : '-translate-x-full'
-            }`}
-          >
-            {/* Header */}
-            <div className="bg-gray-750 border-b-2 border-gray-700">
-              <div className="px-4 py-3 text-sm font-semibold border-b-2 border-blue-500 text-blue-400">
-                <span className="mr-2">⚙️</span>
-                Filters
-              </div>
-            </div>
-
-            {/* Content */}
-            <div className="overflow-y-auto h-[calc(100%-57px)] p-4">
-              <ShipFilters />
-            </div>
-          </aside>
-
           {/* Map */}
           <main className="w-full h-full">
             {viewMode === 'system' ? <SpaceMap ref={spaceMapRef} /> : <GalaxyView />}

@@ -9,23 +9,6 @@ function hexToCSS(hex: number, alpha: number = 1): string {
   return alpha < 1 ? `rgba(${r}, ${g}, ${b}, ${alpha})` : `rgb(${r}, ${g}, ${b})`;
 }
 
-// Get CSS color from color utils
-function colorToCSS(color: string | number, alpha: number = 1): string {
-  if (typeof color === 'string') {
-    // Already CSS format
-    if (alpha < 1) {
-      // Convert to rgba
-      const hex = color.replace('#', '');
-      const r = parseInt(hex.substr(0, 2), 16);
-      const g = parseInt(hex.substr(2, 2), 16);
-      const b = parseInt(hex.substr(4, 2), 16);
-      return `rgba(${r}, ${g}, ${b}, ${alpha})`;
-    }
-    return color;
-  }
-  return hexToCSS(color, alpha);
-}
-
 /**
  * Draw ship shape based on role using Canvas 2D API
  * Converted from PixiJS Graphics to preserve all ship designs

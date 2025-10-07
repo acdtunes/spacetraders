@@ -1,4 +1,5 @@
 import type { Ship } from '../types/spacetraders';
+import { getCargoIcon, getCargoLabel, getCargoShortLabel } from '../utils/cargo';
 
 interface ShipDetailsProps {
   ship: Ship;
@@ -132,11 +133,30 @@ const ShipDetails = ({ ship }: ShipDetailsProps) => {
             <div className="mt-2 space-y-1">
               <div className="text-xs text-gray-500 uppercase">Inventory:</div>
               {ship.cargo.inventory.map((item, idx) => (
-                <div key={idx} className="flex justify-between text-xs bg-gray-750 p-1.5 rounded">
-                  <span className="text-gray-300">{item.symbol}</span>
-                  <span className="text-gray-400">{item.units}</span>
+                <div key={idx} className="flex items-center justify-between text-xs bg-gray-750 p-1.5 rounded">
+                  <div className="flex items-center gap-2">
+                    <span className="text-base leading-none">{getCargoIcon(item.symbol)}</span>
+                    <span className="text-gray-300">{getCargoLabel(item.symbol)}</span>
+                  </div>
+                  <span className="text-gray-400 font-semibold">×{item.units}</span>
                 </div>
               ))}
+              <div className="pt-2 border-t border-gray-700">
+                <div className="text-xs text-gray-500 uppercase mb-1">Summary:</div>
+                <ul className="text-xs text-gray-300 space-y-0.5">
+                  {ship.cargo.inventory.slice(0, 3).map((item, idx) => (
+                    <li key={`summary-${idx}`} className="flex items-center gap-1.5">
+                      <span className="leading-none">{getCargoIcon(item.symbol)}</span>
+                      <span>{getCargoShortLabel(item.symbol)}: {item.units}</span>
+                    </li>
+                  ))}
+                  {ship.cargo.inventory.length > 3 && (
+                    <li className="text-gray-500">
+                      ...and {ship.cargo.inventory.length - 3} more
+                    </li>
+                  )}
+                </ul>
+              </div>
             </div>
           )}
         </div>

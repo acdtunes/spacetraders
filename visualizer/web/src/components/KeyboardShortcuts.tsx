@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react';
-import { useStore } from '../store/useStore';
 
 interface KeyboardShortcutsProps {
   onZoomIn: () => void;
@@ -21,7 +20,6 @@ const KeyboardShortcuts = ({
   buttonClassName,
 }: KeyboardShortcutsProps) => {
   const [showHelp, setShowHelp] = useState(false);
-  const { toggleLabels } = useStore();
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -67,12 +65,6 @@ const KeyboardShortcuts = ({
         onToggleSidebar();
       }
 
-      // Labels toggle
-      else if (e.key === 'l' || e.key === 'L') {
-        e.preventDefault();
-        toggleLabels();
-      }
-
       // Zoom controls
       else if (e.key === '+' || e.key === '=') {
         e.preventDefault();
@@ -94,7 +86,7 @@ const KeyboardShortcuts = ({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [showHelp, onZoomIn, onZoomOut, onReset, onFitView, onToggleSidebar, onSwitchTab, toggleLabels]);
+  }, [showHelp, onZoomIn, onZoomOut, onReset, onFitView, onToggleSidebar, onSwitchTab]);
 
   return (
     <>
@@ -159,14 +151,6 @@ const KeyboardShortcuts = ({
                     <ShortcutItem keys={['2']} description="Details tab" />
                     <ShortcutItem keys={['3']} description="Search tab" />
                     <ShortcutItem keys={['Space']} description="Toggle sidebar" />
-                  </div>
-                </div>
-
-                {/* Display */}
-                <div>
-                  <h3 className="text-sm font-bold text-gray-400 uppercase mb-3">Display</h3>
-                  <div className="space-y-2 text-sm">
-                    <ShortcutItem keys={['L']} description="Toggle labels" />
                   </div>
                 </div>
 

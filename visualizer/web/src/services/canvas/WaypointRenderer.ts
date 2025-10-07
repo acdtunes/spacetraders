@@ -8,6 +8,318 @@ function hexToCSS(hex: number, alpha: number = 1): string {
   return alpha < 1 ? `rgba(${r}, ${g}, ${b}, ${alpha})` : `rgb(${r}, ${g}, ${b})`;
 }
 
+function adjustHex(hex: number, factor: number): number {
+  const clamp = (value: number) => Math.max(0, Math.min(255, value));
+  const r = (hex >> 16) & 0xff;
+  const g = (hex >> 8) & 0xff;
+  const b = hex & 0xff;
+  const apply = (channel: number) => {
+    if (factor >= 0) {
+      return clamp(channel + (255 - channel) * factor);
+    }
+    return clamp(channel + channel * factor);
+  };
+  return (apply(r) << 16) | (apply(g) << 8) | apply(b);
+}
+
+function createSeededRandom(seed: number): () => number {
+  let value = seed % 2147483647;
+  if (value <= 0) {
+    value += 2147483646;
+  }
+  return () => {
+    value = (value * 16807) % 2147483647;
+    return (value - 1) / 2147483646;
+  };
+}
+
+interface IrregularDiskOptions {
+  jaggedness?: number;
+  points?: number;
+  rotation?: number;
+  squash?: number;
+}
+
+function drawIrregularDisk(
+  context: CanvasRenderingContext2D,
+  cx: number,
+  cy: number,
+  radius: number,
+  random: () => number,
+  options: IrregularDiskOptions = {}
+): void {
+  const { jaggedness = 0.25, points = 16, rotation = 0, squash = 1 } = options;
+  const cosR = Math.cos(rotation);
+  const sinR = Math.sin(rotation);
+
+  context.beginPath();
+  for (let i = 0; i < points; i++) {
+    const angle = (i / points) * Math.PI * 2;
+    const noise = 1 + (random() * 2 - 1) * jaggedness;
+    const r = radius * noise;
+    const localX = Math.cos(angle) * r;
+    const localY = Math.sin(angle) * r * squash;
+    const rotatedX = localX * cosR - localY * sinR;
+    const rotatedY = localX * sinR + localY * cosR;
+    const px = cx + rotatedX;
+    const py = cy + rotatedY;
+    if (i === 0) {
+      context.moveTo(px, py);
+    } else {
+      context.lineTo(px, py);
+    }
+  }
+  context.closePath();
+}
+
+interface MoonPalette {
+  base: number;
+  highlight: number;
+  shadow: number;
+  rim: number;
+  craterDark: number;
+  craterLight: number;
+  dust: number;
+}
+
+const MOON_PALETTES: MoonPalette[] = [
+  {
+    base: 0x9ea6b2,
+    highlight: 0xd8dee6,
+    shadow: 0x5a636f,
+    rim: 0x3d4753,
+    craterDark: 0x6b737e,
+    craterLight: 0xb0b8c4,
+    dust: 0xcbd2dc,
+  },
+  {
+    base: 0x8c7460,
+    highlight: 0xcab49a,
+    shadow: 0x4c3d33,
+    rim: 0x352a22,
+    craterDark: 0x5d4b3b,
+    craterLight: 0xa18a72,
+    dust: 0xdfc5a8,
+  },
+  {
+    base: 0x8893a4,
+    highlight: 0xc4d2e4,
+    shadow: 0x454f61,
+    rim: 0x2f3747,
+    craterDark: 0x535d70,
+    craterLight: 0xa7b4c7,
+    dust: 0xd5deeb,
+  },
+];
+
+function drawDetailedMoon(
+  context: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  radius: number,
+  seed: number,
+  palette: MoonPalette
+): void {
+  const random = createSeededRandom(seed || 1);
+  context.save();
+
+  const gradient = context.createRadialGradient(
+    x - radius * 0.25,
+    y - radius * 0.28,
+    radius * 0.25,
+    x,
+    y,
+    radius
+  );
+  gradient.addColorStop(0, hexToCSS(palette.highlight, 1));
+  gradient.addColorStop(0.45, hexToCSS(palette.base, 1));
+  gradient.addColorStop(1, hexToCSS(palette.shadow, 1));
+
+  context.beginPath();
+  context.arc(x, y, radius, 0, Math.PI * 2);
+  context.fillStyle = gradient;
+  context.fill();
+
+  // Soft terminator shadow for depth
+  context.beginPath();
+  context.arc(x + radius * 0.18, y + radius * 0.12, radius * 1.08, Math.PI * 0.1, Math.PI * 1.2);
+  context.strokeStyle = hexToCSS(adjustHex(palette.shadow, -0.2), 0.25);
+  context.lineWidth = radius * 0.25;
+  context.stroke();
+
+  const craterTargets: { cx: number; cy: number; r: number }[] = [];
+  const craterCount = 7 + Math.floor(random() * 6);
+  let attempts = 0;
+
+  while (craterTargets.length < craterCount && attempts < craterCount * 8) {
+    attempts += 1;
+    const angle = random() * Math.PI * 2;
+    const distance = radius * (0.18 + random() * 0.55);
+    const craterRadius = radius * (0.08 + random() * 0.18);
+    if (distance + craterRadius > radius * 0.92) continue;
+
+    const cx = x + Math.cos(angle) * distance;
+    const cy = y + Math.sin(angle) * distance * (0.92 + random() * 0.12);
+
+    let overlaps = false;
+    for (const crater of craterTargets) {
+      const separation = Math.hypot(crater.cx - cx, crater.cy - cy);
+      if (separation < (crater.r + craterRadius) * 0.85) {
+        overlaps = true;
+        break;
+      }
+    }
+    if (overlaps) continue;
+
+    craterTargets.push({ cx, cy, r: craterRadius });
+  }
+
+  // Draw large craters with irregular rims and inner highlights
+  craterTargets.forEach(({ cx, cy, r }) => {
+    const rotation = random() * Math.PI;
+    const squash = 0.85 + random() * 0.3;
+    const rimJaggedness = 0.18 + random() * 0.1;
+    const rimPoints = 14 + Math.floor(random() * 6);
+
+    // Outer rim shadow
+    drawIrregularDisk(context, cx, cy, r * (1.18 + random() * 0.1), random, {
+      jaggedness: rimJaggedness,
+      points: rimPoints,
+      rotation,
+      squash,
+    });
+    context.fillStyle = hexToCSS(adjustHex(palette.craterDark, -0.15 + random() * 0.1), 0.85);
+    context.fill();
+
+    // Crater floor
+    drawIrregularDisk(context, cx, cy, r * (0.68 + random() * 0.08), random, {
+      jaggedness: rimJaggedness * 0.6,
+      points: rimPoints,
+      rotation,
+      squash: squash * (0.9 + random() * 0.1),
+    });
+    context.fillStyle = hexToCSS(adjustHex(palette.craterLight, -0.05 + random() * 0.08), 0.9);
+    context.fill();
+
+    // Rim highlight
+    context.beginPath();
+    context.arc(
+      cx - r * 0.15,
+      cy - r * 0.18,
+      r * (0.55 + random() * 0.15),
+      Math.PI * 1.1,
+      Math.PI * 1.85
+    );
+    context.strokeStyle = hexToCSS(adjustHex(palette.craterLight, 0.35), 0.35);
+    context.lineWidth = Math.max(1, r * 0.2);
+    context.stroke();
+
+    // Inner core highlight
+    drawIrregularDisk(context, cx - r * 0.05, cy - r * 0.05, r * 0.32, random, {
+      jaggedness: rimJaggedness * 0.4,
+      points: rimPoints,
+      rotation,
+      squash: squash * 0.9,
+    });
+    context.fillStyle = hexToCSS(adjustHex(palette.highlight, 0.15 + random() * 0.1), 0.55);
+    context.fill();
+
+    // Rim stroke
+    drawIrregularDisk(context, cx, cy, r * (1.05 + random() * 0.08), random, {
+      jaggedness: rimJaggedness,
+      points: rimPoints,
+      rotation,
+      squash,
+    });
+    context.strokeStyle = hexToCSS(adjustHex(palette.rim, -0.05), 0.7);
+    context.lineWidth = Math.max(0.8, r * 0.25);
+    context.stroke();
+  });
+
+  // Smaller pockmarks rendered as jagged depressions
+  const microCraterCount = 36 + Math.floor(random() * 28);
+  for (let i = 0; i < microCraterCount; i++) {
+    const angle = random() * Math.PI * 2;
+    const distance = radius * Math.pow(random(), 0.75) * 0.94;
+    const size = radius * (0.012 + random() * 0.024);
+    const cx = x + Math.cos(angle) * distance;
+    const cy = y + Math.sin(angle) * distance;
+    const points = 5 + Math.floor(random() * 4);
+    const rotation = random() * Math.PI * 2;
+
+    drawIrregularDisk(context, cx, cy, size * (1.4 + random() * 0.4), random, {
+      jaggedness: 0.45,
+      points,
+      rotation,
+      squash: 0.6 + random() * 0.5,
+    });
+    context.fillStyle = hexToCSS(adjustHex(palette.craterDark, -0.08 + random() * 0.12), 0.28 + random() * 0.28);
+    context.fill();
+
+    drawIrregularDisk(context, cx + size * 0.15, cy + size * 0.1, size * 0.7, random, {
+      jaggedness: 0.25,
+      points,
+      rotation: rotation * 1.5,
+      squash: 0.7 + random() * 0.3,
+    });
+    context.fillStyle = hexToCSS(adjustHex(palette.craterLight, 0.05 + random() * 0.08), 0.25 + random() * 0.2);
+    context.fill();
+  }
+
+  // Dust streaks/highlights rendered as short strokes
+  const dustCount = 55 + Math.floor(random() * 30);
+  context.save();
+  context.globalAlpha = 0.18;
+  context.lineCap = 'round';
+  for (let i = 0; i < dustCount; i++) {
+    const angle = random() * Math.PI * 2;
+    const distance = radius * Math.pow(random(), 0.85) * 0.96;
+    const px = x + Math.cos(angle) * distance;
+    const py = y + Math.sin(angle) * distance;
+    const length = radius * (0.025 + random() * 0.045);
+    const dir = random() * Math.PI * 2;
+    const offsetX = Math.cos(dir) * length;
+    const offsetY = Math.sin(dir) * length * (0.6 + random() * 0.5);
+    context.beginPath();
+    context.moveTo(px - offsetX * 0.4, py - offsetY * 0.4);
+    context.lineTo(px + offsetX * 0.6, py + offsetY * 0.6);
+    context.strokeStyle = hexToCSS(adjustHex(palette.dust, (random() - 0.5) * 0.5), 0.4 + random() * 0.3);
+    context.lineWidth = Math.max(0.6, radius * 0.02);
+    context.stroke();
+  }
+  context.restore();
+
+  // Subtle noise overlay to break up uniform shading
+  const textureSamples = 140 + Math.floor(radius * 12);
+  context.save();
+  context.globalAlpha = 0.08;
+  for (let i = 0; i < textureSamples; i++) {
+    const angle = random() * Math.PI * 2;
+    const distance = radius * Math.sqrt(random()) * 0.98;
+    const px = x + Math.cos(angle) * distance;
+    const py = y + Math.sin(angle) * distance;
+    const size = radius * (0.006 + random() * 0.012);
+    context.fillStyle = hexToCSS(adjustHex(palette.base, (random() - 0.5) * 0.4), 1);
+    context.fillRect(px, py, size, size * (0.6 + random() * 0.8));
+  }
+  context.restore();
+
+  // Rim with subtle highlight
+  context.beginPath();
+  context.arc(x, y, radius, 0, Math.PI * 2);
+  context.strokeStyle = hexToCSS(palette.rim, 0.85);
+  context.lineWidth = Math.max(1, radius * 0.09);
+  context.stroke();
+
+  context.beginPath();
+  context.arc(x - radius * 0.3, y - radius * 0.32, radius * 0.92, Math.PI * 1.15, Math.PI * 1.9);
+  context.strokeStyle = hexToCSS(palette.highlight, 0.28);
+  context.lineWidth = radius * 0.12;
+  context.stroke();
+
+  context.restore();
+}
+
 // Helper to draw polygon from points array
 function drawPoly(context: CanvasRenderingContext2D, points: number[]): void {
   if (points.length < 2) return;
@@ -438,140 +750,12 @@ export function drawWaypoint(
       context.stroke();
       break;
 
-    case 'MOON':
-      // Vary moon appearance based on position
+    case 'MOON': {
       const moonHash = (x * 73856093) ^ (y * 19349663);
-      const moonType = Math.abs(moonHash) % 3;
-
-      if (moonType === 0) {
-        // Gray rocky moon
-        context.beginPath();
-        context.arc(x, y, radius, 0, Math.PI * 2);
-        context.fillStyle = hexToCSS(0x95a5a6, 1.0);
-        context.fill();
-
-        // Craters
-        context.beginPath();
-        context.arc(x - radius * 0.3, y - radius * 0.2, radius * 0.3, 0, Math.PI * 2);
-        context.fillStyle = hexToCSS(0x7f8c8d, 0.9);
-        context.fill();
-
-        context.beginPath();
-        context.arc(x + radius * 0.4, y + radius * 0.1, radius * 0.22, 0, Math.PI * 2);
-        context.fillStyle = hexToCSS(0x7f8c8d, 0.85);
-        context.fill();
-
-        context.beginPath();
-        context.arc(x, y + radius * 0.5, radius * 0.26, 0, Math.PI * 2);
-        context.fillStyle = hexToCSS(0x7f8c8d, 0.88);
-        context.fill();
-
-        context.beginPath();
-        context.arc(x - radius * 0.5, y + radius * 0.3, radius * 0.18, 0, Math.PI * 2);
-        context.fillStyle = hexToCSS(0x7f8c8d, 0.82);
-        context.fill();
-
-        context.beginPath();
-        context.arc(x + radius * 0.2, y - radius * 0.5, radius * 0.2, 0, Math.PI * 2);
-        context.fillStyle = hexToCSS(0x7f8c8d, 0.86);
-        context.fill();
-
-        // Bright ray crater
-        context.beginPath();
-        context.arc(x - radius * 0.3, y - radius * 0.3, radius * 0.2, 0, Math.PI * 2);
-        context.fillStyle = hexToCSS(0xbdc3c7, 0.7);
-        context.fill();
-
-        // Outline
-        context.beginPath();
-        context.arc(x, y, radius, 0, Math.PI * 2);
-        context.strokeStyle = hexToCSS(0x7f8c8d, 0.9);
-        context.lineWidth = 1.2;
-        context.stroke();
-
-      } else if (moonType === 1) {
-        // Brownish/tan moon
-        context.beginPath();
-        context.arc(x, y, radius, 0, Math.PI * 2);
-        context.fillStyle = hexToCSS(0xa0826d, 1.0);
-        context.fill();
-
-        // Dark maria
-        context.beginPath();
-        context.arc(x - radius * 0.25, y - radius * 0.25, radius * 0.35, 0, Math.PI * 2);
-        context.fillStyle = hexToCSS(0x6d5d4b, 0.85);
-        context.fill();
-
-        context.beginPath();
-        context.arc(x + radius * 0.3, y + radius * 0.2, radius * 0.38, 0, Math.PI * 2);
-        context.fillStyle = hexToCSS(0x5c4d3d, 0.8);
-        context.fill();
-
-        // Impact craters
-        context.beginPath();
-        context.arc(x + radius * 0.45, y - radius * 0.35, radius * 0.2, 0, Math.PI * 2);
-        context.fillStyle = hexToCSS(0x8b7355, 0.9);
-        context.fill();
-
-        context.beginPath();
-        context.arc(x - radius * 0.4, y + radius * 0.4, radius * 0.18, 0, Math.PI * 2);
-        context.fillStyle = hexToCSS(0x786450, 0.88);
-        context.fill();
-
-        context.beginPath();
-        context.arc(x + radius * 0.1, y - radius * 0.5, radius * 0.15, 0, Math.PI * 2);
-        context.fillStyle = hexToCSS(0x6d5d4b, 0.85);
-        context.fill();
-
-        // Outline
-        context.beginPath();
-        context.arc(x, y, radius, 0, Math.PI * 2);
-        context.strokeStyle = hexToCSS(0x6d5d4b, 0.9);
-        context.lineWidth = 1.2;
-        context.stroke();
-
-      } else {
-        // Icy/white moon
-        context.beginPath();
-        context.arc(x, y, radius, 0, Math.PI * 2);
-        context.fillStyle = hexToCSS(0xd5d8dc, 1.0);
-        context.fill();
-
-        // Darker ice regions
-        context.beginPath();
-        context.arc(x - radius * 0.3, y - radius * 0.2, radius * 0.32, 0, Math.PI * 2);
-        context.fillStyle = hexToCSS(0xaeb6bf, 0.85);
-        context.fill();
-
-        context.beginPath();
-        context.arc(x + radius * 0.35, y + radius * 0.25, radius * 0.35, 0, Math.PI * 2);
-        context.fillStyle = hexToCSS(0xbdc3c7, 0.8);
-        context.fill();
-
-        // Bright craters
-        context.beginPath();
-        context.arc(x + radius * 0.4, y - radius * 0.4, radius * 0.22, 0, Math.PI * 2);
-        context.fillStyle = hexToCSS(0xecf0f1, 0.9);
-        context.fill();
-
-        context.beginPath();
-        context.arc(x - radius * 0.45, y + radius * 0.35, radius * 0.2, 0, Math.PI * 2);
-        context.fillStyle = hexToCSS(0xe8daef, 0.85);
-        context.fill();
-
-        context.beginPath();
-        context.arc(x - radius * 0.1, y + radius * 0.5, radius * 0.18, 0, Math.PI * 2);
-        context.fillStyle = hexToCSS(0xf4ecf7, 0.88);
-        context.fill();
-
-        // Outline
-        context.beginPath();
-        context.arc(x, y, radius, 0, Math.PI * 2);
-        context.strokeStyle = hexToCSS(0xaeb6bf, 0.9);
-        context.lineWidth = 1.2;
-        context.stroke();
-      }
+      const moonType = Math.abs(moonHash) % MOON_PALETTES.length;
+      drawDetailedMoon(context, x, y, radius, moonHash, MOON_PALETTES[moonType]);
       break;
+    }
 
     case 'ORBITAL_STATION':
     case 'FUEL_STATION':

@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { Agent, Ship, Waypoint, ShipTrailPoint, Market, System, FlightMode } from '../types/spacetraders';
+import type { Agent, TaggedShip, Waypoint, ShipTrailPoint, Market, System, FlightMode, Ship } from '../types/spacetraders';
 
 const TRAIL_MAX_POINTS: Record<FlightMode, number> = {
   DRIFT: 0,
@@ -19,8 +19,8 @@ interface AppState {
   removeAgent: (id: string) => void;
 
   // Ships
-  ships: Ship[];
-  setShips: (ships: Ship[]) => void;
+  ships: TaggedShip[];
+  setShips: (ships: TaggedShip[]) => void;
 
   // Waypoints
   waypoints: Map<string, Waypoint>;
@@ -34,6 +34,14 @@ interface AppState {
   trails: Map<string, ShipTrailPoint[]>;
   addTrailPosition: (shipSymbol: string, point: ShipTrailPoint) => void;
   clearTrail: (shipSymbol: string) => void;
+
+  // Visualization toggles
+  showDestinationRoutes: boolean;
+  toggleDestinationRoutes: () => void;
+  showShipNames: boolean;
+  toggleShipNames: () => void;
+  showWaypointNames: boolean;
+  toggleWaypointNames: () => void;
 
   // Markets
   markets: Map<string, Market>;
@@ -59,6 +67,9 @@ interface AppState {
   toggleWaypointTypeFilter: (type: string) => void;
   selectAllWaypointTypes: (types: string[]) => void;
   clearAllWaypointTypes: () => void;
+
+  shipNameFilter: string;
+  setShipNameFilter: (value: string) => void;
 
   // Connection status
   isPolling: boolean;
@@ -142,6 +153,15 @@ export const useStore = create<AppState>((set) => ({
       return { trails: newTrails };
     }),
 
+  // Visualization toggles
+  showDestinationRoutes: true,
+  toggleDestinationRoutes: () =>
+    set((state) => ({ showDestinationRoutes: !state.showDestinationRoutes })),
+  showShipNames: true,
+  toggleShipNames: () => set((state) => ({ showShipNames: !state.showShipNames })),
+  showWaypointNames: true,
+  toggleWaypointNames: () => set((state) => ({ showWaypointNames: !state.showWaypointNames })),
+
   // Markets
   markets: new Map(),
   setMarkets: (markets) => set({ markets }),
@@ -197,6 +217,9 @@ export const useStore = create<AppState>((set) => ({
     }),
   selectAllWaypointTypes: (types) => set({ filterWaypointTypes: new Set(types) }),
   clearAllWaypointTypes: () => set({ filterWaypointTypes: new Set() }),
+
+  shipNameFilter: '',
+  setShipNameFilter: (value) => set({ shipNameFilter: value }),
 
   // Connection status
   isPolling: false,

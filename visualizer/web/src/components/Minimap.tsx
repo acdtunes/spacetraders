@@ -16,9 +16,10 @@ interface MinimapProps {
   };
   onNavigate: (x: number, y: number) => void;
   onZoom: (worldX: number, worldY: number, zoomFactor: number) => void;
+  animationFrame: number;
 }
 
-const Minimap = ({ waypoints, ships, viewportBounds, onNavigate, onZoom }: MinimapProps) => {
+const Minimap = ({ waypoints, ships, viewportBounds, onNavigate, onZoom, animationFrame }: MinimapProps) => {
   const [isMinimized, setIsMinimized] = useState(false);
 
   const minimapData = useMemo(() => {
@@ -103,7 +104,7 @@ const Minimap = ({ waypoints, ships, viewportBounds, onNavigate, onZoom }: Minim
       scale,
       padding,
     };
-  }, [waypoints, viewportBounds, ships]);
+  }, [waypoints, viewportBounds, ships, animationFrame]);
 
   if (!minimapData) return null;
 

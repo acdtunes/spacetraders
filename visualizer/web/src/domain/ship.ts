@@ -26,7 +26,7 @@ export const Ship = {
       return this.getDockedPosition(ship, waypoints);
     }
 
-    return this.interpolateTransitPosition(ship);
+    return this.interpolateTransitPosition(ship, waypoints);
   },
 
   /**
@@ -64,7 +64,7 @@ export const Ship = {
   /**
    * Interpolate position for ship in transit
    */
-  interpolateTransitPosition(ship: ShipType): Position {
+  interpolateTransitPosition(ship: ShipType, waypoints: Map<string, WaypointType>): Position {
     if (!ship.nav.route?.destination) {
       return { x: 0, y: 0 };
     }
@@ -85,6 +85,25 @@ export const Ship = {
 
     const progress = (now - departureTime) / (arrivalTime - departureTime);
     const clampedProgress = Math.max(0, Math.min(1, progress));
+
+    if (clampedProgress >= 1 && ship.nav.route.destination.symbol) {
+      const destinationSymbol = ship.nav.route.destination.symbol;
+      const destinationWaypoint = waypoints.get(destinationSymbol);
+
+      if (destinationWaypoint) {
+        return this.calculateOrbitPosition(
+          {
+            ...ship,
+            nav: {
+              ...ship.nav,
+              status: 'IN_ORBIT',
+              waypointSymbol: destinationSymbol,
+            },
+          } as ShipType,
+          waypoints
+        );
+      }
+    }
 
     return {
       x: origin.x + (dest.x - origin.x) * clampedProgress,

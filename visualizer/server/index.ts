@@ -27,7 +27,4 @@ app.use((err: any, req: express.Request, res: express.Response, next: express.Ne
   res.status(500).json({ error: 'Something went wrong!' });
 });
 
-app.listen(PORT, () => {
-  console.log(`SpaceTraders Visualization Server running on port ${PORT}`);
-  console.log(`Health check: http://localhost:${PORT}/health`);
-});
+app.listen(PORT);

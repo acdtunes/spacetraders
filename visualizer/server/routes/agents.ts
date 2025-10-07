@@ -129,16 +129,6 @@ router.get('/:id/ships', async (req, res) => {
     const client = new SpaceTradersClient(API_BASE_URL, agent.token);
     const ships = await client.get('/my/ships');
 
-    // Log first ship to debug cooldown structure
-    if (ships.data && ships.data.length > 0) {
-      console.log('Ship API response sample:', JSON.stringify({
-        symbol: ships.data[0].symbol,
-        cooldown: ships.data[0].cooldown,
-        hasCooldown: !!ships.data[0].cooldown,
-        cooldownType: typeof ships.data[0].cooldown
-      }, null, 2));
-    }
-
     res.json(ships);
   } catch (error) {
     console.error('Failed to fetch ships:', error);
