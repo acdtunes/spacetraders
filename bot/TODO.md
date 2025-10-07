@@ -2,7 +2,7 @@
 
 ## Captain Log Integration
 
-**Issue:** Captain log (`agents/void_hunter/docs/captain-log.md`) only records OPERATION_STARTED events but not progress, completion, or errors.
+**Issue:** Captain log (`var/logs/captain/void_hunter/captain-log.md`) only records OPERATION_STARTED events but not progress, completion, or errors.
 
 **Root Cause:** Operations (mining, scout, contract) don't integrate with captain log system. They only log to daemon logs.
 

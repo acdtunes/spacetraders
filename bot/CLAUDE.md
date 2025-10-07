@@ -14,7 +14,7 @@ Autonomous bot automation system for SpaceTraders (HTTP API-based space trading 
 bot/
 ├── spacetraders_bot.py          # Main CLI entry point (all operations)
 │
-├── lib/                          # Core library components
+├── src/spacetraders_bot/core/    # Core library components
 │   ├── api_client.py             # SpaceTraders API client with rate limiting
 │   ├── ship_controller.py        # Ship state machine & operations
 │   ├── smart_navigator.py        # Intelligent navigation with fuel optimization
@@ -23,18 +23,16 @@ bot/
 │   ├── assignment_manager.py     # Ship allocation & conflict prevention
 │   └── operation_controller.py   # Operation lifecycle & checkpointing
 │
-├── operations/                   # Modular operation handlers
+├── src/spacetraders_bot/operations/  # Modular operation handlers
 │   ├── mining.py                 # Autonomous mining operations
-│   ├── trading.py                # Trading & market scouting
+│   ├── multileg_trader.py        # Trading & market scouting
 │   ├── contracts.py              # Contract negotiation & fulfillment
 │   ├── fleet.py                  # Fleet status & monitoring
 │   ├── analysis.py               # Market analysis & utilities
 │   ├── routing.py                # Route planning & graph operations
 │   ├── daemon.py                 # Daemon lifecycle operations
 │   ├── assignments.py            # Ship assignment operations
-│   └── daemons/                  # Background daemon runners
-│       ├── pids/                 # Process tracking (*.json)
-│       └── logs/                 # Daemon logs (*.log)
+│   └── scout_coordination.py     # Multi-ship market coordination
 │
 └── tests/                        # BDD tests (pytest-bdd)
     ├── test_*_steps.py           # Step definitions
@@ -62,7 +60,7 @@ See `AGENT_ARCHITECTURE.md` for complete agent system design.
 
 ### 1. Ship Controller - State Machine
 
-**File:** `lib/ship_controller.py`
+**File:** `src/spacetraders_bot/core/ship_controller.py`
 
 Ships have states: `DOCKED`, `IN_ORBIT`, `IN_TRANSIT`. All operations automatically handle state transitions:
 
@@ -83,7 +81,7 @@ ship.dock()                  # If IN_TRANSIT → wait for arrival, then dock
 
 ### 2. Smart Navigator - Intelligent Routing
 
-**Files:** `lib/smart_navigator.py`, `lib/routing.py`
+**Files:** `src/spacetraders_bot/core/smart_navigator.py`, `src/spacetraders_bot/core/routing.py`
 
 Provides fuel-aware pathfinding with automatic refuel stop insertion:
 
@@ -110,7 +108,7 @@ success = navigator.execute_route(ship, "X1-HU87-B9")
 
 ### 3. Daemon Manager - Background Operations
 
-**File:** `lib/daemon_manager.py`
+**File:** `src/spacetraders_bot/core/daemon_manager.py`
 
 Manages long-running operations as background processes:
 
@@ -138,12 +136,12 @@ python3 spacetraders_bot.py daemon stop miner-ship3
 - `scout-markets` - Market intelligence gathering
 
 **Storage:**
-- PIDs: `operations/daemons/pids/{daemon_id}.json`
-- Logs: `operations/daemons/logs/{daemon_id}.log`
+- PIDs: `var/daemons/pids/{daemon_id}.json`
+- Logs: `var/daemons/logs/{daemon_id}.log`
 
 ### 4. Assignment Manager - Ship Allocation
 
-**File:** `lib/assignment_manager.py`
+**File:** `src/spacetraders_bot/core/assignment_manager.py`
 
 Prevents ship double-booking with centralized registry:
 
@@ -168,11 +166,11 @@ python3 spacetraders_bot.py assignments find --cargo-min 40
 python3 spacetraders_bot.py assignments sync
 ```
 
-**Registry Location:** `agents/cmdr_ac_2025/ship_assignments.json`
+**Registry Location:** `var/data/sqlite/spacetraders.db`
 
 ### 5. API Client - Rate Limiting & Retry
 
-**File:** `lib/api_client.py`
+**File:** `src/spacetraders_bot/core/api_client.py`
 
 Handles SpaceTraders API with automatic retry and rate limiting:
 
@@ -501,8 +499,8 @@ pip install pytest pytest-bdd pytest-cov
 Bot expects these directories (auto-created):
 - `logs/` - Operation logs
 - `graphs/` - Cached system graphs
-- `operations/daemons/pids/` - Daemon PID files
-- `operations/daemons/logs/` - Daemon logs
+- `var/daemons/pids/` - Daemon PID files
+- `var/daemons/logs/` - Daemon logs
 - `agents/cmdr_ac_2025/` - Agent-specific data
 
 ## Game Mechanics Quick Reference

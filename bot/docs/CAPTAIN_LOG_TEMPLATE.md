@@ -461,9 +461,9 @@ The Captain Log Writer agent automatically:
 
 ## File Locations
 
-- **Main Log:** `agents/{agent}/docs/captain-log.md`
-- **Session Data:** `agents/{agent}/logs/sessions/{session_id}.json`
-- **Executive Reports:** `agents/{agent}/logs/executive_reports/{date}.md`
+- **Main Log:** `var/logs/captain/{agent}/captain-log.md`
+- **Session Data:** `var/logs/captain/{agent}/sessions/{session_id}.json`
+- **Executive Reports:** `var/logs/captain/{agent}/executive_reports/{date}.md`
 
 ---
 

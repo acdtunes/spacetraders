@@ -391,7 +391,7 @@ manager.sync_with_daemons()
 
 ## Registry File Format
 
-**Location:** `agents/cmdr_ac_2025/ship_assignments.json`
+**Location:** `var/data/sqlite/spacetraders.db`
 
 ```json
 {
@@ -490,7 +490,7 @@ python3 spacetraders_bot.py daemon status
 
 ```bash
 # Backup current registry
-cp agents/cmdr_ac_2025/ship_assignments.json agents/cmdr_ac_2025/ship_assignments.json.backup
+sqlite3 var/data/sqlite/spacetraders.db ".backup var/data/sqlite/spacetraders.db.backup"
 
 # Reinitialize
 python3 spacetraders_bot.py assignments init --token YOUR_TOKEN

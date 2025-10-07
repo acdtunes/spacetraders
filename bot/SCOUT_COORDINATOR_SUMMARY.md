@@ -112,7 +112,7 @@ scout-coordinator stop --system X1-HU87
 ## Architecture
 
 ### Configuration File
-`agents/scout_config_{SYSTEM}.json`
+`config/agents/scout_config_{SYSTEM}.json`
 
 ```json
 {

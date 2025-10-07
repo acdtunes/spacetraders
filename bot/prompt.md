@@ -513,7 +513,7 @@ Objective: Maximize profits, expand fleet, automate all operations
 1. Check if Bash 949282 is still running every 30 minutes using ps command
 2. Monitor output using BashOutput tool to verify it's scanning markets
 3. If process crashes or stops producing output for >10 minutes:
-   - Restart with: `nohup python3 scripts/market_scout.py --agent-token "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZGVudGlmaWVyIjoiQ01EUl9BQ18yMDI1IiwidmVyc2lvbiI6InYyLjMuMCIsInJlc2V0X2RhdGUiOiIyMDI1LTA5LTI4IiwiaWF0IjoxNzU5NDUzNDUzLCJzdWIiOiJhZ2VudC10b2tlbiJ9.CXezdsR8_Lt3p2YpoC4EXVVUA_I3xDygzvwmtMPI3okA7nmKiFq9ms4BnahiXW5_4DEgk70xAiClKAflyk6Zq721S8ZaiMzFES-NVbi-0tVC3JWI22mksHynWJIKScFiDy7ISlydbueTYqfteNKiZAwMgeXrFyM_cWwnplAEH3ib-4OTrqQiFXw3khmaTMHDjVMwFO3fT1awghzYzZ94t29TFaGpkkfZ6bKx2jr1qrt21vBqlfhnmAOaBiO_LyY3pnPcGWOKrYds8USPBtTrvbxIfvklOTaHiqZHAEnWFaJXTNEwqgaOUu38VDe6g3n7G6G_o41MiDOVJF17eDZTAsSA9z2ZWfXHSuohRuN-RQfPFqFvHxBRM1RrSJs90rN7rUQb8Lqgv1xiDv7LzGKBUWssGoPFgwA2OdE2nJMDIICprr3YsD-qm5uJ9SgGzW6zJ6sRJOwLBVMGMQFKvZBV4KEGR6tbrjEDoYxgzRzTSk9H3bvpVmgxgfll34NERwTdIYY9I8tqjyEfvA8354Ke7VH6L7DORHPFtUN3SDEROWP8Dq2n00iskcNFbSUjPBGNO_Yf4Yxsqif0L6QUwlxFIIVXp0MiBNYAHNdavrt0oJoYv2kFR6EUAdXysPBgdD9XkcOieH3d-SS_kIf1FFYodwxxQ004TsLnGbzywFztmwQ" --ship CMDR_AC_2025-2 --system X1-HU87 --markets 25 > /Users/andres.camacho/Development/Personal/spacetradersV2/bot/agents/cmdr_ac_2025/logs/market_scout.log 2>&1 &`
+   - Restart with: `nohup spacetraders-bot scout-markets --player-id 8 --ship CMDR_AC_2025-2 --system X1-HU87 --markets 25 --continuous --return-to-start > /Users/andres.camacho/Development/Personal/spacetradersV2/bot/var/logs/captain/cmdr_ac_2025/market_scout.log 2>&1 &`
    - Save new PID
 4. Verify it's updating /Users/andres.camacho/Development/Personal/spacetradersV2/bot/shared/data/market_database.py
 5. Report status to Fleet Monitor every 30 minutes
@@ -530,13 +530,13 @@ Objective: Maximize profits, expand fleet, automate all operations
 **Task:** Continuously analyze market data and identify most profitable trade routes.
 
 **Instructions:**
-1. Every 30 minutes, run: `python3 /Users/andres.camacho/Development/Personal/spacetradersV2/bot/agents/cmdr_ac_2025/scripts/trade_route_optimizer.py`
+1. Every 30 minutes, run: `spacetraders-bot trade-plan --player-id 8 --ship CMDR_AC_2025-2 --max-stops 4 > /Users/andres.camacho/Development/Personal/spacetradersV2/bot/var/logs/captain/cmdr_ac_2025/trade_route_optimizer.log 2>&1`
 2. Read market data from /Users/andres.camacho/Development/Personal/spacetradersV2/bot/shared/data/market_database.py
 3. Calculate all profitable routes with:
    - ROI > 30%
    - Net profit > 50,000 credits per round trip
    - Distance < 300 units (fuel efficiency)
-4. Save top 10 routes to /Users/andres.camacho/Development/Personal/spacetradersV2/bot/agents/cmdr_ac_2025/logs/trade_routes.json
+4. Save top 10 routes to `/Users/andres.camacho/Development/Personal/spacetradersV2/bot/var/logs/captain/cmdr_ac_2025/trade_routes.json`
 5. If market data is stale (>2 hours old), wait for Market Scout to refresh
 6. Report best route to Autonomous Trader Subagent
 7. Report status to Fleet Monitor every 30 minutes
@@ -566,23 +566,10 @@ Objective: Maximize profits, expand fleet, automate all operations
 ### Trading Execution:
 Run this command (adjust parameters based on top route):
 ```bash
-nohup python3 /Users/andres.camacho/Development/Personal/spacetradersV2/bot/agents/cmdr_ac_2025/scripts/autonomous_trader.py \
-  --token "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZGVudGlmaWVyIjoiQ01EUl9BQ18yMDI1IiwidmVyc2lvbiI6InYyLjMuMCIsInJlc2V0X2RhdGUiOiIyMDI1LTA5LTI4IiwiaWF0IjoxNzU5NDUzNDUzLCJzdWIiOiJhZ2VudC10b2tlbiJ9.CXezdsR8_Lt3p2YpoC4EXVVUA_I3xDygzvwmtMPI3okA7nmKiFq9ms4BnahiXW5_4DEgk70xAiClKAflyk6Zq721S8ZaiMzFES-NVbi-0tVC3JWI22mksHynWJIKScFiDy7ISlydbueTYqfteNKiZAwMgeXrFyM_cWwnplAEH3ib-4OTrqQiFXw3khmaTMHDjVMwFO3fT1awghzYzZ94t29TFaGpkkfZ6bKx2jr1qrt21vBqlfhnmAOaBiO_LyY3pnPcGWOKrYds8USPBtTrvbxIfvklOTaHiqZHAEnWFaJXTNEwqgaOUu38VDe6g3n7G6G_o41MiDOVJF17eDZTAsSA9z2ZWfXHSuohRuN-RQfPFqFvHxBRM1RrSJs90rN7rUQb8Lqgv1xiDv7LzGKBUWssGoPFgwA2OdE2nJMDIICprr3YsD-qm5uJ9SgGzW6zJ6sRJOwLBVMGMQFKvZBV4KEGR6tbrjEDoYxgzRzTSk9H3bvpVmgxgfll34NERwTdIYY9I8tqjyEfvA8354Ke7VH6L7DORHPFtUN3SDEROWP8Dq2n00iskcNFbSUjPBGNO_Yf4Yxsqif0L6QUwlxFIIVXp0MiBNYAHNdavrt0oJoYv2kFR6EUAdXysPBgdD9XkcOieH3d-SS_kIf1FFYodwxxQ004TsLnGbzywFztmwQ" \
-  --ship "CMDR_AC_2025-1" \
-  --good "SHIP_PARTS" \
-  --buy-from "X1-HU87-D42" \
-  --sell-to "X1-HU87-A2" \
-  --cargo 40 \
-  --min-profit 5000 \
-  --duration 12 \
-  --min-fuel 0.60 \
-  --max-spend 0.85 \
-  --max-loss 20000 \
-  --max-total-loss 40000 \
-  --max-consecutive-losses 3 \
-  --profit-threshold 5000 \
-  --log-dir "/Users/andres.camacho/Development/Personal/spacetradersV2/bot/agents/cmdr_ac_2025/logs" \
-  > /Users/andres.camacho/Development/Personal/spacetradersV2/bot/agents/cmdr_ac_2025/logs/ship1_trader.log 2>&1 &
+nohup spacetraders-bot trade --player-id 8 --ship CMDR_AC_2025-1 \
+  --good SHIP_PARTS --buy-from X1-HU87-D42 --sell-to X1-HU87-A2 \
+  --cycles -1 --min-profit 5000 --max-stops 2 \
+  > /Users/andres.camacho/Development/Personal/spacetradersV2/bot/var/logs/captain/cmdr_ac_2025/ship1_trader.log 2>&1 &
 ```
 
 **Route Parameters** (from current top route: D42→A2 SHIP_PARTS):
@@ -677,7 +664,7 @@ python3 /Users/andres.camacho/Development/Personal/spacetradersV2/bot/scripts/fu
    - Current mining revenue: ~2,000-2,250 credits/hour/ship (from Ships 3-5 data)
 4. If criteria met:
    - Purchase ship using MCP: mcp__spacetraders__purchase_ship
-   - Record new ship to /Users/andres.camacho/Development/Personal/spacetradersV2/bot/agents/cmdr_ac_2025/logs/fleet_roster.json
+   - Record new ship to `/Users/andres.camacho/Development/Personal/spacetradersV2/bot/var/logs/captain/cmdr_ac_2025/fleet_roster.json`
    - Start autonomous mining for new ship (see below)
 5. If Ship 6 doesn't exist and credits > 250,000:
    - Prioritize purchasing Ship 6 for Contract Manager
@@ -686,13 +673,9 @@ python3 /Users/andres.camacho/Development/Personal/spacetradersV2/bot/scripts/fu
 ### Starting New Mining Ship:
 When new ship purchased (e.g., CMDR_AC_2025-7):
 ```bash
-nohup python3 /Users/andres.camacho/Development/Personal/spacetradersV2/bot/agents/cmdr_ac_2025/scripts/autonomous_mining.py \
-  --token "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZGVudGlmaWVyIjoiQ01EUl9BQ18yMDI1IiwidmVyc2lvbiI6InYyLjMuMCIsInJlc2V0X2RhdGUiOiIyMDI1LTA5LTI4IiwiaWF0IjoxNzU5NDUzNDUzLCJzdWIiOiJhZ2VudC10b2tlbiJ9.CXezdsR8_Lt3p2YpoC4EXVVUA_I3xDygzvwmtMPI3okA7nmKiFq9ms4BnahiXW5_4DEgk70xAiClKAflyk6Zq721S8ZaiMzFES-NVbi-0tVC3JWI22mksHynWJIKScFiDy7ISlydbueTYqfteNKiZAwMgeXrFyM_cWwnplAEH3ib-4OTrqQiFXw3khmaTMHDjVMwFO3fT1awghzYzZ94t29TFaGpkkfZ6bKx2jr1qrt21vBqlfhnmAOaBiO_LyY3pnPcGWOKrYds8USPBtTrvbxIfvklOTaHiqZHAEnWFaJXTNEwqgaOUu38VDe6g3n7G6G_o41MiDOVJF17eDZTAsSA9z2ZWfXHSuohRuN-RQfPFqFvHxBRM1RrSJs90rN7rUQb8Lqgv1xiDv7LzGKBUWssGoPFgwA2OdE2nJMDIICprr3YsD-qm5uJ9SgGzW6zJ6sRJOwLBVMGMQFKvZBV4KEGR6tbrjEDoYxgzRzTSk9H3bvpVmgxgfll34NERwTdIYY9I8tqjyEfvA8354Ke7VH6L7DORHPFtUN3SDEROWP8Dq2n00iskcNFbSUjPBGNO_Yf4Yxsqif0L6QUwlxFIIVXp0MiBNYAHNdavrt0oJoYv2kFR6EUAdXysPBgdD9XkcOieH3d-SS_kIf1FFYodwxxQ004TsLnGbzywFztmwQ" \
-  --ship "CMDR_AC_2025-7" \
-  --mining-waypoint "X1-HU87-B9" \
-  --market-waypoint "X1-HU87-B7" \
-  --cycles 30 \
-  > /Users/andres.camacho/Development/Personal/spacetradersV2/bot/agents/cmdr_ac_2025/logs/ship7_output.log 2>&1 &
+nohup spacetraders-bot mine --player-id 8 --ship CMDR_AC_2025-7 \
+  --asteroid X1-HU87-B9 --market X1-HU87-B7 --cycles -1 \
+  > /Users/andres.camacho/Development/Personal/spacetradersV2/bot/var/logs/captain/cmdr_ac_2025/ship7_output.log 2>&1 &
 ```
 
 ### Fleet Roster File (fleet_roster.json):
@@ -772,7 +755,7 @@ Update this file whenever:
 
 6. **Captain's Log Maintenance:**
 
-**Log File:** /Users/andres.camacho/Development/Personal/spacetradersV2/bot/agents/cmdr_ac_2025/logs/captains_log.txt
+**Log File:** `/Users/andres.camacho/Development/Personal/spacetradersV2/bot/var/logs/captain/cmdr_ac_2025/captain-log.md`
 
 **Format:** Follow CLAUDE.md templates exactly
 

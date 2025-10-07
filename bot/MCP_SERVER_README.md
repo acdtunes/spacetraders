@@ -479,7 +479,7 @@ Claude will:
 1. Verify `spacetraders_bot.py` works from command line
 2. Check token validity
 3. Ensure ship symbols are correct
-4. Review daemon logs: `operations/daemons/logs/`
+4. Review daemon logs: `var/daemons/logs/`
 
 ### Permission Errors
 

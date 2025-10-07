@@ -153,7 +153,7 @@ Ship Assignment: Stops 3 daemons, releases assignments
 Ship Assignment → First Mate: "Ships 3,4,5 now idle at location X"
 ```
 
-See `agents/templates/ship_assignment_specialist.md` for full task types.
+See `docs/agents/templates/ship_assignment_specialist.md` for full task types.
 
 ---
 
@@ -239,7 +239,7 @@ scout-coordinator stop --system X1-HU87
 - **Auto-Recovery**: Monitors daemons every 30s, restarts on failure
 - **Hot Reconfiguration**: Add/remove ships without data gaps (waits for tours to complete)
 
-**Configuration File:** `agents/scout_config_{SYSTEM}.json`
+**Configuration File:** `config/agents/scout_config_{SYSTEM}.json`
 ```json
 {
   "system": "X1-HU87",
@@ -516,9 +516,9 @@ captain-log archive \
 ```
 
 **Output Files:**
-- `agents/{agent}/docs/captain-log.md` - Main log file
-- `agents/{agent}/logs/sessions/{session_id}.json` - Structured session data
-- `agents/{agent}/logs/executive_reports/{date}.md` - Daily summaries
+- `var/logs/captain/{agent}/captain-log.md` - Main log file
+- `var/logs/captain/{agent}/sessions/{session_id}.json` - Structured session data
+- `var/logs/captain/{agent}/executive_reports/{date}.md` - Daily summaries
 
 **Decision Authority:**
 - ✅ Create all log entry types
@@ -718,10 +718,10 @@ negotiate --ship S
 
 ## File Locations
 
-- **Ship Registry:** `agents/cmdr_ac_2025/ship_assignments.json`
-- **Daemon PIDs:** `operations/daemons/pids/*.json`
-- **Daemon Logs:** `operations/daemons/logs/*.log`
-- **Captain's Log:** `agents/cmdr_ac_2025/logs/captains_log.txt`
+- **Ship Registry:** `var/data/sqlite/spacetraders.db`
+- **Daemon PIDs:** `var/daemons/pids/*.json`
+- **Daemon Logs:** `var/daemons/logs/*.log`
+- **Captain's Log:** `var/logs/captain/cmdr_ac_2025/captain-log.md`
 
 ---
 

@@ -187,8 +187,8 @@ print('Ships:', list(m.list_all().keys()))
 "
 
 # If all good, clean up old files
-rm agents/cmdr_ac_2025/ship_assignments.json
-rm operations/daemons/pids/*.json
+sqlite3 var/data/sqlite/spacetraders.db ".backup var/data/sqlite/spacetraders.db.backup"
+rm var/daemons/pids/*.json
 ```
 
 ## Database Schema (Quick Reference)

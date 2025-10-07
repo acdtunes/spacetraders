@@ -32,19 +32,19 @@ htmlcov/
 *.db
 *.db-shm
 *.db-wal
-bot/data/*.db
-bot/data/*.db-*
+bot/var/data/**
 
-# Daemon runtime files
+# Runtime state and logs
+bot/var/logs/**
+bot/var/state/**
+bot/var/daemons/**
+
+# Legacy paths (kept for safety)
 bot/operations/daemons/logs/
 bot/operations/daemons/pids/
-
-# Operation state files (checkpoints)
 bot/operations/state/
-
-# Agent runtime data
-bot/agents/*/logs/
-bot/agents/*/market_intelligence.db
+bot/data/
+bot/logs/
 
 # IDE
 .vscode/

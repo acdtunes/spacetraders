@@ -5,11 +5,13 @@ A comprehensive automation system for the SpaceTraders API game. This bot provid
 ## Quick Start
 
 ```bash
-# Install dependencies
-pip install requests python-dateutil
+# Install in editable mode
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .[dev]
 
 # Run any operation
-python3 spacetraders_bot.py <operation> [options]
+spacetraders-bot <operation> [options]
 ```
 
 ## Available Operations
@@ -30,17 +32,16 @@ python3 spacetraders_bot.py <operation> [options]
 
 ```
 bot/
-├── lib/                          # Core library
-│   ├── api_client.py             # Unified API client with rate limiting
-│   ├── ship_controller.py        # All ship operations
-│   └── utils.py                  # Common utilities
+├── src/spacetraders_bot/         # Installable package
+│   ├── core/                     # API client, navigation, database, routing
+│   ├── operations/               # CLI command handlers
+│   ├── cli/                      # Console entry point
+│   └── integrations/             # Bridges (e.g., MCP server helper)
 │
-├── spacetraders_bot.py           # Main CLI (8 operations)
-│
-├── logs/                         # Operation logs
-│
-├── QUICK_START.md                # User guide with examples
-└── LOGGING_AND_ERROR_HANDLING.md # Logging & error handling guide
+├── config/agents/                # Versioned agent configuration (JSON)
+├── docs/agents/                  # Reference prompts and templates
+├── var/                          # Runtime data (logs, state, sqlite)
+└── pyproject.toml                # Packaging + entry points
 ```
 
 ## Key Features
@@ -72,7 +73,7 @@ bot/
 
 ### Mining Operation
 ```bash
-python3 spacetraders_bot.py mine \
+spacetraders-bot mine \
   --ship "SHIP-1" \
   --asteroid "X1-HU87-B9" \
   --market "X1-HU87-B7" \
@@ -89,7 +90,7 @@ python3 spacetraders_bot.py mine \
 
 ### Market Scouting
 ```bash
-python3 spacetraders_bot.py scout-markets \
+spacetraders-bot scout-markets \
   --player-id PLAYER_ID \
   --ship "SHIP-2" \
   --system "X1-HU87" \
@@ -101,10 +102,10 @@ python3 spacetraders_bot.py scout-markets \
 ### Contract Fulfillment
 ```bash
 # 1. Negotiate new contract
-python3 spacetraders_bot.py negotiate --player-id PLAYER_ID --ship SHIP-1
+spacetraders-bot negotiate --player-id PLAYER_ID --ship SHIP-1
 
 # 2. Fulfill contract
-python3 spacetraders_bot.py contract \
+spacetraders-bot contract \
   --player-id PLAYER_ID \
   --ship SHIP-1 \
   --contract-id CONTRACT_ID \
@@ -114,10 +115,10 @@ python3 spacetraders_bot.py contract \
 ### Fleet Status
 ```bash
 # Check all ships
-python3 spacetraders_bot.py status --player-id PLAYER_ID
+spacetraders-bot status --player-id PLAYER_ID
 
 # Check specific ships
-python3 spacetraders_bot.py status --player-id PLAYER_ID --ships SHIP-1,SHIP-2
+spacetraders-bot status --player-id PLAYER_ID --ships SHIP-1,SHIP-2
 ```
 
 ### Fleet Monitoring
