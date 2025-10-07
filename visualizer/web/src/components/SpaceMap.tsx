@@ -1,14 +1,14 @@
 import { useEffect, useRef, useState, forwardRef, useImperativeHandle, useMemo } from 'react';
-import { Stage, Layer, Shape, Group, Circle, Text, Line, Rect } from 'react-konva';
+import { Stage, Layer, Shape, Group, Circle, Text, Line } from 'react-konva';
 import Konva from 'konva';
 import { useStore } from '../store/useStore';
 import { getWaypoints } from '../services/api';
 import { getWaypointOpportunities, formatOpportunity } from '../services/marketAnalysis';
 import { Ship, Waypoint, ShipQueries, WaypointQueries, ViewportBounds } from '../domain';
-import type { WorldBounds } from '../domain/viewport';
 import { VIEWPORT_CONSTANTS } from '../constants/viewport';
 import { drawWaypoint } from '../services/canvas/WaypointRenderer';
 import { drawShipShape } from '../services/canvas/ShipRenderer';
+import { getCargoIcon, getCargoLabel } from '../utils/cargo';
 import ZoomControls from './ZoomControls';
 import Minimap from './Minimap';
 import type { FlightMode, ShipTrailPoint } from '../types/spacetraders';
@@ -79,6 +79,19 @@ const TRAIL_VISUAL_CONFIG: Record<FlightMode, TrailVisualSettings> = {
 
 const TRAIL_SAMPLE_RATE = 4;
 
+type ShipLabelData = {
+  key: string;
+  text: string;
+  left: number;
+  top: number;
+};
+
+const SHIP_LABEL_FONT_SIZE = 6;
+const SHIP_LABEL_PADDING_X = 3;
+const SHIP_LABEL_PADDING_Y = 2;
+const SHIP_LABEL_HORIZONTAL_OFFSET = 8;
+const SHIP_LABEL_VERTICAL_OFFSET = 6;
+
 type RGB = { r: number; g: number; b: number };
 
 const hexToRgb = (hex: string): RGB => {
@@ -124,10 +137,11 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
   const layerRef = useRef<Konva.Layer | null>(null);
   const waypointsSizeRef = useRef<number>(0);
 
-  const { currentSystem, waypoints, ships, markets, showMarkets, setWaypoints, showLabels, trails, addTrailPosition, clearTrail, filterStatus, filterAgents, filterWaypointTypes, setSelectedShip, setSelectedWaypoint } =
+  const { currentSystem, waypoints, ships, markets, showMarkets, setWaypoints, trails, addTrailPosition, clearTrail, filterStatus, filterAgents, filterWaypointTypes, setSelectedShip, setSelectedWaypoint } =
     useStore();
 
   const [hoveredWaypoint, setHoveredWaypoint] = useState<string | null>(null);
+  const [hoveredShip, setHoveredShip] = useState<string | null>(null);
   const [mousePosition, setMousePosition] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [selectedObject, setSelectedObject] = useState<{ type: 'waypoint' | 'ship', symbol: string, x: number, y: number } | null>(null);
   const [viewportBounds, setViewportBounds] = useState({ x: 0, y: 0, width: 0, height: 0, scale: 1 });
@@ -135,6 +149,8 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
   const animationRef = useRef<Konva.Animation | null>(null);
 
   const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
+
+  const currentScale = viewportBounds.scale || 1;
 
   // Track canvas size with ResizeObserver so it reacts to layout changes (e.g. sidebar toggles)
   useEffect(() => {
@@ -445,7 +461,6 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
         if (!layerRef.current || !stageRef.current) return;
 
         const layer = layerRef.current;
-        const stage = stageRef.current;
         const panDistance = 50; // pixels
 
         let dx = 0;
@@ -573,7 +588,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
   };
 
   // Handle double-click zoom
-  const handleDoubleClick = (e: any) => {
+  const handleDoubleClick = () => {
     if (!layerRef.current || !stageRef.current) return;
 
     const layer = layerRef.current;
@@ -581,12 +596,10 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
     const pointer = stage.getPointerPosition();
     if (!pointer) return;
 
-    // Calculate current viewport center from layer position (not from stale state!)
     const currentScale = layer.scaleX();
     const currentCenterX = (stage.width() / 2 - layer.x()) / currentScale;
     const currentCenterY = (stage.height() / 2 - layer.y()) / currentScale;
 
-    // Get current viewport bounds
     const currentViewport = new ViewportBounds(
       currentCenterX,
       currentCenterY,
@@ -595,10 +608,8 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
       currentScale
     );
 
-    // Convert pointer screen coordinates to world coordinates
     const worldPos = currentViewport.screenToWorld(pointer.x, pointer.y, stage);
 
-    // Zoom in at pointer position
     const newViewport = ViewportBounds.zoomAtPointer(
       currentViewport,
       worldPos.x,
@@ -678,7 +689,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
   // Filter ships using domain queries
   const filteredShips = useMemo(() => {
     return ShipQueries.filter(ships, {
-      systemSymbol: currentSystem,
+      systemSymbol: currentSystem ?? undefined,
       statuses: filterStatus,
       hiddenAgentIds: filterAgents,
     });
@@ -763,6 +774,153 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
   }, [waypoints, viewportBounds.scale]);
 
   // Get waypoint tooltip data
+  const activeShipTooltipSymbol = hoveredShip ?? (selectedObject?.type === 'ship' ? selectedObject.symbol : null);
+
+  const shipTooltip = activeShipTooltipSymbol ? (() => {
+    const ship = ships.find((s) => s.symbol === activeShipTooltipSymbol);
+    if (!ship) return null;
+
+    const statusText = ship.nav.status.replace(/_/g, ' ');
+    const flightMode = ship.nav.flightMode;
+    const location = ship.nav.waypointSymbol.split('-').pop() ?? ship.nav.waypointSymbol;
+
+    let routeSummary: string | null = null;
+    let etaText: string | null = null;
+    if (ship.nav.status === 'IN_TRANSIT' && ship.nav.route) {
+      const origin = ship.nav.route.origin.symbol.split('-').pop() ?? ship.nav.route.origin.symbol;
+      const destination = ship.nav.route.destination.symbol.split('-').pop() ?? ship.nav.route.destination.symbol;
+      routeSummary = `${origin}→${destination}`;
+
+      const arrivalTime = new Date(ship.nav.route.arrival).getTime();
+      const now = Date.now();
+      const remainingMs = Math.max(0, arrivalTime - now);
+      const totalSeconds = Math.floor(remainingMs / 1000);
+      const hours = Math.floor(totalSeconds / 3600);
+      const minutes = Math.floor((totalSeconds % 3600) / 60);
+      const seconds = totalSeconds % 60;
+      const pad = (value: number) => value.toString().padStart(2, '0');
+      etaText = `${pad(hours)}:${pad(minutes)}:${pad(seconds)}`;
+    }
+
+    const fuelPercent = ship.fuel.capacity > 0
+      ? Math.round((ship.fuel.current / ship.fuel.capacity) * 100)
+      : 0;
+
+    const cargoEntries = ship.cargo.inventory.slice(0, 4).map((item) => ({
+      icon: getCargoIcon(item.symbol),
+      label: getCargoLabel(item.symbol),
+      units: item.units,
+    }));
+    const extraCargoCount = Math.max(0, ship.cargo.inventory.length - cargoEntries.length);
+
+    const cooldownSeconds = ship.cooldown && ship.cooldown.remainingSeconds > 0
+      ? ship.cooldown.remainingSeconds
+      : null;
+
+    return {
+      symbol: ship.symbol,
+      registrationName: ship.registration.name,
+      role: ship.registration.role,
+      statusText,
+      flightMode,
+      location,
+      routeSummary,
+      etaText,
+      fuelCurrent: ship.fuel.current,
+      fuelCapacity: ship.fuel.capacity,
+      fuelPercent,
+      cargoUnits: ship.cargo.units,
+      cargoCapacity: ship.cargo.capacity,
+      cargoEntries,
+      extraCargoCount,
+      cooldownSeconds,
+    };
+  })() : null;
+
+  const shipTooltipPosition = useMemo(() => {
+    if (!activeShipTooltipSymbol) return null;
+    const layer = layerRef.current;
+    if (!layer) return null;
+
+    const ship = ships.find((s) => s.symbol === activeShipTooltipSymbol);
+    if (!ship) return null;
+
+    const position = Ship.getPosition(ship, waypoints);
+    if (position.x === 0 && position.y === 0) return null;
+
+    const transform = layer.getAbsoluteTransform().copy();
+    const screenPos = transform.point({ x: position.x, y: position.y });
+
+    return {
+      left: screenPos.x - SHIP_LABEL_HORIZONTAL_OFFSET,
+      top: screenPos.y - SHIP_LABEL_VERTICAL_OFFSET,
+    };
+  }, [activeShipTooltipSymbol, ships, waypoints, animationFrame]);
+
+  const selectionOverlay = useMemo(() => {
+    if (!selectedObject) return null;
+    const layer = layerRef.current;
+    if (!layer) return null;
+
+    const transform = layer.getAbsoluteTransform().copy();
+
+    let worldX = selectedObject.x;
+    let worldY = selectedObject.y;
+
+    if (selectedObject.type === 'ship') {
+      const ship = ships.find((s) => s.symbol === selectedObject.symbol);
+      if (!ship) return null;
+      const position = Ship.getPosition(ship, waypoints);
+      if (position.x === 0 && position.y === 0) return null;
+      worldX = position.x;
+      worldY = position.y;
+    } else if (selectedObject.type === 'waypoint') {
+      const waypoint = waypoints.get(selectedObject.symbol);
+      if (!waypoint) return null;
+      worldX = waypoint.x;
+      worldY = waypoint.y;
+    }
+
+    const screenPos = transform.point({ x: worldX, y: worldY });
+    const size = selectedObject.type === 'waypoint' ? 15 : 12;
+
+    return {
+      left: screenPos.x,
+      top: screenPos.y,
+      size,
+    };
+  }, [selectedObject, ships, waypoints, animationFrame]);
+
+  const shipLabelData = useMemo<ShipLabelData[]>(() => {
+    const layer = layerRef.current;
+    if (!layer) return [];
+
+    const transform = layer.getAbsoluteTransform().copy();
+
+    return filteredShips.flatMap<ShipLabelData>((ship: any) => {
+      const position = Ship.getPosition(ship, waypoints);
+      if (position.x === 0 && position.y === 0) return [];
+
+      const screenPos = transform.point({ x: position.x, y: position.y });
+
+      const shipNumber = ship.symbol.split('-').pop() ?? ship.symbol;
+      const shipTypeRaw = ship.registration.role || 'UNKNOWN';
+      const shipType = shipTypeRaw
+        .split('_')
+        .map((part: string) => part.charAt(0) + part.slice(1).toLowerCase())
+        .join(' ');
+
+      const labelHeight = SHIP_LABEL_FONT_SIZE + SHIP_LABEL_PADDING_Y * 2;
+
+      return [{
+        key: ship.symbol,
+        text: `${shipType} ${shipNumber}`,
+        left: screenPos.x + SHIP_LABEL_HORIZONTAL_OFFSET,
+        top: screenPos.y - (labelHeight + SHIP_LABEL_VERTICAL_OFFSET),
+      }];
+    });
+  }, [filteredShips, waypoints, animationFrame]);
+
   const waypointTooltip = hoveredWaypoint ? (() => {
     const waypoint = waypoints.get(hoveredWaypoint);
     if (!waypoint) return null;
@@ -802,6 +960,11 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
           draggable
           onWheel={handleWheel}
           onMouseMove={handleStageMouseMove}
+          onMouseLeave={() => {
+            setHoveredShip(null);
+            setHoveredWaypoint(null);
+          }}
+          onDragMove={updateViewportBounds}
           onDragEnd={handleDragEnd}
           onDblClick={handleDoubleClick}
         >
@@ -812,7 +975,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
                 key={`v-${i}`}
                 points={line.points}
                 stroke={line.stroke}
-                strokeWidth={line.strokeWidth}
+                strokeWidth={line.strokeWidth / currentScale}
                 opacity={line.opacity}
                 listening={false}
               />
@@ -822,7 +985,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
                 key={`h-${i}`}
                 points={line.points}
                 stroke={line.stroke}
-                strokeWidth={line.strokeWidth}
+                strokeWidth={line.strokeWidth / currentScale}
                 opacity={line.opacity}
                 listening={false}
               />
@@ -833,7 +996,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
                 text={label.text}
                 x={label.x}
                 y={label.y}
-                fontSize={8}
+                fontSize={8 / currentScale}
                 fill="#666666"
                 opacity={0.6}
                 listening={false}
@@ -868,7 +1031,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
                     y={y}
                     radius={radius + 4}
                     stroke="#f39c12"
-                    strokeWidth={1}
+                    strokeWidth={1 / currentScale}
                     opacity={0.6}
                     listening={false}
                   />
@@ -895,7 +1058,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
                     text="$"
                     x={x + radius * 0.7 - 3}
                     y={y - radius * 0.7 - 4}
-                    fontSize={8}
+                    fontSize={8 / currentScale}
                     fill="#f39c12"
                     listening={false}
                   />
@@ -906,7 +1069,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
                   text={waypoint.symbol.split('-').pop() || ''}
                   x={x + radius + 2}
                   y={y - 5}
-                  fontSize={10}
+                  fontSize={10 / currentScale}
                   fill="white"
                   opacity={0.6}
                   listening={false}
@@ -1029,10 +1192,15 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
                     setSelectedWaypoint(null);
                   }}
                   onMouseEnter={(e) => {
+                    setHoveredShip(ship.symbol);
+                    setHoveredWaypoint(null);
+
                     const container = e.target.getStage()?.container();
                     if (container) container.style.cursor = 'pointer';
                   }}
                   onMouseLeave={(e) => {
+                    setHoveredShip(null);
+
                     const container = e.target.getStage()?.container();
                     if (container) container.style.cursor = 'default';
                   }}
@@ -1083,225 +1251,161 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
             );
           })}
 
-          {/* Ship labels */}
-          {showLabels && filteredShips.map((ship: any) => {
-            const position = Ship.getPosition(ship, waypoints);
-            if (position.x === 0 && position.y === 0) return null;
-
-            const borderColor = ship.agentColor || '#555555';
-            let status = ship.nav.status.replace('_', ' ');
-            if (ship.cooldown && ship.cooldown.remainingSeconds > 0) {
-              status += ' ⛏️';
-            }
-
-            // Calculate ETA for in-transit ships
-            let routeText = '';
-            if (ship.nav.status === 'IN_TRANSIT' && ship.nav.route) {
-              const origin = ship.nav.route.origin.symbol.split('-').pop();
-              const dest = ship.nav.route.destination.symbol.split('-').pop();
-              const arrivalTime = new Date(ship.nav.route.arrival).getTime();
-              const now = Date.now();
-              const remainingMs = Math.max(0, arrivalTime - now);
-              const totalSeconds = Math.floor(remainingMs / 1000);
-              const hours = Math.floor(totalSeconds / 3600);
-              const minutes = Math.floor((totalSeconds % 3600) / 60);
-              const seconds = totalSeconds % 60;
-              const etaText = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
-              routeText = `${origin}→${dest} (${etaText})`;
-            }
-
-            return (
-              <Group key={`label-${ship.symbol}`} x={position.x + 8} y={position.y - 22}>
-                {/* Background */}
-                <Rect
-                  width={120}
-                  height={routeText ? 70 : 60}
-                  fill="#1a1a1a"
-                  opacity={0.85}
-                  stroke={borderColor}
-                  strokeWidth={1}
-                />
-
-                {/* Connector line */}
-                <Line
-                  points={[-8, 22, 0, routeText ? 35 : 30]}
-                  stroke={borderColor}
-                  strokeWidth={1}
-                  opacity={0.5}
-                />
-
-                {/* Ship name */}
-                <Text
-                  text={ship.symbol}
-                  x={4}
-                  y={4}
-                  fontSize={8}
-                  fill="white"
-                  fontStyle="bold"
-                  listening={false}
-                />
-
-                {/* Status */}
-                <Text
-                  text={status}
-                  x={4}
-                  y={14}
-                  fontSize={7}
-                  fill="#88ccff"
-                  listening={false}
-                />
-
-                {/* Route */}
-                {routeText && (
-                  <Text
-                    text={routeText}
-                    x={4}
-                    y={23}
-                    fontSize={7}
-                    fill="#aaaaaa"
-                    listening={false}
-                  />
-                )}
-
-                {/* Flight mode */}
-                <Text
-                  text={ship.nav.flightMode}
-                  x={4}
-                  y={routeText ? 32 : 23}
-                  fontSize={6}
-                  fill="#888888"
-                  listening={false}
-                />
-
-                {/* Fuel */}
-                <Text
-                  text={`⛽ ${ship.fuel.current}/${ship.fuel.capacity}`}
-                  x={4}
-                  y={routeText ? 40 : 31}
-                  fontSize={7}
-                  fill="#999999"
-                  listening={false}
-                />
-
-                {/* Cargo */}
-                <Text
-                  text={`📦 ${ship.cargo.units}/${ship.cargo.capacity}`}
-                  x={4}
-                  y={routeText ? 49 : 40}
-                  fontSize={7}
-                  fill="#999999"
-                  listening={false}
-                />
-              </Group>
-            );
-          })}
-
-          {/* Selection marker */}
-          {selectedObject && (() => {
-            let currentX = selectedObject.x;
-            let currentY = selectedObject.y;
-            if (selectedObject.type === 'ship') {
-              const ship = ships.find(s => s.symbol === selectedObject.symbol);
-              if (ship) {
-                const position = Ship.getPosition(ship, waypoints);
-                currentX = position.x;
-                currentY = position.y;
-              }
-            }
-
-            const size = selectedObject.type === 'waypoint' ? 15 : 12;
-            const bracketSize = size + 4;
-            const bracketLength = 6;
-
-            return (
-              <Group key="selection" x={currentX} y={currentY}>
-                {/* Selection ring */}
-                <Circle
-                  radius={size}
-                  stroke="#00ff00"
-                  strokeWidth={0.5}
-                  opacity={0.9}
-                  listening={false}
-                />
-
-                {/* Corner brackets */}
-                <Line
-                  points={[
-                    -bracketSize, -bracketSize, -bracketSize + bracketLength, -bracketSize,
-                  ]}
-                  stroke="#00ff00"
-                  strokeWidth={0.5}
-                  opacity={0.8}
-                  listening={false}
-                />
-                <Line
-                  points={[
-                    -bracketSize, -bracketSize, -bracketSize, -bracketSize + bracketLength,
-                  ]}
-                  stroke="#00ff00"
-                  strokeWidth={0.5}
-                  opacity={0.8}
-                  listening={false}
-                />
-                <Line
-                  points={[
-                    bracketSize, -bracketSize, bracketSize - bracketLength, -bracketSize,
-                  ]}
-                  stroke="#00ff00"
-                  strokeWidth={0.5}
-                  opacity={0.8}
-                  listening={false}
-                />
-                <Line
-                  points={[
-                    bracketSize, -bracketSize, bracketSize, -bracketSize + bracketLength,
-                  ]}
-                  stroke="#00ff00"
-                  strokeWidth={0.5}
-                  opacity={0.8}
-                  listening={false}
-                />
-                <Line
-                  points={[
-                    -bracketSize, bracketSize, -bracketSize + bracketLength, bracketSize,
-                  ]}
-                  stroke="#00ff00"
-                  strokeWidth={0.5}
-                  opacity={0.8}
-                  listening={false}
-                />
-                <Line
-                  points={[
-                    -bracketSize, bracketSize, -bracketSize, bracketSize - bracketLength,
-                  ]}
-                  stroke="#00ff00"
-                  strokeWidth={0.5}
-                  opacity={0.8}
-                  listening={false}
-                />
-                <Line
-                  points={[
-                    bracketSize, bracketSize, bracketSize - bracketLength, bracketSize,
-                  ]}
-                  stroke="#00ff00"
-                  strokeWidth={0.5}
-                  opacity={0.8}
-                  listening={false}
-                />
-                <Line
-                  points={[
-                    bracketSize, bracketSize, bracketSize, bracketSize - bracketLength,
-                  ]}
-                  stroke="#00ff00"
-                  strokeWidth={0.5}
-                  opacity={0.8}
-                  listening={false}
-                />
-              </Group>
-            );
-          })()}
         </Layer>
       </Stage>
+      )}
+
+      {shipLabelData.map((label: ShipLabelData) => (
+        <div
+          key={label.key}
+          className="absolute pointer-events-none z-10 inline-flex items-center justify-center rounded-sm border border-red-500 bg-black/80 text-red-200 font-semibold leading-none shadow-[0_0_6px_rgba(255,77,79,0.3)] whitespace-nowrap"
+          style={{
+            left: `${label.left}px`,
+            top: `${label.top}px`,
+            fontSize: `${SHIP_LABEL_FONT_SIZE}px`,
+            padding: `${SHIP_LABEL_PADDING_Y}px ${SHIP_LABEL_PADDING_X}px`,
+          }}
+        >
+          {label.text}
+        </div>
+      ))}
+
+      {selectionOverlay && (
+        <div
+          className="absolute pointer-events-none z-20"
+          style={{
+            left: `${selectionOverlay.left}px`,
+            top: `${selectionOverlay.top}px`,
+            width: `${selectionOverlay.size * 2}px`,
+            height: `${selectionOverlay.size * 2}px`,
+            transform: 'translate(-50%, -50%)',
+          }}
+        >
+          <div className="relative w-full h-full">
+            <div className="absolute inset-0 rounded-full border border-green-400/80" />
+            {[['top', 'left'], ['top', 'right'], ['bottom', 'left'], ['bottom', 'right']].map(([vertical, horizontal]) => (
+              <div
+                key={`${vertical}-${horizontal}`}
+                className="absolute w-2 h-2 border-green-400/80"
+                style={{
+                  [vertical]: 0,
+                  [horizontal]: 0,
+                  borderStyle: 'solid',
+                  borderTopWidth: vertical === 'top' ? '1px' : '0px',
+                  borderBottomWidth: vertical === 'bottom' ? '1px' : '0px',
+                  borderLeftWidth: horizontal === 'left' ? '1px' : '0px',
+                  borderRightWidth: horizontal === 'right' ? '1px' : '0px',
+                }}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Ship tooltip */}
+      {shipTooltip && shipTooltipPosition && (
+        <div
+          className="absolute bg-black bg-opacity-80 border border-red-500 rounded-lg p-3 text-xs min-w-[260px] max-w-[340px] pointer-events-none z-30 shadow-xl backdrop-blur-sm"
+          style={{
+            left: `${shipTooltipPosition.left}px`,
+            top: `${shipTooltipPosition.top}px`,
+            transform: 'translate(-100%, -100%)',
+          }}
+        >
+          <div className="flex items-start justify-between gap-3 mb-3">
+            <div>
+              <div className="text-sm font-bold text-white leading-snug">{shipTooltip.symbol}</div>
+              <div className="text-[10px] uppercase tracking-wide text-red-300">{shipTooltip.registrationName}</div>
+            </div>
+            <span className="text-[10px] font-semibold text-red-300 bg-red-500/10 border border-red-500/40 rounded-full px-2 py-0.5 whitespace-nowrap">
+              {shipTooltip.role}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-gray-200">
+            <div>
+              <div className="text-[10px] uppercase text-gray-400">Status</div>
+              <div className="text-xs font-semibold">{shipTooltip.statusText}</div>
+            </div>
+            <div>
+              <div className="text-[10px] uppercase text-gray-400">Flight Mode</div>
+              <div className="text-xs">{shipTooltip.flightMode}</div>
+            </div>
+
+            <div>
+              <div className="text-[10px] uppercase text-gray-400">Location</div>
+              <div className="text-xs">{shipTooltip.location}</div>
+            </div>
+
+            <div>
+              <div className="text-[10px] uppercase text-gray-400">Cargo Capacity</div>
+              <div className="text-xs font-semibold text-red-200">
+                {shipTooltip.cargoUnits} / {shipTooltip.cargoCapacity}
+              </div>
+            </div>
+
+            {shipTooltip.cooldownSeconds !== null && (
+              <div>
+                <div className="text-[10px] uppercase text-gray-400">Cooldown</div>
+                <div className="text-xs">{shipTooltip.cooldownSeconds}s</div>
+              </div>
+            )}
+
+            {shipTooltip.routeSummary && (
+              <div className="col-span-2">
+                <div className="text-[10px] uppercase text-gray-400">Route</div>
+                <div className="text-xs flex items-center gap-2">
+                  <span>{shipTooltip.routeSummary}</span>
+                  {shipTooltip.etaText && (
+                    <span className="text-[10px] text-red-200 bg-red-500/10 px-1.5 py-0.5 rounded-full">
+                      ETA {shipTooltip.etaText}
+                    </span>
+                  )}
+                </div>
+              </div>
+            )}
+
+            <div className="col-span-2">
+              <div className="flex items-center justify-between text-[10px] uppercase text-gray-400">
+                <span>Fuel</span>
+                <span className="text-xs text-red-200 font-semibold">
+                  {shipTooltip.fuelCurrent} / {shipTooltip.fuelCapacity} ({shipTooltip.fuelPercent}%)
+                </span>
+              </div>
+              <div className="w-full bg-red-900/40 h-1.5 rounded-full mt-1">
+                <div
+                  className="bg-red-500 h-1.5 rounded-full"
+                  style={{ width: `${Math.min(100, Math.max(0, shipTooltip.fuelPercent))}%` }}
+                />
+              </div>
+            </div>
+          </div>
+
+          {shipTooltip.cargoEntries.length > 0 && (
+            <div className="mt-3">
+              <div className="text-[10px] uppercase text-gray-400 mb-1">Cargo Hold</div>
+              <div className="grid grid-cols-2 gap-2">
+                {shipTooltip.cargoEntries.map((item, index) => (
+                  <div
+                    key={`${item.label}-${index}`}
+                    className="flex items-center gap-2 text-xs text-gray-200 bg-white/5 border border-white/10 rounded-md px-2 py-1"
+                  >
+                    <span className="text-base leading-none">{item.icon}</span>
+                    <div className="flex flex-col leading-tight">
+                      <span className="text-[11px]">{item.label}</span>
+                      <span className="text-[10px] text-gray-400">×{item.units}</span>
+                    </div>
+                  </div>
+                ))}
+                {shipTooltip.extraCargoCount > 0 && (
+                  <div className="col-span-2 text-[10px] text-gray-500">
+                    +{shipTooltip.extraCargoCount} more item{shipTooltip.extraCargoCount > 1 ? 's' : ''}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
       )}
 
       {/* Waypoint tooltip */}
@@ -1390,6 +1494,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
         viewportBounds={viewportBounds}
         onNavigate={handleMinimapNavigate}
         onZoom={handleMinimapZoom}
+        animationFrame={animationFrame}
       />
     </div>
   );
