@@ -183,6 +183,19 @@ class PurchaseShip:
         return {"units": units, "totalPrice": units * 90}
 
 
+class DockFailShip(PurchaseShip):
+    def __init__(self, fail_on_second=True):
+        super().__init__()
+        self._dock_calls = 0
+        self._fail_on_second = fail_on_second
+
+    def dock(self):
+        self._dock_calls += 1
+        if self._fail_on_second and self._dock_calls >= 2:
+            return False
+        return True
+
+
 def patch_contract_helpers(monkeypatch, captain):
     monkeypatch.setattr(contracts, "setup_logging", lambda *a, **k: "logfile.log")
     monkeypatch.setattr(contracts, "get_captain_logger", lambda *_: captain)
@@ -302,6 +315,88 @@ def test_contract_operation_accepts_and_handles_transaction_limit(monkeypatch):
     assert navigator.calls.count('X1-TEST-M1') >= 1
     assert navigator.calls.count("X1-TEST-B1") >= 1
     assert ship.buy_calls and ship.buy_calls[0] > 20
+    assert any(event[0] == "OPERATION_COMPLETED" for event in captain.events)
+
+
+def test_contract_operation_aborts_on_docking_failure(monkeypatch):
+    captain = NullCaptain()
+    patch_contract_helpers(monkeypatch, captain)
+
+    ship = DockFailShip()
+    api = FakeContractAPI(make_contract(), ship)
+    navigator = FakeNavigator()
+    args = SimpleNamespace(
+        player_id=1,
+        ship="SHIP-1",
+        contract_id="CONTRACT-1",
+        buy_from='X1-TEST-M1',
+        log_level="INFO",
+    )
+
+    fetch_fn = lambda symbol, pattern: ('X1-TEST-M1', 90, 'ABUNDANT')
+
+    result = contracts.contract_operation(
+        args,
+        api=api,
+        ship=ship,
+        navigator=navigator,
+        db=FakeDB(fetch_fn=fetch_fn),
+        sleep_fn=lambda *_: None,
+    )
+
+    assert result == 1
+    assert any(event[0] == "CRITICAL_ERROR" for event in captain.events)
+
+
+def test_contract_operation_retries_delivery_error(monkeypatch):
+    captain = NullCaptain()
+    patch_contract_helpers(monkeypatch, captain)
+
+    class RetryAPI(FakeContractAPI):
+        def __init__(self, contract, ship):
+            super().__init__(contract, ship)
+            self.failures = 0
+
+        def post(self, path, payload=None):
+            if path.endswith('/deliver'):
+                self.failures += 1
+                if self.failures == 1:
+                    return {'error': {'code': 4502, 'message': 'Try again'}}
+                self.delivered_units.append(payload['units'])
+                return {'data': {'delivered': payload['units']}}
+            return super().post(path, payload)
+
+    contract = make_contract()
+    contract['terms']['deliver'][0]['unitsRequired'] = 5
+
+    ship = PurchaseShip()
+    ship._initial_attempt = False
+    api = RetryAPI(contract, ship)
+    navigator = FakeNavigator()
+    args = SimpleNamespace(
+        player_id=1,
+        ship='SHIP-1',
+        contract_id='CONTRACT-1',
+        buy_from='X1-TEST-M1',
+        log_level='INFO',
+    )
+
+    fetch_fn = lambda symbol, pattern: ('X1-TEST-M1', 90, 'ABUNDANT')
+
+    sleep_calls = []
+
+    result = contracts.contract_operation(
+        args,
+        api=api,
+        ship=ship,
+        navigator=navigator,
+        db=FakeDB(fetch_fn=fetch_fn),
+        sleep_fn=lambda seconds: sleep_calls.append(seconds),
+    )
+
+    assert result == 0
+    assert sleep_calls == [2]
+    assert api.delivered_units == [5]
     assert any(event[0] == "OPERATION_COMPLETED" for event in captain.events)
 
 
