@@ -1,17 +1,16 @@
 import { useEffect, useRef, useState, forwardRef, useImperativeHandle, useMemo, useCallback } from 'react';
-import { Stage, Layer, Shape, Group, Circle, Text, Line, Label, Tag } from 'react-konva';
+import { Stage, Layer, Shape, Group, Circle, Text, Line, Label, Tag, Image as KonvaImage } from 'react-konva';
 import Konva from 'konva';
 import { useStore } from '../store/useStore';
 import { getWaypoints } from '../services/api';
 import { getWaypointOpportunities, formatOpportunity } from '../domain/market';
 import { Ship, Waypoint, ShipQueries, WaypointQueries, ViewportBounds } from '../domain';
 import { VIEWPORT_CONSTANTS } from '../constants/viewport';
-import { drawWaypoint } from '../services/canvas/WaypointRenderer';
 import { drawShipShape } from '../services/canvas/ShipRenderer';
 import { getCargoIcon, getCargoLabel } from '../utils/cargo';
 import ZoomControls from './ZoomControls';
 import Minimap from './Minimap';
-import type { FlightMode, ShipTrailPoint } from '../types/spacetraders';
+import type { FlightMode, ShipTrailPoint, Waypoint as WaypointType, TaggedShip } from '../types/spacetraders';
 
 type TrailVisualSettings = {
   maxAgeMs: number;
@@ -88,6 +87,181 @@ const SHIP_LABEL_SCREEN_OFFSET_Y = 14;
 
 const SHIP_TOOLTIP_OFFSET_X = 12;
 const SHIP_TOOLTIP_OFFSET_Y = 12;
+const WAYPOINT_TOOLTIP_OFFSET_X = 12;
+const WAYPOINT_TOOLTIP_OFFSET_Y = 12;
+
+const WAYPOINT_ASSET_BASE_PATH = '/assets/waypoints/';
+const SHIP_ASSET_BASE_PATH = '/assets/ships/';
+
+const WAYPOINT_ASSET_VARIANTS: Record<string, string[]> = {
+  asteroid: ['waypoint-asteroid-1.png', 'waypoint-asteroid-2.png'],
+  asteroidBase: ['waypoint-asteroid-base-1.png', 'waypoint-asteroid-base-2.png'],
+  engineeredAsteroid: ['waypoint-engineered-asteroid-2.png'],
+  orbitalStation: ['waypoint-orbital-station-1.png'],
+  planetTemperate: ['waypoint-planet-temperate-1.png', 'waypoint-planet-temperate-2.png'],
+  planetOcean: ['waypoint-planet-ocean-1.png', 'waypoint-planet-ocean-2.png'],
+  planetFrozen: ['waypoint-planet-frozen-1.png', 'waypoint-planet-frozen-2.png'],
+  planetRocky: ['waypoint-planet-rocky-1.png', 'waypoint-planet-rocky-2.png'],
+  planetVolcanic: ['waypoint-planet-volcanic-1.png', 'waypoint-planet-volcanic-2.png'],
+  planetRadioactive: [
+    'waypoint-planet-radioactive-1.png',
+    'waypoint-planet-radioactive-2.png',
+    'waypoint-planet-radioactive-3.png',
+    'waypoint-planet-radioactive-4.png',
+  ],
+  planetSwamp: ['waypoint-planet-swamp-2.png'],
+  planetJovian: ['waypoint-planet-jovian-1.png', 'waypoint-planet-jovian-2.png'],
+  fuelStation: ['waypoint-fuel-station-1.png', 'waypoint-fuel-station-2.png'],
+  volcanicMoon: ['waypoint-volcanic-moon-1.png', 'waypoint-volcanic-moon-2.png'],
+};
+
+const SHIP_ASSET_VARIANTS: Record<string, string[]> = {
+  command: ['ship-command-frigate-2.png'],
+  hauler: ['ship-light-hauler-1.png', 'ship-light-hauler-2.png'],
+  mining: ['ship-mining-drone-1.png', 'ship-mining-drone-2.png'],
+  probe: ['ship-probe-2.png'],
+  satellite: ['ship-satellite-1.png', 'ship-satellite-2.png'],
+  station: ['ship-space-station-1.png', 'ship-space-station-2.png'],
+};
+
+const DEFAULT_WAYPOINT_ASSET = 'waypoint-planet-rocky-1.png';
+const DEFAULT_SHIP_ASSET = 'ship-command-frigate-2.png';
+const DEFAULT_SHIP_SPRITE_SIZE = 18;
+const SHIP_SPRITE_SIZE = DEFAULT_SHIP_SPRITE_SIZE / 10;
+
+const imageCache = new Map<string, HTMLImageElement | null>();
+
+const hashString = (value: string): number => {
+  let hash = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    hash = (hash * 31 + value.charCodeAt(i)) >>> 0;
+  }
+  return hash;
+};
+
+const useCachedImage = (src: string | null): HTMLImageElement | null => {
+  const [image, setImage] = useState<HTMLImageElement | null>(() => {
+    if (!src || typeof window === 'undefined') return null;
+    const cached = imageCache.get(src);
+    return cached ?? null;
+  });
+
+  useEffect(() => {
+    if (!src || typeof window === 'undefined') {
+      setImage(null);
+      return;
+    }
+
+    const cached = imageCache.get(src);
+    if (cached !== undefined) {
+      setImage(cached);
+      return;
+    }
+
+    let cancelled = false;
+    const img = new window.Image();
+    img.src = src;
+    img.onload = () => {
+      if (cancelled) return;
+      imageCache.set(src, img);
+      setImage(img);
+    };
+    img.onerror = () => {
+      if (cancelled) return;
+      imageCache.set(src, null);
+      setImage(null);
+    };
+
+    return () => {
+      cancelled = true;
+    };
+  }, [src]);
+
+  return image;
+};
+
+const WaypointSprite = ({
+  assetPath,
+  x,
+  y,
+  radius,
+}: {
+  assetPath: string | null;
+  x: number;
+  y: number;
+  radius: number;
+}) => {
+  const image = useCachedImage(assetPath);
+  const size = Math.max(radius * 2, 8);
+  const half = size / 2;
+
+  if (image && image.width > 0 && image.height > 0) {
+    return (
+      <KonvaImage
+        image={image}
+        x={x - half}
+        y={y - half}
+        width={size}
+        height={size}
+        listening={false}
+      />
+    );
+  }
+
+  return (
+    <Circle
+      x={x}
+      y={y}
+      radius={radius}
+      fill="#394150"
+      stroke="#5f6a7a"
+      strokeWidth={1.5}
+      listening={false}
+    />
+  );
+};
+
+const ShipSprite = ({
+  assetPath,
+  ship,
+  shipHexColor,
+  shipColor,
+  size,
+}: {
+  assetPath: string | null;
+  ship: TaggedShip;
+  shipHexColor: string;
+  shipColor: number;
+  size: number;
+}) => {
+  const image = useCachedImage(assetPath);
+
+  if (image && image.width > 0 && image.height > 0) {
+    return (
+      <KonvaImage
+        image={image}
+        x={-size / 2}
+        y={-size / 2}
+        width={size}
+        height={size}
+        listening={false}
+      />
+    );
+  }
+
+  const spriteScale = Math.max(size / DEFAULT_SHIP_SPRITE_SIZE, 0.02);
+
+  return (
+    <Group listening={false} scale={{ x: spriteScale, y: spriteScale }}>
+      <Shape
+        sceneFunc={(context, _shape) => {
+          drawShipShape(context._context as CanvasRenderingContext2D, ship.registration.role, shipColor);
+        }}
+        listening={false}
+      />
+    </Group>
+  );
+};
 
 type RGB = { r: number; g: number; b: number };
 
@@ -134,12 +308,11 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
   const layerRef = useRef<Konva.Layer | null>(null);
   const waypointsSizeRef = useRef<number>(0);
 
-  const { currentSystem, waypoints, ships, markets, showMarkets, setWaypoints, trails, addTrailPosition, clearTrail, filterStatus, filterAgents, filterWaypointTypes, setSelectedShip, setSelectedWaypoint } =
+  const { currentSystem, waypoints, ships, markets, showMapOverlays, showWaypointNames, showShipNames, setWaypoints, trails, addTrailPosition, clearTrail, filterStatus, filterAgents, filterWaypointTypes, setSelectedShip, setSelectedWaypoint } =
     useStore();
 
-  const [hoveredWaypoint, setHoveredWaypoint] = useState<string | null>(null);
   const [hoveredShip, setHoveredShip] = useState<string | null>(null);
-  const [mousePosition, setMousePosition] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const [waypointTooltipAnchor, setWaypointTooltipAnchor] = useState<{ symbol: string; worldX: number; worldY: number } | null>(null);
   const [selectedObject, setSelectedObject] = useState<{ type: 'waypoint' | 'ship', symbol: string, x: number, y: number } | null>(null);
   const [viewportBounds, setViewportBounds] = useState({ x: 0, y: 0, width: 0, height: 0, scale: 1 });
   const [animationFrame, setAnimationFrame] = useState(0);
@@ -511,15 +684,6 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
     }
   }, [waypoints]);
 
-  // Handle mouse move for tooltips
-  const handleStageMouseMove = (e: any) => {
-    const stage = e.target.getStage();
-    const pointerPosition = stage.getPointerPosition();
-    if (pointerPosition) {
-      setMousePosition({ x: pointerPosition.x, y: pointerPosition.y });
-    }
-  };
-
   const applyZoomAtWorldPoint = (worldX: number, worldY: number, zoomFactor: number) => {
     if (!layerRef.current || !stageRef.current) return;
 
@@ -689,7 +853,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
       systemSymbol: currentSystem ?? undefined,
       statuses: filterStatus,
       hiddenAgentIds: filterAgents,
-    });
+    }) as TaggedShip[];
   }, [ships, currentSystem, filterStatus, filterAgents]);
 
   // Filter waypoints using domain queries
@@ -699,6 +863,109 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
       filterWaypointTypes
     );
   }, [waypoints, filterWaypointTypes]);
+
+  const getWaypointDisplayPosition = useCallback(
+    (waypoint: WaypointType): { x: number; y: number } => {
+      const overlapIndex = filteredWaypoints.filter((w) =>
+        w.x === waypoint.x &&
+        w.y === waypoint.y &&
+        w.symbol <= waypoint.symbol
+      ).length - 1;
+
+      if (overlapIndex <= 0) {
+        return { x: waypoint.x, y: waypoint.y };
+      }
+
+      const angle = (overlapIndex * Math.PI * 2) / 8;
+      const offset = 15 * overlapIndex;
+      return {
+        x: waypoint.x + Math.cos(angle) * offset,
+        y: waypoint.y + Math.sin(angle) * offset,
+      };
+    },
+    [filteredWaypoints]
+  );
+
+  const selectWaypointAsset = useCallback((waypoint: WaypointType): string => {
+    const traitSymbols = (waypoint.traits ?? []).map((trait) => trait.symbol.toUpperCase());
+    const hasTrait = (...keywords: string[]) =>
+      traitSymbols.some((trait) => keywords.some((keyword) => trait.includes(keyword)));
+
+    let variantKey: string;
+
+    if (
+      waypoint.type === 'ASTEROID' ||
+      waypoint.type === 'ASTEROID_FIELD'
+    ) {
+      variantKey = 'asteroid';
+    } else if (waypoint.type === 'ASTEROID_BASE') {
+      variantKey = 'asteroidBase';
+    } else if (waypoint.type === 'ENGINEERED_ASTEROID') {
+      variantKey = 'engineeredAsteroid';
+    } else if (
+      waypoint.type === 'GAS_GIANT' ||
+      hasTrait('GAS_GIANT') ||
+      hasTrait('JOVIAN')
+    ) {
+      variantKey = 'planetJovian';
+    } else if (hasTrait('OCEAN', 'WATER')) {
+      variantKey = 'planetOcean';
+    } else if (hasTrait('TEMPERATE', 'TROPICAL', 'FOREST')) {
+      variantKey = 'planetTemperate';
+    } else if (hasTrait('FROZEN', 'ICE')) {
+      variantKey = 'planetFrozen';
+    } else if (hasTrait('VOLCANIC', 'INFERNO')) {
+      variantKey = waypoint.type === 'MOON' ? 'volcanicMoon' : 'planetVolcanic';
+    } else if (hasTrait('RADIOACTIVE', 'NUCLEAR')) {
+      variantKey = 'planetRadioactive';
+    } else if (waypoint.type === 'ORBITAL_STATION' || hasTrait('ORBITAL')) {
+      variantKey = 'orbitalStation';
+    } else if (waypoint.type.includes('STATION')) {
+      variantKey = 'fuelStation';
+    } else if (hasTrait('SWAMP', 'JUNGLE', 'BOG')) {
+      variantKey = 'planetSwamp';
+    } else if (waypoint.type === 'FUEL_STATION' || hasTrait('FUEL')) {
+      variantKey = 'fuelStation';
+    } else if (waypoint.type === 'MOON') {
+      variantKey = 'planetRocky';
+    } else {
+      variantKey = 'planetRocky';
+    }
+
+    const variants = WAYPOINT_ASSET_VARIANTS[variantKey] ?? WAYPOINT_ASSET_VARIANTS.planetRocky;
+    const assetIndex = variants.length > 0
+      ? hashString(`${waypoint.symbol}:${variantKey}`) % variants.length
+      : 0;
+    const filename = variants[assetIndex] ?? DEFAULT_WAYPOINT_ASSET;
+    return `${WAYPOINT_ASSET_BASE_PATH}${filename}`;
+  }, []);
+
+  const selectShipAsset = useCallback((ship: TaggedShip): string | null => {
+    const role = ship.registration.role?.toLowerCase() ?? '';
+
+    let variantKey: string;
+    if (role.includes('satellite')) {
+      variantKey = 'satellite';
+    } else if (role.includes('station') || role.includes('platform')) {
+      variantKey = 'station';
+    } else if (role.includes('probe') || role.includes('scout') || role.includes('explorer')) {
+      variantKey = 'probe';
+    } else if (role.includes('mine') || role.includes('extract') || role.includes('drone')) {
+      variantKey = 'mining';
+    } else if (role.includes('haul') || role.includes('freight') || role.includes('cargo') || role.includes('transport')) {
+      variantKey = 'hauler';
+    } else {
+      variantKey = 'command';
+    }
+
+    const variants = SHIP_ASSET_VARIANTS[variantKey];
+    if (!variants || variants.length === 0) {
+      return `${SHIP_ASSET_BASE_PATH}${DEFAULT_SHIP_ASSET}`;
+    }
+
+    const filename = variants[hashString(`${ship.symbol}:${variantKey}`) % variants.length] ?? DEFAULT_SHIP_ASSET;
+    return `${SHIP_ASSET_BASE_PATH}${filename}`;
+  }, []);
 
   // Grid rendering with dynamic spacing
   const gridLines = useMemo(() => {
@@ -772,29 +1039,42 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
 
   // Get waypoint tooltip data
   const activeShipTooltipSymbol = hoveredShip ?? (selectedObject?.type === 'ship' ? selectedObject.symbol : null);
+  const activeWaypointTooltipSymbol = waypointTooltipAnchor?.symbol ?? null;
 
-  const projectToScreen = useCallback(
-    (point: { x: number; y: number }) => {
-      const layer = layerRef.current;
-      if (!layer) return null;
+  const projectToScreen = useCallback((point: { x: number; y: number }) => {
+    const layer = layerRef.current;
+    const stage = stageRef.current;
+    const container = containerRef.current;
+    if (!layer || !stage || !container) return null;
 
-      const transform = layer.getAbsoluteTransform().copy();
-      return transform.point(point);
-    },
-    []
-  );
+    const transform = layer.getAbsoluteTransform().copy();
+    const { x, y } = transform.point(point);
 
-  const projectToWorld = useCallback(
-    (point: { x: number; y: number }) => {
-      const layer = layerRef.current;
-      if (!layer) return null;
+    const stageRect = stage.container().getBoundingClientRect();
+    const containerRect = container.getBoundingClientRect();
 
-      const transform = layer.getAbsoluteTransform().copy();
-      transform.invert();
-      return transform.point(point);
-    },
-    []
-  );
+    return {
+      x: x + (stageRect.left - containerRect.left),
+      y: y + (stageRect.top - containerRect.top),
+    };
+  }, []);
+
+  const projectToWorld = useCallback((point: { x: number; y: number }) => {
+    const layer = layerRef.current;
+    const stage = stageRef.current;
+    const container = containerRef.current;
+    if (!layer || !stage || !container) return null;
+
+    const stageRect = stage.container().getBoundingClientRect();
+    const containerRect = container.getBoundingClientRect();
+    const transform = layer.getAbsoluteTransform().copy();
+    transform.invert();
+
+    return transform.point({
+      x: point.x - (stageRect.left - containerRect.left),
+      y: point.y - (stageRect.top - containerRect.top),
+    });
+  }, []);
 
   const shipTooltip = activeShipTooltipSymbol ? (() => {
     const ship = ships.find((s) => s.symbol === activeShipTooltipSymbol);
@@ -880,7 +1160,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
       left: screenPos.x - SHIP_TOOLTIP_OFFSET_X,
       top: screenPos.y - SHIP_TOOLTIP_OFFSET_Y,
     };
-  }, [activeShipTooltipSymbol, ships, waypoints, animationFrame, projectToScreen]);
+  }, [activeShipTooltipSymbol, ships, waypoints, animationFrame, projectToScreen, viewportBounds]);
 
   const selectionOverlay = useMemo(() => {
     if (!selectedObject) return null;
@@ -904,25 +1184,37 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
 
     const screenPos = projectToScreen({ x: worldX, y: worldY });
     if (!screenPos) return null;
-    const size = selectedObject.type === 'waypoint' ? 15 : 12;
+    const size = selectedObject.type === 'waypoint' ? 18 : 14;
 
     return {
       left: screenPos.x,
       top: screenPos.y,
       size,
     };
-  }, [selectedObject, ships, waypoints, animationFrame, projectToScreen]);
+  }, [selectedObject, ships, waypoints, animationFrame, projectToScreen, viewportBounds]);
 
-  const waypointTooltip = hoveredWaypoint ? (() => {
-    const waypoint = waypoints.get(hoveredWaypoint);
+  useEffect(() => {
+    if (selectedObject?.type === 'waypoint') {
+      const waypoint = waypoints.get(selectedObject.symbol);
+      if (waypoint) {
+        const { x, y } = getWaypointDisplayPosition(waypoint);
+        setWaypointTooltipAnchor({ symbol: waypoint.symbol, worldX: x, worldY: y });
+      }
+    } else {
+      setWaypointTooltipAnchor(null);
+    }
+  }, [selectedObject, waypoints, getWaypointDisplayPosition]);
+
+  const waypointTooltip = activeWaypointTooltipSymbol ? (() => {
+    const waypoint = waypoints.get(activeWaypointTooltipSymbol);
     if (!waypoint) return null;
 
-    const market = markets.get(hoveredWaypoint);
+    const market = markets.get(activeWaypointTooltipSymbol);
     const hasMarketplace = waypoint.traits.some((t) => t.symbol === 'MARKETPLACE');
 
     let marketData = null;
-    if (market && hasMarketplace && showMarkets) {
-      const opportunities = getWaypointOpportunities(hoveredWaypoint, markets, 2);
+    if (market && hasMarketplace) {
+      const opportunities = getWaypointOpportunities(activeWaypointTooltipSymbol, markets, 2);
       marketData = {
         importsCount: market.imports.length,
         exportsCount: market.exports.length,
@@ -931,7 +1223,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
     }
 
     return {
-      symbol: hoveredWaypoint,
+      symbol: activeWaypointTooltipSymbol,
       type: waypoint.type,
       x: waypoint.x,
       y: waypoint.y,
@@ -942,6 +1234,18 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
     };
   })() : null;
 
+  const waypointTooltipPosition = useMemo(() => {
+    if (!waypointTooltipAnchor) return null;
+
+    const screenPos = projectToScreen({ x: waypointTooltipAnchor.worldX, y: waypointTooltipAnchor.worldY });
+    if (!screenPos) return null;
+
+    return {
+      left: screenPos.x + WAYPOINT_TOOLTIP_OFFSET_X,
+      top: screenPos.y - WAYPOINT_TOOLTIP_OFFSET_Y,
+    };
+  }, [waypointTooltipAnchor, projectToScreen, viewportBounds]);
+
   return (
     <div ref={containerRef} className="relative w-full h-full">
       {stageSize.width > 0 && stageSize.height > 0 && (
@@ -951,10 +1255,11 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
           height={stageSize.height}
           draggable
           onWheel={handleWheel}
-          onMouseMove={handleStageMouseMove}
           onMouseLeave={() => {
             setHoveredShip(null);
-            setHoveredWaypoint(null);
+            if (!selectedObject || selectedObject.type !== 'waypoint') {
+              setWaypointTooltipAnchor(null);
+            }
           }}
           onDragMove={updateViewportBounds}
           onDragEnd={handleDragEnd}
@@ -996,82 +1301,86 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
             ))}
 
           {/* Waypoints */}
-          {filteredWaypoints.map(waypoint => {
+          {filteredWaypoints.map((waypoint) => {
             const radius = Waypoint.getRadius(waypoint);
             const hasMarketplace = waypoint.traits.some((t) => t.symbol === 'MARKETPLACE');
 
-            // Handle overlapping waypoints
-            const overlapIndex = filteredWaypoints.filter(w =>
-              w.x === waypoint.x && w.y === waypoint.y && w.symbol <= waypoint.symbol
-            ).length - 1;
-
-            let x = waypoint.x;
-            let y = waypoint.y;
-            if (overlapIndex > 0) {
-              const angle = (overlapIndex * Math.PI * 2) / 8;
-              const offset = 15 * overlapIndex;
-              x += Math.cos(angle) * offset;
-              y += Math.sin(angle) * offset;
-            }
+            const assetPath = selectWaypointAsset(waypoint);
+            const { x, y } = getWaypointDisplayPosition(waypoint);
+            const hitRadius = Math.max(radius + 3, 8 / currentScale);
 
             return (
               <Group key={waypoint.symbol}>
-                {/* Marketplace ring */}
-                {hasMarketplace && showMarkets && (
-                  <Circle
-                    x={x}
-                    y={y}
-                    radius={radius + 4}
-                    stroke="#f39c12"
-                    strokeWidth={1 / currentScale}
-                    opacity={0.6}
-                    listening={false}
-                  />
-                )}
-
-                {/* Waypoint shape */}
-                <Shape
-                  sceneFunc={(context, _shape) => {
-                    drawWaypoint(context._context as CanvasRenderingContext2D, waypoint, x, y, radius);
+                <Circle
+                  x={x}
+                  y={y}
+                  radius={hitRadius}
+                  fill="rgba(255,255,255,0.01)"
+                  listening
+                  onMouseEnter={(e) => {
+                    const container = e.target.getStage()?.container();
+                    if (container) container.style.cursor = 'pointer';
                   }}
-                  onMouseEnter={() => setHoveredWaypoint(waypoint.symbol)}
-                  onMouseLeave={() => setHoveredWaypoint(null)}
+                  onMouseLeave={(e) => {
+                    const container = e.target.getStage()?.container();
+                    if (container) container.style.cursor = 'default';
+                  }}
                   onClick={() => {
                     setSelectedObject({ type: 'waypoint', symbol: waypoint.symbol, x: waypoint.x, y: waypoint.y });
                     setSelectedWaypoint(waypoint);
                     setSelectedShip(null);
+                    setWaypointTooltipAnchor({ symbol: waypoint.symbol, worldX: x, worldY: y });
                   }}
-                  hitStrokeWidth={radius + 20}
                 />
 
-                {/* Marketplace $ symbol */}
-                {hasMarketplace && showMarkets && (
+                {/* Marketplace ring */}
+                <WaypointSprite
+                  assetPath={assetPath}
+                  x={x}
+                  y={y}
+                  radius={radius}
+                />
+
+                {hasMarketplace && showMapOverlays && (
                   <Text
                     text="$"
-                    x={x + radius * 0.7 - 3}
-                    y={y - radius * 0.7 - 4}
-                    fontSize={8 / currentScale}
-                    fill="#f39c12"
+                    x={x - radius - 8 / currentScale}
+                    y={y - 6 / currentScale}
+                    fontSize={12 / currentScale}
+                    fill="#fff200"
+                    stroke="rgba(15, 23, 42, 0.6)"
+                    strokeWidth={0.5 / currentScale}
                     listening={false}
                   />
                 )}
 
-                {/* Waypoint label */}
-                <Text
-                  text={waypoint.symbol.split('-').pop() || ''}
-                  x={x + radius + 2}
-                  y={y - 5}
-                  fontSize={10 / currentScale}
-                  fill="white"
-                  opacity={0.6}
-                  listening={false}
-                />
+                {showWaypointNames && (
+                  <Text
+                    text={waypoint.symbol.split('-').pop() || waypoint.symbol}
+                    x={x + radius + 4}
+                    y={y - 5}
+                    fontSize={10 / currentScale}
+                    fill="#e2e8f0"
+                    listening={false}
+                  />
+                )}
+
+                {/* Fuel icon for stations */}
+                {showMapOverlays && assetPath.includes('fuel') && (
+                  <Text
+                    text="⛽"
+                    x={x + radius + 8 / currentScale}
+                    y={y - 6 / currentScale}
+                    fontSize={14 / currentScale}
+                    listening={false}
+                  />
+                )}
               </Group>
             );
           })}
 
           {/* Ship trails */}
-          {filteredShips.map((ship: any) => {
+          {filteredShips.map((ship: TaggedShip) => {
             const trail = trails.get(ship.symbol) as ShipTrailPoint[] | undefined;
             if (!trail || trail.length < 2) return null;
 
@@ -1147,11 +1456,13 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
           })}
 
           {/* Ships */}
-          {filteredShips.map((ship: any) => {
+          {filteredShips.map((ship: TaggedShip) => {
             const position = Ship.getPosition(ship, waypoints);
             if (position.x === 0 && position.y === 0) return null;
 
-            const shipColor = ship.agentColor ? parseInt(ship.agentColor.replace('#', ''), 16) : 0xff6b6b;
+            const shipHexColor = Ship.getDisplayColor(ship);
+            const shipColor = parseInt(shipHexColor.replace('#', ''), 16);
+            const shipAssetPath = selectShipAsset(ship);
 
             // Calculate rotation
             let rotation = 0;
@@ -1210,7 +1521,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
                 <Group rotation={rotation}>
                   {/* Hit area - invisible circle for easier clicking */}
                   <Circle
-                    radius={15}
+                    radius={4}
                     fill="transparent"
                     onClick={() => {
                       setSelectedObject({ type: 'ship', symbol: ship.symbol, x: position.x, y: position.y });
@@ -1219,7 +1530,6 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
                     }}
                     onMouseEnter={(e) => {
                       setHoveredShip(ship.symbol);
-                      setHoveredWaypoint(null);
 
                       const container = e.target.getStage()?.container();
                       if (container) container.style.cursor = 'pointer';
@@ -1231,51 +1541,52 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
                       if (container) container.style.cursor = 'default';
                     }}
                   />
-                  {/* Ship shape */}
-                  <Shape
-                    sceneFunc={(context, _shape) => {
-                      drawShipShape(context._context as CanvasRenderingContext2D, ship.registration.role, shipColor);
-                    }}
-                    listening={false}
+                  <ShipSprite
+                    assetPath={shipAssetPath}
+                    ship={ship}
+                    shipHexColor={shipHexColor}
+                    shipColor={shipColor}
+                    size={SHIP_SPRITE_SIZE}
                   />
                 </Group>
 
-                {/* Ship label */}
-                <Group
-                  listening={false}
-                  x={labelOffsetX}
-                  y={labelOffsetY}
-                >
-                  <Group scale={{ x: labelScale, y: labelScale }} listening={false}>
-                    <Label>
-                      <Tag
-                        width={labelWidth}
-                        height={labelHeight}
-                        fill="rgba(0, 0, 0, 0.82)"
-                        stroke="#ff4d4f"
-                        strokeWidth={1}
-                        cornerRadius={3}
-                      />
-                      <Text
-                        x={SHIP_LABEL_PADDING_X}
-                        y={SHIP_LABEL_PADDING_Y / 1.5}
-                        width={labelWidth - SHIP_LABEL_PADDING_X * 2}
-                        height={labelHeight - SHIP_LABEL_PADDING_Y}
-                        fontSize={SHIP_LABEL_FONT_SIZE}
-                        fontStyle="bold"
-                        fill="#ffd7d7"
-                        align="center"
-                        text={labelText}
-                      />
-                    </Label>
+               {showShipNames && (
+                 <Group
+                   listening={false}
+                   x={labelOffsetX}
+                   y={labelOffsetY}
+                 >
+                   <Group scale={{ x: labelScale, y: labelScale }} listening={false}>
+                     <Label>
+                       <Tag
+                          width={labelWidth + 12}
+                          height={labelHeight}
+                          fill="rgba(0, 0, 0, 0.82)"
+                          stroke="#ff4d4f"
+                          strokeWidth={1}
+                          cornerRadius={3}
+                        />
+                        <Text
+                          x={SHIP_LABEL_PADDING_X}
+                          y={SHIP_LABEL_PADDING_Y / 1.5}
+                          width={labelWidth + 12 - SHIP_LABEL_PADDING_X * 2}
+                          height={labelHeight - SHIP_LABEL_PADDING_Y}
+                          fontSize={SHIP_LABEL_FONT_SIZE}
+                          fontStyle="bold"
+                          fill="#ffd7d7"
+                          align="center"
+                          text={labelText}
+                        />
+                      </Label>
+                    </Group>
                   </Group>
-                </Group>
+                )}
               </Group>
             );
           })}
 
           {/* Mining lasers */}
-          {filteredShips.map((ship: any) => {
+          {filteredShips.map((ship: TaggedShip) => {
             if (!ship.cooldown || ship.cooldown.remainingSeconds <= 0) return null;
 
             const waypoint = waypoints.get(ship.nav.waypointSymbol);
@@ -1325,19 +1636,20 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
           }}
         >
           <div className="relative w-full h-full">
-            <div className="absolute inset-0 rounded-full border border-green-400/80" />
+            <div className="absolute inset-0 rounded-lg border border-sky-300/80 shadow-[0_0_12px_rgba(125,211,252,0.8)]" />
+            <div className="absolute inset-[3px] rounded-lg border border-sky-500/40" />
             {[['top', 'left'], ['top', 'right'], ['bottom', 'left'], ['bottom', 'right']].map(([vertical, horizontal]) => (
               <div
                 key={`${vertical}-${horizontal}`}
-                className="absolute w-2 h-2 border-green-400/80"
+                className="absolute h-2 w-2 border-sky-200/90"
                 style={{
-                  [vertical]: 0,
-                  [horizontal]: 0,
+                  [vertical]: '-3px',
+                  [horizontal]: '-3px',
                   borderStyle: 'solid',
-                  borderTopWidth: vertical === 'top' ? '1px' : '0px',
-                  borderBottomWidth: vertical === 'bottom' ? '1px' : '0px',
-                  borderLeftWidth: horizontal === 'left' ? '1px' : '0px',
-                  borderRightWidth: horizontal === 'right' ? '1px' : '0px',
+                  borderTopWidth: vertical === 'top' ? '2px' : '0px',
+                  borderBottomWidth: vertical === 'bottom' ? '2px' : '0px',
+                  borderLeftWidth: horizontal === 'left' ? '2px' : '0px',
+                  borderRightWidth: horizontal === 'right' ? '2px' : '0px',
                 }}
               />
             ))}
@@ -1348,50 +1660,27 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
       {/* Ship tooltip */}
       {shipTooltip && shipTooltipPosition && (
         <div
-          className="absolute bg-black bg-opacity-80 border border-red-500 rounded-lg p-2.5 text-xs min-w-[220px] max-w-[300px] pointer-events-none z-30 shadow-xl backdrop-blur-sm"
+          className="absolute bg-gray-900 bg-opacity-70 border border-red-500/70 rounded-lg p-2.5 text-xs min-w-[220px] max-w-[300px] pointer-events-none z-30 shadow-xl backdrop-blur-sm"
           style={{
             left: `${shipTooltipPosition.left}px`,
             top: `${shipTooltipPosition.top}px`,
             transform: 'translate(-100%, -100%)',
           }}
         >
-          <div className="flex items-start justify-between gap-2 mb-2">
-            <div className="text-sm font-bold text-white leading-snug">{shipTooltip.symbol}</div>
-            <span className="text-[10px] font-semibold text-red-300 bg-red-500/10 border border-red-500/40 rounded-full px-1.5 py-0.5 whitespace-nowrap">
-              {shipTooltip.role}
-            </span>
+          <div className="flex flex-col gap-1 mb-3">
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-bold text-white leading-snug">{shipTooltip.symbol}</span>
+              <span className="text-[10px] font-semibold text-red-200 bg-red-500/15 border border-red-500/40 rounded-full px-1.5 py-0.5 whitespace-nowrap">
+                {shipTooltip.role}
+              </span>
+            </div>
+            <div className="text-[11px] text-gray-200">
+              <span className="text-red-200 font-semibold mr-2">{shipTooltip.statusText}</span>
+              <span className="text-gray-400 text-[10px] uppercase">{shipTooltip.flightMode}</span>
+            </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-gray-200">
-            <div>
-              <div className="text-[10px] uppercase text-gray-400">Status</div>
-              <div className="text-xs font-semibold">{shipTooltip.statusText}</div>
-            </div>
-            <div>
-              <div className="text-[10px] uppercase text-gray-400">Flight Mode</div>
-              <div className="text-xs">{shipTooltip.flightMode}</div>
-            </div>
-
-            <div>
-              <div className="text-[10px] uppercase text-gray-400">Location</div>
-              <div className="text-xs">{shipTooltip.location}</div>
-            </div>
-
-            <div className="col-span-2">
-              <div className="flex items-center justify-between text-[10px] uppercase text-gray-400">
-                <span>Cargo</span>
-                <span className="text-xs text-red-200 font-semibold">
-                  {shipTooltip.cargoUnits} / {shipTooltip.cargoCapacity} ({shipTooltip.cargoPercent}%)
-                </span>
-              </div>
-              <div className="w-full bg-red-900/40 h-1.5 rounded-full mt-1">
-                <div
-                  className="bg-red-500 h-1.5 rounded-full"
-                  style={{ width: `${Math.min(100, Math.max(0, shipTooltip.cargoPercent))}%` }}
-                />
-              </div>
-            </div>
-
+          <div className="space-y-3 text-gray-200">
             {shipTooltip.cooldownSeconds !== null && (
               <div>
                 <div className="text-[10px] uppercase text-gray-400">Cooldown</div>
@@ -1400,7 +1689,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
             )}
 
             {shipTooltip.routeSummary && (
-              <div className="col-span-2">
+              <div>
                 <div className="text-[10px] uppercase text-gray-400">Route</div>
                 <div className="text-xs flex items-center gap-2">
                   <span>{shipTooltip.routeSummary}</span>
@@ -1413,7 +1702,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
               </div>
             )}
 
-            <div className="col-span-2">
+            <div>
               <div className="flex items-center justify-between text-[10px] uppercase text-gray-400">
                 <span>Fuel</span>
                 <span className="text-xs text-red-200 font-semibold">
@@ -1424,6 +1713,21 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
                 <div
                   className="bg-red-500 h-1.5 rounded-full"
                   style={{ width: `${Math.min(100, Math.max(0, shipTooltip.fuelPercent))}%` }}
+                />
+              </div>
+            </div>
+
+            <div>
+              <div className="flex items-center justify-between text-[10px] uppercase text-gray-400">
+                <span>Cargo</span>
+                <span className="text-xs text-red-200 font-semibold">
+                  {shipTooltip.cargoUnits} / {shipTooltip.cargoCapacity} ({shipTooltip.cargoPercent}%)
+                </span>
+              </div>
+              <div className="w-full bg-red-900/40 h-1.5 rounded-full mt-1">
+                <div
+                  className="bg-red-500 h-1.5 rounded-full"
+                  style={{ width: `${Math.min(100, Math.max(0, shipTooltip.cargoPercent))}%` }}
                 />
               </div>
             </div>
@@ -1457,61 +1761,75 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
       )}
 
       {/* Waypoint tooltip */}
-      {waypointTooltip && (
+      {waypointTooltip && waypointTooltipPosition && (
         <div
-          className="fixed bg-gray-800 bg-opacity-95 rounded-lg p-3 text-xs min-w-[200px] border border-gray-600 pointer-events-none z-20 shadow-lg"
+          className="absolute bg-gray-900 bg-opacity-70 border border-sky-500/60 rounded-lg p-3 text-xs min-w-[220px] max-w-[280px] pointer-events-none z-30 shadow-2xl backdrop-blur"
           style={{
-            left: `${mousePosition.x + 10}px`,
-            bottom: `${window.innerHeight - mousePosition.y + 10}px`,
+            left: `${waypointTooltipPosition.left}px`,
+            top: `${waypointTooltipPosition.top}px`,
+            transform: 'translate(-50%, -110%)',
           }}
         >
-          <div className="font-bold mb-1 text-sm">{waypointTooltip.symbol}</div>
-          <div className="text-gray-300 mb-2">{waypointTooltip.type.replace(/_/g, ' ')}</div>
-
-          <div className="text-gray-400 text-xs mb-2">
-            <div>X: {waypointTooltip.x}</div>
-            <div>Y: {waypointTooltip.y}</div>
+          <div className="flex items-start justify-between gap-2 mb-2">
+            <div>
+              <div className="text-sm font-bold text-white leading-snug">{waypointTooltip.symbol}</div>
+              <div className="text-[11px] text-sky-200 uppercase tracking-wide">
+                {waypointTooltip.type.replace(/_/g, ' ')}
+              </div>
+            </div>
+            {waypointTooltip.faction && (
+              <span className="text-[10px] font-semibold text-sky-200 bg-sky-500/10 border border-sky-500/40 rounded-full px-1.5 py-0.5 whitespace-nowrap">
+                {waypointTooltip.faction.symbol}
+              </span>
+            )}
           </div>
 
-          {waypointTooltip.faction && (
-            <div className="text-blue-400 mb-2">
-              Faction: {waypointTooltip.faction.symbol}
-            </div>
-          )}
+          <div className="grid grid-cols-2 gap-1 text-zinc-300 mb-2">
+            {waypointTooltip.traits.length === 0 ? (
+              <span className="col-span-2 text-[8px] text-zinc-500">No notable traits</span>
+            ) : (
+              waypointTooltip.traits.map((trait, index) => (
+                <span
+                  key={`${waypointTooltip.symbol}-trait-${index}`}
+                  className="bg-sky-500/10 border border-sky-500/30 text-[8px] text-sky-100 rounded px-1 py-0.5"
+                >
+                  {trait.symbol.replace(/_/g, ' ')}
+                </span>
+              ))
+            )}
+          </div>
 
-          {waypointTooltip.traits.length > 0 && (
-            <div className="mb-2">
-              <div className="text-gray-400 mb-1">Traits:</div>
-              <div className="flex flex-wrap gap-1">
-                {waypointTooltip.traits.slice(0, 3).map((trait, i) => (
-                  <span key={i} className="bg-gray-700 px-2 py-0.5 rounded text-xs">
-                    {trait.symbol.replace(/_/g, ' ')}
-                  </span>
-                ))}
-                {waypointTooltip.traits.length > 3 && (
-                  <span className="text-gray-500">+{waypointTooltip.traits.length - 3} more</span>
-                )}
+          {waypointTooltip.hasMarketplace && (
+            <div className="border-t border-sky-500/40 pt-2 mt-2">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-[10px] uppercase text-sky-300 tracking-wide">Marketplace</span>
+                <span className="text-sm">🏪</span>
               </div>
-            </div>
-          )}
-
-          {waypointTooltip.marketData && (
-            <div className="border-t border-gray-600 pt-2 mt-2">
-              <div className="text-yellow-400 flex items-center gap-2 mb-1">
-                <span>🏪</span> Market
-              </div>
-              <div className="text-xs">↓ {waypointTooltip.marketData.importsCount} Imports</div>
-              <div className="text-xs mb-2">↑ {waypointTooltip.marketData.exportsCount} Exports</div>
-
-              {waypointTooltip.marketData.opportunities.length > 0 && (
-                <>
-                  <div className="text-gray-400 mb-1">Opportunities:</div>
-                  <ul className="text-green-400 text-xs">
-                    {waypointTooltip.marketData.opportunities.map((opp, i) => (
-                      <li key={i} className="mb-1">• {opp}</li>
-                    ))}
-                  </ul>
-                </>
+              {waypointTooltip.marketData ? (
+                <div className="space-y-1">
+                  <div className="flex justify-between text-[11px] text-sky-100">
+                    <span>Imports</span>
+                    <span>{waypointTooltip.marketData.importsCount}</span>
+                  </div>
+                  <div className="flex justify-between text-[11px] text-rose-100">
+                    <span>Exports</span>
+                    <span>{waypointTooltip.marketData.exportsCount}</span>
+                  </div>
+                  {waypointTooltip.marketData.opportunities.length > 0 && (
+                    <div>
+                      <div className="text-[10px] uppercase text-emerald-300 mb-0.5">Opportunities</div>
+                      <ul className="list-disc list-inside text-[11px] text-emerald-200 space-y-0.5">
+                        {waypointTooltip.marketData.opportunities.map((opp, index) => (
+                          <li key={`${waypointTooltip.symbol}-opp-${index}`}>{opp}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="text-[11px] text-zinc-500">
+                  Market intel unavailable. Enable Markets overlay for trade insights.
+                </div>
               )}
             </div>
           )}
