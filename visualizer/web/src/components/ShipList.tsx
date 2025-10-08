@@ -6,6 +6,44 @@ import { VIEWPORT_CONSTANTS } from '../constants/viewport';
 import OverlayToggle from './OverlayToggle';
 import { getCargoIcon, getCargoShortLabel } from '../utils/cargo';
 
+type OverlayOptions = {
+  showDestinationRoutes: boolean;
+  toggleDestinationRoutes: () => void;
+  showWaypointNames: boolean;
+  toggleWaypointNames: () => void;
+  showShipNames: boolean;
+  toggleShipNames: () => void;
+  showMapOverlays: boolean;
+  toggleMapOverlays: () => void;
+};
+
+const OVERLAY_CONFIG = [
+  {
+    label: 'Route Vectors',
+    tone: 'orange',
+    isActive: (options: OverlayOptions) => options.showDestinationRoutes,
+    toggle: (options: OverlayOptions) => options.toggleDestinationRoutes(),
+  },
+  {
+    label: 'Overlays',
+    tone: 'amber',
+    isActive: (options: OverlayOptions) => options.showMapOverlays,
+    toggle: (options: OverlayOptions) => options.toggleMapOverlays(),
+  },
+  {
+    label: 'Waypoint Names',
+    tone: 'sky',
+    isActive: (options: OverlayOptions) => options.showWaypointNames,
+    toggle: (options: OverlayOptions) => options.toggleWaypointNames(),
+  },
+  {
+    label: 'Ship Names',
+    tone: 'rose',
+    isActive: (options: OverlayOptions) => options.showShipNames,
+    toggle: (options: OverlayOptions) => options.toggleShipNames(),
+  },
+] as const;
+
 interface ShipListProps {
   onFocusOn: (x: number, y: number, scale?: number) => void;
 }
@@ -15,6 +53,12 @@ const getFuelBarColor = (percent: number): string => {
   if (percent >= 40) return '#facc15';
   if (percent >= 20) return '#f97316';
   return '#ef4444';
+};
+
+const STATUS_COLORS: Record<string, string> = {
+  IN_TRANSIT: 'bg-orange-500',
+  DOCKED: 'bg-green-500',
+  IN_ORBIT: 'bg-blue-500',
 };
 
 const ShipList = ({ onFocusOn }: ShipListProps) => {
@@ -30,26 +74,30 @@ const ShipList = ({ onFocusOn }: ShipListProps) => {
     waypoints,
   showDestinationRoutes,
   toggleDestinationRoutes,
-    showWaypointNames,
-    toggleWaypointNames,
-    showShipNames,
-    toggleShipNames,
-    showMapOverlays,
-    toggleMapOverlays,
+  showWaypointNames,
+  toggleWaypointNames,
+  showShipNames,
+  toggleShipNames,
+  showMapOverlays,
+  toggleMapOverlays,
     shipNameFilter,
     setShipNameFilter,
   } = useStore();
 
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case 'IN_TRANSIT': return 'bg-orange-500';
-      case 'DOCKED': return 'bg-green-500';
-      case 'IN_ORBIT': return 'bg-blue-500';
-      default: return 'bg-gray-500';
-    }
-  };
+  const getStatusColor = (status: string) => STATUS_COLORS[status] ?? 'bg-gray-500';
 
   const nameFilter = shipNameFilter.trim().toLowerCase();
+
+  const overlayOptions = {
+    showDestinationRoutes,
+    toggleDestinationRoutes,
+    showMapOverlays,
+    toggleMapOverlays,
+    showWaypointNames,
+    toggleWaypointNames,
+    showShipNames,
+    toggleShipNames,
+  } satisfies OverlayOptions;
 
   const filteredShips = useMemo(() => {
     return ships.filter((ship: TaggedShip) => {
@@ -112,30 +160,15 @@ const ShipList = ({ onFocusOn }: ShipListProps) => {
           Map Overlays
         </span>
         <div className="grid grid-cols-2 gap-2 text-xs">
-          <OverlayToggle
-            label="Route Vectors"
-            active={showDestinationRoutes}
-            onToggle={toggleDestinationRoutes}
-            activeTone="orange"
-          />
-          <OverlayToggle
-            label="Overlays"
-            active={showMapOverlays}
-            onToggle={toggleMapOverlays}
-            activeTone="amber"
-          />
-          <OverlayToggle
-            label="Waypoint Names"
-            active={showWaypointNames}
-            onToggle={toggleWaypointNames}
-            activeTone="sky"
-          />
-          <OverlayToggle
-            label="Ship Names"
-            active={showShipNames}
-            onToggle={toggleShipNames}
-            activeTone="rose"
-          />
+          {OVERLAY_CONFIG.map(({ label, tone, isActive, toggle }) => (
+            <OverlayToggle
+              key={label}
+              label={label}
+              active={isActive(overlayOptions)}
+              onToggle={() => toggle(overlayOptions)}
+              activeTone={tone}
+            />
+          ))}
         </div>
       </div>
 
