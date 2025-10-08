@@ -200,50 +200,59 @@ class DaemonManager:
             print(f"Daemon {daemon_id} is not running")
             return False
 
+        process = self._fetch_process(pid)
+
+        if process is None:
+            print(f"Process {pid} not found (already stopped)")
+            self._mark_crashed(daemon_id)
+            return True
+
+        print(f"Stopping daemon {daemon_id} (PID: {pid})...")
         try:
-            process = psutil.Process(pid)
-
-            # Try graceful shutdown (SIGTERM)
-            print(f"Stopping daemon {daemon_id} (PID: {pid})...")
             process.terminate()
-
-            # Wait for process to exit
             try:
                 process.wait(timeout=timeout)
                 print(f"✅ Daemon {daemon_id} stopped gracefully")
                 status = "stopped"
             except psutil.TimeoutExpired:
-                # Force kill if still running
                 print(f"⚠️  Daemon did not stop gracefully, force killing...")
                 process.kill()
                 process.wait(timeout=5)
                 print(f"✅ Daemon {daemon_id} force killed")
                 status = "killed"
 
-            # Update database
             self._update_daemon_status(
                 daemon_id,
                 status,
                 stopped_at=datetime.now(UTC).isoformat(),
             )
-
             return True
 
         except psutil.NoSuchProcess:
             print(f"Process {pid} not found (already stopped)")
-
-            # Update database
-            self._update_daemon_status(
-                daemon_id,
-                "crashed",
-                stopped_at=datetime.now(UTC).isoformat(),
-            )
-
+            self._mark_crashed(daemon_id)
             return True
 
         except Exception as e:
             print(f"❌ Error stopping daemon: {e}")
             return False
+
+    def _fetch_process(self, pid: Optional[int]) -> Optional[psutil.Process]:
+        """Return psutil.Process for pid if it exists."""
+        if not pid:
+            return None
+        try:
+            return psutil.Process(pid)
+        except psutil.NoSuchProcess:
+            return None
+
+    def _mark_crashed(self, daemon_id: str) -> None:
+        """Persist crashed status with timestamp."""
+        self._update_daemon_status(
+            daemon_id,
+            "crashed",
+            stopped_at=datetime.now(UTC).isoformat(),
+        )
 
     def get_pid(self, daemon_id: str) -> Optional[int]:
         """Get PID of running daemon"""
@@ -256,28 +265,15 @@ class DaemonManager:
         if not pid:
             return False
 
-        try:
-            process = psutil.Process(pid)
-            is_running = process.is_running()
-
-            # If not running, update database
-            if not is_running:
-                self._update_daemon_status(
-                    daemon_id,
-                    "crashed",
-                    stopped_at=datetime.now(UTC).isoformat(),
-                )
-
-            return is_running
-
-        except psutil.NoSuchProcess:
-            # Update database to mark as crashed
-            self._update_daemon_status(
-                daemon_id,
-                "crashed",
-                stopped_at=datetime.now(UTC).isoformat(),
-            )
+        process = self._fetch_process(pid)
+        if not process:
+            self._mark_crashed(daemon_id)
             return False
+
+        is_running = process.is_running()
+        if not is_running:
+            self._mark_crashed(daemon_id)
+        return is_running
 
     def status(self, daemon_id: str) -> Optional[Dict]:
         """
