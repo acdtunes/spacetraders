@@ -7,7 +7,27 @@ Simulates SpaceTraders API responses conforming to OpenAPI spec
 
 import json
 from typing import Optional, Dict, Any, List
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, UTC
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _utc_now_iso() -> str:
+    return _utc_now().isoformat()
+
+
+def _utc_now_iso_z() -> str:
+    return _to_iso_z(_utc_now())
+
+
+def _expiration_iso_z(seconds: int) -> str:
+    return _to_iso_z(_utc_now() + timedelta(seconds=seconds))
+
+
+def _to_iso_z(dt: datetime) -> str:
+    return dt.isoformat().replace('+00:00', 'Z')
 
 
 class MockAPIClient:
@@ -56,7 +76,7 @@ class MockAPIClient:
             "method": method,
             "endpoint": endpoint,
             "data": data,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": _utc_now_iso()
         })
 
     # Setup methods for test scenarios
@@ -95,7 +115,7 @@ class MockAPIClient:
         if ship_symbol not in self.ships:
             self.ships[ship_symbol] = self._create_default_ship(ship_symbol)
 
-        departure_time = datetime.utcnow()
+        departure_time = _utc_now()
         arrival_time = departure_time + timedelta(seconds=arrival_seconds)
 
         current_waypoint = self.ships[ship_symbol]["nav"]["waypointSymbol"]
@@ -116,8 +136,8 @@ class MockAPIClient:
                 "x": 0,
                 "y": 0
             },
-            "departureTime": departure_time.isoformat() + "Z",
-            "arrival": arrival_time.isoformat() + "Z"
+            "departureTime": _to_iso_z(departure_time),
+            "arrival": _to_iso_z(arrival_time)
         }
 
     def set_ship_cooldown(self, ship_symbol: str, seconds: int):
@@ -125,12 +145,11 @@ class MockAPIClient:
         if ship_symbol not in self.ships:
             self.ships[ship_symbol] = self._create_default_ship(ship_symbol)
 
-        expiration = datetime.utcnow() + timedelta(seconds=seconds)
         self.ships[ship_symbol]["cooldown"] = {
             "shipSymbol": ship_symbol,
             "totalSeconds": seconds,
             "remainingSeconds": seconds,
-            "expiration": expiration.isoformat() + "Z"
+            "expiration": _expiration_iso_z(seconds)
         }
 
     def add_waypoint(self, symbol: str, type: str = "PLANET", x: int = 0, y: int = 0, traits: list = None):
@@ -204,8 +223,8 @@ class MockAPIClient:
             if ship['nav']['status'] == 'IN_TRANSIT' and ship['nav'].get('route'):
                 arrival_str = ship['nav']['route'].get('arrival')
                 if arrival_str:
-                    arrival_time = datetime.fromisoformat(arrival_str.replace('Z', ''))
-                    if datetime.utcnow() >= arrival_time:
+                    arrival_time = datetime.fromisoformat(arrival_str.replace('Z', '+00:00'))
+                    if _utc_now() >= arrival_time:
                         # Navigation complete - update to destination
                         destination = ship['nav']['route']['destination']['symbol']
                         ship['nav']['waypointSymbol'] = destination
@@ -298,7 +317,7 @@ class MockAPIClient:
             ship["nav"]["status"] = "IN_ORBIT"
 
             # Update route
-            departure_time = datetime.utcnow()
+            departure_time = _utc_now()
             ship["nav"]["route"] = {
                 "destination": {
                     "symbol": waypoint,
@@ -314,8 +333,8 @@ class MockAPIClient:
                     "x": current_wp["x"],
                     "y": current_wp["y"]
                 },
-                "departureTime": departure_time.isoformat() + "Z",
-                "arrival": departure_time.isoformat() + "Z"
+                "departureTime": departure_time.isoformat().replace('+00:00', 'Z'),
+                "arrival": departure_time.isoformat().replace('+00:00', 'Z')
             }
 
             return {
@@ -326,7 +345,7 @@ class MockAPIClient:
                         "capacity": ship["fuel"]["capacity"],
                         "consumed": {
                             "amount": fuel_cost,
-                            "timestamp": departure_time.isoformat() + "Z"
+                        "timestamp": departure_time.isoformat().replace('+00:00', 'Z')
                         }
                     },
                     "events": []  # No events in mock
@@ -387,7 +406,7 @@ class MockAPIClient:
                         "units": units,
                         "pricePerUnit": 10,
                         "totalPrice": cost,
-                        "timestamp": datetime.utcnow().isoformat() + "Z"
+                        "timestamp": _utc_now_iso_z()
                     }
                 }
             }
@@ -434,7 +453,7 @@ class MockAPIClient:
                         "units": units,
                         "pricePerUnit": 50,
                         "totalPrice": cost,
-                        "timestamp": datetime.utcnow().isoformat() + "Z"
+                        "timestamp": _utc_now_iso_z()
                     }
                 }
             }
@@ -489,7 +508,7 @@ class MockAPIClient:
                         "units": units,
                         "pricePerUnit": 70,
                         "totalPrice": revenue,
-                        "timestamp": datetime.utcnow().isoformat() + "Z"
+                        "timestamp": _utc_now_iso_z()
                     }
                 }
             }
@@ -684,12 +703,12 @@ class MockAPIClient:
 
             # Set cooldown (80 seconds standard)
             cooldown_seconds = 80
-            expiration = datetime.utcnow() + timedelta(seconds=cooldown_seconds)
+            expiration = _utc_now() + timedelta(seconds=cooldown_seconds)
             ship["cooldown"] = {
                 "shipSymbol": ship_symbol,
                 "totalSeconds": cooldown_seconds,
                 "remainingSeconds": cooldown_seconds,
-                "expiration": expiration.isoformat() + "Z"
+                "expiration": expiration.isoformat().replace('+00:00', 'Z')
             }
 
             return {
@@ -754,8 +773,8 @@ class MockAPIClient:
                         "x": 0,
                         "y": 0
                     },
-                    "departureTime": datetime.utcnow().isoformat() + "Z",
-                    "arrival": datetime.utcnow().isoformat() + "Z"
+                    "departureTime": _utc_now_iso_z(),
+                    "arrival": _utc_now_iso_z()
                 },
                 "status": "IN_ORBIT",
                 "flightMode": "CRUISE"
@@ -831,14 +850,14 @@ class MockAPIClient:
                 "capacity": 400,
                 "consumed": {
                     "amount": 0,
-                    "timestamp": datetime.utcnow().isoformat() + "Z"
+                    "timestamp": _utc_now_iso_z()
                 }
             },
             "cooldown": {
                 "shipSymbol": ship_symbol,
                 "totalSeconds": 0,
                 "remainingSeconds": 0,
-                "expiration": datetime.utcnow().isoformat() + "Z"
+                "expiration": _utc_now_iso_z()
             }
         }
 
