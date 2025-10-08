@@ -6,9 +6,71 @@ Fleet operations: status checking and monitoring
 import logging
 import time
 from datetime import datetime
+from typing import Iterable, List
 
 from spacetraders_bot.core.utils import timestamp, timestamp_iso
 from spacetraders_bot.operations.common import format_credits, get_api_client, setup_logging
+
+
+def _resolve_ship_symbols(api, ships_arg: str) -> List[str]:
+    if ships_arg:
+        return [symbol.strip() for symbol in ships_arg.split(',') if symbol.strip()]
+
+    all_ships = api.list_ships() or []
+    return [ship['symbol'] for ship in all_ships]
+
+
+def _print_agent_summary(agent: dict) -> None:
+    if not agent:
+        print("  ⚠️ Unable to retrieve agent information")
+        return
+
+    print(f"  Callsign: {agent['symbol']}")
+    print(f"  Credits: {format_credits(agent['credits'])}")
+    print(f"  HQ: {agent['headquarters']}")
+
+
+def _print_ship_status(ship_data: dict) -> None:
+    nav = ship_data['nav']
+    fuel = ship_data['fuel']
+    cargo = ship_data['cargo']
+
+    symbol = ship_data.get('symbol', '<unknown>')
+    print(f"\n  {symbol}:")
+    print(f"    Location: {nav['waypointSymbol']}")
+    print(f"    Status: {nav['status']}")
+    print(f"    Flight Mode: {nav['flightMode']}")
+    print(f"    Fuel: {fuel['current']}/{fuel['capacity']}")
+    print(f"    Cargo: {cargo['units']}/{cargo['capacity']}")
+
+    if nav['status'] == 'IN_TRANSIT':
+        print(f"    ETA: {nav['route']['arrival']}")
+
+
+def _print_monitor_ship_statuses(api, ship_symbols: Iterable[str]) -> None:
+    for ship_symbol in ship_symbols:
+        ship_data = api.get_ship(ship_symbol)
+        if not ship_data:
+            print(f"\n🚀 {ship_symbol}: unavailable")
+            continue
+
+        nav = ship_data['nav']
+        fuel = ship_data['fuel']
+        cargo = ship_data['cargo']
+
+        print(f"\n🚀 {ship_symbol}:")
+        print(f"   {nav['status']} at {nav['waypointSymbol']}")
+        print(f"   Fuel: {fuel['current']}/{fuel['capacity']} | Cargo: {cargo['units']}/{cargo['capacity']}")
+
+        if nav['status'] == 'IN_TRANSIT':
+            print(f"   ETA: {nav['route']['arrival']}")
+
+
+def _sleep_minutes(minutes: int) -> None:
+    if minutes <= 0:
+        return
+    print(f"\n⏳ Next check in {minutes} minutes...")
+    time.sleep(minutes * 60)
 
 
 def status_operation(args):
@@ -23,38 +85,16 @@ def status_operation(args):
 
     # Get agent info
     print("\n💰 AGENT INFO:")
-    agent = api.get_agent()
-    if agent:
-        print(f"  Callsign: {agent['symbol']}")
-        print(f"  Credits: {format_credits(agent['credits'])}")
-        print(f"  HQ: {agent['headquarters']}")
+    _print_agent_summary(api.get_agent())
 
     # Get ships
     print(f"\n🚀 FLEET STATUS:")
-    ships_to_check = args.ships.split(',') if args.ships else []
-
-    if not ships_to_check:
-        # Get all ships
-        all_ships = api.list_ships()
-        if all_ships:
-            ships_to_check = [s['symbol'] for s in all_ships]
+    ships_to_check = _resolve_ship_symbols(api, args.ships or "")
 
     for ship_symbol in ships_to_check:
-        ship_data = api.get_ship(ship_symbol.strip())
+        ship_data = api.get_ship(ship_symbol)
         if ship_data:
-            nav = ship_data['nav']
-            fuel = ship_data['fuel']
-            cargo = ship_data['cargo']
-
-            print(f"\n  {ship_symbol}:")
-            print(f"    Location: {nav['waypointSymbol']}")
-            print(f"    Status: {nav['status']}")
-            print(f"    Flight Mode: {nav['flightMode']}")
-            print(f"    Fuel: {fuel['current']}/{fuel['capacity']}")
-            print(f"    Cargo: {cargo['units']}/{cargo['capacity']}")
-
-            if nav['status'] == 'IN_TRANSIT':
-                print(f"    ETA: {nav['route']['arrival']}")
+            _print_ship_status(ship_data)
 
     print("\n" + "=" * 70)
     return 0
@@ -69,7 +109,7 @@ def monitor_operation(args):
     print("=" * 70)
 
     api = get_api_client(args.player_id)
-    ships_to_monitor = args.ships.split(',') if args.ships else []
+    ships_to_monitor = _resolve_ship_symbols(api, args.ships or "")
 
     # Get starting credits
     agent = api.get_agent()
@@ -78,7 +118,8 @@ def monitor_operation(args):
 
     print(f"Starting Credits: {format_credits(starting_credits)}")
     print(f"Monitoring Interval: {args.interval} minutes")
-    print(f"Ships: {', '.join(ships_to_monitor) if ships_to_monitor else 'All'}")
+    printable_ships = ', '.join(ships_to_monitor) if ships_to_monitor else 'All'
+    print(f"Ships: {printable_ships}")
     print(f"Duration: {args.duration} checks\n")
 
     for check_num in range(1, args.duration + 1):
@@ -93,26 +134,11 @@ def monitor_operation(args):
             profit = current_credits - starting_credits
             print(f"\n💰 Credits: {format_credits(current_credits)} (+{format_credits(profit)})")
 
-        # Ship statuses
-        for ship_symbol in ships_to_monitor:
-            ship_data = api.get_ship(ship_symbol.strip())
-            if ship_data:
-                nav = ship_data['nav']
-                fuel = ship_data['fuel']
-                cargo = ship_data['cargo']
-
-                print(f"\n🚀 {ship_symbol}:")
-                print(f"   {nav['status']} at {nav['waypointSymbol']}")
-                print(f"   Fuel: {fuel['current']}/{fuel['capacity']} | Cargo: {cargo['units']}/{cargo['capacity']}")
-
-                if nav['status'] == 'IN_TRANSIT':
-                    print(f"   ETA: {nav['route']['arrival']}")
+        _print_monitor_ship_statuses(api, ships_to_monitor)
 
         # Wait for next check
         if check_num < args.duration:
-            wait_seconds = args.interval * 60
-            print(f"\n⏳ Next check in {args.interval} minutes...")
-            time.sleep(wait_seconds)
+            _sleep_minutes(args.interval)
 
     # Final summary
     elapsed = datetime.now() - start_time
