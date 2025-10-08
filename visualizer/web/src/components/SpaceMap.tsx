@@ -14,6 +14,8 @@ import { ShipSprite } from './ShipSprite';
 import { WaypointSprite } from './WaypointSprite';
 import { ShipFuelBar } from './ShipFuelBar';
 import { ShipCargoBar } from './ShipCargoBar';
+import { WaypointTraits } from './WaypointTraits';
+import { WaypointMarketplace } from './WaypointMarketplace';
 import ZoomControls from './ZoomControls';
 import Minimap from './Minimap';
 import type { FlightMode, ShipTrailPoint, Waypoint as WaypointType, TaggedShip, ShipNavStatus } from '../types/spacetraders';
@@ -1782,54 +1784,13 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
           </div>
 
           <div className="grid grid-cols-2 gap-1 text-zinc-300 mb-2">
-            {waypointTooltip.traits.length === 0 ? (
-              <span className="col-span-2 text-[8px] text-zinc-500">No notable traits</span>
-            ) : (
-              waypointTooltip.traits.map((trait, index) => (
-                <span
-                  key={`${waypointTooltip.symbol}-trait-${index}`}
-                  className="bg-sky-500/10 border border-sky-500/30 text-[8px] text-sky-100 rounded px-1 py-0.5"
-                >
-                  {trait.symbol.replace(/_/g, ' ')}
-                </span>
-              ))
-            )}
+            <WaypointTraits symbol={waypointTooltip.symbol} traits={waypointTooltip.traits} />
           </div>
 
-          {waypointTooltip.hasMarketplace && (
-            <div className="border-t border-sky-500/40 pt-2 mt-2">
-              <div className="flex items-center justify-between mb-1">
-                <span className="text-[10px] uppercase text-sky-300 tracking-wide">Marketplace</span>
-                <span className="text-sm">🏪</span>
-              </div>
-              {waypointTooltip.marketData ? (
-                <div className="space-y-1">
-                  <div className="flex justify-between text-[11px] text-sky-100">
-                    <span>Imports</span>
-                    <span>{waypointTooltip.marketData.importsCount}</span>
-                  </div>
-                  <div className="flex justify-between text-[11px] text-rose-100">
-                    <span>Exports</span>
-                    <span>{waypointTooltip.marketData.exportsCount}</span>
-                  </div>
-                  {waypointTooltip.marketData.opportunities.length > 0 && (
-                    <div>
-                      <div className="text-[10px] uppercase text-emerald-300 mb-0.5">Opportunities</div>
-                      <ul className="list-disc list-inside text-[11px] text-emerald-200 space-y-0.5">
-                        {waypointTooltip.marketData.opportunities.map((opp, index) => (
-                          <li key={`${waypointTooltip.symbol}-opp-${index}`}>{opp}</li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <div className="text-[11px] text-zinc-500">
-                  Market intel unavailable. Enable Markets overlay for trade insights.
-                </div>
-              )}
-            </div>
-          )}
+          <WaypointMarketplace
+            hasMarketplace={waypointTooltip.hasMarketplace}
+            marketData={waypointTooltip.marketData}
+          />
         </div>
       )}
 
