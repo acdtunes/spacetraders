@@ -8,7 +8,7 @@ import json
 import os
 import re
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, UTC
 
 from spacetraders_bot.core.api_client import APIClient
 from spacetraders_bot.helpers.paths import captain_logs_root
@@ -25,6 +25,13 @@ class CaptainLogWriter:
         'STRATEGIC_DECISION': '🤔',
         'PERFORMANCE_SUMMARY': '📊',
         'SESSION_END': '🎯'
+    }
+
+    FORMATTERS = {
+        'OPERATION_STARTED': '_format_operation_started',
+        'OPERATION_COMPLETED': '_format_operation_completed',
+        'CRITICAL_ERROR': '_format_critical_error',
+        'PERFORMANCE_SUMMARY': '_format_performance_summary',
     }
 
     def __init__(self, agent_callsign, token=None):
@@ -63,7 +70,7 @@ class CaptainLogWriter:
 
     def _get_timestamp(self):
         """Get current ISO timestamp"""
-        return datetime.utcnow().isoformat() + 'Z'
+        return datetime.now(UTC).isoformat().replace('+00:00', 'Z')
 
     def _append_to_log(self, content, max_retries=5):
         """Append content to captain log (APPEND-ONLY) with file locking
@@ -140,7 +147,7 @@ class CaptainLogWriter:
             objective: Mission objective description
             operator: Who started the session
         """
-        session_id = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        session_id = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
 
         # Get agent status
         agent = self.api.get_agent() if self.api else {}
@@ -197,16 +204,12 @@ class CaptainLogWriter:
         timestamp = self._get_timestamp()
         icon = self.ENTRY_TYPES[entry_type]
 
-        if entry_type == 'OPERATION_STARTED':
-            entry = self._format_operation_started(timestamp, icon, **kwargs)
-        elif entry_type == 'OPERATION_COMPLETED':
-            entry = self._format_operation_completed(timestamp, icon, **kwargs)
-        elif entry_type == 'CRITICAL_ERROR':
-            entry = self._format_critical_error(timestamp, icon, **kwargs)
-        elif entry_type == 'PERFORMANCE_SUMMARY':
-            entry = self._format_performance_summary(timestamp, icon, **kwargs)
+        formatter_name = self.FORMATTERS.get(entry_type)
+        if formatter_name:
+            formatter = getattr(self, formatter_name)
+            entry = formatter(timestamp, icon, **kwargs)
         else:
-            entry = f"\n### 📅 STARDATE: {timestamp}\n\n#### {icon} {entry_type}\n\n{kwargs}\n\n---\n"
+            entry = self._format_generic_entry(timestamp, icon, entry_type, **kwargs)
 
         self._append_to_log(entry)
 
@@ -423,6 +426,12 @@ class CaptainLogWriter:
 ---
 """
 
+    def _format_generic_entry(self, timestamp, icon, entry_type, **kwargs):
+        """Fallback formatter for entry types without custom renderers."""
+        body = '\n'.join(f"- {key}: {value}" for key, value in kwargs.items()) if kwargs else ''
+
+        return f"\n### 📅 STARDATE: {timestamp}\n\n#### {icon} {entry_type}\n\n{body}\n\n---\n"
+
     def session_end(self):
         """End current session with final report"""
         if not self.current_session:
@@ -430,8 +439,8 @@ class CaptainLogWriter:
             return
 
         session_id = self.current_session['session_id']
-        start_time = datetime.fromisoformat(self.current_session['start_time'].replace('Z', ''))
-        end_time = datetime.utcnow()
+        start_time = datetime.fromisoformat(self.current_session['start_time'].replace('Z', '+00:00'))
+        end_time = datetime.now(UTC)
         duration = end_time - start_time
 
         # Get current agent status
@@ -522,8 +531,8 @@ class CaptainLogWriter:
             if timeframe:
                 timestamp_match = re.search(r'^([0-9T:\-\.Z]+)', entry)
                 if timestamp_match:
-                    entry_time = datetime.fromisoformat(timestamp_match.group(1).replace('Z', ''))
-                    cutoff = datetime.utcnow() - timedelta(hours=timeframe)
+                    entry_time = datetime.fromisoformat(timestamp_match.group(1).replace('Z', '+00:00'))
+                    cutoff = datetime.now(UTC) - timedelta(hours=timeframe)
                     if entry_time < cutoff:
                         continue
 
@@ -540,7 +549,7 @@ class CaptainLogWriter:
         Returns:
             Report markdown string
         """
-        cutoff = datetime.utcnow() - timedelta(hours=duration_hours)
+        cutoff = datetime.now(UTC) - timedelta(hours=duration_hours)
 
         # Find sessions in timeframe
         sessions = []
@@ -551,7 +560,7 @@ class CaptainLogWriter:
             with open(session_file, 'r') as f:
                 session = json.load(f)
 
-            start_time = datetime.fromisoformat(session['start_time'].replace('Z', ''))
+            start_time = datetime.fromisoformat(session['start_time'].replace('Z', '+00:00'))
             if start_time >= cutoff:
                 sessions.append(session)
 
@@ -577,8 +586,8 @@ class CaptainLogWriter:
         for session in sorted(sessions, key=lambda s: s['start_time'], reverse=True):
             duration = 0
             if 'end_time' in session:
-                start = datetime.fromisoformat(session['start_time'].replace('Z', ''))
-                end = datetime.fromisoformat(session['end_time'].replace('Z', ''))
+                start = datetime.fromisoformat(session['start_time'].replace('Z', '+00:00'))
+                end = datetime.fromisoformat(session['end_time'].replace('Z', '+00:00'))
                 duration = (end - start).total_seconds() / 3600
 
             report += f"""### {session['session_id']}
@@ -659,7 +668,7 @@ def captain_log_operation(args):
         )
 
         # Save report
-        report_file = writer.reports_dir / f"report_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.md"
+        report_file = writer.reports_dir / f"report_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}.md"
         with open(report_file, 'w') as f:
             f.write(report)
 
