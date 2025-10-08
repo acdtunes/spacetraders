@@ -189,46 +189,61 @@ class MultiLegTradeOptimizer:
 
         with self.db.connection() as conn:
             for buy_market in markets:
-                for sell_market in markets:
-                    if buy_market == sell_market:
-                        continue
-
-                    # Get all goods available at buy market
-                    buy_data = self.db.get_market_data(conn, buy_market, None)  # All goods
-
-                    for buy_record in buy_data:
-                        good = buy_record['good_symbol']
-                        buy_price = buy_record.get('sell_price')  # What we pay
-
-                        if not buy_price or buy_price == 0:
-                            continue
-
-                        # Check if sell market buys this good
-                        sell_data = self.db.get_market_data(conn, sell_market, good)
-                        if not sell_data:
-                            continue
-
-                        sell_record = sell_data[0]
-                        sell_price = sell_record.get('purchase_price')  # What we receive
-
-                        if not sell_price or sell_price == 0:
-                            continue
-
-                        spread = sell_price - buy_price
-
-                        if spread > 0:  # Profitable
-                            opportunities.append({
-                                'buy_waypoint': buy_market,
-                                'sell_waypoint': sell_market,
-                                'good': good,
-                                'buy_price': buy_price,
-                                'sell_price': sell_price,
-                                'spread': spread,
-                                'trade_volume': buy_record.get('trade_volume', 100)
-                            })
+                buy_data = self.db.get_market_data(conn, buy_market, None)
+                opportunities.extend(
+                    self._collect_opportunities_for_market(
+                        conn, buy_market, buy_data, markets
+                    )
+                )
 
         # Sort by spread (most profitable first)
         opportunities.sort(key=lambda x: x['spread'], reverse=True)
+
+        return opportunities
+
+    def _collect_opportunities_for_market(
+        self,
+        conn,
+        buy_market: str,
+        buy_data: List[Dict],
+        markets: List[str],
+    ) -> List[Dict]:
+        opportunities = []
+
+        for sell_market in markets:
+            if sell_market == buy_market:
+                continue
+
+            for buy_record in buy_data:
+                good = buy_record['good_symbol']
+                buy_price = buy_record.get('sell_price')
+
+                if not buy_price:
+                    continue
+
+                sell_data = self.db.get_market_data(conn, sell_market, good)
+                if not sell_data:
+                    continue
+
+                sell_record = sell_data[0]
+                sell_price = sell_record.get('purchase_price')
+
+                if not sell_price:
+                    continue
+
+                spread = sell_price - buy_price
+                if spread <= 0:
+                    continue
+
+                opportunities.append({
+                    'buy_waypoint': buy_market,
+                    'sell_waypoint': sell_market,
+                    'good': good,
+                    'buy_price': buy_price,
+                    'sell_price': sell_price,
+                    'spread': spread,
+                    'trade_volume': buy_record.get('trade_volume', 100),
+                })
 
         return opportunities
 
