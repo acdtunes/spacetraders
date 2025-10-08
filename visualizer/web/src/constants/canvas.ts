@@ -4,7 +4,7 @@ export const CANVAS_CONSTANTS = {
   STROKE_WIDTH: 0.1,
 
   // Orbital mechanics
-  ORBIT_PERIOD: 5000, // milliseconds
+  ORBIT_PERIOD: 10000, // milliseconds
   ORBIT_DISTANCE_DEFAULT: 10,
   ORBIT_DISTANCE_ASTEROID: 3,
 

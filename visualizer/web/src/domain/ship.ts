@@ -43,8 +43,39 @@ export const Ship = {
 
     const orbitRadius = waypointRadius + orbitDistance;
     const orbitPeriod = CANVAS_CONSTANTS.ORBIT_PERIOD;
-    const currentTime = Date.now();
-    const angle = (currentTime % orbitPeriod) / orbitPeriod * Math.PI * 2;
+    const route = ship.nav.route;
+    const now = Date.now();
+
+    let angle: number | null = null;
+
+    if (route && route.origin && route.destination) {
+      const origin = route.origin;
+      const destination = route.destination;
+      const hasCoordinates =
+        typeof origin.x === 'number' &&
+        typeof origin.y === 'number' &&
+        typeof destination.x === 'number' &&
+        typeof destination.y === 'number';
+
+      if (hasCoordinates) {
+        const arrivalTime = new Date(route.arrival).getTime();
+        if (!Number.isNaN(arrivalTime) && arrivalTime <= now) {
+          const dx = destination.x - origin.x;
+          const dy = destination.y - origin.y;
+          const length = Math.hypot(dx, dy);
+          if (length > 0.0001) {
+            const arrivalAngle = Math.atan2(dy, dx) + Math.PI; // facing back along incoming vector
+            const elapsedSinceArrival = Math.max(0, now - arrivalTime);
+            const phase = ((elapsedSinceArrival % orbitPeriod) / orbitPeriod) * Math.PI * 2;
+            angle = arrivalAngle + phase;
+          }
+        }
+      }
+    }
+
+    if (angle === null) {
+      angle = (now % orbitPeriod) / orbitPeriod * Math.PI * 2;
+    }
 
     return {
       x: waypoint.x + Math.cos(angle) * orbitRadius,
@@ -80,12 +111,12 @@ export const Ship = {
     }
 
     const origin = ship.nav.route.origin;
-    if (!origin || !origin.x || !origin.y) {
+    if (!origin || origin.x === undefined || origin.y === undefined) {
       return { x: 0, y: 0 };
     }
 
     const dest = ship.nav.route.destination;
-    if (!dest.x || !dest.y) {
+    if (!dest || dest.x === undefined || dest.y === undefined) {
       return { x: 0, y: 0 };
     }
 
@@ -115,9 +146,36 @@ export const Ship = {
       }
     }
 
+    const dx = dest.x - origin.x;
+    const dy = dest.y - origin.y;
+    const totalDistance = Math.hypot(dx, dy);
+
+    if (totalDistance === 0) {
+      return { x: origin.x, y: origin.y };
+    }
+
+    let maxTravelDistance = totalDistance;
+    const destinationSymbol = ship.nav.route.destination.symbol;
+    if (destinationSymbol) {
+      const destinationWaypoint = waypoints.get(destinationSymbol);
+      if (destinationWaypoint) {
+        const waypointRadius = Waypoint.getRadius(destinationWaypoint);
+        const orbitDistance = destinationWaypoint.type.includes('ASTEROID')
+          ? CANVAS_CONSTANTS.ORBIT_DISTANCE_ASTEROID
+          : CANVAS_CONSTANTS.ORBIT_DISTANCE_DEFAULT;
+        const orbitRadius = waypointRadius + orbitDistance;
+        if (orbitRadius > 0 && totalDistance > orbitRadius) {
+          maxTravelDistance = Math.max(totalDistance - orbitRadius, 0);
+        }
+      }
+    }
+
+    const travelledDistance = Math.min(totalDistance * clampedProgress, maxTravelDistance);
+    const ratio = travelledDistance / totalDistance;
+
     return {
-      x: origin.x + (dest.x - origin.x) * clampedProgress,
-      y: origin.y + (dest.y - origin.y) * clampedProgress,
+      x: origin.x + dx * ratio,
+      y: origin.y + dy * ratio,
     };
   },
 
