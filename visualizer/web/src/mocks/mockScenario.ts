@@ -43,6 +43,9 @@ const baseRoute = (origin: string, destination: string): ShipNavRoute => {
   };
 };
 
+const waypointMining = 'X1-MOCK-MINE1';
+const waypointFuelDepot = 'X1-MOCK-FUEL';
+
 export const mockState: MockState = {
   agents: [
     {
@@ -73,6 +76,8 @@ export const mockState: MockState = {
         { symbol: waypointA, type: 'PLANET', systemSymbol, x: 0, y: 0 },
         { symbol: waypointB, type: 'PLANET', systemSymbol, x: 40, y: -10 },
         { symbol: waypointC, type: 'FUEL_STATION', systemSymbol, x: -25, y: 30 },
+        { symbol: waypointMining, type: 'ASTEROID_FIELD', systemSymbol, x: 15, y: 35 },
+        { symbol: waypointFuelDepot, type: 'FUEL_STATION', systemSymbol, x: -40, y: -20 },
       ],
       factions: [],
     },
@@ -121,6 +126,39 @@ export const mockState: MockState = {
       traits: [{ symbol: 'ICE_RICH', name: 'Ice Deposits', description: 'Frozen resources' }],
       isUnderConstruction: false,
       hasMarketplace: false,
+    },
+    {
+      symbol: 'X1-MOCK-MOON2',
+      type: 'MOON',
+      systemSymbol,
+      x: -12,
+      y: 18,
+      orbitals: [],
+      traits: [{ symbol: 'FROZEN', name: 'Frozen Surface', description: 'Extremely cold conditions' }],
+      isUnderConstruction: false,
+      hasMarketplace: false,
+    },
+    {
+      symbol: waypointMining,
+      type: 'ASTEROID_FIELD',
+      systemSymbol,
+      x: 15,
+      y: 35,
+      orbitals: [],
+      traits: [{ symbol: 'ORE_RICH', name: 'Dense Asteroid Field', description: 'Great for mining drones' }],
+      isUnderConstruction: false,
+      hasMarketplace: false,
+    },
+    {
+      symbol: waypointFuelDepot,
+      type: 'FUEL_STATION',
+      systemSymbol,
+      x: -40,
+      y: -20,
+      orbitals: [],
+      traits: [{ symbol: 'FUEL_STATION', name: 'Remote Fuel Depot', description: 'Refuel point' }],
+      isUnderConstruction: false,
+      hasMarketplace: true,
     },
   ],
   ships: [
@@ -219,6 +257,36 @@ export const mockState: MockState = {
       agentId: 'AGENT-2',
       agentColor: '#f472b6',
     },
+    {
+      symbol: 'SHIP-4',
+      registration: {
+        name: 'Miner Drone',
+        factionSymbol: 'MOCK',
+        role: 'MINING_DRONE',
+      },
+      nav: {
+        systemSymbol,
+        waypointSymbol: waypointMining,
+        route: baseRoute(waypointMining, waypointA),
+        status: 'IN_ORBIT',
+        flightMode: 'DRIFT',
+      },
+      crew: {},
+      frame: {},
+      reactor: {},
+      engine: {},
+      cargo: {
+        capacity: 20,
+        units: 0,
+        inventory: [{ symbol: 'ORE', name: 'Raw Ore', description: '', units: 0 }],
+      },
+      fuel: {
+        current: 20,
+        capacity: 40,
+      },
+      agentId: 'AGENT-2',
+      agentColor: '#f472b6',
+    },
   ],
   markets: new Map<string, Market>([
     [
@@ -267,6 +335,17 @@ const cycleStatuses: Array<(ships: MockShip[]) => void> = [
         miner.cargo.inventory[0].units = miner.cargo.units;
       }
     }
+
+    const drone = ships.find((ship) => ship.registration.role === 'MINING_DRONE');
+    if (drone) {
+      drone.nav.status = 'IN_ORBIT';
+      drone.nav.waypointSymbol = waypointMining;
+      drone.nav.flightMode = 'MINING' as FlightMode;
+      drone.cargo.units = Math.min(drone.cargo.capacity, drone.cargo.units + 3);
+      if (drone.cargo.inventory.length > 0) {
+        drone.cargo.inventory[0].units = drone.cargo.units;
+      }
+    }
   },
   (ships) => {
     // Phase 3: hauler departs in transit
@@ -276,6 +355,17 @@ const cycleStatuses: Array<(ships: MockShip[]) => void> = [
       hauler.nav.route = baseRoute(waypointC, waypointA);
       hauler.nav.flightMode = 'CRUISE';
       hauler.fuel.current = Math.max(0, hauler.fuel.current - 15);
+    }
+
+    const drone = ships.find((ship) => ship.registration.role === 'MINING_DRONE');
+    if (drone) {
+      drone.nav.status = 'DOCKED';
+      drone.nav.waypointSymbol = waypointFuelDepot;
+      drone.nav.flightMode = 'DRIFT';
+      drone.fuel.current = Math.min(drone.fuel.capacity, drone.fuel.current + 5);
+      if (drone.cargo.inventory.length > 0) {
+        drone.cargo.inventory[0].units = Math.max(0, drone.cargo.inventory[0].units - 5);
+      }
     }
   },
 ];
@@ -296,4 +386,3 @@ export const startMockScenarioIfNeeded = () => {
 export const advanceShipScenario = () => {
   advancePhase();
 };
-
