@@ -1,12 +1,15 @@
-import importlib
+from importlib import import_module
 
-wait_timer_module = importlib.import_module('spacetraders_bot.helpers.wait_timer')
+wait_timer_module = import_module('spacetraders_bot.helpers.wait_timer')
 
 
-def test_wait_timer(monkeypatch, capsys):
-    monkeypatch.setattr(wait_timer_module.time, 'sleep', lambda *_: None)
-    wait_timer_module.wait_timer(3)
+def test_wait_timer(monkeypatch):
+    prints = []
+    monkeypatch.setattr(wait_timer_module.time, 'sleep', lambda seconds: prints.append(f'sleep {seconds}'))
+    monkeypatch.setattr('builtins.print', lambda message: prints.append(message))
 
-    out = capsys.readouterr().out
-    assert 'Waiting for 3 seconds' in out
-    assert 'Wait complete' in out
+    wait_timer_module.wait_timer(2)
+
+    assert prints[0].startswith('⏳ Waiting for 2 seconds')
+    assert 'sleep 2' in prints
+    assert prints[-1].startswith('✅ Wait complete!')
