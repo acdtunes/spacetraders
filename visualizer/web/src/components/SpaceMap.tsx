@@ -220,8 +220,8 @@ const WaypointSprite = ({
   scale: number;
 }) => {
   const image = useCachedImage(assetPath);
-  const minSize = 18 / Math.max(scale, 0.0001);
-  const size = Math.max(radius * 2, minSize);
+  const MIN_WORLD_SIZE = 1.2;
+  const size = Math.max(radius * 2, MIN_WORLD_SIZE);
   const half = size / 2;
 
   if (image && image.width > 0 && image.height > 0) {
@@ -244,7 +244,7 @@ const WaypointSprite = ({
   return (
     <Group x={x} y={y} listening={false}>
       <Circle
-        radius={radius}
+        radius={size / 2}
         fill="#1f2937"
         stroke="#ef4444"
         strokeWidth={strokeWidth * 0.6}
