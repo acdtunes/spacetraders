@@ -193,6 +193,70 @@ def contract_operation(
         )
         return False
 
+    def purchase_units_for_trip(still_needed: int, cargo_available: int, trip_number: int) -> Tuple[int, bool]:
+        if cargo_available <= 0:
+            print("  ⚠️  No cargo space and nothing to deliver")
+            return 0, True
+
+        to_buy = min(still_needed, cargo_available)
+        if to_buy <= 0:
+            return 0, True
+
+        print(f"\n  Trip {trip_number}: Buying {to_buy} more units from {args.buy_from}...")
+        if not navigator.execute_route(ship, args.buy_from, prefer_cruise=True):
+            log_error(
+                "Navigation failure",
+                f"Unable to navigate to market {args.buy_from}",
+                impact={'Market': args.buy_from},
+                resolution="Check fuel and route feasibility",
+                escalate=True,
+            )
+            return 0, False
+
+        ship.dock()
+
+        total_bought = 0
+        remaining_to_buy = to_buy
+
+        while remaining_to_buy > 0:
+            batch_size = remaining_to_buy
+            transaction = ship.buy(delivery['tradeSymbol'], batch_size)
+
+            if transaction:
+                units_bought = transaction.get('units', batch_size)
+                total_bought += units_bought
+                remaining_to_buy -= units_bought
+                stats['purchase_spent'] += transaction.get('totalPrice', 0)
+                stats['purchased_units'] += units_bought
+
+                if remaining_to_buy > 0:
+                    print(f"  ✅ Bought {units_bought} units, {remaining_to_buy} more to go...")
+                continue
+
+            result = ship.api.request("GET", f"/my/ships/{ship.ship_symbol}")
+            if result and batch_size > 20:
+                print("  ⚠️  Transaction limit hit, reducing batch to 20 units...")
+                batch_size = 20
+                transaction = ship.buy(delivery['tradeSymbol'], batch_size)
+                if transaction:
+                    units_bought = transaction.get('units', batch_size)
+                    total_bought += units_bought
+                    remaining_to_buy -= units_bought
+                    stats['purchase_spent'] += transaction.get('totalPrice', 0)
+                    stats['purchased_units'] += units_bought
+                    continue
+
+            log_error(
+                "Purchase failed",
+                f"Unable to buy {remaining_to_buy} units from {args.buy_from} during trip {trip_number}",
+                impact={'Bought': total_bought, 'Failed': remaining_to_buy, 'Remaining': still_needed},
+                resolution="Check market supply and transaction limits",
+                escalate=True,
+            )
+            break
+
+        return total_bought, True
+
     # Initialize navigator
     ship_data = ship.get_status()
     if not ship_data:
@@ -352,70 +416,17 @@ def contract_operation(
                 break
 
         if to_deliver == 0:
-            # No more cargo, need to buy more
             if args.buy_from:
                 still_need = remaining - total_delivered
                 cargo_available = ship_data['cargo']['capacity'] - ship_data['cargo']['units']
-                to_buy = min(still_need, cargo_available)
+                units_bought, continue_operation = purchase_units_for_trip(still_need, cargo_available, trip)
 
-                if to_buy > 0:
-                    print(f"\n  Trip {trip}: Buying {to_buy} more units from {args.buy_from}...")
-                    navigator.execute_route(ship, args.buy_from, prefer_cruise=True)
-                    ship.dock()
+                if not continue_operation:
+                    return 1
 
-                    # Handle transaction limits by buying in batches
-                    total_bought = 0
-                    remaining_to_buy = to_buy
-
-                    while remaining_to_buy > 0:
-                        # Try to buy all remaining, but handle transaction limit errors
-                        batch_size = remaining_to_buy
-                        transaction = ship.buy(delivery['tradeSymbol'], batch_size)
-
-                        if transaction:
-                            # Success
-                            units_bought = transaction.get('units', batch_size)
-                            total_bought += units_bought
-                            remaining_to_buy -= units_bought
-                            stats['purchase_spent'] += transaction.get('totalPrice', 0)
-                            stats['purchased_units'] += units_bought
-
-                            if remaining_to_buy > 0:
-                                print(f"  ✅ Bought {units_bought} units, {remaining_to_buy} more to go...")
-                        else:
-                            # Purchase failed - check if it's a transaction limit error
-                            # Get the last API response to check error code
-                            result = ship.api.request("GET", f"/my/ships/{ship.ship_symbol}")
-                            if result:
-                                # Try buying in smaller batch (20 units max is common limit)
-                                if batch_size > 20:
-                                    print(f"  ⚠️  Transaction limit hit, reducing batch to 20 units...")
-                                    batch_size = 20
-                                    transaction = ship.buy(delivery['tradeSymbol'], batch_size)
-                                    if transaction:
-                                        units_bought = transaction.get('units', batch_size)
-                                        total_bought += units_bought
-                                        remaining_to_buy -= units_bought
-                                        stats['purchase_spent'] += transaction.get('totalPrice', 0)
-                                        stats['purchased_units'] += units_bought
-                                        continue
-
-                            # If still failing, log and break
-                            log_error(
-                                "Purchase failed",
-                                f"Unable to buy {remaining_to_buy} units from {args.buy_from} during trip {trip}",
-                                impact={'Bought': total_bought, 'Failed': remaining_to_buy, 'Remaining': still_need},
-                                resolution="Check market supply and transaction limits",
-                                escalate=True
-                            )
-                            break
-
-                    to_deliver = total_bought
-                    if total_bought == 0:
-                        print(f"  ❌ Failed to purchase any units, skipping delivery")
-                        break
-                else:
-                    print("  ⚠️  No cargo space and nothing to deliver")
+                to_deliver = units_bought
+                if units_bought == 0:
+                    print(f"  ❌ Failed to purchase any units, skipping delivery")
                     break
             else:
                 print("  ❌ No cargo to deliver and no buy_from specified")
