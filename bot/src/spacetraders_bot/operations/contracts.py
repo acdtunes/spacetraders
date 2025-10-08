@@ -195,6 +195,52 @@ def contract_operation(
 
 
 
+    def _purchase_initial_cargo(
+        ship,
+        navigator,
+        market: str,
+        trade_symbol: str,
+        quantity: int,
+        stats: dict,
+        log_error,
+    ) -> Tuple[int, bool]:
+        if quantity <= 0:
+            return 0, True
+
+        print(f"\n  💰 Purchasing {quantity} units of {trade_symbol} from {market}...")
+        if not navigator.execute_route(ship, market, prefer_cruise=True):
+            print(f"  ❌ Navigation to {market} failed")
+            log_error(
+                "Navigation failure",
+                f"Unable to navigate to market {market}",
+                impact={'Market': market},
+                resolution="Check fuel and route feasibility",
+                escalate=True,
+            )
+            return 0, False
+
+        ship.dock()
+        transaction = ship.buy(trade_symbol, quantity)
+        if transaction:
+            units = transaction.get('units', quantity)
+            stats['purchase_spent'] += transaction.get('totalPrice', 0)
+            stats['purchased_units'] += units
+            print(
+                f"  ✅ Purchased {units} units for {format_credits(transaction.get('totalPrice', 0))}"
+            )
+            return units, True
+
+        print(f"  ❌ Purchase failed at {market}")
+        log_error(
+            "Purchase failed",
+            f"Unable to buy {quantity} units from {market}",
+            impact={'Units remaining': quantity},
+            resolution="Verify market availability and ship credits",
+            escalate=True,
+        )
+        return 0, False
+
+
     def _run_delivery_loop(
         ship,
         navigator,
@@ -453,44 +499,19 @@ def contract_operation(
         if not ensure_market_availability(still_need, cargo_available):
             return 1
 
-        # Purchase from identified market
-        if cargo_available < still_need:
-            print(f"\n  ⚠️  Not enough cargo space! Will need multiple trips")
-            # Buy what we can fit now
-            to_buy = cargo_available
-        else:
-            to_buy = still_need
+        quantity = min(still_need, cargo_available)
+        purchased_units, purchase_success = _purchase_initial_cargo(
+            ship=ship,
+            navigator=navigator,
+            market=args.buy_from,
+            trade_symbol=delivery['tradeSymbol'],
+            quantity=quantity,
+            stats=stats,
+            log_error=log_error,
+        )
+        if not purchase_success:
+            return 1
 
-        if to_buy > 0:
-            print(f"\n  💰 Purchasing {to_buy} units of {delivery['tradeSymbol']} from {args.buy_from}...")
-            nav_success = navigator.execute_route(ship, args.buy_from, prefer_cruise=True)
-            if not nav_success:
-                print(f"  ❌ Navigation to {args.buy_from} failed")
-                log_error(
-                    "Navigation failure",
-                    f"Unable to navigate to market {args.buy_from}",
-                    impact={'Market': args.buy_from},
-                    resolution="Check fuel and route feasibility",
-                    escalate=True
-                )
-                return 1
-
-            ship.dock()
-            transaction = ship.buy(delivery['tradeSymbol'], to_buy)
-            if transaction:
-                stats['purchase_spent'] += transaction.get('totalPrice', 0)
-                stats['purchased_units'] += transaction.get('units', to_buy)
-                print(f"  ✅ Purchased {transaction.get('units', to_buy)} units for {format_credits(transaction.get('totalPrice', 0))}")
-            else:
-                print(f"  ❌ Purchase failed at {args.buy_from}")
-                log_error(
-                    "Purchase failed",
-                    f"Unable to buy {to_buy} units from {args.buy_from}",
-                    impact={'Units remaining': still_need},
-                    resolution="Verify market availability and ship credits",
-                    escalate=True
-                )
-                return 1
 
     total_delivered, success = _run_delivery_loop(
         ship=ship,
