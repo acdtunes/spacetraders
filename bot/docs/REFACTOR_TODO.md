@@ -9,5 +9,5 @@
 7. [x] Introduce a MiningCycle helper in mining operations to encapsulate extraction/cooldown workflow.
 8. [x] Identify the next high-complexity operation module for conditional-logic refactor (strategy pattern candidates).
 9. [x] Extract a trade evaluation strategy from GreedyRoutePlanner to separate market simulation logic.
-10. [ ] Update MultiLegTradeOptimizer to accept pluggable strategies and cover new components with unit tests.
+10. [x] Update MultiLegTradeOptimizer to accept pluggable strategies and cover new components with unit tests.
 11. [ ] Reassess remaining operations modules for further conditional refactors after strategy integration.
