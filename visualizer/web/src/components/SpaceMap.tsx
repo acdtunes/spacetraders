@@ -19,6 +19,7 @@ import { ShipRouteInfo } from './ShipRouteInfo';
 import { ShipCargoList } from './ShipCargoList';
 import { WaypointTraits } from './WaypointTraits';
 import { WaypointMarketplace } from './WaypointMarketplace';
+import { useSelectionOverlay } from '../hooks/useSelectionOverlay';
 import ZoomControls from './ZoomControls';
 import Minimap from './Minimap';
 import type { FlightMode, ShipTrailPoint, Waypoint as WaypointType, TaggedShip, ShipNavStatus } from '../types/spacetraders';
@@ -1111,39 +1112,21 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
     };
   }, [activeShipTooltipSymbol, ships, waypoints, projectToScreen, viewportBounds, getShipRenderPosition, frameTimestamp]);
 
-  const selectionOverlay = useMemo(() => {
-    if (!selectedObject) return null;
-
-    let worldX = selectedObject.x;
-    let worldY = selectedObject.y;
-
-    if (selectedObject.type === 'ship') {
-      const ship = ships.find((s) => s.symbol === selectedObject.symbol);
-      if (!ship) return null;
+  const selectionOverlay = useSelectionOverlay({
+    selectedObject,
+    ships,
+    waypoints,
+    projectToScreen,
+    getWaypointPosition: getWaypointDisplayPosition,
+    getShipPosition: (ship) => {
       const targetPosition = Ship.getPosition(ship, waypoints);
       const position = getShipRenderPosition(ship, targetPosition, frameTimestamp);
-      if (position.x === 0 && position.y === 0) return null;
-      worldX = position.x;
-      worldY = position.y;
-    } else if (selectedObject.type === 'waypoint') {
-      const waypoint = waypoints.get(selectedObject.symbol);
-      if (!waypoint) return null;
-      const displayPosition = getWaypointDisplayPosition(waypoint);
-      worldX = displayPosition.x;
-      worldY = displayPosition.y;
-    }
-
-    const screenPos = projectToScreen({ x: worldX, y: worldY });
-    if (!screenPos) return null;
-    const size = selectedObject.type === 'waypoint' ? 18 : 14;
-
-    return {
-      left: screenPos.x,
-      top: screenPos.y,
-      size,
-      type: selectedObject.type,
-    };
-  }, [selectedObject, ships, waypoints, projectToScreen, viewportBounds, getWaypointDisplayPosition, getShipRenderPosition, frameTimestamp]);
+      if (position.x === 0 && position.y === 0) {
+        return null;
+      }
+      return position;
+    },
+  });
 
   useEffect(() => {
     if (selectedObject?.type === 'waypoint') {
