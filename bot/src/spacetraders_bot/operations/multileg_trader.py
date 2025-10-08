@@ -14,7 +14,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 from spacetraders_bot.core.api_client import APIClient
 from spacetraders_bot.core.ship_controller import ShipController
@@ -394,11 +394,19 @@ class MultiLegTradeOptimizer:
     3. Use A* search to find optimal route
     """
 
-    def __init__(self, api: APIClient, db, player_id: int, logger: Optional[logging.Logger] = None):
+    def __init__(
+        self,
+        api: APIClient,
+        db,
+        player_id: int,
+        logger: Optional[logging.Logger] = None,
+        strategy_factory: Optional[Callable[[logging.Logger], TradeEvaluationStrategy]] = None,
+    ):
         self.api = api
         self.db = db
         self.player_id = player_id
         self.logger = logger or logging.getLogger(__name__)
+        self._strategy_factory = strategy_factory or (lambda log: ProfitFirstStrategy(log))
 
     def find_optimal_route(
         self,
@@ -448,7 +456,8 @@ class MultiLegTradeOptimizer:
         trade_opportunities = self._get_trade_opportunities(system, markets)
         self.logger.info(f"Found {len(trade_opportunities)} trade opportunities")
 
-        planner = GreedyRoutePlanner(self.logger, self.db)
+        strategy = self._strategy_factory(self.logger)
+        planner = GreedyRoutePlanner(self.logger, self.db, strategy=strategy)
         best_route = planner.find_route(
             start_waypoint=start_waypoint,
             markets=markets,

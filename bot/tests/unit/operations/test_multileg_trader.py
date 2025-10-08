@@ -8,10 +8,12 @@ import spacetraders_bot.operations.multileg_trader as multileg_module
 from spacetraders_bot.operations.multileg_trader import (
     GreedyRoutePlanner,
     ProfitFirstStrategy,
+    MarketEvaluation,
     MultiLegRoute,
     MultiLegTradeOptimizer,
     RouteSegment,
     TradeAction,
+    TradeEvaluationStrategy,
     execute_multileg_route,
     create_fixed_route,
     trade_plan_operation,
@@ -266,6 +268,61 @@ def test_find_optimal_route_positive_profit(monkeypatch):
     assert route.total_profit > 0
     # First segment should contain a BUY action
     assert any(action.action == 'BUY' for action in route.segments[0].actions_at_destination)
+
+
+def test_optimizer_injects_custom_strategy(monkeypatch):
+    captured = {}
+
+    class StubPlanner:
+        def __init__(self, logger, db, strategy=None):
+            captured['strategy'] = strategy
+
+        def find_route(self, **kwargs):
+            return MultiLegRoute(
+                segments=[],
+                total_profit=0,
+                total_distance=0,
+                total_fuel_cost=0,
+                estimated_time_minutes=0,
+            )
+
+    monkeypatch.setattr(multileg_module, 'GreedyRoutePlanner', StubPlanner)
+
+    class StubStrategy(TradeEvaluationStrategy):
+        def evaluate(self, **kwargs):
+            return MarketEvaluation(
+                actions=[],
+                cargo_after={},
+                credits_after=kwargs['current_credits'],
+                net_profit=0,
+            )
+
+    strategy_instance = StubStrategy()
+
+    optimizer = MultiLegTradeOptimizer(
+        api=MagicMock(),
+        db=MagicMock(),
+        player_id=7,
+        logger=MagicMock(),
+        strategy_factory=lambda logger: strategy_instance,
+    )
+
+    monkeypatch.setattr(optimizer, '_get_markets_in_system', lambda system: ['SYS-A'])
+    monkeypatch.setattr(optimizer, '_get_trade_opportunities', lambda system, markets: [])
+
+    route = optimizer.find_optimal_route(
+        start_waypoint='SYS-A',
+        system='SYS',
+        max_stops=1,
+        cargo_capacity=10,
+        starting_credits=500,
+        ship_speed=10,
+        fuel_capacity=100,
+        current_fuel=50,
+    )
+
+    assert route is not None
+    assert captured['strategy'] is strategy_instance
 
 
 def _ship_status_stub():
