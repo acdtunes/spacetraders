@@ -170,6 +170,47 @@ def test_stop_handles_missing_process(monkeypatch, tmp_daemon_env, dummy_db):
     assert dummy_db.daemons["daemon-1"]["status"] == "crashed"
 
 
+def test_stop_handles_process_disappearing(monkeypatch, tmp_daemon_env, dummy_db):
+    manager = make_manager(dummy_db, tmp_daemon_env)
+    dummy_db.daemons["daemon-1"] = {
+        "daemon_id": "daemon-1",
+        "player_id": 1,
+        "pid": 222,
+    }
+
+    class VanishingProcess:
+        def __init__(self, pid):
+            self.pid = pid
+
+        def terminate(self):
+            raise dm.psutil.NoSuchProcess(self.pid)
+
+    monkeypatch.setattr(dm.psutil, "Process", VanishingProcess)
+
+    assert manager.stop("daemon-1") is True
+    assert dummy_db.daemons["daemon-1"]["status"] == "crashed"
+
+
+def test_stop_handles_generic_exception(monkeypatch, tmp_daemon_env, dummy_db):
+    manager = make_manager(dummy_db, tmp_daemon_env)
+    dummy_db.daemons["daemon-1"] = {
+        "daemon_id": "daemon-1",
+        "player_id": 1,
+        "pid": 333,
+    }
+
+    class BrokenProcess:
+        def __init__(self, pid):
+            self.pid = pid
+
+        def terminate(self):
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(dm.psutil, "Process", BrokenProcess)
+
+    assert manager.stop("daemon-1") is False
+
+
 def test_is_running_updates_crashed(monkeypatch, tmp_daemon_env, dummy_db):
     manager = make_manager(dummy_db, tmp_daemon_env)
     dummy_db.daemons["daemon-1"] = {
@@ -189,6 +230,37 @@ def test_is_running_updates_crashed(monkeypatch, tmp_daemon_env, dummy_db):
 
     assert manager.is_running("daemon-1") is False
     assert dummy_db.daemons["daemon-1"]["status"] == "crashed"
+
+
+def test_fetch_process_none(tmp_daemon_env, dummy_db):
+    manager = make_manager(dummy_db, tmp_daemon_env)
+    assert manager._fetch_process(None) is None
+
+
+def test_status_handles_missing_process(monkeypatch, tmp_daemon_env, dummy_db):
+    started_at = datetime.now(UTC).isoformat()
+    dummy_db.daemons["daemon-1"] = {
+        "daemon_id": "daemon-1",
+        "player_id": 1,
+        "pid": 9999,
+        "command": ["cmd"],
+        "started_at": started_at,
+        "log_file": "log",
+        "err_file": "err",
+        "status": "running",
+    }
+
+    class RaisingProcess:
+        def __init__(self, pid):
+            raise dm.psutil.NoSuchProcess(pid)
+
+    monkeypatch.setattr(dm.psutil, "Process", RaisingProcess)
+
+    manager = make_manager(dummy_db, tmp_daemon_env)
+    status = manager.status("daemon-1")
+
+    assert status["is_running"] is False
+    assert status["runtime_seconds"] is None
 
 
 def test_status_reports_metrics(monkeypatch, tmp_daemon_env, dummy_db):
@@ -228,6 +300,72 @@ def test_status_reports_metrics(monkeypatch, tmp_daemon_env, dummy_db):
     assert status["is_running"] is True
     assert status["cpu_percent"] == pytest.approx(12.5)
     assert status["memory_mb"] == pytest.approx(5.0)
+
+
+def test_list_all_sorted(monkeypatch, tmp_daemon_env, dummy_db):
+    now = datetime.now(UTC)
+    dummy_db.daemons.update(
+        {
+            "daemon-1": {
+                "daemon_id": "daemon-1",
+                "player_id": 1,
+                "pid": 1,
+                "started_at": (now.isoformat()),
+                "command": ["a"],
+            },
+            "daemon-2": {
+                "daemon_id": "daemon-2",
+                "player_id": 1,
+                "pid": 2,
+                "started_at": (now.replace(microsecond=0)).isoformat(),
+                "command": ["b"],
+            },
+        }
+    )
+
+    def fake_status(self, daemon_id):
+        record = dummy_db.daemons[daemon_id]
+        return {
+            "daemon_id": daemon_id,
+            "started_at": record["started_at"],
+            "is_running": True,
+        }
+
+    monkeypatch.setattr(dm.DaemonManager, "status", fake_status)
+
+    manager = make_manager(dummy_db, tmp_daemon_env)
+    order = [entry["daemon_id"] for entry in manager.list_all()]
+    assert order == ["daemon-1", "daemon-2"]
+
+
+def test_tail_logs_missing_file(tmp_daemon_env, dummy_db, capsys):
+    manager = make_manager(dummy_db, tmp_daemon_env)
+    dummy_db.daemons["daemon-1"] = {
+        "daemon_id": "daemon-1",
+        "player_id": 1,
+        "log_file": str(tmp_daemon_env / "logs" / "missing.log"),
+    }
+
+    manager.tail_logs("daemon-1")
+    out = capsys.readouterr().out
+    assert "Log file not found" in out
+
+
+def test_tail_logs_reads_file(tmp_daemon_env, dummy_db, capsys):
+    log_path = tmp_daemon_env / "logs" / "daemon-1.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_text("line1\nline2\nline3\n")
+
+    manager = make_manager(dummy_db, tmp_daemon_env)
+    dummy_db.daemons["daemon-1"] = {
+        "daemon_id": "daemon-1",
+        "player_id": 1,
+        "log_file": str(log_path),
+    }
+
+    manager.tail_logs("daemon-1", lines=2)
+    out = capsys.readouterr().out
+    assert "line2" in out and "line3" in out
 
 
 def test_cleanup_stopped_removes_entries(monkeypatch, tmp_daemon_env, dummy_db):

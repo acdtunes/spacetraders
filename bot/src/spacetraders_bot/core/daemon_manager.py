@@ -415,7 +415,7 @@ def daemonize_current_process():
     # Note: Caller should redirect stdout/stderr to log files after this
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover - CLI entry point
     # CLI for daemon management
     import argparse
 

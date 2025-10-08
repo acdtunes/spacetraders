@@ -53,11 +53,6 @@ def test_mining_cycle_execute_success(monkeypatch, mining_context):
     def fake_checkpoint(context, cycle, location):
         checkpoint_calls.append((cycle, location))
 
-    monkeypatch.setattr(mining_module, "_navigate_with_retries", fake_navigate)
-    monkeypatch.setattr(mining_module, "_mine_until_cargo_full", fake_mine)
-    monkeypatch.setattr(mining_module, "_sell_cargo", fake_sell)
-    monkeypatch.setattr(mining_module, "_checkpoint_cycle", fake_checkpoint)
-
     monkeypatch.setitem(MiningCycle.execute.__globals__, "_navigate_with_retries", fake_navigate)
     monkeypatch.setitem(MiningCycle.execute.__globals__, "_mine_until_cargo_full", fake_mine)
     monkeypatch.setitem(MiningCycle.execute.__globals__, "_sell_cargo", fake_sell)
@@ -88,8 +83,6 @@ def test_mining_cycle_aborts_on_failed_navigation(monkeypatch, mining_context):
     def fake_mine(context):
         return {}
 
-    monkeypatch.setattr(mining_module, "_navigate_with_retries", fake_navigate)
-    monkeypatch.setattr(mining_module, "_mine_until_cargo_full", fake_mine)
     monkeypatch.setitem(MiningCycle.execute.__globals__, "_navigate_with_retries", fake_navigate)
     monkeypatch.setitem(MiningCycle.execute.__globals__, "_mine_until_cargo_full", fake_mine)
 

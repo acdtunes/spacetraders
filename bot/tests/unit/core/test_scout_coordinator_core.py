@@ -1,5 +1,6 @@
 import json
-from types import SimpleNamespace
+from pathlib import Path
+from types import MethodType, SimpleNamespace
 
 import pytest
 
@@ -17,6 +18,7 @@ class APIStub:
             'symbol': ship_symbol,
             'nav': {'waypointSymbol': 'X1-TEST-A1'},
             'engine': {'speed': 10},
+            'fuel': {'current': 100, 'capacity': 100},
         }
 
 
@@ -467,6 +469,194 @@ def test_balance_tour_times_reallocates(monkeypatch):
 
     assert balanced['SHIP-2']
 
+
+def test_balance_tour_times_missing_ship_data(monkeypatch):
+    graph = _base_graph()
+    coord, _ = _make_coordinator(monkeypatch, load_graph=graph)
+    coord.graph = graph
+
+    def missing_ship_data(ship):
+        return None
+
+    coord.api.get_ship = missing_ship_data
+    coord._estimate_partition_tour_time = MethodType(lambda self, markets, ship_data: 0.0, coord)
+    coord._calculate_partition_tour_time = MethodType(lambda self, markets, ship_data: 0.0, coord)
+
+    partitions = {
+        'SHIP-1': ['X1-TEST-M1'],
+        'SHIP-2': [],
+    }
+
+    balanced = coord.balance_tour_times(partitions, use_tsp=False)
+
+    # Without ship data, partitions should remain unchanged and tour time zero
+    assert balanced == partitions
+
+
+def test_balance_tour_times_no_boundary_market(monkeypatch):
+    graph = _base_graph()
+    coord, _ = _make_coordinator(monkeypatch, load_graph=graph)
+    coord.graph = graph
+
+    partitions = {
+        'SHIP-1': ['X1-TEST-M1'],
+        'SHIP-2': [],
+    }
+
+    coord._find_boundary_market = lambda source, target: None
+
+    result = coord.balance_tour_times(partitions, min_markets=1)
+
+    # When no market can be moved, partitions stay the same
+    assert result == partitions
+
+
+def test_balance_tour_times_tsp_path(monkeypatch):
+    graph = _base_graph()
+    coord, _ = _make_coordinator(monkeypatch, load_graph=graph)
+    coord.graph = graph
+
+    calls = {}
+
+    class OptimizerStub:
+        def __init__(self, graph, ship_data):
+            calls['init'] = True
+
+        def solve_nearest_neighbor(self, *args, **kwargs):
+            return {'total_time': 120, 'legs': []}
+
+        def two_opt_improve(self, tour, max_iterations=100):
+            tour['total_time'] = 110
+            return tour
+
+    monkeypatch.setattr(coordinator_module, 'TourOptimizer', OptimizerStub)
+
+    partitions = {
+        'SHIP-1': ['X1-TEST-M1', 'X1-TEST-M2'],
+    }
+
+    result = coord.balance_tour_times(partitions, use_tsp=True, variance_threshold=0.0)
+
+    assert result['SHIP-1']
+    assert calls.get('init') is True
+
+
+def test_monitor_cycle_triggers_reconfigure(monkeypatch):
+    graph = _base_graph()
+    coord, _ = _make_coordinator(monkeypatch, load_graph=graph)
+    coord.config_file = str(Path('/tmp/nonexistent'))
+    coord.assignments = {}
+
+    flag = {}
+    monkeypatch.setattr(coord, '_check_reconfigure_signal', lambda: True)
+    monkeypatch.setattr(coord, '_handle_reconfiguration', lambda: flag.setdefault('called', True))
+
+    coord._monitor_cycle(check_interval=5)
+
+    assert flag.get('called') is True
+
+
+def test_monitor_cycle_restarts_daemon(monkeypatch):
+    graph = _base_graph()
+    coord, _ = _make_coordinator(monkeypatch, load_graph=graph)
+    coord.assignments = {
+        'SHIP-1': SubtourAssignment('SHIP-1', ['M1'], 100, 'daemon-old')
+    }
+
+    health_record = coordinator_module.DaemonHealth(ship='SHIP-1', daemon_id='daemon-old', is_running=False)
+    monkeypatch.setattr(coord, '_check_reconfigure_signal', lambda: False)
+    monkeypatch.setattr(coord, '_collect_daemon_health', lambda: [health_record])
+
+    restarted = {}
+    monkeypatch.setattr(coord, '_restart_daemon_for', lambda ship, daemon: restarted.setdefault(ship, daemon))
+    monkeypatch.setattr(coordinator_module.time, 'sleep', lambda *_: None)
+
+    coord._monitor_cycle(check_interval=1)
+
+    assert restarted.get('SHIP-1') == 'daemon-old'
+
+
+def test_restart_daemon_for_missing_assignment(monkeypatch, capsys):
+    graph = _base_graph()
+    coord, _ = _make_coordinator(monkeypatch, load_graph=graph)
+    coord.assignments = {}
+
+    coord._restart_daemon_for('SHIP-1', 'daemon-1')
+
+    captured = capsys.readouterr().out
+    assert 'No assignment found for ship' in captured
+
+
+def test_check_reconfigure_signal_invalid_json(tmp_path, monkeypatch):
+    graph = _base_graph()
+    coord, _ = _make_coordinator(monkeypatch, load_graph=graph)
+
+    config_path = tmp_path / 'config.json'
+    config_path.write_text('{invalid')
+    coord.config_file = str(config_path)
+
+    assert coord._check_reconfigure_signal() is False
+
+
+def test_handle_reconfiguration_no_changes(tmp_path, monkeypatch):
+    graph = _base_graph()
+    coord, _ = _make_coordinator(monkeypatch, load_graph=graph)
+    coord.config_file = str(tmp_path / 'config.json')
+    coord.ships = {'SHIP-1'}
+
+    config = {
+        'system': 'X1-TEST',
+        'ships': ['SHIP-1'],
+        'algorithm': '2opt',
+        'reconfigure': True
+    }
+    Path(coord.config_file).write_text(json.dumps(config))
+
+    coord._handle_reconfiguration()
+
+    new_config = json.loads(Path(coord.config_file).read_text())
+    assert new_config['reconfigure'] is False
+
+
+def test_wait_for_tours_complete_timeout(monkeypatch):
+    graph = _base_graph()
+    coord, _ = _make_coordinator(monkeypatch, load_graph=graph)
+    coord.assignments = {
+        'SHIP-1': SubtourAssignment('SHIP-1', ['M1'], 100, 'daemon-1')
+    }
+
+    start = 0
+
+    def fake_time():
+        nonlocal start
+        start += 50
+        return start
+
+    monkeypatch.setattr(coordinator_module.time, 'time', fake_time)
+    monkeypatch.setattr(coordinator_module.time, 'sleep', lambda *_: None)
+    coord.daemon_manager = SimpleNamespace(is_running=lambda daemon_id: True, stop=lambda *_: None)
+
+    coord._wait_for_tours_complete(timeout=100)
+
+
+def test_wait_for_tours_complete_success(monkeypatch):
+    graph = _base_graph()
+    coord, _ = _make_coordinator(monkeypatch, load_graph=graph)
+    coord.assignments = {
+        'SHIP-1': SubtourAssignment('SHIP-1', ['M1'], 100, 'daemon-1')
+    }
+
+    state = {'calls': 0}
+
+    def fake_is_running(_daemon_id):
+        state['calls'] += 1
+        return state['calls'] < 2
+
+    coord.daemon_manager = SimpleNamespace(is_running=fake_is_running, stop=lambda *_: None)
+    monkeypatch.setattr(coordinator_module.time, 'time', lambda: 0)
+    monkeypatch.setattr(coordinator_module.time, 'sleep', lambda *_: None)
+
+    coord._wait_for_tours_complete(timeout=10)
 
 def test_partition_markets_kmeans(monkeypatch):
     graph = _base_graph()
