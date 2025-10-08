@@ -22,6 +22,7 @@ import { WaypointMarketplace } from './WaypointMarketplace';
 import { useSelectionOverlay } from '../hooks/useSelectionOverlay';
 import { useWaypointTooltipAnchor } from '../hooks/useWaypointTooltipAnchor';
 import { useShipTooltip } from '../hooks/useShipTooltip';
+import { useGridLines } from '../hooks/useGridLines';
 import { calculateShipRotation } from '../utils/shipDisplay';
 import ZoomControls from './ZoomControls';
 import Minimap from './Minimap';
@@ -918,75 +919,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
     return `${SHIP_ASSET_BASE_PATH}${filename}`;
   }, []);
 
-  // Grid rendering with dynamic spacing
-  const gridLines = useMemo(() => {
-    if (waypoints.size === 0) return { vertical: [], horizontal: [], labels: [] };
-
-    const waypointArray = Array.from(waypoints.values());
-    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-    waypointArray.forEach(wp => {
-      minX = Math.min(minX, wp.x);
-      maxX = Math.max(maxX, wp.x);
-      minY = Math.min(minY, wp.y);
-      maxY = Math.max(maxY, wp.y);
-    });
-
-    // Calculate dynamic grid spacing based on zoom level
-    // Target: ~50px spacing on screen
-    const currentScale = viewportBounds.scale || 1;
-    const targetSpacing = VIEWPORT_CONSTANTS.GRID_TARGET_SPACING;
-    const worldSpacing = targetSpacing / currentScale;
-
-    // Round to nice numbers (powers of 10 or 5)
-    const magnitude = Math.pow(10, Math.floor(Math.log10(worldSpacing)));
-    let gridSpacing = magnitude;
-
-    if (worldSpacing / magnitude >= 5) {
-      gridSpacing = magnitude * 5;
-    } else if (worldSpacing / magnitude >= 2) {
-      gridSpacing = magnitude * 2;
-    }
-
-    // Calculate label multiplier (show labels every N grid lines)
-    const labelMultiplier = VIEWPORT_CONSTANTS.GRID_LABEL_MULTIPLIER;
-    const labelSpacing = gridSpacing * labelMultiplier;
-
-    const padding = gridSpacing * 2;
-    minX = Math.floor((minX - padding) / gridSpacing) * gridSpacing;
-    maxX = Math.ceil((maxX + padding) / gridSpacing) * gridSpacing;
-    minY = Math.floor((minY - padding) / gridSpacing) * gridSpacing;
-    maxY = Math.ceil((maxY + padding) / gridSpacing) * gridSpacing;
-
-    const vertical = [];
-    const horizontal = [];
-    const labels = [];
-
-    for (let x = minX; x <= maxX; x += gridSpacing) {
-      vertical.push({
-        points: [x, minY, x, maxY],
-        stroke: x === 0 ? '#444444' : '#222222',
-        strokeWidth: x === 0 ? 1.5 : 0.5,
-        opacity: x === 0 ? 0.5 : 0.2,
-      });
-      if (x % labelSpacing === 0) {
-        labels.push({ text: x.toString(), x: x + 2, y: 5 });
-      }
-    }
-
-    for (let y = minY; y <= maxY; y += gridSpacing) {
-      horizontal.push({
-        points: [minX, y, maxX, y],
-        stroke: y === 0 ? '#444444' : '#222222',
-        strokeWidth: y === 0 ? 1.5 : 0.5,
-        opacity: y === 0 ? 0.5 : 0.2,
-      });
-      if (y % labelSpacing === 0 && y !== 0) {
-        labels.push({ text: y.toString(), x: 5, y: y + 2 });
-      }
-    }
-
-    return { vertical, horizontal, labels };
-  }, [waypoints, viewportBounds.scale]);
+  const gridLines = useGridLines(waypoints, viewportBounds.scale);
 
   const { anchor: waypointTooltipAnchor, showForWaypoint, clearAnchor } = useWaypointTooltipAnchor({
     selectedObject,
