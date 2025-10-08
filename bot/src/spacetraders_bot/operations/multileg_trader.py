@@ -440,6 +440,13 @@ class MultiLegTradeOptimizer:
                 continue
 
             sale_value = units_to_sell * sell_price
+            self.logger.debug(
+                "Sell %s: %s units @ %s = %s",
+                good,
+                units_to_sell,
+                sell_price,
+                sale_value,
+            )
             actions.append(TradeAction(
                 waypoint=market,
                 good=good,
