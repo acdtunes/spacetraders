@@ -12,6 +12,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
 sys.path.insert(0, str(Path(__file__).parent))
 
+from bdd_table_utils import table_to_rows
 from smart_navigator import SmartNavigator
 from mock_api import MockAPIClient
 from ship_controller import ShipController
@@ -99,42 +100,26 @@ def mock_api(context):
 
 
 @given(parsers.parse('the system "{system}" has the following waypoints:\n{table}'))
-def setup_waypoints_table(context, system, table):
-    """Parse waypoint table from Gherkin"""
-    lines = table.strip().split('\n')
-    headers = [h.strip() for h in lines[0].split('|')[1:-1]]
-
-    for line in lines[1:]:  # Skip only the header
-        values = [v.strip() for v in line.split('|')[1:-1]]
-        waypoint_data = dict(zip(headers, values))
-
-        traits = waypoint_data.get('traits', '').split(',') if waypoint_data.get('traits') else []
-        traits = [t.strip() for t in traits if t.strip()]
-
-        context['mock_api'].add_waypoint(
-            symbol=waypoint_data['symbol'],
-            type=waypoint_data['type'],
-            x=int(waypoint_data['x']),
-            y=int(waypoint_data['y']),
-            traits=traits
-        )
-
-
+@given(parsers.parse('the system "{system}" has the following waypoints:'))
 @given(parsers.parse('the system "{system}" has waypoints:\n{table}'))
-def setup_waypoints_simple(context, system, table):
-    """Parse simple waypoint table"""
-    lines = table.strip().split('\n')
-    headers = [h.strip() for h in lines[0].split('|')[1:-1]]
+@given(parsers.parse('the system "{system}" has waypoints:'))
+def setup_waypoints(context, system, table: str | None = None, datatable: list[list[str]] | None = None):
+    rows = table_to_rows(table, datatable)
+    if not rows:
+        return
 
-    for line in lines[1:]:  # Skip only the header
-        values = [v.strip() for v in line.split('|')[1:-1]]
-        waypoint_data = dict(zip(headers, values))
+    headers = rows[0]
 
-        context['mock_api'].add_waypoint(
-            symbol=waypoint_data['symbol'],
-            x=int(waypoint_data['x']),
-            y=int(waypoint_data['y'])
-        )
+    for cells in rows[1:]:
+        row = dict(zip(headers, cells))
+
+        symbol = row['symbol']
+        x = int(float(row.get('x', 0)))
+        y = int(float(row.get('y', 0)))
+        waypoint_type = row.get('type', 'ASTEROID')
+        traits = [t.strip() for t in row.get('traits', '').split(',') if t.strip()]
+
+        context['mock_api'].add_waypoint(symbol, waypoint_type, x, y, traits)
 
 
 # Given steps

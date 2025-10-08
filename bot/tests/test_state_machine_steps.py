@@ -11,6 +11,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
 sys.path.insert(0, str(Path(__file__).parent))
 
+from bdd_table_utils import table_to_rows
 from smart_navigator import SmartNavigator
 from mock_api import MockAPIClient
 from ship_controller import ShipController
@@ -90,12 +91,15 @@ def mock_api(context):
 
 
 @given(parsers.parse('the system "{system}" has waypoints:\n{table}'))
-def setup_waypoints(context, system, table):
-    lines = table.strip().split('\n')
-    headers = [h.strip() for h in lines[0].split('|')[1:-1]]
+@given(parsers.parse('the system "{system}" has waypoints:'))
+def setup_waypoints(context, system, table: str | None = None, datatable: list[list[str]] | None = None):
+    rows = table_to_rows(table, datatable)
+    if not rows:
+        return
 
-    for line in lines[1:]:  # Skip only the header
-        values = [v.strip() for v in line.split('|')[1:-1]]
+    headers = rows[0]
+
+    for values in rows[1:]:
         waypoint_data = dict(zip(headers, values))
         context['mock_api'].add_waypoint(
             symbol=waypoint_data['symbol'],
@@ -182,9 +186,11 @@ def attempt_navigate(context, destination):
     # Capture log output
     log_capture = io.StringIO()
     handler = logging.StreamHandler(log_capture)
-    handler.setLevel(logging.ERROR)
-    logger = logging.getLogger('smart_navigator')
+    handler.setLevel(logging.DEBUG)
+    logger = logging.getLogger(SmartNavigator.__module__)
     logger.addHandler(handler)
+    logger.setLevel(logging.DEBUG)
+    logger.propagate = False
 
     try:
         context['success'] = context['navigator'].execute_route(context['ship'], destination)
@@ -195,7 +201,10 @@ def attempt_navigate(context, destination):
         context['success'] = False
         context['error'] = str(e)
     finally:
+        handler.flush()
         logger.removeHandler(handler)
+    if context.get('error'):
+        context['error'] = context['error'] or log_capture.getvalue()
 
 
 @when("a refuel stop is executed")

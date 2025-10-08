@@ -126,7 +126,7 @@ def ship_assigned(context, ship, operator):
     context['mock_daemon_manager'].start(daemon_id, ["python3", "test.py"])
 
 
-@given(parsers.re(r'a ship "(?P<ship>[^"]+)" is assigned to "(?P<operator>[^"]+)" with daemon "(?P<daemon_id>[^"]+)"'))
+@given(parsers.parse('a ship "{ship}" is assigned to "{operator}" with daemon "{daemon_id}"'))
 def ship_assigned_with_daemon(context, ship, operator, daemon_id):
     """Assign ship to operator with specific daemon ID"""
     # Track the ship
@@ -145,7 +145,7 @@ def ship_assigned_with_daemon(context, ship, operator, daemon_id):
     context['mock_daemon_manager'].start(daemon_id, ["python3", "test.py"])
 
 
-@given(parsers.re(r'a ship "(?P<ship>[^"]+)" is assigned to "(?P<operator>[^"]+)" with daemon "(?P<daemon_id>[^"]+)" for operation "(?P<operation>[^"]+)"'))
+@given(parsers.parse('a ship "{ship}" is assigned to "{operator}" with daemon "{daemon_id}" for operation "{operation}"'))
 def ship_assigned_full(context, ship, operator, daemon_id, operation):
     """Assign ship to operator with daemon and operation"""
     # Track the ship
@@ -170,7 +170,7 @@ def daemon_stopped(context, daemon_id):
     context['mock_daemon_manager'].set_daemon_running(daemon_id, False)
 
 
-@when(parsers.re(r'I assign "(?P<ship>[^"]+)" to "(?P<operator>[^"]+)" with daemon "(?P<daemon_id>[^"]+)" for operation "(?P<operation>[^"]+)"'))
+@when(parsers.parse('I assign "{ship}" to "{operator}" with daemon "{daemon_id}" for operation "{operation}"'))
 def assign_ship(context, ship, operator, daemon_id, operation):
     """Assign ship to operation"""
     try:
@@ -210,7 +210,7 @@ def assign_ship_with_metadata(context, ship, metadata):
         context['result'] = False
 
 
-@when(parsers.re(r'I release "(?P<ship>[^"]+)" with reason "(?P<reason>[^"]+)"'))
+@when(parsers.parse('I release "{ship}" with reason "{reason}"'))
 def release_ship(context, ship, reason):
     """Release ship from assignment"""
     try:
@@ -800,5 +800,3 @@ def verify_sync_skipped(context):
     # Ship should still be in database
     assignment = context['assignment_manager'].get_assignment('CMDR_AC_2025-1')
     assert assignment is not None
-
-

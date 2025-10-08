@@ -25,6 +25,11 @@ class FakePurchaseShip:
         return True
 
 
+class FailNavigateShip(FakePurchaseShip):
+    def navigate(self, destination):
+        return False
+
+
 class FakePurchaseAPI:
     def __init__(self, price=1000, credits=5000):
         self.price = price
@@ -89,6 +94,69 @@ def test_purchase_ship_operation_success(monkeypatch):
     assert result == 0
     assert len(api.purchase_calls) == 2
     assert captain_events  # Captain log entries recorded
+
+
+def test_purchase_ship_operation_insufficient_funds(monkeypatch):
+    captain_events = []
+    patch_purchase_helpers(monkeypatch, captain_events)
+
+    api = FakePurchaseAPI(price=2000, credits=1000)
+    ship = FakePurchaseShip(location="X1-TEST-B1")
+    args = SimpleNamespace(
+        player_id=1,
+        ship="PURCHASER",
+        shipyard="X1-TEST-B1",
+        ship_type="HEAVY_FREIGHTER",
+        max_budget=1500,
+        quantity=1,
+        log_level="INFO",
+    )
+
+    result = purchasing.purchase_ship_operation(args, api=api, ship=ship, captain_logger=captain_events)
+
+    assert result == 1
+    assert any(event[0] == "CRITICAL_ERROR" for event in captain_events)
+
+
+def test_purchase_ship_operation_navigation_failure(monkeypatch):
+    captain_events = []
+    patch_purchase_helpers(monkeypatch, captain_events)
+
+    api = FakePurchaseAPI(price=1000, credits=5000)
+    ship = FailNavigateShip(location="X1-TEST-A1")
+    args = SimpleNamespace(
+        player_id=1,
+        ship="PURCHASER",
+        shipyard="X1-TEST-B1",
+        ship_type="HEAVY_FREIGHTER",
+        max_budget=5000,
+        quantity=1,
+        log_level="INFO",
+    )
+
+    result = purchasing.purchase_ship_operation(args, api=api, ship=ship, captain_logger=captain_events)
+
+    assert result == 1
+    assert any(event[0] == "CRITICAL_ERROR" for event in captain_events)
+
+
+def test_purchase_ship_operation_quantity_must_be_positive(monkeypatch, capsys):
+    patch_purchase_helpers(monkeypatch, [])
+
+    args = SimpleNamespace(
+        player_id=1,
+        ship="PURCHASER",
+        shipyard="X1-TEST-B1",
+        ship_type="HEAVY_FREIGHTER",
+        max_budget=5000,
+        quantity=0,
+        log_level="INFO",
+    )
+
+    result = purchasing.purchase_ship_operation(args)
+
+    assert result == 1
+    assert "Quantity must be greater than zero" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize(

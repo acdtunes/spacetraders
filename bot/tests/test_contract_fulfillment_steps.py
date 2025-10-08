@@ -3,6 +3,7 @@
 Step definitions for contract fulfillment BDD tests
 """
 import sys
+import math
 from pathlib import Path
 import pytest
 from pytest_bdd import scenarios, given, when, then, parsers
@@ -12,7 +13,69 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from mock_api import MockAPIClient
 from ship_controller import ShipController
-from smart_navigator import SmartNavigator
+class FastContractNavigator:
+    """Lightweight navigator for contract tests (skips DB + full routing)."""
+
+    def __init__(self, api_client, system: str):
+        self.api = api_client
+        self.system = system
+        self.graph = None
+
+    def execute_route(self, ship_controller, destination: str,
+                      prefer_cruise: bool = True, operation_controller=None) -> bool:
+        ship_data = ship_controller.get_status()
+        if not ship_data:
+            return False
+
+        current = ship_data['nav']['waypointSymbol']
+        if current == destination:
+            return True
+
+        start_wp = self.api.waypoints.get(current)
+        dest_wp = self.api.waypoints.get(destination)
+        if not dest_wp:
+            raise AssertionError(f"Destination {destination} missing in mock waypoints")
+
+        if not start_wp:
+            # If the start waypoint was not explicitly declared, mirror destination coords
+            start_wp = {
+                "x": dest_wp['x'],
+                "y": dest_wp['y'],
+                "type": dest_wp['type'],
+                "systemSymbol": dest_wp['systemSymbol'],
+            }
+
+        # Simple distance + fuel drain to keep behaviour expectations
+        distance = math.hypot(dest_wp['x'] - start_wp['x'], dest_wp['y'] - start_wp['y'])
+        fuel_cost = max(1, int(distance) or 1)
+
+        ship_record = self.api.ships[ship_controller.ship_symbol]
+        current_fuel = ship_record['fuel']['current']
+        ship_record['fuel']['current'] = max(0, current_fuel - min(current_fuel, fuel_cost))
+
+        # Update nav state to reflect arrival
+        ship_record['nav']['route'] = {
+            "destination": {
+                "symbol": destination,
+                "type": dest_wp['type'],
+                "systemSymbol": dest_wp['systemSymbol'],
+                "x": dest_wp['x'],
+                "y": dest_wp['y']
+            },
+            "departure": {
+                "symbol": current,
+                "type": start_wp.get('type', 'PLANET'),
+                "systemSymbol": start_wp.get('systemSymbol', self.system),
+                "x": start_wp['x'],
+                "y": start_wp['y']
+            },
+            "departureTime": "T0",
+            "arrival": "T0"
+        }
+        ship_record['nav']['waypointSymbol'] = destination
+        ship_record['nav']['status'] = 'IN_ORBIT'
+
+        return True
 
 # Load all scenarios from the feature file
 scenarios('features/contract_fulfillment.feature')
@@ -31,7 +94,10 @@ def context():
         'completion_payment': 0,
         'units_purchased': 0,
         'trip_count': 0,
-        'delivery_log': []
+        'delivery_log': [],
+        'graph_version': 0,
+        'graph_cache_version': -1,
+        'graph_cache': None
     }
 
 
@@ -110,6 +176,9 @@ def create_waypoint(context, waypoint, x, y, traits):
     if "MARKETPLACE" in trait_list:
         context['mock_api'].add_market(waypoint, imports=["IRON_ORE", "COPPER_ORE"], exports=["FUEL"])
 
+    # Invalidate graph cache
+    context['graph_version'] += 1
+
 
 @given('the system "X1-TEST" has the contract market configured')
 def configure_contract_market(context):
@@ -128,14 +197,19 @@ def create_ship(context, ship_symbol, waypoint, nav_status):
 
     # Initialize navigator
     system = waypoint.rsplit('-', 1)[0]
-    context['navigator'] = SmartNavigator(context['mock_api'], system)
+    # Swap in lightweight navigator to avoid heavy routing/DB setup
+    context['navigator'] = FastContractNavigator(context['mock_api'], system)
 
     # Build graph from waypoints
-    waypoints = normalize_waypoints(context['mock_api'].waypoints)
-    context['navigator'].graph = {
-        'waypoints': waypoints,
-        'edges': build_graph_edges(waypoints)
-    }
+    if context['graph_cache_version'] != context['graph_version']:
+        waypoints = normalize_waypoints(context['mock_api'].waypoints)
+        graph = {
+            'waypoints': waypoints,
+            'edges': build_graph_edges(waypoints)
+        }
+        context['graph_cache'] = graph
+        context['graph_cache_version'] = context['graph_version']
+    context['navigator'].graph = context['graph_cache']
 
 
 @given(parsers.parse('the ship has {current:d}/{capacity:d} fuel'))

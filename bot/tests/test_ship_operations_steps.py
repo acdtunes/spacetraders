@@ -122,6 +122,13 @@ def refuel_ship(context):
 @then(parsers.parse('the ship should be {expected_status}'))
 def ship_status_is(context, expected_status):
     """Verify ship navigation status"""
+    if expected_status.startswith('at "') and expected_status.endswith('"'):
+        expected_location = expected_status[4:-1]
+        actual_location = context['ship'].get_location()
+        assert actual_location == expected_location, \
+            f"Expected {expected_location}, got {actual_location}"
+        return
+
     actual_status = context['ship'].get_nav_status()
     assert actual_status == expected_status, f"Expected {expected_status}, got {actual_status}"
 

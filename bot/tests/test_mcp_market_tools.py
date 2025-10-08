@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """Tests for market-related MCP server tools."""
 
+import asyncio
 import importlib
 import sys
 import types
 from pathlib import Path
-
-import pytest
 
 REPO_ROOT = Path(__file__).parent.parent
 
@@ -67,8 +66,7 @@ mcp_server = importlib.import_module("mcp_server")
 market_data = importlib.import_module("spacetraders_bot.core.market_data")
 
 
-@pytest.mark.asyncio
-async def test_market_waypoint_lists_all_goods(monkeypatch):
+def test_market_waypoint_lists_all_goods(monkeypatch):
     """Waypoint tool should format multiple goods into readable text."""
 
     def fake_get_waypoint_goods(waypoint_symbol, *, db=None, db_path=None):
@@ -102,20 +100,22 @@ async def test_market_waypoint_lists_all_goods(monkeypatch):
     monkeypatch.setattr(market_data, "get_waypoint_goods", fake_get_waypoint_goods)
     monkeypatch.setattr(market_data, "get_waypoint_good", fake_get_waypoint_good)
 
-    result = await mcp_server.call_tool(
-        "bot_market_waypoint",
-        {"waypoint_symbol": "X1-TEST-A1"},
-    )
+    async def _run():
+        result = await mcp_server.call_tool(
+            "bot_market_waypoint",
+            {"waypoint_symbol": "X1-TEST-A1"},
+        )
 
-    assert len(result) == 1
-    text = result[0].text
-    assert "Market intel for X1-TEST-A1" in text
-    assert "IRON_ORE" in text
-    assert "COPPER" in text
+        assert len(result) == 1
+        text = result[0].text
+        assert "Market intel for X1-TEST-A1" in text
+        assert "IRON_ORE" in text
+        assert "COPPER" in text
+
+    asyncio.run(_run())
 
 
-@pytest.mark.asyncio
-async def test_market_find_sellers_formats_results(monkeypatch):
+def test_market_find_sellers_formats_results(monkeypatch):
     """Selling search should show ordered list with pricing."""
 
     def fake_find_markets_selling(
@@ -150,26 +150,28 @@ async def test_market_find_sellers_formats_results(monkeypatch):
 
     monkeypatch.setattr(market_data, "find_markets_selling", fake_find_markets_selling)
 
-    result = await mcp_server.call_tool(
-        "bot_market_find_sellers",
-        {
-            "good_symbol": "IRON_ORE",
-            "system": "X1-TEST",
-            "min_supply": "MODERATE",
-            "updated_within_hours": 4.5,
-            "limit": 3,
-        },
-    )
+    async def _run():
+        result = await mcp_server.call_tool(
+            "bot_market_find_sellers",
+            {
+                "good_symbol": "IRON_ORE",
+                "system": "X1-TEST",
+                "min_supply": "MODERATE",
+                "updated_within_hours": 4.5,
+                "limit": 3,
+            },
+        )
 
-    assert len(result) == 1
-    text = result[0].text
-    assert "Best selling markets for IRON_ORE" in text
-    assert "1. X1-TEST-A2" in text
-    assert "2. X1-TEST-B1" in text
+        assert len(result) == 1
+        text = result[0].text
+        assert "Best selling markets for IRON_ORE" in text
+        assert "1. X1-TEST-A2" in text
+        assert "2. X1-TEST-B1" in text
+
+    asyncio.run(_run())
 
 
-@pytest.mark.asyncio
-async def test_market_summarize_handles_missing_data(monkeypatch):
+def test_market_summarize_handles_missing_data(monkeypatch):
     """Summary tool should report when no data available."""
 
     def fake_summarize_good(good_symbol, *, system=None, db=None, db_path=None):
@@ -179,12 +181,15 @@ async def test_market_summarize_handles_missing_data(monkeypatch):
 
     monkeypatch.setattr(market_data, "summarize_good", fake_summarize_good)
 
-    result = await mcp_server.call_tool(
-        "bot_market_summarize_good",
-        {"good_symbol": "ALUMINUM_ORE", "system": "X1-TEST"},
-    )
+    async def _run():
+        result = await mcp_server.call_tool(
+            "bot_market_summarize_good",
+            {"good_symbol": "ALUMINUM_ORE", "system": "X1-TEST"},
+        )
 
-    assert len(result) == 1
-    text = result[0].text
-    assert "No market summary available" in text
-    assert "X1-TEST" in text
+        assert len(result) == 1
+        text = result[0].text
+        assert "No market summary available" in text
+        assert "X1-TEST" in text
+
+    asyncio.run(_run())

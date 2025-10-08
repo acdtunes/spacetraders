@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Unit tests for market_data helper functions."""
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, UTC
 
 import pytest
 
@@ -55,7 +55,7 @@ def _seed_market_entry(
 
 
 def test_get_waypoint_goods_returns_all_goods(temp_database):
-    now = datetime.utcnow()
+    now = datetime.now(UTC)
     _seed_market_entry(
         temp_database,
         "X1-TEST-A1",
@@ -84,7 +84,7 @@ def test_get_waypoint_goods_returns_all_goods(temp_database):
 
 
 def test_find_markets_selling_filters_by_system_and_supply(temp_database):
-    now = datetime.utcnow()
+    now = datetime.now(UTC)
     _seed_market_entry(
         temp_database,
         "X1-TEST-A1",
@@ -130,7 +130,7 @@ def test_find_markets_selling_filters_by_system_and_supply(temp_database):
 
 
 def test_find_markets_buying_orders_by_sell_price(temp_database):
-    now = datetime.utcnow()
+    now = datetime.now(UTC)
     _seed_market_entry(
         temp_database,
         "X1-TEST-A1",
@@ -159,7 +159,7 @@ def test_find_markets_buying_orders_by_sell_price(temp_database):
 
 
 def test_recent_updates_and_stale_queries(temp_database):
-    now = datetime.utcnow()
+    now = datetime.now(UTC)
     stale_time = now - timedelta(hours=3)
     _seed_market_entry(
         temp_database,
@@ -193,7 +193,7 @@ def test_recent_updates_and_stale_queries(temp_database):
 
 
 def test_get_waypoint_good_and_summary(temp_database):
-    now = datetime.utcnow()
+    now = datetime.now(UTC)
     _seed_market_entry(
         temp_database,
         "X1-TEST-A1",

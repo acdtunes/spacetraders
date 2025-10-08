@@ -11,6 +11,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
 sys.path.insert(0, str(Path(__file__).parent))
 
+from bdd_table_utils import table_to_rows
 from smart_navigator import SmartNavigator
 from mock_api import MockAPIClient
 from ship_controller import ShipController
@@ -93,13 +94,16 @@ def mock_api(context):
 
 
 @given(parsers.parse('the system "{system}" has waypoints:\n{table}'))
-def setup_waypoints(context, system, table):
+@given(parsers.parse('the system "{system}" has waypoints:'))
+def setup_waypoints(context, system, table: str | None = None, datatable: list[list[str]] | None = None):
     """Setup waypoints from datatable"""
-    lines = table.strip().split('\n')
-    headers = [h.strip() for h in lines[0].split('|')[1:-1]]
+    rows = table_to_rows(table, datatable)
+    if not rows:
+        return
 
-    for line in lines[1:]:  # Skip header
-        values = [v.strip() for v in line.split('|')[1:-1]]
+    headers = rows[0]
+
+    for values in rows[1:]:
         waypoint_data = dict(zip(headers, values))
 
         symbol = waypoint_data.get('symbol')
@@ -186,15 +190,18 @@ def request_state_transition(context, target_state):
 
 
 @when(parsers.parse('I request these transitions in sequence:\n{table}'))
-def rapid_transitions(context, table):
+@when('I request these transitions in sequence:')
+def rapid_transitions(context, table: str | None = None, datatable: list[list[str]] | None = None):
     """Execute rapid state transitions"""
     context['transitions'] = []
 
-    lines = table.strip().split('\n')
-    headers = [h.strip() for h in lines[0].split('|')[1:-1]]
+    rows = table_to_rows(table, datatable)
+    if not rows:
+        return
 
-    for line in lines[1:]:  # Skip header
-        values = [v.strip() for v in line.split('|')[1:-1]]
+    headers = rows[0]
+
+    for values in rows[1:]:
         row_data = dict(zip(headers, values))
 
         from_state = row_data.get('from')

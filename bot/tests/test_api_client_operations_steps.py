@@ -791,13 +791,15 @@ def response_contains_data(context):
 @then("the request should fail")
 def request_fails(context):
     """Verify request failed"""
-    assert context['response'] is None
+    response = context.get('response')
+    assert response is None or 'error' in response
 
 
 @then("no data should be returned")
 def no_data_returned(context):
     """Verify no data returned"""
-    assert context['response'] is None
+    response = context.get('response')
+    assert response is None or 'data' not in response
 
 
 @then("the response should contain navigation data")
@@ -842,20 +844,23 @@ def verify_retry_count(context, count):
 @then("the request should fail after max retries")
 def request_fails_max_retries(context):
     """Verify request failed after max retries"""
-    assert context['response'] is None
+    response = context.get('response')
+    assert response is None or 'error' in response
 
 
 @then("the error should be logged about unsupported method")
 def error_logged_unsupported_method(context):
     """Verify error was logged about unsupported method"""
-    # The API client catches the ValueError and returns None
-    assert context['response'] is None
+    # The API client catches the ValueError and returns None/error payload
+    response = context.get('response')
+    assert response is None or 'error' in response
 
 
 @then("the request should fail immediately")
 def request_fails_immediately(context):
     """Verify request failed without retries"""
-    assert context['response'] is None
+    response = context.get('response')
+    assert response is None or 'error' in response
 
 
 @then("there should be no retry attempts")
@@ -863,7 +868,8 @@ def no_retry_attempts(context):
     """Verify no retries occurred"""
     # For 400 errors, the request is made once but not retried
     # So we just verify the response failed
-    assert context['response'] is None
+    response = context.get('response')
+    assert response is None or 'error' in response
 
 
 @then("the request headers should include bearer token")

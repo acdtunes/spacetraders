@@ -693,8 +693,17 @@ class RouteOptimizer:
         }]
 
         if prefer_cruise:
-            if not self._should_allow_emergency_drift(current_wp, neighbor, fuel):
-                return counter
+            current_has_fuel = self.graph['waypoints'][current_wp].get('has_fuel', False)
+            neighbor_has_fuel = self.graph['waypoints'][neighbor].get('has_fuel', False)
+            can_cruise_after_refuel = False
+            if current_has_fuel:
+                cruise_cost_to_neighbor = FuelCalculator.fuel_cost(distance, 'CRUISE')
+                can_cruise_after_refuel = cruise_cost_to_neighbor * (1 + FUEL_SAFETY_MARGIN) <= self.fuel_capacity
+
+            if not self._should_allow_emergency_drift(current_wp, neighbor, fuel, distance, goal):
+                # Allow drift only if destination lacks fuel AND even a full tank can't reach it via CRUISE.
+                if not (neighbor == goal and not neighbor_has_fuel and not can_cruise_after_refuel):
+                    return counter
 
             emergency_path = new_path + [{
                 "action": "emergency",
@@ -735,10 +744,39 @@ class RouteOptimizer:
         )
         return counter + 1
 
-    def _should_allow_emergency_drift(self, current_wp: str, neighbor: str, fuel: int) -> bool:
+    def _should_allow_emergency_drift(self, current_wp: str, neighbor: str, fuel: int, distance: float, goal: str) -> bool:
         neighbor_data = self.graph['waypoints'][neighbor]
-        if not neighbor_data.get('has_fuel', False):
+        neighbor_has_fuel = neighbor_data.get('has_fuel', False)
+
+        current_data = self.graph['waypoints'][current_wp]
+        max_fuel = self.fuel_capacity if current_data.get('has_fuel', False) else fuel
+
+        # If we can reach the neighbor via CRUISE after refueling to full, prefer that.
+        cruise_cost_to_neighbor = FuelCalculator.fuel_cost(distance, 'CRUISE')
+        if current_data.get('has_fuel', False) and cruise_cost_to_neighbor * (1 + FUEL_SAFETY_MARGIN) <= max_fuel:
             return False
+
+        # If refueling at current waypoint would allow reaching another fuel stop, avoid DRIFT.
+        if current_data.get('has_fuel', False):
+            for neighbor_wp, dist in self.adjacency[current_wp]:
+                neighbor_wp_data = self.graph['waypoints'][neighbor_wp]
+                cruise_cost = FuelCalculator.fuel_cost(dist, 'CRUISE')
+                if neighbor_wp_data.get('has_fuel', False) and cruise_cost * (1 + FUEL_SAFETY_MARGIN) <= max_fuel:
+                    return False
+
+        if not neighbor_has_fuel:
+            # Allow DRIFT only if we can't reach destination via CRUISE even with full tank
+            if cruise_cost_to_neighbor * (1 + FUEL_SAFETY_MARGIN) > max_fuel:
+                return True
+
+        # If a cruise hop can reach any fuel waypoint (even without the
+        # usual safety margin), prefer that deterministic path.
+        for neighbor_wp, dist in self.adjacency[current_wp]:
+            cruise_cost = FuelCalculator.fuel_cost(dist, 'CRUISE')
+            if fuel >= cruise_cost:
+                neighbor_info = self.graph['waypoints'][neighbor_wp]
+                if neighbor_info.get('has_fuel', False):
+                    return False
 
         if any(
             fuel >= FuelCalculator.fuel_cost(dist, 'CRUISE') * (1 + FUEL_SAFETY_MARGIN)

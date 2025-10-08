@@ -6,7 +6,7 @@ Simulates daemon manager without actually running processes
 """
 
 from typing import Dict, List, Optional
-from datetime import datetime
+from datetime import datetime, UTC
 
 
 class MockDaemonManager:
@@ -26,7 +26,7 @@ class MockDaemonManager:
             'pid': self.next_pid,
             'command': command,
             'is_running': True,
-            'started_at': datetime.utcnow().isoformat(),
+            'started_at': datetime.now(UTC).isoformat(),
             'cpu_percent': 2.5,
             'memory_mb': 45.0,
             'runtime_seconds': 0,

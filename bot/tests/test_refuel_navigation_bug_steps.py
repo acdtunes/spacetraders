@@ -12,6 +12,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
 sys.path.insert(0, str(Path(__file__).parent))
 
+from bdd_table_utils import table_to_rows
 from smart_navigator import SmartNavigator
 from ship_controller import ShipController
 from operation_controller import OperationController
@@ -50,23 +51,24 @@ def mock_api(context):
 
 
 @given(parsers.parse('the system "{system}" has the following waypoints:\n{table}'))
-def setup_waypoints_table(context, system, table):
-    """Parse waypoint table from Gherkin"""
-    lines = table.strip().split('\n')
-    headers = [h.strip() for h in lines[0].split('|')[1:-1]]
+@given(parsers.parse('the system "{system}" has the following waypoints:'))
+def setup_waypoints_table(context, system, table: str | None = None, datatable: list[list[str]] | None = None):
+    """Load waypoint data for scenario from table"""
+    rows = table_to_rows(table, datatable)
+    if not rows:
+        return
 
-    for line in lines[1:]:
-        values = [v.strip() for v in line.split('|')[1:-1]]
-        waypoint_data = dict(zip(headers, values))
+    headers = rows[0]
 
-        traits = waypoint_data.get('traits', '').split(',') if waypoint_data.get('traits') else []
-        traits = [t.strip() for t in traits if t.strip()]
+    for cells in rows[1:]:
+        row = dict(zip(headers, cells))
 
+        traits = [t.strip() for t in row.get('traits', '').split(',') if t.strip()]
         context['mock_api'].add_waypoint(
-            symbol=waypoint_data['symbol'],
-            type=waypoint_data['type'],
-            x=int(waypoint_data['x']),
-            y=int(waypoint_data['y']),
+            symbol=row['symbol'],
+            type=row.get('type', 'ASTEROID'),
+            x=int(float(row.get('x', 0))),
+            y=int(float(row.get('y', 0))),
             traits=traits
         )
 
@@ -129,11 +131,15 @@ def set_ship_state(context, state):
 
 
 @given(parsers.parse('a navigation checkpoint exists with:\n{table}'))
-def checkpoint_exists(context, table):
+@given('a navigation checkpoint exists with:')
+def checkpoint_exists(context, table: str | None = None, datatable: list[list[str]] | None = None):
     """Create a navigation checkpoint"""
-    lines = [line.strip() for line in table.strip().split('\n') if line.strip()]
-    headers = [h.strip() for h in lines[0].split('|')[1:-1]]
-    values = [v.strip() for v in lines[1].split('|')[1:-1]]
+    rows = table_to_rows(table, datatable)
+    if len(rows) < 2:
+        return
+
+    headers = rows[0]
+    values = rows[1]
 
     checkpoint_data = dict(zip(headers, values))
 

@@ -158,12 +158,12 @@ def fail_first_sell(context):
 def set_ship_in_transit(context, destination, seconds):
     """Set ship in IN_TRANSIT state"""
     ship_symbol = context['ship'].ship_symbol
-    from datetime import datetime, timedelta
+    from datetime import datetime, timedelta, UTC
 
     # Since time.sleep is mocked to 0.001s, set arrival to almost immediate
     # to ensure the ship arrives after the mocked sleep
-    arrival_time = datetime.utcnow() + timedelta(milliseconds=0.1)
-    arrival_str = arrival_time.strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+    arrival_time = datetime.now(UTC) + timedelta(milliseconds=0.1)
+    arrival_str = arrival_time.isoformat().replace('+00:00', 'Z')
 
     current_location = context['mock_api'].ships[ship_symbol]['nav']['waypointSymbol']
 
@@ -325,6 +325,13 @@ def orbit_returns_false(context):
 @then(parsers.parse('the ship should be {expected_status}'))
 def ship_status_is(context, expected_status):
     """Verify ship navigation status"""
+    if expected_status.startswith('at "') and expected_status.endswith('"'):
+        expected_location = expected_status[4:-1]
+        actual_location = context['ship'].get_location()
+        assert actual_location == expected_location, \
+            f"Expected {expected_location}, got {actual_location}"
+        return
+
     actual_status = context['ship'].get_nav_status()
     assert actual_status == expected_status, f"Expected {expected_status}, got {actual_status}"
 

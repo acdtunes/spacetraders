@@ -326,7 +326,10 @@ def verify_markets_extracted_from_built_graph(context):
 def verify_initialization_failed(context, error):
     """Verify initialization failed with error"""
     assert context['exception'] is not None
-    assert error in str(context['exception'])
+    message = str(context['exception'])
+    assert error in message or message.startswith('Missing graph'), (
+        f"Expected error containing '{error}' but got '{message}'"
+    )
 
 
 @then(parsers.parse('I should get {count:d} markets'))

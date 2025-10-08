@@ -12,6 +12,7 @@ import tempfile
 sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
 sys.path.insert(0, str(Path(__file__).parent))
 
+from bdd_table_utils import table_to_rows
 from mock_api import MockAPIClient
 from routing import (
     GraphBuilder, RouteOptimizer, TourOptimizer, FuelCalculator,
@@ -20,6 +21,47 @@ from routing import (
 
 # Load all scenarios from the feature file
 scenarios('features/routing_advanced.feature')
+
+
+_KNOWN_HEADERS = {
+    'symbol', 'type', 'x', 'y', 'traits', 'page', 'distance', 'from', 'to',
+    'has_fuel', 'has_fuel_at_to', 'edge_to', 'edge_type', 'purchase_price',
+    'sell_price', 'supply', 'activity', 'trade_volume', 'last_updated',
+    'name'
+}
+
+
+def _parse_table(table: str | None = None, datatable: list[list[str]] | None = None) -> list[dict[str, str]]:
+    """Parse a Gherkin table string into list of dict rows."""
+    rows_raw = table_to_rows(table, datatable)
+    if not rows_raw:
+        return []
+
+    raw_headers = rows_raw[0]
+    header_lower = {h.lower() for h in raw_headers}
+
+    if raw_headers and (header_lower & _KNOWN_HEADERS):
+        headers = raw_headers
+        data_rows = rows_raw[1:]
+    else:
+        headers = ['value']
+        data_rows = rows_raw
+
+    rows = []
+    for values in data_rows:
+        if not values:
+            continue
+        rows.append(dict(zip(headers, values)))
+    return rows
+
+
+def _get_value(row: dict[str, str], key: str) -> str:
+    """Get value from row using key, falling back to the first column."""
+    if key in row:
+        return row[key]
+    if key == 'symbol' and 'value' in row:
+        return row['value']
+    return next(iter(row.values()))
 
 
 # Import step definitions from basic routing tests to avoid duplication
@@ -138,17 +180,13 @@ def waypoint_should_be(context, expected):
 # =============================================================================
 
 @given(parsers.parse('waypoints exist with pagination:\n{table}'))
-def create_waypoints_with_pagination(context, table):
+@given('waypoints exist with pagination:')
+def create_waypoints_with_pagination(context, table: str | None = None, datatable: list[list[str]] | None = None):
     """Create waypoints with pagination"""
-    lines = table.strip().split('\n')
-    headers = [h.strip() for h in lines[0].split('|')[1:-1]]
-
+    rows = _parse_table(table, datatable)
     waypoints_by_page = {}
 
-    for line in lines[1:]:
-        values = [v.strip() for v in line.split('|')[1:-1]]
-        row = dict(zip(headers, values))
-
+    for row in rows:
         symbol = row['symbol']
         wp_type = row['type']
         x = int(row['x'])
@@ -203,22 +241,18 @@ def graph_should_be_none(context):
 # =============================================================================
 
 @given(parsers.parse('a fuel network:\n{table}'))
-def create_fuel_network(context, table):
+@given('a fuel network:')
+def create_fuel_network(context, table: str | None = None, datatable: list[list[str]] | None = None):
     """Create navigation graph with fuel stations"""
-    lines = table.strip().split('\n')
-    headers = [h.strip() for h in lines[0].split('|')[1:-1]]
-
+    rows = _parse_table(table, datatable)
     waypoints = {}
     edges = []
 
-    for line in lines[1:]:
-        values = [v.strip() for v in line.split('|')[1:-1]]
-        row = dict(zip(headers, values))
-
-        from_wp = row['from']
-        to_wp = row['to']
-        distance = int(row['distance'])
-        has_fuel_at_to = row['has_fuel_at_to'].lower() == 'true'
+    for row in rows:
+        from_wp = _get_value(row, 'from')
+        to_wp = _get_value(row, 'to')
+        distance = int(float(_get_value(row, 'distance')))
+        has_fuel_at_to = _get_value(row, 'has_fuel_at_to').lower() == 'true'
 
         # Create waypoints if they don't exist
         if from_wp not in waypoints:
@@ -357,23 +391,20 @@ def plan_route_complex(context, start, goal):
 # =============================================================================
 
 @given(parsers.parse('a tour network:\n{table}'))
-def create_tour_network(context, table):
+@given('a tour network:')
+def create_tour_network(context, table: str | None = None, datatable: list[list[str]] | None = None):
     """Create network for tour planning"""
-    lines = table.strip().split('\n')
-    headers = [h.strip() for h in lines[0].split('|')[1:-1]]
-
     waypoints = {}
     edges = []
 
     symbols = []
-    for line in lines[1:]:
-        values = [v.strip() for v in line.split('|')[1:-1]]
-        row = dict(zip(headers, values))
+    rows = _parse_table(table, datatable)
+    for row in rows:
 
-        symbol = row['symbol']
-        x = int(row['x'])
-        y = int(row['y'])
-        has_fuel = row['has_fuel'].lower() == 'true'
+        symbol = _get_value(row, 'symbol')
+        x = int(float(_get_value(row, 'x')))
+        y = int(float(_get_value(row, 'y')))
+        has_fuel = _get_value(row, 'has_fuel').lower() == 'true'
 
         traits = ["MARKETPLACE"] if has_fuel else []
         waypoints[symbol] = {
@@ -416,10 +447,11 @@ def add_isolated_waypoint(context, symbol, x, y):
 
 
 @when(parsers.parse('I plan a tour from "{start}" visiting:\n{table}'))
-def plan_tour(context, start, table):
+@when(parsers.parse('I plan a tour from "{start}" visiting:'))
+def plan_tour(context, start, table: str | None = None, datatable: list[list[str]] | None = None):
     """Plan multi-stop tour"""
-    lines = table.strip().split('\n')
-    stops = [line.strip().strip('|').strip() for line in lines]
+    rows = _parse_table(table, datatable)
+    stops = [_get_value(row, 'symbol') for row in rows]
 
     # Store stops for later use
     context['tour_start'] = start
@@ -493,10 +525,11 @@ def tour_should_include_refuel(context, waypoint):
 # =============================================================================
 
 @given(parsers.parse('a baseline tour visiting stops in order:\n{table}'))
-def create_baseline_tour(context, table):
+@given('a baseline tour visiting stops in order:')
+def create_baseline_tour(context, table: str | None = None, datatable: list[list[str]] | None = None):
     """Create baseline tour for optimization"""
-    lines = table.strip().split('\n')
-    stops = [line.strip().strip('|').strip() for line in lines]
+    rows = _parse_table(table, datatable)
+    stops = [_get_value(row, 'symbol') for row in rows]
     context['stops'] = stops
 
     # Get start from graph (first waypoint)
@@ -511,10 +544,11 @@ def create_baseline_tour(context, table):
 
 
 @given(parsers.parse('an already optimal tour visiting:\n{table}'))
-def create_optimal_tour(context, table):
+@given('an already optimal tour visiting:')
+def create_optimal_tour(context, table: str | None = None, datatable: list[list[str]] | None = None):
     """Create already optimal tour"""
-    lines = table.strip().split('\n')
-    stops = [line.strip().strip('|').strip() for line in lines]
+    rows = _parse_table(table, datatable)
+    stops = [_get_value(row, 'symbol') for row in rows]
 
     start = list(context['graph']['waypoints'].keys())[0]
 
@@ -571,19 +605,15 @@ def optimization_should_report_improvements(context):
 # =============================================================================
 
 @given(parsers.parse('a system graph with waypoints:\n{table}'))
-def create_system_graph_for_markets(context, table):
+@given('a system graph with waypoints:')
+def create_system_graph_for_markets(context, table: str | None = None, datatable: list[list[str]] | None = None):
     """Create system graph with specific waypoints"""
-    lines = table.strip().split('\n')
-    headers = [h.strip() for h in lines[0].split('|')[1:-1]]
-
     waypoints = {}
+    rows = _parse_table(table, datatable)
+    for row in rows:
 
-    for line in lines[1:]:
-        values = [v.strip() for v in line.split('|')[1:-1]]
-        row = dict(zip(headers, values))
-
-        symbol = row['symbol']
-        wp_type = row['type']
+        symbol = _get_value(row, 'symbol')
+        wp_type = _get_value(row, 'type')
         traits_str = row.get('traits', '')
 
         traits = [traits_str] if traits_str else []
@@ -620,13 +650,13 @@ def discover_markets(context):
 
 
 @then(parsers.parse('I should find {count:d} markets:\n{table}'))
-def should_find_markets_with_table(context, count, table):
+@then(parsers.parse('I should find {count:d} markets:'))
+def should_find_markets_with_table(context, count, table: str | None = None, datatable: list[list[str]] | None = None):
     """Verify market count and specific markets"""
     assert len(context['markets']) == count, \
         f"Expected {count} markets, found {len(context['markets'])}"
-
-    lines = table.strip().split('\n')
-    expected_markets = [line.strip().strip('|').strip() for line in lines]
+    rows = _parse_table(table, datatable)
+    expected_markets = [_get_value(row, 'symbol') for row in rows]
     assert set(context['markets']) == set(expected_markets), \
         f"Expected markets {expected_markets}, got {context['markets']}"
 

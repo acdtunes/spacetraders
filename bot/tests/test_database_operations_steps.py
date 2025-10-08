@@ -8,7 +8,7 @@ import tempfile
 import shutil
 import json
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, UTC
 import pytest
 from pytest_bdd import scenarios, given, when, then, parsers
 
@@ -165,7 +165,7 @@ def update_market_data(context, agent_symbol, waypoint, good, supply, activity, 
             purchase_price=buy,
             sell_price=sell,
             trade_volume=volume,
-            last_updated=datetime.utcnow().isoformat(),
+            last_updated=datetime.now(UTC).isoformat(),
             player_id=player_id
         )
         context['result'] = result
@@ -173,15 +173,14 @@ def update_market_data(context, agent_symbol, waypoint, good, supply, activity, 
         context['market_data'] = [(waypoint, good)]
 
 
-@when(parsers.re(r'I get market data for waypoint "(?P<waypoint>[^"]+)" and good "(?P<good>[^"]+)"'))
+@when(parsers.parse('I get market data for waypoint "{waypoint}" and good "{good}"'))
 def get_market_data_filtered(context, waypoint, good):
     """Get market data for a waypoint and specific good"""
     with context['db'].connection() as conn:
-        result = context['db'].get_market_data(conn, waypoint, good)
-        context['result'] = result
+        context['result'] = context['db'].get_market_data(conn, waypoint, good)
 
 
-@when(parsers.parse('I get market data for waypoint "{waypoint}"'))
+@when(parsers.re(r'^I get market data for waypoint "(?P<waypoint>[^\"]+)"$'))
 def get_market_data(context, waypoint):
     """Get market data for a waypoint (all goods)"""
     with context['db'].connection() as conn:
@@ -306,7 +305,7 @@ def market_data_exists(context, waypoint, goods):
                 purchase_price=60,
                 sell_price=70,
                 trade_volume=100,
-                last_updated=datetime.utcnow().isoformat(),
+                last_updated=datetime.now(UTC).isoformat(),
                 player_id=player_id
             )
 
@@ -375,10 +374,10 @@ def system_graph_exists_complex(context, system_symbol, wp_count, edge_count):
         context['db'].save_system_graph(conn, system_symbol, graph_data)
 
 
-@given(parsers.re(r'a system graph exists for "(?P<system_symbol>[^"]+)" with fuel waypoints "(?P<waypoints>[^"]+)"'))
+@given(parsers.parse('a system graph exists for "{system_symbol}" with fuel waypoints "{waypoints}"'))
 def system_graph_with_fuel(context, system_symbol, waypoints):
     """Create a system graph with specific fuel waypoints"""
-    waypoint_list = waypoints.split(',')
+    waypoint_list = [wp.strip() for wp in waypoints.split(',') if wp.strip()]
 
     graph_waypoints = {}
     for wp in waypoint_list:
@@ -398,9 +397,11 @@ def system_graph_with_fuel(context, system_symbol, waypoints):
 
     with context['db'].transaction() as conn:
         context['db'].save_system_graph(conn, system_symbol, graph_data)
+    context['graph'] = graph_data
+    context['system_symbol_debug'] = system_symbol
 
 
-@given(parsers.parse('a system graph exists for "{system_symbol}"'))
+@given(parsers.re(r'^a system graph exists for "(?P<system_symbol>[^\"]+)"$'))
 def system_graph_exists(context, system_symbol):
     """Create a minimal system graph"""
     graph_data = {
@@ -492,7 +493,7 @@ def verify_last_active(context):
         assert player is not None
 
         last_active = datetime.fromisoformat(player['last_active'])
-        now = datetime.utcnow()
+        now = datetime.now(UTC)
         diff = now - last_active
 
         # Should be within 5 seconds
@@ -823,7 +824,7 @@ def verify_can_retrieve_daemon(context, daemon_id, agent_symbol):
         assert daemon['daemon_id'] == daemon_id
 
 
-@given(parsers.parse('daemon "{daemon_id}" exists for player "{agent_symbol}"'))
+@given(parsers.re(r'^daemon "(?P<daemon_id>[^\"]+)" exists for player "(?P<agent_symbol>[^\"]+)"$'))
 def daemon_exists(context, daemon_id, agent_symbol):
     """Create a daemon for testing"""
     player_id = context['player_ids'][agent_symbol]
@@ -845,7 +846,7 @@ def update_daemon_status(context, daemon_id, status, agent_symbol):
     with context['db'].transaction() as conn:
         result = context['db'].update_daemon_status(
             conn, player_id, daemon_id, status,
-            stopped_at=datetime.utcnow().isoformat() if status == 'stopped' else None
+            stopped_at=datetime.now(UTC).isoformat() if status == 'stopped' else None
         )
         context['result'] = result
 
@@ -863,7 +864,7 @@ def verify_daemon_status(context, daemon_id, status):
         assert daemon['status'] == status
 
 
-@given(parsers.re(r'daemon "(?P<daemon_id>[^"]+)" with status "(?P<status>[^"]+)" exists for player "(?P<agent_symbol>[^"]+)"'))
+@given(parsers.parse('daemon "{daemon_id}" with status "{status}" exists for player "{agent_symbol}"'))
 def daemon_with_status_exists(context, daemon_id, status, agent_symbol):
     """Create a daemon with specific status"""
     player_id = context['player_ids'][agent_symbol]
@@ -879,7 +880,7 @@ def daemon_with_status_exists(context, daemon_id, status, agent_symbol):
         if status != 'running':
             context['db'].update_daemon_status(
                 conn, player_id, daemon_id, status,
-                stopped_at=datetime.utcnow().isoformat() if status == 'stopped' else None
+                stopped_at=datetime.now(UTC).isoformat() if status == 'stopped' else None
             )
 
 

@@ -11,11 +11,51 @@ import tempfile
 sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
 sys.path.insert(0, str(Path(__file__).parent))
 
+from bdd_table_utils import table_to_rows
 from mock_api import MockAPIClient
 from routing import GraphBuilder, RouteOptimizer, FuelCalculator, euclidean_distance
 
 # Load all scenarios from the feature file
 scenarios('features/routing_algorithms.feature')
+
+
+_KNOWN_HEADERS = {
+    'symbol', 'type', 'x', 'y', 'traits', 'distance', 'from', 'to',
+    'heuristic', 'cost', 'page', 'has_fuel', 'edge_to', 'edge_type',
+    'orbits'
+}
+
+
+def _parse_table(table: str | None = None, datatable: list[list[str]] | None = None) -> list[dict[str, str]]:
+    rows = table_to_rows(table, datatable)
+
+    if not rows:
+        return []
+
+    raw_headers = rows[0]
+    header_lower = {h.lower() for h in raw_headers}
+
+    if raw_headers and (header_lower & _KNOWN_HEADERS):
+        headers = raw_headers
+        data_rows = rows[1:]
+    else:
+        headers = ['value']
+        data_rows = rows
+
+    rows = []
+    for row in data_rows:
+        if not row:
+            continue
+        rows.append(dict(zip(headers, row)))
+    return rows
+
+
+def _get_value(row: dict[str, str], key: str) -> str:
+    if key in row:
+        return row[key]
+    if key == 'symbol' and 'value' in row:
+        return row['value']
+    return next(iter(row.values()))
 
 
 @pytest.fixture
@@ -45,57 +85,44 @@ def mock_api(context):
 
 
 @given(parsers.parse('waypoints exist:\n{table}'))
-def create_waypoints_from_table(context, table):
+@given('waypoints exist:')
+def create_waypoints_from_table(context, table: str | None = None, datatable: list[list[str]] | None = None):
     """Create waypoints from datatable"""
-    lines = table.strip().split('\n')
-    headers = [h.strip() for h in lines[0].split('|')[1:-1]]
+    rows = _parse_table(table, datatable)
 
-    for line in lines[1:]:  # Skip header only (no separator line in Gherkin tables)
-        values = [v.strip() for v in line.split('|')[1:-1]]
-        row = dict(zip(headers, values))
-
-        symbol = row['symbol']
-        wp_type = row['type']
-        x = int(row['x'])
-        y = int(row['y'])
+    for row in rows:
+        symbol = _get_value(row, 'symbol')
+        wp_type = row.get('type', row.get('value', 'ASTEROID'))
+        x = int(float(row.get('x', 0)))
+        y = int(float(row.get('y', 0)))
         traits_str = row.get('traits', '')
         orbits = row.get('orbits', '')
 
-        # Parse traits
         traits = [traits_str] if traits_str else []
-
-        # Add waypoint
         context['mock_api'].add_waypoint(symbol, wp_type, x, y, traits)
 
-        # Set orbital relationship if specified
         if orbits:
             waypoint_data = context['mock_api'].waypoints[symbol]
             waypoint_data['orbits'] = orbits
-            # Also update parent's orbitals array
             if orbits in context['mock_api'].waypoints:
                 parent_data = context['mock_api'].waypoints[orbits]
-                # Check if this orbital isn't already in the list
                 if not any(o == symbol if isinstance(o, str) else o.get('symbol') == symbol
                           for o in parent_data['orbitals']):
                     parent_data['orbitals'].append({'symbol': symbol})
 
 
 @given(parsers.parse('a simple navigation graph:\n{table}'))
-def create_simple_graph(context, table):
+@given('a simple navigation graph:')
+def create_simple_graph(context, table: str | None = None, datatable: list[list[str]] | None = None):
     """Create a simple navigation graph from edges"""
-    lines = table.strip().split('\n')
-    headers = [h.strip() for h in lines[0].split('|')[1:-1]]
-
     waypoints = {}
     edges = []
 
-    for line in lines[1:]:  # Skip header only (no separator line in Gherkin tables)
-        values = [v.strip() for v in line.split('|')[1:-1]]
-        row = dict(zip(headers, values))
-
-        from_wp = row['from']
-        to_wp = row['to']
-        distance = int(row['distance'])
+    rows = _parse_table(table, datatable)
+    for row in rows:
+        from_wp = _get_value(row, 'from')
+        to_wp = _get_value(row, 'to')
+        distance = int(float(_get_value(row, 'distance')))
 
         # Create waypoints if they don't exist
         if from_wp not in waypoints:
@@ -119,20 +146,15 @@ def create_simple_graph(context, table):
 
 
 @given(parsers.parse('an isolated navigation graph:\n{table}'))
-def create_isolated_graph(context, table):
+@given('an isolated navigation graph:')
+def create_isolated_graph(context, table: str | None = None, datatable: list[list[str]] | None = None):
     """Create graph with isolated waypoints (no edges)"""
-    lines = table.strip().split('\n')
-    headers = [h.strip() for h in lines[0].split('|')[1:-1]]
-
     waypoints = {}
-
-    for line in lines[1:]:  # Skip header only (no separator line in Gherkin tables)
-        values = [v.strip() for v in line.split('|')[1:-1]]
-        row = dict(zip(headers, values))
-
-        symbol = row['waypoint']
-        x = int(row['x'])
-        y = int(row['y'])
+    rows = _parse_table(table, datatable)
+    for row in rows:
+        symbol = row.get('waypoint') or _get_value(row, 'symbol')
+        x = int(float(row.get('x', 0)))
+        y = int(float(row.get('y', 0)))
         waypoints[symbol] = {"x": x, "y": y, "has_fuel": True, "traits": []}
 
     context['graph'] = {

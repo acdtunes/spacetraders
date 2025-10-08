@@ -8,8 +8,10 @@ import pytest
 from pathlib import Path
 from pytest_bdd import scenarios, given, when, then, parsers
 
+sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
 
+from bdd_table_utils import table_to_rows
 from mock_api import MockAPIClient
 from smart_navigator import SmartNavigator
 from ship_controller import ShipController
@@ -108,47 +110,30 @@ def empty_graph(context):
     )
 
 
-@given(parsers.parse('the system "{system}" has waypoints:'))
-def system_with_waypoints(context, system):
-    """Add waypoints to system from datatable"""
-    # This step expects a datatable, but pytest-bdd handles it differently
-    # We'll read the scenario's datatable in the When/Then steps
-    pass
-
-
 @given(parsers.parse('the system "{system}" has waypoints:\n{table}'))
-def system_with_waypoints_table(context, system, table):
-    """Add waypoints to system from inline table"""
-    lines = table.strip().split('\n')
-    headers = [h.strip() for h in lines[0].split('|')[1:-1]]
+@given(parsers.parse('the system "{system}" has waypoints:'))
+def system_with_waypoints_table(context, system, table: str | None = None, datatable: list[list[str]] | None = None):
+    """Add waypoints to system from Gherkin table data"""
+    rows = table_to_rows(table, datatable)
+    if not rows:
+        return context
 
-    waypoints_to_add = []
-    # Start from line 1 (skip only header line 0), not line 2
-    for line in lines[1:]:
-        # Skip empty lines
-        if not line.strip():
-            continue
-        values = [v.strip() for v in line.split('|')[1:-1]]
-        waypoint_data = dict(zip(headers, values))
+    headers = rows[0]
 
-        symbol = waypoint_data.get('symbol')
-        x = int(waypoint_data.get('x', 0))
-        y = int(waypoint_data.get('y', 0))
-        waypoint_type = waypoint_data.get('type', 'ASTEROID')
-        traits_str = waypoint_data.get('traits', '')
-        traits = [t.strip() for t in traits_str.split(',') if t.strip()]
+    for cells in rows[1:]:
+        row = dict(zip(headers, cells))
 
-        waypoints_to_add.append((symbol, waypoint_type, x, y, traits))
+        symbol = row['symbol']
+        x = int(float(row.get('x', 0)))
+        y = int(float(row.get('y', 0)))
+        waypoint_type = row.get('type', 'ASTEROID')
+        traits = [t.strip() for t in row.get('traits', '').split(',') if t.strip()]
 
-    # Add all waypoints first
-    for symbol, waypoint_type, x, y, traits in waypoints_to_add:
         context['mock_api'].add_waypoint(symbol, waypoint_type, x, y, traits)
 
-    # Build graph data with all waypoints in the system
     graph_waypoints = {}
     for wp_symbol, wp_data in context['mock_api'].waypoints.items():
         if wp_data['systemSymbol'] == system:
-            # Check if waypoint has marketplace trait
             traits = wp_data.get('traits', [])
             has_fuel = any(t.get('symbol') == 'MARKETPLACE' for t in traits)
 
@@ -162,7 +147,6 @@ def system_with_waypoints_table(context, system, table):
                 'has_fuel': has_fuel
             }
 
-    # Build graph with edges
     graph_data = build_graph_with_edges(graph_waypoints, system)
     context['navigator'] = SmartNavigator(context['mock_api'], system, cache_dir=context['cache_dir'], graph=graph_data)
     return context
@@ -517,8 +501,8 @@ def fuel_cost_zero_or_one(context):
     assert 0 <= fuel_cost <= 1, f"Fuel cost {fuel_cost} not in range [0, 1]"
 
 
-@then("fuel cost should be <min:d> or <max:d>")
-@then(parsers.parse('fuel cost should be {min:d} or {max:d}'))
+@then("fuel cost should be <min_fuel:d> or <max_fuel:d>")
+@then(parsers.parse('fuel cost should be {min_fuel:d} or {max_fuel:d}'))
 def fuel_cost_range(context, min_fuel, max_fuel):
     """Verify fuel cost is within range"""
     # Calculate fuel cost from initial and final fuel if not in route
@@ -582,7 +566,7 @@ def route_has_refuel_stops(context):
         pass
 
 
-@then("Or the route should be None if impossible")
+@then("the route should be None if impossible")
 def route_none_if_impossible(context):
     """Alternative: route is None if impossible"""
     # This is an alternative assertion - if route exists, it should have refuel stops OR be a direct DRIFT route

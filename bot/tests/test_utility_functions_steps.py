@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 import pytest
 from pytest_bdd import scenarios, given, when, then, parsers
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, UTC
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
 
@@ -65,22 +65,22 @@ def create_two_waypoints(context, x1, y1, x2, y2):
 @given(parsers.parse('an arrival time {seconds:d} seconds in the future'))
 def create_future_arrival_time(context, seconds):
     """Create arrival time in the future"""
-    future = datetime.utcnow() + timedelta(seconds=seconds)
-    context['arrival_time'] = future.isoformat() + "Z"
+    future = datetime.now(UTC) + timedelta(seconds=seconds)
+    context['arrival_time'] = future.isoformat().replace('+00:00', 'Z')
 
 
 @given(parsers.parse('an arrival time {seconds:d} seconds in the past'))
 def create_past_arrival_time(context, seconds):
     """Create arrival time in the past"""
-    past = datetime.utcnow() - timedelta(seconds=seconds)
-    context['arrival_time'] = past.isoformat() + "Z"
+    past = datetime.now(UTC) - timedelta(seconds=seconds)
+    context['arrival_time'] = past.isoformat().replace('+00:00', 'Z')
 
 
 @given("an arrival time at current time")
 def create_current_arrival_time(context):
     """Create arrival time at current time"""
-    now = datetime.utcnow()
-    context['arrival_time'] = now.isoformat() + "Z"
+    now = datetime.now(UTC)
+    context['arrival_time'] = now.isoformat().replace('+00:00', 'Z')
 
 
 @given(parsers.parse('a waypoint symbol "{symbol}"'))

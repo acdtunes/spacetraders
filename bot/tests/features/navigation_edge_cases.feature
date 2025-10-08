@@ -100,7 +100,7 @@ Feature: Navigation Edge Cases
     And a ship "TEST-1" at "X1-HU87-A1" with 400 fuel
     When I plan a route to "X1-HU87-Z9"
     Then the route should have multiple refuel stops
-    Or the route should be None if impossible
+    And the route should be None if impossible
 
   Scenario: Find nearest with no matching trait
     Given the system "X1-HU87" has waypoints:

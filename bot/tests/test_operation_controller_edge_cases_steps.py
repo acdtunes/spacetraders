@@ -113,8 +113,8 @@ def operation_started_seconds_ago(context, op_id, seconds):
     controller.start({"operation": "test"})
 
     # Manually adjust start time
-    from datetime import datetime, timedelta
-    start_time = datetime.utcnow() - timedelta(seconds=seconds)
+    from datetime import datetime, timedelta, UTC
+    start_time = datetime.now(UTC) - timedelta(seconds=seconds)
     controller.state['started_at'] = start_time.isoformat()
     controller._save_state()
 
@@ -125,14 +125,14 @@ def operation_started_seconds_ago(context, op_id, seconds):
 @given(parsers.parse('operation "{op_id}" was updated {seconds:d} seconds ago'))
 def operation_updated_seconds_ago(context, op_id, seconds):
     """Create operation with specific update time"""
-    from datetime import datetime, timedelta
+    from datetime import datetime, timedelta, UTC
     import json
 
     controller = OperationController(op_id, state_dir=context['temp_dir'])
 
     # Use a fixed reference time to ensure consistent ordering
     if 'reference_time' not in context:
-        context['reference_time'] = datetime.utcnow()
+        context['reference_time'] = datetime.now(UTC)
 
     update_time = context['reference_time'] - timedelta(seconds=seconds)
 

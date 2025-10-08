@@ -10,11 +10,13 @@ from pytest_bdd import scenarios, given, when, then, parsers
 import pytest
 import math
 
-# Add lib and tests to path
-sys.path.insert(0, str(Path(__file__).parent.parent / "src/spacetraders_bot/core"))
+# Add project source and tests to path
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).parent))
 
-from smart_navigator import SmartNavigator
+import spacetraders_bot  # noqa: F401 - register compat aliases
+from bdd_table_utils import table_to_rows
+from spacetraders_bot.core.smart_navigator import SmartNavigator
 from mock_api import MockAPIClient
 from ship_controller import ShipController
 
@@ -96,25 +98,26 @@ def mock_api(context):
 
 
 @given(parsers.parse('the system "{system}" has the following waypoints:\n{table}'))
-def setup_waypoints_table(context, system, table):
-    """Parse waypoint table from Gherkin"""
-    lines = table.strip().split('\n')
-    headers = [h.strip() for h in lines[0].split('|')[1:-1]]
+@given(parsers.parse('the system "{system}" has the following waypoints:'))
+def setup_waypoints_table(context, system, table: str | None = None, datatable: list[list[str]] | None = None):
+    """Load waypoints for the system from a Gherkin table"""
+    rows = table_to_rows(table, datatable)
+    if not rows:
+        return
 
-    for line in lines[1:]:
-        values = [v.strip() for v in line.split('|')[1:-1]]
-        waypoint_data = dict(zip(headers, values))
+    headers = rows[0]
 
-        traits = waypoint_data.get('traits', '').split(',') if waypoint_data.get('traits') else []
-        traits = [t.strip() for t in traits if t.strip()]
+    for cells in rows[1:]:
+        row = dict(zip(headers, cells))
 
-        context['mock_api'].add_waypoint(
-            symbol=waypoint_data['symbol'],
-            type=waypoint_data['type'],
-            x=int(waypoint_data['x']),
-            y=int(waypoint_data['y']),
-            traits=traits
-        )
+        symbol = row['symbol']
+        wp_type = row.get('type', 'PLANET')
+        x = int(float(row.get('x', 0)))
+        y = int(float(row.get('y', 0)))
+        traits_field = row.get('traits', '')
+        traits = [t.strip() for t in traits_field.split(',') if t.strip()]
+
+        context['mock_api'].add_waypoint(symbol, wp_type, x, y, traits)
 
 
 @given(parsers.parse('a ship "{ship_symbol}" at "{waypoint}" with {fuel:d} fuel out of {capacity:d} capacity'))
