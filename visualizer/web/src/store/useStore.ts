@@ -10,6 +10,26 @@ const TRAIL_MAX_POINTS: Record<FlightMode, number> = {
 
 const TRAIL_MIN_DISTANCE = 2;
 
+const initializeWaypointMap = (waypoints: Waypoint[]) => new Map(waypoints.map((waypoint) => [waypoint.symbol, waypoint]));
+
+const addTrailPoint = (existing: ShipTrailPoint[] | undefined, point: ShipTrailPoint, maxPoints: number) => {
+  if (!existing) {
+    return [point];
+  }
+
+  const lastPoint = existing[existing.length - 1];
+  if (
+    lastPoint &&
+    Math.hypot(point.x - lastPoint.x, point.y - lastPoint.y) < TRAIL_MIN_DISTANCE
+  ) {
+    return existing;
+  }
+
+  const sliceCount = Math.max(0, maxPoints - 1);
+  const pointsToKeep = existing.length ? existing.slice(-sliceCount) : [];
+  return [...pointsToKeep, point].slice(-maxPoints);
+};
+
 interface AppState {
   // Agents
   agents: Agent[];
@@ -103,7 +123,7 @@ export const useStore = create<AppState>((set) => ({
   waypoints: new Map(),
   setWaypoints: (waypoints) =>
     set({
-      waypoints: new Map(waypoints.map((w) => [w.symbol, w])),
+      waypoints: initializeWaypointMap(waypoints),
     }),
 
   // Current system
@@ -126,20 +146,8 @@ export const useStore = create<AppState>((set) => ({
         return { trails: cleared };
       }
 
-      const lastPoint = existing?.[existing.length - 1];
-      if (
-        lastPoint &&
-        Math.hypot(point.x - lastPoint.x, point.y - lastPoint.y) < TRAIL_MIN_DISTANCE
-      ) {
-        return state;
-      }
-
       const newTrails = new Map(state.trails);
-      const sliceCount = Math.max(0, maxPoints - 1);
-      const pointsToKeep = existing?.length
-        ? existing.slice(-sliceCount)
-        : [];
-      const updatedTrail = [...pointsToKeep, point].slice(-maxPoints);
+      const updatedTrail = addTrailPoint(existing, point, maxPoints);
       newTrails.set(shipSymbol, updatedTrail);
       return { trails: newTrails };
     }),
