@@ -1,7 +1,7 @@
 import { useMemo } from 'react';
 import type { TaggedShip, Waypoint as WaypointType } from '../types/spacetraders';
 
-interface SelectionOverlay {
+export interface SelectionOverlay {
   left: number;
   top: number;
   size: number;

@@ -1,96 +1,38 @@
-import { useEffect, useRef, useState, forwardRef, useImperativeHandle, useMemo, useCallback } from 'react';
-import { Stage, Layer, Shape, Group, Circle, Text, Line } from 'react-konva';
+import { Suspense, lazy, useEffect, useRef, useState, forwardRef, useImperativeHandle, useMemo, useCallback } from 'react';
+import { Stage, Layer, Group, Circle, Text, Line } from 'react-konva';
 import Konva from 'konva';
 import { useStore } from '../store/useStore';
 import { getWaypoints } from '../services/api';
 import { getWaypointOpportunities, formatOpportunity } from '../domain/market';
 import { Ship, Waypoint, ShipQueries, WaypointQueries, ViewportBounds } from '../domain';
 import { VIEWPORT_CONSTANTS } from '../constants/viewport';
-import { getFuelBarColor } from '../utils/fuel';
 import { hashString } from '../utils/hash';
-import { RouteVectors } from './RouteVectors';
-import { ShipSprite } from './ShipSprite';
 import { WaypointSprite } from './WaypointSprite';
-import { ShipFuelBar } from './ShipFuelBar';
-import { ShipCargoBar } from './ShipCargoBar';
-import { ShipTooltipHeader } from './ShipTooltipHeader';
-import { ShipRouteInfo } from './ShipRouteInfo';
-import { ShipCargoList } from './ShipCargoList';
-import { ShipNameLabel } from './ShipNameLabel';
-import { WaypointTraits } from './WaypointTraits';
-import { WaypointMarketplace } from './WaypointMarketplace';
+import { ShipLayer } from './ShipLayer';
+import { MiningLaserLayer } from './MiningLaserLayer';
+import { ShipTrailLayer } from './ShipTrailLayer';
+import type { WaypointTooltipData } from './WaypointTooltipOverlay';
 import { useSelectionOverlay } from '../hooks/useSelectionOverlay';
 import { useWaypointTooltipAnchor } from '../hooks/useWaypointTooltipAnchor';
 import { useShipTooltip } from '../hooks/useShipTooltip';
 import { useGridLines } from '../hooks/useGridLines';
-import { calculateShipRotation, getShipLabelInfo } from '../utils/shipDisplay';
+import { useShipTrailSampler } from '../hooks/useShipTrailSampler';
 import ZoomControls from './ZoomControls';
 import Minimap from './Minimap';
-import type { FlightMode, ShipTrailPoint, Waypoint as WaypointType, TaggedShip, ShipNavStatus } from '../types/spacetraders';
+import type { Waypoint as WaypointType, TaggedShip, ShipNavStatus } from '../types/spacetraders';
+import type { RouteVectorsProps } from './RouteVectors';
 
-type TrailVisualSettings = {
-  maxAgeMs: number;
-  baseWidth: number;
-  baseAlpha: number;
-  tailAlpha: number;
-  glowBlur: number;
-  glowAlpha: number;
-  particleDensity: number;
-  particleSize: [number, number];
-  particleAlpha: number;
-  colorBoost: number;
-};
+const LazySelectionOverlay = lazy(() =>
+  import('./SelectionOverlay').then((module) => ({ default: module.SelectionOverlay }))
+);
+const LazyShipTooltipOverlay = lazy(() =>
+  import('./ShipTooltipOverlay').then((module) => ({ default: module.ShipTooltipOverlay }))
+);
+const LazyWaypointTooltipOverlay = lazy(() =>
+  import('./WaypointTooltipOverlay').then((module) => ({ default: module.WaypointTooltipOverlay }))
+);
 
-const TRAIL_VISUAL_CONFIG: Record<FlightMode, TrailVisualSettings> = {
-  DRIFT: {
-    maxAgeMs: 0,
-    baseWidth: 0,
-    baseAlpha: 0,
-    tailAlpha: 0,
-    glowBlur: 0,
-    glowAlpha: 0,
-    particleDensity: 0,
-    particleSize: [0, 0],
-    particleAlpha: 0,
-    colorBoost: 0,
-  },
-  CRUISE: {
-    maxAgeMs: 7000,
-    baseWidth: 0.7,
-    baseAlpha: 0.28,
-    tailAlpha: 0.06,
-    glowBlur: 4,
-    glowAlpha: 0.22,
-    particleDensity: 0.18,
-    particleSize: [0.25, 0.5],
-    particleAlpha: 0.22,
-    colorBoost: 0.18,
-  },
-  BURN: {
-    maxAgeMs: 12000,
-    baseWidth: 2.5,
-    baseAlpha: 0.55,
-    tailAlpha: 0.15,
-    glowBlur: 12,
-    glowAlpha: 0.65,
-    particleDensity: 0.6,
-    particleSize: [0.6, 1.3],
-    particleAlpha: 0.5,
-    colorBoost: 0.45,
-  },
-  STEALTH: {
-    maxAgeMs: 0,
-    baseWidth: 0,
-    baseAlpha: 0,
-    tailAlpha: 0,
-    glowBlur: 0,
-    glowAlpha: 0,
-    particleDensity: 0,
-    particleSize: [0, 0],
-    particleAlpha: 0,
-    colorBoost: 0,
-  },
-};
+type RouteVectorsComponentType = (props: RouteVectorsProps) => JSX.Element | null;
 
 const TRAIL_SAMPLE_RATE = 4;
 
@@ -141,44 +83,6 @@ const SHIP_SPRITE_SIZE = DEFAULT_SHIP_SPRITE_SIZE / 10;
 const SHIP_POSITION_SMOOTHING_MS = 900;
 const SHIP_POSITION_DISTANCE_THRESHOLD = 2;
 
-const MINING_WAYPOINT_TYPES = new Set<WaypointType['type']>([
-  'ASTEROID',
-  'ASTEROID_FIELD',
-  'ENGINEERED_ASTEROID',
-  'ASTEROID_BASE',
-]);
-
-type RGB = { r: number; g: number; b: number };
-
-const hexToRgb = (hex: string): RGB => {
-  const normalized = hex.replace('#', '');
-  const parsed = normalized.length === 3
-    ? normalized
-        .split('')
-        .map((char) => char + char)
-        .join('')
-    : normalized;
-
-  const value = Number.parseInt(parsed, 16);
-  if (Number.isNaN(value)) {
-    return { r: 255, g: 107, b: 107 };
-  }
-
-  return {
-    r: (value >> 16) & 255,
-    g: (value >> 8) & 255,
-    b: value & 255,
-  };
-};
-
-const boostColor = (rgb: RGB, amount: number): RGB => ({
-  r: Math.min(255, rgb.r + (255 - rgb.r) * amount),
-  g: Math.min(255, rgb.g + (255 - rgb.g) * amount),
-  b: Math.min(255, rgb.b + (255 - rgb.b) * amount),
-});
-
-const rgba = (rgb: RGB, alpha: number): string => `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${alpha})`;
-
 export interface SpaceMapRef {
   zoomIn: () => void;
   zoomOut: () => void;
@@ -203,6 +107,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
   const [animationFrame, setAnimationFrame] = useState(0);
 
   const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
+  const [RouteVectorsComponent, setRouteVectorsComponent] = useState<RouteVectorsComponentType | null>(null);
 
   const currentScale = viewportBounds.scale || 1;
   const frameTimestamp = useMemo(() => Date.now(), [animationFrame]);
@@ -259,6 +164,29 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
       }
     });
   }, [ships]);
+
+  useEffect(() => {
+    let isActive = true;
+
+    if (showDestinationRoutes && !RouteVectorsComponent) {
+      import('./RouteVectors')
+        .then((module) => {
+          if (isActive) {
+            setRouteVectorsComponent(() => module.RouteVectors);
+          }
+        })
+        .catch((error) => {
+          const isDevEnvironment = Boolean((import.meta as any)?.env?.DEV);
+          if (isDevEnvironment) {
+            console.error('Failed to load route overlay module', error);
+          }
+        });
+    }
+
+    return () => {
+      isActive = false;
+    };
+  }, [showDestinationRoutes, RouteVectorsComponent]);
 
   // Track canvas size with ResizeObserver so it reacts to layout changes (e.g. sidebar toggles)
   useEffect(() => {
@@ -745,44 +673,15 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
     };
   }, [animationLayer]);
 
-  // Sample ship positions for trails based on flight mode
-  useEffect(() => {
-    if (ships.length === 0) return;
-    if (animationFrame % TRAIL_SAMPLE_RATE !== 0) return;
-
-    const timestamp = Date.now();
-
-    ships.forEach((ship: any) => {
-      if (currentSystem && ship.nav.systemSymbol !== currentSystem) {
-        if (ship.nav.route?.destination?.systemSymbol !== currentSystem) {
-          clearTrail(ship.symbol);
-          return;
-        }
-      }
-
-      if (ship.nav.status !== 'IN_TRANSIT') {
-        clearTrail(ship.symbol);
-        return;
-      }
-
-      const flightMode: FlightMode = ship.nav.flightMode;
-      if (flightMode === 'DRIFT' || flightMode === 'STEALTH') {
-        clearTrail(ship.symbol);
-        return;
-      }
-
-      const position = Ship.getPosition(ship, waypoints);
-      if (position.x === 0 && position.y === 0) return;
-
-      addTrailPosition(ship.symbol, {
-        shipSymbol: ship.symbol,
-        x: position.x,
-        y: position.y,
-        timestamp,
-        flightMode,
-      });
-    });
-  }, [animationFrame, ships, waypoints, currentSystem, addTrailPosition, clearTrail]);
+  useShipTrailSampler({
+    animationFrame,
+    sampleRate: TRAIL_SAMPLE_RATE,
+    ships,
+    waypoints,
+    currentSystem,
+    addTrailPoint: addTrailPosition,
+    clearTrail,
+  });
 
   // Filter ships using domain queries
   const filteredShips = useMemo(() => {
@@ -999,14 +898,16 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
     },
   });
 
-  const waypointTooltip = activeWaypointTooltipSymbol ? (() => {
+  const waypointTooltip: WaypointTooltipData | null = useMemo(() => {
+    if (!activeWaypointTooltipSymbol) return null;
+
     const waypoint = waypoints.get(activeWaypointTooltipSymbol);
     if (!waypoint) return null;
 
     const market = markets.get(activeWaypointTooltipSymbol);
-    const hasMarketplace = waypoint.traits.some((t) => t.symbol === 'MARKETPLACE');
+    const hasMarketplace = waypoint.traits.some((trait) => trait.symbol === 'MARKETPLACE');
 
-    let marketData = null;
+    let marketData: WaypointTooltipData['marketData'] = null;
     if (market && hasMarketplace) {
       const opportunities = getWaypointOpportunities(activeWaypointTooltipSymbol, markets, 2);
       marketData = {
@@ -1019,14 +920,12 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
     return {
       symbol: activeWaypointTooltipSymbol,
       type: waypoint.type,
-      x: waypoint.x,
-      y: waypoint.y,
       traits: waypoint.traits,
       faction: waypoint.faction,
       hasMarketplace,
       marketData,
     };
-  })() : null;
+  }, [activeWaypointTooltipSymbol, waypoints, markets]);
 
   const waypointTooltipPosition = useMemo(() => {
     if (!waypointTooltipAnchor) return null;
@@ -1174,85 +1073,11 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
             );
           })}
 
-          {/* Ship trails */}
-          {filteredShips.map((ship: TaggedShip) => {
-            const trail = trails.get(ship.symbol) as ShipTrailPoint[] | undefined;
-            if (!trail || trail.length < 2) return null;
-
-            const now = Date.now();
-            const activeTrail = trail.filter((point) => {
-              const config = TRAIL_VISUAL_CONFIG[point.flightMode];
-              return config.maxAgeMs > 0 && now - point.timestamp <= config.maxAgeMs;
-            });
-
-            if (activeTrail.length < 2) return null;
-
-            const latestMode = activeTrail[activeTrail.length - 1].flightMode;
-            const config = TRAIL_VISUAL_CONFIG[latestMode] ?? TRAIL_VISUAL_CONFIG.CRUISE;
-            if (config.maxAgeMs === 0) return null;
-
-            const baseColor = hexToRgb(Ship.getDisplayColor(ship));
-            const boostedColor = boostColor(baseColor, config.colorBoost);
-            const sparkColor = boostColor(boostedColor, 0.25);
-
-            return (
-              <Shape
-                key={`trail-${ship.symbol}`}
-                sceneFunc={(context, _shape) => {
-                  const ctx = context._context as CanvasRenderingContext2D;
-                  ctx.save();
-                  ctx.lineCap = 'round';
-                  ctx.lineJoin = 'round';
-
-                  for (let i = 0; i < activeTrail.length - 1; i++) {
-                    const start = activeTrail[i];
-                    const end = activeTrail[i + 1];
-                    const progress = (i + 1) / activeTrail.length;
-                    const alpha = config.tailAlpha + (config.baseAlpha - config.tailAlpha) * progress;
-
-                    ctx.shadowColor = rgba(boostedColor, config.glowAlpha * progress);
-                    ctx.shadowBlur = config.glowBlur * progress;
-                    ctx.lineWidth = config.baseWidth * (0.6 + progress * 0.4);
-                    ctx.strokeStyle = rgba(boostedColor, alpha);
-                    ctx.beginPath();
-                    ctx.moveTo(start.x, start.y);
-                    ctx.lineTo(end.x, end.y);
-                    ctx.stroke();
-                  }
-
-                  ctx.shadowBlur = 0;
-
-                  if (config.particleDensity > 0 && ship.nav.status === 'IN_TRANSIT') {
-                    const segmentCount = activeTrail.length - 1;
-                    const particleCount = Math.max(1, Math.floor(segmentCount * config.particleDensity));
-                    for (let p = 0; p < particleCount; p++) {
-                      const index = Math.max(1, segmentCount - Math.floor((p / particleCount) * segmentCount));
-                      const head = activeTrail[index];
-                      const tail = activeTrail[index - 1];
-                      const t = ((animationFrame * 0.08 + p * 0.37) % 1 + 1) % 1;
-                      const x = head.x + (tail.x - head.x) * t;
-                      const y = head.y + (tail.y - head.y) * t;
-                      const oscillation = (Math.sin(animationFrame * 0.15 + p) + 1) / 2;
-                      const radius =
-                        config.particleSize[0] +
-                        (config.particleSize[1] - config.particleSize[0]) * oscillation;
-                      ctx.fillStyle = rgba(sparkColor, config.particleAlpha * (0.8 + 0.2 * oscillation));
-                      ctx.beginPath();
-                      ctx.arc(x, y, radius, 0, Math.PI * 2);
-                      ctx.fill();
-                    }
-                  }
-
-                  ctx.restore();
-                }}
-                listening={false}
-              />
-            );
-          })}
+          <ShipTrailLayer ships={filteredShips} trails={trails} animationFrame={animationFrame} />
 
           {/* Active route indicators */}
-          {showDestinationRoutes && (
-            <RouteVectors
+          {showDestinationRoutes && RouteVectorsComponent && (
+            <RouteVectorsComponent
               ships={filteredShips}
               waypoints={waypoints}
               currentScale={currentScale}
@@ -1262,260 +1087,54 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
             />
           )}
 
-          {/* Ships */}
-          {filteredShips.map((ship: TaggedShip) => {
-            const targetPosition = Ship.getPosition(ship, waypoints);
-            if (targetPosition.x === 0 && targetPosition.y === 0) return null;
-            const position = getShipRenderPosition(ship, targetPosition, frameTimestamp);
+          <ShipLayer
+            ships={filteredShips}
+            trails={trails}
+            waypoints={waypoints}
+            frameTimestamp={frameTimestamp}
+            currentScale={currentScale}
+            showShipNames={showShipNames}
+            shipSpriteSize={SHIP_SPRITE_SIZE}
+            getShipRenderPosition={getShipRenderPosition}
+            selectShipAsset={selectShipAsset}
+            projectToScreen={projectToScreen}
+            projectToWorld={projectToWorld}
+            onSelectShip={(ship, position) => {
+              setSelectedObject({ type: 'ship', symbol: ship.symbol, x: position.x, y: position.y });
+              setSelectedShip(ship);
+              setSelectedWaypoint(null);
+            }}
+            onHoverShip={setHoveredShip}
+          />
 
-            const shipAssetPath = selectShipAsset(ship);
-
-            // Calculate rotation
-            const shipTrail = trails.get(ship.symbol);
-            const rotation = calculateShipRotation(ship, position, waypoints, shipTrail);
-
-            const labelInfo = getShipLabelInfo(ship, position, {
-              currentScale,
-              projectToScreen,
-              projectToWorld,
-            });
-
-            return (
-              <Group key={ship.symbol} x={position.x} y={position.y}>
-                <Group rotation={rotation}>
-                  {/* Hit area - invisible circle for easier clicking */}
-                  <Circle
-                    radius={4}
-                    fill="transparent"
-                    onClick={() => {
-                      setSelectedObject({ type: 'ship', symbol: ship.symbol, x: position.x, y: position.y });
-                      setSelectedShip(ship);
-                      setSelectedWaypoint(null);
-                    }}
-                    onMouseEnter={(e) => {
-                      setHoveredShip(ship.symbol);
-
-                      const container = e.target.getStage()?.container();
-                      if (container) container.style.cursor = 'pointer';
-                    }}
-                    onMouseLeave={(e) => {
-                      setHoveredShip(null);
-
-                      const container = e.target.getStage()?.container();
-                      if (container) container.style.cursor = 'default';
-                    }}
-                  />
-                  <ShipSprite assetPath={shipAssetPath} size={SHIP_SPRITE_SIZE} />
-                </Group>
-
-                {showShipNames && labelInfo && (
-                  <ShipNameLabel
-                    labelText={labelInfo.labelText}
-                    labelWidth={labelInfo.labelWidth}
-                    labelHeight={labelInfo.labelHeight}
-                    labelScale={labelInfo.labelScale}
-                    offsetX={labelInfo.offsetX}
-                    offsetY={labelInfo.offsetY}
-                  />
-                )}
-              </Group>
-            );
-          })}
-
-          {/* Mining lasers */}
-          {filteredShips.map((ship: TaggedShip) => {
-            if (!ship.cooldown || ship.cooldown.remainingSeconds <= 0) return null;
-
-            const waypoint = waypoints.get(ship.nav.waypointSymbol);
-            if (!waypoint) return null;
-
-            if (ship.nav.status !== 'IN_ORBIT') return null;
-            if (!MINING_WAYPOINT_TYPES.has(waypoint.type)) return null;
-
-            const targetPosition = Ship.getPosition(ship, waypoints);
-            const position = getShipRenderPosition(ship, targetPosition, frameTimestamp);
-            const time = animationFrame / 60; // Convert to seconds
-
-            return (
-              <Group key={`laser-${ship.symbol}`}>
-                {[0, 1].map((i) => {
-                  const phase = (time * 3 + i * 0.7) % 1;
-                  const alpha = 0.5 + Math.sin(phase * Math.PI * 2) * 0.4;
-                  const angle = Math.atan2(waypoint.y - position.y, waypoint.x - position.x);
-                  const directionX = Math.cos(angle);
-                  const directionY = Math.sin(angle);
-                  const angleOffset = i === 0 ? -0.12 : 0.12;
-                  const beamAngle = angle + angleOffset;
-                  const beamDirX = Math.cos(beamAngle);
-                  const beamDirY = Math.sin(beamAngle);
-                  const surfaceRadius = Math.max(Waypoint.getRadius(waypoint) - 1, 0);
-                  const centerOffsetX = position.x - waypoint.x;
-                  const centerOffsetY = position.y - waypoint.y;
-                  const b = 2 * (beamDirX * centerOffsetX + beamDirY * centerOffsetY);
-                  const c = centerOffsetX * centerOffsetX + centerOffsetY * centerOffsetY - surfaceRadius * surfaceRadius;
-                  const discriminant = b * b - 4 * c;
-                  let beamEndX = waypoint.x - directionX * surfaceRadius;
-                  let beamEndY = waypoint.y - directionY * surfaceRadius;
-
-                  if (discriminant >= 0) {
-                    const sqrtDisc = Math.sqrt(discriminant);
-                    const t1 = (-b - sqrtDisc) / 2;
-                    const t2 = (-b + sqrtDisc) / 2;
-                    const t = [t1, t2]
-                      .filter((value) => value > 0)
-                      .sort((aVal, bVal) => aVal - bVal)[0];
-                    if (typeof t === 'number') {
-                      beamEndX = position.x + beamDirX * t;
-                      beamEndY = position.y + beamDirY * t;
-                    }
-                  }
-
-                  return (
-                    <Line
-                      key={i}
-                      points={[position.x, position.y, beamEndX, beamEndY]}
-                      stroke="#ff0000"
-                      strokeWidth={0.08}
-                      opacity={alpha}
-                      listening={false}
-                    />
-                  );
-                })}
-              </Group>
-            );
-          })}
+          <MiningLaserLayer
+            ships={filteredShips}
+            waypoints={waypoints}
+            animationFrame={animationFrame}
+            frameTimestamp={frameTimestamp}
+            getShipRenderPosition={getShipRenderPosition}
+          />
 
         </Layer>
       </Stage>
       )}
 
       {selectionOverlay && (
-        <div
-          className="absolute pointer-events-none z-20"
-          style={{
-            left: `${selectionOverlay.left}px`,
-            top: `${selectionOverlay.top}px`,
-            width: `${selectionOverlay.size * 2}px`,
-            height: `${selectionOverlay.size * 2}px`,
-            transform: 'translate(-50%, -50%)',
-          }}
-        >
-          <div className="relative w-full h-full">
-            <div
-              className={
-                selectionOverlay.type === 'ship'
-                  ? 'absolute inset-0 rounded-lg border border-red-400/80 shadow-[0_0_12px_rgba(248,113,113,0.8)]'
-                  : 'absolute inset-0 rounded-lg border border-sky-300/80 shadow-[0_0_12px_rgba(125,211,252,0.8)]'
-              }
-            />
-            <div
-              className={
-                selectionOverlay.type === 'ship'
-                  ? 'absolute inset-[3px] rounded-lg border border-red-500/50'
-                  : 'absolute inset-[3px] rounded-lg border border-sky-500/40'
-              }
-            />
-            {[['top', 'left'], ['top', 'right'], ['bottom', 'left'], ['bottom', 'right']].map(([vertical, horizontal]) => (
-              <div
-                key={`${vertical}-${horizontal}`}
-                className={
-                  selectionOverlay.type === 'ship'
-                    ? 'absolute h-2 w-2 border-red-200/90'
-                    : 'absolute h-2 w-2 border-sky-200/90'
-                }
-                style={{
-                  [vertical]: '-3px',
-                  [horizontal]: '-3px',
-                  borderStyle: 'solid',
-                  borderTopWidth: vertical === 'top' ? '2px' : '0px',
-                  borderBottomWidth: vertical === 'bottom' ? '2px' : '0px',
-                  borderLeftWidth: horizontal === 'left' ? '2px' : '0px',
-                  borderRightWidth: horizontal === 'right' ? '2px' : '0px',
-                }}
-              />
-            ))}
-          </div>
-        </div>
+        <Suspense fallback={null}>
+          <LazySelectionOverlay overlay={selectionOverlay} />
+        </Suspense>
       )}
 
-      {/* Ship tooltip */}
       {shipTooltip && shipTooltipPosition && (
-        <div
-          className="absolute bg-gray-900 bg-opacity-70 border border-red-500/70 rounded-lg p-2.5 text-xs min-w-[220px] max-w-[300px] pointer-events-none z-30 shadow-xl backdrop-blur-sm"
-          style={{
-            left: `${shipTooltipPosition.left}px`,
-            top: `${shipTooltipPosition.top}px`,
-            transform: 'translate(-100%, -100%)',
-          }}
-        >
-          <ShipTooltipHeader
-            symbol={shipTooltip.symbol}
-            role={shipTooltip.role}
-            statusText={shipTooltip.statusText}
-            flightMode={shipTooltip.flightMode}
-          />
-
-          <div className="space-y-3 text-gray-200">
-            {shipTooltip.cooldownSeconds !== null && (
-              <div>
-                <div className="text-[10px] uppercase text-gray-400">Cooldown</div>
-                <div className="text-xs">{shipTooltip.cooldownSeconds}s</div>
-              </div>
-            )}
-
-            <ShipRouteInfo routeSummary={shipTooltip.routeSummary} etaText={shipTooltip.etaText} />
-
-            <ShipFuelBar
-              current={shipTooltip.fuelCurrent}
-              capacity={shipTooltip.fuelCapacity}
-              percent={shipTooltip.fuelPercent}
-              getColor={getFuelBarColor}
-            />
-
-            <ShipCargoBar
-              units={shipTooltip.cargoUnits}
-              capacity={shipTooltip.cargoCapacity}
-              percent={shipTooltip.cargoPercent}
-            />
-          </div>
-
-          <ShipCargoList entries={shipTooltip.cargoEntries} extraCount={shipTooltip.extraCargoCount} />
-        </div>
+        <Suspense fallback={null}>
+          <LazyShipTooltipOverlay tooltip={shipTooltip} position={shipTooltipPosition} />
+        </Suspense>
       )}
 
-      {/* Waypoint tooltip */}
       {waypointTooltip && waypointTooltipPosition && (
-        <div
-          className="absolute bg-gray-900 bg-opacity-70 border border-sky-500/60 rounded-lg p-3 text-xs min-w-[220px] max-w-[280px] pointer-events-none z-30 shadow-2xl backdrop-blur"
-          style={{
-            left: `${waypointTooltipPosition.left}px`,
-            top: `${waypointTooltipPosition.top}px`,
-            transform: 'translate(-50%, -110%)',
-          }}
-        >
-          <div className="flex items-start justify-between gap-2 mb-2">
-            <div>
-              <div className="text-sm font-bold text-white leading-snug">{waypointTooltip.symbol}</div>
-              <div className="text-[11px] text-sky-200 uppercase tracking-wide">
-                {waypointTooltip.type.replace(/_/g, ' ')}
-              </div>
-            </div>
-            {waypointTooltip.faction && (
-              <span className="text-[10px] font-semibold text-sky-200 bg-sky-500/10 border border-sky-500/40 rounded-full px-1.5 py-0.5 whitespace-nowrap">
-                {waypointTooltip.faction.symbol}
-              </span>
-            )}
-          </div>
-
-          <div className="grid grid-cols-2 gap-1 text-zinc-300 mb-2">
-            <WaypointTraits symbol={waypointTooltip.symbol} traits={waypointTooltip.traits} />
-          </div>
-
-          <WaypointMarketplace
-            hasMarketplace={waypointTooltip.hasMarketplace}
-            marketData={waypointTooltip.marketData}
-          />
-        </div>
+        <Suspense fallback={null}>
+          <LazyWaypointTooltipOverlay tooltip={waypointTooltip} position={waypointTooltipPosition} />
+        </Suspense>
       )}
 
       {!currentSystem && (

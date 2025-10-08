@@ -17,7 +17,7 @@ const ROUTE_COLORS: Record<FlightMode, { line: string; arrow: string }> = {
   STEALTH: { line: 'rgba(129, 140, 248, 0.4)', arrow: '#c7d2fe' },
 };
 
-interface RouteVectorsProps {
+export interface RouteVectorsProps {
   ships: TaggedShip[];
   waypoints: Map<string, WaypointType>;
   currentScale: number;

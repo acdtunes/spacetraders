@@ -2,7 +2,7 @@ import { useMemo } from 'react';
 import type { TaggedShip } from '../types/spacetraders';
 import { getCargoIcon, getCargoLabel } from '../utils/cargo';
 
-type ShipTooltipData = {
+export type ShipTooltipData = {
   symbol: string;
   registrationName: string;
   role: string;
