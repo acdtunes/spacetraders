@@ -55,13 +55,207 @@ class MultiLegRoute:
     total_fuel_cost: int
     estimated_time_minutes: int
 
+@dataclass
+class MarketEvaluation:
+    """Represents the result of evaluating actions at a market."""
+
+    actions: List[TradeAction]
+    cargo_after: Dict[str, int]
+    credits_after: int
+    net_profit: int
+
+
+class TradeEvaluationStrategy:
+    """Defines the contract for market evaluation strategies."""
+
+    def evaluate(
+        self,
+        *,
+        market: str,
+        current_cargo: Dict[str, int],
+        current_credits: int,
+        trade_opportunities: List[Dict],
+        cargo_capacity: int,
+        fuel_cost: int,
+    ) -> MarketEvaluation:
+        raise NotImplementedError
+
+
+class ProfitFirstStrategy(TradeEvaluationStrategy):
+    """Default strategy that maximizes profit by mixing sell/buy actions."""
+
+    def __init__(self, logger: logging.Logger):
+        self.logger = logger
+
+    def evaluate(
+        self,
+        *,
+        market: str,
+        current_cargo: Dict[str, int],
+        current_credits: int,
+        trade_opportunities: List[Dict],
+        cargo_capacity: int,
+        fuel_cost: int,
+    ) -> MarketEvaluation:
+        sell_actions, cargo_after_sell, credits_after_sell, revenue = self._apply_sell_actions(
+            market=market,
+            current_cargo=current_cargo,
+            current_credits=current_credits,
+            trade_opportunities=trade_opportunities,
+        )
+
+        buy_actions, cargo_after_buy, credits_after_buy, purchase_costs = self._apply_buy_actions(
+            market=market,
+            trade_opportunities=trade_opportunities,
+            cargo=cargo_after_sell,
+            credits=credits_after_sell,
+            cargo_capacity=cargo_capacity,
+        )
+
+        potential_future_revenue = self._estimate_potential_future_revenue(
+            cargo_after_buy,
+            market,
+            trade_opportunities,
+        )
+
+        net_profit = revenue - fuel_cost + (potential_future_revenue - purchase_costs)
+
+        return MarketEvaluation(
+            actions=sell_actions + buy_actions,
+            cargo_after=cargo_after_buy,
+            credits_after=credits_after_buy,
+            net_profit=net_profit,
+        )
+
+    def _apply_sell_actions(
+        self,
+        *,
+        market: str,
+        current_cargo: Dict[str, int],
+        current_credits: int,
+        trade_opportunities: List[Dict],
+    ) -> Tuple[List[TradeAction], Dict[str, int], int, int]:
+        actions: List[TradeAction] = []
+        cargo = current_cargo.copy()
+        credits = current_credits
+        revenue = 0
+
+        for good, units in list(cargo.items()):
+            sell_opp = next((o for o in trade_opportunities if o['sell_waypoint'] == market and o['good'] == good), None)
+            if not sell_opp:
+                continue
+
+            sell_price = sell_opp['sell_price']
+            trade_volume = sell_opp['trade_volume']
+
+            units_to_sell = min(units, trade_volume)
+            if units_to_sell <= 0:
+                continue
+
+            sale_value = units_to_sell * sell_price
+            self.logger.debug(
+                "Sell %s: %s units @ %s = %s",
+                good,
+                units_to_sell,
+                sell_price,
+                sale_value,
+            )
+            actions.append(TradeAction(
+                waypoint=market,
+                good=good,
+                action='SELL',
+                units=units_to_sell,
+                price_per_unit=sell_price,
+                total_value=sale_value,
+            ))
+
+            credits += sale_value
+            revenue += sale_value
+            cargo[good] -= units_to_sell
+            if cargo[good] == 0:
+                del cargo[good]
+
+        return actions, cargo, credits, revenue
+
+    def _apply_buy_actions(
+        self,
+        *,
+        market: str,
+        trade_opportunities: List[Dict],
+        cargo: Dict[str, int],
+        credits: int,
+        cargo_capacity: int,
+    ) -> Tuple[List[TradeAction], Dict[str, int], int, int]:
+        actions: List[TradeAction] = []
+        updated_cargo = cargo.copy()
+        updated_credits = credits
+        purchase_cost = 0
+
+        cargo_used = sum(updated_cargo.values())
+        cargo_available = cargo_capacity - cargo_used
+
+        for opp in trade_opportunities:
+            if opp['buy_waypoint'] != market:
+                continue
+
+            if cargo_available <= 0 or updated_credits <= 0:
+                break
+
+            good = opp['good']
+            buy_price = opp['buy_price']
+            trade_volume = opp['trade_volume']
+
+            if buy_price <= 0:
+                continue
+
+            max_affordable = min(updated_credits // buy_price, cargo_available, trade_volume)
+            if max_affordable <= 0:
+                continue
+
+            purchase_value = max_affordable * buy_price
+            actions.append(TradeAction(
+                waypoint=market,
+                good=good,
+                action='BUY',
+                units=max_affordable,
+                price_per_unit=buy_price,
+                total_value=purchase_value,
+            ))
+
+            updated_credits -= purchase_value
+            updated_cargo[good] = updated_cargo.get(good, 0) + max_affordable
+            cargo_available -= max_affordable
+            purchase_cost += purchase_value
+
+        return actions, updated_cargo, updated_credits, purchase_cost
+
+    def _estimate_potential_future_revenue(
+        self,
+        cargo: Dict[str, int],
+        current_market: str,
+        trade_opportunities: List[Dict],
+    ) -> int:
+        potential_revenue = 0
+        for good, units in cargo.items():
+            best_sell = max(
+                (
+                    o['sell_price']
+                    for o in trade_opportunities
+                    if o['good'] == good and o['sell_waypoint'] != current_market
+                ),
+                default=0,
+            )
+            potential_revenue += units * best_sell
+        return potential_revenue
+
 
 class GreedyRoutePlanner:
     """Encapsulates the greedy multi-leg route search logic."""
 
-    def __init__(self, logger: logging.Logger, db):
+    def __init__(self, logger: logging.Logger, db, strategy: Optional[TradeEvaluationStrategy] = None):
         self.logger = logger
         self.db = db
+        self.strategy = strategy or ProfitFirstStrategy(logger)
 
     def find_route(
         self,
@@ -151,7 +345,7 @@ class GreedyRoutePlanner:
             distance = self._estimate_distance(current_waypoint, next_market)
             fuel_cost = int(distance * 1.1)
 
-            actions, new_cargo, new_credits, net_profit = self._simulate_market_actions(
+            evaluation = self.strategy.evaluate(
                 market=next_market,
                 current_cargo=current_cargo,
                 current_credits=current_credits,
@@ -160,164 +354,16 @@ class GreedyRoutePlanner:
                 fuel_cost=fuel_cost,
             )
 
+            actions = evaluation.actions
+            new_cargo = evaluation.cargo_after
+            new_credits = evaluation.credits_after
+            net_profit = evaluation.net_profit
+
             if net_profit > best_profit:
                 best_profit = net_profit
                 best_option = (next_market, actions, new_cargo, new_credits, net_profit, distance)
 
         return best_option
-
-    def _simulate_market_actions(
-        self,
-        market: str,
-        current_cargo: Dict[str, int],
-        current_credits: int,
-        trade_opportunities: List[Dict],
-        cargo_capacity: int,
-        fuel_cost: int,
-    ) -> Tuple[List[TradeAction], Dict[str, int], int, int]:
-        sell_actions, cargo_after_sell, credits_after_sell, revenue = self._apply_sell_actions(
-            market=market,
-            current_cargo=current_cargo,
-            current_credits=current_credits,
-            trade_opportunities=trade_opportunities,
-        )
-
-        buy_actions, cargo_after_buy, credits_after_buy, purchase_costs = self._apply_buy_actions(
-            market=market,
-            trade_opportunities=trade_opportunities,
-            cargo=cargo_after_sell,
-            credits=credits_after_sell,
-            cargo_capacity=cargo_capacity,
-        )
-
-        potential_future_revenue = self._estimate_potential_future_revenue(
-            cargo_after_buy,
-            market,
-            trade_opportunities,
-        )
-
-        net_profit = revenue - fuel_cost + (potential_future_revenue - purchase_costs)
-
-        return sell_actions + buy_actions, cargo_after_buy, credits_after_buy, net_profit
-
-    def _apply_sell_actions(
-        self,
-        market: str,
-        current_cargo: Dict[str, int],
-        current_credits: int,
-        trade_opportunities: List[Dict],
-    ) -> Tuple[List[TradeAction], Dict[str, int], int, int]:
-        actions: List[TradeAction] = []
-        cargo = current_cargo.copy()
-        credits = current_credits
-        revenue = 0
-
-        for good, units in list(cargo.items()):
-            sell_opp = next((o for o in trade_opportunities if o['sell_waypoint'] == market and o['good'] == good), None)
-            if not sell_opp:
-                continue
-
-            sell_price = sell_opp['sell_price']
-            trade_volume = sell_opp['trade_volume']
-
-            units_to_sell = min(units, trade_volume)
-            if units_to_sell <= 0:
-                continue
-
-            sale_value = units_to_sell * sell_price
-            self.logger.debug(
-                "Sell %s: %s units @ %s = %s",
-                good,
-                units_to_sell,
-                sell_price,
-                sale_value,
-            )
-            actions.append(TradeAction(
-                waypoint=market,
-                good=good,
-                action='SELL',
-                units=units_to_sell,
-                price_per_unit=sell_price,
-                total_value=sale_value,
-            ))
-
-            credits += sale_value
-            revenue += sale_value
-            cargo[good] -= units_to_sell
-            if cargo[good] == 0:
-                del cargo[good]
-
-        return actions, cargo, credits, revenue
-
-    def _apply_buy_actions(
-        self,
-        market: str,
-        trade_opportunities: List[Dict],
-        cargo: Dict[str, int],
-        credits: int,
-        cargo_capacity: int,
-    ) -> Tuple[List[TradeAction], Dict[str, int], int, int]:
-        actions: List[TradeAction] = []
-        updated_cargo = cargo.copy()
-        updated_credits = credits
-        purchase_cost = 0
-
-        cargo_used = sum(updated_cargo.values())
-        cargo_available = cargo_capacity - cargo_used
-
-        for opp in trade_opportunities:
-            if opp['buy_waypoint'] != market:
-                continue
-
-            if cargo_available <= 0 or updated_credits <= 0:
-                break
-
-            good = opp['good']
-            buy_price = opp['buy_price']
-            trade_volume = opp['trade_volume']
-
-            if buy_price <= 0:
-                continue
-
-            max_affordable = min(updated_credits // buy_price, cargo_available, trade_volume)
-            if max_affordable <= 0:
-                continue
-
-            purchase_value = max_affordable * buy_price
-            actions.append(TradeAction(
-                waypoint=market,
-                good=good,
-                action='BUY',
-                units=max_affordable,
-                price_per_unit=buy_price,
-                total_value=purchase_value,
-            ))
-
-            updated_credits -= purchase_value
-            updated_cargo[good] = updated_cargo.get(good, 0) + max_affordable
-            cargo_available -= max_affordable
-            purchase_cost += purchase_value
-
-        return actions, updated_cargo, updated_credits, purchase_cost
-
-    def _estimate_potential_future_revenue(
-        self,
-        cargo: Dict[str, int],
-        current_market: str,
-        trade_opportunities: List[Dict],
-    ) -> int:
-        potential_revenue = 0
-        for good, units in cargo.items():
-            best_sell = max(
-                (
-                    o['sell_price']
-                    for o in trade_opportunities
-                    if o['good'] == good and o['sell_waypoint'] != current_market
-                ),
-                default=0,
-            )
-            potential_revenue += units * best_sell
-        return potential_revenue
 
     def _estimate_distance(self, from_waypoint: str, to_waypoint: str) -> float:
         with self.db.connection() as conn:

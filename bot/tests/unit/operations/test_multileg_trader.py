@@ -7,6 +7,7 @@ import spacetraders_bot.operations.multileg_trader as multileg_module
 
 from spacetraders_bot.operations.multileg_trader import (
     GreedyRoutePlanner,
+    ProfitFirstStrategy,
     MultiLegRoute,
     MultiLegTradeOptimizer,
     RouteSegment,
@@ -99,8 +100,8 @@ def test_get_trade_opportunities(monkeypatch):
     assert opp['spread'] == 40
 
 
-def test_simulate_market_actions_buys_and_sells():
-    planner = GreedyRoutePlanner(logger=MagicMock(), db=MagicMock())
+def test_strategy_evaluation_buys_and_sells():
+    strategy = ProfitFirstStrategy(logger=MagicMock())
 
     trade_ops = [
         {
@@ -114,7 +115,7 @@ def test_simulate_market_actions_buys_and_sells():
         }
     ]
 
-    actions, cargo, credits, net_profit = planner._simulate_market_actions(
+    buy_eval = strategy.evaluate(
         market='A',
         current_cargo={'IRON': 5},
         current_credits=100,
@@ -123,11 +124,11 @@ def test_simulate_market_actions_buys_and_sells():
         fuel_cost=5,
     )
 
-    assert any(a.action == 'BUY' for a in actions)
-    assert cargo['IRON'] > 0
-    assert net_profit > 0  # includes future potential
+    assert any(a.action == 'BUY' for a in buy_eval.actions)
+    assert buy_eval.cargo_after['IRON'] > 0
+    assert buy_eval.net_profit > 0
 
-    actions, cargo, credits, net_profit = planner._simulate_market_actions(
+    sell_eval = strategy.evaluate(
         market='B',
         current_cargo={'IRON': 5},
         current_credits=100,
@@ -136,8 +137,8 @@ def test_simulate_market_actions_buys_and_sells():
         fuel_cost=5,
     )
 
-    assert any(a.action == 'SELL' for a in actions)
-    assert 'IRON' not in cargo
+    assert any(a.action == 'SELL' for a in sell_eval.actions)
+    assert 'IRON' not in sell_eval.cargo_after
 
 
 def test_find_best_next_market(monkeypatch):
