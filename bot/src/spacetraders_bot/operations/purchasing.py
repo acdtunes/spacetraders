@@ -16,7 +16,7 @@ from spacetraders_bot.operations.common import (
 )
 
 
-def purchase_ship_operation(args):
+def purchase_ship_operation(args, *, api=None, ship=None, captain_logger=None):
     """Purchase one or more ships from a shipyard using the supplied hauler."""
 
     log_file = setup_logging(
@@ -55,9 +55,9 @@ def purchase_ship_operation(args):
     ship_type = args.ship_type
     operator_name = get_operator_name(args)
 
-    api = get_api_client(args.player_id)
-    ship = ShipController(api, ship_symbol)
-    captain_logger = get_captain_logger(args.player_id)
+    api = api or get_api_client(args.player_id)
+    ship = ship or ShipController(api, ship_symbol)
+    captain_logger = captain_logger or get_captain_logger(args.player_id)
 
     def log_error(error: str, cause: str, *, escalate: bool = False, extra_tags: Optional[List[str]] = None):
         log_captain_event(

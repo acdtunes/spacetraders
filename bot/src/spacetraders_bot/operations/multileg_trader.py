@@ -69,10 +69,11 @@ class MultiLegTradeOptimizer:
     3. Use A* search to find optimal route
     """
 
-    def __init__(self, api: APIClient, db, player_id: int):
+    def __init__(self, api: APIClient, db, player_id: int, logger: Optional[logging.Logger] = None):
         self.api = api
         self.db = db
         self.player_id = player_id
+        self.logger = logger or logging.getLogger(__name__)
 
     def find_optimal_route(
         self,
@@ -101,26 +102,26 @@ class MultiLegTradeOptimizer:
         Returns:
             MultiLegRoute with optimal path, or None if no profitable route found
         """
-        logging.info("="*70)
-        logging.info("MULTI-LEG ROUTE OPTIMIZATION")
-        logging.info("="*70)
-        logging.info(f"Start: {start_waypoint}")
-        logging.info(f"Max stops: {max_stops}")
-        logging.info(f"Cargo capacity: {cargo_capacity}")
-        logging.info(f"Starting credits: {starting_credits:,}")
-        logging.info("="*70)
+        self.logger.info("="*70)
+        self.logger.info("MULTI-LEG ROUTE OPTIMIZATION")
+        self.logger.info("="*70)
+        self.logger.info(f"Start: {start_waypoint}")
+        self.logger.info(f"Max stops: {max_stops}")
+        self.logger.info(f"Cargo capacity: {cargo_capacity}")
+        self.logger.info(f"Starting credits: {starting_credits:,}")
+        self.logger.info("="*70)
 
         # Get all markets in system from database
         markets = self._get_markets_in_system(system)
-        logging.info(f"Found {len(markets)} markets in {system}")
+        self.logger.info(f"Found {len(markets)} markets in {system}")
 
         if not markets:
-            logging.error("No markets found in system")
+            self.logger.error("No markets found in system")
             return None
 
         # Get all trade opportunities from database
         trade_opportunities = self._get_trade_opportunities(system, markets)
-        logging.info(f"Found {len(trade_opportunities)} trade opportunities")
+        self.logger.info(f"Found {len(trade_opportunities)} trade opportunities")
 
         # Build route using greedy best-first search with market price awareness
         # (Full A* would be too expensive for real-time, greedy is good enough)
@@ -135,28 +136,28 @@ class MultiLegTradeOptimizer:
         )
 
         if best_route:
-            logging.info("\n" + "="*70)
-            logging.info("OPTIMAL ROUTE FOUND")
-            logging.info("="*70)
-            logging.info(f"Total profit: {best_route.total_profit:,} credits")
-            logging.info(f"Total distance: {best_route.total_distance:.0f} units")
-            logging.info(f"Estimated time: {best_route.estimated_time_minutes:.0f} minutes")
-            logging.info(f"Stops: {len(best_route.segments)}")
-            logging.info("\nRoute:")
+            self.logger.info("\n" + "="*70)
+            self.logger.info("OPTIMAL ROUTE FOUND")
+            self.logger.info("="*70)
+            self.logger.info(f"Total profit: {best_route.total_profit:,} credits")
+            self.logger.info(f"Total distance: {best_route.total_distance:.0f} units")
+            self.logger.info(f"Estimated time: {best_route.estimated_time_minutes:.0f} minutes")
+            self.logger.info(f"Stops: {len(best_route.segments)}")
+            self.logger.info("\nRoute:")
 
             for i, segment in enumerate(best_route.segments, 1):
-                logging.info(f"\n  Stop {i}: {segment.to_waypoint}")
-                logging.info(f"    Distance: {segment.distance:.0f} units")
-                logging.info(f"    Actions:")
+                self.logger.info(f"\n  Stop {i}: {segment.to_waypoint}")
+                self.logger.info(f"    Distance: {segment.distance:.0f} units")
+                self.logger.info(f"    Actions:")
                 for action in segment.actions_at_destination:
                     symbol = '💰' if action.action == 'BUY' else '💵'
-                    logging.info(f"      {symbol} {action.action} {action.units}x {action.good} @ {action.price_per_unit:,} = {action.total_value:,}")
-                logging.info(f"    Cargo after: {segment.cargo_after}")
-                logging.info(f"    Cumulative profit: {segment.cumulative_profit:,}")
+                    self.logger.info(f"      {symbol} {action.action} {action.units}x {action.good} @ {action.price_per_unit:,} = {action.total_value:,}")
+                self.logger.info(f"    Cargo after: {segment.cargo_after}")
+                self.logger.info(f"    Cumulative profit: {segment.cumulative_profit:,}")
 
-            logging.info("="*70)
+            self.logger.info("="*70)
         else:
-            logging.warning("No profitable multi-leg route found")
+            self.logger.warning("No profitable multi-leg route found")
 
         return best_route
 

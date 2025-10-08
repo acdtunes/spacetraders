@@ -6,7 +6,7 @@ Contract operations: contract fulfillment and negotiation
 import logging
 import time
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from spacetraders_bot.core.database import Database
 from spacetraders_bot.core.ship_controller import ShipController
@@ -22,7 +22,15 @@ from spacetraders_bot.operations.common import (
 )
 
 
-def contract_operation(args):
+def contract_operation(
+    args,
+    *,
+    api=None,
+    ship=None,
+    navigator=None,
+    db=None,
+    sleep_fn=time.sleep,
+):
     """Contract fulfillment operation"""
     log_file = setup_logging("contract", args.ship, getattr(args, 'log_level', 'INFO'))
 
@@ -30,11 +38,12 @@ def contract_operation(args):
     print("CONTRACT FULFILLMENT OPERATION")
     print("=" * 70)
 
-    api = get_api_client(args.player_id)
-    ship = ShipController(api, args.ship)
+    api = api or get_api_client(args.player_id)
+    ship = ship or ShipController(api, args.ship)
 
     operation_start = datetime.now(timezone.utc)
     captain_logger = get_captain_logger(args.player_id)
+    local_db = db or Database()
     operator_name = get_operator_name(args)
 
     def log_error(error: str, cause: str, *, impact: Optional[Dict] = None,
@@ -113,7 +122,7 @@ def contract_operation(args):
         return 1
 
     system = ship_data['nav']['systemSymbol']
-    navigator = SmartNavigator(api, system)
+    navigator = navigator or SmartNavigator(api, system)
 
     # Get contract details
     print("1. Getting contract details...")
@@ -201,16 +210,7 @@ def contract_operation(args):
         if args.buy_from:
             print(f"  ✅ Using specified market: {args.buy_from}")
             # Validate the market exists and sells the resource
-            db = Database()
-            with db.connection() as conn:
-                cursor = conn.execute("""
-                    SELECT waypoint_symbol, sell_price, supply
-                    FROM market_data
-                    WHERE good_symbol = ?
-                      AND waypoint_symbol = ?
-                      AND sell_price IS NOT NULL
-                """, (delivery['tradeSymbol'], args.buy_from))
-                market_row = cursor.fetchone()
+            market_row = _fetch_market_listing(local_db, delivery['tradeSymbol'], args.buy_from)
 
             if market_row:
                 total_cost = market_row[1] * still_need
@@ -222,92 +222,70 @@ def contract_operation(args):
         else:
             # No buy_from specified - search for best market
             print(f"\n  🔍 Searching for markets selling {delivery['tradeSymbol']}...")
-            db = Database()
-            with db.connection() as conn:
-                cursor = conn.execute("""
-                    SELECT waypoint_symbol, sell_price, supply
-                    FROM market_data
-                    WHERE good_symbol = ?
-                      AND sell_price IS NOT NULL
-                      AND waypoint_symbol LIKE ?
-                    ORDER BY sell_price ASC
-                    LIMIT 1
-                """, (delivery['tradeSymbol'], f"{system}%"))
-                market_row = cursor.fetchone()
+            market_row = _find_lowest_price_market(local_db, delivery['tradeSymbol'], system)
 
-                if market_row:
-                    args.buy_from = market_row[0]
-                    total_cost = market_row[1] * still_need
-                    print(f"  ✅ Found market: {args.buy_from}")
-                    print(f"     Price: {market_row[1]} cr/unit ({market_row[2]} supply)")
-                    print(f"     Total cost: {format_credits(total_cost)} for {still_need} units")
-                else:
-                    # Resource not available in any market
-                    print(f"  ❌ RESOURCE NOT AVAILABLE")
-                    print(f"  {delivery['tradeSymbol']} is not available in any discovered markets in {system}")
-                    print(f"\n  📋 RECOMMENDED ACTIONS:")
-                    print(f"     1. Deploy scout coordinator to system {system}")
-                    print(f"     2. Wait for scouts to discover markets selling {delivery['tradeSymbol']}")
-                    print(f"     3. Re-run contract with --buy-from <market> once discovered")
-                    print(f"\n  🔄 Contract operation will wait and periodically retry...")
+            if market_row:
+                args.buy_from = market_row[0]
+                total_cost = market_row[1] * still_need
+                print(f"  ✅ Found market: {args.buy_from}")
+                print(f"     Price: {market_row[1]} cr/unit ({market_row[2]} supply)")
+                print(f"     Total cost: {format_credits(total_cost)} for {still_need} units")
+            else:
+                # Resource not available in any market
+                print(f"  ❌ RESOURCE NOT AVAILABLE")
+                print(f"  {delivery['tradeSymbol']} is not available in any discovered markets in {system}")
+                print(f"\n  📋 RECOMMENDED ACTIONS:")
+                print(f"     1. Deploy scout coordinator to system {system}")
+                print(f"     2. Wait for scouts to discover markets selling {delivery['tradeSymbol']}")
+                print(f"     3. Re-run contract with --buy-from <market> once discovered")
+                print(f"\n  🔄 Contract operation will wait and periodically retry...")
 
+                log_error(
+                    "Resource not available in markets",
+                    f"{delivery['tradeSymbol']} not found in any discovered markets",
+                    impact={'Resource': delivery['tradeSymbol'], 'System': system, 'Required': still_need},
+                    resolution="Deploy scout coordinator to discover markets, then retry",
+                    escalate=True,
+                    tags=['contract', 'market_missing', delivery['tradeSymbol'].lower()]
+                )
+
+                # Wait-and-retry loop (periodically check if market data gets updated)
+                max_retries = 12  # 12 retries = 1 hour (5 min intervals)
+                retry_count = 0
+                retry_interval = 300  # 5 minutes
+
+                while retry_count < max_retries:
+                    print(f"\n  ⏳ Waiting {retry_interval // 60} minutes before retry {retry_count + 1}/{max_retries}...")
+                    sleep_fn(retry_interval)
+
+                    # Re-query market database
+                    print(f"  🔍 Retry {retry_count + 1}: Checking market database...")
+                    market_row = _find_lowest_price_market(local_db, delivery['tradeSymbol'], system)
+
+                    if market_row:
+                        print(f"  ✅ SUCCESS! Market discovered: {market_row[0]}")
+                        args.buy_from = market_row[0]
+                        total_cost = market_row[1] * still_need
+                        print(f"     Price: {market_row[1]} cr/unit ({market_row[2]} supply)")
+                        print(f"     Total cost: {format_credits(total_cost)} for {still_need} units")
+                        break
+                    else:
+                        print(f"  ⚠️  Still not available (retry {retry_count + 1}/{max_retries})")
+                        retry_count += 1
+
+                if not args.buy_from:
+                    # Exhausted all retries
+                    print(f"\n  ❌ OPERATION FAILED: Resource never became available after {max_retries} retries")
+                    print(f"  Manual intervention required - Flag Captain must deploy scout coordinator")
                     log_error(
-                        "Resource not available in markets",
-                        f"{delivery['tradeSymbol']} not found in any discovered markets",
-                        impact={'Resource': delivery['tradeSymbol'], 'System': system, 'Required': still_need},
-                        resolution="Deploy scout coordinator to discover markets, then retry",
+                        "Contract operation timeout",
+                        f"Resource {delivery['tradeSymbol']} not discovered after waiting {max_retries * retry_interval // 60} minutes",
+                        impact={'Resource': delivery['tradeSymbol'], 'System': system, 'Waited': f"{max_retries * retry_interval // 60} min"},
+                        resolution="Flag Captain must manually deploy scouts or source resource elsewhere",
                         escalate=True,
-                        tags=['contract', 'market_missing', delivery['tradeSymbol'].lower()]
+                        tags=['contract', 'timeout', delivery['tradeSymbol'].lower()]
                     )
-
-                    # Wait-and-retry loop (periodically check if market data gets updated)
-                    max_retries = 12  # 12 retries = 1 hour (5 min intervals)
-                    retry_count = 0
-                    retry_interval = 300  # 5 minutes
-
-                    while retry_count < max_retries:
-                        print(f"\n  ⏳ Waiting {retry_interval // 60} minutes before retry {retry_count + 1}/{max_retries}...")
-                        time.sleep(retry_interval)
-
-                        # Re-query market database
-                        print(f"  🔍 Retry {retry_count + 1}: Checking market database...")
-                        db = Database()
-                        with db.connection() as conn:
-                            cursor = conn.execute("""
-                                SELECT waypoint_symbol, sell_price, supply
-                                FROM market_data
-                                WHERE good_symbol = ?
-                                  AND sell_price IS NOT NULL
-                                  AND waypoint_symbol LIKE ?
-                                ORDER BY sell_price ASC
-                                LIMIT 1
-                            """, (delivery['tradeSymbol'], f"{system}%"))
-                            market_row = cursor.fetchone()
-
-                        if market_row:
-                            print(f"  ✅ SUCCESS! Market discovered: {market_row[0]}")
-                            args.buy_from = market_row[0]
-                            total_cost = market_row[1] * still_need
-                            print(f"     Price: {market_row[1]} cr/unit ({market_row[2]} supply)")
-                            print(f"     Total cost: {format_credits(total_cost)} for {still_need} units")
-                            break
-                        else:
-                            print(f"  ⚠️  Still not available (retry {retry_count + 1}/{max_retries})")
-                            retry_count += 1
-
-                    if not args.buy_from:
-                        # Exhausted all retries
-                        print(f"\n  ❌ OPERATION FAILED: Resource never became available after {max_retries} retries")
-                        print(f"  Manual intervention required - Flag Captain must deploy scout coordinator")
-                        log_error(
-                            "Contract operation timeout",
-                            f"Resource {delivery['tradeSymbol']} not discovered after waiting {max_retries * retry_interval // 60} minutes",
-                            impact={'Resource': delivery['tradeSymbol'], 'System': system, 'Waited': f"{max_retries * retry_interval // 60} min"},
-                            resolution="Flag Captain must manually deploy scouts or source resource elsewhere",
-                            escalate=True,
-                            tags=['contract', 'timeout', delivery['tradeSymbol'].lower()]
-                        )
-                        return 1
+                    return 1
 
         # Purchase from identified market
         if cargo_available < still_need:
@@ -481,7 +459,7 @@ def contract_operation(args):
                 if error_code == 4502 and retry < max_delivery_retries - 1:
                     print(f"  ⚠️  Delivery failed (error {error_code}): {error_msg}")
                     print(f"  🔄 Retry {retry + 1}/{max_delivery_retries - 1}...")
-                    time.sleep(2)  # Brief pause before retry
+                    sleep_fn(2)  # Brief pause before retry
                     continue
                 else:
                     print(f"  ❌ Delivery failed: {error_msg} (Code: {error_code})")
@@ -535,7 +513,7 @@ def contract_operation(args):
         return 1
 
 
-def negotiate_operation(args):
+def negotiate_operation(args, *, api=None):
     """Negotiate a new contract - replaces negotiate_contract.sh"""
     log_file = setup_logging("negotiate", args.ship, getattr(args, 'log_level', 'INFO'))
 
@@ -543,7 +521,7 @@ def negotiate_operation(args):
     print("NEGOTIATE CONTRACT")
     print("=" * 70)
 
-    api = get_api_client(args.player_id)
+    api = api or get_api_client(args.player_id)
 
     print(f"Negotiating contract with ship {args.ship}...\n")
 
@@ -576,3 +554,36 @@ def negotiate_operation(args):
     else:
         print("❌ Failed to negotiate contract")
         return 1
+def _fetch_market_listing(db: Database, trade_symbol: str, waypoint_symbol: str) -> Optional[Tuple[str, int, str]]:
+    """Return market listing tuple for specific waypoint or None."""
+    with db.connection() as conn:
+        cursor = conn.execute(
+            """
+            SELECT waypoint_symbol, sell_price, supply
+            FROM market_data
+            WHERE good_symbol = ?
+              AND waypoint_symbol = ?
+              AND sell_price IS NOT NULL
+            """,
+            (trade_symbol, waypoint_symbol),
+        )
+        return cursor.fetchone()
+
+
+def _find_lowest_price_market(db: Database, trade_symbol: str, system_prefix: str) -> Optional[Tuple[str, int, str]]:
+    """Return the cheapest market tuple within given system prefix."""
+    pattern = f"{system_prefix}%"
+    with db.connection() as conn:
+        cursor = conn.execute(
+            """
+            SELECT waypoint_symbol, sell_price, supply
+            FROM market_data
+            WHERE good_symbol = ?
+              AND sell_price IS NOT NULL
+              AND waypoint_symbol LIKE ?
+            ORDER BY sell_price ASC
+            LIMIT 1
+            """,
+            (trade_symbol, pattern),
+        )
+        return cursor.fetchone()
