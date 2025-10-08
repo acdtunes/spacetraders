@@ -1,7 +1,16 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook } from '@testing-library/react';
 import { useShipTooltip } from '../useShipTooltip';
-import type { TaggedShip } from '../../types/spacetraders';
+import type { TaggedShip, WaypointRef, CargoItem } from '../../types/spacetraders';
+
+const buildWaypointRef = (symbol: string, overrides: Partial<WaypointRef> = {}): WaypointRef => ({
+  symbol,
+  type: 'PLANET',
+  systemSymbol: 'X1-TEST',
+  x: 0,
+  y: 0,
+  ...overrides,
+});
 
 const buildShip = (overrides: Partial<TaggedShip> = {}): TaggedShip => ({
   symbol: 'SHIP-001',
@@ -18,8 +27,8 @@ const buildShip = (overrides: Partial<TaggedShip> = {}): TaggedShip => ({
     status: 'DOCKED',
     flightMode: 'CRUISE',
     route: {
-      origin: { symbol: 'ORIGIN', x: 0, y: 0 },
-      destination: { symbol: 'DEST', x: 10, y: 0 },
+      origin: buildWaypointRef('ORIGIN'),
+      destination: buildWaypointRef('DEST', { x: 10 }),
       departureTime: new Date().toISOString(),
       arrival: new Date(Date.now() + 3600_000).toISOString(),
     },
@@ -32,8 +41,7 @@ const buildShip = (overrides: Partial<TaggedShip> = {}): TaggedShip => ({
   modules: [],
   mounts: [],
   crew: { capacity: 1, current: 1, required: 1, morale: 100, wages: 0 },
-  cooldown: { remainingSeconds: 0, totalSeconds: 0 },
-  state: 'OPERATIONAL',
+  cooldown: { shipSymbol: 'SHIP-001', remainingSeconds: 0, totalSeconds: 0 },
   ...overrides,
 });
 
@@ -75,15 +83,16 @@ describe('useShipTooltip', () => {
   });
 
   it('maps cargo entries and calculates percentages', () => {
+    const inventory: CargoItem[] = [
+      { symbol: 'IRON_ORE', name: 'Iron Ore', description: 'Ore', units: 2 },
+      { symbol: 'COPPER_ORE', name: 'Copper Ore', description: 'Ore', units: 3 },
+      { symbol: 'ALUMINUM', name: 'Aluminum', description: 'Metal', units: 4 },
+    ];
     const ship = buildShip({
       cargo: {
         capacity: 10,
         units: 5,
-        inventory: [
-          { symbol: 'IRON_ORE', name: 'Iron Ore', units: 2 },
-          { symbol: 'COPPER_ORE', name: 'Copper Ore', units: 3 },
-          { symbol: 'ALUMINUM', name: 'Aluminum', units: 4 },
-        ],
+        inventory,
       },
     });
     const { result } = renderHook(() => useShipTooltip({ activeSymbol: ship.symbol, ships: [ship] }));
@@ -92,7 +101,7 @@ describe('useShipTooltip', () => {
   });
 
   it('returns cooldown seconds when present', () => {
-    const ship = buildShip({ cooldown: { remainingSeconds: 12, totalSeconds: 60 } });
+    const ship = buildShip({ cooldown: { shipSymbol: 'SHIP-001', remainingSeconds: 12, totalSeconds: 60 } });
     const { result } = renderHook(() => useShipTooltip({ activeSymbol: ship.symbol, ships: [ship] }));
     expect(result.current?.cooldownSeconds).toBe(12);
   });

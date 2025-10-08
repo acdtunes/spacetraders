@@ -1,17 +1,26 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { act } from '@testing-library/react';
 import { createAppStore } from '../useStore';
-import type { Agent, TaggedShip, Waypoint, ShipTrailPoint, FlightMode } from '../../types/spacetraders';
+import type { Agent, TaggedShip, Waypoint, WaypointRef, ShipTrailPoint, FlightMode } from '../../types/spacetraders';
 
 type AppStore = ReturnType<typeof createAppStore>;
 
 const buildAgent = (overrides: Partial<Agent> = {}): Agent => ({
   id: 'AGENT-1',
   symbol: 'AGENT-1',
-  headquarters: 'X1-TEST',
-  startingFaction: 'COSMIC',
-  shipCount: 1,
+  color: '#60a5fa',
+  visible: true,
+  createdAt: new Date(0).toISOString(),
   credits: 0,
+  ...overrides,
+});
+
+const buildWaypointRef = (symbol: string, overrides: Partial<WaypointRef> = {}): WaypointRef => ({
+  symbol,
+  type: 'PLANET',
+  systemSymbol: 'X1-TEST',
+  x: 0,
+  y: 0,
   ...overrides,
 });
 
@@ -30,8 +39,8 @@ const buildShip = (overrides: Partial<TaggedShip> = {}): TaggedShip => ({
     status: 'IN_ORBIT',
     flightMode: 'CRUISE',
     route: {
-      origin: { symbol: 'ORIGIN', x: 0, y: 0 },
-      destination: { symbol: 'DEST', x: 10, y: 5 },
+      origin: buildWaypointRef('ORIGIN'),
+      destination: buildWaypointRef('DEST', { x: 10, y: 5 }),
       departureTime: new Date().toISOString(),
       arrival: new Date(Date.now() + 60_000).toISOString(),
     },
@@ -44,7 +53,7 @@ const buildShip = (overrides: Partial<TaggedShip> = {}): TaggedShip => ({
   engine: {},
   modules: [],
   mounts: [],
-  cooldown: { remainingSeconds: 0, totalSeconds: 0 },
+  cooldown: { shipSymbol: 'SHIP-1', remainingSeconds: 0, totalSeconds: 0 },
   ...overrides,
 });
 

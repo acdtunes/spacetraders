@@ -1,11 +1,6 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { filterActiveTrail, computeParticleCount, hexToRgb, boostColor, rgba, type TrailVisualSettings } from '../shipTrailUtils';
 import type { ShipTrailPoint } from '../../types/spacetraders';
-
-const freeze = (timestamp: number) => {
-  vi.useFakeTimers();
-  vi.setSystemTime(timestamp);
-};
 
 describe('shipTrailUtils', () => {
   const now = Date.now();
@@ -31,10 +26,6 @@ describe('shipTrailUtils', () => {
       colorBoost: 0.2,
     },
   } as const;
-
-  beforeEach(() => {
-    vi.useRealTimers();
-  });
 
   it('filters out stale trail points based on maxAge', () => {
     const trail: ShipTrailPoint[] = [

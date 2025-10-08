@@ -29,8 +29,20 @@ const baseShip: TaggedShip = {
     status: 'IN_TRANSIT',
     flightMode: 'CRUISE',
     route: {
-      origin: { symbol: 'ORIGIN', x: 0, y: 0 },
-      destination: { symbol: 'DEST', x: 10, y: 0 },
+      origin: {
+        symbol: 'ORIGIN',
+        type: 'PLANET',
+        systemSymbol: 'X1-TEST',
+        x: 0,
+        y: 0,
+      },
+      destination: {
+        symbol: 'DEST',
+        type: 'PLANET',
+        systemSymbol: 'X1-TEST',
+        x: 10,
+        y: 0,
+      },
       departureTime: new Date().toISOString(),
       arrival: new Date(Date.now() + 60000).toISOString(),
     },
@@ -43,8 +55,7 @@ const baseShip: TaggedShip = {
   modules: [],
   mounts: [],
   crew: { capacity: 1, current: 1, required: 1, morale: 100, wages: 0 },
-  cooldown: { remainingSeconds: 0, totalSeconds: 0 },
-  state: 'OPERATIONAL',
+  cooldown: { shipSymbol: 'SHIP-1', remainingSeconds: 0, totalSeconds: 0 },
 };
 
 describe('shipDisplay utilities', () => {

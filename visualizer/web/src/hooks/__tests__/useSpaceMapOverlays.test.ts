@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { useSpaceMapOverlays } from '../useSpaceMapOverlays';
-import type { TaggedShip, Waypoint as WaypointType, Market } from '../../types/spacetraders';
+import type { TaggedShip, Waypoint as WaypointType, Market, WaypointRef } from '../../types/spacetraders';
 import { renderHook } from '@testing-library/react';
 
 const buildWaypoint = (overrides: Partial<WaypointType> = {}): WaypointType => ({
@@ -13,6 +13,15 @@ const buildWaypoint = (overrides: Partial<WaypointType> = {}): WaypointType => (
   traits: [],
   chart: null,
   isUnderConstruction: false,
+  ...overrides,
+});
+
+const buildWaypointRef = (symbol: string, overrides: Partial<WaypointRef> = {}): WaypointRef => ({
+  symbol,
+  type: 'PLANET',
+  systemSymbol: 'X1-TEST',
+  x: 0,
+  y: 0,
   ...overrides,
 });
 
@@ -31,8 +40,8 @@ const buildShip = (overrides: Partial<TaggedShip> = {}): TaggedShip => ({
     status: 'IN_TRANSIT',
     flightMode: 'CRUISE',
     route: {
-      origin: { symbol: 'ORIGIN', x: 0, y: 0 },
-      destination: { symbol: 'X1-TEST-A1', x: 10, y: 5 },
+      origin: buildWaypointRef('ORIGIN'),
+      destination: buildWaypointRef('X1-TEST-A1', { x: 10, y: 5 }),
       departureTime: new Date().toISOString(),
       arrival: new Date(Date.now() + 60000).toISOString(),
     },
@@ -45,8 +54,7 @@ const buildShip = (overrides: Partial<TaggedShip> = {}): TaggedShip => ({
   modules: [],
   mounts: [],
   crew: { capacity: 1, current: 1, required: 1, morale: 100, wages: 0 },
-  cooldown: { remainingSeconds: 0, totalSeconds: 0 },
-  state: 'OPERATIONAL',
+  cooldown: { shipSymbol: 'SHIP-1', remainingSeconds: 0, totalSeconds: 0 },
   ...overrides,
 });
 
@@ -129,7 +137,7 @@ describe('useSpaceMapOverlays', () => {
       waypoints: new Map([[waypointWithMarket.symbol, waypointWithMarket]]),
       markets,
       waypointTooltipAnchor: { symbol: waypointWithMarket.symbol, worldX: waypointWithMarket.x, worldY: waypointWithMarket.y },
-      getWaypointOpportunities: (_, inputMarkets) => {
+      getWaypointOpportunities: (_symbol: string, inputMarkets: Map<string, Market>) => {
         expect(inputMarkets).toBe(markets);
         return [{ good: 'IRON', profitPerUnit: 150, buyLocation: 'X1-TEST-A1', sellLocation: 'X1-TEST-B1' }];
       },

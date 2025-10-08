@@ -129,6 +129,7 @@ export const ShipTrailLayer = memo(function ShipTrailLayer({
 
               if (ship.nav.status === 'IN_TRANSIT') {
                 const particleCount = computeParticleCount(activeTrail, config);
+                const segmentCount = activeTrail.length - 1;
 
                 for (let p = 0; p < particleCount; p++) {
                   const index = Math.max(1, segmentCount - Math.floor((p / particleCount) * segmentCount));

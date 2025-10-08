@@ -38,11 +38,11 @@ describe('useWaypointTooltipAnchor', () => {
   });
 
   it('can manually show and clear anchor', () => {
-    const hook = render(null);
-    act(() => hook.current.showForWaypoint(waypoint));
-    expect(hook.current.anchor).not.toBeNull();
+    const { result } = render(null);
+    act(() => result.current.showForWaypoint(waypoint));
+    expect(result.current.anchor).not.toBeNull();
 
-    act(() => hook.current.clearAnchor());
-    expect(hook.current.anchor).toBeNull();
+    act(() => result.current.clearAnchor());
+    expect(result.current.anchor).toBeNull();
   });
 });

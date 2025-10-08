@@ -32,8 +32,20 @@ describe('Ship domain', () => {
       status: 'DOCKED',
       flightMode: 'CRUISE',
       route: {
-        origin: { symbol: baseWaypoint.symbol, x: 0, y: 0 },
-        destination: { symbol: baseWaypoint.symbol, x: baseWaypoint.x, y: baseWaypoint.y },
+        origin: {
+          symbol: baseWaypoint.symbol,
+          type: baseWaypoint.type,
+          systemSymbol: baseWaypoint.systemSymbol,
+          x: 0,
+          y: 0,
+        },
+        destination: {
+          symbol: baseWaypoint.symbol,
+          type: baseWaypoint.type,
+          systemSymbol: baseWaypoint.systemSymbol,
+          x: baseWaypoint.x,
+          y: baseWaypoint.y,
+        },
         departureTime: new Date().toISOString(),
         arrival: new Date(Date.now() + 60000).toISOString(),
       },
@@ -46,8 +58,7 @@ describe('Ship domain', () => {
     modules: [],
     mounts: [],
     cargo: { capacity: 100, units: 0, inventory: [] },
-    cooldown: { remainingSeconds: 0, totalSeconds: 0 },
-    state: 'OPERATIONAL',
+    cooldown: { shipSymbol: 'TEST-1', remainingSeconds: 0, totalSeconds: 0 },
   };
 
   beforeEach(() => {
@@ -75,9 +86,21 @@ describe('Ship domain', () => {
       nav: {
         ...baseShip.nav,
         status: 'IN_TRANSIT',
-        route: {
-          origin: { symbol: baseWaypoint.symbol, x: 0, y: 0 },
-          destination: { symbol: baseWaypoint.symbol, x: baseWaypoint.x, y: baseWaypoint.y },
+    route: {
+          origin: {
+            symbol: baseWaypoint.symbol,
+            type: baseWaypoint.type,
+            systemSymbol: baseWaypoint.systemSymbol,
+            x: 0,
+            y: 0,
+          },
+          destination: {
+            symbol: baseWaypoint.symbol,
+            type: baseWaypoint.type,
+            systemSymbol: baseWaypoint.systemSymbol,
+            x: baseWaypoint.x,
+            y: baseWaypoint.y,
+          },
           departureTime: new Date(Date.now() - 600000).toISOString(),
           arrival,
         },
@@ -96,9 +119,21 @@ describe('Ship domain', () => {
       nav: {
         ...baseShip.nav,
         status: 'IN_TRANSIT',
-        route: {
-          origin: { symbol: baseWaypoint.symbol, x: 0, y: 0 },
-          destination: { symbol: baseWaypoint.symbol, x: baseWaypoint.x, y: baseWaypoint.y },
+    route: {
+          origin: {
+            symbol: baseWaypoint.symbol,
+            type: baseWaypoint.type,
+            systemSymbol: baseWaypoint.systemSymbol,
+            x: 0,
+            y: 0,
+          },
+          destination: {
+            symbol: baseWaypoint.symbol,
+            type: baseWaypoint.type,
+            systemSymbol: baseWaypoint.systemSymbol,
+            x: baseWaypoint.x,
+            y: baseWaypoint.y,
+          },
           departureTime: new Date(Date.now() - 1000).toISOString(),
           arrival: new Date(Date.now() + 1000).toISOString(),
         },

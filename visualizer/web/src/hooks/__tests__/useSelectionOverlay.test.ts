@@ -30,8 +30,20 @@ const ship: TaggedShip = {
     status: 'IN_TRANSIT',
     flightMode: 'CRUISE',
     route: {
-      origin: { symbol: 'ORIGIN', x: 0, y: 0 },
-      destination: { symbol: waypoint.symbol, x: waypoint.x, y: waypoint.y },
+      origin: {
+        symbol: 'ORIGIN',
+        type: 'PLANET',
+        systemSymbol: 'X1-TEST',
+        x: 0,
+        y: 0,
+      },
+      destination: {
+        symbol: waypoint.symbol,
+        type: waypoint.type,
+        systemSymbol: waypoint.systemSymbol,
+        x: waypoint.x,
+        y: waypoint.y,
+      },
       departureTime: new Date().toISOString(),
       arrival: new Date(Date.now() + 60000).toISOString(),
     },
@@ -44,8 +56,7 @@ const ship: TaggedShip = {
   modules: [],
   mounts: [],
   crew: { capacity: 1, current: 1, required: 1, morale: 100, wages: 0 },
-  cooldown: { remainingSeconds: 0, totalSeconds: 0 },
-  state: 'OPERATIONAL',
+  cooldown: { shipSymbol: 'SHIP-99', remainingSeconds: 0, totalSeconds: 0 },
 };
 
 const projectToScreen = (point: { x: number; y: number }) => ({ x: point.x + 100, y: point.y + 200 });
