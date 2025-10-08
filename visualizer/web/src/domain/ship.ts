@@ -58,7 +58,17 @@ export const Ship = {
   getDockedPosition(ship: ShipType, waypoints: Map<string, WaypointType>): Position {
     const waypoint = waypoints.get(ship.nav.waypointSymbol);
     if (!waypoint) return { x: 0, y: 0 };
-    return { x: waypoint.x, y: waypoint.y };
+    const baseRadius = Waypoint.getRadius(waypoint);
+
+    // Deterministic offset around the waypoint so docked ships don't overlap the center.
+    const hash = Array.from(ship.symbol).reduce((acc, char) => acc * 31 + char.charCodeAt(0), 7);
+    const angle = (Math.abs(hash) % 360) * (Math.PI / 180);
+    const ring = baseRadius + 4 + ((Math.abs(hash) % 4) * 1.2);
+
+    return {
+      x: waypoint.x + Math.cos(angle) * ring,
+      y: waypoint.y + Math.sin(angle) * ring,
+    };
   },
 
   /**
