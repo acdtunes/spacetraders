@@ -131,21 +131,8 @@ class DaemonManager:
             print(f"Daemon {daemon_id} is already running (PID: {self.get_pid(daemon_id)})")
             return False
 
-        # Setup log files
-        log_file = self.logs_dir / f"{daemon_id}.log"
-        err_file = self.logs_dir / f"{daemon_id}.err"
-
-        # Add start marker to logs
-        timestamp = datetime.now(UTC).isoformat()
-        with open(log_file, 'a') as f:
-            f.write(f"\n{'='*70}\n")
-            f.write(f"Daemon {daemon_id} started at {timestamp}\n")
-            f.write(f"Command: {' '.join(command)}\n")
-            f.write(f"{'='*70}\n\n")
-
-        # Open file handles for subprocess (must stay open for daemon)
-        stdout_handle = open(log_file, 'a')
-        stderr_handle = open(err_file, 'a')
+        log_file, err_file = self._prepare_log_files(daemon_id, command)
+        stdout_handle, stderr_handle = self._open_log_streams(log_file, err_file)
 
         # Start process in background
         process = subprocess.Popen(
@@ -173,6 +160,29 @@ class DaemonManager:
         print(f"   Errors: {err_file}")
 
         return True
+
+    def _prepare_log_files(self, daemon_id: str, command: List[str]) -> tuple[Path, Path]:
+        """Ensure log files exist and append a start marker."""
+        log_file = self.logs_dir / f"{daemon_id}.log"
+        err_file = self.logs_dir / f"{daemon_id}.err"
+
+        timestamp = datetime.now(UTC).isoformat()
+        with open(log_file, 'a') as stream:
+            stream.write(f"\n{'='*70}\n")
+            stream.write(f"Daemon {daemon_id} started at {timestamp}\n")
+            stream.write(f"Command: {' '.join(command)}\n")
+            stream.write(f"{'='*70}\n\n")
+
+        # Touch error file so the path exists even before writes
+        err_file.touch(exist_ok=True)
+
+        return log_file, err_file
+
+    def _open_log_streams(self, log_file: Path, err_file: Path) -> tuple:
+        """Return file handles for subprocess stdout and stderr."""
+        stdout_handle = open(log_file, 'a')
+        stderr_handle = open(err_file, 'a')
+        return stdout_handle, stderr_handle
 
     def stop(self, daemon_id: str, timeout: int = 10) -> bool:
         """
