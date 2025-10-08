@@ -2,6 +2,7 @@
 """Ship purchasing operation."""
 
 import logging
+from dataclasses import dataclass
 from typing import List, Optional
 
 from spacetraders_bot.core.ship_controller import ShipController
@@ -14,6 +15,17 @@ from spacetraders_bot.operations.common import (
     log_captain_event,
     setup_logging,
 )
+
+
+@dataclass
+class PurchasePlan:
+    """Represents how many ships can be purchased and the financial limits."""
+
+    price: int
+    requested_quantity: int
+    purchasable_quantity: int
+    max_budget: int
+    available_credits: int
 
 
 def _validate_purchase_args(args):
@@ -93,6 +105,42 @@ def _fetch_shipyard_listing(api, shipyard_symbol: str, ship_type: str, log_error
         return None, None
 
     return listing, price
+
+
+def _load_agent_credits(api, log_error) -> Optional[int]:
+    agent = api.get_agent()
+    if not agent:
+        print("❌ Failed to load agent data")
+        log_error("Agent data unavailable", "API returned no agent info")
+        return None
+
+    return int(agent.get("credits", 0))
+
+
+def _calculate_purchase_plan(quantity: int, price: int, credits: int, max_budget: int, log_error) -> Optional[PurchasePlan]:
+    max_by_budget = max_budget // price if price else 0
+    max_by_credits = credits // price if price else 0
+    purchasable_quantity = min(quantity, max_by_budget, max_by_credits)
+
+    if purchasable_quantity <= 0:
+        print(
+            "❌ Not enough budget or credits to purchase even one ship. "
+            f"Price per ship: {format_credits(price)}"
+        )
+        log_error(
+            "Insufficient funds",
+            f"Credits: {credits:,}, Budget: {max_budget:,}, Price: {price:,}",
+            escalate=False,
+        )
+        return None
+
+    return PurchasePlan(
+        price=price,
+        requested_quantity=quantity,
+        purchasable_quantity=purchasable_quantity,
+        max_budget=max_budget,
+        available_credits=credits,
+    )
 
 
 def _execute_purchases(
@@ -217,46 +265,31 @@ def purchase_ship_operation(args, *, api=None, ship=None, captain_logger=None):
     if price is None:
         return 1
 
-    agent = api.get_agent()
-    if not agent:
-        print("❌ Failed to load agent data")
-        log_error("Agent data unavailable", "API returned no agent info")
+    available_credits = _load_agent_credits(api, log_error)
+    if available_credits is None:
         return 1
 
-    available_credits = int(agent.get("credits", 0))
-    max_by_budget = max_budget // price
-    max_by_credits = available_credits // price
-    purchasable_quantity = min(quantity, max_by_budget, max_by_credits)
-
-    if purchasable_quantity <= 0:
-        print(
-            "❌ Not enough budget or credits to purchase even one ship. "
-            f"Price per ship: {format_credits(price)}"
-        )
-        log_error(
-            "Insufficient funds",
-            f"Credits: {available_credits:,}, Budget: {max_budget:,}, Price: {price:,}",
-            escalate=False,
-        )
+    plan = _calculate_purchase_plan(quantity, price, available_credits, max_budget, log_error)
+    if not plan:
         return 1
 
     logging.info(
         "Purchasing up to %d ships (requested=%d, price=%d, credits=%d, budget=%d)",
-        purchasable_quantity,
-        quantity,
-        price,
-        available_credits,
-        max_budget,
+        plan.purchasable_quantity,
+        plan.requested_quantity,
+        plan.price,
+        plan.available_credits,
+        plan.max_budget,
     )
 
     purchased_symbols, total_spent, available_credits = _execute_purchases(
         api=api,
         shipyard_symbol=shipyard_symbol,
         ship_type=ship_type,
-        purchasable_quantity=purchasable_quantity,
-        price=price,
-        available_credits=available_credits,
-        max_budget=max_budget,
+        purchasable_quantity=plan.purchasable_quantity,
+        price=plan.price,
+        available_credits=plan.available_credits,
+        max_budget=plan.max_budget,
         captain_logger=captain_logger,
         operator_name=operator_name,
         ship_symbol=ship_symbol,
@@ -268,8 +301,8 @@ def purchase_ship_operation(args, *, api=None, ship=None, captain_logger=None):
         return 1
 
     print("\n✅ Purchase summary:")
-    print(f"  Ships bought: {len(purchased_symbols)} / {quantity} requested")
-    print(f"  Total spent: {format_credits(total_spent)} (budget cap: {format_credits(max_budget)})")
+    print(f"  Ships bought: {len(purchased_symbols)} / {plan.requested_quantity} requested")
+    print(f"  Total spent: {format_credits(total_spent)} (budget cap: {format_credits(plan.max_budget)})")
     print(f"  Remaining credits: {format_credits(available_credits)}")
     print("  New ship symbols:")
     for symbol in purchased_symbols:
