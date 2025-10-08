@@ -3,10 +3,9 @@
   "ships": [
     "STORMHAVEN-2",
     "STORMHAVEN-3",
-    "STORMHAVEN-4",
-    "STORMHAVEN-5"
+    "STORMHAVEN-4"
   ],
   "algorithm": "2opt",
   "reconfigure": false,
-  "last_updated": "2025-10-07T12:01:41.590690"
+  "last_updated": "2025-10-08T14:39:59.296118+00:00"
 }

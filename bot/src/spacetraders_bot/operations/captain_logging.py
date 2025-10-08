@@ -8,7 +8,7 @@ import json
 import os
 import re
 import time
-from datetime import datetime, timedelta, UTC
+from datetime import datetime, timedelta, timezone
 
 from spacetraders_bot.core.api_client import APIClient
 from spacetraders_bot.helpers.paths import captain_logs_root
@@ -70,7 +70,7 @@ class CaptainLogWriter:
 
     def _get_timestamp(self):
         """Get current ISO timestamp"""
-        return datetime.now(UTC).isoformat().replace('+00:00', 'Z')
+        return datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
 
     def _append_to_log(self, content, max_retries=5):
         """Append content to captain log (APPEND-ONLY) with file locking
@@ -147,7 +147,7 @@ class CaptainLogWriter:
             objective: Mission objective description
             operator: Who started the session
         """
-        session_id = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+        session_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 
         # Get agent status
         agent = self.api.get_agent() if self.api else {}
@@ -440,7 +440,7 @@ class CaptainLogWriter:
 
         session_id = self.current_session['session_id']
         start_time = datetime.fromisoformat(self.current_session['start_time'].replace('Z', '+00:00'))
-        end_time = datetime.now(UTC)
+        end_time = datetime.now(timezone.utc)
         duration = end_time - start_time
 
         # Get current agent status
@@ -532,7 +532,7 @@ class CaptainLogWriter:
                 timestamp_match = re.search(r'^([0-9T:\-\.Z]+)', entry)
                 if timestamp_match:
                     entry_time = datetime.fromisoformat(timestamp_match.group(1).replace('Z', '+00:00'))
-                    cutoff = datetime.now(UTC) - timedelta(hours=timeframe)
+                    cutoff = datetime.now(timezone.utc) - timedelta(hours=timeframe)
                     if entry_time < cutoff:
                         continue
 
@@ -549,7 +549,7 @@ class CaptainLogWriter:
         Returns:
             Report markdown string
         """
-        cutoff = datetime.now(UTC) - timedelta(hours=duration_hours)
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=duration_hours)
 
         # Find sessions in timeframe
         sessions = []
@@ -668,7 +668,7 @@ def captain_log_operation(args):
         )
 
         # Save report
-        report_file = writer.reports_dir / f"report_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}.md"
+        report_file = writer.reports_dir / f"report_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.md"
         with open(report_file, 'w') as f:
             f.write(report)
 

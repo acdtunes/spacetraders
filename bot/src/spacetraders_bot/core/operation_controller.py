@@ -13,7 +13,7 @@ Provides:
 
 import json
 import logging
-from datetime import datetime, UTC
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 def _now_iso() -> str:
     """Return the current UTC timestamp as ISO string."""
-    return datetime.now(UTC).isoformat()
+    return datetime.now(timezone.utc).isoformat()
 
 
 class OperationStatus(Enum):
@@ -86,8 +86,8 @@ class OperationController:
         return {
             "operation_id": self.operation_id,
             "status": OperationStatus.PENDING.value,
-            "created_at": datetime.now(UTC).isoformat(),
-            "updated_at": datetime.now(UTC).isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
             "checkpoints": [],
             "metadata": {},
             "error": None
@@ -217,7 +217,7 @@ class OperationController:
         duration = None
         if "started_at" in self.state:
             start = datetime.fromisoformat(self.state["started_at"].replace('Z', '+00:00'))
-            now = datetime.now(UTC)
+            now = datetime.now(timezone.utc)
             duration = (now - start).total_seconds()
 
         return {

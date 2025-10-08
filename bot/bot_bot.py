@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/Users/andres.camacho/Development/Personal/spacetradersV2/bot/venv312/bin/python
 """Backward-compatible entry point for the unified bot CLI."""
 
 from spacetraders_bot.cli.main import main

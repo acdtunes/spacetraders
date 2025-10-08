@@ -10,4 +10,6 @@
 8. [x] Identify the next high-complexity operation module for conditional-logic refactor (strategy pattern candidates).
 9. [x] Extract a trade evaluation strategy from GreedyRoutePlanner to separate market simulation logic.
 10. [x] Update MultiLegTradeOptimizer to accept pluggable strategies and cover new components with unit tests.
-11. [ ] Reassess remaining operations modules for further conditional refactors after strategy integration.
+11. [x] Reassess remaining operations modules for further conditional refactors after strategy integration.
+12. [ ] Extract contract resource availability logic into a dedicated `ResourceAcquisitionStrategy` to shrink branching in `contract_operation`.
+13. [ ] Update the contract delivery loop to consume the new strategy and add focused unit tests for resource procurement and retry paths.

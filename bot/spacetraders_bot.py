@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/Users/andres.camacho/Development/Personal/spacetradersV2/bot/venv312/bin/python
 """Compatibility wrapper for the legacy CLI path."""
 
 from __future__ import annotations

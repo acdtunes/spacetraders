@@ -10,7 +10,7 @@ import json
 import signal
 import time
 from dataclasses import dataclass
-from datetime import datetime, UTC
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -827,7 +827,7 @@ class ScoutCoordinator:
             'ships': sorted(list(self.ships)),
             'algorithm': self.algorithm,
             'reconfigure': False,
-            'last_updated': datetime.now(UTC).isoformat()
+            'last_updated': datetime.now(timezone.utc).isoformat()
         }
 
         config_path = Path(self.config_file)

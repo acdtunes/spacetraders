@@ -11,7 +11,7 @@ import os
 import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional
-from datetime import datetime, UTC
+from datetime import datetime, timezone
 import psutil
 
 from ..helpers import paths
@@ -166,7 +166,7 @@ class DaemonManager:
         log_file = self.logs_dir / f"{daemon_id}.log"
         err_file = self.logs_dir / f"{daemon_id}.err"
 
-        timestamp = datetime.now(UTC).isoformat()
+        timestamp = datetime.now(timezone.utc).isoformat()
         with open(log_file, 'a') as stream:
             stream.write(f"\n{'='*70}\n")
             stream.write(f"Daemon {daemon_id} started at {timestamp}\n")
@@ -224,7 +224,7 @@ class DaemonManager:
             self._update_daemon_status(
                 daemon_id,
                 status,
-                stopped_at=datetime.now(UTC).isoformat(),
+                stopped_at=datetime.now(timezone.utc).isoformat(),
             )
             return True
 
@@ -251,7 +251,7 @@ class DaemonManager:
         self._update_daemon_status(
             daemon_id,
             "crashed",
-            stopped_at=datetime.now(UTC).isoformat(),
+            stopped_at=datetime.now(timezone.utc).isoformat(),
         )
 
     def get_pid(self, daemon_id: str) -> Optional[int]:
@@ -302,7 +302,7 @@ class DaemonManager:
 
                 # Calculate runtime
                 started_at = datetime.fromisoformat(daemon['started_at'].replace('Z', '+00:00'))
-                runtime = (datetime.now(UTC) - started_at).total_seconds()
+                runtime = (datetime.now(timezone.utc) - started_at).total_seconds()
 
         except psutil.NoSuchProcess:
             pass
