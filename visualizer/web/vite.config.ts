@@ -6,6 +6,24 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [react()],
+    server: {
+      proxy: {
+        '/api': {
+          target: 'http://localhost:4000',
+          changeOrigin: true,
+          secure: false,
+        },
+      },
+    },
+    preview: {
+      proxy: {
+        '/api': {
+          target: 'http://localhost:4000',
+          changeOrigin: true,
+          secure: false,
+        },
+      },
+    },
     test: {
       environment: 'jsdom',
       setupFiles: ['./vitest.setup.ts'],
