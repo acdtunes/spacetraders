@@ -12,6 +12,8 @@ import { hashString } from '../utils/hash';
 import { RouteVectors } from './RouteVectors';
 import { ShipSprite } from './ShipSprite';
 import { WaypointSprite } from './WaypointSprite';
+import { ShipFuelBar } from './ShipFuelBar';
+import { ShipCargoBar } from './ShipCargoBar';
 import ZoomControls from './ZoomControls';
 import Minimap from './Minimap';
 import type { FlightMode, ShipTrailPoint, Waypoint as WaypointType, TaggedShip, ShipNavStatus } from '../types/spacetraders';
@@ -1714,38 +1716,18 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
               </div>
             )}
 
-            <div>
-              <div className="flex items-center justify-between text-[10px] uppercase text-gray-400">
-                <span>Fuel</span>
-                <span className="text-xs text-red-200 font-semibold">
-                  {shipTooltip.fuelCurrent} / {shipTooltip.fuelCapacity} ({shipTooltip.fuelPercent}%)
-                </span>
-              </div>
-              <div className="w-full bg-red-900/40 h-1.5 rounded-full mt-1">
-                <div
-                  className="h-1.5 rounded-full"
-                  style={{
-                    width: `${Math.min(100, Math.max(0, shipTooltip.fuelPercent))}%`,
-                    backgroundColor: getFuelBarColor(shipTooltip.fuelPercent),
-                  }}
-                />
-              </div>
-            </div>
+            <ShipFuelBar
+              current={shipTooltip.fuelCurrent}
+              capacity={shipTooltip.fuelCapacity}
+              percent={shipTooltip.fuelPercent}
+              getColor={getFuelBarColor}
+            />
 
-            <div>
-              <div className="flex items-center justify-between text-[10px] uppercase text-gray-400">
-                <span>Cargo</span>
-                <span className="text-xs text-red-200 font-semibold">
-                  {shipTooltip.cargoUnits} / {shipTooltip.cargoCapacity} ({shipTooltip.cargoPercent}%)
-                </span>
-              </div>
-              <div className="w-full bg-red-900/40 h-1.5 rounded-full mt-1">
-                <div
-                  className="bg-red-500 h-1.5 rounded-full"
-                  style={{ width: `${Math.min(100, Math.max(0, shipTooltip.cargoPercent))}%` }}
-                />
-              </div>
-            </div>
+            <ShipCargoBar
+              units={shipTooltip.cargoUnits}
+              capacity={shipTooltip.cargoCapacity}
+              percent={shipTooltip.cargoPercent}
+            />
           </div>
 
           {shipTooltip.cargoEntries.length > 0 && (
