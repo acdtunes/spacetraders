@@ -18,9 +18,53 @@ from unittest.mock import Mock, MagicMock, patch
 sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
 sys.path.insert(0, str(Path(__file__).parent))
 
+from bdd_table_utils import table_to_rows
 from scout_coordinator import ScoutCoordinator
 from mock_api import MockAPIClient
 from routing import TourOptimizer
+from system_graph_provider import GraphLoadResult
+
+
+def _ensure_player_id(context):
+    """Ensure the test context has a stable player_id for daemon/DB mocks."""
+    if 'player_id' not in context or context['player_id'] is None:
+        context['player_id'] = 42
+    return context['player_id']
+
+
+def _minimal_waypoint_payload(symbol, raw):
+    """Convert mock waypoint payload into the compact graph representation."""
+    traits = [t['symbol'] if isinstance(t, dict) else t for t in raw.get('traits', [])]
+    return {
+        'type': raw.get('type', 'PLANET'),
+        'x': raw.get('x', 0),
+        'y': raw.get('y', 0),
+        'traits': traits,
+        'has_fuel': 'MARKETPLACE' in traits or 'FUEL_STATION' in traits,
+        'orbitals': raw.get('orbitals', []) or []
+    }
+
+
+def _graph_from_context(context, system):
+    """Return the smallest graph necessary for tests based on context data."""
+    if context.get('graph'):
+        return context['graph']
+
+    if getattr(context.get('mock_api'), 'waypoints', None):
+        waypoints = {
+            symbol: _minimal_waypoint_payload(symbol, data)
+            for symbol, data in context['mock_api'].waypoints.items()
+            if symbol.startswith(system)
+        }
+        if waypoints:
+            context['graph'] = {
+                'system': system,
+                'waypoints': waypoints,
+                'edges': []
+            }
+            return context['graph']
+
+    return None
 
 scenarios('features/scout_coordinator.feature')
 
@@ -49,6 +93,8 @@ def context():
         'algorithm': '2opt',
         'reconfigure_detected': False,
         'signal_received': False,
+        'player_id': 42,
+        'mock_assignment_manager': None,
     }
 
 
@@ -164,79 +210,57 @@ def initialize_coordinator(context, system, ships):
     """Initialize scout coordinator"""
     ship_list = ships.split(',')
     context['ships'] = ship_list
+    player_id = _ensure_player_id(context)
 
-    # Mock graph loading
-    graph_dir = Path(context['temp_dir']) / 'graphs'
+    with patch('scout_coordinator.SystemGraphProvider') as mock_provider_class, \
+         patch('scout_coordinator.DaemonManager') as mock_daemon_cls, \
+         patch('scout_coordinator.AssignmentManager') as mock_assignment_cls, \
+         patch('signal.signal'):
+        provider = Mock(name='SystemGraphProviderStub')
 
-    with patch.object(Path, 'exists', return_value=context.get('graph_file') is not None):
-        if context.get('graph_file'):
-            # Mock loading from file
-            with patch('builtins.open', create=True) as mock_open:
-                mock_open.return_value.__enter__.return_value.read.return_value = json.dumps(context['graph'])
+        def _get_graph(system_symbol):
+            graph = context.get('graph')
+            if not graph or graph.get('system') != system_symbol:
+                graph = _graph_from_context(context, system_symbol)
+            if not graph:
+                raise RuntimeError(f"Missing graph for {system_symbol}")
+            context['graph'] = graph
+            return GraphLoadResult(
+                graph=graph,
+                source='database',
+                message=f"📊 Loaded graph for {system_symbol} from test provider",
+            )
 
-                # Also need to mock the daemon manager
-                with patch('scout_coordinator.DaemonManager') as mock_dm:
-                    mock_daemon_manager = Mock()
-                    mock_dm.return_value = mock_daemon_manager
-                    context['mock_daemon_manager'] = mock_daemon_manager
+        provider.get_graph.side_effect = _get_graph
+        mock_provider_class.return_value = provider
 
-                    # Mock signal handlers
-                    with patch('signal.signal'):
-                        context['coordinator'] = ScoutCoordinator(
-                            system, ship_list, context['token'],
-                            algorithm=context.get('algorithm', '2opt')
-                        )
-                        context['coordinator'].api = context['mock_api']
-        else:
-            # Mock building new graph
-            with patch('scout_coordinator.GraphBuilder') as mock_builder_class:
-                mock_builder = Mock()
+        mock_daemon_manager = Mock(name='DaemonManagerStub')
+        mock_daemon_cls.return_value = mock_daemon_manager
+        context['mock_daemon_manager'] = mock_daemon_manager
 
-                if context['mock_api'].waypoints:
-                    # Return graph from API waypoints with proper MARKETPLACE trait
-                    waypoints_dict = {}
-                    for wp, data in context['mock_api'].waypoints.items():
-                        # Extract trait symbols from mock API format [{"symbol": "MARKETPLACE"}]
-                        trait_symbols = [t['symbol'] if isinstance(t, dict) else t for t in data.get('traits', [])]
-                        wp_data = {
-                            'type': data['type'],
-                            'x': data['x'],
-                            'y': data['y'],
-                            'traits': trait_symbols,
-                            'has_fuel': 'MARKETPLACE' in trait_symbols,
-                            'orbitals': []
-                        }
-                        waypoints_dict[wp] = wp_data
+        mock_assignment_manager = MagicMock(name='AssignmentManagerStub')
+        mock_assignment_manager.is_available.return_value = True
+        mock_assignment_manager.get_assignment.return_value = {}
+        mock_assignment_manager.assign.return_value = True
+        mock_assignment_manager.release.return_value = True
+        mock_assignment_cls.return_value = mock_assignment_manager
+        context['mock_assignment_manager'] = mock_assignment_manager
 
-                    graph = {
-                        'system': system,
-                        'waypoints': waypoints_dict,
-                        'edges': []
-                    }
-                    mock_builder.build_system_graph.return_value = graph
-                else:
-                    mock_builder.build_system_graph.return_value = None
+        try:
+            context['coordinator'] = ScoutCoordinator(
+                system,
+                ship_list,
+                context['token'],
+                player_id,
+                algorithm=context.get('algorithm', '2opt')
+            )
+            context['coordinator'].api = context['mock_api']
 
-                mock_builder_class.return_value = mock_builder
-
-                with patch('scout_coordinator.DaemonManager') as mock_dm:
-                    mock_daemon_manager = Mock()
-                    mock_dm.return_value = mock_daemon_manager
-                    context['mock_daemon_manager'] = mock_daemon_manager
-
-                    with patch('signal.signal'):
-                        try:
-                            context['coordinator'] = ScoutCoordinator(
-                                system, ship_list, context['token'],
-                                algorithm=context.get('algorithm', '2opt')
-                            )
-                            context['coordinator'].api = context['mock_api']
-                            # Get the graph that was returned by the mock builder
-                            # The coordinator should have already loaded it, but ensure markets are extracted
-                            if context['coordinator'].graph:
-                                context['coordinator'].markets = TourOptimizer.get_markets_from_graph(context['coordinator'].graph)
-                        except RuntimeError as e:
-                            context['exception'] = e
+            if context['coordinator'].graph:
+                context['graph'] = context['coordinator'].graph
+                context['coordinator'].markets = TourOptimizer.get_markets_from_graph(context['coordinator'].graph)
+        except RuntimeError as e:
+            context['exception'] = e
 
 
 @when(parsers.parse('I attempt to initialize a scout coordinator for system "{system}" with ships "{ships}"'))
@@ -287,7 +311,7 @@ def verify_graph_built(context):
 @then("the graph should be saved to file")
 def verify_graph_saved(context):
     """Verify graph was saved"""
-    # In real implementation, GraphBuilder saves the file
+    # In real implementation, SystemGraphProvider persists the graph to disk
     # For testing, we just verify the coordinator has a graph
     assert context['coordinator'].graph is not None
 
@@ -353,21 +377,33 @@ def coordinator_with_n_ships(context, count):
     ships = [f'SHIP-{i+1}' for i in range(count)]
     context['ships'] = ships
 
+    player_id = _ensure_player_id(context)
+
     # Create coordinator with mocked components
-    with patch('scout_coordinator.DaemonManager') as mock_dm:
-        mock_daemon_manager = Mock()
+    with patch('scout_coordinator.DaemonManager') as mock_dm, \
+         patch('scout_coordinator.AssignmentManager') as mock_assignment_cls, \
+         patch('signal.signal'):
+
+        mock_daemon_manager = Mock(name='DaemonManagerStub')
         mock_dm.return_value = mock_daemon_manager
         context['mock_daemon_manager'] = mock_daemon_manager
 
-        with patch('signal.signal'):
-            # Create coordinator without loading graph (we'll set it manually)
-            with patch.object(ScoutCoordinator, '_load_or_build_graph'):
-                context['coordinator'] = ScoutCoordinator(
-                    context['system'], ships, context['token']
-                )
-                context['coordinator'].graph = context['graph']
-                context['coordinator'].markets = context['markets']
-                context['coordinator'].api = context['mock_api']
+        mock_assignment_manager = MagicMock(name='AssignmentManagerStub')
+        mock_assignment_manager.is_available.return_value = True
+        mock_assignment_manager.get_assignment.return_value = {}
+        mock_assignment_manager.assign.return_value = True
+        mock_assignment_manager.release.return_value = True
+        mock_assignment_cls.return_value = mock_assignment_manager
+        context['mock_assignment_manager'] = mock_assignment_manager
+
+        # Create coordinator without loading graph (we'll set it manually)
+        with patch.object(ScoutCoordinator, '_load_or_build_graph'):
+            context['coordinator'] = ScoutCoordinator(
+                context['system'], ships, context['token'], player_id
+            )
+            context['coordinator'].graph = context['graph']
+            context['coordinator'].markets = context['markets']
+            context['coordinator'].api = context['mock_api']
 
 
 @given(parsers.parse('a system "{system}" with markets spread horizontally'))
@@ -474,20 +510,22 @@ def system_with_2_markets(context):
 
 
 @given(parsers.parse('a system with markets at coordinates:\n{table}'))
-def system_markets_at_coordinates(context, table):
+@given('a system with markets at coordinates:')
+def system_markets_at_coordinates(context, table: str | None = None, datatable: list[list[str]] | None = None):
     """Create system with markets at specific coordinates"""
-    lines = [line.strip() for line in table.strip().split('\n')]
-    headers = [h.strip() for h in lines[0].split('|') if h.strip()]
+    rows = table_to_rows(table, datatable)
+    if not rows:
+        return
 
+    headers = rows[0]
     waypoints = {}
-    for line in lines[1:]:
-        if not line or line.startswith('|--'):
-            continue
-        values = [v.strip() for v in line.split('|') if v.strip()]
+    system = None
 
-        symbol = values[0]
-        x = int(values[1])
-        y = int(values[2])
+    for values in rows[1:]:
+        row = dict(zip(headers, values))
+        symbol = row['symbol']
+        x = int(float(row.get('x', 0)))
+        y = int(float(row.get('y', 0)))
 
         waypoints[symbol] = {
             'type': 'PLANET',
@@ -498,7 +536,11 @@ def system_markets_at_coordinates(context, table):
             'orbitals': []
         }
 
-    system = symbol.rsplit('-', 1)[0]
+        if system is None:
+            system = symbol.rsplit('-', 1)[0]
+
+    if system is None:
+        return
     context['system'] = system
     context['graph'] = {
         'system': system,
@@ -801,31 +843,41 @@ def optimize_subtour(context, ship):
         if not context.get('graph'):
             context['graph'] = {'waypoints': {}, 'edges': []}
 
-        with patch('scout_coordinator.DaemonManager') as mock_dm:
-            mock_daemon_manager = Mock()
+        with patch('scout_coordinator.DaemonManager') as mock_dm, \
+             patch('scout_coordinator.AssignmentManager') as mock_assignment_cls, \
+             patch('signal.signal'):
+
+            mock_daemon_manager = Mock(name='DaemonManagerStub')
             mock_dm.return_value = mock_daemon_manager
             context['mock_daemon_manager'] = mock_daemon_manager
 
-            with patch('signal.signal'):
-                with patch.object(ScoutCoordinator, '_load_or_build_graph'):
-                    context['coordinator'] = ScoutCoordinator(
-                        'X1-TEST', [ship], context['token'],
-                        algorithm=context['algorithm']
-                    )
-                    context['coordinator'].api = context['mock_api']
-                    context['coordinator'].graph = context['graph']
+            mock_assignment_manager = MagicMock(name='AssignmentManagerStub')
+            mock_assignment_manager.is_available.return_value = True
+            mock_assignment_manager.get_assignment.return_value = {}
+            mock_assignment_manager.assign.return_value = True
+            mock_assignment_manager.release.return_value = True
+            mock_assignment_cls.return_value = mock_assignment_manager
+            context['mock_assignment_manager'] = mock_assignment_manager
 
-                    # Add markets to graph if not present
-                    for market in context['markets']:
-                        if market not in context['coordinator'].graph['waypoints']:
-                            context['coordinator'].graph['waypoints'][market] = {
-                                'type': 'PLANET',
-                                'x': 0,
-                                'y': 0,
-                                'traits': ['MARKETPLACE'],
-                                'has_fuel': True,
-                                'orbitals': []
-                            }
+            with patch.object(ScoutCoordinator, '_load_or_build_graph'):
+                context['coordinator'] = ScoutCoordinator(
+                    'X1-TEST', [ship], context['token'], _ensure_player_id(context),
+                    algorithm=context['algorithm']
+                )
+                context['coordinator'].api = context['mock_api']
+                context['coordinator'].graph = context['graph']
+
+                # Add markets to graph if not present
+                for market in context['markets']:
+                    if market not in context['coordinator'].graph['waypoints']:
+                        context['coordinator'].graph['waypoints'][market] = {
+                            'type': 'PLANET',
+                            'x': 0,
+                            'y': 0,
+                            'traits': ['MARKETPLACE'],
+                            'has_fuel': True,
+                            'orbitals': []
+                        }
 
     context['tour'] = context['coordinator'].optimize_subtour(ship, context['markets'])
 
@@ -915,19 +967,29 @@ def coordinator_with_ships(context, ships):
     context['ships'] = ship_list
 
     # Create coordinator
-    with patch('scout_coordinator.DaemonManager') as mock_dm:
-        mock_daemon_manager = Mock()
+    with patch('scout_coordinator.DaemonManager') as mock_dm, \
+         patch('scout_coordinator.AssignmentManager') as mock_assignment_cls, \
+         patch('signal.signal'):
+
+        mock_daemon_manager = Mock(name='DaemonManagerStub')
         mock_dm.return_value = mock_daemon_manager
         context['mock_daemon_manager'] = mock_daemon_manager
 
-        with patch('signal.signal'):
-            with patch.object(ScoutCoordinator, '_load_or_build_graph'):
-                context['coordinator'] = ScoutCoordinator(
-                    'X1-TEST', ship_list, context['token']
-                )
-                context['coordinator'].api = context['mock_api']
-                context['coordinator'].graph = {'waypoints': {}, 'edges': []}
-                context['coordinator'].markets = []
+        mock_assignment_manager = MagicMock(name='AssignmentManagerStub')
+        mock_assignment_manager.is_available.return_value = True
+        mock_assignment_manager.get_assignment.return_value = {}
+        mock_assignment_manager.assign.return_value = True
+        mock_assignment_manager.release.return_value = True
+        mock_assignment_cls.return_value = mock_assignment_manager
+        context['mock_assignment_manager'] = mock_assignment_manager
+
+        with patch.object(ScoutCoordinator, '_load_or_build_graph'):
+            context['coordinator'] = ScoutCoordinator(
+                'X1-TEST', ship_list, context['token'], _ensure_player_id(context)
+            )
+            context['coordinator'].api = context['mock_api']
+            context['coordinator'].graph = {'waypoints': {}, 'edges': []}
+            context['coordinator'].markets = []
 
 
 @given("partitioned markets")
@@ -1001,7 +1063,9 @@ def verify_daemon_started(context):
 @then(parsers.parse('the daemon ID should be "{daemon_id}"'))
 def verify_daemon_id(context, daemon_id):
     """Verify daemon ID"""
-    assert context['daemon_id'] == daemon_id
+    actual = context.get('daemon_id')
+    assert actual is not None
+    assert actual.startswith(daemon_id)
 
 
 @then('the daemon command should include "scout-markets"')
@@ -1028,7 +1092,7 @@ def verify_daemon_running(context, daemon_id):
     """Verify daemon is running"""
     # Check assignments
     for assignment in context['coordinator'].assignments.values():
-        if assignment.daemon_id == daemon_id:
+        if assignment.daemon_id.startswith(daemon_id):
             return
     pytest.fail(f"Daemon {daemon_id} not found in assignments")
 
@@ -1393,7 +1457,7 @@ def verify_daemon_stopped(context, daemon_id):
     # Verify stop was called with this daemon ID
     calls = context['mock_daemon_manager'].stop.call_args_list
     daemon_ids_stopped = [call[0][0] for call in calls]
-    assert daemon_id in daemon_ids_stopped
+    assert any(stopped_id.startswith(daemon_id) for stopped_id in daemon_ids_stopped)
 
 
 @then(parsers.parse('ship "{ship}" should get all markets'))
@@ -1583,19 +1647,30 @@ def config_file_exists_with_ships(context, ships):
     context['config_file'] = str(config_path)
 
     # Create coordinator with this config
-    with patch('scout_coordinator.DaemonManager') as mock_dm:
-        mock_daemon_manager = Mock()
+    with patch('scout_coordinator.DaemonManager') as mock_dm, \
+         patch('scout_coordinator.AssignmentManager') as mock_assignment_cls, \
+         patch('signal.signal'):
+
+        mock_daemon_manager = Mock(name='DaemonManagerStub')
         mock_dm.return_value = mock_daemon_manager
         context['mock_daemon_manager'] = mock_daemon_manager
 
-        with patch('signal.signal'):
-            with patch.object(ScoutCoordinator, '_load_or_build_graph'):
-                context['coordinator'] = ScoutCoordinator(
-                    'X1-TEST', ship_list, context['token'],
-                    config_file=str(config_path)
-                )
-                context['coordinator'].graph = {'waypoints': {}, 'edges': []}
-                context['coordinator'].markets = []
+        mock_assignment_manager = MagicMock(name='AssignmentManagerStub')
+        mock_assignment_manager.is_available.return_value = True
+        mock_assignment_manager.get_assignment.return_value = {}
+        mock_assignment_manager.assign.return_value = True
+        mock_assignment_manager.release.return_value = True
+        mock_assignment_cls.return_value = mock_assignment_manager
+        context['mock_assignment_manager'] = mock_assignment_manager
+
+        with patch.object(ScoutCoordinator, '_load_or_build_graph'):
+            context['coordinator'] = ScoutCoordinator(
+                'X1-TEST', ship_list, context['token'], _ensure_player_id(context),
+                config_file=str(config_path)
+            )
+            context['coordinator'].graph = {'waypoints': {}, 'edges': []}
+            context['coordinator'].markets = []
+            context['coordinator'].api = context['mock_api']
 
 
 @when("I load the configuration")

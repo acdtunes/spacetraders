@@ -17,7 +17,8 @@ from typing import Dict, Optional, Tuple
 
 from ..helpers import paths
 from .database import Database
-from .routing import GraphBuilder, RouteOptimizer
+from .routing import RouteOptimizer
+from .system_graph_provider import SystemGraphProvider
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,11 @@ class SmartNavigator:
         self.graph = graph
         resolved_db_path = Path(db_path) if db_path else paths.sqlite_path()
         self.db = Database(resolved_db_path)
+        self.graph_provider = SystemGraphProvider(
+            api_client,
+            db=self.db,
+            cache_dir=self.cache_dir,
+        )
 
         # Load or build graph if not provided
         if self.graph is None:
@@ -59,40 +65,10 @@ class SmartNavigator:
 
     def _ensure_graph(self):
         """Load graph from database cache or build if needed"""
-        # Try loading from database first
-        with self.db.transaction() as conn:
-            graph_data = self.db.get_system_graph(conn, self.system)
-
-        if graph_data:
-            logger.info(f"Loading cached graph for {self.system} from database")
-            self.graph = graph_data  # Already a dict from database
-        else:
-            # Fallback to file cache for backward compatibility
-            graph_file = self.cache_dir / f"{self.system}_graph.json"
-
-            if graph_file.exists():
-                import json
-                logger.info(f"Loading cached graph for {self.system} from file (migrating to database)")
-                with open(graph_file, 'r') as f:
-                    self.graph = json.load(f)
-
-                # Save to database for future use
-                with self.db.transaction() as conn:
-                    self.db.save_system_graph(conn, self.system, self.graph)
-                logger.info(f"Migrated graph for {self.system} to database")
-            else:
-                # Build graph from scratch
-                logger.info(f"Building graph for {self.system} (this may take a moment)...")
-                builder = GraphBuilder(self.api, db_path=self.db.db_path)
-                self.graph = builder.build_system_graph(self.system)
-
-                if not self.graph:
-                    raise Exception(f"Failed to build graph for system {self.system}")
-
-                # Save to database
-                with self.db.transaction() as conn:
-                    self.db.save_system_graph(conn, self.system, self.graph)
-                logger.info(f"Saved graph for {self.system} to database")
+        result = self.graph_provider.get_graph(self.system)
+        self.graph = result.graph
+        if result.message:
+            logger.info(result.message)
 
     def plan_route(self, ship_data: Dict, destination: str,
                    prefer_cruise: bool = True) -> Optional[Dict]:
@@ -372,7 +348,7 @@ class SmartNavigator:
 
             if in_transit_dest == destination:
                 logger.info(f"Already in transit to {destination}")
-                from utils import calculate_arrival_wait_time
+                from spacetraders_bot.core.utils import calculate_arrival_wait_time
                 wait_time = calculate_arrival_wait_time(ship_data['nav']['route']['arrival'])
                 ship_controller._wait_for_arrival(wait_time + 3)
                 # Verify arrival
@@ -384,7 +360,7 @@ class SmartNavigator:
                 return True
             else:
                 logger.info(f"Ship in transit to {in_transit_dest}, waiting for arrival before planning route to {destination}")
-                from utils import calculate_arrival_wait_time
+                from spacetraders_bot.core.utils import calculate_arrival_wait_time
                 wait_time = calculate_arrival_wait_time(ship_data['nav']['route']['arrival'])
                 ship_controller._wait_for_arrival(wait_time + 3)
                 # Refresh ship data after arrival

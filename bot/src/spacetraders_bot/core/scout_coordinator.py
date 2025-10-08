@@ -19,7 +19,8 @@ from .api_client import APIClient
 from .assignment_manager import AssignmentManager
 from .daemon_manager import DaemonManager
 from .market_partitioning import MarketPartitioner
-from .routing import GraphBuilder, TourOptimizer
+from .routing import TourOptimizer
+from .system_graph_provider import SystemGraphProvider
 
 
 @dataclass
@@ -44,7 +45,8 @@ class ScoutCoordinator:
     """
 
     def __init__(self, system: str, ships: List[str], token: str, player_id: int,
-                 algorithm: str = '2opt', config_file: Optional[str] = None):
+                 algorithm: str = '2opt', config_file: Optional[str] = None,
+                 graph_provider: Optional[SystemGraphProvider] = None):
         """
         Initialize scout coordinator
 
@@ -67,6 +69,7 @@ class ScoutCoordinator:
         self.api = APIClient(token)
         self.daemon_manager = DaemonManager(player_id)
         self.assignment_manager = AssignmentManager(player_id=player_id)
+        self.graph_provider = graph_provider or SystemGraphProvider(self.api)
 
         # State
         self.graph = None
@@ -90,19 +93,10 @@ class ScoutCoordinator:
 
     def _load_or_build_graph(self):
         """Load or build navigation graph"""
-        builder = GraphBuilder(self.api)
-
-        # Try loading from database first
-        self.graph = builder.load_system_graph(self.system)
-
-        if self.graph:
-            print(f"📊 Loaded graph for {self.system} from database")
-        else:
-            print(f"📊 Building graph for {self.system}...")
-            self.graph = builder.build_system_graph(self.system)
-
-            if not self.graph:
-                raise RuntimeError(f"Failed to build graph for {self.system}")
+        result = self.graph_provider.get_graph(self.system)
+        self.graph = result.graph
+        if result.message:
+            print(result.message)
 
         # Extract markets
         self.markets = TourOptimizer.get_markets_from_graph(self.graph)

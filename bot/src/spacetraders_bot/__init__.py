@@ -21,6 +21,7 @@ from .core import (
     scout_coordinator as _scout_coordinator_module,
     ship_controller as _ship_controller_module,
     smart_navigator as _smart_navigator_module,
+    system_graph_provider as _system_graph_provider_module,
     utils as _utils_module,
 )
 
@@ -35,6 +36,7 @@ _COMPAT_MODULES = {
     "scout_coordinator": _scout_coordinator_module,
     "ship_controller": _ship_controller_module,
     "smart_navigator": _smart_navigator_module,
+    "system_graph_provider": _system_graph_provider_module,
     "utils": _utils_module,
     "operations": _operations_module,
 }
