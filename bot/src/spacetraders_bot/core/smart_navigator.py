@@ -300,6 +300,42 @@ class SmartNavigator:
 
         return True, "Ship health OK"
 
+    def _handle_in_transit_state(
+        self,
+        ship_controller,
+        ship_data: Dict,
+        destination: str,
+    ) -> Tuple[Optional[Dict], bool]:
+        """Wait for a ship already in transit and refresh its status."""
+        route_info = ship_data['nav']['route']
+        in_transit_dest = route_info['destination']['symbol']
+
+        from spacetraders_bot.core.utils import calculate_arrival_wait_time
+
+        wait_time = calculate_arrival_wait_time(route_info['arrival'])
+
+        if in_transit_dest == destination:
+            logger.info(f"Already in transit to {destination}")
+        else:
+            logger.info(
+                "Ship in transit to %s, waiting for arrival before planning route to %s",
+                in_transit_dest,
+                destination,
+            )
+
+        ship_controller._wait_for_arrival(wait_time + 3)
+        updated_data = ship_controller.get_status()
+
+        if not updated_data:
+            logger.error("Failed to get ship status after arrival")
+            return None, False
+
+        if in_transit_dest == destination:
+            logger.info(f"✅ Arrived at {destination}")
+            return updated_data, True
+
+        return updated_data, False
+
     def execute_route(self, ship_controller, destination: str,
                      prefer_cruise: bool = True,
                      operation_controller=None) -> bool:
@@ -344,31 +380,14 @@ class SmartNavigator:
 
         # Handle IN_TRANSIT state - must wait before planning new route
         if current_state == 'IN_TRANSIT':
-            in_transit_dest = ship_data['nav']['route']['destination']['symbol']
-
-            if in_transit_dest == destination:
-                logger.info(f"Already in transit to {destination}")
-                from spacetraders_bot.core.utils import calculate_arrival_wait_time
-                wait_time = calculate_arrival_wait_time(ship_data['nav']['route']['arrival'])
-                ship_controller._wait_for_arrival(wait_time + 3)
-                # Verify arrival
-                ship_data = ship_controller.get_status()
-                if not ship_data:
-                    logger.error("Failed to get ship status after arrival")
-                    return False
-                logger.info(f"✅ Arrived at {destination}")
+            ship_data, arrived = self._handle_in_transit_state(ship_controller, ship_data, destination)
+            if not ship_data:
+                return False
+            if arrived:
                 return True
-            else:
-                logger.info(f"Ship in transit to {in_transit_dest}, waiting for arrival before planning route to {destination}")
-                from spacetraders_bot.core.utils import calculate_arrival_wait_time
-                wait_time = calculate_arrival_wait_time(ship_data['nav']['route']['arrival'])
-                ship_controller._wait_for_arrival(wait_time + 3)
-                # Refresh ship data after arrival
-                ship_data = ship_controller.get_status()
-                if not ship_data:
-                    logger.error("Failed to get ship status after arrival")
-                    return False
-                current_location = ship_data['nav']['waypointSymbol']
+
+            current_location = ship_data['nav']['waypointSymbol']
+            current_state = ship_data['nav']['status']
 
         # Plan route from current location
         route = self.plan_route(ship_data, destination, prefer_cruise)

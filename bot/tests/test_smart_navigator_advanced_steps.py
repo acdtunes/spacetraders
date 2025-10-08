@@ -7,6 +7,7 @@ Comprehensive coverage for SmartNavigator edge cases
 import sys
 import math
 import json
+import tempfile
 from pathlib import Path
 from pytest_bdd import scenarios, given, when, then, parsers
 import pytest
@@ -17,6 +18,7 @@ import logging
 sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
 sys.path.insert(0, str(Path(__file__).parent))
 
+from bdd_table_utils import table_to_rows
 from smart_navigator import SmartNavigator
 from mock_api import MockAPIClient
 from ship_controller import ShipController
@@ -42,7 +44,13 @@ def apply_controller_failures(context):
     if context.get('controller_fail_dock'):
         context['ship_controller'].dock = lambda: False
     if context.get('controller_fail_refuel'):
-        context['ship_controller'].refuel = lambda: False
+        original_refuel = getattr(context['ship_controller'], 'refuel', lambda: False)
+
+        def failing_refuel(*args, **kwargs):
+            context['error_message'] = 'Refuel failed'
+            return False
+
+        context['ship_controller'].refuel = failing_refuel
 
     # Special handling for fail_status_after_nav: mock navigate to succeed, then fail status
     if context.get('controller_fail_status_after_nav'):
@@ -185,12 +193,12 @@ def apply_controller_failures(context):
 def create_ship_data(symbol, location, fuel=400, capacity=400, integrity=100,
                      status='IN_ORBIT', cooldown=0, in_transit_to=None, arrival_seconds=0):
     """Helper to create complete ship data"""
-    from datetime import datetime, timedelta
+    from datetime import datetime, timedelta, UTC
 
     if in_transit_to:
         status = 'IN_TRANSIT'
         destination = in_transit_to
-        arrival_time = (datetime.utcnow() + timedelta(seconds=arrival_seconds)).isoformat() + 'Z'
+        arrival_time = (datetime.now(UTC) + timedelta(seconds=arrival_seconds)).isoformat().replace('+00:00', 'Z')
     else:
         destination = location
         arrival_time = '2025-10-04T12:00:00Z'
@@ -291,7 +299,8 @@ def context():
         'warnings': [],
         'search_results': None,
         'checkpoints': [],
-        'log_capture': None
+        'log_capture': None,
+        'temp_dir': tempfile.mkdtemp(prefix='smart_nav_')
     }
 
 
@@ -304,16 +313,21 @@ def mock_api_client(context):
 
 
 @given(parsers.parse('the system "{system}" has waypoints:\n{waypoints_table}'))
-def system_waypoints(context, system, waypoints_table):
+@given(parsers.parse('the system "{system}" has waypoints:'))
+@given(parsers.parse('the system "{system}" has the following waypoints:\n{waypoints_table}'))
+@given(parsers.parse('the system "{system}" has the following waypoints:'))
+def system_waypoints(context, system, waypoints_table: str | None = None, datatable: list[list[str]] | None = None):
     """Setup system waypoints from table"""
-    lines = [line.strip() for line in waypoints_table.strip().split('\n')]
-    headers = [h.strip() for h in lines[0].split('|') if h.strip()]
+    rows = table_to_rows(waypoints_table, datatable)
+    if not rows:
+        return
+
+    headers = rows[0]
 
     waypoints = {}
-    for line in lines[1:]:
-        if not line or line.startswith('|--'):
+    for values in rows[1:]:
+        if not values:
             continue
-        values = [v.strip() for v in line.split('|') if v.strip()]
 
         waypoint = {}
         for i, header in enumerate(headers):
@@ -347,16 +361,20 @@ def api_empty_waypoints(context, system):
 def init_navigator_no_graph(context, system):
     """Try to initialize navigator without graph"""
     try:
-        # Mock GraphBuilder to return None
-        with patch('smart_navigator.GraphBuilder') as mock_builder_class:
-            mock_builder = MagicMock()
-            mock_builder.build_system_graph.return_value = None
-            mock_builder_class.return_value = mock_builder
+        module_path = SmartNavigator.__module__
+        context['module_path'] = module_path
+        with patch(f'{module_path}.SystemGraphProvider') as mock_provider_class:
+            mock_provider = MagicMock()
+            mock_provider.get_graph.side_effect = RuntimeError(
+                f"Failed to build graph for system {system}"
+            )
+            mock_provider_class.return_value = mock_provider
 
             context['navigator'] = SmartNavigator(
                 context['mock_api'],
                 system,
-                cache_dir='/tmp/test_cache'
+                cache_dir=Path(context['temp_dir']) / f"cache_{system}",
+                db_path=Path(context['temp_dir']) / f"db_{system}.sqlite"
             )
     except Exception as e:
         context['exception'] = e
@@ -365,7 +383,10 @@ def init_navigator_no_graph(context, system):
 @then(parsers.parse('an exception should be raised with message "{message}"'))
 def exception_raised(context, message):
     """Verify exception was raised"""
-    assert context['exception'] is not None, "Expected exception but none was raised"
+    module_path = context.get('module_path')
+    assert context['exception'] is not None, (
+        f"Expected exception but none was raised (module_path={module_path})"
+    )
     assert message in str(context['exception']), f"Expected '{message}' in exception, got: {context['exception']}"
 
 
@@ -707,9 +728,11 @@ def execute_route(context, destination):
     log_capture = StringIO()
     handler = logging.StreamHandler(log_capture)
     handler.setLevel(logging.DEBUG)
-    logger = logging.getLogger('smart_navigator')
+    navigator_logger_name = SmartNavigator.__module__
+    logger = logging.getLogger(navigator_logger_name)
     logger.addHandler(handler)
     logger.setLevel(logging.DEBUG)
+    logger.propagate = False
 
     context['log_capture'] = log_capture
 
@@ -722,9 +745,14 @@ def execute_route(context, destination):
         context['exception'] = e
         context['success'] = False
         context['error_message'] = str(e)
+    finally:
+        handler.flush()
+        logger.removeHandler(handler)
 
     # Capture log output
     context['log_output'] = log_capture.getvalue()
+    if not context.get('error_message') and context['log_output']:
+        context['error_message'] = context['log_output']
 
 
 @when(parsers.parse('I execute route to "{destination}" with operation controller'))
@@ -760,9 +788,10 @@ def execute_route_with_controller(context, destination):
     log_capture = StringIO()
     handler = logging.StreamHandler(log_capture)
     handler.setLevel(logging.DEBUG)
-    logger = logging.getLogger('smart_navigator')
+    logger = logging.getLogger(SmartNavigator.__module__)
     logger.addHandler(handler)
     logger.setLevel(logging.DEBUG)
+    logger.propagate = False
 
     context['log_capture'] = log_capture
 
@@ -775,8 +804,14 @@ def execute_route_with_controller(context, destination):
     except Exception as e:
         context['exception'] = e
         context['success'] = False
+        context['error_message'] = str(e)
+    finally:
+        handler.flush()
+        logger.removeHandler(handler)
 
     context['log_output'] = log_capture.getvalue()
+    if not context.get('error_message') and context['log_output']:
+        context['error_message'] = context['log_output']
 
 
 @when("I execute the multi-hop route")
@@ -813,9 +848,10 @@ def execute_multi_hop_route(context):
     log_capture = StringIO()
     handler = logging.StreamHandler(log_capture)
     handler.setLevel(logging.DEBUG)
-    logger = logging.getLogger('smart_navigator')
+    logger = logging.getLogger(SmartNavigator.__module__)
     logger.addHandler(handler)
     logger.setLevel(logging.DEBUG)
+    logger.propagate = False
 
     context['log_capture'] = log_capture
 
@@ -828,6 +864,10 @@ def execute_multi_hop_route(context):
     except Exception as e:
         context['exception'] = e
         context['success'] = False
+        context['error_message'] = str(e)
+    finally:
+        handler.flush()
+        logger.removeHandler(handler)
 
     context['log_output'] = log_capture.getvalue()
 
@@ -975,19 +1015,21 @@ def validate_route(context, destination):
 # THEN STEPS
 
 @then(parsers.parse("the fuel estimate should contain:\n{table}"))
-def verify_fuel_estimate_fields(context, table):
+@then("the fuel estimate should contain:")
+def verify_fuel_estimate_fields(context, table: str | None = None, datatable: list[list[str]] | None = None):
     """Verify fuel estimate has expected fields and values"""
     assert context['fuel_estimate'] is not None, "Fuel estimate should not be None"
 
-    # Parse table to extract field/value pairs
-    lines = [line.strip() for line in table.strip().split('\n')]
-    headers = [h.strip() for h in lines[0].split('|') if h.strip()]
+    rows = table_to_rows(table, datatable)
+    if not rows:
+        return
+
+    headers = rows[0]
 
     # Verify each field in table
-    for line in lines[1:]:
-        if not line or line.startswith('|--'):
+    for values in rows[1:]:
+        if not values:
             continue
-        values = [v.strip() for v in line.split('|') if v.strip()]
 
         if len(values) >= 2:
             field = values[0]
@@ -1083,6 +1125,11 @@ def verify_navigation_failed(context):
 def verify_error_contains(context, text):
     """Verify error message contains text"""
     log_output = context.get('log_output', '') or ''
+    if not log_output and context.get('log_capture') is not None:
+        try:
+            log_output = context['log_capture'].getvalue()
+        except Exception:
+            log_output = ''
     exception_msg = str(context.get('exception', '') or '')
     error_msg = context.get('error_message', '') or ''
 
