@@ -13,6 +13,8 @@ interface MockState {
   markets: Map<string, Market>;
 }
 
+const isTestEnvironment = typeof import.meta !== 'undefined' && Boolean((import.meta as any).vitest);
+
 const systemSymbol = 'X1-MOCK';
 const waypointA = 'X1-MOCK-A1';
 const waypointB = 'X1-MOCK-B1';
@@ -661,11 +663,13 @@ const runHaulerLoopStep = () => {
 };
 
 const startHaulerLoopIfNeeded = () => {
+  if (isTestEnvironment) return;
   if (haulerLoopTimeout) return;
   runHaulerLoopStep();
 };
 
 const advanceHaulerLoop = () => {
+  if (isTestEnvironment) return;
   if (haulerLoopTimeout) {
     clearTimeout(haulerLoopTimeout);
     haulerLoopTimeout = null;
@@ -736,11 +740,13 @@ const runFrigateLoopStep = () => {
 };
 
 const startFrigateLoopIfNeeded = () => {
+  if (isTestEnvironment) return;
   if (frigateLoopTimeout) return;
   runFrigateLoopStep();
 };
 
 const advanceFrigateLoop = () => {
+  if (isTestEnvironment) return;
   if (frigateLoopTimeout) {
     clearTimeout(frigateLoopTimeout);
     frigateLoopTimeout = null;
@@ -826,6 +832,7 @@ let phaseIndex = 0;
 let phaseTimeout: ReturnType<typeof setTimeout> | null = null;
 
 const runPhase = () => {
+  if (isTestEnvironment) return;
   const phase = phases[phaseIndex];
   const nextDuration = phase.apply();
   const computedDuration =
@@ -838,6 +845,7 @@ const runPhase = () => {
 };
 
 export const startMockScenarioIfNeeded = () => {
+  if (isTestEnvironment) return;
   if (scenarioRunning) return;
   scenarioRunning = true;
   startHaulerLoopIfNeeded();
@@ -846,6 +854,7 @@ export const startMockScenarioIfNeeded = () => {
 };
 
 export const advanceShipScenario = () => {
+  if (isTestEnvironment) return;
   if (phaseTimeout) {
     clearTimeout(phaseTimeout);
     phaseTimeout = null;
