@@ -15,6 +15,7 @@ import { useWaypointTooltipAnchor } from '../hooks/useWaypointTooltipAnchor';
 import { useGridLines } from '../hooks/useGridLines';
 import { useShipTrailSampler } from '../hooks/useShipTrailSampler';
 import { useSpaceMapOverlays, type SelectedMapObject } from '../hooks/useSpaceMapOverlays';
+import { useKonvaStage } from '../hooks/useKonvaStage';
 import ZoomControls from './ZoomControls';
 import Minimap from './Minimap';
 import type { Waypoint as WaypointType, TaggedShip, ShipNavStatus } from '../types/spacetraders';
@@ -103,12 +104,21 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
   const [selectedObject, setSelectedObject] = useState<SelectedMapObject | null>(null);
   const [viewportBounds, setViewportBounds] = useState({ x: 0, y: 0, width: 0, height: 0, scale: 1 });
   const [animationFrame, setAnimationFrame] = useState(0);
-
-  const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
   const [RouteVectorsComponent, setRouteVectorsComponent] = useState<RouteVectorsComponentType | null>(null);
 
   const currentScale = viewportBounds.scale || 1;
   const frameTimestamp = useMemo(() => Date.now(), [animationFrame]);
+
+  const handleAnimationTick = useCallback(() => {
+    setAnimationFrame((prev) => prev + 1);
+  }, []);
+
+  const stageSize = useKonvaStage({
+    containerRef,
+    layerRef,
+    stageRef,
+    onAnimationTick: handleAnimationTick,
+  });
 
   const getShipRenderPosition = useCallback(
     (ship: TaggedShip, target: { x: number; y: number }, timestamp: number): { x: number; y: number } => {
@@ -185,34 +195,6 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
       isActive = false;
     };
   }, [showDestinationRoutes, RouteVectorsComponent]);
-
-  // Track canvas size with ResizeObserver so it reacts to layout changes (e.g. sidebar toggles)
-  useEffect(() => {
-    const container = containerRef.current;
-    if (!container || typeof ResizeObserver === 'undefined') return;
-
-    const updateSize = (width: number, height: number) => {
-      setStageSize((prev) => {
-        if (prev.width === width && prev.height === height) return prev;
-        return { width, height };
-      });
-    };
-
-    // Initialise with current size before observing for future changes
-    const rect = container.getBoundingClientRect();
-    updateSize(rect.width, rect.height);
-
-    const observer = new ResizeObserver((entries) => {
-      entries.forEach((entry) => {
-        const { width, height } = entry.contentRect;
-        updateSize(width, height);
-      });
-    });
-
-    observer.observe(container);
-
-    return () => observer.disconnect();
-  }, []);
 
   // Update viewport bounds for minimap
   const updateViewportBounds = () => {
@@ -655,22 +637,6 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
   };
 
   // Start animation loop for ships
-  const animationLayer = layerRef.current;
-
-  useEffect(() => {
-    if (!animationLayer) return;
-
-    const anim = new Konva.Animation(() => {
-      setAnimationFrame(prev => prev + 1);
-    }, animationLayer);
-
-    anim.start();
-
-    return () => {
-      anim.stop();
-    };
-  }, [animationLayer]);
-
   useShipTrailSampler({
     animationFrame,
     sampleRate: TRAIL_SAMPLE_RATE,
