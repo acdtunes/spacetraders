@@ -993,3 +993,237 @@ def test_execute_multileg_route_overall_loss(monkeypatch):
     result = execute_multileg_route(route, ship, api, db, player_id=7)
 
     assert result is True
+
+def test_strategy_returns_zero_when_no_opportunities():
+    strategy = ProfitFirstStrategy(logger=MagicMock())
+    evaluation = strategy.evaluate(
+        market='A',
+        current_cargo={},
+        current_credits=100,
+        trade_opportunities=[],
+        cargo_capacity=10,
+        fuel_cost=5,
+    )
+    assert evaluation.actions == []
+    assert evaluation.net_profit == -5
+    assert evaluation.cargo_after == {}
+    assert evaluation.credits_after == 100
+
+
+def test_greedy_route_returns_none_when_no_market(monkeypatch):
+    planner = GreedyRoutePlanner(logger=MagicMock(), db=MagicMock())
+    planner._estimate_distance = MagicMock(return_value=10)
+
+    result = planner._find_best_next_market(
+        current_waypoint='A',
+        current_cargo={},
+        current_credits=0,
+        markets=['B'],
+        trade_opportunities=[],
+        cargo_capacity=10,
+        visited={'A'},
+    )
+
+    assert result is None
+
+
+def test_find_route_exits_when_no_steps(monkeypatch):
+    planner = GreedyRoutePlanner(logger=MagicMock(), db=MagicMock())
+
+    monkeypatch.setattr(
+        planner,
+        '_find_best_next_market',
+        lambda **_: None,
+    )
+
+    route = planner.find_route(
+        start_waypoint='A',
+        markets=['B'],
+        trade_opportunities=[],
+        max_stops=1,
+        cargo_capacity=10,
+        starting_credits=100,
+        ship_speed=10,
+    )
+
+    assert route is None
+
+
+def test_execute_multileg_route_handles_negative_profit(monkeypatch):
+    buy_action = TradeAction(
+        waypoint='B',
+        good='ORE',
+        action='BUY',
+        units=5,
+        price_per_unit=100,
+        total_value=500,
+    )
+
+    segment = RouteSegment(
+        from_waypoint='A',
+        to_waypoint='B',
+        distance=10,
+        fuel_cost=5,
+        actions_at_destination=[buy_action],
+        cargo_after={'ORE': 5},
+        credits_after=500,
+        cumulative_profit=-100,
+    )
+
+    route = MultiLegRoute(
+        segments=[segment],
+        total_profit=-100,
+        total_distance=10,
+        total_fuel_cost=5,
+        estimated_time_minutes=60,
+    )
+
+    class NavigatorStub:
+        def __init__(self, *_):
+            pass
+
+        def execute_route(self, *_args, **_kwargs):
+            return True
+
+    def fake_post(*_args, **_kwargs):
+        return {'data': {'contract': {}}}
+
+    ship = MagicMock()
+    ship.get_status.return_value = {
+        'nav': {'systemSymbol': 'SYS', 'waypointSymbol': 'A'},
+        'cargo': {'inventory': [{'symbol': 'ORE', 'units': 5}], 'capacity': 20, 'units': 5},
+        'fuel': {'current': 100, 'capacity': 100},
+    }
+
+    ship.dock.return_value = True
+    ship.sell_all.side_effect = [0]
+
+    api = MagicMock()
+    api.get_agent.return_value = {'credits': 1000}
+    api.post.side_effect = fake_post
+
+    db = MagicMock()
+
+    monkeypatch.setattr(multileg_module, 'SmartNavigator', NavigatorStub)
+
+    result = execute_multileg_route(route, ship, api, db, player_id=7)
+    assert result is False
+
+
+def test_trade_plan_operation_handles_optimizer_failure(monkeypatch):
+    monkeypatch.setattr(
+        'spacetraders_bot.operations.common.get_api_client',
+        lambda *_: SimpleNamespace(get_agent=lambda: {'credits': 1000}),
+    )
+    monkeypatch.setattr(
+        'spacetraders_bot.operations.common.get_database',
+        lambda: MagicMock(),
+    )
+
+    class OptimizerStub:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def find_optimal_route(self, *args, **kwargs):
+            return None
+
+    monkeypatch.setattr(multileg_module, 'MultiLegTradeOptimizer', OptimizerStub)
+    monkeypatch.setattr(
+        multileg_module,
+        'ShipController',
+        lambda api, symbol: SimpleNamespace(
+            get_status=lambda: {
+                'nav': {'systemSymbol': 'SYS', 'waypointSymbol': 'START'},
+                'cargo': {'capacity': 40},
+                'engine': {'speed': 10},
+                'fuel': {'capacity': 120, 'current': 80},
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        'spacetraders_bot.operations.common.setup_logging',
+        lambda *args, **kwargs: 'logfile.log',
+    )
+
+    args = SimpleNamespace(
+        ship='SHIP-1',
+        player_id=1,
+        system='SYS',
+        max_stops=2,
+        token='TOKEN',
+        log_level='INFO',
+    )
+
+    result = trade_plan_operation(args)
+    assert result == 1
+
+
+def test_trade_plan_operation_success(monkeypatch):
+    monkeypatch.setattr(
+        'spacetraders_bot.operations.common.get_api_client',
+        lambda *_: SimpleNamespace(get_agent=lambda: {'credits': 1000}),
+    )
+    monkeypatch.setattr(
+        'spacetraders_bot.operations.common.get_database',
+        lambda: MagicMock(),
+    )
+    monkeypatch.setattr(
+        'spacetraders_bot.operations.common.setup_logging',
+        lambda *args, **kwargs: 'logfile.log',
+    )
+
+    class OptimizerStub:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def find_optimal_route(self, *args, **kwargs):
+            segment = RouteSegment(
+                from_waypoint='A',
+                to_waypoint='B',
+                distance=10,
+                fuel_cost=5,
+                actions_at_destination=[],
+                cargo_after={},
+                credits_after=1000,
+                cumulative_profit=100,
+            )
+            return MultiLegRoute(
+                segments=[segment],
+                total_profit=100,
+                total_distance=10,
+                total_fuel_cost=5,
+                estimated_time_minutes=60,
+            )
+
+    def fake_execute(route, *_args, **_kwargs):
+        assert route.total_profit == 100
+        return True
+
+
+    monkeypatch.setattr(
+        multileg_module,
+        'ShipController',
+        lambda api, symbol: SimpleNamespace(
+            get_status=lambda: {
+                'nav': {'systemSymbol': 'SYS', 'waypointSymbol': 'START'},
+                'cargo': {'capacity': 40},
+                'engine': {'speed': 10},
+                'fuel': {'capacity': 120, 'current': 80},
+            }
+        ),
+    )
+
+    monkeypatch.setattr(multileg_module, 'MultiLegTradeOptimizer', OptimizerStub)
+    monkeypatch.setattr(multileg_module, 'execute_multileg_route', fake_execute)
+
+    args = SimpleNamespace(
+        ship='SHIP-1',
+        player_id=1,
+        system='SYS',
+        max_stops=2,
+        token='TOKEN',
+        log_level='INFO',
+    )
+
+    result = trade_plan_operation(args)
+    assert result == 0
