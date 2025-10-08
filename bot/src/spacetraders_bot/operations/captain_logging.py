@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 
 from spacetraders_bot.core.api_client import APIClient
 from spacetraders_bot.helpers.paths import captain_logs_root
+from spacetraders_bot.operations.control import CircuitBreaker
 
 
 class CaptainLogWriter:
@@ -82,7 +83,10 @@ class CaptainLogWriter:
         Raises:
             IOError: If lock cannot be acquired after max_retries
         """
-        for attempt in range(max_retries):
+        breaker = CircuitBreaker(limit=max_retries)
+
+        while not breaker.tripped():
+            attempt_index = breaker.failures
             try:
                 with open(self.log_file, 'a') as f:
                     # Acquire exclusive lock (blocks until available)
@@ -93,16 +97,20 @@ class CaptainLogWriter:
                     finally:
                         # Release lock
                         fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                    breaker.record_success()
                     return  # Success
             except IOError as e:
                 if e.errno == 11:  # Resource temporarily unavailable
-                    if attempt < max_retries - 1:
-                        # Exponential backoff: 0.1s, 0.2s, 0.4s, 0.8s, 1.6s
-                        wait_time = 0.1 * (2 ** attempt)
-                        time.sleep(wait_time)
-                        continue
-                    else:
-                        raise IOError(f"Failed to acquire log file lock after {max_retries} attempts")
+                    failure_count = breaker.record_failure()
+                    if breaker.tripped():
+                        raise IOError(
+                            f"Failed to acquire log file lock after {max_retries} attempts"
+                        )
+
+                    # Exponential backoff: 0.1s, 0.2s, 0.4s, ...
+                    wait_time = 0.1 * (2 ** attempt_index)
+                    time.sleep(wait_time)
+                    continue
                 else:
                     raise  # Other IO errors
 

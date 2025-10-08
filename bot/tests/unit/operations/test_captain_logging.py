@@ -5,6 +5,7 @@ import json
 
 import pytest
 
+import spacetraders_bot.operations.captain_logging as captain_logging
 from spacetraders_bot.operations.captain_logging import CaptainLogWriter, captain_log_operation
 
 
@@ -38,6 +39,48 @@ def temp_logs_root(tmp_path, monkeypatch):
 
     monkeypatch.setattr('spacetraders_bot.operations.captain_logging.captain_logs_root', fake_root)
     return root
+
+
+def test_append_to_log_uses_circuit_breaker(tmp_path, monkeypatch):
+    writer = CaptainLogWriter('CMD-LOCK', token='TOKEN')
+    writer.log_file = tmp_path / 'captain.log'
+    writer.log_file.write_text('')
+
+    attempts = {'count': 0}
+
+    def fake_flock(fd, flag):
+        if flag == captain_logging.fcntl.LOCK_UN:
+            return None
+        attempts['count'] += 1
+        if attempts['count'] < 3:
+            raise IOError(11, 'temporarily unavailable')
+
+    sleep_calls = []
+
+    monkeypatch.setattr('spacetraders_bot.operations.captain_logging.fcntl.flock', fake_flock)
+    monkeypatch.setattr('spacetraders_bot.operations.captain_logging.time.sleep', lambda seconds: sleep_calls.append(seconds))
+
+    writer._append_to_log('ENTRY', max_retries=5)
+
+    assert attempts['count'] == 3
+    assert sleep_calls == [0.1, 0.2]
+
+
+def test_append_to_log_raises_after_circuit_breaker_trip(tmp_path, monkeypatch):
+    writer = CaptainLogWriter('CMD-LOCK', token='TOKEN')
+    writer.log_file = tmp_path / 'captain.log'
+    writer.log_file.write_text('')
+
+    def fake_flock(fd, flag):
+        if flag == captain_logging.fcntl.LOCK_UN:
+            return None
+        raise IOError(11, 'temporarily unavailable')
+
+    monkeypatch.setattr('spacetraders_bot.operations.captain_logging.fcntl.flock', fake_flock)
+    monkeypatch.setattr('spacetraders_bot.operations.captain_logging.time.sleep', lambda seconds: None)
+
+    with pytest.raises(IOError):
+        writer._append_to_log('ENTRY', max_retries=2)
 
 
 def test_initialize_log_creates_file(temp_logs_root, monkeypatch):
