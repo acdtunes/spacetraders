@@ -1,4 +1,6 @@
 import { create } from 'zustand';
+import { createStore } from 'zustand/vanilla';
+import type { StateCreator } from 'zustand';
 import type { Agent, TaggedShip, Waypoint, ShipTrailPoint, Market, System, FlightMode, Ship } from '../types/spacetraders';
 
 const TRAIL_MAX_POINTS: Record<FlightMode, number> = {
@@ -30,7 +32,7 @@ const addTrailPoint = (existing: ShipTrailPoint[] | undefined, point: ShipTrailP
   return [...pointsToKeep, point].slice(-maxPoints);
 };
 
-interface AppState {
+export interface AppState {
   // Agents
   agents: Agent[];
   setAgents: (agents: Agent[]) => void;
@@ -104,7 +106,7 @@ interface AppState {
   setSelectedWaypoint: (waypoint: Waypoint | null) => void;
 }
 
-export const useStore = create<AppState>((set) => ({
+const storeInitializer: StateCreator<AppState, [], []> = (set) => ({
   // Agents
   agents: [],
   setAgents: (agents) => set({ agents }),
@@ -240,4 +242,8 @@ export const useStore = create<AppState>((set) => ({
   setSelectedShip: (ship) => set({ selectedShip: ship }),
   selectedWaypoint: null,
   setSelectedWaypoint: (waypoint) => set({ selectedWaypoint: waypoint }),
-}));
+});
+
+export const createAppStore = () => createStore<AppState>(storeInitializer);
+
+export const useStore = create<AppState>()(storeInitializer);
