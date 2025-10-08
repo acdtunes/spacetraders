@@ -238,9 +238,11 @@ class SmartNavigator:
         Returns:
             True if ship is in required state or successfully transitioned, False otherwise
         """
-        ship_data = ship_controller.get_status()
+        ship_data = self._get_status_or_log(
+            ship_controller,
+            "Failed to get ship status for state validation",
+        )
         if not ship_data:
-            logger.error("Failed to get ship status for state validation")
             return False
 
         current_state = ship_data['nav']['status']
@@ -324,10 +326,12 @@ class SmartNavigator:
             )
 
         ship_controller._wait_for_arrival(wait_time + 3)
-        updated_data = ship_controller.get_status()
+        updated_data = self._get_status_or_log(
+            ship_controller,
+            "Failed to get ship status after arrival",
+        )
 
         if not updated_data:
-            logger.error("Failed to get ship status after arrival")
             return None, False
 
         if in_transit_dest == destination:
@@ -335,6 +339,13 @@ class SmartNavigator:
             return updated_data, True
 
         return updated_data, False
+
+    def _get_status_or_log(self, ship_controller, error_message: str) -> Optional[Dict]:
+        """Fetch ship status, logging an error when unavailable."""
+        status = ship_controller.get_status()
+        if not status:
+            logger.error(error_message)
+        return status
 
     def execute_route(self, ship_controller, destination: str,
                      prefer_cruise: bool = True,
@@ -359,9 +370,8 @@ class SmartNavigator:
             True if navigation successful and arrived at destination, False otherwise
         """
         # Get current ship status
-        ship_data = ship_controller.get_status()
+        ship_data = self._get_status_or_log(ship_controller, "Failed to get ship status")
         if not ship_data:
-            logger.error("Failed to get ship status")
             return False
 
         # Validate ship health
@@ -455,9 +465,11 @@ class SmartNavigator:
                     return False
 
                 # Verify arrival
-                current_ship_data = ship_controller.get_status()
+                current_ship_data = self._get_status_or_log(
+                    ship_controller,
+                    "Failed to get ship status after navigation",
+                )
                 if not current_ship_data:
-                    logger.error("Failed to get ship status after navigation")
                     return False
 
                 actual_location = current_ship_data['nav']['waypointSymbol']
@@ -487,9 +499,11 @@ class SmartNavigator:
 
                 # BUGFIX: Check if we're at the refuel waypoint
                 # If not, navigate there first
-                current_ship_data = ship_controller.get_status()
+                current_ship_data = self._get_status_or_log(
+                    ship_controller,
+                    "Failed to get ship status before refuel",
+                )
                 if not current_ship_data:
-                    logger.error("Failed to get ship status before refuel")
                     return False
 
                 current_location = current_ship_data['nav']['waypointSymbol']
@@ -515,9 +529,11 @@ class SmartNavigator:
                         return False
 
                     # Verify arrival at refuel waypoint
-                    current_ship_data = ship_controller.get_status()
+                    current_ship_data = self._get_status_or_log(
+                        ship_controller,
+                        "Failed to get ship status after navigation to refuel stop",
+                    )
                     if not current_ship_data:
-                        logger.error("Failed to get ship status after navigation to refuel stop")
                         return False
 
                     actual_location = current_ship_data['nav']['waypointSymbol']
