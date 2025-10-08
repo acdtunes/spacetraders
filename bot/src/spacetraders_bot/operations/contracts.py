@@ -109,7 +109,7 @@ def contract_operation(
             tags=['contract', 'performance']
         )
 
-    def ensure_market_availability(still_needed: int, cargo_available: int) -> bool:
+    def ensure_market_availability(still_needed: int, cargo_available: int, cargo_capacity: int) -> bool:
         print(f"  Cargo space available: {cargo_available}/{cargo_capacity}")
 
         if args.buy_from:
@@ -239,6 +239,57 @@ def contract_operation(
             escalate=True,
         )
         return 0, False
+
+    def _acquire_initial_resources(
+        delivery: Dict,
+        remaining_units: int,
+    ) -> bool:
+        ship_data = ship.get_status()
+        if not ship_data:
+            print("❌ Failed to get ship status")
+            log_error(
+                "Ship status unavailable",
+                "API returned no ship data",
+                resolution="Verify ship readiness",
+                escalate=True,
+            )
+            return False
+
+        current_cargo = ship_data['cargo']['inventory']
+        cargo_capacity = ship_data['cargo']['capacity']
+        cargo_units = ship_data['cargo']['units']
+
+        already_have = next(
+            (item['units'] for item in current_cargo if item['symbol'] == delivery['tradeSymbol']),
+            0,
+        )
+
+        still_need = remaining_units - already_have
+        print(f"  Already have: {already_have} units")
+        print(f"  Still need: {still_need} units")
+
+        if still_need <= 0:
+            return True
+
+        cargo_available = cargo_capacity - cargo_units
+        if cargo_available <= 0:
+            print("  ⚠️  No cargo space available to acquire additional goods")
+
+        if not ensure_market_availability(still_need, cargo_available, cargo_capacity):
+            return False
+
+        quantity = min(still_need, cargo_available)
+        _, purchase_success = _purchase_initial_cargo(
+            ship=ship,
+            navigator=navigator,
+            market=args.buy_from,
+            trade_symbol=delivery['tradeSymbol'],
+            quantity=quantity,
+            stats=stats,
+            log_error=log_error,
+        )
+
+        return purchase_success
 
 
     def _run_delivery_loop(
@@ -473,44 +524,8 @@ def contract_operation(
 
     # Acquire resources (PURCHASE ONLY - mining removed for efficiency)
     print(f"\n3. Acquiring resources...")
-
-    # Check current cargo first
-    ship_data = ship.get_status()
-    current_cargo = ship_data['cargo']['inventory']
-    cargo_capacity = ship_data['cargo']['capacity']
-    cargo_units = ship_data['cargo']['units']
-
-    # Count how many of the required resource we already have
-    already_have = 0
-    for item in current_cargo:
-        if item['symbol'] == delivery['tradeSymbol']:
-            already_have = item['units']
-            break
-
-    still_need = remaining - already_have
-    print(f"  Already have: {already_have} units")
-    print(f"  Still need: {still_need} units")
-
-    if still_need > 0:
-        cargo_available = cargo_capacity - cargo_units
-        if cargo_available <= 0:
-            print("  ⚠️  No cargo space available to acquire additional goods")
-
-        if not ensure_market_availability(still_need, cargo_available):
-            return 1
-
-        quantity = min(still_need, cargo_available)
-        purchased_units, purchase_success = _purchase_initial_cargo(
-            ship=ship,
-            navigator=navigator,
-            market=args.buy_from,
-            trade_symbol=delivery['tradeSymbol'],
-            quantity=quantity,
-            stats=stats,
-            log_error=log_error,
-        )
-        if not purchase_success:
-            return 1
+    if not _acquire_initial_resources(delivery, remaining):
+        return 1
 
 
     total_delivered, success = _run_delivery_loop(
