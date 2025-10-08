@@ -10,7 +10,7 @@ import json
 import signal
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, UTC
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -18,6 +18,7 @@ from ..helpers import paths
 from .api_client import APIClient
 from .assignment_manager import AssignmentManager
 from .daemon_manager import DaemonManager
+from .market_partitioning import MarketPartitioner
 from .routing import GraphBuilder, TourOptimizer
 
 
@@ -73,6 +74,7 @@ class ScoutCoordinator:
         self.assignments: Dict[str, SubtourAssignment] = {}
         self.running = True
         self.reconfigure_requested = False
+        self._partitioner: Optional[MarketPartitioner] = None
 
         # Load graph
         self._load_or_build_graph()
@@ -104,219 +106,42 @@ class ScoutCoordinator:
 
         # Extract markets
         self.markets = TourOptimizer.get_markets_from_graph(self.graph)
+        self._invalidate_partitioner()
         print(f"✅ Found {len(self.markets)} markets: {', '.join(self.markets)}")
 
     def partition_markets_greedy(self) -> Dict[str, List[str]]:
-        """
-        Greedy assignment: assign each market to the scout with shortest current tour time
+        """Assign markets greedily based on current tour time estimates."""
 
-        This naturally balances workload from the start
-        """
-        # Get all market coordinates
-        market_coords = {}
-        for market in self.markets:
-            wp = self.graph['waypoints'].get(market)
-            if wp:
-                market_coords[market] = (wp['x'], wp['y'])
-
-        # Initialize partitions
-        partitions = {ship: [] for ship in self.ships}
-        tour_times = {ship: 0.0 for ship in self.ships}
-
-        # Sort markets by some order (by X coordinate for consistency)
-        sorted_markets = sorted(market_coords.keys(), key=lambda m: market_coords[m][0])
-
-        # Assign each market to scout with minimum tour time
-        for market in sorted_markets:
-            # Find scout with minimum tour time
-            min_ship = min(tour_times.keys(), key=lambda s: tour_times[s])
-
-            # Assign market
-            partitions[min_ship].append(market)
-
-            # Recalculate tour time for this scout (quick estimate)
-            coords = [market_coords[m] for m in partitions[min_ship]]
-            if len(coords) == 1:
-                est_dist = 0
-            elif len(coords) == 2:
-                est_dist = 2 * ((coords[1][0]-coords[0][0])**2 + (coords[1][1]-coords[0][1])**2)**0.5
-            else:
-                # Nearest neighbor estimate
-                total = 0
-                for i in range(len(coords)-1):
-                    total += ((coords[i+1][0]-coords[i][0])**2 + (coords[i+1][1]-coords[i][1])**2)**0.5
-                total += ((coords[0][0]-coords[-1][0])**2 + (coords[0][1]-coords[-1][1])**2)**0.5
-                est_dist = total
-
-            # Rough time estimate (distance * 26 / 9 + overhead)
-            tour_times[min_ship] = round((est_dist * 26) / 9) + len(partitions[min_ship]) * 22
-
-        print(f"\n✅ Greedy assignment complete")
-        return partitions
+        result = self._create_partitioner().partition("greedy")
+        if result.message:
+            print(f"\n{result.message}")
+        return result.partitions
 
     def partition_markets_kmeans(self) -> Dict[str, List[str]]:
-        """
-        Partition markets using K-means clustering for spatially compact groups
+        """Cluster markets using K-means to form compact tours."""
 
-        This avoids the empty partition problem of linear slicing
-        """
-        import random
-
-        # Get market coordinates
-        coords = []
-        markets = []
-        for market in self.markets:
-            wp = self.graph['waypoints'].get(market)
-            if wp:
-                coords.append([wp['x'], wp['y']])
-                markets.append(market)
-
-        if not coords:
-            return {ship: [] for ship in self.ships}
-
-        # K-means clustering
-        k = len(self.ships)
-
-        # Initialize centroids randomly
-        random.seed(42)  # Reproducible
-        centroids = random.sample(coords, k)
-
-        max_iterations = 50
-        for iteration in range(max_iterations):
-            # Assign each market to nearest centroid
-            clusters = [[] for _ in range(k)]
-            for i, coord in enumerate(coords):
-                distances = [((coord[0] - c[0])**2 + (coord[1] - c[1])**2)**0.5 for c in centroids]
-                nearest = distances.index(min(distances))
-                clusters[nearest].append(i)
-
-            # Update centroids
-            new_centroids = []
-            for cluster in clusters:
-                if cluster:
-                    avg_x = sum(coords[i][0] for i in cluster) / len(cluster)
-                    avg_y = sum(coords[i][1] for i in cluster) / len(cluster)
-                    new_centroids.append([avg_x, avg_y])
-                else:
-                    # Keep old centroid if cluster is empty
-                    new_centroids.append(centroids[len(new_centroids)])
-
-            # Check convergence
-            if new_centroids == centroids:
-                break
-            centroids = new_centroids
-
-        # Create partitions
-        partitions = {}
-        for ship_idx, ship in enumerate(self.ships):
-            if ship_idx < len(clusters):
-                partitions[ship] = [markets[i] for i in clusters[ship_idx]]
-            else:
-                partitions[ship] = []
-
-        print(f"\n✅ K-means clustering converged in {iteration + 1} iterations")
-        return partitions
+        result = self._create_partitioner().partition("kmeans")
+        if result.message:
+            print(f"\n{result.message}")
+        return result.partitions
 
     def partition_markets_geographic(self) -> Dict[str, List[str]]:
-        """
-        Partition markets into subtours using geographic clustering
+        """Slice markets geographically to generate initial assignments."""
 
-        Returns:
-            Dict mapping ship symbol to list of markets
-        """
-        # Handle empty markets
-        if not self.markets:
-            return {ship: [] for ship in self.ships}
+        result = self._create_partitioner().partition("geographic")
+        return result.partitions
 
-        if len(self.ships) == 1:
-            # Single ship gets all markets
-            return {list(self.ships)[0]: self.markets}
+    def _create_partitioner(self) -> MarketPartitioner:
+        if self._partitioner is None:
+            self._partitioner = MarketPartitioner(
+                graph=self.graph or {},
+                markets=self.markets,
+                ships=sorted(self.ships),
+            )
+        return self._partitioner
 
-        # Get market positions
-        positions = {}
-        for market in self.markets:
-            wp = self.graph['waypoints'].get(market)
-            if wp:
-                positions[market] = (wp['x'], wp['y'])
-
-        # Handle case where no positions found
-        if not positions:
-            return {ship: [] for ship in self.ships}
-
-        # Calculate bounding box
-        min_x = min(pos[0] for pos in positions.values())
-        max_x = max(pos[0] for pos in positions.values())
-        min_y = min(pos[1] for pos in positions.values())
-        max_y = max(pos[1] for pos in positions.values())
-
-        # Determine partitioning strategy based on shape
-        width = max_x - min_x
-        height = max_y - min_y
-
-        num_ships = len(self.ships)
-        ship_list = sorted(self.ships)  # Consistent ordering
-
-        if width == 0 and height == 0:
-            # All markets at same position - distribute evenly
-            return self._distribute_evenly(list(positions.keys()), ship_list)
-        elif width > height:
-            # Partition vertically (by X)
-            return self._partition_by_x(positions, ship_list, min_x, max_x)
-        else:
-            # Partition horizontally (by Y)
-            return self._partition_by_y(positions, ship_list, min_y, max_y)
-
-    def _distribute_evenly(self, markets: List[str], ship_list: List[str]) -> Dict[str, List[str]]:
-        """Distribute markets evenly when geographic partitioning not possible"""
-        partitions = {ship: [] for ship in ship_list}
-
-        for i, market in enumerate(markets):
-            ship_idx = i % len(ship_list)
-            partitions[ship_list[ship_idx]].append(market)
-
-        return partitions
-
-    def _partition_by_x(self, positions: Dict[str, Tuple[int, int]],
-                        ship_list: List[str], min_x: int, max_x: int) -> Dict[str, List[str]]:
-        """Partition markets by X coordinate (vertical slices)"""
-        width = max_x - min_x
-        num_ships = len(ship_list)
-
-        # Handle zero width - distribute evenly
-        if width == 0:
-            return self._distribute_evenly(list(positions.keys()), ship_list)
-
-        slice_width = width / num_ships
-
-        partitions = {ship: [] for ship in ship_list}
-
-        for market, (x, y) in positions.items():
-            # Determine which slice this market belongs to
-            slice_idx = min(int((x - min_x) / slice_width), num_ships - 1)
-            partitions[ship_list[slice_idx]].append(market)
-
-        return partitions
-
-    def _partition_by_y(self, positions: Dict[str, Tuple[int, int]],
-                        ship_list: List[str], min_y: int, max_y: int) -> Dict[str, List[str]]:
-        """Partition markets by Y coordinate (horizontal slices)"""
-        height = max_y - min_y
-        num_ships = len(ship_list)
-
-        # Handle zero height - distribute evenly
-        if height == 0:
-            return self._distribute_evenly(list(positions.keys()), ship_list)
-
-        slice_height = height / num_ships
-
-        partitions = {ship: [] for ship in ship_list}
-
-        for market, (x, y) in positions.items():
-            # Determine which slice this market belongs to
-            slice_idx = min(int((y - min_y) / slice_height), num_ships - 1)
-            partitions[ship_list[slice_idx]].append(market)
-
-        return partitions
+    def _invalidate_partitioner(self) -> None:
+        self._partitioner = None
 
     def balance_tour_times(self, partitions: Dict[str, List[str]],
                           max_iterations: int = 20,
@@ -932,6 +757,7 @@ class ScoutCoordinator:
 
         # Update ship pool
         self.ships = new_ships
+        self._invalidate_partitioner()
 
         # Repartition and restart
         print(f"\n🔄 Repartitioning {len(self.markets)} markets for {len(self.ships)} ship(s)...")
@@ -985,7 +811,7 @@ class ScoutCoordinator:
             'ships': sorted(list(self.ships)),
             'algorithm': self.algorithm,
             'reconfigure': False,
-            'last_updated': datetime.utcnow().isoformat()
+            'last_updated': datetime.now(UTC).isoformat()
         }
 
         config_path = Path(self.config_file)
