@@ -16,6 +16,161 @@ from spacetraders_bot.operations.common import (
 )
 
 
+def _validate_purchase_args(args):
+    required_args = ["player_id", "ship", "shipyard", "ship_type", "max_budget"]
+    for arg_name in required_args:
+        if not hasattr(args, arg_name) or getattr(args, arg_name) in (None, ""):
+            print(f"❌ Missing required argument: {arg_name}")
+            return None
+
+    try:
+        quantity = int(getattr(args, "quantity", 1))
+    except (TypeError, ValueError):
+        print("❌ Quantity must be an integer")
+        return None
+    if quantity <= 0:
+        print("❌ Quantity must be greater than zero")
+        return None
+
+    try:
+        max_budget = int(getattr(args, "max_budget"))
+    except (TypeError, ValueError):
+        print("❌ max_budget must be an integer value in credits")
+        return None
+    if max_budget <= 0:
+        print("❌ max_budget must be greater than zero")
+        return None
+
+    return quantity, max_budget
+
+
+def _ensure_ship_ready(ship: ShipController, shipyard_symbol: str, log_error) -> bool:
+    ship_status = ship.get_status()
+    if not ship_status:
+        print("❌ Failed to retrieve ship status")
+        log_error("Ship status unavailable", "API returned no data")
+        return False
+
+    current_waypoint = ship_status["nav"]["waypointSymbol"]
+    if current_waypoint != shipyard_symbol:
+        logging.info("Navigating %s to %s", ship.ship_symbol, shipyard_symbol)
+        print(f"🚀 Navigating {ship.ship_symbol} to {shipyard_symbol}...")
+        if not ship.navigate(shipyard_symbol):
+            print("❌ Failed to navigate to shipyard")
+            log_error("Navigation failed", f"Unable to reach {shipyard_symbol}")
+            return False
+
+    print("🛬 Docking purchasing ship...")
+    if not ship.dock():
+        print("❌ Failed to dock at shipyard")
+        log_error("Dock failed", "Shipyard docking endpoint returned error")
+        return False
+
+    return True
+
+
+def _fetch_shipyard_listing(api, shipyard_symbol: str, ship_type: str, log_error):
+    system_symbol, _ = parse_waypoint_symbol(shipyard_symbol)
+    logging.info("Retrieving shipyard listings from %s", shipyard_symbol)
+    shipyard_response = api.get(f"/systems/{system_symbol}/waypoints/{shipyard_symbol}/shipyard")
+    if not shipyard_response or "data" not in shipyard_response:
+        print("❌ Failed to load shipyard data")
+        log_error("Shipyard unavailable", "API response missing data")
+        return None, None
+
+    shipyard_data = shipyard_response["data"]
+    listings = shipyard_data.get("ships") or []
+    listing = next((s for s in listings if s.get("type") == ship_type), None)
+    if not listing:
+        print(f"❌ Ship type {ship_type} not available at {shipyard_symbol}")
+        log_error("Ship type unavailable", f"No listing for {ship_type}")
+        return None, None
+
+    price = listing.get("purchasePrice")
+    if price is None:
+        print("❌ Ship listing missing purchase price")
+        log_error("Missing price", "Shipyard listing lacked purchasePrice")
+        return None, None
+
+    return listing, price
+
+
+def _execute_purchases(
+    api,
+    shipyard_symbol: str,
+    ship_type: str,
+    purchasable_quantity: int,
+    price: int,
+    available_credits: int,
+    max_budget: int,
+    captain_logger,
+    operator_name: str,
+    ship_symbol: str,
+    log_error,
+):
+    purchased_symbols: List[str] = []
+    total_spent = 0
+    agent_credits = available_credits
+
+    for idx in range(purchasable_quantity):
+        remaining_budget = max_budget - total_spent
+        if remaining_budget < price:
+            logging.info("Budget exhausted before purchase %d", idx + 1)
+            break
+
+        if agent_credits < price:
+            logging.info("Credits exhausted before purchase %d", idx + 1)
+            break
+
+        print(f"🛒 Purchasing {ship_type} #{idx + 1}...")
+        payload = {"shipType": ship_type, "waypointSymbol": shipyard_symbol}
+        response = api.post("/my/ships", payload)
+        if not response or "data" not in response:
+            print("❌ Purchase failed - see logs for details")
+            log_error("Purchase failed", f"API response: {response}", escalate=False)
+            break
+
+        data = response["data"]
+        new_ship = data.get("ship")
+        transaction = data.get("transaction", {})
+        agent = data.get("agent")
+        if agent:
+            agent_credits = int(agent.get("credits", agent_credits - price))
+        else:
+            agent_credits -= price
+
+        spent = int(transaction.get("totalPrice", price))
+        total_spent += spent
+
+        new_symbol = new_ship.get("symbol") if new_ship else None
+        if new_symbol:
+            purchased_symbols.append(new_symbol)
+
+        logging.info(
+            "Purchased %s for %s credits (remaining credits: %s)",
+            new_symbol or "<unknown>",
+            format_credits(spent),
+            format_credits(agent_credits),
+        )
+
+        log_captain_event(
+            captain_logger,
+            "OPERATION_COMPLETED",
+            operator=operator_name,
+            ship=ship_symbol,
+            results={
+                "purchased_ship": new_symbol,
+                "ship_type": ship_type,
+                "price": format_credits(spent),
+                "shipyard": shipyard_symbol,
+            },
+            notes=f"Purchased {ship_type} at {shipyard_symbol}",
+            tags=["purchasing", ship_type.lower(), shipyard_symbol.lower()],
+        )
+
+    return purchased_symbols, total_spent, agent_credits
+
+
 def purchase_ship_operation(args, *, api=None, ship=None, captain_logger=None):
     """Purchase one or more ships from a shipyard using the supplied hauler."""
 
@@ -26,29 +181,11 @@ def purchase_ship_operation(args, *, api=None, ship=None, captain_logger=None):
     )
     logging.info("Purchase ship operation initialized")
 
-    required_args = ["player_id", "ship", "shipyard", "ship_type", "max_budget"]
-    for arg_name in required_args:
-        if not hasattr(args, arg_name) or getattr(args, arg_name) in (None, ""):
-            print(f"❌ Missing required argument: {arg_name}")
-            return 1
-
-    try:
-        quantity = int(getattr(args, "quantity", 1))
-    except (TypeError, ValueError):
-        print("❌ Quantity must be an integer")
-        return 1
-    if quantity <= 0:
-        print("❌ Quantity must be greater than zero")
+    parsed_args = _validate_purchase_args(args)
+    if not parsed_args:
         return 1
 
-    try:
-        max_budget = int(getattr(args, "max_budget"))
-    except (TypeError, ValueError):
-        print("❌ max_budget must be an integer value in credits")
-        return 1
-    if max_budget <= 0:
-        print("❌ max_budget must be greater than zero")
-        return 1
+    quantity, max_budget = parsed_args
 
     ship_symbol = args.ship
     shipyard_symbol = args.shipyard
@@ -73,49 +210,11 @@ def purchase_ship_operation(args, *, api=None, ship=None, captain_logger=None):
         )
 
     # Ensure purchasing ship can reach/dock at the shipyard
-    ship_status = ship.get_status()
-    if not ship_status:
-        print("❌ Failed to retrieve ship status")
-        log_error("Ship status unavailable", "API returned no data")
+    if not _ensure_ship_ready(ship, shipyard_symbol, log_error):
         return 1
 
-    current_waypoint = ship_status["nav"]["waypointSymbol"]
-    if current_waypoint != shipyard_symbol:
-        logging.info("Navigating %s to %s", ship_symbol, shipyard_symbol)
-        print(f"🚀 Navigating {ship_symbol} to {shipyard_symbol}...")
-        if not ship.navigate(shipyard_symbol):
-            print("❌ Failed to navigate to shipyard")
-            log_error("Navigation failed", f"Unable to reach {shipyard_symbol}")
-            return 1
-
-    # Ensure docked before interacting with shipyard
-    print("🛬 Docking purchasing ship...")
-    if not ship.dock():
-        print("❌ Failed to dock at shipyard")
-        log_error("Dock failed", "Shipyard docking endpoint returned error")
-        return 1
-
-    # Fetch shipyard listings
-    system_symbol, _ = parse_waypoint_symbol(shipyard_symbol)
-    logging.info("Retrieving shipyard listings from %s", shipyard_symbol)
-    shipyard_response = api.get(f"/systems/{system_symbol}/waypoints/{shipyard_symbol}/shipyard")
-    if not shipyard_response or "data" not in shipyard_response:
-        print("❌ Failed to load shipyard data")
-        log_error("Shipyard unavailable", "API response missing data")
-        return 1
-
-    shipyard_data = shipyard_response["data"]
-    listings = shipyard_data.get("ships") or []
-    listing = next((s for s in listings if s.get("type") == ship_type), None)
-    if not listing:
-        print(f"❌ Ship type {ship_type} not available at {shipyard_symbol}")
-        log_error("Ship type unavailable", f"No listing for {ship_type}")
-        return 1
-
-    price = listing.get("purchasePrice")
+    _, price = _fetch_shipyard_listing(api, shipyard_symbol, ship_type, log_error)
     if price is None:
-        print("❌ Ship listing missing purchase price")
-        log_error("Missing price", "Shipyard listing lacked purchasePrice")
         return 1
 
     agent = api.get_agent()
@@ -150,63 +249,19 @@ def purchase_ship_operation(args, *, api=None, ship=None, captain_logger=None):
         max_budget,
     )
 
-    purchased_symbols: List[str] = []
-    total_spent = 0
-
-    for idx in range(purchasable_quantity):
-        remaining_budget = max_budget - total_spent
-        if remaining_budget < price:
-            logging.info("Budget exhausted before purchase %d", idx + 1)
-            break
-
-        if available_credits < price:
-            logging.info("Credits exhausted before purchase %d", idx + 1)
-            break
-
-        print(f"🛒 Purchasing {ship_type} #{idx + 1}...")
-        payload = {
-            "shipType": ship_type,
-            "waypointSymbol": shipyard_symbol,
-        }
-        response = api.post("/my/ships", payload)
-        if not response or "data" not in response:
-            print("❌ Purchase failed - see logs for details")
-            log_error("Purchase failed", f"API response: {response}", escalate=False)
-            break
-
-        data = response["data"]
-        new_ship = data.get("ship")
-        transaction = data.get("transaction", {})
-        agent = data.get("agent") or agent
-        available_credits = int(agent.get("credits", available_credits - price))
-        spent = int(transaction.get("totalPrice", price))
-        total_spent += spent
-
-        new_symbol = new_ship.get("symbol") if new_ship else None
-        if new_symbol:
-            purchased_symbols.append(new_symbol)
-
-        logging.info(
-            "Purchased %s for %s credits (remaining credits: %s)",
-            new_symbol or "<unknown>",
-            format_credits(spent),
-            format_credits(available_credits),
-        )
-
-        log_captain_event(
-            captain_logger,
-            "OPERATION_COMPLETED",
-            operator=operator_name,
-            ship=ship_symbol,
-            results={
-                "purchased_ship": new_symbol,
-                "ship_type": ship_type,
-                "price": format_credits(spent),
-                "shipyard": shipyard_symbol,
-            },
-            notes=f"Purchased {ship_type} at {shipyard_symbol}",
-            tags=["purchasing", ship_type.lower(), shipyard_symbol.lower()],
-        )
+    purchased_symbols, total_spent, available_credits = _execute_purchases(
+        api=api,
+        shipyard_symbol=shipyard_symbol,
+        ship_type=ship_type,
+        purchasable_quantity=purchasable_quantity,
+        price=price,
+        available_credits=available_credits,
+        max_budget=max_budget,
+        captain_logger=captain_logger,
+        operator_name=operator_name,
+        ship_symbol=ship_symbol,
+        log_error=log_error,
+    )
 
     if not purchased_symbols:
         print("⚠️ No ships were purchased. Credits or budget may have been exhausted.")
