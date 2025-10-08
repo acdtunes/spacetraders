@@ -20,6 +20,7 @@ from spacetraders_bot.core.api_client import APIClient
 from spacetraders_bot.core.ship_controller import ShipController
 from spacetraders_bot.core.smart_navigator import SmartNavigator
 from spacetraders_bot.core.utils import parse_waypoint_symbol
+from spacetraders_bot.operations.control import CircuitBreaker
 
 
 @dataclass
@@ -1216,7 +1217,7 @@ def multileg_trade_operation(args):
 
     cycle_num = 0
     total_profit = 0
-    consecutive_low_profit = 0
+    low_profit_breaker = CircuitBreaker(limit=3)
 
     # Main trading loop
     while cycles_remaining > 0:
@@ -1322,16 +1323,22 @@ def multileg_trade_operation(args):
         # Circuit breaker: Check profitability for looping mode
         if looping_mode:
             if cycle_profit < args.min_profit:
-                consecutive_low_profit += 1
-                logging.warning(f"Low profit ({cycle_profit:,} < {args.min_profit:,})")
-                logging.warning(f"Consecutive low cycles: {consecutive_low_profit}")
+                failures = low_profit_breaker.record_failure()
+                logging.warning(
+                    "Low profit (%s < %s)",
+                    f"{cycle_profit:,}",
+                    f"{args.min_profit:,}",
+                )
+                logging.warning("Consecutive low cycles: %s", failures)
 
-                if consecutive_low_profit >= 3:
-                    logging.error("🚨 3 consecutive low-profit cycles")
+                if low_profit_breaker.tripped():
+                    logging.error(
+                        "🚨 %s consecutive low-profit cycles", failures
+                    )
                     logging.error("🛑 STOPPING")
                     break
             else:
-                consecutive_low_profit = 0
+                low_profit_breaker.record_success()
 
             if cycle_profit < 0:
                 logging.error(f"🚨 CIRCUIT BREAKER: NEGATIVE PROFIT ({cycle_profit:,})")

@@ -22,6 +22,7 @@ from spacetraders_bot.operations.common import (
     log_captain_event,
     setup_logging,
 )
+from spacetraders_bot.operations.control import CircuitBreaker
 
 
 SEPARATOR = "=" * 70
@@ -111,24 +112,6 @@ class MiningCycle:
         print(f"Total revenue: {self.context.stats.total_revenue:,} credits")
         print(f"Total extracted: {self.context.stats.total_extracted} units")
         print(SEPARATOR)
-
-
-@dataclass
-class CircuitBreaker:
-    """Tracks consecutive failures and trips after exceeding the configured limit."""
-
-    limit: int
-    failures: int = 0
-
-    def record_success(self) -> None:
-        self.failures = 0
-
-    def record_failure(self) -> int:
-        self.failures += 1
-        return self.failures
-
-    def tripped(self) -> bool:
-        return self.failures >= self.limit
 
 
 @dataclass
