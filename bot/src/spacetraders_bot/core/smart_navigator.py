@@ -347,6 +347,171 @@ class SmartNavigator:
             logger.error(error_message)
         return status
 
+    def _should_continue_operation(self, operation_controller) -> bool:
+        """Handle external control commands for long-running operations."""
+        if not operation_controller:
+            return True
+
+        if operation_controller.should_cancel():
+            logger.warning("Operation cancelled by external command")
+            operation_controller.cancel()
+            return False
+
+        if operation_controller.should_pause():
+            logger.info("Operation paused by external command")
+            operation_controller.pause()
+            return False
+
+        return True
+
+    def _execute_navigate_step(
+        self,
+        ship_controller,
+        step: Dict,
+        step_index: int,
+        total_steps: int,
+        operation_controller,
+    ) -> bool:
+        logger.info(
+            "Step %s/%s: Navigate %s → %s (%s, %.0fu, %s⛽)",
+            step_index,
+            total_steps,
+            step['from'],
+            step['to'],
+            step['mode'],
+            step['distance'],
+            step['fuel_cost'],
+        )
+
+        if not self._ensure_valid_state(ship_controller, 'IN_ORBIT'):
+            logger.error("Failed to transition to IN_ORBIT for navigation")
+            return False
+
+        success = ship_controller.navigate(
+            waypoint=step['to'],
+            flight_mode=step['mode'],
+            auto_refuel=False,
+        )
+
+        if not success:
+            logger.error(f"Navigation failed at step {step_index}")
+            return False
+
+        current_ship_data = self._get_status_or_log(
+            ship_controller,
+            "Failed to get ship status after navigation",
+        )
+        if not current_ship_data:
+            return False
+
+        actual_location = current_ship_data['nav']['waypointSymbol']
+        actual_state = current_ship_data['nav']['status']
+
+        if actual_location != step['to']:
+            logger.error(f"Navigation error: expected {step['to']}, arrived at {actual_location}")
+            return False
+
+        if actual_state != 'IN_ORBIT':
+            logger.warning(f"Unexpected state after navigation: {actual_state} (expected IN_ORBIT)")
+
+        logger.info(f"✅ Arrived at {step['to']} (state: {actual_state})")
+
+        if operation_controller:
+            operation_controller.checkpoint({
+                'completed_step': step_index,
+                'location': actual_location,
+                'fuel': current_ship_data['fuel']['current'],
+                'state': actual_state,
+            })
+
+        return True
+
+    def _execute_refuel_step(
+        self,
+        ship_controller,
+        step: Dict,
+        step_index: int,
+        total_steps: int,
+        operation_controller,
+    ) -> bool:
+        logger.info(
+            "Step %s/%s: Refuel at %s (+%s⛽)",
+            step_index,
+            total_steps,
+            step['waypoint'],
+            step['fuel_added'],
+        )
+
+        current_ship_data = self._get_status_or_log(
+            ship_controller,
+            "Failed to get ship status before refuel",
+        )
+        if not current_ship_data:
+            return False
+
+        current_location = current_ship_data['nav']['waypointSymbol']
+        refuel_waypoint = step['waypoint']
+
+        if current_location != refuel_waypoint:
+            logger.info(
+                "Navigating to refuel waypoint: %s → %s",
+                current_location,
+                refuel_waypoint,
+            )
+
+            if not self._ensure_valid_state(ship_controller, 'IN_ORBIT'):
+                logger.error("Failed to transition to IN_ORBIT for navigation to refuel stop")
+                return False
+
+            success = ship_controller.navigate(
+                waypoint=refuel_waypoint,
+                flight_mode='DRIFT',
+                auto_refuel=False,
+            )
+
+            if not success:
+                logger.error(f"Navigation to refuel waypoint {refuel_waypoint} failed")
+                return False
+
+            current_ship_data = self._get_status_or_log(
+                ship_controller,
+                "Failed to get ship status after navigation to refuel stop",
+            )
+            if not current_ship_data:
+                return False
+
+            actual_location = current_ship_data['nav']['waypointSymbol']
+            if actual_location != refuel_waypoint:
+                logger.error(f"Navigation error: expected {refuel_waypoint}, arrived at {actual_location}")
+                return False
+
+            logger.info(f"✅ Arrived at refuel stop {refuel_waypoint}")
+
+        if not self._ensure_valid_state(ship_controller, 'DOCKED'):
+            logger.error("Failed to dock for refueling")
+            return False
+
+        status = ship_controller.get_status()
+        fuel_before = status['fuel']['current'] if status else 0
+
+        if not ship_controller.refuel():
+            logger.error("Refuel failed")
+            return False
+
+        status_after = ship_controller.get_status()
+        fuel_after = status_after['fuel']['current'] if status_after else 0
+        logger.info(f"✅ Refueled: {fuel_before} → {fuel_after}")
+
+        if operation_controller:
+            operation_controller.checkpoint({
+                'completed_step': step_index,
+                'location': refuel_waypoint,
+                'fuel': fuel_after,
+                'state': 'DOCKED',
+            })
+
+        return True
+
     def execute_route(self, ship_controller, destination: str,
                      prefer_cruise: bool = True,
                      operation_controller=None) -> bool:
@@ -413,9 +578,22 @@ class SmartNavigator:
         logger.info("📋 ROUTE PLAN:")
         for i, step in enumerate(route['steps'], 1):
             if step['action'] == 'navigate':
-                logger.info(f"   {i}. Navigate {step['from']} → {step['to']} ({step['mode']}, {step['distance']:.0f}u, {step['fuel_cost']}⛽)")
+                logger.info(
+                    "   %s. Navigate %s → %s (%s, %.0fu, %s⛽)",
+                    i,
+                    step['from'],
+                    step['to'],
+                    step['mode'],
+                    step['distance'],
+                    step['fuel_cost'],
+                )
             elif step['action'] == 'refuel':
-                logger.info(f"   {i}. Refuel at {step['waypoint']} (+{step['fuel_added']}⛽)")
+                logger.info(
+                    "   %s. Refuel at %s (+%s⛽)",
+                    i,
+                    step['waypoint'],
+                    step['fuel_added'],
+                )
 
         # Execute each step with state machine
         start_step = 1
@@ -427,149 +605,27 @@ class SmartNavigator:
                 start_step = checkpoint.get('completed_step', 0) + 1
                 logger.info(f"Resuming from step {start_step}/{len(route['steps'])}")
 
+        total_steps = len(route['steps'])
+        handlers = {
+            'navigate': self._execute_navigate_step,
+            'refuel': self._execute_refuel_step,
+        }
+
         for i, step in enumerate(route['steps'], 1):
             # Skip already completed steps
             if i < start_step:
                 continue
 
-            # Check for external control commands
-            if operation_controller:
-                if operation_controller.should_cancel():
-                    logger.warning("Operation cancelled by external command")
-                    operation_controller.cancel()
-                    return False
+            if not self._should_continue_operation(operation_controller):
+                return False
 
-                if operation_controller.should_pause():
-                    logger.info("Operation paused by external command")
-                    operation_controller.pause()
-                    return False
+            handler = handlers.get(step['action'])
+            if not handler:
+                logger.warning("Skipping unsupported route action: %s", step['action'])
+                continue
 
-            if step['action'] == 'navigate':
-                logger.info(f"Step {i}/{len(route['steps'])}: Navigate {step['from']} → {step['to']} "
-                           f"({step['mode']}, {step['distance']:.0f}u, {step['fuel_cost']}⛽)")
-
-                # Ensure ship is IN_ORBIT before navigation
-                if not self._ensure_valid_state(ship_controller, 'IN_ORBIT'):
-                    logger.error(f"Failed to transition to IN_ORBIT for navigation")
-                    return False
-
-                # Navigate using ShipController (handles waiting automatically)
-                success = ship_controller.navigate(
-                    waypoint=step['to'],
-                    flight_mode=step['mode'],
-                    auto_refuel=False  # We handle refueling via planned stops
-                )
-
-                if not success:
-                    logger.error(f"Navigation failed at step {i}")
-                    return False
-
-                # Verify arrival
-                current_ship_data = self._get_status_or_log(
-                    ship_controller,
-                    "Failed to get ship status after navigation",
-                )
-                if not current_ship_data:
-                    return False
-
-                actual_location = current_ship_data['nav']['waypointSymbol']
-                actual_state = current_ship_data['nav']['status']
-
-                if actual_location != step['to']:
-                    logger.error(f"Navigation error: expected {step['to']}, arrived at {actual_location}")
-                    return False
-
-                if actual_state != 'IN_ORBIT':
-                    logger.warning(f"Unexpected state after navigation: {actual_state} (expected IN_ORBIT)")
-
-                logger.info(f"✅ Arrived at {step['to']} (state: {actual_state})")
-
-                # Save checkpoint
-                if operation_controller:
-                    operation_controller.checkpoint({
-                        'completed_step': i,
-                        'location': actual_location,
-                        'fuel': current_ship_data['fuel']['current'],
-                        'state': actual_state
-                    })
-
-            elif step['action'] == 'refuel':
-                logger.info(f"Step {i}/{len(route['steps'])}: Refuel at {step['waypoint']} "
-                           f"(+{step['fuel_added']}⛽)")
-
-                # BUGFIX: Check if we're at the refuel waypoint
-                # If not, navigate there first
-                current_ship_data = self._get_status_or_log(
-                    ship_controller,
-                    "Failed to get ship status before refuel",
-                )
-                if not current_ship_data:
-                    return False
-
-                current_location = current_ship_data['nav']['waypointSymbol']
-                refuel_waypoint = step['waypoint']
-
-                if current_location != refuel_waypoint:
-                    logger.info(f"Navigating to refuel waypoint: {current_location} → {refuel_waypoint}")
-
-                    # Ensure ship is IN_ORBIT before navigation
-                    if not self._ensure_valid_state(ship_controller, 'IN_ORBIT'):
-                        logger.error(f"Failed to transition to IN_ORBIT for navigation to refuel stop")
-                        return False
-
-                    # Navigate to refuel waypoint
-                    success = ship_controller.navigate(
-                        waypoint=refuel_waypoint,
-                        flight_mode='DRIFT',  # Use DRIFT to conserve fuel
-                        auto_refuel=False
-                    )
-
-                    if not success:
-                        logger.error(f"Navigation to refuel waypoint {refuel_waypoint} failed")
-                        return False
-
-                    # Verify arrival at refuel waypoint
-                    current_ship_data = self._get_status_or_log(
-                        ship_controller,
-                        "Failed to get ship status after navigation to refuel stop",
-                    )
-                    if not current_ship_data:
-                        return False
-
-                    actual_location = current_ship_data['nav']['waypointSymbol']
-                    if actual_location != refuel_waypoint:
-                        logger.error(f"Navigation error: expected {refuel_waypoint}, arrived at {actual_location}")
-                        return False
-
-                    logger.info(f"✅ Arrived at refuel stop {refuel_waypoint}")
-
-                # Ensure ship is DOCKED for refueling
-                if not self._ensure_valid_state(ship_controller, 'DOCKED'):
-                    logger.error("Failed to dock for refueling")
-                    return False
-
-                # Get fuel before refueling
-                status = ship_controller.get_status()
-                fuel_before = status['fuel']['current'] if status else 0
-
-                # Refuel to full
-                if not ship_controller.refuel():
-                    logger.error("Refuel failed")
-                    return False
-
-                # Verify refuel
-                status_after = ship_controller.get_status()
-                fuel_after = status_after['fuel']['current'] if status_after else 0
-                logger.info(f"✅ Refueled: {fuel_before} → {fuel_after}")
-
-                # Save checkpoint
-                if operation_controller:
-                    operation_controller.checkpoint({
-                        'completed_step': i,
-                        'location': step['waypoint'],
-                        'fuel': fuel_after,
-                        'state': 'DOCKED'
-                    })
+            if not handler(ship_controller, step, i, total_steps, operation_controller):
+                return False
 
         # Final verification
         final_ship_data = ship_controller.get_status()
