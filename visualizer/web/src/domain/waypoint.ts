@@ -28,7 +28,7 @@ export const Waypoint = {
       const hash = (waypoint.x * 73856093) ^ (waypoint.y * 19349663);
       const sizeVariation = (Math.abs(hash) % 5) / 4; // 0 to 1 step of 0.25
       const baseSize = 0.3 + sizeVariation * 0.4; // 0.3 to 0.7
-      return baseSize; // ≈0.3 to 0.7
+      return baseSize * 3; // 3x larger than before
     }
 
     if (waypoint.type === 'ORBITAL_STATION') {
