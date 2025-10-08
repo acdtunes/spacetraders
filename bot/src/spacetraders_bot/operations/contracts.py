@@ -109,6 +109,90 @@ def contract_operation(
             tags=['contract', 'performance']
         )
 
+    def ensure_market_availability(still_needed: int, cargo_available: int) -> bool:
+        print(f"  Cargo space available: {cargo_available}/{cargo_capacity}")
+
+        if args.buy_from:
+            print(f"  ✅ Using specified market: {args.buy_from}")
+            market_row = _fetch_market_listing(local_db, delivery['tradeSymbol'], args.buy_from)
+
+            if market_row:
+                total_cost = market_row[1] * still_needed
+                print(f"     Price: {market_row[1]} cr/unit ({market_row[2]} supply)")
+                print(f"     Total cost: {format_credits(total_cost)} for {still_needed} units")
+            else:
+                print(
+                    f"  ⚠️  Warning: Market {args.buy_from} not found in database or doesn't sell {delivery['tradeSymbol']}"
+                )
+                print("  Will attempt purchase anyway (market may not be scouted yet)")
+            return True
+
+        print(f"\n  🔍 Searching for markets selling {delivery['tradeSymbol']}...")
+        market_row = _find_lowest_price_market(local_db, delivery['tradeSymbol'], system)
+
+        if market_row:
+            args.buy_from = market_row[0]
+            total_cost = market_row[1] * still_needed
+            print(f"  ✅ Found market: {args.buy_from}")
+            print(f"     Price: {market_row[1]} cr/unit ({market_row[2]} supply)")
+            print(f"     Total cost: {format_credits(total_cost)} for {still_needed} units")
+            return True
+
+        print(f"  ❌ RESOURCE NOT AVAILABLE")
+        print(f"  {delivery['tradeSymbol']} is not available in any discovered markets in {system}")
+        print(f"\n  📋 RECOMMENDED ACTIONS:")
+        print(f"     1. Deploy scout coordinator to system {system}")
+        print(f"     2. Wait for scouts to discover markets selling {delivery['tradeSymbol']}")
+        print(f"     3. Re-run contract with --buy-from <market> once discovered")
+        print(f"\n  🔄 Contract operation will wait and periodically retry...")
+
+        log_error(
+            "Resource not available in markets",
+            f"{delivery['tradeSymbol']} not found in any discovered markets",
+            impact={'Resource': delivery['tradeSymbol'], 'System': system, 'Required': still_needed},
+            resolution="Deploy scout coordinator to discover markets, then retry",
+            escalate=True,
+            tags=['contract', 'market_missing', delivery['tradeSymbol'].lower()]
+        )
+
+        max_retries = 12
+        retry_interval = 300
+        for retry_count in range(max_retries):
+            print(
+                f"\n  ⏳ Waiting {retry_interval // 60} minutes before retry {retry_count + 1}/{max_retries}..."
+            )
+            sleep_fn(retry_interval)
+            print(f"  🔍 Retry {retry_count + 1}: Checking market database...")
+
+            market_row = _find_lowest_price_market(local_db, delivery['tradeSymbol'], system)
+            if market_row:
+                print(f"  ✅ SUCCESS! Market discovered: {market_row[0]}")
+                args.buy_from = market_row[0]
+                total_cost = market_row[1] * still_needed
+                print(f"     Price: {market_row[1]} cr/unit ({market_row[2]} supply)")
+                print(f"     Total cost: {format_credits(total_cost)} for {still_needed} units")
+                return True
+
+            print(f"  ⚠️  Still not available (retry {retry_count + 1}/{max_retries})")
+
+        print(
+            f"\n  ❌ OPERATION FAILED: Resource never became available after {max_retries * retry_interval // 60} minutes"
+        )
+        print("  Manual intervention required - Flag Captain must deploy scout coordinator")
+        log_error(
+            "Contract operation timeout",
+            f"Resource {delivery['tradeSymbol']} not discovered after waiting {max_retries * retry_interval // 60} minutes",
+            impact={
+                'Resource': delivery['tradeSymbol'],
+                'System': system,
+                'Waited': f"{max_retries * retry_interval // 60} min",
+            },
+            resolution="Flag Captain must manually deploy scouts or source resource elsewhere",
+            escalate=True,
+            tags=['contract', 'timeout', delivery['tradeSymbol'].lower()]
+        )
+        return False
+
     # Initialize navigator
     ship_data = ship.get_status()
     if not ship_data:
@@ -202,90 +286,12 @@ def contract_operation(
     print(f"  Still need: {still_need} units")
 
     if still_need > 0:
-        # Check cargo space
         cargo_available = cargo_capacity - cargo_units
-        print(f"  Cargo space available: {cargo_available}/{cargo_capacity}")
+        if cargo_available <= 0:
+            print("  ⚠️  No cargo space available to acquire additional goods")
 
-        # Check if buy_from was specified
-        if args.buy_from:
-            print(f"  ✅ Using specified market: {args.buy_from}")
-            # Validate the market exists and sells the resource
-            market_row = _fetch_market_listing(local_db, delivery['tradeSymbol'], args.buy_from)
-
-            if market_row:
-                total_cost = market_row[1] * still_need
-                print(f"     Price: {market_row[1]} cr/unit ({market_row[2]} supply)")
-                print(f"     Total cost: {format_credits(total_cost)} for {still_need} units")
-            else:
-                print(f"  ⚠️  Warning: Market {args.buy_from} not found in database or doesn't sell {delivery['tradeSymbol']}")
-                print(f"  Will attempt purchase anyway (market may not be scouted yet)")
-        else:
-            # No buy_from specified - search for best market
-            print(f"\n  🔍 Searching for markets selling {delivery['tradeSymbol']}...")
-            market_row = _find_lowest_price_market(local_db, delivery['tradeSymbol'], system)
-
-            if market_row:
-                args.buy_from = market_row[0]
-                total_cost = market_row[1] * still_need
-                print(f"  ✅ Found market: {args.buy_from}")
-                print(f"     Price: {market_row[1]} cr/unit ({market_row[2]} supply)")
-                print(f"     Total cost: {format_credits(total_cost)} for {still_need} units")
-            else:
-                # Resource not available in any market
-                print(f"  ❌ RESOURCE NOT AVAILABLE")
-                print(f"  {delivery['tradeSymbol']} is not available in any discovered markets in {system}")
-                print(f"\n  📋 RECOMMENDED ACTIONS:")
-                print(f"     1. Deploy scout coordinator to system {system}")
-                print(f"     2. Wait for scouts to discover markets selling {delivery['tradeSymbol']}")
-                print(f"     3. Re-run contract with --buy-from <market> once discovered")
-                print(f"\n  🔄 Contract operation will wait and periodically retry...")
-
-                log_error(
-                    "Resource not available in markets",
-                    f"{delivery['tradeSymbol']} not found in any discovered markets",
-                    impact={'Resource': delivery['tradeSymbol'], 'System': system, 'Required': still_need},
-                    resolution="Deploy scout coordinator to discover markets, then retry",
-                    escalate=True,
-                    tags=['contract', 'market_missing', delivery['tradeSymbol'].lower()]
-                )
-
-                # Wait-and-retry loop (periodically check if market data gets updated)
-                max_retries = 12  # 12 retries = 1 hour (5 min intervals)
-                retry_count = 0
-                retry_interval = 300  # 5 minutes
-
-                while retry_count < max_retries:
-                    print(f"\n  ⏳ Waiting {retry_interval // 60} minutes before retry {retry_count + 1}/{max_retries}...")
-                    sleep_fn(retry_interval)
-
-                    # Re-query market database
-                    print(f"  🔍 Retry {retry_count + 1}: Checking market database...")
-                    market_row = _find_lowest_price_market(local_db, delivery['tradeSymbol'], system)
-
-                    if market_row:
-                        print(f"  ✅ SUCCESS! Market discovered: {market_row[0]}")
-                        args.buy_from = market_row[0]
-                        total_cost = market_row[1] * still_need
-                        print(f"     Price: {market_row[1]} cr/unit ({market_row[2]} supply)")
-                        print(f"     Total cost: {format_credits(total_cost)} for {still_need} units")
-                        break
-                    else:
-                        print(f"  ⚠️  Still not available (retry {retry_count + 1}/{max_retries})")
-                        retry_count += 1
-
-                if not args.buy_from:
-                    # Exhausted all retries
-                    print(f"\n  ❌ OPERATION FAILED: Resource never became available after {max_retries} retries")
-                    print(f"  Manual intervention required - Flag Captain must deploy scout coordinator")
-                    log_error(
-                        "Contract operation timeout",
-                        f"Resource {delivery['tradeSymbol']} not discovered after waiting {max_retries * retry_interval // 60} minutes",
-                        impact={'Resource': delivery['tradeSymbol'], 'System': system, 'Waited': f"{max_retries * retry_interval // 60} min"},
-                        resolution="Flag Captain must manually deploy scouts or source resource elsewhere",
-                        escalate=True,
-                        tags=['contract', 'timeout', delivery['tradeSymbol'].lower()]
-                    )
-                    return 1
+        if not ensure_market_availability(still_need, cargo_available):
+            return 1
 
         # Purchase from identified market
         if cargo_available < still_need:
