@@ -23,7 +23,7 @@ import { useSelectionOverlay } from '../hooks/useSelectionOverlay';
 import { useWaypointTooltipAnchor } from '../hooks/useWaypointTooltipAnchor';
 import { useShipTooltip } from '../hooks/useShipTooltip';
 import { useGridLines } from '../hooks/useGridLines';
-import { calculateShipRotation } from '../utils/shipDisplay';
+import { calculateShipRotation, getShipLabelInfo } from '../utils/shipDisplay';
 import ZoomControls from './ZoomControls';
 import Minimap from './Minimap';
 import type { FlightMode, ShipTrailPoint, Waypoint as WaypointType, TaggedShip, ShipNavStatus } from '../types/spacetraders';
@@ -93,15 +93,6 @@ const TRAIL_VISUAL_CONFIG: Record<FlightMode, TrailVisualSettings> = {
 };
 
 const TRAIL_SAMPLE_RATE = 4;
-
-import {
-  SHIP_LABEL_FONT_SIZE,
-  SHIP_LABEL_MIN_WIDTH,
-  SHIP_LABEL_PADDING_X,
-  SHIP_LABEL_PADDING_Y,
-  SHIP_LABEL_SCREEN_OFFSET_X,
-  SHIP_LABEL_SCREEN_OFFSET_Y,
-} from '../constants/shipLabel';
 
 const SHIP_TOOLTIP_OFFSET_X = 12;
 const SHIP_TOOLTIP_OFFSET_Y = 12;
@@ -1283,38 +1274,14 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
             const shipTrail = trails.get(ship.symbol);
             const rotation = calculateShipRotation(ship, position, waypoints, shipTrail);
 
-            const shipNumber = ship.symbol.split('-').pop() ?? ship.symbol;
-            const shipTypeRaw = ship.registration.role || 'UNKNOWN';
-            const shipType = shipTypeRaw
-              .split('_')
-              .map((part: string) => part.charAt(0) + part.slice(1).toLowerCase())
-              .join(' ');
-            const labelText = `${shipType} ${shipNumber}`;
-            const labelHeight = SHIP_LABEL_FONT_SIZE + SHIP_LABEL_PADDING_Y * 2;
-            const estimatedTextWidth = labelText.length * (SHIP_LABEL_FONT_SIZE * 0.6);
-            const labelWidth = Math.max(
-              SHIP_LABEL_MIN_WIDTH,
-              estimatedTextWidth + SHIP_LABEL_PADDING_X * 2
-            );
-            const labelScale = 1 / currentScale;
-
-            const screenPos = projectToScreen(position);
-            if (!screenPos) {
+            const labelInfo = getShipLabelInfo(ship, position, {
+              currentScale,
+              projectToScreen,
+              projectToWorld,
+            });
+            if (!labelInfo) {
               return null;
             }
-
-            const labelTargetScreen = {
-              x: screenPos.x + SHIP_LABEL_SCREEN_OFFSET_X,
-              y: screenPos.y - SHIP_LABEL_SCREEN_OFFSET_Y,
-            };
-
-            const labelWorldPos = projectToWorld(labelTargetScreen);
-            if (!labelWorldPos) {
-              return null;
-            }
-
-            const labelOffsetX = labelWorldPos.x - position.x;
-            const labelOffsetY = labelWorldPos.y - position.y;
 
             return (
               <Group key={ship.symbol} x={position.x} y={position.y}>
@@ -1346,12 +1313,12 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
 
                 {showShipNames && (
                   <ShipNameLabel
-                    labelText={labelText}
-                    labelWidth={labelWidth}
-                    labelHeight={labelHeight}
-                    labelScale={labelScale}
-                    offsetX={labelOffsetX}
-                    offsetY={labelOffsetY}
+                    labelText={labelInfo.labelText}
+                    labelWidth={labelInfo.labelWidth}
+                    labelHeight={labelInfo.labelHeight}
+                    labelScale={labelInfo.labelScale}
+                    offsetX={labelInfo.offsetX}
+                    offsetY={labelInfo.offsetY}
                   />
                 )}
               </Group>
