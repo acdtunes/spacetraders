@@ -13,6 +13,7 @@ Running `npx vitest run` inside `web/` consistently ends with Node reporting `FA
 - Increasing the heap to 8 GB with `NODE_OPTIONS="--max-old-space-size=8192"` only delays the failure; the run still OOMs after ~28 minutes.
 - The problem reproduces with the new store/overlay tests as well as the earlier suite—so it’s not caused by the recent additions alone.
 - Targeted runs (`npx vitest run src/store/__tests__/useStore.test.ts`) complete in <1 s and never exceed ~120 MB.
+- Running `node --trace-gc --trace-gc-ignore-scavenger node_modules/vitest/vitest.mjs run` (4 GB heap) captured explicit GC telemetry showing the live set stuck around 3.9 GB: multiple `Mark-Compact (reduce) 3900.8 -> 3900.2 MB` entries occur before the fatal collection. This confirms the leak persists even when workers run sequentially and the GC explicitly attempts compaction.
 
 ## Mitigations Attempted
 
@@ -31,6 +32,9 @@ Running `npx vitest run` inside `web/` consistently ends with Node reporting `FA
 4. **Increase Node heap**
    - Tried `NODE_OPTIONS="--max-old-space-size=8192"` and variants with `--trace-gc`.
    - Heap exhaustion still occurs (just later), confirming a leak or runaway allocation inside Vitest workers.
+5. **Direct `node --trace-gc` invocation**
+   - Because `--trace-gc` is blocked in `NODE_OPTIONS`, executed Vitest via `node --trace-gc --trace-gc-ignore-scavenger node_modules/vitest/vitest.mjs run`.
+   - The run aborted at ~312 s with the same OOM signature; trace logs (see `/tmp/vitest-trace.log`) show the process hovering at ~4 GB before crashing, reinforcing that GC reclamation fails during worker teardown.
 
 ## Recommended Workflow (until fixed)
 
