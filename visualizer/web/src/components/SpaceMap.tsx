@@ -1201,6 +1201,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
       left: screenPos.x,
       top: screenPos.y,
       size,
+      type: selectedObject.type,
     };
   }, [selectedObject, ships, waypoints, animationFrame, projectToScreen, viewportBounds, getWaypointDisplayPosition]);
 
@@ -1647,12 +1648,28 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
           }}
         >
           <div className="relative w-full h-full">
-            <div className="absolute inset-0 rounded-lg border border-sky-300/80 shadow-[0_0_12px_rgba(125,211,252,0.8)]" />
-            <div className="absolute inset-[3px] rounded-lg border border-sky-500/40" />
+            <div
+              className={
+                selectionOverlay.type === 'ship'
+                  ? 'absolute inset-0 rounded-lg border border-red-400/80 shadow-[0_0_12px_rgba(248,113,113,0.8)]'
+                  : 'absolute inset-0 rounded-lg border border-sky-300/80 shadow-[0_0_12px_rgba(125,211,252,0.8)]'
+              }
+            />
+            <div
+              className={
+                selectionOverlay.type === 'ship'
+                  ? 'absolute inset-[3px] rounded-lg border border-red-500/50'
+                  : 'absolute inset-[3px] rounded-lg border border-sky-500/40'
+              }
+            />
             {[['top', 'left'], ['top', 'right'], ['bottom', 'left'], ['bottom', 'right']].map(([vertical, horizontal]) => (
               <div
                 key={`${vertical}-${horizontal}`}
-                className="absolute h-2 w-2 border-sky-200/90"
+                className={
+                  selectionOverlay.type === 'ship'
+                    ? 'absolute h-2 w-2 border-red-200/90'
+                    : 'absolute h-2 w-2 border-sky-200/90'
+                }
                 style={{
                   [vertical]: '-3px',
                   [horizontal]: '-3px',
