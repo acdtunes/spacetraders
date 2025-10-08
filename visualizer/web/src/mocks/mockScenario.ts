@@ -358,114 +358,232 @@ export const mockState: MockState = {
   ]),
 };
 
-let scenarioRunning = false;
-let phaseIndex = 0;
+// New phased scenario runner replaces the old cycle
+type Phase = { name: string; duration: number; apply: () => void };
 
-const cycleStatuses: Array<(ships: MockShip[]) => void> = [
-  (ships) => {
-    // Phase 1: ships dock to refuel
-    ships.forEach((ship) => {
-      if (ship.registration.role === 'EXPLORER' || ship.registration.role === 'MINING_DRONE') {
-        return;
-      }
-      ship.nav.status = 'DOCKED';
-      ship.nav.waypointSymbol = ship.registration.role === 'HAULER' ? waypointC : ship.registration.role === 'COMMAND' ? waypointCommandPatrol : waypointA;
-      ship.nav.flightMode = 'DRIFT';
-      ship.fuel.current = Math.min(ship.fuel.capacity, ship.fuel.current + 10);
-    });
+const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+
+const findShipByRole = (role: string) => mockState.ships.find((ship) => ship.registration.role === role);
+
+const ensureCargoEntry = (ship: MockShip, symbol: string, name: string) => {
+  if (!ship.cargo.inventory.length) {
+    ship.cargo.inventory.push({ symbol, name, description: '', units: ship.cargo.units });
+  } else {
+    ship.cargo.inventory[0].symbol = symbol;
+    ship.cargo.inventory[0].name = name;
+    ship.cargo.inventory[0].units = ship.cargo.units;
+  }
+};
+
+// Explorer phases
+const setExplorerMining = () => {
+  const explorer = findShipByRole('EXPLORER');
+  if (!explorer) return;
+  explorer.nav.status = 'IN_ORBIT';
+  explorer.nav.waypointSymbol = waypointMining;
+  explorer.nav.route = baseRoute(waypointMining, waypointA);
+  explorer.nav.flightMode = 'DRIFT';
+  explorer.fuel.current = clamp(explorer.fuel.current - 2, 0, explorer.fuel.capacity);
+  explorer.cargo.units = clamp(explorer.cargo.units + 5, 0, explorer.cargo.capacity);
+  ensureCargoEntry(explorer, 'ICE', 'Ice Water');
+};
+
+const setExplorerTransit = (origin: string, destination: string, fuelCost: number, mode: FlightMode) => {
+  const explorer = findShipByRole('EXPLORER');
+  if (!explorer) return;
+  explorer.nav.status = 'IN_TRANSIT';
+  explorer.nav.waypointSymbol = destination;
+  explorer.nav.route = baseRoute(origin, destination);
+  explorer.nav.flightMode = mode;
+  explorer.fuel.current = clamp(explorer.fuel.current - fuelCost, 0, explorer.fuel.capacity);
+};
+
+const setExplorerDocked = (waypointSymbol: string) => {
+  const explorer = findShipByRole('EXPLORER');
+  if (!explorer) return;
+  explorer.nav.status = 'DOCKED';
+  explorer.nav.waypointSymbol = waypointSymbol;
+  explorer.nav.flightMode = 'DRIFT';
+  explorer.fuel.current = clamp(explorer.fuel.current + 6, 0, explorer.fuel.capacity);
+};
+
+const setExplorerOrbit = (waypointSymbol: string) => {
+  const explorer = findShipByRole('EXPLORER');
+  if (!explorer) return;
+  explorer.nav.status = 'IN_ORBIT';
+  explorer.nav.waypointSymbol = waypointSymbol;
+  explorer.nav.flightMode = 'DRIFT';
+};
+
+// Supporting ships
+const setMinerOrbit = () => {
+  const miner = findShipByRole('EXCAVATOR');
+  if (!miner) return;
+  miner.nav.status = 'IN_ORBIT';
+  miner.nav.waypointSymbol = waypointB;
+  miner.nav.flightMode = 'DRIFT';
+  miner.cargo.units = clamp(miner.cargo.units + 4, 0, miner.cargo.capacity);
+  if (miner.cargo.inventory.length) {
+    miner.cargo.inventory[0].units = miner.cargo.units;
+  }
+};
+
+const setHaulerDocked = () => {
+  const hauler = findShipByRole('HAULER');
+  if (!hauler) return;
+  hauler.nav.status = 'DOCKED';
+  hauler.nav.waypointSymbol = waypointC;
+  hauler.nav.flightMode = 'DRIFT';
+  hauler.fuel.current = clamp(hauler.fuel.current + 8, 0, hauler.fuel.capacity);
+};
+
+const setHaulerTransit = () => {
+  const hauler = findShipByRole('HAULER');
+  if (!hauler) return;
+  hauler.nav.status = 'IN_TRANSIT';
+  hauler.nav.waypointSymbol = waypointA;
+  hauler.nav.route = baseRoute(waypointC, waypointA);
+  hauler.nav.flightMode = 'CRUISE';
+  hauler.fuel.current = clamp(hauler.fuel.current - 12, 0, hauler.fuel.capacity);
+};
+
+const setDroneMining = () => {
+  const drone = findShipByRole('MINING_DRONE');
+  if (!drone) return;
+  drone.nav.status = 'IN_ORBIT';
+  drone.nav.waypointSymbol = waypointMining;
+  drone.nav.flightMode = 'DRIFT';
+  drone.cargo.units = clamp(drone.cargo.units + 3, 0, drone.cargo.capacity);
+  ensureCargoEntry(drone, 'ORE', 'Raw Ore');
+};
+
+const setDroneDockedRefuel = () => {
+  const drone = findShipByRole('MINING_DRONE');
+  if (!drone) return;
+  drone.nav.status = 'DOCKED';
+  drone.nav.waypointSymbol = waypointFuelDepot;
+  drone.nav.flightMode = 'DRIFT';
+  drone.fuel.current = clamp(drone.fuel.current + 6, 0, drone.fuel.capacity);
+  if (drone.cargo.inventory.length) {
+    drone.cargo.inventory[0].units = Math.max(0, drone.cargo.inventory[0].units - 4);
+    drone.cargo.units = drone.cargo.inventory[0].units;
+  }
+};
+
+const setDroneTransitToMine = () => {
+  const drone = findShipByRole('MINING_DRONE');
+  if (!drone) return;
+  drone.nav.status = 'IN_TRANSIT';
+  drone.nav.waypointSymbol = waypointMining;
+  drone.nav.route = baseRoute(waypointFuelDepot, waypointMining);
+  drone.nav.flightMode = 'CRUISE';
+  drone.fuel.current = clamp(drone.fuel.current - 5, 0, drone.fuel.capacity);
+};
+
+const setFrigateDocked = (waypointSymbol: string) => {
+  const frigate = findShipByRole('COMMAND');
+  if (!frigate) return;
+  frigate.nav.status = 'DOCKED';
+  frigate.nav.waypointSymbol = waypointSymbol;
+  frigate.nav.flightMode = 'DRIFT';
+  frigate.fuel.current = clamp(frigate.fuel.current + 4, 0, frigate.fuel.capacity);
+};
+
+const setFrigateTransit = (origin: string, destination: string) => {
+  const frigate = findShipByRole('COMMAND');
+  if (!frigate) return;
+  frigate.nav.status = 'IN_TRANSIT';
+  frigate.nav.waypointSymbol = destination;
+  frigate.nav.route = baseRoute(origin, destination);
+  frigate.nav.flightMode = 'CRUISE';
+  frigate.fuel.current = clamp(frigate.fuel.current - 6, 0, frigate.fuel.capacity);
+};
+
+const phases: Phase[] = [
+  {
+    name: 'explorer-mining',
+    duration: 10000,
+    apply: () => {
+      setExplorerMining();
+      setMinerOrbit();
+      setHaulerDocked();
+      setDroneMining();
+      setFrigateDocked(waypointCommandPatrol);
+    },
   },
-  (ships) => {
-    // Phase 2: miner orbits target
-    const miner = ships.find((ship) => ship.registration.role === 'EXCAVATOR');
-    if (miner) {
-      miner.nav.status = 'IN_ORBIT';
-      miner.nav.waypointSymbol = waypointB;
-      miner.nav.flightMode = 'DRIFT';
-      miner.cargo.units = Math.min(miner.cargo.capacity, miner.cargo.units + 5);
-      if (miner.cargo.inventory.length > 0) {
-        miner.cargo.inventory[0].units = miner.cargo.units;
-      }
-    }
-
-    const explorer = ships.find((ship) => ship.registration.role === 'EXPLORER');
-    if (explorer) {
-      explorer.nav.status = 'IN_ORBIT';
-      explorer.nav.waypointSymbol = waypointMining;
-      explorer.nav.flightMode = 'DRIFT';
-      explorer.cargo.units = Math.min(explorer.cargo.capacity, explorer.cargo.units + 4);
-      if (explorer.cargo.inventory.length > 0) {
-        explorer.cargo.inventory[0].units = explorer.cargo.units;
-      } else {
-        explorer.cargo.inventory = [{ symbol: 'ICE', name: 'Ice Water', description: '', units: explorer.cargo.units }];
-      }
-    }
-
-    const drone = ships.find((ship) => ship.registration.role === 'MINING_DRONE');
-    if (drone) {
-      drone.nav.status = 'IN_ORBIT';
-      drone.nav.waypointSymbol = waypointMining;
-      drone.nav.flightMode = 'MINING' as FlightMode;
-      drone.cargo.units = Math.min(drone.cargo.capacity, drone.cargo.units + 3);
-      if (drone.cargo.inventory.length > 0) {
-        drone.cargo.inventory[0].units = drone.cargo.units;
-      }
-    }
+  {
+    name: 'explorer-transit-a1',
+    duration: 6000,
+    apply: () => {
+      setExplorerTransit(waypointMining, waypointA, 8, 'CRUISE');
+      setMinerOrbit();
+      setDroneMining();
+      setHaulerDocked();
+      setFrigateTransit(waypointCommandPatrol, waypointB);
+    },
   },
-  (ships) => {
-    // Phase 3: hauler departs in transit
-    const hauler = ships.find((ship) => ship.registration.role === 'HAULER');
-    if (hauler) {
-      hauler.nav.status = 'IN_TRANSIT';
-      hauler.nav.route = baseRoute(waypointC, waypointA);
-      hauler.nav.flightMode = 'CRUISE';
-      hauler.fuel.current = Math.max(0, hauler.fuel.current - 15);
-    }
-
-    const explorer = ships.find((ship) => ship.registration.role === 'EXPLORER');
-    if (explorer) {
-      explorer.nav.status = 'IN_ORBIT';
-      explorer.nav.waypointSymbol = waypointMining;
-      explorer.nav.flightMode = 'DRIFT';
-      explorer.fuel.current = Math.max(0, explorer.fuel.current - 5);
-    }
-
-    const frigate = ships.find((ship) => ship.registration.role === 'COMMAND');
-    if (frigate) {
-      const departingFrom = frigate.nav.waypointSymbol === waypointA ? waypointA : waypointB;
-      const headingTo = departingFrom === waypointA ? waypointB : waypointA;
-      frigate.nav.status = 'IN_TRANSIT';
-      frigate.nav.waypointSymbol = headingTo;
-      frigate.nav.route = baseRoute(departingFrom, headingTo);
-      frigate.nav.flightMode = 'CRUISE';
-      frigate.fuel.current = Math.max(0, frigate.fuel.current - 8);
-    }
-
-    const drone = ships.find((ship) => ship.registration.role === 'MINING_DRONE');
-    if (drone) {
-      drone.nav.status = 'DOCKED';
-      drone.nav.waypointSymbol = waypointFuelDepot;
-      drone.nav.flightMode = 'DRIFT';
-      drone.fuel.current = Math.min(drone.fuel.capacity, drone.fuel.current + 5);
-      if (drone.cargo.inventory.length > 0) {
-        drone.cargo.inventory[0].units = Math.max(0, drone.cargo.inventory[0].units - 5);
-      }
-    }
+  {
+    name: 'explorer-docked-a1',
+    duration: 10000,
+    apply: () => {
+      setExplorerDocked(waypointA);
+      setMinerOrbit();
+      setDroneMining();
+      setHaulerDocked();
+      setFrigateDocked(waypointB);
+    },
+  },
+  {
+    name: 'explorer-orbit-a1',
+    duration: 10000,
+    apply: () => {
+      setExplorerOrbit(waypointA);
+      setMinerOrbit();
+      setDroneDockedRefuel();
+      setHaulerDocked();
+      setFrigateTransit(waypointB, waypointA);
+    },
+  },
+  {
+    name: 'explorer-return-to-mine',
+    duration: 6000,
+    apply: () => {
+      setExplorerTransit(waypointA, waypointMining, 10, 'BURN');
+      setMinerOrbit();
+      setHaulerTransit();
+      setDroneTransitToMine();
+      setFrigateDocked(waypointA);
+    },
   },
 ];
 
-const advancePhase = () => {
-  phaseIndex = (phaseIndex + 1) % cycleStatuses.length;
-  cycleStatuses[phaseIndex](mockState.ships);
+let scenarioRunning = false;
+let phaseIndex = 0;
+let phaseTimeout: ReturnType<typeof setTimeout> | null = null;
+
+const runPhase = () => {
+  const phase = phases[phaseIndex];
+  phase.apply();
+  phaseTimeout = setTimeout(() => {
+    phaseIndex = (phaseIndex + 1) % phases.length;
+    runPhase();
+  }, phase.duration);
 };
 
 export const startMockScenarioIfNeeded = () => {
   if (scenarioRunning) return;
   scenarioRunning = true;
-  setInterval(() => {
-    advancePhase();
-  }, 8000);
+  runPhase();
 };
 
 export const advanceShipScenario = () => {
-  advancePhase();
+  if (phaseTimeout) {
+    clearTimeout(phaseTimeout);
+    phaseTimeout = null;
+  }
+  if (!scenarioRunning) {
+    scenarioRunning = true;
+  }
+  phaseIndex = (phaseIndex + 1) % phases.length;
+  runPhase();
 };
