@@ -14,6 +14,9 @@ import { ShipSprite } from './ShipSprite';
 import { WaypointSprite } from './WaypointSprite';
 import { ShipFuelBar } from './ShipFuelBar';
 import { ShipCargoBar } from './ShipCargoBar';
+import { ShipTooltipHeader } from './ShipTooltipHeader';
+import { ShipRouteInfo } from './ShipRouteInfo';
+import { ShipCargoList } from './ShipCargoList';
 import { WaypointTraits } from './WaypointTraits';
 import { WaypointMarketplace } from './WaypointMarketplace';
 import ZoomControls from './ZoomControls';
@@ -1683,18 +1686,12 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
             transform: 'translate(-100%, -100%)',
           }}
         >
-          <div className="flex flex-col gap-1 mb-3">
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-bold text-white leading-snug">{shipTooltip.symbol}</span>
-              <span className="text-[10px] font-semibold text-red-200 bg-red-500/15 border border-red-500/40 rounded-full px-1.5 py-0.5 whitespace-nowrap">
-                {shipTooltip.role}
-              </span>
-            </div>
-            <div className="text-[11px] text-gray-200 flex items-center justify-between gap-2">
-              <span className="text-red-200 font-semibold truncate uppercase">{shipTooltip.statusText}</span>
-              <span className="text-gray-400 text-[10px] uppercase whitespace-nowrap">{shipTooltip.flightMode}</span>
-            </div>
-          </div>
+          <ShipTooltipHeader
+            symbol={shipTooltip.symbol}
+            role={shipTooltip.role}
+            statusText={shipTooltip.statusText}
+            flightMode={shipTooltip.flightMode}
+          />
 
           <div className="space-y-3 text-gray-200">
             {shipTooltip.cooldownSeconds !== null && (
@@ -1704,19 +1701,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
               </div>
             )}
 
-            {shipTooltip.routeSummary && (
-              <div>
-                <div className="text-[10px] uppercase text-gray-400">Route</div>
-                <div className="text-xs flex items-center gap-2">
-                  <span>{shipTooltip.routeSummary}</span>
-                  {shipTooltip.etaText && (
-                    <span className="text-[10px] text-red-200 bg-red-500/10 px-1.5 py-0.5 rounded-full">
-                      ETA {shipTooltip.etaText}
-                    </span>
-                  )}
-                </div>
-              </div>
-            )}
+            <ShipRouteInfo routeSummary={shipTooltip.routeSummary} etaText={shipTooltip.etaText} />
 
             <ShipFuelBar
               current={shipTooltip.fuelCurrent}
@@ -1732,30 +1717,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
             />
           </div>
 
-          {shipTooltip.cargoEntries.length > 0 && (
-            <div className="mt-3">
-              <div className="text-[10px] uppercase text-gray-400 mb-1">Cargo Hold</div>
-              <div className="grid grid-cols-2 gap-2">
-                {shipTooltip.cargoEntries.map((item, index) => (
-                  <div
-                    key={`${item.label}-${index}`}
-                    className="flex items-center gap-2 text-xs text-gray-200 bg-white/5 border border-white/10 rounded-md px-2 py-1"
-                  >
-                    <span className="text-base leading-none">{item.icon}</span>
-                    <div className="flex flex-col leading-tight">
-                      <span className="text-[11px]">{item.label}</span>
-                      <span className="text-[10px] text-gray-400">×{item.units}</span>
-                    </div>
-                  </div>
-                ))}
-                {shipTooltip.extraCargoCount > 0 && (
-                  <div className="col-span-2 text-[10px] text-gray-500">
-                    +{shipTooltip.extraCargoCount} more item{shipTooltip.extraCargoCount > 1 ? 's' : ''}
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
+          <ShipCargoList entries={shipTooltip.cargoEntries} extraCount={shipTooltip.extraCargoCount} />
         </div>
       )}
 
