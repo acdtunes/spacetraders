@@ -21,6 +21,7 @@ import { ShipNameLabel } from './ShipNameLabel';
 import { WaypointTraits } from './WaypointTraits';
 import { WaypointMarketplace } from './WaypointMarketplace';
 import { useSelectionOverlay } from '../hooks/useSelectionOverlay';
+import { useWaypointTooltipAnchor } from '../hooks/useWaypointTooltipAnchor';
 import ZoomControls from './ZoomControls';
 import Minimap from './Minimap';
 import type { FlightMode, ShipTrailPoint, Waypoint as WaypointType, TaggedShip, ShipNavStatus } from '../types/spacetraders';
@@ -204,7 +205,6 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
     useStore();
 
   const [hoveredShip, setHoveredShip] = useState<string | null>(null);
-  const [waypointTooltipAnchor, setWaypointTooltipAnchor] = useState<{ symbol: string; worldX: number; worldY: number } | null>(null);
   const [selectedObject, setSelectedObject] = useState<{ type: 'waypoint' | 'ship', symbol: string, x: number, y: number } | null>(null);
   const [viewportBounds, setViewportBounds] = useState({ x: 0, y: 0, width: 0, height: 0, scale: 1 });
   const [animationFrame, setAnimationFrame] = useState(0);
@@ -987,6 +987,12 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
     return { vertical, horizontal, labels };
   }, [waypoints, viewportBounds.scale]);
 
+  const { anchor: waypointTooltipAnchor, showForWaypoint, clearAnchor } = useWaypointTooltipAnchor({
+    selectedObject,
+    waypoints,
+    getWaypointPosition: getWaypointDisplayPosition,
+  });
+
   // Get waypoint tooltip data
   const activeShipTooltipSymbol = hoveredShip ?? (selectedObject?.type === 'ship' ? selectedObject.symbol : null);
   const activeWaypointTooltipSymbol = waypointTooltipAnchor?.symbol ?? null;
@@ -1131,18 +1137,6 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
     },
   });
 
-  useEffect(() => {
-    if (selectedObject?.type === 'waypoint') {
-      const waypoint = waypoints.get(selectedObject.symbol);
-      if (waypoint) {
-        const { x, y } = getWaypointDisplayPosition(waypoint);
-        setWaypointTooltipAnchor({ symbol: waypoint.symbol, worldX: x, worldY: y });
-      }
-    } else {
-      setWaypointTooltipAnchor(null);
-    }
-  }, [selectedObject, waypoints, getWaypointDisplayPosition]);
-
   const waypointTooltip = activeWaypointTooltipSymbol ? (() => {
     const waypoint = waypoints.get(activeWaypointTooltipSymbol);
     if (!waypoint) return null;
@@ -1196,7 +1190,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
           onMouseLeave={() => {
             setHoveredShip(null);
             if (!selectedObject || selectedObject.type !== 'waypoint') {
-              setWaypointTooltipAnchor(null);
+              clearAnchor();
             }
           }}
           onDragMove={updateViewportBounds}
@@ -1267,7 +1261,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
                     setSelectedObject({ type: 'waypoint', symbol: waypoint.symbol, x: waypoint.x, y: waypoint.y });
                     setSelectedWaypoint(waypoint);
                     setSelectedShip(null);
-                    setWaypointTooltipAnchor({ symbol: waypoint.symbol, worldX: x, worldY: y });
+                    showForWaypoint(waypoint);
                   }}
                 />
 
