@@ -7,7 +7,7 @@ import { ShipCargoBar } from './ShipCargoBar';
 import { ShipCargoList } from './ShipCargoList';
 import { getFuelBarColor } from '../utils/fuel';
 
-interface ShipTooltipOverlayProps {
+export interface ShipTooltipOverlayProps {
   tooltip: ShipTooltipData;
   position: { left: number; top: number };
 }

@@ -1,4 +1,4 @@
-import { Suspense, lazy, useEffect, useRef, useState, forwardRef, useImperativeHandle, useMemo, useCallback } from 'react';
+import { useEffect, useRef, useState, forwardRef, useImperativeHandle, useMemo, useCallback } from 'react';
 import { Stage, Layer, Group, Circle, Text, Line } from 'react-konva';
 import Konva from 'konva';
 import { useStore } from '../store/useStore';
@@ -16,20 +16,11 @@ import { useGridLines } from '../hooks/useGridLines';
 import { useShipTrailSampler } from '../hooks/useShipTrailSampler';
 import { useSpaceMapOverlays, type SelectedMapObject } from '../hooks/useSpaceMapOverlays';
 import { useKonvaStage } from '../hooks/useKonvaStage';
+import { SelectionOverlayLazy, ShipTooltipOverlayLazy, WaypointTooltipOverlayLazy } from './SpaceMapLazyOverlays';
 import ZoomControls from './ZoomControls';
 import Minimap from './Minimap';
 import type { Waypoint as WaypointType, TaggedShip, ShipNavStatus } from '../types/spacetraders';
 import type { RouteVectorsProps } from './RouteVectors';
-
-const LazySelectionOverlay = lazy(() =>
-  import('./SelectionOverlay').then((module) => ({ default: module.SelectionOverlay }))
-);
-const LazyShipTooltipOverlay = lazy(() =>
-  import('./ShipTooltipOverlay').then((module) => ({ default: module.ShipTooltipOverlay }))
-);
-const LazyWaypointTooltipOverlay = lazy(() =>
-  import('./WaypointTooltipOverlay').then((module) => ({ default: module.WaypointTooltipOverlay }))
-);
 
 type RouteVectorsComponentType = (props: RouteVectorsProps) => JSX.Element | null;
 
@@ -1020,22 +1011,14 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
       </Stage>
       )}
 
-      {selectionOverlay && (
-        <Suspense fallback={null}>
-          <LazySelectionOverlay overlay={selectionOverlay} />
-        </Suspense>
-      )}
+      {selectionOverlay && <SelectionOverlayLazy overlay={selectionOverlay} />}
 
       {shipTooltip && shipTooltipPosition && (
-        <Suspense fallback={null}>
-          <LazyShipTooltipOverlay tooltip={shipTooltip} position={shipTooltipPosition} />
-        </Suspense>
+        <ShipTooltipOverlayLazy tooltip={shipTooltip} position={shipTooltipPosition} />
       )}
 
       {waypointTooltip && waypointTooltipPosition && (
-        <Suspense fallback={null}>
-          <LazyWaypointTooltipOverlay tooltip={waypointTooltip} position={waypointTooltipPosition} />
-        </Suspense>
+        <WaypointTooltipOverlayLazy tooltip={waypointTooltip} position={waypointTooltipPosition} />
       )}
 
       {!currentSystem && (
