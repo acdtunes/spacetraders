@@ -15,7 +15,7 @@ const Legend = lazy(() => import('./components/Legend'));
 const KeyboardShortcuts = lazy(() => import('./components/KeyboardShortcuts'));
 
 function App() {
-  const { agents, setAgents, viewMode, setViewMode } = useStore();
+  const { agents, setAgents, viewMode, setViewMode, currentSystem } = useStore();
   const spaceMapRef = useRef<SpaceMapRef>(null);
   const [isRightSidebarOpen, setIsRightSidebarOpen] = useState(true);
   const [rightSidebarTab, setRightSidebarTab] = useState<'ships' | 'details' | 'search'>('ships');
@@ -124,9 +124,21 @@ function App() {
           {/* Map */}
           <main className="w-full h-full">
             {viewMode === 'system' ? (
-              <Suspense fallback={<div className="w-full h-full flex items-center justify-center text-gray-500">Loading map…</div>}>
-                <SpaceMap ref={spaceMapRef} />
-              </Suspense>
+              currentSystem ? (
+                <Suspense fallback={<div className="w-full h-full flex items-center justify-center text-gray-500">Loading map…</div>}>
+                  <SpaceMap ref={spaceMapRef} />
+                </Suspense>
+              ) : (
+                <div className="w-full h-full flex flex-col items-center justify-center text-gray-400 gap-3">
+                  <p className="text-sm">Select a system to load the map.</p>
+                  <button
+                    onClick={() => setViewMode('galaxy')}
+                    className="px-4 py-2 bg-gray-800 border border-gray-600 rounded text-sm hover:bg-gray-700"
+                  >
+                    Browse Galaxy
+                  </button>
+                </div>
+              )
             ) : (
               <Suspense fallback={<div className="w-full h-full flex items-center justify-center text-gray-500">Loading galaxy…</div>}>
                 <GalaxyView />

@@ -10,8 +10,8 @@ const createWaypoint = (overrides: Partial<WaypointType>): WaypointType => ({
   y: 0,
   orbitals: [],
   traits: [],
-  orbit: null,
   chart: null,
+  isUnderConstruction: false,
   ...overrides,
 });
 
