@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, forwardRef, useImperativeHandle, useMemo, useCallback } from 'react';
-import { Stage, Layer, Shape, Group, Circle, Text, Line, Label, Tag } from 'react-konva';
+import { Stage, Layer, Shape, Group, Circle, Text, Line } from 'react-konva';
 import Konva from 'konva';
 import { useStore } from '../store/useStore';
 import { getWaypoints } from '../services/api';
@@ -17,6 +17,7 @@ import { ShipCargoBar } from './ShipCargoBar';
 import { ShipTooltipHeader } from './ShipTooltipHeader';
 import { ShipRouteInfo } from './ShipRouteInfo';
 import { ShipCargoList } from './ShipCargoList';
+import { ShipNameLabel } from './ShipNameLabel';
 import { WaypointTraits } from './WaypointTraits';
 import { WaypointMarketplace } from './WaypointMarketplace';
 import { useSelectionOverlay } from '../hooks/useSelectionOverlay';
@@ -90,12 +91,14 @@ const TRAIL_VISUAL_CONFIG: Record<FlightMode, TrailVisualSettings> = {
 
 const TRAIL_SAMPLE_RATE = 4;
 
-const SHIP_LABEL_FONT_SIZE = 10;
-const SHIP_LABEL_PADDING_X = 6;
-const SHIP_LABEL_PADDING_Y = 3;
-const SHIP_LABEL_MIN_WIDTH = 56;
-const SHIP_LABEL_SCREEN_OFFSET_X = 16;
-const SHIP_LABEL_SCREEN_OFFSET_Y = 14;
+import {
+  SHIP_LABEL_FONT_SIZE,
+  SHIP_LABEL_MIN_WIDTH,
+  SHIP_LABEL_PADDING_X,
+  SHIP_LABEL_PADDING_Y,
+  SHIP_LABEL_SCREEN_OFFSET_X,
+  SHIP_LABEL_SCREEN_OFFSET_Y,
+} from '../constants/shipLabel';
 
 const SHIP_TOOLTIP_OFFSET_X = 12;
 const SHIP_TOOLTIP_OFFSET_Y = 12;
@@ -1508,36 +1511,15 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
                   <ShipSprite assetPath={shipAssetPath} size={SHIP_SPRITE_SIZE} />
                 </Group>
 
-               {showShipNames && (
-                 <Group
-                   listening={false}
-                   x={labelOffsetX}
-                   y={labelOffsetY}
-                 >
-                   <Group scale={{ x: labelScale, y: labelScale }} listening={false}>
-                     <Label>
-                       <Tag
-                          width={labelWidth + 12}
-                          height={labelHeight}
-                          fill="rgba(0, 0, 0, 0.82)"
-                          stroke="#ff4d4f"
-                          strokeWidth={1}
-                          cornerRadius={3}
-                        />
-                        <Text
-                          x={SHIP_LABEL_PADDING_X}
-                          y={SHIP_LABEL_PADDING_Y / 1.5}
-                          width={labelWidth + 12 - SHIP_LABEL_PADDING_X * 2}
-                          height={labelHeight - SHIP_LABEL_PADDING_Y}
-                          fontSize={SHIP_LABEL_FONT_SIZE}
-                          fontStyle="bold"
-                          fill="#ffd7d7"
-                          align="center"
-                          text={labelText}
-                        />
-                      </Label>
-                    </Group>
-                  </Group>
+                {showShipNames && (
+                  <ShipNameLabel
+                    labelText={labelText}
+                    labelWidth={labelWidth}
+                    labelHeight={labelHeight}
+                    labelScale={labelScale}
+                    offsetX={labelOffsetX}
+                    offsetY={labelOffsetY}
+                  />
                 )}
               </Group>
             );
