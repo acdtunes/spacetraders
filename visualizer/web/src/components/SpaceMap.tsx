@@ -193,14 +193,17 @@ const WaypointSprite = ({
   x,
   y,
   radius,
+  scale,
 }: {
   assetPath: string | null;
   x: number;
   y: number;
   radius: number;
+  scale: number;
 }) => {
   const image = useCachedImage(assetPath);
-  const size = Math.max(radius * 2, 8);
+  const minSize = 3 / Math.max(scale, 0.0001);
+  const size = Math.max(radius * 2, minSize);
   const half = size / 2;
 
   if (image && image.width > 0 && image.height > 0) {
@@ -1351,6 +1354,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
                   x={x}
                   y={y}
                   radius={radius}
+                  scale={currentScale}
                 />
 
                 {hasMarketplace && showMapOverlays && (
