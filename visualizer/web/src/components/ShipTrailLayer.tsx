@@ -2,21 +2,14 @@ import { memo } from 'react';
 import { Shape } from 'react-konva';
 import type { TaggedShip, ShipTrailPoint, FlightMode } from '../types/spacetraders';
 import { Ship } from '../domain/ship';
-
-type RGB = { r: number; g: number; b: number };
-
-type TrailVisualSettings = {
-  maxAgeMs: number;
-  baseWidth: number;
-  baseAlpha: number;
-  tailAlpha: number;
-  glowBlur: number;
-  glowAlpha: number;
-  particleDensity: number;
-  particleSize: [number, number];
-  particleAlpha: number;
-  colorBoost: number;
-};
+import {
+  filterActiveTrail,
+  hexToRgb,
+  boostColor,
+  rgba,
+  computeParticleCount,
+  type TrailVisualSettings,
+} from './shipTrailUtils';
 
 const TRAIL_VISUAL_CONFIG: Record<FlightMode, TrailVisualSettings> = {
   DRIFT: {
@@ -69,35 +62,6 @@ const TRAIL_VISUAL_CONFIG: Record<FlightMode, TrailVisualSettings> = {
   },
 };
 
-const hexToRgb = (hex: string): RGB => {
-  const normalized = hex.replace('#', '');
-  const parsed = normalized.length === 3
-    ? normalized
-        .split('')
-        .map((char) => char + char)
-        .join('')
-    : normalized;
-
-  const value = Number.parseInt(parsed, 16);
-  if (Number.isNaN(value)) {
-    return { r: 255, g: 107, b: 107 };
-  }
-
-  return {
-    r: (value >> 16) & 255,
-    g: (value >> 8) & 255,
-    b: value & 255,
-  };
-};
-
-const boostColor = (rgb: RGB, amount: number): RGB => ({
-  r: Math.min(255, rgb.r + (255 - rgb.r) * amount),
-  g: Math.min(255, rgb.g + (255 - rgb.g) * amount),
-  b: Math.min(255, rgb.b + (255 - rgb.b) * amount),
-});
-
-const rgba = (rgb: RGB, alpha: number): string => `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${alpha})`;
-
 export interface ShipTrailLayerProps {
   ships: TaggedShip[];
   trails: Map<string, ShipTrailPoint[]>;
@@ -119,10 +83,7 @@ export const ShipTrailLayer = memo(function ShipTrailLayer({
           return null;
         }
 
-        const activeTrail = trail.filter((point) => {
-          const config = TRAIL_VISUAL_CONFIG[point.flightMode];
-          return config.maxAgeMs > 0 && now - point.timestamp <= config.maxAgeMs;
-        });
+        const activeTrail = filterActiveTrail(trail, now, TRAIL_VISUAL_CONFIG);
 
         if (activeTrail.length < 2) {
           return null;
@@ -166,9 +127,8 @@ export const ShipTrailLayer = memo(function ShipTrailLayer({
 
               ctx.shadowBlur = 0;
 
-              if (config.particleDensity > 0 && ship.nav.status === 'IN_TRANSIT') {
-                const segmentCount = activeTrail.length - 1;
-                const particleCount = Math.max(1, Math.floor(segmentCount * config.particleDensity));
+              if (ship.nav.status === 'IN_TRANSIT') {
+                const particleCount = computeParticleCount(activeTrail, config);
 
                 for (let p = 0; p < particleCount; p++) {
                   const index = Math.max(1, segmentCount - Math.floor((p / particleCount) * segmentCount));
@@ -197,4 +157,3 @@ export const ShipTrailLayer = memo(function ShipTrailLayer({
     </>
   );
 });
-
