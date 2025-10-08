@@ -655,21 +655,28 @@ class ResourceAcquisitionStrategy:
     ) -> bool:
         self._log_missing_market()
 
-        for retry_count in range(self.max_retries):
+        breaker = CircuitBreaker(limit=self.max_retries)
+
+        while not breaker.tripped():
+            attempt = breaker.failures + 1
             self.print_fn(
-                f"\n  ⏳ Waiting {self.retry_interval_seconds // 60} minutes before retry {retry_count + 1}/{self.max_retries}..."
+                f"\n  ⏳ Waiting {self.retry_interval_seconds // 60} minutes before retry {attempt}/{self.max_retries}..."
             )
             self.sleep_fn(self.retry_interval_seconds)
-            self.print_fn(f"  🔍 Retry {retry_count + 1}: Checking market database...")
+            self.print_fn(f"  🔍 Retry {attempt}: Checking market database...")
 
             market_row = self._find_market()
             if market_row:
                 self.print_fn(f"  ✅ SUCCESS! Market discovered: {market_row[0]}")
                 update_preferred_market(market_row[0])
                 self._announce_market(market_row, still_needed)
+                breaker.record_success()
                 return True
 
-            self.print_fn(f"  ⚠️  Still not available (retry {retry_count + 1}/{self.max_retries})")
+            failure_count = breaker.record_failure()
+            self.print_fn(
+                f"  ⚠️  Still not available (retry {failure_count}/{self.max_retries})"
+            )
 
         self._log_timeout()
         return False
