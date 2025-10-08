@@ -30,6 +30,13 @@ class SubtourAssignment:
     markets: List[str]
     tour_time_seconds: float
     daemon_id: str
+@dataclass
+class DaemonHealth:
+    """Represents the current running status of a scout daemon."""
+
+    ship: str
+    daemon_id: str
+    is_running: bool
 
 
 class ScoutCoordinator:
@@ -673,30 +680,45 @@ class ScoutCoordinator:
         check_interval = 30  # Check every 30 seconds
 
         while self.running:
-            # Check for reconfiguration request
-            if self._check_reconfigure_signal():
-                self._handle_reconfiguration()
-
-            # Monitor each scout daemon
-            for ship, assignment in list(self.assignments.items()):
-                daemon_id = assignment.daemon_id
-
-                # Check if daemon is running
-                if not self.daemon_manager.is_running(daemon_id):
-                    print(f"⚠️  Daemon {daemon_id} stopped, restarting...")
-
-                    # Restart daemon
-                    new_daemon_id = self.start_scout_daemon(ship, assignment.markets)
-
-                    if new_daemon_id:
-                        assignment.daemon_id = new_daemon_id
-                    else:
-                        print(f"❌ Failed to restart {daemon_id}")
-
-            # Sleep
-            time.sleep(check_interval)
+            self._monitor_cycle(check_interval)
 
         print("\n🛑 Monitoring stopped")
+
+    def _monitor_cycle(self, check_interval: int) -> None:
+        """Perform a single monitoring cycle."""
+        if self._check_reconfigure_signal():
+            self._handle_reconfiguration()
+            return
+
+        for health in self._collect_daemon_health():
+            if not health.is_running:
+                self._restart_daemon_for(health.ship, health.daemon_id)
+
+        time.sleep(check_interval)
+
+    def _collect_daemon_health(self) -> List[DaemonHealth]:
+        """Gather the running status for all tracked scout daemons."""
+        health: List[DaemonHealth] = []
+        for ship, assignment in list(self.assignments.items()):
+            daemon_id = assignment.daemon_id
+            is_running = self.daemon_manager.is_running(daemon_id)
+            health.append(DaemonHealth(ship=ship, daemon_id=daemon_id, is_running=is_running))
+        return health
+
+    def _restart_daemon_for(self, ship: str, daemon_id: str) -> None:
+        """Attempt to restart the daemon associated with the given ship."""
+        print(f"⚠️  Daemon {daemon_id} stopped, restarting...")
+
+        assignment = self.assignments.get(ship)
+        if not assignment:
+            print(f"⚠️  No assignment found for ship {ship}; cannot restart daemon")
+            return
+
+        new_daemon_id = self.start_scout_daemon(ship, assignment.markets)
+        if new_daemon_id:
+            assignment.daemon_id = new_daemon_id
+        else:
+            print(f"❌ Failed to restart {daemon_id}")
 
     def _check_reconfigure_signal(self) -> bool:
         """Check if reconfiguration was requested"""
