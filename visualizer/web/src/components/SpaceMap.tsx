@@ -1187,8 +1187,9 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
     } else if (selectedObject.type === 'waypoint') {
       const waypoint = waypoints.get(selectedObject.symbol);
       if (!waypoint) return null;
-      worldX = waypoint.x;
-      worldY = waypoint.y;
+      const displayPosition = getWaypointDisplayPosition(waypoint);
+      worldX = displayPosition.x;
+      worldY = displayPosition.y;
     }
 
     const screenPos = projectToScreen({ x: worldX, y: worldY });
@@ -1200,7 +1201,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
       top: screenPos.y,
       size,
     };
-  }, [selectedObject, ships, waypoints, animationFrame, projectToScreen, viewportBounds]);
+  }, [selectedObject, ships, waypoints, animationFrame, projectToScreen, viewportBounds, getWaypointDisplayPosition]);
 
   useEffect(() => {
     if (selectedObject?.type === 'waypoint') {
