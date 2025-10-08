@@ -98,6 +98,7 @@ const WAYPOINT_ASSET_VARIANTS: Record<string, string[]> = {
   asteroidBase: ['waypoint-asteroid-base-1.png', 'waypoint-asteroid-base-2.png'],
   engineeredAsteroid: ['waypoint-engineered-asteroid-2.png'],
   orbitalStation: ['waypoint-orbital-station-1.png'],
+  frozenMoon: ['waypoint-frozen-moon-1.png', 'waypoint-frozen-moon-2.png'],
   planetTemperate: ['waypoint-planet-temperate-1.png', 'waypoint-planet-temperate-2.png'],
   planetOcean: ['waypoint-planet-ocean-1.png', 'waypoint-planet-ocean-2.png'],
   planetFrozen: ['waypoint-planet-frozen-1.png', 'waypoint-planet-frozen-2.png'],
@@ -920,7 +921,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
     } else if (hasTrait('TEMPERATE', 'TROPICAL', 'FOREST')) {
       variantKey = 'planetTemperate';
     } else if (hasTrait('FROZEN', 'ICE')) {
-      variantKey = 'planetFrozen';
+      variantKey = waypoint.type === 'MOON' ? 'frozenMoon' : 'planetFrozen';
     } else if (hasTrait('VOLCANIC', 'INFERNO')) {
       variantKey = waypoint.type === 'MOON' ? 'volcanicMoon' : 'planetVolcanic';
     } else if (hasTrait('RADIOACTIVE', 'NUCLEAR')) {
