@@ -6,7 +6,6 @@ import { getWaypoints } from '../services/api';
 import { getWaypointOpportunities, formatOpportunity } from '../domain/market';
 import { Ship, Waypoint, ShipQueries, WaypointQueries, ViewportBounds } from '../domain';
 import { VIEWPORT_CONSTANTS } from '../constants/viewport';
-import { getCargoIcon, getCargoLabel } from '../utils/cargo';
 import { getFuelBarColor } from '../utils/fuel';
 import { hashString } from '../utils/hash';
 import { RouteVectors } from './RouteVectors';
@@ -22,6 +21,7 @@ import { WaypointTraits } from './WaypointTraits';
 import { WaypointMarketplace } from './WaypointMarketplace';
 import { useSelectionOverlay } from '../hooks/useSelectionOverlay';
 import { useWaypointTooltipAnchor } from '../hooks/useWaypointTooltipAnchor';
+import { useShipTooltip } from '../hooks/useShipTooltip';
 import ZoomControls from './ZoomControls';
 import Minimap from './Minimap';
 import type { FlightMode, ShipTrailPoint, Waypoint as WaypointType, TaggedShip, ShipNavStatus } from '../types/spacetraders';
@@ -1032,73 +1032,10 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
     });
   }, []);
 
-  const shipTooltip = activeShipTooltipSymbol ? (() => {
-    const ship = ships.find((s) => s.symbol === activeShipTooltipSymbol);
-    if (!ship) return null;
-
-    const statusText = ship.nav.status === 'DOCKED'
-      ? `Docked at ${ship.nav.waypointSymbol}`
-      : ship.nav.status.replace(/_/g, ' ');
-    const flightMode = ship.nav.flightMode;
-    const location = ship.nav.waypointSymbol.split('-').pop() ?? ship.nav.waypointSymbol;
-
-    let routeSummary: string | null = null;
-    let etaText: string | null = null;
-    if (ship.nav.status === 'IN_TRANSIT' && ship.nav.route) {
-      const origin = ship.nav.route.origin.symbol.split('-').pop() ?? ship.nav.route.origin.symbol;
-      const destination = ship.nav.route.destination.symbol.split('-').pop() ?? ship.nav.route.destination.symbol;
-      routeSummary = `${origin}→${destination}`;
-
-      const arrivalTime = new Date(ship.nav.route.arrival).getTime();
-      const now = Date.now();
-      const remainingMs = Math.max(0, arrivalTime - now);
-      const totalSeconds = Math.floor(remainingMs / 1000);
-      const hours = Math.floor(totalSeconds / 3600);
-      const minutes = Math.floor((totalSeconds % 3600) / 60);
-      const seconds = totalSeconds % 60;
-      const pad = (value: number) => value.toString().padStart(2, '0');
-      etaText = `${pad(hours)}:${pad(minutes)}:${pad(seconds)}`;
-    }
-
-    const fuelPercent = ship.fuel.capacity > 0
-      ? Math.round((ship.fuel.current / ship.fuel.capacity) * 100)
-      : 0;
-
-    const cargoPercent = ship.cargo.capacity > 0
-      ? Math.round((ship.cargo.units / ship.cargo.capacity) * 100)
-      : 0;
-
-    const cargoEntries = ship.cargo.inventory.slice(0, 4).map((item) => ({
-      icon: getCargoIcon(item.symbol),
-      label: getCargoLabel(item.symbol),
-      units: item.units,
-    }));
-    const extraCargoCount = Math.max(0, ship.cargo.inventory.length - cargoEntries.length);
-
-    const cooldownSeconds = ship.cooldown && ship.cooldown.remainingSeconds > 0
-      ? ship.cooldown.remainingSeconds
-      : null;
-
-    return {
-      symbol: ship.symbol,
-      registrationName: ship.registration.name,
-      role: ship.registration.role,
-      statusText,
-      flightMode,
-      location,
-      routeSummary,
-      etaText,
-      fuelCurrent: ship.fuel.current,
-      fuelCapacity: ship.fuel.capacity,
-      fuelPercent,
-      cargoUnits: ship.cargo.units,
-      cargoCapacity: ship.cargo.capacity,
-      cargoPercent,
-      cargoEntries,
-      extraCargoCount,
-      cooldownSeconds,
-    };
-  })() : null;
+  const shipTooltip = useShipTooltip({
+    activeSymbol: activeShipTooltipSymbol,
+    ships,
+  });
 
   const shipTooltipPosition = useMemo(() => {
     if (!activeShipTooltipSymbol) return null;
