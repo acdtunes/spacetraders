@@ -1684,7 +1684,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
               </span>
             </div>
             <div className="text-[11px] text-gray-200 flex items-center justify-between gap-2">
-              <span className="text-red-200 font-semibold truncate">{shipTooltip.statusText}</span>
+              <span className="text-red-200 font-semibold truncate uppercase">{shipTooltip.statusText}</span>
               <span className="text-gray-400 text-[10px] uppercase whitespace-nowrap">{shipTooltip.flightMode}</span>
             </div>
           </div>
