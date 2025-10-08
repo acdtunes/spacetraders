@@ -24,10 +24,18 @@ export const Waypoint = {
     }
 
     if (waypoint.type === 'MOON') {
-      // Moons vary in size
+      // Moons vary in size but remain smaller than planets
       const hash = (waypoint.x * 73856093) ^ (waypoint.y * 19349663);
-      const sizeVariation = (Math.abs(hash) % 3); // 0 to 2
-      return 1 + sizeVariation; // 1 to 3
+      const sizeVariation = Math.abs(hash) % 3; // 0 to 2
+      return (0.5 + sizeVariation * 0.5) / 3; // ~0.17 to 0.5
+    }
+
+    if (waypoint.type === 'ORBITAL_STATION') {
+      return 2.5;
+    }
+
+    if (waypoint.type === 'ENGINEERED_ASTEROID') {
+      return 0.75;
     }
 
     if (waypoint.type.includes('STATION')) {
