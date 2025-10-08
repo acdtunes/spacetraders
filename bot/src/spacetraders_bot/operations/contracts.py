@@ -6,7 +6,8 @@ Contract operations: contract fulfillment and negotiation
 import logging
 import time
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from typing import Callable, Dict, List, Optional, Tuple
 
 from spacetraders_bot.core.database import Database
 from spacetraders_bot.core.ship_controller import ShipController
@@ -109,92 +110,6 @@ def contract_operation(
             tags=['contract', 'performance']
         )
 
-    def ensure_market_availability(still_needed: int, cargo_available: int, cargo_capacity: int) -> bool:
-        print(f"  Cargo space available: {cargo_available}/{cargo_capacity}")
-
-        if args.buy_from:
-            print(f"  ✅ Using specified market: {args.buy_from}")
-            market_row = _fetch_market_listing(local_db, delivery['tradeSymbol'], args.buy_from)
-
-            if market_row:
-                total_cost = market_row[1] * still_needed
-                print(f"     Price: {market_row[1]} cr/unit ({market_row[2]} supply)")
-                print(f"     Total cost: {format_credits(total_cost)} for {still_needed} units")
-            else:
-                print(
-                    f"  ⚠️  Warning: Market {args.buy_from} not found in database or doesn't sell {delivery['tradeSymbol']}"
-                )
-                print("  Will attempt purchase anyway (market may not be scouted yet)")
-            return True
-
-        print(f"\n  🔍 Searching for markets selling {delivery['tradeSymbol']}...")
-        market_row = _find_lowest_price_market(local_db, delivery['tradeSymbol'], system)
-
-        if market_row:
-            args.buy_from = market_row[0]
-            total_cost = market_row[1] * still_needed
-            print(f"  ✅ Found market: {args.buy_from}")
-            print(f"     Price: {market_row[1]} cr/unit ({market_row[2]} supply)")
-            print(f"     Total cost: {format_credits(total_cost)} for {still_needed} units")
-            return True
-
-        print(f"  ❌ RESOURCE NOT AVAILABLE")
-        print(f"  {delivery['tradeSymbol']} is not available in any discovered markets in {system}")
-        print(f"\n  📋 RECOMMENDED ACTIONS:")
-        print(f"     1. Deploy scout coordinator to system {system}")
-        print(f"     2. Wait for scouts to discover markets selling {delivery['tradeSymbol']}")
-        print(f"     3. Re-run contract with --buy-from <market> once discovered")
-        print(f"\n  🔄 Contract operation will wait and periodically retry...")
-
-        log_error(
-            "Resource not available in markets",
-            f"{delivery['tradeSymbol']} not found in any discovered markets",
-            impact={'Resource': delivery['tradeSymbol'], 'System': system, 'Required': still_needed},
-            resolution="Deploy scout coordinator to discover markets, then retry",
-            escalate=True,
-            tags=['contract', 'market_missing', delivery['tradeSymbol'].lower()]
-        )
-
-        max_retries = 12
-        retry_interval = 300
-        for retry_count in range(max_retries):
-            print(
-                f"\n  ⏳ Waiting {retry_interval // 60} minutes before retry {retry_count + 1}/{max_retries}..."
-            )
-            sleep_fn(retry_interval)
-            print(f"  🔍 Retry {retry_count + 1}: Checking market database...")
-
-            market_row = _find_lowest_price_market(local_db, delivery['tradeSymbol'], system)
-            if market_row:
-                print(f"  ✅ SUCCESS! Market discovered: {market_row[0]}")
-                args.buy_from = market_row[0]
-                total_cost = market_row[1] * still_needed
-                print(f"     Price: {market_row[1]} cr/unit ({market_row[2]} supply)")
-                print(f"     Total cost: {format_credits(total_cost)} for {still_needed} units")
-                return True
-
-            print(f"  ⚠️  Still not available (retry {retry_count + 1}/{max_retries})")
-
-        print(
-            f"\n  ❌ OPERATION FAILED: Resource never became available after {max_retries * retry_interval // 60} minutes"
-        )
-        print("  Manual intervention required - Flag Captain must deploy scout coordinator")
-        log_error(
-            "Contract operation timeout",
-            f"Resource {delivery['tradeSymbol']} not discovered after waiting {max_retries * retry_interval // 60} minutes",
-            impact={
-                'Resource': delivery['tradeSymbol'],
-                'System': system,
-                'Waited': f"{max_retries * retry_interval // 60} min",
-            },
-            resolution="Flag Captain must manually deploy scouts or source resource elsewhere",
-            escalate=True,
-            tags=['contract', 'timeout', delivery['tradeSymbol'].lower()]
-        )
-        return False
-
-
-
     def _purchase_initial_cargo(
         ship,
         navigator,
@@ -275,7 +190,22 @@ def contract_operation(
         if cargo_available <= 0:
             print("  ⚠️  No cargo space available to acquire additional goods")
 
-        if not ensure_market_availability(still_need, cargo_available, cargo_capacity):
+        acquisition_strategy = ResourceAcquisitionStrategy(
+            trade_symbol=delivery['tradeSymbol'],
+            system=system,
+            database=local_db,
+            log_error=log_error,
+            sleep_fn=sleep_fn,
+            print_fn=print,
+        )
+
+        if not acquisition_strategy.ensure_availability(
+            still_needed=still_need,
+            cargo_available=cargo_available,
+            cargo_capacity=cargo_capacity,
+            preferred_market=getattr(args, 'buy_from', None),
+            update_preferred_market=lambda new_market: setattr(args, 'buy_from', new_market),
+        ):
             return False
 
         quantity = min(still_need, cargo_available)
@@ -655,3 +585,124 @@ def _find_lowest_price_market(db: Database, trade_symbol: str, system_prefix: st
             (trade_symbol, pattern),
         )
         return cursor.fetchone()
+
+@dataclass
+class ResourceAcquisitionStrategy:
+    """Encapsulates market lookup and waiting logic for contract resources."""
+
+    trade_symbol: str
+    system: str
+    database: Database
+    log_error: Callable[..., None]
+    sleep_fn: Callable[[int], None]
+    print_fn: Callable[[str], None]
+    max_retries: int = 12
+    retry_interval_seconds: int = 300
+
+    def ensure_availability(
+        self,
+        *,
+        still_needed: int,
+        cargo_available: int,
+        cargo_capacity: int,
+        preferred_market: Optional[str],
+        update_preferred_market: Callable[[str], None],
+    ) -> bool:
+        self.print_fn(f"  Cargo space available: {cargo_available}/{cargo_capacity}")
+
+        if preferred_market:
+            return self._verify_preferred_market(still_needed, preferred_market)
+
+        market_row = self._find_market()
+        if market_row:
+            update_preferred_market(market_row[0])
+            self._announce_market(market_row, still_needed)
+            return True
+
+        return self._wait_for_market(still_needed, update_preferred_market)
+
+    def _verify_preferred_market(self, still_needed: int, market: str) -> bool:
+        self.print_fn(f"  ✅ Using specified market: {market}")
+        market_row = _fetch_market_listing(self.database, self.trade_symbol, market)
+
+        if market_row:
+            self._announce_market(market_row, still_needed)
+            return True
+
+        self.print_fn(
+            f"  ⚠️  Warning: Market {market} not found in database or doesn't sell {self.trade_symbol}"
+        )
+        self.print_fn("  Will attempt purchase anyway (market may not be scouted yet)")
+        return True
+
+    def _find_market(self) -> Optional[Tuple[str, int, str]]:
+        self.print_fn(f"\n  🔍 Searching for markets selling {self.trade_symbol}...")
+        return _find_lowest_price_market(self.database, self.trade_symbol, self.system)
+
+    def _wait_for_market(
+        self,
+        still_needed: int,
+        update_preferred_market: Callable[[str], None],
+    ) -> bool:
+        self._log_missing_market()
+
+        for retry_count in range(self.max_retries):
+            self.print_fn(
+                f"\n  ⏳ Waiting {self.retry_interval_seconds // 60} minutes before retry {retry_count + 1}/{self.max_retries}..."
+            )
+            self.sleep_fn(self.retry_interval_seconds)
+            self.print_fn(f"  🔍 Retry {retry_count + 1}: Checking market database...")
+
+            market_row = self._find_market()
+            if market_row:
+                self.print_fn(f"  ✅ SUCCESS! Market discovered: {market_row[0]}")
+                update_preferred_market(market_row[0])
+                self._announce_market(market_row, still_needed)
+                return True
+
+            self.print_fn(f"  ⚠️  Still not available (retry {retry_count + 1}/{self.max_retries})")
+
+        self._log_timeout()
+        return False
+
+    def _announce_market(self, market_row: Tuple[str, int, str], units: int) -> None:
+        market, price, supply = market_row
+        total_cost = price * units
+        self.print_fn(f"  ✅ Found market: {market}")
+        self.print_fn(f"     Price: {price} cr/unit ({supply} supply)")
+        self.print_fn(f"     Total cost: {format_credits(total_cost)} for {units} units")
+
+    def _log_missing_market(self) -> None:
+        self.print_fn(f"  ❌ RESOURCE NOT AVAILABLE")
+        self.print_fn(
+            f"  {self.trade_symbol} is not available in any discovered markets in {self.system}"
+        )
+        self.print_fn(f"\n  📋 RECOMMENDED ACTIONS:")
+        self.print_fn(f"     1. Deploy scout coordinator to system {self.system}")
+        self.print_fn(f"     2. Wait for scouts to discover markets selling {self.trade_symbol}")
+        self.print_fn(f"     3. Re-run contract with --buy-from <market> once discovered")
+        self.print_fn(f"\n  🔄 Contract operation will wait and periodically retry...")
+
+        self.log_error(
+            "Resource not available in markets",
+            f"{self.trade_symbol} not found in any discovered markets",
+            impact={'Resource': self.trade_symbol, 'System': self.system},
+            resolution="Deploy scout coordinator to discover markets, then retry",
+            escalate=True,
+            tags=['contract', 'market_missing', self.trade_symbol.lower()],
+        )
+
+    def _log_timeout(self) -> None:
+        minutes_waited = (self.max_retries * self.retry_interval_seconds) // 60
+        self.print_fn(
+            f"\n  ❌ OPERATION FAILED: Resource never became available after {minutes_waited} minutes"
+        )
+        self.print_fn("  Manual intervention required - Flag Captain must deploy scout coordinator")
+        self.log_error(
+            "Contract operation timeout",
+            f"Resource {self.trade_symbol} not discovered after waiting {minutes_waited} minutes",
+            impact={'Resource': self.trade_symbol, 'System': self.system, 'Waited': f"{minutes_waited} min"},
+            resolution="Flag Captain must manually deploy scouts or source resource elsewhere",
+            escalate=True,
+            tags=['contract', 'timeout', self.trade_symbol.lower()],
+        )
