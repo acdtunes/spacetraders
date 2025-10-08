@@ -10,6 +10,7 @@ import { getCargoIcon, getCargoLabel } from '../utils/cargo';
 import { getFuelBarColor } from '../utils/fuel';
 import { hashString } from '../utils/hash';
 import { RouteVectors } from './RouteVectors';
+import { useCachedImage } from '../hooks/useCachedImage';
 import ZoomControls from './ZoomControls';
 import Minimap from './Minimap';
 import type { FlightMode, ShipTrailPoint, Waypoint as WaypointType, TaggedShip, ShipNavStatus } from '../types/spacetraders';
@@ -140,49 +141,6 @@ const MINING_WAYPOINT_TYPES = new Set<WaypointType['type']>([
   'ENGINEERED_ASTEROID',
   'ASTEROID_BASE',
 ]);
-
-const imageCache = new Map<string, HTMLImageElement | null>();
-
-const useCachedImage = (src: string | null): HTMLImageElement | null => {
-  const [image, setImage] = useState<HTMLImageElement | null>(() => {
-    if (!src || typeof window === 'undefined') return null;
-    const cached = imageCache.get(src);
-    return cached ?? null;
-  });
-
-  useEffect(() => {
-    if (!src || typeof window === 'undefined') {
-      setImage(null);
-      return;
-    }
-
-    const cached = imageCache.get(src);
-    if (cached !== undefined) {
-      setImage(cached);
-      return;
-    }
-
-    let cancelled = false;
-    const img = new window.Image();
-    img.src = src;
-    img.onload = () => {
-      if (cancelled) return;
-      imageCache.set(src, img);
-      setImage(img);
-    };
-    img.onerror = () => {
-      if (cancelled) return;
-      imageCache.set(src, null);
-      setImage(null);
-    };
-
-    return () => {
-      cancelled = true;
-    };
-  }, [src]);
-
-  return image;
-};
 
 const WaypointSprite = ({
   assetPath,
