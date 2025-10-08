@@ -628,9 +628,11 @@ class SmartNavigator:
                 return False
 
         # Final verification
-        final_ship_data = ship_controller.get_status()
+        final_ship_data = self._get_status_or_log(
+            ship_controller,
+            "Could not verify final position",
+        )
         if not final_ship_data:
-            logger.warning("Could not verify final position")
             return True  # Navigation succeeded even if we can't verify
 
         final_location = final_ship_data['nav']['waypointSymbol']
@@ -638,37 +640,70 @@ class SmartNavigator:
         final_fuel = final_ship_data['fuel']['current']
 
         if final_location != destination:
-            logger.error(f"Route execution failed: ended at {final_location}, expected {destination}")
+            logger.error(
+                "Route execution failed: ended at %s, expected %s",
+                final_location,
+                destination,
+            )
             return False
 
-        logger.info(f"✅ Route execution complete. Arrived at {destination} (state: {final_state}, fuel: {final_fuel}⛽)")
+        logger.info(
+            "✅ Route execution complete. Arrived at %s (state: %s, fuel: %s⛽)",
+            destination,
+            final_state,
+            final_fuel,
+        )
 
-        # PROACTIVE REFUELING: When prefer_cruise=True, refuel at destination if needed
-        # This ensures next navigation can use CRUISE mode
-        if prefer_cruise and final_fuel < final_ship_data['fuel']['capacity'] * 0.75:
-            # Check if destination has marketplace for refueling
-            dest_wp = self.graph['waypoints'].get(destination, {})
-            has_marketplace = 'MARKETPLACE' in dest_wp.get('traits', [])
-
-            if has_marketplace:
-                logger.info(f"🔋 Proactive refuel: {final_fuel}/{final_ship_data['fuel']['capacity']} fuel (maintaining CRUISE capability)")
-
-                # Dock if needed for refuel
-                if final_state != 'DOCKED':
-                    if not self._ensure_valid_state(ship_controller, 'DOCKED'):
-                        logger.warning("⚠️  Failed to dock for proactive refuel")
-                        return True  # Still return success since we arrived
-
-                # Refuel
-                if ship_controller.refuel():
-                    after_refuel = ship_controller.get_status()
-                    if after_refuel:
-                        new_fuel = after_refuel['fuel']['current']
-                        logger.info(f"✅ Refueled: {final_fuel} → {new_fuel} fuel")
-                else:
-                    logger.warning("⚠️  Proactive refuel failed")
+        self._maybe_proactive_refuel(
+            ship_controller,
+            destination,
+            prefer_cruise,
+            final_ship_data,
+            final_state,
+            final_fuel,
+        )
 
         return True
+
+    def _maybe_proactive_refuel(
+        self,
+        ship_controller,
+        destination: str,
+        prefer_cruise: bool,
+        final_ship_data: Dict,
+        final_state: str,
+        final_fuel: int,
+    ) -> None:
+        """Top up fuel at destination when necessary to keep cruise capability."""
+        if not prefer_cruise:
+            return
+
+        capacity = final_ship_data['fuel']['capacity']
+        if final_fuel >= capacity * 0.75:
+            return
+
+        dest_wp = self.graph['waypoints'].get(destination, {})
+        has_marketplace = 'MARKETPLACE' in dest_wp.get('traits', [])
+        if not has_marketplace:
+            return
+
+        logger.info(
+            "🔋 Proactive refuel: %s/%s fuel (maintaining CRUISE capability)",
+            final_fuel,
+            capacity,
+        )
+
+        if final_state != 'DOCKED' and not self._ensure_valid_state(ship_controller, 'DOCKED'):
+            logger.warning("⚠️  Failed to dock for proactive refuel")
+            return
+
+        if ship_controller.refuel():
+            after_refuel = ship_controller.get_status()
+            if after_refuel:
+                new_fuel = after_refuel['fuel']['current']
+                logger.info(f"✅ Refueled: {final_fuel} → {new_fuel} fuel")
+        else:
+            logger.warning("⚠️  Proactive refuel failed")
 
     def find_nearest_with_trait(self, ship_data: Dict, trait: str,
                                 max_results: int = 5) -> list:
