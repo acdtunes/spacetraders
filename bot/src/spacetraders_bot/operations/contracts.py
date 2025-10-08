@@ -21,6 +21,7 @@ from spacetraders_bot.operations.common import (
     humanize_duration,
     get_operator_name,
 )
+from spacetraders_bot.operations.control import CircuitBreaker
 
 
 def contract_operation(
@@ -283,24 +284,32 @@ def contract_operation(
         return total_delivered, total_delivered >= remaining
 
     def _attempt_delivery(api, args, delivery, units, delivered_so_far, remaining, trip, log_error, sleep_fn):
-        max_delivery_retries = 3
-        for retry in range(max_delivery_retries):
-            result = api.post(f"/my/contracts/{args.contract_id}/deliver", {
-                "shipSymbol": args.ship,
-                "tradeSymbol": delivery['tradeSymbol'],
-                "units": units
-            })
+        breaker = CircuitBreaker(limit=3)
+
+        while not breaker.tripped():
+            result = api.post(
+                f"/my/contracts/{args.contract_id}/deliver",
+                {
+                    "shipSymbol": args.ship,
+                    "tradeSymbol": delivery['tradeSymbol'],
+                    "units": units,
+                },
+            )
 
             if result and 'data' in result:
-                print(f"  ✅ Delivered {units} units (total: {delivered_so_far + units}/{remaining})")
+                print(
+                    f"  ✅ Delivered {units} units (total: {delivered_so_far + units}/{remaining})"
+                )
+                breaker.record_success()
                 return True
 
             error_code = result.get('error', {}).get('code') if result else None
             error_msg = result.get('error', {}).get('message', 'Unknown error') if result else 'No response'
+            failure_count = breaker.record_failure()
 
-            if error_code == 4502 and retry < max_delivery_retries - 1:
+            if error_code == 4502 and failure_count < breaker.limit:
                 print(f"  ⚠️  Delivery failed (error {error_code}): {error_msg}")
-                print(f"  🔄 Retry {retry + 1}/{max_delivery_retries - 1}...")
+                print(f"  🔄 Retry {failure_count}/{breaker.limit - 1}...")
                 sleep_fn(2)
                 continue
 
