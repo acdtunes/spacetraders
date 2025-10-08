@@ -1,4 +1,5 @@
 import { API_CONSTANTS } from '../../constants/api';
+import { mockRequest } from './mockClient';
 
 export class ApiError extends Error {
   constructor(
@@ -116,7 +117,8 @@ class ApiClient {
 
 export const apiClient = new ApiClient(API_CONSTANTS.BASE_URL);
 
-export const fetchApi = apiClient.request.bind(apiClient) as <T>(
-  endpoint: string,
-  options?: ApiRequestOptions
-) => Promise<T>;
+const useMockApi = import.meta.env.VITE_USE_MOCK_API === 'true';
+
+export const fetchApi = useMockApi
+  ? (mockRequest as <T>(endpoint: string, options?: ApiRequestOptions) => Promise<T>)
+  : (apiClient.request.bind(apiClient) as <T>(endpoint: string, options?: ApiRequestOptions) => Promise<T>);
