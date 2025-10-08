@@ -202,7 +202,7 @@ const WaypointSprite = ({
   scale: number;
 }) => {
   const image = useCachedImage(assetPath);
-  const minSize = 6 / Math.max(scale, 0.0001);
+  const minSize = 18 / Math.max(scale, 0.0001);
   const size = Math.max(radius * 2, minSize);
   const half = size / 2;
 
