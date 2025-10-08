@@ -5,6 +5,7 @@ import { Waypoint } from '../domain';
 import { CANVAS_CONSTANTS } from '../constants/canvas';
 import { Ship } from '../domain/ship';
 import type { Position } from '../domain/ship';
+import { hashString } from '../utils/hash';
 
 const ROUTE_ARROW_SPEED = 0.008;
 const ROUTE_ARROW_SEGMENT_LENGTH = 14;
@@ -14,14 +15,6 @@ const ROUTE_COLORS: Record<FlightMode, { line: string; arrow: string }> = {
   CRUISE: { line: 'rgba(59, 130, 246, 0.4)', arrow: '#93c5fd' },
   BURN: { line: 'rgba(248, 113, 113, 0.45)', arrow: '#fca5a5' },
   STEALTH: { line: 'rgba(129, 140, 248, 0.4)', arrow: '#c7d2fe' },
-};
-
-const hashString = (value: string): number => {
-  let hash = 0;
-  for (let i = 0; i < value.length; i += 1) {
-    hash = (hash * 31 + value.charCodeAt(i)) >>> 0;
-  }
-  return hash;
 };
 
 interface RouteVectorsProps {

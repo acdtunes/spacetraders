@@ -18,7 +18,7 @@ import json
 import logging
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, UTC
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -26,6 +26,11 @@ from ..helpers import paths
 
 
 logger = logging.getLogger(__name__)
+
+
+def _now_iso() -> str:
+    """Return the current UTC timestamp as ISO string."""
+    return datetime.now(UTC).isoformat()
 
 
 class Database:
@@ -392,6 +397,7 @@ class Database:
         """
         cursor = conn.cursor()
 
+        timestamp = _now_iso()
         cursor.execute("""
             INSERT INTO players (agent_symbol, token, created_at, last_active, metadata)
             VALUES (?, ?, ?, ?, ?)
@@ -400,8 +406,7 @@ class Database:
                 last_active = excluded.last_active,
                 metadata = excluded.metadata
             RETURNING player_id
-        """, (agent_symbol, token, datetime.utcnow().isoformat(),
-              datetime.utcnow().isoformat(), json.dumps(metadata or {})))
+        """, (agent_symbol, token, timestamp, timestamp, json.dumps(metadata or {})))
 
         result = cursor.fetchone()
         return result['player_id']
@@ -461,7 +466,7 @@ class Database:
 
         cursor.execute("""
             UPDATE players SET last_active = ? WHERE player_id = ?
-        """, (datetime.utcnow().isoformat(), player_id))
+        """, (_now_iso(), player_id))
 
     # =========================================================================
     # SHIP ASSIGNMENTS
@@ -501,6 +506,7 @@ class Database:
             return False
 
         # Upsert assignment
+        assigned_at = _now_iso()
         cursor.execute("""
             INSERT INTO ship_assignments
                 (ship_symbol, player_id, assigned_to, daemon_id, operation, status, assigned_at, metadata)
@@ -515,7 +521,7 @@ class Database:
                 released_at = NULL,
                 release_reason = NULL
         """, (ship_symbol, player_id, assigned_to, daemon_id, operation,
-              datetime.utcnow().isoformat(),
+              assigned_at,
               json.dumps(metadata or {})))
 
         return True
@@ -534,7 +540,7 @@ class Database:
                 released_at = ?,
                 release_reason = ?
             WHERE ship_symbol = ? AND player_id = ?
-        """, (datetime.utcnow().isoformat(), reason, ship_symbol, player_id))
+        """, (_now_iso(), reason, ship_symbol, player_id))
 
         return cursor.rowcount > 0
 
@@ -605,7 +611,7 @@ class Database:
             INSERT INTO daemons (daemon_id, player_id, pid, command, started_at, status, log_file, err_file)
             VALUES (?, ?, ?, ?, ?, 'running', ?, ?)
         """, (daemon_id, player_id, pid, json.dumps(command),
-              datetime.utcnow().isoformat(), log_file, err_file))
+              _now_iso(), log_file, err_file))
 
         return True
 
@@ -692,7 +698,7 @@ class Database:
         Also saves normalized waypoint and edge data for querying
         """
         cursor = conn.cursor()
-        now = datetime.utcnow().isoformat()
+        now = _now_iso()
 
         # Save denormalized graph
         cursor.execute("""
@@ -825,7 +831,7 @@ class Database:
                  units, price_per_unit, total_cost, timestamp)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (player_id, ship_symbol, waypoint_symbol, good_symbol, transaction_type,
-              units, price_per_unit, total_cost, datetime.utcnow().isoformat()))
+              units, price_per_unit, total_cost, _now_iso()))
 
         return True
 
@@ -941,7 +947,7 @@ class Database:
                 total_distance = excluded.total_distance,
                 calculated_at = excluded.calculated_at
         """, (system, markets_key, algorithm, start_waypoint,
-              tour_order_json, total_distance, datetime.utcnow().isoformat()))
+              tour_order_json, total_distance, _now_iso()))
 
         return True
 

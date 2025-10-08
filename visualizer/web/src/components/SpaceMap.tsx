@@ -7,6 +7,7 @@ import { getWaypointOpportunities, formatOpportunity } from '../domain/market';
 import { Ship, Waypoint, ShipQueries, WaypointQueries, ViewportBounds } from '../domain';
 import { VIEWPORT_CONSTANTS } from '../constants/viewport';
 import { getCargoIcon, getCargoLabel } from '../utils/cargo';
+import { hashString } from '../utils/hash';
 import { RouteVectors } from './RouteVectors';
 import ZoomControls from './ZoomControls';
 import Minimap from './Minimap';
@@ -140,14 +141,6 @@ const MINING_WAYPOINT_TYPES = new Set<WaypointType['type']>([
 ]);
 
 const imageCache = new Map<string, HTMLImageElement | null>();
-
-const hashString = (value: string): number => {
-  let hash = 0;
-  for (let i = 0; i < value.length; i += 1) {
-    hash = (hash * 31 + value.charCodeAt(i)) >>> 0;
-  }
-  return hash;
-};
 
 const getFuelBarColor = (percent: number): string => {
   if (percent >= 75) return '#22c55e';
