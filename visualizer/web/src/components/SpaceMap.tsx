@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, forwardRef, useImperativeHandle, useMemo, useCallback } from 'react';
-import { Stage, Layer, Shape, Group, Circle, Text, Line, Label, Tag, Image as KonvaImage } from 'react-konva';
+import { Stage, Layer, Shape, Group, Circle, Text, Line, Label, Tag } from 'react-konva';
 import Konva from 'konva';
 import { useStore } from '../store/useStore';
 import { getWaypoints } from '../services/api';
@@ -10,7 +10,8 @@ import { getCargoIcon, getCargoLabel } from '../utils/cargo';
 import { getFuelBarColor } from '../utils/fuel';
 import { hashString } from '../utils/hash';
 import { RouteVectors } from './RouteVectors';
-import { useCachedImage } from '../hooks/useCachedImage';
+import { ShipSprite } from './ShipSprite';
+import { WaypointSprite } from './WaypointSprite';
 import ZoomControls from './ZoomControls';
 import Minimap from './Minimap';
 import type { FlightMode, ShipTrailPoint, Waypoint as WaypointType, TaggedShip, ShipNavStatus } from '../types/spacetraders';
@@ -141,115 +142,6 @@ const MINING_WAYPOINT_TYPES = new Set<WaypointType['type']>([
   'ENGINEERED_ASTEROID',
   'ASTEROID_BASE',
 ]);
-
-const WaypointSprite = ({
-  assetPath,
-  x,
-  y,
-  radius,
-  scale,
-}: {
-  assetPath: string | null;
-  x: number;
-  y: number;
-  radius: number;
-  scale: number;
-}) => {
-  const image = useCachedImage(assetPath);
-  const MIN_WORLD_SIZE = 1.2;
-  const size = Math.max(radius * 2, MIN_WORLD_SIZE);
-  const half = size / 2;
-
-  if (image && image.width > 0 && image.height > 0) {
-    return (
-      <KonvaImage
-        image={image}
-        x={x - half}
-        y={y - half}
-        width={size}
-        height={size}
-        listening={false}
-      />
-    );
-  }
-
-  const crossSize = Math.max(size * 0.75, 14 / Math.max(scale, 0.0001));
-  const crossHalf = crossSize / 2;
-  const strokeWidth = Math.max(2 / Math.max(scale, 0.0001), 0.8);
-
-  return (
-    <Group x={x} y={y} listening={false}>
-      <Circle
-        radius={size / 2}
-        fill="#1f2937"
-        stroke="#ef4444"
-        strokeWidth={strokeWidth * 0.6}
-        listening={false}
-        opacity={0.4}
-      />
-      <Line
-        points={[-crossHalf, -crossHalf, crossHalf, crossHalf]}
-        stroke="#f87171"
-        strokeWidth={strokeWidth}
-        listening={false}
-        lineCap="round"
-      />
-      <Line
-        points={[-crossHalf, crossHalf, crossHalf, -crossHalf]}
-        stroke="#f87171"
-        strokeWidth={strokeWidth}
-        listening={false}
-        lineCap="round"
-      />
-    </Group>
-  );
-};
-
-const ShipSprite = ({
-  assetPath,
-  size,
-}: {
-  assetPath: string | null;
-  size: number;
-}) => {
-  const image = useCachedImage(assetPath);
-
-  if (image && image.width > 0 && image.height > 0) {
-    return (
-      <KonvaImage
-        image={image}
-        x={-size / 2}
-        y={-size / 2}
-        width={size}
-        height={size}
-        listening={false}
-      />
-    );
-  }
-
-  const crossSize = Math.max(size * 0.65, 6);
-  const crossHalf = crossSize / 2;
-  const strokeWidth = Math.max(size * 0.08, 0.8);
-
-  return (
-    <Group listening={false}>
-      <Line
-        points={[-crossHalf, -crossHalf, crossHalf, crossHalf]}
-        stroke="#f87171"
-        strokeWidth={strokeWidth}
-        listening={false}
-        lineCap="round"
-      />
-      <Line
-        points={[-crossHalf, crossHalf, crossHalf, -crossHalf]}
-        stroke="#f87171"
-        strokeWidth={strokeWidth}
-        listening={false}
-        lineCap="round"
-      />
-    </Group>
-  );
-};
 
 type RGB = { r: number; g: number; b: number };
 
