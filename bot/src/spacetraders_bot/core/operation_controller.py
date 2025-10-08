@@ -13,8 +13,7 @@ Provides:
 
 import json
 import logging
-import time
-from datetime import datetime
+from datetime import datetime, UTC
 from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -22,6 +21,11 @@ from typing import Any, Dict, Optional
 from ..helpers import paths
 
 logger = logging.getLogger(__name__)
+
+
+def _now_iso() -> str:
+    """Return the current UTC timestamp as ISO string."""
+    return datetime.now(UTC).isoformat()
 
 
 class OperationStatus(Enum):
@@ -82,8 +86,8 @@ class OperationController:
         return {
             "operation_id": self.operation_id,
             "status": OperationStatus.PENDING.value,
-            "created_at": datetime.utcnow().isoformat(),
-            "updated_at": datetime.utcnow().isoformat(),
+            "created_at": datetime.now(UTC).isoformat(),
+            "updated_at": datetime.now(UTC).isoformat(),
             "checkpoints": [],
             "metadata": {},
             "error": None
@@ -91,9 +95,15 @@ class OperationController:
 
     def _save_state(self):
         """Persist state to disk"""
-        self.state["updated_at"] = datetime.utcnow().isoformat()
+        self.state["updated_at"] = _now_iso()
         with open(self.state_file, 'w') as f:
             json.dump(self.state, f, indent=2)
+
+    def _set_status(self, status: OperationStatus, **fields: Any) -> None:
+        """Update state status and persist with additional fields."""
+        self.state["status"] = status.value
+        self.state.update(fields)
+        self._save_state()
 
     def start(self, metadata: Dict[str, Any]):
         """
@@ -102,10 +112,11 @@ class OperationController:
         Args:
             metadata: Operation metadata (ship, route, params, etc.)
         """
-        self.state["status"] = OperationStatus.RUNNING.value
-        self.state["metadata"] = metadata
-        self.state["started_at"] = datetime.utcnow().isoformat()
-        self._save_state()
+        self._set_status(
+            OperationStatus.RUNNING,
+            metadata=metadata,
+            started_at=_now_iso(),
+        )
         logger.info(f"Operation {self.operation_id} started")
 
     def checkpoint(self, checkpoint_data: Dict[str, Any]):
@@ -116,7 +127,7 @@ class OperationController:
             checkpoint_data: Current state (step, fuel, location, etc.)
         """
         checkpoint = {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": _now_iso(),
             "data": checkpoint_data
         }
         self.state["checkpoints"].append(checkpoint)
@@ -146,9 +157,7 @@ class OperationController:
             logger.warning(f"Cannot resume operation {self.operation_id}")
             return None
 
-        self.state["status"] = OperationStatus.RUNNING.value
-        self.state["resumed_at"] = datetime.utcnow().isoformat()
-        self._save_state()
+        self._set_status(OperationStatus.RUNNING, resumed_at=_now_iso())
 
         checkpoint = self.get_last_checkpoint()
         logger.info(f"Resuming operation {self.operation_id} from checkpoint: {checkpoint}")
@@ -156,32 +165,29 @@ class OperationController:
 
     def pause(self):
         """Pause operation (can be resumed later)"""
-        self.state["status"] = OperationStatus.PAUSED.value
-        self._save_state()
+        self._set_status(OperationStatus.PAUSED)
         logger.info(f"Operation {self.operation_id} paused")
 
     def complete(self, result: Dict[str, Any] = None):
         """Mark operation as completed"""
-        self.state["status"] = OperationStatus.COMPLETED.value
-        self.state["completed_at"] = datetime.utcnow().isoformat()
-        if result:
-            self.state["result"] = result
-        self._save_state()
+        fields: Dict[str, Any] = {"completed_at": _now_iso()}
+        if result is not None:
+            fields["result"] = result
+        self._set_status(OperationStatus.COMPLETED, **fields)
         logger.info(f"Operation {self.operation_id} completed")
 
     def fail(self, error: str):
         """Mark operation as failed"""
-        self.state["status"] = OperationStatus.FAILED.value
-        self.state["error"] = error
-        self.state["failed_at"] = datetime.utcnow().isoformat()
-        self._save_state()
+        self._set_status(
+            OperationStatus.FAILED,
+            error=error,
+            failed_at=_now_iso(),
+        )
         logger.error(f"Operation {self.operation_id} failed: {error}")
 
     def cancel(self):
         """Cancel operation"""
-        self.state["status"] = OperationStatus.CANCELLED.value
-        self.state["cancelled_at"] = datetime.utcnow().isoformat()
-        self._save_state()
+        self._set_status(OperationStatus.CANCELLED, cancelled_at=_now_iso())
         logger.info(f"Operation {self.operation_id} cancelled")
 
     def should_pause(self) -> bool:
@@ -210,8 +216,8 @@ class OperationController:
 
         duration = None
         if "started_at" in self.state:
-            start = datetime.fromisoformat(self.state["started_at"])
-            now = datetime.utcnow()
+            start = datetime.fromisoformat(self.state["started_at"].replace('Z', '+00:00'))
+            now = datetime.now(UTC)
             duration = (now - start).total_seconds()
 
         return {
@@ -250,7 +256,7 @@ def send_control_command(operation_id: str, command: str, state_dir: Optional[Pa
         state = json.load(f)
 
     state["control_command"] = command
-    state["control_timestamp"] = datetime.utcnow().isoformat()
+    state["control_timestamp"] = _now_iso()
 
     with open(state_file, 'w') as f:
         json.dump(state, f, indent=2)
