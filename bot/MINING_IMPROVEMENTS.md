@@ -217,7 +217,7 @@ if hasattr(args, 'mine_from') and args.mine_from:
 ## Tests Added
 
 ### Test file: `/tests/test_targeted_mining_steps.py`
-### Feature file: `/tests/features/targeted_mining.feature`
+### Feature file: `/tests/bdd/features/targeted_mining.feature`
 
 **Test scenarios:**
 1. ✅ Jettison wrong cargo when mining for specific resource

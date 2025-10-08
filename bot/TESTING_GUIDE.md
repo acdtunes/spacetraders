@@ -332,7 +332,7 @@ pytest tests/ --pdb
 
 ### 1. Create Feature File
 
-Create `tests/features/my_feature.feature`:
+Create `tests/bdd/features/my_feature.feature`:
 
 ```gherkin
 Feature: My New Feature
@@ -410,7 +410,7 @@ pip install pytest-bdd
 ### Issue: Feature file not loading
 **Solution:**
 - Verify path in `scenarios('features/file.feature')`
-- Check file is in `tests/features/` directory
+- Check file is in `tests/bdd/features/` directory
 
 ### Issue: Mock API not resetting between tests
 **Solution:**
@@ -445,7 +445,7 @@ pytest tests/ -v -s --pdb
 ```
 
 **Key Files:**
-- `tests/features/*.feature` - Gherkin scenarios
+- `tests/bdd/features/*.feature` - Gherkin scenarios
 - `tests/test_*_steps.py` - Step definitions
 - `tests/mock_api.py` - Mock API client
 - `tests/requirements.txt` - Test dependencies

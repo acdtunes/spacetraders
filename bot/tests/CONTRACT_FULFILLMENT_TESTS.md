@@ -72,7 +72,7 @@ Comprehensive BDD tests for the contract fulfillment operation in `operations/co
 ## Files Created
 
 ### 1. Feature File
-**Location:** `tests/features/contract_fulfillment.feature`
+**Location:** `tests/bdd/features/contract_fulfillment.feature`
 
 Gherkin-style BDD scenarios defining expected behavior for contract fulfillment operations.
 

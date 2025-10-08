@@ -306,7 +306,7 @@ This is a **REAL data flow test** because:
    - All passing
    - Real data flow verification
 
-2. `/Users/andres.camacho/Development/Personal/spacetradersV2/bot/tests/features/component_interactions.feature`
+2. `/Users/andres.camacho/Development/Personal/spacetradersV2/bot/tests/bdd/features/component_interactions.feature`
    - 12 BDD scenarios (optional - for reference)
    - Describes expected behavior
    - Can be implemented later with pytest-bdd if needed
