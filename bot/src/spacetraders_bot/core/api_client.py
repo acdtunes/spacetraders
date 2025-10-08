@@ -4,14 +4,44 @@ SpaceTraders API Client - Consolidated API request handling
 Centralizes all API interactions with rate limiting, retry logic, and error handling
 """
 
-import requests
-import time
 import logging
-from typing import Optional, Dict, Any
-from datetime import datetime
+import time
+from dataclasses import dataclass
+from typing import Any, Dict, Optional
+
+import requests
 
 # Configure module logger
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class APIResult:
+    """Typed result wrapper for API responses."""
+
+    ok: bool
+    data: Optional[Dict[str, Any]] = None
+    error: Optional[Dict[str, Any]] = None
+    status_code: Optional[int] = None
+
+    @property
+    def message(self) -> Optional[str]:
+        if not self.error:
+            return None
+        return self.error.get("message")
+
+    @classmethod
+    def success(cls, data: Dict[str, Any], status_code: int) -> "APIResult":
+        return cls(ok=True, data=data, status_code=status_code)
+
+    @classmethod
+    def failure(
+        cls,
+        error: Dict[str, Any],
+        status_code: Optional[int],
+        data: Optional[Dict[str, Any]] = None,
+    ) -> "APIResult":
+        return cls(ok=False, data=data, error=error, status_code=status_code)
 
 
 class RateLimiter:
@@ -64,16 +94,36 @@ class APIClient:
         Returns:
             API response data or None on failure
         """
+        result = self.request_result(method, endpoint, data=data, max_retries=max_retries)
+
+        if result.ok:
+            return result.data
+
+        if result.status_code and 400 <= result.status_code < 500:
+            if result.data:
+                return result.data
+            if result.error:
+                return {"error": result.error}
+
+        return None
+
+    def request_result(
+        self,
+        method: str,
+        endpoint: str,
+        data: Optional[Dict[str, Any]] = None,
+        max_retries: int = 5,
+    ) -> APIResult:
+        """Same as `request` but returns typed result wrapper."""
+
         url = f"{self.base_url}{endpoint}"
         retry_count = 0
         wait_time = 2
 
         while retry_count < max_retries:
-            # Rate limiting
             self.rate_limiter.wait()
 
             try:
-                # Make request
                 if method == "GET":
                     response = requests.get(url, headers=self.headers, timeout=30)
                 elif method == "POST":
@@ -84,94 +134,185 @@ class APIClient:
                     logger.error(f"Unsupported HTTP method: {method}")
                     raise ValueError(f"Unsupported HTTP method: {method}")
 
-                # Parse response
                 try:
                     response_data = response.json()
                 except ValueError as e:
-                    logger.error(f"Failed to parse JSON response from {method} {endpoint}: {e}")
-                    return None
+                    logger.error(
+                        "Failed to parse JSON response from %s %s: %s",
+                        method,
+                        endpoint,
+                        e,
+                    )
+                    return APIResult.failure(
+                        {"code": "invalid_json", "message": str(e)},
+                        response.status_code,
+                    )
 
-                # Handle rate limiting (429 or error message)
-                if response.status_code == 429 or (
-                    "error" in response_data
-                    and "rate limit" in response_data["error"].get("message", "").lower()
-                ):
+                rate_limited = response.status_code == 429 or (
+                    isinstance(response_data, dict)
+                    and "error" in response_data
+                    and "rate limit" in str(response_data["error"].get("message", "")).lower()
+                )
+                if rate_limited:
                     retry_count += 1
-                    logger.warning(f"Rate limit hit on {method} {endpoint}, waiting {wait_time}s (attempt {retry_count}/{max_retries})")
-                    time.sleep(wait_time)
-                    wait_time = min(wait_time * 2, 60)  # Exponential backoff, max 60s
-                    continue
+                    logger.warning(
+                        "⚠️  %s %s - Rate limit hit, waiting %ss (attempt %s/%s)",
+                        method,
+                        endpoint,
+                        wait_time,
+                        retry_count,
+                        max_retries,
+                    )
+                    if retry_count < max_retries:
+                        time.sleep(wait_time)
+                        wait_time = min(wait_time * 2, 60)
+                        continue
 
-                # Handle success
+                    logger.error("Max retries exceeded after rate limiting on %s %s", method, endpoint)
+                    return APIResult.failure(
+                        {"code": "rate_limited", "message": "Rate limit exceeded"},
+                        response.status_code,
+                        data=response_data if isinstance(response_data, dict) else None,
+                    )
+
                 if response.status_code in [200, 201]:
-                    return response_data
+                    return APIResult.success(response_data, response.status_code)
 
-                # Handle client errors (4xx)
                 if 400 <= response.status_code < 500:
-                    error_msg = response_data.get("error", {})
-                    error_code = error_msg.get("code", "UNKNOWN")
-                    error_message = error_msg.get("message", str(response_data))
+                    error_payload = (
+                        response_data.get("error")
+                        if isinstance(response_data, dict)
+                        else None
+                    ) or {
+                        "code": "HTTP_4XX",
+                        "message": str(response_data),
+                    }
+                    logger.error(
+                        "❌ %s %s - Client Error (HTTP %s): %s - %s",
+                        method,
+                        endpoint,
+                        response.status_code,
+                        error_payload.get("code", "UNKNOWN"),
+                        error_payload.get("message", ""),
+                    )
+                    return APIResult.failure(
+                        error_payload,
+                        response.status_code,
+                        data=response_data if isinstance(response_data, dict) else None,
+                    )
 
-                    logger.error(f"❌ {method} {endpoint} - Client Error (HTTP {response.status_code}): {error_code} - {error_message}")
-
-                    # Return response_data with error info instead of None
-                    # This allows caller to handle specific error codes (e.g., 4604 transaction limits)
-                    return response_data
-
-                # Handle server errors (5xx) - retry these
                 if 500 <= response.status_code < 600:
                     retry_count += 1
-                    logger.warning(f"⚠️  {method} {endpoint} - Server Error (HTTP {response.status_code}), retrying (attempt {retry_count}/{max_retries})")
+                    logger.warning(
+                        "⚠️  %s %s - Server Error (HTTP %s), retrying (attempt %s/%s)",
+                        method,
+                        endpoint,
+                        response.status_code,
+                        retry_count,
+                        max_retries,
+                    )
 
                     if retry_count < max_retries:
                         time.sleep(wait_time)
                         wait_time = min(wait_time * 2, 60)
                         continue
-                    else:
-                        logger.error(f"Max retries exceeded for server error on {method} {endpoint}")
-                        return None
 
-                # Handle other status codes
-                logger.warning(f"Unexpected status code {response.status_code} for {method} {endpoint}")
-                return None
+                    logger.error("Max retries exceeded for server error on %s %s", method, endpoint)
+                    return APIResult.failure(
+                        {"code": "HTTP_5XX", "message": "Server error"},
+                        response.status_code,
+                        data=response_data if isinstance(response_data, dict) else None,
+                    )
+
+                logger.warning("Unexpected status code %s for %s %s", response.status_code, method, endpoint)
+                return APIResult.failure(
+                    {"code": "unexpected_status", "message": str(response_data)},
+                    response.status_code,
+                    data=response_data if isinstance(response_data, dict) else None,
+                )
 
             except requests.exceptions.Timeout:
                 retry_count += 1
-                logger.warning(f"⏱️  Request timeout on {method} {endpoint} (attempt {retry_count}/{max_retries})")
+                logger.warning(
+                    "⏱️  Request timeout on %s %s (attempt %s/%s)",
+                    method,
+                    endpoint,
+                    retry_count,
+                    max_retries,
+                )
                 if retry_count < max_retries:
                     time.sleep(wait_time)
                     wait_time = min(wait_time * 2, 60)
                     continue
-                logger.error(f"Request timeout - max retries exceeded on {method} {endpoint}")
-                return None
+                logger.error("Request timeout - max retries exceeded on %s %s", method, endpoint)
+                return APIResult.failure(
+                    {"code": "timeout", "message": "Request timed out"},
+                    None,
+                )
 
             except requests.exceptions.ConnectionError:
                 retry_count += 1
-                logger.warning(f"🔌 Connection error on {method} {endpoint} (attempt {retry_count}/{max_retries})")
+                logger.warning(
+                    "🔌 Connection error on %s %s (attempt %s/%s)",
+                    method,
+                    endpoint,
+                    retry_count,
+                    max_retries,
+                )
                 if retry_count < max_retries:
                     time.sleep(wait_time)
                     wait_time = min(wait_time * 2, 60)
                     continue
-                logger.error(f"Connection error - max retries exceeded on {method} {endpoint}")
-                return None
+                logger.error("Connection error - max retries exceeded on %s %s", method, endpoint)
+                return APIResult.failure(
+                    {"code": "connection_error", "message": "Connection error"},
+                    None,
+                )
 
             except requests.exceptions.RequestException as e:
                 retry_count += 1
-                logger.warning(f"Network error on {method} {endpoint} (attempt {retry_count}/{max_retries}): {e}")
+                logger.warning(
+                    "Network error on %s %s (attempt %s/%s): %s",
+                    method,
+                    endpoint,
+                    retry_count,
+                    max_retries,
+                    e,
+                )
                 if retry_count < max_retries:
                     time.sleep(wait_time)
                     wait_time = min(wait_time * 2, 60)
                     continue
-                logger.error(f"Request exception - max retries exceeded on {method} {endpoint}: {e}")
-                return None
+                logger.error(
+                    "Request exception - max retries exceeded on %s %s: %s",
+                    method,
+                    endpoint,
+                    e,
+                )
+                return APIResult.failure(
+                    {"code": "request_exception", "message": str(e)},
+                    None,
+                )
 
             except Exception as e:
-                logger.error(f"Unexpected error on {method} {endpoint}: {type(e).__name__}: {e}")
+                logger.error(
+                    "Unexpected error on %s %s: %s: %s",
+                    method,
+                    endpoint,
+                    type(e).__name__,
+                    e,
+                )
                 logger.exception("Full traceback:")
-                return None
+                return APIResult.failure(
+                    {"code": "unexpected_error", "message": str(e)},
+                    None,
+                )
 
         logger.error(f"❌ Max retries ({max_retries}) exceeded for {method} {endpoint}")
-        return None
+        return APIResult.failure(
+            {"code": "max_retries", "message": "Max retries exceeded"},
+            None,
+        )
 
     def get(self, endpoint: str) -> Optional[Dict[str, Any]]:
         """GET request"""
