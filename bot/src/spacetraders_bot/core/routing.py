@@ -50,6 +50,11 @@ FUEL_CONSUMPTION = {
 FUEL_SAFETY_MARGIN = 0.1  # Keep 10% fuel reserve
 REFUEL_TIME = 5  # Estimated seconds for refueling
 
+# Route optimization penalties
+LEG_COMPLEXITY_PENALTY = 120  # Seconds added per hop to prefer fewer legs (increased to discourage oscillations)
+DRIFT_EMERGENCY_PENALTY = 1000  # Multiplier for DRIFT when prefer_cruise=True (10x increase)
+DRIFT_BASE_COST = 3600  # Base cost in seconds (1 hour!) added to DRIFT when prefer_cruise=True
+
 
 # =============================================================================
 # UTILITY FUNCTIONS
@@ -359,12 +364,13 @@ class RouteOptimizer:
         3. Navigate to neighbor using DRIFT mode (slow, low fuel cost)
 
         Cost Function Strategy:
-        - When prefer_cruise=True:
+        - When prefer_cruise=True (NEW IMPLEMENTATION):
           * CRUISE routes use actual travel time as cost
-          * DRIFT routes have 5x time penalty applied to cost (but not actual time)
-          * This makes A* strongly prefer routes that enable CRUISE travel
-          * Refuel stops become cheap compared to slow DRIFT travel
-          * Result: Algorithm inserts refuel stops along route to enable CRUISE mode
+          * DRIFT routes are EXTREMELY penalized (100x penalty + 300s base cost)
+          * DRIFT is ONLY viable when it's the ONLY option to reach a fuel station
+          * This makes A* avoid DRIFT unless absolutely necessary
+          * Refuel stops are strongly preferred over DRIFT
+          * Result: Algorithm uses CRUISE everywhere, inserting refuel stops as needed
 
         - When prefer_cruise=False:
           * Both modes use actual travel time as cost
@@ -372,21 +378,26 @@ class RouteOptimizer:
           * Result: Minimal refueling, maximizes DRIFT usage
 
         Why This Works:
-        The 5x penalty on DRIFT cost (when prefer_cruise=True) makes the algorithm
-        perceive DRIFT routes as much longer than they actually are. This causes A*
-        to explore alternative paths that include:
-        - Refuel stops at start position (if has_fuel)
-        - Refuel stops at waypoints along the route
-        - Multiple refuel stops for very long journeys
+        The extreme penalty on DRIFT cost (when prefer_cruise=True) makes DRIFT
+        effectively unusable except in true emergencies:
+        - DRIFT time * 100 + 300s base cost = extremely expensive
+        - Example: 24u DRIFT = ~1min actual, but 100min + 300s = 400min cost!
+        - Refuel stop = 5s cost
+        - CRUISE 100u = ~2min cost
 
-        The key insight: A 5-second refuel stop + 5-minute CRUISE leg appears cheaper
-        to A* than a 25-minute DRIFT leg (5min * 5x penalty = 25min cost).
+        This ensures A* will:
+        1. Refuel at start if possible
+        2. Use CRUISE for all legs
+        3. Insert refuel stops mid-route if needed
+        4. ONLY use DRIFT in true emergency (no fuel, must reach station to survive)
+
+        The key insight: Even long detours with refuel stops are cheaper than DRIFT.
 
         Args:
             start: Starting waypoint symbol
             goal: Destination waypoint symbol
             current_fuel: Current fuel level
-            prefer_cruise: If True, strongly prefer CRUISE mode (insert refuel stops as needed)
+            prefer_cruise: If True, NEVER use DRIFT unless absolutely necessary
                           If False, optimize for fuel efficiency (minimize refueling)
 
         Returns:
@@ -398,11 +409,13 @@ class RouteOptimizer:
               1. Refuel at B17 (+303 fuel)
               2. Navigate B17 → H48 (CRUISE, 303u, 5m)
 
-            Scenario 2: Ship at A1 with 50 fuel, going to C1 via fuel station B1
-            - With prefer_cruise=True:
-              1. Navigate A1 → B1 (DRIFT, 100u, conserve fuel)
-              2. Refuel at B1 (+351 fuel)
-              3. Navigate B1 → C1 (CRUISE, 200u, fast)
+            Scenario 2: Ship at B7 with 96 fuel, going to J55 (671 units)
+            - OLD (buggy): 6 hops with DRIFT segments
+            - NEW (fixed): 2-3 hops, all CRUISE:
+              1. Refuel at B7 (+304 fuel)
+              2. Navigate B7 → [intermediate refuel station] (CRUISE, ~400u)
+              3. Refuel at station
+              4. Navigate [station] → J55 (CRUISE, ~271u)
         """
         self.logger.info(f"Planning route: {start} → {goal}")
         self.logger.info(f"Ship speed: {self.engine_speed}, Fuel: {current_fuel}/{self.fuel_capacity}")
@@ -447,7 +460,9 @@ class RouteOptimizer:
                 return route
 
             # Visited check (with fuel bucketing to reduce state space)
-            fuel_bucket = fuel // 50
+            # Use smaller fuel buckets for better precision (10 instead of 50)
+            # This prevents oscillations between similar fuel states
+            fuel_bucket = fuel // 10
             state = (wp, fuel_bucket)
             if state in visited:
                 continue
@@ -457,126 +472,286 @@ class RouteOptimizer:
 
             # Action 1: Refuel (if at fuel station and not full)
             if wp_data['has_fuel'] and fuel < self.fuel_capacity:
-                refuel_amount = self.fuel_capacity - fuel
-                new_path = path + [{"action": "refuel", "waypoint": wp, "fuel_added": refuel_amount}]
-
-                heappush(queue, (
-                    current_time + REFUEL_TIME + self.heuristic(wp, goal),
+                counter = self._enqueue_refuel_action(
+                    queue,
                     counter,
-                    current_time + REFUEL_TIME,
+                    current_time,
                     wp,
-                    self.fuel_capacity,
-                    new_path
-                ))
-                counter += 1
+                    goal,
+                    path,
+                    fuel,
+                )
 
             # Action 2: Navigate to neighbors
             for neighbor, distance in self.adjacency[wp]:
-                # Special case: 0 fuel capacity ships (probes) don't consume fuel
-                if self.fuel_capacity == 0:
-                    drift_time = TimeCalculator.travel_time(distance, self.engine_speed, 'DRIFT')
-                    new_path = path + [{
-                        "action": "navigate",
-                        "from": wp,
-                        "to": neighbor,
-                        "mode": "DRIFT",
-                        "distance": distance,
-                        "fuel_cost": 0,
-                        "time": drift_time
-                    }]
-
-                    heappush(queue, (
-                        current_time + drift_time + self.heuristic(neighbor, goal),
-                        counter,
-                        current_time + drift_time,
-                        neighbor,
-                        0,  # Probes always have 0 fuel
-                        new_path
-                    ))
-                    counter += 1
-                    continue
-
-                # Calculate fuel and time for both modes
-                cruise_fuel = FuelCalculator.fuel_cost(distance, 'CRUISE')
-                cruise_time = TimeCalculator.travel_time(distance, self.engine_speed, 'CRUISE')
-                drift_fuel = FuelCalculator.fuel_cost(distance, 'DRIFT')
-                drift_time = TimeCalculator.travel_time(distance, self.engine_speed, 'DRIFT')
-
-                # Try CRUISE if fuel allows
-                # Always explore CRUISE option when we have enough fuel
-                if fuel >= cruise_fuel * (1 + FUEL_SAFETY_MARGIN):
-                    new_fuel = fuel - cruise_fuel
-                    new_path = path + [{
-                        "action": "navigate",
-                        "from": wp,
-                        "to": neighbor,
-                        "mode": "CRUISE",
-                        "distance": distance,
-                        "fuel_cost": cruise_fuel,
-                        "time": cruise_time
-                    }]
-
-                    # CRUISE cost: Use actual travel time
-                    # This is naturally fast, so it's preferred when fuel allows
-                    # Example: 100u @ speed 30 = ~2min travel time
-                    cruise_cost = current_time + cruise_time + self.heuristic(neighbor, goal)
-
-                    heappush(queue, (
-                        cruise_cost,
-                        counter,
-                        current_time + cruise_time,
-                        neighbor,
-                        new_fuel,
-                        new_path
-                    ))
-                    counter += 1
-
-                # Try DRIFT if fuel allows
-                # Always explore DRIFT option (very low fuel cost)
-                if fuel >= drift_fuel:
-                    new_fuel = fuel - drift_fuel
-                    new_path = path + [{
-                        "action": "navigate",
-                        "from": wp,
-                        "to": neighbor,
-                        "mode": "DRIFT",
-                        "distance": distance,
-                        "fuel_cost": drift_fuel,
-                        "time": drift_time
-                    }]
-
-                    # DRIFT cost calculation depends on prefer_cruise flag
-                    if prefer_cruise:
-                        # Apply 5x time penalty to DRIFT cost (but NOT actual time!)
-                        # This makes A* perceive DRIFT as much slower than it really is
-                        # Example: 100u DRIFT @ speed 30 = ~5min actual, but 25min cost
-                        #
-                        # Why this works:
-                        # - Refuel stop = 5s cost
-                        # - CRUISE 100u = ~2min cost (actual time)
-                        # - DRIFT 100u = ~25min cost (5min * 5x penalty)
-                        # → A* prefers: refuel (5s) + CRUISE (2min) = 2:05 cost
-                        #   over: DRIFT = 25min cost
-                        #
-                        # Result: Algorithm inserts refuel stops to enable CRUISE mode
-                        drift_cost = current_time + (drift_time * 5) + self.heuristic(neighbor, goal)
-                    else:
-                        # Fuel-efficient mode: Use actual time without penalty
-                        # DRIFT becomes attractive due to minimal fuel consumption
-                        drift_cost = current_time + drift_time + self.heuristic(neighbor, goal)
-
-                    heappush(queue, (
-                        drift_cost,
-                        counter,
-                        current_time + drift_time,  # Store actual time (not penalized)
-                        neighbor,
-                        new_fuel,
-                        new_path
-                    ))
-                    counter += 1
+                counter = self._enqueue_navigation_actions(
+                    queue,
+                    counter,
+                    prefer_cruise,
+                    current_time,
+                    wp,
+                    neighbor,
+                    distance,
+                    fuel,
+                    path,
+                    goal,
+                )
 
         self.logger.warning(f"No route found after {iterations} iterations")
         return None
+
+    def _enqueue_refuel_action(
+        self,
+        queue,
+        counter: int,
+        current_time: int,
+        waypoint: str,
+        goal: str,
+        path: List[Dict],
+        fuel: int,
+    ) -> int:
+        refuel_amount = self.fuel_capacity - fuel
+        new_path = path + [{"action": "refuel", "waypoint": waypoint, "fuel_added": refuel_amount}]
+
+        heappush(
+            queue,
+            (
+                current_time + REFUEL_TIME + self.heuristic(waypoint, goal),
+                counter,
+                current_time + REFUEL_TIME,
+                waypoint,
+                self.fuel_capacity,
+                new_path,
+            ),
+        )
+        return counter + 1
+
+    def _enqueue_navigation_actions(
+        self,
+        queue,
+        counter: int,
+        prefer_cruise: bool,
+        current_time: int,
+        current_wp: str,
+        neighbor: str,
+        distance: float,
+        fuel: int,
+        path: List[Dict],
+        goal: str,
+    ) -> int:
+        if self.fuel_capacity == 0:
+            return self._enqueue_probe_drift(
+                queue,
+                counter,
+                current_time,
+                current_wp,
+                neighbor,
+                distance,
+                path,
+                goal,
+            )
+
+        cruise_fuel = FuelCalculator.fuel_cost(distance, 'CRUISE')
+        cruise_time = TimeCalculator.travel_time(distance, self.engine_speed, 'CRUISE')
+        drift_fuel = FuelCalculator.fuel_cost(distance, 'DRIFT')
+        drift_time = TimeCalculator.travel_time(distance, self.engine_speed, 'DRIFT')
+
+        if fuel >= cruise_fuel * (1 + FUEL_SAFETY_MARGIN):
+            counter = self._enqueue_cruise_leg(
+                queue,
+                counter,
+                current_time,
+                current_wp,
+                neighbor,
+                distance,
+                cruise_fuel,
+                cruise_time,
+                fuel,
+                path,
+                goal,
+            )
+
+        if fuel >= drift_fuel:
+            counter = self._enqueue_drift_leg(
+                queue,
+                counter,
+                prefer_cruise,
+                current_time,
+                current_wp,
+                neighbor,
+                distance,
+                drift_fuel,
+                drift_time,
+                fuel,
+                path,
+                goal,
+            )
+
+        return counter
+
+    def _enqueue_probe_drift(
+        self,
+        queue,
+        counter: int,
+        current_time: int,
+        current_wp: str,
+        neighbor: str,
+        distance: float,
+        path: List[Dict],
+        goal: str,
+    ) -> int:
+        drift_time = TimeCalculator.travel_time(distance, self.engine_speed, 'DRIFT')
+        new_path = path + [{
+            "action": "navigate",
+            "from": current_wp,
+            "to": neighbor,
+            "mode": "DRIFT",
+            "distance": distance,
+            "fuel_cost": 0,
+            "time": drift_time,
+        }]
+
+        heappush(
+            queue,
+            (
+                current_time + drift_time + self.heuristic(neighbor, goal),
+                counter,
+                current_time + drift_time,
+                neighbor,
+                0,
+                new_path,
+            ),
+        )
+        return counter + 1
+
+    def _enqueue_cruise_leg(
+        self,
+        queue,
+        counter: int,
+        current_time: int,
+        current_wp: str,
+        neighbor: str,
+        distance: float,
+        cruise_fuel: int,
+        cruise_time: int,
+        fuel: int,
+        path: List[Dict],
+        goal: str,
+    ) -> int:
+        new_fuel = fuel - cruise_fuel
+        new_path = path + [{
+            "action": "navigate",
+            "from": current_wp,
+            "to": neighbor,
+            "mode": "CRUISE",
+            "distance": distance,
+            "fuel_cost": cruise_fuel,
+            "time": cruise_time,
+        }]
+
+        cruise_cost = (
+            current_time + cruise_time + LEG_COMPLEXITY_PENALTY + self.heuristic(neighbor, goal)
+        )
+
+        heappush(
+            queue,
+            (
+                cruise_cost,
+                counter,
+                current_time + cruise_time,
+                neighbor,
+                new_fuel,
+                new_path,
+            ),
+        )
+        return counter + 1
+
+    def _enqueue_drift_leg(
+        self,
+        queue,
+        counter: int,
+        prefer_cruise: bool,
+        current_time: int,
+        current_wp: str,
+        neighbor: str,
+        distance: float,
+        drift_fuel: int,
+        drift_time: int,
+        fuel: int,
+        path: List[Dict],
+        goal: str,
+    ) -> int:
+        new_fuel = fuel - drift_fuel
+        new_path = path + [{
+            "action": "navigate",
+            "from": current_wp,
+            "to": neighbor,
+            "mode": "DRIFT",
+            "distance": distance,
+            "fuel_cost": drift_fuel,
+            "time": drift_time,
+        }]
+
+        if prefer_cruise:
+            if not self._should_allow_emergency_drift(current_wp, neighbor, fuel):
+                return counter
+
+            emergency_path = new_path + [{
+                "action": "emergency",
+                "from": current_wp,
+                "to": neighbor,
+                "mode": "DRIFT",
+                "reason": "Fuel critical - emergency DRIFT to fuel station",
+            }]
+
+            emergency_cost = (
+                current_time + drift_time + LEG_COMPLEXITY_PENALTY + self.heuristic(neighbor, goal)
+            )
+
+            heappush(
+                queue,
+                (
+                    emergency_cost,
+                    counter,
+                    current_time + drift_time,
+                    neighbor,
+                    new_fuel,
+                    emergency_path,
+                ),
+            )
+            return counter + 1
+
+        drift_cost = current_time + drift_time + LEG_COMPLEXITY_PENALTY + self.heuristic(neighbor, goal)
+        heappush(
+            queue,
+            (
+                drift_cost,
+                counter,
+                current_time + drift_time,
+                neighbor,
+                new_fuel,
+                new_path,
+            ),
+        )
+        return counter + 1
+
+    def _should_allow_emergency_drift(self, current_wp: str, neighbor: str, fuel: int) -> bool:
+        neighbor_data = self.graph['waypoints'][neighbor]
+        if not neighbor_data.get('has_fuel', False):
+            return False
+
+        if any(
+            fuel >= FuelCalculator.fuel_cost(dist, 'CRUISE') * (1 + FUEL_SAFETY_MARGIN)
+            for _, dist in self.adjacency[current_wp]
+        ):
+            return False
+
+        for neighbor_wp, dist in self.adjacency[current_wp]:
+            neighbor_wp_data = self.graph['waypoints'][neighbor_wp]
+            if neighbor_wp_data.get('has_fuel', False) and fuel >= FuelCalculator.fuel_cost(dist, 'CRUISE') * (1 + FUEL_SAFETY_MARGIN):
+                return False
+
+        return True
 
 
 # =============================================================================
