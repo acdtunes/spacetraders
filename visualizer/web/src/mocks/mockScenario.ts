@@ -17,6 +17,8 @@ const systemSymbol = 'X1-MOCK';
 const waypointA = 'X1-MOCK-A1';
 const waypointB = 'X1-MOCK-B1';
 const waypointC = 'X1-MOCK-C1';
+const waypointMining = 'X1-MOCK-MINE1';
+const waypointFuelDepot = 'X1-MOCK-FUEL';
 
 const now = () => new Date().toISOString();
 
@@ -42,9 +44,6 @@ const baseRoute = (origin: string, destination: string): ShipNavRoute => {
     arrival: arrival.toISOString(),
   };
 };
-
-const waypointMining = 'X1-MOCK-MINE1';
-const waypointFuelDepot = 'X1-MOCK-FUEL';
 
 export const mockState: MockState = {
   agents: [
@@ -171,10 +170,10 @@ export const mockState: MockState = {
       },
       nav: {
         systemSymbol,
-        waypointSymbol: waypointA,
-        route: baseRoute(waypointA, waypointB),
-        status: 'DOCKED',
-        flightMode: 'CRUISE',
+        waypointSymbol: waypointMining,
+        route: baseRoute(waypointMining, waypointA),
+        status: 'IN_ORBIT',
+        flightMode: 'DRIFT',
       },
       crew: {},
       frame: {},
@@ -317,6 +316,9 @@ const cycleStatuses: Array<(ships: MockShip[]) => void> = [
   (ships) => {
     // Phase 1: ships dock to refuel
     ships.forEach((ship) => {
+      if (ship.registration.role === 'EXPLORER' || ship.registration.role === 'MINING_DRONE') {
+        return;
+      }
       ship.nav.status = 'DOCKED';
       ship.nav.waypointSymbol = ship.registration.role === 'HAULER' ? waypointC : waypointA;
       ship.nav.flightMode = 'DRIFT';
@@ -333,6 +335,19 @@ const cycleStatuses: Array<(ships: MockShip[]) => void> = [
       miner.cargo.units = Math.min(miner.cargo.capacity, miner.cargo.units + 5);
       if (miner.cargo.inventory.length > 0) {
         miner.cargo.inventory[0].units = miner.cargo.units;
+      }
+    }
+
+    const explorer = ships.find((ship) => ship.registration.role === 'EXPLORER');
+    if (explorer) {
+      explorer.nav.status = 'IN_ORBIT';
+      explorer.nav.waypointSymbol = waypointMining;
+      explorer.nav.flightMode = 'DRIFT';
+      explorer.cargo.units = Math.min(explorer.cargo.capacity, explorer.cargo.units + 4);
+      if (explorer.cargo.inventory.length > 0) {
+        explorer.cargo.inventory[0].units = explorer.cargo.units;
+      } else {
+        explorer.cargo.inventory = [{ symbol: 'ICE', name: 'Ice Water', description: '', units: explorer.cargo.units }];
       }
     }
 
@@ -355,6 +370,14 @@ const cycleStatuses: Array<(ships: MockShip[]) => void> = [
       hauler.nav.route = baseRoute(waypointC, waypointA);
       hauler.nav.flightMode = 'CRUISE';
       hauler.fuel.current = Math.max(0, hauler.fuel.current - 15);
+    }
+
+    const explorer = ships.find((ship) => ship.registration.role === 'EXPLORER');
+    if (explorer) {
+      explorer.nav.status = 'IN_ORBIT';
+      explorer.nav.waypointSymbol = waypointMining;
+      explorer.nav.flightMode = 'DRIFT';
+      explorer.fuel.current = Math.max(0, explorer.fuel.current - 5);
     }
 
     const drone = ships.find((ship) => ship.registration.role === 'MINING_DRONE');
