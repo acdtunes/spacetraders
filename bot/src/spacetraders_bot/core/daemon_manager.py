@@ -11,7 +11,7 @@ import os
 import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional
-from datetime import datetime
+from datetime import datetime, UTC
 import psutil
 
 from ..helpers import paths
@@ -75,6 +75,23 @@ class DaemonManager:
 
         self._api_client = None  # Lazy-loaded API client
 
+    def _fetch_daemon(self, daemon_id: str) -> Optional[Dict]:
+        """Return persisted daemon details for this player."""
+        with self.db.connection() as conn:
+            return self.db.get_daemon(conn, self.player_id, daemon_id)
+
+    def _update_daemon_status(self, daemon_id: str, status: str,
+                              stopped_at: Optional[str] = None) -> None:
+        """Persist daemon status changes with optional stop timestamp."""
+        with self.db.transaction() as conn:
+            self.db.update_daemon_status(
+                conn,
+                player_id=self.player_id,
+                daemon_id=daemon_id,
+                status=status,
+                stopped_at=stopped_at,
+            )
+
     def get_api_client(self):
         """
         Get API client with stored token (lazy-loaded)
@@ -119,7 +136,7 @@ class DaemonManager:
         err_file = self.logs_dir / f"{daemon_id}.err"
 
         # Add start marker to logs
-        timestamp = datetime.utcnow().isoformat()
+        timestamp = datetime.now(UTC).isoformat()
         with open(log_file, 'a') as f:
             f.write(f"\n{'='*70}\n")
             f.write(f"Daemon {daemon_id} started at {timestamp}\n")
@@ -194,14 +211,11 @@ class DaemonManager:
                 status = "killed"
 
             # Update database
-            with self.db.transaction() as conn:
-                self.db.update_daemon_status(
-                    conn,
-                    player_id=self.player_id,
-                    daemon_id=daemon_id,
-                    status=status,
-                    stopped_at=datetime.utcnow().isoformat()
-                )
+            self._update_daemon_status(
+                daemon_id,
+                status,
+                stopped_at=datetime.now(UTC).isoformat(),
+            )
 
             return True
 
@@ -209,14 +223,11 @@ class DaemonManager:
             print(f"Process {pid} not found (already stopped)")
 
             # Update database
-            with self.db.transaction() as conn:
-                self.db.update_daemon_status(
-                    conn,
-                    player_id=self.player_id,
-                    daemon_id=daemon_id,
-                    status="crashed",
-                    stopped_at=datetime.utcnow().isoformat()
-                )
+            self._update_daemon_status(
+                daemon_id,
+                "crashed",
+                stopped_at=datetime.now(UTC).isoformat(),
+            )
 
             return True
 
@@ -226,9 +237,8 @@ class DaemonManager:
 
     def get_pid(self, daemon_id: str) -> Optional[int]:
         """Get PID of running daemon"""
-        with self.db.connection() as conn:
-            daemon = self.db.get_daemon(conn, self.player_id, daemon_id)
-            return daemon['pid'] if daemon else None
+        daemon = self._fetch_daemon(daemon_id)
+        return daemon['pid'] if daemon else None
 
     def is_running(self, daemon_id: str) -> bool:
         """Check if daemon is running"""
@@ -242,27 +252,21 @@ class DaemonManager:
 
             # If not running, update database
             if not is_running:
-                with self.db.transaction() as conn:
-                    self.db.update_daemon_status(
-                        conn,
-                        player_id=self.player_id,
-                        daemon_id=daemon_id,
-                        status="crashed",
-                        stopped_at=datetime.utcnow().isoformat()
-                    )
+                self._update_daemon_status(
+                    daemon_id,
+                    "crashed",
+                    stopped_at=datetime.now(UTC).isoformat(),
+                )
 
             return is_running
 
         except psutil.NoSuchProcess:
             # Update database to mark as crashed
-            with self.db.transaction() as conn:
-                self.db.update_daemon_status(
-                    conn,
-                    player_id=self.player_id,
-                    daemon_id=daemon_id,
-                    status="crashed",
-                    stopped_at=datetime.utcnow().isoformat()
-                )
+            self._update_daemon_status(
+                daemon_id,
+                "crashed",
+                stopped_at=datetime.now(UTC).isoformat(),
+            )
             return False
 
     def status(self, daemon_id: str) -> Optional[Dict]:
@@ -272,46 +276,45 @@ class DaemonManager:
         Returns:
             Status dict or None if not found
         """
-        with self.db.connection() as conn:
-            daemon = self.db.get_daemon(conn, self.player_id, daemon_id)
+        daemon = self._fetch_daemon(daemon_id)
 
-            if not daemon:
-                return None
+        if not daemon:
+            return None
 
-            pid = daemon['pid']
-            is_running = False
-            cpu_percent = 0
-            memory_mb = 0
-            runtime = None
+        pid = daemon['pid']
+        is_running = False
+        cpu_percent = 0
+        memory_mb = 0
+        runtime = None
 
-            try:
-                process = psutil.Process(pid)
-                if process.is_running():
-                    is_running = True
-                    cpu_percent = process.cpu_percent(interval=0.1)
-                    memory_mb = process.memory_info().rss / 1024 / 1024
+        try:
+            process = psutil.Process(pid)
+            if process.is_running():
+                is_running = True
+                cpu_percent = process.cpu_percent(interval=0.1)
+                memory_mb = process.memory_info().rss / 1024 / 1024
 
-                    # Calculate runtime
-                    started_at = datetime.fromisoformat(daemon['started_at'])
-                    runtime = (datetime.utcnow() - started_at).total_seconds()
+                # Calculate runtime
+                started_at = datetime.fromisoformat(daemon['started_at'].replace('Z', '+00:00'))
+                runtime = (datetime.now(UTC) - started_at).total_seconds()
 
-            except psutil.NoSuchProcess:
-                pass
+        except psutil.NoSuchProcess:
+            pass
 
-            return {
-                "daemon_id": daemon_id,
-                "pid": pid,
-                "is_running": is_running,
-                "cpu_percent": cpu_percent,
-                "memory_mb": memory_mb,
-                "runtime_seconds": runtime,
-                "started_at": daemon.get('started_at'),
-                "stopped_at": daemon.get('stopped_at'),
-                "status": daemon.get('status'),
-                "command": daemon.get('command'),
-                "log_file": daemon.get('log_file'),
-                "err_file": daemon.get('err_file')
-            }
+        return {
+            "daemon_id": daemon_id,
+            "pid": pid,
+            "is_running": is_running,
+            "cpu_percent": cpu_percent,
+            "memory_mb": memory_mb,
+            "runtime_seconds": runtime,
+            "started_at": daemon.get('started_at'),
+            "stopped_at": daemon.get('stopped_at'),
+            "status": daemon.get('status'),
+            "command": daemon.get('command'),
+            "log_file": daemon.get('log_file'),
+            "err_file": daemon.get('err_file')
+        }
 
     def list_all(self) -> List[Dict]:
         """List all daemons for this player"""
@@ -329,26 +332,25 @@ class DaemonManager:
 
     def tail_logs(self, daemon_id: str, lines: int = 20):
         """Show recent log output"""
-        with self.db.connection() as conn:
-            daemon = self.db.get_daemon(conn, self.player_id, daemon_id)
+        daemon = self._fetch_daemon(daemon_id)
 
-            if not daemon:
-                print(f"Daemon {daemon_id} not found")
-                return
+        if not daemon:
+            print(f"Daemon {daemon_id} not found")
+            return
 
-            log_file = Path(daemon['log_file'])
+        log_file = Path(daemon['log_file'])
 
-            if not log_file.exists():
-                print(f"Log file not found: {log_file}")
-                return
+        if not log_file.exists():
+            print(f"Log file not found: {log_file}")
+            return
 
-            # Read last N lines
-            with open(log_file, 'r') as f:
-                all_lines = f.readlines()
-                recent_lines = all_lines[-lines:]
+        # Read last N lines
+        with open(log_file, 'r') as f:
+            all_lines = f.readlines()
+            recent_lines = all_lines[-lines:]
 
-            print(f"Last {lines} lines from {log_file}:")
-            print("".join(recent_lines))
+        print(f"Last {lines} lines from {log_file}:")
+        print("".join(recent_lines))
 
     def cleanup_stopped(self):
         """Remove database records for stopped daemons"""
