@@ -1,16 +1,16 @@
 import { useEffect, useRef, useState, forwardRef, useImperativeHandle, useMemo, useCallback } from 'react';
-import { Stage, Layer, Shape, Group, Circle, Text, Line, Label, Tag, Image as KonvaImage } from 'react-konva';
+import { Stage, Layer, Shape, Group, Circle, Text, Line, Label, Tag, Arrow, Image as KonvaImage } from 'react-konva';
 import Konva from 'konva';
 import { useStore } from '../store/useStore';
 import { getWaypoints } from '../services/api';
 import { getWaypointOpportunities, formatOpportunity } from '../domain/market';
 import { Ship, Waypoint, ShipQueries, WaypointQueries, ViewportBounds } from '../domain';
 import { VIEWPORT_CONSTANTS } from '../constants/viewport';
-import { drawShipShape } from '../services/canvas/ShipRenderer';
+import { CANVAS_CONSTANTS } from '../constants/canvas';
 import { getCargoIcon, getCargoLabel } from '../utils/cargo';
 import ZoomControls from './ZoomControls';
 import Minimap from './Minimap';
-import type { FlightMode, ShipTrailPoint, Waypoint as WaypointType, TaggedShip } from '../types/spacetraders';
+import type { FlightMode, ShipTrailPoint, Waypoint as WaypointType, TaggedShip, ShipNavStatus } from '../types/spacetraders';
 
 type TrailVisualSettings = {
   maxAgeMs: number;
@@ -40,15 +40,15 @@ const TRAIL_VISUAL_CONFIG: Record<FlightMode, TrailVisualSettings> = {
   },
   CRUISE: {
     maxAgeMs: 7000,
-    baseWidth: 1.4,
-    baseAlpha: 0.35,
-    tailAlpha: 0.08,
-    glowBlur: 6,
-    glowAlpha: 0.35,
-    particleDensity: 0.25,
-    particleSize: [0.7, 1.4],
-    particleAlpha: 0.3,
-    colorBoost: 0.2,
+    baseWidth: 0.7,
+    baseAlpha: 0.28,
+    tailAlpha: 0.06,
+    glowBlur: 4,
+    glowAlpha: 0.22,
+    particleDensity: 0.18,
+    particleSize: [0.25, 0.5],
+    particleAlpha: 0.22,
+    colorBoost: 0.18,
   },
   BURN: {
     maxAgeMs: 12000,
@@ -58,7 +58,7 @@ const TRAIL_VISUAL_CONFIG: Record<FlightMode, TrailVisualSettings> = {
     glowBlur: 12,
     glowAlpha: 0.65,
     particleDensity: 0.6,
-    particleSize: [1.2, 2.6],
+    particleSize: [0.6, 1.3],
     particleAlpha: 0.5,
     colorBoost: 0.45,
   },
@@ -129,6 +129,24 @@ const DEFAULT_WAYPOINT_ASSET = 'waypoint-planet-rocky-1.png';
 const DEFAULT_SHIP_ASSET = 'ship-command-frigate-2.png';
 const DEFAULT_SHIP_SPRITE_SIZE = 18;
 const SHIP_SPRITE_SIZE = DEFAULT_SHIP_SPRITE_SIZE / 10;
+const SHIP_POSITION_SMOOTHING_MS = 900;
+const SHIP_POSITION_DISTANCE_THRESHOLD = 2;
+const ROUTE_ARROW_SPEED = 0.008;
+const ROUTE_ARROW_SEGMENT_LENGTH = 14;
+
+const ROUTE_COLORS: Record<FlightMode, { line: string; arrow: string }> = {
+  DRIFT: { line: 'rgba(148, 163, 184, 0.35)', arrow: '#f1f5f9' },
+  CRUISE: { line: 'rgba(59, 130, 246, 0.4)', arrow: '#93c5fd' },
+  BURN: { line: 'rgba(248, 113, 113, 0.45)', arrow: '#fca5a5' },
+  STEALTH: { line: 'rgba(129, 140, 248, 0.4)', arrow: '#c7d2fe' },
+};
+
+const MINING_WAYPOINT_TYPES = new Set<WaypointType['type']>([
+  'ASTEROID',
+  'ASTEROID_FIELD',
+  'ENGINEERED_ASTEROID',
+  'ASTEROID_BASE',
+]);
 
 const imageCache = new Map<string, HTMLImageElement | null>();
 
@@ -219,16 +237,35 @@ const WaypointSprite = ({
     );
   }
 
+  const crossSize = Math.max(size * 0.75, 14 / Math.max(scale, 0.0001));
+  const crossHalf = crossSize / 2;
+  const strokeWidth = Math.max(2 / Math.max(scale, 0.0001), 0.8);
+
   return (
-    <Circle
-      x={x}
-      y={y}
-      radius={radius}
-      fill="#394150"
-      stroke="#5f6a7a"
-      strokeWidth={1.5}
-      listening={false}
-    />
+    <Group x={x} y={y} listening={false}>
+      <Circle
+        radius={radius}
+        fill="#1f2937"
+        stroke="#ef4444"
+        strokeWidth={strokeWidth * 0.6}
+        listening={false}
+        opacity={0.4}
+      />
+      <Line
+        points={[-crossHalf, -crossHalf, crossHalf, crossHalf]}
+        stroke="#f87171"
+        strokeWidth={strokeWidth}
+        listening={false}
+        lineCap="round"
+      />
+      <Line
+        points={[-crossHalf, crossHalf, crossHalf, -crossHalf]}
+        stroke="#f87171"
+        strokeWidth={strokeWidth}
+        listening={false}
+        lineCap="round"
+      />
+    </Group>
   );
 };
 
@@ -260,15 +297,25 @@ const ShipSprite = ({
     );
   }
 
-  const spriteScale = Math.max(size / DEFAULT_SHIP_SPRITE_SIZE, 0.02);
+  const crossSize = Math.max(size * 0.65, 6);
+  const crossHalf = crossSize / 2;
+  const strokeWidth = Math.max(size * 0.08, 0.8);
 
   return (
-    <Group listening={false} scale={{ x: spriteScale, y: spriteScale }}>
-      <Shape
-        sceneFunc={(context, _shape) => {
-          drawShipShape(context._context as CanvasRenderingContext2D, ship.registration.role, shipColor);
-        }}
+    <Group listening={false}>
+      <Line
+        points={[-crossHalf, -crossHalf, crossHalf, crossHalf]}
+        stroke="#f87171"
+        strokeWidth={strokeWidth}
         listening={false}
+        lineCap="round"
+      />
+      <Line
+        points={[-crossHalf, crossHalf, crossHalf, -crossHalf]}
+        stroke="#f87171"
+        strokeWidth={strokeWidth}
+        listening={false}
+        lineCap="round"
       />
     </Group>
   );
@@ -318,8 +365,9 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const layerRef = useRef<Konva.Layer | null>(null);
   const waypointsSizeRef = useRef<number>(0);
+  const shipPositionCacheRef = useRef<Map<string, { x: number; y: number; status: ShipNavStatus; timestamp: number }>>(new Map());
 
-  const { currentSystem, waypoints, ships, markets, showMapOverlays, showWaypointNames, showShipNames, setWaypoints, trails, addTrailPosition, clearTrail, filterStatus, filterAgents, filterWaypointTypes, setSelectedShip, setSelectedWaypoint } =
+  const { currentSystem, waypoints, ships, markets, showMapOverlays, showWaypointNames, showShipNames, showDestinationRoutes, setWaypoints, trails, addTrailPosition, clearTrail, filterStatus, filterAgents, filterWaypointTypes, setSelectedShip, setSelectedWaypoint } =
     useStore();
 
   const [hoveredShip, setHoveredShip] = useState<string | null>(null);
@@ -331,6 +379,106 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
   const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
 
   const currentScale = viewportBounds.scale || 1;
+  const frameTimestamp = useMemo(() => Date.now(), [animationFrame]);
+
+  const getShipRenderPosition = useCallback(
+    (ship: TaggedShip, target: { x: number; y: number }, timestamp: number): { x: number; y: number } => {
+      const cache = shipPositionCacheRef.current;
+      const previous = cache.get(ship.symbol);
+      const status = ship.nav.status as ShipNavStatus;
+
+      const distanceFromPrevious = previous
+        ? Math.hypot(target.x - previous.x, target.y - previous.y)
+        : 0;
+
+      let smoothingAllowed = status !== 'IN_TRANSIT';
+      if (!smoothingAllowed && previous) {
+        const largeJumpThreshold = SHIP_POSITION_DISTANCE_THRESHOLD * 4;
+        if (distanceFromPrevious > largeJumpThreshold) {
+          smoothingAllowed = true;
+        }
+      }
+
+      let result = target;
+
+      if (!smoothingAllowed || !previous) {
+        cache.set(ship.symbol, { x: target.x, y: target.y, status, timestamp });
+        return target;
+      }
+
+      const statusChanged = previous.status !== status;
+      const shouldSmooth = statusChanged || distanceFromPrevious > SHIP_POSITION_DISTANCE_THRESHOLD;
+
+      if (shouldSmooth) {
+        const deltaTime = Math.max(0, timestamp - previous.timestamp);
+        const alpha = 1 - Math.exp(-deltaTime / SHIP_POSITION_SMOOTHING_MS);
+        result = {
+          x: previous.x + (target.x - previous.x) * alpha,
+          y: previous.y + (target.y - previous.y) * alpha,
+        };
+      }
+
+      cache.set(ship.symbol, { x: result.x, y: result.y, status, timestamp });
+      return result;
+    },
+    []
+  );
+
+  useEffect(() => {
+    const cache = shipPositionCacheRef.current;
+    const knownSymbols = new Set(ships.map((ship) => ship.symbol));
+    Array.from(cache.keys()).forEach((symbol) => {
+      if (!knownSymbols.has(symbol)) {
+        cache.delete(symbol);
+      }
+    });
+  }, [ships]);
+
+  const getRouteEndpoint = useCallback(
+    (ship: TaggedShip, currentPosition: { x: number; y: number }): { x: number; y: number } | null => {
+      const route = ship.nav.route;
+      if (!route?.destination) return null;
+
+      const destSymbol = route.destination.symbol;
+      const destWaypoint = destSymbol ? waypoints.get(destSymbol) : null;
+      const destX =
+        typeof route.destination.x === 'number'
+          ? route.destination.x
+          : destWaypoint?.x;
+      const destY =
+        typeof route.destination.y === 'number'
+          ? route.destination.y
+          : destWaypoint?.y;
+
+      if (typeof destX !== 'number' || typeof destY !== 'number') {
+        return null;
+      }
+
+      let targetX = destX;
+      let targetY = destY;
+
+      if (destWaypoint) {
+        const waypointRadius = Waypoint.getRadius(destWaypoint);
+        const orbitDistance = destWaypoint.type.includes('ASTEROID')
+          ? CANVAS_CONSTANTS.ORBIT_DISTANCE_ASTEROID
+          : CANVAS_CONSTANTS.ORBIT_DISTANCE_DEFAULT;
+        const orbitRadius = waypointRadius + orbitDistance;
+
+        const dx = destX - currentPosition.x;
+        const dy = destY - currentPosition.y;
+        const totalDistance = Math.hypot(dx, dy);
+
+        if (orbitRadius > 0 && totalDistance > orbitRadius + 0.5) {
+          const ratio = (totalDistance - orbitRadius) / totalDistance;
+          targetX = currentPosition.x + dx * ratio;
+          targetY = currentPosition.y + dy * ratio;
+        }
+      }
+
+      return { x: targetX, y: targetY };
+    },
+    [waypoints]
+  );
 
   // Track canvas size with ResizeObserver so it reacts to layout changes (e.g. sidebar toggles)
   useEffect(() => {
@@ -959,7 +1107,13 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
       variantKey = 'station';
     } else if (role.includes('probe') || role.includes('scout') || role.includes('explorer')) {
       variantKey = 'probe';
-    } else if (role.includes('mine') || role.includes('extract') || role.includes('drone')) {
+    } else if (
+      role.includes('mine') ||
+      role.includes('extract') ||
+      role.includes('drone') ||
+      role.includes('excavator') ||
+      role.includes('miner')
+    ) {
       variantKey = 'mining';
     } else if (role.includes('haul') || role.includes('freight') || role.includes('cargo') || role.includes('transport')) {
       variantKey = 'hauler';
@@ -1161,7 +1315,8 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
     const ship = ships.find((s) => s.symbol === activeShipTooltipSymbol);
     if (!ship) return null;
 
-    const position = Ship.getPosition(ship, waypoints);
+    const targetPosition = Ship.getPosition(ship, waypoints);
+    const position = getShipRenderPosition(ship, targetPosition, frameTimestamp);
     if (position.x === 0 && position.y === 0) return null;
 
     const screenPos = projectToScreen(position);
@@ -1171,7 +1326,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
       left: screenPos.x - SHIP_TOOLTIP_OFFSET_X,
       top: screenPos.y - SHIP_TOOLTIP_OFFSET_Y,
     };
-  }, [activeShipTooltipSymbol, ships, waypoints, animationFrame, projectToScreen, viewportBounds]);
+  }, [activeShipTooltipSymbol, ships, waypoints, projectToScreen, viewportBounds, getShipRenderPosition, frameTimestamp]);
 
   const selectionOverlay = useMemo(() => {
     if (!selectedObject) return null;
@@ -1182,7 +1337,8 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
     if (selectedObject.type === 'ship') {
       const ship = ships.find((s) => s.symbol === selectedObject.symbol);
       if (!ship) return null;
-      const position = Ship.getPosition(ship, waypoints);
+      const targetPosition = Ship.getPosition(ship, waypoints);
+      const position = getShipRenderPosition(ship, targetPosition, frameTimestamp);
       if (position.x === 0 && position.y === 0) return null;
       worldX = position.x;
       worldY = position.y;
@@ -1204,7 +1360,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
       size,
       type: selectedObject.type,
     };
-  }, [selectedObject, ships, waypoints, animationFrame, projectToScreen, viewportBounds, getWaypointDisplayPosition]);
+  }, [selectedObject, ships, waypoints, projectToScreen, viewportBounds, getWaypointDisplayPosition, getShipRenderPosition, frameTimestamp]);
 
   useEffect(() => {
     if (selectedObject?.type === 'waypoint') {
@@ -1357,13 +1513,13 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
 
                 {hasMarketplace && showMapOverlays && (
                   <Text
-                    text="$"
+                    text="🏪"
                     x={x - radius - 8 / currentScale}
                     y={y - 6 / currentScale}
                     fontSize={12 / currentScale}
-                    fill="#fff200"
-                    stroke="rgba(15, 23, 42, 0.6)"
-                    strokeWidth={0.5 / currentScale}
+                    fill="#facc15"
+                    stroke="rgba(17, 24, 39, 0.65)"
+                    strokeWidth={0.4 / currentScale}
                     listening={false}
                   />
                 )}
@@ -1441,7 +1597,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
 
                   ctx.shadowBlur = 0;
 
-                  if (config.particleDensity > 0) {
+                  if (config.particleDensity > 0 && ship.nav.status === 'IN_TRANSIT') {
                     const segmentCount = activeTrail.length - 1;
                     const particleCount = Math.max(1, Math.floor(segmentCount * config.particleDensity));
                     for (let p = 0; p < particleCount; p++) {
@@ -1469,10 +1625,76 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
             );
           })}
 
+          {/* Active route indicators */}
+          {showDestinationRoutes && filteredShips.map((ship: TaggedShip) => {
+            if (ship.nav.status !== 'IN_TRANSIT' || !ship.nav.route?.destination) return null;
+
+            const departureTime = ship.nav.route.departureTime ? new Date(ship.nav.route.departureTime).getTime() : null;
+            const arrivalTime = ship.nav.route.arrival ? new Date(ship.nav.route.arrival).getTime() : null;
+            if (arrivalTime && frameTimestamp >= arrivalTime) {
+              return null;
+            }
+
+            const targetPosition = Ship.getPosition(ship, waypoints);
+            if (targetPosition.x === 0 && targetPosition.y === 0) return null;
+
+            const renderPosition = getShipRenderPosition(ship, targetPosition, frameTimestamp);
+            const endpoint = getRouteEndpoint(ship, targetPosition);
+            if (!endpoint) return null;
+
+            const dx = endpoint.x - renderPosition.x;
+            const dy = endpoint.y - renderPosition.y;
+            const length = Math.hypot(dx, dy);
+            if (length < 6) return null;
+
+            const unitX = dx / length;
+            const unitY = dy / length;
+
+            const phaseSeed = (hashString(ship.symbol) % 100) / 100;
+            const arrowProgress = (((animationFrame * ROUTE_ARROW_SPEED) + phaseSeed) % 1 + 1) % 1;
+            const arrowHeadDistance = Math.max(4, Math.min(length, arrowProgress * length));
+            const segmentLength = Math.min(ROUTE_ARROW_SEGMENT_LENGTH, length * 0.35);
+            const arrowTailDistance = Math.max(0, arrowHeadDistance - segmentLength);
+
+            const tailX = renderPosition.x + unitX * arrowTailDistance;
+            const tailY = renderPosition.y + unitY * arrowTailDistance;
+            const headX = renderPosition.x + unitX * arrowHeadDistance;
+            const headY = renderPosition.y + unitY * arrowHeadDistance;
+
+            const colors = ROUTE_COLORS[ship.nav.flightMode] ?? ROUTE_COLORS.CRUISE;
+            const strokeWidth = Math.max(0.8 / currentScale, 0.4);
+            const dashOffset = -((animationFrame * 1.2) % 1000);
+
+            return (
+              <Group key={`route-${ship.symbol}`} listening={false}>
+                <Line
+                  points={[renderPosition.x, renderPosition.y, endpoint.x, endpoint.y]}
+                  stroke={colors.line}
+                  strokeWidth={strokeWidth}
+                  dash={[12 / currentScale, 10 / currentScale]}
+                  dashOffset={dashOffset}
+                  lineCap="round"
+                  lineJoin="round"
+                  listening={false}
+                />
+                <Arrow
+                  points={[tailX, tailY, headX, headY]}
+                  stroke={colors.arrow}
+                  fill={colors.arrow}
+                  strokeWidth={strokeWidth * 1.4}
+                  pointerLength={8 / currentScale}
+                  pointerWidth={6 / currentScale}
+                  listening={false}
+                />
+              </Group>
+            );
+          })}
+
           {/* Ships */}
           {filteredShips.map((ship: TaggedShip) => {
-            const position = Ship.getPosition(ship, waypoints);
-            if (position.x === 0 && position.y === 0) return null;
+            const targetPosition = Ship.getPosition(ship, waypoints);
+            if (targetPosition.x === 0 && targetPosition.y === 0) return null;
+            const position = getShipRenderPosition(ship, targetPosition, frameTimestamp);
 
             const shipHexColor = Ship.getDisplayColor(ship);
             const shipColor = parseInt(shipHexColor.replace('#', ''), 16);
@@ -1480,21 +1702,38 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
 
             // Calculate rotation
             let rotation = 0;
-            if (ship.nav.status === 'IN_TRANSIT' && ship.nav.route?.destination) {
-              const dest = ship.nav.route.destination;
-              if (dest.x && dest.y) {
-                const angle = Math.atan2(dest.y - position.y, dest.x - position.x);
-                rotation = (angle + Math.PI / 2) * (180 / Math.PI);
+            let travelAngleRad: number | null = null;
+
+            const shipTrail = trails.get(ship.symbol) as ShipTrailPoint[] | undefined;
+            if (shipTrail && shipTrail.length >= 2) {
+              const previous = shipTrail[shipTrail.length - 2];
+              const dxTrail = position.x - previous.x;
+              const dyTrail = position.y - previous.y;
+              if (Math.hypot(dxTrail, dyTrail) > 0.01) {
+                travelAngleRad = Math.atan2(dyTrail, dxTrail);
               }
-            } else if (ship.nav.status === 'IN_ORBIT') {
-              const waypointSymbol = ship.nav.waypointSymbol;
-              const waypoint = waypoints.get(waypointSymbol);
-              if (waypoint) {
-                const dx = position.x - waypoint.x;
-                const dy = position.y - waypoint.y;
-                const orbitalAngle = Math.atan2(dy, dx);
-                rotation = (orbitalAngle + Math.PI) * (180 / Math.PI);
+            }
+
+            if (travelAngleRad === null) {
+              if (ship.nav.status === 'IN_TRANSIT' && ship.nav.route?.destination) {
+                const dest = ship.nav.route.destination;
+                if (typeof dest.x === 'number' && typeof dest.y === 'number') {
+                  travelAngleRad = Math.atan2(dest.y - position.y, dest.x - position.x);
+                }
+              } else if (ship.nav.status === 'IN_ORBIT') {
+                const waypointSymbol = ship.nav.waypointSymbol;
+                const waypoint = waypoints.get(waypointSymbol);
+                if (waypoint) {
+                  const dx = position.x - waypoint.x;
+                  const dy = position.y - waypoint.y;
+                  const orbitalAngle = Math.atan2(dy, dx);
+                  travelAngleRad = orbitalAngle + Math.PI / 2;
+                }
               }
+            }
+
+            if (travelAngleRad !== null) {
+              rotation = (travelAngleRad + Math.PI / 2) * (180 / Math.PI);
             }
 
             const shipNumber = ship.symbol.split('-').pop() ?? ship.symbol;
@@ -1606,25 +1845,53 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
             const waypoint = waypoints.get(ship.nav.waypointSymbol);
             if (!waypoint) return null;
 
-            const position = Ship.getPosition(ship, waypoints);
+            if (ship.nav.status !== 'IN_ORBIT') return null;
+            if (!MINING_WAYPOINT_TYPES.has(waypoint.type)) return null;
+
+            const targetPosition = Ship.getPosition(ship, waypoints);
+            const position = getShipRenderPosition(ship, targetPosition, frameTimestamp);
             const time = animationFrame / 60; // Convert to seconds
 
             return (
               <Group key={`laser-${ship.symbol}`}>
-                {[0, 1, 2].map(i => {
-                  const phase = (time * 3 + i * 0.5) % 1;
+                {[0, 1].map((i) => {
+                  const phase = (time * 3 + i * 0.7) % 1;
                   const alpha = 0.5 + Math.sin(phase * Math.PI * 2) * 0.4;
-                  const offset = (i - 1) * 2;
                   const angle = Math.atan2(waypoint.y - position.y, waypoint.x - position.x);
-                  const perpX = Math.cos(angle + Math.PI / 2) * offset;
-                  const perpY = Math.sin(angle + Math.PI / 2) * offset;
+                  const directionX = Math.cos(angle);
+                  const directionY = Math.sin(angle);
+                  const angleOffset = i === 0 ? -0.12 : 0.12;
+                  const beamAngle = angle + angleOffset;
+                  const beamDirX = Math.cos(beamAngle);
+                  const beamDirY = Math.sin(beamAngle);
+                  const surfaceRadius = Math.max(Waypoint.getRadius(waypoint) - 1, 0);
+                  const centerOffsetX = position.x - waypoint.x;
+                  const centerOffsetY = position.y - waypoint.y;
+                  const b = 2 * (beamDirX * centerOffsetX + beamDirY * centerOffsetY);
+                  const c = centerOffsetX * centerOffsetX + centerOffsetY * centerOffsetY - surfaceRadius * surfaceRadius;
+                  const discriminant = b * b - 4 * c;
+                  let beamEndX = waypoint.x - directionX * surfaceRadius;
+                  let beamEndY = waypoint.y - directionY * surfaceRadius;
+
+                  if (discriminant >= 0) {
+                    const sqrtDisc = Math.sqrt(discriminant);
+                    const t1 = (-b - sqrtDisc) / 2;
+                    const t2 = (-b + sqrtDisc) / 2;
+                    const t = [t1, t2]
+                      .filter((value) => value > 0)
+                      .sort((aVal, bVal) => aVal - bVal)[0];
+                    if (typeof t === 'number') {
+                      beamEndX = position.x + beamDirX * t;
+                      beamEndY = position.y + beamDirY * t;
+                    }
+                  }
 
                   return (
                     <Line
                       key={i}
-                      points={[position.x, position.y, waypoint.x + perpX, waypoint.y + perpY]}
+                      points={[position.x, position.y, beamEndX, beamEndY]}
                       stroke="#ff0000"
-                      strokeWidth={0.3}
+                      strokeWidth={0.08}
                       opacity={alpha}
                       listening={false}
                     />

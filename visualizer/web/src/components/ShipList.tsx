@@ -28,8 +28,8 @@ const ShipList = ({ onFocusOn }: ShipListProps) => {
     filterAgents,
     currentSystem,
     waypoints,
-    showDestinationRoutes,
-    toggleDestinationRoutes,
+  showDestinationRoutes,
+  toggleDestinationRoutes,
     showWaypointNames,
     toggleWaypointNames,
     showShipNames,
@@ -113,7 +113,7 @@ const ShipList = ({ onFocusOn }: ShipListProps) => {
         </span>
         <div className="grid grid-cols-2 gap-2 text-xs">
           <OverlayToggle
-            label="Routes"
+            label="Route Vectors"
             active={showDestinationRoutes}
             onToggle={toggleDestinationRoutes}
             activeTone="orange"
