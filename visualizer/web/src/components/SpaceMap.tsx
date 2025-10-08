@@ -7,6 +7,7 @@ import { getWaypointOpportunities, formatOpportunity } from '../domain/market';
 import { Ship, Waypoint, ShipQueries, WaypointQueries, ViewportBounds } from '../domain';
 import { VIEWPORT_CONSTANTS } from '../constants/viewport';
 import { getCargoIcon, getCargoLabel } from '../utils/cargo';
+import { getFuelBarColor } from '../utils/fuel';
 import { hashString } from '../utils/hash';
 import { RouteVectors } from './RouteVectors';
 import ZoomControls from './ZoomControls';
@@ -141,13 +142,6 @@ const MINING_WAYPOINT_TYPES = new Set<WaypointType['type']>([
 ]);
 
 const imageCache = new Map<string, HTMLImageElement | null>();
-
-const getFuelBarColor = (percent: number): string => {
-  if (percent >= 75) return '#22c55e';
-  if (percent >= 40) return '#facc15';
-  if (percent >= 20) return '#f97316';
-  return '#ef4444';
-};
 
 const useCachedImage = (src: string | null): HTMLImageElement | null => {
   const [image, setImage] = useState<HTMLImageElement | null>(() => {

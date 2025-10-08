@@ -5,6 +5,7 @@ import { Ship } from '../domain';
 import { VIEWPORT_CONSTANTS } from '../constants/viewport';
 import OverlayToggle from './OverlayToggle';
 import { getCargoIcon, getCargoShortLabel } from '../utils/cargo';
+import { getFuelBarColor } from '../utils/fuel';
 
 type OverlayOptions = {
   showDestinationRoutes: boolean;
@@ -47,13 +48,6 @@ const OVERLAY_CONFIG = [
 interface ShipListProps {
   onFocusOn: (x: number, y: number, scale?: number) => void;
 }
-
-const getFuelBarColor = (percent: number): string => {
-  if (percent >= 75) return '#22c55e';
-  if (percent >= 40) return '#facc15';
-  if (percent >= 20) return '#f97316';
-  return '#ef4444';
-};
 
 const STATUS_COLORS: Record<string, string> = {
   IN_TRANSIT: 'bg-orange-500',
