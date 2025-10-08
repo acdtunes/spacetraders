@@ -327,7 +327,6 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
   const [selectedObject, setSelectedObject] = useState<{ type: 'waypoint' | 'ship', symbol: string, x: number, y: number } | null>(null);
   const [viewportBounds, setViewportBounds] = useState({ x: 0, y: 0, width: 0, height: 0, scale: 1 });
   const [animationFrame, setAnimationFrame] = useState(0);
-  const animationRef = useRef<Konva.Animation | null>(null);
 
   const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
 
@@ -802,22 +801,21 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
   };
 
   // Start animation loop for ships
-  useEffect(() => {
-    if (!layerRef.current) return;
+  const animationLayer = layerRef.current;
 
-    const layer = layerRef.current;
+  useEffect(() => {
+    if (!animationLayer) return;
+
     const anim = new Konva.Animation(() => {
       setAnimationFrame(prev => prev + 1);
-    }, layer);
+    }, animationLayer);
 
     anim.start();
-    animationRef.current = anim;
 
     return () => {
       anim.stop();
-      animationRef.current = null;
     };
-  }, []);
+  }, [animationLayer]);
 
   // Sample ship positions for trails based on flight mode
   useEffect(() => {
