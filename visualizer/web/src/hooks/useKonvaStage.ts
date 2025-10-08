@@ -21,8 +21,9 @@ export function useKonvaStage({
 }: UseKonvaStageParams): StageSize {
   const [stageSize, setStageSize] = useState<StageSize>({ width: 0, height: 0 });
 
+  const layer = layerRef.current;
+
   useEffect(() => {
-    const layer = layerRef.current;
     if (!layer) return;
 
     const animation = new Konva.Animation(() => {
@@ -34,7 +35,7 @@ export function useKonvaStage({
     return () => {
       animation.stop();
     };
-  }, [layerRef, onAnimationTick]);
+  }, [layer, onAnimationTick]);
 
   const updateSize = useCallback((width: number, height: number) => {
     setStageSize((prev) => {
