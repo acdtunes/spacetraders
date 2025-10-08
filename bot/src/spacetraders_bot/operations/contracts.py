@@ -193,6 +193,102 @@ def contract_operation(
         )
         return False
 
+
+
+    def _run_delivery_loop(
+        ship,
+        navigator,
+        api,
+        args,
+        delivery,
+        remaining,
+        purchase_units_for_trip,
+        stats,
+        log_error,
+        sleep_fn,
+        fulfilled,
+    ) -> tuple[int, bool]:
+        total_delivered = 0
+        trip = 1
+        max_trips = 10
+
+        while total_delivered < remaining and trip <= max_trips:
+            ship_data = ship.get_status()
+            current_cargo = ship_data['cargo']['inventory']
+
+            to_deliver = next((item['units'] for item in current_cargo if item['symbol'] == delivery['tradeSymbol']), 0)
+
+            if to_deliver == 0:
+                still_need = remaining - total_delivered
+                cargo_available = ship_data['cargo']['capacity'] - ship_data['cargo']['units']
+                units_bought, continue_operation = purchase_units_for_trip(still_need, cargo_available, trip)
+
+                if not continue_operation:
+                    return total_delivered, False
+
+                to_deliver = units_bought
+                if units_bought == 0:
+                    print(f"  ❌ Failed to purchase any units, skipping delivery")
+                    break
+
+            print(f"  Trip {trip}: Delivering {to_deliver} units...")
+            navigator.execute_route(ship, delivery['destinationSymbol'], prefer_cruise=True)
+
+            if not ship.dock():
+                print(f"  ❌ Failed to dock at {delivery['destinationSymbol']}")
+                log_error(
+                    "Docking failure",
+                    f"Unable to dock at delivery destination on trip {trip}",
+                    impact={'Delivered': total_delivered, 'Remaining': remaining - total_delivered},
+                    resolution="Check ship status and retry",
+                    escalate=True,
+                )
+                return total_delivered, False
+
+            if not _attempt_delivery(api, args, delivery, to_deliver, total_delivered, remaining, trip, log_error, sleep_fn):
+                return total_delivered, False
+
+            total_delivered += to_deliver
+            stats['units_delivered'] = fulfilled + total_delivered
+            stats['trips'] = trip
+            trip += 1
+
+        return total_delivered, total_delivered >= remaining
+
+    def _attempt_delivery(api, args, delivery, units, delivered_so_far, remaining, trip, log_error, sleep_fn):
+        max_delivery_retries = 3
+        for retry in range(max_delivery_retries):
+            result = api.post(f"/my/contracts/{args.contract_id}/deliver", {
+                "shipSymbol": args.ship,
+                "tradeSymbol": delivery['tradeSymbol'],
+                "units": units
+            })
+
+            if result and 'data' in result:
+                print(f"  ✅ Delivered {units} units (total: {delivered_so_far + units}/{remaining})")
+                return True
+
+            error_code = result.get('error', {}).get('code') if result else None
+            error_msg = result.get('error', {}).get('message', 'Unknown error') if result else 'No response'
+
+            if error_code == 4502 and retry < max_delivery_retries - 1:
+                print(f"  ⚠️  Delivery failed (error {error_code}): {error_msg}")
+                print(f"  🔄 Retry {retry + 1}/{max_delivery_retries - 1}...")
+                sleep_fn(2)
+                continue
+
+            print(f"  ❌ Delivery failed: {error_msg} (Code: {error_code})")
+            log_error(
+                "Delivery API failure",
+                f"/deliver call returned error {error_code}: {error_msg} on trip {trip}",
+                impact={'Delivered': delivered_so_far, 'Remaining': remaining - delivered_so_far},
+                resolution="Retry delivery manually or check contract requirements",
+                escalate=True,
+            )
+            return False
+
+        return False
+
     def purchase_units_for_trip(still_needed: int, cargo_available: int, trip_number: int) -> Tuple[int, bool]:
         if cargo_available <= 0:
             print("  ⚠️  No cargo space and nothing to deliver")
@@ -396,103 +492,22 @@ def contract_operation(
                 )
                 return 1
 
-    # Deliver (may need multiple trips)
-    print(f"\n4. Delivering to {delivery['destinationSymbol']}...")
+    total_delivered, success = _run_delivery_loop(
+        ship=ship,
+        navigator=navigator,
+        api=api,
+        args=args,
+        delivery=delivery,
+        remaining=remaining,
+        purchase_units_for_trip=purchase_units_for_trip,
+        stats=stats,
+        log_error=log_error,
+        sleep_fn=sleep_fn,
+        fulfilled=fulfilled,
+    )
 
-    total_delivered = 0
-    trip = 1
-    max_trips = 10  # Safety limit
-
-    while total_delivered < remaining and trip <= max_trips:
-        # Check current cargo
-        ship_data = ship.get_status()
-        current_cargo = ship_data['cargo']['inventory']
-
-        # Count how many units we have to deliver
-        to_deliver = 0
-        for item in current_cargo:
-            if item['symbol'] == delivery['tradeSymbol']:
-                to_deliver = item['units']
-                break
-
-        if to_deliver == 0:
-            if args.buy_from:
-                still_need = remaining - total_delivered
-                cargo_available = ship_data['cargo']['capacity'] - ship_data['cargo']['units']
-                units_bought, continue_operation = purchase_units_for_trip(still_need, cargo_available, trip)
-
-                if not continue_operation:
-                    return 1
-
-                to_deliver = units_bought
-                if units_bought == 0:
-                    print(f"  ❌ Failed to purchase any units, skipping delivery")
-                    break
-            else:
-                print("  ❌ No cargo to deliver and no buy_from specified")
-                break
-
-        # Navigate and deliver
-        print(f"  Trip {trip}: Delivering {to_deliver} units...")
-        navigator.execute_route(ship, delivery['destinationSymbol'], prefer_cruise=True)
-
-        # Ensure ship docks properly (ship.dock() now handles IN_TRANSIT wait)
-        if not ship.dock():
-            print(f"  ❌ Failed to dock at {delivery['destinationSymbol']}")
-            log_error(
-                "Docking failure",
-                f"Unable to dock at delivery destination on trip {trip}",
-                impact={'Delivered': total_delivered, 'Remaining': remaining - total_delivered},
-                resolution="Check ship status and retry",
-                escalate=True
-            )
-            return 1
-
-        # Attempt delivery with retry logic for API errors
-        max_delivery_retries = 3
-        delivery_success = False
-
-        for retry in range(max_delivery_retries):
-            result = api.post(f"/my/contracts/{args.contract_id}/deliver", {
-                "shipSymbol": args.ship,
-                "tradeSymbol": delivery['tradeSymbol'],
-                "units": to_deliver
-            })
-
-            if result and 'data' in result:
-                # Success
-                total_delivered += to_deliver
-                stats['units_delivered'] = fulfilled + total_delivered
-                stats['trips'] = trip
-                print(f"  ✅ Delivered {to_deliver} units (total: {total_delivered}/{remaining})")
-                delivery_success = True
-                break
-            else:
-                # Check error details
-                error_code = result.get('error', {}).get('code') if result else None
-                error_msg = result.get('error', {}).get('message', 'Unknown error') if result else 'No response'
-
-                # Error 4502 = contract terms not met - retry with brief pause
-                if error_code == 4502 and retry < max_delivery_retries - 1:
-                    print(f"  ⚠️  Delivery failed (error {error_code}): {error_msg}")
-                    print(f"  🔄 Retry {retry + 1}/{max_delivery_retries - 1}...")
-                    sleep_fn(2)  # Brief pause before retry
-                    continue
-                else:
-                    print(f"  ❌ Delivery failed: {error_msg} (Code: {error_code})")
-                    log_error(
-                        "Delivery API failure",
-                        f"/deliver call returned error {error_code}: {error_msg} on trip {trip}",
-                        impact={'Delivered': total_delivered, 'Remaining': remaining - total_delivered},
-                        resolution="Retry delivery manually or check contract requirements",
-                        escalate=True
-                    )
-                    break
-
-        if not delivery_success:
-            return 1
-
-        trip += 1
+    if not success:
+        return 1
 
     if total_delivered >= remaining:
         # Fulfill contract
