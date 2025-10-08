@@ -19,6 +19,7 @@ const waypointB = 'X1-MOCK-B1';
 const waypointC = 'X1-MOCK-C1';
 const waypointMining = 'X1-MOCK-MINE1';
 const waypointFuelDepot = 'X1-MOCK-FUEL';
+const waypointCommandPatrol = 'X1-MOCK-P1';
 
 const now = () => new Date().toISOString();
 
@@ -76,6 +77,7 @@ export const mockState: MockState = {
         { symbol: waypointB, type: 'PLANET', systemSymbol, x: 40, y: -10 },
         { symbol: waypointC, type: 'FUEL_STATION', systemSymbol, x: -25, y: 30 },
         { symbol: waypointMining, type: 'ASTEROID_FIELD', systemSymbol, x: 15, y: 35 },
+        { symbol: waypointCommandPatrol, type: 'PLANET', systemSymbol, x: 25, y: 18 },
         { symbol: waypointFuelDepot, type: 'FUEL_STATION', systemSymbol, x: -40, y: -20 },
       ],
       factions: [],
@@ -158,6 +160,17 @@ export const mockState: MockState = {
       traits: [{ symbol: 'FUEL_STATION', name: 'Remote Fuel Depot', description: 'Refuel point' }],
       isUnderConstruction: false,
       hasMarketplace: true,
+    },
+    {
+      symbol: waypointCommandPatrol,
+      type: 'PLANET',
+      systemSymbol,
+      x: 25,
+      y: 18,
+      orbitals: [],
+      traits: [{ symbol: 'OBSERVATORY', name: 'Observation Outpost', description: 'Patrol hub' }],
+      isUnderConstruction: false,
+      hasMarketplace: false,
     },
   ],
   ships: [
@@ -286,6 +299,36 @@ export const mockState: MockState = {
       agentId: 'AGENT-2',
       agentColor: '#f472b6',
     },
+    {
+      symbol: 'SHIP-5',
+      registration: {
+        name: 'Command Frigate',
+        factionSymbol: 'MOCK',
+        role: 'COMMAND',
+      },
+      nav: {
+        systemSymbol,
+        waypointSymbol: waypointA,
+        route: baseRoute(waypointA, waypointB),
+        status: 'IN_TRANSIT',
+        flightMode: 'CRUISE',
+      },
+      crew: {},
+      frame: {},
+      reactor: {},
+      engine: {},
+      cargo: {
+        capacity: 30,
+        units: 0,
+        inventory: [],
+      },
+      fuel: {
+        current: 80,
+        capacity: 120,
+      },
+      agentId: 'AGENT-2',
+      agentColor: '#fbbf24',
+    },
   ],
   markets: new Map<string, Market>([
     [
@@ -320,7 +363,7 @@ const cycleStatuses: Array<(ships: MockShip[]) => void> = [
         return;
       }
       ship.nav.status = 'DOCKED';
-      ship.nav.waypointSymbol = ship.registration.role === 'HAULER' ? waypointC : waypointA;
+      ship.nav.waypointSymbol = ship.registration.role === 'HAULER' ? waypointC : ship.registration.role === 'COMMAND' ? waypointCommandPatrol : waypointA;
       ship.nav.flightMode = 'DRIFT';
       ship.fuel.current = Math.min(ship.fuel.capacity, ship.fuel.current + 10);
     });
@@ -378,6 +421,17 @@ const cycleStatuses: Array<(ships: MockShip[]) => void> = [
       explorer.nav.waypointSymbol = waypointMining;
       explorer.nav.flightMode = 'DRIFT';
       explorer.fuel.current = Math.max(0, explorer.fuel.current - 5);
+    }
+
+    const frigate = ships.find((ship) => ship.registration.role === 'COMMAND');
+    if (frigate) {
+      const departingFrom = frigate.nav.waypointSymbol === waypointA ? waypointA : waypointB;
+      const headingTo = departingFrom === waypointA ? waypointB : waypointA;
+      frigate.nav.status = 'IN_TRANSIT';
+      frigate.nav.waypointSymbol = headingTo;
+      frigate.nav.route = baseRoute(departingFrom, headingTo);
+      frigate.nav.flightMode = 'CRUISE';
+      frigate.fuel.current = Math.max(0, frigate.fuel.current - 8);
     }
 
     const drone = ships.find((ship) => ship.registration.role === 'MINING_DRONE');
