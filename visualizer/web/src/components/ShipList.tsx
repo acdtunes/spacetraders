@@ -10,6 +10,13 @@ interface ShipListProps {
   onFocusOn: (x: number, y: number, scale?: number) => void;
 }
 
+const getFuelBarColor = (percent: number): string => {
+  if (percent >= 75) return '#22c55e';
+  if (percent >= 40) return '#facc15';
+  if (percent >= 20) return '#f97316';
+  return '#ef4444';
+};
+
 const ShipList = ({ onFocusOn }: ShipListProps) => {
   const {
     ships,
@@ -201,16 +208,26 @@ const ShipList = ({ onFocusOn }: ShipListProps) => {
                     </div>
 
                     <div className="flex-1">
-                      <div className="flex justify-between text-xs text-gray-500 mb-0.5">
-                        <span>Fuel</span>
-                        <span>{ship.fuel.current}/{ship.fuel.capacity}</span>
-                      </div>
-                      <div className="w-full bg-gray-700 rounded-full h-1">
-                        <div
-                          className="bg-yellow-500 h-1 rounded-full"
-                          style={{ width: `${(ship.fuel.current / ship.fuel.capacity) * 100}%` }}
-                        />
-                      </div>
+                      {(() => {
+                        const fuelPercent = ship.fuel.capacity > 0 ? (ship.fuel.current / ship.fuel.capacity) * 100 : 0;
+                        return (
+                          <>
+                            <div className="flex justify-between text-xs text-gray-500 mb-0.5">
+                              <span>Fuel</span>
+                              <span>{ship.fuel.current}/{ship.fuel.capacity}</span>
+                            </div>
+                            <div className="w-full bg-gray-700 rounded-full h-1">
+                              <div
+                                className="h-1 rounded-full"
+                                style={{
+                                  width: `${Math.min(100, Math.max(0, fuelPercent))}%`,
+                                  backgroundColor: getFuelBarColor(fuelPercent),
+                                }}
+                              />
+                            </div>
+                          </>
+                        );
+                      })()}
                     </div>
                   </div>
 

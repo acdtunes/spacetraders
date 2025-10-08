@@ -139,6 +139,13 @@ const hashString = (value: string): number => {
   return hash;
 };
 
+const getFuelBarColor = (percent: number): string => {
+  if (percent >= 75) return '#22c55e';
+  if (percent >= 40) return '#facc15';
+  if (percent >= 20) return '#f97316';
+  return '#ef4444';
+};
+
 const useCachedImage = (src: string | null): HTMLImageElement | null => {
   const [image, setImage] = useState<HTMLImageElement | null>(() => {
     if (!src || typeof window === 'undefined') return null;
@@ -1080,7 +1087,9 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
     const ship = ships.find((s) => s.symbol === activeShipTooltipSymbol);
     if (!ship) return null;
 
-    const statusText = ship.nav.status.replace(/_/g, ' ');
+    const statusText = ship.nav.status === 'DOCKED'
+      ? `Docked at ${ship.nav.waypointSymbol}`
+      : ship.nav.status.replace(/_/g, ' ');
     const flightMode = ship.nav.flightMode;
     const location = ship.nav.waypointSymbol.split('-').pop() ?? ship.nav.waypointSymbol;
 
@@ -1674,9 +1683,9 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
                 {shipTooltip.role}
               </span>
             </div>
-            <div className="text-[11px] text-gray-200">
-              <span className="text-red-200 font-semibold mr-2">{shipTooltip.statusText}</span>
-              <span className="text-gray-400 text-[10px] uppercase">{shipTooltip.flightMode}</span>
+            <div className="text-[11px] text-gray-200 flex items-center justify-between gap-2">
+              <span className="text-red-200 font-semibold truncate">{shipTooltip.statusText}</span>
+              <span className="text-gray-400 text-[10px] uppercase whitespace-nowrap">{shipTooltip.flightMode}</span>
             </div>
           </div>
 
@@ -1711,8 +1720,11 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
               </div>
               <div className="w-full bg-red-900/40 h-1.5 rounded-full mt-1">
                 <div
-                  className="bg-red-500 h-1.5 rounded-full"
-                  style={{ width: `${Math.min(100, Math.max(0, shipTooltip.fuelPercent))}%` }}
+                  className="h-1.5 rounded-full"
+                  style={{
+                    width: `${Math.min(100, Math.max(0, shipTooltip.fuelPercent))}%`,
+                    backgroundColor: getFuelBarColor(shipTooltip.fuelPercent),
+                  }}
                 />
               </div>
             </div>
