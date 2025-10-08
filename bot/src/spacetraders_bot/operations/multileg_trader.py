@@ -56,198 +56,14 @@ class MultiLegRoute:
     estimated_time_minutes: int
 
 
-class MultiLegTradeOptimizer:
-    """
-    Optimizes multi-leg trading routes using market data
+class GreedyRoutePlanner:
+    """Encapsulates the greedy multi-leg route search logic."""
 
-    Strategy:
-    1. Start at current location with empty cargo
-    2. For each potential next market:
-       - Check what we can buy/sell profitably
-       - Calculate profit if we sell current cargo
-       - Calculate profit if we buy new goods for future markets
-    3. Use A* search to find optimal route
-    """
-
-    def __init__(self, api: APIClient, db, player_id: int, logger: Optional[logging.Logger] = None):
-        self.api = api
+    def __init__(self, logger: logging.Logger, db):
+        self.logger = logger
         self.db = db
-        self.player_id = player_id
-        self.logger = logger or logging.getLogger(__name__)
 
-    def find_optimal_route(
-        self,
-        start_waypoint: str,
-        system: str,
-        max_stops: int,
-        cargo_capacity: int,
-        starting_credits: int,
-        ship_speed: int,
-        fuel_capacity: int,
-        current_fuel: int
-    ) -> Optional[MultiLegRoute]:
-        """
-        Find the most profitable multi-leg trade route
-
-        Args:
-            start_waypoint: Current location
-            system: System symbol (e.g., "X1-JB26")
-            max_stops: Maximum number of stops (3-5 recommended)
-            cargo_capacity: Ship cargo capacity
-            starting_credits: Available credits for purchases
-            ship_speed: Ship speed (for time estimation)
-            fuel_capacity: Fuel tank capacity
-            current_fuel: Current fuel level
-
-        Returns:
-            MultiLegRoute with optimal path, or None if no profitable route found
-        """
-        self.logger.info("="*70)
-        self.logger.info("MULTI-LEG ROUTE OPTIMIZATION")
-        self.logger.info("="*70)
-        self.logger.info(f"Start: {start_waypoint}")
-        self.logger.info(f"Max stops: {max_stops}")
-        self.logger.info(f"Cargo capacity: {cargo_capacity}")
-        self.logger.info(f"Starting credits: {starting_credits:,}")
-        self.logger.info("="*70)
-
-        # Get all markets in system from database
-        markets = self._get_markets_in_system(system)
-        self.logger.info(f"Found {len(markets)} markets in {system}")
-
-        if not markets:
-            self.logger.error("No markets found in system")
-            return None
-
-        # Get all trade opportunities from database
-        trade_opportunities = self._get_trade_opportunities(system, markets)
-        self.logger.info(f"Found {len(trade_opportunities)} trade opportunities")
-
-        # Build route using greedy best-first search with market price awareness
-        # (Full A* would be too expensive for real-time, greedy is good enough)
-        best_route = self._greedy_route_search(
-            start_waypoint=start_waypoint,
-            markets=markets,
-            trade_opportunities=trade_opportunities,
-            max_stops=max_stops,
-            cargo_capacity=cargo_capacity,
-            starting_credits=starting_credits,
-            ship_speed=ship_speed
-        )
-
-        if best_route:
-            self.logger.info("\n" + "="*70)
-            self.logger.info("OPTIMAL ROUTE FOUND")
-            self.logger.info("="*70)
-            self.logger.info(f"Total profit: {best_route.total_profit:,} credits")
-            self.logger.info(f"Total distance: {best_route.total_distance:.0f} units")
-            self.logger.info(f"Estimated time: {best_route.estimated_time_minutes:.0f} minutes")
-            self.logger.info(f"Stops: {len(best_route.segments)}")
-            self.logger.info("\nRoute:")
-
-            for i, segment in enumerate(best_route.segments, 1):
-                self.logger.info(f"\n  Stop {i}: {segment.to_waypoint}")
-                self.logger.info(f"    Distance: {segment.distance:.0f} units")
-                self.logger.info(f"    Actions:")
-                for action in segment.actions_at_destination:
-                    symbol = '💰' if action.action == 'BUY' else '💵'
-                    self.logger.info(f"      {symbol} {action.action} {action.units}x {action.good} @ {action.price_per_unit:,} = {action.total_value:,}")
-                self.logger.info(f"    Cargo after: {segment.cargo_after}")
-                self.logger.info(f"    Cumulative profit: {segment.cumulative_profit:,}")
-
-            self.logger.info("="*70)
-        else:
-            self.logger.warning("No profitable multi-leg route found")
-
-        return best_route
-
-    def _get_markets_in_system(self, system: str) -> List[str]:
-        """Get all market waypoints in a system from database"""
-        with self.db.connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT DISTINCT waypoint_symbol
-                FROM market_data
-                WHERE waypoint_symbol LIKE ?
-                AND (updated_by_player = ? OR updated_by_player IS NULL)
-            """, (f"{system}-%", self.player_id))
-
-            return [row[0] for row in cursor.fetchall()]
-
-    def _get_trade_opportunities(self, system: str, markets: List[str]) -> List[Dict]:
-        """
-        Get all profitable trade opportunities from database
-
-        Returns list of dicts with:
-        - buy_waypoint, sell_waypoint
-        - good
-        - buy_price (what we pay), sell_price (what we receive)
-        - spread (profit per unit)
-        - trade_volume (transaction limit)
-        """
-        opportunities = []
-
-        with self.db.connection() as conn:
-            for buy_market in markets:
-                buy_data = self.db.get_market_data(conn, buy_market, None)
-                opportunities.extend(
-                    self._collect_opportunities_for_market(
-                        conn, buy_market, buy_data, markets
-                    )
-                )
-
-        # Sort by spread (most profitable first)
-        opportunities.sort(key=lambda x: x['spread'], reverse=True)
-
-        return opportunities
-
-    def _collect_opportunities_for_market(
-        self,
-        conn,
-        buy_market: str,
-        buy_data: List[Dict],
-        markets: List[str],
-    ) -> List[Dict]:
-        opportunities = []
-
-        for sell_market in markets:
-            if sell_market == buy_market:
-                continue
-
-            for buy_record in buy_data:
-                good = buy_record['good_symbol']
-                buy_price = buy_record.get('sell_price')
-
-                if not buy_price:
-                    continue
-
-                sell_data = self.db.get_market_data(conn, sell_market, good)
-                if not sell_data:
-                    continue
-
-                sell_record = sell_data[0]
-                sell_price = sell_record.get('purchase_price')
-
-                if not sell_price:
-                    continue
-
-                spread = sell_price - buy_price
-                if spread <= 0:
-                    continue
-
-                opportunities.append({
-                    'buy_waypoint': buy_market,
-                    'sell_waypoint': sell_market,
-                    'good': good,
-                    'buy_price': buy_price,
-                    'sell_price': sell_price,
-                    'spread': spread,
-                    'trade_volume': buy_record.get('trade_volume', 100),
-                })
-
-        return opportunities
-
-    def _greedy_route_search(
+    def find_route(
         self,
         start_waypoint: str,
         markets: List[str],
@@ -255,57 +71,44 @@ class MultiLegTradeOptimizer:
         max_stops: int,
         cargo_capacity: int,
         starting_credits: int,
-        ship_speed: int
+        ship_speed: int,
     ) -> Optional[MultiLegRoute]:
-        """
-        Greedy best-first search for profitable route
-
-        At each step, choose the next market that maximizes profit considering:
-        1. Selling current cargo at that market
-        2. Buying new goods for future markets
-        3. Distance/fuel cost to get there
-        """
-        # Current state
         current_waypoint = start_waypoint
-        current_cargo = {}  # {good: units}
+        current_cargo: Dict[str, int] = {}
         current_credits = starting_credits
         cumulative_profit = 0
-        route_segments = []
+        route_segments: List[RouteSegment] = []
         visited = {start_waypoint}
 
-        for stop_num in range(max_stops):
-            # Find best next market
-            best_next = self._find_best_next_market(
+        for _ in range(max_stops):
+            next_step = self._find_best_next_market(
                 current_waypoint=current_waypoint,
                 current_cargo=current_cargo,
                 current_credits=current_credits,
                 markets=markets,
                 trade_opportunities=trade_opportunities,
                 cargo_capacity=cargo_capacity,
-                visited=visited
+                visited=visited,
             )
 
-            if not best_next:
-                # No more profitable moves
+            if not next_step:
                 break
 
-            next_waypoint, actions, new_cargo, new_credits, segment_profit, distance = best_next
+            next_waypoint, actions, new_cargo, new_credits, segment_profit, distance = next_step
 
-            # Create segment
             segment = RouteSegment(
                 from_waypoint=current_waypoint,
                 to_waypoint=next_waypoint,
                 distance=distance,
-                fuel_cost=int(distance * 1.1),  # Rough estimate
+                fuel_cost=int(distance * 1.1),
                 actions_at_destination=actions,
                 cargo_after=new_cargo.copy(),
                 credits_after=new_credits,
-                cumulative_profit=cumulative_profit + segment_profit
+                cumulative_profit=cumulative_profit + segment_profit,
             )
 
             route_segments.append(segment)
 
-            # Update state
             current_waypoint = next_waypoint
             current_cargo = new_cargo
             current_credits = new_credits
@@ -315,12 +118,9 @@ class MultiLegTradeOptimizer:
         if not route_segments:
             return None
 
-        # Calculate totals
         total_distance = sum(s.distance for s in route_segments)
         total_fuel_cost = sum(s.fuel_cost for s in route_segments)
         total_profit = cumulative_profit - total_fuel_cost
-
-        # Estimate time (very rough)
         estimated_time_minutes = (total_distance / ship_speed) * 60
 
         return MultiLegRoute(
@@ -328,7 +128,7 @@ class MultiLegTradeOptimizer:
             total_profit=total_profit,
             total_distance=total_distance,
             total_fuel_cost=total_fuel_cost,
-            estimated_time_minutes=estimated_time_minutes
+            estimated_time_minutes=estimated_time_minutes,
         )
 
     def _find_best_next_market(
@@ -339,15 +139,8 @@ class MultiLegTradeOptimizer:
         markets: List[str],
         trade_opportunities: List[Dict],
         cargo_capacity: int,
-        visited: set
+        visited: set,
     ) -> Optional[Tuple]:
-        """
-        Find the next market that maximizes profit
-
-        Returns:
-            Tuple of (next_waypoint, actions, new_cargo, new_credits, profit, distance)
-            or None if no good option
-        """
         best_option = None
         best_profit = 0
 
@@ -355,18 +148,16 @@ class MultiLegTradeOptimizer:
             if next_market in visited:
                 continue
 
-            # Calculate distance (placeholder - should use actual pathfinding)
             distance = self._estimate_distance(current_waypoint, next_market)
             fuel_cost = int(distance * 1.1)
 
-            # Simulate actions at this market
             actions, new_cargo, new_credits, net_profit = self._simulate_market_actions(
                 market=next_market,
                 current_cargo=current_cargo,
                 current_credits=current_credits,
                 trade_opportunities=trade_opportunities,
                 cargo_capacity=cargo_capacity,
-                fuel_cost=fuel_cost
+                fuel_cost=fuel_cost,
             )
 
             if net_profit > best_profit:
@@ -382,14 +173,8 @@ class MultiLegTradeOptimizer:
         current_credits: int,
         trade_opportunities: List[Dict],
         cargo_capacity: int,
-        fuel_cost: int
+        fuel_cost: int,
     ) -> Tuple[List[TradeAction], Dict[str, int], int, int]:
-        """
-        Simulate trading at a market
-
-        Returns:
-            (actions, new_cargo, new_credits, net_profit)
-        """
         sell_actions, cargo_after_sell, credits_after_sell, revenue = self._apply_sell_actions(
             market=market,
             current_cargo=current_cargo,
@@ -524,41 +309,221 @@ class MultiLegTradeOptimizer:
         potential_revenue = 0
         for good, units in cargo.items():
             best_sell = max(
-                (o['sell_price'] for o in trade_opportunities if o['good'] == good and o['sell_waypoint'] != current_market),
+                (
+                    o['sell_price']
+                    for o in trade_opportunities
+                    if o['good'] == good and o['sell_waypoint'] != current_market
+                ),
                 default=0,
             )
             potential_revenue += units * best_sell
         return potential_revenue
 
-
     def _estimate_distance(self, from_waypoint: str, to_waypoint: str) -> float:
-        """
-        Estimate distance between waypoints using coordinates from database
-        """
         with self.db.connection() as conn:
             cursor = conn.cursor()
-
-            # Get coordinates for both waypoints
-            cursor.execute("""
-                SELECT x, y FROM waypoints WHERE waypoint_symbol = ?
-            """, (from_waypoint,))
+            cursor.execute("SELECT x, y FROM waypoints WHERE waypoint_symbol = ?", (from_waypoint,))
             from_row = cursor.fetchone()
-
-            cursor.execute("""
-                SELECT x, y FROM waypoints WHERE waypoint_symbol = ?
-            """, (to_waypoint,))
+            cursor.execute("SELECT x, y FROM waypoints WHERE waypoint_symbol = ?", (to_waypoint,))
             to_row = cursor.fetchone()
 
             if not from_row or not to_row:
-                # Fallback to placeholder if coordinates not found
                 return 150.0
 
-            # Calculate Euclidean distance
             dx = to_row[0] - from_row[0]
             dy = to_row[1] - from_row[1]
-            distance = (dx**2 + dy**2)**0.5
+            return (dx**2 + dy**2) ** 0.5
 
-            return distance
+
+class MultiLegTradeOptimizer:
+    """
+    Optimizes multi-leg trading routes using market data
+
+    Strategy:
+    1. Start at current location with empty cargo
+    2. For each potential next market:
+       - Check what we can buy/sell profitably
+       - Calculate profit if we sell current cargo
+       - Calculate profit if we buy new goods for future markets
+    3. Use A* search to find optimal route
+    """
+
+    def __init__(self, api: APIClient, db, player_id: int, logger: Optional[logging.Logger] = None):
+        self.api = api
+        self.db = db
+        self.player_id = player_id
+        self.logger = logger or logging.getLogger(__name__)
+
+    def find_optimal_route(
+        self,
+        start_waypoint: str,
+        system: str,
+        max_stops: int,
+        cargo_capacity: int,
+        starting_credits: int,
+        ship_speed: int,
+        fuel_capacity: int,
+        current_fuel: int
+    ) -> Optional[MultiLegRoute]:
+        """
+        Find the most profitable multi-leg trade route
+
+        Args:
+            start_waypoint: Current location
+            system: System symbol (e.g., "X1-JB26")
+            max_stops: Maximum number of stops (3-5 recommended)
+            cargo_capacity: Ship cargo capacity
+            starting_credits: Available credits for purchases
+            ship_speed: Ship speed (for time estimation)
+            fuel_capacity: Fuel tank capacity
+            current_fuel: Current fuel level
+
+        Returns:
+            MultiLegRoute with optimal path, or None if no profitable route found
+        """
+        self.logger.info("="*70)
+        self.logger.info("MULTI-LEG ROUTE OPTIMIZATION")
+        self.logger.info("="*70)
+        self.logger.info(f"Start: {start_waypoint}")
+        self.logger.info(f"Max stops: {max_stops}")
+        self.logger.info(f"Cargo capacity: {cargo_capacity}")
+        self.logger.info(f"Starting credits: {starting_credits:,}")
+        self.logger.info("="*70)
+
+        # Get all markets in system from database
+        markets = self._get_markets_in_system(system)
+        self.logger.info(f"Found {len(markets)} markets in {system}")
+
+        if not markets:
+            self.logger.error("No markets found in system")
+            return None
+
+        # Get all trade opportunities from database
+        trade_opportunities = self._get_trade_opportunities(system, markets)
+        self.logger.info(f"Found {len(trade_opportunities)} trade opportunities")
+
+        planner = GreedyRoutePlanner(self.logger, self.db)
+        best_route = planner.find_route(
+            start_waypoint=start_waypoint,
+            markets=markets,
+            trade_opportunities=trade_opportunities,
+            max_stops=max_stops,
+            cargo_capacity=cargo_capacity,
+            starting_credits=starting_credits,
+            ship_speed=ship_speed,
+        )
+
+        if best_route:
+            self.logger.info("\n" + "="*70)
+            self.logger.info("OPTIMAL ROUTE FOUND")
+            self.logger.info("="*70)
+            self.logger.info(f"Total profit: {best_route.total_profit:,} credits")
+            self.logger.info(f"Total distance: {best_route.total_distance:.0f} units")
+            self.logger.info(f"Estimated time: {best_route.estimated_time_minutes:.0f} minutes")
+            self.logger.info(f"Stops: {len(best_route.segments)}")
+            self.logger.info("\nRoute:")
+
+            for i, segment in enumerate(best_route.segments, 1):
+                self.logger.info(f"\n  Stop {i}: {segment.to_waypoint}")
+                self.logger.info(f"    Distance: {segment.distance:.0f} units")
+                self.logger.info(f"    Actions:")
+                for action in segment.actions_at_destination:
+                    symbol = '💰' if action.action == 'BUY' else '💵'
+                    self.logger.info(f"      {symbol} {action.action} {action.units}x {action.good} @ {action.price_per_unit:,} = {action.total_value:,}")
+                self.logger.info(f"    Cargo after: {segment.cargo_after}")
+                self.logger.info(f"    Cumulative profit: {segment.cumulative_profit:,}")
+
+            self.logger.info("="*70)
+        else:
+            self.logger.warning("No profitable multi-leg route found")
+
+        return best_route
+
+    def _get_markets_in_system(self, system: str) -> List[str]:
+        """Get all market waypoints in a system from database"""
+        with self.db.connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT DISTINCT waypoint_symbol
+                FROM market_data
+                WHERE waypoint_symbol LIKE ?
+                AND (updated_by_player = ? OR updated_by_player IS NULL)
+            """, (f"{system}-%", self.player_id))
+
+            return [row[0] for row in cursor.fetchall()]
+
+    def _get_trade_opportunities(self, system: str, markets: List[str]) -> List[Dict]:
+        """
+        Get all profitable trade opportunities from database
+
+        Returns list of dicts with:
+        - buy_waypoint, sell_waypoint
+        - good
+        - buy_price (what we pay), sell_price (what we receive)
+        - spread (profit per unit)
+        - trade_volume (transaction limit)
+        """
+        opportunities = []
+
+        with self.db.connection() as conn:
+            for buy_market in markets:
+                buy_data = self.db.get_market_data(conn, buy_market, None)
+                opportunities.extend(
+                    self._collect_opportunities_for_market(
+                        conn, buy_market, buy_data, markets
+                    )
+                )
+
+        # Sort by spread (most profitable first)
+        opportunities.sort(key=lambda x: x['spread'], reverse=True)
+
+        return opportunities
+
+    def _collect_opportunities_for_market(
+        self,
+        conn,
+        buy_market: str,
+        buy_data: List[Dict],
+        markets: List[str],
+    ) -> List[Dict]:
+        opportunities = []
+
+        for sell_market in markets:
+            if sell_market == buy_market:
+                continue
+
+            for buy_record in buy_data:
+                good = buy_record['good_symbol']
+                buy_price = buy_record.get('sell_price')
+
+                if not buy_price:
+                    continue
+
+                sell_data = self.db.get_market_data(conn, sell_market, good)
+                if not sell_data:
+                    continue
+
+                sell_record = sell_data[0]
+                sell_price = sell_record.get('purchase_price')
+
+                if not sell_price:
+                    continue
+
+                spread = sell_price - buy_price
+                if spread <= 0:
+                    continue
+
+                opportunities.append({
+                    'buy_waypoint': buy_market,
+                    'sell_waypoint': sell_market,
+                    'good': good,
+                    'buy_price': buy_price,
+                    'sell_price': sell_price,
+                    'spread': spread,
+                    'trade_volume': buy_record.get('trade_volume', 100),
+                })
+
+        return opportunities
 
 
 def execute_multileg_route(

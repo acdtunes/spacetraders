@@ -6,6 +6,7 @@ import pytest
 import spacetraders_bot.operations.multileg_trader as multileg_module
 
 from spacetraders_bot.operations.multileg_trader import (
+    GreedyRoutePlanner,
     MultiLegRoute,
     MultiLegTradeOptimizer,
     RouteSegment,
@@ -99,7 +100,7 @@ def test_get_trade_opportunities(monkeypatch):
 
 
 def test_simulate_market_actions_buys_and_sells():
-    optimizer = MultiLegTradeOptimizer(api=MagicMock(), db=MagicMock(), player_id=1, logger=MagicMock())
+    planner = GreedyRoutePlanner(logger=MagicMock(), db=MagicMock())
 
     trade_ops = [
         {
@@ -113,7 +114,7 @@ def test_simulate_market_actions_buys_and_sells():
         }
     ]
 
-    actions, cargo, credits, net_profit = optimizer._simulate_market_actions(
+    actions, cargo, credits, net_profit = planner._simulate_market_actions(
         market='A',
         current_cargo={'IRON': 5},
         current_credits=100,
@@ -126,7 +127,7 @@ def test_simulate_market_actions_buys_and_sells():
     assert cargo['IRON'] > 0
     assert net_profit > 0  # includes future potential
 
-    actions, cargo, credits, net_profit = optimizer._simulate_market_actions(
+    actions, cargo, credits, net_profit = planner._simulate_market_actions(
         market='B',
         current_cargo={'IRON': 5},
         current_credits=100,
@@ -140,9 +141,9 @@ def test_simulate_market_actions_buys_and_sells():
 
 
 def test_find_best_next_market(monkeypatch):
-    optimizer = MultiLegTradeOptimizer(api=MagicMock(), db=MagicMock(), player_id=1, logger=MagicMock())
+    planner = GreedyRoutePlanner(logger=MagicMock(), db=MagicMock())
 
-    optimizer._estimate_distance = MagicMock(return_value=10)
+    planner._estimate_distance = MagicMock(return_value=10)
 
     trade_ops = [
         {
@@ -165,7 +166,7 @@ def test_find_best_next_market(monkeypatch):
         }
     ]
 
-    result = optimizer._find_best_next_market(
+    result = planner._find_best_next_market(
         current_waypoint='A',
         current_cargo={'IRON': 5},
         current_credits=100,
@@ -179,7 +180,7 @@ def test_find_best_next_market(monkeypatch):
 
 
 def test_greedy_route_search(monkeypatch):
-    optimizer = MultiLegTradeOptimizer(api=MagicMock(), db=MagicMock(), player_id=1, logger=MagicMock())
+    planner = GreedyRoutePlanner(logger=MagicMock(), db=MagicMock())
 
     def fake_find(*args, **kwargs):
         visited = kwargs.get('visited')
@@ -194,9 +195,9 @@ def test_greedy_route_search(monkeypatch):
             )
         return None
 
-    monkeypatch.setattr(optimizer, '_find_best_next_market', fake_find)
+    monkeypatch.setattr(planner, '_find_best_next_market', fake_find)
 
-    route = optimizer._greedy_route_search(
+    route = planner.find_route(
         start_waypoint='A',
         markets=['B'],
         trade_opportunities=[],
@@ -227,7 +228,25 @@ def test_find_optimal_route_positive_profit(monkeypatch):
         }
     ]
     monkeypatch.setattr(optimizer, '_get_trade_opportunities', lambda system, markets: trade_ops)
-    monkeypatch.setattr(MultiLegTradeOptimizer, '_estimate_distance', lambda self, a, b: 10)
+
+    class StubPlanner:
+        def __init__(self, *_, **__):
+            pass
+
+        def find_route(self, **kwargs):
+            planner = GreedyRoutePlanner(logger=MagicMock(), db=FakeDB())
+            planner._estimate_distance = lambda *args, **kwargs: 10
+            return planner.find_route(
+                start_waypoint='A',
+                markets=['B', 'C'],
+                trade_opportunities=trade_ops,
+                max_stops=3,
+                cargo_capacity=20,
+                starting_credits=1000,
+                ship_speed=10,
+            )
+
+    monkeypatch.setattr(multileg_module, 'GreedyRoutePlanner', StubPlanner)
 
     route = optimizer.find_optimal_route(
         start_waypoint='A',
