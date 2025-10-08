@@ -24,6 +24,9 @@ from spacetraders_bot.operations.common import (
 )
 
 
+SEPARATOR = "=" * 70
+
+
 @dataclass
 class MiningStats:
     cycles_completed: int = 0
@@ -40,6 +43,74 @@ class MiningContext:
     controller: Optional[OperationController]
     stats: MiningStats
     log_error: Callable[..., None]
+
+
+@dataclass
+class MiningCycle:
+    """Executes a single mining cycle from asteroid extraction to market sale."""
+
+    context: MiningContext
+    total_cycles: int
+    asteroid: str
+    market: str
+
+    def execute(self, cycle: int) -> bool:
+        self._print_cycle_header(cycle)
+
+        if not self._navigate_to_asteroid(cycle):
+            return False
+
+        self.context.ship.orbit()
+        cargo = _mine_until_cargo_full(self.context)
+
+        if not self._navigate_to_market(cycle):
+            return False
+
+        revenue = _sell_cargo(self.context, cargo)
+        self._refuel_ship()
+
+        self.context.stats.cycles_completed += 1
+        _checkpoint_cycle(self.context, cycle, self.market)
+
+        self._print_cycle_summary(cycle, revenue, cargo)
+        return True
+
+    def _navigate_to_asteroid(self, cycle: int) -> bool:
+        return _navigate_with_retries(
+            self.context,
+            self.asteroid,
+            cycle,
+            f"\n1. Navigating to asteroid {self.asteroid}...",
+            "Check fuel levels and route",
+        )
+
+    def _navigate_to_market(self, cycle: int) -> bool:
+        return _navigate_with_retries(
+            self.context,
+            self.market,
+            cycle,
+            f"\n3. Navigating to market {self.market}...",
+            "Verify route and refuel options",
+        )
+
+    def _refuel_ship(self) -> None:
+        print("\n5. Refueling...")
+        self.context.ship.refuel()
+
+    def _print_cycle_header(self, cycle: int) -> None:
+        print(f"\n{SEPARATOR}")
+        print(f"CYCLE {cycle}/{self.total_cycles}")
+        print(SEPARATOR)
+
+    def _print_cycle_summary(self, cycle: int, revenue: int, cargo: Optional[Dict]) -> None:
+        cargo_units = cargo.get('units', 0) if cargo else 0
+        print(f"\n{SEPARATOR}")
+        print(f"CYCLE {cycle} COMPLETE")
+        print(f"Revenue this cycle: {revenue:,} credits")
+        print(f"Cargo sold: {cargo_units} units")
+        print(f"Total revenue: {self.context.stats.total_revenue:,} credits")
+        print(f"Total extracted: {self.context.stats.total_extracted} units")
+        print(SEPARATOR)
 
 
 def _stats_from_checkpoint(checkpoint: dict, default: MiningStats) -> Tuple[int, MiningStats]:
@@ -291,6 +362,13 @@ def mining_operation(args):
         log_error=log_error,
     )
 
+    cycle_runner = MiningCycle(
+        context=context,
+        total_cycles=args.cycles,
+        asteroid=args.asteroid,
+        market=args.market,
+    )
+
     # Mining loop with smart navigation
     for cycle in range(start_cycle, args.cycles + 1):
         # Check for control commands
@@ -310,54 +388,13 @@ def mining_operation(args):
             controller.pause()
             return 0
 
-        print(f"\n{'='*70}")
-        print(f"CYCLE {cycle}/{args.cycles}")
-        print('='*70)
-
-        if not _navigate_with_retries(
-            context,
-            args.asteroid,
-            cycle,
-            f"\n1. Navigating to asteroid {args.asteroid}...",
-            "Check fuel levels and route",
-        ):
+        if not cycle_runner.execute(cycle):
             return 1
-
-        context.ship.orbit()
-
-        cargo = _mine_until_cargo_full(context)
-
-        if not _navigate_with_retries(
-            context,
-            args.market,
-            cycle,
-            f"\n3. Navigating to market {args.market}...",
-            "Verify route and refuel options",
-        ):
-            return 1
-
-        revenue = _sell_cargo(context, cargo)
-
-        print(f"\n5. Refueling...")
-        context.ship.refuel()
-
-        context.stats.cycles_completed += 1
-
-        _checkpoint_cycle(context, cycle, args.market)
-
-        cargo_units = cargo.get('units', 0) if cargo else 0
-        print(f"\n{'='*70}")
-        print(f"CYCLE {cycle} COMPLETE")
-        print(f"Revenue this cycle: {revenue:,} credits")
-        print(f"Cargo sold: {cargo_units} units")
-        print(f"Total revenue: {context.stats.total_revenue:,} credits")
-        print(f"Total extracted: {context.stats.total_extracted} units")
-        print('='*70)
 
     # Final summary
-    print(f"\n{'='*70}")
+    print(f"\n{SEPARATOR}")
     print("MINING OPERATION COMPLETE")
-    print('='*70)
+    print(SEPARATOR)
     print(f"Cycles completed: {context.stats.cycles_completed}")
     print(f"Total revenue: {context.stats.total_revenue:,} credits")
     print(f"Total extracted: {context.stats.total_extracted} units")

@@ -5,5 +5,6 @@
 3. [x] Modularize scout coordinator monitoring with per-ship state and clearer error handling.
 4. [x] Simplify daemon manager supervision loop via smaller command helpers.
 5. [x] Split purchasing validation/execution into dedicated functions or classes to adhere to SRP.
-6. [ ] Wrap API client responses in typed success/error results to centralize error handling.
-7. [ ] Introduce a MiningCycle helper in mining operations to encapsulate extraction/cooldown workflow.
+6. [x] Wrap API client responses in typed success/error results to centralize error handling.
+7. [x] Introduce a MiningCycle helper in mining operations to encapsulate extraction/cooldown workflow.
+8. [ ] Identify the next high-complexity operation module for conditional-logic refactor (strategy pattern candidates).
