@@ -9,6 +9,19 @@ export default defineConfig(({ mode }) => {
     test: {
       environment: 'jsdom',
       setupFiles: ['./vitest.setup.ts'],
+      pool: 'threads',
+      poolOptions: {
+        threads: {
+          minThreads: 1,
+          maxThreads: 1,
+        },
+      },
+      maxConcurrency: 1,
+      exclude: [
+        'dist/**',
+        'node_modules/**',
+        'src/mocks/**',
+      ],
     },
   };
 });
