@@ -62,7 +62,9 @@ describe('useShipTooltip', () => {
 
   it('formats docked ships with location text', () => {
     const ship = buildShip({ nav: { ...buildShip().nav, status: 'DOCKED' } });
-    const { result } = renderHook(() => useShipTooltip({ activeSymbol: ship.symbol, ships: [ship] }));
+    const { result } = renderHook(() =>
+      useShipTooltip({ activeSymbol: ship.symbol, ships: [ship], now: Date.now() })
+    );
     expect(result.current?.statusText).toBe(`Docked at ${ship.nav.waypointSymbol}`);
   });
 
@@ -78,7 +80,9 @@ describe('useShipTooltip', () => {
         },
       },
     });
-    const { result } = renderHook(() => useShipTooltip({ activeSymbol: ship.symbol, ships: [ship] }));
+    const { result } = renderHook(() =>
+      useShipTooltip({ activeSymbol: ship.symbol, ships: [ship], now: Date.now() })
+    );
     expect(result.current?.etaText).toMatch(/^00:01:/);
   });
 
@@ -95,14 +99,45 @@ describe('useShipTooltip', () => {
         inventory,
       },
     });
-    const { result } = renderHook(() => useShipTooltip({ activeSymbol: ship.symbol, ships: [ship] }));
+    const { result } = renderHook(() =>
+      useShipTooltip({ activeSymbol: ship.symbol, ships: [ship], now: Date.now() })
+    );
     expect(result.current?.cargoEntries).toHaveLength(3);
     expect(result.current?.cargoPercent).toBe(50);
   });
 
   it('returns cooldown seconds when present', () => {
     const ship = buildShip({ cooldown: { shipSymbol: 'SHIP-001', remainingSeconds: 12, totalSeconds: 60 } });
-    const { result } = renderHook(() => useShipTooltip({ activeSymbol: ship.symbol, ships: [ship] }));
+    const { result } = renderHook(() =>
+      useShipTooltip({ activeSymbol: ship.symbol, ships: [ship], now: Date.now() })
+    );
     expect(result.current?.cooldownSeconds).toBe(12);
+  });
+
+  it('updates ETA as the reference time advances', () => {
+    const baseShip = buildShip();
+    const ship = buildShip({
+      nav: {
+        ...baseShip.nav,
+        status: 'IN_TRANSIT',
+        route: {
+          ...baseShip.nav.route,
+          arrival: new Date(Date.now() + 60_000).toISOString(),
+        },
+      },
+    });
+
+    const { result, rerender } = renderHook(
+      ({ now }) => useShipTooltip({ activeSymbol: ship.symbol, ships: [ship], now }),
+      { initialProps: { now: 0 } }
+    );
+
+    expect(result.current?.etaText).toBe('00:01:00');
+
+    rerender({ now: 20_000 });
+    expect(result.current?.etaText).toBe('00:00:40');
+
+    rerender({ now: 60_000 });
+    expect(result.current?.etaText).toBe('00:00:00');
   });
 });

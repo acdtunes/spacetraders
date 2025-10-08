@@ -77,7 +77,7 @@ export function useSpaceMapOverlays({
 }: SpaceMapOverlayParams): SpaceMapOverlaysResult {
   const activeShipTooltipSymbol = hoveredShip ?? (selectedObject?.type === 'ship' ? selectedObject.symbol : null);
 
-  const shipTooltip = useShipTooltip({ activeSymbol: activeShipTooltipSymbol, ships });
+  const shipTooltip = useShipTooltip({ activeSymbol: activeShipTooltipSymbol, ships, now: frameTimestamp });
 
   const shipTooltipPosition = useMemo(() => {
     if (!activeShipTooltipSymbol) return null;
