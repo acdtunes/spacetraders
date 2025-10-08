@@ -6,8 +6,9 @@ Mining operations: autonomous resource extraction with intelligent routing
 """
 
 import logging
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
-from typing import List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 from spacetraders_bot.core.api_client import APIClient
 from spacetraders_bot.core.operation_controller import OperationController
@@ -21,6 +22,102 @@ from spacetraders_bot.operations.common import (
     log_captain_event,
     setup_logging,
 )
+
+
+@dataclass
+class MiningStats:
+    cycles_completed: int = 0
+    total_extracted: int = 0
+    total_sold: int = 0
+    total_revenue: int = 0
+
+
+@dataclass
+class MiningContext:
+    args: any
+    ship: ShipController
+    navigator: SmartNavigator
+    controller: Optional[OperationController]
+    stats: MiningStats
+    log_error: Callable[..., None]
+
+
+def _stats_from_checkpoint(checkpoint: dict, default: MiningStats) -> Tuple[int, MiningStats]:
+    start_cycle = checkpoint.get('cycle', 0) + 1
+    stats_payload = checkpoint.get('stats') or asdict(default)
+    stats = MiningStats(**stats_payload)
+    return start_cycle, stats
+
+
+def _navigate_with_retries(
+    context: MiningContext,
+    destination: str,
+    cycle: int,
+    description: str,
+    resolution: str,
+) -> bool:
+    print(description)
+    success = context.navigator.execute_route(
+        context.ship,
+        destination,
+        prefer_cruise=True,
+        operation_controller=context.controller,
+    )
+
+    if success:
+        return True
+
+    print("❌ Navigation failed, aborting")
+    if context.controller:
+        context.controller.fail(f"Navigation to {destination} failed at cycle {cycle}")
+    context.log_error(
+        "Navigation failure",
+        f"Unable to reach {destination}",
+        impact={'Cycle': cycle},
+        resolution=resolution,
+        escalate=True,
+    )
+    return False
+
+
+def _mine_until_cargo_full(context: MiningContext) -> Dict:
+    print(f"\n2. Mining until cargo full...")
+    cargo = context.ship.get_cargo()
+
+    while cargo and cargo['units'] < cargo['capacity'] - 1:
+        ship_status = context.ship.get_status()
+        remaining = ship_status['cooldown']['remainingSeconds'] if ship_status else 0
+        if remaining > 0:
+            context.ship.wait_for_cooldown(remaining)
+
+        extraction = context.ship.extract()
+        if extraction:
+            context.stats.total_extracted += extraction['units']
+            context.ship.wait_for_cooldown(extraction['cooldown'])
+
+        cargo = context.ship.get_cargo()
+
+    return cargo or {'units': 0}
+
+
+def _sell_cargo(context: MiningContext, cargo: Dict) -> int:
+    print(f"\n4. Selling cargo...")
+    context.ship.dock()
+    revenue = context.ship.sell_all()
+    context.stats.total_revenue += revenue
+    context.stats.total_sold += cargo.get('units', 0)
+    return revenue
+
+
+def _checkpoint_cycle(context: MiningContext, cycle: int, location: str) -> None:
+    if not context.controller:
+        return
+
+    context.controller.checkpoint({
+        'cycle': cycle,
+        'stats': asdict(context.stats),
+        'location': location,
+    })
 
 
 def mining_operation(args):
@@ -67,7 +164,7 @@ def mining_operation(args):
             tags=tags or ['mining']
         )
 
-    def log_completion(stats_snapshot: dict) -> None:
+    def log_completion(stats_snapshot: MiningStats) -> None:
         duration = humanize_duration(datetime.now(timezone.utc) - operation_start)
         log_captain_event(
             captain_logger,
@@ -76,17 +173,17 @@ def mining_operation(args):
             ship=args.ship,
             duration=duration,
             results={
-                'Cycles Completed': stats_snapshot.get('cycles_completed', 0),
-                'Total Revenue': f"{stats_snapshot.get('total_revenue', 0):,} cr",
-                'Units Extracted': stats_snapshot.get('total_extracted', 0),
-                'Units Sold': stats_snapshot.get('total_sold', 0),
+                'Cycles Completed': stats_snapshot.cycles_completed,
+                'Total Revenue': f"{stats_snapshot.total_revenue:,} cr",
+                'Units Extracted': stats_snapshot.total_extracted,
+                'Units Sold': stats_snapshot.total_sold,
             },
             notes=f"Mined at {args.asteroid} and sold at {args.market}.",
             tags=['mining', args.asteroid.lower(), args.market.lower()]
         )
 
-    def log_performance(stats_snapshot: dict) -> None:
-        revenue = stats_snapshot.get('total_revenue', 0)
+    def log_performance(stats_snapshot: MiningStats) -> None:
+        revenue = stats_snapshot.total_revenue
         elapsed = datetime.now(timezone.utc) - operation_start
         hours = max(elapsed.total_seconds() / 3600, 0.0001)
         rate = int(revenue / hours) if revenue else 0
@@ -100,9 +197,9 @@ def mining_operation(args):
                 'rate': rate,
             },
             operations={
-                'completed': stats_snapshot.get('cycles_completed', 0),
-                'active': max(args.cycles - stats_snapshot.get('cycles_completed', 0), 0),
-                'success_rate': 100 if stats_snapshot.get('cycles_completed', 0) == args.cycles else 0,
+                'completed': stats_snapshot.cycles_completed,
+                'active': max(args.cycles - stats_snapshot.cycles_completed, 0),
+                'success_rate': 100 if stats_snapshot.cycles_completed == args.cycles else 0,
             },
             fleet={'active': 1, 'total': 1},
             top_performers=[{
@@ -169,19 +266,13 @@ def mining_operation(args):
 
     # Check for existing operation to resume
     start_cycle = 1
-    stats = {
-        "cycles_completed": 0,
-        "total_extracted": 0,
-        "total_sold": 0,
-        "total_revenue": 0
-    }
+    stats = MiningStats()
 
     if controller.can_resume():
         checkpoint = controller.resume()
-        start_cycle = checkpoint.get('cycle', 0) + 1
-        stats = checkpoint.get('stats', stats)
+        start_cycle, stats = _stats_from_checkpoint(checkpoint, stats)
         print(f"\n♻️  Resuming from cycle {start_cycle}/{args.cycles}")
-        print(f"   Previous progress: {stats['cycles_completed']} cycles, {stats['total_revenue']:,} credits")
+        print(f"   Previous progress: {stats.cycles_completed} cycles, {stats.total_revenue:,} credits")
     else:
         controller.start({
             "ship": args.ship,
@@ -190,6 +281,15 @@ def mining_operation(args):
             "cycles": args.cycles,
             "system": system
         })
+
+    context = MiningContext(
+        args=args,
+        ship=ship,
+        navigator=navigator,
+        controller=controller,
+        stats=stats,
+        log_error=log_error,
+    )
 
     # Mining loop with smart navigation
     for cycle in range(start_cycle, args.cycles + 1):
@@ -214,105 +314,73 @@ def mining_operation(args):
         print(f"CYCLE {cycle}/{args.cycles}")
         print('='*70)
 
-        # Navigate to asteroid
-        print(f"\n1. Navigating to asteroid {args.asteroid}...")
-        success = navigator.execute_route(ship, args.asteroid, prefer_cruise=True, operation_controller=controller)
-        if not success:
-            print("❌ Navigation failed, aborting")
-            controller.fail(f"Navigation to asteroid failed at cycle {cycle}")
-            log_error(
-                "Navigation failure",
-                f"Unable to reach asteroid {args.asteroid}",
-                impact={'Cycle': cycle},
-                resolution="Check fuel levels and route",
-                escalate=True
-            )
+        if not _navigate_with_retries(
+            context,
+            args.asteroid,
+            cycle,
+            f"\n1. Navigating to asteroid {args.asteroid}...",
+            "Check fuel levels and route",
+        ):
             return 1
 
-        ship.orbit()
+        context.ship.orbit()
 
-        # Mine until cargo full
-        print(f"\n2. Mining until cargo full...")
-        cargo = ship.get_cargo()
-        while cargo and cargo['units'] < cargo['capacity'] - 1:
-            # Check cooldown
-            ship_data = ship.get_status()
-            if ship_data and ship_data['cooldown']['remainingSeconds'] > 0:
-                ship.wait_for_cooldown(ship_data['cooldown']['remainingSeconds'])
+        cargo = _mine_until_cargo_full(context)
 
-            # Extract
-            extraction = ship.extract()
-            if extraction:
-                stats['total_extracted'] += extraction['units']
-                ship.wait_for_cooldown(extraction['cooldown'])
-
-            cargo = ship.get_cargo()
-
-        # Navigate to market
-        print(f"\n3. Navigating to market {args.market}...")
-        success = navigator.execute_route(ship, args.market, prefer_cruise=True, operation_controller=controller)
-        if not success:
-            print("❌ Navigation failed, aborting")
-            controller.fail(f"Navigation to market failed at cycle {cycle}")
-            log_error(
-                "Navigation failure",
-                f"Unable to reach market {args.market}",
-                impact={'Cycle': cycle},
-                resolution="Verify route and refuel options",
-                escalate=True
-            )
+        if not _navigate_with_retries(
+            context,
+            args.market,
+            cycle,
+            f"\n3. Navigating to market {args.market}...",
+            "Verify route and refuel options",
+        ):
             return 1
 
-        # Dock and sell
-        print(f"\n4. Selling cargo...")
-        ship.dock()
-        revenue = ship.sell_all()
-        stats['total_revenue'] += revenue
-        stats['total_sold'] += cargo['units'] if cargo else 0
+        revenue = _sell_cargo(context, cargo)
 
-        # Refuel
         print(f"\n5. Refueling...")
-        ship.refuel()
+        context.ship.refuel()
 
-        stats['cycles_completed'] += 1
+        context.stats.cycles_completed += 1
 
-        # Save checkpoint after each cycle
-        controller.checkpoint({
-            'cycle': cycle,
-            'stats': stats,
-            'location': args.market
-        })
+        _checkpoint_cycle(context, cycle, args.market)
 
-        # Cycle summary
+        cargo_units = cargo.get('units', 0) if cargo else 0
         print(f"\n{'='*70}")
         print(f"CYCLE {cycle} COMPLETE")
         print(f"Revenue this cycle: {revenue:,} credits")
-        print(f"Total revenue: {stats['total_revenue']:,} credits")
-        print(f"Total extracted: {stats['total_extracted']} units")
+        print(f"Cargo sold: {cargo_units} units")
+        print(f"Total revenue: {context.stats.total_revenue:,} credits")
+        print(f"Total extracted: {context.stats.total_extracted} units")
         print('='*70)
 
     # Final summary
     print(f"\n{'='*70}")
     print("MINING OPERATION COMPLETE")
     print('='*70)
-    print(f"Cycles completed: {stats['cycles_completed']}")
-    print(f"Total revenue: {stats['total_revenue']:,} credits")
-    print(f"Total extracted: {stats['total_extracted']} units")
-    print(f"Total sold: {stats['total_sold']} units")
-    print(f"Average per cycle: {stats['total_revenue'] // stats['cycles_completed']:,} credits" if stats['cycles_completed'] > 0 else "N/A")
+    print(f"Cycles completed: {context.stats.cycles_completed}")
+    print(f"Total revenue: {context.stats.total_revenue:,} credits")
+    print(f"Total extracted: {context.stats.total_extracted} units")
+    print(f"Total sold: {context.stats.total_sold} units")
+    print(
+        f"Average per cycle: {context.stats.total_revenue // context.stats.cycles_completed:,} credits"
+        if context.stats.cycles_completed > 0
+        else "N/A"
+    )
     print('='*70)
 
     # Mark operation as complete and cleanup
     controller.complete({
-        "cycles": stats['cycles_completed'],
-        "revenue": stats['total_revenue']
+        "cycles": context.stats.cycles_completed,
+        "revenue": context.stats.total_revenue
     })
     controller.cleanup()
 
-    log_completion(stats)
-    log_performance(stats)
+    log_completion(context.stats)
+    log_performance(context.stats)
 
     return 0
+
 
 
 def targeted_mining_with_circuit_breaker(
@@ -346,21 +414,31 @@ def targeted_mining_with_circuit_breaker(
     print(f"\n🎯 Targeted mining: {target_resource} (need {units_needed} units)")
     print(f"   Circuit breaker: Will stop after {max_consecutive_failures} consecutive failures")
 
-    # Navigate to asteroid
-    print(f"\n1. Navigating to asteroid {asteroid}...")
-    success = navigator.execute_route(ship, asteroid, prefer_cruise=True)
-    if not success:
+    context = MiningContext(
+        args=None,
+        ship=ship,
+        navigator=navigator,
+        controller=None,
+        stats=MiningStats(),
+        log_error=lambda *_, **__: None,
+    )
+
+    if not _navigate_with_retries(
+        context,
+        asteroid,
+        cycle=0,
+        description=f"\n1. Navigating to asteroid {asteroid}...",
+        resolution="Verify route and refuel options",
+    ):
         return False, 0, "Navigation to asteroid failed"
 
     ship.orbit()
 
-    # Mining loop with circuit breaker
     consecutive_failures = 0
     units_collected = 0
     total_extractions = 0
 
     while units_collected < units_needed:
-        # Check circuit breaker
         if consecutive_failures >= max_consecutive_failures:
             print(f"\n🛑 CIRCUIT BREAKER TRIGGERED!")
             print(f"   {consecutive_failures} consecutive extractions without {target_resource}")
@@ -368,37 +446,33 @@ def targeted_mining_with_circuit_breaker(
             print(f"   Recommend: Switch to different asteroid or buy from market")
             return False, units_collected, f"Circuit breaker: {consecutive_failures} consecutive failures"
 
-        # Check cooldown
         ship_data = ship.get_status()
-        if ship_data and ship_data.get('cooldown') and ship_data['cooldown'].get('remainingSeconds', 0) > 0:
-            ship.wait_for_cooldown(ship_data['cooldown']['remainingSeconds'])
+        cooldown = ship_data.get('cooldown', {}).get('remainingSeconds', 0) if ship_data else 0
+        if cooldown > 0:
+            ship.wait_for_cooldown(cooldown)
 
-        # Extract
         extraction = ship.extract()
         total_extractions += 1
 
         if extraction:
             extracted_symbol = extraction['symbol']
             extracted_units = extraction['units']
+            context.stats.total_extracted += extracted_units
 
-            # Check if we got the target resource
             if extracted_symbol == target_resource:
                 units_collected += extracted_units
-                consecutive_failures = 0  # Reset circuit breaker
+                consecutive_failures = 0
                 print(f"✅ Got {extracted_units} x {target_resource} (total: {units_collected}/{units_needed})")
             else:
                 consecutive_failures += 1
                 print(f"⚠️  Got {extracted_units} x {extracted_symbol} instead (failure #{consecutive_failures})")
 
-            # Jettison wrong cargo if getting full
             ship.jettison_wrong_cargo(target_resource, cargo_threshold=0.8)
-
             ship.wait_for_cooldown(extraction['cooldown'])
         else:
             consecutive_failures += 1
             print(f"❌ Extraction failed (failure #{consecutive_failures})")
 
-        # Safety check: If cargo completely full of wrong materials, jettison and continue
         cargo = ship.get_cargo()
         if cargo and cargo['units'] >= cargo['capacity'] - 1:
             has_target = any(item['symbol'] == target_resource for item in cargo['inventory'])
@@ -406,13 +480,11 @@ def targeted_mining_with_circuit_breaker(
                 print(f"⚠️  Cargo full of wrong materials, jettisoning all...")
                 ship.jettison_wrong_cargo(target_resource, cargo_threshold=0.0)
 
-    # Success
     print(f"\n✅ Collected {units_collected} units of {target_resource}")
     print(f"   Total extractions: {total_extractions}")
     print(f"   Success rate: {(units_collected/total_extractions)*100:.1f}%" if total_extractions > 0 else "   Success rate: N/A")
 
     return True, units_collected, "Success"
-
 
 def find_alternative_asteroids(
     api: APIClient,

@@ -1279,9 +1279,6 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
               projectToScreen,
               projectToWorld,
             });
-            if (!labelInfo) {
-              return null;
-            }
 
             return (
               <Group key={ship.symbol} x={position.x} y={position.y}>
@@ -1311,7 +1308,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
                   <ShipSprite assetPath={shipAssetPath} size={SHIP_SPRITE_SIZE} />
                 </Group>
 
-                {showShipNames && (
+                {showShipNames && labelInfo && (
                   <ShipNameLabel
                     labelText={labelInfo.labelText}
                     labelWidth={labelInfo.labelWidth}

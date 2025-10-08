@@ -2,16 +2,16 @@ import { useMemo } from 'react';
 import type { Waypoint as WaypointType } from '../types/spacetraders';
 import { VIEWPORT_CONSTANTS } from '../constants/viewport';
 
-interface GridLines {
-  vertical: { points: number[]; stroke: string; strokeWidth: number; opacity: number }[];
-  horizontal: { points: number[]; stroke: string; strokeWidth: number; opacity: number }[];
-  labels: { text: string; x: number; y: number }[];
+type LineConfig = { points: number[]; stroke: string; strokeWidth: number; opacity: number };
+type LabelConfig = { text: string; x: number; y: number };
+
+export interface GridLines {
+  vertical: LineConfig[];
+  horizontal: LineConfig[];
+  labels: LabelConfig[];
 }
 
-export const useGridLines = (
-  waypoints: Map<string, WaypointType>,
-  scale: number
-): GridLines => {
+export const useGridLines = (waypoints: Map<string, WaypointType>, scale: number): GridLines => {
   return useMemo(() => {
     if (waypoints.size === 0) return { vertical: [], horizontal: [], labels: [] };
 
@@ -50,9 +50,9 @@ export const useGridLines = (
     minY = Math.floor((minY - padding) / gridSpacing) * gridSpacing;
     maxY = Math.ceil((maxY + padding) / gridSpacing) * gridSpacing;
 
-    const vertical: GridLines['vertical'] = [];
-    const horizontal: GridLines['horizontal'] = [];
-    const labels: GridLines['labels'] = [];
+    const vertical: LineConfig[] = [];
+    const horizontal: LineConfig[] = [];
+    const labels: LabelConfig[] = [];
 
     for (let x = minX; x <= maxX; x += gridSpacing) {
       vertical.push({
