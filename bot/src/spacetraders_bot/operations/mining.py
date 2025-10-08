@@ -113,6 +113,131 @@ class MiningCycle:
         print(SEPARATOR)
 
 
+@dataclass
+class CircuitBreaker:
+    """Tracks consecutive failures and trips after exceeding the configured limit."""
+
+    limit: int
+    failures: int = 0
+
+    def record_success(self) -> None:
+        self.failures = 0
+
+    def record_failure(self) -> int:
+        self.failures += 1
+        return self.failures
+
+    def tripped(self) -> bool:
+        return self.failures >= self.limit
+
+
+@dataclass
+class TargetedMiningSession:
+    """Encapsulates targeted mining with circuit-breaker protection."""
+
+    context: MiningContext
+    target_resource: str
+    units_needed: int
+    breaker: CircuitBreaker
+    units_collected: int = 0
+    total_extractions: int = 0
+
+    def run(self) -> Tuple[bool, int, str]:
+        while self.units_collected < self.units_needed:
+            if self.breaker.tripped():
+                return self._breaker_failure()
+
+            self._wait_if_cooldown_active()
+            self._process_extraction()
+
+            if self.breaker.tripped():
+                return self._breaker_failure()
+
+            self._manage_cargo()
+
+        return self._success()
+
+    def _wait_if_cooldown_active(self) -> None:
+        ship_data = self.context.ship.get_status()
+        cooldown = 0
+        if ship_data:
+            cooldown = ship_data.get('cooldown', {}).get('remainingSeconds', 0)
+        if cooldown > 0:
+            self.context.ship.wait_for_cooldown(cooldown)
+
+    def _process_extraction(self) -> None:
+        extraction = self.context.ship.extract()
+        self.total_extractions += 1
+
+        if not extraction:
+            failure_count = self.breaker.record_failure()
+            print(f"❌ Extraction failed (failure #{failure_count})")
+            return
+
+        symbol = extraction['symbol']
+        units = extraction['units']
+        self.context.stats.total_extracted += units
+
+        if symbol == self.target_resource:
+            self.units_collected += units
+            self.breaker.record_success()
+            print(
+                f"✅ Got {units} x {self.target_resource} "
+                f"(total: {self.units_collected}/{self.units_needed})"
+            )
+        else:
+            failure_count = self.breaker.record_failure()
+            print(
+                f"⚠️  Got {units} x {symbol} instead "
+                f"(failure #{failure_count})"
+            )
+
+        self.context.ship.jettison_wrong_cargo(self.target_resource, cargo_threshold=0.8)
+        self.context.ship.wait_for_cooldown(extraction['cooldown'])
+
+    def _manage_cargo(self) -> None:
+        cargo = self.context.ship.get_cargo()
+        if not cargo:
+            return
+
+        if cargo['units'] < cargo['capacity'] - 1:
+            return
+
+        has_target = any(
+            item['symbol'] == self.target_resource for item in cargo.get('inventory', [])
+        )
+        if not has_target:
+            print("⚠️  Cargo full of wrong materials, jettisoning all...")
+            self.context.ship.jettison_wrong_cargo(
+                self.target_resource,
+                cargo_threshold=0.0,
+            )
+
+    def _breaker_failure(self) -> Tuple[bool, int, str]:
+        print("\n🛑 CIRCUIT BREAKER TRIGGERED!")
+        print(
+            f"   {self.breaker.failures} "
+            f"consecutive extractions without {self.target_resource}"
+        )
+        print(f"   This asteroid may not contain {self.target_resource}")
+        print("   Recommend: Switch to different asteroid or buy from market")
+        return False, self.units_collected, (
+            f"Circuit breaker: {self.breaker.failures} consecutive failures"
+        )
+
+    def _success(self) -> Tuple[bool, int, str]:
+        print(
+            f"\n✅ Collected {self.units_collected} units of {self.target_resource}"
+        )
+        print(f"   Total extractions: {self.total_extractions}")
+        if self.total_extractions > 0:
+            success_rate = (self.units_collected / self.total_extractions) * 100
+            print(f"   Success rate: {success_rate:.1f}%")
+        else:
+            print("   Success rate: N/A")
+        return True, self.units_collected, "Success"
+
+
 def _stats_from_checkpoint(checkpoint: dict, default: MiningStats) -> Tuple[int, MiningStats]:
     start_cycle = checkpoint.get('cycle', 0) + 1
     stats_payload = checkpoint.get('stats') or asdict(default)
@@ -471,57 +596,14 @@ def targeted_mining_with_circuit_breaker(
 
     ship.orbit()
 
-    consecutive_failures = 0
-    units_collected = 0
-    total_extractions = 0
+    session = TargetedMiningSession(
+        context=context,
+        target_resource=target_resource,
+        units_needed=units_needed,
+        breaker=CircuitBreaker(limit=max_consecutive_failures),
+    )
 
-    while units_collected < units_needed:
-        if consecutive_failures >= max_consecutive_failures:
-            print(f"\n🛑 CIRCUIT BREAKER TRIGGERED!")
-            print(f"   {consecutive_failures} consecutive extractions without {target_resource}")
-            print(f"   This asteroid may not contain {target_resource}")
-            print(f"   Recommend: Switch to different asteroid or buy from market")
-            return False, units_collected, f"Circuit breaker: {consecutive_failures} consecutive failures"
-
-        ship_data = ship.get_status()
-        cooldown = ship_data.get('cooldown', {}).get('remainingSeconds', 0) if ship_data else 0
-        if cooldown > 0:
-            ship.wait_for_cooldown(cooldown)
-
-        extraction = ship.extract()
-        total_extractions += 1
-
-        if extraction:
-            extracted_symbol = extraction['symbol']
-            extracted_units = extraction['units']
-            context.stats.total_extracted += extracted_units
-
-            if extracted_symbol == target_resource:
-                units_collected += extracted_units
-                consecutive_failures = 0
-                print(f"✅ Got {extracted_units} x {target_resource} (total: {units_collected}/{units_needed})")
-            else:
-                consecutive_failures += 1
-                print(f"⚠️  Got {extracted_units} x {extracted_symbol} instead (failure #{consecutive_failures})")
-
-            ship.jettison_wrong_cargo(target_resource, cargo_threshold=0.8)
-            ship.wait_for_cooldown(extraction['cooldown'])
-        else:
-            consecutive_failures += 1
-            print(f"❌ Extraction failed (failure #{consecutive_failures})")
-
-        cargo = ship.get_cargo()
-        if cargo and cargo['units'] >= cargo['capacity'] - 1:
-            has_target = any(item['symbol'] == target_resource for item in cargo['inventory'])
-            if not has_target:
-                print(f"⚠️  Cargo full of wrong materials, jettisoning all...")
-                ship.jettison_wrong_cargo(target_resource, cargo_threshold=0.0)
-
-    print(f"\n✅ Collected {units_collected} units of {target_resource}")
-    print(f"   Total extractions: {total_extractions}")
-    print(f"   Success rate: {(units_collected/total_extractions)*100:.1f}%" if total_extractions > 0 else "   Success rate: N/A")
-
-    return True, units_collected, "Success"
+    return session.run()
 
 def find_alternative_asteroids(
     api: APIClient,
