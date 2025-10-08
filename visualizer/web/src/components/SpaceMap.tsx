@@ -249,15 +249,9 @@ const WaypointSprite = ({
 
 const ShipSprite = ({
   assetPath,
-  ship,
-  shipHexColor,
-  shipColor,
   size,
 }: {
   assetPath: string | null;
-  ship: TaggedShip;
-  shipHexColor: string;
-  shipColor: number;
   size: number;
 }) => {
   const image = useCachedImage(assetPath);
@@ -1575,8 +1569,6 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
             if (targetPosition.x === 0 && targetPosition.y === 0) return null;
             const position = getShipRenderPosition(ship, targetPosition, frameTimestamp);
 
-            const shipHexColor = Ship.getDisplayColor(ship);
-            const shipColor = parseInt(shipHexColor.replace('#', ''), 16);
             const shipAssetPath = selectShipAsset(ship);
 
             // Calculate rotation
@@ -1673,13 +1665,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
                       if (container) container.style.cursor = 'default';
                     }}
                   />
-                  <ShipSprite
-                    assetPath={shipAssetPath}
-                    ship={ship}
-                    shipHexColor={shipHexColor}
-                    shipColor={shipColor}
-                    size={SHIP_SPRITE_SIZE}
-                  />
+                  <ShipSprite assetPath={shipAssetPath} size={SHIP_SPRITE_SIZE} />
                 </Group>
 
                {showShipNames && (

@@ -117,7 +117,8 @@ class ApiClient {
 
 export const apiClient = new ApiClient(API_CONSTANTS.BASE_URL);
 
-const useMockApi = import.meta.env.VITE_USE_MOCK_API === 'true';
+const env = (import.meta as unknown as { env?: Record<string, string | undefined> }).env ?? {};
+const useMockApi = env.VITE_USE_MOCK_API === 'true';
 
 export const fetchApi = useMockApi
   ? (mockRequest as <T>(endpoint: string, options?: ApiRequestOptions) => Promise<T>)

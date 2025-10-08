@@ -1,4 +1,4 @@
-import type { Agent, Ship, System, Waypoint, Market, ShipNavStatus, FlightMode, ShipNavRoute } from '../types/spacetraders';
+import type { Agent, Ship, System, Waypoint, Market, FlightMode, ShipNavRoute } from '../types/spacetraders';
 
 interface MockShip extends Ship {
   agentId: string;
@@ -271,6 +271,8 @@ export const mockState: MockState = {
       frame: {},
       reactor: {},
       engine: { speed: ENGINE_SPEED_BY_ROLE.EXPLORER ?? DEFAULT_ENGINE_SPEED },
+      modules: [],
+      mounts: [],
       cargo: {
         capacity: 40,
         units: 10,
@@ -311,6 +313,8 @@ export const mockState: MockState = {
       frame: {},
       reactor: {},
       engine: { speed: ENGINE_SPEED_BY_ROLE.EXCAVATOR ?? DEFAULT_ENGINE_SPEED },
+      modules: [],
+      mounts: [],
       cargo: {
         capacity: 80,
         units: 40,
@@ -346,6 +350,8 @@ export const mockState: MockState = {
       frame: {},
       reactor: {},
       engine: { speed: ENGINE_SPEED_BY_ROLE.HAULER ?? DEFAULT_ENGINE_SPEED },
+      modules: [],
+      mounts: [],
       cargo: {
         capacity: 120,
         units: 80,
@@ -381,6 +387,8 @@ export const mockState: MockState = {
       frame: {},
       reactor: {},
       engine: { speed: ENGINE_SPEED_BY_ROLE.MINING_DRONE ?? DEFAULT_ENGINE_SPEED },
+      modules: [],
+      mounts: [],
       cargo: {
         capacity: 20,
         units: 0,
@@ -416,6 +424,8 @@ export const mockState: MockState = {
       frame: {},
       reactor: {},
       engine: { speed: ENGINE_SPEED_BY_ROLE.COMMAND ?? DEFAULT_ENGINE_SPEED },
+      modules: [],
+      mounts: [],
       cargo: {
         capacity: 30,
         units: 0,

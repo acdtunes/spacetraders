@@ -1,5 +1,5 @@
 import type { ApiRequestOptions } from './client';
-import type { Agent, Ship, System, Waypoint, Market, ApiResponse } from '../../types/spacetraders';
+import type { Agent, ApiResponse } from '../../types/spacetraders';
 import { mockState, startMockScenarioIfNeeded, advanceShipScenario } from '../../mocks/mockScenario';
 
 const DEFAULT_LIMIT = 20;
