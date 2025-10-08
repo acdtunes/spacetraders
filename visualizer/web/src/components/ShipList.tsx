@@ -27,8 +27,8 @@ const ShipList = ({ onFocusOn }: ShipListProps) => {
     toggleWaypointNames,
     showShipNames,
     toggleShipNames,
-    showMarkets,
-    toggleMarkets,
+    showMapOverlays,
+    toggleMapOverlays,
     shipNameFilter,
     setShipNameFilter,
   } = useStore();
@@ -112,9 +112,9 @@ const ShipList = ({ onFocusOn }: ShipListProps) => {
             activeTone="orange"
           />
           <OverlayToggle
-            label="Markets"
-            active={showMarkets}
-            onToggle={toggleMarkets}
+            label="Overlays"
+            active={showMapOverlays}
+            onToggle={toggleMapOverlays}
             activeTone="amber"
           />
           <OverlayToggle

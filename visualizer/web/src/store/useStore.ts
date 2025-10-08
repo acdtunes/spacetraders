@@ -43,12 +43,12 @@ interface AppState {
   showWaypointNames: boolean;
   toggleWaypointNames: () => void;
 
-  // Markets
+  // Markets / overlays
   markets: Map<string, Market>;
   setMarkets: (markets: Map<string, Market>) => void;
   updateMarket: (waypointSymbol: string, market: Market) => void;
-  showMarkets: boolean;
-  toggleMarkets: () => void;
+  showMapOverlays: boolean;
+  toggleMapOverlays: () => void;
 
   // Galaxy
   systems: System[];
@@ -171,8 +171,8 @@ export const useStore = create<AppState>((set) => ({
       newMarkets.set(waypointSymbol, market);
       return { markets: newMarkets };
     }),
-  showMarkets: false,
-  toggleMarkets: () => set((state) => ({ showMarkets: !state.showMarkets })),
+  showMapOverlays: false,
+  toggleMapOverlays: () => set((state) => ({ showMapOverlays: !state.showMapOverlays })),
 
   // Galaxy
   systems: [],
