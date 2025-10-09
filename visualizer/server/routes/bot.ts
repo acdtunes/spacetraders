@@ -204,6 +204,7 @@ router.get('/tours/:systemSymbol', async (req, res) => {
 
     // Only get the most recent tour for each start_waypoint using window functions
     // Ranks tours by recency, breaking ties by markets (most markets first)
+    // Uses COALESCE to extract start waypoint from tour_order JSON if start_waypoint is NULL
     const tours = db.prepare(`
       WITH RankedTours AS (
         SELECT
@@ -214,8 +215,9 @@ router.get('/tours/:systemSymbol', async (req, res) => {
           tour_order,
           total_distance,
           calculated_at,
+          COALESCE(start_waypoint, json_extract(tour_order, '$[0]')) as effective_start,
           ROW_NUMBER() OVER (
-            PARTITION BY system, start_waypoint
+            PARTITION BY system, COALESCE(start_waypoint, json_extract(tour_order, '$[0]'))
             ORDER BY calculated_at DESC, markets DESC
           ) as rn
         FROM tour_cache
