@@ -53,8 +53,21 @@ router.get('/:systemSymbol/waypoints', async (req, res) => {
     );
 
     res.json(waypoints);
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to fetch waypoints' });
+  } catch (error: any) {
+    console.error('Failed to fetch waypoints:', error);
+
+    // Check if it's a 404 (no more pages)
+    if (error.response?.status === 404) {
+      return res.status(404).json({ error: 'No waypoints found or invalid page' });
+    }
+
+    // Return detailed error for debugging
+    const errorMessage = error.message || 'Failed to fetch waypoints';
+    const statusCode = error.response?.status || 500;
+    res.status(statusCode).json({
+      error: errorMessage,
+      details: error.response?.data || null
+    });
   }
 });
 

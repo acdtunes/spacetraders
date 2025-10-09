@@ -21,20 +21,30 @@ export async function fetchAllPaginated<T>(
   let hasMore = true;
 
   while (hasMore) {
-    const response = await fetchPage(page, limit);
-    allResults = [...allResults, ...response.data];
+    try {
+      const response = await fetchPage(page, limit);
+      allResults = [...allResults, ...response.data];
 
-    // Check if there are more pages
-    if (response.meta?.page && response.meta?.limit && response.meta?.total) {
-      if (response.meta.page * response.meta.limit >= response.meta.total) {
+      // Check if there are more pages
+      if (response.meta?.page && response.meta?.limit && response.meta?.total) {
+        if (response.meta.page * response.meta.limit >= response.meta.total) {
+          hasMore = false;
+        } else {
+          page++;
+        }
+      } else if (response.data.length < limit) {
         hasMore = false;
       } else {
         page++;
       }
-    } else if (response.data.length < limit) {
-      hasMore = false;
-    } else {
-      page++;
+    } catch (error: any) {
+      // If we get a 404, it means we've reached the end of available pages
+      if (error.statusCode === 404 || error.message?.includes('404')) {
+        hasMore = false;
+      } else {
+        // For other errors, rethrow
+        throw error;
+      }
     }
   }
 
