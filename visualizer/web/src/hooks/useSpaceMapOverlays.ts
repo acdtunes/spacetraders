@@ -62,7 +62,6 @@ interface SpaceMapOverlaysResult {
 
 export function useSpaceMapOverlays({
   hoveredShip,
-  selectedObject,
   selectedShip,
   selectedWaypoint,
   ships,
@@ -112,7 +111,6 @@ export function useSpaceMapOverlays({
   ]);
 
   const selectionOverlays = useSelectionOverlay({
-    selectedObject,
     selectedShip,
     selectedWaypoint,
     ships,
@@ -127,6 +125,7 @@ export function useSpaceMapOverlays({
       }
       return position;
     },
+    frameTimestamp,
   });
 
   const waypointTooltip = useMemo<WaypointTooltipData | null>(() => {

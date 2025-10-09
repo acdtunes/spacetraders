@@ -16,6 +16,7 @@ interface SelectionParams {
   projectToScreen: (point: { x: number; y: number }) => { x: number; y: number } | null;
   getWaypointPosition: (waypoint: WaypointType) => { x: number; y: number };
   getShipPosition: (ship: TaggedShip) => { x: number; y: number } | null;
+  frameTimestamp: number;
 }
 
 const DEFAULT_SIZE = 14;
@@ -29,6 +30,7 @@ export const useSelectionOverlay = ({
   projectToScreen,
   getWaypointPosition,
   getShipPosition,
+  frameTimestamp,
 }: SelectionParams): SelectionOverlay[] => {
   return useMemo(() => {
     const overlays: SelectionOverlay[] = [];
@@ -64,5 +66,5 @@ export const useSelectionOverlay = ({
     }
 
     return overlays;
-  }, [selectedShip, selectedWaypoint, ships, waypoints, projectToScreen, getWaypointPosition, getShipPosition]);
+  }, [selectedShip, selectedWaypoint, ships, waypoints, projectToScreen, getWaypointPosition, getShipPosition, frameTimestamp]);
 };
