@@ -9,6 +9,7 @@ interface ScoutTourLayerProps {
   currentScale: number;
   animationFrame: number;
   visibleTours?: Set<string>;
+  getWaypointPosition: (waypoint: WaypointType) => { x: number; y: number };
 }
 
 /**
@@ -56,6 +57,7 @@ export const ScoutTourLayer = memo(function ScoutTourLayer({
   currentScale,
   animationFrame,
   visibleTours,
+  getWaypointPosition,
 }: ScoutTourLayerProps) {
   if (tours.length === 0) return null;
 
@@ -71,11 +73,13 @@ export const ScoutTourLayer = memo(function ScoutTourLayer({
         const tourOrder = tour.tour_order;
         if (tourOrder.length < 2) return null;
 
-        // Get waypoint positions
+        // Get waypoint positions (using display positions for overlapping waypoints)
         const positions = tourOrder
           .map((symbol) => {
             const waypoint = waypoints.get(symbol);
-            return waypoint ? { x: waypoint.x, y: waypoint.y, symbol } : null;
+            if (!waypoint) return null;
+            const pos = getWaypointPosition(waypoint);
+            return { x: pos.x, y: pos.y, symbol };
           })
           .filter((pos): pos is { x: number; y: number; symbol: string } => pos !== null);
 

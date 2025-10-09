@@ -990,6 +990,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
               currentScale={currentScale}
               animationFrame={animationFrame}
               visibleTours={visibleTours}
+              getWaypointPosition={getWaypointDisplayPosition}
             />
           )}
 
