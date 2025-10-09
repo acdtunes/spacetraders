@@ -196,45 +196,48 @@ router.get('/markets/:systemSymbol/freshness', async (req, res) => {
   }
 });
 
-// Get scout tours for system (all tours from most recent coordinator run)
+// Get scout tours for system (generate tours from currently assigned ships)
 router.get('/tours/:systemSymbol', async (req, res) => {
   try {
     const db = getDatabase();
     const systemSymbol = req.params.systemSymbol;
 
-    // Get all tours from the most recent coordinator run
-    // First, find the most recent tour calculation time, then get all tours
-    // calculated at exactly that time (same coordinator batch)
-    const tours = db.prepare(`
-      WITH LatestRun AS (
-        SELECT MAX(calculated_at) as latest_time
-        FROM tour_cache
-        WHERE system = ?
-      )
+    // Get scout assignments and build tours from them
+    // This is the source of truth - we show what scouts are actually running
+    const assignments = db.prepare(`
       SELECT
-        system,
-        markets,
-        algorithm,
-        start_waypoint,
-        tour_order,
-        total_distance,
-        calculated_at
-      FROM tour_cache, LatestRun
-      WHERE system = ?
-        AND calculated_at = LatestRun.latest_time
-      ORDER BY start_waypoint, markets DESC
-    `).all(systemSymbol, systemSymbol);
+        ship_symbol,
+        daemon_id,
+        json_extract(metadata, '$.markets') as markets,
+        assigned_at
+      FROM ship_assignments
+      WHERE daemon_id LIKE 'scout%'
+        AND status = 'active'
+        AND json_extract(metadata, '$.system') = ?
+      ORDER BY ship_symbol
+    `).all(systemSymbol);
 
     db.close();
 
-    // Parse JSON fields
-    const parsed = tours.map((t: any) => ({
-      ...t,
-      markets: JSON.parse(t.markets),
-      tour_order: JSON.parse(t.tour_order),
-    }));
+    // Convert assignments to tour format
+    const tours = assignments.map((a: any) => {
+      const markets = JSON.parse(a.markets);
+      const startWaypoint = markets[0];
 
-    res.json({ tours: parsed });
+      return {
+        system: systemSymbol,
+        markets: markets,
+        algorithm: 'assigned',
+        start_waypoint: startWaypoint,
+        tour_order: markets, // Simple tour: visit each market once
+        total_distance: 0, // Unknown from assignment
+        calculated_at: a.assigned_at,
+        ship_symbol: a.ship_symbol,
+        daemon_id: a.daemon_id,
+      };
+    });
+
+    res.json({ tours });
   } catch (error) {
     console.error('Failed to fetch tours:', error);
     res.status(500).json({ error: 'Failed to fetch tours' });
