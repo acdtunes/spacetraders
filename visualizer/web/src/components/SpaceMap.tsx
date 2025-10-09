@@ -928,7 +928,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
                   }}
                   onMouseLeave={(e) => {
                     const container = e.target.getStage()?.container();
-                    if (container) container.style.cursor = 'default';
+                    if (container) container.style.cursor = 'grab';
                   }}
                   onClick={() => {
                     setSelectedObject({ type: 'waypoint', symbol: waypoint.symbol, x: waypoint.x, y: waypoint.y });

@@ -86,7 +86,7 @@ export const ShipLayer = memo(function ShipLayer({
                   onHoverShip(null);
                   const container = event.target.getStage()?.container();
                   if (container) {
-                    container.style.cursor = 'default';
+                    container.style.cursor = 'grab';
                   }
                 }}
               />
