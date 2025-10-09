@@ -298,15 +298,14 @@ const storeInitializer: StateCreator<AppState, [], []> = (set) => ({
   scoutTours: [],
   setScoutTours: (tours) =>
     set((state) => {
-      // Auto-add new tours to visible set using unique tour IDs
-      const newVisible = new Set(state.visibleTours);
-      tours.forEach((tour) => {
-        const tourId = getTourId(tour);
-        if (!newVisible.has(tourId)) {
-          newVisible.add(tourId);
-        }
-      });
-      return { scoutTours: tours, visibleTours: newVisible };
+      // Only auto-add tours if visibleTours is empty (initial load)
+      // This prevents re-selecting tours that the user manually deselected
+      if (state.visibleTours.size === 0 && tours.length > 0) {
+        const allTourIds = new Set(tours.map((tour) => getTourId(tour)));
+        return { scoutTours: tours, visibleTours: allTourIds };
+      }
+      // Otherwise just update tours without changing visibility
+      return { scoutTours: tours };
     }),
   tradeOpportunities: [],
   setTradeOpportunities: (opportunities) => set({ tradeOpportunities: opportunities }),
