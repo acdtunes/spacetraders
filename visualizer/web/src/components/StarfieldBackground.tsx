@@ -1,9 +1,17 @@
 import { memo, useMemo } from 'react';
-import { Group, Circle, Rect } from 'react-konva';
+import { Group, Circle, Line } from 'react-konva';
 
 interface StarfieldBackgroundProps {
   viewportBounds: { x: number; y: number; width: number; height: number; scale: number };
   currentScale: number;
+}
+
+interface Star {
+  x: number;
+  y: number;
+  size: number;
+  brightness: number;
+  color: string;
 }
 
 /**
@@ -19,7 +27,7 @@ export const StarfieldBackground = memo(function StarfieldBackground({
   currentScale,
 }: StarfieldBackgroundProps) {
   const stars = useMemo(() => {
-    const starList: Array<{ x: number; y: number; size: number; brightness: number; color: string }> = [];
+    const starList: Star[] = [];
 
     // Calculate visible area with padding
     const padding = 500;
@@ -48,19 +56,19 @@ export const StarfieldBackground = memo(function StarfieldBackground({
           const x = gx * gridSize + seededRandom(starSeed) * gridSize;
           const y = gy * gridSize + seededRandom(starSeed + 1) * gridSize;
 
-          // Random size (most small, some medium, few large)
+          // Much smaller stars (tiny points)
           const sizeRoll = seededRandom(starSeed + 2);
           let size: number;
-          if (sizeRoll < 0.7) {
-            size = 0.5 + seededRandom(starSeed + 3) * 0.5; // Small stars
-          } else if (sizeRoll < 0.9) {
-            size = 1.0 + seededRandom(starSeed + 3) * 1.0; // Medium stars
+          if (sizeRoll < 0.8) {
+            size = 0.15 + seededRandom(starSeed + 3) * 0.15; // Tiny stars
+          } else if (sizeRoll < 0.95) {
+            size = 0.3 + seededRandom(starSeed + 3) * 0.2; // Small stars
           } else {
-            size = 2.0 + seededRandom(starSeed + 3) * 1.5; // Large stars
+            size = 0.5 + seededRandom(starSeed + 3) * 0.3; // Medium stars (rare)
           }
 
           // Brightness variation
-          const brightness = 0.4 + seededRandom(starSeed + 4) * 0.6;
+          const brightness = 0.5 + seededRandom(starSeed + 4) * 0.5;
 
           // Star colors (mostly white, some colored)
           const colorRoll = seededRandom(starSeed + 5);
@@ -68,11 +76,11 @@ export const StarfieldBackground = memo(function StarfieldBackground({
           if (colorRoll < 0.7) {
             color = '#ffffff'; // White stars
           } else if (colorRoll < 0.8) {
-            color = '#a8d8ea'; // Blue stars
+            color = '#c8e6ff'; // Blue stars
           } else if (colorRoll < 0.9) {
-            color = '#ffd89b'; // Yellow/orange stars
+            color = '#fff4d6'; // Yellow/warm stars
           } else {
-            color = '#ffb3ba'; // Red stars
+            color = '#ffd4d4'; // Red stars
           }
 
           starList.push({ x, y, size, brightness, color });
@@ -148,18 +156,57 @@ export const StarfieldBackground = memo(function StarfieldBackground({
         />
       ))}
 
-      {/* Stars - render on top of nebulae */}
-      {stars.map((star, i) => (
-        <Circle
-          key={`star-${i}`}
-          x={star.x}
-          y={star.y}
-          radius={star.size / currentScale}
-          fill={star.color}
-          opacity={star.brightness}
-          listening={false}
-        />
-      ))}
+      {/* Stars - render on top of nebulae with sparkle effect */}
+      {stars.map((star, i) => {
+        const baseSize = star.size / currentScale;
+        const rayLength = baseSize * 3;
+        const thinRayLength = rayLength * 0.7;
+
+        return (
+          <Group key={`star-${i}`} x={star.x} y={star.y} listening={false}>
+            {/* Center dot */}
+            <Circle
+              radius={baseSize}
+              fill={star.color}
+              opacity={star.brightness}
+              listening={false}
+            />
+
+            {/* Four-point sparkle (cross) */}
+            {/* Horizontal ray */}
+            <Line
+              points={[-rayLength, 0, rayLength, 0]}
+              stroke={star.color}
+              strokeWidth={baseSize * 0.3}
+              opacity={star.brightness * 0.6}
+              listening={false}
+            />
+            {/* Vertical ray */}
+            <Line
+              points={[0, -rayLength, 0, rayLength]}
+              stroke={star.color}
+              strokeWidth={baseSize * 0.3}
+              opacity={star.brightness * 0.6}
+              listening={false}
+            />
+            {/* Diagonal rays (thinner and shorter for classic star look) */}
+            <Line
+              points={[-thinRayLength, -thinRayLength, thinRayLength, thinRayLength]}
+              stroke={star.color}
+              strokeWidth={baseSize * 0.2}
+              opacity={star.brightness * 0.4}
+              listening={false}
+            />
+            <Line
+              points={[-thinRayLength, thinRayLength, thinRayLength, -thinRayLength]}
+              stroke={star.color}
+              strokeWidth={baseSize * 0.2}
+              opacity={star.brightness * 0.4}
+              listening={false}
+            />
+          </Group>
+        );
+      })}
     </Group>
   );
 });
