@@ -25,8 +25,8 @@ export const ShipOperationBadge = memo(function ShipOperationBadge({
   const color = getOperationColor(operationType);
 
   // Fixed screen size - does not scale with zoom
-  const badgeSize = 4.0;
-  const fontSize = 5.0;
+  const badgeSize = 6.0;
+  const fontSize = 7.5;
 
   // Position badge at top-left corner of name label if available
   let offsetX = 4 / currentScale;
