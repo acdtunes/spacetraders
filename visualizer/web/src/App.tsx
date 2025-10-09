@@ -54,7 +54,7 @@ function App() {
     return (
       <>
         <ServerStatus />
-        <div className="h-screen w-screen flex flex-col items-center justify-center bg-gray-900 text-white p-8">
+        <div className="h-screen w-screen flex flex-col items-center justify-center bg-black text-white p-8">
           <div className="mb-8 text-center">
             <h1 className="text-4xl font-bold mb-2">🚀 SpaceTraders Fleet Visualization</h1>
             <p className="text-gray-400">Real-time tracking of your space fleet</p>
@@ -70,7 +70,7 @@ function App() {
   return (
     <>
       <ServerStatus />
-      <div className="h-screen w-screen flex flex-col bg-gray-900 text-white">
+      <div className="h-screen w-screen flex flex-col bg-black text-white">
         {/* Header */}
         <header className="bg-gray-800 border-b border-gray-700 p-4 flex items-center justify-between">
           <h1 className="text-2xl font-bold">SpaceTraders Fleet Visualization</h1>
