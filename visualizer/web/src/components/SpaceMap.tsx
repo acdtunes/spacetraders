@@ -13,6 +13,8 @@ import { MiningLaserLayer } from './MiningLaserLayer';
 import { ShipTrailLayer } from './ShipTrailLayer';
 import { MarketFreshnessRing } from './MarketFreshnessRing';
 import { ScoutTourLayer } from './ScoutTourLayer';
+import { TradeRouteLayer } from './TradeRouteLayer';
+import { MiningLoopLayer } from './MiningLoopLayer';
 import { useWaypointTooltipAnchor } from '../hooks/useWaypointTooltipAnchor';
 import { useGridLines } from '../hooks/useGridLines';
 import { useShipTrailSampler } from '../hooks/useShipTrailSampler';
@@ -90,7 +92,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
   const waypointsSizeRef = useRef<number>(0);
   const shipPositionCacheRef = useRef<Map<string, { x: number; y: number; status: ShipNavStatus; timestamp: number }>>(new Map());
 
-  const { currentSystem, waypoints, ships, markets, showMapOverlays, showWaypointNames, showShipNames, showDestinationRoutes, setWaypoints, trails, addTrailPosition, clearTrail, filterStatus, filterAgents, filterWaypointTypes, selectedShip, selectedWaypoint, setSelectedShip, setSelectedWaypoint, assignments, showOperationBadges, marketFreshness, showMarketFreshness, scoutTours, showScoutTours } =
+  const { currentSystem, waypoints, ships, markets, showMapOverlays, showWaypointNames, showShipNames, showDestinationRoutes, setWaypoints, trails, addTrailPosition, clearTrail, filterStatus, filterAgents, filterWaypointTypes, selectedShip, selectedWaypoint, setSelectedShip, setSelectedWaypoint, assignments, showOperationBadges, marketFreshness, showMarketFreshness, scoutTours, showScoutTours, tradeOpportunities, showTradeRoutes, showMiningRoutes } =
     useStore();
 
   const [hoveredShip, setHoveredShip] = useState<string | null>(null);
@@ -984,6 +986,26 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
           {showScoutTours && (
             <ScoutTourLayer
               tours={scoutTours}
+              waypoints={waypoints}
+              currentScale={currentScale}
+              animationFrame={animationFrame}
+            />
+          )}
+
+          {/* Trade routes */}
+          {showTradeRoutes && (
+            <TradeRouteLayer
+              opportunities={tradeOpportunities}
+              waypoints={waypoints}
+              currentScale={currentScale}
+              animationFrame={animationFrame}
+            />
+          )}
+
+          {/* Mining loops */}
+          {showMiningRoutes && (
+            <MiningLoopLayer
+              assignments={assignments}
               waypoints={waypoints}
               currentScale={currentScale}
               animationFrame={animationFrame}
