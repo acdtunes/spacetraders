@@ -196,12 +196,13 @@ router.get('/markets/:systemSymbol/freshness', async (req, res) => {
   }
 });
 
-// Get scout tours for system
+// Get scout tours for system (only most recent per start_waypoint)
 router.get('/tours/:systemSymbol', async (req, res) => {
   try {
     const db = getDatabase();
     const systemSymbol = req.params.systemSymbol;
 
+    // Only get the most recent tour for each start_waypoint
     const tours = db.prepare(`
       SELECT
         system,
@@ -211,8 +212,14 @@ router.get('/tours/:systemSymbol', async (req, res) => {
         tour_order,
         total_distance,
         calculated_at
-      FROM tour_cache
+      FROM tour_cache t1
       WHERE system = ?
+        AND calculated_at = (
+          SELECT MAX(calculated_at)
+          FROM tour_cache t2
+          WHERE t2.system = t1.system
+            AND t2.start_waypoint = t1.start_waypoint
+        )
     `).all(systemSymbol);
 
     db.close();

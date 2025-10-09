@@ -22,7 +22,6 @@ import { useShipTrailSampler } from '../hooks/useShipTrailSampler';
 import { useSpaceMapOverlays, type SelectedMapObject } from '../hooks/useSpaceMapOverlays';
 import { useKonvaStage } from '../hooks/useKonvaStage';
 import { SelectionOverlayLazy, ShipTooltipOverlayLazy, WaypointTooltipOverlayLazy } from './SpaceMapLazyOverlays';
-import ZoomControls from './ZoomControls';
 import Minimap from './Minimap';
 import type { Waypoint as WaypointType, TaggedShip, ShipNavStatus } from '../types/spacetraders';
 import type { RouteVectorsProps } from './RouteVectors';
@@ -1068,14 +1067,6 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
           </div>
         </div>
       )}
-
-      {/* Zoom Controls */}
-      <ZoomControls
-        onZoomIn={handleZoomIn}
-        onZoomOut={handleZoomOut}
-        onReset={handleResetView}
-        onFitView={handleFitView}
-      />
 
       {/* Minimap */}
       <Minimap
