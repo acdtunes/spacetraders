@@ -32,26 +32,6 @@ export const getRouteEndpoint = (
     }
   }
 
-  let targetX = destX;
-  let targetY = destY;
-
-  if (destWaypoint) {
-    const waypointRadius = Waypoint.getRadius(destWaypoint);
-    const orbitDistance = destWaypoint.type.includes('ASTEROID')
-      ? CANVAS_CONSTANTS.ORBIT_DISTANCE_ASTEROID
-      : CANVAS_CONSTANTS.ORBIT_DISTANCE_DEFAULT;
-    const orbitRadius = waypointRadius + orbitDistance;
-
-    const dxOrbit = destX - currentPosition.x;
-    const dyOrbit = destY - currentPosition.y;
-    const totalDistance = Math.hypot(dxOrbit, dyOrbit);
-
-    if (orbitRadius > 0 && totalDistance > orbitRadius + 0.5) {
-      const ratio = (totalDistance - orbitRadius) / totalDistance;
-      targetX = currentPosition.x + dxOrbit * ratio;
-      targetY = currentPosition.y + dyOrbit * ratio;
-    }
-  }
-
-  return { x: targetX, y: targetY };
+  // Return the exact waypoint position (not orbit radius)
+  return { x: destX, y: destY };
 };
