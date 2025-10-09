@@ -25,17 +25,17 @@ export const ShipOperationBadge = memo(function ShipOperationBadge({
   const color = getOperationColor(operationType);
 
   // Fixed screen size - does not scale with zoom
-  const badgeSize = 8.0;
-  const fontSize = 10.0;
+  const badgeSize = 4.0;
+  const fontSize = 5.0;
 
   // Position badge at top-left corner of name label if available
   let offsetX = 4 / currentScale;
   let offsetY = 4 / currentScale;
 
   if (labelInfo) {
-    // Position at top-left of the label
-    offsetX = labelInfo.offsetX - (badgeSize * labelInfo.labelScale * 2);
-    offsetY = labelInfo.offsetY - (badgeSize * labelInfo.labelScale * 2);
+    // Position exactly at top-left corner of the label box
+    offsetX = labelInfo.offsetX;
+    offsetY = labelInfo.offsetY;
   }
 
   return (
