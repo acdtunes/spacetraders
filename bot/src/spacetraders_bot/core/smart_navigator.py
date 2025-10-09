@@ -112,7 +112,29 @@ class SmartNavigator:
         route = self.plan_route(ship_data, destination, prefer_cruise=True)
 
         if not route:
-            return False, "No route found (insufficient fuel even with DRIFT)"
+            # Calculate fuel feasibility to provide accurate error message
+            from spacetraders_bot.core.routing import FuelCalculator
+            current_location = ship_data['nav']['waypointSymbol']
+            current_wp = self.graph['waypoints'].get(current_location)
+            dest_wp = self.graph['waypoints'].get(destination)
+
+            if current_wp and dest_wp:
+                import math
+                distance = math.sqrt(
+                    (dest_wp['x'] - current_wp['x']) ** 2 +
+                    (dest_wp['y'] - current_wp['y']) ** 2
+                )
+                drift_fuel = FuelCalculator.fuel_cost(distance, 'DRIFT')
+                current_fuel = ship_data['fuel']['current']
+
+                if current_fuel >= drift_fuel:
+                    # Fuel is adequate - route planning failed for other reasons
+                    return False, f"No route found (complex pathfinding - distance: {distance:.0f} units, may require refuel stops or intermediate waypoints)"
+                else:
+                    # Fuel is actually insufficient
+                    return False, f"Insufficient fuel (need {drift_fuel} for DRIFT, have {current_fuel})"
+
+            return False, "No route found"
 
         # Check if route requires refueling
         needs_refuel = any(step['action'] == 'refuel' for step in route['steps'])

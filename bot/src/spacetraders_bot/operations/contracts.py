@@ -462,6 +462,8 @@ def contract_operation(
             log_error=log_error,
             sleep_fn=sleep_fn,
             print_fn=print,
+            delivery_waypoint=delivery['destinationSymbol'],  # NEW: Enable distance filtering
+            max_distance=400,  # NEW: Limit to markets within 400 units of delivery point
         )
 
         if not acquisition_strategy.ensure_availability(
@@ -818,9 +820,89 @@ def _fetch_market_listing(db: Database, trade_symbol: str, waypoint_symbol: str)
         return cursor.fetchone()
 
 
-def _find_lowest_price_market(db: Database, trade_symbol: str, system_prefix: str) -> Optional[Tuple[str, int, str]]:
-    """Return the cheapest market tuple within given system prefix."""
+def _find_lowest_price_market(db: Database, trade_symbol: str, system_prefix: str, delivery_waypoint: Optional[str] = None, max_distance: Optional[float] = None) -> Optional[Tuple[str, int, str]]:
+    """
+    Return the cheapest market tuple within given system prefix.
+
+    Args:
+        db: Database instance
+        trade_symbol: Good to search for
+        system_prefix: System to search in (e.g., 'X1-GH18')
+        delivery_waypoint: Optional delivery destination for distance filtering
+        max_distance: Optional maximum distance from delivery waypoint (units)
+
+    Returns:
+        Tuple of (waypoint_symbol, sell_price, supply) or None
+
+    If delivery_waypoint and max_distance are provided, only markets within
+    max_distance of the delivery point are considered. This prevents selecting
+    distant markets that cause navigation failures.
+    """
     pattern = f"{system_prefix}%"
+
+    if delivery_waypoint and max_distance:
+        # Distance-aware selection: filter by proximity to delivery waypoint
+        # Load system graph to calculate distances
+        with db.connection() as conn:
+            system_graph = db.get_system_graph(conn, system_prefix)
+
+        if not system_graph:
+            # Fallback to price-only if graph unavailable
+            return _find_lowest_price_market_price_only(db, trade_symbol, pattern)
+
+        delivery_wp_data = system_graph['waypoints'].get(delivery_waypoint)
+        if not delivery_wp_data:
+            # Fallback if delivery waypoint not in graph
+            return _find_lowest_price_market_price_only(db, trade_symbol, pattern)
+
+        # Get all markets selling this good
+        with db.connection() as conn:
+            cursor = conn.execute(
+                """
+                SELECT waypoint_symbol, sell_price, supply
+                FROM market_data
+                WHERE good_symbol = ?
+                  AND sell_price IS NOT NULL
+                  AND waypoint_symbol LIKE ?
+                ORDER BY sell_price ASC
+                """,
+                (trade_symbol, pattern),
+            )
+            all_markets = cursor.fetchall()
+
+        # Filter by distance and select cheapest among nearby markets
+        import math
+        nearby_markets = []
+        for market_symbol, price, supply in all_markets:
+            market_wp_data = system_graph['waypoints'].get(market_symbol)
+            if not market_wp_data:
+                continue
+
+            # Calculate Euclidean distance
+            distance = math.sqrt(
+                (delivery_wp_data['x'] - market_wp_data['x']) ** 2 +
+                (delivery_wp_data['y'] - market_wp_data['y']) ** 2
+            )
+
+            if distance <= max_distance:
+                nearby_markets.append((market_symbol, price, supply, distance))
+
+        if nearby_markets:
+            # Return cheapest market among nearby options
+            # Sort by price (already sorted from query, but re-sort with distance info)
+            nearby_markets.sort(key=lambda x: (x[1], x[3]))  # price, then distance
+            best = nearby_markets[0]
+            return (best[0], best[1], best[2])  # Return original tuple format
+
+        # No markets within max_distance - return None to trigger waiting logic
+        return None
+
+    # Default: price-only optimization (original behavior)
+    return _find_lowest_price_market_price_only(db, trade_symbol, pattern)
+
+
+def _find_lowest_price_market_price_only(db: Database, trade_symbol: str, pattern: str) -> Optional[Tuple[str, int, str]]:
+    """Original price-only market selection (no distance filtering)."""
     with db.connection() as conn:
         cursor = conn.execute(
             """
@@ -846,6 +928,8 @@ class ResourceAcquisitionStrategy:
     log_error: Callable[..., None]
     sleep_fn: Callable[[int], None]
     print_fn: Callable[[str], None]
+    delivery_waypoint: Optional[str] = None  # NEW: For distance-aware market selection
+    max_distance: Optional[float] = None  # NEW: Maximum distance from delivery point
     max_retries: int = 12
     retry_interval_seconds: int = 300
 
@@ -887,7 +971,18 @@ class ResourceAcquisitionStrategy:
 
     def _find_market(self) -> Optional[Tuple[str, int, str]]:
         self.print_fn(f"\n  🔍 Searching for markets selling {self.trade_symbol}...")
-        return _find_lowest_price_market(self.database, self.trade_symbol, self.system)
+
+        # Use distance-aware selection if delivery waypoint provided
+        if self.delivery_waypoint and self.max_distance:
+            self.print_fn(f"     Distance filter: max {self.max_distance:.0f} units from {self.delivery_waypoint}")
+
+        return _find_lowest_price_market(
+            self.database,
+            self.trade_symbol,
+            self.system,
+            delivery_waypoint=self.delivery_waypoint,
+            max_distance=self.max_distance
+        )
 
     def _wait_for_market(
         self,

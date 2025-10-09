@@ -196,14 +196,13 @@ router.get('/markets/:systemSymbol/freshness', async (req, res) => {
   }
 });
 
-// Get scout tours for system (generate tours from currently assigned ships)
+// Get scout tours for system (match assignments to cached tours by market set equality)
 router.get('/tours/:systemSymbol', async (req, res) => {
   try {
     const db = getDatabase();
     const systemSymbol = req.params.systemSymbol;
 
-    // Get scout assignments and build tours from them
-    // This is the source of truth - we show what scouts are actually running
+    // Get active scout assignments
     const assignments = db.prepare(`
       SELECT
         ship_symbol,
@@ -217,24 +216,63 @@ router.get('/tours/:systemSymbol', async (req, res) => {
       ORDER BY ship_symbol
     `).all(systemSymbol);
 
+    // Get all tours for this system
+    const allTours = db.prepare(`
+      SELECT
+        system,
+        markets,
+        algorithm,
+        start_waypoint,
+        tour_order,
+        total_distance,
+        calculated_at
+      FROM tour_cache
+      WHERE system = ?
+      ORDER BY calculated_at DESC
+    `).all(systemSymbol);
+
     db.close();
 
-    // Convert assignments to tour format
+    // Match each assignment to the most recent tour with the same market set (ignoring order)
     const tours = assignments.map((a: any) => {
-      const markets = JSON.parse(a.markets);
-      const startWaypoint = markets[0];
+      const assignedMarkets = JSON.parse(a.markets);
+      const assignedSet = new Set(assignedMarkets);
 
-      return {
-        system: systemSymbol,
-        markets: markets,
-        algorithm: 'assigned',
-        start_waypoint: startWaypoint,
-        tour_order: markets, // Simple tour: visit each market once
-        total_distance: 0, // Unknown from assignment
-        calculated_at: a.assigned_at,
-        ship_symbol: a.ship_symbol,
-        daemon_id: a.daemon_id,
-      };
+      // Find the most recent tour with the exact same set of markets
+      const matchingTour = allTours.find((t: any) => {
+        const tourMarkets = JSON.parse(t.markets);
+        if (tourMarkets.length !== assignedMarkets.length) return false;
+        return tourMarkets.every((m: string) => assignedSet.has(m));
+      });
+
+      if (matchingTour) {
+        // Return the cached tour with ship info
+        const tour = matchingTour as any;
+        return {
+          system: tour.system,
+          markets: JSON.parse(tour.markets),
+          algorithm: tour.algorithm,
+          start_waypoint: tour.start_waypoint,
+          tour_order: JSON.parse(tour.tour_order),
+          total_distance: tour.total_distance,
+          calculated_at: tour.calculated_at,
+          ship_symbol: a.ship_symbol,
+          daemon_id: a.daemon_id,
+        };
+      } else {
+        // Fallback: build simple tour from assignment
+        return {
+          system: systemSymbol,
+          markets: assignedMarkets,
+          algorithm: 'assigned',
+          start_waypoint: assignedMarkets[0],
+          tour_order: assignedMarkets,
+          total_distance: 0,
+          calculated_at: a.assigned_at,
+          ship_symbol: a.ship_symbol,
+          daemon_id: a.daemon_id,
+        };
+      }
     });
 
     res.json({ tours });

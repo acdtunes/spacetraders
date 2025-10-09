@@ -445,7 +445,7 @@ class RouteOptimizer:
 
         best_route = None
         iterations = 0
-        max_iterations = 10000
+        max_iterations = 50000  # Increased from 10000 to handle long-distance paths (700+ units) in complex graphs
 
         while queue and iterations < max_iterations:
             iterations += 1
