@@ -298,13 +298,17 @@ const storeInitializer: StateCreator<AppState, [], []> = (set) => ({
   scoutTours: [],
   setScoutTours: (tours) =>
     set((state) => {
-      // Only auto-add tours if visibleTours is empty (initial load)
-      // This prevents re-selecting tours that the user manually deselected
-      if (state.visibleTours.size === 0 && tours.length > 0) {
+      // Check if this is the initial load (no existing tours)
+      if (state.scoutTours.length === 0 && tours.length > 0) {
+        // Initial load: auto-select all tours
         const allTourIds = new Set(tours.map((tour) => getTourId(tour)));
+        console.log('[setScoutTours] Initial load - selecting all tours:', allTourIds);
         return { scoutTours: tours, visibleTours: allTourIds };
       }
-      // Otherwise just update tours without changing visibility
+
+      // For subsequent updates: preserve existing visibility state
+      // Don't modify visibleTours at all - keep whatever the user selected
+      console.log('[setScoutTours] Update - preserving visibility. Tours:', tours.length, 'Visible:', state.visibleTours.size);
       return { scoutTours: tours };
     }),
   tradeOpportunities: [],
@@ -324,22 +328,28 @@ const storeInitializer: StateCreator<AppState, [], []> = (set) => ({
 
   // Tour filtering
   visibleTours: new Set(),
-  toggleTourVisibility: (tourSystem) =>
+  toggleTourVisibility: (tourId) =>
     set((state) => {
       const newVisible = new Set(state.visibleTours);
-      if (newVisible.has(tourSystem)) {
-        newVisible.delete(tourSystem);
+      const action = newVisible.has(tourId) ? 'remove' : 'add';
+      if (newVisible.has(tourId)) {
+        newVisible.delete(tourId);
       } else {
-        newVisible.add(tourSystem);
+        newVisible.add(tourId);
       }
+      console.log(`[toggleTourVisibility] ${action} tour:`, tourId, 'New size:', newVisible.size);
       return { visibleTours: newVisible };
     }),
   showAllTours: () =>
     set((state) => {
       const allTourIds = new Set(state.scoutTours.map((t) => getTourId(t)));
+      console.log('[showAllTours] Selecting all tours:', allTourIds.size);
       return { visibleTours: allTourIds };
     }),
-  hideAllTours: () => set({ visibleTours: new Set() }),
+  hideAllTours: () => {
+    console.log('[hideAllTours] Hiding all tours');
+    return set({ visibleTours: new Set() });
+  },
 });
 
 export const createAppStore = () => createStore<AppState>(storeInitializer);

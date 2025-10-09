@@ -699,17 +699,11 @@ class RouteOptimizer:
         }]
 
         if prefer_cruise:
-            current_has_fuel = self.graph['waypoints'][current_wp].get('has_fuel', False)
-            neighbor_has_fuel = self.graph['waypoints'][neighbor].get('has_fuel', False)
-            can_cruise_after_refuel = False
-            if current_has_fuel:
-                cruise_cost_to_neighbor = FuelCalculator.fuel_cost(distance, 'CRUISE')
-                can_cruise_after_refuel = cruise_cost_to_neighbor * (1 + FUEL_SAFETY_MARGIN) <= self.fuel_capacity
-
+            # When prefer_cruise=True, we should ONLY use DRIFT in true emergencies
+            # The _should_allow_emergency_drift check handles all the logic for when DRIFT is necessary
+            # Do NOT bypass this check with additional conditions that allow DRIFT to the goal
             if not self._should_allow_emergency_drift(current_wp, neighbor, fuel, distance, goal):
-                # Allow drift only if destination lacks fuel AND even a full tank can't reach it via CRUISE.
-                if not (neighbor == goal and not neighbor_has_fuel and not can_cruise_after_refuel):
-                    return counter
+                return counter
 
             emergency_path = new_path + [{
                 "action": "emergency",
