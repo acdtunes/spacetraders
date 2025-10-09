@@ -19,7 +19,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 from spacetraders_bot.core.api_client import APIClient
 from spacetraders_bot.core.ship_controller import ShipController
 from spacetraders_bot.core.smart_navigator import SmartNavigator
-from spacetraders_bot.core.utils import parse_waypoint_symbol
+from spacetraders_bot.core.utils import parse_waypoint_symbol, calculate_distance
 from spacetraders_bot.operations.control import CircuitBreaker
 
 
@@ -64,6 +64,108 @@ class MarketEvaluation:
     cargo_after: Dict[str, int]
     credits_after: int
     net_profit: int
+
+
+def _cleanup_stranded_cargo(ship: ShipController, api: APIClient, db, logger: logging.Logger) -> bool:
+    """
+    Emergency cleanup: Sell all cargo on ship to nearest market
+
+    Called by circuit breakers before exiting to prevent stranded cargo.
+    Accepts ANY price to recover credits - this is cleanup, not profit optimization.
+
+    Args:
+        ship: ShipController instance
+        api: APIClient instance
+        db: Database instance for market lookups
+        logger: Logger for recording cleanup actions
+
+    Returns:
+        True if cleanup succeeded (or no cargo to clean), False on critical failure
+    """
+    try:
+        # Get current ship status
+        ship_data = ship.get_status()
+        if not ship_data:
+            logger.error("Failed to get ship status for cargo cleanup")
+            return False
+
+        cargo = ship_data.get('cargo', {})
+        inventory = cargo.get('inventory', [])
+
+        # If no cargo, nothing to clean up
+        if not inventory or cargo.get('units', 0) == 0:
+            logger.info("No stranded cargo to clean up")
+            return True
+
+        logger.warning("="*70)
+        logger.warning("🧹 CARGO CLEANUP: Selling stranded cargo")
+        logger.warning("="*70)
+
+        # Log stranded cargo
+        for item in inventory:
+            logger.warning(f"  Stranded: {item['units']}x {item['symbol']}")
+
+        # Get current location
+        current_waypoint = ship_data['nav']['waypointSymbol']
+        system = ship_data['nav']['systemSymbol']
+
+        # Try to find nearest market that accepts cargo
+        # For simplicity, try current waypoint first (we're likely already at a market)
+        logger.info(f"Attempting cleanup at current location: {current_waypoint}")
+
+        # Ensure ship is docked
+        if ship_data['nav']['status'] != 'DOCKED':
+            logger.info("Docking for cargo cleanup...")
+            if not ship.dock():
+                logger.error("Failed to dock for cargo cleanup")
+                return False
+
+        # Sell all cargo, accepting any price
+        cleanup_revenue = 0
+        for item in inventory:
+            good = item['symbol']
+            units = item['units']
+
+            logger.warning(f"  Selling {units}x {good} (accepting any price)...")
+
+            try:
+                # Use ship.sell with check_market_prices=False to accept any price
+                transaction = ship.sell(good, units, check_market_prices=False)
+
+                if transaction:
+                    revenue = transaction['totalPrice']
+                    price_per_unit = revenue / units if units > 0 else 0
+                    cleanup_revenue += revenue
+                    logger.warning(f"  ✅ Sold {units}x {good} for {revenue:,} credits ({price_per_unit:.0f} cr/unit)")
+                else:
+                    logger.error(f"  ❌ Failed to sell {good}")
+                    # Continue trying to sell other items
+
+            except Exception as e:
+                logger.error(f"  ❌ Error selling {good}: {e}")
+                # Continue trying to sell other items
+
+        logger.warning(f"Total cleanup revenue: {cleanup_revenue:,} credits")
+        logger.warning("="*70)
+
+        # Verify cargo is now empty
+        final_status = ship.get_status()
+        if final_status:
+            final_cargo = final_status.get('cargo', {})
+            if final_cargo.get('units', 0) == 0:
+                logger.info("✅ Cargo cleanup complete - ship hold empty")
+                return True
+            else:
+                logger.warning(f"⚠️  Partial cleanup - {final_cargo.get('units', 0)} units remaining")
+                return True  # Partial success is still acceptable
+
+        return True
+
+    except Exception as e:
+        logger.error(f"Critical error during cargo cleanup: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return False
 
 
 class TradeEvaluationStrategy:
@@ -650,6 +752,7 @@ def execute_multileg_route(
             if not navigator.execute_route(ship, segment.to_waypoint):
                 logging.error(f"❌ Navigation failed to {segment.to_waypoint}")
                 logging.error("Route execution aborted")
+                _cleanup_stranded_cargo(ship, api, db, logging.getLogger(__name__))
                 return False
 
             logging.info(f"✅ Arrived at {segment.to_waypoint}")
@@ -659,6 +762,7 @@ def execute_multileg_route(
             if not ship.dock():
                 logging.error("❌ Failed to dock")
                 logging.error("Route execution aborted")
+                _cleanup_stranded_cargo(ship, api, db, logging.getLogger(__name__))
                 return False
 
             # Step 3: Execute trade actions at this waypoint
@@ -703,6 +807,7 @@ def execute_multileg_route(
                                     logging.error(f"  Increase: {price_change_pct:.1f}%")
                                     logging.error("  Route execution aborted to prevent loss")
                                     logging.error("="*70)
+                                    _cleanup_stranded_cargo(ship, api, db, logging.getLogger(__name__))
                                     return False
                     except Exception as e:
                         logging.warning(f"  ⚠️  Live market check failed: {e}, proceeding with planned purchase...")
@@ -712,6 +817,7 @@ def execute_multileg_route(
                     if not transaction:
                         logging.error(f"  ❌ Purchase failed for {action.good}")
                         logging.error("  Route execution aborted")
+                        _cleanup_stranded_cargo(ship, api, db, logging.getLogger(__name__))
                         return False
 
                     actual_cost = transaction['totalPrice']
@@ -731,6 +837,7 @@ def execute_multileg_route(
                             logging.error(f"  Already spent: {actual_cost:,} credits on this purchase")
                             logging.error("  Aborting route to prevent further losses")
                             logging.error("="*70)
+                            _cleanup_stranded_cargo(ship, api, db, logging.getLogger(__name__))
                             return False
                         elif abs(actual_price_change_pct) > 5:
                             logging.warning(f"  ⚠️  Actual price: {action.price_per_unit:,} → {actual_price_per_unit:,.0f} ({actual_price_change_pct:+.1f}%)")
@@ -772,6 +879,7 @@ def execute_multileg_route(
                                     logging.error(f"  Drop: {price_change_pct:.1f}%")
                                     logging.error("  Route execution aborted to prevent loss")
                                     logging.error("="*70)
+                                    _cleanup_stranded_cargo(ship, api, db, logging.getLogger(__name__))
                                     return False
                     except Exception as e:
                         logging.warning(f"  ⚠️  Live market check failed: {e}, proceeding with planned sale...")
@@ -788,6 +896,7 @@ def execute_multileg_route(
                     if not transaction:
                         logging.error(f"  ❌ Sale failed for {action.good}")
                         logging.error("  Route execution aborted")
+                        _cleanup_stranded_cargo(ship, api, db, logging.getLogger(__name__))
                         return False
 
                     # Check if sale was aborted mid-batch due to price collapse
