@@ -106,7 +106,7 @@ export const ShipLayer = memo(function ShipLayer({
               />
             )}
 
-            {showOperationBadges && operationType && (
+            {showShipNames && showOperationBadges && operationType && (
               <ShipOperationBadge
                 operationType={operationType}
                 currentScale={currentScale}
