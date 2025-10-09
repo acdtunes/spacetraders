@@ -1089,7 +1089,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
 
       {/* Tour Filter Panel */}
       {showScoutTours && scoutTours.length > 0 && (
-        <div className="absolute top-4 left-4 z-40">
+        <div className="absolute top-4 right-4 z-40">
           <TourFilterPanel
             tours={scoutTours}
             visibleTours={visibleTours}

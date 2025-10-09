@@ -1,6 +1,7 @@
 import { memo } from 'react';
 import { Group, Line, Circle } from 'react-konva';
 import type { ScoutTour, Waypoint as WaypointType } from '../types/spacetraders';
+import { getTourId } from '../utils/tourHelpers';
 
 interface ScoutTourLayerProps {
   tours: ScoutTour[];
@@ -62,7 +63,8 @@ export const ScoutTourLayer = memo(function ScoutTourLayer({
     <Group listening={false}>
       {tours.map((tour, tourIndex) => {
         // Filter based on visibility
-        if (visibleTours && !visibleTours.has(tour.system)) {
+        const tourId = getTourId(tour);
+        if (visibleTours && !visibleTours.has(tourId)) {
           return null;
         }
 
@@ -97,7 +99,7 @@ export const ScoutTourLayer = memo(function ScoutTourLayer({
         const dashOffset = (animationFrame * 0.5) % (dashLength + gapLength);
 
         return (
-          <Group key={`tour-${tourIndex}`}>
+          <Group key={`tour-${tourId}`}>
             {/* Tour path lines */}
             <Line
               points={linePoints}

@@ -110,6 +110,7 @@ export const ShipLayer = memo(function ShipLayer({
               <ShipOperationBadge
                 operationType={operationType}
                 currentScale={currentScale}
+                labelInfo={labelInfo}
               />
             )}
           </Group>

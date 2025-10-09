@@ -14,6 +14,7 @@ import type {
   ScoutTour,
   TradeOpportunityData,
 } from '../types/spacetraders';
+import { getTourId } from '../utils/tourHelpers';
 
 const TRAIL_MAX_POINTS: Record<FlightMode, number> = {
   DRIFT: 0,
@@ -141,7 +142,7 @@ export interface AppState {
 
   // Tour filtering
   visibleTours: Set<string>;
-  toggleTourVisibility: (tourSystem: string) => void;
+  toggleTourVisibility: (tourId: string) => void;
   showAllTours: () => void;
   hideAllTours: () => void;
 }
@@ -297,11 +298,12 @@ const storeInitializer: StateCreator<AppState, [], []> = (set) => ({
   scoutTours: [],
   setScoutTours: (tours) =>
     set((state) => {
-      // Auto-add new tours to visible set
+      // Auto-add new tours to visible set using unique tour IDs
       const newVisible = new Set(state.visibleTours);
       tours.forEach((tour) => {
-        if (!newVisible.has(tour.system)) {
-          newVisible.add(tour.system);
+        const tourId = getTourId(tour);
+        if (!newVisible.has(tourId)) {
+          newVisible.add(tourId);
         }
       });
       return { scoutTours: tours, visibleTours: newVisible };
@@ -335,8 +337,8 @@ const storeInitializer: StateCreator<AppState, [], []> = (set) => ({
     }),
   showAllTours: () =>
     set((state) => {
-      const allSystems = new Set(state.scoutTours.map((t) => t.system));
-      return { visibleTours: allSystems };
+      const allTourIds = new Set(state.scoutTours.map((t) => getTourId(t)));
+      return { visibleTours: allTourIds };
     }),
   hideAllTours: () => set({ visibleTours: new Set() }),
 });

@@ -1,10 +1,11 @@
 import { useMemo } from 'react';
 import type { ScoutTour } from '../types/spacetraders';
+import { getTourId, getTourLabel } from '../utils/tourHelpers';
 
 interface TourFilterPanelProps {
   tours: ScoutTour[];
   visibleTours: Set<string>;
-  onToggleTour: (tourSystem: string) => void;
+  onToggleTour: (tourId: string) => void;
   onShowAll: () => void;
   onHideAll: () => void;
 }
@@ -63,8 +64,8 @@ export const TourFilterPanel = ({
     );
   }
 
-  const allVisible = tours.length > 0 && tours.every((t) => visibleTours.has(t.system));
-  const noneVisible = tours.every((t) => !visibleTours.has(t.system));
+  const allVisible = tours.length > 0 && tours.every((t) => visibleTours.has(getTourId(t)));
+  const noneVisible = tours.every((t) => !visibleTours.has(getTourId(t)));
 
   return (
     <div className="bg-gray-800 rounded-lg p-4 border border-gray-700 max-w-xs">
@@ -90,18 +91,20 @@ export const TourFilterPanel = ({
 
       <div className="space-y-2 max-h-64 overflow-y-auto">
         {sortedTours.map((tour, index) => {
-          const isVisible = visibleTours.has(tour.system);
+          const tourId = getTourId(tour);
+          const tourLabel = getTourLabel(tour);
+          const isVisible = visibleTours.has(tourId);
           const color = getTourColor(tour.system, index);
 
           return (
             <label
-              key={tour.system}
+              key={tourId}
               className="flex items-center gap-2 cursor-pointer hover:bg-gray-750 p-2 rounded transition-colors"
             >
               <input
                 type="checkbox"
                 checked={isVisible}
-                onChange={() => onToggleTour(tour.system)}
+                onChange={() => onToggleTour(tourId)}
                 className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-600 focus:ring-2 focus:ring-blue-500 focus:ring-offset-0"
               />
               <div
@@ -109,7 +112,7 @@ export const TourFilterPanel = ({
                 style={{ backgroundColor: color }}
               />
               <span className="text-sm text-gray-200 font-mono flex-1">
-                {tour.system}
+                {tour.system} - {tourLabel}
               </span>
               <span className="text-xs text-gray-400">
                 {tour.tour_order.length} pts
