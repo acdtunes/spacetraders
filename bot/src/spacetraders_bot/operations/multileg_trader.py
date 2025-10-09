@@ -1025,8 +1025,12 @@ def create_fixed_route(
 
     # Get market data from database
     with db.transaction() as conn:
-        buy_market = db.get_market_data(conn, buy_waypoint, good, player_id)
-        sell_market = db.get_market_data(conn, sell_waypoint, good, player_id)
+        buy_market_rows = db.get_market_data(conn, buy_waypoint, good)
+        sell_market_rows = db.get_market_data(conn, sell_waypoint, good)
+
+    # Extract first row (get_market_data returns List[Dict])
+    buy_market = buy_market_rows[0] if buy_market_rows else None
+    sell_market = sell_market_rows[0] if sell_market_rows else None
 
     if not buy_market or not sell_market:
         logging.error("Missing market data for route")
@@ -1040,9 +1044,43 @@ def create_fixed_route(
     logging.info(f"Sell price @ {sell_waypoint}: {sell_price:,} cr/unit")
     logging.info(f"Spread: {sell_price - buy_price:,} cr/unit")
 
-    # Calculate distances
-    dist_to_buy = calculate_distance(current_waypoint, buy_waypoint)
-    dist_buy_to_sell = calculate_distance(buy_waypoint, sell_waypoint)
+    # Look up waypoint coordinates from database
+    # (calculate_distance expects coordinate dictionaries, not waypoint symbols)
+    with db.connection() as conn:
+        cursor = conn.cursor()
+
+        # Get coordinates for current waypoint
+        cursor.execute("SELECT x, y FROM waypoints WHERE waypoint_symbol = ?", (current_waypoint,))
+        current_coords_row = cursor.fetchone()
+
+        # Get coordinates for buy waypoint
+        cursor.execute("SELECT x, y FROM waypoints WHERE waypoint_symbol = ?", (buy_waypoint,))
+        buy_coords_row = cursor.fetchone()
+
+        # Get coordinates for sell waypoint
+        cursor.execute("SELECT x, y FROM waypoints WHERE waypoint_symbol = ?", (sell_waypoint,))
+        sell_coords_row = cursor.fetchone()
+
+    # Validate that we have all coordinates
+    if not current_coords_row or not buy_coords_row or not sell_coords_row:
+        missing = []
+        if not current_coords_row:
+            missing.append(current_waypoint)
+        if not buy_coords_row:
+            missing.append(buy_waypoint)
+        if not sell_coords_row:
+            missing.append(sell_waypoint)
+        logging.error(f"Missing waypoint coordinate data for: {', '.join(missing)}")
+        return None
+
+    # Convert database rows to coordinate dictionaries
+    current_coords = {'x': current_coords_row[0], 'y': current_coords_row[1]}
+    buy_coords = {'x': buy_coords_row[0], 'y': buy_coords_row[1]}
+    sell_coords = {'x': sell_coords_row[0], 'y': sell_coords_row[1]}
+
+    # Calculate distances using coordinate dictionaries
+    dist_to_buy = calculate_distance(current_coords, buy_coords)
+    dist_buy_to_sell = calculate_distance(buy_coords, sell_coords)
     total_distance = dist_to_buy + dist_buy_to_sell
 
     # Estimate fuel costs

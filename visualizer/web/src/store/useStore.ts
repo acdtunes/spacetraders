@@ -138,6 +138,12 @@ export interface AppState {
   toggleOperationBadges: () => void;
   showMarketFreshness: boolean;
   toggleMarketFreshness: () => void;
+
+  // Tour filtering
+  visibleTours: Set<string>;
+  toggleTourVisibility: (tourSystem: string) => void;
+  showAllTours: () => void;
+  hideAllTours: () => void;
 }
 
 const storeInitializer: StateCreator<AppState, [], []> = (set) => ({
@@ -289,7 +295,17 @@ const storeInitializer: StateCreator<AppState, [], []> = (set) => ({
       marketFreshness: new Map(freshness.map((f) => [f.waypoint_symbol, f])),
     }),
   scoutTours: [],
-  setScoutTours: (tours) => set({ scoutTours: tours }),
+  setScoutTours: (tours) =>
+    set((state) => {
+      // Auto-add new tours to visible set
+      const newVisible = new Set(state.visibleTours);
+      tours.forEach((tour) => {
+        if (!newVisible.has(tour.system)) {
+          newVisible.add(tour.system);
+        }
+      });
+      return { scoutTours: tours, visibleTours: newVisible };
+    }),
   tradeOpportunities: [],
   setTradeOpportunities: (opportunities) => set({ tradeOpportunities: opportunities }),
 
@@ -304,6 +320,25 @@ const storeInitializer: StateCreator<AppState, [], []> = (set) => ({
   toggleOperationBadges: () => set((state) => ({ showOperationBadges: !state.showOperationBadges })),
   showMarketFreshness: true,
   toggleMarketFreshness: () => set((state) => ({ showMarketFreshness: !state.showMarketFreshness })),
+
+  // Tour filtering
+  visibleTours: new Set(),
+  toggleTourVisibility: (tourSystem) =>
+    set((state) => {
+      const newVisible = new Set(state.visibleTours);
+      if (newVisible.has(tourSystem)) {
+        newVisible.delete(tourSystem);
+      } else {
+        newVisible.add(tourSystem);
+      }
+      return { visibleTours: newVisible };
+    }),
+  showAllTours: () =>
+    set((state) => {
+      const allSystems = new Set(state.scoutTours.map((t) => t.system));
+      return { visibleTours: allSystems };
+    }),
+  hideAllTours: () => set({ visibleTours: new Set() }),
 });
 
 export const createAppStore = () => createStore<AppState>(storeInitializer);

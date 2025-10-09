@@ -15,6 +15,7 @@ import { MarketFreshnessRing } from './MarketFreshnessRing';
 import { ScoutTourLayer } from './ScoutTourLayer';
 import { TradeRouteLayer } from './TradeRouteLayer';
 import { MiningLoopLayer } from './MiningLoopLayer';
+import { TourFilterPanel } from './TourFilterPanel';
 import { useWaypointTooltipAnchor } from '../hooks/useWaypointTooltipAnchor';
 import { useGridLines } from '../hooks/useGridLines';
 import { useShipTrailSampler } from '../hooks/useShipTrailSampler';
@@ -92,7 +93,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
   const waypointsSizeRef = useRef<number>(0);
   const shipPositionCacheRef = useRef<Map<string, { x: number; y: number; status: ShipNavStatus; timestamp: number }>>(new Map());
 
-  const { currentSystem, waypoints, ships, markets, showMapOverlays, showWaypointNames, showShipNames, showDestinationRoutes, setWaypoints, trails, addTrailPosition, clearTrail, filterStatus, filterAgents, filterWaypointTypes, selectedShip, selectedWaypoint, setSelectedShip, setSelectedWaypoint, assignments, showOperationBadges, marketFreshness, showMarketFreshness, scoutTours, showScoutTours, tradeOpportunities, showTradeRoutes, showMiningRoutes } =
+  const { currentSystem, waypoints, ships, markets, showMapOverlays, showWaypointNames, showShipNames, showDestinationRoutes, setWaypoints, trails, addTrailPosition, clearTrail, filterStatus, filterAgents, filterWaypointTypes, selectedShip, selectedWaypoint, setSelectedShip, setSelectedWaypoint, assignments, showOperationBadges, marketFreshness, showMarketFreshness, scoutTours, showScoutTours, tradeOpportunities, showTradeRoutes, showMiningRoutes, visibleTours, toggleTourVisibility, showAllTours, hideAllTours } =
     useStore();
 
   const [hoveredShip, setHoveredShip] = useState<string | null>(null);
@@ -944,19 +945,6 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
                   />
                 )}
 
-                {hasMarketplace && showMapOverlays && (
-                  <Text
-                    text="🏪"
-                    x={x - radius - 8 / currentScale}
-                    y={y - 6 / currentScale}
-                    fontSize={12 / currentScale}
-                    fill="#facc15"
-                    stroke="rgba(17, 24, 39, 0.65)"
-                    strokeWidth={0.4 / currentScale}
-                    listening={false}
-                  />
-                )}
-
                 {showWaypointNames && (
                   <Text
                     text={waypoint.symbol.split('-').pop() || waypoint.symbol}
@@ -989,6 +977,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
               waypoints={waypoints}
               currentScale={currentScale}
               animationFrame={animationFrame}
+              visibleTours={visibleTours}
             />
           )}
 
@@ -1097,6 +1086,19 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
         onZoom={handleMinimapZoom}
         animationFrame={animationFrame}
       />
+
+      {/* Tour Filter Panel */}
+      {showScoutTours && scoutTours.length > 0 && (
+        <div className="absolute top-4 left-4 z-40">
+          <TourFilterPanel
+            tours={scoutTours}
+            visibleTours={visibleTours}
+            onToggleTour={toggleTourVisibility}
+            onShowAll={showAllTours}
+            onHideAll={hideAllTours}
+          />
+        </div>
+      )}
     </div>
   );
 });
