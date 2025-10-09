@@ -873,7 +873,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
         >
           <Layer ref={layerRef}>
             {/* Space background */}
-            <StarfieldBackground viewportBounds={viewportBounds} currentScale={currentScale} />
+            <StarfieldBackground viewportBounds={viewportBounds} currentScale={currentScale} animationFrame={animationFrame} />
 
             {/* Grid lines */}
             {gridLines.vertical.map((line, i) => (

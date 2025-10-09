@@ -4,6 +4,7 @@ import { Group, Circle, Line } from 'react-konva';
 interface StarfieldBackgroundProps {
   viewportBounds: { x: number; y: number; width: number; height: number; scale: number };
   currentScale: number;
+  animationFrame: number;
 }
 
 interface Star {
@@ -25,6 +26,7 @@ function seededRandom(seed: number): number {
 export const StarfieldBackground = memo(function StarfieldBackground({
   viewportBounds,
   currentScale,
+  animationFrame,
 }: StarfieldBackgroundProps) {
   const stars = useMemo(() => {
     const starList: Star[] = [];
@@ -56,15 +58,15 @@ export const StarfieldBackground = memo(function StarfieldBackground({
           const x = gx * gridSize + seededRandom(starSeed) * gridSize;
           const y = gy * gridSize + seededRandom(starSeed + 1) * gridSize;
 
-          // Much smaller stars (tiny points)
+          // Larger stars with more variation
           const sizeRoll = seededRandom(starSeed + 2);
           let size: number;
-          if (sizeRoll < 0.8) {
-            size = 0.15 + seededRandom(starSeed + 3) * 0.15; // Tiny stars
-          } else if (sizeRoll < 0.95) {
-            size = 0.3 + seededRandom(starSeed + 3) * 0.2; // Small stars
+          if (sizeRoll < 0.7) {
+            size = 0.3 + seededRandom(starSeed + 3) * 0.3; // Small stars
+          } else if (sizeRoll < 0.9) {
+            size = 0.6 + seededRandom(starSeed + 3) * 0.4; // Medium stars
           } else {
-            size = 0.5 + seededRandom(starSeed + 3) * 0.3; // Medium stars (rare)
+            size = 1.0 + seededRandom(starSeed + 3) * 0.5; // Large stars (rare)
           }
 
           // Brightness variation
@@ -162,13 +164,22 @@ export const StarfieldBackground = memo(function StarfieldBackground({
         const rayLength = baseSize * 3;
         const thinRayLength = rayLength * 0.7;
 
+        // Twinkling animation: each star has its own phase and speed
+        const twinklePhase = (star.x * 1000 + star.y * 1000) % 100;
+        const twinkleSpeed = 0.02 + (twinklePhase / 100) * 0.03; // Vary speed between stars
+        const twinkle = Math.sin((animationFrame * twinkleSpeed) + twinklePhase) * 0.5 + 0.5; // 0 to 1
+
+        // Apply twinkling to brightness and size
+        const twinkledBrightness = star.brightness * (0.4 + twinkle * 0.6); // Vary between 40% and 100%
+        const twinkledSize = baseSize * (0.8 + twinkle * 0.4); // Vary size slightly
+
         return (
           <Group key={`star-${i}`} x={star.x} y={star.y} listening={false}>
             {/* Center dot */}
             <Circle
-              radius={baseSize}
+              radius={twinkledSize}
               fill={star.color}
-              opacity={star.brightness}
+              opacity={twinkledBrightness}
               listening={false}
             />
 
@@ -177,31 +188,31 @@ export const StarfieldBackground = memo(function StarfieldBackground({
             <Line
               points={[-rayLength, 0, rayLength, 0]}
               stroke={star.color}
-              strokeWidth={baseSize * 0.3}
-              opacity={star.brightness * 0.6}
+              strokeWidth={twinkledSize * 0.3}
+              opacity={twinkledBrightness * 0.6}
               listening={false}
             />
             {/* Vertical ray */}
             <Line
               points={[0, -rayLength, 0, rayLength]}
               stroke={star.color}
-              strokeWidth={baseSize * 0.3}
-              opacity={star.brightness * 0.6}
+              strokeWidth={twinkledSize * 0.3}
+              opacity={twinkledBrightness * 0.6}
               listening={false}
             />
             {/* Diagonal rays (thinner and shorter for classic star look) */}
             <Line
               points={[-thinRayLength, -thinRayLength, thinRayLength, thinRayLength]}
               stroke={star.color}
-              strokeWidth={baseSize * 0.2}
-              opacity={star.brightness * 0.4}
+              strokeWidth={twinkledSize * 0.2}
+              opacity={twinkledBrightness * 0.4}
               listening={false}
             />
             <Line
               points={[-thinRayLength, thinRayLength, thinRayLength, -thinRayLength]}
               stroke={star.color}
-              strokeWidth={baseSize * 0.2}
-              opacity={star.brightness * 0.4}
+              strokeWidth={twinkledSize * 0.2}
+              opacity={twinkledBrightness * 0.4}
               listening={false}
             />
           </Group>
