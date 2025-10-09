@@ -24,7 +24,7 @@ export const ShipNameLabel = ({
         <Tag
           width={labelWidth + 12}
           height={labelHeight}
-          fill="rgba(0, 0, 0, 0.82)"
+          fill="transparent"
           cornerRadius={3}
         />
         <Text
