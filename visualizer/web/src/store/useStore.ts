@@ -305,8 +305,20 @@ const storeInitializer: StateCreator<AppState, [], []> = (set) => ({
         return { scoutTours: tours, visibleTours: allTourIds };
       }
 
-      // For subsequent updates: preserve existing visibility state
-      // Don't modify visibleTours at all - keep whatever the user selected
+      // For subsequent updates: add new tours to visible set while preserving user selections
+      const currentTourIds = new Set(state.scoutTours.map((t) => getTourId(t)));
+      const newTourIds = tours
+        .map((t) => getTourId(t))
+        .filter((id) => !currentTourIds.has(id));
+
+      if (newTourIds.length > 0) {
+        // New tours detected - add them to visible set
+        const updatedVisibleTours = new Set(state.visibleTours);
+        newTourIds.forEach((id) => updatedVisibleTours.add(id));
+        return { scoutTours: tours, visibleTours: updatedVisibleTours };
+      }
+
+      // No new tours - just update the tour list
       return { scoutTours: tours };
     }),
   tradeOpportunities: [],
