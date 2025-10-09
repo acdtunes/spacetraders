@@ -127,9 +127,32 @@ router.get('/:id/ships', async (req, res) => {
     }
 
     const client = new SpaceTradersClient(API_BASE_URL, agent.token);
-    const ships = await client.get('/my/ships');
 
-    res.json(ships);
+    // Fetch all ships with pagination
+    let allShips: any[] = [];
+    let page = 1;
+    let hasMore = true;
+    const limit = 20;
+
+    while (hasMore) {
+      const response = await client.get(`/my/ships?page=${page}&limit=${limit}`);
+      allShips = [...allShips, ...response.data];
+
+      // Check if there are more pages
+      if (response.meta?.page && response.meta?.limit && response.meta?.total) {
+        if (response.meta.page * response.meta.limit >= response.meta.total) {
+          hasMore = false;
+        } else {
+          page++;
+        }
+      } else if (response.data.length < limit) {
+        hasMore = false;
+      } else {
+        page++;
+      }
+    }
+
+    res.json({ data: allShips, meta: { total: allShips.length } });
   } catch (error) {
     console.error('Failed to fetch ships:', error);
     res.status(500).json({ error: 'Failed to fetch ships' });
