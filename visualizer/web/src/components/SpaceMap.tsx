@@ -1,36 +1,26 @@
-import { Suspense, lazy, useEffect, useRef, useState, forwardRef, useImperativeHandle, useMemo, useCallback } from 'react';
+import { useEffect, useRef, useState, forwardRef, useImperativeHandle, useMemo, useCallback } from 'react';
 import { Stage, Layer, Group, Circle, Text, Line } from 'react-konva';
 import Konva from 'konva';
 import { useStore } from '../store/useStore';
 import { getWaypoints } from '../services/api';
 import { getWaypointOpportunities, formatOpportunity } from '../domain/market';
-import { Ship, Waypoint, ShipQueries, WaypointQueries, ViewportBounds } from '../domain';
+import { Waypoint, ShipQueries, WaypointQueries, ViewportBounds } from '../domain';
 import { VIEWPORT_CONSTANTS } from '../constants/viewport';
 import { hashString } from '../utils/hash';
 import { WaypointSprite } from './WaypointSprite';
 import { ShipLayer } from './ShipLayer';
 import { MiningLaserLayer } from './MiningLaserLayer';
 import { ShipTrailLayer } from './ShipTrailLayer';
-import type { WaypointTooltipData } from './WaypointTooltipOverlay';
-import { useSelectionOverlay } from '../hooks/useSelectionOverlay';
 import { useWaypointTooltipAnchor } from '../hooks/useWaypointTooltipAnchor';
-import { useShipTooltip } from '../hooks/useShipTooltip';
 import { useGridLines } from '../hooks/useGridLines';
 import { useShipTrailSampler } from '../hooks/useShipTrailSampler';
+import { useSpaceMapOverlays, type SelectedMapObject } from '../hooks/useSpaceMapOverlays';
+import { useKonvaStage } from '../hooks/useKonvaStage';
+import { SelectionOverlayLazy, ShipTooltipOverlayLazy, WaypointTooltipOverlayLazy } from './SpaceMapLazyOverlays';
 import ZoomControls from './ZoomControls';
 import Minimap from './Minimap';
 import type { Waypoint as WaypointType, TaggedShip, ShipNavStatus } from '../types/spacetraders';
 import type { RouteVectorsProps } from './RouteVectors';
-
-const LazySelectionOverlay = lazy(() =>
-  import('./SelectionOverlay').then((module) => ({ default: module.SelectionOverlay }))
-);
-const LazyShipTooltipOverlay = lazy(() =>
-  import('./ShipTooltipOverlay').then((module) => ({ default: module.ShipTooltipOverlay }))
-);
-const LazyWaypointTooltipOverlay = lazy(() =>
-  import('./WaypointTooltipOverlay').then((module) => ({ default: module.WaypointTooltipOverlay }))
-);
 
 type RouteVectorsComponentType = (props: RouteVectorsProps) => JSX.Element | null;
 
@@ -102,15 +92,24 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
     useStore();
 
   const [hoveredShip, setHoveredShip] = useState<string | null>(null);
-  const [selectedObject, setSelectedObject] = useState<{ type: 'waypoint' | 'ship', symbol: string, x: number, y: number } | null>(null);
+  const [selectedObject, setSelectedObject] = useState<SelectedMapObject | null>(null);
   const [viewportBounds, setViewportBounds] = useState({ x: 0, y: 0, width: 0, height: 0, scale: 1 });
   const [animationFrame, setAnimationFrame] = useState(0);
-
-  const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
   const [RouteVectorsComponent, setRouteVectorsComponent] = useState<RouteVectorsComponentType | null>(null);
 
   const currentScale = viewportBounds.scale || 1;
   const frameTimestamp = useMemo(() => Date.now(), [animationFrame]);
+
+  const handleAnimationTick = useCallback(() => {
+    setAnimationFrame((prev) => prev + 1);
+  }, []);
+
+  const stageSize = useKonvaStage({
+    containerRef,
+    layerRef,
+    stageRef,
+    onAnimationTick: handleAnimationTick,
+  });
 
   const getShipRenderPosition = useCallback(
     (ship: TaggedShip, target: { x: number; y: number }, timestamp: number): { x: number; y: number } => {
@@ -187,34 +186,6 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
       isActive = false;
     };
   }, [showDestinationRoutes, RouteVectorsComponent]);
-
-  // Track canvas size with ResizeObserver so it reacts to layout changes (e.g. sidebar toggles)
-  useEffect(() => {
-    const container = containerRef.current;
-    if (!container || typeof ResizeObserver === 'undefined') return;
-
-    const updateSize = (width: number, height: number) => {
-      setStageSize((prev) => {
-        if (prev.width === width && prev.height === height) return prev;
-        return { width, height };
-      });
-    };
-
-    // Initialise with current size before observing for future changes
-    const rect = container.getBoundingClientRect();
-    updateSize(rect.width, rect.height);
-
-    const observer = new ResizeObserver((entries) => {
-      entries.forEach((entry) => {
-        const { width, height } = entry.contentRect;
-        updateSize(width, height);
-      });
-    });
-
-    observer.observe(container);
-
-    return () => observer.disconnect();
-  }, []);
 
   // Update viewport bounds for minimap
   const updateViewportBounds = () => {
@@ -657,22 +628,6 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
   };
 
   // Start animation loop for ships
-  const animationLayer = layerRef.current;
-
-  useEffect(() => {
-    if (!animationLayer) return;
-
-    const anim = new Konva.Animation(() => {
-      setAnimationFrame(prev => prev + 1);
-    }, animationLayer);
-
-    anim.start();
-
-    return () => {
-      anim.stop();
-    };
-  }, [animationLayer]);
-
   useShipTrailSampler({
     animationFrame,
     sampleRate: TRAIL_SAMPLE_RATE,
@@ -818,9 +773,6 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
   });
 
   // Get waypoint tooltip data
-  const activeShipTooltipSymbol = hoveredShip ?? (selectedObject?.type === 'ship' ? selectedObject.symbol : null);
-  const activeWaypointTooltipSymbol = waypointTooltipAnchor?.symbol ?? null;
-
   const projectToScreen = useCallback((point: { x: number; y: number }) => {
     const layer = layerRef.current;
     const stage = stageRef.current;
@@ -856,88 +808,28 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
     });
   }, []);
 
-  const shipTooltip = useShipTooltip({
-    activeSymbol: activeShipTooltipSymbol,
-    ships,
-  });
-
-  const shipTooltipPosition = useMemo(() => {
-    if (!activeShipTooltipSymbol) return null;
-    const layer = layerRef.current;
-    if (!layer) return null;
-
-    const ship = ships.find((s) => s.symbol === activeShipTooltipSymbol);
-    if (!ship) return null;
-
-    const targetPosition = Ship.getPosition(ship, waypoints);
-    const position = getShipRenderPosition(ship, targetPosition, frameTimestamp);
-    if (position.x === 0 && position.y === 0) return null;
-
-    const screenPos = projectToScreen(position);
-    if (!screenPos) return null;
-
-    return {
-      left: screenPos.x - SHIP_TOOLTIP_OFFSET_X,
-      top: screenPos.y - SHIP_TOOLTIP_OFFSET_Y,
-    };
-  }, [activeShipTooltipSymbol, ships, waypoints, projectToScreen, viewportBounds, getShipRenderPosition, frameTimestamp]);
-
-  const selectionOverlay = useSelectionOverlay({
+  const {
+    selectionOverlay,
+    shipTooltip,
+    shipTooltipPosition,
+    waypointTooltip,
+    waypointTooltipPosition,
+  } = useSpaceMapOverlays({
+    hoveredShip,
     selectedObject,
     ships,
     waypoints,
+    markets,
     projectToScreen,
     getWaypointPosition: getWaypointDisplayPosition,
-    getShipPosition: (ship) => {
-      const targetPosition = Ship.getPosition(ship, waypoints);
-      const position = getShipRenderPosition(ship, targetPosition, frameTimestamp);
-      if (position.x === 0 && position.y === 0) {
-        return null;
-      }
-      return position;
-    },
+    getShipRenderPosition,
+    frameTimestamp,
+    waypointTooltipAnchor,
+    shipTooltipOffset: { x: SHIP_TOOLTIP_OFFSET_X, y: SHIP_TOOLTIP_OFFSET_Y },
+    waypointTooltipOffset: { x: WAYPOINT_TOOLTIP_OFFSET_X, y: WAYPOINT_TOOLTIP_OFFSET_Y },
+    getWaypointOpportunities,
+    formatOpportunity,
   });
-
-  const waypointTooltip: WaypointTooltipData | null = useMemo(() => {
-    if (!activeWaypointTooltipSymbol) return null;
-
-    const waypoint = waypoints.get(activeWaypointTooltipSymbol);
-    if (!waypoint) return null;
-
-    const market = markets.get(activeWaypointTooltipSymbol);
-    const hasMarketplace = waypoint.traits.some((trait) => trait.symbol === 'MARKETPLACE');
-
-    let marketData: WaypointTooltipData['marketData'] = null;
-    if (market && hasMarketplace) {
-      const opportunities = getWaypointOpportunities(activeWaypointTooltipSymbol, markets, 2);
-      marketData = {
-        importsCount: market.imports.length,
-        exportsCount: market.exports.length,
-        opportunities: opportunities.map(formatOpportunity),
-      };
-    }
-
-    return {
-      symbol: activeWaypointTooltipSymbol,
-      type: waypoint.type,
-      traits: waypoint.traits,
-      faction: waypoint.faction,
-      hasMarketplace,
-      marketData,
-    };
-  }, [activeWaypointTooltipSymbol, waypoints, markets]);
-
-  const waypointTooltipPosition = useMemo(() => {
-    if (!waypointTooltipAnchor) return null;
-
-    const screenPos = projectToScreen({ x: waypointTooltipAnchor.worldX, y: waypointTooltipAnchor.worldY });
-    if (!screenPos) return null;
-
-    return {
-      left: screenPos.x + WAYPOINT_TOOLTIP_OFFSET_X,
-      top: screenPos.y - WAYPOINT_TOOLTIP_OFFSET_Y,
-    };
-  }, [waypointTooltipAnchor, projectToScreen, viewportBounds]);
 
   return (
     <div ref={containerRef} className="relative w-full h-full">
@@ -1119,22 +1011,14 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
       </Stage>
       )}
 
-      {selectionOverlay && (
-        <Suspense fallback={null}>
-          <LazySelectionOverlay overlay={selectionOverlay} />
-        </Suspense>
-      )}
+      {selectionOverlay && <SelectionOverlayLazy overlay={selectionOverlay} />}
 
       {shipTooltip && shipTooltipPosition && (
-        <Suspense fallback={null}>
-          <LazyShipTooltipOverlay tooltip={shipTooltip} position={shipTooltipPosition} />
-        </Suspense>
+        <ShipTooltipOverlayLazy tooltip={shipTooltip} position={shipTooltipPosition} />
       )}
 
       {waypointTooltip && waypointTooltipPosition && (
-        <Suspense fallback={null}>
-          <LazyWaypointTooltipOverlay tooltip={waypointTooltip} position={waypointTooltipPosition} />
-        </Suspense>
+        <WaypointTooltipOverlayLazy tooltip={waypointTooltip} position={waypointTooltipPosition} />
       )}
 
       {!currentSystem && (

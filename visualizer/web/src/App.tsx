@@ -1,19 +1,21 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react';
 import { useStore } from './store/useStore';
 import { getAgents } from './services/api';
 import { usePolling } from './hooks/usePolling';
-import SpaceMap, { SpaceMapRef } from './components/SpaceMap';
-import GalaxyView from './components/GalaxyView';
-import AgentManager from './components/AgentManager';
-import SystemSelector from './components/SystemSelector';
-import AddAgentCard from './components/AddAgentCard';
 import ServerStatus from './components/ServerStatus';
-import Sidebar from './components/Sidebar';
-import Legend from './components/Legend';
-import KeyboardShortcuts from './components/KeyboardShortcuts';
+import type { SpaceMapRef } from './components/SpaceMap';
+
+const SpaceMap = lazy(() => import('./components/SpaceMap'));
+const GalaxyView = lazy(() => import('./components/GalaxyView'));
+const AgentManager = lazy(() => import('./components/AgentManager'));
+const SystemSelector = lazy(() => import('./components/SystemSelector'));
+const AddAgentCard = lazy(() => import('./components/AddAgentCard'));
+const Sidebar = lazy(() => import('./components/Sidebar'));
+const Legend = lazy(() => import('./components/Legend'));
+const KeyboardShortcuts = lazy(() => import('./components/KeyboardShortcuts'));
 
 function App() {
-  const { agents, setAgents, viewMode, setViewMode } = useStore();
+  const { agents, setAgents, viewMode, setViewMode, currentSystem } = useStore();
   const spaceMapRef = useRef<SpaceMapRef>(null);
   const [isRightSidebarOpen, setIsRightSidebarOpen] = useState(true);
   const [rightSidebarTab, setRightSidebarTab] = useState<'ships' | 'details' | 'search'>('ships');
@@ -71,7 +73,9 @@ function App() {
             <h1 className="text-4xl font-bold mb-2">🚀 SpaceTraders Fleet Visualization</h1>
             <p className="text-gray-400">Real-time tracking of your space fleet</p>
           </div>
-          <AddAgentCard />
+          <Suspense fallback={<div className="text-gray-500">Loading…</div>}>
+            <AddAgentCard />
+          </Suspense>
         </div>
       </>
     );
@@ -92,18 +96,26 @@ function App() {
             >
               {viewMode === 'system' ? '🌌 Galaxy View' : '🗺️ System View'}
             </button>
-            <SystemSelector />
-            <AgentManager />
-            <Legend buttonClassName="px-3 py-2 bg-gray-700 hover:bg-gray-600 rounded transition-colors text-sm font-semibold text-gray-200 border border-gray-600 flex items-center gap-2" />
-            <KeyboardShortcuts
-              onZoomIn={handleZoomIn}
-              onZoomOut={handleZoomOut}
-              onReset={handleResetView}
-              onFitView={handleFitView}
-              onToggleSidebar={handleToggleRightSidebar}
-              onSwitchTab={handleSwitchRightSidebarTab}
-              buttonClassName="px-3 py-2 bg-gray-700 hover:bg-gray-600 rounded transition-colors text-sm font-semibold text-gray-200 border border-gray-600 flex items-center gap-2"
-            />
+            <Suspense fallback={<div className="text-gray-500 text-sm">Loading…</div>}>
+              <SystemSelector />
+            </Suspense>
+            <Suspense fallback={<div className="text-gray-500 text-sm">Agents…</div>}>
+              <AgentManager />
+            </Suspense>
+            <Suspense fallback={<div className="px-3 py-2 bg-gray-800 rounded text-sm text-gray-400">Legend…</div>}>
+              <Legend buttonClassName="px-3 py-2 bg-gray-700 hover:bg-gray-600 rounded transition-colors text-sm font-semibold text-gray-200 border border-gray-600 flex items-center gap-2" />
+            </Suspense>
+            <Suspense fallback={null}>
+              <KeyboardShortcuts
+                onZoomIn={handleZoomIn}
+                onZoomOut={handleZoomOut}
+                onReset={handleResetView}
+                onFitView={handleFitView}
+                onToggleSidebar={handleToggleRightSidebar}
+                onSwitchTab={handleSwitchRightSidebarTab}
+                buttonClassName="px-3 py-2 bg-gray-700 hover:bg-gray-600 rounded transition-colors text-sm font-semibold text-gray-200 border border-gray-600 flex items-center gap-2"
+              />
+            </Suspense>
           </div>
         </header>
 
@@ -111,14 +123,36 @@ function App() {
         <div className="flex-1 relative overflow-hidden">
           {/* Map */}
           <main className="w-full h-full">
-            {viewMode === 'system' ? <SpaceMap ref={spaceMapRef} /> : <GalaxyView />}
-            <Sidebar
-              isOpen={isRightSidebarOpen}
-              activeTab={rightSidebarTab}
-              onToggleSidebar={handleToggleRightSidebar}
-              onSwitchTab={handleSwitchRightSidebarTab}
-              onFocusOn={handleFocusOn}
-            />
+            {viewMode === 'system' ? (
+              currentSystem ? (
+                <Suspense fallback={<div className="w-full h-full flex items-center justify-center text-gray-500">Loading map…</div>}>
+                  <SpaceMap ref={spaceMapRef} />
+                </Suspense>
+              ) : (
+                <div className="w-full h-full flex flex-col items-center justify-center text-gray-400 gap-3">
+                  <p className="text-sm">Select a system to load the map.</p>
+                  <button
+                    onClick={() => setViewMode('galaxy')}
+                    className="px-4 py-2 bg-gray-800 border border-gray-600 rounded text-sm hover:bg-gray-700"
+                  >
+                    Browse Galaxy
+                  </button>
+                </div>
+              )
+            ) : (
+              <Suspense fallback={<div className="w-full h-full flex items-center justify-center text-gray-500">Loading galaxy…</div>}>
+                <GalaxyView />
+              </Suspense>
+            )}
+            <Suspense fallback={null}>
+              <Sidebar
+                isOpen={isRightSidebarOpen}
+                activeTab={rightSidebarTab}
+                onToggleSidebar={handleToggleRightSidebar}
+                onSwitchTab={handleSwitchRightSidebarTab}
+                onFocusOn={handleFocusOn}
+              />
+            </Suspense>
           </main>
         </div>
       </div>

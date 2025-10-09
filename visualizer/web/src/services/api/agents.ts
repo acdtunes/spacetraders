@@ -9,6 +9,9 @@ export async function getAgents(): Promise<Agent[]> {
 export async function addAgent(token: string): Promise<Agent> {
   const data = await fetchApi<{ agent: Agent }>('/agents', {
     method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
     body: JSON.stringify({ token }),
   });
   return data.agent;
@@ -17,6 +20,9 @@ export async function addAgent(token: string): Promise<Agent> {
 export async function updateAgent(id: string, updates: Partial<Agent>): Promise<Agent> {
   const data = await fetchApi<{ agent: Agent }>(`/agents/${id}`, {
     method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+    },
     body: JSON.stringify(updates),
   });
   return data.agent;

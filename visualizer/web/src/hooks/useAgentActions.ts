@@ -77,10 +77,16 @@ export function useAgentForm(): AgentFormState {
       return;
     }
 
+    const sanitizedToken = token.trim();
+    if (!sanitizedToken) {
+      setError('Agent token is required');
+      return;
+    }
+
     setSubmitting(true);
 
     try {
-      await registerAgent(token);
+      await registerAgent(sanitizedToken);
       setToken('');
       clearError();
     } catch (err) {

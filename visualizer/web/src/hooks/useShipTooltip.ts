@@ -25,9 +25,10 @@ export type ShipTooltipData = {
 interface UseShipTooltipParams {
   activeSymbol: string | null;
   ships: TaggedShip[];
+  now?: number;
 }
 
-export const useShipTooltip = ({ activeSymbol, ships }: UseShipTooltipParams): ShipTooltipData | null => {
+export const useShipTooltip = ({ activeSymbol, ships, now = Date.now() }: UseShipTooltipParams): ShipTooltipData | null => {
   return useMemo(() => {
     if (!activeSymbol) return null;
     const ship = ships.find((candidate) => candidate.symbol === activeSymbol);
@@ -46,7 +47,6 @@ export const useShipTooltip = ({ activeSymbol, ships }: UseShipTooltipParams): S
       routeSummary = `${origin}→${destination}`;
 
       const arrivalTime = new Date(ship.nav.route.arrival).getTime();
-      const now = Date.now();
       const remainingMs = Math.max(0, arrivalTime - now);
       const totalSeconds = Math.floor(remainingMs / 1000);
       const hours = Math.floor(totalSeconds / 3600);
@@ -94,5 +94,5 @@ export const useShipTooltip = ({ activeSymbol, ships }: UseShipTooltipParams): S
       extraCargoCount,
       cooldownSeconds,
     };
-  }, [activeSymbol, ships]);
+  }, [activeSymbol, ships, now]);
 };

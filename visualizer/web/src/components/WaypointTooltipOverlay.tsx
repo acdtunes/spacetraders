@@ -16,7 +16,7 @@ export interface WaypointTooltipData {
   } | null;
 }
 
-interface WaypointTooltipOverlayProps {
+export interface WaypointTooltipOverlayProps {
   tooltip: WaypointTooltipData;
   position: { left: number; top: number };
 }

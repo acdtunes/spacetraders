@@ -1,7 +1,7 @@
 import type { CSSProperties } from 'react';
 import type { SelectionOverlay as SelectionOverlayData } from '../hooks/useSelectionOverlay';
 
-interface SelectionOverlayProps {
+export interface SelectionOverlayProps {
   overlay: SelectionOverlayData;
 }
 
