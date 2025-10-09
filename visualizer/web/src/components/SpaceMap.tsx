@@ -854,7 +854,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
   });
 
   return (
-    <div ref={containerRef} className="relative w-full h-full">
+    <div ref={containerRef} className="relative w-full h-full cursor-grab active:cursor-grabbing">
       {stageSize.width > 0 && stageSize.height > 0 && (
         <Stage
           ref={stageRef}
