@@ -909,6 +909,7 @@ def execute_multileg_route(
                         logging.error(f"  Remaining: {remaining} units (unsold due to price collapse)")
                         logging.error("  Route execution aborted")
                         logging.error("="*70)
+                        _cleanup_stranded_cargo(ship, api, db, logging.getLogger(__name__))
                         return False
 
                     actual_revenue = transaction['totalPrice']
@@ -936,6 +937,7 @@ def execute_multileg_route(
                 logging.error(f"  Segment {segment_num} lost {abs(segment_profit):,} credits")
                 logging.error("  Aborting route to prevent further losses")
                 logging.error("="*70)
+                _cleanup_stranded_cargo(ship, api, db, logging.getLogger(__name__))
                 return False
 
             # Get current credits to verify progress
@@ -954,6 +956,7 @@ def execute_multileg_route(
             logging.error("="*70)
             import traceback
             logging.error(traceback.format_exc())
+            _cleanup_stranded_cargo(ship, api, db, logging.getLogger(__name__))
             return False
 
     # All segments complete

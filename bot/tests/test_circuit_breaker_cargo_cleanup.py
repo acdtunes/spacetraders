@@ -209,13 +209,13 @@ def test_circuit_breaker_sells_stranded_cargo_on_sell_price_crash():
         },
         'cargo': {
             'capacity': 40,
-            'units': 0,
-            'inventory': []
+            'units': 30,
+            'inventory': [{'symbol': 'IRON_ORE', 'units': 30}]
         },
         'fuel': {'current': 400, 'capacity': 400}
     })
 
-    cargo_state = {'units': 0, 'inventory': []}
+    cargo_state = {'units': 30, 'inventory': [{'symbol': 'IRON_ORE', 'units': 30}]}
 
     def update_cargo_after_buy(good, units):
         cargo_state['units'] = units
@@ -249,21 +249,12 @@ def test_circuit_breaker_sells_stranded_cargo_on_sell_price_crash():
     market_call_count = [0]
 
     def mock_get_market(system, waypoint):
-        market_call_count[0] += 1
-        if market_call_count[0] == 1:
-            # Normal sell price expected
-            return {
-                'tradeGoods': [
-                    {'symbol': 'IRON_ORE', 'sellPrice': 800, 'purchasePrice': 1500, 'tradeVolume': 50}
-                ]
-            }
-        else:
-            # CRASHED sell price (triggers circuit breaker)
-            return {
-                'tradeGoods': [
-                    {'symbol': 'IRON_ORE', 'sellPrice': 800, 'purchasePrice': 900, 'tradeVolume': 50}  # 40% crash!
-                ]
-            }
+        # CRASHED sell price (triggers circuit breaker immediately)
+        return {
+            'tradeGoods': [
+                {'symbol': 'IRON_ORE', 'sellPrice': 800, 'purchasePrice': 900, 'tradeVolume': 50}  # 40% crash from expected 1500!
+            ]
+        }
 
     mock_api.get_market = Mock(side_effect=mock_get_market)
 
