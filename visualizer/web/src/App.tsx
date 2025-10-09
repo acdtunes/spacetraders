@@ -12,14 +12,12 @@ const AgentManager = lazy(() => import('./components/AgentManager'));
 const SystemSelector = lazy(() => import('./components/SystemSelector'));
 const AddAgentCard = lazy(() => import('./components/AddAgentCard'));
 const Sidebar = lazy(() => import('./components/Sidebar'));
-const FleetOperationsSidebar = lazy(() => import('./components/FleetOperationsSidebar').then(m => ({ default: m.FleetOperationsSidebar })));
 
 function App() {
-  const { agents, setAgents, viewMode, setViewMode, currentSystem, assignments, showScoutTours, toggleScoutTours, showOperationBadges, toggleOperationBadges } = useStore();
+  const { agents, setAgents, viewMode, setViewMode, currentSystem, showScoutTours, toggleScoutTours, showOperationBadges, toggleOperationBadges } = useStore();
   const spaceMapRef = useRef<SpaceMapRef>(null);
   const [isRightSidebarOpen, setIsRightSidebarOpen] = useState(true);
   const [rightSidebarTab, setRightSidebarTab] = useState<'ships' | 'details' | 'search'>('ships');
-  const [isOperationsSidebarOpen, setIsOperationsSidebarOpen] = useState(false);
 
   const handleFocusOn = useCallback((x: number, y: number, scale?: number) => {
     spaceMapRef.current?.focusOn(x, y, scale);
@@ -149,13 +147,6 @@ function App() {
                 onToggleSidebar={handleToggleRightSidebar}
                 onSwitchTab={handleSwitchRightSidebarTab}
                 onFocusOn={handleFocusOn}
-              />
-            </Suspense>
-            <Suspense fallback={null}>
-              <FleetOperationsSidebar
-                assignments={assignments}
-                isVisible={isOperationsSidebarOpen}
-                onToggle={() => setIsOperationsSidebarOpen(!isOperationsSidebarOpen)}
               />
             </Suspense>
           </main>
