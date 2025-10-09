@@ -1,7 +1,20 @@
 import { create } from 'zustand';
 import { createStore } from 'zustand/vanilla';
 import type { StateCreator } from 'zustand';
-import type { Agent, TaggedShip, Waypoint, ShipTrailPoint, Market, System, FlightMode, Ship } from '../types/spacetraders';
+import type {
+  Agent,
+  TaggedShip,
+  Waypoint,
+  ShipTrailPoint,
+  Market,
+  System,
+  FlightMode,
+  Ship,
+  ShipAssignment,
+  MarketFreshness,
+  ScoutTour,
+  TradeOpportunityData,
+} from '../types/spacetraders';
 
 const TRAIL_MAX_POINTS: Record<FlightMode, number> = {
   DRIFT: 0,
@@ -104,6 +117,28 @@ export interface AppState {
   setSelectedShip: (ship: Ship | null) => void;
   selectedWaypoint: Waypoint | null;
   setSelectedWaypoint: (waypoint: Waypoint | null) => void;
+
+  // Bot operations
+  assignments: Map<string, ShipAssignment>;
+  setAssignments: (assignments: ShipAssignment[]) => void;
+  marketFreshness: Map<string, MarketFreshness>;
+  setMarketFreshness: (freshness: MarketFreshness[]) => void;
+  scoutTours: ScoutTour[];
+  setScoutTours: (tours: ScoutTour[]) => void;
+  tradeOpportunities: TradeOpportunityData[];
+  setTradeOpportunities: (opportunities: TradeOpportunityData[]) => void;
+
+  // Bot visualization toggles
+  showScoutTours: boolean;
+  toggleScoutTours: () => void;
+  showTradeRoutes: boolean;
+  toggleTradeRoutes: () => void;
+  showMiningRoutes: boolean;
+  toggleMiningRoutes: () => void;
+  showOperationBadges: boolean;
+  toggleOperationBadges: () => void;
+  showMarketFreshness: boolean;
+  toggleMarketFreshness: () => void;
 }
 
 const storeInitializer: StateCreator<AppState, [], []> = (set) => ({
@@ -242,6 +277,34 @@ const storeInitializer: StateCreator<AppState, [], []> = (set) => ({
   setSelectedShip: (ship) => set({ selectedShip: ship }),
   selectedWaypoint: null,
   setSelectedWaypoint: (waypoint) => set({ selectedWaypoint: waypoint }),
+
+  // Bot operations
+  assignments: new Map(),
+  setAssignments: (assignments) =>
+    set({
+      assignments: new Map(assignments.map((a) => [a.ship_symbol, a])),
+    }),
+  marketFreshness: new Map(),
+  setMarketFreshness: (freshness) =>
+    set({
+      marketFreshness: new Map(freshness.map((f) => [f.waypoint_symbol, f])),
+    }),
+  scoutTours: [],
+  setScoutTours: (tours) => set({ scoutTours: tours }),
+  tradeOpportunities: [],
+  setTradeOpportunities: (opportunities) => set({ tradeOpportunities: opportunities }),
+
+  // Bot visualization toggles
+  showScoutTours: true,
+  toggleScoutTours: () => set((state) => ({ showScoutTours: !state.showScoutTours })),
+  showTradeRoutes: false,
+  toggleTradeRoutes: () => set((state) => ({ showTradeRoutes: !state.showTradeRoutes })),
+  showMiningRoutes: false,
+  toggleMiningRoutes: () => set((state) => ({ showMiningRoutes: !state.showMiningRoutes })),
+  showOperationBadges: true,
+  toggleOperationBadges: () => set((state) => ({ showOperationBadges: !state.showOperationBadges })),
+  showMarketFreshness: true,
+  toggleMarketFreshness: () => set((state) => ({ showMarketFreshness: !state.showMarketFreshness })),
 });
 
 export const createAppStore = () => createStore<AppState>(storeInitializer);

@@ -2,6 +2,7 @@ import { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react'
 import { useStore } from './store/useStore';
 import { getAgents } from './services/api';
 import { usePolling } from './hooks/usePolling';
+import { useBotPolling } from './hooks/useBotPolling';
 import ServerStatus from './components/ServerStatus';
 import type { SpaceMapRef } from './components/SpaceMap';
 
@@ -62,6 +63,9 @@ function App() {
 
   // Start polling for ship updates
   usePolling();
+
+  // Start polling for bot operations
+  useBotPolling();
 
   // Show welcome screen if no agents
   if (agents.length === 0) {

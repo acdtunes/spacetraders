@@ -188,3 +188,108 @@ export interface ApiResponse<T> {
     limit?: number;
   };
 }
+
+// Bot operation types
+export type OperationType = 'scout-markets' | 'trade' | 'mine' | 'contract' | 'idle';
+export type AssignmentStatus = 'active' | 'idle' | 'stale';
+
+export interface ShipAssignment {
+  ship_symbol: string;
+  player_id: number;
+  assigned_to: string | null;
+  daemon_id: string | null;
+  operation: OperationType | null;
+  status: AssignmentStatus;
+  assigned_at: string | null;
+  released_at: string | null;
+  metadata: {
+    system?: string;
+    markets?: string[];
+    asteroid?: string;
+    market?: string;
+    cycles?: number;
+    [key: string]: any;
+  } | null;
+}
+
+export interface Daemon {
+  daemon_id: string;
+  player_id: number;
+  pid: number | null;
+  command: string[];
+  started_at: string;
+  stopped_at: string | null;
+  status: 'running' | 'stopping' | 'stopped' | 'crashed';
+  log_file: string | null;
+  err_file: string | null;
+}
+
+export interface MarketGood {
+  good_symbol: string;
+  supply: MarketSupply;
+  activity: string;
+  purchase_price: number;
+  sell_price: number;
+  trade_volume: number;
+}
+
+export interface MarketData {
+  waypoint_symbol: string;
+  last_updated: string;
+  goods: MarketGood[];
+}
+
+export interface MarketFreshness {
+  waypoint_symbol: string;
+  last_updated: string;
+}
+
+export interface ScoutTour {
+  system: string;
+  markets: string[];
+  algorithm: string;
+  start_waypoint: string | null;
+  tour_order: string[];
+  total_distance: number;
+  calculated_at: string;
+}
+
+export interface TradeOpportunityData {
+  buy_waypoint: string;
+  sell_waypoint: string;
+  good_symbol: string;
+  buy_price: number;
+  sell_price: number;
+  profit_per_unit: number;
+  supply: MarketSupply;
+  activity: string;
+  buy_updated: string;
+  sell_updated: string;
+}
+
+export interface MarketTransaction {
+  ship_symbol: string;
+  waypoint_symbol: string;
+  good_symbol: string;
+  transaction_type: 'BUY' | 'SELL';
+  units: number;
+  price_per_unit: number;
+  total_cost: number;
+  timestamp: string;
+}
+
+export interface SystemGraph {
+  system_symbol: string;
+  graph_data: {
+    nodes: Record<string, { x: number; y: number }>;
+    edges: Record<string, Record<string, number>>;
+  };
+  created_at: string;
+  updated_at: string;
+}
+
+export interface OperationSummary {
+  operation: OperationType | null;
+  count: number;
+  status: AssignmentStatus;
+}

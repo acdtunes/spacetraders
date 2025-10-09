@@ -9,7 +9,6 @@ export interface SelectionOverlay {
 }
 
 interface SelectionParams {
-  selectedObject: { type: 'waypoint' | 'ship'; symbol: string; x: number; y: number } | null;
   selectedShip: TaggedShip | null;
   selectedWaypoint: WaypointType | null;
   ships: TaggedShip[];
@@ -23,7 +22,6 @@ const DEFAULT_SIZE = 14;
 const WAYPOINT_SIZE = 18;
 
 export const useSelectionOverlay = ({
-  selectedObject,
   selectedShip,
   selectedWaypoint,
   ships,

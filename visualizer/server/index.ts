@@ -4,6 +4,7 @@ import express from 'express';
 import cors from 'cors';
 import agentsRouter from './routes/agents.js';
 import systemsRouter from './routes/systems.js';
+import botRouter from './routes/bot.js';
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -15,6 +16,7 @@ app.use(express.json());
 // Routes
 app.use('/api/agents', agentsRouter);
 app.use('/api/systems', systemsRouter);
+app.use('/api/bot', botRouter);
 
 // Health check
 app.get('/health', (req, res) => {
