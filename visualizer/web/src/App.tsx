@@ -12,32 +12,14 @@ const AgentManager = lazy(() => import('./components/AgentManager'));
 const SystemSelector = lazy(() => import('./components/SystemSelector'));
 const AddAgentCard = lazy(() => import('./components/AddAgentCard'));
 const Sidebar = lazy(() => import('./components/Sidebar'));
-const Legend = lazy(() => import('./components/Legend'));
-const KeyboardShortcuts = lazy(() => import('./components/KeyboardShortcuts'));
 const FleetOperationsSidebar = lazy(() => import('./components/FleetOperationsSidebar').then(m => ({ default: m.FleetOperationsSidebar })));
 
 function App() {
-  const { agents, setAgents, viewMode, setViewMode, currentSystem, assignments } = useStore();
+  const { agents, setAgents, viewMode, setViewMode, currentSystem, assignments, showScoutTours, toggleScoutTours, showOperationBadges, toggleOperationBadges } = useStore();
   const spaceMapRef = useRef<SpaceMapRef>(null);
   const [isRightSidebarOpen, setIsRightSidebarOpen] = useState(true);
   const [rightSidebarTab, setRightSidebarTab] = useState<'ships' | 'details' | 'search'>('ships');
   const [isOperationsSidebarOpen, setIsOperationsSidebarOpen] = useState(false);
-
-  const handleZoomIn = useCallback(() => {
-    spaceMapRef.current?.zoomIn();
-  }, []);
-
-  const handleZoomOut = useCallback(() => {
-    spaceMapRef.current?.zoomOut();
-  }, []);
-
-  const handleResetView = useCallback(() => {
-    spaceMapRef.current?.resetView();
-  }, []);
-
-  const handleFitView = useCallback(() => {
-    spaceMapRef.current?.fitView();
-  }, []);
 
   const handleFocusOn = useCallback((x: number, y: number, scale?: number) => {
     spaceMapRef.current?.focusOn(x, y, scale);
@@ -108,20 +90,30 @@ function App() {
             <Suspense fallback={<div className="text-gray-500 text-sm">Agents…</div>}>
               <AgentManager />
             </Suspense>
-            <Suspense fallback={<div className="px-3 py-2 bg-gray-800 rounded text-sm text-gray-400">Legend…</div>}>
-              <Legend buttonClassName="px-3 py-2 bg-gray-700 hover:bg-gray-600 rounded transition-colors text-sm font-semibold text-gray-200 border border-gray-600 flex items-center gap-2" />
-            </Suspense>
-            <Suspense fallback={null}>
-              <KeyboardShortcuts
-                onZoomIn={handleZoomIn}
-                onZoomOut={handleZoomOut}
-                onReset={handleResetView}
-                onFitView={handleFitView}
-                onToggleSidebar={handleToggleRightSidebar}
-                onSwitchTab={handleSwitchRightSidebarTab}
-                buttonClassName="px-3 py-2 bg-gray-700 hover:bg-gray-600 rounded transition-colors text-sm font-semibold text-gray-200 border border-gray-600 flex items-center gap-2"
-              />
-            </Suspense>
+            {/* Scout Tours Toggle */}
+            <button
+              onClick={toggleScoutTours}
+              className={`px-3 py-2 rounded transition-colors text-sm font-semibold border ${
+                showScoutTours
+                  ? 'bg-blue-600 hover:bg-blue-700 text-white border-blue-500'
+                  : 'bg-gray-700 hover:bg-gray-600 text-gray-200 border-gray-600'
+              }`}
+              title="Toggle scout tour visualization"
+            >
+              🗺️ Tours
+            </button>
+            {/* Operations Toggle */}
+            <button
+              onClick={toggleOperationBadges}
+              className={`px-3 py-2 rounded transition-colors text-sm font-semibold border ${
+                showOperationBadges
+                  ? 'bg-blue-600 hover:bg-blue-700 text-white border-blue-500'
+                  : 'bg-gray-700 hover:bg-gray-600 text-gray-200 border-gray-600'
+              }`}
+              title="Toggle operation badges on ships"
+            >
+              🏷️ Operations
+            </button>
           </div>
         </header>
 

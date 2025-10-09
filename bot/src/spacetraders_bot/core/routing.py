@@ -308,7 +308,7 @@ class RouteOptimizer:
     """
     Ship-aware route optimization with fuel constraints
 
-    Uses A* pathfinding with state = (waypoint, fuel_level)
+    Uses Dijkstra pathfinding with state = (waypoint, fuel_level)
     """
 
     def __init__(self, graph: Dict, ship_data: Dict):
@@ -341,7 +341,12 @@ class RouteOptimizer:
         return adj
 
     def heuristic(self, wp: str, goal: str) -> int:
-        """A* heuristic: optimistic time estimate (CRUISE, straight line)"""
+        """
+        Heuristic for future A* implementation: optimistic time estimate (CRUISE, straight line)
+
+        NOTE: Currently unused - algorithm uses Dijkstra (no heuristic).
+        Kept for potential future A* optimization.
+        """
         wp_data = self.graph['waypoints'][wp]
         goal_data = self.graph['waypoints'][goal]
 
@@ -517,7 +522,7 @@ class RouteOptimizer:
         heappush(
             queue,
             (
-                current_time + REFUEL_TIME + self.heuristic(waypoint, goal),
+                current_time + REFUEL_TIME,  # Dijkstra: use actual accumulated cost
                 counter,
                 current_time + REFUEL_TIME,
                 waypoint,
@@ -615,7 +620,7 @@ class RouteOptimizer:
         heappush(
             queue,
             (
-                current_time + drift_time + self.heuristic(neighbor, goal),
+                current_time + drift_time,  # Dijkstra: use actual accumulated cost
                 counter,
                 current_time + drift_time,
                 neighbor,
@@ -651,7 +656,7 @@ class RouteOptimizer:
         }]
 
         cruise_cost = (
-            current_time + cruise_time + LEG_COMPLEXITY_PENALTY + self.heuristic(neighbor, goal)
+            current_time + cruise_time + LEG_COMPLEXITY_PENALTY  # Dijkstra: use actual accumulated cost
         )
 
         heappush(
@@ -715,7 +720,7 @@ class RouteOptimizer:
             }]
 
             emergency_cost = (
-                current_time + drift_time + LEG_COMPLEXITY_PENALTY + self.heuristic(neighbor, goal)
+                current_time + drift_time + LEG_COMPLEXITY_PENALTY  # Dijkstra: use actual accumulated cost
             )
 
             heappush(
@@ -731,7 +736,7 @@ class RouteOptimizer:
             )
             return counter + 1
 
-        drift_cost = current_time + drift_time + LEG_COMPLEXITY_PENALTY + self.heuristic(neighbor, goal)
+        drift_cost = current_time + drift_time + LEG_COMPLEXITY_PENALTY  # Dijkstra: use actual accumulated cost
         heappush(
             queue,
             (

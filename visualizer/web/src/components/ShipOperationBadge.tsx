@@ -1,7 +1,6 @@
 import { memo } from 'react';
 import { Text, Circle, Group } from 'react-konva';
 import { getOperationEmoji, getOperationColor } from '../utils/shipOperations';
-import { SHIP_LABEL_FONT_SIZE } from '../constants/shipLabel';
 import type { OperationType } from '../types/spacetraders';
 import type { ShipLabelInfo } from '../utils/shipDisplay';
 
