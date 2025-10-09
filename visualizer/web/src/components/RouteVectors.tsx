@@ -23,6 +23,7 @@ export interface RouteVectorsProps {
   animationFrame: number;
   frameTimestamp: number;
   getShipRenderPosition: (ship: TaggedShip, target: Position, timestamp: number) => Position;
+  getWaypointPosition: (waypoint: WaypointType) => { x: number; y: number };
 }
 
 export function RouteVectors({
@@ -32,6 +33,7 @@ export function RouteVectors({
   animationFrame,
   frameTimestamp,
   getShipRenderPosition,
+  getWaypointPosition,
 }: RouteVectorsProps) {
   const activeShips = useMemo(() => {
     return ships.filter((ship) => ship.nav.status === 'IN_TRANSIT' && ship.nav.route?.destination);
@@ -53,7 +55,7 @@ export function RouteVectors({
         if (targetPosition.x === 0 && targetPosition.y === 0) return null;
 
         const renderPosition = getShipRenderPosition(ship, targetPosition, frameTimestamp);
-        const endpoint = getRouteEndpoint(ship, targetPosition, waypoints);
+        const endpoint = getRouteEndpoint(ship, targetPosition, waypoints, getWaypointPosition);
         if (!endpoint) return null;
 
         const dx = endpoint.x - renderPosition.x;

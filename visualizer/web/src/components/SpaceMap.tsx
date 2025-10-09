@@ -1025,6 +1025,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
               animationFrame={animationFrame}
               frameTimestamp={frameTimestamp}
               getShipRenderPosition={getShipRenderPosition}
+              getWaypointPosition={getWaypointDisplayPosition}
             />
           )}
 
