@@ -347,14 +347,24 @@ def scout_markets_operation(args):
         current_location = ship_data['nav']['waypointSymbol']
         logger.info(f"Ship {args.ship} currently at {current_location}")
 
-        # Determine which markets to visit
+        # Determine which markets to visit and tour start point
         if hasattr(args, 'markets_list') and args.markets_list:
-            # Use specific markets list (from coordinator)
+            # BUG FIX: When coordinator provides specific markets list (partitioned assignment),
+            # start tour from FIRST assigned market (partition centroid), NOT current location.
+            # This prevents overlap when all ships start at same waypoint but have disjoint assignments.
             markets = [m.strip() for m in args.markets_list.split(',')]
-            logger.info(f"Using specific markets list: {', '.join(markets)}")
-            market_stops = [m for m in markets if m != current_location]
+            logger.info(f"Using specific markets list (coordinator-assigned partition): {', '.join(markets)}")
+
+            # Tour starts from first assigned market (partition centroid)
+            # This ensures tours are independent of where ships happen to be stationed
+            tour_start_location = markets[0]
+            logger.info(f"Tour will start from first assigned market (partition centroid): {tour_start_location}")
+
+            # All markets in list will be visited (including the start point)
+            # The tour planning will handle this by removing start from stops internally
+            market_stops = markets
         else:
-            # Auto-discover markets from graph
+            # Auto-discover markets from graph (non-partitioned mode)
             markets = TourOptimizer.get_markets_from_graph(graph)
             logger.info(f"Found {len(markets)} markets in {args.system}: {', '.join(markets)}")
 
@@ -369,6 +379,7 @@ def scout_markets_operation(args):
                 return 1
 
             # Remove current location from markets list (will visit all others from here)
+            tour_start_location = current_location
             market_stops = [m for m in markets if m != current_location]
 
             # Limit to requested number of markets (if specified)
@@ -392,7 +403,7 @@ def scout_markets_operation(args):
         if algorithm in ['greedy', '2opt']:
             logger.info(f"Using {algorithm} algorithm with caching...")
             tour = optimizer.plan_tour(
-                current_location, market_stops,
+                tour_start_location, market_stops,
                 ship_data['fuel']['current'],
                 return_to_start=args.return_to_start,
                 algorithm=algorithm,

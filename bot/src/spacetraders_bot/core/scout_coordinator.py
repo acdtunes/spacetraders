@@ -145,10 +145,10 @@ class ScoutCoordinator:
         self._partitioner = None
 
     def balance_tour_times(self, partitions: Dict[str, List[str]],
-                          max_iterations: int = 20,
+                          max_iterations: int = 50,
                           variance_threshold: float = 0.3,
                           min_markets: int = 2,
-                          use_tsp: bool = False) -> Dict[str, List[str]]:
+                          use_tsp: bool = True) -> Dict[str, List[str]]:
         """
         Rebalance partitions to equalize tour times across ships
 
@@ -262,6 +262,7 @@ class ScoutCoordinator:
             print(f"  {ship}: {markets_count:2d} markets, {time_min:6.1f} min")
 
         # Iterative rebalancing
+        last_moved = None  # Track last moved market to detect oscillations
         for iteration in range(max_iterations):
             # Calculate variance
             times = [t for t in tour_times.values() if t > 0]
@@ -290,40 +291,96 @@ class ScoutCoordinator:
                     print(f"  ⚠️  Variance {variance*100:.0f}% is extreme, allowing reduction below {min_markets} markets")
 
             # Find market in longest tour that's closest to shortest ship's region
-            market_to_move = self._find_boundary_market(
-                partitions[longest_ship],
-                partitions[shortest_ship]
-            )
+            # IMPROVEMENT: If tour time is extremely high, prioritize moving markets that
+            # contribute most to the tour distance (outliers in dispersed clusters)
+            # Use 1.5x threshold to catch cases just below 2x (e.g., 681.6 vs 345.7*2=691.4)
+            if tour_times[longest_ship] > avg_time * 1.5:  # If 1.5x longer than average
+                # Find the market that contributes most to tour time
+                market_to_move = self._find_most_expensive_market(partitions[longest_ship])
+                print(f"   Extreme imbalance detected ({tour_times[longest_ship]/60:.1f} min vs avg {avg_time/60:.1f} min)")
+                print(f"   Moving most expensive market: {market_to_move}")
+            else:
+                market_to_move = self._find_boundary_market(
+                    partitions[longest_ship],
+                    partitions[shortest_ship]
+                )
 
             if not market_to_move:
                 print("⚠️  No suitable market to move")
                 break
 
             # Detect oscillation: don't move a market that was just moved
-            if iteration > 0 and 'last_moved' in locals():
-                if market_to_move == last_moved:
-                    print(f"⚠️  Detected oscillation ({market_to_move} moving back and forth), stopping")
+            if market_to_move == last_moved:
+                print(f"⚠️  Detected oscillation ({market_to_move} moving back and forth)")
+                # Try to find an alternative market to move
+                remaining_markets = [m for m in partitions[longest_ship] if m != market_to_move]
+                if remaining_markets:
+                    # Find second-best market to move
+                    alternative_market = self._find_boundary_market(remaining_markets, partitions[shortest_ship])
+                    if alternative_market:
+                        print(f"   Trying alternative market: {alternative_market}")
+                        market_to_move = alternative_market
+                    else:
+                        print("   No alternative market found, stopping")
+                        break
+                else:
+                    print("   No other markets available, stopping")
                     break
 
-            # Move market
+            # PREVIEW: Simulate the move to check if it improves variance
+            # Make a copy of tour times to test the move
+            preview_times = tour_times.copy()
+
+            # Calculate what tour times would be after the move
+            temp_longest = partitions[longest_ship].copy()
+            temp_shortest = partitions[shortest_ship].copy()
+            temp_longest.remove(market_to_move)
+            temp_shortest.append(market_to_move)
+
+            ship_data = ship_data_cache[longest_ship]
+            if use_tsp:
+                preview_times[longest_ship] = self._calculate_partition_tour_time(temp_longest, ship_data) if temp_longest else 0.0
+            else:
+                preview_times[longest_ship] = self._estimate_partition_tour_time(temp_longest, ship_data) if temp_longest else 0.0
+
+            ship_data = ship_data_cache[shortest_ship]
+            if use_tsp:
+                preview_times[shortest_ship] = self._calculate_partition_tour_time(temp_shortest, ship_data) if temp_shortest else 0.0
+            else:
+                preview_times[shortest_ship] = self._estimate_partition_tour_time(temp_shortest, ship_data) if temp_shortest else 0.0
+
+            # Calculate new variance
+            preview_values = [t for t in preview_times.values() if t > 0]
+            if not preview_values:
+                print("⚠️  Preview move would result in no valid tours, stopping")
+                break
+
+            preview_avg = sum(preview_values) / len(preview_values)
+            preview_variance = max(abs(t - preview_avg) / preview_avg for t in preview_values) if preview_avg > 0 else 0
+
+            # Check if move would make variance worse
+            # Allow slight increases (<10%) to escape local minima, but only if variance is still very high (>50%)
+            variance_increase = preview_variance - variance
+            variance_increase_pct = (variance_increase / variance * 100) if variance > 0 else 0
+
+            if preview_variance > variance:
+                # Allow small increases if we're far from target
+                if variance > 0.5 and variance_increase_pct < 10:
+                    print(f"   ⚠️  Accepting small variance increase ({variance*100:.1f}% → {preview_variance*100:.1f}%) to escape local minimum")
+                else:
+                    print(f"   ⚠️  Move would increase variance from {variance*100:.1f}% to {preview_variance*100:.1f}%, rejecting")
+                    # If we can't improve further, stop
+                    print("   No beneficial moves available, stopping")
+                    break
+
+            # Move is beneficial, execute it
             partitions[longest_ship].remove(market_to_move)
             partitions[shortest_ship].append(market_to_move)
             last_moved = market_to_move  # Track for oscillation detection
 
-            # Recalculate tour times for affected ships (use fast estimate or TSP)
-            for affected_ship in [longest_ship, shortest_ship]:
-                if partitions[affected_ship]:
-                    ship_data = ship_data_cache[affected_ship]
-                    if use_tsp:
-                        tour_times[affected_ship] = self._calculate_partition_tour_time(
-                            partitions[affected_ship], ship_data
-                        )
-                    else:
-                        tour_times[affected_ship] = self._estimate_partition_tour_time(
-                            partitions[affected_ship], ship_data
-                        )
-                else:
-                    tour_times[affected_ship] = 0.0
+            # Update tour times with the previewed values
+            tour_times[longest_ship] = preview_times[longest_ship]
+            tour_times[shortest_ship] = preview_times[shortest_ship]
 
             print(f"  Moved {market_to_move} from {longest_ship} to {shortest_ship}")
             print(f"    {longest_ship}: {tour_times[longest_ship]/60:.1f} min → {len(partitions[longest_ship])} markets")
@@ -464,7 +521,11 @@ class ScoutCoordinator:
                 virtual_ship['fuel']['current'],
                 return_to_start=True
             )
-            tour = optimizer.two_opt_improve(greedy_tour, max_iterations=100)
+            # Only apply 2-opt if greedy tour succeeded
+            if greedy_tour:
+                tour = optimizer.two_opt_improve(greedy_tour, max_iterations=100)
+            else:
+                tour = None
         else:
             tour = optimizer.solve_nearest_neighbor(
                 start_market, markets,
@@ -472,7 +533,7 @@ class ScoutCoordinator:
                 return_to_start=True
             )
 
-        return tour['total_time'] if tour else 0.0
+        return tour['total_time'] if tour else float('inf')  # Return infinity if tour not possible
 
     def _find_boundary_market(self, from_markets: List[str], to_markets: List[str]) -> Optional[str]:
         """
@@ -517,27 +578,90 @@ class ScoutCoordinator:
 
         return min(from_markets, key=distance_to_centroid)
 
+    def _find_most_expensive_market(self, markets: List[str]) -> Optional[str]:
+        """
+        Find the market that contributes most to tour time (most distant outlier)
+
+        This helps break up geographically dispersed clusters by finding the market
+        that's farthest from the cluster centroid.
+        """
+        if not markets:
+            return None
+
+        if len(markets) == 1:
+            return markets[0]
+
+        # Get positions
+        positions = {}
+        for market in markets:
+            wp = self.graph['waypoints'].get(market)
+            if wp:
+                positions[market] = (wp['x'], wp['y'])
+
+        if not positions:
+            return markets[0]
+
+        # Calculate centroid
+        centroid_x = sum(pos[0] for pos in positions.values()) / len(positions)
+        centroid_y = sum(pos[1] for pos in positions.values()) / len(positions)
+
+        # Find market farthest from centroid (most expensive to visit)
+        def distance_from_centroid(market: str) -> float:
+            if market not in positions:
+                return 0
+            x, y = positions[market]
+            return ((x - centroid_x)**2 + (y - centroid_y)**2)**0.5
+
+        return max(markets, key=distance_from_centroid)
+
     def optimize_subtour(self, ship: str, markets: List[str]) -> Optional[Dict]:
         """
         Optimize a subtour for a ship using TSP
+
+        IMPORTANT: Uses partition centroid as starting point, NOT ship's current location.
+        This ensures tours are independent of where ships happen to be stationed,
+        preventing overlap when all ships start from the same waypoint.
 
         Args:
             ship: Ship symbol
             markets: List of markets to visit
 
         Returns:
-            Tour dict with optimized route
+            Tour dict with optimized route starting from partition centroid
         """
         if not markets:
             return None
 
-        # Get ship data
+        # Get ship data for fuel/engine specs
         ship_data = self.api.get_ship(ship)
         if not ship_data:
             print(f"❌ Failed to get ship data for {ship}")
             return None
 
-        current_location = ship_data['nav']['waypointSymbol']
+        # Calculate partition centroid and find market closest to it
+        # This gives a fair starting point independent of ship's current location
+        positions = []
+        for market in markets:
+            wp = self.graph['waypoints'].get(market)
+            if wp:
+                positions.append((wp['x'], wp['y']))
+
+        if not positions:
+            print(f"❌ No waypoint positions found for markets: {markets}")
+            return None
+
+        centroid_x = sum(p[0] for p in positions) / len(positions)
+        centroid_y = sum(p[1] for p in positions) / len(positions)
+
+        # Find market closest to centroid to use as starting point
+        def dist_to_centroid(market):
+            wp = self.graph['waypoints'].get(market)
+            if not wp:
+                return float('inf')
+            return ((wp['x'] - centroid_x)**2 + (wp['y'] - centroid_y)**2)**0.5
+
+        start_location = min(markets, key=dist_to_centroid)
+        print(f"   Tour starts from partition centroid: {start_location} (centroid: {centroid_x:.0f}, {centroid_y:.0f})")
 
         # Initialize optimizer
         optimizer = TourOptimizer(self.graph, ship_data)
@@ -546,7 +670,7 @@ class ScoutCoordinator:
         if self.algorithm == '2opt':
             # Greedy first, then improve
             greedy_tour = optimizer.solve_nearest_neighbor(
-                current_location, markets,
+                start_location, markets,
                 ship_data['fuel']['current'],
                 return_to_start=True  # Return to start for continuous loop
             )
@@ -554,7 +678,7 @@ class ScoutCoordinator:
         else:
             # Greedy only
             tour = optimizer.solve_nearest_neighbor(
-                current_location, markets,
+                start_location, markets,
                 ship_data['fuel']['current'],
                 return_to_start=True
             )

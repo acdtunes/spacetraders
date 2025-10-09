@@ -24,6 +24,269 @@ from spacetraders_bot.operations.common import (
 from spacetraders_bot.operations.control import CircuitBreaker
 
 
+def evaluate_contract_profitability(contract: Dict, cargo_capacity: int) -> Tuple[bool, str, Dict]:
+    """
+    Evaluate if a contract is profitable based on ROI and net profit criteria.
+
+    Returns:
+        (is_profitable, reason, metrics)
+    """
+    terms = contract['terms']
+    delivery = terms['deliver'][0] if terms.get('deliver') else None
+
+    if not delivery:
+        return False, "No delivery requirements", {}
+
+    # Calculate payment
+    on_accepted = terms['payment']['onAccepted']
+    on_fulfilled = terms['payment']['onFulfilled']
+    total_payment = on_accepted + on_fulfilled
+
+    # Calculate units and trips
+    units_required = delivery['unitsRequired']
+    units_fulfilled = delivery['unitsFulfilled']
+    units_remaining = units_required - units_fulfilled
+
+    if units_remaining <= 0:
+        return False, "Contract already fulfilled", {}
+
+    trips = (units_remaining + cargo_capacity - 1) // cargo_capacity  # Ceiling division
+
+    # Estimate costs (conservative - assumes purchase required)
+    # Use 1500 cr/unit as conservative estimate for raw materials
+    estimated_unit_cost = 1500
+    estimated_purchase_cost = units_remaining * estimated_unit_cost
+
+    # Estimate fuel cost (conservative - 100 cr per trip for fuel)
+    estimated_fuel_cost = trips * 100
+
+    total_estimated_cost = estimated_purchase_cost + estimated_fuel_cost
+
+    # Calculate profit and ROI
+    net_profit = total_payment - total_estimated_cost
+    roi = (net_profit / total_estimated_cost * 100) if total_estimated_cost > 0 else 0
+
+    # Profitability criteria
+    min_profit = 5000
+    min_roi = 5.0
+
+    metrics = {
+        'total_payment': total_payment,
+        'estimated_cost': total_estimated_cost,
+        'net_profit': net_profit,
+        'roi': roi,
+        'units_remaining': units_remaining,
+        'trips': trips,
+    }
+
+    # Check profitability
+    if net_profit < min_profit:
+        return False, f"Net profit {net_profit:,} cr < {min_profit:,} cr minimum", metrics
+
+    if roi < min_roi:
+        return False, f"ROI {roi:.1f}% < {min_roi}% minimum", metrics
+
+    return True, "Contract meets profitability criteria", metrics
+
+
+def batch_contract_operation(args, *, api=None):
+    """
+    Batch contract negotiation and fulfillment operation.
+
+    Negotiates and fulfills multiple contracts in sequence, filtering by profitability.
+    """
+    log_file = setup_logging("batch_contract", args.ship, getattr(args, 'log_level', 'INFO'))
+
+    print("=" * 70)
+    print("BATCH CONTRACT OPERATION")
+    print("=" * 70)
+    print(f"Target: {args.contract_count} contracts")
+    print("=" * 70)
+
+    api = api or get_api_client(args.player_id)
+    ship = ShipController(api, args.ship)
+
+    # Get ship data for profitability evaluation
+    ship_data = ship.get_status()
+    if not ship_data:
+        print("❌ Failed to get ship status")
+        return 1
+
+    cargo_capacity = ship_data['cargo']['capacity']
+
+    captain_logger = get_captain_logger(args.player_id)
+    operator_name = get_operator_name(args)
+
+    # Statistics tracking
+    batch_stats = {
+        'total_negotiated': 0,
+        'accepted': 0,
+        'fulfilled': 0,
+        'failed': 0,
+        'total_profit': 0,
+        'contracts': [],
+    }
+
+    print(f"\nShip: {args.ship}")
+    print(f"Cargo Capacity: {cargo_capacity}")
+    print(f"\nStarting batch contract operations...\n")
+
+    for i in range(args.contract_count):
+        contract_num = i + 1
+        print("\n" + "=" * 70)
+        print(f"CONTRACT {contract_num}/{args.contract_count}")
+        print("=" * 70)
+
+        # Step 1: Negotiate new contract
+        print(f"\n{contract_num}.1 Negotiating contract...")
+        result = api.post(f"/my/ships/{args.ship}/negotiate/contract")
+
+        if not result or 'data' not in result:
+            print(f"❌ Failed to negotiate contract {contract_num}")
+            batch_stats['failed'] += 1
+
+            # Log error but continue to next contract
+            log_captain_event(
+                captain_logger,
+                'CRITICAL_ERROR',
+                operator=operator_name,
+                ship=args.ship,
+                error=f"Contract negotiation failed (contract {contract_num}/{args.contract_count})",
+                cause="API returned no data for negotiate request",
+                impact={'Contract Number': contract_num},
+                resolution="Continuing to next contract",
+                lesson="Monitor API reliability",
+                escalate=False,
+                tags=['contract', 'batch', 'negotiation_failed']
+            )
+            continue
+
+        contract = result['data']['contract']
+        contract_id = contract['id']
+        batch_stats['total_negotiated'] += 1
+
+        # Display contract details
+        terms = contract['terms']
+        delivery = terms['deliver'][0] if terms.get('deliver') else None
+
+        print(f"\n✅ Contract {contract_id} negotiated")
+        print(f"   Type: {contract['type']}")
+        print(f"   Faction: {contract['factionSymbol']}")
+
+        if delivery:
+            print(f"   Delivery: {delivery['unitsRequired']} x {delivery['tradeSymbol']}")
+            print(f"   Destination: {delivery['destinationSymbol']}")
+
+        print(f"   Payment on Accept: {format_credits(terms['payment']['onAccepted'])}")
+        print(f"   Payment on Fulfill: {format_credits(terms['payment']['onFulfilled'])}")
+
+        # Step 2: Calculate estimated profitability (for informational purposes only)
+        # NOTE: We ALWAYS accept and fulfill contracts, regardless of profitability.
+        # Rationale: Opportunity cost of waiting for contract expiration is worse than small loss.
+        print(f"\n{contract_num}.2 Calculating profitability metrics...")
+        is_profitable, reason, metrics = evaluate_contract_profitability(contract, cargo_capacity)
+
+        print(f"   Estimated Cost: {format_credits(metrics.get('estimated_cost', 0))}")
+        print(f"   Net Profit: {format_credits(metrics.get('net_profit', 0))}")
+        print(f"   ROI: {metrics.get('roi', 0):.1f}%")
+        print(f"   Trips Required: {metrics.get('trips', 0)}")
+
+        if not is_profitable:
+            print(f"\n⚠️  WARNING: {reason}")
+            print(f"   However, proceeding with contract anyway (avoiding opportunity cost of waiting)")
+        else:
+            print(f"\n✅ PROFITABLE: {reason}")
+
+        # ALWAYS accept contracts
+        batch_stats['accepted'] += 1
+
+        # Step 3: Fulfill contract
+        print(f"\n{contract_num}.3 Fulfilling contract...")
+
+        # Create args for single contract fulfillment
+        contract_args = type('obj', (object,), {
+            'player_id': args.player_id,
+            'ship': args.ship,
+            'contract_id': contract_id,
+            'buy_from': getattr(args, 'buy_from', None),
+            'log_level': getattr(args, 'log_level', 'INFO'),
+        })()
+
+        # Execute contract fulfillment
+        result = contract_operation(contract_args, api=api, ship=ship)
+
+        if result == 0:
+            print(f"\n✅ Contract {contract_id} fulfilled successfully!")
+            batch_stats['fulfilled'] += 1
+            batch_stats['total_profit'] += metrics.get('net_profit', 0)
+            batch_stats['contracts'].append({
+                'contract_id': contract_id,
+                'status': 'fulfilled',
+                'metrics': metrics,
+            })
+        else:
+            print(f"\n❌ Contract {contract_id} fulfillment failed")
+            batch_stats['failed'] += 1
+            batch_stats['contracts'].append({
+                'contract_id': contract_id,
+                'status': 'failed',
+                'metrics': metrics,
+            })
+
+            # Log failure but continue
+            log_captain_event(
+                captain_logger,
+                'CRITICAL_ERROR',
+                operator=operator_name,
+                ship=args.ship,
+                error=f"Contract fulfillment failed (contract {contract_num}/{args.contract_count})",
+                cause=f"Contract operation returned error code {result}",
+                impact={'Contract ID': contract_id, 'Contract Number': contract_num},
+                resolution="Continuing to next contract",
+                lesson="Review contract fulfillment error logs",
+                escalate=False,
+                tags=['contract', 'batch', 'fulfillment_failed', contract_id]
+            )
+
+    # Print batch summary
+    print("\n" + "=" * 70)
+    print("BATCH CONTRACT SUMMARY")
+    print("=" * 70)
+    print(f"Total Negotiated: {batch_stats['total_negotiated']}")
+    print(f"Accepted: {batch_stats['accepted']}")
+    print(f"Fulfilled: {batch_stats['fulfilled']}")
+    print(f"Failed: {batch_stats['failed']}")
+    print(f"Total Estimated Profit: {format_credits(batch_stats['total_profit'])}")
+    print("=" * 70)
+
+    # Log batch completion
+    log_captain_event(
+        captain_logger,
+        'PERFORMANCE_SUMMARY',
+        summary_type='Batch Contract Operation',
+        financials={
+            'revenue': batch_stats['total_profit'],
+            'cumulative': batch_stats['total_profit'],
+            'rate': 0,  # Not time-based
+        },
+        operations={
+            'completed': batch_stats['fulfilled'],
+            'active': 0,
+            'success_rate': (batch_stats['fulfilled'] / batch_stats['accepted'] * 100) if batch_stats['accepted'] > 0 else 0
+        },
+        fleet={'active': 1, 'total': 1},
+        top_performers=[{
+            'ship': args.ship,
+            'profit': batch_stats['total_profit'],
+            'operation': 'batch_contract'
+        }],
+        tags=['contract', 'batch', 'summary']
+    )
+
+    # Return success if at least one contract was fulfilled
+    return 0 if batch_stats['fulfilled'] > 0 else 1
+
+
 def contract_operation(
     args,
     *,

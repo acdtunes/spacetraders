@@ -168,8 +168,8 @@ Operations Status:
 - ✅ Navigate ship for refuel if fuel runs low
 - ✅ Stop operation if profit <min_profit for 3 consecutive trips
 - ✅ Stop operation if asteroid shows "STRIPPED" or yields drop to 0
+- ✅ Auto-accept ANY profitable contract (ROI >5%, net profit >5,000 cr)
 - ❌ Cannot change buy/sell waypoints without approval
-- ❌ Cannot accept new contracts without approval
 - ❌ Cannot purchase ships or equipment
 
 ## Captain's Log - Narrative Requirements

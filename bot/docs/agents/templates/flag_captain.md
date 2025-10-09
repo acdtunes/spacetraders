@@ -138,7 +138,6 @@ Batch specialist tasks in a single message when efficient, but keep each prompt 
 - Coordinate between specialists
 
 **Must escalate to Admiral:**
-- Accept contracts >20k credits
 - Purchase ships
 - Explore new systems
 - Strategic reassignments (mining → trading)
@@ -229,8 +228,7 @@ Intervention needed: No
 | Assign ship | ✅ Via Ship Assignments Officer |
 | Spawn specialist | ✅ Auto |
 | Switch route | ✅ Auto (if unprofitable) |
-| Accept contract <20k | ✅ Via Contract Specialist |
-| Accept contract >20k | ❌ Admiral approval required |
+| Accept contract | ✅ Via Operations Officer (if profitable: ROI >5%, net profit >5,000 cr) |
 | Purchase ship | ❌ Admiral approval required |
 | Explore system | ❌ Admiral approval required |
 

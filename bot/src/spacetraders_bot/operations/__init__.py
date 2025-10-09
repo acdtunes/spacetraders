@@ -13,7 +13,7 @@ from .assignments import (
     assignment_sync_operation,
 )
 from .captain_logging import captain_log_operation
-from .contracts import contract_operation, negotiate_operation
+from .contracts import contract_operation, negotiate_operation, batch_contract_operation
 from .daemon import (
     daemon_cleanup_operation,
     daemon_logs_operation,
@@ -51,6 +51,7 @@ __all__ = [
     # Contracts
     "contract_operation",
     "negotiate_operation",
+    "batch_contract_operation",
 
     # Fleet management
     "status_operation",

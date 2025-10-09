@@ -17,7 +17,6 @@ import { ScoutTourLayer } from './ScoutTourLayer';
 import { TradeRouteLayer } from './TradeRouteLayer';
 import { MiningLoopLayer } from './MiningLoopLayer';
 import { TourFilterPanel } from './TourFilterPanel';
-import { StarfieldBackground } from './StarfieldBackground';
 import { useWaypointTooltipAnchor } from '../hooks/useWaypointTooltipAnchor';
 import { useGridLines } from '../hooks/useGridLines';
 import { useShipTrailSampler } from '../hooks/useShipTrailSampler';
@@ -872,9 +871,6 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
           onDblClick={handleDoubleClick}
         >
           <Layer ref={layerRef}>
-            {/* Space background */}
-            <StarfieldBackground viewportBounds={viewportBounds} currentScale={currentScale} animationFrame={animationFrame} />
-
             {/* Grid lines */}
             {gridLines.vertical.map((line, i) => (
               <Line

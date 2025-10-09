@@ -91,7 +91,8 @@ def main():
     contract_parser = subparsers.add_parser('contract', help='Contract fulfillment')
     contract_parser.add_argument('--player-id', type=int, required=True, help='Player ID')
     contract_parser.add_argument('--ship', required=True, help='Ship symbol')
-    contract_parser.add_argument('--contract-id', required=True, help='Contract ID')
+    contract_parser.add_argument('--contract-id', help='Contract ID (required for single contract mode)')
+    contract_parser.add_argument('--contract-count', type=int, default=1, help='Number of contracts to negotiate and fulfill in sequence (default: 1)')
     contract_parser.add_argument('--buy-from', help='Waypoint to buy from (optional - will auto-discover if omitted)')
 
     # Trade operation (unified multi-leg and single-leg trading)
@@ -401,7 +402,18 @@ def main():
     elif args.operation == 'purchase-ship':
         return purchase_ship_operation(args)
     elif args.operation == 'contract':
-        return contract_operation(args)
+        # Determine if batch or single contract mode
+        if args.contract_count > 1:
+            # Batch mode: negotiate and fulfill multiple contracts
+            from spacetraders_bot.operations.contracts import batch_contract_operation
+            return batch_contract_operation(args)
+        else:
+            # Single contract mode: fulfill specific contract
+            if not args.contract_id:
+                print("❌ Error: --contract-id is required for single contract mode")
+                print("   Use --contract-count N for batch mode (auto-negotiates N contracts)")
+                return 1
+            return contract_operation(args)
     elif args.operation == 'status':
         return status_operation(args)
     elif args.operation == 'monitor':

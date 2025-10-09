@@ -196,38 +196,20 @@ router.get('/markets/:systemSymbol/freshness', async (req, res) => {
   }
 });
 
-// Get scout tours for system (only most recent per start_waypoint)
+// Get scout tours for system (all tours from most recent coordinator run)
 router.get('/tours/:systemSymbol', async (req, res) => {
   try {
     const db = getDatabase();
     const systemSymbol = req.params.systemSymbol;
 
-    // Only get tours from the most recent coordinator run
+    // Get all tours from the most recent coordinator run
     // First, find the most recent tour calculation time, then get all tours
-    // calculated within 5 minutes of that time (same coordinator batch)
+    // calculated at exactly that time (same coordinator batch)
     const tours = db.prepare(`
       WITH LatestRun AS (
         SELECT MAX(calculated_at) as latest_time
         FROM tour_cache
         WHERE system = ?
-      ),
-      RecentTours AS (
-        SELECT
-          system,
-          markets,
-          algorithm,
-          start_waypoint,
-          tour_order,
-          total_distance,
-          calculated_at,
-          COALESCE(start_waypoint, json_extract(tour_order, '$[0]')) as effective_start,
-          ROW_NUMBER() OVER (
-            PARTITION BY system, COALESCE(start_waypoint, json_extract(tour_order, '$[0]'))
-            ORDER BY calculated_at DESC, markets DESC
-          ) as rn
-        FROM tour_cache, LatestRun
-        WHERE system = ?
-          AND datetime(calculated_at) >= datetime(LatestRun.latest_time, '-5 minutes')
       )
       SELECT
         system,
@@ -237,8 +219,10 @@ router.get('/tours/:systemSymbol', async (req, res) => {
         tour_order,
         total_distance,
         calculated_at
-      FROM RecentTours
-      WHERE rn = 1
+      FROM tour_cache, LatestRun
+      WHERE system = ?
+        AND calculated_at = LatestRun.latest_time
+      ORDER BY start_waypoint, markets DESC
     `).all(systemSymbol, systemSymbol);
 
     db.close();
