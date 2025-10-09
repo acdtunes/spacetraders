@@ -202,11 +202,16 @@ router.get('/tours/:systemSymbol', async (req, res) => {
     const db = getDatabase();
     const systemSymbol = req.params.systemSymbol;
 
-    // Only get the most recent tour for each start_waypoint using window functions
-    // Ranks tours by recency, breaking ties by markets (most markets first)
-    // Uses COALESCE to extract start waypoint from tour_order JSON if start_waypoint is NULL
+    // Only get tours from the most recent coordinator run
+    // First, find the most recent tour calculation time, then get all tours
+    // calculated within 5 minutes of that time (same coordinator batch)
     const tours = db.prepare(`
-      WITH RankedTours AS (
+      WITH LatestRun AS (
+        SELECT MAX(calculated_at) as latest_time
+        FROM tour_cache
+        WHERE system = ?
+      ),
+      RecentTours AS (
         SELECT
           system,
           markets,
@@ -220,8 +225,9 @@ router.get('/tours/:systemSymbol', async (req, res) => {
             PARTITION BY system, COALESCE(start_waypoint, json_extract(tour_order, '$[0]'))
             ORDER BY calculated_at DESC, markets DESC
           ) as rn
-        FROM tour_cache
+        FROM tour_cache, LatestRun
         WHERE system = ?
+          AND datetime(calculated_at) >= datetime(LatestRun.latest_time, '-5 minutes')
       )
       SELECT
         system,
@@ -231,9 +237,9 @@ router.get('/tours/:systemSymbol', async (req, res) => {
         tour_order,
         total_distance,
         calculated_at
-      FROM RankedTours
+      FROM RecentTours
       WHERE rn = 1
-    `).all(systemSymbol);
+    `).all(systemSymbol, systemSymbol);
 
     db.close();
 

@@ -355,9 +355,9 @@ class RouteOptimizer:
     def find_optimal_route(self, start: str, goal: str, current_fuel: int,
                           prefer_cruise: bool = True) -> Optional[Dict]:
         """
-        Find optimal route from start to goal with fuel constraints using A* algorithm
+        Find optimal route from start to goal with fuel constraints using Dijkstra algorithm
 
-        Uses A* pathfinding with state = (waypoint, fuel_level) to find optimal routes.
+        Uses Dijkstra pathfinding with state = (waypoint, fuel_level) to find optimal routes.
         The algorithm explores three types of actions:
         1. Refuel at current waypoint (if has_fuel=True)
         2. Navigate to neighbor using CRUISE mode (fast, high fuel cost)
@@ -428,10 +428,11 @@ class RouteOptimizer:
             self.logger.error(f"Goal waypoint {goal} not in graph")
             return None
 
-        # Priority queue: (estimated_total_time, counter, current_time, waypoint, fuel, path)
+        # Priority queue: (current_time, counter, current_time, waypoint, fuel, path)
         # Counter serves as tiebreaker to avoid comparing complex objects
+        # Using Dijkstra: cost = actual accumulated time (no heuristic)
         counter = 0
-        queue = [(self.heuristic(start, goal), counter, 0, start, current_fuel, [])]
+        queue = [(0, counter, 0, start, current_fuel, [])]
 
         # Visited states: (waypoint, fuel_bucket)
         # Use fuel buckets to reduce state space (bucket = fuel // 50)
