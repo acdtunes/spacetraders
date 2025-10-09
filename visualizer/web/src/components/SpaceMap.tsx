@@ -93,7 +93,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
   const waypointsSizeRef = useRef<number>(0);
   const shipPositionCacheRef = useRef<Map<string, { x: number; y: number; status: ShipNavStatus; timestamp: number }>>(new Map());
 
-  const { currentSystem, waypoints, ships, markets, showMapOverlays, showWaypointNames, showShipNames, showDestinationRoutes, setWaypoints, trails, addTrailPosition, clearTrail, filterStatus, filterAgents, filterWaypointTypes, selectedShip, selectedWaypoint, setSelectedShip, setSelectedWaypoint, assignments, showOperationBadges, marketFreshness, showMarketFreshness, scoutTours, showScoutTours, tradeOpportunities, showTradeRoutes, showMiningRoutes, visibleTours, toggleTourVisibility, showAllTours, hideAllTours } =
+  const { currentSystem, waypoints, ships, markets, showMapOverlays, showWaypointNames, showShipNames, showDestinationRoutes, setWaypoints, trails, addTrailPosition, clearTrail, filterStatus, filterAgents, filterWaypointTypes, selectedShip, selectedWaypoint, setSelectedShip, setSelectedWaypoint, assignments, marketFreshness, showMarketFreshness, scoutTours, showScoutTours, tradeOpportunities, showTradeRoutes, showMiningRoutes, visibleTours, toggleTourVisibility, showAllTours, hideAllTours } =
     useStore();
 
   const [hoveredShip, setHoveredShip] = useState<string | null>(null);
@@ -1045,7 +1045,6 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
             }}
             onHoverShip={setHoveredShip}
             assignments={assignments}
-            showOperationBadges={showOperationBadges}
           />
 
           <MiningLaserLayer

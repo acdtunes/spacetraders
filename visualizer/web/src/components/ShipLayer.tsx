@@ -28,7 +28,6 @@ export interface ShipLayerProps {
   onSelectShip: (ship: TaggedShip, position: Point) => void;
   onHoverShip: (symbol: string | null) => void;
   assignments: Map<string, ShipAssignment>;
-  showOperationBadges: boolean;
 }
 
 export const ShipLayer = memo(function ShipLayer({
@@ -46,7 +45,6 @@ export const ShipLayer = memo(function ShipLayer({
   onSelectShip,
   onHoverShip,
   assignments,
-  showOperationBadges,
 }: ShipLayerProps) {
   return (
     <>
@@ -106,7 +104,7 @@ export const ShipLayer = memo(function ShipLayer({
               />
             )}
 
-            {showShipNames && showOperationBadges && operationType && (
+            {showShipNames && operationType && (
               <ShipOperationBadge
                 operationType={operationType}
                 currentScale={currentScale}

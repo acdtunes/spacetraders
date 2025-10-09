@@ -14,7 +14,7 @@ const AddAgentCard = lazy(() => import('./components/AddAgentCard'));
 const Sidebar = lazy(() => import('./components/Sidebar'));
 
 function App() {
-  const { agents, setAgents, viewMode, setViewMode, currentSystem, showScoutTours, toggleScoutTours, showOperationBadges, toggleOperationBadges } = useStore();
+  const { agents, setAgents, viewMode, setViewMode, currentSystem, showScoutTours, toggleScoutTours } = useStore();
   const spaceMapRef = useRef<SpaceMapRef>(null);
   const [isRightSidebarOpen, setIsRightSidebarOpen] = useState(true);
   const [rightSidebarTab, setRightSidebarTab] = useState<'ships' | 'details' | 'search'>('ships');
@@ -99,18 +99,6 @@ function App() {
               title="Toggle scout tour visualization"
             >
               🗺️ Tours
-            </button>
-            {/* Operations Toggle */}
-            <button
-              onClick={toggleOperationBadges}
-              className={`px-3 py-2 rounded transition-colors text-sm font-semibold border ${
-                showOperationBadges
-                  ? 'bg-blue-600 hover:bg-blue-700 text-white border-blue-500'
-                  : 'bg-gray-700 hover:bg-gray-600 text-gray-200 border-gray-600'
-              }`}
-              title="Toggle operation badges on ships"
-            >
-              🏷️ Operations
             </button>
           </div>
         </header>
