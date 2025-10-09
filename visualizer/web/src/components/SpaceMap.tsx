@@ -11,6 +11,8 @@ import { WaypointSprite } from './WaypointSprite';
 import { ShipLayer } from './ShipLayer';
 import { MiningLaserLayer } from './MiningLaserLayer';
 import { ShipTrailLayer } from './ShipTrailLayer';
+import { MarketFreshnessRing } from './MarketFreshnessRing';
+import { ScoutTourLayer } from './ScoutTourLayer';
 import { useWaypointTooltipAnchor } from '../hooks/useWaypointTooltipAnchor';
 import { useGridLines } from '../hooks/useGridLines';
 import { useShipTrailSampler } from '../hooks/useShipTrailSampler';
@@ -88,7 +90,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
   const waypointsSizeRef = useRef<number>(0);
   const shipPositionCacheRef = useRef<Map<string, { x: number; y: number; status: ShipNavStatus; timestamp: number }>>(new Map());
 
-  const { currentSystem, waypoints, ships, markets, showMapOverlays, showWaypointNames, showShipNames, showDestinationRoutes, setWaypoints, trails, addTrailPosition, clearTrail, filterStatus, filterAgents, filterWaypointTypes, selectedShip, selectedWaypoint, setSelectedShip, setSelectedWaypoint } =
+  const { currentSystem, waypoints, ships, markets, showMapOverlays, showWaypointNames, showShipNames, showDestinationRoutes, setWaypoints, trails, addTrailPosition, clearTrail, filterStatus, filterAgents, filterWaypointTypes, selectedShip, selectedWaypoint, setSelectedShip, setSelectedWaypoint, assignments, showOperationBadges, marketFreshness, showMarketFreshness, scoutTours, showScoutTours } =
     useStore();
 
   const [hoveredShip, setHoveredShip] = useState<string | null>(null);
@@ -929,6 +931,17 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
                   scale={currentScale}
                 />
 
+                {/* Market freshness ring */}
+                {hasMarketplace && showMarketFreshness && (
+                  <MarketFreshnessRing
+                    x={x}
+                    y={y}
+                    radius={radius}
+                    lastUpdated={marketFreshness.get(waypoint.symbol)?.last_updated || null}
+                    currentScale={currentScale}
+                  />
+                )}
+
                 {hasMarketplace && showMapOverlays && (
                   <Text
                     text="🏪"
@@ -967,6 +980,16 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
             );
           })}
 
+          {/* Scout tour routes */}
+          {showScoutTours && (
+            <ScoutTourLayer
+              tours={scoutTours}
+              waypoints={waypoints}
+              currentScale={currentScale}
+              animationFrame={animationFrame}
+            />
+          )}
+
           <ShipTrailLayer ships={filteredShips} trails={trails} animationFrame={animationFrame} />
 
           {/* Active route indicators */}
@@ -998,6 +1021,8 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
               setSelectedShip(ship);
             }}
             onHoverShip={setHoveredShip}
+            assignments={assignments}
+            showOperationBadges={showOperationBadges}
           />
 
           <MiningLaserLayer

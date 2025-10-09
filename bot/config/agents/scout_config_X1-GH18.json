@@ -1,0 +1,19 @@
+{
+  "system": "X1-GH18",
+  "ships": [
+    "SILMARETH-2",
+    "SILMARETH-3",
+    "SILMARETH-4",
+    "SILMARETH-5",
+    "SILMARETH-6",
+    "SILMARETH-7",
+    "SILMARETH-8",
+    "SILMARETH-9",
+    "SILMARETH-A",
+    "SILMARETH-B",
+    "SILMARETH-C"
+  ],
+  "algorithm": "2opt",
+  "reconfigure": false,
+  "last_updated": "2025-10-09T06:03:40.316372+00:00"
+}

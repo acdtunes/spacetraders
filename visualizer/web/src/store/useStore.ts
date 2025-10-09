@@ -9,7 +9,6 @@ import type {
   Market,
   System,
   FlightMode,
-  Ship,
   ShipAssignment,
   MarketFreshness,
   ScoutTour,
@@ -113,8 +112,8 @@ export interface AppState {
   setLastUpdate: (timestamp: number) => void;
 
   // Selection
-  selectedShip: Ship | null;
-  setSelectedShip: (ship: Ship | null) => void;
+  selectedShip: TaggedShip | null;
+  setSelectedShip: (ship: TaggedShip | null) => void;
   selectedWaypoint: Waypoint | null;
   setSelectedWaypoint: (waypoint: Waypoint | null) => void;
 

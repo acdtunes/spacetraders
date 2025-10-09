@@ -1,0 +1,70 @@
+{
+  "system": "X1-GH18",
+  "ships": [
+    "SILMARETH-2",
+    "SILMARETH-3",
+    "SILMARETH-4",
+    "SILMARETH-5",
+    "SILMARETH-6",
+    "SILMARETH-7",
+    "SILMARETH-8",
+    "SILMARETH-9",
+    "SILMARETH-A",
+    "SILMARETH-B",
+    "SILMARETH-C"
+  ],
+  "partitions": {
+    "SILMARETH-2": [
+      "X1-GH18-A2",
+      "X1-GH18-D45",
+      "X1-GH18-I59"
+    ],
+    "SILMARETH-3": [
+      "X1-GH18-A4",
+      "X1-GH18-D46",
+      "X1-GH18-J61"
+    ],
+    "SILMARETH-4": [
+      "X1-GH18-C43",
+      "X1-GH18-G52"
+    ],
+    "SILMARETH-5": [
+      "X1-GH18-C44",
+      "X1-GH18-G53",
+      "X1-GH18-I60"
+    ],
+    "SILMARETH-6": [
+      "X1-GH18-E47",
+      "X1-GH18-H55"
+    ],
+    "SILMARETH-7": [
+      "X1-GH18-E48",
+      "X1-GH18-H56"
+    ],
+    "SILMARETH-8": [
+      "X1-GH18-E49",
+      "X1-GH18-H57"
+    ],
+    "SILMARETH-9": [
+      "X1-GH18-F50",
+      "X1-GH18-H58"
+    ],
+    "SILMARETH-A": [
+      "X1-GH18-EZ5E",
+      "X1-GH18-F51",
+      "X1-GH18-J62"
+    ],
+    "SILMARETH-B": [
+      "X1-GH18-B6",
+      "X1-GH18-B7"
+    ],
+    "SILMARETH-C": [
+      "X1-GH18-A1",
+      "X1-GH18-K95"
+    ]
+  },
+  "algorithm": "2opt",
+  "generated_by": "rebalance_scouts_v2.py (greedy tour-time)",
+  "validation": "strict_disjoint",
+  "timestamp": "2025-10-09T11:30:00Z"
+}

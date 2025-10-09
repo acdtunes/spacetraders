@@ -515,31 +515,86 @@ class ShipController:
         self.log(f"💵 Total revenue: {total_revenue:,} credits")
         return total_revenue
 
-    def buy(self, symbol: str, units: int) -> Optional[Dict[str, Any]]:
+    def buy(self, symbol: str, units: int, max_per_transaction: int = None) -> Optional[Dict[str, Any]]:
         """
-        Purchase cargo at current market
+        Purchase cargo at current market with automatic batch handling for transaction limits
 
         Args:
             symbol: Trade symbol to buy
             units: Number of units to buy
+            max_per_transaction: Maximum units per transaction (handles market limits)
 
         Returns:
-            Transaction data or None on failure
+            Transaction data with aggregated totals or None on failure
         """
-        self.log(f"💰 Buying {units} x {symbol}...")
+        if max_per_transaction and units > max_per_transaction:
+            # Handle transaction limits by buying in batches
+            self.log(f"💰 Buying {units} x {symbol} in batches (limit: {max_per_transaction}/transaction)...")
+            total_bought = 0
+            total_cost = 0
+            batches = (units + max_per_transaction - 1) // max_per_transaction
 
-        result = self.api.post(f"/my/ships/{self.ship_symbol}/purchase", {
-            "symbol": symbol,
-            "units": units
-        })
+            for i in range(batches):
+                batch_size = min(max_per_transaction, units - total_bought)
+                result = self.api.post(f"/my/ships/{self.ship_symbol}/purchase", {
+                    "symbol": symbol,
+                    "units": batch_size
+                })
 
-        if result and 'data' in result:
-            transaction = result['data']['transaction']
-            self.log(f"✅ Bought {transaction['units']} x {transaction['tradeSymbol']} @ {transaction['pricePerUnit']} = {transaction['totalPrice']:,} credits")
-            return transaction
+                if result and 'data' in result:
+                    transaction = result['data']['transaction']
+                    total_bought += transaction['units']
+                    total_cost += transaction['totalPrice']
+                    self.log(f"   Batch {i+1}/{batches}: Bought {transaction['units']} @ {transaction['pricePerUnit']} = {transaction['totalPrice']:,} credits")
+                    time.sleep(0.6)  # Rate limiting between batches
+                else:
+                    self.log(f"❌ Batch {i+1} failed")
+                    if total_bought == 0:
+                        return None
+                    break
 
-        self.log("❌ Purchase failed")
-        return None
+            # Return aggregated transaction data
+            if total_bought > 0:
+                avg_price = total_cost // total_bought
+                self.log(f"✅ Total bought: {total_bought} x {symbol} = {total_cost:,} credits")
+                return {
+                    'units': total_bought,
+                    'tradeSymbol': symbol,
+                    'totalPrice': total_cost,
+                    'pricePerUnit': avg_price
+                }
+            return None
+        else:
+            # Single transaction
+            self.log(f"💰 Buying {units} x {symbol}...")
+            result = self.api.post(f"/my/ships/{self.ship_symbol}/purchase", {
+                "symbol": symbol,
+                "units": units
+            })
+
+            # Check for successful transaction
+            if result and 'data' in result:
+                transaction = result['data']['transaction']
+                self.log(f"✅ Bought {transaction['units']} x {transaction['tradeSymbol']} @ {transaction['pricePerUnit']} = {transaction['totalPrice']:,} credits")
+                return transaction
+
+            # Check if error is due to transaction limit
+            if result and 'error' in result:
+                error = result['error']
+                error_code = error.get('code')
+                error_message = error.get('message', '')
+
+                if error_code == 4604 and 'limit' in error_message.lower():
+                    # Extract limit from error message and retry
+                    import re
+                    match = re.search(r'limit of (\d+)', error_message)
+                    if match:
+                        limit = int(match.group(1))
+                        self.log(f"⚠️  Market limit detected: {limit} units/transaction, retrying with batches...")
+                        return self.buy(symbol, units, max_per_transaction=limit)
+
+            self.log("❌ Purchase failed")
+            return None
 
     def jettison(self, symbol: str, units: int) -> bool:
         """Jettison cargo into space"""

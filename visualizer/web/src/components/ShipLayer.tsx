@@ -1,10 +1,12 @@
 import { memo } from 'react';
 import { Group, Circle } from 'react-konva';
-import type { ShipTrailPoint, TaggedShip, Waypoint as WaypointType } from '../types/spacetraders';
+import type { ShipTrailPoint, TaggedShip, Waypoint as WaypointType, ShipAssignment } from '../types/spacetraders';
 import { Ship } from '../domain/ship';
 import { ShipSprite } from './ShipSprite';
 import { ShipNameLabel } from './ShipNameLabel';
+import { ShipOperationBadge } from './ShipOperationBadge';
 import { calculateShipRotation, getShipLabelInfo } from '../utils/shipDisplay';
+import { getShipOperation } from '../utils/shipOperations';
 
 interface Point {
   x: number;
@@ -25,6 +27,8 @@ export interface ShipLayerProps {
   projectToWorld: (point: Point) => Point | null;
   onSelectShip: (ship: TaggedShip, position: Point) => void;
   onHoverShip: (symbol: string | null) => void;
+  assignments: Map<string, ShipAssignment>;
+  showOperationBadges: boolean;
 }
 
 export const ShipLayer = memo(function ShipLayer({
@@ -41,6 +45,8 @@ export const ShipLayer = memo(function ShipLayer({
   projectToWorld,
   onSelectShip,
   onHoverShip,
+  assignments,
+  showOperationBadges,
 }: ShipLayerProps) {
   return (
     <>
@@ -60,6 +66,9 @@ export const ShipLayer = memo(function ShipLayer({
           projectToScreen,
           projectToWorld,
         });
+
+        const assignment = getShipOperation(ship.symbol, assignments);
+        const operationType = assignment?.operation || null;
 
         return (
           <Group key={ship.symbol} x={position.x} y={position.y}>
@@ -94,6 +103,13 @@ export const ShipLayer = memo(function ShipLayer({
                 labelScale={labelInfo.labelScale}
                 offsetX={labelInfo.offsetX}
                 offsetY={labelInfo.offsetY}
+              />
+            )}
+
+            {showOperationBadges && operationType && (
+              <ShipOperationBadge
+                operationType={operationType}
+                currentScale={currentScale}
               />
             )}
           </Group>
