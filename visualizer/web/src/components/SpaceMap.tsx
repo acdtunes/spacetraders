@@ -88,7 +88,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
   const waypointsSizeRef = useRef<number>(0);
   const shipPositionCacheRef = useRef<Map<string, { x: number; y: number; status: ShipNavStatus; timestamp: number }>>(new Map());
 
-  const { currentSystem, waypoints, ships, markets, showMapOverlays, showWaypointNames, showShipNames, showDestinationRoutes, setWaypoints, trails, addTrailPosition, clearTrail, filterStatus, filterAgents, filterWaypointTypes, setSelectedShip, setSelectedWaypoint } =
+  const { currentSystem, waypoints, ships, markets, showMapOverlays, showWaypointNames, showShipNames, showDestinationRoutes, setWaypoints, trails, addTrailPosition, clearTrail, filterStatus, filterAgents, filterWaypointTypes, selectedShip, selectedWaypoint, setSelectedShip, setSelectedWaypoint } =
     useStore();
 
   const [hoveredShip, setHoveredShip] = useState<string | null>(null);
@@ -436,7 +436,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       // Deselection
-      if (e.key === 'Escape' && selectedObject) {
+      if (e.key === 'Escape' && (selectedObject || selectedShip || selectedWaypoint)) {
         setSelectedObject(null);
         setSelectedShip(null);
         setSelectedWaypoint(null);
@@ -490,7 +490,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedObject, setSelectedShip, setSelectedWaypoint]);
+  }, [selectedObject, selectedShip, selectedWaypoint, setSelectedShip, setSelectedWaypoint]);
 
   // Load waypoints when system changes
   useEffect(() => {
@@ -768,6 +768,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
 
   const { anchor: waypointTooltipAnchor, showForWaypoint, clearAnchor } = useWaypointTooltipAnchor({
     selectedObject,
+    selectedWaypoint,
     waypoints,
     getWaypointPosition: getWaypointDisplayPosition,
   });
@@ -809,7 +810,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
   }, []);
 
   const {
-    selectionOverlay,
+    selectionOverlays,
     shipTooltip,
     shipTooltipPosition,
     waypointTooltip,
@@ -817,6 +818,8 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
   } = useSpaceMapOverlays({
     hoveredShip,
     selectedObject,
+    selectedShip,
+    selectedWaypoint,
     ships,
     waypoints,
     markets,
@@ -913,7 +916,6 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
                   onClick={() => {
                     setSelectedObject({ type: 'waypoint', symbol: waypoint.symbol, x: waypoint.x, y: waypoint.y });
                     setSelectedWaypoint(waypoint);
-                    setSelectedShip(null);
                     showForWaypoint(waypoint);
                   }}
                 />
@@ -994,7 +996,6 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
             onSelectShip={(ship, position) => {
               setSelectedObject({ type: 'ship', symbol: ship.symbol, x: position.x, y: position.y });
               setSelectedShip(ship);
-              setSelectedWaypoint(null);
             }}
             onHoverShip={setHoveredShip}
           />
@@ -1011,7 +1012,9 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
       </Stage>
       )}
 
-      {selectionOverlay && <SelectionOverlayLazy overlay={selectionOverlay} />}
+      {selectionOverlays.map((overlay, index) => (
+        <SelectionOverlayLazy key={`${overlay.type}-${index}`} overlay={overlay} />
+      ))}
 
       {shipTooltip && shipTooltipPosition && (
         <ShipTooltipOverlayLazy tooltip={shipTooltip} position={shipTooltipPosition} />

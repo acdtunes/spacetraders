@@ -9,12 +9,14 @@ interface TooltipAnchor {
 
 interface UseWaypointTooltipAnchorParams {
   selectedObject: { type: 'waypoint' | 'ship'; symbol: string } | null;
+  selectedWaypoint: WaypointType | null;
   waypoints: Map<string, WaypointType>;
   getWaypointPosition: (waypoint: WaypointType) => { x: number; y: number };
 }
 
 export const useWaypointTooltipAnchor = ({
   selectedObject,
+  selectedWaypoint,
   waypoints,
   getWaypointPosition,
 }: UseWaypointTooltipAnchorParams) => {
@@ -28,6 +30,13 @@ export const useWaypointTooltipAnchor = ({
   const clearAnchor = () => setAnchor(null);
 
   useEffect(() => {
+    // Use selectedWaypoint from store if available
+    if (selectedWaypoint) {
+      showForWaypoint(selectedWaypoint);
+      return;
+    }
+
+    // Fallback to selectedObject for backwards compatibility
     if (selectedObject?.type === 'waypoint') {
       const waypoint = waypoints.get(selectedObject.symbol);
       if (waypoint) {
@@ -35,8 +44,9 @@ export const useWaypointTooltipAnchor = ({
         return;
       }
     }
+
     clearAnchor();
-  }, [selectedObject, waypoints, getWaypointPosition]);
+  }, [selectedObject, selectedWaypoint, waypoints, getWaypointPosition]);
 
   return { anchor, showForWaypoint, clearAnchor };
 };

@@ -10,6 +10,8 @@ export interface SelectionOverlay {
 
 interface SelectionParams {
   selectedObject: { type: 'waypoint' | 'ship'; symbol: string; x: number; y: number } | null;
+  selectedShip: TaggedShip | null;
+  selectedWaypoint: WaypointType | null;
   ships: TaggedShip[];
   waypoints: Map<string, WaypointType>;
   projectToScreen: (point: { x: number; y: number }) => { x: number; y: number } | null;
@@ -22,41 +24,47 @@ const WAYPOINT_SIZE = 18;
 
 export const useSelectionOverlay = ({
   selectedObject,
+  selectedShip,
+  selectedWaypoint,
   ships,
   waypoints,
   projectToScreen,
   getWaypointPosition,
   getShipPosition,
-}: SelectionParams): SelectionOverlay | null => {
+}: SelectionParams): SelectionOverlay[] => {
   return useMemo(() => {
-    if (!selectedObject) return null;
+    const overlays: SelectionOverlay[] = [];
 
-    let worldX = selectedObject.x;
-    let worldY = selectedObject.y;
-
-    if (selectedObject.type === 'ship') {
-      const ship = ships.find((candidate) => candidate.symbol === selectedObject.symbol);
-      if (!ship) return null;
-      const position = getShipPosition(ship);
-      if (!position) return null;
-      worldX = position.x;
-      worldY = position.y;
-    } else if (selectedObject.type === 'waypoint') {
-      const waypoint = waypoints.get(selectedObject.symbol);
-      if (!waypoint) return null;
-      const displayPosition = getWaypointPosition(waypoint);
-      worldX = displayPosition.x;
-      worldY = displayPosition.y;
+    // Add ship selection overlay
+    if (selectedShip) {
+      const position = getShipPosition(selectedShip);
+      if (position) {
+        const screenPos = projectToScreen(position);
+        if (screenPos) {
+          overlays.push({
+            left: screenPos.x,
+            top: screenPos.y,
+            size: DEFAULT_SIZE,
+            type: 'ship',
+          });
+        }
+      }
     }
 
-    const screenPos = projectToScreen({ x: worldX, y: worldY });
-    if (!screenPos) return null;
+    // Add waypoint selection overlay
+    if (selectedWaypoint) {
+      const displayPosition = getWaypointPosition(selectedWaypoint);
+      const screenPos = projectToScreen(displayPosition);
+      if (screenPos) {
+        overlays.push({
+          left: screenPos.x,
+          top: screenPos.y,
+          size: WAYPOINT_SIZE,
+          type: 'waypoint',
+        });
+      }
+    }
 
-    return {
-      left: screenPos.x,
-      top: screenPos.y,
-      size: selectedObject.type === 'waypoint' ? WAYPOINT_SIZE : DEFAULT_SIZE,
-      type: selectedObject.type,
-    };
-  }, [selectedObject, ships, waypoints, projectToScreen, getWaypointPosition, getShipPosition]);
+    return overlays;
+  }, [selectedShip, selectedWaypoint, ships, waypoints, projectToScreen, getWaypointPosition, getShipPosition]);
 };

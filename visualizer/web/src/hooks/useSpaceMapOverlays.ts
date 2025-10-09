@@ -22,6 +22,8 @@ type WaypointTooltipAnchor = {
 interface SpaceMapOverlayParams {
   hoveredShip: string | null;
   selectedObject: SelectedMapObject | null;
+  selectedShip: TaggedShip | null;
+  selectedWaypoint: WaypointType | null;
   ships: TaggedShip[];
   waypoints: Map<string, WaypointType>;
   markets: Map<string, Market>;
@@ -51,7 +53,7 @@ export interface WaypointTooltipData {
 }
 
 interface SpaceMapOverlaysResult {
-  selectionOverlay: SelectionOverlayData | null;
+  selectionOverlays: SelectionOverlayData[];
   shipTooltip: ShipTooltipData | null;
   shipTooltipPosition: { left: number; top: number } | null;
   waypointTooltip: WaypointTooltipData | null;
@@ -61,6 +63,8 @@ interface SpaceMapOverlaysResult {
 export function useSpaceMapOverlays({
   hoveredShip,
   selectedObject,
+  selectedShip,
+  selectedWaypoint,
   ships,
   waypoints,
   markets,
@@ -75,7 +79,7 @@ export function useSpaceMapOverlays({
   formatOpportunity,
   opportunityLimit = 2,
 }: SpaceMapOverlayParams): SpaceMapOverlaysResult {
-  const activeShipTooltipSymbol = hoveredShip ?? (selectedObject?.type === 'ship' ? selectedObject.symbol : null);
+  const activeShipTooltipSymbol = hoveredShip ?? selectedShip?.symbol ?? null;
 
   const shipTooltip = useShipTooltip({ activeSymbol: activeShipTooltipSymbol, ships, now: frameTimestamp });
 
@@ -107,8 +111,10 @@ export function useSpaceMapOverlays({
     shipTooltipOffset.y,
   ]);
 
-  const selectionOverlay = useSelectionOverlay({
+  const selectionOverlays = useSelectionOverlay({
     selectedObject,
+    selectedShip,
+    selectedWaypoint,
     ships,
     waypoints,
     projectToScreen,
@@ -173,10 +179,10 @@ export function useSpaceMapOverlays({
       left: screenPos.x + waypointTooltipOffset.x,
       top: screenPos.y - waypointTooltipOffset.y,
     };
-  }, [waypointTooltipAnchor, projectToScreen, waypointTooltipOffset.x, waypointTooltipOffset.y]);
+  }, [waypointTooltipAnchor, projectToScreen, waypointTooltipOffset.x, waypointTooltipOffset.y, frameTimestamp]);
 
   return {
-    selectionOverlay,
+    selectionOverlays,
     shipTooltip,
     shipTooltipPosition,
     waypointTooltip,
