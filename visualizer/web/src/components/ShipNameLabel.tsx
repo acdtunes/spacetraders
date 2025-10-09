@@ -25,8 +25,6 @@ export const ShipNameLabel = ({
           width={labelWidth + 12}
           height={labelHeight}
           fill="rgba(0, 0, 0, 0.82)"
-          stroke="#ff4d4f"
-          strokeWidth={1}
           cornerRadius={3}
         />
         <Text
