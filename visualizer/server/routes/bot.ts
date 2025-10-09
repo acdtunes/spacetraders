@@ -202,8 +202,25 @@ router.get('/tours/:systemSymbol', async (req, res) => {
     const db = getDatabase();
     const systemSymbol = req.params.systemSymbol;
 
-    // Only get the most recent tour for each start_waypoint
+    // Only get the most recent tour for each start_waypoint using window functions
+    // Ranks tours by recency, breaking ties by markets (most markets first)
     const tours = db.prepare(`
+      WITH RankedTours AS (
+        SELECT
+          system,
+          markets,
+          algorithm,
+          start_waypoint,
+          tour_order,
+          total_distance,
+          calculated_at,
+          ROW_NUMBER() OVER (
+            PARTITION BY system, start_waypoint
+            ORDER BY calculated_at DESC, markets DESC
+          ) as rn
+        FROM tour_cache
+        WHERE system = ?
+      )
       SELECT
         system,
         markets,
@@ -212,14 +229,8 @@ router.get('/tours/:systemSymbol', async (req, res) => {
         tour_order,
         total_distance,
         calculated_at
-      FROM tour_cache t1
-      WHERE system = ?
-        AND calculated_at = (
-          SELECT MAX(calculated_at)
-          FROM tour_cache t2
-          WHERE t2.system = t1.system
-            AND t2.start_waypoint = t1.start_waypoint
-        )
+      FROM RankedTours
+      WHERE rn = 1
     `).all(systemSymbol);
 
     db.close();
