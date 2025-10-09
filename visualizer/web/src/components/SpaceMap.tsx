@@ -669,10 +669,8 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
         tour.markets.forEach((market) => markets.add(market));
       }
     });
-    console.log('[DEBUG] Visible tour markets:', Array.from(markets));
-    console.log('[DEBUG] Market freshness keys:', Array.from(marketFreshness.keys()));
     return markets;
-  }, [scoutTours, visibleTours, marketFreshness]);
+  }, [scoutTours, visibleTours]);
 
   const getWaypointDisplayPosition = useCallback(
     (waypoint: WaypointType): { x: number; y: number } => {
@@ -915,12 +913,6 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
             const assetPath = selectWaypointAsset(waypoint);
             const { x, y } = getWaypointDisplayPosition(waypoint);
             const hitRadius = Math.max(radius + 3, 8 / currentScale);
-
-            if (hasMarketplace && showMarketFreshness) {
-              const inTour = visibleTourMarkets.has(waypoint.symbol);
-              const hasFreshness = marketFreshness.has(waypoint.symbol);
-              console.log(`[DEBUG] Waypoint ${waypoint.symbol}: inTour=${inTour}, hasFreshness=${hasFreshness}, hasMarketplace=${hasMarketplace}`);
-            }
 
             return (
               <Group key={waypoint.symbol}>

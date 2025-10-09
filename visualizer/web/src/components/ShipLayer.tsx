@@ -70,11 +70,6 @@ export const ShipLayer = memo(function ShipLayer({
         const assignment = getShipOperation(ship.symbol, assignments);
         const operationType = assignment?.operation || null;
 
-        // Debug logging for operation badges
-        if (assignment) {
-          console.log(`[DEBUG] Ship ${ship.symbol}: operation=${operationType}, showNames=${showShipNames}, showBadges=${showOperationBadges}, hasLabel=${!!labelInfo}`);
-        }
-
         return (
           <Group key={ship.symbol} x={position.x} y={position.y}>
             <Group rotation={rotation}>
