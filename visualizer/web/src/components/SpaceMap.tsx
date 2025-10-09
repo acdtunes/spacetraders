@@ -7,6 +7,7 @@ import { getWaypointOpportunities, formatOpportunity } from '../domain/market';
 import { Waypoint, ShipQueries, WaypointQueries, ViewportBounds } from '../domain';
 import { VIEWPORT_CONSTANTS } from '../constants/viewport';
 import { hashString } from '../utils/hash';
+import { getTourId } from '../utils/tourHelpers';
 import { WaypointSprite } from './WaypointSprite';
 import { ShipLayer } from './ShipLayer';
 import { MiningLaserLayer } from './MiningLaserLayer';
@@ -659,6 +660,18 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
     );
   }, [waypoints, filterWaypointTypes]);
 
+  // Get set of all market waypoints in visible tours
+  const visibleTourMarkets = useMemo(() => {
+    const markets = new Set<string>();
+    scoutTours.forEach((tour) => {
+      const tourId = getTourId(tour);
+      if (visibleTours.has(tourId)) {
+        tour.markets.forEach((market) => markets.add(market));
+      }
+    });
+    return markets;
+  }, [scoutTours, visibleTours]);
+
   const getWaypointDisplayPosition = useCallback(
     (waypoint: WaypointType): { x: number; y: number } => {
       const overlapIndex = filteredWaypoints.filter((w) =>
@@ -934,7 +947,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
                 />
 
                 {/* Market freshness ring */}
-                {hasMarketplace && showMarketFreshness && (
+                {hasMarketplace && showMarketFreshness && visibleTourMarkets.has(waypoint.symbol) && (
                   <MarketFreshnessRing
                     x={x}
                     y={y}
