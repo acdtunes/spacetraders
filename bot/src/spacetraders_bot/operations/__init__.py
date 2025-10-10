@@ -14,6 +14,7 @@ from .assignments import (
 )
 from .captain_logging import captain_log_operation
 from .contracts import contract_operation, negotiate_operation, batch_contract_operation
+from .waypoint_query import waypoint_query_operation
 from .daemon import (
     daemon_cleanup_operation,
     daemon_logs_operation,
@@ -31,6 +32,7 @@ from .routing import (
     route_plan_operation,
     scout_markets_operation,
 )
+from .validate_routing import validate_routing_operation
 from .scout_coordination import (
     coordinator_add_ship_operation,
     coordinator_remove_ship_operation,
@@ -64,6 +66,7 @@ __all__ = [
     "graph_build_operation",
     "route_plan_operation",
     "scout_markets_operation",
+    "validate_routing_operation",
 
     # Daemon management
     "daemon_start_operation",
@@ -95,4 +98,7 @@ __all__ = [
 
     # Navigation
     "navigate_ship",
+
+    # Waypoint query
+    "waypoint_query_operation",
 ]

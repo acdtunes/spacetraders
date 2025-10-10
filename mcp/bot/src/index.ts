@@ -1089,6 +1089,29 @@ class SpaceTradersBotServer {
         );
         break;
       }
+      case "bot_waypoint_query": {
+        this.ensureArgs(name, args, ["player_id", "system"]);
+        command.push(
+          "waypoint-query",
+          "--player-id",
+          String(args.player_id),
+          "--system",
+          String(args.system)
+        );
+        if (args.type) {
+          command.push("--type", String(args.type));
+        }
+        if (args.trait) {
+          command.push("--trait", String(args.trait));
+        }
+        if (args.exclude) {
+          command.push("--exclude", String(args.exclude));
+        }
+        if (args.has_fuel) {
+          command.push("--has-fuel");
+        }
+        break;
+      }
       default:
         return {
           content: [{ type: "text", text: `Unknown tool: ${name}` }],

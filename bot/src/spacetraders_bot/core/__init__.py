@@ -15,6 +15,14 @@ from .market_data import (
 )
 from .operation_controller import OperationController
 from .routing import GraphBuilder, RouteOptimizer, TimeCalculator, TourOptimizer
+from .routing_config import RoutingConfig
+from .routing_validator import RoutingValidator
+from .routing_pause import (
+    get_pause_details as get_routing_pause_details,
+    is_paused as is_routing_paused,
+    pause as pause_routing,
+    resume as resume_routing,
+)
 from .scout_coordinator import ScoutCoordinator
 from .ship_controller import ShipController
 from .smart_navigator import SmartNavigator
@@ -35,6 +43,12 @@ __all__ = [
     "RouteOptimizer",
     "TimeCalculator",
     "TourOptimizer",
+    "RoutingConfig",
+    "RoutingValidator",
+    "is_routing_paused",
+    "get_routing_pause_details",
+    "pause_routing",
+    "resume_routing",
     "find_markets_buying",
     "find_markets_selling",
     "get_database",

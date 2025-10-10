@@ -11,6 +11,7 @@ from typing import Dict, List, Optional
 
 from spacetraders_bot.core.database import Database
 from spacetraders_bot.core.routing import GraphBuilder, RouteOptimizer, TimeCalculator, TourOptimizer
+from spacetraders_bot.core.routing_pause import is_paused as routing_paused, get_pause_details
 from spacetraders_bot.operations.common import (
     setup_logging,
     get_api_client,
@@ -87,6 +88,11 @@ def route_plan_operation(args):
     print(f"  Engine: {ship_data['engine']['symbol']} (speed: {ship_data['engine']['speed']})")
     print(f"  Fuel: {ship_data['fuel']['current']}/{ship_data['fuel']['capacity']}")
     print(f"\nRoute: {args.start} → {args.goal}\n")
+
+    if routing_paused():
+        details = get_pause_details() or {}
+        print(f"❌ Routing is paused: {details.get('reason', 'Validation failure')}\n")
+        return 1
 
     # Plan route
     optimizer = RouteOptimizer(graph, ship_data)
@@ -228,6 +234,11 @@ def scout_markets_operation(args):
     logger.info("=" * 70)
     logger.info("SpaceTraders Bot - SCOUT-MARKETS Operation")
     logger.info("=" * 70)
+
+    if routing_paused():
+        details = get_pause_details() or {}
+        logger.error("Routing is paused: %s", details.get('reason', 'Validation failure'))
+        return 1
 
     # Initialize API
     api = get_api_client(args.player_id)
@@ -400,21 +411,32 @@ def scout_markets_operation(args):
         # Run optimization based on algorithm choice
         algorithm = args.algorithm.lower()
 
-        if algorithm in ['greedy', '2opt']:
+        if algorithm == 'ortools':
+            logger.info("Using OR-Tools optimizer with caching...")
+            tour = optimizer.plan_tour(
+                tour_start_location,
+                market_stops,
+                ship_data['fuel']['current'],
+                return_to_start=args.return_to_start,
+                algorithm='ortools',
+                use_cache=True,
+            )
+        elif algorithm in ['greedy', '2opt']:
             logger.info(f"Using {algorithm} algorithm with caching...")
             tour = optimizer.plan_tour(
-                tour_start_location, market_stops,
+                tour_start_location,
+                market_stops,
                 ship_data['fuel']['current'],
                 return_to_start=args.return_to_start,
                 algorithm=algorithm,
-                use_cache=True
+                use_cache=True,
             )
         else:
             logger.error(f"Unknown algorithm: {algorithm}")
             log_error(
                 "Unknown routing algorithm",
                 f"Algorithm '{algorithm}' not supported",
-                resolution="Use 'greedy' or '2opt'",
+                resolution="Use 'ortools', 'greedy', or '2opt'",
                 escalate=False
             )
             return 1

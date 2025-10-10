@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import logging
 import math
 import random
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Sequence, Tuple
+
+from .ortools_router import ORToolsFleetPartitioner
+from .routing_config import RoutingConfig
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -24,12 +30,14 @@ class MarketPartitioner:
         graph: Dict,
         markets: Sequence[str],
         ships: Iterable[str],
+        ship_data: Dict[str, Dict] | None = None,
         *,
         rng: random.Random | None = None,
     ) -> None:
         self.graph = graph or {}
         self.markets = list(markets)
         self.ships = list(ships)
+        self.ship_data = ship_data or {}
         self._rng = rng or random.Random(42)
         self._market_coords = self._extract_market_coords()
 
@@ -41,6 +49,7 @@ class MarketPartitioner:
             "greedy": GreedyPartitionStrategy(),
             "kmeans": KMeansPartitionStrategy(self._rng),
             "geographic": GeographicPartitionStrategy(),
+            "ortools": ORToolsPartitionStrategy(),
         }
 
         if strategy not in strategies:
@@ -303,3 +312,32 @@ class GeographicPartitionStrategy:
             partitions[ships[slice_idx]].append(market)
 
         return partitions
+
+
+class ORToolsPartitionStrategy:
+    """Use OR-Tools VRP to partition markets across ships."""
+
+    def __init__(self) -> None:
+        self._config = RoutingConfig()
+
+    def partition(self, partitioner: MarketPartitioner) -> PartitionResult:
+        if not partitioner.ships or not partitioner.markets:
+            return PartitionResult(partitioner.create_empty_partitions(), "No ships or markets for OR-Tools partitioning")
+
+        if not partitioner.ship_data:
+            return PartitionResult(partitioner.create_empty_partitions(), "Missing ship data for OR-Tools partitioning")
+
+        fleet = ORToolsFleetPartitioner(partitioner.graph, self._config)
+        try:
+            assignments = fleet.partition_and_optimize(
+                markets=partitioner.markets,
+                ships=partitioner.available_ship_ids(),
+                ship_data=partitioner.ship_data,
+            )
+            return PartitionResult(assignments, "✅ OR-Tools partitioning complete")
+        except Exception as exc:
+            logger.exception("OR-Tools partitioning failed")
+            return PartitionResult(
+                partitioner.create_empty_partitions(),
+                f"❌ OR-Tools partitioning failed: {exc}",
+            )

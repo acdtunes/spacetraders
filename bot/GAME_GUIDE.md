@@ -54,9 +54,11 @@ Sector → System → Waypoints
 
 | Mode | Fuel Consumption | Speed | Use Case |
 |------|------------------|-------|----------|
-| **CRUISE** | ~1 fuel/unit | Fast (4 min/300 units) | Standard travel, fuel >75% |
-| **DRIFT** | ~1 fuel/300 units | Slow (35 min/300 units) | Fuel efficiency, long distances |
-| **BURN** | ~2 fuel/unit | Fastest | Emergency, short bursts |
+| **CRUISE** | ~1 fuel/unit (configurable) | Fast (4 min/300 units) | Standard travel, fuel >75% |
+| **DRIFT** | ~1 fuel/300 units (configurable) | Slow (35 min/300 units) | Fuel efficiency, long distances |
+| **BURN** | ~2 fuel/unit (configurable) | Fastest | Emergency, short bursts |
+
+> Flight mode multipliers and fuel rates are defined in `config/routing_constants.yaml` and can be hot-reloaded without restarting the bot.
 
 **Flight Mode Selection Rules:**
 - Fuel >75% → CRUISE (fast travel)
@@ -554,6 +556,13 @@ Required = (Outbound + Return) × 1.1
 - Write off ship value
 - File captain's log entry documenting mistake
 - Learn lesson: always check fuel
+
+### Routing Validation Deviation (>5%)
+
+- Run manual validation: `python3 spacetraders_bot.py validate-routing --player-id <ID> --ship <SHIP> --destination <WAYPOINT>`
+- If time or fuel deviation exceeds configured threshold (default 5%), routing operations automatically pause (`var/routing_pause.json`)
+- Tune `config/routing_constants.yaml` multipliers/fuel rates and re-run validation to clear the pause
+- While paused, SmartNavigator and routing CLIs will reject new routes until validation passes
 
 ---
 

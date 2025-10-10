@@ -1,3 +1,5 @@
+import { getTokenForPlayer } from "./database.js";
+
 export class SpaceTradersClient {
   private baseUrl: string;
   private accountToken?: string;
@@ -7,12 +9,24 @@ export class SpaceTradersClient {
     this.accountToken = accountToken;
   }
 
-  private getHeaders(agentToken?: string): Record<string, string> {
+  private getHeaders(playerId?: number): Record<string, string> {
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
     };
 
-    const token = agentToken || this.accountToken;
+    let token: string | null | undefined;
+
+    // If playerId provided, look up token from database
+    if (playerId !== undefined) {
+      token = getTokenForPlayer(playerId);
+      if (!token) {
+        throw new Error(`No token found for player_id ${playerId} in database`);
+      }
+    } else {
+      // Fallback to account token from environment
+      token = this.accountToken;
+    }
+
     if (token) {
       headers["Authorization"] = `Bearer ${token}`;
     }
@@ -20,10 +34,10 @@ export class SpaceTradersClient {
     return headers;
   }
 
-  async get(path: string, agentToken?: string): Promise<any> {
+  async get(path: string, playerId?: number): Promise<any> {
     const response = await fetch(`${this.baseUrl}${path}`, {
       method: "GET",
-      headers: this.getHeaders(agentToken),
+      headers: this.getHeaders(playerId),
     });
 
     if (!response.ok) {
@@ -36,10 +50,10 @@ export class SpaceTradersClient {
     return response.json();
   }
 
-  async post(path: string, body: any, agentToken?: string): Promise<any> {
+  async post(path: string, body: any, playerId?: number): Promise<any> {
     const response = await fetch(`${this.baseUrl}${path}`, {
       method: "POST",
-      headers: this.getHeaders(agentToken),
+      headers: this.getHeaders(playerId),
       body: JSON.stringify(body),
     });
 
