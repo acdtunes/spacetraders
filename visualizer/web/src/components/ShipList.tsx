@@ -1,7 +1,6 @@
 import { useMemo } from 'react';
 import { useStore } from '../store/useStore';
 import type { TaggedShip } from '../types/spacetraders';
-import { Ship } from '../domain';
 import { VIEWPORT_CONSTANTS } from '../constants/viewport';
 import OverlayToggle from './OverlayToggle';
 import { getCargoIcon, getCargoShortLabel } from '../utils/cargo';
@@ -45,17 +44,13 @@ const OVERLAY_CONFIG = [
   },
 ] as const;
 
-interface ShipListProps {
-  onFocusOn: (x: number, y: number, scale?: number) => void;
-}
-
 const STATUS_COLORS: Record<string, string> = {
   IN_TRANSIT: 'bg-orange-500',
   DOCKED: 'bg-green-500',
   IN_ORBIT: 'bg-blue-500',
 };
 
-const ShipList = ({ onFocusOn }: ShipListProps) => {
+const ShipList = () => {
   const {
     ships,
     agents,
@@ -65,7 +60,7 @@ const ShipList = ({ onFocusOn }: ShipListProps) => {
     filterStatus,
     filterAgents,
     currentSystem,
-    waypoints,
+    requestShipFocus,
   showDestinationRoutes,
   toggleDestinationRoutes,
   showWaypointNames,
@@ -191,8 +186,7 @@ const ShipList = ({ onFocusOn }: ShipListProps) => {
                   onClick={() => {
                     setSelectedShip(ship);
                     setSelectedWaypoint(null);
-                    const position = Ship.getPosition(ship, waypoints);
-                    onFocusOn(position.x, position.y, VIEWPORT_CONSTANTS.SHIP_FOCUS_ZOOM);
+                    requestShipFocus(ship.symbol, VIEWPORT_CONSTANTS.SHIP_FOCUS_ZOOM);
                   }}
                   className={`w-full text-left p-2 rounded border transition-colors ${
                     selectedShip?.symbol === ship.symbol

@@ -7,6 +7,52 @@ export interface Position {
   y: number;
 }
 
+export interface ShipPositionOptions {
+  waypointPositionResolver?: (waypoint: WaypointType) => Position;
+}
+
+type RoutePoint = {
+  symbol?: string;
+  x?: number;
+  y?: number;
+} | null | undefined;
+
+const resolveWaypointPosition = (
+  waypoint: WaypointType,
+  options?: ShipPositionOptions
+): Position => {
+  if (options?.waypointPositionResolver) {
+    return options.waypointPositionResolver(waypoint);
+  }
+  return { x: waypoint.x, y: waypoint.y };
+};
+
+const resolveRoutePointPosition = (
+  point: RoutePoint,
+  waypoints: Map<string, WaypointType>,
+  options?: ShipPositionOptions
+): Position | null => {
+  if (!point) {
+    return null;
+  }
+
+  if (point.symbol) {
+    const waypoint = waypoints.get(point.symbol);
+    if (waypoint) {
+      return resolveWaypointPosition(waypoint, options);
+    }
+  }
+
+  const x = typeof point.x === 'number' ? point.x : null;
+  const y = typeof point.y === 'number' ? point.y : null;
+
+  if (x === null || y === null) {
+    return null;
+  }
+
+  return { x, y };
+};
+
 /**
  * Ship domain logic - encapsulates all ship-related business rules
  */
@@ -17,24 +63,33 @@ export const Ship = {
    * - DOCKED: Position at waypoint
    * - IN_TRANSIT: Interpolate between origin and destination
    */
-  getPosition(ship: ShipType, waypoints: Map<string, WaypointType>): Position {
+  getPosition(
+    ship: ShipType,
+    waypoints: Map<string, WaypointType>,
+    options?: ShipPositionOptions
+  ): Position {
     if (ship.nav.status === 'IN_ORBIT') {
-      return this.calculateOrbitPosition(ship, waypoints);
+      return this.calculateOrbitPosition(ship, waypoints, options);
     }
 
     if (ship.nav.status !== 'IN_TRANSIT') {
-      return this.getDockedPosition(ship, waypoints);
+      return this.getDockedPosition(ship, waypoints, options);
     }
 
-    return this.interpolateTransitPosition(ship, waypoints);
+    return this.interpolateTransitPosition(ship, waypoints, options);
   },
 
   /**
    * Calculate orbital position around waypoint
    */
-  calculateOrbitPosition(ship: ShipType, waypoints: Map<string, WaypointType>): Position {
+  calculateOrbitPosition(
+    ship: ShipType,
+    waypoints: Map<string, WaypointType>,
+    options?: ShipPositionOptions
+  ): Position {
     const waypoint = waypoints.get(ship.nav.waypointSymbol);
     if (!waypoint) return { x: 0, y: 0 };
+    const center = resolveWaypointPosition(waypoint, options);
 
     const waypointRadius = Waypoint.getRadius(waypoint);
     const orbitDistance = waypoint.type.includes('ASTEROID')
@@ -57,11 +112,14 @@ export const Ship = {
         typeof destination.x === 'number' &&
         typeof destination.y === 'number';
 
-      if (hasCoordinates) {
+      const originPosition = resolveRoutePointPosition(origin, waypoints, options);
+      const destinationPosition = resolveRoutePointPosition(destination, waypoints, options);
+
+      if (hasCoordinates && originPosition && destinationPosition) {
         const arrivalTime = new Date(route.arrival).getTime();
         if (!Number.isNaN(arrivalTime) && arrivalTime <= now) {
-          const dx = destination.x - origin.x;
-          const dy = destination.y - origin.y;
+          const dx = destinationPosition.x - originPosition.x;
+          const dy = destinationPosition.y - originPosition.y;
           const length = Math.hypot(dx, dy);
           if (length > 0.0001) {
             const arrivalAngle = Math.atan2(dy, dx) + Math.PI; // facing back along incoming vector
@@ -78,17 +136,22 @@ export const Ship = {
     }
 
     return {
-      x: waypoint.x + Math.cos(angle) * orbitRadius,
-      y: waypoint.y + Math.sin(angle) * orbitRadius,
+      x: center.x + Math.cos(angle) * orbitRadius,
+      y: center.y + Math.sin(angle) * orbitRadius,
     };
   },
 
   /**
    * Get docked ship position (at waypoint)
    */
-  getDockedPosition(ship: ShipType, waypoints: Map<string, WaypointType>): Position {
+  getDockedPosition(
+    ship: ShipType,
+    waypoints: Map<string, WaypointType>,
+    options?: ShipPositionOptions
+  ): Position {
     const waypoint = waypoints.get(ship.nav.waypointSymbol);
     if (!waypoint) return { x: 0, y: 0 };
+    const center = resolveWaypointPosition(waypoint, options);
     const baseRadius = Waypoint.getRadius(waypoint);
 
     // Deterministic offset around the waypoint so docked ships don't overlap the center.
@@ -97,26 +160,26 @@ export const Ship = {
     const ring = baseRadius + 4 + ((Math.abs(hash) % 4) * 1.2);
 
     return {
-      x: waypoint.x + Math.cos(angle) * ring,
-      y: waypoint.y + Math.sin(angle) * ring,
+      x: center.x + Math.cos(angle) * ring,
+      y: center.y + Math.sin(angle) * ring,
     };
   },
 
   /**
    * Interpolate position for ship in transit
    */
-  interpolateTransitPosition(ship: ShipType, waypoints: Map<string, WaypointType>): Position {
+  interpolateTransitPosition(
+    ship: ShipType,
+    waypoints: Map<string, WaypointType>,
+    options?: ShipPositionOptions
+  ): Position {
     if (!ship.nav.route?.destination) {
       return { x: 0, y: 0 };
     }
 
-    const origin = ship.nav.route.origin;
-    if (!origin || origin.x === undefined || origin.y === undefined) {
-      return { x: 0, y: 0 };
-    }
-
-    const dest = ship.nav.route.destination;
-    if (!dest || dest.x === undefined || dest.y === undefined) {
+    const originPosition = resolveRoutePointPosition(ship.nav.route.origin, waypoints, options);
+    const destinationPosition = resolveRoutePointPosition(ship.nav.route.destination, waypoints, options);
+    if (!originPosition || !destinationPosition) {
       return { x: 0, y: 0 };
     }
 
@@ -141,17 +204,18 @@ export const Ship = {
               waypointSymbol: destinationSymbol,
             },
           } as ShipType,
-          waypoints
+          waypoints,
+          options
         );
       }
     }
 
-    const dx = dest.x - origin.x;
-    const dy = dest.y - origin.y;
+    const dx = destinationPosition.x - originPosition.x;
+    const dy = destinationPosition.y - originPosition.y;
     const totalDistance = Math.hypot(dx, dy);
 
     if (totalDistance === 0) {
-      return { x: origin.x, y: origin.y };
+      return { x: originPosition.x, y: originPosition.y };
     }
 
     let maxTravelDistance = totalDistance;
@@ -174,8 +238,8 @@ export const Ship = {
     const ratio = travelledDistance / totalDistance;
 
     return {
-      x: origin.x + dx * ratio,
-      y: origin.y + dy * ratio,
+      x: originPosition.x + dx * ratio,
+      y: originPosition.y + dy * ratio,
     };
   },
 

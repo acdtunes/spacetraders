@@ -145,6 +145,15 @@ export interface AppState {
   toggleTourVisibility: (tourId: string) => void;
   showAllTours: () => void;
   hideAllTours: () => void;
+
+  // Camera focus
+  shipFocusRequest: {
+    symbol: string;
+    zoom?: number;
+    timestamp: number;
+  } | null;
+  requestShipFocus: (symbol: string, zoom?: number) => void;
+  clearShipFocusRequest: () => void;
 }
 
 const storeInitializer: StateCreator<AppState, [], []> = (set) => ({
@@ -354,6 +363,18 @@ const storeInitializer: StateCreator<AppState, [], []> = (set) => ({
       return { visibleTours: allTourIds };
     }),
   hideAllTours: () => set({ visibleTours: new Set() }),
+
+  // Camera focus
+  shipFocusRequest: null,
+  requestShipFocus: (symbol, zoom) =>
+    set({
+      shipFocusRequest: {
+        symbol,
+        zoom,
+        timestamp: Date.now(),
+      },
+    }),
+  clearShipFocusRequest: () => set({ shipFocusRequest: null }),
 });
 
 export const createAppStore = () => createStore<AppState>(storeInitializer);

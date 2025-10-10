@@ -51,7 +51,9 @@ export function RouteVectors({
           return null;
         }
 
-        const targetPosition = Ship.getPosition(ship, waypoints);
+        const targetPosition = Ship.getPosition(ship, waypoints, {
+          waypointPositionResolver: getWaypointPosition,
+        });
         if (targetPosition.x === 0 && targetPosition.y === 0) return null;
 
         const renderPosition = getShipRenderPosition(ship, targetPosition, frameTimestamp);

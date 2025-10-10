@@ -88,7 +88,9 @@ export function useSpaceMapOverlays({
     const ship = ships.find((candidate) => candidate.symbol === activeShipTooltipSymbol);
     if (!ship) return null;
 
-    const targetPosition = Ship.getPosition(ship, waypoints);
+    const targetPosition = Ship.getPosition(ship, waypoints, {
+      waypointPositionResolver: getWaypointPosition,
+    });
     const position = getShipRenderPosition(ship, targetPosition, frameTimestamp);
     if (position.x === 0 && position.y === 0) return null;
 
@@ -118,7 +120,9 @@ export function useSpaceMapOverlays({
     projectToScreen,
     getWaypointPosition,
     getShipPosition: (ship) => {
-      const targetPosition = Ship.getPosition(ship, waypoints);
+      const targetPosition = Ship.getPosition(ship, waypoints, {
+        waypointPositionResolver: getWaypointPosition,
+      });
       const position = getShipRenderPosition(ship, targetPosition, frameTimestamp);
       if (position.x === 0 && position.y === 0) {
         return null;

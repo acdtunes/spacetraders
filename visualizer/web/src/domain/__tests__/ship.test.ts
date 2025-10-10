@@ -145,4 +145,69 @@ describe('Ship domain', () => {
     const maxDistance = Math.hypot(baseWaypoint.x, baseWaypoint.y);
     expect(distance).toBeLessThanOrEqual(maxDistance);
   });
+
+  it('interpolates along resolved waypoint positions when provided', () => {
+    const originWaypoint: WaypointType = {
+      ...baseWaypoint,
+      symbol: 'X1-TEST-A1',
+      x: 0,
+      y: 0,
+    };
+
+    const destinationWaypoint: WaypointType = {
+      ...baseWaypoint,
+      symbol: 'X1-TEST-A2',
+      x: 0,
+      y: 0,
+    };
+
+    const map = new Map<string, WaypointType>([
+      [originWaypoint.symbol, originWaypoint],
+      [destinationWaypoint.symbol, destinationWaypoint],
+    ]);
+
+    const ship: ShipType = {
+      ...baseShip,
+      nav: {
+        ...baseShip.nav,
+        status: 'IN_TRANSIT',
+        waypointSymbol: destinationWaypoint.symbol,
+        route: {
+          origin: {
+            symbol: originWaypoint.symbol,
+            type: originWaypoint.type,
+            systemSymbol: originWaypoint.systemSymbol,
+            x: originWaypoint.x,
+            y: originWaypoint.y,
+          },
+          destination: {
+            symbol: destinationWaypoint.symbol,
+            type: destinationWaypoint.type,
+            systemSymbol: destinationWaypoint.systemSymbol,
+            x: destinationWaypoint.x,
+            y: destinationWaypoint.y,
+          },
+          departureTime: new Date(Date.now() - 1000).toISOString(),
+          arrival: new Date(Date.now() + 1000).toISOString(),
+        },
+      },
+    };
+
+    const resolveWaypointPosition = (waypoint: WaypointType) => {
+      if (waypoint.symbol === originWaypoint.symbol) {
+        return { x: -10, y: 5 };
+      }
+      if (waypoint.symbol === destinationWaypoint.symbol) {
+        return { x: 40, y: 45 };
+      }
+      return { x: waypoint.x, y: waypoint.y };
+    };
+
+    const position = Ship.getPosition(ship, map, {
+      waypointPositionResolver: resolveWaypointPosition,
+    });
+
+    expect(position.x).toBeCloseTo(15, 3);
+    expect(position.y).toBeCloseTo(25, 3);
+  });
 });

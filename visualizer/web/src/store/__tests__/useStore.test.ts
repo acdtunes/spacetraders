@@ -196,4 +196,18 @@ describe('useStore', () => {
     act(() => clearTrail('SHIP-1'));
     expect(store.getState().trails.get('SHIP-1')).toBeUndefined();
   });
+
+  it('queues ship focus requests with timestamp metadata', () => {
+    const { requestShipFocus, clearShipFocusRequest } = store.getState();
+
+    act(() => requestShipFocus('SHIP-1', 4));
+    const request = store.getState().shipFocusRequest;
+
+    expect(request?.symbol).toBe('SHIP-1');
+    expect(request?.zoom).toBe(4);
+    expect(typeof request?.timestamp).toBe('number');
+
+    act(() => clearShipFocusRequest());
+    expect(store.getState().shipFocusRequest).toBeNull();
+  });
 });

@@ -4,7 +4,7 @@
  */
 
 export { Ship } from './ship';
-export type { Position } from './ship';
+export type { Position, ShipPositionOptions } from './ship';
 
 export { Waypoint } from './waypoint';
 

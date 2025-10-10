@@ -14,11 +14,49 @@ export const calculateShipRotation = (
   ship: TaggedShip,
   position: Point,
   waypoints: Map<string, WaypointType>,
-  trail?: ShipTrailPoint[]
+  trail?: ShipTrailPoint[],
+  resolveWaypointPosition?: (waypoint: WaypointType) => Point
 ): number => {
   let travelAngleRad: number | null = null;
 
-  if (trail && trail.length >= 2) {
+  const getWaypointCenter = (waypoint: WaypointType): Point =>
+    resolveWaypointPosition ? resolveWaypointPosition(waypoint) : { x: waypoint.x, y: waypoint.y };
+
+  const resolveRoutePoint = (
+    routePoint?: { symbol?: string; x?: number; y?: number }
+  ): Point | null => {
+    if (!routePoint) {
+      return null;
+    }
+
+    if (routePoint.symbol) {
+      const waypoint = waypoints.get(routePoint.symbol);
+      if (waypoint) {
+        return getWaypointCenter(waypoint);
+      }
+    }
+
+    if (typeof routePoint.x === 'number' && typeof routePoint.y === 'number') {
+      return { x: routePoint.x, y: routePoint.y };
+    }
+
+    return null;
+  };
+
+  if (ship.nav.status === 'IN_TRANSIT' && ship.nav.route?.origin && ship.nav.route?.destination) {
+    const originPosition = resolveRoutePoint(ship.nav.route.origin);
+    const destinationPosition = resolveRoutePoint(ship.nav.route.destination);
+
+    if (originPosition && destinationPosition) {
+      const dxRoute = destinationPosition.x - originPosition.x;
+      const dyRoute = destinationPosition.y - originPosition.y;
+      if (Math.hypot(dxRoute, dyRoute) > 0.01) {
+        travelAngleRad = Math.atan2(dyRoute, dxRoute);
+      }
+    }
+  }
+
+  if (travelAngleRad === null && trail && trail.length >= 2) {
     const previous = trail[trail.length - 2];
     const dxTrail = position.x - previous.x;
     const dyTrail = position.y - previous.y;
@@ -29,15 +67,29 @@ export const calculateShipRotation = (
 
   if (travelAngleRad === null) {
     if (ship.nav.status === 'IN_TRANSIT' && ship.nav.route?.destination) {
-      const dest = ship.nav.route.destination;
-      if (typeof dest.x === 'number' && typeof dest.y === 'number') {
-        travelAngleRad = Math.atan2(dest.y - position.y, dest.x - position.x);
+      const originPosition = resolveRoutePoint(ship.nav.route.origin);
+      const destinationPosition = resolveRoutePoint(ship.nav.route.destination);
+
+      if (originPosition && destinationPosition) {
+        const dxRoute = destinationPosition.x - originPosition.x;
+        const dyRoute = destinationPosition.y - originPosition.y;
+        if (Math.hypot(dxRoute, dyRoute) > 0.01) {
+          travelAngleRad = Math.atan2(dyRoute, dxRoute);
+        }
+      }
+
+      if (travelAngleRad === null && destinationPosition) {
+        travelAngleRad = Math.atan2(
+          destinationPosition.y - position.y,
+          destinationPosition.x - position.x
+        );
       }
     } else if (ship.nav.status === 'IN_ORBIT') {
       const waypoint = waypoints.get(ship.nav.waypointSymbol);
       if (waypoint) {
-        const dx = position.x - waypoint.x;
-        const dy = position.y - waypoint.y;
+        const center = getWaypointCenter(waypoint);
+        const dx = position.x - center.x;
+        const dy = position.y - center.y;
         const orbitalAngle = Math.atan2(dy, dx);
         travelAngleRad = orbitalAngle + Math.PI / 2;
       }

@@ -2,6 +2,7 @@ import { memo } from 'react';
 import { Group, Circle } from 'react-konva';
 import type { ShipTrailPoint, TaggedShip, Waypoint as WaypointType, ShipAssignment } from '../types/spacetraders';
 import { Ship } from '../domain/ship';
+import type { ShipPositionOptions } from '../domain';
 import { ShipSprite } from './ShipSprite';
 import { ShipNameLabel } from './ShipNameLabel';
 import { ShipOperationBadge } from './ShipOperationBadge';
@@ -28,6 +29,8 @@ export interface ShipLayerProps {
   onSelectShip: (ship: TaggedShip, position: Point) => void;
   onHoverShip: (symbol: string | null) => void;
   assignments: Map<string, ShipAssignment>;
+  shipPositionOptions?: ShipPositionOptions;
+  getWaypointPosition: (waypoint: WaypointType) => Point;
 }
 
 export const ShipLayer = memo(function ShipLayer({
@@ -45,11 +48,13 @@ export const ShipLayer = memo(function ShipLayer({
   onSelectShip,
   onHoverShip,
   assignments,
+  shipPositionOptions,
+  getWaypointPosition,
 }: ShipLayerProps) {
   return (
     <>
       {ships.map((ship) => {
-        const targetPosition = Ship.getPosition(ship, waypoints);
+        const targetPosition = Ship.getPosition(ship, waypoints, shipPositionOptions);
         if (targetPosition.x === 0 && targetPosition.y === 0) {
           return null;
         }
@@ -57,7 +62,13 @@ export const ShipLayer = memo(function ShipLayer({
         const position = getShipRenderPosition(ship, targetPosition, frameTimestamp);
         const shipAssetPath = selectShipAsset(ship);
         const shipTrail = trails.get(ship.symbol);
-        const rotation = calculateShipRotation(ship, position, waypoints, shipTrail);
+        const rotation = calculateShipRotation(
+          ship,
+          position,
+          waypoints,
+          shipTrail,
+          getWaypointPosition
+        );
 
         const labelInfo = getShipLabelInfo(ship, position, {
           currentScale,
@@ -117,4 +128,3 @@ export const ShipLayer = memo(function ShipLayer({
     </>
   );
 });
-

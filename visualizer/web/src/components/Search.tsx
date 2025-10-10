@@ -1,6 +1,5 @@
 import { useState, useMemo } from 'react';
 import { useStore } from '../store/useStore';
-import { Ship } from '../domain';
 import { VIEWPORT_CONSTANTS } from '../constants/viewport';
 
 interface SearchProps {
@@ -9,7 +8,14 @@ interface SearchProps {
 
 const Search = ({ onFocusOn }: SearchProps) => {
   const [query, setQuery] = useState('');
-  const { ships, waypoints, setSelectedShip, setSelectedWaypoint, currentSystem } = useStore();
+  const {
+    ships,
+    waypoints,
+    setSelectedShip,
+    setSelectedWaypoint,
+    currentSystem,
+    requestShipFocus,
+  } = useStore();
 
   // Search results
   const results = useMemo(() => {
@@ -44,8 +50,7 @@ const Search = ({ onFocusOn }: SearchProps) => {
   const handleSelectShip = (ship: any) => {
     setSelectedShip(ship);
     setSelectedWaypoint(null);
-    const position = Ship.getPosition(ship, waypoints);
-    onFocusOn(position.x, position.y, VIEWPORT_CONSTANTS.MAX_ZOOM);
+    requestShipFocus(ship.symbol, VIEWPORT_CONSTANTS.MAX_ZOOM);
   };
 
   const handleSelectWaypoint = (waypoint: any) => {

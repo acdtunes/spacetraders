@@ -79,7 +79,7 @@ const Sidebar = ({
 
         {/* Tab Content */}
         <div className={`overflow-y-auto p-4 ${currentSystem ? 'h-[calc(100%-113px)]' : 'h-[calc(100%-57px)]'}`}>
-          {activeTab === 'ships' && <ShipList onFocusOn={onFocusOn} />}
+          {activeTab === 'ships' && <ShipList />}
 
           {activeTab === 'details' && (
             <>

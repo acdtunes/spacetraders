@@ -22,6 +22,7 @@ export interface MiningLaserLayerProps {
   animationFrame: number;
   frameTimestamp: number;
   getShipRenderPosition: (ship: TaggedShip, target: Point, timestamp: number) => Point;
+  getWaypointPosition: (waypoint: WaypointType) => Point;
 }
 
 export const MiningLaserLayer = memo(function MiningLaserLayer({
@@ -30,6 +31,7 @@ export const MiningLaserLayer = memo(function MiningLaserLayer({
   animationFrame,
   frameTimestamp,
   getShipRenderPosition,
+  getWaypointPosition,
 }: MiningLaserLayerProps) {
   const time = animationFrame / 60; // Convert to seconds
 
@@ -43,7 +45,10 @@ export const MiningLaserLayer = memo(function MiningLaserLayer({
         if (!waypoint) return null;
         if (!MINING_WAYPOINT_TYPES.has(waypoint.type)) return null;
 
-        const targetPosition = Ship.getPosition(ship, waypoints);
+        const waypointCenter = getWaypointPosition(waypoint);
+        const targetPosition = Ship.getPosition(ship, waypoints, {
+          waypointPositionResolver: getWaypointPosition,
+        });
         const position = getShipRenderPosition(ship, targetPosition, frameTimestamp);
 
         return (
@@ -51,7 +56,7 @@ export const MiningLaserLayer = memo(function MiningLaserLayer({
             {[0, 1].map((beamIndex) => {
               const phase = (time * 3 + beamIndex * 0.7) % 1;
               const alpha = 0.5 + Math.sin(phase * Math.PI * 2) * 0.4;
-              const angle = Math.atan2(waypoint.y - position.y, waypoint.x - position.x);
+              const angle = Math.atan2(waypointCenter.y - position.y, waypointCenter.x - position.x);
               const directionX = Math.cos(angle);
               const directionY = Math.sin(angle);
               const angleOffset = beamIndex === 0 ? -0.12 : 0.12;
@@ -59,13 +64,13 @@ export const MiningLaserLayer = memo(function MiningLaserLayer({
               const beamDirX = Math.cos(beamAngle);
               const beamDirY = Math.sin(beamAngle);
               const surfaceRadius = Math.max(Waypoint.getRadius(waypoint) - 1, 0);
-              const centerOffsetX = position.x - waypoint.x;
-              const centerOffsetY = position.y - waypoint.y;
+              const centerOffsetX = position.x - waypointCenter.x;
+              const centerOffsetY = position.y - waypointCenter.y;
               const b = 2 * (beamDirX * centerOffsetX + beamDirY * centerOffsetY);
               const c = centerOffsetX * centerOffsetX + centerOffsetY * centerOffsetY - surfaceRadius * surfaceRadius;
               const discriminant = b * b - 4 * c;
-              let beamEndX = waypoint.x - directionX * surfaceRadius;
-              let beamEndY = waypoint.y - directionY * surfaceRadius;
+              let beamEndX = waypointCenter.x - directionX * surfaceRadius;
+              let beamEndY = waypointCenter.y - directionY * surfaceRadius;
 
               if (discriminant >= 0) {
                 const sqrtDisc = Math.sqrt(discriminant);

@@ -4,7 +4,8 @@ import Konva from 'konva';
 import { useStore } from '../store/useStore';
 import { getWaypoints } from '../services/api';
 import { getWaypointOpportunities, formatOpportunity } from '../domain/market';
-import { Waypoint, ShipQueries, WaypointQueries, ViewportBounds } from '../domain';
+import { Ship, Waypoint, ShipQueries, WaypointQueries, ViewportBounds } from '../domain';
+import type { ShipPositionOptions } from '../domain';
 import { VIEWPORT_CONSTANTS } from '../constants/viewport';
 import { hashString } from '../utils/hash';
 import { getTourId } from '../utils/tourHelpers';
@@ -93,7 +94,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
   const waypointsSizeRef = useRef<number>(0);
   const shipPositionCacheRef = useRef<Map<string, { x: number; y: number; status: ShipNavStatus; timestamp: number }>>(new Map());
 
-  const { currentSystem, waypoints, ships, markets, showMapOverlays, showWaypointNames, showShipNames, showDestinationRoutes, setWaypoints, trails, addTrailPosition, clearTrail, filterStatus, filterAgents, filterWaypointTypes, selectedShip, selectedWaypoint, setSelectedShip, setSelectedWaypoint, assignments, marketFreshness, showMarketFreshness, scoutTours, showScoutTours, tradeOpportunities, showTradeRoutes, showMiningRoutes, visibleTours, toggleTourVisibility, showAllTours, hideAllTours } =
+  const { currentSystem, waypoints, ships, markets, showMapOverlays, showWaypointNames, showShipNames, showDestinationRoutes, setWaypoints, trails, addTrailPosition, clearTrail, filterStatus, filterAgents, filterWaypointTypes, selectedShip, selectedWaypoint, setSelectedShip, setSelectedWaypoint, assignments, marketFreshness, showMarketFreshness, scoutTours, showScoutTours, tradeOpportunities, showTradeRoutes, showMiningRoutes, visibleTours, toggleTourVisibility, showAllTours, hideAllTours, shipFocusRequest, clearShipFocusRequest } =
     useStore();
 
   const [hoveredShip, setHoveredShip] = useState<string | null>(null);
@@ -194,7 +195,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
   }, [showDestinationRoutes, RouteVectorsComponent]);
 
   // Update viewport bounds for minimap
-  const updateViewportBounds = () => {
+  const updateViewportBounds = useCallback(() => {
     if (!layerRef.current || !stageRef.current) return;
     const layer = layerRef.current;
     const stage = stageRef.current;
@@ -219,7 +220,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
       x: layer.x() * parallaxFactor,
       y: layer.y() * parallaxFactor,
     });
-  };
+  }, []);
 
   // Handle drag end with viewport clamping
   const handleDragEnd = () => {
@@ -420,7 +421,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
     });
   };
 
-  const handleFocusOn = (x: number, y: number, scale?: number) => {
+  const handleFocusOn = useCallback((x: number, y: number, scale?: number) => {
     if (!layerRef.current || !stageRef.current) return;
     const layer = layerRef.current;
     const stage = stageRef.current;
@@ -435,7 +436,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
       easing: Konva.Easings.EaseInOut,
       onFinish: updateViewportBounds,
     });
-  };
+  }, [updateViewportBounds]);
 
   // Expose zoom functions via ref
   useImperativeHandle(ref, () => ({
@@ -641,17 +642,6 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
     });
   };
 
-  // Start animation loop for ships
-  useShipTrailSampler({
-    animationFrame,
-    sampleRate: TRAIL_SAMPLE_RATE,
-    ships,
-    waypoints,
-    currentSystem,
-    addTrailPoint: addTrailPosition,
-    clearTrail,
-  });
-
   // Filter ships using domain queries
   const filteredShips = useMemo(() => {
     return ShipQueries.filter(ships, {
@@ -702,6 +692,18 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
     },
     [filteredWaypoints]
   );
+
+  // Start animation loop for ships
+  useShipTrailSampler({
+    animationFrame,
+    sampleRate: TRAIL_SAMPLE_RATE,
+    ships,
+    waypoints,
+    currentSystem,
+    addTrailPoint: addTrailPosition,
+    clearTrail,
+    resolveWaypointPosition: getWaypointDisplayPosition,
+  });
 
   const selectWaypointAsset = useCallback((waypoint: WaypointType): string => {
     const traitSymbols = (waypoint.traits ?? []).map((trait) => trait.symbol.toUpperCase());
@@ -756,6 +758,50 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
     const filename = variants[assetIndex] ?? DEFAULT_WAYPOINT_ASSET;
     return `${WAYPOINT_ASSET_BASE_PATH}${filename}`;
   }, []);
+
+  const shipPositionOptions = useMemo<ShipPositionOptions>(
+    () => ({
+      waypointPositionResolver: getWaypointDisplayPosition,
+    }),
+    [getWaypointDisplayPosition]
+  );
+
+  useEffect(() => {
+    if (!shipFocusRequest) {
+      return;
+    }
+
+    if (!stageSize.width || !stageSize.height) {
+      return;
+    }
+
+    if (!layerRef.current || !stageRef.current) {
+      return;
+    }
+
+    const ship = ships.find((candidate) => candidate.symbol === shipFocusRequest.symbol);
+    if (!ship) {
+      clearShipFocusRequest();
+      return;
+    }
+
+    const targetPosition = Ship.getPosition(ship, waypoints, shipPositionOptions);
+    const renderPosition = getShipRenderPosition(ship, targetPosition, Date.now());
+    const zoom = shipFocusRequest.zoom ?? VIEWPORT_CONSTANTS.SHIP_FOCUS_ZOOM;
+
+    handleFocusOn(renderPosition.x, renderPosition.y, zoom);
+    clearShipFocusRequest();
+  }, [
+    shipFocusRequest,
+    ships,
+    waypoints,
+    getShipRenderPosition,
+    handleFocusOn,
+    clearShipFocusRequest,
+    stageSize.width,
+    stageSize.height,
+    shipPositionOptions,
+  ]);
 
   const selectShipAsset = useCallback((ship: TaggedShip): string | null => {
     const role = ship.registration.role?.toLowerCase() ?? '';
@@ -1065,6 +1111,8 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
             }}
             onHoverShip={setHoveredShip}
             assignments={assignments}
+            shipPositionOptions={shipPositionOptions}
+            getWaypointPosition={getWaypointDisplayPosition}
           />
 
           <MiningLaserLayer
@@ -1073,6 +1121,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
             animationFrame={animationFrame}
             frameTimestamp={frameTimestamp}
             getShipRenderPosition={getShipRenderPosition}
+            getWaypointPosition={getWaypointDisplayPosition}
           />
 
         </Layer>

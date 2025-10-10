@@ -64,6 +64,74 @@ describe('shipDisplay utilities', () => {
     expect(rotation).toBeCloseTo(90, 1);
   });
 
+  it('uses route vector for rotation even when position deviates from path', () => {
+    const rotation = calculateShipRotation(baseShip, { x: -5, y: 5 }, new Map());
+    expect(rotation).toBeCloseTo(90, 1);
+  });
+
+  it('aligns rotation with resolved waypoint offsets when waypoints overlap', () => {
+    const originWaypoint: WaypointType = {
+      ...baseWaypoint,
+      symbol: 'ORIGIN',
+      x: 0,
+      y: 0,
+    };
+
+    const destinationWaypoint: WaypointType = {
+      ...baseWaypoint,
+      symbol: 'DEST',
+      x: 0,
+      y: 0,
+    };
+
+    const waypointMap = new Map<string, WaypointType>([
+      [originWaypoint.symbol, originWaypoint],
+      [destinationWaypoint.symbol, destinationWaypoint],
+    ]);
+
+    const ship: TaggedShip = {
+      ...baseShip,
+      nav: {
+        ...baseShip.nav,
+        status: 'IN_TRANSIT',
+        route: {
+          ...baseShip.nav.route,
+          origin: {
+            ...baseShip.nav.route.origin,
+            x: 0,
+            y: 0,
+          },
+          destination: {
+            ...baseShip.nav.route.destination,
+            x: 0,
+            y: 0,
+          },
+        },
+      },
+    };
+
+    const resolveWaypointPosition = (waypoint: WaypointType) => {
+      if (waypoint.symbol === 'ORIGIN') {
+        return { x: -10, y: -5 };
+      }
+      if (waypoint.symbol === 'DEST') {
+        return { x: 25, y: 45 };
+      }
+      return { x: waypoint.x, y: waypoint.y };
+    };
+
+    const rotation = calculateShipRotation(
+      ship,
+      { x: -10, y: -5 },
+      waypointMap,
+      undefined,
+      resolveWaypointPosition
+    );
+
+    // Vector from (-10,-5) to (25,45) -> angle ~ 55°, plus 90° offset -> ~145°
+    expect(rotation).toBeCloseTo(145, 1);
+  });
+
   it('uses orbital vector when in orbit', () => {
     const ship: TaggedShip = {
       ...baseShip,

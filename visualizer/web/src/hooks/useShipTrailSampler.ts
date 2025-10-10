@@ -10,6 +10,7 @@ export interface ShipTrailSamplerOptions {
   currentSystem: string | null;
   addTrailPoint: (shipSymbol: string, point: ShipTrailPoint) => void;
   clearTrail: (shipSymbol: string) => void;
+  resolveWaypointPosition: (waypoint: WaypointType) => { x: number; y: number };
 }
 
 const DEFAULT_SAMPLE_RATE = 4;
@@ -22,6 +23,7 @@ export const useShipTrailSampler = ({
   currentSystem,
   addTrailPoint,
   clearTrail,
+  resolveWaypointPosition,
 }: ShipTrailSamplerOptions) => {
   useEffect(() => {
     if (ships.length === 0) return;
@@ -49,7 +51,9 @@ export const useShipTrailSampler = ({
         return;
       }
 
-      const position = Ship.getPosition(ship, waypoints);
+      const position = Ship.getPosition(ship, waypoints, {
+        waypointPositionResolver: resolveWaypointPosition,
+      });
       if (position.x === 0 && position.y === 0) {
         return;
       }
@@ -72,5 +76,6 @@ export const useShipTrailSampler = ({
     currentSystem,
     addTrailPoint,
     clearTrail,
+    resolveWaypointPosition,
   ]);
 };
