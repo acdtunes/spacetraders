@@ -35,7 +35,6 @@ class SmartNavigator:
         self,
         api_client,
         system: str,
-        cache_dir: str = 'graphs',
         graph: Optional[Dict] = None,
         db_path: Optional[str | Path] = None,
     ):
@@ -45,20 +44,17 @@ class SmartNavigator:
         Args:
             api_client: APIClient instance
             system: System symbol (e.g., X1-HU87)
-            cache_dir: Directory for cached graphs (DEPRECATED - use database)
             graph: Pre-built graph (optional, for testing)
-            db_path: Path to SQLite database (default: data/spacetraders.db)
+            db_path: Path to SQLite database (default: var/data/sqlite/spacetraders.db)
         """
         self.api = api_client
         self.system = system
-        self.cache_dir = Path(cache_dir)  # Keep for backward compatibility
         self.graph = graph
         resolved_db_path = Path(db_path) if db_path else paths.sqlite_path()
         self.db = Database(resolved_db_path)
         self.graph_provider = SystemGraphProvider(
             api_client,
             db=self.db,
-            cache_dir=self.cache_dir,
         )
         self.routing_config = RoutingConfig()
 
