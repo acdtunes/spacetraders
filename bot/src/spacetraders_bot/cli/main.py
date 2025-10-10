@@ -33,6 +33,7 @@ from pathlib import Path
 from ..core import APIClient, ShipController, timestamp, timestamp_iso
 from ..operations import (
     mining_operation,
+    mining_optimize_operation,
     multileg_trade_operation,
     trade_plan_operation,
     purchase_ship_operation,
@@ -88,6 +89,14 @@ def main():
     mine_parser.add_argument('--asteroid', required=True, help='Asteroid waypoint')
     mine_parser.add_argument('--market', required=True, help='Market waypoint')
     mine_parser.add_argument('--cycles', type=int, default=30, help='Number of cycles')
+
+    # Mining fleet optimization
+    mining_optimize_parser = subparsers.add_parser('mining-optimize', help='Optimize mining fleet assignments using OR-Tools')
+    mining_optimize_parser.add_argument('--player-id', type=int, required=True, help='Player ID')
+    mining_optimize_parser.add_argument('--system', required=True, help='System symbol (e.g., X1-HU87)')
+    mining_optimize_parser.add_argument('--ships', help='Comma-separated ship symbols (default: all EXCAVATOR ships)')
+    mining_optimize_parser.add_argument('--algorithm', default='ortools', choices=['ortools', 'greedy'], help='Optimization algorithm (default: ortools)')
+    mining_optimize_parser.add_argument('--output', help='Save results to JSON file')
 
     # Contract operation
     contract_parser = subparsers.add_parser('contract', help='Contract fulfillment')
@@ -188,9 +197,6 @@ def main():
     plan_route_parser.add_argument('--player-id', type=int, required=True, help='Player ID')
     plan_route_parser.add_argument('--ship', required=True, help='Ship symbol')
     plan_route_parser.add_argument('--system', required=True, help='System symbol (e.g., X1-HU87)')
-    plan_route_parser.add_argument('--algorithm', default='greedy',
-                                   choices=['greedy', '2opt'],
-                                   help='Optimization algorithm: greedy (fast) or 2opt (10-15%% better, slower) (default: greedy)')
     plan_route_parser.add_argument('--return-to-start', action='store_true', help='Return to starting waypoint')
     plan_route_parser.add_argument('--continuous', action='store_true', help='Continuous mode: restart immediately after completing tour')
     plan_route_parser.add_argument('--output', help='Save tour plan to JSON file')
@@ -202,9 +208,6 @@ def main():
     scout_markets_parser.add_argument('--system', required=True, help='System to scout')
     scout_markets_parser.add_argument('--markets', type=int, default=20, help='Number of markets (ignored if --markets-list provided)')
     scout_markets_parser.add_argument('--markets-list', type=str, help='Comma-separated list of specific markets to visit (e.g., X1-JB26-A1,X1-JB26-B7)')
-    scout_markets_parser.add_argument('--algorithm', default='ortools',
-                                      choices=['ortools', 'greedy', '2opt'],
-                                      help='Optimization algorithm (default: ortools, fallback: greedy/2opt)')
     scout_markets_parser.add_argument('--return-to-start', action='store_true', help='Return to starting waypoint')
     scout_markets_parser.add_argument('--continuous', action='store_true', help='Continuously loop the tour (restart after completion)')
     scout_markets_parser.add_argument('--output', help='Save tour plan to JSON file')
@@ -313,8 +316,6 @@ def main():
     coordinator_start_parser.add_argument('--player-id', type=int, required=True, help='Player ID')
     coordinator_start_parser.add_argument('--system', required=True, help='System symbol (e.g., X1-HU87)')
     coordinator_start_parser.add_argument('--ships', required=True, help='Comma-separated ship symbols')
-    coordinator_start_parser.add_argument('--algorithm', default='2opt', choices=['greedy', '2opt'],
-                                         help='Optimization algorithm (default: 2opt)')
 
     # Add ship to coordinator
     coordinator_add_parser = coordinator_subparsers.add_parser('add-ship', help='Add ship to ongoing operation')
@@ -412,6 +413,8 @@ def main():
     # Dispatch to appropriate operation
     if args.operation == 'mine':
         return mining_operation(args)
+    elif args.operation == 'mining-optimize':
+        return mining_optimize_operation(args)
     elif args.operation == 'trade':
         return multileg_trade_operation(args)
     elif args.operation == 'trade-plan':
