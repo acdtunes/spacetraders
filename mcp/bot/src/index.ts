@@ -768,6 +768,26 @@ class SpaceTradersBotServer {
         );
         break;
       }
+      case "bot_mining_optimize": {
+        this.ensureArgs(name, args, ["player_id", "system"]);
+        command.push(
+          "mining-optimize",
+          "--player-id",
+          String(args.player_id),
+          "--system",
+          String(args.system)
+        );
+        if (args.ships) {
+          command.push("--ships", String(args.ships));
+        }
+        if (args.algorithm) {
+          command.push("--algorithm", String(args.algorithm));
+        }
+        if (args.output) {
+          command.push("--output", String(args.output));
+        }
+        break;
+      }
       case "bot_daemon_start": {
         this.ensureArgs(name, args, ["player_id", "operation", "args"]);
         const extraArgs = Array.isArray(args.args)
@@ -1021,6 +1041,15 @@ class SpaceTradersBotServer {
         }
         if (args.op_type) {
           command.push("--op-type", String(args.op_type));
+        }
+        if (args.narrative) {
+          command.push("--narrative", String(args.narrative));
+        }
+        if (args.insights) {
+          command.push("--insights", String(args.insights));
+        }
+        if (args.recommendations) {
+          command.push("--recommendations", String(args.recommendations));
         }
         if (args.error) {
           command.push("--error", String(args.error));

@@ -981,6 +981,39 @@ export const botToolDefinitions: Tool[] = [
     }
   },
   {
+    "name": "bot_mining_optimize",
+    "description": "Optimize mining fleet assignments using OR-Tools Assignment solver. Assigns ships to optimal asteroid-market pairs to maximize total fleet profit per hour. Uses Google OR-Tools for global fleet optimization instead of greedy per-ship assignment. IMPORTANT: Provide all EXCAVATOR ships for best results - optimizer considers ship-specific characteristics (speed, cargo, fuel) and avoids asteroid conflicts.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "player_id": {
+          "type": "integer",
+          "description": "Player ID from database"
+        },
+        "system": {
+          "type": "string",
+          "description": "System symbol to optimize (e.g., X1-HU87). Optimizer scans all suitable asteroids and markets."
+        },
+        "ships": {
+          "type": "string",
+          "description": "Optional: Comma-separated ship symbols (e.g., 'MINER-1,MINER-2,MINER-3'). If omitted, optimizes ALL EXCAVATOR ships in fleet. Ships must have mining mounts."
+        },
+        "algorithm": {
+          "type": "string",
+          "description": "Optimization algorithm (default: 'ortools'). Options: 'ortools' (recommended, 15-30% better than greedy), 'greedy' (fallback, single-ship optimization)"
+        },
+        "output": {
+          "type": "string",
+          "description": "Optional: Save results to JSON file path"
+        }
+      },
+      "required": [
+        "player_id",
+        "system"
+      ]
+    }
+  },
+  {
     "name": "bot_captain_log_init",
     "description": "Initialize captain's log storage for an agent and optional player.",
     "inputSchema": {
