@@ -154,6 +154,7 @@ class ORToolsRouter:
         prefer_cruise: bool = True,
     ) -> Optional[Dict]:
         """Compute optimal route plan, returning structure compatible with legacy RouteOptimizer."""
+        prefer_cruise = True  # Cruise preference enforced globally
         if start == goal:
             return {
                 "start": start,
@@ -175,7 +176,6 @@ class ORToolsRouter:
             start=start,
             goal=goal,
             current_fuel=current_fuel,
-            prefer_cruise=prefer_cruise,
         )
 
         if not path_steps:
@@ -269,7 +269,6 @@ class ORToolsRouter:
         start: str,
         goal: str,
         current_fuel: int,
-        prefer_cruise: bool,
     ) -> Optional[List[Dict]]:
         flow = min_cost_flow.SimpleMinCostFlow()
         metadata: Dict[int, Dict] = {}
@@ -282,7 +281,7 @@ class ORToolsRouter:
         flow.set_node_supply(sink_node, -1)
 
         refuel_time = self.config.refuel_time_seconds()
-        drift_penalty = self.DRIFT_PENALTY_SECONDS if prefer_cruise else 0
+        drift_penalty = self.DRIFT_PENALTY_SECONDS
 
         # Generate arcs for each waypoint/fuel state
         for waypoint in self._waypoints:

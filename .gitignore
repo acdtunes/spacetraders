@@ -51,3 +51,4 @@ bot/logs/
 .idea/
 *.swp
 *.swo
+venv/

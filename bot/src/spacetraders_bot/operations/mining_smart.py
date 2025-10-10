@@ -89,7 +89,7 @@ def smart_mining_operation(args):
 
         # Navigate to asteroid using smart router
         print(f"\n1. Smart navigation to asteroid {args.asteroid}...")
-        success = navigator.execute_route(ship, args.asteroid, prefer_cruise=True)
+        success = navigator.execute_route(ship, args.asteroid)
 
         if not success:
             print("❌ Smart navigation failed, aborting")
@@ -116,7 +116,7 @@ def smart_mining_operation(args):
 
         # Navigate to market using smart router
         print(f"\n3. Smart navigation to market {args.market}...")
-        success = navigator.execute_route(ship, args.market, prefer_cruise=True)
+        success = navigator.execute_route(ship, args.market)
 
         if not success:
             print("❌ Smart navigation failed, aborting")

@@ -242,7 +242,7 @@ class RouteOptimizer:
         current_fuel: int,
         prefer_cruise: bool = True,
     ) -> Optional[Dict]:
-        return self._router.find_optimal_route(start, goal, current_fuel, prefer_cruise=prefer_cruise)
+        return self._router.find_optimal_route(start, goal, current_fuel, prefer_cruise=True)
 
 
 class TourOptimizer:

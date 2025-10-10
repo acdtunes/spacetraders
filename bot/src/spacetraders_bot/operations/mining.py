@@ -239,7 +239,6 @@ def _navigate_with_retries(
     success = context.navigator.execute_route(
         context.ship,
         destination,
-        prefer_cruise=True,
         operation_controller=context.controller,
     )
 

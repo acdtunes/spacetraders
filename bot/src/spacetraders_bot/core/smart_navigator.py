@@ -94,12 +94,14 @@ class SmartNavigator:
             logger.warning("Routing paused: %s", details.get("reason", "Validation failure"))
             return None
 
+        prefer_cruise = True  # Cruise preference enforced globally
+
         optimizer = ORToolsRouter(self.graph, ship_data, self.routing_config)
         route = optimizer.find_optimal_route(
             current_location,
             destination,
             current_fuel,
-            prefer_cruise=prefer_cruise
+            prefer_cruise=True
         )
 
         return route
@@ -562,11 +564,13 @@ class SmartNavigator:
         Args:
             ship_controller: ShipController instance
             destination: Destination waypoint symbol
-            prefer_cruise: Prefer CRUISE mode when possible (True = fast, False = economical)
+            prefer_cruise: Deprecated. Cruise is always preferred.
 
         Returns:
             True if navigation successful and arrived at destination, False otherwise
         """
+        prefer_cruise = True  # Cruise preference enforced globally
+
         # Get current ship status
         ship_data = self._get_status_or_log(ship_controller, "Failed to get ship status")
         if not ship_data:
@@ -604,7 +608,7 @@ class SmartNavigator:
             current_state = ship_data['nav']['status']
 
         # Plan route from current location
-        route = self.plan_route(ship_data, destination, prefer_cruise)
+        route = self.plan_route(ship_data, destination, prefer_cruise=True)
         if not route:
             logger.error(f"No route found from {current_location} to {destination}")
             return False
@@ -696,7 +700,6 @@ class SmartNavigator:
         self._maybe_proactive_refuel(
             ship_controller,
             destination,
-            prefer_cruise,
             final_ship_data,
             final_state,
             final_fuel,
@@ -708,15 +711,11 @@ class SmartNavigator:
         self,
         ship_controller,
         destination: str,
-        prefer_cruise: bool,
         final_ship_data: Dict,
         final_state: str,
         final_fuel: int,
     ) -> None:
         """Top up fuel at destination when necessary to keep cruise capability."""
-        if not prefer_cruise:
-            return
-
         capacity = final_ship_data['fuel']['capacity']
         if final_fuel >= capacity * 0.75:
             return

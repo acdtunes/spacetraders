@@ -72,9 +72,10 @@ class RoutingValidator:
         Args:
             ship_symbol: Ship to validate
             destination: Destination waypoint
-            prefer_cruise: Optimise for speed (True) or fuel efficiency (False)
+            prefer_cruise: Deprecated. Cruise is always preferred.
             execute: If False, only compute predictions without navigation
         """
+        prefer_cruise = True  # Cruise preference enforced globally
         ship_data = self.api.get_ship(ship_symbol)
         if not ship_data:
             logger.error("Unable to fetch ship %s", ship_symbol)

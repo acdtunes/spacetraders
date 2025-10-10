@@ -175,7 +175,6 @@ def main():
     route_parser.add_argument('--system', required=True, help='System symbol')
     route_parser.add_argument('--start', required=True, help='Starting waypoint')
     route_parser.add_argument('--goal', required=True, help='Destination waypoint')
-    route_parser.add_argument('--drift-only', action='store_true', help='Force DRIFT mode only')
     route_parser.add_argument('--output', help='Save route to JSON file')
 
     # Smart navigation operation
@@ -215,7 +214,6 @@ def main():
     validate_parser.add_argument('--player-id', type=int, required=True, help='Player ID')
     validate_parser.add_argument('--ship', required=True, help='Ship symbol')
     validate_parser.add_argument('--destination', required=True, help='Destination waypoint symbol')
-    validate_parser.add_argument('--mode', default='CRUISE', choices=['CRUISE', 'DRIFT'], help='Preferred flight mode for planning')
     validate_parser.add_argument('--dry-run', action='store_true', help='Plan only without executing navigation')
 
     # Daemon management operations

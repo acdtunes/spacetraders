@@ -306,12 +306,12 @@ def utilities_operation(args):
 
                     try:
                         # Plan route: asteroid → market (prefer DRIFT)
-                        outbound_route = navigator.plan_route(mock_ship, best_market['waypoint'], prefer_cruise=False)
+                        outbound_route = navigator.plan_route(mock_ship, best_market['waypoint'])
 
                         # Plan return: market → asteroid (after refueling at market)
                         mock_ship['nav']['waypointSymbol'] = best_market['waypoint']
                         mock_ship['fuel']['current'] = fuel_capacity  # Assume refuel at market
-                        return_route = navigator.plan_route(mock_ship, asteroid['symbol'], prefer_cruise=False)
+                        return_route = navigator.plan_route(mock_ship, asteroid['symbol'])
 
                         if outbound_route and return_route:
                             # Use actual route times and fuel costs

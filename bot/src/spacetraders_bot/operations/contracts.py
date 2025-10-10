@@ -330,15 +330,20 @@ def contract_operation(
 
     def log_completion(stats_snapshot: dict, destination: str, trade_symbol: str) -> None:
         duration = humanize_duration(datetime.now(timezone.utc) - operation_start)
+        net_profit = stats_snapshot['payment'] - stats_snapshot['purchase_spent']
         results = {
             'Units Delivered': f"{stats_snapshot['units_delivered']}/{stats_snapshot['units_required']}",
             'Trips': stats_snapshot['trips'],
             'Purchased Units': stats_snapshot['purchased_units'],
             'Gross Payment': f"{stats_snapshot['payment']:,} cr",
             'Purchase Spend': f"{stats_snapshot['purchase_spent']:,} cr",
-            'Net Profit': f"{stats_snapshot['payment'] - stats_snapshot['purchase_spent']:,} cr",
+            'Net Profit': f"{net_profit:,} cr",
         }
         notes = f"Fulfilled contract {args.contract_id} delivering {trade_symbol} to {destination}."
+
+        # Generate narrative for captain's log
+        narrative = f"""Contract fulfillment complete. I coordinated {stats_snapshot['trips']} delivery trip{'s' if stats_snapshot['trips'] > 1 else ''} to transport {stats_snapshot['units_delivered']} units of {trade_symbol} to {destination}. All {stats_snapshot['purchased_units']} units were acquired through market purchases. The operation took {duration} and generated {net_profit:,} credits net profit after accounting for {stats_snapshot['purchase_spent']:,} credits in procurement costs."""
+
         log_captain_event(
             captain_logger,
             'OPERATION_COMPLETED',
@@ -346,6 +351,7 @@ def contract_operation(
             ship=args.ship,
             duration=duration,
             results=results,
+            narrative=narrative,
             notes=notes,
             tags=['contract', trade_symbol.lower(), destination.lower()]
         )
@@ -387,7 +393,7 @@ def contract_operation(
             return 0, True
 
         print(f"\n  💰 Purchasing {quantity} units of {trade_symbol} from {market}...")
-        if not navigator.execute_route(ship, market, prefer_cruise=True):
+        if not navigator.execute_route(ship, market):
             print(f"  ❌ Navigation to {market} failed")
             log_error(
                 "Navigation failure",
@@ -526,7 +532,7 @@ def contract_operation(
                     break
 
             print(f"  Trip {trip}: Delivering {to_deliver} units...")
-            navigator.execute_route(ship, delivery['destinationSymbol'], prefer_cruise=True)
+            navigator.execute_route(ship, delivery['destinationSymbol'])
 
             if not ship.dock():
                 print(f"  ❌ Failed to dock at {delivery['destinationSymbol']}")
@@ -601,7 +607,7 @@ def contract_operation(
             return 0, True
 
         print(f"\n  Trip {trip_number}: Buying {to_buy} more units from {args.buy_from}...")
-        if not navigator.execute_route(ship, args.buy_from, prefer_cruise=True):
+        if not navigator.execute_route(ship, args.buy_from):
             log_error(
                 "Navigation failure",
                 f"Unable to navigate to market {args.buy_from}",

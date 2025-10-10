@@ -100,7 +100,6 @@ def route_plan_operation(args):
         args.start,
         args.goal,
         ship_data['fuel']['current'],
-        prefer_cruise=not args.drift_only
     )
 
     if not route:
@@ -294,8 +293,9 @@ def scout_markets_operation(args):
             fleet={'active': 1, 'total': 1},
             top_performers=[{
                 'ship': args.ship,
-                'profit': goods_updated,
-                'operation': 'scouting'
+                'profit': 0,  # Scouting operations don't generate profit
+                'operation': 'scouting',
+                'goods_updated': goods_updated,  # Track goods updated as separate metric
             }],
             tags=['scouting', 'performance']
         )
