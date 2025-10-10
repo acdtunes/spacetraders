@@ -27,6 +27,7 @@ import { SelectionOverlayLazy, ShipTooltipOverlayLazy, WaypointTooltipOverlayLaz
 import Minimap from './Minimap';
 import type { Waypoint as WaypointType, TaggedShip, ShipNavStatus } from '../types/spacetraders';
 import type { RouteVectorsProps } from './RouteVectors';
+import LoaderScreen from './LoaderScreen';
 
 type RouteVectorsComponentType = (props: RouteVectorsProps) => JSX.Element | null;
 
@@ -103,6 +104,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
   const [animationFrame, setAnimationFrame] = useState(0);
   const [RouteVectorsComponent, setRouteVectorsComponent] = useState<RouteVectorsComponentType | null>(null);
   const [backgroundPosition, setBackgroundPosition] = useState({ x: 0, y: 0 });
+  const [isLoadingWaypoints, setIsLoadingWaypoints] = useState(false);
 
   const currentScale = viewportBounds.scale || 1;
   const frameTimestamp = useMemo(() => Date.now(), [animationFrame]);
@@ -509,15 +511,34 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
 
   // Load waypoints when system changes
   useEffect(() => {
-    if (!currentSystem) return;
+    let isCancelled = false;
+
+    if (!currentSystem) {
+      setIsLoadingWaypoints(false);
+      return;
+    }
+
+    setIsLoadingWaypoints(true);
 
     getWaypoints(currentSystem)
       .then((data) => {
-        setWaypoints(data);
+        if (!isCancelled) {
+          setWaypoints(data);
+        }
       })
       .catch((error) => {
-        console.error('Failed to load waypoints:', error);
+        if (!isCancelled) {
+          console.error('Failed to load waypoints:', error);
+        }
+      })
+      .finally(() => {
+        if (!isCancelled) {
+          setIsLoadingWaypoints(false);
+        }
       });
+    return () => {
+      isCancelled = true;
+    };
   }, [currentSystem, setWaypoints]);
 
   // Center view when waypoints load
@@ -644,11 +665,16 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
 
   // Filter ships using domain queries
   const filteredShips = useMemo(() => {
-    return ShipQueries.filter(ships, {
+    let result = ShipQueries.filter(ships, {
       systemSymbol: currentSystem ?? undefined,
       statuses: filterStatus,
-      hiddenAgentIds: filterAgents,
     }) as TaggedShip[];
+
+    if (filterAgents.size > 0) {
+      result = result.filter((ship) => !ship.agentId || filterAgents.has(ship.agentId));
+    }
+
+    return result;
   }, [ships, currentSystem, filterStatus, filterAgents]);
 
   // Filter waypoints using domain queries
@@ -1010,7 +1036,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
                   scale={currentScale}
                 />
 
-                {/* Market freshness ring */}
+                {/* Market freshness ring - shows only for markets in visible tours */}
                 {hasMarketplace && showMarketFreshness && visibleTourMarkets.has(waypoint.symbol) && (
                   <MarketFreshnessRing
                     x={x}
@@ -1018,6 +1044,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
                     radius={radius}
                     lastUpdated={marketFreshness.get(waypoint.symbol)?.last_updated || null}
                     currentScale={currentScale}
+                    animationFrame={animationFrame}
                   />
                 )}
 
@@ -1046,7 +1073,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
             );
           })}
 
-          {/* Scout tour routes */}
+          {/* Scout tour routes - animated dashed lines with colored markers */}
           {showScoutTours && (
             <ScoutTourLayer
               tours={scoutTours}
@@ -1138,6 +1165,19 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
 
       {waypointTooltip && waypointTooltipPosition && (
         <WaypointTooltipOverlayLazy tooltip={waypointTooltip} position={waypointTooltipPosition} />
+      )}
+
+      {isLoadingWaypoints && waypoints.size === 0 && (
+        <LoaderScreen
+          variant="overlay"
+          className="z-50"
+          title="Loading System Map"
+          message={
+            currentSystem
+              ? `Syncing ${currentSystem} waypoints and ship telemetry`
+              : 'Syncing system data'
+          }
+        />
       )}
 
       {!currentSystem && (

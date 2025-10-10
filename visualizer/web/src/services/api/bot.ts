@@ -54,8 +54,31 @@ export async function getMarketFreshness(systemSymbol: string): Promise<MarketFr
 /**
  * Get scout tours for system
  */
-export async function getScoutTours(systemSymbol: string): Promise<ScoutTour[]> {
-  const response = await fetchApi<{ tours: ScoutTour[] }>(`/bot/tours/${systemSymbol}`);
+export async function getScoutTours(systemSymbol: string, playerId?: number): Promise<ScoutTour[]> {
+  const url = playerId
+    ? `/bot/tours/${systemSymbol}?player_id=${playerId}`
+    : `/bot/tours/${systemSymbol}`;
+
+  console.log('[getScoutTours] Fetching tours', {
+    systemSymbol,
+    playerId,
+    url,
+    filteringEnabled: playerId !== undefined,
+  });
+
+  const response = await fetchApi<{ tours: ScoutTour[] }>(url);
+
+  console.log('[getScoutTours] Response received', {
+    toursCount: response.tours.length,
+    tours: response.tours.map(t => ({
+      ship: t.ship_symbol,
+      player_id: t.player_id,
+      daemon_id: t.daemon_id,
+      markets: t.markets.length
+    })),
+    requestedPlayerId: playerId,
+  });
+
   return response.tours;
 }
 
@@ -96,4 +119,12 @@ export async function getSystemGraph(systemSymbol: string): Promise<SystemGraph>
 export async function getOperationsSummary(): Promise<OperationSummary[]> {
   const response = await fetchApi<{ summary: OperationSummary[] }>('/bot/operations/summary');
   return response.summary;
+}
+
+/**
+ * Get agent to player_id mappings
+ */
+export async function getPlayerMappings(): Promise<Map<string, number>> {
+  const response = await fetchApi<{ players: Array<{ agent_symbol: string; player_id: number }> }>('/bot/players');
+  return new Map(response.players.map(p => [p.agent_symbol, p.player_id]));
 }

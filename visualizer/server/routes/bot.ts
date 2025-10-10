@@ -196,28 +196,32 @@ router.get('/markets/:systemSymbol/freshness', async (req, res) => {
   }
 });
 
-// Get scout tours for system (match assignments to cached tours by market set equality)
+// Get scout tours for system (extract subsets from optimized tour)
 router.get('/tours/:systemSymbol', async (req, res) => {
   try {
     const db = getDatabase();
     const systemSymbol = req.params.systemSymbol;
+    const playerId = req.query.player_id ? parseInt(req.query.player_id as string, 10) : null;
 
-    // Get active scout assignments
+    // Get active scout assignments (optionally filtered by player_id)
     const assignments = db.prepare(`
       SELECT
         ship_symbol,
         daemon_id,
         json_extract(metadata, '$.markets') as markets,
-        assigned_at
+        assigned_at,
+        player_id
       FROM ship_assignments
       WHERE daemon_id LIKE 'scout%'
         AND status = 'active'
         AND json_extract(metadata, '$.system') = ?
+        AND (? IS NULL OR player_id = ?)
       ORDER BY ship_symbol
-    `).all(systemSymbol);
+    `).all(systemSymbol, playerId, playerId);
 
-    // Get all tours for this system
-    const allTours = db.prepare(`
+    // Get the most recent optimized tour for this system (ortools preferred, then 2opt)
+    // This is the full optimized tour containing all markets
+    const fullTour = db.prepare(`
       SELECT
         system,
         markets,
@@ -228,39 +232,51 @@ router.get('/tours/:systemSymbol', async (req, res) => {
         calculated_at
       FROM tour_cache
       WHERE system = ?
-      ORDER BY calculated_at DESC
-    `).all(systemSymbol);
+        AND algorithm IN ('ortools', '2opt')
+      ORDER BY
+        CASE algorithm
+          WHEN 'ortools' THEN 1
+          WHEN '2opt' THEN 2
+          ELSE 3
+        END,
+        calculated_at DESC
+      LIMIT 1
+    `).get(systemSymbol);
 
     db.close();
 
-    // Match each assignment to the most recent tour with the same market set (ignoring order)
+    // Extract tour subsets for each scout from the full optimized tour
     const tours = assignments.map((a: any) => {
       const assignedMarkets = JSON.parse(a.markets);
       const assignedSet = new Set(assignedMarkets);
 
-      // Find the most recent tour with the exact same set of markets
-      const matchingTour = allTours.find((t: any) => {
-        const tourMarkets = JSON.parse(t.markets);
-        if (tourMarkets.length !== assignedMarkets.length) return false;
-        return tourMarkets.every((m: string) => assignedSet.has(m));
-      });
+      if (fullTour) {
+        // Extract subset from the optimized tour in optimized order
+        const tour = fullTour as any;
+        const fullTourOrder = JSON.parse(tour.tour_order);
 
-      if (matchingTour) {
-        // Return the cached tour with ship info
-        const tour = matchingTour as any;
+        // Filter the optimized tour to only include this scout's assigned markets
+        // This preserves the optimized visit order
+        const scoutTourOrder = fullTourOrder.filter((waypoint: string) =>
+          assignedSet.has(waypoint)
+        );
+
+        // Calculate distance for this subset
+        // (Note: This is approximate - the full tour distance doesn't apply to subsets)
         return {
           system: tour.system,
-          markets: JSON.parse(tour.markets),
-          algorithm: tour.algorithm,
-          start_waypoint: tour.start_waypoint,
-          tour_order: JSON.parse(tour.tour_order),
-          total_distance: tour.total_distance,
+          markets: assignedMarkets,
+          algorithm: tour.algorithm, // Return actual algorithm used (ortools or 2opt)
+          start_waypoint: scoutTourOrder[0] || assignedMarkets[0],
+          tour_order: scoutTourOrder,
+          total_distance: 0, // Would need to recalculate based on graph
           calculated_at: tour.calculated_at,
           ship_symbol: a.ship_symbol,
           daemon_id: a.daemon_id,
+          player_id: a.player_id,
         };
       } else {
-        // Fallback: build simple tour from assignment
+        // Fallback: no optimized tour found, use assignment order
         return {
           system: systemSymbol,
           markets: assignedMarkets,
@@ -271,6 +287,7 @@ router.get('/tours/:systemSymbol', async (req, res) => {
           calculated_at: a.assigned_at,
           ship_symbol: a.ship_symbol,
           daemon_id: a.daemon_id,
+          player_id: a.player_id,
         };
       }
     });
@@ -411,6 +428,28 @@ router.get('/operations/summary', async (req, res) => {
   } catch (error) {
     console.error('Failed to fetch operations summary:', error);
     res.status(500).json({ error: 'Failed to fetch operations summary' });
+  }
+});
+
+// Get agent to player_id mappings
+router.get('/players', async (req, res) => {
+  try {
+    const db = getDatabase();
+
+    const players = db.prepare(`
+      SELECT
+        player_id,
+        agent_symbol
+      FROM players
+      ORDER BY player_id
+    `).all();
+
+    db.close();
+
+    res.json({ players });
+  } catch (error) {
+    console.error('Failed to fetch players:', error);
+    res.status(500).json({ error: 'Failed to fetch players' });
   }
 });
 

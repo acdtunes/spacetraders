@@ -252,6 +252,9 @@ export interface ScoutTour {
   tour_order: string[];
   total_distance: number;
   calculated_at: string;
+  ship_symbol: string;
+  daemon_id: string;
+  player_id: number;
 }
 
 export interface TradeOpportunityData {
@@ -292,4 +295,9 @@ export interface OperationSummary {
   operation: OperationType | null;
   count: number;
   status: AssignmentStatus;
+}
+
+export interface PlayerMapping {
+  player_id: number;
+  agent_symbol: string;
 }

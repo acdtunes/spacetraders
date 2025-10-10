@@ -4,6 +4,7 @@ import {
   getMarketFreshness,
   getScoutTours,
   getTradeOpportunities,
+  getPlayerMappings,
 } from './api';
 
 /**
@@ -15,6 +16,16 @@ export class BotPollingService {
   private isRunning = false;
   private pollInterval: number;
 
+  // Store current polling parameters to avoid stale closures
+  private currentSystem: string | null = null;
+  private selectedPlayerId: number | null = null;
+  private setAssignments: AppState['setAssignments'] | null = null;
+  private setMarketFreshness: AppState['setMarketFreshness'] | null = null;
+  private setScoutTours: AppState['setScoutTours'] | null = null;
+  private setTradeOpportunities: AppState['setTradeOpportunities'] | null = null;
+  private setAvailablePlayers: AppState['setAvailablePlayers'] | null = null;
+  private setPlayerMappings: AppState['setPlayerMappings'] | null = null;
+
   constructor(pollInterval: number = 10000) {
     // 10 second default interval
     this.pollInterval = pollInterval;
@@ -25,25 +36,38 @@ export class BotPollingService {
    */
   start(
     currentSystem: string | null,
+    selectedPlayerId: number | null,
     setAssignments: AppState['setAssignments'],
     setMarketFreshness: AppState['setMarketFreshness'],
     setScoutTours: AppState['setScoutTours'],
-    setTradeOpportunities: AppState['setTradeOpportunities']
+    setTradeOpportunities: AppState['setTradeOpportunities'],
+    setAvailablePlayers: AppState['setAvailablePlayers'],
+    setPlayerMappings: AppState['setPlayerMappings']
   ): void {
     if (this.isRunning) {
-      console.warn('Bot polling is already running');
-      return;
+      console.warn('[BotPollingService] Bot polling is already running, stopping old instance');
+      this.stop();
     }
 
+    // Store parameters as instance variables to avoid stale closures
+    this.currentSystem = currentSystem;
+    this.selectedPlayerId = selectedPlayerId;
+    this.setAssignments = setAssignments;
+    this.setMarketFreshness = setMarketFreshness;
+    this.setScoutTours = setScoutTours;
+    this.setTradeOpportunities = setTradeOpportunities;
+    this.setAvailablePlayers = setAvailablePlayers;
+    this.setPlayerMappings = setPlayerMappings;
+
     this.isRunning = true;
-    console.log('Starting bot operations polling...');
+    console.log('[BotPollingService] Starting bot operations polling with selectedPlayerId:', selectedPlayerId);
 
     // Initial fetch
-    this.poll(currentSystem, setAssignments, setMarketFreshness, setScoutTours, setTradeOpportunities);
+    this.pollCycle();
 
-    // Set up interval
+    // Set up interval - now uses instance variables instead of closure
     this.intervalId = window.setInterval(() => {
-      this.poll(currentSystem, setAssignments, setMarketFreshness, setScoutTours, setTradeOpportunities);
+      this.pollCycle();
     }, this.pollInterval);
   }
 
@@ -66,41 +90,66 @@ export class BotPollingService {
   }
 
   /**
-   * Single poll cycle
+   * Single poll cycle - uses instance variables to avoid stale closures
    */
-  private async poll(
-    currentSystem: string | null,
-    setAssignments: AppState['setAssignments'],
-    setMarketFreshness: AppState['setMarketFreshness'],
-    setScoutTours: AppState['setScoutTours'],
-    setTradeOpportunities: AppState['setTradeOpportunities']
-  ): Promise<void> {
+  private async pollCycle(): Promise<void> {
+    console.log('[BotPollingService.pollCycle] Starting poll cycle', {
+      currentSystem: this.currentSystem,
+      selectedPlayerId: this.selectedPlayerId,
+    });
+
+    // Defensive checks
+    if (!this.setAssignments || !this.setMarketFreshness || !this.setScoutTours ||
+        !this.setTradeOpportunities || !this.setAvailablePlayers || !this.setPlayerMappings) {
+      console.error('[BotPollingService.pollCycle] Store setters not initialized');
+      return;
+    }
+
     try {
-      // Fetch assignments (not system-specific)
-      const assignments = await getAssignments();
-      setAssignments(assignments);
+      // Fetch player mappings and assignments in parallel
+      const [playerMappings, assignments] = await Promise.all([
+        getPlayerMappings().catch((err) => {
+          console.warn('Failed to fetch player mappings:', err);
+          return new Map<string, number>();
+        }),
+        getAssignments().catch((err) => {
+          console.warn('Failed to fetch assignments:', err);
+          return [];
+        }),
+      ]);
+
+      this.setPlayerMappings(playerMappings);
+      this.setAssignments(assignments);
+
+      // Extract unique player IDs from assignments
+      const playerIds = Array.from(new Set(assignments.map((a) => a.player_id))).sort((a, b) => a - b);
+      this.setAvailablePlayers(playerIds);
 
       // If we have a current system, fetch system-specific data
-      if (currentSystem) {
+      if (this.currentSystem) {
+        console.log('[BotPollingService.pollCycle] Fetching scout tours for system:', this.currentSystem, 'with player_id:', this.selectedPlayerId);
+
         // Fetch in parallel
         const [freshness, tours, opportunities] = await Promise.all([
-          getMarketFreshness(currentSystem).catch((err) => {
+          getMarketFreshness(this.currentSystem).catch((err) => {
             console.warn('Failed to fetch market freshness:', err);
             return [];
           }),
-          getScoutTours(currentSystem).catch((err) => {
+          getScoutTours(this.currentSystem, this.selectedPlayerId ?? undefined).catch((err) => {
             console.warn('Failed to fetch scout tours:', err);
             return [];
           }),
-          getTradeOpportunities(currentSystem, 200).catch((err) => {
+          getTradeOpportunities(this.currentSystem, 200).catch((err) => {
             console.warn('Failed to fetch trade opportunities:', err);
             return [];
           }),
         ]);
 
-        setMarketFreshness(freshness);
-        setScoutTours(tours);
-        setTradeOpportunities(opportunities);
+        console.log('[BotPollingService.pollCycle] Scout tours fetched:', tours.length, 'tours');
+
+        this.setMarketFreshness(freshness);
+        this.setScoutTours(tours);
+        this.setTradeOpportunities(opportunities);
       }
     } catch (error) {
       console.error('Error during bot polling:', error);

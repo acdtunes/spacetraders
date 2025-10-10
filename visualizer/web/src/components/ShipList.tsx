@@ -59,6 +59,7 @@ const ShipList = () => {
     setSelectedWaypoint,
     filterStatus,
     filterAgents,
+    toggleAgentFilter,
     currentSystem,
     requestShipFocus,
   showDestinationRoutes,
@@ -143,6 +144,44 @@ const ShipList = () => {
           )}
         </div>
       </div>
+
+      {/* Agent Filter */}
+      {agents.length > 1 && (
+        <div className="pb-2 border-b border-gray-800">
+          <span className="block text-[11px] font-semibold uppercase tracking-wider text-gray-500 mb-2">
+            Agent Filter
+          </span>
+          <div className="space-y-1">
+            {agents.map((agent) => {
+              const isActive = filterAgents.size === 0 || filterAgents.has(agent.id);
+              const agentShipCount = ships.filter(
+                (ship) => ship.agentId === agent.id && (!currentSystem || ship.nav.systemSymbol === currentSystem)
+              ).length;
+
+              return (
+                <button
+                  key={agent.id}
+                  onClick={() => toggleAgentFilter(agent.id)}
+                  className={`w-full text-left px-2 py-1.5 rounded border transition-colors text-xs ${
+                    isActive
+                      ? 'bg-gray-700 border-gray-600 text-white'
+                      : 'bg-gray-800 border-gray-700 text-gray-500'
+                  }`}
+                >
+                  <div className="flex items-center gap-2">
+                    <div
+                      className="w-2.5 h-2.5 rounded-full flex-shrink-0"
+                      style={{ backgroundColor: agent.color }}
+                    />
+                    <span className="flex-1 truncate font-medium">{agent.symbol}</span>
+                    <span className="text-gray-500">({agentShipCount})</span>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       <div className="pb-2 border-b border-gray-800">
         <span className="block text-[11px] font-semibold uppercase tracking-wider text-gray-500 mb-2">

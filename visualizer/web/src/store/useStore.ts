@@ -154,6 +154,16 @@ export interface AppState {
   } | null;
   requestShipFocus: (symbol: string, zoom?: number) => void;
   clearShipFocusRequest: () => void;
+
+  // Player filtering
+  selectedPlayerId: number | null;
+  setSelectedPlayerId: (playerId: number | null) => void;
+  availablePlayers: number[];
+  setAvailablePlayers: (playerIds: number[]) => void;
+
+  // Agent to player_id mapping
+  playerMappings: Map<string, number>;
+  setPlayerMappings: (mappings: Map<string, number>) => void;
 }
 
 const storeInitializer: StateCreator<AppState, [], []> = (set) => ({
@@ -375,6 +385,16 @@ const storeInitializer: StateCreator<AppState, [], []> = (set) => ({
       },
     }),
   clearShipFocusRequest: () => set({ shipFocusRequest: null }),
+
+  // Player filtering
+  selectedPlayerId: null,
+  setSelectedPlayerId: (playerId) => set({ selectedPlayerId: playerId }),
+  availablePlayers: [],
+  setAvailablePlayers: (playerIds) => set({ availablePlayers: playerIds }),
+
+  // Agent to player_id mapping
+  playerMappings: new Map(),
+  setPlayerMappings: (mappings) => set({ playerMappings: mappings }),
 });
 
 export const createAppStore = () => createStore<AppState>(storeInitializer);
