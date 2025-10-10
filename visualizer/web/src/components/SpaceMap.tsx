@@ -852,7 +852,16 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
   });
 
   return (
-    <div ref={containerRef} className="relative w-full h-full cursor-grab active:cursor-grabbing">
+    <div
+      ref={containerRef}
+      className="relative w-full h-full cursor-grab active:cursor-grabbing"
+      style={{
+        backgroundImage: 'url(/assets/space.png)',
+        backgroundSize: 'cover',
+        backgroundPosition: 'center',
+        backgroundRepeat: 'no-repeat',
+      }}
+    >
       {stageSize.width > 0 && stageSize.height > 0 && (
         <Stage
           ref={stageRef}

@@ -562,7 +562,36 @@ class RouteOptimizer:
         drift_fuel = FuelCalculator.fuel_cost(distance, 'DRIFT')
         drift_time = TimeCalculator.travel_time(distance, self.engine_speed, 'DRIFT')
 
-        if fuel >= cruise_fuel * (1 + FUEL_SAFETY_MARGIN):
+        # CRUISE enqueue logic:
+        # Use safety margin when possible, but cap at ship capacity
+        # Ship needs AT LEAST cruise_fuel to make the journey
+        # Prefer cruise_fuel + margin, but accept cruise_fuel if that's all ship can hold
+        cruise_with_margin = cruise_fuel * (1 + FUEL_SAFETY_MARGIN)
+
+        # If the journey needs more fuel than ship capacity (e.g., 600 fuel needed, 400 capacity),
+        # then this leg is IMPOSSIBLE via CRUISE - don't enqueue it
+        if cruise_fuel > self.fuel_capacity:
+            # Leg is too long for this ship's capacity - skip CRUISE
+            pass
+        elif fuel >= cruise_with_margin:
+            # Ideal case: have fuel + margin
+            counter = self._enqueue_cruise_leg(
+                queue,
+                counter,
+                current_time,
+                current_wp,
+                neighbor,
+                distance,
+                cruise_fuel,
+                cruise_time,
+                fuel,
+                path,
+                goal,
+            )
+        elif fuel >= cruise_fuel and cruise_with_margin > self.fuel_capacity:
+            # Special case: leg needs more fuel than we'd like (with margin),
+            # but ship capacity limits us. Accept journey if we have exact fuel needed.
+            # This handles legs like 382u (needs 382 fuel, margin would be 420 but cap is 400)
             counter = self._enqueue_cruise_leg(
                 queue,
                 counter,
@@ -752,8 +781,10 @@ class RouteOptimizer:
         max_fuel = self.fuel_capacity if current_data.get('has_fuel', False) else fuel
 
         # If we can reach the neighbor via CRUISE after refueling to full, prefer that.
+        # CRITICAL: Don't apply safety margin when checking if full tank can reach destination
+        # We're AT a fuel station - we can refuel to exactly what we need
         cruise_cost_to_neighbor = FuelCalculator.fuel_cost(distance, 'CRUISE')
-        if current_data.get('has_fuel', False) and cruise_cost_to_neighbor * (1 + FUEL_SAFETY_MARGIN) <= max_fuel:
+        if current_data.get('has_fuel', False) and cruise_cost_to_neighbor <= max_fuel:
             return False
 
         # If refueling at current waypoint would allow reaching another fuel stop, avoid DRIFT.
