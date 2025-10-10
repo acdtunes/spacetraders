@@ -101,6 +101,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
   const [viewportBounds, setViewportBounds] = useState({ x: 0, y: 0, width: 0, height: 0, scale: 1 });
   const [animationFrame, setAnimationFrame] = useState(0);
   const [RouteVectorsComponent, setRouteVectorsComponent] = useState<RouteVectorsComponentType | null>(null);
+  const [backgroundPosition, setBackgroundPosition] = useState({ x: 0, y: 0 });
 
   const currentScale = viewportBounds.scale || 1;
   const frameTimestamp = useMemo(() => Date.now(), [animationFrame]);
@@ -209,6 +210,14 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
       width: stage.width(),
       height: stage.height(),
       scale: layer.scaleX(),
+    });
+
+    // Update background position to pan with the map
+    // Divide by a factor to slow down the parallax effect
+    const parallaxFactor = 0.5;
+    setBackgroundPosition({
+      x: layer.x() * parallaxFactor,
+      y: layer.y() * parallaxFactor,
     });
   };
 
@@ -857,9 +866,9 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
       className="relative w-full h-full cursor-grab active:cursor-grabbing"
       style={{
         backgroundImage: 'url(/assets/space.png)',
-        backgroundSize: '150%',
-        backgroundPosition: 'center',
-        backgroundRepeat: 'no-repeat',
+        backgroundSize: '1024px 1024px',
+        backgroundPosition: `${backgroundPosition.x}px ${backgroundPosition.y}px`,
+        backgroundRepeat: 'repeat',
       }}
     >
       {stageSize.width > 0 && stageSize.height > 0 && (
