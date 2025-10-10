@@ -857,7 +857,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
       className="relative w-full h-full cursor-grab active:cursor-grabbing"
       style={{
         backgroundImage: 'url(/assets/space.png)',
-        backgroundSize: 'cover',
+        backgroundSize: '150%',
         backgroundPosition: 'center',
         backgroundRepeat: 'no-repeat',
       }}
