@@ -43,10 +43,10 @@ const apiToolDefinitions: Tool[] = [
     inputSchema: {
       type: "object",
       properties: {
-        agentToken: {
-          type: "string",
+        player_id: {
+          type: "number",
           description:
-            "Agent authentication token (optional, uses account token if not provided)",
+            "Player ID from database (optional, uses env token if not provided)",
         },
       },
     },
@@ -57,10 +57,10 @@ const apiToolDefinitions: Tool[] = [
     inputSchema: {
       type: "object",
       properties: {
-        agentToken: {
-          type: "string",
+        player_id: {
+          type: "number",
           description:
-            "Agent authentication token (optional, uses account token if not provided)",
+            "Player ID from database (optional, uses env token if not provided)",
         },
         page: {
           type: "number",
@@ -79,10 +79,10 @@ const apiToolDefinitions: Tool[] = [
     inputSchema: {
       type: "object",
       properties: {
-        agentToken: {
-          type: "string",
+        player_id: {
+          type: "number",
           description:
-            "Agent authentication token (optional, uses account token if not provided)",
+            "Player ID from database (optional, uses env token if not provided)",
         },
         systemSymbol: {
           type: "string",
@@ -98,10 +98,10 @@ const apiToolDefinitions: Tool[] = [
     inputSchema: {
       type: "object",
       properties: {
-        agentToken: {
-          type: "string",
+        player_id: {
+          type: "number",
           description:
-            "Agent authentication token (optional, uses account token if not provided)",
+            "Player ID from database (optional, uses env token if not provided)",
         },
         systemSymbol: {
           type: "string",
@@ -125,10 +125,10 @@ const apiToolDefinitions: Tool[] = [
     inputSchema: {
       type: "object",
       properties: {
-        agentToken: {
-          type: "string",
+        player_id: {
+          type: "number",
           description:
-            "Agent authentication token (optional, uses account token if not provided)",
+            "Player ID from database (optional, uses env token if not provided)",
         },
         systemSymbol: {
           type: "string",
@@ -148,10 +148,10 @@ const apiToolDefinitions: Tool[] = [
     inputSchema: {
       type: "object",
       properties: {
-        agentToken: {
-          type: "string",
+        player_id: {
+          type: "number",
           description:
-            "Agent authentication token (optional, uses account token if not provided)",
+            "Player ID from database (optional, uses env token if not provided)",
         },
         systemSymbol: {
           type: "string",
@@ -171,10 +171,10 @@ const apiToolDefinitions: Tool[] = [
     inputSchema: {
       type: "object",
       properties: {
-        agentToken: {
-          type: "string",
+        player_id: {
+          type: "number",
           description:
-            "Agent authentication token (optional, uses account token if not provided)",
+            "Player ID from database (optional, uses env token if not provided)",
         },
         systemSymbol: {
           type: "string",
@@ -194,10 +194,10 @@ const apiToolDefinitions: Tool[] = [
     inputSchema: {
       type: "object",
       properties: {
-        agentToken: {
-          type: "string",
+        player_id: {
+          type: "number",
           description:
-            "Agent authentication token (optional, uses account token if not provided)",
+            "Player ID from database (optional, uses env token if not provided)",
         },
         page: {
           type: "number",
@@ -216,10 +216,10 @@ const apiToolDefinitions: Tool[] = [
     inputSchema: {
       type: "object",
       properties: {
-        agentToken: {
-          type: "string",
+        player_id: {
+          type: "number",
           description:
-            "Agent authentication token (optional, uses account token if not provided)",
+            "Player ID from database (optional, uses env token if not provided)",
         },
         factionSymbol: {
           type: "string",
@@ -235,10 +235,10 @@ const apiToolDefinitions: Tool[] = [
     inputSchema: {
       type: "object",
       properties: {
-        agentToken: {
-          type: "string",
+        player_id: {
+          type: "number",
           description:
-            "Agent authentication token (optional, uses account token if not provided)",
+            "Player ID from database (optional, uses env token if not provided)",
         },
         page: {
           type: "number",
@@ -257,10 +257,10 @@ const apiToolDefinitions: Tool[] = [
     inputSchema: {
       type: "object",
       properties: {
-        agentToken: {
-          type: "string",
+        player_id: {
+          type: "number",
           description:
-            "Agent authentication token (optional, uses account token if not provided)",
+            "Player ID from database (optional, uses env token if not provided)",
         },
         contractId: {
           type: "string",
@@ -276,10 +276,10 @@ const apiToolDefinitions: Tool[] = [
     inputSchema: {
       type: "object",
       properties: {
-        agentToken: {
-          type: "string",
+        player_id: {
+          type: "number",
           description:
-            "Agent authentication token (optional, uses account token if not provided)",
+            "Player ID from database (optional, uses env token if not provided)",
         },
         contractId: {
           type: "string",
@@ -295,10 +295,10 @@ const apiToolDefinitions: Tool[] = [
     inputSchema: {
       type: "object",
       properties: {
-        agentToken: {
-          type: "string",
+        player_id: {
+          type: "number",
           description:
-            "Agent authentication token (optional, uses account token if not provided)",
+            "Player ID from database (optional, uses env token if not provided)",
         },
         page: {
           type: "number",
@@ -317,10 +317,10 @@ const apiToolDefinitions: Tool[] = [
     inputSchema: {
       type: "object",
       properties: {
-        agentToken: {
-          type: "string",
+        player_id: {
+          type: "number",
           description:
-            "Agent authentication token (optional, uses account token if not provided)",
+            "Player ID from database (optional, uses env token if not provided)",
         },
         shipSymbol: {
           type: "string",
@@ -336,10 +336,10 @@ const apiToolDefinitions: Tool[] = [
     inputSchema: {
       type: "object",
       properties: {
-        agentToken: {
-          type: "string",
+        player_id: {
+          type: "number",
           description:
-            "Agent authentication token (optional, uses account token if not provided)",
+            "Player ID from database (optional, uses env token if not provided)",
         },
         shipSymbol: {
           type: "string",
@@ -359,10 +359,10 @@ const apiToolDefinitions: Tool[] = [
     inputSchema: {
       type: "object",
       properties: {
-        agentToken: {
-          type: "string",
+        player_id: {
+          type: "number",
           description:
-            "Agent authentication token (optional, uses account token if not provided)",
+            "Player ID from database (optional, uses env token if not provided)",
         },
         shipSymbol: {
           type: "string",
@@ -378,10 +378,10 @@ const apiToolDefinitions: Tool[] = [
     inputSchema: {
       type: "object",
       properties: {
-        agentToken: {
-          type: "string",
+        player_id: {
+          type: "number",
           description:
-            "Agent authentication token (optional, uses account token if not provided)",
+            "Player ID from database (optional, uses env token if not provided)",
         },
         shipSymbol: {
           type: "string",
@@ -397,10 +397,10 @@ const apiToolDefinitions: Tool[] = [
     inputSchema: {
       type: "object",
       properties: {
-        agentToken: {
-          type: "string",
+        player_id: {
+          type: "number",
           description:
-            "Agent authentication token (optional, uses account token if not provided)",
+            "Player ID from database (optional, uses env token if not provided)",
         },
         shipSymbol: {
           type: "string",
@@ -420,10 +420,10 @@ const apiToolDefinitions: Tool[] = [
     inputSchema: {
       type: "object",
       properties: {
-        agentToken: {
-          type: "string",
+        player_id: {
+          type: "number",
           description:
-            "Agent authentication token (optional, uses account token if not provided)",
+            "Player ID from database (optional, uses env token if not provided)",
         },
         shipSymbol: {
           type: "string",
@@ -439,10 +439,10 @@ const apiToolDefinitions: Tool[] = [
     inputSchema: {
       type: "object",
       properties: {
-        agentToken: {
-          type: "string",
+        player_id: {
+          type: "number",
           description:
-            "Agent authentication token (optional, uses account token if not provided)",
+            "Player ID from database (optional, uses env token if not provided)",
         },
         shipSymbol: {
           type: "string",
@@ -466,10 +466,10 @@ const apiToolDefinitions: Tool[] = [
     inputSchema: {
       type: "object",
       properties: {
-        agentToken: {
-          type: "string",
+        player_id: {
+          type: "number",
           description:
-            "Agent authentication token (optional, uses account token if not provided)",
+            "Player ID from database (optional, uses env token if not provided)",
         },
         shipSymbol: {
           type: "string",
@@ -493,10 +493,10 @@ const apiToolDefinitions: Tool[] = [
     inputSchema: {
       type: "object",
       properties: {
-        agentToken: {
-          type: "string",
+        player_id: {
+          type: "number",
           description:
-            "Agent authentication token (optional, uses account token if not provided)",
+            "Player ID from database (optional, uses env token if not provided)",
         },
         shipSymbol: {
           type: "string",
@@ -512,10 +512,10 @@ const apiToolDefinitions: Tool[] = [
     inputSchema: {
       type: "object",
       properties: {
-        agentToken: {
-          type: "string",
+        player_id: {
+          type: "number",
           description:
-            "Agent authentication token (optional, uses account token if not provided)",
+            "Player ID from database (optional, uses env token if not provided)",
         },
         shipSymbol: {
           type: "string",
@@ -531,10 +531,10 @@ const apiToolDefinitions: Tool[] = [
     inputSchema: {
       type: "object",
       properties: {
-        agentToken: {
-          type: "string",
+        player_id: {
+          type: "number",
           description:
-            "Agent authentication token (optional, uses account token if not provided)",
+            "Player ID from database (optional, uses env token if not provided)",
         },
         shipSymbol: {
           type: "string",
@@ -637,7 +637,7 @@ class SpaceTradersApiServer {
   }
 
   private async getAgent(args: any = {}): Promise<CallToolResult> {
-    const data = await this.client.get("/my/agent", args.agentToken);
+    const data = await this.client.get("/my/agent", args.player_id as number | undefined);
     return {
       content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
     };
@@ -648,14 +648,14 @@ class SpaceTradersApiServer {
     if (args.page) params.append("page", String(args.page));
     if (args.limit) params.append("limit", String(args.limit));
     const query = params.toString() ? `?${params.toString()}` : "";
-    const data = await this.client.get(`/systems${query}`, args.agentToken);
+    const data = await this.client.get(`/systems${query}`, args.player_id as number | undefined);
     return {
       content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
     };
   }
 
   private async getSystem(args: any): Promise<CallToolResult> {
-    const data = await this.client.get(`/systems/${args.systemSymbol}`, args.agentToken);
+    const data = await this.client.get(`/systems/${args.systemSymbol}`, args.player_id as number | undefined);
     return {
       content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
     };
@@ -668,7 +668,7 @@ class SpaceTradersApiServer {
     const query = params.toString() ? `?${params.toString()}` : "";
     const data = await this.client.get(
       `/systems/${args.systemSymbol}/waypoints${query}`,
-      args.agentToken
+      args.player_id as number | undefined
     );
     return {
       content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
@@ -678,7 +678,7 @@ class SpaceTradersApiServer {
   private async getWaypoint(args: any): Promise<CallToolResult> {
     const data = await this.client.get(
       `/systems/${args.systemSymbol}/waypoints/${args.waypointSymbol}`,
-      args.agentToken
+      args.player_id as number | undefined
     );
     return {
       content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
@@ -688,7 +688,7 @@ class SpaceTradersApiServer {
   private async getMarket(args: any): Promise<CallToolResult> {
     const data = await this.client.get(
       `/systems/${args.systemSymbol}/waypoints/${args.waypointSymbol}/market`,
-      args.agentToken
+      args.player_id as number | undefined
     );
     return {
       content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
@@ -698,7 +698,7 @@ class SpaceTradersApiServer {
   private async getShipyard(args: any): Promise<CallToolResult> {
     const data = await this.client.get(
       `/systems/${args.systemSymbol}/waypoints/${args.waypointSymbol}/shipyard`,
-      args.agentToken
+      args.player_id as number | undefined
     );
     return {
       content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
@@ -710,14 +710,14 @@ class SpaceTradersApiServer {
     if (args.page) params.append("page", String(args.page));
     if (args.limit) params.append("limit", String(args.limit));
     const query = params.toString() ? `?${params.toString()}` : "";
-    const data = await this.client.get(`/factions${query}`, args.agentToken);
+    const data = await this.client.get(`/factions${query}`, args.player_id as number | undefined);
     return {
       content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
     };
   }
 
   private async getFaction(args: any): Promise<CallToolResult> {
-    const data = await this.client.get(`/factions/${args.factionSymbol}`, args.agentToken);
+    const data = await this.client.get(`/factions/${args.factionSymbol}`, args.player_id as number | undefined);
     return {
       content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
     };
@@ -728,14 +728,14 @@ class SpaceTradersApiServer {
     if (args.page) params.append("page", String(args.page));
     if (args.limit) params.append("limit", String(args.limit));
     const query = params.toString() ? `?${params.toString()}` : "";
-    const data = await this.client.get(`/my/contracts${query}`, args.agentToken);
+    const data = await this.client.get(`/my/contracts${query}`, args.player_id as number | undefined);
     return {
       content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
     };
   }
 
   private async getContract(args: any): Promise<CallToolResult> {
-    const data = await this.client.get(`/my/contracts/${args.contractId}`, args.agentToken);
+    const data = await this.client.get(`/my/contracts/${args.contractId}`, args.player_id as number | undefined);
     return {
       content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
     };
@@ -745,7 +745,7 @@ class SpaceTradersApiServer {
     const data = await this.client.post(
       `/my/contracts/${args.contractId}/accept`,
       {},
-      args.agentToken
+      args.player_id as number | undefined
     );
     return {
       content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
@@ -757,14 +757,14 @@ class SpaceTradersApiServer {
     if (args.page) params.append("page", String(args.page));
     if (args.limit) params.append("limit", String(args.limit));
     const query = params.toString() ? `?${params.toString()}` : "";
-    const data = await this.client.get(`/my/ships${query}`, args.agentToken);
+    const data = await this.client.get(`/my/ships${query}`, args.player_id as number | undefined);
     return {
       content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
     };
   }
 
   private async getShip(args: any): Promise<CallToolResult> {
-    const data = await this.client.get(`/my/ships/${args.shipSymbol}`, args.agentToken);
+    const data = await this.client.get(`/my/ships/${args.shipSymbol}`, args.player_id as number | undefined);
     return {
       content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
     };
@@ -776,7 +776,7 @@ class SpaceTradersApiServer {
       {
         waypointSymbol: args.waypointSymbol,
       },
-      args.agentToken
+      args.player_id as number | undefined
     );
     return {
       content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
@@ -787,7 +787,7 @@ class SpaceTradersApiServer {
     const data = await this.client.post(
       `/my/ships/${args.shipSymbol}/dock`,
       {},
-      args.agentToken
+      args.player_id as number | undefined
     );
     return {
       content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
@@ -798,7 +798,7 @@ class SpaceTradersApiServer {
     const data = await this.client.post(
       `/my/ships/${args.shipSymbol}/orbit`,
       {},
-      args.agentToken
+      args.player_id as number | undefined
     );
     return {
       content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
@@ -811,7 +811,7 @@ class SpaceTradersApiServer {
     const data = await this.client.post(
       `/my/ships/${args.shipSymbol}/refuel`,
       body,
-      args.agentToken
+      args.player_id as number | undefined
     );
     return {
       content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
@@ -822,7 +822,7 @@ class SpaceTradersApiServer {
     const data = await this.client.post(
       `/my/ships/${args.shipSymbol}/extract`,
       {},
-      args.agentToken
+      args.player_id as number | undefined
     );
     return {
       content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
@@ -836,7 +836,7 @@ class SpaceTradersApiServer {
         symbol: args.symbol,
         units: args.units,
       },
-      args.agentToken
+      args.player_id as number | undefined
     );
     return {
       content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
@@ -850,7 +850,7 @@ class SpaceTradersApiServer {
         symbol: args.symbol,
         units: args.units,
       },
-      args.agentToken
+      args.player_id as number | undefined
     );
     return {
       content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
@@ -861,7 +861,7 @@ class SpaceTradersApiServer {
     const data = await this.client.post(
       `/my/ships/${args.shipSymbol}/scan/systems`,
       {},
-      args.agentToken
+      args.player_id as number | undefined
     );
     return {
       content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
@@ -872,7 +872,7 @@ class SpaceTradersApiServer {
     const data = await this.client.post(
       `/my/ships/${args.shipSymbol}/scan/waypoints`,
       {},
-      args.agentToken
+      args.player_id as number | undefined
     );
     return {
       content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
@@ -883,7 +883,7 @@ class SpaceTradersApiServer {
     const data = await this.client.post(
       `/my/ships/${args.shipSymbol}/scan/ships`,
       {},
-      args.agentToken
+      args.player_id as number | undefined
     );
     return {
       content: [{ type: "text", text: JSON.stringify(data, null, 2) }],

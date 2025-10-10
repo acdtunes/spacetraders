@@ -41,6 +41,7 @@ from ..operations import (
     status_operation,
     monitor_operation,
     utilities_operation,
+    waypoint_query_operation,
     graph_build_operation,
     route_plan_operation,
     daemon_start_operation,
@@ -63,6 +64,7 @@ from ..operations import (
     coordinator_stop_operation,
     coordinator_status_operation,
     captain_log_operation,
+    validate_routing_operation,
 )
 
 
@@ -201,12 +203,20 @@ def main():
     scout_markets_parser.add_argument('--system', required=True, help='System to scout')
     scout_markets_parser.add_argument('--markets', type=int, default=20, help='Number of markets (ignored if --markets-list provided)')
     scout_markets_parser.add_argument('--markets-list', type=str, help='Comma-separated list of specific markets to visit (e.g., X1-JB26-A1,X1-JB26-B7)')
-    scout_markets_parser.add_argument('--algorithm', default='2opt',
-                                      choices=['greedy', '2opt'],
-                                      help='Optimization algorithm: greedy (fast) or 2opt (better, slower) (default: 2opt)')
+    scout_markets_parser.add_argument('--algorithm', default='ortools',
+                                      choices=['ortools', 'greedy', '2opt'],
+                                      help='Optimization algorithm (default: ortools, fallback: greedy/2opt)')
     scout_markets_parser.add_argument('--return-to-start', action='store_true', help='Return to starting waypoint')
     scout_markets_parser.add_argument('--continuous', action='store_true', help='Continuously loop the tour (restart after completion)')
     scout_markets_parser.add_argument('--output', help='Save tour plan to JSON file')
+
+    # Routing validation operation
+    validate_parser = subparsers.add_parser('validate-routing', help='Validate routing predictions against live navigation')
+    validate_parser.add_argument('--player-id', type=int, required=True, help='Player ID')
+    validate_parser.add_argument('--ship', required=True, help='Ship symbol')
+    validate_parser.add_argument('--destination', required=True, help='Destination waypoint symbol')
+    validate_parser.add_argument('--mode', default='CRUISE', choices=['CRUISE', 'DRIFT'], help='Preferred flight mode for planning')
+    validate_parser.add_argument('--dry-run', action='store_true', help='Plan only without executing navigation')
 
     # Daemon management operations
     daemon_parser = subparsers.add_parser('daemon', help='Background daemon management')
@@ -379,6 +389,15 @@ def main():
     log_report_parser.add_argument('--token', help='Agent token (optional)')
     log_report_parser.add_argument('--duration', type=int, default=24, help='Hours to summarize (default: 24)')
 
+    # Waypoint query operation
+    waypoint_query_parser = subparsers.add_parser('waypoint-query', help='Query and filter waypoints from database')
+    waypoint_query_parser.add_argument('--player-id', type=int, required=True, help='Player ID')
+    waypoint_query_parser.add_argument('--system', required=True, help='System symbol (e.g., X1-JB26)')
+    waypoint_query_parser.add_argument('--type', dest='waypoint_type', help='Waypoint type (PLANET, ASTEROID, MOON, etc.)')
+    waypoint_query_parser.add_argument('--trait', help='Required trait (SHIPYARD, MARKETPLACE, COMMON_METAL_DEPOSITS, etc.)')
+    waypoint_query_parser.add_argument('--exclude', help='Exclude waypoints with these traits (comma-separated: RADIOACTIVE,EXPLOSIVE_GASES)')
+    waypoint_query_parser.add_argument('--has-fuel', action='store_true', help='Only show waypoints with fuel')
+
     # Special handling for daemon start - use parse_known_args to capture operation-specific args
     if len(sys.argv) > 2 and sys.argv[1] == 'daemon' and sys.argv[2] == 'start':
         args, unknown_args = parser.parse_known_args()
@@ -435,6 +454,8 @@ def main():
     elif args.operation == 'scout-markets':
         from spacetraders_bot.operations.routing import scout_markets_operation
         return scout_markets_operation(args)
+    elif args.operation == 'validate-routing':
+        return validate_routing_operation(args)
     elif args.operation == 'daemon':
         if args.daemon_action == 'start':
             return daemon_start_operation(args)
@@ -482,6 +503,8 @@ def main():
     elif args.operation == 'captain-log':
         args.action = args.log_action  # Rename for consistency
         return captain_log_operation(args)
+    elif args.operation == 'waypoint-query':
+        return waypoint_query_operation(args)
 
     return 1
 

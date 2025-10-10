@@ -1225,5 +1225,42 @@ export const botToolDefinitions: Tool[] = [
         "system"
       ]
     }
+  },
+  {
+    "name": "bot_waypoint_query",
+    "description": "Query waypoints from the database by system with filtering by type, traits, and exclusions.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "player_id": {
+          "type": "integer",
+          "description": "Player ID from database"
+        },
+        "system": {
+          "type": "string",
+          "description": "System symbol (e.g., X1-JB26)"
+        },
+        "type": {
+          "type": "string",
+          "description": "Optional: Filter by waypoint type (PLANET, ASTEROID, MOON, FUEL_STATION, etc.)"
+        },
+        "trait": {
+          "type": "string",
+          "description": "Optional: Filter by required trait (SHIPYARD, MARKETPLACE, COMMON_METAL_DEPOSITS, etc.)"
+        },
+        "exclude": {
+          "type": "string",
+          "description": "Optional: Comma-separated traits to exclude (RADIOACTIVE,EXPLOSIVE_GASES,STRIPPED)"
+        },
+        "has_fuel": {
+          "type": "boolean",
+          "description": "Optional: Filter for waypoints with fuel availability"
+        }
+      },
+      "required": [
+        "player_id",
+        "system"
+      ]
+    }
   }
 ] as const;

@@ -18,7 +18,9 @@ bot/
 │   ├── api_client.py             # SpaceTraders API client with rate limiting
 │   ├── ship_controller.py        # Ship state machine & operations
 │   ├── smart_navigator.py        # Intelligent navigation with fuel optimization
-│   ├── routing.py                # A* pathfinding, TSP solver, graph building
+│   ├── routing.py                # OR-Tools routing wrappers + graph building
+│   ├── routing_config.py         # Hot-reloadable routing constants (YAML)
+│   ├── routing_validator.py      # Route validation + pause mechanisms
 │   ├── daemon_manager.py         # Background process management
 │   ├── assignment_manager.py     # Ship allocation & conflict prevention
 │   └── operation_controller.py   # Operation lifecycle & checkpointing
@@ -81,9 +83,9 @@ ship.dock()                  # If IN_TRANSIT → wait for arrival, then dock
 
 ### 2. Smart Navigator - Intelligent Routing
 
-**Files:** `src/spacetraders_bot/core/smart_navigator.py`, `src/spacetraders_bot/core/routing.py`
+**Files:** `src/spacetraders_bot/core/smart_navigator.py`, `src/spacetraders_bot/core/ortools_router.py`, `src/spacetraders_bot/core/routing.py`
 
-Provides fuel-aware pathfinding with automatic refuel stop insertion:
+Backed by Google OR-Tools (VRP/TSP solvers) with fuel/resource constraints and dual-mode edges. Provides fuel-aware pathfinding with automatic refuel stop insertion:
 
 ```python
 navigator = SmartNavigator(api, "X1-HU87")
@@ -96,11 +98,20 @@ success = navigator.execute_route(ship, "X1-HU87-B9")
 ```
 
 **Features:**
-- **A* pathfinding** with fuel constraints
-- **Automatic refuel stops** when needed
-- **Flight mode optimization** (CRUISE when fuel >75%, DRIFT for efficiency)
-- **Graph caching** (`graphs/*.json`)
-- **TSP solving** for multi-stop tours (2-opt, nearest neighbor)
+- **Google OR-Tools VRP/TSP engine** with fuel dimension and flight mode decisions
+- **Automatic refuel stops** and fuel safety margin enforcement
+- **Flight mode optimisation** (prefers CRUISE, falls back to DRIFT when capacity demands)
+- **Graph caching** (`graphs/*.json`) via `GraphBuilder`
+- **Tour optimisation** (ORToolsTSP replaces 2-opt/nearest neighbour heuristics)
+- **Multi-ship partitioning** through `ORToolsFleetPartitioner`
+- **Configurable constants** loaded from `config/routing_constants.yaml` (hot-reload supported)
+
+### Routing Validation
+
+- Manual validation command: `spacetraders_bot.py validate-routing --player-id X --ship SHIP --destination WAYPOINT`
+- Uses `RoutingValidator` to compare predicted vs actual results
+- Deviations >5% automatically pause routing (flag stored in `var/routing_pause.json`)
+- Successful validations clear the pause flag
 
 **Flight Modes:**
 - `CRUISE`: ~1 fuel/unit (fast, use when fuel >75%)

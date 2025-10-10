@@ -85,6 +85,7 @@ class ScoutCoordinator:
         self.running = True
         self.reconfigure_requested = False
         self._partitioner: Optional[MarketPartitioner] = None
+        self._ship_data_cache: Dict[str, Dict] = {}
 
         # Load graph
         self._load_or_build_graph()
@@ -132,14 +133,36 @@ class ScoutCoordinator:
         result = self._create_partitioner().partition("geographic")
         return result.partitions
 
+    def partition_markets_ortools(self) -> Dict[str, List[str]]:
+        """Use OR-Tools multi-vehicle optimisation to partition markets."""
+
+        result = self._create_partitioner().partition("ortools")
+        if result.message:
+            print(f"\n{result.message}")
+        return result.partitions
+
     def _create_partitioner(self) -> MarketPartitioner:
         if self._partitioner is None:
             self._partitioner = MarketPartitioner(
                 graph=self.graph or {},
                 markets=self.markets,
                 ships=sorted(self.ships),
+                ship_data=self._get_ship_data_map(),
             )
         return self._partitioner
+
+    def _get_ship_data_map(self) -> Dict[str, Dict]:
+        """Fetch and cache ship data required for OR-Tools partitioning."""
+        updated: Dict[str, Dict] = {}
+        for ship in self.ships:
+            if ship not in self._ship_data_cache:
+                try:
+                    self._ship_data_cache[ship] = self.api.get_ship(ship)
+                except Exception as exc:  # broad catch to avoid breaking coordinator
+                    print(f"⚠️  Failed to load ship data for {ship}: {exc}")
+                    continue
+            updated[ship] = self._ship_data_cache[ship]
+        return updated
 
     def _invalidate_partitioner(self) -> None:
         self._partitioner = None
@@ -165,11 +188,8 @@ class ScoutCoordinator:
 
         # Calculate tour times for each partition
         tour_times = {}
-        ship_data_cache = {}
-
         # Pre-load all ship data to avoid cache misses later
-        for ship in partitions.keys():
-            ship_data_cache[ship] = self.api.get_ship(ship)
+        ship_data_cache = self._get_ship_data_map()
 
         for ship, markets in partitions.items():
             if not markets:
@@ -666,21 +686,31 @@ class ScoutCoordinator:
         # Initialize optimizer
         optimizer = TourOptimizer(self.graph, ship_data)
 
-        # Optimize tour
-        if self.algorithm == '2opt':
-            # Greedy first, then improve
-            greedy_tour = optimizer.solve_nearest_neighbor(
-                start_location, markets,
+        algo = (self.algorithm or 'ortools').lower()
+
+        if algo == 'ortools':
+            tour = optimizer.plan_tour(
+                start_location,
+                markets,
                 ship_data['fuel']['current'],
-                return_to_start=True  # Return to start for continuous loop
+                return_to_start=True,
+                algorithm='ortools',
+                use_cache=True,
+            )
+        elif algo == '2opt':
+            greedy_tour = optimizer.solve_nearest_neighbor(
+                start_location,
+                markets,
+                ship_data['fuel']['current'],
+                return_to_start=True,
             )
             tour = optimizer.two_opt_improve(greedy_tour, max_iterations=100)
         else:
-            # Greedy only
             tour = optimizer.solve_nearest_neighbor(
-                start_location, markets,
+                start_location,
+                markets,
                 ship_data['fuel']['current'],
-                return_to_start=True
+                return_to_start=True,
             )
 
         return tour

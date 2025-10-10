@@ -17,7 +17,9 @@ from typing import Dict, Optional, Tuple
 
 from ..helpers import paths
 from .database import Database
-from .routing import RouteOptimizer
+from .routing_config import RoutingConfig
+from .ortools_router import ORToolsRouter
+from .routing_pause import is_paused as routing_paused, get_pause_details
 from .system_graph_provider import SystemGraphProvider
 
 logger = logging.getLogger(__name__)
@@ -58,6 +60,7 @@ class SmartNavigator:
             db=self.db,
             cache_dir=self.cache_dir,
         )
+        self.routing_config = RoutingConfig()
 
         # Load or build graph if not provided
         if self.graph is None:
@@ -86,8 +89,12 @@ class SmartNavigator:
         current_location = ship_data['nav']['waypointSymbol']
         current_fuel = ship_data['fuel']['current']
 
-        # Use RouteOptimizer
-        optimizer = RouteOptimizer(self.graph, ship_data)
+        if routing_paused():
+            details = get_pause_details() or {}
+            logger.warning("Routing paused: %s", details.get("reason", "Validation failure"))
+            return None
+
+        optimizer = ORToolsRouter(self.graph, ship_data, self.routing_config)
         route = optimizer.find_optimal_route(
             current_location,
             destination,
@@ -108,6 +115,10 @@ class SmartNavigator:
         Returns:
             (is_valid, reason) tuple
         """
+        if routing_paused():
+            details = get_pause_details() or {}
+            return False, f"Routing paused: {details.get('reason', 'Validation failure')}"
+
         # Always prefer CRUISE - only fall back to DRIFT if insufficient fuel
         route = self.plan_route(ship_data, destination, prefer_cruise=True)
 
@@ -559,6 +570,12 @@ class SmartNavigator:
         # Get current ship status
         ship_data = self._get_status_or_log(ship_controller, "Failed to get ship status")
         if not ship_data:
+            return False
+
+        # Validate ship health
+        if routing_paused():
+            details = get_pause_details() or {}
+            logger.error("Routing paused: %s", details.get("reason", "Validation failure"))
             return False
 
         # Validate ship health
