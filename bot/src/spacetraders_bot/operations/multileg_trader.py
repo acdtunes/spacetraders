@@ -2019,7 +2019,7 @@ def multileg_trade_operation(args):
     from spacetraders_bot.core.ship_controller import ShipController
     from datetime import datetime, timedelta
 
-    log_file = setup_logging("multileg_trade", args.ship, getattr(args, 'log_level', 'INFO'))
+    log_file = setup_logging("multileg_trade", args.ship, getattr(args, 'log_level', 'INFO'), player_id=args.player_id)
 
     logging.info("="*70)
     logging.info("MULTI-LEG TRADING OPERATION")

@@ -95,7 +95,7 @@ def batch_contract_operation(args, *, api=None):
 
     Negotiates and fulfills multiple contracts in sequence, filtering by profitability.
     """
-    log_file = setup_logging("batch_contract", args.ship, getattr(args, 'log_level', 'INFO'))
+    log_file = setup_logging("batch_contract", args.ship, getattr(args, 'log_level', 'INFO'), player_id=args.player_id)
 
     print("=" * 70)
     print("BATCH CONTRACT OPERATION")
@@ -297,7 +297,7 @@ def contract_operation(
     sleep_fn=time.sleep,
 ):
     """Contract fulfillment operation"""
-    log_file = setup_logging("contract", args.ship, getattr(args, 'log_level', 'INFO'))
+    log_file = setup_logging("contract", args.ship, getattr(args, 'log_level', 'INFO'), player_id=args.player_id)
 
     print("=" * 70)
     print("CONTRACT FULFILLMENT OPERATION")
@@ -341,8 +341,9 @@ def contract_operation(
         }
         notes = f"Fulfilled contract {args.contract_id} delivering {trade_symbol} to {destination}."
 
-        # Generate narrative for captain's log
-        narrative = f"""Contract fulfillment complete. I coordinated {stats_snapshot['trips']} delivery trip{'s' if stats_snapshot['trips'] > 1 else ''} to transport {stats_snapshot['units_delivered']} units of {trade_symbol} to {destination}. All {stats_snapshot['purchased_units']} units were acquired through market purchases. The operation took {duration} and generated {net_profit:,} credits net profit after accounting for {stats_snapshot['purchase_spent']:,} credits in procurement costs."""
+        # NOTE: Narrative should be provided by the AI agent (Flag Captain/Operations Officer)
+        # using the MCP bot_captain_log_entry tool after operation completes.
+        # This allows the agent to provide strategic reasoning and context.
 
         log_captain_event(
             captain_logger,
@@ -351,7 +352,6 @@ def contract_operation(
             ship=args.ship,
             duration=duration,
             results=results,
-            narrative=narrative,
             notes=notes,
             tags=['contract', trade_symbol.lower(), destination.lower()]
         )
@@ -771,7 +771,7 @@ def contract_operation(
 
 def negotiate_operation(args, *, api=None):
     """Negotiate a new contract - replaces negotiate_contract.sh"""
-    log_file = setup_logging("negotiate", args.ship, getattr(args, 'log_level', 'INFO'))
+    log_file = setup_logging("negotiate", args.ship, getattr(args, 'log_level', 'INFO'), player_id=args.player_id)
 
     print("=" * 70)
     print("NEGOTIATE CONTRACT")

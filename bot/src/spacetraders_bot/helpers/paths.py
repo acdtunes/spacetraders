@@ -27,17 +27,32 @@ def sqlite_path(name: str = DEFAULT_DATABASE_NAME) -> Path:
     return SQLITE_DIR / name
 
 
-def captain_logs_root(agent_symbol: str) -> Path:
-    """Return the root directory for captain logs for *agent_symbol*."""
-    agent_dir = LOGS_DIR / "captain" / agent_symbol.lower()
+def agent_logs_root(agent_symbol: str) -> Path:
+    """Return the root directory for all logs for *agent_symbol*.
+
+    Structure:
+        var/logs/{agent}/
+          ├── operations/     # Operation logs (mining, trading, etc.)
+          ├── daemons/        # Daemon logs
+          └── captain/        # Captain's log, sessions, reports
+    """
+    agent_dir = LOGS_DIR / agent_symbol.lower()
     ensure_dirs(
         (
             agent_dir,
-            agent_dir / "sessions",
-            agent_dir / "executive_reports",
+            agent_dir / "operations",
+            agent_dir / "daemons",
+            agent_dir / "captain",
+            agent_dir / "captain" / "sessions",
+            agent_dir / "captain" / "executive_reports",
         )
     )
     return agent_dir
+
+
+def captain_logs_root(agent_symbol: str) -> Path:
+    """Return the captain log directory for *agent_symbol*."""
+    return agent_logs_root(agent_symbol) / "captain"
 
 
 def ensure_dirs(directories: Iterable[Path]) -> None:

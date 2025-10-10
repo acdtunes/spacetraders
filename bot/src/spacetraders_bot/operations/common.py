@@ -12,7 +12,7 @@ from typing import Optional
 from spacetraders_bot.core.api_client import APIClient
 from spacetraders_bot.core.database import get_database
 from spacetraders_bot.core.utils import timestamp_iso
-from spacetraders_bot.helpers.paths import LOGS_DIR, ensure_dirs, sqlite_path
+from spacetraders_bot.helpers.paths import LOGS_DIR, agent_logs_root, ensure_dirs, sqlite_path
 from spacetraders_bot.operations.captain_logging import CaptainLogWriter
 
 
@@ -50,7 +50,21 @@ def format_credits(amount: int) -> str:
     return f"{amount:,}"
 
 
-def setup_logging(operation: str, ship: str = "system", log_level: str = "INFO"):
+def get_agent_symbol_from_player_id(player_id: Optional[int], db_path: Optional[str] = None) -> Optional[str]:
+    """Get agent_symbol for a player_id from database."""
+    if player_id is None:
+        return None
+    try:
+        db_location = db_path or str(sqlite_path())
+        db = get_database(db_location)
+        with db.connection() as conn:
+            player = db.get_player_by_id(conn, player_id)
+            return player.get('agent_symbol') if player else None
+    except Exception:
+        return None
+
+
+def setup_logging(operation: str, ship: str = "system", log_level: str = "INFO", agent_symbol: Optional[str] = None, player_id: Optional[int] = None):
     """
     Setup structured logging for the bot
 
@@ -60,12 +74,25 @@ def setup_logging(operation: str, ship: str = "system", log_level: str = "INFO")
         operation: Operation name (mining, scout, etc.)
         ship: Ship symbol or "system"
         log_level: Logging level (INFO, WARNING, ERROR)
+        agent_symbol: Agent symbol for scoped logging (optional)
+        player_id: Player ID to resolve agent_symbol (optional, ignored if agent_symbol provided)
 
     Returns:
         Path to log file
     """
-    ensure_dirs((LOGS_DIR,))
-    log_file = LOGS_DIR / f"{operation}_{ship}_{timestamp_iso().replace(':', '-')}.log"
+    # Resolve agent_symbol from player_id if not provided
+    if not agent_symbol and player_id:
+        agent_symbol = get_agent_symbol_from_player_id(player_id)
+
+    if agent_symbol:
+        # Agent-scoped: var/logs/{agent}/operations/
+        log_dir = agent_logs_root(agent_symbol) / "operations"
+    else:
+        # Global fallback: var/logs/
+        ensure_dirs((LOGS_DIR,))
+        log_dir = LOGS_DIR
+
+    log_file = log_dir / f"{operation}_{ship}_{timestamp_iso().replace(':', '-')}.log"
 
     # Clear any existing handlers
     root_logger = logging.getLogger()

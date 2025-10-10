@@ -226,6 +226,7 @@ def purchase_ship_operation(args, *, api=None, ship=None, captain_logger=None):
         "purchase_ship",
         getattr(args, "ship", "purchasing_ship"),
         getattr(args, "log_level", "INFO"),
+        player_id=args.player_id
     )
     logging.info("Purchase ship operation initialized")
 

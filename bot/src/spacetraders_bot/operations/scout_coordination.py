@@ -50,8 +50,7 @@ def coordinator_start_operation(args):
                 system=args.system,
                 ships=ships,
                 token=token,
-                player_id=args.player_id,
-                algorithm=args.algorithm
+                player_id=args.player_id
             )
 
             # Save configuration
@@ -255,12 +254,10 @@ def coordinator_status_operation(args):
             config = json.load(f)
 
         ships = config.get('ships', [])
-        algorithm = config.get('algorithm', 'greedy')
 
         print("=" * 70)
         print(f"SCOUT COORDINATOR STATUS - {args.system}")
         print("=" * 70)
-        print(f"Algorithm: {algorithm.upper()}")
         print(f"Ships: {len(ships)}")
         print()
 

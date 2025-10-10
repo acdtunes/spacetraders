@@ -52,7 +52,7 @@ class ScoutCoordinator:
     """
 
     def __init__(self, system: str, ships: List[str], token: str, player_id: int,
-                 algorithm: str = '2opt', config_file: Optional[str] = None,
+                 config_file: Optional[str] = None,
                  graph_provider: Optional[SystemGraphProvider] = None):
         """
         Initialize scout coordinator
@@ -62,14 +62,12 @@ class ScoutCoordinator:
             ships: List of ship symbols
             token: Agent token
             player_id: Player ID for daemon management
-            algorithm: Optimization algorithm (greedy or 2opt)
             config_file: Optional config file path for reconfiguration
         """
         self.system = system
         self.ships = set(ships)
         self.token = token
         self.player_id = player_id
-        self.algorithm = algorithm
         paths.ensure_dirs((paths.AGENT_CONFIG_DIR,))
         self.config_file = Path(config_file) if config_file else paths.AGENT_CONFIG_DIR / f"scout_config_{system}.json"
 
@@ -496,7 +494,7 @@ class ScoutCoordinator:
 
     def _calculate_partition_tour_time(self, markets: List[str], ship_data: Dict) -> float:
         """
-        Calculate tour time for a partition starting from its centroid
+        Calculate tour time for a partition starting from its centroid using OR-Tools
 
         This gives a fair estimate of tour time independent of ship's current position.
         Represents the actual recurring scouting work, not one-time repositioning.
@@ -532,26 +530,16 @@ class ScoutCoordinator:
         virtual_ship['nav']['waypointSymbol'] = start_market
         virtual_ship['fuel'] = {'current': virtual_ship['fuel']['capacity'], 'capacity': virtual_ship['fuel']['capacity']}
 
-        # Calculate tour using TourOptimizer
+        # Calculate tour using TourOptimizer with OR-Tools
         optimizer = TourOptimizer(self.graph, virtual_ship)
-
-        if self.algorithm == '2opt':
-            greedy_tour = optimizer.solve_nearest_neighbor(
-                start_market, markets,
-                virtual_ship['fuel']['current'],
-                return_to_start=True
-            )
-            # Only apply 2-opt if greedy tour succeeded
-            if greedy_tour:
-                tour = optimizer.two_opt_improve(greedy_tour, max_iterations=100)
-            else:
-                tour = None
-        else:
-            tour = optimizer.solve_nearest_neighbor(
-                start_market, markets,
-                virtual_ship['fuel']['current'],
-                return_to_start=True
-            )
+        tour = optimizer.plan_tour(
+            start_market,
+            markets,
+            virtual_ship['fuel']['current'],
+            return_to_start=True,
+            algorithm='ortools',
+            use_cache=True,
+        )
 
         return tour['total_time'] if tour else float('inf')  # Return infinity if tour not possible
 
@@ -636,7 +624,7 @@ class ScoutCoordinator:
 
     def optimize_subtour(self, ship: str, markets: List[str]) -> Optional[Dict]:
         """
-        Optimize a subtour for a ship using TSP
+        Optimize a subtour for a ship using OR-Tools TSP
 
         IMPORTANT: Uses partition centroid as starting point, NOT ship's current location.
         This ensures tours are independent of where ships happen to be stationed,
@@ -683,35 +671,16 @@ class ScoutCoordinator:
         start_location = min(markets, key=dist_to_centroid)
         print(f"   Tour starts from partition centroid: {start_location} (centroid: {centroid_x:.0f}, {centroid_y:.0f})")
 
-        # Initialize optimizer
+        # Initialize optimizer and use OR-Tools
         optimizer = TourOptimizer(self.graph, ship_data)
-
-        algo = (self.algorithm or 'ortools').lower()
-
-        if algo == 'ortools':
-            tour = optimizer.plan_tour(
-                start_location,
-                markets,
-                ship_data['fuel']['current'],
-                return_to_start=True,
-                algorithm='ortools',
-                use_cache=True,
-            )
-        elif algo == '2opt':
-            greedy_tour = optimizer.solve_nearest_neighbor(
-                start_location,
-                markets,
-                ship_data['fuel']['current'],
-                return_to_start=True,
-            )
-            tour = optimizer.two_opt_improve(greedy_tour, max_iterations=100)
-        else:
-            tour = optimizer.solve_nearest_neighbor(
-                start_location,
-                markets,
-                ship_data['fuel']['current'],
-                return_to_start=True,
-            )
+        tour = optimizer.plan_tour(
+            start_location,
+            markets,
+            ship_data['fuel']['current'],
+            return_to_start=True,
+            algorithm='ortools',
+            use_cache=True,
+        )
 
         return tour
 
@@ -753,7 +722,6 @@ class ScoutCoordinator:
             "--player-id", str(self.player_id),
             "--ship", ship,
             "--system", self.system,
-            "--algorithm", self.algorithm,
             "--return-to-start",
             "--continuous",
             "--markets-list", ','.join(markets)  # Pass the specific markets assigned to this ship
@@ -979,7 +947,6 @@ class ScoutCoordinator:
         config = {
             'system': self.system,
             'ships': sorted(list(self.ships)),
-            'algorithm': self.algorithm,
             'reconfigure': False,
             'last_updated': datetime.now(timezone.utc).isoformat()
         }

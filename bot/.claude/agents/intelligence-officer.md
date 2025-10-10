@@ -1,4 +1,4 @@
----
+inte---
 name: intelligence-officer
 description: Use this agent when the Flag Captain needs market analysis and trade route planning.
 model: sonnet

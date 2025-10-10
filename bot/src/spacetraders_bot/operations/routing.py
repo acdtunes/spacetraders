@@ -25,7 +25,7 @@ from spacetraders_bot.operations.common import (
 def graph_build_operation(args):
     """Build navigation graph for a system"""
     ship_name = "system"
-    log_file = setup_logging("graph-build", ship_name, getattr(args, 'log_level', 'INFO'))
+    log_file = setup_logging("graph-build", ship_name, getattr(args, 'log_level', 'INFO'), player_id=args.player_id)
 
     print("=" * 70)
     print("BUILDING SYSTEM NAVIGATION GRAPH")
@@ -55,7 +55,7 @@ def graph_build_operation(args):
 
 def route_plan_operation(args):
     """Plan optimal route with fuel awareness"""
-    log_file = setup_logging("route-plan", args.ship, getattr(args, 'log_level', 'INFO'))
+    log_file = setup_logging("route-plan", args.ship, getattr(args, 'log_level', 'INFO'), player_id=args.player_id)
 
     print("=" * 70)
     print("ROUTE PLANNING")
@@ -228,7 +228,7 @@ def scout_markets_operation(args):
     import signal
     import time
 
-    setup_logging('SCOUT-MARKETS', args.ship, getattr(args, 'log_level', 'INFO'))
+    setup_logging('SCOUT-MARKETS', args.ship, getattr(args, 'log_level', 'INFO'), player_id=args.player_id)
     logger = logging.getLogger(__name__ + '.scout_markets')
     logger.info("=" * 70)
     logger.info("SpaceTraders Bot - SCOUT-MARKETS Operation")
@@ -405,41 +405,18 @@ def scout_markets_operation(args):
             time.sleep(60)  # Wait a minute before next tour
             continue
 
-        # Initialize optimizer
+        # Initialize optimizer and use OR-Tools for tour optimization
         optimizer = TourOptimizer(graph, ship_data)
+        logger.info("Using OR-Tools optimizer with caching...")
 
-        # Run optimization based on algorithm choice
-        algorithm = args.algorithm.lower()
-
-        if algorithm == 'ortools':
-            logger.info("Using OR-Tools optimizer with caching...")
-            tour = optimizer.plan_tour(
-                tour_start_location,
-                market_stops,
-                ship_data['fuel']['current'],
-                return_to_start=args.return_to_start,
-                algorithm='ortools',
-                use_cache=True,
-            )
-        elif algorithm in ['greedy', '2opt']:
-            logger.info(f"Using {algorithm} algorithm with caching...")
-            tour = optimizer.plan_tour(
-                tour_start_location,
-                market_stops,
-                ship_data['fuel']['current'],
-                return_to_start=args.return_to_start,
-                algorithm=algorithm,
-                use_cache=True,
-            )
-        else:
-            logger.error(f"Unknown algorithm: {algorithm}")
-            log_error(
-                "Unknown routing algorithm",
-                f"Algorithm '{algorithm}' not supported",
-                resolution="Use 'ortools', 'greedy', or '2opt'",
-                escalate=False
-            )
-            return 1
+        tour = optimizer.plan_tour(
+            tour_start_location,
+            market_stops,
+            ship_data['fuel']['current'],
+            return_to_start=args.return_to_start,
+            algorithm='ortools',
+            use_cache=True,
+        )
 
         if not tour:
             logger.error("Failed to find tour")
@@ -461,7 +438,7 @@ def scout_markets_operation(args):
         if continuous:
             print(f"Tour #{tour_count}")
         print(f"{'='*70}")
-        print(f"Algorithm: {algorithm.upper()}")
+        print(f"Algorithm: OR-TOOLS")
         print(f"Markets to visit: {len(market_stops)}")
         planned_time = TimeCalculator.format_time(tour['total_time'])
         print(f"Total time: {planned_time}")
