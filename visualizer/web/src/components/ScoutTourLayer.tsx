@@ -73,13 +73,15 @@ export const ScoutTourLayer = memo(function ScoutTourLayer({
         const tourOrder = tour.tour_order;
         if (tourOrder.length < 2) return null;
 
-        // Get waypoint positions (using display positions for overlapping waypoints)
+        // Get waypoint positions (using ACTUAL coordinates for geometric accuracy)
+        // Note: We use actual coordinates for tour lines to show the true geometric path.
+        // Waypoint markers below still use display positions for visual clarity.
         const positions = tourOrder
           .map((symbol) => {
             const waypoint = waypoints.get(symbol);
             if (!waypoint) return null;
-            const pos = getWaypointPosition(waypoint);
-            return { x: pos.x, y: pos.y, symbol };
+            // Use actual database coordinates, not display offsets
+            return { x: waypoint.x, y: waypoint.y, symbol };
           })
           .filter((pos): pos is { x: number; y: number; symbol: string } => pos !== null);
 
@@ -88,11 +90,39 @@ export const ScoutTourLayer = memo(function ScoutTourLayer({
         // Get distinct color for this tour
         const color = getTourColor(tour.system, tourIndex);
 
-        // Create line points
-        const linePoints: number[] = [];
-        positions.forEach((pos) => {
-          linePoints.push(pos.x, pos.y);
-        });
+        // Create line segments, SKIPPING orbital jumps (same coordinates)
+        // Orbitals are instant 0-distance moves that shouldn't be drawn as lines
+        const lineSegments: number[][] = [];
+        let currentSegment: number[] = [];
+
+        for (let i = 0; i < positions.length - 1; i++) {
+          const current = positions[i];
+          const next = positions[i + 1];
+
+          // Add current point to segment
+          if (currentSegment.length === 0) {
+            currentSegment.push(current.x, current.y);
+          }
+
+          // Check if next move is orbital (same coordinates)
+          const isOrbital = current.x === next.x && current.y === next.y;
+
+          if (isOrbital) {
+            // Finish current segment and start new one
+            if (currentSegment.length >= 4) { // At least 2 points
+              lineSegments.push(currentSegment);
+            }
+            currentSegment = [];
+          } else {
+            // Add next point to continue segment
+            currentSegment.push(next.x, next.y);
+          }
+        }
+
+        // Add final segment
+        if (currentSegment.length >= 4) {
+          lineSegments.push(currentSegment);
+        }
 
         const strokeWidth = Math.max(1, 2 / currentScale);
         const dotRadius = Math.max(1.5, 3 / currentScale);
@@ -104,43 +134,56 @@ export const ScoutTourLayer = memo(function ScoutTourLayer({
 
         return (
           <Group key={`tour-${tourId}`}>
-            {/* Tour path lines */}
-            <Line
-              points={linePoints}
-              stroke={color}
-              strokeWidth={strokeWidth}
-              opacity={0.6}
-              dash={[dashLength, gapLength]}
-              dashOffset={dashOffset}
-              listening={false}
-              lineCap="round"
-              lineJoin="round"
-            />
-
-            {/* Waypoint markers */}
-            {positions.map((pos, idx) => (
-              <Circle
-                key={`${tour.system}-${pos.symbol}-${idx}`}
-                x={pos.x}
-                y={pos.y}
-                radius={dotRadius}
-                fill={color}
-                opacity={0.8}
+            {/* Tour path lines (only non-orbital segments) */}
+            {lineSegments.map((segment, segIdx) => (
+              <Line
+                key={`segment-${segIdx}`}
+                points={segment}
+                stroke={color}
+                strokeWidth={strokeWidth}
+                opacity={0.6}
+                dash={[dashLength, gapLength]}
+                dashOffset={dashOffset}
                 listening={false}
+                lineCap="round"
+                lineJoin="round"
               />
             ))}
 
-            {/* Start marker (larger circle) */}
-            {positions.length > 0 && (
-              <Circle
-                x={positions[0].x}
-                y={positions[0].y}
-                radius={dotRadius * 1.8}
-                fill={color}
-                opacity={0.5}
-                listening={false}
-              />
-            )}
+            {/* Waypoint markers (use display positions for visual clarity) */}
+            {positions.map((pos, idx) => {
+              const waypoint = waypoints.get(pos.symbol);
+              if (!waypoint) return null;
+              const displayPos = getWaypointPosition(waypoint);
+              return (
+                <Circle
+                  key={`${tour.system}-${pos.symbol}-${idx}`}
+                  x={displayPos.x}
+                  y={displayPos.y}
+                  radius={dotRadius}
+                  fill={color}
+                  opacity={0.8}
+                  listening={false}
+                />
+              );
+            })}
+
+            {/* Start marker (larger circle, use display position) */}
+            {positions.length > 0 && (() => {
+              const waypoint = waypoints.get(positions[0].symbol);
+              if (!waypoint) return null;
+              const displayPos = getWaypointPosition(waypoint);
+              return (
+                <Circle
+                  x={displayPos.x}
+                  y={displayPos.y}
+                  radius={dotRadius * 1.8}
+                  fill={color}
+                  opacity={0.5}
+                  listening={false}
+                />
+              );
+            })()}
           </Group>
         );
       })}

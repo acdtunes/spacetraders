@@ -1,15 +1,31 @@
 import { useStore } from '../store/useStore';
 
 const AgentCredits = () => {
-  const { agents } = useStore();
+  const { agents, ships, currentSystem } = useStore();
 
-  if (agents.length === 0) {
+  if (!currentSystem || agents.length === 0) {
+    return null;
+  }
+
+  const agentIdsInSystem = new Set(
+    ships
+      .filter((ship) => ship.nav.systemSymbol === currentSystem && ship.agentId)
+      .map((ship) => ship.agentId)
+  );
+
+  if (agentIdsInSystem.size === 0) {
+    return null;
+  }
+
+  const agentsOnSystem = agents.filter((agent) => agentIdsInSystem.has(agent.id));
+
+  if (agentsOnSystem.length === 0) {
     return null;
   }
 
   return (
     <div className="flex flex-wrap items-center gap-3 text-sm">
-      {agents.map((agent) => {
+      {agentsOnSystem.map((agent) => {
         const creditsLabel =
           agent.credits !== undefined ? `${agent.credits.toLocaleString()}₡` : '--';
 

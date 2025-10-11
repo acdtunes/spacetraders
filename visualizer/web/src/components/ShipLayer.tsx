@@ -1,4 +1,4 @@
-import { memo } from 'react';
+import { memo, useMemo } from 'react';
 import { Group, Circle } from 'react-konva';
 import type { ShipTrailPoint, TaggedShip, Waypoint as WaypointType, ShipAssignment } from '../types/spacetraders';
 import { Ship } from '../domain/ship';
@@ -8,6 +8,7 @@ import { ShipNameLabel } from './ShipNameLabel';
 import { ShipOperationBadge } from './ShipOperationBadge';
 import { calculateShipRotation, getShipLabelInfo } from '../utils/shipDisplay';
 import { getShipOperation } from '../utils/shipOperations';
+import { Waypoint } from '../domain/waypoint';
 
 interface Point {
   x: number;
@@ -51,6 +52,62 @@ export const ShipLayer = memo(function ShipLayer({
   shipPositionOptions,
   getWaypointPosition,
 }: ShipLayerProps) {
+  const dockedFormations = useMemo(() => {
+    const formations = new Map<string, Map<string, Point>>();
+    const groupedByWaypoint = new Map<string, TaggedShip[]>();
+
+    ships.forEach((ship) => {
+      if (ship.nav.status !== 'DOCKED') return;
+      if (!ship.nav.waypointSymbol) return;
+      const existing = groupedByWaypoint.get(ship.nav.waypointSymbol);
+      if (existing) {
+        existing.push(ship);
+      } else {
+        groupedByWaypoint.set(ship.nav.waypointSymbol, [ship]);
+      }
+    });
+
+    const DOCKED_RING_CAPACITY = 6;
+    const DOCKED_RING_GAP = 6;
+    const DOCKED_BASE_OFFSET = 6;
+
+    groupedByWaypoint.forEach((group, waypointSymbol) => {
+      if (group.length <= 1) {
+        return;
+      }
+
+      const waypoint = waypoints.get(waypointSymbol);
+      if (!waypoint) return;
+
+      const center = getWaypointPosition(waypoint);
+      const waypointRadius = Waypoint.getRadius(waypoint);
+      const shipsSorted = [...group].sort((a, b) => a.symbol.localeCompare(b.symbol));
+      const formationPositions = new Map<string, Point>();
+
+      shipsSorted.forEach((ship, index) => {
+        const ringIndex = Math.floor(index / DOCKED_RING_CAPACITY);
+        const ringStartIndex = ringIndex * DOCKED_RING_CAPACITY;
+        const positionsInRing = Math.min(
+          DOCKED_RING_CAPACITY,
+          shipsSorted.length - ringStartIndex
+        );
+        const positionInRing = index - ringStartIndex;
+        const angleStep = (Math.PI * 2) / positionsInRing;
+        const angle = positionInRing * angleStep;
+        const radius = waypointRadius + DOCKED_BASE_OFFSET + ringIndex * DOCKED_RING_GAP;
+
+        formationPositions.set(ship.symbol, {
+          x: center.x + Math.cos(angle) * radius,
+          y: center.y + Math.sin(angle) * radius,
+        });
+      });
+
+      formations.set(waypointSymbol, formationPositions);
+    });
+
+    return formations;
+  }, [ships, waypoints, getWaypointPosition]);
+
   return (
     <>
       {ships.map((ship) => {
@@ -59,7 +116,17 @@ export const ShipLayer = memo(function ShipLayer({
           return null;
         }
 
-        const position = getShipRenderPosition(ship, targetPosition, frameTimestamp);
+        let adjustedTarget = targetPosition;
+
+        if (ship.nav.status === 'DOCKED' && ship.nav.waypointSymbol) {
+          const formation = dockedFormations.get(ship.nav.waypointSymbol);
+          const dockedOffset = formation?.get(ship.symbol);
+          if (dockedOffset) {
+            adjustedTarget = dockedOffset;
+          }
+        }
+
+        const position = getShipRenderPosition(ship, adjustedTarget, frameTimestamp);
         const shipAssetPath = selectShipAsset(ship);
         const shipTrail = trails.get(ship.symbol);
         const rotation = calculateShipRotation(

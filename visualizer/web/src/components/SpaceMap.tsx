@@ -95,8 +95,42 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
   const waypointsSizeRef = useRef<number>(0);
   const shipPositionCacheRef = useRef<Map<string, { x: number; y: number; status: ShipNavStatus; timestamp: number }>>(new Map());
 
-  const { currentSystem, waypoints, ships, markets, showMapOverlays, showWaypointNames, showShipNames, showDestinationRoutes, setWaypoints, trails, addTrailPosition, clearTrail, filterStatus, filterAgents, filterWaypointTypes, selectedShip, selectedWaypoint, setSelectedShip, setSelectedWaypoint, assignments, marketFreshness, showMarketFreshness, scoutTours, showScoutTours, tradeOpportunities, showTradeRoutes, showMiningRoutes, visibleTours, toggleTourVisibility, showAllTours, hideAllTours, shipFocusRequest, clearShipFocusRequest } =
-    useStore();
+  const {
+    currentSystem,
+    waypoints,
+    ships,
+    markets,
+    marketIntel,
+    showMapOverlays,
+    showWaypointNames,
+    showShipNames,
+    showDestinationRoutes,
+    setWaypoints,
+    trails,
+    addTrailPosition,
+    clearTrail,
+    filterStatus,
+    filterAgents,
+    filterWaypointTypes,
+    selectedShip,
+    selectedWaypoint,
+    setSelectedShip,
+    setSelectedWaypoint,
+    assignments,
+    marketFreshness,
+    showMarketFreshness,
+    scoutTours,
+    showScoutTours,
+    tradeOpportunities,
+    showTradeRoutes,
+    showMiningRoutes,
+    visibleTours,
+    toggleTourVisibility,
+    showAllTours,
+    hideAllTours,
+    shipFocusRequest,
+    clearShipFocusRequest,
+  } = useStore();
 
   const [hoveredShip, setHoveredShip] = useState<string | null>(null);
   const [selectedObject, setSelectedObject] = useState<SelectedMapObject | null>(null);
@@ -921,6 +955,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
     ships,
     waypoints,
     markets,
+    marketIntel,
     projectToScreen,
     getWaypointPosition: getWaypointDisplayPosition,
     getShipRenderPosition,
@@ -1036,8 +1071,8 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
                   scale={currentScale}
                 />
 
-                {/* Market freshness ring - shows only for markets in visible tours */}
-                {hasMarketplace && showMarketFreshness && visibleTourMarkets.has(waypoint.symbol) && (
+                {/* Market freshness ring - shows for all markets with freshness data */}
+                {hasMarketplace && showMarketFreshness && marketFreshness.has(waypoint.symbol) && (
                   <MarketFreshnessRing
                     x={x}
                     y={y}

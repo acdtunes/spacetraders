@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import type { TaggedShip, Waypoint as WaypointType, Market } from '../types/spacetraders';
+import type { TaggedShip, Waypoint as WaypointType, Market, MarketData } from '../types/spacetraders';
 import type { TradeOpportunity } from '../domain/market';
 import { Ship } from '../domain';
 import type { Position } from '../domain/ship';
@@ -27,6 +27,7 @@ interface SpaceMapOverlayParams {
   ships: TaggedShip[];
   waypoints: Map<string, WaypointType>;
   markets: Map<string, Market>;
+  marketIntel: Map<string, MarketData>;
   projectToScreen: (point: { x: number; y: number }) => { x: number; y: number } | null;
   getWaypointPosition: (waypoint: WaypointType) => { x: number; y: number };
   getShipRenderPosition: (ship: TaggedShip, target: Position, timestamp: number) => Position;
@@ -50,6 +51,18 @@ export interface WaypointTooltipData {
     exportsCount: number;
     opportunities: string[];
   } | null;
+  intel: {
+    lastUpdated: string;
+    goods: Array<{
+      symbol: string;
+      supply: string;
+      activity: string | null;
+      purchasePrice: number;
+      sellPrice: number;
+      tradeVolume: number;
+      spread: number;
+    }>;
+  } | null;
 }
 
 interface SpaceMapOverlaysResult {
@@ -67,6 +80,7 @@ export function useSpaceMapOverlays({
   ships,
   waypoints,
   markets,
+  marketIntel,
   projectToScreen,
   getWaypointPosition,
   getShipRenderPosition,
@@ -139,6 +153,7 @@ export function useSpaceMapOverlays({
     if (!waypoint) return null;
 
     const market = markets.get(waypointTooltipAnchor.symbol);
+    const intelEntry = marketIntel.get(waypointTooltipAnchor.symbol);
     const hasMarketplace = waypoint.traits.some((trait) => trait.symbol === 'MARKETPLACE');
 
     let marketData: WaypointTooltipData['marketData'] = null;
@@ -151,6 +166,26 @@ export function useSpaceMapOverlays({
       };
     }
 
+    let intel: WaypointTooltipData['intel'] = null;
+    if (intelEntry) {
+      const goods = intelEntry.goods
+        .map((good) => ({
+          symbol: good.symbol,
+          supply: good.supply,
+          activity: good.activity,
+          purchasePrice: good.purchasePrice,
+          sellPrice: good.sellPrice,
+          tradeVolume: good.tradeVolume,
+          spread: good.sellPrice - good.purchasePrice,
+        }))
+        .sort((a, b) => b.spread - a.spread);
+
+      intel = {
+        lastUpdated: intelEntry.lastUpdated,
+        goods,
+      };
+    }
+
     return {
       symbol: waypoint.symbol,
       type: waypoint.type,
@@ -158,11 +193,13 @@ export function useSpaceMapOverlays({
       faction: waypoint.faction,
       hasMarketplace,
       marketData,
+      intel,
     };
   }, [
     waypointTooltipAnchor,
     waypoints,
     markets,
+    marketIntel,
     getWaypointOpportunities,
     formatOpportunity,
     opportunityLimit,
