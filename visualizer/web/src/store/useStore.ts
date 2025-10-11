@@ -11,6 +11,7 @@ import type {
   FlightMode,
   ShipAssignment,
   MarketFreshness,
+  MarketData,
   ScoutTour,
   TradeOpportunityData,
 } from '../types/spacetraders';
@@ -82,6 +83,8 @@ export interface AppState {
   markets: Map<string, Market>;
   setMarkets: (markets: Map<string, Market>) => void;
   updateMarket: (waypointSymbol: string, market: Market) => void;
+  marketIntel: Map<string, MarketData>;
+  setMarketIntel: (marketData: MarketData[]) => void;
   showMapOverlays: boolean;
   toggleMapOverlays: () => void;
 
@@ -241,6 +244,11 @@ const storeInitializer: StateCreator<AppState, [], []> = (set) => ({
       newMarkets.set(waypointSymbol, market);
       return { markets: newMarkets };
     }),
+  marketIntel: new Map(),
+  setMarketIntel: (marketData) =>
+    set(() => ({
+      marketIntel: new Map(marketData.map((entry) => [entry.waypointSymbol, entry])),
+    })),
   showMapOverlays: false,
   toggleMapOverlays: () => set((state) => ({ showMapOverlays: !state.showMapOverlays })),
 

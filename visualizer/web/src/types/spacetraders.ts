@@ -225,17 +225,17 @@ export interface Daemon {
 }
 
 export interface MarketGood {
-  good_symbol: string;
+  symbol: string;
   supply: MarketSupply;
-  activity: string;
-  purchase_price: number;
-  sell_price: number;
-  trade_volume: number;
+  activity: string | null;
+  purchasePrice: number;
+  sellPrice: number;
+  tradeVolume: number;
 }
 
 export interface MarketData {
-  waypoint_symbol: string;
-  last_updated: string;
+  waypointSymbol: string;
+  lastUpdated: string;
   goods: MarketGood[];
 }
 
