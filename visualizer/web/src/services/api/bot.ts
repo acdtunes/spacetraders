@@ -38,9 +38,35 @@ export async function getDaemons(): Promise<Daemon[]> {
 /**
  * Get market data for system
  */
+type RawMarketGood = {
+  good_symbol: string;
+  supply: string;
+  activity: string | null;
+  purchase_price: number;
+  sell_price: number;
+  trade_volume: number;
+};
+
+type RawMarketData = {
+  waypoint_symbol: string;
+  last_updated: string;
+  goods: RawMarketGood[];
+};
+
 export async function getMarketData(systemSymbol: string): Promise<MarketData[]> {
-  const response = await fetchApi<{ markets: MarketData[] }>(`/bot/markets/${systemSymbol}`);
-  return response.markets;
+  const response = await fetchApi<{ markets: RawMarketData[] }>(`/bot/markets/${systemSymbol}`);
+  return response.markets.map((market) => ({
+    waypointSymbol: market.waypoint_symbol,
+    lastUpdated: market.last_updated,
+    goods: market.goods.map((good) => ({
+      symbol: good.good_symbol,
+      supply: good.supply as MarketData['goods'][number]['supply'],
+      activity: good.activity,
+      purchasePrice: good.purchase_price,
+      sellPrice: good.sell_price,
+      tradeVolume: good.trade_volume,
+    })),
+  }));
 }
 
 /**
