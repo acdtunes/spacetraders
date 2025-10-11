@@ -8,6 +8,7 @@ export function useBotPolling() {
     selectedPlayerId,
     setAssignments,
     setMarketFreshness,
+    setMarketIntel,
     setScoutTours,
     setTradeOpportunities,
     setAvailablePlayers,
@@ -43,6 +44,7 @@ export function useBotPolling() {
       selectedPlayerId,
       setAssignments,
       setMarketFreshness,
+      setMarketIntel,
       setScoutTours,
       setTradeOpportunities,
       setAvailablePlayers,
@@ -54,7 +56,7 @@ export function useBotPolling() {
       console.log('[useBotPolling] Stopping polling service (cleanup)');
       service.stop();
     };
-  }, [currentSystem, selectedPlayerId, setAssignments, setMarketFreshness, setScoutTours, setTradeOpportunities, setAvailablePlayers, setPlayerMappings]);
+  }, [currentSystem, selectedPlayerId, setAssignments, setMarketFreshness, setMarketIntel, setScoutTours, setTradeOpportunities, setAvailablePlayers, setPlayerMappings]);
 
   return serviceRef.current;
 }
