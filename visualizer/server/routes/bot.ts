@@ -196,7 +196,7 @@ router.get('/markets/:systemSymbol/freshness', async (req, res) => {
   }
 });
 
-// Get scout tours for system (extract subsets from optimized tour)
+// Get scout tours for system (fetch individually optimized tours from cache)
 router.get('/tours/:systemSymbol', async (req, res) => {
   try {
     const db = getDatabase();
@@ -219,70 +219,109 @@ router.get('/tours/:systemSymbol', async (req, res) => {
       ORDER BY ship_symbol
     `).all(systemSymbol, playerId, playerId);
 
-    // Get the most recent optimized tour for this system (ortools preferred, then 2opt)
-    // This is the full optimized tour containing all markets
-    const fullTour = db.prepare(`
-      SELECT
-        system,
-        markets,
-        algorithm,
-        start_waypoint,
-        tour_order,
-        total_distance,
-        calculated_at
-      FROM tour_cache
-      WHERE system = ?
-        AND algorithm IN ('ortools', '2opt')
-      ORDER BY
-        CASE algorithm
-          WHEN 'ortools' THEN 1
-          WHEN '2opt' THEN 2
-          ELSE 3
-        END,
-        calculated_at DESC
-      LIMIT 1
-    `).get(systemSymbol);
-
-    db.close();
-
-    // Extract tour subsets for each scout from the full optimized tour
+    // For each scout assignment, find its individually optimized tour from cache
+    // Match by EXACT market list (sorted) to ensure we get the correct optimized tour
     const tours = assignments.map((a: any) => {
       const assignedMarkets = JSON.parse(a.markets);
-      const assignedSet = new Set(assignedMarkets);
 
-      if (fullTour) {
-        // Extract subset from the optimized tour in optimized order
-        const tour = fullTour as any;
-        const fullTourOrder = JSON.parse(tour.tour_order);
+      // CRITICAL: Cache key must match daemon's format (ortools_router.py:618-621)
+      // Daemon removes start waypoint from markets list before caching (line 606).
+      // Formula: cache_key = (system, markets_excluding_start, algorithm, start_waypoint)
+      // Example: 26 assigned markets → cache with 25 markets + start parameter
 
-        // Filter the optimized tour to only include this scout's assigned markets
-        // This preserves the optimized visit order
-        const scoutTourOrder = fullTourOrder.filter((waypoint: string) =>
-          assignedSet.has(waypoint)
-        );
+      // Extract first market as tour start (matches operations/routing.py:371)
+      const tourStart = assignedMarkets[0];
 
-        // Calculate distance for this subset
-        // (Note: This is approximate - the full tour distance doesn't apply to subsets)
+      // Remove start from markets for cache lookup (matches daemon behavior at ortools_router.py:606)
+      const marketsForLookup = assignedMarkets.filter((m: string) => m !== tourStart);
+
+      // Sort markets for cache key matching (database stores sorted markets)
+      // Note: Python's json.dumps() adds spaces after colons/commas, so we must match that format
+      const marketsSorted = JSON.stringify(marketsForLookup.sort(), null, 0).replace(/,/g, ', ');
+
+      // Find cached tour that exactly matches this scout's markets
+      // CRITICAL: Daemon caches with different start_waypoint based on return_to_start flag:
+      //   - return_to_start=True  → start_waypoint IS NULL
+      //   - return_to_start=False → start_waypoint = tourStart
+      // Try both patterns (prefer return_to_start=True which is typical for scouts)
+      let cachedTour = db.prepare(`
+        SELECT
+          system,
+          markets,
+          algorithm,
+          start_waypoint,
+          tour_order,
+          total_distance,
+          calculated_at
+        FROM tour_cache
+        WHERE system = ?
+          AND markets = ?
+          AND algorithm IN ('ortools', '2opt')
+          AND start_waypoint IS NULL
+        ORDER BY
+          CASE algorithm
+            WHEN 'ortools' THEN 1
+            WHEN '2opt' THEN 2
+            ELSE 3
+          END,
+          calculated_at DESC
+        LIMIT 1
+      `).get(systemSymbol, marketsSorted);
+
+      // If not found with NULL start_waypoint, try with specific start
+      if (!cachedTour) {
+        cachedTour = db.prepare(`
+          SELECT
+            system,
+            markets,
+            algorithm,
+            start_waypoint,
+            tour_order,
+            total_distance,
+            calculated_at
+          FROM tour_cache
+          WHERE system = ?
+            AND markets = ?
+            AND algorithm IN ('ortools', '2opt')
+            AND start_waypoint = ?
+          ORDER BY
+            CASE algorithm
+              WHEN 'ortools' THEN 1
+              WHEN '2opt' THEN 2
+              ELSE 3
+            END,
+            calculated_at DESC
+          LIMIT 1
+        `).get(systemSymbol, marketsSorted, tourStart);
+      }
+
+      if (cachedTour) {
+        // Found exact cached tour for this scout's markets - use it directly
+        const tour = cachedTour as any;
+        const tourOrder = JSON.parse(tour.tour_order);
+
         return {
           system: tour.system,
           markets: assignedMarkets,
-          algorithm: tour.algorithm, // Return actual algorithm used (ortools or 2opt)
-          start_waypoint: scoutTourOrder[0] || assignedMarkets[0],
-          tour_order: scoutTourOrder,
-          total_distance: 0, // Would need to recalculate based on graph
+          algorithm: tour.algorithm,
+          start_waypoint: tour.start_waypoint,
+          tour_order: tourOrder,
+          total_distance: tour.total_distance,
           calculated_at: tour.calculated_at,
           ship_symbol: a.ship_symbol,
           daemon_id: a.daemon_id,
           player_id: a.player_id,
         };
       } else {
-        // Fallback: no optimized tour found, use assignment order
+        // No cached tour found for this exact market list
+        // Return unoptimized tour_order as fallback
+        // DO NOT filter full tour - that causes crossing edges!
         return {
           system: systemSymbol,
           markets: assignedMarkets,
-          algorithm: 'assigned',
+          algorithm: 'unoptimized',
           start_waypoint: assignedMarkets[0],
-          tour_order: assignedMarkets,
+          tour_order: assignedMarkets, // Use unoptimized assignment order
           total_distance: 0,
           calculated_at: a.assigned_at,
           ship_symbol: a.ship_symbol,
@@ -291,6 +330,8 @@ router.get('/tours/:systemSymbol', async (req, res) => {
         };
       }
     });
+
+    db.close();
 
     res.json({ tours });
   } catch (error) {
