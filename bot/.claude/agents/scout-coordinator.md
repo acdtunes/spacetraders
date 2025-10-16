@@ -334,6 +334,60 @@ Next Steps:
 - Stop coordinator with bot_scout_coordinator_stop when no longer needed
 ```
 
+## Captain's Log - Narrative Requirements
+
+**CRITICAL:** All scout operations MUST be logged with narrative prose explaining strategic decisions.
+
+### OPERATION_STARTED (After Coordinator Launch)
+```python
+mcp__spacetraders-bot__bot_captain_log_entry(
+    agent="AGENT_SYMBOL",
+    entry_type="OPERATION_STARTED",
+    operator="Scout Coordinator",
+    ship="PROBE-1,PROBE-2,PROBE-3",  # List all probes
+    daemon_id="scout-coordinator-{system}",
+    op_type="scout",
+    narrative="I deployed 3 probe ships (PROBE-1, PROBE-2, PROBE-3) for continuous market scouting in X1-HU87. The system contains 25 markets spread across a 180×120 unit area. I partitioned the markets geographically into 3 regions (8, 8, 9 markets each) to eliminate overlap and maximize coverage. Each probe received a 2-opt optimized subtour—PROBE-1 covers the northwest quadrant (estimated 9min/tour), PROBE-2 handles the eastern markets (8min/tour), and PROBE-3 scouts the southern region (10min/tour). With staggered start times, market intelligence will refresh every ~3 minutes on average, keeping data <10 minutes fresh for trading decisions."
+)
+```
+
+### OPERATION_COMPLETED (After Shutdown or Handoff)
+```python
+mcp__spacetraders-bot__bot_captain_log_entry(
+    agent="AGENT_SYMBOL",
+    entry_type="OPERATION_COMPLETED",
+    operator="Scout Coordinator",
+    ship="PROBE-1,PROBE-2,PROBE-3",
+    narrative="Continuous scouting operation in X1-HU87 ran for 4 hours with 3 probe ships. The geographic partitioning worked flawlessly—zero overlap detected in daemon logs. PROBE-1 completed 27 tours (avg 8.9min), PROBE-2 completed 30 tours (avg 8.0min), PROBE-3 completed 24 tours (avg 10.0min, slightly slower due to one extra market). Database shows 121 goods updated per tour cycle, confirming all markets being visited. Market data staleness never exceeded 11 minutes during the entire operation.",
+    insights="Geographic partitioning scales well—3 probes kept 25 markets fresh with minimal idle time. The 2-opt optimizer reduced tour times by ~23% compared to greedy algorithm (tested on PROBE-2). Probe speed variance matters: PROBE-3's speed-7 engine added 2min/tour vs PROBE-1's speed-10 engine. System shape was roughly rectangular, making vertical partitioning ideal (horizontal would create uneven travel distances).",
+    recommendations="For systems >30 markets, deploy 4+ probes to maintain <10min freshness. Upgrade PROBE-3 engine to speed-10 for better parity. Monitor daemon logs every 2-3 hours—one daemon crashed at hour 2.5 due to API timeout, auto-restarted successfully. Consider horizontal partitioning for elongated systems (aspect ratio >2:1). This scouting data enables Trading Operator to identify 5+ profitable routes with confidence."
+)
+```
+
+### CRITICAL_ERROR (If Coordinator Fails)
+```python
+mcp__spacetraders-bot__bot_captain_log_entry(
+    agent="AGENT_SYMBOL",
+    entry_type="CRITICAL_ERROR",
+    operator="Scout Coordinator",
+    ship="PROBE-1,PROBE-2,PROBE-3",
+    narrative="Scout coordinator startup failed in X1-HU87 during geographic partitioning phase. DIAGNOSIS: The system graph was missing 3 markets (total 25 in graph, but API shows 28 markets exist). Coordinator attempted to partition incomplete data, resulting in 3 markets never being visited. Root cause: Graph build operation only scanned waypoints with trait='MARKETPLACE' but missed 3 waypoints with trait='EXCHANGE' that also sell goods. PROBE-1 and PROBE-2 started successfully but their routes excluded the missing markets. PROBE-3 daemon failed to start due to empty partition assignment.",
+    error="GraphIncompleteError: System graph missing 3 EXCHANGE waypoints. Partitioning algorithm assigned empty region to PROBE-3.",
+    resolution="IMMEDIATE: Stopped PROBE-1 and PROBE-2 daemons. Running graph rebuild with corrected filters to include both MARKETPLACE and EXCHANGE traits. Will retry coordinator start after graph update completes. LONG-TERM FIX: GraphBuilder must scan for all market-capable traits, not just MARKETPLACE. Add validation step in coordinator to verify graph waypoint count matches API market count before partitioning."
+)
+```
+
+### Key Narrative Requirements:
+- **Explain WHY** partitioning decisions were made (system shape, probe count, market distribution)
+- **Quantify performance** (tour times, market freshness, staleness metrics)
+- **Share strategic context** (how this enables trading operations, data quality)
+- **Document adaptations** (daemon restarts, route adjustments)
+- **Provide actionable insights** (what worked, what didn't, scaling recommendations)
+
+**DO NOT log PERFORMANCE_SUMMARY** - the operations code handles that automatically after calculating metrics.
+
+---
+
 ## Completion Checklist
 
 Before reporting mission complete:
@@ -342,6 +396,7 @@ Before reporting mission complete:
 - ✅ Geographic partitioning completed (verified in logs)
 - ✅ 2-opt tour optimization applied to all ships
 - ✅ Continuous scout daemons running
+- ✅ **OPERATION_STARTED logged with narrative**
 - ✅ Flag Captain briefed on performance metrics
 - ✅ Monitoring instructions provided
 

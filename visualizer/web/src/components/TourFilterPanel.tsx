@@ -8,6 +8,8 @@ interface TourFilterPanelProps {
   onToggleTour: (tourId: string) => void;
   onShowAll: () => void;
   onHideAll: () => void;
+  showMarketFreshness: boolean;
+  onToggleMarketFreshness: () => void;
 }
 
 /**
@@ -50,6 +52,8 @@ export const TourFilterPanel = ({
   onToggleTour,
   onShowAll,
   onHideAll,
+  showMarketFreshness,
+  onToggleMarketFreshness,
 }: TourFilterPanelProps) => {
   const sortedTours = useMemo(() => {
     return [...tours].sort((a, b) => a.system.localeCompare(b.system));
@@ -89,7 +93,18 @@ export const TourFilterPanel = ({
         </div>
       </div>
 
-      <div className="space-y-2 max-h-64 overflow-y-auto">
+      <button
+        onClick={onToggleMarketFreshness}
+        className={`w-full mb-3 px-2 py-1 rounded border text-[11px] transition-colors ${
+          showMarketFreshness
+            ? 'border-emerald-500 text-emerald-300 bg-emerald-500/10'
+            : 'border-gray-600 text-gray-400 hover:text-gray-200 hover:border-gray-500'
+        }`}
+      >
+        Market Freshness
+      </button>
+
+      <div className="space-y-2 max-h-60 overflow-y-auto">
         {sortedTours.map((tour, index) => {
           const tourId = getTourId(tour);
           const tourLabel = getTourLabel(tour);
@@ -107,14 +122,21 @@ export const TourFilterPanel = ({
                 onChange={() => onToggleTour(tourId)}
                 className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-600 focus:ring-2 focus:ring-blue-500 focus:ring-offset-0"
               />
-              <div
-                className="w-3 h-3 rounded-full flex-shrink-0"
-                style={{ backgroundColor: color }}
-              />
-              <span className="text-sm text-gray-200 font-mono flex-1">
-                {tour.system} - {tourLabel}
-              </span>
-              <span className="text-xs text-gray-400">
+              <div className="flex items-center gap-2 flex-1 min-w-0">
+                <div
+                  className="w-3 h-3 rounded-full flex-shrink-0"
+                  style={{ backgroundColor: color }}
+                />
+                <div className="flex flex-col flex-1 min-w-0">
+                  <span className="text-sm text-gray-200 font-mono truncate">
+                    {tourLabel}
+                  </span>
+                  <span className="text-[10px] uppercase text-gray-500 tracking-wide">
+                    {tour.system}
+                  </span>
+                </div>
+              </div>
+              <span className="text-xs text-gray-400 whitespace-nowrap">
                 {tour.tour_order.length} pts
               </span>
             </label>

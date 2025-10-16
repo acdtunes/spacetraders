@@ -18,14 +18,35 @@ export interface ApiRequestOptions extends RequestInit {
    * Defaults to true to match the SpaceTraders API responses.
    */
   parseJson?: boolean;
+  /**
+   * Maximum number of retry attempts for rate-limited requests (429 errors).
+   * Defaults to 3.
+   */
+  maxRetries?: number;
+  /**
+   * Base delay in milliseconds for exponential backoff.
+   * Defaults to 1000ms.
+   */
+  baseRetryDelay?: number;
 }
 
 class ApiClient {
   constructor(private readonly baseUrl: string) {}
 
   async request<T>(endpoint: string, options: ApiRequestOptions = {}): Promise<T> {
+    const { maxRetries = 3, baseRetryDelay = 1000 } = options;
+    return this.requestWithRetry<T>(endpoint, options, 0, maxRetries, baseRetryDelay);
+  }
+
+  private async requestWithRetry<T>(
+    endpoint: string,
+    options: ApiRequestOptions,
+    retryCount: number,
+    maxRetries: number,
+    baseRetryDelay: number
+  ): Promise<T> {
     const url = `${this.baseUrl}${endpoint}`;
-    const { parseJson = true, headers, ...fetchOptions } = options;
+    const { parseJson = true, headers, maxRetries: _, baseRetryDelay: __, ...fetchOptions } = options;
 
     let response: Response;
 
@@ -41,6 +62,17 @@ class ApiClient {
         undefined,
         error
       );
+    }
+
+    // Handle 429 rate limit with exponential backoff + jitter
+    if (response.status === 429 && retryCount < maxRetries) {
+      const delay = this.calculateBackoffWithJitter(baseRetryDelay, retryCount);
+      console.warn(
+        `Rate limited (429) on ${endpoint}. Retrying in ${delay}ms (attempt ${retryCount + 1}/${maxRetries})...`
+      );
+
+      await this.sleep(delay);
+      return this.requestWithRetry<T>(endpoint, options, retryCount + 1, maxRetries, baseRetryDelay);
     }
 
     if (!response.ok) {
@@ -66,6 +98,21 @@ class ApiClient {
     }
 
     return (await response.json()) as T;
+  }
+
+  /**
+   * Calculate exponential backoff delay with jitter.
+   * Formula: baseDelay * (2^retryCount) + random jitter
+   * Jitter helps prevent thundering herd problem.
+   */
+  private calculateBackoffWithJitter(baseDelay: number, retryCount: number): number {
+    const exponentialDelay = baseDelay * Math.pow(2, retryCount);
+    const jitter = Math.random() * baseDelay * 0.5; // 0-50% of base delay
+    return Math.floor(exponentialDelay + jitter);
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   private buildHeaders(headers: HeadersInit | undefined, body: BodyInit | null | undefined): HeadersInit {

@@ -1,14 +1,9 @@
 {
   "system": "X1-UF16",
   "ships": [
-    "STORMWATCH-2",
-    "STORMWATCH-3",
-    "STORMWATCH-4",
-    "STORMWATCH-5",
-    "STORMWATCH-6",
-    "STORMWATCH-7"
+    "STORMWARDEN-2"
   ],
   "algorithm": "2opt",
   "reconfigure": false,
-  "last_updated": "2025-10-07T03:23:29.997734"
+  "last_updated": "2025-10-10T16:07:49.929383+00:00"
 }

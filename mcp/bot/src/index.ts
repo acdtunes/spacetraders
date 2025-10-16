@@ -659,6 +659,22 @@ class SpaceTradersBotServer {
         }
         break;
       }
+      case "bot_fleet_trade_optimize": {
+        this.ensureArgs(name, args, ["player_id", "ships", "system"]);
+        command.push(
+          "fleet-trade-optimize",
+          "--player-id",
+          String(args.player_id),
+          "--ships",
+          String(args.ships),
+          "--system",
+          String(args.system)
+        );
+        if (args.max_stops !== undefined) {
+          command.push("--max-stops", String(args.max_stops));
+        }
+        break;
+      }
       case "bot_multileg_trade": {
         this.ensureArgs(name, args, ["player_id", "ship"]);
         // Auto-generate daemon ID if not provided
@@ -686,6 +702,16 @@ class SpaceTradersBotServer {
         if (args.duration !== undefined) {
           command.push("--duration", String(args.duration));
         }
+        // Fixed-route mode parameters (optional)
+        if (args.good !== undefined) {
+          command.push("--good", String(args.good));
+        }
+        if (args.buy_from !== undefined) {
+          command.push("--buy-from", String(args.buy_from));
+        }
+        if (args.sell_to !== undefined) {
+          command.push("--sell-to", String(args.sell_to));
+        }
         break;
       }
       case "bot_negotiate_contract": {
@@ -700,24 +726,44 @@ class SpaceTradersBotServer {
         break;
       }
       case "bot_fulfill_contract": {
-        this.ensureArgs(name, args, ["player_id", "ship", "contract_id"]);
-        // Auto-generate daemon ID if not provided
-        const daemonId = `contract-${String(args.ship)}-${Date.now()}`;
-        command.push(
-          "daemon",
-          "start",
-          "--player-id",
-          String(args.player_id),
-          "--daemon-id",
-          daemonId,
-          "contract",
-          "--ship",
-          String(args.ship),
-          "--contract-id",
-          String(args.contract_id)
-        );
-        if (args.buy_from) {
-          command.push("--buy-from", String(args.buy_from));
+        this.ensureArgs(name, args, ["player_id", "ship"]);
+
+        // Batch mode: multiple contracts
+        if (args.contract_count && Number(args.contract_count) > 1) {
+          command.push(
+            "contract",
+            "--player-id",
+            String(args.player_id),
+            "--ship",
+            String(args.ship),
+            "--contract-count",
+            String(args.contract_count)
+          );
+          if (args.buy_from) {
+            command.push("--buy-from", String(args.buy_from));
+          }
+        } else {
+          // Single contract with daemon wrapper
+          if (!args.contract_id) {
+            throw new Error("contract_id is required when contract_count is not specified or is 1");
+          }
+          const daemonId = `contract-${String(args.ship)}-${Date.now()}`;
+          command.push(
+            "daemon",
+            "start",
+            "--player-id",
+            String(args.player_id),
+            "--daemon-id",
+            daemonId,
+            "contract",
+            "--ship",
+            String(args.ship),
+            "--contract-id",
+            String(args.contract_id)
+          );
+          if (args.buy_from) {
+            command.push("--buy-from", String(args.buy_from));
+          }
         }
         break;
       }
@@ -766,6 +812,26 @@ class SpaceTradersBotServer {
           "--system",
           String(args.system)
         );
+        break;
+      }
+      case "bot_mining_optimize": {
+        this.ensureArgs(name, args, ["player_id", "system"]);
+        command.push(
+          "mining-optimize",
+          "--player-id",
+          String(args.player_id),
+          "--system",
+          String(args.system)
+        );
+        if (args.ships) {
+          command.push("--ships", String(args.ships));
+        }
+        if (args.algorithm) {
+          command.push("--algorithm", String(args.algorithm));
+        }
+        if (args.output) {
+          command.push("--output", String(args.output));
+        }
         break;
       }
       case "bot_daemon_start": {
@@ -1022,6 +1088,15 @@ class SpaceTradersBotServer {
         if (args.op_type) {
           command.push("--op-type", String(args.op_type));
         }
+        if (args.narrative) {
+          command.push("--narrative", String(args.narrative));
+        }
+        if (args.insights) {
+          command.push("--insights", String(args.insights));
+        }
+        if (args.recommendations) {
+          command.push("--recommendations", String(args.recommendations));
+        }
         if (args.error) {
           command.push("--error", String(args.error));
         }
@@ -1067,13 +1142,18 @@ class SpaceTradersBotServer {
         if (args.algorithm) {
           command.push("--algorithm", String(args.algorithm));
         }
+        if (args.exclude_markets) {
+          command.push("--exclude-markets", String(args.exclude_markets));
+        }
         break;
       }
       case "bot_scout_coordinator_stop": {
-        this.ensureArgs(name, args, ["system"]);
+        this.ensureArgs(name, args, ["player_id", "system"]);
         command.push(
           "scout-coordinator",
           "stop",
+          "--player-id",
+          String(args.player_id),
           "--system",
           String(args.system)
         );

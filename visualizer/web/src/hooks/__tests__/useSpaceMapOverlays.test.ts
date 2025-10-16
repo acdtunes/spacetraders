@@ -68,9 +68,12 @@ const buildMarket = (): Market => ({
 const defaultParams = {
   hoveredShip: null,
   selectedObject: null,
+  selectedShip: null,
+  selectedWaypoint: null,
   ships: [buildShip()],
   waypoints: new Map([[ 'X1-TEST-A1', buildWaypoint() ]]),
   markets: new Map([[ 'X1-TEST-A1', buildMarket() ]]),
+  marketIntel: new Map(),
   projectToScreen: () => ({ x: 100, y: 200 }),
   getWaypointPosition: () => ({ x: 10, y: 5 }),
   getShipRenderPosition: () => ({ x: 10, y: 5 }),
@@ -86,7 +89,7 @@ describe('useSpaceMapOverlays', () => {
   it('returns null tooltip when nothing selected or hovered', () => {
     const { result } = renderHook(() => useSpaceMapOverlays(defaultParams));
     expect(result.current.shipTooltip).toBeNull();
-    expect(result.current.selectionOverlay).toBeNull();
+    expect(result.current.selectionOverlays).toEqual([]);
   });
 
   it('returns ship tooltip when hovered', () => {
@@ -103,9 +106,10 @@ describe('useSpaceMapOverlays', () => {
     const params = {
       ...defaultParams,
       selectedObject: { type: 'waypoint', symbol: 'X1-TEST-A1', x: 0, y: 0 },
+      selectedWaypoint: buildWaypoint(),
     } as const;
     const { result } = renderHook(() => useSpaceMapOverlays(params));
-    expect(result.current.selectionOverlay).toMatchObject({ type: 'waypoint', size: 18 });
+    expect(result.current.selectionOverlays[0]).toMatchObject({ type: 'waypoint', size: 18 });
   });
 
   it('returns waypoint tooltip with market data', () => {
@@ -130,12 +134,33 @@ describe('useSpaceMapOverlays', () => {
       ],
     ]);
 
+    const intel = new Map([
+      [
+        'X1-TEST-A1',
+        {
+          waypointSymbol: 'X1-TEST-A1',
+          lastUpdated: new Date().toISOString(),
+          goods: [
+            {
+              symbol: 'IRON',
+              supply: 'HIGH',
+              activity: 'ACTIVE',
+              purchasePrice: 50,
+              sellPrice: 200,
+              tradeVolume: 100,
+            },
+          ],
+        },
+      ],
+    ]);
+
     const waypointWithMarket = buildWaypoint({ traits: [{ symbol: 'MARKETPLACE', name: 'Marketplace', description: '' }] });
 
     const params = {
       ...defaultParams,
       waypoints: new Map([[waypointWithMarket.symbol, waypointWithMarket]]),
       markets,
+      marketIntel: intel,
       waypointTooltipAnchor: { symbol: waypointWithMarket.symbol, worldX: waypointWithMarket.x, worldY: waypointWithMarket.y },
       getWaypointOpportunities: (_symbol: string, inputMarkets: Map<string, Market>) => {
         expect(inputMarkets).toBe(markets);
@@ -145,6 +170,7 @@ describe('useSpaceMapOverlays', () => {
     } as const;
     const { result } = renderHook(() => useSpaceMapOverlays(params));
     expect(result.current.waypointTooltip?.marketData?.opportunities).toEqual(['IRON: +150 cr/unit']);
+    expect(result.current.waypointTooltip?.intel?.goods[0]).toMatchObject({ symbol: 'IRON', spread: 150 });
     expect(result.current.waypointTooltipPosition).toEqual({ left: 112, top: 188 });
   });
 });

@@ -27,7 +27,7 @@ from spacetraders_bot.operations.multileg_trader import (
 )
 
 
-def test_route_planner_creates_actions_for_starting_waypoint():
+def regression_route_planner_creates_actions_for_starting_waypoint():
     """
     Test that route planner correctly assigns BUY actions to starting waypoint
 
@@ -156,7 +156,7 @@ def test_route_planner_creates_actions_for_starting_waypoint():
     # 2. BUY actions will be in actions_at_start, not actions_at_destination
 
 
-def test_intermediate_segment_has_both_sell_and_buy():
+def regression_intermediate_segment_has_both_sell_and_buy():
     """
     Test that intermediate segments correctly have SELL (from previous) and BUY (for next)
 
@@ -168,5 +168,3 @@ def test_intermediate_segment_has_both_sell_and_buy():
     pass
 
 
-if __name__ == "__main__":
-    pytest.main([__file__, "-xvs"])

@@ -30,6 +30,11 @@ def coordinator_start_operation(args):
     # Parse ships
     ships = [s.strip() for s in args.ships.split(',')]
 
+    # Parse exclude_markets (if provided)
+    exclude_markets = None
+    if hasattr(args, 'exclude_markets') and args.exclude_markets:
+        exclude_markets = [m.strip() for m in args.exclude_markets.split(',')]
+
     # Get token from database
     db = get_database()
     with db.connection() as conn:
@@ -51,7 +56,7 @@ def coordinator_start_operation(args):
                 ships=ships,
                 token=token,
                 player_id=args.player_id,
-                algorithm=args.algorithm
+                exclude_markets=exclude_markets
             )
 
             # Save configuration
@@ -255,12 +260,10 @@ def coordinator_status_operation(args):
             config = json.load(f)
 
         ships = config.get('ships', [])
-        algorithm = config.get('algorithm', 'greedy')
 
         print("=" * 70)
         print(f"SCOUT COORDINATOR STATUS - {args.system}")
         print("=" * 70)
-        print(f"Algorithm: {algorithm.upper()}")
         print(f"Ships: {len(ships)}")
         print()
 

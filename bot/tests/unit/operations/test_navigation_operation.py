@@ -12,7 +12,7 @@ def ns(**kwargs):
 
 @patch("spacetraders_bot.operations.navigation.SmartNavigator")
 @patch("spacetraders_bot.operations.navigation.ShipController")
-def test_navigate_ship_success(mock_ship_cls, mock_nav_cls):
+def regression_navigate_ship_success(mock_ship_cls, mock_nav_cls):
     args = ns(ship="SHIP-1", destination="X1-TEST-B2")
     api = MagicMock()
     logger = MagicMock()
@@ -43,7 +43,7 @@ def test_navigate_ship_success(mock_ship_cls, mock_nav_cls):
 
 
 @patch("spacetraders_bot.operations.navigation.ShipController")
-def test_navigate_ship_same_location(mock_ship_cls):
+def regression_navigate_ship_same_location(mock_ship_cls):
     ship = mock_ship_cls.return_value
     status = {
         "nav": {
@@ -61,7 +61,7 @@ def test_navigate_ship_same_location(mock_ship_cls):
 
 
 @patch("spacetraders_bot.operations.navigation.ShipController")
-def test_navigate_ship_cross_system_fails(mock_ship_cls):
+def regression_navigate_ship_cross_system_fails(mock_ship_cls):
     ship = mock_ship_cls.return_value
     ship.get_status.return_value = {
         "nav": {
@@ -79,7 +79,7 @@ def test_navigate_ship_cross_system_fails(mock_ship_cls):
 
 @patch("spacetraders_bot.operations.navigation.SmartNavigator")
 @patch("spacetraders_bot.operations.navigation.ShipController")
-def test_navigate_ship_validation_failure(mock_ship_cls, mock_nav_cls):
+def regression_navigate_ship_validation_failure(mock_ship_cls, mock_nav_cls):
     ship = mock_ship_cls.return_value
     status = {
         "nav": {
@@ -98,7 +98,7 @@ def test_navigate_ship_validation_failure(mock_ship_cls, mock_nav_cls):
     logger.error.assert_called_with("Route validation failed: No fuel")
 
 
-def test_navigate_operation_success(monkeypatch):
+def regression_navigate_operation_success(monkeypatch):
     fake_db = MagicMock()
 
     class Conn:
@@ -121,7 +121,7 @@ def test_navigate_operation_success(monkeypatch):
     navigate_ship_mock.assert_called_once()
 
 
-def test_navigate_operation_missing_player(monkeypatch):
+def regression_navigate_operation_missing_player(monkeypatch):
     class Conn:
         def __enter__(self):
             return MagicMock(get_player_by_id=lambda *_: None)

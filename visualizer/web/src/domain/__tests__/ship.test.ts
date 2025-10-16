@@ -109,8 +109,8 @@ describe('Ship domain', () => {
 
     const position = Ship.interpolateTransitPosition(ship, waypoints);
     const distanceToWaypoint = Math.hypot(position.x - baseWaypoint.x, position.y - baseWaypoint.y);
-    const expectedRadius = Waypoint.getRadius(baseWaypoint) + CANVAS_CONSTANTS.ORBIT_DISTANCE_DEFAULT;
-    expect(Math.abs(distanceToWaypoint - expectedRadius)).toBeLessThan(0.01);
+    const expectedRadius = Waypoint.getRadius(baseWaypoint) + Waypoint.getOrbitDistance(baseWaypoint);
+    expect(distanceToWaypoint).toBeCloseTo(expectedRadius, 2);
   });
 
   it('clamps interpolation when progress exceeds destination orbit radius', () => {
@@ -150,15 +150,15 @@ describe('Ship domain', () => {
     const originWaypoint: WaypointType = {
       ...baseWaypoint,
       symbol: 'X1-TEST-A1',
-      x: 0,
-      y: 0,
+      x: -10,
+      y: 5,
     };
 
     const destinationWaypoint: WaypointType = {
       ...baseWaypoint,
       symbol: 'X1-TEST-A2',
-      x: 0,
-      y: 0,
+      x: 40,
+      y: 45,
     };
 
     const map = new Map<string, WaypointType>([
@@ -193,18 +193,8 @@ describe('Ship domain', () => {
       },
     };
 
-    const resolveWaypointPosition = (waypoint: WaypointType) => {
-      if (waypoint.symbol === originWaypoint.symbol) {
-        return { x: -10, y: 5 };
-      }
-      if (waypoint.symbol === destinationWaypoint.symbol) {
-        return { x: 40, y: 45 };
-      }
-      return { x: waypoint.x, y: waypoint.y };
-    };
-
     const position = Ship.getPosition(ship, map, {
-      waypointPositionResolver: resolveWaypointPosition,
+      waypointPositionResolver: (wp) => ({ x: wp.x, y: wp.y }),
     });
 
     expect(position.x).toBeCloseTo(15, 3);

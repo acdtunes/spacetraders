@@ -239,7 +239,6 @@ def _navigate_with_retries(
     success = context.navigator.execute_route(
         context.ship,
         destination,
-        prefer_cruise=True,
         operation_controller=context.controller,
     )
 
@@ -309,8 +308,8 @@ def mining_operation(args):
     - Checkpoint/resume on crash
     - Route validation before execution
     """
-    # Setup logging first
-    log_file = setup_logging("mining", args.ship, getattr(args, 'log_level', 'INFO'))
+    # Setup logging first (agent-scoped by player_id)
+    log_file = setup_logging("mining", args.ship, getattr(args, 'log_level', 'INFO'), player_id=args.player_id)
 
     logging.info("Initializing mining operation")
     logging.info(f"Player ID: {args.player_id}")

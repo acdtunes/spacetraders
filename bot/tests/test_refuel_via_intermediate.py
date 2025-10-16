@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from spacetraders_bot.core.routing import RouteOptimizer, TimeCalculator
 
 
-def test_refuel_at_intermediate_waypoint():
+def regression_refuel_at_intermediate_waypoint():
     """
     Test case: A2 → J62 via B33 with refuel stop
 
@@ -199,7 +199,7 @@ def test_refuel_at_intermediate_waypoint():
     print("="*80)
 
 
-def test_direct_route_without_intermediate():
+def regression_direct_route_without_intermediate():
     """
     Test case: Direct route when intermediate refuel not needed
 
@@ -281,10 +281,6 @@ def test_direct_route_without_intermediate():
     print("="*80)
 
 
-if __name__ == "__main__":
-    print("\n" + "="*80)
-    print("Running intermediate refuel tests...")
-    print("="*80)
 
     try:
         test_refuel_at_intermediate_waypoint()

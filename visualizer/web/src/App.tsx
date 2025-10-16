@@ -3,8 +3,11 @@ import { useStore } from './store/useStore';
 import { getAgents } from './services/api';
 import { usePolling } from './hooks/usePolling';
 import { useBotPolling } from './hooks/useBotPolling';
+import { useAgentPlayerSync } from './hooks/useAgentPlayerSync';
 import ServerStatus from './components/ServerStatus';
+import AgentCredits from './components/AgentCredits';
 import type { SpaceMapRef } from './components/SpaceMap';
+import LoaderScreen from './components/LoaderScreen';
 
 const SpaceMap = lazy(() => import('./components/SpaceMap'));
 const GalaxyView = lazy(() => import('./components/GalaxyView'));
@@ -49,6 +52,9 @@ function App() {
   // Start polling for bot operations
   useBotPolling();
 
+  // Auto-sync player filter with agent filter selection
+  useAgentPlayerSync();
+
   // Show welcome screen if no agents
   if (agents.length === 0) {
     return (
@@ -72,23 +78,16 @@ function App() {
       <ServerStatus />
       <div className="h-screen w-screen flex flex-col bg-black text-white">
         {/* Header */}
-        <header className="bg-gray-800 border-b border-gray-700 p-4 flex items-center justify-between">
-          <h1 className="text-2xl font-bold">SpaceTraders Fleet Visualization</h1>
+        <header className="bg-gray-800 border-b border-gray-700 p-4 relative flex items-center justify-end">
+          <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex justify-center">
+            <AgentCredits />
+          </div>
           <div className="flex items-center gap-4">
             {/* View Mode Toggle */}
-            <button
-              onClick={() => setViewMode(viewMode === 'system' ? 'galaxy' : 'system')}
-              className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded transition-colors text-sm font-medium"
-            >
-              {viewMode === 'system' ? '🌌 Galaxy View' : '🗺️ System View'}
-            </button>
-            <Suspense fallback={<div className="text-gray-500 text-sm">Loading…</div>}>
-              <SystemSelector />
-            </Suspense>
             <Suspense fallback={<div className="text-gray-500 text-sm">Agents…</div>}>
               <AgentManager />
             </Suspense>
-            {/* Scout Tours Toggle */}
+            {/* Markets Toggle */}
             <button
               onClick={toggleScoutTours}
               className={`px-3 py-2 rounded transition-colors text-sm font-semibold border ${
@@ -96,9 +95,9 @@ function App() {
                   ? 'bg-blue-600 hover:bg-blue-700 text-white border-blue-500'
                   : 'bg-gray-700 hover:bg-gray-600 text-gray-200 border-gray-600'
               }`}
-              title="Toggle scout tour visualization"
+              title="Toggle market overlays and tours"
             >
-              🗺️ Tours
+              🛒 Markets
             </button>
           </div>
         </header>
@@ -109,7 +108,14 @@ function App() {
           <main className="w-full h-full">
             {viewMode === 'system' ? (
               currentSystem ? (
-                <Suspense fallback={<div className="w-full h-full flex items-center justify-center text-gray-500">Loading map…</div>}>
+                <Suspense
+                  fallback={
+                    <LoaderScreen
+                      title="Preparing Map"
+                      message="Fetching system layout and ship telemetry"
+                    />
+                  }
+                >
                   <SpaceMap ref={spaceMapRef} />
                 </Suspense>
               ) : (

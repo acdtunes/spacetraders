@@ -66,7 +66,7 @@ mcp_server = importlib.import_module("mcp_server")
 market_data = importlib.import_module("spacetraders_bot.core.market_data")
 
 
-def test_market_waypoint_lists_all_goods(monkeypatch):
+def regression_market_waypoint_lists_all_goods(monkeypatch):
     """Waypoint tool should format multiple goods into readable text."""
 
     def fake_get_waypoint_goods(waypoint_symbol, *, db=None, db_path=None):
@@ -115,7 +115,7 @@ def test_market_waypoint_lists_all_goods(monkeypatch):
     asyncio.run(_run())
 
 
-def test_market_find_sellers_formats_results(monkeypatch):
+def regression_market_find_sellers_formats_results(monkeypatch):
     """Selling search should show ordered list with pricing."""
 
     def fake_find_markets_selling(
@@ -171,7 +171,7 @@ def test_market_find_sellers_formats_results(monkeypatch):
     asyncio.run(_run())
 
 
-def test_market_summarize_handles_missing_data(monkeypatch):
+def regression_market_summarize_handles_missing_data(monkeypatch):
     """Summary tool should report when no data available."""
 
     def fake_summarize_good(good_symbol, *, system=None, db=None, db_path=None):

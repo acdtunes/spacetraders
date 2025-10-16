@@ -1,5 +1,5 @@
 import type { CSSProperties } from 'react';
-import type { Waypoint as WaypointType } from '../types/spacetraders';
+import type { Waypoint as WaypointType, MarketSupply } from '../types/spacetraders';
 import { WaypointTraits } from './WaypointTraits';
 import { WaypointMarketplace } from './WaypointMarketplace';
 
@@ -13,6 +13,18 @@ export interface WaypointTooltipData {
     importsCount: number;
     exportsCount: number;
     opportunities: string[];
+  } | null;
+  intel: {
+    lastUpdated: string;
+    goods: Array<{
+      symbol: string;
+      supply: MarketSupply;
+      activity: string | null;
+      purchasePrice: number;
+      sellPrice: number;
+      tradeVolume: number;
+      spread: number;
+    }>;
   } | null;
 }
 
@@ -51,7 +63,11 @@ export const WaypointTooltipOverlay = ({ tooltip, position }: WaypointTooltipOve
         <WaypointTraits symbol={tooltip.symbol} traits={tooltip.traits} />
       </div>
 
-      <WaypointMarketplace hasMarketplace={tooltip.hasMarketplace} marketData={tooltip.marketData} />
+      <WaypointMarketplace
+        hasMarketplace={tooltip.hasMarketplace}
+        marketData={tooltip.marketData}
+        intel={tooltip.intel}
+      />
     </div>
   );
 };

@@ -45,7 +45,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from spacetraders_bot.core.routing import RouteOptimizer, TimeCalculator, FuelCalculator
 
 
-def test_safety_margin_bug_382_unit_cruise():
+def regression_safety_margin_bug_382_unit_cruise():
     """
     Test case: B33 → J62 with 19 fuel at fuel station
 
@@ -208,7 +208,7 @@ def test_safety_margin_bug_382_unit_cruise():
     print("="*80 + "\n")
 
 
-def test_safety_margin_bug_boundary_case():
+def regression_safety_margin_bug_boundary_case():
     """
     Test boundary case: exactly at capacity threshold
 
@@ -302,7 +302,7 @@ def test_safety_margin_bug_boundary_case():
     print("="*80 + "\n")
 
 
-def test_legitimate_drift_still_allowed():
+def regression_legitimate_drift_still_allowed():
     """
     Test that legitimate DRIFT use cases still work
 
@@ -393,11 +393,6 @@ def test_legitimate_drift_still_allowed():
     print("="*80 + "\n")
 
 
-if __name__ == "__main__":
-    print("\n" + "="*80)
-    print("CRITICAL BUG FIX TEST SUITE")
-    print("Safety margin prevents CRUISE selection at fuel stations")
-    print("="*80)
 
     try:
         # Test 1: Main bug reproduction (382u case from production)

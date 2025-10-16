@@ -134,12 +134,21 @@ class DaemonManager:
         log_file, err_file = self._prepare_log_files(daemon_id, command)
         stdout_handle, stderr_handle = self._open_log_streams(log_file, err_file)
 
+        # CRITICAL FIX: Inject -B flag for Python commands to disable bytecode cache
+        # This ensures daemons ALWAYS use fresh source code, never stale .pyc files
+        patched_command = self._inject_python_no_cache_flag(command)
+
+        # Prepare environment with PYTHONDONTWRITEBYTECODE to prevent cache writes
+        env = os.environ.copy()
+        env['PYTHONDONTWRITEBYTECODE'] = '1'
+
         # Start process in background
         process = subprocess.Popen(
-            command,
+            patched_command,
             stdout=stdout_handle,
             stderr=stderr_handle,
             cwd=cwd or os.getcwd(),
+            env=env,  # Pass environment with cache disabled
             start_new_session=True  # Detach from parent
         )
 
@@ -183,6 +192,39 @@ class DaemonManager:
         stdout_handle = open(log_file, 'a')
         stderr_handle = open(err_file, 'a')
         return stdout_handle, stderr_handle
+
+    def _inject_python_no_cache_flag(self, command: List[str]) -> List[str]:
+        """
+        Inject -B flag into Python commands to disable bytecode cache
+
+        CRITICAL: Prevents daemons from using stale .pyc files after code updates.
+        Without this, daemons can execute OLD code logic even after fixes are deployed.
+
+        Examples:
+            ['python3', 'script.py'] → ['python3', '-B', 'script.py']
+            ['python3', '-m', 'module'] → ['python3', '-B', '-m', 'module']
+            ['/usr/bin/python3.12', '-u', 'script.py'] → ['/usr/bin/python3.12', '-B', '-u', 'script.py']
+
+        Args:
+            command: Original command list
+
+        Returns:
+            Patched command with -B flag injected after python executable
+        """
+        if not command:
+            return command
+
+        # Check if first element is a Python interpreter
+        python_executables = ('python', 'python3', 'python3.12', 'python3.11', 'python3.10')
+        first_arg = os.path.basename(command[0])
+
+        if any(first_arg.startswith(exe) for exe in python_executables):
+            # Check if -B flag already present
+            if '-B' not in command:
+                # Inject -B immediately after Python executable (before other flags)
+                return [command[0], '-B'] + command[1:]
+
+        return command
 
     def stop(self, daemon_id: str, timeout: int = 10) -> bool:
         """

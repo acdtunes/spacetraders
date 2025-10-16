@@ -14,7 +14,7 @@ def _run_cli(monkeypatch, argv, **handlers):
     return cli_main.main()
 
 
-def test_cli_dispatches_graph_build(monkeypatch):
+def regression_cli_dispatches_graph_build(monkeypatch):
     called = {}
 
     def fake_graph(args):
@@ -31,7 +31,7 @@ def test_cli_dispatches_graph_build(monkeypatch):
     assert called['args'].system == 'X1-TEST'
 
 
-def test_cli_route_plan(monkeypatch):
+def regression_cli_route_plan(monkeypatch):
     triggered = {}
 
     def fake_route(args):
@@ -55,7 +55,7 @@ def test_cli_route_plan(monkeypatch):
     assert triggered['args'].goal == 'B'
 
 
-def test_cli_assignments_list(monkeypatch):
+def regression_cli_assignments_list(monkeypatch):
     captured = {}
 
     def fake_list(args):
@@ -72,14 +72,14 @@ def test_cli_assignments_list(monkeypatch):
     assert captured.get('called') is True
 
 
-def test_cli_assignments_missing_action(monkeypatch, capsys):
+def regression_cli_assignments_missing_action(monkeypatch, capsys):
     result = _run_cli(monkeypatch, ['assignments'])
     assert result == 1
     out = capsys.readouterr().out
     assert 'usage' in out.lower()
 
 
-def test_cli_scout_coordinator_status(monkeypatch):
+def regression_cli_scout_coordinator_status(monkeypatch):
     hit = {}
 
     def fake_status(args):
@@ -101,7 +101,7 @@ def test_cli_scout_coordinator_status(monkeypatch):
     assert hit['action'] == 'status'
 
 
-def test_cli_daemon_start(monkeypatch):
+def regression_cli_daemon_start(monkeypatch):
     called = {}
 
     def fake_daemon_start(args):

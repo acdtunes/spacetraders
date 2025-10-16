@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, useRef } from 'react';
 import Konva from 'konva';
 
 interface StageSize {
@@ -13,6 +13,8 @@ interface UseKonvaStageParams {
   onAnimationTick: () => void;
 }
 
+const isDev = import.meta.env.DEV;
+
 export function useKonvaStage({
   containerRef,
   layerRef,
@@ -20,22 +22,74 @@ export function useKonvaStage({
   onAnimationTick,
 }: UseKonvaStageParams): StageSize {
   const [stageSize, setStageSize] = useState<StageSize>({ width: 0, height: 0 });
+  const [layerReady, setLayerReady] = useState(false);
+  const animationRunningRef = useRef(false);
 
-  const layer = layerRef.current;
-
+  // Monitor layer availability
   useEffect(() => {
-    if (!layer) return;
+    const checkLayer = () => {
+      const layer = layerRef.current;
+      if (layer && !layerReady) {
+        if (isDev) console.log('useKonvaStage: Layer became ready');
+        setLayerReady(true);
+      } else if (!layer && layerReady) {
+        if (isDev) console.warn('useKonvaStage: Layer became unavailable');
+        setLayerReady(false);
+      }
+    };
 
-    const animation = new Konva.Animation(() => {
-      onAnimationTick();
-    }, layer);
+    checkLayer();
 
-    animation.start();
+    // Poll for layer availability (fallback for race conditions during mount)
+    const interval = setInterval(checkLayer, 100);
+
+    return () => clearInterval(interval);
+  }, [layerRef, layerReady]);
+
+  // Animation loop
+  useEffect(() => {
+    if (!layerReady) {
+      if (isDev && !animationRunningRef.current) {
+        console.warn('useKonvaStage: Waiting for layer to be ready...');
+      }
+      return;
+    }
+
+    const layer = layerRef.current;
+    if (!layer) {
+      if (isDev) console.error('useKonvaStage: Layer ready but not available (race condition)');
+      return;
+    }
+
+    let animation: Konva.Animation | null = null;
+
+    try {
+      animation = new Konva.Animation(() => {
+        try {
+          onAnimationTick();
+        } catch (error) {
+          console.error('Animation tick error:', error);
+          // Don't stop animation on tick errors - just log and continue
+        }
+      }, layer);
+
+      animation.start();
+      animationRunningRef.current = true;
+      if (isDev) console.log('✓ Konva animation started successfully');
+    } catch (error) {
+      console.error('Failed to start Konva animation:', error);
+      animationRunningRef.current = false;
+      return;
+    }
 
     return () => {
-      animation.stop();
+      if (animation) {
+        animation.stop();
+        animationRunningRef.current = false;
+        if (isDev) console.log('Konva animation stopped');
+      }
     };
-  }, [layer, onAnimationTick]);
+  }, [layerReady, layerRef, onAnimationTick]);
 
   const updateSize = useCallback((width: number, height: number) => {
     setStageSize((prev) => {

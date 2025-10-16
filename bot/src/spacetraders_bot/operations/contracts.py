@@ -12,6 +12,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 from spacetraders_bot.core.database import Database
 from spacetraders_bot.core.ship_controller import ShipController
 from spacetraders_bot.core.smart_navigator import SmartNavigator
+from spacetraders_bot.core.market_data import find_markets_selling
 from spacetraders_bot.operations.common import (
     setup_logging,
     format_credits,
@@ -24,9 +25,20 @@ from spacetraders_bot.operations.common import (
 from spacetraders_bot.operations.control import CircuitBreaker
 
 
-def evaluate_contract_profitability(contract: Dict, cargo_capacity: int) -> Tuple[bool, str, Dict]:
+def evaluate_contract_profitability(
+    contract: Dict,
+    cargo_capacity: int,
+    system: Optional[str] = None,
+    db: Optional[Database] = None
+) -> Tuple[bool, str, Dict]:
     """
     Evaluate if a contract is profitable based on ROI and net profit criteria.
+
+    Args:
+        contract: Contract data from API
+        cargo_capacity: Ship's cargo capacity
+        system: Optional system symbol for market price lookup
+        db: Optional database instance for market price lookup
 
     Returns:
         (is_profitable, reason, metrics)
@@ -52,41 +64,72 @@ def evaluate_contract_profitability(contract: Dict, cargo_capacity: int) -> Tupl
 
     trips = (units_remaining + cargo_capacity - 1) // cargo_capacity  # Ceiling division
 
-    # Estimate costs (conservative - assumes purchase required)
-    # Use 1500 cr/unit as conservative estimate for raw materials
-    estimated_unit_cost = 1500
-    estimated_purchase_cost = units_remaining * estimated_unit_cost
+    # Get real market price for the required resource
+    trade_symbol = delivery['tradeSymbol']
+    actual_unit_cost = None
+
+    if system and db:
+        # Query market database for cheapest price
+        try:
+            markets = find_markets_selling(
+                trade_symbol,
+                system=system,
+                limit=1,
+                db=db
+            )
+            if markets:
+                # Use purchase_price (what we pay to buy)
+                actual_unit_cost = markets[0].get('purchase_price')
+        except Exception as e:
+            # If market lookup fails, fall back to conservative estimate
+            logging.warning(f"Market price lookup failed for {trade_symbol}: {e}")
+
+    # Fall back to conservative estimate if no market data available
+    if actual_unit_cost is None:
+        # Use 5000 cr/unit as conservative high estimate
+        # (prevents accepting contracts with expensive goods like MEDICINE, ADVANCED_CIRCUITRY)
+        actual_unit_cost = 5000
+        price_source = "estimated (conservative)"
+    else:
+        price_source = f"market data ({system})"
+
+    # Calculate costs with real market prices
+    actual_purchase_cost = units_remaining * actual_unit_cost
 
     # Estimate fuel cost (conservative - 100 cr per trip for fuel)
     estimated_fuel_cost = trips * 100
 
-    total_estimated_cost = estimated_purchase_cost + estimated_fuel_cost
+    total_actual_cost = actual_purchase_cost + estimated_fuel_cost
 
     # Calculate profit and ROI
-    net_profit = total_payment - total_estimated_cost
-    roi = (net_profit / total_estimated_cost * 100) if total_estimated_cost > 0 else 0
+    net_profit = total_payment - total_actual_cost
+    roi = (net_profit / total_actual_cost * 100) if total_actual_cost > 0 else 0
 
     # Profitability criteria
-    min_profit = 5000
-    min_roi = 5.0
+    # Allow small losses (up to 5000 cr) to avoid opportunity cost
+    min_profit = -5000
+    min_roi = -100.0  # Effectively disabled (any ROI acceptable for small losses)
 
     metrics = {
         'total_payment': total_payment,
-        'estimated_cost': total_estimated_cost,
+        'estimated_cost': total_actual_cost,
         'net_profit': net_profit,
         'roi': roi,
         'units_remaining': units_remaining,
         'trips': trips,
+        'unit_cost': actual_unit_cost,
+        'price_source': price_source,
+        'trade_symbol': trade_symbol,
     }
 
     # Check profitability
     if net_profit < min_profit:
-        return False, f"Net profit {net_profit:,} cr < {min_profit:,} cr minimum", metrics
+        return False, f"Net profit {net_profit:,} cr < {min_profit:,} cr minimum (using {price_source})", metrics
 
     if roi < min_roi:
-        return False, f"ROI {roi:.1f}% < {min_roi}% minimum", metrics
+        return False, f"ROI {roi:.1f}% < {min_roi}% minimum (using {price_source})", metrics
 
-    return True, "Contract meets profitability criteria", metrics
+    return True, f"Contract meets profitability criteria (using {price_source})", metrics
 
 
 def batch_contract_operation(args, *, api=None):
@@ -95,7 +138,7 @@ def batch_contract_operation(args, *, api=None):
 
     Negotiates and fulfills multiple contracts in sequence, filtering by profitability.
     """
-    log_file = setup_logging("batch_contract", args.ship, getattr(args, 'log_level', 'INFO'))
+    log_file = setup_logging("batch_contract", args.ship, getattr(args, 'log_level', 'INFO'), player_id=args.player_id)
 
     print("=" * 70)
     print("BATCH CONTRACT OPERATION")
@@ -113,6 +156,10 @@ def batch_contract_operation(args, *, api=None):
         return 1
 
     cargo_capacity = ship_data['cargo']['capacity']
+    system = ship_data['nav']['systemSymbol']
+
+    # Initialize database for market price lookups
+    db = Database()
 
     captain_logger = get_captain_logger(args.player_id)
     operator_name = get_operator_name(args)
@@ -123,6 +170,7 @@ def batch_contract_operation(args, *, api=None):
         'accepted': 0,
         'fulfilled': 0,
         'failed': 0,
+        'existing_fulfilled': 0,  # Track existing contracts fulfilled
         'total_profit': 0,
         'contracts': [],
     }
@@ -136,6 +184,84 @@ def batch_contract_operation(args, *, api=None):
         print("\n" + "=" * 70)
         print(f"CONTRACT {contract_num}/{args.contract_count}")
         print("=" * 70)
+
+        # Step 0: Check for existing active unfulfilled contracts
+        print(f"\n{contract_num}.0 Checking for existing active contracts...")
+
+        # CRITICAL: Fetch ALL pages of contracts to find any active contracts
+        # BUG FIX: Previously only checked page 1, missing active contracts on page 2+
+        all_contracts = []
+        page = 1
+        while True:
+            contracts_response = api.get(f"/my/contracts?page={page}&limit=20")
+
+            if not contracts_response or 'data' not in contracts_response:
+                break
+
+            all_contracts.extend(contracts_response['data'])
+
+            # Check if there are more pages
+            meta = contracts_response.get('meta', {})
+            total = meta.get('total', 0)
+            current_count = len(all_contracts)
+
+            if current_count >= total:
+                break  # Fetched all contracts
+
+            page += 1
+
+        if all_contracts:
+            active_contracts = [
+                c for c in all_contracts
+                if c.get('accepted') and not c.get('fulfilled')
+            ]
+        else:
+            active_contracts = []
+
+        if active_contracts:
+            print(f"  ⚠️  Found {len(active_contracts)} active unfulfilled contract(s)")
+
+            # Fulfill existing contracts first
+            for existing_contract in active_contracts:
+                existing_id = existing_contract['id']
+                print(f"\n  📋 Fulfilling existing contract {existing_id} before negotiating new one...")
+
+                # Create args for existing contract fulfillment
+                existing_args = type('obj', (object,), {
+                    'player_id': args.player_id,
+                    'ship': args.ship,
+                    'contract_id': existing_id,
+                    'buy_from': getattr(args, 'buy_from', None),
+                    'log_level': getattr(args, 'log_level', 'INFO'),
+                })()
+
+                # Execute contract fulfillment
+                result = contract_operation(existing_args, api=api, ship=ship)
+
+                if result == 0:
+                    print(f"  ✅ Existing contract {existing_id} fulfilled successfully")
+                    batch_stats['existing_fulfilled'] += 1
+                    batch_stats['fulfilled'] += 1
+                else:
+                    print(f"  ❌ Failed to fulfill existing contract {existing_id}")
+                    batch_stats['failed'] += 1
+                    log_captain_event(
+                        captain_logger,
+                        'CRITICAL_ERROR',
+                        operator=operator_name,
+                        ship=args.ship,
+                        error=f"Failed to fulfill existing contract {existing_id}",
+                        cause=f"Contract operation returned error code {result}",
+                        impact={'Contract ID': existing_id, 'Batch Progress': f"{contract_num}/{args.contract_count}"},
+                        resolution="Continuing to next iteration",
+                        lesson="Review existing contract fulfillment errors",
+                        escalate=False,
+                        tags=['contract', 'batch', 'existing_contract_failed', existing_id]
+                    )
+        else:
+            print(f"  ✅ No active unfulfilled contracts found (checked {len(all_contracts)} contracts)")
+            if not all_contracts:
+                print("  ⚠️  Warning: Could not fetch any contracts from API")
 
         # Step 1: Negotiate new contract
         print(f"\n{contract_num}.1 Negotiating contract...")
@@ -184,9 +310,13 @@ def batch_contract_operation(args, *, api=None):
         # NOTE: We ALWAYS accept and fulfill contracts, regardless of profitability.
         # Rationale: Opportunity cost of waiting for contract expiration is worse than small loss.
         print(f"\n{contract_num}.2 Calculating profitability metrics...")
-        is_profitable, reason, metrics = evaluate_contract_profitability(contract, cargo_capacity)
+        is_profitable, reason, metrics = evaluate_contract_profitability(
+            contract, cargo_capacity, system=system, db=db
+        )
 
-        print(f"   Estimated Cost: {format_credits(metrics.get('estimated_cost', 0))}")
+        print(f"   Resource: {metrics.get('trade_symbol', 'UNKNOWN')}")
+        print(f"   Unit Cost: {format_credits(metrics.get('unit_cost', 0))} ({metrics.get('price_source', 'unknown')})")
+        print(f"   Estimated Total Cost: {format_credits(metrics.get('estimated_cost', 0))}")
         print(f"   Net Profit: {format_credits(metrics.get('net_profit', 0))}")
         print(f"   ROI: {metrics.get('roi', 0):.1f}%")
         print(f"   Trips Required: {metrics.get('trips', 0)}")
@@ -252,9 +382,10 @@ def batch_contract_operation(args, *, api=None):
     print("\n" + "=" * 70)
     print("BATCH CONTRACT SUMMARY")
     print("=" * 70)
-    print(f"Total Negotiated: {batch_stats['total_negotiated']}")
-    print(f"Accepted: {batch_stats['accepted']}")
-    print(f"Fulfilled: {batch_stats['fulfilled']}")
+    print(f"Existing Contracts Fulfilled: {batch_stats['existing_fulfilled']}")
+    print(f"New Contracts Negotiated: {batch_stats['total_negotiated']}")
+    print(f"New Contracts Accepted: {batch_stats['accepted']}")
+    print(f"Total Fulfilled: {batch_stats['fulfilled']}")
     print(f"Failed: {batch_stats['failed']}")
     print(f"Total Estimated Profit: {format_credits(batch_stats['total_profit'])}")
     print("=" * 70)
@@ -297,7 +428,7 @@ def contract_operation(
     sleep_fn=time.sleep,
 ):
     """Contract fulfillment operation"""
-    log_file = setup_logging("contract", args.ship, getattr(args, 'log_level', 'INFO'))
+    log_file = setup_logging("contract", args.ship, getattr(args, 'log_level', 'INFO'), player_id=args.player_id)
 
     print("=" * 70)
     print("CONTRACT FULFILLMENT OPERATION")
@@ -330,15 +461,21 @@ def contract_operation(
 
     def log_completion(stats_snapshot: dict, destination: str, trade_symbol: str) -> None:
         duration = humanize_duration(datetime.now(timezone.utc) - operation_start)
+        net_profit = stats_snapshot['payment'] - stats_snapshot['purchase_spent']
         results = {
             'Units Delivered': f"{stats_snapshot['units_delivered']}/{stats_snapshot['units_required']}",
             'Trips': stats_snapshot['trips'],
             'Purchased Units': stats_snapshot['purchased_units'],
             'Gross Payment': f"{stats_snapshot['payment']:,} cr",
             'Purchase Spend': f"{stats_snapshot['purchase_spent']:,} cr",
-            'Net Profit': f"{stats_snapshot['payment'] - stats_snapshot['purchase_spent']:,} cr",
+            'Net Profit': f"{net_profit:,} cr",
         }
         notes = f"Fulfilled contract {args.contract_id} delivering {trade_symbol} to {destination}."
+
+        # NOTE: Narrative should be provided by the AI agent (Flag Captain/Operations Officer)
+        # using the MCP bot_captain_log_entry tool after operation completes.
+        # This allows the agent to provide strategic reasoning and context.
+
         log_captain_event(
             captain_logger,
             'OPERATION_COMPLETED',
@@ -387,7 +524,7 @@ def contract_operation(
             return 0, True
 
         print(f"\n  💰 Purchasing {quantity} units of {trade_symbol} from {market}...")
-        if not navigator.execute_route(ship, market, prefer_cruise=True):
+        if not navigator.execute_route(ship, market):
             print(f"  ❌ Navigation to {market} failed")
             log_error(
                 "Navigation failure",
@@ -462,8 +599,8 @@ def contract_operation(
             log_error=log_error,
             sleep_fn=sleep_fn,
             print_fn=print,
-            delivery_waypoint=delivery['destinationSymbol'],  # NEW: Enable distance filtering
-            max_distance=400,  # NEW: Limit to markets within 400 units of delivery point
+            delivery_waypoint=None,  # Disabled: No distance filtering - find absolute cheapest
+            max_distance=None,  # Disabled: Prioritize lowest price over proximity
         )
 
         if not acquisition_strategy.ensure_availability(
@@ -526,7 +663,7 @@ def contract_operation(
                     break
 
             print(f"  Trip {trip}: Delivering {to_deliver} units...")
-            navigator.execute_route(ship, delivery['destinationSymbol'], prefer_cruise=True)
+            navigator.execute_route(ship, delivery['destinationSymbol'])
 
             if not ship.dock():
                 print(f"  ❌ Failed to dock at {delivery['destinationSymbol']}")
@@ -601,7 +738,7 @@ def contract_operation(
             return 0, True
 
         print(f"\n  Trip {trip_number}: Buying {to_buy} more units from {args.buy_from}...")
-        if not navigator.execute_route(ship, args.buy_from, prefer_cruise=True):
+        if not navigator.execute_route(ship, args.buy_from):
             log_error(
                 "Navigation failure",
                 f"Unable to navigate to market {args.buy_from}",
@@ -704,8 +841,32 @@ def contract_operation(
         'payment': 0,
     }
 
+    # Poll for profitable price before acquiring resources
+    print(f"\n3. Checking contract profitability...")
+    ship_data = ship.get_status()
+    cargo_capacity = ship_data['cargo']['capacity']
+
+    # Create price polling strategy
+    price_strategy = ResourceAcquisitionStrategy(
+        trade_symbol=delivery['tradeSymbol'],
+        system=system,
+        database=local_db,
+        log_error=log_error,
+        sleep_fn=sleep_fn,
+        print_fn=print,
+        max_retries=12,  # 1 hour timeout (12 retries * 5 min)
+        retry_interval_seconds=300,  # 5 minutes
+    )
+
+    # Wait for profitable price (or timeout and execute anyway)
+    price_strategy.wait_for_profitable_price(
+        contract=contract,
+        cargo_capacity=cargo_capacity,
+        system=system
+    )
+
     # Acquire resources (PURCHASE ONLY - mining removed for efficiency)
-    print(f"\n3. Acquiring resources...")
+    print(f"\n4. Acquiring resources...")
     if not _acquire_initial_resources(delivery, remaining):
         return 1
 
@@ -765,7 +926,7 @@ def contract_operation(
 
 def negotiate_operation(args, *, api=None):
     """Negotiate a new contract - replaces negotiate_contract.sh"""
-    log_file = setup_logging("negotiate", args.ship, getattr(args, 'log_level', 'INFO'))
+    log_file = setup_logging("negotiate", args.ship, getattr(args, 'log_level', 'INFO'), player_id=args.player_id)
 
     print("=" * 70)
     print("NEGOTIATE CONTRACT")
@@ -1058,3 +1219,80 @@ class ResourceAcquisitionStrategy:
             escalate=True,
             tags=['contract', 'timeout', self.trade_symbol.lower()],
         )
+
+    def wait_for_profitable_price(
+        self,
+        *,
+        contract: Dict,
+        cargo_capacity: int,
+        system: str,
+    ) -> bool:
+        """
+        Poll market prices until contract becomes profitable, or timeout after max_retries.
+
+        Similar to _wait_for_market() but checks profitability instead of resource availability.
+        Uses CircuitBreaker with same retry logic (300s intervals, 12 retries = 1 hour).
+
+        Args:
+            contract: Contract data from API
+            cargo_capacity: Ship cargo capacity
+            system: System symbol for market lookups
+
+        Returns:
+            True (always executes after polling, either when profitable or on timeout)
+        """
+        # Check if already profitable
+        is_profitable, reason, metrics = evaluate_contract_profitability(
+            contract=contract,
+            cargo_capacity=cargo_capacity,
+            system=system,
+            db=self.database
+        )
+
+        if is_profitable:
+            self.print_fn("  ✅ Price is profitable! Proceeding with acquisition...")
+            return True
+
+        # Not profitable - wait for price drop
+        self.print_fn("  ⏳ Current price unprofitable, waiting for price drop...")
+        self.print_fn(f"     {reason}")
+        self.print_fn(f"     Will poll every {self.retry_interval_seconds // 60} minutes...")
+
+        breaker = CircuitBreaker(limit=self.max_retries)
+
+        while not breaker.tripped():
+            attempt = breaker.failures + 1
+            self.print_fn(
+                f"\n  ⏳ Waiting {self.retry_interval_seconds // 60} minutes before retry {attempt}/{self.max_retries}..."
+            )
+            self.sleep_fn(self.retry_interval_seconds)
+            self.print_fn(f"  🔍 Retry {attempt}: Checking market prices...")
+
+            # Re-evaluate profitability with fresh market data
+            is_profitable, reason, metrics = evaluate_contract_profitability(
+                contract=contract,
+                cargo_capacity=cargo_capacity,
+                system=system,
+                db=self.database
+            )
+
+            if is_profitable:
+                self.print_fn(f"  ✅ Price now profitable! Proceeding with acquisition...")
+                self.print_fn(f"     {reason}")
+                breaker.record_success()
+                return True
+
+            failure_count = breaker.record_failure()
+            self.print_fn(
+                f"  ⚠️  Still unprofitable: {reason} (retry {failure_count}/{self.max_retries})"
+            )
+
+        # Timeout - execute anyway to avoid contract expiration
+        minutes_waited = (self.max_retries * self.retry_interval_seconds) // 60
+        self.print_fn(
+            f"\n  ⚠️  Timeout - executing anyway to avoid contract expiration"
+        )
+        self.print_fn(f"     Waited {minutes_waited} minutes for profitable price")
+        self.print_fn(f"     Contract may result in small loss, but avoids opportunity cost of expiration")
+
+        return True  # Always execute (failsafe)

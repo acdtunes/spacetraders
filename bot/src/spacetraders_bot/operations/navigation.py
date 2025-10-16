@@ -11,7 +11,7 @@ from spacetraders_bot.operations.common import setup_logging
 
 def navigate_operation(args):
     """CLI entry point for navigation operation."""
-    log_file = setup_logging("navigate", args.ship, getattr(args, 'log_level', 'INFO'))
+    log_file = setup_logging("navigate", args.ship, getattr(args, 'log_level', 'INFO'), player_id=args.player_id)
     logger = logging.getLogger(__name__)
 
     print("=" * 70)

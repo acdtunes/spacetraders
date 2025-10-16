@@ -28,7 +28,7 @@ def build_graph(edges):
     return {"system": "X1-TEST", "waypoints": waypoints, "edges": graph_edges}
 
 
-def test_ortools_router_probe_fast_path():
+def regression_ortools_router_probe_fast_path():
     graph = {
         "system": "X1-TEST",
         "waypoints": {
@@ -52,7 +52,7 @@ def test_ortools_router_probe_fast_path():
     assert all(step["fuel_cost"] == 0 for step in route["steps"] if step["action"] == "navigate")
 
 
-def test_ortools_router_selects_drift_when_cruise_impossible():
+def regression_ortools_router_selects_drift_when_cruise_impossible():
     edges = [
         ("A", "B", 500, {"A": True, "B": False}),
     ]
@@ -74,7 +74,7 @@ def test_ortools_router_selects_drift_when_cruise_impossible():
     assert navigate_steps[0]["mode"] == "DRIFT"
 
 
-def test_routing_config_validation(tmp_path: Path):
+def regression_routing_config_validation(tmp_path: Path):
     bad_config = tmp_path / "bad.yaml"
     bad_config.write_text("fuel_safety_margin: -1\n")
 
@@ -82,7 +82,7 @@ def test_routing_config_validation(tmp_path: Path):
         RoutingConfig(bad_config)
 
 
-def test_routing_validator_detects_deviation(monkeypatch, tmp_path):
+def regression_routing_validator_detects_deviation(monkeypatch, tmp_path):
     config_path = tmp_path / "routing.yaml"
     config_path.write_text(
         """
@@ -166,7 +166,7 @@ validation:
     resume_pause()
 
 
-def test_routing_validator_resumes_on_success(monkeypatch, tmp_path):
+def regression_routing_validator_resumes_on_success(monkeypatch, tmp_path):
     config_path = tmp_path / "routing.yaml"
     config_path.write_text(
         """

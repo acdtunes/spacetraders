@@ -262,7 +262,7 @@ def total_after_buying(units, context):
 # Integration test
 
 @pytest.mark.skip(reason="contract_operation now uses purchase-only flow; integration scenario needs rewrite")
-def test_circuit_breaker_partial_cargo_integration():
+def regression_circuit_breaker_partial_cargo_integration():
     """Integration test for circuit breaker with partial cargo"""
 
     # Setup mocks

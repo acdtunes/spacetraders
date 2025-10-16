@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from spacetraders_bot.core.routing import RouteOptimizer, FuelCalculator, TimeCalculator
 
 
-def test_should_find_intermediate_refuel_station_instead_of_drift():
+def regression_should_find_intermediate_refuel_station_instead_of_drift():
     """
     Test that RouteOptimizer finds intermediate refuel stations for CRUISE routes
     instead of falling back to DRIFT mode when direct CRUISE is impossible.
@@ -145,7 +145,7 @@ def test_should_find_intermediate_refuel_station_instead_of_drift():
     print(f"  Refuel stops: {len(refuel_actions)}")
 
 
-def test_direct_drift_when_no_intermediate_stations_exist():
+def regression_direct_drift_when_no_intermediate_stations_exist():
     """
     Test that DRIFT is correctly used when no intermediate fuel stations exist
     and direct CRUISE is impossible.

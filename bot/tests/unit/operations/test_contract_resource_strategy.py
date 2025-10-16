@@ -54,7 +54,7 @@ def make_strategy(**overrides):
     return ResourceAcquisitionStrategy(**defaults)
 
 
-def test_strategy_respects_preferred_market():
+def regression_strategy_respects_preferred_market():
     db = DBStub(listing_row=("SYS-X-A1", 50, "ABUNDANT"))
     strategy = make_strategy(database=db)
     updated = []
@@ -72,7 +72,7 @@ def test_strategy_respects_preferred_market():
     assert db.calls == [("IRON", "SYS-X-A1")]
 
 
-def test_strategy_discovers_market_and_updates_preference():
+def regression_strategy_discovers_market_and_updates_preference():
     db = DBStub(lowest_row=("SYS-X-B2", 75, "LIMITED"))
     strategy = make_strategy(database=db)
     updated = []
@@ -90,7 +90,7 @@ def test_strategy_discovers_market_and_updates_preference():
     assert db.calls == [("IRON", "SYS-X%")]
 
 
-def test_strategy_times_out_after_retries():
+def regression_strategy_times_out_after_retries():
     db = DBStub()
     log_error = Mock()
     prints = []

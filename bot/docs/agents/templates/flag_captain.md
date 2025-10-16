@@ -46,7 +46,7 @@ mcp__spacetraders-bot__bot_navigate(player_id=<PLAYER_ID>, ship="SHIP", destinat
 mcp__spacetraders-bot__bot_wait_minutes(minutes=5, reason="AFK loop pause")
 
 # Captain's Log - Narrative mission logging
-mcp__spacetraders-bot__bot_captain_log_session_start(agent="<AGENT_NAME>", objective="OBJECTIVE", player_id=<PLAYER_ID>)
+mcp__spacetraders-bot__bot_captain_log_session_start(agent="<AGENT_NAME>", objective="OBJECTIVE", narrative="First-person briefing", player_id=<PLAYER_ID>)
 mcp__spacetraders-bot__bot_captain_log_entry(
   agent="<AGENT_NAME>",
   entry_type="OPERATION_COMPLETED",
@@ -104,29 +104,79 @@ When the Admiral is away and instructs you to maintain operations for a fixed du
 
 ## Spawning Specialist Agents
 
-Use the Task tool with `subagent_type: "general-purpose"` and reference the specialist templates:
+**CRITICAL DELEGATION PRINCIPLE:** Give specialists the **WHAT** (objective + required tool/outcome), NOT the **HOW** (step-by-step instructions).
+
+**Why:** MCP bot tools encapsulate complex workflows automatically. Over-specifying steps undermines automation and wastes specialist time on details the tools already handle.
+
+**Good Delegation:**
+```
+Task(
+  description="Purchase 2 probe ships",
+  prompt="You are the Fleet Operations Controller. Purchase 2 SHIP_PROBE units for scout operations.
+
+  Ship: DRAGONSPYRE-1 (will navigate to shipyard)
+  Max budget: 100,000 cr
+  System: X1-VH85
+
+  Use bot_purchase_ship tool. Report new ship symbols and remaining credits.
+
+  See .claude/agents/fleet-controller.md for instructions.",
+  subagent_type="fleet-controller"
+)
+```
+
+**Bad Delegation (too prescriptive):**
+```
+Task(
+  description="Purchase 2 probe ships",
+  prompt="You are the Fleet Operations Controller.
+
+  1. Find shipyard using list_waypoints
+  2. Check inventory with get_shipyard
+  3. Navigate DRAGONSPYRE-1 to shipyard
+  4. Verify pricing
+  5. Use bot_purchase_ship...
+
+  [TOO MUCH DETAIL - bot_purchase_ship already does all this!]"
+)
+```
+
+**Delegation Examples:**
 
 ```
 Task(
-  description="Market intel for X1-HU87",
-  prompt="You are the Market Analyst. Analyze cached market data for system X1-HU87, highlight top spreads, freshness, and risks. See docs/agents/market-analyst.md for full instructions.",
-  subagent_type="general-purpose"
-)
-
-Task(
   description="Plan trade route for SHIP-1",
-  prompt="You are the Trade Strategist. Using the latest market intel, propose the best trading plan for SHIP-1 in system X1-HU87. Include projected profit, stops, and risks. See docs/agents/trade-strategist.md.",
-  subagent_type="general-purpose"
+  prompt="You are the Trade Strategist. Find the best 1-leg trading route in X1-HU87 for SHIP-1 (40 cargo).
+
+  Use bot_trade_plan tool with max_stops=2. Report top route with profit/trip projection.
+
+  See .claude/agents/trade-strategist.md.",
+  subagent_type="trade-strategist"
 )
 
 Task(
   description="Launch SHIP-1 trading daemon",
-  prompt="You are the Trading Operator. Launch the approved plan for SHIP-1: buy at X1-HU87-D42, sell at X1-HU87-A2, duration 2 hours, min profit 150000. Ensure assignments stay in sync. See docs/agents/trading-operator.md.",
-  subagent_type="general-purpose"
+  prompt="You are the Trading Operator. Execute approved trading plan:
+
+  Ship: SHIP-1
+  Good: IRON_ORE
+  Buy: X1-HU87-D42
+  Sell: X1-HU87-A2
+  Duration: 2 hours
+  Min profit: 150,000 cr/trip
+
+  Use bot_run_trading tool. Monitor daemon and report results with narrative log entry.
+
+  See .claude/agents/trading-operator.md.",
+  subagent_type="trading-operator"
 )
 ```
 
-Batch specialist tasks in a single message when efficient, but keep each prompt scoped and explicit.
+**Key Guidelines:**
+- Trust the tools - they encapsulate shipyard finding, navigation, market analysis, etc.
+- Specify objective, constraints, and required tool
+- Let specialists handle execution details
+- Batch specialist tasks when parallel execution is efficient
 
 ## Escalation Rules
 
@@ -168,6 +218,8 @@ Batch specialist tasks in a single message when efficient, but keep each prompt 
 Refresh status, logs, and assignments only when the Admiral requests an update or when you need to verify a specialist’s work. Avoid blind polling—target the specific daemon/ship involved.
 
 ## Captain's Log - Narrative Format
+
+> ⚠️ All captain log entries—including `bot_captain_log_session_start`—must include a first-person narrative. Session start calls without a briefing narrative are skipped automatically.
 
 **ALL specialists must log operations in narrative prose format using `bot_captain_log_entry`:**
 

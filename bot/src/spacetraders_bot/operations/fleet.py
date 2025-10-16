@@ -75,7 +75,7 @@ def _sleep_minutes(minutes: int) -> None:
 
 def status_operation(args):
     """Check status of agent and ships - replaces check_status.sh and similar"""
-    log_file = setup_logging("status", "system", getattr(args, 'log_level', 'INFO'))
+    log_file = setup_logging("status", "system", getattr(args, 'log_level', 'INFO'), player_id=args.player_id)
 
     print("=" * 70)
     print(f"SPACETRADERS STATUS - {timestamp_iso()}")
@@ -102,7 +102,7 @@ def status_operation(args):
 
 def monitor_operation(args):
     """Continuous monitoring of operations - replaces monitor_loop.sh and similar"""
-    log_file = setup_logging("monitor", "system", getattr(args, 'log_level', 'INFO'))
+    log_file = setup_logging("monitor", "system", getattr(args, 'log_level', 'INFO'), player_id=args.player_id)
 
     print("=" * 70)
     print("FLEET MONITORING")

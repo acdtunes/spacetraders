@@ -35,7 +35,7 @@ def mining_context(monkeypatch):
     )
 
 
-def test_mining_cycle_execute_success(monkeypatch, mining_context):
+def regression_mining_cycle_execute_success(monkeypatch, mining_context):
     def fake_navigate(context, destination, cycle, description, resolution):
         return True
 
@@ -76,7 +76,7 @@ def test_mining_cycle_execute_success(monkeypatch, mining_context):
     mining_context.ship.refuel.assert_called_once()
 
 
-def test_mining_cycle_aborts_on_failed_navigation(monkeypatch, mining_context):
+def regression_mining_cycle_aborts_on_failed_navigation(monkeypatch, mining_context):
     def fake_navigate(context, destination, cycle, description, resolution):
         return destination != "AST-1"
 

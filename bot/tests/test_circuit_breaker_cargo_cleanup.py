@@ -27,7 +27,7 @@ from spacetraders_bot.operations.multileg_trader import (
 )
 
 
-def test_circuit_breaker_sells_stranded_cargo_on_buy_price_spike():
+def regression_circuit_breaker_sells_stranded_cargo_on_buy_price_spike():
     """
     Test that circuit breaker sells stranded cargo when buy price spikes
 
@@ -189,7 +189,7 @@ def test_circuit_breaker_sells_stranded_cargo_on_buy_price_spike():
     assert len(final_status['cargo']['inventory']) == 0, "Ship inventory should be empty after cleanup"
 
 
-def test_circuit_breaker_sells_stranded_cargo_on_sell_price_crash():
+def regression_circuit_breaker_sells_stranded_cargo_on_sell_price_crash():
     """
     Test that circuit breaker sells stranded cargo when sell price crashes
 
@@ -306,7 +306,7 @@ def test_circuit_breaker_sells_stranded_cargo_on_sell_price_crash():
     assert final_status['cargo']['units'] == 0, "Ship should have empty cargo after cleanup"
 
 
-def test_circuit_breaker_sells_stranded_cargo_on_segment_unprofitable():
+def regression_circuit_breaker_sells_stranded_cargo_on_segment_unprofitable():
     """
     Test that circuit breaker sells stranded cargo when segment is unprofitable
 
@@ -405,5 +405,3 @@ def test_circuit_breaker_sells_stranded_cargo_on_segment_unprofitable():
     assert final_status['cargo']['units'] == 0, "Ship should have empty cargo after cleanup"
 
 
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])

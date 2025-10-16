@@ -10,7 +10,7 @@ from spacetraders_bot.core.system_graph_provider import GraphLoadResult
 
 
 @pytest.fixture
-def mock_graph():
+def partitioning_graph():
     """Create a mock system graph with multiple markets"""
     waypoints = {
         'X1-TEST-A2': {'x': 100, 'y': 100, 'has_fuel': True, 'traits': ['MARKETPLACE'], 'orbitals': []},
@@ -47,11 +47,11 @@ def mock_graph():
 
 
 @pytest.fixture
-def mock_graph_provider(mock_graph):
+def partitioning_graph_provider(partitioning_graph):
     """Mock graph provider"""
     provider = Mock()
     provider.get_graph.return_value = GraphLoadResult(
-        graph=mock_graph,
+        graph=partitioning_graph,
         source="test",
         message="✅ Loaded graph from test fixture"
     )
@@ -59,7 +59,7 @@ def mock_graph_provider(mock_graph):
 
 
 @pytest.fixture
-def mock_api():
+def partitioning_mock_api():
     """Mock API client that returns ship data"""
     api = Mock()
 
@@ -90,7 +90,7 @@ def mock_api():
     return api
 
 
-def test_disjoint_partitions_with_common_start_location(mock_api, mock_graph_provider):
+def regression_disjoint_partitions_with_common_start_location(partitioning_mock_api, partitioning_graph_provider):
     """
     Test that scout coordinator creates truly disjoint market partitions
     even when all ships start at the same waypoint.
@@ -105,8 +105,7 @@ def test_disjoint_partitions_with_common_start_location(mock_api, mock_graph_pro
         ships=ships,
         token='test-token',
         player_id=1,
-        algorithm='greedy',
-        graph_provider=mock_graph_provider
+        graph_provider=partitioning_graph_provider
     )
 
     # Get geographic partitions
@@ -170,7 +169,7 @@ def test_disjoint_partitions_with_common_start_location(mock_api, mock_graph_pro
         f"Tours must be disjoint! Markets visited by multiple ships: {overlapping_markets}"
 
 
-def test_partition_balance_preserves_disjoint_property(mock_api, mock_graph_provider):
+def regression_partition_balance_preserves_disjoint_property(partitioning_mock_api, partitioning_graph_provider):
     """
     Test that balance_tour_times() doesn't break the disjoint partition guarantee
     """
@@ -180,11 +179,10 @@ def test_partition_balance_preserves_disjoint_property(mock_api, mock_graph_prov
         ships=ships,
         token='test-token',
         player_id=1,
-        algorithm='greedy',
-        graph_provider=mock_graph_provider
+        graph_provider=partitioning_graph_provider
     )
     # Inject mock API to prevent real HTTP calls
-    coordinator.api = mock_api
+    coordinator.api = partitioning_mock_api
 
     # Get initial partitions
     partitions = coordinator.partition_markets_geographic()
@@ -208,7 +206,7 @@ def test_partition_balance_preserves_disjoint_property(mock_api, mock_graph_prov
         f"balance_tour_times() broke disjoint property! Overlapping markets: {overlapping}"
 
 
-def test_centroid_based_start_location(mock_api, mock_graph_provider):
+def regression_centroid_based_start_location(partitioning_mock_api, partitioning_graph_provider):
     """
     Test that optimize_subtour uses partition centroid instead of current_location
     as the starting point for tour optimization.
@@ -218,17 +216,16 @@ def test_centroid_based_start_location(mock_api, mock_graph_provider):
         ships=['SHIP-2'],
         token='test-token',
         player_id=1,
-        algorithm='greedy',
-        graph_provider=mock_graph_provider
+        graph_provider=partitioning_graph_provider
     )
     # Inject mock API to prevent real HTTP calls
-    coordinator.api = mock_api
+    coordinator.api = partitioning_mock_api
 
     # Partition with specific markets far from A2
     test_markets = ['X1-TEST-I60', 'X1-TEST-K95']  # Both far from A2 (100,100)
 
     # Get ship data - it's at A2 (100, 100)
-    ship_data = mock_api.get_ship('SHIP-2')
+    ship_data = partitioning_mock_api.get_ship('SHIP-2')
     assert ship_data['nav']['waypointSymbol'] == 'X1-TEST-A2', "Ship should start at A2"
 
     # Optimize subtour

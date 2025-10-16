@@ -2,11 +2,10 @@ import type { ScoutTour } from '../types/spacetraders';
 
 /**
  * Generate a unique identifier for a scout tour
- * Uses system + start waypoint (or first waypoint in tour order)
+ * Uses daemon_id which is guaranteed unique per scout daemon
  */
 export function getTourId(tour: ScoutTour): string {
-  const startWaypoint = tour.start_waypoint || tour.tour_order[0];
-  return `${tour.system}-${startWaypoint}`;
+  return tour.daemon_id;
 }
 
 /**

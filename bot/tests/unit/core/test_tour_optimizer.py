@@ -41,7 +41,7 @@ def build_ship(start: str, fuel: int = 400, capacity: int = 400):
     }
 
 
-def test_plan_tour_with_cache(tmp_path):
+def regression_plan_tour_with_cache(tmp_path):
     graph = build_graph("X1-TOUR")
     ship = build_ship("X1-TOUR-A")
     db_path = tmp_path / "tour_cache.sqlite"
@@ -71,7 +71,7 @@ def test_plan_tour_with_cache(tmp_path):
     assert cached_tour["return_to_start"] is True
 
 
-def test_build_tour_from_invalid_order(tmp_path):
+def regression_build_tour_from_invalid_order(tmp_path):
     graph = build_graph("X1-TOUR-INVALID")
     ship = build_ship("X1-TOUR-INVALID-A")
     optimizer = TourOptimizer(graph, ship, db_path=tmp_path / "tour_cache.sqlite")

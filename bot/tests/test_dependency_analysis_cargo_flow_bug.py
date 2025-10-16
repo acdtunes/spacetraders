@@ -50,7 +50,7 @@ from spacetraders_bot.operations.multileg_trader import (
 )
 
 
-def test_cargo_flow_tracking_with_net_zero_segment():
+def regression_cargo_flow_tracking_with_net_zero_segment():
     """
     Test cargo flow tracking when middle segments have net-zero cargo changes
 
@@ -165,7 +165,7 @@ def test_cargo_flow_tracking_with_net_zero_segment():
         f"Segment 3 should require 6 SHIP_PARTS, got {segment_3_dep.required_cargo['SHIP_PARTS']}"
 
 
-def test_should_skip_segment_abort_when_source_fails():
+def regression_should_skip_segment_abort_when_source_fails():
     """
     Test that should_skip_segment() correctly aborts when source segment fails
 
@@ -268,7 +268,7 @@ def test_should_skip_segment_abort_when_source_fails():
         f"Expected abort reason, got: {reason}"
 
 
-def test_cargo_flow_tracking_with_partial_sells():
+def regression_cargo_flow_tracking_with_partial_sells():
     """
     Test cargo flow tracking when segments partially sell cargo
 
@@ -355,5 +355,3 @@ def test_cargo_flow_tracking_with_partial_sells():
     assert dependencies[3].dependency_type == 'CARGO', "Segment 3 should have CARGO dependency"
 
 
-if __name__ == "__main__":
-    pytest.main([__file__, "-v", "-s"])

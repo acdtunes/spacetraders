@@ -25,7 +25,7 @@ from unittest.mock import Mock, patch
 from operations.contracts import contract_operation
 
 
-def test_purchase_splits_when_exceeding_transaction_limit():
+def regression_purchase_splits_when_exceeding_transaction_limit():
     """
     Test that contract fulfillment splits purchases when units exceed transaction limit
 

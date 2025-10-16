@@ -48,7 +48,6 @@ def validate_routing_operation(args) -> bool:
     result = validator.validate_route(
         ship_symbol=args.ship,
         destination=destination,
-        prefer_cruise=(args.mode.upper() == "CRUISE"),
         execute=not args.dry_run,
     )
 

@@ -56,7 +56,7 @@ class StubDaemonManager:
         self.cleanup_called = True
 
 
-def test_daemon_start_operation_success(monkeypatch):
+def regression_daemon_start_operation_success(monkeypatch):
     assigned = []
     daemon_manager = StubDaemonManager(1)
 
@@ -81,7 +81,7 @@ def test_daemon_start_operation_success(monkeypatch):
     assert assigned == [('SHIP-1', 'mining_operator', 'mine_SHIP-1', 'mine')]
 
 
-def test_daemon_start_operation_ship_already_assigned(monkeypatch, capsys):
+def regression_daemon_start_operation_ship_already_assigned(monkeypatch, capsys):
     assignments = {'SHIP-1': {'status': 'active', 'assigned_to': 'alpha', 'daemon_id': 'daemon-old'}}
     monkeypatch.setattr(daemon_ops, 'DaemonManager', lambda player_id: StubDaemonManager(player_id))
     monkeypatch.setattr(core_assignment_module, 'AssignmentManager', lambda player_id: StubAssignmentManager(player_id, assignments=assignments))
@@ -100,7 +100,7 @@ def test_daemon_start_operation_ship_already_assigned(monkeypatch, capsys):
     assert 'already assigned' in output
 
 
-def test_daemon_stop_operation_releases_assignment(monkeypatch):
+def regression_daemon_stop_operation_releases_assignment(monkeypatch):
     released = []
     command = [sys.executable, '-m', 'spacetraders_bot.cli', 'mine', '--ship', 'SHIP-1']
     daemon_manager = StubDaemonManager(1, status_map={'daemon-1': {'daemon_id': 'daemon-1', 'command': command}})
@@ -117,7 +117,7 @@ def test_daemon_stop_operation_releases_assignment(monkeypatch):
     assert released == [('SHIP-1', 'Daemon daemon-1 stopped')]
 
 
-def test_daemon_status_operation_single(monkeypatch, capsys):
+def regression_daemon_status_operation_single(monkeypatch, capsys):
     status_map = {
         'daemon-1': {
             'daemon_id': 'daemon-1',
@@ -141,7 +141,7 @@ def test_daemon_status_operation_single(monkeypatch, capsys):
     assert 'CPU' in output
 
 
-def test_daemon_status_operation_list(monkeypatch, capsys):
+def regression_daemon_status_operation_list(monkeypatch, capsys):
     status_map = {
         'daemon-1': {
             'daemon_id': 'daemon-1',
@@ -163,7 +163,7 @@ def test_daemon_status_operation_list(monkeypatch, capsys):
     assert 'daemon-1' in output
 
 
-def test_daemon_logs_operation(monkeypatch):
+def regression_daemon_logs_operation(monkeypatch):
     daemon_manager = StubDaemonManager(1)
     monkeypatch.setattr(daemon_ops, 'DaemonManager', lambda player_id: daemon_manager)
 
@@ -172,7 +172,7 @@ def test_daemon_logs_operation(monkeypatch):
     assert daemon_manager.tail_calls == [('daemon-1', 50)]
 
 
-def test_daemon_cleanup_operation(monkeypatch):
+def regression_daemon_cleanup_operation(monkeypatch):
     daemon_manager = StubDaemonManager(1)
     monkeypatch.setattr(daemon_ops, 'DaemonManager', lambda player_id: daemon_manager)
 

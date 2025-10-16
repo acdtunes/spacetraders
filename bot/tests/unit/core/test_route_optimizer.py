@@ -42,7 +42,7 @@ def build_ship(location: str, fuel: int, capacity: int = 120, role: str = 'EXPLO
     }
 
 
-def test_find_optimal_route_cruise():
+def regression_find_optimal_route_cruise():
     graph = build_graph()
     ship = build_ship("X1-UNIT-A", fuel=120)
 
@@ -55,7 +55,7 @@ def test_find_optimal_route_cruise():
     assert navigate_steps[0]["mode"] == "CRUISE"
 
 
-def test_emergency_drift_to_fuel_station():
+def regression_emergency_drift_to_fuel_station():
     graph = build_graph()
     ship = build_ship("X1-UNIT-B", fuel=2)
 
@@ -67,7 +67,7 @@ def test_emergency_drift_to_fuel_station():
     assert navigate_steps[0]["mode"] == "DRIFT"
 
 
-def test_prefer_drift_when_allowed():
+def regression_prefer_drift_when_allowed():
     graph = build_graph()
     ship = build_ship("X1-UNIT-A", fuel=5)
 

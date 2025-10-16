@@ -17,14 +17,23 @@ class FakePurchaseShip:
 
     def get_status(self):
         return {
-            "nav": {"waypointSymbol": self.location, "systemSymbol": "X1-TEST"},
+            "nav": {"waypointSymbol": self.location, "systemSymbol": "X1-TEST", "status": "IN_ORBIT"},
             "cargo": {"capacity": 100, "units": 0},
             "fuel": {"capacity": 100, "current": 100},
+            "engine": {"speed": 10},  # Add engine for SmartNavigator
+            "frame": {"integrity": 1.0},  # Add frame for health check
+            "registration": {"role": "HAULER"}  # Add role for health check
         }
 
-    def navigate(self, destination):
-        self.navigate_calls.append(destination)
-        self.location = destination
+    def navigate(self, waypoint=None, destination=None, flight_mode=None, auto_refuel=True):
+        """Navigate ship (supports both old and new signature)."""
+        dest = waypoint or destination
+        self.navigate_calls.append(dest)
+        self.location = dest
+        return True
+
+    def orbit(self):
+        """Mock orbit method."""
         return True
 
     def dock(self):
@@ -33,8 +42,10 @@ class FakePurchaseShip:
 
 
 class FailNavigateShip(FakePurchaseShip):
-    def navigate(self, destination):
-        self.navigate_calls.append(destination)
+    def navigate(self, waypoint=None, destination=None, flight_mode=None, auto_refuel=True):
+        """Navigate ship that always fails (supports both old and new signature)."""
+        dest = waypoint or destination
+        self.navigate_calls.append(dest)
         return False
 
 
@@ -59,6 +70,29 @@ class FakePurchaseAPI:
 
     def get_agent(self):
         return {"credits": self.credits}
+
+    def list_waypoints(self, system_symbol, limit=20, page=1):
+        """Mock waypoints for SmartNavigator graph building."""
+        # Return minimal waypoint data for graph building
+        waypoints = [
+            {
+                'symbol': 'X1-TEST-A1',
+                'type': 'PLANET',
+                'x': 0,
+                'y': 0,
+                'traits': [],
+                'orbitals': []
+            },
+            {
+                'symbol': 'X1-TEST-B1',
+                'type': 'ORBITAL_STATION',
+                'x': 100,
+                'y': 100,
+                'traits': [{'symbol': 'MARKETPLACE'}, {'symbol': 'SHIPYARD'}],
+                'orbits': 'X1-TEST-A1'
+            }
+        ]
+        return {'data': waypoints, 'meta': {'total': len(waypoints), 'page': page, 'limit': limit}}
 
     def post(self, path, payload):
         if path == "/my/ships":

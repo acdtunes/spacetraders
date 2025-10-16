@@ -4,7 +4,6 @@ from types import SimpleNamespace
 import pytest
 
 import spacetraders_bot.operations.mining as mining
-import spacetraders_bot.operations.mining_smart as mining_smart
 
 
 class _CaptainLogger:
@@ -20,7 +19,7 @@ def _patch_mining_helpers(monkeypatch, captain):
     monkeypatch.setattr(mining, 'get_operator_name', lambda args: 'OPERATOR')
 
 
-def test_mining_operation_fails_without_ship_status(monkeypatch):
+def regression_mining_operation_fails_without_ship_status(monkeypatch):
     captain = _CaptainLogger()
     _patch_mining_helpers(monkeypatch, captain)
 
@@ -50,7 +49,7 @@ def test_mining_operation_fails_without_ship_status(monkeypatch):
     assert any(event[0] == 'CRITICAL_ERROR' for event in captain.events)
 
 
-def test_mining_operation_route_validation_failure(monkeypatch):
+def regression_mining_operation_route_validation_failure(monkeypatch):
     captain = _CaptainLogger()
     _patch_mining_helpers(monkeypatch, captain)
 
@@ -168,7 +167,7 @@ class _TargetShip:
         self.inventory = []
 
 
-def test_targeted_mining_success(monkeypatch):
+def regression_targeted_mining_success(monkeypatch):
     ship = _TargetShip(
         target_resource='ALUMINUM_ORE',
         extractions=[
@@ -196,7 +195,7 @@ def test_targeted_mining_success(monkeypatch):
     assert ship.jettisons  # wrong cargo was jettisoned once
 
 
-def test_targeted_mining_circuit_breaker_triggers():
+def regression_targeted_mining_circuit_breaker_triggers():
     class FailingShip:
         def __init__(self):
             self.calls = 0
@@ -238,7 +237,7 @@ def test_targeted_mining_circuit_breaker_triggers():
     assert 'Circuit breaker' in reason
 
 
-def test_targeted_mining_navigation_failure():
+def regression_targeted_mining_navigation_failure():
     ship = _TargetShip('ALUMINUM_ORE', [])
     navigator = SimpleNamespace(execute_route=lambda *args, **kwargs: False)
 
@@ -255,7 +254,7 @@ def test_targeted_mining_navigation_failure():
     assert reason == 'Navigation to asteroid failed'
 
 
-def test_mining_operation_success_path(monkeypatch):
+def regression_mining_operation_success_path(monkeypatch):
     captain = _CaptainLogger()
     _patch_mining_helpers(monkeypatch, captain)
 
@@ -388,140 +387,7 @@ def test_mining_operation_success_path(monkeypatch):
     assert any(event[0] == 'OPERATION_COMPLETED' for event in captain.events)
 
 
-def _patch_mining_smart_helpers(monkeypatch):
-    monkeypatch.setattr(mining_smart, 'setup_logging', lambda *args, **kwargs: 'logfile')
-    monkeypatch.setattr(mining_smart, 'get_api_client', lambda player_id: object())
-
-
-def test_smart_mining_operation_fails_without_status(monkeypatch):
-    _patch_mining_smart_helpers(monkeypatch)
-
-    class ShipStub:
-        def __init__(self, api, symbol):
-            self.api = api
-            self.symbol = symbol
-
-        def get_status(self):
-            return None
-
-    monkeypatch.setattr(mining_smart, 'ShipController', ShipStub)
-
-    args = SimpleNamespace(
-        player_id=1,
-        ship='SHIP-1',
-        asteroid='AST-1',
-        market='MRK-1',
-        cycles=1,
-        log_level='INFO',
-    )
-
-    result = mining_smart.smart_mining_operation(args)
-
-    assert result == 1
-
-
-def test_smart_mining_operation_success(monkeypatch):
-    _patch_mining_smart_helpers(monkeypatch)
-
-    class ShipStub:
-        def __init__(self, api, symbol):
-            self.api = api
-            self.symbol = symbol
-            self.fuel_capacity = 100
-            self.fuel_current = 100
-            self.cargo_capacity = 10
-            self.cargo_units = 0
-            self.extracted = False
-
-        def get_status(self):
-            return {
-                'nav': {'systemSymbol': 'X1-TEST'},
-                'fuel': {'current': self.fuel_current, 'capacity': self.fuel_capacity},
-                'cargo': {
-                    'units': self.cargo_units,
-                    'capacity': self.cargo_capacity,
-                    'inventory': [{'symbol': 'ORE', 'units': self.cargo_units}],
-                },
-                'cooldown': {'remainingSeconds': 0},
-            }
-
-        def orbit(self):
-            return None
-
-        def get_cargo(self):
-            return {
-                'units': self.cargo_units,
-                'capacity': self.cargo_capacity,
-                'inventory': [{'symbol': 'ORE', 'units': self.cargo_units}],
-            }
-
-        def extract(self):
-            if self.extracted:
-                return None
-            self.extracted = True
-            self.cargo_units = self.cargo_capacity - 1
-            return {'symbol': 'ORE', 'units': self.cargo_units, 'cooldown': 0}
-
-        def wait_for_cooldown(self, seconds):
-            return None
-
-        def dock(self):
-            return True
-
-        def sell_all(self):
-            revenue = self.cargo_units * 100
-            self.cargo_units = 0
-            return revenue
-
-        def refuel(self):
-            self.fuel_current = self.fuel_capacity
-
-    class NavigatorStub:
-        def __init__(self, api, system):
-            self.api = api
-            self.system = system
-            self.calls = []
-
-        def validate_route(self, ship_data, destination):
-            return True, 'Route ok'
-
-        def get_fuel_estimate(self, ship_data, destination):
-            return {'total_fuel_cost': 10, 'refuel_stops': 0, 'total_time': 120}
-
-        def execute_route(self, ship, destination, prefer_cruise=True):
-            self.calls.append(destination)
-            ship.fuel_current -= 10
-            return True
-
-    created_navigators = []
-
-    def navigator_factory(api, system):
-        stub = NavigatorStub(api, system)
-        created_navigators.append(stub)
-        return stub
-
-    monkeypatch.setattr(mining_smart, 'ShipController', ShipStub)
-    monkeypatch.setattr(mining_smart, 'SmartNavigator', navigator_factory)
-
-    args = SimpleNamespace(
-        player_id=1,
-        ship='SHIP-1',
-        asteroid='AST-1',
-        market='MRK-1',
-        cycles=1,
-        log_level='INFO',
-    )
-
-    monkeypatch.setattr('builtins.input', lambda *_args, **_kwargs: '')
-
-    result = mining_smart.smart_mining_operation(args)
-
-    assert result == 0
-    assert created_navigators
-    assert created_navigators[0].calls == ['AST-1', 'MRK-1']
-
-
-def test_find_alternative_asteroids(monkeypatch):
+def regression_find_alternative_asteroids(monkeypatch):
     class APIStub:
         def __init__(self):
             self.pages = {

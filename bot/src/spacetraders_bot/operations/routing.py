@@ -25,7 +25,7 @@ from spacetraders_bot.operations.common import (
 def graph_build_operation(args):
     """Build navigation graph for a system"""
     ship_name = "system"
-    log_file = setup_logging("graph-build", ship_name, getattr(args, 'log_level', 'INFO'))
+    log_file = setup_logging("graph-build", ship_name, getattr(args, 'log_level', 'INFO'), player_id=args.player_id)
 
     print("=" * 70)
     print("BUILDING SYSTEM NAVIGATION GRAPH")
@@ -55,7 +55,7 @@ def graph_build_operation(args):
 
 def route_plan_operation(args):
     """Plan optimal route with fuel awareness"""
-    log_file = setup_logging("route-plan", args.ship, getattr(args, 'log_level', 'INFO'))
+    log_file = setup_logging("route-plan", args.ship, getattr(args, 'log_level', 'INFO'), player_id=args.player_id)
 
     print("=" * 70)
     print("ROUTE PLANNING")
@@ -100,7 +100,6 @@ def route_plan_operation(args):
         args.start,
         args.goal,
         ship_data['fuel']['current'],
-        prefer_cruise=not args.drift_only
     )
 
     if not route:
@@ -229,7 +228,7 @@ def scout_markets_operation(args):
     import signal
     import time
 
-    setup_logging('SCOUT-MARKETS', args.ship, getattr(args, 'log_level', 'INFO'))
+    setup_logging('SCOUT-MARKETS', args.ship, getattr(args, 'log_level', 'INFO'), player_id=args.player_id)
     logger = logging.getLogger(__name__ + '.scout_markets')
     logger.info("=" * 70)
     logger.info("SpaceTraders Bot - SCOUT-MARKETS Operation")
@@ -294,8 +293,9 @@ def scout_markets_operation(args):
             fleet={'active': 1, 'total': 1},
             top_performers=[{
                 'ship': args.ship,
-                'profit': goods_updated,
-                'operation': 'scouting'
+                'profit': 0,  # Scouting operations don't generate profit
+                'operation': 'scouting',
+                'goods_updated': goods_updated,  # Track goods updated as separate metric
             }],
             tags=['scouting', 'performance']
         )
@@ -405,41 +405,122 @@ def scout_markets_operation(args):
             time.sleep(60)  # Wait a minute before next tour
             continue
 
-        # Initialize optimizer
+        # STATIONARY SCOUT MODE: If exactly 1 market assigned, enter stationary mode
+        # Instead of touring, navigate to the single market once and stay docked,
+        # polling market data every 60 seconds. This gives 100% utilization with
+        # <1 minute data freshness, vs. touring which has travel overhead.
+        if len(market_stops) == 1:
+            single_market = market_stops[0]
+            logger.info(f"\n🎯 STATIONARY SCOUT MODE ACTIVATED")
+            logger.info(f"   Single market assignment: {single_market}")
+            logger.info(f"   Will navigate once, then poll every 60s while docked")
+
+            from spacetraders_bot.core.ship_controller import ShipController
+            from spacetraders_bot.core.smart_navigator import SmartNavigator
+            from spacetraders_bot.core.utils import timestamp_iso
+            from .common import get_database
+
+            ship = ShipController(api, args.ship)
+            navigator = SmartNavigator(api, args.system)
+            db = get_database()
+
+            # One-time navigation to the assigned market
+            if current_location != single_market:
+                logger.info(f"Navigating to assigned market: {single_market}...")
+                if not navigator.execute_route(ship, single_market):
+                    logger.error(f"Failed to navigate to {single_market}")
+                    if not continuous:
+                        log_error(
+                            "Navigation to stationary market failed",
+                            f"Could not reach {single_market}",
+                            resolution="Check fuel and route validity",
+                            escalate=True
+                        )
+                        return 1
+                    logger.info("Waiting 60s before retry...")
+                    time.sleep(60)
+                    continue
+
+            # Dock at the market
+            ship.dock()
+
+            # Get polling interval from args (default 60 seconds)
+            poll_interval = getattr(args, 'interval', 60)
+
+            logger.info(f"✅ Positioned at {single_market} (DOCKED)")
+            logger.info(f"Starting continuous market polling ({poll_interval}s intervals)...\n")
+
+            # Stationary polling loop
+            poll_count = 0
+            goods_updated_total = 0
+
+            # Random initial delay to stagger stationary scouts (0 to poll_interval seconds)
+            import random
+            initial_delay = random.uniform(0, poll_interval)
+            logger.info(f"⏱️  Random initial delay: {initial_delay:.1f}s (to stagger API calls)")
+            time.sleep(initial_delay)
+
+            while running:
+                poll_count += 1
+                poll_start = datetime.now(timezone.utc)
+
+                logger.info(f"[Poll #{poll_count}] Querying market data at {single_market}...")
+
+                # Get market data (ship is already docked)
+                system_symbol = args.system
+                market = api.get_market(system_symbol, single_market)
+
+                if market:
+                    trade_goods = market.get('tradeGoods', [])
+                    timestamp = timestamp_iso()
+
+                    # Update database
+                    # CRITICAL FIX: API field names are counter-intuitive!
+                    # API purchasePrice = ship PAYS to BUY (high) → DB sell_price (market asks)
+                    # API sellPrice = ship RECEIVES to SELL (low) → DB purchase_price (market bids)
+                    with db.transaction() as db_conn:
+                        for good in trade_goods:
+                            db.update_market_data(
+                                db_conn,
+                                waypoint_symbol=single_market,
+                                good_symbol=good['symbol'],
+                                supply=good.get('supply'),
+                                activity=good.get('activity'),
+                                purchase_price=good.get('sellPrice', 0),      # FIXED: API sellPrice → DB purchase_price
+                                sell_price=good.get('purchasePrice', 0),      # FIXED: API purchasePrice → DB sell_price
+                                trade_volume=good.get('tradeVolume', 0),
+                                last_updated=timestamp,
+                                player_id=args.player_id
+                            )
+                            goods_updated_total += 1
+
+                    logger.info(f"✅ Updated {len(trade_goods)} goods in database")
+                else:
+                    logger.warning(f"Failed to get market data for {single_market}")
+
+                # Wait poll_interval seconds before next poll
+                logger.info(f"Waiting {poll_interval}s before next poll...\n")
+                time.sleep(poll_interval)
+
+                # Check if we should stop (only in continuous mode)
+                if not continuous:
+                    break
+
+            logger.info(f"\n🛑 Stationary scout stopped after {poll_count} polls ({goods_updated_total} goods updated)")
+            return 0
+
+        # Initialize optimizer and use OR-Tools for tour optimization
         optimizer = TourOptimizer(graph, ship_data)
+        logger.info("Using OR-Tools optimizer with caching...")
 
-        # Run optimization based on algorithm choice
-        algorithm = args.algorithm.lower()
-
-        if algorithm == 'ortools':
-            logger.info("Using OR-Tools optimizer with caching...")
-            tour = optimizer.plan_tour(
-                tour_start_location,
-                market_stops,
-                ship_data['fuel']['current'],
-                return_to_start=args.return_to_start,
-                algorithm='ortools',
-                use_cache=True,
-            )
-        elif algorithm in ['greedy', '2opt']:
-            logger.info(f"Using {algorithm} algorithm with caching...")
-            tour = optimizer.plan_tour(
-                tour_start_location,
-                market_stops,
-                ship_data['fuel']['current'],
-                return_to_start=args.return_to_start,
-                algorithm=algorithm,
-                use_cache=True,
-            )
-        else:
-            logger.error(f"Unknown algorithm: {algorithm}")
-            log_error(
-                "Unknown routing algorithm",
-                f"Algorithm '{algorithm}' not supported",
-                resolution="Use 'ortools', 'greedy', or '2opt'",
-                escalate=False
-            )
-            return 1
+        tour = optimizer.plan_tour(
+            tour_start_location,
+            market_stops,
+            ship_data['fuel']['current'],
+            return_to_start=args.return_to_start,
+            algorithm='ortools',
+            use_cache=True,
+        )
 
         if not tour:
             logger.error("Failed to find tour")
@@ -461,7 +542,7 @@ def scout_markets_operation(args):
         if continuous:
             print(f"Tour #{tour_count}")
         print(f"{'='*70}")
-        print(f"Algorithm: {algorithm.upper()}")
+        print(f"Algorithm: OR-TOOLS")
         print(f"Markets to visit: {len(market_stops)}")
         planned_time = TimeCalculator.format_time(tour['total_time'])
         print(f"Total time: {planned_time}")
@@ -519,6 +600,9 @@ def scout_markets_operation(args):
                 timestamp = timestamp_iso()
 
                 # Update database immediately for each good
+                # CRITICAL FIX: API field names are counter-intuitive!
+                # API purchasePrice = ship PAYS to BUY (high) → DB sell_price (market asks)
+                # API sellPrice = ship RECEIVES to SELL (low) → DB purchase_price (market bids)
                 with db.transaction() as db_conn:
                     for good in trade_goods:
                         db.update_market_data(
@@ -527,8 +611,8 @@ def scout_markets_operation(args):
                             good_symbol=good['symbol'],
                             supply=good.get('supply'),
                             activity=good.get('activity'),
-                            purchase_price=good.get('purchasePrice', 0),
-                            sell_price=good.get('sellPrice', 0),
+                            purchase_price=good.get('sellPrice', 0),      # FIXED: API sellPrice → DB purchase_price
+                            sell_price=good.get('purchasePrice', 0),      # FIXED: API purchasePrice → DB sell_price
                             trade_volume=good.get('tradeVolume', 0),
                             last_updated=timestamp,
                             player_id=args.player_id

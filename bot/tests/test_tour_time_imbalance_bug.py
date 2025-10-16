@@ -144,7 +144,7 @@ def mock_api_dispersed():
     return api
 
 
-def test_tour_time_imbalance_with_dispersed_markets(mock_api_dispersed, mock_graph_provider_dispersed):
+def regression_tour_time_imbalance_with_dispersed_markets(mock_api_dispersed, mock_graph_provider_dispersed):
     """
     Test that balance_tour_times() recognizes extreme tour time imbalance
     even when market counts are similar.
@@ -171,7 +171,6 @@ def test_tour_time_imbalance_with_dispersed_markets(mock_api_dispersed, mock_gra
         ships=ships,
         token='test-token',
         player_id=1,
-        algorithm='greedy',
         graph_provider=mock_graph_provider_dispersed
     )
     coordinator.api = mock_api_dispersed

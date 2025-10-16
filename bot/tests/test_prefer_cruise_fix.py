@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from spacetraders_bot.core.routing import GraphBuilder, RouteOptimizer, FuelCalculator, TimeCalculator
 
 
-def test_prefer_cruise_avoids_drift():
+def regression_prefer_cruise_avoids_drift():
     """
     Test case: B7 → J55 route with 96 fuel
 
@@ -178,7 +178,7 @@ def test_prefer_cruise_avoids_drift():
     print("="*80)
 
 
-def test_prefer_cruise_emergency_drift():
+def regression_prefer_cruise_emergency_drift():
     """
     Test case: Emergency DRIFT when no fuel for CRUISE
 
@@ -266,10 +266,6 @@ def test_prefer_cruise_emergency_drift():
     print("="*80)
 
 
-if __name__ == "__main__":
-    print("\n" + "="*80)
-    print("Running prefer_cruise optimization tests...")
-    print("="*80)
 
     try:
         test_prefer_cruise_avoids_drift()

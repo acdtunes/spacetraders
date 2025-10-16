@@ -16,8 +16,8 @@ fuel_safety_margin: 0.1
 refuel_time_seconds: 5
 
 solver:
-  time_limit_ms: 5000
-  first_solution_strategy: PATH_CHEAPEST_ARC
+  time_limit_ms: 60000  # 60 seconds - sufficient time for optimal TSP solution with 20-30 waypoints
+  first_solution_strategy: PATH_CHEAPEST_ARC  # Better initial solution than AUTOMATIC
   local_search_metaheuristic: GUIDED_LOCAL_SEARCH
   guided_local_search_lambda: 0.1
 

@@ -89,7 +89,7 @@ def make_manager(dummy_db, tmp_daemon_env):
     return dm.DaemonManager(player_id=1, daemon_dir=tmp_daemon_env)
 
 
-def test_start_records_daemon(monkeypatch, tmp_daemon_env, dummy_db):
+def regression_start_records_daemon(monkeypatch, tmp_daemon_env, dummy_db):
     manager = make_manager(dummy_db, tmp_daemon_env)
 
     popen_calls = {}
@@ -113,7 +113,7 @@ def test_start_records_daemon(monkeypatch, tmp_daemon_env, dummy_db):
     assert log_file.exists()
 
 
-def test_start_returns_false_if_running(monkeypatch, tmp_daemon_env, dummy_db):
+def regression_start_returns_false_if_running(monkeypatch, tmp_daemon_env, dummy_db):
     manager = make_manager(dummy_db, tmp_daemon_env)
     monkeypatch.setattr(dm.DaemonManager, "is_running", lambda self, daemon_id: True)
 
@@ -121,7 +121,7 @@ def test_start_returns_false_if_running(monkeypatch, tmp_daemon_env, dummy_db):
     assert result is False
 
 
-def test_stop_updates_database(monkeypatch, tmp_daemon_env, dummy_db):
+def regression_stop_updates_database(monkeypatch, tmp_daemon_env, dummy_db):
     manager = make_manager(dummy_db, tmp_daemon_env)
     dummy_db.daemons["daemon-1"] = {
         "daemon_id": "daemon-1",
@@ -152,7 +152,7 @@ def test_stop_updates_database(monkeypatch, tmp_daemon_env, dummy_db):
     assert dummy_db.daemons["daemon-1"]["status"] == "stopped"
 
 
-def test_stop_handles_missing_process(monkeypatch, tmp_daemon_env, dummy_db):
+def regression_stop_handles_missing_process(monkeypatch, tmp_daemon_env, dummy_db):
     manager = make_manager(dummy_db, tmp_daemon_env)
     dummy_db.daemons["daemon-1"] = {
         "daemon_id": "daemon-1",
@@ -170,7 +170,7 @@ def test_stop_handles_missing_process(monkeypatch, tmp_daemon_env, dummy_db):
     assert dummy_db.daemons["daemon-1"]["status"] == "crashed"
 
 
-def test_stop_handles_process_disappearing(monkeypatch, tmp_daemon_env, dummy_db):
+def regression_stop_handles_process_disappearing(monkeypatch, tmp_daemon_env, dummy_db):
     manager = make_manager(dummy_db, tmp_daemon_env)
     dummy_db.daemons["daemon-1"] = {
         "daemon_id": "daemon-1",
@@ -191,7 +191,7 @@ def test_stop_handles_process_disappearing(monkeypatch, tmp_daemon_env, dummy_db
     assert dummy_db.daemons["daemon-1"]["status"] == "crashed"
 
 
-def test_stop_handles_generic_exception(monkeypatch, tmp_daemon_env, dummy_db):
+def regression_stop_handles_generic_exception(monkeypatch, tmp_daemon_env, dummy_db):
     manager = make_manager(dummy_db, tmp_daemon_env)
     dummy_db.daemons["daemon-1"] = {
         "daemon_id": "daemon-1",
@@ -211,7 +211,7 @@ def test_stop_handles_generic_exception(monkeypatch, tmp_daemon_env, dummy_db):
     assert manager.stop("daemon-1") is False
 
 
-def test_is_running_updates_crashed(monkeypatch, tmp_daemon_env, dummy_db):
+def regression_is_running_updates_crashed(monkeypatch, tmp_daemon_env, dummy_db):
     manager = make_manager(dummy_db, tmp_daemon_env)
     dummy_db.daemons["daemon-1"] = {
         "daemon_id": "daemon-1",
@@ -232,12 +232,12 @@ def test_is_running_updates_crashed(monkeypatch, tmp_daemon_env, dummy_db):
     assert dummy_db.daemons["daemon-1"]["status"] == "crashed"
 
 
-def test_fetch_process_none(tmp_daemon_env, dummy_db):
+def regression_fetch_process_none(tmp_daemon_env, dummy_db):
     manager = make_manager(dummy_db, tmp_daemon_env)
     assert manager._fetch_process(None) is None
 
 
-def test_status_handles_missing_process(monkeypatch, tmp_daemon_env, dummy_db):
+def regression_status_handles_missing_process(monkeypatch, tmp_daemon_env, dummy_db):
     started_at = datetime.now(UTC).isoformat()
     dummy_db.daemons["daemon-1"] = {
         "daemon_id": "daemon-1",
@@ -263,7 +263,7 @@ def test_status_handles_missing_process(monkeypatch, tmp_daemon_env, dummy_db):
     assert status["runtime_seconds"] is None
 
 
-def test_status_reports_metrics(monkeypatch, tmp_daemon_env, dummy_db):
+def regression_status_reports_metrics(monkeypatch, tmp_daemon_env, dummy_db):
     started_at = datetime.now(UTC).isoformat()
     dummy_db.daemons["daemon-1"] = {
         "daemon_id": "daemon-1",
@@ -302,7 +302,7 @@ def test_status_reports_metrics(monkeypatch, tmp_daemon_env, dummy_db):
     assert status["memory_mb"] == pytest.approx(5.0)
 
 
-def test_list_all_sorted(monkeypatch, tmp_daemon_env, dummy_db):
+def regression_list_all_sorted(monkeypatch, tmp_daemon_env, dummy_db):
     now = datetime.now(UTC)
     dummy_db.daemons.update(
         {
@@ -338,7 +338,7 @@ def test_list_all_sorted(monkeypatch, tmp_daemon_env, dummy_db):
     assert order == ["daemon-1", "daemon-2"]
 
 
-def test_tail_logs_missing_file(tmp_daemon_env, dummy_db, capsys):
+def regression_tail_logs_missing_file(tmp_daemon_env, dummy_db, capsys):
     manager = make_manager(dummy_db, tmp_daemon_env)
     dummy_db.daemons["daemon-1"] = {
         "daemon_id": "daemon-1",
@@ -351,7 +351,7 @@ def test_tail_logs_missing_file(tmp_daemon_env, dummy_db, capsys):
     assert "Log file not found" in out
 
 
-def test_tail_logs_reads_file(tmp_daemon_env, dummy_db, capsys):
+def regression_tail_logs_reads_file(tmp_daemon_env, dummy_db, capsys):
     log_path = tmp_daemon_env / "logs" / "daemon-1.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_path.write_text("line1\nline2\nline3\n")
@@ -368,7 +368,7 @@ def test_tail_logs_reads_file(tmp_daemon_env, dummy_db, capsys):
     assert "line2" in out and "line3" in out
 
 
-def test_cleanup_stopped_removes_entries(monkeypatch, tmp_daemon_env, dummy_db):
+def regression_cleanup_stopped_removes_entries(monkeypatch, tmp_daemon_env, dummy_db):
     dummy_db.daemons.update(
         {
             "daemon-1": {"daemon_id": "daemon-1", "player_id": 1, "pid": 1},

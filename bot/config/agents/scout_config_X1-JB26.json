@@ -1,20 +1,19 @@
 {
   "system": "X1-JB26",
   "ships": [
-    "VOID_HUNTER-2",
-    "VOID_HUNTER-3",
-    "VOID_HUNTER-4",
-    "VOID_HUNTER-6",
-    "VOID_HUNTER-7",
-    "VOID_HUNTER-8",
-    "VOID_HUNTER-9",
-    "VOID_HUNTER-A",
-    "VOID_HUNTER-B",
-    "VOID_HUNTER-C",
-    "VOID_HUNTER-D",
-    "VOID_HUNTER-E"
+    "STARGAZER-12",
+    "STARGAZER-13",
+    "STARGAZER-14",
+    "STARGAZER-15",
+    "STARGAZER-16",
+    "STARGAZER-17",
+    "STARGAZER-2",
+    "STARGAZER-3",
+    "STARGAZER-4",
+    "STARGAZER-5",
+    "STARGAZER-6",
+    "STARGAZER-7"
   ],
-  "algorithm": "2opt",
   "reconfigure": false,
-  "last_updated": "2025-10-06T18:18:25.475593"
+  "last_updated": "2025-10-12T05:14:44.229487+00:00"
 }

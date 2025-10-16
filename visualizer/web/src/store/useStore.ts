@@ -11,6 +11,7 @@ import type {
   FlightMode,
   ShipAssignment,
   MarketFreshness,
+  MarketData,
   ScoutTour,
   TradeOpportunityData,
 } from '../types/spacetraders';
@@ -82,6 +83,8 @@ export interface AppState {
   markets: Map<string, Market>;
   setMarkets: (markets: Map<string, Market>) => void;
   updateMarket: (waypointSymbol: string, market: Market) => void;
+  marketIntel: Map<string, MarketData>;
+  setMarketIntel: (marketData: MarketData[]) => void;
   showMapOverlays: boolean;
   toggleMapOverlays: () => void;
 
@@ -97,6 +100,10 @@ export interface AppState {
 
   filterAgents: Set<string>;
   toggleAgentFilter: (agentId: string) => void;
+
+  filterShipRoles: Set<string>;
+  toggleShipRoleFilter: (role: string) => void;
+  clearShipRoleFilters: () => void;
 
   filterWaypointTypes: Set<string>;
   toggleWaypointTypeFilter: (type: string) => void;
@@ -154,6 +161,16 @@ export interface AppState {
   } | null;
   requestShipFocus: (symbol: string, zoom?: number) => void;
   clearShipFocusRequest: () => void;
+
+  // Player filtering
+  selectedPlayerId: number | null;
+  setSelectedPlayerId: (playerId: number | null) => void;
+  availablePlayers: number[];
+  setAvailablePlayers: (playerIds: number[]) => void;
+
+  // Agent to player_id mapping
+  playerMappings: Map<string, number>;
+  setPlayerMappings: (mappings: Map<string, number>) => void;
 }
 
 const storeInitializer: StateCreator<AppState, [], []> = (set) => ({
@@ -231,6 +248,11 @@ const storeInitializer: StateCreator<AppState, [], []> = (set) => ({
       newMarkets.set(waypointSymbol, market);
       return { markets: newMarkets };
     }),
+  marketIntel: new Map(),
+  setMarketIntel: (marketData) =>
+    set(() => ({
+      marketIntel: new Map(marketData.map((entry) => [entry.waypointSymbol, entry])),
+    })),
   showMapOverlays: false,
   toggleMapOverlays: () => set((state) => ({ showMapOverlays: !state.showMapOverlays })),
 
@@ -263,6 +285,23 @@ const storeInitializer: StateCreator<AppState, [], []> = (set) => ({
       }
       return { filterAgents: newFilter };
     }),
+
+  filterShipRoles: new Set(),
+  toggleShipRoleFilter: (role) =>
+    set((state) => {
+      const normalized = role.toUpperCase();
+      const newFilter = new Set(state.filterShipRoles);
+      if (newFilter.has(normalized)) {
+        if (newFilter.size === 1) {
+          return { filterShipRoles: new Set() };
+        }
+        newFilter.delete(normalized);
+      } else {
+        newFilter.add(normalized);
+      }
+      return { filterShipRoles: newFilter };
+    }),
+  clearShipRoleFilters: () => set({ filterShipRoles: new Set() }),
 
   filterWaypointTypes: new Set(['PLANET', 'GAS_GIANT', 'MOON', 'ORBITAL_STATION', 'JUMP_GATE', 'ASTEROID_FIELD', 'ASTEROID', 'ENGINEERED_ASTEROID', 'ASTEROID_BASE', 'NEBULA', 'DEBRIS_FIELD', 'GRAVITY_WELL', 'ARTIFICIAL_GRAVITY_WELL', 'FUEL_STATION']),
   toggleWaypointTypeFilter: (type) =>
@@ -375,6 +414,16 @@ const storeInitializer: StateCreator<AppState, [], []> = (set) => ({
       },
     }),
   clearShipFocusRequest: () => set({ shipFocusRequest: null }),
+
+  // Player filtering
+  selectedPlayerId: null,
+  setSelectedPlayerId: (playerId) => set({ selectedPlayerId: playerId }),
+  availablePlayers: [],
+  setAvailablePlayers: (playerIds) => set({ availablePlayers: playerIds }),
+
+  // Agent to player_id mapping
+  playerMappings: new Map(),
+  setPlayerMappings: (mappings) => set({ playerMappings: mappings }),
 });
 
 export const createAppStore = () => createStore<AppState>(storeInitializer);
