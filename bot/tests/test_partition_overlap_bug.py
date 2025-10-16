@@ -13,7 +13,7 @@ import pytest
 from spacetraders_bot.core.market_partitioning import MarketPartitioner
 
 
-def test_geographic_partition_disjoint_sets():
+def regression_geographic_partition_disjoint_sets():
     """
     Test that geographic partitioning creates truly disjoint sets
 
@@ -101,7 +101,7 @@ def test_geographic_partition_disjoint_sets():
         f"Geographic partitioning created overlapping partitions! Duplicates: {duplicates}"
 
 
-def test_geographic_partition_boundary_case():
+def regression_geographic_partition_boundary_case():
     """
     Test the specific boundary condition that causes the bug
 

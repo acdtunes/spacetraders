@@ -1,7 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../store/useStore';
 
-const SystemSelector = () => {
+interface SystemSelectorProps {
+  className?: string;
+  buttonClassName?: string;
+}
+
+const SystemSelector = ({ className = '', buttonClassName = '' }: SystemSelectorProps) => {
   const { currentSystem, setCurrentSystem, ships } = useStore();
   const [isOpen, setIsOpen] = useState(false);
 
@@ -14,8 +19,12 @@ const SystemSelector = () => {
       }
     });
 
+    if (uniqueSystems.size === 0 && currentSystem) {
+      uniqueSystems.add(currentSystem);
+    }
+
     return Array.from(uniqueSystems).sort();
-  }, [ships]);
+  }, [ships, currentSystem]);
 
   useEffect(() => {
     if (systems.length === 0) {
@@ -33,10 +42,10 @@ const SystemSelector = () => {
   };
 
   return (
-    <div className="relative">
+    <div className={`relative ${className}`}>
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded text-white font-medium flex items-center gap-2"
+        className={`px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded text-white font-medium flex items-center gap-2 ${buttonClassName}`}
       >
         <span>🌌</span>
         <span>{currentSystem || 'Select System'}</span>

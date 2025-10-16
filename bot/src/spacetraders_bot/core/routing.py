@@ -319,10 +319,27 @@ class TourOptimizer:
 
     @staticmethod
     def get_markets_from_graph(graph: Dict) -> List[str]:
+        """
+        Extract market waypoints from graph, excluding fuel stations.
+
+        Fuel stations have the MARKETPLACE trait but only sell fuel (no trade goods),
+        so they provide no market intelligence value for scouts.
+
+        Returns:
+            List of waypoint symbols that are real markets (not fuel stations)
+        """
         markets = []
         for symbol, data in (graph or {}).get("waypoints", {}).items():
-            if "MARKETPLACE" in data.get("traits", []):
-                markets.append(symbol)
+            # Check for MARKETPLACE trait
+            if "MARKETPLACE" not in data.get("traits", []):
+                continue
+
+            # Exclude fuel stations (only sell fuel, no trade goods)
+            waypoint_type = data.get("type", "")
+            if waypoint_type == "FUEL_STATION":
+                continue
+
+            markets.append(symbol)
         return markets
 
 

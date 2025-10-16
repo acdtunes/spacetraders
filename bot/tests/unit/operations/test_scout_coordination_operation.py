@@ -34,7 +34,6 @@ def _make_args(**overrides):
         'ships': 'SHIP-1,SHIP-2',
         'player_id': 99,
         'system': 'X1-TEST',
-        'algorithm': '2opt',
         'ship': 'SHIP-3',
         'log_level': 'INFO',
         'interval': 1,
@@ -44,7 +43,7 @@ def _make_args(**overrides):
     return SimpleNamespace(**defaults)
 
 
-def test_coordinator_start_operation_happy_path(monkeypatch):
+def regression_coordinator_start_operation_happy_path(monkeypatch):
     dummy_coordinator = MagicMock()
     monkeypatch.setattr(sc, 'ScoutCoordinator', MagicMock(return_value=dummy_coordinator))
     monkeypatch.setattr(sc, 'get_database', lambda: _DummyDB({'token': 'XYZ'}))
@@ -59,13 +58,12 @@ def test_coordinator_start_operation_happy_path(monkeypatch):
         ships=['SHIP-1', 'SHIP-2'],
         token='XYZ',
         player_id=99,
-        algorithm='2opt',
     )
     dummy_coordinator.save_config.assert_called_once()
     dummy_coordinator.partition_and_start.assert_called_once()
 
 
-def test_coordinator_start_operation_player_missing(monkeypatch):
+def regression_coordinator_start_operation_player_missing(monkeypatch):
     monkeypatch.setattr(sc, 'ScoutCoordinator', MagicMock())
     monkeypatch.setattr(sc, 'get_database', lambda: _DummyDB(None))
 
@@ -75,7 +73,7 @@ def test_coordinator_start_operation_player_missing(monkeypatch):
     sc.ScoutCoordinator.assert_not_called()
 
 
-def test_coordinator_add_ship_operation_updates_config(tmp_path, monkeypatch):
+def regression_coordinator_add_ship_operation_updates_config(tmp_path, monkeypatch):
     monkeypatch.setattr(sc.paths, 'AGENT_CONFIG_DIR', tmp_path)
 
     config_path = tmp_path / 'scout_config_X1-TEST.json'
@@ -92,7 +90,7 @@ def test_coordinator_add_ship_operation_updates_config(tmp_path, monkeypatch):
     assert updated['reconfigure'] is True
 
 
-def test_coordinator_add_ship_operation_rejects_duplicate(tmp_path, monkeypatch):
+def regression_coordinator_add_ship_operation_rejects_duplicate(tmp_path, monkeypatch):
     monkeypatch.setattr(sc.paths, 'AGENT_CONFIG_DIR', tmp_path)
 
     config_path = tmp_path / 'scout_config_X1-TEST.json'
@@ -107,7 +105,7 @@ def test_coordinator_add_ship_operation_rejects_duplicate(tmp_path, monkeypatch)
     assert updated['ships'] == ['SHIP-1', 'SHIP-2']
 
 
-def test_coordinator_remove_ship_operation_updates_config(tmp_path, monkeypatch):
+def regression_coordinator_remove_ship_operation_updates_config(tmp_path, monkeypatch):
     monkeypatch.setattr(sc.paths, 'AGENT_CONFIG_DIR', tmp_path)
 
     config_path = tmp_path / 'scout_config_X1-TEST.json'
@@ -123,7 +121,7 @@ def test_coordinator_remove_ship_operation_updates_config(tmp_path, monkeypatch)
     assert updated['reconfigure'] is True
 
 
-def test_coordinator_remove_ship_operation_prevents_last_ship(tmp_path, monkeypatch):
+def regression_coordinator_remove_ship_operation_prevents_last_ship(tmp_path, monkeypatch):
     monkeypatch.setattr(sc.paths, 'AGENT_CONFIG_DIR', tmp_path)
 
     config_path = tmp_path / 'scout_config_X1-TEST.json'
@@ -138,7 +136,7 @@ def test_coordinator_remove_ship_operation_prevents_last_ship(tmp_path, monkeypa
     assert updated['ships'] == ['SHIP-2']
 
 
-def test_coordinator_stop_operation_stops_daemons(tmp_path, monkeypatch):
+def regression_coordinator_stop_operation_stops_daemons(tmp_path, monkeypatch):
     monkeypatch.setattr(sc.paths, 'AGENT_CONFIG_DIR', tmp_path)
 
     config_path = tmp_path / 'scout_config_X1-TEST.json'
@@ -167,7 +165,7 @@ def test_coordinator_stop_operation_stops_daemons(tmp_path, monkeypatch):
     assert not config_path.exists()
 
 
-def test_coordinator_stop_operation_handles_missing_config(tmp_path, monkeypatch):
+def regression_coordinator_stop_operation_handles_missing_config(tmp_path, monkeypatch):
     monkeypatch.setattr(sc.paths, 'AGENT_CONFIG_DIR', tmp_path)
     monkeypatch.setattr('spacetraders_bot.core.daemon_manager.DaemonManager', MagicMock())
 
@@ -178,7 +176,7 @@ def test_coordinator_stop_operation_handles_missing_config(tmp_path, monkeypatch
     assert rc == 0
 
 
-def test_coordinator_status_operation_reports_state(tmp_path, monkeypatch, capsys):
+def regression_coordinator_status_operation_reports_state(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(sc.paths, 'AGENT_CONFIG_DIR', tmp_path)
 
     config_path = tmp_path / 'scout_config_X1-TEST.json'

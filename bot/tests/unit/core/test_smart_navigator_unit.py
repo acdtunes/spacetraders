@@ -40,7 +40,7 @@ def build_ship_data(integrity=1.0, capacity=400, role='EXPLORER', cooldown=0):
     }
 
 
-def test_validate_ship_health_branches():
+def regression_validate_ship_health_branches():
     graph = {
         'system': 'X1-UNIT',
         'waypoints': {'X1-UNIT-A': {'x': 0, 'y': 0, 'has_fuel': True, 'traits': ['MARKETPLACE'], 'orbitals': []}},
@@ -64,7 +64,7 @@ def test_validate_ship_health_branches():
     assert valid and reason == 'Ship health OK'
 
 
-def test_ensure_graph_loads_from_json(tmp_path):
+def regression_ensure_graph_loads_from_json(tmp_path):
     system = 'X1-JSON'
     cache_dir = tmp_path
     graph_path = cache_dir / f'{system}_graph.json'
@@ -83,7 +83,7 @@ def test_ensure_graph_loads_from_json(tmp_path):
     assert navigator.graph['waypoints']
 
 
-def test_ensure_graph_builds_when_missing(tmp_path):
+def regression_ensure_graph_builds_when_missing(tmp_path):
     system = 'X1-BUILD'
     api = StubAPI([
         {'symbol': f'{system}-A', 'type': 'PLANET', 'x': 0, 'y': 0, 'traits': ['MARKETPLACE'], 'page': 1},

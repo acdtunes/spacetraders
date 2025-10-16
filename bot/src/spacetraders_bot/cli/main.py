@@ -36,6 +36,7 @@ from ..operations import (
     mining_optimize_operation,
     multileg_trade_operation,
     trade_plan_operation,
+    fleet_trade_optimize_operation,
     purchase_ship_operation,
     contract_operation,
     negotiate_operation,
@@ -134,6 +135,16 @@ def main():
     trade_plan_parser.add_argument('--max-stops', type=int, default=4, help='Maximum number of stops to evaluate (default: 4)')
     trade_plan_parser.add_argument('--system', help="Optional system override (defaults to ship's current system)")
 
+    # Fleet trade optimization - Multi-ship conflict-aware route planning
+    fleet_trade_parser = subparsers.add_parser(
+        'fleet-trade-optimize',
+        help='Optimize trade routes for multiple ships with conflict avoidance'
+    )
+    fleet_trade_parser.add_argument('--player-id', type=int, required=True, help='Player ID')
+    fleet_trade_parser.add_argument('--ships', required=True, help='Comma-separated ship symbols (e.g., SHIP-1,SHIP-2)')
+    fleet_trade_parser.add_argument('--system', required=True, help='System symbol (e.g., X1-TX46)')
+    fleet_trade_parser.add_argument('--max-stops', type=int, default=4, help='Maximum stops per route (default: 4)')
+
     purchase_ship_parser = subparsers.add_parser('purchase-ship', help='Purchase ships from a shipyard')
     purchase_ship_parser.add_argument('--player-id', type=int, required=True, help='Player ID')
     purchase_ship_parser.add_argument('--ship', required=True, help='Ship symbol that will perform the purchase')
@@ -210,6 +221,7 @@ def main():
     scout_markets_parser.add_argument('--markets-list', type=str, help='Comma-separated list of specific markets to visit (e.g., X1-JB26-A1,X1-JB26-B7)')
     scout_markets_parser.add_argument('--return-to-start', action='store_true', help='Return to starting waypoint')
     scout_markets_parser.add_argument('--continuous', action='store_true', help='Continuously loop the tour (restart after completion)')
+    scout_markets_parser.add_argument('--interval', type=int, default=60, help='Polling interval in seconds for stationary scouts (default: 60)')
     scout_markets_parser.add_argument('--output', help='Save tour plan to JSON file')
 
     # Routing validation operation
@@ -316,6 +328,7 @@ def main():
     coordinator_start_parser.add_argument('--player-id', type=int, required=True, help='Player ID')
     coordinator_start_parser.add_argument('--system', required=True, help='System symbol (e.g., X1-HU87)')
     coordinator_start_parser.add_argument('--ships', required=True, help='Comma-separated ship symbols')
+    coordinator_start_parser.add_argument('--exclude-markets', help='Comma-separated list of markets to exclude from auto-discovery (e.g., X1-TX46-I52,X1-TX46-J55 for stationary scouts)')
 
     # Add ship to coordinator
     coordinator_add_parser = coordinator_subparsers.add_parser('add-ship', help='Add ship to ongoing operation')
@@ -352,6 +365,7 @@ def main():
     log_session_start_parser.add_argument('--token', help='Agent token (optional)')
     log_session_start_parser.add_argument('--objective', required=True, help='Mission objective')
     log_session_start_parser.add_argument('--operator', default='AI First Mate', help='Operator name')
+    log_session_start_parser.add_argument('--narrative', help='First-person briefing narrative')
 
     # End session
     log_session_end_parser = captain_log_subparsers.add_parser('session-end', help='End current session')
@@ -419,6 +433,8 @@ def main():
         return multileg_trade_operation(args)
     elif args.operation == 'trade-plan':
         return trade_plan_operation(args)
+    elif args.operation == 'fleet-trade-optimize':
+        return fleet_trade_optimize_operation(args)
     elif args.operation == 'purchase-ship':
         return purchase_ship_operation(args)
     elif args.operation == 'contract':

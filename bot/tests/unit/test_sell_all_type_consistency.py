@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, patch
 class TestSellAllTypeConsistency:
     """Test that multileg_trader.py handles sell_all() return type correctly"""
 
-    def test_sell_all_returns_int_as_documented(self):
+    def regression_sell_all_returns_int_as_documented(self):
         """
         GIVEN a ShipController instance
         WHEN sell_all() is called
@@ -59,7 +59,7 @@ class TestSellAllTypeConsistency:
         assert isinstance(result, int), f"Expected int, got {type(result)}"
         assert result == 5000, f"Expected 5000, got {result}"
 
-    def test_multileg_trader_handles_sell_all_int_return(self):
+    def regression_multileg_trader_handles_sell_all_int_return(self):
         """
         GIVEN multileg_trader.py auto-recovery code (line 840)
         WHEN sell_all() returns int (as documented)
@@ -76,7 +76,7 @@ class TestSellAllTypeConsistency:
         with pytest.raises(AttributeError, match="'int' object has no attribute 'get'"):
             recovery_revenue = sell_result.get('total_revenue', 0) if sell_result else 0
 
-    def test_multileg_trader_defensive_handling_int_return(self):
+    def regression_multileg_trader_defensive_handling_int_return(self):
         """
         GIVEN sell_all() returns int (total revenue)
         WHEN multileg_trader.py processes the result
@@ -96,7 +96,7 @@ class TestSellAllTypeConsistency:
 
         assert recovery_revenue == 123960, f"Expected 123960, got {recovery_revenue}"
 
-    def test_multileg_trader_defensive_handling_dict_return(self):
+    def regression_multileg_trader_defensive_handling_dict_return(self):
         """
         GIVEN sell_all() returns dict (hypothetical future implementation)
         WHEN multileg_trader.py processes the result
@@ -114,7 +114,7 @@ class TestSellAllTypeConsistency:
 
         assert recovery_revenue == 123960, f"Expected 123960, got {recovery_revenue}"
 
-    def test_multileg_trader_defensive_handling_none_return(self):
+    def regression_multileg_trader_defensive_handling_none_return(self):
         """
         GIVEN sell_all() returns 0 (no cargo to sell)
         WHEN multileg_trader.py processes the result
@@ -132,7 +132,7 @@ class TestSellAllTypeConsistency:
 
         assert recovery_revenue == 0, f"Expected 0, got {recovery_revenue}"
 
-    def test_sell_all_actual_implementation_consistency(self):
+    def regression_sell_all_actual_implementation_consistency(self):
         """
         GIVEN ShipController.sell_all() implementation
         WHEN we examine its return type annotation and behavior

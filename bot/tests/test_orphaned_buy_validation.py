@@ -30,7 +30,15 @@ from spacetraders_bot.operations.multileg_trader import (
 )
 
 
-def test_route_validation_rejects_orphaned_buy_actions():
+
+def _build_segment(**kwargs):
+    actions_at_start = kwargs.pop('actions_at_start', []) or []
+    actions_at_end = kwargs.pop('actions_at_end', []) or []
+    actions_at_destination = kwargs.pop('actions_at_destination', []) or []
+    ordered_actions = list(actions_at_start) + list(actions_at_destination) + list(actions_at_end)
+    return RouteSegment(actions_at_destination=ordered_actions, **kwargs)
+
+def regression_route_validation_rejects_orphaned_buy_actions():
     """
     Test that route validation catches BUY actions without corresponding SELL actions
 
@@ -43,7 +51,7 @@ def test_route_validation_rejects_orphaned_buy_actions():
     """
     # Create a route with orphaned BUY action
     segments = [
-        RouteSegment(
+        _build_segment(
             from_waypoint='X1-GH18-H56',
             to_waypoint='X1-GH18-D46',
             distance=50,
@@ -63,7 +71,7 @@ def test_route_validation_rejects_orphaned_buy_actions():
             credits_after=84290,
             cumulative_profit=0
         ),
-        RouteSegment(
+        _build_segment(
             from_waypoint='X1-GH18-D46',
             to_waypoint='X1-GH18-B22',
             distance=60,
@@ -83,7 +91,7 @@ def test_route_validation_rejects_orphaned_buy_actions():
             credits_after=88290,
             cumulative_profit=4000
         ),
-        RouteSegment(
+        _build_segment(
             from_waypoint='X1-GH18-B22',
             to_waypoint='X1-GH18-A2',
             distance=40,
@@ -126,7 +134,7 @@ def test_route_validation_rejects_orphaned_buy_actions():
     assert any('Orphaned BUY' in error or 'never sold' in error for error in errors), "Should mention orphaned goods"
 
 
-def test_route_validation_accepts_complete_routes():
+def regression_route_validation_accepts_complete_routes():
     """
     Test that validation accepts routes where every BUY has a matching SELL
 
@@ -138,7 +146,7 @@ def test_route_validation_accepts_complete_routes():
     All goods purchased are eventually sold - VALID route.
     """
     segments = [
-        RouteSegment(
+        _build_segment(
             from_waypoint='X1-GH18-H56',
             to_waypoint='X1-GH18-D46',
             distance=50,
@@ -175,7 +183,7 @@ def test_route_validation_accepts_complete_routes():
             credits_after=101000,
             cumulative_profit=5000
         ),
-        RouteSegment(
+        _build_segment(
             from_waypoint='X1-GH18-D46',
             to_waypoint='X1-GH18-A2',
             distance=40,
@@ -213,7 +221,7 @@ def test_route_validation_accepts_complete_routes():
     assert len(errors) == 0, "Valid route should have no errors"
 
 
-def test_greedy_planner_does_not_create_orphaned_buys():
+def regression_greedy_planner_does_not_create_orphaned_buys():
     """
     Test that GreedyRoutePlanner.find_route() validates and rejects orphaned BUYs
 
@@ -304,6 +312,3 @@ def test_greedy_planner_does_not_create_orphaned_buys():
         is_valid, errors = validate_route_completeness(route)
         assert is_valid, f"Planner created invalid route with orphaned BUYs: {errors}"
 
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-xvs"])

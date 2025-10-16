@@ -1,1 +1,8 @@
 venv/
+
+# Python cache files (CRITICAL: Never commit bytecode cache)
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python

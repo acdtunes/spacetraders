@@ -54,7 +54,7 @@ def _seed_market_entry(
         )
 
 
-def test_get_waypoint_goods_returns_all_goods(temp_database):
+def regression_get_waypoint_goods_returns_all_goods(temp_database):
     now = datetime.now(UTC)
     _seed_market_entry(
         temp_database,
@@ -83,7 +83,7 @@ def test_get_waypoint_goods_returns_all_goods(temp_database):
     assert {g["good_symbol"] for g in goods} == {"IRON_ORE", "COPPER"}
 
 
-def test_find_markets_selling_filters_by_system_and_supply(temp_database):
+def regression_find_markets_selling_filters_by_system_and_supply(temp_database):
     now = datetime.now(UTC)
     _seed_market_entry(
         temp_database,
@@ -129,7 +129,7 @@ def test_find_markets_selling_filters_by_system_and_supply(temp_database):
     assert markets[0]["waypoint_symbol"] == "X1-TEST-A2"
 
 
-def test_find_markets_buying_orders_by_sell_price(temp_database):
+def regression_find_markets_buying_orders_by_sell_price(temp_database):
     now = datetime.now(UTC)
     _seed_market_entry(
         temp_database,
@@ -158,7 +158,7 @@ def test_find_markets_buying_orders_by_sell_price(temp_database):
     assert [m["waypoint_symbol"] for m in markets] == ["X1-TEST-A1", "X1-TEST-A2"]
 
 
-def test_recent_updates_and_stale_queries(temp_database):
+def regression_recent_updates_and_stale_queries(temp_database):
     now = datetime.now(UTC)
     stale_time = now - timedelta(hours=3)
     _seed_market_entry(
@@ -192,7 +192,7 @@ def test_recent_updates_and_stale_queries(temp_database):
     assert stale[0]["waypoint_symbol"] == "X1-TEST-A2"
 
 
-def test_get_waypoint_good_and_summary(temp_database):
+def regression_get_waypoint_good_and_summary(temp_database):
     now = datetime.now(UTC)
     _seed_market_entry(
         temp_database,

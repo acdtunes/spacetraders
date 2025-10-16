@@ -1,0 +1,14 @@
+{
+  "system": "X1-TX46",
+  "ships": [
+    "STARHOPPER-10",
+    "STARHOPPER-11",
+    "STARHOPPER-12",
+    "STARHOPPER-5",
+    "STARHOPPER-6",
+    "STARHOPPER-E",
+    "STARHOPPER-F"
+  ],
+  "reconfigure": false,
+  "last_updated": "2025-10-15T00:05:53.126480+00:00"
+}

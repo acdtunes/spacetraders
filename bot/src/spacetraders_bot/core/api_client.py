@@ -80,7 +80,7 @@ class APIClient:
         method: str,
         endpoint: str,
         data: Optional[Dict[str, Any]] = None,
-        max_retries: int = 5
+        max_retries: int = 20
     ) -> Optional[Dict[str, Any]]:
         """
         Make API request with rate limiting and retry logic
@@ -112,7 +112,7 @@ class APIClient:
         method: str,
         endpoint: str,
         data: Optional[Dict[str, Any]] = None,
-        max_retries: int = 5,
+        max_retries: int = 20,
     ) -> APIResult:
         """Same as `request` but returns typed result wrapper."""
 

@@ -3,7 +3,7 @@ from pathlib import Path
 from spacetraders_bot.helpers import paths
 
 
-def test_captain_logs_root_creates_directories(tmp_path, monkeypatch):
+def regression_captain_logs_root_creates_directories(tmp_path, monkeypatch):
     monkeypatch.setattr(paths, 'LOGS_DIR', tmp_path / 'logs')
 
     created = []

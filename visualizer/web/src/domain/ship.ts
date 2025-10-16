@@ -36,21 +36,17 @@ const resolveRoutePointPosition = (
     return null;
   }
 
+  if (typeof point.x === 'number' && typeof point.y === 'number') {
+    return { x: point.x, y: point.y };
+  }
+
   if (point.symbol) {
     const waypoint = waypoints.get(point.symbol);
     if (waypoint) {
       return resolveWaypointPosition(waypoint, options);
     }
   }
-
-  const x = typeof point.x === 'number' ? point.x : null;
-  const y = typeof point.y === 'number' ? point.y : null;
-
-  if (x === null || y === null) {
-    return null;
-  }
-
-  return { x, y };
+  return null;
 };
 
 /**
@@ -85,23 +81,29 @@ export const Ship = {
   calculateOrbitPosition(
     ship: ShipType,
     waypoints: Map<string, WaypointType>,
-    options?: ShipPositionOptions
+    options?: ShipPositionOptions,
+    orbitRadiusOverride?: number
   ): Position {
     const waypoint = waypoints.get(ship.nav.waypointSymbol);
     if (!waypoint) return { x: 0, y: 0 };
     const center = resolveWaypointPosition(waypoint, options);
 
     const waypointRadius = Waypoint.getRadius(waypoint);
-    const orbitDistance = waypoint.type.includes('ASTEROID')
-      ? CANVAS_CONSTANTS.ORBIT_DISTANCE_ASTEROID
-      : CANVAS_CONSTANTS.ORBIT_DISTANCE_DEFAULT;
+    const orbitDistance = Waypoint.getOrbitDistance(waypoint);
 
-    const orbitRadius = waypointRadius + orbitDistance;
+    const orbitRadius = orbitRadiusOverride ?? waypointRadius + orbitDistance;
     const orbitPeriod = CANVAS_CONSTANTS.ORBIT_PERIOD;
     const route = ship.nav.route;
     const now = Date.now();
 
     let angle: number | null = null;
+
+    const normalizeAngle = (value: number) => {
+      let angleValue = value;
+      while (angleValue <= -Math.PI) angleValue += Math.PI * 2;
+      while (angleValue > Math.PI) angleValue -= Math.PI * 2;
+      return angleValue;
+    };
 
     if (route && route.origin && route.destination) {
       const origin = route.origin;
@@ -122,10 +124,15 @@ export const Ship = {
           const dy = destinationPosition.y - originPosition.y;
           const length = Math.hypot(dx, dy);
           if (length > 0.0001) {
-            const arrivalAngle = Math.atan2(dy, dx) + Math.PI; // facing back along incoming vector
+            const incomingAngle = Math.atan2(dy, dx);
+            const topAngle = -Math.PI / 2;
+            const bottomAngle = Math.PI / 2;
+            const deltaTop = Math.abs(normalizeAngle(incomingAngle - topAngle));
+            const deltaBottom = Math.abs(normalizeAngle(incomingAngle - bottomAngle));
+            const entryAngle = deltaTop <= deltaBottom ? topAngle : bottomAngle;
             const elapsedSinceArrival = Math.max(0, now - arrivalTime);
             const phase = ((elapsedSinceArrival % orbitPeriod) / orbitPeriod) * Math.PI * 2;
-            angle = arrivalAngle + phase;
+            angle = entryAngle + phase;
           }
         }
       }
@@ -187,28 +194,8 @@ export const Ship = {
     const arrivalTime = new Date(ship.nav.route.arrival).getTime();
     const now = Date.now();
 
-    const progress = (now - departureTime) / (arrivalTime - departureTime);
+    const progress = (now - departureTime) / Math.max(arrivalTime - departureTime, 1);
     const clampedProgress = Math.max(0, Math.min(1, progress));
-
-    if (clampedProgress >= 1 && ship.nav.route.destination.symbol) {
-      const destinationSymbol = ship.nav.route.destination.symbol;
-      const destinationWaypoint = waypoints.get(destinationSymbol);
-
-      if (destinationWaypoint) {
-        return this.calculateOrbitPosition(
-          {
-            ...ship,
-            nav: {
-              ...ship.nav,
-              status: 'IN_ORBIT',
-              waypointSymbol: destinationSymbol,
-            },
-          } as ShipType,
-          waypoints,
-          options
-        );
-      }
-    }
 
     const dx = destinationPosition.x - originPosition.x;
     const dy = destinationPosition.y - originPosition.y;
@@ -218,23 +205,109 @@ export const Ship = {
       return { x: originPosition.x, y: originPosition.y };
     }
 
-    let maxTravelDistance = totalDistance;
     const destinationSymbol = ship.nav.route.destination.symbol;
     if (destinationSymbol) {
       const destinationWaypoint = waypoints.get(destinationSymbol);
       if (destinationWaypoint) {
         const waypointRadius = Waypoint.getRadius(destinationWaypoint);
-        const orbitDistance = destinationWaypoint.type.includes('ASTEROID')
-          ? CANVAS_CONSTANTS.ORBIT_DISTANCE_ASTEROID
-          : CANVAS_CONSTANTS.ORBIT_DISTANCE_DEFAULT;
-        const orbitRadius = waypointRadius + orbitDistance;
-        if (orbitRadius > 0 && totalDistance > orbitRadius) {
-          maxTravelDistance = Math.max(totalDistance - orbitRadius, 0);
+        const orbitDistance = Waypoint.getOrbitDistance(destinationWaypoint);
+        const orbitRadius = Math.max(0, waypointRadius + orbitDistance);
+
+        const normalizeAngle = (value: number) => {
+          let angleValue = value;
+          while (angleValue <= -Math.PI) angleValue += Math.PI * 2;
+          while (angleValue > Math.PI) angleValue -= Math.PI * 2;
+          return angleValue;
+        };
+
+        const incomingAngle = Math.atan2(dy, dx);
+        const entryAngle = (() => {
+          const radiusThreshold = orbitRadius * 1.5;
+          if (totalDistance <= radiusThreshold) {
+            const midAngle = incomingAngle + Math.PI;
+            return normalizeAngle(midAngle);
+          }
+
+          const topAngle = -Math.PI / 2;
+          const bottomAngle = Math.PI / 2;
+          const deltaTop = Math.abs(normalizeAngle(incomingAngle - topAngle));
+          const deltaBottom = Math.abs(normalizeAngle(incomingAngle - bottomAngle));
+          return deltaTop <= deltaBottom ? topAngle : bottomAngle;
+        })();
+
+        const entryPoint = {
+          x: destinationPosition.x + Math.cos(entryAngle) * orbitRadius,
+          y: destinationPosition.y + Math.sin(entryAngle) * orbitRadius,
+        };
+
+        if (clampedProgress >= 1) {
+          return this.calculateOrbitPosition(
+            {
+              ...ship,
+              nav: {
+                ...ship.nav,
+                status: 'IN_ORBIT',
+                waypointSymbol: destinationSymbol,
+              },
+            } as ShipType,
+            waypoints,
+            options,
+            orbitRadius
+          );
         }
+
+        const travelDistance = totalDistance * clampedProgress;
+        const curveDistance = Math.min(Math.max(orbitRadius * 1.2, 10), totalDistance);
+        const distanceBeforeCurve = Math.max(totalDistance - curveDistance, 0);
+
+        if (travelDistance <= distanceBeforeCurve || curveDistance <= 0) {
+          const ratio = travelDistance / totalDistance;
+          return {
+            x: originPosition.x + dx * ratio,
+            y: originPosition.y + dy * ratio,
+          };
+        }
+
+        const t = (travelDistance - distanceBeforeCurve) / curveDistance;
+        const startPoint = {
+          x: originPosition.x + (dx * distanceBeforeCurve) / totalDistance,
+          y: originPosition.y + (dy * distanceBeforeCurve) / totalDistance,
+        };
+
+        const lineDirection = (() => {
+          const length = Math.hypot(dx, dy);
+          if (length === 0) return { x: 0, y: 0 };
+          return { x: dx / length, y: dy / length };
+        })();
+
+        const orbitTangent = {
+          x: -Math.sin(entryAngle),
+          y: Math.cos(entryAngle),
+        };
+
+        const controlPoint = {
+          x:
+            startPoint.x +
+            lineDirection.x * (curveDistance * 0.5) -
+            orbitTangent.x * (curveDistance * 0.2),
+          y:
+            startPoint.y +
+            lineDirection.y * (curveDistance * 0.5) -
+            orbitTangent.y * (curveDistance * 0.2),
+        };
+
+        const oneMinusT = 1 - t;
+        return {
+          x: oneMinusT * oneMinusT * startPoint.x + 2 * oneMinusT * t * controlPoint.x + t * t * entryPoint.x,
+          y: oneMinusT * oneMinusT * startPoint.y + 2 * oneMinusT * t * controlPoint.y + t * t * entryPoint.y,
+        };
       }
     }
 
-    const travelledDistance = Math.min(totalDistance * clampedProgress, maxTravelDistance);
+    const travelledDistance = totalDistance * clampedProgress;
+    if (totalDistance === 0) {
+      return originPosition;
+    }
     const ratio = travelledDistance / totalDistance;
 
     return {

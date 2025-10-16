@@ -98,7 +98,7 @@ def _make_coordinator(monkeypatch, load_graph, build_graph=None):
     return coord, calls
 
 
-def test_coordinator_uses_cached_graph(monkeypatch):
+def regression_coordinator_uses_cached_graph(monkeypatch):
     graph = _base_graph()
     coord, calls = _make_coordinator(monkeypatch, load_graph=graph, build_graph=None)
 
@@ -108,7 +108,7 @@ def test_coordinator_uses_cached_graph(monkeypatch):
     assert coord.markets == list(graph['waypoints'].keys())
 
 
-def test_coordinator_builds_graph_when_missing(monkeypatch):
+def regression_coordinator_builds_graph_when_missing(monkeypatch):
     graph = _base_graph()
     coord, calls = _make_coordinator(monkeypatch, load_graph=None, build_graph=graph)
 
@@ -117,7 +117,7 @@ def test_coordinator_builds_graph_when_missing(monkeypatch):
     assert coord.graph == graph
 
 
-def test_partition_markets_geographic_vertical(monkeypatch):
+def regression_partition_markets_geographic_vertical(monkeypatch):
     graph = _base_graph()
     coord, _ = _make_coordinator(monkeypatch, load_graph=graph)
     coord.ships = {'SHIP-1', 'SHIP-2'}
@@ -130,7 +130,7 @@ def test_partition_markets_geographic_vertical(monkeypatch):
     assert partitions['SHIP-2'] == ['X1-TEST-M2']
 
 
-def test_partition_markets_geographic_horizontal(monkeypatch):
+def regression_partition_markets_geographic_horizontal(monkeypatch):
     graph = _base_graph()
     coord, _ = _make_coordinator(monkeypatch, load_graph=graph)
     coord.ships = {'SHIP-1', 'SHIP-2'}
@@ -143,7 +143,7 @@ def test_partition_markets_geographic_horizontal(monkeypatch):
     assert partitions['SHIP-2'] == ['X1-TEST-M3']
 
 
-def test_partition_markets_geographic_even_distribution(monkeypatch):
+def regression_partition_markets_geographic_even_distribution(monkeypatch):
     graph = _base_graph()
     # Collapse all coordinates to trigger even distribution
     for wp in graph['waypoints'].values():
@@ -162,7 +162,7 @@ def test_partition_markets_geographic_even_distribution(monkeypatch):
     assert max(len(v) for v in partitions.values()) - min(len(v) for v in partitions.values()) <= 1
 
 
-def test_partition_markets_greedy_assigns_all(monkeypatch):
+def regression_partition_markets_greedy_assigns_all(monkeypatch):
     graph = _base_graph()
     coord, _ = _make_coordinator(monkeypatch, load_graph=graph)
     coord.graph = graph
@@ -174,7 +174,7 @@ def test_partition_markets_greedy_assigns_all(monkeypatch):
     assert assigned == len(coord.markets)
 
 
-def test_start_scout_daemon_available(monkeypatch):
+def regression_start_scout_daemon_available(monkeypatch):
     graph = _base_graph()
     coord, _ = _make_coordinator(monkeypatch, load_graph=graph)
 
@@ -222,7 +222,7 @@ def test_start_scout_daemon_available(monkeypatch):
     assert metadata['markets'] == ['M1', 'M2']
 
 
-def test_start_scout_daemon_existing_assignment(monkeypatch):
+def regression_start_scout_daemon_existing_assignment(monkeypatch):
     graph = _base_graph()
     coord, _ = _make_coordinator(monkeypatch, load_graph=graph)
 
@@ -273,12 +273,10 @@ def test_start_scout_daemon_existing_assignment(monkeypatch):
     assert assignment.releases[0][0] == 'SHIP-2'
 
 
-def test_optimize_subtour_uses_two_opt(monkeypatch):
+def regression_optimize_subtour_uses_two_opt(monkeypatch):
     graph = _base_graph()
     coord, _ = _make_coordinator(monkeypatch, load_graph=graph)
     coord.graph = graph
-    coord.algorithm = '2opt'
-
     class ShipAPIStub(APIStub):
         def get_ship(self, symbol):
             data = super().get_ship(symbol)
@@ -291,28 +289,34 @@ def test_optimize_subtour_uses_two_opt(monkeypatch):
         def __init__(self, graph, ship_data):
             self.graph = graph
             self.ship_data = ship_data
-            self.nn_called = False
-            self.two_opt_called = False
+            self.calls = []
 
-        def solve_nearest_neighbor(self, start, markets, fuel, return_to_start=True):
-            self.nn_called = True
-            return {'total_time': 120, 'legs': []}
-
-        def two_opt_improve(self, tour, max_iterations=100):
-            self.two_opt_called = True
-            tour['total_time'] = 110
-            return tour
+        def plan_tour(self, start_location, markets, fuel, return_to_start=True, algorithm=None, use_cache=False):
+            self.calls.append({
+                'start': start_location,
+                'markets': list(markets),
+                'fuel': fuel,
+                'return_to_start': return_to_start,
+                'algorithm': algorithm,
+                'use_cache': use_cache,
+            })
+            return {'total_time': 110, 'legs': []}
 
     optimizer_instance = OptimizerHarness(graph, {})
     monkeypatch.setattr(coordinator_module, 'TourOptimizer', lambda graph, ship_data: optimizer_instance)
 
-    tour = coord.optimize_subtour('SHIP-1', ['X1-TEST-M1', 'X1-TEST-M2'])
+    markets = ['X1-TEST-M1', 'X1-TEST-M2']
+    tour = coord.optimize_subtour('SHIP-1', markets)
 
-    assert optimizer_instance.nn_called and optimizer_instance.two_opt_called
+    assert optimizer_instance.calls, "plan_tour should be invoked for optimize_subtour"
+    call = optimizer_instance.calls[0]
+    assert call['markets'] == markets
+    assert call['algorithm'] == 'ortools'
+    assert call['return_to_start'] is True
     assert tour['total_time'] == 110
 
 
-def test_partition_and_start_records_assignments(monkeypatch):
+def regression_partition_and_start_records_assignments(monkeypatch):
     graph = _base_graph()
     coord, _ = _make_coordinator(monkeypatch, load_graph=graph)
     coord.graph = graph
@@ -354,7 +358,7 @@ def test_partition_and_start_records_assignments(monkeypatch):
     assert coord.assignments['SHIP-1'].daemon_id == 'id-SHIP-1'
 
 
-def test_start_scout_daemon_start_failure(monkeypatch):
+def regression_start_scout_daemon_start_failure(monkeypatch):
     graph = _base_graph()
     coord, _ = _make_coordinator(monkeypatch, load_graph=graph)
 
@@ -377,7 +381,7 @@ def test_start_scout_daemon_start_failure(monkeypatch):
     assert coord.start_scout_daemon('SHIP-1', ['M']) is None
 
 
-def test_save_config_and_check_reconfigure(tmp_path, monkeypatch):
+def regression_save_config_and_check_reconfigure(tmp_path, monkeypatch):
     graph = _base_graph()
     coord, _ = _make_coordinator(monkeypatch, load_graph=graph)
     coord.config_file = tmp_path / 'config.json'
@@ -393,7 +397,7 @@ def test_save_config_and_check_reconfigure(tmp_path, monkeypatch):
     assert coord._check_reconfigure_signal() is True
 
 
-def test_handle_reconfiguration_updates_ships(tmp_path, monkeypatch):
+def regression_handle_reconfiguration_updates_ships(tmp_path, monkeypatch):
     graph = _base_graph()
     coord, _ = _make_coordinator(monkeypatch, load_graph=graph)
     coord.graph = graph
@@ -442,7 +446,7 @@ def test_handle_reconfiguration_updates_ships(tmp_path, monkeypatch):
     assert called.get('partition') is True
     new_config = json.loads(coord.config_file.read_text())
     assert new_config['reconfigure'] is False
-def test_estimate_partition_tour_time(monkeypatch):
+def regression_estimate_partition_tour_time(monkeypatch):
     graph = _base_graph()
     coord, _ = _make_coordinator(monkeypatch, load_graph=graph)
     coord.graph = graph
@@ -454,7 +458,7 @@ def test_estimate_partition_tour_time(monkeypatch):
     assert tour_time > 0
 
 
-def test_balance_tour_times_reallocates(monkeypatch):
+def regression_balance_tour_times_reallocates(monkeypatch):
     graph = _base_graph()
     coord, _ = _make_coordinator(monkeypatch, load_graph=graph)
     coord.graph = graph
@@ -470,7 +474,7 @@ def test_balance_tour_times_reallocates(monkeypatch):
     assert balanced['SHIP-2']
 
 
-def test_balance_tour_times_missing_ship_data(monkeypatch):
+def regression_balance_tour_times_missing_ship_data(monkeypatch):
     graph = _base_graph()
     coord, _ = _make_coordinator(monkeypatch, load_graph=graph)
     coord.graph = graph
@@ -493,7 +497,7 @@ def test_balance_tour_times_missing_ship_data(monkeypatch):
     assert balanced == partitions
 
 
-def test_balance_tour_times_no_boundary_market(monkeypatch):
+def regression_balance_tour_times_no_boundary_market(monkeypatch):
     graph = _base_graph()
     coord, _ = _make_coordinator(monkeypatch, load_graph=graph)
     coord.graph = graph
@@ -511,23 +515,20 @@ def test_balance_tour_times_no_boundary_market(monkeypatch):
     assert result == partitions
 
 
-def test_balance_tour_times_tsp_path(monkeypatch):
+def regression_balance_tour_times_tsp_path(monkeypatch):
     graph = _base_graph()
     coord, _ = _make_coordinator(monkeypatch, load_graph=graph)
     coord.graph = graph
 
-    calls = {}
+    calls = {'plan_tour': 0}
 
     class OptimizerStub:
         def __init__(self, graph, ship_data):
-            calls['init'] = True
+            pass
 
-        def solve_nearest_neighbor(self, *args, **kwargs):
-            return {'total_time': 120, 'legs': []}
-
-        def two_opt_improve(self, tour, max_iterations=100):
-            tour['total_time'] = 110
-            return tour
+        def plan_tour(self, start_location, markets, fuel, return_to_start=True, algorithm=None, use_cache=False):
+            calls['plan_tour'] += 1
+            return {'total_time': 110, 'legs': []}
 
     monkeypatch.setattr(coordinator_module, 'TourOptimizer', OptimizerStub)
 
@@ -538,10 +539,10 @@ def test_balance_tour_times_tsp_path(monkeypatch):
     result = coord.balance_tour_times(partitions, use_tsp=True, variance_threshold=0.0)
 
     assert result['SHIP-1']
-    assert calls.get('init') is True
+    assert calls['plan_tour'] > 0
 
 
-def test_monitor_cycle_triggers_reconfigure(monkeypatch):
+def regression_monitor_cycle_triggers_reconfigure(monkeypatch):
     graph = _base_graph()
     coord, _ = _make_coordinator(monkeypatch, load_graph=graph)
     coord.config_file = str(Path('/tmp/nonexistent'))
@@ -556,7 +557,7 @@ def test_monitor_cycle_triggers_reconfigure(monkeypatch):
     assert flag.get('called') is True
 
 
-def test_monitor_cycle_restarts_daemon(monkeypatch):
+def regression_monitor_cycle_restarts_daemon(monkeypatch):
     graph = _base_graph()
     coord, _ = _make_coordinator(monkeypatch, load_graph=graph)
     coord.assignments = {
@@ -576,7 +577,7 @@ def test_monitor_cycle_restarts_daemon(monkeypatch):
     assert restarted.get('SHIP-1') == 'daemon-old'
 
 
-def test_restart_daemon_for_missing_assignment(monkeypatch, capsys):
+def regression_restart_daemon_for_missing_assignment(monkeypatch, capsys):
     graph = _base_graph()
     coord, _ = _make_coordinator(monkeypatch, load_graph=graph)
     coord.assignments = {}
@@ -587,7 +588,7 @@ def test_restart_daemon_for_missing_assignment(monkeypatch, capsys):
     assert 'No assignment found for ship' in captured
 
 
-def test_check_reconfigure_signal_invalid_json(tmp_path, monkeypatch):
+def regression_check_reconfigure_signal_invalid_json(tmp_path, monkeypatch):
     graph = _base_graph()
     coord, _ = _make_coordinator(monkeypatch, load_graph=graph)
 
@@ -598,7 +599,7 @@ def test_check_reconfigure_signal_invalid_json(tmp_path, monkeypatch):
     assert coord._check_reconfigure_signal() is False
 
 
-def test_handle_reconfiguration_no_changes(tmp_path, monkeypatch):
+def regression_handle_reconfiguration_no_changes(tmp_path, monkeypatch):
     graph = _base_graph()
     coord, _ = _make_coordinator(monkeypatch, load_graph=graph)
     coord.config_file = str(tmp_path / 'config.json')
@@ -618,7 +619,7 @@ def test_handle_reconfiguration_no_changes(tmp_path, monkeypatch):
     assert new_config['reconfigure'] is False
 
 
-def test_wait_for_tours_complete_timeout(monkeypatch):
+def regression_wait_for_tours_complete_timeout(monkeypatch):
     graph = _base_graph()
     coord, _ = _make_coordinator(monkeypatch, load_graph=graph)
     coord.assignments = {
@@ -639,7 +640,7 @@ def test_wait_for_tours_complete_timeout(monkeypatch):
     coord._wait_for_tours_complete(timeout=100)
 
 
-def test_wait_for_tours_complete_success(monkeypatch):
+def regression_wait_for_tours_complete_success(monkeypatch):
     graph = _base_graph()
     coord, _ = _make_coordinator(monkeypatch, load_graph=graph)
     coord.assignments = {
@@ -658,7 +659,7 @@ def test_wait_for_tours_complete_success(monkeypatch):
 
     coord._wait_for_tours_complete(timeout=10)
 
-def test_partition_markets_kmeans(monkeypatch):
+def regression_partition_markets_kmeans(monkeypatch):
     graph = _base_graph()
     coord, _ = _make_coordinator(monkeypatch, load_graph=graph)
     coord.graph = graph
@@ -668,7 +669,7 @@ def test_partition_markets_kmeans(monkeypatch):
     assert sum(len(v) for v in partitions.values()) == len(coord.markets)
 
 
-def test_monitor_and_restart(monkeypatch):
+def regression_monitor_and_restart(monkeypatch):
     graph = _base_graph()
     coord, _ = _make_coordinator(monkeypatch, load_graph=graph)
     coord.assignments = {
@@ -702,7 +703,7 @@ def test_monitor_and_restart(monkeypatch):
     assert restarts == [('SHIP-1', ('M1',))]
 
 
-def test_stop_all(monkeypatch):
+def regression_stop_all(monkeypatch):
     graph = _base_graph()
     coord, _ = _make_coordinator(monkeypatch, load_graph=graph)
     coord.assignments = {

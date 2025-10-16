@@ -21,7 +21,7 @@ def client(monkeypatch):
     return api_client
 
 
-def test_api_result_success_and_failure_helpers():
+def regression_api_result_success_and_failure_helpers():
     success = APIResult.success({"foo": "bar"}, status_code=200)
     assert success.ok is True
     assert success.data == {"foo": "bar"}
@@ -34,7 +34,7 @@ def test_api_result_success_and_failure_helpers():
     assert failure.status_code == 400
 
 
-def test_request_result_success(monkeypatch, client):
+def regression_request_result_success(monkeypatch, client):
     response = StubResponse(200, {"data": {"id": "ship-1"}})
     monkeypatch.setattr(
         "spacetraders_bot.core.api_client.requests.get",
@@ -48,7 +48,7 @@ def test_request_result_success(monkeypatch, client):
     assert result.status_code == 200
 
 
-def test_request_result_client_error_preserves_payload(monkeypatch, client):
+def regression_request_result_client_error_preserves_payload(monkeypatch, client):
     payload = {"error": {"code": "SHIP_NOT_FOUND", "message": "nope"}}
     response = StubResponse(404, payload)
     monkeypatch.setattr(
@@ -64,7 +64,7 @@ def test_request_result_client_error_preserves_payload(monkeypatch, client):
     assert result.data == payload
 
 
-def test_request_wraps_result_for_client_error(monkeypatch, client):
+def regression_request_wraps_result_for_client_error(monkeypatch, client):
     payload = {"error": {"code": "SHIP_NOT_FOUND", "message": "nope"}}
     response = StubResponse(404, payload)
     monkeypatch.setattr(
@@ -77,7 +77,7 @@ def test_request_wraps_result_for_client_error(monkeypatch, client):
     assert raw_response == payload
 
 
-def test_rate_limit_retries_until_success(monkeypatch, client):
+def regression_rate_limit_retries_until_success(monkeypatch, client):
     responses = iter(
         [
             StubResponse(429, {"error": {"message": "Rate limit hit"}}),
@@ -103,7 +103,7 @@ def test_rate_limit_retries_until_success(monkeypatch, client):
     assert call_count["count"] == 2
 
 
-def test_request_returns_none_for_server_failure(monkeypatch, client):
+def regression_request_returns_none_for_server_failure(monkeypatch, client):
     response = StubResponse(503, {"error": {"message": "down"}})
     monkeypatch.setattr(
         "spacetraders_bot.core.api_client.requests.get",

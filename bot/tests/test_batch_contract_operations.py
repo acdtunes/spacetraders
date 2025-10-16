@@ -18,7 +18,7 @@ from spacetraders_bot.operations.contracts import (
 class TestContractProfitabilityEvaluation:
     """Test contract profitability evaluation logic"""
 
-    def test_profitable_contract(self):
+    def regression_profitable_contract(self):
         """Test contract that meets profitability criteria"""
         contract = {
             'terms': {
@@ -46,7 +46,7 @@ class TestContractProfitabilityEvaluation:
         assert metrics['units_remaining'] == 50
         assert metrics['trips'] == 2  # 50 units / 40 capacity = 2 trips
 
-    def test_unprofitable_low_profit_contract(self):
+    def regression_unprofitable_low_profit_contract(self):
         """Test contract with net profit below minimum threshold"""
         contract = {
             'terms': {
@@ -71,7 +71,7 @@ class TestContractProfitabilityEvaluation:
         assert "5,000 cr minimum" in reason
         assert metrics['net_profit'] < 5000
 
-    def test_unprofitable_low_roi_contract(self):
+    def regression_unprofitable_low_roi_contract(self):
         """Test contract with ROI below minimum threshold"""
         contract = {
             'terms': {
@@ -97,7 +97,7 @@ class TestContractProfitabilityEvaluation:
         assert isinstance(reason, str)
         assert 'roi' in metrics
 
-    def test_partially_fulfilled_contract(self):
+    def regression_partially_fulfilled_contract(self):
         """Test contract that already has some units fulfilled"""
         contract = {
             'terms': {
@@ -121,7 +121,7 @@ class TestContractProfitabilityEvaluation:
         assert metrics['units_remaining'] == 20
         assert metrics['trips'] == 1  # 20 units / 40 capacity = 1 trip
 
-    def test_already_fulfilled_contract(self):
+    def regression_already_fulfilled_contract(self):
         """Test contract that is already completely fulfilled"""
         contract = {
             'terms': {
@@ -144,7 +144,7 @@ class TestContractProfitabilityEvaluation:
         assert is_profitable is False
         assert "already fulfilled" in reason
 
-    def test_no_delivery_requirements(self):
+    def regression_no_delivery_requirements(self):
         """Test contract with no delivery requirements"""
         contract = {
             'terms': {
@@ -195,7 +195,7 @@ class TestBatchContractOperation:
             'log_level': 'ERROR',  # Suppress logs in tests
         })()
 
-    def test_batch_all_profitable_contracts(self, mock_api, mock_ship, args_batch_3):
+    def regression_batch_all_profitable_contracts(self, mock_api, mock_ship, args_batch_3):
         """Test batch where all contracts are profitable"""
         # Mock negotiate responses (3 profitable contracts)
         negotiate_responses = [
@@ -236,7 +236,7 @@ class TestBatchContractOperation:
         # Should have negotiated 3 contracts
         assert mock_api.post.call_count == 3
 
-    def test_batch_accept_all_contracts_regardless_of_profitability(self, mock_api, mock_ship, args_batch_3):
+    def regression_batch_accept_all_contracts_regardless_of_profitability(self, mock_api, mock_ship, args_batch_3):
         """Test batch where all contracts are accepted, even unprofitable ones"""
         # Mock negotiate responses (profitable, unprofitable, profitable)
         negotiate_responses = [
@@ -324,7 +324,7 @@ class TestBatchContractOperation:
         # Should have fulfilled ALL 3 contracts (no skipping, even for unprofitable)
         assert mock_fulfill.call_count == 3
 
-    def test_batch_handle_fulfillment_failure(self, mock_api, mock_ship, args_batch_3):
+    def regression_batch_handle_fulfillment_failure(self, mock_api, mock_ship, args_batch_3):
         """Test batch continues after fulfillment failure"""
         # Mock negotiate responses (3 profitable contracts)
         negotiate_responses = [
@@ -365,7 +365,7 @@ class TestBatchContractOperation:
         # Should have tried to fulfill all 3 contracts
         assert mock_fulfill.call_count == 3
 
-    def test_batch_handle_negotiation_failure(self, mock_api, mock_ship, args_batch_3):
+    def regression_batch_handle_negotiation_failure(self, mock_api, mock_ship, args_batch_3):
         """Test batch continues after negotiation failure"""
         # Mock negotiate responses: success, failure, success
         negotiate_responses = [
@@ -433,7 +433,7 @@ class TestBatchContractOperation:
         # Should have fulfilled only 2 contracts (skipped failed negotiation)
         assert mock_fulfill.call_count == 2
 
-    def test_batch_all_fulfillments_fail(self, mock_api, mock_ship, args_batch_3):
+    def regression_batch_all_fulfillments_fail(self, mock_api, mock_ship, args_batch_3):
         """Test batch where all fulfillments fail (regardless of profitability)"""
         # Mock negotiate responses (3 contracts - mix of profitable and unprofitable)
         negotiate_responses = [
@@ -478,7 +478,7 @@ class TestBatchContractOperation:
 class TestSingleContractBackwardCompatibility:
     """Test that single contract mode still works (backward compatibility)"""
 
-    def test_single_contract_mode_requires_contract_id(self):
+    def regression_single_contract_mode_requires_contract_id(self):
         """Test that single contract mode requires contract_id"""
         args = type('obj', (object,), {
             'player_id': 1,
@@ -529,7 +529,7 @@ class TestBatchContractSequentialExecution:
             'log_level': 'ERROR',
         })()
 
-    def test_sequential_execution_prevents_error_4511(self, mock_api, mock_ship, args_batch_2):
+    def regression_sequential_execution_prevents_error_4511(self, mock_api, mock_ship, args_batch_2):
         """
         Test that contracts are completed sequentially to prevent ERROR 4511.
 
@@ -596,7 +596,7 @@ class TestBatchContractSequentialExecution:
         # Should have fulfilled 2 contracts
         assert fulfill_call_count == 2
 
-    def test_always_accept_contracts_no_profitability_filter(self, mock_api, mock_ship, args_batch_2):
+    def regression_always_accept_contracts_no_profitability_filter(self, mock_api, mock_ship, args_batch_2):
         """
         Test that ALL contracts are accepted and fulfilled, regardless of profitability.
 
@@ -668,6 +668,252 @@ class TestBatchContractSequentialExecution:
         # Old behavior: Would skip both (unprofitable) -> 0 fulfillments
         # New behavior: Always fulfill -> 2 fulfillments
         assert mock_fulfill.call_count == 2
+
+
+class TestBatchContractExistingActiveContract:
+    """
+    Test that batch contract operation handles existing active contracts gracefully.
+
+    When starting a batch operation with an existing active unfulfilled contract,
+    the operation should:
+    1. Detect the existing contract
+    2. Fulfill it first
+    3. Then proceed with negotiating new contracts
+
+    This prevents ERROR 4511.
+    """
+
+    @pytest.fixture
+    def mock_api(self):
+        """Mock API client"""
+        api = MagicMock()
+        return api
+
+    @pytest.fixture
+    def mock_ship(self):
+        """Mock ship controller"""
+        ship = MagicMock()
+        ship.get_status = MagicMock(return_value={
+            'cargo': {'capacity': 40, 'units': 0},
+            'nav': {'systemSymbol': 'X1-TEST'},
+        })
+        return ship
+
+    @pytest.fixture
+    def args_batch_2(self):
+        """Args for batch of 2 contracts"""
+        return type('obj', (object,), {
+            'player_id': 1,
+            'ship': 'SHIP-1',
+            'contract_count': 2,
+            'buy_from': None,
+            'log_level': 'ERROR',
+        })()
+
+    def test_existing_active_contract_fulfilled_before_new_negotiation(self, mock_api, mock_ship, args_batch_2):
+        """
+        Test that existing active unfulfilled contracts are detected and fulfilled
+        before negotiating new ones.
+
+        Scenario:
+        - Agent has 1 existing active unfulfilled contract
+        - User runs batch operation with count=2
+        - Expected: Fulfill existing contract first, then negotiate 2 new contracts
+        - Total contracts fulfilled: 3 (1 existing + 2 new)
+        """
+        # Mock GET /my/contracts to return existing active contract
+        existing_contract = {
+            'id': 'existing-contract-123',
+            'type': 'PROCUREMENT',
+            'factionSymbol': 'COSMIC',
+            'accepted': True,
+            'fulfilled': False,
+            'terms': {
+                'payment': {
+                    'onAccepted': 5000,
+                    'onFulfilled': 50000,
+                },
+                'deliver': [{
+                    'unitsRequired': 26,
+                    'unitsFulfilled': 0,
+                    'tradeSymbol': 'EQUIPMENT',
+                    'destinationSymbol': 'X1-TEST-D41',
+                }]
+            }
+        }
+
+        # Track API calls
+        get_calls = []
+        post_calls = []
+
+        def mock_get(endpoint):
+            get_calls.append(endpoint)
+            if '/my/contracts' in endpoint:
+                # First call: return existing contract
+                # Subsequent calls: return empty (contracts fulfilled)
+                if len([c for c in get_calls if '/my/contracts' in c]) == 1:
+                    return {
+                        'data': [existing_contract],
+                        'meta': {'total': 1, 'page': 1, 'limit': 20}
+                    }
+                else:
+                    return {
+                        'data': [],
+                        'meta': {'total': 0, 'page': 1, 'limit': 20}
+                    }
+            return None
+
+        def mock_post(endpoint, *args, **kwargs):
+            post_calls.append(endpoint)
+            # Negotiate calls should only happen after existing contract is fulfilled
+            if '/negotiate/contract' in endpoint:
+                contract_num = len([c for c in post_calls if '/negotiate/contract' in c])
+                return {
+                    'data': {
+                        'contract': {
+                            'id': f'new-contract-{contract_num}',
+                            'type': 'PROCUREMENT',
+                            'factionSymbol': 'COSMIC',
+                            'terms': {
+                                'payment': {
+                                    'onAccepted': 10000,
+                                    'onFulfilled': 100000,
+                                },
+                                'deliver': [{
+                                    'unitsRequired': 50,
+                                    'unitsFulfilled': 0,
+                                    'tradeSymbol': 'IRON_ORE',
+                                    'destinationSymbol': 'X1-TEST-A1',
+                                }]
+                            }
+                        }
+                    }
+                }
+            return None
+
+        mock_api.get = MagicMock(side_effect=mock_get)
+        mock_api.post = MagicMock(side_effect=mock_post)
+
+        # Mock contract_operation to succeed
+        fulfill_calls = []
+
+        def mock_fulfill(args, **kwargs):
+            fulfill_calls.append(args.contract_id)
+            return 0  # Success
+
+        with patch('spacetraders_bot.operations.contracts.contract_operation', side_effect=mock_fulfill):
+            with patch('spacetraders_bot.operations.contracts.ShipController', return_value=mock_ship):
+                result = batch_contract_operation(args_batch_2, api=mock_api)
+
+        # Should succeed
+        assert result == 0
+
+        # Should have checked for existing contracts (2 times - once per iteration)
+        assert len([c for c in get_calls if '/my/contracts' in c]) >= 1
+
+        # Should have fulfilled 3 contracts total:
+        # 1. existing-contract-123 (existing)
+        # 2. new-contract-1 (newly negotiated)
+        # 3. new-contract-2 (newly negotiated)
+        assert len(fulfill_calls) == 3
+        assert fulfill_calls[0] == 'existing-contract-123'
+        assert 'new-contract-1' in fulfill_calls
+        assert 'new-contract-2' in fulfill_calls
+
+        # Should have negotiated 2 NEW contracts (not 3)
+        negotiate_calls = [c for c in post_calls if '/negotiate/contract' in c]
+        assert len(negotiate_calls) == 2
+
+    def test_error_4511_never_occurs_with_resilient_batch_operation(self, mock_api, mock_ship, args_batch_2):
+        """
+        Test that ERROR 4511 is prevented by fulfilling existing contracts first.
+
+        This simulates the real-world bug scenario:
+        - Agent has active contract
+        - Batch operation attempts to negotiate without checking
+        - OLD BEHAVIOR: Would get ERROR 4511 immediately
+        - NEW BEHAVIOR: Detects and fulfills existing contract, then proceeds
+        """
+        # Mock GET /my/contracts to return existing active contract initially
+        get_call_count = [0]
+
+        def mock_get(endpoint):
+            get_call_count[0] += 1
+            if '/my/contracts' in endpoint:
+                if get_call_count[0] == 1:
+                    # First check: existing active contract present
+                    return {
+                        'data': [{
+                            'id': 'cmgmm6d95hb88ri73qolysl11',
+                            'type': 'PROCUREMENT',
+                            'factionSymbol': 'STARGAZER',
+                            'accepted': True,
+                            'fulfilled': False,
+                            'terms': {
+                                'payment': {
+                                    'onAccepted': 5000,
+                                    'onFulfilled': 50000,
+                                },
+                                'deliver': [{
+                                    'unitsRequired': 26,
+                                    'unitsFulfilled': 0,
+                                    'tradeSymbol': 'EQUIPMENT',
+                                    'destinationSymbol': 'X1-JB26-D41',
+                                }]
+                            }
+                        }],
+                        'meta': {'total': 1, 'page': 1, 'limit': 20}
+                    }
+                else:
+                    # After fulfillment: no active contracts
+                    return {
+                        'data': [],
+                        'meta': {'total': 0, 'page': 1, 'limit': 20}
+                    }
+            return None
+
+        negotiate_call_count = [0]
+
+        def mock_post(endpoint, *args, **kwargs):
+            if '/negotiate/contract' in endpoint:
+                negotiate_call_count[0] += 1
+                # Should NEVER return ERROR 4511 because existing contracts are fulfilled first
+                return {
+                    'data': {
+                        'contract': {
+                            'id': f'new-contract-{negotiate_call_count[0]}',
+                            'type': 'PROCUREMENT',
+                            'factionSymbol': 'STARGAZER',
+                            'terms': {
+                                'payment': {
+                                    'onAccepted': 10000,
+                                    'onFulfilled': 100000,
+                                },
+                                'deliver': [{
+                                    'unitsRequired': 50,
+                                    'unitsFulfilled': 0,
+                                    'tradeSymbol': 'IRON_ORE',
+                                    'destinationSymbol': 'X1-JB26-A1',
+                                }]
+                            }
+                        }
+                    }
+                }
+            return None
+
+        mock_api.get = MagicMock(side_effect=mock_get)
+        mock_api.post = MagicMock(side_effect=mock_post)
+
+        # Mock contract_operation to succeed
+        with patch('spacetraders_bot.operations.contracts.contract_operation', return_value=0):
+            with patch('spacetraders_bot.operations.contracts.ShipController', return_value=mock_ship):
+                result = batch_contract_operation(args_batch_2, api=mock_api)
+
+        # Should succeed without ERROR 4511
+        assert result == 0
+
+        # Should have negotiated 2 new contracts
+        assert negotiate_call_count[0] == 2
 
 
 if __name__ == '__main__':

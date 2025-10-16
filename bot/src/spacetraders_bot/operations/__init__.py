@@ -25,7 +25,7 @@ from .daemon import (
 from .fleet import monitor_operation, status_operation
 from .mining import mining_operation
 from .mining_optimizer import mining_optimize_operation
-from .multileg_trader import multileg_trade_operation, trade_plan_operation
+from .multileg_trader import multileg_trade_operation, trade_plan_operation, fleet_trade_optimize_operation
 from .navigation import navigate_ship
 from .purchasing import purchase_ship_operation
 from .routing import (
@@ -50,6 +50,7 @@ __all__ = [
     # Trading
     "multileg_trade_operation",
     "trade_plan_operation",
+    "fleet_trade_optimize_operation",
     "purchase_ship_operation",
 
     # Contracts

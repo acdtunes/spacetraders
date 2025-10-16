@@ -3,6 +3,7 @@ import ShipList from './ShipList';
 import ShipDetails from './ShipDetails';
 import WaypointDetails from './WaypointDetails';
 import Search from './Search';
+import SystemSelector from './SystemSelector';
 
 interface SidebarProps {
   children?: React.ReactNode;
@@ -21,7 +22,7 @@ const Sidebar = ({
   onSwitchTab,
   onFocusOn,
 }: SidebarProps) => {
-  const { selectedShip, selectedWaypoint, currentSystem } = useStore();
+  const { selectedShip, selectedWaypoint } = useStore();
 
   const tabs = [
     { id: 'ships' as const, label: 'Ships', icon: '🚀' },
@@ -51,13 +52,13 @@ const Sidebar = ({
       >
         {/* Header with Tabs */}
         <div className="bg-gray-750 border-b-2 border-gray-700">
-          {/* Current System Indicator */}
-          {currentSystem && (
-            <div className="px-4 py-2 border-b border-gray-700 bg-gray-800">
-              <div className="text-xs text-gray-500 uppercase">Current System</div>
-              <div className="text-sm font-semibold text-blue-400 truncate">{currentSystem}</div>
-            </div>
-          )}
+          <div className="px-4 py-3 border-b border-gray-700 bg-gray-800">
+            <div className="text-xs text-gray-500 uppercase mb-2">Current System</div>
+            <SystemSelector
+              className="w-full"
+              buttonClassName="w-full justify-between"
+            />
+          </div>
 
           <div className="flex">
             {tabs.map((tab) => (
@@ -78,7 +79,7 @@ const Sidebar = ({
         </div>
 
         {/* Tab Content */}
-        <div className={`overflow-y-auto p-4 ${currentSystem ? 'h-[calc(100%-113px)]' : 'h-[calc(100%-57px)]'}`}>
+        <div className="overflow-y-auto p-4 h-[calc(100%-113px)]">
           {activeTab === 'ships' && <ShipList />}
 
           {activeTab === 'details' && (

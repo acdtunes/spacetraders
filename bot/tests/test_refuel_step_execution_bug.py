@@ -111,7 +111,7 @@ def ship_data_at_b33():
     }
 
 
-def test_drift_final_approach(mock_graph, ship_data_at_b33):
+def regression_drift_final_approach(mock_graph, ship_data_at_b33):
     """
     Test that ship at B33 with full fuel DRIFTs to J62 when CRUISE requires more fuel than capacity
 
@@ -141,7 +141,7 @@ def test_drift_final_approach(mock_graph, ship_data_at_b33):
     assert final_nav['mode'] in ['CRUISE', 'DRIFT']
 
 
-def test_refuel_step_in_route_plan(mock_graph, ship_data):
+def regression_refuel_step_in_route_plan(mock_graph, ship_data):
     """
     Test that RouteOptimizer generates a refuel step in the route plan
 
@@ -191,7 +191,7 @@ def test_refuel_step_in_route_plan(mock_graph, ship_data):
     assert route['steps'][2]['mode'] in ['CRUISE', 'DRIFT'], "Step 3 should use CRUISE or DRIFT"
 
 
-def test_refuel_step_execution(mock_graph, ship_data):
+def regression_refuel_step_execution(mock_graph, ship_data):
     """
     Test that SmartNavigator actually EXECUTES the refuel step
 

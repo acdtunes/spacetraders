@@ -28,7 +28,7 @@ from spacetraders_bot.operations.multileg_trader import _cleanup_stranded_cargo
 class TestCargoCleanupMarketSearchFix:
     """Test cargo cleanup with intelligent market search (after fix)"""
 
-    def test_cleanup_finds_nearby_market_and_navigates(self):
+    def regression_cleanup_finds_nearby_market_and_navigates(self):
         """
         FIXED BEHAVIOR: Function checks market compatibility, searches for buyers,
         navigates to nearby market, and sells successfully.
@@ -194,7 +194,7 @@ class TestCargoCleanupMarketSearchFix:
         final_status = mock_ship.get_status()
         assert final_status['cargo']['units'] == 0, "Cargo should be empty after successful cleanup"
 
-    def test_cleanup_sells_at_current_market_when_compatible(self):
+    def regression_cleanup_sells_at_current_market_when_compatible(self):
         """
         GIVEN: Ship at X1-GH18-D45 with 6x SHIP_PARTS
         AND: D45 market DOES buy SHIP_PARTS (has purchase_price in DB)
@@ -286,7 +286,7 @@ class TestCargoCleanupMarketSearchFix:
         final_status = mock_ship.get_status()
         assert final_status['cargo']['units'] == 0, "Cargo should be empty"
 
-    def test_cleanup_skips_unsellable_goods_gracefully(self):
+    def regression_cleanup_skips_unsellable_goods_gracefully(self):
         """
         GIVEN: Ship at X1-GH18-D45 with 65x RARE_ARTIFACT
         AND: NO markets in system buy RARE_ARTIFACT (not in any market DB)

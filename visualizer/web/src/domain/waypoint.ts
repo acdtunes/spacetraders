@@ -1,4 +1,5 @@
 import type { Waypoint as WaypointType } from '../types/spacetraders';
+import { CANVAS_CONSTANTS } from '../constants/canvas';
 
 /**
  * Waypoint domain logic - encapsulates all waypoint-related business rules
@@ -89,5 +90,23 @@ export const Waypoint = {
       return 'No traits';
     }
     return waypoint.traits.map(t => t.name).join(', ');
+  },
+  getOrbitDistance(waypoint: WaypointType): number {
+    switch (waypoint.type) {
+      case 'GAS_GIANT':
+        return CANVAS_CONSTANTS.ORBIT_DISTANCE_GAS_GIANT;
+      case 'PLANET':
+        return CANVAS_CONSTANTS.ORBIT_DISTANCE_PLANET;
+      case 'MOON':
+        return CANVAS_CONSTANTS.ORBIT_DISTANCE_MOON;
+      case 'ORBITAL_STATION':
+        return CANVAS_CONSTANTS.ORBIT_DISTANCE_STATION;
+      case 'ASTEROID_FIELD':
+      case 'ASTEROID':
+      case 'ENGINEERED_ASTEROID':
+        return CANVAS_CONSTANTS.ORBIT_DISTANCE_ASTEROID;
+      default:
+        return CANVAS_CONSTANTS.ORBIT_DISTANCE_DEFAULT;
+    }
   },
 };

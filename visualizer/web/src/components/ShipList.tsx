@@ -5,6 +5,7 @@ import { VIEWPORT_CONSTANTS } from '../constants/viewport';
 import OverlayToggle from './OverlayToggle';
 import { getCargoIcon, getCargoShortLabel } from '../utils/cargo';
 import { getFuelBarColor } from '../utils/fuel';
+import { formatShipType } from '../utils/shipDisplay';
 
 type OverlayOptions = {
   showDestinationRoutes: boolean;
@@ -58,18 +59,19 @@ const ShipList = () => {
     setSelectedShip,
     setSelectedWaypoint,
     filterStatus,
-    filterAgents,
-    toggleAgentFilter,
+    filterShipRoles,
+    toggleShipRoleFilter,
+    clearShipRoleFilters,
     currentSystem,
     requestShipFocus,
-  showDestinationRoutes,
-  toggleDestinationRoutes,
-  showWaypointNames,
-  toggleWaypointNames,
-  showShipNames,
-  toggleShipNames,
-  showMapOverlays,
-  toggleMapOverlays,
+    showDestinationRoutes,
+    toggleDestinationRoutes,
+    showWaypointNames,
+    toggleWaypointNames,
+    showShipNames,
+    toggleShipNames,
+    showMapOverlays,
+    toggleMapOverlays,
     shipNameFilter,
     setShipNameFilter,
   } = useStore();
@@ -93,15 +95,27 @@ const ShipList = () => {
     return ships.filter((ship: TaggedShip) => {
       if (currentSystem && ship.nav.systemSymbol !== currentSystem) return false;
       if (!filterStatus.has(ship.nav.status)) return false;
-      if (filterAgents.size > 0 && ship.agentId && !filterAgents.has(ship.agentId)) {
-        return false;
+      if (filterShipRoles.size > 0) {
+        const roleKey = ship.registration?.role?.toUpperCase() ?? 'UNKNOWN';
+        if (!filterShipRoles.has(roleKey)) {
+          return false;
+        }
       }
       if (nameFilter && !ship.symbol.toLowerCase().includes(nameFilter)) {
         return false;
       }
       return true;
     });
-  }, [ships, currentSystem, filterStatus, filterAgents, nameFilter]);
+  }, [ships, currentSystem, filterStatus, filterShipRoles, nameFilter]);
+
+  const shipRoles = useMemo(() => {
+    const roles = new Set<string>();
+    ships.forEach((ship) => {
+      const roleKey = ship.registration?.role?.toUpperCase() ?? 'UNKNOWN';
+      roles.add(roleKey);
+    });
+    return Array.from(roles).sort();
+  }, [ships]);
 
   const shipsByAgent = useMemo(() => {
     return filteredShips.reduce((acc, ship: TaggedShip) => {
@@ -111,14 +125,6 @@ const ShipList = () => {
       return acc;
     }, {} as Record<string, TaggedShip[]>);
   }, [filteredShips]);
-
-  if (filteredShips.length === 0) {
-    return (
-      <div className="text-center text-gray-500 text-sm py-8">
-        No ships match the current filters
-      </div>
-    );
-  }
 
   return (
     <div className="space-y-3">
@@ -145,41 +151,44 @@ const ShipList = () => {
         </div>
       </div>
 
-      {/* Agent Filter */}
-      {agents.length > 1 && (
+      {/* Ship Type Filter */}
+      {shipRoles.length > 1 && (
         <div className="pb-2 border-b border-gray-800">
-          <span className="block text-[11px] font-semibold uppercase tracking-wider text-gray-500 mb-2">
-            Agent Filter
-          </span>
-          <div className="space-y-1">
-            {agents.map((agent) => {
-              const isActive = filterAgents.size === 0 || filterAgents.has(agent.id);
-              const agentShipCount = ships.filter(
-                (ship) => ship.agentId === agent.id && (!currentSystem || ship.nav.systemSymbol === currentSystem)
-              ).length;
-
+          <div className="flex items-center justify-between mb-2">
+            <span className="block text-[11px] font-semibold uppercase tracking-wider text-gray-500">
+              Ship Type
+            </span>
+            <button
+              onClick={clearShipRoleFilters}
+              className="text-[10px] text-gray-500 hover:text-gray-200"
+            >
+              Reset
+            </button>
+          </div>
+          <div className="grid grid-cols-2 gap-1">
+            {shipRoles.map((role) => {
+              const isActive = filterShipRoles.size === 0 || filterShipRoles.has(role);
               return (
                 <button
-                  key={agent.id}
-                  onClick={() => toggleAgentFilter(agent.id)}
+                  key={role}
+                  onClick={() => toggleShipRoleFilter(role)}
                   className={`w-full text-left px-2 py-1.5 rounded border transition-colors text-xs ${
                     isActive
                       ? 'bg-gray-700 border-gray-600 text-white'
                       : 'bg-gray-800 border-gray-700 text-gray-500'
                   }`}
                 >
-                  <div className="flex items-center gap-2">
-                    <div
-                      className="w-2.5 h-2.5 rounded-full flex-shrink-0"
-                      style={{ backgroundColor: agent.color }}
-                    />
-                    <span className="flex-1 truncate font-medium">{agent.symbol}</span>
-                    <span className="text-gray-500">({agentShipCount})</span>
-                  </div>
+                  {formatShipType(role)}
                 </button>
               );
             })}
           </div>
+        </div>
+      )}
+
+      {filteredShips.length === 0 && (
+        <div className="text-center text-gray-500 text-sm py-6">
+          No ships match the current filters
         </div>
       )}
 

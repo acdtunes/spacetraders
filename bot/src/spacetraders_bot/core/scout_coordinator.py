@@ -53,7 +53,8 @@ class ScoutCoordinator:
 
     def __init__(self, system: str, ships: List[str], token: str, player_id: int,
                  config_file: Optional[str] = None,
-                 graph_provider: Optional[SystemGraphProvider] = None):
+                 graph_provider: Optional[SystemGraphProvider] = None,
+                 exclude_markets: Optional[List[str]] = None):
         """
         Initialize scout coordinator
 
@@ -63,11 +64,15 @@ class ScoutCoordinator:
             token: Agent token
             player_id: Player ID for daemon management
             config_file: Optional config file path for reconfiguration
+            graph_provider: Optional SystemGraphProvider for testing
+            exclude_markets: Optional list of market waypoints to exclude from auto-discovery
+                           (e.g., ['X1-TX46-I52', 'X1-TX46-J55'] for stationary scouts)
         """
         self.system = system
         self.ships = set(ships)
         self.token = token
         self.player_id = player_id
+        self.exclude_markets = set(exclude_markets) if exclude_markets else set()
         paths.ensure_dirs((paths.AGENT_CONFIG_DIR,))
         self.config_file = Path(config_file) if config_file else paths.AGENT_CONFIG_DIR / f"scout_config_{system}.json"
 
@@ -105,9 +110,18 @@ class ScoutCoordinator:
             print(result.message)
 
         # Extract markets
-        self.markets = TourOptimizer.get_markets_from_graph(self.graph)
+        all_markets = TourOptimizer.get_markets_from_graph(self.graph)
+
+        # Filter out excluded markets (for stationary scouts with dedicated polling)
+        if self.exclude_markets:
+            self.markets = [m for m in all_markets if m not in self.exclude_markets]
+            excluded_list = ', '.join(sorted(self.exclude_markets))
+            print(f"✅ Found {len(all_markets)} markets, excluding {len(self.exclude_markets)} ({excluded_list}): {len(self.markets)} markets assigned to touring scouts")
+        else:
+            self.markets = all_markets
+            print(f"✅ Found {len(self.markets)} markets: {', '.join(self.markets)}")
+
         self._invalidate_partitioner()
-        print(f"✅ Found {len(self.markets)} markets: {', '.join(self.markets)}")
 
     def partition_markets_greedy(self) -> Dict[str, List[str]]:
         """Assign markets greedily based on current tour time estimates."""
@@ -168,7 +182,7 @@ class ScoutCoordinator:
     def balance_tour_times(self, partitions: Dict[str, List[str]],
                           max_iterations: int = 50,
                           variance_threshold: float = 0.3,
-                          min_markets: int = 2,
+                          min_markets: int = 1,
                           use_tsp: bool = True) -> Dict[str, List[str]]:
         """
         Rebalance partitions to equalize tour times across ships
@@ -177,7 +191,7 @@ class ScoutCoordinator:
             partitions: Initial market partitions
             max_iterations: Maximum rebalancing iterations
             variance_threshold: Stop if tour time variance < this (0.3 = 30%)
-            min_markets: Minimum markets per scout (default: 2, no 1-market tours)
+            min_markets: Minimum markets per scout (default: 1, allows stationary scouts)
 
         Returns:
             Rebalanced partitions with roughly equal tour times
@@ -238,29 +252,31 @@ class ScoutCoordinator:
                 print(f"  Moved {market_to_move} from {richest_ship} to {ship} ({len(partitions[ship])} markets)")
 
             # Then, ensure not all markets are co-located (all same coordinates)
-            current_coords = set()
-            for m in partitions[ship]:
-                wp = self.graph['waypoints'].get(m)
-                if wp:
-                    current_coords.add((wp['x'], wp['y']))
-
-            # If all markets at same coordinates, add one from different location
-            if len(current_coords) == 1 and len(partitions[ship]) >= min_markets:
-                print(f"  ⚠️  {ship} has all markets co-located, adding diverse market...")
-                richest_ship = max(partitions.keys(), key=lambda s: len(partitions[s]))
-
-                # Find market with different coordinates
-                market_to_move = None
-                for m in partitions[richest_ship]:
+            # Only check for diversity if scout has 2+ markets (single market scouts are stationary by design)
+            if len(partitions[ship]) >= 2:
+                current_coords = set()
+                for m in partitions[ship]:
                     wp = self.graph['waypoints'].get(m)
-                    if wp and (wp['x'], wp['y']) not in current_coords:
-                        market_to_move = m
-                        break
+                    if wp:
+                        current_coords.add((wp['x'], wp['y']))
 
-                if market_to_move:
-                    partitions[richest_ship].remove(market_to_move)
-                    partitions[ship].append(market_to_move)
-                    print(f"  Moved {market_to_move} from {richest_ship} to {ship} (now {len(partitions[ship])} markets with {len(current_coords)+1} unique locations)")
+                # If all markets at same coordinates, add one from different location
+                if len(current_coords) == 1:
+                    print(f"  ⚠️  {ship} has all markets co-located, adding diverse market...")
+                    richest_ship = max(partitions.keys(), key=lambda s: len(partitions[s]))
+
+                    # Find market with different coordinates
+                    market_to_move = None
+                    for m in partitions[richest_ship]:
+                        wp = self.graph['waypoints'].get(m)
+                        if wp and (wp['x'], wp['y']) not in current_coords:
+                            market_to_move = m
+                            break
+
+                    if market_to_move:
+                        partitions[richest_ship].remove(market_to_move)
+                        partitions[ship].append(market_to_move)
+                        print(f"  Moved {market_to_move} from {richest_ship} to {ship} (now {len(partitions[ship])} markets with {len(current_coords)+1} unique locations)")
 
         # Recalculate tour times after pre-balancing (use same method as initial)
         for ship, markets in partitions.items():
@@ -300,13 +316,12 @@ class ScoutCoordinator:
             longest_ship = max(tour_times.keys(), key=lambda s: tour_times[s])
             shortest_ship = min(tour_times.keys(), key=lambda s: tour_times[s] if len(partitions[s]) < len(self.markets) else float('inf'))
 
-            # Allow reducing below min_markets only if variance is extreme (>40%)
+            # HARD CONSTRAINT: Never reduce below min_markets
+            # This ensures all ships are utilized for maximum data freshness
             if len(partitions[longest_ship]) <= min_markets:
-                if variance < 0.4:  # 40% threshold for extreme imbalance
-                    print(f"⚠️  Cannot rebalance further (longest partition has only {min_markets} markets, variance acceptable)")
-                    break
-                else:
-                    print(f"  ⚠️  Variance {variance*100:.0f}% is extreme, allowing reduction below {min_markets} markets")
+                print(f"⚠️  Cannot rebalance further: {longest_ship} has minimum {min_markets} markets")
+                print(f"   Current variance: {variance*100:.1f}% (prioritizing ship utilization over perfect balance)")
+                break
 
             # Find market in longest tour that's closest to shortest ship's region
             # IMPROVEMENT: If tour time is extremely high, prioritize moving markets that
@@ -418,6 +433,43 @@ class ScoutCoordinator:
         avg_time = total_time / len([s for s in partitions if partitions[s]]) if partitions else 0
         print(f"\nAverage tour time: {avg_time/60:.1f} min")
         print("="*70 + "\n")
+
+        # FINAL VALIDATION: Ensure no markets were dropped AND no duplicates exist
+        # Step 1: Check for duplicates (markets in multiple scouts)
+        all_final_markets = []
+        for markets_list in partitions.values():
+            all_final_markets.extend(markets_list)
+
+        market_counts = {}
+        for market in all_final_markets:
+            market_counts[market] = market_counts.get(market, 0) + 1
+
+        duplicates = {market: count for market, count in market_counts.items() if count > 1}
+
+        if duplicates:
+            duplicate_details = []
+            for market, count in duplicates.items():
+                ships_with_market = [ship for ship, markets in partitions.items() if market in markets]
+                duplicate_details.append(f"  {market} appears {count} times in scouts: {', '.join(ships_with_market)}")
+
+            raise RuntimeError(
+                f"❌ CRITICAL: balance_tour_times() created overlapping partitions! "
+                f"{len(duplicates)} markets assigned to multiple scouts:\n"
+                + "\n".join(duplicate_details)
+            )
+
+        # Step 2: Check for missing/extra markets
+        final_markets = set(all_final_markets)
+        original_markets = set(self.markets)
+        missing = original_markets - final_markets
+        extra = final_markets - original_markets
+
+        if missing or extra:
+            raise RuntimeError(
+                f"❌ CRITICAL: Market set changed during balance_tour_times()! "
+                f"Missing: {sorted(missing) if missing else 'none'}, "
+                f"Extra: {sorted(extra) if extra else 'none'}"
+            )
 
         return partitions
 
@@ -538,7 +590,7 @@ class ScoutCoordinator:
             virtual_ship['fuel']['current'],
             return_to_start=True,
             algorithm='ortools',
-            use_cache=True,
+            use_cache=False,  # Disabled: prevents stale cache with excluded markets
         )
 
         return tour['total_time'] if tour else float('inf')  # Return infinity if tour not possible
@@ -592,6 +644,10 @@ class ScoutCoordinator:
 
         This helps break up geographically dispersed clusters by finding the market
         that's farthest from the cluster centroid.
+
+        SPECIAL CASE: For 2-market dispersed pairs (distance >500 units), uses
+        system-wide centroid instead of pair centroid to identify which market
+        is more isolated relative to ALL markets in the system.
         """
         if not markets:
             return None
@@ -609,7 +665,48 @@ class ScoutCoordinator:
         if not positions:
             return markets[0]
 
-        # Calculate centroid
+        # SPECIAL CASE: For 2-market pairs, check if they're dispersed
+        if len(markets) == 2:
+            market1, market2 = list(markets)
+            pos1 = positions.get(market1)
+            pos2 = positions.get(market2)
+
+            if pos1 and pos2:
+                # Calculate distance between the two markets
+                distance = ((pos2[0] - pos1[0])**2 + (pos2[1] - pos1[1])**2)**0.5
+
+                # If distance >500 units, this is a dispersed pair
+                # Use system-wide centroid instead of pair centroid
+                if distance > 500:
+                    print(f"   Detected dispersed 2-market pair: {market1} and {market2} ({distance:.0f} units apart)")
+                    print(f"   Using system-wide centroid to find most isolated market...")
+
+                    # Calculate system-wide centroid from ALL markets
+                    all_positions = []
+                    for m in self.markets:
+                        wp = self.graph['waypoints'].get(m)
+                        if wp:
+                            all_positions.append((wp['x'], wp['y']))
+
+                    if all_positions:
+                        system_centroid_x = sum(p[0] for p in all_positions) / len(all_positions)
+                        system_centroid_y = sum(p[1] for p in all_positions) / len(all_positions)
+
+                        # Find market farthest from system-wide centroid (most isolated)
+                        def distance_from_system_centroid(market: str) -> float:
+                            if market not in positions:
+                                return 0
+                            x, y = positions[market]
+                            return ((x - system_centroid_x)**2 + (y - system_centroid_y)**2)**0.5
+
+                        most_isolated = max(markets, key=distance_from_system_centroid)
+                        dist1 = distance_from_system_centroid(market1)
+                        dist2 = distance_from_system_centroid(market2)
+                        print(f"   Distance from system centroid: {market1}={dist1:.0f}, {market2}={dist2:.0f}")
+                        print(f"   Most isolated: {most_isolated}")
+                        return most_isolated
+
+        # Standard case: Calculate centroid of this partition
         centroid_x = sum(pos[0] for pos in positions.values()) / len(positions)
         centroid_y = sum(pos[1] for pos in positions.values()) / len(positions)
 
@@ -679,7 +776,7 @@ class ScoutCoordinator:
             ship_data['fuel']['current'],
             return_to_start=True,
             algorithm='ortools',
-            use_cache=True,
+            use_cache=False,  # Disabled: prevents stale cache with excluded markets
         )
 
         return tour
@@ -753,12 +850,73 @@ class ScoutCoordinator:
     def partition_and_start(self):
         """Partition markets and start all scout daemons"""
         print(f"\n🔄 Partitioning {len(self.markets)} markets for {len(self.ships)} ship(s)...")
+        print(f"   Input markets: {', '.join(sorted(self.markets))}")
 
         # Initial geographic partition
         partitions = self.partition_markets_geographic()
 
-        # Balance tour times
-        partitions = self.balance_tour_times(partitions)
+        # DEBUG: Count markets after geographic partitioning
+        geo_count = sum(len(m) for m in partitions.values())
+        print(f"\n📊 After geographic partitioning: {geo_count} markets")
+        for ship, ship_markets in sorted(partitions.items()):
+            print(f"   {ship}: {len(ship_markets)} markets")
+
+        # Calculate minimum markets per scout for data freshness
+        # For market intelligence, every ship should be utilized
+        min_markets_per_scout = max(1, len(self.markets) // len(self.ships))
+        print(f"   Enforcing minimum {min_markets_per_scout} markets/scout for data freshness")
+
+        # Balance tour times using TSP for accurate dispersed pair detection
+        # This takes longer during startup but ensures proper load balancing
+        partitions = self.balance_tour_times(partitions, use_tsp=True, min_markets=min_markets_per_scout)
+
+        # CRITICAL VALIDATION: Verify no markets were dropped AND no duplicates exist
+        # Step 1: Check for duplicate assignments (markets in multiple scouts)
+        all_assigned_markets = []
+        for ship, markets_list in partitions.items():
+            all_assigned_markets.extend(markets_list)
+
+        # Count occurrences of each market
+        market_counts = {}
+        for market in all_assigned_markets:
+            market_counts[market] = market_counts.get(market, 0) + 1
+
+        # Find duplicates (markets assigned to multiple scouts)
+        duplicates = {market: count for market, count in market_counts.items() if count > 1}
+
+        if duplicates:
+            duplicate_details = []
+            for market, count in duplicates.items():
+                ships_with_market = [ship for ship, markets in partitions.items() if market in markets]
+                duplicate_details.append(f"  {market} appears {count} times in scouts: {', '.join(ships_with_market)}")
+
+            raise RuntimeError(
+                f"❌ CRITICAL: {len(duplicates)} markets assigned to multiple scouts (overlapping partitions)!\n"
+                + "\n".join(duplicate_details) + "\n"
+                f"Partitions must be DISJOINT (each market exactly once)."
+            )
+
+        # Step 2: Check for missing markets
+        assigned_set = set(all_assigned_markets)
+        expected_set = set(self.markets)
+
+        missing = expected_set - assigned_set
+        if missing:
+            raise RuntimeError(
+                f"❌ CRITICAL: {len(missing)} markets dropped during partitioning! "
+                f"Expected {len(self.markets)}, got {len(assigned_set)}. "
+                f"Missing: {sorted(missing)}"
+            )
+
+        # Step 3: Check for unexpected markets
+        extra = assigned_set - expected_set
+        if extra:
+            raise RuntimeError(
+                f"❌ CRITICAL: {len(extra)} unexpected markets appeared during partitioning! "
+                f"Extra: {sorted(extra)}"
+            )
+
+        print(f"✅ Partition validation passed: All {len(self.markets)} markets assigned exactly once (disjoint partitions)")
 
         # Optimize and start each subtour
         self.assignments = {}

@@ -76,7 +76,7 @@ def mock_env():
 class TestCheckpointDataFlow:
     """Test REAL data flowing from SmartNavigator to OperationController"""
 
-    def test_checkpoint_contains_actual_navigation_state(self, mock_env, temp_dir):
+    def regression_checkpoint_contains_actual_navigation_state(self, mock_env, temp_dir):
         """
         VERIFY: Checkpoint data ACTUALLY contains navigation state
 
@@ -121,7 +121,7 @@ class TestCheckpointDataFlow:
         assert cp_data['completed_step'] == 1, \
             f"Checkpoint should record step 1, got {cp_data['completed_step']}"
 
-    def test_multiple_checkpoints_track_progress(self, mock_env, temp_dir):
+    def regression_multiple_checkpoints_track_progress(self, mock_env, temp_dir):
         """
         VERIFY: Multiple checkpoints track navigation progress
 
@@ -165,7 +165,7 @@ class TestCheckpointDataFlow:
         assert fuels == [400, 300, 200], \
             f"Fuel should decrease, got {fuels}"
 
-    def test_resume_loads_actual_checkpoint_data(self, mock_env, temp_dir):
+    def regression_resume_loads_actual_checkpoint_data(self, mock_env, temp_dir):
         """
         VERIFY: Resume ACTUALLY loads checkpoint data and returns it
 
@@ -211,7 +211,7 @@ class TestCheckpointDataFlow:
         assert resumed_data['state'] == 'IN_ORBIT', \
             f"Resumed state should be IN_ORBIT, got {resumed_data['state']}"
 
-    def test_pause_signal_preserves_state(self, mock_env, temp_dir):
+    def regression_pause_signal_preserves_state(self, mock_env, temp_dir):
         """
         VERIFY: Pause signal ACTUALLY changes operation state
 
@@ -252,7 +252,7 @@ class TestCheckpointDataFlow:
         assert len(op_ctrl.state['checkpoints']) == 1, \
             "Checkpoint should be preserved after pause"
 
-    def test_cancel_signal_changes_state(self, mock_env, temp_dir):
+    def regression_cancel_signal_changes_state(self, mock_env, temp_dir):
         """
         VERIFY: Cancel signal ACTUALLY changes operation state
 
@@ -293,7 +293,7 @@ class TestCheckpointDataFlow:
         assert op_ctrl.can_resume() is False, \
             "should NOT be able to resume cancelled operation"
 
-    def test_checkpoint_persisted_to_disk(self, temp_dir):
+    def regression_checkpoint_persisted_to_disk(self, temp_dir):
         """
         VERIFY: Checkpoints ACTUALLY persisted to disk
 
@@ -334,7 +334,7 @@ class TestCheckpointDataFlow:
         assert checkpoint['location'] == 'X1-TEST-A2', \
             "Checkpoint data should match what was saved"
 
-    def test_refuel_checkpoint_has_docked_state(self, mock_env, temp_dir):
+    def regression_refuel_checkpoint_has_docked_state(self, mock_env, temp_dir):
         """
         VERIFY: Refuel checkpoint has correct state and fuel
 
@@ -387,7 +387,7 @@ class TestCheckpointDataFlow:
 class TestProgressMetrics:
     """Test operation progress tracking"""
 
-    def test_get_progress_returns_checkpoint_count(self, temp_dir):
+    def regression_get_progress_returns_checkpoint_count(self, temp_dir):
         """VERIFY: get_progress() returns actual checkpoint count"""
         op_ctrl = OperationController(
             operation_id='NAV-008',

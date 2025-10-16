@@ -82,7 +82,7 @@ class TestRoutingCriticalBugs:
     # BUG #1: A* ITERATION LIMIT TOO LOW
     # =========================================================================
 
-    def test_bug1_iteration_limit_insufficient_for_long_paths(self, real_world_graph, ship_data):
+    def regression_bug1_iteration_limit_insufficient_for_long_paths(self, real_world_graph, ship_data):
         """
         BUG #1: max_iterations=10000 is too low for 762-unit paths
 
@@ -131,7 +131,7 @@ class TestRoutingCriticalBugs:
     # BUG #2: FALSE "INSUFFICIENT FUEL" ERROR MESSAGE
     # =========================================================================
 
-    def test_bug2_misleading_insufficient_fuel_error(self, real_world_graph, ship_data):
+    def regression_bug2_misleading_insufficient_fuel_error(self, real_world_graph, ship_data):
         """
         BUG #2: SmartNavigator reports "insufficient fuel even with DRIFT" when route exists
 
@@ -188,7 +188,7 @@ class TestRoutingCriticalBugs:
     # BUG #3: CONTRACT MARKET SELECTION WITHOUT DISTANCE VALIDATION
     # =========================================================================
 
-    def test_bug3_contract_market_ignores_distance(self):
+    def regression_bug3_contract_market_ignores_distance(self):
         """
         BUG #3: Contract operation selects cheapest market without distance validation
 
@@ -236,7 +236,7 @@ class TestRoutingCriticalBugs:
     # INTEGRATION TEST: ALL THREE BUGS
     # =========================================================================
 
-    def test_integration_all_bugs_together(self, real_world_graph, ship_data):
+    def regression_integration_all_bugs_together(self, real_world_graph, ship_data):
         """
         Integration test: Reproduce full SILMARETH-1 failure scenario
 
@@ -323,5 +323,3 @@ class TestRoutingCriticalBugs:
         print(f"\n✅ ALL BUGS FIXED: Contract delivery feasible")
 
 
-if __name__ == "__main__":
-    pytest.main([__file__, "-v", "-s"])

@@ -35,6 +35,19 @@ class CaptainLogWriter:
         'PERFORMANCE_SUMMARY': '_format_performance_summary',
     }
 
+    NARRATIVE_REQUIRED_TYPES = {
+        'OPERATION_STARTED',
+        'OPERATION_COMPLETED',
+        'CRITICAL_ERROR',
+    }
+
+    SCOUT_KEYWORDS = {
+        'scout',
+        'scouting',
+        'market_scout',
+        'market-scout',
+    }
+
     def __init__(self, agent_callsign, token=None):
         """Initialize log writer
 
@@ -148,12 +161,13 @@ class CaptainLogWriter:
 
         print(f"✅ Initialized log: {self.log_file}")
 
-    def session_start(self, objective, operator="AI First Mate"):
+    def session_start(self, objective, operator="AI First Mate", narrative=None):
         """Start new session
 
         Args:
             objective: Mission objective description
             operator: Who started the session
+            narrative: First-person narrative for the session kickoff
         """
         session_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 
@@ -176,7 +190,17 @@ class CaptainLogWriter:
         self._save_session_state()
 
         # Generate log entry
+        if not narrative or not str(narrative).strip():
+            print("⚠️  Captain log session start skipped: narrative missing")
+            return session_id
+
         timestamp = self._get_timestamp()
+        narrative_section = f"""
+
+**📖 COMMAND BRIEF:**
+
+{narrative.strip()}
+""" if narrative else ""
         entry = f"""
 ### 📅 STARDATE: {timestamp}
 
@@ -184,6 +208,7 @@ class CaptainLogWriter:
 **Session ID:** {session_id}
 **Operator:** {operator}
 **Mission:** {objective}
+{narrative_section}
 
 **Starting State:**
 - Credits: {agent.get('credits', 0):,}
@@ -208,6 +233,10 @@ class CaptainLogWriter:
         """
         if entry_type not in self.ENTRY_TYPES:
             raise ValueError(f"Invalid entry type: {entry_type}")
+
+        if not self._should_log_entry(entry_type, kwargs):
+            print(f"⚠️  Captain log entry skipped ({entry_type}): narrative missing or filtered")
+            return
 
         timestamp = self._get_timestamp()
         icon = self.ENTRY_TYPES[entry_type]
@@ -239,6 +268,29 @@ class CaptainLogWriter:
             self._save_session_state()
 
         print(f"✅ Logged: {entry_type}")
+
+    def _should_log_entry(self, entry_type, kwargs):
+        """Return True if entry meets narrative and interest criteria."""
+        # Skip summaries and other low-signal entries
+        if entry_type == 'PERFORMANCE_SUMMARY':
+            return False
+
+        # Enforce narrative requirement where mandated
+        if entry_type in self.NARRATIVE_REQUIRED_TYPES:
+            narrative = kwargs.get('narrative', '')
+            if not narrative or not str(narrative).strip():
+                return False
+
+        # Filter out scouting operations regardless of entry type
+        op_type = str(kwargs.get('op_type', '') or '').lower()
+        if any(keyword in op_type for keyword in self.SCOUT_KEYWORDS):
+            return False
+
+        tags = [str(tag).lower() for tag in (kwargs.get('tags') or [])]
+        if any(keyword in tag for tag in tags for keyword in self.SCOUT_KEYWORDS):
+            return False
+
+        return True
 
     def _format_operation_started(self, timestamp, icon, **kwargs):
         """Format OPERATION_STARTED entry with narrative prose"""
@@ -633,7 +685,11 @@ def captain_log_operation(args):
         writer.initialize_log()
 
     elif args.action == 'session-start':
-        writer.session_start(args.objective, args.operator if hasattr(args, 'operator') else "AI First Mate")
+        writer.session_start(
+            args.objective,
+            args.operator if hasattr(args, 'operator') else "AI First Mate",
+            getattr(args, 'narrative', None)
+        )
 
     elif args.action == 'session-end':
         writer.session_end()

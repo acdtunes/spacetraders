@@ -19,7 +19,7 @@ def _patch_mining_helpers(monkeypatch, captain):
     monkeypatch.setattr(mining, 'get_operator_name', lambda args: 'OPERATOR')
 
 
-def test_mining_operation_fails_without_ship_status(monkeypatch):
+def regression_mining_operation_fails_without_ship_status(monkeypatch):
     captain = _CaptainLogger()
     _patch_mining_helpers(monkeypatch, captain)
 
@@ -49,7 +49,7 @@ def test_mining_operation_fails_without_ship_status(monkeypatch):
     assert any(event[0] == 'CRITICAL_ERROR' for event in captain.events)
 
 
-def test_mining_operation_route_validation_failure(monkeypatch):
+def regression_mining_operation_route_validation_failure(monkeypatch):
     captain = _CaptainLogger()
     _patch_mining_helpers(monkeypatch, captain)
 
@@ -167,7 +167,7 @@ class _TargetShip:
         self.inventory = []
 
 
-def test_targeted_mining_success(monkeypatch):
+def regression_targeted_mining_success(monkeypatch):
     ship = _TargetShip(
         target_resource='ALUMINUM_ORE',
         extractions=[
@@ -195,7 +195,7 @@ def test_targeted_mining_success(monkeypatch):
     assert ship.jettisons  # wrong cargo was jettisoned once
 
 
-def test_targeted_mining_circuit_breaker_triggers():
+def regression_targeted_mining_circuit_breaker_triggers():
     class FailingShip:
         def __init__(self):
             self.calls = 0
@@ -237,7 +237,7 @@ def test_targeted_mining_circuit_breaker_triggers():
     assert 'Circuit breaker' in reason
 
 
-def test_targeted_mining_navigation_failure():
+def regression_targeted_mining_navigation_failure():
     ship = _TargetShip('ALUMINUM_ORE', [])
     navigator = SimpleNamespace(execute_route=lambda *args, **kwargs: False)
 
@@ -254,7 +254,7 @@ def test_targeted_mining_navigation_failure():
     assert reason == 'Navigation to asteroid failed'
 
 
-def test_mining_operation_success_path(monkeypatch):
+def regression_mining_operation_success_path(monkeypatch):
     captain = _CaptainLogger()
     _patch_mining_helpers(monkeypatch, captain)
 
@@ -387,7 +387,7 @@ def test_mining_operation_success_path(monkeypatch):
     assert any(event[0] == 'OPERATION_COMPLETED' for event in captain.events)
 
 
-def test_find_alternative_asteroids(monkeypatch):
+def regression_find_alternative_asteroids(monkeypatch):
     class APIStub:
         def __init__(self):
             self.pages = {

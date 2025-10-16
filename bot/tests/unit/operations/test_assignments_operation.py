@@ -10,13 +10,13 @@ class StubManager:
         self.__dict__.update(kwargs)
 
 
-def test_assignment_list_requires_player_id(capsys):
+def regression_assignment_list_requires_player_id(capsys):
     result = assignments.assignment_list_operation(SimpleNamespace())
     assert result == 1
     assert 'required' in capsys.readouterr().out
 
 
-def test_assignment_list_prints_assignments(monkeypatch, capsys):
+def regression_assignment_list_prints_assignments(monkeypatch, capsys):
     listing = {
         'SHIP-1': {'status': 'active', 'assigned_to': 'AI', 'daemon_id': 'daemon-1', 'operation': 'mining'},
         'SHIP-2': {'status': 'idle', 'assigned_to': None, 'daemon_id': None, 'operation': None},
@@ -38,7 +38,7 @@ def test_assignment_list_prints_assignments(monkeypatch, capsys):
     assert '❓' in output
 
 
-def test_assignment_list_no_assignments(monkeypatch, capsys):
+def regression_assignment_list_no_assignments(monkeypatch, capsys):
     stub = StubManager(list_all=lambda include_stale: {})
     monkeypatch.setattr(assignments, 'AssignmentManager', lambda player_id: stub)
 
@@ -48,7 +48,7 @@ def test_assignment_list_no_assignments(monkeypatch, capsys):
     assert 'No ship assignments' in output
 
 
-def test_assignment_assign_operation(monkeypatch):
+def regression_assignment_assign_operation(monkeypatch):
     captured = {}
 
     def assign(ship, operator, daemon_id, operation_type, metadata=None):
@@ -72,7 +72,7 @@ def test_assignment_assign_operation(monkeypatch):
     assert metadata['duration'] == 60
 
 
-def test_assignment_assign_operation_failure(monkeypatch):
+def regression_assignment_assign_operation_failure(monkeypatch):
     stub = StubManager(assign=lambda *a, **k: False)
     monkeypatch.setattr(assignments, 'AssignmentManager', lambda player_id: stub)
 
@@ -80,7 +80,7 @@ def test_assignment_assign_operation_failure(monkeypatch):
     assert assignments.assignment_assign_operation(args) == 1
 
 
-def test_assignment_release_operation_success(monkeypatch):
+def regression_assignment_release_operation_success(monkeypatch):
     stub = StubManager(release=lambda ship, reason=None: True)
     monkeypatch.setattr(assignments, 'AssignmentManager', lambda player_id: stub)
 
@@ -88,7 +88,7 @@ def test_assignment_release_operation_success(monkeypatch):
     assert assignments.assignment_release_operation(args) == 0
 
 
-def test_assignment_available_operation_success(monkeypatch, capsys):
+def regression_assignment_available_operation_success(monkeypatch, capsys):
     stub = StubManager(is_available=lambda ship: True)
     monkeypatch.setattr(assignments, 'AssignmentManager', lambda player_id: stub)
 
@@ -97,7 +97,7 @@ def test_assignment_available_operation_success(monkeypatch, capsys):
     assert 'available' in capsys.readouterr().out.lower()
 
 
-def test_assignment_available_unavailable(monkeypatch, capsys):
+def regression_assignment_available_unavailable(monkeypatch, capsys):
     stub = StubManager(
         is_available=lambda ship: False,
         get_assignment=lambda ship: {
@@ -117,7 +117,7 @@ def test_assignment_available_unavailable(monkeypatch, capsys):
     assert 'daemon-1' in output
 
 
-def test_assignment_find_no_available(monkeypatch, capsys):
+def regression_assignment_find_no_available(monkeypatch, capsys):
     stub = StubManager(find_available=lambda requirements=None: [])
     monkeypatch.setattr(assignments, 'AssignmentManager', lambda player_id: stub)
 
@@ -128,7 +128,7 @@ def test_assignment_find_no_available(monkeypatch, capsys):
     assert 'No ships available' in capsys.readouterr().out
 
 
-def test_assignment_find_available(monkeypatch, capsys):
+def regression_assignment_find_available(monkeypatch, capsys):
     stub = StubManager(find_available=lambda requirements=None: ['SHIP-1'])
     monkeypatch.setattr(assignments, 'AssignmentManager', lambda player_id: stub)
 
@@ -139,7 +139,7 @@ def test_assignment_find_available(monkeypatch, capsys):
     assert 'SHIP-1' in capsys.readouterr().out
 
 
-def test_assignment_sync_operation(monkeypatch, capsys):
+def regression_assignment_sync_operation(monkeypatch, capsys):
     stub = StubManager(sync_with_daemons=lambda: {'released': ['SHIP-1'], 'still_active': ['SHIP-2']})
     monkeypatch.setattr(assignments, 'AssignmentManager', lambda player_id: stub)
 
@@ -151,13 +151,13 @@ def test_assignment_sync_operation(monkeypatch, capsys):
     assert 'SHIP-1' in out and 'SHIP-2' in out
 
 
-def test_assignment_reassign_operation_no_ships(capsys):
+def regression_assignment_reassign_operation_no_ships(capsys):
     args = SimpleNamespace(player_id=1, ships='', from_operation='mining')
     assert assignments.assignment_reassign_operation(args) == 1
     assert 'No ships specified' in capsys.readouterr().out
 
 
-def test_assignment_reassign_operation_success(monkeypatch, capsys):
+def regression_assignment_reassign_operation_success(monkeypatch, capsys):
     captured = {}
 
     def reassign_ships(ships, from_operation, stop_daemons=True, timeout=10):
@@ -178,7 +178,7 @@ def test_assignment_reassign_operation_success(monkeypatch, capsys):
     assert 'Reassignment complete' in capsys.readouterr().out
 
 
-def test_assignment_reassign_operation_failure(monkeypatch, capsys):
+def regression_assignment_reassign_operation_failure(monkeypatch, capsys):
     stub = StubManager(reassign_ships=lambda *a, **k: False)
     monkeypatch.setattr(assignments, 'AssignmentManager', lambda player_id: stub)
 
@@ -187,7 +187,7 @@ def test_assignment_reassign_operation_failure(monkeypatch, capsys):
     assert 'errors' in capsys.readouterr().out.lower()
 
 
-def test_assignment_status_unknown(monkeypatch, capsys):
+def regression_assignment_status_unknown(monkeypatch, capsys):
     stub = StubManager(get_assignment=lambda ship: None)
     monkeypatch.setattr(assignments, 'AssignmentManager', lambda player_id: stub)
 
@@ -198,7 +198,7 @@ def test_assignment_status_unknown(monkeypatch, capsys):
     assert 'available' in capsys.readouterr().out.lower()
 
 
-def test_assignment_status_details(monkeypatch, capsys):
+def regression_assignment_status_details(monkeypatch, capsys):
     assignment = {
         'status': 'stale',
         'assigned_to': 'AI',

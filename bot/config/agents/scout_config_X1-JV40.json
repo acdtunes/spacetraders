@@ -1,0 +1,10 @@
+{
+  "system": "X1-JV40",
+  "ships": [
+    "STARFORGE-3",
+    "STARFORGE-4",
+    "STARFORGE-5"
+  ],
+  "reconfigure": false,
+  "last_updated": "2025-10-13T01:22:13.633973+00:00"
+}

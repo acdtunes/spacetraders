@@ -63,7 +63,7 @@ def mock_ship_data_at_a2():
     }
 
 
-def test_tour_starts_from_first_assigned_market(mock_graph, mock_ship_data_at_a2):
+def regression_tour_starts_from_first_assigned_market(mock_graph, mock_ship_data_at_a2):
     """
     Test that when provided with specific markets list, tour starts from
     first assigned market (partition centroid), NOT ship's current location.
@@ -122,7 +122,7 @@ def test_tour_starts_from_first_assigned_market(mock_graph, mock_ship_data_at_a2
             f"Tour should return to first assigned market {tour_start}, but returned to {last_dest}"
 
 
-def test_disjoint_tours_with_multiple_ships(mock_graph, mock_ship_data_at_a2):
+def regression_disjoint_tours_with_multiple_ships(mock_graph, mock_ship_data_at_a2):
     """
     Test that multiple ships all starting at A2 can have truly disjoint tours
     when they're assigned different market partitions.
@@ -189,7 +189,7 @@ def test_disjoint_tours_with_multiple_ships(mock_graph, mock_ship_data_at_a2):
     assert 'X1-TEST-A2' not in ship2_visited, "Ship 2 should not visit A2"
 
 
-def test_tour_plan_integration_with_markets_list(mock_graph, mock_ship_data_at_a2):
+def regression_tour_plan_integration_with_markets_list(mock_graph, mock_ship_data_at_a2):
     """
     Test TourOptimizer.plan_tour() works correctly with specific markets list.
     This is what scout-markets actually uses.

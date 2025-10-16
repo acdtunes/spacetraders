@@ -1,7 +1,7 @@
 from spacetraders_bot.operations.control import CircuitBreaker
 
 
-def test_circuit_breaker_records_failures_and_trips():
+def regression_circuit_breaker_records_failures_and_trips():
     breaker = CircuitBreaker(limit=3)
 
     assert breaker.record_failure() == 1
@@ -16,7 +16,7 @@ def test_circuit_breaker_records_failures_and_trips():
     assert breaker.tripped() is True
 
 
-def test_circuit_breaker_resets_on_success():
+def regression_circuit_breaker_resets_on_success():
     breaker = CircuitBreaker(limit=2)
 
     breaker.record_failure()

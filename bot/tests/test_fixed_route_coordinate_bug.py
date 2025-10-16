@@ -13,7 +13,7 @@ from unittest.mock import Mock, MagicMock
 from spacetraders_bot.operations.multileg_trader import create_fixed_route
 
 
-def test_create_fixed_route_coordinate_lookup():
+def regression_create_fixed_route_coordinate_lookup():
     """
     GIVEN a fixed trading route with waypoint symbols
     WHEN create_fixed_route() is called with valid parameters
@@ -98,7 +98,7 @@ def test_create_fixed_route_coordinate_lookup():
     assert route.total_distance > 0, "Route should have calculated distance"
 
 
-def test_calculate_distance_with_waypoint_symbols_fails():
+def regression_calculate_distance_with_waypoint_symbols_fails():
     """
     GIVEN waypoint symbols (strings)
     WHEN calculate_distance() is called with strings instead of coordinate dicts
@@ -117,7 +117,7 @@ def test_calculate_distance_with_waypoint_symbols_fails():
         calculate_distance(waypoint1, waypoint2)
 
 
-def test_calculate_distance_with_coordinate_dicts_succeeds():
+def regression_calculate_distance_with_coordinate_dicts_succeeds():
     """
     GIVEN coordinate dictionaries with 'x' and 'y' keys
     WHEN calculate_distance() is called

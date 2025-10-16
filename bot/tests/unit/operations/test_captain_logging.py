@@ -41,7 +41,7 @@ def temp_logs_root(tmp_path, monkeypatch):
     return root
 
 
-def test_append_to_log_uses_circuit_breaker(tmp_path, monkeypatch):
+def regression_append_to_log_uses_circuit_breaker(tmp_path, monkeypatch):
     writer = CaptainLogWriter('CMD-LOCK', token='TOKEN')
     writer.log_file = tmp_path / 'captain.log'
     writer.log_file.write_text('')
@@ -66,7 +66,7 @@ def test_append_to_log_uses_circuit_breaker(tmp_path, monkeypatch):
     assert sleep_calls == [0.1, 0.2]
 
 
-def test_append_to_log_raises_after_circuit_breaker_trip(tmp_path, monkeypatch):
+def regression_append_to_log_raises_after_circuit_breaker_trip(tmp_path, monkeypatch):
     writer = CaptainLogWriter('CMD-LOCK', token='TOKEN')
     writer.log_file = tmp_path / 'captain.log'
     writer.log_file.write_text('')
@@ -83,7 +83,7 @@ def test_append_to_log_raises_after_circuit_breaker_trip(tmp_path, monkeypatch):
         writer._append_to_log('ENTRY', max_retries=2)
 
 
-def test_initialize_log_creates_file(temp_logs_root, monkeypatch):
+def regression_initialize_log_creates_file(temp_logs_root, monkeypatch):
     api_stub = APIStub()
     monkeypatch.setattr('spacetraders_bot.operations.captain_logging.APIClient', lambda token: api_stub)
     monkeypatch.setattr(CaptainLogWriter, '_get_timestamp', lambda self: '2025-01-01T00:00:00Z')
@@ -98,7 +98,7 @@ def test_initialize_log_creates_file(temp_logs_root, monkeypatch):
     assert 'COSMIC' in content
 
 
-def test_session_start_records_state(temp_logs_root, monkeypatch):
+def regression_session_start_records_state(temp_logs_root, monkeypatch):
     api_stub = APIStub(agent={'credits': 12345, 'faction': 'COSMIC', 'headquarters': 'X1-TEST-A1'}, ships=[{'nav': {'systemSymbol': 'X1-ALPHA'}}])
     monkeypatch.setattr('spacetraders_bot.operations.captain_logging.APIClient', lambda token: api_stub)
     monkeypatch.setattr(CaptainLogWriter, '_get_timestamp', lambda self: '2025-01-01T00:00:00Z')
@@ -108,7 +108,7 @@ def test_session_start_records_state(temp_logs_root, monkeypatch):
     writer = CaptainLogWriter('CMD-SESSION', token='TOKEN')
     writer._append_to_log = lambda content: append_calls.append(content)
 
-    session_id = writer.session_start('Explore asteroid belt')
+    session_id = writer.session_start('Explore asteroid belt', narrative='Setting course for the belt with optimism.')
 
     state_file = temp_logs_root / 'cmd-session' / 'sessions' / 'current_session.json'
     state = json.loads(state_file.read_text())
@@ -118,7 +118,7 @@ def test_session_start_records_state(temp_logs_root, monkeypatch):
     assert append_calls and 'SESSION_START' in append_calls[0]
 
 
-def test_log_entry_updates_session(temp_logs_root, monkeypatch):
+def regression_log_entry_updates_session(temp_logs_root, monkeypatch):
     monkeypatch.setattr('spacetraders_bot.operations.captain_logging.APIClient', lambda token: APIStub())
     monkeypatch.setattr(CaptainLogWriter, '_get_timestamp', lambda self: '2025-01-01T00:00:00Z')
 
@@ -143,11 +143,16 @@ def test_log_entry_updates_session(temp_logs_root, monkeypatch):
     assert writer.current_session['operations'][0]['daemon_id'] == 'daemon-1'
     assert 'OPERATION_STARTED' in captured[0]
 
-    writer.log_entry('CRITICAL_ERROR', ship='SHIP-1', error='Failure')
+    writer.log_entry(
+        'CRITICAL_ERROR',
+        ship='SHIP-1',
+        error='Failure',
+        narrative='Engine failure mid-route required abort.',
+    )
     assert writer.current_session['errors'][0]['error'] == 'Failure'
 
 
-def test_log_entry_operation_completed_sections(temp_logs_root, monkeypatch):
+def regression_log_entry_operation_completed_sections(temp_logs_root, monkeypatch):
     monkeypatch.setattr('spacetraders_bot.operations.captain_logging.APIClient', lambda token: APIStub())
     monkeypatch.setattr(CaptainLogWriter, '_get_timestamp', lambda self: '2025-01-01T00:00:00Z')
 
@@ -186,10 +191,48 @@ def test_log_entry_operation_completed_sections(temp_logs_root, monkeypatch):
         tags=['performance']
     )
 
-    assert len(captured) == 2
+    assert len(captured) == 1
 
 
-def test_session_end_saves_archive(temp_logs_root, monkeypatch):
+def regression_log_entry_requires_narrative(temp_logs_root, monkeypatch, capsys):
+    monkeypatch.setattr('spacetraders_bot.operations.captain_logging.APIClient', lambda token: APIStub())
+    writer = CaptainLogWriter('CMD-NARRATIVE', token='TOKEN')
+    writer._append_to_log = lambda content: pytest.fail("Entry should be skipped when narrative missing")
+
+    writer.log_entry(
+        'OPERATION_COMPLETED',
+        operator='AI',
+        ship='SHIP-1',
+        duration='5m',
+        results={'Deliveries': '1'},
+        tags=['contract']
+    )
+
+    captured = capsys.readouterr()
+    assert "skipped" in captured.out.lower()
+
+
+def regression_log_entry_ignores_scout_operations(temp_logs_root, monkeypatch, capsys):
+    monkeypatch.setattr('spacetraders_bot.operations.captain_logging.APIClient', lambda token: APIStub())
+    writer = CaptainLogWriter('CMD-SCOUT', token='TOKEN')
+    writer._append_to_log = lambda content: pytest.fail("Scout operations must be ignored")
+
+    writer.log_entry(
+        'OPERATION_STARTED',
+        operator='AI',
+        ship='SHIP-2',
+        op_type='scout',
+        daemon_id='daemon-scout',
+        parameters={'route': 'tour'},
+        narrative='Scout launching to map markets.',
+        tags=['scouting']
+    )
+
+    captured = capsys.readouterr()
+    assert "skipped" in captured.out.lower()
+
+
+def regression_session_end_saves_archive(temp_logs_root, monkeypatch):
     real_datetime = __import__('datetime').datetime
 
     class FakeDateTime:
@@ -229,7 +272,7 @@ def test_session_end_saves_archive(temp_logs_root, monkeypatch):
     assert captured and 'SESSION_END' in captured[0]
 
 
-def test_search_and_report(temp_logs_root, monkeypatch):
+def regression_search_and_report(temp_logs_root, monkeypatch):
     real_datetime = __import__('datetime').datetime
 
     class FakeDateTime:
@@ -277,7 +320,7 @@ def test_search_and_report(temp_logs_root, monkeypatch):
     assert 'Total Profit' in report
 
 
-def test_captain_log_operation_actions(tmp_path, monkeypatch, capsys):
+def regression_captain_log_operation_actions(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr('spacetraders_bot.operations.common.setup_logging', lambda *a, **k: tmp_path / 'log.log')
 
     class WriterStub:
@@ -291,8 +334,8 @@ def test_captain_log_operation_actions(tmp_path, monkeypatch, capsys):
         def initialize_log(self):
             self.calls.append(('init',))
 
-        def session_start(self, objective, operator):
-            self.calls.append(('start', objective, operator))
+        def session_start(self, objective, operator, narrative=None):
+            self.calls.append(('start', objective, operator, narrative))
 
         def session_end(self):
             self.calls.append(('end',))
@@ -322,7 +365,7 @@ def test_captain_log_operation_actions(tmp_path, monkeypatch, capsys):
     captain_log_operation(args_init)
     assert created[-1].calls == [('init',)]
 
-    args_start = SimpleNamespace(agent='CMD', action='session-start', objective='Explore', operator='AI', player_id=None)
+    args_start = SimpleNamespace(agent='CMD', action='session-start', objective='Explore', operator='AI', narrative='Heading out with a clear plan.', player_id=None)
     captain_log_operation(args_start)
     assert created[-1].calls[-1][0] == 'start'
 

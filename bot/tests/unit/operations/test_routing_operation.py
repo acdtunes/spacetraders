@@ -83,7 +83,7 @@ def no_logging(monkeypatch, tmp_path):
     monkeypatch.setattr(routing.TimeCalculator, 'format_time', lambda seconds: f"{int(seconds/60)}m")
 
 
-def test_route_plan_operation_success(monkeypatch, tmp_path):
+def regression_route_plan_operation_success(monkeypatch, tmp_path):
     ship_data = {
         'frame': {'symbol': 'FRAME'},
         'engine': {'symbol': 'ENGINE', 'speed': 10},
@@ -110,7 +110,7 @@ def test_route_plan_operation_success(monkeypatch, tmp_path):
     assert result == 0
 
 
-def test_route_plan_operation_writes_output(monkeypatch, tmp_path):
+def regression_route_plan_operation_writes_output(monkeypatch, tmp_path):
     ship_data = {
         'frame': {'symbol': 'FRAME'},
         'engine': {'symbol': 'ENGINE', 'speed': 10},
@@ -140,7 +140,7 @@ def test_route_plan_operation_writes_output(monkeypatch, tmp_path):
     assert output_path.exists()
 
 
-def test_route_plan_operation_builds_graph_when_missing(monkeypatch):
+def regression_route_plan_operation_builds_graph_when_missing(monkeypatch):
     ship_data = {
         'frame': {'symbol': 'FRAME'},
         'engine': {'symbol': 'ENGINE', 'speed': 10},
@@ -172,7 +172,7 @@ def test_route_plan_operation_builds_graph_when_missing(monkeypatch):
     assert builder.called is True
 
 
-def test_route_plan_operation_no_route(monkeypatch):
+def regression_route_plan_operation_no_route(monkeypatch):
     ship_data = {
         'frame': {'symbol': 'FRAME'},
         'engine': {'symbol': 'ENGINE', 'speed': 10},
@@ -204,7 +204,7 @@ def test_route_plan_operation_no_route(monkeypatch):
     assert result == 1
 
 
-def test_graph_build_operation_success(monkeypatch, tmp_path):
+def regression_graph_build_operation_success(monkeypatch, tmp_path):
     built = {}
 
     class BuilderStub:
@@ -226,7 +226,7 @@ def test_graph_build_operation_success(monkeypatch, tmp_path):
     assert built['system'] == 'X1-TEST'
 
 
-def test_graph_build_operation_failure(monkeypatch):
+def regression_graph_build_operation_failure(monkeypatch):
     class BuilderStub:
         def __init__(self, api):
             pass
@@ -244,7 +244,7 @@ def test_graph_build_operation_failure(monkeypatch):
     assert result == 1
 
 
-def test_scout_markets_operation_single_tour(monkeypatch, tmp_path):
+def regression_scout_markets_operation_single_tour(monkeypatch, tmp_path):
     captain_events = []
 
     graph = {
@@ -386,7 +386,7 @@ def test_scout_markets_operation_single_tour(monkeypatch, tmp_path):
     assert any(event[0] == 'OPERATION_COMPLETED' for event in captain_events)
 
 
-def test_route_plan_operation_graph_build_failure(monkeypatch):
+def regression_route_plan_operation_graph_build_failure(monkeypatch):
     ship_data = {
         'frame': {'symbol': 'FRAME'},
         'engine': {'symbol': 'ENGINE', 'speed': 10},
@@ -421,7 +421,7 @@ def test_route_plan_operation_graph_build_failure(monkeypatch):
     assert result == 1
 
 
-def test_route_plan_operation_missing_ship(monkeypatch):
+def regression_route_plan_operation_missing_ship(monkeypatch):
     fake_api = FakeAPI(None)
     monkeypatch.setattr(routing, 'get_api_client', lambda player_id: fake_api)
     monkeypatch.setattr(routing, 'Database', lambda: FakeDatabase(graph={'waypoints': {}, 'edges': []}))
@@ -441,7 +441,7 @@ def test_route_plan_operation_missing_ship(monkeypatch):
     assert result == 1
 
 
-def test_route_plan_operation_includes_refuel(monkeypatch):
+def regression_route_plan_operation_includes_refuel(monkeypatch):
     ship_data = {
         'frame': {'symbol': 'FRAME'},
         'engine': {'symbol': 'ENGINE', 'speed': 10},
@@ -563,7 +563,7 @@ def _patch_scout_common(
     return captain_events
 
 
-def test_scout_markets_operation_graph_build_failure(monkeypatch):
+def regression_scout_markets_operation_graph_build_failure(monkeypatch):
     class BuilderStub:
         def __init__(self, api):
             pass
@@ -605,7 +605,7 @@ def test_scout_markets_operation_graph_build_failure(monkeypatch):
     assert any(event[0] == 'CRITICAL_ERROR' for event in captain_events)
 
 
-def test_scout_markets_operation_missing_ship(monkeypatch):
+def regression_scout_markets_operation_missing_ship(monkeypatch):
     graph = {'waypoints': {'A': {'traits': ['MARKETPLACE'], 'x': 0, 'y': 0}}, 'edges': []}
 
     class BuilderStub:
@@ -642,7 +642,7 @@ def test_scout_markets_operation_missing_ship(monkeypatch):
     assert any(event[0] == 'CRITICAL_ERROR' for event in captain_events)
 
 
-def test_scout_markets_operation_no_markets(monkeypatch):
+def regression_scout_markets_operation_no_markets(monkeypatch):
     graph = {'waypoints': {}, 'edges': []}
 
     class BuilderStub:
@@ -683,7 +683,7 @@ def test_scout_markets_operation_no_markets(monkeypatch):
     assert any(event[0] == 'CRITICAL_ERROR' for event in captain_events)
 
 
-def test_scout_markets_operation_only_current_location(monkeypatch):
+def regression_scout_markets_operation_only_current_location(monkeypatch):
     graph = {'waypoints': {'X1-TEST-M1': {'traits': ['MARKETPLACE'], 'x': 0, 'y': 0}}, 'edges': []}
 
     class BuilderStub:
@@ -723,7 +723,7 @@ def test_scout_markets_operation_only_current_location(monkeypatch):
     assert result == 0
 
 
-def test_scout_markets_operation_unknown_algorithm(monkeypatch):
+def regression_scout_markets_operation_unknown_algorithm(monkeypatch):
     graph = {'waypoints': {'A': {'traits': ['MARKETPLACE'], 'x': 0, 'y': 0}}, 'edges': []}
 
     class BuilderStub:
@@ -768,7 +768,7 @@ def test_scout_markets_operation_unknown_algorithm(monkeypatch):
     assert any(event[0] == 'CRITICAL_ERROR' for event in captain_events)
 
 
-def test_scout_markets_operation_tour_failure(monkeypatch):
+def regression_scout_markets_operation_tour_failure(monkeypatch):
     graph = {'waypoints': {'A': {'traits': ['MARKETPLACE'], 'x': 0, 'y': 0}}, 'edges': []}
 
     class BuilderStub:
@@ -812,7 +812,7 @@ def test_scout_markets_operation_tour_failure(monkeypatch):
     assert any(event[0] == 'CRITICAL_ERROR' for event in captain_events)
 
 
-def test_scout_markets_operation_writes_output(monkeypatch, tmp_path):
+def regression_scout_markets_operation_writes_output(monkeypatch, tmp_path):
     captain_events = []
 
     graph = {

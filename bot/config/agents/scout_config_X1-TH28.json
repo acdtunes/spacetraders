@@ -1,0 +1,11 @@
+{
+  "system": "X1-TH28",
+  "ships": [
+    "STARGAZER11-2",
+    "STARGAZER11-3",
+    "STARGAZER11-4",
+    "STARGAZER11-5"
+  ],
+  "reconfigure": false,
+  "last_updated": "2025-10-12T15:43:22.061205+00:00"
+}

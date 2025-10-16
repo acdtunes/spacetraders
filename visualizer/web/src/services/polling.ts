@@ -1,6 +1,7 @@
 import { getAgentShips, getAgents } from './api';
 import type { TaggedShip, Agent } from '../types/spacetraders';
 import { API_CONSTANTS } from '../constants/api';
+import { useStore } from '../store/useStore';
 
 class ShipPollingService {
   private intervalId: number | null = null;
@@ -8,9 +9,39 @@ class ShipPollingService {
 
   async fetchAllShips(agents: Agent[]): Promise<TaggedShip[]> {
     const allShips: TaggedShip[] = [];
+    const state = useStore.getState();
     const visibleAgents = agents.filter((a) => a.visible);
 
-    for (const agent of visibleAgents) {
+    if (visibleAgents.length === 0) {
+      return allShips;
+    }
+
+    const { filterAgents, selectedPlayerId, playerMappings } = state;
+
+    let agentsToFetch = visibleAgents;
+
+    if (selectedPlayerId !== null && playerMappings.size > 0) {
+      const playerFiltered = agentsToFetch.filter(
+        (agent) => playerMappings.get(agent.symbol) === selectedPlayerId
+      );
+      if (playerFiltered.length > 0) {
+        agentsToFetch = playerFiltered;
+      }
+    }
+
+    if (filterAgents.size > 0) {
+      const filteredBySelection = agentsToFetch.filter((agent) => filterAgents.has(agent.id));
+      if (filteredBySelection.length > 0) {
+        agentsToFetch = filteredBySelection;
+      }
+    }
+
+    if (agentsToFetch.length === 0) {
+      agentsToFetch = visibleAgents;
+    }
+
+    for (let index = 0; index < agentsToFetch.length; index += 1) {
+      const agent = agentsToFetch[index];
       try {
         const ships = await getAgentShips(agent.id);
         // Tag ships with agent info
@@ -22,7 +53,7 @@ class ShipPollingService {
         allShips.push(...taggedShips);
 
         // Rate limit: delay between agents
-        if (visibleAgents.indexOf(agent) < visibleAgents.length - 1) {
+        if (index < agentsToFetch.length - 1) {
           await new Promise((resolve) => setTimeout(resolve, API_CONSTANTS.REQUEST_DELAY));
         }
       } catch (error) {

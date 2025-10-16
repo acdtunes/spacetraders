@@ -165,6 +165,10 @@ def select_flight_mode(
     """
     Intelligently select flight mode based on fuel status
 
+    CRITICAL: Always prefers CRUISE when fuel is adequate.
+    This function should ONLY be used as a fallback when SmartNavigator
+    is unavailable. SmartNavigator's OR-Tools routing is preferred.
+
     Args:
         current_fuel: Current fuel amount
         fuel_capacity: Max fuel capacity
@@ -174,22 +178,18 @@ def select_flight_mode(
     Returns:
         Flight mode: 'CRUISE', 'DRIFT', or 'BURN'
     """
-    fuel_percent = (current_fuel / fuel_capacity * 100) if fuel_capacity > 0 else 0
-
     # Estimate fuel needed for CRUISE
     cruise_fuel = estimate_fuel_cost(distance, "CRUISE")
     if require_return:
         cruise_fuel *= 2
 
-    # High fuel: use CRUISE
-    if fuel_percent > 75 and current_fuel >= cruise_fuel:
+    # ALWAYS prefer CRUISE when fuel is adequate (no percentage threshold)
+    # CRUISE is 8-10x faster than DRIFT for most trips
+    # Only use DRIFT in true emergencies
+    if current_fuel >= cruise_fuel:
         return "CRUISE"
 
-    # Medium fuel: check if CRUISE is feasible
-    if fuel_percent > 50 and current_fuel >= cruise_fuel * 1.5:
-        return "CRUISE"
-
-    # Low fuel or long distance: use DRIFT
+    # Insufficient fuel for CRUISE - check DRIFT feasibility
     drift_fuel = estimate_fuel_cost(distance, "DRIFT")
     if require_return:
         drift_fuel *= 2
@@ -197,5 +197,6 @@ def select_flight_mode(
     if current_fuel >= drift_fuel:
         return "DRIFT"
 
-    # Emergency: try BURN if faster (not recommended)
-    return "DRIFT"  # Default to safest option
+    # Emergency: not enough fuel even for DRIFT
+    # This should never happen if routes are validated properly
+    return "DRIFT"  # Default to safest option (will likely fail)

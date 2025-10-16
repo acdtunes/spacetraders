@@ -79,6 +79,14 @@ const DEFAULT_SHIP_SPRITE_SIZE = 18;
 const SHIP_SPRITE_SIZE = DEFAULT_SHIP_SPRITE_SIZE / 10;
 const SHIP_POSITION_SMOOTHING_MS = 900;
 const SHIP_POSITION_DISTANCE_THRESHOLD = 2;
+const TARGET_FRAME_RATE = 60;
+const FRAMES_PER_MS = TARGET_FRAME_RATE / 1000;
+const getHighResTimestamp = (): number => {
+  if (typeof performance !== 'undefined' && typeof performance.now === 'function') {
+    return performance.now();
+  }
+  return Date.now();
+};
 
 export interface SpaceMapRef {
   zoomIn: () => void;
@@ -94,6 +102,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
   const layerRef = useRef<Konva.Layer | null>(null);
   const waypointsSizeRef = useRef<number>(0);
   const shipPositionCacheRef = useRef<Map<string, { x: number; y: number; status: ShipNavStatus; timestamp: number }>>(new Map());
+  const animationStartRef = useRef<number>(getHighResTimestamp());
 
   const {
     currentSystem,
@@ -111,6 +120,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
     clearTrail,
     filterStatus,
     filterAgents,
+    filterShipRoles,
     filterWaypointTypes,
     selectedShip,
     selectedWaypoint,
@@ -119,6 +129,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
     assignments,
     marketFreshness,
     showMarketFreshness,
+    toggleMarketFreshness,
     scoutTours,
     showScoutTours,
     tradeOpportunities,
@@ -144,7 +155,10 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
   const frameTimestamp = useMemo(() => Date.now(), [animationFrame]);
 
   const handleAnimationTick = useCallback(() => {
-    setAnimationFrame((prev) => prev + 1);
+    const timestamp = getHighResTimestamp();
+    const elapsed = timestamp - animationStartRef.current;
+    const nextFrame = Math.max(0, Math.round(elapsed * FRAMES_PER_MS));
+    setAnimationFrame((prev) => (nextFrame <= prev ? prev : nextFrame));
   }, []);
 
   const stageSize = useKonvaStage({
@@ -708,8 +722,15 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
       result = result.filter((ship) => !ship.agentId || filterAgents.has(ship.agentId));
     }
 
+    if (filterShipRoles.size > 0) {
+      result = result.filter((ship) => {
+        const role = ship.registration?.role?.toUpperCase() ?? 'UNKNOWN';
+        return filterShipRoles.has(role);
+      });
+    }
+
     return result;
-  }, [ships, currentSystem, filterStatus, filterAgents]);
+  }, [ships, currentSystem, filterStatus, filterAgents, filterShipRoles]);
 
   // Filter waypoints using domain queries
   const filteredWaypoints = useMemo(() => {
@@ -718,6 +739,169 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
       filterWaypointTypes
     );
   }, [waypoints, filterWaypointTypes]);
+
+  const orbitalClusters = useMemo(() => {
+    const coordinateGroups = new Map<string, WaypointType[]>();
+    waypoints.forEach((waypoint) => {
+      const key = `${waypoint.x},${waypoint.y}`;
+      const existing = coordinateGroups.get(key);
+      if (existing) {
+        existing.push(waypoint);
+      } else {
+        coordinateGroups.set(key, [waypoint]);
+      }
+    });
+
+    const clusters = new Map<
+      string,
+      {
+        id: string;
+        center: { x: number; y: number };
+        members: string[];
+      }
+    >();
+
+    coordinateGroups.forEach((group, key) => {
+      if (group.length <= 1) {
+        return;
+      }
+
+      const [first] = group;
+      clusters.set(`cluster-${key}`, {
+        id: `cluster-${key}`,
+        center: { x: first.x, y: first.y },
+        members: group.map((waypoint) => waypoint.symbol),
+      });
+    });
+
+    return clusters;
+  }, [waypoints]);
+
+  const orbitalDisplayOffsets = useMemo(() => {
+    const offsets = new Map<string, { x: number; y: number }>();
+
+    orbitalClusters.forEach((cluster) => {
+      if (cluster.members.length <= 1) {
+        return;
+      }
+
+      const resolvedMembers = cluster.members
+        .map((symbol) => waypoints.get(symbol))
+        .filter((waypoint): waypoint is WaypointType => waypoint !== undefined);
+
+      if (resolvedMembers.length <= 1) {
+        return;
+      }
+
+      const getTypePriority = (type: string) => {
+        switch (type) {
+          case 'PLANET':
+          case 'GAS_GIANT':
+          case 'STAR':
+            return 0;
+          case 'MOON':
+          case 'ASTEROID':
+          case 'ASTEROID_FIELD':
+            return 1;
+          case 'ORBITAL_STATION':
+          case 'ASTEROID_BASE':
+          case 'ARTIFICIAL_GRAVITY_WELL':
+            return 2;
+          default:
+            return 3;
+        }
+      };
+
+      resolvedMembers.sort((a, b) => {
+        const priorityDiff = getTypePriority(a.type) - getTypePriority(b.type);
+        if (priorityDiff !== 0) return priorityDiff;
+        return a.symbol.localeCompare(b.symbol);
+      });
+
+      const primary = resolvedMembers[0];
+      offsets.set(primary.symbol, { x: 0, y: 0 });
+
+      const buckets: Record<
+        string,
+        {
+          radius: number;
+          startAngle: number;
+          endAngle: number;
+          waypoints: WaypointType[];
+        }
+      > = {
+        MOON: {
+          radius: 11,
+          startAngle: -Math.PI / 3,
+          endAngle: Math.PI / 3,
+          waypoints: [],
+        },
+        ORBITAL_STATION: {
+          radius: 15,
+          startAngle: (3 * Math.PI) / 4,
+          endAngle: (5 * Math.PI) / 4,
+          waypoints: [],
+        },
+        DEFAULT: {
+          radius: 12,
+          startAngle: Math.PI / 6,
+          endAngle: (11 * Math.PI) / 6,
+          waypoints: [],
+        },
+      };
+
+      resolvedMembers.slice(1).forEach((waypoint) => {
+        if (waypoint.type === 'MOON') {
+          buckets.MOON.waypoints.push(waypoint);
+        } else if (waypoint.type === 'ORBITAL_STATION') {
+          buckets.ORBITAL_STATION.waypoints.push(waypoint);
+        } else {
+          buckets.DEFAULT.waypoints.push(waypoint);
+        }
+      });
+
+      const placeBucket = ({
+        radius,
+        startAngle,
+        endAngle,
+        waypoints: bucketMembers,
+      }: {
+        radius: number;
+        startAngle: number;
+        endAngle: number;
+        waypoints: WaypointType[];
+      }) => {
+        if (bucketMembers.length === 0) return;
+
+        if (bucketMembers.length === 1) {
+          const midAngle = (startAngle + endAngle) / 2;
+          const waypoint = bucketMembers[0];
+          offsets.set(waypoint.symbol, {
+            x: Math.cos(midAngle) * radius,
+            y: Math.sin(midAngle) * radius,
+          });
+          return;
+        }
+
+        const span = endAngle - startAngle;
+        const step = span / (bucketMembers.length - 1);
+
+        bucketMembers.forEach((waypoint, index) => {
+          const angle = startAngle + step * index;
+          offsets.set(waypoint.symbol, {
+            x: Math.cos(angle) * radius,
+            y: Math.sin(angle) * radius,
+          });
+        });
+      };
+
+      placeBucket(buckets.MOON);
+      placeBucket(buckets.ORBITAL_STATION);
+      placeBucket(buckets.DEFAULT);
+    });
+
+    return offsets;
+  }, [orbitalClusters, waypoints]);
 
   // Get set of all market waypoints in visible tours
   const visibleTourMarkets = useMemo(() => {
@@ -733,24 +917,17 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
 
   const getWaypointDisplayPosition = useCallback(
     (waypoint: WaypointType): { x: number; y: number } => {
-      const overlapIndex = filteredWaypoints.filter((w) =>
-        w.x === waypoint.x &&
-        w.y === waypoint.y &&
-        w.symbol <= waypoint.symbol
-      ).length - 1;
-
-      if (overlapIndex <= 0) {
+      const offset = orbitalDisplayOffsets.get(waypoint.symbol);
+      if (!offset) {
         return { x: waypoint.x, y: waypoint.y };
       }
 
-      const angle = (overlapIndex * Math.PI * 2) / 8;
-      const offset = 15 * overlapIndex;
       return {
-        x: waypoint.x + Math.cos(angle) * offset,
-        y: waypoint.y + Math.sin(angle) * offset,
+        x: waypoint.x + offset.x,
+        y: waypoint.y + offset.y,
       };
     },
-    [filteredWaypoints]
+    [orbitalDisplayOffsets]
   );
 
   // Start animation loop for ships
@@ -1117,6 +1294,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
               animationFrame={animationFrame}
               visibleTours={visibleTours}
               getWaypointPosition={getWaypointDisplayPosition}
+              orbitalClusters={orbitalClusters}
             />
           )}
 
@@ -1243,6 +1421,8 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
             onToggleTour={toggleTourVisibility}
             onShowAll={showAllTours}
             onHideAll={hideAllTours}
+            showMarketFreshness={showMarketFreshness}
+            onToggleMarketFreshness={toggleMarketFreshness}
           />
         </div>
       )}

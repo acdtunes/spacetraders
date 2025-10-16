@@ -118,7 +118,7 @@ export interface ShipLabelInfo {
   offsetY: number;
 }
 
-const formatShipType = (role: string | null | undefined) => {
+export const formatShipType = (role: string | null | undefined) => {
   if (!role) return 'Unknown';
   return role
     .split('_')

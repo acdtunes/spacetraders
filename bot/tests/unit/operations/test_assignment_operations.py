@@ -11,14 +11,14 @@ def ns(**kwargs):
 
 
 @patch("spacetraders_bot.operations.assignments.AssignmentManager")
-def test_assignment_list_operation_requires_player_id(mock_manager_cls):
+def regression_assignment_list_operation_requires_player_id(mock_manager_cls):
     result = ops.assignment_list_operation(ns())
     assert result == 1
     mock_manager_cls.assert_not_called()
 
 
 @patch("spacetraders_bot.operations.assignments.AssignmentManager")
-def test_assignment_list_operation_no_assignments(mock_manager_cls, capsys):
+def regression_assignment_list_operation_no_assignments(mock_manager_cls, capsys):
     mock_manager = mock_manager_cls.return_value
     mock_manager.list_all.return_value = {}
 
@@ -31,7 +31,7 @@ def test_assignment_list_operation_no_assignments(mock_manager_cls, capsys):
 
 
 @patch("spacetraders_bot.operations.assignments.AssignmentManager")
-def test_assignment_list_operation_with_assignments(mock_manager_cls, capsys):
+def regression_assignment_list_operation_with_assignments(mock_manager_cls, capsys):
     mock_manager = mock_manager_cls.return_value
     mock_manager.list_all.return_value = {
         "SHIP-A": {
@@ -53,7 +53,7 @@ def test_assignment_list_operation_with_assignments(mock_manager_cls, capsys):
 
 
 @patch("spacetraders_bot.operations.assignments.AssignmentManager")
-def test_assignment_assign_operation_success(mock_manager_cls):
+def regression_assignment_assign_operation_success(mock_manager_cls):
     mock_manager = mock_manager_cls.return_value
     mock_manager.assign.return_value = True
 
@@ -77,7 +77,7 @@ def test_assignment_assign_operation_success(mock_manager_cls):
 
 
 @patch("spacetraders_bot.operations.assignments.AssignmentManager")
-def test_assignment_assign_operation_failure(mock_manager_cls):
+def regression_assignment_assign_operation_failure(mock_manager_cls):
     mock_manager = mock_manager_cls.return_value
     mock_manager.assign.return_value = False
 
@@ -93,7 +93,7 @@ def test_assignment_assign_operation_failure(mock_manager_cls):
 
 
 @patch("spacetraders_bot.operations.assignments.AssignmentManager")
-def test_assignment_release_operation(mock_manager_cls):
+def regression_assignment_release_operation(mock_manager_cls):
     mock_manager = mock_manager_cls.return_value
     mock_manager.release.return_value = True
 
@@ -103,7 +103,7 @@ def test_assignment_release_operation(mock_manager_cls):
 
 
 @patch("spacetraders_bot.operations.assignments.AssignmentManager")
-def test_assignment_available_operation_available(mock_manager_cls, capsys):
+def regression_assignment_available_operation_available(mock_manager_cls, capsys):
     mock_manager = mock_manager_cls.return_value
     mock_manager.is_available.return_value = True
 
@@ -114,7 +114,7 @@ def test_assignment_available_operation_available(mock_manager_cls, capsys):
 
 
 @patch("spacetraders_bot.operations.assignments.AssignmentManager")
-def test_assignment_available_operation_unavailable(mock_manager_cls, capsys):
+def regression_assignment_available_operation_unavailable(mock_manager_cls, capsys):
     mock_manager = mock_manager_cls.return_value
     mock_manager.is_available.return_value = False
     mock_manager.get_assignment.return_value = {
@@ -133,7 +133,7 @@ def test_assignment_available_operation_unavailable(mock_manager_cls, capsys):
 
 
 @patch("spacetraders_bot.operations.assignments.AssignmentManager")
-def test_assignment_find_operation_with_requirements(mock_manager_cls, capsys):
+def regression_assignment_find_operation_with_requirements(mock_manager_cls, capsys):
     mock_manager = mock_manager_cls.return_value
     mock_manager.find_available.return_value = ["SHIP-A", "SHIP-B"]
 
@@ -147,7 +147,7 @@ def test_assignment_find_operation_with_requirements(mock_manager_cls, capsys):
 
 
 @patch("spacetraders_bot.operations.assignments.AssignmentManager")
-def test_assignment_find_operation_none_available(mock_manager_cls, capsys):
+def regression_assignment_find_operation_none_available(mock_manager_cls, capsys):
     mock_manager = mock_manager_cls.return_value
     mock_manager.find_available.return_value = []
 
@@ -159,7 +159,7 @@ def test_assignment_find_operation_none_available(mock_manager_cls, capsys):
 
 
 @patch("spacetraders_bot.operations.assignments.AssignmentManager")
-def test_assignment_sync_operation(mock_manager_cls, capsys):
+def regression_assignment_sync_operation(mock_manager_cls, capsys):
     mock_manager = mock_manager_cls.return_value
     mock_manager.sync_with_daemons.return_value = {
         "released": ["SHIP-1"],
@@ -174,14 +174,14 @@ def test_assignment_sync_operation(mock_manager_cls, capsys):
 
 
 @patch("spacetraders_bot.operations.assignments.AssignmentManager")
-def test_assignment_reassign_operation_requires_ships(mock_manager_cls):
+def regression_assignment_reassign_operation_requires_ships(mock_manager_cls):
     result = ops.assignment_reassign_operation(ns(player_id=1, ships="", from_operation="mine"))
     assert result == 1
     mock_manager_cls.assert_called_once()
 
 
 @patch("spacetraders_bot.operations.assignments.AssignmentManager")
-def test_assignment_reassign_operation_success(mock_manager_cls, capsys):
+def regression_assignment_reassign_operation_success(mock_manager_cls, capsys):
     mock_manager = mock_manager_cls.return_value
     mock_manager.reassign_ships.return_value = True
 
@@ -199,7 +199,7 @@ def test_assignment_reassign_operation_success(mock_manager_cls, capsys):
 
 
 @patch("spacetraders_bot.operations.assignments.AssignmentManager")
-def test_assignment_reassign_operation_failure(mock_manager_cls):
+def regression_assignment_reassign_operation_failure(mock_manager_cls):
     mock_manager = mock_manager_cls.return_value
     mock_manager.reassign_ships.return_value = False
 

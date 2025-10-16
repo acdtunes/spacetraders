@@ -84,19 +84,10 @@ function App() {
           </div>
           <div className="flex items-center gap-4">
             {/* View Mode Toggle */}
-            <button
-              onClick={() => setViewMode(viewMode === 'system' ? 'galaxy' : 'system')}
-              className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded transition-colors text-sm font-medium"
-            >
-              {viewMode === 'system' ? '🌌 Galaxy View' : '🗺️ System View'}
-            </button>
-            <Suspense fallback={<div className="text-gray-500 text-sm">Loading…</div>}>
-              <SystemSelector />
-            </Suspense>
             <Suspense fallback={<div className="text-gray-500 text-sm">Agents…</div>}>
               <AgentManager />
             </Suspense>
-            {/* Scout Tours Toggle */}
+            {/* Markets Toggle */}
             <button
               onClick={toggleScoutTours}
               className={`px-3 py-2 rounded transition-colors text-sm font-semibold border ${
@@ -104,9 +95,9 @@ function App() {
                   ? 'bg-blue-600 hover:bg-blue-700 text-white border-blue-500'
                   : 'bg-gray-700 hover:bg-gray-600 text-gray-200 border-gray-600'
               }`}
-              title="Toggle scout tour visualization"
+              title="Toggle market overlays and tours"
             >
-              🗺️ Tours
+              🛒 Markets
             </button>
           </div>
         </header>

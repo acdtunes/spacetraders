@@ -265,6 +265,36 @@ export const botToolDefinitions: Tool[] = [
     }
   },
   {
+    "name": "bot_fleet_trade_optimize",
+    "description": "Optimize trade routes for multiple ships with conflict avoidance. Uses greedy sequential assignment to prevent ships from buying the same resource at the same waypoint (market interference). Returns conflict-free profitable routes for entire fleet. PLANNING ONLY - does not execute routes.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "player_id": {
+          "type": "integer",
+          "description": "Player ID from database"
+        },
+        "ships": {
+          "type": "string",
+          "description": "Comma-separated ship symbols to optimize routes for (e.g., 'STARHOPPER-D,STARHOPPER-14')"
+        },
+        "system": {
+          "type": "string",
+          "description": "System symbol to optimize in (e.g., X1-TX46)"
+        },
+        "max_stops": {
+          "type": "integer",
+          "description": "Maximum stops per route (default: 4)"
+        }
+      },
+      "required": [
+        "player_id",
+        "ships",
+        "system"
+      ]
+    }
+  },
+  {
     "name": "bot_multileg_trade",
     "description": "Run autonomous multi-leg trading optimizer to find and execute the most profitable trade route. Supports looping with --cycles or --duration. RUNS AS BACKGROUND DAEMON - returns immediately with daemon_id. Monitor with bot_daemon_status and bot_daemon_logs.",
     "inputSchema": {
@@ -293,6 +323,18 @@ export const botToolDefinitions: Tool[] = [
         "duration": {
           "type": "number",
           "description": "Run for N hours. Mutually exclusive with cycles."
+        },
+        "good": {
+          "type": "string",
+          "description": "Trade good for fixed-route mode (optional). When specified with buy_from and sell_to, runs in fixed-route mode instead of autonomous optimization."
+        },
+        "buy_from": {
+          "type": "string",
+          "description": "Buy market for fixed-route mode (optional). Requires good and sell_to parameters."
+        },
+        "sell_to": {
+          "type": "string",
+          "description": "Sell market for fixed-route mode (optional). Requires good and buy_from parameters."
         }
       },
       "required": [
@@ -479,7 +521,11 @@ export const botToolDefinitions: Tool[] = [
         },
         "contract_id": {
           "type": "string",
-          "description": "Contract ID from negotiate response. Must be an ACCEPTED contract."
+          "description": "Optional: Contract ID from negotiate response. Must be an ACCEPTED contract. Omit when using contract_count for batch mode."
+        },
+        "contract_count": {
+          "type": "integer",
+          "description": "Optional: Number of contracts to negotiate and fulfill in sequence (default: 1). For batch operations (e.g., 50-contract mega batch), omit contract_id and specify count."
         },
         "buy_from": {
           "type": "string",
@@ -488,8 +534,7 @@ export const botToolDefinitions: Tool[] = [
       },
       "required": [
         "player_id",
-        "ship",
-        "contract_id"
+        "ship"
       ]
     }
   },
@@ -1215,9 +1260,9 @@ export const botToolDefinitions: Tool[] = [
           "type": "string",
           "description": "Comma-separated ship symbols to use for scouting (e.g., 'SHIP-1,SHIP-2,SHIP-3')"
         },
-        "algorithm": {
+        "exclude_markets": {
           "type": "string",
-          "description": "Optimization algorithm for route planning (default: '2opt'). Options: 'greedy', '2opt'"
+          "description": "Optional: Comma-separated list of market waypoints to exclude from auto-discovery and partitioning (e.g., 'X1-TX46-I52,X1-TX46-J55'). Use this to prevent conflicts with manually deployed stationary scouts that have dedicated polling intervals."
         }
       },
       "required": [
@@ -1233,12 +1278,17 @@ export const botToolDefinitions: Tool[] = [
     "inputSchema": {
       "type": "object",
       "properties": {
+        "player_id": {
+          "type": "integer",
+          "description": "Player ID from database"
+        },
         "system": {
           "type": "string",
           "description": "System symbol of the coordinator to stop (e.g., X1-HU87)"
         }
       },
       "required": [
+        "player_id",
         "system"
       ]
     }

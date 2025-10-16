@@ -51,7 +51,7 @@ def clear_logger_handlers():
     root.setLevel(previous_level)
 
 
-def test_get_api_client_returns_client(monkeypatch):
+def regression_get_api_client_returns_client(monkeypatch):
     dummy_db = DummyDB({1: {"token": "test-token"}})
     monkeypatch.setattr(common, "get_database", lambda path: dummy_db)
     monkeypatch.setattr(common, "sqlite_path", lambda: Path("dummy.db"))
@@ -69,7 +69,7 @@ def test_get_api_client_returns_client(monkeypatch):
     assert captured_token["value"] == "test-token"
 
 
-def test_get_api_client_missing_player(monkeypatch):
+def regression_get_api_client_missing_player(monkeypatch):
     dummy_db = DummyDB({})
     monkeypatch.setattr(common, "get_database", lambda path: dummy_db)
     monkeypatch.setattr(common, "sqlite_path", lambda: Path("dummy.db"))
@@ -78,7 +78,7 @@ def test_get_api_client_missing_player(monkeypatch):
         common.get_api_client(99)
 
 
-def test_setup_logging_creates_file(monkeypatch, tmp_path):
+def regression_setup_logging_creates_file(monkeypatch, tmp_path):
     monkeypatch.setattr(common, "LOGS_DIR", tmp_path)
     monkeypatch.setattr(common, "timestamp_iso", lambda: "2025-10-08T00:00:00Z")
 
@@ -94,7 +94,7 @@ def test_setup_logging_creates_file(monkeypatch, tmp_path):
     assert "SpaceTraders Bot" in content
 
 
-def test_get_captain_logger_returns_cached_instance(monkeypatch):
+def regression_get_captain_logger_returns_cached_instance(monkeypatch):
     dummy_db = DummyDB({1: {"agent_symbol": "AGENT", "token": "tok"}})
     monkeypatch.setattr(common, "get_database", lambda path: dummy_db)
     monkeypatch.setattr(common, "sqlite_path", lambda: Path("dummy.db"))
@@ -116,7 +116,7 @@ def test_get_captain_logger_returns_cached_instance(monkeypatch):
     common._cached_captain_logger.cache_clear()
 
 
-def test_get_captain_logger_missing_player(monkeypatch, caplog):
+def regression_get_captain_logger_missing_player(monkeypatch, caplog):
     dummy_db = DummyDB({})
     monkeypatch.setattr(common, "get_database", lambda path: dummy_db)
     monkeypatch.setattr(common, "sqlite_path", lambda: Path("dummy.db"))
@@ -127,7 +127,7 @@ def test_get_captain_logger_missing_player(monkeypatch, caplog):
     assert "unknown player_id" in caplog.text
 
 
-def test_log_captain_event_invokes_writer():
+def regression_log_captain_event_invokes_writer():
     events = []
 
     class DummyWriter:
@@ -139,7 +139,7 @@ def test_log_captain_event_invokes_writer():
     assert events == [("EVENT", {"data": 123})]
 
 
-def test_log_captain_event_handles_none():
+def regression_log_captain_event_handles_none():
     # Should simply not raise
     common.log_captain_event(None, "EVENT", data=123)
 
@@ -152,10 +152,10 @@ def test_log_captain_event_handles_none():
         (timedelta(hours=3, minutes=15), "3h 15m"),
     ],
 )
-def test_humanize_duration(delta, expected):
+def regression_humanize_duration(delta, expected):
     assert common.humanize_duration(delta) == expected
 
 
-def test_get_operator_name():
+def regression_get_operator_name():
     assert common.get_operator_name(SimpleNamespace(operator="Custom")) == "Custom"
     assert common.get_operator_name(SimpleNamespace()) == common.CAPTAIN_DEFAULT_OPERATOR

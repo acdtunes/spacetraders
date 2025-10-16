@@ -28,7 +28,7 @@ from spacetraders_bot.operations.multileg_trader import (
 # PHASE 1: Dependency Detection Tests
 # ============================================================================
 
-def test_dependency_detection_cargo_dependency():
+def regression_dependency_detection_cargo_dependency():
     """
     Test detection of cargo dependency (Type A: Chained)
 
@@ -82,7 +82,7 @@ def test_dependency_detection_cargo_dependency():
     assert dependencies[1].required_cargo.get('COPPER') == 30
 
 
-def test_dependency_detection_credit_dependency():
+def regression_dependency_detection_credit_dependency():
     """
     Test detection of credit dependency (Type B: Weakly Chained)
 
@@ -127,7 +127,7 @@ def test_dependency_detection_credit_dependency():
     assert dependencies[1].required_credits == 50000
 
 
-def test_dependency_detection_independence():
+def regression_dependency_detection_independence():
     """
     Test detection of independent segments (Type C: Parallel)
 
@@ -193,7 +193,7 @@ def test_dependency_detection_independence():
 # PHASE 2: Smart Skip Decision Tests
 # ============================================================================
 
-def test_should_skip_segment_with_independents_remaining():
+def regression_should_skip_segment_with_independents_remaining():
     """
     Test skip decision when independent segments remain
 
@@ -297,7 +297,7 @@ def test_should_skip_segment_with_independents_remaining():
     assert "independent" in reason.lower()
 
 
-def test_should_not_skip_when_all_depend_on_failed():
+def regression_should_not_skip_when_all_depend_on_failed():
     """
     Test skip decision when all remaining segments depend on failed segment (via transitive CARGO dependencies)
 
@@ -391,7 +391,7 @@ def test_should_not_skip_when_all_depend_on_failed():
     assert "depend" in reason.lower()
 
 
-def test_should_not_skip_when_remaining_profit_too_low():
+def regression_should_not_skip_when_remaining_profit_too_low():
     """
     Test skip decision when remaining independent segments aren't profitable enough
 
@@ -480,7 +480,7 @@ def test_should_not_skip_when_remaining_profit_too_low():
     assert "profit too low" in reason.lower()
 
 
-def test_cargo_blocks_future_segments():
+def regression_cargo_blocks_future_segments():
     """
     Test detection of cargo blocking future segment execution
 
@@ -510,7 +510,7 @@ def test_cargo_blocks_future_segments():
     assert blocks == True
 
 
-def test_cargo_does_not_block_when_space_available():
+def regression_cargo_does_not_block_when_space_available():
     """
     Test that cargo doesn't block when sufficient space exists
 
@@ -544,7 +544,7 @@ def test_cargo_does_not_block_when_space_available():
 # PHASE 3: Integration Tests - Example Scenario from Spec
 # ============================================================================
 
-def test_example_scenario_from_spec_smart_skip_vs_abort_all():
+def regression_example_scenario_from_spec_smart_skip_vs_abort_all():
     """
     Test the example scenario from specification document
 
@@ -799,5 +799,3 @@ def test_example_scenario_from_spec_smart_skip_vs_abort_all():
     print(f"  Improvement: +{profit - 65000:,} credits ({((profit - 65000) / 65000 * 100):.0f}% better)")
 
 
-if __name__ == "__main__":
-    pytest.main([__file__, "-v", "-s"])

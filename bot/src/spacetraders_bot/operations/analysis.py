@@ -174,6 +174,39 @@ def utilities_operation(args):
             'MINERAL_DEPOSITS': ['SILICON_CRYSTALS', 'QUARTZ_SAND', 'ICE_WATER']
         }
 
+        # Material yield probabilities based on deposit type
+        # Extraction yields random materials weighted by these probabilities
+        # This ensures realistic profit calculations instead of assuming 100% best material
+        YIELD_PROBABILITIES = {
+            'RARE_METAL_DEPOSITS': {
+                'MERITIUM_ORE': 0.05,      # 5% - very rare
+                'URANITE_ORE': 0.05,       # 5% - very rare
+                'SILICON_CRYSTALS': 0.25,  # 25% - common byproduct
+                'QUARTZ_SAND': 0.35,       # 35% - common filler
+                'ICE_WATER': 0.30,         # 30% - common filler
+            },
+            'PRECIOUS_METAL_DEPOSITS': {
+                'GOLD_ORE': 0.10,          # 10% - rare
+                'SILVER_ORE': 0.08,        # 8% - rare
+                'PLATINUM_ORE': 0.07,      # 7% - rare
+                'COPPER_ORE': 0.25,        # 25% - common byproduct
+                'QUARTZ_SAND': 0.25,       # 25% - common filler
+                'ICE_WATER': 0.25,         # 25% - common filler
+            },
+            'COMMON_METAL_DEPOSITS': {
+                'ALUMINUM_ORE': 0.35,      # 35% - common
+                'IRON_ORE': 0.30,          # 30% - common
+                'COPPER_ORE': 0.20,        # 20% - common
+                'QUARTZ_SAND': 0.10,       # 10% - filler
+                'ICE_WATER': 0.05,         # 5% - filler
+            },
+            'MINERAL_DEPOSITS': {
+                'SILICON_CRYSTALS': 0.40,  # 40% - common
+                'QUARTZ_SAND': 0.35,       # 35% - common
+                'ICE_WATER': 0.25,         # 25% - common
+            },
+        }
+
         mining_asteroids = []
         for wp in waypoints:
             if wp['type'] != 'ASTEROID':
@@ -232,10 +265,15 @@ def utilities_operation(args):
         DOCK_SELL_TIME = 60  # 1 minute for docking and selling
 
         for asteroid in mining_asteroids:
-            # Find best market for ANY material this asteroid produces
-            best_market = None
-            best_material = None
-            max_price = 0
+            # Find best market considering ALL asteroid's deposit types with weighted pricing
+            # Instead of finding highest single-material price, calculate weighted average
+            # based on realistic yield probabilities for each deposit type
+
+            # Determine deposit types from asteroid traits
+            deposit_types = asteroid['traits'] & GOOD_TRAITS
+
+            # Build market price database for all materials this asteroid can produce
+            material_prices = {}  # {material: {waypoint: {price, distance, ...}}}
 
             for material in asteroid['materials']:
                 # Query database for markets buying this material
@@ -268,28 +306,64 @@ def utilities_operation(args):
                         "last_updated_at": row["last_updated"]
                     } for row in rows]
 
-                for market in markets:
-                    # Get market coordinates
-                    market_coords = None
-                    for wp in waypoints:
-                        if wp['symbol'] == market['waypoint']:
-                            market_coords = {'x': wp['x'], 'y': wp['y']}
-                            break
+                if markets:
+                    material_prices[material] = {}
+                    for market in markets:
+                        # Get market coordinates
+                        market_coords = None
+                        for wp in waypoints:
+                            if wp['symbol'] == market['waypoint']:
+                                market_coords = {'x': wp['x'], 'y': wp['y']}
+                                break
 
-                    if not market_coords:
-                        continue
+                        if not market_coords:
+                            continue
 
-                    distance = calculate_distance(asteroid['coords'], market_coords)
-
-                    # Track best price among all materials
-                    if market['price'] > max_price:
-                        max_price = market['price']
-                        best_market = {
-                            'waypoint': market['waypoint'],
+                        distance = calculate_distance(asteroid['coords'], market_coords)
+                        material_prices[material][market['waypoint']] = {
                             'price': market['price'],
                             'distance': distance
                         }
-                        best_material = material
+
+            # Find best market by calculating weighted profit for each potential market
+            best_market = None
+            best_weighted_price = 0
+            candidate_markets = set()
+
+            # Collect all unique market waypoints
+            for material_markets in material_prices.values():
+                candidate_markets.update(material_markets.keys())
+
+            for market_waypoint in candidate_markets:
+                # Calculate weighted average price for this market
+                # Weight by yield probabilities for each deposit type
+                weighted_price = 0
+                total_weight = 0
+
+                for deposit_type in deposit_types:
+                    probabilities = YIELD_PROBABILITIES.get(deposit_type, {})
+
+                    for material, probability in probabilities.items():
+                        if material in material_prices and market_waypoint in material_prices[material]:
+                            price = material_prices[material][market_waypoint]['price']
+                            weighted_price += probability * price
+                            total_weight += probability
+
+                # Normalize by total weight (should be ~1.0 but handle edge cases)
+                if total_weight > 0:
+                    weighted_price = weighted_price / total_weight
+
+                if weighted_price > best_weighted_price:
+                    best_weighted_price = weighted_price
+                    # Get distance from any material (distance is same for all)
+                    for material_markets in material_prices.values():
+                        if market_waypoint in material_markets:
+                            best_market = {
+                                'waypoint': market_waypoint,
+                                'weighted_price': weighted_price,
+                                'distance': material_markets[market_waypoint]['distance']
+                            }
+                            break
 
             if best_market:
                 distance = best_market['distance']
@@ -351,20 +425,30 @@ def utilities_operation(args):
 
                 cycle_time_minutes = cycle_time_seconds / 60
 
-                # Calculate profit
-                revenue = best_market['price'] * cargo_capacity
+                # Calculate profit using weighted average price (accounts for yield probabilities)
+                # This gives realistic revenue instead of assuming 100% best material
+                weighted_price = best_market['weighted_price']
+                revenue = weighted_price * cargo_capacity
                 net_profit = revenue - fuel_cost
 
                 # Profit per hour
                 cycles_per_hour = 60 / cycle_time_minutes
                 profit_per_hour = net_profit * cycles_per_hour
 
+                # Determine primary material for display (highest probability material for first deposit type)
+                display_material = "MIXED"
+                for deposit_type in deposit_types:
+                    probabilities = YIELD_PROBABILITIES.get(deposit_type, {})
+                    if probabilities:
+                        display_material = max(probabilities.keys(), key=lambda m: probabilities[m])
+                        break
+
                 opportunities.append({
                     'asteroid': asteroid['symbol'],
-                    'material': best_material,
+                    'material': display_material,
                     'market': best_market['waypoint'],
                     'distance': round(distance, 1),
-                    'price': best_market['price'],
+                    'weighted_price': round(weighted_price, 1),  # Weighted average price
                     'revenue': int(revenue),
                     'fuel_cost': int(fuel_cost),
                     'net_profit': int(net_profit),
@@ -387,8 +471,8 @@ def utilities_operation(args):
 
             print(f"\n{i}. {opp['asteroid']}")
             print(f"   Traits: {trait_str}")
-            print(f"   Best Material: {opp['material']} → {opp['market']} ({opp['distance']} units)")
-            print(f"   Sell Price: {opp['price']} cr/unit")
+            print(f"   Primary Material: {opp['material']} → {opp['market']} ({opp['distance']} units)")
+            print(f"   Weighted Avg Price: {opp['weighted_price']:.1f} cr/unit (accounts for mixed cargo)")
             print(f"   Cycle: {opp['cycle_time']:.1f} min (mine {mining_time_min:.1f}m + travel {travel_time_min:.1f}m)")
             print(f"   Profit/Trip: {opp['net_profit']:,} cr (revenue {opp['revenue']:,} - fuel {opp['fuel_cost']:,})")
             print(f"   💰 Profit/Hour: {opp['profit_per_hour']:,} cr/hr")

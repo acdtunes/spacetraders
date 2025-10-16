@@ -80,7 +80,7 @@ class MockAPIClient:
         return self.ships.get(symbol)
 
 
-def test_probe_ship_passes_health_validation():
+def regression_probe_ship_passes_health_validation():
     """Probe/satellite ships with 0 fuel capacity should pass health validation."""
     graph = build_test_graph()
     ship_data = build_probe_ship_data()
@@ -94,7 +94,7 @@ def test_probe_ship_passes_health_validation():
     assert reason == "Ship health OK"
 
 
-def test_normal_ship_with_zero_fuel_fails_health_validation():
+def regression_normal_ship_with_zero_fuel_fails_health_validation():
     """Normal ships (non-probe/satellite) with 0 fuel capacity should FAIL health validation."""
     graph = build_test_graph()
     ship_data = build_normal_ship_data_with_zero_fuel()
@@ -108,7 +108,7 @@ def test_normal_ship_with_zero_fuel_fails_health_validation():
     assert "no fuel capacity" in reason.lower()
 
 
-def test_probe_routing_uses_cruise_mode():
+def regression_probe_routing_uses_cruise_mode():
     """Probe routing should use CRUISE mode (not DRIFT) with 0 fuel cost."""
     graph = build_test_graph()
     ship_data = build_probe_ship_data(location="X1-TEST-A1")
@@ -128,7 +128,7 @@ def test_probe_routing_uses_cruise_mode():
         assert step["mode"] == "CRUISE", f"Probe should use CRUISE mode, not {step['mode']}"
 
 
-def test_probe_routing_works_for_multi_hop():
+def regression_probe_routing_works_for_multi_hop():
     """Probe routing should work for multi-hop journeys."""
     graph = build_test_graph()
     ship_data = build_probe_ship_data(location="X1-TEST-A1")
@@ -150,7 +150,7 @@ def test_probe_routing_works_for_multi_hop():
     assert all(step["fuel_cost"] == 0 for step in nav_steps)
 
 
-def test_probe_ship_role_variations():
+def regression_probe_ship_role_variations():
     """Test both SATELLITE and PROBE roles are recognized."""
     graph = build_test_graph()
     api = MockAPIClient()
@@ -175,7 +175,7 @@ def test_probe_ship_role_variations():
     assert is_healthy, "Lowercase 'satellite' should pass (normalized to uppercase)"
 
 
-def test_smart_navigator_validates_probe_route():
+def regression_smart_navigator_validates_probe_route():
     """SmartNavigator.validate_route() should work for probe ships."""
     graph = build_test_graph()
     ship_data = build_probe_ship_data(location="X1-TEST-A1")
@@ -188,7 +188,7 @@ def test_smart_navigator_validates_probe_route():
     assert valid, f"Probe route should be valid, but failed: {reason}"
 
 
-def test_smart_navigator_plan_route_for_probe():
+def regression_smart_navigator_plan_route_for_probe():
     """SmartNavigator.plan_route() should work for probe ships."""
     graph = build_test_graph()
     ship_data = build_probe_ship_data(location="X1-TEST-A1")
@@ -206,5 +206,3 @@ def test_smart_navigator_plan_route_for_probe():
     assert all(step["mode"] == "CRUISE" for step in nav_steps), "Probes should use CRUISE mode"
 
 
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])

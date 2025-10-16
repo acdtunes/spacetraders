@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 from spacetraders_bot.core.ship_controller import ShipController
+from spacetraders_bot.core.smart_navigator import SmartNavigator
 from spacetraders_bot.core.utils import format_credits, parse_waypoint_symbol
 
 from spacetraders_bot.operations.common import (
@@ -56,7 +57,23 @@ def _validate_purchase_args(args):
     return quantity, max_budget
 
 
-def _ensure_ship_ready(ship: ShipController, shipyard_symbol: str, log_error) -> bool:
+def _ensure_ship_ready(ship: ShipController, shipyard_symbol: str, log_error, api=None) -> bool:
+    """Ensure ship is ready at shipyard using SmartNavigator for intelligent routing.
+
+    This function uses SmartNavigator instead of basic ship.navigate() to enable:
+    - Automatic refuel stop insertion when fuel is low
+    - Optimal flight mode selection (CRUISE preferred)
+    - Fuel-aware pathfinding
+
+    Args:
+        ship: ShipController instance
+        shipyard_symbol: Destination shipyard waypoint
+        log_error: Error logging function
+        api: API client (required for SmartNavigator)
+
+    Returns:
+        bool: True if ship successfully reached and docked at shipyard, False otherwise
+    """
     ship_status = ship.get_status()
     if not ship_status:
         print("❌ Failed to retrieve ship status")
@@ -64,13 +81,48 @@ def _ensure_ship_ready(ship: ShipController, shipyard_symbol: str, log_error) ->
         return False
 
     current_waypoint = ship_status["nav"]["waypointSymbol"]
+
+    # Only navigate if not already at shipyard
     if current_waypoint != shipyard_symbol:
-        logging.info("Navigating %s to %s", ship.ship_symbol, shipyard_symbol)
-        print(f"🚀 Navigating {ship.ship_symbol} to {shipyard_symbol}...")
-        if not ship.navigate(shipyard_symbol):
-            print("❌ Failed to navigate to shipyard")
-            log_error("Navigation failed", f"Unable to reach {shipyard_symbol}")
+        system = ship_status["nav"]["systemSymbol"]
+
+        # Verify destination is in same system
+        dest_system = parse_waypoint_symbol(shipyard_symbol)[0]
+        if dest_system != system:
+            print(f"❌ Cross-system navigation not supported (ship in {system}, shipyard in {dest_system})")
+            log_error("Cross-system navigation", f"Ship in {system}, shipyard in {dest_system}")
             return False
+
+        logging.info("Navigating %s to %s using SmartNavigator", ship.ship_symbol, shipyard_symbol)
+        print(f"🚀 Navigating {ship.ship_symbol} to {shipyard_symbol}...")
+
+        # Use SmartNavigator for intelligent routing with automatic refuel stops
+        if api is None:
+            # Fallback to basic navigation if API not provided (for backwards compatibility)
+            logging.warning("API client not provided, falling back to basic navigation")
+            if not ship.navigate(shipyard_symbol):
+                print("❌ Failed to navigate to shipyard")
+                log_error("Navigation failed", f"Unable to reach {shipyard_symbol}")
+                return False
+        else:
+            # Create SmartNavigator for this system
+            navigator = SmartNavigator(api, system)
+
+            # Validate route (will check fuel and suggest refuel stops if needed)
+            valid, reason = navigator.validate_route(ship_status, shipyard_symbol)
+            if not valid:
+                print(f"❌ Route validation failed: {reason}")
+                log_error("Route validation failed", reason)
+                return False
+
+            # Execute route with automatic fuel management
+            logging.info("Route validated: %s", reason)
+            if not navigator.execute_route(ship, shipyard_symbol):
+                print("❌ Failed to navigate to shipyard")
+                log_error("Navigation failed", f"SmartNavigator unable to reach {shipyard_symbol}")
+                return False
+
+            logging.info("✅ Successfully navigated to %s", shipyard_symbol)
 
     print("🛬 Docking purchasing ship...")
     if not ship.dock():
@@ -201,20 +253,8 @@ def _execute_purchases(
             format_credits(agent_credits),
         )
 
-        log_captain_event(
-            captain_logger,
-            "OPERATION_COMPLETED",
-            operator=operator_name,
-            ship=ship_symbol,
-            results={
-                "purchased_ship": new_symbol,
-                "ship_type": ship_type,
-                "price": format_credits(spent),
-                "shipyard": shipyard_symbol,
-            },
-            notes=f"Purchased {ship_type} at {shipyard_symbol}",
-            tags=["purchasing", ship_type.lower(), shipyard_symbol.lower()],
-        )
+        # Narrative-rich captain log entries are handled by the coordinating agent.
+        # The purchase results are returned for upstream storytelling.
 
     return purchased_symbols, total_spent, agent_credits
 
@@ -258,8 +298,8 @@ def purchase_ship_operation(args, *, api=None, ship=None, captain_logger=None):
             escalate=escalate,
         )
 
-    # Ensure purchasing ship can reach/dock at the shipyard
-    if not _ensure_ship_ready(ship, shipyard_symbol, log_error):
+    # Ensure purchasing ship can reach/dock at the shipyard (using SmartNavigator)
+    if not _ensure_ship_ready(ship, shipyard_symbol, log_error, api=api):
         return 1
 
     _, price = _fetch_shipyard_listing(api, shipyard_symbol, ship_type, log_error)

@@ -43,7 +43,7 @@ class DummyShipAPI:
         }
 
 
-def test_status_operation_lists_all_ships(monkeypatch, capsys):
+def regression_status_operation_lists_all_ships(monkeypatch, capsys):
     monkeypatch.setattr(fleet, 'get_api_client', lambda player_id: DummyShipAPI())
 
     args = SimpleNamespace(player_id=5, ships='', log_level='INFO')
@@ -56,7 +56,7 @@ def test_status_operation_lists_all_ships(monkeypatch, capsys):
     assert 'FLEET STATUS' in output
 
 
-def test_monitor_operation_single_iteration(monkeypatch, capsys):
+def regression_monitor_operation_single_iteration(monkeypatch, capsys):
     api = DummyShipAPI()
     monkeypatch.setattr(fleet, 'get_api_client', lambda player_id: api)
     monkeypatch.setattr(fleet.time, 'sleep', lambda *_args, **_kwargs: None)

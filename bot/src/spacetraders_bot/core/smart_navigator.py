@@ -57,6 +57,7 @@ class SmartNavigator:
             db=self.db,
         )
         self.routing_config = RoutingConfig()
+        self._router_cache: Dict[str, ORToolsRouter] = {}  # Cache routers by ship symbol
 
         # Load or build graph if not provided
         if self.graph is None:
@@ -92,7 +93,15 @@ class SmartNavigator:
 
         prefer_cruise = True  # Cruise preference enforced globally
 
-        optimizer = ORToolsRouter(self.graph, ship_data, self.routing_config)
+        # Get or create cached router for this ship
+        ship_symbol = ship_data.get('symbol', 'unknown')
+        if ship_symbol not in self._router_cache:
+            logger.debug(f"Creating new ORToolsRouter for {ship_symbol}")
+            self._router_cache[ship_symbol] = ORToolsRouter(self.graph, ship_data, self.routing_config)
+        else:
+            logger.debug(f"Using cached ORToolsRouter for {ship_symbol}")
+
+        optimizer = self._router_cache[ship_symbol]
         route = optimizer.find_optimal_route(
             current_location,
             destination,
@@ -451,6 +460,7 @@ class SmartNavigator:
             operation_controller.checkpoint({
                 'completed_step': step_index,
                 'location': actual_location,
+                'destination': step['to'],  # Save destination for checkpoint validation
                 'fuel': current_ship_data['fuel']['current'],
                 'state': actual_state,
             })
@@ -494,9 +504,34 @@ class SmartNavigator:
                 logger.error("Failed to transition to IN_ORBIT for navigation to refuel stop")
                 return False
 
+            # Use the FIXED select_flight_mode() logic - always prefer CRUISE when fuel allows
+            # Calculate distance to refuel waypoint
+            import math
+            current_wp = self.graph['waypoints'].get(current_location)
+            refuel_wp = self.graph['waypoints'].get(refuel_waypoint)
+
+            if current_wp and refuel_wp:
+                distance = math.sqrt(
+                    (refuel_wp['x'] - current_wp['x']) ** 2 +
+                    (refuel_wp['y'] - current_wp['y']) ** 2
+                )
+
+                # Use select_flight_mode() to intelligently choose mode (prefers CRUISE)
+                from spacetraders_bot.core.utils import select_flight_mode
+                fuel = current_ship_data['fuel']
+                flight_mode = select_flight_mode(
+                    fuel['current'],
+                    fuel['capacity'],
+                    distance,
+                    require_return=False
+                )
+            else:
+                # Fallback to CRUISE if we can't calculate distance
+                flight_mode = 'CRUISE'
+
             success = ship_controller.navigate(
                 waypoint=refuel_waypoint,
-                flight_mode='DRIFT',
+                flight_mode=flight_mode,
                 auto_refuel=False,
             )
 
@@ -537,6 +572,7 @@ class SmartNavigator:
             operation_controller.checkpoint({
                 'completed_step': step_index,
                 'location': refuel_waypoint,
+                'destination': refuel_waypoint,  # For refuel steps, destination is the refuel waypoint
                 'fuel': fuel_after,
                 'state': 'DOCKED',
             })
@@ -565,143 +601,183 @@ class SmartNavigator:
         Returns:
             True if navigation successful and arrived at destination, False otherwise
         """
-        prefer_cruise = True  # Cruise preference enforced globally
+        try:
+            prefer_cruise = True  # Cruise preference enforced globally
 
-        # Get current ship status
-        ship_data = self._get_status_or_log(ship_controller, "Failed to get ship status")
-        if not ship_data:
-            return False
-
-        # Validate ship health
-        if routing_paused():
-            details = get_pause_details() or {}
-            logger.error("Routing paused: %s", details.get("reason", "Validation failure"))
-            return False
-
-        # Validate ship health
-        is_healthy, health_reason = self._validate_ship_health(ship_data)
-        if not is_healthy:
-            logger.error(f"Ship health check failed: {health_reason}")
-            return False
-
-        current_location = ship_data['nav']['waypointSymbol']
-        current_state = ship_data['nav']['status']
-
-        # Already at destination
-        if current_location == destination:
-            logger.info(f"Already at {destination}")
-            return True
-
-        # Handle IN_TRANSIT state - must wait before planning new route
-        if current_state == 'IN_TRANSIT':
-            ship_data, arrived = self._handle_in_transit_state(ship_controller, ship_data, destination)
+            # Get current ship status
+            ship_data = self._get_status_or_log(ship_controller, "Failed to get ship status")
             if not ship_data:
                 return False
-            if arrived:
-                return True
+
+            # Validate ship health
+            if routing_paused():
+                details = get_pause_details() or {}
+                logger.error("Routing paused: %s", details.get("reason", "Validation failure"))
+                return False
+
+            # Validate ship health
+            is_healthy, health_reason = self._validate_ship_health(ship_data)
+            if not is_healthy:
+                logger.error(f"Ship health check failed: {health_reason}")
+                return False
 
             current_location = ship_data['nav']['waypointSymbol']
             current_state = ship_data['nav']['status']
 
-        # Plan route from current location
-        route = self.plan_route(ship_data, destination, prefer_cruise=True)
-        if not route:
-            logger.error(f"No route found from {current_location} to {destination}")
-            return False
+            # Already at destination
+            if current_location == destination:
+                logger.info(f"Already at {destination}")
+                return True
 
-        from spacetraders_bot.core.routing import TimeCalculator
-        logger.info(f"Executing route: {len(route['steps'])} steps, "
-                   f"{TimeCalculator.format_time(route['total_time'])} total time")
+            # Handle IN_TRANSIT state - must wait before planning new route
+            if current_state == 'IN_TRANSIT':
+                ship_data, arrived = self._handle_in_transit_state(ship_controller, ship_data, destination)
+                if not ship_data:
+                    return False
+                if arrived:
+                    return True
 
-        # Log complete route plan (including refuel stops)
-        logger.info("📋 ROUTE PLAN:")
-        for i, step in enumerate(route['steps'], 1):
-            if step['action'] == 'navigate':
-                logger.info(
-                    "   %s. Navigate %s → %s (%s, %.0fu, %s⛽)",
-                    i,
-                    step['from'],
-                    step['to'],
-                    step['mode'],
-                    step['distance'],
-                    step['fuel_cost'],
-                )
-            elif step['action'] == 'refuel':
-                logger.info(
-                    "   %s. Refuel at %s (+%s⛽)",
-                    i,
-                    step['waypoint'],
-                    step['fuel_added'],
-                )
+                current_location = ship_data['nav']['waypointSymbol']
+                current_state = ship_data['nav']['status']
 
-        # Execute each step with state machine
-        start_step = 1
-
-        # Resume from checkpoint if available
-        if operation_controller and operation_controller.can_resume():
-            checkpoint = operation_controller.get_last_checkpoint()
-            if checkpoint:
-                start_step = checkpoint.get('completed_step', 0) + 1
-                logger.info(f"Resuming from step {start_step}/{len(route['steps'])}")
-
-        total_steps = len(route['steps'])
-        handlers = {
-            'navigate': self._execute_navigate_step,
-            'refuel': self._execute_refuel_step,
-        }
-
-        for i, step in enumerate(route['steps'], 1):
-            # Skip already completed steps
-            if i < start_step:
-                continue
-
-            if not self._should_continue_operation(operation_controller):
+            # Plan route from current location
+            route = self.plan_route(ship_data, destination, prefer_cruise=True)
+            if not route:
+                logger.error(f"No route found from {current_location} to {destination}")
                 return False
 
-            handler = handlers.get(step['action'])
-            if not handler:
-                logger.warning("Skipping unsupported route action: %s", step['action'])
-                continue
+            from spacetraders_bot.core.routing import TimeCalculator
+            logger.info(f"Executing route: {len(route['steps'])} steps, "
+                       f"{TimeCalculator.format_time(route['total_time'])} total time")
 
-            if not handler(ship_controller, step, i, total_steps, operation_controller):
-                return False
+            # Log complete route plan (including refuel stops)
+            logger.info("📋 ROUTE PLAN:")
+            for i, step in enumerate(route['steps'], 1):
+                if step['action'] == 'navigate':
+                    logger.info(
+                        "   %s. Navigate %s → %s (%s, %.0fu, %s⛽)",
+                        i,
+                        step['from'],
+                        step['to'],
+                        step['mode'],
+                        step['distance'],
+                        step['fuel_cost'],
+                    )
+                elif step['action'] == 'refuel':
+                    logger.info(
+                        "   %s. Refuel at %s (+%s⛽)",
+                        i,
+                        step['waypoint'],
+                        step['fuel_added'],
+                    )
 
-        # Final verification
-        final_ship_data = self._get_status_or_log(
-            ship_controller,
-            "Could not verify final position",
-        )
-        if not final_ship_data:
-            return True  # Navigation succeeded even if we can't verify
+            # Execute each step with state machine
+            start_step = 1
 
-        final_location = final_ship_data['nav']['waypointSymbol']
-        final_state = final_ship_data['nav']['status']
-        final_fuel = final_ship_data['fuel']['current']
+            # Resume from checkpoint if available
+            if operation_controller and operation_controller.can_resume():
+                checkpoint = operation_controller.get_last_checkpoint()
+                if checkpoint:
+                    completed_step = checkpoint.get('completed_step', 0)
+                    checkpoint_location = checkpoint.get('location')
+                    checkpoint_destination = checkpoint.get('destination')
+                    start_step = completed_step + 1
 
-        if final_location != destination:
-            logger.error(
-                "Route execution failed: ended at %s, expected %s",
-                final_location,
-                destination,
+                    # CRITICAL: Validate checkpoint is for THIS route
+                    # Bug fix: Checkpoints from previous navigations can cause route steps to be skipped
+                    # We validate both location AND destination to ensure checkpoint matches current route
+                    location_mismatch = checkpoint_location and checkpoint_location != current_location
+                    destination_mismatch = checkpoint_destination and checkpoint_destination != destination
+
+                    if location_mismatch or destination_mismatch:
+                        if location_mismatch:
+                            logger.warning(
+                                f"Checkpoint location mismatch: checkpoint says {checkpoint_location} "
+                                f"but ship is at {current_location}. "
+                                f"Checkpoint is stale from previous navigation. Starting from step 1."
+                            )
+                        if destination_mismatch:
+                            logger.warning(
+                                f"Checkpoint destination mismatch: checkpoint says {checkpoint_destination} "
+                                f"but current route goes to {destination}. "
+                                f"Checkpoint is stale from previous navigation. Starting from step 1."
+                            )
+                        start_step = 1
+                    # Validate checkpoint is within route bounds
+                    elif start_step > len(route['steps']):
+                        logger.warning(
+                            f"Checkpoint resumption validation failed: "
+                            f"completed_step={completed_step} but route only has {len(route['steps'])} steps. "
+                            f"Checkpoint may be stale from previous operation. Starting from step 1."
+                        )
+                        start_step = 1
+                    elif start_step > 1:
+                        logger.info(f"Resuming from step {start_step}/{len(route['steps'])}")
+
+            total_steps = len(route['steps'])
+            handlers = {
+                'navigate': self._execute_navigate_step,
+                'refuel': self._execute_refuel_step,
+            }
+
+            for i, step in enumerate(route['steps'], 1):
+                # Skip already completed steps
+                if i < start_step:
+                    continue
+
+                if not self._should_continue_operation(operation_controller):
+                    return False
+
+                handler = handlers.get(step['action'])
+                if not handler:
+                    logger.warning("Skipping unsupported route action: %s", step['action'])
+                    continue
+
+                if not handler(ship_controller, step, i, total_steps, operation_controller):
+                    return False
+
+            # Final verification
+            final_ship_data = self._get_status_or_log(
+                ship_controller,
+                "Could not verify final position",
             )
+            if not final_ship_data:
+                return True  # Navigation succeeded even if we can't verify
+
+            final_location = final_ship_data['nav']['waypointSymbol']
+            final_state = final_ship_data['nav']['status']
+            final_fuel = final_ship_data['fuel']['current']
+
+            if final_location != destination:
+                logger.error(
+                    "Route execution failed: ended at %s, expected %s",
+                    final_location,
+                    destination,
+                )
+                return False
+
+            logger.info(
+                "✅ Route execution complete. Arrived at %s (state: %s, fuel: %s⛽)",
+                destination,
+                final_state,
+                final_fuel,
+            )
+
+            self._maybe_proactive_refuel(
+                ship_controller,
+                destination,
+                final_ship_data,
+                final_state,
+                final_fuel,
+            )
+
+            return True
+
+        except Exception as e:
+            logger.error(f"❌ execute_route() crashed with unexpected exception: {type(e).__name__}: {e}", exc_info=True)
+            logger.error(f"   Destination: {destination}")
+            logger.error(f"   Ship: {getattr(ship_controller, 'ship_symbol', 'unknown')}")
             return False
-
-        logger.info(
-            "✅ Route execution complete. Arrived at %s (state: %s, fuel: %s⛽)",
-            destination,
-            final_state,
-            final_fuel,
-        )
-
-        self._maybe_proactive_refuel(
-            ship_controller,
-            destination,
-            final_ship_data,
-            final_state,
-            final_fuel,
-        )
-
-        return True
 
     def _maybe_proactive_refuel(
         self,

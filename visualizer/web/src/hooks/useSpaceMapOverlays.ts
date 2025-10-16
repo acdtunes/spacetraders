@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import type { TaggedShip, Waypoint as WaypointType, Market, MarketData } from '../types/spacetraders';
+import type { TaggedShip, Waypoint as WaypointType, Market, MarketData, MarketSupply } from '../types/spacetraders';
 import type { TradeOpportunity } from '../domain/market';
 import { Ship } from '../domain';
 import type { Position } from '../domain/ship';
@@ -55,7 +55,7 @@ export interface WaypointTooltipData {
     lastUpdated: string;
     goods: Array<{
       symbol: string;
-      supply: string;
+      supply: MarketSupply;
       activity: string | null;
       purchasePrice: number;
       sellPrice: number;

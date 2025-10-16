@@ -61,7 +61,7 @@ def run_util(util_type, api, db=None, navigator_cls=None, **kwargs):
         return utilities_operation(args)
 
 
-def test_utilities_operation_find_fuel_success(capsys):
+def regression_utilities_operation_find_fuel_success(capsys):
     api = DummyAPI(
         fuel_data={
             "ship": {
@@ -84,7 +84,7 @@ def test_utilities_operation_find_fuel_success(capsys):
     assert "X1-TEST-B1" in out
 
 
-def test_utilities_operation_distance(capsys):
+def regression_utilities_operation_distance(capsys):
     api = DummyAPI(
         distance_data={
             ("X1-TEST", "X1-TEST-A1"): {"x": 0, "y": 0},
@@ -104,7 +104,7 @@ def test_utilities_operation_distance(capsys):
     assert "Distance: 5.0" in output
 
 
-def test_utilities_operation_find_mining(capsys):
+def regression_utilities_operation_find_mining(capsys):
     mining_pages = [
         {
             "data": [
@@ -220,14 +220,14 @@ def test_utilities_operation_find_mining(capsys):
     assert "MINERAL_DEPOSITS" in out
 
 
-def test_utilities_operation_find_fuel_missing_data(capsys):
+def regression_utilities_operation_find_fuel_missing_data(capsys):
     api = DummyAPI(fuel_data={"ship": None})
     result = run_util("find-fuel", api, ship="SHIP-1")
     assert result == 1
     assert "Failed to get ship status" in capsys.readouterr().out
 
 
-def test_utilities_operation_unknown_util_type(capsys):
+def regression_utilities_operation_unknown_util_type(capsys):
     api = DummyAPI()
     result = run_util("unknown", api)
     assert result == 1

@@ -101,6 +101,10 @@ export interface AppState {
   filterAgents: Set<string>;
   toggleAgentFilter: (agentId: string) => void;
 
+  filterShipRoles: Set<string>;
+  toggleShipRoleFilter: (role: string) => void;
+  clearShipRoleFilters: () => void;
+
   filterWaypointTypes: Set<string>;
   toggleWaypointTypeFilter: (type: string) => void;
   selectAllWaypointTypes: (types: string[]) => void;
@@ -281,6 +285,23 @@ const storeInitializer: StateCreator<AppState, [], []> = (set) => ({
       }
       return { filterAgents: newFilter };
     }),
+
+  filterShipRoles: new Set(),
+  toggleShipRoleFilter: (role) =>
+    set((state) => {
+      const normalized = role.toUpperCase();
+      const newFilter = new Set(state.filterShipRoles);
+      if (newFilter.has(normalized)) {
+        if (newFilter.size === 1) {
+          return { filterShipRoles: new Set() };
+        }
+        newFilter.delete(normalized);
+      } else {
+        newFilter.add(normalized);
+      }
+      return { filterShipRoles: newFilter };
+    }),
+  clearShipRoleFilters: () => set({ filterShipRoles: new Set() }),
 
   filterWaypointTypes: new Set(['PLANET', 'GAS_GIANT', 'MOON', 'ORBITAL_STATION', 'JUMP_GATE', 'ASTEROID_FIELD', 'ASTEROID', 'ENGINEERED_ASTEROID', 'ASTEROID_BASE', 'NEBULA', 'DEBRIS_FIELD', 'GRAVITY_WELL', 'ARTIFICIAL_GRAVITY_WELL', 'FUEL_STATION']),
   toggleWaypointTypeFilter: (type) =>

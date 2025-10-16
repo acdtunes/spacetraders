@@ -10,6 +10,14 @@ interface ScoutTourLayerProps {
   animationFrame: number;
   visibleTours?: Set<string>;
   getWaypointPosition: (waypoint: WaypointType) => { x: number; y: number };
+  orbitalClusters?: Map<
+    string,
+    {
+      id: string;
+      center: { x: number; y: number };
+      members: string[];
+    }
+  >;
 }
 
 /**
@@ -58,11 +66,45 @@ export const ScoutTourLayer = memo(function ScoutTourLayer({
   animationFrame,
   visibleTours,
   getWaypointPosition,
+  orbitalClusters,
 }: ScoutTourLayerProps) {
   if (tours.length === 0) return null;
 
+  const clusters =
+    orbitalClusters ??
+    new Map<
+      string,
+      {
+        id: string;
+        center: { x: number; y: number };
+        members: string[];
+      }
+    >();
+
+  const connectorLines: JSX.Element[] = [];
+
+  clusters.forEach((cluster) => {
+    if (cluster.members.length <= 1) return;
+    const connectorStrokeWidth = Math.max(0.5, 1.2 / currentScale);
+    cluster.members.forEach((symbol) => {
+      const waypoint = waypoints.get(symbol);
+      if (!waypoint) return;
+      const displayPos = getWaypointPosition(waypoint);
+      connectorLines.push(
+        <Line
+          key={`cluster-connector-${cluster.id}-${symbol}`}
+          points={[cluster.center.x, cluster.center.y, displayPos.x, displayPos.y]}
+          stroke="rgba(148, 163, 184, 0.35)"
+          strokeWidth={connectorStrokeWidth}
+          listening={false}
+        />
+      );
+    });
+  });
+
   return (
     <Group listening={false}>
+      {connectorLines}
       {tours.map((tour, tourIndex) => {
         // Filter based on visibility
         const tourId = getTourId(tour);

@@ -30,6 +30,11 @@ def coordinator_start_operation(args):
     # Parse ships
     ships = [s.strip() for s in args.ships.split(',')]
 
+    # Parse exclude_markets (if provided)
+    exclude_markets = None
+    if hasattr(args, 'exclude_markets') and args.exclude_markets:
+        exclude_markets = [m.strip() for m in args.exclude_markets.split(',')]
+
     # Get token from database
     db = get_database()
     with db.connection() as conn:
@@ -50,7 +55,8 @@ def coordinator_start_operation(args):
                 system=args.system,
                 ships=ships,
                 token=token,
-                player_id=args.player_id
+                player_id=args.player_id,
+                exclude_markets=exclude_markets
             )
 
             # Save configuration
