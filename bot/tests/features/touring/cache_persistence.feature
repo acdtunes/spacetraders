@@ -7,7 +7,6 @@ Feature: Tour Cache Persistence
     Given a temporary test database
     And a tour optimization system with WAL mode enabled
 
-  @xfail
   Scenario: WAL checkpoint ensures immediate persistence
     Given a tour for system "X1-TEST" with 3 markets
     When I save the tour with WAL checkpoint
@@ -15,7 +14,6 @@ Feature: Tour Cache Persistence
     And I reopen the database
     Then the tour should be retrievable from cache
 
-  @xfail
   Scenario: Without checkpoint data may be lost
     Given a tour for system "X1-TEST-BUG" with 2 markets
     When I save the tour without explicit checkpoint
@@ -23,7 +21,6 @@ Feature: Tour Cache Persistence
     And I reopen the database
     Then the tour may or may not be retrievable (flaky)
 
-  @xfail
   Scenario: Return-to-start tours persist correctly
     Given a return-to-start tour for system "X1-TEST-LOOP"
     And the tour has 4 stops plus return to start
@@ -31,20 +28,17 @@ Feature: Tour Cache Persistence
     And I close and reopen the connection
     Then the cached tour should start and end at the same waypoint
 
-  @xfail
   Scenario: Multiple tours persist with checkpoints
     Given I have 5 different systems with tours
     When I save each tour with checkpoint after transaction
     And I close and reopen the connection
     Then all 5 tours should be retrievable
 
-  @xfail
   Scenario: Tours queryable immediately in same connection
     Given a tour for system "X1-IMMEDIATE"
     When I save the tour with checkpoint
     Then the tour should be queryable immediately without closing connection
 
-  @xfail
   Scenario: Checkpoint performance is acceptable
     When I save 10 tours with checkpoints
     Then average checkpoint time should be under 100ms
