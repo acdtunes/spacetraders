@@ -178,10 +178,11 @@ class TestBatchContractOperation:
     def mock_ship(self):
         """Mock ship controller"""
         ship = MagicMock()
-        ship.get_status = MagicMock(return_value={
+        # Use lambda to avoid MagicMock interference with nested dict access
+        ship.get_status = lambda: {
             'cargo': {'capacity': 40, 'units': 0},
             'nav': {'systemSymbol': 'X1-TEST'},
-        })
+        }
         return ship
 
     @pytest.fixture
@@ -227,8 +228,7 @@ class TestBatchContractOperation:
 
         # Mock contract_operation to succeed
         with patch('spacetraders_bot.operations.contracts.contract_operation', return_value=0):
-            with patch('spacetraders_bot.operations.contracts.ShipController', return_value=mock_ship):
-                result = batch_contract_operation(args_batch_3, api=mock_api)
+            result = batch_contract_operation(args_batch_3, api=mock_api, ship=mock_ship)
 
         # Should succeed (at least one contract fulfilled)
         assert result == 0
@@ -312,8 +312,7 @@ class TestBatchContractOperation:
 
         # Mock contract_operation to succeed (called for ALL 3 contracts)
         with patch('spacetraders_bot.operations.contracts.contract_operation', return_value=0) as mock_fulfill:
-            with patch('spacetraders_bot.operations.contracts.ShipController', return_value=mock_ship):
-                result = batch_contract_operation(args_batch_3, api=mock_api)
+            result = batch_contract_operation(args_batch_3, api=mock_api, ship=mock_ship)
 
         # Should succeed
         assert result == 0
@@ -356,8 +355,7 @@ class TestBatchContractOperation:
 
         # Mock contract_operation: success, failure, success
         with patch('spacetraders_bot.operations.contracts.contract_operation', side_effect=[0, 1, 0]) as mock_fulfill:
-            with patch('spacetraders_bot.operations.contracts.ShipController', return_value=mock_ship):
-                result = batch_contract_operation(args_batch_3, api=mock_api)
+            result = batch_contract_operation(args_batch_3, api=mock_api, ship=mock_ship)
 
         # Should succeed (2 out of 3 fulfilled)
         assert result == 0
@@ -421,8 +419,7 @@ class TestBatchContractOperation:
 
         # Mock contract_operation to succeed (called twice)
         with patch('spacetraders_bot.operations.contracts.contract_operation', return_value=0) as mock_fulfill:
-            with patch('spacetraders_bot.operations.contracts.ShipController', return_value=mock_ship):
-                result = batch_contract_operation(args_batch_3, api=mock_api)
+            result = batch_contract_operation(args_batch_3, api=mock_api, ship=mock_ship)
 
         # Should succeed (2 out of 3 fulfilled)
         assert result == 0
@@ -465,8 +462,7 @@ class TestBatchContractOperation:
 
         # Mock contract_operation to fail for all 3 contracts
         with patch('spacetraders_bot.operations.contracts.contract_operation', return_value=1):
-            with patch('spacetraders_bot.operations.contracts.ShipController', return_value=mock_ship):
-                result = batch_contract_operation(args_batch_3, api=mock_api)
+            result = batch_contract_operation(args_batch_3, api=mock_api, ship=mock_ship)
 
         # Should fail (no contracts fulfilled)
         assert result == 1
@@ -512,10 +508,11 @@ class TestBatchContractSequentialExecution:
     def mock_ship(self):
         """Mock ship controller"""
         ship = MagicMock()
-        ship.get_status = MagicMock(return_value={
+        # Use lambda to avoid MagicMock interference with nested dict access
+        ship.get_status = lambda: {
             'cargo': {'capacity': 40, 'units': 0},
             'nav': {'systemSymbol': 'X1-TEST'},
-        })
+        }
         return ship
 
     @pytest.fixture
@@ -584,8 +581,7 @@ class TestBatchContractSequentialExecution:
         mock_api.post = MagicMock(side_effect=mock_negotiate)
 
         with patch('spacetraders_bot.operations.contracts.contract_operation', side_effect=mock_contract_operation):
-            with patch('spacetraders_bot.operations.contracts.ShipController', return_value=mock_ship):
-                result = batch_contract_operation(args_batch_2, api=mock_api)
+            result = batch_contract_operation(args_batch_2, api=mock_api, ship=mock_ship)
 
         # Should succeed - no ERROR 4511 because contracts are completed sequentially
         assert result == 0
@@ -655,8 +651,7 @@ class TestBatchContractSequentialExecution:
         mock_api.post = MagicMock(side_effect=negotiate_responses)
 
         with patch('spacetraders_bot.operations.contracts.contract_operation', return_value=0) as mock_fulfill:
-            with patch('spacetraders_bot.operations.contracts.ShipController', return_value=mock_ship):
-                result = batch_contract_operation(args_batch_2, api=mock_api)
+            result = batch_contract_operation(args_batch_2, api=mock_api, ship=mock_ship)
 
         # Should succeed
         assert result == 0
@@ -693,10 +688,11 @@ class TestBatchContractExistingActiveContract:
     def mock_ship(self):
         """Mock ship controller"""
         ship = MagicMock()
-        ship.get_status = MagicMock(return_value={
+        # Use lambda to avoid MagicMock interference with nested dict access
+        ship.get_status = lambda: {
             'cargo': {'capacity': 40, 'units': 0},
             'nav': {'systemSymbol': 'X1-TEST'},
-        })
+        }
         return ship
 
     @pytest.fixture
@@ -793,6 +789,8 @@ class TestBatchContractExistingActiveContract:
 
         mock_api.get = MagicMock(side_effect=mock_get)
         mock_api.post = MagicMock(side_effect=mock_post)
+        # Mock get_contract for contract_operation
+        mock_api.get_contract = MagicMock(return_value=existing_contract)
 
         # Mock contract_operation to succeed
         fulfill_calls = []
@@ -802,8 +800,7 @@ class TestBatchContractExistingActiveContract:
             return 0  # Success
 
         with patch('spacetraders_bot.operations.contracts.contract_operation', side_effect=mock_fulfill):
-            with patch('spacetraders_bot.operations.contracts.ShipController', return_value=mock_ship):
-                result = batch_contract_operation(args_batch_2, api=mock_api)
+            result = batch_contract_operation(args_batch_2, api=mock_api, ship=mock_ship)
 
         # Should succeed
         assert result == 0
@@ -906,8 +903,7 @@ class TestBatchContractExistingActiveContract:
 
         # Mock contract_operation to succeed
         with patch('spacetraders_bot.operations.contracts.contract_operation', return_value=0):
-            with patch('spacetraders_bot.operations.contracts.ShipController', return_value=mock_ship):
-                result = batch_contract_operation(args_batch_2, api=mock_api)
+            result = batch_contract_operation(args_batch_2, api=mock_api, ship=mock_ship)
 
         # Should succeed without ERROR 4511
         assert result == 0

@@ -7,11 +7,11 @@ Simulates SpaceTraders API responses conforming to OpenAPI spec
 
 import json
 from typing import Optional, Dict, Any, List
-from datetime import datetime, timedelta, UTC
+from datetime import datetime, timedelta, timezone
 
 
 def _utc_now() -> datetime:
-    return datetime.now(UTC)
+    return datetime.now(timezone.utc)
 
 
 def _utc_now_iso() -> str:

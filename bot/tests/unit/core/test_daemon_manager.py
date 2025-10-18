@@ -1,6 +1,6 @@
 import json
 import os
-from datetime import datetime, UTC
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -46,7 +46,7 @@ class DummyDB:
             "command": command,
             "log_file": log_file,
             "err_file": err_file,
-            "started_at": datetime.now(UTC).isoformat(),
+            "started_at": datetime.now(timezone.utc).isoformat(),
             "status": "running",
         }
         self.daemons[daemon_id] = record
@@ -128,7 +128,7 @@ def regression_stop_updates_database(monkeypatch, tmp_daemon_env, dummy_db):
         "player_id": 1,
         "pid": 999,
         "command": ["python"],
-        "started_at": datetime.now(UTC).isoformat(),
+        "started_at": datetime.now(timezone.utc).isoformat(),
         "log_file": str(tmp_daemon_env / "logs" / "daemon.log"),
         "err_file": str(tmp_daemon_env / "logs" / "daemon.err"),
     }
@@ -238,7 +238,7 @@ def regression_fetch_process_none(tmp_daemon_env, dummy_db):
 
 
 def regression_status_handles_missing_process(monkeypatch, tmp_daemon_env, dummy_db):
-    started_at = datetime.now(UTC).isoformat()
+    started_at = datetime.now(timezone.utc).isoformat()
     dummy_db.daemons["daemon-1"] = {
         "daemon_id": "daemon-1",
         "player_id": 1,
@@ -264,7 +264,7 @@ def regression_status_handles_missing_process(monkeypatch, tmp_daemon_env, dummy
 
 
 def regression_status_reports_metrics(monkeypatch, tmp_daemon_env, dummy_db):
-    started_at = datetime.now(UTC).isoformat()
+    started_at = datetime.now(timezone.utc).isoformat()
     dummy_db.daemons["daemon-1"] = {
         "daemon_id": "daemon-1",
         "player_id": 1,
@@ -303,7 +303,7 @@ def regression_status_reports_metrics(monkeypatch, tmp_daemon_env, dummy_db):
 
 
 def regression_list_all_sorted(monkeypatch, tmp_daemon_env, dummy_db):
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     dummy_db.daemons.update(
         {
             "daemon-1": {

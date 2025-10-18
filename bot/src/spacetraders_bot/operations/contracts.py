@@ -132,7 +132,7 @@ def evaluate_contract_profitability(
     return True, f"Contract meets profitability criteria (using {price_source})", metrics
 
 
-def batch_contract_operation(args, *, api=None):
+def batch_contract_operation(args, *, api=None, ship=None):
     """
     Batch contract negotiation and fulfillment operation.
 
@@ -147,7 +147,7 @@ def batch_contract_operation(args, *, api=None):
     print("=" * 70)
 
     api = api or get_api_client(args.player_id)
-    ship = ShipController(api, args.ship)
+    ship = ship or ShipController(api, args.ship)
 
     # Get ship data for profitability evaluation
     ship_data = ship.get_status()
