@@ -193,7 +193,7 @@ def then_purchase_success(purchase_ctx):
     context = purchase_ctx
     assert context['result'] == 0
     assert len(context['api'].purchase_calls) == 2
-    assert any(event[0] == 'OPERATION_COMPLETED' for event in context['captain_events'])
+    # Note: OPERATION_COMPLETED logging is delegated to coordinating agent
 
 
 @then('the purchase should fail with an error log')

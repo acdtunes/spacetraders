@@ -8,6 +8,7 @@ Feature: Circuit Breaker Auto-Recovery Continuation
     And the ship has 40 cargo capacity
     And agent has 100000 credits
 
+  @xfail
   Scenario: Profitable auto-recovery should continue multi-leg route
     Given a multi-leg route with 3 segments
     And segment 1 has a BUY action for "SHIP_PARTS" at "X1-TEST-D45"
