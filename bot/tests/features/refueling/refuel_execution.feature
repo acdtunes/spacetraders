@@ -10,7 +10,6 @@ Feature: Refuel Step Execution in Smart Navigator
       | X1-GH18-B33   | 346 | 0   | yes      | MARKETPLACE |
       | X1-GH18-J62   | 346 | 382 | no       |             |
 
-  @xfail
   Scenario: Use DRIFT for final approach when CRUISE impossible
     Given a ship at "X1-GH18-B33" with 400 fuel (capacity 400)
     And destination "X1-GH18-J62" is 382 units away
@@ -20,7 +19,6 @@ Feature: Refuel Step Execution in Smart Navigator
     And the route should allow DRIFT to goal
     And the final navigation step should reach J62
 
-  @xfail
   Scenario: Route plan includes refuel step
     Given a ship at "X1-GH18-A2" with 390 fuel (capacity 400)
     And destination "X1-GH18-J62" (500 units direct, or 346+382 via B33)
@@ -31,7 +29,6 @@ Feature: Refuel Step Execution in Smart Navigator
     And step 3 should navigate B33 → J62
     And the refuel step should add fuel
 
-  @xfail
   Scenario: Smart Navigator executes refuel step
     Given a ship at "X1-GH18-A2" with 390 fuel
     And a mock ship controller

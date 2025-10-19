@@ -4,7 +4,7 @@ from pytest_bdd import scenarios, given, when, then, parsers
 
 from spacetraders_bot.operations import purchasing
 
-scenarios('../../features/operations/purchasing_operations.feature')
+scenarios('../../../bdd/features/operations/purchasing_operations.feature')
 
 
 class FakePurchaseShip:

@@ -10,7 +10,6 @@ Feature: Intermediate Refuel Station Routing
       | X1-GH18-X     | 200 | 0   | yes      | MARKETPLACE |
       | X1-GH18-C43   | 428 | 0   | no       |             |
 
-  @xfail
   Scenario: Find intermediate refuel station instead of DRIFT
     Given a ship "SILMARETH-1" at "X1-GH18-B32" with 58 fuel (capacity 400)
     And the destination is "X1-GH18-C43" (428 units away)
@@ -31,7 +30,6 @@ Feature: Intermediate Refuel Station Routing
     And the route should use DRIFT mode
     And DRIFT is the only option
 
-  @xfail
   Scenario: Refuel at intermediate waypoint for CRUISE route
     Given a ship at "X1-TEST-A2" with 100 fuel (capacity 400)
     And waypoint "X1-TEST-B33" at 300 units with fuel
@@ -42,7 +40,6 @@ Feature: Intermediate Refuel Station Routing
     And the route should navigate B33 → J62 in CRUISE
     And all navigation should use CRUISE mode
 
-  @xfail
   Scenario: Direct route when fuel sufficient
     Given a ship at "X1-TEST-A2" with 350 fuel (capacity 400)
     And destination "X1-TEST-J62" at 300 units

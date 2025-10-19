@@ -31,9 +31,9 @@ def temp_db_path():
         db_path.unlink()
 
 
-@pytest.fixture
+@pytest.fixture(scope="function")
 def refueling_context():
-    """Shared context for refueling scenarios."""
+    """Shared context for refueling scenarios. Resets for each scenario."""
     return {
         'graph': None,
         'ship_data': None,
@@ -88,7 +88,7 @@ def setup_system_with_waypoints(refueling_context, waypoint_table):
             waypoints[wp_name] = {
                 "x": hash(wp_name) % 1000,  # Simple hash for position
                 "y": hash(wp_name[::-1]) % 1000,
-                "type": wp_type if wp_type else "UNKNOWN",
+                "type": wp_type if wp_type else "",  # Empty type is valid
                 "traits": traits,
                 "has_fuel": has_fuel_str.lower() == "yes",
                 "orbitals": []
@@ -191,6 +191,18 @@ def setup_ship_with_fuel(refueling_context, ship, location, fuel, capacity):
         "nav": {"waypointSymbol": location, "status": "IN_ORBIT"},
     }
 
+    # Ensure starting location is in graph
+    if 'graph' in refueling_context and refueling_context['graph']:
+        if location not in refueling_context['graph']['waypoints']:
+            refueling_context['graph']['waypoints'][location] = {
+                "x": 0, "y": 0,
+                "has_fuel": True,
+                "traits": ["MARKETPLACE"],
+                "type": "ASTEROID",
+                "orbitals": []
+            }
+            rebuild_graph_edges(refueling_context)
+
 
 @given(parsers.parse('a ship at "{location}" with {fuel:d} fuel (capacity {capacity:d})'))
 def setup_generic_ship_with_fuel(refueling_context, location, fuel, capacity):
@@ -275,17 +287,52 @@ def set_destination(refueling_context, dest, distance):
     if 'graph' not in refueling_context or not refueling_context['graph']:
         refueling_context['graph'] = {"system": "X1-TEST", "waypoints": {}, "edges": []}
 
-    refueling_context['graph']['waypoints'][dest] = {
-        "x": distance, "y": 0,
-        "has_fuel": False,
-        "traits": [],
-        "type": "ASTEROID",
-        "orbitals": []
-    }
+    # Only add if not already in graph
+    if dest not in refueling_context['graph']['waypoints']:
+        refueling_context['graph']['waypoints'][dest] = {
+            "x": distance, "y": 0,
+            "has_fuel": False,
+            "traits": [],
+            "type": "ASTEROID",
+            "orbitals": []
+        }
     refueling_context['destination'] = dest
 
     # Rebuild edges for full connectivity
     rebuild_graph_edges(refueling_context)
+
+
+@given(parsers.parse('the destination is "{dest}" ({distance:d} units away)'))
+def set_destination_with_parentheses(refueling_context, dest, distance):
+    """Set destination with distance in parentheses."""
+    if 'graph' not in refueling_context or not refueling_context['graph']:
+        refueling_context['graph'] = {"system": "X1-TEST", "waypoints": {}, "edges": []}
+
+    # Only add if not already in graph (Background may have created it)
+    if dest not in refueling_context['graph']['waypoints']:
+        refueling_context['graph']['waypoints'][dest] = {
+            "x": distance, "y": 0,
+            "has_fuel": False,
+            "traits": [],
+            "type": "ASTEROID",
+            "orbitals": []
+        }
+    refueling_context['destination'] = dest
+    refueling_context['destination_distance'] = distance
+
+    # Rebuild edges for full connectivity
+    rebuild_graph_edges(refueling_context)
+
+
+@given(parsers.cfparse('destination "{dest}" ({details})'))
+def set_destination_with_details(refueling_context, dest, details):
+    """Set destination with route details (ignored)."""
+    # The details are just informational - extract destination only
+    if 'graph' not in refueling_context or not refueling_context['graph']:
+        refueling_context['graph'] = {"system": "X1-TEST", "waypoints": {}, "edges": []}
+
+    # Destination should already exist in the graph from Background
+    refueling_context['destination'] = dest
 
 
 def rebuild_graph_edges(refueling_context):
@@ -513,7 +560,7 @@ def plan_route_prefer_cruise(refueling_context):
 
 
 @when(parsers.parse('I execute the route to "{destination}" with prefer_cruise=True'))
-def execute_route_prefer_cruise(refueling_context):
+def execute_route_prefer_cruise(refueling_context, destination):
     """Execute route with prefer_cruise=True."""
     graph = refueling_context['graph']
     mock_ship = refueling_context['mock_ship']
@@ -765,10 +812,15 @@ def verify_leg_cruise(refueling_context, leg):
 
     found = False
     for step in route['steps']:
-        if step['action'] == 'navigate' and step['from'] == from_wp and step['to'] == to_wp:
-            assert step['mode'] == 'CRUISE', f"Leg {leg} should use CRUISE"
-            found = True
-            break
+        if step['action'] == 'navigate':
+            # Strip system prefix to match shorthand (A2 matches X1-TEST-A2)
+            step_from = step['from'].split('-')[-1] if '-' in step['from'] else step['from']
+            step_to = step['to'].split('-')[-1] if '-' in step['to'] else step['to']
+
+            if step_from == from_wp and step_to == to_wp:
+                assert step['mode'] == 'CRUISE', f"Leg {leg} should use CRUISE"
+                found = True
+                break
 
     assert found, f"Leg {leg} not found in route"
 
@@ -779,9 +831,12 @@ def verify_refuel_at(refueling_context, waypoint):
     route = refueling_context['route']
     refuel_found = False
     for step in route['steps']:
-        if step['action'] == 'refuel' and step['waypoint'] == waypoint:
-            refuel_found = True
-            break
+        if step['action'] == 'refuel':
+            # Strip system prefix to match shorthand (B33 matches X1-TEST-B33)
+            step_wp = step['waypoint'].split('-')[-1] if '-' in step['waypoint'] else step['waypoint']
+            if step_wp == waypoint or step['waypoint'] == waypoint:
+                refuel_found = True
+                break
 
     assert refuel_found, f"Route should refuel at {waypoint}"
 

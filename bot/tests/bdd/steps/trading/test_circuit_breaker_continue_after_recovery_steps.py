@@ -26,7 +26,7 @@ def _build_segment(**kwargs):
 
 
 # Load scenarios
-scenarios('../../features/trading/circuit_breaker_continue_after_recovery.feature')
+scenarios('../../../bdd/features/trading/circuit_breaker_continue_after_recovery.feature')
 
 
 @pytest.fixture
