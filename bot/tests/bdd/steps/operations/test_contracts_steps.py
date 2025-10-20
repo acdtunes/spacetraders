@@ -11,6 +11,7 @@ class MockDatabase:
     """Mock database for market price lookups."""
     def __init__(self):
         self.market_prices = {}
+        self.connection = Mock()  # Mock connection attribute for test isolation
 
     def add_market_price(self, trade_symbol, price):
         """Add mock market price."""
