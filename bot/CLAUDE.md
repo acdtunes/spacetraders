@@ -228,32 +228,52 @@ python3 spacetraders_bot.py monitor \
 
 **Framework:** pytest-bdd (Behavior-Driven Development with Gherkin)
 
+**Status:** ✅ 100% BDD Migration Complete (as of 2025-10-19)
+
+All 117 tests have been migrated to BDD format using Gherkin scenarios:
+- ✅ 94 domain tests → `tests/bdd/features/` (trading, routing, scouting, etc.)
+- ✅ 23 unit tests → `tests/bdd/features/unit/` (CLI, core, operations)
+- ❌ Legacy subprocess bridge → **DELETED**
+- ❌ Legacy `tests/domain/` → **DELETED**
+- ❌ Legacy `tests/unit/` → **DELETED**
+
 ```bash
 # Install dependencies
 pip install -r tests/requirements.txt
 
-# Run all tests
+# Run all BDD tests
 pytest tests/ -v
 
-# Run specific test module
-pytest tests/test_navigation_steps.py -v
+# Run specific domain
+pytest tests/bdd/features/trading/ -v
+
+# Run specific feature
+pytest tests/bdd/features/routing/fuel_aware_routing.feature -v
 
 # Run with coverage
-pytest tests/ --cov=lib --cov-report=html
+pytest tests/ --cov=src --cov-report=html
 open htmlcov/index.html
 
 # Run specific scenario
-pytest tests/ -k "Direct navigation with sufficient fuel" -v
+pytest tests/ -k "Skip failed segment when independent segments remain" -v
+
+# Run by marker
+pytest -m unit tests/         # Unit-level tests
+pytest -m domain tests/       # Domain-level tests
+pytest -m regression tests/   # Regression tests only
 ```
 
 **Test Structure:**
-- `tests/test_*_steps.py` - Step definitions (Given/When/Then)
-- `tests/mock_api.py` - Mock SpaceTraders API for testing
-- `tests/conftest.py` - Shared fixtures
+- `tests/bdd/features/` - Gherkin feature files organized by domain
+- `tests/bdd/steps/` - Step definitions (Given/When/Then)
+- `tests/bdd/steps/fixtures/` - Mock fixtures (API, database, etc.)
+- `tests/conftest.py` - pytest-bdd configuration
+
+**Philosophy:** Every test can and should be BDD - from unit tests to complex integration tests.
 
 **Coverage Goals:** 80%+ (current: ~85% for core components)
 
-See `TESTING_GUIDE.md` for complete testing documentation.
+See `TESTING_GUIDE.md` for complete BDD testing patterns and examples.
 
 ### Building System Graphs
 

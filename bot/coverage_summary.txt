@@ -1,0 +1,161 @@
+================================================================================
+                    COMPLETE CODE COVERAGE REPORT
+                         SpaceTraders Bot
+================================================================================
+
+📊 OVERALL COVERAGE: 23.5% (2,301 / 9,794 statements)
+
+Status: 🔴 Below Target (Goal: 50%+)
+Tests: 81 passed, 1 xfailed (552 BDD scenarios total)
+
+================================================================================
+                        COVERAGE BREAKDOWN
+================================================================================
+
+Package Distribution:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+helpers (39 statements)           ████████████████████████ 87.2% 🟢
+cli (349 statements)              ████████████████████     78.8% 🟢
+__init__.py (12 statements)       █████████████████████████ 100% 🟢
+core (4,497 statements)           ██████                   24.7% 🔴
+operations (4,781 statements)     ████▌                    18.2% 🔴
+integrations (116 statements)                               0.0% ⚫
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+                      CRITICAL COVERAGE GAPS
+================================================================================
+
+Files with >100 statements and <30% coverage (15 total):
+
+🔥 CRITICAL (7.0% - 9.0% coverage):
+  • ship_controller.py         347 statements    7.2% coverage
+  • contracts.py                541 statements    7.0% coverage  
+  • scout_coordinator.py        610 statements    8.7% coverage
+
+🔴 HIGH PRIORITY (13.0% - 23.0% coverage):
+  • captain_logging.py          308 statements   14.0% coverage
+  • daemon_manager.py           213 statements   14.1% coverage
+  • market_data.py              171 statements   13.5% coverage
+  • multileg_trader.py        1,880 statements   23.3% coverage
+  • mining.py                   299 statements   20.1% coverage
+  • ortools_mining_optimizer    209 statements   22.5% coverage
+  • market_partitioning.py      196 statements   21.9% coverage
+
+🟡 MEDIUM PRIORITY (28.0% - 30.0% coverage):
+  • routing.py (core)           164 statements   28.0% coverage
+
+⚫ LEGACY (not tested, deprecated):
+  • routing_legacy.py           443 statements    0.0% coverage
+
+🚨 ZERO COVERAGE (untested):
+  • routing.py (operations)     344 statements    3.5% coverage
+  • analysis.py                 240 statements    2.1% coverage
+  • assignments.py              191 statements    5.2% coverage
+
+Total Critical Gap: 6,444 statements @ 13.4% average coverage
+
+================================================================================
+                      WELL-TESTED MODULES
+================================================================================
+
+Modules with >50 statements and >80% coverage:
+
+❌ NONE - This is a significant testing gap!
+
+Best Performers (>50 statements):
+  ✅ purchasing.py              187 statements   79.1% coverage
+  ✅ routing_config.py           87 statements   73.7% coverage  
+  ✅ main.py (cli)              344 statements   79.2% coverage
+
+================================================================================
+                      IMPROVEMENT ROADMAP
+================================================================================
+
+Phase 1: Quick Wins (Week 1) → 35% coverage
+├── Test purchasing.py remaining 21%
+├── Test captain_logging.py workflows
+├── Test daemon_manager.py lifecycle
+└── Impact: +600 statements = +6.1% coverage
+
+Phase 2: Core Infrastructure (Weeks 2-3) → 50% coverage
+├── Test ship_controller.py state machine (🔥 HIGHEST PRIORITY)
+├── Test assignment_manager.py workflows
+├── Test smart_navigator.py routing
+└── Impact: +844 statements = +8.6% coverage
+
+Phase 3: Business Logic (Weeks 4-6) → 65% coverage
+├── Test multileg_trader.py (LARGEST FILE - 1,880 statements!)
+├── Test scout_coordinator.py fleet coordination
+├── Test contracts.py profitability
+└── Impact: +3,031 statements = +30.9% coverage
+
+Phase 4: Operations (Weeks 7-8) → 80% coverage
+├── Test mining.py operations
+├── Test routing.py (operations) workflows
+├── Test analysis.py and fleet.py
+└── Impact: +989 statements = +10.1% coverage
+
+Phase 5: Advanced Features (Ongoing) → 85%+
+├── Test ortools_router.py VRP/TSP integration
+├── Test market_data.py price tracking
+├── Test MCP integration layer
+└── Impact: Maintain and improve continuously
+
+================================================================================
+                      KEY INSIGHTS
+================================================================================
+
+✅ Strengths:
+  • Helpers package: 87% coverage (excellent utility testing)
+  • CLI package: 79% coverage (good argument parsing tests)
+  • BDD scenarios: 552 scenarios covering workflows
+  • purchasing.py: Best-tested operation handler (79%)
+
+🔴 Weaknesses:
+  • Core components under-tested (ship_controller, daemon_manager)
+  • Large files lack comprehensive tests (multileg_trader: 1,880 lines!)
+  • Operations package critically low (18.2%)
+  • No modules >50 statements with >80% coverage
+  • Error paths and edge cases not covered
+
+🎯 Priority Files (Test These First):
+  1. ship_controller.py (347 statements, 7%) - Core state machine
+  2. scout_coordinator.py (610 statements, 9%) - Fleet coordination
+  3. contracts.py (541 statements, 7%) - Revenue generation
+  4. daemon_manager.py (213 statements, 14%) - Process management
+  5. multileg_trader.py (1,880 statements, 23%) - Trading logic
+
+================================================================================
+                      GENERATED REPORTS
+================================================================================
+
+📁 Available Reports:
+  • Terminal Summary: ✅ (This file)
+  • HTML Coverage: htmlcov/index.html (line-by-line)
+  • JSON Data: coverage.json (raw metrics)
+  • Markdown Report: COVERAGE_REPORT.md (comprehensive analysis)
+
+📊 How to Update:
+  $ python3 -m pytest tests/bdd/ --cov=src/spacetraders_bot \
+      --cov-report=term --cov-report=html --cov-report=json
+  $ python3 analyze_coverage.py
+
+================================================================================
+                      CONCLUSION
+================================================================================
+
+Current Status: 🔴 23.5% coverage (Below 50% target)
+
+The test suite has good BDD scenario coverage for high-level workflows but 
+lacks comprehensive testing of core components, error paths, and edge cases.
+
+Recommended Action: Focus on Phase 1-2 (ship_controller, daemon_manager, 
+assignment_manager) to establish solid foundation before tackling complex 
+business logic.
+
+Target: Achieve 50% coverage within 3 weeks by testing core infrastructure.
+
+================================================================================

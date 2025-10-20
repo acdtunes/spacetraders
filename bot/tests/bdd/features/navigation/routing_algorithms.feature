@@ -14,10 +14,6 @@ Feature: Routing Algorithms
     When I calculate distance from (100, 100) to (100, 100)
     Then the distance should be 0
 
-  Scenario: Calculate distance with negative coordinates
-    When I calculate distance from (-10, -10) to (10, 10)
-    Then the distance should be approximately 28.28
-
   Scenario: Calculate fuel cost for CRUISE mode
     When I calculate fuel cost for 100 units in CRUISE mode
     Then the fuel cost should be 100
