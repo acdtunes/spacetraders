@@ -322,7 +322,7 @@ def _run_daemon_operation(daemon_ctx, operation_func, args):
     # Note: daemon_stop_operation imports AssignmentManager locally, so patch it in core module too
     with patch('spacetraders_bot.operations.daemon.DaemonManager', return_value=daemon_manager):
         with patch('spacetraders_bot.operations.daemon.AssignmentManager', return_value=assignment_manager):
-            with patch('spacetraders_bot.core.assignment_manager.AssignmentManager', return_value=assignment_manager):
+            with patch('spacetraders_bot.core.ship_assignment_repository.AssignmentManager', return_value=assignment_manager):
                 result = operation_func(args)
 
     # Restore stdout
