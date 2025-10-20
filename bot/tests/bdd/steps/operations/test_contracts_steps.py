@@ -1,5 +1,6 @@
-from unittest.mock import Mock
+from unittest.mock import Mock, MagicMock
 from pytest_bdd import scenarios, given, when, then, parsers
+from contextlib import contextmanager
 
 from spacetraders_bot.operations.contracts import evaluate_contract_profitability
 from spacetraders_bot.core.database import Database
@@ -7,18 +8,75 @@ from spacetraders_bot.core.database import Database
 scenarios('../../../bdd/features/operations/contracts.feature')
 
 
+class MockRow(dict):
+    """Mock SQLite Row object that behaves like a dict."""
+    pass
+
+
+class MockConnection:
+    """Mock database connection."""
+    def __init__(self, market_prices):
+        self.market_prices = market_prices
+
+    def execute(self, query, params=None):
+        """Mock SQL execution."""
+        # Return mock market data based on trade symbol
+        if params and len(params) > 0:
+            trade_symbol = params[0]
+            if trade_symbol in self.market_prices:
+                # Return cursor-like object with dict-convertible rows
+                # Match the schema from find_markets_selling query:
+                # waypoint_symbol, good_symbol, supply, activity,
+                # purchase_price, sell_price, trade_volume, last_updated
+                row = MockRow({
+                    'waypoint_symbol': 'X1-TEST-M1',
+                    'good_symbol': trade_symbol,
+                    'trade_symbol': trade_symbol,  # Alias
+                    'supply': 'MODERATE',
+                    'activity': 'STRONG',
+                    'purchase_price': self.market_prices[trade_symbol],
+                    'sell_price': self.market_prices[trade_symbol] + 100,
+                    'trade_volume': 100,
+                    'last_updated': '2025-01-01T00:00:00Z'
+                })
+                result = [row]
+                cursor = MagicMock()
+                cursor.fetchall.return_value = result
+                cursor.fetchone.return_value = row
+                cursor.__iter__ = lambda self: iter(result)
+                return cursor
+        # Return empty cursor
+        cursor = MagicMock()
+        cursor.fetchall.return_value = []
+        cursor.fetchone.return_value = None
+        cursor.__iter__ = lambda self: iter([])
+        return cursor
+
+
 class MockDatabase:
     """Mock database for market price lookups."""
     def __init__(self):
         self.market_prices = {}
-        self.connection = Mock()  # Mock connection attribute for test isolation
 
     def add_market_price(self, trade_symbol, price):
         """Add mock market price."""
         self.market_prices[trade_symbol] = price
 
+    @contextmanager
+    def connection(self):
+        """Return mock connection context manager."""
+        conn = MockConnection(self.market_prices)
+        try:
+            yield conn
+        finally:
+            pass
+
+    def get_system_graph(self, conn, system_prefix):
+        """Mock system graph retrieval."""
+        return None  # No graph available in tests
+
     def execute(self, query, params=None):
-        """Mock database query execution."""
+        """Mock database query execution (legacy interface)."""
         # Return mock market data based on trade symbol
         if params and len(params) > 0:
             trade_symbol = params[0]
