@@ -1,8 +1,8 @@
 # DDD Naming Refactor - COMPLETE ✅
 
 **Date:** 2025-10-20
-**Status:** All phases complete, tests passing
-**Test Results:** 81 passed, 1 xfailed ✅
+**Status:** All phases complete (including Phase 4 optional improvements), tests passing
+**Test Results:** 275 passed, 3 skipped, 1 xfailed ✅
 
 ---
 
@@ -62,6 +62,36 @@ Successfully refactored codebase to use proper Domain-Driven Design naming patte
 
 ---
 
+### Phase 4: Optional Improvements ✅
+
+#### 4.1 Rename ship_controller.py → ship.py
+- **Old:** `core/ship_controller.py`
+- **New:** `core/ship.py`
+- **Pattern:** Entity naming (DDD entities named for domain object, not technical suffix)
+- **Reason:** In DDD, "ship" represents the entity directly, not "ship_controller"
+- **Files updated:** 16
+- **Commit:** `b28dd97`
+
+#### 4.2 Rename operation_controller.py → operation_checkpointer.py
+- **Old:** `core/operation_controller.py`
+- **New:** `core/operation_checkpointer.py`
+- **Pattern:** Behavior-based naming
+- **Reason:** "operation_checkpointer" describes what it does (checkpointing state for resume)
+- **Files updated:** 5
+- **Commit:** `af7a784`
+
+#### 4.3 Rename market_data.py → market_repository.py
+- **Old:** `core/market_data.py`
+- **New:** `core/market_repository.py`
+- **Pattern:** Repository (follows established pattern from ship_assignment_repository)
+- **Reason:** Entity is "market" not "market_data", removed redundant "data" suffix
+- **Files updated:** 4
+- **Commit:** `2023166`
+
+**User Feedback Applied:** User corrected initial proposal of "market_data_repository" as redundant, suggesting "market_repository" instead.
+
+---
+
 ### Fix: Package Compatibility Shims ✅
 
 #### Updated __init__.py backwards compatibility
@@ -95,12 +125,18 @@ market_scout.py       # Scouts markets (not "scout_coordinator")
 
 ## Files Changed Summary
 
-### Renames (4 files)
+### Renames (7 files)
 ```bash
+# Phase 1-3
 core/routing.py                    → core/route_planner.py
 operations/scout_coordination.py   → operations/scout_ops.py
 core/assignment_manager.py         → core/ship_assignment_repository.py
 core/scout_coordinator.py          → core/market_scout.py
+
+# Phase 4
+core/ship_controller.py            → core/ship.py
+core/operation_controller.py       → core/operation_checkpointer.py
+core/market_data.py                → core/market_repository.py
 ```
 
 ### Deletions (1 file)
@@ -133,8 +169,8 @@ spacetraders_bot/__init__.py
 Pattern: {entity}_repository.py
 Examples:
   ✅ ship_assignment_repository.py
-  ✅ daemon_repository.py (if we renamed daemon_manager)
-  ✅ market_data_repository.py (future)
+  ✅ market_repository.py
+  ✅ daemon_repository.py (future - if we rename daemon_manager)
 ```
 
 ### Behavior-Based Domain Logic
@@ -183,9 +219,10 @@ Examples:
 - ✅ Industry-standard naming
 
 ### 5. **Tests Still Pass**
-- ✅ 81 tests passed
-- ✅ 1 xfailed (expected)
+- ✅ 275 tests passed
+- ✅ 3 skipped, 1 xfailed (expected)
 - ✅ All imports working
+- ✅ Full test coverage maintained through all refactors
 
 ---
 
@@ -237,42 +274,38 @@ Name by **what it does** (behavior), not what it is (technical pattern).
    ```python
    # Currently:
    class AssignmentManager:  # in ship_assignment_repository.py
+   class ScoutCoordinator:   # in market_scout.py
+   class ShipController:     # in ship.py
 
    # Could be:
    class ShipAssignmentRepository:  # in ship_assignment_repository.py
+   class MarketScout:               # in market_scout.py
+   class Ship:                      # in ship.py
    ```
 
-2. **Consider more behavior renames:**
-   ```python
-   # Candidates:
-   ship_controller.py       → ship.py (entity)
-   operation_controller.py  → operation_checkpointer.py (behavior)
-   ```
-
-3. **Complete Repository pattern:**
-   ```python
-   # Candidates:
-   market_data.py → market_data_repository.py
-   ```
-
-But these are **optional** - current state is solid DDD-compliant.
+**Note:** Phase 4 optional improvements have been completed. Remaining improvements are class name updates only.
 
 ---
 
 ## Conclusion
 
-✅ **All phases complete**
-✅ **Tests passing (81/81)**
+✅ **All phases complete (including Phase 4)**
+✅ **Tests passing (275 passed, 3 skipped, 1 xfailed)**
 ✅ **Proper DDD naming established**
 ✅ **No Service suffix smell**
 ✅ **Clean, maintainable codebase**
 
-The codebase now follows proper Domain-Driven Design naming conventions with behavior-based names that describe **what modules do**, not generic technical patterns.
+The codebase now follows proper Domain-Driven Design naming conventions with:
+- **Entity naming:** `ship.py` (not `ship_controller.py`)
+- **Behavior-based naming:** `operation_checkpointer.py` (not `operation_controller.py`)
+- **Repository pattern:** `market_repository.py` (not `market_data.py`)
 
-**Total Time:** ~3 hours
-**Lines Changed:** ~500
+All module names now clearly describe **what they do** or **what they represent**, not generic technical patterns.
+
+**Total Time:** ~5 hours
+**Lines Changed:** ~700+
 **Dead Code Removed:** 483 lines
-**Commits:** 4
+**Commits:** 10 (4 from Phases 1-3, 6 from Phase 4 + fixes)
 
 ---
 
