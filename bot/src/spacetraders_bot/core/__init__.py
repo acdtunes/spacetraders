@@ -1,7 +1,7 @@
 """Core services and abstractions for the SpaceTraders bot."""
 
 from .api_client import APIClient
-from .assignment_manager import AssignmentManager
+from .ship_assignment_repository import AssignmentManager
 from .daemon_manager import DaemonManager
 from .database import get_database
 from .market_data import (

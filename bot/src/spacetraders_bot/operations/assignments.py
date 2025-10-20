@@ -3,7 +3,7 @@
 Assignment operations - Ship allocation management
 """
 
-from spacetraders_bot.core.assignment_manager import AssignmentManager
+from spacetraders_bot.core.ship_assignment_repository import AssignmentManager
 
 
 def assignment_list_operation(args):

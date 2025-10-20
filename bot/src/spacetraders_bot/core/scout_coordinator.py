@@ -16,7 +16,7 @@ from typing import Dict, List, Optional, Set, Tuple
 
 from ..helpers import paths
 from .api_client import APIClient
-from .assignment_manager import AssignmentManager
+from .ship_assignment_repository import AssignmentManager
 from .daemon_manager import DaemonManager
 from .market_partitioning import MarketPartitioner
 from .route_planner import TourOptimizer

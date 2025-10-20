@@ -4,7 +4,7 @@
 import json
 import sys
 
-from spacetraders_bot.core.assignment_manager import AssignmentManager
+from spacetraders_bot.core.ship_assignment_repository import AssignmentManager
 from spacetraders_bot.core.daemon_manager import DaemonManager
 
 
@@ -113,7 +113,7 @@ def daemon_stop_operation(args):
                 ship = command_args[ship_index]
 
         if ship:
-            from spacetraders_bot.core.assignment_manager import AssignmentManager
+            from spacetraders_bot.core.ship_assignment_repository import AssignmentManager
             assignment_manager = AssignmentManager(player_id=args.player_id)
             assignment_manager.release(ship, reason=f"Daemon {args.daemon_id} stopped")
             print(f"✅ Released assignment for {ship}")
