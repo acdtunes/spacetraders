@@ -12,13 +12,13 @@ except metadata.PackageNotFoundError:  # pragma: no cover - during local dev
 from . import operations as _operations_module
 from .core import (
     api_client as _api_client_module,
-    assignment_manager as _assignment_manager_module,
+    ship_assignment_repository as _assignment_manager_module,
     daemon_manager as _daemon_manager_module,
     database as _database_module,
     market_data as _market_data_module,
     operation_controller as _operation_controller_module,
-    routing as _routing_module,
-    scout_coordinator as _scout_coordinator_module,
+    route_planner as _routing_module,
+    market_scout as _scout_coordinator_module,
     ship_controller as _ship_controller_module,
     smart_navigator as _smart_navigator_module,
     system_graph_provider as _system_graph_provider_module,
