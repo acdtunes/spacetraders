@@ -1143,7 +1143,7 @@ def fuel_requirements_estimated(operations_context):
 @given('an operation controller')
 def operation_controller(operations_context):
     """Setup operation controller."""
-    from spacetraders_bot.core.operation_controller import OperationController
+    from spacetraders_bot.core.operation_checkpointer import OperationController
 
     controller = OperationController('test-op')
     operations_context['operation_controller'] = controller
@@ -1166,7 +1166,7 @@ def state_should_be(operations_context, state):
 @given('a running operation')
 def running_operation(operations_context):
     """Setup running operation."""
-    from spacetraders_bot.core.operation_controller import OperationController
+    from spacetraders_bot.core.operation_checkpointer import OperationController
 
     controller = OperationController('test-op')
     controller.start({'test': 'data'})
