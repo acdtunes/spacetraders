@@ -19,7 +19,7 @@ from .core import (
     operation_controller as _operation_controller_module,
     route_planner as _routing_module,
     market_scout as _scout_coordinator_module,
-    ship_controller as _ship_controller_module,
+    ship as _ship_controller_module,
     smart_navigator as _smart_navigator_module,
     system_graph_provider as _system_graph_provider_module,
     utils as _utils_module,

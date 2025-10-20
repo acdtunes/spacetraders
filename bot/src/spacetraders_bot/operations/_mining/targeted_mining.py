@@ -10,7 +10,7 @@ Handles:
 from dataclasses import dataclass
 from typing import Tuple
 
-from spacetraders_bot.core.ship_controller import ShipController
+from spacetraders_bot.core.ship import ShipController
 from spacetraders_bot.core.smart_navigator import SmartNavigator
 from spacetraders_bot.operations.control import CircuitBreaker
 

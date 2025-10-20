@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from typing import Optional, List
 
 from spacetraders_bot.core.operation_controller import OperationController
-from spacetraders_bot.core.ship_controller import ShipController
+from spacetraders_bot.core.ship import ShipController
 from spacetraders_bot.core.smart_navigator import SmartNavigator
 from spacetraders_bot.operations.common import (
     get_api_client,

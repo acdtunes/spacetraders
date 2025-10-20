@@ -19,7 +19,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 from datetime import datetime, timezone
 
 from spacetraders_bot.core.api_client import APIClient
-from spacetraders_bot.core.ship_controller import ShipController
+from spacetraders_bot.core.ship import ShipController
 from spacetraders_bot.core.smart_navigator import SmartNavigator
 from spacetraders_bot.core.utils import parse_waypoint_symbol, calculate_distance
 from spacetraders_bot.operations.control import CircuitBreaker
@@ -3341,7 +3341,7 @@ def create_fixed_route(
 def multileg_trade_operation(args):
     """Execute a multi-leg trading operation"""
     from .common import setup_logging, get_api_client, get_database
-    from spacetraders_bot.core.ship_controller import ShipController
+    from spacetraders_bot.core.ship import ShipController
     from datetime import datetime, timedelta
 
     log_file = setup_logging("multileg_trade", args.ship, getattr(args, 'log_level', 'INFO'), player_id=args.player_id)

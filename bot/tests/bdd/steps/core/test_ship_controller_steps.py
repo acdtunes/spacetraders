@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 from pytest_bdd import scenarios, given, when, then, parsers
 
-from spacetraders_bot.core.ship_controller import ShipController
+from spacetraders_bot.core.ship import ShipController
 
 # Load all ship controller scenarios
 scenarios('../../../bdd/features/core/ship_state_machine.feature')

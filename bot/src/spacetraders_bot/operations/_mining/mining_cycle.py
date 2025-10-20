@@ -12,7 +12,7 @@ from dataclasses import asdict, dataclass
 from typing import Callable, Dict, Optional
 
 from spacetraders_bot.core.operation_controller import OperationController
-from spacetraders_bot.core.ship_controller import ShipController
+from spacetraders_bot.core.ship import ShipController
 from spacetraders_bot.core.smart_navigator import SmartNavigator
 
 

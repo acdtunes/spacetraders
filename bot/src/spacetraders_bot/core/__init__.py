@@ -24,7 +24,7 @@ from .routing_pause import (
     resume as resume_routing,
 )
 from .market_scout import ScoutCoordinator
-from .ship_controller import ShipController
+from .ship import ShipController
 from .smart_navigator import SmartNavigator
 from .utils import (
     timestamp,

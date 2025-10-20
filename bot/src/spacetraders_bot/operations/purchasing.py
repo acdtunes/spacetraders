@@ -5,7 +5,7 @@ import logging
 from dataclasses import dataclass
 from typing import List, Optional
 
-from spacetraders_bot.core.ship_controller import ShipController
+from spacetraders_bot.core.ship import ShipController
 from spacetraders_bot.core.smart_navigator import SmartNavigator
 from spacetraders_bot.core.utils import format_credits, parse_waypoint_symbol
 
