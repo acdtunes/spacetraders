@@ -42,7 +42,6 @@ from ..operations import (
     negotiate_operation,
     status_operation,
     monitor_operation,
-    utilities_operation,
     waypoint_query_operation,
     graph_build_operation,
     route_plan_operation,
@@ -456,8 +455,6 @@ def main():
         return monitor_operation(args)
     elif args.operation == 'negotiate':
         return negotiate_operation(args)
-    elif args.operation == 'util':
-        return utilities_operation(args)
     elif args.operation == 'graph-build':
         return graph_build_operation(args)
     elif args.operation == 'route-plan':

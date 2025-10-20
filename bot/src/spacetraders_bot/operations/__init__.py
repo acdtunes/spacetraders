@@ -1,6 +1,5 @@
 """Operations available to the SpaceTraders bot CLI."""
 
-from .analysis import utilities_operation
 from .assignments import (
     assignment_assign_operation,
     assignment_available_operation,
@@ -61,9 +60,6 @@ __all__ = [
     # Fleet management
     "status_operation",
     "monitor_operation",
-
-    # Utilities
-    "utilities_operation",
 
     # Routing
     "graph_build_operation",
