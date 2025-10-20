@@ -12,7 +12,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 from spacetraders_bot.core.database import Database
 from spacetraders_bot.core.ship import ShipController
 from spacetraders_bot.core.smart_navigator import SmartNavigator
-from spacetraders_bot.core.market_data import find_markets_selling
+from spacetraders_bot.core.market_repository import find_markets_selling
 from spacetraders_bot.operations.common import (
     setup_logging,
     format_credits,

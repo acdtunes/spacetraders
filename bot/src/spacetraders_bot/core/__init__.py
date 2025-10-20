@@ -4,7 +4,7 @@ from .api_client import APIClient
 from .ship_assignment_repository import AssignmentManager
 from .daemon_manager import DaemonManager
 from .database import get_database
-from .market_data import (
+from .market_repository import (
     find_markets_buying,
     find_markets_selling,
     get_recent_updates,

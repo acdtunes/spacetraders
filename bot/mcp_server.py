@@ -6,7 +6,7 @@ from typing import Any, Dict, Iterable, List
 
 from mcp.types import TextContent
 
-from spacetraders_bot.core import market_data as _market_data
+from spacetraders_bot.core import market_repository as _market_data
 from spacetraders_bot.integrations.mcp_bridge import (
     build_parser,
     handle_market,

@@ -13,7 +13,7 @@ from typing import Dict, Optional
 from .routing_config import RoutingConfig
 from .routing_pause import pause as pause_routing, resume as resume_routing
 from .smart_navigator import SmartNavigator
-from .ship_controller import ShipController
+from .ship import ShipController
 
 logger = logging.getLogger(__name__)
 

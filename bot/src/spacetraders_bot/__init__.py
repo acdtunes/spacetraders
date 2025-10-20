@@ -15,7 +15,7 @@ from .core import (
     ship_assignment_repository as _assignment_manager_module,
     daemon_manager as _daemon_manager_module,
     database as _database_module,
-    market_data as _market_data_module,
+    market_repository as _market_data_module,
     operation_checkpointer as _operation_controller_module,
     route_planner as _routing_module,
     market_scout as _scout_coordinator_module,
