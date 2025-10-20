@@ -23,7 +23,7 @@ from .routing_pause import (
     pause as pause_routing,
     resume as resume_routing,
 )
-from .scout_coordinator import ScoutCoordinator
+from .market_scout import ScoutCoordinator
 from .ship_controller import ShipController
 from .smart_navigator import SmartNavigator
 from .utils import (

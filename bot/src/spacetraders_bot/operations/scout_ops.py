@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 
 from spacetraders_bot.core.database import get_database
-from spacetraders_bot.core.scout_coordinator import ScoutCoordinator
+from spacetraders_bot.core.market_scout import ScoutCoordinator
 from spacetraders_bot.helpers import paths
 from spacetraders_bot.operations.common import setup_logging
 

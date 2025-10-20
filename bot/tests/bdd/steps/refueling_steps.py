@@ -11,7 +11,7 @@ from spacetraders_bot.core.ortools_router import ORToolsTSP
 from spacetraders_bot.core.route_planner import TourOptimizer, RouteOptimizer
 from spacetraders_bot.core.smart_navigator import SmartNavigator
 from spacetraders_bot.core.ship_controller import ShipController
-from spacetraders_bot.core.scout_coordinator import ScoutCoordinator
+from spacetraders_bot.core.market_scout import ScoutCoordinator
 from spacetraders_bot.core.system_graph_provider import SystemGraphProvider, GraphLoadResult
 
 # Load all refueling scenarios
