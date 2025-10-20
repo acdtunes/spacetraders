@@ -148,24 +148,6 @@ def given_graph_in_database(routing_ctx, system):
 
     routing_ctx['database'].graphs[system] = routing_ctx['graph_data']
 
-    # Also set up route data for route planning
-    if 'route_data' not in routing_ctx:
-        routing_ctx['route_data'] = {
-            'total_time': 1000,
-            'final_fuel': 90,
-            'steps': [
-                {
-                    'action': 'navigate',
-                    'from': f'{system}-A1',
-                    'to': f'{system}-B5',
-                    'mode': 'CRUISE',
-                    'distance': 14.14,
-                    'time': 1000,
-                    'fuel_cost': 10
-                }
-            ]
-        }
-
 
 @given(parsers.re(r'system "(?P<system>[^"]+)" has graph with route'))
 def given_graph_with_route(routing_ctx, system):
@@ -233,62 +215,6 @@ def given_routing_paused(routing_ctx):
     routing_ctx['routing_paused'] = True
 
 
-@given(parsers.re(r'system "(?P<system>[^"]+)" has no waypoints'))
-def given_no_waypoints(routing_ctx, system):
-    """System has no waypoints."""
-    routing_ctx['graph_data'] = None
-
-
-@given(parsers.re(r'ship "(?P<ship>[^"]+)" does not exist'))
-def given_ship_not_exist(routing_ctx, ship):
-    """Ship does not exist."""
-    routing_ctx['ship_data'] = None
-
-
-@given('no route exists between waypoints')
-def given_no_route(routing_ctx):
-    """No route exists."""
-    routing_ctx['route_data'] = None
-
-
-@given(parsers.re(r'system "(?P<system>[^"]+)" has graph with refuel route'))
-def given_refuel_route(routing_ctx, system):
-    """Graph has refuel route."""
-    # First set up graph
-    given_graph_in_database(routing_ctx, system)
-
-    # Add route data with refuel step
-    routing_ctx['route_data'] = {
-        'total_time': 2000,
-        'final_fuel': 95,
-        'steps': [
-            {
-                'action': 'navigate',
-                'from': f'{system}-A1',
-                'to': f'{system}-FUEL',
-                'mode': 'DRIFT',
-                'distance': 5.0,
-                'time': 500,
-                'fuel_cost': 2
-            },
-            {
-                'action': 'refuel',
-                'waypoint': f'{system}-FUEL',
-                'fuel_added': 80
-            },
-            {
-                'action': 'navigate',
-                'from': f'{system}-FUEL',
-                'to': f'{system}-B5',
-                'mode': 'CRUISE',
-                'distance': 10.0,
-                'time': 1500,
-                'fuel_cost': 10
-            }
-        ]
-    }
-
-
 @when(parsers.re(r'I build graph for system "(?P<system>[^"]+)"'))
 def when_build_graph(routing_ctx, system):
     """Build graph."""
@@ -307,8 +233,7 @@ def when_plan_route(routing_ctx, start, goal):
     args = Mock()
     args.player_id = 1
     args.system = start.rsplit('-', 1)[0]  # Extract system from waypoint
-    ship_data = routing_ctx.get('ship_data')
-    args.ship = ship_data.get('symbol', 'SHIP-1') if ship_data else 'SHIP-1'
+    args.ship = routing_ctx.get('ship_data', {}).get('symbol', 'SHIP-1')
     args.start = start
     args.goal = goal
     args.output = None
@@ -512,39 +437,3 @@ def then_saved_route_contains_steps(routing_ctx):
     else:
         # Just check the operation succeeded
         assert routing_ctx['result_code'] == 0
-
-
-@then('graph build should fail')
-def then_graph_build_fails(routing_ctx):
-    """Verify graph build failed."""
-    assert routing_ctx['result_code'] == 1
-
-
-@then('output should show failed to build')
-def then_show_failed_to_build(routing_ctx):
-    """Verify failed to build message."""
-    assert 'Failed to build graph' in routing_ctx['output']
-
-
-@then('output should show failed to get ship')
-def then_show_failed_get_ship(routing_ctx):
-    """Verify failed to get ship message."""
-    assert 'Failed to get ship' in routing_ctx['output']
-
-
-@then('output should show no route found')
-def then_show_no_route(routing_ctx):
-    """Verify no route found message."""
-    assert 'No route found' in routing_ctx['output']
-
-
-@then('route should include refuel action')
-def then_route_includes_refuel(routing_ctx):
-    """Verify route includes refuel."""
-    assert 'REFUEL' in routing_ctx['output']
-
-
-@then('refuel waypoint should be shown')
-def then_refuel_waypoint_shown(routing_ctx):
-    """Verify refuel waypoint shown."""
-    assert 'Fuel added:' in routing_ctx['output']

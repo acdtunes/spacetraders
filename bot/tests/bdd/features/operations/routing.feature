@@ -1,69 +1,87 @@
 Feature: Routing operations
-  As a navigation planner
-  I want to build graphs and plan optimal routes
-  So that ships can navigate efficiently with minimal fuel consumption
+  As a fleet manager
+  I want to build graphs and plan routes
+  So that I can navigate ships efficiently
 
   Background:
     Given a routing system
 
-  Scenario: Build system graph with waypoints
-    Given a system with 5 waypoints
-    When I build navigation graph
-    Then graph should have 5 waypoints
-    And graph should have edges connecting waypoints
-    And waypoint data should include coordinates
+  Scenario: Build system graph successfully
+    Given system "X1-TEST" has waypoints in database
+    When I build graph for system "X1-TEST"
+    Then graph should be built successfully
+    And output should show waypoint count
+    And output should show edge count
 
-  Scenario: Identify fuel stations in graph
-    Given a navigation graph with 8 waypoints
+  Scenario: Build graph shows fuel station count
+    Given system "X1-TEST" has 5 waypoints
     And 2 waypoints have fuel stations
-    When I count fuel stations
-    Then fuel station count should be 2
-    And fuel station waypoints should be marked
+    When I build graph for system "X1-TEST"
+    Then output should show "2" fuel stations
 
-  Scenario: Calculate distance between waypoints
-    Given waypoint A at coordinates (0, 0)
-    And waypoint B at coordinates (300, 400)
-    When I calculate distance between A and B
-    Then distance should be 500 units
+  Scenario: Plan route between waypoints
+    Given system "X1-TEST" has graph in database
+    And ship "SHIP-1" is at waypoint "X1-TEST-A1"
+    And ship "SHIP-1" has fuel 100/100
+    When I plan route from "X1-TEST-A1" to "X1-TEST-B5"
+    Then route should be found
+    And output should show total time
+    And output should show final fuel
 
-  Scenario: Find waypoints within range
-    Given a graph with waypoints at various distances
-    And current position is waypoint "X1-TEST-A1"
-    And ship has 200 units fuel
-    And ship uses DRIFT mode (1 fuel per 300 units)
-    When I find waypoints within fuel range
-    Then reachable waypoints should include all within 60000 units
-    And unreachable waypoints should be excluded
+  Scenario: Plan route shows navigation steps
+    Given system "X1-TEST" has graph with route
+    And ship "SHIP-1" has fuel 100/100
+    When I plan route from "X1-TEST-A1" to "X1-TEST-B5"
+    Then output should show navigation steps
+    And steps should include distance
+    And steps should include fuel cost
 
-  Scenario: Route planning checks routing pause status
-    Given routing validation is paused
-    When I attempt to plan route
+  Scenario: Plan route fails when no graph
+    Given system "X1-EMPTY" has no graph in database
+    And ship "SHIP-1" has fuel 100/100
+    When I plan route from "X1-EMPTY-A1" to "X1-EMPTY-B5"
     Then route planning should fail
-    And error should indicate routing is paused
+    And output should show graph not found
 
-  Scenario: Validate graph has required fuel stations
-    Given a navigation graph for mining operations
-    And graph has 15 waypoints
-    And 3 waypoints have fuel stations
-    When I validate fuel station coverage
-    Then graph should have at least 2 fuel stations
-    And fuel stations should be distributed across graph
+  Scenario: Plan route fails when routing paused
+    Given system "X1-TEST" has graph in database
+    And ship "SHIP-1" has fuel 100/100
+    And routing is paused
+    When I plan route from "X1-TEST-A1" to "X1-TEST-B5"
+    Then route planning should fail
+    And output should show routing paused
 
-  Scenario: Calculate route fuel requirements
-    Given a route with 3 navigation steps
-    And step 1 is 100 units using CRUISE mode
-    And step 2 is 200 units using CRUISE mode
-    And step 3 is 150 units using DRIFT mode
-    When I calculate total fuel required
-    Then CRUISE fuel should be 300 units
-    And DRIFT fuel should be 0.45 units
-    And total fuel should be 300.45 units
+  Scenario: Plan route saves to file when requested
+    Given system "X1-TEST" has graph with route
+    And ship "SHIP-1" has fuel 100/100
+    When I plan route from "X1-TEST-A1" to "X1-TEST-B5" with output "routes/test.json"
+    Then route should be saved to file
+    And saved route should contain steps
 
-  Scenario: Estimate route travel time
-    Given a route with 2 segments
-    And segment 1 is 150 units at speed 30 (CRUISE)
-    And segment 2 is 300 units at speed 10 (DRIFT)
-    When I calculate total travel time
-    Then segment 1 time should be 5 seconds
-    And segment 2 time should be 30 seconds
-    And total time should be 35 seconds
+  Scenario: Build graph fails when no waypoints
+    Given system "X1-EMPTY" has no waypoints
+    When I build graph for system "X1-EMPTY"
+    Then graph build should fail
+    And output should show failed to build
+
+  Scenario: Plan route fails when ship data unavailable
+    Given system "X1-TEST" has graph in database
+    And ship "SHIP-1" does not exist
+    When I plan route from "X1-TEST-A1" to "X1-TEST-B5"
+    Then route planning should fail
+    And output should show failed to get ship
+
+  Scenario: Plan route fails when no route found
+    Given system "X1-TEST" has graph in database
+    And ship "SHIP-1" has fuel 100/100
+    And no route exists between waypoints
+    When I plan route from "X1-TEST-A1" to "X1-TEST-B5"
+    Then route planning should fail
+    And output should show no route found
+
+  Scenario: Plan route with refuel stops
+    Given system "X1-TEST" has graph with refuel route
+    And ship "SHIP-1" has fuel 20/100
+    When I plan route from "X1-TEST-A1" to "X1-TEST-B5"
+    Then route should include refuel action
+    And refuel waypoint should be shown
