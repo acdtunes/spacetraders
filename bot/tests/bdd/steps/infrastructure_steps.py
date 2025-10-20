@@ -7,7 +7,7 @@ import inspect
 from pathlib import Path
 from pytest_bdd import given, when, then, parsers, scenarios
 
-from spacetraders_bot.core.operation_controller import OperationController, send_control_command
+from spacetraders_bot.core.operation_checkpointer import OperationController, send_control_command
 from spacetraders_bot.core.smart_navigator import SmartNavigator
 from spacetraders_bot.core.ship import ShipController
 from spacetraders_bot.core.daemon_manager import DaemonManager
