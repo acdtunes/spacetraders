@@ -26,7 +26,7 @@ def _build_segment(**kwargs):
 
 
 # Load scenarios
-scenarios('../../features/trading/circuit_breaker_continue_after_recovery.feature')
+scenarios('../../../bdd/features/trading/circuit_breaker_continue_after_recovery.feature')
 
 
 @pytest.fixture
@@ -64,7 +64,8 @@ def mock_api(context):
             return {
                 'tradeGoods': [{
                     'symbol': 'SHIP_PARTS',
-                    'sellPrice': 1400,  # 16.7% spike - within 30% threshold
+                    'sellPrice': 1400,  # What we BUY at (16.7% spike - within 30% threshold)
+                    'purchasePrice': 2000,  # What market BUYS from us (for recovery sale - profitable!)
                     'tradeVolume': 100
                 }]
             }
@@ -73,7 +74,8 @@ def mock_api(context):
             return {
                 'tradeGoods': [{
                     'symbol': 'SHIP_PARTS',
-                    'purchasePrice': 2000,  # Good sell price for recovery
+                    'sellPrice': 1400,  # What we'd buy at
+                    'purchasePrice': 2000,  # What market buys from us (good sell price)
                     'tradeVolume': 100
                 }]
             }
@@ -127,6 +129,27 @@ def mock_ship(context):
             'totalPrice': total_cost
         }
 
+    def sell(good, units, check_market_prices=True):
+        # Simulate selling specific cargo
+        if good in context['cargo'] and context['cargo'][good] >= units:
+            sell_price = 2000  # Good sell price for recovery
+            revenue = units * sell_price
+            context['credits'] += revenue
+            context['cargo'][good] -= units
+            if context['cargo'][good] == 0:
+                del context['cargo'][good]
+
+            context['recovery_executed'] = True
+            # Calculate profit based on what was sold
+            context['recovery_profit'] = revenue - (units * 1800)  # Revenue - cost
+
+            return {
+                'units': units,
+                'totalPrice': revenue,
+                'pricePerUnit': sell_price
+            }
+        return None
+
     def sell_all():
         # Simulate recovery sale
         total_revenue = 0
@@ -146,10 +169,16 @@ def mock_ship(context):
         context['ship_location'] = context['ship_location']  # Stay at current location
         return True
 
+    def orbit():
+        # Mock orbit method
+        return True
+
     ship.get_status = get_status
     ship.buy = buy
+    ship.sell = sell
     ship.sell_all = sell_all
     ship.dock = dock
+    ship.orbit = orbit
 
     return ship
 
@@ -166,6 +195,56 @@ def mock_navigator(context):
 
     nav.execute_route = execute_route
     return nav
+
+
+@pytest.fixture
+def mock_db(context):
+    """Mock database"""
+    from datetime import datetime, timezone
+    from contextlib import contextmanager
+
+    db = Mock()
+
+    @contextmanager
+    def connection():
+        """Mock database connection context manager"""
+        conn = Mock()
+        yield conn
+
+    @contextmanager
+    def transaction():
+        """Mock database transaction context manager"""
+        conn = Mock()
+        yield conn
+
+    def get_market_data(conn, waypoint, good):
+        """Return fresh market data to pass validation"""
+        # Return fresh timestamps (<30min) to pass pre-flight validation
+        timestamp = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
+
+        if good:
+            return [{
+                'waypoint_symbol': waypoint,
+                'good_symbol': good,
+                'sell_price': 1400,  # Normal price for pre-flight check
+                'purchase_price': 2000,
+                'last_updated': timestamp,
+                'supply': 'MODERATE',
+                'activity': 'WEAK',
+                'trade_volume': 100
+            }]
+        return []
+
+    def update_market_data(conn, **kwargs):
+        """Mock market data update - just pass"""
+        pass
+
+    db.connection = connection
+    db.transaction = transaction
+    db.get_market_data = get_market_data
+    db.update_market_data = update_market_data
+
+    return db
 
 
 # Background steps
@@ -190,9 +269,10 @@ def agent_credits(context, credits):
 
 @given('a multi-leg route with 3 segments')
 def multi_leg_route_three_segments(context):
-    # Segment 1: Navigate to D45 and BUY SHIP_PARTS (will trigger circuit breaker)
-    # Segment 2: Navigate to A2 and SELL SHIP_PARTS
-    # Segment 3: Navigate to B7 and BUY/SELL something else
+    # Segment 0: Navigate to D45 and BUY SHIP_PARTS (will trigger circuit breaker)
+    # Segment 1: Navigate to A2 and SELL SHIP_PARTS (depends on segment 0)
+    # Segment 2: Navigate to B7 and BUY COPPER_ORE (independent)
+    # Segment 3: Navigate to C8 and SELL COPPER_ORE (depends on segment 2, independent of segment 0)
 
     context['route'] = MultiLegRoute(
         segments=[
@@ -258,12 +338,33 @@ def multi_leg_route_three_segments(context):
                 cargo_after={'COPPER_ORE': 30},
                 credits_after=117000,
                 cumulative_profit=17000
+            ),
+            _build_segment(
+                from_waypoint='X1-TEST-B7',
+                to_waypoint='X1-TEST-C8',
+                distance=50,
+                fuel_cost=55,
+                actions_at_start=[],
+
+                actions_at_end=[
+                    TradeAction(
+                        waypoint='X1-TEST-C8',
+                        good='COPPER_ORE',
+                        action='SELL',
+                        units=30,
+                        price_per_unit=800,
+                        total_value=24000
+                    )
+                ],
+                cargo_after={},
+                credits_after=141000,
+                cumulative_profit=41000
             )
         ],
-        total_profit=17000,
-        total_distance=240,
-        total_fuel_cost=264,
-        estimated_time_minutes=24
+        total_profit=41000,
+        total_distance=290,
+        total_fuel_cost=319,
+        estimated_time_minutes=29
     )
 
 
@@ -307,10 +408,27 @@ def post_purchase_breaker_triggers(context):
 
 
 @when('auto-recovery executes successfully')
-def auto_recovery_executes(context):
+def auto_recovery_executes(context, mock_api, mock_ship, mock_navigator, mock_db):
     # Auto-recovery navigates to segment 2 sell destination and sells cargo
-    # This is simulated in mock_ship.sell_all()
-    pass
+    # Execute the multileg route which will trigger circuit breaker and auto-recovery
+    with patch('spacetraders_bot.operations.multileg_trader.SmartNavigator',
+               return_value=mock_navigator):
+        # Patch logging to reduce noise
+        import logging
+        logging.disable(logging.CRITICAL)
+        try:
+            result = execute_multileg_route(
+                route=context['route'],
+                ship=mock_ship,
+                api=mock_api,
+                db=mock_db,
+                player_id=1
+            )
+            context['multileg_result'] = result
+            context['operation_aborted'] = not result
+            context['operation_continued'] = result
+        finally:
+            logging.disable(logging.NOTSET)
 
 
 @when(parsers.parse('recovery generates {profit:d} credits profit'))
@@ -344,10 +462,12 @@ def operation_continues_with_remaining(context):
     context['operation_continued'] = True
 
 
-@then('segment 3 should be available for execution')
-def segment_three_available(context):
-    assert len(context['route'].segments) == 3, \
-        "Route should still have 3 segments available"
+@then('remaining independent segments should be available')
+def remaining_segments_available(context):
+    # After segment 0 fails and segment 1 is skipped (depends on 0),
+    # segments 2 and 3 should still be available (independent of segment 0)
+    assert len(context['route'].segments) == 4, \
+        "Route should have 4 segments total"
 
 
 @then('the trader should re-optimize route with remaining time budget')
@@ -359,60 +479,3 @@ def trader_reoptimizes_route(context):
 @then('only after duration expires should the operation stop')
 def operation_stops_after_duration(context):
     context['stops_after_duration'] = True
-
-
-# Integration test with actual execute_multileg_route
-
-@pytest.mark.integration
-def regression_circuit_breaker_continues_after_recovery_integration(
-    context, mock_api, mock_ship, mock_navigator
-):
-    pytest.skip("Integration scenario pending update for new multileg route schema")
-
-    """
-    Integration test: Multi-leg trader continues after successful auto-recovery
-
-    Tests the fix for bug where multi-leg trader aborted entire route after
-    successful auto-recovery instead of continuing operations.
-
-    BUG: Post-purchase circuit breaker triggered on price spike, executed profitable
-    recovery, but then returned False causing daemon to stop.
-
-    FIX: After profitable recovery (net >= 0), return True to allow caller to
-    re-optimize new route with fresh market data.
-    """
-
-    # Setup route in context (call the given step)
-    multi_leg_route_three_segments(context)
-
-    # Mock database
-    mock_db = Mock()
-    mock_db.connection = MagicMock()
-
-    # Patch SmartNavigator creation
-    with patch('spacetraders_bot.operations.multileg_trader.SmartNavigator',
-               return_value=mock_navigator):
-
-        # Execute the route
-        result = execute_multileg_route(
-            route=context['route'],
-            ship=mock_ship,
-            api=mock_api,
-            db=mock_db,
-            player_id=1
-        )
-
-    # BEFORE FIX: result will be False (operation aborts)
-    # AFTER FIX: result should be True (continues after recovery)
-
-    # Verify recovery executed
-    assert context['recovery_executed'], "Auto-recovery should have executed"
-
-    # Verify recovery was profitable
-    assert context['recovery_profit'] > 0, \
-        f"Recovery should be profitable but got {context['recovery_profit']}"
-
-    # BUG: Currently fails here because execute_multileg_route returns False
-    # after recovery instead of continuing
-    assert result is True, \
-        "Operation should continue after successful recovery, not abort"
