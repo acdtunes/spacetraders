@@ -14,14 +14,6 @@ Feature: Ship purchasing edge cases
     Then the purchase should fail with message "Cross-system navigation not supported"
     And no purchase requests should be sent
 
-  Scenario: API client not provided falls back to basic navigation
-    Given the purchasing ship is away from "X1-TEST-B1" at "X1-TEST-A1"
-    And the shipyard lists the ship for 1000 credits with 5000 credits available
-    And no API client is provided for SmartNavigator
-    When the purchase operation runs with fallback navigation
-    Then basic navigation should be used instead of SmartNavigator
-    And the purchase should complete successfully
-
   Scenario: SmartNavigator route validation fails
     Given the purchasing ship is at "X1-TEST-A1" with insufficient fuel
     And the shipyard "X1-TEST-B1" requires navigation

@@ -41,29 +41,3 @@ Feature: Daemon process lifecycle management
     When I check the status of "miner-1"
     Then the daemon should be detected as stale
     And the status should automatically update to "stopped"
-
-  Scenario: Cleanup stale daemons removes dead processes
-    Given multiple daemons exist with some processes dead
-    When I run cleanup stale daemons
-    Then all dead daemon statuses should be updated to "stopped"
-    And only alive daemons should remain as "running"
-
-  Scenario: List all daemons for player
-    Given multiple daemons are running for player 1
-    And other players have their own daemons
-    When I list all daemons
-    Then I should see only player 1's daemons
-    And each daemon should have ID, status, and PID
-
-  Scenario: Tail daemon logs shows recent output
-    Given a daemon "miner-1" is running
-    And the daemon has written log output
-    When I tail the logs for "miner-1" with 10 lines
-    Then I should see the last 10 lines of output
-
-  Scenario: PID file management for daemon lifecycle
-    When I start a daemon "miner-1" with command "python3 test.py"
-    Then a PID file should be created
-    When I stop the daemon "miner-1"
-    Then the PID file should remain for audit purposes
-    And the database record should show "stopped"

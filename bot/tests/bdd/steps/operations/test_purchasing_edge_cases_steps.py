@@ -130,9 +130,17 @@ def given_edge_context(monkeypatch, ship_type):
     """Initialize edge case context."""
     captain_events = []
     patch_purchase_helpers(monkeypatch, captain_events)
+
+    # Mock get_api_client to avoid database dependency
+    def mock_get_api_client(player_id):
+        """Return a default EdgeCaseAPI if database lookup fails."""
+        return EdgeCaseAPI()
+    monkeypatch.setattr(purchasing, 'get_api_client', mock_get_api_client)
+
     context = {
         'captain_events': captain_events,
         'ship_type': ship_type,
+        'api': EdgeCaseAPI(),  # Always initialize API
     }
     return context
 
@@ -223,16 +231,11 @@ def given_no_api_client(edge_ctx):
 @when('the purchase operation runs with fallback navigation')
 def when_purchase_with_fallback(edge_ctx, capsys, monkeypatch):
     """Run purchase with fallback navigation."""
-    # Monkeypatch SmartNavigator to force the fallback path
-    original_init = None
-    try:
-        from spacetraders_bot.core import smart_navigator
-        original_init = smart_navigator.SmartNavigator.__init__
-        def failing_init(*args, **kwargs):
-            raise Exception("SmartNavigator unavailable")
-        monkeypatch.setattr(smart_navigator.SmartNavigator, '__init__', failing_init)
-    except:
-        pass
+    # Mock get_api_client to return None (no API available)
+    def mock_get_api_client_none(player_id):
+        """Return None to force fallback navigation."""
+        return None
+    monkeypatch.setattr(purchasing, 'get_api_client', mock_get_api_client_none)
 
     args = SimpleNamespace(
         player_id=1,
@@ -244,7 +247,7 @@ def when_purchase_with_fallback(edge_ctx, capsys, monkeypatch):
         log_level='INFO',
     )
 
-    # Pass api=None to trigger fallback
+    # Pass api=None to trigger fallback navigation
     result = purchasing.purchase_ship_operation(
         args,
         api=None,  # This triggers fallback navigation

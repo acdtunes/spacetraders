@@ -74,6 +74,7 @@ Feature: Captain logging operations
 
   Scenario: Concurrent writes use file locking
     Given a captain log has been initialized
+    And a session is active
     And multiple writers attempt to log simultaneously
     When concurrent log entries are written
     Then all entries should be written successfully
