@@ -1,7 +1,7 @@
 from unittest.mock import Mock
 from pytest_bdd import scenarios, given, when, then, parsers
 
-from spacetraders_bot.core.assignment_manager import AssignmentManager
+from spacetraders_bot.core.ship_assignment_repository import AssignmentManager
 
 scenarios('../../../bdd/features/core/assignment_manager.feature')
 

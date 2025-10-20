@@ -13,7 +13,7 @@ import json
 from pathlib import Path
 
 from spacetraders_bot.core.utils import timestamp_iso
-from spacetraders_bot.core.routing import TimeCalculator
+from spacetraders_bot.core.route_planner import TimeCalculator
 
 
 @dataclass
