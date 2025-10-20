@@ -8,7 +8,7 @@ from pytest_bdd import given, when, then, parsers, scenarios
 
 from spacetraders_bot.core.database import Database
 from spacetraders_bot.core.ortools_router import ORToolsTSP
-from spacetraders_bot.core.routing import TourOptimizer, RouteOptimizer
+from spacetraders_bot.core.route_planner import TourOptimizer, RouteOptimizer
 from spacetraders_bot.core.smart_navigator import SmartNavigator
 from spacetraders_bot.core.ship_controller import ShipController
 from spacetraders_bot.core.scout_coordinator import ScoutCoordinator

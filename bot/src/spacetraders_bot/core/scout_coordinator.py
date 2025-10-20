@@ -19,7 +19,7 @@ from .api_client import APIClient
 from .assignment_manager import AssignmentManager
 from .daemon_manager import DaemonManager
 from .market_partitioning import MarketPartitioner
-from .routing import TourOptimizer
+from .route_planner import TourOptimizer
 from .system_graph_provider import SystemGraphProvider
 
 

@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from spacetraders_bot.core.database import Database
-from spacetraders_bot.core.routing import GraphBuilder, RouteOptimizer, TimeCalculator, TourOptimizer
+from spacetraders_bot.core.route_planner import GraphBuilder, RouteOptimizer, TimeCalculator, TourOptimizer
 from spacetraders_bot.core.routing_pause import is_paused as routing_paused, get_pause_details
 from spacetraders_bot.operations.common import (
     setup_logging,

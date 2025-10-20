@@ -131,7 +131,7 @@ class SmartNavigator:
 
         if not route:
             # Calculate fuel feasibility to provide accurate error message
-            from spacetraders_bot.core.routing import FuelCalculator
+            from spacetraders_bot.core.route_planner import FuelCalculator
             current_location = ship_data['nav']['waypointSymbol']
             current_wp = self.graph['waypoints'].get(current_location)
             dest_wp = self.graph['waypoints'].get(destination)
@@ -162,7 +162,7 @@ class SmartNavigator:
 
         # Validate that we have reasonable fuel margin
         # If the route uses >90% of current fuel, it's too risky without refuel stops
-        from spacetraders_bot.core.routing import FuelCalculator
+        from spacetraders_bot.core.route_planner import FuelCalculator
         current_location = ship_data['nav']['waypointSymbol']
         current_wp = self.graph['waypoints'].get(current_location)
         dest_wp = self.graph['waypoints'].get(destination)
@@ -646,7 +646,7 @@ class SmartNavigator:
                 logger.error(f"No route found from {current_location} to {destination}")
                 return False
 
-            from spacetraders_bot.core.routing import TimeCalculator
+            from spacetraders_bot.core.route_planner import TimeCalculator
             logger.info(f"Executing route: {len(route['steps'])} steps, "
                        f"{TimeCalculator.format_time(route['total_time'])} total time")
 

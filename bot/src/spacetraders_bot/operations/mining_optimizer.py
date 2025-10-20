@@ -6,7 +6,7 @@ import sys
 
 from spacetraders_bot.core.database import get_database
 from spacetraders_bot.core.ortools_mining_optimizer import ORToolsMiningOptimizer
-from spacetraders_bot.core.routing import GraphBuilder
+from spacetraders_bot.core.route_planner import GraphBuilder
 from spacetraders_bot.operations.common import get_api_client, setup_logging
 
 

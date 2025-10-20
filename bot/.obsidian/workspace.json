@@ -1,0 +1,191 @@
+{
+  "main": {
+    "id": "4dc954a6f495ed84",
+    "type": "split",
+    "children": [
+      {
+        "id": "a2a3b261c3e0c37d",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "f62b8e5d2a37d849",
+            "type": "leaf",
+            "state": {
+              "type": "empty",
+              "state": {},
+              "icon": "lucide-file",
+              "title": "New tab"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "vertical"
+  },
+  "left": {
+    "id": "3b4f8092eed32b4f",
+    "type": "split",
+    "children": [
+      {
+        "id": "8c4e56be233984d8",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "02c541500beb4d90",
+            "type": "leaf",
+            "state": {
+              "type": "file-explorer",
+              "state": {
+                "sortOrder": "alphabetical",
+                "autoReveal": false
+              },
+              "icon": "lucide-folder-closed",
+              "title": "Files"
+            }
+          },
+          {
+            "id": "b367a747bd5687ad",
+            "type": "leaf",
+            "state": {
+              "type": "search",
+              "state": {
+                "query": "",
+                "matchingCase": false,
+                "explainSearch": false,
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical"
+              },
+              "icon": "lucide-search",
+              "title": "Search"
+            }
+          },
+          {
+            "id": "945abebb05ce3dc1",
+            "type": "leaf",
+            "state": {
+              "type": "bookmarks",
+              "state": {},
+              "icon": "lucide-bookmark",
+              "title": "Bookmarks"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300
+  },
+  "right": {
+    "id": "3f0eaf12b4b779c9",
+    "type": "split",
+    "children": [
+      {
+        "id": "b21714c35057b88b",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "6c671eca92e4493f",
+            "type": "leaf",
+            "state": {
+              "type": "backlink",
+              "state": {
+                "file": "docs/CAPTAIN_LOG_TEMPLATE.md",
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical",
+                "showSearch": false,
+                "searchQuery": "",
+                "backlinkCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-coming-in",
+              "title": "Backlinks for CAPTAIN_LOG_TEMPLATE"
+            }
+          },
+          {
+            "id": "5a58f5a064799f9b",
+            "type": "leaf",
+            "state": {
+              "type": "outgoing-link",
+              "state": {
+                "file": "docs/CAPTAIN_LOG_TEMPLATE.md",
+                "linksCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-going-out",
+              "title": "Outgoing links from CAPTAIN_LOG_TEMPLATE"
+            }
+          },
+          {
+            "id": "2b30bc09a2daabd6",
+            "type": "leaf",
+            "state": {
+              "type": "tag",
+              "state": {
+                "sortOrder": "frequency",
+                "useHierarchy": true,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-tags",
+              "title": "Tags"
+            }
+          },
+          {
+            "id": "754a1260b453e198",
+            "type": "leaf",
+            "state": {
+              "type": "outline",
+              "state": {
+                "file": "docs/CAPTAIN_LOG_TEMPLATE.md",
+                "followCursor": false,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-list",
+              "title": "Outline of CAPTAIN_LOG_TEMPLATE"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300,
+    "collapsed": true
+  },
+  "left-ribbon": {
+    "hiddenItems": {
+      "switcher:Open quick switcher": false,
+      "graph:Open graph view": false,
+      "canvas:Create new canvas": false,
+      "daily-notes:Open today's daily note": false,
+      "templates:Insert template": false,
+      "command-palette:Open command palette": false,
+      "bases:Create new base": false
+    }
+  },
+  "active": "02c541500beb4d90",
+  "lastOpenFiles": [
+    "analysis/multileg_trade_price_analysis_STARGAZER-11_1760243544169.md",
+    "docs/CAPTAIN_LOG_TEMPLATE.md",
+    "docs/CACHE_PREVENTION_FIX.md",
+    "docs/BUG_FIX_REPORT_CACHE_PREVENTION.md",
+    "docs/REFACTOR_TODO.md",
+    "docs/TEST_COVERAGE_IMPROVEMENT_PLAN.md",
+    "CLAUDE.md",
+    "COVERAGE_REPORT.md",
+    "AGENT_ARCHITECTURE_V2.md",
+    "TESTING_GUIDE.md",
+    "MCP_TODO_CONTRACT_COUNT.md",
+    "PYTEST_BDD_BEST_PRACTICES.md",
+    "PYTEST_BDD_REFERENCE.md",
+    "BUG_FIX_REPORT_CARGO_OVERFLOW.md",
+    "BDD_OVERLAP_ANALYSIS.md",
+    "BUG_FIX_REPORT_TRANSACTION_LIMIT_AND_API_RETRIES.md",
+    "GAME_GUIDE.md",
+    "QUICK_START.md",
+    "README.md",
+    "BUG_FIX_REPORT_CHECKPOINT_LOCATION_VALIDATION.md"
+  ]
+}

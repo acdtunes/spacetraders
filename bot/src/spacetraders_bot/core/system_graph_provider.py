@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Dict, Optional
 
 from .database import Database
-from .routing import GraphBuilder
+from .route_planner import GraphBuilder
 
 logger = logging.getLogger(__name__)
 

@@ -34,7 +34,7 @@ from .routing import (
     scout_markets_operation,
 )
 from .validate_routing import validate_routing_operation
-from .scout_coordination import (
+from .scout_ops import (
     coordinator_add_ship_operation,
     coordinator_remove_ship_operation,
     coordinator_start_operation,
