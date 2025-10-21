@@ -16,7 +16,7 @@ from spacetraders_bot.operations._trading.evaluation_strategies import (
     TradeEvaluationStrategy,
     ProfitFirstStrategy
 )
-from spacetraders_bot.operations._trading.route_planning import MarketValidator
+from spacetraders_bot.operations._trading.route_planning import MarketValidator, OpportunityFinder
 
 
 class GreedyRoutePlanner:
@@ -226,6 +226,7 @@ class MultiLegTradeOptimizer:
         self.logger = logger or logging.getLogger(__name__)
         self._strategy_factory = strategy_factory or (lambda log: ProfitFirstStrategy(log))
         self.market_validator = MarketValidator(self.logger)
+        self.opportunity_finder = OpportunityFinder(self.db, self.player_id, self.logger, self.market_validator)
 
     def find_optimal_route(
         self,
@@ -266,7 +267,7 @@ class MultiLegTradeOptimizer:
         self.logger.info("="*70)
 
         # Get all markets in system from database
-        markets = self._get_markets_in_system(system)
+        markets = self.opportunity_finder.get_markets_in_system(system)
         self.logger.info(f"Found {len(markets)} markets in {system}")
 
         if not markets:
@@ -274,7 +275,7 @@ class MultiLegTradeOptimizer:
             return None
 
         # Get all trade opportunities from database
-        trade_opportunities = self._get_trade_opportunities(system, markets)
+        trade_opportunities = self.opportunity_finder.get_trade_opportunities(system, markets)
         self.logger.info(f"Found {len(trade_opportunities)} trade opportunities")
 
         # Create strategy and planner
@@ -299,101 +300,6 @@ class MultiLegTradeOptimizer:
             self.logger.warning("No profitable multi-leg route found")
 
         return best_route
-
-    def _get_markets_in_system(self, system: str) -> List[str]:
-        """Get all market waypoints in a system from database"""
-        with self.db.connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT DISTINCT waypoint_symbol
-                FROM market_data
-                WHERE waypoint_symbol LIKE ?
-                AND (updated_by_player = ? OR updated_by_player IS NULL)
-            """, (f"{system}-%", self.player_id))
-
-            return [row[0] for row in cursor.fetchall()]
-
-    def _get_trade_opportunities(self, system: str, markets: List[str]) -> List[Dict]:
-        """
-        Get all profitable trade opportunities from database
-
-        Returns list of dicts with:
-        - buy_waypoint, sell_waypoint
-        - good
-        - buy_price (what we pay), sell_price (what we receive)
-        - spread (profit per unit)
-        - trade_volume (transaction limit)
-        """
-        opportunities = []
-
-        with self.db.connection() as conn:
-            for buy_market in markets:
-                buy_data = self.db.get_market_data(conn, buy_market, None)
-                opportunities.extend(
-                    self._collect_opportunities_for_market(
-                        conn, buy_market, buy_data, markets
-                    )
-                )
-
-        # Sort by spread (most profitable first)
-        opportunities.sort(key=lambda x: x['spread'], reverse=True)
-
-        return opportunities
-
-    def _collect_opportunities_for_market(
-        self,
-        conn,
-        buy_market: str,
-        buy_data: List[Dict],
-        markets: List[str],
-    ) -> List[Dict]:
-        """Collect trade opportunities for a specific buy market"""
-        opportunities = []
-
-        for sell_market in markets:
-            if sell_market == buy_market:
-                continue
-
-            for buy_record in buy_data:
-                good = buy_record['good_symbol']
-                buy_price = buy_record.get('sell_price')
-
-                if not buy_price:
-                    continue
-
-                # Freshness check for buy market data
-                if not self.market_validator.is_market_data_fresh(buy_record, buy_market, good, 'buy'):
-                    continue
-
-                sell_data = self.db.get_market_data(conn, sell_market, good)
-                if not sell_data:
-                    continue
-
-                sell_record = sell_data[0]
-                sell_price = sell_record.get('purchase_price')
-
-                if not sell_price:
-                    continue
-
-                # Freshness check for sell market data
-                if not self.market_validator.is_market_data_fresh(sell_record, sell_market, good, 'sell'):
-                    continue
-
-                spread = sell_price - buy_price
-                if spread <= 0:
-                    continue
-
-                opportunities.append({
-                    'buy_waypoint': buy_market,
-                    'sell_waypoint': sell_market,
-                    'good': good,
-                    'buy_price': buy_price,
-                    'sell_price': sell_price,
-                    'spread': spread,
-                    'trade_volume': buy_record.get('trade_volume', 100),
-                })
-
-        return opportunities
 
     def _log_route_summary(self, route: MultiLegRoute) -> None:
         """Log detailed route summary"""
