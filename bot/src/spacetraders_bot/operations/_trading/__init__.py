@@ -75,6 +75,8 @@ from .route_planning import (
     FixedRouteBuilder,
     MarketValidator,
     OpportunityFinder,
+    GreedyRoutePlanner as _GreedyRoutePlanner,
+    MultiLegRouteCoordinator,
 )
 from .market_repository import (
     MarketRepository,
@@ -117,6 +119,7 @@ __all__ = [
     'ProfitFirstStrategy',
     'GreedyRoutePlanner',
     'MultiLegTradeOptimizer',
+    'MultiLegRouteCoordinator',
     'create_fixed_route',
     'FixedRouteBuilder',
     'MarketValidator',
