@@ -411,19 +411,20 @@ def post_purchase_breaker_triggers(context):
 def auto_recovery_executes(context, mock_api, mock_ship, mock_navigator, mock_db):
     # Auto-recovery navigates to segment 2 sell destination and sells cargo
     # Execute the multileg route which will trigger circuit breaker and auto-recovery
-    with patch('spacetraders_bot.operations.multileg_trader.SmartNavigator',
+    with patch('spacetraders_bot.operations._trading.route_executor.SmartNavigator',
                return_value=mock_navigator):
         # Patch logging to reduce noise
         import logging
         logging.disable(logging.CRITICAL)
         try:
-            result = execute_multileg_route(
-                route=context['route'],
+            executor = RouteExecutor(
                 ship=mock_ship,
                 api=mock_api,
                 db=mock_db,
-                player_id=1
+                player_id=1,
+                logger=logging.getLogger()
             )
+            result = executor.execute_route(route=context['route'])
             context['multileg_result'] = result
             context['operation_aborted'] = not result
             context['operation_continued'] = result

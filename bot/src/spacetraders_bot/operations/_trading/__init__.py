@@ -13,9 +13,14 @@ Architecture:
 - route_executor.py: Full route orchestration
 - dependency_analyzer.py: Segment dependency analysis for smart skip logic
 - evaluation_strategies.py: Market evaluation strategies for route planning
-- route_planner.py: Multi-leg route optimization (GreedyRoutePlanner, MultiLegTradeOptimizer)
-- route_planning/: Route planning modules (FixedRouteBuilder, future: MarketValidator, OpportunityFinder)
+- route_planner.py: DEPRECATED - Legacy compatibility wrappers (use route_planning/ instead)
+- route_planning/: Modular route planning package ✅
+  - fixed_route_builder.py: Simple buy→sell route construction
+  - market_validator.py: Market data freshness validation
+  - opportunity_finder.py: Database query service for trade opportunities
+  - route_generator.py: Greedy algorithm + multi-leg coordinator
 - cargo_salvage.py: Emergency cargo cleanup service
+- fleet_optimizer.py: Fleet-wide trade route optimization
 
 Public API:
 - Data models
