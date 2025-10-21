@@ -1,0 +1,3 @@
+[console_scripts]
+spacetraders-bot = spacetraders_bot.cli:main
+spacetraders-mcp = spacetraders_bot.integrations.mcp_bridge:main

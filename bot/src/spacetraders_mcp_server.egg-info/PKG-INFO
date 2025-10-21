@@ -1,0 +1,15 @@
+Metadata-Version: 2.4
+Name: spacetraders-mcp-server
+Version: 1.0.0
+Summary: MCP server for SpaceTraders bot operations
+Author: SpaceTraders Bot Team
+Requires-Python: >=3.10
+Requires-Dist: mcp>=0.1.0
+Requires-Dist: requests>=2.31.0
+Requires-Dist: python-dateutil>=2.8.0
+Requires-Dist: ortools>=9.8.0
+Requires-Dist: pyyaml>=6.0
+Provides-Extra: dev
+Requires-Dist: pytest>=7.0.0; extra == "dev"
+Requires-Dist: pytest-bdd>=6.0.0; extra == "dev"
+Requires-Dist: pytest-cov>=4.0.0; extra == "dev"
