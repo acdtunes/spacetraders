@@ -73,6 +73,7 @@ from .route_planner import (
 from .route_planning import (
     create_fixed_route,
     FixedRouteBuilder,
+    MarketValidator,
 )
 from .market_repository import (
     MarketRepository,
@@ -117,6 +118,7 @@ __all__ = [
     'MultiLegTradeOptimizer',
     'create_fixed_route',
     'FixedRouteBuilder',
+    'MarketValidator',
     'MarketRepository',
     'NearbyMarketBuyer',
     # Cargo Salvage

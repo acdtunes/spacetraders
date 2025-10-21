@@ -6,7 +6,6 @@ Single Responsibility: Plan optimal trading routes across multiple waypoints.
 """
 
 import logging
-from datetime import datetime, timezone
 from typing import Callable, Dict, List, Optional, Tuple
 
 from spacetraders_bot.core.api_client import APIClient
@@ -17,6 +16,7 @@ from spacetraders_bot.operations._trading.evaluation_strategies import (
     TradeEvaluationStrategy,
     ProfitFirstStrategy
 )
+from spacetraders_bot.operations._trading.route_planning import MarketValidator
 
 
 class GreedyRoutePlanner:
@@ -225,6 +225,7 @@ class MultiLegTradeOptimizer:
         self.player_id = player_id
         self.logger = logger or logging.getLogger(__name__)
         self._strategy_factory = strategy_factory or (lambda log: ProfitFirstStrategy(log))
+        self.market_validator = MarketValidator(self.logger)
 
     def find_optimal_route(
         self,
@@ -361,7 +362,7 @@ class MultiLegTradeOptimizer:
                     continue
 
                 # Freshness check for buy market data
-                if not self._is_market_data_fresh(buy_record, buy_market, good, 'buy'):
+                if not self.market_validator.is_market_data_fresh(buy_record, buy_market, good, 'buy'):
                     continue
 
                 sell_data = self.db.get_market_data(conn, sell_market, good)
@@ -375,7 +376,7 @@ class MultiLegTradeOptimizer:
                     continue
 
                 # Freshness check for sell market data
-                if not self._is_market_data_fresh(sell_record, sell_market, good, 'sell'):
+                if not self.market_validator.is_market_data_fresh(sell_record, sell_market, good, 'sell'):
                     continue
 
                 spread = sell_price - buy_price
@@ -393,44 +394,6 @@ class MultiLegTradeOptimizer:
                 })
 
         return opportunities
-
-    def _is_market_data_fresh(
-        self,
-        record: Dict,
-        waypoint: str,
-        good: str,
-        action_type: str
-    ) -> bool:
-        """
-        Check if market data is fresh enough for trading
-
-        Args:
-            record: Market data record
-            waypoint: Waypoint symbol
-            good: Good symbol
-            action_type: 'buy' or 'sell'
-
-        Returns:
-            True if data is fresh (<1 hour), False otherwise
-        """
-        last_updated = record.get('last_updated')
-        if not last_updated:
-            return True  # No timestamp, assume fresh
-
-        try:
-            timestamp = datetime.strptime(last_updated, '%Y-%m-%dT%H:%M:%S.%fZ').replace(tzinfo=timezone.utc)
-            age_hours = (datetime.now(timezone.utc) - timestamp).total_seconds() / 3600
-
-            if age_hours > 1.0:
-                self.logger.warning(f"⚠️  Skipping stale {action_type} data: {waypoint} {good} ({age_hours:.1f}h old)")
-                return False
-            elif age_hours > 0.5:
-                self.logger.info(f"  ⏰ Aging {action_type} data: {waypoint} {good} ({age_hours:.1f}h old)")
-
-            return True
-        except (ValueError, TypeError) as e:
-            self.logger.warning(f"  ⚠️  Invalid timestamp for {waypoint} {good}: {e}")
-            return True  # Assume fresh if timestamp parsing fails
 
     def _log_route_summary(self, route: MultiLegRoute) -> None:
         """Log detailed route summary"""
