@@ -7,7 +7,7 @@ Tests batch purchasing with inter-batch price validation to prevent market price
 import pytest
 from pytest_bdd import scenarios, given, when, then, parsers
 from unittest.mock import Mock, MagicMock, patch
-from spacetraders_bot.operations.multileg_trader import execute_multileg_route, MultiLegRoute, RouteSegment, TradeAction
+from spacetraders_bot.operations._trading import MultiLegRoute, RouteSegment, TradeAction, RouteExecutor
 
 # Load scenarios
 scenarios('../../features/trading/batch_purchasing.feature')

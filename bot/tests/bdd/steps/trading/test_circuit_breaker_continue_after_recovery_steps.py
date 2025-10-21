@@ -9,8 +9,8 @@ instead of aborting the entire route.
 import pytest
 from pytest_bdd import scenarios, given, when, then, parsers
 from unittest.mock import Mock, MagicMock, patch
-from spacetraders_bot.operations.multileg_trader import (
-    execute_multileg_route,
+from spacetraders_bot.operations._trading import (
+    RouteExecutor,
     MultiLegRoute,
     RouteSegment,
     TradeAction

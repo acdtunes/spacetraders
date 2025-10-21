@@ -14,6 +14,7 @@ Architecture:
 - dependency_analyzer.py: Segment dependency analysis for smart skip logic
 - evaluation_strategies.py: Market evaluation strategies for route planning
 - route_planner.py: Multi-leg route optimization (GreedyRoutePlanner, MultiLegTradeOptimizer)
+- route_planning/: Route planning modules (FixedRouteBuilder, future: MarketValidator, OpportunityFinder)
 - cargo_salvage.py: Emergency cargo cleanup service
 
 Public API:
@@ -68,7 +69,10 @@ from .evaluation_strategies import (
 from .route_planner import (
     GreedyRoutePlanner,
     MultiLegTradeOptimizer,
+)
+from .route_planning import (
     create_fixed_route,
+    FixedRouteBuilder,
 )
 from .market_repository import (
     MarketRepository,
@@ -112,6 +116,7 @@ __all__ = [
     'GreedyRoutePlanner',
     'MultiLegTradeOptimizer',
     'create_fixed_route',
+    'FixedRouteBuilder',
     'MarketRepository',
     'NearbyMarketBuyer',
     # Cargo Salvage
