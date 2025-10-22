@@ -21,6 +21,8 @@ from .daemon_manager import DaemonManager
 from .market_partitioning import MarketPartitioner
 from .route_planner import TourOptimizer
 from .system_graph_provider import SystemGraphProvider
+from .balance_oscillation_detector import BalanceOscillationDetector
+from .dispersed_pair_handler import DispersedPairHandler
 
 
 @dataclass
@@ -92,6 +94,10 @@ class ScoutCoordinator:
 
         # Load graph
         self._load_or_build_graph()
+
+        # Initialize helper classes (after graph is loaded)
+        self._oscillation_detector = BalanceOscillationDetector(self._find_boundary_market)
+        self._dispersed_pair_handler = DispersedPairHandler(self.graph, self.markets)
 
         # Setup signal handlers
         signal.signal(signal.SIGTERM, self._handle_signal)
@@ -343,22 +349,14 @@ class ScoutCoordinator:
                 break
 
             # Detect oscillation: don't move a market that was just moved
-            if market_to_move == last_moved:
-                print(f"⚠️  Detected oscillation ({market_to_move} moving back and forth)")
-                # Try to find an alternative market to move
-                remaining_markets = [m for m in partitions[longest_ship] if m != market_to_move]
-                if remaining_markets:
-                    # Find second-best market to move
-                    alternative_market = self._find_boundary_market(remaining_markets, partitions[shortest_ship])
-                    if alternative_market:
-                        print(f"   Trying alternative market: {alternative_market}")
-                        market_to_move = alternative_market
-                    else:
-                        print("   No alternative market found, stopping")
-                        break
-                else:
-                    print("   No other markets available, stopping")
-                    break
+            market_to_move = self._oscillation_detector.check_and_resolve(
+                market_to_move,
+                last_moved,
+                partitions[longest_ship],
+                partitions[shortest_ship]
+            )
+            if market_to_move is None:
+                break
 
             # PREVIEW: Simulate the move to check if it improves variance
             # Make a copy of tour times to test the move
@@ -666,45 +664,9 @@ class ScoutCoordinator:
             return markets[0]
 
         # SPECIAL CASE: For 2-market pairs, check if they're dispersed
-        if len(markets) == 2:
-            market1, market2 = list(markets)
-            pos1 = positions.get(market1)
-            pos2 = positions.get(market2)
-
-            if pos1 and pos2:
-                # Calculate distance between the two markets
-                distance = ((pos2[0] - pos1[0])**2 + (pos2[1] - pos1[1])**2)**0.5
-
-                # If distance >500 units, this is a dispersed pair
-                # Use system-wide centroid instead of pair centroid
-                if distance > 500:
-                    print(f"   Detected dispersed 2-market pair: {market1} and {market2} ({distance:.0f} units apart)")
-                    print(f"   Using system-wide centroid to find most isolated market...")
-
-                    # Calculate system-wide centroid from ALL markets
-                    all_positions = []
-                    for m in self.markets:
-                        wp = self.graph['waypoints'].get(m)
-                        if wp:
-                            all_positions.append((wp['x'], wp['y']))
-
-                    if all_positions:
-                        system_centroid_x = sum(p[0] for p in all_positions) / len(all_positions)
-                        system_centroid_y = sum(p[1] for p in all_positions) / len(all_positions)
-
-                        # Find market farthest from system-wide centroid (most isolated)
-                        def distance_from_system_centroid(market: str) -> float:
-                            if market not in positions:
-                                return 0
-                            x, y = positions[market]
-                            return ((x - system_centroid_x)**2 + (y - system_centroid_y)**2)**0.5
-
-                        most_isolated = max(markets, key=distance_from_system_centroid)
-                        dist1 = distance_from_system_centroid(market1)
-                        dist2 = distance_from_system_centroid(market2)
-                        print(f"   Distance from system centroid: {market1}={dist1:.0f}, {market2}={dist2:.0f}")
-                        print(f"   Most isolated: {most_isolated}")
-                        return most_isolated
+        dispersed_result = self._dispersed_pair_handler.find_most_isolated(markets, positions)
+        if dispersed_result is not None:
+            return dispersed_result
 
         # Standard case: Calculate centroid of this partition
         centroid_x = sum(pos[0] for pos in positions.values()) / len(positions)
