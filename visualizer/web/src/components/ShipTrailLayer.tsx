@@ -37,16 +37,16 @@ const TRAIL_VISUAL_CONFIG: Record<FlightMode, TrailVisualSettings> = {
     colorBoost: 0.18,
   },
   BURN: {
-    maxAgeMs: 12000,
-    baseWidth: 2.5,
-    baseAlpha: 0.55,
-    tailAlpha: 0.15,
-    glowBlur: 12,
-    glowAlpha: 0.65,
-    particleDensity: 0.6,
-    particleSize: [0.6, 1.3],
-    particleAlpha: 0.5,
-    colorBoost: 0.45,
+    maxAgeMs: 4000,     // Shorter trail (was 12000) - fast ships leave brief trails
+    baseWidth: 3.0,     // Slightly wider for intensity
+    baseAlpha: 0.75,    // Much brighter (was 0.55)
+    tailAlpha: 0.25,    // Brighter tail (was 0.15)
+    glowBlur: 16,       // More glow (was 12)
+    glowAlpha: 0.85,    // Intense glow (was 0.65)
+    particleDensity: 0.8, // More particles (was 0.6)
+    particleSize: [0.8, 1.6], // Larger particles (was [0.6, 1.3])
+    particleAlpha: 0.7, // Brighter particles (was 0.5)
+    colorBoost: 0.65,   // Much brighter color (was 0.45)
   },
   STEALTH: {
     maxAgeMs: 5000,

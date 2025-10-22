@@ -92,10 +92,20 @@ class TradeExecutor:
 
             self.logger.info(f"  📦 Batch {batch_num}: Purchasing {units_this_batch} units...")
 
-            # Check cargo space before each batch
-            if not self._has_cargo_space(units_this_batch):
-                self.logger.error(f"  ❌ Cargo full - purchased {total_units_to_buy - units_remaining}/{total_units_to_buy} units")
-                return units_remaining == 0, total_cost
+            # Check available cargo space and adjust batch size if needed
+            ship_data = self.ship.get_status()
+            if ship_data:
+                current_cargo_units = sum(item['units'] for item in ship_data['cargo']['inventory'])
+                cargo_available = ship_data['cargo']['capacity'] - current_cargo_units
+
+                if cargo_available == 0:
+                    self.logger.error(f"  ❌ Cargo full - purchased {total_units_to_buy - units_remaining}/{total_units_to_buy} units")
+                    return units_remaining == 0, total_cost
+
+                # Adjust batch size to fit available cargo
+                if units_this_batch > cargo_available:
+                    self.logger.info(f"  📦 Adjusting batch size from {units_this_batch} to {cargo_available} (cargo limit)")
+                    units_this_batch = cargo_available
 
             # Execute purchase
             success, batch_cost = self._execute_single_purchase(action.waypoint, action.good, units_this_batch)

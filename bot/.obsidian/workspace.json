@@ -167,17 +167,20 @@
   },
   "active": "f62b8e5d2a37d849",
   "lastOpenFiles": [
+    "bdd_split_final_status.md",
+    "tests/bdd/steps/trading/_trading_module/test_market_service_steps.py.tmp.22570.1761086911552",
+    "tests/bdd/steps/trading/_trading_module/__pycache__/test_shared_steps.cpython-312-pytest-8.4.2.pyc",
+    "tests/bdd/steps/trading/_trading_module/conftest.py.tmp.22570.1761086841818",
+    "tests/bdd/steps/trading/_trading_module/__pycache__/test_shared_steps.cpython-312.pyc",
+    "tests/bdd/steps/trading/_trading_module/test_shared_steps.py",
+    "BDD_REORGANIZATION_STATUS.md",
+    "tests/bdd/steps/trading/_trading_module/REORGANIZATION_PLAN.md",
+    "tests/bdd/steps/trading/_trading_module/conftest.py.bloated_backup",
+    "bdd_refactoring_correct_solution.md",
     "tests/bdd/steps/trading/_trading_module/test_route_executor_steps.py.bloated",
     "tests/bdd/steps/trading/_trading_module/test_dependency_analyzer_steps.py.bloated",
     "tests/bdd/steps/trading/_trading_module/test_trade_executor_steps.py.bloated",
     "tests/bdd/steps/trading/_trading_module/test_circuit_breaker_steps.py.bloated",
-    "tests/bdd/steps/trading/_trading_module/test_market_service_steps.py.bloated",
-    "tests/bdd/steps/trading/_trading_module/test_route_executor_steps_NEW.py",
-    "tests/bdd/steps/trading/_trading_module/test_dependency_analyzer_steps_NEW.py",
-    "tests/bdd/steps/trading/_trading_module/test_trade_executor_steps_NEW.py",
-    "tests/bdd/steps/trading/_trading_module/test_circuit_breaker_steps_NEW.py",
-    "tests/bdd/steps/trading/_trading_module/test_circuit_breaker_steps_NEW.py.tmp.22570.1761083236517",
-    "tests/bdd/steps/trading/_trading_module/test_market_service_steps_NEW.py",
     "bdd_refactoring_results.md",
     "bdd_parallel_refactoring_plan.md",
     "bdd_step_file_size_analysis.md",
@@ -199,9 +202,6 @@
     "docs/WEEK_1_COMPLETE.md",
     "docs/DDD_PROPER_STRUCTURE.md",
     "docs/HEXAGONAL_TRANSFORMATION.md",
-    "docs/HEXAGONAL_ARCHITECTURE_PROPOSAL.md",
-    "docs/NAVIGATION_CODE_LOCATIONS.md",
-    "docs/RESTRUCTURING_SUMMARY.md",
-    "docs/OPERATIONS_BEFORE_AFTER.md"
+    "docs/HEXAGONAL_ARCHITECTURE_PROPOSAL.md"
   ]
 }

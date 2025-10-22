@@ -22,7 +22,7 @@ export interface ShipLayerProps {
   frameTimestamp: number;
   currentScale: number;
   showShipNames: boolean;
-  shipSpriteSize: number;
+  getShipSize: (role: string | undefined) => number;
   getShipRenderPosition: (ship: TaggedShip, target: Point, timestamp: number) => Point;
   selectShipAsset: (ship: TaggedShip) => string | null;
   projectToScreen: (point: Point) => Point | null;
@@ -41,7 +41,7 @@ export const ShipLayer = memo(function ShipLayer({
   frameTimestamp,
   currentScale,
   showShipNames,
-  shipSpriteSize,
+  getShipSize,
   getShipRenderPosition,
   selectShipAsset,
   projectToScreen,
@@ -168,7 +168,7 @@ export const ShipLayer = memo(function ShipLayer({
                   }
                 }}
               />
-              <ShipSprite assetPath={shipAssetPath} size={shipSpriteSize} />
+              <ShipSprite assetPath={shipAssetPath} size={getShipSize(ship.registration.role)} />
             </Group>
 
             {showShipNames && labelInfo && (

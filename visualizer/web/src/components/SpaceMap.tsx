@@ -76,7 +76,17 @@ const SHIP_ASSET_VARIANTS: Record<string, string[]> = {
 const DEFAULT_WAYPOINT_ASSET = 'waypoint-planet-rocky-1.png';
 const DEFAULT_SHIP_ASSET = 'ship-command-frigate-2.png';
 const DEFAULT_SHIP_SPRITE_SIZE = 18;
-const SHIP_SPRITE_SIZE = DEFAULT_SHIP_SPRITE_SIZE / 10;
+const BASE_SHIP_SIZE = DEFAULT_SHIP_SPRITE_SIZE / 10;
+
+const getShipSize = (role: string | undefined): number => {
+  if (role === 'EXPLORER') {
+    return BASE_SHIP_SIZE / 3;  // 3x smaller
+  }
+  if (role === 'SURVEYOR') {
+    return BASE_SHIP_SIZE / 4;  // 4x smaller
+  }
+  return BASE_SHIP_SIZE;
+};
 const SHIP_POSITION_SMOOTHING_MS = 900;
 const SHIP_POSITION_DISTANCE_THRESHOLD = 2;
 const TARGET_FRAME_RATE = 60;
@@ -831,19 +841,19 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
         }
       > = {
         MOON: {
-          radius: 11,
+          radius: 24, // More realistic - like Jupiter's outer moons (was 11)
           startAngle: -Math.PI / 3,
           endAngle: Math.PI / 3,
           waypoints: [],
         },
         ORBITAL_STATION: {
-          radius: 15,
+          radius: 16, // Closer to parent planet (was 15)
           startAngle: (3 * Math.PI) / 4,
           endAngle: (5 * Math.PI) / 4,
           waypoints: [],
         },
         DEFAULT: {
-          radius: 12,
+          radius: 18, // Medium distance (was 12)
           startAngle: Math.PI / 6,
           endAngle: (11 * Math.PI) / 6,
           waypoints: [],
@@ -888,9 +898,15 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
 
         bucketMembers.forEach((waypoint, index) => {
           const angle = startAngle + step * index;
+
+          // Vary radius for each waypoint - create realistic orbital distances
+          // Inner moons closer, outer moons farther (like Io, Europa, Ganymede, Callisto)
+          const radiusVariation = (index / Math.max(1, bucketMembers.length - 1)) * 0.6; // 0 to 60% variation
+          const waypointRadius = radius * (0.7 + radiusVariation); // Range: 70% to 130% of base radius
+
           offsets.set(waypoint.symbol, {
-            x: Math.cos(angle) * radius,
-            y: Math.sin(angle) * radius,
+            x: Math.cos(angle) * waypointRadius,
+            y: Math.sin(angle) * waypointRadius,
           });
         });
       };
@@ -1340,7 +1356,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
             frameTimestamp={frameTimestamp}
             currentScale={currentScale}
             showShipNames={showShipNames}
-            shipSpriteSize={SHIP_SPRITE_SIZE}
+            getShipSize={getShipSize}
             getShipRenderPosition={getShipRenderPosition}
             selectShipAsset={selectShipAsset}
             projectToScreen={projectToScreen}

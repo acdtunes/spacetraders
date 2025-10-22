@@ -3,7 +3,16 @@ import { useEffect, useState } from 'react';
 const ServerStatus = () => {
   const [isConnected, setIsConnected] = useState<boolean | null>(null);
 
+  // Check if using mock API
+  const env = (import.meta as unknown as { env?: Record<string, string | undefined> }).env ?? {};
+  const useMockApi = env.VITE_USE_MOCK_API === 'true';
+
   useEffect(() => {
+    // Don't show server status when using mock API
+    if (useMockApi) {
+      return;
+    }
+
     const checkServer = async () => {
       try {
         const response = await fetch('/api/agents');
@@ -17,7 +26,10 @@ const ServerStatus = () => {
     const interval = setInterval(checkServer, 5000);
 
     return () => clearInterval(interval);
-  }, []);
+  }, [useMockApi]);
+
+  // Don't render anything if using mock API
+  if (useMockApi) return null;
 
   if (isConnected === null) return null;
 
