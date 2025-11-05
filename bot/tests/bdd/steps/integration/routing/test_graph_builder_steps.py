@@ -2,7 +2,7 @@
 import pytest
 from pytest_bdd import scenarios, given, when, then, parsers
 from unittest.mock import Mock
-from src.spacetraders.adapters.secondary.routing.graph_builder import (
+from adapters.secondary.routing.graph_builder import (
     GraphBuilder,
     euclidean_distance
 )

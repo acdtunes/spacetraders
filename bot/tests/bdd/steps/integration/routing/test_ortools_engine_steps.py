@@ -1,8 +1,8 @@
 """BDD step definitions for OR-Tools routing engine integration tests"""
 import pytest
 from pytest_bdd import scenarios, given, when, then, parsers
-from src.spacetraders.adapters.secondary.routing.ortools_engine import ORToolsRoutingEngine
-from src.spacetraders.domain.shared.value_objects import Waypoint, FlightMode
+from adapters.secondary.routing.ortools_engine import ORToolsRoutingEngine
+from domain.shared.value_objects import Waypoint, FlightMode
 
 # Load scenarios
 scenarios('../../../features/integration/routing/ortools_engine.feature')

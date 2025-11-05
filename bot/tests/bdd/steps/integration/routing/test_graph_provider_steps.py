@@ -3,8 +3,8 @@ import pytest
 import json
 from pytest_bdd import scenarios, given, when, then, parsers
 from unittest.mock import Mock, MagicMock
-from src.spacetraders.adapters.secondary.routing.graph_provider import SystemGraphProvider
-from src.spacetraders.ports.outbound.graph_provider import GraphLoadResult
+from adapters.secondary.routing.graph_provider import SystemGraphProvider
+from ports.outbound.graph_provider import GraphLoadResult
 
 # Load scenarios
 scenarios('../../../features/integration/routing/graph_provider.feature')

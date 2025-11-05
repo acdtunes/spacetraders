@@ -7,6 +7,14 @@ from datetime import datetime, timedelta
 
 from application.navigation.commands.navigate_ship import NavigateShipCommand, NavigateShipHandler
 from domain.shared.ship import Ship, InvalidNavStatusError
+
+import sys
+import os
+# Add tests directory to path for fixtures import
+tests_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../..'))
+if tests_dir not in sys.path:
+    sys.path.insert(0, tests_dir)
+
 from tests.fixtures.graph_fixtures import (
     REALISTIC_SYSTEM_GRAPH,
     create_realistic_ship_response,
