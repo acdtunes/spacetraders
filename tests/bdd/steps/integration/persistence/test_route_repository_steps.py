@@ -1,0 +1,505 @@
+"""BDD step definitions for RouteRepository integration tests"""
+from pytest_bdd import scenario, given, when, then, parsers
+import pytest
+from datetime import datetime
+
+from spacetraders.domain.shared.value_objects import Waypoint, FlightMode
+from spacetraders.domain.navigation.route import Route, RouteSegment, RouteStatus
+from spacetraders.adapters.secondary.persistence.route_repository import (
+    RouteNotFoundError, DuplicateRouteError
+)
+
+
+@pytest.fixture
+def context():
+    """Shared test context"""
+    return {}
+
+
+def create_sample_route(route_id, ship_symbol, player_id):
+    """Helper to create a sample route"""
+    wp1 = Waypoint(symbol="X1-A1", x=0.0, y=0.0, system_symbol="X1")
+    wp2 = Waypoint(symbol="X1-A2", x=10.0, y=10.0, system_symbol="X1")
+    
+    segment = RouteSegment(
+        from_waypoint=wp1,
+        to_waypoint=wp2,
+        distance=14.14,
+        fuel_required=15,
+        travel_time=100,
+        flight_mode=FlightMode.CRUISE,
+        requires_refuel=False
+    )
+    
+    return Route(
+        route_id=route_id,
+        ship_symbol=ship_symbol,
+        player_id=player_id,
+        segments=[segment],
+        ship_fuel_capacity=200
+    )
+
+
+# Given steps
+@given("a fresh route repository")
+def fresh_repository(context, route_repository):
+    context["route_repo"] = route_repository
+
+
+@given("a test player and ship exist")
+def setup_player_and_ship(context, test_player, test_ship):
+    context["test_player"] = test_player
+    context["test_ship"] = test_ship
+
+
+@given(parsers.parse('a created route "{route_id}"'))
+def create_test_route(context, route_id, route_repository):
+    route = create_sample_route(
+        route_id,
+        context["test_ship"].ship_symbol,
+        context["test_player"].player_id
+    )
+    created = route_repository.create(route)
+    context[f"route_{route_id}"] = created
+    context["last_created"] = created
+
+
+@given("a created route with status PLANNED")
+def create_planned_route(context, route_repository):
+    route = create_sample_route(
+        "route-planned",
+        context["test_ship"].ship_symbol,
+        context["test_player"].player_id
+    )
+    context["last_created"] = route_repository.create(route)
+
+
+@given("a created route with status EXECUTING")
+def create_executing_route(context, route_repository):
+    route = create_sample_route(
+        "route-executing",
+        context["test_ship"].ship_symbol,
+        context["test_player"].player_id
+    )
+    route.start_execution()
+    context["last_created"] = route_repository.create(route)
+
+
+@given("a created route with status COMPLETED")
+def create_completed_route(context, route_repository):
+    route = create_sample_route(
+        "route-completed",
+        context["test_ship"].ship_symbol,
+        context["test_player"].player_id
+    )
+    route.start_execution()
+    route.complete_segment()
+    context["last_created"] = route_repository.create(route)
+
+
+@given("a created route with status FAILED")
+def create_failed_route(context, route_repository):
+    route = create_sample_route(
+        "route-failed",
+        context["test_ship"].ship_symbol,
+        context["test_player"].player_id
+    )
+    route.fail_route("test failure")
+    context["last_created"] = route_repository.create(route)
+
+
+@given("a created route with status ABORTED")
+def create_aborted_route(context, route_repository):
+    route = create_sample_route(
+        "route-aborted",
+        context["test_ship"].ship_symbol,
+        context["test_player"].player_id
+    )
+    route.abort_route("test abort")
+    context["last_created"] = route_repository.create(route)
+
+
+@given(parsers.parse("{count:d} completed routes exist"))
+def create_completed_routes(context, count, route_repository):
+    for i in range(count):
+        route = create_sample_route(
+            f"route-{i}",
+            context["test_ship"].ship_symbol,
+            context["test_player"].player_id
+        )
+        route.start_execution()
+        route.complete_segment()
+        route_repository.create(route)
+
+
+@given("an active route exists")
+def create_active_route(context, route_repository):
+    route = create_sample_route(
+        "route-active",
+        context["test_ship"].ship_symbol,
+        context["test_player"].player_id
+    )
+    context["active_route"] = route_repository.create(route)
+
+
+@given("a completed route exists")
+def create_single_completed(context, route_repository):
+    route = create_sample_route(
+        "route-done",
+        context["test_ship"].ship_symbol,
+        context["test_player"].player_id
+    )
+    route.start_execution()
+    route.complete_segment()
+    route_repository.create(route)
+
+
+# When steps
+@when(parsers.parse('I create a route with ID "{route_id}"'))
+def create_route(context, route_id, route_repository):
+    route = create_sample_route(
+        route_id,
+        context["test_ship"].ship_symbol,
+        context["test_player"].player_id
+    )
+    context["last_created"] = route_repository.create(route)
+
+
+@when(parsers.parse('I attempt to create another route with ID "{route_id}"'))
+def attempt_duplicate_route(context, route_id, route_repository):
+    context["error"] = None
+    try:
+        route = create_sample_route(
+            route_id,
+            context["test_ship"].ship_symbol,
+            context["test_player"].player_id
+        )
+        route_repository.create(route)
+    except Exception as e:
+        context["error"] = e
+
+
+@when(parsers.parse('I find the route by ID "{route_id}"'))
+def find_route(context, route_id, route_repository):
+    context["found"] = route_repository.find_by_id(route_id)
+
+
+@when(parsers.parse('I find route by ID "{route_id}"'))
+def find_route_alt(context, route_id, route_repository):
+    context["found"] = route_repository.find_by_id(route_id)
+
+
+@when("I find routes for the ship")
+def find_routes_for_ship(context, route_repository):
+    context["routes"] = route_repository.find_by_ship(
+        context["test_ship"].ship_symbol,
+        context["test_player"].player_id
+    )
+
+
+@when("I start route execution")
+def start_execution(context, route_repository):
+    route = context["last_created"]
+    route.start_execution()
+    route_repository.update(route)
+    context["last_created"] = route
+
+
+@when("I complete the first segment")
+def complete_segment(context, route_repository):
+    route = context["last_created"]
+    route.complete_segment()
+    route_repository.update(route)
+
+
+@when("I attempt to update a nonexistent route")
+def update_nonexistent(context, route_repository):
+    context["error"] = None
+    try:
+        route = create_sample_route("fake", "FAKE-SHIP", 999)
+        route_repository.update(route)
+    except Exception as e:
+        context["error"] = e
+
+
+@when(parsers.parse('I delete the route "{route_id}"'))
+def delete_route(context, route_id, route_repository):
+    route_repository.delete(route_id)
+
+
+@when(parsers.parse('I attempt to delete route "{route_id}"'))
+def attempt_delete_route(context, route_id, route_repository):
+    context["error"] = None
+    try:
+        route_repository.delete(route_id)
+    except Exception as e:
+        context["error"] = e
+
+
+@when("I find active routes for the player")
+def find_active_routes(context, route_repository):
+    context["routes"] = route_repository.find_active_routes(context["test_player"].player_id)
+
+
+@when(parsers.parse("I cleanup completed routes keeping {keep:d} most recent"))
+def cleanup_routes(context, keep, route_repository):
+    context["deleted"] = route_repository.cleanup_completed_routes(
+        context["test_player"].player_id,
+        keep_recent=keep
+    )
+
+
+@when(parsers.parse("I cleanup completed routes keeping {keep:d}"))
+def cleanup_routes_alt(context, keep, route_repository):
+    route_repository.cleanup_completed_routes(
+        context["test_player"].player_id,
+        keep_recent=keep
+    )
+
+
+@when("I create a route with 2 segments")
+def create_multi_segment_route(context, route_repository):
+    wp1 = Waypoint(symbol="X1-A1", x=0.0, y=0.0, system_symbol="X1")
+    wp2 = Waypoint(symbol="X1-A2", x=10.0, y=0.0, system_symbol="X1")
+    wp3 = Waypoint(symbol="X1-A3", x=20.0, y=0.0, system_symbol="X1")
+    
+    seg1 = RouteSegment(
+        from_waypoint=wp1,
+        to_waypoint=wp2,
+        distance=10.0,
+        fuel_required=11,
+        travel_time=50,
+        flight_mode=FlightMode.CRUISE,
+        requires_refuel=False
+    )
+    seg2 = RouteSegment(
+        from_waypoint=wp2,
+        to_waypoint=wp3,
+        distance=10.0,
+        fuel_required=11,
+        travel_time=50,
+        flight_mode=FlightMode.DRIFT,
+        requires_refuel=True
+    )
+    
+    route = Route(
+        route_id="multi-seg",
+        ship_symbol=context["test_ship"].ship_symbol,
+        player_id=context["test_player"].player_id,
+        segments=[seg1, seg2],
+        ship_fuel_capacity=200
+    )
+    
+    context["last_created"] = route_repository.create(route)
+
+
+@when("I create routes with all 4 flight modes")
+def create_all_flight_modes(context, route_repository):
+    wp1 = Waypoint(symbol="X1-A1", x=0.0, y=0.0)
+    wp2 = Waypoint(symbol="X1-A2", x=10.0, y=10.0)
+    
+    for mode in [FlightMode.CRUISE, FlightMode.DRIFT, FlightMode.BURN, FlightMode.STEALTH]:
+        segment = RouteSegment(
+            from_waypoint=wp1,
+            to_waypoint=wp2,
+            distance=14.14,
+            fuel_required=mode.fuel_cost(14.14),
+            travel_time=mode.travel_time(14.14, 30),
+            flight_mode=mode
+        )
+        
+        route = Route(
+            route_id=f"route-{mode.mode_name}",
+            ship_symbol=context["test_ship"].ship_symbol,
+            player_id=context["test_player"].player_id,
+            segments=[segment],
+            ship_fuel_capacity=200
+        )
+        
+        route_repository.create(route)
+
+
+@when(parsers.parse('I create route "{route_id}" {order}'))
+def create_route_ordered(context, route_id, order, route_repository):
+    import time
+    if "first_route_time" not in context:
+        context["first_route_time"] = time.time()
+    else:
+        time.sleep(0.01)  # Small delay to ensure ordering
+    
+    route = create_sample_route(
+        route_id,
+        context["test_ship"].ship_symbol,
+        context["test_player"].player_id
+    )
+    route_repository.create(route)
+
+
+# Then steps
+@then("the route should be persisted")
+def check_route_persisted(context):
+    assert context["last_created"] is not None
+
+
+@then(parsers.parse('the route should have ID "{route_id}"'))
+def check_route_id(context, route_id):
+    route = context.get("found") or context.get("last_created")
+    assert route.route_id == route_id
+
+
+@then("the route status should be PLANNED")
+def check_status_planned(context):
+    route = context.get("found") or context.get("last_created")
+    assert route.status == RouteStatus.PLANNED
+
+
+@then("the route status should be EXECUTING")
+def check_status_executing(context):
+    route = context.get("found") or context.get("last_created")
+    assert route.status == RouteStatus.EXECUTING
+
+
+@then("the route status should be COMPLETED")
+def check_status_completed(context):
+    route = context.get("found") or context.get("last_created")
+    assert route.status == RouteStatus.COMPLETED
+
+
+@then("creation should fail with DuplicateRouteError")
+def check_duplicate_error(context):
+    assert isinstance(context["error"], DuplicateRouteError)
+
+
+@then("the route should be found")
+def check_found(context):
+    assert context["found"] is not None
+
+
+@then("the route should not be found")
+def check_not_found(context):
+    assert context["found"] is None
+
+
+@then(parsers.parse("the route should have {count:d} segment"))
+def check_segment_count_singular(context, count):
+    route = context.get("found") or context.get("last_created")
+    assert len(route.segments) == count
+
+
+@then(parsers.parse("the route should have {count:d} segments"))
+def check_segment_count(context, count):
+    route = context.get("found") or context.get("last_created")
+    assert len(route.segments) == count
+
+
+@then(parsers.parse("I should see {count:d} route"))
+def check_route_count_singular(context, count):
+    assert len(context["routes"]) == count
+
+
+@then(parsers.parse("I should see {count:d} routes"))
+def check_route_count(context, count):
+    assert len(context["routes"]) == count
+
+
+@then("update should fail with RouteNotFoundError")
+def check_update_error(context):
+    assert isinstance(context["error"], RouteNotFoundError)
+
+
+@then("deletion should fail with RouteNotFoundError")
+def check_deletion_error(context):
+    assert isinstance(context["error"], RouteNotFoundError)
+
+
+@then(parsers.parse("{count:d} routes should be deleted"))
+def check_deleted_count(context, count):
+    assert context["deleted"] == count
+
+
+@then(parsers.parse("{count:d} routes should remain"))
+def check_remaining_count(context, count, route_repository):
+    routes = route_repository.find_by_ship(
+        context["test_ship"].ship_symbol,
+        context["test_player"].player_id
+    )
+    assert len(routes) == count
+
+
+@then("the active route should still exist")
+def check_active_exists(context, route_repository):
+    found = route_repository.find_by_id("route-active")
+    assert found is not None
+
+
+@then(parsers.parse("segment {idx:d} should use flight mode {mode}"))
+def check_segment_flight_mode(context, idx, mode):
+    route = context.get("found") or context.get("last_created")
+    assert route.segments[idx].flight_mode.mode_name == mode
+
+
+@then("current segment index should be 0")
+def check_segment_index(context):
+    route = context.get("found") or context.get("last_created")
+    assert route.get_current_segment_index() == 0
+
+
+@then(parsers.parse("all {count:d} routes should exist"))
+def check_all_routes_exist(context, count, route_repository):
+    routes = route_repository.find_by_ship(
+        context["test_ship"].ship_symbol,
+        context["test_player"].player_id
+    )
+    assert len(routes) == count
+
+
+@then("they should have different flight modes")
+def check_different_modes(context, route_repository):
+    routes = route_repository.find_by_ship(
+        context["test_ship"].ship_symbol,
+        context["test_player"].player_id
+    )
+    modes = {r.segments[0].flight_mode for r in routes}
+    assert len(modes) == 4
+
+
+@then("routes should be in reverse creation order")
+def check_reverse_order(context):
+    route_ids = [r.route_id for r in context["routes"]]
+    assert route_ids == ["route-3", "route-2", "route-1"]
+
+
+# Generate scenario decorators
+scenarios = [
+    "Create new route",
+    "Create duplicate route fails",
+    "Find route by ID when exists",
+    "Find route by ID when not exists",
+    "Find routes by ship when empty",
+    "Find routes by ship with single route",
+    "Find routes by ship with multiple routes",
+    "Update route status",
+    "Update nonexistent route fails",
+    "Delete route",
+    "Delete nonexistent route fails",
+    "Find active routes when empty",
+    "Find active routes includes PLANNED",
+    "Find active routes includes EXECUTING",
+    "Find active routes excludes COMPLETED",
+    "Find active routes excludes FAILED",
+    "Find active routes excludes ABORTED",
+    "Cleanup completed routes keeps recent",
+    "Cleanup does not delete active routes",
+    "Multi-segment route persistence",
+    "Route state changes persist",
+    "Routes with different flight modes",
+    "Find routes ordered by created_at DESC",
+]
+
+for scenario_name in scenarios:
+    func_name = f"test_{scenario_name.lower().replace(' ', '_')}"
+    scenario_func = scenario(
+        "../../../features/integration/persistence/route_repository.feature",
+        scenario_name
+    )
+    globals()[func_name] = scenario_func(lambda: None)
