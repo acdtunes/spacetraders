@@ -59,11 +59,18 @@ def mock_api_waypoints(context, system_symbol: str, datatable, monkeypatch):
     """Mock API client to return waypoint data"""
     waypoints_data = _parse_api_waypoint_table(datatable, system_symbol)
 
-    # Mock the API client factory
+    # Mock the API client factory with pagination support
+    # First call returns data, subsequent calls return empty
+    call_count = {'count': 0}
+
+    def list_waypoints_with_pagination(system_symbol, page=1, limit=20):
+        call_count['count'] += 1
+        if call_count['count'] == 1:
+            return {'data': waypoints_data}
+        return {'data': []}  # Empty data signals end of pagination
+
     mock_api_client = Mock()
-    mock_api_client.list_waypoints = Mock(return_value={
-        'data': waypoints_data
-    })
+    mock_api_client.list_waypoints = Mock(side_effect=list_waypoints_with_pagination)
 
     # Store in context for assertions
     context['mock_api_client'] = mock_api_client
