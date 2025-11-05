@@ -1,0 +1,43 @@
+# Node modules
+node_modules/
+
+# Python virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+
+# Database
+*.db
+var/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+
+# Environment
+.env
+.env.*
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Logs
+*.log
