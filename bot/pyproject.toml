@@ -37,3 +37,6 @@ markers = [
     "integration: marks tests as integration tests requiring real API (deselect with '-m \"not integration\"')",
 ]
 addopts = "-m 'not slow and not integration'"
+filterwarnings = [
+    "ignore::DeprecationWarning:.*importlib._bootstrap",
+]
