@@ -1,1 +1,0 @@
-"""Secondary adapters (driven/outbound)"""
