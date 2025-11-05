@@ -296,6 +296,34 @@ class MockSpaceTradersAPI(ISpaceTradersAPI):
         """Negotiate a new contract with ship (stub for testing)"""
         return {"data": {"contract": {"id": "new-contract", "shipSymbol": ship_symbol}}}
 
+    def purchase_cargo(self, ship_symbol: str, trade_symbol: str, units: int):
+        """Purchase cargo from market (stub for testing)"""
+        return {
+            "data": {
+                "cargo": {
+                    "capacity": 100,
+                    "units": units,
+                    "inventory": [
+                        {
+                            "symbol": trade_symbol,
+                            "units": units,
+                            "name": trade_symbol,
+                            "description": f"Test {trade_symbol}"
+                        }
+                    ]
+                },
+                "transaction": {
+                    "waypointSymbol": "X1-TEST-A1",
+                    "shipSymbol": ship_symbol,
+                    "tradeSymbol": trade_symbol,
+                    "type": "PURCHASE",
+                    "units": units,
+                    "pricePerUnit": 10,
+                    "totalPrice": units * 10
+                }
+            }
+        }
+
 
 @pytest.fixture
 def mock_api():
