@@ -3,7 +3,7 @@ import pytest
 import asyncio
 from pytest_bdd import scenarios, given, when, then, parsers
 from datetime import datetime, timezone, timedelta
-from unittest.mock import Mock, AsyncMock
+from unittest.mock import Mock, AsyncMock, patch
 
 from application.contracts.commands.batch_contract_workflow import (
     BatchContractWorkflowCommand,
@@ -13,10 +13,6 @@ from domain.shared.contract import Contract, ContractTerms, Delivery, Payment
 from domain.shared.value_objects import Waypoint
 from configuration.container import get_mediator, reset_container
 
-# Skip these tests - they make real API calls and need proper mocking
-# TODO: Add API client mocks to prevent real HTTP requests
-pytestmark = pytest.mark.skip(reason="Makes real API calls, needs API client mocking")
-
 # Load all scenarios from the feature file
 scenarios('../../../features/application/contracts/batch_contract_workflow.feature')
 
@@ -25,6 +21,219 @@ scenarios('../../../features/application/contracts/batch_contract_workflow.featu
 def context():
     """Provide shared context dictionary for test data"""
     return {}
+
+
+@pytest.fixture(autouse=True)
+def mock_api_client(monkeypatch, context):
+    """Mock API client to prevent real HTTP calls"""
+    mock_client = Mock()
+
+    # Track how many contracts have been negotiated for unique IDs
+    negotiate_counter = {'count': 0}
+
+    # Mock negotiate contract response (NOT async)
+    def mock_negotiate(ship_symbol):
+        negotiate_counter['count'] += 1
+        contract_id = f'TEST-CONTRACT-{negotiate_counter["count"]}'
+
+        # Check if context specifies specific units required
+        units_required = 50  # default
+        trade_symbol = 'IRON_ORE'  # default
+
+        if 'contract_requirements' in context:
+            units_required = context['contract_requirements'].get('units', 50)
+            trade_symbol = context['contract_requirements'].get('good', 'IRON_ORE')
+
+        return {
+            'data': {
+                'contract': {
+                    'id': contract_id,
+                    'factionSymbol': 'COSMIC',
+                    'type': 'PROCUREMENT',
+                    'terms': {
+                        'deadline': (datetime.now(timezone.utc) + timedelta(days=7)).isoformat(),
+                        'payment': {
+                            'onAccepted': 10000,
+                            'onFulfilled': 15000
+                        },
+                        'deliver': [
+                            {
+                                'tradeSymbol': trade_symbol,
+                                'destinationSymbol': 'X1-TEST-DEST',
+                                'unitsRequired': units_required,
+                                'unitsFulfilled': 0
+                            }
+                        ]
+                    },
+                    'accepted': False,
+                    'fulfilled': False,
+                    'deadlineToAccept': (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+                }
+            }
+        }
+
+    # Mock accept contract response (NOT async)
+    def mock_accept(contract_id):
+        return {
+            'data': {
+                'contract': {
+                    'id': contract_id,
+                    'accepted': True,
+                    'factionSymbol': 'COSMIC',
+                    'type': 'PROCUREMENT',
+                    'terms': {
+                        'deadline': (datetime.now(timezone.utc) + timedelta(days=7)).isoformat(),
+                        'payment': {
+                            'onAccepted': 10000,
+                            'onFulfilled': 15000
+                        },
+                        'deliver': [
+                            {
+                                'tradeSymbol': 'IRON_ORE',
+                                'destinationSymbol': 'X1-TEST-DEST',
+                                'unitsRequired': 50,
+                                'unitsFulfilled': 0
+                            }
+                        ]
+                    },
+                    'fulfilled': False,
+                    'deadlineToAccept': (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+                }
+            }
+        }
+
+    # Mock deliver contract response (NOT async)
+    def mock_deliver(contract_id, ship_symbol, trade_symbol, units):
+        # Check if this contract should fail
+        if 'failing_contracts' in context:
+            # Extract contract number from ID (TEST-CONTRACT-1 -> 1)
+            contract_num = int(contract_id.split('-')[-1])
+            if contract_num in context['failing_contracts']:
+                raise Exception(f"Simulated delivery failure for contract {contract_num}")
+
+        return {
+            'data': {
+                'contract': {
+                    'id': contract_id,
+                    'terms': {
+                        'deliver': [
+                            {
+                                'tradeSymbol': trade_symbol,
+                                'unitsFulfilled': units
+                            }
+                        ]
+                    }
+                }
+            }
+        }
+
+    # Mock fulfill contract response (NOT async)
+    def mock_fulfill(contract_id):
+        return {
+            'data': {
+                'contract': {
+                    'id': contract_id,
+                    'fulfilled': True
+                }
+            }
+        }
+
+    # Mock purchase cargo response (NOT async)
+    def mock_purchase(ship_symbol, trade_symbol, units):
+        return {
+            'data': {
+                'cargo': {
+                    'units': units
+                }
+            }
+        }
+
+    # Mock list contracts response (NOT async)
+    def mock_list_contracts():
+        # Always return empty - forces negotiation of new contracts each iteration
+        # This prevents the handler from reusing a failed contract
+        return {
+            'data': []
+        }
+
+    # Mock get market data (NOT async)
+    def mock_get_market(system, waypoint):
+        return {
+            'data': {
+                'symbol': waypoint,
+                'tradeGoods': [
+                    {
+                        'symbol': 'IRON_ORE',
+                        'type': 'EXPORT',
+                        'tradeVolume': 100,
+                        'supply': 'ABUNDANT',
+                        'purchasePrice': 100,
+                        'sellPrice': 80
+                    }
+                ]
+            }
+        }
+
+    # Configure mock client (NOT AsyncMock)
+    mock_client.negotiate_contract = Mock(side_effect=mock_negotiate)
+    mock_client.accept_contract = Mock(side_effect=mock_accept)
+    mock_client.deliver_contract = Mock(side_effect=mock_deliver)
+    mock_client.fulfill_contract = Mock(side_effect=mock_fulfill)
+    mock_client.purchase_cargo = Mock(side_effect=mock_purchase)
+    mock_client.list_contracts = Mock(side_effect=mock_list_contracts)
+    mock_client.get_market = Mock(side_effect=mock_get_market)
+
+    # Mock get_api_client_for_player to return our mock
+    def mock_get_api_client(player_id):
+        return mock_client
+
+    monkeypatch.setattr(
+        'configuration.container.get_api_client_for_player',
+        mock_get_api_client
+    )
+
+    return mock_client
+
+
+@pytest.fixture(autouse=True)
+def mock_database(monkeypatch):
+    """Mock database queries to prevent real DB calls"""
+    # Mock find_cheapest_market_selling method - use self parameter for instance method
+    def mock_find_cheapest(self, good_symbol, system, player_id):
+        return {
+            'waypoint_symbol': f'{system}-M1',
+            'good_symbol': good_symbol,
+            'sell_price': 100,
+            'supply': 'ABUNDANT'
+        }
+
+    # Import Database class and patch its method
+    from adapters.secondary.persistence.database import Database
+    original_method = Database.find_cheapest_market_selling
+    Database.find_cheapest_market_selling = mock_find_cheapest
+
+    yield
+
+    # Restore original method
+    Database.find_cheapest_market_selling = original_method
+
+
+@pytest.fixture(autouse=True)
+def mock_contract_repository(monkeypatch):
+    """Mock contract repository to prevent DB state issues"""
+    # Mock find_active to always return empty list
+    # This forces each iteration to negotiate a new contract
+    def mock_find_active(self, player_id):
+        return []
+
+    from adapters.secondary.persistence.contract_repository import ContractRepository
+    original_find_active = ContractRepository.find_active
+    ContractRepository.find_active = mock_find_active
+
+    yield
+
+    # Restore
+    ContractRepository.find_active = original_find_active
 
 
 @pytest.fixture(autouse=True)

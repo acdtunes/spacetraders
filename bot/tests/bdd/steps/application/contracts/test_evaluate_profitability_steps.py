@@ -2,7 +2,7 @@
 import pytest
 import asyncio
 from pytest_bdd import scenarios, given, when, then, parsers
-from unittest.mock import Mock
+from unittest.mock import Mock, AsyncMock
 from datetime import datetime, timezone, timedelta
 
 from application.contracts.queries.evaluate_profitability import (
@@ -12,10 +12,6 @@ from application.contracts.queries.evaluate_profitability import (
 )
 from domain.shared.contract import Contract, ContractTerms, Delivery, Payment
 from domain.shared.value_objects import Waypoint
-
-# Skip these tests - they have async/await bugs and missing mocks
-# TODO: Fix async/await issues and add proper repository mocking
-pytestmark = pytest.mark.skip(reason="Async/await bugs, needs fixing")
 
 # Load all scenarios from the feature file
 scenarios('../../../features/application/contracts/evaluate_profitability.feature')
@@ -105,7 +101,7 @@ def evaluate_profitability(context):
     # Mock FindCheapestMarketQuery handler
     mock_find_market_handler = Mock()
 
-    def mock_find_cheapest(query):
+    async def mock_find_cheapest(query):
         market_data = context['markets'].get(query.trade_symbol)
         if market_data is None:
             return None
@@ -116,7 +112,7 @@ def evaluate_profitability(context):
             sell_price=market_data['sell_price']
         )
 
-    mock_find_market_handler.handle = mock_find_cheapest
+    mock_find_market_handler.handle = AsyncMock(side_effect=mock_find_cheapest)
 
     # Create handler with mocked dependencies
     handler = EvaluateContractProfitabilityHandler(
