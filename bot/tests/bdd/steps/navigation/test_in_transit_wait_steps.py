@@ -13,6 +13,9 @@ from domain.shared.value_objects import Waypoint, Fuel
 from domain.shared.ship import Ship
 from ports.repositories import IShipRepository
 
+# Mark all tests in this file as slow (uses real time.sleep())
+pytestmark = pytest.mark.slow
+
 # Load all scenarios from the feature file
 scenarios('../../features/navigation/in_transit_wait.feature')
 
