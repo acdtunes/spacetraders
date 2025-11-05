@@ -1,0 +1,4 @@
+
+    def get_ships(self) -> Dict:
+        return self._request("GET", "/my/ships")
+

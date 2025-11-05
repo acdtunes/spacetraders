@@ -23,7 +23,7 @@ dev = [
 ]
 
 [project.scripts]
-spacetraders = "spacetraders.adapters.primary.cli.main:main"
+spacetraders = "adapters.primary.cli.main:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

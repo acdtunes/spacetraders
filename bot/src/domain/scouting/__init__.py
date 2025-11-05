@@ -1,0 +1,1 @@
+"""Scouting domain module"""
