@@ -13,9 +13,6 @@ from domain.shared.contract import Contract, ContractTerms, Delivery, Payment
 from domain.shared.value_objects import Waypoint
 from configuration.container import get_mediator, reset_container
 
-# Mark all tests in this file as integration tests (make real API calls, slow)
-pytestmark = pytest.mark.integration
-
 # Load all scenarios from the feature file
 scenarios('../../../features/application/contracts/batch_contract_workflow.feature')
 

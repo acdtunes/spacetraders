@@ -13,9 +13,6 @@ from application.contracts.queries.evaluate_profitability import (
 from domain.shared.contract import Contract, ContractTerms, Delivery, Payment
 from domain.shared.value_objects import Waypoint
 
-# Mark all tests in this file as integration tests (need database/repo setup)
-pytestmark = pytest.mark.integration
-
 # Load all scenarios from the feature file
 scenarios('../../../features/application/contracts/evaluate_profitability.feature')
 
