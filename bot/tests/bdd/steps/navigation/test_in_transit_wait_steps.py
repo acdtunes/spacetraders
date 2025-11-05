@@ -13,8 +13,7 @@ from domain.shared.value_objects import Waypoint, Fuel
 from domain.shared.ship import Ship
 from ports.repositories import IShipRepository
 
-# Mark all tests in this file as slow (uses real time.sleep())
-pytestmark = pytest.mark.slow
+# Tests use time.sleep but with mocked/minimal durations for speed
 
 # Load all scenarios from the feature file
 scenarios('../../features/navigation/in_transit_wait.feature')
@@ -320,10 +319,10 @@ def navigate_via_intermediate(context, start, end, middle):
             context['wait_times'].append(wait_time)
             context['navigation_steps'].append(f"calculated_wait_{wait_time}s")
 
-            # Sleep for wait time + buffer
+            # Sleep for minimal time (0.1s instead of actual wait time for speed)
             total_wait = wait_time + 3
             context['navigation_steps'].append(f"sleeping_{total_wait}s")
-            time.sleep(total_wait)
+            time.sleep(0.1)  # Minimal sleep for test speed
 
             # Simulate arrival in mock API
             api_client.simulate_arrival(context['ship_symbol'])
@@ -360,7 +359,7 @@ def navigate_via_intermediate(context, start, end, middle):
             arrival_time_str = ship_data['nav']['route']['arrival']
             from application.navigation.commands.navigate_ship import calculate_arrival_wait_time
             wait_time = calculate_arrival_wait_time(arrival_time_str)
-            time.sleep(wait_time + 3)
+            time.sleep(0.1)  # Minimal sleep instead of wait_time + 3
             api_client.simulate_arrival(context['ship_symbol'])
 
         # Create updated ship with final location and IN_ORBIT status
@@ -432,7 +431,7 @@ def navigate_3_hops(context, start, end):
                 arrival_time_str = ship_data['nav']['route']['arrival']
                 from application.navigation.commands.navigate_ship import calculate_arrival_wait_time
                 wait_time = calculate_arrival_wait_time(arrival_time_str)
-                time.sleep(wait_time + 3)
+                time.sleep(0.1)  # Minimal sleep instead of wait_time + 3
                 api_client.simulate_arrival(context['ship_symbol'])
                 context['navigation_steps'].append(f"arrived_at_{waypoint}")
 
