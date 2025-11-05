@@ -66,7 +66,7 @@ def execute_dock_command(context, ship_symbol, player_id):
     handler = context["handler"]
     command = DockShipCommand(ship_symbol=ship_symbol, player_id=player_id)
     # Patch get_api_client_for_player at the container module level
-    with patch('spacetraders.configuration.container.get_api_client_for_player', return_value=context["mock_api"]):
+    with patch('configuration.container.get_api_client_for_player', return_value=context["mock_api"]):
         context["result"] = asyncio.run(handler.handle(command))
     context["ship_symbol"] = ship_symbol
     context["error"] = None
@@ -164,7 +164,7 @@ def attempt_dock_command(context, ship_symbol, player_id):
     command = DockShipCommand(ship_symbol=ship_symbol, player_id=player_id)
     try:
         # Patch get_api_client_for_player at the container module level
-        with patch('spacetraders.configuration.container.get_api_client_for_player', return_value=context["mock_api"]):
+        with patch('configuration.container.get_api_client_for_player', return_value=context["mock_api"]):
             context["result"] = asyncio.run(handler.handle(command))
         context["error"] = None
     except Exception as e:

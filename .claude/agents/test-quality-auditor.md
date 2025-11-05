@@ -14,8 +14,10 @@ You evaluate tests based on these fundamental criteria:
 1. **Black-Box Testing**: Tests must verify public interfaces and observable behaviors, not internal implementation details
 2. **No White-Box Assertions**: Tests should never assert on private methods, internal state, or implementation specifics
 3. **Mock Assertion Prohibition**: Tests must not assert on mock method calls, argument matchers, or mock invocation counts - these are white-box concerns
-4. **Behavioral Focus**: Tests should verify what the system does (outcomes, state changes, return values), not how it does it
-5. **BDD Alignment**: For pytest-bdd tests, ensure scenarios describe user-observable behavior in Given-When-Then format
+4. **No Over-Mocking**: Never mock core infrastructure like the mediator; use real objects and mock only at architectural boundaries (repositories, external APIs)
+5. **Test Behavior, Not Mocks**: Tests must validate actual system behavior, not mock interactions
+6. **Behavioral Focus**: Tests should verify what the system does (outcomes, state changes, return values), not how it does it
+7. **BDD Alignment**: For pytest-bdd tests, ensure scenarios describe user-observable behavior in Given-When-Then format
 
 ## Analysis Methodology
 
@@ -24,6 +26,8 @@ When reviewing tests, you will:
 1. **Identify Test Type**: Determine if tests are unit tests, integration tests, or BDD scenarios
 2. **Scan for Anti-Patterns**:
    - Mock assertions (e.g., `mock.assert_called_with()`, `mock.assert_called_once()`, `verify()` calls)
+   - Over-mocking (mocking core infrastructure like the mediator itself)
+   - Testing mocks instead of behavior (e.g., mocking mediator and asserting mock was called)
    - Private method testing (methods starting with `_`)
    - Testing implementation details (internal state, private attributes)
    - Over-specification (testing how rather than what)
@@ -40,6 +44,11 @@ When reviewing tests, you will:
    - Do Given-When-Then steps describe observable actions and outcomes?
    - Are step definitions focused on behavior rather than implementation?
    - Do scenarios avoid mentioning implementation details (class names, method names, internal state)?
+
+5. **Detect Over-Mocking**:
+   - Is the mediator being mocked when it should be used as real infrastructure?
+   - Are tests mocking collaborators that should be real objects?
+   - Would using real objects instead of mocks make the test more valuable?
 
 ## Review Output Format
 
@@ -65,6 +74,34 @@ mock_repo.save.assert_called_once_with(expected_player)
 # GOOD - Black-box assertion on observable outcome
 result = await handler.handle(command)
 assert result.agent_symbol == "AGENT-1"
+```
+
+**Over-Mocking Core Infrastructure** (CRITICAL VIOLATION):
+```python
+# BAD - Mocking the mediator and testing the mock
+mock_mediator = Mock()
+mock_mediator.send.return_value = expected_result
+# ... code that uses mock_mediator ...
+mock_mediator.send.assert_called_once_with(expected_command)
+
+# GOOD - Use real mediator with real/mock dependencies at boundaries
+result = await mediator.send(command)
+assert result.agent_symbol == "AGENT-1"
+# The mediator is real infrastructure - mock at repository/API boundaries instead
+```
+
+**Testing Mocks Instead of Behavior** (CRITICAL VIOLATION):
+```python
+# BAD - The test is validating mock behavior, not system behavior
+mock_handler = Mock()
+container.register_handler(SomeCommand, mock_handler)
+await mediator.send(SomeCommand())
+mock_handler.handle.assert_called_once()  # Just testing the mock!
+
+# GOOD - Test actual behavior with real handler
+result = await mediator.send(SomeCommand(data="test"))
+assert result.success is True
+assert result.value == "expected_output"
 ```
 
 **Private Method Testing** (VIOLATION):
@@ -114,6 +151,9 @@ When reviewing tests in `tests/bdd/`, ensure they align with the project's BDD s
 
 A test suite passes quality review if:
 - ✅ Zero mock assertions on method calls or invocations
+- ✅ Zero over-mocking of core infrastructure (mediator, handlers)
+- ✅ Tests validate behavior, not mocks
+- ✅ Mocks only used at architectural boundaries (repositories, external APIs)
 - ✅ Zero tests of private methods or attributes
 - ✅ All assertions verify observable behavior (return values, exceptions, public state)
 - ✅ BDD scenarios are readable by non-technical stakeholders

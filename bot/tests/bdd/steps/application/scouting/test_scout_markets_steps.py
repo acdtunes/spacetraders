@@ -129,8 +129,8 @@ def set_markets_and_execute(context, datatable):
     mock_daemon.create_container.side_effect = mock_create_container
 
     # Patch at container level
-    with patch('spacetraders.configuration.container.get_graph_provider_for_player') as mock_graph_fn, \
-         patch('spacetraders.configuration.container.get_daemon_client') as mock_daemon_fn:
+    with patch('configuration.container.get_graph_provider_for_player') as mock_graph_fn, \
+         patch('configuration.container.get_daemon_client') as mock_daemon_fn:
 
         mock_graph_fn.return_value = mock_graph
         mock_daemon_fn.return_value = mock_daemon

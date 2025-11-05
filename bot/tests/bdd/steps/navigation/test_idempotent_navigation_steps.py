@@ -189,8 +189,8 @@ async def _send_navigation_command_async(context, ship_symbol, destination=None)
     }
 
     # Patch at the container module
-    with patch('spacetraders.configuration.container.get_api_client_for_player') as mock_api_fn, \
-         patch('spacetraders.configuration.container.get_graph_provider_for_player') as mock_graph_fn:
+    with patch('configuration.container.get_api_client_for_player') as mock_api_fn, \
+         patch('configuration.container.get_graph_provider_for_player') as mock_graph_fn:
 
         mock_api_fn.return_value = mock_client
 

@@ -158,8 +158,8 @@ def batch_purchase_ships(context, handler, quantity, ship_type, ship_symbol, shi
     )
 
     async def execute_batch_purchase():
-        with patch('spacetraders.configuration.container.get_mediator') as mock_get_mediator, \
-             patch('spacetraders.configuration.container.get_api_client_for_player') as mock_get_api:
+        with patch('configuration.container.get_mediator') as mock_get_mediator, \
+             patch('configuration.container.get_api_client_for_player') as mock_get_api:
             from domain.shared.shipyard import Shipyard, ShipListing
 
             # Mock API client for get_agent() calls

@@ -319,7 +319,7 @@ def when_execute_query(context, system_symbol):
 
     query = GetSystemGraphQuery(system_symbol=system_symbol, player_id=1)
     try:
-        with patch('spacetraders.configuration.container.get_graph_provider_for_player', return_value=context['mock_provider']):
+        with patch('configuration.container.get_graph_provider_for_player', return_value=context['mock_provider']):
             if context.get('result') is None:
                 context['result'] = asyncio.run(context['handler'].handle(query))
                 context['query'] = query
@@ -340,7 +340,7 @@ def when_execute_query_force_refresh(context, system_symbol):
 
     query = GetSystemGraphQuery(system_symbol=system_symbol, player_id=1, force_refresh=True)
     try:
-        with patch('spacetraders.configuration.container.get_graph_provider_for_player', return_value=context['mock_provider']):
+        with patch('configuration.container.get_graph_provider_for_player', return_value=context['mock_provider']):
             context['result'] = asyncio.run(context['handler'].handle(query))
         context['query'] = query
         context['exception'] = None
@@ -356,7 +356,7 @@ def when_attempt_execute_query(context, system_symbol):
 
     query = GetSystemGraphQuery(system_symbol=system_symbol, player_id=1)
     try:
-        with patch('spacetraders.configuration.container.get_graph_provider_for_player', return_value=context['mock_provider']):
+        with patch('configuration.container.get_graph_provider_for_player', return_value=context['mock_provider']):
             context['result'] = asyncio.run(context['handler'].handle(query))
         context['exception'] = None
     except Exception as e:

@@ -123,7 +123,7 @@ def execute_orbit_command(context, ship_symbol, player_id):
     command = OrbitShipCommand(ship_symbol=ship_symbol, player_id=player_id)
     try:
         # Patch get_api_client_for_player at the container module level
-        with patch('spacetraders.configuration.container.get_api_client_for_player', return_value=context['api']):
+        with patch('configuration.container.get_api_client_for_player', return_value=context['api']):
             result = asyncio.run(context['handler'].handle(command))
         context['result'] = result
         context['error'] = None

@@ -435,7 +435,7 @@ def plan_route(context, handler, mock_graph_provider, ship, dest, player):
     context['destination'] = dest
 
     try:
-        with patch('spacetraders.configuration.container.get_graph_provider_for_player', return_value=mock_graph_provider):
+        with patch('configuration.container.get_graph_provider_for_player', return_value=mock_graph_provider):
             result = asyncio.run(handler.handle(query))
         context['result'] = result
         context['exception'] = None
@@ -462,7 +462,7 @@ def plan_route_with_prefer(context, handler, mock_graph_provider, ship, dest, pl
     context['destination'] = dest
 
     try:
-        with patch('spacetraders.configuration.container.get_graph_provider_for_player', return_value=mock_graph_provider):
+        with patch('configuration.container.get_graph_provider_for_player', return_value=mock_graph_provider):
             result = asyncio.run(handler.handle(query))
         context['result'] = result
         context['exception'] = None

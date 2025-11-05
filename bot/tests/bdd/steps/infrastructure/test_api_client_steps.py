@@ -12,8 +12,8 @@ from adapters.secondary.api.client import SpaceTradersAPIClient
 @given(parsers.parse('the API client is initialized with token "{token}"'))
 def initialize_api_client(context, token, mock_session, mock_rate_limiter):
     """Initialize API client with mocked dependencies"""
-    with patch('spacetraders.adapters.secondary.api.client.requests.Session', return_value=mock_session):
-        with patch('spacetraders.adapters.secondary.api.client.RateLimiter', return_value=mock_rate_limiter):
+    with patch('adapters.secondary.api.client.requests.Session', return_value=mock_session):
+        with patch('adapters.secondary.api.client.RateLimiter', return_value=mock_rate_limiter):
             context["client"] = SpaceTradersAPIClient(token)
             context["mock_session"] = mock_session
             context["mock_rate_limiter"] = mock_rate_limiter
@@ -573,7 +573,7 @@ def attempt_call_get_agent(context):
     """Attempt to call get_agent and capture error"""
     client = context["client"]
     try:
-        with patch('spacetraders.adapters.secondary.api.client.time.sleep'):
+        with patch('adapters.secondary.api.client.time.sleep'):
             context["result"] = client.get_agent()
             context["error"] = None
     except Exception as e:

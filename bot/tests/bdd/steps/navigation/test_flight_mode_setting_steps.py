@@ -473,9 +473,9 @@ def navigate_ship_to_destination(context, destination):
         }
 
     # Patch the container
-    with mock.patch('spacetraders.configuration.container.get_graph_provider_for_player', return_value=mock_graph_provider):
+    with mock.patch('configuration.container.get_graph_provider_for_player', return_value=mock_graph_provider):
         # Patch routing engine at container level
-        with mock.patch('spacetraders.configuration.container.get_routing_engine', return_value=mock_routing_engine):
+        with mock.patch('configuration.container.get_routing_engine', return_value=mock_routing_engine):
             # Execute navigation command
             mediator = get_mediator()
             command = NavigateShipCommand(

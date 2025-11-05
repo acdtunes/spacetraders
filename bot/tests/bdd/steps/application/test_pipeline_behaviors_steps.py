@@ -212,7 +212,7 @@ def execute_logging_behavior(context):
     request = context['request']
     handler = context['next_handler']
 
-    with patch('spacetraders.application.common.behaviors.logger') as mock_logger:
+    with patch('application.common.behaviors.logger') as mock_logger:
         context['mock_logger'] = mock_logger
         try:
             context['result'] = asyncio.run(behavior.handle(request, handler))
@@ -227,7 +227,7 @@ def execute_logging_behavior_all(context):
     behavior = context['logging_behavior']
     handler = context['next_handler']
 
-    with patch('spacetraders.application.common.behaviors.logger') as mock_logger:
+    with patch('application.common.behaviors.logger') as mock_logger:
         context['mock_logger'] = mock_logger
         for request in context['requests']:
             try:
@@ -263,7 +263,7 @@ def execute_behavior_pipeline(context):
     async def validation_then_handler():
         return await validation_behavior.handle(request, final_handler)
 
-    with patch('spacetraders.application.common.behaviors.logger') as mock_logger:
+    with patch('application.common.behaviors.logger') as mock_logger:
         context['mock_logger'] = mock_logger
         try:
             context['result'] = asyncio.run(logging_behavior.handle(request, validation_then_handler))

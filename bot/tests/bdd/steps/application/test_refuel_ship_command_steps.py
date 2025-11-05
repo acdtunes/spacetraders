@@ -185,7 +185,7 @@ def execute_refuel_command(context, ship_symbol, player_id):
     """Execute refuel command"""
     command = RefuelShipCommand(ship_symbol=ship_symbol, player_id=player_id)
     try:
-        with patch('spacetraders.configuration.container.get_api_client_for_player', return_value=context['mock_api']):
+        with patch('configuration.container.get_api_client_for_player', return_value=context['mock_api']):
             context['result'] = asyncio.run(context['handler'].handle(command))
         context['exception'] = None
     except Exception as e:
@@ -198,7 +198,7 @@ def execute_refuel_command_with_units(context, ship_symbol, player_id, units):
     """Execute refuel command with specific units"""
     command = RefuelShipCommand(ship_symbol=ship_symbol, player_id=player_id, units=units)
     try:
-        with patch('spacetraders.configuration.container.get_api_client_for_player', return_value=context['mock_api']):
+        with patch('configuration.container.get_api_client_for_player', return_value=context['mock_api']):
             context['result'] = asyncio.run(context['handler'].handle(command))
         context['exception'] = None
     except Exception as e:

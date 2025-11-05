@@ -440,8 +440,8 @@ def navigate_ship(context, handler, ship_symbol, destination):
     )
 
     try:
-        with patch('spacetraders.configuration.container.get_api_client_for_player', return_value=context['mock_api']):
-            with patch('spacetraders.configuration.container.get_graph_provider_for_player', return_value=context['mock_graph_provider']):
+        with patch('configuration.container.get_api_client_for_player', return_value=context['mock_api']):
+            with patch('configuration.container.get_graph_provider_for_player', return_value=context['mock_graph_provider']):
                 result = asyncio.run(handler.handle(command))
         context['result'] = result
         context['exception'] = None
@@ -468,8 +468,8 @@ def attempt_navigate_as_player(context, handler, ship_symbol, player_id):
     )
 
     try:
-        with patch('spacetraders.configuration.container.get_api_client_for_player', return_value=context['mock_api']):
-            with patch('spacetraders.configuration.container.get_graph_provider_for_player', return_value=context['mock_graph_provider']):
+        with patch('configuration.container.get_api_client_for_player', return_value=context['mock_api']):
+            with patch('configuration.container.get_graph_provider_for_player', return_value=context['mock_graph_provider']):
                 result = asyncio.run(handler.handle(command))
         context['result'] = result
         context['exception'] = None

@@ -275,8 +275,8 @@ def purchase_ship(context, handler, ship_type, ship_symbol, shipyard_waypoint, p
 
     async def execute_purchase():
         # Mock the mediator and API client - patch at container level since they're imported inside handle()
-        with patch('spacetraders.configuration.container.get_mediator') as mock_get_mediator, \
-             patch('spacetraders.configuration.container.get_api_client_for_player') as mock_get_api:
+        with patch('configuration.container.get_mediator') as mock_get_mediator, \
+             patch('configuration.container.get_api_client_for_player') as mock_get_api:
 
             # Create mock mediator with conditional responses
             mock_mediator = AsyncMock()
@@ -707,8 +707,8 @@ def purchase_ship_auto_discovery(context, handler, ship_type, ship_symbol, playe
 
     async def execute_purchase():
         # Mock the mediator and API client
-        with patch('spacetraders.configuration.container.get_mediator') as mock_get_mediator, \
-             patch('spacetraders.configuration.container.get_api_client_for_player') as mock_get_api:
+        with patch('configuration.container.get_mediator') as mock_get_mediator, \
+             patch('configuration.container.get_api_client_for_player') as mock_get_api:
 
             mock_mediator = AsyncMock()
             mock_get_mediator.return_value = mock_mediator

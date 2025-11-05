@@ -34,22 +34,105 @@ def reset_di_container():
 @given(parsers.parse('a registered player with agent "{agent_symbol}"'))
 def player_with_agent(context, agent_symbol):
     """Register a test player"""
+    from configuration.container import get_player_repository
+    from domain.shared.player import Player
+    from datetime import datetime, timezone
+
     context['agent_symbol'] = agent_symbol
-    context['player_id'] = 1
+
+    # Create actual player in repository
+    player = Player(
+        player_id=None,  # Will be auto-assigned
+        agent_symbol=agent_symbol,
+        token="test-token",
+        created_at=datetime.now(timezone.utc),
+        last_active=datetime.now(timezone.utc),
+        metadata={},
+        credits=100000  # Default starting credits
+    )
+
+    player_repo = get_player_repository()
+    created_player = player_repo.create(player)
+    context['player_id'] = created_player.player_id
 
 
 @given(parsers.parse('a ship "{ship_symbol}" with cargo capacity {capacity:d} in system "{system}"'))
 def ship_with_capacity(context, ship_symbol, capacity, system):
     """Create a ship with specified cargo capacity"""
+    from configuration.container import get_ship_repository
+    from domain.shared.ship import Ship
+    from domain.shared.value_objects import Waypoint, Fuel
+
     context['ship_symbol'] = ship_symbol
     context['cargo_capacity'] = capacity
     context['system'] = system
+
+    # Create actual ship in repository
+    waypoint = Waypoint(
+        symbol=f"{system}-A1",
+        x=0.0,
+        y=0.0,
+        system_symbol=system,
+        waypoint_type="PLANET",
+        has_fuel=True
+    )
+    fuel = Fuel(current=100, capacity=100)
+
+    ship = Ship(
+        ship_symbol=ship_symbol,
+        player_id=context.get('player_id', 1),
+        current_location=waypoint,
+        fuel=fuel,
+        fuel_capacity=100,
+        cargo_capacity=capacity,
+        cargo_units=0,
+        engine_speed=30,
+        nav_status=Ship.DOCKED
+    )
+
+    ship_repo = get_ship_repository()
+    ship_repo.create(ship)
 
 
 @given(parsers.parse('the ship is docked at waypoint "{waypoint}"'))
 def ship_docked_at_waypoint(context, waypoint):
     """Set ship's current location"""
+    from configuration.container import get_ship_repository
+    from domain.shared.ship import Ship
+    from domain.shared.value_objects import Waypoint, Fuel
+
     context['current_waypoint'] = waypoint
+
+    # Update ship's location in repository if ship exists
+    ship_repo = get_ship_repository()
+    ship_symbol = context.get('ship_symbol')
+    player_id = context.get('player_id', 1)
+
+    if ship_symbol:
+        ship = ship_repo.find_by_symbol(ship_symbol, player_id)
+        if ship:
+            # Update ship with new location
+            new_waypoint = Waypoint(
+                symbol=waypoint,
+                x=0.0,
+                y=0.0,
+                system_symbol=context.get('system', 'X1-TEST'),
+                waypoint_type="PLANET",
+                has_fuel=True
+            )
+
+            updated_ship = Ship(
+                ship_symbol=ship.ship_symbol,
+                player_id=ship.player_id,
+                current_location=new_waypoint,
+                fuel=ship.fuel,
+                fuel_capacity=ship.fuel_capacity,
+                cargo_capacity=ship.cargo_capacity,
+                cargo_units=ship.cargo_units,
+                engine_speed=ship.engine_speed,
+                nav_status=Ship.DOCKED
+            )
+            ship_repo.update(updated_ship)
 
 
 @given(parsers.parse('a market at "{waypoint}" sells "{good}" for {price:d} credits per unit'))

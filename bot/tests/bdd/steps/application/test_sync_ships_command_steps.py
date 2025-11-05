@@ -78,7 +78,7 @@ def sync_ships(context, mock_ship_repo, player_id):
     handler = SyncShipsHandler(mock_ship_repo)
     command = SyncShipsCommand(player_id=player_id)
 
-    with patch('spacetraders.configuration.container.get_api_client_for_player', return_value=context["api"]):
+    with patch('configuration.container.get_api_client_for_player', return_value=context["api"]):
         result = asyncio.run(handler.handle(command))
 
     context["result"] = result
