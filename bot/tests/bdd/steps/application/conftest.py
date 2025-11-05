@@ -128,13 +128,28 @@ class MockSpaceTradersAPI(ISpaceTradersAPI):
         # Get current state overrides if any
         state = self._ship_state.get(ship.ship_symbol, {})
 
+        current_nav_status = nav_status or state.get("nav_status", ship.nav_status)
+
+        nav_dict = {
+            "status": current_nav_status,
+            "waypointSymbol": state.get("location", ship.current_location.symbol),
+            "systemSymbol": ship.current_location.system_symbol
+        }
+
+        # Include route data if ship is IN_TRANSIT
+        if current_nav_status == "IN_TRANSIT":
+            # For testing, provide a route with an arrival time in the past
+            # so tests can validate the IN_TRANSIT state without actually waiting
+            nav_dict["route"] = {
+                "destination": {
+                    "symbol": state.get("location", ship.current_location.symbol)
+                },
+                "arrival": "2024-01-01T00:00:00Z"  # Past arrival for instant completion in tests
+            }
+
         return {
             "symbol": ship.ship_symbol,
-            "nav": {
-                "status": nav_status or state.get("nav_status", ship.nav_status),
-                "waypointSymbol": state.get("location", ship.current_location.symbol),
-                "systemSymbol": ship.current_location.system_symbol
-            },
+            "nav": nav_dict,
             "fuel": {
                 "current": state.get("fuel_current", ship.fuel.current),
                 "capacity": ship.fuel_capacity

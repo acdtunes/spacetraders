@@ -90,49 +90,14 @@ class DockShipHandler(RequestHandler[DockShipCommand, Ship]):
                 f"Ship '{request.ship_symbol}' not found for player {request.player_id}"
             )
 
-        # 3. Handle state transitions (state machine)
-        # If ship is IN_TRANSIT, wait for arrival before docking
-        if ship.nav_status == Ship.IN_TRANSIT:
-            # Get full ship data from API to access arrival time
-            ship_response = api_client.get_ship(request.ship_symbol)
-            ship_data = ship_response.get('data')
-            if not ship_data:
-                raise DomainException("Failed to fetch ship state")
-
-            # Extract arrival information
-            arrival_time_str = ship_data['nav']['route']['arrival']
-            destination = ship_data['nav']['route']['destination']['symbol']
-            wait_time = calculate_arrival_wait_time(arrival_time_str)
-
-            logger.info(
-                f"State transition: IN_TRANSIT → DOCKED (waiting {wait_time}s for arrival at {destination})"
-            )
-
-            # Wait for arrival (add 3s safety margin)
-            await asyncio.sleep(wait_time + 3)
-
-            # Re-fetch ship state after arrival
-            ship_response = api_client.get_ship(request.ship_symbol)
-            ship_data = ship_response.get('data')
-            if not ship_data:
-                raise DomainException("Failed to fetch ship state after arrival")
-
-            # Update ship entity from API
-            ship = convert_api_ship_to_entity(
-                ship_data,
-                request.player_id,
-                ship.current_location
-            )
-
-            logger.info(f"✅ Arrived at {destination}")
-
-        # Idempotent check: if already docked, just return
+        # 3. Idempotent check: if already docked, just return
         if ship.nav_status == Ship.DOCKED:
             logger.info(f"Ship {request.ship_symbol} already docked (idempotent)")
             return ship
 
-        # 4. Verify ship is in orbit (domain validation)
-        # This will raise InvalidNavStatusError if ship is not in orbit
+        # 4. Verify ship can be docked (domain validation)
+        # This will raise InvalidNavStatusError if ship is not in valid state
+        # Ships must be IN_ORBIT to dock (cannot dock while IN_TRANSIT)
         ship.ensure_in_orbit()
 
         # 5. Call API to dock ship

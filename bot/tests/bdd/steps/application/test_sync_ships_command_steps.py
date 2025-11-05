@@ -418,8 +418,28 @@ def api_returns_ship_with_invalid_data(context, symbol):
     if "api" not in context or not hasattr(context["api"], "ships"):
         return
 
-    # Missing required fields
-    context["api"].ships.append({"symbol": symbol})
+    # Invalid data: mismatched fuel capacity that will fail Ship validation
+    # Ship requires fuel.capacity == fuel_capacity, so we provide mismatched values
+    context["api"].ships.append({
+        "symbol": symbol,
+        "nav": {
+            "systemSymbol": "X1-TEST",
+            "waypointSymbol": "X1-TEST-AB12",
+            "status": "DOCKED",
+            "route": {"destination": {"x": 0, "y": 0, "type": "PLANET"}}
+        },
+        "fuel": {
+            "current": 50,
+            "capacity": 100  # This will be different from what we claim as fuel_capacity
+        },
+        "cargo": {
+            "capacity": 40,
+            "units": 0
+        },
+        "engine": {
+            "speed": -1  # Invalid: engine_speed must be positive
+        }
+    })
 
 
 @then(parsers.parse('ships "{ship1}", "{ship3}" should be synced'))

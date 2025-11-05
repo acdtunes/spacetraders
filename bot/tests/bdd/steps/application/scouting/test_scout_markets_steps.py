@@ -110,8 +110,34 @@ def set_markets_and_execute(context, datatable):
 
     # Mock graph provider
     mock_graph = Mock()
-    from tests.fixtures.graph_fixtures import get_mock_graph_for_system
-    mock_graph.get_graph.return_value = get_mock_graph_for_system(context['system'])
+    # Import with absolute path to avoid module not found error
+    import sys
+    import os
+    # Add tests directory to path temporarily
+    tests_dir = os.path.join(os.path.dirname(__file__), '../../../../')
+    sys.path.insert(0, tests_dir)
+    try:
+        from fixtures.graph_fixtures import get_mock_graph_for_system
+        mock_graph.get_graph.return_value = get_mock_graph_for_system(context['system'])
+    finally:
+        sys.path.pop(0)
+
+    # Mock routing engine for multi-ship VRP optimization
+    mock_routing_engine = Mock()
+
+    def mock_optimize_fleet_tour(graph, markets, ship_locations, fuel_capacity, engine_speed):
+        """Mock VRP partitioning - distribute markets evenly across ships"""
+        ships = list(ship_locations.keys())
+        assignments = {ship: [] for ship in ships}
+
+        # Round-robin distribution
+        for i, market in enumerate(markets):
+            ship_idx = i % len(ships)
+            assignments[ships[ship_idx]].append(market)
+
+        return assignments
+
+    mock_routing_engine.optimize_fleet_tour.side_effect = mock_optimize_fleet_tour
 
     # Mock daemon client to track container creation
     mock_daemon = Mock()
@@ -130,10 +156,12 @@ def set_markets_and_execute(context, datatable):
 
     # Patch at container level
     with patch('configuration.container.get_graph_provider_for_player') as mock_graph_fn, \
-         patch('configuration.container.get_daemon_client') as mock_daemon_fn:
+         patch('configuration.container.get_daemon_client') as mock_daemon_fn, \
+         patch('configuration.container.get_routing_engine') as mock_routing_fn:
 
         mock_graph_fn.return_value = mock_graph
         mock_daemon_fn.return_value = mock_daemon
+        mock_routing_fn.return_value = mock_routing_engine
 
         # Create and execute command
         command = ScoutMarketsCommand(
