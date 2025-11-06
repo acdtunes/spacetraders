@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "spacetraders-bot": {
+      "command": "node",
+      "args": ["../bot/mcp/build/index.js"],
+      "env": {
+        "MCP_PYTHON_BIN": "../bot/uv-python"
+      }
+    }
+  }
+}

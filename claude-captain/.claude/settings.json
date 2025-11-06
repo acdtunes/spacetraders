@@ -1,0 +1,16 @@
+{
+  "outputStyle": "TARS",
+  "enableAllProjectMcpServers": true,
+  "permissions": {
+    "allow": [
+      "mcp__spacetraders-bot__contract_batch_workflow",
+      "mcp__spacetraders-bot__scout_markets",
+      "mcp__spacetraders-bot__daemon_inspect",
+      "mcp__spacetraders-bot__daemon_logs",
+      "mcp__spacetraders-bot__daemon_list",
+      "mcp__spacetraders-bot__ship_list",
+      "mcp__spacetraders-bot__ship_info",
+      "mcp__spacetraders-bot__waypoint_list"
+    ]
+  }
+}
