@@ -125,6 +125,16 @@ Feature: Player Domain Entity
     When I call update_last_active
     Then the player last_active should be more recent than "2024-01-01T12:00:00Z"
 
+  Scenario: Update_last_active with specific timestamp sets to provided value
+    Given a player exists with last_active "2024-01-01T12:00:00Z"
+    When I call update_last_active with timestamp "2024-01-02T14:30:00Z"
+    Then the player last_active should be "2024-01-02T14:30:00Z"
+
+  Scenario: Update_last_active without argument sets to current UTC time
+    Given a player exists with last_active "2024-01-01T12:00:00Z"
+    When I call update_last_active without arguments
+    Then the player last_active should be more recent than "2024-01-01T12:00:00Z"
+
   Scenario: Multiple update_last_active calls increase timestamp
     Given a player exists
     When I call update_last_active
@@ -164,6 +174,19 @@ Feature: Player Domain Entity
     Given a player exists with empty metadata
     When I call update_metadata with an empty dictionary
     Then the player metadata should be an empty dictionary
+
+  Scenario: Update_metadata with replace=True replaces entire metadata
+    Given a player exists with metadata containing faction="COSMIC" and credits=1000
+    When I call update_metadata with {"new_key": "new_value"} and replace=True
+    Then the player metadata should contain "new_key" with value "new_value"
+    And the player metadata should not contain "faction"
+    And the player metadata should not contain "credits"
+
+  Scenario: Update_metadata with replace=False merges metadata (default behavior)
+    Given a player exists with metadata containing "faction"="COSMIC"
+    When I call update_metadata with {"credits": 1000} and replace=False
+    Then the player metadata should contain "faction" with value "COSMIC"
+    And the player metadata should contain "credits" with value 1000
 
   Scenario: Update_metadata supports multiple sequential updates - first update
     Given a player exists with empty metadata

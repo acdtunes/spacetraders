@@ -99,14 +99,14 @@ def check_existence(context, agent, repository):
 def update_metadata(context, metadata, repository):
     import json
     player = context["last_created"]
-    player._metadata = json.loads(metadata)
+    player.update_metadata(json.loads(metadata), replace=True)
     repository.update(player)
 
 
 @when("I update the player last_active timestamp")
 def update_last_active(context, repository):
     player = context["last_created"]
-    player._last_active = datetime(2025, 1, 3, 15, 0, 0)
+    player.update_last_active(datetime(2025, 1, 3, 15, 0, 0))
     repository.update(player)
 
 
@@ -191,14 +191,14 @@ def create_multiple_players(context, count, repository):
 @when(parsers.parse('I update player "{agent}" metadata'))
 def update_specific_player_metadata(context, agent, repository):
     player = context[f"player_{agent}"]
-    player._metadata = {"updated": True}
+    player.update_metadata({"updated": True}, replace=True)
     repository.update(player)
 
 
 @when("I update the player metadata")
 def update_generic_metadata(context, repository):
     player = context["last_created"]
-    player._metadata = {"updated": True}
+    player.update_metadata({"updated": True}, replace=True)
     repository.update(player)
 
 

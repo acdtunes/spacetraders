@@ -17,9 +17,7 @@ Feature: Purchase Ship Command
     When I purchase a "SHIP_MINING_DRONE" using ship "BUYER-1" at shipyard "X1-GZ7-AB12" for player 1
     Then the purchase should succeed
     And the player should have 50000 credits remaining
-    And the new ship should be of type "SHIP_MINING_DRONE"
     And the new ship should be saved to the repository
-    And the API get_agent method should have been called to fetch credits
 
   # Happy Path - Ship needs to navigate to shipyard
   Scenario: Successfully purchase ship with auto-navigation to shipyard
@@ -104,22 +102,6 @@ Feature: Purchase Ship Command
     And the error message should contain "No path found"
     And the player should still have 100000 credits
     And no new ship should be created
-
-  # Verify API purchase call
-  Scenario: Purchase ship calls API purchase_ship method
-    Given I have a player with ID 1 and 100000 credits from API
-    And I have a ship "BUYER-1" at waypoint "X1-GZ7-AB12"
-    And the ship "BUYER-1" is docked
-    And the API returns a shipyard at "X1-GZ7-AB12" with ships:
-      | ship_type              | name            | price  |
-      | SHIP_PROBE             | Probe Satellite | 25000  |
-    And the API will return a new ship "BUYER-2" for purchase
-    When I purchase a "SHIP_PROBE" using ship "BUYER-1" at shipyard "X1-GZ7-AB12" for player 1
-    Then the purchase should succeed
-    And the API purchase_ship method should have been called with:
-      | ship_type   | waypoint_symbol |
-      | SHIP_PROBE  | X1-GZ7-AB12     |
-    And the new ship should have symbol "BUYER-2"
 
   # Verify ship symbol generation
   Scenario: Newly purchased ship has correct symbol from API

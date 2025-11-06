@@ -68,13 +68,27 @@ class Player:
         """Get player's current credit balance"""
         return self._credits
 
-    def update_last_active(self) -> None:
-        """Touch last active timestamp"""
-        self._last_active = datetime.now(timezone.utc)
+    def update_last_active(self, timestamp: Optional[datetime] = None) -> None:
+        """
+        Update last active timestamp
 
-    def update_metadata(self, metadata: Dict[str, Any]) -> None:
-        """Update metadata dict"""
-        self._metadata.update(metadata)
+        Args:
+            timestamp: Specific timestamp to set. If None, uses current UTC time.
+        """
+        self._last_active = timestamp if timestamp is not None else datetime.now(timezone.utc)
+
+    def update_metadata(self, metadata: Dict[str, Any], replace: bool = False) -> None:
+        """
+        Update metadata dict
+
+        Args:
+            metadata: Metadata dictionary to apply
+            replace: If True, replaces entire metadata. If False, merges with existing.
+        """
+        if replace:
+            self._metadata = metadata.copy() if metadata else {}
+        else:
+            self._metadata.update(metadata)
 
     def is_active_within(self, hours: int) -> bool:
         """Check if player was active within N hours"""

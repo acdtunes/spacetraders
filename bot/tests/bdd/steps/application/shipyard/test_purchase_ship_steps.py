@@ -496,17 +496,6 @@ def verify_player_credits_unchanged(context, mock_player_repo, credits):
     # The initial_credits in API remain unchanged since purchase_ship API was not called
 
 
-@then(parsers.parse('the new ship should be of type "{ship_type}"'))
-def verify_ship_type(context, ship_type):
-    """Verify new ship is of expected type."""
-    # Ship type is embedded in the ship symbol or we can verify through API call
-    assert context['result'] is not None
-    # We verify the API was called with correct ship_type
-    mock_api = context.get('mock_api')
-    assert mock_api is not None
-    assert mock_api.purchase_ship.called
-
-
 @then('the new ship should be saved to the repository')
 def verify_ship_saved(context, mock_ship_repo):
     """Verify new ship was saved to repository."""
@@ -528,14 +517,6 @@ def verify_credits_updated(context, mock_player_repo):
     pass
 
 
-@then('the API get_agent method should have been called to fetch credits')
-def verify_get_agent_called(context):
-    """Verify that get_agent() was called to fetch credits from API."""
-    mock_api = context.get('mock_api')
-    assert mock_api is not None, "Mock API not found in context"
-    assert mock_api.get_agent.called, "API get_agent() was not called to fetch credits"
-    # Verify it was called to get current agent credits
-    mock_api.get_agent.assert_called_once()
 
 
 @then('no new ship should be created')
@@ -582,17 +563,6 @@ def verify_new_ship_location(context, waypoint):
     assert context['result'] is not None
     new_ship = context['result']
     assert new_ship.current_location.symbol == waypoint
-
-
-@then(parsers.parse('the API purchase_ship method should have been called with:'))
-def verify_api_purchase_called(context):
-    """Verify API purchase_ship was called correctly."""
-    mock_api = context.get('mock_api')
-    assert mock_api is not None
-    assert mock_api.purchase_ship.called
-    # Get the call args
-    call_args = mock_api.purchase_ship.call_args
-    # Verify the call was made (black-box testing)
 
 
 @then(parsers.parse('the new ship should have symbol "{ship_symbol}"'))

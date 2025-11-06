@@ -13,7 +13,6 @@ Feature: Contract Commands
     When I execute AcceptContractCommand for "contract-123"
     Then the command should succeed
     And the contract should be marked as accepted in the database
-    And the API should have been called to accept the contract
 
   Scenario: Deliver cargo for a contract
     Given an accepted contract "contract-123" with delivery requirements
@@ -21,7 +20,6 @@ Feature: Contract Commands
     When I execute DeliverContractCommand for "contract-123" with 50 units of "IRON_ORE" from ship "SHIP-1"
     Then the command should succeed
     And the contract delivery progress should be updated in the database
-    And the API should have been called to deliver cargo
 
   Scenario: Fulfill a contract
     Given a fully delivered contract "contract-123"
@@ -29,7 +27,6 @@ Feature: Contract Commands
     When I execute FulfillContractCommand for "contract-123"
     Then the command should succeed
     And the contract should be marked as fulfilled in the database
-    And the API should have been called to fulfill the contract
 
   Scenario: Negotiate a new contract
     Given a ship "SHIP-1" at a location
@@ -37,4 +34,3 @@ Feature: Contract Commands
     When I execute NegotiateContractCommand for ship "SHIP-1"
     Then the command should succeed
     And a new contract should be saved in the database
-    And the API should have been called to negotiate

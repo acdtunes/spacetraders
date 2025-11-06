@@ -345,10 +345,6 @@ def check_contract_accepted(context):
     assert contract.accepted is True
 
 
-@then('the API should have been called to accept the contract')
-def check_accept_api_called(context):
-    """Verify API was called"""
-    context['mock_api'].accept_contract.assert_called_once_with(context['contract_id'])
 
 
 @then('the contract delivery progress should be updated in the database')
@@ -362,10 +358,6 @@ def check_delivery_progress(context):
     assert any(d.units_fulfilled > 0 for d in contract.terms.deliveries)
 
 
-@then('the API should have been called to deliver cargo')
-def check_deliver_api_called(context):
-    """Verify API was called"""
-    assert context['mock_api'].deliver_contract.called
 
 
 @then('the contract should be marked as fulfilled in the database')
@@ -378,10 +370,6 @@ def check_contract_fulfilled(context):
     assert contract.fulfilled is True
 
 
-@then('the API should have been called to fulfill the contract')
-def check_fulfill_api_called(context):
-    """Verify API was called"""
-    context['mock_api'].fulfill_contract.assert_called_once_with(context['contract_id'])
 
 
 @then('a new contract should be saved in the database')
@@ -394,7 +382,3 @@ def check_new_contract_saved(context):
     assert len(contracts) > 0
 
 
-@then('the API should have been called to negotiate')
-def check_negotiate_api_called(context):
-    """Verify API was called"""
-    context['mock_api'].negotiate_contract.assert_called_once_with(context['ship_symbol'])

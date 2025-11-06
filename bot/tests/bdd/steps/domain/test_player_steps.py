@@ -554,6 +554,27 @@ def check_timezone_utc(context):
     assert context["player"].last_active.tzinfo == timezone.utc
 
 
+@scenario("../../features/domain/player.feature", "Update_last_active with specific timestamp sets to provided value")
+def test_update_last_active_with_timestamp():
+    pass
+
+
+@when(parsers.parse('I call update_last_active with timestamp "{timestamp}"'))
+def call_update_last_active_with_timestamp(context, timestamp):
+    dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    context["player"].update_last_active(dt)
+
+
+@scenario("../../features/domain/player.feature", "Update_last_active without argument sets to current UTC time")
+def test_update_last_active_without_args():
+    pass
+
+
+@when("I call update_last_active without arguments")
+def call_update_last_active_no_args(context):
+    context["player"].update_last_active()
+
+
 # ==============================================================================
 # Update Metadata Scenarios
 # ==============================================================================
@@ -617,6 +638,35 @@ def test_update_metadata_empty():
 @when("I call update_metadata with an empty dictionary")
 def call_update_metadata_empty(context):
     context["player"].update_metadata({})
+
+
+@scenario("../../features/domain/player.feature", "Update_metadata with replace=True replaces entire metadata")
+def test_update_metadata_replace():
+    pass
+
+
+@when(parsers.parse('I call update_metadata with {metadata} and replace=True'))
+def call_update_metadata_replace_true(context, metadata):
+    import json
+    metadata_dict = json.loads(metadata)
+    context["player"].update_metadata(metadata_dict, replace=True)
+
+
+@then(parsers.parse('the player metadata should not contain "{key}"'))
+def check_metadata_not_contain_key(context, key):
+    assert key not in context["player"].metadata
+
+
+@scenario("../../features/domain/player.feature", "Update_metadata with replace=False merges metadata (default behavior)")
+def test_update_metadata_merge():
+    pass
+
+
+@when(parsers.parse('I call update_metadata with {metadata} and replace=False'))
+def call_update_metadata_replace_false(context, metadata):
+    import json
+    metadata_dict = json.loads(metadata)
+    context["player"].update_metadata(metadata_dict, replace=False)
 
 
 @scenario("../../features/domain/player.feature", "Update_metadata supports multiple sequential updates - first update")
