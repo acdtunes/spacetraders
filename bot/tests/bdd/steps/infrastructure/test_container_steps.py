@@ -6,25 +6,6 @@ from configuration import container
 
 
 # ==============================================================================
-# Fixtures
-# ==============================================================================
-@pytest.fixture(autouse=True)
-def reset_for_each_test(monkeypatch):
-    """Reset container and use in-memory database for tests"""
-    from adapters.secondary.persistence.database import Database
-
-    # Patch Database to always use in-memory database
-    original_init = Database.__init__
-    def patched_init(self, db_path=None):
-        original_init(self, ":memory:")
-
-    monkeypatch.setattr(Database, "__init__", patched_init)
-    container.reset_container()
-    yield
-    container.reset_container()
-
-
-# ==============================================================================
 # Background
 # ==============================================================================
 @given("the container is reset")
