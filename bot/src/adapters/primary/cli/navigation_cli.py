@@ -249,6 +249,21 @@ def ship_info_command(args: argparse.Namespace) -> int:
         if not ship:
             raise ShipNotFoundError(f"Ship '{args.ship}' not found for player {player_id}")
 
+        # Display ship information
+        print(f"\n{ship.ship_symbol}")
+        print("=" * 80)
+        print(f"Location:       {ship.current_location.symbol}")
+        print(f"System:         {ship.current_location.system_symbol or 'Unknown'}")
+        print(f"Status:         {ship.nav_status}")
+        print(f"\nFuel:           {ship.fuel.current}/{ship.fuel.capacity} ({ship.fuel.percentage():.0f}%)")
+        print(f"Cargo:          {ship.cargo_units}/{ship.cargo_capacity}")
+        print(f"Engine Speed:   {ship.engine_speed}")
+
+        if ship.current_location.waypoint_type:
+            print(f"\nWaypoint Type:  {ship.current_location.waypoint_type}")
+        if ship.current_location.traits:
+            print(f"Traits:         {', '.join(ship.current_location.traits)}")
+
         return 0
 
     except PlayerSelectionError as e:
