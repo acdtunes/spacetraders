@@ -8,30 +8,44 @@ This project configures Claude Code to run as **TARS**, an AI assistant based on
 
 ## Quick Start
 
+**To use TARS personality:**
+```bash
+cd /Users/andres.camacho/Development/Personal/spacetraders/claude-captain/tars
+claude
+```
+
+TARS will greet you and provide access to fleet operations through MCP tools.
+
+**To use Claude Code normally (without TARS):**
 ```bash
 cd /Users/andres.camacho/Development/Personal/spacetraders/claude-captain
 claude
 ```
 
-TARS will greet you and provide access to fleet operations through MCP tools.
+This gives you access to MCP tools without the TARS personality.
 
 ## Project Structure
 
 ```
 claude-captain/
 ├── .claude/
-│   ├── settings.json              # TARS configuration
-│   ├── output-styles/tars.md      # TARS personality definition
-│   └── agents/                    # Specialist agents (6 total)
-│       ├── fleet-manager.md       # Fleet optimization
-│       ├── contract-coordinator.md # Contract fulfillment
-│       ├── scout-coordinator.md   # Market intelligence
-│       ├── bug-reporter.md        # Bug documentation
-│       ├── feature-proposer.md    # Strategic proposals
-│       └── captain-logger.md      # Narrative logging
+│   └── settings.json              # Project-wide config (MCP servers, permissions)
 ├── .mcp.json                      # SpaceTraders bot MCP server config
 ├── strategies.md                  # Research-backed strategies
-├── captain-ts/                    # TypeScript agent implementation (standalone)
+├── tars/                          # TARS workspace (TypeScript + Claude Code)
+│   ├── .claude/
+│   │   ├── settings.json          # TARS personality activation
+│   │   ├── output-styles/tars.md  # TARS personality definition
+│   │   └── agents/                # Specialist agents (6 total)
+│   │       ├── fleet-manager.md
+│   │       ├── contract-coordinator.md
+│   │       ├── scout-coordinator.md
+│   │       ├── bug-reporter.md
+│   │       ├── feature-proposer.md
+│   │       └── captain-logger.md
+│   ├── src/                       # TypeScript implementation
+│   ├── dist/                      # Compiled output
+│   └── package.json
 └── README.md                      # This file
 ```
 
@@ -44,10 +58,12 @@ claude-captain/
 ## How It Works
 
 ### 1. Claude Code Integration
-When you run `claude` in this directory, Claude Code loads:
-- TARS personality from `.claude/output-styles/tars.md`
-- Pre-approved MCP tool permissions
-- Access to 6 specialist agents
+When you run `claude` in the `tars/` directory, Claude Code loads:
+- TARS personality from `tars/.claude/output-styles/tars.md`
+- Pre-approved MCP tool permissions (from root `.claude/settings.json`)
+- Access to 6 specialist agents in `tars/.claude/agents/`
+
+When you run `claude` in the root directory, you get normal Claude Code behavior with MCP tools but no TARS personality.
 
 ### 2. MCP Tools (SpaceTraders Bot Interface)
 TARS controls the SpaceTraders bot via MCP:
@@ -87,11 +103,11 @@ TARS: "Fleet-manager reports miners averaging 5.2k credits/hour.
 
 ## Standalone TypeScript Implementation
 
-The `captain-ts/` folder contains a standalone TypeScript implementation using the Claude Agent SDK with Ink UI. This is separate from the Claude Code CLI integration.
+The `tars/` folder contains a standalone TypeScript implementation using the Claude Agent SDK with Ink UI. This is separate from the Claude Code CLI integration.
 
 **To run standalone:**
 ```bash
-cd captain-ts
+cd tars
 npm start
 ```
 
@@ -99,12 +115,15 @@ This provides an alternative way to run TARS with a terminal UI, but the recomme
 
 ## Configuration Files
 
-### `.claude/settings.json`
-- Sets `outputStyle: "TARS"` to load personality
-- Enables MCP servers
+### Root `.claude/settings.json`
+- Enables MCP servers project-wide
 - Pre-approves SpaceTraders bot tools
+- No outputStyle (normal Claude Code behavior at root)
 
-### `.claude/output-styles/tars.md`
+### `tars/.claude/settings.json`
+- Sets `outputStyle: "TARS"` to activate personality in tars/ directory only
+
+### `tars/.claude/output-styles/tars.md`
 - Defines TARS personality (humor/honesty settings)
 - Explains delegation pattern to specialist agents
 - Provides communication style examples
@@ -175,9 +194,10 @@ The bot lives in a separate repository at `../bot/`. TARS interacts with it excl
 ## Development
 
 To modify TARS behavior:
-1. Edit `.claude/output-styles/tars.md` for personality changes
-2. Edit `.claude/agents/*.md` for specialist agent behavior
+1. Edit `tars/.claude/output-styles/tars.md` for personality changes
+2. Edit `tars/.claude/agents/*.md` for specialist agent behavior
 3. Edit `strategies.md` for strategic guidance updates
-4. Edit `.claude/settings.json` for tool permissions or config
+4. Edit root `.claude/settings.json` for MCP tool permissions
+5. Edit `tars/.claude/settings.json` for TARS activation
 
-Run `claude` from the root to test changes immediately.
+Run `claude` from the `tars/` directory to test TARS changes immediately.
