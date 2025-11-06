@@ -77,6 +77,7 @@ def player_info_command(args: argparse.Namespace) -> int:
 
         print(f"Player {player.player_id}:")
         print(f"  Agent: {player.agent_symbol}")
+        print(f"  Credits: {player.credits:,}")
         print(f"  Created: {player.created_at.isoformat()}")
         print(f"  Last Active: {player.last_active.isoformat()}")
         if player.metadata:
