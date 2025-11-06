@@ -10,7 +10,7 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/captain.js",
-    "dev": "tsx src/captain.ts"
+    "dev": "tsx src/captain.tsx"
   },
   "keywords": [
     "spacetraders",

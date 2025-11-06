@@ -5,7 +5,7 @@
     "lib": ["ES2022"],
     "jsx": "react",
     "module": "ES2022",
-    "moduleResolution": "node",
+    "moduleResolution": "bundler",
 
     /* Emit */
     "declaration": true,
