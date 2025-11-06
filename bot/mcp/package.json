@@ -1,0 +1,22 @@
+{
+  "name": "spacetraders-mcp-bot",
+  "version": "3.0.0",
+  "description": "MCP server exposing SpaceTraders bot CLI commands as tools",
+  "type": "module",
+  "main": "build/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node build/index.js",
+    "dev": "tsc --watch"
+  },
+  "keywords": ["mcp", "spacetraders", "bot"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2"
+  }
+}
