@@ -8,8 +8,15 @@ def use_test_database():
     Override settings to use in-memory database for all tests.
     Each test gets a fresh, isolated database.
     """
+    import importlib
     from configuration.settings import settings
     from configuration.container import reset_container, get_database
+
+    # Reload modules to clear any patches from previous tests
+    import configuration.container
+    import adapters.secondary.api.client
+    importlib.reload(adapters.secondary.api.client)
+    importlib.reload(configuration.container)
 
     # Save original database path
     original_db_path = settings.db_path
@@ -35,6 +42,19 @@ def use_test_database():
         cursor.execute("DELETE FROM players")
 
     yield
+
+    # Clean up tables BEFORE resetting container
+    # This ensures we clean the same database instance the test used
+    db = get_database()
+    with db.transaction() as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM routes")
+        cursor.execute("DELETE FROM ship_assignments")
+        cursor.execute("DELETE FROM container_logs")
+        cursor.execute("DELETE FROM containers")
+        cursor.execute("DELETE FROM ships")
+        cursor.execute("DELETE FROM system_graphs")
+        cursor.execute("DELETE FROM players")
 
     # Restore original settings
     settings.db_path = original_db_path
