@@ -211,7 +211,7 @@ def mock_api_client_for_player(context, player_id):
 
     # Patch the container to return our mock API client
     context['api_client_patch'] = mock.patch(
-        'spacetraders.configuration.container.get_api_client_for_player',
+        'configuration.container.get_api_client_for_player',
         return_value=api_client
     )
     context['api_client_patch'].start()

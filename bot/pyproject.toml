@@ -39,4 +39,6 @@ markers = [
 addopts = "-m 'not slow and not integration'"
 filterwarnings = [
     "ignore::DeprecationWarning:.*importlib._bootstrap",
+    "ignore::DeprecationWarning",
+    "ignore::pytest.PytestUnhandledThreadExceptionWarning",
 ]

@@ -23,7 +23,7 @@ scenarios('../../features/navigation/in_transit_wait.feature')
 # Mock Implementations for Testing
 # ============================================================================
 
-class TestShipRepository(IShipRepository):
+class MockShipRepository(IShipRepository):
     """In-memory ship repository for testing"""
 
     def __init__(self):
@@ -59,7 +59,7 @@ class TestShipRepository(IShipRepository):
         return ship
 
 
-class TestAPIClient:
+class MockAPIClient:
     """
     Mock API client that simulates SpaceTraders API behavior with IN_TRANSIT handling.
     """
@@ -183,8 +183,8 @@ def register_test_ship_wait(context, ship_symbol):
     """Register test ship for in-transit wait test"""
     context['ship_symbol'] = ship_symbol
     context['player_id'] = 1
-    context['ship_repo'] = TestShipRepository()
-    context['api_client'] = TestAPIClient()
+    context['ship_repo'] = MockShipRepository()
+    context['api_client'] = MockAPIClient()
 
 
 @given(parsers.parse('the ship is at waypoint "{waypoint}" with {fuel:d} fuel and {capacity:d} capacity'))

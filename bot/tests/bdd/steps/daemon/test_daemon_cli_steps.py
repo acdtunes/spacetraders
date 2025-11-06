@@ -17,6 +17,7 @@ def run_daemon_module(context, command):
     env = os.environ.copy()
     env['PYTHONPATH'] = 'src'
     env['SPACETRADERS_TOKEN'] = 'test-token'
+    env['PYTHONUNBUFFERED'] = '1'  # Force unbuffered output
 
     # Replace 'python' with sys.executable
     cmd_parts = command.split()
@@ -34,8 +35,8 @@ def run_daemon_module(context, command):
 
     context['daemon_process'] = proc
 
-    # Give it 1 second to start
-    time.sleep(1)
+    # Give it 2 seconds to start and flush logs
+    time.sleep(2)
 
     # Send SIGTERM to stop
     proc.terminate()
@@ -81,6 +82,7 @@ def module_starts_without_errors(context):
         not line.strip().startswith('return') and
         not line.strip().startswith('await') and
         not line.strip().startswith('^') and  # Traceback markers
+        not line.strip().startswith('~') and  # Python 3.13+ traceback markers
         not line.strip().startswith('main()')  # Function calls in traceback
     ]
 

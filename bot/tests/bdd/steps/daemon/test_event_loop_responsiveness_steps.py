@@ -195,6 +195,106 @@ def wait_for_refuel_sleep(context):
     time.sleep(0.5)  # Give container time to start and enter sleep phase
 
 
+@when(parsers.parse('I create a test container that sleeps for {seconds:d} seconds'))
+def create_test_sleep_container(context, seconds):
+    """Create a test container that sleeps for a specified duration
+
+    Uses a navigation command which will trigger asyncio.sleep() during transit.
+    This tests that the daemon remains responsive during long async operations.
+    """
+    # First, create a player if not exists
+    if 'player' not in context:
+        player_repo = get_player_repository()
+        player = Player(
+            player_id=None,
+            agent_symbol="TEST-AGENT",
+            token="test-token",
+            created_at=datetime.now(),
+            last_active=datetime.now(),
+            metadata={}
+        )
+        context['player'] = player_repo.create(player)
+
+    # Create a ship for navigation
+    ship_repo = get_ship_repository()
+    ship = Ship(
+        ship_symbol="TEST-SHIP-1",
+        player_id=context['player'].player_id,
+        current_location=Waypoint(symbol="X1-TEST-A1", x=0, y=0),
+        fuel=Fuel(current=100, capacity=100),
+        fuel_capacity=100,
+        cargo_capacity=50,
+        cargo_units=0,
+        engine_speed=30,
+        nav_status=Ship.IN_ORBIT
+    )
+    ship_repo.create(ship)
+
+    client = context['daemon_client']
+
+    # Create a command container with NavigateShipCommand
+    # This will trigger asyncio.sleep() during transit
+    container_config = {
+        'container_id': f'test-sleep-{seconds}s',
+        'player_id': context['player'].player_id,
+        'container_type': 'command',
+        'config': {
+            'command_type': 'NavigateShipCommand',
+            'params': {
+                'ship_symbol': 'TEST-SHIP-1',
+                'destination_symbol': 'X1-TEST-B2',
+                'player_id': context['player'].player_id
+            },
+            'iterations': 1
+        }
+    }
+
+    result = client.create_container(container_config)
+    context['container_id'] = result['container_id']
+
+
+@when("I wait for the container to start sleeping")
+def wait_for_container_sleep(context):
+    """Wait for container to enter sleep phase"""
+    time.sleep(0.5)  # Give container time to start and enter sleep phase
+
+
+@then("I should be able to list containers within 1 second")
+def list_containers_within_timeout(context):
+    """Verify daemon responds to list request within 1 second"""
+    client = context['daemon_client']
+
+    start_time = time.time()
+
+    try:
+        # Set socket timeout to 1 second
+        import socket
+        original_timeout = socket.getdefaulttimeout()
+        socket.setdefaulttimeout(1.0)
+
+        result = client.list_containers()
+        elapsed = time.time() - start_time
+
+        context['list_result'] = result
+        context['list_elapsed'] = elapsed
+
+        # Restore original timeout
+        socket.setdefaulttimeout(original_timeout)
+
+        # Assert response came within 1 second
+        assert elapsed < 1.0, (
+            f"Daemon took {elapsed:.2f}s to respond, expected < 1.0s. "
+            f"This indicates event loop blocking with time.sleep()."
+        )
+
+    except socket.timeout:
+        socket.setdefaulttimeout(original_timeout)
+        raise AssertionError(
+            "Daemon did not respond within 1 second. "
+            "Event loop is blocked by time.sleep()."
+        )
+
+
 @then("I should be able to inspect the container within 1 second")
 def inspect_container_within_timeout(context):
     """Verify daemon responds to inspect request within 1 second

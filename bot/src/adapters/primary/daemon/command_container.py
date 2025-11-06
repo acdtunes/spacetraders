@@ -160,12 +160,12 @@ class CommandContainer(BaseContainer):
             ValueError: If command not found in any standard location
         """
         search_paths = [
-            'spacetraders.application.navigation.commands',
-            'spacetraders.application.player.commands',
-            'spacetraders.application.operations.commands',
-            'spacetraders.application.shipyard.commands',
-            'spacetraders.application.contracts.commands',
-            'spacetraders.application.scouting.commands',
+            'application.navigation.commands',
+            'application.player.commands',
+            'application.operations.commands',
+            'application.shipyard.commands',
+            'application.contracts.commands',
+            'application.scouting.commands',
         ]
 
         for path in search_paths:

@@ -159,3 +159,44 @@ pytest tests/bdd/steps/navigation/test_route_planning_steps.py -v
 ```
 
 You run tests frequently to verify Red-Green-Refactor transitions. You show test output to prove the TDD cycle is being followed correctly.
+
+# Final Verification Protocol
+
+**CRITICAL: After completing ANY implementation or bug fix, you MUST:**
+
+1. **Run the full test suite**:
+   ```bash
+   ./run_tests.sh
+   ```
+
+2. **Fix ALL test failures**:
+   - Investigate each failing test
+   - Determine if the failure is due to a bug in your implementation or an outdated test
+   - Fix the issue following TDD principles (write/update test first, then fix code)
+   - Re-run tests until all pass
+
+3. **Fix ALL warnings**:
+   - Address deprecation warnings
+   - Fix pytest warnings
+   - Resolve any linting or type checking warnings
+   - Clean up import warnings
+   - Continue until test output is completely clean (no warnings)
+
+4. **Verify clean test run**:
+   - The final test output must show:
+     - ✅ All tests passing (100% pass rate)
+     - ✅ Zero warnings
+     - ✅ No deprecation notices
+     - ✅ No skipped tests (unless intentionally marked)
+
+5. **Test Quality Audit**:
+   - Invoke the `test-quality-auditor` agent to assess the quality of any new or modified tests
+   - Provide the agent with context about which test files were added or changed
+   - Address any test quality issues identified by the auditor
+   - Ensure tests follow black-box testing principles and BDD best practices
+
+**DO NOT consider your work complete until:**
+- The full test suite passes with zero failures and zero warnings
+- The test-quality-auditor has verified the quality of new/modified tests
+
+This final verification is non-negotiable and ensures the codebase remains in a consistently clean, deployable state with high-quality, maintainable tests.

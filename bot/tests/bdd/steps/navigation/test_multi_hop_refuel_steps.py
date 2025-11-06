@@ -31,7 +31,7 @@ scenarios('../../features/navigation/multi_hop_refuel.feature')
 # Mock Implementations for Testing
 # ============================================================================
 
-class TestShipRepository(IShipRepository):
+class MockShipRepository(IShipRepository):
     """In-memory ship repository for testing"""
 
     def __init__(self):
@@ -67,7 +67,7 @@ class TestShipRepository(IShipRepository):
         return ship
 
 
-class TestAPIClient:
+class MockAPIClient:
     """
     Mock API client that simulates the ACTUAL SpaceTraders API behavior.
 
@@ -187,8 +187,8 @@ def register_test_ship_multi_hop(context, ship_symbol):
     """Register test ship for multi-hop test"""
     context['ship_symbol'] = ship_symbol
     context['player_id'] = 1
-    context['ship_repo'] = TestShipRepository()
-    context['api_client'] = TestAPIClient()
+    context['ship_repo'] = MockShipRepository()
+    context['api_client'] = MockAPIClient()
 
 
 @given(parsers.parse('the ship is at waypoint "{waypoint}" with {fuel:d} fuel and {capacity:d} capacity'))
