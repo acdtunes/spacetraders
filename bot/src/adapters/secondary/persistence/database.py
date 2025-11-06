@@ -91,7 +91,7 @@ class Database:
             cursor = conn.cursor()
 
             # Players table
-            # NOTE: credits are NOT stored here - they are fetched from SpaceTraders API in real-time
+            # NOTE: credits are synchronized from SpaceTraders API via SyncPlayerCommand
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS players (
                     player_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -99,7 +99,8 @@ class Database:
                     token TEXT NOT NULL,
                     created_at TIMESTAMP NOT NULL,
                     last_active TIMESTAMP,
-                    metadata TEXT
+                    metadata TEXT,
+                    credits INTEGER DEFAULT 0
                 )
             """)
 
@@ -108,13 +109,13 @@ class Database:
                 ON players(agent_symbol)
             """)
 
-            # Migration: Remove credits column if it exists (credits are fetched from API, not stored)
+            # Migration: Add credits column if it doesn't exist
             cursor.execute("PRAGMA table_info(players)")
             player_columns = [row[1] for row in cursor.fetchall()]
-            if 'credits' in player_columns:
-                # SQLite doesn't support DROP COLUMN directly, but since we're not persisting credits anymore,
-                # existing credits column can remain (it will simply not be used)
-                logger.info("Credits column exists but is deprecated - credits are now fetched from API")
+            if 'credits' not in player_columns:
+                logger.info("Adding credits column to players table")
+                cursor.execute("ALTER TABLE players ADD COLUMN credits INTEGER DEFAULT 0")
+                conn.commit()
 
             # System graphs table (shared across all players)
             cursor.execute("""

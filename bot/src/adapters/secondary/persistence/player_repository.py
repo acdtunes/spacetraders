@@ -18,28 +18,29 @@ class PlayerRepository(IPlayerRepository):
 
     def create(self, player: Player) -> Player:
         """
-        Persist new player (without credits).
+        Persist new player.
 
-        NOTE: Credits are NOT persisted to database.
+        NOTE: Credits are cached in database. Use SyncPlayerCommand to synchronize with API.
         """
         with self._db.transaction() as conn:
             cursor = conn.cursor()
 
             cursor.execute("""
-                INSERT INTO players (agent_symbol, token, created_at, last_active, metadata)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO players (agent_symbol, token, created_at, last_active, metadata, credits)
+                VALUES (?, ?, ?, ?, ?, ?)
             """, (
                 player.agent_symbol,
                 player.token,
                 player.created_at.isoformat(),
                 player.last_active.isoformat(),
-                json.dumps(player.metadata)
+                json.dumps(player.metadata),
+                player.credits
             ))
 
             player_id = cursor.lastrowid
             logger.info(f"Created player {player_id}: {player.agent_symbol}")
 
-            # Return player with assigned ID (credits are transient, not persisted)
+            # Return player with assigned ID
             return Player(
                 player_id=player_id,
                 agent_symbol=player.agent_symbol,
@@ -47,7 +48,7 @@ class PlayerRepository(IPlayerRepository):
                 created_at=player.created_at,
                 last_active=player.last_active,
                 metadata=player.metadata,
-                credits=0  # Credits are NOT persisted
+                credits=player.credits
             )
 
     def find_by_id(self, player_id: int) -> Optional[Player]:
@@ -76,19 +77,20 @@ class PlayerRepository(IPlayerRepository):
 
     def update(self, player: Player) -> None:
         """
-        Update existing player (metadata and last_active only).
+        Update existing player (metadata, last_active, and credits).
 
-        NOTE: Credits are NOT persisted to database.
+        NOTE: Credits are cached in database. Use SyncPlayerCommand to synchronize with API.
         """
         with self._db.transaction() as conn:
             cursor = conn.cursor()
             cursor.execute("""
                 UPDATE players
-                SET last_active = ?, metadata = ?
+                SET last_active = ?, metadata = ?, credits = ?
                 WHERE player_id = ?
             """, (
                 player.last_active.isoformat(),
                 json.dumps(player.metadata),
+                player.credits,
                 player.player_id
             ))
             logger.debug(f"Updated player {player.player_id}")

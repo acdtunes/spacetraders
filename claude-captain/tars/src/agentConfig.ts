@@ -41,6 +41,18 @@ export function createCaptainOptions(): Partial<Options> {
   // claude-captain/ directory (contains .mcp.json)
   const projectRoot = join(__dirname, '..', '..');
 
+  // Shared MCP server configuration for all agents
+  const mcpServerConfig = {
+    'spacetraders-bot': {
+      type: 'stdio' as const,
+      command: 'node',
+      args: [join(projectRoot, '..', 'bot/mcp/build/index.js')],
+      env: {
+        MCP_PYTHON_BIN: join(projectRoot, '..', 'bot/uv-python')
+      }
+    }
+  };
+
   return {
     model: 'claude-sonnet-4-5-20250929',
     permissionMode: 'bypassPermissions', // Agents use tools they're configured with - no prompts
@@ -86,23 +98,14 @@ export function createCaptainOptions(): Partial<Options> {
     ],
 
     // MCP server configuration
-    mcpServers: {
-      'spacetraders-bot': {
-        type: 'stdio',
-        command: 'node',
-        args: [join(projectRoot, '..', 'bot/mcp/build/index.js')],
-        env: {
-          MCP_PYTHON_BIN: join(projectRoot, '..', 'bot/uv-python')
-        }
-      }
-    },
+    mcpServers: mcpServerConfig,
 
-    // Subagent definitions
+    // Subagent definitions - they inherit mcpServers and cwd from parent
     agents: {
       'contract-coordinator': {
         description: 'Use when you need to run contract fulfillment operations',
         prompt: loadPrompt(join(tarsRoot, '.claude/agents/contract-coordinator.md')),
-        model: 'haiku',
+        model: 'sonnet',
         tools: [
           'Read', 'Write', 'TodoWrite',
           'mcp__spacetraders-bot__contract_batch_workflow',
@@ -116,7 +119,7 @@ export function createCaptainOptions(): Partial<Options> {
       'scout-coordinator': {
         description: 'Use when you need to manage market intelligence via probe ship network',
         prompt: loadPrompt(join(tarsRoot, '.claude/agents/scout-coordinator.md')),
-        model: 'haiku',
+        model: 'sonnet',
         tools: [
           'Read', 'Write', 'TodoWrite',
           'mcp__spacetraders-bot__scout_markets',
@@ -130,7 +133,7 @@ export function createCaptainOptions(): Partial<Options> {
       'fleet-manager': {
         description: 'Use when you need to optimize ship assignments or analyze fleet composition',
         prompt: loadPrompt(join(tarsRoot, '.claude/agents/fleet-manager.md')),
-        model: 'haiku',
+        model: 'sonnet',
         tools: [
           'Read', 'Write', 'TodoWrite',
           'mcp__spacetraders-bot__ship_list',
@@ -167,7 +170,7 @@ export function createCaptainOptions(): Partial<Options> {
       'procurement-coordinator': {
         description: 'Use to execute approved ship purchase orders after Admiral approval',
         prompt: loadPrompt(join(tarsRoot, '.claude/agents/procurement-coordinator.md')),
-        model: 'haiku',
+        model: 'sonnet',
         tools: [
           'Read', 'Write', 'TodoWrite',
           'mcp__spacetraders-bot__shipyard_batch_purchase',
@@ -181,7 +184,7 @@ export function createCaptainOptions(): Partial<Options> {
       'captain-logger': {
         description: 'Use to write narrative mission logs for key events (session start/end, major operations, strategic decisions)',
         prompt: loadPrompt(join(tarsRoot, '.claude/agents/captain-logger.md')),
-        model: 'haiku',
+        model: 'sonnet',
         tools: [
           'Read', 'Write',
           'mcp__spacetraders-bot__captain_log_create',

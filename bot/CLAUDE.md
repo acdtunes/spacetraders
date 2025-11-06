@@ -2,6 +2,36 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## ⚠️ CRITICAL: Database Preservation ⚠️
+
+**NEVER, EVER DELETE OR RECREATE THE DATABASE!**
+
+The SQLite database at `var/spacetraders.db` contains production data including:
+- Registered players and agent tokens
+- Ship assignments and navigation state
+- Fleet operations history
+- Container logs and daemon state
+
+### Database Schema Changes
+
+When adding new columns or tables:
+1. **ALWAYS use ALTER TABLE to add columns** - NEVER drop and recreate tables
+2. **Use DEFAULT values** for new columns to handle existing rows
+3. **Test migrations on a copy first** - `cp var/spacetraders.db var/spacetraders.db.backup`
+4. **Verify data preservation** after schema changes
+
+Example safe migration:
+```python
+# GOOD - Adds column without losing data
+cursor.execute("ALTER TABLE players ADD COLUMN credits INTEGER DEFAULT 0")
+
+# BAD - DESTROYS ALL DATA
+cursor.execute("DROP TABLE players")
+cursor.execute("CREATE TABLE players (...)")
+```
+
+**If you accidentally delete data, restore from backup immediately!**
+
 ## ⚠️ CRITICAL: Daemon Server Restart Protocol ⚠️
 
 **ALWAYS restart the daemon server after ANY code changes to routing, navigation, or scouting modules!**
@@ -121,23 +151,23 @@ uv run ./spacetraders navigate --from X1-A1 --to X1-B2
 #### Ship Purchasing
 ```bash
 # List available ships at a shipyard
-uv run ./spacetraders shipyard list --waypoint X1-GZ7-AB12 --agent CHROMESAMURAI
+uv run ./spacetraders shipyard list --waypoint X1-GZ7-AB12 --agent YOUR_AGENT
 
 # Purchase a single ship
 uv run ./spacetraders shipyard purchase \
-  --ship CHROMESAMURAI-1 \
+  --ship YOUR_AGENT-1 \
   --shipyard X1-GZ7-AB12 \
   --type SHIP_MINING_DRONE \
-  --agent CHROMESAMURAI
+  --agent YOUR_AGENT
 
 # Batch purchase multiple ships with budget constraint
 uv run ./spacetraders shipyard batch \
-  --ship CHROMESAMURAI-1 \
+  --ship YOUR_AGENT-1 \
   --shipyard X1-GZ7-AB12 \
   --type SHIP_MINING_DRONE \
   --quantity 5 \
   --max-budget 500000 \
-  --agent CHROMESAMURAI
+  --agent YOUR_AGENT
 ```
 
 View all CLI options:
@@ -425,17 +455,6 @@ else:
     print(f"❌ Error: {data}")
 EOF
 ```
-
-### Current Active Agent
-
-**Agent:** CHROMESAMURAI
-**Player ID:** 2 (in database)
-**Credits:** 175,000
-**Faction:** COSMIC
-**Headquarters:** X1-GZ7-A1
-**Ships:** 2
-- `CHROMESAMURAI-1`: Command frigate (mining/gas extraction capable)
-- `CHROMESAMURAI-2`: Probe satellite
 
 ### Token Storage Strategy
 

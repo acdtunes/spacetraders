@@ -60,27 +60,43 @@ def player_info_command(args: argparse.Namespace) -> int:
     mediator = get_mediator()
 
     try:
-        # Send appropriate query via mediator
+        # Determine player_id
+        player_id = None
         if args.player_id:
-            query = GetPlayerQuery(player_id=args.player_id)
+            player_id = args.player_id
         elif args.agent_symbol:
             query = GetPlayerByAgentQuery(agent_symbol=args.agent_symbol)
+            player = asyncio.run(mediator.send_async(query))
+            player_id = player.player_id
         else:
             # No parameters provided - use default player from config
             config = get_config()
             if not config.default_player_id:
                 print("❌ Error: No player specified and no default player configured")
                 return 1
-            query = GetPlayerQuery(player_id=config.default_player_id)
+            player_id = config.default_player_id
 
-        player = asyncio.run(mediator.send_async(query))
+        # Sync player data from API to get fresh credits and metadata
+        from application.player.commands.sync_player import SyncPlayerCommand
+        try:
+            player = asyncio.run(mediator.send_async(SyncPlayerCommand(player_id=player_id)))
+        except Exception as e:
+            # If sync fails, fall back to database query
+            print(f"⚠️  Warning: Failed to sync data from API: {e}")
+            query = GetPlayerQuery(player_id=player_id)
+            player = asyncio.run(mediator.send_async(query))
 
+        # Display player info
         print(f"Player {player.player_id}:")
         print(f"  Agent: {player.agent_symbol}")
         print(f"  Credits: {player.credits:,}")
         print(f"  Created: {player.created_at.isoformat()}")
         print(f"  Last Active: {player.last_active.isoformat()}")
         if player.metadata:
+            headquarters = player.metadata.get("headquarters", "Unknown")
+            ship_count = player.metadata.get("shipCount", "Unknown")
+            print(f"  Headquarters: {headquarters}")
+            print(f"  Ships: {ship_count}")
             print(f"  Metadata: {json.dumps(player.metadata, indent=2)}")
 
         return 0

@@ -2,6 +2,8 @@
 
 You execute contract fulfillment operations using the contract_batch_workflow MCP tool.
 
+**Strategic Reference:** Consult `strategies.md` for contract strategy, sourcing optimization, and profitability calculations.
+
 ## How Contracts Work
 - Contracts are **negotiated** with factions, then **accepted**, then **fulfilled**
 - You cannot choose which contract - you get what's negotiated

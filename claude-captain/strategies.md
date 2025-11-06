@@ -4,28 +4,61 @@ This document contains proven strategies for SpaceTraders operations based on of
 
 **Sources:** Official SpaceTraders API documentation, player dev blogs (staffordwilliams.com, adyxax.org, bwiggs.com), and community implementations.
 
+## Early Game Strategy (0-300K Credits)
+
+**Starting Position:**
+- 1 command ship
+- ~150K-175K starting credits
+- Basic headquarters location
+- No market intelligence
+
+**Phase 1: Intelligence Network**
+
+**Goal:** Build market visibility before scaling operations
+
+**Step 1 - Scout Ship Acquisition:**
+- Purchase 2-3 probe/scout ships (max 100K total investment)
+- Look for cheapest ships that can move between waypoints
+- Probe ships are disposable intelligence assets, not revenue generators
+
+**Step 2 - Scout Operations:**
+- Deploy scout ships to cover major trade routes in your system
+- Use scout_markets MCP tool to start continuous market monitoring
+- Target: 1 scout per 2-3 key waypoints
+- Let scouts run continuously to gather price trends
+
+**Step 3 - Contract Operations:**
+- Start contract fulfillment with command ship immediately
+- Use contract_batch_workflow MCP tool
+- Contracts provide TWO revenue touchpoints:
+  - Acceptance payment (upfront capital)
+  - Delivery payment (profit)
+- Target: Complete initial batch of 5-10 contracts
+
+**Why This Works:**
+- Scouts cost <100K but provide priceless market data
+- Contracts generate 10-20K profit per run (guaranteed income)
+- Market intelligence enables better sourcing decisions
+- Low risk: contracts are guaranteed profit, scouts are cheap
+
+**Success Metrics:**
+- Credits growing steadily from contracts
+- Market price data for 10+ waypoints
+- Total credits reaching 300K+
+
+**Phase 2: Capital Accumulation**
+- Continue contract operations
+- Monitor scout data for trade opportunities
+- Save capital for mining fleet or trade expansion
+- Target: 500K-1M credits before major expansion
+
+**Pitfalls to Avoid:**
+- ❌ Don't buy expensive ships before you have market data
+- ❌ Don't start mining without surveyor + multiple miners
+- ❌ Don't ignore scout data - it's your strategic advantage
+- ❌ Don't scale too fast - let scouts identify opportunities first
+
 ## Core Game Mechanics
-
-### Rate Limits (CRITICAL)
-SpaceTraders API enforces strict rate limits:
-- **2 requests/second** sustained
-- **30 requests burst** over 60 seconds
-- **429 status code** when exceeded
-
-**Optimization Requirements:**
-- Implement priority queue (revenue-generating actions first)
-- Cache data aggressively (use SQLite with JSON support)
-- Centralize network I/O to enforce limits
-- Use exponential backoff on 429 errors
-- Monitor `x-ratelimit-*` response headers
-
-**Strategic Implications:**
-Any competitive agent MUST be efficient in commands sent. Every API call has opportunity cost. Prioritize:
-1. Ship actions that generate credits (extraction, selling)
-2. Contract fulfillment actions
-3. Navigation and docking
-4. Market price checks
-5. Exploration tasks (lowest priority)
 
 ### Fuel Economy
 **v2.1 Changes:** Fuel is more scarce, smaller ships have decreased capacity.
@@ -38,6 +71,14 @@ Any competitive agent MUST be efficient in commands sent. Every API call has opp
 
 **Fuel Starvation:**
 Round-trip fuel calculation is MANDATORY. Stranded ships = zero revenue until rescued.
+
+**Operation Efficiency:**
+Every ship operation has opportunity cost. Prioritize:
+1. Ship actions that generate credits (extraction, selling)
+2. Contract fulfillment actions
+3. Navigation and docking
+4. Market price checks
+5. Exploration tasks (lowest priority)
 
 ## Fleet Composition Strategies
 
@@ -80,13 +121,13 @@ Monitor Credits/hour trend. If declining despite adding miners = **market satura
 ### Market Intelligence Fleet
 
 **Probe/Satellite Deployment:**
-Deploy cheap satellite ships coded to check market prices periodically.
+Deploy cheap satellite ships to check market prices periodically.
 
 **Coverage Ratio:**
 Unknown optimal ratio (player experimentation needed). Consider:
 - 1 probe per major trade route
-- Refresh prices every 5-10 minutes (balance API limits)
-- Store historical data in database (SQLite recommended)
+- Refresh prices every 5-10 minutes
+- Track historical price trends over time
 
 **ROI Tracking:**
 Compare trading profits with vs without price data. If no measurable improvement, reduce probe count.
@@ -98,7 +139,7 @@ Compare trading profits with vs without price data. If no measurable improvement
 2. Dock at waypoint
 3. Refuel ship
 4. Orbit asteroid
-5. Send extraction request via `/extract` endpoint
+5. Execute extraction operation
 6. **Cooldown period** - cannot extract again until cooldown expires
 7. Repeat until cargo full
 8. Return to market, sell ore
@@ -225,18 +266,9 @@ You CANNOT see market prices without a ship physically at that waypoint. This is
 **Community Strategy:** "Deploy inexpensive probe ships to monitor market conditions over time, using historical data to predict price trends and plan profitable trade routes."
 
 **Implementation:**
-- Code satellites to check prices periodically (e.g., every 5-10 minutes)
-- Store in database (SQLite with JSON support recommended)
-- Respect rate limits (2 req/sec = 120 markets/minute theoretical max)
-
-**Coverage Calculation:**
-```
-max_markets_per_hour = 3600 seconds * 2 req/sec / requests_per_check
-If checking price = 1 request:
-  max_markets = 7200/hour (unrealistic, other operations needed)
-Realistic with other fleet ops:
-  Budget 30% of rate limit to market checks = ~2160 markets/hour
-```
+- Scout ships check prices periodically (e.g., every 5-10 minutes)
+- Track historical price data for trend analysis
+- Use scout_markets MCP tool for continuous monitoring
 
 **Practical Deployment:**
 Unknown optimal ratio. Start with 1 probe per major trade route. Scale based on ROI.
@@ -244,18 +276,11 @@ Unknown optimal ratio. Start with 1 probe per major trade route. Scale based on 
 ### Historical Data Analysis
 "Plotting yields over time can reveal the best locations" (applies to both mining and trading).
 
-**Database Schema (Recommended):**
-- Waypoint
-- Good
-- Sell price
-- Buy price
-- Timestamp
-- Supply level (if available)
-
-**Analysis Queries:**
+**Key Metrics to Track:**
 - Price trends over time
 - Arbitrage opportunities (buy location vs sell location)
 - Supply/demand shifts
+- Waypoint-specific good pricing
 
 ## Trade Arbitrage Strategy (Documented Mechanics)
 
@@ -342,44 +367,18 @@ Unknown. Charting may provide reputation/credit rewards or unlock trade opportun
 
 ## Advanced Optimizations
 
-### Database Caching Strategy
-**Proven Approach:** "Caching maximum information in SQLite database reduces API calls."
-
-**Implementation:**
-- Store API responses as JSON documents with indexed fields
-- Balance simplicity vs normalization
-- Reduces redundant /my/ships/{shipSymbol} calls
-- Cache market price data with timestamps
-
-**Benefits:**
-- Drastically reduces rate limit pressure
-- Enables historical trend analysis
-- Faster operation planning (no API roundtrip)
-
-### Request Priority Queue
-**Documented Pattern:** "Priority queue manages network requests, ensuring rate-limit compliance while strategically ordering actions."
-
-**Priority Hierarchy:**
-1. Revenue-generating ship actions (extract, sell, buy, deliver)
-2. Navigation toward revenue operations
-3. Docking/refueling (prerequisites for revenue)
-4. Market price checks (intelligence)
-5. Exploration tasks (lowest)
-
-**Why This Matters:**
-At 2 req/sec, every wasted call = lost revenue opportunity.
-
-### Behavioral Automation Chains
+### Behavioral Automation
 **Proven Patterns:**
 - Auto-docking check before navigation
 - Auto-refuel upon arrival at waypoints
 - Auto-route to asteroids when detected
 - Auto-sell when cargo full
 
-**Reduces:**
-- Manual intervention
-- API calls (batch operations)
-- Human error
+**Benefits:**
+- Reduces manual intervention
+- Optimizes operation efficiency
+- Minimizes human error
+- Enables continuous operations
 
 ## Common Pitfalls (Documented)
 
@@ -388,25 +387,25 @@ At 2 req/sec, every wasted call = lost revenue opportunity.
 **Cause:** Calculated one-way fuel, forgot return trip
 **Fix:** Always calculate `fuel_needed = outbound + return + 10% safety margin`
 
-### 2. Rate Limit Violation
-**Symptom:** 429 errors, failed operations
-**Cause:** Concurrent requests without centralized queue
-**Fix:** Centralize all network I/O, implement priority queue
-
-### 3. Ignoring Cooldowns
-**Symptom:** Wasted API calls trying to extract during cooldown
+### 2. Ignoring Cooldowns
+**Symptom:** Wasted operations trying to extract during cooldown
 **Cause:** Not tracking extraction cooldown timers
-**Fix:** Store cooldown expiry, don't attempt action until expired
+**Fix:** Track cooldown expiry, don't attempt action until expired
 
-### 4. Over-Mining Asteroid Collapse
+### 3. Over-Mining Asteroid Collapse
 **Symptom:** Yields suddenly drop 70%+
 **Cause:** Extracted too much from single asteroid field
 **Fix:** Monitor yields, rotate between multiple fields proactively
 
-### 5. Market Supply Chain Blindness
+### 4. Market Supply Chain Blindness
 **Symptom:** Export prices unexpectedly rising
 **Cause:** Import shortage constraining production
 **Fix:** Monitor both sides of supply chain, ensure imports adequate
+
+### 5. Premature Scaling
+**Symptom:** Credits depleted, fleet idle
+**Cause:** Bought too many ships before establishing profitable operations
+**Fix:** Scale incrementally, validate profitability before expanding
 
 ## Technology Progression (Hypothetical)
 
@@ -428,43 +427,41 @@ At 2 req/sec, every wasted call = lost revenue opportunity.
 - Fuel consumed (lifetime)
 - Profit per operation
 - Active time vs cooldown time
-- API calls per credit earned
+- Operations per credit earned
 
 **Fleet-Wide:**
-- Total credits/hour (trend over time)
-- Rate limit utilization %
+- Total credits per operation (trend over time)
 - Market price trends (by good, by waypoint)
 - Asteroid yield trends (depletion detection)
+- Fleet utilization percentage
 
 **Warning Signals:**
-- Credits/hour declining = market saturation or asteroid depletion
+- Credits per operation declining = market saturation or asteroid depletion
 - Fuel costs increasing = price spike, route optimization needed
 - Yields declining = asteroid collapse imminent
 
 ## Strategy Validation Framework
 
 When proposing new strategy:
-1. **Calculate Expected ROI:** Credits/hour improvement
-2. **API Call Efficiency:** Operations per request
+1. **Calculate Expected ROI:** Credits per operation improvement
+2. **Operation Efficiency:** Time and resources per operation
 3. **Fuel Cost Impact:** Additional fuel vs additional revenue
-4. **Rate Limit Budget:** How many requests needed
-5. **Capital Requirement:** Upfront ship/good purchase costs
-6. **Risk Assessment:** What happens if market moves against us
-7. **Rollback Plan:** How to exit if unprofitable
+4. **Capital Requirement:** Upfront ship/good purchase costs
+5. **Risk Assessment:** What happens if market moves against us
+6. **Rollback Plan:** How to exit if unprofitable
+7. **Scalability:** Can this strategy grow with fleet size
 
 ## Research Sources
 
 **Official Documentation:**
 - docs.spacetraders.io (game mechanics)
-- spacetraders.stoplight.io (API reference)
 
 **Community Experience:**
 - staffordwilliams.com/blog (mining optimization, fleet management)
-- adyxax.org/blog (caching strategy, JavaScript async patterns)
+- adyxax.org/blog (automation patterns)
 - bwiggs.com/projects (contract workflow, multi-ship coordination)
 
 **Confirmed Mechanics:**
-- Rate limits: 2 req/sec, 30 burst/60sec
 - Markets: Export/import/exchange dynamics
 - Contracts: Two-payment structure
 - Mining: Survey improvement, asteroid collapse
@@ -480,6 +477,6 @@ When proposing new strategy:
 
 ---
 
-**Last Updated:** 2025-11-05
+**Last Updated:** 2025-11-06
 **Maintained By:** TARS feature-proposer agent
-**Based On:** Official SpaceTraders API v2.1 documentation and community implementations
+**Based On:** Official SpaceTraders documentation and community implementations

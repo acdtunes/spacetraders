@@ -16,9 +16,8 @@ class PlayerMapper:
         """
         Convert database row to Player entity.
 
-        NOTE: Credits are NOT loaded from database - they must be fetched from API.
-        Player is created with credits=0 by default. Handlers must fetch credits from API
-        via api_client.get_agent() and pass them to the Player entity for validation.
+        NOTE: Credits are cached in database but should be synchronized from API
+        via SyncPlayerCommand to ensure they remain fresh.
         """
         return Player(
             player_id=int(row["player_id"]),
@@ -27,7 +26,7 @@ class PlayerMapper:
             created_at=datetime.fromisoformat(row["created_at"]),
             last_active=datetime.fromisoformat(row["last_active"]) if row["last_active"] else None,
             metadata=json.loads(row["metadata"]) if row["metadata"] else {},
-            credits=0  # Credits are NOT persisted - fetch from API instead
+            credits=int(row["credits"] if "credits" in row.keys() else 0)  # Default to 0 if not present
         )
 
     @staticmethod
@@ -35,7 +34,8 @@ class PlayerMapper:
         """
         Convert Player entity to database dictionary.
 
-        NOTE: Credits are NOT persisted to database.
+        NOTE: Credits are cached in database for display purposes.
+        Use SyncPlayerCommand to keep them synchronized with the API.
         """
         return {
             "player_id": player.player_id,
@@ -43,8 +43,8 @@ class PlayerMapper:
             "token": player.token,
             "created_at": player.created_at.isoformat(),
             "last_active": player.last_active.isoformat() if player.last_active else None,
-            "metadata": json.dumps(player.metadata) if player.metadata else None
-            # Credits are NOT persisted
+            "metadata": json.dumps(player.metadata) if player.metadata else None,
+            "credits": player.credits
         }
 
 
