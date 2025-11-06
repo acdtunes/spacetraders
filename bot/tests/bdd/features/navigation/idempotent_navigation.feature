@@ -11,7 +11,7 @@ Feature: Idempotent Navigation Commands
 
   Scenario: Navigation command sent while ship is IN_TRANSIT
     Given the database shows ship "TEST-SHIP-1" with status "IN_TRANSIT"
-    And the API shows ship "TEST-SHIP-1" arriving in 60 seconds
+    And the API shows ship "TEST-SHIP-1" arriving in 2 seconds
     When I send a navigation command for ship "TEST-SHIP-1" to "X1-TEST-C3"
     Then the ship should wait for previous transit to complete
     And the navigation should proceed after arrival
@@ -19,7 +19,7 @@ Feature: Idempotent Navigation Commands
 
   Scenario: Navigation command accepted even when ship is in transit
     Given the database shows ship "TEST-SHIP-1" with status "IN_TRANSIT"
-    And the API shows ship "TEST-SHIP-1" arriving in 30 seconds
+    And the API shows ship "TEST-SHIP-1" arriving in 2 seconds
     When I send a navigation command for ship "TEST-SHIP-1" to "X1-TEST-B2"
     Then the command should be accepted without error
     And the handler should log "waiting for arrival"
