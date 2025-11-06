@@ -35,14 +35,17 @@ function loadPrompt(path: string): string {
  * Create agent options for TARS Captain
  */
 export function createCaptainOptions(): Partial<Options> {
-  // Get the parent directory (claude-captain) to access .claude folder
+  // tars/ directory (contains .claude folder with TARS config)
+  const tarsRoot = join(__dirname, '..');
+
+  // claude-captain/ directory (contains .mcp.json)
   const projectRoot = join(__dirname, '..', '..');
 
   return {
     model: 'claude-sonnet-4-5-20250929',
     permissionMode: 'bypassPermissions', // Agents use tools they're configured with - no prompts
-    cwd: projectRoot, // Set working directory to claude-captain/ so settings.json is found
-    systemPrompt: loadPrompt(join(projectRoot, '.claude/output-styles/tars.md')),
+    cwd: projectRoot, // Set working directory to claude-captain/ so .mcp.json is found
+    systemPrompt: loadPrompt(join(tarsRoot, '.claude/output-styles/tars.md')),
 
     // Extended thinking mode - Allow TARS to reason deeply about strategic decisions
     maxThinkingTokens: 10000,
@@ -98,7 +101,7 @@ export function createCaptainOptions(): Partial<Options> {
     agents: {
       'contract-coordinator': {
         description: 'Use when you need to run contract fulfillment operations',
-        prompt: loadPrompt(join(projectRoot, '.claude/agents/contract-coordinator.md')),
+        prompt: loadPrompt(join(tarsRoot, '.claude/agents/contract-coordinator.md')),
         model: 'haiku',
         tools: [
           'Read', 'Write', 'TodoWrite',
@@ -112,7 +115,7 @@ export function createCaptainOptions(): Partial<Options> {
 
       'scout-coordinator': {
         description: 'Use when you need to manage market intelligence via probe ship network',
-        prompt: loadPrompt(join(projectRoot, '.claude/agents/scout-coordinator.md')),
+        prompt: loadPrompt(join(tarsRoot, '.claude/agents/scout-coordinator.md')),
         model: 'haiku',
         tools: [
           'Read', 'Write', 'TodoWrite',
@@ -126,7 +129,7 @@ export function createCaptainOptions(): Partial<Options> {
 
       'fleet-manager': {
         description: 'Use when you need to optimize ship assignments or analyze fleet composition',
-        prompt: loadPrompt(join(projectRoot, '.claude/agents/fleet-manager.md')),
+        prompt: loadPrompt(join(tarsRoot, '.claude/agents/fleet-manager.md')),
         model: 'haiku',
         tools: [
           'Read', 'Write', 'TodoWrite',
@@ -139,7 +142,7 @@ export function createCaptainOptions(): Partial<Options> {
 
       'bug-reporter': {
         description: 'Use when you encounter persistent errors after retries that need documentation',
-        prompt: loadPrompt(join(projectRoot, '.claude/agents/bug-reporter.md')),
+        prompt: loadPrompt(join(tarsRoot, '.claude/agents/bug-reporter.md')),
         model: 'sonnet',
         tools: [
           'Read', 'Write',
@@ -151,7 +154,7 @@ export function createCaptainOptions(): Partial<Options> {
 
       'feature-proposer': {
         description: 'Use every 2 hours or when performance metrics decline to analyze strategy and propose improvements',
-        prompt: loadPrompt(join(projectRoot, '.claude/agents/feature-proposer.md')),
+        prompt: loadPrompt(join(tarsRoot, '.claude/agents/feature-proposer.md')),
         model: 'sonnet',
         tools: [
           'Read', 'Write', 'Grep', 'Glob',
@@ -163,7 +166,7 @@ export function createCaptainOptions(): Partial<Options> {
 
       'procurement-coordinator': {
         description: 'Use to execute approved ship purchase orders after Admiral approval',
-        prompt: loadPrompt(join(projectRoot, '.claude/agents/procurement-coordinator.md')),
+        prompt: loadPrompt(join(tarsRoot, '.claude/agents/procurement-coordinator.md')),
         model: 'haiku',
         tools: [
           'Read', 'Write', 'TodoWrite',
@@ -177,7 +180,7 @@ export function createCaptainOptions(): Partial<Options> {
 
       'captain-logger': {
         description: 'Use to write narrative mission logs for key events (session start/end, major operations, strategic decisions)',
-        prompt: loadPrompt(join(projectRoot, '.claude/agents/captain-logger.md')),
+        prompt: loadPrompt(join(tarsRoot, '.claude/agents/captain-logger.md')),
         model: 'haiku',
         tools: [
           'Read', 'Write',
