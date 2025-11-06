@@ -436,6 +436,15 @@ def verify_zero_profit(context):
     assert context['workflow_result'].total_profit == 0
 
 
+@then('the result may show negative profit')
+def verify_negative_profit_allowed(context):
+    """Verify negative profit is acceptable (small losses allowed)"""
+    assert context.get('workflow_result') is not None
+    # Small losses up to -5000 credits are acceptable
+    assert context['workflow_result'].total_profit >= -5000, \
+        f"Loss exceeds acceptable threshold: {context['workflow_result'].total_profit}"
+
+
 @then(parsers.parse('{count:d} contract should fail'))
 @then(parsers.parse('{count:d} contracts should fail'))
 def verify_failed(context, count):

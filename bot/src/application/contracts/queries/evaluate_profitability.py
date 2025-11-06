@@ -100,9 +100,17 @@ class EvaluateContractProfitabilityHandler(RequestHandler[EvaluateContractProfit
         net_profit = total_payment - (total_purchase_cost + total_fuel_cost)
 
         # Determine if profitable
-        is_profitable = net_profit > 0
+        # Allow small losses (up to 5000 cr) to avoid opportunity cost of waiting
+        min_profit = -5000
+        is_profitable = net_profit >= min_profit
 
-        reason = "Profitable" if is_profitable else "Not profitable"
+        # Generate detailed reason message
+        if net_profit > 0:
+            reason = "Profitable"
+        elif net_profit >= min_profit:
+            reason = "Acceptable small loss (avoids opportunity cost)"
+        else:
+            reason = f"Loss exceeds acceptable threshold (min profit: {min_profit} cr)"
 
         return ProfitabilityResult(
             is_profitable=is_profitable,

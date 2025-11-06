@@ -34,6 +34,10 @@ from application.player.commands.touch_last_active import (
     TouchPlayerLastActiveCommand,
     TouchPlayerLastActiveHandler
 )
+from application.player.commands.sync_player import (
+    SyncPlayerCommand,
+    SyncPlayerHandler
+)
 from application.player.queries.get_player import (
     GetPlayerQuery,
     GetPlayerHandler,
@@ -140,6 +144,10 @@ from application.contracts.commands.negotiate_contract import (
     NegotiateContractCommand,
     NegotiateContractHandler
 )
+from application.contracts.commands.fetch_contract_from_api import (
+    FetchContractFromAPICommand,
+    FetchContractFromAPIHandler
+)
 from application.trading.commands.purchase_cargo import (
     PurchaseCargoCommand,
     PurchaseCargoHandler
@@ -155,6 +163,10 @@ from application.contracts.queries.evaluate_profitability import (
 from application.contracts.commands.batch_contract_workflow import (
     BatchContractWorkflowCommand,
     BatchContractWorkflowHandler
+)
+from application.waypoints.queries.list_waypoints import (
+    ListWaypointsQuery,
+    ListWaypointsHandler
 )
 from application.common.behaviors import (
     LoggingBehavior,
@@ -375,7 +387,7 @@ def get_mediator() -> Mediator:
         # ===== Player Command Handlers =====
         _mediator.register_handler(
             RegisterPlayerCommand,
-            lambda: RegisterPlayerHandler(player_repo)
+            lambda: RegisterPlayerHandler(player_repo, _mediator)
         )
         _mediator.register_handler(
             UpdatePlayerMetadataCommand,
@@ -384,6 +396,10 @@ def get_mediator() -> Mediator:
         _mediator.register_handler(
             TouchPlayerLastActiveCommand,
             lambda: TouchPlayerLastActiveHandler(player_repo)
+        )
+        _mediator.register_handler(
+            SyncPlayerCommand,
+            lambda: SyncPlayerHandler(player_repo)
         )
 
         # ===== Player Query Handlers =====
@@ -489,6 +505,13 @@ def get_mediator() -> Mediator:
             lambda: ScoutTourHandler(ship_repo, market_repo)
         )
 
+        # ===== Waypoint Query Handlers =====
+        waypoint_repo = get_waypoint_repository()
+        _mediator.register_handler(
+            ListWaypointsQuery,
+            lambda: ListWaypointsHandler(waypoint_repo)
+        )
+
         # ===== Contract Query Handlers =====
         contract_repo = get_contract_repository()
         db = get_database()
@@ -527,6 +550,10 @@ def get_mediator() -> Mediator:
         _mediator.register_handler(
             NegotiateContractCommand,
             lambda: NegotiateContractHandler(contract_repo, get_api_client_for_player)
+        )
+        _mediator.register_handler(
+            FetchContractFromAPICommand,
+            lambda: FetchContractFromAPIHandler(contract_repo, get_api_client_for_player)
         )
         _mediator.register_handler(
             BatchContractWorkflowCommand,

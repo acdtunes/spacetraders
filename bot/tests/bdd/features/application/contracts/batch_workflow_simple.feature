@@ -17,13 +17,13 @@ Feature: Batch Contract Workflow - Unit Tests
     And 1 contract should be fulfilled
     And the result should show positive profit
 
-  Scenario: Skip unprofitable contract and continue
+  Scenario: Accept unprofitable contract to avoid opportunity cost
     Given contract negotiation returns an unprofitable contract
     When I execute batch workflow with 1 iteration
     Then 1 contract should be negotiated
-    And 0 contracts should be accepted
-    And 0 contracts should be fulfilled
-    And the result should show zero profit
+    And 1 contract should be accepted
+    And 1 contract should be fulfilled
+    And the result may show negative profit
 
   Scenario: Execute multiple iterations
     Given contract negotiation returns profitable contracts

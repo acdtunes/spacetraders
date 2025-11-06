@@ -286,6 +286,24 @@ class SpaceTradersBotServer {
       case "config_clear_player":
         return ["config", "clear-player"];
 
+      // ==================== WAYPOINT QUERIES ====================
+      case "waypoint_list": {
+        const cmd = ["waypoint", "list", "--system", String(args.system)];
+        if (args.trait !== undefined) {
+          cmd.push("--trait", String(args.trait));
+        }
+        if (args.has_fuel === true) {
+          cmd.push("--has-fuel");
+        }
+        if (args.player_id !== undefined) {
+          cmd.push("--player-id", String(args.player_id));
+        }
+        if (args.agent !== undefined) {
+          cmd.push("--agent", String(args.agent));
+        }
+        return cmd;
+      }
+
       default:
         return null;
     }

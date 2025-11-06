@@ -99,6 +99,7 @@ class MockSpaceTradersAPI(ISpaceTradersAPI):
         self.ships: List[dict] = []
         self.agent_symbol: str = "TEST-AGENT"
         self.agent_fetched: bool = False
+        self.agent_data: Optional[dict] = None
         # Tracking for orbit operations
         self.orbit_called: bool = False
         self.orbit_ship_symbol: Optional[str] = None
@@ -168,6 +169,8 @@ class MockSpaceTradersAPI(ISpaceTradersAPI):
 
     def get_agent(self):
         self.agent_fetched = True
+        if self.agent_data:
+            return self.agent_data
         return {"data": {"symbol": self.agent_symbol}}
 
     def get_ship(self, ship_symbol: str):

@@ -29,13 +29,21 @@ Feature: Batch Contract Workflow
     And the workflow should deliver 150 units total
     And the workflow should fulfill the contract successfully
 
-  Scenario: Wait for profitable price before accepting contract
+  Scenario: Always accept contracts even if initially unprofitable
+    Given a market at "X1-TEST-M1" sells "IRON_ORE" for 5000 credits per unit
+    And the ship has 100000 credits available
+    When I execute batch contract workflow for ship "TEST_AGENT-1" with 1 iteration
+    Then the workflow should negotiate 1 contract
+    And the workflow should accept the contract even if loss exceeds threshold
+    And the workflow should fulfill 1 contract successfully
+
+  Scenario: Poll market prices and accept when profitable
     Given a market at "X1-TEST-M1" initially sells "IRON_ORE" for 5000 credits per unit
     And the market price will drop to 100 credits after 1 poll
     And the ship has 10000 credits available
     When I execute batch contract workflow for ship "TEST_AGENT-1" with 1 iteration
     Then the workflow should poll market prices until profitable
-    And the workflow should accept the contract after price drop
+    And the workflow should accept the contract after price becomes profitable
     And the workflow should fulfill the contract successfully
 
   Scenario: Continue to next contract when one fails
@@ -54,3 +62,15 @@ Feature: Batch Contract Workflow
     Then the workflow should negotiate 5 contracts
     And the workflow should fulfill 5 contracts successfully
     And the workflow should return batch statistics with total profit
+
+  Scenario: Resume existing active contract from API when local database is empty
+    Given the local database has no contracts
+    And the API has an active contract "API-CONTRACT-123" for the agent
+    And a market at "X1-TEST-M1" sells "IRON_ORE" for 100 credits per unit
+    And the ship has 10000 credits available
+    When I execute batch contract workflow for ship "TEST_AGENT-1" with 1 iteration
+    Then the workflow should not negotiate a new contract
+    And the workflow should fetch the existing contract "API-CONTRACT-123" from API
+    And the workflow should save the contract to local database
+    And the workflow should resume the existing contract
+    And the workflow should fulfill 1 contract successfully

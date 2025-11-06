@@ -28,7 +28,7 @@ Feature: Evaluate Contract Profitability
     And the net profit should be 9400 credits
     And 3 trips should be required
 
-  Scenario: Contract is unprofitable due to high purchase costs
+  Scenario: Contract is unprofitable due to high purchase costs but loss exceeds threshold
     Given a contract pays 5000 credits on acceptance and 10000 on fulfillment
     And the contract requires 100 units of "IRON_ORE" delivery
     And the cheapest market sells "IRON_ORE" for 200 credits per unit
@@ -37,6 +37,18 @@ Feature: Evaluate Contract Profitability
     When I evaluate contract profitability
     Then the contract should not be profitable
     And the net profit should be -5200 credits
+    And the reason should indicate "Loss exceeds acceptable threshold"
+
+  Scenario: Contract with small loss is still considered acceptable
+    Given a contract pays 5000 credits on acceptance and 10000 on fulfillment
+    And the contract requires 50 units of "IRON_ORE" delivery
+    And the cheapest market sells "IRON_ORE" for 302 credits per unit
+    And the ship has cargo capacity of 100 units
+    And estimated fuel cost per trip is 200 credits
+    When I evaluate contract profitability
+    Then the contract should be profitable
+    And the net profit should be -300 credits
+    And the reason should indicate "Acceptable small loss"
 
   Scenario: No market sells required goods
     Given a contract pays 5000 credits on acceptance and 10000 on fulfillment

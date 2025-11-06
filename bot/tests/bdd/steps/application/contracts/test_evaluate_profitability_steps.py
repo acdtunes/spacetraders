@@ -177,3 +177,11 @@ def verify_error_message(context, message):
     assert context.get('profitability_result') is not None, "No profitability result"
     assert message.lower() in context['profitability_result'].reason.lower(), \
         f"Expected message containing '{message}', got: {context['profitability_result'].reason}"
+
+
+@then(parsers.parse('the reason should indicate "{message}"'))
+def verify_reason_message(context, message):
+    """Verify reason message in result"""
+    assert context.get('profitability_result') is not None, "No profitability result"
+    assert message.lower() in context['profitability_result'].reason.lower(), \
+        f"Expected reason containing '{message}', got: {context['profitability_result'].reason}"

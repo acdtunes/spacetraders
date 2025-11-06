@@ -215,6 +215,38 @@ export const botToolDefinitions: Tool[] = [
     }
   },
 
+  // ==================== WAYPOINT QUERIES ====================
+  {
+    name: "waypoint_list",
+    description: "List cached waypoints in a system. Query local database for waypoint information without making API calls. Supports filtering by trait (e.g., MARKETPLACE, SHIPYARD) or fuel availability.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        system: {
+          type: "string",
+          description: "System symbol (e.g., X1-HZ85)"
+        },
+        trait: {
+          type: "string",
+          description: "Optional: Filter by trait (e.g., MARKETPLACE, SHIPYARD, ASTEROIDS)"
+        },
+        has_fuel: {
+          type: "boolean",
+          description: "Optional: Filter for waypoints with fuel stations"
+        },
+        player_id: {
+          type: "integer",
+          description: "Player ID (optional)"
+        },
+        agent: {
+          type: "string",
+          description: "Agent symbol - alternative to player_id"
+        }
+      },
+      required: ["system"]
+    }
+  },
+
   // ==================== SCOUTING COMMANDS ====================
   {
     name: "scout_markets",
