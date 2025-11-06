@@ -25,6 +25,12 @@ dev = [
 [project.scripts]
 spacetraders = "adapters.primary.cli.main:main"
 
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = "test_*.py"

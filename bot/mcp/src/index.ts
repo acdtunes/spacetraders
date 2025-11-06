@@ -331,8 +331,8 @@ class SpaceTradersBotServer {
     timeoutMs: number
   ): Promise<PythonCommandResult> {
     return new Promise((resolve) => {
-      // Invoke as module: python -m spacetraders.adapters.primary.cli.main
-      const child = spawn(this.pythonExecutable, ["-m", "spacetraders.adapters.primary.cli.main", ...args], {
+      // Invoke as module: python -m adapters.primary.cli.main
+      const child = spawn(this.pythonExecutable, ["-m", "adapters.primary.cli.main", ...args], {
         cwd: this.botDir,
         stdio: ["ignore", "pipe", "pipe"],
         env: {
