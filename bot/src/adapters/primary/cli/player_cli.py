@@ -5,6 +5,7 @@ from typing import Any, Dict
 
 # TODO: get_mediator() will be implemented in Wave 5 (DI Container)
 from configuration.container import get_mediator
+from configuration.config import get_config
 from application.player.commands.register_player import RegisterPlayerCommand
 from application.player.queries.get_player import GetPlayerQuery, GetPlayerByAgentQuery
 from application.player.queries.list_players import ListPlayersQuery
@@ -62,8 +63,15 @@ def player_info_command(args: argparse.Namespace) -> int:
         # Send appropriate query via mediator
         if args.player_id:
             query = GetPlayerQuery(player_id=args.player_id)
-        else:
+        elif args.agent_symbol:
             query = GetPlayerByAgentQuery(agent_symbol=args.agent_symbol)
+        else:
+            # No parameters provided - use default player from config
+            config = get_config()
+            if not config.default_player_id:
+                print("❌ Error: No player specified and no default player configured")
+                return 1
+            query = GetPlayerQuery(player_id=config.default_player_id)
 
         player = asyncio.run(mediator.send_async(query))
 

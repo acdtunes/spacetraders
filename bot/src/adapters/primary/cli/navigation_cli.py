@@ -295,6 +295,23 @@ def list_ships_command(args: argparse.Namespace) -> int:
             ships = asyncio.run(mediator.send_async(sync_command))
             print(f"✅ Synced {len(ships)} ships\n")
 
+        # Display ship list
+        if not ships:
+            print("No ships found")
+            return 0
+
+        print(f"Ships ({len(ships)}):")
+        print("-" * 80)
+        for ship in ships:
+            fuel_pct = ship.fuel.percentage()
+            cargo_used = f"{ship.cargo_units}/{ship.cargo_capacity}"
+            print(f"  {ship.ship_symbol}")
+            print(f"    Location: {ship.current_location.symbol}")
+            print(f"    Status: {ship.nav_status}")
+            print(f"    Fuel: {fuel_pct:.0f}% ({ship.fuel.current}/{ship.fuel.capacity})")
+            print(f"    Cargo: {cargo_used}")
+            print()
+
         return 0
 
     except PlayerSelectionError as e:

@@ -95,7 +95,7 @@ const AssistantMessage: React.FC<{ message: any; isInSubagent?: boolean }> = ({
   );
 };
 
-const UserMessage: React.FC<{ message: SDKMessage }> = ({ message }) => {
+const UserMessage: React.FC<{ message: SDKMessage }> = () => {
   // User messages (tool results) are typically hidden
   return null;
 };
@@ -145,6 +145,13 @@ const SystemMessage: React.FC<{ message: any }> = ({ message }) => {
         <Text color="yellow">⚠️  Permission Required</Text>
         <Text color="yellow">Tool: {toolName}{paramStr}</Text>
         <Text dimColor>Note: This should be pre-approved in settings.json</Text>
+      </Box>
+    );
+  } else if (message.content && typeof message.content === 'string') {
+    // Handle generic app notifications (not from SDK)
+    return (
+      <Box marginBottom={1}>
+        <Text color="yellow">{message.content}</Text>
       </Box>
     );
   }

@@ -53,19 +53,19 @@ export const TarsApp: React.FC<TarsAppProps> = ({ options, memory, afkMode }) =>
       const checkinMinutes = parts.length >= 3 ? parseInt(parts[2]) : 30;
 
       if (isNaN(durationHours) || durationHours <= 0) {
-        const msg: SDKMessage = {
+        const msg = {
           type: 'system',
           content: '⚠️ Invalid duration. Using default 4 hours.'
-        };
+        } as unknown as SDKMessage;
         setMessages(prev => [...prev, msg]);
         memory.addMessage(msg);
       }
 
       if (isNaN(checkinMinutes) || checkinMinutes <= 0) {
-        const msg: SDKMessage = {
+        const msg = {
           type: 'system',
           content: '⚠️ Invalid check-in interval. Using default 30 minutes.'
-        };
+        } as unknown as SDKMessage;
         setMessages(prev => [...prev, msg]);
         memory.addMessage(msg);
       }
@@ -76,10 +76,10 @@ export const TarsApp: React.FC<TarsAppProps> = ({ options, memory, afkMode }) =>
         mission: undefined
       };
 
-      const afkMsg: SDKMessage = {
+      const afkMsg = {
         type: 'system',
         content: `🤖 Entering AFK mode: ${config.durationHours}h, check-in every ${config.checkinMinutes}min\n💡 Press ESC to return to interactive mode`
-      };
+      } as unknown as SDKMessage;
       setMessages(prev => [...prev, afkMsg]);
       memory.addMessage(afkMsg);
 
@@ -107,10 +107,10 @@ export const TarsApp: React.FC<TarsAppProps> = ({ options, memory, afkMode }) =>
       for await (const message of result) {
         // Check if user requested cancellation
         if (shouldCancelRef.current) {
-          const interruptMsg: SDKMessage = {
+          const interruptMsg = {
             type: 'system',
             content: '⚠️ Processing interrupted by user (ESC pressed)'
-          };
+          } as unknown as SDKMessage;
           setMessages(prev => [...prev, interruptMsg]);
           memory.addMessage(interruptMsg);
           break;
@@ -206,7 +206,7 @@ BEGIN SETUP NOW.`;
           setMessages(prev => [...prev, {
             type: 'system',
             content: '✅ AFK mode complete. Returning to interactive mode.'
-          }]);
+          } as unknown as SDKMessage]);
           setIsAfkMode(false);
           setAfkConfig(undefined);
           return;
@@ -274,6 +274,7 @@ After reporting, you will wait for the next check-in at ${elapsedHours.toFixed(1
         }
       };
     }
+    return;
   }, [isAfkMode, afkConfig]);
 
   // Handle ESC in AFK mode to return to interactive
@@ -287,7 +288,7 @@ After reporting, you will wait for the next check-in at ${elapsedHours.toFixed(1
         setMessages(prev => [...prev, {
           type: 'system',
           content: '⚠️ AFK mode interrupted. Returning to interactive mode.'
-        }]);
+        } as unknown as SDKMessage]);
 
         setIsAfkMode(false);
         setAfkConfig(undefined);

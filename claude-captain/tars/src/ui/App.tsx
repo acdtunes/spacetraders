@@ -48,7 +48,7 @@ export const App: React.FC<AppProps> = ({
   }, [stdout]);
 
   // Handle ESC key to interrupt processing
-  useInput((input, key) => {
+  useInput((_input, key) => {
     if (key.escape && isProcessing) {
       cancelRef.current = true;
     }
