@@ -4,6 +4,7 @@ import pytest
 import sqlite3
 import tempfile
 import shutil
+import os
 from pathlib import Path
 
 from adapters.secondary.persistence.database import Database
@@ -56,6 +57,18 @@ def check_table_exists(context, table_name):
         """, (table_name,))
         result = cursor.fetchone()
         assert result is not None
+
+
+@then(parsers.parse('the "{table_name}" table should not exist'))
+def check_table_not_exists(context, table_name):
+    with context["db"].connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT name FROM sqlite_master
+            WHERE type='table' AND name=?
+        """, (table_name,))
+        result = cursor.fetchone()
+        assert result is None, f"Table {table_name} should not exist but it does"
 
 
 # ==============================================================================
@@ -306,11 +319,7 @@ def test_players_schema():
     pass
 
 
-@scenario("../../../features/integration/persistence/database.feature",
-          "Ships table has correct schema")
-def test_ships_schema():
-    pass
-
+# Ships table scenario removed - ships data now fetched from API
 
 @scenario("../../../features/integration/persistence/database.feature",
           "Routes table has correct schema")
@@ -378,48 +387,8 @@ def check_integrity_error(context):
 
 
 # ==============================================================================
-# Scenario: Foreign key cascade delete
+# Foreign key cascade delete scenario removed - ships table no longer exists
 # ==============================================================================
-@scenario("../../../features/integration/persistence/database.feature",
-          "Foreign key cascade delete from players to ships")
-def test_cascade_delete():
-    pass
-
-
-@when("I create a player and a ship")
-def create_player_and_ship(context):
-    with context["db"].transaction() as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO players (agent_symbol, token, created_at, last_active)
-            VALUES (?, ?, ?, ?)
-        """, ("TEST_AGENT", "token123", "2025-01-01T00:00:00", "2025-01-01T00:00:00"))
-        context["player_id"] = cursor.lastrowid
-
-        cursor.execute("""
-            INSERT INTO ships (
-                ship_symbol, player_id, current_location_symbol,
-                fuel_current, fuel_capacity, cargo_capacity,
-                cargo_units, engine_speed, nav_status, system_symbol
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, ("SHIP-1", context["player_id"], "X1-A1", 100, 200, 50, 0, 30, "IN_ORBIT", "X1"))
-
-
-@when("I delete the player")
-def delete_player(context):
-    with context["db"].transaction() as conn:
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM players WHERE player_id = ?", (context["player_id"],))
-
-
-@then("the ship should be cascade deleted")
-def verify_cascade_delete(context):
-    with context["db"].connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM ships WHERE player_id = ?",
-                      (context["player_id"],))
-        count = cursor.fetchone()[0]
-        assert count == 0
 
 
 # ==============================================================================
@@ -475,3 +444,118 @@ def check_indexes(context):
 @then(parsers.parse('index "{index_name}" should exist'))
 def verify_index_exists(context, index_name):
     assert index_name in context["indexes"]
+
+
+@then(parsers.parse('index "{index_name}" should not exist'))
+def verify_index_not_exists(context, index_name):
+    assert index_name not in context["indexes"], f"Index {index_name} should not exist but it does"
+
+
+# ==============================================================================
+# Scenario: Database uses path from SPACETRADERS_DB_PATH environment variable
+# ==============================================================================
+@scenario("../../../features/integration/persistence/database.feature",
+          "Database uses path from SPACETRADERS_DB_PATH environment variable")
+def test_database_env_path():
+    pass
+
+
+@given('the environment variable "SPACETRADERS_DB_PATH" is set to a test path')
+def set_env_db_path(context, temp_db_path, request):
+    context["env_db_path"] = temp_db_path
+    context["original_env"] = os.environ.get("SPACETRADERS_DB_PATH")
+    os.environ["SPACETRADERS_DB_PATH"] = str(temp_db_path)
+
+    # Schedule cleanup
+    def cleanup():
+        if context.get("original_env"):
+            os.environ["SPACETRADERS_DB_PATH"] = context["original_env"]
+        elif "SPACETRADERS_DB_PATH" in os.environ:
+            del os.environ["SPACETRADERS_DB_PATH"]
+        if "tmpdir" in context and Path(context["tmpdir"]).exists():
+            shutil.rmtree(context["tmpdir"], ignore_errors=True)
+    request.addfinalizer(cleanup)
+
+
+@when("I initialize a database without providing a path")
+def initialize_database_no_path(context, temp_db_path):
+    # For test isolation, change to a temp directory
+    tmpdir = tempfile.mkdtemp()
+    os.chdir(tmpdir)
+    context["tmpdir"] = tmpdir
+    context["db"] = Database()
+    context["db_path"] = context["db"].db_path
+
+
+@then("the database should be created at the environment variable path")
+def check_env_path_used(context):
+    assert context["db"].db_path == context["env_db_path"]
+
+
+# ==============================================================================
+# Scenario: Database falls back to default path when environment variable not set
+# ==============================================================================
+@scenario("../../../features/integration/persistence/database.feature",
+          "Database falls back to default path when environment variable not set")
+def test_database_default_path():
+    pass
+
+
+@given('the environment variable "SPACETRADERS_DB_PATH" is not set')
+def unset_env_db_path(context, request):
+    context["original_env"] = os.environ.get("SPACETRADERS_DB_PATH")
+    if "SPACETRADERS_DB_PATH" in os.environ:
+        del os.environ["SPACETRADERS_DB_PATH"]
+
+    # Schedule cleanup
+    def cleanup():
+        if context.get("original_env"):
+            os.environ["SPACETRADERS_DB_PATH"] = context["original_env"]
+        if "tmpdir" in context and Path(context["tmpdir"]).exists():
+            shutil.rmtree(context["tmpdir"], ignore_errors=True)
+    request.addfinalizer(cleanup)
+
+
+@then(parsers.parse('the database should be created at the default path "{default_path}"'))
+def check_default_path_used(context, default_path):
+    # Compare as Path objects to handle relative vs absolute
+    assert str(context["db"].db_path) == default_path or context["db"].db_path == Path(default_path)
+
+
+# ==============================================================================
+# Scenario: Explicit path parameter overrides environment variable
+# ==============================================================================
+@scenario("../../../features/integration/persistence/database.feature",
+          "Explicit path parameter overrides environment variable")
+def test_explicit_path_override():
+    pass
+
+
+@when("I initialize a database with an explicit path")
+def initialize_database_explicit_path(context):
+    # Create a different explicit path
+    tmpdir = tempfile.mkdtemp()
+    explicit_path = Path(tmpdir) / "explicit.db"
+    context["explicit_db_path"] = explicit_path
+    context["tmpdir"] = tmpdir
+    context["db"] = Database(explicit_path)
+
+
+@then("the database should be created at the explicit path")
+def check_explicit_path_used(context):
+    assert context["db"].db_path == context["explicit_db_path"]
+
+
+@then("not at the environment variable path")
+def check_not_env_path(context, request):
+    assert context["db"].db_path != context["env_db_path"]
+    # Schedule cleanup after test completes
+    def cleanup():
+        if "tmpdir" in context and Path(context["tmpdir"]).exists():
+            shutil.rmtree(context["tmpdir"], ignore_errors=True)
+        # Restore original environment
+        if context.get("original_env"):
+            os.environ["SPACETRADERS_DB_PATH"] = context["original_env"]
+        elif "SPACETRADERS_DB_PATH" in os.environ:
+            del os.environ["SPACETRADERS_DB_PATH"]
+    request.addfinalizer(cleanup)

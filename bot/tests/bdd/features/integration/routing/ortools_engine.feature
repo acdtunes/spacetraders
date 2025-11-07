@@ -111,10 +111,11 @@ Feature: OR-Tools Routing Engine Integration
   Scenario: Orbital hop with zero cost
     Given an orbital graph with "PLANET" at (0,0) with fuel having orbital "STATION", "STATION" at (0,0) with fuel
     When I find optimal path from "PLANET" to "STATION" with 10 current fuel, 100 capacity, speed 10, preferring cruise
-    Then the path should have 1 step
-    And step 1 should have 0 fuel cost
-    And step 1 should have 0.0 distance
-    And step 1 should have 1 second travel time
+    Then the path should have 2 steps
+    And step 1 should be REFUEL action
+    And step 2 should have 0 fuel cost
+    And step 2 should have 0.0 distance
+    And step 2 should have 1 second travel time
 
   Scenario: Path with orbital hop and regular travel
     Given an orbital graph with "PLANET" at (0,0) with fuel having orbital "STATION", "STATION" at (0,0) with fuel, "OTHER" at (50,0) without fuel

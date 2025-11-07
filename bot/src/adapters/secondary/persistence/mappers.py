@@ -5,7 +5,7 @@ from sqlite3 import Row
 
 from domain.shared.player import Player
 from domain.shared.ship import Ship
-from domain.shared.value_objects import Waypoint, Fuel, FlightMode
+from domain.shared.value_objects import Waypoint, Fuel, FlightMode, Cargo, CargoItem
 from domain.navigation.route import Route, RouteSegment, RouteStatus
 
 class PlayerMapper:
@@ -68,16 +68,60 @@ class ShipMapper:
             capacity=int(row["fuel_capacity"])
         )
 
+        # Parse cargo inventory from JSON (if present)
+        try:
+            cargo_inventory_json = row["cargo_inventory"]
+            if cargo_inventory_json:
+                try:
+                    inventory_data = json.loads(cargo_inventory_json)
+                    cargo_items = tuple(
+                        CargoItem(
+                            symbol=item['symbol'],
+                            name=item.get('name', item['symbol']),
+                            description=item.get('description', ''),
+                            units=item['units']
+                        )
+                        for item in inventory_data
+                    )
+                except (json.JSONDecodeError, KeyError):
+                    # If parsing fails, fall back to empty inventory
+                    cargo_items = ()
+            else:
+                cargo_items = ()
+        except (KeyError, IndexError):
+            # Column doesn't exist or is not accessible - use empty inventory
+            cargo_items = ()
+
+        # Create Cargo object
+        cargo_units = int(row["cargo_units"])
+        cargo_capacity = int(row["cargo_capacity"])
+
+        # Backward compatibility: if we have cargo_units but no inventory, create placeholder
+        if cargo_units > 0 and not cargo_items:
+            cargo_items = (CargoItem(
+                symbol="UNKNOWN",
+                name="Unknown Cargo",
+                description="Legacy cargo without detailed inventory",
+                units=cargo_units
+            ),)
+
+        cargo = Cargo(
+            capacity=cargo_capacity,
+            units=cargo_units,
+            inventory=cargo_items
+        )
+
         return Ship(
             ship_symbol=row["ship_symbol"],
             player_id=int(row["player_id"]),
             current_location=waypoint,
             fuel=fuel,
             fuel_capacity=int(row["fuel_capacity"]),
-            cargo_capacity=int(row["cargo_capacity"]),
-            cargo_units=int(row["cargo_units"]),
+            cargo_capacity=cargo_capacity,
+            cargo_units=cargo_units,
             engine_speed=int(row["engine_speed"]),
-            nav_status=row["nav_status"]
+            nav_status=row["nav_status"],
+            cargo=cargo
         )
 
     @staticmethod
@@ -91,6 +135,17 @@ class ShipMapper:
         Returns:
             Dictionary with database columns
         """
+        # Serialize cargo inventory to JSON
+        cargo_inventory_json = json.dumps([
+            {
+                'symbol': item.symbol,
+                'name': item.name,
+                'description': item.description,
+                'units': item.units
+            }
+            for item in ship.cargo.inventory
+        ])
+
         return {
             "ship_symbol": ship.ship_symbol,
             "player_id": ship.player_id,
@@ -99,6 +154,7 @@ class ShipMapper:
             "fuel_capacity": ship.fuel_capacity,
             "cargo_capacity": ship.cargo_capacity,
             "cargo_units": ship.cargo_units,
+            "cargo_inventory": cargo_inventory_json,
             "engine_speed": ship.engine_speed,
             "nav_status": ship.nav_status,
             "system_symbol": ship.current_location.system_symbol or ""

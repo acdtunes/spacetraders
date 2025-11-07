@@ -140,3 +140,65 @@ class Distance:
 
     def __repr__(self) -> str:
         return f"{self.units:.1f} units"
+
+
+@dataclass(frozen=True)
+class CargoItem:
+    """Individual cargo item in ship's hold"""
+    symbol: str        # Trade good symbol (e.g., "IRON_ORE")
+    name: str          # Human-readable name
+    description: str   # Item description
+    units: int         # Quantity in cargo
+
+    def __post_init__(self):
+        if self.units < 0:
+            raise ValueError("Cargo units cannot be negative")
+        if not self.symbol:
+            raise ValueError("Cargo symbol cannot be empty")
+
+
+@dataclass(frozen=True)
+class Cargo:
+    """Ship cargo manifest with detailed inventory"""
+    capacity: int                      # Total cargo capacity
+    units: int                         # Total units currently loaded
+    inventory: tuple[CargoItem, ...]   # Frozen tuple of items
+
+    def __post_init__(self):
+        if self.units < 0:
+            raise ValueError("Cargo units cannot be negative")
+        if self.capacity < 0:
+            raise ValueError("Cargo capacity cannot be negative")
+        if self.units > self.capacity:
+            raise ValueError(f"Cargo units {self.units} exceed capacity {self.capacity}")
+
+        # Verify inventory sum matches total units
+        inventory_sum = sum(item.units for item in self.inventory)
+        if inventory_sum != self.units:
+            raise ValueError(f"Inventory sum {inventory_sum} != total units {self.units}")
+
+    def has_item(self, symbol: str, min_units: int = 1) -> bool:
+        """Check if cargo contains at least min_units of specific item"""
+        return self.get_item_units(symbol) >= min_units
+
+    def get_item_units(self, symbol: str) -> int:
+        """Get units of specific trade good in cargo (0 if not present)"""
+        for item in self.inventory:
+            if item.symbol == symbol:
+                return item.units
+        return 0
+
+    def has_items_other_than(self, symbol: str) -> bool:
+        """Check if cargo contains items other than specified symbol"""
+        for item in self.inventory:
+            if item.symbol != symbol and item.units > 0:
+                return True
+        return False
+
+    def available_capacity(self) -> int:
+        """Calculate available cargo space"""
+        return self.capacity - self.units
+
+    def is_empty(self) -> bool:
+        """Check if cargo hold is empty"""
+        return self.units == 0

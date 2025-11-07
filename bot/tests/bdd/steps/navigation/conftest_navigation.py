@@ -118,8 +118,11 @@ def create_test_ship(context, ship_symbol, player_id, location="X1-TEST-A1"):
         )
     )
 
-    # Save to database
-    ship_repo.create(ship)
+    # Ships are API-only now - no database persistence
+    # Store in context for API mocks
+    if 'ships' not in context:
+        context['ships'] = {}
+    context['ships'][ship_symbol] = ship
 
     context['ship_symbol'] = ship_symbol
     context['ship'] = ship

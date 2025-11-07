@@ -120,8 +120,17 @@ class DaemonServer:
             # Process JSON-RPC request
             response = await self._process_request(request)
 
-            # Send response
-            writer.write(json.dumps(response).encode())
+            # Send response with proper JSON serialization
+            # Use ensure_ascii=True for safe transmission, separators for minimal size
+            response_json = json.dumps(
+                response,
+                ensure_ascii=True,
+                separators=(',', ':')
+            )
+            response_bytes = response_json.encode('utf-8')
+
+            # Write all data and ensure it's flushed before closing
+            writer.write(response_bytes)
             await writer.drain()
 
         except Exception as e:
@@ -131,10 +140,20 @@ class DaemonServer:
                 "error": {"code": -32603, "message": str(e)},
                 "id": None
             }
-            writer.write(json.dumps(error_response).encode())
+            error_json = json.dumps(
+                error_response,
+                ensure_ascii=True,
+                separators=(',', ':')
+            )
+            writer.write(error_json.encode('utf-8'))
             await writer.drain()
 
         finally:
+            # Ensure all data is sent before closing
+            try:
+                await writer.drain()
+            except Exception:
+                pass  # Ignore errors during final drain
             writer.close()
             await writer.wait_closed()
 
@@ -263,8 +282,49 @@ class DaemonServer:
         container_id = params["container_id"]
         info = self._container_mgr.get_container(container_id)
 
+        # If not in memory, try to load from database
         if not info:
-            raise ValueError(f"Container {container_id} not found")
+            with self._database.connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT container_id, player_id, container_type, status,
+                           started_at, stopped_at, restart_count, exit_code
+                    FROM containers
+                    WHERE container_id = ?
+                """, (container_id,))
+                row = cursor.fetchone()
+
+                if not row:
+                    raise ValueError(f"Container {container_id} not found")
+
+                # Create a minimal info object from database data
+                from dataclasses import dataclass
+                from datetime import datetime
+                from adapters.primary.daemon.container_manager import ContainerStatus
+
+                @dataclass
+                class DbContainerInfo:
+                    container_id: str
+                    player_id: int
+                    container_type: str
+                    status: ContainerStatus
+                    started_at: datetime
+                    stopped_at: datetime
+                    iteration: int  # Not in DB, default to 0
+                    restart_count: int
+                    exit_code: int
+
+                info = DbContainerInfo(
+                    container_id=row['container_id'],
+                    player_id=row['player_id'],
+                    container_type=row['container_type'],
+                    status=ContainerStatus(row['status']),
+                    started_at=datetime.fromisoformat(row['started_at']) if row['started_at'] else None,
+                    stopped_at=datetime.fromisoformat(row['stopped_at']) if row['stopped_at'] else None,
+                    iteration=0,  # Not stored in DB
+                    restart_count=row['restart_count'] or 0,
+                    exit_code=row['exit_code']
+                )
 
         # Get logs from database
         log_limit = params.get("log_limit", 50)

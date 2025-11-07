@@ -1,10 +1,12 @@
 """Graph building adapter - constructs navigation graphs from API data"""
 import logging
 import math
-from typing import Dict, List
+from typing import Callable, Dict, List
 
+from domain.shared.value_objects import Waypoint
 from ports.outbound.api_client import ISpaceTradersAPI
 from ports.outbound.graph_provider import IGraphBuilder
+from ports.outbound.repositories import IWaypointRepository
 
 logger = logging.getLogger(__name__)
 
@@ -15,19 +17,48 @@ def euclidean_distance(x1: float, y1: float, x2: float, y2: float) -> float:
 
 
 class GraphBuilder(IGraphBuilder):
-    """Builds system navigation graphs by fetching waypoints from the API"""
+    """
+    Builds system navigation graphs with dual-cache strategy.
 
-    def __init__(self, api_client: ISpaceTradersAPI):
-        self.api = api_client
+    Populates:
+    1. Return value: Structure data only (x, y, type, orbitals) for navigation
+    2. waypoints table: Full trait data (has_fuel, traits) via waypoint repository - 2hr TTL
+    """
 
-    def build_system_graph(self, system_symbol: str) -> Dict:
+    def __init__(
+        self,
+        api_client_factory: Callable[[int], ISpaceTradersAPI],
+        waypoint_repository_factory: Callable[[int], IWaypointRepository],
+    ):
         """
-        Fetch all waypoints for system and build navigation graph
+        Initialize GraphBuilder with dependency factories.
+
+        Args:
+            api_client_factory: Factory function that creates API client for a player_id
+            waypoint_repository_factory: Factory function that creates waypoint repository for a player_id
+        """
+        self._api_client_factory = api_client_factory
+        self._waypoint_repository_factory = waypoint_repository_factory
+
+    def build_system_graph(self, system_symbol: str, player_id: int = 1) -> Dict:
+        """
+        Fetch all waypoints for system and build navigation graph with dual-cache strategy.
+
+        Populates both:
+        1. Return value: Structure-only graph for navigation (infinite TTL)
+        2. Waypoints table: Full trait data for queries (2hr TTL)
+
+        Args:
+            system_symbol: System to build graph for
+            player_id: Player ID for API client and waypoint repository
 
         Returns:
-            Graph dict: {waypoints: {symbol: {...}}, edges: [{from, to, distance, type}]}
+            Graph dict with ONLY structure data: {waypoints: {symbol: {x, y, type, systemSymbol, orbitals}}, edges: [...]}
         """
         logger.info(f"Building graph for system {system_symbol}...")
+
+        # Get API client for this player
+        api_client = self._api_client_factory(player_id)
 
         # Fetch all waypoints with pagination
         all_waypoints: List[Dict] = []
@@ -36,7 +67,7 @@ class GraphBuilder(IGraphBuilder):
 
         while True:
             try:
-                result = self.api.list_waypoints(system_symbol, limit=limit, page=page)
+                result = api_client.list_waypoints(system_symbol, limit=limit, page=page)
             except Exception as e:
                 logger.error(f"Failed to fetch waypoints page {page}: {e}")
                 raise RuntimeError(f"API error while building graph for {system_symbol}") from e
@@ -68,26 +99,50 @@ class GraphBuilder(IGraphBuilder):
             logger.error(f"No waypoints found for system {system_symbol}")
             raise RuntimeError(f"No waypoints found for system {system_symbol}")
 
-        # Build graph structure
+        # Build STRUCTURE-ONLY graph for navigation (infinite TTL)
         graph = {
             "system": system_symbol,
             "waypoints": {},
             "edges": [],
         }
 
-        # Process waypoints
+        # Prepare waypoint objects for trait cache (2hr TTL)
+        waypoint_objects: List[Waypoint] = []
+
+        # Process waypoints with dual-cache strategy
         for waypoint in all_waypoints:
-            traits = [t["symbol"] for t in waypoint.get("traits", [])]
+            symbol = waypoint["symbol"]
+            x = waypoint["x"]
+            y = waypoint["y"]
+            wp_type = waypoint.get("type")
+            orbitals = [o["symbol"] for o in waypoint.get("orbitals", [])]
+
+            # Extract traits
+            traits = [t["symbol"] if isinstance(t, dict) else t for t in waypoint.get("traits", [])]
             has_fuel = "MARKETPLACE" in traits or "FUEL_STATION" in traits
 
-            graph["waypoints"][waypoint["symbol"]] = {
-                "type": waypoint.get("type"),
-                "x": waypoint.get("x"),
-                "y": waypoint.get("y"),
-                "traits": traits,
-                "has_fuel": has_fuel,
-                "orbitals": [o["symbol"] for o in waypoint.get("orbitals", [])],
+            # 1. STRUCTURE-ONLY data for navigation graph (no traits, no has_fuel)
+            graph["waypoints"][symbol] = {
+                "type": wp_type,
+                "x": x,
+                "y": y,
+                "systemSymbol": system_symbol,
+                "orbitals": orbitals,
+                # NO traits or has_fuel - structure only for routing
             }
+
+            # 2. FULL waypoint object with traits for waypoints table
+            waypoint_obj = Waypoint(
+                symbol=symbol,
+                x=x,
+                y=y,
+                system_symbol=system_symbol,
+                waypoint_type=wp_type,
+                traits=tuple(traits),
+                has_fuel=has_fuel,
+                orbitals=tuple(orbitals),
+            )
+            waypoint_objects.append(waypoint_obj)
 
         # Build edges (bidirectional graph)
         waypoint_list = list(graph["waypoints"].keys())
@@ -131,11 +186,16 @@ class GraphBuilder(IGraphBuilder):
                     "type": edge_type,
                 })
 
+        # Save waypoints with traits to waypoints table (2hr TTL)
+        waypoint_repository = self._waypoint_repository_factory(player_id)
+        waypoint_repository.save_waypoints(waypoint_objects)
+
         logger.info(f"Graph built for {system_symbol}")
         logger.info(f"  Waypoints: {len(graph['waypoints'])}")
         logger.info(f"  Edges: {len(graph['edges'])}")
+        logger.info(f"  Synced {len(waypoint_objects)} waypoints to waypoints table")
         logger.info(
-            f"  Fuel stations: {sum(1 for wp in graph['waypoints'].values() if wp['has_fuel'])}"
+            f"  Fuel stations: {sum(1 for wp in waypoint_objects if wp.has_fuel)}"
         )
 
         return graph

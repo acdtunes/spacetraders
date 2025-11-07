@@ -105,3 +105,96 @@ Feature: List Waypoints Query
     Given I create a list waypoints query for system "X1-IMMUTABLE"
     When I attempt to modify the query system to "X1-MODIFIED"
     Then the modification should fail with AttributeError
+
+  # ============================================================================
+  # Lazy-Loading with TTL-Based Caching Scenarios
+  # ============================================================================
+
+  Scenario: Cache hit - Fresh data less than 2 hours old is returned from cache
+    Given the API client is configured
+    And a player with ID 1 exists in the system
+    And the player has a valid API token
+    And a waypoint "X1-FRESH-A1" exists in cache for system "X1-FRESH"
+    And the waypoint was synced 1 hour ago
+    And the waypoint has type "PLANET"
+    And the waypoint has traits "MARKETPLACE"
+    When I query waypoints for system "X1-FRESH" with player ID 1
+    Then the query should succeed
+    And the list should contain 1 waypoints
+    And the API should not have been called
+
+  Scenario: Cache miss - Empty cache fetches from API
+    Given the API client is configured
+    And a player with ID 1 exists in the system
+    And the player has a valid API token
+    And no waypoints exist in cache for system "X1-EMPTY"
+    And the API returns 2 waypoints for system "X1-EMPTY"
+    When I query waypoints for system "X1-EMPTY" with player ID 1
+    Then the query should succeed
+    And the list should contain 2 waypoints
+    And the API should have been called once
+    And the waypoints should be saved to cache with current timestamp
+
+  Scenario: Stale cache - Data older than 2 hours refetches from API
+    Given the API client is configured
+    And a player with ID 1 exists in the system
+    And the player has a valid API token
+    And a waypoint "X1-STALE-A1" exists in cache for system "X1-STALE"
+    And the waypoint was synced 3 hours ago
+    And the API returns 2 waypoints for system "X1-STALE"
+    When I query waypoints for system "X1-STALE" with player ID 1
+    Then the query should succeed
+    And the list should contain 2 waypoints
+    And the API should have been called once
+    And the waypoints should be saved to cache with current timestamp
+
+  Scenario: Cache hit with trait filter - Fresh data returned from cache
+    Given the API client is configured
+    And a player with ID 1 exists in the system
+    And the player has a valid API token
+    And a waypoint "X1-TRAIT-A1" exists in cache for system "X1-TRAIT"
+    And the waypoint was synced 30 minutes ago
+    And the waypoint has traits "MARKETPLACE"
+    And a waypoint "X1-TRAIT-B2" exists in cache for system "X1-TRAIT"
+    And the waypoint was synced 30 minutes ago
+    And the waypoint has traits "SHIPYARD"
+    When I query waypoints for system "X1-TRAIT" with trait "MARKETPLACE" and player ID 1
+    Then the query should succeed
+    And the list should contain 1 waypoints
+    And the API should not have been called
+
+  Scenario: Stale cache with fuel filter - Refetches from API before filtering
+    Given the API client is configured
+    And a player with ID 1 exists in the system
+    And the player has a valid API token
+    And a waypoint "X1-FUEL-A1" exists in cache for system "X1-FUEL"
+    And the waypoint was synced 5 hours ago
+    And the waypoint has fuel available
+    And the API returns 3 waypoints for system "X1-FUEL"
+    When I query waypoints for system "X1-FUEL" with fuel filter and player ID 1
+    Then the query should succeed
+    And the list should contain 3 waypoints
+    And the API should have been called once
+
+  # ============================================================================
+  # Player-Specific API Client Scenarios
+  # ============================================================================
+
+  Scenario: Query with player_id uses player-specific API client
+    Given a player with ID 42 exists in the system
+    And the player has a valid API token
+    And no waypoints exist in cache for system "X1-PLAYER"
+    And the API returns 2 waypoints for system "X1-PLAYER"
+    When I query waypoints for system "X1-PLAYER" with player ID 42
+    Then the query should succeed
+    And the list should contain 2 waypoints
+    And the API should have been called once with player 42 token
+
+  Scenario: Query without player_id works in cache-only mode
+    Given a waypoint "X1-CACHE-A1" exists in cache for system "X1-CACHE"
+    And the waypoint was synced 1 hour ago
+    And no API client is configured for the query
+    When I query waypoints for system "X1-CACHE" without player ID
+    Then the query should succeed
+    And the list should contain 1 waypoints
+    And the API should not have been called

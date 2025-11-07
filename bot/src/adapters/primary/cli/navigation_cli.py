@@ -299,16 +299,8 @@ def list_ships_command(args: argparse.Namespace) -> int:
         mediator = get_mediator()
         query = ListShipsQuery(player_id=player_id)
 
-        # Send query via mediator
+        # Send query via mediator (fetches from API since ships are API-only)
         ships = asyncio.run(mediator.send_async(query))
-
-        # Auto-sync if database is empty
-        if not ships:
-            print("📡 No ships in database, syncing from API...")
-            from application.navigation.commands.sync_ships import SyncShipsCommand
-            sync_command = SyncShipsCommand(player_id=player_id)
-            ships = asyncio.run(mediator.send_async(sync_command))
-            print(f"✅ Synced {len(ships)} ships\n")
 
         # Display ship list
         if not ships:

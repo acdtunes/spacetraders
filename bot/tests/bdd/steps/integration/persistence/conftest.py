@@ -123,4 +123,6 @@ def test_ship(ship_repository, test_player):
         engine_speed=30,
         nav_status="IN_ORBIT"
     )
-    return ship_repository.create(ship)
+    # Ships are API-only now - just return the ship entity
+    # Tests will need to mock API responses for ship data
+    return ship

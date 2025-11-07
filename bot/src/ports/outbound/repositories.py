@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from typing import Optional, List
+from datetime import datetime
 from domain.shared.player import Player
 from domain.shared.ship import Ship
 from domain.navigation.route import Route
@@ -42,94 +43,51 @@ class IPlayerRepository(ABC):
 
 
 class IShipRepository(ABC):
-    """Port for ship persistence"""
+    """
+    Port for ship data retrieval (API-only, no caching).
 
-    @abstractmethod
-    def create(self, ship: Ship) -> Ship:
-        """
-        Persist new ship
-
-        Args:
-            ship: Ship entity to persist
-
-        Returns:
-            The persisted ship (same instance, as ship_symbol is the ID)
-
-        Raises:
-            DuplicateShipError: If ship with same symbol already exists for player
-        """
-        pass
+    All ship data is fetched directly from the SpaceTraders API on each query.
+    This ensures ship state (location, fuel, cargo) is always fresh and consistent.
+    """
 
     @abstractmethod
     def find_by_symbol(self, ship_symbol: str, player_id: int) -> Optional[Ship]:
         """
-        Find ship by symbol and player ID
+        Find ship by symbol and player ID from SpaceTraders API.
+
+        Fetches live ship data including:
+        - Current location (waypoint)
+        - Fuel levels
+        - Cargo contents
+        - Navigation status (DOCKED, IN_ORBIT, IN_TRANSIT)
 
         Args:
             ship_symbol: Unique ship identifier
             player_id: Owning player's ID
 
         Returns:
-            Ship if found, None otherwise
+            Ship entity with live data from API, or None if not found
+
+        Raises:
+            DomainException: If API call fails
         """
         pass
 
     @abstractmethod
     def find_all_by_player(self, player_id: int) -> List[Ship]:
         """
-        Find all ships belonging to a player
+        Find all ships belonging to a player from SpaceTraders API.
+
+        Fetches live fleet data for all ships owned by the player.
 
         Args:
             player_id: Player's ID
 
         Returns:
-            List of ships (empty if none found)
-        """
-        pass
-
-    @abstractmethod
-    def update(self, ship: Ship) -> None:
-        """
-        Update existing ship
-
-        Args:
-            ship: Ship entity with updated state
+            List of ships with live data from API (empty if player has no ships)
 
         Raises:
-            ShipNotFoundError: If ship doesn't exist
-        """
-        pass
-
-    @abstractmethod
-    def delete(self, ship_symbol: str, player_id: int) -> None:
-        """
-        Delete ship from persistence
-
-        Args:
-            ship_symbol: Ship's unique identifier
-            player_id: Owning player's ID
-
-        Raises:
-            ShipNotFoundError: If ship doesn't exist
-        """
-        pass
-
-    @abstractmethod
-    def sync_from_api(self, ship_symbol: str, player_id: int, api_client, graph_provider):
-        """
-        Sync ship state from SpaceTraders API and update database
-
-        Args:
-            ship_symbol: Ship's unique identifier
-            player_id: Owning player's ID
-            api_client: API client to fetch ship state
-            graph_provider: Graph provider to reconstruct waypoints
-
-        Returns:
-            Ship entity with fresh state from API
-
-        Raises:
-            DomainException: If API call fails or ship not found
+            DomainException: If API call fails
         """
         pass
 
@@ -266,36 +224,40 @@ class IWaypointRepository(ABC):
     """Port for waypoint caching persistence"""
 
     @abstractmethod
-    def save_waypoints(self, waypoints: List[Waypoint]) -> None:
+    def save_waypoints(self, waypoints: List[Waypoint], synced_at: Optional[datetime] = None, replace_system: bool = False) -> None:
         """
-        Save or update waypoints in cache
+        Save or update waypoints in cache with timestamp
 
         Args:
             waypoints: List of Waypoint value objects to cache
+            synced_at: Timestamp when waypoints were synced (defaults to now)
+            replace_system: If True, delete all existing waypoints for the system first (default: False)
         """
         pass
 
     @abstractmethod
-    def find_by_system(self, system_symbol: str) -> List[Waypoint]:
+    def find_by_system(self, system_symbol: str, player_id: Optional[int] = None) -> List[Waypoint]:
         """
-        Find all waypoints in a system
+        Find all waypoints in a system with optional lazy-loading
 
         Args:
             system_symbol: System identifier (e.g., "X1-GZ7")
+            player_id: Optional player ID for lazy-loading from API if cache is stale
 
         Returns:
-            List of cached waypoints (empty if none cached)
+            List of cached waypoints (empty if none cached and no player_id provided)
         """
         pass
 
     @abstractmethod
-    def find_by_trait(self, system_symbol: str, trait: str) -> List[Waypoint]:
+    def find_by_trait(self, system_symbol: str, trait: str, player_id: Optional[int] = None) -> List[Waypoint]:
         """
-        Find waypoints with a specific trait
+        Find waypoints with a specific trait with optional lazy-loading
 
         Args:
             system_symbol: System identifier
             trait: Trait symbol (e.g., "SHIPYARD", "MARKETPLACE")
+            player_id: Optional player ID for lazy-loading from API if cache is stale
 
         Returns:
             List of waypoints with the trait
@@ -303,14 +265,42 @@ class IWaypointRepository(ABC):
         pass
 
     @abstractmethod
-    def find_by_fuel(self, system_symbol: str) -> List[Waypoint]:
+    def find_by_fuel(self, system_symbol: str, player_id: Optional[int] = None) -> List[Waypoint]:
         """
-        Find waypoints with fuel stations
+        Find waypoints with fuel stations with optional lazy-loading
+
+        Args:
+            system_symbol: System identifier
+            player_id: Optional player ID for lazy-loading from API if cache is stale
+
+        Returns:
+            List of waypoints with fuel available
+        """
+        pass
+
+    @abstractmethod
+    def get_system_sync_time(self, system_symbol: str) -> Optional[datetime]:
+        """
+        Get the last sync time for a system
 
         Args:
             system_symbol: System identifier
 
         Returns:
-            List of waypoints with fuel available
+            Timestamp when system was last synced, None if never synced
+        """
+        pass
+
+    @abstractmethod
+    def is_cache_stale(self, system_symbol: str, ttl_seconds: int = 7200) -> bool:
+        """
+        Check if cached data for a system is stale
+
+        Args:
+            system_symbol: System identifier
+            ttl_seconds: Time-to-live in seconds (default: 7200 = 2 hours)
+
+        Returns:
+            True if cache is stale or doesn't exist, False if fresh
         """
         pass

@@ -2,8 +2,8 @@
  * Main Ink UI component for TARS Captain
  */
 
-import React, { useState, useEffect } from 'react';
-import { Box, Text, Newline, useStdout, useInput } from 'ink';
+import React, { useState, useEffect, useCallback } from 'react';
+import { Box, Text, Newline, useStdout, useInput, Static } from 'ink';
 import Spinner from 'ink-spinner';
 import TextInput from 'ink-text-input';
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
@@ -20,85 +20,132 @@ interface AppProps {
   userCommands?: string[];
 }
 
-export const App: React.FC<AppProps> = ({
-  onCommand,
-  messages,
+// Isolated input section - manages its own state to avoid parent re-renders
+const InputSection = React.memo(({
   isProcessing,
-  memoryStatus,
-  onExit,
-  cancelRef,
-  isAfkMode = false,
-  userCommands = []
+  isAfkMode,
+  handleSubmit,
+  terminalWidth
+}: {
+  isProcessing: boolean;
+  isAfkMode: boolean;
+  handleSubmit: (val: string) => Promise<void>;
+  terminalWidth: number;
 }) => {
   const [input, setInput] = useState('');
-  const { stdout } = useStdout();
-  const [terminalWidth, setTerminalWidth] = useState(stdout?.columns || 80);
 
-  // Update terminal width on resize
-  useEffect(() => {
-    const handleResize = () => {
-      setTerminalWidth(stdout?.columns || 80);
-    };
+  if (isAfkMode || isProcessing) {
+    return null;
+  }
 
-    stdout?.on('resize', handleResize);
+  const onSubmit = async (value: string) => {
+    setInput('');  // Clear input immediately
+    await handleSubmit(value);
+  };
 
-    return () => {
-      stdout?.off('resize', handleResize);
-    };
-  }, [stdout]);
+  return (
+    <Box flexDirection="column">
+      <Text color="cyan" wrap="truncate">
+        {'─'.repeat(terminalWidth)}
+      </Text>
+      <Box flexDirection="row">
+        <Text bold>Admiral&gt; </Text>
+        <TextInput value={input} onChange={setInput} onSubmit={onSubmit} />
+      </Box>
+      <Text color="cyan" wrap="truncate">
+        {'─'.repeat(terminalWidth)}
+      </Text>
+    </Box>
+  );
+}, (prevProps, nextProps) => {
+  // Only re-render if these specific props change (NOT input!)
+  return (
+    prevProps.isProcessing === nextProps.isProcessing &&
+    prevProps.isAfkMode === nextProps.isAfkMode &&
+    prevProps.terminalWidth === nextProps.terminalWidth
+  );
+});
 
-  // Handle ESC key to interrupt processing
+InputSection.displayName = 'InputSection';
+
+// Component to handle ESC key input - only rendered when stdin supports raw mode
+const EscapeKeyHandler: React.FC<{
+  isProcessing: boolean;
+  cancelRef: React.MutableRefObject<boolean>;
+}> = ({ isProcessing, cancelRef }) => {
+  // Only try to use useInput if stdin is a TTY
+  if (!process.stdin.isTTY) {
+    return null;
+  }
+
+  // eslint-disable-next-line react-hooks/rules-of-hooks
   useInput((_input, key) => {
     if (key.escape && isProcessing) {
       cancelRef.current = true;
     }
   });
 
-  const handleSubmit = async (value: string) => {
-    if (!value.trim()) {
-      return;
+  return null;
+};
+
+// Memoized message display using Static to prevent re-rendering old messages
+const MessageDisplay = React.memo(({
+  messages,
+  userCommands
+}: {
+  messages: SDKMessage[];
+  userCommands: string[];
+}) => {
+  // Build combined array of user commands and messages for Static
+  const displayItems: Array<{type: 'command' | 'message', content: any, messageIndex: number, commandIndex: number}> = [];
+  let assistantMessageCount = 0;
+
+  messages.forEach((message, index) => {
+    // Show user command before the first message of each assistant response
+    // We track how many times we've started showing an assistant response
+    if (message.type === 'assistant') {
+      const userCommand = userCommands[assistantMessageCount];
+
+      // Only show the command if we haven't shown it yet for this assistant response
+      if (userCommand && (assistantMessageCount === 0 || messages[index - 1]?.type !== 'assistant')) {
+        displayItems.push({
+          type: 'command',
+          content: userCommand,
+          messageIndex: index,
+          commandIndex: assistantMessageCount
+        });
+      }
+
+      assistantMessageCount++;
     }
 
-    // Handle special commands
-    if (value.toLowerCase() === 'exit' || value.toLowerCase() === 'quit') {
-      onExit();
-      return;
-    }
-
-    setInput('');
-    await onCommand(value);
-  };
+    displayItems.push({
+      type: 'message',
+      content: message,
+      messageIndex: index,
+      commandIndex: assistantMessageCount
+    });
+  });
 
   return (
-    <Box flexDirection="column">
-      {/* Header */}
-      <Box flexDirection="column" marginBottom={1}>
-        <Text bold color="cyan" wrap="truncate">
-          {'─'.repeat(terminalWidth)}
-        </Text>
-        <Text bold color="cyan">
-          🚀 TARS Fleet Command Console
-        </Text>
-        <Text color="gray">Tactical Autonomous Resource Strategist</Text>
-        <Text color="gray">Model: claude-sonnet-4-5-20250929</Text>
-        <Text color="gray">Memory: {memoryStatus}</Text>
-        <Text bold color="cyan" wrap="truncate">
-          {'─'.repeat(terminalWidth)}
-        </Text>
-        <Newline />
-      </Box>
+    <Box flexDirection="column" marginBottom={1}>
+      <Static items={displayItems}>
+        {(item) => {
+          if (item.type === 'command') {
+            return (
+              <Box marginBottom={1} key={`cmd-${item.commandIndex}`}>
+                <Text bold>Admiral&gt; </Text>
+                <Text>{item.content}</Text>
+              </Box>
+            );
+          }
 
-      {/* Messages */}
-      <Box flexDirection="column" marginBottom={1}>
-        {messages.map((message, index) => {
-          // Show user command before each assistant response
-          const userCommand = userCommands[Math.floor(index / 2)];
-          const showUserCommand = message.type === 'assistant' && userCommand;
-
-          // Determine if we're in a subagent context by checking if previous message has Task delegation
+          // Determine if we're in a subagent context
+          const message = item.content;
+          const index = item.messageIndex;
           let isInSubagent = false;
+
           if (message.type === 'assistant' && index > 0) {
-            // Look backwards to see if we've delegated to a subagent
             for (let i = index - 1; i >= 0; i--) {
               const prevMsg = messages[i];
               if (prevMsg.type === 'assistant') {
@@ -110,7 +157,6 @@ export const App: React.FC<AppProps> = ({
                   isInSubagent = true;
                   break;
                 }
-                // If we hit text content from assistant, we've likely exited subagent context
                 const hasText = content.some((block: any) => block.type === 'text');
                 if (hasText) {
                   break;
@@ -119,74 +165,187 @@ export const App: React.FC<AppProps> = ({
             }
           }
 
-          return (
-            <React.Fragment key={index}>
-              {showUserCommand && (
-                <Box marginBottom={1}>
-                  <Text bold>Admiral&gt; </Text>
-                  <Text>{userCommand}</Text>
-                </Box>
-              )}
-              <Message message={message} isInSubagent={isInSubagent} />
-            </React.Fragment>
-          );
-        })}
+          return <Message key={`msg-${index}`} message={message} isInSubagent={isInSubagent} />;
+        }}
+      </Static>
+    </Box>
+  );
+}, (prevProps, nextProps) => {
+  return (
+    prevProps.messages === nextProps.messages &&
+    prevProps.userCommands === nextProps.userCommands
+  );
+});
+
+MessageDisplay.displayName = 'MessageDisplay';
+
+// Memoized header to prevent re-renders
+const Header = React.memo(({
+  terminalWidth,
+  memoryStatus
+}: {
+  terminalWidth: number;
+  memoryStatus: string;
+}) => (
+  <Box flexDirection="column" marginBottom={1}>
+    <Text bold color="cyan" wrap="truncate">
+      {'─'.repeat(terminalWidth)}
+    </Text>
+    <Text bold color="cyan">
+      🚀 TARS Fleet Command Console
+    </Text>
+    <Text color="gray">Tactical Autonomous Resource Strategist</Text>
+    <Text color="gray">Model: claude-sonnet-4-5-20250929</Text>
+    <Text color="gray">Memory: {memoryStatus}</Text>
+    <Text bold color="cyan" wrap="truncate">
+      {'─'.repeat(terminalWidth)}
+    </Text>
+    <Newline />
+  </Box>
+));
+
+Header.displayName = 'Header';
+
+// Memoized processing indicator
+const ProcessingIndicator = React.memo(({
+  isProcessing
+}: {
+  isProcessing: boolean;
+}) => {
+  if (!isProcessing) {
+    return null;
+  }
+
+  return (
+    <Box marginBottom={1}>
+      <Text color="cyan">
+        <Spinner type="dots" /> TARS is processing...{' '}
+        <Text dimColor>(ESC to interrupt)</Text>
+      </Text>
+    </Box>
+  );
+});
+
+ProcessingIndicator.displayName = 'ProcessingIndicator';
+
+// Memoized AFK indicator
+const AfkIndicator = React.memo(({
+  isAfkMode,
+  isProcessing,
+  terminalWidth
+}: {
+  isAfkMode: boolean;
+  isProcessing: boolean;
+  terminalWidth: number;
+}) => {
+  if (!isAfkMode || isProcessing) {
+    return null;
+  }
+
+  return (
+    <Box flexDirection="column">
+      <Text color="cyan" wrap="truncate">
+        {'─'.repeat(terminalWidth)}
+      </Text>
+      <Box flexDirection="column" paddingY={1}>
+        <Text bold color="green">
+          🤖 AFK MODE ACTIVE - Autonomous Operation
+        </Text>
+        <Text dimColor>
+          TARS is operating autonomously. ESC to interrupt and return to interactive mode.
+        </Text>
       </Box>
+      <Text color="cyan" wrap="truncate">
+        {'─'.repeat(terminalWidth)}
+      </Text>
+    </Box>
+  );
+});
 
-      {/* Processing indicator */}
-      {isProcessing && (
-        <Box marginBottom={1}>
-          <Text color="cyan">
-            <Spinner type="dots" /> TARS is processing...{' '}
-            <Text dimColor>(ESC to interrupt)</Text>
-          </Text>
-        </Box>
-      )}
+AfkIndicator.displayName = 'AfkIndicator';
 
-      {/* AFK Mode Indicator */}
-      {isAfkMode && !isProcessing && (
-        <Box flexDirection="column">
-          <Text color="cyan" wrap="truncate">
-            {'─'.repeat(terminalWidth)}
-          </Text>
-          <Box flexDirection="column" paddingY={1}>
-            <Text bold color="green">
-              🤖 AFK MODE ACTIVE - Autonomous Operation
-            </Text>
-            <Text dimColor>
-              TARS is operating autonomously. ESC to interrupt and return to interactive mode.
-            </Text>
-          </Box>
-          <Text color="cyan" wrap="truncate">
-            {'─'.repeat(terminalWidth)}
-          </Text>
-        </Box>
-      )}
+// Memoized help text
+const HelpText = React.memo(({
+  isAfkMode
+}: {
+  isAfkMode: boolean;
+}) => {
+  if (isAfkMode) {
+    return null;
+  }
 
-      {/* Input prompt */}
-      {!isAfkMode && !isProcessing && (
-        <Box flexDirection="column">
-          <Text color="cyan" wrap="truncate">
-            {'─'.repeat(terminalWidth)}
-          </Text>
-          <Box flexDirection="row">
-            <Text bold>Admiral&gt; </Text>
-            <TextInput value={input} onChange={setInput} onSubmit={handleSubmit} />
-          </Box>
-          <Text color="cyan" wrap="truncate">
-            {'─'.repeat(terminalWidth)}
-          </Text>
-        </Box>
-      )}
+  return (
+    <Box marginTop={1}>
+      <Text dimColor>
+        Commands: exit/quit | /clear-memory | /afk [hours] [checkin_min] (default: /afk 4 30)
+      </Text>
+    </Box>
+  );
+});
 
-      {/* Help text */}
-      {!isAfkMode && (
-        <Box marginTop={1}>
-          <Text dimColor>
-            Commands: exit/quit | /clear-memory | /afk [hours] [checkin_min] (default: /afk 4 30)
-          </Text>
-        </Box>
-      )}
+HelpText.displayName = 'HelpText';
+
+export const App: React.FC<AppProps> = ({
+  onCommand,
+  messages,
+  isProcessing,
+  memoryStatus,
+  onExit,
+  cancelRef,
+  isAfkMode = false,
+  userCommands = []
+}) => {
+  const { stdout } = useStdout();
+  const [terminalWidth, setTerminalWidth] = useState(stdout?.columns || 80);
+
+  // Update terminal width on resize (debounced to reduce flicker)
+  useEffect(() => {
+    let resizeTimeout: NodeJS.Timeout;
+
+    const handleResize = () => {
+      clearTimeout(resizeTimeout);
+      resizeTimeout = setTimeout(() => {
+        setTerminalWidth(stdout?.columns || 80);
+      }, 300);  // Debounce resize for 300ms
+    };
+
+    stdout?.on('resize', handleResize);
+
+    return () => {
+      stdout?.off('resize', handleResize);
+      clearTimeout(resizeTimeout);
+    };
+  }, [stdout]);
+
+  // Memoize handleSubmit to prevent InputSection from re-rendering
+  const handleSubmit = useCallback(async (value: string) => {
+    if (!value.trim()) {
+      return;
+    }
+
+    // Handle special commands
+    if (value.toLowerCase() === 'exit' || value.toLowerCase() === 'quit') {
+      onExit();
+      return;
+    }
+
+    await onCommand(value);
+  }, [onCommand, onExit]);
+
+  return (
+    <Box flexDirection="column">
+      <EscapeKeyHandler isProcessing={isProcessing} cancelRef={cancelRef} />
+      <Header terminalWidth={terminalWidth} memoryStatus={memoryStatus} />
+      <MessageDisplay messages={messages} userCommands={userCommands} />
+      <ProcessingIndicator isProcessing={isProcessing} />
+      <AfkIndicator isAfkMode={isAfkMode} isProcessing={isProcessing} terminalWidth={terminalWidth} />
+      <InputSection
+        isProcessing={isProcessing}
+        isAfkMode={isAfkMode}
+        handleSubmit={handleSubmit}
+        terminalWidth={terminalWidth}
+      />
+      <HelpText isAfkMode={isAfkMode} />
     </Box>
   );
 };

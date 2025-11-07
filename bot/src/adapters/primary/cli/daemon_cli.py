@@ -33,10 +33,17 @@ def daemon_list_command(args: argparse.Namespace) -> int:
 
 def daemon_inspect_command(args: argparse.Namespace) -> int:
     """Inspect container"""
+    import json
     client = DaemonClient()
     try:
         result = client.inspect_container(args.container_id)
 
+        # If --json flag is set, output as JSON
+        if hasattr(args, 'json') and args.json:
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+            return 0
+
+        # Otherwise, output human-readable format
         print(f"Container: {result['container_id']}")
         print(f"Status: {result['status']}")
         print(f"Type: {result['type']}")
@@ -48,9 +55,21 @@ def daemon_inspect_command(args: argparse.Namespace) -> int:
             print(f"Stopped: {result['stopped_at']}")
         if result.get('exit_code') is not None:
             print(f"Exit code: {result['exit_code']}")
+
+        # Print logs if present
+        if result.get('logs'):
+            print(f"\nLogs ({len(result['logs'])} entries):")
+            for log in result['logs'][:10]:  # Show first 10
+                print(f"  [{log['level']}] {log['timestamp']}: {log['message'][:100]}")
+            if len(result['logs']) > 10:
+                print(f"  ... and {len(result['logs']) - 10} more")
+
         return 0
     except Exception as e:
-        print(f"❌ Error: {e}")
+        if hasattr(args, 'json') and args.json:
+            print(json.dumps({"error": str(e)}, indent=2))
+        else:
+            print(f"❌ Error: {e}")
         return 1
 
 
@@ -80,6 +99,7 @@ def daemon_remove_command(args: argparse.Namespace) -> int:
 
 def daemon_logs_command(args: argparse.Namespace) -> int:
     """Get container logs from database"""
+    import json
     client = DaemonClient()
     try:
         result = client.get_container_logs(
@@ -88,8 +108,28 @@ def daemon_logs_command(args: argparse.Namespace) -> int:
             limit=args.limit if hasattr(args, 'limit') else 100,
             level=args.level if hasattr(args, 'level') else None
         )
+
+        # If --json flag is set, output as JSON
+        if hasattr(args, 'json') and args.json:
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+            return 0
+
+        # Otherwise, output human-readable format
+        logs = result.get('logs', [])
+        if not logs:
+            print("No logs found")
+            return 0
+
+        print(f"Logs for container {args.container_id} ({len(logs)} entries):")
+        for log in logs:
+            print(f"[{log['level']}] {log['timestamp']}: {log['message']}")
+
         return 0
     except Exception as e:
+        if hasattr(args, 'json') and args.json:
+            print(json.dumps({"error": str(e)}, indent=2))
+        else:
+            print(f"❌ Error: {e}")
         return 1
 
 
@@ -113,6 +153,7 @@ def setup_daemon_commands(subparsers):
     # Inspect command
     inspect = daemon_sub.add_parser("inspect", help="Inspect container")
     inspect.add_argument("--container-id", required=True, help="Container ID to inspect")
+    inspect.add_argument("--json", action="store_true", help="Output as JSON")
     inspect.set_defaults(func=daemon_inspect_command)
 
     # Stop command
@@ -131,4 +172,5 @@ def setup_daemon_commands(subparsers):
     logs.add_argument("--player-id", type=int, required=True, help="Player ID")
     logs.add_argument("--limit", type=int, default=100, help="Maximum logs to retrieve (default 100)")
     logs.add_argument("--level", choices=["INFO", "WARNING", "ERROR", "DEBUG"], help="Filter by log level")
+    logs.add_argument("--json", action="store_true", help="Output as JSON")
     logs.set_defaults(func=daemon_logs_command)

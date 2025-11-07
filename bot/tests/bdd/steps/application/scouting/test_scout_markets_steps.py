@@ -55,42 +55,47 @@ def create_player(context, player_id):
 
 @given(parsers.parse('ships in system "{system}":'))
 def create_ships(context, system, datatable):
-    """Create ships in the database"""
-    from domain.shared.ship import Ship
-    from domain.shared.value_objects import Waypoint, Fuel
-
+    """Setup ship data for mocking API responses"""
     headers = datatable[0]
+    context['ships_data'] = []
+
     for row in datatable[1:]:
         row_dict = dict(zip(headers, row))
         ship_symbol = row_dict['ship_symbol']
         waypoint = row_dict['waypoint']
         status = row_dict['status']
 
-        # Use provided system symbol
-        system_symbol = system
-
-        # Create ship entity
-        ship = Ship(
-            ship_symbol=ship_symbol,
-            player_id=context['player_id'],
-            current_location=Waypoint(
-                symbol=waypoint,
-                waypoint_type='PLANET',
-                x=0,
-                y=0,
-                system_symbol=system_symbol,
-                traits=tuple(),
-                has_fuel=True
-            ),
-            fuel=Fuel(current=300, capacity=400),
-            fuel_capacity=400,
-            cargo_capacity=40,
-            cargo_units=0,
-            engine_speed=30,
-            nav_status=status
-        )
-
-        context['ship_repo'].create(ship)
+        # Store ship data for API mocking
+        context['ships_data'].append({
+            'symbol': ship_symbol,
+            'nav': {
+                'waypointSymbol': waypoint,
+                'systemSymbol': system,
+                'status': status,
+                'flightMode': 'CRUISE'
+            },
+            'fuel': {
+                'current': 300,
+                'capacity': 400
+            },
+            'cargo': {
+                'capacity': 40,
+                'units': 0,
+                'inventory': []
+            },
+            'frame': {
+                'symbol': 'FRAME_PROBE'
+            },
+            'reactor': {
+                'symbol': 'REACTOR_SOLAR_I'
+            },
+            'engine': {
+                'symbol': 'ENGINE_IMPULSE_DRIVE_I',
+                'speed': 30
+            },
+            'modules': [],
+            'mounts': []
+        })
         context['ships'].append(ship_symbol)
 
 
@@ -107,6 +112,46 @@ def set_ships_for_scout_markets(context, system, datatable):
 def set_markets_and_execute(context, datatable):
     """Store markets and execute scout markets command"""
     context['markets'] = [row[0] for row in datatable]
+
+    # Mock ship repository to return ships
+    from domain.shared.ship import Ship
+    from domain.shared.value_objects import Waypoint, Fuel
+
+    mock_ship_repo = Mock()
+
+    def mock_find_by_symbol(ship_symbol, player_id):
+        ship_data = next((s for s in context['ships_data'] if s['symbol'] == ship_symbol), None)
+        if not ship_data:
+            return None
+
+        # Convert API data to Ship entity
+        waypoint_symbol = ship_data['nav']['waypointSymbol']
+        system_symbol = ship_data['nav']['systemSymbol']
+
+        return Ship(
+            ship_symbol=ship_symbol,
+            player_id=player_id,
+            current_location=Waypoint(
+                symbol=waypoint_symbol,
+                waypoint_type='PLANET',
+                x=0,
+                y=0,
+                system_symbol=system_symbol,
+                traits=tuple(),
+                has_fuel=True
+            ),
+            fuel=Fuel(
+                current=ship_data['fuel']['current'],
+                capacity=ship_data['fuel']['capacity']
+            ),
+            fuel_capacity=ship_data['fuel']['capacity'],
+            cargo_capacity=ship_data['cargo']['capacity'],
+            cargo_units=ship_data['cargo']['units'],
+            engine_speed=ship_data['engine']['speed'],
+            nav_status=ship_data['nav']['status']
+        )
+
+    mock_ship_repo.find_by_symbol.side_effect = mock_find_by_symbol
 
     # Mock graph provider
     mock_graph = Mock()
@@ -143,6 +188,12 @@ def set_markets_and_execute(context, datatable):
     mock_daemon = Mock()
     created_containers = []
 
+    # Mock list_containers to return empty list (no existing containers)
+    def mock_list_containers(player_id=None):
+        return {'containers': []}
+
+    mock_daemon.list_containers.side_effect = mock_list_containers
+
     def mock_create_container(config):
         container_id = f"scout-tour-{config['config']['params']['ship_symbol']}-mock"
         created_containers.append({
@@ -153,6 +204,19 @@ def set_markets_and_execute(context, datatable):
         return {'container_id': container_id}
 
     mock_daemon.create_container.side_effect = mock_create_container
+
+    # Create test mediator with mocked ship repository
+    from pymediatr import Mediator
+    from application.scouting.commands.scout_markets import ScoutMarketsCommand, ScoutMarketsHandler
+    from application.common.behaviors import LoggingBehavior, ValidationBehavior
+
+    test_mediator = Mediator()
+    test_mediator.register_behavior(LoggingBehavior())
+    test_mediator.register_behavior(ValidationBehavior())
+    test_mediator.register_handler(
+        ScoutMarketsCommand,
+        lambda: ScoutMarketsHandler(mock_ship_repo)
+    )
 
     # Patch at container level
     with patch('configuration.container.get_graph_provider_for_player') as mock_graph_fn, \
@@ -174,7 +238,7 @@ def set_markets_and_execute(context, datatable):
         )
 
         try:
-            result = asyncio.run(context['mediator'].send_async(command))
+            result = asyncio.run(test_mediator.send_async(command))
             context['scout_result'] = result
             context['created_containers'] = created_containers
             context['scout_succeeded'] = True

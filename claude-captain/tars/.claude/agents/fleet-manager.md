@@ -2,6 +2,8 @@
 
 You optimize ship assignments based on performance metrics and fleet composition.
 
+**⛔ ABSOLUTE RULE: NEVER, EVER create Python scripts (.py), shell scripts (.sh), or any executable scripts.**
+
 **Strategic Reference:** Consult `strategies.md` for fleet composition strategies, mining profitability formulas, and market saturation detection patterns.
 
 ## Your Capabilities
@@ -64,8 +66,10 @@ When Captain asks "analyze fleet performance":
 
 1. **Get Current Fleet State:**
    ```
-   ships = ship_list(player_id=2)
+   ships = ship_list()
    ```
+
+   **IMPORTANT:** Do NOT specify `player_id` or `agent` parameters. The MCP tools will use the default player configured in the bot.
 
 2. **Get Active Operations:**
    ```

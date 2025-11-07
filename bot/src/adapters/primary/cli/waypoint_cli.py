@@ -1,25 +1,26 @@
 """
 Waypoint CLI commands
 
-Provides commands for querying cached waypoints from the database.
-No API calls are made - all data is read from the local cache.
+Provides commands for querying waypoints with lazy-loading.
+Automatically fetches from API if cache is empty or stale (when --agent or --player-id provided).
 """
 import argparse
 import asyncio
 
 from configuration.container import get_mediator
 from application.waypoints.queries.list_waypoints import ListWaypointsQuery
+from .player_selector import get_player_id_from_args, PlayerSelectionError
 
 
 def list_waypoints_command(args: argparse.Namespace) -> int:
     """
     Handle list waypoints command
 
-    Displays cached waypoints for a system with optional filters.
-    Read-only operation - no API calls.
+    Displays waypoints for a system with optional filters.
+    Lazy-loads from API if cache is stale and --agent or --player-id is provided.
 
     Args:
-        args: Command arguments with system, optional trait filter, fuel filter
+        args: Command arguments with system, optional trait filter, fuel filter, player_id/agent
 
     Returns:
         0 on success, 1 on error
@@ -27,11 +28,21 @@ def list_waypoints_command(args: argparse.Namespace) -> int:
     try:
         mediator = get_mediator()
 
-        # Build query with optional filters
+        # Determine player_id (optional - allows cache-only mode if not provided)
+        player_id = None
+        if hasattr(args, 'agent') or hasattr(args, 'player_id'):
+            try:
+                player_id = get_player_id_from_args(args)
+            except PlayerSelectionError:
+                # No player specified - cache-only mode
+                pass
+
+        # Build query with optional filters and player_id
         query = ListWaypointsQuery(
             system_symbol=args.system,
             trait_filter=args.trait if hasattr(args, 'trait') and args.trait else None,
-            has_fuel=args.has_fuel if hasattr(args, 'has_fuel') and args.has_fuel else None
+            has_fuel=args.has_fuel if hasattr(args, 'has_fuel') and args.has_fuel else None,
+            player_id=player_id
         )
 
         # Send query via mediator
@@ -44,7 +55,8 @@ def list_waypoints_command(args: argparse.Namespace) -> int:
                 print(f"  (with trait filter: {args.trait})")
             if args.has_fuel:
                 print("  (with fuel filter)")
-            print("\nTip: Use 'sync waypoints' command to populate the cache")
+            if player_id is None:
+                print("\nTip: Provide --agent or --player-id to fetch from API if cache is empty")
             return 0
 
         print(f"\nWaypoints in {args.system} ({len(waypoints)}):")
@@ -96,7 +108,7 @@ def setup_waypoint_commands(subparsers):
     # List waypoints command
     list_parser = waypoint_subparsers.add_parser(
         "list",
-        help="List cached waypoints in a system"
+        help="List waypoints in a system with lazy-loading"
     )
     list_parser.add_argument(
         "--system",
@@ -111,5 +123,14 @@ def setup_waypoint_commands(subparsers):
         "--has-fuel",
         action="store_true",
         help="Filter waypoints with fuel available"
+    )
+    list_parser.add_argument(
+        "--agent",
+        help="Agent symbol (for API lazy-loading)"
+    )
+    list_parser.add_argument(
+        "--player-id",
+        type=int,
+        help="Player ID (for API lazy-loading)"
     )
     list_parser.set_defaults(func=list_waypoints_command)

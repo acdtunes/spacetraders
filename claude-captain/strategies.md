@@ -16,35 +16,48 @@ This document contains proven strategies for SpaceTraders operations based on of
 
 **Goal:** Build market visibility before scaling operations
 
-**Step 1 - Scout Ship Acquisition:**
-- Purchase 2-3 probe/scout ships (max 100K total investment)
+**Step 1 - Scout Ship Acquisition (Initial):**
+- Purchase 4 probe/scout ships (max 120K total investment)
 - Look for cheapest ships that can move between waypoints
 - Probe ships are disposable intelligence assets, not revenue generators
+- Solar-powered probes preferred (zero fuel cost, infinite runtime)
 
-**Step 2 - Scout Operations:**
-- Deploy scout ships to cover major trade routes in your system
-- Use scout_markets MCP tool to start continuous market monitoring
-- Target: 1 scout per 2-3 key waypoints
-- Let scouts run continuously to gather price trends
+**Step 2 - Scout Operations (Initial Deployment):**
+- Deploy ALL 4 scout ships to cover ALL markets in your system
+- Use scout_markets MCP tool with VRP optimization
+- Each scout tours multiple markets (markets distributed across fleet)
+- Let scouts run continuously (infinite iterations) to gather price trends
+- **NEVER leave scouts idle** - deploy all available ships
 
 **Step 3 - Contract Operations:**
-- Start contract fulfillment with command ship immediately
+- Start contract fulfillment with command ship immediately (while scouts monitor)
 - Use contract_batch_workflow MCP tool
 - Contracts provide TWO revenue touchpoints:
   - Acceptance payment (upfront capital)
   - Delivery payment (profit)
 - Target: Complete initial batch of 5-10 contracts
+- Build capital for scout expansion
+
+**Step 4 - Scout Fleet Expansion (When Credits Allow):**
+- **Target: 7 scouts total** for optimal coverage + redundancy
+- Purchase 3 additional scouts when credits reach ~50K+ available
+- Typical cost: ~75K-90K for 3 more probes
+- Redeploy all 7 scouts to cover all markets with better distribution
+- **Expansion timing:** After initial contracts establish cash flow (~200K-250K total credits)
 
 **Why This Works:**
-- Scouts cost <100K but provide priceless market data
+- Initial 4 scouts cost <120K but provide complete market coverage
+- VRP optimization ensures all markets monitored even with few ships
 - Contracts generate 10-20K profit per run (guaranteed income)
-- Market intelligence enables better sourcing decisions
-- Low risk: contracts are guaranteed profit, scouts are cheap
+- Market intelligence enables better sourcing decisions (cheaper goods = higher profit)
+- Scout expansion to 7 ships provides redundancy and faster refresh cycles
+- Low risk: contracts are guaranteed profit, scouts are cheap and solar-powered
 
 **Success Metrics:**
 - Credits growing steadily from contracts
-- Market price data for 10+ waypoints
-- Total credits reaching 300K+
+- 100% market coverage with ALL scouts deployed
+- Scout fleet expanded to 7 ships when credits allow
+- Total credits reaching 300K+ (ready for Phase 2)
 
 **Phase 2: Capital Accumulation**
 - Continue contract operations
@@ -57,6 +70,10 @@ This document contains proven strategies for SpaceTraders operations based on of
 - ❌ Don't start mining without surveyor + multiple miners
 - ❌ Don't ignore scout data - it's your strategic advantage
 - ❌ Don't scale too fast - let scouts identify opportunities first
+- ❌ Don't send fewer than 4 scouts initially - insufficient coverage
+- ❌ Don't leave scouts idle - always deploy ALL available scouts to ALL markets
+- ❌ Don't stop at 4 scouts - expand to 7 when credits allow (~50K+ available)
+- ❌ Don't scout only some markets - cover ALL markets for complete intelligence
 
 ## Core Game Mechanics
 
@@ -120,17 +137,29 @@ Monitor Credits/hour trend. If declining despite adding miners = **market satura
 
 ### Market Intelligence Fleet
 
-**Probe/Satellite Deployment:**
-Deploy cheap satellite ships to check market prices periodically.
+**Proven Scout Strategy:**
+- **Start:** 4 solar-powered probes (max 120K investment)
+- **Target:** 7 total scouts for optimal coverage + redundancy
+- **Expansion:** Buy 3 more when credits reach ~50K+ available
 
-**Coverage Ratio:**
-Unknown optimal ratio (player experimentation needed). Consider:
-- 1 probe per major trade route
-- Refresh prices every 5-10 minutes
-- Track historical price trends over time
+**Deployment Strategy:**
+- Deploy ALL available scouts to cover ALL markets (100% coverage)
+- Use VRP (Vehicle Routing Problem) optimization to distribute markets
+- Each scout tours multiple markets in optimized route
+- Continuous monitoring (infinite iterations, never stop)
+- Solar-powered probes = zero fuel cost = infinite runtime
 
-**ROI Tracking:**
-Compare trading profits with vs without price data. If no measurable improvement, reduce probe count.
+**Coverage Approach:**
+- **With 4 scouts:** Each tours 2-3+ markets (VRP optimized)
+- **With 7 scouts:** Better distribution, faster refresh cycles, redundancy
+- **NEVER partial deployment:** Use ALL scouts, cover ALL markets
+- Markets refresh continuously as scouts complete their tours
+
+**ROI Validation:**
+- Scouts enable finding cheapest sellers (contracts profit +15-30%)
+- Market data prevents buying at imports (expensive) vs exports (cheap)
+- Zero fuel cost means scouts pay for themselves quickly
+- Intelligence value compounds over time (better decisions daily)
 
 ## Mining Strategy (Researched Mechanics)
 

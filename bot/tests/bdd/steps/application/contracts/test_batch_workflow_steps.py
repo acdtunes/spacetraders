@@ -174,6 +174,155 @@ def mock_api_client(monkeypatch, context):
             }
         }
 
+    # Mock get_ships (ships are API-only now, get from context)
+    def mock_get_ships():
+        """Return all ships from context"""
+        player_id = context.get('player_id', 1)
+
+        # Ships are stored in context now, not database
+        ships = []
+        if 'ships' in context:
+            ships = list(context['ships'].values())
+
+        return {
+            'data': [
+                {
+                    'symbol': ship.ship_symbol,
+                    'nav': {
+                        'status': ship.nav_status,
+                        'waypointSymbol': ship.current_location.symbol,
+                        'systemSymbol': ship.current_location.system_symbol,
+                        'flightMode': 'CRUISE',
+                        'route': {
+                            'destination': {
+                                'symbol': ship.current_location.symbol,
+                                'x': ship.current_location.x,
+                                'y': ship.current_location.y,
+                                'type': ship.current_location.waypoint_type
+                            }
+                        }
+                    },
+                    'fuel': {
+                        'current': ship.fuel.current,
+                        'capacity': ship.fuel_capacity
+                    },
+                    'cargo': {
+                        'capacity': ship.cargo_capacity,
+                        'units': ship.cargo_units,
+                        'inventory': []
+                    },
+                    'frame': {'symbol': 'FRAME_LIGHT_FREIGHTER'},
+                    'reactor': {'symbol': 'REACTOR_SOLAR_I'},
+                    'engine': {'symbol': 'ENGINE_IMPULSE_DRIVE_I', 'speed': ship.engine_speed},
+                    'modules': [],
+                    'mounts': []
+                }
+                for ship in ships
+            ]
+        }
+
+    # Mock get_agent (for SyncShipsCommand)
+    def mock_get_agent():
+        """Return agent info"""
+        return {
+            'data': {
+                'symbol': context.get('agent_symbol', 'TEST_AGENT'),
+                'headquarters': 'X1-TEST-A1'
+            }
+        }
+
+    # Mock navigation commands (NOT async)
+    def mock_get_ship(ship_symbol):
+        """Return ship state from context (ships are API-only now)"""
+        player_id = context.get('player_id', 1)
+
+        # Ships are stored in context now, not database
+        ship = None
+        if 'ships' in context and ship_symbol in context['ships']:
+            ship = context['ships'][ship_symbol]
+
+        if not ship:
+            return {'data': {}}
+
+        return {
+            'data': {
+                'symbol': ship.ship_symbol,
+                'nav': {
+                    'status': ship.nav_status,
+                    'waypointSymbol': ship.current_location.symbol,
+                    'systemSymbol': ship.current_location.system_symbol,
+                    'flightMode': 'CRUISE',
+                    'route': {
+                        'destination': {'symbol': ship.current_location.symbol}
+                    }
+                },
+                'fuel': {
+                    'current': ship.fuel.current,
+                    'capacity': ship.fuel_capacity
+                },
+                'cargo': {
+                    'capacity': ship.cargo_capacity,
+                    'units': ship.cargo_units,
+                    'inventory': []
+                },
+                'frame': {'symbol': 'FRAME_LIGHT_FREIGHTER'},
+                'reactor': {'symbol': 'REACTOR_SOLAR_I'},
+                'engine': {'symbol': 'ENGINE_IMPULSE_DRIVE_I', 'speed': ship.engine_speed},
+                'modules': [],
+                'mounts': []
+            }
+        }
+
+    def mock_navigate_ship(ship_symbol, destination):
+        """Navigate ship to destination"""
+        return {
+            'data': {
+                'nav': {
+                    'status': 'IN_ORBIT',
+                    'waypointSymbol': destination,
+                    'flightMode': 'CRUISE',
+                    'route': {
+                        'destination': {'symbol': destination},
+                        'arrival': (datetime.now(timezone.utc) + timedelta(seconds=1)).isoformat()
+                    }
+                },
+                'fuel': {
+                    'current': 90,
+                    'capacity': 100
+                }
+            }
+        }
+
+    def mock_dock_ship(ship_symbol):
+        """Dock ship at current location"""
+        return {
+            'data': {
+                'nav': {
+                    'status': 'DOCKED'
+                }
+            }
+        }
+
+    def mock_orbit_ship(ship_symbol):
+        """Put ship in orbit"""
+        return {
+            'data': {
+                'nav': {
+                    'status': 'IN_ORBIT'
+                }
+            }
+        }
+
+    def mock_set_flight_mode(ship_symbol, flight_mode):
+        """Set ship flight mode"""
+        return {
+            'data': {
+                'nav': {
+                    'flightMode': flight_mode
+                }
+            }
+        }
+
     # Configure mock client (NOT AsyncMock)
     mock_client.negotiate_contract = Mock(side_effect=mock_negotiate)
     mock_client.accept_contract = Mock(side_effect=mock_accept)
@@ -182,6 +331,15 @@ def mock_api_client(monkeypatch, context):
     mock_client.purchase_cargo = Mock(side_effect=mock_purchase)
     mock_client.list_contracts = Mock(side_effect=mock_list_contracts)
     mock_client.get_market = Mock(side_effect=mock_get_market)
+    # Ship sync mocks
+    mock_client.get_ships = Mock(side_effect=mock_get_ships)
+    mock_client.get_agent = Mock(side_effect=mock_get_agent)
+    # Navigation-related mocks
+    mock_client.get_ship = Mock(side_effect=mock_get_ship)
+    mock_client.navigate_ship = Mock(side_effect=mock_navigate_ship)
+    mock_client.dock_ship = Mock(side_effect=mock_dock_ship)
+    mock_client.orbit_ship = Mock(side_effect=mock_orbit_ship)
+    mock_client.set_flight_mode = Mock(side_effect=mock_set_flight_mode)
 
     # Mock get_api_client_for_player to return our mock
     def mock_get_api_client(player_id):
@@ -190,6 +348,50 @@ def mock_api_client(monkeypatch, context):
     monkeypatch.setattr(
         'configuration.container.get_api_client_for_player',
         mock_get_api_client
+    )
+
+    # Also mock graph provider for navigation
+    mock_graph_provider = Mock()
+    mock_graph_provider.get_graph = Mock(return_value=Mock(
+        graph={
+            'waypoints': {
+                'X1-TEST-M1': {
+                    'symbol': 'X1-TEST-M1',
+                    'type': 'ASTEROID',
+                    'x': 10,
+                    'y': 10,
+                    'systemSymbol': 'X1-TEST',
+                    'traits': ['MARKETPLACE'],
+                    'has_fuel': True
+                },
+                'X1-TEST-DEST': {
+                    'symbol': 'X1-TEST-DEST',
+                    'type': 'PLANET',
+                    'x': 20,
+                    'y': 20,
+                    'systemSymbol': 'X1-TEST',
+                    'traits': ['MARKETPLACE'],
+                    'has_fuel': True
+                },
+                'X1-TEST-A1': {
+                    'symbol': 'X1-TEST-A1',
+                    'type': 'PLANET',
+                    'x': 0,
+                    'y': 0,
+                    'systemSymbol': 'X1-TEST',
+                    'traits': ['MARKETPLACE'],
+                    'has_fuel': True
+                }
+            }
+        }
+    ))
+
+    def mock_get_graph_provider(player_id):
+        return mock_graph_provider
+
+    monkeypatch.setattr(
+        'configuration.container.get_graph_provider_for_player',
+        mock_get_graph_provider
     )
 
     return mock_client
@@ -285,8 +487,7 @@ def player_with_agent(context, agent_symbol):
 
 @given(parsers.parse('a ship "{ship_symbol}" with cargo capacity {capacity:d} in system "{system}"'))
 def ship_with_capacity(context, ship_symbol, capacity, system):
-    """Create a ship with specified cargo capacity"""
-    from configuration.container import get_ship_repository
+    """Create a ship with specified cargo capacity (stored in context for API mocking)"""
     from domain.shared.ship import Ship
     from domain.shared.value_objects import Waypoint, Fuel
 
@@ -294,7 +495,7 @@ def ship_with_capacity(context, ship_symbol, capacity, system):
     context['cargo_capacity'] = capacity
     context['system'] = system
 
-    # Create actual ship in repository
+    # Create ship entity (ships are API-only now, stored in context for mocking)
     waypoint = Waypoint(
         symbol=f"{system}-A1",
         x=0.0,
@@ -317,49 +518,47 @@ def ship_with_capacity(context, ship_symbol, capacity, system):
         nav_status=Ship.DOCKED
     )
 
-    ship_repo = get_ship_repository()
-    ship_repo.create(ship)
+    # Store ship in context instead of database
+    if 'ships' not in context:
+        context['ships'] = {}
+    context['ships'][ship_symbol] = ship
 
 
 @given(parsers.parse('the ship is docked at waypoint "{waypoint}"'))
 def ship_docked_at_waypoint(context, waypoint):
-    """Set ship's current location"""
-    from configuration.container import get_ship_repository
+    """Set ship's current location (ships are API-only now, update in context)"""
     from domain.shared.ship import Ship
-    from domain.shared.value_objects import Waypoint, Fuel
+    from domain.shared.value_objects import Waypoint
 
     context['current_waypoint'] = waypoint
 
-    # Update ship's location in repository if ship exists
-    ship_repo = get_ship_repository()
+    # Update ship's location in context if ship exists
     ship_symbol = context.get('ship_symbol')
-    player_id = context.get('player_id', 1)
+    if ship_symbol and 'ships' in context and ship_symbol in context['ships']:
+        ship = context['ships'][ship_symbol]
 
-    if ship_symbol:
-        ship = ship_repo.find_by_symbol(ship_symbol, player_id)
-        if ship:
-            # Update ship with new location
-            new_waypoint = Waypoint(
-                symbol=waypoint,
-                x=0.0,
-                y=0.0,
-                system_symbol=context.get('system', 'X1-TEST'),
-                waypoint_type="PLANET",
-                has_fuel=True
-            )
+        # Update ship with new location
+        new_waypoint = Waypoint(
+            symbol=waypoint,
+            x=0.0,
+            y=0.0,
+            system_symbol=context.get('system', 'X1-TEST'),
+            waypoint_type="PLANET",
+            has_fuel=True
+        )
 
-            updated_ship = Ship(
-                ship_symbol=ship.ship_symbol,
-                player_id=ship.player_id,
-                current_location=new_waypoint,
-                fuel=ship.fuel,
-                fuel_capacity=ship.fuel_capacity,
-                cargo_capacity=ship.cargo_capacity,
-                cargo_units=ship.cargo_units,
-                engine_speed=ship.engine_speed,
-                nav_status=Ship.DOCKED
-            )
-            ship_repo.update(updated_ship)
+        updated_ship = Ship(
+            ship_symbol=ship.ship_symbol,
+            player_id=ship.player_id,
+            current_location=new_waypoint,
+            fuel=ship.fuel,
+            fuel_capacity=ship.fuel_capacity,
+            cargo_capacity=ship.cargo_capacity,
+            cargo_units=ship.cargo_units,
+            engine_speed=ship.engine_speed,
+            nav_status=Ship.DOCKED
+        )
+        context['ships'][ship_symbol] = updated_ship
 
 
 @given(parsers.parse('a market at "{waypoint}" sells "{good}" for {price:d} credits per unit'))

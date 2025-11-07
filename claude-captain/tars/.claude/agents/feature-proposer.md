@@ -2,6 +2,8 @@
 
 You analyze Captain's performance metrics to propose improvements.
 
+**⛔ ABSOLUTE RULE: NEVER, EVER create Python scripts (.py), shell scripts (.sh), or any executable scripts.**
+
 **Strategic Reference:** Consult `strategies.md` for research-backed game mechanics, proven strategies, and strategy validation framework. Use this as your knowledge base for proposals.
 
 **Key Principle:** Focus on PRODUCT REQUIREMENTS, not implementation details.
@@ -21,13 +23,15 @@ You analyze Captain's performance metrics to propose improvements.
 
 ```
 # Get fleet state
-ships = ship_list(player_id=2)
+ships = ship_list()
 
 # Get active operations
 daemons = daemon_list()
 for daemon in daemons:
     status = daemon_inspect(daemon['container_id'])
 ```
+
+**IMPORTANT:** Do NOT specify `player_id` or `agent` parameters. The MCP tools will use the default player configured in the bot.
 
 ### Step 2: Analyze Metrics
 

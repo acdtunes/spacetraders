@@ -1,5 +1,6 @@
 import sqlite3
 import logging
+import os
 from pathlib import Path
 from contextlib import contextmanager
 from typing import Optional, List, Dict, Any
@@ -18,7 +19,16 @@ class Database:
             # Otherwise each new connection creates a fresh empty database
             self._persistent_conn = None
         else:
-            self.db_path = db_path or Path("var/spacetraders.db")
+            # Priority: explicit parameter > environment variable > default
+            if db_path is not None:
+                self.db_path = Path(db_path) if not isinstance(db_path, Path) else db_path
+            else:
+                env_path = os.environ.get("SPACETRADERS_DB_PATH")
+                if env_path:
+                    self.db_path = Path(env_path)
+                else:
+                    self.db_path = Path("var/spacetraders.db")
+
             self._persistent_conn = None
             # Create directory for file-based databases
             if isinstance(self.db_path, Path):
@@ -126,44 +136,12 @@ class Database:
                 )
             """)
 
-            # Ships table
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS ships (
-                    ship_symbol TEXT NOT NULL,
-                    player_id INTEGER NOT NULL,
-                    current_location_symbol TEXT NOT NULL,
-                    fuel_current INTEGER NOT NULL,
-                    fuel_capacity INTEGER NOT NULL,
-                    cargo_capacity INTEGER NOT NULL,
-                    cargo_units INTEGER NOT NULL,
-                    engine_speed INTEGER NOT NULL,
-                    nav_status TEXT NOT NULL,
-                    system_symbol TEXT NOT NULL,
-                    synced_at TIMESTAMP,
-                    PRIMARY KEY (ship_symbol, player_id),
-                    FOREIGN KEY (player_id) REFERENCES players(player_id) ON DELETE CASCADE
-                )
-            """)
+            # Ships table removed - ship data is now fetched directly from API
+            # Historical note: Ships table was removed to ensure ship state
+            # (location, fuel, cargo) is always fresh from the SpaceTraders API.
+            # This prevents stale data issues and eliminates sync complexity.
 
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_ships_player
-                ON ships(player_id)
-            """)
-
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_ships_location
-                ON ships(current_location_symbol)
-            """)
-
-            # Add synced_at column to existing ships tables (migration)
-            # Check if column exists before adding
-            cursor.execute("PRAGMA table_info(ships)")
-            columns = [row[1] for row in cursor.fetchall()]
-            if 'synced_at' not in columns:
-                cursor.execute("ALTER TABLE ships ADD COLUMN synced_at TIMESTAMP")
-                logger.info("Added synced_at column to ships table")
-
-            # Routes table
+            # Routes table (FK to ships removed since ships are API-only)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS routes (
                     route_id TEXT PRIMARY KEY,
@@ -174,7 +152,7 @@ class Database:
                     ship_fuel_capacity INTEGER NOT NULL,
                     segments_json TEXT NOT NULL,
                     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (ship_symbol, player_id) REFERENCES ships(ship_symbol, player_id) ON DELETE CASCADE
+                    FOREIGN KEY (player_id) REFERENCES players(player_id) ON DELETE CASCADE
                 )
             """)
 
@@ -339,6 +317,15 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_waypoint_fuel
                 ON waypoints(has_fuel)
             """)
+
+            # Migration: Add synced_at column if it doesn't exist
+            cursor.execute("PRAGMA table_info(waypoints)")
+            waypoint_columns = [row[1] for row in cursor.fetchall()]
+            if 'synced_at' not in waypoint_columns:
+                logger.info("Adding synced_at column to waypoints table")
+                # Set default to NULL so we can detect waypoints that have never been synced
+                cursor.execute("ALTER TABLE waypoints ADD COLUMN synced_at TIMESTAMP DEFAULT NULL")
+                conn.commit()
 
             conn.commit()
 

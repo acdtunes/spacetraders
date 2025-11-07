@@ -139,13 +139,23 @@ class MockSpaceTradersAPI(ISpaceTradersAPI):
 
         # Include route data if ship is IN_TRANSIT
         if current_nav_status == "IN_TRANSIT":
-            # For testing, provide a route with an arrival time in the past
-            # so tests can validate the IN_TRANSIT state without actually waiting
+            # Use arrival_time from state if available, otherwise use past time for instant completion
+            from datetime import datetime, timezone
+            if "arrival_time" in state:
+                arrival_time = state["arrival_time"]
+                # Use ISO format with microseconds to preserve precision
+                arrival_str = arrival_time.isoformat().replace('+00:00', 'Z')
+            else:
+                arrival_str = "2024-01-01T00:00:00Z"  # Past arrival for instant completion in tests
+
             nav_dict["route"] = {
                 "destination": {
-                    "symbol": state.get("location", ship.current_location.symbol)
+                    "symbol": state.get("location", ship.current_location.symbol),
+                    "x": ship.current_location.x,
+                    "y": ship.current_location.y,
+                    "type": ship.current_location.waypoint_type
                 },
-                "arrival": "2024-01-01T00:00:00Z"  # Past arrival for instant completion in tests
+                "arrival": arrival_str
             }
 
         return {
@@ -174,10 +184,26 @@ class MockSpaceTradersAPI(ISpaceTradersAPI):
         return {"data": {"symbol": self.agent_symbol}}
 
     def get_ship(self, ship_symbol: str):
-        """Return full ship data"""
+        """Return full ship data, simulating arrival time transitions"""
+        from datetime import datetime, timezone
         # Get registered ship and return full data
         if ship_symbol in self._ship_registry:
             ship = self._ship_registry[ship_symbol]
+
+            # Check if ship has arrival time and if it has passed
+            state = self._ship_state.get(ship_symbol, {})
+            if "arrival_time" in state:
+                arrival_time = state["arrival_time"]
+                now = datetime.now(timezone.utc)
+                # Ensure both times are timezone-aware for comparison
+                if arrival_time.tzinfo is None:
+                    arrival_time = arrival_time.replace(tzinfo=timezone.utc)
+                if now >= arrival_time:
+                    # Ship has arrived - transition from IN_TRANSIT to IN_ORBIT
+                    state["nav_status"] = "IN_ORBIT"
+                    del state["arrival_time"]  # Remove arrival time once arrived
+                    self._ship_state[ship_symbol] = state
+
             return {"data": self._ship_to_api_dict(ship)}
         return {"data": {}}
 
@@ -338,6 +364,18 @@ class MockSpaceTradersAPI(ISpaceTradersAPI):
                     "units": units,
                     "pricePerUnit": 10,
                     "totalPrice": units * 10
+                }
+            }
+        }
+
+    def jettison_cargo(self, ship_symbol: str, cargo_symbol: str, units: int):
+        """Jettison cargo from ship into space (stub for testing)"""
+        return {
+            "data": {
+                "cargo": {
+                    "capacity": 100,
+                    "units": 0,
+                    "inventory": []
                 }
             }
         }

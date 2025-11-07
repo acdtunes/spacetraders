@@ -139,8 +139,7 @@ class RefuelShipHandler(RequestHandler[RefuelShipCommand, RefuelShipResponse]):
         if transaction:
             cost = transaction.get('totalPrice', None)
 
-        # 9. Persist with from_api=True to update synced_at timestamp
-        self._ship_repo.update(ship, from_api=True)
+        # 9. Ship state is API-only now - no database updates needed
 
         # 10. Return response
         return RefuelShipResponse(

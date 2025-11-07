@@ -142,9 +142,16 @@ def negotiate_contract_command(args: argparse.Namespace) -> int:
         print(f"   Faction: {contract.faction_symbol}")
         print(f"   Type: {contract.type}")
         print(f"   Deliveries: {len(contract.terms.deliveries)}")
+        for delivery in contract.terms.deliveries:
+            print(f"     - {delivery.trade_symbol}: {delivery.units_required} units to {delivery.destination.symbol}")
+        print(f"   Payment on accept: {contract.terms.payment.on_accepted:,} credits")
+        print(f"   Payment on fulfill: {contract.terms.payment.on_fulfilled:,} credits")
         return 0
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f"❌ Contract negotiation failed: {e}")
+        import traceback
+        if hasattr(args, 'verbose') and args.verbose:
+            traceback.print_exc()
         return 1
 
 
@@ -168,7 +175,7 @@ def batch_workflow_command(args: argparse.Namespace) -> int:
         print("=" * 50)
         print("📊 Batch Workflow Results")
         print("=" * 50)
-        print(f"  Contracts negotiated: {result.negotiated}")
+        print(f"  Contracts negotiated: {result.negotiated}/{args.count}")
         print(f"  Contracts accepted:   {result.accepted}")
         print(f"  Contracts fulfilled:  {result.fulfilled}")
         print(f"  Contracts failed:     {result.failed}")
@@ -180,7 +187,16 @@ def batch_workflow_command(args: argparse.Namespace) -> int:
             avg_profit = result.total_profit // result.fulfilled
             print(f"  Average profit/contract: {avg_profit:,} credits")
 
-        return 0
+        # Display errors if any occurred
+        if result.errors and len(result.errors) > 0:
+            print()
+            print("❌ Errors Encountered:")
+            print("=" * 50)
+            for error in result.errors:
+                print(f"  - {error}")
+            print("=" * 50)
+
+        return 0 if result.failed == 0 else 1
     except Exception as e:
         print(f"❌ Error: {e}")
         return 1

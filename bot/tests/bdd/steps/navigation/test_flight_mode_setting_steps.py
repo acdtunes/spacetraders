@@ -224,26 +224,41 @@ def create_ship_at_waypoint(context, ship_symbol, waypoint, fuel):
     player_id = context.get('player_id', 1)
 
     # Set initial location and fuel in API client mock
+    # Ships are API-only now, so we only need to configure the mock
     if 'api_client' in context:
         context['api_client']._current_location = waypoint
         context['api_client']._current_fuel = fuel
 
-    with db.transaction() as conn:
-        # Clean up any previous ship data
-        conn.execute("DELETE FROM ships WHERE ship_symbol = ?", (ship_symbol,))
+    # Ships are API-only now - no database persistence
+    # Create ship entity in context for testing
+    from domain.shared.ship import Ship
+    from domain.shared.value_objects import Waypoint, Fuel
 
-        # Extract system symbol from waypoint (X1-A1 -> X1)
-        system_symbol = waypoint.split('-')[0]
+    # Extract system symbol from waypoint (X1-A1 -> X1)
+    system_symbol = waypoint.split('-')[0]
 
-        # Create test ship
-        conn.execute("""
-            INSERT INTO ships (
-                ship_symbol, player_id, nav_status, current_location_symbol,
-                fuel_current, fuel_capacity, engine_speed, system_symbol,
-                cargo_capacity, cargo_units, synced_at
-            )
-            VALUES (?, ?, 'IN_ORBIT', ?, ?, 500, 30, ?, 100, 0, ?)
-        """, (ship_symbol, player_id, waypoint, fuel, system_symbol, datetime.now(timezone.utc).isoformat()))
+    ship = Ship(
+        ship_symbol=ship_symbol,
+        player_id=player_id,
+        current_location=Waypoint(
+            symbol=waypoint,
+            x=0.0,
+            y=0.0,
+            system_symbol=system_symbol,
+            waypoint_type='PLANET',
+            has_fuel=True
+        ),
+        fuel=Fuel(current=fuel, capacity=500),
+        fuel_capacity=500,
+        cargo_capacity=100,
+        cargo_units=0,
+        engine_speed=30,
+        nav_status='IN_ORBIT'
+    )
+
+    if 'ships' not in context:
+        context['ships'] = {}
+    context['ships'][ship_symbol] = ship
 
     context['ship_symbol'] = ship_symbol
     context['starting_waypoint'] = waypoint
@@ -502,21 +517,11 @@ def navigate_ship_to_destination(context, destination):
 @then(parsers.parse('the API should set flight mode to "{mode}" before navigating'))
 def verify_flight_mode_set(context, mode):
     """Verify ship consumed fuel consistent with the specified flight mode"""
-    db = get_database()
-    ship_symbol = context['ship_symbol']
-    player_id = context['player_id']
+    # Ships are API-only now - check API client state
+    api_client = context.get('api_client')
+    assert api_client is not None, "API client not found in context"
 
-    # Get ship from database
-    with db.transaction() as conn:
-        row = conn.execute("""
-            SELECT fuel_current
-            FROM ships
-            WHERE ship_symbol = ? AND player_id = ?
-        """, (ship_symbol, player_id)).fetchone()
-
-    assert row is not None, f"Ship {ship_symbol} not found in database"
-
-    final_fuel = row[0]
+    final_fuel = api_client._current_fuel
     initial_fuel = context.get('initial_fuel', 500)
 
     # Calculate expected fuel consumption based on mode
@@ -538,21 +543,13 @@ def verify_flight_mode_set(context, mode):
 @then(parsers.parse('the ship should navigate to "{destination}"'))
 def verify_navigation_to_destination(context, destination):
     """Verify ship successfully arrived at destination with correct fuel consumption"""
-    db = get_database()
-    ship_symbol = context['ship_symbol']
-    player_id = context['player_id']
+    # Ships are API-only now - check API client state
+    api_client = context.get('api_client')
+    assert api_client is not None, "API client not found in context"
 
-    # Get ship from database
-    with db.transaction() as conn:
-        row = conn.execute("""
-            SELECT current_location_symbol, fuel_current, nav_status
-            FROM ships
-            WHERE ship_symbol = ? AND player_id = ?
-        """, (ship_symbol, player_id)).fetchone()
-
-    assert row is not None, f"Ship {ship_symbol} not found in database"
-    assert row[0] == destination, \
-        f"Ship not at destination: expected {destination}, got {row[0]}"
+    current_location = api_client._current_location
+    assert current_location == destination, \
+        f"Ship not at destination: expected {destination}, got {current_location}"
 
 
 @then(parsers.parse('the API should set flight mode to "{mode}" before first navigation'))
@@ -567,20 +564,13 @@ def verify_first_flight_mode(context, mode):
 @then(parsers.parse('the ship should navigate to "{waypoint}"'))
 def verify_navigation_occurred(context, waypoint):
     """Verify ship is at the specified waypoint"""
-    db = get_database()
-    ship_symbol = context['ship_symbol']
-    player_id = context['player_id']
+    # Ships are API-only now - check API client state
+    api_client = context.get('api_client')
+    assert api_client is not None, "API client not found in context"
 
-    with db.transaction() as conn:
-        row = conn.execute("""
-            SELECT current_location_symbol
-            FROM ships
-            WHERE ship_symbol = ? AND player_id = ?
-        """, (ship_symbol, player_id)).fetchone()
-
-    assert row is not None, f"Ship {ship_symbol} not found"
-    assert row[0] == waypoint, \
-        f"Ship not at waypoint: expected {waypoint}, got {row[0]}"
+    current_location = api_client._current_location
+    assert current_location == waypoint, \
+        f"Ship not at waypoint: expected {waypoint}, got {current_location}"
 
 
 @then(parsers.parse('the API should set flight mode to "{mode}" before second navigation'))
@@ -595,21 +585,15 @@ def verify_second_flight_mode(context, mode):
 @then(parsers.parse('the ship should refuel at "{waypoint}"'))
 def verify_refueling(context, waypoint):
     """Verify ship has full fuel after refueling"""
-    db = get_database()
-    ship_symbol = context['ship_symbol']
-    player_id = context['player_id']
+    # Ships are API-only now - check API client state
+    api_client = context.get('api_client')
+    assert api_client is not None, "API client not found in context"
 
-    with db.transaction() as conn:
-        row = conn.execute("""
-            SELECT fuel_current, fuel_capacity
-            FROM ships
-            WHERE ship_symbol = ? AND player_id = ?
-        """, (ship_symbol, player_id)).fetchone()
-
-    assert row is not None, f"Ship {ship_symbol} not found"
+    fuel_current = api_client._current_fuel
+    fuel_capacity = 500
     # After refuel, fuel should be at or near capacity
-    assert row[0] >= row[1] * 0.9, \
-        f"Ship not refueled: fuel {row[0]}/{row[1]}"
+    assert fuel_current >= fuel_capacity * 0.9, \
+        f"Ship not refueled: fuel {fuel_current}/{fuel_capacity}"
 
 
 @then('set_flight_mode should be called before navigate_ship')
@@ -621,40 +605,23 @@ def verify_mode_set_before_navigate(context):
         f"Navigation failed: {context.get('navigation_error')}"
 
     # Verify ship reached destination (proves navigation occurred)
-    db = get_database()
-    ship_symbol = context['ship_symbol']
-    player_id = context['player_id']
+    api_client = context.get('api_client')
+    assert api_client is not None, "API client not found in context"
 
-    with db.transaction() as conn:
-        row = conn.execute("""
-            SELECT current_location_symbol
-            FROM ships
-            WHERE ship_symbol = ? AND player_id = ?
-        """, (ship_symbol, player_id)).fetchone()
-
-    assert row is not None, f"Ship {ship_symbol} not found"
-    assert row[0] == context['destination'], \
-        f"Ship did not reach destination: at {row[0]}, expected {context['destination']}"
+    current_location = api_client._current_location
+    expected_location = context['destination']
+    assert current_location == expected_location, \
+        f"Ship did not reach destination: at {current_location}, expected {expected_location}"
 
 
 @then(parsers.parse('the mode parameter should be "{mode}"'))
 def verify_mode_parameter(context, mode):
     """Verify fuel consumption matches the expected mode"""
-    db = get_database()
-    ship_symbol = context['ship_symbol']
-    player_id = context['player_id']
+    # Ships are API-only now - check API client state
+    api_client = context.get('api_client')
+    assert api_client is not None, "API client not found in context"
 
-    # Get current fuel
-    with db.transaction() as conn:
-        row = conn.execute("""
-            SELECT fuel_current
-            FROM ships
-            WHERE ship_symbol = ? AND player_id = ?
-        """, (ship_symbol, player_id)).fetchone()
-
-    assert row is not None, f"Ship {ship_symbol} not found in database"
-
-    final_fuel = row[0]
+    final_fuel = api_client._current_fuel
     initial_fuel = context.get('initial_fuel', 500)
 
     # Calculate expected fuel consumption

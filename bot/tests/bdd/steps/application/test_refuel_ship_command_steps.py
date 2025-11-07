@@ -286,13 +286,11 @@ def check_fuel_was_added(context):
 
 @then(parsers.parse('the ship in the repository should have {fuel:d} current fuel'))
 def check_repo_ship_fuel(context, fuel):
-    """Verify ship in repository has correct fuel"""
-    ship = context['mock_repo'].find_by_symbol(
-        context.get('ship_symbol', 'TEST-SHIP-1'),
-        context.get('player_id', 1)
-    )
-    assert ship is not None
-    assert ship.fuel.current == fuel
+    """Verify ship has correct fuel (API-only model, no database persistence)"""
+    # In API-only model, we verify the result contains the correct fuel state
+    assert context['result'] is not None, "No result returned"
+    assert context['result'].ship.fuel.current == fuel, \
+        f"Expected fuel {fuel}, got {context['result'].ship.fuel.current}"
 
 
 @then("the cost should be None")

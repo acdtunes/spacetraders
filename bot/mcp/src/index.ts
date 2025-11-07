@@ -219,6 +219,46 @@ class SpaceTradersBotServer {
         return cmd;
       }
 
+      // ==================== SHIPYARD COMMANDS ====================
+      case "shipyard_list": {
+        const cmd = ["shipyard", "list", "--waypoint", String(args.waypoint)];
+        if (args.player_id !== undefined) {
+          cmd.push("--player-id", String(args.player_id));
+        }
+        if (args.agent !== undefined) {
+          cmd.push("--agent", String(args.agent));
+        }
+        return cmd;
+      }
+
+      case "shipyard_purchase": {
+        const cmd = ["shipyard", "purchase", "--ship", String(args.ship), "--type", String(args.type)];
+        if (args.shipyard !== undefined) {
+          cmd.push("--shipyard", String(args.shipyard));
+        }
+        if (args.player_id !== undefined) {
+          cmd.push("--player-id", String(args.player_id));
+        }
+        if (args.agent !== undefined) {
+          cmd.push("--agent", String(args.agent));
+        }
+        return cmd;
+      }
+
+      case "shipyard_batch_purchase": {
+        const cmd = ["shipyard", "batch", "--ship", String(args.ship), "--type", String(args.type), "--quantity", String(args.quantity), "--max-budget", String(args.max_budget)];
+        if (args.shipyard !== undefined) {
+          cmd.push("--shipyard", String(args.shipyard));
+        }
+        if (args.player_id !== undefined) {
+          cmd.push("--player-id", String(args.player_id));
+        }
+        if (args.agent !== undefined) {
+          cmd.push("--agent", String(args.agent));
+        }
+        return cmd;
+      }
+
       // ==================== SCOUTING COMMANDS ====================
       case "scout_markets": {
         const cmd = ["scout", "markets", "--ships", String(args.ships), "--system", String(args.system), "--markets", String(args.markets)];
@@ -257,7 +297,7 @@ class SpaceTradersBotServer {
         return ["daemon", "list"];
 
       case "daemon_inspect":
-        return ["daemon", "inspect", "--container-id", String(args.container_id)];
+        return ["daemon", "inspect", "--container-id", String(args.container_id), "--json"];
 
       case "daemon_stop":
         return ["daemon", "stop", "--container-id", String(args.container_id)];
@@ -266,7 +306,7 @@ class SpaceTradersBotServer {
         return ["daemon", "remove", "--container-id", String(args.container_id)];
 
       case "daemon_logs": {
-        const cmd = ["daemon", "logs", "--container-id", String(args.container_id), "--player-id", String(args.player_id)];
+        const cmd = ["daemon", "logs", "--container-id", String(args.container_id), "--player-id", String(args.player_id), "--json"];
         if (args.limit !== undefined) {
           cmd.push("--limit", String(args.limit));
         }
@@ -350,12 +390,16 @@ class SpaceTradersBotServer {
   ): Promise<PythonCommandResult> {
     return new Promise((resolve) => {
       // Invoke as module: python -m adapters.primary.cli.main
+      // Set SPACETRADERS_DB_PATH to canonical database location for consistency
+      const dbPath = process.env.SPACETRADERS_DB_PATH || path.join(this.botDir, "var", "spacetraders.db");
+
       const child = spawn(this.pythonExecutable, ["-m", "adapters.primary.cli.main", ...args], {
         cwd: this.botDir,
         stdio: ["ignore", "pipe", "pipe"],
         env: {
           ...process.env,
           PYTHONPATH: path.join(this.botDir, "src"),
+          SPACETRADERS_DB_PATH: dbPath,
         },
       });
 

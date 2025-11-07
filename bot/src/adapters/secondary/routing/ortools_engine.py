@@ -115,12 +115,16 @@ class ORToolsRoutingEngine(IRoutingEngine):
 
             # Calculate minimum fuel needed for direct path to goal (if visible)
             if at_start_with_low_fuel and goal in graph:
+                # NEW: 90% rule at start - always refuel when below 90% capacity
+                fuel_threshold = int(fuel_capacity * 0.9)
+                should_refuel_90_at_start = fuel_remaining < fuel_threshold
+
                 goal_wp = graph[goal]
                 distance_to_goal = current_wp.distance_to(goal_wp)
                 cruise_fuel_needed = self.calculate_fuel_cost(distance_to_goal, FlightMode.CRUISE)
 
-                # If we can't make it in CRUISE mode with safety margin, MUST refuel first
-                if fuel_remaining < cruise_fuel_needed + SAFETY_MARGIN:
+                # If we can't make it in CRUISE mode with safety margin OR below 90% capacity, MUST refuel first
+                if fuel_remaining < cruise_fuel_needed + SAFETY_MARGIN or should_refuel_90_at_start:
                     # Force refuel first - don't explore DRIFT option from start
                     refuel_amount = fuel_capacity - fuel_remaining
                     refuel_step = {
@@ -143,10 +147,16 @@ class ORToolsRoutingEngine(IRoutingEngine):
                     continue  # Skip travel options from this state
 
             # Option 1: Refuel at current waypoint (if has fuel)
-            # Check if we MUST refuel (insufficient fuel to reach goal even with DRIFT)
+            # Implement 90% rule: always refuel when below 90% capacity
             must_refuel = False
+            should_refuel_90 = False
+
             if current_wp.has_fuel and fuel_remaining < fuel_capacity:
-                # Calculate if we can reach goal from here without refueling
+                # NEW: 90% rule - always refuel when below 90% capacity
+                fuel_threshold = int(fuel_capacity * 0.9)
+                should_refuel_90 = fuel_remaining < fuel_threshold
+
+                # Also check if MUST refuel (can't reach goal in DRIFT)
                 if goal in graph:
                     goal_wp = graph[goal]
                     distance_to_goal = current_wp.distance_to(goal_wp)
@@ -156,29 +166,30 @@ class ORToolsRoutingEngine(IRoutingEngine):
                     if fuel_remaining < drift_fuel_needed:
                         must_refuel = True
 
-                # Always add refuel option
-                refuel_amount = fuel_capacity - fuel_remaining
-                refuel_step = {
-                    'action': 'REFUEL',
-                    'waypoint': current,
-                    'fuel_cost': 0,
-                    'time': 0,  # Simplified: assume instant refuel
-                    'amount': refuel_amount
-                }
-                new_path = path + [refuel_step]
-                heapq.heappush(pq, (
-                    total_time,
-                    counter,
-                    current,
-                    fuel_capacity,
-                    total_fuel_used,
-                    new_path
-                ))
-                counter += 1
+                # Add refuel option if we should or must refuel
+                if should_refuel_90 or must_refuel:
+                    refuel_amount = fuel_capacity - fuel_remaining
+                    refuel_step = {
+                        'action': 'REFUEL',
+                        'waypoint': current,
+                        'fuel_cost': 0,
+                        'time': 0,  # Simplified: assume instant refuel
+                        'amount': refuel_amount
+                    }
+                    new_path = path + [refuel_step]
+                    heapq.heappush(pq, (
+                        total_time,
+                        counter,
+                        current,
+                        fuel_capacity,
+                        total_fuel_used,
+                        new_path
+                    ))
+                    counter += 1
 
-                # If MUST refuel, skip travel options (force refuel first)
-                if must_refuel:
-                    continue
+                    # If MUST refuel or SHOULD refuel (90% rule), skip travel options (force refuel first)
+                    if must_refuel or should_refuel_90:
+                        continue
 
             # Option 2: Travel to neighboring waypoints
             for neighbor_symbol, neighbor in graph.items():

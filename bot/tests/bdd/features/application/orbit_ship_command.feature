@@ -29,11 +29,12 @@ Feature: Orbit Ship Command
     And the error message should contain "NONEXISTENT"
     And the error message should contain "player 1"
 
-  Scenario: Cannot orbit a ship in transit
-    Given a ship "TEST-SHIP-1" for player 1 with status "IN_TRANSIT"
-    When I attempt to orbit ship "TEST-SHIP-1" for player 1
-    Then the command should fail with InvalidNavStatusError
-    And the error message should contain "transit"
+  # Eventual Consistency - Waiting for Ship State
+  Scenario: Orbit command waits for ship in transit to arrive
+    Given a ship "TEST-SHIP-1" for player 1 in transit arriving in 2 seconds at "X1-TEST-AB12"
+    When I execute orbit command for ship "TEST-SHIP-1" and player 1
+    Then the command should succeed
+    And the ship status should be "IN_ORBIT"
 
   Scenario: Cannot orbit another player's ship
     Given a ship "TEST-SHIP-1" for player 1 with status "DOCKED"

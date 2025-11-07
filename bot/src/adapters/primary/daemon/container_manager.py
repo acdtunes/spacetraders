@@ -119,9 +119,15 @@ class ContainerManager:
             info.exit_code = 1
             info.exit_reason = str(e)
             logger.error(f"Container {info.container_id} failed: {e}")
-            await self._handle_restart(info)
         finally:
             info.stopped_at = datetime.now()
+            # Set status to STOPPED after execution completes
+            # This will be overridden to STARTING if restart happens
+            info.status = ContainerStatus.STOPPED
+
+        # Handle restart if needed (only called on failure)
+        if info.exit_code != 0:
+            await self._handle_restart(info)
 
     async def _handle_restart(self, info: ContainerInfo):
         """Handle container restart based on policy

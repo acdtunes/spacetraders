@@ -1,6 +1,9 @@
 from typing import Optional
-from .value_objects import Waypoint, Fuel, FlightMode
+import logging
+from .value_objects import Waypoint, Fuel, FlightMode, Cargo, CargoItem
 from .exceptions import DomainException
+
+logger = logging.getLogger(__name__)
 
 
 class ShipException(DomainException):
@@ -64,7 +67,8 @@ class Ship:
         cargo_capacity: int,
         cargo_units: int,
         engine_speed: int,
-        nav_status: str = IN_ORBIT
+        nav_status: str = IN_ORBIT,
+        cargo: Optional[Cargo] = None
     ):
         """
         Initialize a Ship entity
@@ -76,16 +80,52 @@ class Ship:
             fuel: Current fuel state
             fuel_capacity: Maximum fuel capacity
             cargo_capacity: Maximum cargo capacity
-            cargo_units: Current cargo units
+            cargo_units: Current cargo units (deprecated, use cargo parameter)
             engine_speed: Ship's engine speed rating
             nav_status: Current navigation status (default: IN_ORBIT)
+            cargo: Cargo object with detailed inventory (optional, overrides cargo_units)
 
         Raises:
             InvalidShipDataError: If any validation fails
         """
+        # If cargo object provided, use it; otherwise create from cargo_units
+        if cargo is None:
+            # For backward compatibility: if cargo_units > 0, create a placeholder item
+            if cargo_units > 0:
+                logger.warning(
+                    f"Ship {ship_symbol} created with {cargo_units} cargo units but no inventory - "
+                    "creating UNKNOWN placeholder. Ship should be synced from API to get actual cargo symbols."
+                )
+                try:
+                    inventory = (CargoItem(
+                        symbol="UNKNOWN",
+                        name="Unknown Cargo",
+                        description="Legacy cargo without detailed inventory",
+                        units=cargo_units
+                    ),)
+                except ValueError as e:
+                    # Re-raise as InvalidShipDataError for consistency
+                    raise InvalidShipDataError(str(e))
+            else:
+                inventory = ()
+
+            try:
+                cargo = Cargo(capacity=cargo_capacity, units=cargo_units, inventory=inventory)
+            except ValueError as e:
+                # Re-raise as InvalidShipDataError with Ship-specific wording
+                error_msg = str(e)
+                if "Cargo units cannot be negative" in error_msg:
+                    raise InvalidShipDataError("cargo_units cannot be negative")
+                elif "Cargo capacity cannot be negative" in error_msg:
+                    raise InvalidShipDataError("cargo_capacity cannot be negative")
+                elif "exceed capacity" in error_msg:
+                    raise InvalidShipDataError("cargo_units cannot exceed cargo_capacity")
+                else:
+                    raise InvalidShipDataError(str(e))
+
         self._validate_initialization(
             ship_symbol, player_id, fuel, fuel_capacity,
-            cargo_capacity, cargo_units, engine_speed, nav_status
+            cargo_capacity, cargo.units, engine_speed, nav_status
         )
 
         self._ship_symbol = ship_symbol.strip()
@@ -94,7 +134,7 @@ class Ship:
         self._fuel = fuel
         self._fuel_capacity = fuel_capacity
         self._cargo_capacity = cargo_capacity
-        self._cargo_units = cargo_units
+        self._cargo = cargo  # Now stores Cargo object
         self._engine_speed = engine_speed
         self._nav_status = nav_status
 
@@ -172,9 +212,14 @@ class Ship:
         return self._cargo_capacity
 
     @property
+    def cargo(self) -> Cargo:
+        """Get cargo object with detailed inventory"""
+        return self._cargo
+
+    @property
     def cargo_units(self) -> int:
-        """Get current cargo units"""
-        return self._cargo_units
+        """Get current cargo units (backward compatibility)"""
+        return self._cargo.units
 
     @property
     def engine_speed(self) -> int:
@@ -455,7 +500,7 @@ class Ship:
         Returns:
             True if space available, False otherwise
         """
-        return (self._cargo_units + units) <= self._cargo_capacity
+        return (self._cargo.units + units) <= self._cargo_capacity
 
     def available_cargo_space(self) -> int:
         """
@@ -464,15 +509,15 @@ class Ship:
         Returns:
             Number of cargo units available
         """
-        return self._cargo_capacity - self._cargo_units
+        return self._cargo.available_capacity()
 
     def is_cargo_empty(self) -> bool:
         """Check if cargo hold is empty"""
-        return self._cargo_units == 0
+        return self._cargo.is_empty()
 
     def is_cargo_full(self) -> bool:
         """Check if cargo hold is full"""
-        return self._cargo_units >= self._cargo_capacity
+        return self._cargo.units >= self._cargo_capacity
 
     # State Queries
 

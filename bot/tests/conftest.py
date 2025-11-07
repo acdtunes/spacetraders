@@ -1,4 +1,5 @@
 import pytest
+import os
 from pathlib import Path
 
 
@@ -18,10 +19,15 @@ def use_test_database():
     importlib.reload(adapters.secondary.api.client)
     importlib.reload(configuration.container)
 
-    # Save original database path
+    # Save original database path and environment variable
     original_db_path = settings.db_path
+    original_env_db_path = os.environ.get("SPACETRADERS_DB_PATH")
 
-    # Use in-memory SQLite database for tests
+    # CRITICAL FIX: Set environment variable so Database class uses in-memory database
+    # Database class reads os.environ directly, not settings object
+    os.environ["SPACETRADERS_DB_PATH"] = ":memory:"
+
+    # Also update settings object for consistency
     settings.db_path = ":memory:"
 
     # Reset container to ensure it uses the test database
@@ -37,7 +43,7 @@ def use_test_database():
         cursor.execute("DELETE FROM ship_assignments")
         cursor.execute("DELETE FROM container_logs")
         cursor.execute("DELETE FROM containers")
-        cursor.execute("DELETE FROM ships")
+        # Ships table removed - ship data is now fetched directly from API
         cursor.execute("DELETE FROM system_graphs")
         cursor.execute("DELETE FROM players")
 
@@ -52,12 +58,17 @@ def use_test_database():
         cursor.execute("DELETE FROM ship_assignments")
         cursor.execute("DELETE FROM container_logs")
         cursor.execute("DELETE FROM containers")
-        cursor.execute("DELETE FROM ships")
+        # Ships table removed - ship data is now fetched directly from API
         cursor.execute("DELETE FROM system_graphs")
         cursor.execute("DELETE FROM players")
 
-    # Restore original settings
+    # Restore original settings and environment variable
     settings.db_path = original_db_path
+    if original_env_db_path is None:
+        # Remove the environment variable if it wasn't set originally
+        os.environ.pop("SPACETRADERS_DB_PATH", None)
+    else:
+        os.environ["SPACETRADERS_DB_PATH"] = original_env_db_path
 
     # Reset container again to clean up test state (this closes the database connection)
     reset_container()
@@ -67,3 +78,10 @@ def use_test_database():
 def context():
     """Shared context for BDD steps"""
     return {}
+
+
+@pytest.fixture
+def mediator():
+    """Get mediator instance for testing"""
+    from configuration.container import get_mediator
+    return get_mediator()

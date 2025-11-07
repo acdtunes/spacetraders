@@ -291,3 +291,25 @@ class SpaceTradersAPIClient(ISpaceTradersAPI):
                 "units": units
             }
         )
+
+    def jettison_cargo(self, ship_symbol: str, cargo_symbol: str, units: int) -> Dict:
+        """Jettison cargo from ship into space.
+
+        Endpoint: POST /my/ships/{shipSymbol}/jettison
+
+        Args:
+            ship_symbol: Ship jettisoning the cargo
+            cargo_symbol: Good to jettison (e.g., "IRON_ORE")
+            units: Number of units to jettison
+
+        Returns:
+            Dict containing updated cargo data
+        """
+        return self._request(
+            "POST",
+            f"/my/ships/{ship_symbol}/jettison",
+            json={
+                "symbol": cargo_symbol,
+                "units": units
+            }
+        )

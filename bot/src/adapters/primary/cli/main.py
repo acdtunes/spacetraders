@@ -3,7 +3,6 @@ import argparse
 import sys
 from .player_cli import setup_player_commands
 from .navigation_cli import setup_navigation_commands
-from .sync_cli import setup_sync_commands
 from .daemon_cli import setup_daemon_commands
 from .config_cli import setup_config_commands
 from .shipyard_cli import setup_shipyard_commands
@@ -18,7 +17,6 @@ def main():
     # Setup subcommands
     setup_player_commands(subparsers)
     setup_navigation_commands(subparsers)
-    setup_sync_commands(subparsers)
     setup_daemon_commands(subparsers)
     setup_config_commands(subparsers)
     setup_shipyard_commands(subparsers)

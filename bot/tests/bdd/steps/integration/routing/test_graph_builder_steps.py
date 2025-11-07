@@ -29,7 +29,19 @@ def context():
 def given_graph_builder(context):
     """Create graph builder with mocked API client"""
     context['api_client'] = Mock()
-    context['builder'] = GraphBuilder(context['api_client'])
+    context['waypoint_repository'] = Mock()
+
+    # Create factories
+    def api_client_factory(player_id: int):
+        return context['api_client']
+
+    def waypoint_repository_factory(player_id: int):
+        return context['waypoint_repository']
+
+    context['builder'] = GraphBuilder(
+        api_client_factory=api_client_factory,
+        waypoint_repository_factory=waypoint_repository_factory,
+    )
 
 
 # Distance calculation steps
@@ -163,7 +175,7 @@ def given_api_returns_malformed(context, system):
 def when_build_system_graph(context, system):
     """Build system graph"""
     try:
-        context['graph'] = context['builder'].build_system_graph(system)
+        context['graph'] = context['builder'].build_system_graph(system, player_id=1)
         context['error'] = None
     except RuntimeError as e:
         context['error'] = str(e)
@@ -220,24 +232,56 @@ def then_waypoint_has_coordinates(context, waypoint, x, y):
 
 @then(parsers.parse('waypoint "{waypoint}" should have trait "{trait}"'))
 def then_waypoint_has_trait(context, waypoint, trait):
-    """Verify waypoint has specific trait"""
+    """Verify waypoint repository received waypoint with specific trait"""
     assert context['graph'] is not None
-    wp = context['graph']['waypoints'][waypoint]
-    assert trait in wp['traits']
+    # Traits are NO LONGER in the graph structure (structure-only)
+    # They are saved to waypoint repository
+    assert context['waypoint_repository'].save_waypoints.called, "Waypoint repository should have been called"
+
+    # Get saved waypoint objects
+    call_args = context['waypoint_repository'].save_waypoints.call_args
+    waypoint_objects = call_args[0][0]
+
+    # Find the waypoint and verify trait
+    target_wp = next((wp for wp in waypoint_objects if wp.symbol == waypoint), None)
+    assert target_wp is not None, f"Waypoint {waypoint} not found in saved waypoints"
+    assert trait in target_wp.traits, f"Trait {trait} not in waypoint {waypoint} traits: {target_wp.traits}"
 
 
 @then(parsers.parse('waypoint "{waypoint}" should have fuel available'))
 def then_waypoint_has_fuel(context, waypoint):
-    """Verify waypoint has fuel available"""
+    """Verify waypoint repository received waypoint with fuel available"""
     assert context['graph'] is not None
-    assert context['graph']['waypoints'][waypoint]['has_fuel'] is True
+    # has_fuel is NO LONGER in the graph structure (structure-only)
+    # It is saved to waypoint repository
+    assert context['waypoint_repository'].save_waypoints.called, "Waypoint repository should have been called"
+
+    # Get saved waypoint objects
+    call_args = context['waypoint_repository'].save_waypoints.call_args
+    waypoint_objects = call_args[0][0]
+
+    # Find the waypoint and verify has_fuel
+    target_wp = next((wp for wp in waypoint_objects if wp.symbol == waypoint), None)
+    assert target_wp is not None, f"Waypoint {waypoint} not found in saved waypoints"
+    assert target_wp.has_fuel is True, f"Waypoint {waypoint} should have fuel"
 
 
 @then(parsers.parse('waypoint "{waypoint}" should not have fuel available'))
 def then_waypoint_has_no_fuel(context, waypoint):
-    """Verify waypoint does not have fuel available"""
+    """Verify waypoint repository received waypoint without fuel available"""
     assert context['graph'] is not None
-    assert context['graph']['waypoints'][waypoint]['has_fuel'] is False
+    # has_fuel is NO LONGER in the graph structure (structure-only)
+    # It is saved to waypoint repository
+    assert context['waypoint_repository'].save_waypoints.called, "Waypoint repository should have been called"
+
+    # Get saved waypoint objects
+    call_args = context['waypoint_repository'].save_waypoints.call_args
+    waypoint_objects = call_args[0][0]
+
+    # Find the waypoint and verify has_fuel
+    target_wp = next((wp for wp in waypoint_objects if wp.symbol == waypoint), None)
+    assert target_wp is not None, f"Waypoint {waypoint} not found in saved waypoints"
+    assert target_wp.has_fuel is False, f"Waypoint {waypoint} should not have fuel"
 
 
 @then(parsers.parse('waypoint "{waypoint}" should have orbital "{orbital}"'))
@@ -259,10 +303,20 @@ def then_waypoint_has_no_orbitals(context, waypoint):
 @then(parsers.parse('waypoint "{waypoint}" should have {count:d} trait'))
 @then(parsers.parse('waypoint "{waypoint}" should have {count:d} traits'))
 def then_waypoint_has_trait_count(context, waypoint, count):
-    """Verify waypoint has expected number of traits"""
+    """Verify waypoint repository received waypoint with expected number of traits"""
     assert context['graph'] is not None
-    wp = context['graph']['waypoints'][waypoint]
-    assert len(wp['traits']) == count
+    # Traits are NO LONGER in the graph structure (structure-only)
+    # They are saved to waypoint repository
+    assert context['waypoint_repository'].save_waypoints.called, "Waypoint repository should have been called"
+
+    # Get saved waypoint objects
+    call_args = context['waypoint_repository'].save_waypoints.call_args
+    waypoint_objects = call_args[0][0]
+
+    # Find the waypoint and verify trait count
+    target_wp = next((wp for wp in waypoint_objects if wp.symbol == waypoint), None)
+    assert target_wp is not None, f"Waypoint {waypoint} not found in saved waypoints"
+    assert len(target_wp.traits) == count, f"Expected {count} traits, got {len(target_wp.traits)}"
 
 
 @then(parsers.parse('waypoint "{waypoint}" should have {count:d} orbital'))

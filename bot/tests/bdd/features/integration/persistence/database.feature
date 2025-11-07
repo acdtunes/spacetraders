@@ -7,9 +7,9 @@ Feature: Database Initialization and Management
     When I initialize a new database
     Then the database file should exist
     And the "players" table should exist
-    And the "ships" table should exist
     And the "routes" table should exist
     And the "system_graphs" table should exist
+    But the "ships" table should not exist
 
   Scenario: Database creates parent directories
     When I initialize a database in nested directories
@@ -70,16 +70,7 @@ Feature: Database Initialization and Management
     And it should have column "last_active"
     And it should have column "metadata"
 
-  Scenario: Ships table has correct schema
-    Given an initialized database
-    When I check the ships table schema
-    Then it should have column "ship_symbol"
-    And it should have column "player_id"
-    And it should have column "current_location_symbol"
-    And it should have column "fuel_current"
-    And it should have column "fuel_capacity"
-    And it should have column "cargo_capacity"
-    And it should have column "nav_status"
+  # Ships table removed - ship data now fetched directly from API
 
   Scenario: Routes table has correct schema
     Given an initialized database
@@ -103,11 +94,7 @@ Feature: Database Initialization and Management
     And I attempt to insert another player with agent_symbol "TEST_AGENT"
     Then the second insert should fail with IntegrityError
 
-  Scenario: Foreign key cascade delete from players to ships
-    Given an initialized database
-    When I create a player and a ship
-    And I delete the player
-    Then the ship should be cascade deleted
+  # Foreign key cascade test removed - ships table no longer exists
 
   Scenario: Multiple connections can be opened simultaneously
     Given an initialized database
@@ -118,5 +105,23 @@ Feature: Database Initialization and Management
     Given an initialized database
     When I check database indexes
     Then index "idx_player_agent" should exist
-    And index "idx_ships_player" should exist
     And index "idx_routes_ship" should exist
+    But index "idx_ships_player" should not exist
+
+  Scenario: Database uses path from SPACETRADERS_DB_PATH environment variable
+    Given the environment variable "SPACETRADERS_DB_PATH" is set to a test path
+    When I initialize a database without providing a path
+    Then the database should be created at the environment variable path
+    And the database file should exist
+
+  Scenario: Database falls back to default path when environment variable not set
+    Given the environment variable "SPACETRADERS_DB_PATH" is not set
+    When I initialize a database without providing a path
+    Then the database should be created at the default path "var/spacetraders.db"
+    And the database file should exist
+
+  Scenario: Explicit path parameter overrides environment variable
+    Given the environment variable "SPACETRADERS_DB_PATH" is set to a test path
+    When I initialize a database with an explicit path
+    Then the database should be created at the explicit path
+    And not at the environment variable path

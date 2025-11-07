@@ -17,6 +17,7 @@ class ProfitabilityResult:
     purchase_cost: int
     trips_required: int
     reason: str
+    cheapest_market_waypoint: Optional[str] = None  # Waypoint symbol of cheapest market
 
 
 @dataclass(frozen=True)
@@ -60,6 +61,7 @@ class EvaluateContractProfitabilityHandler(RequestHandler[EvaluateContractProfit
         # Calculate total units needed and purchase cost
         total_units = 0
         total_purchase_cost = 0
+        cheapest_market_waypoint = None  # Track the waypoint of cheapest market
 
         for delivery in contract.terms.deliveries:
             units_needed = delivery.units_required - delivery.units_fulfilled
@@ -84,8 +86,14 @@ class EvaluateContractProfitabilityHandler(RequestHandler[EvaluateContractProfit
                     net_profit=0,
                     purchase_cost=0,
                     trips_required=0,
-                    reason=f"No market found selling {delivery.trade_symbol}"
+                    reason=f"No market found selling {delivery.trade_symbol}",
+                    cheapest_market_waypoint=None
                 )
+
+            # Store the waypoint of the cheapest market for the first delivery
+            # (assumes single delivery per contract, which is typical)
+            if cheapest_market_waypoint is None:
+                cheapest_market_waypoint = market_result.waypoint_symbol
 
             total_purchase_cost += market_result.sell_price * units_needed
 
@@ -117,5 +125,6 @@ class EvaluateContractProfitabilityHandler(RequestHandler[EvaluateContractProfit
             net_profit=net_profit,
             purchase_cost=total_purchase_cost,
             trips_required=trips_required,
-            reason=reason
+            reason=reason,
+            cheapest_market_waypoint=cheapest_market_waypoint
         )

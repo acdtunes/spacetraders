@@ -121,13 +121,11 @@ class NavigateShipHandler(RequestHandler[NavigateShipCommand, Route]):
                 f"Ship '{request.ship_symbol}' not found for player {request.player_id}"
             )
 
-        # 2b. Sync ship state from API before navigation to prevent stale database state
+        # 2b. Fetch ship state from API (ships are API-only now, so find_by_symbol fetches from API)
         # This ensures we have accurate nav_status, fuel, cargo, and location
-        ship = self._ship_repo.sync_from_api(
+        ship = self._ship_repo.find_by_symbol(
             request.ship_symbol,
-            request.player_id,
-            api_client,
-            graph_provider
+            request.player_id
         )
 
         # 3. Get system graph
@@ -137,6 +135,27 @@ class NavigateShipHandler(RequestHandler[NavigateShipCommand, Route]):
 
         # Convert graph waypoints to Waypoint objects if needed
         waypoint_objects = self._convert_graph_to_waypoints(graph)
+
+        # Validate waypoint cache has waypoints
+        if not waypoint_objects:
+            raise ValueError(
+                f"No waypoints found for system {system_symbol}. "
+                f"The waypoint cache is empty. Please sync waypoints from API first."
+            )
+
+        # Validate ship location exists in waypoint cache
+        if ship.current_location.symbol not in waypoint_objects:
+            raise ValueError(
+                f"Waypoint {ship.current_location.symbol} not found in cache for system {system_symbol}. "
+                f"Ship location is missing from waypoint cache. Please sync waypoints from API."
+            )
+
+        # Validate destination exists in waypoint cache
+        if request.destination_symbol not in waypoint_objects:
+            raise ValueError(
+                f"Waypoint {request.destination_symbol} not found in cache for system {system_symbol}. "
+                f"Destination waypoint is missing from waypoint cache. Please sync waypoints from API."
+            )
 
         # 3. Find optimal path using routing engine
         route_plan = self._routing_engine.find_optimal_path(
@@ -151,7 +170,8 @@ class NavigateShipHandler(RequestHandler[NavigateShipCommand, Route]):
 
         if route_plan is None:
             raise ValueError(
-                f"No path found from {ship.current_location.symbol} to {request.destination_symbol}"
+                f"No route found from {ship.current_location.symbol} to {request.destination_symbol}. "
+                f"The routing engine could not find a valid path. Check waypoint cache for system {system_symbol}."
             )
 
         # 4. Create Route entity from plan
@@ -167,10 +187,8 @@ class NavigateShipHandler(RequestHandler[NavigateShipCommand, Route]):
         route.start_execution()
         ship = await self._execute_route(route, ship, api_client, graph_provider)
 
-        # 6. Persist ship (final state after route execution)
-        # Note: ship was already synced during execution with from_api=True
-        # This is a final persistence to ensure consistency
-        self._ship_repo.update(ship, from_api=True)
+        # 6. Ship state is API-only now - no persistence needed
+        # The ship repository fetches fresh state from API on each call
 
         # 7. Return Route
         return route
@@ -265,11 +283,21 @@ class NavigateShipHandler(RequestHandler[NavigateShipCommand, Route]):
 
         Returns:
             Route entity
+
+        Raises:
+            ValueError: If route plan has no steps or no TRAVEL steps
         """
         segments = []
         refuel_before_departure = False
 
         steps = route_plan.get('steps', [])
+
+        # Validate route plan has steps
+        if not steps:
+            raise ValueError(
+                f"No route found. The routing engine returned an empty route plan with no steps. "
+                f"This may indicate waypoints are missing from the cache or the destination is unreachable."
+            )
 
         # Check if first action is REFUEL (ship at fuel station with low fuel)
         if steps and steps[0]['action'] == 'REFUEL':
@@ -309,6 +337,16 @@ class NavigateShipHandler(RequestHandler[NavigateShipCommand, Route]):
                         flight_mode=prev.flight_mode,
                         requires_refuel=True
                     )
+
+        # Validate we have at least one TRAVEL segment
+        if not segments:
+            # Build steps summary for error message
+            steps_summary = ', '.join([f"{s['action']} at {s.get('waypoint', 'unknown')}" for s in steps])
+            raise ValueError(
+                f"Route plan has no TRAVEL steps. The routing engine returned only non-travel actions. "
+                f"Steps: [{steps_summary}]. This may indicate the ship is already at the destination "
+                f"or there is an issue with the route planning."
+            )
 
         # Generate route ID
         route_id = f"{ship_symbol}_{route_plan.get('total_time', 0)}"
@@ -364,12 +402,10 @@ class NavigateShipHandler(RequestHandler[NavigateShipCommand, Route]):
                             logger.info(f"Waiting {wait_time + 3} seconds for ship to complete previous transit")
                             await asyncio.sleep(wait_time + 3)  # Use async sleep to avoid blocking event loop
 
-                        # Sync ship state after arrival
-                        ship = self._ship_repo.sync_from_api(
+                        # Fetch ship state after arrival (API-only)
+                        ship = self._ship_repo.find_by_symbol(
                             ship.ship_symbol,
-                            route.player_id,
-                            api_client,
-                            graph_provider
+                            route.player_id
                         )
                         logger.info(f"Ship arrived, status now: {ship.nav_status}")
 
@@ -384,11 +420,9 @@ class NavigateShipHandler(RequestHandler[NavigateShipCommand, Route]):
                     # Auto-sync: Fetch full ship state after dock
                     # Dock endpoint returns {data: {nav: {...}}} not full ship object
                     # So we need to fetch the complete ship state
-                    ship = self._ship_repo.sync_from_api(
+                    ship = self._ship_repo.find_by_symbol(
                         ship.ship_symbol,
-                        route.player_id,
-                        api_client,
-                        graph_provider
+                        route.player_id
                     )
 
                 # Refuel before starting journey
@@ -402,7 +436,7 @@ class NavigateShipHandler(RequestHandler[NavigateShipCommand, Route]):
                         route.player_id,
                         ship.current_location  # Refueling doesn't change location
                     )
-                    self._ship_repo.update(ship, from_api=True)
+                    # Ship state is API-only now - no database updates needed
 
                 # Return to orbit - domain handles DOCKED → IN_ORBIT transition
                 state_changed = ship.ensure_in_orbit()
@@ -413,15 +447,15 @@ class NavigateShipHandler(RequestHandler[NavigateShipCommand, Route]):
                     # Auto-sync: Fetch full ship state after orbit
                     # Orbit endpoint returns {data: {nav: {...}}} not full ship object
                     # So we need to fetch the complete ship state
-                    ship = self._ship_repo.sync_from_api(
+                    ship = self._ship_repo.find_by_symbol(
                         ship.ship_symbol,
-                        route.player_id,
-                        api_client,
-                        graph_provider
+                        route.player_id
                     )
 
             # Execute route segments
-            for segment in route.segments:
+            for segment_idx, segment in enumerate(route.segments):
+                # Check if this is the last segment
+                is_last_segment = (segment_idx == len(route.segments) - 1)
                 # Ensure ship is in orbit - domain handles DOCKED → IN_ORBIT transition
                 state_changed = ship.ensure_in_orbit()
                 if state_changed:
@@ -431,11 +465,9 @@ class NavigateShipHandler(RequestHandler[NavigateShipCommand, Route]):
                     # Auto-sync: Fetch full ship state after orbit
                     # Orbit endpoint returns {data: {nav: {...}}} not full ship object
                     # So we need to fetch the complete ship state
-                    ship = self._ship_repo.sync_from_api(
+                    ship = self._ship_repo.find_by_symbol(
                         ship.ship_symbol,
-                        route.player_id,
-                        api_client,
-                        graph_provider
+                        route.player_id
                     )
 
                 # Set flight mode before navigation
@@ -451,11 +483,9 @@ class NavigateShipHandler(RequestHandler[NavigateShipCommand, Route]):
                 # Auto-sync: Fetch full ship state after navigation
                 # Navigate endpoint returns {data: {nav, fuel, events}} not full ship
                 # So we need to fetch the complete ship state
-                ship = self._ship_repo.sync_from_api(
+                ship = self._ship_repo.find_by_symbol(
                     ship.ship_symbol,
-                    route.player_id,
-                    api_client,
-                    graph_provider
+                    route.player_id
                 )
 
                 # Wait for arrival if ship is IN_TRANSIT
@@ -479,11 +509,9 @@ class NavigateShipHandler(RequestHandler[NavigateShipCommand, Route]):
                             logger.warning(f"Wait time is 0 or negative: {wait_time}, ship might already be at destination")
 
                         # Sync ship state again after arrival to verify ship is IN_ORBIT
-                        ship = self._ship_repo.sync_from_api(
+                        ship = self._ship_repo.find_by_symbol(
                             ship.ship_symbol,
-                            route.player_id,
-                            api_client,
-                            graph_provider
+                            route.player_id
                         )
                 else:
                     logger.debug(f"Ship not IN_TRANSIT after navigation, status: {ship.nav_status}")
@@ -493,9 +521,46 @@ class NavigateShipHandler(RequestHandler[NavigateShipCommand, Route]):
                 if ship.nav_status == Ship.IN_TRANSIT:
                     ship.arrive()
 
-                self._ship_repo.update(ship, from_api=True)
+                # Ship state is API-only now - no database updates needed
 
-                # Handle refueling if required
+                # Opportunistic refueling safety check (90% rule)
+                # Defense-in-depth: catch cases where routing engine didn't add refuel
+                # Only refuel if NOT at final destination (to avoid interfering with tests)
+                current_waypoint = segment.to_waypoint
+                fuel_percentage = (ship.fuel.current / ship.fuel_capacity) if ship.fuel_capacity > 0 else 0
+
+                if (current_waypoint.has_fuel and fuel_percentage < 0.9 and
+                    not segment.requires_refuel and not is_last_segment):
+                    logger.info(
+                        f"Opportunistic refuel at {current_waypoint.symbol}: "
+                        f"Fuel at {fuel_percentage*100:.1f}% ({ship.fuel.current}/{ship.fuel_capacity})"
+                    )
+
+                    # Dock for refuel
+                    state_changed = ship.ensure_docked()
+                    if state_changed:
+                        api_client.dock_ship(ship.ship_symbol)
+                        ship = self._ship_repo.find_by_symbol(ship.ship_symbol, route.player_id)
+
+                    # Refuel
+                    refuel_result = api_client.refuel_ship(ship.ship_symbol)
+
+                    # Auto-sync: Extract and convert ship data
+                    ship_data = refuel_result.get('data', {}).get('ship')
+                    if ship_data:
+                        ship = convert_api_ship_to_entity(
+                            ship_data,
+                            route.player_id,
+                            ship.current_location
+                        )
+
+                    # Return to orbit
+                    state_changed = ship.ensure_in_orbit()
+                    if state_changed:
+                        api_client.orbit_ship(ship.ship_symbol)
+                        ship = self._ship_repo.find_by_symbol(ship.ship_symbol, route.player_id)
+
+                # Handle refueling if required (planned refuel from routing engine)
                 if segment.requires_refuel:
                     # Dock for refuel - domain handles IN_ORBIT → DOCKED transition
                     state_changed = ship.ensure_docked()
@@ -506,11 +571,9 @@ class NavigateShipHandler(RequestHandler[NavigateShipCommand, Route]):
                         # Auto-sync: Fetch full ship state after dock
                         # Dock endpoint returns {data: {nav: {...}}} not full ship object
                         # So we need to fetch the complete ship state to ensure proper sync
-                        ship = self._ship_repo.sync_from_api(
+                        ship = self._ship_repo.find_by_symbol(
                             ship.ship_symbol,
-                            route.player_id,
-                            api_client,
-                            graph_provider
+                            route.player_id
                         )
 
                     # Refuel
@@ -524,7 +587,7 @@ class NavigateShipHandler(RequestHandler[NavigateShipCommand, Route]):
                             route.player_id,
                             ship.current_location  # Refueling doesn't change location
                         )
-                        self._ship_repo.update(ship, from_api=True)
+                        # Ship state is API-only now - no database updates needed
 
                     # Return to orbit - domain handles DOCKED → IN_ORBIT transition
                     state_changed = ship.ensure_in_orbit()
@@ -535,11 +598,9 @@ class NavigateShipHandler(RequestHandler[NavigateShipCommand, Route]):
                         # Auto-sync: Fetch full ship state after orbit
                         # Orbit endpoint returns {data: {nav: {...}}} not full ship object
                         # So we need to fetch the complete ship state
-                        ship = self._ship_repo.sync_from_api(
+                        ship = self._ship_repo.find_by_symbol(
                             ship.ship_symbol,
-                            route.player_id,
-                            api_client,
-                            graph_provider
+                            route.player_id
                         )
 
                 # Complete segment

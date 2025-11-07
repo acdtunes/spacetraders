@@ -215,6 +215,98 @@ export const botToolDefinitions: Tool[] = [
     }
   },
 
+  // ==================== SHIPYARD COMMANDS ====================
+  {
+    name: "shipyard_list",
+    description: "List available ships at a shipyard waypoint. Shows ship types, prices, and specifications.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        waypoint: {
+          type: "string",
+          description: "Shipyard waypoint symbol (e.g., X1-HZ85-A2)"
+        },
+        player_id: {
+          type: "integer",
+          description: "Player ID (optional if default player configured)"
+        },
+        agent: {
+          type: "string",
+          description: "Agent symbol - alternative to player_id"
+        }
+      },
+      required: ["waypoint"]
+    }
+  },
+  {
+    name: "shipyard_purchase",
+    description: "Purchase a single ship from a shipyard. Auto-discovers nearest shipyard that sells the ship type if shipyard not specified. Runs as background container.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ship: {
+          type: "string",
+          description: "Ship symbol to use for purchasing (must be at or will navigate to shipyard)"
+        },
+        type: {
+          type: "string",
+          description: "Ship type to purchase (e.g., SHIP_PROBE, SHIP_MINING_DRONE, SHIP_LIGHT_SHUTTLE)"
+        },
+        shipyard: {
+          type: "string",
+          description: "Optional: Shipyard waypoint symbol (will auto-discover if not provided)"
+        },
+        player_id: {
+          type: "integer",
+          description: "Player ID (optional if default player configured)"
+        },
+        agent: {
+          type: "string",
+          description: "Agent symbol - alternative to player_id"
+        }
+      },
+      required: ["ship", "type"]
+    }
+  },
+  {
+    name: "shipyard_batch_purchase",
+    description: "Batch purchase multiple ships from a shipyard within budget constraints. Auto-discovers nearest shipyard if not specified. Purchases as many ships as possible within quantity and budget limits. Runs as background container.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ship: {
+          type: "string",
+          description: "Ship symbol to use for purchasing (must be at or will navigate to shipyard)"
+        },
+        type: {
+          type: "string",
+          description: "Ship type to purchase (e.g., SHIP_PROBE, SHIP_MINING_DRONE, SHIP_LIGHT_SHUTTLE)"
+        },
+        quantity: {
+          type: "integer",
+          description: "Maximum number of ships to purchase"
+        },
+        max_budget: {
+          type: "integer",
+          description: "Maximum total credits to spend on purchases"
+        },
+        shipyard: {
+          type: "string",
+          description: "Optional: Shipyard waypoint symbol (will auto-discover if not provided)"
+        },
+        player_id: {
+          type: "integer",
+          description: "Player ID (optional if default player configured)"
+        },
+        agent: {
+          type: "string",
+          description: "Agent symbol - alternative to player_id"
+        }
+      },
+      required: ["ship", "type", "quantity", "max_budget"]
+    }
+  },
+
   // ==================== WAYPOINT QUERIES ====================
   {
     name: "waypoint_list",

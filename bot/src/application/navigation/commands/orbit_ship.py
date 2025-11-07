@@ -2,6 +2,7 @@
 from dataclasses import dataclass
 import asyncio
 import logging
+from datetime import datetime, timezone
 from pymediatr import Request, RequestHandler
 
 from domain.shared.ship import Ship, InvalidNavStatusError
@@ -55,17 +56,63 @@ class OrbitShipHandler(RequestHandler[OrbitShipCommand, Ship]):
         """
         self._ship_repo = ship_repository
 
+    async def _sync_ship(self, ship_symbol: str, player_id: int) -> Ship:
+        """
+        Sync ship state from API to get latest status.
+
+        Args:
+            ship_symbol: Ship's unique identifier
+            player_id: Owning player's ID
+
+        Returns:
+            Ship entity with fresh state from API
+
+        Raises:
+            ShipNotFoundError: If ship doesn't exist in repository
+        """
+        # Get current ship from repository first
+        existing_ship = self._ship_repo.find_by_symbol(ship_symbol, player_id)
+        if not existing_ship:
+            raise ShipNotFoundError(
+                f"Ship '{ship_symbol}' not found for player {player_id}"
+            )
+
+        from configuration.container import get_api_client_for_player
+
+        api_client = get_api_client_for_player(player_id)
+
+        # Fetch ship from API
+        ship_response = api_client.get_ship(ship_symbol)
+        ship_data = ship_response.get('data')
+
+        if not ship_data:
+            raise DomainException(f"Failed to fetch ship {ship_symbol} from API")
+
+        # Convert API response to Ship entity
+        ship = convert_api_ship_to_entity(
+            ship_data,
+            player_id,
+            existing_ship.current_location
+        )
+
+        # Ship state is API-only now - no database updates needed
+
+        return ship
+
     async def handle(self, request: OrbitShipCommand) -> Ship:
         """
-        Execute ship orbit command.
+        Execute ship orbit command with eventual consistency.
+
+        This is an **eventual** command - it expresses the intention to orbit
+        the ship, and will wait for the ship to be in a valid state if needed.
 
         Process:
-        1. Get API client for player
-        2. Load ship from repository
-        3. Verify ship is docked (domain rule)
-        4. Call API orbit_ship()
-        5. Update ship state to IN_ORBIT (via depart)
-        6. Persist ship
+        1. Sync ship state from API to get latest status
+        2. If already in orbit - return (idempotent)
+        3. If in transit - wait for arrival (ship arrives in orbit)
+        4. If docked - orbit immediately
+        5. Call API orbit_ship()
+        6. Sync ship state after orbiting
         7. Return updated ship
 
         Args:
@@ -76,50 +123,59 @@ class OrbitShipHandler(RequestHandler[OrbitShipCommand, Ship]):
 
         Raises:
             ShipNotFoundError: If ship doesn't exist
-            InvalidNavStatusError: If ship is not docked
         """
-        # 1. Get API client for this player (reads token from database)
-        from configuration.container import get_api_client_for_player
-        api_client = get_api_client_for_player(request.player_id)
+        # 1. Sync ship from API to get current state
+        ship = await self._sync_ship(request.ship_symbol, request.player_id)
 
-        # 2. Load ship from repository
-        ship = self._ship_repo.find_by_symbol(request.ship_symbol, request.player_id)
-        if ship is None:
-            raise ShipNotFoundError(
-                f"Ship '{request.ship_symbol}' not found for player {request.player_id}"
-            )
-
-        # 3. Idempotent check: if already in orbit, just return
+        # 2. Idempotent check: if already in orbit, just return
         if ship.nav_status == Ship.IN_ORBIT:
             logger.info(f"Ship {request.ship_symbol} already in orbit (idempotent)")
             return ship
 
-        # 4. Verify ship can be orbited (domain validation)
-        # This will raise InvalidNavStatusError if ship is not in valid state
-        # Ships must be DOCKED to orbit (cannot orbit while IN_TRANSIT)
-        ship.ensure_docked()
+        # 3. Eventual consistency: If ship is in transit, wait for arrival
+        # When ships arrive from transit, they arrive IN_ORBIT
+        if ship.nav_status == Ship.IN_TRANSIT:
+            from configuration.container import get_api_client_for_player
+            api_client = get_api_client_for_player(request.player_id)
 
-        # 5. Call API to orbit ship
-        api_client.orbit_ship(request.ship_symbol)
+            # Fetch ship data to get arrival time
+            ship_response = api_client.get_ship(request.ship_symbol)
+            ship_data = ship_response.get('data', {})
+            nav_data = ship_data.get('nav', {})
+            route_data = nav_data.get('route', {})
+            arrival_str = route_data.get('arrival')
 
-        # 6. Auto-sync: Fetch full ship state after orbit
-        # Orbit endpoint returns {data: {nav: {...}}} not full ship object
-        # So we need to fetch the complete ship state
-        ship_response = api_client.get_ship(request.ship_symbol)
-        ship_data = ship_response.get('data')
-        if not ship_data:
-            raise DomainException("Failed to fetch ship state after orbit")
+            if arrival_str:
+                wait_seconds = calculate_arrival_wait_time(arrival_str)
+                # Always wait at least until arrival, with 1s buffer for clock precision
+                actual_wait = max(wait_seconds + 1, 0.1)
+                logger.info(
+                    f"Ship {request.ship_symbol} in transit, waiting {actual_wait}s for arrival"
+                )
+                await asyncio.sleep(actual_wait)
 
-        # 7. Convert API response to Ship entity
-        # Reuse existing waypoint since orbiting doesn't change location
-        ship = convert_api_ship_to_entity(
-            ship_data,
-            request.player_id,
-            ship.current_location
+            # Sync again after waiting - ship should now be in orbit
+            ship = await self._sync_ship(request.ship_symbol, request.player_id)
+
+            # Ships arrive in orbit from transit, so if we waited, we should be done
+            if ship.nav_status == Ship.IN_ORBIT:
+                logger.info(f"Ship {request.ship_symbol} arrived in orbit")
+                return ship
+
+        # 4. If ship is docked, orbit it
+        if ship.nav_status == Ship.DOCKED:
+            from configuration.container import get_api_client_for_player
+            api_client = get_api_client_for_player(request.player_id)
+
+            api_client.orbit_ship(request.ship_symbol)
+
+            # Sync to get updated state after orbiting
+            ship = await self._sync_ship(request.ship_symbol, request.player_id)
+
+            logger.info(f"Ship {request.ship_symbol} successfully orbited")
+            return ship
+
+        # Should not reach here
+        raise InvalidNavStatusError(
+            f"Ship {request.ship_symbol} in unexpected state {ship.nav_status}"
         )
-
-        # 8. Persist with from_api=True to update synced_at timestamp
-        self._ship_repo.update(ship, from_api=True)
-
-        # 9. Return updated ship
-        return ship

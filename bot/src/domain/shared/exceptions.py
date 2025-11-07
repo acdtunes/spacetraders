@@ -33,3 +33,11 @@ class ShipyardNotFoundError(DomainException):
 class NoShipyardFoundError(DomainException):
     """Raised when no shipyard in system sells the desired ship type"""
     pass
+
+class ContractNegotiationError(DomainException):
+    """Raised when contract negotiation fails"""
+    pass
+
+class RateLimitError(DomainException):
+    """Raised when API rate limit is exceeded"""
+    pass

@@ -153,17 +153,41 @@ class ScoutMarketsHandler(RequestHandler[ScoutMarketsCommand, ScoutMarketsResult
             for ship, markets in assignments.items():
                 logger.info(f"  {ship}: {len(markets)} markets")
 
-        # 4. Create scout tour containers for each ship
+        # 4. Create scout tour containers for each ship (with idempotency check)
         from configuration.container import get_daemon_client
         daemon = get_daemon_client()
 
         container_ids = []
+
+        # First, check for existing active containers for these ships
+        existing_containers = daemon.list_containers(player_id=request.player_id)
+        existing_ship_containers = {}
+
+        for container_info in existing_containers.get('containers', []):
+            # Parse ship symbol from container_id pattern: scout-tour-{ship}-{uuid}
+            container_id = container_info['container_id']
+            if container_id.startswith('scout-tour-') and container_info['status'] in ['STARTING', 'RUNNING']:
+                # Extract ship symbol (everything between 'scout-tour-' and last '-')
+                parts = container_id[len('scout-tour-'):].rsplit('-', 1)
+                if len(parts) == 2:
+                    ship_from_container = parts[0].upper()
+                    # Store the first active container for each ship
+                    if ship_from_container not in existing_ship_containers:
+                        existing_ship_containers[ship_from_container] = container_id
+                        logger.info(f"Found existing container {container_id} for {ship_from_container}")
 
         for ship_symbol in request.ship_symbols:
             assigned_markets = assignments.get(ship_symbol, [])
 
             if not assigned_markets:
                 logger.warning(f"Ship {ship_symbol} has no markets assigned, skipping container creation")
+                continue
+
+            # Check if container already exists for this ship (idempotency)
+            if ship_symbol in existing_ship_containers:
+                existing_container_id = existing_ship_containers[ship_symbol]
+                container_ids.append(existing_container_id)
+                logger.info(f"♻️  Reusing existing container {existing_container_id} for {ship_symbol} (idempotent)")
                 continue
 
             # Generate unique container ID
@@ -191,7 +215,7 @@ class ScoutMarketsHandler(RequestHandler[ScoutMarketsCommand, ScoutMarketsResult
             container_ids.append(container_id)
             logger.info(f"✅ Created container {container_id} for {ship_symbol} ({len(assigned_markets)} markets)")
 
-        logger.info(f"Scout markets deployment complete: {len(container_ids)} containers created")
+        logger.info(f"Scout markets deployment complete: {len(container_ids)} containers (reused or created)")
 
         return ScoutMarketsResult(
             container_ids=container_ids,

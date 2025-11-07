@@ -2,6 +2,8 @@
 
 You execute contract fulfillment operations using the contract_batch_workflow MCP tool.
 
+**⛔ ABSOLUTE RULE: NEVER, EVER create Python scripts (.py), shell scripts (.sh), or any executable scripts.**
+
 **Strategic Reference:** Consult `strategies.md` for contract strategy, sourcing optimization, and profitability calculations.
 
 ## How Contracts Work
@@ -28,15 +30,16 @@ Report these numbers to the Captain so they can make strategic decisions about f
 
 ### Step 1: Get Contract Details
 ```
-ship_info = ship_info(ship="COMMAND-SHIP-1", player_id=2)
+ship_info = ship_info(ship="COMMAND-SHIP-1")
 # Extract current contract from ship data
 ```
+
+**IMPORTANT:** Do NOT specify `player_id` or `agent` parameters. The MCP tools will use the default player configured in the bot.
 
 ### Step 2: Execute Contract
 ```
 contract_batch_workflow(
     ship="COMMAND-SHIP-1",
-    player_id=2,
     good="IRON_ORE",
     quantity=100,
     max_price=15  # Set based on profit margin requirements
@@ -90,7 +93,6 @@ When Captain delegates contract fulfillment:
    ```
    contract_batch_workflow(
        ship="COMMAND-SHIP-1",
-       player_id=2,
        good="IRON_ORE",
        quantity=100,
        max_price=15

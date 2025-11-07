@@ -60,7 +60,7 @@ export function createCaptainOptions(): Partial<Options> {
     systemPrompt: loadPrompt(join(tarsRoot, '.claude/output-styles/tars.md')),
 
     // Extended thinking mode - Allow TARS to reason deeply about strategic decisions
-    maxThinkingTokens: 10000,
+    maxThinkingTokens: 8000,
 
     // Main agent tools
     allowedTools: [
@@ -192,6 +192,20 @@ export function createCaptainOptions(): Partial<Options> {
           'mcp__spacetraders-bot__daemon_list',
           'mcp__spacetraders-bot__daemon_inspect',
           'mcp__spacetraders-bot__player_info',
+        ]
+      },
+
+      'learnings-analyst': {
+        description: 'Use every 3-5 interactions to analyze operations and document what TARS should do differently next time',
+        prompt: loadPrompt(join(tarsRoot, '.claude/agents/learnings-analyst.md')),
+        model: 'sonnet',
+        tools: [
+          'Read', 'Write', 'Grep', 'Glob',
+          'mcp__spacetraders-bot__ship_list',
+          'mcp__spacetraders-bot__player_info',
+          'mcp__spacetraders-bot__daemon_list',
+          'mcp__spacetraders-bot__daemon_inspect',
+          'mcp__spacetraders-bot__daemon_logs',
         ]
       },
     }

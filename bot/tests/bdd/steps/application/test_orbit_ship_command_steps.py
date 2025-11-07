@@ -175,15 +175,12 @@ def check_api_called(context, ship_symbol):
 
 @then("the ship should be updated in the repository")
 def check_ship_updated(context):
-    """Verify ship was updated in repository"""
-    # Retrieve the ship from repository
-    ship_symbol = context['result'].ship_symbol
-    player_id = context['result'].player_id
-    updated_ship = context['ship_repo'].find_by_symbol(ship_symbol, player_id)
-
-    assert updated_ship is not None, "Ship not found in repository"
-    assert updated_ship.nav_status == Ship.IN_ORBIT, \
-        f"Expected IN_ORBIT in repository, got {updated_ship.nav_status}"
+    """Verify ship state is correct (API-only model, no database persistence)"""
+    # In API-only model, we verify the returned ship state is correct
+    # The result should have the updated nav status
+    assert context['result'] is not None, "No result returned"
+    assert context['result'].nav_status == Ship.IN_ORBIT, \
+        f"Expected IN_ORBIT in result, got {context['result'].nav_status}"
 
 
 @then(parsers.parse('the command should fail with {error_type}'))
@@ -241,3 +238,47 @@ def check_ship_properties(context, datatable):
 
         assert str(actual) == str(expected), \
             f"Property {prop}: expected {expected}, got {actual}"
+
+
+@given(parsers.parse('a ship "{ship_symbol}" for player {player_id:d} in transit arriving in {seconds:d} seconds at "{location}"'))
+def create_ship_in_transit_arriving_at(context, ship_symbol, player_id, seconds, location):
+    """Create a ship that is in transit with a specific arrival time"""
+    from datetime import datetime, timedelta, timezone
+
+    waypoint = Waypoint(
+        symbol=location,
+        x=0.0,
+        y=0.0,
+        system_symbol="X1-TEST",
+        waypoint_type="PLANET"
+    )
+
+    fuel = Fuel(current=100, capacity=100)
+
+    ship = Ship(
+        ship_symbol=ship_symbol,
+        player_id=player_id,
+        current_location=waypoint,
+        fuel=fuel,
+        fuel_capacity=100,
+        cargo_capacity=40,
+        cargo_units=0,
+        engine_speed=30,
+        nav_status=Ship.IN_TRANSIT
+    )
+
+    context['ship_repo'].create(ship)
+
+    # Store mock_api and ensure handler exists
+    if 'handler' not in context:
+        from application.navigation.commands.orbit_ship import OrbitShipHandler
+        context['handler'] = OrbitShipHandler(context['ship_repo'])
+
+    # Configure mock API to transition ship from IN_TRANSIT to IN_ORBIT after arrival
+    arrival_time = datetime.now(timezone.utc) + timedelta(seconds=seconds)
+    context['api']._ship_state[ship_symbol] = {
+        "nav_status": "IN_TRANSIT",
+        "location": waypoint.symbol,
+        "fuel_current": 100,
+        "arrival_time": arrival_time
+    }

@@ -52,10 +52,6 @@ from application.navigation.commands.navigate_ship import (
     NavigateShipCommand,
     NavigateShipHandler
 )
-from application.navigation.commands.sync_ships import (
-    SyncShipsCommand,
-    SyncShipsHandler
-)
 from application.navigation.commands.dock_ship import (
     DockShipCommand,
     DockShipHandler
@@ -152,6 +148,10 @@ from application.trading.commands.purchase_cargo import (
     PurchaseCargoCommand,
     PurchaseCargoHandler
 )
+from application.cargo.commands.jettison_cargo import (
+    JettisonCargoCommand,
+    JettisonCargoHandler
+)
 from application.trading.queries.find_cheapest_market import (
     FindCheapestMarketQuery,
     FindCheapestMarketHandler
@@ -246,16 +246,18 @@ def get_api_client_for_player(player_id: int) -> ISpaceTradersAPI:
 def get_graph_builder_for_player(player_id: int) -> IGraphBuilder:
     """
     Create graph builder for specific player.
-    Uses player's token from database.
+    Uses player's token from database and provides waypoint repository.
 
     Args:
         player_id: Player ID to get token from database
 
     Returns:
-        IGraphBuilder: Graph builder instance with player's API client
+        IGraphBuilder: Graph builder instance with player's API client and waypoint repository
     """
-    api_client = get_api_client_for_player(player_id)
-    return GraphBuilder(api_client)
+    return GraphBuilder(
+        api_client_factory=get_api_client_for_player,
+        waypoint_repository_factory=lambda pid: get_waypoint_repository(),
+    )
 
 
 def get_graph_provider_for_player(player_id: int) -> ISystemGraphProvider:
@@ -288,18 +290,17 @@ def get_routing_engine() -> IRoutingEngine:
 
 def get_ship_repository() -> IShipRepository:
     """
-    Get or create ship repository.
+    Get or create API-only ship repository.
 
     Returns:
-        IShipRepository: Singleton ship repository instance
+        IShipRepository: Singleton ship repository instance that fetches data from API
     """
     global _ship_repo
     if _ship_repo is None:
-        # Don't initialize graph_provider by default - it requires API client
-        # Operations that need the graph will need to handle this separately
+        # Ship repository now fetches all data directly from API (no caching)
         _ship_repo = ShipRepository(
-            get_database(),
-            graph_provider=None  # Lazy-loaded only when needed
+            api_client_factory=get_api_client_for_player,
+            graph_provider_factory=get_graph_provider_for_player
         )
     return _ship_repo
 
@@ -345,14 +346,17 @@ def get_contract_repository():
 
 def get_waypoint_repository() -> IWaypointRepository:
     """
-    Get or create waypoint repository.
+    Get or create waypoint repository with lazy-loading support.
 
     Returns:
         IWaypointRepository: Singleton waypoint repository instance
     """
     global _waypoint_repo
     if _waypoint_repo is None:
-        _waypoint_repo = WaypointRepository(get_database())
+        _waypoint_repo = WaypointRepository(
+            get_database(),
+            api_client_factory=get_api_client_for_player
+        )
     return _waypoint_repo
 
 def get_mediator() -> Mediator:
@@ -436,10 +440,6 @@ def get_mediator() -> Mediator:
         _mediator.register_handler(
             RefuelShipCommand,
             lambda: RefuelShipHandler(ship_repo)
-        )
-        _mediator.register_handler(
-            SyncShipsCommand,
-            lambda: SyncShipsHandler(ship_repo)
         )
 
         # ===== Navigation Query Handlers =====
@@ -567,6 +567,12 @@ def get_mediator() -> Mediator:
         _mediator.register_handler(
             PurchaseCargoCommand,
             lambda: PurchaseCargoHandler(get_api_client_for_player)
+        )
+
+        # ===== Cargo Command Handlers =====
+        _mediator.register_handler(
+            JettisonCargoCommand,
+            lambda: JettisonCargoHandler(get_api_client_for_player)
         )
 
         # ===== Trading Query Handlers =====

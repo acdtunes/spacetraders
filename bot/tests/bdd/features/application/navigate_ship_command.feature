@@ -67,7 +67,7 @@ Feature: Navigate Ship Command
     And no route plan can be found to "X1-TEST-UNREACHABLE"
     When I attempt to navigate ship "TEST-SHIP-1" to "X1-TEST-UNREACHABLE"
     Then the command should fail with ValueError
-    And the error message should contain "No path found"
+    And the error message should contain "No waypoints found"
 
   Scenario: Navigate ship with wrong player ID
     Given a ship "TEST-SHIP-1" belongs to player 1

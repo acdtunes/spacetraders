@@ -28,11 +28,13 @@ Feature: Dock Ship Command
     And the error message should mention "NONEXISTENT"
     And the error message should mention "player 1"
 
-  Scenario: Cannot dock ship that is in transit
-    Given a ship "TEST-SHIP-1" for player 1 in transit to "X1-TEST-CD34"
-    When I attempt to dock ship "TEST-SHIP-1" for player 1
-    Then the command should fail with InvalidNavStatusError
-    And the error message should mention "transit"
+  # Eventual Consistency - Waiting for Ship State
+  Scenario: Dock command waits for ship in transit to arrive
+    Given a ship "TEST-SHIP-1" for player 1 in transit arriving in 2 seconds
+    When I execute dock ship command for "TEST-SHIP-1" and player 1
+    Then the handler should wait for arrival
+    And the ship should be docked after waiting
+    And the API dock method should be called with "TEST-SHIP-1"
 
   Scenario: Cannot dock ship belonging to different player
     Given a ship "TEST-SHIP-1" for player 1 in orbit at "X1-TEST-AB12"

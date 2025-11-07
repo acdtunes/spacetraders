@@ -296,7 +296,8 @@ def execute_batch_workflow(context, iterations):
                 net_profit=10000,
                 purchase_cost=5000,
                 trips_required=1,
-                reason="Profitable"
+                reason="Profitable",
+                cheapest_market_waypoint="X1-TEST-M1"  # Add this field
             )
         else:
             return ProfitabilityResult(
@@ -304,7 +305,8 @@ def execute_batch_workflow(context, iterations):
                 net_profit=-5000,
                 purchase_cost=20000,
                 trips_required=1,
-                reason="Not profitable"
+                reason="Not profitable",
+                cheapest_market_waypoint=None  # Add this field
             )
 
     # Mock accept contract
@@ -343,6 +345,9 @@ def execute_batch_workflow(context, iterations):
         from application.trading.commands.purchase_cargo import PurchaseCargoCommand
         from application.contracts.commands.deliver_contract import DeliverContractCommand
         from application.contracts.commands.fulfill_contract import FulfillContractCommand
+        from application.navigation.commands.navigate_ship import NavigateShipCommand
+        from application.navigation.commands.dock_ship import DockShipCommand
+        from domain.navigation.route import Route
 
         if isinstance(cmd, GetActiveContractsQuery):
             return mock_get_active_contracts(cmd)
@@ -352,6 +357,37 @@ def execute_batch_workflow(context, iterations):
             return mock_evaluate(cmd)
         elif isinstance(cmd, AcceptContractCommand):
             return mock_accept(cmd)
+        elif isinstance(cmd, NavigateShipCommand):
+            # Mock navigation - return a simple Route object with one dummy segment
+            from domain.navigation.route import RouteSegment
+            from domain.shared.value_objects import Waypoint, FlightMode
+
+            # Create minimal route segment
+            segment = RouteSegment(
+                from_waypoint=Waypoint("X1-TEST-A1", "PLANET", 0, 0, "X1-TEST"),
+                to_waypoint=Waypoint(cmd.destination_symbol, "PLANET", 10, 10, "X1-TEST"),
+                distance=10.0,
+                fuel_required=1,
+                travel_time=10,
+                flight_mode=FlightMode.CRUISE,
+                requires_refuel=False
+            )
+
+            route = Route(
+                route_id="test-route",
+                ship_symbol=cmd.ship_symbol,
+                player_id=cmd.player_id,
+                segments=[segment],
+                ship_fuel_capacity=100,
+                refuel_before_departure=False
+            )
+            # Mark route as completed so workflow doesn't try to execute it
+            route.start_execution()
+            route.complete_segment()
+            return route
+        elif isinstance(cmd, DockShipCommand):
+            # Mock docking - return a simple ship mock
+            return mock_ship
         elif isinstance(cmd, PurchaseCargoCommand):
             return mock_purchase(cmd)
         elif isinstance(cmd, DeliverContractCommand):
@@ -369,6 +405,15 @@ def execute_batch_workflow(context, iterations):
     cargo_capacity = context.get('cargo_capacity', 100)
     mock_ship = Mock()
     mock_ship.cargo_capacity = cargo_capacity
+
+    # Mock cargo object with required methods and attributes
+    mock_cargo = Mock()
+    mock_cargo.get_item_units = Mock(return_value=0)  # No cargo by default
+    mock_cargo.has_items_other_than = Mock(return_value=False)  # No wrong cargo
+    mock_cargo.inventory = ()  # Empty inventory (tuple, not Mock)
+    mock_ship.cargo = mock_cargo
+    mock_ship.ship_symbol = context.get('ship_symbol', 'TEST-SHIP-1')  # For error messages
+
     mock_ship_repo.find_by_symbol.return_value = mock_ship
 
     # Create handler with mocked mediator and ship repository

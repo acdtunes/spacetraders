@@ -2,11 +2,12 @@
  * TARS App - Main React component for the Captain UI
  */
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { SDKMessage, Options } from '@anthropic-ai/claude-agent-sdk';
 import { ConversationMemory } from '../conversationMemory.js';
 import { App } from './App.js';
+import { agentLogger } from '../agentLogger.js';
 
 export interface AfkConfig {
   durationHours: number;
@@ -35,7 +36,7 @@ export const TarsApp: React.FC<TarsAppProps> = ({ options, memory, afkMode }) =>
     ? `Session #${memory.getSessionId()?.substring(0, 8)}... (${memory.turnCount} turns)`
     : 'Fresh start';
 
-  const handleCommand = async (command: string) => {
+  const handleCommand = useCallback(async (command: string) => {
     // Handle special commands
     if (command.toLowerCase() === '/clear-memory') {
       memory.clear();
@@ -104,9 +105,25 @@ export const TarsApp: React.FC<TarsAppProps> = ({ options, memory, afkMode }) =>
         options: queryOptions
       });
 
+      // Message batching - collect messages in a buffer and flush periodically
+      let bufferedMessages: SDKMessage[] = [];
+      let bufferTimer: NodeJS.Timeout | undefined;
+      let messageCount = 0;
+
+      const flushBuffer = () => {
+        if (bufferedMessages.length > 0) {
+          setMessages(prev => [...prev, ...bufferedMessages]);
+          bufferedMessages = [];
+        }
+        bufferTimer = undefined;
+      };
+
       for await (const message of result) {
         // Check if user requested cancellation
         if (shouldCancelRef.current) {
+          // Flush any remaining buffered messages
+          flushBuffer();
+
           const interruptMsg = {
             type: 'system',
             content: '⚠️ Processing interrupted by user (ESC pressed)'
@@ -116,14 +133,40 @@ export const TarsApp: React.FC<TarsAppProps> = ({ options, memory, afkMode }) =>
           break;
         }
 
-        setMessages(prev => [...prev, message]);
+        // Buffer messages instead of immediate state update
+        bufferedMessages.push(message);
         memory.addMessage(message);
+        messageCount++;
 
         // Capture and save session ID from any message
         if ('session_id' in message && message.session_id) {
           memory.setSessionId(message.session_id);
+
+          // Log subagent invocations/results to filesystem
+          agentLogger.processMessage(message, message.session_id);
+        }
+
+        // Flush buffer every 250ms OR every 5 messages (whichever comes first)
+        // Longer interval = fewer renders = less flicker
+        if (!bufferTimer) {
+          bufferTimer = setTimeout(flushBuffer, 250);
+        }
+
+        // Also flush if we've accumulated many messages
+        if (messageCount >= 5) {
+          if (bufferTimer) {
+            clearTimeout(bufferTimer);
+          }
+          flushBuffer();
+          messageCount = 0;
         }
       }
+
+      // Final flush of any remaining messages
+      if (bufferTimer) {
+        clearTimeout(bufferTimer);
+      }
+      flushBuffer();
 
       // Increment turn counter only if not cancelled
       if (!shouldCancelRef.current) {
@@ -135,11 +178,11 @@ export const TarsApp: React.FC<TarsAppProps> = ({ options, memory, afkMode }) =>
       setIsProcessing(false);
       shouldCancelRef.current = false;
     }
-  };
+  }, [memory, options]);
 
-  const handleExit = () => {
+  const handleExit = useCallback(() => {
     setShouldExit(true);
-  };
+  }, []);
 
   useEffect(() => {
     if (shouldExit) {

@@ -149,8 +149,37 @@ class DaemonClient:
         try:
             sock.connect(str(self.SOCKET_PATH))
             sock.sendall(json.dumps(request).encode())
-            response_data = sock.recv(65536)
-            response = json.loads(response_data.decode())
+
+            # Read all data in chunks until socket is closed
+            # (Server closes after sending complete response)
+            chunks = []
+            while True:
+                chunk = sock.recv(65536)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+
+            response_data = b''.join(chunks)
+
+            # Decode and parse JSON with better error handling
+            try:
+                response_str = response_data.decode('utf-8')
+                response = json.loads(response_str)
+            except json.JSONDecodeError as e:
+                # Provide detailed error information for debugging
+                error_context = response_str[max(0, e.pos - 100):e.pos + 100] if 'response_str' in locals() else 'N/A'
+                raise Exception(
+                    f"JSON parsing error at position {e.pos}: {e.msg}\n"
+                    f"Context: ...{error_context}...\n"
+                    f"Response size: {len(response_data)} bytes\n"
+                    f"First 200 chars: {response_str[:200] if 'response_str' in locals() else 'N/A'}"
+                ) from e
+            except UnicodeDecodeError as e:
+                raise Exception(
+                    f"UTF-8 decoding error: {e}\n"
+                    f"Response size: {len(response_data)} bytes\n"
+                    f"First 100 bytes (hex): {response_data[:100].hex()}"
+                ) from e
 
             if "error" in response:
                 raise Exception(response["error"]["message"])

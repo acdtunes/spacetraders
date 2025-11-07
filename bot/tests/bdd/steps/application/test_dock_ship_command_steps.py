@@ -3,6 +3,8 @@ from pytest_bdd import scenario, given, when, then, parsers
 import asyncio
 import pytest
 from unittest.mock import patch
+from datetime import datetime, timedelta, timezone
+import time
 
 from application.navigation.commands.dock_ship import (
     DockShipCommand,
@@ -65,6 +67,8 @@ def execute_dock_command(context, ship_symbol, player_id):
     """Execute the dock ship command"""
     handler = context["handler"]
     command = DockShipCommand(ship_symbol=ship_symbol, player_id=player_id)
+    # Record start time for timing verification
+    context["wait_start_time"] = datetime.now(timezone.utc)
     # Patch get_api_client_for_player at the container module level
     with patch('configuration.container.get_api_client_for_player', return_value=context["mock_api"]):
         context["result"] = asyncio.run(handler.handle(command))
@@ -87,15 +91,11 @@ def check_api_dock_called(context, ship_symbol):
 
 
 @then(parsers.parse('the ship should be persisted with nav status "{status}"'))
-def check_ship_persisted(context, status, mock_ship_repo):
-    """Verify the ship was updated in the repository"""
-    ship_symbol = context["ship_symbol"]
-    # Get the ship from the repository - need to determine player_id from context
-    # The result should have the player_id
-    player_id = context["result"].player_id
-    updated_ship = mock_ship_repo.find_by_symbol(ship_symbol, player_id)
-    assert updated_ship is not None
-    assert updated_ship.nav_status == status
+def check_ship_persisted(context, status):
+    """Verify the ship has the expected nav status (API-only model, no database persistence)"""
+    # In API-only model, we verify the returned ship state matches expectations
+    # The command result should reflect the API state
+    assert context["result"].nav_status == status
 
 
 # ==============================================================================
@@ -182,48 +182,6 @@ def check_ship_not_found_error(context):
 def check_error_message_contains(context, text):
     """Verify error message contains specific text"""
     assert text in str(context["error"])
-
-
-# ==============================================================================
-# Scenario: Cannot dock ship that is in transit
-# ==============================================================================
-@scenario("../../features/application/dock_ship_command.feature", "Cannot dock ship that is in transit")
-def test_cannot_dock_ship_in_transit():
-    pass
-
-
-@given(parsers.parse('a ship "{ship_symbol}" for player {player_id:d} in transit to "{destination}"'))
-def create_ship_in_transit(context, ship_symbol, player_id, destination, mock_ship_repo):
-    """Create a ship that is in transit"""
-    waypoint = Waypoint(
-        symbol=destination,
-        x=0.0,
-        y=0.0,
-        system_symbol=destination.split('-')[0] + '-' + destination.split('-')[1],
-        waypoint_type="PLANET"
-    )
-
-    fuel = Fuel(current=100, capacity=100)
-
-    ship = Ship(
-        ship_symbol=ship_symbol,
-        player_id=player_id,
-        current_location=waypoint,
-        fuel=fuel,
-        fuel_capacity=100,
-        cargo_capacity=40,
-        cargo_units=0,
-        engine_speed=30,
-        nav_status=Ship.IN_TRANSIT
-    )
-
-    mock_ship_repo.create(ship)
-
-
-@then("the command should fail with InvalidNavStatusError")
-def check_invalid_nav_status_error(context):
-    """Verify InvalidNavStatusError was raised"""
-    assert isinstance(context["error"], InvalidNavStatusError)
 
 
 # ==============================================================================
@@ -314,3 +272,84 @@ def check_engine_speed_preserved(context, speed):
 def check_location_preserved(context, location):
     """Verify location is preserved"""
     assert context["result"].current_location.symbol == location
+
+
+# ==============================================================================
+# Scenario: Dock command waits for ship in transit to arrive
+# ==============================================================================
+@scenario("../../features/application/dock_ship_command.feature", "Dock command waits for ship in transit to arrive")
+def test_dock_waits_for_transit():
+    pass
+
+
+@given(parsers.parse('a ship "{ship_symbol}" for player {player_id:d} in transit arriving in {seconds:d} seconds'))
+def create_ship_in_transit_arriving(context, ship_symbol, player_id, seconds, mock_ship_repo, mock_api):
+    """Create a ship that is in transit with a specific arrival time"""
+    waypoint = Waypoint(
+        symbol="X1-TEST-CD34",
+        x=0.0,
+        y=0.0,
+        system_symbol="X1-TEST",
+        waypoint_type="PLANET"
+    )
+
+    fuel = Fuel(current=100, capacity=100)
+
+    ship = Ship(
+        ship_symbol=ship_symbol,
+        player_id=player_id,
+        current_location=waypoint,
+        fuel=fuel,
+        fuel_capacity=100,
+        cargo_capacity=40,
+        cargo_units=0,
+        engine_speed=30,
+        nav_status=Ship.IN_TRANSIT
+    )
+
+    mock_ship_repo.create(ship)
+
+    # Store mock_api and repo in context (needed for execute_dock_command)
+    context["mock_api"] = mock_api
+    context["mock_ship_repo"] = mock_ship_repo
+    # Also initialize handler if not already done
+    if "handler" not in context:
+        context["handler"] = DockShipHandler(mock_ship_repo)
+
+    # Configure mock API to transition ship from IN_TRANSIT to IN_ORBIT after arrival
+    # Store the arrival time for verification
+    arrival_time = datetime.now(timezone.utc) + timedelta(seconds=seconds)
+    context["arrival_time"] = arrival_time
+    context["wait_seconds"] = seconds
+    context["wait_start_time"] = None
+
+    # Set up mock API state with arrival time
+    mock_api._ship_state[ship_symbol] = {
+        "nav_status": "IN_TRANSIT",
+        "location": waypoint.symbol,
+        "fuel_current": 100,
+        "arrival_time": arrival_time
+    }
+
+
+@then("the handler should wait for arrival")
+def check_handler_waited(context):
+    """Verify the handler waited for the ship to arrive"""
+    # The handler should have taken at least the wait_seconds time
+    wait_start = context.get("wait_start_time")
+    wait_end = datetime.now(timezone.utc)
+
+    if wait_start:
+        elapsed = (wait_end - wait_start).total_seconds()
+        expected_wait = context["wait_seconds"]
+        # Allow some tolerance (0.5 seconds) for test execution overhead
+        assert elapsed >= (expected_wait - 0.5), \
+            f"Handler should have waited at least {expected_wait}s, but only waited {elapsed}s"
+
+
+@then("the ship should be docked after waiting")
+def check_ship_docked_after_waiting(context):
+    """Verify the ship is docked after waiting for transit"""
+    assert context["result"] is not None, "No result returned from handler"
+    assert context["result"].nav_status == Ship.DOCKED, \
+        f"Expected ship to be DOCKED after waiting, but got {context['result'].nav_status}"

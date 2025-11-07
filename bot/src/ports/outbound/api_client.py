@@ -182,3 +182,17 @@ class ISpaceTradersAPI(ABC):
             Dict containing transaction details including updated cargo and credits
         """
         pass
+
+    @abstractmethod
+    def jettison_cargo(self, ship_symbol: str, cargo_symbol: str, units: int) -> Dict:
+        """Jettison cargo from ship into space.
+
+        Args:
+            ship_symbol: Ship jettisoning the cargo
+            cargo_symbol: Good to jettison (e.g., "IRON_ORE")
+            units: Number of units to jettison
+
+        Returns:
+            Dict containing updated cargo data
+        """
+        pass
