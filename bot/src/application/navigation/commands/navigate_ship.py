@@ -1,6 +1,6 @@
 """Navigate ship command and handler"""
 from dataclasses import dataclass
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 import asyncio
 import logging
 from datetime import datetime, timezone
@@ -133,8 +133,23 @@ class NavigateShipHandler(RequestHandler[NavigateShipCommand, Route]):
         graph_result = graph_provider.get_graph(system_symbol)
         graph = graph_result.graph
 
-        # Convert graph waypoints to Waypoint objects if needed
-        waypoint_objects = self._convert_graph_to_waypoints(graph)
+        # 3a. Query waypoints table for trait enrichment data
+        from configuration.container import get_waypoint_repository
+        waypoint_repo = get_waypoint_repository()
+
+        try:
+            waypoint_list = waypoint_repo.find_by_system(system_symbol, request.player_id)
+            # Create lookup dict for has_fuel by waypoint symbol (handle None/empty list)
+            if waypoint_list and hasattr(waypoint_list, '__iter__'):
+                waypoint_traits = {wp.symbol: wp for wp in waypoint_list}
+            else:
+                waypoint_traits = {}
+        except Exception:
+            # If waypoint repo fails, continue without enrichment (use fallback)
+            waypoint_traits = {}
+
+        # Convert graph waypoints to Waypoint objects with trait enrichment
+        waypoint_objects = self._convert_graph_to_waypoints(graph, waypoint_traits if waypoint_traits else None)
 
         # Validate waypoint cache has waypoints
         if not waypoint_objects:
@@ -185,9 +200,15 @@ class NavigateShipHandler(RequestHandler[NavigateShipCommand, Route]):
         )
 
         if route_plan is None:
+            waypoint_count = len(waypoint_objects)
+            fuel_stations = sum(1 for wp in waypoint_objects.values() if wp.has_fuel)
+
             raise ValueError(
                 f"No route found from {ship.current_location.symbol} to {request.destination_symbol}. "
-                f"The routing engine could not find a valid path. Check waypoint cache for system {system_symbol}."
+                f"The routing engine could not find a valid path. "
+                f"System {system_symbol} has {waypoint_count} waypoints cached with {fuel_stations} fuel stations. "
+                f"Ship fuel: {ship.fuel.current}/{ship.fuel_capacity}. "
+                f"Route may be unreachable or require multi-hop refueling not supported by current fuel levels."
             )
 
         # 5. Create Route entity from plan
@@ -227,15 +248,21 @@ class NavigateShipHandler(RequestHandler[NavigateShipCommand, Route]):
             return f"{parts[0]}-{parts[1]}"
         return waypoint_symbol
 
-    def _convert_graph_to_waypoints(self, graph: Dict[str, Any]) -> Dict[str, Waypoint]:
+    def _convert_graph_to_waypoints(
+        self,
+        graph: Dict[str, Any],
+        waypoint_traits: Optional[Dict[str, Waypoint]] = None
+    ) -> Dict[str, Waypoint]:
         """
-        Convert graph waypoints dict to Waypoint objects.
+        Convert graph waypoints to Waypoint objects with trait enrichment.
 
         Args:
-            graph: Graph data with waypoints
+            graph: Graph structure from system_graphs table (structure-only)
+            waypoint_traits: Optional lookup dict of Waypoint objects from waypoints table
+                           Maps waypoint_symbol -> Waypoint with full trait data
 
         Returns:
-            Dict mapping waypoint symbol to Waypoint object
+            Dict of waypoint_symbol -> Waypoint objects with correct has_fuel data
         """
         waypoint_objects = {}
 
@@ -244,18 +271,20 @@ class NavigateShipHandler(RequestHandler[NavigateShipCommand, Route]):
                 # If it's already a Waypoint object, use it
                 if isinstance(wp_data, Waypoint):
                     waypoint_objects[symbol] = wp_data
+                # Check if we have trait data from waypoints table
+                elif waypoint_traits and symbol in waypoint_traits:
+                    # Use full Waypoint object from waypoints table (has correct has_fuel)
+                    waypoint_objects[symbol] = waypoint_traits[symbol]
                 else:
-                    # Convert from dict
+                    # Fallback: create Waypoint from graph structure-only data
+                    # This handles edge case where waypoint not in waypoints table
                     traits_data = wp_data.get('traits', [])
 
-                    # Use has_fuel from graph data (already calculated by graph provider)
-                    # If not present, fallback to checking traits for MARKETPLACE
+                    # Try to extract has_fuel from graph (may not exist in structure-only graph)
                     if 'has_fuel' in wp_data:
                         has_fuel_station = wp_data['has_fuel']
                     else:
                         # Fallback: check if traits contain MARKETPLACE
-                        # Traits can be either list of dicts [{'symbol': 'MARKETPLACE'}]
-                        # or list of strings ['MARKETPLACE']
                         has_fuel_station = any(
                             (t.get('symbol') == 'MARKETPLACE' if isinstance(t, dict) else t == 'MARKETPLACE')
                             for t in traits_data
