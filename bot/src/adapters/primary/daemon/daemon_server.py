@@ -2,12 +2,14 @@
 import asyncio
 import json
 import logging
+import os
 import signal
 import threading
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional
 
-from .container_manager import ContainerManager
+from .container_manager import ContainerManager, ContainerStatus
 from .assignment_manager import ShipAssignmentManager
 
 logger = logging.getLogger(__name__)
@@ -16,13 +18,14 @@ logger = logging.getLogger(__name__)
 class DaemonServer:
     """Daemon server for long-running operations
 
-    - Unix socket at var/daemon.sock
+    - Unix socket at var/daemon.sock (or SPACETRADERS_DAEMON_SOCKET env var)
     - JSON-RPC 2.0 protocol
     - Graceful shutdown
     - Health monitoring
     """
 
-    SOCKET_PATH = Path("var/daemon.sock")
+    # Allow override via environment variable for testing
+    SOCKET_PATH = Path(os.environ.get('SPACETRADERS_DAEMON_SOCKET', 'var/daemon.sock'))
 
     def __init__(self):
         """Initialize daemon server"""
@@ -59,8 +62,11 @@ class DaemonServer:
         self.SOCKET_PATH.chmod(0o660)
         self._running = True
 
-        # Release all active ship assignments from previous daemon instance
+        # 1. Release all active ship assignments from previous daemon instance
         await self.release_all_active_assignments()
+
+        # 2. Recover RUNNING containers from database
+        await self.recover_running_containers()
 
         logger.info(f"Daemon server started on {self.SOCKET_PATH}")
 
@@ -96,10 +102,15 @@ class DaemonServer:
             except Exception as e:
                 logger.error(f"Error stopping container {container.container_id}: {e}")
 
-        # Close server
+        # Close server immediately
         if self._server:
             self._server.close()
-            await self._server.wait_closed()
+            # NOTE: We do NOT call await self._server.wait_closed() here because:
+            # 1. It waits for all client connections to acknowledge closure
+            # 2. This can add unnecessary delays during daemon shutdown
+            # 3. server.close() is sufficient - it stops accepting new connections
+            # 4. Active connections will finish their current operations
+            # 5. The OS will handle final cleanup asynchronously
 
         # Cleanup socket
         if self.SOCKET_PATH.exists():
@@ -154,8 +165,15 @@ class DaemonServer:
                 await writer.drain()
             except Exception:
                 pass  # Ignore errors during final drain
+
+            # Close the connection immediately
             writer.close()
-            await writer.wait_closed()
+            # NOTE: We do NOT call await writer.wait_closed() here because:
+            # 1. It waits for the client to acknowledge the socket closure
+            # 2. This can take 60+ seconds if client is slow or network has issues
+            # 3. writer.close() is sufficient for cleanup - it closes the socket
+            # 4. The OS will handle final TCP handshake asynchronously
+            # 5. This ensures instant RPC response times for MCP tools
 
     async def _process_request(self, request: Dict) -> Dict:
         """Process JSON-RPC request
@@ -440,6 +458,198 @@ class DaemonServer:
                 logger.info(f"Released {count} zombie assignment(s) on daemon startup")
         except Exception as e:
             logger.error(f"Error releasing zombie assignments: {e}")
+
+    async def recover_running_containers(self):
+        """Recover RUNNING containers from database on daemon startup
+
+        Queries the database for containers with status='RUNNING' and attempts
+        to recreate them in the ContainerManager. Handles edge cases:
+        - Ships that no longer exist (mark as FAILED)
+        - Invalid configuration (mark as FAILED)
+        - Ship assignment conflicts (already handled by release_all_active_assignments)
+
+        This ensures operations survive daemon restarts and maintain business continuity.
+        """
+        try:
+            # Query database for RUNNING containers
+            with self._database.connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT container_id, player_id, container_type, config,
+                           restart_policy, restart_count
+                    FROM containers
+                    WHERE status = 'RUNNING'
+                    ORDER BY started_at ASC
+                """)
+                running_containers = cursor.fetchall()
+
+            if not running_containers:
+                logger.info("No RUNNING containers to recover")
+                return
+
+            logger.info(f"Recovering {len(running_containers)} RUNNING container(s)")
+
+            for row in running_containers:
+                container_id = row['container_id']
+                player_id = row['player_id']
+                container_type = row['container_type']
+                restart_policy = row['restart_policy'] or 'no'
+                restart_count = row['restart_count'] or 0
+
+                try:
+                    # Parse configuration
+                    config = json.loads(row['config'])
+
+                    # Validate ship exists if container uses a ship
+                    ship_symbol = config.get('params', {}).get('ship_symbol')
+                    if ship_symbol:
+                        ship = self._ship_repo.find_by_symbol(ship_symbol, player_id)
+                        if not ship:
+                            logger.warning(
+                                f"Cannot recover container {container_id}: "
+                                f"ship {ship_symbol} no longer exists"
+                            )
+                            self._mark_container_failed(
+                                container_id, player_id, "ship_not_found"
+                            )
+                            continue
+
+                        # Assign ship (should succeed since we released all zombie assignments)
+                        if not self._assignment_mgr.assign(
+                            player_id, ship_symbol, container_id, container_type
+                        ):
+                            logger.warning(
+                                f"Cannot recover container {container_id}: "
+                                f"ship {ship_symbol} assignment conflict"
+                            )
+                            self._mark_container_failed(
+                                container_id, player_id, "assignment_conflict"
+                            )
+                            continue
+
+                    # Recreate container in ContainerManager (without re-inserting to DB)
+                    await self._recreate_container(
+                        container_id=container_id,
+                        player_id=player_id,
+                        container_type=container_type,
+                        config=config,
+                        restart_policy=restart_policy,
+                        restart_count=restart_count
+                    )
+
+                    logger.info(f"Recovered container {container_id}")
+
+                except json.JSONDecodeError as e:
+                    logger.error(
+                        f"Cannot recover container {container_id}: "
+                        f"invalid JSON configuration: {e}"
+                    )
+                    self._mark_container_failed(
+                        container_id, player_id, "invalid_config"
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"Failed to recover container {container_id}: {e}",
+                        exc_info=True
+                    )
+                    self._mark_container_failed(
+                        container_id, player_id, f"recovery_error: {str(e)}"
+                    )
+
+        except Exception as e:
+            logger.error(f"Error during container recovery: {e}", exc_info=True)
+
+    async def _recreate_container(
+        self,
+        container_id: str,
+        player_id: int,
+        container_type: str,
+        config: dict,
+        restart_policy: str,
+        restart_count: int
+    ):
+        """Recreate container in ContainerManager without DB insert
+
+        Used during recovery to restore containers from database into memory.
+        Does not insert new database record since container already exists.
+
+        Args:
+            container_id: Container ID
+            player_id: Player ID
+            container_type: Container type (e.g., 'command')
+            config: Container configuration dict
+            restart_policy: Restart policy string
+            restart_count: Current restart count
+        """
+        from adapters.primary.daemon.types import ContainerInfo, RestartPolicy
+        from copy import deepcopy
+
+        # Create container info
+        config_copy = deepcopy(config)
+        info = ContainerInfo(
+            container_id=container_id,
+            player_id=player_id,
+            container_type=container_type,
+            status=ContainerStatus.STARTING,
+            restart_policy=RestartPolicy(restart_policy),
+            restart_count=restart_count,
+            max_restarts=3,
+            config=config_copy,
+            task=None,
+            logs=[],
+            started_at=datetime.now(),
+            stopped_at=None,
+            exit_code=None,
+            exit_reason=None
+        )
+
+        # Create container instance
+        container_class = self._container_mgr._container_types.get(container_type)
+        if not container_class:
+            raise ValueError(f"Unknown container type: {container_type}")
+
+        container = container_class(
+            container_id=container_id,
+            player_id=player_id,
+            config=config_copy,
+            mediator=self._container_mgr._mediator,
+            database=self._container_mgr._database,
+            container_info=info
+        )
+
+        # Start task
+        info.task = asyncio.create_task(
+            self._container_mgr._run_container(info, container)
+        )
+
+        # Add to in-memory container manager (without DB insert)
+        async with self._container_mgr._lock:
+            self._container_mgr._containers[container_id] = info
+
+    def _mark_container_failed(self, container_id: str, player_id: int, reason: str):
+        """Mark a container as FAILED in the database
+
+        Args:
+            container_id: Container ID
+            player_id: Player ID
+            reason: Failure reason for logging
+        """
+        from datetime import datetime
+
+        try:
+            self._database.update_container_status(
+                container_id=container_id,
+                player_id=player_id,
+                status='FAILED',
+                stopped_at=datetime.now().isoformat(),
+                exit_code=1,
+                exit_reason=reason
+            )
+            logger.info(f"Marked container {container_id} as FAILED: {reason}")
+        except Exception as e:
+            logger.error(
+                f"Failed to mark container {container_id} as FAILED: {e}"
+            )
 
     async def cleanup_stale_assignments(self):
         """Clean up ship assignments where container no longer exists (PUBLIC API)

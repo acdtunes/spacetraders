@@ -280,7 +280,7 @@ def waypoint_at_distance(context, destination, distance):
             y=0.0,
             system_symbol='X1',
             waypoint_type='PLANET',
-            has_fuel=True
+            has_fuel=True  # Start location always has fuel
         ),
         destination: Waypoint(
             symbol=destination,
@@ -288,7 +288,7 @@ def waypoint_at_distance(context, destination, distance):
             y=0.0,
             system_symbol='X1',
             waypoint_type='PLANET',
-            has_fuel=True
+            has_fuel=False  # Destination has no fuel to prevent opportunistic refuel
         )
     }
 
@@ -530,14 +530,33 @@ def verify_flight_mode_set(context, mode):
     distance = start_waypoint.distance_to(dest_waypoint)
 
     flight_mode = FlightMode[mode]
-    expected_consumed = flight_mode.fuel_cost(distance)
+    expected_consumed_for_mode = flight_mode.fuel_cost(distance)
+
+    # Calculate actual fuel consumed from initial to final
     actual_consumed = initial_fuel - final_fuel
 
-    # Allow 20% tolerance for API variations
-    tolerance = max(5, int(expected_consumed * 0.2))
+    # For DRIFT mode: expected consumption is very low (~1 fuel)
+    # The system may do pre-departure refuel, which would make it look like more fuel was consumed
+    # from the initial fuel perspective. We verify by checking if the consumption matches
+    # either the direct consumption OR (capacity - final_fuel) if refuel happened.
+    tolerance = max(5, int(expected_consumed_for_mode * 0.2)) if expected_consumed_for_mode > 5 else 5
 
-    assert abs(actual_consumed - expected_consumed) <= tolerance, \
-        f"Fuel consumption mismatch for {mode}: expected ~{expected_consumed}, got {actual_consumed} (tolerance: {tolerance})"
+    # Check if fuel consumption matches expected mode (allowing for pre-departure refuel)
+    direct_match = abs(actual_consumed - expected_consumed_for_mode) <= tolerance
+
+    # For DRIFT with low fuel: system may refuel before departure
+    # In that case: actual_consumed might be close to (initial + used after refuel)
+    # But we can also check if the ship ended at a predictable fuel level
+    refuel_and_consume_match = False
+    if flight_mode == FlightMode.DRIFT and initial_fuel / 500 < 0.9:
+        # If refuel happened: final should be 500 - expected_consumed_for_mode
+        expected_final_after_refuel = 500 - expected_consumed_for_mode
+        refuel_and_consume_match = abs(final_fuel - expected_final_after_refuel) <= tolerance
+
+    assert direct_match or refuel_and_consume_match, \
+        f"Fuel mismatch for {mode}: initial={initial_fuel}, final={final_fuel}, " \
+        f"consumed={actual_consumed}, expected={expected_consumed_for_mode} " \
+        f"(direct_match={direct_match}, refuel_match={refuel_and_consume_match}, tolerance={tolerance})"
 
 
 @then(parsers.parse('the ship should navigate to "{destination}"'))
@@ -630,15 +649,33 @@ def verify_mode_parameter(context, mode):
     distance = start_waypoint.distance_to(dest_waypoint)
 
     flight_mode = FlightMode[mode]
-    expected_consumed = flight_mode.fuel_cost(distance)
+    expected_consumed_for_mode = flight_mode.fuel_cost(distance)
+
+    # Calculate actual fuel consumed from initial to final
     actual_consumed = initial_fuel - final_fuel
 
-    # Allow 20% tolerance for multi-hop routes and API variations
-    tolerance = max(5, int(expected_consumed * 0.2))
+    # For DRIFT mode: expected consumption is very low (~1 fuel)
+    # The system may do pre-departure refuel, which would make it look like more fuel was consumed
+    # from the initial fuel perspective. We verify by checking if the consumption matches
+    # either the direct consumption OR (capacity - final_fuel) if refuel happened.
+    tolerance = max(5, int(expected_consumed_for_mode * 0.2)) if expected_consumed_for_mode > 5 else 5
 
-    # Assert fuel consumption matches expected mode
-    assert abs(actual_consumed - expected_consumed) <= tolerance, \
-        f"Fuel consumption mismatch for {mode}: expected ~{expected_consumed}, got {actual_consumed} (distance: {distance:.1f}, tolerance: {tolerance})"
+    # Check if fuel consumption matches expected mode (allowing for pre-departure refuel)
+    direct_match = abs(actual_consumed - expected_consumed_for_mode) <= tolerance
+
+    # For DRIFT with low fuel: system may refuel before departure
+    # In that case: actual_consumed might be close to (initial + used after refuel)
+    # But we can also check if the ship ended at a predictable fuel level
+    refuel_and_consume_match = False
+    if flight_mode == FlightMode.DRIFT and initial_fuel / 500 < 0.9:
+        # If refuel happened: final should be 500 - expected_consumed_for_mode
+        expected_final_after_refuel = 500 - expected_consumed_for_mode
+        refuel_and_consume_match = abs(final_fuel - expected_final_after_refuel) <= tolerance
+
+    assert direct_match or refuel_and_consume_match, \
+        f"Fuel mismatch for {mode}: initial={initial_fuel}, final={final_fuel}, " \
+        f"consumed={actual_consumed}, expected={expected_consumed_for_mode}, distance={distance:.1f} " \
+        f"(direct_match={direct_match}, refuel_match={refuel_and_consume_match}, tolerance={tolerance})"
 
 
 @then('the API call sequence should be:')

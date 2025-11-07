@@ -1,5 +1,6 @@
 """Daemon client for JSON-RPC communication via Unix socket"""
 import json
+import os
 import socket
 from pathlib import Path
 from typing import Dict, Optional
@@ -8,7 +9,8 @@ from typing import Dict, Optional
 class DaemonClient:
     """Client for daemon communication via Unix socket"""
 
-    SOCKET_PATH = Path("var/daemon.sock")
+    # Allow override via environment variable for testing
+    SOCKET_PATH = Path(os.environ.get('SPACETRADERS_DAEMON_SOCKET', 'var/daemon.sock'))
 
     def create_container(self, config: Dict) -> Dict:
         """Create container
@@ -149,6 +151,9 @@ class DaemonClient:
         try:
             sock.connect(str(self.SOCKET_PATH))
             sock.sendall(json.dumps(request).encode())
+
+            # Signal we're done sending (half-close the connection)
+            sock.shutdown(socket.SHUT_WR)
 
             # Read all data in chunks until socket is closed
             # (Server closes after sending complete response)

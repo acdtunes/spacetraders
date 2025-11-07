@@ -3,21 +3,50 @@ import json
 import socket
 import threading
 import time
+import pytest
 from pathlib import Path
 from pytest_bdd import scenarios, given, when, then, parsers
 
 scenarios('../../features/daemon/daemon_socket_buffer.feature')
 
 
+@pytest.fixture
+def context():
+    """Shared test context with cleanup"""
+    ctx = {}
+    yield ctx
+
+    # Cleanup: Close server socket and wait for thread
+    if 'server_socket' in ctx:
+        try:
+            ctx['server_socket'].close()
+        except Exception:
+            pass
+
+    if 'server_thread' in ctx and ctx['server_thread'].is_alive():
+        # Give thread a moment to finish
+        ctx['server_thread'].join(timeout=2.0)
+
+    # Cleanup: Remove test socket file
+    if 'socket_path' in ctx:
+        try:
+            ctx['socket_path'].unlink()
+        except Exception:
+            pass
+
+
 @given("a mock daemon server returning 500KB of JSON data")
 def mock_daemon_server(context):
     """Create mock server that returns large JSON response"""
-    # Clean up old socket
-    socket_path = Path("var/daemon.sock")
+    # Use TEST-SPECIFIC socket path to avoid interfering with production daemon
+    socket_path = Path("var/test-daemon.sock")
     if socket_path.exists():
         socket_path.unlink()
 
     socket_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Store socket path for cleanup and client usage
+    context['socket_path'] = socket_path
 
     # Create large JSON response (500KB)
     large_logs = []
@@ -65,8 +94,13 @@ def mock_daemon_server(context):
         # Accept one connection
         try:
             conn, _ = server.accept()
-            # Read request (discard it)
-            conn.recv(4096)
+            # Read request until EOF (like real server does)
+            request_data = b""
+            while True:
+                chunk = conn.recv(4096)
+                if not chunk:
+                    break
+                request_data += chunk
             # Send large response
             conn.sendall(response_bytes)
             conn.close()
@@ -87,8 +121,12 @@ def send_request(context):
     """Send request using DaemonClient (uses the fixed implementation)"""
     from adapters.primary.daemon.daemon_client import DaemonClient
 
-    client = DaemonClient()
+    # Monkey-patch DaemonClient to use test socket path instead of production socket
+    original_socket_path = DaemonClient.SOCKET_PATH
+    DaemonClient.SOCKET_PATH = context['socket_path']
+
     try:
+        client = DaemonClient()
         result = client.inspect_container("test")
         context['result'] = result
         context['error'] = None
@@ -100,6 +138,9 @@ def send_request(context):
         context['error'] = e
         context['result'] = None
         context['bytes_received'] = 0
+    finally:
+        # Restore original socket path
+        DaemonClient.SOCKET_PATH = original_socket_path
 
 
 @then("the response should be fully received")

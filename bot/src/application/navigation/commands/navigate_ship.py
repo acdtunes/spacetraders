@@ -157,7 +157,23 @@ class NavigateShipHandler(RequestHandler[NavigateShipCommand, Route]):
                 f"Destination waypoint is missing from waypoint cache. Please sync waypoints from API."
             )
 
-        # 3. Find optimal path using routing engine
+        # 3. Check if ship is already at destination (idempotent command)
+        if ship.current_location.symbol == request.destination_symbol:
+            # Ship is already at destination - create empty route and mark as completed
+            route_id = f"{request.ship_symbol}_already_at_destination"
+            route = Route(
+                route_id=route_id,
+                ship_symbol=request.ship_symbol,
+                player_id=request.player_id,
+                segments=[],  # No segments needed
+                ship_fuel_capacity=ship.fuel_capacity,
+                refuel_before_departure=False
+            )
+            route.start_execution()
+            route.complete_segment()  # Sets status to COMPLETED since no segments
+            return route
+
+        # 4. Find optimal path using routing engine
         route_plan = self._routing_engine.find_optimal_path(
             graph=waypoint_objects,
             start=ship.current_location.symbol,
@@ -174,7 +190,7 @@ class NavigateShipHandler(RequestHandler[NavigateShipCommand, Route]):
                 f"The routing engine could not find a valid path. Check waypoint cache for system {system_symbol}."
             )
 
-        # 4. Create Route entity from plan
+        # 5. Create Route entity from plan
         route = self._create_route_from_plan(
             route_plan=route_plan,
             ship_symbol=request.ship_symbol,
@@ -183,7 +199,7 @@ class NavigateShipHandler(RequestHandler[NavigateShipCommand, Route]):
             waypoint_objects=waypoint_objects
         )
 
-        # 5. Execute route
+        # 6. Execute route
         route.start_execution()
         ship = await self._execute_route(route, ship, api_client, graph_provider)
 
@@ -470,6 +486,42 @@ class NavigateShipHandler(RequestHandler[NavigateShipCommand, Route]):
                         route.player_id
                     )
 
+                # Pre-departure refuel check: If planned to use DRIFT mode at a fuel station, refuel instead
+                current_location = ship.current_location
+                fuel_percentage = (ship.fuel.current / ship.fuel_capacity) if ship.fuel_capacity > 0 else 0
+
+                # Only refuel if: (1) using DRIFT mode, (2) at fuel station, (3) low fuel
+                if (segment.flight_mode == FlightMode.DRIFT and
+                    fuel_percentage < 0.9 and
+                    segment.from_waypoint.symbol == current_location.symbol and
+                    current_location.has_fuel):
+                    logger.info(f"Pre-departure refuel at {current_location.symbol}: Preventing DRIFT mode with {fuel_percentage*100:.1f}% fuel")
+
+                    # Dock if in orbit
+                    if ship.nav_status != Ship.DOCKED:
+                        state_changed = ship.ensure_docked()
+                        if state_changed:
+                            api_client.dock_ship(ship.ship_symbol)
+                            ship = self._ship_repo.find_by_symbol(ship.ship_symbol, route.player_id)
+
+                    # Refuel
+                    refuel_result = api_client.refuel_ship(ship.ship_symbol)
+
+                    # Auto-sync: Extract and convert ship data
+                    ship_data = refuel_result.get('data', {}).get('ship')
+                    if ship_data:
+                        ship = convert_api_ship_to_entity(
+                            ship_data,
+                            route.player_id,
+                            ship.current_location  # Refueling doesn't change location
+                        )
+
+                    # Orbit for departure
+                    state_changed = ship.ensure_in_orbit()
+                    if state_changed:
+                        api_client.orbit_ship(ship.ship_symbol)
+                        ship = self._ship_repo.find_by_symbol(ship.ship_symbol, route.player_id)
+
                 # Set flight mode before navigation
                 # This ensures the ship uses the mode planned by the routing engine
                 api_client.set_flight_mode(ship.ship_symbol, segment.flight_mode.mode_name)
@@ -525,12 +577,11 @@ class NavigateShipHandler(RequestHandler[NavigateShipCommand, Route]):
 
                 # Opportunistic refueling safety check (90% rule)
                 # Defense-in-depth: catch cases where routing engine didn't add refuel
-                # Only refuel if NOT at final destination (to avoid interfering with tests)
                 current_waypoint = segment.to_waypoint
                 fuel_percentage = (ship.fuel.current / ship.fuel_capacity) if ship.fuel_capacity > 0 else 0
 
                 if (current_waypoint.has_fuel and fuel_percentage < 0.9 and
-                    not segment.requires_refuel and not is_last_segment):
+                    not segment.requires_refuel):
                     logger.info(
                         f"Opportunistic refuel at {current_waypoint.symbol}: "
                         f"Fuel at {fuel_percentage*100:.1f}% ({ship.fuel.current}/{ship.fuel_capacity})"

@@ -1,6 +1,7 @@
 """Container manager for lifecycle management"""
 import asyncio
 import logging
+from copy import deepcopy
 from datetime import datetime
 from typing import Dict, Optional, Any
 
@@ -69,6 +70,11 @@ class ContainerManager:
             if not container_class:
                 raise ValueError(f"Unknown container type: {container_type}")
 
+            # CRITICAL: Deep copy config to ensure container isolation
+            # Without this, multiple containers could share the same config dict
+            # and mutations would affect all containers
+            config_copy = deepcopy(config)
+
             # Create info
             info = ContainerInfo(
                 container_id=container_id,
@@ -78,7 +84,7 @@ class ContainerManager:
                 restart_policy=RestartPolicy(restart_policy),
                 restart_count=0,
                 max_restarts=max_restarts,
-                config=config,
+                config=config_copy,
                 task=None,
                 logs=[],
                 started_at=None,
@@ -87,13 +93,14 @@ class ContainerManager:
                 exit_reason=None
             )
 
-            # Create container instance
+            # Create container instance with reference to ContainerInfo for status sync
             container = container_class(
                 container_id=container_id,
                 player_id=player_id,
-                config=config,
+                config=config_copy,
                 mediator=self._mediator,
-                database=self._database
+                database=self._database,
+                container_info=info
             )
 
             # Start task
@@ -101,6 +108,19 @@ class ContainerManager:
             info.started_at = datetime.now()
 
             self._containers[container_id] = info
+
+            # Persist container to database
+            import json
+            self._database.insert_container(
+                container_id=container_id,
+                player_id=player_id,
+                container_type=container_type,
+                status=ContainerStatus.STARTING.value,
+                restart_policy=restart_policy,
+                config=json.dumps(config_copy),
+                started_at=info.started_at.isoformat()
+            )
+
             logger.info(f"Created container {container_id} (type={container_type})")
             return info
 
@@ -111,22 +131,55 @@ class ContainerManager:
             info: Container info to update
             container: Container instance to run
         """
+        cancelled = False
         try:
             await container.start()
             info.exit_code = 0
             logger.info(f"Container {info.container_id} completed successfully")
+        except asyncio.CancelledError:
+            # Container was cancelled via stop_container()
+            # Don't update database here - stop_container() already did it
+            cancelled = True
+            logger.info(f"Container {info.container_id} cancelled")
+            raise  # Re-raise to properly propagate cancellation
         except Exception as e:
             info.exit_code = 1
             info.exit_reason = str(e)
             logger.error(f"Container {info.container_id} failed: {e}")
         finally:
-            info.stopped_at = datetime.now()
-            # Set status to STOPPED after execution completes
-            # This will be overridden to STARTING if restart happens
-            info.status = ContainerStatus.STOPPED
+            # Only update database if not cancelled
+            # (cancelled containers already have database updated by stop_container)
+            if not cancelled:
+                info.stopped_at = datetime.now()
+                # Set status to STOPPED after execution completes
+                # This will be overridden to STARTING if restart happens
+                info.status = ContainerStatus.STOPPED
 
-        # Handle restart if needed (only called on failure)
-        if info.exit_code != 0:
+                # Update database with final status (only if database is still open)
+                # This prevents errors during test cleanup when database is closed
+                # Use try-except to handle race condition where database closes between check and call
+                if not self._database.is_closed():
+                    try:
+                        self._database.update_container_status(
+                            container_id=info.container_id,
+                            player_id=info.player_id,
+                            status=info.status.value,
+                            stopped_at=info.stopped_at.isoformat(),
+                            exit_code=info.exit_code,
+                            exit_reason=info.exit_reason
+                        )
+                    except Exception as e:
+                        # Database may have closed between check and call
+                        # This is expected during test cleanup, log and continue
+                        import sqlite3
+                        if isinstance(e, sqlite3.ProgrammingError) and "closed database" in str(e):
+                            logger.debug(f"Database closed during cleanup for {info.container_id}")
+                        else:
+                            # Re-raise unexpected exceptions
+                            raise
+
+        # Handle restart if needed (only called on failure and not cancelled)
+        if not cancelled and info.exit_code != 0:
             await self._handle_restart(info)
 
     async def _handle_restart(self, info: ContainerInfo):
@@ -162,19 +215,20 @@ class ContainerManager:
         info.restart_count += 1
         info.status = ContainerStatus.STARTING
 
-        # Recreate container and restart
+        # Recreate container and restart with reference to ContainerInfo
         container_class = self._container_types[info.container_type]
         container = container_class(
             container_id=info.container_id,
             player_id=info.player_id,
             config=info.config,
             mediator=self._mediator,
-            database=self._database
+            database=self._database,
+            container_info=info
         )
         info.task = asyncio.create_task(self._run_container(info, container))
 
     async def stop_container(self, container_id: str):
-        """Stop container gracefully
+        """Stop container immediately (forceful termination)
 
         Args:
             container_id: Container to stop
@@ -187,16 +241,23 @@ class ContainerManager:
             if not info:
                 raise ValueError(f"Container {container_id} not found")
 
+            # Cancel task if it exists and is running
             if info.task and not info.task.done():
-                info.status = ContainerStatus.STOPPING
                 info.task.cancel()
-                try:
-                    await info.task
-                except asyncio.CancelledError:
-                    pass
+                # Do NOT await task - we want immediate stop
+                # The task will be cancelled in the background
 
+            # Mark as STOPPED immediately
             info.status = ContainerStatus.STOPPED
             info.stopped_at = datetime.now()
+
+            # Update database immediately
+            self._database.update_container_status(
+                container_id=container_id,
+                player_id=info.player_id,
+                status=ContainerStatus.STOPPED.value,
+                stopped_at=info.stopped_at.isoformat()
+            )
             logger.info(f"Stopped container {container_id}")
 
     def get_container(self, container_id: str) -> Optional[ContainerInfo]:

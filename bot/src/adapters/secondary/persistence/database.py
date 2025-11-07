@@ -95,6 +95,19 @@ class Database:
             self._persistent_conn.close()
             self._persistent_conn = None
 
+    def is_closed(self) -> bool:
+        """Check if database connection is closed
+
+        Returns:
+            True if database is closed, False otherwise
+        """
+        # For in-memory databases, check if persistent connection is closed
+        if self.db_path == ":memory:":
+            return self._persistent_conn is None
+        # For file-based databases, we don't maintain a persistent connection
+        # so we consider them "open" unless explicitly closed
+        return False
+
     def _init_database(self):
         """Initialize database schema"""
         with self._get_connection() as conn:
@@ -401,6 +414,70 @@ class Database:
                 }
                 for row in rows
             ]
+
+    def insert_container(
+        self,
+        container_id: str,
+        player_id: int,
+        container_type: str,
+        status: str,
+        restart_policy: str,
+        config: str,
+        started_at: str
+    ):
+        """
+        Insert a new container record into the database.
+
+        Args:
+            container_id: Unique container identifier
+            player_id: Player identifier
+            container_type: Type of container (e.g., 'command')
+            status: Initial status (e.g., 'STARTING')
+            restart_policy: Restart policy ('no', 'on-failure', 'always')
+            config: JSON string of container configuration
+            started_at: ISO format timestamp when container was started
+        """
+        with self.transaction() as conn:
+            conn.execute("""
+                INSERT INTO containers (
+                    container_id, player_id, container_type, status,
+                    restart_policy, restart_count, config, started_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (container_id, player_id, container_type, status, restart_policy, 0, config, started_at))
+
+    def update_container_status(
+        self,
+        container_id: str,
+        player_id: int,
+        status: str,
+        stopped_at: Optional[str] = None,
+        exit_code: Optional[int] = None,
+        exit_reason: Optional[str] = None
+    ):
+        """
+        Update container status in the database.
+
+        Args:
+            container_id: Container identifier
+            player_id: Player identifier
+            status: New status ('RUNNING', 'STOPPED', 'FAILED', etc.)
+            stopped_at: Optional ISO format timestamp when container stopped
+            exit_code: Optional exit code (0 for success, non-zero for failure)
+            exit_reason: Optional reason for failure
+        """
+        with self.transaction() as conn:
+            if stopped_at is not None:
+                conn.execute("""
+                    UPDATE containers
+                    SET status = ?, stopped_at = ?, exit_code = ?, exit_reason = ?
+                    WHERE container_id = ? AND player_id = ?
+                """, (status, stopped_at, exit_code, exit_reason, container_id, player_id))
+            else:
+                conn.execute("""
+                    UPDATE containers
+                    SET status = ?
+                    WHERE container_id = ? AND player_id = ?
+                """, (status, container_id, player_id))
 
     def update_market_data(
         self,

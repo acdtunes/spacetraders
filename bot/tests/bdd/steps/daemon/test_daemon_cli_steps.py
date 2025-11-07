@@ -18,6 +18,10 @@ def run_daemon_module(context, command):
     env['PYTHONPATH'] = 'src'
     env['SPACETRADERS_TOKEN'] = 'test-token'
     env['PYTHONUNBUFFERED'] = '1'  # Force unbuffered output
+    # Use in-memory database for daemon CLI test to avoid recovery of production containers
+    env['SPACETRADERS_DB_PATH'] = ':memory:'
+    # Use test socket path to avoid interfering with production daemon
+    env['SPACETRADERS_DAEMON_SOCKET'] = 'var/test-daemon.sock'
 
     # Replace 'python' with sys.executable
     cmd_parts = command.split()
@@ -53,8 +57,8 @@ def run_daemon_module(context, command):
         context['daemon_stderr'] = stderr.decode()
         context['daemon_returncode'] = proc.returncode
 
-    # Cleanup socket
-    socket_path = Path("var/daemon.sock")
+    # Cleanup test socket
+    socket_path = Path("var/test-daemon.sock")
     if socket_path.exists():
         socket_path.unlink()
 
@@ -95,12 +99,17 @@ def main_function_called(context):
     stderr = context.get('daemon_stderr', '')
     stdout = context.get('daemon_stdout', '')
 
-    # The daemon should log "Daemon server started" when main() is called
-    # This is the most reliable way to check if main() was invoked
-    main_was_called = 'Daemon server started' in stderr
+    # The daemon should log either:
+    # - "Daemon server started" (normal startup)
+    # - "Recovering N RUNNING container(s)" (startup with recovery)
+    # Both indicate main() was called and startup sequence began
+    daemon_started = 'Daemon server started' in stderr
+    recovery_started = 'Recovering' in stderr and 'container' in stderr
+
+    main_was_called = daemon_started or recovery_started
 
     assert main_was_called, \
-        f"Main function was not called - no 'Daemon server started' log found.\n" \
+        f"Main function was not called - no daemon startup or recovery log found.\n" \
         f"Return code: {context['daemon_returncode']}\n" \
         f"stderr: {stderr}\n" \
         f"stdout: {stdout}"

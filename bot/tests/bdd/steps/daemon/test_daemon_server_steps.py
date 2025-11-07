@@ -10,13 +10,15 @@ from adapters.primary.daemon.daemon_server import DaemonServer
 
 scenarios('../../features/daemon/daemon_server.feature')
 
+# Use test-specific socket path to avoid interfering with production daemon
+TEST_SOCKET_PATH = Path("var/test-daemon.sock")
+
 
 @given("the daemon server is not running")
 def daemon_not_running(context):
     """Ensure daemon is not running"""
-    socket_path = Path("var/daemon.sock")
-    if socket_path.exists():
-        socket_path.unlink()
+    if TEST_SOCKET_PATH.exists():
+        TEST_SOCKET_PATH.unlink()
     context['daemon_server'] = None
     context['daemon_thread'] = None
     context['daemon_loop'] = None
@@ -25,9 +27,11 @@ def daemon_not_running(context):
 @given("the daemon server is running")
 def daemon_running(context):
     """Start daemon server for test"""
-    socket_path = Path("var/daemon.sock")
-    if socket_path.exists():
-        socket_path.unlink()
+    if TEST_SOCKET_PATH.exists():
+        TEST_SOCKET_PATH.unlink()
+
+    # Monkey-patch DaemonServer to use test socket
+    DaemonServer.SOCKET_PATH = TEST_SOCKET_PATH
 
     server = DaemonServer()
     context['daemon_server'] = server
@@ -55,19 +59,20 @@ def daemon_running(context):
     # Wait for socket to exist
     timeout = 5
     start = time.time()
-    while not socket_path.exists() and time.time() - start < timeout:
+    while not TEST_SOCKET_PATH.exists() and time.time() - start < timeout:
         time.sleep(0.1)
 
     if context.get('daemon_error'):
         raise AssertionError(f"Daemon failed to start: {context['daemon_error']}\n{context.get('daemon_traceback', '')}")
 
-    assert socket_path.exists(), "Daemon socket did not appear"
+    assert TEST_SOCKET_PATH.exists(), "Daemon socket did not appear"
 
 
 @when("I start the daemon server")
 def start_daemon_server(context):
     """Start the daemon server"""
-    socket_path = Path("var/daemon.sock")
+    # Monkey-patch DaemonServer to use test socket
+    DaemonServer.SOCKET_PATH = TEST_SOCKET_PATH
 
     server = DaemonServer()
     context['daemon_server'] = server
@@ -102,10 +107,9 @@ def start_daemon_server(context):
 @when("a client connects to the Unix socket")
 def client_connects(context):
     """Connect a client to daemon"""
-    socket_path = Path("var/daemon.sock")
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
-        sock.connect(str(socket_path))
+        sock.connect(str(TEST_SOCKET_PATH))
         context['client_socket'] = sock
         context['connection_successful'] = True
     except Exception as e:
@@ -189,5 +193,4 @@ def daemon_stopped(context):
 @then("the Unix socket should be cleaned up")
 def socket_cleaned_up(context):
     """Verify socket was removed"""
-    socket_path = Path("var/daemon.sock")
-    assert not socket_path.exists(), "Socket should be cleaned up"
+    assert not TEST_SOCKET_PATH.exists(), "Socket should be cleaned up"
