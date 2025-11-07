@@ -559,7 +559,8 @@ def get_mediator() -> Mediator:
             BatchContractWorkflowCommand,
             lambda: BatchContractWorkflowHandler(
                 mediator=_mediator,
-                ship_repository=ship_repo
+                ship_repository=ship_repo,
+                market_repository=get_market_repository()
             )
         )
 

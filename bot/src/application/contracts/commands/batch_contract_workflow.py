@@ -53,21 +53,66 @@ class BatchContractWorkflowHandler(RequestHandler[BatchContractWorkflowCommand, 
     1. Negotiate contract
     2. Evaluate profitability
     3. Accept if profitable
-    4. Purchase required goods
+    4. Purchase required goods (with transaction splitting)
     5. Deliver goods (handle multi-trip if needed)
     6. Fulfill contract
     """
 
-    def __init__(self, mediator: Mediator, ship_repository):
+    def __init__(self, mediator: Mediator, ship_repository, market_repository):
         """
         Initialize handler
 
         Args:
             mediator: Mediator for sending commands/queries
             ship_repository: Repository for fetching ship data
+            market_repository: Repository for fetching market data (transaction limits)
         """
         self._mediator = mediator
         self._ship_repository = ship_repository
+        self._market_repository = market_repository
+
+    def _get_transaction_limit(self, market_waypoint: str, trade_symbol: str, player_id: int) -> int:
+        """
+        Get transaction limit for a trade good at a market.
+
+        Args:
+            market_waypoint: Waypoint symbol of the market
+            trade_symbol: Trade good symbol
+            player_id: Player ID
+
+        Returns:
+            Transaction limit for the trade good, or a very high default (999999) if not found
+        """
+        try:
+            market = self._market_repository.get_market_data(
+                waypoint=market_waypoint,
+                player_id=player_id
+            )
+
+            if market:
+                for trade_good in market.trade_goods:
+                    if trade_good.symbol == trade_symbol:
+                        # trade_volume indicates the max units per transaction
+                        if trade_good.trade_volume > 0:
+                            logger.info(
+                                f"Market {market_waypoint} has transaction limit of {trade_good.trade_volume} "
+                                f"units for {trade_symbol}"
+                            )
+                            return trade_good.trade_volume
+
+            # No transaction limit data found - default to very high limit
+            logger.warning(
+                f"No transaction limit data found for {trade_symbol} at {market_waypoint}, "
+                "defaulting to 999999 (unlimited)"
+            )
+            return 999999
+
+        except Exception as e:
+            logger.warning(
+                f"Failed to fetch market data for transaction limit: {e}, "
+                "defaulting to 999999 (unlimited)"
+            )
+            return 999999
 
     async def _jettison_wrong_cargo(
         self,
@@ -339,11 +384,22 @@ class BatchContractWorkflowHandler(RequestHandler[BatchContractWorkflowCommand, 
 
                     else:
                         # Don't have enough, but cargo is clean (only required item or empty)
-                        units_to_purchase = units_remaining - current_units
-                        logger.info(
-                            f"Iteration {iteration + 1}: Ship has {current_units}/{units_remaining} units, "
-                            f"purchasing {units_to_purchase} more"
-                        )
+                        # Check if cargo is full - if so, deliver first, then purchase remainder
+                        if ship.cargo.units >= ship.cargo_capacity and current_units > 0:
+                            # Ship is full with required cargo - deliver what we have first
+                            logger.info(
+                                f"Iteration {iteration + 1}: Ship is FULL ({ship.cargo.units}/{ship.cargo_capacity}) "
+                                f"with {current_units} units of {delivery.trade_symbol}. "
+                                f"Delivering current cargo first, will need to purchase {units_remaining - current_units} more later."
+                            )
+                            units_to_purchase = 0  # Don't purchase yet, deliver current cargo first
+                        else:
+                            # Ship has room - purchase what we need
+                            units_to_purchase = units_remaining - current_units
+                            logger.info(
+                                f"Iteration {iteration + 1}: Ship has {current_units}/{units_remaining} units, "
+                                f"purchasing {units_to_purchase} more"
+                            )
 
                     # Step 6: Purchase and deliver in trips (only if needed)
                     if units_to_purchase > 0:
@@ -370,15 +426,37 @@ class BatchContractWorkflowHandler(RequestHandler[BatchContractWorkflowCommand, 
                             )
                             await self._mediator.send_async(dock_at_seller_cmd)
 
-                            # Step 6c: Purchase cargo
-                            logger.info(f"Iteration {iteration + 1}, Trip {trip + 1}: Purchasing {units_this_trip} units of {delivery.trade_symbol}")
-                            purchase_cmd = PurchaseCargoCommand(
-                                ship_symbol=request.ship_symbol,
+                            # Step 6c: Purchase cargo (with transaction splitting)
+                            # Get market transaction limit
+                            transaction_limit = self._get_transaction_limit(
+                                market_waypoint=cheapest_market,
                                 trade_symbol=delivery.trade_symbol,
-                                units=units_this_trip,
                                 player_id=request.player_id
                             )
-                            await self._mediator.send_async(purchase_cmd)
+
+                            # Split purchase into multiple transactions if needed
+                            units_remaining_this_trip = units_this_trip
+                            transaction_number = 0
+
+                            while units_remaining_this_trip > 0:
+                                units_this_transaction = min(units_remaining_this_trip, transaction_limit)
+                                transaction_number += 1
+
+                                logger.info(
+                                    f"Iteration {iteration + 1}, Trip {trip + 1}, Transaction {transaction_number}: "
+                                    f"Purchasing {units_this_transaction} units of {delivery.trade_symbol} "
+                                    f"(limit: {transaction_limit}, remaining: {units_remaining_this_trip})"
+                                )
+
+                                purchase_cmd = PurchaseCargoCommand(
+                                    ship_symbol=request.ship_symbol,
+                                    trade_symbol=delivery.trade_symbol,
+                                    units=units_this_transaction,
+                                    player_id=request.player_id
+                                )
+                                await self._mediator.send_async(purchase_cmd)
+
+                                units_remaining_this_trip -= units_this_transaction
 
                             # Step 6d: Navigate to delivery destination
                             logger.info(f"Iteration {iteration + 1}, Trip {trip + 1}: Navigating to delivery destination {delivery.destination.symbol}")
@@ -411,35 +489,44 @@ class BatchContractWorkflowHandler(RequestHandler[BatchContractWorkflowCommand, 
                             units_to_purchase -= units_this_trip
                     else:
                         # Skip purchase but still need to deliver if we have cargo
-                        logger.info(f"Iteration {iteration + 1}: Skipping purchase, proceeding directly to delivery")
+                        # Deliver only what we currently have (not units_remaining, which might be more)
+                        units_to_deliver = min(current_units, units_remaining)
 
-                        # Navigate to delivery destination
-                        logger.info(f"Iteration {iteration + 1}: Navigating to delivery destination {delivery.destination.symbol}")
-                        navigate_to_delivery_cmd = NavigateShipCommand(
-                            ship_symbol=request.ship_symbol,
-                            destination_symbol=delivery.destination.symbol,
-                            player_id=request.player_id
-                        )
-                        await self._mediator.send_async(navigate_to_delivery_cmd)
+                        if units_to_deliver > 0:
+                            logger.info(
+                                f"Iteration {iteration + 1}: Skipping purchase, proceeding directly to delivery "
+                                f"of {units_to_deliver} units (ship has {current_units}, contract needs {units_remaining})"
+                            )
 
-                        # Dock at delivery destination
-                        logger.info(f"Iteration {iteration + 1}: Docking at delivery destination {delivery.destination.symbol}")
-                        dock_at_delivery_cmd = DockShipCommand(
-                            ship_symbol=request.ship_symbol,
-                            player_id=request.player_id
-                        )
-                        await self._mediator.send_async(dock_at_delivery_cmd)
+                            # Navigate to delivery destination
+                            logger.info(f"Iteration {iteration + 1}: Navigating to delivery destination {delivery.destination.symbol}")
+                            navigate_to_delivery_cmd = NavigateShipCommand(
+                                ship_symbol=request.ship_symbol,
+                                destination_symbol=delivery.destination.symbol,
+                                player_id=request.player_id
+                            )
+                            await self._mediator.send_async(navigate_to_delivery_cmd)
 
-                        # Deliver cargo
-                        logger.info(f"Iteration {iteration + 1}: Delivering {units_remaining} units of {delivery.trade_symbol}")
-                        deliver_cmd = DeliverContractCommand(
-                            contract_id=contract.contract_id,
-                            ship_symbol=request.ship_symbol,
-                            trade_symbol=delivery.trade_symbol,
-                            units=units_remaining,
-                            player_id=request.player_id
-                        )
-                        await self._mediator.send_async(deliver_cmd)
+                            # Dock at delivery destination
+                            logger.info(f"Iteration {iteration + 1}: Docking at delivery destination {delivery.destination.symbol}")
+                            dock_at_delivery_cmd = DockShipCommand(
+                                ship_symbol=request.ship_symbol,
+                                player_id=request.player_id
+                            )
+                            await self._mediator.send_async(dock_at_delivery_cmd)
+
+                            # Deliver cargo (only what we have)
+                            logger.info(f"Iteration {iteration + 1}: Delivering {units_to_deliver} units of {delivery.trade_symbol}")
+                            deliver_cmd = DeliverContractCommand(
+                                contract_id=contract.contract_id,
+                                ship_symbol=request.ship_symbol,
+                                trade_symbol=delivery.trade_symbol,
+                                units=units_to_deliver,
+                                player_id=request.player_id
+                            )
+                            await self._mediator.send_async(deliver_cmd)
+                        else:
+                            logger.info(f"Iteration {iteration + 1}: No cargo to deliver, skipping delivery step")
 
                 # Step 7: Fulfill contract
                 fulfill_cmd = FulfillContractCommand(

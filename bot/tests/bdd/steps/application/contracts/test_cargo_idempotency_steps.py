@@ -176,6 +176,7 @@ def execute_batch_workflow(context, iterations):
     context['jettison_calls'] = []
     context['navigate_calls'] = []
     context['purchase_calls'] = []
+    context['delivery_calls'] = []
 
     # Create mocks
     mock_mediator = Mock()
@@ -245,8 +246,35 @@ def execute_batch_workflow(context, iterations):
         elif 'AcceptContract' in command_type:
             context['contract']._accepted = True
         elif 'DeliverContract' in command_type:
-            pass  # Mock delivery
+            context['delivery_calls'].append({
+                'symbol': command.trade_symbol,
+                'units': command.units
+            })
+            # Update contract deliveries (create new Delivery objects since they're frozen)
+            new_deliveries = []
+            for delivery in context['contract'].terms.deliveries:
+                if delivery.trade_symbol == command.trade_symbol:
+                    new_delivery = Delivery(
+                        trade_symbol=delivery.trade_symbol,
+                        destination=delivery.destination,
+                        units_required=delivery.units_required,
+                        units_fulfilled=delivery.units_fulfilled + command.units
+                    )
+                    new_deliveries.append(new_delivery)
+                else:
+                    new_deliveries.append(delivery)
+
+            # Update contract terms with new deliveries
+            new_terms = ContractTerms(
+                deadline=context['contract'].terms.deadline,
+                payment=context['contract'].terms.payment,
+                deliveries=new_deliveries
+            )
+
+            # Replace the contract's terms
+            context['contract']._terms = new_terms
         elif 'FulfillContract' in command_type:
+            # Mark contract as fulfilled
             context['contract']._fulfilled = True
         elif 'DockShip' in command_type:
             pass  # Mock dock
@@ -255,10 +283,15 @@ def execute_batch_workflow(context, iterations):
 
     mock_mediator.send_async = AsyncMock(side_effect=mock_send_async)
 
+    # Mock market repository
+    mock_market_repository = Mock()
+    mock_market_repository.get_market_data = Mock(return_value=None)  # No market data = unlimited transaction limit
+
     # Create handler
     handler = BatchContractWorkflowHandler(
         mediator=mock_mediator,
-        ship_repository=mock_ship_repository
+        ship_repository=mock_ship_repository,
+        market_repository=mock_market_repository
     )
 
     # Execute workflow
@@ -339,3 +372,31 @@ def check_purchase_occurred(context, units, trade_symbol):
 def check_no_jettison(context):
     """Verify no jettison occurred"""
     assert len(context['jettison_calls']) == 0
+
+
+@then(parsers.parse('the workflow should deliver {units:d} units of "{trade_symbol}"'))
+def check_delivery_occurred_units(context, units, trade_symbol):
+    """Verify specific delivery occurred"""
+    # Find the delivery with matching symbol and units
+    delivery_found = False
+    for delivery in context['delivery_calls']:
+        if delivery['symbol'] == trade_symbol and delivery['units'] == units:
+            delivery_found = True
+            break
+
+    assert delivery_found, \
+        f"Expected delivery of {units} units of {trade_symbol}, but deliveries were: {context['delivery_calls']}"
+
+
+@then('the workflow should not purchase any cargo')
+def check_no_purchase_any(context):
+    """Verify no cargo purchases occurred"""
+    assert len(context['purchase_calls']) == 0, \
+        f"Expected no purchases, but found: {context['purchase_calls']}"
+
+
+@then('the contract should NOT be fulfilled yet')
+def check_contract_not_fulfilled(context):
+    """Verify contract is not yet fulfilled"""
+    assert not context['contract'].fulfilled, \
+        "Expected contract to NOT be fulfilled yet, but it was fulfilled"

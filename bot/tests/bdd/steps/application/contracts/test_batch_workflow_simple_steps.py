@@ -411,15 +411,22 @@ def execute_batch_workflow(context, iterations):
     mock_cargo.get_item_units = Mock(return_value=0)  # No cargo by default
     mock_cargo.has_items_other_than = Mock(return_value=False)  # No wrong cargo
     mock_cargo.inventory = ()  # Empty inventory (tuple, not Mock)
+    mock_cargo.units = 0  # No cargo by default (for cargo.units >= cargo_capacity check)
+    mock_cargo.capacity = cargo_capacity  # For completeness
     mock_ship.cargo = mock_cargo
     mock_ship.ship_symbol = context.get('ship_symbol', 'TEST-SHIP-1')  # For error messages
 
     mock_ship_repo.find_by_symbol.return_value = mock_ship
 
+    # Mock market repository
+    mock_market_repo = Mock()
+    mock_market_repo.get_market_data = Mock(return_value=None)  # No market data = unlimited transaction limit
+
     # Create handler with mocked mediator and ship repository
     handler = BatchContractWorkflowHandler(
         mediator=mock_mediator,
-        ship_repository=mock_ship_repo
+        ship_repository=mock_ship_repo,
+        market_repository=mock_market_repo
     )
 
     command = BatchContractWorkflowCommand(
