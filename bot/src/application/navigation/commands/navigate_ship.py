@@ -139,11 +139,16 @@ class NavigateShipHandler(RequestHandler[NavigateShipCommand, Route]):
 
         try:
             waypoint_list = waypoint_repo.find_by_system(system_symbol, request.player_id)
-            # Create lookup dict for has_fuel by waypoint symbol (handle None/empty list)
-            if waypoint_list and hasattr(waypoint_list, '__iter__'):
-                waypoint_traits = {wp.symbol: wp for wp in waypoint_list}
-            else:
-                waypoint_traits = {}
+            # Create lookup dict for has_fuel by waypoint symbol
+            # Safely handle None, empty list, and non-iterable objects (e.g., mocks in tests)
+            waypoint_traits = {}
+            if waypoint_list:
+                try:
+                    # Try to iterate - this will fail gracefully for mocks/non-iterables
+                    waypoint_traits = {wp.symbol: wp for wp in waypoint_list}
+                except (TypeError, AttributeError):
+                    # Non-iterable or missing attributes - skip enrichment
+                    waypoint_traits = {}
         except Exception:
             # If waypoint repo fails, continue without enrichment (use fallback)
             waypoint_traits = {}
@@ -189,8 +194,12 @@ class NavigateShipHandler(RequestHandler[NavigateShipCommand, Route]):
             return route
 
         # 4. Find optimal path using routing engine
+        # Pass waypoint_objects (flat Dict[str, Waypoint]) directly to routing engine
+        # The routing engine calculates distances between waypoints on-the-fly
+        # NOTE: Do NOT pass a nested structure with "waypoints" and "edges" keys
+        # The routing engine interface expects: graph: Dict[str, Waypoint]
         route_plan = self._routing_engine.find_optimal_path(
-            graph=waypoint_objects,
+            graph=waypoint_objects,  # Flat dictionary of enriched Waypoint objects
             start=ship.current_location.symbol,
             goal=request.destination_symbol,
             current_fuel=ship.fuel.current,
@@ -211,7 +220,7 @@ class NavigateShipHandler(RequestHandler[NavigateShipCommand, Route]):
                 f"Route may be unreachable or require multi-hop refueling not supported by current fuel levels."
             )
 
-        # 5. Create Route entity from plan
+        # 6. Create Route entity from plan
         route = self._create_route_from_plan(
             route_plan=route_plan,
             ship_symbol=request.ship_symbol,
