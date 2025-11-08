@@ -58,7 +58,16 @@ class ORToolsRoutingEngine(IRoutingEngine):
         4. Prefers CRUISE mode when possible
         5. For fuel_capacity=0 ships (probes), uses simple direct pathfinding
         """
+        import logging
+        logger = logging.getLogger(__name__)
+
+        logger.info(f"=== ROUTING ENGINE CALLED ===")
+        logger.info(f"Start: {start}, Goal: {goal}")
+        logger.info(f"Graph type: {type(graph)}, Graph size: {len(graph) if graph else 0}")
+        logger.info(f"Fuel: {current_fuel}/{fuel_capacity}, Engine: {engine_speed}")
+
         if start not in graph or goal not in graph:
+            logger.error(f"Start or goal not in graph! Start in graph: {start in graph}, Goal in graph: {goal in graph}")
             return None
 
         if start == goal:
@@ -110,7 +119,8 @@ class ORToolsRoutingEngine(IRoutingEngine):
             at_start_with_low_fuel = (
                 current == start and
                 len(path) == 0 and
-                current_wp.has_fuel
+                current_wp.has_fuel and
+                fuel_remaining < fuel_capacity  # Don't force refuel if already full
             )
 
             # Calculate minimum fuel needed for direct path to goal (if visible)
@@ -257,6 +267,11 @@ class ORToolsRoutingEngine(IRoutingEngine):
                 counter += 1
 
         # No path found
+        logger.error(f"=== ROUTING ENGINE FAILED ===")
+        logger.error(f"No path found from {start} to {goal}")
+        logger.error(f"States explored: {len(visited)}, Counter: {counter}")
+        logger.error(f"Graph has {len(graph)} waypoints")
+        logger.error(f"Fuel stations in graph: {sum(1 for wp in graph.values() if wp.has_fuel)}")
         return None
 
     def _find_path_no_fuel(
