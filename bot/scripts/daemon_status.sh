@@ -11,7 +11,7 @@ echo "================"
 echo ""
 
 # Check socket file
-if [ ! -f var/daemon.sock ]; then
+if [ ! -S var/daemon.sock ]; then
     echo "Status: ❌ NOT RUNNING (socket file not found)"
     exit 1
 fi
