@@ -375,7 +375,15 @@ def _execute_scout_markets(context):
     # Track newly created containers
     def mock_create_container(config):
         container_id = config['container_id']
-        ship_symbol = config['config']['params']['ship_symbol']
+        params = config['config']['params']
+
+        # Handle both ScoutTourCommand (ship_symbol) and ScoutMarketsVRPCommand (ship_symbols)
+        if 'ship_symbol' in params:
+            ship_symbol = params['ship_symbol']
+        elif 'ship_symbols' in params:
+            ship_symbol = params['ship_symbols'][0]  # Use first ship
+        else:
+            ship_symbol = 'UNKNOWN'
 
         # Add to created containers list
         context['created_containers'].append({

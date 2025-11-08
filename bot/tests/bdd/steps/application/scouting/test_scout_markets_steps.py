@@ -195,10 +195,19 @@ def set_markets_and_execute(context, datatable):
     mock_daemon.list_containers.side_effect = mock_list_containers
 
     def mock_create_container(config):
-        container_id = f"scout-tour-{config['config']['params']['ship_symbol']}-mock"
+        params = config['config']['params']
+        # Handle both ScoutTourCommand (ship_symbol) and ScoutMarketsVRPCommand (ship_symbols)
+        if 'ship_symbol' in params:
+            ship_symbol = params['ship_symbol']
+        elif 'ship_symbols' in params:
+            ship_symbol = params['ship_symbols'][0]  # Use first ship
+        else:
+            ship_symbol = 'UNKNOWN'
+
+        container_id = f"scout-tour-{ship_symbol}-mock"
         created_containers.append({
             'container_id': container_id,
-            'ship': config['config']['params']['ship_symbol'],
+            'ship': ship_symbol,
             'markets': config['config']['params']['markets']
         })
         return {'container_id': container_id}
