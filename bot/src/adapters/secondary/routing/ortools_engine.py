@@ -166,14 +166,14 @@ class ORToolsRoutingEngine(IRoutingEngine):
                 fuel_threshold = int(fuel_capacity * 0.9)
                 should_refuel_90 = fuel_remaining < fuel_threshold
 
-                # Also check if MUST refuel (can't reach goal in DRIFT)
+                # Also check if MUST refuel (can't reach goal in CRUISE)
                 if goal in graph:
                     goal_wp = graph[goal]
                     distance_to_goal = current_wp.distance_to(goal_wp)
-                    drift_fuel_needed = self.calculate_fuel_cost(distance_to_goal, FlightMode.DRIFT)
+                    cruise_fuel_needed = self.calculate_fuel_cost(distance_to_goal, FlightMode.CRUISE)
 
-                    # If we can't even make it in DRIFT mode, MUST refuel
-                    if fuel_remaining < drift_fuel_needed:
+                    # If we can't make it in CRUISE mode with safety margin, MUST refuel
+                    if fuel_remaining < cruise_fuel_needed + SAFETY_MARGIN:
                         must_refuel = True
 
                 # Add refuel option if we should or must refuel
@@ -215,26 +215,26 @@ class ORToolsRoutingEngine(IRoutingEngine):
                 else:
                     distance = current_wp.distance_to(neighbor)
 
-                    # Select flight mode: ALWAYS prioritize speed (BURN > CRUISE > DRIFT)
+                    # Select flight mode: NEVER use DRIFT mode
+                    # Ships should ALWAYS use BURN or CRUISE, inserting refuel stops as needed
                     # Use fastest mode that maintains 4-unit safety margin
                     SAFETY_MARGIN = 4
 
-                    if prefer_cruise:
-                        # Try BURN first (fastest)
-                        burn_cost = self.calculate_fuel_cost(distance, FlightMode.BURN)
-                        if fuel_remaining >= burn_cost + SAFETY_MARGIN:
-                            mode = FlightMode.BURN
-                        # Try CRUISE next
-                        elif fuel_remaining >= self.calculate_fuel_cost(distance, FlightMode.CRUISE) + SAFETY_MARGIN:
-                            mode = FlightMode.CRUISE
-                        # Fall back to DRIFT
-                        else:
-                            mode = FlightMode.DRIFT
-                    else:
-                        # User explicitly requested slow mode (unlikely in production)
-                        mode = FlightMode.DRIFT
+                    # Try BURN first (fastest)
+                    burn_cost = self.calculate_fuel_cost(distance, FlightMode.BURN)
+                    cruise_cost = self.calculate_fuel_cost(distance, FlightMode.CRUISE)
 
-                    fuel_cost = self.calculate_fuel_cost(distance, mode)
+                    if fuel_remaining >= burn_cost + SAFETY_MARGIN:
+                        mode = FlightMode.BURN
+                        fuel_cost = burn_cost
+                    elif fuel_remaining >= cruise_cost + SAFETY_MARGIN:
+                        mode = FlightMode.CRUISE
+                        fuel_cost = cruise_cost
+                    else:
+                        # Insufficient fuel for CRUISE with safety margin
+                        # NEVER use DRIFT - skip this neighbor to force refuel stop
+                        continue
+
                     travel_time = self.calculate_travel_time(distance, mode, engine_speed)
 
                 # Check if we have enough fuel
