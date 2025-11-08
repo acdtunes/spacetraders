@@ -3,42 +3,178 @@ import logging
 import os
 from pathlib import Path
 from contextlib import contextmanager
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
+
+class ConnectionWrapper:
+    """Wrapper for database connections that transparently converts SQL placeholders"""
+
+    def __init__(self, connection, converter_func):
+        """
+        Wrap a database connection to auto-convert SQL placeholders.
+
+        Args:
+            connection: The actual database connection (sqlite3 or psycopg2)
+            converter_func: Function to convert SQL (takes str, returns str)
+        """
+        self._connection = connection
+        self._converter = converter_func
+
+    def execute(self, sql: str, parameters=None):
+        """Execute SQL with automatic placeholder conversion
+
+        For SQLite: Calls execute() directly on the connection (SQLite supports this)
+        For psycopg2: Gets a cursor first, then calls execute (psycopg2 requires this)
+        """
+        converted_sql = self._converter(sql)
+
+        # Check if the underlying connection has execute() method (SQLite)
+        # psycopg2 connections don't have execute() - they require cursor()
+        if hasattr(self._connection, 'execute'):
+            # SQLite path - direct execute on connection
+            if parameters is None:
+                return self._connection.execute(converted_sql)
+            return self._connection.execute(converted_sql, parameters)
+        else:
+            # psycopg2 path - must use cursor
+            cursor = self.cursor()
+            if parameters is None:
+                return cursor.execute(converted_sql)
+            return cursor.execute(converted_sql, parameters)
+
+    def cursor(self):
+        """Get a cursor that auto-converts SQL"""
+        return CursorWrapper(self._connection.cursor(), self._converter)
+
+    def commit(self):
+        """Commit the transaction"""
+        return self._connection.commit()
+
+    def rollback(self):
+        """Rollback the transaction"""
+        return self._connection.rollback()
+
+    def close(self):
+        """Close the connection"""
+        return self._connection.close()
+
+    def __getattr__(self, name):
+        """Delegate all other attributes to the wrapped connection"""
+        return getattr(self._connection, name)
+
+
+class CursorWrapper:
+    """Wrapper for database cursors that transparently converts SQL placeholders"""
+
+    def __init__(self, cursor, converter_func):
+        """
+        Wrap a database cursor to auto-convert SQL placeholders.
+
+        Args:
+            cursor: The actual database cursor
+            converter_func: Function to convert SQL (takes str, returns str)
+        """
+        self._cursor = cursor
+        self._converter = converter_func
+
+    def execute(self, sql: str, parameters=None):
+        """Execute SQL with automatic placeholder conversion"""
+        converted_sql = self._converter(sql)
+        if parameters is None:
+            return self._cursor.execute(converted_sql)
+        return self._cursor.execute(converted_sql, parameters)
+
+    def fetchone(self):
+        """Fetch one row"""
+        return self._cursor.fetchone()
+
+    def fetchall(self):
+        """Fetch all rows"""
+        return self._cursor.fetchall()
+
+    def fetchmany(self, size=None):
+        """Fetch many rows"""
+        if size is None:
+            return self._cursor.fetchmany()
+        return self._cursor.fetchmany(size)
+
+    @property
+    def lastrowid(self):
+        """Get last row ID"""
+        return self._cursor.lastrowid
+
+    @property
+    def rowcount(self):
+        """Get row count"""
+        return self._cursor.rowcount
+
+    def __getattr__(self, name):
+        """Delegate all other attributes to the wrapped cursor"""
+        return getattr(self._cursor, name)
+
+
 class Database:
-    """SQLite database manager with WAL mode for concurrency"""
+    """Database manager supporting both SQLite and PostgreSQL backends"""
 
     def __init__(self, db_path: Optional[Path | str] = None):
-        # Handle in-memory database as string, file-based as Path
-        if db_path == ":memory:":
-            self.db_path = ":memory:"
-            # For in-memory databases, keep a persistent connection
-            # Otherwise each new connection creates a fresh empty database
-            self._persistent_conn = None
-        else:
-            # Priority: explicit parameter > environment variable > default
-            if db_path is not None:
-                self.db_path = Path(db_path) if not isinstance(db_path, Path) else db_path
-            else:
-                env_path = os.environ.get("SPACETRADERS_DB_PATH")
-                if env_path:
-                    self.db_path = Path(env_path)
-                else:
-                    self.db_path = Path("var/spacetraders.db")
+        # Check for DATABASE_URL environment variable (PostgreSQL)
+        database_url = os.environ.get("DATABASE_URL")
 
+        if database_url and database_url.startswith("postgresql://"):
+            # PostgreSQL backend
+            self.backend = 'postgresql'
+            self.db_url = database_url
+            self.db_path = None
             self._persistent_conn = None
-            # Create directory for file-based databases
-            if isinstance(self.db_path, Path):
-                self.db_path.parent.mkdir(parents=True, exist_ok=True)
+            logger.info(f"Using PostgreSQL backend: {database_url}")
+        else:
+            # SQLite backend
+            self.backend = 'sqlite'
+            self.db_url = None
+
+            # Handle in-memory database as string, file-based as Path
+            if db_path == ":memory:":
+                self.db_path = ":memory:"
+                # For in-memory databases, keep a persistent connection
+                # Otherwise each new connection creates a fresh empty database
+                self._persistent_conn = None
+            else:
+                # Priority: explicit parameter > environment variable > default
+                if db_path is not None:
+                    self.db_path = Path(db_path) if not isinstance(db_path, Path) else db_path
+                else:
+                    env_path = os.environ.get("SPACETRADERS_DB_PATH")
+                    if env_path:
+                        self.db_path = Path(env_path)
+                    else:
+                        self.db_path = Path("var/spacetraders.db")
+
+                self._persistent_conn = None
+                # Create directory for file-based databases
+                if isinstance(self.db_path, Path):
+                    self.db_path.parent.mkdir(parents=True, exist_ok=True)
+
+            logger.info(f"Using SQLite backend: {self.db_path}")
 
         self._init_database()
-        logger.info(f"Database initialized at {self.db_path}")
+        logger.info(f"Database initialized")
 
-    def _get_connection(self) -> sqlite3.Connection:
+    def _get_connection(self) -> Union[sqlite3.Connection, Any]:
         """Get database connection with optimized settings"""
+        if self.backend == 'postgresql':
+            # PostgreSQL connection
+            import psycopg2
+            import psycopg2.extras
+
+            conn = psycopg2.connect(self.db_url)
+            # Use RealDictCursor for dict-like row access
+            conn.cursor_factory = psycopg2.extras.RealDictCursor
+            return conn
+
+        # SQLite connection
         # For in-memory databases, reuse the persistent connection
         # Otherwise each new connection creates a fresh empty database
         if self.db_path == ":memory:":
@@ -64,28 +200,34 @@ class Database:
 
     @contextmanager
     def connection(self):
-        """Context manager for read-only connections"""
+        """Context manager for read-only connections with automatic SQL conversion"""
         conn = self._get_connection()
+        wrapped_conn = ConnectionWrapper(conn, self._convert_placeholders)
         try:
-            yield conn
+            yield wrapped_conn
         finally:
             # Don't close persistent connections for in-memory databases
-            if self.db_path != ":memory:":
+            if self.backend == 'sqlite' and self.db_path == ":memory:":
+                pass  # Keep connection open
+            else:
                 conn.close()
 
     @contextmanager
     def transaction(self):
-        """Context manager for transactional writes"""
+        """Context manager for transactional writes with automatic SQL conversion"""
         conn = self._get_connection()
+        wrapped_conn = ConnectionWrapper(conn, self._convert_placeholders)
         try:
-            yield conn
+            yield wrapped_conn
             conn.commit()
         except Exception:
             conn.rollback()
             raise
         finally:
             # Don't close persistent connections for in-memory databases
-            if self.db_path != ":memory:":
+            if self.backend == 'sqlite' and self.db_path == ":memory:":
+                pass  # Keep connection open
+            else:
                 conn.close()
 
     def close(self):
@@ -108,24 +250,88 @@ class Database:
         # so we consider them "open" unless explicitly closed
         return False
 
+    def _get_sql_type(self, sql_type: str) -> str:
+        """Get backend-specific SQL type"""
+        if self.backend == 'postgresql':
+            # Map SQLite types to PostgreSQL types
+            type_map = {
+                'INTEGER PRIMARY KEY AUTOINCREMENT': 'SERIAL PRIMARY KEY',
+                'TEXT': 'TEXT',
+                'INTEGER': 'INTEGER',
+                'REAL': 'REAL',
+                'BOOLEAN': 'BOOLEAN',
+                'TIMESTAMP': 'TIMESTAMP',
+            }
+            return type_map.get(sql_type, sql_type)
+        return sql_type
+
+    def _get_placeholder(self) -> str:
+        """Get parameter placeholder for SQL queries"""
+        return '%s' if self.backend == 'postgresql' else '?'
+
+    def _convert_placeholders(self, sql: str) -> str:
+        """
+        Convert SQLite-style placeholders (?) to backend-specific format.
+
+        For PostgreSQL: ? -> $1, $2, $3, ...
+        For SQLite: no conversion needed
+
+        Args:
+            sql: SQL query string with ? placeholders
+
+        Returns:
+            SQL query string with backend-specific placeholders
+        """
+        if self.backend != 'postgresql':
+            return sql
+
+        # Convert ? to $1, $2, $3, etc. for PostgreSQL
+        result = []
+        placeholder_count = 0
+        i = 0
+
+        while i < len(sql):
+            if sql[i] == '?':
+                placeholder_count += 1
+                result.append(f'${placeholder_count}')
+            else:
+                result.append(sql[i])
+            i += 1
+
+        return ''.join(result)
+
     def _init_database(self):
         """Initialize database schema"""
-        with self._get_connection() as conn:
+        # Use transaction for schema initialization
+        with self.transaction() as conn:
             cursor = conn.cursor()
 
             # Players table
             # NOTE: credits are synchronized from SpaceTraders API via SyncPlayerCommand
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS players (
-                    player_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    agent_symbol TEXT UNIQUE NOT NULL,
-                    token TEXT NOT NULL,
-                    created_at TIMESTAMP NOT NULL,
-                    last_active TIMESTAMP,
-                    metadata TEXT,
-                    credits INTEGER DEFAULT 0
-                )
-            """)
+            if self.backend == 'postgresql':
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS players (
+                        player_id SERIAL PRIMARY KEY,
+                        agent_symbol TEXT UNIQUE NOT NULL,
+                        token TEXT NOT NULL,
+                        created_at TIMESTAMP NOT NULL,
+                        last_active TIMESTAMP,
+                        metadata TEXT,
+                        credits INTEGER DEFAULT 0
+                    )
+                """)
+            else:
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS players (
+                        player_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        agent_symbol TEXT UNIQUE NOT NULL,
+                        token TEXT NOT NULL,
+                        created_at TIMESTAMP NOT NULL,
+                        last_active TIMESTAMP,
+                        metadata TEXT,
+                        credits INTEGER DEFAULT 0
+                    )
+                """)
 
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_player_agent
@@ -133,12 +339,22 @@ class Database:
             """)
 
             # Migration: Add credits column if it doesn't exist
-            cursor.execute("PRAGMA table_info(players)")
-            player_columns = [row[1] for row in cursor.fetchall()]
-            if 'credits' not in player_columns:
-                logger.info("Adding credits column to players table")
-                cursor.execute("ALTER TABLE players ADD COLUMN credits INTEGER DEFAULT 0")
-                conn.commit()
+            if self.backend == 'postgresql':
+                # PostgreSQL: Check column existence
+                cursor.execute("""
+                    SELECT column_name FROM information_schema.columns
+                    WHERE table_name = 'players' AND column_name = 'credits'
+                """)
+                if not cursor.fetchone():
+                    logger.info("Adding credits column to players table")
+                    cursor.execute("ALTER TABLE players ADD COLUMN credits INTEGER DEFAULT 0")
+            else:
+                # SQLite: Use PRAGMA
+                cursor.execute("PRAGMA table_info(players)")
+                player_columns = [row[1] for row in cursor.fetchall()]
+                if 'credits' not in player_columns:
+                    logger.info("Adding credits column to players table")
+                    cursor.execute("ALTER TABLE players ADD COLUMN credits INTEGER DEFAULT 0")
 
             # System graphs table (shared across all players)
             cursor.execute("""
@@ -215,17 +431,30 @@ class Database:
             """)
 
             # Container logs table
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS container_logs (
-                    log_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    container_id TEXT NOT NULL,
-                    player_id INTEGER NOT NULL,
-                    timestamp TIMESTAMP NOT NULL,
-                    level TEXT NOT NULL DEFAULT 'INFO',
-                    message TEXT NOT NULL,
-                    FOREIGN KEY (player_id) REFERENCES players(player_id) ON DELETE CASCADE
-                )
-            """)
+            if self.backend == 'postgresql':
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS container_logs (
+                        log_id SERIAL PRIMARY KEY,
+                        container_id TEXT NOT NULL,
+                        player_id INTEGER NOT NULL,
+                        timestamp TIMESTAMP NOT NULL,
+                        level TEXT NOT NULL DEFAULT 'INFO',
+                        message TEXT NOT NULL,
+                        FOREIGN KEY (player_id) REFERENCES players(player_id) ON DELETE CASCADE
+                    )
+                """)
+            else:
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS container_logs (
+                        log_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        container_id TEXT NOT NULL,
+                        player_id INTEGER NOT NULL,
+                        timestamp TIMESTAMP NOT NULL,
+                        level TEXT NOT NULL DEFAULT 'INFO',
+                        message TEXT NOT NULL,
+                        FOREIGN KEY (player_id) REFERENCES players(player_id) ON DELETE CASCADE
+                    )
+                """)
 
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_container_logs_container_time
@@ -332,15 +561,23 @@ class Database:
             """)
 
             # Migration: Add synced_at column if it doesn't exist
-            cursor.execute("PRAGMA table_info(waypoints)")
-            waypoint_columns = [row[1] for row in cursor.fetchall()]
-            if 'synced_at' not in waypoint_columns:
-                logger.info("Adding synced_at column to waypoints table")
-                # Set default to NULL so we can detect waypoints that have never been synced
-                cursor.execute("ALTER TABLE waypoints ADD COLUMN synced_at TIMESTAMP DEFAULT NULL")
-                conn.commit()
-
-            conn.commit()
+            if self.backend == 'postgresql':
+                # PostgreSQL: Check column existence
+                cursor.execute("""
+                    SELECT column_name FROM information_schema.columns
+                    WHERE table_name = 'waypoints' AND column_name = 'synced_at'
+                """)
+                if not cursor.fetchone():
+                    logger.info("Adding synced_at column to waypoints table")
+                    cursor.execute("ALTER TABLE waypoints ADD COLUMN synced_at TIMESTAMP DEFAULT NULL")
+            else:
+                # SQLite: Use PRAGMA
+                cursor.execute("PRAGMA table_info(waypoints)")
+                waypoint_columns = [row[1] for row in cursor.fetchall()]
+                if 'synced_at' not in waypoint_columns:
+                    logger.info("Adding synced_at column to waypoints table")
+                    # Set default to NULL so we can detect waypoints that have never been synced
+                    cursor.execute("ALTER TABLE waypoints ADD COLUMN synced_at TIMESTAMP DEFAULT NULL")
 
     def log_to_database(self, container_id: str, player_id: int, message: str, level: str = "INFO"):
         """
