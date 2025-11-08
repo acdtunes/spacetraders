@@ -159,4 +159,191 @@ export class DaemonClient {
     };
     return this.sendRequest("container.create", params);
   }
+
+  /**
+   * Navigate ship to destination (creates background container)
+   */
+  async navigateShip(
+    shipSymbol: string,
+    destination: string,
+    playerId: number
+  ): Promise<unknown> {
+    const randomHex = Math.floor(Math.random() * 0xFFFFFFFF).toString(16).padStart(8, '0');
+    const containerId = `navigate-${randomHex}`;
+
+    const params = {
+      container_id: containerId,
+      player_id: playerId,
+      container_type: "command",
+      config: {
+        command_type: "NavigateShipCommand",
+        params: {
+          ship_symbol: shipSymbol,
+          destination,
+          player_id: playerId,
+        },
+      },
+    };
+    return this.sendRequest("container.create", params);
+  }
+
+  /**
+   * Dock ship (creates background container)
+   */
+  async dockShip(shipSymbol: string, playerId: number): Promise<unknown> {
+    const randomHex = Math.floor(Math.random() * 0xFFFFFFFF).toString(16).padStart(8, '0');
+    const containerId = `dock-${randomHex}`;
+
+    const params = {
+      container_id: containerId,
+      player_id: playerId,
+      container_type: "command",
+      config: {
+        command_type: "DockShipCommand",
+        params: {
+          ship_symbol: shipSymbol,
+          player_id: playerId,
+        },
+      },
+    };
+    return this.sendRequest("container.create", params);
+  }
+
+  /**
+   * Put ship in orbit (creates background container)
+   */
+  async orbitShip(shipSymbol: string, playerId: number): Promise<unknown> {
+    const randomHex = Math.floor(Math.random() * 0xFFFFFFFF).toString(16).padStart(8, '0');
+    const containerId = `orbit-${randomHex}`;
+
+    const params = {
+      container_id: containerId,
+      player_id: playerId,
+      container_type: "command",
+      config: {
+        command_type: "OrbitShipCommand",
+        params: {
+          ship_symbol: shipSymbol,
+          player_id: playerId,
+        },
+      },
+    };
+    return this.sendRequest("container.create", params);
+  }
+
+  /**
+   * Refuel ship (creates background container)
+   */
+  async refuelShip(
+    shipSymbol: string,
+    playerId: number,
+    units?: number
+  ): Promise<unknown> {
+    const randomHex = Math.floor(Math.random() * 0xFFFFFFFF).toString(16).padStart(8, '0');
+    const containerId = `refuel-${randomHex}`;
+
+    const params = {
+      container_id: containerId,
+      player_id: playerId,
+      container_type: "command",
+      config: {
+        command_type: "RefuelShipCommand",
+        params: {
+          ship_symbol: shipSymbol,
+          player_id: playerId,
+          ...(units !== undefined && { units }),
+        },
+      },
+    };
+    return this.sendRequest("container.create", params);
+  }
+
+  /**
+   * Purchase single ship (creates background container)
+   */
+  async purchaseShip(
+    purchasingShipSymbol: string,
+    shipType: string,
+    playerId: number,
+    shipyardWaypoint?: string
+  ): Promise<unknown> {
+    const randomHex = Math.floor(Math.random() * 0xFFFFFFFF).toString(16).padStart(8, '0');
+    const containerId = `purchase-ship-${randomHex}`;
+
+    const params = {
+      container_id: containerId,
+      player_id: playerId,
+      container_type: "command",
+      config: {
+        command_type: "PurchaseShipCommand",
+        params: {
+          purchasing_ship_symbol: purchasingShipSymbol,
+          ship_type: shipType,
+          player_id: playerId,
+          ...(shipyardWaypoint && { shipyard_waypoint: shipyardWaypoint }),
+        },
+      },
+    };
+    return this.sendRequest("container.create", params);
+  }
+
+  /**
+   * Batch purchase ships (creates background container)
+   */
+  async batchPurchaseShips(
+    purchasingShipSymbol: string,
+    shipType: string,
+    quantity: number,
+    maxBudget: number,
+    playerId: number,
+    shipyardWaypoint?: string
+  ): Promise<unknown> {
+    const randomHex = Math.floor(Math.random() * 0xFFFFFFFF).toString(16).padStart(8, '0');
+    const containerId = `batch-purchase-${randomHex}`;
+
+    const params = {
+      container_id: containerId,
+      player_id: playerId,
+      container_type: "command",
+      config: {
+        command_type: "BatchPurchaseShipsCommand",
+        params: {
+          purchasing_ship_symbol: purchasingShipSymbol,
+          ship_type: shipType,
+          quantity,
+          max_budget: maxBudget,
+          player_id: playerId,
+          ...(shipyardWaypoint && { shipyard_waypoint: shipyardWaypoint }),
+        },
+      },
+    };
+    return this.sendRequest("container.create", params);
+  }
+
+  /**
+   * Execute batch contract workflow (creates background container)
+   */
+  async batchContractWorkflow(
+    shipSymbol: string,
+    playerId: number,
+    count: number = 1
+  ): Promise<unknown> {
+    const randomHex = Math.floor(Math.random() * 0xFFFFFFFF).toString(16).padStart(8, '0');
+    const containerId = `contract-batch-${randomHex}`;
+
+    const params = {
+      container_id: containerId,
+      player_id: playerId,
+      container_type: "command",
+      config: {
+        command_type: "BatchContractWorkflowCommand",
+        params: {
+          ship_symbol: shipSymbol,
+          iterations: count,
+          player_id: playerId,
+        },
+      },
+    };
+    return this.sendRequest("container.create", params);
+  }
 }

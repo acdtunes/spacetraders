@@ -211,14 +211,20 @@ class ORToolsRoutingEngine(IRoutingEngine):
                 if neighbor_symbol == current:
                     continue
 
-                # Calculate distance (check for orbital hop)
-                if current_wp.is_orbital_of(neighbor):
+                # Calculate distance
+                distance = current_wp.distance_to(neighbor)
+
+                # Check for orbital hop (parent↔child OR siblings at same coordinates)
+                # Parent-child: detected via is_orbital_of() checking orbitals field
+                # Siblings: detected via distance=0 (waypoints at same coordinates)
+                is_orbital = current_wp.is_orbital_of(neighbor) or distance == 0.0
+
+                if is_orbital:
                     distance = self.ORBITAL_HOP_DISTANCE
                     travel_time = self.ORBITAL_HOP_TIME
                     fuel_cost = 0
                     mode = FlightMode.CRUISE  # Mode doesn't matter for orbitals
                 else:
-                    distance = current_wp.distance_to(neighbor)
 
                     # Select flight mode: NEVER use DRIFT mode
                     # Ships should ALWAYS use BURN or CRUISE, inserting refuel stops as needed
@@ -328,13 +334,17 @@ class ORToolsRoutingEngine(IRoutingEngine):
                 if neighbor_symbol == current or neighbor_symbol in visited:
                     continue
 
-                # Check for orbital hop
-                if current_wp.is_orbital_of(neighbor_wp):
+                # Calculate distance
+                distance = current_wp.distance_to(neighbor_wp)
+
+                # Check for orbital hop (parent↔child OR siblings at same coordinates)
+                is_orbital = current_wp.is_orbital_of(neighbor_wp) or distance == 0.0
+
+                if is_orbital:
                     distance = self.ORBITAL_HOP_DISTANCE
                     time = self.ORBITAL_HOP_TIME
                     mode = FlightMode.CRUISE
                 else:
-                    distance = current_wp.distance_to(neighbor_wp)
                     # Use CRUISE mode for zero-fuel ships
                     mode = FlightMode.CRUISE
                     time = self.calculate_travel_time(distance, mode, engine_speed)
@@ -403,11 +413,15 @@ class ORToolsRoutingEngine(IRoutingEngine):
                     continue
                 wp2 = graph[wp2_symbol]
 
-                # Check for orbital hop
-                if wp1.is_orbital_of(wp2):
+                # Calculate distance
+                distance = wp1.distance_to(wp2)
+
+                # Check for orbital hop (parent↔child OR siblings at same coordinates)
+                is_orbital = wp1.is_orbital_of(wp2) or distance == 0.0
+
+                if is_orbital:
                     distance_matrix[i][j] = 1  # Use 1 unit to represent orbital hop
                 else:
-                    distance = wp1.distance_to(wp2)
                     # Scale to integer for OR-Tools (multiply by 100 for precision)
                     distance_matrix[i][j] = int(distance * 100)
 
@@ -463,14 +477,18 @@ class ORToolsRoutingEngine(IRoutingEngine):
                 from_wp = graph[all_waypoints[node]]
                 to_wp = graph[all_waypoints[next_node]]
 
-                # Calculate actual distance and costs
-                if from_wp.is_orbital_of(to_wp):
+                # Calculate distance
+                distance = from_wp.distance_to(to_wp)
+
+                # Check for orbital hop (parent↔child OR siblings at same coordinates)
+                is_orbital = from_wp.is_orbital_of(to_wp) or distance == 0.0
+
+                if is_orbital:
                     distance = self.ORBITAL_HOP_DISTANCE
                     time = self.ORBITAL_HOP_TIME
                     fuel_cost = 0
                     mode = FlightMode.CRUISE
                 else:
-                    distance = from_wp.distance_to(to_wp)
 
                     # Prioritize speed: try BURN first, then CRUISE, then DRIFT
                     SAFETY_MARGIN = 4
@@ -509,13 +527,18 @@ class ORToolsRoutingEngine(IRoutingEngine):
             from_wp = graph[ordered_waypoints[-1]]
             to_wp = graph[start]
 
-            if from_wp.is_orbital_of(to_wp):
+            # Calculate distance
+            distance = from_wp.distance_to(to_wp)
+
+            # Check for orbital hop (parent↔child OR siblings at same coordinates)
+            is_orbital = from_wp.is_orbital_of(to_wp) or distance == 0.0
+
+            if is_orbital:
                 distance = self.ORBITAL_HOP_DISTANCE
                 time = self.ORBITAL_HOP_TIME
                 fuel_cost = 0
                 mode = FlightMode.CRUISE
             else:
-                distance = from_wp.distance_to(to_wp)
 
                 # Prioritize speed for return leg too
                 SAFETY_MARGIN = 4

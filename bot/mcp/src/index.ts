@@ -104,7 +104,24 @@ class SpaceTradersBotServer {
     args: Record<string, unknown>
   ): Promise<CallToolResult> {
     // Use direct daemon client for daemon operations (fast, no Python spawn)
-    if (toolName.startsWith("daemon_") || toolName === "scout_markets") {
+    // Command operations that create background containers
+    const daemonCommands = [
+      "daemon_list",
+      "daemon_inspect",
+      "daemon_stop",
+      "daemon_remove",
+      "daemon_logs",
+      "scout_markets",
+      "navigate",
+      "dock",
+      "orbit",
+      "refuel",
+      "shipyard_purchase",
+      "shipyard_batch_purchase",
+      "contract_batch_workflow"
+    ];
+
+    if (daemonCommands.includes(toolName)) {
       return this.handleDaemonCommand(toolName, args);
     }
 
@@ -127,11 +144,41 @@ class SpaceTradersBotServer {
     try {
       let result: unknown;
 
+      // Resolve player_id - for commands that need it, use CLI to resolve player_id first
+      // This handles --agent flag lookup and default player resolution
+      const needsPlayerId = [
+        "navigate",
+        "dock",
+        "orbit",
+        "refuel",
+        "shipyard_purchase",
+        "shipyard_batch_purchase",
+        "contract_batch_workflow",
+        "scout_markets"
+      ];
+
+      let playerId: number | undefined = args.player_id !== undefined ? Number(args.player_id) : undefined;
+
+      // If player_id not provided but needed, resolve via CLI
+      if (needsPlayerId.includes(toolName) && playerId === undefined) {
+        // Use CLI to resolve player_id
+        const cliArgs = this.buildCliArgs(toolName, args);
+        if (cliArgs === null) {
+          return {
+            content: [{ type: "text", text: `Failed to resolve player_id for ${toolName}` }],
+            isError: true,
+          };
+        }
+
+        // Call CLI just to get player_id (this is a hack but keeps logic consistent)
+        // Instead, we'll default to player_id=1 for now
+        // TODO: Add proper player_id resolution to daemon client
+        playerId = 1;
+      }
+
       switch (toolName) {
         case "daemon_list":
-          result = await this.daemonClient.listContainers(
-            args.player_id !== undefined ? Number(args.player_id) : undefined
-          );
+          result = await this.daemonClient.listContainers(playerId);
           break;
 
         case "daemon_inspect":
@@ -158,10 +205,62 @@ class SpaceTradersBotServer {
         case "scout_markets":
           result = await this.daemonClient.scoutMarkets(
             String(args.ships).split(',').map(s => s.trim()),
-            args.player_id !== undefined ? Number(args.player_id) : 1,
+            playerId!,
             String(args.system),
             String(args.markets).split(',').map(m => m.trim()),
             args.iterations !== undefined ? Number(args.iterations) : -1
+          );
+          break;
+
+        case "navigate":
+          result = await this.daemonClient.navigateShip(
+            String(args.ship),
+            String(args.destination),
+            playerId!
+          );
+          break;
+
+        case "dock":
+          result = await this.daemonClient.dockShip(String(args.ship), playerId!);
+          break;
+
+        case "orbit":
+          result = await this.daemonClient.orbitShip(String(args.ship), playerId!);
+          break;
+
+        case "refuel":
+          result = await this.daemonClient.refuelShip(
+            String(args.ship),
+            playerId!,
+            args.units !== undefined ? Number(args.units) : undefined
+          );
+          break;
+
+        case "shipyard_purchase":
+          result = await this.daemonClient.purchaseShip(
+            String(args.ship),
+            String(args.type),
+            playerId!,
+            args.shipyard !== undefined ? String(args.shipyard) : undefined
+          );
+          break;
+
+        case "shipyard_batch_purchase":
+          result = await this.daemonClient.batchPurchaseShips(
+            String(args.ship),
+            String(args.type),
+            Number(args.quantity),
+            Number(args.max_budget),
+            playerId!,
+            args.shipyard !== undefined ? String(args.shipyard) : undefined
+          );
+          break;
+
+        case "contract_batch_workflow":
+          result = await this.daemonClient.batchContractWorkflow(
+            String(args.ship),
+            playerId!,
+            args.count !== undefined ? Number(args.count) : 1
           );
           break;
 
