@@ -6,7 +6,9 @@
 import net from "node:net";
 import path from "node:path";
 
-const SOCKET_PATH = path.join(process.cwd(), "var", "daemon.sock");
+const SOCKET_PATH = process.env.SPACETRADERS_DAEMON_SOCKET
+  ? process.env.SPACETRADERS_DAEMON_SOCKET
+  : path.join(process.cwd(), "var", "daemon.sock");
 const REQUEST_TIMEOUT_MS = 10000; // 10 seconds
 
 interface JsonRpcRequest {
@@ -102,19 +104,19 @@ export class DaemonClient {
     if (playerId !== undefined) {
       params.player_id = playerId;
     }
-    return this.sendRequest("list_containers", params);
+    return this.sendRequest("container.list", params);
   }
 
   async inspectContainer(containerId: string): Promise<unknown> {
-    return this.sendRequest("inspect_container", { container_id: containerId });
+    return this.sendRequest("container.inspect", { container_id: containerId });
   }
 
   async stopContainer(containerId: string): Promise<unknown> {
-    return this.sendRequest("stop_container", { container_id: containerId });
+    return this.sendRequest("container.stop", { container_id: containerId });
   }
 
   async removeContainer(containerId: string): Promise<unknown> {
-    return this.sendRequest("remove_container", { container_id: containerId });
+    return this.sendRequest("container.remove", { container_id: containerId });
   }
 
   async getLogs(containerId: string, playerId: number, level?: string, limit?: number): Promise<unknown> {
@@ -128,7 +130,7 @@ export class DaemonClient {
     if (limit !== undefined) {
       params.limit = limit;
     }
-    return this.sendRequest("get_logs", params);
+    return this.sendRequest("container.logs", params);
   }
 
   async scoutMarkets(
