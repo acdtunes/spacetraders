@@ -252,10 +252,19 @@ def then_all_travel_steps_use_cruise(context):
 
 @then('all TRAVEL steps should use DRIFT mode')
 def then_all_travel_steps_use_drift(context):
-    """Verify all TRAVEL steps use DRIFT mode"""
+    """Verify all TRAVEL steps use DRIFT mode (DEPRECATED - ships never drift)"""
     assert context['path'] is not None
     travel_steps = [s for s in context['path']['steps'] if s['action'] == 'TRAVEL']
-    assert all(step['mode'] == FlightMode.DRIFT for step in travel_steps)
+    # DRIFT mode disabled - expect CRUISE or BURN instead
+    assert all(step['mode'] in [FlightMode.CRUISE, FlightMode.BURN] for step in travel_steps)
+
+
+@then('all TRAVEL steps should use CRUISE mode or better')
+def then_all_travel_steps_use_cruise_or_better(context):
+    """Verify all TRAVEL steps use CRUISE or BURN mode (never DRIFT)"""
+    assert context['path'] is not None
+    travel_steps = [s for s in context['path']['steps'] if s['action'] == 'TRAVEL']
+    assert all(step['mode'] in [FlightMode.CRUISE, FlightMode.BURN] for step in travel_steps)
 
 
 @then('any TRAVEL steps should use DRIFT mode or path should be None')
@@ -268,11 +277,19 @@ def then_any_travel_steps_use_drift_or_none(context):
 
 @then('the path should include REFUEL actions or DRIFT mode')
 def then_path_includes_refuel_or_drift(context):
-    """Verify path includes REFUEL actions or uses DRIFT mode"""
+    """Verify path includes REFUEL actions (DRIFT mode deprecated)"""
     assert context['path'] is not None
     has_refuel = any(s['action'] == 'REFUEL' for s in context['path']['steps'])
-    has_drift = any(s['mode'] == FlightMode.DRIFT for s in context['path']['steps'] if s['action'] == 'TRAVEL')
-    assert has_refuel or has_drift
+    # DRIFT mode disabled - must use REFUEL instead
+    assert has_refuel
+
+
+@then('the path should include REFUEL actions')
+def then_path_includes_refuel(context):
+    """Verify path includes REFUEL actions"""
+    assert context['path'] is not None
+    has_refuel = any(s['action'] == 'REFUEL' for s in context['path']['steps'])
+    assert has_refuel
 
 
 @then('the path should use DRIFT mode or be None')

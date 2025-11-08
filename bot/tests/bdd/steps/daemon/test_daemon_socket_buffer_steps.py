@@ -94,13 +94,10 @@ def mock_daemon_server(context):
         # Accept one connection
         try:
             conn, _ = server.accept()
-            # Read request until EOF (like real server does)
-            request_data = b""
-            while True:
-                chunk = conn.recv(4096)
-                if not chunk:
-                    break
-                request_data += chunk
+            # Read request (like real server does - don't wait for EOF)
+            # Real daemon server uses reader.read(65536) which reads available data
+            request_data = conn.recv(65536)
+
             # Send large response
             conn.sendall(response_bytes)
             conn.close()

@@ -42,10 +42,10 @@ Feature: Route Planning
     Then route creation should fail with InvalidRouteError
     And the error message should mention "not connected"
 
-  Scenario: Route must have at least one segment
-    When I attempt to create a route with no segments
-    Then route creation should fail with ValueError
-    And the error message should mention "at least one segment"
+  Scenario: Route can have zero segments for already-at-destination case
+    When I create a route with no segments
+    Then the route should be initialized successfully
+    And the route should have 0 segments
 
   Scenario: Route fuel requirement cannot exceed ship capacity
     Given a ship with 10 fuel capacity at waypoint "X1-A1"

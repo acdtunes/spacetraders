@@ -152,8 +152,12 @@ class DaemonClient:
             sock.connect(str(self.SOCKET_PATH))
             sock.sendall(json.dumps(request).encode())
 
-            # Signal we're done sending (half-close the connection)
-            sock.shutdown(socket.SHUT_WR)
+            # NOTE: We do NOT call sock.shutdown(SHUT_WR) here because:
+            # 1. The server uses reader.read(65536) which reads all available data
+            # 2. The server doesn't wait for EOF - it parses JSON from the data received
+            # 3. shutdown(SHUT_WR) adds latency waiting for TCP FIN handshake
+            # 4. The server will close its end after sending the response anyway
+            # 5. This eliminates multi-second delays in MCP tool responses
 
             # Read all data in chunks until socket is closed
             # (Server closes after sending complete response)

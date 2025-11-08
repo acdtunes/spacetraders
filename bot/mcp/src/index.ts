@@ -12,6 +12,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { botToolDefinitions } from "./botToolDefinitions.js";
+import { DaemonClient } from "./daemonClient.js";
 
 // ES module equivalent of __dirname
 const __filename = fileURLToPath(import.meta.url);
@@ -34,8 +35,10 @@ class SpaceTradersBotServer {
   private readonly botDir: string;
   private readonly cliScriptPath: string;
   private readonly pythonExecutable: string;
+  private readonly daemonClient: DaemonClient;
 
   constructor() {
+    this.daemonClient = new DaemonClient();
     this.server = new Server(
       {
         name: "spacetraders-mcp-bot",
@@ -100,6 +103,11 @@ class SpaceTradersBotServer {
     toolName: string,
     args: Record<string, unknown>
   ): Promise<CallToolResult> {
+    // Use direct daemon client for daemon operations (fast, no Python spawn)
+    if (toolName.startsWith("daemon_") || toolName === "scout_markets") {
+      return this.handleDaemonCommand(toolName, args);
+    }
+
     const cliArgs = this.buildCliArgs(toolName, args);
 
     if (cliArgs === null) {
@@ -110,6 +118,70 @@ class SpaceTradersBotServer {
     }
 
     return this.runCliCommand(cliArgs);
+  }
+
+  private async handleDaemonCommand(
+    toolName: string,
+    args: Record<string, unknown>
+  ): Promise<CallToolResult> {
+    try {
+      let result: unknown;
+
+      switch (toolName) {
+        case "daemon_list":
+          result = await this.daemonClient.listContainers(
+            args.player_id !== undefined ? Number(args.player_id) : undefined
+          );
+          break;
+
+        case "daemon_inspect":
+          result = await this.daemonClient.inspectContainer(String(args.container_id));
+          break;
+
+        case "daemon_stop":
+          result = await this.daemonClient.stopContainer(String(args.container_id));
+          break;
+
+        case "daemon_remove":
+          result = await this.daemonClient.removeContainer(String(args.container_id));
+          break;
+
+        case "daemon_logs":
+          result = await this.daemonClient.getLogs(
+            String(args.container_id),
+            Number(args.player_id),
+            args.level !== undefined ? String(args.level) : undefined,
+            args.limit !== undefined ? Number(args.limit) : undefined
+          );
+          break;
+
+        case "scout_markets":
+          result = await this.daemonClient.scoutMarkets(
+            String(args.ships).split(',').map(s => s.trim()),
+            args.player_id !== undefined ? Number(args.player_id) : 1,
+            String(args.system),
+            String(args.markets).split(',').map(m => m.trim()),
+            args.iterations !== undefined ? Number(args.iterations) : -1
+          );
+          break;
+
+        default:
+          return {
+            content: [{ type: "text", text: `Unknown daemon command: ${toolName}` }],
+            isError: true,
+          };
+      }
+
+      // Format result as text
+      const text = typeof result === "string" ? result : JSON.stringify(result, null, 2);
+      return { content: [{ type: "text", text }] };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      return {
+        content: [{ type: "text", text: `❌ Daemon error: ${errorMessage}` }],
+        isError: true,
+      };
+    }
   }
 
   private buildCliArgs(toolName: string, args: Record<string, unknown>): string[] | null {
@@ -264,9 +336,6 @@ class SpaceTradersBotServer {
         const cmd = ["scout", "markets", "--ships", String(args.ships), "--system", String(args.system), "--markets", String(args.markets)];
         if (args.iterations !== undefined) {
           cmd.push("--iterations", String(args.iterations));
-        }
-        if (args.return_to_start === true) {
-          cmd.push("--return-to-start");
         }
         if (args.player_id !== undefined) {
           cmd.push("--player-id", String(args.player_id));

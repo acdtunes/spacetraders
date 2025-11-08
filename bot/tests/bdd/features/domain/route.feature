@@ -66,9 +66,10 @@ Feature: Route Entity
     And the route should have 2 segments
     And the route should have status "PLANNED"
 
-  Scenario: Cannot create route with empty segments
-    When I attempt to create a route with empty segments
-    Then the route creation should fail with "Route must have at least one segment"
+  Scenario: Can create route with empty segments for already-at-destination case
+    When I create a route with empty segments
+    Then the route should have 0 segments
+    And the route should have status "PLANNED"
 
   Scenario: Cannot create route with disconnected segments
     Given a route segment from "X1-A1" to "X1-B2"

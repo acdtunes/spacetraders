@@ -208,6 +208,9 @@ export function createCaptainOptions(): Partial<Options> {
           'mcp__spacetraders-bot__daemon_logs',
         ]
       },
-    }
+    },
+
+    // Enable token-by-token streaming for real-time display
+    includePartialMessages: true
   };
 }

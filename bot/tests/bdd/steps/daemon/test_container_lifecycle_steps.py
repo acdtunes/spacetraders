@@ -22,6 +22,12 @@ def context():
 def test_database():
     """Initialize test database"""
     db = Database(":memory:")
+    # Create a test player
+    with db.transaction() as conn:
+        conn.execute("""
+            INSERT INTO players (agent_symbol, token, created_at)
+            VALUES (?, ?, ?)
+        """, ("TEST_AGENT", "test-token", datetime.now().isoformat()))
     yield db
     db.close()
 
@@ -43,12 +49,13 @@ def daemon_manager_initialized(context, test_database):
 
     # Mock container type that completes successfully
     class MockCommandContainer:
-        def __init__(self, container_id, player_id, config, mediator, database):
+        def __init__(self, container_id, player_id, config, mediator, database, container_info=None):
             self.container_id = container_id
             self.player_id = player_id
             self.config = config
             self.mediator = mediator
             self.database = database
+            self.container_info = container_info
 
         async def start(self):
             """Mock start that completes successfully or fails based on config"""

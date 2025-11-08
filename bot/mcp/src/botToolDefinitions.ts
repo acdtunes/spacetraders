@@ -342,7 +342,7 @@ export const botToolDefinitions: Tool[] = [
   // ==================== SCOUTING COMMANDS ====================
   {
     name: "scout_markets",
-    description: "Scout markets with VRP-optimized fleet distribution. Partitions markets across multiple ships using vehicle routing optimization and creates background containers for each ship's tour.",
+    description: "Scout markets with VRP-optimized fleet distribution. Partitions markets across multiple ships using vehicle routing optimization and creates background containers for each ship's tour. Tours (2+ markets) always return to start by definition. Stationary scouts (1 market) don't need to return.",
     inputSchema: {
       type: "object",
       properties: {
@@ -361,10 +361,6 @@ export const botToolDefinitions: Tool[] = [
         iterations: {
           type: "integer",
           description: "Number of complete tours to execute (default: 1, use -1 for infinite)"
-        },
-        return_to_start: {
-          type: "boolean",
-          description: "Return to starting waypoint after each tour (default: false)"
         },
         player_id: {
           type: "integer",

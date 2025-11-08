@@ -3,10 +3,15 @@ import pytest
 from unittest.mock import Mock, MagicMock
 
 
+class Context:
+    """Context object for sharing state between steps"""
+    pass
+
+
 @pytest.fixture
 def context():
-    """Shared context dictionary for BDD scenarios"""
-    return {}
+    """Shared context object for BDD scenarios"""
+    return Context()
 
 
 @pytest.fixture

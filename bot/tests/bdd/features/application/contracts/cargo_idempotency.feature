@@ -55,3 +55,10 @@ Feature: Contract Workflow Cargo Idempotency
     And the workflow should navigate to seller market "X1-TEST-A1"
     And the workflow should purchase 15 units of "IRON_ORE"
     And the contract should be fulfilled
+
+  Scenario: Ship is FULL with required cargo but insufficient total - delivers first
+    Given a mock contract requiring 75 units of "IRON_ORE" to deliver to "X1-TEST-B1"
+    And ship "TEST-1" has 40 units of "IRON_ORE" in cargo
+    When I execute contract batch workflow for 1 iteration
+    Then the workflow should deliver 40 units of "IRON_ORE"
+    And the workflow should not purchase any cargo

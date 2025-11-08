@@ -424,8 +424,7 @@ def _execute_scout_markets(context):
             player_id=context['player_id'],
             system=context['system'],
             markets=context['markets'],
-            iterations=1,
-            return_to_start=False
+            iterations=1
         )
 
         try:
@@ -564,8 +563,7 @@ def _execute_scout_markets_concurrent(context):
             player_id=context['player_id'],
             system=context['system'],
             markets=context['markets'],
-            iterations=1,
-            return_to_start=False
+            iterations=1
         )
 
         try:

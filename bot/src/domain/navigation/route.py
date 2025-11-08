@@ -47,8 +47,8 @@ class Route:
         ship_fuel_capacity: int,
         refuel_before_departure: bool = False
     ):
-        if not segments:
-            raise ValueError("Route must have at least one segment")
+        # Allow empty segments for "already at destination" case
+        # In this case, the route is created but immediately marked as COMPLETED
 
         self._route_id = route_id
         self._ship_symbol = ship_symbol
@@ -59,7 +59,9 @@ class Route:
         self._status = RouteStatus.PLANNED
         self._current_segment_index = 0
 
-        self._validate()
+        # Only validate if we have segments
+        if segments:
+            self._validate()
 
     @property
     def route_id(self) -> str:

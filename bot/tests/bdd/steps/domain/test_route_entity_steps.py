@@ -257,35 +257,33 @@ def check_route_status(context, status):
 
 
 # ==============================================================================
-# Scenario: Cannot create route with empty segments
+# Scenario: Can create route with empty segments for already-at-destination case
 # ==============================================================================
-@scenario("../../features/domain/route_entity.feature", "Cannot create route with empty segments")
-def test_cannot_create_route_with_empty_segments():
+@scenario("../../features/domain/route_entity.feature", "Can create route with empty segments for already-at-destination case")
+def test_can_create_route_with_empty_segments():
     pass
 
 
-@when("I attempt to create a route with empty segments")
-def attempt_create_route_empty_segments(context):
-    """Try to create route with no segments"""
-    try:
-        route = Route(
-            route_id="route-1",
-            ship_symbol="SHIP-1",
-            player_id=1,
-            segments=[],
-            ship_fuel_capacity=100
-        )
-        context["route"] = route
-        context["error"] = None
-    except ValueError as e:
-        context["error"] = e
+@when("I create a route with empty segments")
+def create_route_empty_segments(context):
+    """Create route with no segments (already at destination case)"""
+    route = Route(
+        route_id="route-1",
+        ship_symbol="SHIP-1",
+        player_id=1,
+        segments=[],
+        ship_fuel_capacity=100
+    )
+    context["route"] = route
+    context["error"] = None
 
 
 @then(parsers.parse('the route creation should fail with "{message}"'))
 def check_route_creation_failed(context, message):
     """Verify route creation failed with expected message"""
-    assert context["error"] is not None
-    assert message in str(context["error"])
+    assert context["error"] is not None, "Expected route creation to fail but it succeeded"
+    assert message in str(context["error"]), \
+        f"Expected '{message}' in error but got: {context['error']}"
 
 
 # ==============================================================================

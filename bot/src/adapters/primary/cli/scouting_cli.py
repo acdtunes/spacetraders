@@ -47,8 +47,7 @@ def scout_markets_command(args: argparse.Namespace) -> int:
             player_id=player_id,
             system=args.system,
             markets=markets,
-            iterations=args.iterations if hasattr(args, 'iterations') else 1,
-            return_to_start=args.return_to_start
+            iterations=args.iterations if hasattr(args, 'iterations') else 1
         )
 
         # Execute via mediator
@@ -61,7 +60,7 @@ def scout_markets_command(args: argparse.Namespace) -> int:
         print(f"   Total markets: {len(markets)}")
         print(f"   Ships: {len(ships)}")
         print(f"   Iterations: {args.iterations if hasattr(args, 'iterations') else 1}")
-        print(f"   Return to start: {args.return_to_start}")
+        print(f"   Tours (2+ markets) return to start automatically")
         print()
         print("Market assignments:")
         for ship, assigned_markets in result.assignments.items():
@@ -91,7 +90,10 @@ def setup_scouting_commands(subparsers):
     Creates 'scout' command group with markets subcommand.
 
     Command structure:
-    - spacetraders scout markets --ships SCOUT-1,SCOUT-2 --system X1-GZ7 --markets X1-GZ7-A1,X1-GZ7-B2,X1-GZ7-C3 [--iterations N] [--return-to-start]
+    - spacetraders scout markets --ships SCOUT-1,SCOUT-2 --system X1-GZ7 --markets X1-GZ7-A1,X1-GZ7-B2,X1-GZ7-C3 [--iterations N]
+
+    Tours (2+ markets) automatically return to start by definition.
+    Stationary scouts (1 market) don't need to return.
 
     Player selection (same as other commands):
     - Uses default player if configured
@@ -126,11 +128,6 @@ def setup_scouting_commands(subparsers):
         type=int,
         default=1,
         help="Number of complete tours to execute (default: 1, use -1 for infinite)"
-    )
-    markets_parser.add_argument(
-        "--return-to-start",
-        action="store_true",
-        help="Return to starting waypoint after each tour"
     )
     markets_parser.add_argument("--player-id", type=int, help="Player ID (optional if default set)")
     markets_parser.add_argument("--agent", help="Agent symbol (e.g., CHROMESAMURAI)")

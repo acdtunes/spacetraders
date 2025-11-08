@@ -98,7 +98,7 @@ Feature: OR-Tools Routing Engine Integration
 
   # Refueling
   Scenario: Automatic refuel when needed (never DRIFT)
-    Given a fuel constraint graph with "START" at (0,0), "FUEL-1" at (20,0), "FUEL-2" at (40,0), "GOAL" at (60,0) with fuel
+    Given a fuel constraint graph with "START" at (0,0) without fuel, "FUEL-1" at (20,0) with fuel, "FUEL-2" at (40,0) with fuel, "GOAL" at (60,0) with fuel
     When I find optimal path from "START" to "GOAL" with 25 current fuel, 100 capacity, speed 10, preferring cruise
     Then the path should include REFUEL actions
 

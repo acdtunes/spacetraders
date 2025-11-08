@@ -568,22 +568,19 @@ def create_disconnected_route(context, mock_graph_provider):
         context['route'] = None
 
 
-@when("I attempt to create a route with no segments")
+@when("I create a route with no segments")
 def create_empty_route(context):
-    """Attempt to create route with no segments"""
-    try:
-        route = Route(
-            route_id="route-1",
-            ship_symbol="TEST-SHIP-1",
-            player_id=1,
-            segments=[],
-            ship_fuel_capacity=500
-        )
-        context['route'] = route
-        context['error'] = None
-    except Exception as e:
-        context['error'] = e
-        context['route'] = None
+    """Create route with no segments (already at destination case)"""
+    route = Route(
+        route_id="route-1",
+        ship_symbol="TEST-SHIP-1",
+        player_id=1,
+        segments=[],
+        ship_fuel_capacity=500
+    )
+    context['route'] = route
+    context['error'] = None
+    context['initialized'] = True
 
 
 @when(parsers.parse('I attempt to create a route to "{destination}"'))
@@ -763,6 +760,14 @@ def check_segment_waypoints(context, num, start, end):
     segment = context['route'].segments[num - 1]
     assert segment.from_waypoint.symbol == start
     assert segment.to_waypoint.symbol == end
+
+
+@then("the route should be initialized successfully")
+def check_route_initialized(context):
+    """Verify route was initialized successfully"""
+    assert context.get('initialized'), "Route was not initialized"
+    assert context['route'] is not None, "Route is None"
+    assert context['error'] is None, f"Unexpected error: {context['error']}"
 
 
 @then(parsers.parse("route creation should fail with {error_type}"))

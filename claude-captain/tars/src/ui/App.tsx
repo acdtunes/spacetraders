@@ -18,6 +18,9 @@ interface AppProps {
   cancelRef: React.MutableRefObject<boolean>;
   isAfkMode?: boolean;
   userCommands?: string[];
+  showSubagentOutput: boolean;
+  onToggleSubagentOutput: () => void;
+  streamingText: string;
 }
 
 // Isolated input section - manages its own state to avoid parent re-renders
@@ -88,42 +91,62 @@ const EscapeKeyHandler: React.FC<{
   return null;
 };
 
+// Component to handle Ctrl-O toggle for subagent output visibility
+const SubagentToggleHandler: React.FC<{
+  onToggle: () => void;
+}> = ({ onToggle }) => {
+  // Only try to use useInput if stdin is a TTY
+  if (!process.stdin.isTTY) {
+    return null;
+  }
+
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  useInput((_input, key) => {
+    if (key.ctrl && _input === 'o') {
+      onToggle();
+    }
+  });
+
+  return null;
+};
+
 // Memoized message display using Static to prevent re-rendering old messages
 const MessageDisplay = React.memo(({
   messages,
-  userCommands
+  userCommands,
+  showSubagentOutput
 }: {
   messages: SDKMessage[];
   userCommands: string[];
+  showSubagentOutput: boolean;
 }) => {
   // Build combined array of user commands and messages for Static
   const displayItems: Array<{type: 'command' | 'message', content: any, messageIndex: number, commandIndex: number}> = [];
-  let assistantMessageCount = 0;
+  let commandIndex = 0;
 
   messages.forEach((message, index) => {
-    // Show user command before the first message of each assistant response
-    // We track how many times we've started showing an assistant response
+    // Show user command at the START of each new assistant response sequence
+    // (i.e., when we see an assistant message that's NOT preceded by another assistant message)
     if (message.type === 'assistant') {
-      const userCommand = userCommands[assistantMessageCount];
+      const isStartOfResponse = index === 0 || messages[index - 1]?.type !== 'assistant';
 
-      // Only show the command if we haven't shown it yet for this assistant response
-      if (userCommand && (assistantMessageCount === 0 || messages[index - 1]?.type !== 'assistant')) {
+      if (isStartOfResponse && commandIndex < userCommands.length) {
+        const userCommand = userCommands[commandIndex];
         displayItems.push({
           type: 'command',
           content: userCommand,
           messageIndex: index,
-          commandIndex: assistantMessageCount
+          commandIndex
         });
+        commandIndex++;
       }
-
-      assistantMessageCount++;
     }
 
     displayItems.push({
       type: 'message',
       content: message,
       messageIndex: index,
-      commandIndex: assistantMessageCount
+      commandIndex
     });
   });
 
@@ -165,7 +188,7 @@ const MessageDisplay = React.memo(({
             }
           }
 
-          return <Message key={`msg-${index}`} message={message} isInSubagent={isInSubagent} />;
+          return <Message key={`msg-${index}`} message={message} isInSubagent={isInSubagent} showSubagentOutput={showSubagentOutput} allMessages={messages} messageIndex={index} />;
         }}
       </Static>
     </Box>
@@ -173,7 +196,8 @@ const MessageDisplay = React.memo(({
 }, (prevProps, nextProps) => {
   return (
     prevProps.messages === nextProps.messages &&
-    prevProps.userCommands === nextProps.userCommands
+    prevProps.userCommands === nextProps.userCommands &&
+    prevProps.showSubagentOutput === nextProps.showSubagentOutput
   );
 });
 
@@ -228,6 +252,25 @@ const ProcessingIndicator = React.memo(({
 
 ProcessingIndicator.displayName = 'ProcessingIndicator';
 
+// Memoized streaming text display
+const StreamingTextDisplay = React.memo((({
+  streamingText
+}: {
+  streamingText: string;
+}) => {
+  if (!streamingText) {
+    return null;
+  }
+
+  return (
+    <Box marginBottom={1}>
+      <Text>{streamingText}</Text>
+    </Box>
+  );
+}));
+
+StreamingTextDisplay.displayName = 'StreamingTextDisplay';
+
 // Memoized AFK indicator
 const AfkIndicator = React.memo(({
   isAfkMode,
@@ -266,18 +309,23 @@ AfkIndicator.displayName = 'AfkIndicator';
 
 // Memoized help text
 const HelpText = React.memo(({
-  isAfkMode
+  isAfkMode,
+  showSubagentOutput
 }: {
   isAfkMode: boolean;
+  showSubagentOutput: boolean;
 }) => {
   if (isAfkMode) {
     return null;
   }
 
   return (
-    <Box marginTop={1}>
+    <Box flexDirection="column" marginTop={1}>
       <Text dimColor>
         Commands: exit/quit | /clear-memory | /afk [hours] [checkin_min] (default: /afk 4 30)
+      </Text>
+      <Text dimColor>
+        Shortcuts: Ctrl-O (subagent details: {showSubagentOutput ? '👁️ VISIBLE' : '🙈 HIDDEN'})
       </Text>
     </Box>
   );
@@ -293,7 +341,10 @@ export const App: React.FC<AppProps> = ({
   onExit,
   cancelRef,
   isAfkMode = false,
-  userCommands = []
+  userCommands = [],
+  showSubagentOutput,
+  onToggleSubagentOutput,
+  streamingText
 }) => {
   const { stdout } = useStdout();
   const [terminalWidth, setTerminalWidth] = useState(stdout?.columns || 80);
@@ -335,8 +386,10 @@ export const App: React.FC<AppProps> = ({
   return (
     <Box flexDirection="column">
       <EscapeKeyHandler isProcessing={isProcessing} cancelRef={cancelRef} />
+      <SubagentToggleHandler onToggle={onToggleSubagentOutput} />
       <Header terminalWidth={terminalWidth} memoryStatus={memoryStatus} />
-      <MessageDisplay messages={messages} userCommands={userCommands} />
+      <MessageDisplay messages={messages} userCommands={userCommands} showSubagentOutput={showSubagentOutput} />
+      <StreamingTextDisplay streamingText={streamingText} />
       <ProcessingIndicator isProcessing={isProcessing} />
       <AfkIndicator isAfkMode={isAfkMode} isProcessing={isProcessing} terminalWidth={terminalWidth} />
       <InputSection
@@ -345,7 +398,7 @@ export const App: React.FC<AppProps> = ({
         handleSubmit={handleSubmit}
         terminalWidth={terminalWidth}
       />
-      <HelpText isAfkMode={isAfkMode} />
+      <HelpText isAfkMode={isAfkMode} showSubagentOutput={showSubagentOutput} />
     </Box>
   );
 };

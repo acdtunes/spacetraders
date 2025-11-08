@@ -233,8 +233,7 @@ def set_markets_and_execute(context, datatable):
             player_id=context['player_id'],
             system=context['system'],
             markets=context['markets'],
-            iterations=1,
-            return_to_start=False
+            iterations=1
         )
 
         try:

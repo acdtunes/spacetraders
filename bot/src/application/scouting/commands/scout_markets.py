@@ -31,13 +31,13 @@ class ScoutMarketsCommand(Request[ScoutMarketsResult]):
     5. Return container IDs and market assignments
 
     Each ship gets a disjoint subset of markets optimized by the VRP solver.
+    Tours always return to start for multi-market assignments (2+).
     """
     ship_symbols: List[str]
     player_id: int
     system: str
     markets: List[str]
     iterations: int = 1
-    return_to_start: bool = False
 
 
 class ScoutMarketsHandler(RequestHandler[ScoutMarketsCommand, ScoutMarketsResult]):
@@ -59,6 +59,65 @@ class ScoutMarketsHandler(RequestHandler[ScoutMarketsCommand, ScoutMarketsResult
 
     async def handle(self, request: ScoutMarketsCommand) -> ScoutMarketsResult:
         """
+        Submit VRP work to background container and return immediately.
+
+        The VRP container will:
+        1. Run VRP optimization (10-30 seconds)
+        2. Create scout tour containers for each ship
+        """
+        from configuration.container import get_container_manager, get_daemon_client
+        import uuid
+
+        container_id = f"scout-markets-vrp-{uuid.uuid4().hex[:8]}"
+
+        # Try to use ContainerManager if inside daemon, otherwise use daemon client
+        try:
+            container_mgr = get_container_manager()
+            # Inside daemon - use direct access
+            await container_mgr.create_container(
+                container_id=container_id,
+                player_id=request.player_id,
+                container_type='command',
+                config={
+                    'command_type': 'ScoutMarketsVRPCommand',
+                    'params': {
+                        'ship_symbols': request.ship_symbols,
+                        'player_id': request.player_id,
+                        'system': request.system,
+                        'markets': request.markets,
+                        'iterations': request.iterations
+                    }
+                }
+            )
+        except RuntimeError:
+            # Outside daemon - use daemon client
+            daemon = get_daemon_client()
+            daemon.create_container({
+                'container_id': container_id,
+                'player_id': request.player_id,
+                'container_type': 'command',
+                'config': {
+                    'command_type': 'ScoutMarketsVRPCommand',
+                    'params': {
+                        'ship_symbols': request.ship_symbols,
+                        'player_id': request.player_id,
+                        'system': request.system,
+                        'markets': request.markets,
+                        'iterations': request.iterations
+                    }
+                }
+            })
+
+        # Return immediately - VRP runs in background
+        return ScoutMarketsResult(
+            container_ids=[container_id],
+            assignments={ship: [] for ship in request.ship_symbols}
+        )
+
+    async def handle_ORIGINAL(self, request: ScoutMarketsCommand) -> ScoutMarketsResult:
+        """
+        ORIGINAL VERSION - runs VRP synchronously (30+ seconds)
+
         Partition markets and deploy market scouting.
 
         Process:
@@ -130,20 +189,25 @@ class ScoutMarketsHandler(RequestHandler[ScoutMarketsCommand, ScoutMarketsResult
             assignments = {single_ship: request.markets}
             logger.info(f"Single ship optimization: {single_ship} assigned all {len(request.markets)} markets")
         else:
-            # Multiple ships - use VRP to partition markets
+            # Multiple ships - use VRP to partition markets (run in executor to avoid blocking)
             from configuration.container import get_routing_engine
+            import asyncio
             routing_engine = get_routing_engine()
 
             # Assume homogeneous fleet (use first ship's specs)
             fuel_capacity = ships[0].fuel_capacity
             engine_speed = ships[0].engine_speed
 
-            assignments = routing_engine.optimize_fleet_tour(
-                graph=graph,
-                markets=request.markets,
-                ship_locations=ship_locations,
-                fuel_capacity=fuel_capacity,
-                engine_speed=engine_speed
+            # Run VRP in thread pool to avoid blocking event loop
+            loop = asyncio.get_event_loop()
+            assignments = await loop.run_in_executor(
+                None,
+                routing_engine.optimize_fleet_tour,
+                graph,
+                request.markets,
+                ship_locations,
+                fuel_capacity,
+                engine_speed
             )
 
             if not assignments:
@@ -204,8 +268,7 @@ class ScoutMarketsHandler(RequestHandler[ScoutMarketsCommand, ScoutMarketsResult
                         'ship_symbol': ship_symbol,
                         'player_id': request.player_id,
                         'system': request.system,
-                        'markets': assigned_markets,
-                        'return_to_start': request.return_to_start
+                        'markets': assigned_markets
                     },
                     'iterations': request.iterations
                 },

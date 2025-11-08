@@ -133,9 +133,10 @@ class ORToolsRoutingEngine(IRoutingEngine):
                 distance_to_goal = current_wp.distance_to(goal_wp)
                 cruise_fuel_needed = self.calculate_fuel_cost(distance_to_goal, FlightMode.CRUISE)
 
-                # If we can't make it in CRUISE mode with safety margin OR below 90% capacity, MUST refuel first
-                if fuel_remaining < cruise_fuel_needed + SAFETY_MARGIN or should_refuel_90_at_start:
-                    # Force refuel first - don't explore DRIFT option from start
+                # If we can't make it in CRUISE mode OR below 90% capacity, MUST refuel first
+                # Allow exact fuel for reaching the goal (no safety margin required)
+                if fuel_remaining < cruise_fuel_needed or should_refuel_90_at_start:
+                    # Force refuel first - don't explore travel options from start yet
                     refuel_amount = fuel_capacity - fuel_remaining
                     refuel_step = {
                         'action': 'REFUEL',
@@ -172,8 +173,9 @@ class ORToolsRoutingEngine(IRoutingEngine):
                     distance_to_goal = current_wp.distance_to(goal_wp)
                     cruise_fuel_needed = self.calculate_fuel_cost(distance_to_goal, FlightMode.CRUISE)
 
-                    # If we can't make it in CRUISE mode with safety margin, MUST refuel
-                    if fuel_remaining < cruise_fuel_needed + SAFETY_MARGIN:
+                    # If we can't make it in CRUISE mode, MUST refuel
+                    # Allow exact fuel for reaching the goal (no safety margin required for goal)
+                    if fuel_remaining < cruise_fuel_needed:
                         must_refuel = True
 
                 # Add refuel option if we should or must refuel
@@ -218,7 +220,9 @@ class ORToolsRoutingEngine(IRoutingEngine):
                     # Select flight mode: NEVER use DRIFT mode
                     # Ships should ALWAYS use BURN or CRUISE, inserting refuel stops as needed
                     # Use fastest mode that maintains 4-unit safety margin
+                    # Exception: Allow exact fuel when reaching the goal
                     SAFETY_MARGIN = 4
+                    is_goal = (neighbor_symbol == goal)
 
                     # Try BURN first (fastest)
                     burn_cost = self.calculate_fuel_cost(distance, FlightMode.BURN)
@@ -228,6 +232,10 @@ class ORToolsRoutingEngine(IRoutingEngine):
                         mode = FlightMode.BURN
                         fuel_cost = burn_cost
                     elif fuel_remaining >= cruise_cost + SAFETY_MARGIN:
+                        mode = FlightMode.CRUISE
+                        fuel_cost = cruise_cost
+                    elif is_goal and fuel_remaining >= cruise_cost:
+                        # Allow exact fuel for final hop to goal (no safety margin)
                         mode = FlightMode.CRUISE
                         fuel_cost = cruise_cost
                     else:

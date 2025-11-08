@@ -241,11 +241,12 @@ class ShipRepository(IShipRepository):
             # Reconstruct waypoint value object
             # CRITICAL: In production graphs, the waypoint symbol is the DICTIONARY KEY,
             # not a field in the data. Use waypoint_symbol (the key) as the symbol.
+            # CRITICAL: Graph data does NOT contain systemSymbol - use the parameter instead
             waypoint = Waypoint(
                 symbol=waypoint_symbol,  # Symbol is the dict key, not a field!
                 x=wp_data["x"],
                 y=wp_data["y"],
-                system_symbol=wp_data.get("systemSymbol"),
+                system_symbol=system_symbol,  # Use parameter, not graph data (graph doesn't have it)
                 waypoint_type=wp_data.get("type"),
                 traits=tuple(wp_data.get("traits", [])),
                 has_fuel=wp_data.get("has_fuel", False),

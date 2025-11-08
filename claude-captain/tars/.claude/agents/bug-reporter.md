@@ -225,15 +225,38 @@ system_name = waypoint_symbol.rsplit('-', 1)[0]  # "X1-HZ85"
 
 ## File Naming & Output
 
-**Filename:** `reports/bugs/YYYY-MM-DD_HH-MM_{short-title}.md`
+**CRITICAL: Always use the absolute path to the claude-captain project directory!**
 
-Example: `reports/bugs/2025-11-01_14-30_contract-daemon-crash.md`
+**Base Directory (ABSOLUTE PATH):**
+```
+/Users/andres.camacho/Development/Personal/spacetraders/claude-captain/reports/bugs/
+```
+
+**Filename Format:** `YYYY-MM-DD_HH-MM_{short-title}.md`
+
+**Full Path Construction:**
+```
+{BASE_DIR}/{FILENAME}
+/Users/andres.camacho/Development/Personal/spacetraders/claude-captain/reports/bugs/2025-11-01_14-30_contract-daemon-crash.md
+```
+
+**Path Validation Checklist (REQUIRED before writing):**
+1. ✅ Path starts with `/Users/andres.camacho/Development/Personal/spacetraders/claude-captain/`?
+2. ✅ Path contains `/reports/bugs/` subdirectory?
+3. ✅ Filename follows `YYYY-MM-DD_HH-MM_{title}.md` format?
+4. ❌ Path does NOT start with `/Users/andres.camacho/Development/Personal/spacetraders/reports/` (missing claude-captain)?
+
+**Common Path Errors to Avoid:**
+- ❌ WRONG: `/Users/andres.camacho/Development/Personal/spacetraders/reports/bugs/...` (parent directory)
+- ❌ WRONG: `reports/bugs/...` (relative path - depends on working directory)
+- ✅ CORRECT: `/Users/andres.camacho/Development/Personal/spacetraders/claude-captain/reports/bugs/...` (absolute path)
 
 **After Writing Report:**
-1. Write report to file using Write tool
-2. Return summary to Captain:
+1. Validate path using checklist above
+2. Write report to file using Write tool with validated absolute path
+3. Return summary to Captain:
    ```
-   Bug Report Generated: reports/bugs/2025-11-01_14-30_contract-daemon-crash.md
+   Bug Report Generated: /Users/andres.camacho/Development/Personal/spacetraders/claude-captain/reports/bugs/2025-11-01_14-30_contract-daemon-crash.md
 
    Summary: Contract daemon crashed 3 times with 'ship not found' error
    Severity: HIGH

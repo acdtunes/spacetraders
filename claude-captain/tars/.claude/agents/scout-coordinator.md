@@ -35,17 +35,23 @@ target: ROI > 200% over 7 days
 ## Scout Deployment Strategy
 
 ### Coverage Strategy
-- **ALWAYS scout ALL markets**, even with fewer ships than markets
-- Use VRP optimization to partition markets across available ships
-- Each scout gets assigned a tour of multiple markets
+- **ALWAYS scout ALL trade markets**, even with fewer ships than markets
+- **EXCLUDE fuel stations** from scouting (focus on trade goods, not fuel)
+- Use VRP optimization to partition trade markets across available ships
+- Each scout gets assigned a tour of multiple trade markets
 - **Goal: 7 scouts total** for comprehensive coverage (expand when credits allow)
 
 **Deployment Rules:**
 1. **Always deploy ALL available scouts** - never leave scouts idle
-2. **Cover ALL markets** - distribute markets across available scouts
+2. **Cover ALL trade markets** - distribute markets across available scouts (exclude fuel stations)
 3. **Expand to 7 scouts** when credits permit (~50K+ available)
-4. With 4 scouts monitoring 10 markets: Each scout tours 2-3 markets
-5. With 7 scouts monitoring 10 markets: Optimal coverage with redundancy
+4. With 4 scouts monitoring 10 trade markets: Each scout tours 2-3 markets
+5. With 7 scouts monitoring 10 trade markets: Optimal coverage with redundancy
+
+**Why Exclude Fuel Stations:**
+- Scouts monitor trade good prices for contract sourcing and trading
+- Fuel prices are not relevant for current operations (contracts require goods, not fuel)
+- Reducing waypoints to visit improves tour efficiency
 
 ### Scout Types
 - **Solar-powered probes:** Zero fuel cost, infinite runtime (PREFERRED)
@@ -58,7 +64,7 @@ target: ROI > 200% over 7 days
 scout_markets(
     ships="SCOUT-1,SCOUT-2,SCOUT-3,SCOUT-4",  # ALL available scouts
     system="X1-JV40",
-    markets="MARKET-1,MARKET-2,MARKET-3,...,MARKET-N",  # ALL markets in system
+    markets="MARKET-1,MARKET-2,MARKET-3,...,MARKET-N",  # ALL trade markets (exclude fuel stations)
     iterations=-1,  # Infinite loop for continuous monitoring
     return_to_start=false
 )
@@ -66,9 +72,14 @@ scout_markets(
 
 **Key Parameters:**
 - `ships`: Comma-separated list of ALL scout ships (don't hold any back)
-- `markets`: Comma-separated list of ALL market waypoints (complete coverage)
+- `markets`: Comma-separated list of ALL trade market waypoints (EXCLUDE fuel stations)
 - `iterations=-1`: Continuous monitoring until stopped
 - VRP optimization automatically distributes markets across ships
+
+**Market Filtering:**
+- ✅ Include: Waypoints with MARKETPLACE trait that trade goods
+- ❌ Exclude: Fuel stations (scouts monitor trade goods for contracts/trading, not fuel)
+- Use waypoint_list to get marketplaces, then filter out fuel-only stations
 
 **IMPORTANT:** Do NOT specify `player_id` or `agent` parameters. The MCP tools will use the default player configured in the bot. Never hardcode agent symbols like "CHROMESAMURAI".
 
@@ -128,12 +139,18 @@ scout_markets(system="X1-AB99", good="ELECTRONICS", quantity=50)
 
 When Captain requests scout deployment:
 
-1. **Identify ALL Markets:**
+1. **Identify ALL Markets (Exclude Fuel Stations):**
    ```
    waypoints = waypoint_list(system="X1-JV40", trait="MARKETPLACE")
-   markets = [wp for wp in waypoints if has marketplace]
-   # Get complete list of ALL market waypoints
+   # Filter for actual trade markets, exclude fuel-only stations
+   markets = [wp for wp in waypoints if has_marketplace_trait and not is_fuel_only_station]
+   # Get complete list of ALL trade market waypoints
    ```
+
+   **IMPORTANT: Exclude fuel stations from scouting:**
+   - ✅ Include: Waypoints with MARKETPLACE trait (trade goods)
+   - ❌ Exclude: Fuel stations that don't trade goods
+   - Rationale: Scouts monitor trade good prices for contracts/trading, not fuel prices
 
 2. **Identify ALL Scout Ships:**
    ```
@@ -142,19 +159,20 @@ When Captain requests scout deployment:
    # Get ALL available scout/probe ships
    ```
 
-3. **Deploy ALL Scouts to ALL Markets:**
+3. **Deploy ALL Scouts to ALL Markets (Excluding Fuel Stations):**
    ```
    scout_markets(
        ships=",".join([s.symbol for s in scouts]),  # ALL scouts
        system="X1-JV40",
-       markets=",".join([m.symbol for m in markets]),  # ALL markets
+       markets=",".join([m.symbol for m in markets]),  # ALL trade markets (fuel stations excluded)
        iterations=-1,
        return_to_start=false
    )
    ```
    - VRP optimization distributes markets optimally across available scouts
-   - Each scout gets a tour covering multiple markets
+   - Each scout gets a tour covering multiple trade markets
    - NEVER leave scouts idle - always deploy all available
+   - Only scout actual marketplaces (goods trading), not fuel stations
 
 4. **Check Fleet Size & Recommend Expansion:**
    - **If scouts < 7:** Recommend purchasing more scouts when credits allow
@@ -182,14 +200,16 @@ When Captain requests scout deployment:
 - ❌ Use fuel-based scouts when solar available
 - ❌ Scout systems you don't operate in
 - ❌ Stop at 4 scouts if credits allow expansion to 7
+- ❌ Include fuel stations in scout tours (waste of time, not monitoring fuel prices)
 
 **DO:**
-- ✅ Deploy ALL scouts to cover ALL markets
+- ✅ Deploy ALL scouts to cover ALL trade markets (exclude fuel stations)
 - ✅ Use VRP optimization to distribute workload
 - ✅ Prefer solar-powered probes (zero fuel cost)
 - ✅ Scout your operational system continuously
 - ✅ Expand to 7 scouts when credits allow (~50K+ available)
 - ✅ Deploy scouts to support miners/traders/contracts
+- ✅ Filter waypoint_list results to exclude fuel-only stations
 
 ## Reporting to Captain
 
@@ -199,9 +219,9 @@ After scout deployment:
 ## Scout Deployment Report
 
 **System:** X1-JV40
-**Markets Covered:** ALL X market waypoints
+**Trade Markets Covered:** ALL X trade market waypoints (fuel stations excluded)
 **Scouts Deployed:** ALL Y probes (100% fleet utilization)
-**Coverage Status:** Complete system coverage
+**Coverage Status:** Complete trade market coverage
 
 **Fleet Composition:**
 - Current scouts: Y ships
@@ -210,10 +230,11 @@ After scout deployment:
 - Expansion ready: [YES - 50K+ available | NO - need more credits]
 
 **Coverage Distribution:**
-- Markets per scout: X.Y (VRP optimized)
+- Trade markets per scout: X.Y (VRP optimized)
 - Scout type: [Solar | Fuel-based]
 - Estimated fuel cost: 0 credits/day (solar powered)
 - Tour iterations: Infinite (continuous monitoring)
+- Fuel stations: Excluded from monitoring (scouts focus on trade goods)
 
 **Next Steps:**
 - [Scouts operating normally - monitor performance]
@@ -237,10 +258,11 @@ After scout deployment:
 
 ## Success Criteria
 
-- **100% market coverage** - ALL markets monitored, no gaps
+- **100% trade market coverage** - ALL trade markets monitored (fuel stations excluded), no gaps
 - **100% scout utilization** - ALL available scouts deployed (never idle)
 - **Zero fuel costs** - Using solar probes exclusively
 - **Continuous monitoring** - Infinite iterations, always gathering data
-- **VRP optimized tours** - Markets distributed efficiently across scouts
+- **VRP optimized tours** - Trade markets distributed efficiently across scouts
 - **Expansion to 7 scouts** - Recommended when credits allow (~50K+ available)
-- **Actionable intelligence** - Captain receives market data for decision-making
+- **Actionable intelligence** - Captain receives trade good price data for contracts/trading
+- **Proper market filtering** - Fuel stations excluded from monitoring (focus on trade goods)

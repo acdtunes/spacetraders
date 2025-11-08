@@ -33,7 +33,10 @@ class ScoutTourCommand(Request[ScoutTourResult]):
     2. Dock at each market
     3. Get market data from API
     4. Persist market data
-    5. Optionally return to starting waypoint
+    5. Return to starting waypoint for multi-market tours (2+)
+
+    Tours by definition complete a circuit and return to start.
+    Stationary scouts (1 market) don't need to return as they're already at the start.
 
     This is an INTERNAL command - not exposed via CLI.
     Used by ScoutMarketsCommand to execute tours in daemon containers.
@@ -42,7 +45,6 @@ class ScoutTourCommand(Request[ScoutTourResult]):
     player_id: int
     system: str
     markets: List[str]
-    return_to_start: bool = False
 
 
 class ScoutTourHandler(RequestHandler[ScoutTourCommand, ScoutTourResult]):
@@ -74,7 +76,10 @@ class ScoutTourHandler(RequestHandler[ScoutTourCommand, ScoutTourResult]):
            b. Dock at market
            c. Get market data from API
            d. Persist market data
-        3. If return_to_start, navigate back to starting waypoint
+        3. For multi-market tours (2+), navigate back to starting waypoint
+
+        Tours by definition complete a circuit and return to start.
+        Stationary scouts (1 market) don't need to return.
 
         Args:
             request: Scout tour command
@@ -115,17 +120,24 @@ class ScoutTourHandler(RequestHandler[ScoutTourCommand, ScoutTourResult]):
 
             logger.info(f"✅ Market {market_waypoint}: {goods_count} goods updated")
 
-        # 3. Return to start if requested
-        if request.return_to_start:
-            logger.info(f"Returning to starting waypoint {starting_waypoint}")
+        # 3. Return to start for multi-market tours (2+)
+        # Tours by definition complete a circuit
+        # Stationary scouts (1 market) don't need to return as they're already at start
+        if len(request.markets) > 1:
+            logger.info(f"Tour complete: returning to starting waypoint {starting_waypoint}")
             await self._navigate_to(request.ship_symbol, request.player_id, starting_waypoint)
             await self._dock_at(request.ship_symbol, request.player_id, starting_waypoint)
 
         logger.info(f"Tour complete: {len(request.markets)} markets, {total_goods} goods, {sum([1 for _ in request.markets])}")
 
-        # Wait 1 minute before next iteration to avoid hammering API
-        logger.info("Waiting 60 seconds before next iteration...")
-        await asyncio.sleep(60)
+        # Wait between iterations based on tour type
+        # Stationary scouts (1 market) need to wait for market refresh
+        # Touring scouts (2+ markets) already spend time traveling
+        if len(request.markets) == 1:
+            logger.info("Stationary scout: waiting 60 seconds for market refresh before next iteration...")
+            await asyncio.sleep(60)
+        else:
+            logger.info(f"Touring scout ({len(request.markets)} markets): no wait needed between iterations (travel time provides natural delay)")
 
         return ScoutTourResult(
             markets_visited=len(request.markets),

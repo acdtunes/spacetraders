@@ -31,6 +31,8 @@ export const TarsApp: React.FC<TarsAppProps> = ({ options, memory, afkMode }) =>
   const [afkConfig, setAfkConfig] = useState<AfkConfig | undefined>(afkMode);
   const afkIntervalRef = useRef<NodeJS.Timeout | undefined>();
   const [userCommands, setUserCommands] = useState<string[]>([]);
+  const [showSubagentOutput, setShowSubagentOutput] = useState(false);
+  const [streamingText, setStreamingText] = useState<string>('');
 
   const memoryStatus = memory.hasPreviousSession()
     ? `Session #${memory.getSessionId()?.substring(0, 8)}... (${memory.turnCount} turns)`
@@ -123,6 +125,7 @@ export const TarsApp: React.FC<TarsAppProps> = ({ options, memory, afkMode }) =>
         if (shouldCancelRef.current) {
           // Flush any remaining buffered messages
           flushBuffer();
+          setStreamingText('');
 
           const interruptMsg = {
             type: 'system',
@@ -133,7 +136,25 @@ export const TarsApp: React.FC<TarsAppProps> = ({ options, memory, afkMode }) =>
           break;
         }
 
-        // Buffer messages instead of immediate state update
+        // Handle streaming text tokens separately
+        if (message.type === 'stream_event') {
+          const event = (message as any).event;
+
+          if (event?.type === 'content_block_delta' &&
+              event.delta?.type === 'text_delta' &&
+              event.delta?.text) {
+            // Accumulate streaming text in real-time
+            setStreamingText(prev => prev + event.delta.text);
+            // Still store in memory for persistence
+            memory.addMessage(message);
+            continue; // Don't buffer streaming tokens as separate messages
+          } else if (event?.type === 'content_block_stop' || event?.type === 'message_stop') {
+            // Content block finished - clear streaming text
+            setStreamingText('');
+          }
+        }
+
+        // Buffer non-streaming messages
         bufferedMessages.push(message);
         memory.addMessage(message);
         messageCount++;
@@ -146,14 +167,14 @@ export const TarsApp: React.FC<TarsAppProps> = ({ options, memory, afkMode }) =>
           agentLogger.processMessage(message, message.session_id);
         }
 
-        // Flush buffer every 250ms OR every 5 messages (whichever comes first)
-        // Longer interval = fewer renders = less flicker
+        // Flush buffer every 32ms OR every 3 messages (whichever comes first)
+        // 32ms matches Ink's native throttle for smooth real-time streaming
         if (!bufferTimer) {
-          bufferTimer = setTimeout(flushBuffer, 250);
+          bufferTimer = setTimeout(flushBuffer, 32);
         }
 
-        // Also flush if we've accumulated many messages
-        if (messageCount >= 5) {
+        // Also flush if we've accumulated messages (for burst handling)
+        if (messageCount >= 3) {
           if (bufferTimer) {
             clearTimeout(bufferTimer);
           }
@@ -167,6 +188,7 @@ export const TarsApp: React.FC<TarsAppProps> = ({ options, memory, afkMode }) =>
         clearTimeout(bufferTimer);
       }
       flushBuffer();
+      setStreamingText(''); // Clear any remaining streaming text
 
       // Increment turn counter only if not cancelled
       if (!shouldCancelRef.current) {
@@ -354,6 +376,9 @@ After reporting, you will wait for the next check-in at ${elapsedHours.toFixed(1
       cancelRef={shouldCancelRef}
       isAfkMode={isAfkMode}
       userCommands={userCommands}
+      showSubagentOutput={showSubagentOutput}
+      onToggleSubagentOutput={() => setShowSubagentOutput(prev => !prev)}
+      streamingText={streamingText}
     />
   );
 };

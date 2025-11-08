@@ -33,7 +33,8 @@ class DaemonServer:
         from configuration.container import (
             get_database,
             get_mediator,
-            get_ship_repository
+            get_ship_repository,
+            set_container_manager
         )
 
         database = get_database()
@@ -43,6 +44,9 @@ class DaemonServer:
         self._ship_repo = get_ship_repository()
         self._server: Optional[asyncio.Server] = None
         self._running = False
+
+        # Make container manager globally accessible for handlers running inside containers
+        set_container_manager(self._container_mgr)
 
     async def start(self):
         """Start daemon server"""
@@ -128,6 +132,8 @@ class DaemonServer:
             data = await reader.read(65536)
             request = json.loads(data.decode())
 
+            logger.info(f"Received request: {request.get('method')} (id={request.get('id')})")
+
             # Process JSON-RPC request
             response = await self._process_request(request)
 
@@ -143,6 +149,8 @@ class DaemonServer:
             # Write all data and ensure it's flushed before closing
             writer.write(response_bytes)
             await writer.drain()
+
+            logger.info(f"Sent response: {len(response_bytes)} bytes (id={request.get('id')})")
 
         except Exception as e:
             logger.error(f"Error handling connection: {e}", exc_info=True)

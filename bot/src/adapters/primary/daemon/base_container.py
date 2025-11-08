@@ -3,7 +3,7 @@ import asyncio
 import logging
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from .types import ContainerStatus
 
@@ -23,7 +23,8 @@ class BaseContainer(ABC):
         player_id: int,
         config: Dict[str, Any],
         mediator: Any,
-        database: Any
+        database: Any,
+        container_info: Optional[Any] = None
     ):
         """Initialize container
 
@@ -33,12 +34,14 @@ class BaseContainer(ABC):
             config: Container configuration dict
             mediator: Mediator instance for sending commands
             database: Database instance for logging
+            container_info: Optional ContainerInfo for synchronizing status
         """
         self.container_id = container_id
         self.player_id = player_id
         self.config = config
         self.mediator = mediator
         self.database = database
+        self.container_info = container_info
         self.cancel_event = asyncio.Event()
         self.status = ContainerStatus.STARTING
         self.iteration = 0
@@ -68,6 +71,15 @@ class BaseContainer(ABC):
         """
         try:
             self.status = ContainerStatus.RUNNING
+            # Sync status to ContainerInfo if provided
+            if self.container_info:
+                self.container_info.status = ContainerStatus.RUNNING
+            # Update status in database
+            self.database.update_container_status(
+                container_id=self.container_id,
+                player_id=self.player_id,
+                status=ContainerStatus.RUNNING.value
+            )
             await self.run()
             self.status = ContainerStatus.STOPPED
         except asyncio.CancelledError:

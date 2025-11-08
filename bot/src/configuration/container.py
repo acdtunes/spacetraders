@@ -108,6 +108,10 @@ from application.scouting.commands.scout_markets import (
     ScoutMarketsCommand,
     ScoutMarketsHandler
 )
+from application.scouting.commands.scout_markets_vrp import (
+    ScoutMarketsVRPCommand,
+    ScoutMarketsVRPHandler
+)
 from application.scouting.commands.scout_tour import (
     ScoutTourCommand,
     ScoutTourHandler
@@ -501,6 +505,10 @@ def get_mediator() -> Mediator:
             lambda: ScoutMarketsHandler(ship_repo)
         )
         _mediator.register_handler(
+            ScoutMarketsVRPCommand,
+            lambda: ScoutMarketsVRPHandler(ship_repo)
+        )
+        _mediator.register_handler(
             ScoutTourCommand,
             lambda: ScoutTourHandler(ship_repo, market_repo)
         )
@@ -586,6 +594,7 @@ def get_mediator() -> Mediator:
 
 
 _daemon_client = None
+_container_mgr = None
 
 def get_daemon_client():
     """Get daemon client singleton"""
@@ -594,6 +603,20 @@ def get_daemon_client():
         from adapters.primary.daemon.daemon_client import DaemonClient
         _daemon_client = DaemonClient()
     return _daemon_client
+
+
+def set_container_manager(container_mgr):
+    """Set container manager (called by daemon server on startup)"""
+    global _container_mgr
+    _container_mgr = container_mgr
+
+
+def get_container_manager():
+    """Get container manager (only available when running inside daemon)"""
+    global _container_mgr
+    if _container_mgr is None:
+        raise RuntimeError("ContainerManager not available - only accessible from within daemon server")
+    return _container_mgr
 
 
 def reset_container():
