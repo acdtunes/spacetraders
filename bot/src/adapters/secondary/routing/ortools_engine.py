@@ -1,5 +1,6 @@
 """OR-Tools based routing engine implementation"""
 import heapq
+import logging
 import math
 from typing import Optional, Dict, List, Any, Tuple, Set
 from ortools.constraint_solver import routing_enums_pb2
@@ -7,6 +8,8 @@ from ortools.constraint_solver import pywrapcp
 
 from domain.shared.value_objects import Waypoint, FlightMode
 from ports.routing_engine import IRoutingEngine
+
+logger = logging.getLogger(__name__)
 
 
 class ORToolsRoutingEngine(IRoutingEngine):
@@ -590,6 +593,11 @@ class ORToolsRoutingEngine(IRoutingEngine):
             nodes, graph, fuel_capacity, engine_speed
         )
 
+        # DEBUG: Log distance matrix
+        logger.info(f"VRP Distance Matrix ({len(nodes)} nodes):")
+        for i, origin in enumerate(nodes):
+            logger.info(f"  {origin}: {distance_matrix[i]}")
+
         # CRITICAL FIX: Calculate maximum possible distance cost in system
         # This ensures disjunction penalty is ALWAYS higher than any market's cost
         # Prevents OR-Tools from dropping extreme outliers
@@ -664,12 +672,23 @@ class ORToolsRoutingEngine(IRoutingEngine):
         assigned_waypoints: set = set()
 
         for vehicle, ship in enumerate(ships):
+            # CRITICAL FIX: If ship starts AT a market, assign it immediately
+            # OR-Tools VRP treats depot nodes as "already there" and doesn't include them in routes
+            # This causes markets at ship locations to be dropped from assignments
+            start_node = manager.IndexToNode(routing.Start(vehicle))
+            start_waypoint = nodes[start_node]
+
+            if start_waypoint in markets and start_waypoint not in assigned_waypoints:
+                assignments[ship].append(start_waypoint)
+                assigned_waypoints.add(start_waypoint)
+
+            # Extract markets from the route
             index = routing.Start(vehicle)
             while not routing.IsEnd(index):
                 node = manager.IndexToNode(index)
                 waypoint = nodes[node]
 
-                # Only assign markets (not ship start locations)
+                # Only assign markets (not already assigned)
                 if waypoint in markets:
                     if waypoint not in assigned_waypoints:
                         assignments[ship].append(waypoint)
@@ -710,25 +729,23 @@ class ORToolsRoutingEngine(IRoutingEngine):
                 origin_wp = graph[origin]
                 target_wp = graph[target]
 
-                # Check for orbital hop
-                if origin_wp.is_orbital_of(target_wp):
-                    distance = self.ORBITAL_HOP_DISTANCE
-                    travel_time = self.ORBITAL_HOP_TIME
+                # Use actual pathfinding to get route cost (including refueling stops)
+                route = self.find_optimal_path(
+                    graph=graph,
+                    start=origin,
+                    goal=target,
+                    current_fuel=fuel_capacity,  # Assume starting with full tank
+                    fuel_capacity=fuel_capacity,
+                    engine_speed=engine_speed,
+                    prefer_cruise=True
+                )
+
+                if route and route.get('total_time'):
+                    # Path exists - use actual pathfinding time (includes refueling)
+                    matrix[i][j] = route['total_time']
                 else:
-                    distance = origin_wp.distance_to(target_wp)
-
-                    # Use CRUISE mode for time estimation
-                    cruise_cost = self.calculate_fuel_cost(distance, FlightMode.CRUISE)
-                    if fuel_capacity >= cruise_cost:
-                        travel_time = self.calculate_travel_time(
-                            distance, FlightMode.CRUISE, engine_speed
-                        )
-                    else:
-                        # Fall back to DRIFT if CRUISE exceeds capacity
-                        travel_time = self.calculate_travel_time(
-                            distance, FlightMode.DRIFT, engine_speed
-                        )
-
-                matrix[i][j] = travel_time
+                    # No path exists - keep as unreachable (1,000,000)
+                    # This happens when fuel constraints make the route impossible
+                    pass  # matrix[i][j] already initialized to 1,000,000
 
         return matrix

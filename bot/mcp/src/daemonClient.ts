@@ -56,19 +56,37 @@ export class DaemonClient {
 
       socket.on("data", (chunk) => {
         responseData += chunk.toString();
-      });
 
-      socket.on("end", () => {
-        clearTimeout(timeout);
+        // Try to parse response immediately (server closes socket without waiting for ACK)
         try {
           const response: JsonRpcResponse = JSON.parse(responseData);
+          clearTimeout(timeout);
+          socket.destroy();
+
           if (response.error) {
             reject(new Error(response.error.message));
           } else {
             resolve(response.result);
           }
         } catch (error) {
-          reject(new Error(`Invalid JSON response: ${error}`));
+          // Not complete JSON yet, wait for more data
+        }
+      });
+
+      socket.on("end", () => {
+        // Fallback if server properly closes socket
+        if (responseData) {
+          clearTimeout(timeout);
+          try {
+            const response: JsonRpcResponse = JSON.parse(responseData);
+            if (response.error) {
+              reject(new Error(response.error.message));
+            } else {
+              resolve(response.result);
+            }
+          } catch (error) {
+            reject(new Error(`Invalid JSON response: ${error}`));
+          }
         }
       });
 
@@ -120,11 +138,16 @@ export class DaemonClient {
     markets: string[],
     iterations: number = -1
   ): Promise<unknown> {
+    // Generate unique container ID (matches Python pattern)
+    const randomHex = Math.floor(Math.random() * 0xFFFFFFFF).toString(16).padStart(8, '0');
+    const containerId = `scout-markets-vrp-${randomHex}`;
+
     const params = {
+      container_id: containerId,
       player_id: playerId,
       container_type: "command",
       config: {
-        command_type: "ScoutMarketsCommand",
+        command_type: "ScoutMarketsVRPCommand",
         params: {
           ship_symbols: shipSymbols,
           player_id: playerId,

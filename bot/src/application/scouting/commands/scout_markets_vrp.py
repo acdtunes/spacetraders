@@ -131,10 +131,10 @@ class ScoutMarketsVRPHandler(RequestHandler[ScoutMarketsVRPCommand, None]):
                     'params': {
                         'ship_symbol': ship_symbol,
                         'player_id': request.player_id,
-                        'markets': assigned_markets,
-                        'return_to_start': len(assigned_markets) > 1,
-                        'iterations': request.iterations
-                    }
+                        'system': request.system,
+                        'markets': assigned_markets
+                    },
+                    'iterations': request.iterations
                 }
             )
 
