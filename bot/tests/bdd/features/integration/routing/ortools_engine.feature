@@ -86,26 +86,26 @@ Feature: OR-Tools Routing Engine Integration
     When I find optimal path from "WP-A" to "WP-B" with 100 current fuel, 100 capacity, speed 10, preferring cruise
     Then all TRAVEL steps should use CRUISE mode
 
-  Scenario: Prefer DRIFT mode when requested
+  Scenario: Never use DRIFT mode (always CRUISE minimum)
     Given a simple graph with waypoints "WP-A" at (0,0) with fuel, "WP-B" at (10,0) without fuel
     When I find optimal path from "WP-A" to "WP-B" with 100 current fuel, 100 capacity, speed 10, preferring drift
-    Then all TRAVEL steps should use DRIFT mode
+    Then all TRAVEL steps should use CRUISE mode or better
 
-  Scenario: Low fuel forces DRIFT mode
+  Scenario: Low fuel without refuel station returns None
     Given a simple graph with waypoints "WP-A" at (0,0) without fuel, "WP-B" at (10,0) without fuel
     When I find optimal path from "WP-A" to "WP-B" with 9 current fuel, 100 capacity, speed 10, preferring cruise
-    Then any TRAVEL steps should use DRIFT mode or path should be None
+    Then the path should be None
 
   # Refueling
-  Scenario: Automatic refuel when needed
+  Scenario: Automatic refuel when needed (never DRIFT)
     Given a fuel constraint graph with "START" at (0,0), "FUEL-1" at (20,0), "FUEL-2" at (40,0), "GOAL" at (60,0) with fuel
     When I find optimal path from "START" to "GOAL" with 25 current fuel, 100 capacity, speed 10, preferring cruise
-    Then the path should include REFUEL actions or DRIFT mode
+    Then the path should include REFUEL actions
 
-  Scenario: Insufficient fuel with no refuel station
+  Scenario: Insufficient fuel with no refuel station returns None
     Given a simple graph with waypoints "WP-A" at (0,0) without fuel, "WP-B" at (10,0) without fuel
     When I find optimal path from "WP-A" to "WP-B" with 1 current fuel, 100 capacity, speed 10, preferring cruise
-    Then the path should use DRIFT mode or be None
+    Then the path should be None
 
   # Orbital Hops
   Scenario: Orbital hop with zero cost
