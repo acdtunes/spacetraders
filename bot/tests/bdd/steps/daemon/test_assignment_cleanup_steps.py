@@ -248,24 +248,15 @@ def container_is_running(context):
 @given(parsers.parse('the ship "{ship_symbol}" has an active assignment to container "{container_id}"'))
 def create_zombie_assignment(context, ship_symbol, container_id):
     """Create an active ship assignment directly in database (zombie state)"""
-    from configuration.container import get_database
-    from datetime import datetime
+    from configuration.container import get_ship_assignment_repository
 
-    db = get_database()
-    with db.transaction() as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO ship_assignments (
-                ship_symbol, player_id, container_id, operation,
-                status, assigned_at
-            ) VALUES (?, ?, ?, ?, 'active', ?)
-        """, (
-            ship_symbol,
-            context['player_id'],
-            container_id,
-            'command',
-            datetime.now().isoformat()
-        ))
+    assignment_repo = get_ship_assignment_repository()
+    assignment_repo.assign(
+        player_id=context['player_id'],
+        ship_symbol=ship_symbol,
+        container_id=container_id,
+        operation='command'
+    )
 
     context['zombie_container_id'] = container_id
 

@@ -6,10 +6,12 @@ from datetime import datetime
 
 from configuration.container import (
     get_database,
+    get_engine,
     get_player_repository,
     get_ship_repository,
     reset_container
 )
+from adapters.secondary.persistence.models import metadata
 from domain.shared.player import Player
 from domain.shared.ship import Ship
 from domain.shared.value_objects import Waypoint, Fuel
@@ -27,19 +29,12 @@ def reset_test_environment():
     # Reset dependency injection container
     reset_container()
 
-    # Get fresh database instance
-    db = get_database()
+    # Initialize SQLAlchemy schema for in-memory database
+    engine = get_engine()
+    metadata.create_all(engine)
 
-    # Clear all tables to ensure clean state between tests
-    # Order matters due to foreign key constraints - delete children first
-    with db.transaction() as conn:
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM ship_assignments")
-        cursor.execute("DELETE FROM container_logs")
-        cursor.execute("DELETE FROM containers")
-        # Ships table removed - ships are API-only now
-        cursor.execute("DELETE FROM system_graphs")
-        cursor.execute("DELETE FROM players")
+    # Get fresh database instance (old Database class - still needed for some operations)
+    db = get_database()
 
     yield
 

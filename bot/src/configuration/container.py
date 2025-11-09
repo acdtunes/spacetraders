@@ -20,6 +20,7 @@ from adapters.secondary.persistence.market_repository import MarketRepository
 from adapters.secondary.persistence.contract_repository import ContractRepository
 from adapters.secondary.persistence.waypoint_repository import WaypointRepository
 from adapters.secondary.persistence.ship_assignment_repository import ShipAssignmentRepository
+from adapters.secondary.persistence.ship_assignment_repository_sqlalchemy import ShipAssignmentRepositorySQLAlchemy
 from adapters.secondary.persistence.captain_log_repository import CaptainLogRepository
 from adapters.secondary.api.client import SpaceTradersAPIClient
 from adapters.secondary.routing.ortools_engine import ORToolsRoutingEngine
@@ -407,11 +408,11 @@ def get_ship_assignment_repository() -> IShipAssignmentRepository:
     Get or create ship assignment repository.
 
     Returns:
-        IShipAssignmentRepository: Singleton ship assignment repository instance
+        IShipAssignmentRepository: Singleton ship assignment repository instance using SQLAlchemy
     """
     global _ship_assignment_repo
     if _ship_assignment_repo is None:
-        _ship_assignment_repo = ShipAssignmentRepository(get_database())
+        _ship_assignment_repo = ShipAssignmentRepositorySQLAlchemy(get_engine())
     return _ship_assignment_repo
 
 
