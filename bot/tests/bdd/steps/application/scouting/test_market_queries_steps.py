@@ -17,6 +17,13 @@ def context():
     """Shared context for scenario steps"""
     # Reset container to ensure clean state
     reset_container()
+
+    # Initialize SQLAlchemy schema after reset
+    from configuration.container import get_engine
+    from adapters.secondary.persistence.models import metadata
+    engine = get_engine()
+    metadata.create_all(engine)
+
     return {
         'mediator': get_mediator(),
         'market_repo': get_market_repository()
@@ -37,14 +44,29 @@ def player_id(context, player_id):
     """Create a player in the database"""
     context['player_id'] = player_id
 
-    # Insert player into database to satisfy foreign key constraint
-    from configuration.container import get_database
-    db = get_database()
-    with db.transaction() as conn:
-        conn.execute("""
-            INSERT OR IGNORE INTO players (player_id, agent_symbol, token, created_at)
-            VALUES (?, ?, ?, ?)
-        """, (player_id, f'TEST_AGENT_{player_id}', 'test_token', '2025-01-01T00:00:00Z'))
+    # Insert player using SQLAlchemy to satisfy foreign key constraint
+    from configuration.container import get_engine
+    from adapters.secondary.persistence.models import players
+    from sqlalchemy import insert
+    from datetime import datetime, timezone
+
+    engine = get_engine()
+    with engine.begin() as conn:
+        # Check if player exists first
+        from sqlalchemy import select
+        stmt = select(players.c.player_id).where(players.c.player_id == player_id)
+        result = conn.execute(stmt)
+        if not result.fetchone():
+            # Insert new player
+            conn.execute(
+                insert(players).values(
+                    player_id=player_id,
+                    agent_symbol=f'TEST_AGENT_{player_id}',
+                    token='test_token',
+                    created_at=datetime.now(timezone.utc),
+                    metadata={}
+                )
+            )
 
 
 @given('market data exists for waypoint "X1-GZ7-A1" with goods:')

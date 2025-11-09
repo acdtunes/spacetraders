@@ -111,7 +111,7 @@ market_data = Table(
     Column('purchase_price', Integer, nullable=False),
     Column('sell_price', Integer, nullable=False),
     Column('trade_volume', Integer, nullable=False),
-    Column('last_updated', DateTime(timezone=True), nullable=False),
+    Column('last_updated', String, nullable=False),  # ISO timestamp string
     Column('player_id', Integer, ForeignKey('players.player_id', ondelete='CASCADE'), nullable=False),
     PrimaryKeyConstraint('waypoint_symbol', 'good_symbol'),
 )
@@ -169,7 +169,7 @@ captain_logs = Table(
     metadata,
     Column('log_id', Integer, primary_key=True, autoincrement=True),
     Column('player_id', Integer, ForeignKey('players.player_id', ondelete='CASCADE'), nullable=False),
-    Column('timestamp', DateTime(timezone=True), nullable=False),
+    Column('timestamp', String, nullable=False),  # ISO timestamp string
     Column('entry_type', String, nullable=False),
     Column('narrative', Text, nullable=False),
     Column('event_data', Text),

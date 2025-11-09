@@ -16,12 +16,12 @@ from adapters.secondary.persistence.engine import create_engine_from_config
 from adapters.secondary.persistence.player_repository import PlayerRepository
 from adapters.secondary.persistence.player_repository_sqlalchemy import PlayerRepositorySQLAlchemy
 from adapters.secondary.persistence.ship_repository import ShipRepository
-from adapters.secondary.persistence.market_repository import MarketRepository
+from adapters.secondary.persistence.market_repository_sqlalchemy import MarketRepositorySQLAlchemy
 from adapters.secondary.persistence.contract_repository import ContractRepository
 from adapters.secondary.persistence.waypoint_repository import WaypointRepository
 from adapters.secondary.persistence.ship_assignment_repository import ShipAssignmentRepository
 from adapters.secondary.persistence.ship_assignment_repository_sqlalchemy import ShipAssignmentRepositorySQLAlchemy
-from adapters.secondary.persistence.captain_log_repository import CaptainLogRepository
+from adapters.secondary.persistence.captain_log_repository_sqlalchemy import CaptainLogRepositorySQLAlchemy
 from adapters.secondary.api.client import SpaceTradersAPIClient
 from adapters.secondary.routing.ortools_engine import ORToolsRoutingEngine
 from adapters.secondary.routing.graph_builder import GraphBuilder
@@ -370,7 +370,7 @@ def get_market_repository() -> IMarketRepository:
     """
     global _market_repo
     if _market_repo is None:
-        _market_repo = MarketRepository(get_database())
+        _market_repo = MarketRepositorySQLAlchemy(get_engine())
     return _market_repo
 
 
@@ -421,11 +421,11 @@ def get_captain_log_repository():
     Get or create captain log repository.
 
     Returns:
-        CaptainLogRepository: Singleton captain log repository instance
+        CaptainLogRepositorySQLAlchemy: Singleton captain log repository instance
     """
     global _captain_log_repo
     if _captain_log_repo is None:
-        _captain_log_repo = CaptainLogRepository(get_database())
+        _captain_log_repo = CaptainLogRepositorySQLAlchemy(get_engine())
     return _captain_log_repo
 
 

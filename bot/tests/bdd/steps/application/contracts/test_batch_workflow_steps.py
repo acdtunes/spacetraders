@@ -456,6 +456,13 @@ def mock_contract_repository(monkeypatch):
 def reset_di_container():
     """Reset DI container before each test"""
     reset_container()
+
+    # Initialize SQLAlchemy schema after reset
+    from configuration.container import get_engine
+    from adapters.secondary.persistence.models import metadata
+    engine = get_engine()
+    metadata.create_all(engine)
+
     yield
     reset_container()
 

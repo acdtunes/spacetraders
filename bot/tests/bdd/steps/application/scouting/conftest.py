@@ -1,3 +1,4 @@
+"""Shared fixtures for scouting tests"""
 import pytest
 
 from configuration.container import get_engine, reset_container
@@ -6,7 +7,7 @@ from adapters.secondary.persistence.models import metadata
 
 @pytest.fixture(autouse=True)
 def setup_test_environment():
-    """Initialize database schema for contract tests"""
+    """Initialize database schema for scouting tests"""
     # Reset container to ensure clean state
     reset_container()
 
@@ -18,9 +19,3 @@ def setup_test_environment():
 
     # Cleanup after test
     reset_container()
-
-
-@pytest.fixture
-def context():
-    """Provide shared context dictionary for test data"""
-    return {}
