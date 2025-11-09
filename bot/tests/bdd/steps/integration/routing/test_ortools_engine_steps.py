@@ -27,8 +27,8 @@ def context():
 # Background steps
 @given('an OR-Tools routing engine')
 def given_ortools_engine(context):
-    """Create OR-Tools routing engine"""
-    context['engine'] = ORToolsRoutingEngine()
+    """Create OR-Tools routing engine with reduced timeouts for fast tests"""
+    context['engine'] = ORToolsRoutingEngine(tsp_timeout=1, vrp_timeout=1)
 
 
 # Fuel cost calculation steps

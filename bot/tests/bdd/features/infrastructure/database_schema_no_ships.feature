@@ -8,4 +8,4 @@ Feature: Database Schema Without Ships Table
     When I inspect the database schema
     Then the ships table should not exist
     And the ship_assignments table should exist
-    And the routes table should exist
+    But the routes table should not exist

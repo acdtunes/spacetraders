@@ -4,7 +4,6 @@ from .base_container import BaseContainer
 from .command_container import CommandContainer
 from .types import ContainerStatus, RestartPolicy, ContainerInfo
 from .container_manager import ContainerManager
-from .assignment_manager import ShipAssignmentManager
 from .daemon_server import DaemonServer
 from .daemon_client import DaemonClient
 
@@ -15,7 +14,6 @@ __all__ = [
     'RestartPolicy',
     'ContainerInfo',
     'ContainerManager',
-    'ShipAssignmentManager',
     'DaemonServer',
     'DaemonClient',
 ]

@@ -494,6 +494,50 @@ class SpaceTradersBotServer {
       case "config_clear_player":
         return ["config", "clear-player"];
 
+      // ==================== CAPTAIN LOGGING ====================
+      case "captain_log_entry": {
+        const cmd = ["captain", "log", "--type", String(args.entry_type), "--narrative", String(args.narrative)];
+        if (args.player_id !== undefined) {
+          cmd.push("--player-id", String(args.player_id));
+        }
+        if (args.agent !== undefined) {
+          cmd.push("--agent", String(args.agent));
+        }
+        if (args.event_data !== undefined) {
+          cmd.push("--event-data", String(args.event_data));
+        }
+        if (args.tags !== undefined) {
+          cmd.push("--tags", String(args.tags));
+        }
+        if (args.fleet_snapshot !== undefined) {
+          cmd.push("--fleet-snapshot", String(args.fleet_snapshot));
+        }
+        return cmd;
+      }
+
+      case "captain_get_logs": {
+        const cmd = ["captain", "logs"];
+        if (args.player_id !== undefined) {
+          cmd.push("--player-id", String(args.player_id));
+        }
+        if (args.agent !== undefined) {
+          cmd.push("--agent", String(args.agent));
+        }
+        if (args.limit !== undefined) {
+          cmd.push("--limit", String(args.limit));
+        }
+        if (args.entry_type !== undefined) {
+          cmd.push("--type", String(args.entry_type));
+        }
+        if (args.since !== undefined) {
+          cmd.push("--since", String(args.since));
+        }
+        if (args.tags !== undefined) {
+          cmd.push("--tags", String(args.tags));
+        }
+        return cmd;
+      }
+
       // ==================== WAYPOINT QUERIES ====================
       case "waypoint_list": {
         const cmd = ["waypoint", "list", "--system", String(args.system)];

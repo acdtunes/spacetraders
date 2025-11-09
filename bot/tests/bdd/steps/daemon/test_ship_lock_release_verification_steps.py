@@ -2,16 +2,15 @@
 import pytest
 from pytest_bdd import scenarios, when, then, parsers
 
-from configuration.container import get_database
-from adapters.primary.daemon.assignment_manager import ShipAssignmentManager
+from configuration.container import get_ship_assignment_repository
 
 scenarios('../../features/daemon/ship_lock_release_verification.feature')
 
 
 @pytest.fixture
 def assignment_mgr():
-    """Fixture for assignment manager"""
-    return ShipAssignmentManager(get_database())
+    """Fixture for assignment repository"""
+    return get_ship_assignment_repository()
 
 
 @when(parsers.parse('I assign ship "{ship_symbol}" to container "{container_id}"'))

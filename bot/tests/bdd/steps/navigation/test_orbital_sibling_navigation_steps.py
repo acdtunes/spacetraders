@@ -146,7 +146,7 @@ def define_markets(datatable) -> List[str]:
 @when(parsers.parse('I plan a route from "{start}" to "{goal}"'))
 def plan_route(context, orbital_system: Dict, test_ship: Dict, start: str, goal: str):
     """Plan a route between two waypoints"""
-    engine = ORToolsRoutingEngine()
+    engine = ORToolsRoutingEngine(tsp_timeout=1, vrp_timeout=1)
 
     # Pass just the waypoints dict (flat Dict[str, Waypoint])
     # This matches how production code calls the routing engine
@@ -167,7 +167,7 @@ def plan_route(context, orbital_system: Dict, test_ship: Dict, start: str, goal:
 def build_vrp_distance_matrix(context, orbital_system: Dict, fleet_ships: Dict[str, str],
                                market_list: List[str]):
     """Build VRP distance matrix"""
-    engine = ORToolsRoutingEngine()
+    engine = ORToolsRoutingEngine(tsp_timeout=1, vrp_timeout=1)
 
     # Build nodes list (markets + ship starting positions)
     nodes = list(market_list)
@@ -191,7 +191,7 @@ def build_vrp_distance_matrix(context, orbital_system: Dict, fleet_ships: Dict[s
 def optimize_fleet_partitioning(context, orbital_system: Dict, fleet_ships: Dict[str, str],
                                 market_list: List[str]):
     """Run VRP fleet partitioning"""
-    engine = ORToolsRoutingEngine()
+    engine = ORToolsRoutingEngine(tsp_timeout=1, vrp_timeout=1)
 
     assignments = engine.optimize_fleet_tour(
         graph=orbital_system['waypoints'],

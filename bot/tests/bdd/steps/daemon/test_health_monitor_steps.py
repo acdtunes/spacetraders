@@ -5,7 +5,7 @@ from pytest_bdd import scenarios, given, when, then, parsers
 from unittest.mock import Mock, patch
 
 from adapters.primary.daemon.daemon_server import DaemonServer
-from adapters.primary.daemon.assignment_manager import ShipAssignmentManager
+from configuration.container import get_ship_assignment_repository
 
 # Load scenarios
 scenarios('../../features/daemon/health_monitor.feature')
@@ -31,7 +31,7 @@ def ship_was_assigned(context, ship_symbol, container_id):
     """Assign ship using public API"""
     from configuration.container import get_database
 
-    assignment_mgr = ShipAssignmentManager(get_database())
+    assignment_mgr = get_ship_assignment_repository()
     success = assignment_mgr.assign(
         player_id=context['player_id'],
         ship_symbol=ship_symbol,
@@ -99,7 +99,7 @@ def check_auto_released(context):
     """Verify assignment was released using public API"""
     from configuration.container import get_database
 
-    assignment_mgr = ShipAssignmentManager(get_database())
+    assignment_mgr = get_ship_assignment_repository()
     info = assignment_mgr.get_assignment_info(context['player_id'], context['ship_symbol'])
 
     assert info is not None, "No assignment found"
@@ -170,7 +170,7 @@ def check_assignment_remains_active(context, ship_symbol):
     """Verify assignment stays active using public API"""
     from configuration.container import get_database
 
-    assignment_mgr = ShipAssignmentManager(get_database())
+    assignment_mgr = get_ship_assignment_repository()
     info = assignment_mgr.get_assignment_info(context['player_id'], ship_symbol)
 
     assert info is not None, "No assignment found"
@@ -189,7 +189,7 @@ def multiple_stale_assignments(context, count):
     """Create multiple stale assignments using public API"""
     from configuration.container import get_database
 
-    assignment_mgr = ShipAssignmentManager(get_database())
+    assignment_mgr = get_ship_assignment_repository()
     for i in range(count):
         ship_symbol = f'SHIP-{i+1}'
         container_id = f'gone-container-{i+1}'
@@ -215,7 +215,7 @@ def check_all_released(context, count):
     """Verify all assignments released using public API"""
     from configuration.container import get_database
 
-    assignment_mgr = ShipAssignmentManager(get_database())
+    assignment_mgr = get_ship_assignment_repository()
     released_count = 0
 
     # Check each ship that was created
@@ -244,7 +244,7 @@ def ship_still_assigned_in_db(context, ship_symbol):
 
     # This step verifies that the previous assignment is still in place
     # It's already been assigned in the previous step, so we just verify
-    assignment_mgr = ShipAssignmentManager(get_database())
+    assignment_mgr = get_ship_assignment_repository()
     info = assignment_mgr.get_assignment_info(context['player_id'], ship_symbol)
 
     assert info is not None, f"No assignment found for {ship_symbol}"
@@ -271,7 +271,7 @@ def check_warning_logged(context):
     from configuration.container import get_database
 
     # Verify the assignment was actually cleaned up
-    assignment_mgr = ShipAssignmentManager(get_database())
+    assignment_mgr = get_ship_assignment_repository()
     info = assignment_mgr.get_assignment_info(context['player_id'], context['ship_symbol'])
 
     assert info is not None, "No assignment found"

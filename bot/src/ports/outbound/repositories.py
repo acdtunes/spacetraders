@@ -1,9 +1,8 @@
 from abc import ABC, abstractmethod
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from datetime import datetime
 from domain.shared.player import Player
 from domain.shared.ship import Ship
-from domain.navigation.route import Route
 from domain.shared.contract import Contract
 from domain.shared.value_objects import Waypoint
 
@@ -88,79 +87,6 @@ class IShipRepository(ABC):
 
         Raises:
             DomainException: If API call fails
-        """
-        pass
-
-
-class IRouteRepository(ABC):
-    """Port for route persistence"""
-
-    @abstractmethod
-    def create(self, route: Route) -> Route:
-        """
-        Persist new route
-
-        Args:
-            route: Route entity to persist
-
-        Returns:
-            The persisted route (same instance)
-
-        Raises:
-            DuplicateRouteError: If route with same ID already exists
-        """
-        pass
-
-    @abstractmethod
-    def find_by_id(self, route_id: str) -> Optional[Route]:
-        """
-        Find route by ID
-
-        Args:
-            route_id: Unique route identifier
-
-        Returns:
-            Route if found, None otherwise
-        """
-        pass
-
-    @abstractmethod
-    def find_by_ship(self, ship_symbol: str, player_id: int) -> List[Route]:
-        """
-        Find all routes for a ship
-
-        Args:
-            ship_symbol: Ship's unique identifier
-            player_id: Owning player's ID
-
-        Returns:
-            List of routes (empty if none found)
-        """
-        pass
-
-    @abstractmethod
-    def update(self, route: Route) -> None:
-        """
-        Update existing route
-
-        Args:
-            route: Route entity with updated state
-
-        Raises:
-            RouteNotFoundError: If route doesn't exist
-        """
-        pass
-
-    @abstractmethod
-    def delete(self, route_id: str) -> None:
-        """
-        Delete route from persistence
-
-        Args:
-            route_id: Route's unique identifier
-
-        Raises:
-            RouteNotFoundError: If route doesn't exist
         """
         pass
 
@@ -302,5 +228,105 @@ class IWaypointRepository(ABC):
 
         Returns:
             True if cache is stale or doesn't exist, False if fresh
+        """
+        pass
+
+
+class IShipAssignmentRepository(ABC):
+    """Port for ship assignment persistence
+
+    Manages ship-to-container assignments to prevent double-booking.
+    Ensures ships are only assigned to one operation at a time.
+    """
+
+    @abstractmethod
+    def assign(
+        self,
+        player_id: int,
+        ship_symbol: str,
+        container_id: str,
+        operation: str
+    ) -> bool:
+        """
+        Assign ship to container
+
+        Args:
+            player_id: Player ID
+            ship_symbol: Ship to assign
+            container_id: Container ID to assign to
+            operation: Operation type (e.g., 'navigation', 'mining', 'scouting')
+
+        Returns:
+            True if assignment successful, False if already assigned
+        """
+        pass
+
+    @abstractmethod
+    def release(
+        self,
+        player_id: int,
+        ship_symbol: str,
+        reason: str = "completed"
+    ) -> None:
+        """
+        Release ship assignment
+
+        Args:
+            player_id: Player ID
+            ship_symbol: Ship to release
+            reason: Reason for release (e.g., 'completed', 'stopped', 'failed')
+        """
+        pass
+
+    @abstractmethod
+    def check_available(
+        self,
+        player_id: int,
+        ship_symbol: str
+    ) -> bool:
+        """
+        Check if ship is available for assignment
+
+        Args:
+            player_id: Player ID
+            ship_symbol: Ship to check
+
+        Returns:
+            True if ship is available (idle or not assigned)
+        """
+        pass
+
+    @abstractmethod
+    def get_assignment_info(
+        self,
+        player_id: int,
+        ship_symbol: str
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Get assignment info for a ship
+
+        Args:
+            player_id: Player ID
+            ship_symbol: Ship to check
+
+        Returns:
+            Dict with status, container_id, operation, assigned_at,
+            released_at, release_reason, or None if not found
+        """
+        pass
+
+    @abstractmethod
+    def release_all_active_assignments(self, reason: str = "daemon_restart") -> int:
+        """
+        Release all active ship assignments
+
+        Called on daemon startup to clean up zombie assignments
+        from crashed or killed daemon instances.
+
+        Args:
+            reason: Reason for release (default: 'daemon_restart')
+
+        Returns:
+            Number of assignments released
         """
         pass

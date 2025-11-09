@@ -71,7 +71,7 @@ def waypoint_at_position(context, symbol: str, x: int, y: int, has_fuel: str):
 @when('the routing engine receives the graph for pathfinding')
 def routing_engine_receives_graph(context):
     """Routing engine receives the graph"""
-    engine = ORToolsRoutingEngine()
+    engine = ORToolsRoutingEngine(tsp_timeout=1, vrp_timeout=1)
 
     # Attempt to call with flat dictionary (CORRECT)
     if len(context['test_waypoints']) >= 2:
@@ -117,7 +117,7 @@ def routing_engine_receives_graph(context):
 @when(parsers.parse('the routing engine finds optimal path from "{start}" to "{goal}"'))
 def routing_engine_finds_path(context, start: str, goal: str):
     """Routing engine pathfinding with flat dictionary"""
-    engine = ORToolsRoutingEngine()
+    engine = ORToolsRoutingEngine(tsp_timeout=1, vrp_timeout=1)
 
     try:
         result = engine.find_optimal_path(

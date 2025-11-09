@@ -34,7 +34,6 @@ def reset_test_environment():
     # Order matters due to foreign key constraints - delete children first
     with db.transaction() as conn:
         cursor = conn.cursor()
-        cursor.execute("DELETE FROM routes")
         cursor.execute("DELETE FROM ship_assignments")
         cursor.execute("DELETE FROM container_logs")
         cursor.execute("DELETE FROM containers")

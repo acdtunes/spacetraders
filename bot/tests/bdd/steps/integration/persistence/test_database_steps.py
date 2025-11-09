@@ -320,12 +320,7 @@ def test_players_schema():
 
 
 # Ships table scenario removed - ships data now fetched from API
-
-@scenario("../../../features/integration/persistence/database.feature",
-          "Routes table has correct schema")
-def test_routes_schema():
-    pass
-
+# Routes table scenario removed - routes no longer cached
 
 @scenario("../../../features/integration/persistence/database.feature",
           "System graphs table has correct schema")

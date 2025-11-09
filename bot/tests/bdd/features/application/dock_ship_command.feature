@@ -30,7 +30,7 @@ Feature: Dock Ship Command
 
   # Eventual Consistency - Waiting for Ship State
   Scenario: Dock command waits for ship in transit to arrive
-    Given a ship "TEST-SHIP-1" for player 1 in transit arriving in 2 seconds
+    Given a ship "TEST-SHIP-1" for player 1 in transit arriving in 0.1 seconds
     When I execute dock ship command for "TEST-SHIP-1" and player 1
     Then the handler should wait for arrival
     And the ship should be docked after waiting

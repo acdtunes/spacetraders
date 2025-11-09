@@ -40,8 +40,8 @@ def ship_assignments_table_should_exist(context):
         f"Database should have 'ship_assignments' table. Tables: {context['tables']}"
 
 
-@then('the routes table should exist')
-def routes_table_should_exist(context):
-    """Verify routes table exists"""
-    assert 'routes' in context['tables'], \
-        f"Database should have 'routes' table. Tables: {context['tables']}"
+@then('the routes table should not exist')
+def routes_table_should_not_exist(context):
+    """Verify routes table does not exist"""
+    assert 'routes' not in context['tables'], \
+        f"Database should not have 'routes' table, but it exists. Tables: {context['tables']}"

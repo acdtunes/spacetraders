@@ -23,8 +23,8 @@ scenarios('../../features/navigation/pre_departure_refuel.feature')
 
 @given('the routing engine is initialized')
 def initialize_routing_engine(context):
-    """Initialize the routing engine"""
-    context['routing_engine'] = ORToolsRoutingEngine()
+    """Initialize the routing engine with reduced timeouts for fast tests"""
+    context['routing_engine'] = ORToolsRoutingEngine(tsp_timeout=1, vrp_timeout=1)
     context['waypoints'] = {}
 
 

@@ -29,6 +29,15 @@ fi
 # Clean up stale PID file
 rm -f var/daemon.pid
 
+# Load environment variables from .env file
+if [ -f .env ]; then
+    echo "  Loading DATABASE_URL from .env..."
+    export $(grep -v '^#' .env | xargs)
+else
+    echo "⚠️  WARNING: .env file not found, using default PostgreSQL connection"
+    export DATABASE_URL="postgresql://spacetraders:dev_password@localhost:5432/spacetraders"
+fi
+
 # Start daemon
 echo "  Starting daemon..."
 PYTHONPATH=src:$PYTHONPATH uv run python -m adapters.primary.daemon.daemon_server > /tmp/daemon.log 2>&1 &

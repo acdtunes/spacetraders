@@ -14,10 +14,11 @@ from pymediatr import Mediator
 from adapters.secondary.persistence.database import Database
 from adapters.secondary.persistence.player_repository import PlayerRepository
 from adapters.secondary.persistence.ship_repository import ShipRepository
-from adapters.secondary.persistence.route_repository import RouteRepository
 from adapters.secondary.persistence.market_repository import MarketRepository
 from adapters.secondary.persistence.contract_repository import ContractRepository
 from adapters.secondary.persistence.waypoint_repository import WaypointRepository
+from adapters.secondary.persistence.ship_assignment_repository import ShipAssignmentRepository
+from adapters.secondary.persistence.captain_log_repository import CaptainLogRepository
 from adapters.secondary.api.client import SpaceTradersAPIClient
 from adapters.secondary.routing.ortools_engine import ORToolsRoutingEngine
 from adapters.secondary.routing.graph_builder import GraphBuilder
@@ -172,6 +173,14 @@ from application.waypoints.queries.list_waypoints import (
     ListWaypointsQuery,
     ListWaypointsHandler
 )
+from application.captain.commands.log_captain_entry import (
+    LogCaptainEntryCommand,
+    LogCaptainEntryHandler
+)
+from application.captain.queries.get_captain_logs import (
+    GetCaptainLogsQuery,
+    GetCaptainLogsHandler
+)
 from application.common.behaviors import (
     LoggingBehavior,
     ValidationBehavior
@@ -179,7 +188,11 @@ from application.common.behaviors import (
 from ports.outbound.api_client import ISpaceTradersAPI
 from ports.outbound.graph_provider import IGraphBuilder, ISystemGraphProvider
 from ports.routing_engine import IRoutingEngine
-from ports.repositories import IShipRepository, IRouteRepository, IWaypointRepository
+from ports.outbound.repositories import (
+    IShipRepository,
+    IWaypointRepository,
+    IShipAssignmentRepository
+)
 from ports.outbound.market_repository import IMarketRepository
 from .settings import settings
 
@@ -188,10 +201,11 @@ from .settings import settings
 _db = None
 _player_repo = None
 _ship_repo = None
-_route_repo = None
 _market_repo = None
 _contract_repo = None
 _waypoint_repo = None
+_ship_assignment_repo = None
+_captain_log_repo = None
 _graph_provider = None
 _graph_builder = None
 _routing_engine = None
@@ -202,12 +216,23 @@ def get_database() -> Database:
     """
     Get or create database instance.
 
+    Database path resolution priority:
+    1. SPACETRADERS_DB_PATH environment variable
+    2. settings.db_path default
+
     Returns:
         Database: Singleton database instance
     """
     global _db
     if _db is None:
-        _db = Database(settings.db_path)
+        import os
+        # Let Database class handle env var resolution
+        # Only pass explicit path if no env var is set
+        env_db_path = os.environ.get("SPACETRADERS_DB_PATH")
+        if env_db_path:
+            _db = Database(db_path=env_db_path)
+        else:
+            _db = Database(db_path=settings.db_path)
     return _db
 
 
@@ -309,19 +334,6 @@ def get_ship_repository() -> IShipRepository:
     return _ship_repo
 
 
-def get_route_repository() -> IRouteRepository:
-    """
-    Get or create route repository.
-
-    Returns:
-        IRouteRepository: Singleton route repository instance
-    """
-    global _route_repo
-    if _route_repo is None:
-        _route_repo = RouteRepository(get_database())
-    return _route_repo
-
-
 def get_market_repository() -> IMarketRepository:
     """
     Get or create market repository.
@@ -363,6 +375,33 @@ def get_waypoint_repository() -> IWaypointRepository:
         )
     return _waypoint_repo
 
+
+def get_ship_assignment_repository() -> IShipAssignmentRepository:
+    """
+    Get or create ship assignment repository.
+
+    Returns:
+        IShipAssignmentRepository: Singleton ship assignment repository instance
+    """
+    global _ship_assignment_repo
+    if _ship_assignment_repo is None:
+        _ship_assignment_repo = ShipAssignmentRepository(get_database())
+    return _ship_assignment_repo
+
+
+def get_captain_log_repository():
+    """
+    Get or create captain log repository.
+
+    Returns:
+        CaptainLogRepository: Singleton captain log repository instance
+    """
+    global _captain_log_repo
+    if _captain_log_repo is None:
+        _captain_log_repo = CaptainLogRepository(get_database())
+    return _captain_log_repo
+
+
 def get_mediator() -> Mediator:
     """
     Get or create configured mediator with all handlers registered.
@@ -387,7 +426,6 @@ def get_mediator() -> Mediator:
         # Get basic dependencies (database-only, no API)
         player_repo = get_player_repository()
         ship_repo = get_ship_repository()
-        route_repo = get_route_repository()
 
         # Lazy dependencies - only initialized when handlers that need them are called
         # Don't initialize these here as they require API client
@@ -590,6 +628,19 @@ def get_mediator() -> Mediator:
             lambda: FindCheapestMarketHandler(db)
         )
 
+        # ===== Captain Command Handlers =====
+        captain_log_repo = get_captain_log_repository()
+        _mediator.register_handler(
+            LogCaptainEntryCommand,
+            lambda: LogCaptainEntryHandler(captain_log_repo, player_repo)
+        )
+
+        # ===== Captain Query Handlers =====
+        _mediator.register_handler(
+            GetCaptainLogsQuery,
+            lambda: GetCaptainLogsHandler(captain_log_repo, player_repo)
+        )
+
     return _mediator
 
 
@@ -625,8 +676,8 @@ def reset_container():
 
     Useful for testing to ensure clean state between tests.
     """
-    global _db, _player_repo, _ship_repo, _route_repo, _market_repo, _contract_repo, _waypoint_repo
-    global _graph_provider, _graph_builder, _routing_engine, _mediator, _daemon_client
+    global _db, _player_repo, _ship_repo, _market_repo, _contract_repo, _waypoint_repo
+    global _ship_assignment_repo, _captain_log_repo, _graph_provider, _graph_builder, _routing_engine, _mediator, _daemon_client
 
     # Close database connection before resetting to ensure in-memory database is properly cleaned up
     if _db is not None:
@@ -635,10 +686,11 @@ def reset_container():
     _db = None
     _player_repo = None
     _ship_repo = None
-    _route_repo = None
     _market_repo = None
     _contract_repo = None
     _waypoint_repo = None
+    _ship_assignment_repo = None
+    _captain_log_repo = None
     _graph_provider = None
     _graph_builder = None
     _routing_engine = None

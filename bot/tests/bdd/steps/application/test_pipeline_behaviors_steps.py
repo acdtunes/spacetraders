@@ -284,6 +284,17 @@ def logger_should_log(context, message):
     )
 
 
+@then("the logger should not log any INFO messages")
+def logger_should_not_log_info(context):
+    """Verify logger did not log any INFO messages"""
+    mock_logger = context['mock_logger']
+    # Check that info was not called
+    assert mock_logger.info.call_count == 0, (
+        f"Expected no INFO logs but found {mock_logger.info.call_count} calls: "
+        f"{mock_logger.info.call_args_list}"
+    )
+
+
 @then("the next handler should be called")
 def next_handler_called(context):
     """Verify next handler was called by checking we got a result"""

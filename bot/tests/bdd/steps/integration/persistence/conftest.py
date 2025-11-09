@@ -7,7 +7,6 @@ from datetime import datetime
 from adapters.secondary.persistence.database import Database
 from adapters.secondary.persistence.player_repository import PlayerRepository
 from adapters.secondary.persistence.ship_repository import ShipRepository
-from adapters.secondary.persistence.route_repository import RouteRepository
 from domain.shared.player import Player
 from domain.shared.ship import Ship
 from domain.shared.value_objects import Waypoint, Fuel
@@ -86,12 +85,6 @@ def player_repository(db):
 def ship_repository(db, graph_provider):
     """Create ship repository"""
     return ShipRepository(db, graph_provider)
-
-
-@pytest.fixture
-def route_repository(db):
-    """Create route repository"""
-    return RouteRepository(db)
 
 
 @pytest.fixture

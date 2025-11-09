@@ -9,6 +9,7 @@ from .shipyard_cli import setup_shipyard_commands
 from .scouting_cli import setup_scouting_commands
 from .contract_cli import setup_contract_commands
 from .waypoint_cli import setup_waypoint_commands
+from .captain_cli import setup_captain_commands
 
 def main():
     parser = argparse.ArgumentParser(description="SpaceTraders V2")
@@ -23,6 +24,7 @@ def main():
     setup_scouting_commands(subparsers)
     setup_contract_commands(subparsers)
     setup_waypoint_commands(subparsers)
+    setup_captain_commands(subparsers)
 
     args = parser.parse_args()
 

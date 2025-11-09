@@ -5,19 +5,12 @@ Feature: Pipeline Behaviors
 
   # LoggingBehavior Tests
 
-  Scenario: LoggingBehavior logs request execution start
+  Scenario: LoggingBehavior does not log successful execution
     Given the logging behavior is initialized
     And a test request named "TestRequest"
     And a mock next handler that returns success
     When I execute the logging behavior with the request
-    Then the logger should log "Executing TestRequest"
-
-  Scenario: LoggingBehavior logs request completion
-    Given the logging behavior is initialized
-    And a test request named "TestRequest"
-    And a mock next handler that returns success
-    When I execute the logging behavior with the request
-    Then the logger should log "Successfully completed TestRequest"
+    Then the logger should not log any INFO messages
 
   Scenario: LoggingBehavior calls next handler
     Given the logging behavior is initialized
@@ -57,15 +50,6 @@ Feature: Pipeline Behaviors
     And a mock next handler that raises ValueError "Test error"
     When I execute the logging behavior with the request
     Then the execution should fail with ValueError "Test error"
-
-  Scenario: LoggingBehavior logs different request types
-    Given the logging behavior is initialized
-    And a test request named "GetPlayerQuery"
-    And a test request named "NavigateShipCommand"
-    And a mock next handler that returns success
-    When I execute the logging behavior with all requests
-    Then the logger should log "GetPlayerQuery"
-    And the logger should log "NavigateShipCommand"
 
   # ValidationBehavior Tests
 

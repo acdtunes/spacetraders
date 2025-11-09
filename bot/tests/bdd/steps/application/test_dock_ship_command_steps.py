@@ -282,7 +282,7 @@ def test_dock_waits_for_transit():
     pass
 
 
-@given(parsers.parse('a ship "{ship_symbol}" for player {player_id:d} in transit arriving in {seconds:d} seconds'))
+@given(parsers.parse('a ship "{ship_symbol}" for player {player_id:d} in transit arriving in {seconds:f} seconds'))
 def create_ship_in_transit_arriving(context, ship_symbol, player_id, seconds, mock_ship_repo, mock_api):
     """Create a ship that is in transit with a specific arrival time"""
     waypoint = Waypoint(

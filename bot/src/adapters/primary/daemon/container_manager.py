@@ -111,6 +111,8 @@ class ContainerManager:
 
             # Persist container to database
             import json
+            # Extract command_type from config for easier filtering
+            command_type = config_copy.get('command_type')
             self._database.insert_container(
                 container_id=container_id,
                 player_id=player_id,
@@ -118,7 +120,8 @@ class ContainerManager:
                 status=ContainerStatus.STARTING.value,
                 restart_policy=restart_policy,
                 config=json.dumps(config_copy),
-                started_at=info.started_at.isoformat()
+                started_at=info.started_at.isoformat(),
+                command_type=command_type
             )
 
             logger.info(f"Created container {container_id} (type={container_type})")

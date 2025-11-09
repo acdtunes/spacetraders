@@ -31,7 +31,7 @@ Feature: Orbit Ship Command
 
   # Eventual Consistency - Waiting for Ship State
   Scenario: Orbit command waits for ship in transit to arrive
-    Given a ship "TEST-SHIP-1" for player 1 in transit arriving in 2 seconds at "X1-TEST-AB12"
+    Given a ship "TEST-SHIP-1" for player 1 in transit arriving in 0.1 seconds at "X1-TEST-AB12"
     When I execute orbit command for ship "TEST-SHIP-1" and player 1
     Then the command should succeed
     And the ship status should be "IN_ORBIT"

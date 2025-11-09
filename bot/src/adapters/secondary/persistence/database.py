@@ -3,8 +3,9 @@ import logging
 import os
 from pathlib import Path
 from contextlib import contextmanager
-from typing import Optional, List, Dict, Any, Union
-from datetime import datetime
+from typing import Optional, List, Dict, Any, Union, Tuple
+from datetime import datetime, timedelta
+import threading
 
 logger = logging.getLogger(__name__)
 
@@ -29,21 +30,22 @@ class ConnectionWrapper:
         For SQLite: Calls execute() directly on the connection (SQLite supports this)
         For psycopg2: Gets a cursor first, then calls execute (psycopg2 requires this)
         """
-        converted_sql = self._converter(sql)
-
         # Check if the underlying connection has execute() method (SQLite)
         # psycopg2 connections don't have execute() - they require cursor()
         if hasattr(self._connection, 'execute'):
-            # SQLite path - direct execute on connection
+            # SQLite path - direct execute on connection (convert here)
+            converted_sql = self._converter(sql)
             if parameters is None:
                 return self._connection.execute(converted_sql)
             return self._connection.execute(converted_sql, parameters)
         else:
-            # psycopg2 path - must use cursor
+            # psycopg2 path - must use cursor (let CursorWrapper do the conversion)
             cursor = self.cursor()
             if parameters is None:
-                return cursor.execute(converted_sql)
-            return cursor.execute(converted_sql, parameters)
+                cursor.execute(sql)  # Pass original SQL, cursor will convert
+            else:
+                cursor.execute(sql, parameters)  # Pass original SQL, cursor will convert
+            return cursor  # Return the cursor, not the result of execute() (which is None)
 
     def cursor(self):
         """Get a cursor that auto-converts SQL"""
@@ -159,6 +161,12 @@ class Database:
 
             logger.info(f"Using SQLite backend: {self.db_path}")
 
+        # Initialize log deduplication cache
+        self._log_dedup_cache: Dict[Tuple[str, str], datetime] = {}
+        self._log_dedup_lock = threading.Lock()
+        self._log_dedup_window = timedelta(seconds=60)  # 60-second deduplication window
+        self._log_dedup_max_size = 10000  # Max cache entries before cleanup
+
         self._init_database()
         logger.info(f"Database initialized")
 
@@ -273,7 +281,7 @@ class Database:
         """
         Convert SQLite-style placeholders (?) to backend-specific format.
 
-        For PostgreSQL: ? -> $1, $2, $3, ...
+        For PostgreSQL: ? -> $1, $2, $3, ... (PostgreSQL numbered parameters)
         For SQLite: no conversion needed
 
         Args:
@@ -285,19 +293,17 @@ class Database:
         if self.backend != 'postgresql':
             return sql
 
-        # Convert ? to $1, $2, $3, etc. for PostgreSQL
+        # Convert ? to $1, $2, $3, ... for PostgreSQL
         result = []
-        placeholder_count = 0
+        param_num = 1
         i = 0
-
         while i < len(sql):
             if sql[i] == '?':
-                placeholder_count += 1
-                result.append(f'${placeholder_count}')
+                result.append(f'${param_num}')
+                param_num += 1
             else:
                 result.append(sql[i])
             i += 1
-
         return ''.join(result)
 
     def _init_database(self):
@@ -370,31 +376,6 @@ class Database:
             # (location, fuel, cargo) is always fresh from the SpaceTraders API.
             # This prevents stale data issues and eliminates sync complexity.
 
-            # Routes table (FK to ships removed since ships are API-only)
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS routes (
-                    route_id TEXT PRIMARY KEY,
-                    ship_symbol TEXT NOT NULL,
-                    player_id INTEGER NOT NULL,
-                    status TEXT NOT NULL,
-                    current_segment_index INTEGER NOT NULL,
-                    ship_fuel_capacity INTEGER NOT NULL,
-                    segments_json TEXT NOT NULL,
-                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (player_id) REFERENCES players(player_id) ON DELETE CASCADE
-                )
-            """)
-
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_routes_ship
-                ON routes(ship_symbol, player_id)
-            """)
-
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_routes_status
-                ON routes(status)
-            """)
-
             # Ship assignments table (for container system)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS ship_assignments (
@@ -417,6 +398,7 @@ class Database:
                     container_id TEXT NOT NULL,
                     player_id INTEGER NOT NULL,
                     container_type TEXT,
+                    command_type TEXT,
                     status TEXT,
                     restart_policy TEXT,
                     restart_count INTEGER DEFAULT 0,
@@ -429,6 +411,43 @@ class Database:
                     FOREIGN KEY (player_id) REFERENCES players(player_id) ON DELETE CASCADE
                 )
             """)
+
+            # Migrate existing containers: add command_type column if missing
+            if self.backend == 'sqlite':
+                # Check if command_type column exists
+                cursor.execute("PRAGMA table_info(containers)")
+                columns = [row[1] for row in cursor.fetchall()]
+                if 'command_type' not in columns:
+                    cursor.execute("ALTER TABLE containers ADD COLUMN command_type TEXT DEFAULT NULL")
+                    logger.info("Added command_type column to containers table")
+            elif self.backend == 'postgresql':
+                # Check if command_type column exists
+                cursor.execute("""
+                    SELECT column_name FROM information_schema.columns
+                    WHERE table_name = 'containers' AND column_name = 'command_type'
+                """)
+                if not cursor.fetchone():
+                    cursor.execute("ALTER TABLE containers ADD COLUMN command_type TEXT DEFAULT NULL")
+                    logger.info("Added command_type column to containers table")
+
+            # Backfill command_type from JSON config for existing containers
+            if self.backend == 'sqlite':
+                cursor.execute("""
+                    UPDATE containers
+                    SET command_type = json_extract(config, '$.command_type')
+                    WHERE command_type IS NULL AND config IS NOT NULL
+                """)
+                updated_count = cursor.execute("SELECT changes()").fetchone()[0]
+                if updated_count > 0:
+                    logger.info(f"Backfilled command_type for {updated_count} existing containers")
+            elif self.backend == 'postgresql':
+                cursor.execute("""
+                    UPDATE containers
+                    SET command_type = config::json->>'command_type'
+                    WHERE command_type IS NULL AND config IS NOT NULL
+                """)
+                if cursor.rowcount > 0:
+                    logger.info(f"Backfilled command_type for {cursor.rowcount} existing containers")
 
             # Container logs table
             if self.backend == 'postgresql':
@@ -579,9 +598,52 @@ class Database:
                     # Set default to NULL so we can detect waypoints that have never been synced
                     cursor.execute("ALTER TABLE waypoints ADD COLUMN synced_at TIMESTAMP DEFAULT NULL")
 
+            # Captain logs table (narrative mission logs from TARS AI captain)
+            if self.backend == 'postgresql':
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS captain_logs (
+                        log_id SERIAL PRIMARY KEY,
+                        player_id INTEGER NOT NULL,
+                        timestamp TIMESTAMP NOT NULL,
+                        entry_type TEXT NOT NULL,
+                        narrative TEXT NOT NULL,
+                        event_data TEXT,
+                        tags TEXT,
+                        fleet_snapshot TEXT,
+                        FOREIGN KEY (player_id) REFERENCES players(player_id) ON DELETE CASCADE
+                    )
+                """)
+            else:
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS captain_logs (
+                        log_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        player_id INTEGER NOT NULL,
+                        timestamp TIMESTAMP NOT NULL,
+                        entry_type TEXT NOT NULL,
+                        narrative TEXT NOT NULL,
+                        event_data TEXT,
+                        tags TEXT,
+                        fleet_snapshot TEXT,
+                        FOREIGN KEY (player_id) REFERENCES players(player_id) ON DELETE CASCADE
+                    )
+                """)
+
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_captain_logs_player_time
+                ON captain_logs(player_id, timestamp DESC)
+            """)
+
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_captain_logs_entry_type
+                ON captain_logs(player_id, entry_type)
+            """)
+
     def log_to_database(self, container_id: str, player_id: int, message: str, level: str = "INFO"):
         """
-        Log container message to database.
+        Log container message to database with time-windowed deduplication.
+
+        Suppresses duplicate messages within the deduplication window (default 60 seconds)
+        to reduce log volume while preserving all unique events.
 
         Args:
             container_id: Container identifier
@@ -589,12 +651,55 @@ class Database:
             message: Log message
             level: Log level (INFO, WARNING, ERROR, DEBUG)
         """
+        now = datetime.now()
+        cache_key = (container_id, message)
+
+        # Thread-safe deduplication check
+        with self._log_dedup_lock:
+            # Check if this message was logged recently
+            if cache_key in self._log_dedup_cache:
+                last_logged = self._log_dedup_cache[cache_key]
+                if now - last_logged < self._log_dedup_window:
+                    # Duplicate within window, skip logging
+                    return
+
+            # Clean up cache if it's getting too large
+            if len(self._log_dedup_cache) >= self._log_dedup_max_size:
+                self._cleanup_dedup_cache()
+
+            # Update cache with current timestamp
+            self._log_dedup_cache[cache_key] = now
+
+        # Log to database (outside lock to minimize lock contention)
         with self.transaction() as conn:
             conn.execute("""
                 INSERT INTO container_logs
                 (container_id, player_id, timestamp, level, message)
                 VALUES (?, ?, ?, ?, ?)
-            """, (container_id, player_id, datetime.now().isoformat(), level, message))
+            """, (container_id, player_id, now.isoformat(), level, message))
+
+    def _cleanup_dedup_cache(self):
+        """
+        Clean up old entries from the deduplication cache.
+
+        Removes entries older than the deduplication window to prevent unbounded
+        memory growth. Called automatically when cache size exceeds threshold.
+
+        Note: Must be called while holding self._log_dedup_lock
+        """
+        now = datetime.now()
+        cutoff = now - self._log_dedup_window
+
+        # Remove entries older than the deduplication window
+        keys_to_remove = [
+            key for key, timestamp in self._log_dedup_cache.items()
+            if timestamp < cutoff
+        ]
+
+        for key in keys_to_remove:
+            del self._log_dedup_cache[key]
+
+        logger.debug(f"Cleaned up {len(keys_to_remove)} old entries from log deduplication cache")
 
     def get_container_logs(
         self,
@@ -645,7 +750,7 @@ class Database:
                     'log_id': row['log_id'],
                     'container_id': row['container_id'],
                     'player_id': row['player_id'],
-                    'timestamp': row['timestamp'],
+                    'timestamp': row['timestamp'].isoformat() if isinstance(row['timestamp'], datetime) else row['timestamp'],
                     'level': row['level'],
                     'message': row['message']
                 }
@@ -660,7 +765,8 @@ class Database:
         status: str,
         restart_policy: str,
         config: str,
-        started_at: str
+        started_at: str,
+        command_type: Optional[str] = None
     ):
         """
         Insert a new container record into the database.
@@ -673,14 +779,15 @@ class Database:
             restart_policy: Restart policy ('no', 'on-failure', 'always')
             config: JSON string of container configuration
             started_at: ISO format timestamp when container was started
+            command_type: Optional command type (e.g., 'scout_markets', 'navigate', 'purchase_ship')
         """
         with self.transaction() as conn:
             conn.execute("""
                 INSERT INTO containers (
-                    container_id, player_id, container_type, status,
+                    container_id, player_id, container_type, command_type, status,
                     restart_policy, restart_count, config, started_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, (container_id, player_id, container_type, status, restart_policy, 0, config, started_at))
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (container_id, player_id, container_type, command_type, status, restart_policy, 0, config, started_at))
 
     def update_container_status(
         self,

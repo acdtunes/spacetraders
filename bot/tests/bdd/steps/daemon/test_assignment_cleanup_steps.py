@@ -5,7 +5,7 @@ from pytest_bdd import scenarios, given, when, then, parsers
 from datetime import datetime
 
 from adapters.primary.daemon.command_container import CommandContainer
-from adapters.primary.daemon.assignment_manager import ShipAssignmentManager
+from configuration.container import get_ship_assignment_repository
 from adapters.primary.daemon.types import ContainerStatus
 
 # Load scenarios
@@ -45,7 +45,7 @@ def assign_ship_to_container(context, ship_symbol):
     """Assign ship to container"""
     from configuration.container import get_database
 
-    assignment_mgr = ShipAssignmentManager(get_database())
+    assignment_mgr = get_ship_assignment_repository()
     success = assignment_mgr.assign(
         context['player_id'],
         ship_symbol,
@@ -162,7 +162,7 @@ def check_assignment_released(context, ship_symbol):
     """Verify ship assignment was released using public API"""
     from configuration.container import get_database
 
-    assignment_mgr = ShipAssignmentManager(get_database())
+    assignment_mgr = get_ship_assignment_repository()
 
     # Use public API instead of direct SQL
     info = assignment_mgr.get_assignment_info(context['player_id'], ship_symbol)
@@ -184,7 +184,7 @@ def check_release_reason(context, reason):
     """Verify release reason using public API"""
     from configuration.container import get_database
 
-    assignment_mgr = ShipAssignmentManager(get_database())
+    assignment_mgr = get_ship_assignment_repository()
 
     # Use public API instead of direct SQL
     info = assignment_mgr.get_assignment_info(context['player_id'], context['ship_symbol'])

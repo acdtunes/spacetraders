@@ -240,7 +240,7 @@ def check_ship_properties(context, datatable):
             f"Property {prop}: expected {expected}, got {actual}"
 
 
-@given(parsers.parse('a ship "{ship_symbol}" for player {player_id:d} in transit arriving in {seconds:d} seconds at "{location}"'))
+@given(parsers.parse('a ship "{ship_symbol}" for player {player_id:d} in transit arriving in {seconds:f} seconds at "{location}"'))
 def create_ship_in_transit_arriving_at(context, ship_symbol, player_id, seconds, location):
     """Create a ship that is in transit with a specific arrival time"""
     from datetime import datetime, timedelta, timezone

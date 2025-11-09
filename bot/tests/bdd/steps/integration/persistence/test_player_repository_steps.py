@@ -289,7 +289,9 @@ def check_metadata_key(context, key):
 
 @then("the player last_active should be updated")
 def check_last_active_updated(context):
-    assert context["found"].last_active == datetime(2025, 1, 3, 15, 0, 0)
+    from datetime import timezone
+    expected = datetime(2025, 1, 3, 15, 0, 0, tzinfo=timezone.utc)
+    assert context["found"].last_active == expected
 
 
 @then("no error should occur")

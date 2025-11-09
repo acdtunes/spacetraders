@@ -512,5 +512,80 @@ export const botToolDefinitions: Tool[] = [
       type: "object",
       properties: {}
     }
+  },
+
+  // ==================== CAPTAIN LOGGING ====================
+  {
+    name: "captain_log_entry",
+    description: "Log a narrative mission entry from the captain (TARS). Stores narrative prose along with structured event data and fleet snapshots for continuity across sessions.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        player_id: {
+          type: "integer",
+          description: "Player ID (optional if agent specified)"
+        },
+        agent: {
+          type: "string",
+          description: "Agent symbol (e.g., ENDURANCE) - alternative to player_id"
+        },
+        entry_type: {
+          type: "string",
+          description: "Type of log entry",
+          enum: ["session_start", "operation_started", "operation_completed", "critical_error", "strategic_decision", "session_end"]
+        },
+        narrative: {
+          type: "string",
+          description: "The narrative prose from captain-logger agent"
+        },
+        event_data: {
+          type: "string",
+          description: "Optional JSON string of structured event data (e.g., '{\"ship\": \"ENDURANCE-1\", \"operation\": \"mining\"}')"
+        },
+        tags: {
+          type: "string",
+          description: "Optional comma-separated tags (e.g., 'mining,iron_ore,attempt_3')"
+        },
+        fleet_snapshot: {
+          type: "string",
+          description: "Optional JSON string of fleet state (e.g., '{\"active_miners\": 7, \"total_credits\": 50000}')"
+        }
+      },
+      required: ["entry_type", "narrative"]
+    }
+  },
+  {
+    name: "captain_get_logs",
+    description: "Retrieve captain mission logs with optional filtering by entry type, time range, or tags. Returns narrative entries with their metadata for continuity and context.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        player_id: {
+          type: "integer",
+          description: "Player ID (optional if agent specified)"
+        },
+        agent: {
+          type: "string",
+          description: "Agent symbol - alternative to player_id"
+        },
+        limit: {
+          type: "integer",
+          description: "Maximum number of entries to return (default: 100)"
+        },
+        entry_type: {
+          type: "string",
+          description: "Filter by entry type",
+          enum: ["session_start", "operation_started", "operation_completed", "critical_error", "strategic_decision", "session_end"]
+        },
+        since: {
+          type: "string",
+          description: "ISO timestamp - only return logs after this time (e.g., '2025-11-08T00:00:00')"
+        },
+        tags: {
+          type: "string",
+          description: "Comma-separated tags to filter by (e.g., 'mining,iron_ore')"
+        }
+      }
+    }
   }
 ] as const;

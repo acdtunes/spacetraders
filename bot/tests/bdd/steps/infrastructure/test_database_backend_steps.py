@@ -141,9 +141,9 @@ def check_tables_created(context):
             tables = {row[0] for row in cursor.fetchall()}
 
         expected_tables = {
-            'players', 'system_graphs', 'routes', 'ship_assignments',
+            'players', 'system_graphs', 'ship_assignments',
             'containers', 'container_logs', 'market_data', 'contracts',
-            'waypoints'
+            'waypoints', 'captain_logs'
         }
 
         assert expected_tables.issubset(tables), \

@@ -3,7 +3,6 @@ from pytest_bdd import scenarios, given, when, then, parsers
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 from domain.shared.value_objects import Waypoint
-from adapters.secondary.routing.ortools_engine import ORToolsRoutingEngine
 
 
 scenarios('../../features/routing/vrp_market_distribution.feature')
@@ -82,15 +81,14 @@ def ship_at_waypoint(ship, waypoint, current, capacity, speed, context):
 
 
 @when("I optimize fleet tour for markets:")
-def optimize_fleet_tour_from_table(datatable, context):
+def optimize_fleet_tour_from_table(datatable, context, routing_engine):
     """Optimize VRP with markets from data table"""
     # Data table has no header row - each row is a single market symbol
     markets = [row[0] for row in datatable if row]
     context['vrp'].markets = markets
 
-    engine = ORToolsRoutingEngine()
     try:
-        assignments = engine.optimize_fleet_tour(
+        assignments = routing_engine.optimize_fleet_tour(
             graph=context['vrp'].graph,
             markets=markets,
             ship_locations=context['vrp'].ship_locations,
@@ -105,15 +103,14 @@ def optimize_fleet_tour_from_table(datatable, context):
 
 
 @when(parsers.parse("I optimize fleet tour for {count:d} markets"))
-def optimize_fleet_tour_for_count(count, context):
+def optimize_fleet_tour_for_count(count, context, routing_engine):
     """Optimize VRP with all markets in graph"""
     # Use all waypoints in graph as markets
     markets = list(context['vrp'].graph.keys())[:count]
     context['vrp'].markets = markets
 
-    engine = ORToolsRoutingEngine()
     try:
-        assignments = engine.optimize_fleet_tour(
+        assignments = routing_engine.optimize_fleet_tour(
             graph=context['vrp'].graph,
             markets=markets,
             ship_locations=context['vrp'].ship_locations,
@@ -223,16 +220,15 @@ def load_balanced_across_ships(context):
 
 
 @when("I build the VRP distance matrix for markets:")
-def build_vrp_distance_matrix(datatable, context):
+def build_vrp_distance_matrix(datatable, context, routing_engine):
     """Build VRP distance matrix and capture it for inspection"""
     markets = [row[0] for row in datatable if row]
     context['vrp'].markets = markets
 
-    engine = ORToolsRoutingEngine()
     try:
         # Build distance matrix directly
         nodes = list(context['vrp'].graph.keys())
-        distance_matrix = engine._build_distance_matrix_for_vrp(
+        distance_matrix = routing_engine._build_distance_matrix_for_vrp(
             nodes=nodes,
             graph=context['vrp'].graph,
             fuel_capacity=context['vrp'].fuel_capacity,
@@ -246,7 +242,7 @@ def build_vrp_distance_matrix(datatable, context):
 
 
 @then(parsers.parse('the distance from "{origin}" to "{destination}" should reflect pathfinding with refueling'))
-def distance_reflects_pathfinding_with_refueling(origin, destination, context):
+def distance_reflects_pathfinding_with_refueling(origin, destination, context, routing_engine):
     """Verify distance matrix entry uses actual pathfinding for routes requiring refueling"""
     if context['vrp'].exception:
         raise AssertionError(f"Distance matrix build failed: {context['vrp'].exception}")
@@ -260,9 +256,8 @@ def distance_reflects_pathfinding_with_refueling(origin, destination, context):
 
     matrix_distance = context['vrp'].distance_matrix[origin_idx][dest_idx]
 
-    # Test actual pathfinding
-    engine = ORToolsRoutingEngine()
-    route = engine.find_optimal_path(
+    # Test actual pathfinding - should use cache from matrix build
+    route = routing_engine.find_optimal_path(
         graph=context['vrp'].graph,
         start=origin,
         goal=destination,
@@ -288,7 +283,7 @@ def distance_reflects_pathfinding_with_refueling(origin, destination, context):
 
 
 @then(parsers.parse('the distance from "{origin}" to "{destination}" should reflect direct pathfinding'))
-def distance_reflects_direct_pathfinding(origin, destination, context):
+def distance_reflects_direct_pathfinding(origin, destination, context, routing_engine):
     """Verify distance matrix entry uses actual pathfinding for direct routes"""
     if context['vrp'].exception:
         raise AssertionError(f"Distance matrix build failed: {context['vrp'].exception}")
@@ -302,9 +297,8 @@ def distance_reflects_direct_pathfinding(origin, destination, context):
 
     matrix_distance = context['vrp'].distance_matrix[origin_idx][dest_idx]
 
-    # Test actual pathfinding
-    engine = ORToolsRoutingEngine()
-    route = engine.find_optimal_path(
+    # Test actual pathfinding - should use cache from matrix build
+    route = routing_engine.find_optimal_path(
         graph=context['vrp'].graph,
         start=origin,
         goal=destination,

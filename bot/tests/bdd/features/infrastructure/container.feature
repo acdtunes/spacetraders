@@ -64,15 +64,6 @@ Feature: Dependency Injection Container
     When I get the ship repository instance twice
     Then both ship repository instances should be the same
 
-  # Route Repository Factory
-  Scenario: Get route repository returns instance
-    When I get the route repository instance
-    Then the route repository should not be null
-
-  Scenario: Get route repository returns singleton
-    When I get the route repository instance twice
-    Then both route repository instances should be the same
-
   # Graph Builder Factory (Player-based)
   Scenario: Get graph builder for player returns instance
     Given a player with id 1 and token "test-token-123" exists

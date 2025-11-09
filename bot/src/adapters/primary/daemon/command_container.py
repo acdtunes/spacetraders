@@ -3,7 +3,6 @@ import importlib
 import logging
 
 from .base_container import BaseContainer
-from .assignment_manager import ShipAssignmentManager
 
 logger = logging.getLogger(__name__)
 
@@ -191,7 +190,9 @@ class CommandContainer(BaseContainer):
 
         if ship_symbol:
             try:
-                assignment_mgr = ShipAssignmentManager(self.database)
+                # Import here to avoid circular dependencies
+                from configuration.container import get_ship_assignment_repository
+                assignment_repo = get_ship_assignment_repository()
 
                 # Determine reason based on container status
                 if self.status.value == 'FAILED':
@@ -201,7 +202,7 @@ class CommandContainer(BaseContainer):
                 else:
                     reason = 'completed'
 
-                assignment_mgr.release(
+                assignment_repo.release(
                     self.player_id,
                     ship_symbol,
                     reason=reason

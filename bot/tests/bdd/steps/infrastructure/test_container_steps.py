@@ -304,47 +304,6 @@ def check_ship_repo_same(context):
 # ==============================================================================
 # Scenario: Get route repository returns instance
 # ==============================================================================
-@scenario("../../features/infrastructure/container.feature",
-          "Get route repository returns instance")
-def test_get_route_repository():
-    pass
-
-
-@when("I get the route repository instance")
-def get_route_repository(context):
-    """Get route repository instance"""
-    context["route_repo"] = container.get_route_repository()
-
-
-@then("the route repository should not be null")
-def check_route_repo_not_null(context):
-    """Verify route repository is not null"""
-    assert context["route_repo"] is not None
-
-
-# ==============================================================================
-# Scenario: Get route repository returns singleton
-# ==============================================================================
-@scenario("../../features/infrastructure/container.feature",
-          "Get route repository returns singleton")
-def test_route_repository_singleton():
-    pass
-
-
-@when("I get the route repository instance twice")
-def get_route_repository_twice(context):
-    """Get route repository instance twice"""
-    context["route_repo1"] = container.get_route_repository()
-    context["route_repo2"] = container.get_route_repository()
-
-
-@then("both route repository instances should be the same")
-def check_route_repo_same(context):
-    """Verify both instances are the same"""
-    assert context["route_repo1"] is context["route_repo2"]
-
-
-# ==============================================================================
 # Scenario: Get graph builder for player returns instance
 # ==============================================================================
 @scenario("../../features/infrastructure/container.feature",
@@ -548,7 +507,6 @@ def get_all_singletons(context):
     context["db1"] = container.get_database()
     context["player_repo1"] = container.get_player_repository()
     context["ship_repo1"] = container.get_ship_repository()
-    context["route_repo1"] = container.get_route_repository()
     context["routing_engine1"] = container.get_routing_engine()
     context["mediator1"] = container.get_mediator()
 
@@ -559,7 +517,6 @@ def get_all_singletons_again(context):
     context["db2"] = container.get_database()
     context["player_repo2"] = container.get_player_repository()
     context["ship_repo2"] = container.get_ship_repository()
-    context["route_repo2"] = container.get_route_repository()
     context["routing_engine2"] = container.get_routing_engine()
     context["mediator2"] = container.get_mediator()
 
@@ -570,7 +527,6 @@ def check_all_instances_different(context):
     assert context["db2"] is not context["db1"]
     assert context["player_repo2"] is not context["player_repo1"]
     assert context["ship_repo2"] is not context["ship_repo1"]
-    assert context["route_repo2"] is not context["route_repo1"]
     assert context["routing_engine2"] is not context["routing_engine1"]
     assert context["mediator2"] is not context["mediator1"]
 
@@ -636,7 +592,6 @@ def create_all_repositories(context):
     context["db"] = container.get_database()
     context["player_repo"] = container.get_player_repository()
     context["ship_repo"] = container.get_ship_repository()
-    context["route_repo"] = container.get_route_repository()
 
 
 @then("all repositories should be created without errors")
@@ -645,4 +600,3 @@ def check_all_repos_created(context):
     assert context["db"] is not None
     assert context["player_repo"] is not None
     assert context["ship_repo"] is not None
-    assert context["route_repo"] is not None

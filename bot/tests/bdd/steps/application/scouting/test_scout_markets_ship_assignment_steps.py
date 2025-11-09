@@ -202,7 +202,7 @@ def set_markets_and_execute(context, datatable):
         context['captured_configs'].append(captured)
 
         # Also log what we received for debugging
-        ship_in_config = config['config']['params']['ship_symbol']
+        ship_in_config = config['config']['params']['ship_symbols'][0]
         markets_in_config = config['config']['params']['markets']
         print(f"DEBUG: create_container called with ship={ship_in_config}, markets={markets_in_config}")
 
@@ -276,7 +276,7 @@ def check_container_ship_assignment(context, index, ship_symbol):
         assert False, f"Container {index} does not exist (only {len(context['captured_configs'])} containers created)"
 
     config = context['captured_configs'][index]
-    actual_ship = config['config']['params']['ship_symbol']
+    actual_ship = config['config']['params']['ship_symbols'][0]
 
     assert actual_ship == ship_symbol, \
         f"Container {index} assigned to ship {actual_ship}, expected {ship_symbol}"
@@ -288,7 +288,7 @@ def check_markets_match_ship(context):
     result = context['scout_result']
 
     for i, config in enumerate(context['captured_configs']):
-        container_ship = config['config']['params']['ship_symbol']
+        container_ship = config['config']['params']['ship_symbols'][0]
         container_markets = config['config']['params']['markets']
 
         # Get expected markets for this ship from the result

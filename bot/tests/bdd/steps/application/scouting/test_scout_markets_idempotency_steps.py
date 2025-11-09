@@ -375,7 +375,7 @@ def _execute_scout_markets(context):
     # Track newly created containers
     def mock_create_container(config):
         container_id = config['container_id']
-        ship_symbol = config['config']['params']['ship_symbol']
+        ship_symbol = config['config']['params']['ship_symbols'][0]
 
         # Add to created containers list
         context['created_containers'].append({
@@ -528,7 +528,7 @@ def _execute_scout_markets_concurrent(context):
 
     def mock_create_container(config):
         container_id = config['container_id']
-        ship_symbol = config['config']['params']['ship_symbol']
+        ship_symbol = config['config']['params']['ship_symbols'][0]
 
         with container_lock:
             # Add to all_containers

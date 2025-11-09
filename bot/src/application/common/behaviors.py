@@ -18,18 +18,19 @@ logger = logging.getLogger(__name__)
 
 class LoggingBehavior(PipelineBehavior):
     """
-    Logs command/query execution for debugging and monitoring.
+    Logs command/query failures for debugging and monitoring.
 
     Logs:
-    - Request name and type at start
-    - Completion with success
     - Failure with exception details
     - Re-raises exceptions to preserve error handling
+
+    Success logs are omitted to reduce verbosity (domain-level logs provide
+    sufficient context for successful operations).
     """
 
     async def handle(self, request: Any, next_handler):
         """
-        Log request execution.
+        Log request execution failures.
 
         Args:
             request: The request being processed
@@ -42,11 +43,9 @@ class LoggingBehavior(PipelineBehavior):
             Re-raises any exception from handler after logging
         """
         request_name = type(request).__name__
-        logger.info(f"Executing {request_name}")
 
         try:
             response = await next_handler()
-            logger.info(f"Successfully completed {request_name}")
             return response
         except Exception as e:
             logger.error(f"Failed executing {request_name}: {e}", exc_info=True)

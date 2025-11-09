@@ -6,7 +6,31 @@ from sqlite3 import Row
 from domain.shared.player import Player
 from domain.shared.ship import Ship
 from domain.shared.value_objects import Waypoint, Fuel, FlightMode, Cargo, CargoItem
-from domain.navigation.route import Route, RouteSegment, RouteStatus
+
+
+def _parse_datetime(value):
+    """Parse datetime from database - handles both SQLite strings and PostgreSQL datetime objects
+
+    Ensures all datetimes are timezone-aware (UTC) for consistency.
+    """
+    from datetime import timezone
+
+    if value is None:
+        return None
+
+    if isinstance(value, datetime):
+        # PostgreSQL returns datetime objects
+        dt = value
+    else:
+        # SQLite returns ISO strings
+        dt = datetime.fromisoformat(value)
+
+    # Ensure timezone-aware (assume UTC if naive)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+
+    return dt
+
 
 class PlayerMapper:
     """Map between database rows and Player entities"""
@@ -23,8 +47,8 @@ class PlayerMapper:
             player_id=int(row["player_id"]),
             agent_symbol=row["agent_symbol"],
             token=row["token"],
-            created_at=datetime.fromisoformat(row["created_at"]),
-            last_active=datetime.fromisoformat(row["last_active"]) if row["last_active"] else None,
+            created_at=_parse_datetime(row["created_at"]),
+            last_active=_parse_datetime(row["last_active"]),
             metadata=json.loads(row["metadata"]) if row["metadata"] else {},
             credits=int(row["credits"] if "credits" in row.keys() else 0)  # Default to 0 if not present
         )
@@ -161,131 +185,3 @@ class ShipMapper:
         }
 
 
-class RouteMapper:
-    """Map between database rows and Route entities"""
-
-    @staticmethod
-    def from_db_row(row: Row) -> Route:
-        """
-        Convert database row to Route entity
-
-        Args:
-            row: Database row with route data
-
-        Returns:
-            Route entity
-        """
-        # Deserialize segments from JSON
-        segments_data = json.loads(row["segments_json"])
-        segments = [RouteMapper._deserialize_segment(seg) for seg in segments_data]
-
-        # Create route with basic data
-        route = Route(
-            route_id=row["route_id"],
-            ship_symbol=row["ship_symbol"],
-            player_id=int(row["player_id"]),
-            segments=segments,
-            ship_fuel_capacity=int(row["ship_fuel_capacity"])
-        )
-
-        # Restore state
-        route._status = RouteStatus(row["status"])
-        route._current_segment_index = int(row["current_segment_index"])
-
-        return route
-
-    @staticmethod
-    def to_db_dict(route: Route) -> Dict[str, Any]:
-        """
-        Convert Route entity to database dictionary
-
-        Args:
-            route: Route entity to convert
-
-        Returns:
-            Dictionary with database columns
-        """
-        # Serialize segments to JSON
-        segments_data = [RouteMapper._serialize_segment(seg) for seg in route.segments]
-
-        return {
-            "route_id": route.route_id,
-            "ship_symbol": route.ship_symbol,
-            "player_id": route.player_id,
-            "status": route.status.value,
-            "current_segment_index": route.get_current_segment_index(),
-            "ship_fuel_capacity": route._ship_fuel_capacity,
-            "segments_json": json.dumps(segments_data)
-        }
-
-    @staticmethod
-    def _serialize_segment(segment: RouteSegment) -> Dict[str, Any]:
-        """Serialize a RouteSegment to dictionary"""
-        return {
-            "from_waypoint": {
-                "symbol": segment.from_waypoint.symbol,
-                "x": segment.from_waypoint.x,
-                "y": segment.from_waypoint.y,
-                "system_symbol": segment.from_waypoint.system_symbol,
-                "waypoint_type": segment.from_waypoint.waypoint_type,
-                "traits": list(segment.from_waypoint.traits),
-                "has_fuel": segment.from_waypoint.has_fuel,
-                "orbitals": list(segment.from_waypoint.orbitals)
-            },
-            "to_waypoint": {
-                "symbol": segment.to_waypoint.symbol,
-                "x": segment.to_waypoint.x,
-                "y": segment.to_waypoint.y,
-                "system_symbol": segment.to_waypoint.system_symbol,
-                "waypoint_type": segment.to_waypoint.waypoint_type,
-                "traits": list(segment.to_waypoint.traits),
-                "has_fuel": segment.to_waypoint.has_fuel,
-                "orbitals": list(segment.to_waypoint.orbitals)
-            },
-            "distance": segment.distance,
-            "fuel_required": segment.fuel_required,
-            "travel_time": segment.travel_time,
-            "flight_mode": segment.flight_mode.mode_name,
-            "requires_refuel": segment.requires_refuel
-        }
-
-    @staticmethod
-    def _deserialize_segment(data: Dict[str, Any]) -> RouteSegment:
-        """Deserialize a dictionary to RouteSegment"""
-        from_wp_data = data["from_waypoint"]
-        to_wp_data = data["to_waypoint"]
-
-        from_waypoint = Waypoint(
-            symbol=from_wp_data["symbol"],
-            x=from_wp_data["x"],
-            y=from_wp_data["y"],
-            system_symbol=from_wp_data.get("system_symbol"),
-            waypoint_type=from_wp_data.get("waypoint_type"),
-            traits=tuple(from_wp_data.get("traits", [])),
-            has_fuel=from_wp_data.get("has_fuel", False),
-            orbitals=tuple(from_wp_data.get("orbitals", []))
-        )
-
-        to_waypoint = Waypoint(
-            symbol=to_wp_data["symbol"],
-            x=to_wp_data["x"],
-            y=to_wp_data["y"],
-            system_symbol=to_wp_data.get("system_symbol"),
-            waypoint_type=to_wp_data.get("waypoint_type"),
-            traits=tuple(to_wp_data.get("traits", [])),
-            has_fuel=to_wp_data.get("has_fuel", False),
-            orbitals=tuple(to_wp_data.get("orbitals", []))
-        )
-
-        # Convert flight mode string to enum
-        flight_mode = FlightMode[data["flight_mode"]]
-
-        return RouteSegment(
-            from_waypoint=from_waypoint,
-            to_waypoint=to_waypoint,
-            distance=data["distance"],
-            fuel_required=data["fuel_required"],
-            travel_time=data["travel_time"],
-            flight_mode=flight_mode,
-            requires_refuel=data.get("requires_refuel", False)
-        )

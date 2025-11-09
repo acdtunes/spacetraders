@@ -39,10 +39,10 @@ def use_test_database():
         cursor = conn.cursor()
         # Clear all tables to ensure clean state between tests
         # Order matters due to foreign key constraints - delete children first
-        cursor.execute("DELETE FROM routes")
         cursor.execute("DELETE FROM ship_assignments")
         cursor.execute("DELETE FROM container_logs")
         cursor.execute("DELETE FROM containers")
+        cursor.execute("DELETE FROM captain_logs")
         # Ships table removed - ship data is now fetched directly from API
         cursor.execute("DELETE FROM system_graphs")
         cursor.execute("DELETE FROM players")
@@ -54,10 +54,10 @@ def use_test_database():
     db = get_database()
     with db.transaction() as conn:
         cursor = conn.cursor()
-        cursor.execute("DELETE FROM routes")
         cursor.execute("DELETE FROM ship_assignments")
         cursor.execute("DELETE FROM container_logs")
         cursor.execute("DELETE FROM containers")
+        cursor.execute("DELETE FROM captain_logs")
         # Ships table removed - ship data is now fetched directly from API
         cursor.execute("DELETE FROM system_graphs")
         cursor.execute("DELETE FROM players")

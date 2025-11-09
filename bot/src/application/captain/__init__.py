@@ -1,0 +1,1 @@
+"""Captain logging application layer"""

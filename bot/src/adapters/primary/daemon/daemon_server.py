@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Dict, Optional
 
 from .container_manager import ContainerManager, ContainerStatus
-from .assignment_manager import ShipAssignmentManager
 
 logger = logging.getLogger(__name__)
 
@@ -34,13 +33,14 @@ class DaemonServer:
             get_database,
             get_mediator,
             get_ship_repository,
+            get_ship_assignment_repository,
             set_container_manager
         )
 
         database = get_database()
         self._database = database
         self._container_mgr = ContainerManager(get_mediator(), database)
-        self._assignment_mgr = ShipAssignmentManager(database)
+        self._assignment_repo = get_ship_assignment_repository()
         self._ship_repo = get_ship_repository()
         self._server: Optional[asyncio.Server] = None
         self._running = False
@@ -249,7 +249,7 @@ class DaemonServer:
                 raise ValueError(f"Ship {ship_symbol} not found")
 
             # Assign ship
-            if not self._assignment_mgr.assign(
+            if not self._assignment_repo.assign(
                 player_id, ship_symbol, container_id, container_type
             ):
                 raise ValueError(f"Ship {ship_symbol} already assigned")
@@ -285,7 +285,7 @@ class DaemonServer:
         if info:
             ship_symbol = info.config.get('params', {}).get('ship_symbol')
             if ship_symbol:
-                self._assignment_mgr.release(
+                self._assignment_repo.release(
                     info.player_id,
                     ship_symbol,
                     reason="stopped"
@@ -313,7 +313,7 @@ class DaemonServer:
             with self._database.connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
-                    SELECT container_id, player_id, container_type, status,
+                    SELECT container_id, player_id, container_type, command_type, status,
                            started_at, stopped_at, restart_count, exit_code
                     FROM containers
                     WHERE container_id = ?
@@ -333,6 +333,7 @@ class DaemonServer:
                     container_id: str
                     player_id: int
                     container_type: str
+                    command_type: str
                     status: ContainerStatus
                     started_at: datetime
                     stopped_at: datetime
@@ -340,13 +341,17 @@ class DaemonServer:
                     restart_count: int
                     exit_code: int
 
+                # Import _parse_datetime helper for PostgreSQL compatibility
+                from adapters.secondary.persistence.mappers import _parse_datetime
+
                 info = DbContainerInfo(
                     container_id=row['container_id'],
                     player_id=row['player_id'],
                     container_type=row['container_type'],
+                    command_type=row['command_type'],
                     status=ContainerStatus(row['status']),
-                    started_at=datetime.fromisoformat(row['started_at']) if row['started_at'] else None,
-                    stopped_at=datetime.fromisoformat(row['stopped_at']) if row['stopped_at'] else None,
+                    started_at=_parse_datetime(row['started_at']),
+                    stopped_at=_parse_datetime(row['stopped_at']),
                     iteration=0,  # Not stored in DB
                     restart_count=row['restart_count'] or 0,
                     exit_code=row['exit_code']
@@ -360,10 +365,18 @@ class DaemonServer:
             limit=log_limit
         )
 
+        # Extract command_type from config if available
+        command_type = None
+        if hasattr(info, 'config') and isinstance(info.config, dict):
+            command_type = info.config.get('command_type')
+        elif hasattr(info, 'command_type'):
+            command_type = info.command_type
+
         return {
             "container_id": info.container_id,
             "player_id": info.player_id,
             "type": info.container_type,
+            "command_type": command_type,
             "status": info.status.value,
             "iteration": info.iteration if hasattr(info, 'iteration') else 0,
             "restart_count": info.restart_count,
@@ -391,6 +404,7 @@ class DaemonServer:
                     "container_id": c.container_id,
                     "player_id": c.player_id,
                     "type": c.container_type,
+                    "command_type": c.config.get('command_type') if isinstance(c.config, dict) else None,
                     "status": c.status.value
                 }
                 for c in containers
@@ -459,7 +473,7 @@ class DaemonServer:
         previous daemon instances that crashed or were killed.
         """
         try:
-            count = self._assignment_mgr.release_all_active_assignments(
+            count = self._assignment_repo.release_all_active_assignments(
                 reason="daemon_restart"
             )
             if count > 0:
@@ -523,7 +537,7 @@ class DaemonServer:
                             continue
 
                         # Assign ship (should succeed since we released all zombie assignments)
-                        if not self._assignment_mgr.assign(
+                        if not self._assignment_repo.assign(
                             player_id, ship_symbol, container_id, container_type
                         ):
                             logger.warning(
@@ -690,7 +704,7 @@ class DaemonServer:
                         f"Cleaning up stale assignment: {assignment['ship_symbol']} "
                         f"was assigned to {assignment['container_id']} (not running)"
                     )
-                    self._assignment_mgr.release(
+                    self._assignment_repo.release(
                         assignment["player_id"],
                         assignment["ship_symbol"],
                         reason="stale_cleanup"
