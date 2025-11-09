@@ -30,10 +30,15 @@ def context():
 def setup_database():
     """Initialize database for waypoint caching tests."""
     from adapters.secondary.persistence.database import Database
-    from configuration.container import reset_container
+    from configuration.container import reset_container, get_engine
+    from adapters.secondary.persistence.models import metadata
 
     # Reset container to ensure clean state
     reset_container()
+
+    # Initialize SQLAlchemy schema
+    engine = get_engine()
+    metadata.create_all(engine)
 
     # Initialize in-memory database (will be created via get_database())
     # The waypoint repository will use this database

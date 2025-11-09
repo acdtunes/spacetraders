@@ -18,7 +18,7 @@ from adapters.secondary.persistence.player_repository_sqlalchemy import PlayerRe
 from adapters.secondary.persistence.ship_repository import ShipRepository
 from adapters.secondary.persistence.market_repository_sqlalchemy import MarketRepositorySQLAlchemy
 from adapters.secondary.persistence.contract_repository_sqlalchemy import ContractRepositorySQLAlchemy
-from adapters.secondary.persistence.waypoint_repository import WaypointRepository
+from adapters.secondary.persistence.waypoint_repository_sqlalchemy import WaypointRepositorySQLAlchemy
 from adapters.secondary.persistence.ship_assignment_repository import ShipAssignmentRepository
 from adapters.secondary.persistence.ship_assignment_repository_sqlalchemy import ShipAssignmentRepositorySQLAlchemy
 from adapters.secondary.persistence.captain_log_repository_sqlalchemy import CaptainLogRepositorySQLAlchemy
@@ -396,8 +396,8 @@ def get_waypoint_repository() -> IWaypointRepository:
     """
     global _waypoint_repo
     if _waypoint_repo is None:
-        _waypoint_repo = WaypointRepository(
-            get_database(),
+        _waypoint_repo = WaypointRepositorySQLAlchemy(
+            get_engine(),
             api_client_factory=get_api_client_for_player
         )
     return _waypoint_repo

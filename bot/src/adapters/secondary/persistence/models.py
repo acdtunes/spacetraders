@@ -156,7 +156,7 @@ waypoints = Table(
     Column('traits', Text),
     Column('has_fuel', Integer, nullable=False, default=0),
     Column('orbitals', Text),
-    Column('synced_at', DateTime(timezone=True)),
+    Column('synced_at', String),  # ISO timestamp string
 )
 
 # Indexes for waypoints
