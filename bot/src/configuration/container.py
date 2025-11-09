@@ -17,7 +17,7 @@ from adapters.secondary.persistence.player_repository import PlayerRepository
 from adapters.secondary.persistence.player_repository_sqlalchemy import PlayerRepositorySQLAlchemy
 from adapters.secondary.persistence.ship_repository import ShipRepository
 from adapters.secondary.persistence.market_repository_sqlalchemy import MarketRepositorySQLAlchemy
-from adapters.secondary.persistence.contract_repository import ContractRepository
+from adapters.secondary.persistence.contract_repository_sqlalchemy import ContractRepositorySQLAlchemy
 from adapters.secondary.persistence.waypoint_repository import WaypointRepository
 from adapters.secondary.persistence.ship_assignment_repository import ShipAssignmentRepository
 from adapters.secondary.persistence.ship_assignment_repository_sqlalchemy import ShipAssignmentRepositorySQLAlchemy
@@ -379,11 +379,11 @@ def get_contract_repository():
     Get or create contract repository.
 
     Returns:
-        ContractRepository: Singleton contract repository instance
+        ContractRepositorySQLAlchemy: Singleton contract repository instance
     """
     global _contract_repo
     if _contract_repo is None:
-        _contract_repo = ContractRepository(get_database())
+        _contract_repo = ContractRepositorySQLAlchemy(get_engine())
     return _contract_repo
 
 

@@ -131,12 +131,12 @@ contracts = Table(
     Column('type', String, nullable=False),
     Column('accepted', Boolean, nullable=False),
     Column('fulfilled', Boolean, nullable=False),
-    Column('deadline_to_accept', DateTime(timezone=True), nullable=False),
-    Column('deadline', DateTime(timezone=True), nullable=False),
+    Column('deadline_to_accept', String, nullable=False),  # ISO timestamp string
+    Column('deadline', String, nullable=False),  # ISO timestamp string
     Column('payment_on_accepted', Integer, nullable=False),
     Column('payment_on_fulfilled', Integer, nullable=False),
     Column('deliveries_json', Text, nullable=False),
-    Column('last_updated', DateTime(timezone=True), nullable=False),
+    Column('last_updated', String, nullable=False),  # ISO timestamp string
     PrimaryKeyConstraint('contract_id', 'player_id'),
 )
 
