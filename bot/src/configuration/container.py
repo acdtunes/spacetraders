@@ -12,7 +12,9 @@ from pathlib import Path
 from pymediatr import Mediator
 
 from adapters.secondary.persistence.database import Database
+from adapters.secondary.persistence.engine import create_engine_from_config
 from adapters.secondary.persistence.player_repository import PlayerRepository
+from adapters.secondary.persistence.player_repository_sqlalchemy import PlayerRepositorySQLAlchemy
 from adapters.secondary.persistence.ship_repository import ShipRepository
 from adapters.secondary.persistence.market_repository import MarketRepository
 from adapters.secondary.persistence.contract_repository import ContractRepository
@@ -199,6 +201,7 @@ from .settings import settings
 
 # Singleton instances
 _db = None
+_engine = None
 _player_repo = None
 _ship_repo = None
 _market_repo = None
@@ -236,16 +239,39 @@ def get_database() -> Database:
     return _db
 
 
-def get_player_repository() -> PlayerRepository:
+def get_engine():
+    """
+    Get or create SQLAlchemy engine instance.
+
+    Engine configuration is determined by environment:
+    - DATABASE_URL → PostgreSQL
+    - SPACETRADERS_DB_PATH=":memory:" → SQLite in-memory (tests)
+    - Otherwise → SQLite file-based
+
+    Returns:
+        Engine: Singleton SQLAlchemy engine instance
+    """
+    global _engine
+    if _engine is None:
+        import os
+        env_db_path = os.environ.get("SPACETRADERS_DB_PATH")
+        if env_db_path:
+            _engine = create_engine_from_config(env_db_path)
+        else:
+            _engine = create_engine_from_config(str(settings.db_path))
+    return _engine
+
+
+def get_player_repository() -> PlayerRepositorySQLAlchemy:
     """
     Get or create player repository.
 
     Returns:
-        PlayerRepository: Singleton player repository instance
+        PlayerRepositorySQLAlchemy: Singleton player repository instance using SQLAlchemy
     """
     global _player_repo
     if _player_repo is None:
-        _player_repo = PlayerRepository(get_database())
+        _player_repo = PlayerRepositorySQLAlchemy(get_engine())
     return _player_repo
 
 
@@ -676,14 +702,19 @@ def reset_container():
 
     Useful for testing to ensure clean state between tests.
     """
-    global _db, _player_repo, _ship_repo, _market_repo, _contract_repo, _waypoint_repo
+    global _db, _engine, _player_repo, _ship_repo, _market_repo, _contract_repo, _waypoint_repo
     global _ship_assignment_repo, _captain_log_repo, _graph_provider, _graph_builder, _routing_engine, _mediator, _daemon_client
 
     # Close database connection before resetting to ensure in-memory database is properly cleaned up
     if _db is not None:
         _db.close()
 
+    # Dispose SQLAlchemy engine to close all connections
+    if _engine is not None:
+        _engine.dispose()
+
     _db = None
+    _engine = None
     _player_repo = None
     _ship_repo = None
     _market_repo = None

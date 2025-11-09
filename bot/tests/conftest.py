@@ -11,7 +11,8 @@ def use_test_database():
     """
     import importlib
     from configuration.settings import settings
-    from configuration.container import reset_container, get_database
+    from configuration.container import reset_container, get_database, get_engine
+    from adapters.secondary.persistence.models import metadata
 
     # Reload modules to clear any patches from previous tests
     import configuration.container
@@ -33,34 +34,16 @@ def use_test_database():
     # Reset container to ensure it uses the test database
     reset_container()
 
-    # Get fresh database instance and clear all tables
+    # Initialize SQLAlchemy schema for in-memory database
+    engine = get_engine()
+    metadata.create_all(engine)
+
+    # Get fresh database instance (old Database class - still needed for some repos)
     db = get_database()
-    with db.transaction() as conn:
-        cursor = conn.cursor()
-        # Clear all tables to ensure clean state between tests
-        # Order matters due to foreign key constraints - delete children first
-        cursor.execute("DELETE FROM ship_assignments")
-        cursor.execute("DELETE FROM container_logs")
-        cursor.execute("DELETE FROM containers")
-        cursor.execute("DELETE FROM captain_logs")
-        # Ships table removed - ship data is now fetched directly from API
-        cursor.execute("DELETE FROM system_graphs")
-        cursor.execute("DELETE FROM players")
 
     yield
 
-    # Clean up tables BEFORE resetting container
-    # This ensures we clean the same database instance the test used
-    db = get_database()
-    with db.transaction() as conn:
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM ship_assignments")
-        cursor.execute("DELETE FROM container_logs")
-        cursor.execute("DELETE FROM containers")
-        cursor.execute("DELETE FROM captain_logs")
-        # Ships table removed - ship data is now fetched directly from API
-        cursor.execute("DELETE FROM system_graphs")
-        cursor.execute("DELETE FROM players")
+    # No cleanup needed - in-memory database will be disposed on engine.dispose()
 
     # Restore original settings and environment variable
     settings.db_path = original_db_path
