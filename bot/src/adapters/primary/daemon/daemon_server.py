@@ -50,6 +50,12 @@ class DaemonServer:
 
     async def start(self):
         """Start daemon server"""
+        # Initialize SQLAlchemy schema (needed for repositories)
+        from configuration.container import get_engine
+        from adapters.secondary.persistence.models import metadata
+        engine = get_engine()
+        metadata.create_all(engine)
+
         # Cleanup old socket
         if self.SOCKET_PATH.exists():
             self.SOCKET_PATH.unlink()

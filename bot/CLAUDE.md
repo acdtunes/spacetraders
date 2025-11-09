@@ -49,6 +49,22 @@ Restart daemon IMMEDIATELY after:
 
 ### How to Restart Daemon
 
+**Recommended: Use the scripts in `scripts/` folder:**
+
+```bash
+# Check daemon status
+./scripts/daemon_status.sh
+
+# Restart daemon (kills old, starts new)
+./scripts/restart_daemon.sh
+
+# Or manage manually:
+./scripts/stop_daemon.sh   # Stop daemon
+./scripts/start_daemon.sh  # Start daemon
+```
+
+**Manual restart (if scripts fail):**
+
 ```bash
 # 1. Kill old daemon
 pkill -9 -f daemon_server
@@ -57,19 +73,20 @@ pkill -9 -f daemon_server
 sleep 2
 
 # 3. Start new daemon with updated code
-uv run python -m spacetraders.adapters.primary.daemon.daemon_server > /tmp/daemon.log 2>&1 &
+./scripts/start_daemon.sh
 
 # 4. Verify it started
-sleep 3 && tail -10 /tmp/daemon.log
+./scripts/daemon_status.sh
 ```
 
 ### Verification Checklist
 
-After restarting daemon, verify:
-- [ ] Daemon log shows "Daemon server started"
-- [ ] Zombie assignments were released (if any)
-- [ ] New code changes are reflected in behavior
-- [ ] Test with actual command to confirm new behavior
+After restarting daemon, run `./scripts/daemon_status.sh` and verify:
+- [ ] Status shows "✅ RUNNING" (not multiple instances)
+- [ ] Logs show "Daemon server started on var/daemon.sock"
+- [ ] Zombie assignments were released (if any shown in logs)
+- [ ] No error messages in recent activity
+- [ ] Test with actual command to confirm new code behavior
 
 **DO NOT test in production without restarting daemon after code changes!**
 
@@ -111,6 +128,23 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 # Create virtual environment and install dependencies
 uv sync
 ```
+
+### Daemon Management Scripts
+
+The `scripts/` folder contains helper scripts for managing the daemon server:
+
+```bash
+./scripts/daemon_status.sh       # Check daemon status and view recent logs
+./scripts/start_daemon.sh        # Start the daemon server
+./scripts/stop_daemon.sh         # Stop the daemon server
+./scripts/restart_daemon.sh      # Restart daemon (kill + start + verify)
+```
+
+**Always use these scripts for daemon management!** They handle:
+- Multiple instance detection and cleanup
+- PostgreSQL connection from `.env`
+- Socket file verification
+- Process monitoring and logging
 
 ### Testing
 

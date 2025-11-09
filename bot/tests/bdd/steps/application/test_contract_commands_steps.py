@@ -12,15 +12,18 @@ from domain.shared.contract import (
     Payment
 )
 from domain.shared.value_objects import Waypoint
-from adapters.secondary.persistence.database import Database
-from adapters.secondary.persistence.contract_repository import ContractRepository
-from adapters.secondary.persistence.player_repository import PlayerRepository
 from domain.shared.player import Player
 from application.contracts.commands.accept_contract import AcceptContractCommand
 from application.contracts.commands.deliver_contract import DeliverContractCommand
 from application.contracts.commands.fulfill_contract import FulfillContractCommand
 from application.contracts.commands.negotiate_contract import NegotiateContractCommand
-from configuration.container import get_mediator, reset_container
+from configuration.container import (
+    get_mediator,
+    get_player_repository,
+    get_contract_repository,
+    reset_container,
+    get_engine
+)
 
 # Load scenarios
 scenarios('../../features/application/contract_commands.feature')
@@ -28,15 +31,8 @@ scenarios('../../features/application/contract_commands.feature')
 
 @pytest.fixture
 def mediator(context):
-    """Get mediator instance with test database and mocked API"""
-    from configuration.container import get_mediator
+    """Get mediator instance with SQLAlchemy and mocked API"""
     import configuration.container as container_module
-
-    # Set the container's database to the test database
-    container_module._db = context['db']
-    # Reset mediator to use the test database
-    container_module._mediator = None
-    container_module._contract_repo = None
 
     # Mock the API client factory
     mock_api_factory = Mock(return_value=context.get('mock_api'))
@@ -47,18 +43,22 @@ def mediator(context):
 
 @given('a clean database')
 def clean_database(context):
-    """Initialize clean in-memory database"""
-    from configuration.container import reset_container
+    """Initialize clean in-memory database with SQLAlchemy"""
+    from adapters.secondary.persistence.models import metadata
+
     reset_container()
-    context['db'] = Database(":memory:")
+
+    # Initialize SQLAlchemy schema
+    engine = get_engine()
+    metadata.create_all(engine)
+
     context['api_calls'] = []
 
 
 @given('a test player exists')
 def create_test_player(context):
-    """Create a test player"""
-    db = context['db']
-    player_repo = PlayerRepository(db)
+    """Create a test player using SQLAlchemy repository"""
+    player_repo = get_player_repository()
     player = Player(
         player_id=None,
         agent_symbol="TEST_AGENT",
@@ -73,9 +73,8 @@ def create_test_player(context):
 
 @given(parsers.parse('an unaccepted contract "{contract_id}" in the database'))
 def unaccepted_contract(context, contract_id):
-    """Create an unaccepted contract"""
-    db = context['db']
-    contract_repo = ContractRepository(db)
+    """Create an unaccepted contract using SQLAlchemy repository"""
+    contract_repo = get_contract_repository()
 
     delivery = Delivery(
         trade_symbol="IRON_ORE",
@@ -124,8 +123,7 @@ def mock_accept_api(context):
 @given(parsers.parse('an accepted contract "{contract_id}" with delivery requirements'))
 def accepted_contract_with_delivery(context, contract_id):
     """Create an accepted contract with delivery requirements"""
-    db = context['db']
-    contract_repo = ContractRepository(db)
+    contract_repo = get_contract_repository()
 
     delivery = Delivery(
         trade_symbol="IRON_ORE",
@@ -180,8 +178,7 @@ def mock_deliver_api(context):
 @given(parsers.parse('a fully delivered contract "{contract_id}"'))
 def fully_delivered_contract(context, contract_id):
     """Create a contract with all deliveries fulfilled"""
-    db = context['db']
-    contract_repo = ContractRepository(db)
+    contract_repo = get_contract_repository()
 
     delivery = Delivery(
         trade_symbol="IRON_ORE",
@@ -338,8 +335,7 @@ def check_command_success(context):
 @then('the contract should be marked as accepted in the database')
 def check_contract_accepted(context):
     """Verify contract is accepted in database"""
-    db = context['db']
-    contract_repo = ContractRepository(db)
+    contract_repo = get_contract_repository()
     contract = contract_repo.find_by_id(context['contract_id'], context['player_id'])
     assert contract is not None
     assert contract.accepted is True
@@ -350,8 +346,7 @@ def check_contract_accepted(context):
 @then('the contract delivery progress should be updated in the database')
 def check_delivery_progress(context):
     """Verify delivery progress updated"""
-    db = context['db']
-    contract_repo = ContractRepository(db)
+    contract_repo = get_contract_repository()
     contract = contract_repo.find_by_id(context['contract_id'], context['player_id'])
     assert contract is not None
     # Check that at least one delivery has progress
@@ -363,8 +358,7 @@ def check_delivery_progress(context):
 @then('the contract should be marked as fulfilled in the database')
 def check_contract_fulfilled(context):
     """Verify contract is fulfilled in database"""
-    db = context['db']
-    contract_repo = ContractRepository(db)
+    contract_repo = get_contract_repository()
     contract = contract_repo.find_by_id(context['contract_id'], context['player_id'])
     assert contract is not None
     assert contract.fulfilled is True
@@ -375,8 +369,7 @@ def check_contract_fulfilled(context):
 @then('a new contract should be saved in the database')
 def check_new_contract_saved(context):
     """Verify new contract was saved"""
-    db = context['db']
-    contract_repo = ContractRepository(db)
+    contract_repo = get_contract_repository()
     contracts = contract_repo.find_all(context['player_id'])
     # Should have at least one contract (the negotiated one)
     assert len(contracts) > 0

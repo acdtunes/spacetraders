@@ -447,3 +447,22 @@ def mock_player_repo():
 def context():
     """Provide shared context dictionary for test data"""
     return {}
+
+
+@pytest.fixture(autouse=True)
+def setup_test_environment():
+    """Initialize database schema for application tests"""
+    from configuration.container import reset_container, get_engine
+    from adapters.secondary.persistence.models import metadata
+
+    # Reset container to ensure clean state
+    reset_container()
+
+    # Initialize SQLAlchemy schema for in-memory database
+    engine = get_engine()
+    metadata.create_all(engine)
+
+    yield
+
+    # Cleanup after test
+    reset_container()

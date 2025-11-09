@@ -21,6 +21,13 @@ def context():
 def database_initialized():
     """Initialize in-memory database"""
     reset_container()
+
+    # Initialize SQLAlchemy schema after reset
+    from configuration.container import get_engine
+    from adapters.secondary.persistence.models import metadata
+    engine = get_engine()
+    metadata.create_all(engine)
+
     db = Database(":memory:")
     return db
 

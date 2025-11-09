@@ -73,7 +73,8 @@ def initialize_container_manager(context):
 
 @given(parsers.parse('a player with ID {player_id:d} exists'))
 def create_player(context, player_id):
-    """Create test player"""
+    """Create test player in BOTH SQLAlchemy and Database class schemas"""
+    # Create player in SQLAlchemy database
     player_repo = get_player_repository()
 
     player = Player(
@@ -88,12 +89,14 @@ def create_player(context, player_id):
 
     created_player = player_repo.create(player)
 
-    # Update to specific ID if needed
-    if player_id != created_player.player_id:
-        db = get_database()
-        with db.transaction() as conn:
-            conn.execute("UPDATE players SET player_id = ? WHERE player_id = ?",
-                        (player_id, created_player.player_id))
+    # Also create player in old Database class (daemon code still uses it)
+    db = get_database()
+    with db.transaction() as conn:
+        conn.execute("""
+            INSERT OR REPLACE INTO players
+            (player_id, agent_symbol, token, created_at, last_active, metadata, credits)
+            VALUES (?, ?, ?, ?, ?, '{}', ?)
+        """, (player_id, f"TEST-AGENT-{player_id}", "test-token", datetime.now(), datetime.now(), 100000))
 
     context['player_id'] = player_id
 

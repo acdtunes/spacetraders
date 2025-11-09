@@ -11,14 +11,17 @@ from domain.shared.contract import (
     Payment
 )
 from domain.shared.value_objects import Waypoint
-from adapters.secondary.persistence.database import Database
-from adapters.secondary.persistence.contract_repository import ContractRepository
-from adapters.secondary.persistence.player_repository import PlayerRepository
 from domain.shared.player import Player
 from application.contracts.queries.get_contract import GetContractQuery
 from application.contracts.queries.list_contracts import ListContractsQuery
 from application.contracts.queries.get_active_contracts import GetActiveContractsQuery
-from configuration.container import get_mediator, reset_container
+from configuration.container import (
+    get_mediator,
+    get_player_repository,
+    get_contract_repository,
+    reset_container,
+    get_engine
+)
 
 # Load scenarios
 scenarios('../../features/application/contract_queries.feature')
@@ -26,30 +29,26 @@ scenarios('../../features/application/contract_queries.feature')
 
 @pytest.fixture
 def mediator(context):
-    """Get mediator instance with test database"""
-    from configuration.container import _db, get_mediator
-    # Set the container's database to the test database
-    import configuration.container as container_module
-    container_module._db = context['db']
-    # Reset mediator to use the test database
-    container_module._mediator = None
-    container_module._contract_repo = None
+    """Get mediator instance with SQLAlchemy"""
     return get_mediator()
 
 
 @given('a clean database')
 def clean_database(context):
-    """Initialize clean in-memory database"""
-    from configuration.container import reset_container
+    """Initialize clean in-memory database with SQLAlchemy"""
+    from adapters.secondary.persistence.models import metadata
+
     reset_container()
-    context['db'] = Database(":memory:")
+
+    # Initialize SQLAlchemy schema
+    engine = get_engine()
+    metadata.create_all(engine)
 
 
 @given('a test player exists')
 def create_test_player(context):
-    """Create a test player"""
-    db = context['db']
-    player_repo = PlayerRepository(db)
+    """Create a test player using SQLAlchemy repository"""
+    player_repo = get_player_repository()
     player = Player(
         player_id=None,
         agent_symbol="TEST_AGENT",
@@ -65,8 +64,7 @@ def create_test_player(context):
 @given(parsers.parse('a saved contract with ID "{contract_id}"'))
 def saved_contract_with_id(context, contract_id):
     """Create and save a contract with specific ID"""
-    db = context['db']
-    contract_repo = ContractRepository(db)
+    contract_repo = get_contract_repository()
 
     delivery = Delivery(
         trade_symbol="IRON_ORE",
@@ -99,8 +97,7 @@ def saved_contract_with_id(context, contract_id):
 @given(parsers.parse('{count:d} saved contracts for the player'))
 def saved_contracts(context, count):
     """Create and save multiple contracts"""
-    db = context['db']
-    contract_repo = ContractRepository(db)
+    contract_repo = get_contract_repository()
 
     for i in range(count):
         delivery = Delivery(
@@ -134,8 +131,7 @@ def saved_contracts(context, count):
 @given(parsers.parse('{count:d} accepted contracts for the player'))
 def accepted_contracts(context, count):
     """Create and save accepted contracts"""
-    db = context['db']
-    contract_repo = ContractRepository(db)
+    contract_repo = get_contract_repository()
 
     for i in range(count):
         delivery = Delivery(
@@ -172,8 +168,7 @@ def accepted_contracts(context, count):
 @given(parsers.parse('{count:d} fulfilled contract for the player'))
 def fulfilled_contract(context, count):
     """Create and save a fulfilled contract"""
-    db = context['db']
-    contract_repo = ContractRepository(db)
+    contract_repo = get_contract_repository()
 
     for i in range(count):
         delivery = Delivery(
@@ -207,8 +202,7 @@ def fulfilled_contract(context, count):
 @given(parsers.parse('{count:d} unaccepted contract for the player'))
 def unaccepted_contract(context, count):
     """Create and save an unaccepted contract"""
-    db = context['db']
-    contract_repo = ContractRepository(db)
+    contract_repo = get_contract_repository()
 
     for i in range(count):
         delivery = Delivery(

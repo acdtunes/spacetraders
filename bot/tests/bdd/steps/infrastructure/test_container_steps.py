@@ -13,6 +13,12 @@ def reset_container(context):
     """Reset the container before each scenario"""
     container.reset_container()
 
+    # Reinitialize SQLAlchemy schema after reset
+    from configuration.container import get_engine
+    from adapters.secondary.persistence.models import metadata
+    engine = get_engine()
+    metadata.create_all(engine)
+
 
 # ==============================================================================
 # Scenario: Get database returns instance
@@ -168,12 +174,41 @@ def test_get_api_client_for_player():
 @given(parsers.parse('a player with id {player_id:d} and token "{token}" exists'))
 def create_player_with_token(context, player_id, token):
     """Create a player in the database"""
-    db = container.get_database()
-    with db.transaction() as conn:
-        conn.execute(
-            "INSERT OR REPLACE INTO players (player_id, agent_symbol, token, created_at) VALUES (?, ?, ?, datetime('now'))",
-            (player_id, f"TEST_AGENT_{player_id}", token)
-        )
+    from configuration.container import get_engine
+    from adapters.secondary.persistence.models import players
+    from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+    from datetime import datetime, timezone
+
+    engine = get_engine()
+    with engine.begin() as conn:
+        backend = conn.engine.dialect.name
+        if backend == 'postgresql':
+            stmt = pg_insert(players).values(
+                player_id=player_id,
+                agent_symbol=f"TEST_AGENT_{player_id}",
+                token=token,
+                created_at=datetime.now(timezone.utc),
+                metadata={}
+            )
+            stmt = stmt.on_conflict_do_update(
+                index_elements=['player_id'],
+                set_={'token': token}
+            )
+        else:
+            stmt = sqlite_insert(players).values(
+                player_id=player_id,
+                agent_symbol=f"TEST_AGENT_{player_id}",
+                token=token,
+                created_at=datetime.now(timezone.utc),
+                metadata={}
+            )
+            stmt = stmt.on_conflict_do_update(
+                index_elements=['player_id'],
+                set_={'token': token}
+            )
+        conn.execute(stmt)
+
     context["player_id"] = player_id
     context["token"] = token
 
@@ -208,9 +243,13 @@ def test_api_client_no_player():
 @given(parsers.parse("player {player_id:d} does not exist"))
 def ensure_player_not_exists(context, player_id):
     """Ensure player does not exist in database"""
-    db = container.get_database()
-    with db.transaction() as conn:
-        conn.execute("DELETE FROM players WHERE player_id = ?", (player_id,))
+    from configuration.container import get_engine
+    from adapters.secondary.persistence.models import players
+    from sqlalchemy import delete
+
+    engine = get_engine()
+    with engine.begin() as conn:
+        conn.execute(delete(players).where(players.c.player_id == player_id))
     context["player_id"] = player_id
 
 

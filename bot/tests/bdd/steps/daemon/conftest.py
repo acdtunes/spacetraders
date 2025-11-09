@@ -94,10 +94,10 @@ def mock_api_client(context, monkeypatch):
 
 @given(parsers.parse('a player exists with ID {player_id:d} and token "{token}"'))
 def create_test_player(context, player_id, token):
-    """Create a test player in the database"""
+    """Create a test player in BOTH SQLAlchemy and Database class schemas"""
+    # Create player in SQLAlchemy database
     player_repo = get_player_repository()
 
-    # Create player
     player = Player(
         player_id=None,  # Will be assigned by repository
         agent_symbol=f"TEST-AGENT-{player_id}",
@@ -108,18 +108,20 @@ def create_test_player(context, player_id, token):
     )
 
     created_player = player_repo.create(player)
-    context['player_id'] = created_player.player_id
-    context['player'] = created_player
 
-    # If specific ID requested, update it
-    if player_id != created_player.player_id:
-        db = get_database()
-        with db.transaction() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE players SET player_id = ? WHERE player_id = ?
-            """, (player_id, created_player.player_id))
-        context['player_id'] = player_id
+    # Also create player in old Database class (daemon code still uses it)
+    db = get_database()
+    with db.transaction() as conn:
+        cursor = conn.cursor()
+        # Insert or replace player with the requested ID
+        cursor.execute("""
+            INSERT OR REPLACE INTO players
+            (player_id, agent_symbol, token, created_at, last_active, metadata, credits)
+            VALUES (?, ?, ?, ?, ?, '{}', 0)
+        """, (player_id, f"TEST-AGENT-{player_id}", token, datetime.now(), datetime.now()))
+
+    context['player_id'] = player_id
+    context['player'] = created_player
 
 
 @given(parsers.parse('a ship "{ship_symbol}" exists for player {player_id:d} at "{location}"'))
