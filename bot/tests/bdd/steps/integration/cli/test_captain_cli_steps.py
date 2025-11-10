@@ -52,13 +52,15 @@ def setup_teardown(context):
     """Reset container and clean database before each test"""
     reset_container()
 
-    # Clean database for test isolation
-    from configuration.container import get_database
-    db = get_database()
-    with db.transaction() as conn:
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM captain_logs")
-        cursor.execute("DELETE FROM players")
+    # Clean database for test isolation using SQLAlchemy
+    from configuration.container import get_engine
+    from adapters.secondary.persistence.models import captain_logs, players
+    from sqlalchemy import delete
+
+    engine = get_engine()
+    with engine.begin() as conn:
+        conn.execute(delete(captain_logs))
+        conn.execute(delete(players))
 
     # Sync so changes are visible
     sync_database_for_subprocess()
@@ -67,12 +69,11 @@ def setup_teardown(context):
 
     # Cleanup after test
     reset_container()
-    db = get_database()
     try:
-        with db.transaction() as conn:
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM captain_logs")
-            cursor.execute("DELETE FROM players")
+        engine = get_engine()
+        with engine.begin() as conn:
+            conn.execute(delete(captain_logs))
+            conn.execute(delete(players))
         sync_database_for_subprocess()
     except Exception:
         # Ignore errors during cleanup (e.g., tables don't exist)

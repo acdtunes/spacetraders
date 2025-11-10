@@ -293,8 +293,8 @@ class PurchaseShipHandler(RequestHandler[PurchaseShipCommand, Ship]):
             shipyard_waypoint_obj
         )
 
-        # 13. Save new ship to repository (for test compatibility and caching)
-        self._ship_repo.create(new_ship)
+        # 13. Skip local save - ShipRepository is API-only in production
+        # Ship data is already created via API and will be fetched fresh on next query
 
         # 14. Return the new ship
         return new_ship
