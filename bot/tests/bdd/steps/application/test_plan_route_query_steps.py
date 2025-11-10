@@ -78,10 +78,10 @@ def mock_routing_engine():
 
 
 @pytest.fixture
-def handler(mock_ship_repo, mock_routing_engine):
+def handler(ship_repo, mock_routing_engine):
     """Create PlanRouteHandler with all dependencies"""
     return PlanRouteHandler(
-        mock_ship_repo,
+        ship_repo,
         mock_routing_engine
     )
 
@@ -149,7 +149,7 @@ def handler_initialized(context):
 # ============================================================================
 
 @given(parsers.parse('a ship "{ship_symbol}" exists at waypoint "{waypoint}" in system "{system}"'))
-def ship_exists(context, mock_ship_repo, ship_symbol, waypoint, system):
+def ship_exists(context, ship_repo, ship_symbol, waypoint, system):
     """Create a ship at a waypoint"""
     # Store for later use
     context['ship_symbol'] = ship_symbol
@@ -161,18 +161,32 @@ def ship_exists(context, mock_ship_repo, ship_symbol, waypoint, system):
 
 
 @given(parsers.parse('the ship has {fuel:d} fuel with capacity {capacity:d} and engine speed {speed:d}'))
-def ship_has_fuel_and_speed(context, mock_ship_repo, fuel, capacity, speed):
-    """Set ship fuel and engine specs"""
-    ship = create_ship(
-        ship_symbol=context['ship_symbol'],
-        player_id=1,
-        waypoint_symbol=context['waypoint'],
-        system_symbol=context['system'],
-        fuel_current=fuel,
-        fuel_capacity=capacity,
-        engine_speed=speed
-    )
-    mock_ship_repo.create(ship)
+def ship_has_fuel_and_speed(context, fuel, capacity, speed):
+    """Set ship fuel and engine specs (store in context for API mock)"""
+    ship_symbol = context['ship_symbol']
+    waypoint = context['waypoint']
+    system_symbol = context['system']
+
+    # Store ship data for API mock
+    if 'ships_data' not in context:
+        context['ships_data'] = {}
+
+    context['ships_data'][ship_symbol] = {
+        'symbol': ship_symbol,
+        'nav': {
+            'waypointSymbol': waypoint,
+            'systemSymbol': system_symbol,
+            'status': 'IN_ORBIT',
+            'flightMode': 'CRUISE'
+        },
+        'fuel': {'current': fuel, 'capacity': capacity},
+        'cargo': {'capacity': 40, 'units': 0, 'inventory': []},
+        'frame': {'symbol': 'FRAME_PROBE'},
+        'reactor': {'symbol': 'REACTOR_SOLAR_I'},
+        'engine': {'symbol': 'ENGINE_IMPULSE_DRIVE_I', 'speed': speed},
+        'modules': [],
+        'mounts': []
+    }
     context['fuel_current'] = fuel
     context['fuel_capacity'] = capacity
     context['engine_speed'] = speed
@@ -243,7 +257,7 @@ def routing_engine_valid_path(context, mock_routing_engine, start, dest):
 
 
 @given(parsers.parse('no ship "{ship_symbol}" exists for player {player_id:d}'))
-def no_ship_exists(mock_ship_repo, ship_symbol, player_id):
+def no_ship_exists(ship_repo, ship_symbol, player_id):
     """Ensure ship doesn't exist"""
     # Repository is empty by default
     pass
@@ -550,12 +564,12 @@ def route_segment_count(context, count):
 
 
 @then(parsers.parse('the ship repository should have been queried for "{ship}"'))
-def repository_queried(context, mock_ship_repo, ship):
+def repository_queried(context, ship_repo, ship):
     """Verify ship repository was queried"""
     # BLACK-BOX TESTING: We verify the repository was queried by checking
     # that the returned route contains the ship data. If the ship wasn't
     # found in the repository, the query would have failed with ShipNotFoundError.
-    # Testing internal state (mock_ship_repo._ships) would be white-box testing.
+    # Testing internal state (ship_repo._ships) would be white-box testing.
     route = context.get('result')
     assert route is not None, "Route should have been created (repository was queried)"
     assert route.ship_symbol == ship, f"Route should be for ship {ship}"

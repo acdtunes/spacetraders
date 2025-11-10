@@ -75,10 +75,10 @@ def mock_routing_engine():
 
 
 @pytest.fixture
-def handler(mock_ship_repo, mock_routing_engine):
+def handler(ship_repo, mock_routing_engine):
     """Create NavigateShipHandler with all dependencies"""
     return NavigateShipHandler(
-        mock_ship_repo,
+        ship_repo,
         mock_routing_engine
     )
 
@@ -143,16 +143,31 @@ def handler_initialized(context, mock_api, mock_graph_provider):
 # ============================================================================
 
 @given(parsers.parse('a ship "{ship_symbol}" at waypoint "{waypoint}" with {fuel:d} fuel'))
-def ship_at_waypoint(context, mock_ship_repo, ship_symbol, waypoint, fuel):
-    """Create a ship at a waypoint with fuel"""
-    ship = create_ship(
-        ship_symbol=ship_symbol,
-        player_id=1,
-        waypoint_symbol=waypoint,
-        nav_status=Ship.IN_ORBIT,
-        fuel_current=fuel
-    )
-    mock_ship_repo.create(ship)
+def ship_at_waypoint(context, ship_symbol, waypoint, fuel):
+    """Create a ship at a waypoint with fuel (store in context for API mock)"""
+    parts = waypoint.split('-')
+    system_symbol = f"{parts[0]}-{parts[1]}" if len(parts) >= 2 else "X1-TEST"
+
+    # Store ship data for API mock
+    if 'ships_data' not in context:
+        context['ships_data'] = {}
+
+    context['ships_data'][ship_symbol] = {
+        'symbol': ship_symbol,
+        'nav': {
+            'waypointSymbol': waypoint,
+            'systemSymbol': system_symbol,
+            'status': 'IN_ORBIT',
+            'flightMode': 'CRUISE'
+        },
+        'fuel': {'current': fuel, 'capacity': 100},
+        'cargo': {'capacity': 40, 'units': 0, 'inventory': []},
+        'frame': {'symbol': 'FRAME_PROBE'},
+        'reactor': {'symbol': 'REACTOR_SOLAR_I'},
+        'engine': {'symbol': 'ENGINE_IMPULSE_DRIVE_I', 'speed': 30},
+        'modules': [],
+        'mounts': []
+    }
     context['ship_symbol'] = ship_symbol
     context['player_id'] = 1
     context['initial_fuel'] = fuel
@@ -160,27 +175,19 @@ def ship_at_waypoint(context, mock_ship_repo, ship_symbol, waypoint, fuel):
 
 
 @given("the ship is in orbit")
-def ship_in_orbit(context, mock_ship_repo):
-    """Set ship to orbit status"""
+def ship_in_orbit(context):
+    """Set ship to orbit status (update context for API mock)"""
     ship_symbol = context.get('ship_symbol')
-    if ship_symbol:
-        ship = mock_ship_repo.find_by_symbol(ship_symbol, context.get('player_id', 1))
-        if ship:
-            # Use public API: ensure_in_orbit() transitions to IN_ORBIT
-            ship.ensure_in_orbit()
-            mock_ship_repo.update(ship)
+    if ship_symbol and 'ships_data' in context and ship_symbol in context['ships_data']:
+        context['ships_data'][ship_symbol]['nav']['status'] = 'IN_ORBIT'
 
 
 @given("the ship is docked")
-def ship_docked(context, mock_ship_repo):
-    """Set ship to docked status"""
+def ship_docked(context):
+    """Set ship to docked status (update context for API mock)"""
     ship_symbol = context.get('ship_symbol')
-    if ship_symbol:
-        ship = mock_ship_repo.find_by_symbol(ship_symbol, context.get('player_id', 1))
-        if ship:
-            # Use public API: ensure_docked() transitions to DOCKED
-            ship.ensure_docked()
-            mock_ship_repo.update(ship)
+    if ship_symbol and 'ships_data' in context and ship_symbol in context['ships_data']:
+        context['ships_data'][ship_symbol]['nav']['status'] = 'DOCKED'
 
 
 @given(parsers.parse('waypoint "{waypoint}" exists at distance {distance:f}'))
@@ -351,9 +358,9 @@ def route_plan_with_refuel(context, mock_routing_engine, mock_graph_provider):
 
 
 @given("no ships exist in the repository")
-def no_ships_exist(mock_ship_repo):
+def no_ships_exist(ship_repo):
     """Ensure repository is empty"""
-    mock_ship_repo.clear_all()
+    ship_repo.clear_all()
 
 
 @given(parsers.parse('no route plan can be found to "{destination}"'))
@@ -363,45 +370,46 @@ def no_route_plan(mock_routing_engine, destination):
 
 
 @given(parsers.parse('a ship "{ship_symbol}" belongs to player {player_id:d}'))
-def ship_belongs_to_player(context, mock_ship_repo, ship_symbol, player_id):
-    """Create a ship for a specific player"""
-    ship = create_ship(
-        ship_symbol=ship_symbol,
-        player_id=player_id,
-        waypoint_symbol="X1-TEST-AB12",
-        nav_status=Ship.IN_ORBIT,
-        fuel_current=100
-    )
-    mock_ship_repo.create(ship)
+def ship_belongs_to_player(context, ship_symbol, player_id):
+    """Create a ship for a specific player (store in context for API mock)"""
+    waypoint = "X1-TEST-AB12"
+
+    # Store ship data for API mock
+    if 'ships_data' not in context:
+        context['ships_data'] = {}
+
+    context['ships_data'][ship_symbol] = {
+        'symbol': ship_symbol,
+        'nav': {
+            'waypointSymbol': waypoint,
+            'systemSymbol': 'X1-TEST',
+            'status': 'IN_ORBIT',
+            'flightMode': 'CRUISE'
+        },
+        'fuel': {'current': 100, 'capacity': 100},
+        'cargo': {'capacity': 40, 'units': 0, 'inventory': []},
+        'frame': {'symbol': 'FRAME_PROBE'},
+        'reactor': {'symbol': 'REACTOR_SOLAR_I'},
+        'engine': {'symbol': 'ENGINE_IMPULSE_DRIVE_I', 'speed': 30},
+        'modules': [],
+        'mounts': []
+    }
     context['ship_symbol'] = ship_symbol
     context['owner_player_id'] = player_id
 
 
 @given(parsers.parse('the ship is at waypoint "{waypoint}" with {fuel:d} fuel'))
-def ship_at_waypoint_with_fuel(context, mock_ship_repo, waypoint, fuel):
-    """Update ship location and fuel"""
+def ship_at_waypoint_with_fuel(context, waypoint, fuel):
+    """Update ship location and fuel (update context for API mock)"""
     ship_symbol = context.get('ship_symbol')
-    player_id = context.get('owner_player_id', 1)
 
-    if ship_symbol:
-        ship = mock_ship_repo.find_by_symbol(ship_symbol, player_id)
-        if ship:
-            # Recreate ship with new location and fuel using constructor
-            new_waypoint = create_waypoint(waypoint)
-            new_fuel = Fuel(current=fuel, capacity=100)
+    if ship_symbol and 'ships_data' in context and ship_symbol in context['ships_data']:
+        parts = waypoint.split('-')
+        system_symbol = f"{parts[0]}-{parts[1]}" if len(parts) >= 2 else "X1-TEST"
 
-            updated_ship = Ship(
-                ship_symbol=ship.ship_symbol,
-                player_id=ship.player_id,
-                current_location=new_waypoint,
-                fuel=new_fuel,
-                fuel_capacity=ship.fuel_capacity,
-                cargo_capacity=ship.cargo_capacity,
-                cargo_units=ship.cargo_units,
-                engine_speed=ship.engine_speed,
-                nav_status=ship.nav_status
-            )
-            mock_ship_repo.update(updated_ship)
+        context['ships_data'][ship_symbol]['nav']['waypointSymbol'] = waypoint
+        context['ships_data'][ship_symbol]['nav']['systemSymbol'] = system_symbol
+        context['ships_data'][ship_symbol]['fuel']['current'] = fuel
 
 
 @given(parsers.parse('a route plan exists requiring {fuel:d} fuel'))
@@ -511,7 +519,7 @@ def final_destination(context, waypoint):
 
 
 @then("the API should have been called to navigate")
-def api_called_navigate(context, mock_ship_repo):
+def api_called_navigate(context, ship_repo):
     """Verify navigation completed by checking ship reached destination"""
     result = context.get('result')
     assert result is not None, "No route was returned"
@@ -519,7 +527,7 @@ def api_called_navigate(context, mock_ship_repo):
     # Verify ship reached destination by querying repository
     ship_symbol = context.get('ship_symbol')
     player_id = context.get('player_id', 1)
-    ship = mock_ship_repo.find_by_symbol(ship_symbol, player_id)
+    ship = ship_repo.find_by_symbol(ship_symbol, player_id)
 
     # Ship should exist and route should be completed
     assert ship is not None, "Ship not found after navigation"
@@ -536,7 +544,7 @@ def ship_state_persisted(context):
 
 
 @then("the ship should have been put into orbit first")
-def ship_orbited_first(context, mock_ship_repo):
+def ship_orbited_first(context, ship_repo):
     """Verify ship transitioned from docked to navigating"""
     result = context.get('result')
     assert result is not None, "No route was returned"
@@ -547,7 +555,7 @@ def ship_orbited_first(context, mock_ship_repo):
     # Query ship from repository - should no longer be docked
     ship_symbol = context.get('ship_symbol')
     player_id = context.get('player_id', 1)
-    ship = mock_ship_repo.find_by_symbol(ship_symbol, player_id)
+    ship = ship_repo.find_by_symbol(ship_symbol, player_id)
 
     assert ship is not None, "Ship not found"
     assert ship.nav_status != Ship.DOCKED, "Ship should have left docked status"
@@ -588,7 +596,7 @@ def ship_docked_for_refuel(context):
 
 
 @then("the ship should have been refueled")
-def ship_refueled(context, mock_ship_repo):
+def ship_refueled(context, ship_repo):
     """Verify ship fuel was replenished during route"""
     result = context.get('result')
     assert result is not None, "No route was returned"
@@ -596,7 +604,7 @@ def ship_refueled(context, mock_ship_repo):
     # Query ship from repository
     ship_symbol = context.get('ship_symbol')
     player_id = context.get('player_id', 1)
-    ship = mock_ship_repo.find_by_symbol(ship_symbol, player_id)
+    ship = ship_repo.find_by_symbol(ship_symbol, player_id)
 
     assert ship is not None, "Ship not found"
     # Ship should have fuel after completing route with refuel stop
@@ -653,13 +661,13 @@ def ship_fuel_reduced(context, fuel):
 
 
 @then("the repository should have been updated at least once")
-def repository_updated(context, mock_ship_repo):
+def repository_updated(context, ship_repo):
     """Verify repository was updated by checking ship state exists"""
     ship_symbol = context.get('ship_symbol')
     player_id = context.get('player_id', 1)
 
     # Query ship from repository - if it exists with updated state, repository was updated
-    ship = mock_ship_repo.find_by_symbol(ship_symbol, player_id)
+    ship = ship_repo.find_by_symbol(ship_symbol, player_id)
     assert ship is not None, "Ship not found in repository - repository was not updated"
 
     # Additional verification: ship should be in navigated state
