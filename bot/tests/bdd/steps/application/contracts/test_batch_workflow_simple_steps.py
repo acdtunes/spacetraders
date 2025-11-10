@@ -399,7 +399,7 @@ def execute_batch_workflow(context, iterations):
     mock_mediator.send_async = AsyncMock(side_effect=mock_send)
 
     # Mock ship repository
-    mock_ship_repo = Mock()
+    ship_repo = Mock()
 
     # Create mock ship with cargo capacity from context
     cargo_capacity = context.get('cargo_capacity', 100)
@@ -416,7 +416,7 @@ def execute_batch_workflow(context, iterations):
     mock_ship.cargo = mock_cargo
     mock_ship.ship_symbol = context.get('ship_symbol', 'TEST-SHIP-1')  # For error messages
 
-    mock_ship_repo.find_by_symbol.return_value = mock_ship
+    ship_repo.find_by_symbol.return_value = mock_ship
 
     # Mock market repository
     mock_market_repo = Mock()
@@ -425,7 +425,7 @@ def execute_batch_workflow(context, iterations):
     # Create handler with mocked mediator and ship repository
     handler = BatchContractWorkflowHandler(
         mediator=mock_mediator,
-        ship_repository=mock_ship_repo,
+        ship_repository=ship_repo,
         market_repository=mock_market_repo
     )
 

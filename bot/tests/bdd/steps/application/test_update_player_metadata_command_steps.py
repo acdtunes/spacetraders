@@ -24,15 +24,15 @@ def test_update_metadata_successfully():
 
 
 @given("the update player metadata command handler is initialized")
-def initialize_handler(context, mock_player_repo):
+def initialize_handler(context, player_repo):
     """Initialize the UpdatePlayerMetadataHandler with mock repository"""
-    context["handler"] = UpdatePlayerMetadataHandler(mock_player_repo)
-    context["mock_player_repo"] = mock_player_repo
+    context["handler"] = UpdatePlayerMetadataHandler(player_repo)
+    context["player_repo"] = player_repo
     context["update_count"] = 0
 
 
 @given(parsers.parse('a registered player with id {player_id:d} and metadata {metadata}'))
-def create_player_with_metadata(context, player_id, metadata, mock_player_repo):
+def create_player_with_metadata(context, player_id, metadata, player_repo):
     """Create a registered player with specific metadata"""
     metadata_dict = json.loads(metadata)
     player = Player(
@@ -42,7 +42,7 @@ def create_player_with_metadata(context, player_id, metadata, mock_player_repo):
         created_at=datetime.now(timezone.utc),
         metadata=metadata_dict
     )
-    created_player = mock_player_repo.create(player)
+    created_player = player_repo.create(player)
     context[f"player_{player_id}"] = created_player
     context["player"] = created_player
     context["player_id"] = created_player.player_id
@@ -144,7 +144,7 @@ def test_update_metadata_complex_types():
 
 
 @given(parsers.parse("a registered player with id {player_id:d} with no metadata"))
-def create_player_no_metadata(context, player_id, mock_player_repo):
+def create_player_no_metadata(context, player_id, player_repo):
     """Create a registered player with no metadata"""
     player = Player(
         player_id=None,
@@ -152,7 +152,7 @@ def create_player_no_metadata(context, player_id, mock_player_repo):
         token=f"test-token-{player_id}",
         created_at=datetime.now(timezone.utc)
     )
-    created_player = mock_player_repo.create(player)
+    created_player = player_repo.create(player)
     context[f"player_{player_id}"] = created_player
     context["player"] = created_player
     context["player_id"] = created_player.player_id
@@ -229,18 +229,18 @@ def test_update_metadata_persists():
 
 
 @then(parsers.parse('the persisted player metadata should contain key "{key}"'))
-def check_persisted_metadata_contains_key(context, key, mock_player_repo):
+def check_persisted_metadata_contains_key(context, key, player_repo):
     """Verify the persisted player metadata contains a key"""
     player_id = context["player"].player_id
-    persisted_player = mock_player_repo.find_by_id(player_id)
+    persisted_player = player_repo.find_by_id(player_id)
     assert key in persisted_player.metadata
 
 
 @then(parsers.parse('the persisted player metadata "{key}" should equal "{value}"'))
-def check_persisted_metadata_value(context, key, value, mock_player_repo):
+def check_persisted_metadata_value(context, key, value, player_repo):
     """Verify persisted metadata key equals value"""
     player_id = context["player"].player_id
-    persisted_player = mock_player_repo.find_by_id(player_id)
+    persisted_player = player_repo.find_by_id(player_id)
     assert persisted_player.metadata[key] == value
 
 
@@ -254,7 +254,7 @@ def test_update_metadata_returns_player():
 
 
 @given(parsers.parse('a registered player with id {player_id:d} and agent symbol "{agent_symbol}" with no metadata'))
-def create_player_with_agent_no_metadata(context, player_id, agent_symbol, mock_player_repo):
+def create_player_with_agent_no_metadata(context, player_id, agent_symbol, player_repo):
     """Create a player with specific agent symbol and no metadata"""
     player = Player(
         player_id=None,
@@ -262,7 +262,7 @@ def create_player_with_agent_no_metadata(context, player_id, agent_symbol, mock_
         token=f"test-token-{player_id}",
         created_at=datetime.now(timezone.utc)
     )
-    created_player = mock_player_repo.create(player)
+    created_player = player_repo.create(player)
     context[f"player_{player_id}"] = created_player
     context["player"] = created_player
     context["player_id"] = created_player.player_id
@@ -402,9 +402,9 @@ def test_handler_initializes_correctly():
 
 
 @given("a mock player repository is created")
-def create_mock_repo(context, mock_player_repo):
+def create_mock_repo(context, player_repo):
     """Create a mock player repository"""
-    context["test_mock_repo"] = mock_player_repo
+    context["test_mock_repo"] = player_repo
 
 
 @when("I create an update player metadata handler with the repository")

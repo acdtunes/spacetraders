@@ -75,7 +75,7 @@ def set_markets(context, datatable):
 def execute_scout_tour(context, ship_symbol):
     """Execute scout tour and verify wait behavior"""
     # Create mock ship repository
-    mock_ship_repo = Mock()
+    ship_repo = Mock()
 
     ship_data = context['ship_data']
     test_ship = Ship(
@@ -98,7 +98,7 @@ def execute_scout_tour(context, ship_symbol):
         nav_status=ship_data['status']
     )
 
-    mock_ship_repo.find_by_symbol.return_value = test_ship
+    ship_repo.find_by_symbol.return_value = test_ship
 
     # Create mock market repository
     mock_market_repo = Mock()
@@ -132,7 +132,7 @@ def execute_scout_tour(context, ship_symbol):
 
     # Create test handler
     from application.scouting.commands.scout_tour import ScoutTourHandler
-    handler = ScoutTourHandler(mock_ship_repo, mock_market_repo)
+    handler = ScoutTourHandler(ship_repo, mock_market_repo)
 
     # Create command
     command = ScoutTourCommand(

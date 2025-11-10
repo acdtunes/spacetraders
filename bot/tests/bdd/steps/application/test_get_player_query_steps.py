@@ -18,11 +18,11 @@ from domain.shared.exceptions import PlayerNotFoundError
 # Background
 # ==============================================================================
 @given("the get player query handlers are initialized")
-def initialize_handlers(context, mock_player_repo):
+def initialize_handlers(context, player_repo):
     """Initialize both GetPlayer handlers with mock repository"""
-    context["get_player_handler"] = GetPlayerHandler(mock_player_repo)
-    context["get_player_by_agent_handler"] = GetPlayerByAgentHandler(mock_player_repo)
-    context["mock_player_repo"] = mock_player_repo
+    context["get_player_handler"] = GetPlayerHandler(player_repo)
+    context["get_player_by_agent_handler"] = GetPlayerByAgentHandler(player_repo)
+    context["player_repo"] = player_repo
 
 
 # ==============================================================================
@@ -35,7 +35,7 @@ def test_get_player_by_id_successfully():
 
 
 @given(parsers.parse('a registered player with id {player_id:d} and agent symbol "{agent_symbol}"'))
-def create_player_with_id_and_symbol(context, player_id, agent_symbol, mock_player_repo):
+def create_player_with_id_and_symbol(context, player_id, agent_symbol, player_repo):
     """Create a registered player with specific ID and agent symbol"""
     player = Player(
         player_id=None,  # Will be assigned by mock repo
@@ -44,7 +44,7 @@ def create_player_with_id_and_symbol(context, player_id, agent_symbol, mock_play
         created_at=datetime.now(timezone.utc) - timedelta(days=1),
         last_active=datetime.now(timezone.utc) - timedelta(hours=1)
     )
-    created_player = mock_player_repo.create(player)
+    created_player = player_repo.create(player)
     context[f"player_{player_id}"] = created_player
     context["player"] = created_player
     context["player_id"] = created_player.player_id
@@ -334,9 +334,9 @@ def test_get_player_handler_initializes():
 
 
 @given("a mock player repository is created")
-def create_mock_repo(context, mock_player_repo):
+def create_mock_repo(context, player_repo):
     """Create a mock player repository"""
-    context["test_mock_repo"] = mock_player_repo
+    context["test_mock_repo"] = player_repo
 
 
 @when("I create a get player handler with the repository")

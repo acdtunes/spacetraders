@@ -18,21 +18,21 @@ from domain.shared.exceptions import PlayerNotFoundError
 # Background
 # ==============================================================================
 @given("the captain logging system is initialized")
-def initialize_captain_logging(context, mock_player_repo, mock_captain_log_repo):
+def initialize_captain_logging(context, player_repo, mock_captain_log_repo):
     """Initialize captain logging system with mock repositories"""
     context["log_captain_entry_handler"] = LogCaptainEntryHandler(
         mock_captain_log_repo,
-        mock_player_repo
+        player_repo
     )
     context["mock_captain_log_repo"] = mock_captain_log_repo
-    context["mock_player_repo"] = mock_player_repo
+    context["player_repo"] = player_repo
 
 
 # ==============================================================================
 # Shared Given Steps
 # ==============================================================================
 @given(parsers.parse('a registered player with id {player_id:d} and agent symbol "{agent_symbol}"'))
-def create_player_with_id_and_symbol(context, player_id, agent_symbol, mock_player_repo):
+def create_player_with_id_and_symbol(context, player_id, agent_symbol, player_repo):
     """Create a registered player with specific ID and agent symbol"""
     player = Player(
         player_id=None,  # Will be assigned by mock repo
@@ -41,7 +41,7 @@ def create_player_with_id_and_symbol(context, player_id, agent_symbol, mock_play
         created_at=datetime.now(timezone.utc) - timedelta(days=1),
         last_active=datetime.now(timezone.utc) - timedelta(hours=1)
     )
-    created_player = mock_player_repo.create(player)
+    created_player = player_repo.create(player)
     context[f"player_{player_id}"] = created_player
     context["player"] = created_player
     context["player_id"] = created_player.player_id

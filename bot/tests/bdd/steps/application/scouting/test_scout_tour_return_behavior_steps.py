@@ -104,11 +104,11 @@ def execute_scout_tour(context, ship_symbol):
         )
 
     # Mock ship repository that returns ship at current location
-    mock_ship_repo = Mock()
+    ship_repo = Mock()
     def get_ship(symbol, player_id):
         return make_test_ship(current_location)
 
-    mock_ship_repo.find_by_symbol.side_effect = get_ship
+    ship_repo.find_by_symbol.side_effect = get_ship
 
     # Create mock market repository
     mock_market_repo = Mock()
@@ -149,7 +149,7 @@ def execute_scout_tour(context, ship_symbol):
 
     # Create test handler
     from application.scouting.commands.scout_tour import ScoutTourHandler
-    handler = ScoutTourHandler(mock_ship_repo, mock_market_repo)
+    handler = ScoutTourHandler(ship_repo, mock_market_repo)
 
     # Create command WITHOUT return_to_start parameter
     command = ScoutTourCommand(

@@ -26,12 +26,12 @@ scenarios('../../features/application/orbit_ship_command.feature')
 # ============================================================================
 
 @given("the orbit ship command system is initialized")
-def orbit_system_initialized(context, mock_ship_repo, mock_api):
+def orbit_system_initialized(context, ship_repo, mock_api):
     """Initialize the orbit command system"""
-    context['ship_repo'] = mock_ship_repo
+    context['ship_repo'] = ship_repo
     context['api'] = mock_api
     # Handler now only takes ship_repo - API client is retrieved via get_api_client_for_player
-    context['handler'] = OrbitShipHandler(mock_ship_repo)
+    context['handler'] = OrbitShipHandler(ship_repo)
     context['initialized'] = True
 
 

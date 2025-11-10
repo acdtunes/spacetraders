@@ -34,13 +34,13 @@ def test_register_new_player():
     pass
 
 @when(parsers.parse('I register player "{agent}" with token "{token}"'))
-def register_player(context, agent, token, mock_player_repo):
+def register_player(context, agent, token, player_repo):
     """
     Register a player using RegisterPlayerHandler
 
     Note: Using direct handler invocation (mediator integration in Wave 5)
     """
-    handler = RegisterPlayerHandler(mock_player_repo)
+    handler = RegisterPlayerHandler(player_repo)
     command = RegisterPlayerCommand(agent_symbol=agent, token=token)
     context["player"] = asyncio.run(handler.handle(command))
 
@@ -68,17 +68,17 @@ def test_duplicate_agent_rejected():
     pass
 
 @given(parsers.parse('a player with agent_symbol "{agent}" exists'))
-def existing_player(context, agent, mock_player_repo):
+def existing_player(context, agent, player_repo):
     """Create an existing player in the repository"""
-    handler = RegisterPlayerHandler(mock_player_repo)
+    handler = RegisterPlayerHandler(player_repo)
     command = RegisterPlayerCommand(agent_symbol=agent, token="EXISTING-TOKEN")
     asyncio.run(handler.handle(command))
     context["existing_agent"] = agent
 
 @when(parsers.re(r'I attempt to register player "(?P<agent>.*)" with token "(?P<token>.*)"'))
-def attempt_register_player(context, agent, token, mock_player_repo):
+def attempt_register_player(context, agent, token, player_repo):
     """Attempt to register a player and capture any error"""
-    handler = RegisterPlayerHandler(mock_player_repo)
+    handler = RegisterPlayerHandler(player_repo)
     command = RegisterPlayerCommand(agent_symbol=agent, token=token)
     try:
         asyncio.run(handler.handle(command))
@@ -109,9 +109,9 @@ def test_update_player_metadata():
     pass
 
 @given(parsers.parse("a registered player with id {player_id:d}"))
-def registered_player(context, player_id, mock_player_repo):
+def registered_player(context, player_id, player_repo):
     """Register a player with a specific expected ID"""
-    handler = RegisterPlayerHandler(mock_player_repo)
+    handler = RegisterPlayerHandler(player_repo)
     command = RegisterPlayerCommand(
         agent_symbol=f"AGENT-{player_id}",
         token=f"TOKEN-{player_id}"
@@ -121,10 +121,10 @@ def registered_player(context, player_id, mock_player_repo):
     context["player"] = player
 
 @when(parsers.parse('I update metadata with {metadata}'))
-def update_metadata(context, metadata, mock_player_repo):
+def update_metadata(context, metadata, player_repo):
     """Update player metadata"""
     metadata_dict = json.loads(metadata)
-    handler = UpdatePlayerMetadataHandler(mock_player_repo)
+    handler = UpdatePlayerMetadataHandler(player_repo)
     command = UpdatePlayerMetadataCommand(
         player_id=context["player_id"],
         metadata=metadata_dict
@@ -143,13 +143,13 @@ def test_touch_last_active():
     pass
 
 @when("I touch the player's last_active")
-def touch_last_active(context, mock_player_repo):
+def touch_last_active(context, player_repo):
     """Touch the player's last_active timestamp"""
     # Store the old timestamp (before touching)
     context["old_last_active"] = context["player"].last_active
 
     # Touch the timestamp using the handler
-    handler = TouchPlayerLastActiveHandler(mock_player_repo)
+    handler = TouchPlayerLastActiveHandler(player_repo)
     command = TouchPlayerLastActiveCommand(player_id=context["player_id"])
     context["player"] = asyncio.run(handler.handle(command))
 
@@ -165,9 +165,9 @@ def test_list_all_players():
     pass
 
 @given(parsers.parse('players "{agent1}", "{agent2}", "{agent3}" are registered'))
-def register_multiple_players(context, agent1, agent2, agent3, mock_player_repo):
+def register_multiple_players(context, agent1, agent2, agent3, player_repo):
     """Register multiple players"""
-    handler = RegisterPlayerHandler(mock_player_repo)
+    handler = RegisterPlayerHandler(player_repo)
 
     for agent in [agent1, agent2, agent3]:
         command = RegisterPlayerCommand(
@@ -177,9 +177,9 @@ def register_multiple_players(context, agent1, agent2, agent3, mock_player_repo)
         asyncio.run(handler.handle(command))
 
 @when("I list all players")
-def list_all_players(context, mock_player_repo):
+def list_all_players(context, player_repo):
     """List all players using the handler"""
-    handler = ListPlayersHandler(mock_player_repo)
+    handler = ListPlayersHandler(player_repo)
     query = ListPlayersQuery()
     context["players"] = asyncio.run(handler.handle(query))
 

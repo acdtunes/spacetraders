@@ -289,7 +289,7 @@ def _execute_scout_markets(context):
     from domain.shared.ship import Ship
     from domain.shared.value_objects import Waypoint, Fuel
 
-    mock_ship_repo = Mock()
+    ship_repo = Mock()
 
     def mock_find_by_symbol(ship_symbol, player_id):
         ship_data = next((s for s in context['ships_data'] if s['symbol'] == ship_symbol), None)
@@ -323,7 +323,7 @@ def _execute_scout_markets(context):
             nav_status=ship_data['nav']['status']
         )
 
-    mock_ship_repo.find_by_symbol.side_effect = mock_find_by_symbol
+    ship_repo.find_by_symbol.side_effect = mock_find_by_symbol
 
     # Mock graph provider
     mock_graph = Mock()
@@ -406,7 +406,7 @@ def _execute_scout_markets(context):
     test_mediator.register_behavior(ValidationBehavior())
     test_mediator.register_handler(
         ScoutMarketsCommand,
-        lambda: ScoutMarketsHandler(mock_ship_repo)
+        lambda: ScoutMarketsHandler(ship_repo)
     )
 
     # Patch at container level
@@ -442,7 +442,7 @@ def _execute_scout_markets_concurrent(context):
     from domain.shared.ship import Ship
     from domain.shared.value_objects import Waypoint, Fuel
 
-    mock_ship_repo = Mock()
+    ship_repo = Mock()
 
     def mock_find_by_symbol(ship_symbol, player_id):
         ship_data = next((s for s in context['ships_data'] if s['symbol'] == ship_symbol), None)
@@ -476,7 +476,7 @@ def _execute_scout_markets_concurrent(context):
             nav_status=ship_data['nav']['status']
         )
 
-    mock_ship_repo.find_by_symbol.side_effect = mock_find_by_symbol
+    ship_repo.find_by_symbol.side_effect = mock_find_by_symbol
 
     # Mock graph provider
     mock_graph = Mock()
@@ -553,7 +553,7 @@ def _execute_scout_markets_concurrent(context):
     test_mediator.register_behavior(ValidationBehavior())
     test_mediator.register_handler(
         ScoutMarketsCommand,
-        lambda: ScoutMarketsHandler(mock_ship_repo)
+        lambda: ScoutMarketsHandler(ship_repo)
     )
 
     # Execute multiple times concurrently

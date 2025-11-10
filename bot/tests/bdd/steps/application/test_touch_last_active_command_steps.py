@@ -22,15 +22,15 @@ def test_touch_last_active_successfully():
 
 
 @given("the touch player last active command handler is initialized")
-def initialize_handler(context, mock_player_repo):
+def initialize_handler(context, player_repo):
     """Initialize the TouchPlayerLastActiveHandler with mock repository"""
-    context["handler"] = TouchPlayerLastActiveHandler(mock_player_repo)
-    context["mock_player_repo"] = mock_player_repo
+    context["handler"] = TouchPlayerLastActiveHandler(player_repo)
+    context["player_repo"] = player_repo
     context["update_count"] = 0
 
 
 @given(parsers.parse("a registered player with id {player_id:d}"))
-def create_registered_player(context, player_id, mock_player_repo):
+def create_registered_player(context, player_id, player_repo):
     """Create a registered player with a specific ID"""
     player = Player(
         player_id=None,  # Will be assigned by mock repo
@@ -39,7 +39,7 @@ def create_registered_player(context, player_id, mock_player_repo):
         created_at=datetime.now(timezone.utc) - timedelta(days=1),
         last_active=datetime.now(timezone.utc) - timedelta(hours=1)
     )
-    created_player = mock_player_repo.create(player)
+    created_player = player_repo.create(player)
     context[f"player_{player_id}"] = created_player
     context["player"] = created_player
     context["player_id"] = created_player.player_id
@@ -55,7 +55,7 @@ def record_original_timestamp(context):
 def execute_touch_command(context, player_id):
     """Execute the touch player last active command"""
     handler = context["handler"]
-    mock_repo = context["mock_player_repo"]
+    mock_repo = context["player_repo"]
 
     # Get the actual player_id from the registered player
     if f"player_{player_id}" in context:
@@ -118,7 +118,7 @@ def test_touch_updates_to_current_time():
 
 
 @given(parsers.parse("a registered player with id {player_id:d} and last_active {hours:d} hours ago"))
-def create_player_with_old_timestamp(context, player_id, hours, mock_player_repo):
+def create_player_with_old_timestamp(context, player_id, hours, player_repo):
     """Create a player with an old last_active timestamp"""
     old_time = datetime.now(timezone.utc) - timedelta(hours=hours)
     player = Player(
@@ -128,7 +128,7 @@ def create_player_with_old_timestamp(context, player_id, hours, mock_player_repo
         created_at=old_time,
         last_active=old_time
     )
-    created_player = mock_player_repo.create(player)
+    created_player = player_repo.create(player)
     context["player"] = created_player
     context["player_id"] = created_player.player_id
     context["old_timestamp"] = old_time
@@ -205,10 +205,10 @@ def test_touch_persists_changes():
 
 
 @then("the persisted player should have updated last_active")
-def check_persisted_player(context, mock_player_repo):
+def check_persisted_player(context, player_repo):
     """Verify the player in the repository has the updated timestamp"""
     player_id = context["player"].player_id
-    persisted_player = mock_player_repo.find_by_id(player_id)
+    persisted_player = player_repo.find_by_id(player_id)
     assert persisted_player is not None
     assert persisted_player.last_active > context["original_last_active"]
 
@@ -223,7 +223,7 @@ def test_touch_returns_player_entity():
 
 
 @given(parsers.parse('a registered player with id {player_id:d} and agent symbol "{agent_symbol}"'))
-def create_player_with_agent_symbol(context, player_id, agent_symbol, mock_player_repo):
+def create_player_with_agent_symbol(context, player_id, agent_symbol, player_repo):
     """Create a player with a specific agent symbol"""
     player = Player(
         player_id=None,
@@ -232,7 +232,7 @@ def create_player_with_agent_symbol(context, player_id, agent_symbol, mock_playe
         created_at=datetime.now(timezone.utc) - timedelta(days=1),
         last_active=datetime.now(timezone.utc) - timedelta(hours=1)
     )
-    created_player = mock_player_repo.create(player)
+    created_player = player_repo.create(player)
     # Store in both formats for compatibility with different scenarios
     context[f"player_{player_id}"] = created_player
     context["player"] = created_player
@@ -343,9 +343,9 @@ def test_handler_initializes_correctly():
 
 
 @given("a mock player repository is created")
-def create_mock_repo(context, mock_player_repo):
+def create_mock_repo(context, player_repo):
     """Create a mock player repository"""
-    context["test_mock_repo"] = mock_player_repo
+    context["test_mock_repo"] = player_repo
 
 
 @when("I create a touch player last active handler with the repository")

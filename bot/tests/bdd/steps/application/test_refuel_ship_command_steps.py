@@ -73,11 +73,11 @@ def create_test_ship(
 # ============================================================================
 
 @given("the refuel ship command handler is initialized")
-def initialize_handler(context, mock_ship_repo, mock_api):
+def initialize_handler(context, ship_repo, mock_api):
     """Initialize handler with shared mock dependencies from conftest.py"""
-    context['mock_repo'] = mock_ship_repo
+    context['mock_repo'] = ship_repo
     context['mock_api'] = mock_api
-    context['handler'] = RefuelShipHandler(mock_ship_repo)
+    context['handler'] = RefuelShipHandler(ship_repo)
     context['exception'] = None
     context['result'] = None
 
