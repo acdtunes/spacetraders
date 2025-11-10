@@ -24,41 +24,41 @@ def test_dock_ship_successfully_from_orbit():
 
 
 @given("the dock ship command handler is initialized")
-def initialize_handler(context, mock_ship_repo, mock_api):
+def initialize_handler(context, ship_repo, mock_api):
     """Initialize the DockShipHandler with mock dependencies"""
     # Store mock API in context so it can be used by the patched get_api_client_for_player
     context["mock_api"] = mock_api
-    context["mock_ship_repo"] = mock_ship_repo
+    context["ship_repo"] = ship_repo
     # Handler now only takes ship_repo - API client is retrieved via get_api_client_for_player
-    context["handler"] = DockShipHandler(mock_ship_repo)
+    context["handler"] = DockShipHandler(ship_repo)
 
 
 @given(parsers.parse('a ship "{ship_symbol}" for player {player_id:d} in orbit at "{location}"'))
-def create_ship_in_orbit(context, ship_symbol, player_id, location, mock_ship_repo):
-    """Create a ship in orbit at a specific location"""
-    waypoint = Waypoint(
-        symbol=location,
-        x=0.0,
-        y=0.0,
-        system_symbol=location.split('-')[0] + '-' + location.split('-')[1],
-        waypoint_type="PLANET"
-    )
+def create_ship_in_orbit(context, ship_symbol, player_id, location):
+    """Create a ship in orbit at a specific location (store in context for API mock)"""
+    parts = location.split('-')
+    system_symbol = f"{parts[0]}-{parts[1]}" if len(parts) >= 2 else "X1-TEST"
 
-    fuel = Fuel(current=100, capacity=100)
+    # Store ship data for API mock
+    if 'ships_data' not in context:
+        context['ships_data'] = {}
 
-    ship = Ship(
-        ship_symbol=ship_symbol,
-        player_id=player_id,
-        current_location=waypoint,
-        fuel=fuel,
-        fuel_capacity=100,
-        cargo_capacity=40,
-        cargo_units=0,
-        engine_speed=30,
-        nav_status=Ship.IN_ORBIT
-    )
-
-    mock_ship_repo.create(ship)
+    context['ships_data'][ship_symbol] = {
+        'symbol': ship_symbol,
+        'nav': {
+            'waypointSymbol': location,
+            'systemSymbol': system_symbol,
+            'status': 'IN_ORBIT',
+            'flightMode': 'CRUISE'
+        },
+        'fuel': {'current': 100, 'capacity': 100},
+        'cargo': {'capacity': 40, 'units': 0, 'inventory': []},
+        'frame': {'symbol': 'FRAME_PROBE'},
+        'reactor': {'symbol': 'REACTOR_SOLAR_I'},
+        'engine': {'symbol': 'ENGINE_IMPULSE_DRIVE_I', 'speed': 30},
+        'modules': [],
+        'mounts': []
+    }
     context["initial_nav_status"] = Ship.IN_ORBIT
 
 
@@ -107,31 +107,31 @@ def test_dock_ship_already_docked():
 
 
 @given(parsers.parse('a ship "{ship_symbol}" for player {player_id:d} already docked at "{location}"'))
-def create_ship_already_docked(context, ship_symbol, player_id, location, mock_ship_repo):
-    """Create a ship that is already docked"""
-    waypoint = Waypoint(
-        symbol=location,
-        x=0.0,
-        y=0.0,
-        system_symbol=location.split('-')[0] + '-' + location.split('-')[1],
-        waypoint_type="PLANET"
-    )
+def create_ship_already_docked(context, ship_symbol, player_id, location):
+    """Create a ship that is already docked (store in context for API mock)"""
+    parts = location.split('-')
+    system_symbol = f"{parts[0]}-{parts[1]}" if len(parts) >= 2 else "X1-TEST"
 
-    fuel = Fuel(current=100, capacity=100)
+    # Store ship data for API mock
+    if 'ships_data' not in context:
+        context['ships_data'] = {}
 
-    ship = Ship(
-        ship_symbol=ship_symbol,
-        player_id=player_id,
-        current_location=waypoint,
-        fuel=fuel,
-        fuel_capacity=100,
-        cargo_capacity=40,
-        cargo_units=0,
-        engine_speed=30,
-        nav_status=Ship.DOCKED
-    )
-
-    mock_ship_repo.create(ship)
+    context['ships_data'][ship_symbol] = {
+        'symbol': ship_symbol,
+        'nav': {
+            'waypointSymbol': location,
+            'systemSymbol': system_symbol,
+            'status': 'DOCKED',
+            'flightMode': 'CRUISE'
+        },
+        'fuel': {'current': 100, 'capacity': 100},
+        'cargo': {'capacity': 40, 'units': 0, 'inventory': []},
+        'frame': {'symbol': 'FRAME_PROBE'},
+        'reactor': {'symbol': 'REACTOR_SOLAR_I'},
+        'engine': {'symbol': 'ENGINE_IMPULSE_DRIVE_I', 'speed': 30},
+        'modules': [],
+        'mounts': []
+    }
     context["initial_nav_status"] = Ship.DOCKED
 
 
@@ -220,31 +220,31 @@ def test_docking_preserves_properties():
 
 
 @given(parsers.parse('a ship "{ship_symbol}" for player {player_id:d} in orbit at "{location}" with fuel {fuel_current:d}/{fuel_capacity:d}'))
-def create_ship_with_properties(context, ship_symbol, player_id, location, fuel_current, fuel_capacity, mock_ship_repo):
-    """Create a ship with specific properties"""
-    waypoint = Waypoint(
-        symbol=location,
-        x=0.0,
-        y=0.0,
-        system_symbol=location.split('-')[0] + '-' + location.split('-')[1],
-        waypoint_type="PLANET"
-    )
+def create_ship_with_properties(context, ship_symbol, player_id, location, fuel_current, fuel_capacity):
+    """Create a ship with specific properties (store in context for API mock)"""
+    parts = location.split('-')
+    system_symbol = f"{parts[0]}-{parts[1]}" if len(parts) >= 2 else "X1-TEST"
 
-    fuel = Fuel(current=fuel_current, capacity=fuel_capacity)
+    # Store ship data for API mock
+    if 'ships_data' not in context:
+        context['ships_data'] = {}
 
-    ship = Ship(
-        ship_symbol=ship_symbol,
-        player_id=player_id,
-        current_location=waypoint,
-        fuel=fuel,
-        fuel_capacity=fuel_capacity,
-        cargo_capacity=40,
-        cargo_units=0,
-        engine_speed=30,
-        nav_status=Ship.IN_ORBIT
-    )
-
-    mock_ship_repo.create(ship)
+    context['ships_data'][ship_symbol] = {
+        'symbol': ship_symbol,
+        'nav': {
+            'waypointSymbol': location,
+            'systemSymbol': system_symbol,
+            'status': 'IN_ORBIT',
+            'flightMode': 'CRUISE'
+        },
+        'fuel': {'current': fuel_current, 'capacity': fuel_capacity},
+        'cargo': {'capacity': 40, 'units': 0, 'inventory': []},
+        'frame': {'symbol': 'FRAME_PROBE'},
+        'reactor': {'symbol': 'REACTOR_SOLAR_I'},
+        'engine': {'symbol': 'ENGINE_IMPULSE_DRIVE_I', 'speed': 30},
+        'modules': [],
+        'mounts': []
+    }
     context["initial_nav_status"] = Ship.IN_ORBIT
 
 
@@ -283,38 +283,37 @@ def test_dock_waits_for_transit():
 
 
 @given(parsers.parse('a ship "{ship_symbol}" for player {player_id:d} in transit arriving in {seconds:f} seconds'))
-def create_ship_in_transit_arriving(context, ship_symbol, player_id, seconds, mock_ship_repo, mock_api):
+def create_ship_in_transit_arriving(context, ship_symbol, player_id, seconds, ship_repo, mock_api):
     """Create a ship that is in transit with a specific arrival time"""
-    waypoint = Waypoint(
-        symbol="X1-TEST-CD34",
-        x=0.0,
-        y=0.0,
-        system_symbol="X1-TEST",
-        waypoint_type="PLANET"
-    )
+    location = "X1-TEST-CD34"
 
-    fuel = Fuel(current=100, capacity=100)
+    # Store ship data for API mock
+    if 'ships_data' not in context:
+        context['ships_data'] = {}
 
-    ship = Ship(
-        ship_symbol=ship_symbol,
-        player_id=player_id,
-        current_location=waypoint,
-        fuel=fuel,
-        fuel_capacity=100,
-        cargo_capacity=40,
-        cargo_units=0,
-        engine_speed=30,
-        nav_status=Ship.IN_TRANSIT
-    )
-
-    mock_ship_repo.create(ship)
+    context['ships_data'][ship_symbol] = {
+        'symbol': ship_symbol,
+        'nav': {
+            'waypointSymbol': location,
+            'systemSymbol': 'X1-TEST',
+            'status': 'IN_TRANSIT',
+            'flightMode': 'CRUISE'
+        },
+        'fuel': {'current': 100, 'capacity': 100},
+        'cargo': {'capacity': 40, 'units': 0, 'inventory': []},
+        'frame': {'symbol': 'FRAME_PROBE'},
+        'reactor': {'symbol': 'REACTOR_SOLAR_I'},
+        'engine': {'symbol': 'ENGINE_IMPULSE_DRIVE_I', 'speed': 30},
+        'modules': [],
+        'mounts': []
+    }
 
     # Store mock_api and repo in context (needed for execute_dock_command)
     context["mock_api"] = mock_api
-    context["mock_ship_repo"] = mock_ship_repo
+    context["ship_repo"] = ship_repo
     # Also initialize handler if not already done
     if "handler" not in context:
-        context["handler"] = DockShipHandler(mock_ship_repo)
+        context["handler"] = DockShipHandler(ship_repo)
 
     # Configure mock API to transition ship from IN_TRANSIT to IN_ORBIT after arrival
     # Store the arrival time for verification
@@ -326,7 +325,7 @@ def create_ship_in_transit_arriving(context, ship_symbol, player_id, seconds, mo
     # Set up mock API state with arrival time
     mock_api._ship_state[ship_symbol] = {
         "nav_status": "IN_TRANSIT",
-        "location": waypoint.symbol,
+        "location": location,
         "fuel_current": 100,
         "arrival_time": arrival_time
     }
