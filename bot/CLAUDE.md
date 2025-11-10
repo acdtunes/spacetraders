@@ -351,8 +351,68 @@ tests/bdd/
 
 **Test Fixtures**:
 - `context` fixture in conftest.py provides shared state
-- Mock repositories for unit testing handlers
-- Real database instances for integration tests
+- **IMPORTANT**: All tests use real SQLAlchemy repositories backed by in-memory SQLite (`:memory:`)
+- NO mock repositories - tests exercise actual database operations
+- Each test gets fresh, isolated database via autouse fixture in `tests/conftest.py`
+
+**Repository Pattern**:
+```python
+# ✅ CORRECT: Use real repositories from container
+@pytest.fixture
+def player_repo():
+    """Get real PlayerRepository (SQLAlchemy + in-memory SQLite)"""
+    from configuration.container import get_player_repository
+    return get_player_repository()
+
+# ❌ INCORRECT: Don't create mock repositories
+@pytest.fixture
+def player_repo():
+    return MockPlayerRepository()  # NEVER DO THIS!
+```
+
+**API-Only ShipRepository Pattern**:
+- Ships are NOT persisted in database - they're API-only
+- ShipRepository fetches ships from SpaceTraders API on each query
+- Tests use `context['ships_data']` pattern with `mock_api_client` autouse fixture
+```python
+# Example: Creating a ship for tests
+@given(parsers.parse('a ship "{ship_symbol}" for player {player_id:d} at "{location}"'))
+def create_ship(context, ship_symbol, player_id, location):
+    if 'ships_data' not in context:
+        context['ships_data'] = {}
+
+    context['ships_data'][ship_symbol] = {
+        'symbol': ship_symbol,
+        'player_id': player_id,  # Track ownership for API mock
+        'nav': {
+            'waypointSymbol': location,
+            'systemSymbol': 'X1-TEST',
+            'status': 'DOCKED',
+            'flightMode': 'CRUISE'
+        },
+        'fuel': {'current': 400, 'capacity': 400},
+        'cargo': {'capacity': 40, 'units': 0, 'inventory': []},
+        'frame': {'symbol': 'FRAME_PROBE'},
+        'reactor': {'symbol': 'REACTOR_SOLAR_I'},
+        'engine': {'symbol': 'ENGINE_IMPULSE_DRIVE_I', 'speed': 30},
+        'modules': [],
+        'mounts': []
+    }
+```
+
+**Mock API Client** (autouse fixture in `tests/bdd/steps/application/conftest.py`):
+- Automatically mocks SpaceTraders API for all application tests
+- Returns ships from `context['ships_data']`
+- Supports navigation operations: `dock_ship()`, `orbit_ship()`, `navigate_ship()`, `refuel_ship()`
+- Enforces player ownership (returns None if `player_id` doesn't match)
+- Simulates ship arrival for IN_TRANSIT ships
+
+**Black-Box Testing Principles**:
+- ✅ Test observable behavior, NOT implementation details
+- ✅ Use real repositories - don't access internal state like `._players`
+- ✅ Test equality of fields, not object identity (`is`)
+- ❌ Don't check internal repository state
+- ❌ Don't rely on caching or object identity
 
 ## Key Patterns and Conventions
 

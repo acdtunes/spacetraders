@@ -258,8 +258,9 @@ class SpaceTradersBotServer {
         case "contract_batch_workflow":
           result = await this.daemonClient.batchContractWorkflow(
             String(args.ship),
-            playerId!,
-            args.count !== undefined ? Number(args.count) : 1
+            playerId,
+            args.count !== undefined ? Number(args.count) : 1,
+            args.agent !== undefined ? String(args.agent) : undefined
           );
           break;
 

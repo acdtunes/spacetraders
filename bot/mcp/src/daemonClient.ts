@@ -338,25 +338,36 @@ export class DaemonClient {
    */
   async batchContractWorkflow(
     shipSymbol: string,
-    playerId: number,
-    count: number = 1
+    playerId: number | undefined,
+    count: number = 1,
+    agent?: string
   ): Promise<unknown> {
     const randomHex = Math.floor(Math.random() * 0xFFFFFFFF).toString(16).padStart(8, '0');
     const containerId = `contract-batch-${randomHex}`;
 
-    const params = {
+    const params: any = {
       container_id: containerId,
-      player_id: playerId,
       container_type: "command",
       config: {
         command_type: "BatchContractWorkflowCommand",
         params: {
           ship_symbol: shipSymbol,
           iterations: count,
-          player_id: playerId,
         },
       },
     };
+
+    // Add player_id or agent (daemon will resolve agent to player_id)
+    if (playerId !== undefined) {
+      params.player_id = playerId;
+      params.config.params.player_id = playerId;
+    } else if (agent) {
+      params.agent = agent;
+      params.config.params.agent = agent;
+    } else {
+      throw new Error("Either playerId or agent must be provided");
+    }
+
     return this.sendRequest("container.create", params);
   }
 }

@@ -1,8 +1,9 @@
 """Contract CLI commands"""
 import argparse
 import asyncio
+import uuid
 
-from configuration.container import get_mediator
+from configuration.container import get_mediator, get_daemon_client
 from application.contracts.queries.list_contracts import ListContractsQuery
 from application.contracts.queries.get_active_contracts import GetActiveContractsQuery
 from application.contracts.queries.get_contract import GetContractQuery
@@ -156,47 +157,56 @@ def negotiate_contract_command(args: argparse.Namespace) -> int:
 
 
 def batch_workflow_command(args: argparse.Namespace) -> int:
-    """Handle batch contract workflow command"""
-    player_id = get_player_id_from_args(args)
-    mediator = get_mediator()
-    command = BatchContractWorkflowCommand(
-        ship_symbol=args.ship_symbol,
-        iterations=args.count,
-        player_id=player_id
-    )
+    """
+    Batch contract workflow - runs in daemon container.
 
+    Automatically negotiates, evaluates profitability, purchases goods,
+    delivers cargo, and fulfills contracts in an automated loop.
+
+    Args:
+        args: Command arguments with ship_symbol, count, optional player_id/agent
+
+    Returns:
+        0 on success, 1 on error
+    """
     try:
-        print(f"🚀 Starting batch contract workflow for {args.ship_symbol}")
-        print(f"   Iterations: {args.count}")
+        # Determine player_id using intelligent selection
+        player_id = get_player_id_from_args(args)
+
+        # Generate unique container ID
+        container_id = f"contract-batch-{uuid.uuid4().hex[:8]}"
+
+        # Get daemon client
+        daemon = get_daemon_client()
+
+        # Build params dict
+        params = {
+            'ship_symbol': args.ship_symbol,
+            'iterations': args.count,
+            'player_id': player_id
+        }
+
+        # Create container for batch contract workflow
+        result = daemon.create_container({
+            'container_id': container_id,
+            'player_id': player_id,
+            'container_type': 'command',
+            'config': {
+                'command_type': 'BatchContractWorkflowCommand',
+                'params': params
+            },
+            'restart_policy': 'no'
+        })
+
+        print(f"🚀 Batch contract workflow container created: {container_id}")
+        print(f"   Ship: {args.ship_symbol}")
+        print(f"   Iterations: {args.count} contract(s)")
         print()
+        print(f"Monitor progress with: spacetraders daemon logs --container-id {container_id}")
+        print(f"Check status with:     spacetraders daemon inspect --container-id {container_id}")
 
-        result = asyncio.run(mediator.send_async(command))
+        return 0
 
-        print("=" * 50)
-        print("📊 Batch Workflow Results")
-        print("=" * 50)
-        print(f"  Contracts negotiated: {result.negotiated}/{args.count}")
-        print(f"  Contracts accepted:   {result.accepted}")
-        print(f"  Contracts fulfilled:  {result.fulfilled}")
-        print(f"  Contracts failed:     {result.failed}")
-        print(f"  Total profit:         {result.total_profit:,} credits")
-        print(f"  Total trips:          {result.total_trips}")
-        print("=" * 50)
-
-        if result.fulfilled > 0:
-            avg_profit = result.total_profit // result.fulfilled
-            print(f"  Average profit/contract: {avg_profit:,} credits")
-
-        # Display errors if any occurred
-        if result.errors and len(result.errors) > 0:
-            print()
-            print("❌ Errors Encountered:")
-            print("=" * 50)
-            for error in result.errors:
-                print(f"  - {error}")
-            print("=" * 50)
-
-        return 0 if result.failed == 0 else 1
     except Exception as e:
         print(f"❌ Error: {e}")
         return 1
