@@ -240,7 +240,30 @@ def batch_purchase_ships(context, handler, quantity, ship_type, ship_symbol, shi
                     purchase_counter['count'] += 1
                     new_ship_symbol = f"AGENT-{player_id}-{purchase_counter['count']}"
                     new_ship = create_ship(new_ship_symbol, player_id, shipyard_waypoint, Ship.DOCKED)
-                    context['ship_repo'].create(new_ship)
+
+                    # Store new ship in context ships_data for API mock
+                    if 'ships_data' not in context:
+                        context['ships_data'] = {}
+
+                    parts = shipyard_waypoint.split('-')
+                    system_symbol = f"{parts[0]}-{parts[1]}" if len(parts) >= 2 else "X1-TEST"
+
+                    context['ships_data'][new_ship_symbol] = {
+                        'symbol': new_ship_symbol,
+                        'nav': {
+                            'waypointSymbol': shipyard_waypoint,
+                            'systemSymbol': system_symbol,
+                            'status': 'DOCKED',
+                            'flightMode': 'CRUISE'
+                        },
+                        'fuel': {'current': 0, 'capacity': 100},
+                        'cargo': {'capacity': 40, 'units': 0, 'inventory': []},
+                        'frame': {'symbol': 'FRAME_PROBE'},
+                        'reactor': {'symbol': 'REACTOR_SOLAR_I'},
+                        'engine': {'symbol': 'ENGINE_IMPULSE_DRIVE_I', 'speed': 30},
+                        'modules': [],
+                        'mounts': []
+                    }
 
                     # NOTE: We do NOT deduct credits from player in mock
                     # The real PurchaseShipCommand would fetch credits from API and validate
@@ -252,12 +275,12 @@ def batch_purchase_ships(context, handler, quantity, ship_type, ship_symbol, shi
                 else:
                     return AsyncMock()
 
-            mock_mediator.send_async.side_effect = mediator_send_side_effect
-            context['mock_mediator'] = mock_mediator
-
-            # Store repos in context for side effect access
+            # Store repos in context for side effect access (BEFORE handler execution)
             context['ship_repo'] = handler._ship_repo
             context['player_repo'] = handler._player_repo
+
+            mock_mediator.send_async.side_effect = mediator_send_side_effect
+            context['mock_mediator'] = mock_mediator
 
             try:
                 context['result'] = await handler.handle(command)

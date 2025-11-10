@@ -7,7 +7,6 @@ black-box testing approach - only verifying observable behavior.
 import pytest
 from pytest_bdd import scenarios, given, when, then, parsers
 from typing import Optional
-from unittest.mock import patch
 
 from application.navigation.commands.navigate_ship import (
     NavigateShipCommand,
@@ -25,12 +24,6 @@ scenarios('../../features/application/navigate_ship_command.feature')
 # ============================================================================
 # Fixtures - Mock Infrastructure
 # ============================================================================
-
-@pytest.fixture
-def context():
-    """Shared test context dictionary"""
-    return {}
-
 
 class MockSystemGraphProvider:
     """Mock system graph provider for testing"""
@@ -131,11 +124,9 @@ def create_ship(
 # ============================================================================
 
 @given("the navigate ship command handler is initialized")
-def handler_initialized(context, mock_api, mock_graph_provider):
+def handler_initialized(context):
     """Initialize handler context"""
     context['initialized'] = True
-    context['mock_api'] = mock_api
-    context['mock_graph_provider'] = mock_graph_provider
 
 
 # ============================================================================
@@ -154,6 +145,7 @@ def ship_at_waypoint(context, ship_symbol, waypoint, fuel):
 
     context['ships_data'][ship_symbol] = {
         'symbol': ship_symbol,
+        'player_id': 1,
         'nav': {
             'waypointSymbol': waypoint,
             'systemSymbol': system_symbol,
@@ -191,48 +183,62 @@ def ship_docked(context):
 
 
 @given(parsers.parse('waypoint "{waypoint}" exists at distance {distance:f}'))
-def waypoint_exists(context, mock_graph_provider, waypoint, distance):
+def waypoint_exists(context, waypoint, distance):
     """Create a waypoint at specified distance"""
     # Get current ship location
-    ship_symbol = context.get('ship_symbol', 'TEST-SHIP-1')
     current_waypoint = context.get('current_waypoint', 'X1-TEST-AB12')
 
-    # Extract system symbol
-    parts = waypoint.split('-')
-    system = f"{parts[0]}-{parts[1]}" if len(parts) >= 2 else "X1-TEST"
+    # Add waypoints to context for conftest mock_graph_provider
+    if 'waypoints' not in context:
+        context['waypoints'] = {}
 
-    # Create waypoints
-    waypoint_a = create_waypoint(current_waypoint, 0.0, 0.0)
-    waypoint_b = create_waypoint(waypoint, distance, 0.0)
+    # Add current waypoint
+    context['waypoints'][current_waypoint] = {
+        'x': 0.0,
+        'y': 0.0,
+        'type': 'PLANET',
+        'traits': []
+    }
 
-    if system not in mock_graph_provider.graphs:
-        mock_graph_provider.graphs[system] = {"waypoints": {}}
-
-    mock_graph_provider.graphs[system]["waypoints"][current_waypoint] = waypoint_a
-    mock_graph_provider.graphs[system]["waypoints"][waypoint] = waypoint_b
+    # Add destination waypoint
+    context['waypoints'][waypoint] = {
+        'x': distance,
+        'y': 0.0,
+        'type': 'PLANET',
+        'traits': []
+    }
 
     context['destination'] = waypoint
 
 
 @given(parsers.parse('waypoints "{wp1}" and "{wp2}" exist'))
-def waypoints_exist(context, mock_graph_provider, wp1, wp2):
+def waypoints_exist(context, wp1, wp2):
     """Create multiple waypoints"""
-    # Extract system symbol from first waypoint
-    parts = wp1.split('-')
-    system = f"{parts[0]}-{parts[1]}" if len(parts) >= 2 else "X1-TEST"
-
     # Get current waypoint from context (where ship is)
     current_waypoint_symbol = context.get('current_waypoint', 'X1-TEST-AB12')
-    waypoint_a = create_waypoint(current_waypoint_symbol, 0.0, 0.0)
-    waypoint_b = create_waypoint(wp1, 10.0, 10.0)
-    waypoint_c = create_waypoint(wp2, 20.0, 20.0)
 
-    if system not in mock_graph_provider.graphs:
-        mock_graph_provider.graphs[system] = {"waypoints": {}}
+    # Add waypoints to context for conftest mock_graph_provider
+    if 'waypoints' not in context:
+        context['waypoints'] = {}
 
-    mock_graph_provider.graphs[system]["waypoints"][current_waypoint_symbol] = waypoint_a
-    mock_graph_provider.graphs[system]["waypoints"][wp1] = waypoint_b
-    mock_graph_provider.graphs[system]["waypoints"][wp2] = waypoint_c
+    context['waypoints'][current_waypoint_symbol] = {
+        'x': 0.0,
+        'y': 0.0,
+        'type': 'PLANET',
+        'traits': []
+    }
+    context['waypoints'][wp1] = {
+        'x': 10.0,
+        'y': 10.0,
+        'type': 'PLANET',
+        'traits': []
+    }
+    context['waypoints'][wp2] = {
+        'x': 20.0,
+        'y': 20.0,
+        'type': 'PLANET',
+        'traits': []
+    }
 
 
 @given(parsers.parse('a route plan exists to "{destination}" with {segments:d} segment'))
@@ -284,49 +290,74 @@ def route_plan_multi_segment(context, mock_routing_engine, origin, destination, 
 
 
 @given(parsers.parse('waypoint "{waypoint}" has refueling available'))
-def waypoint_has_refueling(context, mock_graph_provider, waypoint):
+def waypoint_has_refueling(context, waypoint):
     """Mark waypoint as having refueling"""
-    parts = waypoint.split('-')
-    system = f"{parts[0]}-{parts[1]}" if len(parts) >= 2 else "X1-TEST"
+    # Add waypoint to context for conftest mock_graph_provider
+    if 'waypoints' not in context:
+        context['waypoints'] = {}
 
-    wp = create_waypoint(waypoint, 10.0, 10.0, has_fuel=True)
-
-    if system not in mock_graph_provider.graphs:
-        mock_graph_provider.graphs[system] = {"waypoints": {}}
-
-    mock_graph_provider.graphs[system]["waypoints"][waypoint] = wp
+    context['waypoints'][waypoint] = {
+        'x': 10.0,
+        'y': 10.0,
+        'type': 'PLANET',
+        'traits': [{'symbol': 'MARKETPLACE'}],  # Has refueling
+        'has_fuel': True
+    }
 
 
 @given(parsers.parse('waypoint "{waypoint}" exists at distance {distance:f} from "{origin}"'))
-def waypoint_at_distance_from(context, mock_graph_provider, waypoint, distance, origin):
+def waypoint_at_distance_from(context, waypoint, distance, origin):
     """Create waypoint at distance from another waypoint"""
-    parts = waypoint.split('-')
-    system = f"{parts[0]}-{parts[1]}" if len(parts) >= 2 else "X1-TEST"
+    # Add waypoints to context for conftest mock_graph_provider
+    if 'waypoints' not in context:
+        context['waypoints'] = {}
 
-    # Get origin waypoint or create it
-    if system not in mock_graph_provider.graphs:
-        mock_graph_provider.graphs[system] = {"waypoints": {}}
+    # Add origin waypoint if not exists
+    if origin not in context['waypoints']:
+        context['waypoints'][origin] = {
+            'x': 10.0,
+            'y': 10.0,
+            'type': 'PLANET',
+            'traits': [{'symbol': 'MARKETPLACE'}],  # Has refueling
+            'has_fuel': True
+        }
 
-    if origin not in mock_graph_provider.graphs[system]["waypoints"]:
-        wp_origin = create_waypoint(origin, 10.0, 10.0, has_fuel=True)
-        mock_graph_provider.graphs[system]["waypoints"][origin] = wp_origin
-
-    wp = create_waypoint(waypoint, 10.0 + distance, 10.0)
-    mock_graph_provider.graphs[system]["waypoints"][waypoint] = wp
+    # Add destination waypoint
+    context['waypoints'][waypoint] = {
+        'x': 10.0 + distance,
+        'y': 10.0,
+        'type': 'PLANET',
+        'traits': []
+    }
 
 
 @given("a route plan exists with refuel stop at \"X1-TEST-CD34\"")
-def route_plan_with_refuel(context, mock_routing_engine, mock_graph_provider):
+def route_plan_with_refuel(context, mock_routing_engine):
     """Setup route plan with refuel stop"""
-    # Ensure all waypoints in the route exist in the graph
-    system = "X1-TEST"
-    if system not in mock_graph_provider.graphs:
-        mock_graph_provider.graphs[system] = {"waypoints": {}}
+    # Add waypoints to context for conftest mock_graph_provider
+    if 'waypoints' not in context:
+        context['waypoints'] = {}
 
-    # Add initial waypoint if not already present
-    if "X1-TEST-AB12" not in mock_graph_provider.graphs[system]["waypoints"]:
-        wp_start = create_waypoint("X1-TEST-AB12", 0.0, 0.0)
-        mock_graph_provider.graphs[system]["waypoints"]["X1-TEST-AB12"] = wp_start
+    # Add all waypoints in the route
+    context['waypoints']["X1-TEST-AB12"] = {
+        'x': 0.0,
+        'y': 0.0,
+        'type': 'PLANET',
+        'traits': []
+    }
+    context['waypoints']["X1-TEST-CD34"] = {
+        'x': 10.0,
+        'y': 10.0,
+        'type': 'PLANET',
+        'traits': [{'symbol': 'MARKETPLACE'}],
+        'has_fuel': True
+    }
+    context['waypoints']["X1-TEST-EF56"] = {
+        'x': 20.0,
+        'y': 20.0,
+        'type': 'PLANET',
+        'traits': []
+    }
 
     mock_routing_engine.route_plan = {
         "steps": [
@@ -358,9 +389,9 @@ def route_plan_with_refuel(context, mock_routing_engine, mock_graph_provider):
 
 
 @given("no ships exist in the repository")
-def no_ships_exist(ship_repo):
+def no_ships_exist(context):
     """Ensure repository is empty"""
-    ship_repo.clear_all()
+    context['ships_data'] = {}
 
 
 @given(parsers.parse('no route plan can be found to "{destination}"'))
@@ -380,6 +411,7 @@ def ship_belongs_to_player(context, ship_symbol, player_id):
 
     context['ships_data'][ship_symbol] = {
         'symbol': ship_symbol,
+        'player_id': player_id,
         'nav': {
             'waypointSymbol': waypoint,
             'systemSymbol': 'X1-TEST',
@@ -448,9 +480,8 @@ def navigate_ship(context, handler, ship_symbol, destination):
     )
 
     try:
-        with patch('configuration.container.get_api_client_for_player', return_value=context['mock_api']):
-            with patch('configuration.container.get_graph_provider_for_player', return_value=context['mock_graph_provider']):
-                result = asyncio.run(handler.handle(command))
+        # API client and graph provider are automatically mocked by autouse fixtures
+        result = asyncio.run(handler.handle(command))
         context['result'] = result
         context['exception'] = None
     except Exception as e:
@@ -476,9 +507,8 @@ def attempt_navigate_as_player(context, handler, ship_symbol, player_id):
     )
 
     try:
-        with patch('configuration.container.get_api_client_for_player', return_value=context['mock_api']):
-            with patch('configuration.container.get_graph_provider_for_player', return_value=context['mock_graph_provider']):
-                result = asyncio.run(handler.handle(command))
+        # API client and graph provider are automatically mocked by autouse fixtures
+        result = asyncio.run(handler.handle(command))
         context['result'] = result
         context['exception'] = None
     except Exception as e:

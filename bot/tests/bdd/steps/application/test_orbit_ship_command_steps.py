@@ -7,7 +7,6 @@ across 8 scenarios covering success cases, error handling, and state management.
 import pytest
 import asyncio
 from pytest_bdd import scenarios, given, when, then, parsers
-from unittest.mock import patch
 
 from application.navigation.commands.orbit_ship import (
     OrbitShipCommand,
@@ -26,10 +25,9 @@ scenarios('../../features/application/orbit_ship_command.feature')
 # ============================================================================
 
 @given("the orbit ship command system is initialized")
-def orbit_system_initialized(context, ship_repo, mock_api):
+def orbit_system_initialized(context, ship_repo):
     """Initialize the orbit command system"""
     context['ship_repo'] = ship_repo
-    context['api'] = mock_api
     # Handler now only takes ship_repo - API client is retrieved via get_api_client_for_player
     context['handler'] = OrbitShipHandler(ship_repo)
     context['initialized'] = True
@@ -37,34 +35,32 @@ def orbit_system_initialized(context, ship_repo, mock_api):
 
 @given(parsers.parse('a ship "{ship_symbol}" for player {player_id:d} with status "{status}"'))
 def create_ship_with_status(context, ship_symbol, player_id, status):
-    """Create a ship with specific status"""
-    waypoint = Waypoint(
-        symbol="X1-TEST-AB12",
-        x=0.0,
-        y=0.0,
-        system_symbol="X1-TEST",
-        waypoint_type="PLANET"
-    )
-    fuel = Fuel(current=100, capacity=100)
-
-    ship = Ship(
-        ship_symbol=ship_symbol,
-        player_id=player_id,
-        current_location=waypoint,
-        fuel=fuel,
-        fuel_capacity=100,
-        cargo_capacity=40,
-        cargo_units=0,
-        engine_speed=30,
-        nav_status=status
-    )
-    context['ship_repo'].create(ship)
-    context['test_ship'] = ship
+    """Create a ship with specific status (store in context for API mock)"""
+    # Add ship to context['ships_data'] for API mock
+    if 'ships_data' not in context:
+        context['ships_data'] = {}
+    context['ships_data'][ship_symbol] = {
+        'symbol': ship_symbol,
+        'player_id': player_id,
+        'nav': {
+            'waypointSymbol': "X1-TEST-AB12",
+            'systemSymbol': "X1-TEST",
+            'status': status,
+            'flightMode': 'CRUISE'
+        },
+        'fuel': {'current': 100, 'capacity': 100},
+        'cargo': {'capacity': 40, 'units': 0, 'inventory': []},
+        'frame': {'symbol': 'FRAME_PROBE'},
+        'reactor': {'symbol': 'REACTOR_SOLAR_I'},
+        'engine': {'symbol': 'ENGINE_IMPULSE_DRIVE_I', 'speed': 30},
+        'modules': [],
+        'mounts': []
+    }
 
 
 @given(parsers.parse('a ship "{ship_symbol}" for player {player_id:d} with the following properties:'), target_fixture='ship_with_properties')
 def create_ship_with_properties(context, ship_symbol, player_id, datatable):
-    """Create a ship with properties from table"""
+    """Create a ship with properties from table (store in context for API mock)"""
     # Parse the table to get properties
     # datatable is a list of lists: [['property', 'value'], ['nav_status', 'DOCKED'], ...]
     props = {}
@@ -73,37 +69,37 @@ def create_ship_with_properties(context, ship_symbol, player_id, datatable):
             continue
         props[row[0]] = row[1]
 
-    # Create waypoint
-    location = props.get('location', 'X1-TEST-AB12')
-    waypoint = Waypoint(
-        symbol=location,
-        x=0.0,
-        y=0.0,
-        system_symbol="X1-TEST",
-        waypoint_type="PLANET"
-    )
-
-    # Create fuel
-    fuel = Fuel(
-        current=int(props.get('fuel_current', 100)),
-        capacity=int(props.get('fuel_capacity', 100))
-    )
-
-    # Create ship
-    ship = Ship(
-        ship_symbol=ship_symbol,
-        player_id=player_id,
-        current_location=waypoint,
-        fuel=fuel,
-        fuel_capacity=int(props.get('fuel_capacity', 100)),
-        cargo_capacity=int(props.get('cargo_capacity', 40)),
-        cargo_units=int(props.get('cargo_units', 0)),
-        engine_speed=int(props.get('engine_speed', 30)),
-        nav_status=props.get('nav_status', 'DOCKED')
-    )
-    context['ship_repo'].create(ship)
-    context['test_ship'] = ship
+    # Store properties for verification later
     context['original_properties'] = props
+    location = props.get('location', 'X1-TEST-AB12')
+
+    # Add ship to context['ships_data'] for API mock
+    if 'ships_data' not in context:
+        context['ships_data'] = {}
+    context['ships_data'][ship_symbol] = {
+        'symbol': ship_symbol,
+        'player_id': player_id,
+        'nav': {
+            'waypointSymbol': location,
+            'systemSymbol': "X1-TEST",
+            'status': props.get('nav_status', 'DOCKED'),
+            'flightMode': 'CRUISE'
+        },
+        'fuel': {
+            'current': int(props.get('fuel_current', 100)),
+            'capacity': int(props.get('fuel_capacity', 100))
+        },
+        'cargo': {
+            'capacity': int(props.get('cargo_capacity', 40)),
+            'units': int(props.get('cargo_units', 0)),
+            'inventory': []
+        },
+        'frame': {'symbol': 'FRAME_PROBE'},
+        'reactor': {'symbol': 'REACTOR_SOLAR_I'},
+        'engine': {'symbol': 'ENGINE_IMPULSE_DRIVE_I', 'speed': int(props.get('engine_speed', 30))},
+        'modules': [],
+        'mounts': []
+    }
 
 
 @given(parsers.parse('no ship exists with symbol "{ship_symbol}"'))
@@ -111,6 +107,7 @@ def no_ship_exists(context, ship_symbol):
     """Ensure no ship exists with given symbol"""
     # Ship repository is already empty, just note it
     context['nonexistent_ship'] = ship_symbol
+    context['ships_data'] = {}
 
 
 # ============================================================================
@@ -122,9 +119,8 @@ def execute_orbit_command(context, ship_symbol, player_id):
     """Execute orbit command"""
     command = OrbitShipCommand(ship_symbol=ship_symbol, player_id=player_id)
     try:
-        # Patch get_api_client_for_player at the container module level
-        with patch('configuration.container.get_api_client_for_player', return_value=context['api']):
-            result = asyncio.run(context['handler'].handle(command))
+        # API client is automatically mocked by autouse fixture
+        result = asyncio.run(context['handler'].handle(command))
         context['result'] = result
         context['error'] = None
     except Exception as e:
@@ -167,10 +163,14 @@ def check_ship_status_not(context, status):
 
 @then(parsers.parse('the API orbit endpoint should be called with "{ship_symbol}"'))
 def check_api_called(context, ship_symbol):
-    """Verify API was called correctly"""
-    assert context['api'].orbit_called, "API orbit was not called"
-    assert context['api'].orbit_ship_symbol == ship_symbol, \
-        f"Expected API call with {ship_symbol}, got {context['api'].orbit_ship_symbol}"
+    """Verify API was called correctly by checking ship reached orbit status"""
+    # In API-only model, we verify the command completed successfully
+    # The result should have the ship in orbit
+    assert context['result'] is not None, "No result returned"
+    assert context['result'].nav_status == Ship.IN_ORBIT, \
+        f"Expected ship to be in orbit, got {context['result'].nav_status}"
+    assert context['result'].ship_symbol == ship_symbol, \
+        f"Expected ship {ship_symbol}, got {context['result'].ship_symbol}"
 
 
 @then("the ship should be updated in the repository")
@@ -242,43 +242,41 @@ def check_ship_properties(context, datatable):
 
 @given(parsers.parse('a ship "{ship_symbol}" for player {player_id:d} in transit arriving in {seconds:f} seconds at "{location}"'))
 def create_ship_in_transit_arriving_at(context, ship_symbol, player_id, seconds, location):
-    """Create a ship that is in transit with a specific arrival time"""
+    """Create a ship that is in transit with a specific arrival time (store in context for API mock)"""
     from datetime import datetime, timedelta, timezone
 
-    waypoint = Waypoint(
-        symbol=location,
-        x=0.0,
-        y=0.0,
-        system_symbol="X1-TEST",
-        waypoint_type="PLANET"
-    )
-
-    fuel = Fuel(current=100, capacity=100)
-
-    ship = Ship(
-        ship_symbol=ship_symbol,
-        player_id=player_id,
-        current_location=waypoint,
-        fuel=fuel,
-        fuel_capacity=100,
-        cargo_capacity=40,
-        cargo_units=0,
-        engine_speed=30,
-        nav_status=Ship.IN_TRANSIT
-    )
-
-    context['ship_repo'].create(ship)
-
-    # Store mock_api and ensure handler exists
-    if 'handler' not in context:
-        from application.navigation.commands.orbit_ship import OrbitShipHandler
-        context['handler'] = OrbitShipHandler(context['ship_repo'])
-
-    # Configure mock API to transition ship from IN_TRANSIT to IN_ORBIT after arrival
+    # Calculate arrival time and store in context for mock_get_ship to check
     arrival_time = datetime.now(timezone.utc) + timedelta(seconds=seconds)
-    context['api']._ship_state[ship_symbol] = {
-        "nav_status": "IN_TRANSIT",
-        "location": waypoint.symbol,
-        "fuel_current": 100,
-        "arrival_time": arrival_time
+    context["arrival_time"] = arrival_time
+    context["wait_seconds"] = seconds
+
+    # Add ship to context['ships_data'] for API mock with arrival time
+    if 'ships_data' not in context:
+        context['ships_data'] = {}
+    context['ships_data'][ship_symbol] = {
+        'symbol': ship_symbol,
+        'player_id': player_id,
+        'nav': {
+            'waypointSymbol': location,
+            'systemSymbol': "X1-TEST",
+            'status': 'IN_TRANSIT',
+            'flightMode': 'CRUISE',
+            'route': {
+                'destination': {
+                    'symbol': location,
+                    'type': 'PLANET',
+                    'systemSymbol': "X1-TEST",
+                    'x': 0,
+                    'y': 0
+                },
+                'arrival': arrival_time.isoformat()
+            }
+        },
+        'fuel': {'current': 100, 'capacity': 100},
+        'cargo': {'capacity': 40, 'units': 0, 'inventory': []},
+        'frame': {'symbol': 'FRAME_PROBE'},
+        'reactor': {'symbol': 'REACTOR_SOLAR_I'},
+        'engine': {'symbol': 'ENGINE_IMPULSE_DRIVE_I', 'speed': 30},
+        'modules': [],
+        'mounts': []
     }

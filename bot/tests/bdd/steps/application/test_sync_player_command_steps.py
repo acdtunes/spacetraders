@@ -1,6 +1,5 @@
 from pytest_bdd import scenario, given, when, then, parsers
 import asyncio
-from unittest.mock import patch
 from datetime import datetime, timezone
 
 from application.player.commands.sync_player import (
@@ -38,7 +37,7 @@ def test_sync_updates_player_credits():
 
 
 @given(parsers.parse('a player exists with player_id {player_id:d} and agent_symbol "{agent_symbol}" and credits {credits:d}'))
-def player_exists_with_credits(context, player_repo, mock_api, player_id, agent_symbol, credits):
+def player_exists_with_credits(context, player_repo, player_id, agent_symbol, credits):
     """Create an existing player with specific credits"""
     player = Player(
         player_id=player_id,
@@ -50,13 +49,12 @@ def player_exists_with_credits(context, player_repo, mock_api, player_id, agent_
     player_repo.create(player)
     context["player_id"] = player_id
     context["agent_symbol"] = agent_symbol
-    context["api"] = mock_api
 
 
 @given(parsers.parse('the API returns agent "{agent_symbol}" with credits {credits:d}'))
 def api_returns_agent_with_credits(context, agent_symbol, credits):
     """Set up API to return agent with specific credits"""
-    context["api"].agent_data = create_api_agent_data(
+    context["agent_data"] = create_api_agent_data(
         agent_symbol=agent_symbol,
         credits=credits
     )
@@ -68,8 +66,8 @@ def sync_player_data(context, player_repo, player_id):
     handler = SyncPlayerHandler(player_repo)
     command = SyncPlayerCommand(player_id=player_id)
 
-    with patch('configuration.container.get_api_client_for_player', return_value=context["api"]):
-        result = asyncio.run(handler.handle(command))
+    # API client is automatically mocked by autouse fixture
+    result = asyncio.run(handler.handle(command))
 
     context["result"] = result
     context["repo"] = player_repo
@@ -92,7 +90,7 @@ def test_sync_updates_player_headquarters():
 
 
 @given(parsers.parse('a player exists with player_id {player_id:d} and agent_symbol "{agent_symbol}"'))
-def player_exists(context, player_repo, mock_api, player_id, agent_symbol):
+def player_exists(context, player_repo, player_id, agent_symbol):
     """Create an existing player"""
     player = Player(
         player_id=player_id,
@@ -103,13 +101,12 @@ def player_exists(context, player_repo, mock_api, player_id, agent_symbol):
     player_repo.create(player)
     context["player_id"] = player_id
     context["agent_symbol"] = agent_symbol
-    context["api"] = mock_api
 
 
 @given(parsers.parse('the API returns agent "{agent_symbol}" with headquarters "{headquarters}"'))
 def api_returns_agent_with_headquarters(context, agent_symbol, headquarters):
     """Set up API to return agent with headquarters"""
-    context["api"].agent_data = create_api_agent_data(
+    context["agent_data"] = create_api_agent_data(
         agent_symbol=agent_symbol,
         headquarters=headquarters
     )
@@ -134,7 +131,7 @@ def test_sync_updates_credits_and_headquarters():
 @given(parsers.parse('the API returns agent "{agent_symbol}" with credits {credits:d} and headquarters "{headquarters}"'))
 def api_returns_agent_with_credits_and_headquarters(context, agent_symbol, credits, headquarters):
     """Set up API to return agent with credits and headquarters"""
-    context["api"].agent_data = create_api_agent_data(
+    context["agent_data"] = create_api_agent_data(
         agent_symbol=agent_symbol,
         credits=credits,
         headquarters=headquarters
@@ -150,7 +147,7 @@ def test_sync_preserves_existing_metadata():
 
 
 @given(parsers.parse('a player exists with player_id {player_id:d} and agent_symbol "{agent_symbol}" with metadata key "{key}" value "{value}"'))
-def player_exists_with_metadata(context, player_repo, mock_api, player_id, agent_symbol, key, value):
+def player_exists_with_metadata(context, player_repo, player_id, agent_symbol, key, value):
     """Create an existing player with metadata"""
     player = Player(
         player_id=player_id,
@@ -162,7 +159,6 @@ def player_exists_with_metadata(context, player_repo, mock_api, player_id, agent
     player_repo.create(player)
     context["player_id"] = player_id
     context["agent_symbol"] = agent_symbol
-    context["api"] = mock_api
 
 
 @then(parsers.parse('the player metadata should contain "{key}" with value "{value}"'))
@@ -206,7 +202,6 @@ def api_returns_agent_with_data(context, mock_api, agent_symbol, datatable):
             "accountId": data.get("accountId", "test-123")
         }
     }
-    context["api"] = mock_api
 
 
 @then(parsers.parse("the player metadata should contain \"{key}\" with value {value:d}"))

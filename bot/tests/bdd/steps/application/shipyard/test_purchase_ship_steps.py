@@ -20,12 +20,6 @@ scenarios('../../../features/application/shipyard/purchase_ship.feature')
 
 
 # Fixtures
-@pytest.fixture
-def context():
-    """Shared context for steps."""
-    return {}
-
-
 @pytest.fixture(autouse=True)
 def setup_database():
     """Initialize database for waypoint caching tests."""
@@ -385,16 +379,22 @@ def purchase_ship(context, handler, ship_type, ship_symbol, shipyard_waypoint, p
             new_ship_symbol = context.get('new_ship_symbol', 'BUYER-2')
 
             # Mock purchase_ship API response
+            system_symbol = '-'.join(shipyard_waypoint.split('-')[:2])
             new_ship_data = {
                 "symbol": new_ship_symbol,
                 "nav": {
                     "status": "DOCKED",
                     "waypointSymbol": shipyard_waypoint,
-                    "systemSymbol": '-'.join(shipyard_waypoint.split('-')[:2])
+                    "systemSymbol": system_symbol,
+                    "flightMode": "CRUISE"
                 },
                 "fuel": {"current": 0, "capacity": 100},
-                "cargo": {"capacity": 40, "units": 0},
-                "engine": {"speed": 30}
+                "cargo": {"capacity": 40, "units": 0, "inventory": []},
+                "frame": {"symbol": "FRAME_PROBE"},
+                "reactor": {"symbol": "REACTOR_SOLAR_I"},
+                "engine": {"symbol": "ENGINE_IMPULSE_DRIVE_I", "speed": 30},
+                "modules": [],
+                "mounts": []
             }
 
             mock_api.purchase_ship.return_value = {
@@ -411,6 +411,13 @@ def purchase_ship(context, handler, ship_type, ship_symbol, shipyard_waypoint, p
             try:
                 context['result'] = await handler.handle(command)
                 context['error'] = None
+
+                # Add newly purchased ship to context ships_data so it can be found later
+                if context['result'] is not None:
+                    if 'ships_data' not in context:
+                        context['ships_data'] = {}
+                    context['ships_data'][new_ship_symbol] = new_ship_data
+
             except Exception as e:
                 context['error'] = e
                 context['result'] = None
@@ -836,16 +843,22 @@ def purchase_ship_auto_discovery(context, handler, ship_type, ship_symbol, playe
             }
             price = ship_prices.get(ship_type, 25000)
 
+            system_symbol_auto = '-'.join(nearest_shipyard.split('-')[:2])
             new_ship_data = {
                 "symbol": new_ship_symbol,
                 "nav": {
                     "status": "DOCKED",
                     "waypointSymbol": nearest_shipyard,
-                    "systemSymbol": '-'.join(nearest_shipyard.split('-')[:2])
+                    "systemSymbol": system_symbol_auto,
+                    "flightMode": "CRUISE"
                 },
                 "fuel": {"current": 0, "capacity": 100},
-                "cargo": {"capacity": 40, "units": 0},
-                "engine": {"speed": 30}
+                "cargo": {"capacity": 40, "units": 0, "inventory": []},
+                "frame": {"symbol": "FRAME_PROBE"},
+                "reactor": {"symbol": "REACTOR_SOLAR_I"},
+                "engine": {"symbol": "ENGINE_IMPULSE_DRIVE_I", "speed": 30},
+                "modules": [],
+                "mounts": []
             }
 
             mock_api.purchase_ship.return_value = {
@@ -862,6 +875,13 @@ def purchase_ship_auto_discovery(context, handler, ship_type, ship_symbol, playe
             try:
                 context['result'] = await handler.handle(command)
                 context['error'] = None
+
+                # Add newly purchased ship to context ships_data so it can be found later
+                if context['result'] is not None:
+                    if 'ships_data' not in context:
+                        context['ships_data'] = {}
+                    context['ships_data'][new_ship_symbol] = new_ship_data
+
             except Exception as e:
                 context['error'] = e
                 context['result'] = None

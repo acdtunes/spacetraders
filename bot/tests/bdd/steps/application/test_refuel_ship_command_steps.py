@@ -7,7 +7,7 @@ across 13 scenarios covering all refueling functionality.
 import pytest
 import asyncio
 from typing import Optional
-from unittest.mock import patch
+# Mock is handled by autouse fixture
 from pytest_bdd import scenarios, given, when, then, parsers
 
 from application.navigation.commands.refuel_ship import (
@@ -73,10 +73,9 @@ def create_test_ship(
 # ============================================================================
 
 @given("the refuel ship command handler is initialized")
-def initialize_handler(context, ship_repo, mock_api):
+def initialize_handler(context, ship_repo):
     """Initialize handler with shared mock dependencies from conftest.py"""
     context['mock_repo'] = ship_repo
-    context['mock_api'] = mock_api
     context['handler'] = RefuelShipHandler(ship_repo)
     context['exception'] = None
     context['result'] = None
@@ -95,12 +94,37 @@ def create_ship(context, ship_symbol, player_id):
     context['cargo_units'] = 0
     context['engine_speed'] = 30
 
+    # Initialize ships_data for API mock (will be updated by other steps)
+    if 'ships_data' not in context:
+        context['ships_data'] = {}
+    context['ships_data'][ship_symbol] = {
+        'symbol': ship_symbol,
+        'player_id': player_id,
+        'nav': {
+            'waypointSymbol': 'X1-TEST-A1',
+            'systemSymbol': 'X1-TEST',
+            'status': 'DOCKED',
+            'flightMode': 'CRUISE'
+        },
+        'fuel': {'current': 50, 'capacity': 100},
+        'cargo': {'capacity': 40, 'units': 0, 'inventory': []},
+        'frame': {'symbol': 'FRAME_PROBE'},
+        'reactor': {'symbol': 'REACTOR_SOLAR_I'},
+        'engine': {'symbol': 'ENGINE_IMPULSE_DRIVE_I', 'speed': 30},
+        'modules': [],
+        'mounts': []
+    }
+
 
 @given(parsers.parse('the ship is docked at waypoint "{waypoint}"'))
 def ship_is_docked(context, waypoint):
     """Set ship to docked status"""
     context['nav_status'] = Ship.DOCKED
     context['waypoint'] = waypoint
+    # Update ships_data if it exists
+    if 'ships_data' in context and context.get('ship_symbol') in context['ships_data']:
+        context['ships_data'][context['ship_symbol']]['nav']['waypointSymbol'] = waypoint
+        context['ships_data'][context['ship_symbol']]['nav']['status'] = 'DOCKED'
 
 
 @given(parsers.parse('the ship is in orbit at waypoint "{waypoint}"'))
@@ -108,12 +132,19 @@ def ship_is_in_orbit(context, waypoint):
     """Set ship to in orbit status"""
     context['nav_status'] = Ship.IN_ORBIT
     context['waypoint'] = waypoint
+    # Update ships_data if it exists
+    if 'ships_data' in context and context.get('ship_symbol') in context['ships_data']:
+        context['ships_data'][context['ship_symbol']]['nav']['waypointSymbol'] = waypoint
+        context['ships_data'][context['ship_symbol']]['nav']['status'] = 'IN_ORBIT'
 
 
 @given("the ship is in transit")
 def ship_is_in_transit(context):
     """Set ship to in transit status"""
     context['nav_status'] = Ship.IN_TRANSIT
+    # Update ships_data if it exists
+    if 'ships_data' in context and context.get('ship_symbol') in context['ships_data']:
+        context['ships_data'][context['ship_symbol']]['nav']['status'] = 'IN_TRANSIT'
 
 
 @given("the waypoint has fuel available")
@@ -121,11 +152,35 @@ def waypoint_has_fuel(context):
     """Set waypoint to have fuel available"""
     context['has_fuel'] = True
 
+    # Add waypoint to context for conftest mock_graph_provider
+    waypoint_symbol = context.get('waypoint', 'X1-TEST-A1')
+    if 'waypoints' not in context:
+        context['waypoints'] = {}
+    context['waypoints'][waypoint_symbol] = {
+        'x': 0.0,
+        'y': 0.0,
+        'type': 'PLANET',
+        'traits': [{'symbol': 'MARKETPLACE'}],
+        'has_fuel': True
+    }
+
 
 @given("the waypoint does not have fuel available")
 def waypoint_no_fuel(context):
     """Set waypoint to not have fuel available"""
     context['has_fuel'] = False
+
+    # Add waypoint to context for conftest mock_graph_provider
+    waypoint_symbol = context.get('waypoint', 'X1-TEST-A1')
+    if 'waypoints' not in context:
+        context['waypoints'] = {}
+    context['waypoints'][waypoint_symbol] = {
+        'x': 0.0,
+        'y': 0.0,
+        'type': 'PLANET',
+        'traits': [],
+        'has_fuel': False
+    }
 
 
 @given(parsers.parse('the ship has {current:d} current fuel and {capacity:d} capacity'))
@@ -134,19 +189,11 @@ def set_ship_fuel(context, current, capacity):
     context['fuel_current'] = current
     context['fuel_capacity'] = capacity
 
-    # Create the ship with all accumulated context
-    ship = create_test_ship(
-        ship_symbol=context.get('ship_symbol', 'TEST-SHIP-1'),
-        player_id=context.get('player_id', 1),
-        nav_status=context.get('nav_status', Ship.DOCKED),
-        fuel_current=current,
-        fuel_capacity=capacity,
-        has_fuel=context.get('has_fuel', True),
-        cargo_capacity=context.get('cargo_capacity', 40),
-        cargo_units=context.get('cargo_units', 0),
-        engine_speed=context.get('engine_speed', 30)
-    )
-    context['mock_repo'].create(ship)
+    # Update ships_data with fuel levels
+    ship_symbol = context.get('ship_symbol', 'TEST-SHIP-1')
+    if 'ships_data' in context and ship_symbol in context['ships_data']:
+        context['ships_data'][ship_symbol]['fuel']['current'] = current
+        context['ships_data'][ship_symbol]['fuel']['capacity'] = capacity
 
 
 @given(parsers.parse('the ship has cargo capacity {cargo_capacity:d} and cargo units {cargo_units:d}'))
@@ -185,8 +232,8 @@ def execute_refuel_command(context, ship_symbol, player_id):
     """Execute refuel command"""
     command = RefuelShipCommand(ship_symbol=ship_symbol, player_id=player_id)
     try:
-        with patch('configuration.container.get_api_client_for_player', return_value=context['mock_api']):
-            context['result'] = asyncio.run(context['handler'].handle(command))
+        # API client is automatically mocked by autouse fixture
+        context['result'] = asyncio.run(context['handler'].handle(command))
         context['exception'] = None
     except Exception as e:
         context['exception'] = e
@@ -198,8 +245,8 @@ def execute_refuel_command_with_units(context, ship_symbol, player_id, units):
     """Execute refuel command with specific units"""
     command = RefuelShipCommand(ship_symbol=ship_symbol, player_id=player_id, units=units)
     try:
-        with patch('configuration.container.get_api_client_for_player', return_value=context['mock_api']):
-            context['result'] = asyncio.run(context['handler'].handle(command))
+        # API client is automatically mocked by autouse fixture
+        context['result'] = asyncio.run(context['handler'].handle(command))
         context['exception'] = None
     except Exception as e:
         context['exception'] = e
