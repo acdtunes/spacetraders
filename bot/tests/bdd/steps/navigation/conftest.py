@@ -42,7 +42,8 @@ class MockShipRepository:
         self.ships[ship_symbol] = {
             'ship_symbol': ship_symbol,
             'fuel': fuel,
-            'waypoint': waypoint,
+            'location': waypoint,  # Store as 'location' for compatibility
+            'waypoint': waypoint,  # Also store as 'waypoint' for compatibility
             'engine_speed': engine_speed
         }
 
