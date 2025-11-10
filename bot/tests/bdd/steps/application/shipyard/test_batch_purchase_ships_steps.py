@@ -26,11 +26,11 @@ def context():
 
 
 @pytest.fixture
-def handler(mock_ship_repo, mock_player_repo):
+def handler(ship_repo, player_repo):
     """Create handler with mocks."""
     return BatchPurchaseShipsHandler(
-        ship_repository=mock_ship_repo,
-        player_repository=mock_player_repo
+        ship_repository=ship_repo,
+        player_repository=player_repo
     )
 
 
@@ -62,30 +62,38 @@ def handler_initialized(context):
 
 # Given steps - reuse from purchase_ship_steps
 @given(parsers.parse('I have a player with ID {player_id:d} and {credits:d} credits'))
-def player_with_credits(context, mock_player_repo, player_id, credits):
-    """Create a player with specified credits (legacy)."""
+def player_with_credits(context, player_repo, player_id, credits):
+    """Create a player with specified credits (using real repository)."""
+    from configuration.container import get_database
+
     player = Player(
         player_id=None, agent_symbol=f"AGENT-{player_id}", token="test-token",
         created_at=datetime.now(timezone.utc), credits=credits
     )
-    created_player = mock_player_repo.create(player)
+    created_player = player_repo.create(player)
+
+    # If specific player_id needed, update it directly in database
     if created_player.player_id != player_id:
-        player_with_id = Player(
-            player_id=player_id, agent_symbol=f"AGENT-{player_id}", token="test-token",
-            created_at=datetime.now(timezone.utc), credits=credits
-        )
-        mock_player_repo._players[player_id] = player_with_id
-        mock_player_repo._agents[f"AGENT-{player_id}"] = player_id
+        db = get_database()
+        with db.transaction() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE players SET player_id = ? WHERE player_id = ?",
+                (player_id, created_player.player_id)
+            )
+
     context['player_id'] = player_id
     context['initial_credits'] = credits
 
 
 @given(parsers.parse('I have a player with ID {player_id:d} and {credits:d} credits from API'))
-def player_with_credits_from_api(context, mock_player_repo, player_id, credits):
+def player_with_credits_from_api(context, player_repo, player_id, credits):
     """
     Create a player WITHOUT credits in storage.
     Credits will be fetched from API during purchase.
     """
+    from configuration.container import get_database
+
     # Create player WITHOUT credits (credits=0 in storage)
     player = Player(
         player_id=None,
@@ -94,17 +102,17 @@ def player_with_credits_from_api(context, mock_player_repo, player_id, credits):
         created_at=datetime.now(timezone.utc),
         credits=0  # No credits in storage - will be fetched from API
     )
-    created_player = mock_player_repo.create(player)
+    created_player = player_repo.create(player)
+
+    # If specific player_id needed, update it directly in database
     if created_player.player_id != player_id:
-        player_with_id = Player(
-            player_id=player_id,
-            agent_symbol=f"AGENT-{player_id}",
-            token="test-token",
-            created_at=datetime.now(timezone.utc),
-            credits=0  # No credits in storage
-        )
-        mock_player_repo._players[player_id] = player_with_id
-        mock_player_repo._agents[f"AGENT-{player_id}"] = player_id
+        db = get_database()
+        with db.transaction() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE players SET player_id = ? WHERE player_id = ?",
+                (player_id, created_player.player_id)
+            )
 
     context['player_id'] = player_id
     context['initial_credits'] = credits  # Track what API will return
@@ -112,23 +120,40 @@ def player_with_credits_from_api(context, mock_player_repo, player_id, credits):
 
 
 @given(parsers.parse('I have a ship "{ship_symbol}" at waypoint "{waypoint}"'))
-def ship_at_waypoint(context, mock_ship_repo, ship_symbol, waypoint):
-    """Create a ship at a waypoint."""
-    player_id = context.get('player_id', 1)
-    ship = create_ship(ship_symbol, player_id, waypoint, Ship.DOCKED)
-    mock_ship_repo.create(ship)
+def ship_at_waypoint(context, ship_symbol, waypoint):
+    """Create a ship at a waypoint (store in context for API mock)."""
+    # Store ship data for API mock
+    if 'ships_data' not in context:
+        context['ships_data'] = {}
+
+    parts = waypoint.split('-')
+    system_symbol = f"{parts[0]}-{parts[1]}" if len(parts) >= 2 else "X1-TEST"
+
+    context['ships_data'][ship_symbol] = {
+        'symbol': ship_symbol,
+        'nav': {
+            'waypointSymbol': waypoint,
+            'systemSymbol': system_symbol,
+            'status': 'DOCKED',
+            'flightMode': 'CRUISE'
+        },
+        'fuel': {'current': 0, 'capacity': 100},
+        'cargo': {'capacity': 40, 'units': 0, 'inventory': []},
+        'frame': {'symbol': 'FRAME_PROBE'},
+        'reactor': {'symbol': 'REACTOR_SOLAR_I'},
+        'engine': {'symbol': 'ENGINE_IMPULSE_DRIVE_I', 'speed': 30},
+        'modules': [],
+        'mounts': []
+    }
     context['purchasing_ship_symbol'] = ship_symbol
     context['purchasing_ship_waypoint'] = waypoint
 
 
 @given(parsers.parse('the ship "{ship_symbol}" is docked'))
-def ship_is_docked(context, mock_ship_repo, ship_symbol):
-    """Set ship to docked status."""
-    player_id = context.get('player_id', 1)
-    ship = mock_ship_repo.find_by_symbol(ship_symbol, player_id)
-    if ship:
-        ship.ensure_docked()
-        mock_ship_repo.update(ship)
+def ship_is_docked(context, ship_symbol):
+    """Set ship to docked status (update context for API mock)."""
+    if 'ships_data' in context and ship_symbol in context['ships_data']:
+        context['ships_data'][ship_symbol]['nav']['status'] = 'DOCKED'
 
 
 @given(parsers.parse('the API returns a shipyard at "{waypoint}" with ships:'))
@@ -139,9 +164,9 @@ def api_returns_shipyard(context, waypoint):
 
 
 @given('no ships exist in the repository')
-def no_ships_exist(context, mock_ship_repo):
-    """Clear all ships from repository."""
-    mock_ship_repo.clear_all()
+def no_ships_exist(context):
+    """Clear all ships from context (for API mock)."""
+    context['ships_data'] = {}
 
 
 # When steps
@@ -202,7 +227,7 @@ def batch_purchase_ships(context, handler, quantity, ship_type, ship_symbol, shi
                     return shipyard
                 elif isinstance(request, PurchaseShipCommand):
                     # Check if purchasing ship exists (simulate actual PurchaseShipHandler behavior)
-                    purchasing_ship = context['mock_ship_repo'].find_by_symbol(
+                    purchasing_ship = context['ship_repo'].find_by_symbol(
                         request.purchasing_ship_symbol,
                         request.player_id
                     )
@@ -215,7 +240,7 @@ def batch_purchase_ships(context, handler, quantity, ship_type, ship_symbol, shi
                     purchase_counter['count'] += 1
                     new_ship_symbol = f"AGENT-{player_id}-{purchase_counter['count']}"
                     new_ship = create_ship(new_ship_symbol, player_id, shipyard_waypoint, Ship.DOCKED)
-                    context['mock_ship_repo'].create(new_ship)
+                    context['ship_repo'].create(new_ship)
 
                     # NOTE: We do NOT deduct credits from player in mock
                     # The real PurchaseShipCommand would fetch credits from API and validate
@@ -231,8 +256,8 @@ def batch_purchase_ships(context, handler, quantity, ship_type, ship_symbol, shi
             context['mock_mediator'] = mock_mediator
 
             # Store repos in context for side effect access
-            context['mock_ship_repo'] = handler._ship_repo
-            context['mock_player_repo'] = handler._player_repo
+            context['ship_repo'] = handler._ship_repo
+            context['player_repo'] = handler._player_repo
 
             try:
                 context['result'] = await handler.handle(command)
@@ -283,7 +308,7 @@ def verify_ships_purchased_count(context, count):
 
 
 @then(parsers.parse('the player should have {credits:d} credits remaining'))
-def verify_player_credits(context, mock_player_repo, credits):
+def verify_player_credits(context, player_repo, credits):
     """
     Verify player would have expected credits remaining (calculated from API credits).
 
@@ -295,7 +320,7 @@ def verify_player_credits(context, mock_player_repo, credits):
 
 
 @then(parsers.parse('the player should still have {credits:d} credits'))
-def verify_player_credits_unchanged(context, mock_player_repo, credits):
+def verify_player_credits_unchanged(context, player_repo, credits):
     """
     Verify player credits unchanged (either failed or 0 ships purchased).
 
@@ -317,12 +342,12 @@ def verify_player_credits_unchanged(context, mock_player_repo, credits):
 
 
 @then('all purchased ships should be saved to the repository')
-def verify_all_ships_saved(context, mock_ship_repo):
+def verify_all_ships_saved(context, ship_repo):
     """Verify all purchased ships were saved."""
     assert context['result'] is not None
     player_id = context.get('player_id', 1)
     for ship in context['result'].purchased_ships:
-        saved_ship = mock_ship_repo.find_by_symbol(ship.ship_symbol, player_id)
+        saved_ship = ship_repo.find_by_symbol(ship.ship_symbol, player_id)
         assert saved_ship is not None
 
 
