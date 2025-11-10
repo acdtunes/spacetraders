@@ -27,7 +27,34 @@ from domain.shared.ship import Ship
 
 # Mock Domain Services
 # NOTE: Mocking domain logic (graphs, routing) is acceptable.
-# We only avoid mocking repositories (data persistence).
+# For navigation DOMAIN tests (not application tests), we use a simple
+# mock ship repository since we're testing route planning algorithms, not
+# repository integration.
+
+class MockShipRepository:
+    """Simple in-memory ship repository for navigation domain tests"""
+
+    def __init__(self):
+        self.ships: Dict[str, dict] = {}
+
+    def add(self, ship_symbol: str, fuel: Fuel, waypoint: Waypoint, engine_speed: int = 30):
+        """Add a ship to the mock repository"""
+        self.ships[ship_symbol] = {
+            'ship_symbol': ship_symbol,
+            'fuel': fuel,
+            'waypoint': waypoint,
+            'engine_speed': engine_speed
+        }
+
+    def get(self, ship_symbol: str) -> Optional[dict]:
+        """Get a ship from the mock repository"""
+        return self.ships.get(ship_symbol)
+
+    def update_fuel(self, ship_symbol: str, fuel: Fuel):
+        """Update a ship's fuel"""
+        if ship_symbol in self.ships:
+            self.ships[ship_symbol]['fuel'] = fuel
+
 
 class MockRouteRepository:
     """In-memory route repository for testing"""
@@ -163,6 +190,12 @@ class MockAPIClient:
 def context():
     """Shared test context dictionary"""
     return {}
+
+
+@pytest.fixture
+def mock_ship_repository():
+    """Mock ship repository for navigation domain tests"""
+    return MockShipRepository()
 
 
 @pytest.fixture
