@@ -63,9 +63,7 @@ def execute_touch_command(context, player_id):
     else:
         actual_player_id = context["player_id"]
 
-    # Track update count before
-    initial_updates = len([p for p in mock_repo._players.values()])
-
+    # Execute command (no need to track internal repository state - black-box testing)
     command = TouchPlayerLastActiveCommand(player_id=actual_player_id)
     result = asyncio.run(handler.handle(command))
 

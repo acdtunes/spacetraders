@@ -43,13 +43,23 @@ class PlayerMapper:
         NOTE: Credits are cached in database but should be synchronized from API
         via SyncPlayerCommand to ensure they remain fresh.
         """
+        # SQLAlchemy JSON column automatically deserializes to dict
+        # So metadata is already a dict, not a JSON string
+        metadata_value = row["metadata"]
+        if metadata_value and isinstance(metadata_value, str):
+            # Handle legacy case where metadata might still be a JSON string
+            metadata = json.loads(metadata_value)
+        else:
+            # Modern case: SQLAlchemy JSON column returns dict directly
+            metadata = metadata_value if metadata_value else {}
+
         return Player(
             player_id=int(row["player_id"]),
             agent_symbol=row["agent_symbol"],
             token=row["token"],
             created_at=_parse_datetime(row["created_at"]),
             last_active=_parse_datetime(row["last_active"]),
-            metadata=json.loads(row["metadata"]) if row["metadata"] else {},
+            metadata=metadata,
             credits=int(row["credits"] if "credits" in row.keys() else 0)  # Default to 0 if not present
         )
 
