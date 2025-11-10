@@ -15,7 +15,7 @@ scenarios('../../features/daemon/assignment_cleanup.feature')
 @given(parsers.parse('a navigation container is created for ship "{ship_symbol}"'))
 def create_navigation_container(context, ship_symbol):
     """Create a navigation container for the ship"""
-    from configuration.container import get_database, get_mediator
+    from configuration.container import get_container_log_repository, get_mediator
 
     container_id = f"test-container-{ship_symbol}"
     config = {
@@ -32,7 +32,7 @@ def create_navigation_container(context, ship_symbol):
         player_id=context['player_id'],
         config=config,
         mediator=get_mediator(),
-        database=get_database()
+        container_log_repo=get_container_log_repository()
     )
 
     context['container'] = container

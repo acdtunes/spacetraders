@@ -582,14 +582,11 @@ def verify_logs_retrievable(context):
 @then(parsers.parse('the container logs should mention "{expected_text}"'))
 def verify_logs_contain_text(context, expected_text):
     """Verify logs contain expected text (supports OR with ' or ')"""
-    from configuration.container import get_container_log_repository
-
-    container_log_repo = get_container_log_repository()
     db = context['database']
     container_id = context['container_id']
     player_id = context['player_id']
 
-    all_logs = container_log_repo.get_logs(
+    all_logs = db.get_container_logs(
         container_id=container_id,
         player_id=player_id,
         limit=100
@@ -621,14 +618,11 @@ def verify_logs_contain_text(context, expected_text):
 @then('the container logs should contain INFO messages')
 def verify_info_logs(context):
     """Verify INFO logs exist"""
-    from configuration.container import get_container_log_repository
-
-    container_log_repo = get_container_log_repository()
     db = context['database']
     container_id = context['container_id']
     player_id = context['player_id']
 
-    logs = container_log_repo.get_logs(
+    logs = db.get_container_logs(
         container_id=container_id,
         player_id=player_id,
         level='INFO',
@@ -641,14 +635,11 @@ def verify_info_logs(context):
 @then('the container logs should contain WARNING messages')
 def verify_warning_logs(context):
     """Verify WARNING logs exist"""
-    from configuration.container import get_container_log_repository
-
-    container_log_repo = get_container_log_repository()
     db = context['database']
     container_id = context['container_id']
     player_id = context['player_id']
 
-    logs = container_log_repo.get_logs(
+    logs = db.get_container_logs(
         container_id=container_id,
         player_id=player_id,
         level='WARNING',
@@ -661,14 +652,11 @@ def verify_warning_logs(context):
 @then('the container logs should contain DEBUG messages')
 def verify_debug_logs(context):
     """Verify DEBUG logs exist"""
-    from configuration.container import get_container_log_repository
-
-    container_log_repo = get_container_log_repository()
     db = context['database']
     container_id = context['container_id']
     player_id = context['player_id']
 
-    logs = container_log_repo.get_logs(
+    logs = db.get_container_logs(
         container_id=container_id,
         player_id=player_id,
         level='DEBUG',
@@ -707,9 +695,7 @@ def create_test_container_with_id(context, container_id):
 @when(parsers.parse('I add a log with message containing all special characters: {message}'))
 def add_log_with_special_characters(context, message):
     """Add log with special characters directly to database"""
-    from configuration.container import get_container_log_repository
-
-    container_log_repo = get_container_log_repository()
+    db = context['database']
     container_id = context['test_container_id']
     player_id = context['player_id']
 
@@ -723,13 +709,12 @@ def add_log_with_special_characters(context, message):
     message = message.replace('\\n', '\n').replace('\\t', '\t').replace('\\r', '\r')
     message = message.replace('\\b', '\b').replace('\\f', '\f').replace('\\\\', '\\')
 
-    # Add log to database using repository
-    container_log_repo.log(
-        container_id=container_id,
-        player_id=player_id,
-        message=message,
-        level='INFO'
-    )
+    # Add log to database
+    with db.transaction() as conn:
+        conn.execute("""
+            INSERT INTO container_logs (container_id, player_id, timestamp, level, message)
+            VALUES (?, ?, datetime('now'), 'INFO', ?)
+        """, (container_id, player_id, message))
 
     context['added_logs'].append(message)
 
@@ -737,9 +722,7 @@ def add_log_with_special_characters(context, message):
 @when(parsers.parse('I add {count:d} logs with varying content including special characters'))
 def add_multiple_logs_with_special_chars(context, count):
     """Add multiple logs with varying special characters"""
-    from configuration.container import get_container_log_repository
-
-    container_log_repo = get_container_log_repository()
+    db = context['database']
     container_id = context['test_container_id']
     player_id = context['player_id']
 
@@ -761,13 +744,13 @@ def add_multiple_logs_with_special_chars(context, count):
         msg = msg.replace('\\n', '\n').replace('\\t', '\t').replace('\\\\', '\\')
         test_messages.append(msg)
 
-        # Add log to database using repository
-        container_log_repo.log(
-            container_id=container_id,
-            player_id=player_id,
-            message=msg,
-            level='INFO'
-        )
+    # Batch insert
+    with db.transaction() as conn:
+        for msg in test_messages:
+            conn.execute("""
+                INSERT INTO container_logs (container_id, player_id, timestamp, level, message)
+                VALUES (?, ?, datetime('now'), 'INFO', ?)
+            """, (container_id, player_id, msg))
 
     context['added_logs'] = test_messages
 
@@ -775,15 +758,12 @@ def add_multiple_logs_with_special_chars(context, count):
 @when(parsers.parse('I call daemon_inspect for container "{container_id}"'))
 def call_daemon_inspect(context, container_id):
     """Simulate daemon_inspect by getting logs and serializing to JSON"""
-    from configuration.container import get_container_log_repository
-
-    container_log_repo = get_container_log_repository()
     import json
     db = context['database']
     player_id = context['player_id']
 
     # Get logs from database (same as _inspect_container does)
-    logs = container_log_repo.get_logs(
+    logs = db.get_container_logs(
         container_id=container_id,
         player_id=player_id,
         limit=200  # Use higher limit to capture all test logs
@@ -817,14 +797,11 @@ def call_daemon_inspect(context, container_id):
 @when(parsers.parse('I call daemon_logs for container "{container_id}" and player {player_id:d}'))
 def call_daemon_logs(context, container_id, player_id):
     """Simulate daemon_logs by getting logs and serializing to JSON"""
-    from configuration.container import get_container_log_repository
-
-    container_log_repo = get_container_log_repository()
     import json
     db = context['database']
 
     # Get logs from database
-    logs = container_log_repo.get_logs(
+    logs = db.get_container_logs(
         container_id=container_id,
         player_id=player_id,
         limit=100
@@ -934,9 +911,6 @@ def verify_response_size(context, min_size):
 @when(parsers.parse('I call daemon_inspect CLI command for container "{container_id}"'))
 def call_daemon_inspect_cli(context, container_id):
     """Call daemon_inspect CLI command function directly with mocked client"""
-    from configuration.container import get_container_log_repository
-
-    container_log_repo = get_container_log_repository()
     import json
     from io import StringIO
     import sys
@@ -947,7 +921,7 @@ def call_daemon_inspect_cli(context, container_id):
     # Get logs from database to build mock response
     db = context['database']
     player_id = context['player_id']
-    logs = container_log_repo.get_logs(
+    logs = db.get_container_logs(
         container_id=container_id,
         player_id=player_id,
         limit=200
@@ -998,9 +972,6 @@ def call_daemon_inspect_cli(context, container_id):
 @when(parsers.parse('I call daemon_logs CLI command for container "{container_id}" and player {player_id:d}'))
 def call_daemon_logs_cli(context, container_id, player_id):
     """Call daemon_logs CLI command function directly with mocked client"""
-    from configuration.container import get_container_log_repository
-
-    container_log_repo = get_container_log_repository()
     import json
     from io import StringIO
     import sys
@@ -1010,7 +981,7 @@ def call_daemon_logs_cli(context, container_id, player_id):
 
     # Get logs from database
     db = context['database']
-    logs = container_log_repo.get_logs(
+    logs = db.get_container_logs(
         container_id=container_id,
         player_id=player_id,
         limit=100

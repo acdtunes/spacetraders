@@ -570,13 +570,34 @@ def ship_docked_at_waypoint(context, waypoint):
 
 @given(parsers.parse('a market at "{waypoint}" sells "{good}" for {price:d} credits per unit'))
 def market_sells_good(context, waypoint, good, price):
-    """Set up market data in database"""
+    """Set up market data in repository"""
+    from configuration.container import get_market_repository
+    from domain.shared.market import TradeGood
+    from datetime import datetime, timezone
+
     if 'markets' not in context:
         context['markets'] = {}
     context['markets'][waypoint] = {
         'good': good,
         'price': price
     }
+
+    # Actually insert market data into repository so FindCheapestMarketHandler can find it
+    market_repo = get_market_repository()
+    trade_good = TradeGood(
+        symbol=good,
+        supply='ABUNDANT',
+        activity='STRONG',
+        purchase_price=price - 10,  # What market pays when buying from ships
+        sell_price=price,  # What market charges when selling to ships
+        trade_volume=1000
+    )
+    market_repo.upsert_market_data(
+        waypoint=waypoint,
+        goods=[trade_good],
+        timestamp=datetime.now(timezone.utc).isoformat(),
+        player_id=context['player_id']
+    )
 
 
 @given(parsers.parse('the ship has {credits:d} credits available'))
@@ -603,6 +624,10 @@ def ship_cargo_capacity(context, capacity):
 @given(parsers.parse('a market at "{waypoint}" initially sells "{good}" for {initial_price:d} credits per unit'))
 def market_initial_price(context, waypoint, good, initial_price):
     """Set initial market price (for polling scenario)"""
+    from configuration.container import get_market_repository
+    from domain.shared.market import TradeGood
+    from datetime import datetime, timezone
+
     if 'price_changes' not in context:
         context['price_changes'] = {}
     context['price_changes'][waypoint] = {
@@ -610,6 +635,23 @@ def market_initial_price(context, waypoint, good, initial_price):
         'initial_price': initial_price,
         'polls': 0
     }
+
+    # Insert initial market data into repository
+    market_repo = get_market_repository()
+    trade_good = TradeGood(
+        symbol=good,
+        supply='ABUNDANT',
+        activity='STRONG',
+        purchase_price=initial_price - 10,
+        sell_price=initial_price,
+        trade_volume=1000
+    )
+    market_repo.upsert_market_data(
+        waypoint=waypoint,
+        goods=[trade_good],
+        timestamp=datetime.now(timezone.utc).isoformat(),
+        player_id=context['player_id']
+    )
 
 
 @given(parsers.parse('the market price will drop to {new_price:d} credits after {polls:d} poll'))

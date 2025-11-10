@@ -25,7 +25,7 @@ npm run build
 ## Prerequisites
 
 - Python 3.12+ with bot dependencies installed via `uv sync` (see `../pyproject.toml`)
-- Bot database initialized at `../var/spacetraders.db`
+- PostgreSQL database running at `localhost:5432/spacetraders` (configured via `DATABASE_URL` in `../.env`)
 - At least one player registered in the database
 
 ## Running
@@ -49,7 +49,8 @@ Add to your `claude_desktop_config.json`:
         "/absolute/path/to/spacetraders/bot/mcp/build/index.js"
       ],
       "env": {
-        "MCP_PYTHON_BIN": "/absolute/path/to/spacetraders/bot/.venv/bin/python"
+        "MCP_PYTHON_BIN": "/absolute/path/to/spacetraders/bot/.venv/bin/python",
+        "DATABASE_URL": "postgresql://spacetraders:dev_password@localhost:5432/spacetraders"
       }
     }
   }
@@ -59,6 +60,8 @@ Add to your `claude_desktop_config.json`:
 **Environment Variables:**
 - `MCP_PYTHON_BIN`: Path to Python executable (defaults to `/usr/bin/python3`)
   - For uv virtual environments: Use `/path/to/project/.venv/bin/python`
+- `DATABASE_URL`: PostgreSQL connection string (required for production database access)
+  - Format: `postgresql://user:password@host:port/database`
 - `PYTHON_BIN`: Alternative to `MCP_PYTHON_BIN`
 
 ## Available Tools

@@ -1,6 +1,6 @@
 """SQLAlchemy-based MarketRepository implementation."""
 
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from datetime import datetime, timedelta, timezone
 from sqlalchemy import select, func
 from sqlalchemy.engine import Engine
@@ -213,3 +213,51 @@ class MarketRepositorySQLAlchemy(IMarketRepository):
                 markets.append(market)
 
         return markets
+
+    def find_cheapest_market_selling(
+        self,
+        good_symbol: str,
+        system: str,
+        player_id: int
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Find the cheapest market selling a specific good in a system.
+
+        Args:
+            good_symbol: Trade good symbol (e.g., "IRON_ORE")
+            system: System symbol (e.g., "X1-TEST")
+            player_id: Player ID
+
+        Returns:
+            Dictionary with waypoint_symbol, good_symbol, sell_price, supply
+            or None if not found
+        """
+        with self._engine.connect() as conn:
+            stmt = (
+                select(
+                    market_data.c.waypoint_symbol,
+                    market_data.c.good_symbol,
+                    market_data.c.sell_price,
+                    market_data.c.supply
+                )
+                .where(
+                    market_data.c.player_id == player_id,
+                    market_data.c.good_symbol == good_symbol,
+                    market_data.c.waypoint_symbol.like(f"{system}-%")
+                )
+                .order_by(market_data.c.sell_price.asc())
+                .limit(1)
+            )
+
+            result = conn.execute(stmt)
+            row = result.fetchone()
+
+            if not row:
+                return None
+
+            return {
+                'waypoint_symbol': row.waypoint_symbol,
+                'good_symbol': row.good_symbol,
+                'sell_price': row.sell_price,
+                'supply': row.supply
+            }

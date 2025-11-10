@@ -269,3 +269,83 @@ class ShipAssignmentRepositorySQLAlchemy(IShipAssignmentRepository):
             if count > 0:
                 logger.info(f"Released {count} zombie assignment(s) on daemon startup")
             return count
+
+    def get_all_active_assignments(self) -> list[Dict[str, Any]]:
+        """
+        Get all active ship assignments
+
+        Returns:
+            List of dicts with ship_symbol, player_id, container_id, operation
+        """
+        with self._engine.connect() as conn:
+            stmt = select(
+                ship_assignments.c.ship_symbol,
+                ship_assignments.c.player_id,
+                ship_assignments.c.container_id,
+                ship_assignments.c.operation
+            ).where(ship_assignments.c.status == 'active')
+
+            result = conn.execute(stmt)
+            return [
+                {
+                    'ship_symbol': row.ship_symbol,
+                    'player_id': row.player_id,
+                    'container_id': row.container_id,
+                    'operation': row.operation
+                }
+                for row in result
+            ]
+
+    def reassign(
+        self,
+        player_id: int,
+        ship_symbol: str,
+        old_container_id: str,
+        new_container_id: str
+    ) -> bool:
+        """
+        Reassign ship from old container to new container
+
+        Used when containers are restarted and get new container IDs.
+        Updates the assignment to point to the new container and resets
+        the assignment to active status with a new timestamp.
+
+        Args:
+            player_id: Player ID
+            ship_symbol: Ship to reassign
+            old_container_id: Current container ID the ship is assigned to
+            new_container_id: New container ID to assign ship to
+
+        Returns:
+            True if reassignment successful, False if ship wasn't assigned to old_container_id
+        """
+        with self._engine.begin() as conn:
+            # Update assignment only if currently assigned to old_container_id
+            stmt = (
+                sql_update(ship_assignments)
+                .where(
+                    ship_assignments.c.ship_symbol == ship_symbol,
+                    ship_assignments.c.player_id == player_id,
+                    ship_assignments.c.container_id == old_container_id
+                )
+                .values(
+                    container_id=new_container_id,
+                    status='active',
+                    assigned_at=datetime.now(timezone.utc),
+                    released_at=None,
+                    release_reason=None
+                )
+            )
+
+            result = conn.execute(stmt)
+
+            if result.rowcount > 0:
+                logger.info(
+                    f"Reassigned {ship_symbol} from {old_container_id} to {new_container_id}"
+                )
+                return True
+            else:
+                logger.warning(
+                    f"Failed to reassign {ship_symbol}: not assigned to {old_container_id}"
+                )
+                return False

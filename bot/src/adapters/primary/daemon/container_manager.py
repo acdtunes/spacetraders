@@ -21,17 +21,19 @@ class ContainerManager:
     - Track container state
     """
 
-    def __init__(self, mediator, database):
-        """Initialize with mediator and database
+    def __init__(self, mediator, container_repo, container_log_repo):
+        """Initialize with mediator and repositories
 
         Args:
             mediator: Mediator instance for command execution
-            database: Database instance for logging
+            container_repo: ContainerRepository for container persistence
+            container_log_repo: ContainerLogRepository for log persistence
         """
         self._containers: Dict[str, ContainerInfo] = {}
         self._lock = asyncio.Lock()
         self._mediator = mediator
-        self._database = database
+        self._container_repo = container_repo
+        self._container_log_repo = container_log_repo
         self._container_types = {
             'command': CommandContainer
         }
@@ -99,7 +101,7 @@ class ContainerManager:
                 player_id=player_id,
                 config=config_copy,
                 mediator=self._mediator,
-                database=self._database,
+                container_log_repo=self._container_log_repo,
                 container_info=info
             )
 
@@ -113,7 +115,7 @@ class ContainerManager:
             import json
             # Extract command_type from config for easier filtering
             command_type = config_copy.get('command_type')
-            self._database.insert_container(
+            self._container_repo.insert(
                 container_id=container_id,
                 player_id=player_id,
                 container_type=container_type,
@@ -136,6 +138,17 @@ class ContainerManager:
         """
         cancelled = False
         try:
+            # Update database to RUNNING before starting the container
+            # BaseContainer.start() will set info.status = RUNNING in memory
+            # but we also need to persist it to the database immediately
+            info.status = ContainerStatus.RUNNING
+            self._container_repo.update_status(
+                container_id=info.container_id,
+                player_id=info.player_id,
+                status=ContainerStatus.RUNNING.value
+            )
+
+            # Now run the container (this blocks until container completes)
             await container.start()
             info.exit_code = 0
             logger.info(f"Container {info.container_id} completed successfully")
@@ -158,28 +171,20 @@ class ContainerManager:
                 # This will be overridden to STARTING if restart happens
                 info.status = ContainerStatus.STOPPED
 
-                # Update database with final status (only if database is still open)
-                # This prevents errors during test cleanup when database is closed
-                # Use try-except to handle race condition where database closes between check and call
-                if not self._database.is_closed():
-                    try:
-                        self._database.update_container_status(
-                            container_id=info.container_id,
-                            player_id=info.player_id,
-                            status=info.status.value,
-                            stopped_at=info.stopped_at.isoformat(),
-                            exit_code=info.exit_code,
-                            exit_reason=info.exit_reason
-                        )
-                    except Exception as e:
-                        # Database may have closed between check and call
-                        # This is expected during test cleanup, log and continue
-                        import sqlite3
-                        if isinstance(e, sqlite3.ProgrammingError) and "closed database" in str(e):
-                            logger.debug(f"Database closed during cleanup for {info.container_id}")
-                        else:
-                            # Re-raise unexpected exceptions
-                            raise
+                # Update database with final status
+                # Use try-except to handle any database errors during cleanup
+                try:
+                    self._container_repo.update_status(
+                        container_id=info.container_id,
+                        player_id=info.player_id,
+                        status=info.status.value,
+                        stopped_at=info.stopped_at.isoformat(),
+                        exit_code=info.exit_code,
+                        exit_reason=info.exit_reason
+                    )
+                except Exception as e:
+                    # This may fail during test cleanup, log and continue
+                    logger.debug(f"Failed to update container status during cleanup: {e}")
 
         # Handle restart if needed (only called on failure and not cancelled)
         if not cancelled and info.exit_code != 0:
@@ -225,7 +230,7 @@ class ContainerManager:
             player_id=info.player_id,
             config=info.config,
             mediator=self._mediator,
-            database=self._database,
+            container_log_repo=self._container_log_repo,
             container_info=info
         )
         info.task = asyncio.create_task(self._run_container(info, container))
@@ -255,7 +260,7 @@ class ContainerManager:
             info.stopped_at = datetime.now()
 
             # Update database immediately
-            self._database.update_container_status(
+            self._container_repo.update_status(
                 container_id=container_id,
                 player_id=info.player_id,
                 status=ContainerStatus.STOPPED.value,

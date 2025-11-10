@@ -323,7 +323,11 @@ class WaypointRepositorySQLAlchemy(IWaypointRepository):
             row = result.fetchone()
 
             if row and row.last_sync:
-                return datetime.fromisoformat(row.last_sync)
+                # PostgreSQL returns datetime objects, SQLite returns strings
+                if isinstance(row.last_sync, datetime):
+                    return row.last_sync
+                else:
+                    return datetime.fromisoformat(row.last_sync)
 
             return None
 

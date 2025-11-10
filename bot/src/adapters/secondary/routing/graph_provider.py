@@ -1,5 +1,4 @@
 """System graph provider with database caching"""
-import json
 import logging
 from typing import Optional
 
@@ -8,7 +7,6 @@ from ports.outbound.graph_provider import (
     IGraphBuilder,
     ISystemGraphProvider,
 )
-from ..persistence.database import Database
 
 logger = logging.getLogger(__name__)
 
@@ -21,9 +19,17 @@ class SystemGraphProvider(ISystemGraphProvider):
     Stores newly built graphs in database for future use.
     """
 
-    def __init__(self, database: Database, graph_builder: IGraphBuilder):
-        self.db = database
+    def __init__(self, graph_repo, graph_builder: IGraphBuilder, player_id: int):
+        """Initialize with SQLAlchemy repository
+
+        Args:
+            graph_repo: SystemGraphRepositorySQLAlchemy instance
+            graph_builder: Graph builder instance
+            player_id: Player ID for API client
+        """
+        self._graph_repo = graph_repo
         self.builder = graph_builder
+        self.player_id = player_id
 
     def get_graph(self, system_symbol: str, force_refresh: bool = False) -> GraphLoadResult:
         """
@@ -58,23 +64,12 @@ class SystemGraphProvider(ISystemGraphProvider):
     def _load_from_database(self, system_symbol: str) -> Optional[dict]:
         """Load graph from database cache"""
         try:
-            with self.db.connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute(
-                    "SELECT graph_data FROM system_graphs WHERE system_symbol = ?",
-                    (system_symbol,),
-                )
-                row = cursor.fetchone()
-
-                if row:
-                    graph_json = row[0]
-                    graph = json.loads(graph_json)
-                    logger.debug(f"Cache hit for {system_symbol}")
-                    return graph
-                else:
-                    logger.debug(f"Cache miss for {system_symbol}")
-                    return None
-
+            graph = self._graph_repo.get(system_symbol)
+            if graph:
+                logger.debug(f"Cache hit for {system_symbol}")
+            else:
+                logger.debug(f"Cache miss for {system_symbol}")
+            return graph
         except Exception as e:
             logger.error(f"Error loading graph from database: {e}")
             return None
@@ -84,8 +79,8 @@ class SystemGraphProvider(ISystemGraphProvider):
         logger.info(f"Building navigation graph for {system_symbol} from API")
 
         try:
-            # Build the graph
-            graph = self.builder.build_system_graph(system_symbol)
+            # Build the graph using this player's API client
+            graph = self.builder.build_system_graph(system_symbol, self.player_id)
 
             # Save to database cache
             self._save_to_database(system_symbol, graph)
@@ -100,24 +95,8 @@ class SystemGraphProvider(ISystemGraphProvider):
     def _save_to_database(self, system_symbol: str, graph: dict) -> None:
         """Save graph to database cache"""
         try:
-            graph_json = json.dumps(graph)
-
-            with self.db.transaction() as conn:
-                cursor = conn.cursor()
-                cursor.execute(
-                    """
-                    INSERT INTO system_graphs (system_symbol, graph_data, last_updated)
-                    VALUES (?, ?, CURRENT_TIMESTAMP)
-                    ON CONFLICT(system_symbol)
-                    DO UPDATE SET
-                        graph_data = excluded.graph_data,
-                        last_updated = CURRENT_TIMESTAMP
-                    """,
-                    (system_symbol, graph_json),
-                )
-
+            self._graph_repo.save(system_symbol, graph)
             logger.debug(f"Saved graph for {system_symbol} to database")
-
         except Exception as e:
             logger.error(f"Error saving graph to database: {e}")
             # Don't raise - caching failure shouldn't break the operation

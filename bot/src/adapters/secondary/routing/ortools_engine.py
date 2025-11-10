@@ -679,11 +679,12 @@ class ORToolsRoutingEngine(IRoutingEngine):
         )
         time_dimension = routing.GetDimensionOrDie("TravelTime")
         # SetGlobalSpanCostCoefficient penalizes imbalance between vehicle loads
-        # Higher value = more pressure to balance loads across ALL vehicles
-        # CRITICAL: Use 10000 (not 100) to force all vehicles to be used
-        # With high coefficient, solver minimizes max_route_time - min_route_time
-        # This forces balanced distribution across ALL available ships
-        time_dimension.SetGlobalSpanCostCoefficient(10000)
+        # Higher value = more pressure to balance loads (may drop vehicles to achieve balance)
+        # Lower value = allows imbalance but uses more vehicles
+        # CRITICAL: Use 100 (legacy value) to allow all vehicles to be used
+        # With coefficient=100, solver will use all available ships even with slight imbalance
+        # With coefficient=10000, solver drops ships to achieve perfect balance (WRONG!)
+        time_dimension.SetGlobalSpanCostCoefficient(100)
 
         # Add disjunction constraints for markets (makes them optional but penalized)
         for market in markets:

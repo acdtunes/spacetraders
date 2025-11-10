@@ -59,7 +59,8 @@ def test_database_initialized(test_database):
 
 @given("the daemon container manager is initialized")
 def daemon_manager_initialized(context, test_database):
-    """Initialize daemon container manager with mock mediator"""
+    """Initialize daemon container manager with mock mediator and repositories"""
+    from unittest.mock import Mock
 
     class MockMediator:
         async def send_async(self, command):
@@ -68,12 +69,12 @@ def daemon_manager_initialized(context, test_database):
 
     class LongRunningContainer:
         """Mock container that runs for a long time"""
-        def __init__(self, container_id, player_id, config, mediator, database, container_info=None):
+        def __init__(self, container_id, player_id, config, mediator, container_log_repo, container_info=None):
             self.container_id = container_id
             self.player_id = player_id
             self.config = config
             self.mediator = mediator
-            self.database = database
+            self.container_log_repo = container_log_repo
             self.container_info = container_info
 
         async def start(self):
@@ -89,7 +90,11 @@ def daemon_manager_initialized(context, test_database):
                 await asyncio.sleep(0.5)
                 raise
 
-    manager = ContainerManager(MockMediator(), test_database)
+    # Create mock repositories
+    mock_container_repo = Mock()
+    mock_container_log_repo = Mock()
+
+    manager = ContainerManager(MockMediator(), mock_container_repo, mock_container_log_repo)
     manager._container_types['command'] = LongRunningContainer
 
     context['manager'] = manager

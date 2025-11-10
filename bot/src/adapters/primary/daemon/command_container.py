@@ -34,9 +34,9 @@ class ContainerLogHandler(logging.Handler):
             # Format the message
             message = self.format(record)
 
-            # Write directly to database to avoid infinite recursion
+            # Write directly to repository to avoid infinite recursion
             # (container.log() uses logger.info() which would trigger this handler again)
-            self.container.database.log_to_database(
+            self.container.container_log_repo.log(
                 container_id=self.container.container_id,
                 player_id=self.container.player_id,
                 message=message,
@@ -165,6 +165,7 @@ class CommandContainer(BaseContainer):
             'application.shipyard.commands',
             'application.contracts.commands',
             'application.scouting.commands',
+            'application.testing.commands',  # For test commands
         ]
 
         for path in search_paths:

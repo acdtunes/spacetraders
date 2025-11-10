@@ -23,7 +23,7 @@ class BaseContainer(ABC):
         player_id: int,
         config: Dict[str, Any],
         mediator: Any,
-        database: Any,
+        container_log_repo: Any,
         container_info: Optional[Any] = None
     ):
         """Initialize container
@@ -33,14 +33,14 @@ class BaseContainer(ABC):
             player_id: Player ID owning this container
             config: Container configuration dict
             mediator: Mediator instance for sending commands
-            database: Database instance for logging
+            container_log_repo: ContainerLogRepository instance for logging
             container_info: Optional ContainerInfo for synchronizing status
         """
         self.container_id = container_id
         self.player_id = player_id
         self.config = config
         self.mediator = mediator
-        self.database = database
+        self.container_log_repo = container_log_repo
         self.container_info = container_info
         self.cancel_event = asyncio.Event()
         self.status = ContainerStatus.STARTING
@@ -74,12 +74,7 @@ class BaseContainer(ABC):
             # Sync status to ContainerInfo if provided
             if self.container_info:
                 self.container_info.status = ContainerStatus.RUNNING
-            # Update status in database
-            self.database.update_container_status(
-                container_id=self.container_id,
-                player_id=self.player_id,
-                status=ContainerStatus.RUNNING.value
-            )
+            # Note: Status updates are handled by ContainerManager
             await self.run()
             self.status = ContainerStatus.STOPPED
         except asyncio.CancelledError:
@@ -106,7 +101,7 @@ class BaseContainer(ABC):
             level: Log level (INFO, WARNING, ERROR, DEBUG)
         """
         try:
-            self.database.log_to_database(
+            self.container_log_repo.log(
                 container_id=self.container_id,
                 player_id=self.player_id,
                 message=message,

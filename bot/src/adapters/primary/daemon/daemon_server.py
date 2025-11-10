@@ -25,21 +25,27 @@ class DaemonServer:
 
     # Allow override via environment variable for testing
     SOCKET_PATH = Path(os.environ.get('SPACETRADERS_DAEMON_SOCKET', 'var/daemon.sock'))
+    PID_FILE = Path(os.environ.get('SPACETRADERS_DAEMON_PID', 'var/daemon.pid'))
 
     def __init__(self):
         """Initialize daemon server"""
         # Import here to avoid circular dependencies
         from configuration.container import (
-            get_database,
             get_mediator,
             get_ship_repository,
             get_ship_assignment_repository,
+            get_container_repository,
+            get_container_log_repository,
             set_container_manager
         )
 
-        database = get_database()
-        self._database = database
-        self._container_mgr = ContainerManager(get_mediator(), database)
+        self._container_repo = get_container_repository()
+        self._container_log_repo = get_container_log_repository()
+        self._container_mgr = ContainerManager(
+            get_mediator(),
+            self._container_repo,
+            self._container_log_repo
+        )
         self._assignment_repo = get_ship_assignment_repository()
         self._ship_repo = get_ship_repository()
         self._server: Optional[asyncio.Server] = None
@@ -48,16 +54,70 @@ class DaemonServer:
         # Make container manager globally accessible for handlers running inside containers
         set_container_manager(self._container_mgr)
 
+    def _check_already_running(self) -> bool:
+        """Check if another daemon instance is already running
+
+        Returns:
+            True if another instance is running, False otherwise
+        """
+        if not self.PID_FILE.exists():
+            return False
+
+        try:
+            # Read PID from file
+            pid = int(self.PID_FILE.read_text().strip())
+
+            # Check if process exists
+            try:
+                os.kill(pid, 0)  # Signal 0 just checks if process exists
+                logger.error(f"Daemon already running with PID {pid}")
+                return True
+            except OSError:
+                # Process doesn't exist, PID file is stale
+                logger.warning(f"Stale PID file found (PID {pid}), cleaning up")
+                self.PID_FILE.unlink()
+                return False
+        except (ValueError, IOError) as e:
+            logger.warning(f"Invalid PID file: {e}, cleaning up")
+            try:
+                self.PID_FILE.unlink()
+            except:
+                pass
+            return False
+
+    def _write_pid_file(self):
+        """Write current process PID to file"""
+        self.PID_FILE.parent.mkdir(parents=True, exist_ok=True)
+        self.PID_FILE.write_text(str(os.getpid()))
+        logger.info(f"Wrote PID {os.getpid()} to {self.PID_FILE}")
+
+    def _cleanup_pid_file(self):
+        """Remove PID file on shutdown"""
+        try:
+            if self.PID_FILE.exists():
+                self.PID_FILE.unlink()
+                logger.info("Removed PID file")
+        except Exception as e:
+            logger.error(f"Failed to remove PID file: {e}")
+
     async def start(self):
         """Start daemon server"""
+        # Check if already running
+        if self._check_already_running():
+            raise RuntimeError("Daemon is already running. Use 'pkill -9 -f daemon_server' to kill it first.")
+
+        # Write PID file
+        self._write_pid_file()
+
         # Initialize SQLAlchemy schema (needed for repositories)
         from configuration.container import get_engine
         from adapters.secondary.persistence.models import metadata
         engine = get_engine()
         metadata.create_all(engine)
 
-        # Cleanup old socket
+        # Cleanup stale socket (only if no daemon is running)
         if self.SOCKET_PATH.exists():
+            logger.warning(f"Removing stale socket file: {self.SOCKET_PATH}")
             self.SOCKET_PATH.unlink()
 
         self.SOCKET_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -125,6 +185,9 @@ class DaemonServer:
         # Cleanup socket
         if self.SOCKET_PATH.exists():
             self.SOCKET_PATH.unlink()
+
+        # Cleanup PID file
+        self._cleanup_pid_file()
 
         logger.info("Daemon server stopped")
 
@@ -208,11 +271,17 @@ class DaemonServer:
             elif method == "container.stop":
                 result = await self._stop_container(params)
             elif method == "container.inspect":
-                result = self._inspect_container(params)
+                # Offload blocking DB I/O to thread pool to prevent event loop blocking
+                loop = asyncio.get_event_loop()
+                result = await loop.run_in_executor(None, self._inspect_container, params)
             elif method == "container.list":
-                result = self._list_containers(params)
+                # Offload blocking DB I/O to thread pool to prevent event loop blocking
+                loop = asyncio.get_event_loop()
+                result = await loop.run_in_executor(None, self._list_containers, params)
             elif method == "container.logs":
-                result = self._get_container_logs(params)
+                # Offload blocking DB I/O to thread pool to prevent event loop blocking
+                loop = asyncio.get_event_loop()
+                result = await loop.run_in_executor(None, self._get_container_logs, params)
             elif method == "container.remove":
                 result = await self._remove_container(params)
             else:
@@ -236,13 +305,28 @@ class DaemonServer:
         """Create container with validation
 
         Args:
-            params: Container parameters
+            params: Container parameters (must include player_id OR agent)
 
         Returns:
             Dict with container_id and status
         """
         container_id = params["container_id"]
-        player_id = params["player_id"]
+
+        # Resolve player_id from agent if needed
+        player_id = params.get("player_id")
+        if player_id is None:
+            agent = params.get("agent")
+            if agent:
+                # Import here to avoid circular dependency
+                from configuration.container import get_mediator
+                from application.player.queries.get_player import GetPlayerByAgentQuery
+
+                mediator = get_mediator()
+                player = await mediator.send_async(GetPlayerByAgentQuery(agent_symbol=agent))
+                player_id = player.player_id
+            else:
+                raise ValueError("Either player_id or agent must be provided")
+
         container_type = params["container_type"]
         config = params.get("config", {})
         restart_policy = params.get("restart_policy", "no")
@@ -316,56 +400,53 @@ class DaemonServer:
 
         # If not in memory, try to load from database
         if not info:
-            with self._database.connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute("""
-                    SELECT container_id, player_id, container_type, command_type, status,
-                           started_at, stopped_at, restart_count, exit_code
-                    FROM containers
-                    WHERE container_id = ?
-                """, (container_id,))
-                row = cursor.fetchone()
+            # Get player_id from params since we need it for the query
+            player_id = params.get("player_id")
+            if not player_id:
+                raise ValueError("player_id required when container not in memory")
 
-                if not row:
-                    raise ValueError(f"Container {container_id} not found")
+            row = self._container_repo.get(container_id, player_id)
 
-                # Create a minimal info object from database data
-                from dataclasses import dataclass
-                from datetime import datetime
-                from adapters.primary.daemon.container_manager import ContainerStatus
+            if not row:
+                raise ValueError(f"Container {container_id} not found")
 
-                @dataclass
-                class DbContainerInfo:
-                    container_id: str
-                    player_id: int
-                    container_type: str
-                    command_type: str
-                    status: ContainerStatus
-                    started_at: datetime
-                    stopped_at: datetime
-                    iteration: int  # Not in DB, default to 0
-                    restart_count: int
-                    exit_code: int
+            # Create a minimal info object from database data
+            from dataclasses import dataclass
+            from datetime import datetime
+            from adapters.primary.daemon.container_manager import ContainerStatus
 
-                # Import _parse_datetime helper for PostgreSQL compatibility
-                from adapters.secondary.persistence.mappers import _parse_datetime
+            @dataclass
+            class DbContainerInfo:
+                container_id: str
+                player_id: int
+                container_type: str
+                command_type: str
+                status: ContainerStatus
+                started_at: datetime
+                stopped_at: datetime
+                iteration: int  # Not in DB, default to 0
+                restart_count: int
+                exit_code: int
 
-                info = DbContainerInfo(
-                    container_id=row['container_id'],
-                    player_id=row['player_id'],
-                    container_type=row['container_type'],
-                    command_type=row['command_type'],
-                    status=ContainerStatus(row['status']),
-                    started_at=_parse_datetime(row['started_at']),
-                    stopped_at=_parse_datetime(row['stopped_at']),
-                    iteration=0,  # Not stored in DB
-                    restart_count=row['restart_count'] or 0,
-                    exit_code=row['exit_code']
-                )
+            # Import _parse_datetime helper for PostgreSQL compatibility
+            from adapters.secondary.persistence.mappers import _parse_datetime
+
+            info = DbContainerInfo(
+                container_id=row['container_id'],
+                player_id=row['player_id'],
+                container_type=row['container_type'],
+                command_type=row['command_type'],
+                status=ContainerStatus(row['status']),
+                started_at=_parse_datetime(row['started_at']),
+                stopped_at=_parse_datetime(row['stopped_at']),
+                iteration=0,  # Not stored in DB
+                restart_count=row['restart_count'] or 0,
+                exit_code=row['exit_code']
+            )
 
         # Get logs from database
         log_limit = params.get("log_limit", 50)
-        logs = self._database.get_container_logs(
+        logs = self._container_log_repo.get_logs(
             container_id=container_id,
             player_id=info.player_id,
             limit=log_limit
@@ -445,7 +526,7 @@ class DaemonServer:
         level = params.get("level")
         since = params.get("since")
 
-        logs = self._database.get_container_logs(
+        logs = self._container_log_repo.get_logs(
             container_id=container_id,
             player_id=player_id,
             limit=limit,
@@ -500,16 +581,7 @@ class DaemonServer:
         """
         try:
             # Query database for RUNNING containers
-            with self._database.connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute("""
-                    SELECT container_id, player_id, container_type, config,
-                           restart_policy, restart_count
-                    FROM containers
-                    WHERE status = 'RUNNING'
-                    ORDER BY started_at ASC
-                """)
-                running_containers = cursor.fetchall()
+            running_containers = self._container_repo.list_by_status('RUNNING')
 
             if not running_containers:
                 logger.info("No RUNNING containers to recover")
@@ -641,7 +713,7 @@ class DaemonServer:
             player_id=player_id,
             config=config_copy,
             mediator=self._container_mgr._mediator,
-            database=self._container_mgr._database,
+            container_log_repo=self._container_mgr._container_log_repo,
             container_info=info
         )
 
@@ -665,7 +737,7 @@ class DaemonServer:
         from datetime import datetime
 
         try:
-            self._database.update_container_status(
+            self._container_repo.update_status(
                 container_id=container_id,
                 player_id=player_id,
                 status='FAILED',
@@ -688,15 +760,8 @@ class DaemonServer:
         - Daemon crashed mid-operation
         """
         try:
-            # Get all active assignments from database
-            with self._database.connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute("""
-                    SELECT ship_symbol, player_id, container_id, operation
-                    FROM ship_assignments
-                    WHERE status = 'active'
-                """)
-                active_assignments = cursor.fetchall()
+            # Get all active assignments from repository
+            active_assignments = self._assignment_repo.get_all_active_assignments()
 
             # Get list of running container IDs
             running_containers = self._container_mgr.list_containers()
@@ -731,12 +796,38 @@ def main():
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
 
+    # CRITICAL: Load .env BEFORE DaemonServer() constructor
+    # because DaemonServer creates repositories which need DATABASE_URL
+    from dotenv import load_dotenv
+    from pathlib import Path
+    # daemon_server.py is at src/adapters/primary/daemon/daemon_server.py
+    # Go up 5 levels to reach project root: daemon -> primary -> adapters -> src -> bot
+    project_root = Path(__file__).resolve().parent.parent.parent.parent.parent
+    dotenv_path = project_root / '.env'
+    if dotenv_path.exists():
+        load_dotenv(dotenv_path)
+        logger.info(f"Loaded .env from {dotenv_path}")
+    else:
+        logger.warning(f".env not found at {dotenv_path}")
+
+    # Now safe to create server (repositories will use PostgreSQL from .env)
     server = DaemonServer()
 
     try:
         asyncio.run(server.start())
     except KeyboardInterrupt:
         logger.info("Interrupted by user")
+    except RuntimeError as e:
+        # Daemon already running
+        logger.error(str(e))
+        return 1
+    except Exception as e:
+        logger.error(f"Daemon crashed: {e}")
+        server._cleanup_pid_file()
+        raise
+    finally:
+        # Ensure cleanup on all exit paths
+        server._cleanup_pid_file()
 
 
 if __name__ == "__main__":

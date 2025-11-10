@@ -56,7 +56,6 @@ class SpaceTradersBotServer {
     this.cliScriptPath = path.resolve(
       this.botDir,
       "src",
-      "spacetraders",
       "adapters",
       "primary",
       "cli",
@@ -170,10 +169,9 @@ class SpaceTradersBotServer {
           };
         }
 
-        // Call CLI just to get player_id (this is a hack but keeps logic consistent)
-        // Instead, we'll default to player_id=1 for now
-        // TODO: Add proper player_id resolution to daemon client
-        playerId = 1;
+        // For daemon commands, let daemon server resolve agent to player_id
+        // Don't hardcode playerId - pass agent parameter instead
+        playerId = undefined;
       }
 
       switch (toolName) {
@@ -251,8 +249,9 @@ class SpaceTradersBotServer {
             String(args.type),
             Number(args.quantity),
             Number(args.max_budget),
-            playerId!,
-            args.shipyard !== undefined ? String(args.shipyard) : undefined
+            playerId,
+            args.shipyard !== undefined ? String(args.shipyard) : undefined,
+            args.agent !== undefined ? String(args.agent) : undefined
           );
           break;
 
@@ -602,16 +601,14 @@ class SpaceTradersBotServer {
   ): Promise<PythonCommandResult> {
     return new Promise((resolve) => {
       // Invoke as module: python -m adapters.primary.cli.main
-      // Set SPACETRADERS_DB_PATH to canonical database location for consistency
-      const dbPath = process.env.SPACETRADERS_DB_PATH || path.join(this.botDir, "var", "spacetraders.db");
+      // Pass through DATABASE_URL from environment for PostgreSQL connection
 
       const child = spawn(this.pythonExecutable, ["-m", "adapters.primary.cli.main", ...args], {
         cwd: this.botDir,
         stdio: ["ignore", "pipe", "pipe"],
         env: {
-          ...process.env,
+          ...process.env,  // Includes DATABASE_URL for PostgreSQL
           PYTHONPATH: path.join(this.botDir, "src"),
-          SPACETRADERS_DB_PATH: dbPath,
         },
       });
 

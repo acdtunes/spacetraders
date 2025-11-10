@@ -6,7 +6,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **NEVER, EVER DELETE OR RECREATE THE DATABASE!**
 
-The SQLite database at `var/spacetraders.db` contains production data including:
+**PRODUCTION DATABASE:** PostgreSQL at `localhost:5432/spacetraders` (configured via `DATABASE_URL` in `.env`)
+**TEST DATABASE:** SQLite in-memory (`:memory:`) - ephemeral, created per test
+
+**SQLite is ONLY used for tests!** All production operations use PostgreSQL.
+
+The PostgreSQL database contains production data including:
 - Registered players and agent tokens
 - Ship assignments and navigation state
 - Fleet operations history
@@ -17,7 +22,7 @@ The SQLite database at `var/spacetraders.db` contains production data including:
 When adding new columns or tables:
 1. **ALWAYS use ALTER TABLE to add columns** - NEVER drop and recreate tables
 2. **Use DEFAULT values** for new columns to handle existing rows
-3. **Test migrations on a copy first** - `cp var/spacetraders.db var/spacetraders.db.backup`
+3. **Test migrations on a copy first** - `pg_dump spacetraders > backup.sql` (PostgreSQL)
 4. **Verify data preservation** after schema changes
 
 Example safe migration:
@@ -374,10 +379,12 @@ tests/bdd/
 - CLI commands wrap async calls with `asyncio.run()`
 
 ### Database
-- SQLite database at `var/database.db`
+- **Production:** PostgreSQL at `localhost:5432/spacetraders` (DATABASE_URL in `.env`)
+- **Tests:** SQLite in-memory (`:memory:`) - automatically used when running tests
 - Managed by `Database` class (adapters/secondary/persistence/database.py)
 - Schema initialization on first run
-- Repositories handle domain object mapping via mappers
+- Repositories handle domain object mapping via SQLAlchemy ORM
+- **NEVER use SQLite for production!** It's test-only.
 
 ## Adding New Features
 

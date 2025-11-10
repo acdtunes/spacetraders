@@ -330,3 +330,29 @@ class IShipAssignmentRepository(ABC):
             Number of assignments released
         """
         pass
+
+    @abstractmethod
+    def reassign(
+        self,
+        player_id: int,
+        ship_symbol: str,
+        old_container_id: str,
+        new_container_id: str
+    ) -> bool:
+        """
+        Reassign ship from old container to new container
+
+        Used when containers are restarted and get new container IDs.
+        Updates the assignment to point to the new container and resets
+        the assignment to active status with a new timestamp.
+
+        Args:
+            player_id: Player ID
+            ship_symbol: Ship to reassign
+            old_container_id: Current container ID the ship is assigned to
+            new_container_id: New container ID to assign ship to
+
+        Returns:
+            True if reassignment successful, False if ship wasn't assigned to old_container_id
+        """
+        pass

@@ -4,7 +4,7 @@ from pymediatr import Request, RequestHandler
 
 
 @dataclass(frozen=True)
-class JettisonCargoCommand(Request[None]):
+class JettisonCargoCommand(Request[dict]):
     """Command to jettison cargo from ship"""
     ship_symbol: str
     player_id: int
@@ -12,11 +12,11 @@ class JettisonCargoCommand(Request[None]):
     units: int
 
 
-class JettisonCargoHandler(RequestHandler[JettisonCargoCommand, None]):
+class JettisonCargoHandler(RequestHandler[JettisonCargoCommand, dict]):
     """Handler for jettisoning cargo
 
     This handler calls the SpaceTraders API to jettison cargo from a ship.
-    The ship state will be synchronized automatically on next operation.
+    Returns the updated cargo state from the API response.
     """
 
     def __init__(self, api_client_factory):
@@ -28,22 +28,25 @@ class JettisonCargoHandler(RequestHandler[JettisonCargoCommand, None]):
         """
         self._api_client_factory = api_client_factory
 
-    async def handle(self, request: JettisonCargoCommand) -> None:
+    async def handle(self, request: JettisonCargoCommand) -> dict:
         """
         Jettison cargo from ship via API
 
         Args:
             request: Command with ship symbol, cargo symbol, and units to jettison
+
+        Returns:
+            dict: API response containing updated cargo state
         """
         # Get API client for player
         api_client = self._api_client_factory(request.player_id)
 
         # Call API to jettison cargo
-        api_client.jettison_cargo(
+        response = api_client.jettison_cargo(
             ship_symbol=request.ship_symbol,
             cargo_symbol=request.cargo_symbol,
             units=request.units
         )
 
-        # Ship will be synced on next operation
-        # No need to manually update - sync_from_api will fetch latest state
+        # Return the API response containing updated cargo state
+        return response

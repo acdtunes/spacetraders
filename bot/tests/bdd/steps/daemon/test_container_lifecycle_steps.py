@@ -40,7 +40,9 @@ def test_database_initialized(test_database):
 
 @given("the daemon container manager is initialized")
 def daemon_manager_initialized(context, test_database):
-    """Initialize daemon container manager with mock mediator"""
+    """Initialize daemon container manager with mock mediator and repositories"""
+    from unittest.mock import Mock
+
     # Mock mediator that succeeds quickly
     class MockMediator:
         async def send_async(self, command):
@@ -49,12 +51,12 @@ def daemon_manager_initialized(context, test_database):
 
     # Mock container type that completes successfully
     class MockCommandContainer:
-        def __init__(self, container_id, player_id, config, mediator, database, container_info=None):
+        def __init__(self, container_id, player_id, config, mediator, container_log_repo, container_info=None):
             self.container_id = container_id
             self.player_id = player_id
             self.config = config
             self.mediator = mediator
-            self.database = database
+            self.container_log_repo = container_log_repo
             self.container_info = container_info
 
         async def start(self):
@@ -64,7 +66,11 @@ def daemon_manager_initialized(context, test_database):
             if self.config.get('should_fail', False):
                 raise RuntimeError("Container failed as configured")
 
-    manager = ContainerManager(MockMediator(), test_database)
+    # Create mock repositories
+    mock_container_repo = Mock()
+    mock_container_log_repo = Mock()
+
+    manager = ContainerManager(MockMediator(), mock_container_repo, mock_container_log_repo)
     # Override container type with mock
     manager._container_types['command'] = MockCommandContainer
 

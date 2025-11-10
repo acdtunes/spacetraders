@@ -9,7 +9,7 @@ import path from "node:path";
 const SOCKET_PATH = process.env.SPACETRADERS_DAEMON_SOCKET
   ? process.env.SPACETRADERS_DAEMON_SOCKET
   : path.join(process.cwd(), "var", "daemon.sock");
-const REQUEST_TIMEOUT_MS = 10000; // 10 seconds
+const REQUEST_TIMEOUT_MS = 60000; // 60 seconds - daemon can be busy with container operations
 
 interface JsonRpcRequest {
   jsonrpc: string;
@@ -297,15 +297,15 @@ export class DaemonClient {
     shipType: string,
     quantity: number,
     maxBudget: number,
-    playerId: number,
-    shipyardWaypoint?: string
+    playerId: number | undefined,
+    shipyardWaypoint?: string,
+    agent?: string
   ): Promise<unknown> {
     const randomHex = Math.floor(Math.random() * 0xFFFFFFFF).toString(16).padStart(8, '0');
     const containerId = `batch-purchase-${randomHex}`;
 
-    const params = {
+    const params: any = {
       container_id: containerId,
-      player_id: playerId,
       container_type: "command",
       config: {
         command_type: "BatchPurchaseShipsCommand",
@@ -314,11 +314,22 @@ export class DaemonClient {
           ship_type: shipType,
           quantity,
           max_budget: maxBudget,
-          player_id: playerId,
           ...(shipyardWaypoint && { shipyard_waypoint: shipyardWaypoint }),
         },
       },
     };
+
+    // Add player_id or agent (daemon will resolve agent to player_id)
+    if (playerId !== undefined) {
+      params.player_id = playerId;
+      params.config.params.player_id = playerId;
+    } else if (agent) {
+      params.agent = agent;
+      params.config.params.agent = agent;
+    } else {
+      throw new Error("Either playerId or agent must be provided");
+    }
+
     return this.sendRequest("container.create", params);
   }
 

@@ -110,12 +110,14 @@ def verify_jettison_success(context):
     assert context['jettison_error'] is None, f"Jettison command failed with error: {context['jettison_error']}"
 
 
-@then(parsers.parse('the API should receive jettison request for ship "{ship_symbol}" with cargo "{cargo_symbol}" and {units:d} units'))
-def verify_api_jettison_call(context, ship_symbol, cargo_symbol, units):
-    """Verify API client was called with correct parameters"""
-    # Verify the mock was called correctly
-    context['mock_api_client'].jettison_cargo.assert_called_once_with(
-        ship_symbol=ship_symbol,
-        cargo_symbol=cargo_symbol,
-        units=units
-    )
+@then(parsers.parse('the result should contain updated cargo with capacity {capacity:d} and {total_units:d} units'))
+def verify_cargo_result(context, capacity, total_units):
+    """Verify the command returned updated cargo state"""
+    result = context['jettison_result']
+    assert result is not None, "Jettison command should return a result"
+    assert 'data' in result, "Result should contain 'data' field"
+    assert 'cargo' in result['data'], "Result data should contain 'cargo' field"
+
+    cargo = result['data']['cargo']
+    assert cargo['capacity'] == capacity, f"Expected capacity {capacity}, got {cargo['capacity']}"
+    assert cargo['units'] == total_units, f"Expected {total_units} units, got {cargo['units']}"

@@ -225,3 +225,59 @@ class ShipAssignmentRepository(IShipAssignmentRepository):
             if count > 0:
                 logger.info(f"Released {count} zombie assignment(s) on daemon startup")
             return count
+
+    def reassign(
+        self,
+        player_id: int,
+        ship_symbol: str,
+        old_container_id: str,
+        new_container_id: str
+    ) -> bool:
+        """
+        Reassign ship from old container to new container
+
+        Used when containers are restarted and get new container IDs.
+        Updates the assignment to point to the new container and resets
+        the assignment to active status with a new timestamp.
+
+        Args:
+            player_id: Player ID
+            ship_symbol: Ship to reassign
+            old_container_id: Current container ID the ship is assigned to
+            new_container_id: New container ID to assign ship to
+
+        Returns:
+            True if reassignment successful, False if ship wasn't assigned to old_container_id
+        """
+        with self._db.transaction() as conn:
+            cursor = conn.cursor()
+
+            # Update assignment only if currently assigned to old_container_id
+            cursor.execute("""
+                UPDATE ship_assignments
+                SET container_id = ?,
+                    status = 'active',
+                    assigned_at = ?,
+                    released_at = NULL,
+                    release_reason = NULL
+                WHERE ship_symbol = ?
+                  AND player_id = ?
+                  AND container_id = ?
+            """, (
+                new_container_id,
+                datetime.now().isoformat(),
+                ship_symbol,
+                player_id,
+                old_container_id
+            ))
+
+            if cursor.rowcount > 0:
+                logger.info(
+                    f"Reassigned {ship_symbol} from {old_container_id} to {new_container_id}"
+                )
+                return True
+            else:
+                logger.warning(
+                    f"Failed to reassign {ship_symbol}: not assigned to {old_container_id}"
+                )
+                return False

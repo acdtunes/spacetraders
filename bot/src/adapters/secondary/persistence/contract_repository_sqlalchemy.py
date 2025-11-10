@@ -12,6 +12,7 @@ from ports.outbound.repositories import IContractRepository
 from domain.shared.contract import Contract, ContractTerms, Delivery, Payment
 from domain.shared.value_objects import Waypoint
 from .models import contracts
+from .mappers import _parse_datetime
 
 
 class ContractRepositorySQLAlchemy(IContractRepository):
@@ -260,7 +261,7 @@ class ContractRepositorySQLAlchemy(IContractRepository):
 
         # Create terms
         terms = ContractTerms(
-            deadline=datetime.fromisoformat(row.deadline),
+            deadline=_parse_datetime(row.deadline),
             payment=payment,
             deliveries=deliveries
         )
@@ -273,5 +274,5 @@ class ContractRepositorySQLAlchemy(IContractRepository):
             terms=terms,
             accepted=bool(row.accepted),
             fulfilled=bool(row.fulfilled),
-            deadline_to_accept=datetime.fromisoformat(row.deadline_to_accept)
+            deadline_to_accept=_parse_datetime(row.deadline_to_accept)
         )

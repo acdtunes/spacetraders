@@ -34,11 +34,20 @@ fi
 echo "  Starting daemon..."
 PYTHONPATH=src:$PYTHONPATH uv run python -m adapters.primary.daemon.daemon_server > /tmp/daemon.log 2>&1 &
 
-# Wait for socket to appear (simple fixed delay)
+# Wait for socket to appear
 sleep 2
 
-# Verify single instance
-count=$(lsof var/daemon.sock 2>/dev/null | grep -v COMMAND | wc -l)
+# Verify daemon started successfully
+if [ ! -S var/daemon.sock ]; then
+    echo "❌ ERROR: Socket file not created"
+    echo ""
+    echo "Recent logs:"
+    tail -10 /tmp/daemon.log
+    exit 1
+fi
+
+# Verify single instance using lsof
+count=$(lsof var/daemon.sock 2>/dev/null | grep -v COMMAND | wc -l | tr -d ' ')
 if [ "$count" -eq 1 ]; then
     echo "✅ Daemon started successfully"
     echo ""
@@ -49,6 +58,9 @@ else
     echo "❌ ERROR: Expected 1 process, found $count"
     echo ""
     echo "Processes holding socket:"
-    lsof var/daemon.sock
+    lsof var/daemon.sock 2>/dev/null || echo "(none)"
+    echo ""
+    echo "Recent logs:"
+    tail -10 /tmp/daemon.log
     exit 1
 fi

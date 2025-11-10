@@ -22,6 +22,9 @@ from adapters.secondary.persistence.waypoint_repository_sqlalchemy import Waypoi
 from adapters.secondary.persistence.ship_assignment_repository import ShipAssignmentRepository
 from adapters.secondary.persistence.ship_assignment_repository_sqlalchemy import ShipAssignmentRepositorySQLAlchemy
 from adapters.secondary.persistence.captain_log_repository_sqlalchemy import CaptainLogRepositorySQLAlchemy
+from adapters.secondary.persistence.container_repository_sqlalchemy import ContainerRepositorySQLAlchemy
+from adapters.secondary.persistence.container_log_repository_sqlalchemy import ContainerLogRepositorySQLAlchemy
+from adapters.secondary.persistence.system_graph_repository_sqlalchemy import SystemGraphRepositorySQLAlchemy
 from adapters.secondary.api.client import SpaceTradersAPIClient
 from adapters.secondary.routing.ortools_engine import ORToolsRoutingEngine
 from adapters.secondary.routing.graph_builder import GraphBuilder
@@ -210,6 +213,9 @@ _contract_repo = None
 _waypoint_repo = None
 _ship_assignment_repo = None
 _captain_log_repo = None
+_container_repo = None
+_container_log_repo = None
+_system_graph_repo = None
 _graph_provider = None
 _graph_builder = None
 _routing_engine = None
@@ -328,7 +334,7 @@ def get_graph_provider_for_player(player_id: int) -> ISystemGraphProvider:
         ISystemGraphProvider: Graph provider instance with player's API client
     """
     graph_builder = get_graph_builder_for_player(player_id)
-    return SystemGraphProvider(get_database(), graph_builder)
+    return SystemGraphProvider(get_system_graph_repository(), graph_builder, player_id)
 
 
 def get_routing_engine() -> IRoutingEngine:
@@ -427,6 +433,45 @@ def get_captain_log_repository():
     if _captain_log_repo is None:
         _captain_log_repo = CaptainLogRepositorySQLAlchemy(get_engine())
     return _captain_log_repo
+
+
+def get_container_repository():
+    """
+    Get or create container repository.
+
+    Returns:
+        ContainerRepositorySQLAlchemy: Singleton container repository instance
+    """
+    global _container_repo
+    if _container_repo is None:
+        _container_repo = ContainerRepositorySQLAlchemy(get_engine())
+    return _container_repo
+
+
+def get_container_log_repository():
+    """
+    Get or create container log repository.
+
+    Returns:
+        ContainerLogRepositorySQLAlchemy: Singleton container log repository instance
+    """
+    global _container_log_repo
+    if _container_log_repo is None:
+        _container_log_repo = ContainerLogRepositorySQLAlchemy(get_engine())
+    return _container_log_repo
+
+
+def get_system_graph_repository():
+    """
+    Get or create system graph repository.
+
+    Returns:
+        SystemGraphRepositorySQLAlchemy: Singleton system graph repository instance
+    """
+    global _system_graph_repo
+    if _system_graph_repo is None:
+        _system_graph_repo = SystemGraphRepositorySQLAlchemy(get_engine())
+    return _system_graph_repo
 
 
 def get_mediator() -> Mediator:
@@ -587,7 +632,6 @@ def get_mediator() -> Mediator:
 
         # ===== Contract Query Handlers =====
         contract_repo = get_contract_repository()
-        db = get_database()
         _mediator.register_handler(
             GetContractQuery,
             lambda: GetContractHandler(contract_repo)
@@ -603,7 +647,7 @@ def get_mediator() -> Mediator:
         _mediator.register_handler(
             EvaluateContractProfitabilityQuery,
             lambda: EvaluateContractProfitabilityHandler(
-                find_market_handler=FindCheapestMarketHandler(db)
+                find_market_handler=FindCheapestMarketHandler(market_repo)
             )
         )
 
@@ -652,7 +696,7 @@ def get_mediator() -> Mediator:
         # ===== Trading Query Handlers =====
         _mediator.register_handler(
             FindCheapestMarketQuery,
-            lambda: FindCheapestMarketHandler(db)
+            lambda: FindCheapestMarketHandler(market_repo)
         )
 
         # ===== Captain Command Handlers =====
@@ -704,7 +748,8 @@ def reset_container():
     Useful for testing to ensure clean state between tests.
     """
     global _db, _engine, _player_repo, _ship_repo, _market_repo, _contract_repo, _waypoint_repo
-    global _ship_assignment_repo, _captain_log_repo, _graph_provider, _graph_builder, _routing_engine, _mediator, _daemon_client
+    global _ship_assignment_repo, _captain_log_repo, _container_repo, _container_log_repo, _system_graph_repo
+    global _graph_provider, _graph_builder, _routing_engine, _mediator, _daemon_client
 
     # Close database connection before resetting to ensure in-memory database is properly cleaned up
     if _db is not None:
@@ -723,6 +768,9 @@ def reset_container():
     _waypoint_repo = None
     _ship_assignment_repo = None
     _captain_log_repo = None
+    _container_repo = None
+    _container_log_repo = None
+    _system_graph_repo = None
     _graph_provider = None
     _graph_builder = None
     _routing_engine = None

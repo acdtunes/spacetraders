@@ -1,6 +1,16 @@
 #!/usr/bin/env python3
 import argparse
 import sys
+import os
+from pathlib import Path
+from dotenv import load_dotenv
+
+# Load .env file from project root
+project_root = Path(__file__).parent.parent.parent.parent.parent
+dotenv_path = project_root / '.env'
+if dotenv_path.exists():
+    load_dotenv(dotenv_path)
+
 from .player_cli import setup_player_commands
 from .navigation_cli import setup_navigation_commands
 from .daemon_cli import setup_daemon_commands

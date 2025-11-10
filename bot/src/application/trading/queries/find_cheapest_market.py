@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from pymediatr import Request, RequestHandler
+from ports.outbound.market_repository import IMarketRepository
 
 
 @dataclass(frozen=True)
@@ -25,14 +26,14 @@ class FindCheapestMarketQuery(Request[Optional[CheapestMarketResult]]):
 class FindCheapestMarketHandler(RequestHandler[FindCheapestMarketQuery, Optional[CheapestMarketResult]]):
     """Handler for FindCheapestMarketQuery"""
 
-    def __init__(self, database):
+    def __init__(self, market_repository: IMarketRepository):
         """
         Initialize handler
 
         Args:
-            database: Database instance for market data queries
+            market_repository: Market repository for market data queries
         """
-        self._db = database
+        self._market_repo = market_repository
 
     async def handle(self, request: FindCheapestMarketQuery) -> Optional[CheapestMarketResult]:
         """
@@ -44,8 +45,8 @@ class FindCheapestMarketHandler(RequestHandler[FindCheapestMarketQuery, Optional
         Returns:
             CheapestMarketResult if found, None otherwise
         """
-        # Query database for cheapest market
-        result = self._db.find_cheapest_market_selling(
+        # Query market repository for cheapest market
+        result = self._market_repo.find_cheapest_market_selling(
             good_symbol=request.trade_symbol,
             system=request.system,
             player_id=request.player_id
@@ -54,7 +55,7 @@ class FindCheapestMarketHandler(RequestHandler[FindCheapestMarketQuery, Optional
         if not result:
             return None
 
-        # Map database result to domain result
+        # Map repository result to domain result
         return CheapestMarketResult(
             waypoint_symbol=result['waypoint_symbol'],
             trade_symbol=result['good_symbol'],

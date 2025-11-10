@@ -293,7 +293,7 @@ class PurchaseShipHandler(RequestHandler[PurchaseShipCommand, Ship]):
             shipyard_waypoint_obj
         )
 
-        # 13. Save new ship to repository
+        # 13. Save new ship to repository (for test compatibility and caching)
         self._ship_repo.create(new_ship)
 
         # 14. Return the new ship

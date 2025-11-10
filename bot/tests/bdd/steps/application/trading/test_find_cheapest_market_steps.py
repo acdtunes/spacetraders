@@ -44,28 +44,28 @@ def market_sells_good(context, waypoint, good, price):
 @when(parsers.parse('I search for cheapest market selling "{trade_symbol}" in system "{system}"'))
 def search_cheapest_market(context, trade_symbol, system):
     """Execute find cheapest market query"""
-    # Create mock database that returns our test market data
-    mock_db = Mock()
+    # Create mock market repository that returns our test market data
+    mock_market_repo = Mock()
 
-    # Convert context markets to database format
-    db_results = []
+    # Convert context markets to repository format
+    repo_results = []
     for waypoint, goods in context['markets'].items():
         for good in goods:
             if good['symbol'] == trade_symbol:
-                db_results.append({
+                repo_results.append({
                     'waypoint_symbol': waypoint,
                     'good_symbol': good['symbol'],
                     'sell_price': good['sell_price'],
-                    'last_updated': good['last_updated']
+                    'supply': None  # Add supply field
                 })
 
     # Sort by price (cheapest first)
-    db_results.sort(key=lambda x: x['sell_price'])
+    repo_results.sort(key=lambda x: x['sell_price'])
 
-    mock_db.find_cheapest_market_selling.return_value = db_results[0] if db_results else None
+    mock_market_repo.find_cheapest_market_selling.return_value = repo_results[0] if repo_results else None
 
-    # Create handler with mock database
-    handler = FindCheapestMarketHandler(database=mock_db)
+    # Create handler with mock market repository
+    handler = FindCheapestMarketHandler(market_repository=mock_market_repo)
 
     query = FindCheapestMarketQuery(
         trade_symbol=trade_symbol,

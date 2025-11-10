@@ -22,7 +22,9 @@ def test_database_initialized(context):
 @given(parsers.parse('a container "{container_id}" exists in the database with status "{status}"'))
 def create_container_in_database(context, container_id, status):
     """Create a container record in the database with specified status"""
-    db = context['database']
+    from configuration.container import get_container_repository
+
+    container_repo = get_container_repository()
     player_id = context.get('player_id', 1)
 
     # Default config for command container
@@ -35,24 +37,16 @@ def create_container_in_database(context, container_id, status):
         'iterations': 1  # Run once for testing
     }
 
-    with db.transaction() as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO containers (
-                container_id, player_id, container_type, status,
-                restart_policy, restart_count, config, started_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            container_id,
-            player_id,
-            'command',
-            status,
-            'no',
-            0,
-            json.dumps(config),
-            datetime.now().isoformat()
-        ))
+    # Use repository to insert container
+    container_repo.insert(
+        container_id=container_id,
+        player_id=player_id,
+        container_type='command',
+        status=status,
+        restart_policy='no',
+        config=json.dumps(config),
+        started_at=datetime.now().isoformat()
+    )
 
     # Store in context for later assertions
     if 'containers' not in context:
@@ -75,7 +69,9 @@ def set_valid_container_config(context, ship_symbol):
 @given(parsers.parse('the container references non-existent ship "{ship_symbol}"'))
 def set_nonexistent_ship_in_config(context, ship_symbol, monkeypatch):
     """Update container config to reference a non-existent ship"""
-    db = context['database']
+    from configuration.container import get_engine
+    from adapters.secondary.persistence.models import containers
+    from sqlalchemy import update as sql_update
 
     # Get the most recent container from context
     container_ids = list(context['containers'].keys())
@@ -85,11 +81,13 @@ def set_nonexistent_ship_in_config(context, ship_symbol, monkeypatch):
     config = context['containers'][container_id]['config']
     config['params']['ship_symbol'] = ship_symbol
 
-    with db.transaction() as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-            UPDATE containers SET config = ? WHERE container_id = ?
-        """, (json.dumps(config), container_id))
+    # Update using SQLAlchemy
+    engine = get_engine()
+    with engine.begin() as conn:
+        stmt = sql_update(containers).where(
+            containers.c.container_id == container_id
+        ).values(config=json.dumps(config))
+        conn.execute(stmt)
 
     context['containers'][container_id]['config'] = config
     context['containers'][container_id]['missing_ship'] = True
@@ -122,19 +120,22 @@ def set_nonexistent_ship_in_config(context, ship_symbol, monkeypatch):
 @given(parsers.parse('the container has invalid JSON configuration'))
 def set_invalid_container_config(context):
     """Update container config to invalid JSON"""
-    db = context['database']
+    from configuration.container import get_engine
+    from adapters.secondary.persistence.models import containers
+    from sqlalchemy import update as sql_update
 
     # Get the most recent container from context
     container_ids = list(context['containers'].keys())
     container_id = container_ids[-1] if container_ids else None
     assert container_id, "No container in context to update"
 
-    # Store invalid JSON string (not parseable)
-    with db.transaction() as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-            UPDATE containers SET config = ? WHERE container_id = ?
-        """, ("{ invalid json }", container_id))
+    # Store invalid JSON string (not parseable) using SQLAlchemy
+    engine = get_engine()
+    with engine.begin() as conn:
+        stmt = sql_update(containers).where(
+            containers.c.container_id == container_id
+        ).values(config="{ invalid json }")
+        conn.execute(stmt)
 
     context['containers'][container_id]['invalid_config'] = True
 
@@ -142,25 +143,18 @@ def set_invalid_container_config(context):
 @given(parsers.parse('the ship "{ship_symbol}" has an active zombie assignment'))
 def create_zombie_assignment(context, ship_symbol):
     """Create an active ship assignment (zombie from previous daemon)"""
-    db = context['database']
+    from configuration.container import get_ship_assignment_repository
+
+    assignment_repo = get_ship_assignment_repository()
     player_id = context.get('player_id', 1)
 
-    with db.transaction() as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO ship_assignments (
-                ship_symbol, player_id, container_id, operation,
-                status, assigned_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (
-            ship_symbol,
-            player_id,
-            'zombie-container',
-            'navigate',
-            'active',
-            datetime.now().isoformat()
-        ))
+    # Use repository to assign ship
+    assignment_repo.assign(
+        player_id=player_id,
+        ship_symbol=ship_symbol,
+        container_id='zombie-container',
+        operation='navigate'
+    )
 
     context['zombie_assignment_exists'] = True
 
@@ -242,18 +236,16 @@ def verify_container_status(context, expected_status):
 @then(parsers.parse('the container "{container_id}" should be marked as "{expected_status}"'))
 def verify_container_marked_as_status(context, container_id, expected_status):
     """Verify container was marked with expected status in database"""
-    db = context['database']
+    from configuration.container import get_container_repository
 
-    with db.connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT status FROM containers WHERE container_id = ?
-        """, (container_id,))
-        row = cursor.fetchone()
+    container_repo = get_container_repository()
+    player_id = context.get('player_id', 1)
 
-    assert row is not None, f"Container {container_id} not found in database"
-    assert row['status'].upper() == expected_status.upper(), (
-        f"Expected status {expected_status}, got {row['status']}"
+    container = container_repo.get(container_id=container_id, player_id=player_id)
+
+    assert container is not None, f"Container {container_id} not found in database"
+    assert container['status'].upper() == expected_status.upper(), (
+        f"Expected status {expected_status}, got {container['status']}"
     )
 
 
@@ -307,35 +299,31 @@ def verify_only_specific_container_resumed(context, container_id):
 @then(parsers.parse('container "{container_id}" should remain "{expected_status}"'))
 def verify_container_remains_status(context, container_id, expected_status):
     """Verify container kept its original status in database"""
-    db = context['database']
+    from configuration.container import get_container_repository
 
-    with db.connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT status FROM containers WHERE container_id = ?
-        """, (container_id,))
-        row = cursor.fetchone()
+    container_repo = get_container_repository()
+    player_id = context.get('player_id', 1)
 
-    assert row is not None, f"Container {container_id} not found"
-    assert row['status'].upper() == expected_status.upper(), (
-        f"Container {container_id} should remain {expected_status}, got {row['status']}"
+    container = container_repo.get(container_id=container_id, player_id=player_id)
+
+    assert container is not None, f"Container {container_id} not found"
+    assert container['status'].upper() == expected_status.upper(), (
+        f"Container {container_id} should remain {expected_status}, got {container['status']}"
     )
 
 
 @then('zombie assignments should be released first')
 def verify_zombie_assignments_released(context):
     """Verify zombie assignments were cleaned up"""
-    db = context['database']
+    from configuration.container import get_ship_assignment_repository
 
-    with db.connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT COUNT(*) as count FROM ship_assignments
-            WHERE status = 'active' AND container_id = 'zombie-container'
-        """)
-        row = cursor.fetchone()
+    assignment_repo = get_ship_assignment_repository()
 
-    assert row['count'] == 0, (
+    # Get all active assignments and filter for zombie container
+    all_active = assignment_repo.get_all_active_assignments()
+    zombie_assignments = [a for a in all_active if a.get('container_id') == 'zombie-container']
+
+    assert len(zombie_assignments) == 0, (
         "Zombie assignments should have been released before recovery"
     )
 
@@ -350,26 +338,21 @@ def verify_container_resumed_after_cleanup(context, container_id):
 @then(parsers.parse('the ship "{ship_symbol}" should be assigned to container "{container_id}"'))
 def verify_ship_assigned_to_container(context, ship_symbol, container_id):
     """Verify ship assignment was created for recovered container"""
-    db = context['database']
+    from configuration.container import get_ship_assignment_repository
+
+    assignment_repo = get_ship_assignment_repository()
     player_id = context.get('player_id', 1)
 
-    with db.connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT container_id, status FROM ship_assignments
-            WHERE ship_symbol = ? AND player_id = ? AND container_id = ?
-            ORDER BY assigned_at DESC LIMIT 1
-        """, (ship_symbol, player_id, container_id))
-        row = cursor.fetchone()
+    assignment = assignment_repo.get_assignment_info(player_id=player_id, ship_symbol=ship_symbol)
 
-    assert row is not None, (
+    assert assignment is not None, (
         f"No assignment found for ship {ship_symbol} and container {container_id}"
     )
-    assert row['container_id'] == container_id, (
-        f"Ship assigned to wrong container: {row['container_id']} (expected {container_id})"
+    assert assignment['container_id'] == container_id, (
+        f"Ship assigned to wrong container: {assignment['container_id']} (expected {container_id})"
     )
     # Status may be 'active' or 'idle' (if container completed quickly)
     # The important thing is that the assignment was created
-    assert row['status'] in ['active', 'idle'], (
-        f"Assignment should be active or idle, got {row['status']}"
+    assert assignment['status'] in ['active', 'idle'], (
+        f"Assignment should be active or idle, got {assignment['status']}"
     )
