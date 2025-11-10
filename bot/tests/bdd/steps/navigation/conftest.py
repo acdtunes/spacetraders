@@ -25,38 +25,9 @@ from domain.shared.player import Player
 from domain.shared.ship import Ship
 
 
-# Mock Repositories
-
-class MockShipRepository:
-    """In-memory ship repository for testing"""
-
-    def __init__(self):
-        self.ships: Dict[str, dict] = {}
-
-    def add(self, ship_symbol: str, fuel: Fuel, location: Waypoint, engine_speed: int = 30):
-        """Add a ship to the repository"""
-        self.ships[ship_symbol] = {
-            'symbol': ship_symbol,
-            'fuel': fuel,
-            'location': location,
-            'engine_speed': engine_speed,
-            'player_id': 1
-        }
-
-    def get(self, ship_symbol: str) -> Optional[dict]:
-        """Get a ship by symbol"""
-        return self.ships.get(ship_symbol)
-
-    def update_fuel(self, ship_symbol: str, fuel: Fuel):
-        """Update ship fuel"""
-        if ship_symbol in self.ships:
-            self.ships[ship_symbol]['fuel'] = fuel
-
-    def update_location(self, ship_symbol: str, location: Waypoint):
-        """Update ship location"""
-        if ship_symbol in self.ships:
-            self.ships[ship_symbol]['location'] = location
-
+# Mock Domain Services
+# NOTE: Mocking domain logic (graphs, routing) is acceptable.
+# We only avoid mocking repositories (data persistence).
 
 class MockRouteRepository:
     """In-memory route repository for testing"""
@@ -192,12 +163,6 @@ class MockAPIClient:
 def context():
     """Shared test context dictionary"""
     return {}
-
-
-@pytest.fixture
-def mock_ship_repository():
-    """Mock ship repository"""
-    return MockShipRepository()
 
 
 @pytest.fixture
