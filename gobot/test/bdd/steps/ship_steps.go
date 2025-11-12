@@ -1,0 +1,781 @@
+package steps
+
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	"github.com/cucumber/godog"
+)
+
+type shipContext struct {
+	ship              *navigation.Ship
+	err               error
+	boolResult        bool
+	intResult         int
+	waypoints         map[string]*shared.Waypoint
+	flightMode        shared.FlightMode
+	stateChangeResult bool
+}
+
+func (sc *shipContext) reset() {
+	sc.ship = nil
+	sc.err = nil
+	sc.boolResult = false
+	sc.intResult = 0
+	sc.waypoints = make(map[string]*shared.Waypoint)
+	sc.flightMode = shared.FlightModeCruise
+	sc.stateChangeResult = false
+}
+
+// Helper to create a default waypoint
+func (sc *shipContext) getOrCreateWaypoint(symbol string, x, y float64) *shared.Waypoint {
+	if wp, exists := sc.waypoints[symbol]; exists {
+		return wp
+	}
+	wp, _ := shared.NewWaypoint(symbol, x, y)
+	sc.waypoints[symbol] = wp
+	return wp
+}
+
+// Ship Initialization Steps
+
+func (sc *shipContext) iCreateAShipWithSymbolPlayerAtFuelCargoSpeedStatus(
+	symbol string, playerID int, location string, fuelCurrent, fuelCapacity, cargoUnits, cargoCapacity, speed int, status string,
+) error {
+	waypoint := sc.getOrCreateWaypoint(location, 0, 0)
+	fuel, err := shared.NewFuel(fuelCurrent, fuelCapacity)
+	if err != nil {
+		return err
+	}
+	cargo, err := shared.NewCargo(cargoCapacity, cargoUnits, []*shared.CargoItem{})
+	if err != nil {
+		return err
+	}
+
+	var navStatus navigation.NavStatus
+	switch status {
+	case "DOCKED":
+		navStatus = navigation.NavStatusDocked
+	case "IN_ORBIT":
+		navStatus = navigation.NavStatusInOrbit
+	case "IN_TRANSIT":
+		navStatus = navigation.NavStatusInTransit
+	default:
+		navStatus = navigation.NavStatusInOrbit
+	}
+
+	sc.ship, sc.err = navigation.NewShip(
+		symbol, playerID, waypoint, fuel, fuelCapacity,
+		cargoCapacity, cargo, speed, navStatus,
+	)
+	return sc.err
+}
+
+func (sc *shipContext) iAttemptToCreateAShipWithEmptyShipSymbol() error {
+	waypoint := sc.getOrCreateWaypoint("X1-A1", 0, 0)
+	fuel, _ := shared.NewFuel(100, 100)
+	cargo, _ := shared.NewCargo(40, 0, []*shared.CargoItem{})
+
+	sc.ship, sc.err = navigation.NewShip(
+		"", 1, waypoint, fuel, 100, 40, cargo, 30, navigation.NavStatusInOrbit,
+	)
+	return nil
+}
+
+func (sc *shipContext) iAttemptToCreateAShipWithPlayerID(playerID int) error {
+	waypoint := sc.getOrCreateWaypoint("X1-A1", 0, 0)
+	fuel, _ := shared.NewFuel(100, 100)
+	cargo, _ := shared.NewCargo(40, 0, []*shared.CargoItem{})
+
+	sc.ship, sc.err = navigation.NewShip(
+		"SHIP-1", playerID, waypoint, fuel, 100, 40, cargo, 30, navigation.NavStatusInOrbit,
+	)
+	return nil
+}
+
+func (sc *shipContext) iAttemptToCreateAShipWithFuelCapacity(fuelCapacity int) error {
+	waypoint := sc.getOrCreateWaypoint("X1-A1", 0, 0)
+	fuel, _ := shared.NewFuel(0, 0)
+	cargo, _ := shared.NewCargo(40, 0, []*shared.CargoItem{})
+
+	sc.ship, sc.err = navigation.NewShip(
+		"SHIP-1", 1, waypoint, fuel, fuelCapacity, 40, cargo, 30, navigation.NavStatusInOrbit,
+	)
+	return nil
+}
+
+func (sc *shipContext) iAttemptToCreateAShipWithFuelObjectCapacityButFuelCapacityParameter(fuelObjCap, fuelCapParam int) error {
+	waypoint := sc.getOrCreateWaypoint("X1-A1", 0, 0)
+	fuel, _ := shared.NewFuel(fuelObjCap, fuelObjCap)
+	cargo, _ := shared.NewCargo(40, 0, []*shared.CargoItem{})
+
+	sc.ship, sc.err = navigation.NewShip(
+		"SHIP-1", 1, waypoint, fuel, fuelCapParam, 40, cargo, 30, navigation.NavStatusInOrbit,
+	)
+	return nil
+}
+
+func (sc *shipContext) iAttemptToCreateAShipWithCargoCapacity(cargoCapacity int) error {
+	waypoint := sc.getOrCreateWaypoint("X1-A1", 0, 0)
+	fuel, _ := shared.NewFuel(100, 100)
+	cargo, _ := shared.NewCargo(0, 0, []*shared.CargoItem{})
+
+	sc.ship, sc.err = navigation.NewShip(
+		"SHIP-1", 1, waypoint, fuel, 100, cargoCapacity, cargo, 30, navigation.NavStatusInOrbit,
+	)
+	return nil
+}
+
+func (sc *shipContext) iAttemptToCreateAShipWithCargoUnits(cargoUnits int) error {
+	waypoint := sc.getOrCreateWaypoint("X1-A1", 0, 0)
+	fuel, _ := shared.NewFuel(100, 100)
+	cargo, _ := shared.NewCargo(40, 0, []*shared.CargoItem{})
+
+	// Override cargo units - this will fail validation
+	sc.ship, sc.err = navigation.NewShip(
+		"SHIP-1", 1, waypoint, fuel, 100, 40, cargo, 30, navigation.NavStatusInOrbit,
+	)
+	return nil
+}
+
+func (sc *shipContext) iAttemptToCreateAShipWithCargoCapacityAndCargoUnits(capacity, units int) error {
+	waypoint := sc.getOrCreateWaypoint("X1-A1", 0, 0)
+	fuel, _ := shared.NewFuel(100, 100)
+	cargo, _ := shared.NewCargo(capacity, units, []*shared.CargoItem{})
+	if cargo != nil {
+		sc.ship, sc.err = navigation.NewShip(
+			"SHIP-1", 1, waypoint, fuel, 100, capacity, cargo, 30, navigation.NavStatusInOrbit,
+		)
+	}
+	return nil
+}
+
+func (sc *shipContext) iAttemptToCreateAShipWithEngineSpeed(speed int) error {
+	waypoint := sc.getOrCreateWaypoint("X1-A1", 0, 0)
+	fuel, _ := shared.NewFuel(100, 100)
+	cargo, _ := shared.NewCargo(40, 0, []*shared.CargoItem{})
+
+	sc.ship, sc.err = navigation.NewShip(
+		"SHIP-1", 1, waypoint, fuel, 100, 40, cargo, speed, navigation.NavStatusInOrbit,
+	)
+	return nil
+}
+
+func (sc *shipContext) iAttemptToCreateAShipWithNavStatus(status string) error {
+	waypoint := sc.getOrCreateWaypoint("X1-A1", 0, 0)
+	fuel, _ := shared.NewFuel(100, 100)
+	cargo, _ := shared.NewCargo(40, 0, []*shared.CargoItem{})
+
+	sc.ship, sc.err = navigation.NewShip(
+		"SHIP-1", 1, waypoint, fuel, 100, 40, cargo, 30, navigation.NavStatus(status),
+	)
+	return nil
+}
+
+func (sc *shipContext) shipCreationShouldFailWithError(expectedError string) error {
+	if sc.err == nil {
+		return fmt.Errorf("expected error containing '%s' but got no error", expectedError)
+	}
+	if !strings.Contains(sc.err.Error(), expectedError) {
+		return fmt.Errorf("expected error containing '%s' but got '%s'", expectedError, sc.err.Error())
+	}
+	return nil
+}
+
+// Ship Property Verification Steps
+
+func (sc *shipContext) theShipShouldHaveSymbol(symbol string) error {
+	if sc.ship.ShipSymbol() != symbol {
+		return fmt.Errorf("expected symbol '%s' but got '%s'", symbol, sc.ship.ShipSymbol())
+	}
+	return nil
+}
+
+func (sc *shipContext) theShipShouldHavePlayerID(playerID int) error {
+	if sc.ship.PlayerID() != playerID {
+		return fmt.Errorf("expected player_id %d but got %d", playerID, sc.ship.PlayerID())
+	}
+	return nil
+}
+
+func (sc *shipContext) theShipShouldBeAtLocation(location string) error {
+	if sc.ship.CurrentLocation().Symbol != location {
+		return fmt.Errorf("expected location '%s' but got '%s'", location, sc.ship.CurrentLocation().Symbol)
+	}
+	return nil
+}
+
+func (sc *shipContext) theShipShouldHaveUnitsOfFuel(units int) error {
+	if sc.ship.Fuel().Current != units {
+		return fmt.Errorf("expected %d units of fuel but got %d", units, sc.ship.Fuel().Current)
+	}
+	return nil
+}
+
+func (sc *shipContext) theShipFuelCapacityShouldBe(capacity int) error {
+	if sc.ship.FuelCapacity() != capacity {
+		return fmt.Errorf("expected fuel capacity %d but got %d", capacity, sc.ship.FuelCapacity())
+	}
+	return nil
+}
+
+func (sc *shipContext) theShipCargoCapacityShouldBe(capacity int) error {
+	if sc.ship.CargoCapacity() != capacity {
+		return fmt.Errorf("expected cargo capacity %d but got %d", capacity, sc.ship.CargoCapacity())
+	}
+	return nil
+}
+
+func (sc *shipContext) theShipCargoUnitsShouldBe(units int) error {
+	if sc.ship.CargoUnits() != units {
+		return fmt.Errorf("expected cargo units %d but got %d", units, sc.ship.CargoUnits())
+	}
+	return nil
+}
+
+func (sc *shipContext) theShipEngineSpeedShouldBe(speed int) error {
+	if sc.ship.EngineSpeed() != speed {
+		return fmt.Errorf("expected engine speed %d but got %d", speed, sc.ship.EngineSpeed())
+	}
+	return nil
+}
+
+func (sc *shipContext) theShipShouldBeInOrbit() error {
+	if !sc.ship.IsInOrbit() {
+		return fmt.Errorf("expected ship to be in orbit but status is %s", sc.ship.NavStatus())
+	}
+	return nil
+}
+
+// Navigation State Machine Steps
+
+func (sc *shipContext) aDockedShipAt(location string) error {
+	waypoint := sc.getOrCreateWaypoint(location, 0, 0)
+	fuel, _ := shared.NewFuel(100, 100)
+	cargo, _ := shared.NewCargo(40, 0, []*shared.CargoItem{})
+
+	sc.ship, sc.err = navigation.NewShip(
+		"SHIP-1", 1, waypoint, fuel, 100, 40, cargo, 30, navigation.NavStatusDocked,
+	)
+	return sc.err
+}
+
+func (sc *shipContext) aShipInOrbitAt(location string) error {
+	waypoint := sc.getOrCreateWaypoint(location, 0, 0)
+	fuel, _ := shared.NewFuel(100, 100)
+	cargo, _ := shared.NewCargo(40, 0, []*shared.CargoItem{})
+
+	sc.ship, sc.err = navigation.NewShip(
+		"SHIP-1", 1, waypoint, fuel, 100, 40, cargo, 30, navigation.NavStatusInOrbit,
+	)
+	return sc.err
+}
+
+func (sc *shipContext) aShipInTransitTo(destination string) error {
+	waypoint := sc.getOrCreateWaypoint(destination, 100, 0)
+	fuel, _ := shared.NewFuel(100, 100)
+	cargo, _ := shared.NewCargo(40, 0, []*shared.CargoItem{})
+
+	sc.ship, sc.err = navigation.NewShip(
+		"SHIP-1", 1, waypoint, fuel, 100, 40, cargo, 30, navigation.NavStatusInTransit,
+	)
+	return sc.err
+}
+
+func (sc *shipContext) theShipDeparts() error {
+	sc.err = sc.ship.Depart()
+	return nil
+}
+
+func (sc *shipContext) iAttemptToDepartTheShip() error {
+	sc.err = sc.ship.Depart()
+	return nil
+}
+
+func (sc *shipContext) theShipShouldNotBeDocked() error {
+	if sc.ship.IsDocked() {
+		return fmt.Errorf("expected ship not to be docked but it is")
+	}
+	return nil
+}
+
+func (sc *shipContext) theShipDocks() error {
+	sc.err = sc.ship.Dock()
+	return nil
+}
+
+func (sc *shipContext) iAttemptToDockTheShip() error {
+	sc.err = sc.ship.Dock()
+	return nil
+}
+
+func (sc *shipContext) theShipShouldBeDocked() error {
+	if !sc.ship.IsDocked() {
+		return fmt.Errorf("expected ship to be docked but status is %s", sc.ship.NavStatus())
+	}
+	return nil
+}
+
+func (sc *shipContext) theShipShouldNotBeInOrbit() error {
+	if sc.ship.IsInOrbit() {
+		return fmt.Errorf("expected ship not to be in orbit but it is")
+	}
+	return nil
+}
+
+func (sc *shipContext) theShipStartsTransitTo(destination string) error {
+	destWaypoint := sc.getOrCreateWaypoint(destination, 100, 0)
+	sc.err = sc.ship.StartTransit(destWaypoint)
+	return nil
+}
+
+func (sc *shipContext) iAttemptToStartTransitTo(destination string) error {
+	destWaypoint := sc.getOrCreateWaypoint(destination, 100, 0)
+	sc.err = sc.ship.StartTransit(destWaypoint)
+	return nil
+}
+
+func (sc *shipContext) theShipShouldBeInTransit() error {
+	if !sc.ship.IsInTransit() {
+		return fmt.Errorf("expected ship to be in transit but status is %s", sc.ship.NavStatus())
+	}
+	return nil
+}
+
+func (sc *shipContext) theShipShouldNotBeInTransit() error {
+	if sc.ship.IsInTransit() {
+		return fmt.Errorf("expected ship not to be in transit but it is")
+	}
+	return nil
+}
+
+func (sc *shipContext) theShipArrives() error {
+	sc.err = sc.ship.Arrive()
+	return nil
+}
+
+func (sc *shipContext) iAttemptToArriveTheShip() error {
+	sc.err = sc.ship.Arrive()
+	return nil
+}
+
+func (sc *shipContext) iEnsureTheShipIsInOrbit() error {
+	sc.stateChangeResult, sc.err = sc.ship.EnsureInOrbit()
+	return nil
+}
+
+func (sc *shipContext) iAttemptToEnsureTheShipIsInOrbit() error {
+	sc.stateChangeResult, sc.err = sc.ship.EnsureInOrbit()
+	return nil
+}
+
+func (sc *shipContext) theStateChangeResultShouldBe(expected bool) error {
+	if sc.stateChangeResult != expected {
+		return fmt.Errorf("expected state change result %t but got %t", expected, sc.stateChangeResult)
+	}
+	return nil
+}
+
+func (sc *shipContext) iEnsureTheShipIsDocked() error {
+	sc.stateChangeResult, sc.err = sc.ship.EnsureDocked()
+	return nil
+}
+
+func (sc *shipContext) iAttemptToEnsureTheShipIsDocked() error {
+	sc.stateChangeResult, sc.err = sc.ship.EnsureDocked()
+	return nil
+}
+
+func (sc *shipContext) theOperationShouldFailWithError(expectedError string) error {
+	if sc.err == nil {
+		return fmt.Errorf("expected error containing '%s' but got no error", expectedError)
+	}
+	if !strings.Contains(sc.err.Error(), expectedError) {
+		return fmt.Errorf("expected error containing '%s' but got '%s'", expectedError, sc.err.Error())
+	}
+	return nil
+}
+
+// Fuel Management Steps
+
+func (sc *shipContext) aShipWithUnitsOfFuel(units int) error {
+	waypoint := sc.getOrCreateWaypoint("X1-A1", 0, 0)
+	fuel, _ := shared.NewFuel(units, 100)
+	cargo, _ := shared.NewCargo(40, 0, []*shared.CargoItem{})
+
+	sc.ship, sc.err = navigation.NewShip(
+		"SHIP-1", 1, waypoint, fuel, 100, 40, cargo, 30, navigation.NavStatusInOrbit,
+	)
+	return sc.err
+}
+
+func (sc *shipContext) aShipWithUnitsOfFuelAndCapacity(current, capacity int) error {
+	waypoint := sc.getOrCreateWaypoint("X1-A1", 0, 0)
+	fuel, _ := shared.NewFuel(current, capacity)
+	cargo, _ := shared.NewCargo(40, 0, []*shared.CargoItem{})
+
+	sc.ship, sc.err = navigation.NewShip(
+		"SHIP-1", 1, waypoint, fuel, capacity, 40, cargo, 30, navigation.NavStatusInOrbit,
+	)
+	return sc.err
+}
+
+func (sc *shipContext) theShipConsumesUnitsOfFuel(units int) error {
+	sc.err = sc.ship.ConsumeFuel(units)
+	return nil
+}
+
+func (sc *shipContext) iAttemptToConsumeUnitsOfFuel(units int) error {
+	sc.err = sc.ship.ConsumeFuel(units)
+	return nil
+}
+
+func (sc *shipContext) theShipRefuelsUnits(units int) error {
+	sc.err = sc.ship.Refuel(units)
+	return nil
+}
+
+func (sc *shipContext) iAttemptToRefuelUnits(units int) error {
+	sc.err = sc.ship.Refuel(units)
+	return nil
+}
+
+func (sc *shipContext) theShipRefuelsToFull() error {
+	sc.intResult, sc.err = sc.ship.RefuelToFull()
+	return nil
+}
+
+func (sc *shipContext) theFuelAddedShouldBeUnits(units int) error {
+	if sc.intResult != units {
+		return fmt.Errorf("expected %d units added but got %d", units, sc.intResult)
+	}
+	return nil
+}
+
+// Navigation Calculation Steps
+
+func (sc *shipContext) aShipAtWithCoordinatesAndUnitsOfFuel(location string, x, y float64, fuel int) error {
+	waypoint := sc.getOrCreateWaypoint(location, x, y)
+	fuelObj, _ := shared.NewFuel(fuel, 100)
+	cargo, _ := shared.NewCargo(40, 0, []*shared.CargoItem{})
+
+	sc.ship, sc.err = navigation.NewShip(
+		"SHIP-1", 1, waypoint, fuelObj, 100, 40, cargo, 30, navigation.NavStatusInOrbit,
+	)
+	return sc.err
+}
+
+func (sc *shipContext) aWaypointAtCoordinates(symbol string, x, y float64) error {
+	sc.getOrCreateWaypoint(symbol, x, y)
+	return nil
+}
+
+func (sc *shipContext) iCheckIfTheShipCanNavigateTo(destination string) error {
+	destWaypoint := sc.waypoints[destination]
+	sc.boolResult = sc.ship.CanNavigateTo(destWaypoint)
+	return nil
+}
+
+func (sc *shipContext) theResultShouldBe(expected bool) error {
+	if sc.boolResult != expected {
+		return fmt.Errorf("expected result %t but got %t", expected, sc.boolResult)
+	}
+	return nil
+}
+
+func (sc *shipContext) aShipAtWithCoordinates(location string, x, y float64) error {
+	waypoint := sc.getOrCreateWaypoint(location, x, y)
+	fuel, _ := shared.NewFuel(100, 100)
+	cargo, _ := shared.NewCargo(40, 0, []*shared.CargoItem{})
+
+	sc.ship, sc.err = navigation.NewShip(
+		"SHIP-1", 1, waypoint, fuel, 100, 40, cargo, 30, navigation.NavStatusInOrbit,
+	)
+	return sc.err
+}
+
+func (sc *shipContext) iCalculateFuelRequiredToWithMode(destination, mode string) error {
+	destWaypoint := sc.waypoints[destination]
+	var flightMode shared.FlightMode
+	switch mode {
+	case "CRUISE":
+		flightMode = shared.FlightModeCruise
+	case "DRIFT":
+		flightMode = shared.FlightModeDrift
+	case "BURN":
+		flightMode = shared.FlightModeBurn
+	case "STEALTH":
+		flightMode = shared.FlightModeStealth
+	}
+	sc.intResult = sc.ship.CalculateFuelForTrip(destWaypoint, flightMode)
+	return nil
+}
+
+func (sc *shipContext) theFuelRequiredShouldBeUnits(units int) error {
+	if sc.intResult != units {
+		return fmt.Errorf("expected fuel required %d but got %d", units, sc.intResult)
+	}
+	return nil
+}
+
+func (sc *shipContext) iCheckIfTheShipNeedsRefuelForJourneyTo(destination string) error {
+	destWaypoint := sc.waypoints[destination]
+	sc.boolResult = sc.ship.NeedsRefuelForJourney(destWaypoint, 0.1)
+	return nil
+}
+
+func (sc *shipContext) iCheckIfTheShipNeedsRefuelForJourneyToWithSafetyMargin(destination string, margin float64) error {
+	destWaypoint := sc.waypoints[destination]
+	sc.boolResult = sc.ship.NeedsRefuelForJourney(destWaypoint, margin)
+	return nil
+}
+
+func (sc *shipContext) aShipAtWithCoordinatesAndEngineSpeed(location string, x, y float64, speed int) error {
+	waypoint := sc.getOrCreateWaypoint(location, x, y)
+	fuel, _ := shared.NewFuel(100, 100)
+	cargo, _ := shared.NewCargo(40, 0, []*shared.CargoItem{})
+
+	sc.ship, sc.err = navigation.NewShip(
+		"SHIP-1", 1, waypoint, fuel, 100, 40, cargo, speed, navigation.NavStatusInOrbit,
+	)
+	return sc.err
+}
+
+func (sc *shipContext) iCalculateTravelTimeToWithMode(destination, mode string) error {
+	destWaypoint := sc.waypoints[destination]
+	var flightMode shared.FlightMode
+	switch mode {
+	case "CRUISE":
+		flightMode = shared.FlightModeCruise
+	case "DRIFT":
+		flightMode = shared.FlightModeDrift
+	case "BURN":
+		flightMode = shared.FlightModeBurn
+	case "STEALTH":
+		flightMode = shared.FlightModeStealth
+	}
+	sc.intResult = sc.ship.CalculateTravelTime(destWaypoint, flightMode)
+	return nil
+}
+
+func (sc *shipContext) theTravelTimeShouldBeSeconds(seconds int) error {
+	if sc.intResult != seconds {
+		return fmt.Errorf("expected travel time %d but got %d", seconds, sc.intResult)
+	}
+	return nil
+}
+
+func (sc *shipContext) aShipWithUnitsOfFuelAtDistance(fuel int, distance float64) error {
+	waypoint := sc.getOrCreateWaypoint("X1-A1", 0, 0)
+	fuelObj, _ := shared.NewFuel(fuel, 100)
+	cargo, _ := shared.NewCargo(40, 0, []*shared.CargoItem{})
+
+	sc.ship, sc.err = navigation.NewShip(
+		"SHIP-1", 1, waypoint, fuelObj, 100, 40, cargo, 30, navigation.NavStatusInOrbit,
+	)
+	return sc.err
+}
+
+func (sc *shipContext) iSelectOptimalFlightModeForDistance(distance float64) error {
+	sc.flightMode = sc.ship.SelectOptimalFlightMode(distance)
+	return nil
+}
+
+func (sc *shipContext) theSelectedModeShouldBe(mode string) error {
+	expectedMode := mode
+	actualMode := sc.flightMode.Name()
+	if actualMode != expectedMode {
+		return fmt.Errorf("expected mode '%s' but got '%s'", expectedMode, actualMode)
+	}
+	return nil
+}
+
+// Cargo Management Steps
+
+func (sc *shipContext) aShipWithCargoCapacityAndCargoUnits(capacity, units int) error {
+	waypoint := sc.getOrCreateWaypoint("X1-A1", 0, 0)
+	fuel, _ := shared.NewFuel(100, 100)
+	cargo, _ := shared.NewCargo(capacity, units, []*shared.CargoItem{})
+
+	sc.ship, sc.err = navigation.NewShip(
+		"SHIP-1", 1, waypoint, fuel, 100, capacity, cargo, 30, navigation.NavStatusInOrbit,
+	)
+	return sc.err
+}
+
+func (sc *shipContext) iCheckIfTheShipHasCargoSpaceForUnits(units int) error {
+	sc.boolResult = sc.ship.HasCargoSpace(units)
+	return nil
+}
+
+func (sc *shipContext) iCheckAvailableCargoSpace() error {
+	sc.intResult = sc.ship.AvailableCargoSpace()
+	return nil
+}
+
+func (sc *shipContext) theAvailableSpaceShouldBeUnits(units int) error {
+	if sc.intResult != units {
+		return fmt.Errorf("expected available space %d but got %d", units, sc.intResult)
+	}
+	return nil
+}
+
+func (sc *shipContext) iCheckIfCargoIsEmpty() error {
+	sc.boolResult = sc.ship.IsCargoEmpty()
+	return nil
+}
+
+func (sc *shipContext) iCheckIfCargoIsFull() error {
+	sc.boolResult = sc.ship.IsCargoFull()
+	return nil
+}
+
+// State Query Steps
+
+func (sc *shipContext) aShipAt(location string) error {
+	waypoint := sc.getOrCreateWaypoint(location, 0, 0)
+	fuel, _ := shared.NewFuel(100, 100)
+	cargo, _ := shared.NewCargo(40, 0, []*shared.CargoItem{})
+
+	sc.ship, sc.err = navigation.NewShip(
+		"SHIP-1", 1, waypoint, fuel, 100, 40, cargo, 30, navigation.NavStatusInOrbit,
+	)
+	return sc.err
+}
+
+func (sc *shipContext) iCheckIfTheShipIsDocked() error {
+	sc.boolResult = sc.ship.IsDocked()
+	return nil
+}
+
+func (sc *shipContext) iCheckIfTheShipIsInOrbit() error {
+	sc.boolResult = sc.ship.IsInOrbit()
+	return nil
+}
+
+func (sc *shipContext) iCheckIfTheShipIsInTransit() error {
+	sc.boolResult = sc.ship.IsInTransit()
+	return nil
+}
+
+func (sc *shipContext) iCheckIfTheShipIsAtLocation(location string) error {
+	waypoint := sc.waypoints[location]
+	if waypoint == nil {
+		waypoint = sc.getOrCreateWaypoint(location, 0, 0)
+	}
+	sc.boolResult = sc.ship.IsAtLocation(waypoint)
+	return nil
+}
+
+// InitializeShipScenario registers all ship-related step definitions
+func InitializeShipScenario(ctx *godog.ScenarioContext) {
+	sc := &shipContext{}
+
+	ctx.Before(func(ctx context.Context, sc *godog.Scenario) (context.Context, error) {
+		return ctx, nil
+	})
+
+	ctx.After(func(ctx context.Context, sc *godog.Scenario, err error) (context.Context, error) {
+		return ctx, nil
+	})
+
+	// Ship initialization
+	ctx.Step(`^I create a ship with symbol "([^"]*)", player (\d+), at "([^"]*)", fuel (\d+)/(\d+), cargo (\d+)/(\d+), speed (\d+), status "([^"]*)"$`,
+		sc.iCreateAShipWithSymbolPlayerAtFuelCargoSpeedStatus)
+	ctx.Step(`^I attempt to create a ship with empty ship_symbol$`, sc.iAttemptToCreateAShipWithEmptyShipSymbol)
+	ctx.Step(`^I attempt to create a ship with player_id (\d+)$`, sc.iAttemptToCreateAShipWithPlayerID)
+	ctx.Step(`^I attempt to create a ship with player_id (-?\d+)$`, sc.iAttemptToCreateAShipWithPlayerID)
+	ctx.Step(`^I attempt to create a ship with fuel_capacity (-?\d+)$`, sc.iAttemptToCreateAShipWithFuelCapacity)
+	ctx.Step(`^I attempt to create a ship with fuel object capacity (\d+) but fuel_capacity parameter (\d+)$`,
+		sc.iAttemptToCreateAShipWithFuelObjectCapacityButFuelCapacityParameter)
+	ctx.Step(`^I attempt to create a ship with cargo_capacity (-?\d+)$`, sc.iAttemptToCreateAShipWithCargoCapacity)
+	ctx.Step(`^I attempt to create a ship with cargo_units (-?\d+)$`, sc.iAttemptToCreateAShipWithCargoUnits)
+	ctx.Step(`^I attempt to create a ship with cargo_capacity (\d+) and cargo_units (\d+)$`,
+		sc.iAttemptToCreateAShipWithCargoCapacityAndCargoUnits)
+	ctx.Step(`^I attempt to create a ship with engine_speed (-?\d+)$`, sc.iAttemptToCreateAShipWithEngineSpeed)
+	ctx.Step(`^I attempt to create a ship with nav_status "([^"]*)"$`, sc.iAttemptToCreateAShipWithNavStatus)
+	ctx.Step(`^ship creation should fail with error "([^"]*)"$`, sc.shipCreationShouldFailWithError)
+
+	// Ship properties
+	ctx.Step(`^the ship should have symbol "([^"]*)"$`, sc.theShipShouldHaveSymbol)
+	ctx.Step(`^the ship should have player_id (\d+)$`, sc.theShipShouldHavePlayerID)
+	ctx.Step(`^the ship should be at location "([^"]*)"$`, sc.theShipShouldBeAtLocation)
+	ctx.Step(`^the ship should have (\d+) units of fuel$`, sc.theShipShouldHaveUnitsOfFuel)
+	ctx.Step(`^the ship fuel capacity should be (\d+)$`, sc.theShipFuelCapacityShouldBe)
+	ctx.Step(`^the ship cargo capacity should be (\d+)$`, sc.theShipCargoCapacityShouldBe)
+	ctx.Step(`^the ship cargo units should be (\d+)$`, sc.theShipCargoUnitsShouldBe)
+	ctx.Step(`^the ship engine speed should be (\d+)$`, sc.theShipEngineSpeedShouldBe)
+	ctx.Step(`^the ship should be in orbit$`, sc.theShipShouldBeInOrbit)
+
+	// Navigation state machine
+	ctx.Step(`^a docked ship at "([^"]*)"$`, sc.aDockedShipAt)
+	ctx.Step(`^a ship in orbit at "([^"]*)"$`, sc.aShipInOrbitAt)
+	ctx.Step(`^a ship in transit to "([^"]*)"$`, sc.aShipInTransitTo)
+	ctx.Step(`^the ship departs$`, sc.theShipDeparts)
+	ctx.Step(`^I attempt to depart the ship$`, sc.iAttemptToDepartTheShip)
+	ctx.Step(`^the ship should not be docked$`, sc.theShipShouldNotBeDocked)
+	ctx.Step(`^the ship docks$`, sc.theShipDocks)
+	ctx.Step(`^I attempt to dock the ship$`, sc.iAttemptToDockTheShip)
+	ctx.Step(`^the ship should be docked$`, sc.theShipShouldBeDocked)
+	ctx.Step(`^the ship should not be in orbit$`, sc.theShipShouldNotBeInOrbit)
+	ctx.Step(`^the ship starts transit to "([^"]*)"$`, sc.theShipStartsTransitTo)
+	ctx.Step(`^I attempt to start transit to "([^"]*)"$`, sc.iAttemptToStartTransitTo)
+	ctx.Step(`^the ship should be in transit$`, sc.theShipShouldBeInTransit)
+	ctx.Step(`^the ship should not be in transit$`, sc.theShipShouldNotBeInTransit)
+	ctx.Step(`^the ship arrives$`, sc.theShipArrives)
+	ctx.Step(`^I attempt to arrive the ship$`, sc.iAttemptToArriveTheShip)
+	ctx.Step(`^I ensure the ship is in orbit$`, sc.iEnsureTheShipIsInOrbit)
+	ctx.Step(`^I attempt to ensure the ship is in orbit$`, sc.iAttemptToEnsureTheShipIsInOrbit)
+	ctx.Step(`^the state change result should be (true|false)$`, sc.theStateChangeResultShouldBe)
+	ctx.Step(`^I ensure the ship is docked$`, sc.iEnsureTheShipIsDocked)
+	ctx.Step(`^I attempt to ensure the ship is docked$`, sc.iAttemptToEnsureTheShipIsDocked)
+	ctx.Step(`^the operation should fail with error "([^"]*)"$`, sc.theOperationShouldFailWithError)
+
+	// Fuel management
+	ctx.Step(`^a ship with (\d+) units of fuel$`, sc.aShipWithUnitsOfFuel)
+	ctx.Step(`^a ship with (\d+) units of fuel and capacity (\d+)$`, sc.aShipWithUnitsOfFuelAndCapacity)
+	ctx.Step(`^the ship consumes (\d+) units of fuel$`, sc.theShipConsumesUnitsOfFuel)
+	ctx.Step(`^I attempt to consume (-?\d+) units of fuel$`, sc.iAttemptToConsumeUnitsOfFuel)
+	ctx.Step(`^the ship refuels (\d+) units$`, sc.theShipRefuelsUnits)
+	ctx.Step(`^I attempt to refuel (-?\d+) units$`, sc.iAttemptToRefuelUnits)
+	ctx.Step(`^the ship refuels to full$`, sc.theShipRefuelsToFull)
+	ctx.Step(`^the fuel added should be (\d+) units$`, sc.theFuelAddedShouldBeUnits)
+
+	// Navigation calculations
+	ctx.Step(`^a ship at "([^"]*)" with coordinates \(([^,]+), ([^)]+)\) and (\d+) units of fuel$`,
+		sc.aShipAtWithCoordinatesAndUnitsOfFuel)
+	ctx.Step(`^a waypoint "([^"]*)" at coordinates \(([^,]+), ([^)]+)\)$`, sc.aWaypointAtCoordinates)
+	ctx.Step(`^I check if the ship can navigate to "([^"]*)"$`, sc.iCheckIfTheShipCanNavigateTo)
+	ctx.Step(`^the result should be (true|false)$`, sc.theResultShouldBe)
+	ctx.Step(`^a ship at "([^"]*)" with coordinates \(([^,]+), ([^)]+)\)$`, sc.aShipAtWithCoordinates)
+	ctx.Step(`^I calculate fuel required to "([^"]*)" with ([A-Z]+) mode$`, sc.iCalculateFuelRequiredToWithMode)
+	ctx.Step(`^the fuel required should be (\d+) units$`, sc.theFuelRequiredShouldBeUnits)
+	ctx.Step(`^I check if the ship needs refuel for journey to "([^"]*)"$`, sc.iCheckIfTheShipNeedsRefuelForJourneyTo)
+	ctx.Step(`^I check if the ship needs refuel for journey to "([^"]*)" with safety margin ([0-9.]+)$`,
+		sc.iCheckIfTheShipNeedsRefuelForJourneyToWithSafetyMargin)
+	ctx.Step(`^a ship at "([^"]*)" with coordinates \(([^,]+), ([^)]+)\) and engine speed (\d+)$`,
+		sc.aShipAtWithCoordinatesAndEngineSpeed)
+	ctx.Step(`^I calculate travel time to "([^"]*)" with ([A-Z]+) mode$`, sc.iCalculateTravelTimeToWithMode)
+	ctx.Step(`^the travel time should be (\d+) seconds$`, sc.theTravelTimeShouldBeSeconds)
+	ctx.Step(`^a ship with (\d+) units of fuel at distance ([0-9.]+)$`, sc.aShipWithUnitsOfFuelAtDistance)
+	ctx.Step(`^I select optimal flight mode for distance ([0-9.]+)$`, sc.iSelectOptimalFlightModeForDistance)
+	ctx.Step(`^the selected mode should be ([A-Z]+)$`, sc.theSelectedModeShouldBe)
+
+	// Cargo management
+	ctx.Step(`^a ship with cargo capacity (\d+) and cargo units (\d+)$`, sc.aShipWithCargoCapacityAndCargoUnits)
+	ctx.Step(`^I check if the ship has cargo space for (\d+) units$`, sc.iCheckIfTheShipHasCargoSpaceForUnits)
+	ctx.Step(`^I check available cargo space$`, sc.iCheckAvailableCargoSpace)
+	ctx.Step(`^the available space should be (\d+) units$`, sc.theAvailableSpaceShouldBeUnits)
+	ctx.Step(`^I check if cargo is empty$`, sc.iCheckIfCargoIsEmpty)
+	ctx.Step(`^I check if cargo is full$`, sc.iCheckIfCargoIsFull)
+
+	// State queries
+	ctx.Step(`^a ship at "([^"]*)"$`, sc.aShipAt)
+	ctx.Step(`^I check if the ship is docked$`, sc.iCheckIfTheShipIsDocked)
+	ctx.Step(`^I check if the ship is in orbit$`, sc.iCheckIfTheShipIsInOrbit)
+	ctx.Step(`^I check if the ship is in transit$`, sc.iCheckIfTheShipIsInTransit)
+	ctx.Step(`^I check if the ship is at location "([^"]*)"$`, sc.iCheckIfTheShipIsAtLocation)
+}

@@ -51,10 +51,18 @@ class SpaceTradersAPIClient(ISpaceTradersAPI):
                     try:
                         error_body = response.json()
                         logger.error(f"API error {response.status_code}: {error_body}")
+                        # Extract error message and code from API response
+                        error_data = error_body.get('error', {})
+                        error_msg = error_data.get('message', response.text)
+                        error_code = error_data.get('code', response.status_code)
+                        # Raise exception with detailed message
+                        raise RuntimeError(f"API error {error_code}: {error_msg}")
+                    except RuntimeError:
+                        raise  # Re-raise our custom error
                     except:
                         logger.error(f"API error {response.status_code}: {response.text}")
+                        response.raise_for_status()
 
-                response.raise_for_status()
                 return response.json()
 
             except requests.exceptions.RequestException as e:
@@ -72,7 +80,29 @@ class SpaceTradersAPIClient(ISpaceTradersAPI):
         return self._request("GET", f"/my/ships/{ship_symbol}")
 
     def get_ships(self) -> Dict:
-        return self._request("GET", "/my/ships")
+        """Get all ships, handling pagination automatically."""
+        all_ships = []
+        page = 1
+
+        while True:
+            result = self._request("GET", f"/my/ships?limit=20&page={page}")
+            all_ships.extend(result['data'])
+
+            # Check if we've fetched all ships
+            total = result['meta']['total']
+            if len(all_ships) >= total:
+                break
+            page += 1
+
+        # Return in same format as original, but with all ships
+        return {
+            'data': all_ships,
+            'meta': {
+                'total': len(all_ships),
+                'page': 1,
+                'limit': len(all_ships)
+            }
+        }
 
     def navigate_ship(self, ship_symbol: str, waypoint: str) -> Dict:
         return self._request(
@@ -286,6 +316,28 @@ class SpaceTradersAPIClient(ISpaceTradersAPI):
         return self._request(
             "POST",
             f"/my/ships/{ship_symbol}/purchase",
+            json={
+                "symbol": trade_symbol,
+                "units": units
+            }
+        )
+
+    def sell_cargo(self, ship_symbol: str, trade_symbol: str, units: int) -> Dict:
+        """Sell cargo at market.
+
+        Endpoint: POST /my/ships/{shipSymbol}/sell
+
+        Args:
+            ship_symbol: Ship selling the cargo
+            trade_symbol: Good to sell (e.g., "IRON_ORE")
+            units: Number of units to sell
+
+        Returns:
+            Dict containing transaction details including updated cargo and credits
+        """
+        return self._request(
+            "POST",
+            f"/my/ships/{ship_symbol}/sell",
             json={
                 "symbol": trade_symbol,
                 "units": units

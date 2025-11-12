@@ -165,6 +165,7 @@ class CommandContainer(BaseContainer):
             'application.shipyard.commands',
             'application.contracts.commands',
             'application.scouting.commands',
+            'application.trading.commands',  # For trading/experiment commands
             'application.testing.commands',  # For test commands
         ]
 

@@ -184,6 +184,20 @@ class ISpaceTradersAPI(ABC):
         pass
 
     @abstractmethod
+    def sell_cargo(self, ship_symbol: str, trade_symbol: str, units: int) -> Dict:
+        """Sell cargo at market.
+
+        Args:
+            ship_symbol: Ship selling the cargo
+            trade_symbol: Good to sell (e.g., "IRON_ORE")
+            units: Number of units to sell
+
+        Returns:
+            Dict containing transaction details including updated cargo and credits
+        """
+        pass
+
+    @abstractmethod
     def jettison_cargo(self, ship_symbol: str, cargo_symbol: str, units: int) -> Dict:
         """Jettison cargo from ship into space.
 

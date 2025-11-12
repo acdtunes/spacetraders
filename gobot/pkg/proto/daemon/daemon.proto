@@ -1,0 +1,196 @@
+syntax = "proto3";
+
+package daemon;
+
+option go_package = "github.com/andrescamacho/spacetraders-go/pkg/proto/daemon";
+
+// DaemonService defines the gRPC API for CLI <-> Daemon communication
+// Communication occurs over Unix domain socket for security and performance
+service DaemonService {
+  // NavigateShip initiates a ship navigation operation as a background container
+  rpc NavigateShip(NavigateShipRequest) returns (NavigateShipResponse);
+
+  // DockShip docks a ship at its current location
+  rpc DockShip(DockShipRequest) returns (DockShipResponse);
+
+  // OrbitShip puts a ship into orbit from docked position
+  rpc OrbitShip(OrbitShipRequest) returns (OrbitShipResponse);
+
+  // RefuelShip refuels a ship at its current location
+  rpc RefuelShip(RefuelShipRequest) returns (RefuelShipResponse);
+
+  // ListContainers returns all running background containers
+  rpc ListContainers(ListContainersRequest) returns (ListContainersResponse);
+
+  // GetContainer returns detailed information about a specific container
+  rpc GetContainer(GetContainerRequest) returns (GetContainerResponse);
+
+  // StopContainer stops a running background container
+  rpc StopContainer(StopContainerRequest) returns (StopContainerResponse);
+
+  // GetContainerLogs retrieves logs from a container
+  rpc GetContainerLogs(GetContainerLogsRequest) returns (GetContainerLogsResponse);
+
+  // HealthCheck verifies daemon is running and responsive
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+}
+
+// NavigateShipRequest initiates ship navigation
+message NavigateShipRequest {
+  // Ship symbol to navigate (e.g., "AGENT-1")
+  string ship_symbol = 1;
+
+  // Destination waypoint symbol (e.g., "X1-GZ7-B1")
+  string destination = 2;
+
+  // Player ID for authentication
+  int32 player_id = 3;
+
+  // Optional agent symbol (alternative to player_id)
+  optional string agent_symbol = 4;
+}
+
+// NavigateShipResponse returns container ID for tracking
+message NavigateShipResponse {
+  // Container ID for tracking the navigation operation
+  string container_id = 1;
+
+  // Ship symbol
+  string ship_symbol = 2;
+
+  // Destination waypoint
+  string destination = 3;
+
+  // Initial status
+  string status = 4;
+
+  // Estimated total travel time in seconds
+  int32 estimated_time_seconds = 5;
+}
+
+// DockShipRequest initiates ship docking
+message DockShipRequest {
+  string ship_symbol = 1;
+  int32 player_id = 2;
+  optional string agent_symbol = 3;
+}
+
+message DockShipResponse {
+  string container_id = 1;
+  string ship_symbol = 2;
+  string status = 3;
+}
+
+// OrbitShipRequest initiates ship orbit
+message OrbitShipRequest {
+  string ship_symbol = 1;
+  int32 player_id = 2;
+  optional string agent_symbol = 3;
+}
+
+message OrbitShipResponse {
+  string container_id = 1;
+  string ship_symbol = 2;
+  string status = 3;
+}
+
+// RefuelShipRequest initiates ship refueling
+message RefuelShipRequest {
+  string ship_symbol = 1;
+  int32 player_id = 2;
+  optional string agent_symbol = 3;
+
+  // Optional: specific fuel units to purchase. Omit for full tank.
+  optional int32 units = 4;
+}
+
+message RefuelShipResponse {
+  string container_id = 1;
+  string ship_symbol = 2;
+  int32 fuel_added = 3;
+  int32 credits_cost = 4;
+  string status = 5;
+}
+
+// ListContainersRequest lists all containers
+message ListContainersRequest {
+  // Optional filter by player ID
+  optional int32 player_id = 1;
+
+  // Optional filter by container status
+  optional string status = 2;
+}
+
+message ListContainersResponse {
+  repeated ContainerInfo containers = 1;
+}
+
+message ContainerInfo {
+  string container_id = 1;
+  string container_type = 2;
+  string status = 3;
+  int32 player_id = 4;
+  string created_at = 5;
+  string updated_at = 6;
+
+  // Iteration tracking for loops
+  int32 current_iteration = 7;
+  int32 max_iterations = 8;
+
+  // Restart tracking
+  int32 restart_count = 9;
+}
+
+// GetContainerRequest retrieves container details
+message GetContainerRequest {
+  string container_id = 1;
+}
+
+message GetContainerResponse {
+  ContainerInfo container = 1;
+  string metadata = 2; // JSON-encoded metadata
+}
+
+// StopContainerRequest stops a container
+message StopContainerRequest {
+  string container_id = 1;
+}
+
+message StopContainerResponse {
+  string container_id = 1;
+  string status = 2;
+  string message = 3;
+}
+
+// GetContainerLogsRequest retrieves container logs
+message GetContainerLogsRequest {
+  string container_id = 1;
+
+  // Optional limit on number of log entries
+  optional int32 limit = 2;
+
+  // Optional filter by log level (INFO, WARNING, ERROR, DEBUG)
+  optional string level = 3;
+}
+
+message GetContainerLogsResponse {
+  repeated LogEntry logs = 1;
+}
+
+message LogEntry {
+  string timestamp = 1;
+  string level = 2;
+  string message = 3;
+  string metadata = 4; // JSON-encoded metadata
+}
+
+// HealthCheckRequest verifies daemon status
+message HealthCheckRequest {
+  // Empty for now
+}
+
+message HealthCheckResponse {
+  string status = 1; // "ok" or error message
+  string version = 2;
+  int32 active_containers = 3;
+}

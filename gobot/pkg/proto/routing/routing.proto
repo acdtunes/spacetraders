@@ -1,0 +1,220 @@
+syntax = "proto3";
+
+package routing;
+
+option go_package = "github.com/andrescamacho/spacetraders-go/pkg/proto/routing";
+
+// RoutingService defines the gRPC API for Daemon <-> OR-Tools communication
+// Provides route planning, TSP optimization, and VRP fleet partitioning
+// This service runs as a separate Python process using OR-Tools library
+service RoutingService {
+  // PlanRoute computes optimal route with fuel constraints using Dijkstra
+  rpc PlanRoute(PlanRouteRequest) returns (PlanRouteResponse);
+
+  // OptimizeTour solves TSP for visiting multiple waypoints optimally
+  rpc OptimizeTour(OptimizeTourRequest) returns (OptimizeTourResponse);
+
+  // PartitionFleet solves VRP to distribute waypoints across multiple ships
+  rpc PartitionFleet(PartitionFleetRequest) returns (PartitionFleetResponse);
+}
+
+// PlanRouteRequest requests a fuel-constrained route
+message PlanRouteRequest {
+  // System symbol (e.g., "X1-GZ7")
+  string system_symbol = 1;
+
+  // Starting waypoint symbol
+  string start_waypoint = 2;
+
+  // Goal/destination waypoint symbol
+  string goal_waypoint = 3;
+
+  // Current fuel level
+  int32 current_fuel = 4;
+
+  // Maximum fuel capacity
+  int32 fuel_capacity = 5;
+
+  // Ship engine speed (for time calculations)
+  int32 engine_speed = 6;
+
+  // All waypoints in the system (graph nodes)
+  repeated Waypoint waypoints = 7;
+}
+
+message Waypoint {
+  // Waypoint symbol
+  string symbol = 1;
+
+  // X coordinate in space
+  double x = 2;
+
+  // Y coordinate in space
+  double y = 3;
+
+  // Whether this waypoint has fuel available
+  bool has_fuel = 4;
+
+  // Optional: fuel price at this waypoint
+  optional int32 fuel_price = 5;
+}
+
+message PlanRouteResponse {
+  // Route steps in order
+  repeated RouteStep steps = 1;
+
+  // Total fuel cost for entire route
+  int32 total_fuel_cost = 2;
+
+  // Total travel time in seconds
+  int32 total_time_seconds = 3;
+
+  // Total distance traveled
+  double total_distance = 4;
+
+  // Whether route was successfully found
+  bool success = 5;
+
+  // Error message if route planning failed
+  optional string error_message = 6;
+}
+
+message RouteStep {
+  // Action type: "TRAVEL" or "REFUEL"
+  RouteAction action = 1;
+
+  // Waypoint symbol for this step
+  string waypoint = 2;
+
+  // Fuel cost for this step (0 for refuel actions)
+  int32 fuel_cost = 3;
+
+  // Time in seconds for this step
+  int32 time_seconds = 4;
+
+  // Distance traveled (0 for refuel actions)
+  double distance = 5;
+
+  // For REFUEL actions: amount of fuel to add
+  optional int32 refuel_amount = 6;
+
+  // Flight mode for TRAVEL actions: "BURN", "CRUISE", "DRIFT", or "STEALTH"
+  optional string mode = 7;
+}
+
+enum RouteAction {
+  ROUTE_ACTION_UNSPECIFIED = 0;
+  ROUTE_ACTION_TRAVEL = 1;
+  ROUTE_ACTION_REFUEL = 2;
+}
+
+// OptimizeTourRequest solves TSP for multiple waypoints
+message OptimizeTourRequest {
+  // System symbol
+  string system_symbol = 1;
+
+  // Starting waypoint (ship's current location)
+  string start_waypoint = 2;
+
+  // Waypoints to visit (order to be optimized)
+  repeated string target_waypoints = 3;
+
+  // Maximum fuel capacity
+  int32 fuel_capacity = 4;
+
+  // Ship engine speed
+  int32 engine_speed = 5;
+
+  // All waypoints in system (for distance calculations)
+  repeated Waypoint all_waypoints = 6;
+
+  // Whether tour should return to start (default: true for tours, false for paths)
+  bool return_to_start = 7;
+}
+
+message OptimizeTourResponse {
+  // Optimized visit order (waypoint symbols)
+  repeated string visit_order = 1;
+
+  // Combined route with all steps (travel + refuel)
+  repeated RouteStep route_steps = 2;
+
+  // Total time for entire tour
+  int32 total_time_seconds = 3;
+
+  // Total distance traveled
+  double total_distance = 4;
+
+  // Success indicator
+  bool success = 5;
+
+  // Error message if optimization failed
+  optional string error_message = 6;
+}
+
+// PartitionFleetRequest solves VRP for multiple ships
+message PartitionFleetRequest {
+  // System symbol
+  string system_symbol = 1;
+
+  // Ship symbols to partition work across
+  repeated string ship_symbols = 2;
+
+  // Market waypoints to visit
+  repeated string market_waypoints = 3;
+
+  // Ship configurations (location, fuel, speed)
+  map<string, ShipConfig> ship_configs = 4;
+
+  // All waypoints in system
+  repeated Waypoint all_waypoints = 5;
+
+  // Number of iterations (for repeated tours). Use -1 for infinite.
+  int32 iterations = 6;
+}
+
+message ShipConfig {
+  // Current location of the ship
+  string current_location = 1;
+
+  // Fuel capacity
+  int32 fuel_capacity = 2;
+
+  // Engine speed
+  int32 engine_speed = 3;
+
+  // Current fuel level
+  int32 current_fuel = 4;
+}
+
+message PartitionFleetResponse {
+  // Ship assignments (ship_symbol -> tour)
+  map<string, ShipTour> assignments = 1;
+
+  // Success indicator
+  bool success = 2;
+
+  // Error message if partitioning failed
+  optional string error_message = 3;
+
+  // Statistics
+  int32 total_waypoints_assigned = 4;
+  int32 ships_utilized = 5;
+}
+
+message ShipTour {
+  // Waypoints assigned to this ship (in visit order)
+  repeated string waypoints = 1;
+
+  // Complete route with steps
+  repeated RouteStep route_steps = 2;
+
+  // Total time for this ship's tour
+  int32 total_time_seconds = 3;
+
+  // Total distance for this ship's tour
+  double total_distance = 4;
+
+  // Whether this ship returns to start
+  bool returns_to_start = 5;
+}

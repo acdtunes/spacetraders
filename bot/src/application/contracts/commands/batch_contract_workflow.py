@@ -165,6 +165,14 @@ class BatchContractWorkflowHandler(RequestHandler[BatchContractWorkflowCommand, 
         Raises:
             Exception: If negotiation fails for reasons other than error 4511, or if 4511 occurs without contractId
         """
+        # Dock ship before negotiating (API requires ship to be docked)
+        logger.info(f"Iteration {iteration}: Docking ship {ship_symbol} before negotiating contract")
+        dock_cmd = DockShipCommand(
+            ship_symbol=ship_symbol,
+            player_id=player_id
+        )
+        await self._mediator.send_async(dock_cmd)
+
         try:
             negotiate_cmd = NegotiateContractCommand(
                 ship_symbol=ship_symbol,

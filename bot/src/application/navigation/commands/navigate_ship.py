@@ -618,8 +618,8 @@ class NavigateShipHandler(RequestHandler[NavigateShipCommand, Route]):
                 current_waypoint = segment.to_waypoint
                 fuel_percentage = (ship.fuel.current / ship.fuel_capacity) if ship.fuel_capacity > 0 else 0
 
-                if (current_waypoint.has_fuel and fuel_percentage < 0.9 and
-                    not segment.requires_refuel):
+                if (ship.fuel_capacity > 0 and current_waypoint.has_fuel and
+                    fuel_percentage < 0.9 and not segment.requires_refuel):
                     logger.info(
                         f"Opportunistic refuel at {current_waypoint.symbol}: "
                         f"Fuel at {fuel_percentage*100:.1f}% ({ship.fuel.current}/{ship.fuel_capacity})"

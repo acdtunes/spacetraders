@@ -34,12 +34,21 @@ fi
 echo "  Starting daemon..."
 PYTHONPATH=src:$PYTHONPATH uv run python -m adapters.primary.daemon.daemon_server > /tmp/daemon.log 2>&1 &
 
-# Wait for socket to appear
-sleep 2
+# Wait for socket to appear with retry logic (up to 10 seconds)
+echo "  Waiting for socket..."
+max_attempts=20
+attempt=0
+while [ $attempt -lt $max_attempts ]; do
+    if [ -S var/daemon.sock ]; then
+        break
+    fi
+    sleep 0.5
+    attempt=$((attempt + 1))
+done
 
 # Verify daemon started successfully
 if [ ! -S var/daemon.sock ]; then
-    echo "❌ ERROR: Socket file not created"
+    echo "❌ ERROR: Socket file not created after ${max_attempts} attempts"
     echo ""
     echo "Recent logs:"
     tail -10 /tmp/daemon.log

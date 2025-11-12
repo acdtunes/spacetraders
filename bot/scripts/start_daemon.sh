@@ -40,6 +40,7 @@ fi
 
 # Start daemon
 echo "  Starting daemon..."
+export DATABASE_URL
 PYTHONPATH=src:$PYTHONPATH uv run python -m adapters.primary.daemon.daemon_server > /tmp/daemon.log 2>&1 &
 
 # Wait for startup (poll for socket)

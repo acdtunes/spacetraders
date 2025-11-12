@@ -8,7 +8,7 @@ import path from "node:path";
 
 const SOCKET_PATH = process.env.SPACETRADERS_DAEMON_SOCKET
   ? process.env.SPACETRADERS_DAEMON_SOCKET
-  : path.join(process.cwd(), "var", "daemon.sock");
+  : "/tmp/spacetraders-daemon.sock";
 const REQUEST_TIMEOUT_MS = 60000; // 60 seconds - daemon can be busy with container operations
 
 interface JsonRpcRequest {

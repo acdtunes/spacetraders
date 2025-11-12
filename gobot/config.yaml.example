@@ -1,0 +1,95 @@
+# SpaceTraders Go Bot Configuration
+# Copy this file to config.yaml and adjust values as needed
+#
+# Configuration priority (highest to lowest):
+# 1. Environment variables (ST_* prefix)
+# 2. This config file
+# 3. Default values
+
+# Database configuration
+database:
+  # Database type: postgres or sqlite
+  type: postgres
+
+  # Option 1: Full connection URL (takes precedence)
+  # url: postgresql://user:password@localhost:5432/spacetraders
+
+  # Option 2: Individual connection fields (used if url is empty)
+  host: localhost
+  port: 5432
+  user: spacetraders
+  password: dev_password
+  name: spacetraders
+  sslmode: disable  # disable, require, verify-ca, verify-full
+
+  # SQLite configuration (if type: sqlite)
+  # path: ./spacetraders.db  # Use ":memory:" for in-memory database
+
+  # Connection pool settings
+  pool:
+    max_open: 25          # Maximum number of open connections
+    max_idle: 5           # Maximum number of idle connections
+    max_lifetime: 5m      # Maximum connection lifetime (e.g., 5m, 1h)
+
+# SpaceTraders API configuration
+api:
+  base_url: https://api.spacetraders.io/v2
+  timeout: 30s          # Request timeout (e.g., 30s, 1m)
+
+  # Rate limiting (to respect API limits)
+  rate_limit:
+    requests: 2         # Requests per second
+    burst: 10           # Burst capacity
+
+  # Retry configuration
+  retry:
+    max_attempts: 3     # Maximum retry attempts
+    backoff_base: 1s    # Base backoff duration
+
+# Routing service configuration (OR-Tools)
+routing:
+  address: localhost:50051  # gRPC service address
+
+  # Operation timeouts
+  timeout:
+    connect: 10s        # Connection timeout
+    dijkstra: 30s       # Pathfinding timeout
+    tsp: 60s            # TSP solver timeout
+    vrp: 120s           # VRP solver timeout
+
+# Daemon configuration
+daemon:
+  address: localhost:50052              # gRPC server address
+  socket_path: /tmp/spacetraders-daemon.sock  # Unix socket path
+  pid_file: /tmp/spacetraders-daemon.pid      # PID file location
+  max_containers: 100                   # Maximum concurrent containers
+  health_check_interval: 30s            # Health check interval
+  shutdown_timeout: 30s                 # Graceful shutdown timeout
+
+  # Container restart policy
+  restart_policy:
+    enabled: true                       # Enable automatic restart on failure
+    max_attempts: 3                     # Maximum restart attempts
+    delay: 5s                           # Delay between attempts
+    backoff_multiplier: 2.0             # Backoff multiplier
+
+# Logging configuration
+logging:
+  level: info          # debug, info, warn, error
+  format: json         # json, text
+  output: stdout       # stdout, stderr, file
+
+  # File output configuration (if output: file)
+  file_path: /var/log/spacetraders/daemon.log
+
+  # Log rotation
+  rotation:
+    enabled: true      # Enable rotation
+    max_size: 100      # Maximum size in MB before rotation
+    max_backups: 3     # Maximum number of old files to keep
+    max_age: 28        # Maximum age in days before deletion
+    compress: true     # Compress rotated files
+
+  # Additional options
+  include_caller: false      # Include file:line in logs
+  include_stacktrace: false  # Include stack traces for errors

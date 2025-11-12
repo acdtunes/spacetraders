@@ -180,3 +180,86 @@ captain_logs = Table(
 # Indexes for captain_logs
 Index('idx_captain_logs_player_time', captain_logs.c.player_id, captain_logs.c.timestamp.desc())
 Index('idx_captain_logs_entry_type', captain_logs.c.player_id, captain_logs.c.entry_type)
+
+# Experiment work queue table (for market liquidity experiment coordination)
+experiment_work_queue = Table(
+    'experiment_work_queue',
+    metadata,
+    Column('queue_id', Integer, primary_key=True, autoincrement=True),
+    Column('run_id', String, nullable=False),
+    Column('player_id', Integer, ForeignKey('players.player_id', ondelete='CASCADE'), nullable=False),
+
+    # Market pair definition
+    Column('pair_id', String, nullable=False),           # "IRON_ORE:X1-A1:X1-B2"
+    Column('good_symbol', String, nullable=False),       # "IRON_ORE"
+    Column('buy_market', String, nullable=False),        # "X1-GZ7-A1"
+    Column('sell_market', String, nullable=False),       # "X1-GZ7-B2"
+
+    # Work status
+    Column('status', String, nullable=False),            # PENDING, CLAIMED, COMPLETED, FAILED
+    Column('claimed_by', String),                        # ship_symbol
+    Column('claimed_at', DateTime(timezone=True)),
+    Column('completed_at', DateTime(timezone=True)),
+
+    # Error tracking
+    Column('attempts', Integer, default=0),
+    Column('error_message', Text),
+
+    Column('created_at', DateTime(timezone=True), nullable=False),
+)
+
+# Indexes for experiment_work_queue
+Index('idx_work_queue_run_status', experiment_work_queue.c.run_id, experiment_work_queue.c.status)
+
+# Market experiments table (stores experimental transaction results)
+market_experiments = Table(
+    'market_experiments',
+    metadata,
+    Column('experiment_id', Integer, primary_key=True, autoincrement=True),
+    Column('run_id', String, nullable=False),
+    Column('player_id', Integer, ForeignKey('players.player_id', ondelete='CASCADE'), nullable=False),
+    Column('ship_symbol', String, nullable=False),       # Which ship performed this
+    Column('good_symbol', String, nullable=False),
+
+    # Market pair (matches work queue)
+    Column('pair_id', String, nullable=False),           # Links to work queue entry
+    Column('buy_market', String),
+    Column('sell_market', String),
+
+    # Transaction details
+    Column('operation', String, nullable=False),         # 'BUY' or 'SELL'
+    Column('iteration', Integer, nullable=False),        # Which iteration (1-3)
+    Column('batch_size_fraction', Float),                # 0.1, 0.25, 0.5, 1.0
+    Column('units', Integer, nullable=False),
+    Column('price_per_unit', Integer, nullable=False),
+    Column('total_credits', Integer, nullable=False),
+
+    # Market state BEFORE transaction
+    Column('supply_before', String),                     # SCARCE, LIMITED, etc.
+    Column('activity_before', String),                   # WEAK, GROWING, etc.
+    Column('trade_volume_before', Integer),
+    Column('price_before', Integer),
+
+    # Market state AFTER transaction
+    Column('supply_after', String),
+    Column('price_after', Integer),
+
+    # Calculated metrics
+    Column('supply_change', String),                     # e.g., "MODERATE→LIMITED"
+    Column('price_impact_percent', Float),               # (after-before)/before × 100
+
+    # Ship cargo state
+    Column('ship_cargo_capacity', Integer),              # Ship's total cargo capacity
+    Column('ship_cargo_used', Integer),                  # Cargo used after transaction
+
+    # Temporal features
+    Column('minutes_since_last_trade', Float),           # Minutes since last trade on this market
+    Column('market_poll_timestamp', DateTime(timezone=True)),  # When market was polled
+
+    Column('timestamp', DateTime(timezone=True), nullable=False),
+)
+
+# Indexes for market_experiments
+Index('idx_experiments_run', market_experiments.c.run_id)
+Index('idx_experiments_ship', market_experiments.c.run_id, market_experiments.c.ship_symbol)
+Index('idx_experiments_good', market_experiments.c.run_id, market_experiments.c.good_symbol)

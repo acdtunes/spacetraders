@@ -25,6 +25,8 @@ from adapters.secondary.persistence.captain_log_repository_sqlalchemy import Cap
 from adapters.secondary.persistence.container_repository_sqlalchemy import ContainerRepositorySQLAlchemy
 from adapters.secondary.persistence.container_log_repository_sqlalchemy import ContainerLogRepositorySQLAlchemy
 from adapters.secondary.persistence.system_graph_repository_sqlalchemy import SystemGraphRepositorySQLAlchemy
+from adapters.secondary.persistence.work_queue_repository import WorkQueueRepository
+from adapters.secondary.persistence.experiment_repository import ExperimentRepository
 from adapters.secondary.api.client import SpaceTradersAPIClient
 from adapters.secondary.routing.ortools_engine import ORToolsRoutingEngine
 from adapters.secondary.routing.graph_builder import GraphBuilder
@@ -159,6 +161,19 @@ from application.trading.commands.purchase_cargo import (
     PurchaseCargoCommand,
     PurchaseCargoHandler
 )
+from application.trading.commands.sell_cargo import (
+    SellCargoCommand,
+    SellCargoHandler
+)
+from application.trading.commands.ship_experiment_worker import (
+    ShipExperimentWorkerCommand,
+    ShipExperimentWorkerHandler
+)
+from application.trading.commands.market_liquidity_experiment import (
+    MarketLiquidityExperimentCommand,
+    MarketLiquidityExperimentHandler
+)
+from application.trading.services.market_selector import MarketSelector
 from application.cargo.commands.jettison_cargo import (
     JettisonCargoCommand,
     JettisonCargoHandler
@@ -216,6 +231,8 @@ _captain_log_repo = None
 _container_repo = None
 _container_log_repo = None
 _system_graph_repo = None
+_work_queue_repo = None
+_experiment_repo = None
 _graph_provider = None
 _graph_builder = None
 _routing_engine = None
@@ -391,6 +408,32 @@ def get_contract_repository():
     if _contract_repo is None:
         _contract_repo = ContractRepositorySQLAlchemy(get_engine())
     return _contract_repo
+
+
+def get_work_queue_repository():
+    """
+    Get or create work queue repository for experiment coordination.
+
+    Returns:
+        WorkQueueRepository: Singleton work queue repository instance
+    """
+    global _work_queue_repo
+    if _work_queue_repo is None:
+        _work_queue_repo = WorkQueueRepository(get_engine())
+    return _work_queue_repo
+
+
+def get_experiment_repository():
+    """
+    Get or create experiment repository for storing transaction results.
+
+    Returns:
+        ExperimentRepository: Singleton experiment repository instance
+    """
+    global _experiment_repo
+    if _experiment_repo is None:
+        _experiment_repo = ExperimentRepository(get_engine())
+    return _experiment_repo
 
 
 def get_waypoint_repository() -> IWaypointRepository:
@@ -685,6 +728,30 @@ def get_mediator() -> Mediator:
         _mediator.register_handler(
             PurchaseCargoCommand,
             lambda: PurchaseCargoHandler(get_api_client_for_player)
+        )
+        _mediator.register_handler(
+            SellCargoCommand,
+            lambda: SellCargoHandler(get_api_client_for_player)
+        )
+
+        # ===== Experiment Command Handlers =====
+        _mediator.register_handler(
+            ShipExperimentWorkerCommand,
+            lambda: ShipExperimentWorkerHandler(
+                work_queue_repo=get_work_queue_repository(),
+                experiment_repo=get_experiment_repository(),
+                market_repo=get_market_repository(),
+                api_client_factory=get_api_client_for_player,
+                mediator=_mediator
+            )
+        )
+        _mediator.register_handler(
+            MarketLiquidityExperimentCommand,
+            lambda: MarketLiquidityExperimentHandler(
+                market_selector=MarketSelector(get_market_repository()),
+                work_queue_repo=get_work_queue_repository(),
+                market_repo=get_market_repository()
+            )
         )
 
         # ===== Cargo Command Handlers =====

@@ -132,12 +132,6 @@ class DaemonServer:
         self.SOCKET_PATH.chmod(0o660)
         self._running = True
 
-        # 1. Release all active ship assignments from previous daemon instance
-        await self.release_all_active_assignments()
-
-        # 2. Recover RUNNING containers from database
-        await self.recover_running_containers()
-
         logger.info(f"Daemon server started on {self.SOCKET_PATH}")
 
         # Register signal handlers (only works in main thread)
@@ -152,6 +146,10 @@ class DaemonServer:
 
         # Start health monitor
         asyncio.create_task(self._health_monitor())
+
+        # Start background recovery (non-blocking)
+        # This ensures daemon responds immediately while recovery happens in background
+        asyncio.create_task(self._background_recovery())
 
         # Serve forever
         async with self._server:
@@ -331,10 +329,22 @@ class DaemonServer:
         config = params.get("config", {})
         restart_policy = params.get("restart_policy", "no")
 
+        # Clean up config.params: remove 'agent' and ensure 'player_id' is set
+        if config.get("params"):
+            config["params"].pop("agent", None)  # Remove agent if present
+            config["params"]["player_id"] = player_id  # Ensure player_id is set
+
         # Validate ship exists and is available
         ship_symbol = config.get('params', {}).get('ship_symbol')
         if ship_symbol:
-            ship = self._ship_repo.find_by_symbol(ship_symbol, player_id)
+            # Offload blocking API call to thread pool to prevent event loop blocking
+            loop = asyncio.get_event_loop()
+            ship = await loop.run_in_executor(
+                None,
+                self._ship_repo.find_by_symbol,
+                ship_symbol,
+                player_id
+            )
             if not ship:
                 raise ValueError(f"Ship {ship_symbol} not found")
 
@@ -553,6 +563,24 @@ class DaemonServer:
             # Check for stale ship assignments (assigned but container not running)
             await self.cleanup_stale_assignments()
 
+    async def _background_recovery(self):
+        """Run recovery tasks in background without blocking daemon startup
+
+        This method runs asynchronously after the daemon server has started
+        accepting connections, ensuring immediate responsiveness while recovery
+        happens in the background.
+        """
+        try:
+            # 1. Release all zombie assignments from previous daemon instance
+            await self.release_all_active_assignments()
+
+            # 2. Recover RUNNING containers from database
+            await self.recover_running_containers()
+
+            logger.info("Background recovery completed")
+        except Exception as e:
+            logger.error(f"Background recovery failed: {e}", exc_info=True)
+
     async def release_all_active_assignments(self):
         """Release all active ship assignments on daemon startup
 
@@ -603,7 +631,14 @@ class DaemonServer:
                     # Validate ship exists if container uses a ship
                     ship_symbol = config.get('params', {}).get('ship_symbol')
                     if ship_symbol:
-                        ship = self._ship_repo.find_by_symbol(ship_symbol, player_id)
+                        # Offload blocking API call to thread pool to prevent event loop blocking
+                        loop = asyncio.get_event_loop()
+                        ship = await loop.run_in_executor(
+                            None,
+                            self._ship_repo.find_by_symbol,
+                            ship_symbol,
+                            player_id
+                        )
                         if not ship:
                             logger.warning(
                                 f"Cannot recover container {container_id}: "

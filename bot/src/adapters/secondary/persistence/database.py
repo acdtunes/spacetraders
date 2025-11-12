@@ -638,6 +638,130 @@ class Database:
                 ON captain_logs(player_id, entry_type)
             """)
 
+            # Experiment work queue table (for market liquidity experiment coordination)
+            if self.backend == 'postgresql':
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS experiment_work_queue (
+                        queue_id SERIAL PRIMARY KEY,
+                        run_id TEXT NOT NULL,
+                        player_id INTEGER NOT NULL,
+                        pair_id TEXT NOT NULL,
+                        good_symbol TEXT NOT NULL,
+                        buy_market TEXT NOT NULL,
+                        sell_market TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        claimed_by TEXT,
+                        claimed_at TIMESTAMP,
+                        completed_at TIMESTAMP,
+                        attempts INTEGER DEFAULT 0,
+                        error_message TEXT,
+                        created_at TIMESTAMP NOT NULL,
+                        FOREIGN KEY (player_id) REFERENCES players(player_id) ON DELETE CASCADE
+                    )
+                """)
+            else:
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS experiment_work_queue (
+                        queue_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        run_id TEXT NOT NULL,
+                        player_id INTEGER NOT NULL,
+                        pair_id TEXT NOT NULL,
+                        good_symbol TEXT NOT NULL,
+                        buy_market TEXT NOT NULL,
+                        sell_market TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        claimed_by TEXT,
+                        claimed_at TIMESTAMP,
+                        completed_at TIMESTAMP,
+                        attempts INTEGER DEFAULT 0,
+                        error_message TEXT,
+                        created_at TIMESTAMP NOT NULL,
+                        FOREIGN KEY (player_id) REFERENCES players(player_id) ON DELETE CASCADE
+                    )
+                """)
+
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_work_queue_run_status
+                ON experiment_work_queue(run_id, status)
+            """)
+
+            # Market experiments table (stores experimental transaction results)
+            if self.backend == 'postgresql':
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS market_experiments (
+                        experiment_id SERIAL PRIMARY KEY,
+                        run_id TEXT NOT NULL,
+                        player_id INTEGER NOT NULL,
+                        ship_symbol TEXT NOT NULL,
+                        good_symbol TEXT NOT NULL,
+                        pair_id TEXT NOT NULL,
+                        buy_market TEXT,
+                        sell_market TEXT,
+                        operation TEXT NOT NULL,
+                        iteration INTEGER NOT NULL,
+                        batch_size_fraction REAL,
+                        units INTEGER NOT NULL,
+                        price_per_unit INTEGER NOT NULL,
+                        total_credits INTEGER NOT NULL,
+                        supply_before TEXT,
+                        activity_before TEXT,
+                        trade_volume_before INTEGER,
+                        price_before INTEGER,
+                        supply_after TEXT,
+                        activity_after TEXT,
+                        price_after INTEGER,
+                        supply_change TEXT,
+                        price_impact_percent REAL,
+                        timestamp TIMESTAMP NOT NULL,
+                        FOREIGN KEY (player_id) REFERENCES players(player_id) ON DELETE CASCADE
+                    )
+                """)
+            else:
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS market_experiments (
+                        experiment_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        run_id TEXT NOT NULL,
+                        player_id INTEGER NOT NULL,
+                        ship_symbol TEXT NOT NULL,
+                        good_symbol TEXT NOT NULL,
+                        pair_id TEXT NOT NULL,
+                        buy_market TEXT,
+                        sell_market TEXT,
+                        operation TEXT NOT NULL,
+                        iteration INTEGER NOT NULL,
+                        batch_size_fraction REAL,
+                        units INTEGER NOT NULL,
+                        price_per_unit INTEGER NOT NULL,
+                        total_credits INTEGER NOT NULL,
+                        supply_before TEXT,
+                        activity_before TEXT,
+                        trade_volume_before INTEGER,
+                        price_before INTEGER,
+                        supply_after TEXT,
+                        activity_after TEXT,
+                        price_after INTEGER,
+                        supply_change TEXT,
+                        price_impact_percent REAL,
+                        timestamp TIMESTAMP NOT NULL,
+                        FOREIGN KEY (player_id) REFERENCES players(player_id) ON DELETE CASCADE
+                    )
+                """)
+
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_experiments_run
+                ON market_experiments(run_id)
+            """)
+
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_experiments_ship
+                ON market_experiments(run_id, ship_symbol)
+            """)
+
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_experiments_good
+                ON market_experiments(run_id, good_symbol)
+            """)
+
     def log_to_database(self, container_id: str, player_id: int, message: str, level: str = "INFO"):
         """
         Log container message to database with time-windowed deduplication.

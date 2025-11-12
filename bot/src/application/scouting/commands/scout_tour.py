@@ -102,10 +102,26 @@ class ScoutTourHandler(RequestHandler[ScoutTourCommand, ScoutTourResult]):
         starting_waypoint = ship.current_location.symbol
         logger.info(f"Ship starting from {starting_waypoint}")
 
+        # IDEMPOTENCY: If ship is at one of the tour markets, start from there
+        # This handles daemon restarts mid-tour gracefully
+        # NOTE: For IN_TRANSIT ships, current_location is already set to the destination
+        markets_to_visit = list(request.markets)
+
+        if starting_waypoint in markets_to_visit:
+            # Rotate list so we start from current location (or destination if IN_TRANSIT)
+            start_index = markets_to_visit.index(starting_waypoint)
+            markets_to_visit = markets_to_visit[start_index:] + markets_to_visit[:start_index]
+
+            from domain.shared.ship import Ship
+            if ship.nav_status == Ship.IN_TRANSIT:
+                logger.info(f"Ship IN_TRANSIT to tour market {starting_waypoint}, will resume from there (idempotent)")
+            else:
+                logger.info(f"Ship at tour market {starting_waypoint}, resuming from here (idempotent)")
+
         total_goods = 0
 
         # 2. Visit each market in sequence
-        for i, market_waypoint in enumerate(request.markets, 1):
+        for i, market_waypoint in enumerate(markets_to_visit, 1):
             logger.info(f"Visiting market {i}/{len(request.markets)}: {market_waypoint}")
 
             # Navigate to market (uses NavigateShipCommand via mediator)
@@ -124,9 +140,11 @@ class ScoutTourHandler(RequestHandler[ScoutTourCommand, ScoutTourResult]):
         # Tours by definition complete a circuit
         # Stationary scouts (1 market) don't need to return as they're already at start
         if len(request.markets) > 1:
-            logger.info(f"Tour complete: returning to starting waypoint {starting_waypoint}")
-            await self._navigate_to(request.ship_symbol, request.player_id, starting_waypoint)
-            await self._dock_at(request.ship_symbol, request.player_id, starting_waypoint)
+            # Return to first market in the rotated tour (which is the starting waypoint)
+            tour_start = markets_to_visit[0]
+            logger.info(f"Tour complete: returning to starting waypoint {tour_start}")
+            await self._navigate_to(request.ship_symbol, request.player_id, tour_start)
+            await self._dock_at(request.ship_symbol, request.player_id, tour_start)
 
         logger.info(f"Tour complete: {len(request.markets)} markets, {total_goods} goods, {sum([1 for _ in request.markets])}")
 

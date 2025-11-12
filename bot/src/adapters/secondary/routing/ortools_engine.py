@@ -319,73 +319,47 @@ class ORToolsRoutingEngine(IRoutingEngine):
         """
         Find path for ships with fuel_capacity=0 (probe satellites).
 
-        These ships don't use fuel, so we just find the shortest path
-        based on distance and time, without fuel constraints.
+        These ships don't use fuel, so they travel DIRECTLY from start to goal
+        without stopping at intermediate waypoints.
         """
-        # Simple Dijkstra without fuel tracking
-        pq: List[Tuple[int, int, str, List[Dict[str, Any]]]] = []
-        counter = 0
-        heapq.heappush(pq, (0, counter, start, []))
-        counter += 1
+        if start not in graph or goal not in graph:
+            return None
 
-        visited: Set[str] = set()
+        start_wp = graph[start]
+        goal_wp = graph[goal]
 
-        while pq:
-            total_time, _, current, path = heapq.heappop(pq)
+        # Calculate direct distance
+        distance = start_wp.distance_to(goal_wp)
 
-            if current == goal:
-                return {
-                    'steps': path,
-                    'total_fuel_cost': 0,  # No fuel used
-                    'total_time': total_time,
-                    'total_distance': sum(step.get('distance', 0) for step in path if step['action'] == 'TRAVEL')
-                }
+        # Check for orbital hop (parent↔child OR siblings at same coordinates)
+        is_orbital = start_wp.is_orbital_of(goal_wp) or distance == 0.0
 
-            if current in visited:
-                continue
-            visited.add(current)
+        if is_orbital:
+            distance = self.ORBITAL_HOP_DISTANCE
+            time = self.ORBITAL_HOP_TIME
+            mode = FlightMode.CRUISE
+        else:
+            # Use CRUISE mode for zero-fuel ships
+            mode = FlightMode.CRUISE
+            time = self.calculate_travel_time(distance, mode, engine_speed)
 
-            current_wp = graph[current]
+        # Create single direct travel step from start to goal
+        travel_step = {
+            'action': 'TRAVEL',
+            'waypoint': goal,
+            'from': start,
+            'distance': distance,
+            'fuel_cost': 0,  # No fuel cost for zero-fuel ships
+            'time': time,
+            'mode': mode
+        }
 
-            # Try all neighbors
-            for neighbor_symbol, neighbor_wp in graph.items():
-                if neighbor_symbol == current or neighbor_symbol in visited:
-                    continue
-
-                # Calculate distance
-                distance = current_wp.distance_to(neighbor_wp)
-
-                # Check for orbital hop (parent↔child OR siblings at same coordinates)
-                is_orbital = current_wp.is_orbital_of(neighbor_wp) or distance == 0.0
-
-                if is_orbital:
-                    distance = self.ORBITAL_HOP_DISTANCE
-                    time = self.ORBITAL_HOP_TIME
-                    mode = FlightMode.CRUISE
-                else:
-                    # Use CRUISE mode for zero-fuel ships
-                    mode = FlightMode.CRUISE
-                    time = self.calculate_travel_time(distance, mode, engine_speed)
-
-                # Create travel step
-                travel_step = {
-                    'action': 'TRAVEL',
-                    'waypoint': neighbor_symbol,
-                    'from': current,
-                    'distance': distance,
-                    'fuel_cost': 0,  # No fuel cost for zero-fuel ships
-                    'time': time,
-                    'mode': mode
-                }
-
-                new_path = path + [travel_step]
-                new_time = total_time + time
-
-                heapq.heappush(pq, (new_time, counter, neighbor_symbol, new_path))
-                counter += 1
-
-        # No path found
-        return None
+        return {
+            'steps': [travel_step],
+            'total_fuel_cost': 0,
+            'total_time': time,
+            'total_distance': distance
+        }
 
     def optimize_tour(
         self,
