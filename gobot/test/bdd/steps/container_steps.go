@@ -335,26 +335,31 @@ func (cc *containerContext) iGetMetadataValueForKey(key string) error {
 
 func (cc *containerContext) iCheckIfTheContainerShouldContinue() error {
 	cc.boolResult = cc.container.ShouldContinue()
+	sharedBoolResult = cc.boolResult // Share result for cross-context assertions
 	return nil
 }
 
 func (cc *containerContext) iCheckIfTheContainerCanRestart() error {
 	cc.boolResult = cc.container.CanRestart()
+	sharedBoolResult = cc.boolResult // Share result for cross-context assertions
 	return nil
 }
 
 func (cc *containerContext) iCheckIfTheContainerIsRunning() error {
 	cc.boolResult = cc.container.IsRunning()
+	sharedBoolResult = cc.boolResult // Share result for cross-context assertions
 	return nil
 }
 
 func (cc *containerContext) iCheckIfTheContainerIsFinished() error {
 	cc.boolResult = cc.container.IsFinished()
+	sharedBoolResult = cc.boolResult // Share result for cross-context assertions
 	return nil
 }
 
 func (cc *containerContext) iCheckIfTheContainerIsStopping() error {
 	cc.boolResult = cc.container.IsStopping()
+	sharedBoolResult = cc.boolResult // Share result for cross-context assertions
 	return nil
 }
 
@@ -585,11 +590,17 @@ func (cc *containerContext) theRuntimeDurationShouldBeApproximatelySeconds(secon
 }
 
 func (cc *containerContext) theOperationShouldFailWithError(expectedError string) error {
-	if cc.err == nil {
+	// Check shared error first (used by other contexts), then fallback to context-specific error
+	err := sharedErr
+	if err == nil {
+		err = cc.err
+	}
+
+	if err == nil {
 		return fmt.Errorf("expected error containing '%s' but got no error", expectedError)
 	}
-	if !strings.Contains(cc.err.Error(), expectedError) {
-		return fmt.Errorf("expected error containing '%s' but got '%s'", expectedError, cc.err.Error())
+	if !strings.Contains(err.Error(), expectedError) {
+		return fmt.Errorf("expected error containing '%s' but got '%s'", expectedError, err.Error())
 	}
 	return nil
 }

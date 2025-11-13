@@ -29,10 +29,8 @@ func (rc *routeContext) reset() {
 }
 
 func (rc *routeContext) testWaypointsAreAvailable(table *godog.Table) error {
-	for i, row := range table.Rows {
-		if i == 0 {
-			continue // Skip header
-		}
+	// Godog table.Rows does NOT include header row, only data rows
+	for _, row := range table.Rows {
 		symbol := row.Cells[0].Value
 		x := parseFloat(row.Cells[1].Value)
 		y := parseFloat(row.Cells[2].Value)
@@ -51,10 +49,8 @@ func (rc *routeContext) iCreateARouteSegmentFromToWith(from, to string, table *g
 	var flightMode shared.FlightMode
 	var requiresRefuel bool
 
-	for i, row := range table.Rows {
-		if i == 0 {
-			continue
-		}
+	// Godog table.Rows does NOT include header row, only data rows
+	for _, row := range table.Rows {
 		key := row.Cells[0].Value
 		val := row.Cells[1].Value
 
@@ -121,7 +117,8 @@ func (rc *routeContext) theSegmentShouldHaveFlightMode(mode string) error {
 	return nil
 }
 
-func (rc *routeContext) theSegmentShouldHaveRequiresRefuel(expected bool) error {
+func (rc *routeContext) theSegmentShouldHaveRequiresRefuel(expectedStr string) error {
+	expected := expectedStr == "true"
 	if rc.segment.RequiresRefuel != expected {
 		return fmt.Errorf("expected requires_refuel %t but got %t", expected, rc.segment.RequiresRefuel)
 	}
@@ -142,10 +139,8 @@ func (rc *routeContext) iCreateARouteWith(table *godog.Table) error {
 	var routeID, shipSymbol string
 	var playerID, shipFuelCapacity int
 
-	for i, row := range table.Rows {
-		if i == 0 {
-			continue
-		}
+	// Godog table.Rows does NOT include header row, only data rows
+	for _, row := range table.Rows {
 		key := row.Cells[0].Value
 		val := row.Cells[1].Value
 

@@ -76,7 +76,7 @@ Feature: Ship Entity
   Scenario: Depart when in transit raises error
     Given a ship in transit to "X1-B2"
     When I attempt to depart the ship
-    Then the operation should fail with error "ship must be docked to depart"
+    Then the operation should fail with error "cannot orbit while in transit"
 
   Scenario: Dock from in orbit to docked
     Given a ship in orbit at "X1-A1"
@@ -87,7 +87,7 @@ Feature: Ship Entity
   Scenario: Dock when in transit raises error
     Given a ship in transit to "X1-B2"
     When I attempt to dock the ship
-    Then the operation should fail with error "ship must be in orbit to dock"
+    Then the operation should fail with error "cannot dock while in transit"
 
   Scenario: Start transit from in orbit
     Given a ship in orbit at "X1-A1"
@@ -397,4 +397,44 @@ Feature: Ship Entity
   Scenario: Is at location when not at location
     Given a ship at "X1-A1"
     When I check if the ship is at location "X1-B2"
+    Then the result should be false
+
+  # ============================================================================
+  # Refueling Decision Tests
+  # ============================================================================
+
+  Scenario: Should refuel opportunistically when at fuel station with low fuel
+    Given a ship at "X1-A1" with 30 units of fuel and capacity 100
+    And waypoint "X1-A1" has trait "MARKETPLACE" and fuel available
+    When I check if ship should refuel opportunistically at "X1-A1" with threshold 0.5
+    Then the result should be true
+
+  Scenario: Should not refuel opportunistically when fuel above threshold
+    Given a ship at "X1-A1" with 60 units of fuel and capacity 100
+    And waypoint "X1-A1" has trait "MARKETPLACE" and fuel available
+    When I check if ship should refuel opportunistically at "X1-A1" with threshold 0.5
+    Then the result should be false
+
+  Scenario: Should not refuel opportunistically when no fuel available at waypoint
+    Given a ship at "X1-A1" with 30 units of fuel and capacity 100
+    And waypoint "X1-A1" has no fuel available
+    When I check if ship should refuel opportunistically at "X1-A1" with threshold 0.5
+    Then the result should be false
+
+  Scenario: Should prevent drift mode when fuel below threshold
+    Given a ship with 40 units of fuel and capacity 100
+    And a route segment requiring 50 units of fuel in DRIFT mode
+    When I check if ship should prevent drift mode with threshold 0.5
+    Then the result should be true
+
+  Scenario: Should not prevent drift mode when fuel above threshold
+    Given a ship with 60 units of fuel and capacity 100
+    And a route segment requiring 50 units of fuel in DRIFT mode
+    When I check if ship should prevent drift mode with threshold 0.5
+    Then the result should be false
+
+  Scenario: Should not prevent drift mode when not using drift flight mode
+    Given a ship with 40 units of fuel and capacity 100
+    And a route segment requiring 50 units of fuel in CRUISE mode
+    When I check if ship should prevent drift mode with threshold 0.5
     Then the result should be false

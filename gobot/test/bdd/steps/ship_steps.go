@@ -25,9 +25,10 @@ func (sc *shipContext) reset() {
 	sc.err = nil
 	sc.boolResult = false
 	sc.intResult = 0
-	sc.waypoints = make(map[string]*shared.Waypoint)
+	sc.waypoints = sharedWaypointMap  // Use shared waypoint map
 	sc.flightMode = shared.FlightModeCruise
 	sc.stateChangeResult = false
+	// Reset shared variables from value_object_steps (done in value_object reset)
 }
 
 // Helper to create a default waypoint
@@ -37,6 +38,7 @@ func (sc *shipContext) getOrCreateWaypoint(symbol string, x, y float64) *shared.
 	}
 	wp, _ := shared.NewWaypoint(symbol, x, y)
 	sc.waypoints[symbol] = wp
+	sharedWaypointMap[symbol] = wp  // Also update shared map
 	return wp
 }
 
@@ -132,9 +134,13 @@ func (sc *shipContext) iAttemptToCreateAShipWithCargoCapacity(cargoCapacity int)
 func (sc *shipContext) iAttemptToCreateAShipWithCargoUnits(cargoUnits int) error {
 	waypoint := sc.getOrCreateWaypoint("X1-A1", 0, 0)
 	fuel, _ := shared.NewFuel(100, 100)
-	cargo, _ := shared.NewCargo(40, 0, []*shared.CargoItem{})
+	// Try to create cargo with the specified units - will fail for negative
+	cargo, err := shared.NewCargo(40, cargoUnits, []*shared.CargoItem{})
+	if err != nil {
+		sc.err = err
+		return nil
+	}
 
-	// Override cargo units - this will fail validation
 	sc.ship, sc.err = navigation.NewShip(
 		"SHIP-1", 1, waypoint, fuel, 100, 40, cargo, 30, navigation.NavStatusInOrbit,
 	)
@@ -144,12 +150,15 @@ func (sc *shipContext) iAttemptToCreateAShipWithCargoUnits(cargoUnits int) error
 func (sc *shipContext) iAttemptToCreateAShipWithCargoCapacityAndCargoUnits(capacity, units int) error {
 	waypoint := sc.getOrCreateWaypoint("X1-A1", 0, 0)
 	fuel, _ := shared.NewFuel(100, 100)
-	cargo, _ := shared.NewCargo(capacity, units, []*shared.CargoItem{})
-	if cargo != nil {
-		sc.ship, sc.err = navigation.NewShip(
-			"SHIP-1", 1, waypoint, fuel, 100, capacity, cargo, 30, navigation.NavStatusInOrbit,
-		)
+	cargo, err := shared.NewCargo(capacity, units, []*shared.CargoItem{})
+	if err != nil {
+		sc.err = err
+		return nil
 	}
+
+	sc.ship, sc.err = navigation.NewShip(
+		"SHIP-1", 1, waypoint, fuel, 100, capacity, cargo, 30, navigation.NavStatusInOrbit,
+	)
 	return nil
 }
 
@@ -286,12 +295,13 @@ func (sc *shipContext) aShipInTransitTo(destination string) error {
 }
 
 func (sc *shipContext) theShipDeparts() error {
-	sc.err = sc.ship.Depart()
+	_, sc.err = sc.ship.EnsureInOrbit()
 	return nil
 }
 
 func (sc *shipContext) iAttemptToDepartTheShip() error {
-	sc.err = sc.ship.Depart()
+	_, sc.err = sc.ship.EnsureInOrbit()
+	sharedErr = sc.err
 	return nil
 }
 
@@ -303,12 +313,13 @@ func (sc *shipContext) theShipShouldNotBeDocked() error {
 }
 
 func (sc *shipContext) theShipDocks() error {
-	sc.err = sc.ship.Dock()
+	_, sc.err = sc.ship.EnsureDocked()
 	return nil
 }
 
 func (sc *shipContext) iAttemptToDockTheShip() error {
-	sc.err = sc.ship.Dock()
+	_, sc.err = sc.ship.EnsureDocked()
+	sharedErr = sc.err
 	return nil
 }
 
@@ -335,6 +346,7 @@ func (sc *shipContext) theShipStartsTransitTo(destination string) error {
 func (sc *shipContext) iAttemptToStartTransitTo(destination string) error {
 	destWaypoint := sc.getOrCreateWaypoint(destination, 100, 0)
 	sc.err = sc.ship.StartTransit(destWaypoint)
+	sharedErr = sc.err
 	return nil
 }
 
@@ -359,6 +371,7 @@ func (sc *shipContext) theShipArrives() error {
 
 func (sc *shipContext) iAttemptToArriveTheShip() error {
 	sc.err = sc.ship.Arrive()
+	sharedErr = sc.err
 	return nil
 }
 
@@ -369,10 +382,12 @@ func (sc *shipContext) iEnsureTheShipIsInOrbit() error {
 
 func (sc *shipContext) iAttemptToEnsureTheShipIsInOrbit() error {
 	sc.stateChangeResult, sc.err = sc.ship.EnsureInOrbit()
+	sharedErr = sc.err
 	return nil
 }
 
-func (sc *shipContext) theStateChangeResultShouldBe(expected bool) error {
+func (sc *shipContext) theStateChangeResultShouldBe(expectedStr string) error {
+	expected := expectedStr == "true"
 	if sc.stateChangeResult != expected {
 		return fmt.Errorf("expected state change result %t but got %t", expected, sc.stateChangeResult)
 	}
@@ -386,6 +401,7 @@ func (sc *shipContext) iEnsureTheShipIsDocked() error {
 
 func (sc *shipContext) iAttemptToEnsureTheShipIsDocked() error {
 	sc.stateChangeResult, sc.err = sc.ship.EnsureDocked()
+	sharedErr = sc.err
 	return nil
 }
 
@@ -430,6 +446,7 @@ func (sc *shipContext) theShipConsumesUnitsOfFuel(units int) error {
 
 func (sc *shipContext) iAttemptToConsumeUnitsOfFuel(units int) error {
 	sc.err = sc.ship.ConsumeFuel(units)
+	sharedErr = sc.err
 	return nil
 }
 
@@ -440,11 +457,13 @@ func (sc *shipContext) theShipRefuelsUnits(units int) error {
 
 func (sc *shipContext) iAttemptToRefuelUnits(units int) error {
 	sc.err = sc.ship.Refuel(units)
+	sharedErr = sc.err
 	return nil
 }
 
 func (sc *shipContext) theShipRefuelsToFull() error {
 	sc.intResult, sc.err = sc.ship.RefuelToFull()
+	sharedIntResult = sc.intResult
 	return nil
 }
 
@@ -476,10 +495,12 @@ func (sc *shipContext) aWaypointAtCoordinates(symbol string, x, y float64) error
 func (sc *shipContext) iCheckIfTheShipCanNavigateTo(destination string) error {
 	destWaypoint := sc.waypoints[destination]
 	sc.boolResult = sc.ship.CanNavigateTo(destWaypoint)
+	sharedBoolResult = sc.boolResult
 	return nil
 }
 
-func (sc *shipContext) theResultShouldBe(expected bool) error {
+func (sc *shipContext) theResultShouldBe(expectedStr string) error {
+	expected := expectedStr == "true"
 	if sc.boolResult != expected {
 		return fmt.Errorf("expected result %t but got %t", expected, sc.boolResult)
 	}
@@ -511,6 +532,7 @@ func (sc *shipContext) iCalculateFuelRequiredToWithMode(destination, mode string
 		flightMode = shared.FlightModeStealth
 	}
 	sc.intResult = sc.ship.CalculateFuelForTrip(destWaypoint, flightMode)
+	sharedIntResult = sc.intResult
 	return nil
 }
 
@@ -524,12 +546,14 @@ func (sc *shipContext) theFuelRequiredShouldBeUnits(units int) error {
 func (sc *shipContext) iCheckIfTheShipNeedsRefuelForJourneyTo(destination string) error {
 	destWaypoint := sc.waypoints[destination]
 	sc.boolResult = sc.ship.NeedsRefuelForJourney(destWaypoint, 0.1)
+	sharedBoolResult = sc.boolResult
 	return nil
 }
 
 func (sc *shipContext) iCheckIfTheShipNeedsRefuelForJourneyToWithSafetyMargin(destination string, margin float64) error {
 	destWaypoint := sc.waypoints[destination]
 	sc.boolResult = sc.ship.NeedsRefuelForJourney(destWaypoint, margin)
+	sharedBoolResult = sc.boolResult
 	return nil
 }
 
@@ -558,6 +582,7 @@ func (sc *shipContext) iCalculateTravelTimeToWithMode(destination, mode string) 
 		flightMode = shared.FlightModeStealth
 	}
 	sc.intResult = sc.ship.CalculateTravelTime(destWaypoint, flightMode)
+	sharedIntResult = sc.intResult
 	return nil
 }
 
@@ -608,11 +633,13 @@ func (sc *shipContext) aShipWithCargoCapacityAndCargoUnits(capacity, units int) 
 
 func (sc *shipContext) iCheckIfTheShipHasCargoSpaceForUnits(units int) error {
 	sc.boolResult = sc.ship.HasCargoSpace(units)
+	sharedBoolResult = sc.boolResult
 	return nil
 }
 
 func (sc *shipContext) iCheckAvailableCargoSpace() error {
 	sc.intResult = sc.ship.AvailableCargoSpace()
+	sharedIntResult = sc.intResult
 	return nil
 }
 
@@ -625,11 +652,13 @@ func (sc *shipContext) theAvailableSpaceShouldBeUnits(units int) error {
 
 func (sc *shipContext) iCheckIfCargoIsEmpty() error {
 	sc.boolResult = sc.ship.IsCargoEmpty()
+	sharedBoolResult = sc.boolResult
 	return nil
 }
 
 func (sc *shipContext) iCheckIfCargoIsFull() error {
 	sc.boolResult = sc.ship.IsCargoFull()
+	sharedBoolResult = sc.boolResult
 	return nil
 }
 
@@ -648,16 +677,19 @@ func (sc *shipContext) aShipAt(location string) error {
 
 func (sc *shipContext) iCheckIfTheShipIsDocked() error {
 	sc.boolResult = sc.ship.IsDocked()
+	sharedBoolResult = sc.boolResult
 	return nil
 }
 
 func (sc *shipContext) iCheckIfTheShipIsInOrbit() error {
 	sc.boolResult = sc.ship.IsInOrbit()
+	sharedBoolResult = sc.boolResult
 	return nil
 }
 
 func (sc *shipContext) iCheckIfTheShipIsInTransit() error {
 	sc.boolResult = sc.ship.IsInTransit()
+	sharedBoolResult = sc.boolResult
 	return nil
 }
 
@@ -667,6 +699,7 @@ func (sc *shipContext) iCheckIfTheShipIsAtLocation(location string) error {
 		waypoint = sc.getOrCreateWaypoint(location, 0, 0)
 	}
 	sc.boolResult = sc.ship.IsAtLocation(waypoint)
+	sharedBoolResult = sc.boolResult
 	return nil
 }
 
@@ -674,7 +707,8 @@ func (sc *shipContext) iCheckIfTheShipIsAtLocation(location string) error {
 func InitializeShipScenario(ctx *godog.ScenarioContext) {
 	sc := &shipContext{}
 
-	ctx.Before(func(ctx context.Context, sc *godog.Scenario) (context.Context, error) {
+	ctx.Before(func(ctx context.Context, _ *godog.Scenario) (context.Context, error) {
+		sc.reset()
 		return ctx, nil
 	})
 

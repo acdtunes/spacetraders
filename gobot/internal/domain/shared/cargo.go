@@ -37,13 +37,13 @@ type Cargo struct {
 // NewCargo creates a new cargo manifest with validation
 func NewCargo(capacity, units int, inventory []*CargoItem) (*Cargo, error) {
 	if units < 0 {
-		return nil, fmt.Errorf("cargo units cannot be negative")
+		return nil, fmt.Errorf("cargo_units cannot be negative")
 	}
 	if capacity < 0 {
-		return nil, fmt.Errorf("cargo capacity cannot be negative")
+		return nil, fmt.Errorf("cargo_capacity cannot be negative")
 	}
 	if units > capacity {
-		return nil, fmt.Errorf("cargo units %d exceed capacity %d", units, capacity)
+		return nil, fmt.Errorf("cargo_units cannot exceed cargo_capacity")
 	}
 
 	// Verify inventory sum matches total units
@@ -85,6 +85,17 @@ func (c *Cargo) HasItemsOtherThan(symbol string) bool {
 		}
 	}
 	return false
+}
+
+// GetOtherItems returns all cargo items except the specified symbol
+func (c *Cargo) GetOtherItems(symbol string) []*CargoItem {
+	var others []*CargoItem
+	for _, item := range c.Inventory {
+		if item.Symbol != symbol {
+			others = append(others, item)
+		}
+	}
+	return others
 }
 
 // AvailableCapacity calculates available cargo space

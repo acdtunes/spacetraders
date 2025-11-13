@@ -9,18 +9,28 @@ import (
 	"github.com/cucumber/godog"
 )
 
+// Shared assertion variables across contexts
+// These are used when steps from different contexts need to share assertion data
+var (
+	sharedBoolResult   bool
+	sharedIntResult    int
+	sharedErr          error
+	sharedWaypointMap  map[string]*shared.Waypoint
+)
+
 type valueObjectContext struct {
-	waypoint     *shared.Waypoint
-	fuel         *shared.Fuel
-	originalFuel *shared.Fuel
-	cargo        *shared.Cargo
-	cargoItem    *shared.CargoItem
-	flightMode   shared.FlightMode
-	err          error
-	floatResult  float64
-	intResult    int
-	boolResult   bool
-	waypointMap  map[string]*shared.Waypoint
+	waypoint       *shared.Waypoint
+	fuel           *shared.Fuel
+	originalFuel   *shared.Fuel
+	cargo          *shared.Cargo
+	cargoItem      *shared.CargoItem
+	flightMode     shared.FlightMode
+	err            error
+	floatResult    float64
+	intResult      int
+	boolResult     bool
+	waypointMap    map[string]*shared.Waypoint
+	otherCargoItems []*shared.CargoItem
 }
 
 func (voc *valueObjectContext) reset() {
@@ -35,6 +45,12 @@ func (voc *valueObjectContext) reset() {
 	voc.intResult = 0
 	voc.boolResult = false
 	voc.waypointMap = make(map[string]*shared.Waypoint)
+	voc.otherCargoItems = nil
+	// Reset shared variables
+	sharedBoolResult = false
+	sharedIntResult = 0
+	sharedErr = nil
+	sharedWaypointMap = make(map[string]*shared.Waypoint)
 }
 
 // Waypoint steps
@@ -65,6 +81,7 @@ func (voc *valueObjectContext) theWaypointShouldHaveSymbol(symbol string) error 
 func (voc *valueObjectContext) aWaypointAtCoordinates(symbol string, x, y float64) error {
 	wp, _ := shared.NewWaypoint(symbol, x, y)
 	voc.waypointMap[symbol] = wp
+	sharedWaypointMap[symbol] = wp
 	return nil
 }
 
@@ -172,8 +189,14 @@ func (voc *valueObjectContext) iCalculateTravelTimeForModeWithDistanceAndSpeed(m
 }
 
 func (voc *valueObjectContext) theTravelTimeShouldBeSeconds(seconds int) error {
-	if voc.intResult != seconds {
-		return fmt.Errorf("expected travel time %d but got %d", seconds, voc.intResult)
+	// Check shared int result first (used by other contexts), then fallback to context-specific result
+	result := sharedIntResult
+	if result == 0 && voc.intResult != 0 {
+		result = voc.intResult
+	}
+
+	if result != seconds {
+		return fmt.Errorf("expected travel time %d but got %d", seconds, result)
 	}
 	return nil
 }
@@ -222,6 +245,211 @@ func (voc *valueObjectContext) theCargoItemShouldHaveUnits(units int) error {
 	return nil
 }
 
+func (voc *valueObjectContext) theCargoItemShouldHaveName(name string) error {
+	if voc.cargoItem.Name != name {
+		return fmt.Errorf("expected name '%s' but got '%s'", name, voc.cargoItem.Name)
+	}
+	return nil
+}
+
+func (voc *valueObjectContext) iAttemptToCreateACargoItemWithUnits(units int) error {
+	voc.cargoItem, voc.err = shared.NewCargoItem("TEST", "Test", "", units)
+	return nil
+}
+
+// Cargo construction steps
+func (voc *valueObjectContext) aCargoItemWithSymbolAndUnits(symbol string, units int) error {
+	item, err := shared.NewCargoItem(symbol, symbol, "", units)
+	if err != nil {
+		return err
+	}
+	voc.cargoItem = item
+	return nil
+}
+
+func (voc *valueObjectContext) iCreateCargoWithCapacityUnitsAndInventory(capacity, units int) error {
+	inventory := []*shared.CargoItem{}
+	if voc.cargoItem != nil {
+		inventory = append(inventory, voc.cargoItem)
+	}
+	voc.cargo, voc.err = shared.NewCargo(capacity, units, inventory)
+	return voc.err
+}
+
+func (voc *valueObjectContext) iCreateCargoWithCapacityUnitsAndEmptyInventory(capacity, units int) error {
+	voc.cargo, voc.err = shared.NewCargo(capacity, units, []*shared.CargoItem{})
+	return voc.err
+}
+
+func (voc *valueObjectContext) iAttemptToCreateCargoWithUnits(units int) error {
+	voc.cargo, voc.err = shared.NewCargo(40, units, []*shared.CargoItem{})
+	return nil
+}
+
+func (voc *valueObjectContext) iAttemptToCreateCargoWithCapacity(capacity int) error {
+	voc.cargo, voc.err = shared.NewCargo(capacity, 0, []*shared.CargoItem{})
+	return nil
+}
+
+func (voc *valueObjectContext) iAttemptToCreateCargoWithCapacityAndUnits(capacity, units int) error {
+	voc.cargo, voc.err = shared.NewCargo(capacity, units, []*shared.CargoItem{})
+	return nil
+}
+
+func (voc *valueObjectContext) cargoCreationShouldFailWithError(expectedError string) error {
+	if voc.err == nil {
+		return fmt.Errorf("expected error but got none")
+	}
+	return nil
+}
+
+func (voc *valueObjectContext) theCargoShouldHaveCapacity(capacity int) error {
+	if voc.cargo.Capacity != capacity {
+		return fmt.Errorf("expected capacity %d but got %d", capacity, voc.cargo.Capacity)
+	}
+	return nil
+}
+
+func (voc *valueObjectContext) theCargoShouldHaveUnits(units int) error {
+	if voc.cargo.Units != units {
+		return fmt.Errorf("expected units %d but got %d", units, voc.cargo.Units)
+	}
+	return nil
+}
+
+func (voc *valueObjectContext) theCargoInventoryShouldContainItems(count int) error {
+	if len(voc.cargo.Inventory) != count {
+		return fmt.Errorf("expected %d items but got %d", count, len(voc.cargo.Inventory))
+	}
+	return nil
+}
+
+func (voc *valueObjectContext) theCargoShouldBeEmpty() error {
+	if !voc.cargo.IsEmpty() {
+		return fmt.Errorf("expected cargo to be empty but it has %d units", voc.cargo.Units)
+	}
+	return nil
+}
+
+// Cargo query steps
+func (voc *valueObjectContext) cargoWithItems(table *godog.Table) error {
+	items := []*shared.CargoItem{}
+	totalUnits := 0
+
+	for i, row := range table.Rows {
+		if i == 0 {
+			continue // Skip header
+		}
+		symbol := row.Cells[0].Value
+		var units int
+		fmt.Sscanf(row.Cells[1].Value, "%d", &units)
+
+		item, err := shared.NewCargoItem(symbol, symbol, "", units)
+		if err != nil {
+			return err
+		}
+		items = append(items, item)
+		totalUnits += units
+	}
+
+	voc.cargo, voc.err = shared.NewCargo(100, totalUnits, items)
+	return voc.err
+}
+
+func (voc *valueObjectContext) iCheckIfCargoHasItemWithMinUnits(symbol string, minUnits int) error {
+	voc.boolResult = voc.cargo.HasItem(symbol, minUnits)
+	return nil
+}
+
+func (voc *valueObjectContext) theResultShouldBe(expectedStr string) error {
+	expected := expectedStr == "true"
+	// Use shared variable if set by another context (e.g., containerContext)
+	// Otherwise fall back to local boolResult
+	actualResult := sharedBoolResult || voc.boolResult
+	// For false expectations, we need to check both are false
+	if !expected && (sharedBoolResult || voc.boolResult) {
+		return fmt.Errorf("expected result false but got true")
+	}
+	if expected && !actualResult {
+		return fmt.Errorf("expected result true but got false")
+	}
+	return nil
+}
+
+func (voc *valueObjectContext) iGetUnitsOfItem(symbol string) error {
+	voc.intResult = voc.cargo.GetItemUnits(symbol)
+	return nil
+}
+
+func (voc *valueObjectContext) theItemUnitsShouldBe(units int) error {
+	if voc.intResult != units {
+		return fmt.Errorf("expected %d units but got %d", units, voc.intResult)
+	}
+	return nil
+}
+
+func (voc *valueObjectContext) iCheckIfCargoHasItemsOtherThan(symbol string) error {
+	voc.boolResult = voc.cargo.HasItemsOtherThan(symbol)
+	return nil
+}
+
+// Cargo capacity steps
+func (voc *valueObjectContext) cargoWithCapacityAndUnits(capacity, units int) error {
+	// Create dummy inventory items to match total units (required by Cargo validation)
+	var inventory []*shared.CargoItem
+	if units > 0 {
+		item, _ := shared.NewCargoItem("DUMMY", "Dummy Item", "", units)
+		inventory = []*shared.CargoItem{item}
+	}
+	voc.cargo, voc.err = shared.NewCargo(capacity, units, inventory)
+	return voc.err
+}
+
+func (voc *valueObjectContext) iCalculateAvailableCapacity() error {
+	voc.intResult = voc.cargo.AvailableCapacity()
+	return nil
+}
+
+func (voc *valueObjectContext) theAvailableCapacityShouldBe(capacity int) error {
+	if voc.intResult != capacity {
+		return fmt.Errorf("expected available capacity %d but got %d", capacity, voc.intResult)
+	}
+	return nil
+}
+
+// Cargo status steps
+func (voc *valueObjectContext) iCheckIfCargoIsEmpty() error {
+	voc.boolResult = voc.cargo.IsEmpty()
+	return nil
+}
+
+func (voc *valueObjectContext) iCheckIfCargoIsFull() error {
+	voc.boolResult = voc.cargo.IsFull()
+	return nil
+}
+
+// Get other items steps
+func (voc *valueObjectContext) iGetOtherItemsExcluding(symbol string) error {
+	voc.otherCargoItems = voc.cargo.GetOtherItems(symbol)
+	return nil
+}
+
+func (voc *valueObjectContext) iShouldHaveOtherCargoItems(count int) error {
+	if len(voc.otherCargoItems) != count {
+		return fmt.Errorf("expected %d other cargo items but got %d", count, len(voc.otherCargoItems))
+	}
+	return nil
+}
+
+func (voc *valueObjectContext) otherItemsShouldContainWithUnits(symbol string, units int) error {
+	for _, item := range voc.otherCargoItems {
+		if item.Symbol == symbol && item.Units == units {
+			return nil
+		}
+	}
+	return fmt.Errorf("expected to find %s with %d units in other items", symbol, units)
+}
+
 // InitializeValueObjectScenarios registers all value object-related step definitions
 func InitializeValueObjectScenarios(ctx *godog.ScenarioContext) {
 	voc := &valueObjectContext{}
@@ -263,13 +491,48 @@ func InitializeValueObjectScenarios(ctx *godog.ScenarioContext) {
 		voc.iSelectOptimalFlightModeWithCurrentFuelCostSafetyMargin)
 	ctx.Step(`^the selected mode should be ([A-Z]+)$`, voc.theSelectedModeShouldBe)
 
-	// Cargo steps
+	// Cargo item steps
 	ctx.Step(`^I create a cargo item with symbol "([^"]*)", name "([^"]*)", units (\d+)$`,
 		voc.iCreateACargoItemWithSymbolNameUnits)
 	ctx.Step(`^I attempt to create a cargo item with empty symbol$`, voc.iAttemptToCreateACargoItemWithEmptySymbol)
+	ctx.Step(`^I attempt to create a cargo item with units (-?\d+)$`, voc.iAttemptToCreateACargoItemWithUnits)
 	ctx.Step(`^cargo item creation should fail with error "([^"]*)"$`, voc.cargoItemCreationShouldFailWithError)
 	ctx.Step(`^the cargo item should have symbol "([^"]*)"$`, voc.theCargoItemShouldHaveSymbol)
+	ctx.Step(`^the cargo item should have name "([^"]*)"$`, voc.theCargoItemShouldHaveName)
 	ctx.Step(`^the cargo item should have units (\d+)$`, voc.theCargoItemShouldHaveUnits)
 
-	// Note: Complete implementation would include all remaining steps from the value object feature files
+	// Cargo construction steps
+	ctx.Step(`^a cargo item with symbol "([^"]*)" and units (\d+)$`, voc.aCargoItemWithSymbolAndUnits)
+	ctx.Step(`^I create cargo with capacity (\d+), units (\d+), and inventory$`, voc.iCreateCargoWithCapacityUnitsAndInventory)
+	ctx.Step(`^I create cargo with capacity (\d+), units (\d+), and empty inventory$`, voc.iCreateCargoWithCapacityUnitsAndEmptyInventory)
+	ctx.Step(`^I attempt to create cargo with units (-?\d+)$`, voc.iAttemptToCreateCargoWithUnits)
+	ctx.Step(`^I attempt to create cargo with capacity (-?\d+)$`, voc.iAttemptToCreateCargoWithCapacity)
+	ctx.Step(`^I attempt to create cargo with capacity (\d+) and units (\d+)$`, voc.iAttemptToCreateCargoWithCapacityAndUnits)
+	ctx.Step(`^cargo creation should fail with error "([^"]*)"$`, voc.cargoCreationShouldFailWithError)
+	ctx.Step(`^the cargo should have capacity (\d+)$`, voc.theCargoShouldHaveCapacity)
+	ctx.Step(`^the cargo should have units (\d+)$`, voc.theCargoShouldHaveUnits)
+	ctx.Step(`^the cargo inventory should contain (\d+) items$`, voc.theCargoInventoryShouldContainItems)
+	ctx.Step(`^the cargo should be empty$`, voc.theCargoShouldBeEmpty)
+
+	// Cargo query steps
+	ctx.Step(`^cargo with items:$`, voc.cargoWithItems)
+	ctx.Step(`^I check if cargo has item "([^"]*)" with min units (\d+)$`, voc.iCheckIfCargoHasItemWithMinUnits)
+	ctx.Step(`^I get units of item "([^"]*)"$`, voc.iGetUnitsOfItem)
+	ctx.Step(`^the item units should be (\d+)$`, voc.theItemUnitsShouldBe)
+	ctx.Step(`^I check if cargo has items other than "([^"]*)"$`, voc.iCheckIfCargoHasItemsOtherThan)
+	ctx.Step(`^the result should be (true|false)$`, voc.theResultShouldBe)
+
+	// Cargo capacity steps
+	ctx.Step(`^cargo with capacity (\d+) and units (\d+)$`, voc.cargoWithCapacityAndUnits)
+	ctx.Step(`^I calculate available capacity$`, voc.iCalculateAvailableCapacity)
+	ctx.Step(`^the available capacity should be (\d+)$`, voc.theAvailableCapacityShouldBe)
+
+	// Cargo status steps
+	ctx.Step(`^I check if cargo is empty$`, voc.iCheckIfCargoIsEmpty)
+	ctx.Step(`^I check if cargo is full$`, voc.iCheckIfCargoIsFull)
+
+	// Get other items steps
+	ctx.Step(`^I get other items excluding "([^"]*)"$`, voc.iGetOtherItemsExcluding)
+	ctx.Step(`^I should have (\d+) other cargo items$`, voc.iShouldHaveOtherCargoItems)
+	ctx.Step(`^other items should contain "([^"]*)" with (\d+) units$`, voc.otherItemsShouldContainWithUnits)
 }

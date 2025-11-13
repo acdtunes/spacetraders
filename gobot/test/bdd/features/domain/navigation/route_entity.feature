@@ -234,3 +234,61 @@ Feature: Route Entity
     And I complete the current segment
     And I get the current segment index
     Then the index should be 2
+
+  # ============================================================================
+  # Route Query Tests
+  # ============================================================================
+
+  Scenario: Has refuel at start when route requires refuel before departure
+    Given a route with refuel_before_departure true
+    Then HasRefuelAtStart should return true
+
+  Scenario: Does not have refuel at start when route does not require refuel before departure
+    Given a route with refuel_before_departure false
+    Then HasRefuelAtStart should return false
+
+  Scenario: NextSegment returns first segment initially
+    Given a route with 2 segments
+    When I call NextSegment
+    Then it should return the first segment
+
+  Scenario: NextSegment returns current segment when executing
+    Given a route in "EXECUTING" status with 2 segments
+    And the current_segment_index is 1
+    When I call NextSegment
+    Then it should return the second segment
+
+  Scenario: NextSegment returns nil when route completed
+    Given a route in "COMPLETED" status with 2 segments
+    When I call NextSegment
+    Then it should return nil
+
+  Scenario: IsComplete returns false when route is planned
+    Given a route in "PLANNED" status
+    When I call IsComplete
+    Then it should return false
+
+  Scenario: IsComplete returns false when route is executing
+    Given a route in "EXECUTING" status
+    When I call IsComplete
+    Then it should return false
+
+  Scenario: IsComplete returns true when route is completed
+    Given a route in "COMPLETED" status
+    When I call IsComplete
+    Then it should return true
+
+  Scenario: IsFailed returns false when route is planned
+    Given a route in "PLANNED" status
+    When I call IsFailed
+    Then it should return false
+
+  Scenario: IsFailed returns false when route is executing
+    Given a route in "EXECUTING" status
+    When I call IsFailed
+    Then it should return false
+
+  Scenario: IsFailed returns true when route is failed
+    Given a route in "FAILED" status
+    When I call IsFailed
+    Then it should return true
