@@ -6,6 +6,7 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 )
 
 // ListShipsQuery represents a query to list all ships for a player
@@ -21,12 +22,12 @@ type ListShipsResponse struct {
 
 // ListShipsHandler handles the ListShips query
 type ListShipsHandler struct {
-	shipRepo   common.ShipRepository
-	playerRepo common.PlayerRepository
+	shipRepo   navigation.ShipRepository
+	playerRepo player.PlayerRepository
 }
 
 // NewListShipsHandler creates a new ListShipsHandler
-func NewListShipsHandler(shipRepo common.ShipRepository, playerRepo common.PlayerRepository) *ListShipsHandler {
+func NewListShipsHandler(shipRepo navigation.ShipRepository, playerRepo player.PlayerRepository) *ListShipsHandler {
 	return &ListShipsHandler{
 		shipRepo:   shipRepo,
 		playerRepo: playerRepo,

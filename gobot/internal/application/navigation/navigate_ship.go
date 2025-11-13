@@ -8,8 +8,10 @@ import (
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	domainNavigation "github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	domainRouting "github.com/andrescamacho/spacetraders-go/internal/domain/routing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
 
 // extractSystemSymbol extracts system symbol from waypoint symbol
@@ -28,10 +30,12 @@ func extractSystemSymbol(waypointSymbol string) string {
 // calculateArrivalWaitTime calculates seconds to wait until arrival
 //
 // Args:
-//     arrivalTimeStr: ISO format arrival time from API (e.g., "2024-01-01T12:00:00Z")
+//
+//	arrivalTimeStr: ISO format arrival time from API (e.g., "2024-01-01T12:00:00Z")
 //
 // Returns:
-//     Seconds to wait (minimum 0)
+//
+//	Seconds to wait (minimum 0)
 func calculateArrivalWaitTime(arrivalTimeStr string) int {
 	// Handle both Z suffix and +00:00 suffix
 	arrivalTimeStr = strings.Replace(arrivalTimeStr, "Z", "+00:00", 1)
@@ -66,23 +70,23 @@ type NavigateShipResponse struct {
 	CurrentLocation string
 	FuelRemaining   int
 	Error           string
-	Route           *navigation.Route
+	Route           *domainNavigation.Route
 }
 
 // NavigateShipHandler handles the NavigateShip command with full Python feature parity
 type NavigateShipHandler struct {
-	shipRepo      common.ShipRepository
-	waypointRepo  common.WaypointRepository
-	graphProvider common.ISystemGraphProvider
-	routingClient common.RoutingClient
+	shipRepo      domainNavigation.ShipRepository
+	waypointRepo  system.WaypointRepository
+	graphProvider system.ISystemGraphProvider
+	routingClient domainRouting.RoutingClient
 }
 
 // NewNavigateShipHandler creates a new NavigateShipHandler with graph provider
 func NewNavigateShipHandler(
-	shipRepo common.ShipRepository,
-	waypointRepo common.WaypointRepository,
-	graphProvider common.ISystemGraphProvider,
-	routingClient common.RoutingClient,
+	shipRepo domainNavigation.ShipRepository,
+	waypointRepo system.WaypointRepository,
+	graphProvider system.ISystemGraphProvider,
+	routingClient domainRouting.RoutingClient,
 ) *NavigateShipHandler {
 	return &NavigateShipHandler{
 		shipRepo:      shipRepo,
@@ -172,11 +176,11 @@ func (h *NavigateShipHandler) Handle(ctx context.Context, request common.Request
 	if ship.CurrentLocation().Symbol == cmd.Destination {
 		// Ship is already at destination - create empty route and mark as completed
 		routeID := fmt.Sprintf("%s_already_at_destination", cmd.ShipSymbol)
-		route, err := navigation.NewRoute(
+		route, err := domainNavigation.NewRoute(
 			routeID,
 			cmd.ShipSymbol,
 			cmd.PlayerID,
-			[]*navigation.RouteSegment{}, // No segments needed
+			[]*domainNavigation.RouteSegment{}, // No segments needed
 			ship.FuelCapacity(),
 			false,
 		)
@@ -261,12 +265,14 @@ func (h *NavigateShipHandler) Handle(ctx context.Context, request common.Request
 // convertGraphToWaypoints converts graph waypoints to Waypoint objects with trait enrichment
 //
 // Args:
-//     graph: Graph structure from system_graphs table (structure-only)
-//     waypointTraits: Optional lookup dict of Waypoint objects from waypoints table
-//                    Maps waypoint_symbol -> Waypoint with full trait data
+//
+//	graph: Graph structure from system_graphs table (structure-only)
+//	waypointTraits: Optional lookup dict of Waypoint objects from waypoints table
+//	               Maps waypoint_symbol -> Waypoint with full trait data
 //
 // Returns:
-//     Dict of waypoint_symbol -> Waypoint objects with correct has_fuel data
+//
+//	Dict of waypoint_symbol -> Waypoint objects with correct has_fuel data
 func (h *NavigateShipHandler) convertGraphToWaypoints(
 	graph map[string]interface{},
 	waypointTraits map[string]*shared.Waypoint,
@@ -336,14 +342,14 @@ func (h *NavigateShipHandler) convertGraphToWaypoints(
 // planRoute plans route using routing client
 func (h *NavigateShipHandler) planRoute(
 	ctx context.Context,
-	ship *navigation.Ship,
+	ship *domainNavigation.Ship,
 	destination string,
 	waypoints map[string]*shared.Waypoint,
-) (*navigation.Route, error) {
+) (*domainNavigation.Route, error) {
 	// Convert waypoints to DTO
-	waypointData := make([]*common.WaypointData, 0, len(waypoints))
+	waypointData := make([]*system.WaypointData, 0, len(waypoints))
 	for _, wp := range waypoints {
-		waypointData = append(waypointData, &common.WaypointData{
+		waypointData = append(waypointData, &system.WaypointData{
 			Symbol:  wp.Symbol,
 			X:       wp.X,
 			Y:       wp.Y,
@@ -351,7 +357,7 @@ func (h *NavigateShipHandler) planRoute(
 		})
 	}
 
-	request := &common.RouteRequest{
+	request := &domainRouting.RouteRequest{
 		SystemSymbol:  ship.CurrentLocation().SystemSymbol,
 		StartWaypoint: ship.CurrentLocation().Symbol,
 		GoalWaypoint:  destination,
@@ -372,11 +378,11 @@ func (h *NavigateShipHandler) planRoute(
 
 // createRouteFromPlan creates Route entity from routing engine plan
 func (h *NavigateShipHandler) createRouteFromPlan(
-	routePlan *common.RouteResponse,
-	ship *navigation.Ship,
+	routePlan *domainRouting.RouteResponse,
+	ship *domainNavigation.Ship,
 	waypointObjects map[string]*shared.Waypoint,
-) (*navigation.Route, error) {
-	segments := []*navigation.RouteSegment{}
+) (*domainNavigation.Route, error) {
+	segments := []*domainNavigation.RouteSegment{}
 	refuelBeforeDeparture := false
 
 	if len(routePlan.Steps) == 0 {
@@ -384,13 +390,13 @@ func (h *NavigateShipHandler) createRouteFromPlan(
 	}
 
 	// Check if first action is REFUEL (ship at fuel station with low fuel)
-	if routePlan.Steps[0].Action == common.RouteActionRefuel {
+	if routePlan.Steps[0].Action == domainRouting.RouteActionRefuel {
 		refuelBeforeDeparture = true
 	}
 
 	var fromWaypoint *shared.Waypoint
 	for _, step := range routePlan.Steps {
-		if step.Action == common.RouteActionTravel {
+		if step.Action == domainRouting.RouteActionTravel {
 			// Find the from_waypoint (previous step's destination or start)
 			if len(segments) > 0 {
 				fromWaypoint = segments[len(segments)-1].ToWaypoint
@@ -403,22 +409,22 @@ func (h *NavigateShipHandler) createRouteFromPlan(
 				return nil, fmt.Errorf("waypoint %s not found in cache", step.Waypoint)
 			}
 
-		// Determine flight mode from step (routing engine uses BURN-first logic)
-		flightMode := shared.FlightModeCruise // Default fallback
-		if step.Mode != "" {
-			switch step.Mode {
-			case "BURN":
-				flightMode = shared.FlightModeBurn
-			case "CRUISE":
-				flightMode = shared.FlightModeCruise
-			case "DRIFT":
-				flightMode = shared.FlightModeDrift
-			case "STEALTH":
-				flightMode = shared.FlightModeStealth
+			// Determine flight mode from step (routing engine uses BURN-first logic)
+			flightMode := shared.FlightModeCruise // Default fallback
+			if step.Mode != "" {
+				switch step.Mode {
+				case "BURN":
+					flightMode = shared.FlightModeBurn
+				case "CRUISE":
+					flightMode = shared.FlightModeCruise
+				case "DRIFT":
+					flightMode = shared.FlightModeDrift
+				case "STEALTH":
+					flightMode = shared.FlightModeStealth
+				}
 			}
-		}
 
-			segment := navigation.NewRouteSegment(
+			segment := domainNavigation.NewRouteSegment(
 				fromWaypoint,
 				toWaypoint,
 				fromWaypoint.DistanceTo(toWaypoint),
@@ -428,11 +434,11 @@ func (h *NavigateShipHandler) createRouteFromPlan(
 				false, // Will be updated if next step is REFUEL
 			)
 			segments = append(segments, segment)
-		} else if step.Action == common.RouteActionRefuel {
+		} else if step.Action == domainRouting.RouteActionRefuel {
 			// Mark previous segment as requiring refuel (mid-route refueling)
 			if len(segments) > 0 {
 				prev := segments[len(segments)-1]
-				segments[len(segments)-1] = navigation.NewRouteSegment(
+				segments[len(segments)-1] = domainNavigation.NewRouteSegment(
 					prev.FromWaypoint,
 					prev.ToWaypoint,
 					prev.Distance,
@@ -452,7 +458,7 @@ func (h *NavigateShipHandler) createRouteFromPlan(
 	// Generate route ID
 	routeID := fmt.Sprintf("%s_%d", ship.ShipSymbol(), routePlan.TotalTimeSeconds)
 
-	return navigation.NewRoute(
+	return domainNavigation.NewRoute(
 		routeID,
 		ship.ShipSymbol(),
 		ship.PlayerID(),
@@ -478,13 +484,13 @@ func (h *NavigateShipHandler) createRouteFromPlan(
 // 11. Complete segment
 func (h *NavigateShipHandler) executeRoute(
 	ctx context.Context,
-	route *navigation.Route,
-	ship *navigation.Ship,
+	route *domainNavigation.Route,
+	ship *domainNavigation.Ship,
 	playerID int,
 ) error {
 	// IDEMPOTENCY: If ship is IN_TRANSIT from a previous command, wait for arrival first
 	// This makes navigation commands idempotent - you can send them at any time
-	if ship.NavStatus() == navigation.NavStatusInTransit {
+	if ship.NavStatus() == domainNavigation.NavStatusInTransit {
 		log.Printf("Ship %s is IN_TRANSIT from previous command, waiting for arrival...", ship.ShipSymbol())
 
 		// Fetch current ship state to get arrival time (need to call API directly)
@@ -500,7 +506,7 @@ func (h *NavigateShipHandler) executeRoute(
 		ship = freshShip
 
 		// Call arrive() if still IN_TRANSIT
-		if ship.NavStatus() == navigation.NavStatusInTransit {
+		if ship.NavStatus() == domainNavigation.NavStatusInTransit {
 			if err := ship.Arrive(); err != nil {
 				return fmt.Errorf("failed to mark ship as arrived: %w", err)
 			}
@@ -607,7 +613,7 @@ func (h *NavigateShipHandler) executeRoute(
 				currentLocation.Symbol, fuelPercentage*100)
 
 			// Dock if in orbit
-			if ship.NavStatus() != navigation.NavStatusDocked {
+			if ship.NavStatus() != domainNavigation.NavStatusDocked {
 				stateChanged, err := ship.EnsureDocked()
 				if err != nil {
 					return fmt.Errorf("failed to dock for pre-departure refuel: %w", err)
@@ -676,7 +682,7 @@ func (h *NavigateShipHandler) executeRoute(
 		// Wait for arrival if ship is IN_TRANSIT
 		// This prevents attempting to navigate to next segment while still in transit
 		// CRITICAL: Use ACTUAL arrival time from API, not pre-calculated segment time (Python pattern)
-		if ship.NavStatus() == navigation.NavStatusInTransit {
+		if ship.NavStatus() == domainNavigation.NavStatusInTransit {
 			// Extract arrival time from API response and calculate wait time
 			if navResult.ArrivalTimeStr != "" {
 				waitTime := calculateArrivalWaitTime(navResult.ArrivalTimeStr)
@@ -694,7 +700,7 @@ func (h *NavigateShipHandler) executeRoute(
 			}
 
 			// Call arrive() if still IN_TRANSIT
-			if ship.NavStatus() == navigation.NavStatusInTransit {
+			if ship.NavStatus() == domainNavigation.NavStatusInTransit {
 				if err := ship.Arrive(); err != nil {
 					return fmt.Errorf("failed to mark ship as arrived: %w", err)
 				}

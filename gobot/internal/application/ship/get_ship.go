@@ -6,6 +6,7 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 )
 
 // GetShipQuery represents a query to get ship details
@@ -22,12 +23,12 @@ type GetShipResponse struct {
 
 // GetShipHandler handles the GetShip query
 type GetShipHandler struct {
-	shipRepo   common.ShipRepository
-	playerRepo common.PlayerRepository
+	shipRepo   navigation.ShipRepository
+	playerRepo player.PlayerRepository
 }
 
 // NewGetShipHandler creates a new GetShipHandler
-func NewGetShipHandler(shipRepo common.ShipRepository, playerRepo common.PlayerRepository) *GetShipHandler {
+func NewGetShipHandler(shipRepo navigation.ShipRepository, playerRepo player.PlayerRepository) *GetShipHandler {
 	return &GetShipHandler{
 		shipRepo:   shipRepo,
 		playerRepo: playerRepo,

@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
 )
 
@@ -17,11 +17,11 @@ type PlayerSelectionOptions struct {
 
 // PlayerResolver resolves which player to use based on priority logic
 type PlayerResolver struct {
-	playerRepo common.PlayerRepository
+	playerRepo player.PlayerRepository
 }
 
 // NewPlayerResolver creates a new PlayerResolver
-func NewPlayerResolver(playerRepo common.PlayerRepository) *PlayerResolver {
+func NewPlayerResolver(playerRepo player.PlayerRepository) *PlayerResolver {
 	return &PlayerResolver{
 		playerRepo: playerRepo,
 	}
@@ -33,7 +33,7 @@ func NewPlayerResolver(playerRepo common.PlayerRepository) *PlayerResolver {
 // 3. config default player
 // 4. auto-select if only one player exists
 // 5. error if ambiguous
-func (r *PlayerResolver) ResolvePlayer(ctx context.Context, opts *PlayerSelectionOptions) (*common.Player, error) {
+func (r *PlayerResolver) ResolvePlayer(ctx context.Context, opts *PlayerSelectionOptions) (*player.Player, error) {
 	// Priority 1: --player-id flag
 	if opts.PlayerIDFlag != nil {
 		player, err := r.playerRepo.FindByID(ctx, *opts.PlayerIDFlag)

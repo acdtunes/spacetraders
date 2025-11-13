@@ -4,7 +4,8 @@ import (
 	"context"
 	"math"
 
-	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	domainRouting "github.com/andrescamacho/spacetraders-go/internal/domain/routing"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
 
 // MockRoutingClient provides simple routing for testing (no OR-Tools required)
@@ -17,7 +18,7 @@ func NewMockRoutingClient() *MockRoutingClient {
 }
 
 // PlanRoute returns a simple direct route
-func (c *MockRoutingClient) PlanRoute(ctx context.Context, req *common.RouteRequest) (*common.RouteResponse, error) {
+func (c *MockRoutingClient) PlanRoute(ctx context.Context, req *domainRouting.RouteRequest) (*domainRouting.RouteResponse, error) {
 	// Simple implementation for POC:
 	// 1. Find start and goal waypoints in the waypoint list
 	// 2. Calculate distance
@@ -25,7 +26,7 @@ func (c *MockRoutingClient) PlanRoute(ctx context.Context, req *common.RouteRequ
 	// 4. Return a single-step route if we have enough fuel
 	// 5. If not enough fuel, add refuel stop at nearest fuel station
 
-	var startWP, goalWP *common.WaypointData
+	var startWP, goalWP *system.WaypointData
 	for _, wp := range req.Waypoints {
 		if wp.Symbol == req.StartWaypoint {
 			startWP = wp
@@ -45,7 +46,7 @@ func (c *MockRoutingClient) PlanRoute(ctx context.Context, req *common.RouteRequ
 	timeSeconds := int(math.Ceil(distance / float64(req.EngineSpeed) * 60)) // Approximate: 60 seconds per speed unit
 
 	// Check if we need to refuel
-	steps := []*common.RouteStepData{}
+	steps := []*domainRouting.RouteStepData{}
 
 	if fuelCost > req.CurrentFuel {
 		// Need to refuel - find nearest fuel station
@@ -56,16 +57,16 @@ func (c *MockRoutingClient) PlanRoute(ctx context.Context, req *common.RouteRequ
 			fuelToStation := int(math.Ceil(distToFuel))
 			timeToStation := int(math.Ceil(distToFuel / float64(req.EngineSpeed) * 60))
 
-			steps = append(steps, &common.RouteStepData{
-				Action:      common.RouteActionTravel,
+			steps = append(steps, &domainRouting.RouteStepData{
+				Action:      domainRouting.RouteActionTravel,
 				Waypoint:    fuelStation.Symbol,
 				FuelCost:    fuelToStation,
 				TimeSeconds: timeToStation,
 			})
 
 			// Add refuel action
-			steps = append(steps, &common.RouteStepData{
-				Action:      common.RouteActionRefuel,
+			steps = append(steps, &domainRouting.RouteStepData{
+				Action:      domainRouting.RouteActionRefuel,
 				Waypoint:    fuelStation.Symbol,
 				FuelCost:    0,
 				TimeSeconds: 10, // Assume 10 seconds for refuel
@@ -76,8 +77,8 @@ func (c *MockRoutingClient) PlanRoute(ctx context.Context, req *common.RouteRequ
 			fuelFromStation := int(math.Ceil(distFromFuel))
 			timeFromStation := int(math.Ceil(distFromFuel / float64(req.EngineSpeed) * 60))
 
-			steps = append(steps, &common.RouteStepData{
-				Action:      common.RouteActionTravel,
+			steps = append(steps, &domainRouting.RouteStepData{
+				Action:      domainRouting.RouteActionTravel,
 				Waypoint:    goalWP.Symbol,
 				FuelCost:    fuelFromStation,
 				TimeSeconds: timeFromStation,
@@ -86,7 +87,7 @@ func (c *MockRoutingClient) PlanRoute(ctx context.Context, req *common.RouteRequ
 			totalFuel := fuelToStation + fuelFromStation
 			totalTime := timeToStation + 10 + timeFromStation
 
-			return &common.RouteResponse{
+			return &domainRouting.RouteResponse{
 				Steps:            steps,
 				TotalFuelCost:    totalFuel,
 				TotalTimeSeconds: totalTime,
@@ -96,14 +97,14 @@ func (c *MockRoutingClient) PlanRoute(ctx context.Context, req *common.RouteRequ
 	}
 
 	// Direct route - we have enough fuel
-	steps = append(steps, &common.RouteStepData{
-		Action:      common.RouteActionTravel,
+	steps = append(steps, &domainRouting.RouteStepData{
+		Action:      domainRouting.RouteActionTravel,
 		Waypoint:    goalWP.Symbol,
 		FuelCost:    fuelCost,
 		TimeSeconds: timeSeconds,
 	})
 
-	return &common.RouteResponse{
+	return &domainRouting.RouteResponse{
 		Steps:            steps,
 		TotalFuelCost:    fuelCost,
 		TotalTimeSeconds: timeSeconds,
@@ -112,31 +113,31 @@ func (c *MockRoutingClient) PlanRoute(ctx context.Context, req *common.RouteRequ
 }
 
 // OptimizeTour returns waypoints in order (no optimization for POC)
-func (c *MockRoutingClient) OptimizeTour(ctx context.Context, req *common.TourRequest) (*common.TourResponse, error) {
+func (c *MockRoutingClient) OptimizeTour(ctx context.Context, req *domainRouting.TourRequest) (*domainRouting.TourResponse, error) {
 	// Simple implementation: return waypoints in the order they were provided
-	return &common.TourResponse{
+	return &domainRouting.TourResponse{
 		VisitOrder:       req.Waypoints,
-		CombinedRoute:    []*common.RouteStepData{},
+		CombinedRoute:    []*domainRouting.RouteStepData{},
 		TotalTimeSeconds: 0,
 	}, nil
 }
 
 // PartitionFleet returns simple 1:1 ship-to-market assignment (no VRP optimization)
-func (c *MockRoutingClient) PartitionFleet(ctx context.Context, req *common.VRPRequest) (*common.VRPResponse, error) {
+func (c *MockRoutingClient) PartitionFleet(ctx context.Context, req *domainRouting.VRPRequest) (*domainRouting.VRPResponse, error) {
 	// Simple implementation: assign first N markets to first N ships
-	assignments := make(map[string]*common.ShipTourData)
+	assignments := make(map[string]*domainRouting.ShipTourData)
 
 	for i, ship := range req.ShipSymbols {
 		if i < len(req.MarketWaypoints) {
 			// Assign one market per ship
-			assignments[ship] = &common.ShipTourData{
+			assignments[ship] = &domainRouting.ShipTourData{
 				Waypoints: []string{req.MarketWaypoints[i]},
-				Route:     []*common.RouteStepData{},
+				Route:     []*domainRouting.RouteStepData{},
 			}
 		}
 	}
 
-	return &common.VRPResponse{
+	return &domainRouting.VRPResponse{
 		Assignments: assignments,
 	}, nil
 }
@@ -151,8 +152,8 @@ func calculateDistance(x1, y1, x2, y2 float64) float64 {
 }
 
 // findNearestFuelStation finds the closest waypoint with fuel
-func findNearestFuelStation(from *common.WaypointData, waypoints []*common.WaypointData) *common.WaypointData {
-	var nearest *common.WaypointData
+func findNearestFuelStation(from *system.WaypointData, waypoints []*system.WaypointData) *system.WaypointData {
+	var nearest *system.WaypointData
 	minDistance := math.MaxFloat64
 
 	for _, wp := range waypoints {

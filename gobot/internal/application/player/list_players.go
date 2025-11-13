@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 )
 
 // ListPlayersCommand represents a command to list all players
@@ -14,16 +15,16 @@ type ListPlayersCommand struct {
 
 // ListPlayersResponse represents the result of listing players
 type ListPlayersResponse struct {
-	Players []*common.Player
+	Players []*player.Player
 }
 
 // ListPlayersHandler handles the ListPlayers command
 type ListPlayersHandler struct {
-	playerRepo common.PlayerRepository
+	playerRepo player.PlayerRepository
 }
 
 // NewListPlayersHandler creates a new ListPlayersHandler
-func NewListPlayersHandler(playerRepo common.PlayerRepository) *ListPlayersHandler {
+func NewListPlayersHandler(playerRepo player.PlayerRepository) *ListPlayersHandler {
 	return &ListPlayersHandler{
 		playerRepo: playerRepo,
 	}
@@ -39,6 +40,6 @@ func (h *ListPlayersHandler) Handle(ctx context.Context, request common.Request)
 	// TODO: Add ListAll method to PlayerRepository
 	// For now, return empty list
 	return &ListPlayersResponse{
-		Players: []*common.Player{},
+		Players: []*player.Player{},
 	}, nil
 }

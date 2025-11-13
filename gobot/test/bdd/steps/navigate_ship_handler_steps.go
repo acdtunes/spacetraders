@@ -13,10 +13,11 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/graph"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
-	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	appNavigation "github.com/andrescamacho/spacetraders-go/internal/application/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
 
 // ============================================================================
@@ -25,46 +26,46 @@ import (
 
 type NavigateShipTestContext struct {
 	// Database and repositories
-	db                *gorm.DB
-	playerRepo        *persistence.GormPlayerRepository
-	waypointRepo      *persistence.GormWaypointRepository
-	systemGraphRepo   *persistence.GormSystemGraphRepository
-	shipRepo          *MockShipRepository
+	db              *gorm.DB
+	playerRepo      *persistence.GormPlayerRepository
+	waypointRepo    *persistence.GormWaypointRepository
+	systemGraphRepo *persistence.GormSystemGraphRepository
+	shipRepo        *MockShipRepository
 
 	// Mocks
 	mockAPIClient     *MockSpaceTradersAPIClient
 	mockRoutingClient *MockRoutingClient
 
 	// Components
-	graphBuilder      *MockGraphBuilder
-	graphProvider     *graph.SystemGraphProvider
-	handler           *appNavigation.NavigateShipHandler
+	graphBuilder  *MockGraphBuilder
+	graphProvider *graph.SystemGraphProvider
+	handler       *appNavigation.NavigateShipHandler
 
 	// Test state
-	playerID          int
-	agentSymbol       string
-	token             string
-	response          *appNavigation.NavigateShipResponse
-	err               error
-	apiCallLog        []string
-	currentTime       time.Time
+	playerID    int
+	agentSymbol string
+	token       string
+	response    *appNavigation.NavigateShipResponse
+	err         error
+	apiCallLog  []string
+	currentTime time.Time
 
 	// Tracking
-	shipState         map[string]*ShipState // Track ship state by symbol
-	waypointCache     map[string]*shared.Waypoint
-	graphCache        map[string]map[string]interface{}
-	routePlans        map[string]*common.RouteResponse
+	shipState     map[string]*ShipState // Track ship state by symbol
+	waypointCache map[string]*shared.Waypoint
+	graphCache    map[string]map[string]interface{}
+	routePlans    map[string]*domainRouting.RouteResponse
 }
 
 type ShipState struct {
-	Symbol          string
-	Location        string
-	NavStatus       navigation.NavStatus
-	FuelCurrent     int
-	FuelCapacity    int
-	CargoCapacity   int
-	CargoUnits      int
-	EngineSpeed     int
+	Symbol        string
+	Location      string
+	NavStatus     navigation.NavStatus
+	FuelCurrent   int
+	FuelCapacity  int
+	CargoCapacity int
+	CargoUnits    int
+	EngineSpeed   int
 }
 
 func (ctx *NavigateShipTestContext) reset() {
@@ -88,7 +89,7 @@ func (ctx *NavigateShipTestContext) reset() {
 	ctx.shipState = make(map[string]*ShipState)
 	ctx.waypointCache = make(map[string]*shared.Waypoint)
 	ctx.graphCache = make(map[string]map[string]interface{})
-	ctx.routePlans = make(map[string]*common.RouteResponse)
+	ctx.routePlans = make(map[string]*domainRouting.RouteResponse)
 }
 
 // ============================================================================
@@ -97,23 +98,23 @@ func (ctx *NavigateShipTestContext) reset() {
 
 type MockSpaceTradersAPIClient struct {
 	ctx               *NavigateShipTestContext
-	waypointsToReturn map[string][]common.WaypointAPIData
-	shipDataToReturn  map[string]*common.ShipData
-	navigateResults   map[string]*common.NavigationResult
+	waypointsToReturn map[string][]system.WaypointAPIData
+	shipDataToReturn  map[string]*navigation.ShipData
+	navigateResults   map[string]*navigation.NavigationResult
 	errorToReturn     map[string]error // Key: operation type
 }
 
 func NewMockAPIClient(ctx *NavigateShipTestContext) *MockSpaceTradersAPIClient {
 	return &MockSpaceTradersAPIClient{
 		ctx:               ctx,
-		waypointsToReturn: make(map[string][]common.WaypointAPIData),
-		shipDataToReturn:  make(map[string]*common.ShipData),
-		navigateResults:   make(map[string]*common.NavigationResult),
+		waypointsToReturn: make(map[string][]system.WaypointAPIData),
+		shipDataToReturn:  make(map[string]*navigation.ShipData),
+		navigateResults:   make(map[string]*navigation.NavigationResult),
 		errorToReturn:     make(map[string]error),
 	}
 }
 
-func (m *MockSpaceTradersAPIClient) GetShip(ctx context.Context, symbol, token string) (*common.ShipData, error) {
+func (m *MockSpaceTradersAPIClient) GetShip(ctx context.Context, symbol, token string) (*navigation.ShipData, error) {
 	m.ctx.apiCallLog = append(m.ctx.apiCallLog, fmt.Sprintf("GetShip(%s)", symbol))
 
 	if err, ok := m.errorToReturn["GetShip"]; ok {
@@ -127,7 +128,7 @@ func (m *MockSpaceTradersAPIClient) GetShip(ctx context.Context, symbol, token s
 
 	// Generate from ship state
 	if state, ok := m.ctx.shipState[symbol]; ok {
-		return &common.ShipData{
+		return &navigation.ShipData{
 			Symbol:        state.Symbol,
 			Location:      state.Location,
 			NavStatus:     string(state.NavStatus),
@@ -142,7 +143,7 @@ func (m *MockSpaceTradersAPIClient) GetShip(ctx context.Context, symbol, token s
 	return nil, fmt.Errorf("ship %s not found", symbol)
 }
 
-func (m *MockSpaceTradersAPIClient) NavigateShip(ctx context.Context, symbol, destination, token string) (*common.NavigationResult, error) {
+func (m *MockSpaceTradersAPIClient) NavigateShip(ctx context.Context, symbol, destination, token string) (*navigation.NavigationResult, error) {
 	m.ctx.apiCallLog = append(m.ctx.apiCallLog, fmt.Sprintf("Navigate(%s -> %s)", symbol, destination))
 
 	if err, ok := m.errorToReturn["NavigateShip"]; ok {
@@ -161,7 +162,7 @@ func (m *MockSpaceTradersAPIClient) NavigateShip(ctx context.Context, symbol, de
 		return result, nil
 	}
 
-	return &common.NavigationResult{
+	return &navigation.NavigationResult{
 		Destination:  destination,
 		ArrivalTime:  0,
 		FuelConsumed: 0,
@@ -198,7 +199,7 @@ func (m *MockSpaceTradersAPIClient) OrbitShip(ctx context.Context, symbol, token
 	return nil
 }
 
-func (m *MockSpaceTradersAPIClient) RefuelShip(ctx context.Context, symbol, token string, units *int) (*common.RefuelResult, error) {
+func (m *MockSpaceTradersAPIClient) RefuelShip(ctx context.Context, symbol, token string, units *int) (*navigation.RefuelResult, error) {
 	m.ctx.apiCallLog = append(m.ctx.apiCallLog, fmt.Sprintf("Refuel(%s)", symbol))
 
 	if err, ok := m.errorToReturn["RefuelShip"]; ok {
@@ -209,13 +210,13 @@ func (m *MockSpaceTradersAPIClient) RefuelShip(ctx context.Context, symbol, toke
 	if state, ok := m.ctx.shipState[symbol]; ok {
 		fuelAdded := state.FuelCapacity - state.FuelCurrent
 		state.FuelCurrent = state.FuelCapacity
-		return &common.RefuelResult{
+		return &navigation.RefuelResult{
 			FuelAdded:   fuelAdded,
 			CreditsCost: fuelAdded * 100,
 		}, nil
 	}
 
-	return &common.RefuelResult{FuelAdded: 0, CreditsCost: 0}, nil
+	return &navigation.RefuelResult{FuelAdded: 0, CreditsCost: 0}, nil
 }
 
 func (m *MockSpaceTradersAPIClient) SetFlightMode(ctx context.Context, symbol, flightMode, token string) error {
@@ -228,21 +229,21 @@ func (m *MockSpaceTradersAPIClient) SetFlightMode(ctx context.Context, symbol, f
 	return nil
 }
 
-func (m *MockSpaceTradersAPIClient) GetAgent(ctx context.Context, token string) (*common.AgentData, error) {
+func (m *MockSpaceTradersAPIClient) GetAgent(ctx context.Context, token string) (*player.AgentData, error) {
 	m.ctx.apiCallLog = append(m.ctx.apiCallLog, "GetAgent")
 
 	if err, ok := m.errorToReturn["GetAgent"]; ok {
 		return nil, err
 	}
 
-	return &common.AgentData{
+	return &player.AgentData{
 		Symbol:          m.ctx.agentSymbol,
 		Credits:         100000,
 		StartingFaction: "COSMIC",
 	}, nil
 }
 
-func (m *MockSpaceTradersAPIClient) ListWaypoints(ctx context.Context, systemSymbol, token string, page, limit int) (*common.WaypointsListResponse, error) {
+func (m *MockSpaceTradersAPIClient) ListWaypoints(ctx context.Context, systemSymbol, token string, page, limit int) (*system.WaypointsListResponse, error) {
 	m.ctx.apiCallLog = append(m.ctx.apiCallLog, fmt.Sprintf("ListWaypoints(%s)", systemSymbol))
 
 	if err, ok := m.errorToReturn["ListWaypoints"]; ok {
@@ -250,13 +251,13 @@ func (m *MockSpaceTradersAPIClient) ListWaypoints(ctx context.Context, systemSym
 	}
 
 	if waypoints, ok := m.waypointsToReturn[systemSymbol]; ok {
-		return &common.WaypointsListResponse{
+		return &system.WaypointsListResponse{
 			Data: waypoints,
-			Meta: common.PaginationMeta{Total: len(waypoints), Page: 1, Limit: 20},
+			Meta: system.PaginationMeta{Total: len(waypoints), Page: 1, Limit: 20},
 		}, nil
 	}
 
-	return &common.WaypointsListResponse{Data: []common.WaypointAPIData{}, Meta: common.PaginationMeta{}}, nil
+	return &system.WaypointsListResponse{Data: []system.WaypointAPIData{}, Meta: system.PaginationMeta{}}, nil
 }
 
 // ============================================================================
@@ -264,19 +265,19 @@ func (m *MockSpaceTradersAPIClient) ListWaypoints(ctx context.Context, systemSym
 // ============================================================================
 
 type MockRoutingClient struct {
-	ctx          *NavigateShipTestContext
-	routesToReturn map[string]*common.RouteResponse
-	defaultRoute   *common.RouteResponse
+	ctx            *NavigateShipTestContext
+	routesToReturn map[string]*domainRouting.RouteResponse
+	defaultRoute   *domainRouting.RouteResponse
 }
 
 func NewMockRoutingClient(ctx *NavigateShipTestContext) *MockRoutingClient {
 	return &MockRoutingClient{
 		ctx:            ctx,
-		routesToReturn: make(map[string]*common.RouteResponse),
+		routesToReturn: make(map[string]*domainRouting.RouteResponse),
 	}
 }
 
-func (m *MockRoutingClient) PlanRoute(ctx context.Context, req *common.RouteRequest) (*common.RouteResponse, error) {
+func (m *MockRoutingClient) PlanRoute(ctx context.Context, req *domainRouting.RouteRequest) (*domainRouting.RouteResponse, error) {
 	key := fmt.Sprintf("%s->%s", req.StartWaypoint, req.GoalWaypoint)
 
 	// Check for configured route
@@ -295,10 +296,10 @@ func (m *MockRoutingClient) PlanRoute(ctx context.Context, req *common.RouteRequ
 	}
 
 	// Generate simple direct route
-	return &common.RouteResponse{
-		Steps: []*common.RouteStepData{
+	return &domainRouting.RouteResponse{
+		Steps: []*domainRouting.RouteStepData{
 			{
-				Action:      common.RouteActionTravel,
+				Action:      domainRouting.RouteActionTravel,
 				Waypoint:    req.GoalWaypoint,
 				FuelCost:    10,
 				TimeSeconds: 30,
@@ -310,11 +311,11 @@ func (m *MockRoutingClient) PlanRoute(ctx context.Context, req *common.RouteRequ
 	}, nil
 }
 
-func (m *MockRoutingClient) OptimizeTour(ctx context.Context, req *common.TourRequest) (*common.TourResponse, error) {
+func (m *MockRoutingClient) OptimizeTour(ctx context.Context, req *domainRouting.TourRequest) (*domainRouting.TourResponse, error) {
 	return nil, fmt.Errorf("not implemented")
 }
 
-func (m *MockRoutingClient) PartitionFleet(ctx context.Context, req *common.VRPRequest) (*common.VRPResponse, error) {
+func (m *MockRoutingClient) PartitionFleet(ctx context.Context, req *domainRouting.VRPRequest) (*domainRouting.VRPResponse, error) {
 	return nil, fmt.Errorf("not implemented")
 }
 
@@ -323,13 +324,13 @@ func (m *MockRoutingClient) PartitionFleet(ctx context.Context, req *common.VRPR
 // ============================================================================
 
 type MockShipRepository struct {
-	ctx             *NavigateShipTestContext
-	apiClient       common.APIClient
-	playerRepo      common.PlayerRepository
-	waypointRepo    common.WaypointRepository
+	ctx          *NavigateShipTestContext
+	apiClient    shared.APIClient
+	playerRepo   player.PlayerRepository
+	waypointRepo system.WaypointRepository
 }
 
-func NewMockShipRepository(ctx *NavigateShipTestContext, apiClient common.APIClient, playerRepo common.PlayerRepository, waypointRepo common.WaypointRepository) *MockShipRepository {
+func NewMockShipRepository(ctx *NavigateShipTestContext, apiClient shared.APIClient, playerRepo player.PlayerRepository, waypointRepo system.WaypointRepository) *MockShipRepository {
 	return &MockShipRepository{
 		ctx:          ctx,
 		apiClient:    apiClient,
@@ -468,8 +469,8 @@ func (r *MockShipRepository) SetFlightMode(ctx context.Context, ship *navigation
 // ============================================================================
 
 type MockGraphBuilder struct {
-	ctx              *NavigateShipTestContext
-	graphsToReturn   map[string]map[string]interface{}
+	ctx            *NavigateShipTestContext
+	graphsToReturn map[string]map[string]interface{}
 }
 
 func NewMockGraphBuilder(ctx *NavigateShipTestContext) *MockGraphBuilder {
@@ -530,7 +531,7 @@ func (ctx *NavigateShipTestContext) anInMemoryDatabaseIsInitialized() error {
 	ctx.waypointCache = make(map[string]*shared.Waypoint)
 	ctx.graphCache = make(map[string]map[string]interface{})
 	ctx.shipState = make(map[string]*ShipState)
-	ctx.routePlans = make(map[string]*common.RouteResponse)
+	ctx.routePlans = make(map[string]*domainRouting.RouteResponse)
 	ctx.apiCallLog = make([]string, 0)
 	ctx.currentTime = time.Now().UTC()
 
@@ -554,7 +555,7 @@ func (ctx *NavigateShipTestContext) aPlayerExistsWithToken(agentSymbol, token st
 	ctx.playerRepo = persistence.NewGormPlayerRepository(ctx.db)
 
 	// Save player
-	player := &common.Player{
+	player := &player.Player{
 		AgentSymbol: agentSymbol,
 		Token:       token,
 		Credits:     100000,
@@ -701,7 +702,7 @@ func (ctx *NavigateShipTestContext) shipIsAtWithFuel(shipSymbol, location string
 func (ctx *NavigateShipTestContext) systemHasNoCachedGraph(system string) error {
 	// Don't save graph to database
 	// Configure API to return waypoints
-	waypoints := []common.WaypointAPIData{
+	waypoints := []system.WaypointAPIData{
 		{Symbol: system + "-A1", Type: "PLANET", X: 0, Y: 0},
 		{Symbol: system + "-B1", Type: "MOON", X: 100, Y: 0},
 	}
@@ -711,11 +712,11 @@ func (ctx *NavigateShipTestContext) systemHasNoCachedGraph(system string) error 
 }
 
 func (ctx *NavigateShipTestContext) theAPIWillReturnWaypointsForSystem(count int, system string) error {
-	waypoints := make([]common.WaypointAPIData, count)
+	waypoints := make([]system.WaypointAPIData, count)
 
 	for i := 0; i < count; i++ {
 		wpSymbol := fmt.Sprintf("%s-%c%d", system, 'A'+i/26, i%26+1)
-		waypoints[i] = common.WaypointAPIData{
+		waypoints[i] = system.WaypointAPIData{
 			Symbol: wpSymbol,
 			Type:   "PLANET",
 			X:      float64(i * 100),
@@ -1441,14 +1442,14 @@ func (ctx *NavigateShipTestContext) shipShouldArriveAtD1() error {
 // Additional step stubs
 func (ctx *NavigateShipTestContext) shipIsINTRANSITToArrivingInSeconds(shipSymbol, destination string, seconds int) error {
 	ctx.shipState[shipSymbol] = &ShipState{
-		Symbol:      shipSymbol,
-		Location:    destination,
-		NavStatus:   navigation.NavStatusInTransit,
-		FuelCurrent: 100,
-		FuelCapacity: 100,
+		Symbol:        shipSymbol,
+		Location:      destination,
+		NavStatus:     navigation.NavStatusInTransit,
+		FuelCurrent:   100,
+		FuelCapacity:  100,
 		CargoCapacity: 40,
-		CargoUnits: 0,
-		EngineSpeed: 30,
+		CargoUnits:    0,
+		EngineSpeed:   30,
 	}
 	return nil
 }
@@ -1481,14 +1482,14 @@ func (ctx *NavigateShipTestContext) shipIsDOCKEDAt(shipSymbol, location string) 
 		state.Location = location
 	} else {
 		ctx.shipState[shipSymbol] = &ShipState{
-			Symbol:      shipSymbol,
-			Location:    location,
-			NavStatus:   navigation.NavStatusDocked,
-			FuelCurrent: 100,
-			FuelCapacity: 100,
+			Symbol:        shipSymbol,
+			Location:      location,
+			NavStatus:     navigation.NavStatusDocked,
+			FuelCurrent:   100,
+			FuelCapacity:  100,
 			CargoCapacity: 40,
-			CargoUnits: 0,
-			EngineSpeed: 30,
+			CargoUnits:    0,
+			EngineSpeed:   30,
 		}
 	}
 	return nil

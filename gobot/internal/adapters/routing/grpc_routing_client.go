@@ -8,7 +8,8 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
-	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	domainRouting "github.com/andrescamacho/spacetraders-go/internal/domain/routing"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 	pb "github.com/andrescamacho/spacetraders-go/pkg/proto/routing"
 )
 
@@ -49,7 +50,7 @@ func (c *GRPCRoutingClient) Close() error {
 }
 
 // PlanRoute implements RoutingClient.PlanRoute using gRPC
-func (c *GRPCRoutingClient) PlanRoute(ctx context.Context, req *common.RouteRequest) (*common.RouteResponse, error) {
+func (c *GRPCRoutingClient) PlanRoute(ctx context.Context, req *domainRouting.RouteRequest) (*domainRouting.RouteResponse, error) {
 	// Convert to protobuf request
 	pbReq := &pb.PlanRouteRequest{
 		SystemSymbol:   req.SystemSymbol,
@@ -76,7 +77,7 @@ func (c *GRPCRoutingClient) PlanRoute(ctx context.Context, req *common.RouteRequ
 	}
 
 	// Convert response
-	return &common.RouteResponse{
+	return &domainRouting.RouteResponse{
 		Steps:            convertRouteStepsFromPb(pbResp.Steps),
 		TotalFuelCost:    int(pbResp.TotalFuelCost),
 		TotalTimeSeconds: int(pbResp.TotalTimeSeconds),
@@ -85,7 +86,7 @@ func (c *GRPCRoutingClient) PlanRoute(ctx context.Context, req *common.RouteRequ
 }
 
 // OptimizeTour implements RoutingClient.OptimizeTour using gRPC
-func (c *GRPCRoutingClient) OptimizeTour(ctx context.Context, req *common.TourRequest) (*common.TourResponse, error) {
+func (c *GRPCRoutingClient) OptimizeTour(ctx context.Context, req *domainRouting.TourRequest) (*domainRouting.TourResponse, error) {
 	// Convert to protobuf request
 	pbReq := &pb.OptimizeTourRequest{
 		SystemSymbol:     req.SystemSymbol,
@@ -112,7 +113,7 @@ func (c *GRPCRoutingClient) OptimizeTour(ctx context.Context, req *common.TourRe
 	}
 
 	// Convert response
-	return &common.TourResponse{
+	return &domainRouting.TourResponse{
 		VisitOrder:       pbResp.VisitOrder,
 		CombinedRoute:    convertRouteStepsFromPb(pbResp.RouteSteps),
 		TotalTimeSeconds: int(pbResp.TotalTimeSeconds),
@@ -120,7 +121,7 @@ func (c *GRPCRoutingClient) OptimizeTour(ctx context.Context, req *common.TourRe
 }
 
 // PartitionFleet implements RoutingClient.PartitionFleet using gRPC
-func (c *GRPCRoutingClient) PartitionFleet(ctx context.Context, req *common.VRPRequest) (*common.VRPResponse, error) {
+func (c *GRPCRoutingClient) PartitionFleet(ctx context.Context, req *domainRouting.VRPRequest) (*domainRouting.VRPResponse, error) {
 	// Convert ship configs to protobuf
 	pbShipConfigs := make(map[string]*pb.ShipConfig)
 	for ship, config := range req.ShipConfigs {
@@ -157,22 +158,22 @@ func (c *GRPCRoutingClient) PartitionFleet(ctx context.Context, req *common.VRPR
 	}
 
 	// Convert assignments
-	assignments := make(map[string]*common.ShipTourData)
+	assignments := make(map[string]*domainRouting.ShipTourData)
 	for ship, tour := range pbResp.Assignments {
-		assignments[ship] = &common.ShipTourData{
+		assignments[ship] = &domainRouting.ShipTourData{
 			Waypoints: tour.Waypoints,
 			Route:     convertRouteStepsFromPb(tour.RouteSteps),
 		}
 	}
 
-	return &common.VRPResponse{
+	return &domainRouting.VRPResponse{
 		Assignments: assignments,
 	}, nil
 }
 
 // Helper functions for conversion
 
-func convertWaypointsToPb(waypoints []*common.WaypointData) []*pb.Waypoint {
+func convertWaypointsToPb(waypoints []*system.WaypointData) []*pb.Waypoint {
 	pbWaypoints := make([]*pb.Waypoint, len(waypoints))
 	for i, wp := range waypoints {
 		pbWaypoints[i] = &pb.Waypoint{
@@ -185,12 +186,12 @@ func convertWaypointsToPb(waypoints []*common.WaypointData) []*pb.Waypoint {
 	return pbWaypoints
 }
 
-func convertRouteStepsFromPb(pbSteps []*pb.RouteStep) []*common.RouteStepData {
-	steps := make([]*common.RouteStepData, len(pbSteps))
+func convertRouteStepsFromPb(pbSteps []*pb.RouteStep) []*domainRouting.RouteStepData {
+	steps := make([]*domainRouting.RouteStepData, len(pbSteps))
 	for i, pbStep := range pbSteps {
-		action := common.RouteActionTravel
+		action := domainRouting.RouteActionTravel
 		if pbStep.Action == pb.RouteAction_ROUTE_ACTION_REFUEL {
-			action = common.RouteActionRefuel
+			action = domainRouting.RouteActionRefuel
 		}
 
 		// Extract flight mode from protobuf (BURN-first logic is in routing engine)
@@ -199,7 +200,7 @@ func convertRouteStepsFromPb(pbSteps []*pb.RouteStep) []*common.RouteStepData {
 			mode = *pbStep.Mode
 		}
 
-		steps[i] = &common.RouteStepData{
+		steps[i] = &domainRouting.RouteStepData{
 			Action:      action,
 			Waypoint:    pbStep.Waypoint,
 			FuelCost:    int(pbStep.FuelCost),

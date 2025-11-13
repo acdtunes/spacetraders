@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
 
 // SystemGraphProvider provides system navigation graphs with database caching
@@ -13,17 +13,17 @@ import (
 // Checks database cache first, falls back to building from API if needed.
 // Stores newly built graphs in database for future use.
 type SystemGraphProvider struct {
-	graphRepo    common.SystemGraphRepository
-	graphBuilder common.IGraphBuilder
+	graphRepo    system.SystemGraphRepository
+	graphBuilder system.IGraphBuilder
 	playerID     int
 }
 
 // NewSystemGraphProvider creates a new system graph provider
 func NewSystemGraphProvider(
-	graphRepo common.SystemGraphRepository,
-	graphBuilder common.IGraphBuilder,
+	graphRepo system.SystemGraphRepository,
+	graphBuilder system.IGraphBuilder,
 	playerID int,
-) common.ISystemGraphProvider {
+) system.ISystemGraphProvider {
 	return &SystemGraphProvider{
 		graphRepo:    graphRepo,
 		graphBuilder: graphBuilder,
@@ -32,7 +32,7 @@ func NewSystemGraphProvider(
 }
 
 // GetGraph retrieves system navigation graph (checks cache first, builds from API if needed)
-func (p *SystemGraphProvider) GetGraph(ctx context.Context, systemSymbol string, forceRefresh bool) (*common.GraphLoadResult, error) {
+func (p *SystemGraphProvider) GetGraph(ctx context.Context, systemSymbol string, forceRefresh bool) (*system.GraphLoadResult, error) {
 	// Try loading from database cache first (unless force refresh)
 	if !forceRefresh {
 		graph, err := p.loadFromDatabase(ctx, systemSymbol)
@@ -40,7 +40,7 @@ func (p *SystemGraphProvider) GetGraph(ctx context.Context, systemSymbol string,
 			log.Printf("Error loading graph from database: %v", err)
 		} else if graph != nil {
 			log.Printf("Loaded graph for %s from database cache", systemSymbol)
-			return &common.GraphLoadResult{
+			return &system.GraphLoadResult{
 				Graph:   graph,
 				Source:  "database",
 				Message: fmt.Sprintf("Loaded graph for %s from database cache", systemSymbol),
@@ -54,7 +54,7 @@ func (p *SystemGraphProvider) GetGraph(ctx context.Context, systemSymbol string,
 		return nil, err
 	}
 
-	return &common.GraphLoadResult{
+	return &system.GraphLoadResult{
 		Graph:   graph,
 		Source:  "api",
 		Message: fmt.Sprintf("Built graph for %s from API", systemSymbol),

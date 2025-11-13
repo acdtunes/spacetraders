@@ -5,9 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"gorm.io/gorm"
-
-	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 )
 
 // GormPlayerRepository implements PlayerRepository using GORM
@@ -21,7 +20,7 @@ func NewGormPlayerRepository(db *gorm.DB) *GormPlayerRepository {
 }
 
 // FindByID retrieves a player by ID
-func (r *GormPlayerRepository) FindByID(ctx context.Context, playerID int) (*common.Player, error) {
+func (r *GormPlayerRepository) FindByID(ctx context.Context, playerID int) (*player.Player, error) {
 	var model PlayerModel
 	result := r.db.WithContext(ctx).Where("player_id = ?", playerID).First(&model)
 	if result.Error != nil {
@@ -35,7 +34,7 @@ func (r *GormPlayerRepository) FindByID(ctx context.Context, playerID int) (*com
 }
 
 // FindByAgentSymbol retrieves a player by agent symbol
-func (r *GormPlayerRepository) FindByAgentSymbol(ctx context.Context, agentSymbol string) (*common.Player, error) {
+func (r *GormPlayerRepository) FindByAgentSymbol(ctx context.Context, agentSymbol string) (*player.Player, error) {
 	var model PlayerModel
 	result := r.db.WithContext(ctx).Where("agent_symbol = ?", agentSymbol).First(&model)
 	if result.Error != nil {
@@ -49,7 +48,7 @@ func (r *GormPlayerRepository) FindByAgentSymbol(ctx context.Context, agentSymbo
 }
 
 // Save persists a player
-func (r *GormPlayerRepository) Save(ctx context.Context, player *common.Player) error {
+func (r *GormPlayerRepository) Save(ctx context.Context, player *player.Player) error {
 	model, err := r.playerToModel(player)
 	if err != nil {
 		return fmt.Errorf("failed to convert player to model: %w", err)
@@ -66,7 +65,7 @@ func (r *GormPlayerRepository) Save(ctx context.Context, player *common.Player) 
 
 // modelToPlayer converts database model to domain DTO
 // NOTE: Credits are NOT mapped from database - they're always fetched fresh from API
-func (r *GormPlayerRepository) modelToPlayer(model *PlayerModel) (*common.Player, error) {
+func (r *GormPlayerRepository) modelToPlayer(model *PlayerModel) (*player.Player, error) {
 	var metadata map[string]interface{}
 	if model.Metadata != "" {
 		if err := json.Unmarshal([]byte(model.Metadata), &metadata); err != nil {
@@ -75,7 +74,7 @@ func (r *GormPlayerRepository) modelToPlayer(model *PlayerModel) (*common.Player
 		}
 	}
 
-	return &common.Player{
+	return &player.Player{
 		ID:          model.PlayerID,
 		AgentSymbol: model.AgentSymbol,
 		Token:       model.Token,
@@ -86,7 +85,7 @@ func (r *GormPlayerRepository) modelToPlayer(model *PlayerModel) (*common.Player
 
 // playerToModel converts domain DTO to database model
 // NOTE: Credits are NOT persisted to database - they're always fetched fresh from API
-func (r *GormPlayerRepository) playerToModel(player *common.Player) (*PlayerModel, error) {
+func (r *GormPlayerRepository) playerToModel(player *player.Player) (*PlayerModel, error) {
 	var metadataJSON string
 	if player.Metadata != nil {
 		bytes, err := json.Marshal(player.Metadata)
@@ -101,6 +100,6 @@ func (r *GormPlayerRepository) playerToModel(player *common.Player) (*PlayerMode
 		AgentSymbol: player.AgentSymbol,
 		Token:       player.Token,
 		// Credits field intentionally omitted - not persisted to database
-		Metadata:    metadataJSON,
+		Metadata: metadataJSON,
 	}, nil
 }

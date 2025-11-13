@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
+	infraPorts "github.com/andrescamacho/spacetraders-go/internal/infrastructure/ports"
 )
 
 // RegisterPlayerCommand represents a command to register a new player
@@ -17,16 +19,16 @@ type RegisterPlayerCommand struct {
 
 // RegisterPlayerResponse represents the result of registering a player
 type RegisterPlayerResponse struct {
-	Player *common.Player
+	Player *player.Player
 }
 
 // RegisterPlayerHandler handles the RegisterPlayer command
 type RegisterPlayerHandler struct {
-	playerRepo common.PlayerRepository
+	playerRepo player.PlayerRepository
 }
 
 // NewRegisterPlayerHandler creates a new RegisterPlayerHandler
-func NewRegisterPlayerHandler(playerRepo common.PlayerRepository) *RegisterPlayerHandler {
+func NewRegisterPlayerHandler(playerRepo player.PlayerRepository) *RegisterPlayerHandler {
 	return &RegisterPlayerHandler{
 		playerRepo: playerRepo,
 	}
@@ -48,7 +50,7 @@ func (h *RegisterPlayerHandler) Handle(ctx context.Context, request common.Reque
 	}
 
 	// Create player entity
-	player := &common.Player{
+	player := &player.Player{
 		AgentSymbol: cmd.AgentSymbol,
 		Token:       cmd.Token,
 		Metadata:    cmd.Metadata,
@@ -72,21 +74,21 @@ type SyncPlayerCommand struct {
 
 // SyncPlayerResponse represents the result of syncing player data
 type SyncPlayerResponse struct {
-	Player  *common.Player
+	Player  *player.Player
 	Updated bool
 }
 
 // SyncPlayerHandler handles the SyncPlayer command
 // This syncs player credits and metadata from the SpaceTraders API
 type SyncPlayerHandler struct {
-	playerRepo common.PlayerRepository
-	apiClient  common.APIClient
+	playerRepo player.PlayerRepository
+	apiClient  infraPorts.APIClient
 }
 
 // NewSyncPlayerHandler creates a new SyncPlayerHandler
 func NewSyncPlayerHandler(
-	playerRepo common.PlayerRepository,
-	apiClient common.APIClient,
+	playerRepo player.PlayerRepository,
+	apiClient infraPorts.APIClient,
 ) *SyncPlayerHandler {
 	return &SyncPlayerHandler{
 		playerRepo: playerRepo,

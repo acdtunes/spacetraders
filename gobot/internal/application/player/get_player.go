@@ -5,6 +5,8 @@ import (
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
+	infraPorts "github.com/andrescamacho/spacetraders-go/internal/infrastructure/ports"
 )
 
 // GetPlayerCommand represents a command to get a player by ID or agent symbol
@@ -15,17 +17,17 @@ type GetPlayerCommand struct {
 
 // GetPlayerResponse represents the result of getting a player
 type GetPlayerResponse struct {
-	Player *common.Player
+	Player *player.Player
 }
 
 // GetPlayerHandler handles the GetPlayer command
 type GetPlayerHandler struct {
-	playerRepo common.PlayerRepository
-	apiClient  common.APIClient
+	playerRepo player.PlayerRepository
+	apiClient  infraPorts.APIClient
 }
 
 // NewGetPlayerHandler creates a new GetPlayerHandler
-func NewGetPlayerHandler(playerRepo common.PlayerRepository, apiClient common.APIClient) *GetPlayerHandler {
+func NewGetPlayerHandler(playerRepo player.PlayerRepository, apiClient infraPorts.APIClient) *GetPlayerHandler {
 	return &GetPlayerHandler{
 		playerRepo: playerRepo,
 		apiClient:  apiClient,
@@ -44,7 +46,7 @@ func (h *GetPlayerHandler) Handle(ctx context.Context, request common.Request) (
 		return nil, fmt.Errorf("either player_id or agent_symbol must be provided")
 	}
 
-	var player *common.Player
+	var player *player.Player
 	var err error
 
 	// Priority: PlayerID > AgentSymbol

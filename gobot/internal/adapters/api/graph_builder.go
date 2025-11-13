@@ -6,23 +6,25 @@ import (
 	"log"
 	"math"
 
-	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
+	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/ports"
 )
 
 // GraphBuilder builds system navigation graphs from API data
 type GraphBuilder struct {
-	apiClient     common.APIClient
-	playerRepo    common.PlayerRepository
-	waypointRepo  common.WaypointRepository
+	apiClient    ports.APIClient
+	playerRepo   player.PlayerRepository
+	waypointRepo system.WaypointRepository
 }
 
 // NewGraphBuilder creates a new graph builder
 func NewGraphBuilder(
-	apiClient common.APIClient,
-	playerRepo common.PlayerRepository,
-	waypointRepo common.WaypointRepository,
-) common.IGraphBuilder {
+	apiClient ports.APIClient,
+	playerRepo player.PlayerRepository,
+	waypointRepo system.WaypointRepository,
+) system.IGraphBuilder {
 	return &GraphBuilder{
 		apiClient:    apiClient,
 		playerRepo:   playerRepo,
@@ -52,7 +54,7 @@ func (b *GraphBuilder) BuildSystemGraph(ctx context.Context, systemSymbol string
 	}
 
 	// Fetch all waypoints with pagination
-	allWaypoints := []common.WaypointAPIData{}
+	allWaypoints := []system.WaypointAPIData{}
 	page := 1
 	limit := 20
 	maxPages := 50 // Safety limit

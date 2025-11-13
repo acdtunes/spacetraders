@@ -6,10 +6,9 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
-
-	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 )
 
 // GormSystemGraphRepository implements SystemGraphRepository using GORM
@@ -18,7 +17,7 @@ type GormSystemGraphRepository struct {
 }
 
 // NewGormSystemGraphRepository creates a new GORM-based system graph repository
-func NewGormSystemGraphRepository(db *gorm.DB) common.SystemGraphRepository {
+func NewGormSystemGraphRepository(db *gorm.DB) system.SystemGraphRepository {
 	return &GormSystemGraphRepository{
 		db: db,
 	}

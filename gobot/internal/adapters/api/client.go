@@ -11,7 +11,9 @@ import (
 
 	"golang.org/x/time/rate"
 
-	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
 
 const (
@@ -41,7 +43,7 @@ func NewSpaceTradersClient() *SpaceTradersClient {
 }
 
 // GetShip retrieves ship details
-func (c *SpaceTradersClient) GetShip(ctx context.Context, symbol, token string) (*common.ShipData, error) {
+func (c *SpaceTradersClient) GetShip(ctx context.Context, symbol, token string) (*navigation.ShipData, error) {
 	path := fmt.Sprintf("/my/ships/%s", symbol)
 
 	var response struct {
@@ -77,9 +79,9 @@ func (c *SpaceTradersClient) GetShip(ctx context.Context, symbol, token string) 
 	}
 
 	// Convert cargo inventory
-	inventory := make([]common.CargoItemData, len(response.Data.Cargo.Inventory))
+	inventory := make([]navigation.CargoItemData, len(response.Data.Cargo.Inventory))
 	for i, item := range response.Data.Cargo.Inventory {
-		inventory[i] = common.CargoItemData{
+		inventory[i] = navigation.CargoItemData{
 			Symbol:      item.Symbol,
 			Name:        item.Name,
 			Description: item.Description,
@@ -87,13 +89,13 @@ func (c *SpaceTradersClient) GetShip(ctx context.Context, symbol, token string) 
 		}
 	}
 
-	cargo := &common.CargoData{
+	cargo := &navigation.CargoData{
 		Capacity:  response.Data.Cargo.Capacity,
 		Units:     response.Data.Cargo.Units,
 		Inventory: inventory,
 	}
 
-	return &common.ShipData{
+	return &navigation.ShipData{
 		Symbol:        response.Data.Symbol,
 		Location:      response.Data.Nav.WaypointSymbol,
 		NavStatus:     response.Data.Nav.Status,
@@ -108,7 +110,7 @@ func (c *SpaceTradersClient) GetShip(ctx context.Context, symbol, token string) 
 
 // ListShips retrieves all ships for the authenticated agent
 // Uses pagination - fetches up to 20 ships per page (SpaceTraders API default limit)
-func (c *SpaceTradersClient) ListShips(ctx context.Context, token string) ([]*common.ShipData, error) {
+func (c *SpaceTradersClient) ListShips(ctx context.Context, token string) ([]*navigation.ShipData, error) {
 	path := "/my/ships"
 
 	var response struct {
@@ -144,12 +146,12 @@ func (c *SpaceTradersClient) ListShips(ctx context.Context, token string) ([]*co
 	}
 
 	// Convert API response to ShipData DTOs
-	ships := make([]*common.ShipData, len(response.Data))
+	ships := make([]*navigation.ShipData, len(response.Data))
 	for i, ship := range response.Data {
 		// Convert cargo inventory
-		inventory := make([]common.CargoItemData, len(ship.Cargo.Inventory))
+		inventory := make([]navigation.CargoItemData, len(ship.Cargo.Inventory))
 		for j, item := range ship.Cargo.Inventory {
-			inventory[j] = common.CargoItemData{
+			inventory[j] = navigation.CargoItemData{
 				Symbol:      item.Symbol,
 				Name:        item.Name,
 				Description: item.Description,
@@ -157,13 +159,13 @@ func (c *SpaceTradersClient) ListShips(ctx context.Context, token string) ([]*co
 			}
 		}
 
-		cargo := &common.CargoData{
+		cargo := &navigation.CargoData{
 			Capacity:  ship.Cargo.Capacity,
 			Units:     ship.Cargo.Units,
 			Inventory: inventory,
 		}
 
-		ships[i] = &common.ShipData{
+		ships[i] = &navigation.ShipData{
 			Symbol:        ship.Symbol,
 			Location:      ship.Nav.WaypointSymbol,
 			NavStatus:     ship.Nav.Status,
@@ -180,7 +182,7 @@ func (c *SpaceTradersClient) ListShips(ctx context.Context, token string) ([]*co
 }
 
 // NavigateShip navigates a ship to a destination
-func (c *SpaceTradersClient) NavigateShip(ctx context.Context, symbol, destination, token string) (*common.NavigationResult, error) {
+func (c *SpaceTradersClient) NavigateShip(ctx context.Context, symbol, destination, token string) (*navigation.NavigationResult, error) {
 	path := fmt.Sprintf("/my/ships/%s/navigate", symbol)
 
 	body := map[string]string{
@@ -213,7 +215,7 @@ func (c *SpaceTradersClient) NavigateShip(ctx context.Context, symbol, destinati
 	// Parse arrival time for legacy ArrivalTime field (can be removed later)
 	arrivalTime := 0
 
-	return &common.NavigationResult{
+	return &navigation.NavigationResult{
 		Destination:    response.Data.Nav.WaypointSymbol,
 		ArrivalTime:    arrivalTime,
 		ArrivalTimeStr: arrivalTimeStr, // ISO8601 string from API
@@ -248,7 +250,7 @@ func (c *SpaceTradersClient) DockShip(ctx context.Context, symbol, token string)
 }
 
 // RefuelShip refuels a ship
-func (c *SpaceTradersClient) RefuelShip(ctx context.Context, symbol, token string, units *int) (*common.RefuelResult, error) {
+func (c *SpaceTradersClient) RefuelShip(ctx context.Context, symbol, token string, units *int) (*navigation.RefuelResult, error) {
 	path := fmt.Sprintf("/my/ships/%s/refuel", symbol)
 
 	// Always send an object (empty {} if no units specified)
@@ -270,7 +272,7 @@ func (c *SpaceTradersClient) RefuelShip(ctx context.Context, symbol, token strin
 		return nil, fmt.Errorf("failed to refuel ship: %w", err)
 	}
 
-	return &common.RefuelResult{
+	return &navigation.RefuelResult{
 		FuelAdded:   response.Data.Transaction.Units,
 		CreditsCost: response.Data.Transaction.TotalPrice,
 	}, nil
@@ -293,7 +295,7 @@ func (c *SpaceTradersClient) SetFlightMode(ctx context.Context, symbol, flightMo
 }
 
 // GetAgent retrieves agent information
-func (c *SpaceTradersClient) GetAgent(ctx context.Context, token string) (*common.AgentData, error) {
+func (c *SpaceTradersClient) GetAgent(ctx context.Context, token string) (*player.AgentData, error) {
 	path := "/my/agent"
 
 	var response struct {
@@ -310,7 +312,7 @@ func (c *SpaceTradersClient) GetAgent(ctx context.Context, token string) (*commo
 		return nil, fmt.Errorf("failed to get agent: %w", err)
 	}
 
-	return &common.AgentData{
+	return &player.AgentData{
 		AccountID:       response.Data.AccountID,
 		Symbol:          response.Data.Symbol,
 		Headquarters:    response.Data.Headquarters,
@@ -320,7 +322,7 @@ func (c *SpaceTradersClient) GetAgent(ctx context.Context, token string) (*commo
 }
 
 // ListWaypoints retrieves waypoints for a system with pagination
-func (c *SpaceTradersClient) ListWaypoints(ctx context.Context, systemSymbol, token string, page, limit int) (*common.WaypointsListResponse, error) {
+func (c *SpaceTradersClient) ListWaypoints(ctx context.Context, systemSymbol, token string, page, limit int) (*system.WaypointsListResponse, error) {
 	path := fmt.Sprintf("/systems/%s/waypoints?page=%d&limit=%d", systemSymbol, page, limit)
 
 	var response struct {
@@ -343,9 +345,9 @@ func (c *SpaceTradersClient) ListWaypoints(ctx context.Context, systemSymbol, to
 		return nil, fmt.Errorf("failed to list waypoints: %w", err)
 	}
 
-	waypoints := make([]common.WaypointAPIData, len(response.Data))
+	waypoints := make([]system.WaypointAPIData, len(response.Data))
 	for i, wp := range response.Data {
-		waypoints[i] = common.WaypointAPIData{
+		waypoints[i] = system.WaypointAPIData{
 			Symbol:   wp.Symbol,
 			Type:     wp.Type,
 			X:        wp.X,
@@ -355,9 +357,9 @@ func (c *SpaceTradersClient) ListWaypoints(ctx context.Context, systemSymbol, to
 		}
 	}
 
-	return &common.WaypointsListResponse{
+	return &system.WaypointsListResponse{
 		Data: waypoints,
-		Meta: common.PaginationMeta{
+		Meta: system.PaginationMeta{
 			Total: response.Meta.Total,
 			Page:  response.Meta.Page,
 			Limit: response.Meta.Limit,

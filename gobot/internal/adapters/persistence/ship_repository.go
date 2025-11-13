@@ -6,26 +6,28 @@ import (
 
 	"gorm.io/gorm"
 
-	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
+	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/ports"
 )
 
 // GormShipRepository implements ShipRepository using GORM
 // This repository abstracts API calls and converts DTOs to domain entities
 type GormShipRepository struct {
-	db               *gorm.DB
-	apiClient        common.APIClient
-	playerRepo       common.PlayerRepository
-	waypointRepo     common.WaypointRepository
+	db           *gorm.DB
+	apiClient    ports.APIClient
+	playerRepo   player.PlayerRepository
+	waypointRepo system.WaypointRepository
 }
 
 // NewGormShipRepository creates a new GORM ship repository
 func NewGormShipRepository(
 	db *gorm.DB,
-	apiClient common.APIClient,
-	playerRepo common.PlayerRepository,
-	waypointRepo common.WaypointRepository,
+	apiClient ports.APIClient,
+	playerRepo player.PlayerRepository,
+	waypointRepo system.WaypointRepository,
 ) *GormShipRepository {
 	return &GormShipRepository{
 		db:           db,
@@ -96,7 +98,7 @@ func (r *GormShipRepository) Save(ctx context.Context, ship *navigation.Ship) er
 
 // Navigate executes ship navigation via API
 // Returns navigation result with arrival time from API (following Python implementation pattern)
-func (r *GormShipRepository) Navigate(ctx context.Context, ship *navigation.Ship, destination *shared.Waypoint, playerID int) (*common.NavigationResult, error) {
+func (r *GormShipRepository) Navigate(ctx context.Context, ship *navigation.Ship, destination *shared.Waypoint, playerID int) (*navigation.NavigationResult, error) {
 	// Get player token
 	player, err := r.playerRepo.FindByID(ctx, playerID)
 	if err != nil {
@@ -231,7 +233,7 @@ func (r *GormShipRepository) SetFlightMode(ctx context.Context, ship *navigation
 }
 
 // shipDataToDomain converts API ship DTO to domain entity
-func (r *GormShipRepository) shipDataToDomain(ctx context.Context, data *common.ShipData, playerID int) (*navigation.Ship, error) {
+func (r *GormShipRepository) shipDataToDomain(ctx context.Context, data *navigation.ShipData, playerID int) (*navigation.Ship, error) {
 	// Get current location waypoint from repository
 	location, err := r.waypointRepo.FindBySymbol(ctx, data.Location, extractSystemSymbol(data.Location))
 	if err != nil {
