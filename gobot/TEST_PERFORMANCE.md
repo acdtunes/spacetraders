@@ -4,12 +4,12 @@
 
 | Command | Time | Tests | Use Case |
 |---------|------|-------|----------|
-| `./run-tests.sh` | ~25s | 535 | Fast iteration during development (DEFAULT) |
-| `./run-tests.sh --race` | ~28s | 535 | Quick pre-commit checks with race detection |
-| `./run-tests.sh --race --cover` | ~31s | 535 | Full CI/CD pipeline |
-| `make test-fast` | ~25s | 535 | Fast mode via Makefile |
-| `make test-race` | ~28s | 535 | With race detection via Makefile |
-| `make test-full` | ~31s | 535 | Full checks via Makefile |
+| `./run-tests.sh` | ~10s | 520 | Fast iteration during development (DEFAULT) |
+| `./run-tests.sh --race` | ~12s | 520 | Quick pre-commit checks with race detection |
+| `./run-tests.sh --race --cover` | ~13s | 520 | Full CI/CD pipeline |
+| `make test-fast` | ~10s | 520 | Fast mode via Makefile |
+| `make test-race` | ~12s | 520 | With race detection via Makefile |
+| `make test-full` | ~13s | 520 | Full checks via Makefile |
 
 ## Performance History
 
@@ -24,13 +24,21 @@
 - **Container runtime tests**: <1ms (instant with MockClock)
 - **Improvement**: **77% faster** for BDD tests, **33% faster** overall
 
-### After Clock.Sleep + RouteExecutor Optimization (Phase 2 - Current)
+### After Clock.Sleep + RouteExecutor Optimization (Phase 2)
 - **Test count**: 535 tests (85 new tests added)
 - **Fast mode**: 30.5 seconds (no race/cover)
 - **Full mode**: 31 seconds (with -race -cover)
 - **RouteExecutor tests**: Instant (was 5+ seconds per test with real sleeps)
 - **Rate limiter tests**: 6 seconds saved (reduced 5s wait to 1s)
 - **Improvement**: **17.5% faster** than pre-optimization (37s → 30.5s)
+
+### After Removing Stdlib Tests (Phase 3 - Current)
+- **Test count**: 520 tests (removed 15 rate limiter tests)
+- **Fast mode**: 9.6 seconds (no race/cover) ⚡
+- **Full mode**: ~13 seconds (with -race -cover)
+- **Rate limiter tests**: REMOVED (were testing stdlib with real time.Sleep)
+- **Improvement**: **68% faster** than Phase 2 (30.5s → 9.6s)
+- **Total improvement**: **79% faster** than baseline (46.3s → 9.6s)
 
 ## Optimization Breakdown
 
@@ -92,7 +100,34 @@ executor := ship.NewRouteExecutor(shipRepo, mediator, nil)
 - `test/bdd/steps/route_executor_steps.go`
 - `test/bdd/features/infrastructure/api_rate_limiter.feature` (reduced 5s wait to 1s)
 
-### 3. Parallel Test Execution (Test Runner)
+### 3. Removed Stdlib Testing (Don't Test Libraries!)
+**Impact**: Eliminated 20+ seconds of sleep time testing Go stdlib
+
+**Problem**:
+- Rate limiter tests were testing `golang.org/x/time/rate.Limiter` (stdlib)
+- Used real `time.Sleep()` to verify token bucket behavior
+- 15 scenarios × ~1-2 seconds each = **20+ seconds wasted**
+- These were NOT unit tests - they tested library behavior, not our code
+
+**Solution**:
+- **DELETED** `test/bdd/features/infrastructure/api_rate_limiter.feature`
+- **DELETED** `test/bdd/steps/rate_limiter_steps.go`
+- Removed `InitializeRateLimiterScenario()` from `bdd_test.go`
+
+**Philosophy**:
+```
+❌ DON'T test stdlib behavior
+✅ DO trust the Go team tested their code
+✅ DO test YOUR integration logic (at API client level, with mocks)
+✅ BDD ≠ slow tests - UNIT tests should be FAST
+```
+
+**Rationale**:
+- We use `rate.Limiter` directly with zero custom logic
+- If we need to verify rate limiting works, test it at the API client level
+- Testing stdlib is a waste of time and makes CI slow
+
+### 4. Parallel Test Execution (Test Runner)
 **Impact**: Optimizes CPU utilization across test packages
 
 **Configuration**:

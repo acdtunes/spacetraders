@@ -70,7 +70,6 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	// Infrastructure layer scenarios
 	// steps.InitializeWaypointCacheScenario(sc) // Temporarily disabled - compilation errors
 	// steps.InitializeDatabaseRetryScenario(sc) // Temporarily disabled - compilation errors
-	// steps.InitializeRateLimiterScenario(sc) // REMOVED - tested stdlib with real time.Sleep()
 
 	// Daemon layer scenarios
 	// steps.InitializeShipAssignmentScenario(sc) // Temporarily disabled - compilation errors
