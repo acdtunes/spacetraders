@@ -12,7 +12,9 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
-	"github.com/andrescamacho/spacetraders-go/internal/application/navigation"
+	"github.com/andrescamacho/spacetraders-go/internal/application/contract"
+	"github.com/andrescamacho/spacetraders-go/internal/application/scouting"
+	"github.com/andrescamacho/spacetraders-go/internal/application/ship"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	pb "github.com/andrescamacho/spacetraders-go/pkg/proto/daemon"
 	"google.golang.org/grpc"
@@ -125,7 +127,7 @@ func (s *DaemonServer) NavigateShip(ctx context.Context, shipSymbol, destination
 	containerID := generateContainerID("navigate", shipSymbol)
 
 	// Create navigation command
-	cmd := &navigation.NavigateShipCommand{
+	cmd := &ship.NavigateShipCommand{
 		ShipSymbol:  shipSymbol,
 		Destination: destination,
 		PlayerID:    playerID,
@@ -141,6 +143,7 @@ func (s *DaemonServer) NavigateShip(ctx context.Context, shipSymbol, destination
 			"ship_symbol": shipSymbol,
 			"destination": destination,
 		},
+		nil, // Use default RealClock for production
 	)
 
 	// Create and start container runner
@@ -176,6 +179,119 @@ func (s *DaemonServer) RefuelShip(ctx context.Context, shipSymbol string, player
 	// TODO: Implement RefuelShip command when created
 	containerID := generateContainerID("refuel", shipSymbol)
 	return containerID, fmt.Errorf("RefuelShip not yet implemented")
+}
+
+// BatchContractWorkflow handles batch contract workflow requests
+func (s *DaemonServer) BatchContractWorkflow(ctx context.Context, shipSymbol string, iterations, playerID int) (string, error) {
+	// Create container ID
+	containerID := generateContainerID("batch_contract_workflow", shipSymbol)
+
+	// Create batch contract workflow command
+	cmd := &contract.BatchContractWorkflowCommand{
+		ShipSymbol: shipSymbol,
+		Iterations: iterations,
+		PlayerID:   playerID,
+	}
+
+	// Create container for this operation
+	containerEntity := container.NewContainer(
+		containerID,
+		container.ContainerTypeContract,
+		playerID,
+		iterations,
+		map[string]interface{}{
+			"ship_symbol": shipSymbol,
+			"iterations":  iterations,
+		},
+		nil, // Use default RealClock for production
+	)
+
+	// Create and start container runner
+	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo)
+	s.registerContainer(containerID, runner)
+
+	// Start container in background
+	go func() {
+		if err := runner.Start(); err != nil {
+			fmt.Printf("Container %s failed: %v\n", containerID, err)
+		}
+	}()
+
+	return containerID, nil
+}
+
+// ScoutTour handles market scouting tour requests (single ship)
+func (s *DaemonServer) ScoutTour(ctx context.Context, shipSymbol string, markets []string, iterations, playerID int) (string, error) {
+	// Create container ID
+	containerID := generateContainerID("scout_tour", shipSymbol)
+
+	// Create scout tour command
+	cmd := &scouting.ScoutTourCommand{
+		PlayerID:   uint(playerID),
+		ShipSymbol: shipSymbol,
+		Markets:    markets,
+		Iterations: iterations,
+	}
+
+	// Create container for this operation
+	containerEntity := container.NewContainer(
+		containerID,
+		container.ContainerTypeScout,
+		playerID,
+		iterations,
+		map[string]interface{}{
+			"ship_symbol": shipSymbol,
+			"markets":     markets,
+			"iterations":  iterations,
+		},
+		nil, // Use default RealClock for production
+	)
+
+	// Create and start container runner
+	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo)
+	s.registerContainer(containerID, runner)
+
+	// Start container in background
+	go func() {
+		if err := runner.Start(); err != nil {
+			fmt.Printf("Container %s failed: %v\n", containerID, err)
+		}
+	}()
+
+	return containerID, nil
+}
+
+// ScoutMarkets handles fleet deployment for market scouting (multi-ship with VRP)
+func (s *DaemonServer) ScoutMarkets(
+	ctx context.Context,
+	shipSymbols []string,
+	systemSymbol string,
+	markets []string,
+	iterations int,
+	playerID int,
+) ([]string, map[string][]string, []string, error) {
+	// Create scout markets command
+	cmd := &scouting.ScoutMarketsCommand{
+		PlayerID:     uint(playerID),
+		ShipSymbols:  shipSymbols,
+		SystemSymbol: systemSymbol,
+		Markets:      markets,
+		Iterations:   iterations,
+	}
+
+	// Execute via mediator (synchronously)
+	response, err := s.mediator.Send(ctx, cmd)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to execute scout markets command: %w", err)
+	}
+
+	// Type assert response
+	scoutResp, ok := response.(*scouting.ScoutMarketsResponse)
+	if !ok {
+		return nil, nil, nil, fmt.Errorf("invalid response type from scout markets handler")
+	}
+
+	return scoutResp.ContainerIDs, scoutResp.Assignments, scoutResp.ReusedContainers, nil
 }
 
 // ListContainers returns all registered containers

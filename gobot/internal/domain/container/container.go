@@ -3,6 +3,8 @@ package container
 import (
 	"fmt"
 	"time"
+
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
 // ContainerStatus represents the lifecycle state of a container
@@ -32,14 +34,15 @@ const (
 type ContainerType string
 
 const (
-	ContainerTypeNavigate   ContainerType = "NAVIGATE"
-	ContainerTypeDock       ContainerType = "DOCK"
-	ContainerTypeOrbit      ContainerType = "ORBIT"
-	ContainerTypeRefuel     ContainerType = "REFUEL"
-	ContainerTypeScout      ContainerType = "SCOUT"
-	ContainerTypeMining     ContainerType = "MINING"
-	ContainerTypeContract   ContainerType = "CONTRACT"
-	ContainerTypeTrading    ContainerType = "TRADING"
+	ContainerTypeNavigate              ContainerType = "NAVIGATE"
+	ContainerTypeDock                  ContainerType = "DOCK"
+	ContainerTypeOrbit                 ContainerType = "ORBIT"
+	ContainerTypeRefuel                ContainerType = "REFUEL"
+	ContainerTypeScout                 ContainerType = "SCOUT"
+	ContainerTypeMining                ContainerType = "MINING"
+	ContainerTypeContract              ContainerType = "CONTRACT"
+	ContainerTypeBatchContractWorkflow ContainerType = "BATCH_CONTRACT_WORKFLOW"
+	ContainerTypeTrading               ContainerType = "TRADING"
 )
 
 // Container represents a background operation running in the daemon
@@ -70,17 +73,27 @@ type Container struct {
 
 	// Error tracking
 	lastError error
+
+	// Time provider for testability
+	clock shared.Clock
 }
 
 // NewContainer creates a new container instance
+// If clock is nil, uses RealClock (production behavior)
 func NewContainer(
 	id string,
 	containerType ContainerType,
 	playerID int,
 	maxIterations int,
 	metadata map[string]interface{},
+	clock shared.Clock,
 ) *Container {
-	now := time.Now()
+	// Default to real clock if not provided
+	if clock == nil {
+		clock = shared.NewRealClock()
+	}
+
+	now := clock.Now()
 	return &Container{
 		id:               id,
 		containerType:    containerType,
@@ -93,6 +106,7 @@ func NewContainer(
 		createdAt:        now,
 		updatedAt:        now,
 		metadata:         metadata,
+		clock:            clock,
 	}
 }
 
@@ -121,7 +135,7 @@ func (c *Container) Start() error {
 		return fmt.Errorf("cannot start container in %s state", c.status)
 	}
 
-	now := time.Now()
+	now := c.clock.Now()
 	c.status = ContainerStatusRunning
 	c.startedAt = &now
 	c.updatedAt = now
@@ -134,7 +148,7 @@ func (c *Container) Complete() error {
 		return fmt.Errorf("cannot complete container in %s state", c.status)
 	}
 
-	now := time.Now()
+	now := c.clock.Now()
 	c.status = ContainerStatusCompleted
 	c.stoppedAt = &now
 	c.updatedAt = now
@@ -147,7 +161,7 @@ func (c *Container) Fail(err error) error {
 		return fmt.Errorf("cannot fail container in %s state", c.status)
 	}
 
-	now := time.Now()
+	now := c.clock.Now()
 	c.status = ContainerStatusFailed
 	c.lastError = err
 	c.stoppedAt = &now
@@ -161,7 +175,7 @@ func (c *Container) Stop() error {
 		return fmt.Errorf("cannot stop container in %s state", c.status)
 	}
 
-	now := time.Now()
+	now := c.clock.Now()
 	// First go to STOPPING to signal graceful shutdown
 	if c.status == ContainerStatusRunning {
 		c.status = ContainerStatusStopping
@@ -182,7 +196,7 @@ func (c *Container) MarkStopped() error {
 		return fmt.Errorf("cannot mark stopped when not in stopping state")
 	}
 
-	now := time.Now()
+	now := c.clock.Now()
 	c.status = ContainerStatusStopped
 	c.stoppedAt = &now
 	c.updatedAt = now
@@ -198,7 +212,7 @@ func (c *Container) IncrementIteration() error {
 	}
 
 	c.currentIteration++
-	c.updatedAt = time.Now()
+	c.updatedAt = c.clock.Now()
 	return nil
 }
 
@@ -227,7 +241,7 @@ func (c *Container) CanRestart() bool {
 // IncrementRestartCount advances the restart counter
 func (c *Container) IncrementRestartCount() {
 	c.restartCount++
-	c.updatedAt = time.Now()
+	c.updatedAt = c.clock.Now()
 }
 
 // ResetForRestart prepares container for restart attempt
@@ -241,7 +255,7 @@ func (c *Container) ResetForRestart() error {
 	c.lastError = nil
 	c.stoppedAt = nil
 	c.IncrementRestartCount()
-	c.updatedAt = time.Now()
+	c.updatedAt = c.clock.Now()
 	return nil
 }
 
@@ -257,7 +271,7 @@ func (c *Container) UpdateMetadata(updates map[string]interface{}) {
 		c.metadata[key] = value
 	}
 
-	c.updatedAt = time.Now()
+	c.updatedAt = c.clock.Now()
 }
 
 // GetMetadataValue retrieves a specific metadata value
@@ -297,7 +311,7 @@ func (c *Container) RuntimeDuration() time.Duration {
 		return 0
 	}
 
-	endTime := time.Now()
+	endTime := c.clock.Now()
 	if c.stoppedAt != nil {
 		endTime = *c.stoppedAt
 	}

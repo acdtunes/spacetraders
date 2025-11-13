@@ -19,14 +19,31 @@ build-routing-service:
 	@go build -o bin/routing-service ./cmd/routing-service
 
 # Run all tests
+# Note: LC_DYSYMTAB warning is a known macOS/Go 1.24 issue and is harmless
 test:
 	@echo "Running tests..."
-	@go test -v -race -cover ./...
+	@go test -v -race -cover ./... 2>&1 | grep -v "LC_DYSYMTAB" || true
+
+# Run tests with summary report (colored output) - FAST mode (no race/cover)
+test-summary:
+	@./run-tests.sh
+
+# Run tests - FAST mode (no race/cover, ~18s)
+test-fast:
+	@./run-tests.sh
+
+# Run tests with race detection (~22s)
+test-race:
+	@./run-tests.sh --race
+
+# Run tests with full checks - race + coverage (~31s)
+test-full:
+	@./run-tests.sh --race --cover
 
 # Run tests with coverage report
 test-coverage:
 	@echo "Running tests with coverage..."
-	@go test -v -race -coverprofile=coverage.out ./...
+	@go test -v -race -coverprofile=coverage.out ./... 2>&1 | grep -v "LC_DYSYMTAB" || true
 	@go tool cover -html=coverage.out -o coverage.html
 	@echo "Coverage report generated at coverage.html"
 
@@ -64,7 +81,7 @@ test-bdd-navigate:
 # Run unit tests only
 test-unit:
 	@echo "Running unit tests..."
-	@go test -v -race -cover ./internal/... ./pkg/...
+	@go test -v -race -cover ./internal/... ./pkg/... 2>&1 | grep -v "LC_DYSYMTAB" || true
 
 # Run linter
 lint:
@@ -154,7 +171,11 @@ help:
 	@echo "  build-cli            - Build CLI binary only"
 	@echo "  build-daemon         - Build daemon binary only"
 	@echo "  build-routing-service - Build routing service manager binary"
-	@echo "  test                 - Run all tests"
+	@echo "  test                 - Run all tests (with race + cover)"
+	@echo "  test-summary         - Run tests with colored summary (fast mode)"
+	@echo "  test-fast            - Run tests in fast mode (~18s, no race/cover)"
+	@echo "  test-race            - Run tests with race detection (~22s)"
+	@echo "  test-full            - Run tests with full checks (~31s, race + cover)"
 	@echo "  test-coverage        - Run tests with coverage report"
 	@echo "  test-bdd             - Run all BDD tests (domain layer)"
 	@echo "  test-bdd-pretty      - Run BDD tests with colored output"
