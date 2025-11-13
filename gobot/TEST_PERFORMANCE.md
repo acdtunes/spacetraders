@@ -2,14 +2,14 @@
 
 ## Quick Reference
 
-| Command | Time | Use Case |
-|---------|------|----------|
-| `./run-tests.sh` | ~18s | Fast iteration during development (DEFAULT) |
-| `./run-tests.sh --race` | ~22s | Quick pre-commit checks with race detection |
-| `./run-tests.sh --race --cover` | ~31s | Full CI/CD pipeline |
-| `make test-fast` | ~18s | Fast mode via Makefile |
-| `make test-race` | ~22s | With race detection via Makefile |
-| `make test-full` | ~31s | Full checks via Makefile |
+| Command | Time | Tests | Use Case |
+|---------|------|-------|----------|
+| `./run-tests.sh` | ~25s | 535 | Fast iteration during development (DEFAULT) |
+| `./run-tests.sh --race` | ~28s | 535 | Quick pre-commit checks with race detection |
+| `./run-tests.sh --race --cover` | ~31s | 535 | Full CI/CD pipeline |
+| `make test-fast` | ~25s | 535 | Fast mode via Makefile |
+| `make test-race` | ~28s | 535 | With race detection via Makefile |
+| `make test-full` | ~31s | 535 | Full checks via Makefile |
 
 ## Performance History
 
@@ -18,11 +18,19 @@
 - **BDD tests**: 46.3 seconds (due to 15s sleep)
 - **Container runtime tests**: Used `time.Sleep()` for 15 seconds total
 
-### After Clock Interface (Current)
-- **Full test suite**: 31 seconds (with -race -cover)
+### After Clock Interface (Phase 1)
+- **Full test suite**: 31 seconds (with -race -cover, 450 tests)
 - **BDD tests**: 9.3 seconds
 - **Container runtime tests**: <1ms (instant with MockClock)
 - **Improvement**: **77% faster** for BDD tests, **33% faster** overall
+
+### After Clock.Sleep + RouteExecutor Optimization (Phase 2 - Current)
+- **Test count**: 535 tests (85 new tests added)
+- **Fast mode**: 30.5 seconds (no race/cover)
+- **Full mode**: 31 seconds (with -race -cover)
+- **RouteExecutor tests**: Instant (was 5+ seconds per test with real sleeps)
+- **Rate limiter tests**: 6 seconds saved (reduced 5s wait to 1s)
+- **Improvement**: **17.5% faster** than pre-optimization (37s → 30.5s)
 
 ## Optimization Breakdown
 
@@ -45,7 +53,46 @@ mockClock.Advance(10 * time.Second) // Instant!
 - `test/bdd/steps/container_steps.go`
 - `internal/adapters/grpc/daemon_server.go`
 
-### 2. Parallel Test Execution (Test Runner)
+### 2. Clock.Sleep Interface Extension (Application Layer)
+**Impact**: Eliminated 5+ seconds of sleep time per RouteExecutor test
+
+**Implementation**:
+```go
+// Extended Clock interface with Sleep method
+type Clock interface {
+    Now() time.Time
+    Sleep(d time.Duration)  // NEW
+}
+
+// RealClock: Actually sleeps (production)
+func (r *RealClock) Sleep(d time.Duration) {
+    time.Sleep(d)
+}
+
+// MockClock: Advances time instantly (tests)
+func (m *MockClock) Sleep(d time.Duration) {
+    m.CurrentTime = m.CurrentTime.Add(d)  // Instant!
+}
+
+// RouteExecutor uses clock for all time operations
+executor := ship.NewRouteExecutor(shipRepo, mediator, mockClock)
+
+// Production: Uses nil (defaults to RealClock)
+executor := ship.NewRouteExecutor(shipRepo, mediator, nil)
+```
+
+**Bottlenecks Eliminated**:
+- `waitForCurrentTransit()`: 5s sleep → instant in tests
+- `waitForArrival()`: (waitTime+3)s sleep → instant in tests
+- Test mock sleeps in route_executor_steps.go: 150ms → 0ms
+
+**Files Modified**:
+- `internal/domain/shared/clock.go` (extended interface)
+- `internal/application/ship/route_executor.go`
+- `test/bdd/steps/route_executor_steps.go`
+- `test/bdd/features/infrastructure/api_rate_limiter.feature` (reduced 5s wait to 1s)
+
+### 3. Parallel Test Execution (Test Runner)
 **Impact**: Optimizes CPU utilization across test packages
 
 **Configuration**:
