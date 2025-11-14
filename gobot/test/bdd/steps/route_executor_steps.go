@@ -162,6 +162,9 @@ func (ctx *routeExecutorContext) createWaypoint(waypointSymbol string, x, y floa
 	// Save to in-memory map
 	ctx.waypoints[waypointSymbol] = waypoint
 
+	// Register with MockAPIClient for navigation lookups
+	ctx.apiClient.AddWaypoint(waypoint)
+
 	// Save to database
 	waypointModel := &persistence.WaypointModel{
 		WaypointSymbol: waypointSymbol,
@@ -292,6 +295,10 @@ func (ctx *routeExecutorContext) waypointExistsAtCoordinatesWithFuelStation(
 		existing.X = x
 		existing.Y = y
 		existing.HasFuel = true
+
+		// Update in MockAPIClient
+		ctx.apiClient.AddWaypoint(existing)
+
 		// Update in database
 		return ctx.db.Model(&persistence.WaypointModel{}).
 			Where("waypoint_symbol = ?", waypointSymbol).
@@ -315,6 +322,10 @@ func (ctx *routeExecutorContext) waypointExistsAtCoordinatesWithoutFuelStation(
 		existing.X = x
 		existing.Y = y
 		existing.HasFuel = false
+
+		// Update in MockAPIClient
+		ctx.apiClient.AddWaypoint(existing)
+
 		// Update in database
 		return ctx.db.Model(&persistence.WaypointModel{}).
 			Where("waypoint_symbol = ?", waypointSymbol).

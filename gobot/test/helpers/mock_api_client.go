@@ -7,6 +7,7 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 	infraports "github.com/andrescamacho/spacetraders-go/internal/infrastructure/ports"
 )
@@ -33,6 +34,9 @@ type MockAPIClient struct {
 	// Ship storage for GetShip
 	ships map[string]*navigation.Ship // shipSymbol -> ship
 
+	// Waypoint storage for navigation
+	waypoints map[string]*shared.Waypoint // waypointSymbol -> waypoint
+
 	// Call tracking
 	getMarketCalls []string // Track which waypoints were queried
 
@@ -53,8 +57,16 @@ func NewMockAPIClient() *MockAPIClient {
 	return &MockAPIClient{
 		marketData:     make(map[string]*infraports.MarketData),
 		ships:          make(map[string]*navigation.Ship),
+		waypoints:      make(map[string]*shared.Waypoint),
 		getMarketCalls: []string{},
 	}
+}
+
+// AddWaypoint adds a waypoint to the mock for navigation lookups
+func (m *MockAPIClient) AddWaypoint(waypoint *shared.Waypoint) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.waypoints[waypoint.Symbol] = waypoint
 }
 
 // SetMarketData configures the mock to return specific market data for a waypoint
@@ -223,13 +235,58 @@ func (m *MockAPIClient) ListShips(ctx context.Context, token string) ([]*navigat
 }
 
 func (m *MockAPIClient) NavigateShip(ctx context.Context, symbol, destination, token string) (*navigation.NavigationResult, error) {
-	m.mu.RLock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	shouldError := m.shouldError
 	errorMsg := m.errorMsg
-	m.mu.RUnlock()
+	ship := m.ships[symbol]
 
 	if shouldError {
 		return nil, fmt.Errorf("%s", errorMsg)
+	}
+
+	if ship == nil {
+		return nil, fmt.Errorf("ship not found: %s", symbol)
+	}
+
+	// Look up destination waypoint from registered waypoints
+	destWaypoint, exists := m.waypoints[destination]
+	if !exists {
+		// Fallback: create a basic waypoint if not registered
+		var err error
+		destWaypoint, err = shared.NewWaypoint(destination, 0, 0)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create destination waypoint: %w", err)
+		}
+	}
+
+	// Calculate fuel required based on distance (simplified: 2.5 fuel per distance unit in CRUISE mode)
+	currentLoc := ship.CurrentLocation()
+	distance := currentLoc.DistanceTo(destWaypoint)
+	fuelConsumed := int(distance * 2.5) // Simplified fuel calculation (matches CRUISE mode)
+	if fuelConsumed == 0 && distance > 0 {
+		fuelConsumed = 1 // Minimum 1 fuel for any movement
+	}
+
+	// Check if ship has enough fuel BEFORE starting transit
+	if ship.Fuel().Current < fuelConsumed {
+		return nil, fmt.Errorf("insufficient fuel: need %d but only have %d", fuelConsumed, ship.Fuel().Current)
+	}
+
+	// Start transit to destination
+	if err := ship.StartTransit(destWaypoint); err != nil {
+		return nil, fmt.Errorf("failed to start transit: %w", err)
+	}
+
+	// Consume fuel
+	if err := ship.ConsumeFuel(fuelConsumed); err != nil {
+		return nil, fmt.Errorf("failed to consume fuel: %w", err)
+	}
+
+	// Immediately arrive (mock instant travel)
+	if err := ship.Arrive(); err != nil {
+		return nil, fmt.Errorf("failed to arrive: %w", err)
 	}
 
 	// Mock navigation result with instant arrival
@@ -237,7 +294,7 @@ func (m *MockAPIClient) NavigateShip(ctx context.Context, symbol, destination, t
 		Destination:      destination,
 		ArrivalTime:      0, // Instant arrival in mock
 		ArrivalTimeStr:   "",
-		FuelConsumed:     10, // Mock fuel consumption
+		FuelConsumed:     fuelConsumed,
 	}, nil
 }
 
