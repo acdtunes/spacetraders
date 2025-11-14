@@ -54,6 +54,7 @@ func (c *scoutTourContext) reset() error {
 	// Auto-migrate the models
 	err = db.AutoMigrate(
 		&persistence.PlayerModel{},
+		&persistence.WaypointModel{},
 		&persistence.MarketData{},
 		&persistence.TradeGoodData{},
 	)
@@ -107,6 +108,22 @@ func (c *scoutTourContext) thePlayerHasToken(token string) error {
 	return nil
 }
 
+// ensureWaypointExists ensures a waypoint exists in the repository
+func (c *scoutTourContext) ensureWaypointExists(waypoint *shared.Waypoint) error {
+	// Extract system symbol from waypoint symbol
+	systemSymbol := shared.ExtractSystemSymbol(waypoint.Symbol)
+	waypoint.SystemSymbol = systemSymbol
+
+	// Check if waypoint already exists
+	_, err := c.waypointRepo.FindBySymbol(context.Background(), waypoint.Symbol, systemSymbol)
+	if err == nil {
+		return nil // Waypoint already exists
+	}
+
+	// Save waypoint to repository
+	return c.waypointRepo.Save(context.Background(), waypoint)
+}
+
 // Ship setup steps
 
 func (c *scoutTourContext) thePlayerHasAShipAtWaypointWithStatus(shipSymbol, waypointSymbol, status string) error {
@@ -114,6 +131,11 @@ func (c *scoutTourContext) thePlayerHasAShipAtWaypointWithStatus(shipSymbol, way
 	if !exists {
 		waypoint, _ = shared.NewWaypoint(waypointSymbol, 0, 0)
 		c.waypoints[waypointSymbol] = waypoint
+	}
+
+	// Ensure waypoint exists in repository
+	if err := c.ensureWaypointExists(waypoint); err != nil {
+		return fmt.Errorf("failed to persist waypoint: %w", err)
 	}
 
 	fuel, _ := shared.NewFuel(100, 100)
@@ -152,6 +174,12 @@ func (c *scoutTourContext) theSystemHasWaypointWithCoordinates(systemSymbol, way
 		return err
 	}
 	c.waypoints[waypointSymbol] = waypoint
+
+	// Ensure waypoint exists in repository
+	if err := c.ensureWaypointExists(waypoint); err != nil {
+		return fmt.Errorf("failed to persist waypoint: %w", err)
+	}
+
 	return nil
 }
 
@@ -173,6 +201,11 @@ func (c *scoutTourContext) theSystemHasTheFollowingWaypoints(systemSymbol string
 			return err
 		}
 		c.waypoints[waypointSymbol] = waypoint
+
+		// Ensure waypoint exists in repository
+		if err := c.ensureWaypointExists(waypoint); err != nil {
+			return fmt.Errorf("failed to persist waypoint: %w", err)
+		}
 	}
 	return nil
 }
