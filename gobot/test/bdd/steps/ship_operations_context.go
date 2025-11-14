@@ -111,6 +111,12 @@ func (ctx *shipOperationsContext) aShipForPlayerAtWithStatus(shipSymbol string, 
 	}
 
 	waypoint, _ := shared.NewWaypoint(location, 0, 0)
+
+	// Ensure waypoint exists in repository
+	if err := ctx.ensureWaypointExists(waypoint); err != nil {
+		return err
+	}
+
 	fuel, _ := shared.NewFuel(100, 100)
 	cargo, _ := shared.NewCargo(40, 0, []*shared.CargoItem{})
 
@@ -165,6 +171,22 @@ func (ctx *shipOperationsContext) ensurePlayerExists(playerID int) error {
 	return ctx.playerRepo.Save(context.Background(), p)
 }
 
+// ensureWaypointExists ensures a waypoint exists in the repository
+func (ctx *shipOperationsContext) ensureWaypointExists(waypoint *shared.Waypoint) error {
+	// Extract system symbol from waypoint symbol
+	systemSymbol := shared.ExtractSystemSymbol(waypoint.Symbol)
+	waypoint.SystemSymbol = systemSymbol
+
+	// Check if waypoint already exists
+	_, err := ctx.waypointRepo.FindBySymbol(context.Background(), waypoint.Symbol, systemSymbol)
+	if err == nil {
+		return nil // Waypoint already exists
+	}
+
+	// Save waypoint to repository
+	return ctx.waypointRepo.Save(context.Background(), waypoint)
+}
+
 func (ctx *shipOperationsContext) aShipForPlayerInTransitTo(shipSymbol string, playerID int, destination string) error {
 	// Ensure player exists in repository
 	if err := ctx.ensurePlayerExists(playerID); err != nil {
@@ -173,6 +195,15 @@ func (ctx *shipOperationsContext) aShipForPlayerInTransitTo(shipSymbol string, p
 
 	waypoint, _ := shared.NewWaypoint("X1-START", 0, 0)
 	destWaypoint, _ := shared.NewWaypoint(destination, 100, 0)
+
+	// Ensure waypoints exist in repository
+	if err := ctx.ensureWaypointExists(waypoint); err != nil {
+		return err
+	}
+	if err := ctx.ensureWaypointExists(destWaypoint); err != nil {
+		return err
+	}
+
 	fuel, _ := shared.NewFuel(100, 100)
 	cargo, _ := shared.NewCargo(40, 0, []*shared.CargoItem{})
 

@@ -51,6 +51,7 @@ func (c *scoutMarketsContext) reset() error {
 	// Auto-migrate the models
 	err = db.AutoMigrate(
 		&persistence.PlayerModel{},
+		&persistence.WaypointModel{},
 	)
 	if err != nil {
 		return fmt.Errorf("failed to migrate database: %w", err)
@@ -105,6 +106,22 @@ func (c *scoutMarketsContext) theScoutMarketsPlayerHasToken(token string) error 
 	return nil
 }
 
+// ensureWaypointExists ensures a waypoint exists in the repository
+func (c *scoutMarketsContext) ensureWaypointExists(waypoint *shared.Waypoint) error {
+	// Extract system symbol from waypoint symbol
+	systemSymbol := shared.ExtractSystemSymbol(waypoint.Symbol)
+	waypoint.SystemSymbol = systemSymbol
+
+	// Check if waypoint already exists
+	_, err := c.waypointRepo.FindBySymbol(context.Background(), waypoint.Symbol, systemSymbol)
+	if err == nil {
+		return nil // Waypoint already exists
+	}
+
+	// Save waypoint to repository
+	return c.waypointRepo.Save(context.Background(), waypoint)
+}
+
 // Given steps
 
 func (c *scoutMarketsContext) iHaveAShipAtWaypointInSystem(shipSymbol, waypointSymbol, systemSymbol string) error {
@@ -120,6 +137,11 @@ func (c *scoutMarketsContext) iHaveAShipAtWaypointInSystem(shipSymbol, waypointS
 			return fmt.Errorf("failed to create waypoint: %w", err)
 		}
 		c.waypoints[waypointSymbol] = waypoint
+
+		// Ensure waypoint exists in repository
+		if err := c.ensureWaypointExists(waypoint); err != nil {
+			return fmt.Errorf("failed to persist waypoint: %w", err)
+		}
 	}
 
 	// Create fuel
