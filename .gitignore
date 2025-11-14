@@ -18,21 +18,60 @@ dist/
 build/
 *.egg-info/
 
+# Go binaries
+bin/
+*.exe
+*.exe~
+*.dll
+*.dylib
+*.test
+
+# Go build cache
+.cache/
+
+# Go modules vendor
+vendor/
+
+# Go coverage files
+coverage.out
+coverage.html
+*.coverprofile
+
+# Go workspace files (if using go workspaces)
+go.work
+go.work.sum
+
+# Protobuf generated files
+pkg/proto/**/*.pb.go
+pkg/proto/**/*_grpc.pb.go
+**/generated/*.py
+**/generated/*_pb2.py
+**/generated/*_pb2_grpc.py
+
 # Database
 *.db
+*.sqlite
+*.sqlite3
 var/
+
+# Unix sockets
+*.sock
 
 # IDE
 .vscode/
 .idea/
 *.swp
+*.swo
+*~
 
 # OS
 .DS_Store
+Thumbs.db
 
 # Environment
 .env
 .env.*
+!.env.example
 
 # Testing
 .pytest_cache/
@@ -41,3 +80,4 @@ htmlcov/
 
 # Logs
 *.log
+logs/

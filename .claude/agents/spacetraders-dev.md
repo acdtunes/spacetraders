@@ -56,9 +56,13 @@ The codebase structure:
 - ❌ NEVER: Access unexported fields directly
 
 **CRITICAL: Unit Tests MUST Be FAST** (Target: <10 seconds for full suite)
-- ❌ NEVER use `time.Sleep()` in unit tests - this makes tests slow and brittle
-- ❌ NEVER test stdlib behavior (e.g., `golang.org/x/time/rate.Limiter`) - trust the Go team
-- ✅ ALWAYS use the Clock interface pattern for time-dependent code:
+- 🎯 **PREFER mocking time** with Clock interface pattern - instant, deterministic
+- ✅ **If you MUST use real `time.Sleep()`** (testing actual concurrency/races), keep it **TINY**:
+  - ✅ Acceptable: 10-50ms for concurrency tests
+  - ❌ Too slow: >100ms per test, especially >1 second
+  - Example: `time.Sleep(10 * time.Millisecond)` ✅ vs `time.Sleep(5 * time.Second)` ❌
+- ❌ **NEVER test stdlib behavior** (e.g., `golang.org/x/time/rate.Limiter`) - trust the Go team
+- ✅ **ALWAYS use Clock pattern for time-dependent logic**:
   ```go
   // Production: Uses real time
   container := container.NewContainer(..., nil) // defaults to RealClock
@@ -67,10 +71,10 @@ The codebase structure:
   container := container.NewContainer(..., mockClock)
   mockClock.Advance(10 * time.Second) // Instant! No sleep!
   ```
-- ✅ ALWAYS inject Clock via constructors (defaults to RealClock when nil)
+- ✅ Inject Clock via constructors (defaults to RealClock when nil)
 - ✅ MockClock.Sleep() advances time instantly without blocking
 - ✅ Delete tests that test library behavior instead of YOUR logic
-- 🎯 Philosophy: BDD ≠ slow tests. Unit tests should be FAST even with BDD syntax!
+- 🎯 Philosophy: BDD ≠ slow tests. Mock time when possible, use tiny sleeps when necessary!
 
 **High-Quality Test Characteristics**:
 - Clear Given-When-Then structure in Gherkin
@@ -172,7 +176,7 @@ When reviewing code:
 - **NEVER create `*_test.go` files outside `test/` directory**
 - **NEVER verify mocks in assertions** - only assert on observable outcomes
 - **NEVER test implementation details** - only test public behavior
-- **NEVER use `time.Sleep()` in unit tests** - use Clock interface pattern instead
+- **NEVER use long sleeps (>100ms)** in tests - prefer Clock pattern, use tiny sleeps if needed
 - **NEVER test stdlib behavior** - trust the Go team, test YOUR logic only
 - **ALWAYS use Gherkin/Godog** for test scenarios
 - **ALWAYS follow the Red-Green-Refactor cycle explicitly**
