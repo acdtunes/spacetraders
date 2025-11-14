@@ -1,0 +1,516 @@
+import { Router } from 'express';
+import pkg from 'pg';
+const { Pool } = pkg;
+import { optimizeTour } from '../utils/tourOptimizer.js';
+
+const router = Router();
+
+// PostgreSQL connection pool
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL || 'postgresql://spacetraders:dev_password@localhost:5432/spacetraders'
+});
+
+// Get all ship assignments
+router.get('/assignments', async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const result = await client.query(`
+      SELECT
+        sa.ship_symbol,
+        sa.player_id,
+        sa.container_id as assigned_to,
+        sa.container_id as daemon_id,
+        sa.operation,
+        sa.status,
+        sa.assigned_at,
+        sa.released_at,
+        c.config as metadata
+      FROM ship_assignments sa
+      LEFT JOIN containers c ON sa.container_id = c.container_id AND sa.player_id = c.player_id
+      WHERE sa.status = 'active'
+    `);
+
+    // Parse metadata JSON (config from containers)
+    const parsed = result.rows.map((a: any) => ({
+      ...a,
+      metadata: a.metadata ? a.metadata.params : null,
+    }));
+
+    res.json({ assignments: parsed });
+  } catch (error) {
+    console.error('Failed to fetch assignments:', error);
+    res.status(500).json({ error: 'Failed to fetch assignments' });
+  } finally {
+    client.release();
+  }
+});
+
+// Get assignment for specific ship
+router.get('/assignments/:shipSymbol', async (req, res) => {
+  try {
+    const db = getDatabase();
+    const assignment = db.prepare(`
+      SELECT
+        sa.ship_symbol,
+        sa.player_id,
+        sa.container_id as assigned_to,
+        sa.container_id as daemon_id,
+        sa.operation,
+        sa.status,
+        sa.assigned_at,
+        sa.released_at,
+        c.config as metadata
+      FROM ship_assignments sa
+      LEFT JOIN containers c ON sa.container_id = c.container_id AND sa.player_id = c.player_id
+      WHERE sa.ship_symbol = ?
+    `).get(req.params.shipSymbol);
+
+    db.close();
+
+    if (!assignment) {
+      return res.status(404).json({ error: 'Assignment not found' });
+    }
+
+    const parsed = {
+      ...assignment,
+      metadata: (assignment as any).metadata ? JSON.parse(
+        (assignment as any).metadata
+          .replace(/False/g, 'false')
+          .replace(/True/g, 'true')
+          .replace(/None/g, 'null')
+          .replace(/'/g, '"')
+      ).params : null,
+    };
+
+    res.json({ assignment: parsed });
+  } catch (error) {
+    console.error('Failed to fetch assignment:', error);
+    res.status(500).json({ error: 'Failed to fetch assignment' });
+  }
+});
+
+// Get all active containers (daemons)
+router.get('/daemons', async (req, res) => {
+  try {
+    const db = getDatabase();
+    const daemons = db.prepare(`
+      SELECT
+        container_id as daemon_id,
+        player_id,
+        NULL as pid,
+        config as command,
+        started_at,
+        stopped_at,
+        status,
+        NULL as log_file,
+        NULL as err_file
+      FROM containers
+      WHERE status IN ('RUNNING', 'STOPPING', 'STARTED')
+    `).all();
+
+    db.close();
+
+    // Parse command JSON (config field uses Python dict syntax with single quotes)
+    const parsed = daemons.map((d: any) => ({
+      ...d,
+      command: d.command ? JSON.parse(d.command.replace(/'/g, '"')) : null,
+    }));
+
+    res.json({ daemons: parsed });
+  } catch (error) {
+    console.error('Failed to fetch daemons:', error);
+    res.status(500).json({ error: 'Failed to fetch daemons' });
+  }
+});
+
+// Get market data for system
+router.get('/markets/:systemSymbol', async (req, res) => {
+  try {
+    const db = getDatabase();
+    const systemSymbol = req.params.systemSymbol;
+
+    const markets = db.prepare(`
+      SELECT
+        waypoint_symbol,
+        good_symbol,
+        supply,
+        activity,
+        purchase_price,
+        sell_price,
+        trade_volume,
+        last_updated
+      FROM market_data
+      WHERE waypoint_symbol LIKE ?
+      ORDER BY waypoint_symbol, good_symbol
+    `).all(`${systemSymbol}-%`);
+
+    db.close();
+
+    // Group by waypoint
+    const grouped: Record<string, any> = {};
+    for (const row of markets as any[]) {
+      if (!grouped[row.waypoint_symbol]) {
+        grouped[row.waypoint_symbol] = {
+          waypoint_symbol: row.waypoint_symbol,
+          last_updated: row.last_updated,
+          goods: [],
+        };
+      }
+      grouped[row.waypoint_symbol].goods.push({
+        good_symbol: row.good_symbol,
+        supply: row.supply,
+        activity: row.activity,
+        purchase_price: row.purchase_price,
+        sell_price: row.sell_price,
+        trade_volume: row.trade_volume,
+      });
+
+      // Update last_updated to most recent
+      if (new Date(row.last_updated) > new Date(grouped[row.waypoint_symbol].last_updated)) {
+        grouped[row.waypoint_symbol].last_updated = row.last_updated;
+      }
+    }
+
+    res.json({ markets: Object.values(grouped) });
+  } catch (error) {
+    console.error('Failed to fetch market data:', error);
+    res.status(500).json({ error: 'Failed to fetch market data' });
+  }
+});
+
+// Get market freshness (last updated times)
+router.get('/markets/:systemSymbol/freshness', async (req, res) => {
+  try {
+    const db = getDatabase();
+    const systemSymbol = req.params.systemSymbol;
+
+    const freshness = db.prepare(`
+      SELECT
+        waypoint_symbol,
+        MAX(last_updated) as last_updated
+      FROM market_data
+      WHERE waypoint_symbol LIKE ?
+      GROUP BY waypoint_symbol
+    `).all(`${systemSymbol}-%`);
+
+    db.close();
+
+    res.json({ freshness });
+  } catch (error) {
+    console.error('Failed to fetch market freshness:', error);
+    res.status(500).json({ error: 'Failed to fetch market freshness' });
+  }
+});
+
+// Get scout tours for system (extract ACTUAL optimized tours from container logs)
+router.get('/tours/:systemSymbol', async (req, res) => {
+  try {
+    const db = getDatabase();
+    const systemSymbol = req.params.systemSymbol;
+    const playerId = req.query.player_id ? parseInt(req.query.player_id as string, 10) : null;
+
+    // Get system graph for waypoint coordinates (for distance calculation)
+    const graphRow = db.prepare(`
+      SELECT graph_data
+      FROM system_graphs
+      WHERE system_symbol = ?
+    `).get(systemSymbol) as any;
+
+    if (!graphRow) {
+      db.close();
+      return res.status(404).json({ error: 'System graph not found' });
+    }
+
+    const graphData = JSON.parse(graphRow.graph_data);
+    const waypoints = graphData.waypoints || {};
+
+    // Get scout assignments with their container configs (only running containers)
+    const assignments = db.prepare(`
+      SELECT
+        sa.ship_symbol,
+        sa.container_id as daemon_id,
+        c.config,
+        sa.assigned_at,
+        sa.player_id
+      FROM ship_assignments sa
+      JOIN containers c ON sa.container_id = c.container_id AND sa.player_id = c.player_id
+      WHERE sa.operation = 'command'
+        AND sa.container_id IS NOT NULL
+        AND c.config LIKE '%ScoutTourCommand%'
+        AND c.status IN ('RUNNING', 'STARTING', 'STARTED')
+        AND (? IS NULL OR sa.player_id = ?)
+      ORDER BY sa.ship_symbol
+    `).all(playerId, playerId);
+
+    // For each assignment, extract the ACTUAL optimized tour from container logs
+    const tours = assignments
+      .map((a: any) => {
+        try {
+          // Parse Python dict syntax config
+          const configStr = a.config
+            .replace(/False/g, 'false')
+            .replace(/True/g, 'true')
+            .replace(/None/g, 'null')
+            .replace(/'/g, '"');
+
+          const config = JSON.parse(configStr);
+          const params = config.params;
+
+          // Filter by system
+          if (params.system !== systemSymbol) {
+            return null;
+          }
+
+          const markets = params.markets || [];
+          if (markets.length === 0) {
+            return null;
+          }
+
+          // Get ACTUAL optimized tour order from container logs
+          // Find the most recent "Starting scout tour" message for this ship
+          const startLog = db.prepare(`
+            SELECT timestamp
+            FROM container_logs
+            WHERE container_id = ?
+            AND message LIKE 'Starting scout tour: ' || ? || '%'
+            ORDER BY timestamp DESC
+            LIMIT 1
+          `).get(a.daemon_id, a.ship_symbol) as any;
+
+          let tourOrder = markets; // Fallback to config order
+          let algorithm = 'config-order';
+
+          if (startLog) {
+            // Get "Visiting market" logs only from this tour iteration
+            // Stop when we hit the NEXT "Starting scout tour" message OR when we've collected enough visits
+            const expectedVisits = markets.length;
+
+            const visitLogs = db.prepare(`
+              SELECT message, timestamp
+              FROM container_logs
+              WHERE container_id = ?
+              AND message LIKE 'Visiting market%'
+              AND timestamp > ?
+              AND timestamp < (
+                SELECT COALESCE(MIN(timestamp), datetime('now'))
+                FROM container_logs
+                WHERE container_id = ?
+                AND message LIKE 'Starting scout tour%'
+                AND timestamp > ?
+              )
+              ORDER BY timestamp ASC
+              LIMIT ?
+            `).all(a.daemon_id, startLog.timestamp, a.daemon_id, startLog.timestamp, expectedVisits) as any[];
+
+            // Extract waypoints from "Visiting market 1/6: X1-GZ7-B6" format
+            const extractedOrder: string[] = [];
+            for (const log of visitLogs) {
+              const match = log.message.match(/Visiting market \d+\/\d+: (.+)$/);
+              if (match) {
+                extractedOrder.push(match[1].trim());
+              }
+            }
+
+            // Only use extracted order if we have a COMPLETE tour (all markets visited)
+            // Incomplete tours mean the ship is mid-tour, so fall back to config order
+            if (extractedOrder.length === expectedVisits) {
+              tourOrder = extractedOrder;
+              algorithm = 'ortools-vrp';
+            }
+          }
+
+          // Calculate total distance
+          let totalDistance = 0;
+          for (let i = 0; i < tourOrder.length - 1; i++) {
+            const from = waypoints[tourOrder[i]];
+            const to = waypoints[tourOrder[i + 1]];
+            if (from && to) {
+              const dx = to.x - from.x;
+              const dy = to.y - from.y;
+              totalDistance += Math.sqrt(dx * dx + dy * dy);
+            }
+          }
+
+          return {
+            system: params.system,
+            markets: markets,
+            algorithm: algorithm,
+            start_waypoint: tourOrder[0] || null,
+            tour_order: tourOrder,
+            total_distance: Math.round(totalDistance * 100) / 100,
+            calculated_at: a.assigned_at,
+            ship_symbol: a.ship_symbol,
+            daemon_id: a.daemon_id,
+            player_id: a.player_id,
+          };
+        } catch (error) {
+          console.warn(`Failed to parse config for ${a.ship_symbol}:`, error);
+          return null;
+        }
+      })
+      .filter((tour: any) => tour !== null);
+
+    db.close();
+
+    res.json({ tours });
+  } catch (error) {
+    console.error('Failed to fetch tours:', error);
+    res.status(500).json({ error: 'Failed to fetch tours' });
+  }
+});
+
+// Get trade opportunities (price deltas)
+router.get('/trade-opportunities/:systemSymbol', async (req, res) => {
+  try {
+    const db = getDatabase();
+    const systemSymbol = req.params.systemSymbol;
+    const minProfit = parseInt(req.query.minProfit as string) || 100;
+
+    // Find buy/sell opportunities
+    const opportunities = db.prepare(`
+      SELECT
+        buy.waypoint_symbol as buy_waypoint,
+        sell.waypoint_symbol as sell_waypoint,
+        buy.good_symbol,
+        buy.purchase_price as buy_price,
+        sell.sell_price as sell_price,
+        (sell.sell_price - buy.purchase_price) as profit_per_unit,
+        buy.supply,
+        sell.activity,
+        buy.last_updated as buy_updated,
+        sell.last_updated as sell_updated
+      FROM market_data buy
+      JOIN market_data sell
+        ON buy.good_symbol = sell.good_symbol
+        AND buy.waypoint_symbol != sell.waypoint_symbol
+      WHERE buy.waypoint_symbol LIKE ?
+        AND sell.waypoint_symbol LIKE ?
+        AND buy.purchase_price > 0
+        AND sell.sell_price > 0
+        AND (sell.sell_price - buy.purchase_price) >= ?
+      ORDER BY profit_per_unit DESC
+      LIMIT 50
+    `).all(`${systemSymbol}-%`, `${systemSymbol}-%`, minProfit);
+
+    db.close();
+
+    res.json({ opportunities });
+  } catch (error) {
+    console.error('Failed to fetch trade opportunities:', error);
+    res.status(500).json({ error: 'Failed to fetch trade opportunities' });
+  }
+});
+
+// Get market transactions (recent trades)
+router.get('/transactions/:systemSymbol', async (req, res) => {
+  try {
+    const db = getDatabase();
+    const systemSymbol = req.params.systemSymbol;
+    const limit = parseInt(req.query.limit as string) || 100;
+
+    const transactions = db.prepare(`
+      SELECT
+        ship_symbol,
+        waypoint_symbol,
+        good_symbol,
+        transaction_type,
+        units,
+        price_per_unit,
+        total_cost,
+        timestamp
+      FROM market_transactions
+      WHERE waypoint_symbol LIKE ?
+      ORDER BY timestamp DESC
+      LIMIT ?
+    `).all(`${systemSymbol}-%`, limit);
+
+    db.close();
+
+    res.json({ transactions });
+  } catch (error) {
+    console.error('Failed to fetch transactions:', error);
+    res.status(500).json({ error: 'Failed to fetch transactions' });
+  }
+});
+
+// Get system navigation graph
+router.get('/graph/:systemSymbol', async (req, res) => {
+  try {
+    const db = getDatabase();
+    const systemSymbol = req.params.systemSymbol;
+
+    const graph = db.prepare(`
+      SELECT
+        system_symbol,
+        graph_data,
+        created_at,
+        updated_at
+      FROM system_graphs
+      WHERE system_symbol = ?
+    `).get(systemSymbol);
+
+    db.close();
+
+    if (!graph) {
+      return res.status(404).json({ error: 'Graph not found' });
+    }
+
+    const parsed = {
+      ...graph,
+      graph_data: JSON.parse((graph as any).graph_data),
+    };
+
+    res.json({ graph: parsed });
+  } catch (error) {
+    console.error('Failed to fetch graph:', error);
+    res.status(500).json({ error: 'Failed to fetch graph' });
+  }
+});
+
+// Get operations summary
+router.get('/operations/summary', async (req, res) => {
+  try {
+    const db = getDatabase();
+
+    // Count by operation type
+    const summary = db.prepare(`
+      SELECT
+        operation,
+        COUNT(*) as count,
+        status
+      FROM ship_assignments
+      GROUP BY operation, status
+    `).all();
+
+    db.close();
+
+    res.json({ summary });
+  } catch (error) {
+    console.error('Failed to fetch operations summary:', error);
+    res.status(500).json({ error: 'Failed to fetch operations summary' });
+  }
+});
+
+// Get agent to player_id mappings
+router.get('/players', async (req, res) => {
+  try {
+    const db = getDatabase();
+
+    const players = db.prepare(`
+      SELECT
+        player_id,
+        agent_symbol
+      FROM players
+      ORDER BY player_id
+    `).all();
+
+    db.close();
+
+    res.json({ players });
+  } catch (error) {
+    console.error('Failed to fetch players:', error);
+    res.status(500).json({ error: 'Failed to fetch players' });
+  }
+});
+
+export default router;

@@ -105,6 +105,17 @@ func (ctx *sharedApplicationContext) getWaypoint(symbol string) (*shared.Waypoin
 	return waypoint, exists
 }
 
+func (ctx *sharedApplicationContext) getAllWaypoints() map[string]*shared.Waypoint {
+	ctx.mu.RLock()
+	defer ctx.mu.RUnlock()
+	// Return a copy to prevent concurrent modification
+	waypointsCopy := make(map[string]*shared.Waypoint, len(ctx.waypoints))
+	for k, v := range ctx.waypoints {
+		waypointsCopy[k] = v
+	}
+	return waypointsCopy
+}
+
 // Shared step definitions that multiple contexts can use
 
 func sharedPlayerExistsWithAgentAndToken(agentSymbol, token string) error {

@@ -250,7 +250,7 @@ func (r *GormShipRepository) JettisonCargo(ctx context.Context, ship *navigation
 // shipDataToDomain converts API ship DTO to domain entity
 func (r *GormShipRepository) shipDataToDomain(ctx context.Context, data *navigation.ShipData, playerID int) (*navigation.Ship, error) {
 	// Get current location waypoint from repository
-	location, err := r.waypointRepo.FindBySymbol(ctx, data.Location, extractSystemSymbol(data.Location))
+	location, err := r.waypointRepo.FindBySymbol(ctx, data.Location, shared.ExtractSystemSymbol(data.Location))
 	if err != nil {
 		return nil, fmt.Errorf("failed to get location waypoint: %w", err)
 	}
@@ -294,18 +294,6 @@ func (r *GormShipRepository) shipDataToDomain(ctx context.Context, data *navigat
 		data.EngineSpeed,
 		navStatus,
 	)
-}
-
-// extractSystemSymbol extracts system symbol from waypoint symbol
-// Format: SYSTEM-SECTOR-WAYPOINT -> SYSTEM-SECTOR
-// Example: X1-GZ7-A1 -> X1-GZ7
-func extractSystemSymbol(waypointSymbol string) string {
-	for i := len(waypointSymbol) - 1; i >= 0; i-- {
-		if waypointSymbol[i] == '-' {
-			return waypointSymbol[:i]
-		}
-	}
-	return waypointSymbol
 }
 
 // isAlreadyDockedError checks if the error is due to ship already being docked

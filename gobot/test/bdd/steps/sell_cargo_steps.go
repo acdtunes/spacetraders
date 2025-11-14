@@ -6,7 +6,10 @@ import (
 	"strings"
 
 	"github.com/cucumber/godog"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
 
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	appShip "github.com/andrescamacho/spacetraders-go/internal/application/ship"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
@@ -22,11 +25,15 @@ type sellCargoContext struct {
 	response    *appShip.SellCargoResponse
 	err         error
 
-	// Test doubles
-	shipRepo   *helpers.MockShipRepository
-	playerRepo *helpers.MockPlayerRepository
+	// Real repositories with in-memory database
+	db         *gorm.DB
+	shipRepo   *persistence.GormShipRepository
+	playerRepo *persistence.GormPlayerRepository
+	marketRepo *persistence.MarketRepositoryGORM
+
+	// Mock API client (don't hit real SpaceTraders API)
 	apiClient  *helpers.MockAPIClient
-	marketRepo *helpers.MockMarketRepository
+
 	handler    *appShip.SellCargoHandler
 }
 
@@ -38,11 +45,27 @@ func (ctx *sellCargoContext) reset() {
 	ctx.response = nil
 	ctx.err = nil
 
-	// Initialize test doubles
-	ctx.shipRepo = helpers.NewMockShipRepository()
-	ctx.playerRepo = helpers.NewMockPlayerRepository()
+	// Create in-memory SQLite database
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		panic(fmt.Errorf("failed to open test database: %w", err))
+	}
+
+	// Run migrations for all needed models
+	err = db.AutoMigrate(
+		&persistence.PlayerModel{},
+		&persistence.WaypointModel{},
+		&persistence.MarketData{},
+		&persistence.TradeGoodData{},
+	)
+	if err != nil {
+		panic(fmt.Errorf("failed to migrate database: %w", err))
+	}
+
+	ctx.db = db
+
+	// Create mock API client (don't hit real API)
 	ctx.apiClient = helpers.NewMockAPIClient()
-	ctx.marketRepo = helpers.NewMockMarketRepository()
 
 	// Configure mock API client to successfully sell cargo
 	// Default: 100 credits per unit (configurable in tests if needed)
@@ -52,6 +75,12 @@ func (ctx *sellCargoContext) reset() {
 			UnitsSold:    units,
 		}, nil
 	})
+
+	// Create real repositories
+	ctx.playerRepo = persistence.NewGormPlayerRepository(db)
+	waypointRepo := persistence.NewGormWaypointRepository(db)
+	ctx.shipRepo = persistence.NewGormShipRepository(db, ctx.apiClient, ctx.playerRepo, waypointRepo)
+	ctx.marketRepo = persistence.NewMarketRepository(db)
 
 	ctx.handler = appShip.NewSellCargoHandler(ctx.shipRepo, ctx.playerRepo, ctx.apiClient, ctx.marketRepo)
 }
@@ -76,7 +105,9 @@ func (ctx *sellCargoContext) thePlayerHasPlayerID(playerID int) error {
 
 	// Add player to repository
 	p := player.NewPlayer(playerID, ctx.agentSymbol, ctx.token)
-	ctx.playerRepo.AddPlayer(p)
+	if err := ctx.playerRepo.Save(context.Background(), p); err != nil {
+		return fmt.Errorf("failed to save player: %w", err)
+	}
 
 	return nil
 }
@@ -84,6 +115,21 @@ func (ctx *sellCargoContext) thePlayerHasPlayerID(playerID int) error {
 // Given steps
 
 func (ctx *sellCargoContext) aShipForPlayerDockedAtMarketplaceWithCargo(shipSymbol string, playerID int, location string) error {
+	// Create waypoint in database (required for GormShipRepository.shipDataToDomain)
+	// Extract system from location using domain logic
+	systemSymbol := shared.ExtractSystemSymbol(location)
+
+	waypointModel := &persistence.WaypointModel{
+		WaypointSymbol: location,
+		Type:           "MARKETPLACE",
+		SystemSymbol:   systemSymbol,
+		X:              0,
+		Y:              0,
+	}
+	if err := ctx.db.Create(waypointModel).Error; err != nil {
+		return fmt.Errorf("failed to create waypoint: %w", err)
+	}
+
 	waypoint, _ := shared.NewWaypoint(location, 0, 0)
 	fuel, _ := shared.NewFuel(100, 100)
 	cargo, _ := shared.NewCargo(100, 0, []*shared.CargoItem{})
@@ -98,13 +144,28 @@ func (ctx *sellCargoContext) aShipForPlayerDockedAtMarketplaceWithCargo(shipSymb
 
 	ctx.ships[shipSymbol] = ship
 
-	// Add ship to repository
-	ctx.shipRepo.AddShip(ship)
+	// Configure API client to return this ship
+	ctx.apiClient.AddShip(ship)
 
 	return nil
 }
 
 func (ctx *sellCargoContext) aShipForPlayerInOrbitAtWithCargo(shipSymbol string, playerID int, location string) error {
+	// Create waypoint in database (required for GormShipRepository.shipDataToDomain)
+	// Extract system from location using domain logic
+	systemSymbol := shared.ExtractSystemSymbol(location)
+
+	waypointModel := &persistence.WaypointModel{
+		WaypointSymbol: location,
+		Type:           "PLANET",
+		SystemSymbol:   systemSymbol,
+		X:              0,
+		Y:              0,
+	}
+	if err := ctx.db.Create(waypointModel).Error; err != nil {
+		return fmt.Errorf("failed to create waypoint: %w", err)
+	}
+
 	waypoint, _ := shared.NewWaypoint(location, 0, 0)
 	fuel, _ := shared.NewFuel(100, 100)
 	cargo, _ := shared.NewCargo(100, 0, []*shared.CargoItem{})
@@ -119,8 +180,8 @@ func (ctx *sellCargoContext) aShipForPlayerInOrbitAtWithCargo(shipSymbol string,
 
 	ctx.ships[shipSymbol] = ship
 
-	// Add ship to repository
-	ctx.shipRepo.AddShip(ship)
+	// Configure API client to return this ship
+	ctx.apiClient.AddShip(ship)
 
 	return nil
 }
@@ -157,8 +218,8 @@ func (ctx *sellCargoContext) theShipHasUnitsOfInCargo(units int, goodSymbol stri
 
 	ctx.ships["SHIP-1"] = newShip
 
-	// Update ship in repository
-	ctx.shipRepo.AddShip(newShip)
+	// Update ship in API client
+	ctx.apiClient.AddShip(newShip)
 
 	return nil
 }
@@ -185,7 +246,7 @@ func (ctx *sellCargoContext) executeSellCommand(shipSymbol, goodSymbol string, u
 	// Ensure player is in repository
 	if playerID > 0 {
 		p := player.NewPlayer(playerID, agentSymbol, token)
-		ctx.playerRepo.AddPlayer(p)
+		_ = ctx.playerRepo.Save(context.Background(), p) // Ignore error - player may already exist
 	}
 
 	// Create command

@@ -151,12 +151,17 @@ func (m *MockShipRepository) Save(ctx context.Context, ship *navigation.Ship) er
 
 // Navigate executes ship navigation
 func (m *MockShipRepository) Navigate(ctx context.Context, ship *navigation.Ship, destination *shared.Waypoint, playerID int) (*navigation.NavigationResult, error) {
-	// Simple mock: just update ship's position
-	// Real implementation would call API
+	// Mock implementation: For tests, return empty arrival time string
+	// This signals to RouteExecutor that navigation completed instantly (no waiting needed)
+	// The RouteExecutor will handle calling Arrive() on the ship
+
+	// Don't mutate ship state here - let the handler/executor manage state transitions
+	// Just return navigation result
+
 	return &navigation.NavigationResult{
 		Destination:    destination.Symbol,
-		ArrivalTime:    60,
-		ArrivalTimeStr: "",
+		ArrivalTime:    0,           // Instant arrival for tests
+		ArrivalTimeStr: "immediate", // Signal that it's immediate
 		FuelConsumed:   10,
 	}, nil
 }
@@ -175,8 +180,23 @@ func (m *MockShipRepository) Orbit(ctx context.Context, ship *navigation.Ship, p
 
 // Refuel refuels the ship
 func (m *MockShipRepository) Refuel(ctx context.Context, ship *navigation.Ship, playerID int, units *int) error {
-	// Mock implementation - just succeed
-	return nil
+	// Mock implementation - actually refuel the ship
+	if units == nil {
+		// Full refuel
+		_, err := ship.RefuelToFull()
+		if err != nil {
+			return err
+		}
+	} else {
+		// Partial refuel
+		err := ship.Refuel(*units)
+		if err != nil {
+			return err
+		}
+	}
+
+	// Update in repository
+	return m.Save(ctx, ship)
 }
 
 // SetFlightMode sets the ship's flight mode

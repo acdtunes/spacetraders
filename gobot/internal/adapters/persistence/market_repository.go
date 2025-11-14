@@ -8,6 +8,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 )
 
 // MarketRepositoryGORM implements market persistence using GORM
@@ -137,6 +138,56 @@ func (r *MarketRepositoryGORM) ListMarketsInSystem(
 	}
 
 	return markets, nil
+}
+
+// FindCheapestMarketSelling finds the market with the lowest sell price for a specific good in a system
+func (r *MarketRepositoryGORM) FindCheapestMarketSelling(
+	ctx context.Context,
+	goodSymbol string,
+	systemSymbol string,
+	playerID int,
+) (*trading.CheapestMarketResult, error) {
+	// Query to find the cheapest market selling the specified good
+	// Join market_data and trade_goods tables, filter by system and good symbol
+	// Order by sell_price ascending and limit to 1
+	var result struct {
+		WaypointSymbol string
+		TradeSymbol    string
+		SellPrice      int
+		Supply         *string
+	}
+
+	err := r.db.WithContext(ctx).
+		Table("market_data").
+		Select("market_data.waypoint_symbol, trade_goods.symbol as trade_symbol, trade_goods.sell_price, trade_goods.supply").
+		Joins("INNER JOIN trade_goods ON trade_goods.market_data_id = market_data.id").
+		Where("market_data.player_id = ?", playerID).
+		Where("market_data.waypoint_symbol LIKE ?", systemSymbol+"-%").
+		Where("trade_goods.symbol = ?", goodSymbol).
+		Order("trade_goods.sell_price ASC").
+		Limit(1).
+		Scan(&result).Error
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to find cheapest market: %w", err)
+	}
+
+	// If no result found, return nil (not an error)
+	if result.WaypointSymbol == "" {
+		return nil, nil
+	}
+
+	supply := ""
+	if result.Supply != nil {
+		supply = *result.Supply
+	}
+
+	return &trading.CheapestMarketResult{
+		WaypointSymbol: result.WaypointSymbol,
+		TradeSymbol:    result.TradeSymbol,
+		SellPrice:      result.SellPrice,
+		Supply:         supply,
+	}, nil
 }
 
 // toDomain converts database models to domain Market entity

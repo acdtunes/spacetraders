@@ -6,8 +6,11 @@ import (
 	"strings"
 
 	"github.com/cucumber/godog"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
 
 	appShip "github.com/andrescamacho/spacetraders-go/internal/application/ship"
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/test/helpers"
@@ -20,9 +23,10 @@ type refuelShipContext struct {
 	token       string
 	response    *appShip.RefuelShipResponse
 	err         error
-	waypoints   map[string]*shared.Waypoint // Track waypoints with fuel station info
-	handler     *appShip.RefuelShipHandler  // The actual handler to test
-	shipRepo    *helpers.MockShipRepository // Mock repository
+	waypoints   map[string]*shared.Waypoint    // Track waypoints with fuel station info
+	handler     *appShip.RefuelShipHandler      // The actual handler to test
+	shipRepo    *helpers.MockShipRepository     // Still use mock since ships aren't database-persisted
+	db          *gorm.DB                        // In-memory SQLite database
 }
 
 func (ctx *refuelShipContext) reset() {
@@ -34,7 +38,24 @@ func (ctx *refuelShipContext) reset() {
 	ctx.response = nil
 	ctx.err = nil
 
-	// Initialize mock repository and handler
+	// Create in-memory SQLite database
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		panic(fmt.Errorf("failed to open test database: %w", err))
+	}
+
+	// Run migrations for models that might be needed
+	err = db.AutoMigrate(
+		&persistence.PlayerModel{},
+		&persistence.WaypointModel{},
+	)
+	if err != nil {
+		panic(fmt.Errorf("failed to migrate database: %w", err))
+	}
+
+	ctx.db = db
+
+	// Still use mock repository for ships since they're API-only in production
 	ctx.shipRepo = helpers.NewMockShipRepository()
 	ctx.handler = appShip.NewRefuelShipHandler(ctx.shipRepo)
 }

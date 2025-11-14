@@ -115,7 +115,7 @@ func (h *SellCargoHandler) Handle(ctx context.Context, request common.Request) (
 
 		result, err := h.apiClient.SellCargo(ctx, cmd.ShipSymbol, cmd.GoodSymbol, unitsToSell, player.Token)
 		if err != nil {
-			return nil, fmt.Errorf("failed to sell cargo after %d successful transactions (%d units sold, %d credits earned): %w", transactionCount, unitsSold, totalRevenue, err)
+			return nil, fmt.Errorf("partial failure: failed to sell cargo after %d successful transactions (%d units sold, %d credits earned): %w", transactionCount, unitsSold, totalRevenue, err)
 		}
 
 		totalRevenue += result.TotalRevenue

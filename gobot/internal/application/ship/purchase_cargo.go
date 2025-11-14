@@ -121,7 +121,7 @@ func (h *PurchaseCargoHandler) Handle(ctx context.Context, request common.Reques
 
 		result, err := h.apiClient.PurchaseCargo(ctx, cmd.ShipSymbol, cmd.GoodSymbol, unitsToBuy, player.Token)
 		if err != nil {
-			return nil, fmt.Errorf("failed to purchase cargo after %d successful transactions (%d units added, %d credits spent): %w", transactionCount, unitsAdded, totalCost, err)
+			return nil, fmt.Errorf("partial failure: failed to purchase cargo after %d successful transactions (%d units added, %d credits spent): %w", transactionCount, unitsAdded, totalCost, err)
 		}
 
 		totalCost += result.TotalCost

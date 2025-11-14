@@ -43,14 +43,14 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	// NOTE: NegotiateContractScenario registered BEFORE ContractScenario so negotiate contract assertions take precedence
 	steps.InitializeNegotiateContractScenario(sc)
 	steps.InitializeContractScenario(sc)
-	// steps.InitializeAcceptContractScenario(sc) // Temporarily disabled - needs error handling fix
+	steps.InitializeAcceptContractScenario(sc) // Re-enabled
 	// steps.InitializeFulfillContractScenario(sc) // Temporarily disabled - FulfillContract not implemented
 	// steps.InitializeNavigateShipHandlerScenario(sc) // Temporarily disabled - needs error handling fix
 
 	// Register ShipOperationsScenario (dock, orbit, set flight mode) BEFORE NavigateToWaypointScenario
 	// so its step definitions take precedence for dock_ship.feature, orbit_ship.feature, and set_flight_mode.feature
 	steps.InitializeShipOperationsScenario(sc)
-	// steps.InitializeNavigateToWaypointScenario(sc) // Temporarily disabled - needs error handling fix
+	steps.InitializeNavigateToWaypointScenario(sc) // Re-enabled
 	steps.InitializeRefuelShipScenario(sc)
 	// Adapter layer scenarios
 	// NOTE: MarketRepositoryScenario registered BEFORE TransactionLimitScenario
@@ -59,14 +59,14 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 
 	// NOTE: TransactionLimitScenario registered BEFORE PurchaseCargoScenario
 	// so transaction limit step definitions take precedence for purchase_cargo_transaction_limits.feature
-	// steps.InitializeTransactionLimitScenario(sc) // Temporarily disabled - needs error handling fix
+	steps.InitializeTransactionLimitScenario(sc) // Re-enabled
 	steps.InitializePurchaseCargoScenario(sc)
 	steps.InitializeSellCargoScenario(sc)
 	steps.InitializeJettisonCargoScenario(sc)
-	// steps.InitializeDeliverContractScenario(sc) // Temporarily disabled
+	steps.InitializeDeliverContractScenario(sc) // Re-enabled
 	steps.InitializeRoutePlannerScenario(sc)
-	// steps.InitializeRouteExecutorScenario(sc) // Temporarily disabled - needs error handling fix
-	// steps.InitializeEvaluateContractProfitabilityScenario(sc) // Temporarily disabled - needs error handling fix
+	steps.InitializeRouteExecutorScenario(sc) // Re-enabled
+	steps.InitializeEvaluateContractProfitabilityScenario(sc) // Re-enabled
 	steps.InitializeBatchContractWorkflowScenario(sc)
 
 	// Scouting application layer scenarios
@@ -76,7 +76,7 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	steps.InitializeScoutMarketsScenario(sc)
 
 	// Infrastructure layer scenarios
-	// steps.InitializeWaypointCacheScenario(sc) // Temporarily disabled - compilation errors
+	// steps.InitializeWaypointCacheScenario(sc) // Temporarily disabled - 211 undefined steps
 	steps.InitializeDatabaseRetryScenario(sc)
 
 	// Daemon layer scenarios

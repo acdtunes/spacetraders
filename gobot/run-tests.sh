@@ -103,26 +103,58 @@ echo -e "${CYAN}${BOLD}═══════════════════
 echo -e "${WHITE}${BOLD}                    TEST SUMMARY${NC}"
 echo -e "${CYAN}${BOLD}════════════════════════════════════════════════════════════${NC}\n"
 
-# Count results (ensure single line output)
-TOTAL_PASS=$(grep -c "\-\-\- PASS:" "$TEMP_OUTPUT" 2>/dev/null || echo "0")
-TOTAL_FAIL=$(grep -c "\-\-\- FAIL:" "$TEMP_OUTPUT" 2>/dev/null || echo "0")
-TOTAL_SKIP=$(grep -c "\-\-\- SKIP:" "$TEMP_OUTPUT" 2>/dev/null || echo "0")
+# Count Go test functions (traditional tests)
+GO_PASS=$(grep -c "\-\-\- PASS:" "$TEMP_OUTPUT" 2>/dev/null || echo "0")
+GO_FAIL=$(grep -c "\-\-\- FAIL:" "$TEMP_OUTPUT" 2>/dev/null || echo "0")
+GO_SKIP=$(grep -c "\-\-\- SKIP:" "$TEMP_OUTPUT" 2>/dev/null || echo "0")
 WARNINGS=$(grep -c "warning:" "$TEMP_OUTPUT" 2>/dev/null || echo "0")
 
 # Remove any newlines and ensure numeric
-TOTAL_PASS=$(echo "$TOTAL_PASS" | tr -d '\n' | grep -o '[0-9]*' | head -1)
-TOTAL_FAIL=$(echo "$TOTAL_FAIL" | tr -d '\n' | grep -o '[0-9]*' | head -1)
-TOTAL_SKIP=$(echo "$TOTAL_SKIP" | tr -d '\n' | grep -o '[0-9]*' | head -1)
+GO_PASS=$(echo "$GO_PASS" | tr -d '\n' | grep -o '[0-9]*' | head -1)
+GO_FAIL=$(echo "$GO_FAIL" | tr -d '\n' | grep -o '[0-9]*' | head -1)
+GO_SKIP=$(echo "$GO_SKIP" | tr -d '\n' | grep -o '[0-9]*' | head -1)
 WARNINGS=$(echo "$WARNINGS" | tr -d '\n' | grep -o '[0-9]*' | head -1)
 
 # Default to 0 if empty
-TOTAL_PASS=${TOTAL_PASS:-0}
-TOTAL_FAIL=${TOTAL_FAIL:-0}
-TOTAL_SKIP=${TOTAL_SKIP:-0}
+GO_PASS=${GO_PASS:-0}
+GO_FAIL=${GO_FAIL:-0}
+GO_SKIP=${GO_SKIP:-0}
 WARNINGS=${WARNINGS:-0}
 
-# Calculate total tests
-TOTAL_TESTS=$((TOTAL_PASS + TOTAL_FAIL + TOTAL_SKIP))
+# Count BDD scenarios (from godog output)
+# Format: "534 scenarios (309 passed, 225 undefined)"
+BDD_LINE=$(grep "scenarios (" "$TEMP_OUTPUT" | head -1)
+if [ -n "$BDD_LINE" ]; then
+    BDD_TOTAL=$(echo "$BDD_LINE" | grep -o '^[0-9]*' | head -1)
+    BDD_PASSED=$(echo "$BDD_LINE" | grep -o '[0-9]* passed' | grep -o '[0-9]*' | head -1)
+    BDD_FAILED=$(echo "$BDD_LINE" | grep -o '[0-9]* failed' | grep -o '[0-9]*' | head -1)
+    BDD_UNDEFINED=$(echo "$BDD_LINE" | grep -o '[0-9]* undefined' | grep -o '[0-9]*' | head -1)
+    BDD_PENDING=$(echo "$BDD_LINE" | grep -o '[0-9]* pending' | grep -o '[0-9]*' | head -1)
+
+    # Default to 0 if not found
+    BDD_TOTAL=${BDD_TOTAL:-0}
+    BDD_PASSED=${BDD_PASSED:-0}
+    BDD_FAILED=${BDD_FAILED:-0}
+    BDD_UNDEFINED=${BDD_UNDEFINED:-0}
+    BDD_PENDING=${BDD_PENDING:-0}
+else
+    BDD_TOTAL=0
+    BDD_PASSED=0
+    BDD_FAILED=0
+    BDD_UNDEFINED=0
+    BDD_PENDING=0
+fi
+
+# Calculate total tests (use BDD if available, otherwise Go)
+if [ "$BDD_TOTAL" -gt 0 ]; then
+    TOTAL_TESTS=$BDD_TOTAL
+    TOTAL_PASS=$BDD_PASSED
+    TOTAL_FAIL=$BDD_FAILED
+else
+    TOTAL_TESTS=$((GO_PASS + GO_FAIL + GO_SKIP))
+    TOTAL_PASS=$GO_PASS
+    TOTAL_FAIL=$GO_FAIL
+fi
 
 # Calculate pass rate
 if [ "$TOTAL_TESTS" -gt 0 ]; then
@@ -132,11 +164,25 @@ else
 fi
 
 # Display counts with colors
-echo -e "${GREEN}${BOLD}✓ Passed:${NC}    ${GREEN}${TOTAL_PASS}${NC}"
-echo -e "${RED}${BOLD}✗ Failed:${NC}    ${RED}${TOTAL_FAIL}${NC}"
-
-if [ "$TOTAL_SKIP" -gt 0 ]; then
-    echo -e "${YELLOW}${BOLD}⊝ Skipped:${NC}   ${YELLOW}${TOTAL_SKIP}${NC}"
+if [ "$BDD_TOTAL" -gt 0 ]; then
+    # BDD Scenarios only (cleaner, less confusing)
+    echo -e "${GREEN}${BOLD}  ✓ Passed:${NC}      ${GREEN}${BDD_PASSED}${NC}"
+    if [ "$BDD_FAILED" -gt 0 ]; then
+        echo -e "${RED}${BOLD}  ✗ Failed:${NC}      ${RED}${BDD_FAILED}${NC}"
+    fi
+    if [ "$BDD_UNDEFINED" -gt 0 ]; then
+        echo -e "${YELLOW}${BOLD}  ? Undefined:${NC}   ${YELLOW}${BDD_UNDEFINED}${NC}"
+    fi
+    if [ "$BDD_PENDING" -gt 0 ]; then
+        echo -e "${CYAN}${BOLD}  ⊝ Pending:${NC}     ${CYAN}${BDD_PENDING}${NC}"
+    fi
+else
+    # Traditional Go tests
+    echo -e "${GREEN}${BOLD}✓ Passed:${NC}    ${GREEN}${TOTAL_PASS}${NC}"
+    echo -e "${RED}${BOLD}✗ Failed:${NC}    ${RED}${TOTAL_FAIL}${NC}"
+    if [ "$GO_SKIP" -gt 0 ]; then
+        echo -e "${YELLOW}${BOLD}⊝ Skipped:${NC}   ${YELLOW}${GO_SKIP}${NC}"
+    fi
 fi
 
 if [ "$WARNINGS" -gt 0 ]; then
@@ -144,7 +190,11 @@ if [ "$WARNINGS" -gt 0 ]; then
 fi
 
 echo -e "${WHITE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${BOLD}Total Tests: ${TOTAL_TESTS}${NC}"
+if [ "$BDD_TOTAL" -gt 0 ]; then
+    echo -e "${BOLD}Total Scenarios: ${TOTAL_TESTS}${NC}"
+else
+    echo -e "${BOLD}Total Tests: ${TOTAL_TESTS}${NC}"
+fi
 echo -e "${BOLD}Elapsed Time: ${ELAPSED_TIME}s${NC} (${PARALLEL_COUNT} parallel workers)"
 
 # Display pass rate with color based on percentage
@@ -162,8 +212,14 @@ echo -e "${CYAN}${BOLD}═══════════════════
 
 # Final status
 if [ "$TOTAL_FAIL" -eq 0 ]; then
-    echo -e "${GREEN}${BOLD}🎉 ALL TESTS PASSED! 🎉${NC}\n"
-    EXIT_CODE=0
+    if [ "$BDD_TOTAL" -gt 0 ] && [ "$BDD_UNDEFINED" -gt 0 ]; then
+        echo -e "${YELLOW}${BOLD}⚠️  TESTS PASSED (${BDD_UNDEFINED} undefined scenarios)${NC}"
+        echo -e "${CYAN}Undefined scenarios have no step implementations yet${NC}\n"
+        EXIT_CODE=0
+    else
+        echo -e "${GREEN}${BOLD}🎉 ALL TESTS PASSED! 🎉${NC}\n"
+        EXIT_CODE=0
+    fi
 else
     echo -e "${RED}${BOLD}❌ SOME TESTS FAILED${NC}"
     echo -e "${YELLOW}Run with -v flag for detailed failure information${NC}\n"

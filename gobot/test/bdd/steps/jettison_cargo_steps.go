@@ -6,7 +6,10 @@ import (
 	"strings"
 
 	"github.com/cucumber/godog"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
 
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	appShip "github.com/andrescamacho/spacetraders-go/internal/application/ship"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
@@ -22,10 +25,14 @@ type jettisonCargoContext struct {
 	response    *appShip.JettisonCargoResponse
 	err         error
 
-	// Test doubles
-	shipRepo   *helpers.MockShipRepository
-	playerRepo *helpers.MockPlayerRepository
+	// Real repositories with in-memory database
+	db         *gorm.DB
+	shipRepo   *persistence.GormShipRepository
+	playerRepo *persistence.GormPlayerRepository
+
+	// Mock API client (don't hit real SpaceTraders API)
 	apiClient  *helpers.MockAPIClient
+
 	handler    *appShip.JettisonCargoHandler
 }
 
@@ -37,10 +44,31 @@ func (ctx *jettisonCargoContext) reset() {
 	ctx.response = nil
 	ctx.err = nil
 
-	// Initialize test doubles
-	ctx.shipRepo = helpers.NewMockShipRepository()
-	ctx.playerRepo = helpers.NewMockPlayerRepository()
+	// Create in-memory SQLite database
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		panic(fmt.Errorf("failed to open test database: %w", err))
+	}
+
+	// Run migrations for all needed models
+	err = db.AutoMigrate(
+		&persistence.PlayerModel{},
+		&persistence.WaypointModel{},
+	)
+	if err != nil {
+		panic(fmt.Errorf("failed to migrate database: %w", err))
+	}
+
+	ctx.db = db
+
+	// Create mock API client (don't hit real API)
 	ctx.apiClient = helpers.NewMockAPIClient()
+
+	// Create real repositories
+	ctx.playerRepo = persistence.NewGormPlayerRepository(db)
+	waypointRepo := persistence.NewGormWaypointRepository(db)
+	ctx.shipRepo = persistence.NewGormShipRepository(db, ctx.apiClient, ctx.playerRepo, waypointRepo)
+
 	ctx.handler = appShip.NewJettisonCargoHandler(ctx.shipRepo, ctx.playerRepo, ctx.apiClient)
 }
 
@@ -64,7 +92,9 @@ func (ctx *jettisonCargoContext) thePlayerHasPlayerID(playerID int) error {
 
 	// Add player to repository
 	p := player.NewPlayer(playerID, ctx.agentSymbol, ctx.token)
-	ctx.playerRepo.AddPlayer(p)
+	if err := ctx.playerRepo.Save(context.Background(), p); err != nil {
+		return fmt.Errorf("failed to save player: %w", err)
+	}
 
 	return nil
 }
@@ -96,6 +126,21 @@ func (ctx *jettisonCargoContext) createShipWithCargo(
 	navStatus navigation.NavStatus,
 	cargoTable *godog.Table,
 ) error {
+	// Create waypoint in database (required for GormShipRepository.shipDataToDomain)
+	// Extract system from location using domain logic
+	systemSymbol := shared.ExtractSystemSymbol(location)
+
+	waypointModel := &persistence.WaypointModel{
+		WaypointSymbol: location,
+		Type:           "PLANET",
+		SystemSymbol:   systemSymbol,
+		X:              0,
+		Y:              0,
+	}
+	if err := ctx.db.Create(waypointModel).Error; err != nil {
+		return fmt.Errorf("failed to create waypoint: %w", err)
+	}
+
 	// Create waypoint
 	waypoint, err := shared.NewWaypoint(location, 0, 0)
 	if err != nil {
@@ -150,8 +195,8 @@ func (ctx *jettisonCargoContext) createShipWithCargo(
 
 	ctx.ships[shipSymbol] = ship
 
-	// Add ship to repository
-	ctx.shipRepo.AddShip(ship)
+	// Configure API client to return this ship
+	ctx.apiClient.AddShip(ship)
 
 	return nil
 }
@@ -174,7 +219,7 @@ func (ctx *jettisonCargoContext) iExecuteJettisonCargoCommandForShipJettisoningU
 	// Ensure player is in repository
 	if playerID > 0 {
 		p := player.NewPlayer(playerID, agentSymbol, token)
-		ctx.playerRepo.AddPlayer(p)
+		_ = ctx.playerRepo.Save(context.Background(), p) // Ignore error - player may already exist
 	}
 
 	// Create command
