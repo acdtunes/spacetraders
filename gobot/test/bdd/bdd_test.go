@@ -76,7 +76,7 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	steps.InitializeScoutMarketsScenario(sc)
 
 	// Infrastructure layer scenarios
-	// steps.InitializeWaypointCacheScenario(sc) // Temporarily disabled - 211 undefined steps
+	steps.InitializeWaypointCacheScenario(sc) // Re-enabled
 	steps.InitializeDatabaseRetryScenario(sc)
 
 	// Daemon layer scenarios

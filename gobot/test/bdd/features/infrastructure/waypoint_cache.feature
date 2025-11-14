@@ -57,9 +57,9 @@ Feature: Waypoint Caching
 
   Scenario: Filter waypoints by trait (MARKETPLACE)
     Given waypoints exist in database for system "X1-GZ7":
-      | symbol     | type    | x    | y    | traits           | has_fuel |
-      | X1-GZ7-A1  | PLANET  | 10.0 | 5.0  | SHIPYARD,MARKET  | true     |
-      | X1-GZ7-B2  | MOON    | -5.0 | 8.0  | MARKETPLACE      | false    |
+      | symbol     | type    | x    | y    | traits                 | has_fuel |
+      | X1-GZ7-A1  | PLANET  | 10.0 | 5.0  | SHIPYARD,MARKETPLACE   | true     |
+      | X1-GZ7-B2  | MOON    | -5.0 | 8.0  | MARKETPLACE            | false    |
     When I filter waypoints for system "X1-GZ7" by trait "MARKETPLACE"
     Then I should receive 2 waypoints
     And the waypoint list should contain "X1-GZ7-A1"

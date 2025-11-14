@@ -124,11 +124,11 @@ func (c *WaypointCacheContext) waypointExistsInDatabaseForSystemWith(waypointSym
 	}
 
 	row := table.Rows[1]
-	waypointType := getCellValue(row, "type")
-	x := parseFloat(getCellValue(row, "x"))
-	y := parseFloat(getCellValue(row, "y"))
-	traitsStr := getCellValue(row, "traits")
-	hasFuel := getCellValue(row, "has_fuel") == "true"
+	waypointType := getCellValue(table, row, "type")
+	x := parseFloat(getCellValue(table, row, "x"))
+	y := parseFloat(getCellValue(table, row, "y"))
+	traitsStr := getCellValue(table, row, "traits")
+	hasFuel := getCellValue(table, row, "has_fuel") == "true"
 
 	// Create waypoint
 	waypoint, err := shared.NewWaypoint(waypointSymbol, x, y)
@@ -160,12 +160,12 @@ func (c *WaypointCacheContext) waypointsExistInDatabaseForSystem(systemSymbol st
 			continue // Skip header
 		}
 
-		symbol := getCellValue(row, "symbol")
-		waypointType := getCellValue(row, "type")
-		x := parseFloat(getCellValue(row, "x"))
-		y := parseFloat(getCellValue(row, "y"))
-		traitsStr := getCellValue(row, "traits")
-		hasFuel := getCellValue(row, "has_fuel") == "true"
+		symbol := getCellValue(table, row, "symbol")
+		waypointType := getCellValue(table, row, "type")
+		x := parseFloat(getCellValue(table, row, "x"))
+		y := parseFloat(getCellValue(table, row, "y"))
+		traitsStr := getCellValue(table, row, "traits")
+		hasFuel := getCellValue(table, row, "has_fuel") == "true"
 
 		waypoint, err := shared.NewWaypoint(symbol, x, y)
 		if err != nil {
@@ -197,11 +197,11 @@ func (c *WaypointCacheContext) iSaveWaypointForSystemWith(waypointSymbol, system
 	}
 
 	row := table.Rows[1]
-	waypointType := getCellValue(row, "type")
-	x := parseFloat(getCellValue(row, "x"))
-	y := parseFloat(getCellValue(row, "y"))
-	traitsStr := getCellValue(row, "traits")
-	hasFuel := getCellValue(row, "has_fuel") == "true"
+	waypointType := getCellValue(table, row, "type")
+	x := parseFloat(getCellValue(table, row, "x"))
+	y := parseFloat(getCellValue(table, row, "y"))
+	traitsStr := getCellValue(table, row, "traits")
+	hasFuel := getCellValue(table, row, "has_fuel") == "true"
 
 	waypoint, err := shared.NewWaypoint(waypointSymbol, x, y)
 	if err != nil {
@@ -232,13 +232,13 @@ func (c *WaypointCacheContext) iSaveWaypointsForSystemWith(systemSymbol string, 
 			continue // Skip header
 		}
 
-		symbol := getCellValue(row, "symbol")
-		waypointType := getCellValue(row, "type")
-		x := parseFloat(getCellValue(row, "x"))
-		y := parseFloat(getCellValue(row, "y"))
-		traitsStr := getCellValue(row, "traits")
-		hasFuel := getCellValue(row, "has_fuel") == "true"
-		orbitalsStr := getCellValue(row, "orbitals")
+		symbol := getCellValue(table, row, "symbol")
+		waypointType := getCellValue(table, row, "type")
+		x := parseFloat(getCellValue(table, row, "x"))
+		y := parseFloat(getCellValue(table, row, "y"))
+		traitsStr := getCellValue(table, row, "traits")
+		hasFuel := getCellValue(table, row, "has_fuel") == "true"
+		orbitalsStr := getCellValue(table, row, "orbitals")
 
 		waypoint, err := shared.NewWaypoint(symbol, x, y)
 		if err != nil {
@@ -313,12 +313,12 @@ func (c *WaypointCacheContext) iSaveWaypointForSystemWithOrbitals(waypointSymbol
 	}
 
 	row := table.Rows[1]
-	waypointType := getCellValue(row, "type")
-	x := parseFloat(getCellValue(row, "x"))
-	y := parseFloat(getCellValue(row, "y"))
-	traitsStr := getCellValue(row, "traits")
-	hasFuel := getCellValue(row, "has_fuel") == "true"
-	orbitalsStr := getCellValue(row, "orbitals")
+	waypointType := getCellValue(table, row, "type")
+	x := parseFloat(getCellValue(table, row, "x"))
+	y := parseFloat(getCellValue(table, row, "y"))
+	traitsStr := getCellValue(table, row, "traits")
+	hasFuel := getCellValue(table, row, "has_fuel") == "true"
+	orbitalsStr := getCellValue(table, row, "orbitals")
 
 	waypoint, err := shared.NewWaypoint(waypointSymbol, x, y)
 	if err != nil {
@@ -416,8 +416,12 @@ func (c *WaypointCacheContext) theWaypointShouldHaveFuelAvailable() error {
 }
 
 func (c *WaypointCacheContext) iShouldReceiveNWaypoints(count int) error {
-	require.NoError(nil, c.retrieveError, "Expected no error when retrieving waypoints")
-	assert.Equal(nil, count, len(c.waypointsList), "Expected %d waypoints, got %d", count, len(c.waypointsList))
+	if c.retrieveError != nil {
+		return fmt.Errorf("expected no error when retrieving waypoints but got: %v", c.retrieveError)
+	}
+	if len(c.waypointsList) != count {
+		return fmt.Errorf("expected %d waypoints, got %d", count, len(c.waypointsList))
+	}
 	return nil
 }
 
@@ -501,22 +505,31 @@ func (c *WaypointCacheContext) waypointShouldHaveCoordinates(waypointSymbol, xSt
 // Helper Functions
 // ============================================================================
 
-func getCellValue(row *messages.PickleTableRow, columnName string) string {
-	// Find column index by name in first row
-	for i, cell := range row.Cells {
-		if cell.Value == columnName {
-			return row.Cells[i].Value
-		}
+// getCellValueFromTable gets a cell value from a table row by column name
+// It uses the first row (table.Rows[0]) as the header to find the column index
+func getCellValueFromTable(table *godog.Table, row *messages.PickleTableRow, columnName string) string {
+	if len(table.Rows) == 0 {
+		return ""
 	}
-	// If not found, try to return cell by index
-	if len(row.Cells) > 0 {
-		for i, cell := range row.Cells {
-			// Try to match by iterating through table header
+
+	headerRow := table.Rows[0]
+
+	// Find column index by matching header
+	for i, headerCell := range headerRow.Cells {
+		if headerCell.Value == columnName {
 			if i < len(row.Cells) {
-				return cell.Value
+				return row.Cells[i].Value
 			}
+			return ""
 		}
 	}
+
 	return ""
+}
+
+// getCellValue is a helper for backwards compatibility - it attempts to find the value by index
+// This version requires the table to have consistent column ordering
+func getCellValue(table *godog.Table, row *messages.PickleTableRow, columnName string) string {
+	return getCellValueFromTable(table, row, columnName)
 }
 
