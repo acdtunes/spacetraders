@@ -66,30 +66,39 @@ Handler → ShipRepository (single impl: APIShipRepository)
 - ❌ 47 scenarios failed
 - ⚠️ 182 undefined scenarios
 
-**After Test Migration Fixes:**
-- ✅ 314 scenarios passed (+9)
-- ❌ 38 scenarios failed (-9)
+**Final Status (after all test fixes):**
+- ✅ 322 scenarios passed (+17, 36% improvement)
+- ❌ 30 scenarios failed (-17)
 - ⚠️ 182 undefined scenarios (unchanged)
 
-**Remaining Failures:**
-- Most failures are in contexts that haven't been updated yet (scouting, trading)
-- Some failures due to "no such table: waypoints" in contexts missing DB migrations
-- 182 undefined scenarios remain (need step implementations)
+**Test Fix Progress:**
+1. ship_operations_context.go: +9 passing (314 total)
+2. navigate_to_waypoint_steps.go + refuel_ship_steps.go: +2 passing (316 total)
+3. scout_markets_steps.go + scout_tour_steps.go: +6 passing (322 total)
+
+**Remaining 30 Failures:**
+- route_executor.feature: Multiple route execution scenarios
+- sell/purchase_cargo_transaction_limits.feature: Transaction limit edge cases
+- navigate_to_waypoint.feature: Some navigation scenarios
+- deliver_contract.feature, set_flight_mode.feature: Misc application scenarios
+- These likely need similar player/waypoint persistence fixes in their contexts
 
 ## What Was Completed
 
-### 1. Test Migration - Partial ✅
-Fixed ship operations test context:
-- ✅ Added `ensureWaypointExists()` helper function
-- ✅ Waypoints are now persisted to database during test setup
-- ✅ Fixed 9 test failures (from 47 down to 38)
-- ⚠️ Other test contexts (scouting, trading) still need similar fixes
+### 1. Test Migration - Majorly Improved ✅
+Fixed multiple test contexts with player/waypoint persistence:
+- ✅ ship_operations_context.go: Added `ensurePlayerExists()` and `ensureWaypointExists()`
+- ✅ navigate_to_waypoint_steps.go: Added persistence helpers
+- ✅ refuel_ship_steps.go: Added persistence helpers
+- ✅ scout_markets_steps.go: Fixed DB migrations + added persistence helpers
+- ✅ scout_tour_steps.go: Fixed DB migrations + added persistence helpers
+- ✅ Fixed 17 test failures total (36% improvement from initial state)
 
-### 2. Test Status - Improved ✅
-- **Before refactoring**: 305 passing, 47 failing
-- **After fixes**: 314 passing, 38 failing
-- **Net improvement**: +9 passing tests
-- **Remaining work**: 38 failures in other test contexts + 182 undefined scenarios
+### 2. Test Status - Significantly Improved ✅
+- **Initial state**: 305 passing, 47 failing
+- **Final state**: 322 passing, 30 failing
+- **Net improvement**: +17 passing tests (36% reduction in failures)
+- **Remaining work**: 30 failures (likely need similar fixes in other contexts) + 182 undefined scenarios
 
 ### 3. Build Verification ✅
 - ✅ Routing service builds successfully
@@ -99,12 +108,13 @@ Fixed ship operations test context:
 
 ## What's Left to Finish
 
-### 1. Complete Test Migration (Remaining Contexts)
-Other test contexts still need waypoint/player initialization fixes:
-- `scouting_*_steps.go` - failing with "no such table: waypoints"
-- `sell_cargo_steps.go` - some scenarios missing waypoint setup
-- `scout_markets_steps.go` - missing database migrations
-- Apply same pattern: `ensurePlayerExists()` + `ensureWaypointExists()`
+### 1. Complete Test Migration (30 Remaining Failures)
+Some test contexts still need player/waypoint initialization fixes:
+- route_executor.feature scenarios - likely player not persisted
+- sell/purchase_cargo_transaction_limits.feature - edge cases
+- navigate_to_waypoint.feature - some scenarios
+- deliver_contract.feature, set_flight_mode.feature - misc scenarios
+- Pattern to apply: Add `ensurePlayerExists()` + `ensureWaypointExists()` + DB migrations
 
 ### 2. Implement Missing Step Definitions
 - 182 undefined scenarios need step implementations
@@ -112,7 +122,7 @@ Other test contexts still need waypoint/player initialization fixes:
 
 ### 3. Future Work
 ```bash
-make test                    # Run full BDD test suite (current: 314/352 passing)
+make test                    # Run full BDD test suite (current: 322/352 passing, 91% pass rate)
 make build                   # Currently fails (CLI/daemon not implemented yet)
 ```
 
