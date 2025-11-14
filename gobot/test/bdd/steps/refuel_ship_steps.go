@@ -81,6 +81,44 @@ func (ctx *refuelShipContext) thePlayerHasPlayerID(playerID int) error {
 	return nil
 }
 
+// ensurePlayerExists ensures a player with the given ID exists in the repository
+func (ctx *refuelShipContext) ensurePlayerExists(playerID int) error {
+	// Check if player already exists
+	_, err := ctx.playerRepo.FindByID(context.Background(), playerID)
+	if err == nil {
+		return nil // Player already exists
+	}
+
+	// Create and save player
+	agentSymbol := fmt.Sprintf("AGENT-%d", playerID)
+	token := fmt.Sprintf("token-%d", playerID)
+	if ctx.agentSymbol != "" {
+		agentSymbol = ctx.agentSymbol
+	}
+	if ctx.token != "" {
+		token = ctx.token
+	}
+
+	p := player.NewPlayer(playerID, agentSymbol, token)
+	return ctx.playerRepo.Save(context.Background(), p)
+}
+
+// ensureWaypointExists ensures a waypoint exists in the repository
+func (ctx *refuelShipContext) ensureWaypointExists(waypoint *shared.Waypoint) error {
+	// Extract system symbol from waypoint symbol
+	systemSymbol := shared.ExtractSystemSymbol(waypoint.Symbol)
+	waypoint.SystemSymbol = systemSymbol
+
+	// Check if waypoint already exists
+	_, err := ctx.waypointRepo.FindBySymbol(context.Background(), waypoint.Symbol, systemSymbol)
+	if err == nil {
+		return nil // Waypoint already exists
+	}
+
+	// Save waypoint to repository
+	return ctx.waypointRepo.Save(context.Background(), waypoint)
+}
+
 // Given steps
 
 func (ctx *refuelShipContext) aShipForPlayerAtFuelStationWithStatusAndFuel(
@@ -90,27 +128,23 @@ func (ctx *refuelShipContext) aShipForPlayerAtFuelStationWithStatusAndFuel(
 	status string,
 	currentFuel, fuelCapacity int,
 ) error {
-	// Create waypoint in database (required for APIShipRepository.shipDataToDomain)
-	systemSymbol := shared.ExtractSystemSymbol(location)
-	waypointModel := &persistence.WaypointModel{
-		WaypointSymbol: location,
-		Type:           "FUEL_STATION",
-		SystemSymbol:   systemSymbol,
-		X:              0,
-		Y:              0,
-		HasFuel:        1, // Mark as fuel station
-	}
-	if err := ctx.db.Create(waypointModel).Error; err != nil {
-		return fmt.Errorf("failed to create waypoint: %w", err)
+	// Ensure player exists in repository
+	if err := ctx.ensurePlayerExists(playerID); err != nil {
+		return err
 	}
 
-	// Create waypoint domain object with fuel station
+	// Create waypoint with fuel station
 	waypoint, err := shared.NewWaypoint(location, 0, 0)
 	if err != nil {
 		return err
 	}
 	waypoint.HasFuel = true // Mark as fuel station
 	ctx.waypoints[location] = waypoint
+
+	// Ensure waypoint exists in repository
+	if err := ctx.ensureWaypointExists(waypoint); err != nil {
+		return err
+	}
 
 	fuel, err := shared.NewFuel(currentFuel, fuelCapacity)
 	if err != nil {
@@ -162,27 +196,23 @@ func (ctx *refuelShipContext) aShipForPlayerAtWaypointWithoutFuelWithStatusAndFu
 	status string,
 	currentFuel, fuelCapacity int,
 ) error {
-	// Create waypoint in database (required for APIShipRepository.shipDataToDomain)
-	systemSymbol := shared.ExtractSystemSymbol(location)
-	waypointModel := &persistence.WaypointModel{
-		WaypointSymbol: location,
-		Type:           "PLANET",
-		SystemSymbol:   systemSymbol,
-		X:              0,
-		Y:              0,
-		HasFuel:        0, // No fuel station
-	}
-	if err := ctx.db.Create(waypointModel).Error; err != nil {
-		return fmt.Errorf("failed to create waypoint: %w", err)
+	// Ensure player exists in repository
+	if err := ctx.ensurePlayerExists(playerID); err != nil {
+		return err
 	}
 
-	// Create waypoint domain object WITHOUT fuel station
+	// Create waypoint WITHOUT fuel station
 	waypoint, err := shared.NewWaypoint(location, 0, 0)
 	if err != nil {
 		return err
 	}
 	waypoint.HasFuel = false // No fuel station
 	ctx.waypoints[location] = waypoint
+
+	// Ensure waypoint exists in repository
+	if err := ctx.ensureWaypointExists(waypoint); err != nil {
+		return err
+	}
 
 	fuel, err := shared.NewFuel(currentFuel, fuelCapacity)
 	if err != nil {

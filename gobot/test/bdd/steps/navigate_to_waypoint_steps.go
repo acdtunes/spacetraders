@@ -13,6 +13,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/api"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/test/helpers"
 )
@@ -97,8 +98,57 @@ func (ctx *navigateToWaypointContext) thePlayerHasPlayerID(playerID int) error {
 	return nil
 }
 
+// ensurePlayerExists ensures a player with the given ID exists in the repository
+func (ctx *navigateToWaypointContext) ensurePlayerExists(playerID int) error {
+	// Check if player already exists
+	_, err := ctx.playerRepo.FindByID(context.Background(), playerID)
+	if err == nil {
+		return nil // Player already exists
+	}
+
+	// Create and save player
+	agentSymbol := fmt.Sprintf("AGENT-%d", playerID)
+	token := fmt.Sprintf("token-%d", playerID)
+	if ctx.agentSymbol != "" {
+		agentSymbol = ctx.agentSymbol
+	}
+	if ctx.token != "" {
+		token = ctx.token
+	}
+
+	p := player.NewPlayer(playerID, agentSymbol, token)
+	return ctx.playerRepo.Save(context.Background(), p)
+}
+
+// ensureWaypointExists ensures a waypoint exists in the repository
+func (ctx *navigateToWaypointContext) ensureWaypointExists(waypoint *shared.Waypoint) error {
+	// Extract system symbol from waypoint symbol
+	systemSymbol := shared.ExtractSystemSymbol(waypoint.Symbol)
+	waypoint.SystemSymbol = systemSymbol
+
+	// Check if waypoint already exists
+	_, err := ctx.waypointRepo.FindBySymbol(context.Background(), waypoint.Symbol, systemSymbol)
+	if err == nil {
+		return nil // Waypoint already exists
+	}
+
+	// Save waypoint to repository
+	return ctx.waypointRepo.Save(context.Background(), waypoint)
+}
+
 func (ctx *navigateToWaypointContext) aShipForPlayerAtWithStatus(shipSymbol string, playerID int, location, status string) error {
+	// Ensure player exists in repository
+	if err := ctx.ensurePlayerExists(playerID); err != nil {
+		return err
+	}
+
 	waypoint, _ := shared.NewWaypoint(location, 0, 0)
+
+	// Ensure waypoint exists in repository
+	if err := ctx.ensureWaypointExists(waypoint); err != nil {
+		return err
+	}
+
 	fuel, _ := shared.NewFuel(100, 100)
 	cargo, _ := shared.NewCargo(40, 0, []*shared.CargoItem{})
 
@@ -135,11 +185,21 @@ func (ctx *navigateToWaypointContext) aWaypointExistsAtCoordinates(waypointSymbo
 		return err
 	}
 
+	// Ensure waypoint exists in repository
+	if err := ctx.ensureWaypointExists(waypoint); err != nil {
+		return err
+	}
+
 	ctx.waypoints[waypointSymbol] = waypoint
 	return nil
 }
 
 func (ctx *navigateToWaypointContext) aShipForPlayerInTransitTo(shipSymbol string, playerID int, destination string) error {
+	// Ensure player exists in repository
+	if err := ctx.ensurePlayerExists(playerID); err != nil {
+		return err
+	}
+
 	// Get or create destination waypoint
 	destWaypoint, exists := ctx.waypoints[destination]
 	if !exists {
@@ -147,8 +207,19 @@ func (ctx *navigateToWaypointContext) aShipForPlayerInTransitTo(shipSymbol strin
 		ctx.waypoints[destination] = destWaypoint
 	}
 
+	// Ensure destination waypoint exists in repository
+	if err := ctx.ensureWaypointExists(destWaypoint); err != nil {
+		return err
+	}
+
 	// Create ship in transit
 	currentLocation, _ := shared.NewWaypoint("X1-A1", 0, 0)
+
+	// Ensure current location exists in repository
+	if err := ctx.ensureWaypointExists(currentLocation); err != nil {
+		return err
+	}
+
 	fuel, _ := shared.NewFuel(100, 100)
 	cargo, _ := shared.NewCargo(40, 0, []*shared.CargoItem{})
 
