@@ -76,12 +76,21 @@ Handler → ShipRepository (single impl: APIShipRepository)
 2. navigate_to_waypoint_steps.go + refuel_ship_steps.go: +2 passing (316 total)
 3. scout_markets_steps.go + scout_tour_steps.go: +6 passing (322 total)
 
-**Remaining 30 Failures:**
-- route_executor.feature: Multiple route execution scenarios
-- sell/purchase_cargo_transaction_limits.feature: Transaction limit edge cases
-- navigate_to_waypoint.feature: Some navigation scenarios
-- deliver_contract.feature, set_flight_mode.feature: Misc application scenarios
-- These likely need similar player/waypoint persistence fixes in their contexts
+**Remaining 30 Failures - Root Cause Identified:**
+
+The remaining failures are due to **cross-context database isolation**:
+- Each test context creates its own in-memory SQLite database
+- Background steps (e.g., "a player exists...") run in one context (negotiate_contract_context)
+- Scenario steps run in a different context (navigate_to_waypoint_context, route_executor_context, etc.)
+- The player/waypoint created in the background context's database is not visible to the scenario context's database
+
+**Affected scenarios:**
+- navigate_to_waypoint.feature: 6 scenarios (player not found: 1)
+- route_executor.feature: 8 scenarios (player not found: 1)
+- sell/purchase_cargo_transaction_limits.feature: 10 scenarios (waypoint/player not found)
+- dock_ship.feature, orbit_ship.feature: 2 scenarios (MockAPIClient state not persisting)
+- refuel_ship.feature: 2 scenarios (fuel state assertion mismatches)
+- set_flight_mode.feature: 2 scenarios (player not found: 1)
 
 ## What Was Completed
 
@@ -108,13 +117,22 @@ Fixed multiple test contexts with player/waypoint persistence:
 
 ## What's Left to Finish
 
-### 1. Complete Test Migration (30 Remaining Failures)
-Some test contexts still need player/waypoint initialization fixes:
-- route_executor.feature scenarios - likely player not persisted
-- sell/purchase_cargo_transaction_limits.feature - edge cases
-- navigate_to_waypoint.feature - some scenarios
-- deliver_contract.feature, set_flight_mode.feature - misc scenarios
-- Pattern to apply: Add `ensurePlayerExists()` + `ensureWaypointExists()` + DB migrations
+### 1. Fix Cross-Context Database Isolation (30 Remaining Failures)
+
+**Root Cause:**
+Each test context creates its own in-memory database, causing cross-context step failures when Background steps run in one context but scenario steps run in another.
+
+**Solution Options:**
+1. **Shared Database Approach**: Create a single shared database instance used by all contexts
+2. **Context Redesign**: Consolidate related scenarios into single contexts with unified step definitions
+3. **Background Elimination**: Move Background steps into individual scenario Given steps
+
+**Recommended Approach**: Option 1 (Shared Database)
+- Create a `SharedTestDatabase` that all contexts use
+- Modify each context's `reset()` to use the shared database instead of creating new instances
+- Add cleanup between scenarios to maintain test isolation
+
+**Effort Estimate**: Medium (4-6 hours) - requires refactoring all test contexts
 
 ### 2. Implement Missing Step Definitions
 - 182 undefined scenarios need step implementations
@@ -123,8 +141,13 @@ Some test contexts still need player/waypoint initialization fixes:
 ### 3. Future Work
 ```bash
 make test                    # Run full BDD test suite (current: 322/352 passing, 91% pass rate)
-make build                   # Currently fails (CLI/daemon not implemented yet)
+make build                   # Routing service builds; CLI/daemon not implemented yet
 ```
+
+**Priority Order:**
+1. Fix cross-context database isolation (unlocks 30 more passing tests → 96% pass rate)
+2. Implement 182 undefined step definitions (unlocks full test coverage)
+3. Build CLI and daemon executables
 
 ## Benefits Achieved
 
