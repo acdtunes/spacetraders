@@ -423,6 +423,10 @@ func (r *testShipRepository) JettisonCargo(ctx context.Context, ship *navigation
 	return fmt.Errorf("not implemented")
 }
 
+func (r *testShipRepository) GetShipData(ctx context.Context, symbol string, playerID int) (*navigation.ShipData, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+
 // marketRepositoryAdapter adapts persistence.MarketRepositoryGORM to trading.MarketRepository
 type marketRepositoryAdapter struct {
 	repo *persistence.MarketRepositoryGORM

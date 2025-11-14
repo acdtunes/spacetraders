@@ -210,3 +210,18 @@ func (m *MockShipRepository) JettisonCargo(ctx context.Context, ship *navigation
 	// Mock implementation - just succeed
 	return nil
 }
+
+// GetShipData retrieves raw ship data (for API-level operations)
+func (m *MockShipRepository) GetShipData(ctx context.Context, symbol string, playerID int) (*navigation.ShipData, error) {
+	// Mock implementation - return minimal ship data
+	return &navigation.ShipData{
+		Symbol:         symbol,
+		Location:       "X1-A1",
+		FuelCurrent:    100,
+		FuelCapacity:   100,
+		CargoCapacity:  100,
+		CargoUnits:     0,
+		EngineSpeed:    30,
+		NavStatus:      "DOCKED",
+	}, nil
+}

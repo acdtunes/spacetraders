@@ -206,11 +206,13 @@ func (m *MockAPIClient) NavigateShip(ctx context.Context, symbol, destination, t
 }
 
 func (m *MockAPIClient) OrbitShip(ctx context.Context, symbol, token string) error {
-	return fmt.Errorf("not implemented in mock")
+	// Mock implementation - just succeed
+	return nil
 }
 
 func (m *MockAPIClient) DockShip(ctx context.Context, symbol, token string) error {
-	return fmt.Errorf("not implemented in mock")
+	// Mock implementation - just succeed
+	return nil
 }
 
 func (m *MockAPIClient) RefuelShip(ctx context.Context, symbol, token string, units *int) (*navigation.RefuelResult, error) {

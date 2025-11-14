@@ -12,6 +12,9 @@ type ShipRepository interface {
 	// FindBySymbol retrieves a ship (from API with waypoint reconstruction)
 	FindBySymbol(ctx context.Context, symbol string, playerID int) (*Ship, error)
 
+	// GetShipData retrieves raw ship data from API (includes arrival time for IN_TRANSIT ships)
+	GetShipData(ctx context.Context, symbol string, playerID int) (*ShipData, error)
+
 	// FindAllByPlayer retrieves all ships for a player (from API with waypoint reconstruction)
 	FindAllByPlayer(ctx context.Context, playerID int) ([]*Ship, error)
 
@@ -44,6 +47,7 @@ type ShipData struct {
 	Symbol          string
 	Location        string
 	NavStatus       string
+	ArrivalTime     string // ISO8601 timestamp when IN_TRANSIT (e.g., "2024-01-01T12:00:00Z"), empty otherwise
 	FuelCurrent     int
 	FuelCapacity    int
 	CargoCapacity   int

@@ -229,15 +229,27 @@ func (e *RouteExecutor) waitForCurrentTransit(
 	ship *domainNavigation.Ship,
 	playerID int,
 ) error {
-	log.Printf("Ship %s is IN_TRANSIT from previous command, waiting for arrival...",
+	log.Printf("Ship %s is IN_TRANSIT from previous command, fetching arrival time from API...",
 		ship.ShipSymbol())
 
-	// In a real implementation, we'd get the arrival time from API
-	// For now, wait a bit and re-sync
-	// Uses clock for testability (instant in tests, real sleep in production)
-	e.clock.Sleep(5 * time.Second)
+	// Fetch ship data from API to get arrival time (matches Python implementation)
+	if e.shipRepo != nil {
+		shipData, err := e.shipRepo.GetShipData(ctx, ship.ShipSymbol(), playerID)
+		if err != nil {
+			return fmt.Errorf("failed to fetch ship data from API: %w", err)
+		}
 
-	// Re-sync ship state (if using real repository)
+		// If ship is still IN_TRANSIT and has arrival time, wait for it
+		if shipData.NavStatus == "IN_TRANSIT" && shipData.ArrivalTime != "" {
+			waitTime := CalculateArrivalWaitTime(shipData.ArrivalTime)
+			if waitTime > 0 {
+				log.Printf("Waiting %d seconds for ship to complete previous transit", waitTime+3)
+				e.clock.Sleep(time.Duration(waitTime+3) * time.Second) // +3 second buffer
+			}
+		}
+	}
+
+	// Re-sync ship state after waiting
 	if e.shipRepo != nil {
 		freshShip, err := e.shipRepo.FindBySymbol(ctx, ship.ShipSymbol(), playerID)
 		if err != nil {

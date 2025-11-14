@@ -92,6 +92,9 @@ func (c *SpaceTradersClient) GetShip(ctx context.Context, symbol, token string) 
 				SystemSymbol   string `json:"systemSymbol"`
 				WaypointSymbol string `json:"waypointSymbol"`
 				Status         string `json:"status"`
+				Route          *struct {
+					Arrival string `json:"arrival"`
+				} `json:"route,omitempty"` // Only present when IN_TRANSIT
 			} `json:"nav"`
 			Fuel struct {
 				Current  int `json:"current"`
@@ -134,10 +137,17 @@ func (c *SpaceTradersClient) GetShip(ctx context.Context, symbol, token string) 
 		Inventory: inventory,
 	}
 
+	// Extract arrival time if ship is IN_TRANSIT
+	arrivalTime := ""
+	if response.Data.Nav.Route != nil {
+		arrivalTime = response.Data.Nav.Route.Arrival
+	}
+
 	return &navigation.ShipData{
 		Symbol:        response.Data.Symbol,
 		Location:      response.Data.Nav.WaypointSymbol,
 		NavStatus:     response.Data.Nav.Status,
+		ArrivalTime:   arrivalTime, // ISO8601 timestamp when IN_TRANSIT
 		FuelCurrent:   response.Data.Fuel.Current,
 		FuelCapacity:  response.Data.Fuel.Capacity,
 		CargoCapacity: response.Data.Cargo.Capacity,

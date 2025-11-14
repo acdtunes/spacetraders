@@ -61,6 +61,23 @@ func (r *GormShipRepository) FindBySymbol(ctx context.Context, symbol string, pl
 	return ship, nil
 }
 
+// GetShipData retrieves raw ship data from API (includes arrival time for IN_TRANSIT ships)
+func (r *GormShipRepository) GetShipData(ctx context.Context, symbol string, playerID int) (*navigation.ShipData, error) {
+	// Get player token
+	player, err := r.playerRepo.FindByID(ctx, playerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find player: %w", err)
+	}
+
+	// Fetch ship data from API (includes ArrivalTime for IN_TRANSIT ships)
+	shipData, err := r.apiClient.GetShip(ctx, symbol, player.Token)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get ship from API: %w", err)
+	}
+
+	return shipData, nil
+}
+
 // FindAllByPlayer retrieves all ships for a player from API
 // Converts API DTOs to domain entities with full waypoint reconstruction
 func (r *GormShipRepository) FindAllByPlayer(ctx context.Context, playerID int) ([]*navigation.Ship, error) {

@@ -67,32 +67,18 @@ func (h *RefuelShipHandler) Handle(ctx context.Context, request common.Request) 
 		}
 	}
 
-	// 5. Calculate fuel to add before refueling
-	var fuelAdded int
+	// 5. Get fuel before refueling to calculate amount added
+	fuelBefore := ship.Fuel().Current
 
-	if cmd.Units == nil {
-		// Full refuel
-		added, err := ship.RefuelToFull()
-		if err != nil {
-			return nil, err
-		}
-		fuelAdded = added
-	} else {
-		// Partial refuel
-		if err := ship.Refuel(*cmd.Units); err != nil {
-			return nil, err
-		}
-		fuelAdded = *cmd.Units
+	// 6. Call repository to refuel via API (repository will update ship state)
+	if err := h.shipRepo.Refuel(ctx, ship, cmd.PlayerID, cmd.Units); err != nil {
+		return nil, fmt.Errorf("failed to refuel ship: %w", err)
 	}
 
-	// 6. Call repository to refuel via API (only if fuel was added)
-	if fuelAdded > 0 {
-		if err := h.shipRepo.Refuel(ctx, ship, cmd.PlayerID, cmd.Units); err != nil {
-			return nil, fmt.Errorf("failed to refuel ship: %w", err)
-		}
-	}
+	// 7. Calculate fuel added based on before/after comparison
+	fuelAdded := ship.Fuel().Current - fuelBefore
 
-	// 7. Calculate cost (100 credits per unit is standard)
+	// 8. Calculate cost (100 credits per unit is standard)
 	creditsCost := fuelAdded * 100
 
 	return &RefuelShipResponse{
