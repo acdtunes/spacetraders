@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"text/tabwriter"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -23,16 +24,25 @@ func NewShipCommand() *cobra.Command {
 		Long: `Manage ships and view ship information.
 
 Ships are your vessels in the SpaceTraders universe. Use these commands to
-view your fleet, check ship details, and monitor status.
+view your fleet, check ship details, monitor status, and perform ship operations.
 
 Examples:
   spacetraders ship list --agent ENDURANCE
-  spacetraders ship info --ship ENDURANCE-1 --agent ENDURANCE`,
+  spacetraders ship info --ship ENDURANCE-1 --agent ENDURANCE
+  spacetraders ship navigate --ship ENDURANCE-1 --destination X1-GZ7-B1 --agent ENDURANCE
+  spacetraders ship dock --ship ENDURANCE-1 --agent ENDURANCE
+  spacetraders ship orbit --ship ENDURANCE-1 --agent ENDURANCE
+  spacetraders ship refuel --ship ENDURANCE-1 --agent ENDURANCE`,
 	}
 
 	// Add subcommands
 	cmd.AddCommand(newShipListCommand())
 	cmd.AddCommand(newShipInfoCommand())
+	cmd.AddCommand(newShipNavigateCommand())
+	cmd.AddCommand(newShipDockCommand())
+	cmd.AddCommand(newShipOrbitCommand())
+	cmd.AddCommand(newShipRefuelCommand())
+	cmd.AddCommand(newShipSellCommand())
 
 	return cmd
 }
@@ -50,66 +60,57 @@ Examples:
   spacetraders ship list --player-id 1
   spacetraders ship list --agent ENDURANCE`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Get daemon client
+			client, err := NewDaemonClient(socketPath)
+			if err != nil {
+				return fmt.Errorf("failed to connect to daemon: %w", err)
+			}
+			defer client.Close()
+
 			// Resolve player from flags or defaults
 			playerIdent, err := resolvePlayerIdentifier()
 			if err != nil {
 				return err
 			}
 
-			// Load config and connect to database
-			cfg, err := config.LoadConfig("")
-			if err != nil {
-				return fmt.Errorf("failed to load config: %w", err)
-			}
-
-			db, err := database.NewConnection(&cfg.Database)
-			if err != nil {
-				return fmt.Errorf("failed to connect to database: %w", err)
-			}
-
-			// Create repositories and handler
-			playerRepo := persistence.NewGormPlayerRepository(db)
-			apiClient := api.NewSpaceTradersClient()
-			waypointRepo := persistence.NewGormWaypointRepository(db)
-			shipRepo := persistence.NewGormShipRepository(db, apiClient, playerRepo, waypointRepo)
-			handler := ship.NewListShipsHandler(shipRepo, playerRepo)
-
-			// Execute query
+			// Call daemon via gRPC
 			ctx := context.Background()
-			var playerIDPtr *int
+			var playerID *int32
 			if playerIdent.PlayerID > 0 {
-				playerIDPtr = &playerIdent.PlayerID
+				pid := int32(playerIdent.PlayerID)
+				playerID = &pid
 			}
 
-			response, err := handler.Handle(ctx, &ship.ListShipsQuery{
-				PlayerID:    playerIDPtr,
-				AgentSymbol: playerIdent.AgentSymbol,
-			})
+			var agentSymbol *string
+			if playerIdent.AgentSymbol != "" {
+				agentSymbol = &playerIdent.AgentSymbol
+			}
+
+			response, err := client.ListShips(ctx, playerID, agentSymbol)
 			if err != nil {
 				return fmt.Errorf("failed to list ships: %w", err)
 			}
 
-			result := response.(*ship.ListShipsResponse)
-
-			if len(result.Ships) == 0 {
+			if len(response.Ships) == 0 {
 				fmt.Println("No ships found.")
 				return nil
 			}
 
 			// Display table
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "SHIP SYMBOL\tLOCATION\tSTATUS\tFUEL\tCARGO")
-			fmt.Fprintln(w, "-----------\t--------\t------\t----\t-----")
+			fmt.Fprintln(w, "SHIP SYMBOL\tLOCATION\tSTATUS\tFUEL\tCARGO\tSPEED")
+			fmt.Fprintln(w, "-----------\t--------\t------\t----\t-----\t-----")
 
-			for _, s := range result.Ships {
-				fmt.Fprintf(w, "%s\t%s\t%s\t%d/%d\t%d/%d\n",
-					s.ShipSymbol(),
-					s.CurrentLocation().Symbol,
-					s.NavStatus(),
-					s.Fuel().Current,
-					s.Fuel().Capacity,
-					s.CargoUnits(),
-					s.CargoCapacity(),
+			for _, s := range response.Ships {
+				fmt.Fprintf(w, "%s\t%s\t%s\t%d/%d\t%d/%d\t%d\n",
+					s.Symbol,
+					s.Location,
+					s.NavStatus,
+					s.FuelCurrent,
+					s.FuelCapacity,
+					s.CargoUnits,
+					s.CargoCapacity,
+					s.EngineSpeed,
 				)
 			}
 
@@ -142,6 +143,334 @@ Examples:
 				return fmt.Errorf("--ship flag is required")
 			}
 
+			// Get daemon client
+			client, err := NewDaemonClient(socketPath)
+			if err != nil {
+				return fmt.Errorf("failed to connect to daemon: %w", err)
+			}
+			defer client.Close()
+
+			// Resolve player from flags or defaults
+			playerIdent, err := resolvePlayerIdentifier()
+			if err != nil {
+				return err
+			}
+
+			// Call daemon via gRPC
+			ctx := context.Background()
+			var playerID *int32
+			if playerIdent.PlayerID > 0 {
+				pid := int32(playerIdent.PlayerID)
+				playerID = &pid
+			}
+
+			var agentSymbol *string
+			if playerIdent.AgentSymbol != "" {
+				agentSymbol = &playerIdent.AgentSymbol
+			}
+
+			response, err := client.GetShip(ctx, shipSymbol, playerID, agentSymbol)
+			if err != nil {
+				return fmt.Errorf("failed to get ship: %w", err)
+			}
+
+			s := response.Ship
+
+			// Display ship info
+			fmt.Printf("Ship Information\n")
+			fmt.Printf("================\n\n")
+			fmt.Printf("Ship Symbol:    %s\n", s.Symbol)
+			fmt.Printf("Location:       %s\n", s.Location)
+			fmt.Printf("Nav Status:     %s\n", s.NavStatus)
+			fmt.Printf("Fuel:           %d / %d\n", s.FuelCurrent, s.FuelCapacity)
+			fmt.Printf("Cargo:          %d / %d units\n", s.CargoUnits, s.CargoCapacity)
+			fmt.Printf("Engine Speed:   %d\n", s.EngineSpeed)
+
+			// Show cargo contents if any
+			if s.CargoUnits > 0 {
+				fmt.Printf("\nCargo Contents:\n")
+				for _, item := range s.CargoInventory {
+					fmt.Printf("  - %s: %d units (%s)\n", item.Name, item.Units, item.Symbol)
+				}
+			}
+
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&shipSymbol, "ship", "", "Ship symbol (required)")
+
+	return cmd
+}
+
+// newShipNavigateCommand creates the ship navigate subcommand
+func newShipNavigateCommand() *cobra.Command {
+	var (
+		shipSymbol  string
+		destination string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "navigate",
+		Short: "Navigate a ship to a destination waypoint",
+		Long: `Navigate a ship to a destination waypoint within the same system.
+
+The daemon will automatically:
+- Orbit the ship if docked
+- Plan the optimal route (including refuel stops if needed)
+- Navigate to the destination
+- Return a container ID for tracking progress
+
+Examples:
+  spacetraders ship navigate --ship AGENT-1 --destination X1-GZ7-B1 --player-id 1
+  spacetraders ship navigate --ship SCOUT-2 --destination X1-GZ7-A1 --agent ENDURANCE`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			// Validate flags
+			if shipSymbol == "" {
+				return fmt.Errorf("--ship flag is required")
+			}
+			if destination == "" {
+				return fmt.Errorf("--destination flag is required")
+			}
+
+			// Resolve player from flags or defaults
+			playerIdent, err := resolvePlayerIdentifier()
+			if err != nil {
+				return err
+			}
+
+			// Create gRPC client
+			client, err := NewDaemonClient(socketPath)
+			if err != nil {
+				return fmt.Errorf("failed to connect to daemon: %w", err)
+			}
+			defer client.Close()
+
+			// Execute navigate command
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			result, err := client.NavigateShip(ctx, shipSymbol, destination, playerIdent.PlayerID, playerIdent.AgentSymbol)
+			if err != nil {
+				return fmt.Errorf("navigation failed: %w", err)
+			}
+
+			// Display result
+			fmt.Println("✓ Navigation started successfully")
+			fmt.Printf("  Container ID:     %s\n", result.ContainerID)
+			fmt.Printf("  Ship:             %s\n", result.ShipSymbol)
+			fmt.Printf("  Destination:      %s\n", result.Destination)
+			fmt.Printf("  Status:           %s\n", result.Status)
+			fmt.Printf("  Estimated Time:   %d seconds\n", result.EstimatedTime)
+			fmt.Printf("\nTrack progress with: spacetraders container logs %s\n", result.ContainerID)
+
+			return nil
+		},
+	}
+
+	// Command-specific flags
+	cmd.Flags().StringVar(&shipSymbol, "ship", "", "Ship symbol to navigate (required)")
+	cmd.Flags().StringVar(&destination, "destination", "", "Destination waypoint symbol (required)")
+
+	return cmd
+}
+
+// newShipDockCommand creates the ship dock subcommand
+func newShipDockCommand() *cobra.Command {
+	var shipSymbol string
+
+	cmd := &cobra.Command{
+		Use:   "dock",
+		Short: "Dock a ship at its current location",
+		Long: `Dock a ship at its current location.
+Ship must be in orbit to dock.
+
+Examples:
+  spacetraders ship dock --ship AGENT-1 --player-id 1
+  spacetraders ship dock --ship ENDURANCE-1 --agent ENDURANCE`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if shipSymbol == "" {
+				return fmt.Errorf("--ship flag is required")
+			}
+
+			// Resolve player from flags or defaults
+			playerIdent, err := resolvePlayerIdentifier()
+			if err != nil {
+				return err
+			}
+
+			client, err := NewDaemonClient(socketPath)
+			if err != nil {
+				return fmt.Errorf("failed to connect to daemon: %w", err)
+			}
+			defer client.Close()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			result, err := client.DockShip(ctx, shipSymbol, playerIdent.PlayerID, playerIdent.AgentSymbol)
+			if err != nil {
+				return fmt.Errorf("dock failed: %w", err)
+			}
+
+			fmt.Println("✓ Dock operation started")
+			fmt.Printf("  Container ID: %s\n", result.ContainerID)
+			fmt.Printf("  Ship:         %s\n", result.ShipSymbol)
+			fmt.Printf("  Status:       %s\n", result.Status)
+
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&shipSymbol, "ship", "", "Ship symbol to dock (required)")
+
+	return cmd
+}
+
+// newShipOrbitCommand creates the ship orbit subcommand
+func newShipOrbitCommand() *cobra.Command {
+	var shipSymbol string
+
+	cmd := &cobra.Command{
+		Use:   "orbit",
+		Short: "Put a ship into orbit from docked position",
+		Long: `Put a ship into orbit from its current docked position.
+Ship must be docked to orbit.
+
+Examples:
+  spacetraders ship orbit --ship AGENT-1 --player-id 1
+  spacetraders ship orbit --ship ENDURANCE-1 --agent ENDURANCE`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if shipSymbol == "" {
+				return fmt.Errorf("--ship flag is required")
+			}
+
+			// Resolve player from flags or defaults
+			playerIdent, err := resolvePlayerIdentifier()
+			if err != nil {
+				return err
+			}
+
+			client, err := NewDaemonClient(socketPath)
+			if err != nil {
+				return fmt.Errorf("failed to connect to daemon: %w", err)
+			}
+			defer client.Close()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			result, err := client.OrbitShip(ctx, shipSymbol, playerIdent.PlayerID, playerIdent.AgentSymbol)
+			if err != nil {
+				return fmt.Errorf("orbit failed: %w", err)
+			}
+
+			fmt.Println("✓ Orbit operation started")
+			fmt.Printf("  Container ID: %s\n", result.ContainerID)
+			fmt.Printf("  Ship:         %s\n", result.ShipSymbol)
+			fmt.Printf("  Status:       %s\n", result.Status)
+
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&shipSymbol, "ship", "", "Ship symbol to orbit (required)")
+
+	return cmd
+}
+
+// newShipRefuelCommand creates the ship refuel subcommand
+func newShipRefuelCommand() *cobra.Command {
+	var (
+		shipSymbol string
+		units      int
+	)
+
+	cmd := &cobra.Command{
+		Use:   "refuel",
+		Short: "Refuel a ship at its current location",
+		Long: `Refuel a ship at its current location.
+Ship must be docked at a waypoint with fuel available.
+
+Examples:
+  spacetraders ship refuel --ship AGENT-1 --player-id 1
+  spacetraders ship refuel --ship AGENT-1 --units 100 --player-id 1
+  spacetraders ship refuel --ship ENDURANCE-1 --agent ENDURANCE`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if shipSymbol == "" {
+				return fmt.Errorf("--ship flag is required")
+			}
+
+			// Resolve player from flags or defaults
+			playerIdent, err := resolvePlayerIdentifier()
+			if err != nil {
+				return err
+			}
+
+			client, err := NewDaemonClient(socketPath)
+			if err != nil {
+				return fmt.Errorf("failed to connect to daemon: %w", err)
+			}
+			defer client.Close()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			var unitsPtr *int
+			if units > 0 {
+				unitsPtr = &units
+			}
+
+			result, err := client.RefuelShip(ctx, shipSymbol, playerIdent.PlayerID, playerIdent.AgentSymbol, unitsPtr)
+			if err != nil {
+				return fmt.Errorf("refuel failed: %w", err)
+			}
+
+			fmt.Println("✓ Refuel operation started")
+			fmt.Printf("  Container ID:  %s\n", result.ContainerID)
+			fmt.Printf("  Ship:          %s\n", result.ShipSymbol)
+			fmt.Printf("  Fuel Added:    %d\n", result.FuelAdded)
+			fmt.Printf("  Credits Cost:  %d\n", result.CreditsCost)
+			fmt.Printf("  Status:        %s\n", result.Status)
+
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&shipSymbol, "ship", "", "Ship symbol to refuel (required)")
+	cmd.Flags().IntVar(&units, "units", 0, "Specific fuel units to purchase (omit for full tank)")
+
+	return cmd
+}
+
+// newShipSellCommand creates the ship sell subcommand
+func newShipSellCommand() *cobra.Command {
+	var (
+		shipSymbol string
+		goodSymbol string
+		units      int
+	)
+
+	cmd := &cobra.Command{
+		Use:   "sell",
+		Short: "Sell cargo from a ship",
+		Long: `Sell cargo from a ship at its current location.
+Ship must be docked at a marketplace.
+
+Examples:
+  spacetraders ship sell --ship AGENT-1 --good IRON_ORE --units 50 --player-id 1
+  spacetraders ship sell --ship ENDURANCE-1 --good IRON_ORE --units 100 --agent ENDURANCE`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if shipSymbol == "" {
+				return fmt.Errorf("--ship flag is required")
+			}
+			if goodSymbol == "" {
+				return fmt.Errorf("--good flag is required")
+			}
+			if units <= 0 {
+				return fmt.Errorf("--units must be greater than 0")
+			}
+
 			// Resolve player from flags or defaults
 			playerIdent, err := resolvePlayerIdentifier()
 			if err != nil {
@@ -159,55 +488,60 @@ Examples:
 				return fmt.Errorf("failed to connect to database: %w", err)
 			}
 
-			// Create repositories and handler
+			// Create dependencies
 			playerRepo := persistence.NewGormPlayerRepository(db)
 			apiClient := api.NewSpaceTradersClient()
 			waypointRepo := persistence.NewGormWaypointRepository(db)
 			shipRepo := persistence.NewGormShipRepository(db, apiClient, playerRepo, waypointRepo)
-			handler := ship.NewGetShipHandler(shipRepo, playerRepo)
+			marketRepo := persistence.NewMarketRepository(db)
 
-			// Execute query
+			// Create handler
+			handler := ship.NewSellCargoHandler(shipRepo, playerRepo, apiClient, marketRepo)
+
+			// Resolve player ID
 			ctx := context.Background()
-			var playerIDPtr *int
+			var resolvedPlayerID int
 			if playerIdent.PlayerID > 0 {
-				playerIDPtr = &playerIdent.PlayerID
+				resolvedPlayerID = playerIdent.PlayerID
+			} else {
+				// Look up player by agent symbol
+				player, err := playerRepo.FindByAgentSymbol(ctx, playerIdent.AgentSymbol)
+				if err != nil {
+					return fmt.Errorf("failed to resolve player from agent symbol: %w", err)
+				}
+				resolvedPlayerID = player.ID
 			}
 
-			response, err := handler.Handle(ctx, &ship.GetShipQuery{
-				ShipSymbol:  shipSymbol,
-				PlayerID:    playerIDPtr,
-				AgentSymbol: playerIdent.AgentSymbol,
+			// Execute command
+			response, err := handler.Handle(ctx, &ship.SellCargoCommand{
+				ShipSymbol: shipSymbol,
+				GoodSymbol: goodSymbol,
+				Units:      units,
+				PlayerID:   resolvedPlayerID,
 			})
 			if err != nil {
-				return fmt.Errorf("failed to get ship: %w", err)
+				return fmt.Errorf("sell cargo command failed: %w", err)
 			}
 
-			result := response.(*ship.GetShipResponse)
-			s := result.Ship
-
-			// Display ship info
-			fmt.Printf("Ship Information\n")
-			fmt.Printf("================\n\n")
-			fmt.Printf("Ship Symbol:    %s\n", s.ShipSymbol())
-			fmt.Printf("Location:       %s\n", s.CurrentLocation().Symbol)
-			fmt.Printf("Nav Status:     %s\n", s.NavStatus())
-			fmt.Printf("Fuel:           %d / %d\n", s.Fuel().Current, s.Fuel().Capacity)
-			fmt.Printf("Cargo:          %d / %d units\n", s.CargoUnits(), s.CargoCapacity())
-			fmt.Printf("Engine Speed:   %d\n", s.EngineSpeed())
-
-			// Show cargo contents if any
-			if s.CargoUnits() > 0 {
-				fmt.Printf("\nCargo Contents:\n")
-				for _, item := range s.Cargo().Inventory {
-					fmt.Printf("  - %s: %d units (%s)\n", item.Name, item.Units, item.Symbol)
-				}
+			result, ok := response.(*ship.SellCargoResponse)
+			if !ok {
+				return fmt.Errorf("unexpected response type")
 			}
+
+			// Display success
+			fmt.Println("✓ Cargo sold successfully")
+			fmt.Printf("  Ship:          %s\n", shipSymbol)
+			fmt.Printf("  Good:          %s\n", goodSymbol)
+			fmt.Printf("  Units Sold:    %d\n", result.UnitsSold)
+			fmt.Printf("  Total Revenue: %d credits\n", result.TotalRevenue)
 
 			return nil
 		},
 	}
 
-	cmd.Flags().StringVar(&shipSymbol, "ship", "", "Ship symbol (required)")
+	cmd.Flags().StringVar(&shipSymbol, "ship", "", "Ship symbol to sell from (required)")
+	cmd.Flags().StringVar(&goodSymbol, "good", "", "Trade good symbol to sell (required)")
+	cmd.Flags().IntVar(&units, "units", 0, "Number of units to sell (required)")
 
 	return cmd
 }

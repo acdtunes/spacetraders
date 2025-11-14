@@ -225,7 +225,7 @@ Examples:
 				playerIDPtr = &playerIdent.PlayerID
 			}
 
-			response, err := handler.Handle(ctx, &player.GetPlayerCommand{
+			response, err := handler.Handle(ctx, &player.GetPlayerQuery{
 				PlayerID:    playerIDPtr,
 				AgentSymbol: playerIdent.AgentSymbol,
 			})
