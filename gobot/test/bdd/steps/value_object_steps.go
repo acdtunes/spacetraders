@@ -16,6 +16,8 @@ var (
 	sharedIntResult    int
 	sharedErr          error
 	sharedWaypointMap  map[string]*shared.Waypoint
+	sharedShip         interface { Fuel() *shared.Fuel; Cargo() *shared.Cargo }
+	sharedMarket       interface{ GoodsCount() int; WaypointSymbol() string } // For scouting market context
 )
 
 type valueObjectContext struct {
@@ -51,6 +53,8 @@ func (voc *valueObjectContext) reset() {
 	sharedIntResult = 0
 	sharedErr = nil
 	sharedWaypointMap = make(map[string]*shared.Waypoint)
+	sharedShip = nil
+	sharedMarket = nil
 }
 
 // Waypoint steps
@@ -159,6 +163,40 @@ func (voc *valueObjectContext) iConsumeUnitsOfFuel(units int) error {
 	voc.originalFuel = voc.fuel
 	voc.fuel, voc.err = voc.fuel.Consume(units)
 	return voc.err
+}
+
+func (voc *valueObjectContext) iAttemptToConsumeUnitsOfFuel(units int) error {
+	// If we have a shared ship, use Ship.ConsumeFuel() which has validation
+	if sharedShip != nil {
+		// We need to type assert to get the ConsumeFuel method
+		type shipWithConsumeFuel interface {
+			ConsumeFuel(int) error
+			Fuel() *shared.Fuel
+		}
+		if ship, ok := sharedShip.(shipWithConsumeFuel); ok {
+			voc.err = ship.ConsumeFuel(units)
+			sharedErr = voc.err
+			return nil
+		}
+	}
+
+	// Otherwise use the fuel value object directly
+	fuel := voc.fuel
+	if fuel == nil {
+		voc.err = fmt.Errorf("no fuel object available")
+		sharedErr = voc.err
+		return nil
+	}
+
+	voc.originalFuel = fuel
+	newFuel, err := fuel.Consume(units)
+	if err != nil {
+		voc.err = err
+		sharedErr = err // Set shared error for cross-context assertions
+		return nil // Don't fail the step, capture the error
+	}
+	voc.fuel = newFuel
+	return nil
 }
 
 func (voc *valueObjectContext) theNewFuelShouldHaveCurrent(current int) error {
@@ -419,12 +457,38 @@ func (voc *valueObjectContext) theAvailableCapacityShouldBe(capacity int) error 
 
 // Cargo status steps
 func (voc *valueObjectContext) iCheckIfCargoIsEmpty() error {
-	voc.boolResult = voc.cargo.IsEmpty()
+	// Check if we have a shared ship from shipContext
+	cargo := voc.cargo
+	if cargo == nil && sharedShip != nil {
+		cargo = sharedShip.Cargo()
+	}
+
+	if cargo == nil {
+		voc.err = fmt.Errorf("no cargo object available")
+		sharedErr = voc.err
+		return voc.err
+	}
+
+	voc.boolResult = cargo.IsEmpty()
+	sharedBoolResult = voc.boolResult
 	return nil
 }
 
 func (voc *valueObjectContext) iCheckIfCargoIsFull() error {
-	voc.boolResult = voc.cargo.IsFull()
+	// Check if we have a shared ship from shipContext
+	cargo := voc.cargo
+	if cargo == nil && sharedShip != nil {
+		cargo = sharedShip.Cargo()
+	}
+
+	if cargo == nil {
+		voc.err = fmt.Errorf("no cargo object available")
+		sharedErr = voc.err
+		return voc.err
+	}
+
+	voc.boolResult = cargo.IsFull()
+	sharedBoolResult = voc.boolResult
 	return nil
 }
 
@@ -479,6 +543,7 @@ func InitializeValueObjectScenarios(ctx *godog.ScenarioContext) {
 	ctx.Step(`^I calculate the fuel percentage$`, voc.iCalculateTheFuelPercentage)
 	ctx.Step(`^the percentage should be ([0-9.]+)$`, voc.thePercentageShouldBe)
 	ctx.Step(`^I consume (\d+) units of fuel$`, voc.iConsumeUnitsOfFuel)
+	ctx.Step(`^I attempt to consume (-?\d+) units of fuel$`, voc.iAttemptToConsumeUnitsOfFuel)
 	ctx.Step(`^the new fuel should have current (\d+)$`, voc.theNewFuelShouldHaveCurrent)
 
 	// Flight mode steps

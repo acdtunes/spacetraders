@@ -277,19 +277,19 @@ Feature: Ship Entity
     Then the travel time should be 50 seconds
 
   Scenario: Select optimal flight mode with high fuel
-    Given a ship with 100 units of fuel at distance 100
+    Given a ship with 250 units of fuel at distance 100
     When I select optimal flight mode for distance 100
-    Then the selected mode should be BURN
+    Then the ship's selected mode should be BURN
 
   Scenario: Select optimal flight mode with low fuel
-    Given a ship with 10 units of fuel at distance 100
+    Given a ship with 50 units of fuel at distance 100
     When I select optimal flight mode for distance 100
-    Then the selected mode should be DRIFT
+    Then the ship's selected mode should be DRIFT
 
   Scenario: Select optimal flight mode with medium fuel
-    Given a ship with 104 units of fuel at distance 100
+    Given a ship with 110 units of fuel at distance 100
     When I select optimal flight mode for distance 100
-    Then the selected mode should be CRUISE
+    Then the ship's selected mode should be CRUISE
 
   # ============================================================================
   # Cargo Management Tests

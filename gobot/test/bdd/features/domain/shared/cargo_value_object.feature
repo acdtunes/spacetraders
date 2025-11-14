@@ -162,3 +162,30 @@ Feature: Cargo Value Object
     Given cargo with capacity 40 and units 0
     When I check if cargo is full
     Then the result should be false
+
+  # ============================================================================
+  # Get Other Items Tests (NEW)
+  # ============================================================================
+
+  Scenario: Get other items from cargo with multiple types
+    Given cargo with items:
+      | symbol        | units |
+      | IRON_ORE      | 50    |
+      | COPPER_ORE    | 25    |
+      | ALUMINUM_ORE  | 10    |
+    When I get other items excluding "IRON_ORE"
+    Then I should have 2 other cargo items
+    And other items should contain "COPPER_ORE" with 25 units
+    And other items should contain "ALUMINUM_ORE" with 10 units
+
+  Scenario: Get other items returns empty when only specified item exists
+    Given cargo with items:
+      | symbol   | units |
+      | IRON_ORE | 50    |
+    When I get other items excluding "IRON_ORE"
+    Then I should have 0 other cargo items
+
+  Scenario: Get other items from empty cargo
+    Given cargo with capacity 100 and units 0
+    When I get other items excluding "IRON_ORE"
+    Then I should have 0 other cargo items

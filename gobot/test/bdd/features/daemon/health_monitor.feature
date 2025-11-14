@@ -1,0 +1,164 @@
+Feature: Health Monitor - Container and Ship Health Monitoring
+  As an autonomous bot operator
+  I need the health monitor to detect and recover from stuck operations
+  So that containers and ships don't remain in invalid states indefinitely
+
+  Background:
+    Given the clock is mocked
+    And a health monitor exists with check interval 60 seconds and recovery timeout 300 seconds
+
+  # ============================================================================
+  # Stale Assignment Detection
+  # ============================================================================
+
+  Scenario: Health monitor detects stale assignment after container removed
+    Given a ship "SHIP-1" with player ID 1 is assigned to container "container-123" for operation "navigate"
+    And the container "container-123" no longer exists
+    When the health monitor runs a check
+    Then the stale assignment for ship "SHIP-1" should be detected
+    And the ship assignment should be auto-released with reason "stale_cleanup"
+    And 1 stale assignment should be cleaned up
+
+  Scenario: Health monitor ignores valid assignments
+    Given a ship "SHIP-1" with player ID 1 is assigned to container "container-123" for operation "navigate"
+    And the container "container-123" exists and is running
+    When the health monitor runs a check
+    Then the ship assignment for "SHIP-1" should remain active
+    And 0 stale assignments should be cleaned up
+
+  Scenario: Health monitor cleans up multiple stale assignments
+    Given a ship "SHIP-1" with player ID 1 is assigned to container "container-123" for operation "navigate"
+    And a ship "SHIP-2" with player ID 1 is assigned to container "container-456" for operation "scout"
+    And a ship "SHIP-3" with player ID 1 is assigned to container "container-789" for operation "dock"
+    And no containers exist
+    When the health monitor runs a check
+    Then 3 stale assignments should be cleaned up
+    And all ship assignments should be released with reason "stale_cleanup"
+
+  # ============================================================================
+  # Stuck Ship Detection (IN_TRANSIT)
+  # ============================================================================
+
+  Scenario: Health monitor detects stuck IN_TRANSIT ship
+    Given a ship "SHIP-1" with navigation status "IN_TRANSIT" since 600 seconds ago
+    And a container "container-123" exists for ship "SHIP-1" with status "RUNNING"
+    And the recovery timeout is 300 seconds
+    When the health monitor runs a check
+    Then the stuck ship "SHIP-1" should be detected
+    And a warning should be logged about stuck ship "SHIP-1"
+    And the stuck ship count should be 1
+
+  Scenario: Health monitor distinguishes between stuck and slow operations
+    Given a ship "SHIP-1" with navigation status "IN_TRANSIT" since 200 seconds ago
+    And the recovery timeout is 300 seconds
+    When the health monitor runs a check
+    Then the stuck ship "SHIP-1" should not be detected
+    And the stuck ship count should be 0
+
+  Scenario: Health monitor detects missing arrival for completed route
+    Given a ship "SHIP-1" with navigation status "IN_TRANSIT" since 600 seconds ago
+    And a route for ship "SHIP-1" exists with status "COMPLETED"
+    And the ship has not arrived at its destination
+    When the health monitor runs a check
+    Then the stuck ship "SHIP-1" should be detected
+    And a critical warning should be logged about route-ship state mismatch
+
+  # ============================================================================
+  # Recovery Triggering
+  # ============================================================================
+
+  Scenario: Health monitor triggers recovery for stuck ship
+    Given a ship "SHIP-1" with navigation status "IN_TRANSIT" since 600 seconds ago
+    And a container "container-123" exists for ship "SHIP-1" with status "RUNNING"
+    And the health monitor detects ship "SHIP-1" as stuck
+    When the health monitor attempts recovery for ship "SHIP-1"
+    Then a recovery action should be initiated for ship "SHIP-1"
+    And the recovery attempt should be logged
+    And the recovery attempt count for ship "SHIP-1" should be 1
+
+  Scenario: Health monitor recovery succeeds and resumes operation
+    Given a ship "SHIP-1" with navigation status "IN_TRANSIT" since 600 seconds ago
+    And a container "container-123" exists for ship "SHIP-1" with status "RUNNING"
+    And the ship is stuck due to missing arrival
+    When the health monitor attempts recovery for ship "SHIP-1"
+    And the recovery action forces arrival at destination
+    Then the ship navigation status should transition to "IN_ORBIT"
+    And the container "container-123" should remain running
+    And the recovery should be marked as successful
+
+  Scenario: Health monitor recovery fails and marks container as failed
+    Given a ship "SHIP-1" with navigation status "IN_TRANSIT" since 600 seconds ago
+    And a container "container-123" exists for ship "SHIP-1" with status "RUNNING"
+    And the recovery action will fail with error "API timeout"
+    When the health monitor attempts recovery for ship "SHIP-1"
+    Then the recovery should be marked as failed
+    And the container "container-123" should transition to "FAILED"
+    And an error should be logged with reason "API timeout"
+
+  # ============================================================================
+  # Recovery Attempt Tracking
+  # ============================================================================
+
+  Scenario: Health monitor tracks recovery attempts per ship
+    Given a ship "SHIP-1" with navigation status "IN_TRANSIT" since 600 seconds ago
+    When the health monitor attempts recovery for ship "SHIP-1" 3 times
+    Then the recovery attempt count for ship "SHIP-1" should be 3
+    And all recovery attempts should be persisted
+
+  Scenario: Health monitor abandons ship after max recovery attempts
+    Given a ship "SHIP-1" with navigation status "IN_TRANSIT" since 600 seconds ago
+    And a container "container-123" exists for ship "SHIP-1" with status "RUNNING"
+    And the max recovery attempts is 5
+    And the ship has already failed recovery 5 times
+    When the health monitor runs a check
+    Then the ship "SHIP-1" should be marked as abandoned
+    And the container "container-123" should transition to "FAILED"
+    And a critical error should be logged about abandoning ship "SHIP-1"
+
+  Scenario: Health monitor clears healthy ship from watch list
+    Given a ship "SHIP-1" was previously stuck and is on the watch list
+    And the ship "SHIP-1" navigation status is now "IN_ORBIT"
+    And the ship has been healthy for 120 seconds
+    When the health monitor runs a check
+    Then the ship "SHIP-1" should be removed from watch list
+    And the recovery attempt count for ship "SHIP-1" should be reset to 0
+
+  # ============================================================================
+  # Periodic Monitoring
+  # ============================================================================
+
+  Scenario: Health monitor respects cooldown between checks
+    Given the health monitor check interval is 60 seconds
+    And the health monitor last ran 30 seconds ago
+    When the health monitor is triggered to run
+    Then the health check should be skipped due to cooldown
+    And no monitoring actions should be performed
+
+  Scenario: Health monitor runs after cooldown period elapses
+    Given the health monitor check interval is 60 seconds
+    And the health monitor last ran 65 seconds ago
+    When the health monitor is triggered to run
+    Then the health check should execute
+    And the last check timestamp should be updated
+
+  # ============================================================================
+  # Infinite Loop Detection
+  # ============================================================================
+
+  Scenario: Health monitor detects infinite loop in navigation
+    Given a ship "SHIP-1" is assigned to container "container-123"
+    And the container "container-123" has completed 50 iterations in 120 seconds
+    And the container max iterations is -1
+    And the average iteration duration is 2.4 seconds
+    When the health monitor runs a check
+    Then a suspicious rapid iteration pattern should be detected for container "container-123"
+    And a warning should be logged about potential infinite loop
+
+  Scenario: Health monitor reports metrics on recovery success rate
+    Given the health monitor has attempted 20 recoveries
+    And 15 recoveries were successful
+    And 5 recoveries failed
+    When the health monitor reports metrics
+    Then the success rate should be 75 percent
+    And the total recovery attempts should be 20
+    And the failed recovery count should be 5

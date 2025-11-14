@@ -71,7 +71,7 @@ Feature: Fuel Value Object
   Scenario: Consume negative fuel fails
     Given fuel with current 100 and capacity 100
     When I attempt to consume -10 units of fuel
-    Then the operation should fail with error "consume amount cannot be negative"
+    Then the operation should fail with error "fuel amount cannot be negative"
 
   Scenario: Consume more fuel than available sets to zero
     Given fuel with current 50 and capacity 100

@@ -28,7 +28,8 @@ func (sc *shipContext) reset() {
 	sc.waypoints = sharedWaypointMap  // Use shared waypoint map
 	sc.flightMode = shared.FlightModeCruise
 	sc.stateChangeResult = false
-	// Reset shared variables from value_object_steps (done in value_object reset)
+	// Reset shared ship (shared with value_object_steps)
+	sharedShip = nil
 }
 
 // Helper to create a default waypoint
@@ -42,6 +43,20 @@ func (sc *shipContext) getOrCreateWaypoint(symbol string, x, y float64) *shared.
 	return wp
 }
 
+// Helper to create cargo with proper inventory for testing
+func (sc *shipContext) createCargoWithUnits(capacity, units int) (*shared.Cargo, error) {
+	// Create dummy inventory items to match total units (required by Cargo validation)
+	var inventory []*shared.CargoItem
+	if units > 0 {
+		item, err := shared.NewCargoItem("DUMMY", "Dummy Item", "", units)
+		if err != nil {
+			return nil, err
+		}
+		inventory = []*shared.CargoItem{item}
+	}
+	return shared.NewCargo(capacity, units, inventory)
+}
+
 // Ship Initialization Steps
 
 func (sc *shipContext) iCreateAShipWithSymbolPlayerAtFuelCargoSpeedStatus(
@@ -52,7 +67,7 @@ func (sc *shipContext) iCreateAShipWithSymbolPlayerAtFuelCargoSpeedStatus(
 	if err != nil {
 		return err
 	}
-	cargo, err := shared.NewCargo(cargoCapacity, cargoUnits, []*shared.CargoItem{})
+	cargo, err := sc.createCargoWithUnits(cargoCapacity, cargoUnits)
 	if err != nil {
 		return err
 	}
@@ -135,7 +150,7 @@ func (sc *shipContext) iAttemptToCreateAShipWithCargoUnits(cargoUnits int) error
 	waypoint := sc.getOrCreateWaypoint("X1-A1", 0, 0)
 	fuel, _ := shared.NewFuel(100, 100)
 	// Try to create cargo with the specified units - will fail for negative
-	cargo, err := shared.NewCargo(40, cargoUnits, []*shared.CargoItem{})
+	cargo, err := sc.createCargoWithUnits(40, cargoUnits)
 	if err != nil {
 		sc.err = err
 		return nil
@@ -150,7 +165,7 @@ func (sc *shipContext) iAttemptToCreateAShipWithCargoUnits(cargoUnits int) error
 func (sc *shipContext) iAttemptToCreateAShipWithCargoCapacityAndCargoUnits(capacity, units int) error {
 	waypoint := sc.getOrCreateWaypoint("X1-A1", 0, 0)
 	fuel, _ := shared.NewFuel(100, 100)
-	cargo, err := shared.NewCargo(capacity, units, []*shared.CargoItem{})
+	cargo, err := sc.createCargoWithUnits(capacity, units)
 	if err != nil {
 		sc.err = err
 		return nil
@@ -425,6 +440,7 @@ func (sc *shipContext) aShipWithUnitsOfFuel(units int) error {
 	sc.ship, sc.err = navigation.NewShip(
 		"SHIP-1", 1, waypoint, fuel, 100, 40, cargo, 30, navigation.NavStatusInOrbit,
 	)
+	sharedShip = sc.ship // Share ship with other contexts
 	return sc.err
 }
 
@@ -595,11 +611,26 @@ func (sc *shipContext) theTravelTimeShouldBeSeconds(seconds int) error {
 
 func (sc *shipContext) aShipWithUnitsOfFuelAtDistance(fuel int, distance float64) error {
 	waypoint := sc.getOrCreateWaypoint("X1-A1", 0, 0)
-	fuelObj, _ := shared.NewFuel(fuel, 100)
-	cargo, _ := shared.NewCargo(40, 0, []*shared.CargoItem{})
+
+	// Set fuel capacity to a large value to test fuel-based selection logic
+	// Capacity should be large enough that percentage isn't the limiting factor
+	capacity := 400
+	if fuel > capacity {
+		capacity = fuel * 2
+	}
+
+	fuelObj, err := shared.NewFuel(fuel, capacity)
+	if err != nil {
+		return fmt.Errorf("failed to create fuel: %w", err)
+	}
+
+	cargo, err := shared.NewCargo(40, 0, []*shared.CargoItem{})
+	if err != nil {
+		return fmt.Errorf("failed to create cargo: %w", err)
+	}
 
 	sc.ship, sc.err = navigation.NewShip(
-		"SHIP-1", 1, waypoint, fuelObj, 100, 40, cargo, 30, navigation.NavStatusInOrbit,
+		"SHIP-1", 1, waypoint, fuelObj, capacity, 40, cargo, 30, navigation.NavStatusInOrbit,
 	)
 	return sc.err
 }
@@ -623,11 +654,15 @@ func (sc *shipContext) theSelectedModeShouldBe(mode string) error {
 func (sc *shipContext) aShipWithCargoCapacityAndCargoUnits(capacity, units int) error {
 	waypoint := sc.getOrCreateWaypoint("X1-A1", 0, 0)
 	fuel, _ := shared.NewFuel(100, 100)
-	cargo, _ := shared.NewCargo(capacity, units, []*shared.CargoItem{})
+	cargo, err := sc.createCargoWithUnits(capacity, units)
+	if err != nil {
+		return err
+	}
 
 	sc.ship, sc.err = navigation.NewShip(
 		"SHIP-1", 1, waypoint, fuel, 100, capacity, cargo, 30, navigation.NavStatusInOrbit,
 	)
+	sharedShip = sc.ship // Share ship with other contexts
 	return sc.err
 }
 
@@ -796,7 +831,7 @@ func InitializeShipScenario(ctx *godog.ScenarioContext) {
 	ctx.Step(`^the travel time should be (\d+) seconds$`, sc.theTravelTimeShouldBeSeconds)
 	ctx.Step(`^a ship with (\d+) units of fuel at distance ([0-9.]+)$`, sc.aShipWithUnitsOfFuelAtDistance)
 	ctx.Step(`^I select optimal flight mode for distance ([0-9.]+)$`, sc.iSelectOptimalFlightModeForDistance)
-	ctx.Step(`^the selected mode should be ([A-Z]+)$`, sc.theSelectedModeShouldBe)
+	ctx.Step(`^the ship's selected mode should be ([A-Z]+)$`, sc.theSelectedModeShouldBe)
 
 	// Cargo management
 	ctx.Step(`^a ship with cargo capacity (\d+) and cargo units (\d+)$`, sc.aShipWithCargoCapacityAndCargoUnits)
