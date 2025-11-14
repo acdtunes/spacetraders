@@ -10,8 +10,10 @@ import (
 	"gorm.io/gorm"
 
 	appShip "github.com/andrescamacho/spacetraders-go/internal/application/ship"
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/api"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/test/helpers"
 )
@@ -32,11 +34,14 @@ type shipOperationsContext struct {
 	err               error
 
 	// Handlers and repositories for testing
-	shipRepo             *helpers.MockShipRepository      // Still use mock since ships aren't database-persisted
+	apiClient            *helpers.MockAPIClient
+	shipRepo             navigation.ShipRepository
+	playerRepo           *persistence.GormPlayerRepository
+	waypointRepo         *persistence.GormWaypointRepository
 	dockHandler          *appShip.DockShipHandler
 	orbitHandler         *appShip.OrbitShipHandler
 	setFlightModeHandler *appShip.SetFlightModeHandler
-	db                   *gorm.DB                         // In-memory SQLite database
+	db                   *gorm.DB // In-memory SQLite database
 }
 
 func (ctx *shipOperationsContext) reset() {
@@ -69,8 +74,12 @@ func (ctx *shipOperationsContext) reset() {
 
 	ctx.db = db
 
-	// Still use mock repository for ships since they're API-only in production
-	ctx.shipRepo = helpers.NewMockShipRepository()
+	// Create repositories
+	ctx.apiClient = helpers.NewMockAPIClient()
+	ctx.playerRepo = persistence.NewGormPlayerRepository(db)
+	ctx.waypointRepo = persistence.NewGormWaypointRepository(db)
+	ctx.shipRepo = api.NewAPIShipRepository(ctx.apiClient, ctx.playerRepo, ctx.waypointRepo)
+
 	ctx.dockHandler = appShip.NewDockShipHandler(ctx.shipRepo)
 	ctx.orbitHandler = appShip.NewOrbitShipHandler(ctx.shipRepo)
 	ctx.setFlightModeHandler = appShip.NewSetFlightModeHandler(ctx.shipRepo)
@@ -96,6 +105,11 @@ func (ctx *shipOperationsContext) thePlayerHasPlayerID(playerID int) error {
 // Given steps
 
 func (ctx *shipOperationsContext) aShipForPlayerAtWithStatus(shipSymbol string, playerID int, location, status string) error {
+	// Ensure player exists in repository
+	if err := ctx.ensurePlayerExists(playerID); err != nil {
+		return err
+	}
+
 	waypoint, _ := shared.NewWaypoint(location, 0, 0)
 	fuel, _ := shared.NewFuel(100, 100)
 	cargo, _ := shared.NewCargo(40, 0, []*shared.CargoItem{})
@@ -121,15 +135,42 @@ func (ctx *shipOperationsContext) aShipForPlayerAtWithStatus(shipSymbol string, 
 	}
 
 	ctx.ships[shipSymbol] = ship
-	// Add to mock repository so handler can find it
-	ctx.shipRepo.AddShip(ship)
+	// Add to API client so handler can find it
+	ctx.apiClient.AddShip(ship)
 	// Also add to global context for cross-context communication
 	globalAppContext.addShip(shipSymbol, ship)
 	globalAppContext.addWaypoint(location, waypoint)
 	return nil
 }
 
+// ensurePlayerExists ensures a player with the given ID exists in the repository
+func (ctx *shipOperationsContext) ensurePlayerExists(playerID int) error {
+	// Check if player already exists
+	_, err := ctx.playerRepo.FindByID(context.Background(), playerID)
+	if err == nil {
+		return nil // Player already exists
+	}
+
+	// Create and save player
+	agentSymbol := fmt.Sprintf("AGENT-%d", playerID)
+	token := fmt.Sprintf("token-%d", playerID)
+	if ctx.agentSymbol != "" {
+		agentSymbol = ctx.agentSymbol
+	}
+	if ctx.token != "" {
+		token = ctx.token
+	}
+
+	p := player.NewPlayer(playerID, agentSymbol, token)
+	return ctx.playerRepo.Save(context.Background(), p)
+}
+
 func (ctx *shipOperationsContext) aShipForPlayerInTransitTo(shipSymbol string, playerID int, destination string) error {
+	// Ensure player exists in repository
+	if err := ctx.ensurePlayerExists(playerID); err != nil {
+		return err
+	}
+
 	waypoint, _ := shared.NewWaypoint("X1-START", 0, 0)
 	destWaypoint, _ := shared.NewWaypoint(destination, 100, 0)
 	fuel, _ := shared.NewFuel(100, 100)
@@ -149,8 +190,8 @@ func (ctx *shipOperationsContext) aShipForPlayerInTransitTo(shipSymbol string, p
 	}
 
 	ctx.ships[shipSymbol] = ship
-	// Add to mock repository so handler can find it
-	ctx.shipRepo.AddShip(ship)
+	// Add to API client so handler can find it
+	ctx.apiClient.AddShip(ship)
 	// Also add to global context
 	globalAppContext.addShip(shipSymbol, ship)
 	globalAppContext.addWaypoint(destination, destWaypoint)

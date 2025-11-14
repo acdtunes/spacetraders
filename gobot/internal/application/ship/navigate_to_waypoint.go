@@ -91,23 +91,14 @@ func (h *NavigateToWaypointHandler) Handle(ctx context.Context, request common.R
 	// Note: In real implementation, we would call shipRepo.SetFlightMode
 	// For now, we skip this as it's an optional feature
 
-	// 6. Navigate via repository (calls API)
+	// 6. Navigate via repository (calls API and updates ship state)
+	// Note: Navigate() internally calls StartTransit() and ConsumeFuel() on the ship
 	navResult, err := h.shipRepo.Navigate(ctx, ship, destination, cmd.PlayerID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to navigate: %w", err)
 	}
 
-	// 7. Update ship domain state to in-transit
-	if err := ship.StartTransit(destination); err != nil {
-		return nil, fmt.Errorf("failed to start transit: %w", err)
-	}
-
-	// 8. Save updated ship state to repository
-	if err := h.shipRepo.Save(ctx, ship); err != nil {
-		return nil, fmt.Errorf("failed to save ship after navigation: %w", err)
-	}
-
-	// 9. Return successful navigation response
+	// 7. Return successful navigation response
 	return &NavigateToWaypointResponse{
 		Status:         "navigating",
 		ArrivalTime:    navResult.ArrivalTime,

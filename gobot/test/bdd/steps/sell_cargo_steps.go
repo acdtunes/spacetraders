@@ -9,6 +9,7 @@ import (
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/api"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	appShip "github.com/andrescamacho/spacetraders-go/internal/application/ship"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
@@ -27,7 +28,7 @@ type sellCargoContext struct {
 
 	// Real repositories with in-memory database
 	db         *gorm.DB
-	shipRepo   *persistence.GormShipRepository
+	shipRepo   navigation.ShipRepository
 	playerRepo *persistence.GormPlayerRepository
 	marketRepo *persistence.MarketRepositoryGORM
 
@@ -79,7 +80,7 @@ func (ctx *sellCargoContext) reset() {
 	// Create real repositories
 	ctx.playerRepo = persistence.NewGormPlayerRepository(db)
 	waypointRepo := persistence.NewGormWaypointRepository(db)
-	ctx.shipRepo = persistence.NewGormShipRepository(db, ctx.apiClient, ctx.playerRepo, waypointRepo)
+	ctx.shipRepo = api.NewAPIShipRepository(ctx.apiClient, ctx.playerRepo, waypointRepo)
 	ctx.marketRepo = persistence.NewMarketRepository(db)
 
 	ctx.handler = appShip.NewSellCargoHandler(ctx.shipRepo, ctx.playerRepo, ctx.apiClient, ctx.marketRepo)
@@ -115,7 +116,7 @@ func (ctx *sellCargoContext) thePlayerHasPlayerID(playerID int) error {
 // Given steps
 
 func (ctx *sellCargoContext) aShipForPlayerDockedAtMarketplaceWithCargo(shipSymbol string, playerID int, location string) error {
-	// Create waypoint in database (required for GormShipRepository.shipDataToDomain)
+	// Create waypoint in database (required for APIShipRepository.shipDataToDomain)
 	// Extract system from location using domain logic
 	systemSymbol := shared.ExtractSystemSymbol(location)
 
@@ -151,7 +152,7 @@ func (ctx *sellCargoContext) aShipForPlayerDockedAtMarketplaceWithCargo(shipSymb
 }
 
 func (ctx *sellCargoContext) aShipForPlayerInOrbitAtWithCargo(shipSymbol string, playerID int, location string) error {
-	// Create waypoint in database (required for GormShipRepository.shipDataToDomain)
+	// Create waypoint in database (required for APIShipRepository.shipDataToDomain)
 	// Extract system from location using domain logic
 	systemSymbol := shared.ExtractSystemSymbol(location)
 

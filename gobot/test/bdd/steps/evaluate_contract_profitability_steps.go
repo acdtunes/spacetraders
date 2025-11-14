@@ -32,7 +32,7 @@ type evaluateContractProfitabilityContext struct {
 
 	// SQLite database and repositories
 	db         *gorm.DB
-	shipRepo   *persistence.GormShipRepository
+	shipRepo   navigation.ShipRepository
 	marketRepo *persistence.MarketRepositoryGORM
 	handler    *appContract.EvaluateContractProfitabilityHandler
 

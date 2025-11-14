@@ -9,6 +9,7 @@ import (
 	"github.com/cucumber/godog"
 
 	appShip "github.com/andrescamacho/spacetraders-go/internal/application/ship"
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/api"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
@@ -30,8 +31,9 @@ type transactionLimitContext struct {
 	partialSuccess       bool
 
 	// Test doubles
-	shipRepo         *helpers.MockShipRepository
-	playerRepo       *helpers.MockPlayerRepository
+	shipRepo         navigation.ShipRepository
+	mockPlayerRepo   *helpers.MockPlayerRepository
+	mockWaypointRepo *helpers.MockWaypointRepository
 	apiClient        *helpers.MockAPIClient
 	marketRepo       *helpers.MockMarketRepository
 	purchaseHandler  *appShip.PurchaseCargoHandler
@@ -52,9 +54,10 @@ func (ctx *transactionLimitContext) reset() {
 	ctx.partialSuccess = false
 
 	// Initialize test doubles
-	ctx.shipRepo = helpers.NewMockShipRepository()
-	ctx.playerRepo = helpers.NewMockPlayerRepository()
+	ctx.mockPlayerRepo = helpers.NewMockPlayerRepository()
+	ctx.mockWaypointRepo = helpers.NewMockWaypointRepository()
 	ctx.apiClient = helpers.NewMockAPIClient()
+	ctx.shipRepo = api.NewAPIShipRepository(ctx.apiClient, ctx.mockPlayerRepo, ctx.mockWaypointRepo)
 	ctx.marketRepo = helpers.NewMockMarketRepository()
 
 	// Configure default purchase behavior (tracks transaction count)
@@ -89,8 +92,8 @@ func (ctx *transactionLimitContext) reset() {
 		}, nil
 	})
 
-	ctx.purchaseHandler = appShip.NewPurchaseCargoHandler(ctx.shipRepo, ctx.playerRepo, ctx.apiClient, ctx.marketRepo)
-	ctx.sellHandler = appShip.NewSellCargoHandler(ctx.shipRepo, ctx.playerRepo, ctx.apiClient, ctx.marketRepo)
+	ctx.purchaseHandler = appShip.NewPurchaseCargoHandler(ctx.shipRepo, ctx.mockPlayerRepo, ctx.apiClient, ctx.marketRepo)
+	ctx.sellHandler = appShip.NewSellCargoHandler(ctx.shipRepo, ctx.mockPlayerRepo, ctx.apiClient, ctx.marketRepo)
 }
 
 // Given steps
@@ -102,7 +105,7 @@ func (ctx *transactionLimitContext) aPlayerWithID(playerID int) error {
 
 	// Add player to repository
 	p := player.NewPlayer(playerID, ctx.agentSymbol, ctx.token)
-	ctx.playerRepo.AddPlayer(p)
+	ctx.mockPlayerRepo.AddPlayer(p)
 
 	return nil
 }
@@ -114,7 +117,7 @@ func (ctx *transactionLimitContext) aShipDockedAtWaypoint(shipSymbol, waypointSy
 		ctx.agentSymbol = "TEST-AGENT"
 		ctx.token = "test-token-123"
 		p := player.NewPlayer(ctx.playerID, ctx.agentSymbol, ctx.token)
-		ctx.playerRepo.AddPlayer(p)
+		ctx.mockPlayerRepo.AddPlayer(p)
 	}
 
 	waypoint, _ := shared.NewWaypoint(waypointSymbol, 0, 0)
@@ -130,7 +133,7 @@ func (ctx *transactionLimitContext) aShipDockedAtWaypoint(shipSymbol, waypointSy
 	}
 
 	ctx.ships[shipSymbol] = ship
-	ctx.shipRepo.AddShip(ship)
+	ctx.apiClient.AddShip(ship)
 
 	return nil
 }
@@ -155,7 +158,7 @@ func (ctx *transactionLimitContext) theShipHasUnitsOfCargoSpace(units int) error
 	}
 
 	ctx.ships["SHIP-1"] = newShip
-	ctx.shipRepo.AddShip(newShip)
+	ctx.apiClient.AddShip(newShip)
 
 	return nil
 }
@@ -182,7 +185,7 @@ func (ctx *transactionLimitContext) theShipHasUnitsOfInCargo(units int, goodSymb
 	}
 
 	ctx.ships["SHIP-1"] = newShip
-	ctx.shipRepo.AddShip(newShip)
+	ctx.apiClient.AddShip(newShip)
 
 	return nil
 }

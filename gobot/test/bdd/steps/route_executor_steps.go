@@ -11,6 +11,7 @@ import (
 
 	appShip "github.com/andrescamacho/spacetraders-go/internal/application/ship"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/api"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	domainNavigation "github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
@@ -36,7 +37,8 @@ type routeExecutorContext struct {
 	routes      map[string]*domainNavigation.Route
 
 	// Services
-	shipRepo      *helpers.MockShipRepository // Mock for ship operations (API-only)
+	apiClient     *helpers.MockAPIClient
+	shipRepo      domainNavigation.ShipRepository
 	playerRepo    *persistence.GormPlayerRepository
 	waypointRepo  *persistence.GormWaypointRepository
 	mediator      common.Mediator
@@ -94,9 +96,10 @@ func (ctx *routeExecutorContext) reset() {
 	ctx.initialFuel = 0
 
 	// Initialize repositories
+	ctx.apiClient = helpers.NewMockAPIClient()
 	ctx.playerRepo = persistence.NewGormPlayerRepository(ctx.db)
 	ctx.waypointRepo = persistence.NewGormWaypointRepository(ctx.db)
-	ctx.shipRepo = helpers.NewMockShipRepository()
+	ctx.shipRepo = api.NewAPIShipRepository(ctx.apiClient, ctx.playerRepo, ctx.waypointRepo)
 
 	// Initialize mediator
 	ctx.mediator = common.NewMediator()
@@ -116,7 +119,7 @@ func (ctx *routeExecutorContext) reset() {
 
 // registerHandlers registers all command handlers needed for route execution
 func (ctx *routeExecutorContext) registerHandlers() {
-	// Create handlers with mock repository
+	// Create handlers with API repository
 	orbitHandler := appShip.NewOrbitShipHandler(ctx.shipRepo)
 	dockHandler := appShip.NewDockShipHandler(ctx.shipRepo)
 	refuelHandler := appShip.NewRefuelShipHandler(ctx.shipRepo)
@@ -214,7 +217,7 @@ func (ctx *routeExecutorContext) createShip(shipSymbol string, playerID int, loc
 	}
 
 	ctx.ships[shipSymbol] = ship
-	ctx.shipRepo.AddShip(ship)
+	ctx.apiClient.AddShip(ship)
 	ctx.initialFuel = currentFuel
 
 	return nil
@@ -582,7 +585,7 @@ func (ctx *routeExecutorContext) aShipForPlayerInTransitToArrivingInSeconds(
 	}
 
 	ctx.ships[shipSymbol] = ship
-	ctx.shipRepo.AddShip(ship)
+	ctx.apiClient.AddShip(ship)
 
 	return nil
 }

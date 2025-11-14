@@ -1,10 +1,8 @@
-package persistence
+package api
 
 import (
 	"context"
 	"fmt"
-
-	"gorm.io/gorm"
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
@@ -13,24 +11,21 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/ports"
 )
 
-// GormShipRepository implements ShipRepository using GORM
-// This repository abstracts API calls and converts DTOs to domain entities
-type GormShipRepository struct {
-	db           *gorm.DB
+// APIShipRepository implements ShipRepository using the SpaceTraders API
+// This repository adapts API responses to domain entities
+type APIShipRepository struct {
 	apiClient    ports.APIClient
 	playerRepo   player.PlayerRepository
 	waypointRepo system.WaypointRepository
 }
 
-// NewGormShipRepository creates a new GORM ship repository
-func NewGormShipRepository(
-	db *gorm.DB,
+// NewAPIShipRepository creates a new API ship repository
+func NewAPIShipRepository(
 	apiClient ports.APIClient,
 	playerRepo player.PlayerRepository,
 	waypointRepo system.WaypointRepository,
-) *GormShipRepository {
-	return &GormShipRepository{
-		db:           db,
+) *APIShipRepository {
+	return &APIShipRepository{
 		apiClient:    apiClient,
 		playerRepo:   playerRepo,
 		waypointRepo: waypointRepo,
@@ -39,7 +34,7 @@ func NewGormShipRepository(
 
 // FindBySymbol retrieves a ship by symbol and player ID from API
 // Converts API DTO to domain entity with full waypoint reconstruction
-func (r *GormShipRepository) FindBySymbol(ctx context.Context, symbol string, playerID int) (*navigation.Ship, error) {
+func (r *APIShipRepository) FindBySymbol(ctx context.Context, symbol string, playerID int) (*navigation.Ship, error) {
 	// Get player token
 	player, err := r.playerRepo.FindByID(ctx, playerID)
 	if err != nil {
@@ -62,7 +57,7 @@ func (r *GormShipRepository) FindBySymbol(ctx context.Context, symbol string, pl
 }
 
 // GetShipData retrieves raw ship data from API (includes arrival time for IN_TRANSIT ships)
-func (r *GormShipRepository) GetShipData(ctx context.Context, symbol string, playerID int) (*navigation.ShipData, error) {
+func (r *APIShipRepository) GetShipData(ctx context.Context, symbol string, playerID int) (*navigation.ShipData, error) {
 	// Get player token
 	player, err := r.playerRepo.FindByID(ctx, playerID)
 	if err != nil {
@@ -80,7 +75,7 @@ func (r *GormShipRepository) GetShipData(ctx context.Context, symbol string, pla
 
 // FindAllByPlayer retrieves all ships for a player from API
 // Converts API DTOs to domain entities with full waypoint reconstruction
-func (r *GormShipRepository) FindAllByPlayer(ctx context.Context, playerID int) ([]*navigation.Ship, error) {
+func (r *APIShipRepository) FindAllByPlayer(ctx context.Context, playerID int) ([]*navigation.Ship, error) {
 	// Get player token
 	player, err := r.playerRepo.FindByID(ctx, playerID)
 	if err != nil {
@@ -106,16 +101,9 @@ func (r *GormShipRepository) FindAllByPlayer(ctx context.Context, playerID int) 
 	return ships, nil
 }
 
-// Save persists ship state to database (optional - for caching)
-func (r *GormShipRepository) Save(ctx context.Context, ship *navigation.Ship) error {
-	// For now, ships are API-only (no database caching)
-	// This can be implemented later if needed
-	return nil
-}
-
 // Navigate executes ship navigation via API
 // Returns navigation result with arrival time from API (following Python implementation pattern)
-func (r *GormShipRepository) Navigate(ctx context.Context, ship *navigation.Ship, destination *shared.Waypoint, playerID int) (*navigation.NavigationResult, error) {
+func (r *APIShipRepository) Navigate(ctx context.Context, ship *navigation.Ship, destination *shared.Waypoint, playerID int) (*navigation.NavigationResult, error) {
 	// Get player token
 	player, err := r.playerRepo.FindByID(ctx, playerID)
 	if err != nil {
@@ -142,7 +130,7 @@ func (r *GormShipRepository) Navigate(ctx context.Context, ship *navigation.Ship
 }
 
 // Dock docks the ship via API (idempotent)
-func (r *GormShipRepository) Dock(ctx context.Context, ship *navigation.Ship, playerID int) error {
+func (r *APIShipRepository) Dock(ctx context.Context, ship *navigation.Ship, playerID int) error {
 	// Get player token
 	player, err := r.playerRepo.FindByID(ctx, playerID)
 	if err != nil {
@@ -167,7 +155,7 @@ func (r *GormShipRepository) Dock(ctx context.Context, ship *navigation.Ship, pl
 }
 
 // Orbit puts ship in orbit via API (idempotent)
-func (r *GormShipRepository) Orbit(ctx context.Context, ship *navigation.Ship, playerID int) error {
+func (r *APIShipRepository) Orbit(ctx context.Context, ship *navigation.Ship, playerID int) error {
 	// Get player token
 	player, err := r.playerRepo.FindByID(ctx, playerID)
 	if err != nil {
@@ -192,7 +180,7 @@ func (r *GormShipRepository) Orbit(ctx context.Context, ship *navigation.Ship, p
 }
 
 // Refuel refuels the ship via API
-func (r *GormShipRepository) Refuel(ctx context.Context, ship *navigation.Ship, playerID int, units *int) error {
+func (r *APIShipRepository) Refuel(ctx context.Context, ship *navigation.Ship, playerID int, units *int) error {
 	// Get player token
 	player, err := r.playerRepo.FindByID(ctx, playerID)
 	if err != nil {
@@ -226,7 +214,7 @@ func (r *GormShipRepository) Refuel(ctx context.Context, ship *navigation.Ship, 
 }
 
 // SetFlightMode sets the ship's flight mode via API
-func (r *GormShipRepository) SetFlightMode(ctx context.Context, ship *navigation.Ship, playerID int, mode string) error {
+func (r *APIShipRepository) SetFlightMode(ctx context.Context, ship *navigation.Ship, playerID int, mode string) error {
 	// Get player token
 	player, err := r.playerRepo.FindByID(ctx, playerID)
 	if err != nil {
@@ -246,7 +234,7 @@ func (r *GormShipRepository) SetFlightMode(ctx context.Context, ship *navigation
 }
 
 // JettisonCargo jettisons cargo from the ship via API
-func (r *GormShipRepository) JettisonCargo(ctx context.Context, ship *navigation.Ship, playerID int, goodSymbol string, units int) error {
+func (r *APIShipRepository) JettisonCargo(ctx context.Context, ship *navigation.Ship, playerID int, goodSymbol string, units int) error {
 	// Get player token
 	player, err := r.playerRepo.FindByID(ctx, playerID)
 	if err != nil {
@@ -265,7 +253,7 @@ func (r *GormShipRepository) JettisonCargo(ctx context.Context, ship *navigation
 }
 
 // shipDataToDomain converts API ship DTO to domain entity
-func (r *GormShipRepository) shipDataToDomain(ctx context.Context, data *navigation.ShipData, playerID int) (*navigation.Ship, error) {
+func (r *APIShipRepository) shipDataToDomain(ctx context.Context, data *navigation.ShipData, playerID int) (*navigation.Ship, error) {
 	// Get current location waypoint from repository
 	location, err := r.waypointRepo.FindBySymbol(ctx, data.Location, shared.ExtractSystemSymbol(data.Location))
 	if err != nil {

@@ -10,6 +10,7 @@ import (
 	"gorm.io/gorm"
 
 	appShip "github.com/andrescamacho/spacetraders-go/internal/application/ship"
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/api"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
@@ -23,10 +24,13 @@ type refuelShipContext struct {
 	token       string
 	response    *appShip.RefuelShipResponse
 	err         error
-	waypoints   map[string]*shared.Waypoint    // Track waypoints with fuel station info
-	handler     *appShip.RefuelShipHandler      // The actual handler to test
-	shipRepo    *helpers.MockShipRepository     // Still use mock since ships aren't database-persisted
-	db          *gorm.DB                        // In-memory SQLite database
+	waypoints   map[string]*shared.Waypoint
+	handler     *appShip.RefuelShipHandler
+	apiClient   *helpers.MockAPIClient
+	shipRepo    navigation.ShipRepository
+	playerRepo  *persistence.GormPlayerRepository
+	waypointRepo *persistence.GormWaypointRepository
+	db          *gorm.DB // In-memory SQLite database
 }
 
 func (ctx *refuelShipContext) reset() {
@@ -55,8 +59,11 @@ func (ctx *refuelShipContext) reset() {
 
 	ctx.db = db
 
-	// Still use mock repository for ships since they're API-only in production
-	ctx.shipRepo = helpers.NewMockShipRepository()
+	// Create repositories
+	ctx.apiClient = helpers.NewMockAPIClient()
+	ctx.playerRepo = persistence.NewGormPlayerRepository(db)
+	ctx.waypointRepo = persistence.NewGormWaypointRepository(db)
+	ctx.shipRepo = api.NewAPIShipRepository(ctx.apiClient, ctx.playerRepo, ctx.waypointRepo)
 	ctx.handler = appShip.NewRefuelShipHandler(ctx.shipRepo)
 }
 
@@ -121,7 +128,7 @@ func (ctx *refuelShipContext) aShipForPlayerAtFuelStationWithStatusAndFuel(
 	}
 
 	ctx.ships[shipSymbol] = ship
-	ctx.shipRepo.AddShip(ship) // Add to mock repository
+	ctx.apiClient.AddShip(ship)
 	return nil
 }
 
@@ -171,7 +178,7 @@ func (ctx *refuelShipContext) aShipForPlayerAtWaypointWithoutFuelWithStatusAndFu
 	}
 
 	ctx.ships[shipSymbol] = ship
-	ctx.shipRepo.AddShip(ship) // Add to mock repository
+	ctx.apiClient.AddShip(ship)
 	return nil
 }
 

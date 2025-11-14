@@ -198,29 +198,105 @@ func (m *MockAPIClient) shipToData(ship *navigation.Ship) *navigation.ShipData {
 }
 
 func (m *MockAPIClient) ListShips(ctx context.Context, token string) ([]*navigation.ShipData, error) {
-	return nil, fmt.Errorf("not implemented in mock")
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if m.shouldError {
+		return nil, fmt.Errorf("%s", m.errorMsg)
+	}
+
+	// Convert all ships to ShipData DTOs
+	var shipsData []*navigation.ShipData
+	for _, ship := range m.ships {
+		shipsData = append(shipsData, m.shipToData(ship))
+	}
+
+	return shipsData, nil
 }
 
 func (m *MockAPIClient) NavigateShip(ctx context.Context, symbol, destination, token string) (*navigation.NavigationResult, error) {
-	return nil, fmt.Errorf("not implemented in mock")
+	m.mu.RLock()
+	shouldError := m.shouldError
+	errorMsg := m.errorMsg
+	m.mu.RUnlock()
+
+	if shouldError {
+		return nil, fmt.Errorf("%s", errorMsg)
+	}
+
+	// Mock navigation result with instant arrival
+	return &navigation.NavigationResult{
+		Destination:      destination,
+		ArrivalTime:      0, // Instant arrival in mock
+		ArrivalTimeStr:   "",
+		FuelConsumed:     10, // Mock fuel consumption
+	}, nil
 }
 
 func (m *MockAPIClient) OrbitShip(ctx context.Context, symbol, token string) error {
-	// Mock implementation - just succeed
+	m.mu.RLock()
+	shouldError := m.shouldError
+	errorMsg := m.errorMsg
+	m.mu.RUnlock()
+
+	if shouldError {
+		return fmt.Errorf("%s", errorMsg)
+	}
+
 	return nil
 }
 
 func (m *MockAPIClient) DockShip(ctx context.Context, symbol, token string) error {
-	// Mock implementation - just succeed
+	m.mu.RLock()
+	shouldError := m.shouldError
+	errorMsg := m.errorMsg
+	m.mu.RUnlock()
+
+	if shouldError {
+		return fmt.Errorf("%s", errorMsg)
+	}
+
 	return nil
 }
 
 func (m *MockAPIClient) RefuelShip(ctx context.Context, symbol, token string, units *int) (*navigation.RefuelResult, error) {
-	return nil, fmt.Errorf("not implemented in mock")
+	m.mu.RLock()
+	shouldError := m.shouldError
+	errorMsg := m.errorMsg
+	ship := m.ships[symbol]
+	m.mu.RUnlock()
+
+	if shouldError {
+		return nil, fmt.Errorf("%s", errorMsg)
+	}
+
+	if ship == nil {
+		return nil, fmt.Errorf("ship not found: %s", symbol)
+	}
+
+	// Calculate fuel to add
+	fuelToAdd := ship.FuelCapacity() - ship.Fuel().Current
+	if units != nil && *units < fuelToAdd {
+		fuelToAdd = *units
+	}
+
+	return &navigation.RefuelResult{
+		FuelAdded:   fuelToAdd,
+		CreditsCost: fuelToAdd * 100, // Mock cost: 100 credits per fuel unit
+	}, nil
 }
 
 func (m *MockAPIClient) SetFlightMode(ctx context.Context, symbol, flightMode, token string) error {
-	return fmt.Errorf("not implemented in mock")
+	m.mu.RLock()
+	shouldError := m.shouldError
+	errorMsg := m.errorMsg
+	m.mu.RUnlock()
+
+	if shouldError {
+		return fmt.Errorf("%s", errorMsg)
+	}
+
+	return nil
 }
 
 func (m *MockAPIClient) GetAgent(ctx context.Context, token string) (*player.AgentData, error) {

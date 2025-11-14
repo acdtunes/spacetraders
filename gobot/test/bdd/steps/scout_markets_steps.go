@@ -9,6 +9,7 @@ import (
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/api"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/scouting"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
@@ -20,7 +21,10 @@ import (
 type scoutMarketsContext struct {
 	// Database and repositories
 	db                 *gorm.DB
-	mockShipRepo       *helpers.MockShipRepository
+	apiClient          *helpers.MockAPIClient
+	shipRepo           navigation.ShipRepository
+	playerRepo         *persistence.GormPlayerRepository
+	waypointRepo       *persistence.GormWaypointRepository
 	mockPlayerRepo     *helpers.MockPlayerRepository
 	mockRoutingClient  *helpers.MockRoutingClient
 	mockDaemonClient   *helpers.MockDaemonClient
@@ -53,7 +57,10 @@ func (c *scoutMarketsContext) reset() error {
 	}
 
 	c.db = db
-	c.mockShipRepo = helpers.NewMockShipRepository()
+	c.apiClient = helpers.NewMockAPIClient()
+	c.playerRepo = persistence.NewGormPlayerRepository(db)
+	c.waypointRepo = persistence.NewGormWaypointRepository(db)
+	c.shipRepo = api.NewAPIShipRepository(c.apiClient, c.playerRepo, c.waypointRepo)
 	c.mockPlayerRepo = helpers.NewMockPlayerRepository()
 	c.mockRoutingClient = helpers.NewMockRoutingClient()
 	c.mockDaemonClient = helpers.NewMockDaemonClient()
@@ -144,7 +151,7 @@ func (c *scoutMarketsContext) iHaveAShipAtWaypointInSystem(shipSymbol, waypointS
 	}
 
 	c.ships[shipSymbol] = ship
-	c.mockShipRepo.AddShip(ship)
+	c.apiClient.AddShip(ship)
 
 	return nil
 }
@@ -231,7 +238,7 @@ func (c *scoutMarketsContext) iExecuteScoutMarketsCommandWithShipsAndMarketsInSy
 
 	// Create handler
 	c.handler = scouting.NewScoutMarketsHandler(
-		c.mockShipRepo,
+		c.shipRepo,
 		c.mockGraphProvider,
 		c.mockRoutingClient,
 		c.mockDaemonClient,

@@ -10,6 +10,7 @@ import (
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/api"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/scouting"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
@@ -23,7 +24,9 @@ type scoutTourContext struct {
 	// Database and repositories
 	db             *gorm.DB
 	marketRepo     *persistence.MarketRepositoryGORM
-	mockShipRepo   *helpers.MockShipRepository
+	shipRepo       navigation.ShipRepository
+	playerRepo     *persistence.GormPlayerRepository
+	waypointRepo   *persistence.GormWaypointRepository
 	mockPlayerRepo *helpers.MockPlayerRepository
 	mockAPIClient  *helpers.MockAPIClient
 
@@ -60,9 +63,11 @@ func (c *scoutTourContext) reset() error {
 
 	c.db = db
 	c.marketRepo = persistence.NewMarketRepository(db)
-	c.mockShipRepo = helpers.NewMockShipRepository()
-	c.mockPlayerRepo = helpers.NewMockPlayerRepository()
+	c.playerRepo = persistence.NewGormPlayerRepository(db)
+	c.waypointRepo = persistence.NewGormWaypointRepository(db)
 	c.mockAPIClient = helpers.NewMockAPIClient()
+	c.shipRepo = api.NewAPIShipRepository(c.mockAPIClient, c.playerRepo, c.waypointRepo)
+	c.mockPlayerRepo = helpers.NewMockPlayerRepository()
 
 	c.ships = make(map[string]*navigation.Ship)
 	c.waypoints = make(map[string]*shared.Waypoint)
@@ -135,7 +140,7 @@ func (c *scoutTourContext) thePlayerHasAShipAtWaypointWithStatus(shipSymbol, way
 	}
 
 	c.ships[shipSymbol] = ship
-	c.mockShipRepo.AddShip(ship)
+	c.mockAPIClient.AddShip(ship)
 	return nil
 }
 
@@ -229,7 +234,7 @@ func (c *scoutTourContext) iExecuteScoutTourCommandWithShipMarketsAndNIteration(
 
 	// Create handler
 	c.handler = scouting.NewScoutTourHandler(
-		c.mockShipRepo,
+		c.shipRepo,
 		c.marketRepo,
 		c.mockAPIClient,
 		c.mockPlayerRepo,

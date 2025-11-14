@@ -18,9 +18,6 @@ type ShipRepository interface {
 	// FindAllByPlayer retrieves all ships for a player (from API with waypoint reconstruction)
 	FindAllByPlayer(ctx context.Context, playerID int) ([]*Ship, error)
 
-	// Save persists ship state to database (if caching is needed)
-	Save(ctx context.Context, ship *Ship) error
-
 	// Navigate executes ship navigation (updates via API)
 	// Returns navigation result with arrival time from API
 	Navigate(ctx context.Context, ship *Ship, destination *shared.Waypoint, playerID int) (*NavigationResult, error)

@@ -10,6 +10,7 @@ import (
 	"gorm.io/gorm"
 
 	appShip "github.com/andrescamacho/spacetraders-go/internal/application/ship"
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/api"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
@@ -26,8 +27,10 @@ type navigateToWaypointContext struct {
 	err         error
 
 	// Test doubles
-	shipRepo     *helpers.MockShipRepository         // Still use mock since ships aren't database-persisted
-	waypointRepo *persistence.GormWaypointRepository // Real repository for waypoints
+	apiClient    *helpers.MockAPIClient
+	shipRepo     navigation.ShipRepository
+	playerRepo   *persistence.GormPlayerRepository
+	waypointRepo *persistence.GormWaypointRepository
 	handler      *appShip.NavigateToWaypointHandler
 	db           *gorm.DB // In-memory SQLite database
 }
@@ -59,8 +62,10 @@ func (ctx *navigateToWaypointContext) reset() {
 	ctx.db = db
 
 	// Create repositories
-	ctx.shipRepo = helpers.NewMockShipRepository() // Mock for ships (API-only in production)
-	ctx.waypointRepo = persistence.NewGormWaypointRepository(db) // Real repository for waypoints
+	ctx.apiClient = helpers.NewMockAPIClient()
+	ctx.playerRepo = persistence.NewGormPlayerRepository(db)
+	ctx.waypointRepo = persistence.NewGormWaypointRepository(db)
+	ctx.shipRepo = api.NewAPIShipRepository(ctx.apiClient, ctx.playerRepo, ctx.waypointRepo)
 	ctx.handler = appShip.NewNavigateToWaypointHandler(ctx.shipRepo, ctx.waypointRepo)
 }
 
@@ -70,7 +75,7 @@ func (ctx *navigateToWaypointContext) syncFromGlobalContext() {
 	// Import all ships from global context
 	for symbol, ship := range globalAppContext.getAllShips() {
 		ctx.ships[symbol] = ship
-		ctx.shipRepo.AddShip(ship)
+		ctx.apiClient.AddShip(ship)
 	}
 
 	// Import all waypoints from global context
@@ -118,7 +123,7 @@ func (ctx *navigateToWaypointContext) aShipForPlayerAtWithStatus(shipSymbol stri
 	}
 
 	ctx.ships[shipSymbol] = ship
-	ctx.shipRepo.AddShip(ship)
+	ctx.apiClient.AddShip(ship)
 	ctx.waypoints[location] = waypoint
 
 	return nil
@@ -161,7 +166,7 @@ func (ctx *navigateToWaypointContext) aShipForPlayerInTransitTo(shipSymbol strin
 	}
 
 	ctx.ships[shipSymbol] = ship
-	ctx.shipRepo.AddShip(ship)
+	ctx.apiClient.AddShip(ship)
 
 	return nil
 }

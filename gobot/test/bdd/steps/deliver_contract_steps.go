@@ -9,6 +9,7 @@ import (
 	"github.com/cucumber/godog"
 
 	appContract "github.com/andrescamacho/spacetraders-go/internal/application/contract"
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/api"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
@@ -27,11 +28,12 @@ type deliverContractContext struct {
 	apiDeliveries map[string]int // Track expected API delivery responses
 
 	// Test doubles
-	contractRepo *helpers.MockContractRepository
-	playerRepo   *helpers.MockPlayerRepository
-	shipRepo     *helpers.MockShipRepository
-	apiClient    *helpers.MockAPIClient
-	handler      *appContract.DeliverContractHandler
+	contractRepo     *helpers.MockContractRepository
+	mockPlayerRepo   *helpers.MockPlayerRepository
+	mockWaypointRepo *helpers.MockWaypointRepository
+	shipRepo         navigation.ShipRepository
+	apiClient        *helpers.MockAPIClient
+	handler          *appContract.DeliverContractHandler
 }
 
 func (ctx *deliverContractContext) reset() {
@@ -45,11 +47,12 @@ func (ctx *deliverContractContext) reset() {
 
 	// Initialize test doubles
 	ctx.contractRepo = helpers.NewMockContractRepository()
-	ctx.playerRepo = helpers.NewMockPlayerRepository()
-	ctx.shipRepo = helpers.NewMockShipRepository()
+	ctx.mockPlayerRepo = helpers.NewMockPlayerRepository()
+	ctx.mockWaypointRepo = helpers.NewMockWaypointRepository()
 	ctx.apiClient = helpers.NewMockAPIClient()
+	ctx.shipRepo = api.NewAPIShipRepository(ctx.apiClient, ctx.mockPlayerRepo, ctx.mockWaypointRepo)
 
-	ctx.handler = appContract.NewDeliverContractHandler(ctx.contractRepo, ctx.apiClient, ctx.playerRepo)
+	ctx.handler = appContract.NewDeliverContractHandler(ctx.contractRepo, ctx.apiClient, ctx.mockPlayerRepo)
 }
 
 // Given steps
@@ -58,7 +61,7 @@ func (ctx *deliverContractContext) aPlayerWithIDAndToken(playerID int, token str
 	ctx.playerID = playerID
 	p := player.NewPlayer(playerID, fmt.Sprintf("AGENT-%d", playerID), token)
 	ctx.players[playerID] = p
-	ctx.playerRepo.AddPlayer(p)
+	ctx.mockPlayerRepo.AddPlayer(p)
 	return nil
 }
 
@@ -202,7 +205,7 @@ func (ctx *deliverContractContext) aShipOwnedByPlayerAtWaypointWithInCargo(
 	}
 
 	ctx.ships[shipSymbol] = ship
-	ctx.shipRepo.AddShip(ship)
+	ctx.apiClient.AddShip(ship)
 
 	return nil
 }

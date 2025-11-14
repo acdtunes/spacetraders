@@ -9,6 +9,7 @@ import (
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/api"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	appShip "github.com/andrescamacho/spacetraders-go/internal/application/ship"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
@@ -27,7 +28,7 @@ type jettisonCargoContext struct {
 
 	// Real repositories with in-memory database
 	db         *gorm.DB
-	shipRepo   *persistence.GormShipRepository
+	shipRepo   navigation.ShipRepository
 	playerRepo *persistence.GormPlayerRepository
 
 	// Mock API client (don't hit real SpaceTraders API)
@@ -67,7 +68,7 @@ func (ctx *jettisonCargoContext) reset() {
 	// Create real repositories
 	ctx.playerRepo = persistence.NewGormPlayerRepository(db)
 	waypointRepo := persistence.NewGormWaypointRepository(db)
-	ctx.shipRepo = persistence.NewGormShipRepository(db, ctx.apiClient, ctx.playerRepo, waypointRepo)
+	ctx.shipRepo = api.NewAPIShipRepository(ctx.apiClient, ctx.playerRepo, waypointRepo)
 
 	ctx.handler = appShip.NewJettisonCargoHandler(ctx.shipRepo, ctx.playerRepo, ctx.apiClient)
 }
@@ -126,7 +127,7 @@ func (ctx *jettisonCargoContext) createShipWithCargo(
 	navStatus navigation.NavStatus,
 	cargoTable *godog.Table,
 ) error {
-	// Create waypoint in database (required for GormShipRepository.shipDataToDomain)
+	// Create waypoint in database (required for APIShipRepository.shipDataToDomain)
 	// Extract system from location using domain logic
 	systemSymbol := shared.ExtractSystemSymbol(location)
 

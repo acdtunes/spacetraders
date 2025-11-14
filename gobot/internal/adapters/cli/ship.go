@@ -492,7 +492,7 @@ Examples:
 			playerRepo := persistence.NewGormPlayerRepository(db)
 			apiClient := api.NewSpaceTradersClient()
 			waypointRepo := persistence.NewGormWaypointRepository(db)
-			shipRepo := persistence.NewGormShipRepository(db, apiClient, playerRepo, waypointRepo)
+			shipRepo := api.NewAPIShipRepository(apiClient, playerRepo, waypointRepo)
 			marketRepo := persistence.NewMarketRepository(db)
 
 			// Create handler
