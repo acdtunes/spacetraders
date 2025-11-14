@@ -44,7 +44,7 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	steps.InitializeNegotiateContractScenario(sc)
 	steps.InitializeContractScenario(sc)
 	steps.InitializeAcceptContractScenario(sc) // Re-enabled
-	// steps.InitializeFulfillContractScenario(sc) // Temporarily disabled - FulfillContract not implemented
+	steps.InitializeFulfillContractScenario(sc) // Re-enabled
 	// steps.InitializeNavigateShipHandlerScenario(sc) // Temporarily disabled - needs error handling fix
 
 	// Register ShipOperationsScenario (dock, orbit, set flight mode) BEFORE NavigateToWaypointScenario
