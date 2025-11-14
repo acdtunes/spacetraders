@@ -45,6 +45,7 @@ type MockAPIClient struct {
 	sellCargoFunc        func(ctx context.Context, shipSymbol, goodSymbol string, units int, token string) (*SellCargoResult, error)
 	acceptContractFunc   func(ctx context.Context, contractID, token string) (*infraports.ContractData, error)
 	deliverContractFunc  func(ctx context.Context, contractID, shipSymbol, tradeSymbol string, units int, token string) (*infraports.ContractData, error)
+	fulfillContractFunc  func(ctx context.Context, contractID, token string) (*infraports.ContractData, error)
 }
 
 // NewMockAPIClient creates a new mock API client
@@ -147,6 +148,13 @@ func (m *MockAPIClient) SetDeliverContractFunc(f func(ctx context.Context, contr
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.deliverContractFunc = f
+}
+
+// SetFulfillContractFunc sets a custom function for FulfillContract calls
+func (m *MockAPIClient) SetFulfillContractFunc(f func(ctx context.Context, contractID, token string) (*infraports.ContractData, error)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.fulfillContractFunc = f
 }
 
 // Implement other APIClient interface methods as no-ops
@@ -350,7 +358,25 @@ func (m *MockAPIClient) DeliverContract(ctx context.Context, contractID, shipSym
 }
 
 func (m *MockAPIClient) FulfillContract(ctx context.Context, contractID, token string) (*infraports.ContractData, error) {
-	return nil, fmt.Errorf("not implemented in mock")
+	m.mu.RLock()
+	fn := m.fulfillContractFunc
+	shouldError := m.shouldError
+	errorMsg := m.errorMsg
+	m.mu.RUnlock()
+
+	if shouldError {
+		return nil, fmt.Errorf("%s", errorMsg)
+	}
+
+	if fn != nil {
+		return fn(ctx, contractID, token)
+	}
+
+	// Default successful response (basic mock)
+	return &infraports.ContractData{
+		ID:        contractID,
+		Fulfilled: true,
+	}, nil
 }
 
 func (m *MockAPIClient) PurchaseCargo(ctx context.Context, shipSymbol, goodSymbol string, units int, token string) (*infraports.PurchaseResult, error) {
