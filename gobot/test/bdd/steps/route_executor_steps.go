@@ -120,7 +120,7 @@ func (ctx *routeExecutorContext) registerHandlers() {
 	orbitHandler := appShip.NewOrbitShipHandler(ctx.shipRepo)
 	dockHandler := appShip.NewDockShipHandler(ctx.shipRepo)
 	refuelHandler := appShip.NewRefuelShipHandler(ctx.shipRepo)
-	navigateHandler := appShip.NewNavigateToWaypointHandler(ctx.shipRepo)
+	navigateHandler := appShip.NewNavigateToWaypointHandler(ctx.shipRepo, ctx.waypointRepo)
 	setFlightModeHandler := appShip.NewSetFlightModeHandler(ctx.shipRepo)
 
 	// Register with mediator using reflection

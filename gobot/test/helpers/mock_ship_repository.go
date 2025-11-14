@@ -155,6 +155,14 @@ func (m *MockShipRepository) Navigate(ctx context.Context, ship *navigation.Ship
 	// This signals to RouteExecutor that navigation completed instantly (no waiting needed)
 	// The RouteExecutor will handle calling Arrive() on the ship
 
+	// Validate ship has enough fuel (simulate API behavior)
+	distance := ship.CurrentLocation().DistanceTo(destination)
+	fuelRequired := int(distance) // Simplified calculation for tests
+
+	if ship.Fuel().Current < fuelRequired {
+		return nil, fmt.Errorf("insufficient fuel: need %d but only have %d", fuelRequired, ship.Fuel().Current)
+	}
+
 	// Don't mutate ship state here - let the handler/executor manage state transitions
 	// Just return navigation result
 
@@ -162,7 +170,7 @@ func (m *MockShipRepository) Navigate(ctx context.Context, ship *navigation.Ship
 		Destination:    destination.Symbol,
 		ArrivalTime:    0,           // Instant arrival for tests
 		ArrivalTimeStr: "immediate", // Signal that it's immediate
-		FuelConsumed:   10,
+		FuelConsumed:   fuelRequired,
 	}, nil
 }
 

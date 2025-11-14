@@ -7,6 +7,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
 
 // NavigateToWaypointCommand - Command to navigate a ship to a waypoint
@@ -27,15 +28,18 @@ type NavigateToWaypointResponse struct {
 
 // NavigateToWaypointHandler - Handles navigate to waypoint commands
 type NavigateToWaypointHandler struct {
-	shipRepo navigation.ShipRepository
+	shipRepo     navigation.ShipRepository
+	waypointRepo system.WaypointRepository
 }
 
 // NewNavigateToWaypointHandler creates a new navigate to waypoint handler
 func NewNavigateToWaypointHandler(
 	shipRepo navigation.ShipRepository,
+	waypointRepo system.WaypointRepository,
 ) *NavigateToWaypointHandler {
 	return &NavigateToWaypointHandler{
-		shipRepo: shipRepo,
+		shipRepo:     shipRepo,
+		waypointRepo: waypointRepo,
 	}
 }
 
@@ -57,12 +61,17 @@ func (h *NavigateToWaypointHandler) Handle(ctx context.Context, request common.R
 		return nil, fmt.Errorf("ship not found: %w", err)
 	}
 
-	// 2. Create destination waypoint
-	// Note: In real implementation, we would fetch waypoint from repository
-	// For now, we create it with the symbol (coordinates will be fetched from API)
-	destination, err := shared.NewWaypoint(cmd.Destination, 0, 0)
+	// 2. Load destination waypoint from repository (to get correct HasFuel and other properties)
+	// Extract system symbol from destination
+	systemSymbol := shared.ExtractSystemSymbol(cmd.Destination)
+	destination, err := h.waypointRepo.FindBySymbol(ctx, cmd.Destination, systemSymbol)
 	if err != nil {
-		return nil, fmt.Errorf("invalid destination: %w", err)
+		// Fallback: create waypoint if not found in repository
+		// This can happen in tests or when waypoint hasn't been synced yet
+		destination, err = shared.NewWaypoint(cmd.Destination, 0, 0)
+		if err != nil {
+			return nil, fmt.Errorf("invalid destination: %w", err)
+		}
 	}
 
 	// 3. Check if already at destination (idempotent)
@@ -93,7 +102,12 @@ func (h *NavigateToWaypointHandler) Handle(ctx context.Context, request common.R
 		return nil, fmt.Errorf("failed to start transit: %w", err)
 	}
 
-	// 8. Return successful navigation response
+	// 8. Save updated ship state to repository
+	if err := h.shipRepo.Save(ctx, ship); err != nil {
+		return nil, fmt.Errorf("failed to save ship after navigation: %w", err)
+	}
+
+	// 9. Return successful navigation response
 	return &NavigateToWaypointResponse{
 		Status:         "navigating",
 		ArrivalTime:    navResult.ArrivalTime,

@@ -26,9 +26,10 @@ type navigateToWaypointContext struct {
 	err         error
 
 	// Test doubles
-	shipRepo *helpers.MockShipRepository      // Still use mock since ships aren't database-persisted
-	handler  *appShip.NavigateToWaypointHandler
-	db       *gorm.DB                          // In-memory SQLite database
+	shipRepo     *helpers.MockShipRepository         // Still use mock since ships aren't database-persisted
+	waypointRepo *persistence.GormWaypointRepository // Real repository for waypoints
+	handler      *appShip.NavigateToWaypointHandler
+	db           *gorm.DB // In-memory SQLite database
 }
 
 func (ctx *navigateToWaypointContext) reset() {
@@ -57,9 +58,10 @@ func (ctx *navigateToWaypointContext) reset() {
 
 	ctx.db = db
 
-	// Still use mock repository for ships since they're API-only in production
-	ctx.shipRepo = helpers.NewMockShipRepository()
-	ctx.handler = appShip.NewNavigateToWaypointHandler(ctx.shipRepo)
+	// Create repositories
+	ctx.shipRepo = helpers.NewMockShipRepository() // Mock for ships (API-only in production)
+	ctx.waypointRepo = persistence.NewGormWaypointRepository(db) // Real repository for waypoints
+	ctx.handler = appShip.NewNavigateToWaypointHandler(ctx.shipRepo, ctx.waypointRepo)
 }
 
 // syncFromGlobalContext imports ships and waypoints from the global shared context

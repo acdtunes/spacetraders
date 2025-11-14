@@ -100,6 +100,7 @@ func (e *RouteExecutor) ExecuteRoute(
 
 		if err := e.executeSegment(ctx, segment, ship, playerID); err != nil {
 			log.Printf("[ROUTE EXECUTOR] Segment execution failed: %v", err)
+			route.FailRoute(err.Error())
 			return err
 		}
 
