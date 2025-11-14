@@ -1,0 +1,284 @@
+package steps
+
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"github.com/cucumber/godog"
+
+	appShip "github.com/andrescamacho/spacetraders-go/internal/application/ship"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	"github.com/andrescamacho/spacetraders-go/test/helpers"
+)
+
+type refuelShipContext struct {
+	ships       map[string]*navigation.Ship
+	playerID    int
+	agentSymbol string
+	token       string
+	response    *appShip.RefuelShipResponse
+	err         error
+	waypoints   map[string]*shared.Waypoint // Track waypoints with fuel station info
+	handler     *appShip.RefuelShipHandler  // The actual handler to test
+	shipRepo    *helpers.MockShipRepository // Mock repository
+}
+
+func (ctx *refuelShipContext) reset() {
+	ctx.ships = make(map[string]*navigation.Ship)
+	ctx.waypoints = make(map[string]*shared.Waypoint)
+	ctx.playerID = 0
+	ctx.agentSymbol = ""
+	ctx.token = ""
+	ctx.response = nil
+	ctx.err = nil
+
+	// Initialize mock repository and handler
+	ctx.shipRepo = helpers.NewMockShipRepository()
+	ctx.handler = appShip.NewRefuelShipHandler(ctx.shipRepo)
+}
+
+// Player setup steps (reuse from dock_ship)
+
+func (ctx *refuelShipContext) aPlayerExistsWithAgentAndToken(agentSymbol, token string) error {
+	ctx.agentSymbol = agentSymbol
+	ctx.token = token
+	return nil
+}
+
+func (ctx *refuelShipContext) thePlayerHasPlayerID(playerID int) error {
+	ctx.playerID = playerID
+	return nil
+}
+
+// Given steps
+
+func (ctx *refuelShipContext) aShipForPlayerAtFuelStationWithStatusAndFuel(
+	shipSymbol string,
+	playerID int,
+	location string,
+	status string,
+	currentFuel, fuelCapacity int,
+) error {
+	// Create waypoint with fuel station
+	waypoint, err := shared.NewWaypoint(location, 0, 0)
+	if err != nil {
+		return err
+	}
+	waypoint.HasFuel = true // Mark as fuel station
+	ctx.waypoints[location] = waypoint
+
+	fuel, err := shared.NewFuel(currentFuel, fuelCapacity)
+	if err != nil {
+		return err
+	}
+
+	cargo, err := shared.NewCargo(40, 0, []*shared.CargoItem{})
+	if err != nil {
+		return err
+	}
+
+	var navStatus navigation.NavStatus
+	switch status {
+	case "DOCKED":
+		navStatus = navigation.NavStatusDocked
+	case "IN_ORBIT":
+		navStatus = navigation.NavStatusInOrbit
+	case "IN_TRANSIT":
+		navStatus = navigation.NavStatusInTransit
+	default:
+		return fmt.Errorf("unknown nav status: %s", status)
+	}
+
+	ship, err := navigation.NewShip(
+		shipSymbol, playerID, waypoint, fuel, fuelCapacity,
+		40, cargo, 30, navStatus,
+	)
+	if err != nil {
+		return err
+	}
+
+	ctx.ships[shipSymbol] = ship
+	ctx.shipRepo.AddShip(ship) // Add to mock repository
+	return nil
+}
+
+func (ctx *refuelShipContext) aShipForPlayerAtWaypointWithoutFuelWithStatusAndFuel(
+	shipSymbol string,
+	playerID int,
+	location string,
+	status string,
+	currentFuel, fuelCapacity int,
+) error {
+	// Create waypoint WITHOUT fuel station
+	waypoint, err := shared.NewWaypoint(location, 0, 0)
+	if err != nil {
+		return err
+	}
+	waypoint.HasFuel = false // No fuel station
+	ctx.waypoints[location] = waypoint
+
+	fuel, err := shared.NewFuel(currentFuel, fuelCapacity)
+	if err != nil {
+		return err
+	}
+
+	cargo, err := shared.NewCargo(40, 0, []*shared.CargoItem{})
+	if err != nil {
+		return err
+	}
+
+	var navStatus navigation.NavStatus
+	switch status {
+	case "DOCKED":
+		navStatus = navigation.NavStatusDocked
+	case "IN_ORBIT":
+		navStatus = navigation.NavStatusInOrbit
+	case "IN_TRANSIT":
+		navStatus = navigation.NavStatusInTransit
+	default:
+		return fmt.Errorf("unknown nav status: %s", status)
+	}
+
+	ship, err := navigation.NewShip(
+		shipSymbol, playerID, waypoint, fuel, fuelCapacity,
+		40, cargo, 30, navStatus,
+	)
+	if err != nil {
+		return err
+	}
+
+	ctx.ships[shipSymbol] = ship
+	ctx.shipRepo.AddShip(ship) // Add to mock repository
+	return nil
+}
+
+// When steps
+
+func (ctx *refuelShipContext) iExecuteRefuelShipCommandForShipAndPlayerWithNilUnits(
+	shipSymbol string,
+	playerID int,
+) error {
+	// Call with nil units (full refuel)
+	return ctx.executeRefuelCommand(shipSymbol, playerID, nil)
+}
+
+func (ctx *refuelShipContext) iExecuteRefuelShipCommandForShipAndPlayerWithUnits(
+	shipSymbol string,
+	playerID int,
+	units int,
+) error {
+	// Call with specific units
+	return ctx.executeRefuelCommand(shipSymbol, playerID, &units)
+}
+
+func (ctx *refuelShipContext) executeRefuelCommand(shipSymbol string, playerID int, units *int) error {
+	// Create command
+	cmd := &appShip.RefuelShipCommand{
+		ShipSymbol: shipSymbol,
+		PlayerID:   playerID,
+		Units:      units,
+	}
+
+	// Call the actual handler
+	response, err := ctx.handler.Handle(context.Background(), cmd)
+
+	// Store both response and error
+	ctx.err = err
+	if err == nil {
+		ctx.response = response.(*appShip.RefuelShipResponse)
+	} else {
+		ctx.response = nil
+	}
+
+	return nil
+}
+
+// Then steps
+
+func (ctx *refuelShipContext) theRefuelCommandShouldSucceed() error {
+	if ctx.err != nil {
+		return fmt.Errorf("expected success but got error: %v", ctx.err)
+	}
+	if ctx.response == nil {
+		return fmt.Errorf("expected response but got nil")
+	}
+	return nil
+}
+
+func (ctx *refuelShipContext) theShipShouldHaveFuel(currentFuel, fuelCapacity int) error {
+	if ctx.response == nil {
+		return fmt.Errorf("no response received")
+	}
+	if ctx.response.CurrentFuel != currentFuel {
+		return fmt.Errorf("expected current fuel %d but got %d", currentFuel, ctx.response.CurrentFuel)
+	}
+
+	// Also verify ship entity state
+	ship := ctx.ships["SHIP-1"]
+	if ship == nil {
+		return fmt.Errorf("ship not found in context")
+	}
+	if ship.Fuel().Current != currentFuel {
+		return fmt.Errorf("ship entity has fuel %d but expected %d", ship.Fuel().Current, currentFuel)
+	}
+	if ship.Fuel().Capacity != fuelCapacity {
+		return fmt.Errorf("ship entity has capacity %d but expected %d", ship.Fuel().Capacity, fuelCapacity)
+	}
+	return nil
+}
+
+func (ctx *refuelShipContext) unitsOfFuelShouldHaveBeenAdded(expectedAdded int) error {
+	if ctx.response == nil {
+		return fmt.Errorf("no response received")
+	}
+	if ctx.response.FuelAdded != expectedAdded {
+		return fmt.Errorf("expected %d units added but got %d", expectedAdded, ctx.response.FuelAdded)
+	}
+	return nil
+}
+
+func (ctx *refuelShipContext) theShipShouldBeDocked() error {
+	ship := ctx.ships["SHIP-1"]
+	if ship == nil {
+		return fmt.Errorf("ship not found in context")
+	}
+	if !ship.IsDocked() {
+		return fmt.Errorf("expected ship to be docked but status is %s", ship.NavStatus())
+	}
+	return nil
+}
+
+func (ctx *refuelShipContext) theRefuelCommandShouldFailWithError(expectedError string) error {
+	if ctx.err == nil {
+		return fmt.Errorf("expected error but command succeeded")
+	}
+	// Check if the error message contains the expected substring
+	if !strings.Contains(ctx.err.Error(), expectedError) {
+		return fmt.Errorf("expected error containing '%s' but got '%s'", expectedError, ctx.err.Error())
+	}
+	return nil
+}
+
+// Register steps
+
+func InitializeRefuelShipScenario(ctx *godog.ScenarioContext) {
+	refuelCtx := &refuelShipContext{}
+
+	ctx.Before(func(ctx context.Context, sc *godog.Scenario) (context.Context, error) {
+		refuelCtx.reset()
+		return ctx, nil
+	})
+
+	// Note: Player setup steps are shared with other scenarios and already registered
+	// We only register refuel-specific steps here
+	ctx.Step(`^a ship "([^"]*)" for player (\d+) at fuel station "([^"]*)" with status "([^"]*)" and fuel (\d+)/(\d+)$`, refuelCtx.aShipForPlayerAtFuelStationWithStatusAndFuel)
+	ctx.Step(`^a ship "([^"]*)" for player (\d+) at waypoint "([^"]*)" without fuel with status "([^"]*)" and fuel (\d+)/(\d+)$`, refuelCtx.aShipForPlayerAtWaypointWithoutFuelWithStatusAndFuel)
+	ctx.Step(`^I execute RefuelShipCommand for ship "([^"]*)" and player (\d+) with nil units$`, refuelCtx.iExecuteRefuelShipCommandForShipAndPlayerWithNilUnits)
+	ctx.Step(`^I execute RefuelShipCommand for ship "([^"]*)" and player (\d+) with (\d+) units$`, refuelCtx.iExecuteRefuelShipCommandForShipAndPlayerWithUnits)
+	ctx.Step(`^the refuel command should succeed$`, refuelCtx.theRefuelCommandShouldSucceed)
+	ctx.Step(`^the ship should have fuel (\d+)/(\d+)$`, refuelCtx.theShipShouldHaveFuel)
+	ctx.Step(`^(\d+) units of fuel should have been added$`, refuelCtx.unitsOfFuelShouldHaveBeenAdded)
+	ctx.Step(`^the refuel command should fail with error "([^"]*)"$`, refuelCtx.theRefuelCommandShouldFailWithError)
+}
