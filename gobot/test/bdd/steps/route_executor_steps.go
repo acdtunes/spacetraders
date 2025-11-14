@@ -233,12 +233,18 @@ func boolToInt(b bool) int {
 // Given steps
 
 func (ctx *routeExecutorContext) aPlayerExistsWithAgentAndToken(agentSymbol, token string) error {
+	// Update shared context for cross-scenario compatibility
+	sharedPlayerExistsWithAgentAndToken(agentSymbol, token)
+
 	ctx.agentSymbol = agentSymbol
 	ctx.token = token
 	return ctx.createPlayer()
 }
 
 func (ctx *routeExecutorContext) thePlayerHasPlayerID(playerID int) error {
+	// Update shared context for cross-scenario compatibility
+	sharedPlayerHasPlayerID(playerID)
+
 	// Player ID is auto-generated, but we can verify it matches expectation
 	if ctx.playerID != playerID {
 		return fmt.Errorf("expected player ID %d but got %d", playerID, ctx.playerID)
@@ -253,6 +259,18 @@ func (ctx *routeExecutorContext) aShipForPlayerAtWithStatusAndFuel(
 	status string,
 	currentFuel, fuelCapacity int,
 ) error {
+	// Ensure player exists in database (from shared context set by Background steps)
+	if ctx.playerID == 0 {
+		agentSymbol, token, _ := globalAppContext.getPlayerInfo()
+		if agentSymbol != "" {
+			ctx.agentSymbol = agentSymbol
+			ctx.token = token
+			if err := ctx.createPlayer(); err != nil {
+				return err
+			}
+		}
+	}
+
 	// Ensure waypoint exists first (may not have been created yet)
 	if _, exists := ctx.waypoints[location]; !exists {
 		// Create a default waypoint at (0, 0) without fuel station
@@ -745,8 +763,8 @@ func InitializeRouteExecutorScenario(sc *godog.ScenarioContext) {
 	})
 
 	// Given steps
-	sc.Step(`^a player exists with agent "([^"]*)" and token "([^"]*)"$`, executorCtx.aPlayerExistsWithAgentAndToken)
-	sc.Step(`^the player has player_id (\d+)$`, executorCtx.thePlayerHasPlayerID)
+	// Note: Player setup steps are handled by shared context (registered by first scenario)
+	// We just ensure player exists in our database when creating ships
 	sc.Step(`^a ship "([^"]*)" for player (\d+) at "([^"]*)" with status "([^"]*)" and fuel (\d+)/(\d+)$`, executorCtx.aShipForPlayerAtWithStatusAndFuel)
 	sc.Step(`^waypoint "([^"]*)" exists at coordinates \(([^,]+), ([^)]+)\) with fuel station$`, executorCtx.waypointExistsAtCoordinatesWithFuelStation)
 	sc.Step(`^waypoint "([^"]*)" exists at coordinates \(([^,]+), ([^)]+)\) without fuel station$`, executorCtx.waypointExistsAtCoordinatesWithoutFuelStation)

@@ -13,6 +13,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/api"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/test/helpers"
 )
@@ -89,7 +90,21 @@ func (ctx *refuelShipContext) aShipForPlayerAtFuelStationWithStatusAndFuel(
 	status string,
 	currentFuel, fuelCapacity int,
 ) error {
-	// Create waypoint with fuel station
+	// Create waypoint in database (required for APIShipRepository.shipDataToDomain)
+	systemSymbol := shared.ExtractSystemSymbol(location)
+	waypointModel := &persistence.WaypointModel{
+		WaypointSymbol: location,
+		Type:           "FUEL_STATION",
+		SystemSymbol:   systemSymbol,
+		X:              0,
+		Y:              0,
+		HasFuel:        1, // Mark as fuel station
+	}
+	if err := ctx.db.Create(waypointModel).Error; err != nil {
+		return fmt.Errorf("failed to create waypoint: %w", err)
+	}
+
+	// Create waypoint domain object with fuel station
 	waypoint, err := shared.NewWaypoint(location, 0, 0)
 	if err != nil {
 		return err
@@ -129,6 +144,14 @@ func (ctx *refuelShipContext) aShipForPlayerAtFuelStationWithStatusAndFuel(
 
 	ctx.ships[shipSymbol] = ship
 	ctx.apiClient.AddShip(ship)
+
+	// Ensure player exists in database (from shared context)
+	agentSymbol, token, _ := globalAppContext.getPlayerInfo()
+	if agentSymbol != "" {
+		p := player.NewPlayer(playerID, agentSymbol, token)
+		_ = ctx.playerRepo.Save(context.Background(), p)
+	}
+
 	return nil
 }
 
@@ -139,7 +162,21 @@ func (ctx *refuelShipContext) aShipForPlayerAtWaypointWithoutFuelWithStatusAndFu
 	status string,
 	currentFuel, fuelCapacity int,
 ) error {
-	// Create waypoint WITHOUT fuel station
+	// Create waypoint in database (required for APIShipRepository.shipDataToDomain)
+	systemSymbol := shared.ExtractSystemSymbol(location)
+	waypointModel := &persistence.WaypointModel{
+		WaypointSymbol: location,
+		Type:           "PLANET",
+		SystemSymbol:   systemSymbol,
+		X:              0,
+		Y:              0,
+		HasFuel:        0, // No fuel station
+	}
+	if err := ctx.db.Create(waypointModel).Error; err != nil {
+		return fmt.Errorf("failed to create waypoint: %w", err)
+	}
+
+	// Create waypoint domain object WITHOUT fuel station
 	waypoint, err := shared.NewWaypoint(location, 0, 0)
 	if err != nil {
 		return err
@@ -179,6 +216,14 @@ func (ctx *refuelShipContext) aShipForPlayerAtWaypointWithoutFuelWithStatusAndFu
 
 	ctx.ships[shipSymbol] = ship
 	ctx.apiClient.AddShip(ship)
+
+	// Ensure player exists in database (from shared context)
+	agentSymbol, token, _ := globalAppContext.getPlayerInfo()
+	if agentSymbol != "" {
+		p := player.NewPlayer(playerID, agentSymbol, token)
+		_ = ctx.playerRepo.Save(context.Background(), p)
+	}
+
 	return nil
 }
 
@@ -216,6 +261,12 @@ func (ctx *refuelShipContext) executeRefuelCommand(shipSymbol string, playerID i
 	ctx.err = err
 	if err == nil {
 		ctx.response = response.(*appShip.RefuelShipResponse)
+
+		// Fetch updated ship from repository to verify state
+		updatedShip, fetchErr := ctx.shipRepo.FindBySymbol(context.Background(), shipSymbol, playerID)
+		if fetchErr == nil && updatedShip != nil {
+			ctx.ships[shipSymbol] = updatedShip
+		}
 	} else {
 		ctx.response = nil
 	}
@@ -296,6 +347,15 @@ func InitializeRefuelShipScenario(ctx *godog.ScenarioContext) {
 
 	ctx.Before(func(ctx context.Context, sc *godog.Scenario) (context.Context, error) {
 		refuelCtx.reset()
+
+		// Get player from shared context (set by Background steps)
+		agentSymbol, token, playerID := globalAppContext.getPlayerInfo()
+		if playerID > 0 {
+			// Save player to database for this scenario
+			p := player.NewPlayer(playerID, agentSymbol, token)
+			_ = refuelCtx.playerRepo.Save(context.Background(), p)
+		}
+
 		return ctx, nil
 	})
 

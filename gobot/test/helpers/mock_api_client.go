@@ -260,11 +260,12 @@ func (m *MockAPIClient) DockShip(ctx context.Context, symbol, token string) erro
 }
 
 func (m *MockAPIClient) RefuelShip(ctx context.Context, symbol, token string, units *int) (*navigation.RefuelResult, error) {
-	m.mu.RLock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	shouldError := m.shouldError
 	errorMsg := m.errorMsg
 	ship := m.ships[symbol]
-	m.mu.RUnlock()
 
 	if shouldError {
 		return nil, fmt.Errorf("%s", errorMsg)
@@ -275,9 +276,22 @@ func (m *MockAPIClient) RefuelShip(ctx context.Context, symbol, token string, un
 	}
 
 	// Calculate fuel to add
-	fuelToAdd := ship.FuelCapacity() - ship.Fuel().Current
-	if units != nil && *units < fuelToAdd {
-		fuelToAdd = *units
+	var fuelToAdd int
+	var err error
+
+	if units == nil {
+		// Full refuel
+		fuelToAdd, err = ship.RefuelToFull()
+		if err != nil {
+			return nil, fmt.Errorf("failed to refuel ship: %w", err)
+		}
+	} else {
+		// Partial refuel
+		fuelBefore := ship.Fuel().Current
+		if err := ship.Refuel(*units); err != nil {
+			return nil, fmt.Errorf("failed to refuel ship: %w", err)
+		}
+		fuelToAdd = ship.Fuel().Current - fuelBefore
 	}
 
 	return &navigation.RefuelResult{

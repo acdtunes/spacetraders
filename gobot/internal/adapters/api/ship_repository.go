@@ -196,9 +196,8 @@ func (r *APIShipRepository) Refuel(ctx context.Context, ship *navigation.Ship, p
 	// Update ship domain entity state
 	// If units specified, add that amount, otherwise refuel to full
 	if units != nil {
-		// Add specific amount (not implemented in domain yet)
-		// For now, just refuel to full
-		if _, err := ship.RefuelToFull(); err != nil {
+		// Add specific amount
+		if err := ship.Refuel(*units); err != nil {
 			return fmt.Errorf("failed to update ship fuel: %w", err)
 		}
 	} else {
