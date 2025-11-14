@@ -69,3 +69,65 @@ func (e *ValidationError) Error() string {
 func NewValidationError(field, message string) *ValidationError {
 	return &ValidationError{Field: field, Message: message}
 }
+
+// Ship Assignment errors
+
+type ShipAssignmentError struct {
+	*DomainError
+	ShipSymbol  string
+	ContainerID string
+}
+
+func NewShipAssignmentError(message, shipSymbol, containerID string) *ShipAssignmentError {
+	return &ShipAssignmentError{
+		DomainError: &DomainError{Message: message},
+		ShipSymbol:  shipSymbol,
+		ContainerID: containerID,
+	}
+}
+
+type ShipAlreadyAssignedError struct {
+	*ShipAssignmentError
+}
+
+func NewShipAlreadyAssignedError(shipSymbol, currentContainerID string) *ShipAlreadyAssignedError {
+	return &ShipAlreadyAssignedError{
+		ShipAssignmentError: NewShipAssignmentError(
+			fmt.Sprintf("ship %s is already assigned to container %s", shipSymbol, currentContainerID),
+			shipSymbol,
+			currentContainerID,
+		),
+	}
+}
+
+type ShipLockedError struct {
+	*ShipAssignmentError
+}
+
+func NewShipLockedError(shipSymbol, containerID string) *ShipLockedError {
+	return &ShipLockedError{
+		ShipAssignmentError: NewShipAssignmentError(
+			fmt.Sprintf("ship %s is locked by container %s", shipSymbol, containerID),
+			shipSymbol,
+			containerID,
+		),
+	}
+}
+
+type ShipPlayerMismatchError struct {
+	*ShipAssignmentError
+	ExpectedPlayerID int
+	ActualPlayerID   int
+}
+
+func NewShipPlayerMismatchError(shipSymbol string, expectedPlayerID, actualPlayerID int) *ShipPlayerMismatchError {
+	return &ShipPlayerMismatchError{
+		ShipAssignmentError: NewShipAssignmentError(
+			fmt.Sprintf("ship %s player_id mismatch: expected %d, got %d", shipSymbol, expectedPlayerID, actualPlayerID),
+			shipSymbol,
+			"",
+		),
+		ExpectedPlayerID: expectedPlayerID,
+		ActualPlayerID:   actualPlayerID,
+	}
+}

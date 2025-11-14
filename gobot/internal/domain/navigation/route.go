@@ -250,3 +250,24 @@ func (r *Route) String() string {
 	return fmt.Sprintf("Route(id=%s, ship=%s, segments=%d, status=%s)",
 		r.routeID, r.shipSymbol, len(r.segments), r.status)
 }
+
+// NextSegment returns the next segment to execute (current segment)
+// Returns nil if route is complete
+func (r *Route) NextSegment() *RouteSegment {
+	return r.CurrentSegment()
+}
+
+// HasRefuelAtStart checks if route requires refuel before departure
+func (r *Route) HasRefuelAtStart() bool {
+	return r.refuelBeforeDeparture
+}
+
+// IsComplete checks if route execution is complete
+func (r *Route) IsComplete() bool {
+	return r.status == RouteStatusCompleted
+}
+
+// IsFailed checks if route execution has failed
+func (r *Route) IsFailed() bool {
+	return r.status == RouteStatusFailed
+}

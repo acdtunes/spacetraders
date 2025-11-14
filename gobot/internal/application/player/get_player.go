@@ -9,8 +9,8 @@ import (
 	infraPorts "github.com/andrescamacho/spacetraders-go/internal/infrastructure/ports"
 )
 
-// GetPlayerCommand represents a command to get a player by ID or agent symbol
-type GetPlayerCommand struct {
+// GetPlayerQuery represents a query to get a player by ID or agent symbol
+type GetPlayerQuery struct {
 	PlayerID    *int   // Optional: get by player ID
 	AgentSymbol string // Optional: get by agent symbol
 }
@@ -20,7 +20,7 @@ type GetPlayerResponse struct {
 	Player *player.Player
 }
 
-// GetPlayerHandler handles the GetPlayer command
+// GetPlayerHandler handles the GetPlayer query
 type GetPlayerHandler struct {
 	playerRepo player.PlayerRepository
 	apiClient  infraPorts.APIClient
@@ -34,15 +34,15 @@ func NewGetPlayerHandler(playerRepo player.PlayerRepository, apiClient infraPort
 	}
 }
 
-// Handle executes the GetPlayer command
+// Handle executes the GetPlayer query
 func (h *GetPlayerHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {
-	cmd, ok := request.(*GetPlayerCommand)
+	query, ok := request.(*GetPlayerQuery)
 	if !ok {
-		return nil, fmt.Errorf("invalid request type: expected *GetPlayerCommand")
+		return nil, fmt.Errorf("invalid request type: expected *GetPlayerQuery")
 	}
 
 	// Validate that at least one identifier is provided
-	if cmd.PlayerID == nil && cmd.AgentSymbol == "" {
+	if query.PlayerID == nil && query.AgentSymbol == "" {
 		return nil, fmt.Errorf("either player_id or agent_symbol must be provided")
 	}
 
@@ -50,20 +50,18 @@ func (h *GetPlayerHandler) Handle(ctx context.Context, request common.Request) (
 	var err error
 
 	// Priority: PlayerID > AgentSymbol
-	if cmd.PlayerID != nil {
-		player, err = h.playerRepo.FindByID(ctx, *cmd.PlayerID)
+	if query.PlayerID != nil {
+		player, err = h.playerRepo.FindByID(ctx, *query.PlayerID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to find player by ID: %w", err)
 		}
 	} else {
-		player, err = h.playerRepo.FindByAgentSymbol(ctx, cmd.AgentSymbol)
+		player, err = h.playerRepo.FindByAgentSymbol(ctx, query.AgentSymbol)
 		if err != nil {
 			return nil, fmt.Errorf("failed to find player by agent symbol: %w", err)
 		}
 	}
 
-	// Fetch fresh credits from API
-	// NOTE: Credits are never persisted in DB - always fetched live from SpaceTraders API
 	agent, err := h.apiClient.GetAgent(ctx, player.Token)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch agent credits from API: %w", err)

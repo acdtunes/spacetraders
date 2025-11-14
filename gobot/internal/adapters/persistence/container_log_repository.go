@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"gorm.io/gorm"
 )
 
@@ -15,6 +16,9 @@ type ContainerLogRepository interface {
 
 	// GetLogs retrieves logs for a container with optional filtering
 	GetLogs(ctx context.Context, containerID string, playerID int, limit int, level *string, since *time.Time) ([]ContainerLogEntry, error)
+
+	// GetLogsWithOffset retrieves logs for a container with pagination support
+	GetLogsWithOffset(ctx context.Context, containerID string, playerID int, limit, offset int, level *string, since *time.Time) ([]ContainerLogEntry, error)
 }
 
 // ContainerLogEntry represents a log entry
@@ -29,7 +33,8 @@ type ContainerLogEntry struct {
 
 // GormContainerLogRepository is a GORM-based implementation
 type GormContainerLogRepository struct {
-	db *gorm.DB
+	db    *gorm.DB
+	clock shared.Clock
 
 	// Deduplication cache (matches Python implementation)
 	dedupCache   map[string]time.Time // key: containerID+message, value: last logged time
@@ -39,9 +44,14 @@ type GormContainerLogRepository struct {
 }
 
 // NewGormContainerLogRepository creates a new container log repository
-func NewGormContainerLogRepository(db *gorm.DB) *GormContainerLogRepository {
+// If clock is nil, uses RealClock (production behavior)
+func NewGormContainerLogRepository(db *gorm.DB, clock shared.Clock) *GormContainerLogRepository {
+	if clock == nil {
+		clock = shared.NewRealClock()
+	}
 	return &GormContainerLogRepository{
 		db:           db,
+		clock:        clock,
 		dedupCache:   make(map[string]time.Time),
 		dedupWindow:  60 * time.Second, // 60-second deduplication window (matches Python)
 		dedupMaxSize: 10000,            // Max cache entries before cleanup
@@ -50,7 +60,7 @@ func NewGormContainerLogRepository(db *gorm.DB) *GormContainerLogRepository {
 
 // Log writes a log entry with time-windowed deduplication
 func (r *GormContainerLogRepository) Log(ctx context.Context, containerID string, playerID int, message, level string) error {
-	now := time.Now()
+	now := r.clock.Now()
 	cacheKey := containerID + "|" + message
 
 	// Thread-safe deduplication check
@@ -89,7 +99,7 @@ func (r *GormContainerLogRepository) Log(ctx context.Context, containerID string
 // cleanupDedupCache removes old entries from the deduplication cache
 // Must be called while holding dedupMu lock
 func (r *GormContainerLogRepository) cleanupDedupCache() {
-	now := time.Now()
+	now := r.clock.Now()
 	cutoff := now.Add(-r.dedupWindow)
 
 	// Remove entries older than the deduplication window
@@ -116,6 +126,43 @@ func (r *GormContainerLogRepository) GetLogs(ctx context.Context, containerID st
 	}
 
 	query = query.Order("timestamp DESC").Limit(limit)
+
+	if err := query.Find(&models).Error; err != nil {
+		return nil, err
+	}
+
+	// Convert models to entries
+	entries := make([]ContainerLogEntry, len(models))
+	for i, model := range models {
+		entries[i] = ContainerLogEntry{
+			LogID:       model.LogID,
+			ContainerID: model.ContainerID,
+			PlayerID:    model.PlayerID,
+			Timestamp:   model.Timestamp,
+			Level:       model.Level,
+			Message:     model.Message,
+		}
+	}
+
+	return entries, nil
+}
+
+// GetLogsWithOffset retrieves logs for a container with pagination support
+func (r *GormContainerLogRepository) GetLogsWithOffset(ctx context.Context, containerID string, playerID int, limit, offset int, level *string, since *time.Time) ([]ContainerLogEntry, error) {
+	var models []ContainerLogModel
+
+	query := r.db.WithContext(ctx).
+		Where("container_id = ? AND player_id = ?", containerID, playerID)
+
+	if level != nil {
+		query = query.Where("level = ?", *level)
+	}
+
+	if since != nil {
+		query = query.Where("timestamp > ?", *since)
+	}
+
+	query = query.Order("timestamp DESC").Limit(limit).Offset(offset)
 
 	if err := query.Find(&models).Error; err != nil {
 		return nil, err

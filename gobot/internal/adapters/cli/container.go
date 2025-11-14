@@ -216,7 +216,7 @@ Examples:
 			}
 
 			// Create log repository
-			logRepo := persistence.NewGormContainerLogRepository(db)
+			logRepo := persistence.NewGormContainerLogRepository(db, nil) // nil = use RealClock
 
 			// Query logs
 			ctx := context.Background()

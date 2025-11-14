@@ -19,6 +19,18 @@ service DaemonService {
   // RefuelShip refuels a ship at its current location
   rpc RefuelShip(RefuelShipRequest) returns (RefuelShipResponse);
 
+  // BatchContractWorkflow executes batch contract workflow operations
+  rpc BatchContractWorkflow(BatchContractWorkflowRequest) returns (BatchContractWorkflowResponse);
+
+  // ScoutTour executes market scouting tour operations (single ship)
+  rpc ScoutTour(ScoutTourRequest) returns (ScoutTourResponse);
+
+  // ScoutMarkets orchestrates fleet deployment for market scouting (multi-ship with VRP)
+  rpc ScoutMarkets(ScoutMarketsRequest) returns (ScoutMarketsResponse);
+
+  // AssignScoutingFleet auto-discovers probe/satellite ships and assigns them to scout markets
+  rpc AssignScoutingFleet(AssignScoutingFleetRequest) returns (AssignScoutingFleetResponse);
+
   // ListContainers returns all running background containers
   rpc ListContainers(ListContainersRequest) returns (ListContainersResponse);
 
@@ -33,6 +45,12 @@ service DaemonService {
 
   // HealthCheck verifies daemon is running and responsive
   rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+
+  // ListShips returns all ships for a player
+  rpc ListShips(ListShipsRequest) returns (ListShipsResponse);
+
+  // GetShip returns detailed information about a specific ship
+  rpc GetShip(GetShipRequest) returns (GetShipResponse);
 }
 
 // NavigateShipRequest initiates ship navigation
@@ -110,6 +128,73 @@ message RefuelShipResponse {
   int32 fuel_added = 3;
   int32 credits_cost = 4;
   string status = 5;
+}
+
+// BatchContractWorkflowRequest initiates batch contract workflow
+message BatchContractWorkflowRequest {
+  string ship_symbol = 1;
+  int32 iterations = 2;
+  int32 player_id = 3;
+  optional string agent_symbol = 4;
+}
+
+message BatchContractWorkflowResponse {
+  string container_id = 1;
+  string ship_symbol = 2;
+  int32 iterations = 3;
+  string status = 4;
+}
+
+// ScoutTourRequest initiates market scouting tour
+message ScoutTourRequest {
+  string ship_symbol = 1;
+  repeated string markets = 2;
+  int32 iterations = 3;
+  int32 player_id = 4;
+  optional string agent_symbol = 5;
+}
+
+message ScoutTourResponse {
+  string container_id = 1;
+  string ship_symbol = 2;
+  repeated string markets = 3;
+  int32 iterations = 4;
+  string status = 5;
+}
+
+// ScoutMarketsRequest initiates fleet market scouting with VRP optimization
+message ScoutMarketsRequest {
+  repeated string ship_symbols = 1;
+  string system_symbol = 2;
+  repeated string markets = 3;
+  int32 iterations = 4;
+  int32 player_id = 5;
+  optional string agent_symbol = 6;
+}
+
+message ScoutMarketsResponse {
+  repeated string container_ids = 1;
+  map<string, MarketAssignment> assignments = 2;
+  repeated string reused_containers = 3;
+}
+
+// MarketAssignment represents markets assigned to a ship
+message MarketAssignment {
+  repeated string markets = 1;
+}
+
+// AssignScoutingFleetRequest auto-discovers and assigns scouting fleet
+message AssignScoutingFleetRequest {
+  string system_symbol = 1;
+  int32 player_id = 2;
+  optional string agent_symbol = 3;
+}
+
+message AssignScoutingFleetResponse {
+  repeated string assigned_ships = 1;
+  repeated string container_ids = 2;
+  map<string, MarketAssignment> assignments = 3;
+  repeated string reused_containers = 4;
 }
 
 // ListContainersRequest lists all containers
@@ -193,4 +278,57 @@ message HealthCheckResponse {
   string status = 1; // "ok" or error message
   string version = 2;
   int32 active_containers = 3;
+}
+
+// ListShipsRequest lists all ships for a player
+message ListShipsRequest {
+  // Optional player ID filter
+  optional int32 player_id = 1;
+
+  // Optional agent symbol (alternative to player_id)
+  optional string agent_symbol = 2;
+}
+
+message ListShipsResponse {
+  repeated ShipInfo ships = 1;
+}
+
+message ShipInfo {
+  string symbol = 1;
+  string location = 2;
+  string nav_status = 3;
+  int32 fuel_current = 4;
+  int32 fuel_capacity = 5;
+  int32 cargo_units = 6;
+  int32 cargo_capacity = 7;
+  int32 engine_speed = 8;
+}
+
+// GetShipRequest retrieves ship details
+message GetShipRequest {
+  string ship_symbol = 1;
+  optional int32 player_id = 2;
+  optional string agent_symbol = 3;
+}
+
+message GetShipResponse {
+  ShipDetail ship = 1;
+}
+
+message ShipDetail {
+  string symbol = 1;
+  string location = 2;
+  string nav_status = 3;
+  int32 fuel_current = 4;
+  int32 fuel_capacity = 5;
+  int32 cargo_units = 6;
+  int32 cargo_capacity = 7;
+  repeated CargoItem cargo_inventory = 8;
+  int32 engine_speed = 9;
+}
+
+message CargoItem {
+  string symbol = 1;
+  string name = 2;
+  int32 units = 3;
 }

@@ -47,6 +47,31 @@ type RefuelResponse struct {
 	Status      string
 }
 
+type BatchContractWorkflowResponse struct {
+	ContainerID string
+	ShipSymbol  string
+	Iterations  int
+	Status      string
+}
+
+type ScoutTourResponse struct {
+	ContainerID string
+	ShipSymbol  string
+	Markets     []string
+	Iterations  int
+	Status      string
+}
+
+type ScoutMarketsResponse struct {
+	ContainerIDs     []string
+	Assignments      map[string]*MarketAssignment
+	ReusedContainers []string
+}
+
+type MarketAssignment struct {
+	Markets []string
+}
+
 type ContainerInfo struct {
 	ContainerID      string
 	ContainerType    string
@@ -236,6 +261,154 @@ func (c *DaemonClient) RefuelShip(
 	}, nil
 }
 
+// BatchContractWorkflow initiates batch contract workflow
+func (c *DaemonClient) BatchContractWorkflow(
+	ctx context.Context,
+	shipSymbol string,
+	iterations int,
+	playerID int,
+	agentSymbol string,
+) (*BatchContractWorkflowResponse, error) {
+	req := &pb.BatchContractWorkflowRequest{
+		ShipSymbol: shipSymbol,
+		Iterations: int32(iterations),
+		PlayerId:   int32(playerID),
+	}
+	if agentSymbol != "" {
+		req.AgentSymbol = &agentSymbol
+	}
+
+	resp, err := c.client.BatchContractWorkflow(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("gRPC call failed: %w", err)
+	}
+
+	return &BatchContractWorkflowResponse{
+		ContainerID: resp.ContainerId,
+		ShipSymbol:  resp.ShipSymbol,
+		Iterations:  int(resp.Iterations),
+		Status:      resp.Status,
+	}, nil
+}
+
+// ScoutTour initiates market scouting tour (single ship)
+func (c *DaemonClient) ScoutTour(
+	ctx context.Context,
+	shipSymbol string,
+	markets []string,
+	iterations int,
+	playerID int,
+	agentSymbol string,
+) (*ScoutTourResponse, error) {
+	req := &pb.ScoutTourRequest{
+		ShipSymbol: shipSymbol,
+		Markets:    markets,
+		Iterations: int32(iterations),
+		PlayerId:   int32(playerID),
+	}
+	if agentSymbol != "" {
+		req.AgentSymbol = &agentSymbol
+	}
+
+	resp, err := c.client.ScoutTour(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("gRPC call failed: %w", err)
+	}
+
+	return &ScoutTourResponse{
+		ContainerID: resp.ContainerId,
+		ShipSymbol:  resp.ShipSymbol,
+		Markets:     resp.Markets,
+		Iterations:  int(resp.Iterations),
+		Status:      resp.Status,
+	}, nil
+}
+
+// ScoutMarkets initiates fleet market scouting with VRP optimization (multi-ship)
+func (c *DaemonClient) ScoutMarkets(
+	ctx context.Context,
+	shipSymbols []string,
+	systemSymbol string,
+	markets []string,
+	iterations int,
+	playerID int,
+	agentSymbol string,
+) (*ScoutMarketsResponse, error) {
+	req := &pb.ScoutMarketsRequest{
+		ShipSymbols:  shipSymbols,
+		SystemSymbol: systemSymbol,
+		Markets:      markets,
+		Iterations:   int32(iterations),
+		PlayerId:     int32(playerID),
+	}
+	if agentSymbol != "" {
+		req.AgentSymbol = &agentSymbol
+	}
+
+	resp, err := c.client.ScoutMarkets(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("gRPC call failed: %w", err)
+	}
+
+	// Convert protobuf response to client response type
+	assignments := make(map[string]*MarketAssignment)
+	for ship, pbAssignment := range resp.Assignments {
+		assignments[ship] = &MarketAssignment{
+			Markets: pbAssignment.Markets,
+		}
+	}
+
+	return &ScoutMarketsResponse{
+		ContainerIDs:     resp.ContainerIds,
+		Assignments:      assignments,
+		ReusedContainers: resp.ReusedContainers,
+	}, nil
+}
+
+// AssignScoutingFleetResponse contains the results of auto-discovery and assignment
+type AssignScoutingFleetResponse struct {
+	AssignedShips    []string
+	ContainerIDs     []string
+	Assignments      map[string]*MarketAssignment
+	ReusedContainers []string
+}
+
+// AssignScoutingFleet auto-discovers probe/satellite ships and assigns them to scout markets
+func (c *DaemonClient) AssignScoutingFleet(
+	ctx context.Context,
+	systemSymbol string,
+	playerID int,
+	agentSymbol string,
+) (*AssignScoutingFleetResponse, error) {
+	req := &pb.AssignScoutingFleetRequest{
+		SystemSymbol: systemSymbol,
+		PlayerId:     int32(playerID),
+	}
+	if agentSymbol != "" {
+		req.AgentSymbol = &agentSymbol
+	}
+
+	resp, err := c.client.AssignScoutingFleet(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("gRPC call failed: %w", err)
+	}
+
+	// Convert protobuf response to client response type
+	assignments := make(map[string]*MarketAssignment)
+	for ship, pbAssignment := range resp.Assignments {
+		assignments[ship] = &MarketAssignment{
+			Markets: pbAssignment.Markets,
+		}
+	}
+
+	return &AssignScoutingFleetResponse{
+		AssignedShips:    resp.AssignedShips,
+		ContainerIDs:     resp.ContainerIds,
+		Assignments:      assignments,
+		ReusedContainers: resp.ReusedContainers,
+	}, nil
+}
+
 // ListContainers lists all containers
 func (c *DaemonClient) ListContainers(
 	ctx context.Context,
@@ -376,4 +549,35 @@ func (c *DaemonClient) HealthCheck(ctx context.Context) (*HealthResponse, error)
 		Version:          resp.Version,
 		ActiveContainers: resp.ActiveContainers,
 	}, nil
+}
+
+// ListShips lists all ships for a player
+func (c *DaemonClient) ListShips(ctx context.Context, playerID *int32, agentSymbol *string) (*pb.ListShipsResponse, error) {
+	req := &pb.ListShipsRequest{
+		PlayerId:    playerID,
+		AgentSymbol: agentSymbol,
+	}
+
+	resp, err := c.client.ListShips(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("gRPC call failed: %w", err)
+	}
+
+	return resp, nil
+}
+
+// GetShip gets detailed ship information
+func (c *DaemonClient) GetShip(ctx context.Context, shipSymbol string, playerID *int32, agentSymbol *string) (*pb.GetShipResponse, error) {
+	req := &pb.GetShipRequest{
+		ShipSymbol:  shipSymbol,
+		PlayerId:    playerID,
+		AgentSymbol: agentSymbol,
+	}
+
+	resp, err := c.client.GetShip(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("gRPC call failed: %w", err)
+	}
+
+	return resp, nil
 }

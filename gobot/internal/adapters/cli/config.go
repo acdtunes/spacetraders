@@ -75,7 +75,7 @@ Example:
 
 			// Display configuration
 			fmt.Println("SpaceTraders Configuration")
-			fmt.Println("==========================\n")
+			fmt.Println("==========================")
 
 			fmt.Println("User Preferences:")
 			fmt.Printf("  Config file:      %s\n", userConfigHandler.GetConfigPath())

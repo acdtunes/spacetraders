@@ -56,3 +56,8 @@ Thumbs.db
 # Unix socket
 *.sock
 /var/run/spacetraders.sock
+
+# MCP Server (TypeScript)
+/mcp/node_modules/
+/mcp/build/
+/mcp/var/

@@ -98,21 +98,34 @@ func (SystemGraphModel) TableName() string {
 	return "system_graphs"
 }
 
-// MarketDataModel represents the market_data table
-type MarketDataModel struct {
-	WaypointSymbol string `gorm:"column:waypoint_symbol;primaryKey;not null"`
-	GoodSymbol     string `gorm:"column:good_symbol;primaryKey;not null"`
-	Supply         string `gorm:"column:supply"`
-	Activity       string `gorm:"column:activity"`
-	PurchasePrice  int    `gorm:"column:purchase_price;not null"`
-	SellPrice      int    `gorm:"column:sell_price;not null"`
-	TradeVolume    int    `gorm:"column:trade_volume;not null"`
-	LastUpdated    string `gorm:"column:last_updated;not null"` // ISO timestamp string
-	PlayerID       int    `gorm:"column:player_id;not null"`
+// MarketData represents the market_data table
+type MarketData struct {
+	ID             uint            `gorm:"primaryKey;autoIncrement"`
+	PlayerID       uint            `gorm:"index:idx_player_waypoint,unique;not null"`
+	WaypointSymbol string          `gorm:"index:idx_player_waypoint,unique;size:255;not null"`
+	LastUpdated    time.Time       `gorm:"index;not null"`
+	CreatedAt      time.Time       `gorm:"not null;autoCreateTime"`
+	TradeGoods     []TradeGoodData `gorm:"foreignKey:MarketDataID;constraint:OnDelete:CASCADE"`
 }
 
-func (MarketDataModel) TableName() string {
+func (MarketData) TableName() string {
 	return "market_data"
+}
+
+// TradeGoodData represents the trade_goods table
+type TradeGoodData struct {
+	ID            uint    `gorm:"primaryKey;autoIncrement"`
+	MarketDataID  uint    `gorm:"index;not null"`
+	Symbol        string  `gorm:"size:100;not null"`
+	Supply        *string `gorm:"size:50"`
+	Activity      *string `gorm:"size:50"`
+	PurchasePrice int     `gorm:"not null"`
+	SellPrice     int     `gorm:"not null"`
+	TradeVolume   int     `gorm:"not null"`
+}
+
+func (TradeGoodData) TableName() string {
+	return "trade_goods"
 }
 
 // ContractModel represents the contracts table

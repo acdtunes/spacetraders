@@ -41,7 +41,6 @@ func (h *RegisterPlayerHandler) Handle(ctx context.Context, request common.Reque
 		return nil, fmt.Errorf("invalid request type: expected *RegisterPlayerCommand")
 	}
 
-	// Validate inputs
 	if cmd.AgentSymbol == "" {
 		return nil, fmt.Errorf("agent_symbol is required")
 	}
@@ -49,7 +48,6 @@ func (h *RegisterPlayerHandler) Handle(ctx context.Context, request common.Reque
 		return nil, fmt.Errorf("token is required")
 	}
 
-	// Create player entity
 	player := &player.Player{
 		AgentSymbol: cmd.AgentSymbol,
 		Token:       cmd.Token,
@@ -57,7 +55,6 @@ func (h *RegisterPlayerHandler) Handle(ctx context.Context, request common.Reque
 		Credits:     0, // Will be synced from API later
 	}
 
-	// Save to database
 	if err := h.playerRepo.Save(ctx, player); err != nil {
 		return nil, fmt.Errorf("failed to save player: %w", err)
 	}
@@ -103,26 +100,22 @@ func (h *SyncPlayerHandler) Handle(ctx context.Context, request common.Request) 
 		return nil, fmt.Errorf("invalid request type: expected *SyncPlayerCommand")
 	}
 
-	// Get player from database
 	player, err := h.playerRepo.FindByID(ctx, cmd.PlayerID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find player: %w", err)
 	}
 
-	// Fetch agent data from API
 	agentData, err := h.apiClient.GetAgent(ctx, player.Token)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get agent data from API: %w", err)
 	}
 
-	// Update player with API data
 	updated := false
 	if player.Credits != agentData.Credits {
 		player.Credits = agentData.Credits
 		updated = true
 	}
 
-	// Update metadata
 	if player.Metadata == nil {
 		player.Metadata = make(map[string]interface{})
 	}
@@ -132,7 +125,6 @@ func (h *SyncPlayerHandler) Handle(ctx context.Context, request common.Request) 
 	player.Metadata["last_synced"] = time.Now().UTC().Format(time.RFC3339)
 	updated = true
 
-	// Save updates
 	if updated {
 		if err := h.playerRepo.Save(ctx, player); err != nil {
 			return nil, fmt.Errorf("failed to save player updates: %w", err)

@@ -10,6 +10,7 @@ import (
 type WaypointRepository interface {
 	FindBySymbol(ctx context.Context, symbol, systemSymbol string) (*shared.Waypoint, error)
 	ListBySystem(ctx context.Context, systemSymbol string) ([]*shared.Waypoint, error)
+	ListBySystemWithTrait(ctx context.Context, systemSymbol, trait string) ([]*shared.Waypoint, error)
 	Save(ctx context.Context, waypoint *shared.Waypoint) error
 }
 

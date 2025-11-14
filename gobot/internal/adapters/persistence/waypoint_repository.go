@@ -54,6 +54,75 @@ func (r *GormWaypointRepository) ListBySystem(ctx context.Context, systemSymbol 
 	return waypoints, nil
 }
 
+// ListBySystemWithTrait retrieves waypoints in a system filtered by a specific trait
+func (r *GormWaypointRepository) ListBySystemWithTrait(ctx context.Context, systemSymbol, trait string) ([]*shared.Waypoint, error) {
+	var models []WaypointModel
+	// Use LIKE with JSON array pattern to find trait in JSON array string
+	// Handles both ["TRAIT"] and ["OTHER","TRAIT"] patterns
+	pattern := fmt.Sprintf("%%\"%s\"%%", trait)
+	result := r.db.WithContext(ctx).
+		Where("system_symbol = ? AND traits LIKE ?", systemSymbol, pattern).
+		Find(&models)
+	if result.Error != nil {
+		return nil, fmt.Errorf("failed to list waypoints by trait: %w", result.Error)
+	}
+
+	waypoints := make([]*shared.Waypoint, 0, len(models))
+	for _, model := range models {
+		waypoint, err := r.modelToWaypoint(&model)
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert waypoint %s: %w", model.WaypointSymbol, err)
+		}
+		waypoints = append(waypoints, waypoint)
+	}
+
+	return waypoints, nil
+}
+
+// ListBySystemWithType retrieves waypoints in a system filtered by waypoint type
+func (r *GormWaypointRepository) ListBySystemWithType(ctx context.Context, systemSymbol, waypointType string) ([]*shared.Waypoint, error) {
+	var models []WaypointModel
+	result := r.db.WithContext(ctx).
+		Where("system_symbol = ? AND type = ?", systemSymbol, waypointType).
+		Find(&models)
+	if result.Error != nil {
+		return nil, fmt.Errorf("failed to list waypoints by type: %w", result.Error)
+	}
+
+	waypoints := make([]*shared.Waypoint, 0, len(models))
+	for _, model := range models {
+		waypoint, err := r.modelToWaypoint(&model)
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert waypoint %s: %w", model.WaypointSymbol, err)
+		}
+		waypoints = append(waypoints, waypoint)
+	}
+
+	return waypoints, nil
+}
+
+// ListBySystemWithFuel retrieves waypoints in a system that have fuel stations
+func (r *GormWaypointRepository) ListBySystemWithFuel(ctx context.Context, systemSymbol string) ([]*shared.Waypoint, error) {
+	var models []WaypointModel
+	result := r.db.WithContext(ctx).
+		Where("system_symbol = ? AND has_fuel = 1", systemSymbol).
+		Find(&models)
+	if result.Error != nil {
+		return nil, fmt.Errorf("failed to list waypoints with fuel: %w", result.Error)
+	}
+
+	waypoints := make([]*shared.Waypoint, 0, len(models))
+	for _, model := range models {
+		waypoint, err := r.modelToWaypoint(&model)
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert waypoint %s: %w", model.WaypointSymbol, err)
+		}
+		waypoints = append(waypoints, waypoint)
+	}
+
+	return waypoints, nil
+}
+
 // Save persists a waypoint
 func (r *GormWaypointRepository) Save(ctx context.Context, waypoint *shared.Waypoint) error {
 	model, err := r.waypointToModel(waypoint)

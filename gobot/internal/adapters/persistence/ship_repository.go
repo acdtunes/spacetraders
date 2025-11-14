@@ -141,11 +141,9 @@ func (r *GormShipRepository) Dock(ctx context.Context, ship *navigation.Ship, pl
 		}
 	}
 
-	// Update ship domain entity state only if not already docked
-	if ship.NavStatus() != navigation.NavStatusDocked {
-		if err := ship.Dock(); err != nil {
-			return fmt.Errorf("failed to update ship state: %w", err)
-		}
+	// Update ship domain entity state using idempotent method
+	if _, err := ship.EnsureDocked(); err != nil {
+		return fmt.Errorf("failed to update ship state: %w", err)
 	}
 
 	return nil
@@ -168,11 +166,9 @@ func (r *GormShipRepository) Orbit(ctx context.Context, ship *navigation.Ship, p
 		}
 	}
 
-	// Update ship domain entity state only if not already in orbit
-	if ship.NavStatus() != navigation.NavStatusInOrbit {
-		if err := ship.Depart(); err != nil {
-			return fmt.Errorf("failed to update ship state: %w", err)
-		}
+	// Update ship domain entity state using idempotent method
+	if _, err := ship.EnsureInOrbit(); err != nil {
+		return fmt.Errorf("failed to update ship state: %w", err)
 	}
 
 	return nil
@@ -228,6 +224,25 @@ func (r *GormShipRepository) SetFlightMode(ctx context.Context, ship *navigation
 	// Note: The API response updates the ship's flight mode,
 	// but we don't need to update the domain entity here
 	// as the ship's flight mode is not part of its core state
+
+	return nil
+}
+
+// JettisonCargo jettisons cargo from the ship via API
+func (r *GormShipRepository) JettisonCargo(ctx context.Context, ship *navigation.Ship, playerID int, goodSymbol string, units int) error {
+	// Get player token
+	player, err := r.playerRepo.FindByID(ctx, playerID)
+	if err != nil {
+		return fmt.Errorf("failed to find player: %w", err)
+	}
+
+	// Call API to jettison cargo
+	if err := r.apiClient.JettisonCargo(ctx, ship.ShipSymbol(), goodSymbol, units, player.Token); err != nil {
+		return fmt.Errorf("failed to jettison cargo: %w", err)
+	}
+
+	// Note: Cargo is updated by the API, and we refetch ship state when needed
+	// No need to update the domain entity here
 
 	return nil
 }

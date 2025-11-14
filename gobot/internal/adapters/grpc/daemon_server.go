@@ -162,23 +162,104 @@ func (s *DaemonServer) NavigateShip(ctx context.Context, shipSymbol, destination
 
 // DockShip handles ship docking requests
 func (s *DaemonServer) DockShip(ctx context.Context, shipSymbol string, playerID int) (string, error) {
-	// TODO: Implement DockShip command when created
 	containerID := generateContainerID("dock", shipSymbol)
-	return containerID, fmt.Errorf("DockShip not yet implemented")
+
+	cmd := &ship.DockShipCommand{
+		ShipSymbol: shipSymbol,
+		PlayerID:   playerID,
+	}
+
+	containerEntity := container.NewContainer(
+		containerID,
+		container.ContainerTypeDock,
+		playerID,
+		1, // Single iteration for dock
+		map[string]interface{}{
+			"ship_symbol": shipSymbol,
+		},
+		nil, // Use default RealClock for production
+	)
+
+	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo)
+	s.registerContainer(containerID, runner)
+
+	go func() {
+		if err := runner.Start(); err != nil {
+			fmt.Printf("Container %s failed: %v\n", containerID, err)
+		}
+	}()
+
+	return containerID, nil
 }
 
 // OrbitShip handles ship orbit requests
 func (s *DaemonServer) OrbitShip(ctx context.Context, shipSymbol string, playerID int) (string, error) {
-	// TODO: Implement OrbitShip command when created
 	containerID := generateContainerID("orbit", shipSymbol)
-	return containerID, fmt.Errorf("OrbitShip not yet implemented")
+
+	cmd := &ship.OrbitShipCommand{
+		ShipSymbol: shipSymbol,
+		PlayerID:   playerID,
+	}
+
+	containerEntity := container.NewContainer(
+		containerID,
+		container.ContainerTypeOrbit,
+		playerID,
+		1, // Single iteration for orbit
+		map[string]interface{}{
+			"ship_symbol": shipSymbol,
+		},
+		nil, // Use default RealClock for production
+	)
+
+	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo)
+	s.registerContainer(containerID, runner)
+
+	go func() {
+		if err := runner.Start(); err != nil {
+			fmt.Printf("Container %s failed: %v\n", containerID, err)
+		}
+	}()
+
+	return containerID, nil
 }
 
 // RefuelShip handles ship refuel requests
 func (s *DaemonServer) RefuelShip(ctx context.Context, shipSymbol string, playerID int, units *int) (string, error) {
-	// TODO: Implement RefuelShip command when created
 	containerID := generateContainerID("refuel", shipSymbol)
-	return containerID, fmt.Errorf("RefuelShip not yet implemented")
+
+	cmd := &ship.RefuelShipCommand{
+		ShipSymbol: shipSymbol,
+		PlayerID:   playerID,
+		Units:      units,
+	}
+
+	metadata := map[string]interface{}{
+		"ship_symbol": shipSymbol,
+	}
+	if units != nil {
+		metadata["units"] = *units
+	}
+
+	containerEntity := container.NewContainer(
+		containerID,
+		container.ContainerTypeRefuel,
+		playerID,
+		1, // Single iteration for refuel
+		metadata,
+		nil, // Use default RealClock for production
+	)
+
+	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo)
+	s.registerContainer(containerID, runner)
+
+	go func() {
+		if err := runner.Start(); err != nil {
+			fmt.Printf("Container %s failed: %v\n", containerID, err)
+		}
+	}()
+
+	return containerID, nil
 }
 
 // BatchContractWorkflow handles batch contract workflow requests
@@ -294,6 +375,33 @@ func (s *DaemonServer) ScoutMarkets(
 	return scoutResp.ContainerIDs, scoutResp.Assignments, scoutResp.ReusedContainers, nil
 }
 
+// AssignScoutingFleet auto-discovers probe/satellite ships and assigns them to scout markets
+func (s *DaemonServer) AssignScoutingFleet(
+	ctx context.Context,
+	systemSymbol string,
+	playerID int,
+) ([]string, []string, map[string][]string, []string, error) {
+	// Create assign scouting fleet command
+	cmd := &scouting.AssignScoutingFleetCommand{
+		PlayerID:     uint(playerID),
+		SystemSymbol: systemSymbol,
+	}
+
+	// Execute via mediator (synchronously)
+	response, err := s.mediator.Send(ctx, cmd)
+	if err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("failed to execute assign scouting fleet command: %w", err)
+	}
+
+	// Type assert response
+	assignResp, ok := response.(*scouting.AssignScoutingFleetResponse)
+	if !ok {
+		return nil, nil, nil, nil, fmt.Errorf("invalid response type from assign scouting fleet handler")
+	}
+
+	return assignResp.AssignedShips, assignResp.ContainerIDs, assignResp.Assignments, assignResp.ReusedContainers, nil
+}
+
 // ListContainers returns all registered containers
 func (s *DaemonServer) ListContainers(playerID *int, status *string) []*container.Container {
 	s.containersMu.RLock()
@@ -382,6 +490,93 @@ func (s *DaemonServer) stopAllContainers() {
 	case <-time.After(30 * time.Second):
 		fmt.Println("Warning: Some containers did not stop within timeout")
 	}
+}
+
+// ListShips handles ship listing requests
+func (s *DaemonServer) ListShips(ctx context.Context, playerID *int, agentSymbol string) ([]*pb.ShipInfo, error) {
+	// Create query
+	query := &ship.ListShipsQuery{
+		PlayerID:    playerID,
+		AgentSymbol: agentSymbol,
+	}
+
+	// Execute via mediator
+	response, err := s.mediator.Send(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list ships: %w", err)
+	}
+
+	// Convert response
+	listResp, ok := response.(*ship.ListShipsResponse)
+	if !ok {
+		return nil, fmt.Errorf("unexpected response type")
+	}
+
+	// Convert domain ships to proto ships
+	var ships []*pb.ShipInfo
+	for _, domainShip := range listResp.Ships {
+		ships = append(ships, &pb.ShipInfo{
+			Symbol:        domainShip.ShipSymbol(),
+			Location:      domainShip.CurrentLocation().Symbol,
+			NavStatus:     string(domainShip.NavStatus()),
+			FuelCurrent:   int32(domainShip.Fuel().Current),
+			FuelCapacity:  int32(domainShip.Fuel().Capacity),
+			CargoUnits:    int32(domainShip.CargoUnits()),
+			CargoCapacity: int32(domainShip.CargoCapacity()),
+			EngineSpeed:   int32(domainShip.EngineSpeed()),
+		})
+	}
+
+	return ships, nil
+}
+
+// GetShip handles ship detail requests
+func (s *DaemonServer) GetShip(ctx context.Context, shipSymbol string, playerID *int, agentSymbol string) (*pb.ShipDetail, error) {
+	// Create query
+	query := &ship.GetShipQuery{
+		ShipSymbol:  shipSymbol,
+		PlayerID:    playerID,
+		AgentSymbol: agentSymbol,
+	}
+
+	// Execute via mediator
+	response, err := s.mediator.Send(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get ship: %w", err)
+	}
+
+	// Convert response
+	getResp, ok := response.(*ship.GetShipResponse)
+	if !ok {
+		return nil, fmt.Errorf("unexpected response type")
+	}
+
+	domainShip := getResp.Ship
+
+	// Convert cargo items
+	var cargoItems []*pb.CargoItem
+	for _, item := range domainShip.Cargo().Inventory {
+		cargoItems = append(cargoItems, &pb.CargoItem{
+			Symbol: item.Symbol,
+			Name:   item.Name,
+			Units:  int32(item.Units),
+		})
+	}
+
+	// Build ship detail
+	shipDetail := &pb.ShipDetail{
+		Symbol:         domainShip.ShipSymbol(),
+		Location:       domainShip.CurrentLocation().Symbol,
+		NavStatus:      string(domainShip.NavStatus()),
+		FuelCurrent:    int32(domainShip.Fuel().Current),
+		FuelCapacity:   int32(domainShip.Fuel().Capacity),
+		CargoUnits:     int32(domainShip.CargoUnits()),
+		CargoCapacity:  int32(domainShip.CargoCapacity()),
+		CargoInventory: cargoItems,
+		EngineSpeed:    int32(domainShip.EngineSpeed()),
+	}
+
+	return shipDetail, nil
 }
 
 // Utility functions

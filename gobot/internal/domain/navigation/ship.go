@@ -88,12 +88,20 @@ func (s *Ship) validate() error {
 		return shared.NewInvalidShipDataError("player_id must be positive")
 	}
 
+	if s.fuel == nil {
+		return shared.NewInvalidShipDataError("fuel cannot be nil")
+	}
+
 	if s.fuelCapacity < 0 {
 		return shared.NewInvalidShipDataError("fuel_capacity cannot be negative")
 	}
 
 	if s.fuel.Capacity != s.fuelCapacity {
 		return shared.NewInvalidShipDataError("fuel capacity must match fuel_capacity")
+	}
+
+	if s.cargo == nil {
+		return shared.NewInvalidShipDataError("cargo cannot be nil")
 	}
 
 	if s.cargoCapacity < 0 {
@@ -150,6 +158,9 @@ func (s *Ship) Cargo() *shared.Cargo {
 }
 
 func (s *Ship) CargoUnits() int {
+	if s.cargo == nil {
+		return 0
+	}
 	return s.cargo.Units
 }
 
@@ -180,8 +191,10 @@ func (s *Ship) EnsureInOrbit() (bool, error) {
 		return false, shared.NewInvalidNavStatusError("cannot orbit while in transit")
 	}
 
-	// Must be docked, transition to orbit
-	s.navStatus = NavStatusInOrbit
+	// Must be docked, use internal transition
+	if err := s.depart(); err != nil {
+		return false, err
+	}
 	return true, nil
 }
 
@@ -202,13 +215,15 @@ func (s *Ship) EnsureDocked() (bool, error) {
 		return false, shared.NewInvalidNavStatusError("cannot dock while in transit")
 	}
 
-	// Must be in orbit, transition to docked
-	s.navStatus = NavStatusDocked
+	// Must be in orbit, use internal transition
+	if err := s.dock(); err != nil {
+		return false, err
+	}
 	return true, nil
 }
 
-// Depart transitions from docked to orbit
-func (s *Ship) Depart() error {
+// depart transitions from docked to orbit (internal state transition)
+func (s *Ship) depart() error {
 	if s.navStatus != NavStatusDocked {
 		return shared.NewInvalidNavStatusError(fmt.Sprintf("ship must be docked to depart, currently: %s", s.navStatus))
 	}
@@ -216,8 +231,8 @@ func (s *Ship) Depart() error {
 	return nil
 }
 
-// Dock transitions from orbit to docked
-func (s *Ship) Dock() error {
+// dock transitions from orbit to docked (internal state transition)
+func (s *Ship) dock() error {
 	if s.navStatus != NavStatusInOrbit {
 		return shared.NewInvalidNavStatusError(fmt.Sprintf("ship must be in orbit to dock, currently: %s", s.navStatus))
 	}
@@ -319,7 +334,11 @@ func (s *Ship) CalculateTravelTime(destination *shared.Waypoint, mode shared.Fli
 
 // SelectOptimalFlightMode selects optimal flight mode for a given distance
 func (s *Ship) SelectOptimalFlightMode(distance float64) shared.FlightMode {
+	// Calculate costs for each mode
 	cruiseCost := shared.FlightModeCruise.FuelCost(distance)
+
+	// Use shared SelectOptimalFlightMode with ship's current fuel
+	// Safety margin of 4 ensures we don't run out mid-flight
 	return shared.SelectOptimalFlightMode(s.fuel.Current, cruiseCost, 4)
 }
 
@@ -327,21 +346,33 @@ func (s *Ship) SelectOptimalFlightMode(distance float64) shared.FlightMode {
 
 // HasCargoSpace checks if ship has available cargo space
 func (s *Ship) HasCargoSpace(units int) bool {
+	if s.cargo == nil {
+		return units <= s.cargoCapacity
+	}
 	return (s.cargo.Units + units) <= s.cargoCapacity
 }
 
 // AvailableCargoSpace returns available cargo space
 func (s *Ship) AvailableCargoSpace() int {
+	if s.cargo == nil {
+		return s.cargoCapacity
+	}
 	return s.cargo.AvailableCapacity()
 }
 
 // IsCargoEmpty checks if cargo hold is empty
 func (s *Ship) IsCargoEmpty() bool {
+	if s.cargo == nil {
+		return true
+	}
 	return s.cargo.IsEmpty()
 }
 
 // IsCargoFull checks if cargo hold is full
 func (s *Ship) IsCargoFull() bool {
+	if s.cargo == nil {
+		return false
+	}
 	return s.cargo.Units >= s.cargoCapacity
 }
 
@@ -370,4 +401,63 @@ func (s *Ship) IsAtLocation(waypoint *shared.Waypoint) bool {
 func (s *Ship) String() string {
 	return fmt.Sprintf("Ship(symbol=%s, location=%s, status=%s, fuel=%s)",
 		s.shipSymbol, s.currentLocation.Symbol, s.navStatus, s.fuel)
+}
+
+// Route Execution Decision Methods
+
+// ShouldRefuelOpportunistically determines if ship should refuel at a waypoint
+// even if not planned by routing engine (defense-in-depth safety check)
+//
+// Returns true if:
+// - Ship is at a fuel station
+// - Fuel is below safety threshold (safetyMargin, e.g., 0.9 = 90%)
+// - Ship has fuel capacity > 0
+func (s *Ship) ShouldRefuelOpportunistically(waypoint *shared.Waypoint, safetyMargin float64) bool {
+	if s.fuelCapacity == 0 {
+		return false
+	}
+
+	if !waypoint.HasFuel {
+		return false
+	}
+
+	// Check if ship is at this waypoint
+	if s.currentLocation.Symbol != waypoint.Symbol {
+		return false
+	}
+
+	fuelPercentage := float64(s.fuel.Current) / float64(s.fuelCapacity)
+	return fuelPercentage < safetyMargin
+}
+
+// ShouldPreventDriftMode determines if ship should refuel before using DRIFT mode
+// to prevent unnecessary fuel emergencies at fuel stations
+//
+// Returns true if:
+// - Segment uses DRIFT mode
+// - Ship is at the segment's starting waypoint (departure point)
+// - Starting waypoint has fuel
+// - Fuel is below safety threshold
+func (s *Ship) ShouldPreventDriftMode(segment *RouteSegment, safetyMargin float64) bool {
+	if s.fuelCapacity == 0 {
+		return false
+	}
+
+	// Check if using DRIFT mode
+	if segment.FlightMode != shared.FlightModeDrift {
+		return false
+	}
+
+	// Check if at departure waypoint
+	if s.currentLocation.Symbol != segment.FromWaypoint.Symbol {
+		return false
+	}
+
+	// Check if departure waypoint has fuel
+	if !segment.FromWaypoint.HasFuel {
+		return false
+	}
+
+	fuelPercentage := float64(s.fuel.Current) / float64(s.fuelCapacity)
+	return fuelPercentage < safetyMargin
 }

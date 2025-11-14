@@ -33,6 +33,9 @@ type ShipRepository interface {
 
 	// SetFlightMode sets the ship's flight mode (updates via API)
 	SetFlightMode(ctx context.Context, ship *Ship, playerID int, mode string) error
+
+	// JettisonCargo jettisons cargo from the ship (updates via API)
+	JettisonCargo(ctx context.Context, ship *Ship, playerID int, goodSymbol string, units int) error
 }
 
 // DTOs for ship operations

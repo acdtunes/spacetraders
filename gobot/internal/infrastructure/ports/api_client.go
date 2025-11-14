@@ -25,4 +25,79 @@ type APIClient interface {
 
 	// Waypoint operations
 	ListWaypoints(ctx context.Context, systemSymbol, token string, page, limit int) (*system.WaypointsListResponse, error)
+
+	// Contract operations
+	NegotiateContract(ctx context.Context, shipSymbol, token string) (*ContractNegotiationResult, error)
+	GetContract(ctx context.Context, contractID, token string) (*ContractData, error)
+	AcceptContract(ctx context.Context, contractID, token string) (*ContractData, error)
+	DeliverContract(ctx context.Context, contractID, shipSymbol, tradeSymbol string, units int, token string) (*ContractData, error)
+	FulfillContract(ctx context.Context, contractID, token string) (*ContractData, error)
+
+	// Cargo operations
+	PurchaseCargo(ctx context.Context, shipSymbol, goodSymbol string, units int, token string) (*PurchaseResult, error)
+	SellCargo(ctx context.Context, shipSymbol, goodSymbol string, units int, token string) (*SellResult, error)
+	JettisonCargo(ctx context.Context, shipSymbol, goodSymbol string, units int, token string) error
+
+	// Market operations
+	GetMarket(ctx context.Context, systemSymbol, waypointSymbol, token string) (*MarketData, error)
+}
+
+// Contract DTOs
+type ContractNegotiationResult struct {
+	Contract           *ContractData
+	ErrorCode          int    // For error 4511 handling
+	ExistingContractID string // Extracted from error response
+}
+
+type ContractData struct {
+	ID            string
+	FactionSymbol string
+	Type          string
+	Terms         ContractTermsData
+	Accepted      bool
+	Fulfilled     bool
+}
+
+type ContractTermsData struct {
+	DeadlineToAccept string
+	Deadline         string
+	Payment          PaymentData
+	Deliveries       []DeliveryData
+}
+
+type PaymentData struct {
+	OnAccepted  int
+	OnFulfilled int
+}
+
+type DeliveryData struct {
+	TradeSymbol       string
+	DestinationSymbol string
+	UnitsRequired     int
+	UnitsFulfilled    int
+}
+
+// Cargo DTOs
+type PurchaseResult struct {
+	TotalCost  int
+	UnitsAdded int
+}
+
+type SellResult struct {
+	TotalRevenue int
+	UnitsSold    int
+}
+
+// Market DTOs
+type MarketData struct {
+	Symbol     string
+	TradeGoods []TradeGoodData
+}
+
+type TradeGoodData struct {
+	Symbol        string
+	Supply        string
+	SellPrice     int
+	PurchasePrice int
+	TradeVolume   int
 }

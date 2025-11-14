@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	playerApp "github.com/andrescamacho/spacetraders-go/internal/application/player"
 	pb "github.com/andrescamacho/spacetraders-go/pkg/proto/daemon"
 )
 
@@ -15,6 +16,36 @@ type daemonServiceImpl struct {
 	daemon *DaemonServer
 }
 
+// resolvePlayerID resolves a player_id from either the provided player_id or agent_symbol
+// Priority: player_id > agent_symbol
+// Returns an error if both are missing or if agent_symbol lookup fails
+func (s *daemonServiceImpl) resolvePlayerID(ctx context.Context, playerID int32, agentSymbol *string) (int, error) {
+	// If player_id is provided and non-zero, use it directly
+	if playerID != 0 {
+		return int(playerID), nil
+	}
+
+	// If agent_symbol is provided, resolve it to player_id
+	if agentSymbol != nil && *agentSymbol != "" {
+		response, err := s.daemon.mediator.Send(ctx, &playerApp.GetPlayerQuery{
+			AgentSymbol: *agentSymbol,
+		})
+		if err != nil {
+			return 0, fmt.Errorf("failed to resolve agent symbol %s to player_id: %w", *agentSymbol, err)
+		}
+
+		getPlayerResp, ok := response.(*playerApp.GetPlayerResponse)
+		if !ok {
+			return 0, fmt.Errorf("unexpected response type from GetPlayerQuery")
+		}
+
+		return getPlayerResp.Player.ID, nil
+	}
+
+	// Neither player_id nor agent_symbol provided
+	return 0, fmt.Errorf("either player_id or agent_symbol must be provided")
+}
+
 // newDaemonServiceImpl creates a new gRPC service implementation
 func newDaemonServiceImpl(daemon *DaemonServer) *daemonServiceImpl {
 	return &daemonServiceImpl{
@@ -22,10 +53,18 @@ func newDaemonServiceImpl(daemon *DaemonServer) *daemonServiceImpl {
 	}
 }
 
+// NewDaemonServiceImpl creates a new gRPC service implementation (exported for testing)
+func NewDaemonServiceImpl(daemon *DaemonServer) pb.DaemonServiceServer {
+	return newDaemonServiceImpl(daemon)
+}
+
 // NavigateShip initiates ship navigation
 func (s *daemonServiceImpl) NavigateShip(ctx context.Context, req *pb.NavigateShipRequest) (*pb.NavigateShipResponse, error) {
-	// Extract player ID from request
-	playerID := int(req.PlayerId)
+	// Resolve player ID from request (supports both player_id and agent_symbol)
+	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve player: %w", err)
+	}
 
 	// Call daemon's NavigateShip method
 	containerID, err := s.daemon.NavigateShip(ctx, req.ShipSymbol, req.Destination, playerID)
@@ -47,7 +86,11 @@ func (s *daemonServiceImpl) NavigateShip(ctx context.Context, req *pb.NavigateSh
 
 // DockShip docks a ship
 func (s *daemonServiceImpl) DockShip(ctx context.Context, req *pb.DockShipRequest) (*pb.DockShipResponse, error) {
-	playerID := int(req.PlayerId)
+	// Resolve player ID from request (supports both player_id and agent_symbol)
+	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve player: %w", err)
+	}
 
 	containerID, err := s.daemon.DockShip(ctx, req.ShipSymbol, playerID)
 	if err != nil {
@@ -65,7 +108,11 @@ func (s *daemonServiceImpl) DockShip(ctx context.Context, req *pb.DockShipReques
 
 // OrbitShip puts a ship into orbit
 func (s *daemonServiceImpl) OrbitShip(ctx context.Context, req *pb.OrbitShipRequest) (*pb.OrbitShipResponse, error) {
-	playerID := int(req.PlayerId)
+	// Resolve player ID from request (supports both player_id and agent_symbol)
+	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve player: %w", err)
+	}
 
 	containerID, err := s.daemon.OrbitShip(ctx, req.ShipSymbol, playerID)
 	if err != nil {
@@ -83,7 +130,11 @@ func (s *daemonServiceImpl) OrbitShip(ctx context.Context, req *pb.OrbitShipRequ
 
 // RefuelShip refuels a ship
 func (s *daemonServiceImpl) RefuelShip(ctx context.Context, req *pb.RefuelShipRequest) (*pb.RefuelShipResponse, error) {
-	playerID := int(req.PlayerId)
+	// Resolve player ID from request (supports both player_id and agent_symbol)
+	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve player: %w", err)
+	}
 
 	// Handle optional units parameter
 	var units *int
@@ -103,6 +154,125 @@ func (s *daemonServiceImpl) RefuelShip(ctx context.Context, req *pb.RefuelShipRe
 		FuelAdded:   0,   // TODO: Get from actual operation result
 		CreditsCost: 0,   // TODO: Get from actual operation result
 		Status:      "PENDING",
+	}
+
+	return response, nil
+}
+
+// BatchContractWorkflow executes batch contract workflow
+func (s *daemonServiceImpl) BatchContractWorkflow(ctx context.Context, req *pb.BatchContractWorkflowRequest) (*pb.BatchContractWorkflowResponse, error) {
+	// Resolve player ID from request (supports both player_id and agent_symbol)
+	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve player: %w", err)
+	}
+
+	containerID, err := s.daemon.BatchContractWorkflow(ctx, req.ShipSymbol, int(req.Iterations), playerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to start batch contract workflow: %w", err)
+	}
+
+	response := &pb.BatchContractWorkflowResponse{
+		ContainerId: containerID,
+		ShipSymbol:  req.ShipSymbol,
+		Iterations:  req.Iterations,
+		Status:      "RUNNING",
+	}
+
+	return response, nil
+}
+
+// ScoutTour executes market scouting tour (single ship)
+func (s *daemonServiceImpl) ScoutTour(ctx context.Context, req *pb.ScoutTourRequest) (*pb.ScoutTourResponse, error) {
+	// Resolve player ID from request (supports both player_id and agent_symbol)
+	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve player: %w", err)
+	}
+
+	containerID, err := s.daemon.ScoutTour(ctx, req.ShipSymbol, req.Markets, int(req.Iterations), playerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to start scout tour: %w", err)
+	}
+
+	response := &pb.ScoutTourResponse{
+		ContainerId: containerID,
+		ShipSymbol:  req.ShipSymbol,
+		Markets:     req.Markets,
+		Iterations:  req.Iterations,
+		Status:      "RUNNING",
+	}
+
+	return response, nil
+}
+
+// ScoutMarkets orchestrates fleet deployment for market scouting (multi-ship with VRP)
+func (s *daemonServiceImpl) ScoutMarkets(ctx context.Context, req *pb.ScoutMarketsRequest) (*pb.ScoutMarketsResponse, error) {
+	// Resolve player ID from request (supports both player_id and agent_symbol)
+	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve player: %w", err)
+	}
+
+	containerIDs, assignments, reusedContainers, err := s.daemon.ScoutMarkets(
+		ctx,
+		req.ShipSymbols,
+		req.SystemSymbol,
+		req.Markets,
+		int(req.Iterations),
+		playerID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to start scout markets: %w", err)
+	}
+
+	// Convert assignments map to protobuf format
+	pbAssignments := make(map[string]*pb.MarketAssignment)
+	for ship, markets := range assignments {
+		pbAssignments[ship] = &pb.MarketAssignment{
+			Markets: markets,
+		}
+	}
+
+	response := &pb.ScoutMarketsResponse{
+		ContainerIds:     containerIDs,
+		Assignments:      pbAssignments,
+		ReusedContainers: reusedContainers,
+	}
+
+	return response, nil
+}
+
+// AssignScoutingFleet auto-discovers probe/satellite ships and assigns them to scout markets
+func (s *daemonServiceImpl) AssignScoutingFleet(ctx context.Context, req *pb.AssignScoutingFleetRequest) (*pb.AssignScoutingFleetResponse, error) {
+	// Resolve player ID from request (supports both player_id and agent_symbol)
+	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve player: %w", err)
+	}
+
+	assignedShips, containerIDs, assignments, reusedContainers, err := s.daemon.AssignScoutingFleet(
+		ctx,
+		req.SystemSymbol,
+		playerID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to assign scouting fleet: %w", err)
+	}
+
+	// Convert assignments map to protobuf format
+	pbAssignments := make(map[string]*pb.MarketAssignment)
+	for ship, markets := range assignments {
+		pbAssignments[ship] = &pb.MarketAssignment{
+			Markets: markets,
+		}
+	}
+
+	response := &pb.AssignScoutingFleetResponse{
+		AssignedShips:    assignedShips,
+		ContainerIds:     containerIDs,
+		Assignments:      pbAssignments,
+		ReusedContainers: reusedContainers,
 	}
 
 	return response, nil
@@ -215,5 +385,55 @@ func (s *daemonServiceImpl) HealthCheck(ctx context.Context, req *pb.HealthCheck
 		Status:           "ok",
 		Version:          "0.1.0",
 		ActiveContainers: int32(activeCount),
+	}, nil
+}
+
+// ListShips lists all ships for a player
+func (s *daemonServiceImpl) ListShips(ctx context.Context, req *pb.ListShipsRequest) (*pb.ListShipsResponse, error) {
+	// Convert player ID from proto
+	var playerID *int
+	if req.PlayerId != nil {
+		pid := int(*req.PlayerId)
+		playerID = &pid
+	}
+
+	agentSymbol := ""
+	if req.AgentSymbol != nil {
+		agentSymbol = *req.AgentSymbol
+	}
+
+	// Call daemon's ListShips method
+	ships, err := s.daemon.ListShips(ctx, playerID, agentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list ships: %w", err)
+	}
+
+	return &pb.ListShipsResponse{
+		Ships: ships,
+	}, nil
+}
+
+// GetShip retrieves detailed ship information
+func (s *daemonServiceImpl) GetShip(ctx context.Context, req *pb.GetShipRequest) (*pb.GetShipResponse, error) {
+	// Convert player ID from proto
+	var playerID *int
+	if req.PlayerId != nil {
+		pid := int(*req.PlayerId)
+		playerID = &pid
+	}
+
+	agentSymbol := ""
+	if req.AgentSymbol != nil {
+		agentSymbol = *req.AgentSymbol
+	}
+
+	// Call daemon's GetShip method
+	shipDetail, err := s.daemon.GetShip(ctx, req.ShipSymbol, playerID, agentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get ship: %w", err)
+	}
+
+	return &pb.GetShipResponse{
+		Ship: shipDetail,
 	}, nil
 }

@@ -24,12 +24,17 @@ func NewRootCommand() *cobra.Command {
 The CLI communicates with the daemon via Unix socket for efficient operation.
 
 Examples:
-  spacetraders navigate --ship AGENT-1 --destination X1-GZ7-B1
-  spacetraders dock --ship AGENT-1
+  spacetraders ship navigate --ship AGENT-1 --destination X1-GZ7-B1
+  spacetraders ship dock --ship AGENT-1
+  spacetraders market get --waypoint X1-GZ7-A1
+  spacetraders workflow batch-contract --ship AGENT-1 --iterations 5
   spacetraders container list
   spacetraders container logs <container-id>`,
 		PersistentPreRun: func(cmd *cobra.Command, args []string) {
 			// Global setup (if needed)
+		},
+		CompletionOptions: cobra.CompletionOptions{
+			DisableDefaultCmd: true,
 		},
 	}
 
@@ -43,16 +48,14 @@ Examples:
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false,
 		"Enable verbose output")
 
-	// Add subcommands
-	rootCmd.AddCommand(NewNavigateCommand())
-	rootCmd.AddCommand(NewDockCommand())
-	rootCmd.AddCommand(NewOrbitCommand())
-	rootCmd.AddCommand(NewRefuelCommand())
-	rootCmd.AddCommand(NewContainerCommand())
-	rootCmd.AddCommand(NewHealthCommand())
+	// Add command groups
+	rootCmd.AddCommand(NewConfigCommand())
 	rootCmd.AddCommand(NewPlayerCommand())
 	rootCmd.AddCommand(NewShipCommand())
-	rootCmd.AddCommand(NewConfigCommand())
+	rootCmd.AddCommand(NewMarketCommand())
+	rootCmd.AddCommand(NewWorkflowCommand())
+	rootCmd.AddCommand(NewContainerCommand())
+	rootCmd.AddCommand(NewHealthCommand())
 
 	return rootCmd
 }

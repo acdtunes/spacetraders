@@ -84,21 +84,40 @@ func (e *RouteExecutor) ExecuteRoute(
 	}
 
 	// 3. Execute each segment
+	segmentCount := 0
 	for {
 		segment := route.NextSegment()
+		log.Printf("[ROUTE EXECUTOR] Loop iteration %d: segment=%v, currentIndex=%d, totalSegments=%d",
+			segmentCount, segment != nil, route.CurrentSegmentIndex(), len(route.Segments()))
+
 		if segment == nil {
+			log.Printf("[ROUTE EXECUTOR] NextSegment() returned nil, breaking loop")
 			break // Route complete
 		}
 
+		log.Printf("[ROUTE EXECUTOR] Executing segment %d: %s → %s",
+			segmentCount, segment.FromWaypoint.Symbol, segment.ToWaypoint.Symbol)
+
 		if err := e.executeSegment(ctx, segment, ship, playerID); err != nil {
+			log.Printf("[ROUTE EXECUTOR] Segment execution failed: %v", err)
 			return err
 		}
 
+		log.Printf("[ROUTE EXECUTOR] Segment %d completed successfully", segmentCount)
+
 		// Complete segment in route
 		if err := route.CompleteSegment(); err != nil {
+			log.Printf("[ROUTE EXECUTOR] CompleteSegment() failed: %v", err)
 			return err
 		}
+
+		log.Printf("[ROUTE EXECUTOR] After CompleteSegment: currentIndex=%d, status=%s",
+			route.CurrentSegmentIndex(), route.Status())
+
+		segmentCount++
 	}
+
+	log.Printf("[ROUTE EXECUTOR] Loop finished after %d segments, route status=%s", segmentCount, route.Status())
 
 	return nil
 }
@@ -152,10 +171,27 @@ func (e *RouteExecutor) executeSegment(
 	}
 
 	// 5. Wait for arrival
-	if navResp, ok := navResp.(*NavigateToWaypointResponse); ok && navResp.ArrivalTimeStr != "" {
-		if err := e.waitForArrival(ctx, ship, navResp.ArrivalTimeStr, playerID); err != nil {
+	navResponse, ok := navResp.(*NavigateToWaypointResponse)
+	if !ok {
+		return fmt.Errorf("unexpected response type: %T", navResp)
+	}
+
+	log.Printf("[ROUTE EXECUTOR] NavigateToWaypoint response: Status=%s, ArrivalTimeStr='%s'",
+		navResponse.Status, navResponse.ArrivalTimeStr)
+
+	// Check if already at destination (idempotent case)
+	if navResponse.Status == "already_at_destination" {
+		log.Printf("[ROUTE EXECUTOR] Ship already at destination, skipping wait")
+		return nil
+	}
+
+	// Wait for arrival (Status="navigating")
+	if navResponse.ArrivalTimeStr != "" {
+		if err := e.waitForArrival(ctx, ship, navResponse.ArrivalTimeStr, playerID); err != nil {
 			return err
 		}
+	} else {
+		log.Printf("[ROUTE EXECUTOR] WARNING: ArrivalTimeStr is empty for Status=%s", navResponse.Status)
 	}
 
 	// Re-sync ship after arrival (if using real repository)

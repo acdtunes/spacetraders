@@ -1,6 +1,9 @@
 package shared
 
-import "math"
+import (
+	"fmt"
+	"math"
+)
 
 // FlightMode represents flight mode with time/fuel characteristics
 type FlightMode int
@@ -67,6 +70,8 @@ func (f FlightMode) TravelTime(distance float64, engineSpeed int) int {
 // Strategy: ALWAYS minimize travel time. Use fastest mode that leaves
 // at least safetyMargin fuel remaining.
 //
+// Special case: If fuel exactly equals burn cost, select BURN (willing to use all fuel).
+//
 // Priority order: BURN > CRUISE > DRIFT
 func SelectOptimalFlightMode(currentFuel, fuelCost, safetyMargin int) FlightMode {
 	// Try BURN first (fastest: 2x fuel cost)
@@ -74,6 +79,12 @@ func SelectOptimalFlightMode(currentFuel, fuelCost, safetyMargin int) FlightMode
 	cruiseConfig := flightModeConfigs[FlightModeCruise]
 	burnCost := int(float64(fuelCost) * burnConfig.FuelRate / cruiseConfig.FuelRate)
 
+	// Special case: exact match to burn cost → use BURN
+	if currentFuel == burnCost {
+		return FlightModeBurn
+	}
+
+	// Standard check: BURN with safety margin
 	if currentFuel >= burnCost+safetyMargin {
 		return FlightModeBurn
 	}
@@ -89,4 +100,24 @@ func SelectOptimalFlightMode(currentFuel, fuelCost, safetyMargin int) FlightMode
 
 func (f FlightMode) String() string {
 	return f.Name()
+}
+
+// IsValidFlightModeName checks if a mode name string is valid
+func IsValidFlightModeName(modeName string) bool {
+	for _, config := range flightModeConfigs {
+		if config.Name == modeName {
+			return true
+		}
+	}
+	return false
+}
+
+// ParseFlightMode parses a flight mode name string into a FlightMode
+func ParseFlightMode(modeName string) (FlightMode, error) {
+	for mode, config := range flightModeConfigs {
+		if config.Name == modeName {
+			return mode, nil
+		}
+	}
+	return FlightModeCruise, fmt.Errorf("invalid flight mode: %s", modeName)
 }

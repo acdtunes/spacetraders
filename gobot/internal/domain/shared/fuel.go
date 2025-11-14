@@ -37,7 +37,7 @@ func (f *Fuel) Percentage() float64 {
 // Consume returns new Fuel with amount consumed
 func (f *Fuel) Consume(amount int) (*Fuel, error) {
 	if amount < 0 {
-		return nil, fmt.Errorf("consume amount cannot be negative")
+		return nil, fmt.Errorf("fuel amount cannot be negative")
 	}
 	newCurrent := f.Current - amount
 	if newCurrent < 0 {
