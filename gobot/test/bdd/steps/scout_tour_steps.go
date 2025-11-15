@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/application/scouting"
+	shipapp "github.com/andrescamacho/spacetraders-go/internal/application/ship"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
@@ -71,7 +73,12 @@ func (c *scoutTourContext) reset() error {
 	c.mockAPIClient = helpers.NewMockAPIClient()
 	c.shipRepo = api.NewAPIShipRepository(c.mockAPIClient, c.playerRepo, c.waypointRepo)
 	c.mockPlayerRepo = helpers.NewMockPlayerRepository()
-	c.mediator = common.NewMediator()
+
+	// Create a mock mediator that handles navigation and dock commands
+	c.mediator = &scoutTourMockMediator{
+		apiClient: c.mockAPIClient,
+		shipRepo:  c.shipRepo,
+	}
 
 	c.ships = make(map[string]*navigation.Ship)
 	c.waypoints = make(map[string]*shared.Waypoint)
@@ -436,4 +443,62 @@ func InitializeScoutTourScenario(ctx *godog.ScenarioContext) {
 	ctx.Step(`^market data should be persisted for all (\d+) waypoints?$`, c.marketDataShouldBePersistedForAllNWaypoints)
 	ctx.Step(`^the tour should start from "([^"]*)"$`, c.theTourShouldStartFrom)
 	ctx.Step(`^the visit order should be "([^"]*)"$`, c.theVisitOrderShouldBe)
+}
+
+// scoutTourMockMediator is a simple mock mediator for scout tour tests
+// It handles NavigateShipCommand and DockShipCommand to support scout tour operations
+type scoutTourMockMediator struct {
+	apiClient *helpers.MockAPIClient
+	shipRepo  navigation.ShipRepository
+}
+
+func (m *scoutTourMockMediator) Send(ctx context.Context, request common.Request) (common.Response, error) {
+	// Handle different command types
+	switch cmd := request.(type) {
+	case *shipapp.NavigateShipCommand:
+		// For scout tour, we just need to simulate navigation
+		// Get the ship and update its location
+		ship, err := m.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to find ship: %w", err)
+		}
+
+		// Ship must be in orbit to navigate
+		if ship.NavStatus() == navigation.NavStatusDocked {
+			if _, err := ship.EnsureInOrbit(); err != nil {
+				return nil, fmt.Errorf("failed to orbit ship: %w", err)
+			}
+		}
+
+		// Update ship location via MockAPIClient
+		// The API client will handle the actual navigation simulation
+		// Note: We don't actually need to call navigate since the mock already tracks ship state
+
+		// Return success response
+		return &shipapp.NavigateShipResponse{
+			Status:          "completed",
+			CurrentLocation: cmd.Destination,
+			FuelRemaining:   ship.Fuel().Current,
+		}, nil
+
+	case *shipapp.DockShipCommand:
+		// Dock the ship
+		ship, err := m.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to find ship: %w", err)
+		}
+
+		if _, err := ship.EnsureDocked(); err != nil {
+			return nil, fmt.Errorf("failed to dock ship: %w", err)
+		}
+
+		return &shipapp.DockShipResponse{Status: "docked"}, nil
+
+	default:
+		return nil, fmt.Errorf("no handler registered for type %T", request)
+	}
+}
+
+func (m *scoutTourMockMediator) Register(requestType reflect.Type, handler common.RequestHandler) error {
+	return nil
 }
