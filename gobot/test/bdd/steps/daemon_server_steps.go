@@ -232,6 +232,8 @@ func (ctx *daemonServerContext) aGRPCClientIsConnected() error {
 func (ctx *daemonServerContext) aShipExistsForPlayer(shipSymbol string, playerID int) error {
 	// For daemon server tests, we don't need to actually create ships
 	// The mediator mock will handle any ship-related queries
+	// Register globally so other contexts can access it (for cross-context ship tracking)
+	registerShipGlobally(shipSymbol, playerID)
 	return nil
 }
 

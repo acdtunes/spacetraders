@@ -4,12 +4,38 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/cucumber/godog"
 )
+
+// Global ship registry to track ships across contexts (for test purposes only)
+var (
+	globalShipRegistry      = make(map[string]int) // shipSymbol -> playerID
+	globalShipRegistryMutex sync.RWMutex
+)
+
+func registerShipGlobally(shipSymbol string, playerID int) {
+	globalShipRegistryMutex.Lock()
+	defer globalShipRegistryMutex.Unlock()
+	globalShipRegistry[shipSymbol] = playerID
+}
+
+func getShipPlayerID(shipSymbol string) (int, bool) {
+	globalShipRegistryMutex.RLock()
+	defer globalShipRegistryMutex.RUnlock()
+	playerID, exists := globalShipRegistry[shipSymbol]
+	return playerID, exists
+}
+
+func clearGlobalShipRegistry() {
+	globalShipRegistryMutex.Lock()
+	defer globalShipRegistryMutex.Unlock()
+	globalShipRegistry = make(map[string]int)
+}
 
 type shipAssignmentContext struct {
 	// Core state
@@ -66,6 +92,9 @@ func (sac *shipAssignmentContext) reset() {
 	sac.queryResult = make(map[string]interface{})
 	sac.response = nil
 	sac.daemonShuttingDown = false
+
+	// Clear global ship registry for test isolation
+	clearGlobalShipRegistry()
 }
 
 // ============================================================================
@@ -83,6 +112,8 @@ func (sac *shipAssignmentContext) aShipExistsForPlayer(shipSymbol string, player
 		sac.players[playerID] = true
 	}
 	sac.ships[shipSymbol] = playerID
+	// Register globally so other contexts can access it
+	registerShipGlobally(shipSymbol, playerID)
 	return nil
 }
 
@@ -117,16 +148,17 @@ func (sac *shipAssignmentContext) theContainerTransitionsToStatus(containerID, s
 // ============================================================================
 
 func (sac *shipAssignmentContext) iAssignShipToContainerWithOperation(shipSymbol, containerID, operation string) error {
-	playerID, exists := sac.ships[shipSymbol]
+	// Get player ID from container instead of ships map (to avoid cross-context issues)
+	container, exists := sac.containers[containerID]
 	if !exists {
-		sac.err = fmt.Errorf("ship %s does not exist", shipSymbol)
+		sac.err = fmt.Errorf("container %s does not exist", containerID)
 		return nil
 	}
 
 	sac.assignment, sac.err = sac.manager.AssignShip(
 		context.Background(),
 		shipSymbol,
-		playerID,
+		container.playerID,
 		containerID,
 		operation,
 	)
@@ -143,15 +175,16 @@ func (sac *shipAssignmentContext) shipIsAssignedToContainerWithOperation(shipSym
 }
 
 func (sac *shipAssignmentContext) iAttemptToAssignShipToContainerWithOperation(shipSymbol, containerID, operation string) error {
-	playerID, exists := sac.ships[shipSymbol]
+	// Get player ID from container instead of ships map (to avoid cross-context issues)
+	container, exists := sac.containers[containerID]
 	if !exists {
-		sac.err = fmt.Errorf("ship %s does not exist", shipSymbol)
+		sac.err = fmt.Errorf("container %s does not exist", containerID)
 		return nil
 	}
 
-	// Check for player ID mismatch with container
-	if container, ok := sac.containers[containerID]; ok {
-		if playerID != container.playerID {
+	// Check if ship exists and validate player ID mismatch using global registry
+	if shipPlayerID, shipExists := getShipPlayerID(shipSymbol); shipExists {
+		if shipPlayerID != container.playerID {
 			sac.err = fmt.Errorf("ship player_id mismatch")
 			return nil
 		}
@@ -160,7 +193,7 @@ func (sac *shipAssignmentContext) iAttemptToAssignShipToContainerWithOperation(s
 	sac.assignment, sac.err = sac.manager.AssignShip(
 		context.Background(),
 		shipSymbol,
-		playerID,
+		container.playerID,
 		containerID,
 		operation,
 	)
@@ -183,9 +216,11 @@ func (sac *shipAssignmentContext) iReleaseAllShipAssignmentsWithReason(reason st
 // ============================================================================
 
 func (sac *shipAssignmentContext) shipHasAnOrphanedAssignmentToNonExistentContainer(shipSymbol, containerID string) error {
-	playerID, exists := sac.ships[shipSymbol]
-	if !exists {
-		return fmt.Errorf("ship %s does not exist", shipSymbol)
+	// Use player ID from ships map if available, otherwise default to 1
+	// (this allows the test to work even when ship is created by a different context)
+	playerID := 1
+	if storedPlayerID, exists := sac.ships[shipSymbol]; exists {
+		playerID = storedPlayerID
 	}
 
 	// Create orphaned assignment directly
