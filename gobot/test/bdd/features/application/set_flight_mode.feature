@@ -4,8 +4,7 @@ Feature: Set Flight Mode Command
   So that I can optimize travel time and fuel consumption
 
   Background:
-    Given a player exists with agent "TEST-AGENT" and token "test-token-123"
-    And the player has player_id 1
+    Given a ship operations test player 1 exists with agent "TEST-AGENT" and token "test-token-123"
 
   Scenario: Successfully set flight mode to CRUISE
     Given a ship "SHIP-1" for player 1 at "X1-A1" with status "IN_ORBIT"

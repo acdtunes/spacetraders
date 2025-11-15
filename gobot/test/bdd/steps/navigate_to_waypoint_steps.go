@@ -79,13 +79,33 @@ func (ctx *navigateToWaypointContext) syncFromGlobalContext() {
 		ctx.apiClient.AddShip(ship)
 	}
 
-	// Import all waypoints from global context
+	// Import all waypoints from global context and ensure they exist in the database
 	for symbol, waypoint := range globalAppContext.getAllWaypoints() {
 		ctx.waypoints[symbol] = waypoint
+		// Ensure waypoint exists in repository so ship data conversion can find it
+		_ = ctx.ensureWaypointExists(waypoint)
+	}
+
+	// Import player info from global context if not already set
+	agentSymbol, token, playerID := globalAppContext.getPlayerInfo()
+	if playerID > 0 && ctx.playerID == 0 {
+		ctx.playerID = playerID
+		ctx.agentSymbol = agentSymbol
+		ctx.token = token
+		// Ensure player exists in repository
+		_ = ctx.ensurePlayerExists(playerID)
 	}
 }
 
 // Given steps
+
+func (ctx *navigateToWaypointContext) aNavigationTestPlayerExistsWithAgentAndToken(playerID int, agentSymbol, token string) error {
+	ctx.playerID = playerID
+	ctx.agentSymbol = agentSymbol
+	ctx.token = token
+	// Ensure player exists in repository
+	return ctx.ensurePlayerExists(playerID)
+}
 
 func (ctx *navigateToWaypointContext) aPlayerExistsWithAgentAndToken(agentSymbol, token string) error {
 	ctx.agentSymbol = agentSymbol
@@ -110,10 +130,11 @@ func (ctx *navigateToWaypointContext) ensurePlayerExists(playerID int) error {
 	// Create and save player
 	agentSymbol := fmt.Sprintf("AGENT-%d", playerID)
 	token := fmt.Sprintf("token-%d", playerID)
-	if ctx.agentSymbol != "" {
+	// Only use context's agent/token if this is the same player ID
+	if ctx.playerID == playerID && ctx.agentSymbol != "" {
 		agentSymbol = ctx.agentSymbol
 	}
-	if ctx.token != "" {
+	if ctx.playerID == playerID && ctx.token != "" {
 		token = ctx.token
 	}
 
@@ -381,9 +402,8 @@ func InitializeNavigateToWaypointScenario(ctx *godog.ScenarioContext) {
 		return ctx, nil
 	})
 
-	// Background steps
-	ctx.Step(`^a player exists with agent "([^"]*)" and token "([^"]*)"$`, navCtx.aPlayerExistsWithAgentAndToken)
-	ctx.Step(`^the player has player_id (\d+)$`, navCtx.thePlayerHasPlayerID)
+	// Background steps - navigation specific
+	ctx.Step(`^a navigation test player (\d+) exists with agent "([^"]*)" and token "([^"]*)"$`, navCtx.aNavigationTestPlayerExistsWithAgentAndToken)
 
 	// Given steps
 	ctx.Step(`^a ship "([^"]*)" for player (\d+) at "([^"]*)" with status "([^"]*)"$`, navCtx.aShipForPlayerAtWithStatus)
