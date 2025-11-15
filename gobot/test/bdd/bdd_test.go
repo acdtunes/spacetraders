@@ -28,9 +28,6 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	// NOTE: ValueObjectScenarios registered FIRST so its step definitions take precedence
 	// for shared steps like "the result should be true/false"
 	steps.InitializeValueObjectScenarios(sc)
-	// NOTE: FleetAssignmentContainerScenario registered BEFORE ContainerLifecycleScenario
-	// so fleet assignment step definitions take precedence for fleet_assignment_container.feature
-	steps.InitializeFleetAssignmentContainerScenario(sc)
 	// NOTE: ContainerLifecycleScenario registered BEFORE ContainerScenario so lifecycle steps take precedence
 	// The lifecycle steps have the same wording but operate on containerLifecycleContext with currentContainer
 	steps.InitializeContainerLifecycleScenario(sc)
@@ -84,11 +81,9 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	steps.InitializeListMarketDataScenario(sc)
 	steps.InitializeScoutTourScenario(sc)
 	steps.InitializeScoutMarketsScenario(sc)
-	// FleetAssignmentContainerScenario registered earlier before ContainerLifecycleScenario
 
 	// Infrastructure layer scenarios
 	steps.InitializeWaypointCacheScenario(sc) // Re-enabled
-	steps.InitializeDatabaseRetryScenario(sc)
 
 	// Register NavigationUtils scenario
 	steps.InitializeNavigationUtilsScenario(sc) // Re-enabled
