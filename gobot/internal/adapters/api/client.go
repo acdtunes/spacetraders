@@ -782,7 +782,6 @@ func (c *SpaceTradersClient) request(ctx context.Context, method, path, token st
 	err := c.circuitBreaker.Call(func() error {
 		// Attempt the request with retries
 		for attempt := 0; attempt <= c.maxRetries; attempt++ {
-			fmt.Printf("[DEBUG] Retry loop iteration: attempt=%d, maxRetries=%d\n", attempt, c.maxRetries)
 			// Wait for rate limiter
 			if err := c.rateLimiter.Wait(ctx); err != nil {
 				return fmt.Errorf("rate limiter error: %w", err)

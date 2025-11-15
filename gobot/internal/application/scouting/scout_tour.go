@@ -3,9 +3,11 @@ package scouting
 import (
 	"context"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	shipapp "github.com/andrescamacho/spacetraders-go/internal/application/ship"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
@@ -33,6 +35,7 @@ type ScoutTourHandler struct {
 	marketRepo MarketRepository
 	apiClient  infraports.APIClient
 	playerRepo player.PlayerRepository
+	mediator   common.Mediator
 }
 
 // NewScoutTourHandler creates a new scout tour command handler
@@ -41,12 +44,14 @@ func NewScoutTourHandler(
 	marketRepo MarketRepository,
 	apiClient infraports.APIClient,
 	playerRepo player.PlayerRepository,
+	mediator common.Mediator,
 ) *ScoutTourHandler {
 	return &ScoutTourHandler{
 		shipRepo:   shipRepo,
 		marketRepo: marketRepo,
 		apiClient:  apiClient,
 		playerRepo: playerRepo,
+		mediator:   mediator,
 	}
 }
 
@@ -81,20 +86,49 @@ func (h *ScoutTourHandler) Handle(ctx context.Context, request common.Request) (
 	for iteration := 0; iteration < cmd.Iterations || cmd.Iterations == -1; iteration++ {
 		// For each market: navigate → dock → get market data → persist
 		for _, marketWaypoint := range tourOrder {
-			// Skip navigation if already at the waypoint
-			if ship.CurrentLocation().Symbol != marketWaypoint {
-				// TODO: Navigate to waypoint
-				// For now, we'll just simulate it
+			// Navigate to waypoint using NavigateShip (handles route planning, refueling, etc.)
+			log.Printf("[ScoutTour] Navigating %s to %s", cmd.ShipSymbol, marketWaypoint)
+			navCmd := &shipapp.NavigateShipCommand{
+				ShipSymbol:  cmd.ShipSymbol,
+				Destination: marketWaypoint,
+				PlayerID:    int(cmd.PlayerID),
+			}
+			navResp, err := h.mediator.Send(ctx, navCmd)
+			if err != nil {
+				return nil, fmt.Errorf("failed to navigate to %s: %w", marketWaypoint, err)
+			}
+
+			navResult := navResp.(*shipapp.NavigateShipResponse)
+			log.Printf("[ScoutTour] Navigation complete: status=%s, fuel=%d", navResult.Status, navResult.FuelRemaining)
+
+			// Reload ship after navigation
+			ship, err = h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, int(cmd.PlayerID))
+			if err != nil {
+				return nil, fmt.Errorf("failed to reload ship after navigation: %w", err)
 			}
 
 			// Ensure ship is docked
-			// TODO: Dock ship
-			// For now, we'll just simulate it
+			log.Printf("[ScoutTour] Docking %s at %s", cmd.ShipSymbol, marketWaypoint)
+			dockCmd := &shipapp.DockShipCommand{
+				ShipSymbol: cmd.ShipSymbol,
+				PlayerID:   int(cmd.PlayerID),
+			}
+			_, err = h.mediator.Send(ctx, dockCmd)
+			if err != nil {
+				return nil, fmt.Errorf("failed to dock at %s: %w", marketWaypoint, err)
+			}
+
+			// Reload ship after docking
+			ship, err = h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, int(cmd.PlayerID))
+			if err != nil {
+				return nil, fmt.Errorf("failed to reload ship after docking: %w", err)
+			}
 
 			// Get market data from API
 			// Extract system symbol from waypoint (e.g., "X1-TEST-A1" -> "X1-TEST")
 			systemSymbol := extractSystemSymbol(marketWaypoint)
 
+			log.Printf("[ScoutTour] Getting market data for %s at %s", cmd.ShipSymbol, marketWaypoint)
 			marketData, err := h.apiClient.GetMarket(ctx, systemSymbol, marketWaypoint, player.Token)
 			if err != nil {
 				return nil, fmt.Errorf("failed to get market data for %s: %w", marketWaypoint, err)
