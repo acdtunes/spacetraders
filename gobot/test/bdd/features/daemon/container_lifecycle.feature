@@ -267,3 +267,159 @@ Feature: Daemon Container Lifecycle
     And the stopped_at timestamp is recorded
     When time advances by 5 seconds
     Then the stopped_at timestamp should remain unchanged
+
+  # ============================================================================
+  # Edge Cases for Increased Coverage
+  # ============================================================================
+
+  Scenario: Container with max_iterations 0 completes immediately
+    Given a daemon container with max_iterations 0
+    When the daemon starts the container
+    Then the container should not continue running
+    And the container current_iteration should be 0
+
+  Scenario: Container with max_iterations 1 runs exactly once
+    Given a daemon container with max_iterations 1
+    When the container completes one iteration
+    Then the container should not continue running
+    And the container current_iteration should be 1
+
+  Scenario: Container metadata can be empty
+    Given a daemon container is created with empty metadata
+    When I query the container metadata
+    Then the metadata should be empty
+
+  Scenario: Container metadata can be updated
+    Given a daemon container with metadata "key1" = "value1"
+    When I update the metadata with "key2" = "value2"
+    Then the metadata should contain both "key1" and "key2"
+
+  Scenario: Container type is preserved through lifecycle
+    Given a daemon container is created with type "SCOUT_TOUR"
+    When the container transitions through all states
+    Then the container type should remain "SCOUT_TOUR"
+
+  Scenario: Container with restart_count 0 is eligible for restart
+    Given a daemon container in "FAILED" status with restart_count 0
+    When I check if the container can restart
+    Then the restart eligibility should be true
+
+  Scenario: Container with restart_count 2 is still eligible
+    Given a daemon container in "FAILED" status with restart_count 2
+    When I check if the container can restart
+    Then the restart eligibility should be true
+
+  Scenario: Container with restart_count exactly 3 cannot restart
+    Given a daemon container in "FAILED" status with restart_count 3
+    When I check if the container can restart
+    Then the restart eligibility should be false
+
+  Scenario: Container reset for restart clears iteration count
+    Given a daemon container with max_iterations 5 and current_iteration 3
+    And the container is in "FAILED" status
+    When the daemon resets the container for restart
+    Then the container current_iteration should be 0
+    And the max_iterations should remain 5
+
+  Scenario: Container reset for restart clears error
+    Given a daemon container in "FAILED" status with last_error "API timeout"
+    When the daemon resets the container for restart
+    Then the container last_error should be nil
+    And the container status should be "PENDING"
+
+  Scenario: Container with player_id 1
+    Given a daemon container with player_id 1
+    When I query the container
+    Then the container should have player_id 1
+
+  Scenario: Container with large player_id
+    Given a daemon container with player_id 999999
+    When I query the container
+    Then the container should have player_id 999999
+
+  Scenario: Container status is case-sensitive string
+    Given a daemon container is in "RUNNING" status
+    When I query the container status as string
+    Then the status string should be exactly "RUNNING"
+
+  Scenario: Container transition from PENDING to RUNNING
+    Given a daemon container is in "PENDING" status
+    When the daemon starts the container
+    Then the container status should be "RUNNING"
+    And the container should not be marked as finished
+
+  Scenario: Container is running returns true only for RUNNING
+    Given a daemon container is in "RUNNING" status
+    When I check if the container is running
+    Then the result should be true
+
+  Scenario: Container is running returns false for PENDING
+    Given a daemon container is in "PENDING" status
+    When I check if the container is running
+    Then the result should be false
+
+  Scenario: Container is running returns false for COMPLETED
+    Given a daemon container is in "COMPLETED" status
+    When I check if the container is running
+    Then the result should be false
+
+  Scenario: Container is finished returns false for RUNNING
+    Given a daemon container is in "RUNNING" status
+    When I check if the container is finished
+    Then the result should be false
+
+  Scenario: Container is finished returns true for COMPLETED
+    Given a daemon container is in "COMPLETED" status
+    When I check if the container is finished
+    Then the result should be true
+
+  Scenario: Container is finished returns true for FAILED
+    Given a daemon container is in "FAILED" status
+    When I check if the container is finished
+    Then the result should be true
+
+  Scenario: Container is finished returns true for STOPPED
+    Given a daemon container is in "STOPPED" status
+    When I check if the container is finished
+    Then the result should be true
+
+  Scenario: Container is stopping returns true only for STOPPING
+    Given a daemon container is in "STOPPING" status
+    When I check if the container is stopping
+    Then the result should be true
+
+  Scenario: Container is stopping returns false for RUNNING
+    Given a daemon container is in "RUNNING" status
+    When I check if the container is stopping
+    Then the result should be false
+
+  Scenario: Container with current_iteration at boundary
+    Given a daemon container with max_iterations 10 and current_iteration 9
+    When the container completes one iteration
+    Then the container current_iteration should be 10
+    And the container should not continue running
+
+  Scenario: Container with negative max_iterations continues forever
+    Given a daemon container with max_iterations -1 and current_iteration 1000
+    When I check if the container should continue
+    Then the container should continue running
+
+  Scenario: Container ID format
+    Given a daemon container is created
+    Then the container ID should be a non-empty string
+
+  Scenario: Container created_at timestamp is set on creation
+    Given a daemon container is created
+    Then the container created_at timestamp should be set
+
+  Scenario: Container updated_at changes on state transition
+    Given a daemon container is in "PENDING" status
+    And the updated_at timestamp is recorded
+    When time advances by 1 second
+    And the container transitions to "RUNNING"
+    Then the container updated_at timestamp should be different
+
+  Scenario: Multiple failures increment restart count each time
+    Given a daemon container with restart_count 0
+    When the container fails and restarts 3 times
+    Then the container restart_count should be 3

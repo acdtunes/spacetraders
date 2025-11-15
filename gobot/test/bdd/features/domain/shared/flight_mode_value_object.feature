@@ -118,3 +118,97 @@ Feature: Flight Mode Value Object
   Scenario: Get stealth mode name
     When I get the name of STEALTH mode
     Then the mode name should be "STEALTH"
+
+  # ============================================================================
+  # Edge Cases for Increased Coverage
+  # ============================================================================
+
+  Scenario: Fuel cost for distance of 1
+    When I calculate fuel cost for CRUISE mode with distance 1.0
+    Then the fuel cost should be 1
+
+  Scenario: Fuel cost for large distance
+    When I calculate fuel cost for CRUISE mode with distance 10000.0
+    Then the fuel cost should be 10000
+
+  Scenario: Burn mode uses double fuel
+    When I calculate fuel cost for BURN mode with distance 50.0
+    Then the fuel cost should be 100
+
+  Scenario: Drift mode uses minimal fuel for large distance
+    When I calculate fuel cost for DRIFT mode with distance 5000.0
+    Then the fuel cost should be 14
+
+  Scenario: Travel time with very high speed
+    When I calculate travel time for CRUISE mode with distance 100.0 and speed 100
+    Then the travel time should be 30 seconds
+
+  Scenario: Travel time with very low speed
+    When I calculate travel time for CRUISE mode with distance 100.0 and speed 10
+    Then the travel time should be 310 seconds
+
+  Scenario: Burn mode is fastest
+    When I calculate travel time for BURN mode with distance 100.0 and speed 30
+    Then the travel time should be 50 seconds
+
+  Scenario: Stealth mode is slowest
+    When I calculate travel time for STEALTH mode with distance 100.0 and speed 30
+    Then the travel time should be 166 seconds
+
+  Scenario: Drift mode faster than stealth
+    When I calculate travel time for DRIFT mode with distance 100.0 and speed 30
+    Then the travel time should be 86 seconds
+
+  Scenario: Select drift with exactly minimum fuel
+    When I select optimal flight mode with current fuel 5, cost 50, safety margin 4
+    Then the selected mode should be DRIFT
+
+  Scenario: Select burn when fuel is abundant
+    When I select optimal flight mode with current fuel 1000, cost 50, safety margin 4
+    Then the selected mode should be BURN
+
+  Scenario: Edge case - fuel exactly at burn threshold
+    When I select optimal flight mode with current fuel 104, cost 50, safety margin 4
+    Then the selected mode should be BURN
+
+  Scenario: Edge case - fuel one below burn threshold
+    When I select optimal flight mode with current fuel 103, cost 50, safety margin 4
+    Then the selected mode should be CRUISE
+
+  Scenario: Edge case - fuel exactly at cruise threshold
+    When I select optimal flight mode with current fuel 54, cost 50, safety margin 4
+    Then the selected mode should be CRUISE
+
+  Scenario: Edge case - fuel one below cruise threshold
+    When I select optimal flight mode with current fuel 53, cost 50, safety margin 4
+    Then the selected mode should be DRIFT
+
+  Scenario: Zero safety margin selects burn with exact fuel
+    When I select optimal flight mode with current fuel 100, cost 50, safety margin 0
+    Then the selected mode should be BURN
+
+  Scenario: Zero fuel cost always selects burn
+    When I select optimal flight mode with current fuel 100, cost 0, safety margin 4
+    Then the selected mode should be BURN
+
+  Scenario: High safety margin forces drift
+    When I select optimal flight mode with current fuel 100, cost 50, safety margin 50
+    Then the selected mode should be DRIFT
+
+  Scenario: Fuel cost with fractional distance rounds up
+    When I calculate fuel cost for CRUISE mode with distance 50.5
+    Then the fuel cost should be 51
+
+  Scenario: Travel time with distance 1 and speed 30
+    When I calculate travel time for CRUISE mode with distance 1.0 and speed 30
+    Then the travel time should be 4 seconds
+
+  Scenario: Burn mode fuel cost is exactly double cruise
+    When I calculate fuel cost for BURN mode with distance 100.0
+    And I calculate fuel cost for CRUISE mode with distance 100.0
+    Then burn fuel should be double cruise fuel
+
+  Scenario: Stealth and cruise have same fuel cost
+    When I calculate fuel cost for STEALTH mode with distance 100.0
+    And I calculate fuel cost for CRUISE mode with distance 100.0
+    Then stealth and cruise fuel should be equal

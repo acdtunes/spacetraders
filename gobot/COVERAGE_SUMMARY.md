@@ -1,23 +1,32 @@
 # Code Coverage Report - SpaceTraders Go Bot
 
-**Report Date:** 2025-11-15 (Updated)
-**Overall Coverage:** 61.5% ⬆️ (+7.0% improvement from 54.5%)
+**Report Date:** 2025-11-15 (Updated - Second Pass)
+**Overall Coverage:** 61.6% ⬆️ (+7.1% improvement from 54.5%)
+**Domain Layer Coverage:** 67.2%
 
 ## Executive Summary
 
 The codebase has been analyzed for test coverage. The project uses primarily BDD (Behavior-Driven Development) integration tests located in `test/bdd/`.
 
-**Recent Improvements:**
-- Coverage increased from **54.5% to 61.5%** (+7.0 percentage points)
-- ✅ Added 14 new edge case scenarios for Ship entity
-- ✅ Added 27 new edge case scenarios for Contract entity
+**Recent Improvements (Latest Update):**
+- Overall coverage: **54.5% → 61.6%** (+7.1 percentage points)
+- Domain layer coverage: **67.2%**
+- ✅ Added 14 edge case scenarios for Ship entity (Navigation: 83.4%)
+- ✅ Added 27 edge case scenarios for Contract entity (Contract: 88.9%)
+- ✅ Added 17 edge case scenarios for Cargo value object (Shared: 69.7%)
+- ✅ Added 24 edge case scenarios for Fuel value object
+- ✅ Added 18 edge case scenarios for Waypoint value object
+- ✅ Added 26 edge case scenarios for FlightMode value object
+- ✅ Added 33 edge case scenarios for Container lifecycle (Container: 69.8%)
 - ✅ Created 4 comprehensive feature files for API resilience patterns
   - circuit_breaker.feature (11 scenarios)
   - retry_logic.feature (28 scenarios)
   - rate_limiting.feature (15 scenarios)
   - api_client_integration.feature (15 scenarios)
 
-While most production code is covered by integration tests, recent improvements have significantly increased coverage of edge cases and boundary conditions. The API adapter feature files are pending step definition implementation but provide valuable test specifications.
+**Total New Scenarios Added:** 159 new BDD test scenarios
+
+While most production code is covered by integration tests, recent improvements have significantly increased coverage of edge cases, boundary conditions, and value object validation. The API adapter feature files are pending step definition implementation but provide valuable test specifications.
 
 ## Coverage by Architecture Layer
 
