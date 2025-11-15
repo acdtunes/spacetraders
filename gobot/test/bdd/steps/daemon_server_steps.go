@@ -17,6 +17,8 @@ import (
 	"github.com/cucumber/godog"
 	grpcLib "google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
 )
 
 // daemonServerContext holds state for daemon server BDD tests
@@ -31,8 +33,10 @@ type daemonServerContext struct {
 	grpcConn   *grpcLib.ClientConn
 
 	// Test infrastructure
-	mediator *mockDaemonMediator
-	logRepo  *mockContainerLogRepo
+	mediator      *mockDaemonMediator
+	logRepo       *mockContainerLogRepo
+	containerRepo *persistence.ContainerRepositoryGORM
+	testDB        *gorm.DB
 
 	// Response tracking
 	lastResponse interface{}
@@ -88,6 +92,17 @@ func (ctx *daemonServerContext) reset() {
 		os.RemoveAll(ctx.socketPath)
 	}
 
+	// Create in-memory test database
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		panic(fmt.Sprintf("failed to create test database: %v", err))
+	}
+
+	// Auto-migrate container models
+	if err := db.AutoMigrate(&persistence.ContainerModel{}, &persistence.ContainerLogModel{}); err != nil {
+		panic(fmt.Sprintf("failed to migrate test database: %v", err))
+	}
+
 	// Reset state
 	ctx.server = nil
 	ctx.socketPath = ""
@@ -96,6 +111,8 @@ func (ctx *daemonServerContext) reset() {
 	ctx.grpcConn = nil
 	ctx.mediator = &mockDaemonMediator{}
 	ctx.logRepo = &mockContainerLogRepo{logs: []string{}}
+	ctx.testDB = db
+	ctx.containerRepo = persistence.NewContainerRepository(db)
 	ctx.lastResponse = nil
 	ctx.startTime = time.Time{}
 	ctx.responseTime = 0
@@ -309,7 +326,7 @@ func (ctx *daemonServerContext) iStartTheDaemonServerOnSocket(socketPath string)
 	}
 
 	// Create daemon server
-	server, err := grpc.NewDaemonServer(ctx.mediator, ctx.logRepo, socketPath)
+	server, err := grpc.NewDaemonServer(ctx.mediator, ctx.logRepo, ctx.containerRepo, socketPath)
 	if err != nil {
 		ctx.startErr = err
 		return nil
@@ -323,8 +340,8 @@ func (ctx *daemonServerContext) iStartTheDaemonServerOnSocket(socketPath string)
 		server.Start()
 	}()
 
-	// Give server time to start
-	time.Sleep(100 * time.Millisecond)
+	// Give server time to start (reduced from 100ms to 10ms for faster tests)
+	time.Sleep(10 * time.Millisecond)
 
 	return nil
 }
@@ -336,7 +353,7 @@ func (ctx *daemonServerContext) iAttemptToStartTheDaemonServerOnInvalidSocket(so
 	// The daemon should fail to create the socket
 
 	// Create daemon server
-	server, err := grpc.NewDaemonServer(ctx.mediator, ctx.logRepo, socketPath)
+	server, err := grpc.NewDaemonServer(ctx.mediator, ctx.logRepo, ctx.containerRepo, socketPath)
 	if err != nil {
 		ctx.startErr = err
 		return nil
@@ -353,8 +370,8 @@ func (ctx *daemonServerContext) iAttemptToStartTheDaemonServerOnInvalidSocket(so
 		}
 	}()
 
-	// Give server time to attempt start
-	time.Sleep(100 * time.Millisecond)
+	// Give server time to attempt start (reduced from 100ms to 10ms for faster tests)
+	time.Sleep(10 * time.Millisecond)
 
 	return nil
 }
