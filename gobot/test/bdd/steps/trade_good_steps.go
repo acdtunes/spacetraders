@@ -30,7 +30,7 @@ func InitializeTradeGoodSteps(ctx *godog.ScenarioContext) {
 	})
 
 	// Background
-	ctx.Step(`^I have market trade good data$`, tc.iHaveMarketTradeGoodData)
+	ctx.Step(`^I have market trade good data$`, tc.iHaveMarketMarketData)
 
 	// Trade good creation - successful
 	ctx.Step(`^I create a trade good with symbol "([^"]*)", supply "([^"]*)", activity "([^"]*)", purchase price (\d+), sell price (\d+), and trade volume (\d+)$`,
@@ -56,7 +56,7 @@ func InitializeTradeGoodSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^I should get an error "([^"]*)"$`, tc.iShouldGetAnError)
 }
 
-func (tc *tradeGoodContext) iHaveMarketTradeGoodData() error {
+func (tc *tradeGoodContext) iHaveMarketMarketData() error {
 	// Background setup - nothing to do
 	return nil
 }

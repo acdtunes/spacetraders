@@ -61,7 +61,7 @@ func (ctx *evaluateContractProfitabilityContext) reset() {
 	// Auto-migrate the models
 	err = db.AutoMigrate(
 		&persistence.MarketData{},
-		&persistence.TradeGoodData{},
+		&persistence.MarketData{},
 	)
 	if err != nil {
 		panic(fmt.Sprintf("failed to migrate database: %v", err))

@@ -82,7 +82,7 @@ func (c *MarketRepositoryContext) aCleanTestDatabase() error {
 	// Auto-migrate the models
 	err = db.AutoMigrate(
 		&persistence.MarketData{},
-		&persistence.TradeGoodData{},
+		&persistence.MarketData{},
 	)
 	if err != nil {
 		return fmt.Errorf("failed to migrate database: %w", err)
@@ -277,7 +277,7 @@ func (c *MarketRepositoryContext) theDatabaseShouldContainNMarketRecords(n int) 
 
 func (c *MarketRepositoryContext) theDatabaseShouldContainNTradeGoodsRecords(n int) error {
 	var count int64
-	err := c.db.Model(&persistence.TradeGoodData{}).Count(&count).Error
+	err := c.db.Model(&persistence.MarketData{}).Count(&count).Error
 	if err != nil {
 		return fmt.Errorf("failed to count trade goods records: %v", err)
 	}

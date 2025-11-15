@@ -12,6 +12,7 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/api"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
+	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/application/scouting"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
@@ -29,6 +30,7 @@ type scoutTourContext struct {
 	waypointRepo   *persistence.GormWaypointRepository
 	mockPlayerRepo *helpers.MockPlayerRepository
 	mockAPIClient  *helpers.MockAPIClient
+	mediator       common.Mediator
 
 	// Test state
 	player     *player.Player
@@ -56,7 +58,7 @@ func (c *scoutTourContext) reset() error {
 		&persistence.PlayerModel{},
 		&persistence.WaypointModel{},
 		&persistence.MarketData{},
-		&persistence.TradeGoodData{},
+		&persistence.MarketData{},
 	)
 	if err != nil {
 		return fmt.Errorf("failed to migrate database: %w", err)
@@ -69,6 +71,7 @@ func (c *scoutTourContext) reset() error {
 	c.mockAPIClient = helpers.NewMockAPIClient()
 	c.shipRepo = api.NewAPIShipRepository(c.mockAPIClient, c.playerRepo, c.waypointRepo)
 	c.mockPlayerRepo = helpers.NewMockPlayerRepository()
+	c.mediator = common.NewMediator()
 
 	c.ships = make(map[string]*navigation.Ship)
 	c.waypoints = make(map[string]*shared.Waypoint)
@@ -271,6 +274,7 @@ func (c *scoutTourContext) iExecuteScoutTourCommandWithShipMarketsAndNIteration(
 		c.marketRepo,
 		c.mockAPIClient,
 		c.mockPlayerRepo,
+		c.mediator,
 	)
 
 	c.startTime = time.Now()

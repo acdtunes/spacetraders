@@ -57,7 +57,7 @@ func (ctx *purchaseCargoContext) reset() {
 		&persistence.PlayerModel{},
 		&persistence.WaypointModel{},
 		&persistence.MarketData{},
-		&persistence.TradeGoodData{},
+		&persistence.MarketData{},
 	)
 	if err != nil {
 		panic(fmt.Errorf("failed to migrate database: %w", err))

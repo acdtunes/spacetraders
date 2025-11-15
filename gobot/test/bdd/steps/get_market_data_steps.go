@@ -56,7 +56,7 @@ func (c *getMarketDataContext) setupDatabase() error {
 	// Auto-migrate the models
 	err = db.AutoMigrate(
 		&persistence.MarketData{},
-		&persistence.TradeGoodData{},
+		&persistence.MarketData{},
 		&persistence.PlayerModel{},
 	)
 	if err != nil {
