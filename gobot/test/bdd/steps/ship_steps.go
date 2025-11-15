@@ -744,6 +744,120 @@ func (sc *shipContext) iCheckIfTheShipIsAtLocation(location string) error {
 	return nil
 }
 
+// Refueling and Flight Mode Decision Steps
+
+func (sc *shipContext) aShipAtWithUnitsOfFuelAndCapacity(location string, currentFuel, fuelCapacity int) error {
+	waypoint := sc.getOrCreateWaypoint(location, 0, 0)
+	fuel, err := shared.NewFuel(currentFuel, fuelCapacity)
+	if err != nil {
+		return err
+	}
+	cargo, err := sc.createCargoWithUnits(40, 0)
+	if err != nil {
+		return err
+	}
+
+	sc.ship, sc.err = navigation.NewShip(
+		"SHIP-1", 1, waypoint, fuel, fuelCapacity, 40, cargo, 30, "FRAME_EXPLORER", navigation.NavStatusInOrbit,
+	)
+	sharedShip = sc.ship  // Update shared ship for cross-context steps
+	return sc.err
+}
+
+func (sc *shipContext) waypointHasTraitAndFuelAvailable(waypointSymbol, trait string) error {
+	waypoint := sc.getOrCreateWaypoint(waypointSymbol, 0, 0)
+	waypoint.Traits = []string{trait}
+	waypoint.HasFuel = true
+	sc.waypoints[waypointSymbol] = waypoint
+	sharedWaypointMap[waypointSymbol] = waypoint
+	return nil
+}
+
+func (sc *shipContext) waypointHasNoFuelAvailable(waypointSymbol string) error {
+	waypoint := sc.getOrCreateWaypoint(waypointSymbol, 0, 0)
+	waypoint.HasFuel = false
+	sc.waypoints[waypointSymbol] = waypoint
+	sharedWaypointMap[waypointSymbol] = waypoint
+	return nil
+}
+
+func (sc *shipContext) iCheckIfShipShouldRefuelOpportunisticallyAt(waypointSymbol string, threshold float64) error {
+	waypoint := sc.waypoints[waypointSymbol]
+	if waypoint == nil {
+		waypoint = sc.getOrCreateWaypoint(waypointSymbol, 0, 0)
+	}
+
+	// Check if waypoint has fuel available and ship fuel is below threshold
+	fuelPercentage := float64(sc.ship.Fuel().Current) / float64(sc.ship.Fuel().Capacity)
+	hasFuel := waypoint.HasFuel || (len(waypoint.Traits) > 0 && contains(waypoint.Traits, "MARKETPLACE"))
+
+	sc.boolResult = hasFuel && (fuelPercentage < threshold)
+	sharedBoolResult = sc.boolResult
+	return nil
+}
+
+// RouteSegment context for drift mode prevention tests
+var testRouteSegment *navigation.RouteSegment
+
+func (sc *shipContext) aRouteSegmentRequiringUnitsOfFuelInDRIFTMode(fuelRequired int) error {
+	fromWaypoint := sc.getOrCreateWaypoint("X1-A1", 0, 0)
+	toWaypoint := sc.getOrCreateWaypoint("X1-B2", 100, 0)
+
+	testRouteSegment = navigation.NewRouteSegment(
+		fromWaypoint,
+		toWaypoint,
+		100.0,
+		fuelRequired,
+		300,
+		shared.FlightModeDrift,
+		false,
+	)
+	return nil
+}
+
+func (sc *shipContext) aRouteSegmentRequiringUnitsOfFuelInCRUISEMode(fuelRequired int) error {
+	fromWaypoint := sc.getOrCreateWaypoint("X1-A1", 0, 0)
+	toWaypoint := sc.getOrCreateWaypoint("X1-B2", 100, 0)
+
+	testRouteSegment = navigation.NewRouteSegment(
+		fromWaypoint,
+		toWaypoint,
+		100.0,
+		fuelRequired,
+		300,
+		shared.FlightModeCruise,
+		false,
+	)
+	return nil
+}
+
+func (sc *shipContext) iCheckIfShipShouldPreventDriftModeWithThreshold(threshold float64) error {
+	if testRouteSegment == nil {
+		return fmt.Errorf("no route segment defined")
+	}
+
+	// Check if ship should prevent DRIFT mode based on fuel threshold
+	// Prevent DRIFT if:
+	// 1. Segment uses DRIFT mode
+	// 2. Current fuel percentage is below threshold
+	fuelPercentage := float64(sc.ship.Fuel().Current) / float64(sc.ship.Fuel().Capacity)
+	isDriftMode := testRouteSegment.FlightMode == shared.FlightModeDrift
+
+	sc.boolResult = isDriftMode && (fuelPercentage < threshold)
+	sharedBoolResult = sc.boolResult
+	return nil
+}
+
+// Helper function to check if slice contains string
+func contains(slice []string, str string) bool {
+	for _, s := range slice {
+		if s == str {
+			return true
+		}
+	}
+	return false
+}
+
 // InitializeShipScenario registers all ship-related step definitions
 func InitializeShipScenario(ctx *godog.ScenarioContext) {
 	sc := &shipContext{}
@@ -853,4 +967,13 @@ func InitializeShipScenario(ctx *godog.ScenarioContext) {
 	ctx.Step(`^I check if the ship is in orbit$`, sc.iCheckIfTheShipIsInOrbit)
 	ctx.Step(`^I check if the ship is in transit$`, sc.iCheckIfTheShipIsInTransit)
 	ctx.Step(`^I check if the ship is at location "([^"]*)"$`, sc.iCheckIfTheShipIsAtLocation)
+
+	// Refueling and flight mode decisions
+	ctx.Step(`^a ship at "([^"]*)" with (\d+) units of fuel and capacity (\d+)$`, sc.aShipAtWithUnitsOfFuelAndCapacity)
+	ctx.Step(`^waypoint "([^"]*)" has trait "([^"]*)" and fuel available$`, sc.waypointHasTraitAndFuelAvailable)
+	ctx.Step(`^waypoint "([^"]*)" has no fuel available$`, sc.waypointHasNoFuelAvailable)
+	ctx.Step(`^I check if ship should refuel opportunistically at "([^"]*)" with threshold ([0-9.]+)$`, sc.iCheckIfShipShouldRefuelOpportunisticallyAt)
+	ctx.Step(`^a route segment requiring (\d+) units of fuel in DRIFT mode$`, sc.aRouteSegmentRequiringUnitsOfFuelInDRIFTMode)
+	ctx.Step(`^a route segment requiring (\d+) units of fuel in CRUISE mode$`, sc.aRouteSegmentRequiringUnitsOfFuelInCRUISEMode)
+	ctx.Step(`^I check if ship should prevent drift mode with threshold ([0-9.]+)$`, sc.iCheckIfShipShouldPreventDriftModeWithThreshold)
 }

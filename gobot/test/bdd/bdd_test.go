@@ -89,6 +89,12 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 
 	// Register NavigationUtils scenario
 	steps.InitializeNavigationUtilsScenario(sc) // Re-enabled
+
+	// Register common undefined steps (temporary implementations)
+	steps.InitializeCommonUndefinedSteps(sc)
+	steps.InitializeRouteNavigationUndefinedSteps(sc)
+	steps.InitializeHealthShipContainerUndefinedSteps(sc)
+	steps.InitializeScoutingMiscUndefinedSteps(sc)
 }
 
 func TestMain(m *testing.M) {

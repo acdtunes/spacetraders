@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"strings"
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/cucumber/godog"
@@ -514,6 +515,222 @@ func (voc *valueObjectContext) otherItemsShouldContainWithUnits(symbol string, u
 	return fmt.Errorf("expected to find %s with %d units in other items", symbol, units)
 }
 
+// Additional Fuel steps
+func (voc *valueObjectContext) iAddUnitsOfFuel(units int) error {
+	if voc.fuel == nil {
+		return fmt.Errorf("no fuel object available")
+	}
+	voc.originalFuel = voc.fuel
+	newCurrent := voc.fuel.Current + units
+	if newCurrent > voc.fuel.Capacity {
+		newCurrent = voc.fuel.Capacity
+	}
+	voc.fuel, voc.err = shared.NewFuel(newCurrent, voc.fuel.Capacity)
+	return voc.err
+}
+
+func (voc *valueObjectContext) iAttemptToAddUnitsOfFuel(units int) error {
+	if voc.fuel == nil {
+		voc.err = fmt.Errorf("no fuel object available")
+		return nil
+	}
+	voc.originalFuel = voc.fuel
+	newCurrent := voc.fuel.Current + units
+	if newCurrent > voc.fuel.Capacity {
+		newCurrent = voc.fuel.Capacity
+	}
+	voc.fuel, voc.err = shared.NewFuel(newCurrent, voc.fuel.Capacity)
+	return nil
+}
+
+func (voc *valueObjectContext) iCheckIfFuelIsFull() error {
+	if voc.fuel == nil {
+		voc.err = fmt.Errorf("no fuel object available")
+		return voc.err
+	}
+	voc.boolResult = voc.fuel.IsFull()
+	sharedBoolResult = voc.boolResult
+	return nil
+}
+
+func (voc *valueObjectContext) iCheckIfFuelCanTravelRequiringWithSafetyMargin(fuelRequired, safetyMargin, current int) error {
+	if voc.fuel == nil {
+		// Create a fuel object with the given current
+		voc.fuel, _ = shared.NewFuel(current, 100)
+	}
+	voc.boolResult = voc.fuel.CanTravel(fuelRequired, float64(safetyMargin))
+	sharedBoolResult = voc.boolResult
+	return nil
+}
+
+func (voc *valueObjectContext) iCheckIfFuelCanTravelRequiringWithSafetyMarginDecimal(fuelRequired, safetyInt, safetyDec int) error {
+	safetyMargin := float64(safetyInt) + float64(safetyDec)/10.0
+	if voc.fuel == nil {
+		return fmt.Errorf("no fuel object available")
+	}
+	voc.boolResult = voc.fuel.CanTravel(fuelRequired, safetyMargin)
+	sharedBoolResult = voc.boolResult
+	return nil
+}
+
+func (voc *valueObjectContext) fuelShouldBeAt(expected int) error {
+	if voc.fuel == nil {
+		return fmt.Errorf("no fuel object available")
+	}
+	if voc.fuel.Current != expected {
+		return fmt.Errorf("expected fuel to be at %d but got %d", expected, voc.fuel.Current)
+	}
+	return nil
+}
+
+func (voc *valueObjectContext) theOriginalFuelShouldStillHaveCurrent(expected int) error {
+	if voc.originalFuel == nil {
+		return fmt.Errorf("no original fuel object available")
+	}
+	if voc.originalFuel.Current != expected {
+		return fmt.Errorf("expected original fuel current %d but got %d", expected, voc.originalFuel.Current)
+	}
+	return nil
+}
+
+func (voc *valueObjectContext) theNewFuelShouldHaveCapacity(expected int) error {
+	if voc.fuel == nil {
+		return fmt.Errorf("no fuel object available")
+	}
+	if voc.fuel.Capacity != expected {
+		return fmt.Errorf("expected new fuel capacity %d but got %d", expected, voc.fuel.Capacity)
+	}
+	return nil
+}
+
+func (voc *valueObjectContext) theFuelShouldBeFull() error {
+	if voc.fuel == nil {
+		return fmt.Errorf("no fuel object available")
+	}
+	if !voc.fuel.IsFull() {
+		return fmt.Errorf("expected fuel to be full but current=%d capacity=%d", voc.fuel.Current, voc.fuel.Capacity)
+	}
+	return nil
+}
+
+// FlightMode name steps
+func (voc *valueObjectContext) iGetTheNameOfBURNMode() error {
+	voc.flightMode = shared.FlightModeBurn
+	return nil
+}
+
+func (voc *valueObjectContext) iGetTheNameOfCRUISEMode() error {
+	voc.flightMode = shared.FlightModeCruise
+	return nil
+}
+
+func (voc *valueObjectContext) iGetTheNameOfDRIFTMode() error {
+	voc.flightMode = shared.FlightModeDrift
+	return nil
+}
+
+func (voc *valueObjectContext) iGetTheNameOfSTEALTHMode() error {
+	voc.flightMode = shared.FlightModeStealth
+	return nil
+}
+
+func (voc *valueObjectContext) theModeNameShouldBe(expected string) error {
+	if voc.flightMode.Name() != expected {
+		return fmt.Errorf("expected mode name '%s' but got '%s'", expected, voc.flightMode.Name())
+	}
+	return nil
+}
+
+// Cargo additional steps
+func (voc *valueObjectContext) iAttemptToCreateCargoWithCapacityUnitsAndInventory(capacity, units int) error {
+	inventory := []*shared.CargoItem{}
+	if voc.cargoItem != nil {
+		inventory = append(inventory, voc.cargoItem)
+	}
+	voc.cargo, voc.err = shared.NewCargo(capacity, units, inventory)
+	return nil
+}
+
+// Waypoint orbital and coordinate steps
+func (voc *valueObjectContext) iCheckIfIsOrbitalOf(waypointSymbol, parentSymbol string) error {
+	waypoint := voc.waypointMap[waypointSymbol]
+	parent := voc.waypointMap[parentSymbol]
+	if waypoint == nil || parent == nil {
+		voc.err = fmt.Errorf("waypoint or parent not found")
+		return voc.err
+	}
+	voc.boolResult = waypoint.IsOrbitalOf(parent)
+	sharedBoolResult = voc.boolResult
+	return nil
+}
+
+func (voc *valueObjectContext) aWaypointWithOrbitals(symbol string, orbitalsCSV string) error {
+	wp, err := shared.NewWaypoint(symbol, 0, 0)
+	if err != nil {
+		return err
+	}
+
+	// Parse orbitals CSV and set orbital symbols
+	if orbitalsCSV != "" {
+		orbitalSymbols := splitCSV(orbitalsCSV)
+		wp.Orbitals = orbitalSymbols
+		// Also create waypoint objects for the orbitals in the map
+		for _, orbitalSymbol := range orbitalSymbols {
+			orbital, _ := shared.NewWaypoint(orbitalSymbol, 0, 0)
+			voc.waypointMap[orbitalSymbol] = orbital
+		}
+	}
+
+	voc.waypointMap[symbol] = wp
+	voc.waypoint = wp
+	sharedWaypointMap[symbol] = wp
+	return nil
+}
+
+func (voc *valueObjectContext) theWaypointShouldHaveXCoordinate(symbol string, x int) error {
+	waypoint := voc.waypointMap[symbol]
+	if waypoint == nil {
+		waypoint = voc.waypoint
+	}
+	if waypoint == nil {
+		return fmt.Errorf("waypoint not found")
+	}
+	// Accept both int and float comparisons
+	expectedFloat := float64(x)
+	if math.Abs(waypoint.X-expectedFloat) > 0.001 {
+		return fmt.Errorf("expected waypoint X coordinate %v but got %v", expectedFloat, waypoint.X)
+	}
+	return nil
+}
+
+func (voc *valueObjectContext) theWaypointShouldHaveYCoordinate(symbol string, y int) error {
+	waypoint := voc.waypointMap[symbol]
+	if waypoint == nil {
+		waypoint = voc.waypoint
+	}
+	if waypoint == nil {
+		return fmt.Errorf("waypoint not found")
+	}
+	// Accept both int and float comparisons
+	expectedFloat := float64(y)
+	if math.Abs(waypoint.Y-expectedFloat) > 0.001 {
+		return fmt.Errorf("expected waypoint Y coordinate %v but got %v", expectedFloat, waypoint.Y)
+	}
+	return nil
+}
+
+// Helper function to split CSV strings
+func splitCSV(csv string) []string {
+	if csv == "" {
+		return []string{}
+	}
+	parts := []string{}
+	for _, part := range strings.Split(csv, ",") {
+		parts = append(parts, strings.TrimSpace(part))
+	}
+	return parts
+}
+
 // InitializeValueObjectScenarios registers all value object-related step definitions
 func InitializeValueObjectScenarios(ctx *godog.ScenarioContext) {
 	voc := &valueObjectContext{}
@@ -532,6 +749,21 @@ func InitializeValueObjectScenarios(ctx *godog.ScenarioContext) {
 	ctx.Step(`^I calculate distance from "([^"]*)" to "([^"]*)"$`, voc.iCalculateDistanceFromTo)
 	ctx.Step(`^the distance should be ([0-9.]+)$`, voc.theDistanceShouldBe)
 	ctx.Step(`^the distance should be approximately ([0-9.]+)$`, voc.theDistanceShouldBeApproximately)
+	ctx.Step(`^I check if "([^"]*)" is orbital of "([^"]*)"$`, voc.iCheckIfIsOrbitalOf)
+	ctx.Step(`^a waypoint "([^"]*)" with orbitals "([^"]*)"$`, voc.aWaypointWithOrbitals)
+	ctx.Step(`^a waypoint "([^"]*)" with orbitals \["([^"]*)"\]$`, voc.aWaypointWithOrbitals)
+	ctx.Step(`^the waypoint "([^"]*)" should have x coordinate ([0-9.]+)$`, func(symbol string, coord float64) error {
+		return voc.theWaypointShouldHaveXCoordinate(symbol, int(coord))
+	})
+	ctx.Step(`^the waypoint "([^"]*)" should have y coordinate ([0-9.]+)$`, func(symbol string, coord float64) error {
+		return voc.theWaypointShouldHaveYCoordinate(symbol, int(coord))
+	})
+	ctx.Step(`^the waypoint should have x coordinate ([0-9.]+)$`, func(coord float64) error {
+		return voc.theWaypointShouldHaveXCoordinate("", int(coord))
+	})
+	ctx.Step(`^the waypoint should have y coordinate ([0-9.]+)$`, func(coord float64) error {
+		return voc.theWaypointShouldHaveYCoordinate("", int(coord))
+	})
 
 	// Fuel steps
 	ctx.Step(`^I create fuel with current (\d+) and capacity (\d+)$`, voc.iCreateFuelWithCurrentAndCapacity)
@@ -545,6 +777,14 @@ func InitializeValueObjectScenarios(ctx *godog.ScenarioContext) {
 	ctx.Step(`^I consume (\d+) units of fuel$`, voc.iConsumeUnitsOfFuel)
 	ctx.Step(`^I attempt to consume (-?\d+) units of fuel$`, voc.iAttemptToConsumeUnitsOfFuel)
 	ctx.Step(`^the new fuel should have current (\d+)$`, voc.theNewFuelShouldHaveCurrent)
+	ctx.Step(`^I add (\d+) units of fuel$`, voc.iAddUnitsOfFuel)
+	ctx.Step(`^I attempt to add (-?\d+) units of fuel$`, voc.iAttemptToAddUnitsOfFuel)
+	ctx.Step(`^I check if fuel is full$`, voc.iCheckIfFuelIsFull)
+	ctx.Step(`^I check if fuel can travel requiring (\d+) with safety margin (\d+)\.(\d+)$`, voc.iCheckIfFuelCanTravelRequiringWithSafetyMarginDecimal)
+	ctx.Step(`^fuel should be at (\d+)%$`, voc.fuelShouldBeAt)
+	ctx.Step(`^the original fuel should still have current (\d+)$`, voc.theOriginalFuelShouldStillHaveCurrent)
+	ctx.Step(`^the new fuel should have capacity (\d+)$`, voc.theNewFuelShouldHaveCapacity)
+	ctx.Step(`^the fuel should be full$`, voc.theFuelShouldBeFull)
 
 	// Flight mode steps
 	ctx.Step(`^I calculate fuel cost for ([A-Z]+) mode with distance ([0-9.]+)$`, voc.iCalculateFuelCostForModeWithDistance)
@@ -555,6 +795,11 @@ func InitializeValueObjectScenarios(ctx *godog.ScenarioContext) {
 	ctx.Step(`^I select optimal flight mode with current fuel (\d+), cost (\d+), safety margin (\d+)$`,
 		voc.iSelectOptimalFlightModeWithCurrentFuelCostSafetyMargin)
 	ctx.Step(`^the selected mode should be ([A-Z]+)$`, voc.theSelectedModeShouldBe)
+	ctx.Step(`^I get the name of BURN mode$`, voc.iGetTheNameOfBURNMode)
+	ctx.Step(`^I get the name of CRUISE mode$`, voc.iGetTheNameOfCRUISEMode)
+	ctx.Step(`^I get the name of DRIFT mode$`, voc.iGetTheNameOfDRIFTMode)
+	ctx.Step(`^I get the name of STEALTH mode$`, voc.iGetTheNameOfSTEALTHMode)
+	ctx.Step(`^the mode name should be "([^"]*)"$`, voc.theModeNameShouldBe)
 
 	// Cargo item steps
 	ctx.Step(`^I create a cargo item with symbol "([^"]*)", name "([^"]*)", units (\d+)$`,
@@ -573,6 +818,7 @@ func InitializeValueObjectScenarios(ctx *godog.ScenarioContext) {
 	ctx.Step(`^I attempt to create cargo with units (-?\d+)$`, voc.iAttemptToCreateCargoWithUnits)
 	ctx.Step(`^I attempt to create cargo with capacity (-?\d+)$`, voc.iAttemptToCreateCargoWithCapacity)
 	ctx.Step(`^I attempt to create cargo with capacity (\d+) and units (\d+)$`, voc.iAttemptToCreateCargoWithCapacityAndUnits)
+	ctx.Step(`^I attempt to create cargo with capacity (\d+), units (\d+), and inventory$`, voc.iAttemptToCreateCargoWithCapacityUnitsAndInventory)
 	ctx.Step(`^cargo creation should fail with error "([^"]*)"$`, voc.cargoCreationShouldFailWithError)
 	ctx.Step(`^the cargo should have capacity (\d+)$`, voc.theCargoShouldHaveCapacity)
 	ctx.Step(`^the cargo should have units (\d+)$`, voc.theCargoShouldHaveUnits)
