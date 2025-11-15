@@ -28,12 +28,14 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	// NOTE: ValueObjectScenarios registered FIRST so its step definitions take precedence
 	// for shared steps like "the result should be true/false"
 	steps.InitializeValueObjectScenarios(sc)
+	// NOTE: Route scenario registered early to ensure its step definitions take precedence
+	// for shared steps like "the operation should fail with error" in route tests
+	steps.InitializeRouteScenario(sc)
+	steps.InitializeShipScenario(sc)
 	// NOTE: ContainerLifecycleScenario registered BEFORE ContainerScenario so lifecycle steps take precedence
 	// The lifecycle steps have the same wording but operate on containerLifecycleContext with currentContainer
 	steps.InitializeContainerLifecycleScenario(sc)
 	steps.InitializeContainerScenario(sc)
-	steps.InitializeShipScenario(sc)
-	steps.InitializeRouteScenario(sc)
 	// Market scouting domain scenarios
 	// NOTE: MarketScenario (trading) registered FIRST to take precedence for simpler patterns
 	// TradeGoodSteps and ScoutingMarketSteps check sharedErr for cross-context error assertions

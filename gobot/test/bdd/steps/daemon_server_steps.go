@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"time"
 
@@ -327,7 +328,33 @@ func (ctx *daemonServerContext) iStartTheDaemonServerOnSocket(socketPath string)
 }
 
 func (ctx *daemonServerContext) iAttemptToStartTheDaemonServerOnInvalidSocket(socketPath string) error {
-	return ctx.iStartTheDaemonServerOnSocket(socketPath)
+	ctx.socketPath = socketPath
+
+	// Do NOT create the directory - this is testing an invalid path
+	// The daemon should fail to create the socket
+
+	// Create daemon server
+	server, err := grpc.NewDaemonServer(ctx.mediator, ctx.logRepo, socketPath)
+	if err != nil {
+		ctx.startErr = err
+		return nil
+	}
+
+	ctx.server = server
+	ctx.startErr = nil
+
+	// Start server in background
+	go func() {
+		err := server.Start()
+		if err != nil {
+			ctx.startErr = err
+		}
+	}()
+
+	// Give server time to attempt start
+	time.Sleep(100 * time.Millisecond)
+
+	return nil
 }
 
 func (ctx *daemonServerContext) aGRPCClientConnectsToTheUnixSocket() error {
@@ -451,13 +478,19 @@ func (ctx *daemonServerContext) theUnixSocketShouldExistAt(socketPath string) er
 	return nil
 }
 
-func (ctx *daemonServerContext) theSocketPermissionsShouldBe(expectedPerms int) error {
+func (ctx *daemonServerContext) theSocketPermissionsShouldBe(expectedPermsStr string) error {
+	// Parse as octal (e.g., "0600" -> 384 in decimal)
+	expectedPerms, err := strconv.ParseInt(expectedPermsStr, 8, 32)
+	if err != nil {
+		return fmt.Errorf("failed to parse permissions %s as octal: %v", expectedPermsStr, err)
+	}
+
 	info, err := os.Stat(ctx.socketPath)
 	if err != nil {
 		return err
 	}
 	actualPerms := int(info.Mode().Perm())
-	if actualPerms != expectedPerms {
+	if actualPerms != int(expectedPerms) {
 		return fmt.Errorf("expected socket permissions %o, got %o", expectedPerms, actualPerms)
 	}
 	return nil

@@ -355,11 +355,17 @@ func (rc *routeContext) theCurrentSegmentIndexShouldBe(expectedIndex int) error 
 }
 
 func (rc *routeContext) theOperationShouldFailWithError(expectedError string) error {
-	if rc.err == nil {
+	// Check both local context error and shared error (for cross-context assertions)
+	actualErr := rc.err
+	if actualErr == nil {
+		actualErr = sharedErr // Check shared error from other contexts (e.g., value object validation)
+	}
+
+	if actualErr == nil {
 		return fmt.Errorf("expected error containing '%s' but got no error", expectedError)
 	}
-	if !strings.Contains(rc.err.Error(), expectedError) {
-		return fmt.Errorf("expected error containing '%s' but got '%s'", expectedError, rc.err.Error())
+	if !strings.Contains(actualErr.Error(), expectedError) {
+		return fmt.Errorf("expected error containing '%s' but got '%s'", expectedError, actualErr.Error())
 	}
 	return nil
 }
