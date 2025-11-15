@@ -86,16 +86,16 @@ func (c *GRPCRoutingClient) PlanRoute(ctx context.Context, req *domainRouting.Ro
 }
 
 // OptimizeTour implements RoutingClient.OptimizeTour using gRPC
+// Tours always return to start by definition
 func (c *GRPCRoutingClient) OptimizeTour(ctx context.Context, req *domainRouting.TourRequest) (*domainRouting.TourResponse, error) {
 	// Convert to protobuf request
 	pbReq := &pb.OptimizeTourRequest{
-		SystemSymbol:     req.SystemSymbol,
-		StartWaypoint:    req.StartWaypoint,
-		TargetWaypoints:  req.Waypoints,
-		FuelCapacity:     int32(req.FuelCapacity),
-		EngineSpeed:      int32(req.EngineSpeed),
-		AllWaypoints:     convertWaypointsToPb(req.AllWaypoints),
-		ReturnToStart:    true, // Default to true for tours
+		SystemSymbol:    req.SystemSymbol,
+		StartWaypoint:   req.StartWaypoint,
+		TargetWaypoints: req.Waypoints,
+		FuelCapacity:    int32(req.FuelCapacity),
+		EngineSpeed:     int32(req.EngineSpeed),
+		AllWaypoints:    convertWaypointsToPb(req.AllWaypoints),
 	}
 
 	// Call gRPC service

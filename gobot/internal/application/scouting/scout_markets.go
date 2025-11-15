@@ -174,10 +174,6 @@ func (h *ScoutMarketsHandler) Handle(ctx context.Context, request common.Request
 	// 8. Create scout-tour containers for ships needing them
 	newContainerIDs := []string{}
 	for shipSymbol, markets := range assignments {
-		// Deduplicate markets while preserving order
-		// VRP/TSP solvers may return tours with return-to-start, causing duplicates
-		uniqueMarkets := deduplicatePreservingOrder(markets)
-
 		containerID := fmt.Sprintf("scout-tour-%s-%s",
 			strings.ToLower(shipSymbol),
 			generateShortUUID())
@@ -185,7 +181,7 @@ func (h *ScoutMarketsHandler) Handle(ctx context.Context, request common.Request
 		scoutTourCmd := &ScoutTourCommand{
 			PlayerID:   cmd.PlayerID,
 			ShipSymbol: shipSymbol,
-			Markets:    uniqueMarkets,
+			Markets:    markets,
 			Iterations: cmd.Iterations,
 		}
 
@@ -248,20 +244,4 @@ func extractWaypointData(graph map[string]interface{}) ([]*system.WaypointData, 
 	}
 
 	return waypointData, nil
-}
-
-// deduplicatePreservingOrder removes duplicate strings while preserving order
-// First occurrence is kept, subsequent duplicates are removed
-func deduplicatePreservingOrder(slice []string) []string {
-	seen := make(map[string]bool)
-	result := make([]string, 0, len(slice))
-
-	for _, item := range slice {
-		if !seen[item] {
-			seen[item] = true
-			result = append(result, item)
-		}
-	}
-
-	return result
 }

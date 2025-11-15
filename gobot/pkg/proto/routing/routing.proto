@@ -109,6 +109,7 @@ enum RouteAction {
 }
 
 // OptimizeTourRequest solves TSP for multiple waypoints
+// A tour always returns to the starting waypoint by definition
 message OptimizeTourRequest {
   // System symbol
   string system_symbol = 1;
@@ -127,9 +128,6 @@ message OptimizeTourRequest {
 
   // All waypoints in system (for distance calculations)
   repeated Waypoint all_waypoints = 6;
-
-  // Whether tour should return to start (default: true for tours, false for paths)
-  bool return_to_start = 7;
 }
 
 message OptimizeTourResponse {

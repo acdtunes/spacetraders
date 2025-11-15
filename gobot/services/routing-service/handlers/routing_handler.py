@@ -127,12 +127,12 @@ class RoutingServiceHandler(routing_pb2_grpc.RoutingServiceServicer):
             # Build waypoint graph
             graph = self._build_waypoint_graph(request.all_waypoints)
 
-            # Optimize tour
+            # Optimize tour (always returns to start by definition of a tour)
             result = self.engine.optimize_tour(
                 graph=graph,
                 waypoints=list(request.target_waypoints),
                 start=request.start_waypoint,
-                return_to_start=request.return_to_start,
+                return_to_start=True,
                 fuel_capacity=request.fuel_capacity,
                 engine_speed=request.engine_speed
             )
@@ -244,17 +244,13 @@ class RoutingServiceHandler(routing_pb2_grpc.RoutingServiceServicer):
                     ships_utilized += 1
                     total_assigned += len(waypoints)
 
-                    # Determine if tour should return to start
-                    # Tours (2+ markets) always return; stationary scouts (1 market) don't
-                    return_to_start = len(waypoints) >= 2
-
-                    # Optimize tour for this ship
+                    # Optimize tour for this ship (tours always return to start by definition)
                     ship_config = request.ship_configs[ship_symbol]
                     tour_result = self.engine.optimize_tour(
                         graph=graph,
                         waypoints=waypoints,
                         start=ship_config.current_location,
-                        return_to_start=return_to_start,
+                        return_to_start=True,
                         fuel_capacity=ship_config.fuel_capacity,
                         engine_speed=ship_config.engine_speed
                     )
@@ -294,7 +290,7 @@ class RoutingServiceHandler(routing_pb2_grpc.RoutingServiceServicer):
                             route_steps=route_steps,
                             total_time_seconds=tour_result['total_time'],
                             total_distance=tour_result['total_distance'],
-                            returns_to_start=return_to_start
+                            returns_to_start=True
                         )
                     else:
                         # Fallback: just return waypoints without route
@@ -303,7 +299,7 @@ class RoutingServiceHandler(routing_pb2_grpc.RoutingServiceServicer):
                             route_steps=[],
                             total_time_seconds=0,
                             total_distance=0.0,
-                            returns_to_start=return_to_start
+                            returns_to_start=True
                         )
 
             return routing_pb2.PartitionFleetResponse(
