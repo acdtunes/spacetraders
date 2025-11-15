@@ -86,8 +86,8 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	steps.InitializeContainerLoggingScenario(sc) // Re-enabled - testing
 	steps.InitializeHealthMonitorContext(sc)     // Re-enabled
 
-	// Register NavigationUtils scenario (temporarily disabled - file backed up)
-	// // steps.InitializeNavigationUtilsScenario(sc) // Temporarily disabled
+	// Register NavigationUtils scenario
+	steps.InitializeNavigationUtilsScenario(sc) // Re-enabled
 }
 
 func TestMain(m *testing.M) {
