@@ -139,7 +139,14 @@ func (ctx *navigateToWaypointContext) ensurePlayerExists(playerID int) error {
 	}
 
 	p := player.NewPlayer(playerID, agentSymbol, token)
-	return ctx.playerRepo.Save(context.Background(), p)
+	err = ctx.playerRepo.Save(context.Background(), p)
+	if err != nil {
+		return err
+	}
+
+	// Register player with mock API client for authorization
+	ctx.apiClient.AddPlayer(p)
+	return nil
 }
 
 // ensureWaypointExists ensures a waypoint exists in the repository
