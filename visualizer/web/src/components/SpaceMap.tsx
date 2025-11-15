@@ -17,7 +17,6 @@ import { MarketFreshnessRing } from './MarketFreshnessRing';
 import { ScoutTourLayer } from './ScoutTourLayer';
 import { TradeRouteLayer } from './TradeRouteLayer';
 import { MiningLoopLayer } from './MiningLoopLayer';
-import { TourFilterPanel } from './TourFilterPanel';
 import { useWaypointTooltipAnchor } from '../hooks/useWaypointTooltipAnchor';
 import { useGridLines } from '../hooks/useGridLines';
 import { useShipTrailSampler } from '../hooks/useShipTrailSampler';
@@ -1444,21 +1443,6 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
         onZoom={handleMinimapZoom}
         animationFrame={animationFrame}
       />
-
-      {/* Tour Filter Panel */}
-      {showScoutTours && scoutTours.length > 0 && (
-        <div className="absolute top-4 right-4 z-40">
-          <TourFilterPanel
-            tours={scoutTours}
-            visibleTours={visibleTours}
-            onToggleTour={toggleTourVisibility}
-            onShowAll={showAllTours}
-            onHideAll={hideAllTours}
-            showMarketFreshness={showMarketFreshness}
-            onToggleMarketFreshness={toggleMarketFreshness}
-          />
-        </div>
-      )}
     </div>
   );
 });

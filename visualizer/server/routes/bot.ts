@@ -10,11 +10,31 @@ const pool = new Pool({
   connectionString: process.env.DATABASE_URL || 'postgresql://spacetraders:dev_password@localhost:5432/spacetraders'
 });
 
+// Map command_type to operation type for frontend
+function mapCommandTypeToOperation(commandType: string | undefined): string | null {
+  if (!commandType) return null;
+
+  const mapping: Record<string, string> = {
+    'ScoutTourCommand': 'scout-markets',
+    'ScoutMarketsVRPCommand': 'scout-markets',
+    'BatchContractWorkflowCommand': 'contract',
+    'NavigateShipCommand': 'idle',
+    'BatchPurchaseShipsCommand': 'idle',
+    'DockShipCommand': 'idle',
+    'SellCargoCommand': 'trade',
+    'ShipExperimentWorkerCommand': 'idle',
+  };
+
+  return mapping[commandType] || null;
+}
+
 // Get all ship assignments
 router.get('/assignments', async (req, res) => {
   const client = await pool.connect();
   try {
+    // Get assignments from ship_assignments table AND running containers without assignments
     const result = await client.query(`
+      -- Active assignments from ship_assignments table
       SELECT
         sa.ship_symbol,
         sa.player_id,
@@ -28,13 +48,45 @@ router.get('/assignments', async (req, res) => {
       FROM ship_assignments sa
       LEFT JOIN containers c ON sa.container_id = c.container_id AND sa.player_id = c.player_id
       WHERE sa.status = 'active'
+
+      UNION ALL
+
+      -- Running containers without active assignments (orphaned containers)
+      SELECT
+        (c.config::jsonb->'params'->>'ship_symbol') as ship_symbol,
+        c.player_id,
+        c.container_id as assigned_to,
+        c.container_id as daemon_id,
+        'command' as operation,
+        'active' as status,
+        c.started_at as assigned_at,
+        NULL as released_at,
+        c.config as metadata
+      FROM containers c
+      WHERE c.status IN ('RUNNING', 'STARTING', 'STARTED')
+        AND NOT EXISTS (
+          SELECT 1 FROM ship_assignments sa
+          WHERE sa.container_id = c.container_id
+            AND sa.player_id = c.player_id
+            AND sa.status = 'active'
+        )
     `);
 
-    // Parse metadata JSON (config already stored as JSONB in PostgreSQL)
-    const parsed = result.rows.map((a: any) => ({
-      ...a,
-      metadata: a.metadata ? a.metadata.params : null,
-    }));
+    // Parse metadata JSON and map command_type to operation
+    const parsed = result.rows.map((a: any) => {
+      // Parse config if it's a string (from PostgreSQL JSON column)
+      const config = typeof a.metadata === 'string' ? JSON.parse(a.metadata) : a.metadata;
+      const metadata = config ? config.params : null;
+      const commandType = config?.command_type;
+      const mappedOperation = mapCommandTypeToOperation(commandType);
+
+      return {
+        ...a,
+        metadata,
+        // Use mapped operation if available, otherwise keep database operation
+        operation: mappedOperation || a.operation,
+      };
+    });
 
     res.json({ assignments: parsed });
   } catch (error) {
@@ -70,9 +122,15 @@ router.get('/assignments/:shipSymbol', async (req, res) => {
     }
 
     const assignment = result.rows[0];
+    const config = assignment.metadata;
+    const metadata = config ? config.params : null;
+    const commandType = config?.command_type;
+    const mappedOperation = mapCommandTypeToOperation(commandType);
+
     const parsed = {
       ...assignment,
-      metadata: assignment.metadata ? assignment.metadata.params : null,
+      metadata,
+      operation: mappedOperation || assignment.operation,
     };
 
     res.json({ assignment: parsed });
@@ -222,7 +280,9 @@ router.get('/tours/:systemSymbol', async (req, res) => {
     const waypoints = graphData.waypoints || {};
 
     // Get scout assignments with their container configs (only running containers)
+    // Include both: assignments from ship_assignments AND orphaned running containers
     const assignmentsResult = await client.query(`
+      -- Scout assignments from ship_assignments table
       SELECT
         sa.ship_symbol,
         sa.container_id as daemon_id,
@@ -236,7 +296,28 @@ router.get('/tours/:systemSymbol', async (req, res) => {
         AND (c.config::jsonb)->>'command_type' = 'ScoutTourCommand'
         AND c.status IN ('RUNNING', 'STARTING', 'STARTED')
         AND ($1::integer IS NULL OR sa.player_id = $1)
-      ORDER BY sa.ship_symbol
+
+      UNION ALL
+
+      -- Orphaned running scout containers (no active assignment)
+      SELECT
+        (c.config::jsonb->'params'->>'ship_symbol') as ship_symbol,
+        c.container_id as daemon_id,
+        c.config,
+        c.started_at as assigned_at,
+        c.player_id
+      FROM containers c
+      WHERE (c.config::jsonb)->>'command_type' = 'ScoutTourCommand'
+        AND c.status IN ('RUNNING', 'STARTING', 'STARTED')
+        AND NOT EXISTS (
+          SELECT 1 FROM ship_assignments sa
+          WHERE sa.container_id = c.container_id
+            AND sa.player_id = c.player_id
+            AND sa.status = 'active'
+        )
+        AND ($1::integer IS NULL OR c.player_id = $1)
+
+      ORDER BY ship_symbol
     `, [playerId]);
 
     // For each assignment, extract the ACTUAL optimized tour from container logs

@@ -23,9 +23,10 @@ import (
 // DaemonServer implements the gRPC daemon service
 // Handles CLI requests and orchestrates background container operations
 type DaemonServer struct {
-	mediator common.Mediator
-	listener net.Listener
-	logRepo  persistence.ContainerLogRepository
+	mediator      common.Mediator
+	listener      net.Listener
+	logRepo       persistence.ContainerLogRepository
+	containerRepo *persistence.ContainerRepositoryGORM
 
 	// Container orchestration
 	containers   map[string]*ContainerRunner
@@ -37,7 +38,12 @@ type DaemonServer struct {
 }
 
 // NewDaemonServer creates a new daemon server instance
-func NewDaemonServer(mediator common.Mediator, logRepo persistence.ContainerLogRepository, socketPath string) (*DaemonServer, error) {
+func NewDaemonServer(
+	mediator common.Mediator,
+	logRepo persistence.ContainerLogRepository,
+	containerRepo *persistence.ContainerRepositoryGORM,
+	socketPath string,
+) (*DaemonServer, error) {
 	// Remove existing socket file if present
 	if err := os.RemoveAll(socketPath); err != nil {
 		return nil, fmt.Errorf("failed to remove existing socket: %w", err)
@@ -56,12 +62,13 @@ func NewDaemonServer(mediator common.Mediator, logRepo persistence.ContainerLogR
 	}
 
 	server := &DaemonServer{
-		mediator:     mediator,
-		logRepo:      logRepo,
-		listener:     listener,
-		containers:   make(map[string]*ContainerRunner),
-		shutdownChan: make(chan os.Signal, 1),
-		done:         make(chan struct{}),
+		mediator:      mediator,
+		logRepo:       logRepo,
+		containerRepo: containerRepo,
+		listener:      listener,
+		containers:    make(map[string]*ContainerRunner),
+		shutdownChan:  make(chan os.Signal, 1),
+		done:          make(chan struct{}),
 	}
 
 	// Setup signal handling
@@ -146,8 +153,13 @@ func (s *DaemonServer) NavigateShip(ctx context.Context, shipSymbol, destination
 		nil, // Use default RealClock for production
 	)
 
+	// Persist container to database
+	if err := s.containerRepo.Insert(ctx, containerEntity, "navigate_ship"); err != nil {
+		return "", fmt.Errorf("failed to persist container: %w", err)
+	}
+
 	// Create and start container runner
-	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo)
+	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo)
 	s.registerContainer(containerID, runner)
 
 	// Start container in background
@@ -180,7 +192,12 @@ func (s *DaemonServer) DockShip(ctx context.Context, shipSymbol string, playerID
 		nil, // Use default RealClock for production
 	)
 
-	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo)
+	// Persist container to database
+	if err := s.containerRepo.Insert(ctx, containerEntity, "dock_ship"); err != nil {
+		return "", fmt.Errorf("failed to persist container: %w", err)
+	}
+
+	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo)
 	s.registerContainer(containerID, runner)
 
 	go func() {
@@ -212,7 +229,12 @@ func (s *DaemonServer) OrbitShip(ctx context.Context, shipSymbol string, playerI
 		nil, // Use default RealClock for production
 	)
 
-	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo)
+	// Persist container to database
+	if err := s.containerRepo.Insert(ctx, containerEntity, "orbit_ship"); err != nil {
+		return "", fmt.Errorf("failed to persist container: %w", err)
+	}
+
+	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo)
 	s.registerContainer(containerID, runner)
 
 	go func() {
@@ -250,7 +272,12 @@ func (s *DaemonServer) RefuelShip(ctx context.Context, shipSymbol string, player
 		nil, // Use default RealClock for production
 	)
 
-	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo)
+	// Persist container to database
+	if err := s.containerRepo.Insert(ctx, containerEntity, "refuel_ship"); err != nil {
+		return "", fmt.Errorf("failed to persist container: %w", err)
+	}
+
+	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo)
 	s.registerContainer(containerID, runner)
 
 	go func() {
@@ -287,8 +314,13 @@ func (s *DaemonServer) BatchContractWorkflow(ctx context.Context, shipSymbol str
 		nil, // Use default RealClock for production
 	)
 
+	// Persist container to database
+	if err := s.containerRepo.Insert(ctx, containerEntity, "batch_contract_workflow"); err != nil {
+		return "", fmt.Errorf("failed to persist container: %w", err)
+	}
+
 	// Create and start container runner
-	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo)
+	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo)
 	s.registerContainer(containerID, runner)
 
 	// Start container in background
@@ -328,8 +360,13 @@ func (s *DaemonServer) ScoutTour(ctx context.Context, shipSymbol string, markets
 		nil, // Use default RealClock for production
 	)
 
+	// Persist container to database
+	if err := s.containerRepo.Insert(ctx, containerEntity, "scout_tour"); err != nil {
+		return "", fmt.Errorf("failed to persist container: %w", err)
+	}
+
 	// Create and start container runner
-	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo)
+	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo)
 	s.registerContainer(containerID, runner)
 
 	// Start container in background
@@ -403,8 +440,13 @@ func (s *DaemonServer) AssignScoutingFleet(
 		nil, // Use default RealClock for production
 	)
 
+	// Persist container to database
+	if err := s.containerRepo.Insert(ctx, containerEntity, "scout_fleet_assignment"); err != nil {
+		return "", fmt.Errorf("failed to persist container: %w", err)
+	}
+
 	// Create container runner
-	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo)
+	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo)
 	s.registerContainer(containerID, runner)
 
 	// Start container in background

@@ -1,6 +1,7 @@
 import { useState, useMemo } from 'react';
-import type { ShipAssignment, OperationType } from '../types/spacetraders';
+import type { ShipAssignment, OperationType, TaggedShip } from '../types/spacetraders';
 import { getOperationEmoji, getOperationName, getOperationColor } from '../utils/shipOperations';
+import { useStore } from '../store/useStore';
 
 interface FleetOperationsSidebarProps {
   assignments: Map<string, ShipAssignment>;
@@ -17,9 +18,19 @@ export const FleetOperationsSidebar = ({
   isVisible,
   onToggle,
 }: FleetOperationsSidebarProps) => {
+  const ships = useStore((state) => state.ships);
   const [expandedSections, setExpandedSections] = useState<Set<string>>(
     new Set(['scout-markets', 'trade', 'mine', 'contract'])
   );
+
+  // Create a map of ship symbols to ship data for quick lookup
+  const shipsBySymbol = useMemo(() => {
+    const map = new Map<string, TaggedShip>();
+    ships.forEach((ship) => {
+      map.set(ship.symbol, ship);
+    });
+    return map;
+  }, [ships]);
 
   // Group assignments by operation type
   const groupedOps = useMemo(() => {
@@ -65,7 +76,7 @@ export const FleetOperationsSidebar = ({
         style={{ padding: '12px 8px' }}
       >
         <div className="flex flex-col items-center gap-2">
-          <span className="text-gray-400 text-xs writing-mode-vertical transform rotate-180">
+          <span className="text-gray-400 text-xs" style={{ writingMode: 'vertical-rl' }}>
             OPERATIONS
           </span>
           <div className="bg-blue-600 text-white text-xs font-bold rounded-full w-6 h-6 flex items-center justify-center">
@@ -133,21 +144,29 @@ export const FleetOperationsSidebar = ({
                 {/* Expanded list */}
                 {isExpanded && (
                   <div className="border-t border-gray-600">
-                    {ops.map((assignment) => (
-                      <div
-                        key={assignment.ship_symbol}
-                        className="p-3 border-b border-gray-600 last:border-b-0 hover:bg-gray-650"
-                      >
-                        <div className="flex items-start justify-between">
-                          <div className="flex-1">
-                            <div className="text-sm font-mono text-blue-400">
-                              {assignment.ship_symbol.split('-').pop()}
-                            </div>
-                            {assignment.metadata && (
-                              <div className="mt-1 text-xs text-gray-400 space-y-0.5">
-                                {assignment.metadata.system && (
-                                  <div>System: {assignment.metadata.system}</div>
+                    {ops.map((assignment) => {
+                      const ship = shipsBySymbol.get(assignment.ship_symbol);
+                      const shipRole = ship?.registration.role;
+
+                      return (
+                        <div
+                          key={assignment.ship_symbol}
+                          className="p-3 border-b border-gray-600 last:border-b-0 hover:bg-gray-650"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center justify-between gap-2">
+                                <div className="text-sm font-mono text-blue-400 truncate">
+                                  {assignment.ship_symbol}
+                                </div>
+                                {shipRole && (
+                                  <div className="text-xs text-gray-500 uppercase flex-shrink-0">
+                                    {shipRole}
+                                  </div>
                                 )}
+                              </div>
+                              {assignment.metadata && (
+                              <div className="mt-1 text-xs text-gray-400 space-y-0.5">
                                 {assignment.metadata.markets && (
                                   <div>
                                     Markets: {assignment.metadata.markets.length}
@@ -155,26 +174,25 @@ export const FleetOperationsSidebar = ({
                                 )}
                                 {assignment.metadata.asteroid && (
                                   <div>
-                                    Asteroid:{' '}
-                                    {String(assignment.metadata.asteroid).split('-').pop()}
+                                    Asteroid: {String(assignment.metadata.asteroid)}
                                   </div>
                                 )}
                                 {assignment.metadata.market && (
                                   <div>
-                                    Market:{' '}
-                                    {String(assignment.metadata.market).split('-').pop()}
+                                    Market: {String(assignment.metadata.market)}
                                   </div>
                                 )}
-                              </div>
-                            )}
+                                </div>
+                              )}
+                            </div>
+                            <div
+                              className="w-2 h-2 rounded-full flex-shrink-0"
+                              style={{ backgroundColor: color }}
+                            />
                           </div>
-                          <div
-                            className="w-2 h-2 rounded-full flex-shrink-0 mt-1"
-                            style={{ backgroundColor: color }}
-                          />
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </div>

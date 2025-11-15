@@ -14,10 +14,11 @@ import (
 // ContainerRunner executes a container operation in a background goroutine
 // Manages the lifecycle of a single container including error handling and restarts
 type ContainerRunner struct {
-	containerEntity *container.Container
-	mediator        common.Mediator
-	command         interface{} // The command to execute (must implement mediator request)
-	logRepo         persistence.ContainerLogRepository
+	containerEntity  *container.Container
+	mediator         common.Mediator
+	command          interface{} // The command to execute (must implement mediator request)
+	logRepo          persistence.ContainerLogRepository
+	containerRepo    *persistence.ContainerRepositoryGORM
 
 	// Execution control
 	ctx        context.Context
@@ -43,18 +44,20 @@ func NewContainerRunner(
 	mediator common.Mediator,
 	command interface{},
 	logRepo persistence.ContainerLogRepository,
+	containerRepo *persistence.ContainerRepositoryGORM,
 ) *ContainerRunner {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	return &ContainerRunner{
-		containerEntity: containerEntity,
-		mediator:        mediator,
-		command:         command,
-		logRepo:         logRepo,
-		ctx:             ctx,
-		cancelFunc:      cancel,
-		done:            make(chan struct{}),
-		logs:            make([]LogEntry, 0),
+		containerEntity:  containerEntity,
+		mediator:         mediator,
+		command:          command,
+		logRepo:          logRepo,
+		containerRepo:    containerRepo,
+		ctx:              ctx,
+		cancelFunc:       cancel,
+		done:             make(chan struct{}),
+		logs:             make([]LogEntry, 0),
 	}
 }
 
@@ -75,6 +78,24 @@ func (r *ContainerRunner) Start() error {
 	r.mu.Unlock()
 
 	r.log("INFO", "Container started", nil)
+
+	// Persist status update to database (RUNNING)
+	if r.containerRepo != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		if err := r.containerRepo.UpdateStatus(
+			ctx,
+			r.containerEntity.ID(),
+			r.containerEntity.PlayerID(),
+			container.ContainerStatusRunning,
+			nil,
+			nil,
+			"",
+		); err != nil {
+			r.log("ERROR", fmt.Sprintf("Failed to persist RUNNING status: %v", err), nil)
+		}
+	}
 
 	// Execute the container operation
 	go r.execute()
@@ -176,6 +197,27 @@ func (r *ContainerRunner) execute() {
 		"iterations": r.containerEntity.CurrentIteration(),
 		"runtime":    r.containerEntity.RuntimeDuration().String(),
 	})
+
+	// Persist completion to database
+	if r.containerRepo != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		now := time.Now()
+		exitCode := 0
+
+		if err := r.containerRepo.UpdateStatus(
+			ctx,
+			r.containerEntity.ID(),
+			r.containerEntity.PlayerID(),
+			container.ContainerStatusCompleted,
+			&now,
+			&exitCode,
+			"",
+		); err != nil {
+			r.log("ERROR", fmt.Sprintf("Failed to persist COMPLETED status: %v", err), nil)
+		}
+	}
 }
 
 // executeIteration executes a single iteration of the container operation
@@ -203,6 +245,27 @@ func (r *ContainerRunner) handleError(err error) {
 	r.mu.Lock()
 	r.containerEntity.Fail(err)
 	r.mu.Unlock()
+
+	// Persist failure to database
+	if r.containerRepo != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		now := time.Now()
+		exitCode := 1
+
+		if dbErr := r.containerRepo.UpdateStatus(
+			ctx,
+			r.containerEntity.ID(),
+			r.containerEntity.PlayerID(),
+			container.ContainerStatusFailed,
+			&now,
+			&exitCode,
+			err.Error(),
+		); dbErr != nil {
+			r.log("ERROR", fmt.Sprintf("Failed to persist FAILED status: %v", dbErr), nil)
+		}
+	}
 }
 
 // Logging

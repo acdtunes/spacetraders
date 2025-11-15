@@ -15,12 +15,34 @@ const AgentManager = lazy(() => import('./components/AgentManager'));
 const SystemSelector = lazy(() => import('./components/SystemSelector'));
 const AddAgentCard = lazy(() => import('./components/AddAgentCard'));
 const Sidebar = lazy(() => import('./components/Sidebar'));
+const FleetOperationsSidebar = lazy(() => import('./components/FleetOperationsSidebar').then(m => ({ default: m.FleetOperationsSidebar })));
+const MarketsSidebar = lazy(() => import('./components/MarketsSidebar').then(m => ({ default: m.MarketsSidebar })));
 
 function App() {
-  const { agents, setAgents, ships, viewMode, setViewMode, currentSystem, showScoutTours, toggleScoutTours, setSystems } = useStore();
+  const {
+    agents,
+    setAgents,
+    ships,
+    viewMode,
+    setViewMode,
+    currentSystem,
+    showScoutTours,
+    toggleScoutTours,
+    setSystems,
+    assignments,
+    scoutTours,
+    visibleTours,
+    toggleTourVisibility,
+    showAllTours,
+    hideAllTours,
+    showMarketFreshness,
+    toggleMarketFreshness,
+  } = useStore();
   const spaceMapRef = useRef<SpaceMapRef>(null);
   const [isRightSidebarOpen, setIsRightSidebarOpen] = useState(true);
   const [rightSidebarTab, setRightSidebarTab] = useState<'ships' | 'details' | 'search'>('ships');
+  const [isOperationsSidebarOpen, setIsOperationsSidebarOpen] = useState(true);
+  const [isMarketsSidebarOpen, setIsMarketsSidebarOpen] = useState(true);
 
   const handleFocusOn = useCallback((x: number, y: number, scale?: number) => {
     spaceMapRef.current?.focusOn(x, y, scale);
@@ -115,18 +137,6 @@ function App() {
             <Suspense fallback={<div className="text-gray-500 text-sm">Agents…</div>}>
               <AgentManager />
             </Suspense>
-            {/* Markets Toggle */}
-            <button
-              onClick={toggleScoutTours}
-              className={`px-3 py-2 rounded transition-colors text-sm font-semibold border ${
-                showScoutTours
-                  ? 'bg-blue-600 hover:bg-blue-700 text-white border-blue-500'
-                  : 'bg-gray-700 hover:bg-gray-600 text-gray-200 border-gray-600'
-              }`}
-              title="Toggle market overlays and tours"
-            >
-              🛒 Markets
-            </button>
           </div>
         </header>
 
@@ -169,6 +179,26 @@ function App() {
                 onToggleSidebar={handleToggleRightSidebar}
                 onSwitchTab={handleSwitchRightSidebarTab}
                 onFocusOn={handleFocusOn}
+              />
+            </Suspense>
+            <Suspense fallback={null}>
+              <FleetOperationsSidebar
+                assignments={assignments}
+                isVisible={isOperationsSidebarOpen}
+                onToggle={() => setIsOperationsSidebarOpen(!isOperationsSidebarOpen)}
+              />
+            </Suspense>
+            <Suspense fallback={null}>
+              <MarketsSidebar
+                tours={scoutTours}
+                visibleTours={visibleTours}
+                onToggleTour={toggleTourVisibility}
+                onShowAll={showAllTours}
+                onHideAll={hideAllTours}
+                showMarketFreshness={showMarketFreshness}
+                onToggleMarketFreshness={toggleMarketFreshness}
+                isVisible={isMarketsSidebarOpen}
+                onToggle={() => setIsMarketsSidebarOpen(!isMarketsSidebarOpen)}
               />
             </Suspense>
           </main>
