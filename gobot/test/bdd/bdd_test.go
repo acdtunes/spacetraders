@@ -95,6 +95,9 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	steps.InitializeRouteNavigationUndefinedSteps(sc)
 	steps.InitializeHealthShipContainerUndefinedSteps(sc)
 	steps.InitializeScoutingMiscUndefinedSteps(sc)
+
+	// API Adapter layer scenarios (circuit breaker, retry logic, rate limiting)
+	steps.InitializeAPIAdapterSteps(sc) // PLACEHOLDER - Step definitions not yet implemented
 }
 
 func TestMain(m *testing.M) {
