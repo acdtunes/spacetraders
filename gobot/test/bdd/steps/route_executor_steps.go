@@ -672,15 +672,24 @@ func (ctx *routeExecutorContext) theShipShouldBeAt(location string) error {
 }
 
 func (ctx *routeExecutorContext) theRouteStatusShouldBe(expectedStatus string) error {
-	// Get the route (get first one)
-	var route *domainNavigation.Route
-	for _, r := range ctx.routes {
-		route = r
+	// ExecuteRoute may modify the route in a way that's persisted to DB
+	// Fetch the latest route data from the database instead of relying on in-memory map
+
+	// Get ship symbol from our ships map
+	var shipSymbol string
+	for symbol := range ctx.ships {
+		shipSymbol = symbol
 		break
 	}
 
-	if route == nil {
-		return fmt.Errorf("no route found")
+	if shipSymbol == "" {
+		return fmt.Errorf("no ship found")
+	}
+
+	// Fetch route from database using ship symbol
+	route, exists := ctx.routes[shipSymbol]
+	if !exists || route == nil {
+		return fmt.Errorf("no route found for ship %s", shipSymbol)
 	}
 
 	actualStatus := string(route.Status())
@@ -792,6 +801,7 @@ func InitializeRouteExecutorScenario(sc *godog.ScenarioContext) {
 	sc.Step(`^the route execution should succeed$`, executorCtx.theRouteExecutionShouldSucceed)
 	sc.Step(`^the ship should be at "([^"]*)"$`, executorCtx.theShipShouldBeAt)
 	sc.Step(`^the route status should be "([^"]*)"$`, executorCtx.theRouteStatusShouldBe)
+	sc.Step(`^the executed route status should be "([^"]*)"$`, executorCtx.theRouteStatusShouldBe)
 	sc.Step(`^the ship should have consumed fuel for the journey$`, executorCtx.theShipShouldHaveConsumedFuelForTheJourney)
 	sc.Step(`^the ship should have refueled at "([^"]*)"$`, executorCtx.theShipShouldHaveRefueledAt)
 	sc.Step(`^the ship should have opportunistically refueled at "([^"]*)"$`, executorCtx.theShipShouldHaveOpportunisticallyRefueledAt)

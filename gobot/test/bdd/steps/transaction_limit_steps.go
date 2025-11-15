@@ -121,6 +121,9 @@ func (ctx *transactionLimitContext) aShipDockedAtWaypoint(shipSymbol, waypointSy
 	}
 
 	waypoint, _ := shared.NewWaypoint(waypointSymbol, 0, 0)
+	// Add waypoint to the mock repository
+	ctx.mockWaypointRepo.AddWaypoint(waypoint)
+
 	fuel, _ := shared.NewFuel(100, 100)
 	cargo, _ := shared.NewCargo(100, 0, []*shared.CargoItem{})
 
