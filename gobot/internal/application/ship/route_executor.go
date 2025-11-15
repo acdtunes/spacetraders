@@ -279,6 +279,7 @@ func (e *RouteExecutor) refuelBeforeDeparture(
 	log.Printf("Refueling before departure at %s", ship.CurrentLocation().Symbol)
 
 	// Dock for refuel (via DockShipCommand)
+	// Command handler updates ship state in memory
 	dockCmd := &DockShipCommand{
 		ShipSymbol: ship.ShipSymbol(),
 		PlayerID:   playerID,
@@ -287,16 +288,8 @@ func (e *RouteExecutor) refuelBeforeDeparture(
 		return fmt.Errorf("failed to dock for refuel: %w", err)
 	}
 
-	// Re-sync ship state (if using real repository)
-	if e.shipRepo != nil {
-		freshShip, err := e.shipRepo.FindBySymbol(ctx, ship.ShipSymbol(), playerID)
-		if err != nil {
-			return fmt.Errorf("failed to sync ship after dock: %w", err)
-		}
-		*ship = *freshShip
-	}
-
 	// Refuel (via RefuelShipCommand)
+	// Command handler updates ship state in memory
 	refuelCmd := &RefuelShipCommand{
 		ShipSymbol: ship.ShipSymbol(),
 		PlayerID:   playerID,
@@ -306,31 +299,14 @@ func (e *RouteExecutor) refuelBeforeDeparture(
 		return fmt.Errorf("failed to refuel: %w", err)
 	}
 
-	// Re-sync ship state (if using real repository)
-	if e.shipRepo != nil {
-		freshShip, err := e.shipRepo.FindBySymbol(ctx, ship.ShipSymbol(), playerID)
-		if err != nil {
-			return fmt.Errorf("failed to sync ship after refuel: %w", err)
-		}
-		*ship = *freshShip
-	}
-
 	// Return to orbit (via OrbitShipCommand)
+	// Command handler updates ship state in memory
 	orbitCmd := &OrbitShipCommand{
 		ShipSymbol: ship.ShipSymbol(),
 		PlayerID:   playerID,
 	}
 	if _, err := e.mediator.Send(ctx, orbitCmd); err != nil {
 		return fmt.Errorf("failed to orbit after refuel: %w", err)
-	}
-
-	// Re-sync ship state (if using real repository)
-	if e.shipRepo != nil {
-		freshShip, err := e.shipRepo.FindBySymbol(ctx, ship.ShipSymbol(), playerID)
-		if err != nil {
-			return fmt.Errorf("failed to sync ship after orbit: %w", err)
-		}
-		*ship = *freshShip
 	}
 
 	return nil
@@ -343,6 +319,7 @@ func (e *RouteExecutor) refuelShip(
 	playerID int,
 ) error {
 	// Dock for refuel (via DockShipCommand)
+	// Command handler updates ship state in memory
 	dockCmd := &DockShipCommand{
 		ShipSymbol: ship.ShipSymbol(),
 		PlayerID:   playerID,
@@ -351,16 +328,8 @@ func (e *RouteExecutor) refuelShip(
 		return fmt.Errorf("failed to dock for refuel: %w", err)
 	}
 
-	// Re-sync ship state (if using real repository)
-	if e.shipRepo != nil {
-		freshShip, err := e.shipRepo.FindBySymbol(ctx, ship.ShipSymbol(), playerID)
-		if err != nil {
-			return fmt.Errorf("failed to sync ship after dock: %w", err)
-		}
-		*ship = *freshShip
-	}
-
 	// Refuel (via RefuelShipCommand)
+	// Command handler updates ship state in memory
 	refuelCmd := &RefuelShipCommand{
 		ShipSymbol: ship.ShipSymbol(),
 		PlayerID:   playerID,
@@ -370,31 +339,14 @@ func (e *RouteExecutor) refuelShip(
 		return fmt.Errorf("failed to refuel: %w", err)
 	}
 
-	// Re-sync ship state (if using real repository)
-	if e.shipRepo != nil {
-		freshShip, err := e.shipRepo.FindBySymbol(ctx, ship.ShipSymbol(), playerID)
-		if err != nil {
-			return fmt.Errorf("failed to sync ship after refuel: %w", err)
-		}
-		*ship = *freshShip
-	}
-
 	// Return to orbit (via OrbitShipCommand)
+	// Command handler updates ship state in memory
 	orbitCmd := &OrbitShipCommand{
 		ShipSymbol: ship.ShipSymbol(),
 		PlayerID:   playerID,
 	}
 	if _, err := e.mediator.Send(ctx, orbitCmd); err != nil {
 		return fmt.Errorf("failed to orbit after refuel: %w", err)
-	}
-
-	// Re-sync ship state (if using real repository)
-	if e.shipRepo != nil {
-		freshShip, err := e.shipRepo.FindBySymbol(ctx, ship.ShipSymbol(), playerID)
-		if err != nil {
-			return fmt.Errorf("failed to sync ship after orbit: %w", err)
-		}
-		*ship = *freshShip
 	}
 
 	return nil
