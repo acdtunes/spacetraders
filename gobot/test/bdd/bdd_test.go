@@ -70,7 +70,7 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	steps.InitializeBatchContractWorkflowScenario(sc)
 
 	// Daemon layer scenarios (registered before scouting to avoid step collisions)
-	// steps.InitializeDaemonPlayerResolutionScenario(sc) // Temporarily disabled - incomplete
+	steps.InitializeDaemonPlayerResolutionScenario(sc) // Re-enabled
 	// steps.InitializeDaemonServerScenario(sc) // Temporarily disabled - compilation errors
 	steps.InitializeShipAssignmentScenario(sc) // Re-enabled - registered before GetMarketDataScenario to avoid "the query should succeed" collision
 	steps.InitializeContainerLoggingScenario(sc) // Re-enabled - testing
