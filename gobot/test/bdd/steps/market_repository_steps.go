@@ -264,8 +264,13 @@ func (c *MarketRepositoryContext) theMarketDataShouldBePersistedSuccessfully() e
 }
 
 func (c *MarketRepositoryContext) theDatabaseShouldContainNMarketRecords(n int) error {
+	// Count distinct waypoints (markets), not individual trade good records
+	// Database schema: one row per (waypoint, trade_good) pair
 	var count int64
-	err := c.db.Model(&persistence.MarketData{}).Count(&count).Error
+	err := c.db.Model(&persistence.MarketData{}).
+		Where("player_id = ?", c.playerID).
+		Distinct("waypoint_symbol").
+		Count(&count).Error
 	if err != nil {
 		return fmt.Errorf("failed to count market records: %v", err)
 	}
@@ -276,8 +281,12 @@ func (c *MarketRepositoryContext) theDatabaseShouldContainNMarketRecords(n int) 
 }
 
 func (c *MarketRepositoryContext) theDatabaseShouldContainNTradeGoodsRecords(n int) error {
+	// Count all trade good records for the current player and waypoint
+	// Database schema: one row per (waypoint, trade_good) pair
 	var count int64
-	err := c.db.Model(&persistence.MarketData{}).Count(&count).Error
+	err := c.db.Model(&persistence.MarketData{}).
+		Where("player_id = ? AND waypoint_symbol = ?", c.playerID, c.waypointSymbol).
+		Count(&count).Error
 	if err != nil {
 		return fmt.Errorf("failed to count trade goods records: %v", err)
 	}
