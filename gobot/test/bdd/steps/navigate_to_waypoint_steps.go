@@ -95,7 +95,8 @@ func (ctx *navigateToWaypointContext) aPlayerExistsWithAgentAndToken(agentSymbol
 
 func (ctx *navigateToWaypointContext) thePlayerHasPlayerID(playerID int) error {
 	ctx.playerID = playerID
-	return nil
+	// Ensure player exists in repository
+	return ctx.ensurePlayerExists(playerID)
 }
 
 // ensurePlayerExists ensures a player with the given ID exists in the repository

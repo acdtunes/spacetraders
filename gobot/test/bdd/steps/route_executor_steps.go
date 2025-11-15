@@ -137,10 +137,16 @@ func (ctx *routeExecutorContext) registerHandlers() {
 // Helper methods
 
 func (ctx *routeExecutorContext) createPlayer() error {
+	// If playerID is already set (via thePlayerHasPlayerID), use it
+	// Otherwise, let database auto-generate it
 	player := &persistence.PlayerModel{
 		AgentSymbol: ctx.agentSymbol,
 		Token:       ctx.token,
 		CreatedAt:   time.Now(),
+	}
+
+	if ctx.playerID != 0 {
+		player.PlayerID = ctx.playerID
 	}
 
 	if err := ctx.db.Create(player).Error; err != nil {
@@ -241,18 +247,17 @@ func (ctx *routeExecutorContext) aPlayerExistsWithAgentAndToken(agentSymbol, tok
 
 	ctx.agentSymbol = agentSymbol
 	ctx.token = token
-	return ctx.createPlayer()
+	// Don't create player yet - wait for thePlayerHasPlayerID to set the ID first
+	return nil
 }
 
 func (ctx *routeExecutorContext) thePlayerHasPlayerID(playerID int) error {
 	// Update shared context for cross-scenario compatibility
 	sharedPlayerHasPlayerID(playerID)
 
-	// Player ID is auto-generated, but we can verify it matches expectation
-	if ctx.playerID != playerID {
-		return fmt.Errorf("expected player ID %d but got %d", playerID, ctx.playerID)
-	}
-	return nil
+	// Set the player ID and create the player
+	ctx.playerID = playerID
+	return ctx.createPlayer()
 }
 
 func (ctx *routeExecutorContext) aShipForPlayerAtWithStatusAndFuel(
@@ -800,7 +805,6 @@ func InitializeRouteExecutorScenario(sc *godog.ScenarioContext) {
 	// Then steps
 	sc.Step(`^the route execution should succeed$`, executorCtx.theRouteExecutionShouldSucceed)
 	sc.Step(`^the ship should be at "([^"]*)"$`, executorCtx.theShipShouldBeAt)
-	sc.Step(`^the route status should be "([^"]*)"$`, executorCtx.theRouteStatusShouldBe)
 	sc.Step(`^the executed route status should be "([^"]*)"$`, executorCtx.theRouteStatusShouldBe)
 	sc.Step(`^the ship should have consumed fuel for the journey$`, executorCtx.theShipShouldHaveConsumedFuelForTheJourney)
 	sc.Step(`^the ship should have refueled at "([^"]*)"$`, executorCtx.theShipShouldHaveRefueledAt)

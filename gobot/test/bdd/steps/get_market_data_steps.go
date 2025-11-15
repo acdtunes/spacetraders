@@ -113,7 +113,11 @@ func (c *getMarketDataContext) iQueryMarketDataForWaypoint(waypointSymbol string
 	ctx := context.Background()
 	response, err := handler.Handle(ctx, query)
 	if err == nil {
-		c.response, _ = response.(*scouting.GetMarketDataResponse)
+		var ok bool
+		c.response, ok = response.(*scouting.GetMarketDataResponse)
+		if !ok {
+			return fmt.Errorf("unexpected response type: %T", response)
+		}
 	}
 	c.err = err
 

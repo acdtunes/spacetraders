@@ -15,7 +15,7 @@ Feature: Route Executor Service
     When I execute the route for ship "SHIP-1" and player 1
     Then the route execution should succeed
     And the ship should be at "X1-B2"
-    And the route status should be "COMPLETED"
+    And the executed route status should be "COMPLETED"
 
   Scenario: Execute multi-segment route
     Given a ship "SHIP-1" for player 1 at "X1-A1" with status "IN_ORBIT" and fuel 100/100
@@ -29,7 +29,7 @@ Feature: Route Executor Service
     When I execute the route for ship "SHIP-1" and player 1
     Then the route execution should succeed
     And the ship should be at "X1-C3"
-    And the route status should be "COMPLETED"
+    And the executed route status should be "COMPLETED"
 
   Scenario: Execute route with refuel before departure
     Given a ship "SHIP-1" for player 1 at "X1-A1" with status "DOCKED" and fuel 20/100
@@ -41,7 +41,7 @@ Feature: Route Executor Service
     Then the route execution should succeed
     And the ship should be at "X1-B2"
     And the ship should have consumed fuel for the journey
-    And the route status should be "COMPLETED"
+    And the executed route status should be "COMPLETED"
 
   Scenario: Execute route with mid-route refueling
     Given a ship "SHIP-1" for player 1 at "X1-A1" with status "IN_ORBIT" and fuel 100/100
@@ -56,7 +56,7 @@ Feature: Route Executor Service
     Then the route execution should succeed
     And the ship should be at "X1-C3"
     And the ship should have refueled at "X1-B2"
-    And the route status should be "COMPLETED"
+    And the executed route status should be "COMPLETED"
 
   Scenario: Execute route with opportunistic refueling
     Given a ship "SHIP-1" for player 1 at "X1-A1" with status "IN_ORBIT" and fuel 40/100
@@ -71,7 +71,7 @@ Feature: Route Executor Service
     Then the route execution should succeed
     And the ship should be at "X1-C3"
     And the ship should have opportunistically refueled at "X1-B2"
-    And the route status should be "COMPLETED"
+    And the executed route status should be "COMPLETED"
 
   Scenario: Execute route with pre-departure refuel prevention
     Given a ship "SHIP-1" for player 1 at "X1-A1" with status "IN_ORBIT" and fuel 50/100
@@ -82,7 +82,7 @@ Feature: Route Executor Service
     Then the route execution should succeed
     And the ship should have prevented DRIFT mode by refueling at "X1-A1"
     And the ship should be at "X1-B2"
-    And the route status should be "COMPLETED"
+    And the executed route status should be "COMPLETED"
 
   Scenario: Handle ship already in transit - wait for arrival first
     Given a ship "SHIP-1" for player 1 in transit to "X1-B2" arriving in 5 seconds
@@ -93,7 +93,7 @@ Feature: Route Executor Service
     Then the route executor should wait for current transit to complete
     And the route execution should succeed
     And the ship should be at "X1-C3"
-    And the route status should be "COMPLETED"
+    And the executed route status should be "COMPLETED"
 
   Scenario: Handle route execution failure - segment navigation fails
     Given a ship "SHIP-1" for player 1 at "X1-A1" with status "IN_ORBIT" and fuel 10/100
@@ -102,5 +102,5 @@ Feature: Route Executor Service
     And a route exists for ship "SHIP-1" with 1 segment from "X1-A1" to "X1-B2" in "CRUISE" mode requiring 90 fuel
     When I execute the route for ship "SHIP-1" and player 1
     Then the route execution should fail
-    And the route status should be "FAILED"
+    And the executed route status should be "FAILED"
     And the error should indicate "insufficient fuel"
