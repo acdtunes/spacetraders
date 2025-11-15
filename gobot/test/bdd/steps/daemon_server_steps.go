@@ -13,6 +13,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/grpc"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 	pb "github.com/andrescamacho/spacetraders-go/pkg/proto/daemon"
 	"github.com/cucumber/godog"
 	grpcLib "google.golang.org/grpc"
@@ -31,8 +32,9 @@ type daemonServerContext struct {
 	grpcConn   *grpcLib.ClientConn
 
 	// Test infrastructure
-	mediator *mockDaemonMediator
-	logRepo  *mockContainerLogRepo
+	mediator      *mockDaemonMediator
+	logRepo       *mockContainerLogRepo
+	containerRepo *persistence.ContainerRepositoryGORM
 
 	// Response tracking
 	lastResponse interface{}
@@ -96,6 +98,14 @@ func (ctx *daemonServerContext) reset() {
 	ctx.grpcConn = nil
 	ctx.mediator = &mockDaemonMediator{}
 	ctx.logRepo = &mockContainerLogRepo{logs: []string{}}
+
+	// Initialize test database and container repository
+	db, err := database.NewTestConnection()
+	if err != nil {
+		panic(fmt.Sprintf("failed to create test database: %v", err))
+	}
+	ctx.containerRepo = persistence.NewContainerRepository(db)
+
 	ctx.lastResponse = nil
 	ctx.startTime = time.Time{}
 	ctx.responseTime = 0
@@ -309,7 +319,7 @@ func (ctx *daemonServerContext) iStartTheDaemonServerOnSocket(socketPath string)
 	}
 
 	// Create daemon server
-	server, err := grpc.NewDaemonServer(ctx.mediator, ctx.logRepo, socketPath)
+	server, err := grpc.NewDaemonServer(ctx.mediator, ctx.logRepo, ctx.containerRepo, socketPath)
 	if err != nil {
 		ctx.startErr = err
 		return nil
@@ -336,7 +346,7 @@ func (ctx *daemonServerContext) iAttemptToStartTheDaemonServerOnInvalidSocket(so
 	// The daemon should fail to create the socket
 
 	// Create daemon server
-	server, err := grpc.NewDaemonServer(ctx.mediator, ctx.logRepo, socketPath)
+	server, err := grpc.NewDaemonServer(ctx.mediator, ctx.logRepo, ctx.containerRepo, socketPath)
 	if err != nil {
 		ctx.startErr = err
 		return nil
