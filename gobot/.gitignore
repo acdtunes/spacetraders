@@ -13,6 +13,11 @@
 coverage.txt
 coverage.html
 
+# Test output files
+test_output.txt
+test_results*.txt
+/tmp/test_*.txt
+
 # Dependency directories
 vendor/
 

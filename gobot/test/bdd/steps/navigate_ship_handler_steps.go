@@ -707,6 +707,14 @@ func InitializeNavigateShipHandlerScenario(ctx *godog.ScenarioContext) {
 	ctx.Step(`^the route should have (\d+) segments$`, navCtx.theRouteShouldHaveSegments)
 	ctx.Step(`^the route status should be "([^"]*)"$`, navCtx.theRouteStatusShouldBe)
 	ctx.Step(`^current location should be "([^"]*)"$`, navCtx.currentLocationShouldBe)
+
+	// Route failure steps
+	ctx.Step(`^route status should be set to FAILED$`, func() error {
+		return navCtx.theRouteStatusShouldBe("FAILED")
+	})
+	ctx.Step(`^route should be marked as FAILED$`, func() error {
+		return navCtx.theRouteStatusShouldBe("FAILED")
+	})
 }
 
 // ============================================================================
