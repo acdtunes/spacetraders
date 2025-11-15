@@ -12,8 +12,10 @@ import (
 type MockRoutingClient struct {
 	mu sync.RWMutex
 
-	vrpEnabled bool
-	vrpResult  map[string][]string // ship -> markets assignment
+	vrpEnabled       bool
+	vrpResult        map[string][]string // ship -> markets assignment
+	shouldReturnNoRoute bool             // For testing "no route found" scenarios
+	customRouteResponse *routing.RouteResponse // Custom route response for testing
 }
 
 // NewMockRoutingClient creates a new mock routing client
@@ -31,9 +33,53 @@ func (m *MockRoutingClient) SetVRPResult(assignments map[string][]string) {
 	m.vrpResult = assignments
 }
 
-// PlanRoute implements route planning (not used in ScoutMarkets)
+// SetShouldReturnNoRoute configures whether PlanRoute should return no route
+func (m *MockRoutingClient) SetShouldReturnNoRoute(shouldReturnNoRoute bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.shouldReturnNoRoute = shouldReturnNoRoute
+}
+
+// SetCustomRouteResponse configures a custom route response
+func (m *MockRoutingClient) SetCustomRouteResponse(response *routing.RouteResponse) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.customRouteResponse = response
+}
+
+// PlanRoute implements route planning with mock behavior
 func (m *MockRoutingClient) PlanRoute(ctx context.Context, request *routing.RouteRequest) (*routing.RouteResponse, error) {
-	return nil, fmt.Errorf("PlanRoute not implemented in mock")
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	// If custom response configured, return it
+	if m.customRouteResponse != nil {
+		return m.customRouteResponse, nil
+	}
+
+	// If configured to return no route, return nil
+	if m.shouldReturnNoRoute {
+		return nil, nil
+	}
+
+	// Default behavior: create a simple direct route
+	// This is a simplified mock - real routing service would do pathfinding
+	steps := []*routing.RouteStepData{
+		{
+			Action:      routing.RouteActionTravel,
+			Waypoint:    request.GoalWaypoint,
+			Mode:        "CRUISE",
+			FuelCost:    10, // Simplified fuel cost
+			TimeSeconds: 60, // Simplified time
+		},
+	}
+
+	return &routing.RouteResponse{
+		Steps:            steps,
+		TotalFuelCost:    10,
+		TotalTimeSeconds: 60,
+		TotalDistance:    100.0,
+	}, nil
 }
 
 // OptimizeTour implements tour optimization (not used in ScoutMarkets)
@@ -93,4 +139,6 @@ func (m *MockRoutingClient) Reset() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.vrpResult = make(map[string][]string)
+	m.shouldReturnNoRoute = false
+	m.customRouteResponse = nil
 }

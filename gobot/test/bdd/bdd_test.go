@@ -45,7 +45,7 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	steps.InitializeContractScenario(sc)
 	steps.InitializeAcceptContractScenario(sc) // Re-enabled
 	steps.InitializeFulfillContractScenario(sc) // Re-enabled
-	// steps.InitializeNavigateShipHandlerScenario(sc) // Temporarily disabled - needs error handling fix
+	steps.InitializeNavigateShipHandlerScenario(sc) // Re-enabled
 
 	// Register ShipOperationsScenario (dock, orbit, set flight mode) BEFORE NavigateToWaypointScenario
 	// so its step definitions take precedence for dock_ship.feature, orbit_ship.feature, and set_flight_mode.feature
