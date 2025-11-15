@@ -10,81 +10,46 @@ const pool = new Pool({
   connectionString: process.env.DATABASE_URL || 'postgresql://spacetraders:dev_password@localhost:5432/spacetraders'
 });
 
-// Map command_type to operation type for frontend
-function mapCommandTypeToOperation(commandType: string | undefined): string | null {
-  if (!commandType) return null;
-
-  const mapping: Record<string, string> = {
-    'ScoutTourCommand': 'scout-markets',
-    'ScoutMarketsVRPCommand': 'scout-markets',
-    'BatchContractWorkflowCommand': 'contract',
-    'NavigateShipCommand': 'idle',
-    'BatchPurchaseShipsCommand': 'idle',
-    'DockShipCommand': 'idle',
-    'SellCargoCommand': 'trade',
-    'ShipExperimentWorkerCommand': 'idle',
-  };
-
-  return mapping[commandType] || null;
+// Map Go bot container_id to operation type for frontend
+function getOperationFromContainerId(containerId: string): string | null {
+  if (containerId.startsWith('scout_tour-') || containerId.startsWith('scout-tour-')) {
+    return 'scout-markets';
+  }
+  if (containerId.startsWith('contract-') || containerId.startsWith('contract_')) {
+    return 'contract';
+  }
+  // Add other Go bot patterns as needed
+  return 'idle';
 }
 
-// Get all ship assignments
+// Get all ship assignments (Go bot only - reads from running containers)
 router.get('/assignments', async (req, res) => {
   const client = await pool.connect();
   try {
-    // Get assignments from ship_assignments table AND running containers without assignments
+    // Get all running containers (Go bot containers)
     const result = await client.query(`
-      -- Active assignments from ship_assignments table
       SELECT
-        sa.ship_symbol,
-        sa.player_id,
-        sa.container_id as assigned_to,
-        sa.container_id as daemon_id,
-        sa.operation,
-        sa.status,
-        sa.assigned_at,
-        sa.released_at,
-        c.config as metadata
-      FROM ship_assignments sa
-      LEFT JOIN containers c ON sa.container_id = c.container_id AND sa.player_id = c.player_id
-      WHERE sa.status = 'active'
-
-      UNION ALL
-
-      -- Running containers without active assignments (orphaned containers)
-      SELECT
-        (c.config::jsonb->'params'->>'ship_symbol') as ship_symbol,
+        c.config::jsonb->>'ship_symbol' as ship_symbol,
         c.player_id,
         c.container_id as assigned_to,
         c.container_id as daemon_id,
-        'command' as operation,
         'active' as status,
         c.started_at as assigned_at,
         NULL as released_at,
         c.config as metadata
       FROM containers c
       WHERE c.status IN ('RUNNING', 'STARTING', 'STARTED')
-        AND NOT EXISTS (
-          SELECT 1 FROM ship_assignments sa
-          WHERE sa.container_id = c.container_id
-            AND sa.player_id = c.player_id
-            AND sa.status = 'active'
-        )
     `);
 
-    // Parse metadata JSON and map command_type to operation
+    // Map container_id to operation type
     const parsed = result.rows.map((a: any) => {
-      // Parse config if it's a string (from PostgreSQL JSON column)
       const config = typeof a.metadata === 'string' ? JSON.parse(a.metadata) : a.metadata;
-      const metadata = config ? config.params : null;
-      const commandType = config?.command_type;
-      const mappedOperation = mapCommandTypeToOperation(commandType);
+      const operation = getOperationFromContainerId(a.daemon_id);
 
       return {
         ...a,
-        metadata,
-        // Use mapped operation if available, otherwise keep database operation
-        operation: mappedOperation || a.operation,
+        metadata: config,
+        operation,
       };
     });
 
@@ -97,24 +62,23 @@ router.get('/assignments', async (req, res) => {
   }
 });
 
-// Get assignment for specific ship
+// Get assignment for specific ship (Go bot only)
 router.get('/assignments/:shipSymbol', async (req, res) => {
   const client = await pool.connect();
   try {
     const result = await client.query(`
       SELECT
-        sa.ship_symbol,
-        sa.player_id,
-        sa.container_id as assigned_to,
-        sa.container_id as daemon_id,
-        sa.operation,
-        sa.status,
-        sa.assigned_at,
-        sa.released_at,
+        c.config::jsonb->>'ship_symbol' as ship_symbol,
+        c.player_id,
+        c.container_id as assigned_to,
+        c.container_id as daemon_id,
+        'active' as status,
+        c.started_at as assigned_at,
+        NULL as released_at,
         c.config as metadata
-      FROM ship_assignments sa
-      LEFT JOIN containers c ON sa.container_id = c.container_id AND sa.player_id = c.player_id
-      WHERE sa.ship_symbol = $1
+      FROM containers c
+      WHERE c.config::jsonb->>'ship_symbol' = $1
+        AND c.status IN ('RUNNING', 'STARTING', 'STARTED')
     `, [req.params.shipSymbol]);
 
     if (result.rows.length === 0) {
@@ -122,15 +86,13 @@ router.get('/assignments/:shipSymbol', async (req, res) => {
     }
 
     const assignment = result.rows[0];
-    const config = assignment.metadata;
-    const metadata = config ? config.params : null;
-    const commandType = config?.command_type;
-    const mappedOperation = mapCommandTypeToOperation(commandType);
+    const config = typeof assignment.metadata === 'string' ? JSON.parse(assignment.metadata) : assignment.metadata;
+    const operation = getOperationFromContainerId(assignment.daemon_id);
 
     const parsed = {
       ...assignment,
-      metadata,
-      operation: mappedOperation || assignment.operation,
+      metadata: config,
+      operation,
     };
 
     res.json({ assignment: parsed });
@@ -279,62 +241,39 @@ router.get('/tours/:systemSymbol', async (req, res) => {
       : graphResult.rows[0].graph_data;
     const waypoints = graphData.waypoints || {};
 
-    // Get scout assignments with their container configs (only running containers)
-    // Include both: assignments from ship_assignments AND orphaned running containers
+    // Get Go bot scout tour containers (identified by container_id pattern)
     const assignmentsResult = await client.query(`
-      -- Scout assignments from ship_assignments table
       SELECT
-        sa.ship_symbol,
-        sa.container_id as daemon_id,
-        c.config,
-        sa.assigned_at,
-        sa.player_id
-      FROM ship_assignments sa
-      JOIN containers c ON sa.container_id = c.container_id AND sa.player_id = c.player_id
-      WHERE sa.operation = 'command'
-        AND sa.container_id IS NOT NULL
-        AND (c.config::jsonb)->>'command_type' = 'ScoutTourCommand'
-        AND c.status IN ('RUNNING', 'STARTING', 'STARTED')
-        AND ($1::integer IS NULL OR sa.player_id = $1)
-
-      UNION ALL
-
-      -- Orphaned running scout containers (no active assignment)
-      SELECT
-        (c.config::jsonb->'params'->>'ship_symbol') as ship_symbol,
+        c.config::jsonb->>'ship_symbol' as ship_symbol,
         c.container_id as daemon_id,
         c.config,
         c.started_at as assigned_at,
         c.player_id
       FROM containers c
-      WHERE (c.config::jsonb)->>'command_type' = 'ScoutTourCommand'
+      WHERE (c.container_id LIKE 'scout_tour-%' OR c.container_id LIKE 'scout-tour-%')
         AND c.status IN ('RUNNING', 'STARTING', 'STARTED')
-        AND NOT EXISTS (
-          SELECT 1 FROM ship_assignments sa
-          WHERE sa.container_id = c.container_id
-            AND sa.player_id = c.player_id
-            AND sa.status = 'active'
-        )
         AND ($1::integer IS NULL OR c.player_id = $1)
-
       ORDER BY ship_symbol
     `, [playerId]);
 
-    // For each assignment, extract the ACTUAL optimized tour from container logs
+    // For each Go bot scout tour, extract the tour details
     const tours = [];
     for (const a of assignmentsResult.rows) {
       try {
         // Parse config if it's a string
         const config = typeof a.config === 'string' ? JSON.parse(a.config) : a.config;
-        const params = config.params;
 
-        // Filter by system
-        if (params.system !== systemSymbol) {
+        const markets = config.markets || [];
+        if (markets.length === 0) {
           continue;
         }
 
-        const markets = params.markets || [];
-        if (markets.length === 0) {
+        // Extract system from first market waypoint (e.g., "X1-TS98-J56" -> "X1-TS98")
+        const parts = markets[0].split('-');
+        const tourSystem = parts.length >= 2 ? `${parts[0]}-${parts[1]}` : null;
+
+        // Filter by system
+        if (tourSystem !== systemSymbol) {
           continue;
         }
 
@@ -402,7 +341,7 @@ router.get('/tours/:systemSymbol', async (req, res) => {
         }
 
         tours.push({
-          system: params.system,
+          system: tourSystem,
           markets: markets,
           algorithm: algorithm,
           start_waypoint: tourOrder[0] || null,
