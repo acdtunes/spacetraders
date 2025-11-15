@@ -361,15 +361,15 @@ class ORToolsRoutingEngine:
         graph: Dict[str, Waypoint],
         waypoints: List[str],
         start: str,
-        return_to_start: bool,
         fuel_capacity: int,
         engine_speed: int
     ) -> Optional[Dict[str, Any]]:
         """
         Optimize multi-waypoint tour using OR-Tools TSP solver.
+        Tours always return to start by definition.
 
         Returns dict with:
-        - ordered_waypoints: Optimized visit order
+        - ordered_waypoints: Optimized visit order (excludes final return for looping)
         - legs: List of route legs between waypoints
         - total_distance: Total distance
         - total_fuel_cost: Total fuel
@@ -508,8 +508,8 @@ class ORToolsRoutingEngine:
 
             index = next_index
 
-        # Handle return to start if requested
-        if return_to_start and ordered_waypoints[-1] != start:
+        # Tours always return to start
+        if ordered_waypoints[-1] != start:
             from_wp = graph[ordered_waypoints[-1]]
             to_wp = graph[start]
 
@@ -555,8 +555,13 @@ class ORToolsRoutingEngine:
             total_fuel_cost += fuel_cost
             total_time += time
 
+        # For looping tours (scout markets with infinite iterations),
+        # exclude the final return-to-start waypoint to avoid duplicates
+        # The start waypoint is already at index 0, and the loop handles returning
+        waypoints_for_iteration = ordered_waypoints[:-1] if (len(ordered_waypoints) > 1 and ordered_waypoints[-1] == ordered_waypoints[0]) else ordered_waypoints
+
         return {
-            'ordered_waypoints': ordered_waypoints,
+            'ordered_waypoints': waypoints_for_iteration,
             'legs': legs,
             'total_distance': total_distance,
             'total_fuel_cost': total_fuel_cost,

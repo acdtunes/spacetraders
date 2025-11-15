@@ -127,12 +127,11 @@ class RoutingServiceHandler(routing_pb2_grpc.RoutingServiceServicer):
             # Build waypoint graph
             graph = self._build_waypoint_graph(request.all_waypoints)
 
-            # Optimize tour (always returns to start by definition of a tour)
+            # Optimize tour (always returns to start by definition)
             result = self.engine.optimize_tour(
                 graph=graph,
                 waypoints=list(request.target_waypoints),
                 start=request.start_waypoint,
-                return_to_start=True,
                 fuel_capacity=request.fuel_capacity,
                 engine_speed=request.engine_speed
             )
@@ -244,13 +243,12 @@ class RoutingServiceHandler(routing_pb2_grpc.RoutingServiceServicer):
                     ships_utilized += 1
                     total_assigned += len(waypoints)
 
-                    # Optimize tour for this ship (tours always return to start by definition)
+                    # Optimize tour for this ship (always returns to start)
                     ship_config = request.ship_configs[ship_symbol]
                     tour_result = self.engine.optimize_tour(
                         graph=graph,
                         waypoints=waypoints,
                         start=ship_config.current_location,
-                        return_to_start=True,
                         fuel_capacity=ship_config.fuel_capacity,
                         engine_speed=ship_config.engine_speed
                     )
