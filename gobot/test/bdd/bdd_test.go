@@ -72,12 +72,14 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	steps.InitializeBatchContractWorkflowScenario(sc)
 
 	// Daemon layer scenarios (registered before scouting to avoid step collisions)
+	// NOTE: Entity scenarios registered BEFORE infrastructure scenarios so that infrastructure
+	// steps override domain steps for features/daemon/* (last registration wins)
 	steps.InitializeDaemonEntityScenarios(sc)   // Domain-layer daemon entity tests (ShipAssignment, HealthMonitor)
 	steps.InitializeDaemonPlayerResolutionScenario(sc) // Re-enabled
 	steps.InitializeDaemonServerScenario(sc) // Re-enabled - core functionality implemented, complex scenarios marked pending
-	steps.InitializeShipAssignmentScenario(sc) // Re-enabled - registered before GetMarketDataScenario to avoid "the query should succeed" collision
 	steps.InitializeContainerLoggingScenario(sc) // Re-enabled - testing
-	steps.InitializeHealthMonitorContext(sc)     // Re-enabled
+	steps.InitializeShipAssignmentScenario(sc) // Infrastructure layer ship assignment tests - AFTER entity scenarios to override
+	steps.InitializeHealthMonitorContext(sc)     // Infrastructure layer health monitor tests - AFTER entity scenarios to override
 
 	// Scouting application layer scenarios
 	steps.InitializeGetMarketDataScenario(sc)

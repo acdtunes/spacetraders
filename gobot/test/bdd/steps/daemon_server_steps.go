@@ -112,7 +112,7 @@ func InitializeDaemonServerScenario(sc *godog.ScenarioContext) {
 	sc.Step(`^a stale Unix socket exists at "([^"]*)"$`, sCtx.aStaleUnixSocketExistsAt)
 	sc.Step(`^the daemon server is running on socket "([^"]*)"$`, sCtx.theDaemonServerIsRunningOnSocket)
 	sc.Step(`^a gRPC client is connected$`, sCtx.aGRPCClientIsConnected)
-	sc.Step(`^a ship "([^"]*)" exists for player (\d+)$`, sCtx.aShipExistsForPlayer)
+	// Note: "a ship ... exists for player" step handled by ShipAssignmentScenario
 	sc.Step(`^ships exist for player (\d+):$`, sCtx.shipsExistForPlayer)
 	sc.Step(`^(\d+) containers are running in the background$`, sCtx.containersAreRunningInBackground)
 	sc.Step(`^a container is running that will complete in (\d+) seconds$`, sCtx.aContainerIsRunningThatWillCompleteInSeconds)
