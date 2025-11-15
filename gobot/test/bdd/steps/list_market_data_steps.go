@@ -12,11 +12,13 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/scouting"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 )
 
 type listMarketDataContext struct {
 	db           *gorm.DB
 	marketRepo   *persistence.MarketRepositoryGORM
+	playerRepo   *persistence.GormPlayerRepository
 	playerID     uint
 	systemSymbol string
 	maxAge       int
@@ -59,6 +61,7 @@ func (c *listMarketDataContext) setupDatabase() error {
 	err = db.AutoMigrate(
 		&persistence.MarketData{},
 		&persistence.TradeGoodData{},
+		&persistence.PlayerModel{},
 	)
 	if err != nil {
 		return fmt.Errorf("failed to migrate database: %w", err)
@@ -66,12 +69,29 @@ func (c *listMarketDataContext) setupDatabase() error {
 
 	c.db = db
 	c.marketRepo = persistence.NewMarketRepository(db)
+	c.playerRepo = persistence.NewGormPlayerRepository(db)
 	return nil
 }
 
 func (c *listMarketDataContext) aPlayerWithID(playerID int) error {
 	c.playerID = uint(playerID)
-	return nil
+	return c.ensurePlayerExists(playerID)
+}
+
+// ensurePlayerExists ensures a player with the given ID exists in the repository
+func (c *listMarketDataContext) ensurePlayerExists(playerID int) error {
+	// Check if player already exists
+	_, err := c.playerRepo.FindByID(context.Background(), playerID)
+	if err == nil {
+		return nil // Player already exists
+	}
+
+	// Create and save player
+	agentSymbol := fmt.Sprintf("AGENT-%d", playerID)
+	token := fmt.Sprintf("token-%d", playerID)
+
+	p := player.NewPlayer(playerID, agentSymbol, token)
+	return c.playerRepo.Save(context.Background(), p)
 }
 
 func (c *listMarketDataContext) marketDataExistsForWaypointInSystem(waypointSymbol, systemSymbol string, count int) error {
