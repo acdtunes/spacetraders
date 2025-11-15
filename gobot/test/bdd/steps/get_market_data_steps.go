@@ -12,11 +12,13 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/scouting"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 )
 
 type getMarketDataContext struct {
 	db              *gorm.DB
 	marketRepo      *persistence.MarketRepositoryGORM
+	playerRepo      *persistence.GormPlayerRepository
 	playerID        uint
 	waypointSymbol  string
 	response        *scouting.GetMarketDataResponse
@@ -34,7 +36,7 @@ func InitializeGetMarketDataScenario(ctx *godog.ScenarioContext) {
 	ctx.Step(`^I query market data for waypoint "([^"]*)"$`, c.iQueryMarketDataForWaypoint)
 
 	// Then steps
-	ctx.Step(`^the query should succeed$`, c.theQueryShouldSucceed)
+	ctx.Step(`^the market data query should succeed$`, c.theQueryShouldSucceed)
 	ctx.Step(`^the queried market should have (\d+) trade goods$`, c.theMarketShouldHaveNTradeGoods)
 	ctx.Step(`^the queried market should be nil$`, c.theMarketShouldBeNil)
 
@@ -55,6 +57,7 @@ func (c *getMarketDataContext) setupDatabase() error {
 	err = db.AutoMigrate(
 		&persistence.MarketData{},
 		&persistence.TradeGoodData{},
+		&persistence.PlayerModel{},
 	)
 	if err != nil {
 		return fmt.Errorf("failed to migrate database: %w", err)
@@ -62,13 +65,29 @@ func (c *getMarketDataContext) setupDatabase() error {
 
 	c.db = db
 	c.marketRepo = persistence.NewMarketRepository(db)
+	c.playerRepo = persistence.NewGormPlayerRepository(db)
 	return nil
 }
 
 func (c *getMarketDataContext) aPlayerWithID(playerID int) error {
 	c.playerID = uint(playerID)
-	// Also set in shared context so other scenarios can access it
-	return sharedPlayerHasPlayerID(playerID)
+	return c.ensurePlayerExists(playerID)
+}
+
+// ensurePlayerExists ensures a player with the given ID exists in the repository
+func (c *getMarketDataContext) ensurePlayerExists(playerID int) error {
+	// Check if player already exists
+	_, err := c.playerRepo.FindByID(context.Background(), playerID)
+	if err == nil {
+		return nil // Player already exists
+	}
+
+	// Create and save player
+	agentSymbol := fmt.Sprintf("AGENT-%d", playerID)
+	token := fmt.Sprintf("token-%d", playerID)
+
+	p := player.NewPlayer(playerID, agentSymbol, token)
+	return c.playerRepo.Save(context.Background(), p)
 }
 
 func (c *getMarketDataContext) marketDataExistsForWaypointWithNTradeGoods(waypointSymbol string, count int) error {

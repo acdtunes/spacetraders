@@ -4,8 +4,7 @@ Feature: Navigate to Waypoint Command
   So that I can move ships around the system
 
   Background:
-    Given a player exists with agent "TEST-AGENT" and token "test-token-123"
-    And the player has player_id 1
+    Given a navigation test player 1 exists with agent "TEST-AGENT" and token "test-token-123"
 
   Scenario: Successfully navigate ship from orbit
     Given a ship "SHIP-1" for player 1 at "X1-A1" with status "IN_ORBIT"

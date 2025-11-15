@@ -34,6 +34,9 @@ type MockAPIClient struct {
 	// Ship storage for GetShip
 	ships map[string]*navigation.Ship // shipSymbol -> ship
 
+	// Player storage for authorization
+	players map[int]string // playerID -> token
+
 	// Waypoint storage for navigation
 	waypoints map[string]*shared.Waypoint // waypointSymbol -> waypoint
 
@@ -57,6 +60,7 @@ func NewMockAPIClient() *MockAPIClient {
 	return &MockAPIClient{
 		marketData:     make(map[string]*infraports.MarketData),
 		ships:          make(map[string]*navigation.Ship),
+		players:        make(map[int]string),
 		waypoints:      make(map[string]*shared.Waypoint),
 		getMarketCalls: []string{},
 	}
@@ -92,6 +96,13 @@ func (m *MockAPIClient) AddShip(ship *navigation.Ship) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.ships[ship.ShipSymbol()] = ship
+}
+
+// AddPlayer registers a player and their token for authorization validation
+func (m *MockAPIClient) AddPlayer(p *player.Player) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.players[p.ID] = p.Token
 }
 
 // GetMarket implements the APIClient interface
@@ -177,6 +188,13 @@ func (m *MockAPIClient) GetShip(ctx context.Context, symbol, token string) (*nav
 
 	ship, ok := m.ships[symbol]
 	if !ok {
+		return nil, fmt.Errorf("ship not found")
+	}
+
+	// Validate authorization: token must match ship's owner
+	expectedToken, hasPlayer := m.players[ship.PlayerID()]
+	if hasPlayer && expectedToken != token {
+		// Token doesn't match - unauthorized access
 		return nil, fmt.Errorf("ship not found")
 	}
 
