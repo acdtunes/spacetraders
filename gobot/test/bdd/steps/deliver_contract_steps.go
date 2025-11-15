@@ -157,11 +157,25 @@ func (ctx *deliverContractContext) aShipOwnedByPlayerAtWaypointWithInCargo(
 	cargoUnits int,
 	tradeSymbol string,
 ) error {
+	// Ensure player exists in this context's repository
+	if _, exists := ctx.players[playerID]; !exists {
+		// Create player if not exists
+		agentSymbol := fmt.Sprintf("AGENT-%d", playerID)
+		token := "test-token"
+		p := player.NewPlayer(playerID, agentSymbol, token)
+		ctx.players[playerID] = p
+		ctx.mockPlayerRepo.AddPlayer(p)
+		ctx.playerID = playerID
+	}
+
 	// Parse waypoint
 	waypoint, err := shared.NewWaypoint(waypointSymbol, 0, 0)
 	if err != nil {
 		return err
 	}
+
+	// Add waypoint to the mock repository
+	ctx.mockWaypointRepo.AddWaypoint(waypoint)
 
 	// Create cargo items
 	item, err := shared.NewCargoItem(tradeSymbol, tradeSymbol, tradeSymbol, cargoUnits)

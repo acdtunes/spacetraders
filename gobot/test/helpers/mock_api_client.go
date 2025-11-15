@@ -299,26 +299,41 @@ func (m *MockAPIClient) NavigateShip(ctx context.Context, symbol, destination, t
 }
 
 func (m *MockAPIClient) OrbitShip(ctx context.Context, symbol, token string) error {
-	m.mu.RLock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	shouldError := m.shouldError
 	errorMsg := m.errorMsg
-	m.mu.RUnlock()
 
 	if shouldError {
 		return fmt.Errorf("%s", errorMsg)
+	}
+
+	// Update ship status to IN_ORBIT in the mock
+	ship := m.ships[symbol]
+	if ship != nil {
+		// Ensure ship is in orbit
+		ship.EnsureInOrbit()
 	}
 
 	return nil
 }
 
 func (m *MockAPIClient) DockShip(ctx context.Context, symbol, token string) error {
-	m.mu.RLock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	shouldError := m.shouldError
 	errorMsg := m.errorMsg
-	m.mu.RUnlock()
 
 	if shouldError {
 		return fmt.Errorf("%s", errorMsg)
+	}
+
+	// Update ship status to DOCKED in the mock
+	ship := m.ships[symbol]
+	if ship != nil {
+		ship.EnsureDocked()
 	}
 
 	return nil
