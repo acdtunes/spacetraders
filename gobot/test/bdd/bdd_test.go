@@ -89,6 +89,9 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 
 	// Register NavigationUtils scenario
 	steps.InitializeNavigationUtilsScenario(sc) // Re-enabled
+
+	// API Adapter layer scenarios (circuit breaker, retry logic, rate limiting)
+	steps.InitializeAPIAdapterSteps(sc) // PLACEHOLDER - Step definitions not yet implemented
 }
 
 func TestMain(m *testing.M) {
