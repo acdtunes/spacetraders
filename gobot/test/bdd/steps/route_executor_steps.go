@@ -219,7 +219,7 @@ func (ctx *routeExecutorContext) createShip(shipSymbol string, playerID int, loc
 
 	ship, err := domainNavigation.NewShip(
 		shipSymbol, playerID, waypoint, fuel, fuelCapacity,
-		40, cargo, 30, navStatus,
+		40, cargo, 30, "FRAME_EXPLORER", navStatus,
 	)
 	if err != nil {
 		return err
@@ -607,7 +607,7 @@ func (ctx *routeExecutorContext) aShipForPlayerInTransitToArrivingInSeconds(
 
 	ship, err := domainNavigation.NewShip(
 		shipSymbol, playerID, startWaypoint, fuel, 100,
-		40, cargo, 30, domainNavigation.NavStatusInOrbit,
+		40, cargo, 30, "FRAME_EXPLORER", domainNavigation.NavStatusInOrbit,
 	)
 	if err != nil {
 		return err

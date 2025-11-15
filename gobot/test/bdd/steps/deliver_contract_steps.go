@@ -213,6 +213,7 @@ func (ctx *deliverContractContext) aShipOwnedByPlayerAtWaypointWithInCargo(
 		cargoCapacity, // cargo capacity
 		cargo,
 		30, // engine speed
+		"FRAME_EXPLORER",
 		navigation.NavStatusDocked,
 	)
 	if err != nil {

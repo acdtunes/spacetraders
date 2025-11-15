@@ -32,12 +32,12 @@ Feature: Assign Scouting Fleet
     And the markets assigned should include "X1-TEST-B1"
     And the markets assigned should include "X1-TEST-D1"
 
-  Scenario: Assign probe and satellite ships together
+  Scenario: Assign probe and drone ships together
     Given the following ships owned by player 1 in system "X1-TEST":
-      | symbol      | frame_type        | location    |
-      | PROBE-1     | FRAME_PROBE       | X1-TEST-A1  |
-      | SAT-1       | FRAME_SATELLITE   | X1-TEST-B1  |
-      | EXPLORER-1  | FRAME_EXPLORER    | X1-TEST-C1  |
+      | symbol      | frame_type      | location    |
+      | PROBE-1     | FRAME_PROBE     | X1-TEST-A1  |
+      | DRONE-1     | FRAME_DRONE     | X1-TEST-B1  |
+      | EXPLORER-1  | FRAME_EXPLORER  | X1-TEST-C1  |
     And the following waypoints with marketplaces in system "X1-TEST":
       | symbol       | type            | traits            |
       | X1-TEST-A1   | PLANET          | MARKETPLACE       |
@@ -47,7 +47,7 @@ Feature: Assign Scouting Fleet
       | system_symbol | X1-TEST  |
     Then the command should assign 2 ships to scouting
     And ship "PROBE-1" should be assigned to scout markets
-    And ship "SAT-1" should be assigned to scout markets
+    And ship "DRONE-1" should be assigned to scout markets
     And ship "EXPLORER-1" should not be assigned
 
   Scenario: No probe or satellite ships available

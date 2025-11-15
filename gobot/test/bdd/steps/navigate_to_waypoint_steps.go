@@ -167,7 +167,7 @@ func (ctx *navigateToWaypointContext) aShipForPlayerAtWithStatus(shipSymbol stri
 
 	ship, err := navigation.NewShip(
 		shipSymbol, playerID, waypoint, fuel, 100,
-		40, cargo, 30, navStatus,
+		40, cargo, 30, "FRAME_EXPLORER", navStatus,
 	)
 	if err != nil {
 		return err
@@ -226,7 +226,7 @@ func (ctx *navigateToWaypointContext) aShipForPlayerInTransitTo(shipSymbol strin
 
 	ship, err := navigation.NewShip(
 		shipSymbol, playerID, currentLocation, fuel, 100,
-		40, cargo, 30, navigation.NavStatusInOrbit,
+		40, cargo, 30, "FRAME_EXPLORER", navigation.NavStatusInOrbit,
 	)
 	if err != nil {
 		return err

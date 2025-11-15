@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 
+	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
 )
 
@@ -22,10 +23,11 @@ type MockContainer struct {
 type MockDaemonClient struct {
 	mu sync.RWMutex
 
-	containers        []Container
-	mockContainers    []*MockContainer   // Simplified containers with metadata
-	createdContainers []string            // Track container IDs created during test
-	scoutTourCommands map[string]interface{} // containerID -> command
+	containers         []Container
+	mockContainers     []*MockContainer              // Simplified containers with metadata
+	createdContainers  []string                       // Track container IDs created during test
+	scoutTourCommands  map[string]interface{}         // containerID -> command
+	CreatedContainers  []*container.Container         // Domain container entities created during test
 }
 
 // NewMockDaemonClient creates a new mock daemon client
@@ -35,6 +37,7 @@ func NewMockDaemonClient() *MockDaemonClient {
 		mockContainers:    []*MockContainer{},
 		createdContainers: []string{},
 		scoutTourCommands: make(map[string]interface{}),
+		CreatedContainers: []*container.Container{},
 	}
 }
 
@@ -113,4 +116,5 @@ func (m *MockDaemonClient) Reset() {
 	m.containers = []Container{}
 	m.createdContainers = []string{}
 	m.scoutTourCommands = make(map[string]interface{})
+	m.CreatedContainers = []*container.Container{}
 }

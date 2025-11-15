@@ -191,10 +191,7 @@ message AssignScoutingFleetRequest {
 }
 
 message AssignScoutingFleetResponse {
-  repeated string assigned_ships = 1;
-  repeated string container_ids = 2;
-  map<string, MarketAssignment> assignments = 3;
-  repeated string reused_containers = 4;
+  string container_id = 1; // Fleet-assignment container ID
 }
 
 // ListContainersRequest lists all containers

@@ -365,15 +365,12 @@ func (c *DaemonClient) ScoutMarkets(
 	}, nil
 }
 
-// AssignScoutingFleetResponse contains the results of auto-discovery and assignment
+// AssignScoutingFleetResponse contains the fleet-assignment container ID
 type AssignScoutingFleetResponse struct {
-	AssignedShips    []string
-	ContainerIDs     []string
-	Assignments      map[string]*MarketAssignment
-	ReusedContainers []string
+	ContainerID string
 }
 
-// AssignScoutingFleet auto-discovers probe/satellite ships and assigns them to scout markets
+// AssignScoutingFleet creates a fleet-assignment container for async VRP optimization
 func (c *DaemonClient) AssignScoutingFleet(
 	ctx context.Context,
 	systemSymbol string,
@@ -393,19 +390,8 @@ func (c *DaemonClient) AssignScoutingFleet(
 		return nil, fmt.Errorf("gRPC call failed: %w", err)
 	}
 
-	// Convert protobuf response to client response type
-	assignments := make(map[string]*MarketAssignment)
-	for ship, pbAssignment := range resp.Assignments {
-		assignments[ship] = &MarketAssignment{
-			Markets: pbAssignment.Markets,
-		}
-	}
-
 	return &AssignScoutingFleetResponse{
-		AssignedShips:    resp.AssignedShips,
-		ContainerIDs:     resp.ContainerIds,
-		Assignments:      assignments,
-		ReusedContainers: resp.ReusedContainers,
+		ContainerID: resp.ContainerId,
 	}, nil
 }
 

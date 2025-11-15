@@ -375,31 +375,46 @@ func (s *DaemonServer) ScoutMarkets(
 	return scoutResp.ContainerIDs, scoutResp.Assignments, scoutResp.ReusedContainers, nil
 }
 
-// AssignScoutingFleet auto-discovers probe/satellite ships and assigns them to scout markets
+// AssignScoutingFleet creates a scout-fleet-assignment container for async VRP optimization
+// Returns the container ID immediately without blocking
 func (s *DaemonServer) AssignScoutingFleet(
 	ctx context.Context,
 	systemSymbol string,
 	playerID int,
-) ([]string, []string, map[string][]string, []string, error) {
-	// Create assign scouting fleet command
-	cmd := &scouting.AssignScoutingFleetCommand{
+) (string, error) {
+	// Generate container ID
+	containerID := fmt.Sprintf("scout-fleet-assignment-%s-%d", systemSymbol, time.Now().UnixNano())
+
+	// Create assign scouting fleet command (will execute inside container)
+	cmd := &scouting.AssignFleetCommand{
 		PlayerID:     uint(playerID),
 		SystemSymbol: systemSymbol,
 	}
 
-	// Execute via mediator (synchronously)
-	response, err := s.mediator.Send(ctx, cmd)
-	if err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("failed to execute assign scouting fleet command: %w", err)
-	}
+	// Create container entity (one-time execution)
+	containerEntity := container.NewContainer(
+		containerID,
+		container.ContainerTypeScoutFleetAssignment,
+		playerID,
+		1, // One-time execution
+		map[string]interface{}{
+			"system_symbol": systemSymbol,
+		},
+		nil, // Use default RealClock for production
+	)
 
-	// Type assert response
-	assignResp, ok := response.(*scouting.AssignScoutingFleetResponse)
-	if !ok {
-		return nil, nil, nil, nil, fmt.Errorf("invalid response type from assign scouting fleet handler")
-	}
+	// Create container runner
+	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo)
+	s.registerContainer(containerID, runner)
 
-	return assignResp.AssignedShips, assignResp.ContainerIDs, assignResp.Assignments, assignResp.ReusedContainers, nil
+	// Start container in background
+	go func() {
+		if err := runner.Start(); err != nil {
+			fmt.Printf("Fleet assignment container %s failed: %v\n", containerID, err)
+		}
+	}()
+
+	return containerID, nil
 }
 
 // ListContainers returns all registered containers

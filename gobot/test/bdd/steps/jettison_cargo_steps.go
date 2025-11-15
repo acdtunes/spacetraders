@@ -188,7 +188,7 @@ func (ctx *jettisonCargoContext) createShipWithCargo(
 	// Create ship
 	ship, err := navigation.NewShip(
 		shipSymbol, playerID, waypoint, fuel, 100,
-		100, cargo, 30, navStatus,
+		100, cargo, 30, "FRAME_EXPLORER", navStatus,
 	)
 	if err != nil {
 		return err

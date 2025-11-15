@@ -170,7 +170,7 @@ func (ctx *refuelShipContext) aShipForPlayerAtFuelStationWithStatusAndFuel(
 
 	ship, err := navigation.NewShip(
 		shipSymbol, playerID, waypoint, fuel, fuelCapacity,
-		40, cargo, 30, navStatus,
+		40, cargo, 30, "FRAME_EXPLORER", navStatus,
 	)
 	if err != nil {
 		return err
@@ -238,7 +238,7 @@ func (ctx *refuelShipContext) aShipForPlayerAtWaypointWithoutFuelWithStatusAndFu
 
 	ship, err := navigation.NewShip(
 		shipSymbol, playerID, waypoint, fuel, fuelCapacity,
-		40, cargo, 30, navStatus,
+		40, cargo, 30, "FRAME_EXPLORER", navStatus,
 	)
 	if err != nil {
 		return err

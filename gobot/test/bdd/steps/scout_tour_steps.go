@@ -155,7 +155,7 @@ func (c *scoutTourContext) thePlayerHasAShipAtWaypointWithStatus(shipSymbol, way
 
 	ship, err := navigation.NewShip(
 		shipSymbol, c.player.ID, waypoint, fuel, 100,
-		40, cargo, 30, navStatus,
+		40, cargo, 30, "FRAME_EXPLORER", navStatus,
 	)
 	if err != nil {
 		return err

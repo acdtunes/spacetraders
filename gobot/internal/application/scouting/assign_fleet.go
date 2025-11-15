@@ -12,23 +12,24 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
 
-// AssignScoutingFleetCommand automatically assigns all probe/satellite ships to market scouting
-// Filters out FUEL_STATION marketplaces
-type AssignScoutingFleetCommand struct {
+// AssignFleetCommand assigns all probe/satellite ships to market scouting via VRP
+// This is the command that runs INSIDE a scout-fleet-assignment container
+type AssignFleetCommand struct {
 	PlayerID     uint
 	SystemSymbol string
 }
 
-// AssignScoutingFleetResponse contains the results of fleet assignment
-type AssignScoutingFleetResponse struct {
+// AssignFleetResponse contains the results of fleet assignment
+type AssignFleetResponse struct {
 	AssignedShips    []string            // Ship symbols assigned to scouting
+	ContainerIDs     []string            // Scout-tour container IDs created
 	Assignments      map[string][]string // ship_symbol -> markets assigned
 	ReusedContainers []string            // Container IDs that were reused
-	ContainerIDs     []string            // All container IDs (new + reused)
 }
 
-// AssignScoutingFleetHandler handles the assign scouting fleet command
-type AssignScoutingFleetHandler struct {
+// AssignFleetHandler handles the assign fleet command
+// This handler executes INSIDE a container and creates scout-tour containers
+type AssignFleetHandler struct {
 	shipRepo      navigation.ShipRepository
 	waypointRepo  system.WaypointRepository
 	graphProvider system.ISystemGraphProvider
@@ -36,15 +37,15 @@ type AssignScoutingFleetHandler struct {
 	daemonClient  daemon.DaemonClient
 }
 
-// NewAssignScoutingFleetHandler creates a new assign scouting fleet handler
-func NewAssignScoutingFleetHandler(
+// NewAssignFleetHandler creates a new assign fleet handler
+func NewAssignFleetHandler(
 	shipRepo navigation.ShipRepository,
 	waypointRepo system.WaypointRepository,
 	graphProvider system.ISystemGraphProvider,
 	routingClient routing.RoutingClient,
 	daemonClient daemon.DaemonClient,
-) *AssignScoutingFleetHandler {
-	return &AssignScoutingFleetHandler{
+) *AssignFleetHandler {
+	return &AssignFleetHandler{
 		shipRepo:      shipRepo,
 		waypointRepo:  waypointRepo,
 		graphProvider: graphProvider,
@@ -53,9 +54,9 @@ func NewAssignScoutingFleetHandler(
 	}
 }
 
-// Handle executes the assign scouting fleet command
-func (h *AssignScoutingFleetHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {
-	cmd, ok := request.(*AssignScoutingFleetCommand)
+// Handle executes the assign fleet command
+func (h *AssignFleetHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {
+	cmd, ok := request.(*AssignFleetCommand)
 	if !ok {
 		return nil, fmt.Errorf("invalid request type")
 	}
@@ -124,17 +125,16 @@ func (h *AssignScoutingFleetHandler) Handle(ctx context.Context, request common.
 		return nil, fmt.Errorf("unexpected response type from scout markets")
 	}
 
-	return &AssignScoutingFleetResponse{
+	return &AssignFleetResponse{
 		AssignedShips:    shipSymbols,
+		ContainerIDs:     scoutResult.ContainerIDs,
 		Assignments:      scoutResult.Assignments,
 		ReusedContainers: scoutResult.ReusedContainers,
-		ContainerIDs:     scoutResult.ContainerIDs,
 	}, nil
 }
 
 // filterScoutShips filters ships to only probe/drone types in the specified system
-// Uses frame type information from the SpaceTraders API (FRAME_PROBE, FRAME_DRONE)
-func (h *AssignScoutingFleetHandler) filterScoutShips(ships []*navigation.Ship, systemSymbol string) []*navigation.Ship {
+func (h *AssignFleetHandler) filterScoutShips(ships []*navigation.Ship, systemSymbol string) []*navigation.Ship {
 	var scoutShips []*navigation.Ship
 
 	for _, ship := range ships {
@@ -154,7 +154,7 @@ func (h *AssignScoutingFleetHandler) filterScoutShips(ships []*navigation.Ship, 
 }
 
 // filterNonFuelStations filters out waypoints with FUEL_STATION type
-func (h *AssignScoutingFleetHandler) filterNonFuelStations(waypoints []*shared.Waypoint) []*shared.Waypoint {
+func (h *AssignFleetHandler) filterNonFuelStations(waypoints []*shared.Waypoint) []*shared.Waypoint {
 	var filtered []*shared.Waypoint
 
 	for _, waypoint := range waypoints {

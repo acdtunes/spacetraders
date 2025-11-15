@@ -243,7 +243,7 @@ func (s *daemonServiceImpl) ScoutMarkets(ctx context.Context, req *pb.ScoutMarke
 	return response, nil
 }
 
-// AssignScoutingFleet auto-discovers probe/satellite ships and assigns them to scout markets
+// AssignScoutingFleet creates a fleet-assignment container for async VRP optimization
 func (s *daemonServiceImpl) AssignScoutingFleet(ctx context.Context, req *pb.AssignScoutingFleetRequest) (*pb.AssignScoutingFleetResponse, error) {
 	// Resolve player ID from request (supports both player_id and agent_symbol)
 	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)
@@ -251,28 +251,18 @@ func (s *daemonServiceImpl) AssignScoutingFleet(ctx context.Context, req *pb.Ass
 		return nil, fmt.Errorf("failed to resolve player: %w", err)
 	}
 
-	assignedShips, containerIDs, assignments, reusedContainers, err := s.daemon.AssignScoutingFleet(
+	// Create fleet-assignment container (returns immediately)
+	containerID, err := s.daemon.AssignScoutingFleet(
 		ctx,
 		req.SystemSymbol,
 		playerID,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to assign scouting fleet: %w", err)
-	}
-
-	// Convert assignments map to protobuf format
-	pbAssignments := make(map[string]*pb.MarketAssignment)
-	for ship, markets := range assignments {
-		pbAssignments[ship] = &pb.MarketAssignment{
-			Markets: markets,
-		}
+		return nil, fmt.Errorf("failed to create fleet assignment container: %w", err)
 	}
 
 	response := &pb.AssignScoutingFleetResponse{
-		AssignedShips:    assignedShips,
-		ContainerIds:     containerIDs,
-		Assignments:      pbAssignments,
-		ReusedContainers: reusedContainers,
+		ContainerId: containerID,
 	}
 
 	return response, nil

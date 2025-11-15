@@ -289,68 +289,31 @@ Examples:
 			}
 			defer client.Close()
 
-			// Execute auto-discovery via daemon
-			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			// Create fleet-assignment container via daemon
+			// Timeout is just for container creation (5 seconds)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 
-			fmt.Printf("Auto-discovering probe/satellite ships and marketplaces in %s...\n\n", system)
+			fmt.Printf("Starting scout fleet assignment for system %s...\n\n", system)
 
 			result, err := client.AssignScoutingFleet(ctx, system, playerIdent.PlayerID, playerIdent.AgentSymbol)
 			if err != nil {
-				return fmt.Errorf("scout-all-markets deployment failed: %w", err)
+				return fmt.Errorf("failed to create fleet assignment container: %w", err)
 			}
 
-			// Display results
-			fmt.Println("=== Fleet Assignment Complete ===")
-			fmt.Printf("\nShips discovered: %d\n", len(result.AssignedShips))
-			fmt.Printf("Total containers: %d\n", len(result.ContainerIDs))
-			fmt.Printf("New containers: %d\n", len(result.ContainerIDs)-len(result.ReusedContainers))
-			fmt.Printf("Reused containers: %d\n\n", len(result.ReusedContainers))
-
-			// Display assigned ships
-			if len(result.AssignedShips) > 0 {
-				fmt.Println("Assigned Ships:")
-				for _, ship := range result.AssignedShips {
-					fmt.Printf("  - %s\n", ship)
-				}
-				fmt.Println()
-			}
-
-			// Display market assignments
-			if len(result.Assignments) > 0 {
-				fmt.Println("Market Assignments:")
-				fmt.Println("Ship             Markets")
-				fmt.Println("---------------  -------")
-				for shipSymbol, assignment := range result.Assignments {
-					marketCount := len(assignment.Markets)
-					if marketCount == 0 {
-						fmt.Printf("%-15s  (reused container - markets unknown)\n", shipSymbol)
-					} else {
-						fmt.Printf("%-15s  %s\n", shipSymbol, strings.Join(assignment.Markets, ", "))
-					}
-				}
-				fmt.Println()
-			}
-
-			// Display container IDs
-			if len(result.ContainerIDs) > 0 {
-				fmt.Println("Container IDs:")
-				for _, cid := range result.ContainerIDs {
-					fmt.Printf("  - %s", cid)
-					// Mark reused containers
-					for _, reused := range result.ReusedContainers {
-						if cid == reused {
-							fmt.Print(" (reused)")
-							break
-						}
-					}
-					fmt.Println()
-				}
-				fmt.Println()
-			}
-
-			fmt.Println("Track progress with: spacetraders container logs <container-id>")
-			fmt.Println("View all containers: spacetraders container list")
+			// Display result
+			fmt.Println("✓ Scout fleet assignment started successfully")
+			fmt.Printf("\n  Container ID: %s\n", result.ContainerID)
+			fmt.Printf("  System:       %s\n", system)
+			fmt.Printf("  Agent:        %s (player %d)\n\n", playerIdent.AgentSymbol, playerIdent.PlayerID)
+			fmt.Println("The fleet assignment is running in the background.")
+			fmt.Println("VRP optimization will distribute markets across probe/satellite ships.")
+			fmt.Println()
+			fmt.Println("Track progress with:")
+			fmt.Printf("  spacetraders container logs %s\n", result.ContainerID)
+			fmt.Println()
+			fmt.Println("View created scout-tour containers with:")
+			fmt.Printf("  spacetraders container list --player-id %d\n", playerIdent.PlayerID)
 
 			return nil
 		},

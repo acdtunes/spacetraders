@@ -296,6 +296,7 @@ func (r *APIShipRepository) shipDataToDomain(ctx context.Context, data *navigati
 		data.CargoCapacity,
 		cargo,
 		data.EngineSpeed,
+		data.FrameSymbol,
 		navStatus,
 	)
 }

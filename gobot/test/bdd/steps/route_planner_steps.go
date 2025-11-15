@@ -66,7 +66,7 @@ func (ctx *routePlannerContext) aShipExistsWithCurrentFuelAndCapacity(shipSymbol
 
 	ship, err := domainNavigation.NewShip(
 		shipSymbol, 1, waypoint, fuel, capacity,
-		40, cargo, 30, domainNavigation.NavStatusInOrbit,
+		40, cargo, 30, "FRAME_EXPLORER", domainNavigation.NavStatusInOrbit,
 	)
 	if err != nil {
 		return err
@@ -90,7 +90,7 @@ func (ctx *routePlannerContext) theShipIsAtWaypointWithCoordinates(waypointSymbo
 	ship, err := domainNavigation.NewShip(
 		ctx.ship.ShipSymbol(), ctx.ship.PlayerID(), waypoint,
 		fuel, ctx.ship.FuelCapacity(), ctx.ship.CargoCapacity(),
-		cargo, ctx.ship.EngineSpeed(), ctx.ship.NavStatus(),
+		cargo, ctx.ship.EngineSpeed(), ctx.ship.FrameSymbol(), ctx.ship.NavStatus(),
 	)
 	if err != nil {
 		return err
@@ -142,7 +142,7 @@ func (ctx *routePlannerContext) theShipIsAtAFuelStationWaypoint(waypointSymbol s
 	ship, err := domainNavigation.NewShip(
 		ctx.ship.ShipSymbol(), ctx.ship.PlayerID(), waypoint,
 		fuel, ctx.ship.FuelCapacity(), ctx.ship.CargoCapacity(),
-		cargo, ctx.ship.EngineSpeed(), ctx.ship.NavStatus(),
+		cargo, ctx.ship.EngineSpeed(), ctx.ship.FrameSymbol(), ctx.ship.NavStatus(),
 	)
 	if err != nil {
 		return err

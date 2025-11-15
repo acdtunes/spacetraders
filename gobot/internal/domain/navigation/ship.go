@@ -45,6 +45,7 @@ type Ship struct {
 	cargoCapacity   int
 	cargo           *shared.Cargo
 	engineSpeed     int
+	frameSymbol     string // Frame type (e.g., "FRAME_PROBE", "FRAME_DRONE", "FRAME_MINER")
 	navStatus       NavStatus
 }
 
@@ -58,6 +59,7 @@ func NewShip(
 	cargoCapacity int,
 	cargo *shared.Cargo,
 	engineSpeed int,
+	frameSymbol string,
 	navStatus NavStatus,
 ) (*Ship, error) {
 	s := &Ship{
@@ -69,6 +71,7 @@ func NewShip(
 		cargoCapacity:   cargoCapacity,
 		cargo:           cargo,
 		engineSpeed:     engineSpeed,
+		frameSymbol:     frameSymbol,
 		navStatus:       navStatus,
 	}
 
@@ -170,6 +173,27 @@ func (s *Ship) EngineSpeed() int {
 
 func (s *Ship) NavStatus() NavStatus {
 	return s.navStatus
+}
+
+func (s *Ship) FrameSymbol() string {
+	return s.frameSymbol
+}
+
+// Frame Type Queries
+
+// IsProbe checks if ship is a probe type (FRAME_PROBE)
+func (s *Ship) IsProbe() bool {
+	return s.frameSymbol == "FRAME_PROBE"
+}
+
+// IsDrone checks if ship is a drone type (FRAME_DRONE)
+func (s *Ship) IsDrone() bool {
+	return s.frameSymbol == "FRAME_DRONE"
+}
+
+// IsScoutType checks if ship is either a probe or drone (suitable for scouting)
+func (s *Ship) IsScoutType() bool {
+	return s.IsProbe() || s.IsDrone()
 }
 
 // Navigation Status Management

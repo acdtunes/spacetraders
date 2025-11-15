@@ -113,6 +113,9 @@ func (c *SpaceTradersClient) GetShip(ctx context.Context, symbol, token string) 
 			Engine struct {
 				Speed int `json:"speed"`
 			} `json:"engine"`
+			Frame struct {
+				Symbol string `json:"symbol"`
+			} `json:"frame"`
 		} `json:"data"`
 	}
 
@@ -153,6 +156,7 @@ func (c *SpaceTradersClient) GetShip(ctx context.Context, symbol, token string) 
 		CargoCapacity: response.Data.Cargo.Capacity,
 		CargoUnits:    response.Data.Cargo.Units,
 		EngineSpeed:   response.Data.Engine.Speed,
+		FrameSymbol:   response.Data.Frame.Symbol,
 		Cargo:         cargo,
 	}, nil
 }
@@ -192,6 +196,9 @@ func (c *SpaceTradersClient) ListShips(ctx context.Context, token string) ([]*na
 				Engine struct {
 					Speed int `json:"speed"`
 				} `json:"engine"`
+				Frame struct {
+					Symbol string `json:"symbol"`
+				} `json:"frame"`
 			} `json:"data"`
 			Meta struct {
 				Total int `json:"total"`
@@ -237,6 +244,7 @@ func (c *SpaceTradersClient) ListShips(ctx context.Context, token string) ([]*na
 				CargoCapacity: ship.Cargo.Capacity,
 				CargoUnits:    ship.Cargo.Units,
 				EngineSpeed:   ship.Engine.Speed,
+				FrameSymbol:   ship.Frame.Symbol,
 				Cargo:         cargo,
 			})
 		}

@@ -34,9 +34,10 @@ func (m *MockGraphProvider) SetGraph(systemSymbol string, distanceGraph map[stri
 	// Build waypoints map
 	for waypointSymbol := range distanceGraph {
 		waypoints[waypointSymbol] = map[string]interface{}{
-			"symbol": waypointSymbol,
-			"x":      0.0,
-			"y":      0.0,
+			"symbol":   waypointSymbol,
+			"x":        0.0,
+			"y":        0.0,
+			"has_fuel": true, // Assume all waypoints have fuel for simplicity
 		}
 	}
 

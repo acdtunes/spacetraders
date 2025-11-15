@@ -50,6 +50,7 @@ type ShipData struct {
 	CargoCapacity   int
 	CargoUnits      int
 	EngineSpeed     int
+	FrameSymbol     string // Frame type (e.g., "FRAME_PROBE", "FRAME_DRONE", "FRAME_MINER")
 	Cargo           *CargoData
 }
 
