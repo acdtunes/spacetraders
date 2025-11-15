@@ -157,9 +157,10 @@ func (ctx *deliverContractContext) aShipOwnedByPlayerAtWaypointWithInCargo(
 	cargoUnits int,
 	tradeSymbol string,
 ) error {
-	// Ensure player exists in this context's repository
-	if _, exists := ctx.players[playerID]; !exists {
-		// Create player if not exists
+	// Conditionally create player if not exists AND if it's a "valid" test player ID
+	// Player ID 999 is used for "player not found" tests, so don't auto-create it
+	if _, exists := ctx.players[playerID]; !exists && playerID != 999 {
+		// Create player if not exists (for normal test scenarios)
 		agentSymbol := fmt.Sprintf("AGENT-%d", playerID)
 		token := "test-token"
 		p := player.NewPlayer(playerID, agentSymbol, token)
