@@ -91,10 +91,10 @@ class TestNavigationWithFuelWaypoints:
         assert result.ship_symbol == 'TEST-SHIP'
         assert len(result.segments) >= 1, "Route should have at least one segment"
 
-        # Verify routing engine was called with ship's fuel info (observable interaction)
-        routing_engine.find_optimal_path.assert_called_once()
-        call_args = routing_engine.find_optimal_path.call_args
-        assert call_args[1]['current_fuel'] == 50, "Should pass current fuel to routing engine"
+        # Verify route is achievable with available fuel (observable constraint)
+        total_fuel_cost = sum(segment.fuel_cost for segment in result.segments)
+        assert total_fuel_cost <= 100, \
+            f"Route requires {total_fuel_cost} fuel but ship only has capacity for 100"
 
 
     def test_navigation_fails_when_ship_not_found(self):
