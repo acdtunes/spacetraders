@@ -358,12 +358,12 @@ func (clc *containerLoggingContext) theLogEntriesShouldBeDifferentFromTheFirstPa
 	// Verify that log IDs are different
 	firstPageIDs := make(map[int]bool)
 	for _, log := range clc.firstPageEntries {
-		firstPageIDs[log.LogID] = true
+		firstPageIDs[log.ID] = true
 	}
 
 	for _, log := range clc.logEntries {
-		if firstPageIDs[log.LogID] {
-			return fmt.Errorf("found duplicate log ID %d between pages", log.LogID)
+		if firstPageIDs[log.ID] {
+			return fmt.Errorf("found duplicate log ID %d between pages", log.ID)
 		}
 	}
 

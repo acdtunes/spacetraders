@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/cucumber/godog"
-	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 
 	appContract "github.com/andrescamacho/spacetraders-go/internal/application/contract"
@@ -17,7 +16,8 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
-)
+
+	"github.com/andrescamacho/spacetraders-go/test/helpers")
 
 type evaluateContractProfitabilityContext struct {
 	// Test state
@@ -52,23 +52,13 @@ func (ctx *evaluateContractProfitabilityContext) reset() {
 	ctx.markets = make(map[string][]market.TradeGood)
 	ctx.ship = nil
 
-	// Initialize in-memory SQLite database
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
-	if err != nil {
-		panic(fmt.Sprintf("failed to open test database: %v", err))
+	// Use shared test database and truncate all tables for test isolation
+	if err := helpers.TruncateAllTables(); err != nil {
+		panic(fmt.Sprintf("failed to truncate tables: %v", err))
 	}
 
-	// Auto-migrate the models
-	err = db.AutoMigrate(
-		&persistence.MarketData{},
-		&persistence.MarketData{},
-	)
-	if err != nil {
-		panic(fmt.Sprintf("failed to migrate database: %v", err))
-	}
-
-	ctx.db = db
-	ctx.marketRepo = persistence.NewMarketRepository(db)
+	ctx.db = helpers.SharedTestDB
+	ctx.marketRepo = persistence.NewMarketRepository(helpers.SharedTestDB)
 }
 
 // Background steps

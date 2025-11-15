@@ -17,8 +17,9 @@ import (
 	"github.com/cucumber/godog"
 	grpcLib "google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
-	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
+
+	"github.com/andrescamacho/spacetraders-go/test/helpers"
 )
 
 // daemonServerContext holds state for daemon server BDD tests
@@ -92,15 +93,9 @@ func (ctx *daemonServerContext) reset() {
 		os.RemoveAll(ctx.socketPath)
 	}
 
-	// Create in-memory test database
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
-	if err != nil {
-		panic(fmt.Sprintf("failed to create test database: %v", err))
-	}
-
-	// Auto-migrate container models
-	if err := db.AutoMigrate(&persistence.ContainerModel{}, &persistence.ContainerLogModel{}); err != nil {
-		panic(fmt.Sprintf("failed to migrate test database: %v", err))
+	// Use shared test database and truncate all tables for test isolation
+	if err := helpers.TruncateAllTables(); err != nil {
+		panic(fmt.Sprintf("failed to truncate tables: %v", err))
 	}
 
 	// Reset state
@@ -111,8 +106,8 @@ func (ctx *daemonServerContext) reset() {
 	ctx.grpcConn = nil
 	ctx.mediator = &mockDaemonMediator{}
 	ctx.logRepo = &mockContainerLogRepo{logs: []string{}}
-	ctx.testDB = db
-	ctx.containerRepo = persistence.NewContainerRepository(db)
+	ctx.testDB = helpers.SharedTestDB
+	ctx.containerRepo = persistence.NewContainerRepository(helpers.SharedTestDB)
 	ctx.lastResponse = nil
 	ctx.startTime = time.Time{}
 	ctx.responseTime = 0

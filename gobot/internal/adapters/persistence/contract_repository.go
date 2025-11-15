@@ -23,7 +23,7 @@ func NewGormContractRepository(db *gorm.DB) *GormContractRepository {
 // FindByID retrieves a contract by ID and player ID
 func (r *GormContractRepository) FindByID(ctx context.Context, contractID string, playerID int) (*contract.Contract, error) {
 	var model ContractModel
-	result := r.db.WithContext(ctx).Where("contract_id = ? AND player_id = ?", contractID, playerID).First(&model)
+	result := r.db.WithContext(ctx).Where("id = ? AND player_id = ?", contractID, playerID).First(&model)
 
 	if result.Error != nil {
 		if result.Error == gorm.ErrRecordNotFound {
@@ -50,7 +50,7 @@ func (r *GormContractRepository) FindActiveContracts(ctx context.Context, player
 	for _, model := range models {
 		entity, err := r.modelToEntity(&model)
 		if err != nil {
-			return nil, fmt.Errorf("failed to convert contract %s: %w", model.ContractID, err)
+			return nil, fmt.Errorf("failed to convert contract %s: %w", model.ID, err)
 		}
 		contracts = append(contracts, entity)
 	}
@@ -94,7 +94,7 @@ func (r *GormContractRepository) modelToEntity(model *ContractModel) (*contract.
 
 	// Create new contract using constructor
 	c, err := contract.NewContract(
-		model.ContractID,
+		model.ID,
 		model.PlayerID,
 		model.FactionSymbol,
 		model.Type,
@@ -141,7 +141,7 @@ func (r *GormContractRepository) entityToModel(c *contract.Contract) (*ContractM
 	}
 
 	return &ContractModel{
-		ContractID:         c.ContractID(),
+		ID:                 c.ContractID(),
 		PlayerID:           c.PlayerID(),
 		FactionSymbol:      c.FactionSymbol(),
 		Type:               c.Type(),

@@ -6,11 +6,11 @@ import (
 	"time"
 
 	"github.com/cucumber/godog"
-	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
+	"github.com/andrescamacho/spacetraders-go/test/helpers"
 )
 
 type MarketRepositoryContext struct {
@@ -73,22 +73,12 @@ func InitializeMarketRepositoryScenario(ctx *godog.ScenarioContext) {
 }
 
 func (c *MarketRepositoryContext) aCleanTestDatabase() error {
-	// Create in-memory SQLite database
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
-	if err != nil {
-		return fmt.Errorf("failed to open test database: %w", err)
+	// Use shared test database and truncate all tables for test isolation
+	if err := helpers.TruncateAllTables(); err != nil {
+		return fmt.Errorf("failed to truncate tables: %w", err)
 	}
 
-	// Auto-migrate the models
-	err = db.AutoMigrate(
-		&persistence.MarketData{},
-		&persistence.MarketData{},
-	)
-	if err != nil {
-		return fmt.Errorf("failed to migrate database: %w", err)
-	}
-
-	c.db = db
+	c.db = helpers.SharedTestDB
 	return nil
 }
 

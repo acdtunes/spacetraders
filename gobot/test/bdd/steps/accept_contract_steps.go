@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/cucumber/godog"
-	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 
 	appContract "github.com/andrescamacho/spacetraders-go/internal/application/contract"
@@ -39,26 +38,16 @@ func (ctx *acceptContractContext) reset() {
 	ctx.err = nil
 	ctx.acceptContract = false
 
-	// Create in-memory SQLite database
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
-	if err != nil {
-		panic(fmt.Errorf("failed to open test database: %w", err))
+	// Use shared test database and truncate all tables for test isolation
+	if err := helpers.TruncateAllTables(); err != nil {
+		panic(fmt.Errorf("failed to truncate tables: %w", err))
 	}
 
-	// Run migrations
-	err = db.AutoMigrate(
-		&persistence.ContractModel{},
-		&persistence.PlayerModel{},
-	)
-	if err != nil {
-		panic(fmt.Errorf("failed to migrate database: %w", err))
-	}
-
-	ctx.db = db
+	ctx.db = helpers.SharedTestDB
 
 	// Create real repositories
-	ctx.contractRepo = persistence.NewGormContractRepository(db)
-	ctx.playerRepo = persistence.NewGormPlayerRepository(db)
+	ctx.contractRepo = persistence.NewGormContractRepository(helpers.SharedTestDB)
+	ctx.playerRepo = persistence.NewGormPlayerRepository(helpers.SharedTestDB)
 
 	// Keep mock API client
 	ctx.apiClient = helpers.NewMockAPIClient()

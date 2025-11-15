@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/cucumber/godog"
-	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/api"
@@ -46,24 +45,14 @@ func (ctx *purchaseCargoContext) reset() {
 	ctx.response = nil
 	ctx.err = nil
 
-	// Create in-memory SQLite database
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
-	if err != nil {
-		panic(fmt.Errorf("failed to open test database: %w", err))
+	// Use shared test database and truncate all tables for test isolation
+	if err := helpers.TruncateAllTables(); err != nil {
+		panic(fmt.Errorf("failed to truncate tables: %w", err))
 	}
 
 	// Run migrations for all needed models
-	err = db.AutoMigrate(
-		&persistence.PlayerModel{},
-		&persistence.WaypointModel{},
-		&persistence.MarketData{},
-		&persistence.MarketData{},
-	)
-	if err != nil {
-		panic(fmt.Errorf("failed to migrate database: %w", err))
-	}
 
-	ctx.db = db
+	ctx.db = helpers.SharedTestDB
 
 	// Create mock API client (don't hit real API)
 	ctx.apiClient = helpers.NewMockAPIClient()
@@ -78,10 +67,10 @@ func (ctx *purchaseCargoContext) reset() {
 	})
 
 	// Create real repositories
-	ctx.playerRepo = persistence.NewGormPlayerRepository(db)
-	waypointRepo := persistence.NewGormWaypointRepository(db)
+	ctx.playerRepo = persistence.NewGormPlayerRepository(helpers.SharedTestDB)
+	waypointRepo := persistence.NewGormWaypointRepository(helpers.SharedTestDB)
 	ctx.shipRepo = api.NewAPIShipRepository(ctx.apiClient, ctx.playerRepo, waypointRepo)
-	ctx.marketRepo = persistence.NewMarketRepository(db)
+	ctx.marketRepo = persistence.NewMarketRepository(helpers.SharedTestDB)
 
 	ctx.handler = appShip.NewPurchaseCargoHandler(ctx.shipRepo, ctx.playerRepo, ctx.apiClient, ctx.marketRepo)
 }

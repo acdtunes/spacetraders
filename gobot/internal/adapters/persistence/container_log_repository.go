@@ -23,7 +23,7 @@ type ContainerLogRepository interface {
 
 // ContainerLogEntry represents a log entry
 type ContainerLogEntry struct {
-	LogID       int
+	ID          int
 	ContainerID string
 	PlayerID    int
 	Timestamp   time.Time
@@ -135,7 +135,7 @@ func (r *GormContainerLogRepository) GetLogs(ctx context.Context, containerID st
 	entries := make([]ContainerLogEntry, len(models))
 	for i, model := range models {
 		entries[i] = ContainerLogEntry{
-			LogID:       model.LogID,
+			ID:          model.ID,
 			ContainerID: model.ContainerID,
 			PlayerID:    model.PlayerID,
 			Timestamp:   model.Timestamp,
@@ -172,7 +172,7 @@ func (r *GormContainerLogRepository) GetLogsWithOffset(ctx context.Context, cont
 	entries := make([]ContainerLogEntry, len(models))
 	for i, model := range models {
 		entries[i] = ContainerLogEntry{
-			LogID:       model.LogID,
+			ID:          model.ID,
 			ContainerID: model.ContainerID,
 			PlayerID:    model.PlayerID,
 			Timestamp:   model.Timestamp,

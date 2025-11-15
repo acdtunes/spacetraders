@@ -6,13 +6,13 @@ import (
 	"time"
 
 	"github.com/cucumber/godog"
-	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/scouting"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
+	"github.com/andrescamacho/spacetraders-go/test/helpers"
 )
 
 type listMarketDataContext struct {
@@ -51,25 +51,14 @@ func InitializeListMarketDataScenario(ctx *godog.ScenarioContext) {
 }
 
 func (c *listMarketDataContext) setupDatabase() error {
-	// Create in-memory SQLite database
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
-	if err != nil {
-		return fmt.Errorf("failed to open test database: %w", err)
+	// Use shared test database and truncate all tables for test isolation
+	if err := helpers.TruncateAllTables(); err != nil {
+		return fmt.Errorf("failed to truncate tables: %w", err)
 	}
 
-	// Auto-migrate the models
-	err = db.AutoMigrate(
-		&persistence.MarketData{},
-		&persistence.MarketData{},
-		&persistence.PlayerModel{},
-	)
-	if err != nil {
-		return fmt.Errorf("failed to migrate database: %w", err)
-	}
-
-	c.db = db
-	c.marketRepo = persistence.NewMarketRepository(db)
-	c.playerRepo = persistence.NewGormPlayerRepository(db)
+	c.db = helpers.SharedTestDB
+	c.marketRepo = persistence.NewMarketRepository(helpers.SharedTestDB)
+	c.playerRepo = persistence.NewGormPlayerRepository(helpers.SharedTestDB)
 	return nil
 }
 

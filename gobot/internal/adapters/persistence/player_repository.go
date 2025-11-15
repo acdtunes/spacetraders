@@ -22,7 +22,7 @@ func NewGormPlayerRepository(db *gorm.DB) *GormPlayerRepository {
 // FindByID retrieves a player by ID
 func (r *GormPlayerRepository) FindByID(ctx context.Context, playerID int) (*player.Player, error) {
 	var model PlayerModel
-	result := r.db.WithContext(ctx).Where("player_id = ?", playerID).First(&model)
+	result := r.db.WithContext(ctx).Where("id = ?", playerID).First(&model)
 	if result.Error != nil {
 		if result.Error == gorm.ErrRecordNotFound {
 			return nil, fmt.Errorf("player not found: %d", playerID)
@@ -75,7 +75,7 @@ func (r *GormPlayerRepository) modelToPlayer(model *PlayerModel) (*player.Player
 	}
 
 	return &player.Player{
-		ID:          model.PlayerID,
+		ID:          model.ID,
 		AgentSymbol: model.AgentSymbol,
 		Token:       model.Token,
 		Credits:     0, // Credits set to 0 - will be populated by handler from API
@@ -96,7 +96,7 @@ func (r *GormPlayerRepository) playerToModel(player *player.Player) (*PlayerMode
 	}
 
 	return &PlayerModel{
-		PlayerID:    player.ID,
+		ID:          player.ID,
 		AgentSymbol: player.AgentSymbol,
 		Token:       player.Token,
 		// Credits field intentionally omitted - not persisted to database

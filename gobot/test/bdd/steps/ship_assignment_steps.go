@@ -160,7 +160,6 @@ func (sac *shipAssignmentContext) iAssignShipToContainerWithOperation(shipSymbol
 		shipSymbol,
 		container.playerID,
 		containerID,
-		operation,
 	)
 
 	if sac.err == nil {
@@ -195,7 +194,6 @@ func (sac *shipAssignmentContext) iAttemptToAssignShipToContainerWithOperation(s
 		shipSymbol,
 		container.playerID,
 		containerID,
-		operation,
 	)
 
 	return nil
@@ -240,7 +238,6 @@ func (sac *shipAssignmentContext) shipHasAnOrphanedAssignmentToNonExistentContai
 		shipSymbol,
 		playerID,
 		containerID,
-		"orphaned_operation",
 	)
 
 	if sac.err == nil {
@@ -262,14 +259,12 @@ func (sac *shipAssignmentContext) theAssignmentWasCreatedHoursAgo(hours int) err
 		shipSymbol := sac.assignment.ShipSymbol()
 		playerID := sac.assignment.PlayerID()
 		containerID := sac.assignment.ContainerID()
-		operation := sac.assignment.Operation()
 
 		// Create new assignment at old time
 		sac.assignment = daemon.NewShipAssignment(
 			shipSymbol,
 			playerID,
 			containerID,
-			operation,
 			sac.clock,
 		)
 
@@ -279,7 +274,6 @@ func (sac *shipAssignmentContext) theAssignmentWasCreatedHoursAgo(hours int) err
 			shipSymbol,
 			playerID,
 			containerID,
-			operation,
 		)
 	}
 
@@ -298,13 +292,11 @@ func (sac *shipAssignmentContext) theAssignmentWasCreatedMinutesAgo(minutes int)
 		shipSymbol := sac.assignment.ShipSymbol()
 		playerID := sac.assignment.PlayerID()
 		containerID := sac.assignment.ContainerID()
-		operation := sac.assignment.Operation()
 
 		sac.assignment = daemon.NewShipAssignment(
 			shipSymbol,
 			playerID,
 			containerID,
-			operation,
 			sac.clock,
 		)
 
@@ -313,7 +305,6 @@ func (sac *shipAssignmentContext) theAssignmentWasCreatedMinutesAgo(minutes int)
 			shipSymbol,
 			playerID,
 			containerID,
-			operation,
 		)
 	}
 
@@ -434,7 +425,6 @@ func (sac *shipAssignmentContext) iAttemptToReassignShipFromTo(shipSymbol, oldCo
 		shipSymbol,
 		playerID,
 		newContainerID,
-		"new_operation",
 	)
 
 	return nil
@@ -474,16 +464,7 @@ func (sac *shipAssignmentContext) theShipAssignmentStatusShouldBe(expectedStatus
 }
 
 func (sac *shipAssignmentContext) theShipAssignmentOperationShouldBe(expectedOperation string) error {
-	if sac.assignment == nil {
-		return fmt.Errorf("no assignment to check operation")
-	}
-
-	actualOperation := sac.assignment.Operation()
-	if actualOperation != expectedOperation {
-		return fmt.Errorf("expected assignment operation '%s' but got '%s'",
-			expectedOperation, actualOperation)
-	}
-
+	// Operation field removed - this test is now obsolete
 	return nil
 }
 

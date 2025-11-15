@@ -168,7 +168,7 @@ Example:
 			for _, model := range models {
 				created := model.CreatedAt.Format("2006-01-02")
 				fmt.Fprintf(w, "%d\t%s\t%s\n",
-					model.PlayerID,
+					model.ID,
 					model.AgentSymbol,
 					created,
 				)

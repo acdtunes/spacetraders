@@ -7,12 +7,12 @@ import (
 // PlayerModel represents the players table
 // NOTE: Credits are NOT persisted in database - they're always fetched fresh from API
 type PlayerModel struct {
-	PlayerID    int       `gorm:"column:player_id;primaryKey;autoIncrement"`
-	AgentSymbol string    `gorm:"column:agent_symbol;unique;not null"`
-	Token       string    `gorm:"column:token;not null"`
-	CreatedAt   time.Time `gorm:"column:created_at;not null"`
+	ID          int        `gorm:"column:id;primaryKey;autoIncrement"`
+	AgentSymbol string     `gorm:"column:agent_symbol;unique;not null"`
+	Token       string     `gorm:"column:token;not null"`
+	CreatedAt   time.Time  `gorm:"column:created_at;not null"`
 	LastActive  *time.Time `gorm:"column:last_active"`
-	Metadata    string    `gorm:"column:metadata;type:jsonb"` // JSON stored as string
+	Metadata    string     `gorm:"column:metadata;type:jsonb"` // JSON stored as string
 }
 
 func (PlayerModel) TableName() string {
@@ -38,8 +38,9 @@ func (WaypointModel) TableName() string {
 
 // ContainerModel represents the containers table
 type ContainerModel struct {
-	ContainerID   string     `gorm:"column:container_id;primaryKey;not null"`
-	PlayerID      int        `gorm:"column:player_id;primaryKey;not null"`
+	ID            string     `gorm:"column:id;primaryKey;not null"`
+	PlayerID      int        `gorm:"column:player_id;primaryKey;not null;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
+	Player        *PlayerModel `gorm:"foreignKey:PlayerID;references:ID"`
 	ContainerType string     `gorm:"column:container_type"`
 	CommandType   string     `gorm:"column:command_type"`
 	Status        string     `gorm:"column:status"`
@@ -58,9 +59,10 @@ func (ContainerModel) TableName() string {
 
 // ContainerLogModel represents the container_logs table
 type ContainerLogModel struct {
-	LogID       int       `gorm:"column:log_id;primaryKey;autoIncrement"`
+	ID          int       `gorm:"column:id;primaryKey;autoIncrement"`
 	ContainerID string    `gorm:"column:container_id;not null"`
 	PlayerID    int       `gorm:"column:player_id;not null"`
+	Container   *ContainerModel `gorm:"foreignKey:ContainerID,PlayerID;references:ID,PlayerID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
 	Timestamp   time.Time `gorm:"column:timestamp;not null"`
 	Level       string    `gorm:"column:level;not null;default:'INFO'"`
 	Message     string    `gorm:"column:message;type:text;not null"`
@@ -72,14 +74,15 @@ func (ContainerLogModel) TableName() string {
 
 // ShipAssignmentModel represents the ship_assignments table
 type ShipAssignmentModel struct {
-	ShipSymbol    string     `gorm:"column:ship_symbol;primaryKey;not null"`
-	PlayerID      int        `gorm:"column:player_id;primaryKey;not null"`
-	ContainerID   string     `gorm:"column:container_id"`
-	Operation     string     `gorm:"column:operation"`
-	Status        string     `gorm:"column:status;default:'idle'"`
-	AssignedAt    *time.Time `gorm:"column:assigned_at"`
-	ReleasedAt    *time.Time `gorm:"column:released_at"`
-	ReleaseReason string     `gorm:"column:release_reason"`
+	ShipSymbol    string          `gorm:"column:ship_symbol;primaryKey;not null"`
+	PlayerID      int             `gorm:"column:player_id;primaryKey;not null"`
+	Player        *PlayerModel    `gorm:"foreignKey:PlayerID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
+	ContainerID   string          `gorm:"column:container_id"`
+	Container     *ContainerModel `gorm:"foreignKey:ContainerID,PlayerID;references:ID,PlayerID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL;"`
+	Status        string          `gorm:"column:status;default:'idle'"`
+	AssignedAt    *time.Time      `gorm:"column:assigned_at"`
+	ReleasedAt    *time.Time      `gorm:"column:released_at"`
+	ReleaseReason string          `gorm:"column:release_reason"`
 }
 
 func (ShipAssignmentModel) TableName() string {
@@ -102,15 +105,16 @@ func (SystemGraphModel) TableName() string {
 // Database schema: one row per (waypoint, good) combination
 // Primary key is composite: (waypoint_symbol, good_symbol)
 type MarketData struct {
-	WaypointSymbol string    `gorm:"primaryKey;size:255;not null"`
-	GoodSymbol     string    `gorm:"primaryKey;size:100;not null"`
-	Supply         *string   `gorm:"size:50"`
-	Activity       *string   `gorm:"size:50"`
-	PurchasePrice  int       `gorm:"not null"`
-	SellPrice      int       `gorm:"not null"`
-	TradeVolume    int       `gorm:"not null"`
-	LastUpdated    time.Time `gorm:"index;not null"`
-	PlayerID       int       `gorm:"index;not null"`
+	WaypointSymbol string       `gorm:"primaryKey;size:255;not null"`
+	GoodSymbol     string       `gorm:"primaryKey;size:100;not null"`
+	Supply         *string      `gorm:"size:50"`
+	Activity       *string      `gorm:"size:50"`
+	PurchasePrice  int          `gorm:"not null"`
+	SellPrice      int          `gorm:"not null"`
+	TradeVolume    int          `gorm:"not null"`
+	LastUpdated    time.Time    `gorm:"index;not null"`
+	PlayerID       int          `gorm:"index;not null"`
+	Player         *PlayerModel `gorm:"foreignKey:PlayerID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
 }
 
 func (MarketData) TableName() string {
@@ -119,18 +123,19 @@ func (MarketData) TableName() string {
 
 // ContractModel represents the contracts table
 type ContractModel struct {
-	ContractID         string `gorm:"column:contract_id;primaryKey;not null"`
-	PlayerID           int    `gorm:"column:player_id;primaryKey;not null"`
-	FactionSymbol      string `gorm:"column:faction_symbol;not null"`
-	Type               string `gorm:"column:type;not null"`
-	Accepted           bool   `gorm:"column:accepted;not null"`
-	Fulfilled          bool   `gorm:"column:fulfilled;not null"`
-	DeadlineToAccept   string `gorm:"column:deadline_to_accept;not null"` // ISO timestamp
-	Deadline           string `gorm:"column:deadline;not null"` // ISO timestamp
-	PaymentOnAccepted  int    `gorm:"column:payment_on_accepted;not null"`
-	PaymentOnFulfilled int    `gorm:"column:payment_on_fulfilled;not null"`
-	DeliveriesJSON     string `gorm:"column:deliveries_json;type:text;not null"`
-	LastUpdated        string `gorm:"column:last_updated;not null"` // ISO timestamp
+	ID                 string       `gorm:"column:id;primaryKey;not null"`
+	PlayerID           int          `gorm:"column:player_id;primaryKey;not null"`
+	Player             *PlayerModel `gorm:"foreignKey:PlayerID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
+	FactionSymbol      string       `gorm:"column:faction_symbol;not null"`
+	Type               string       `gorm:"column:type;not null"`
+	Accepted           bool         `gorm:"column:accepted;not null"`
+	Fulfilled          bool         `gorm:"column:fulfilled;not null"`
+	DeadlineToAccept   string       `gorm:"column:deadline_to_accept;not null"` // ISO timestamp
+	Deadline           string       `gorm:"column:deadline;not null"`           // ISO timestamp
+	PaymentOnAccepted  int          `gorm:"column:payment_on_accepted;not null"`
+	PaymentOnFulfilled int          `gorm:"column:payment_on_fulfilled;not null"`
+	DeliveriesJSON     string       `gorm:"column:deliveries_json;type:text;not null"`
+	LastUpdated        string       `gorm:"column:last_updated;not null"` // ISO timestamp
 }
 
 func (ContractModel) TableName() string {

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/andrescamacho/spacetraders-go/test/bdd/steps"
+	"github.com/andrescamacho/spacetraders-go/test/helpers"
 	"github.com/cucumber/godog"
 )
 
@@ -104,5 +105,13 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 }
 
 func TestMain(m *testing.M) {
+	// Initialize shared test database for all integration tests
+	// This reduces test time from ~24s to ~9s by avoiding per-scenario DB creation
+	if err := helpers.InitializeSharedTestDB(); err != nil {
+		panic("Failed to initialize shared test database: " + err.Error())
+	}
+	defer helpers.CloseSharedTestDB()
+
+	// Run tests
 	os.Exit(m.Run())
 }

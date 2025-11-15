@@ -43,7 +43,7 @@ func (r *ContainerRepositoryGORM) Insert(
 	}
 
 	model := &ContainerModel{
-		ContainerID:   containerEntity.ID(),
+		ID:            containerEntity.ID(),
 		PlayerID:      containerEntity.PlayerID(),
 		ContainerType: string(containerEntity.Type()),
 		CommandType:   commandType,
@@ -86,7 +86,7 @@ func (r *ContainerRepositoryGORM) UpdateStatus(
 
 	result := r.db.WithContext(ctx).
 		Model(&ContainerModel{}).
-		Where("container_id = ? AND player_id = ?", containerID, playerID).
+		Where("id = ? AND player_id = ?", containerID, playerID).
 		Updates(updates)
 
 	if result.Error != nil {
@@ -105,7 +105,7 @@ func (r *ContainerRepositoryGORM) Get(
 	var model ContainerModel
 
 	result := r.db.WithContext(ctx).
-		Where("container_id = ? AND player_id = ?", containerID, playerID).
+		Where("id = ? AND player_id = ?", containerID, playerID).
 		First(&model)
 
 	if result.Error != nil {
@@ -166,7 +166,7 @@ func (r *ContainerRepositoryGORM) Delete(
 	playerID int,
 ) error {
 	result := r.db.WithContext(ctx).
-		Where("container_id = ? AND player_id = ?", containerID, playerID).
+		Where("id = ? AND player_id = ?", containerID, playerID).
 		Delete(&ContainerModel{})
 
 	if result.Error != nil {

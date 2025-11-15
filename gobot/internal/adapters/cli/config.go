@@ -171,7 +171,7 @@ Examples:
 			if playerID > 0 {
 				// Verify by player ID
 				var model persistence.PlayerModel
-				result := db.Where("player_id = ?", playerID).First(&model)
+				result := db.Where("id = ?", playerID).First(&model)
 				if result.Error != nil {
 					return fmt.Errorf("player with ID %d not found", playerID)
 				}
@@ -199,13 +199,13 @@ Examples:
 				}
 
 				verifiedPlayer = &persistence.PlayerModel{
-					PlayerID:    player.ID,
+					ID:          player.ID,
 					AgentSymbol: player.AgentSymbol,
 				}
 			}
 
 			fmt.Println("✓ Default player set successfully")
-			fmt.Printf("  Player ID:    %d\n", verifiedPlayer.PlayerID)
+			fmt.Printf("  Player ID:    %d\n", verifiedPlayer.ID)
 			fmt.Printf("  Agent Symbol: %s\n", verifiedPlayer.AgentSymbol)
 			fmt.Printf("\nCommands will now use this player by default.\n")
 			fmt.Printf("Override with --player-id or --agent flags.\n")

@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/cucumber/godog"
-	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/api"
@@ -56,26 +55,15 @@ type navigateShipHandlerContext struct {
 }
 
 func (ctx *navigateShipHandlerContext) reset() {
-	// Create in-memory SQLite database
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
-	if err != nil {
-		panic(fmt.Errorf("failed to open test database: %w", err))
+	// Use shared test database and truncate all tables for test isolation
+	if err := helpers.TruncateAllTables(); err != nil {
+		panic(fmt.Errorf("failed to truncate tables: %w", err))
 	}
 
-	// Run migrations
-	err = db.AutoMigrate(
-		&persistence.PlayerModel{},
-		&persistence.WaypointModel{},
-		&persistence.SystemGraphModel{},
-	)
-	if err != nil {
-		panic(fmt.Errorf("failed to migrate database: %w", err))
-	}
-
-	ctx.db = db
-	ctx.playerRepo = persistence.NewGormPlayerRepository(db)
-	ctx.waypointRepo = persistence.NewGormWaypointRepository(db)
-	ctx.graphRepo = persistence.NewGormSystemGraphRepository(db)
+	ctx.db = helpers.SharedTestDB
+	ctx.playerRepo = persistence.NewGormPlayerRepository(helpers.SharedTestDB)
+	ctx.waypointRepo = persistence.NewGormWaypointRepository(helpers.SharedTestDB)
+	ctx.graphRepo = persistence.NewGormSystemGraphRepository(helpers.SharedTestDB)
 	ctx.apiClient = helpers.NewMockAPIClient()
 	ctx.routingClient = helpers.NewMockRoutingClient()
 	ctx.mockClock = shared.NewMockClock(time.Now())

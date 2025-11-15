@@ -10,12 +10,12 @@ import (
 	"github.com/cucumber/messages/go/v21"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
-)
+
+	"github.com/andrescamacho/spacetraders-go/test/helpers")
 
 // WaypointCacheContext holds state for waypoint caching tests
 type WaypointCacheContext struct {
@@ -79,20 +79,13 @@ func InitializeWaypointCacheScenario(ctx *godog.ScenarioContext) {
 }
 
 func (c *WaypointCacheContext) reset() error {
-	// Create in-memory SQLite database
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
-	if err != nil {
-		return fmt.Errorf("failed to open test database: %w", err)
+	// Use shared test database and truncate all tables for test isolation
+	if err := helpers.TruncateAllTables(); err != nil {
+		return fmt.Errorf("failed to truncate tables: %w", err)
 	}
 
-	// Auto-migrate the models
-	err = db.AutoMigrate(&persistence.WaypointModel{})
-	if err != nil {
-		return fmt.Errorf("failed to migrate database: %w", err)
-	}
-
-	c.db = db
-	c.repo = persistence.NewGormWaypointRepository(db)
+	c.db = helpers.SharedTestDB
+	c.repo = persistence.NewGormWaypointRepository(helpers.SharedTestDB)
 	c.waypointsList = nil
 	c.retrievedWaypoint = nil
 	c.saveError = nil

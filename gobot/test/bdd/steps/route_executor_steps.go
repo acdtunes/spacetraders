@@ -146,14 +146,14 @@ func (ctx *routeExecutorContext) createPlayer() error {
 	}
 
 	if ctx.playerID != 0 {
-		player.PlayerID = ctx.playerID
+		player.ID = ctx.playerID
 	}
 
 	if err := ctx.db.Create(player).Error; err != nil {
 		return fmt.Errorf("failed to create player: %w", err)
 	}
 
-	ctx.playerID = player.PlayerID
+	ctx.playerID = player.ID
 	return nil
 }
 

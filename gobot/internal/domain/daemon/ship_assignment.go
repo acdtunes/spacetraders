@@ -25,7 +25,6 @@ type ShipAssignment struct {
 	shipSymbol    string
 	playerID      int
 	containerID   string
-	operation     string
 	status        AssignmentStatus
 	assignedAt    time.Time
 	releasedAt    *time.Time
@@ -38,7 +37,6 @@ func NewShipAssignment(
 	shipSymbol string,
 	playerID int,
 	containerID string,
-	operation string,
 	clock shared.Clock,
 ) *ShipAssignment {
 	if clock == nil {
@@ -49,7 +47,6 @@ func NewShipAssignment(
 		shipSymbol:  shipSymbol,
 		playerID:    playerID,
 		containerID: containerID,
-		operation:   operation,
 		status:      AssignmentStatusActive,
 		assignedAt:  clock.Now(),
 		clock:       clock,
@@ -61,7 +58,6 @@ func NewShipAssignment(
 func (sa *ShipAssignment) ShipSymbol() string           { return sa.shipSymbol }
 func (sa *ShipAssignment) PlayerID() int                { return sa.playerID }
 func (sa *ShipAssignment) ContainerID() string          { return sa.containerID }
-func (sa *ShipAssignment) Operation() string            { return sa.operation }
 func (sa *ShipAssignment) Status() AssignmentStatus     { return sa.status }
 func (sa *ShipAssignment) AssignedAt() time.Time        { return sa.assignedAt }
 func (sa *ShipAssignment) ReleasedAt() *time.Time       { return sa.releasedAt }
@@ -109,8 +105,8 @@ func (sa *ShipAssignment) IsActive() bool {
 
 // String provides human-readable representation
 func (sa *ShipAssignment) String() string {
-	return fmt.Sprintf("ShipAssignment[ship=%s, container=%s, operation=%s, status=%s]",
-		sa.shipSymbol, sa.containerID, sa.operation, sa.status)
+	return fmt.Sprintf("ShipAssignment[ship=%s, container=%s, status=%s]",
+		sa.shipSymbol, sa.containerID, sa.status)
 }
 
 // ShipAssignmentManager manages ship assignments and enforces locking
@@ -138,7 +134,6 @@ func (sam *ShipAssignmentManager) AssignShip(
 	shipSymbol string,
 	playerID int,
 	containerID string,
-	operation string,
 ) (*ShipAssignment, error) {
 	// Check if ship is already assigned
 	if existing, exists := sam.assignments[shipSymbol]; exists {
@@ -148,7 +143,7 @@ func (sam *ShipAssignmentManager) AssignShip(
 	}
 
 	// Create new assignment
-	assignment := NewShipAssignment(shipSymbol, playerID, containerID, operation, sam.clock)
+	assignment := NewShipAssignment(shipSymbol, playerID, containerID, sam.clock)
 	sam.assignments[shipSymbol] = assignment
 
 	return assignment, nil

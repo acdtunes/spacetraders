@@ -76,7 +76,7 @@ func (dec *daemonEntityContext) reset() {
 
 func (dec *daemonEntityContext) iCreateAShipAssignmentWithShipPlayerContainerOperation(
 	shipSymbol string, playerID int, containerID, operation string) error {
-	dec.assignment = daemon.NewShipAssignment(shipSymbol, playerID, containerID, operation, dec.clock)
+	dec.assignment = daemon.NewShipAssignment(shipSymbol, playerID, containerID, dec.clock)
 	return nil
 }
 
@@ -102,9 +102,7 @@ func (dec *daemonEntityContext) theShipAssignmentShouldHaveContainerID(expected 
 }
 
 func (dec *daemonEntityContext) theShipAssignmentShouldHaveOperation(expected string) error {
-	if dec.assignment.Operation() != expected {
-		return fmt.Errorf("expected operation '%s' but got '%s'", expected, dec.assignment.Operation())
-	}
+	// Operation field removed - this test is now obsolete
 	return nil
 }
 
@@ -138,12 +136,12 @@ func (dec *daemonEntityContext) theShipAssignmentShouldNotHaveAReleaseReason() e
 }
 
 func (dec *daemonEntityContext) anActiveShipAssignmentForShip(shipSymbol string) error {
-	dec.assignment = daemon.NewShipAssignment(shipSymbol, 1, "container-123", "navigate", dec.clock)
+	dec.assignment = daemon.NewShipAssignment(shipSymbol, 1, "container-123", dec.clock)
 	return nil
 }
 
 func (dec *daemonEntityContext) aReleasedShipAssignmentForShip(shipSymbol string) error {
-	dec.assignment = daemon.NewShipAssignment(shipSymbol, 1, "container-123", "navigate", dec.clock)
+	dec.assignment = daemon.NewShipAssignment(shipSymbol, 1, "container-123", dec.clock)
 	dec.assignment.Release("test_release")
 	return nil
 }
@@ -197,7 +195,7 @@ func (dec *daemonEntityContext) iForceReleaseTheAssignmentWithReason(reason stri
 
 func (dec *daemonEntityContext) anActiveShipAssignmentCreatedMinutesAgo(minutes int) error {
 	dec.clock = shared.NewMockClock(time.Now().Add(-time.Duration(minutes) * time.Minute))
-	dec.assignment = daemon.NewShipAssignment("SHIP-1", 1, "container-123", "navigate", dec.clock)
+	dec.assignment = daemon.NewShipAssignment("SHIP-1", 1, "container-123", dec.clock)
 	dec.clock = shared.NewMockClock(time.Now()) // Reset to current time
 	return nil
 }
@@ -241,7 +239,7 @@ func (dec *daemonEntityContext) anActiveShipAssignmentCreatedAgo(duration string
 		}
 	}
 	dec.clock = shared.NewMockClock(time.Now().Add(-d))
-	dec.assignment = daemon.NewShipAssignment("SHIP-1", 1, "container-123", "navigate", dec.clock)
+	dec.assignment = daemon.NewShipAssignment("SHIP-1", 1, "container-123", dec.clock)
 	dec.clock = shared.NewMockClock(time.Now())
 	return nil
 }
@@ -249,7 +247,7 @@ func (dec *daemonEntityContext) anActiveShipAssignmentCreatedAgo(duration string
 func (dec *daemonEntityContext) aReleasedShipAssignmentCreatedMinutesAgo(minutes int) error {
 	pastTime := time.Now().Add(-time.Duration(minutes) * time.Minute)
 	dec.clock = shared.NewMockClock(pastTime)
-	dec.assignment = daemon.NewShipAssignment("SHIP-1", 1, "container-123", "navigate", dec.clock)
+	dec.assignment = daemon.NewShipAssignment("SHIP-1", 1, "container-123", dec.clock)
 	dec.assignment.Release("test_release")
 	dec.clock = shared.NewMockClock(time.Now())
 	return nil
@@ -258,7 +256,7 @@ func (dec *daemonEntityContext) aReleasedShipAssignmentCreatedMinutesAgo(minutes
 func (dec *daemonEntityContext) aReleasedShipAssignmentCreatedDaysAgo(days int) error {
 	pastTime := time.Now().Add(-time.Duration(days) * 24 * time.Hour)
 	dec.clock = shared.NewMockClock(pastTime)
-	dec.assignment = daemon.NewShipAssignment("SHIP-1", 1, "container-123", "navigate", dec.clock)
+	dec.assignment = daemon.NewShipAssignment("SHIP-1", 1, "container-123", dec.clock)
 	dec.assignment.Release("test_release")
 	dec.clock = shared.NewMockClock(time.Now())
 	return nil
@@ -267,7 +265,7 @@ func (dec *daemonEntityContext) aReleasedShipAssignmentCreatedDaysAgo(days int) 
 func (dec *daemonEntityContext) anActiveShipAssignmentCreatedSecondsAgo(seconds int) error {
 	pastTime := time.Now().Add(-time.Duration(seconds) * time.Second)
 	dec.clock = shared.NewMockClock(pastTime)
-	dec.assignment = daemon.NewShipAssignment("SHIP-1", 1, "container-123", "navigate", dec.clock)
+	dec.assignment = daemon.NewShipAssignment("SHIP-1", 1, "container-123", dec.clock)
 	dec.clock = shared.NewMockClock(time.Now())
 	return nil
 }
@@ -309,7 +307,7 @@ func (dec *daemonEntityContext) iAssignShipToContainerWithPlayerAndOperation(
 	if dec.manager == nil {
 		dec.manager = daemon.NewShipAssignmentManager(dec.clock)
 	}
-	dec.assignment, dec.assignmentErr = dec.manager.AssignShip(context.Background(), shipSymbol, playerID, containerID, operation)
+	dec.assignment, dec.assignmentErr = dec.manager.AssignShip(context.Background(), shipSymbol, playerID, containerID)
 	if dec.assignmentErr == nil {
 		dec.assignments[shipSymbol] = dec.assignment
 	}
@@ -356,9 +354,7 @@ func (dec *daemonEntityContext) theAssignmentShouldHavePlayerID(expected int) er
 }
 
 func (dec *daemonEntityContext) theAssignmentShouldHaveOperation(expected string) error {
-	if dec.assignment.Operation() != expected {
-		return fmt.Errorf("expected operation '%s' but got '%s'", expected, dec.assignment.Operation())
-	}
+	// Operation field removed - this test is now obsolete
 	return nil
 }
 
@@ -374,7 +370,7 @@ func (dec *daemonEntityContext) shipIsAssignedToContainer(shipSymbol, containerI
 	if dec.manager == nil {
 		dec.manager = daemon.NewShipAssignmentManager(dec.clock)
 	}
-	assignment, err := dec.manager.AssignShip(context.Background(), shipSymbol, 1, containerID, "test_operation")
+	assignment, err := dec.manager.AssignShip(context.Background(), shipSymbol, 1, containerID)
 	if err != nil {
 		return err
 	}
@@ -387,7 +383,7 @@ func (dec *daemonEntityContext) iAttemptToAssignShipToContainerWithPlayerAndOper
 	if dec.manager == nil {
 		dec.manager = daemon.NewShipAssignmentManager(dec.clock)
 	}
-	dec.assignment, dec.assignmentErr = dec.manager.AssignShip(context.Background(), shipSymbol, playerID, containerID, operation)
+	dec.assignment, dec.assignmentErr = dec.manager.AssignShip(context.Background(), shipSymbol, playerID, containerID)
 	return nil
 }
 
@@ -633,10 +629,10 @@ func (dec *daemonEntityContext) shipWasAssignedToContainerMinutesAgo(shipSymbol,
 	}
 	pastTime := time.Now().Add(-time.Duration(minutesAgo) * time.Minute)
 	pastClock := shared.NewMockClock(pastTime)
-	assignment := daemon.NewShipAssignment(shipSymbol, 1, containerID, "test_operation", pastClock)
+	assignment := daemon.NewShipAssignment(shipSymbol, 1, containerID, pastClock)
 	// Manually add to manager's internal state (this is a test workaround)
 	// In real implementation, we'd use the manager's AssignShip method
-	dec.manager.AssignShip(context.Background(), shipSymbol, 1, containerID, "test_operation")
+	dec.manager.AssignShip(context.Background(), shipSymbol, 1, containerID)
 	dec.assignments[shipSymbol] = assignment
 	return nil
 }
@@ -674,8 +670,8 @@ func (dec *daemonEntityContext) shipWasAssignedToContainerAgo(shipSymbol, contai
 	}
 	pastTime := time.Now().Add(-d)
 	pastClock := shared.NewMockClock(pastTime)
-	assignment := daemon.NewShipAssignment(shipSymbol, 1, containerID, "test_operation", pastClock)
-	dec.manager.AssignShip(context.Background(), shipSymbol, 1, containerID, "test_operation")
+	assignment := daemon.NewShipAssignment(shipSymbol, 1, containerID, pastClock)
+	dec.manager.AssignShip(context.Background(), shipSymbol, 1, containerID)
 	dec.assignments[shipSymbol] = assignment
 	return nil
 }
@@ -692,8 +688,8 @@ func (dec *daemonEntityContext) shipWasAssignedToContainerSecondsAgo(shipSymbol,
 	}
 	pastTime := time.Now().Add(-time.Duration(secondsAgo) * time.Second)
 	pastClock := shared.NewMockClock(pastTime)
-	assignment := daemon.NewShipAssignment(shipSymbol, 1, containerID, "test_operation", pastClock)
-	dec.manager.AssignShip(context.Background(), shipSymbol, 1, containerID, "test_operation")
+	assignment := daemon.NewShipAssignment(shipSymbol, 1, containerID, pastClock)
+	dec.manager.AssignShip(context.Background(), shipSymbol, 1, containerID)
 	dec.assignments[shipSymbol] = assignment
 	return nil
 }
@@ -704,8 +700,8 @@ func (dec *daemonEntityContext) shipWasAssignedToContainerHourAgo(shipSymbol, co
 	}
 	pastTime := time.Now().Add(-time.Duration(hoursAgo) * time.Hour)
 	pastClock := shared.NewMockClock(pastTime)
-	assignment := daemon.NewShipAssignment(shipSymbol, 1, containerID, "test_operation", pastClock)
-	dec.manager.AssignShip(context.Background(), shipSymbol, 1, containerID, "test_operation")
+	assignment := daemon.NewShipAssignment(shipSymbol, 1, containerID, pastClock)
+	dec.manager.AssignShip(context.Background(), shipSymbol, 1, containerID)
 	dec.assignments[shipSymbol] = assignment
 	return nil
 }
@@ -1111,7 +1107,7 @@ func (dec *daemonEntityContext) aHealthMonitorWithAssignments(table *godog.Table
 		// Create assignment in the past
 		pastTime := dec.clock.Now().Add(-time.Duration(minutesAgo) * time.Minute)
 		pastClock := shared.NewMockClock(pastTime)
-		assignment := daemon.NewShipAssignment(shipSymbol, 1, containerID, "test_op", pastClock)
+		assignment := daemon.NewShipAssignment(shipSymbol, 1, containerID, pastClock)
 
 		if status == "released" {
 			assignment.Release("manual_release")

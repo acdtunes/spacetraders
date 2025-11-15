@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/cucumber/godog"
-	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/api"
@@ -42,25 +41,15 @@ type scoutMarketsContext struct {
 }
 
 func (c *scoutMarketsContext) reset() error {
-	// Create in-memory SQLite database
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
-	if err != nil {
-		return fmt.Errorf("failed to open test database: %w", err)
+	// Use shared test database and truncate all tables for test isolation
+	if err := helpers.TruncateAllTables(); err != nil {
+		return fmt.Errorf("failed to truncate tables: %w", err)
 	}
 
-	// Auto-migrate the models
-	err = db.AutoMigrate(
-		&persistence.PlayerModel{},
-		&persistence.WaypointModel{},
-	)
-	if err != nil {
-		return fmt.Errorf("failed to migrate database: %w", err)
-	}
-
-	c.db = db
+	c.db = helpers.SharedTestDB
 	c.apiClient = helpers.NewMockAPIClient()
-	c.playerRepo = persistence.NewGormPlayerRepository(db)
-	c.waypointRepo = persistence.NewGormWaypointRepository(db)
+	c.playerRepo = persistence.NewGormPlayerRepository(helpers.SharedTestDB)
+	c.waypointRepo = persistence.NewGormWaypointRepository(helpers.SharedTestDB)
 	c.shipRepo = api.NewAPIShipRepository(c.apiClient, c.playerRepo, c.waypointRepo)
 	c.mockPlayerRepo = helpers.NewMockPlayerRepository()
 	c.mockRoutingClient = helpers.NewMockRoutingClient()
@@ -89,7 +78,7 @@ func (c *scoutMarketsContext) aScoutMarketsPlayerWithIDAndAgent(playerID int, ag
 
 	// Persist to database
 	playerModel := &persistence.PlayerModel{
-		PlayerID:    playerID,
+		ID:          playerID,
 		AgentSymbol: agentSymbol,
 		Token:       "test-token",
 	}
