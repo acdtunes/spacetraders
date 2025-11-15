@@ -203,6 +203,15 @@ func (sac *shipAssignmentContext) iAttemptToAssignShipToContainerWithOperation(s
 
 func (sac *shipAssignmentContext) iReleaseTheShipAssignmentForWithReason(shipSymbol, reason string) error {
 	sac.err = sac.manager.ReleaseAssignment(shipSymbol, reason)
+
+	// Fetch updated assignment from manager after release
+	if sac.err == nil {
+		assignment, exists := sac.manager.GetAssignment(shipSymbol)
+		if exists {
+			sac.assignment = assignment
+		}
+	}
+
 	return nil
 }
 
@@ -216,26 +225,16 @@ func (sac *shipAssignmentContext) iReleaseAllShipAssignmentsWithReason(reason st
 // ============================================================================
 
 func (sac *shipAssignmentContext) shipHasAnOrphanedAssignmentToNonExistentContainer(shipSymbol, containerID string) error {
-	// Use player ID from ships map if available, otherwise default to 1
-	// (this allows the test to work even when ship is created by a different context)
-	playerID := 1
-	if storedPlayerID, exists := sac.ships[shipSymbol]; exists {
-		playerID = storedPlayerID
+	// Create ship if it doesn't exist
+	playerID, exists := sac.ships[shipSymbol]
+	if !exists {
+		playerID = 1 // Default player ID
+		sac.ships[shipSymbol] = playerID
+		sac.players[playerID] = true
 	}
 
-	// Create orphaned assignment directly
-	assignment := daemon.NewShipAssignment(
-		shipSymbol,
-		playerID,
-		containerID,
-		"orphaned_operation",
-		sac.clock,
-	)
-
-	// Manually add to manager's internal map (simulating persistence)
-	sac.assignments[shipSymbol] = assignment
-
 	// Use the manager to assign (this is the orphaned assignment)
+	// The container does NOT exist in sac.containers, making this orphaned
 	sac.assignment, sac.err = sac.manager.AssignShip(
 		context.Background(),
 		shipSymbol,
@@ -243,6 +242,10 @@ func (sac *shipAssignmentContext) shipHasAnOrphanedAssignmentToNonExistentContai
 		containerID,
 		"orphaned_operation",
 	)
+
+	if sac.err == nil {
+		sac.assignments[shipSymbol] = sac.assignment
+	}
 
 	return nil
 }
@@ -590,6 +593,11 @@ func (sac *shipAssignmentContext) shipShouldNotBeAssignedToAnyContainer(shipSymb
 // ============================================================================
 
 func (sac *shipAssignmentContext) theShipAssignmentShouldBePersistedInTheDatabase() error {
+	// Check if there was an error during assignment
+	if sac.err != nil {
+		return fmt.Errorf("cannot check persistence - assignment failed: %v", sac.err)
+	}
+
 	// In-memory manager - we simulate persistence by checking if assignment exists
 	if sac.assignment == nil {
 		return fmt.Errorf("no assignment to persist")
