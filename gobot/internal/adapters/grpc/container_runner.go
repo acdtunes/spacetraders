@@ -150,6 +150,13 @@ func (r *ContainerRunner) execute() {
 
 		// Execute single iteration
 		if err := r.executeIteration(); err != nil {
+			// Check if error is due to context cancellation (shutdown signal)
+			// Don't retry on context cancellation - exit immediately
+			if r.ctx.Err() != nil {
+				r.log("INFO", "Context canceled, stopping container", nil)
+				return
+			}
+
 			r.handleError(err)
 
 			// Check if we should retry
