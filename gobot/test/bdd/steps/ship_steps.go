@@ -421,11 +421,17 @@ func (sc *shipContext) iAttemptToEnsureTheShipIsDocked() error {
 }
 
 func (sc *shipContext) theOperationShouldFailWithError(expectedError string) error {
-	if sc.err == nil {
+	// Check both local context error and shared error (for cross-context assertions)
+	actualErr := sc.err
+	if actualErr == nil {
+		actualErr = sharedErr // Check shared error from other contexts (e.g., value object validation)
+	}
+
+	if actualErr == nil {
 		return fmt.Errorf("expected error containing '%s' but got no error", expectedError)
 	}
-	if !strings.Contains(sc.err.Error(), expectedError) {
-		return fmt.Errorf("expected error containing '%s' but got '%s'", expectedError, sc.err.Error())
+	if !strings.Contains(actualErr.Error(), expectedError) {
+		return fmt.Errorf("expected error containing '%s' but got '%s'", expectedError, actualErr.Error())
 	}
 	return nil
 }
