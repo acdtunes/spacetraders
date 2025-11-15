@@ -438,3 +438,80 @@ Feature: Ship Entity
     And a route segment requiring 50 units of fuel in CRUISE mode
     When I check if ship should prevent drift mode with threshold 0.5
     Then the result should be false
+
+  # ============================================================================
+  # Additional Edge Cases for Increased Coverage
+  # ============================================================================
+
+  Scenario: Refuel ship with zero fuel capacity (probe)
+    Given a ship with 0 units of fuel and capacity 0
+    When the ship refuels to full
+    Then the fuel added should be 0 units
+    And the ship should have 0 units of fuel
+
+  Scenario: Ship with zero cargo capacity cannot load cargo
+    Given a ship with cargo capacity 0 and cargo units 0
+    When I check if the ship has cargo space for 1 units
+    Then the result should be false
+
+  Scenario: Consume exactly all remaining fuel
+    Given a ship with 50 units of fuel
+    When the ship consumes 50 units of fuel
+    Then the ship should have 0 units of fuel
+
+  Scenario: Cannot consume more fuel than available by 1 unit
+    Given a ship with 10 units of fuel
+    When I attempt to consume 11 units of fuel
+    Then the operation should fail with error "insufficient fuel"
+    And the ship should have 10 units of fuel
+
+  Scenario: Ship at exact refuel threshold boundary (low side)
+    Given a ship at "X1-A1" with 49 units of fuel and capacity 100
+    And waypoint "X1-A1" has trait "MARKETPLACE" and fuel available
+    When I check if ship should refuel opportunistically at "X1-A1" with threshold 0.5
+    Then the result should be true
+
+  Scenario: Ship at exact refuel threshold boundary (high side)
+    Given a ship at "X1-A1" with 50 units of fuel and capacity 100
+    And waypoint "X1-A1" has trait "MARKETPLACE" and fuel available
+    When I check if ship should refuel opportunistically at "X1-A1" with threshold 0.5
+    Then the result should be false
+
+  Scenario: Check cargo space for zero units always returns true
+    Given a ship with cargo capacity 40 and cargo units 40
+    When I check if the ship has cargo space for 0 units
+    Then the result should be true
+
+  Scenario: Calculate fuel for zero distance travel
+    Given a ship at "X1-A1" with coordinates (0, 0)
+    When I calculate fuel required to "X1-A1" with CRUISE mode
+    Then the fuel required should be 0 units
+
+  Scenario: Ship needs refuel when fuel exactly equals required amount
+    Given a ship at "X1-A1" with coordinates (0, 0) and 100 units of fuel
+    And a waypoint "X1-B2" at coordinates (100, 0)
+    When I check if the ship needs refuel for journey to "X1-B2" with safety margin 0.0
+    Then the result should be false
+
+  Scenario: Ship needs refuel with small safety margin
+    Given a ship at "X1-A1" with coordinates (0, 0) and 100 units of fuel
+    And a waypoint "X1-B2" at coordinates (100, 0)
+    When I check if the ship needs refuel for journey to "X1-B2" with safety margin 0.1
+    Then the result should be true
+
+  Scenario: Prevent drift mode at exact threshold boundary
+    Given a ship with 50 units of fuel and capacity 100
+    And a route segment requiring 40 units of fuel in DRIFT mode
+    When I check if ship should prevent drift mode with threshold 0.5
+    Then the result should be false
+
+  Scenario: Update ship location during transit
+    Given a ship in orbit at "X1-A1"
+    When the ship starts transit to "X1-B2"
+    Then the ship should be at location "X1-B2"
+    And the ship should be in transit
+
+  Scenario: Cannot start transit to same location
+    Given a ship in orbit at "X1-A1"
+    When I attempt to start transit to "X1-A1"
+    Then the operation should fail with error "cannot transit to same location"
