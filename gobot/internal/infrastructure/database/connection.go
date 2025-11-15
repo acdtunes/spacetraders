@@ -92,7 +92,6 @@ func AutoMigrate(db *gorm.DB) error {
 		&persistence.ShipAssignmentModel{},
 		&persistence.SystemGraphModel{},
 		&persistence.MarketData{},
-		&persistence.TradeGoodData{},
 		&persistence.ContractModel{},
 	)
 }

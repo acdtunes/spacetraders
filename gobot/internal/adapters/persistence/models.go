@@ -99,33 +99,22 @@ func (SystemGraphModel) TableName() string {
 }
 
 // MarketData represents the market_data table
+// Database schema: one row per (waypoint, good) combination
+// Primary key is composite: (waypoint_symbol, good_symbol)
 type MarketData struct {
-	ID             uint            `gorm:"primaryKey;autoIncrement"`
-	PlayerID       uint            `gorm:"index:idx_player_waypoint,unique;not null"`
-	WaypointSymbol string          `gorm:"index:idx_player_waypoint,unique;size:255;not null"`
-	LastUpdated    time.Time       `gorm:"index;not null"`
-	CreatedAt      time.Time       `gorm:"not null;autoCreateTime"`
-	TradeGoods     []TradeGoodData `gorm:"foreignKey:MarketDataID;constraint:OnDelete:CASCADE"`
+	WaypointSymbol string    `gorm:"primaryKey;size:255;not null"`
+	GoodSymbol     string    `gorm:"primaryKey;size:100;not null"`
+	Supply         *string   `gorm:"size:50"`
+	Activity       *string   `gorm:"size:50"`
+	PurchasePrice  int       `gorm:"not null"`
+	SellPrice      int       `gorm:"not null"`
+	TradeVolume    int       `gorm:"not null"`
+	LastUpdated    time.Time `gorm:"index;not null"`
+	PlayerID       int       `gorm:"index;not null"`
 }
 
 func (MarketData) TableName() string {
 	return "market_data"
-}
-
-// TradeGoodData represents the trade_goods table
-type TradeGoodData struct {
-	ID            uint    `gorm:"primaryKey;autoIncrement"`
-	MarketDataID  uint    `gorm:"index;not null"`
-	Symbol        string  `gorm:"size:100;not null"`
-	Supply        *string `gorm:"size:50"`
-	Activity      *string `gorm:"size:50"`
-	PurchasePrice int     `gorm:"not null"`
-	SellPrice     int     `gorm:"not null"`
-	TradeVolume   int     `gorm:"not null"`
-}
-
-func (TradeGoodData) TableName() string {
-	return "trade_goods"
 }
 
 // ContractModel represents the contracts table

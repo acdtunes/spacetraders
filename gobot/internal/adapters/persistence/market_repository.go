@@ -22,6 +22,8 @@ func NewMarketRepository(db *gorm.DB) *MarketRepositoryGORM {
 }
 
 // UpsertMarketData inserts or updates market data for a waypoint
+// Database schema: market_data table has one row per (waypoint, good) combination
+// Primary key is (waypoint_symbol, good_symbol)
 func (r *MarketRepositoryGORM) UpsertMarketData(
 	ctx context.Context,
 	playerID uint,
@@ -30,54 +32,34 @@ func (r *MarketRepositoryGORM) UpsertMarketData(
 	timestamp time.Time,
 ) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// Find or create MarketData
-		var marketData MarketData
-		err := tx.Where("player_id = ? AND waypoint_symbol = ?", playerID, waypointSymbol).
-			First(&marketData).Error
-
-		if err == gorm.ErrRecordNotFound {
-			// Create new record
-			marketData = MarketData{
-				PlayerID:       playerID,
-				WaypointSymbol: waypointSymbol,
-				LastUpdated:    timestamp,
-				CreatedAt:      time.Now(),
-			}
-			if err := tx.Create(&marketData).Error; err != nil {
-				return fmt.Errorf("failed to create market data: %w", err)
-			}
-		} else if err != nil {
-			return fmt.Errorf("failed to query market data: %w", err)
-		} else {
-			// Update timestamp
-			marketData.LastUpdated = timestamp
-			if err := tx.Save(&marketData).Error; err != nil {
-				return fmt.Errorf("failed to update market data: %w", err)
-			}
+		// Delete all existing trade goods for this waypoint
+		// We'll re-insert them with updated data
+		if err := tx.Where("player_id = ? AND waypoint_symbol = ?", playerID, waypointSymbol).
+			Delete(&MarketData{}).Error; err != nil {
+			return fmt.Errorf("failed to delete old market data: %w", err)
 		}
 
-		// Delete existing trade goods
-		if err := tx.Where("market_data_id = ?", marketData.ID).Delete(&TradeGoodData{}).Error; err != nil {
-			return fmt.Errorf("failed to delete old trade goods: %w", err)
-		}
-
-		// Insert new trade goods
+		// Insert all trade goods for this waypoint
 		if len(goods) > 0 {
-			tradeGoodsData := make([]TradeGoodData, len(goods))
+			marketDataRecords := make([]MarketData, len(goods))
 			for i, good := range goods {
-				tradeGoodsData[i] = TradeGoodData{
-					MarketDataID:  marketData.ID,
-					Symbol:        good.Symbol(),
-					Supply:        good.Supply(),
-					Activity:      good.Activity(),
-					PurchasePrice: good.PurchasePrice(),
-					SellPrice:     good.SellPrice(),
-					TradeVolume:   good.TradeVolume(),
+				supply := good.Supply()
+				activity := good.Activity()
+				marketDataRecords[i] = MarketData{
+					WaypointSymbol: waypointSymbol,
+					GoodSymbol:     good.Symbol(),
+					Supply:         supply,
+					Activity:       activity,
+					PurchasePrice:  good.PurchasePrice(),
+					SellPrice:      good.SellPrice(),
+					TradeVolume:    good.TradeVolume(),
+					LastUpdated:    timestamp,
+					PlayerID:       int(playerID),
 				}
 			}
 
-			if err := tx.Create(&tradeGoodsData).Error; err != nil {
-				return fmt.Errorf("failed to insert trade goods: %w", err)
+			if err := tx.Create(&marketDataRecords).Error; err != nil {
+				return fmt.Errorf("failed to insert market data: %w", err)
 			}
 		}
 
@@ -86,28 +68,50 @@ func (r *MarketRepositoryGORM) UpsertMarketData(
 }
 
 // GetMarketData retrieves market data for a specific waypoint
+// Database schema: multiple rows in market_data, one per (waypoint, good)
 func (r *MarketRepositoryGORM) GetMarketData(
 	ctx context.Context,
 	playerID uint,
 	waypointSymbol string,
 ) (*market.Market, error) {
-	var marketData MarketData
+	// Query all goods for this waypoint
+	var marketDataRecords []MarketData
 	err := r.db.WithContext(ctx).
-		Preload("TradeGoods").
 		Where("player_id = ? AND waypoint_symbol = ?", playerID, waypointSymbol).
-		First(&marketData).Error
+		Find(&marketDataRecords).Error
 
-	if err == gorm.ErrRecordNotFound {
-		return nil, nil
-	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to get market data: %w", err)
 	}
 
-	return r.toDomain(&marketData)
+	if len(marketDataRecords) == 0 {
+		return nil, nil
+	}
+
+	// Convert to domain objects
+	goods := make([]market.TradeGood, len(marketDataRecords))
+	var timestamp time.Time
+	for i, record := range marketDataRecords {
+		good, err := market.NewTradeGood(
+			record.GoodSymbol,
+			record.Supply,
+			record.Activity,
+			record.PurchasePrice,
+			record.SellPrice,
+			record.TradeVolume,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("invalid trade good in database: %w", err)
+		}
+		goods[i] = *good
+		timestamp = record.LastUpdated
+	}
+
+	return market.NewMarket(waypointSymbol, goods, timestamp)
 }
 
 // ListMarketsInSystem retrieves all markets in a system, optionally filtered by age
+// Database schema: multiple rows per waypoint, need to group by waypoint_symbol
 func (r *MarketRepositoryGORM) ListMarketsInSystem(
 	ctx context.Context,
 	playerID uint,
@@ -115,7 +119,6 @@ func (r *MarketRepositoryGORM) ListMarketsInSystem(
 	maxAgeMinutes int,
 ) ([]market.Market, error) {
 	query := r.db.WithContext(ctx).
-		Preload("TradeGoods").
 		Where("player_id = ? AND waypoint_symbol LIKE ?", playerID, systemSymbol+"-%")
 
 	if maxAgeMinutes > 0 {
@@ -128,9 +131,34 @@ func (r *MarketRepositoryGORM) ListMarketsInSystem(
 		return nil, fmt.Errorf("failed to list markets: %w", err)
 	}
 
-	markets := make([]market.Market, 0, len(marketDataList))
-	for _, md := range marketDataList {
-		m, err := r.toDomain(&md)
+	// Group records by waypoint
+	waypointGoods := make(map[string][]MarketData)
+	for _, record := range marketDataList {
+		waypointGoods[record.WaypointSymbol] = append(waypointGoods[record.WaypointSymbol], record)
+	}
+
+	// Convert each waypoint's goods to a Market
+	markets := make([]market.Market, 0, len(waypointGoods))
+	for waypointSymbol, records := range waypointGoods {
+		goods := make([]market.TradeGood, len(records))
+		var timestamp time.Time
+		for i, record := range records {
+			good, err := market.NewTradeGood(
+				record.GoodSymbol,
+				record.Supply,
+				record.Activity,
+				record.PurchasePrice,
+				record.SellPrice,
+				record.TradeVolume,
+			)
+			if err != nil {
+				return nil, fmt.Errorf("invalid trade good in database: %w", err)
+			}
+			goods[i] = *good
+			timestamp = record.LastUpdated
+		}
+
+		m, err := market.NewMarket(waypointSymbol, goods, timestamp)
 		if err != nil {
 			return nil, err
 		}
@@ -148,8 +176,8 @@ func (r *MarketRepositoryGORM) FindCheapestMarketSelling(
 	playerID int,
 ) (*trading.CheapestMarketResult, error) {
 	// Query to find the cheapest market selling the specified good
-	// Join market_data and trade_goods tables, filter by system and good symbol
-	// Order by sell_price ascending and limit to 1
+	// Query market_data table directly (no join needed - all data is in this table)
+	// Filter by system, good symbol, and order by sell_price ascending
 	var result struct {
 		WaypointSymbol string
 		TradeSymbol    string
@@ -159,12 +187,11 @@ func (r *MarketRepositoryGORM) FindCheapestMarketSelling(
 
 	err := r.db.WithContext(ctx).
 		Table("market_data").
-		Select("market_data.waypoint_symbol, trade_goods.symbol as trade_symbol, trade_goods.sell_price, trade_goods.supply").
-		Joins("INNER JOIN trade_goods ON trade_goods.market_data_id = market_data.id").
-		Where("market_data.player_id = ?", playerID).
-		Where("market_data.waypoint_symbol LIKE ?", systemSymbol+"-%").
-		Where("trade_goods.symbol = ?", goodSymbol).
-		Order("trade_goods.sell_price ASC").
+		Select("waypoint_symbol, good_symbol as trade_symbol, sell_price, supply").
+		Where("player_id = ?", playerID).
+		Where("waypoint_symbol LIKE ?", systemSymbol+"-%").
+		Where("good_symbol = ?", goodSymbol).
+		Order("sell_price ASC").
 		Limit(1).
 		Scan(&result).Error
 
@@ -190,23 +217,3 @@ func (r *MarketRepositoryGORM) FindCheapestMarketSelling(
 	}, nil
 }
 
-// toDomain converts database models to domain Market entity
-func (r *MarketRepositoryGORM) toDomain(md *MarketData) (*market.Market, error) {
-	goods := make([]market.TradeGood, len(md.TradeGoods))
-	for i, tg := range md.TradeGoods {
-		good, err := market.NewTradeGood(
-			tg.Symbol,
-			tg.Supply,
-			tg.Activity,
-			tg.PurchasePrice,
-			tg.SellPrice,
-			tg.TradeVolume,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("invalid trade good in database: %w", err)
-		}
-		goods[i] = *good
-	}
-
-	return market.NewMarket(md.WaypointSymbol, goods, md.LastUpdated)
-}
