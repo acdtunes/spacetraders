@@ -1,4 +1,16 @@
-"""Step definitions for purchase transaction limits tests"""
+"""
+Step definitions for purchase transaction limits tests
+
+REFACTORED: Removed mediator mocking.
+
+NOTE: This test still has a VIOLATION - it tests a private method (_get_transaction_limit).
+Black-box tests should verify behavior through public interfaces. This test should either:
+1. Be removed (transaction limit logic tested through public workflow commands)
+2. Be moved to a unit test (not BDD)
+3. Test through a public method that uses transaction limits
+
+Keeping as-is for now with documentation of the issue.
+"""
 import pytest
 from pytest_bdd import scenarios, given, when, then, parsers
 from unittest.mock import Mock
@@ -6,6 +18,7 @@ from unittest.mock import Mock
 from application.contracts.commands.batch_contract_workflow import (
     BatchContractWorkflowHandler
 )
+from configuration.container import get_mediator
 from domain.shared.market import Market, TradeGood
 
 # Load scenarios from feature file
@@ -25,15 +38,21 @@ def context():
 
 @given('a contract workflow handler with market repository access')
 def handler_with_market_repository(context):
-    """Create handler with mock market repository"""
-    mock_mediator = Mock()
+    """
+    Create handler with real mediator and mock repositories.
+
+    Uses real mediator (core infrastructure) and mocks at boundaries (repositories).
+    """
+    # Use REAL mediator from container
+    mediator = get_mediator()
+
     mock_ship_repository = Mock()
     mock_market_repository = Mock()
 
     context['market_repository'] = mock_market_repository
 
     context['handler'] = BatchContractWorkflowHandler(
-        mediator=mock_mediator,
+        mediator=mediator,
         ship_repository=mock_ship_repository,
         market_repository=mock_market_repository
     )
