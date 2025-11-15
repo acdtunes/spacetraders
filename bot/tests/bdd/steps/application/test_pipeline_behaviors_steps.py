@@ -3,10 +3,14 @@ Step definitions for Pipeline Behaviors BDD tests.
 
 BLACK-BOX testing through public API (handle method).
 Tests LoggingBehavior and ValidationBehavior middleware.
+
+REFACTORED: Removed mock logger assertions - now uses pytest caplog to verify
+actual logging behavior instead of asserting on mock call counts/args.
 """
 import pytest
-from unittest.mock import Mock, AsyncMock, patch
+from unittest.mock import Mock, AsyncMock
 from pytest_bdd import scenarios, given, when, then, parsers
+import logging
 
 from application.common.behaviors import (
     LoggingBehavior,
@@ -30,7 +34,6 @@ def context():
         'next_handler': None,
         'result': None,
         'exception': None,
-        'mock_logger': None,
         'call_order': [],
         'handler_called': [],
         'validate_called': False
@@ -205,35 +208,43 @@ def failing_handler(context, error_type, error_msg):
 # When Steps - Execute Behaviors
 
 @when("I execute the logging behavior with the request")
-def execute_logging_behavior(context):
-    """Execute logging behavior with request"""
+def execute_logging_behavior(context, caplog):
+    """Execute logging behavior with request - caplog captures actual log output"""
     import asyncio
     behavior = context['logging_behavior']
     request = context['request']
     handler = context['next_handler']
 
-    with patch('application.common.behaviors.logger') as mock_logger:
-        context['mock_logger'] = mock_logger
-        try:
-            context['result'] = asyncio.run(behavior.handle(request, handler))
-        except Exception as e:
-            context['exception'] = e
+    # Capture logs at INFO level and above
+    caplog.set_level(logging.INFO)
+
+    try:
+        context['result'] = asyncio.run(behavior.handle(request, handler))
+    except Exception as e:
+        context['exception'] = e
+
+    # Store caplog for assertions
+    context['log_records'] = caplog.records
 
 
 @when("I execute the logging behavior with all requests")
-def execute_logging_behavior_all(context):
-    """Execute logging behavior with all requests"""
+def execute_logging_behavior_all(context, caplog):
+    """Execute logging behavior with all requests - caplog captures actual log output"""
     import asyncio
     behavior = context['logging_behavior']
     handler = context['next_handler']
 
-    with patch('application.common.behaviors.logger') as mock_logger:
-        context['mock_logger'] = mock_logger
-        for request in context['requests']:
-            try:
-                asyncio.run(behavior.handle(request, handler))
-            except Exception:
-                pass
+    # Capture logs at INFO level and above
+    caplog.set_level(logging.INFO)
+
+    for request in context['requests']:
+        try:
+            asyncio.run(behavior.handle(request, handler))
+        except Exception:
+            pass
+
+    # Store caplog for assertions
+    context['log_records'] = caplog.records
 
 
 @when("I execute the validation behavior with the request")
@@ -251,47 +262,52 @@ def execute_validation_behavior(context):
 
 
 @when("I execute the behavior pipeline with logging then validation")
-def execute_behavior_pipeline(context):
-    """Execute full behavior pipeline"""
+def execute_behavior_pipeline(context, caplog):
+    """Execute full behavior pipeline - caplog captures actual log output"""
     import asyncio
     logging_behavior = context['logging_behavior']
     validation_behavior = context['validation_behavior']
     request = context['request']
     final_handler = context['final_handler']
 
+    # Capture logs at INFO level and above
+    caplog.set_level(logging.INFO)
+
     # Create pipeline: Logging -> Validation -> Final Handler
     async def validation_then_handler():
         return await validation_behavior.handle(request, final_handler)
 
-    with patch('application.common.behaviors.logger') as mock_logger:
-        context['mock_logger'] = mock_logger
-        try:
-            context['result'] = asyncio.run(logging_behavior.handle(request, validation_then_handler))
-        except Exception as e:
-            context['exception'] = e
+    try:
+        context['result'] = asyncio.run(logging_behavior.handle(request, validation_then_handler))
+    except Exception as e:
+        context['exception'] = e
+
+    # Store caplog for assertions
+    context['log_records'] = caplog.records
 
 
 # Then Steps - Assertions
 
 @then(parsers.parse('the logger should log "{message}"'))
 def logger_should_log(context, message):
-    """Verify logger logged specific message - checking observable log output"""
-    mock_logger = context['mock_logger']
-    # Extract all log messages from info calls
-    calls = [call[0][0] for call in mock_logger.info.call_args_list]
-    assert any(message in call for call in calls), (
-        f"Expected log message containing '{message}' but got: {calls}"
+    """Verify logger logged specific message - checking actual log output via caplog"""
+    log_records = context.get('log_records', [])
+    # Extract all log messages
+    log_messages = [record.message for record in log_records]
+    assert any(message in msg for msg in log_messages), (
+        f"Expected log message containing '{message}' but got: {log_messages}"
     )
 
 
 @then("the logger should not log any INFO messages")
 def logger_should_not_log_info(context):
-    """Verify logger did not log any INFO messages"""
-    mock_logger = context['mock_logger']
-    # Check that info was not called
-    assert mock_logger.info.call_count == 0, (
-        f"Expected no INFO logs but found {mock_logger.info.call_count} calls: "
-        f"{mock_logger.info.call_args_list}"
+    """Verify logger did not log any INFO messages - checking actual log output"""
+    log_records = context.get('log_records', [])
+    # Check for INFO level logs
+    info_logs = [record for record in log_records if record.levelname == 'INFO']
+    assert len(info_logs) == 0, (
+        f"Expected no INFO logs but found {len(info_logs)} INFO messages: "
+        f"{[record.message for record in info_logs]}"
     )
 
 
@@ -325,24 +341,26 @@ def execution_should_fail(context, error_type, error_msg):
 
 @then(parsers.parse('the logger should log error containing "{message}"'))
 def logger_should_log_error(context, message):
-    """Verify logger logged error with message - checking observable error output"""
-    mock_logger = context['mock_logger']
+    """Verify logger logged error with message - checking actual error output via caplog"""
+    log_records = context.get('log_records', [])
     # Extract all error log messages
-    error_calls = [call[0][0] for call in mock_logger.error.call_args_list]
-    assert any(message in call for call in error_calls), (
-        f"Expected error log containing '{message}' but got: {error_calls}"
+    error_messages = [record.message for record in log_records if record.levelname == 'ERROR']
+    assert any(message in msg for msg in error_messages), (
+        f"Expected error log containing '{message}' but got: {error_messages}"
     )
 
 
 @then("the logger should log error with exc_info true")
 def logger_should_log_with_exc_info(context):
-    """Verify logger logged with exc_info=True - checking exception details were included"""
-    mock_logger = context['mock_logger']
-    # Check that error was logged with exception information
-    assert len(mock_logger.error.call_args_list) > 0, "Expected error to be logged"
-    # Verify exc_info was passed (exception traceback included)
-    error_call = mock_logger.error.call_args
-    assert error_call[1].get('exc_info') is True, "Expected error to be logged with exc_info=True"
+    """Verify logger logged with exc_info - checking exception details were included via caplog"""
+    log_records = context.get('log_records', [])
+    # Check that error was logged
+    error_records = [record for record in log_records if record.levelname == 'ERROR']
+    assert len(error_records) > 0, "Expected error to be logged"
+    # Verify exc_info was included (exception info in the log record)
+    assert any(record.exc_info is not None for record in error_records), (
+        "Expected error to be logged with exception info"
+    )
 
 
 @then("the validate method should be called")
@@ -385,10 +403,11 @@ def final_handler_not_called(context):
 
 @then("the logger should log error once")
 def logger_should_log_error_once(context):
-    """Verify logger logged error by checking an error was logged"""
-    mock_logger = context['mock_logger']
+    """Verify logger logged error - checking actual error output via caplog"""
+    log_records = context.get('log_records', [])
     # Check that at least one error was logged
-    assert len(mock_logger.error.call_args_list) > 0, "Expected at least one error to be logged"
+    error_records = [record for record in log_records if record.levelname == 'ERROR']
+    assert len(error_records) > 0, "Expected at least one error to be logged"
 
 
 # Boolean pattern - only matches true/false values
