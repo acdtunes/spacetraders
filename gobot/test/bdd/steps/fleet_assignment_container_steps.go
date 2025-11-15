@@ -233,7 +233,7 @@ func (ctx *fleetAssignmentContainerContext) iInvokeAssignScoutingFleetViaGRPCFor
 	// TODO: Call actual gRPC method when implemented
 	// For now, just check that we can create a container quickly
 	ctx.containerID = fmt.Sprintf("scout-fleet-assignment-%s-%d", systemSymbol, time.Now().UnixNano())
-	ctx.containerType = container.ContainerTypeFleetAssignment
+	ctx.containerType = container.ContainerTypeScoutFleetAssignment
 	ctx.containerStatus = container.ContainerStatusPending
 
 	ctx.grpcCallDuration = time.Since(start)
@@ -251,7 +251,7 @@ func (ctx *fleetAssignmentContainerContext) iCreateAFleetAssignmentContainerForS
 	ctx.containerID = fmt.Sprintf("scout-fleet-assignment-%s-%d", systemSymbol, time.Now().UnixNano())
 	ctx.containerEntity = container.NewContainer(
 		ctx.containerID,
-		container.ContainerTypeFleetAssignment,
+		container.ContainerTypeScoutFleetAssignment,
 		playerID,
 		1, // One-time execution
 		map[string]interface{}{
