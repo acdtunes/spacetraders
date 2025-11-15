@@ -67,7 +67,8 @@ func (c *getMarketDataContext) setupDatabase() error {
 
 func (c *getMarketDataContext) aPlayerWithID(playerID int) error {
 	c.playerID = uint(playerID)
-	return nil
+	// Also set in shared context so other scenarios can access it
+	return sharedPlayerHasPlayerID(playerID)
 }
 
 func (c *getMarketDataContext) marketDataExistsForWaypointWithNTradeGoods(waypointSymbol string, count int) error {
