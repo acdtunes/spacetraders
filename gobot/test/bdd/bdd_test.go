@@ -69,6 +69,13 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	steps.InitializeEvaluateContractProfitabilityScenario(sc) // Re-enabled
 	steps.InitializeBatchContractWorkflowScenario(sc)
 
+	// Daemon layer scenarios (registered before scouting to avoid step collisions)
+	// steps.InitializeDaemonPlayerResolutionScenario(sc) // Temporarily disabled - incomplete
+	// steps.InitializeDaemonServerScenario(sc) // Temporarily disabled - compilation errors
+	steps.InitializeShipAssignmentScenario(sc) // Re-enabled - registered before GetMarketDataScenario to avoid "the query should succeed" collision
+	steps.InitializeContainerLoggingScenario(sc) // Re-enabled - testing
+	steps.InitializeHealthMonitorContext(sc)     // Re-enabled
+
 	// Scouting application layer scenarios
 	steps.InitializeGetMarketDataScenario(sc)
 	steps.InitializeListMarketDataScenario(sc)
@@ -78,13 +85,6 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	// Infrastructure layer scenarios
 	steps.InitializeWaypointCacheScenario(sc) // Re-enabled
 	steps.InitializeDatabaseRetryScenario(sc)
-
-	// Daemon layer scenarios
-	// steps.InitializeDaemonPlayerResolutionScenario(sc) // Temporarily disabled - incomplete
-	// steps.InitializeDaemonServerScenario(sc) // Temporarily disabled - compilation errors
-	// steps.InitializeShipAssignmentScenario(sc) // Temporarily disabled - compilation errors
-	steps.InitializeContainerLoggingScenario(sc) // Re-enabled - testing
-	steps.InitializeHealthMonitorContext(sc)     // Re-enabled
 
 	// Register NavigationUtils scenario
 	steps.InitializeNavigationUtilsScenario(sc) // Re-enabled
