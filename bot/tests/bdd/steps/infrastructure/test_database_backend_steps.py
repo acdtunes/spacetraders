@@ -181,35 +181,45 @@ def check_wal_mode(context):
 
 @then("the database should support concurrent connections")
 def check_concurrent_connections(context):
-    """Verify database supports multiple concurrent connections"""
+    """
+    Verify database supports concurrent access through public transaction API.
+
+    OBSERVABLE BEHAVIOR: Multiple transactions can execute concurrently without errors.
+    Tests through public transaction() context manager, not private _get_connection().
+    """
     db = context['database']
+    import threading
+    results = {}
+    errors = {}
 
-    # Try to get multiple connections
-    conn1 = db._get_connection()
-    conn2 = db._get_connection()
+    def query_in_transaction(thread_id, value):
+        """Execute query in separate thread using public transaction API"""
+        try:
+            with db.transaction() as conn:
+                cursor = conn.cursor()
+                if hasattr(db, 'backend') and db.backend == 'postgresql':
+                    cursor.execute("SELECT %s AS value", (value,))
+                    result = cursor.fetchone()
+                    results[thread_id] = result['value'] if isinstance(result, dict) else result[0]
+                else:
+                    cursor.execute("SELECT ?", (value,))
+                    results[thread_id] = cursor.fetchone()[0]
+        except Exception as e:
+            errors[thread_id] = str(e)
 
-    # Both connections should work
-    cursor1 = conn1.cursor()
-    cursor2 = conn2.cursor()
+    # Execute concurrent queries using public transaction API
+    thread1 = threading.Thread(target=query_in_transaction, args=(1, 42))
+    thread2 = threading.Thread(target=query_in_transaction, args=(2, 99))
 
-    if hasattr(db, 'backend') and db.backend == 'postgresql':
-        cursor1.execute("SELECT 1 AS value")
-        cursor2.execute("SELECT 2 AS value")
+    thread1.start()
+    thread2.start()
+    thread1.join()
+    thread2.join()
 
-        # PostgreSQL with RealDictCursor returns dict
-        assert cursor1.fetchone()['value'] == 1
-        assert cursor2.fetchone()['value'] == 2
-
-        # Clean up PostgreSQL connections
-        conn1.close()
-        conn2.close()
-    else:
-        # SQLite also supports concurrent reads
-        cursor1.execute("SELECT 1")
-        cursor2.execute("SELECT 2")
-
-        assert cursor1.fetchone()[0] == 1
-        assert cursor2.fetchone()[0] == 2
+    # Verify both transactions completed successfully
+    assert not errors, f"Concurrent transactions failed: {errors}"
+    assert results[1] == 42, f"Expected thread 1 to return 42, got {results.get(1)}"
+    assert results[2] == 99, f"Expected thread 2 to return 99, got {results.get(2)}"
 
 
 @pytest.fixture(autouse=True)

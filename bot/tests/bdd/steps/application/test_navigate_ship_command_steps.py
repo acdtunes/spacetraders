@@ -548,9 +548,13 @@ def final_destination(context, waypoint):
         f"Expected destination {waypoint}, got {last_segment.to_waypoint.symbol}"
 
 
-@then("the API should have been called to navigate")
-def api_called_navigate(context, ship_repo):
-    """Verify navigation completed by checking ship reached destination"""
+@then("the ship should reach the destination")
+def ship_reaches_destination(context, ship_repo):
+    """
+    Verify ship reached destination.
+
+    OBSERVABLE BEHAVIOR: Ship is at the destination waypoint.
+    """
     result = context.get('result')
     assert result is not None, "No route was returned"
 
@@ -601,15 +605,19 @@ def segment_ends_at(context, num, waypoint):
         f"Expected segment {num} to end at {waypoint}, got {segment.to_waypoint.symbol}"
 
 
-@then(parsers.parse('the API should have been called {count:d} times for navigation'))
-def api_called_count(context, count):
-    """Verify multi-segment route completed with correct segment count"""
+@then("the ship should complete the multi-segment route")
+def ship_completes_multi_segment_route(context):
+    """
+    Verify ship completed multi-segment route.
+
+    OBSERVABLE BEHAVIOR: Route has multiple segments and is completed.
+    """
     result = context.get('result')
     assert result is not None, "No route was returned"
 
-    # Verify route has expected number of segments (matching navigation calls)
-    assert len(result.segments) == count, \
-        f"Expected {count} route segments, got {len(result.segments)}"
+    # Verify route has multiple segments
+    assert len(result.segments) >= 2, \
+        f"Multi-segment route should have at least 2 segments, got {len(result.segments)}"
 
     # Verify all segments completed successfully
     assert result.status == RouteStatus.COMPLETED, "Route should be completed"
@@ -690,20 +698,24 @@ def ship_fuel_reduced(context, fuel):
         f"Navigation should complete successfully, got status {result.status}"
 
 
-@then("the repository should have been updated at least once")
-def repository_updated(context, ship_repo):
-    """Verify repository was updated by checking ship state exists"""
+@then("the ship should be persisted with updated state")
+def ship_persisted_with_updated_state(context, ship_repo):
+    """
+    Verify ship is persisted with updated state.
+
+    OBSERVABLE BEHAVIOR: Ship can be retrieved from repository with current state.
+    """
     ship_symbol = context.get('ship_symbol')
     player_id = context.get('player_id', 1)
 
-    # Query ship from repository - if it exists with updated state, repository was updated
+    # Query ship from repository - should exist with updated state
     ship = ship_repo.find_by_symbol(ship_symbol, player_id)
-    assert ship is not None, "Ship not found in repository - repository was not updated"
+    assert ship is not None, "Ship not found in repository"
 
-    # Additional verification: ship should be in navigated state
+    # Verify navigation completed successfully
     result = context.get('result')
     assert result is not None, "No route returned"
-    assert result.status == RouteStatus.COMPLETED, "Repository should reflect completed navigation"
+    assert result.status == RouteStatus.COMPLETED, "Navigation should be completed"
 
 
 @then("a Route entity should be returned")

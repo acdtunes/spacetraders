@@ -16,7 +16,7 @@ Feature: Navigate Ship Command
     Then the route should be completed
     And the route should have 1 segment
     And the final destination should be "X1-TEST-CD34"
-    And the API should have been called to navigate
+    And the ship should reach the destination
     And the ship state should be persisted
 
   # Docked Ship - Auto Orbit
@@ -40,7 +40,7 @@ Feature: Navigate Ship Command
     And the route should have 2 segments
     And segment 1 should end at "X1-TEST-CD34"
     And segment 2 should end at "X1-TEST-EF56"
-    And the API should have been called 2 times for navigation
+    And the ship should complete the multi-segment route
 
   # Route with Refueling
   Scenario: Navigate ship with refueling stop
@@ -101,7 +101,7 @@ Feature: Navigate Ship Command
     And waypoint "X1-TEST-CD34" exists at distance 14.14
     And a route plan exists to "X1-TEST-CD34" with 1 segment
     When I navigate ship "TEST-SHIP-1" to "X1-TEST-CD34"
-    Then the repository should have been updated at least once
+    Then the ship should be persisted with updated state
 
   # Route Return Value
   Scenario: Navigate ship returns completed route entity
