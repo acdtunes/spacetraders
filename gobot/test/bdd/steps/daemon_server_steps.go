@@ -34,10 +34,11 @@ type daemonServerContext struct {
 	grpcConn   *grpcLib.ClientConn
 
 	// Test infrastructure
-	mediator      *mockDaemonMediator
-	logRepo       *mockContainerLogRepo
-	containerRepo *persistence.ContainerRepositoryGORM
-	testDB        *gorm.DB
+	mediator           *mockDaemonMediator
+	logRepo            *mockContainerLogRepo
+	containerRepo      *persistence.ContainerRepositoryGORM
+	shipAssignmentRepo *persistence.ShipAssignmentRepositoryGORM
+	testDB             *gorm.DB
 
 	// Response tracking
 	lastResponse interface{}
@@ -108,6 +109,7 @@ func (ctx *daemonServerContext) reset() {
 	ctx.logRepo = &mockContainerLogRepo{logs: []string{}}
 	ctx.testDB = helpers.SharedTestDB
 	ctx.containerRepo = persistence.NewContainerRepository(helpers.SharedTestDB)
+	ctx.shipAssignmentRepo = persistence.NewShipAssignmentRepository(helpers.SharedTestDB)
 	ctx.lastResponse = nil
 	ctx.startTime = time.Time{}
 	ctx.responseTime = 0
@@ -321,7 +323,7 @@ func (ctx *daemonServerContext) iStartTheDaemonServerOnSocket(socketPath string)
 	}
 
 	// Create daemon server
-	server, err := grpc.NewDaemonServer(ctx.mediator, ctx.logRepo, ctx.containerRepo, socketPath)
+	server, err := grpc.NewDaemonServer(ctx.mediator, ctx.logRepo, ctx.containerRepo, ctx.shipAssignmentRepo, socketPath)
 	if err != nil {
 		ctx.startErr = err
 		return nil
@@ -348,7 +350,7 @@ func (ctx *daemonServerContext) iAttemptToStartTheDaemonServerOnInvalidSocket(so
 	// The daemon should fail to create the socket
 
 	// Create daemon server
-	server, err := grpc.NewDaemonServer(ctx.mediator, ctx.logRepo, ctx.containerRepo, socketPath)
+	server, err := grpc.NewDaemonServer(ctx.mediator, ctx.logRepo, ctx.containerRepo, ctx.shipAssignmentRepo, socketPath)
 	if err != nil {
 		ctx.startErr = err
 		return nil

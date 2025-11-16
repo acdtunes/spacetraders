@@ -150,3 +150,28 @@ func (r *ShipAssignmentRepositoryGORM) ReleaseByContainer(
 
 	return nil
 }
+
+// ReleaseAllActive releases all active ship assignments
+// Used during daemon startup to clean up zombie assignments from previous runs
+// Returns the number of assignments released
+func (r *ShipAssignmentRepositoryGORM) ReleaseAllActive(
+	ctx context.Context,
+	reason string,
+) (int, error) {
+	now := time.Now()
+
+	result := r.db.WithContext(ctx).
+		Model(&ShipAssignmentModel{}).
+		Where("status = ?", "active").
+		Updates(map[string]interface{}{
+			"status":         "released",
+			"released_at":    now,
+			"release_reason": reason,
+		})
+
+	if result.Error != nil {
+		return 0, fmt.Errorf("failed to release all active assignments: %w", result.Error)
+	}
+
+	return int(result.RowsAffected), nil
+}

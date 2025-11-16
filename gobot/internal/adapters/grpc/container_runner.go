@@ -14,11 +14,12 @@ import (
 // ContainerRunner executes a container operation in a background goroutine
 // Manages the lifecycle of a single container including error handling and restarts
 type ContainerRunner struct {
-	containerEntity  *container.Container
-	mediator         common.Mediator
-	command          interface{} // The command to execute (must implement mediator request)
-	logRepo          persistence.ContainerLogRepository
-	containerRepo    *persistence.ContainerRepositoryGORM
+	containerEntity    *container.Container
+	mediator           common.Mediator
+	command            interface{} // The command to execute (must implement mediator request)
+	logRepo            persistence.ContainerLogRepository
+	containerRepo      *persistence.ContainerRepositoryGORM
+	shipAssignmentRepo *persistence.ShipAssignmentRepositoryGORM
 
 	// Execution control
 	ctx        context.Context
@@ -45,19 +46,21 @@ func NewContainerRunner(
 	command interface{},
 	logRepo persistence.ContainerLogRepository,
 	containerRepo *persistence.ContainerRepositoryGORM,
+	shipAssignmentRepo *persistence.ShipAssignmentRepositoryGORM,
 ) *ContainerRunner {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	return &ContainerRunner{
-		containerEntity:  containerEntity,
-		mediator:         mediator,
-		command:          command,
-		logRepo:          logRepo,
-		containerRepo:    containerRepo,
-		ctx:              ctx,
-		cancelFunc:       cancel,
-		done:             make(chan struct{}),
-		logs:             make([]LogEntry, 0),
+		containerEntity:    containerEntity,
+		mediator:           mediator,
+		command:            command,
+		logRepo:            logRepo,
+		containerRepo:      containerRepo,
+		shipAssignmentRepo: shipAssignmentRepo,
+		ctx:                ctx,
+		cancelFunc:         cancel,
+		done:               make(chan struct{}),
+		logs:               make([]LogEntry, 0),
 	}
 }
 
@@ -128,6 +131,9 @@ func (r *ContainerRunner) Stop() error {
 	r.mu.Lock()
 	r.containerEntity.MarkStopped()
 	r.mu.Unlock()
+
+	// Release ship assignments for this container
+	r.releaseShipAssignments("stopped")
 
 	return nil
 }
@@ -225,6 +231,9 @@ func (r *ContainerRunner) execute() {
 			r.log("ERROR", fmt.Sprintf("Failed to persist COMPLETED status: %v", err), nil)
 		}
 	}
+
+	// Release ship assignments for this container
+	r.releaseShipAssignments("completed")
 }
 
 // executeIteration executes a single iteration of the container operation
@@ -273,6 +282,9 @@ func (r *ContainerRunner) handleError(err error) {
 			r.log("ERROR", fmt.Sprintf("Failed to persist FAILED status: %v", dbErr), nil)
 		}
 	}
+
+	// Release ship assignments for this container
+	r.releaseShipAssignments("failed")
 }
 
 // Logging
@@ -336,4 +348,27 @@ func (r *ContainerRunner) GetLogs(limit *int, level *string) []LogEntry {
 	}
 
 	return filtered
+}
+
+// releaseShipAssignments releases all ship assignments for this container
+func (r *ContainerRunner) releaseShipAssignments(reason string) {
+	if r.shipAssignmentRepo == nil {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err := r.shipAssignmentRepo.ReleaseByContainer(
+		ctx,
+		r.containerEntity.ID(),
+		r.containerEntity.PlayerID(),
+		reason,
+	)
+
+	if err != nil {
+		r.log("ERROR", fmt.Sprintf("Failed to release ship assignments: %v", err), nil)
+	} else {
+		r.log("INFO", fmt.Sprintf("Released ship assignments (reason: %s)", reason), nil)
+	}
 }
