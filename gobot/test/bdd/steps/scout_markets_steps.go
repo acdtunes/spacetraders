@@ -19,15 +19,16 @@ import (
 
 type scoutMarketsContext struct {
 	// Database and repositories
-	db                 *gorm.DB
-	apiClient          *helpers.MockAPIClient
-	shipRepo           navigation.ShipRepository
-	playerRepo         *persistence.GormPlayerRepository
-	waypointRepo       *persistence.GormWaypointRepository
-	mockPlayerRepo     *helpers.MockPlayerRepository
-	mockRoutingClient  *helpers.MockRoutingClient
-	mockDaemonClient   *helpers.MockDaemonClient
-	mockGraphProvider  *helpers.MockGraphProvider
+	db                         *gorm.DB
+	apiClient                  *helpers.MockAPIClient
+	shipRepo                   navigation.ShipRepository
+	playerRepo                 *persistence.GormPlayerRepository
+	waypointRepo               *persistence.GormWaypointRepository
+	mockPlayerRepo             *helpers.MockPlayerRepository
+	mockRoutingClient          *helpers.MockRoutingClient
+	mockDaemonClient           *helpers.MockDaemonClient
+	mockGraphProvider          *helpers.MockGraphProvider
+	mockShipAssignmentRepo     *helpers.MockShipAssignmentRepository
 
 	// Test state
 	player      *player.Player
@@ -55,6 +56,7 @@ func (c *scoutMarketsContext) reset() error {
 	c.mockRoutingClient = helpers.NewMockRoutingClient()
 	c.mockDaemonClient = helpers.NewMockDaemonClient()
 	c.mockGraphProvider = helpers.NewMockGraphProvider()
+	c.mockShipAssignmentRepo = helpers.NewMockShipAssignmentRepository()
 
 	c.ships = make(map[string]*navigation.Ship)
 	c.waypoints = make(map[string]*shared.Waypoint)
@@ -254,6 +256,7 @@ func (c *scoutMarketsContext) iExecuteScoutMarketsCommandWithShipsAndMarketsInSy
 		c.mockGraphProvider,
 		c.mockRoutingClient,
 		c.mockDaemonClient,
+		c.mockShipAssignmentRepo,
 	)
 
 	// Execute command
