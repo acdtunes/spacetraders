@@ -171,6 +171,9 @@ func (dec *daemonEntityContext) theShipAssignmentStatusShouldRemain(expected str
 }
 
 func (dec *daemonEntityContext) theShipAssignmentShouldHaveAReleasedAtTimestamp() error {
+	if dec.assignment == nil {
+		return fmt.Errorf("no assignment to check released_at timestamp")
+	}
 	if dec.assignment.ReleasedAt() == nil {
 		return fmt.Errorf("expected released_at timestamp but got nil")
 	}
@@ -178,6 +181,9 @@ func (dec *daemonEntityContext) theShipAssignmentShouldHaveAReleasedAtTimestamp(
 }
 
 func (dec *daemonEntityContext) theShipAssignmentReleaseReasonShouldBe(expected string) error {
+	if dec.assignment == nil {
+		return fmt.Errorf("no assignment to check release reason")
+	}
 	if dec.assignment.ReleaseReason() == nil {
 		return fmt.Errorf("expected release reason '%s' but got nil", expected)
 	}
@@ -398,6 +404,9 @@ func (dec *daemonEntityContext) theAssignmentShouldFailWithError(expectedErr str
 }
 
 func (dec *daemonEntityContext) shipShouldStillBeAssignedToContainer(shipSymbol, containerID string) error {
+	if dec.manager == nil {
+		return fmt.Errorf("manager not initialized")
+	}
 	assignment, exists := dec.manager.GetAssignment(shipSymbol)
 	if !exists {
 		return fmt.Errorf("expected ship '%s' to be assigned but it was not", shipSymbol)
