@@ -278,6 +278,9 @@ func (s *Ship) StartTransit(destination *shared.Waypoint) error {
 	if s.navStatus != NavStatusInOrbit {
 		return shared.NewInvalidNavStatusError(fmt.Sprintf("ship must be in orbit to start transit, currently: %s", s.navStatus))
 	}
+	if s.currentLocation.Symbol == destination.Symbol {
+		return fmt.Errorf("cannot transit to same location")
+	}
 	s.navStatus = NavStatusInTransit
 	s.currentLocation = destination
 	return nil
