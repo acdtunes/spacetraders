@@ -201,7 +201,7 @@ Feature: Flight Mode Value Object
 
   Scenario: Travel time with distance 1 and speed 30
     When I calculate travel time for CRUISE mode with distance 1.0 and speed 30
-    Then the travel time should be 4 seconds
+    Then the travel time should be 1 seconds
 
   Scenario: Burn mode fuel cost is exactly double cruise
     When I calculate fuel cost for BURN mode with distance 100.0

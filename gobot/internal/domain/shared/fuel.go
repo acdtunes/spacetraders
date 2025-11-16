@@ -66,6 +66,10 @@ func (f *Fuel) Add(amount int) (*Fuel, error) {
 
 // CanTravel checks if sufficient fuel for travel with safety margin
 func (f *Fuel) CanTravel(required int, safetyMargin float64) bool {
+	// Cannot travel if fuel tank is empty
+	if f.Current == 0 {
+		return false
+	}
 	requiredWithMargin := int(float64(required) * (1 + safetyMargin))
 	return f.Current >= requiredWithMargin
 }

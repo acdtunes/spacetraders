@@ -540,14 +540,12 @@ func (voc *valueObjectContext) iAddUnitsOfFuel(units int) error {
 func (voc *valueObjectContext) iAttemptToAddUnitsOfFuel(units int) error {
 	if voc.fuel == nil {
 		voc.err = fmt.Errorf("no fuel object available")
+		sharedErr = voc.err
 		return nil
 	}
 	voc.originalFuel = voc.fuel
-	newCurrent := voc.fuel.Current + units
-	if newCurrent > voc.fuel.Capacity {
-		newCurrent = voc.fuel.Capacity
-	}
-	voc.fuel, voc.err = shared.NewFuel(newCurrent, voc.fuel.Capacity)
+	voc.fuel, voc.err = voc.fuel.Add(units)
+	sharedErr = voc.err
 	return nil
 }
 
@@ -695,7 +693,7 @@ func (voc *valueObjectContext) aWaypointWithOrbitals(symbol string, orbitalsCSV 
 	return nil
 }
 
-func (voc *valueObjectContext) theWaypointShouldHaveXCoordinate(symbol string, x int) error {
+func (voc *valueObjectContext) theWaypointShouldHaveXCoordinate(symbol string, x float64) error {
 	waypoint := voc.waypointMap[symbol]
 	if waypoint == nil {
 		waypoint = voc.waypoint
@@ -704,14 +702,13 @@ func (voc *valueObjectContext) theWaypointShouldHaveXCoordinate(symbol string, x
 		return fmt.Errorf("waypoint not found")
 	}
 	// Accept both int and float comparisons
-	expectedFloat := float64(x)
-	if math.Abs(waypoint.X-expectedFloat) > 0.001 {
-		return fmt.Errorf("expected waypoint X coordinate %v but got %v", expectedFloat, waypoint.X)
+	if math.Abs(waypoint.X-x) > 0.001 {
+		return fmt.Errorf("expected waypoint X coordinate %v but got %v", x, waypoint.X)
 	}
 	return nil
 }
 
-func (voc *valueObjectContext) theWaypointShouldHaveYCoordinate(symbol string, y int) error {
+func (voc *valueObjectContext) theWaypointShouldHaveYCoordinate(symbol string, y float64) error {
 	waypoint := voc.waypointMap[symbol]
 	if waypoint == nil {
 		waypoint = voc.waypoint
@@ -720,9 +717,8 @@ func (voc *valueObjectContext) theWaypointShouldHaveYCoordinate(symbol string, y
 		return fmt.Errorf("waypoint not found")
 	}
 	// Accept both int and float comparisons
-	expectedFloat := float64(y)
-	if math.Abs(waypoint.Y-expectedFloat) > 0.001 {
-		return fmt.Errorf("expected waypoint Y coordinate %v but got %v", expectedFloat, waypoint.Y)
+	if math.Abs(waypoint.Y-y) > 0.001 {
+		return fmt.Errorf("expected waypoint Y coordinate %v but got %v", y, waypoint.Y)
 	}
 	return nil
 }
@@ -761,16 +757,16 @@ func InitializeValueObjectScenarios(ctx *godog.ScenarioContext) {
 	ctx.Step(`^a waypoint "([^"]*)" with orbitals "([^"]*)"$`, voc.aWaypointWithOrbitals)
 	ctx.Step(`^a waypoint "([^"]*)" with orbitals \["([^"]*)"\]$`, voc.aWaypointWithOrbitals)
 	ctx.Step(`^the waypoint "([^"]*)" should have x coordinate ([0-9.]+)$`, func(symbol string, coord float64) error {
-		return voc.theWaypointShouldHaveXCoordinate(symbol, int(coord))
+		return voc.theWaypointShouldHaveXCoordinate(symbol, coord)
 	})
 	ctx.Step(`^the waypoint "([^"]*)" should have y coordinate ([0-9.]+)$`, func(symbol string, coord float64) error {
-		return voc.theWaypointShouldHaveYCoordinate(symbol, int(coord))
+		return voc.theWaypointShouldHaveYCoordinate(symbol, coord)
 	})
 	ctx.Step(`^the waypoint should have x coordinate ([0-9.]+)$`, func(coord float64) error {
-		return voc.theWaypointShouldHaveXCoordinate("", int(coord))
+		return voc.theWaypointShouldHaveXCoordinate("", coord)
 	})
 	ctx.Step(`^the waypoint should have y coordinate ([0-9.]+)$`, func(coord float64) error {
-		return voc.theWaypointShouldHaveYCoordinate("", int(coord))
+		return voc.theWaypointShouldHaveYCoordinate("", coord)
 	})
 
 	// Fuel steps
