@@ -88,6 +88,8 @@ func (clc *containerLifecycleContext) aDaemonContainerIsInStatus(status string) 
 		clc.currentContainer.Stop()
 	}
 
+	// Share container for cross-context assertions
+	sharedContainer = clc.currentContainer
 	return nil
 }
 
