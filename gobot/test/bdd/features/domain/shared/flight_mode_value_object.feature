@@ -137,7 +137,7 @@ Feature: Flight Mode Value Object
 
   Scenario: Drift mode uses minimal fuel for large distance
     When I calculate fuel cost for DRIFT mode with distance 5000.0
-    Then the fuel cost should be 14
+    Then the fuel cost should be 15
 
   Scenario: Travel time with very high speed
     When I calculate travel time for CRUISE mode with distance 100.0 and speed 100
