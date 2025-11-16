@@ -309,7 +309,11 @@ func (voc *valueObjectContext) aCargoItemWithSymbolAndUnits(symbol string, units
 
 func (voc *valueObjectContext) iCreateCargoWithCapacityUnitsAndInventory(capacity, units int) error {
 	inventory := []*shared.CargoItem{}
-	if voc.cargoItem != nil {
+	// Use otherCargoItems if available (from "cargo with items:" table)
+	if voc.otherCargoItems != nil {
+		inventory = voc.otherCargoItems
+	} else if voc.cargoItem != nil {
+		// Fallback to single item for backward compatibility
 		inventory = append(inventory, voc.cargoItem)
 	}
 	voc.cargo, voc.err = shared.NewCargo(capacity, units, inventory)
@@ -392,6 +396,9 @@ func (voc *valueObjectContext) cargoWithItems(table *godog.Table) error {
 		totalUnits += units
 	}
 
+	// Store items for use in subsequent steps
+	voc.otherCargoItems = items
+	// Also create cargo object for scenarios that immediately use it
 	voc.cargo, voc.err = shared.NewCargo(100, totalUnits, items)
 	return voc.err
 }
