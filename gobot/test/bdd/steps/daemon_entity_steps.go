@@ -624,16 +624,24 @@ func (dec *daemonEntityContext) allAssignmentsShouldRemainActive() error {
 }
 
 func (dec *daemonEntityContext) shipWasAssignedToContainerMinutesAgo(shipSymbol, containerID string, minutesAgo int) error {
+	// Create manager with shared clock if not exists
 	if dec.manager == nil {
 		dec.manager = daemon.NewShipAssignmentManager(dec.clock)
 	}
+
+	// Set clock to past time
 	pastTime := time.Now().Add(-time.Duration(minutesAgo) * time.Minute)
-	pastClock := shared.NewMockClock(pastTime)
-	assignment := daemon.NewShipAssignment(shipSymbol, 1, containerID, pastClock)
-	// Manually add to manager's internal state (this is a test workaround)
-	// In real implementation, we'd use the manager's AssignShip method
-	dec.manager.AssignShip(context.Background(), shipSymbol, 1, containerID)
+	dec.clock.SetTime(pastTime)
+
+	// Assign ship (this will use the past clock to set assignedAt)
+	assignment, err := dec.manager.AssignShip(context.Background(), shipSymbol, 1, containerID)
+	if err != nil {
+		return err
+	}
 	dec.assignments[shipSymbol] = assignment
+
+	// Advance clock back to current time
+	dec.clock.Advance(time.Duration(minutesAgo) * time.Minute)
 	return nil
 }
 
@@ -668,11 +676,20 @@ func (dec *daemonEntityContext) shipWasAssignedToContainerAgo(shipSymbol, contai
 	if dec.manager == nil {
 		dec.manager = daemon.NewShipAssignmentManager(dec.clock)
 	}
+
+	// Set clock to past time
 	pastTime := time.Now().Add(-d)
-	pastClock := shared.NewMockClock(pastTime)
-	assignment := daemon.NewShipAssignment(shipSymbol, 1, containerID, pastClock)
-	dec.manager.AssignShip(context.Background(), shipSymbol, 1, containerID)
+	dec.clock.SetTime(pastTime)
+
+	// Assign ship (uses the shared clock)
+	assignment, err := dec.manager.AssignShip(context.Background(), shipSymbol, 1, containerID)
+	if err != nil {
+		return err
+	}
 	dec.assignments[shipSymbol] = assignment
+
+	// Advance clock back to current time
+	dec.clock.Advance(d)
 	return nil
 }
 
@@ -686,11 +703,20 @@ func (dec *daemonEntityContext) shipWasAssignedToContainerSecondsAgo(shipSymbol,
 	if dec.manager == nil {
 		dec.manager = daemon.NewShipAssignmentManager(dec.clock)
 	}
+
+	// Set clock to past time
 	pastTime := time.Now().Add(-time.Duration(secondsAgo) * time.Second)
-	pastClock := shared.NewMockClock(pastTime)
-	assignment := daemon.NewShipAssignment(shipSymbol, 1, containerID, pastClock)
-	dec.manager.AssignShip(context.Background(), shipSymbol, 1, containerID)
+	dec.clock.SetTime(pastTime)
+
+	// Assign ship (uses the shared clock)
+	assignment, err := dec.manager.AssignShip(context.Background(), shipSymbol, 1, containerID)
+	if err != nil {
+		return err
+	}
 	dec.assignments[shipSymbol] = assignment
+
+	// Advance clock back to current time
+	dec.clock.Advance(time.Duration(secondsAgo) * time.Second)
 	return nil
 }
 
@@ -698,11 +724,20 @@ func (dec *daemonEntityContext) shipWasAssignedToContainerHourAgo(shipSymbol, co
 	if dec.manager == nil {
 		dec.manager = daemon.NewShipAssignmentManager(dec.clock)
 	}
+
+	// Set clock to past time
 	pastTime := time.Now().Add(-time.Duration(hoursAgo) * time.Hour)
-	pastClock := shared.NewMockClock(pastTime)
-	assignment := daemon.NewShipAssignment(shipSymbol, 1, containerID, pastClock)
-	dec.manager.AssignShip(context.Background(), shipSymbol, 1, containerID)
+	dec.clock.SetTime(pastTime)
+
+	// Assign ship (uses the shared clock)
+	assignment, err := dec.manager.AssignShip(context.Background(), shipSymbol, 1, containerID)
+	if err != nil {
+		return err
+	}
 	dec.assignments[shipSymbol] = assignment
+
+	// Advance clock back to current time
+	dec.clock.Advance(time.Duration(hoursAgo) * time.Hour)
 	return nil
 }
 
@@ -929,9 +964,9 @@ func InitializeDaemonEntityScenarios(sc *godog.ScenarioContext) {
 	sc.Step(`^the ship assignment should have player ID (\d+)$`, ctx.theShipAssignmentShouldHavePlayerID)
 	sc.Step(`^the ship assignment should have container ID "([^"]*)"$`, ctx.theShipAssignmentShouldHaveContainerID)
 	sc.Step(`^the ship assignment should have operation "([^"]*)"$`, ctx.theShipAssignmentShouldHaveOperation)
-	// NOTE: Following steps handled by ship_assignment_steps.go to avoid conflicts
-	// sc.Step(`^the ship assignment status should be "([^"]*)"$`, ctx.theShipAssignmentStatusShouldBe)
-	// sc.Step(`^the ship assignment should have an assigned_at timestamp$`, ctx.theShipAssignmentShouldHaveAnAssignedAtTimestamp)
+	// NOTE: Following steps will be overridden by ship_assignment_steps.go for infrastructure tests (registered later)
+	sc.Step(`^the ship assignment status should be "([^"]*)"$`, ctx.theShipAssignmentStatusShouldBe)
+	sc.Step(`^the ship assignment should have an assigned_at timestamp$`, ctx.theShipAssignmentShouldHaveAnAssignedAtTimestamp)
 	sc.Step(`^the ship assignment should not have a released_at timestamp$`, ctx.theShipAssignmentShouldNotHaveAReleasedAtTimestamp)
 	sc.Step(`^the ship assignment should not have a release reason$`, ctx.theShipAssignmentShouldNotHaveAReleaseReason)
 	sc.Step(`^an active ship assignment for ship "([^"]*)"$`, ctx.anActiveShipAssignmentForShip)
@@ -940,8 +975,8 @@ func InitializeDaemonEntityScenarios(sc *godog.ScenarioContext) {
 	sc.Step(`^I attempt to release the assignment with reason "([^"]*)"$`, ctx.iAttemptToReleaseTheAssignmentWithReason)
 	sc.Step(`^the release should fail with error "([^"]*)"$`, ctx.theReleaseShouldFailWithError)
 	sc.Step(`^the ship assignment status should remain "([^"]*)"$`, ctx.theShipAssignmentStatusShouldRemain)
-	// NOTE: Following step handled by ship_assignment_steps.go to avoid conflicts
-	// sc.Step(`^the ship assignment should have a released_at timestamp$`, ctx.theShipAssignmentShouldHaveAReleasedAtTimestamp)
+	// NOTE: Following step will be overridden by ship_assignment_steps.go for infrastructure tests (registered later)
+	sc.Step(`^the ship assignment should have a released_at timestamp$`, ctx.theShipAssignmentShouldHaveAReleasedAtTimestamp)
 	sc.Step(`^the ship assignment release reason should be "([^"]*)"$`, ctx.theShipAssignmentReleaseReasonShouldBe)
 	sc.Step(`^I force release the assignment with reason "([^"]*)"$`, ctx.iForceReleaseTheAssignmentWithReason)
 	sc.Step(`^an active ship assignment created (\d+) minutes ago$`, ctx.anActiveShipAssignmentCreatedMinutesAgo)
@@ -970,8 +1005,8 @@ func InitializeDaemonEntityScenarios(sc *godog.ScenarioContext) {
 	sc.Step(`^ship "([^"]*)" is assigned to container "([^"]*)"$`, ctx.shipIsAssignedToContainer)
 	sc.Step(`^I attempt to assign ship "([^"]*)" to container "([^"]*)" with player (\d+) and operation "([^"]*)"$`,
 		ctx.iAttemptToAssignShipToContainerWithPlayerAndOperation)
-	// NOTE: Following step handled by ship_assignment_steps.go to avoid conflicts
-	// sc.Step(`^the assignment should fail with error "([^"]*)"$`, ctx.theAssignmentShouldFailWithError)
+	// NOTE: Following step will be overridden by ship_assignment_steps.go for infrastructure tests (registered later)
+	sc.Step(`^the assignment should fail with error "([^"]*)"$`, ctx.theAssignmentShouldFailWithError)
 	sc.Step(`^ship "([^"]*)" should still be assigned to container "([^"]*)"$`, ctx.shipShouldStillBeAssignedToContainer)
 	sc.Step(`^the assignment for ship "([^"]*)" is released$`, ctx.theAssignmentForShipIsReleased)
 	sc.Step(`^ship "([^"]*)" should be assigned to container "([^"]*)"$`, ctx.shipShouldBeAssignedToContainer)
