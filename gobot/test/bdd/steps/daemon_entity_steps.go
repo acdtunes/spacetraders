@@ -624,16 +624,24 @@ func (dec *daemonEntityContext) allAssignmentsShouldRemainActive() error {
 }
 
 func (dec *daemonEntityContext) shipWasAssignedToContainerMinutesAgo(shipSymbol, containerID string, minutesAgo int) error {
+	// Create manager with shared clock if not exists
 	if dec.manager == nil {
 		dec.manager = daemon.NewShipAssignmentManager(dec.clock)
 	}
+
+	// Set clock to past time
 	pastTime := time.Now().Add(-time.Duration(minutesAgo) * time.Minute)
-	pastClock := shared.NewMockClock(pastTime)
-	assignment := daemon.NewShipAssignment(shipSymbol, 1, containerID, pastClock)
-	// Manually add to manager's internal state (this is a test workaround)
-	// In real implementation, we'd use the manager's AssignShip method
-	dec.manager.AssignShip(context.Background(), shipSymbol, 1, containerID)
+	dec.clock.SetTime(pastTime)
+
+	// Assign ship (this will use the past clock to set assignedAt)
+	assignment, err := dec.manager.AssignShip(context.Background(), shipSymbol, 1, containerID)
+	if err != nil {
+		return err
+	}
 	dec.assignments[shipSymbol] = assignment
+
+	// Advance clock back to current time
+	dec.clock.Advance(time.Duration(minutesAgo) * time.Minute)
 	return nil
 }
 
@@ -668,11 +676,20 @@ func (dec *daemonEntityContext) shipWasAssignedToContainerAgo(shipSymbol, contai
 	if dec.manager == nil {
 		dec.manager = daemon.NewShipAssignmentManager(dec.clock)
 	}
+
+	// Set clock to past time
 	pastTime := time.Now().Add(-d)
-	pastClock := shared.NewMockClock(pastTime)
-	assignment := daemon.NewShipAssignment(shipSymbol, 1, containerID, pastClock)
-	dec.manager.AssignShip(context.Background(), shipSymbol, 1, containerID)
+	dec.clock.SetTime(pastTime)
+
+	// Assign ship (uses the shared clock)
+	assignment, err := dec.manager.AssignShip(context.Background(), shipSymbol, 1, containerID)
+	if err != nil {
+		return err
+	}
 	dec.assignments[shipSymbol] = assignment
+
+	// Advance clock back to current time
+	dec.clock.Advance(d)
 	return nil
 }
 
@@ -686,11 +703,20 @@ func (dec *daemonEntityContext) shipWasAssignedToContainerSecondsAgo(shipSymbol,
 	if dec.manager == nil {
 		dec.manager = daemon.NewShipAssignmentManager(dec.clock)
 	}
+
+	// Set clock to past time
 	pastTime := time.Now().Add(-time.Duration(secondsAgo) * time.Second)
-	pastClock := shared.NewMockClock(pastTime)
-	assignment := daemon.NewShipAssignment(shipSymbol, 1, containerID, pastClock)
-	dec.manager.AssignShip(context.Background(), shipSymbol, 1, containerID)
+	dec.clock.SetTime(pastTime)
+
+	// Assign ship (uses the shared clock)
+	assignment, err := dec.manager.AssignShip(context.Background(), shipSymbol, 1, containerID)
+	if err != nil {
+		return err
+	}
 	dec.assignments[shipSymbol] = assignment
+
+	// Advance clock back to current time
+	dec.clock.Advance(time.Duration(secondsAgo) * time.Second)
 	return nil
 }
 
@@ -698,11 +724,20 @@ func (dec *daemonEntityContext) shipWasAssignedToContainerHourAgo(shipSymbol, co
 	if dec.manager == nil {
 		dec.manager = daemon.NewShipAssignmentManager(dec.clock)
 	}
+
+	// Set clock to past time
 	pastTime := time.Now().Add(-time.Duration(hoursAgo) * time.Hour)
-	pastClock := shared.NewMockClock(pastTime)
-	assignment := daemon.NewShipAssignment(shipSymbol, 1, containerID, pastClock)
-	dec.manager.AssignShip(context.Background(), shipSymbol, 1, containerID)
+	dec.clock.SetTime(pastTime)
+
+	// Assign ship (uses the shared clock)
+	assignment, err := dec.manager.AssignShip(context.Background(), shipSymbol, 1, containerID)
+	if err != nil {
+		return err
+	}
 	dec.assignments[shipSymbol] = assignment
+
+	// Advance clock back to current time
+	dec.clock.Advance(time.Duration(hoursAgo) * time.Hour)
 	return nil
 }
 
