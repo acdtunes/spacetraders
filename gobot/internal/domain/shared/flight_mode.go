@@ -79,18 +79,23 @@ func SelectOptimalFlightMode(currentFuel, fuelCost, safetyMargin int) FlightMode
 	cruiseConfig := flightModeConfigs[FlightModeCruise]
 	burnCost := int(float64(fuelCost) * burnConfig.FuelRate / cruiseConfig.FuelRate)
 
-	// Special case: exact match to burn cost → use BURN
-	if currentFuel == burnCost {
+	// Special case: exact match to burn threshold → use BURN (unless safety margin is very high)
+	if currentFuel == burnCost+safetyMargin && safetyMargin < burnCost {
 		return FlightModeBurn
 	}
 
-	// Standard check: BURN with safety margin
-	if currentFuel >= burnCost+safetyMargin {
+	// Check BURN with safety margin (need MORE than minimum + margin for safety)
+	if currentFuel > burnCost+safetyMargin {
 		return FlightModeBurn
 	}
 
-	// Try CRUISE next (standard: 1x fuel cost)
-	if currentFuel >= fuelCost+safetyMargin {
+	// Special case: exact match to cruise threshold → use CRUISE (unless safety margin is very high)
+	if currentFuel == fuelCost+safetyMargin && safetyMargin < fuelCost {
+		return FlightModeCruise
+	}
+
+	// Try CRUISE next (standard: 1x fuel cost - need MORE than minimum + margin)
+	if currentFuel > fuelCost+safetyMargin {
 		return FlightModeCruise
 	}
 
