@@ -430,6 +430,9 @@ func (dec *daemonEntityContext) shipShouldBeAssignedToContainer(shipSymbol, cont
 }
 
 func (dec *daemonEntityContext) iGetTheAssignmentForShip(shipSymbol string) error {
+	if dec.manager == nil {
+		dec.manager = daemon.NewShipAssignmentManager(dec.clock)
+	}
 	dec.assignment, dec.boolResult = dec.manager.GetAssignment(shipSymbol)
 	return nil
 }
@@ -449,6 +452,9 @@ func (dec *daemonEntityContext) noAssignmentShouldBeFound() error {
 }
 
 func (dec *daemonEntityContext) iReleaseTheAssignmentForShipWithReason(shipSymbol, reason string) error {
+	if dec.manager == nil {
+		dec.manager = daemon.NewShipAssignmentManager(dec.clock)
+	}
 	dec.releaseErr = dec.manager.ReleaseAssignment(shipSymbol, reason)
 	return nil
 }
@@ -472,6 +478,9 @@ func (dec *daemonEntityContext) theAssignmentShouldHaveReleaseReason(expected st
 }
 
 func (dec *daemonEntityContext) iAttemptToReleaseTheAssignmentForShipWithReason(shipSymbol, reason string) error {
+	if dec.manager == nil {
+		dec.manager = daemon.NewShipAssignmentManager(dec.clock)
+	}
 	dec.releaseErr = dec.manager.ReleaseAssignment(shipSymbol, reason)
 	return nil
 }
@@ -491,6 +500,9 @@ func (dec *daemonEntityContext) theAssignmentForShipIsReleasedWithReason(shipSym
 }
 
 func (dec *daemonEntityContext) iReleaseAllAssignmentsWithReason(reason string) error {
+	if dec.manager == nil {
+		dec.manager = daemon.NewShipAssignmentManager(dec.clock)
+	}
 	dec.releaseErr = dec.manager.ReleaseAll(reason)
 	return nil
 }
@@ -565,6 +577,9 @@ func (dec *daemonEntityContext) containersExist(containerList string) error {
 }
 
 func (dec *daemonEntityContext) iCleanOrphanedAssignments() error {
+	if dec.manager == nil {
+		dec.manager = daemon.NewShipAssignmentManager(dec.clock)
+	}
 	dec.cleanupCount, dec.assignmentErr = dec.manager.CleanOrphanedAssignments(dec.existingContainers)
 	return nil
 }
@@ -646,6 +661,9 @@ func (dec *daemonEntityContext) shipWasAssignedToContainerMinutesAgo(shipSymbol,
 }
 
 func (dec *daemonEntityContext) iCleanStaleAssignmentsWithTimeoutMinutes(timeoutMinutes int) error {
+	if dec.manager == nil {
+		dec.manager = daemon.NewShipAssignmentManager(dec.clock)
+	}
 	timeout := time.Duration(timeoutMinutes) * time.Minute
 	dec.cleanupCount, dec.assignmentErr = dec.manager.CleanStaleAssignments(timeout)
 	return nil
@@ -694,6 +712,9 @@ func (dec *daemonEntityContext) shipWasAssignedToContainerAgo(shipSymbol, contai
 }
 
 func (dec *daemonEntityContext) iCleanStaleAssignmentsWithTimeoutSeconds(timeoutSeconds int) error {
+	if dec.manager == nil {
+		dec.manager = daemon.NewShipAssignmentManager(dec.clock)
+	}
 	timeout := time.Duration(timeoutSeconds) * time.Second
 	dec.cleanupCount, dec.assignmentErr = dec.manager.CleanStaleAssignments(timeout)
 	return nil
@@ -742,6 +763,9 @@ func (dec *daemonEntityContext) shipWasAssignedToContainerHourAgo(shipSymbol, co
 }
 
 func (dec *daemonEntityContext) iCleanStaleAssignmentsWithTimeoutHours(timeoutHours int) error {
+	if dec.manager == nil {
+		dec.manager = daemon.NewShipAssignmentManager(dec.clock)
+	}
 	timeout := time.Duration(timeoutHours) * time.Hour
 	dec.cleanupCount, dec.assignmentErr = dec.manager.CleanStaleAssignments(timeout)
 	return nil
