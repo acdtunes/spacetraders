@@ -665,13 +665,9 @@ class ORToolsRoutingEngine:
         assigned_waypoints: set = set()
 
         for vehicle, ship in enumerate(ships):
-            # If ship starts at a market, assign it immediately
-            start_node = manager.IndexToNode(routing.Start(vehicle))
-            start_waypoint = nodes[start_node]
-
-            if start_waypoint in markets and start_waypoint not in assigned_waypoints:
-                assignments[ship].append(start_waypoint)
-                assigned_waypoints.add(start_waypoint)
+            # DON'T add start waypoint here - let optimize_tour() handle it!
+            # The start location will be added by optimize_tour as position 0 and return position
+            # If we add it here, it appears 3 times: once from VRP, once at TSP start, once at TSP end
 
             # Extract markets from the route
             index = routing.Start(vehicle)
