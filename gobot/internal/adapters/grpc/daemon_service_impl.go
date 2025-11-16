@@ -190,7 +190,10 @@ func (s *daemonServiceImpl) ScoutTour(ctx context.Context, req *pb.ScoutTourRequ
 		return nil, fmt.Errorf("failed to resolve player: %w", err)
 	}
 
-	containerID, err := s.daemon.ScoutTour(ctx, req.ShipSymbol, req.Markets, int(req.Iterations), playerID)
+	// Generate container ID for this scout tour
+	containerID := generateContainerID("scout_tour", req.ShipSymbol)
+
+	_, err = s.daemon.ScoutTour(ctx, containerID, req.ShipSymbol, req.Markets, int(req.Iterations), playerID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start scout tour: %w", err)
 	}

@@ -378,7 +378,10 @@ class ORToolsRoutingEngine:
         if start not in graph:
             return None
 
-        all_waypoints = [start] + waypoints
+        # Remove start from waypoints if present to avoid duplicates
+        # This happens when a ship's current location is also one of the markets to visit
+        waypoints_without_start = [wp for wp in waypoints if wp != start]
+        all_waypoints = [start] + waypoints_without_start
         for wp in all_waypoints:
             if wp not in graph:
                 return None

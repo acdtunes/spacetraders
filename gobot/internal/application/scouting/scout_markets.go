@@ -35,10 +35,11 @@ type ScoutMarketsResponse struct {
 
 // ScoutMarketsHandler handles the scout markets command
 type ScoutMarketsHandler struct {
-	shipRepo      navigation.ShipRepository
-	graphProvider system.ISystemGraphProvider
-	routingClient routing.RoutingClient
-	daemonClient  daemon.DaemonClient
+	shipRepo               navigation.ShipRepository
+	graphProvider          system.ISystemGraphProvider
+	routingClient          routing.RoutingClient
+	daemonClient           daemon.DaemonClient
+	shipAssignmentRepo     daemon.ShipAssignmentRepository
 }
 
 // NewScoutMarketsHandler creates a new scout markets handler
@@ -47,12 +48,14 @@ func NewScoutMarketsHandler(
 	graphProvider system.ISystemGraphProvider,
 	routingClient routing.RoutingClient,
 	daemonClient daemon.DaemonClient,
+	shipAssignmentRepo daemon.ShipAssignmentRepository,
 ) *ScoutMarketsHandler {
 	return &ScoutMarketsHandler{
-		shipRepo:      shipRepo,
-		graphProvider: graphProvider,
-		routingClient: routingClient,
-		daemonClient:  daemonClient,
+		shipRepo:               shipRepo,
+		graphProvider:          graphProvider,
+		routingClient:          routingClient,
+		daemonClient:           daemonClient,
+		shipAssignmentRepo:     shipAssignmentRepo,
 	}
 }
 
@@ -143,14 +146,17 @@ func (h *ScoutMarketsHandler) Handle(ctx context.Context, request common.Request
 	}
 
 	// 7. Run VRP optimization
+	fmt.Printf("[DEBUG ScoutMarkets] Ships needing containers: %d, Markets: %v\n", len(shipsNeedingContainers), cmd.Markets)
 	var assignments map[string][]string
 	if len(shipsNeedingContainers) == 1 {
 		// Single ship: assign all markets
+		fmt.Printf("[DEBUG ScoutMarkets] Single ship path - assigning all markets to %s\n", shipsNeedingContainers[0])
 		assignments = map[string][]string{
 			shipsNeedingContainers[0]: cmd.Markets,
 		}
 	} else {
 		// Multi-ship: use VRP via routing client
+		fmt.Printf("[DEBUG ScoutMarkets] Multi-ship path - calling VRP for %d ships and %d markets\n", len(shipsNeedingContainers), len(cmd.Markets))
 		vrpRequest := &routing.VRPRequest{
 			SystemSymbol:    cmd.SystemSymbol,
 			ShipSymbols:     shipsNeedingContainers,
@@ -167,6 +173,7 @@ func (h *ScoutMarketsHandler) Handle(ctx context.Context, request common.Request
 		// Extract market assignments from VRP response
 		assignments = make(map[string][]string)
 		for shipSymbol, tourData := range vrpResponse.Assignments {
+			fmt.Printf("[DEBUG ScoutMarkets] VRP assigned %d markets to %s: %v\n", len(tourData.Waypoints), shipSymbol, tourData.Waypoints)
 			assignments[shipSymbol] = tourData.Waypoints
 		}
 	}
@@ -188,6 +195,12 @@ func (h *ScoutMarketsHandler) Handle(ctx context.Context, request common.Request
 		err := h.daemonClient.CreateScoutTourContainer(ctx, containerID, cmd.PlayerID, scoutTourCmd)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create container for %s: %w", shipSymbol, err)
+		}
+
+		// Persist ship assignment to database
+		assignment := daemon.NewShipAssignment(shipSymbol, int(cmd.PlayerID), containerID, nil)
+		if err := h.shipAssignmentRepo.Insert(ctx, assignment); err != nil {
+			return nil, fmt.Errorf("failed to persist ship assignment for %s: %w", shipSymbol, err)
 		}
 
 		newContainerIDs = append(newContainerIDs, containerID)

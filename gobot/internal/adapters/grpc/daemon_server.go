@@ -334,9 +334,8 @@ func (s *DaemonServer) BatchContractWorkflow(ctx context.Context, shipSymbol str
 }
 
 // ScoutTour handles market scouting tour requests (single ship)
-func (s *DaemonServer) ScoutTour(ctx context.Context, shipSymbol string, markets []string, iterations, playerID int) (string, error) {
-	// Create container ID
-	containerID := generateContainerID("scout_tour", shipSymbol)
+func (s *DaemonServer) ScoutTour(ctx context.Context, containerID string, shipSymbol string, markets []string, iterations, playerID int) (string, error) {
+	// Use provided container ID from caller
 
 	// Create scout tour command
 	cmd := &scouting.ScoutTourCommand{

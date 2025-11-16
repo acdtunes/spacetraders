@@ -30,11 +30,12 @@ type AssignFleetResponse struct {
 // AssignFleetHandler handles the assign fleet command
 // This handler executes INSIDE a container and creates scout-tour containers
 type AssignFleetHandler struct {
-	shipRepo      navigation.ShipRepository
-	waypointRepo  system.WaypointRepository
-	graphProvider system.ISystemGraphProvider
-	routingClient routing.RoutingClient
-	daemonClient  daemon.DaemonClient
+	shipRepo           navigation.ShipRepository
+	waypointRepo       system.WaypointRepository
+	graphProvider      system.ISystemGraphProvider
+	routingClient      routing.RoutingClient
+	daemonClient       daemon.DaemonClient
+	shipAssignmentRepo daemon.ShipAssignmentRepository
 }
 
 // NewAssignFleetHandler creates a new assign fleet handler
@@ -44,13 +45,15 @@ func NewAssignFleetHandler(
 	graphProvider system.ISystemGraphProvider,
 	routingClient routing.RoutingClient,
 	daemonClient daemon.DaemonClient,
+	shipAssignmentRepo daemon.ShipAssignmentRepository,
 ) *AssignFleetHandler {
 	return &AssignFleetHandler{
-		shipRepo:      shipRepo,
-		waypointRepo:  waypointRepo,
-		graphProvider: graphProvider,
-		routingClient: routingClient,
-		daemonClient:  daemonClient,
+		shipRepo:           shipRepo,
+		waypointRepo:       waypointRepo,
+		graphProvider:      graphProvider,
+		routingClient:      routingClient,
+		daemonClient:       daemonClient,
+		shipAssignmentRepo: shipAssignmentRepo,
 	}
 }
 
@@ -112,6 +115,7 @@ func (h *AssignFleetHandler) Handle(ctx context.Context, request common.Request)
 		h.graphProvider,
 		h.routingClient,
 		h.daemonClient,
+		h.shipAssignmentRepo,
 	)
 
 	scoutResponse, err := scoutMarketsHandler.Handle(ctx, scoutMarketsCmd)

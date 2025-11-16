@@ -290,8 +290,8 @@ Examples:
 			defer client.Close()
 
 			// Create fleet-assignment container via daemon
-			// Timeout is just for container creation (5 seconds)
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			// Timeout for container creation (30 seconds to handle database contention)
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 
 			fmt.Printf("Starting scout fleet assignment for system %s...\n\n", system)

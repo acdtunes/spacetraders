@@ -30,3 +30,21 @@ type DaemonClient interface {
 	// command: The scout tour command to execute in the container
 	CreateScoutTourContainer(ctx context.Context, containerID string, playerID uint, command interface{}) error
 }
+
+// ShipAssignmentRepository defines persistence operations for ship assignments
+type ShipAssignmentRepository interface {
+	// Insert creates a new ship assignment record
+	Insert(ctx context.Context, assignment *ShipAssignment) error
+
+	// FindByShip retrieves the active assignment for a ship
+	FindByShip(ctx context.Context, shipSymbol string, playerID int) (*ShipAssignment, error)
+
+	// FindByContainer retrieves all ship assignments for a container
+	FindByContainer(ctx context.Context, containerID string, playerID int) ([]*ShipAssignment, error)
+
+	// Release marks a ship assignment as released
+	Release(ctx context.Context, shipSymbol string, playerID int, reason string) error
+
+	// ReleaseByContainer releases all ship assignments for a container
+	ReleaseByContainer(ctx context.Context, containerID string, playerID int, reason string) error
+}

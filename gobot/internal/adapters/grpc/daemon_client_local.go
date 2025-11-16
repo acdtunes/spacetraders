@@ -52,6 +52,6 @@ func (c *DaemonClientLocal) CreateScoutTourContainer(
 	}
 
 	// Call server's ScoutTour method directly (bypasses gRPC layer)
-	_, err := c.server.ScoutTour(ctx, cmd.ShipSymbol, cmd.Markets, cmd.Iterations, int(playerID))
+	_, err := c.server.ScoutTour(ctx, containerID, cmd.ShipSymbol, cmd.Markets, cmd.Iterations, int(playerID))
 	return err
 }
