@@ -15,6 +15,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/application/scouting"
 	"github.com/andrescamacho/spacetraders-go/internal/application/ship"
+	"github.com/andrescamacho/spacetraders-go/internal/application/shipyard"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	pb "github.com/andrescamacho/spacetraders-go/pkg/proto/daemon"
 	"google.golang.org/grpc"
@@ -633,6 +634,110 @@ func (s *DaemonServer) GetShip(ctx context.Context, shipSymbol string, playerID 
 	}
 
 	return shipDetail, nil
+}
+
+// GetShipyardListings retrieves available ships at a shipyard
+func (s *DaemonServer) GetShipyardListings(ctx context.Context, systemSymbol, waypointSymbol string, playerID *int, agentSymbol string) ([]*pb.ShipListing, string, int32, error) {
+	// TODO: Implement GetShipyardListings - currently not tested
+	return nil, "", 0, fmt.Errorf("GetShipyardListings not yet implemented")
+}
+
+// PurchaseShip purchases a single ship from a shipyard
+func (s *DaemonServer) PurchaseShip(ctx context.Context, purchasingShipSymbol, shipType string, playerID int, shipyardWaypoint *string) (string, string, int32, int32, string, error) {
+	// Create purchase command
+	cmd := &shipyard.PurchaseShipCommand{
+		PurchasingShipSymbol: purchasingShipSymbol,
+		ShipType:             shipType,
+		PlayerID:             playerID,
+		ShipyardWaypoint:     "",
+	}
+	if shipyardWaypoint != nil {
+		cmd.ShipyardWaypoint = *shipyardWaypoint
+	}
+
+	// Create container ID
+	containerID := generateContainerID("purchase_ship", purchasingShipSymbol)
+
+	// Create container for this operation
+	containerEntity := container.NewContainer(
+		containerID,
+		container.ContainerTypePurchase,
+		playerID,
+		1, // Single iteration
+		map[string]interface{}{
+			"purchasing_ship": purchasingShipSymbol,
+			"ship_type":       shipType,
+			"shipyard":        cmd.ShipyardWaypoint,
+		},
+		nil, // Use real clock
+	)
+
+	// Create and start container runner
+	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo)
+
+	// Store container
+	s.containersMu.Lock()
+	s.containers[containerID] = runner
+	s.containersMu.Unlock()
+
+	// Start execution in background
+	runner.Start()
+
+	return containerID, "", 0, 0, "starting", nil
+}
+
+// BatchPurchaseShips purchases multiple ships from a shipyard as a background operation
+func (s *DaemonServer) BatchPurchaseShips(ctx context.Context, purchasingShipSymbol, shipType string, quantity, maxBudget, playerID int, shipyardWaypoint *string, iterations *int) (string, int32, int32, string, string, error) {
+	// Create batch purchase command
+	cmd := &shipyard.BatchPurchaseShipsCommand{
+		PurchasingShipSymbol: purchasingShipSymbol,
+		ShipType:             shipType,
+		Quantity:             quantity,
+		MaxBudget:            maxBudget,
+		PlayerID:             playerID,
+		ShipyardWaypoint:     "",
+	}
+	if shipyardWaypoint != nil {
+		cmd.ShipyardWaypoint = *shipyardWaypoint
+	}
+
+	// Resolve iterations (default to 1)
+	iterCount := 1
+	if iterations != nil {
+		iterCount = *iterations
+	}
+
+	// Create container ID
+	containerID := generateContainerID("batch_purchase_ships", purchasingShipSymbol)
+
+	// Create container for this operation
+	containerEntity := container.NewContainer(
+		containerID,
+		container.ContainerTypePurchase,
+		playerID,
+		iterCount,
+		map[string]interface{}{
+			"purchasing_ship": purchasingShipSymbol,
+			"ship_type":       shipType,
+			"quantity":        quantity,
+			"max_budget":      maxBudget,
+			"shipyard":        cmd.ShipyardWaypoint,
+		},
+		nil, // Use real clock
+	)
+
+	// Create and start container runner
+	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo)
+
+	// Store container
+	s.containersMu.Lock()
+	s.containers[containerID] = runner
+	s.containersMu.Unlock()
+
+	// Start execution in background
+	runner.Start()
+
+	return containerID, int32(quantity), int32(maxBudget), cmd.ShipyardWaypoint, "starting", nil
 }
 
 // Utility functions

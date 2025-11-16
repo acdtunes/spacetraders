@@ -456,6 +456,10 @@ func (dec *daemonEntityContext) iReleaseTheAssignmentForShipWithReason(shipSymbo
 		dec.manager = daemon.NewShipAssignmentManager(dec.clock)
 	}
 	dec.releaseErr = dec.manager.ReleaseAssignment(shipSymbol, reason)
+	// Fetch the assignment after release so it can be checked
+	if dec.releaseErr == nil {
+		dec.assignment, _ = dec.manager.GetAssignment(shipSymbol)
+	}
 	return nil
 }
 

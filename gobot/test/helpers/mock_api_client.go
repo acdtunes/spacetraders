@@ -534,3 +534,34 @@ func (m *MockAPIClient) JettisonCargo(ctx context.Context, shipSymbol, goodSymbo
 	// Mock success - in real implementation this would call the API
 	return nil
 }
+
+func (m *MockAPIClient) GetShipyard(ctx context.Context, systemSymbol, waypointSymbol, token string) (*infraports.ShipyardData, error) {
+	m.mu.RLock()
+	shouldError := m.shouldError
+	errorMsg := m.errorMsg
+	m.mu.RUnlock()
+
+	if shouldError {
+		return nil, fmt.Errorf("%s", errorMsg)
+	}
+
+	// Return empty shipyard data
+	return &infraports.ShipyardData{
+		Symbol:    waypointSymbol,
+		ShipTypes: []infraports.ShipTypeInfo{},
+		Ships:     []infraports.ShipListingData{},
+	}, nil
+}
+
+func (m *MockAPIClient) PurchaseShip(ctx context.Context, shipType, waypointSymbol, token string) (*infraports.ShipPurchaseResult, error) {
+	m.mu.RLock()
+	shouldError := m.shouldError
+	errorMsg := m.errorMsg
+	m.mu.RUnlock()
+
+	if shouldError {
+		return nil, fmt.Errorf("%s", errorMsg)
+	}
+
+	return nil, fmt.Errorf("not implemented in mock")
+}

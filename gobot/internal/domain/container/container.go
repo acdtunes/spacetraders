@@ -44,6 +44,7 @@ const (
 	ContainerTypeBatchContractWorkflow ContainerType = "BATCH_CONTRACT_WORKFLOW"
 	ContainerTypeTrading               ContainerType = "TRADING"
 	ContainerTypeScoutFleetAssignment  ContainerType = "SCOUT_FLEET_ASSIGNMENT"
+	ContainerTypePurchase              ContainerType = "PURCHASE"
 )
 
 // Container represents a background operation running in the daemon

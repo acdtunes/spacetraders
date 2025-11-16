@@ -40,6 +40,10 @@ type APIClient interface {
 
 	// Market operations
 	GetMarket(ctx context.Context, systemSymbol, waypointSymbol, token string) (*MarketData, error)
+
+	// Shipyard operations
+	GetShipyard(ctx context.Context, systemSymbol, waypointSymbol, token string) (*ShipyardData, error)
+	PurchaseShip(ctx context.Context, shipType, waypointSymbol, token string) (*ShipPurchaseResult, error)
 }
 
 // Contract DTOs
@@ -100,4 +104,44 @@ type TradeGoodData struct {
 	SellPrice     int
 	PurchasePrice int
 	TradeVolume   int
+}
+
+// Shipyard DTOs
+type ShipyardData struct {
+	Symbol          string
+	ShipTypes       []ShipTypeInfo
+	Ships           []ShipListingData
+	Transactions    []map[string]interface{}
+	ModificationFee int
+}
+
+type ShipTypeInfo struct {
+	Type string
+}
+
+type ShipListingData struct {
+	Type          string
+	Name          string
+	Description   string
+	PurchasePrice int
+	Frame         map[string]interface{}
+	Reactor       map[string]interface{}
+	Engine        map[string]interface{}
+	Modules       []map[string]interface{}
+	Mounts        []map[string]interface{}
+}
+
+type ShipPurchaseResult struct {
+	Agent       *player.AgentData
+	Ship        *navigation.ShipData
+	Transaction *ShipPurchaseTransaction
+}
+
+type ShipPurchaseTransaction struct {
+	WaypointSymbol string
+	ShipSymbol     string
+	ShipType       string
+	Price          int
+	AgentSymbol    string
+	Timestamp      string
 }

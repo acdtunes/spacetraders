@@ -51,6 +51,15 @@ service DaemonService {
 
   // GetShip returns detailed information about a specific ship
   rpc GetShip(GetShipRequest) returns (GetShipResponse);
+
+  // PurchaseShip purchases a single ship from a shipyard
+  rpc PurchaseShip(PurchaseShipRequest) returns (PurchaseShipResponse);
+
+  // BatchPurchaseShips purchases multiple ships from a shipyard as a background operation
+  rpc BatchPurchaseShips(BatchPurchaseShipsRequest) returns (BatchPurchaseShipsResponse);
+
+  // GetShipyardListings retrieves available ships at a shipyard
+  rpc GetShipyardListings(GetShipyardListingsRequest) returns (GetShipyardListingsResponse);
 }
 
 // NavigateShipRequest initiates ship navigation
@@ -322,6 +331,64 @@ message ShipDetail {
   int32 cargo_capacity = 7;
   repeated CargoItem cargo_inventory = 8;
   int32 engine_speed = 9;
+}
+
+// PurchaseShipRequest requests purchase of a single ship
+message PurchaseShipRequest {
+  string purchasing_ship_symbol = 1;
+  string ship_type = 2;
+  int32 player_id = 3;
+  optional string agent_symbol = 4;
+  optional string shipyard_waypoint = 5; // Optional - will auto-discover if not provided
+}
+
+message PurchaseShipResponse {
+  string container_id = 1;
+  string purchased_ship_symbol = 2;
+  int32 purchase_price = 3;
+  int32 agent_credits = 4;
+  string status = 5;
+}
+
+// BatchPurchaseShipsRequest requests batch purchase of multiple ships
+message BatchPurchaseShipsRequest {
+  string purchasing_ship_symbol = 1;
+  string ship_type = 2;
+  int32 quantity = 3;
+  int32 max_budget = 4;
+  int32 player_id = 5;
+  optional string agent_symbol = 6;
+  optional string shipyard_waypoint = 7; // Optional - will auto-discover if not provided
+  optional int32 iterations = 8; // -1 for infinite, default 1
+}
+
+message BatchPurchaseShipsResponse {
+  string container_id = 1;
+  int32 ships_to_purchase = 2;
+  int32 max_budget = 3;
+  string shipyard_waypoint = 4;
+  string status = 5;
+}
+
+// GetShipyardListingsRequest requests shipyard listings
+message GetShipyardListingsRequest {
+  string system_symbol = 1;
+  string waypoint_symbol = 2;
+  int32 player_id = 3;
+  optional string agent_symbol = 4;
+}
+
+message GetShipyardListingsResponse {
+  repeated ShipListing listings = 1;
+  string shipyard_symbol = 2;
+  int32 modification_fee = 3;
+}
+
+message ShipListing {
+  string ship_type = 1;
+  string name = 2;
+  string description = 3;
+  int32 purchase_price = 4;
 }
 
 message CargoItem {
