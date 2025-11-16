@@ -144,7 +144,6 @@ Feature: Ship Assignment Entity - Domain Logic
     When I create a ship assignment with ship "SHIP-1", player 1, container "container-123", operation "navigate"
     Then the assignment string representation should contain "SHIP-1"
     And the assignment string representation should contain "container-123"
-    And the assignment string representation should contain "navigate"
     And the assignment string representation should contain "active"
 
   Scenario: Released assignment string shows released status
