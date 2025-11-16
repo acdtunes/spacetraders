@@ -101,7 +101,7 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	steps.InitializeScoutingMiscUndefinedSteps(sc)
 
 	// API Adapter layer scenarios (circuit breaker, retry logic, rate limiting)
-	steps.InitializeAPIAdapterSteps(sc) // PLACEHOLDER - Step definitions not yet implemented
+	// steps.InitializeAPIAdapterSteps(sc) // DELETED - placeholder tests removed
 }
 
 func TestMain(m *testing.M) {
