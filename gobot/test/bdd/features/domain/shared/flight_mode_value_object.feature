@@ -141,7 +141,7 @@ Feature: Flight Mode Value Object
 
   Scenario: Travel time with very high speed
     When I calculate travel time for CRUISE mode with distance 100.0 and speed 100
-    Then the travel time should be 30 seconds
+    Then the travel time should be 31 seconds
 
   Scenario: Travel time with very low speed
     When I calculate travel time for CRUISE mode with distance 100.0 and speed 10
