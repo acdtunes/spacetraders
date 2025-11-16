@@ -19,6 +19,7 @@ var (
 	sharedWaypointMap  map[string]*shared.Waypoint
 	sharedShip         interface { Fuel() *shared.Fuel; Cargo() *shared.Cargo }
 	sharedMarket       interface{ GoodsCount() int; WaypointSymbol() string } // For scouting market context
+	sharedContainer    interface{ IsRunning() bool; IsFinished() bool; IsStopping() bool } // For container lifecycle/state checks
 )
 
 type valueObjectContext struct {

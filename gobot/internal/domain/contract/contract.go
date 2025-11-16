@@ -70,6 +70,9 @@ func (c *Contract) Fulfilled() bool       { return c.fulfilled }
 
 // Accept accepts the contract (MUTABLE - modifies in place)
 func (c *Contract) Accept() error {
+	if c.fulfilled {
+		return fmt.Errorf("contract already fulfilled")
+	}
 	if c.accepted {
 		return fmt.Errorf("contract already accepted")
 	}
@@ -79,6 +82,10 @@ func (c *Contract) Accept() error {
 
 // DeliverCargo updates delivery progress (MUTABLE)
 func (c *Contract) DeliverCargo(tradeSymbol string, units int) error {
+	if !c.accepted {
+		return fmt.Errorf("contract not accepted")
+	}
+
 	var delivery *Delivery
 	for i := range c.terms.Deliveries {
 		if c.terms.Deliveries[i].TradeSymbol == tradeSymbol {
@@ -111,6 +118,9 @@ func (c *Contract) CanFulfill() bool {
 
 // Fulfill marks contract as fulfilled (MUTABLE)
 func (c *Contract) Fulfill() error {
+	if !c.accepted {
+		return fmt.Errorf("contract not accepted")
+	}
 	if !c.CanFulfill() {
 		return fmt.Errorf("deliveries not complete")
 	}

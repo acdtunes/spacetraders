@@ -346,19 +346,34 @@ func (cc *containerContext) iCheckIfTheContainerCanRestart() error {
 }
 
 func (cc *containerContext) iCheckIfTheContainerIsRunning() error {
-	cc.boolResult = cc.container.IsRunning()
+	// Use shared container if local container is not set (cross-context scenario)
+	if cc.container == nil {
+		cc.boolResult = sharedContainer.IsRunning()
+	} else {
+		cc.boolResult = cc.container.IsRunning()
+	}
 	sharedBoolResult = cc.boolResult // Share result for cross-context assertions
 	return nil
 }
 
 func (cc *containerContext) iCheckIfTheContainerIsFinished() error {
-	cc.boolResult = cc.container.IsFinished()
+	// Use shared container if local container is not set (cross-context scenario)
+	if cc.container == nil {
+		cc.boolResult = sharedContainer.IsFinished()
+	} else {
+		cc.boolResult = cc.container.IsFinished()
+	}
 	sharedBoolResult = cc.boolResult // Share result for cross-context assertions
 	return nil
 }
 
 func (cc *containerContext) iCheckIfTheContainerIsStopping() error {
-	cc.boolResult = cc.container.IsStopping()
+	// Use shared container if local container is not set (cross-context scenario)
+	if cc.container == nil {
+		cc.boolResult = sharedContainer.IsStopping()
+	} else {
+		cc.boolResult = cc.container.IsStopping()
+	}
 	sharedBoolResult = cc.boolResult // Share result for cross-context assertions
 	return nil
 }
