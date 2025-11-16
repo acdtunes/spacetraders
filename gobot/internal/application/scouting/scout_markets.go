@@ -3,7 +3,6 @@ package scouting
 import (
 	"context"
 	"fmt"
-	"regexp"
 	"strings"
 
 	"github.com/google/uuid"
@@ -66,34 +65,23 @@ func (h *ScoutMarketsHandler) Handle(ctx context.Context, request common.Request
 		return nil, fmt.Errorf("invalid request type")
 	}
 
-	// 1. Query existing containers from daemon
-	containers, err := h.daemonClient.ListContainers(ctx, cmd.PlayerID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list containers: %w", err)
-	}
-
-	// 2. Parse container IDs to find reusable scout-tour containers
-	scoutContainerPattern := regexp.MustCompile(`^scout-tour-([a-z0-9-]+)-[a-f0-9]+$`)
+	// 1. Query ship assignments to find existing active assignments (source of truth)
 	shipsWithContainers := make(map[string]string) // ship -> container_id
 	reusedContainers := []string{}
 
-	for _, container := range containers {
-		if container.Status == "RUNNING" || container.Status == "STARTING" {
-			matches := scoutContainerPattern.FindStringSubmatch(container.ID)
-			if len(matches) == 2 {
-				shipSymbol := strings.ToUpper(matches[1])
-				// Normalize ship symbol (handle hyphens)
-				shipSymbol = strings.ReplaceAll(shipSymbol, "-", "-")
+	for _, shipSymbol := range cmd.ShipSymbols {
+		assignment, err := h.shipAssignmentRepo.FindByShip(ctx, shipSymbol, int(cmd.PlayerID))
+		if err != nil {
+			return nil, fmt.Errorf("failed to query ship assignment for %s: %w", shipSymbol, err)
+		}
 
-				if _, exists := shipsWithContainers[shipSymbol]; !exists {
-					shipsWithContainers[shipSymbol] = container.ID
-					reusedContainers = append(reusedContainers, container.ID)
-				}
-			}
+		if assignment != nil && assignment.Status() == "active" {
+			shipsWithContainers[shipSymbol] = assignment.ContainerID()
+			reusedContainers = append(reusedContainers, assignment.ContainerID())
 		}
 	}
 
-	// 3. Partition ships: with_containers vs needing_containers
+	// 2. Partition ships: with_containers vs needing_containers
 	shipsNeedingContainers := []string{}
 	for _, ship := range cmd.ShipSymbols {
 		if _, exists := shipsWithContainers[ship]; !exists {
@@ -101,7 +89,7 @@ func (h *ScoutMarketsHandler) Handle(ctx context.Context, request common.Request
 		}
 	}
 
-	// 4. Early return if all ships have containers
+	// 3. Early return if all ships have containers
 	if len(shipsNeedingContainers) == 0 {
 		allContainerIDs := []string{}
 		assignments := make(map[string][]string)
@@ -117,7 +105,7 @@ func (h *ScoutMarketsHandler) Handle(ctx context.Context, request common.Request
 		}, nil
 	}
 
-	// 5. Load ships and get current locations + specs
+	// 4. Load ships and get current locations + specs
 	shipConfigs := make(map[string]*routing.ShipConfigData)
 
 	for _, shipSymbol := range shipsNeedingContainers {
@@ -133,7 +121,7 @@ func (h *ScoutMarketsHandler) Handle(ctx context.Context, request common.Request
 		}
 	}
 
-	// 6. Get system graph
+	// 5. Get system graph
 	graphResult, err := h.graphProvider.GetGraph(ctx, cmd.SystemSymbol, false)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get graph: %w", err)
@@ -145,7 +133,7 @@ func (h *ScoutMarketsHandler) Handle(ctx context.Context, request common.Request
 		return nil, fmt.Errorf("failed to extract waypoint data: %w", err)
 	}
 
-	// 7. Run VRP optimization
+	// 6. Run VRP optimization
 	fmt.Printf("[DEBUG ScoutMarkets] Ships needing containers: %d, Markets: %v\n", len(shipsNeedingContainers), cmd.Markets)
 	var assignments map[string][]string
 	if len(shipsNeedingContainers) == 1 {
@@ -178,7 +166,7 @@ func (h *ScoutMarketsHandler) Handle(ctx context.Context, request common.Request
 		}
 	}
 
-	// 8. Create scout-tour containers for ships needing them
+	// 7. Create scout-tour containers for ships needing them
 	newContainerIDs := []string{}
 	for shipSymbol, markets := range assignments {
 		containerID := fmt.Sprintf("scout-tour-%s-%s",
@@ -206,7 +194,7 @@ func (h *ScoutMarketsHandler) Handle(ctx context.Context, request common.Request
 		newContainerIDs = append(newContainerIDs, containerID)
 	}
 
-	// 9. Combine results
+	// 8. Combine results
 	allContainerIDs := append(reusedContainers, newContainerIDs...)
 
 	// Add reused containers to assignments (with empty markets list)

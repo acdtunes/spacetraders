@@ -94,7 +94,7 @@ fi
 echo ""
 
 START_TIME=$(date +%s)
-go test $TEST_FLAGS ./... 2>&1 | grep -v "LC_DYSYMTAB" | tee "$TEMP_OUTPUT"
+go test $TEST_FLAGS ./... 2>&1 | grep -v "LC_DYSYMTAB" > "$TEMP_OUTPUT"
 END_TIME=$(date +%s)
 ELAPSED_TIME=$((END_TIME - START_TIME))
 

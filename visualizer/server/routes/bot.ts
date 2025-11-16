@@ -2,8 +2,11 @@ import { Router } from 'express';
 import pkg from 'pg';
 const { Pool } = pkg;
 import { optimizeTour } from '../utils/tourOptimizer.js';
+import { SpaceTradersClient } from '../src/client.js';
+import * as db from '../db/storage.js';
 
 const router = Router();
+const API_BASE_URL = 'https://api.spacetraders.io/v2';
 
 // PostgreSQL connection pool
 const pool = new Pool({
@@ -22,38 +25,82 @@ function getOperationFromContainerId(containerId: string): string | null {
   return 'idle';
 }
 
-// Get all ship assignments (Go bot only - reads from running containers)
+// Get all ship assignments (Go bot - queries ship_assignments table joined with containers)
 router.get('/assignments', async (req, res) => {
   const client = await pool.connect();
   try {
-    // Get all running containers (Go bot containers)
+    // Get all agents to fetch their ships
+    const agents = await db.getAllAgents();
+
+    // Get all ship assignments with container details
     const result = await client.query(`
       SELECT
-        c.config::jsonb->>'ship_symbol' as ship_symbol,
-        c.player_id,
-        c.container_id as assigned_to,
-        c.container_id as daemon_id,
-        'active' as status,
-        c.started_at as assigned_at,
-        NULL as released_at,
+        sa.ship_symbol,
+        sa.player_id,
+        sa.container_id as assigned_to,
+        sa.container_id as daemon_id,
+        sa.status,
+        sa.assigned_at,
+        sa.released_at,
         c.config as metadata
-      FROM containers c
-      WHERE c.status IN ('RUNNING', 'STARTING', 'STARTED')
+      FROM ship_assignments sa
+      LEFT JOIN containers c ON sa.container_id = c.id AND sa.player_id = c.player_id
     `);
 
-    // Map container_id to operation type
-    const parsed = result.rows.map((a: any) => {
-      const config = typeof a.metadata === 'string' ? JSON.parse(a.metadata) : a.metadata;
-      const operation = getOperationFromContainerId(a.daemon_id);
-
-      return {
-        ...a,
-        metadata: config,
-        operation,
-      };
+    // Create a map of ship symbols to assignments
+    const assignmentsByShip = new Map();
+    result.rows.forEach((row: any) => {
+      assignmentsByShip.set(row.ship_symbol, row);
     });
 
-    res.json({ assignments: parsed });
+    // Fetch all ships from SpaceTraders API and merge with assignments
+    const assignments = [];
+    for (const agent of agents) {
+      try {
+        const stClient = new SpaceTradersClient(API_BASE_URL, agent.token);
+        const shipsResponse = await stClient.get('/my/ships');
+        const ships = shipsResponse.data;
+
+        for (const ship of ships) {
+          const assignment = assignmentsByShip.get(ship.symbol);
+
+          if (assignment && assignment.status === 'active' && assignment.daemon_id) {
+            // Ship has an active assignment with a container
+            const config = typeof assignment.metadata === 'string' ? JSON.parse(assignment.metadata) : assignment.metadata;
+            const operation = getOperationFromContainerId(assignment.daemon_id);
+
+            assignments.push({
+              ship_symbol: ship.symbol,
+              player_id: assignment.player_id,
+              assigned_to: assignment.assigned_to,
+              daemon_id: assignment.daemon_id,
+              status: assignment.status,
+              assigned_at: assignment.assigned_at,
+              released_at: assignment.released_at,
+              metadata: config,
+              operation,
+            });
+          } else {
+            // Ship is idle (no assignment, or assignment without container)
+            assignments.push({
+              ship_symbol: ship.symbol,
+              player_id: assignment?.player_id || null,
+              assigned_to: null,
+              daemon_id: null,
+              status: 'active',
+              assigned_at: assignment?.assigned_at || null,
+              released_at: assignment?.released_at || null,
+              metadata: null,
+              operation: 'idle',
+            });
+          }
+        }
+      } catch (error) {
+        console.error(`Failed to fetch ships for agent ${agent.symbol}:`, error);
+      }
+    }
+
+    res.json({ assignments });
   } catch (error) {
     console.error('Failed to fetch assignments:', error);
     res.status(500).json({ error: 'Failed to fetch assignments' });
@@ -62,40 +109,65 @@ router.get('/assignments', async (req, res) => {
   }
 });
 
-// Get assignment for specific ship (Go bot only)
+// Get assignment for specific ship (Go bot - queries ship_assignments)
 router.get('/assignments/:shipSymbol', async (req, res) => {
   const client = await pool.connect();
   try {
     const result = await client.query(`
       SELECT
-        c.config::jsonb->>'ship_symbol' as ship_symbol,
-        c.player_id,
-        c.container_id as assigned_to,
-        c.container_id as daemon_id,
-        'active' as status,
-        c.started_at as assigned_at,
-        NULL as released_at,
+        sa.ship_symbol,
+        sa.player_id,
+        sa.container_id as assigned_to,
+        sa.container_id as daemon_id,
+        sa.status,
+        sa.assigned_at,
+        sa.released_at,
         c.config as metadata
-      FROM containers c
-      WHERE c.config::jsonb->>'ship_symbol' = $1
-        AND c.status IN ('RUNNING', 'STARTING', 'STARTED')
+      FROM ship_assignments sa
+      LEFT JOIN containers c ON sa.container_id = c.id AND sa.player_id = c.player_id
+      WHERE sa.ship_symbol = $1
     `, [req.params.shipSymbol]);
 
     if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Assignment not found' });
+      // Ship not in ship_assignments table - it's idle
+      return res.json({
+        assignment: {
+          ship_symbol: req.params.shipSymbol,
+          player_id: null,
+          assigned_to: null,
+          daemon_id: null,
+          status: 'active',
+          assigned_at: null,
+          released_at: null,
+          metadata: null,
+          operation: 'idle',
+        }
+      });
     }
 
     const assignment = result.rows[0];
-    const config = typeof assignment.metadata === 'string' ? JSON.parse(assignment.metadata) : assignment.metadata;
-    const operation = getOperationFromContainerId(assignment.daemon_id);
 
-    const parsed = {
-      ...assignment,
-      metadata: config,
-      operation,
-    };
+    if (assignment.status === 'active' && assignment.daemon_id) {
+      const config = typeof assignment.metadata === 'string' ? JSON.parse(assignment.metadata) : assignment.metadata;
+      const operation = getOperationFromContainerId(assignment.daemon_id);
 
-    res.json({ assignment: parsed });
+      const parsed = {
+        ...assignment,
+        metadata: config,
+        operation,
+      };
+
+      res.json({ assignment: parsed });
+    } else {
+      // Assignment exists but ship is idle
+      res.json({
+        assignment: {
+          ...assignment,
+          metadata: null,
+          operation: 'idle',
+        }
+      });
+    }
   } catch (error) {
     console.error('Failed to fetch assignment:', error);
     res.status(500).json({ error: 'Failed to fetch assignment' });
@@ -110,7 +182,7 @@ router.get('/daemons', async (req, res) => {
   try {
     const result = await client.query(`
       SELECT
-        container_id as daemon_id,
+        id as daemon_id,
         player_id,
         NULL as pid,
         config as command,
@@ -241,16 +313,16 @@ router.get('/tours/:systemSymbol', async (req, res) => {
       : graphResult.rows[0].graph_data;
     const waypoints = graphData.waypoints || {};
 
-    // Get Go bot scout tour containers (identified by container_id pattern)
+    // Get Go bot scout tour containers (identified by id pattern)
     const assignmentsResult = await client.query(`
       SELECT
         c.config::jsonb->>'ship_symbol' as ship_symbol,
-        c.container_id as daemon_id,
+        c.id as daemon_id,
         c.config,
         c.started_at as assigned_at,
         c.player_id
       FROM containers c
-      WHERE (c.container_id LIKE 'scout_tour-%' OR c.container_id LIKE 'scout-tour-%')
+      WHERE (c.id LIKE 'scout_tour-%' OR c.id LIKE 'scout-tour-%')
         AND c.status IN ('RUNNING', 'STARTING', 'STARTED')
         AND ($1::integer IS NULL OR c.player_id = $1)
       ORDER BY ship_symbol
@@ -502,10 +574,10 @@ router.get('/players', async (req, res) => {
   try {
     const result = await client.query(`
       SELECT
-        player_id,
+        id as player_id,
         agent_symbol
       FROM players
-      ORDER BY player_id
+      ORDER BY id
     `);
 
     res.json({ players: result.rows });

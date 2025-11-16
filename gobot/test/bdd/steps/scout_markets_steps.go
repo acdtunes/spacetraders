@@ -11,6 +11,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/api"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/scouting"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
@@ -214,12 +215,20 @@ func (c *scoutMarketsContext) theSystemHasMarketsAt(systemSymbol, marketsCsv str
 }
 
 func (c *scoutMarketsContext) shipHasAnActiveContainer(shipSymbol, containerID string) error {
+	// Add container to daemon client
 	c.mockDaemonClient.AddContainer(helpers.Container{
 		ID:       containerID,
 		PlayerID: uint(c.player.ID),
 		Status:   "RUNNING",
 		Type:     "scout-tour",
 	})
+
+	// Create ship assignment (source of truth for container reuse)
+	assignment := daemon.NewShipAssignment(shipSymbol, c.player.ID, containerID, nil)
+	if err := c.mockShipAssignmentRepo.Insert(context.Background(), assignment); err != nil {
+		return fmt.Errorf("failed to create ship assignment: %w", err)
+	}
+
 	return nil
 }
 
