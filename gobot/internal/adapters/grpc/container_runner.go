@@ -392,6 +392,18 @@ func (r *ContainerRunner) createShipAssignments() error {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
+		// Check if assignment already exists (for recovered containers)
+		existingAssignment, err := r.shipAssignmentRepo.FindByShip(ctx, shipSymbol, r.containerEntity.PlayerID())
+		if err != nil {
+			return fmt.Errorf("failed to check existing assignment: %w", err)
+		}
+
+		// If assignment exists for THIS container, skip creation (recovered container)
+		if existingAssignment != nil && existingAssignment.ContainerID() == r.containerEntity.ID() {
+			r.log("INFO", fmt.Sprintf("Ship %s already assigned to this container (recovered)", shipSymbol), nil)
+			return nil
+		}
+
 		// Create ship assignment
 		assignment := daemon.NewShipAssignment(
 			shipSymbol,

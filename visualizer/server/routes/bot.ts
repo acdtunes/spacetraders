@@ -13,18 +13,6 @@ const pool = new Pool({
   connectionString: process.env.DATABASE_URL || 'postgresql://spacetraders:dev_password@localhost:5432/spacetraders'
 });
 
-// Map Go bot container_id to operation type for frontend
-function getOperationFromContainerId(containerId: string): string | null {
-  if (containerId.startsWith('scout_tour-') || containerId.startsWith('scout-tour-')) {
-    return 'scout-markets';
-  }
-  if (containerId.startsWith('contract-') || containerId.startsWith('contract_')) {
-    return 'contract';
-  }
-  // Add other Go bot patterns as needed
-  return 'idle';
-}
-
 // Get all ship assignments (Go bot - uses ship_assignments table as source of truth)
 router.get('/assignments', async (req, res) => {
   const client = await pool.connect();
@@ -41,7 +29,8 @@ router.get('/assignments', async (req, res) => {
         sa.status,
         sa.assigned_at,
         sa.released_at,
-        c.config
+        c.config,
+        c.container_type
       FROM ship_assignments sa
       LEFT JOIN containers c ON sa.container_id = c.id AND sa.player_id = c.player_id
     `);
@@ -77,7 +66,16 @@ router.get('/assignments', async (req, res) => {
           if (assignment && assignment.status === 'active' && assignment.container_id) {
             // Ship has active assignment with container
             const config = typeof assignment.config === 'string' ? JSON.parse(assignment.config) : assignment.config;
-            const operation = getOperationFromContainerId(assignment.container_id);
+
+            // Map container_type to operation name
+            let operation = 'idle';
+            if (assignment.container_type === 'SCOUT') {
+              operation = 'scout-markets';
+            } else if (assignment.container_type === 'CONTRACT') {
+              operation = 'contract';
+            } else if (assignment.container_type === 'PURCHASE') {
+              operation = 'shipyard';
+            }
 
             assignments.push({
               ship_symbol: ship.symbol,
@@ -132,7 +130,8 @@ router.get('/assignments/:shipSymbol', async (req, res) => {
         sa.status,
         sa.assigned_at,
         sa.released_at,
-        c.config as metadata
+        c.config as metadata,
+        c.container_type
       FROM ship_assignments sa
       LEFT JOIN containers c ON sa.container_id = c.id AND sa.player_id = c.player_id
       WHERE sa.ship_symbol = $1
@@ -159,7 +158,16 @@ router.get('/assignments/:shipSymbol', async (req, res) => {
 
     if (assignment.status === 'active' && assignment.daemon_id) {
       const config = typeof assignment.metadata === 'string' ? JSON.parse(assignment.metadata) : assignment.metadata;
-      const operation = getOperationFromContainerId(assignment.daemon_id);
+
+      // Map container_type to operation name
+      let operation = 'idle';
+      if (assignment.container_type === 'SCOUT') {
+        operation = 'scout-markets';
+      } else if (assignment.container_type === 'CONTRACT') {
+        operation = 'contract';
+      } else if (assignment.container_type === 'PURCHASE') {
+        operation = 'shipyard';
+      }
 
       const parsed = {
         ...assignment,

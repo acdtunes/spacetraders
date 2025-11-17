@@ -11,6 +11,7 @@ export function getOperationEmoji(operationType: OperationType | null | undefine
     'trade': '📦',
     'mine': '⛏️',
     'contract': '📜',
+    'shipyard': '🏭',
     'idle': '💤',
   };
 
@@ -28,6 +29,7 @@ export function getOperationName(operationType: OperationType | null | undefined
     'trade': 'Trading',
     'mine': 'Mining',
     'contract': 'Contract',
+    'shipyard': 'Shipyard',
     'idle': 'Idle',
   };
 
@@ -45,6 +47,7 @@ export function getOperationColor(operationType: OperationType | null | undefine
     'trade': '#10B981', // green-500
     'mine': '#F59E0B', // amber-500
     'contract': '#8B5CF6', // purple-500
+    'shipyard': '#EC4899', // pink-500
     'idle': '#6B7280', // gray-500
   };
 

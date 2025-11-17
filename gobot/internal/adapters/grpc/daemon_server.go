@@ -23,6 +23,9 @@ import (
 	"google.golang.org/grpc"
 )
 
+// CommandFactory creates a command instance from configuration
+type CommandFactory func(config map[string]interface{}, playerID int) (interface{}, error)
+
 // DaemonServer implements the gRPC daemon service
 // Handles CLI requests and orchestrates background container operations
 type DaemonServer struct {
@@ -35,6 +38,9 @@ type DaemonServer struct {
 	// Container orchestration
 	containers   map[string]*ContainerRunner
 	containersMu sync.RWMutex
+
+	// Command factory registry - maps command types to their factory functions
+	commandFactories map[string]CommandFactory
 
 	// Shutdown coordination
 	shutdownChan chan os.Signal
@@ -73,14 +79,130 @@ func NewDaemonServer(
 		shipAssignmentRepo: shipAssignmentRepo,
 		listener:           listener,
 		containers:         make(map[string]*ContainerRunner),
+		commandFactories:   make(map[string]CommandFactory),
 		shutdownChan:       make(chan os.Signal, 1),
 		done:               make(chan struct{}),
 	}
+
+	// Register command factories for recovery
+	server.registerCommandFactories()
 
 	// Setup signal handling
 	signal.Notify(server.shutdownChan, os.Interrupt, syscall.SIGTERM)
 
 	return server, nil
+}
+
+// registerCommandFactories registers command factories for container recovery
+// Adding a new container type only requires adding a factory here - no changes to recovery logic
+func (s *DaemonServer) registerCommandFactories() {
+	// Scout tour factory
+	s.commandFactories["scout_tour"] = func(config map[string]interface{}, playerID int) (interface{}, error) {
+		shipSymbol, ok := config["ship_symbol"].(string)
+		if !ok {
+			return nil, fmt.Errorf("missing or invalid ship_symbol")
+		}
+
+		marketsRaw, ok := config["markets"].([]interface{})
+		if !ok {
+			return nil, fmt.Errorf("missing or invalid markets")
+		}
+
+		markets := make([]string, len(marketsRaw))
+		for i, m := range marketsRaw {
+			markets[i], ok = m.(string)
+			if !ok {
+				return nil, fmt.Errorf("invalid market entry at index %d", i)
+			}
+		}
+
+		iterations, ok := config["iterations"].(float64)
+		if !ok {
+			return nil, fmt.Errorf("missing or invalid iterations")
+		}
+
+		return &scouting.ScoutTourCommand{
+			PlayerID:   uint(playerID),
+			ShipSymbol: shipSymbol,
+			Markets:    markets,
+			Iterations: int(iterations),
+		}, nil
+	}
+
+	// Batch contract workflow factory
+	s.commandFactories["batch_contract_workflow"] = func(config map[string]interface{}, playerID int) (interface{}, error) {
+		shipSymbol, ok := config["ship_symbol"].(string)
+		if !ok {
+			return nil, fmt.Errorf("missing or invalid ship_symbol")
+		}
+
+		iterations, ok := config["iterations"].(float64)
+		if !ok {
+			return nil, fmt.Errorf("missing or invalid iterations")
+		}
+
+		return &contract.BatchContractWorkflowCommand{
+			ShipSymbol: shipSymbol,
+			Iterations: int(iterations),
+			PlayerID:   playerID,
+		}, nil
+	}
+
+	// Purchase ship factory
+	s.commandFactories["purchase_ship"] = func(config map[string]interface{}, playerID int) (interface{}, error) {
+		shipSymbol, ok := config["ship_symbol"].(string)
+		if !ok {
+			return nil, fmt.Errorf("missing or invalid ship_symbol")
+		}
+
+		shipType, ok := config["ship_type"].(string)
+		if !ok {
+			return nil, fmt.Errorf("missing or invalid ship_type")
+		}
+
+		shipyardWaypoint, _ := config["shipyard"].(string) // Optional
+
+		return &shipyard.PurchaseShipCommand{
+			PurchasingShipSymbol: shipSymbol,
+			ShipType:             shipType,
+			PlayerID:             playerID,
+			ShipyardWaypoint:     shipyardWaypoint,
+		}, nil
+	}
+
+	// Batch purchase ships factory
+	s.commandFactories["batch_purchase_ships"] = func(config map[string]interface{}, playerID int) (interface{}, error) {
+		shipSymbol, ok := config["ship_symbol"].(string)
+		if !ok {
+			return nil, fmt.Errorf("missing or invalid ship_symbol")
+		}
+
+		shipType, ok := config["ship_type"].(string)
+		if !ok {
+			return nil, fmt.Errorf("missing or invalid ship_type")
+		}
+
+		quantity, ok := config["quantity"].(float64)
+		if !ok {
+			return nil, fmt.Errorf("missing or invalid quantity")
+		}
+
+		maxBudget, ok := config["max_budget"].(float64)
+		if !ok {
+			return nil, fmt.Errorf("missing or invalid max_budget")
+		}
+
+		shipyardWaypoint, _ := config["shipyard"].(string) // Optional
+
+		return &shipyard.BatchPurchaseShipsCommand{
+			PurchasingShipSymbol: shipSymbol,
+			ShipType:             shipType,
+			Quantity:             int(quantity),
+			MaxBudget:            int(maxBudget),
+			PlayerID:             playerID,
+			ShipyardWaypoint:     shipyardWaypoint,
+		}, nil
+	}
 }
 
 // Start begins serving gRPC requests
@@ -197,30 +319,13 @@ func (s *DaemonServer) RecoverRunningContainers(ctx context.Context) error {
 			continue
 		}
 
-		// Recover based on command type
-		switch containerModel.CommandType {
-		case "scout_tour":
-			if err := s.recoverScoutTourContainer(ctx, containerModel, config); err != nil {
-				fmt.Printf("Container %s: Recovery failed: %v\n", containerModel.ID, err)
-				s.markContainerFailed(ctx, containerModel, "recovery_failed", err.Error())
-				failedCount++
-			} else {
-				recoveredCount++
-			}
-
-		case "batch_contract_workflow":
-			if err := s.recoverBatchContractWorkflowContainer(ctx, containerModel, config); err != nil {
-				fmt.Printf("Container %s: Recovery failed: %v\n", containerModel.ID, err)
-				s.markContainerFailed(ctx, containerModel, "recovery_failed", err.Error())
-				failedCount++
-			} else {
-				recoveredCount++
-			}
-
-		default:
-			fmt.Printf("Container %s: Unknown command type '%s', marking as FAILED\n", containerModel.ID, containerModel.CommandType)
-			s.markContainerFailed(ctx, containerModel, "unknown_command_type", fmt.Sprintf("type: %s", containerModel.CommandType))
+		// Recover using generic recovery with command factory
+		if err := s.recoverContainer(ctx, containerModel, config); err != nil {
+			fmt.Printf("Container %s: Recovery failed: %v\n", containerModel.ID, err)
+			s.markContainerFailed(ctx, containerModel, "recovery_failed", err.Error())
 			failedCount++
+		} else {
+			recoveredCount++
 		}
 	}
 
@@ -228,61 +333,51 @@ func (s *DaemonServer) RecoverRunningContainers(ctx context.Context) error {
 	return nil
 }
 
-// recoverScoutTourContainer recovers a scout_tour container
-func (s *DaemonServer) recoverScoutTourContainer(ctx context.Context, containerModel *persistence.ContainerModel, config map[string]interface{}) error {
-	// Extract configuration
-	shipSymbol, ok := config["ship_symbol"].(string)
-	if !ok {
-		return fmt.Errorf("missing or invalid ship_symbol in config")
+// recoverContainer is the generic container recovery function
+// Uses the command factory registry to recreate any container type
+// Adding new container types only requires registering a new factory - NO changes needed here!
+func (s *DaemonServer) recoverContainer(ctx context.Context, containerModel *persistence.ContainerModel, config map[string]interface{}) error {
+	// Look up command factory
+	factory, exists := s.commandFactories[containerModel.CommandType]
+	if !exists {
+		return fmt.Errorf("unknown command type '%s'", containerModel.CommandType)
 	}
 
-	marketsRaw, ok := config["markets"].([]interface{})
-	if !ok {
-		return fmt.Errorf("missing or invalid markets in config")
+	// Use factory to create command from config
+	cmd, err := factory(config, containerModel.PlayerID)
+	if err != nil {
+		return fmt.Errorf("failed to create command: %w", err)
 	}
 
-	markets := make([]string, len(marketsRaw))
-	for i, m := range marketsRaw {
-		markets[i], ok = m.(string)
-		if !ok {
-			return fmt.Errorf("invalid market entry at index %d", i)
+	// Extract ship symbol for assignment (if present)
+	shipSymbol, hasShip := config["ship_symbol"].(string)
+	if hasShip {
+		// Re-assign ship using UPSERT (will update old released assignment)
+		assignmentEntity := &persistence.ShipAssignmentModel{
+			ShipSymbol:  shipSymbol,
+			PlayerID:    containerModel.PlayerID,
+			ContainerID: containerModel.ID,
+			Status:      "active",
+			AssignedAt:  containerModel.StartedAt,
+		}
+
+		if err := s.shipAssignmentRepo.Insert(ctx, containerModelToShipAssignment(assignmentEntity)); err != nil {
+			return fmt.Errorf("failed to reassign ship %s: %w", shipSymbol, err)
 		}
 	}
 
-	iterations, ok := config["iterations"].(float64) // JSON numbers are float64
-	if !ok {
-		return fmt.Errorf("missing or invalid iterations in config")
+	// Extract iterations from config
+	iterations := 1 // Default
+	if iter, ok := config["iterations"].(float64); ok {
+		iterations = int(iter)
 	}
 
-	// Recreate scout tour command
-	cmd := &scouting.ScoutTourCommand{
-		PlayerID:   uint(containerModel.PlayerID),
-		ShipSymbol: shipSymbol,
-		Markets:    markets,
-		Iterations: int(iterations),
-	}
-
-	// Re-assign ship using UPSERT (will update old released assignment)
-	assignment := containerModel.ID // Container ID serves as assignment container reference
-	assignmentEntity := &persistence.ShipAssignmentModel{
-		ShipSymbol:  shipSymbol,
-		PlayerID:    containerModel.PlayerID,
-		ContainerID: assignment,
-		Status:      "active",
-		AssignedAt:  containerModel.StartedAt,
-	}
-
-	// Use UPSERT to handle reassignment
-	if err := s.shipAssignmentRepo.Insert(ctx, containerModelToShipAssignment(assignmentEntity)); err != nil {
-		return fmt.Errorf("failed to reassign ship %s: %w", shipSymbol, err)
-	}
-
-	// Recreate container entity (without database insert - already exists)
+	// Recreate container entity
 	containerEntity := container.NewContainer(
 		containerModel.ID,
 		container.ContainerType(containerModel.ContainerType),
 		containerModel.PlayerID,
-		int(iterations),
+		iterations,
 		config,
 		nil, // Use default RealClock for production
 	)
@@ -303,72 +398,11 @@ func (s *DaemonServer) recoverScoutTourContainer(ctx context.Context, containerM
 		}
 	}()
 
-	fmt.Printf("Recovered container %s (scout_tour for ship %s)\n", containerModel.ID, shipSymbol)
-	return nil
-}
-
-// recoverBatchContractWorkflowContainer recovers a batch_contract_workflow container
-func (s *DaemonServer) recoverBatchContractWorkflowContainer(ctx context.Context, containerModel *persistence.ContainerModel, config map[string]interface{}) error {
-	// Extract configuration
-	shipSymbol, ok := config["ship_symbol"].(string)
-	if !ok {
-		return fmt.Errorf("missing or invalid ship_symbol in config")
+	shipInfo := ""
+	if hasShip {
+		shipInfo = fmt.Sprintf(" for ship %s", shipSymbol)
 	}
-
-	iterations, ok := config["iterations"].(float64) // JSON numbers are float64
-	if !ok {
-		return fmt.Errorf("missing or invalid iterations in config")
-	}
-
-	// Recreate batch contract workflow command
-	cmd := &contract.BatchContractWorkflowCommand{
-		ShipSymbol: shipSymbol,
-		Iterations: int(iterations),
-		PlayerID:   containerModel.PlayerID,
-	}
-
-	// Re-assign ship using UPSERT (will update old released assignment)
-	assignment := containerModel.ID // Container ID serves as assignment container reference
-	assignmentEntity := &persistence.ShipAssignmentModel{
-		ShipSymbol:  shipSymbol,
-		PlayerID:    containerModel.PlayerID,
-		ContainerID: assignment,
-		Status:      "active",
-		AssignedAt:  containerModel.StartedAt,
-	}
-
-	// Use UPSERT to handle reassignment
-	if err := s.shipAssignmentRepo.Insert(ctx, containerModelToShipAssignment(assignmentEntity)); err != nil {
-		return fmt.Errorf("failed to reassign ship %s: %w", shipSymbol, err)
-	}
-
-	// Recreate container entity (without database insert - already exists)
-	containerEntity := container.NewContainer(
-		containerModel.ID,
-		container.ContainerType(containerModel.ContainerType),
-		containerModel.PlayerID,
-		int(iterations),
-		config,
-		nil, // Use default RealClock for production
-	)
-
-	// Restore restart count from database
-	for i := 0; i < containerModel.RestartCount; i++ {
-		containerEntity.IncrementRestartCount()
-	}
-
-	// Create and start container runner
-	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipAssignmentRepo)
-	s.registerContainer(containerModel.ID, runner)
-
-	// Start container in background
-	go func() {
-		if err := runner.Start(); err != nil {
-			fmt.Printf("Recovered container %s failed: %v\n", containerModel.ID, err)
-		}
-	}()
-
-	fmt.Printf("Recovered container %s (batch_contract_workflow for ship %s)\n", containerModel.ID, shipSymbol)
+	fmt.Printf("Recovered container %s (%s%s)\n", containerModel.ID, containerModel.CommandType, shipInfo)
 	return nil
 }
 
