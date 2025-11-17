@@ -208,6 +208,15 @@ func (s *DaemonServer) RecoverRunningContainers(ctx context.Context) error {
 				recoveredCount++
 			}
 
+		case "batch_contract_workflow":
+			if err := s.recoverBatchContractWorkflowContainer(ctx, containerModel, config); err != nil {
+				fmt.Printf("Container %s: Recovery failed: %v\n", containerModel.ID, err)
+				s.markContainerFailed(ctx, containerModel, "recovery_failed", err.Error())
+				failedCount++
+			} else {
+				recoveredCount++
+			}
+
 		default:
 			fmt.Printf("Container %s: Unknown command type '%s', marking as FAILED\n", containerModel.ID, containerModel.CommandType)
 			s.markContainerFailed(ctx, containerModel, "unknown_command_type", fmt.Sprintf("type: %s", containerModel.CommandType))
@@ -295,6 +304,71 @@ func (s *DaemonServer) recoverScoutTourContainer(ctx context.Context, containerM
 	}()
 
 	fmt.Printf("Recovered container %s (scout_tour for ship %s)\n", containerModel.ID, shipSymbol)
+	return nil
+}
+
+// recoverBatchContractWorkflowContainer recovers a batch_contract_workflow container
+func (s *DaemonServer) recoverBatchContractWorkflowContainer(ctx context.Context, containerModel *persistence.ContainerModel, config map[string]interface{}) error {
+	// Extract configuration
+	shipSymbol, ok := config["ship_symbol"].(string)
+	if !ok {
+		return fmt.Errorf("missing or invalid ship_symbol in config")
+	}
+
+	iterations, ok := config["iterations"].(float64) // JSON numbers are float64
+	if !ok {
+		return fmt.Errorf("missing or invalid iterations in config")
+	}
+
+	// Recreate batch contract workflow command
+	cmd := &contract.BatchContractWorkflowCommand{
+		ShipSymbol: shipSymbol,
+		Iterations: int(iterations),
+		PlayerID:   containerModel.PlayerID,
+	}
+
+	// Re-assign ship using UPSERT (will update old released assignment)
+	assignment := containerModel.ID // Container ID serves as assignment container reference
+	assignmentEntity := &persistence.ShipAssignmentModel{
+		ShipSymbol:  shipSymbol,
+		PlayerID:    containerModel.PlayerID,
+		ContainerID: assignment,
+		Status:      "active",
+		AssignedAt:  containerModel.StartedAt,
+	}
+
+	// Use UPSERT to handle reassignment
+	if err := s.shipAssignmentRepo.Insert(ctx, containerModelToShipAssignment(assignmentEntity)); err != nil {
+		return fmt.Errorf("failed to reassign ship %s: %w", shipSymbol, err)
+	}
+
+	// Recreate container entity (without database insert - already exists)
+	containerEntity := container.NewContainer(
+		containerModel.ID,
+		container.ContainerType(containerModel.ContainerType),
+		containerModel.PlayerID,
+		int(iterations),
+		config,
+		nil, // Use default RealClock for production
+	)
+
+	// Restore restart count from database
+	for i := 0; i < containerModel.RestartCount; i++ {
+		containerEntity.IncrementRestartCount()
+	}
+
+	// Create and start container runner
+	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipAssignmentRepo)
+	s.registerContainer(containerModel.ID, runner)
+
+	// Start container in background
+	go func() {
+		if err := runner.Start(); err != nil {
+			fmt.Printf("Recovered container %s failed: %v\n", containerModel.ID, err)
+		}
+	}()
+
+	fmt.Printf("Recovered container %s (batch_contract_workflow for ship %s)\n", containerModel.ID, shipSymbol)
 	return nil
 }
 
