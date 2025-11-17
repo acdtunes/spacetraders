@@ -265,12 +265,13 @@ func (h *ContractFleetCoordinatorHandler) Handle(ctx context.Context, request co
 			logger.Log("DEBUG", "Received completion signal, about to continue loop", nil)
 			result.ContractsCompleted++
 
-			// Re-assign ship to coordinator
-			// ContainerRunner already released the worker assignment on completion
-			// We just need to create a new assignment to coordinator
-			assignment := daemon.NewShipAssignment(completedShip, cmd.PlayerID, cmd.ContainerID, nil)
-			if err := h.shipAssignmentRepo.Insert(ctx, assignment); err != nil {
-				logger.Log("WARNING", fmt.Sprintf("Failed to re-assign ship %s to coordinator: %v", completedShip, err), nil)
+			// Transfer ship back from worker to coordinator (atomic, prevents race conditions)
+			// Worker container still owns the ship at this point
+			if err := h.shipAssignmentRepo.Transfer(ctx, completedShip, workerContainerID, cmd.ContainerID); err != nil {
+				logger.Log("WARNING", fmt.Sprintf("Failed to transfer ship %s back to coordinator: %v", completedShip, err), nil)
+				// Fallback: try inserting new assignment if transfer fails
+				assignment := daemon.NewShipAssignment(completedShip, cmd.PlayerID, cmd.ContainerID, nil)
+				_ = h.shipAssignmentRepo.Insert(ctx, assignment)
 			}
 			// Loop back to negotiate next contract
 			continue

@@ -270,11 +270,16 @@ func (r *ContainerRunner) execute() {
 		}
 	}
 
-	// Release ship assignments for this container
-	r.releaseShipAssignments("completed")
-
-	// Signal completion to callback if provided
+	// Signal completion BEFORE releasing (so coordinator can atomically transfer ship)
 	r.signalCompletion()
+
+	// Release ship assignments for this container
+	// NOTE: If completion callback is set, coordinator handles the transfer
+	// Otherwise, release normally
+	if r.completionCallback == nil {
+		r.releaseShipAssignments("completed")
+	}
+	// If callback is set, coordinator is responsible for transferring the ship back
 }
 
 // signalCompletion signals container completion via callback channel
@@ -349,11 +354,15 @@ func (r *ContainerRunner) handleError(err error) {
 		}
 	}
 
-	// Release ship assignments for this container
-	r.releaseShipAssignments("failed")
-
-	// Signal completion to callback (even on failure)
+	// Signal completion BEFORE releasing (even on failure)
 	r.signalCompletion()
+
+	// Release ship assignments for this container
+	// NOTE: If completion callback is set, coordinator handles the transfer
+	if r.completionCallback == nil {
+		r.releaseShipAssignments("failed")
+	}
+	// If callback is set, coordinator is responsible for handling the ship
 }
 
 // Logging
