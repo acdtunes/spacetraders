@@ -1014,9 +1014,9 @@ func (s *DaemonServer) PurchaseShip(ctx context.Context, purchasingShipSymbol, s
 		playerID,
 		1, // Single iteration
 		map[string]interface{}{
-			"purchasing_ship": purchasingShipSymbol,
-			"ship_type":       shipType,
-			"shipyard":        cmd.ShipyardWaypoint,
+			"ship_symbol": purchasingShipSymbol,
+			"ship_type":   shipType,
+			"shipyard":    cmd.ShipyardWaypoint,
 		},
 		nil, // Use real clock
 	)
@@ -1071,9 +1071,9 @@ func (s *DaemonServer) BatchPurchaseShips(ctx context.Context, purchasingShipSym
 		playerID,
 		iterCount,
 		map[string]interface{}{
-			"purchasing_ship": purchasingShipSymbol,
-			"ship_type":       shipType,
-			"quantity":        quantity,
+			"ship_symbol": purchasingShipSymbol,
+			"ship_type":   shipType,
+			"quantity":    quantity,
 			"max_budget":      maxBudget,
 			"shipyard":        cmd.ShipyardWaypoint,
 		},
