@@ -104,6 +104,16 @@ func (h *NegotiateContractHandler) Handle(ctx context.Context, request common.Re
 		}, nil
 	}
 
+	// Check for other API errors
+	if err != nil {
+		return nil, fmt.Errorf("failed to negotiate contract: %w", err)
+	}
+
+	// Validate result
+	if result == nil || result.Contract == nil {
+		return nil, fmt.Errorf("API returned nil result or contract")
+	}
+
 	// 7. Convert new contract to domain entity
 	newContract := h.convertToDomain(result.Contract, cmd.PlayerID)
 
