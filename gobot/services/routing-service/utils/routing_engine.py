@@ -361,7 +361,6 @@ class ORToolsRoutingEngine:
         graph: Dict[str, Waypoint],
         waypoints: List[str],
         start: str,
-        return_to_start: bool,
         fuel_capacity: int,
         engine_speed: int
     ) -> Optional[Dict[str, Any]]:
@@ -511,53 +510,6 @@ class ORToolsRoutingEngine:
 
             index = next_index
 
-        # Handle return to start if requested
-        if return_to_start and ordered_waypoints[-1] != start:
-            from_wp = graph[ordered_waypoints[-1]]
-            to_wp = graph[start]
-
-            distance = from_wp.distance_to(to_wp)
-            is_orbital = from_wp.is_orbital_of(to_wp) or distance == 0.0
-
-            if is_orbital:
-                distance = self.ORBITAL_HOP_DISTANCE
-                time = self.ORBITAL_HOP_TIME
-                fuel_cost = 0
-                mode = FlightMode.CRUISE
-            else:
-                # Select flight mode: NEVER use DRIFT mode
-                # Use fastest mode that maintains 4-unit safety margin
-                SAFETY_MARGIN = 4
-                current_fuel = fuel_capacity
-
-                burn_cost = self.calculate_fuel_cost(distance, FlightMode.BURN)
-                cruise_cost = self.calculate_fuel_cost(distance, FlightMode.CRUISE)
-
-                if current_fuel >= burn_cost + SAFETY_MARGIN:
-                    mode = FlightMode.BURN
-                elif current_fuel >= cruise_cost + SAFETY_MARGIN:
-                    mode = FlightMode.CRUISE
-                else:
-                    # If insufficient fuel even for CRUISE, use CRUISE anyway
-                    mode = FlightMode.CRUISE
-
-                fuel_cost = self.calculate_fuel_cost(distance, mode)
-                time = self.calculate_travel_time(distance, mode, engine_speed)
-
-            legs.append({
-                'from': ordered_waypoints[-1],
-                'to': start,
-                'distance': distance,
-                'fuel_cost': fuel_cost,
-                'time': time,
-                'mode': mode.mode_name
-            })
-
-            ordered_waypoints.append(start)
-            total_distance += distance
-            total_fuel_cost += fuel_cost
-            total_time += time
-
         return {
             'ordered_waypoints': ordered_waypoints,
             'legs': legs,
@@ -671,10 +623,14 @@ class ORToolsRoutingEngine:
             start_node = manager.IndexToNode(routing.Start(vehicle))
             start_waypoint = nodes[start_node]
 
+            logger.info(f"[VRP] Processing {ship} (vehicle {vehicle}), starts at {start_waypoint}, assigned_waypoints={assigned_waypoints}")
+
             if start_waypoint in markets and start_waypoint not in assigned_waypoints:
                 assignments[ship].append(start_waypoint)
                 assigned_waypoints.add(start_waypoint)
-                logger.info(f"Ship {ship} starts at market {start_waypoint} - auto-assigned")
+                logger.info(f"[VRP] Ship {ship} starts at market {start_waypoint} - AUTO-ASSIGNED")
+            elif start_waypoint in markets:
+                logger.info(f"[VRP] Ship {ship} starts at market {start_waypoint} but ALREADY ASSIGNED to another ship - SKIPPING")
 
             # Extract markets from the route
             index = routing.Start(vehicle)
@@ -684,8 +640,11 @@ class ORToolsRoutingEngine:
 
                 if waypoint in markets:
                     if waypoint not in assigned_waypoints:
+                        logger.info(f"[VRP] {ship} route includes market {waypoint} - ASSIGNING")
                         assignments[ship].append(waypoint)
                         assigned_waypoints.add(waypoint)
+                    else:
+                        logger.info(f"[VRP] {ship} route includes market {waypoint} but ALREADY ASSIGNED - SKIPPING")
 
                 index = solution.Value(routing.NextVar(index))
 

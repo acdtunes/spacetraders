@@ -212,7 +212,4 @@ message ShipTour {
 
   // Total distance for this ship's tour
   double total_distance = 4;
-
-  // Whether this ship returns to start
-  bool returns_to_start = 5;
 }
