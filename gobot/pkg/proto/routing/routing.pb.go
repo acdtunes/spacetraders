@@ -875,10 +875,8 @@ type ShipTour struct {
 	TotalTimeSeconds int32 `protobuf:"varint,3,opt,name=total_time_seconds,json=totalTimeSeconds,proto3" json:"total_time_seconds,omitempty"`
 	// Total distance for this ship's tour
 	TotalDistance float64 `protobuf:"fixed64,4,opt,name=total_distance,json=totalDistance,proto3" json:"total_distance,omitempty"`
-	// Whether this ship returns to start
-	ReturnsToStart bool `protobuf:"varint,5,opt,name=returns_to_start,json=returnsToStart,proto3" json:"returns_to_start,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ShipTour) Reset() {
@@ -937,13 +935,6 @@ func (x *ShipTour) GetTotalDistance() float64 {
 		return x.TotalDistance
 	}
 	return 0
-}
-
-func (x *ShipTour) GetReturnsToStart() bool {
-	if x != nil {
-		return x.ReturnsToStart
-	}
-	return false
 }
 
 var File_pkg_proto_routing_routing_proto protoreflect.FileDescriptor
@@ -1029,14 +1020,13 @@ const file_pkg_proto_routing_routing_proto_rawDesc = "" +
 	"\x10AssignmentsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12'\n" +
 	"\x05value\x18\x02 \x01(\v2\x11.routing.ShipTourR\x05value:\x028\x01B\x10\n" +
-	"\x0e_error_message\"\xdc\x01\n" +
+	"\x0e_error_message\"\xb2\x01\n" +
 	"\bShipTour\x12\x1c\n" +
 	"\twaypoints\x18\x01 \x03(\tR\twaypoints\x123\n" +
 	"\vroute_steps\x18\x02 \x03(\v2\x12.routing.RouteStepR\n" +
 	"routeSteps\x12,\n" +
 	"\x12total_time_seconds\x18\x03 \x01(\x05R\x10totalTimeSeconds\x12%\n" +
-	"\x0etotal_distance\x18\x04 \x01(\x01R\rtotalDistance\x12(\n" +
-	"\x10returns_to_start\x18\x05 \x01(\bR\x0ereturnsToStart*]\n" +
+	"\x0etotal_distance\x18\x04 \x01(\x01R\rtotalDistance*]\n" +
 	"\vRouteAction\x12\x1c\n" +
 	"\x18ROUTE_ACTION_UNSPECIFIED\x10\x00\x12\x17\n" +
 	"\x13ROUTE_ACTION_TRAVEL\x10\x01\x12\x17\n" +

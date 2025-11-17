@@ -19,24 +19,25 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	DaemonService_NavigateShip_FullMethodName          = "/daemon.DaemonService/NavigateShip"
-	DaemonService_DockShip_FullMethodName              = "/daemon.DaemonService/DockShip"
-	DaemonService_OrbitShip_FullMethodName             = "/daemon.DaemonService/OrbitShip"
-	DaemonService_RefuelShip_FullMethodName            = "/daemon.DaemonService/RefuelShip"
-	DaemonService_BatchContractWorkflow_FullMethodName = "/daemon.DaemonService/BatchContractWorkflow"
-	DaemonService_ScoutTour_FullMethodName             = "/daemon.DaemonService/ScoutTour"
-	DaemonService_ScoutMarkets_FullMethodName          = "/daemon.DaemonService/ScoutMarkets"
-	DaemonService_AssignScoutingFleet_FullMethodName   = "/daemon.DaemonService/AssignScoutingFleet"
-	DaemonService_ListContainers_FullMethodName        = "/daemon.DaemonService/ListContainers"
-	DaemonService_GetContainer_FullMethodName          = "/daemon.DaemonService/GetContainer"
-	DaemonService_StopContainer_FullMethodName         = "/daemon.DaemonService/StopContainer"
-	DaemonService_GetContainerLogs_FullMethodName      = "/daemon.DaemonService/GetContainerLogs"
-	DaemonService_HealthCheck_FullMethodName           = "/daemon.DaemonService/HealthCheck"
-	DaemonService_ListShips_FullMethodName             = "/daemon.DaemonService/ListShips"
-	DaemonService_GetShip_FullMethodName               = "/daemon.DaemonService/GetShip"
-	DaemonService_PurchaseShip_FullMethodName          = "/daemon.DaemonService/PurchaseShip"
-	DaemonService_BatchPurchaseShips_FullMethodName    = "/daemon.DaemonService/BatchPurchaseShips"
-	DaemonService_GetShipyardListings_FullMethodName   = "/daemon.DaemonService/GetShipyardListings"
+	DaemonService_NavigateShip_FullMethodName             = "/daemon.DaemonService/NavigateShip"
+	DaemonService_DockShip_FullMethodName                 = "/daemon.DaemonService/DockShip"
+	DaemonService_OrbitShip_FullMethodName                = "/daemon.DaemonService/OrbitShip"
+	DaemonService_RefuelShip_FullMethodName               = "/daemon.DaemonService/RefuelShip"
+	DaemonService_BatchContractWorkflow_FullMethodName    = "/daemon.DaemonService/BatchContractWorkflow"
+	DaemonService_ContractFleetCoordinator_FullMethodName = "/daemon.DaemonService/ContractFleetCoordinator"
+	DaemonService_ScoutTour_FullMethodName                = "/daemon.DaemonService/ScoutTour"
+	DaemonService_ScoutMarkets_FullMethodName             = "/daemon.DaemonService/ScoutMarkets"
+	DaemonService_AssignScoutingFleet_FullMethodName      = "/daemon.DaemonService/AssignScoutingFleet"
+	DaemonService_ListContainers_FullMethodName           = "/daemon.DaemonService/ListContainers"
+	DaemonService_GetContainer_FullMethodName             = "/daemon.DaemonService/GetContainer"
+	DaemonService_StopContainer_FullMethodName            = "/daemon.DaemonService/StopContainer"
+	DaemonService_GetContainerLogs_FullMethodName         = "/daemon.DaemonService/GetContainerLogs"
+	DaemonService_HealthCheck_FullMethodName              = "/daemon.DaemonService/HealthCheck"
+	DaemonService_ListShips_FullMethodName                = "/daemon.DaemonService/ListShips"
+	DaemonService_GetShip_FullMethodName                  = "/daemon.DaemonService/GetShip"
+	DaemonService_PurchaseShip_FullMethodName             = "/daemon.DaemonService/PurchaseShip"
+	DaemonService_BatchPurchaseShips_FullMethodName       = "/daemon.DaemonService/BatchPurchaseShips"
+	DaemonService_GetShipyardListings_FullMethodName      = "/daemon.DaemonService/GetShipyardListings"
 )
 
 // DaemonServiceClient is the client API for DaemonService service.
@@ -56,6 +57,8 @@ type DaemonServiceClient interface {
 	RefuelShip(ctx context.Context, in *RefuelShipRequest, opts ...grpc.CallOption) (*RefuelShipResponse, error)
 	// BatchContractWorkflow executes batch contract workflow operations
 	BatchContractWorkflow(ctx context.Context, in *BatchContractWorkflowRequest, opts ...grpc.CallOption) (*BatchContractWorkflowResponse, error)
+	// ContractFleetCoordinator manages a pool of ships for continuous contract execution
+	ContractFleetCoordinator(ctx context.Context, in *ContractFleetCoordinatorRequest, opts ...grpc.CallOption) (*ContractFleetCoordinatorResponse, error)
 	// ScoutTour executes market scouting tour operations (single ship)
 	ScoutTour(ctx context.Context, in *ScoutTourRequest, opts ...grpc.CallOption) (*ScoutTourResponse, error)
 	// ScoutMarkets orchestrates fleet deployment for market scouting (multi-ship with VRP)
@@ -136,6 +139,16 @@ func (c *daemonServiceClient) BatchContractWorkflow(ctx context.Context, in *Bat
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(BatchContractWorkflowResponse)
 	err := c.cc.Invoke(ctx, DaemonService_BatchContractWorkflow_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) ContractFleetCoordinator(ctx context.Context, in *ContractFleetCoordinatorRequest, opts ...grpc.CallOption) (*ContractFleetCoordinatorResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ContractFleetCoordinatorResponse)
+	err := c.cc.Invoke(ctx, DaemonService_ContractFleetCoordinator_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -289,6 +302,8 @@ type DaemonServiceServer interface {
 	RefuelShip(context.Context, *RefuelShipRequest) (*RefuelShipResponse, error)
 	// BatchContractWorkflow executes batch contract workflow operations
 	BatchContractWorkflow(context.Context, *BatchContractWorkflowRequest) (*BatchContractWorkflowResponse, error)
+	// ContractFleetCoordinator manages a pool of ships for continuous contract execution
+	ContractFleetCoordinator(context.Context, *ContractFleetCoordinatorRequest) (*ContractFleetCoordinatorResponse, error)
 	// ScoutTour executes market scouting tour operations (single ship)
 	ScoutTour(context.Context, *ScoutTourRequest) (*ScoutTourResponse, error)
 	// ScoutMarkets orchestrates fleet deployment for market scouting (multi-ship with VRP)
@@ -339,6 +354,9 @@ func (UnimplementedDaemonServiceServer) RefuelShip(context.Context, *RefuelShipR
 }
 func (UnimplementedDaemonServiceServer) BatchContractWorkflow(context.Context, *BatchContractWorkflowRequest) (*BatchContractWorkflowResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method BatchContractWorkflow not implemented")
+}
+func (UnimplementedDaemonServiceServer) ContractFleetCoordinator(context.Context, *ContractFleetCoordinatorRequest) (*ContractFleetCoordinatorResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ContractFleetCoordinator not implemented")
 }
 func (UnimplementedDaemonServiceServer) ScoutTour(context.Context, *ScoutTourRequest) (*ScoutTourResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ScoutTour not implemented")
@@ -486,6 +504,24 @@ func _DaemonService_BatchContractWorkflow_Handler(srv interface{}, ctx context.C
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(DaemonServiceServer).BatchContractWorkflow(ctx, req.(*BatchContractWorkflowRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_ContractFleetCoordinator_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ContractFleetCoordinatorRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).ContractFleetCoordinator(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_ContractFleetCoordinator_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).ContractFleetCoordinator(ctx, req.(*ContractFleetCoordinatorRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -750,6 +786,10 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "BatchContractWorkflow",
 			Handler:    _DaemonService_BatchContractWorkflow_Handler,
+		},
+		{
+			MethodName: "ContractFleetCoordinator",
+			Handler:    _DaemonService_ContractFleetCoordinator_Handler,
 		},
 		{
 			MethodName: "ScoutTour",

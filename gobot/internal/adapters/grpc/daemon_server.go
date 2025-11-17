@@ -129,22 +129,49 @@ func (s *DaemonServer) registerCommandFactories() {
 		}, nil
 	}
 
-	// Batch contract workflow factory
-	s.commandFactories["batch_contract_workflow"] = func(config map[string]interface{}, playerID int) (interface{}, error) {
+	// Contract workflow factory (single contract execution)
+	s.commandFactories["contract_workflow"] = func(config map[string]interface{}, playerID int) (interface{}, error) {
 		shipSymbol, ok := config["ship_symbol"].(string)
 		if !ok {
 			return nil, fmt.Errorf("missing or invalid ship_symbol")
 		}
 
-		iterations, ok := config["iterations"].(float64)
+		coordinatorID, _ := config["coordinator_id"].(string) // Optional
+
+		return &contract.ContractWorkflowCommand{
+			ShipSymbol:         shipSymbol,
+			PlayerID:           playerID,
+			CoordinatorID:      coordinatorID,
+			CompletionCallback: nil, // Will be set by container runner if needed
+		}, nil
+	}
+
+	// Contract fleet coordinator factory (multi-ship coordination)
+	s.commandFactories["contract_fleet_coordinator"] = func(config map[string]interface{}, playerID int) (interface{}, error) {
+		shipSymbolsInterface, ok := config["ship_symbols"].([]interface{})
 		if !ok {
-			return nil, fmt.Errorf("missing or invalid iterations")
+			return nil, fmt.Errorf("missing or invalid ship_symbols")
 		}
 
-		return &contract.BatchContractWorkflowCommand{
-			ShipSymbol: shipSymbol,
-			Iterations: int(iterations),
-			PlayerID:   playerID,
+		// Convert []interface{} to []string
+		shipSymbols := make([]string, len(shipSymbolsInterface))
+		for i, v := range shipSymbolsInterface {
+			shipSymbol, ok := v.(string)
+			if !ok {
+				return nil, fmt.Errorf("invalid ship_symbol at index %d", i)
+			}
+			shipSymbols[i] = shipSymbol
+		}
+
+		containerID, ok := config["container_id"].(string)
+		if !ok {
+			return nil, fmt.Errorf("missing or invalid container_id")
+		}
+
+		return &contract.ContractFleetCoordinatorCommand{
+			PlayerID:    playerID,
+			ShipSymbols: shipSymbols,
+			ContainerID: containerID,
 		}, nil
 	}
 
@@ -315,6 +342,15 @@ func (s *DaemonServer) RecoverRunningContainers(ctx context.Context) error {
 		if err := json.Unmarshal([]byte(containerModel.Config), &config); err != nil {
 			fmt.Printf("Container %s: Failed to parse config JSON, marking as FAILED: %v\n", containerModel.ID, err)
 			s.markContainerFailed(ctx, containerModel, "invalid_config", fmt.Sprintf("JSON parse error: %v", err))
+			failedCount++
+			continue
+		}
+
+		// Skip worker containers (those with coordinator_id)
+		// Workers are managed by their parent coordinator and should not be recovered independently
+		if coordinatorID, hasCoordinator := config["coordinator_id"].(string); hasCoordinator && coordinatorID != "" {
+			fmt.Printf("Container %s: Skipping recovery (worker container managed by coordinator %s)\n", containerModel.ID, coordinatorID)
+			s.markContainerFailed(ctx, containerModel, "orphaned_worker", "Worker container should not be recovered without parent coordinator")
 			failedCount++
 			continue
 		}
@@ -599,31 +635,173 @@ func (s *DaemonServer) RefuelShip(ctx context.Context, shipSymbol string, player
 
 // BatchContractWorkflow handles batch contract workflow requests
 func (s *DaemonServer) BatchContractWorkflow(ctx context.Context, shipSymbol string, iterations, playerID int) (string, error) {
-	// Create container ID
-	containerID := generateContainerID("batch_contract_workflow", shipSymbol)
+	// Create container ID with iterations for batch execution
+	containerID := fmt.Sprintf("batch_contract_workflow-%s-%d", shipSymbol, time.Now().UnixNano())
 
-	// Create batch contract workflow command
-	cmd := &contract.BatchContractWorkflowCommand{
-		ShipSymbol: shipSymbol,
-		Iterations: iterations,
-		PlayerID:   playerID,
+	// Delegate to ContractWorkflow (with no completion callback)
+	// Note: iterations parameter is ignored for now - ContractWorkflow always does 1 iteration
+	// TODO: Support multiple iterations by updating container metadata
+	return s.ContractWorkflow(ctx, containerID, shipSymbol, playerID, "", nil)
+}
+
+// ContractWorkflow creates and starts a contract workflow container with optional completion callback
+func (s *DaemonServer) ContractWorkflow(
+	ctx context.Context,
+	containerID string,
+	shipSymbol string,
+	playerID int,
+	coordinatorID string,
+	completionCallback chan<- string,
+) (string, error) {
+	// Persist container to DB
+	if err := s.PersistContractWorkflow(ctx, containerID, shipSymbol, playerID, coordinatorID); err != nil {
+		return "", err
 	}
 
-	// Create container for this operation
+	// Start the container
+	if err := s.StartContractWorkflow(ctx, containerID, completionCallback); err != nil {
+		return "", err
+	}
+
+	return containerID, nil
+}
+
+// PersistContractWorkflow creates a contract workflow container in DB (does NOT start it)
+func (s *DaemonServer) PersistContractWorkflow(
+	ctx context.Context,
+	containerID string,
+	shipSymbol string,
+	playerID int,
+	coordinatorID string,
+) error {
+	// Create container entity (single iteration for worker containers)
+	iterations := 1
 	containerEntity := container.NewContainer(
 		containerID,
-		container.ContainerTypeContract,
+		container.ContainerTypeContractWorkflow,
 		playerID,
 		iterations,
 		map[string]interface{}{
-			"ship_symbol": shipSymbol,
-			"iterations":  iterations,
+			"ship_symbol":    shipSymbol,
+			"coordinator_id": coordinatorID,
 		},
 		nil, // Use default RealClock for production
 	)
 
 	// Persist container to database
-	if err := s.containerRepo.Add(ctx, containerEntity, "batch_contract_workflow"); err != nil {
+	if err := s.containerRepo.Add(ctx, containerEntity, "contract_workflow"); err != nil {
+		return fmt.Errorf("failed to persist container: %w", err)
+	}
+
+	return nil
+}
+
+// StartContractWorkflow starts a previously persisted contract workflow container
+func (s *DaemonServer) StartContractWorkflow(
+	ctx context.Context,
+	containerID string,
+	completionCallback chan<- string,
+) error {
+	// We need playerID to load the container, but we don't have it here
+	// Solution: Load from all players or add playerID parameter
+	// For now, use a workaround: query by ID only (add new repository method)
+	// Temporary: Use ListAll and filter
+	allContainers, err := s.containerRepo.ListAll(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to list containers: %w", err)
+	}
+
+	var containerModel *persistence.ContainerModel
+	for _, c := range allContainers {
+		if c.ID == containerID {
+			containerModel = c
+			break
+		}
+	}
+
+	if containerModel == nil {
+		return fmt.Errorf("container %s not found", containerID)
+	}
+
+	// Parse config
+	var config map[string]interface{}
+	if err := json.Unmarshal([]byte(containerModel.Config), &config); err != nil {
+		return fmt.Errorf("failed to parse config: %w", err)
+	}
+
+	// Extract fields
+	shipSymbol := config["ship_symbol"].(string)
+	coordinatorID, _ := config["coordinator_id"].(string)
+
+	// Create command
+	cmd := &contract.ContractWorkflowCommand{
+		ShipSymbol:         shipSymbol,
+		PlayerID:           containerModel.PlayerID,
+		CoordinatorID:      coordinatorID,
+		CompletionCallback: completionCallback,
+	}
+
+	// Create container entity from model
+	// Worker containers always have 1 iteration
+	containerEntity := container.NewContainer(
+		containerModel.ID,
+		container.ContainerType(containerModel.ContainerType),
+		containerModel.PlayerID,
+		1, // Worker containers are single iteration
+		config,
+		nil,
+	)
+
+	// Create and start container runner
+	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipAssignmentRepo)
+	if completionCallback != nil {
+		runner.SetCompletionCallback(completionCallback)
+	}
+	s.registerContainer(containerID, runner)
+
+	// Start container in background
+	go func() {
+		if err := runner.Start(); err != nil {
+			fmt.Printf("Container %s failed: %v\n", containerID, err)
+		}
+	}()
+
+	return nil
+}
+
+// ContractFleetCoordinator creates a fleet coordinator for multi-ship contract operations
+func (s *DaemonServer) ContractFleetCoordinator(ctx context.Context, shipSymbols []string, playerID int) (string, error) {
+	// Create container ID
+	containerID := generateContainerID("contract_fleet_coordinator", shipSymbols[0])
+
+	// Create contract fleet coordinator command
+	cmd := &contract.ContractFleetCoordinatorCommand{
+		PlayerID:    playerID,
+		ShipSymbols: shipSymbols,
+		ContainerID: containerID,
+	}
+
+	// Convert ship symbols to interface{} for metadata
+	shipSymbolsInterface := make([]interface{}, len(shipSymbols))
+	for i, s := range shipSymbols {
+		shipSymbolsInterface[i] = s
+	}
+
+	// Create container for this operation
+	containerEntity := container.NewContainer(
+		containerID,
+		container.ContainerTypeContractFleetCoordinator,
+		playerID,
+		-1, // Infinite iterations
+		map[string]interface{}{
+			"ship_symbols": shipSymbolsInterface,
+			"container_id": containerID,
+		},
+		nil, // Use default RealClock for production
+	)
+
+	// Persist container to database
+	if err := s.containerRepo.Add(ctx, containerEntity, "contract_fleet_coordinator"); err != nil {
 		return "", fmt.Errorf("failed to persist container: %w", err)
 	}
 
@@ -848,6 +1026,14 @@ func (s *DaemonServer) interruptAllContainers() {
 	defer cancel()
 
 	for _, runner := range runners {
+		// Only mark as INTERRUPTED if container is RUNNING
+		// Skip containers that are already in terminal states (STOPPED, COMPLETED, FAILED)
+		currentStatus := runner.containerEntity.Status()
+		if currentStatus != container.ContainerStatusRunning {
+			fmt.Printf("Skipping container %s (status: %s, not RUNNING)\n", runner.containerEntity.ID(), currentStatus)
+			continue
+		}
+
 		now := time.Now()
 		if err := s.containerRepo.UpdateStatus(
 			ctx,

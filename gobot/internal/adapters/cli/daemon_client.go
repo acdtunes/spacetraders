@@ -72,7 +72,13 @@ type MarketAssignment struct {
 	Markets []string
 }
 
-type ContainerInfo struct {
+type ContractFleetCoordinatorResponse struct {
+	ContainerID string
+	ShipSymbols []string
+	Status      string
+}
+
+type ContainerInfo struct{
 	ContainerID      string
 	ContainerType    string
 	Status           string
@@ -628,4 +634,31 @@ func (c *DaemonClient) BatchPurchaseShips(ctx context.Context, purchasingShipSym
 	}
 
 	return resp, nil
+}
+
+// ContractFleetCoordinator starts a contract fleet coordinator with multiple ships
+func (c *DaemonClient) ContractFleetCoordinator(
+	ctx context.Context,
+	shipSymbols []string,
+	playerID int,
+	agentSymbol string,
+) (*ContractFleetCoordinatorResponse, error) {
+	req := &pb.ContractFleetCoordinatorRequest{
+		ShipSymbols: shipSymbols,
+		PlayerId:    int32(playerID),
+	}
+	if agentSymbol != "" {
+		req.AgentSymbol = &agentSymbol
+	}
+
+	resp, err := c.client.ContractFleetCoordinator(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("gRPC call failed: %w", err)
+	}
+
+	return &ContractFleetCoordinatorResponse{
+		ContainerID: resp.ContainerId,
+		ShipSymbols: shipSymbols,
+		Status:      resp.Status,
+	}, nil
 }

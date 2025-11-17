@@ -8,6 +8,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	appShip "github.com/andrescamacho/spacetraders-go/internal/application/ship"
 	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 )
 
@@ -20,102 +21,122 @@ func min(a, b int) int {
 	return b
 }
 
-// BatchContractWorkflowCommand orchestrates complete contract workflows in batches
-type BatchContractWorkflowCommand struct {
-	ShipSymbol string
-	Iterations int
-	PlayerID   int
+// ContractWorkflowCommand orchestrates complete contract workflow execution
+type ContractWorkflowCommand struct {
+	ShipSymbol         string
+	PlayerID           int
+	CoordinatorID      string           // Parent coordinator container ID (optional)
+	CompletionCallback chan<- string    // Signal completion to coordinator (optional)
 }
 
-// BatchContractWorkflowResponse contains workflow execution results
-type BatchContractWorkflowResponse struct {
-	Negotiated  int
-	Accepted    int
-	Fulfilled   int
-	Failed      int
+// ContractWorkflowResponse contains workflow execution results
+type ContractWorkflowResponse struct {
+	Negotiated  bool
+	Accepted    bool
+	Fulfilled   bool
 	TotalProfit int
 	TotalTrips  int
-	Errors      []string
+	Error       string
 }
 
-// BatchContractWorkflowHandler implements the complete contract workflow
+// ContractWorkflowHandler implements the complete contract workflow
 // following the exact Python implementation pattern:
 //
-// For each iteration:
-//  1. Check for existing active contracts (idempotency)
-//  2. Negotiate new contract or resume existing (handle error 4511)
-//  3. Evaluate profitability (log only, always accept)
-//  4. Accept contract (skip if already accepted)
-//  5. For each delivery:
-//     - Reload ship state
-//     - Jettison wrong cargo if needed
-//     - Calculate purchase needs
-//     - Execute multi-trip loop if units > cargo capacity
-//     - For each trip:
-//       * Navigate to seller
-//       * Dock
-//       * Purchase with transaction splitting (handled by PurchaseCargoHandler)
-//       * Navigate to delivery
-//       * Dock
-//       * Deliver cargo
-//  6. Fulfill contract
-//  7. Calculate profit
-type BatchContractWorkflowHandler struct {
-	mediator     common.Mediator
-	shipRepo     navigation.ShipRepository
-	contractRepo domainContract.ContractRepository
+// 1. Check for existing active contracts (idempotency)
+// 2. Negotiate new contract or resume existing (handle error 4511)
+// 3. Evaluate profitability (log only, always accept)
+// 4. Accept contract (skip if already accepted)
+// 5. For each delivery:
+//    - Reload ship state
+//    - Jettison wrong cargo if needed
+//    - Calculate purchase needs
+//    - Execute multi-trip loop if units > cargo capacity
+//    - For each trip:
+//      * Navigate to seller
+//      * Dock
+//      * Purchase with transaction splitting (handled by PurchaseCargoHandler)
+//      * Navigate to delivery
+//      * Dock
+//      * Deliver cargo
+// 6. Fulfill contract
+// 7. Calculate profit
+// 8. Transfer ship back to coordinator (if applicable)
+// 9. Signal completion via channel (if applicable)
+type ContractWorkflowHandler struct {
+	mediator            common.Mediator
+	shipRepo            navigation.ShipRepository
+	contractRepo        domainContract.ContractRepository
+	shipAssignmentRepo  daemon.ShipAssignmentRepository
 }
 
-// NewBatchContractWorkflowHandler creates a new batch contract workflow handler
-func NewBatchContractWorkflowHandler(
+// NewContractWorkflowHandler creates a new contract workflow handler
+func NewContractWorkflowHandler(
 	mediator common.Mediator,
 	shipRepo navigation.ShipRepository,
 	contractRepo domainContract.ContractRepository,
-) *BatchContractWorkflowHandler {
-	return &BatchContractWorkflowHandler{
-		mediator:     mediator,
-		shipRepo:     shipRepo,
-		contractRepo: contractRepo,
+	shipAssignmentRepo daemon.ShipAssignmentRepository,
+) *ContractWorkflowHandler {
+	return &ContractWorkflowHandler{
+		mediator:           mediator,
+		shipRepo:           shipRepo,
+		contractRepo:       contractRepo,
+		shipAssignmentRepo: shipAssignmentRepo,
 	}
 }
 
-// Handle executes the batch contract workflow command
-func (h *BatchContractWorkflowHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {
-	cmd, ok := request.(*BatchContractWorkflowCommand)
+// Handle executes the contract workflow command
+func (h *ContractWorkflowHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {
+	cmd, ok := request.(*ContractWorkflowCommand)
 	if !ok {
 		return nil, fmt.Errorf("invalid request type")
 	}
 
-	result := &BatchContractWorkflowResponse{
-		Negotiated:  0,
-		Accepted:    0,
-		Fulfilled:   0,
-		Failed:      0,
+	result := &ContractWorkflowResponse{
+		Negotiated:  false,
+		Accepted:    false,
+		Fulfilled:   false,
 		TotalProfit: 0,
 		TotalTrips:  0,
-		Errors:      []string{},
+		Error:       "",
 	}
 
-	// Execute iterations
-	for iteration := 0; iteration < cmd.Iterations; iteration++ {
-		if err := h.processIteration(ctx, cmd, result, iteration); err != nil {
-			result.Failed++
-			result.Errors = append(result.Errors, fmt.Sprintf("Iteration %d: %s", iteration+1, err.Error()))
-			// Continue to next iteration (graceful error handling)
-			continue
+	// Execute workflow
+	if err := h.executeWorkflow(ctx, cmd, result); err != nil {
+		result.Error = err.Error()
+		return result, err
+	}
+
+	logger := common.LoggerFromContext(ctx)
+
+	// Transfer ship back to coordinator if applicable
+	if cmd.CoordinatorID != "" {
+		if err := h.transferShipBackToCoordinator(ctx, cmd); err != nil {
+			logger.Log("WARNING", fmt.Sprintf("Failed to transfer ship back to coordinator: %v", err), nil)
+		}
+	}
+
+	// Signal completion if callback provided
+	if cmd.CompletionCallback != nil {
+		select {
+		case cmd.CompletionCallback <- cmd.ShipSymbol:
+			logger.Log("INFO", fmt.Sprintf("Signaled completion for ship %s", cmd.ShipSymbol), nil)
+		default:
+			// Channel full or closed, log but don't error
+			logger.Log("WARNING", fmt.Sprintf("Could not signal completion for ship %s (channel full/closed)", cmd.ShipSymbol), nil)
 		}
 	}
 
 	return result, nil
 }
 
-// processIteration handles a single contract workflow iteration
-func (h *BatchContractWorkflowHandler) processIteration(
+// executeWorkflow handles the contract workflow execution
+func (h *ContractWorkflowHandler) executeWorkflow(
 	ctx context.Context,
-	cmd *BatchContractWorkflowCommand,
-	result *BatchContractWorkflowResponse,
-	iteration int,
+	cmd *ContractWorkflowCommand,
+	result *ContractWorkflowResponse,
 ) error {
+	logger := common.LoggerFromContext(ctx)
+
 	// Step 1: Check for existing active contracts (idempotency)
 	activeContracts, err := h.contractRepo.FindActiveContracts(ctx, cmd.PlayerID)
 	if err != nil {
@@ -129,8 +150,10 @@ func (h *BatchContractWorkflowHandler) processIteration(
 		// Resume existing active contract
 		contract = activeContracts[0]
 		wasNegotiated = false
+		logger.Log("INFO", fmt.Sprintf("Resuming existing contract: %s", contract.ContractID()), nil)
 	} else {
 		// Step 2: Negotiate new contract
+		logger.Log("INFO", "Negotiating new contract", nil)
 		negotiateCmd := &NegotiateContractCommand{
 			ShipSymbol: cmd.ShipSymbol,
 			PlayerID:   cmd.PlayerID,
@@ -147,12 +170,13 @@ func (h *BatchContractWorkflowHandler) processIteration(
 		wasNegotiated = negotiateResult.WasNegotiated
 
 		if wasNegotiated {
-			result.Negotiated++
+			result.Negotiated = true
+			logger.Log("INFO", fmt.Sprintf("Contract negotiated: %s", contract.ContractID()), nil)
 		}
 	}
 
 	// Step 3: Evaluate profitability (log only - always accept)
-	fmt.Printf("[WORKFLOW] Evaluating contract profitability for contract %s\n", contract.ContractID())
+	logger.Log("INFO", fmt.Sprintf("Evaluating contract profitability for contract %s", contract.ContractID()), nil)
 	profitabilityQuery := &EvaluateContractProfitabilityQuery{
 		Contract:        contract,
 		ShipSymbol:      cmd.ShipSymbol,
@@ -160,19 +184,18 @@ func (h *BatchContractWorkflowHandler) processIteration(
 		FuelCostPerTrip: 0, // Simplified for now
 	}
 
-	fmt.Println("[WORKFLOW] Calling profitability query...")
 	profitabilityResp, err := h.mediator.Send(ctx, profitabilityQuery)
-	fmt.Printf("[WORKFLOW] Profitability query returned: err=%v\n", err)
 	if err != nil {
 		// Log warning but continue (non-fatal)
-		fmt.Printf("WARNING: Failed to evaluate profitability: %v\n", err)
+		logger.Log("WARNING", fmt.Sprintf("Failed to evaluate profitability: %v", err), nil)
 	} else {
 		profitResult := profitabilityResp.(*ProfitabilityResult)
 		if !profitResult.IsProfitable {
-			fmt.Printf("WARNING: Contract unprofitable (%s) but accepting anyway\n", profitResult.Reason)
+			logger.Log("WARNING", fmt.Sprintf("Contract unprofitable (%s) but accepting anyway", profitResult.Reason), nil)
+		} else {
+			logger.Log("INFO", "Contract is profitable", nil)
 		}
 	}
-	fmt.Println("[WORKFLOW] Profitability evaluation complete")
 
 	// Step 4: Accept contract (skip if already accepted)
 	if !contract.Accepted() {
@@ -189,38 +212,42 @@ func (h *BatchContractWorkflowHandler) processIteration(
 		acceptResult := acceptResp.(*AcceptContractResponse)
 
 		contract = acceptResult.Contract
-		result.Accepted++
+		result.Accepted = true
 	}
 
 	// Step 5: Process each delivery
-	fmt.Printf("[WORKFLOW] Processing %d deliveries\n", len(contract.Terms().Deliveries))
+	logger.Log("INFO", fmt.Sprintf("Processing %d deliveries", len(contract.Terms().Deliveries)), nil)
 	for _, delivery := range contract.Terms().Deliveries {
 		unitsRemaining := delivery.UnitsRequired - delivery.UnitsFulfilled
-		fmt.Printf("[WORKFLOW] Delivery: %s, required=%d, fulfilled=%d, remaining=%d\n",
-			delivery.TradeSymbol, delivery.UnitsRequired, delivery.UnitsFulfilled, unitsRemaining)
+		logger.Log("INFO", fmt.Sprintf("Delivery: %s, required=%d, fulfilled=%d, remaining=%d",
+			delivery.TradeSymbol, delivery.UnitsRequired, delivery.UnitsFulfilled, unitsRemaining), nil)
 		if unitsRemaining == 0 {
-			fmt.Println("[WORKFLOW] Delivery already fulfilled, skipping")
+			logger.Log("INFO", "Delivery already fulfilled, skipping", nil)
 			continue // Already fulfilled
 		}
-		fmt.Println("[WORKFLOW] Processing delivery...")
+		logger.Log("INFO", "Processing delivery...", nil)
 
 		// Step 6: Reload ship state (critical for fresh cargo data)
-		fmt.Println("[WORKFLOW] Reloading ship state...")
+		logger.Log("INFO", "Reloading ship state...", nil)
 		ship, err := h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
 		if err != nil {
-			fmt.Printf("[WORKFLOW] ERROR: Failed to reload ship: %v\n", err)
+			logger.Log("ERROR", fmt.Sprintf("Failed to reload ship: %v", err), nil)
 			return fmt.Errorf("failed to reload ship: %w", err)
 		}
-		fmt.Printf("[WORKFLOW] Ship loaded: cargo=%d/%d\n", ship.Cargo().Units, ship.Cargo().Capacity)
+		logger.Log("INFO", fmt.Sprintf("Ship loaded: cargo=%d/%d", ship.Cargo().Units, ship.Cargo().Capacity), nil)
 
 		currentUnits := ship.Cargo().GetItemUnits(delivery.TradeSymbol)
-		fmt.Printf("[WORKFLOW] Current %s units in cargo: %d\n", delivery.TradeSymbol, currentUnits)
+		logger.Log("INFO", fmt.Sprintf("Current %s units in cargo: %d", delivery.TradeSymbol, currentUnits), nil)
 
 		// Step 7: Jettison wrong cargo if needed
 		hasWrongCargo := ship.Cargo().HasItemsOtherThan(delivery.TradeSymbol)
 		needsSpace := currentUnits < unitsRemaining || ship.Cargo().IsFull()
 
+		logger.Log("DEBUG", fmt.Sprintf("Jettison check: hasWrongCargo=%v, needsSpace=%v, currentUnits=%d, unitsRemaining=%d, isFull=%v",
+			hasWrongCargo, needsSpace, currentUnits, unitsRemaining, ship.Cargo().IsFull()), nil)
+
 		if hasWrongCargo && needsSpace {
+			logger.Log("INFO", "Jettisoning wrong cargo...", nil)
 			if err := h.jettisonWrongCargo(ctx, ship, delivery.TradeSymbol, cmd.PlayerID); err != nil {
 				return fmt.Errorf("failed to jettison cargo: %w", err)
 			}
@@ -231,24 +258,24 @@ func (h *BatchContractWorkflowHandler) processIteration(
 				return fmt.Errorf("failed to reload ship after jettison: %w", err)
 			}
 			currentUnits = ship.Cargo().GetItemUnits(delivery.TradeSymbol)
+			logger.Log("INFO", fmt.Sprintf("Jettison complete, cargo now: %d/%d", ship.Cargo().Units, ship.Cargo().Capacity), nil)
 		}
 
 		// Step 8: Calculate purchase needs
 		unitsToPurchase := unitsRemaining - currentUnits
-		fmt.Printf("[WORKFLOW] Units to purchase: %d (remaining=%d - current=%d)\n", unitsToPurchase, unitsRemaining, currentUnits)
+		logger.Log("INFO", fmt.Sprintf("Units to purchase: %d (remaining=%d - current=%d)", unitsToPurchase, unitsRemaining, currentUnits), nil)
 
 		// Step 9: Purchase cargo if needed
 		if unitsToPurchase > 0 {
 			// Get profitability result for cheapest market
-			fmt.Println("[WORKFLOW] Getting cheapest market from profitability result...")
 			profitResult := profitabilityResp.(*ProfitabilityResult)
 			cheapestMarket := profitResult.CheapestMarketWaypoint
-			fmt.Printf("[WORKFLOW] Cheapest market: %s\n", cheapestMarket)
+			logger.Log("INFO", fmt.Sprintf("Cheapest market: %s", cheapestMarket), nil)
 
 			// Multi-trip purchase loop
 			trips := int(math.Ceil(float64(unitsToPurchase) / float64(ship.Cargo().Capacity)))
 			result.TotalTrips += trips
-			fmt.Printf("[WORKFLOW] Starting multi-trip purchase: %d trips needed\n", trips)
+			logger.Log("INFO", fmt.Sprintf("Starting multi-trip purchase: %d trips needed", trips), nil)
 
 			for trip := 0; trip < trips; trip++ {
 				// Calculate available cargo space (capacity - current load)
@@ -259,12 +286,13 @@ func (h *BatchContractWorkflowHandler) processIteration(
 
 				// Skip if no space available
 				if unitsThisTrip <= 0 {
-					fmt.Printf("[WORKFLOW] No cargo space available, ending purchase loop\n")
+					logger.Log("WARNING", "No cargo space available, ending purchase loop", nil)
 					break
 				}
 
-				// Navigate to seller
-				if err := h.navigateToWaypoint(ctx, ship, cheapestMarket, cmd.PlayerID); err != nil {
+				// Navigate to seller (returns updated ship)
+				ship, err = h.navigateToWaypoint(ctx, cmd.ShipSymbol, cheapestMarket, cmd.PlayerID)
+				if err != nil {
 					return fmt.Errorf("failed to navigate to market: %w", err)
 				}
 
@@ -306,11 +334,12 @@ func (h *BatchContractWorkflowHandler) processIteration(
 		}
 
 		unitsToDeliver := ship.Cargo().GetItemUnits(delivery.TradeSymbol)
-		fmt.Printf("[WORKFLOW] Delivering %d units of %s\n", unitsToDeliver, delivery.TradeSymbol)
+		logger.Log("INFO", fmt.Sprintf("Delivering %d units of %s", unitsToDeliver, delivery.TradeSymbol), nil)
 
 		if unitsToDeliver > 0 {
-			// Navigate to delivery destination
-			if err := h.navigateToWaypoint(ctx, ship, delivery.DestinationSymbol, cmd.PlayerID); err != nil {
+			// Navigate to delivery destination (returns updated ship)
+			ship, err = h.navigateToWaypoint(ctx, cmd.ShipSymbol, delivery.DestinationSymbol, cmd.PlayerID)
+			if err != nil {
 				return fmt.Errorf("failed to navigate to delivery: %w", err)
 			}
 
@@ -351,7 +380,7 @@ func (h *BatchContractWorkflowHandler) processIteration(
 
 	_ = fulfillResp // Response unused after error check removed
 
-	result.Fulfilled++
+	result.Fulfilled = true
 
 	// Calculate profit (simplified - use actual payment from contract)
 	totalPayment := contract.Terms().Payment.OnAccepted + contract.Terms().Payment.OnFulfilled
@@ -360,8 +389,26 @@ func (h *BatchContractWorkflowHandler) processIteration(
 	return nil
 }
 
+// transferShipBackToCoordinator transfers ship assignment from worker back to coordinator
+func (h *ContractWorkflowHandler) transferShipBackToCoordinator(
+	ctx context.Context,
+	cmd *ContractWorkflowCommand,
+) error {
+	logger := common.LoggerFromContext(ctx)
+
+	// Note: Container ID will need to be passed via metadata when this handler is invoked
+	// For now, we'll need to get it from somewhere. This is a placeholder.
+	// The actual container ID should come from the container runner context.
+
+	// TODO: Get actual worker container ID from context
+	// For now, we'll skip the transfer and let the coordinator handle it
+	logger.Log("INFO", fmt.Sprintf("Ship transfer back to coordinator: %s -> %s", cmd.ShipSymbol, cmd.CoordinatorID), nil)
+
+	return nil
+}
+
 // jettisonWrongCargo jettisons all cargo items except the specified symbol
-func (h *BatchContractWorkflowHandler) jettisonWrongCargo(
+func (h *ContractWorkflowHandler) jettisonWrongCargo(
 	ctx context.Context,
 	ship *navigation.Ship,
 	keepSymbol string,
@@ -388,35 +435,31 @@ func (h *BatchContractWorkflowHandler) jettisonWrongCargo(
 	return nil
 }
 
-// navigateToWaypoint navigates ship to destination (idempotent)
-func (h *BatchContractWorkflowHandler) navigateToWaypoint(
+// navigateToWaypoint navigates ship to destination and returns updated ship state
+func (h *ContractWorkflowHandler) navigateToWaypoint(
 	ctx context.Context,
-	ship *navigation.Ship,
+	shipSymbol string,
 	destination string,
 	playerID int,
-) error {
-	// Check if already at destination
-	if ship.CurrentLocation().Symbol == destination {
-		return nil
-	}
-
-	// Use HIGH-LEVEL NavigateShipCommand (handles route planning, refueling, multi-hop)
+) (*navigation.Ship, error) {
+	// Use HIGH-LEVEL NavigateShipCommand (handles route planning, refueling, multi-hop, idempotency)
 	navigateCmd := &appShip.NavigateShipCommand{
-		ShipSymbol:  ship.ShipSymbol(),
+		ShipSymbol:  shipSymbol,
 		Destination: destination,
 		PlayerID:    playerID,
 	}
 
-	_, err := h.mediator.Send(ctx, navigateCmd)
+	resp, err := h.mediator.Send(ctx, navigateCmd)
 	if err != nil {
-		return fmt.Errorf("failed to navigate: %w", err)
+		return nil, fmt.Errorf("failed to navigate: %w", err)
 	}
 
-	return nil
+	navResp := resp.(*appShip.NavigateShipResponse)
+	return navResp.Ship, nil
 }
 
 // dockShip docks ship (idempotent)
-func (h *BatchContractWorkflowHandler) dockShip(
+func (h *ContractWorkflowHandler) dockShip(
 	ctx context.Context,
 	ship *navigation.Ship,
 	playerID int,

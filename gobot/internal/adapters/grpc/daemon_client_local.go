@@ -3,6 +3,7 @@ package grpc
 import (
 	"context"
 
+	"github.com/andrescamacho/spacetraders-go/internal/application/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/application/scouting"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
 )
@@ -54,6 +55,51 @@ func (c *DaemonClientLocal) CreateScoutTourContainer(
 	// Call server's ScoutTour method directly (bypasses gRPC layer)
 	_, err := c.server.ScoutTour(ctx, containerID, cmd.ShipSymbol, cmd.Markets, cmd.Iterations, int(playerID))
 	return err
+}
+
+// CreateContractWorkflowContainer creates AND STARTS a background container for contract workflow operations
+func (c *DaemonClientLocal) CreateContractWorkflowContainer(
+	ctx context.Context,
+	containerID string,
+	playerID uint,
+	command interface{},
+	completionCallback chan<- string,
+) error {
+	// Type assert to ContractWorkflowCommand
+	cmd, ok := command.(*contract.ContractWorkflowCommand)
+	if !ok {
+		return daemon.ErrInvalidCommandType
+	}
+
+	// Call server's ContractWorkflow method directly
+	_, err := c.server.ContractWorkflow(ctx, containerID, cmd.ShipSymbol, int(playerID), cmd.CoordinatorID, completionCallback)
+	return err
+}
+
+// PersistContractWorkflowContainer creates (but does NOT start) a worker container in DB
+func (c *DaemonClientLocal) PersistContractWorkflowContainer(
+	ctx context.Context,
+	containerID string,
+	playerID uint,
+	command interface{},
+) error {
+	// Type assert to ContractWorkflowCommand
+	cmd, ok := command.(*contract.ContractWorkflowCommand)
+	if !ok {
+		return daemon.ErrInvalidCommandType
+	}
+
+	// Persist only, don't start
+	return c.server.PersistContractWorkflow(ctx, containerID, cmd.ShipSymbol, int(playerID), cmd.CoordinatorID)
+}
+
+// StartContractWorkflowContainer starts a previously persisted worker container
+func (c *DaemonClientLocal) StartContractWorkflowContainer(
+	ctx context.Context,
+	containerID string,
+	completionCallback chan<- string,
+) error {
+	return c.server.StartContractWorkflow(ctx, containerID, completionCallback)
 }
 
 // StopContainer stops a running container

@@ -1,0 +1,343 @@
+package contract
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
+)
+
+// ContractFleetCoordinatorCommand manages a pool of ships for continuous contract execution.
+// It assigns contracts to the ship closest to the purchase market.
+type ContractFleetCoordinatorCommand struct {
+	PlayerID    int
+	ShipSymbols []string // Pool of ships to use for contracts
+	ContainerID string   // Coordinator's own container ID
+}
+
+// ContractFleetCoordinatorResponse contains the coordinator execution results
+type ContractFleetCoordinatorResponse struct {
+	ContractsCompleted int
+	Errors             []string
+}
+
+// ContractFleetCoordinatorHandler implements the fleet coordinator logic
+type ContractFleetCoordinatorHandler struct {
+	mediator           common.Mediator
+	shipRepo           navigation.ShipRepository
+	contractRepo       domainContract.ContractRepository
+	marketRepo         trading.MarketRepository
+	shipAssignmentRepo daemon.ShipAssignmentRepository
+	daemonClient       daemon.DaemonClient // For creating worker containers
+	graphProvider      system.ISystemGraphProvider // For distance calculations
+}
+
+// NewContractFleetCoordinatorHandler creates a new fleet coordinator handler
+func NewContractFleetCoordinatorHandler(
+	mediator common.Mediator,
+	shipRepo navigation.ShipRepository,
+	contractRepo domainContract.ContractRepository,
+	marketRepo trading.MarketRepository,
+	shipAssignmentRepo daemon.ShipAssignmentRepository,
+	daemonClient daemon.DaemonClient,
+	graphProvider system.ISystemGraphProvider,
+) *ContractFleetCoordinatorHandler {
+	return &ContractFleetCoordinatorHandler{
+		mediator:           mediator,
+		shipRepo:           shipRepo,
+		contractRepo:       contractRepo,
+		marketRepo:         marketRepo,
+		shipAssignmentRepo: shipAssignmentRepo,
+		daemonClient:       daemonClient,
+		graphProvider:      graphProvider,
+	}
+}
+
+// Handle executes the fleet coordinator command
+func (h *ContractFleetCoordinatorHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {
+	logger := common.LoggerFromContext(ctx)
+
+	cmd, ok := request.(*ContractFleetCoordinatorCommand)
+	if !ok {
+		return nil, fmt.Errorf("invalid request type")
+	}
+
+	result := &ContractFleetCoordinatorResponse{
+		ContractsCompleted: 0,
+		Errors:             []string{},
+	}
+
+	// Step 1: Validate that ships are not already assigned to active containers
+	logger.Log("INFO", "Validating ship availability...", nil)
+	for _, shipSymbol := range cmd.ShipSymbols {
+		assignment, err := h.shipAssignmentRepo.FindByShip(ctx, shipSymbol, cmd.PlayerID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to check assignment for %s: %w", shipSymbol, err)
+		}
+
+		if assignment != nil && assignment.Status() == "active" {
+			return nil, fmt.Errorf("ship %s is already assigned to container %s - cannot create overlapping coordinator",
+				shipSymbol, assignment.ContainerID())
+		}
+	}
+
+	// Step 2: Create ship assignments for all pooled ships
+	logger.Log("INFO", fmt.Sprintf("Initializing ship pool with %d ships", len(cmd.ShipSymbols)), nil)
+	if err := CreatePoolAssignments(
+		ctx,
+		cmd.ShipSymbols,
+		cmd.ContainerID,
+		cmd.PlayerID,
+		h.shipAssignmentRepo,
+	); err != nil {
+		return nil, fmt.Errorf("failed to create pool assignments: %w", err)
+	}
+
+	// Step 2: Create unbuffered completion channel for worker notifications
+	// IMPORTANT: Unbuffered so signals are only received when actively waiting
+	completionChan := make(chan string)
+
+	// Step 3: Check for existing worker containers (recovery scenario)
+	existingWorkers, err := h.findExistingWorkers(ctx, cmd.PlayerID)
+	if err != nil {
+		logger.Log("WARNING", fmt.Sprintf("Failed to check for existing workers: %v", err), nil)
+	} else if len(existingWorkers) > 0 {
+		logger.Log("INFO", fmt.Sprintf("Found %d existing worker containers, waiting for completion...", len(existingWorkers)), nil)
+		// Wait for existing worker to signal completion
+		select {
+		case shipSymbol := <-completionChan:
+			logger.Log("INFO", fmt.Sprintf("Existing worker completed for ship %s", shipSymbol), nil)
+		case <-time.After(5 * time.Minute):
+			// Timeout waiting for existing worker
+			logger.Log("WARNING", "Timeout waiting for existing worker, proceeding...", nil)
+		case <-ctx.Done():
+			return result, ctx.Err()
+		}
+	}
+
+	// Step 4: Main coordinator loop (infinite)
+	// Execute one contract at a time (game constraint: one active contract per player)
+	for {
+		select {
+		case <-ctx.Done():
+			// Context cancelled, release pool and exit
+			_ = ReleasePoolAssignments(ctx, cmd.ContainerID, cmd.PlayerID, h.shipAssignmentRepo, "coordinator_stopped")
+			return result, ctx.Err()
+		default:
+			// Continue with contract assignment
+		}
+
+		// Find ships currently owned by coordinator
+		availableShips, err := FindCoordinatorShips(ctx, cmd.ContainerID, cmd.PlayerID, h.shipAssignmentRepo)
+		if err != nil {
+			errMsg := fmt.Sprintf("Failed to find coordinator ships: %v", err)
+			logger.Log("ERROR", errMsg, nil)
+			result.Errors = append(result.Errors, errMsg)
+			time.Sleep(10 * time.Second)
+			continue
+		}
+
+		// If no ships available, wait for completion signal
+		if len(availableShips) == 0 {
+			logger.Log("INFO", "No ships available, waiting for completion...", nil)
+			select {
+			case shipSymbol := <-completionChan:
+				logger.Log("INFO", fmt.Sprintf("Ship %s completed, back in pool", shipSymbol), nil)
+				// Loop immediately to assign next contract
+			case <-time.After(30 * time.Second):
+				// Timeout, check again
+			case <-ctx.Done():
+				_ = ReleasePoolAssignments(ctx, cmd.ContainerID, cmd.PlayerID, h.shipAssignmentRepo, "coordinator_stopped")
+				return result, ctx.Err()
+			}
+			continue // Loop back to check for available ships
+		}
+
+		// Negotiate contract (use any ship from pool for negotiation)
+		logger.Log("INFO", "Negotiating new contract...", nil)
+		contract, err := h.negotiateContract(ctx, availableShips[0], cmd.PlayerID)
+		if err != nil {
+			errMsg := fmt.Sprintf("Failed to negotiate contract: %v", err)
+			logger.Log("ERROR", errMsg, nil)
+			result.Errors = append(result.Errors, errMsg)
+			time.Sleep(30 * time.Second)
+			continue
+		}
+
+		// Find purchase market for contract
+		logger.Log("INFO", "Finding purchase market...", nil)
+		purchaseMarket, err := FindPurchaseMarket(ctx, contract, h.marketRepo, cmd.PlayerID)
+		if err != nil {
+			errMsg := fmt.Sprintf("Failed to find purchase market: %v", err)
+			logger.Log("ERROR", errMsg, nil)
+			result.Errors = append(result.Errors, errMsg)
+			time.Sleep(30 * time.Second)
+			continue
+		}
+
+		// Extract required cargo for delivery (for ship selection prioritization)
+		var requiredCargo string
+		for _, delivery := range contract.Terms().Deliveries {
+			if delivery.UnitsRequired > delivery.UnitsFulfilled {
+				requiredCargo = delivery.TradeSymbol
+				break
+			}
+		}
+
+		// Select closest ship to purchase market (prioritizes ships with required cargo)
+		logger.Log("INFO", fmt.Sprintf("Selecting closest ship (required cargo: %s)...", requiredCargo), nil)
+		selectedShip, distance, err := SelectClosestShip(
+			ctx,
+			availableShips,
+			h.shipRepo,
+			h.graphProvider,
+			purchaseMarket,
+			requiredCargo,
+			cmd.PlayerID,
+		)
+		if err != nil {
+			errMsg := fmt.Sprintf("Failed to select ship: %v", err)
+			logger.Log("ERROR", errMsg, nil)
+			result.Errors = append(result.Errors, errMsg)
+			time.Sleep(10 * time.Second)
+			continue
+		}
+
+		logger.Log("INFO", fmt.Sprintf("Selected %s (distance: %.2f units)", selectedShip, distance), nil)
+
+		// Create worker container ID
+		workerContainerID := fmt.Sprintf("contract-work-%s-%d", selectedShip, time.Now().Unix())
+
+		// Create worker command
+		workerCmd := &ContractWorkflowCommand{
+			ShipSymbol:         selectedShip,
+			PlayerID:           cmd.PlayerID,
+			CoordinatorID:      cmd.ContainerID,
+			CompletionCallback: completionChan,
+		}
+
+		// Step 1: Persist worker container to DB (synchronous, no start)
+		logger.Log("INFO", fmt.Sprintf("Persisting worker container %s for %s", workerContainerID, selectedShip), nil)
+		if err := h.daemonClient.PersistContractWorkflowContainer(ctx, workerContainerID, uint(cmd.PlayerID), workerCmd); err != nil {
+			errMsg := fmt.Sprintf("Failed to persist worker container: %v", err)
+			logger.Log("ERROR", errMsg, nil)
+			result.Errors = append(result.Errors, errMsg)
+			time.Sleep(10 * time.Second)
+			continue
+		}
+
+		// Step 2: Transfer ship from coordinator to worker (atomic, no race condition)
+		logger.Log("INFO", fmt.Sprintf("Transferring %s to worker container", selectedShip), nil)
+		if err := h.shipAssignmentRepo.Transfer(ctx, selectedShip, cmd.ContainerID, workerContainerID); err != nil {
+			errMsg := fmt.Sprintf("Failed to transfer ship %s: %v", selectedShip, err)
+			logger.Log("ERROR", errMsg, nil)
+			result.Errors = append(result.Errors, errMsg)
+			// Clean up: stop worker container on transfer failure
+			_ = h.daemonClient.StopContainer(ctx, workerContainerID)
+			time.Sleep(10 * time.Second)
+			continue
+		}
+
+		// Step 3: Start the worker container (ship is safely transferred)
+		logger.Log("INFO", fmt.Sprintf("Starting worker container for %s", selectedShip), nil)
+		if err := h.daemonClient.StartContractWorkflowContainer(ctx, workerContainerID, completionChan); err != nil {
+			errMsg := fmt.Sprintf("Failed to start worker container: %v", err)
+			logger.Log("ERROR", errMsg, nil)
+			result.Errors = append(result.Errors, errMsg)
+			// Transfer ship back to coordinator on failure
+			_ = h.shipAssignmentRepo.Transfer(ctx, selectedShip, workerContainerID, cmd.ContainerID)
+			time.Sleep(10 * time.Second)
+			continue
+		}
+
+		// Block waiting for worker completion
+		logger.Log("INFO", fmt.Sprintf("Waiting for %s to complete contract...", selectedShip), nil)
+		logger.Log("DEBUG", "Entering select block for completion signal", nil)
+		select {
+		case completedShip := <-completionChan:
+			logger.Log("INFO", fmt.Sprintf("Contract completed by %s", completedShip), nil)
+			logger.Log("DEBUG", "Received completion signal, about to continue loop", nil)
+			result.ContractsCompleted++
+
+			// Re-assign ship to coordinator
+			// ContainerRunner already released the worker assignment on completion
+			// We just need to create a new assignment to coordinator
+			assignment := daemon.NewShipAssignment(completedShip, cmd.PlayerID, cmd.ContainerID, nil)
+			if err := h.shipAssignmentRepo.Insert(ctx, assignment); err != nil {
+				logger.Log("WARNING", fmt.Sprintf("Failed to re-assign ship %s to coordinator: %v", completedShip, err), nil)
+			}
+			// Loop back to negotiate next contract
+			continue
+
+		case <-time.After(30 * time.Minute):
+			// Timeout waiting for worker
+			logger.Log("ERROR", fmt.Sprintf("Timeout waiting for worker %s", selectedShip), nil)
+			logger.Log("DEBUG", "Select timed out after 30 minutes, continuing loop", nil)
+			errMsg := fmt.Sprintf("Worker timeout for ship %s", selectedShip)
+			result.Errors = append(result.Errors, errMsg)
+			// Loop back to try again
+			continue
+
+		case <-ctx.Done():
+			logger.Log("INFO", "Context cancelled, exiting coordinator", nil)
+			_ = ReleasePoolAssignments(ctx, cmd.ContainerID, cmd.PlayerID, h.shipAssignmentRepo, "coordinator_stopped")
+			return result, ctx.Err()
+		}
+
+		// This line should NEVER be reached (all cases have continue/return)
+		logger.Log("ERROR", "CRITICAL: Code execution fell through select statement!", nil)
+	}
+}
+
+// negotiateContract negotiates a new contract
+func (h *ContractFleetCoordinatorHandler) negotiateContract(
+	ctx context.Context,
+	shipSymbol string,
+	playerID int,
+) (*domainContract.Contract, error) {
+	// Check for existing active contracts first
+	activeContracts, err := h.contractRepo.FindActiveContracts(ctx, playerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to check active contracts: %w", err)
+	}
+
+	logger := common.LoggerFromContext(ctx)
+
+	if len(activeContracts) > 0 {
+		// Resume existing contract
+		logger.Log("INFO", fmt.Sprintf("Resuming existing active contract: %s", activeContracts[0].ContractID()), nil)
+		return activeContracts[0], nil
+	}
+
+	// Negotiate new contract
+	negotiateCmd := &NegotiateContractCommand{
+		ShipSymbol: shipSymbol,
+		PlayerID:   playerID,
+	}
+
+	negotiateResp, err := h.mediator.Send(ctx, negotiateCmd)
+	if err != nil {
+		return nil, fmt.Errorf("failed to negotiate: %w", err)
+	}
+
+	negotiateResult := negotiateResp.(*NegotiateContractResponse)
+	logger.Log("INFO", fmt.Sprintf("Negotiated contract: %s", negotiateResult.Contract.ContractID()), nil)
+
+	return negotiateResult.Contract, nil
+}
+
+// findExistingWorkers finds any existing ContractWorkflow containers that might still be running
+func (h *ContractFleetCoordinatorHandler) findExistingWorkers(
+	ctx context.Context,
+	playerID int,
+) ([]daemon.Container, error) {
+	// This is a placeholder - actual implementation would query the container repository
+	// for containers of type ContractWorkflow with status RUNNING or INTERRUPTED
+	return []daemon.Container{}, nil
+}

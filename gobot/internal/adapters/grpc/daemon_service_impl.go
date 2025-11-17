@@ -182,6 +182,28 @@ func (s *daemonServiceImpl) BatchContractWorkflow(ctx context.Context, req *pb.B
 	return response, nil
 }
 
+// ContractFleetCoordinator starts a contract fleet coordinator with multiple ships
+func (s *daemonServiceImpl) ContractFleetCoordinator(ctx context.Context, req *pb.ContractFleetCoordinatorRequest) (*pb.ContractFleetCoordinatorResponse, error) {
+	// Resolve player ID from request (supports both player_id and agent_symbol)
+	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve player: %w", err)
+	}
+
+	containerID, err := s.daemon.ContractFleetCoordinator(ctx, req.ShipSymbols, playerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to start contract fleet coordinator: %w", err)
+	}
+
+	response := &pb.ContractFleetCoordinatorResponse{
+		ContainerId: containerID,
+		ShipSymbols: req.ShipSymbols,
+		Status:      "RUNNING",
+	}
+
+	return response, nil
+}
+
 // ScoutTour executes market scouting tour (single ship)
 func (s *daemonServiceImpl) ScoutTour(ctx context.Context, req *pb.ScoutTourRequest) (*pb.ScoutTourResponse, error) {
 	// Resolve player ID from request (supports both player_id and agent_symbol)

@@ -3,7 +3,6 @@ package ship
 import (
 	"context"
 	"fmt"
-	"log"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	domainNavigation "github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
@@ -36,6 +35,7 @@ type NavigateShipResponse struct {
 	CurrentLocation string
 	FuelRemaining   int
 	Route           *domainNavigation.Route
+	Ship            *domainNavigation.Ship // Updated ship state after navigation
 }
 
 // NavigateShipHandler handles the NavigateShip command with full Python feature parity
@@ -76,6 +76,9 @@ func (h *NavigateShipHandler) Handle(ctx context.Context, request common.Request
 		return nil, fmt.Errorf("invalid request type: expected *NavigateShipCommand")
 	}
 
+	// Extract logger from context
+	logger := common.LoggerFromContext(ctx)
+
 	// 1. Load ship from repository
 	ship, err := h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
 	if err != nil {
@@ -89,7 +92,7 @@ func (h *NavigateShipHandler) Handle(ctx context.Context, request common.Request
 		return nil, fmt.Errorf("failed to get system graph: %w", err)
 	}
 
-	log.Printf("Loaded graph for %s from %s", systemSymbol, graphResult.Source)
+	logger.Log("INFO", fmt.Sprintf("Loaded graph for %s from %s", systemSymbol, graphResult.Source), nil)
 
 	// 3. Enrich waypoints with fuel station data
 	waypointObjects, err := h.waypointEnricher.EnrichGraphWaypoints(ctx, graphResult.Graph, systemSymbol)
@@ -104,9 +107,9 @@ func (h *NavigateShipHandler) Handle(ctx context.Context, request common.Request
 
 	// 5. Handle IN_TRANSIT from previous navigation (CRITICAL for idempotency!)
 	// Ship might be IN_TRANSIT to its current location - must wait before proceeding
-	log.Printf("[NAVIGATE] Ship %s at %s, destination %s", ship.ShipSymbol(), ship.CurrentLocation().Symbol, cmd.Destination)
+	logger.Log("INFO", fmt.Sprintf("[NAVIGATE] Ship %s at %s, destination %s", ship.ShipSymbol(), ship.CurrentLocation().Symbol, cmd.Destination), nil)
 	if ship.NavStatus() == domainNavigation.NavStatusInTransit {
-		log.Printf("[NAVIGATE] Ship is IN_TRANSIT, waiting for arrival before checking destination...")
+		logger.Log("INFO", "[NAVIGATE] Ship is IN_TRANSIT, waiting for arrival before checking destination...", nil)
 
 		// Create a temporary route with no segments to trigger waitForCurrentTransit
 		emptyRoute, err := domainNavigation.NewRoute(
@@ -131,17 +134,17 @@ func (h *NavigateShipHandler) Handle(ctx context.Context, request common.Request
 		if err != nil {
 			return nil, fmt.Errorf("failed to reload ship after transit: %w", err)
 		}
-		log.Printf("[NAVIGATE] Ship arrived, status now: %s", ship.NavStatus())
+		logger.Log("INFO", fmt.Sprintf("[NAVIGATE] Ship arrived, status now: %s", ship.NavStatus()), nil)
 	}
 
 	// 6. Check if ship is already at destination (idempotent command)
 	if ship.CurrentLocation().Symbol == cmd.Destination {
-		log.Printf("[NAVIGATE] Ship already at destination, returning early")
+		logger.Log("INFO", "[NAVIGATE] Ship already at destination, returning early", nil)
 		return h.handleAlreadyAtDestination(cmd, ship)
 	}
 
 	// 7. Plan route using routing engine
-	log.Printf("[NAVIGATE] Planning route from %s to %s", ship.CurrentLocation().Symbol, cmd.Destination)
+	logger.Log("INFO", fmt.Sprintf("[NAVIGATE] Planning route from %s to %s", ship.CurrentLocation().Symbol, cmd.Destination), nil)
 	route, err := h.routePlanner.PlanRoute(ctx, ship, cmd.Destination, waypointObjects)
 	if err != nil {
 		return nil, fmt.Errorf("failed to plan route: %w", err)
@@ -163,13 +166,20 @@ func (h *NavigateShipHandler) Handle(ctx context.Context, request common.Request
 		return nil, fmt.Errorf("failed to execute route: %w", err)
 	}
 
-	// 8. Return success response
+	// 8. Reload ship to get final state after navigation
+	finalShip, err := h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to reload ship after navigation: %w", err)
+	}
+
+	// 9. Return success response with updated ship
 	return &NavigateShipResponse{
 		Status:          "completed",
 		ArrivalTime:     route.TotalTravelTime(),
 		CurrentLocation: cmd.Destination,
-		FuelRemaining:   ship.Fuel().Current,
+		FuelRemaining:   finalShip.Fuel().Current,
 		Route:           route,
+		Ship:            finalShip,
 	}, nil
 }
 
@@ -230,6 +240,7 @@ func (h *NavigateShipHandler) handleAlreadyAtDestination(
 		CurrentLocation: ship.CurrentLocation().Symbol,
 		FuelRemaining:   ship.Fuel().Current,
 		Route:           route,
+		Ship:            ship, // Ship is already in correct state
 	}, nil
 }
 

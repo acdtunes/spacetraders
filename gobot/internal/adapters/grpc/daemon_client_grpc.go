@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	pb "github.com/andrescamacho/spacetraders-go/pkg/proto/daemon"
+	"github.com/andrescamacho/spacetraders-go/internal/application/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/application/scouting"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
 	"google.golang.org/grpc"
@@ -98,6 +99,45 @@ func (c *DaemonClientGRPC) CreateScoutTourContainer(
 	}
 
 	return nil
+}
+
+// CreateContractWorkflowContainer creates AND STARTS a background container for contract workflow operations
+func (c *DaemonClientGRPC) CreateContractWorkflowContainer(
+	ctx context.Context,
+	containerID string,
+	playerID uint,
+	command interface{},
+	completionCallback chan<- string,
+) error {
+	// Type assert to ContractWorkflowCommand
+	_, ok := command.(*contract.ContractWorkflowCommand)
+	if !ok {
+		return fmt.Errorf("invalid command type: expected *contract.ContractWorkflowCommand, got %T", command)
+	}
+
+	// This method is a placeholder - gRPC implementation would send the command to the daemon
+	// For now, we don't support creating contract workflow containers via gRPC
+	// (This would require adding protobuf message and RPC method)
+	return fmt.Errorf("CreateContractWorkflowContainer not implemented for gRPC client")
+}
+
+// PersistContractWorkflowContainer creates (but does NOT start) a worker container in DB
+func (c *DaemonClientGRPC) PersistContractWorkflowContainer(
+	ctx context.Context,
+	containerID string,
+	playerID uint,
+	command interface{},
+) error {
+	return fmt.Errorf("PersistContractWorkflowContainer not implemented for gRPC client")
+}
+
+// StartContractWorkflowContainer starts a previously persisted worker container
+func (c *DaemonClientGRPC) StartContractWorkflowContainer(
+	ctx context.Context,
+	containerID string,
+	completionCallback chan<- string,
+) error {
+	return fmt.Errorf("StartContractWorkflowContainer not implemented for gRPC client")
 }
 
 // StopContainer stops a running container

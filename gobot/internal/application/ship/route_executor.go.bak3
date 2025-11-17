@@ -63,6 +63,9 @@ func (e *RouteExecutor) ExecuteRoute(
 	ship *domainNavigation.Ship,
 	playerID int,
 ) error {
+	// Extract logger from context
+	logger := common.LoggerFromContext(ctx)
+
 	// 0. Start route execution (transition from PLANNED to EXECUTING)
 	if err := route.StartExecution(); err != nil {
 		return fmt.Errorf("failed to start route execution: %w", err)
@@ -87,38 +90,38 @@ func (e *RouteExecutor) ExecuteRoute(
 	segmentCount := 0
 	for {
 		segment := route.NextSegment()
-		log.Printf("INFO", fmt.Sprintf("[ROUTE EXECUTOR] Loop iteration %d: segment=%v, currentIndex=%d, totalSegments=%d",
-			segmentCount, segment != nil, route.CurrentSegmentIndex(), len(route.Segments())))
+		log.Printf("[ROUTE EXECUTOR] Loop iteration %d: segment=%v, currentIndex=%d, totalSegments=%d",
+			segmentCount, segment != nil, route.CurrentSegmentIndex(), len(route.Segments()))
 
 		if segment == nil {
-			log.Printf("INFO", "[ROUTE EXECUTOR] NextSegment() returned nil, breaking loop")
+			log.Printf("[ROUTE EXECUTOR] NextSegment() returned nil, breaking loop")
 			break // Route complete
 		}
 
-		log.Printf("INFO", fmt.Sprintf("[ROUTE EXECUTOR] Executing segment %d: %s → %s",
-			segmentCount, segment.FromWaypoint.Symbol, segment.ToWaypoint.Symbol))
+		log.Printf("[ROUTE EXECUTOR] Executing segment %d: %s → %s",
+			segmentCount, segment.FromWaypoint.Symbol, segment.ToWaypoint.Symbol)
 
 		if err := e.executeSegment(ctx, segment, ship, playerID); err != nil {
-			log.Printf("ERROR", fmt.Sprintf("[ROUTE EXECUTOR] Segment execution failed: %v", err))
+			log.Printf("[ROUTE EXECUTOR] Segment execution failed: %v", err)
 			route.FailRoute(err.Error())
 			return err
 		}
 
-		log.Printf("INFO", fmt.Sprintf("[ROUTE EXECUTOR] Segment %d completed successfully", segmentCount))
+		log.Printf("[ROUTE EXECUTOR] Segment %d completed successfully", segmentCount)
 
 		// Complete segment in route
 		if err := route.CompleteSegment(); err != nil {
-			log.Printf("ERROR", fmt.Sprintf("[ROUTE EXECUTOR] CompleteSegment() failed: %v", err))
+			log.Printf("[ROUTE EXECUTOR] CompleteSegment() failed: %v", err)
 			return err
 		}
 
-		log.Printf("INFO", fmt.Sprintf("[ROUTE EXECUTOR] After CompleteSegment: currentIndex=%d, status=%s",
-			route.CurrentSegmentIndex(), route.Status()))
+		log.Printf("[ROUTE EXECUTOR] After CompleteSegment: currentIndex=%d, status=%s",
+			route.CurrentSegmentIndex(), route.Status())
 
 		segmentCount++
 	}
 
-	log.Printf("INFO", fmt.Sprintf("[ROUTE EXECUTOR] Loop finished after %d segments, route status=%s", segmentCount, route.Status()))
+	log.Printf("[ROUTE EXECUTOR] Loop finished after %d segments, route status=%s", segmentCount, route.Status())
 
 	return nil
 }
@@ -142,8 +145,8 @@ func (e *RouteExecutor) executeSegment(
 	// 2. Pre-departure refuel check (prevent DRIFT at fuel stations with low fuel)
 	// Use domain decision method
 	if ship.ShouldPreventDriftMode(segment, 0.9) {
-		log.Printf("INFO", fmt.Sprintf("Pre-departure refuel: preventing DRIFT mode with low fuel at %s",
-			segment.FromWaypoint.Symbol))
+		log.Printf("Pre-departure refuel: preventing DRIFT mode with low fuel at %s",
+			segment.FromWaypoint.Symbol)
 		if err := e.refuelShip(ctx, ship, playerID); err != nil {
 			return err
 		}
@@ -177,12 +180,12 @@ func (e *RouteExecutor) executeSegment(
 		return fmt.Errorf("unexpected response type: %T", navResp)
 	}
 
-	log.Printf("INFO", fmt.Sprintf("[ROUTE EXECUTOR] NavigateToWaypoint response: Status=%s, ArrivalTimeStr='%s'",
-		navResponse.Status, navResponse.ArrivalTimeStr))
+	log.Printf("[ROUTE EXECUTOR] NavigateToWaypoint response: Status=%s, ArrivalTimeStr='%s'",
+		navResponse.Status, navResponse.ArrivalTimeStr)
 
 	// Check if already at destination (idempotent case)
 	if navResponse.Status == "already_at_destination" {
-		log.Printf("INFO", "[ROUTE EXECUTOR] Ship already at destination, skipping wait")
+		log.Printf("[ROUTE EXECUTOR] Ship already at destination, skipping wait")
 		return nil
 	}
 
@@ -192,7 +195,7 @@ func (e *RouteExecutor) executeSegment(
 			return err
 		}
 	} else {
-		log.Printf("WARNING", fmt.Sprintf("[ROUTE EXECUTOR] WARNING: ArrivalTimeStr is empty for Status=%s", navResponse.Status))
+		log.Printf("[ROUTE EXECUTOR] WARNING: ArrivalTimeStr is empty for Status=%s", navResponse.Status)
 	}
 
 	// Re-sync ship after arrival (if using real repository)
@@ -207,7 +210,7 @@ func (e *RouteExecutor) executeSegment(
 	// 6. Opportunistic refueling (90% safety check)
 	// Use domain decision method
 	if ship.ShouldRefuelOpportunistically(segment.ToWaypoint, 0.9) && !segment.RequiresRefuel {
-		log.Printf("INFO", fmt.Sprintf("Opportunistic refuel at %s", segment.ToWaypoint.Symbol))
+		log.Printf("Opportunistic refuel at %s", segment.ToWaypoint.Symbol)
 		if err := e.refuelShip(ctx, ship, playerID); err != nil {
 			return err
 		}
@@ -215,7 +218,7 @@ func (e *RouteExecutor) executeSegment(
 
 	// 7. Planned refueling (required by routing engine)
 	if segment.RequiresRefuel {
-		log.Printf("INFO", fmt.Sprintf("Planned refuel at %s", segment.ToWaypoint.Symbol))
+		log.Printf("Planned refuel at %s", segment.ToWaypoint.Symbol)
 		if err := e.refuelShip(ctx, ship, playerID); err != nil {
 			return err
 		}
@@ -244,7 +247,7 @@ func (e *RouteExecutor) waitForCurrentTransit(
 		if shipData.NavStatus == "IN_TRANSIT" && shipData.ArrivalTime != "" {
 			waitTime := CalculateArrivalWaitTime(shipData.ArrivalTime)
 			if waitTime > 0 {
-				log.Printf("INFO", fmt.Sprintf("Waiting %d seconds for ship to complete previous transit", waitTime+3))
+				log.Printf("Waiting %d seconds for ship to complete previous transit", waitTime+3)
 				e.clock.Sleep(time.Duration(waitTime+3) * time.Second) // +3 second buffer
 			}
 		}
@@ -263,7 +266,7 @@ func (e *RouteExecutor) waitForCurrentTransit(
 	maxRetries := 5
 	retryDelay := 2 * time.Second
 	for i := 0; i < maxRetries && ship.NavStatus() == domainNavigation.NavStatusInTransit; i++ {
-		log.Printf("INFO", fmt.Sprintf("[ROUTE EXECUTOR] Ship still IN_TRANSIT after initial wait (attempt %d/%d), polling API in %v...", i+1, maxRetries, retryDelay))
+		log.Printf("[ROUTE EXECUTOR] Ship still IN_TRANSIT after initial wait (attempt %d/%d), polling API in %v...", i+1, maxRetries, retryDelay)
 		e.clock.Sleep(retryDelay)
 
 		if e.shipRepo != nil {

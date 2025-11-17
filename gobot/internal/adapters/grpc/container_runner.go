@@ -28,6 +28,10 @@ type ContainerRunner struct {
 	done       chan struct{}
 	mu         sync.RWMutex
 
+	// Completion callback (optional)
+	// Called when container completes or fails, passing ship symbol if available
+	completionCallback chan<- string
+
 	// In-memory log cache for quick access (logs also persisted to DB)
 	logs []LogEntry
 }
@@ -61,8 +65,15 @@ func NewContainerRunner(
 		ctx:                ctx,
 		cancelFunc:         cancel,
 		done:               make(chan struct{}),
+		completionCallback: nil, // Can be set later via SetCompletionCallback
 		logs:               make([]LogEntry, 0),
 	}
+}
+
+// SetCompletionCallback sets the completion callback channel
+// This should be called before Start() if a callback is needed
+func (r *ContainerRunner) SetCompletionCallback(callback chan<- string) {
+	r.completionCallback = callback
 }
 
 // Container returns the underlying container entity
@@ -261,6 +272,31 @@ func (r *ContainerRunner) execute() {
 
 	// Release ship assignments for this container
 	r.releaseShipAssignments("completed")
+
+	// Signal completion to callback if provided
+	r.signalCompletion()
+}
+
+// signalCompletion signals container completion via callback channel
+func (r *ContainerRunner) signalCompletion() {
+	if r.completionCallback == nil {
+		return // No callback configured
+	}
+
+	// Extract ship symbol from container metadata
+	shipSymbol, ok := r.containerEntity.Metadata()["ship_symbol"].(string)
+	if !ok {
+		r.log("WARNING", "No ship_symbol in metadata, cannot signal completion", nil)
+		return
+	}
+
+	// Send signal (non-blocking)
+	select {
+	case r.completionCallback <- shipSymbol:
+		r.log("INFO", fmt.Sprintf("Signaled completion for ship %s", shipSymbol), nil)
+	default:
+		r.log("WARNING", fmt.Sprintf("Completion callback channel full/closed for ship %s", shipSymbol), nil)
+	}
 }
 
 // executeIteration executes a single iteration of the container operation
@@ -269,8 +305,11 @@ func (r *ContainerRunner) executeIteration() error {
 		"iteration": r.containerEntity.CurrentIteration() + 1,
 	})
 
+	// Add logger to context so handlers can log
+	ctxWithLogger := common.WithLogger(r.ctx, r)
+
 	// Execute command via mediator
-	result, err := r.mediator.Send(r.ctx, r.command)
+	result, err := r.mediator.Send(ctxWithLogger, r.command)
 	if err != nil {
 		return fmt.Errorf("command execution failed: %w", err)
 	}
@@ -312,11 +351,15 @@ func (r *ContainerRunner) handleError(err error) {
 
 	// Release ship assignments for this container
 	r.releaseShipAssignments("failed")
+
+	// Signal completion to callback (even on failure)
+	r.signalCompletion()
 }
 
 // Logging
 
-func (r *ContainerRunner) log(level, message string, metadata map[string]interface{}) {
+// Log adds a log entry (implements common.ContainerLogger interface)
+func (r *ContainerRunner) Log(level, message string, metadata map[string]interface{}) {
 	r.mu.Lock()
 	entry := LogEntry{
 		Timestamp: time.Now(),
@@ -351,6 +394,11 @@ func (r *ContainerRunner) log(level, message string, metadata map[string]interfa
 			)
 		}
 	}()
+}
+
+// log is a lowercase alias for backward compatibility with existing code
+func (r *ContainerRunner) log(level, message string, metadata map[string]interface{}) {
+	r.Log(level, message, metadata)
 }
 
 // GetLogs returns all logs for this container

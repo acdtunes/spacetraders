@@ -30,6 +30,20 @@ type DaemonClient interface {
 	// command: The scout tour command to execute in the container
 	CreateScoutTourContainer(ctx context.Context, containerID string, playerID uint, command interface{}) error
 
+	// CreateContractWorkflowContainer creates AND STARTS a background container for contract workflow operations
+	// containerID: Unique container identifier (e.g., "contract-work-SHIP-1-123456")
+	// playerID: Player who owns this operation
+	// command: The contract workflow command to execute in the container
+	// completionCallback: Optional channel to signal completion to coordinator
+	CreateContractWorkflowContainer(ctx context.Context, containerID string, playerID uint, command interface{}, completionCallback chan<- string) error
+
+	// PersistContractWorkflowContainer creates (but does NOT start) a worker container in DB
+	// This allows transferring ships to the container before starting it
+	PersistContractWorkflowContainer(ctx context.Context, containerID string, playerID uint, command interface{}) error
+
+	// StartContractWorkflowContainer starts a previously persisted worker container
+	StartContractWorkflowContainer(ctx context.Context, containerID string, completionCallback chan<- string) error
+
 	// StopContainer stops a running container
 	// containerID: The container to stop
 	StopContainer(ctx context.Context, containerID string) error
@@ -48,6 +62,9 @@ type ShipAssignmentRepository interface {
 
 	// Release marks a ship assignment as released
 	Release(ctx context.Context, shipSymbol string, playerID int, reason string) error
+
+	// Transfer transfers a ship assignment from one container to another
+	Transfer(ctx context.Context, shipSymbol string, fromContainerID string, toContainerID string) error
 
 	// ReleaseByContainer releases all ship assignments for a container
 	ReleaseByContainer(ctx context.Context, containerID string, playerID int, reason string) error

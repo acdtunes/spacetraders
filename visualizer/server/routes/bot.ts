@@ -71,7 +71,9 @@ router.get('/assignments', async (req, res) => {
             let operation = 'idle';
             if (assignment.container_type === 'SCOUT') {
               operation = 'scout-markets';
-            } else if (assignment.container_type === 'CONTRACT') {
+            } else if (assignment.container_type === 'CONTRACT' ||
+                       assignment.container_type === 'CONTRACT_FLEET_COORDINATOR' ||
+                       assignment.container_type === 'CONTRACT_WORKFLOW') {
               operation = 'contract';
             } else if (assignment.container_type === 'PURCHASE') {
               operation = 'shipyard';
@@ -163,7 +165,9 @@ router.get('/assignments/:shipSymbol', async (req, res) => {
       let operation = 'idle';
       if (assignment.container_type === 'SCOUT') {
         operation = 'scout-markets';
-      } else if (assignment.container_type === 'CONTRACT') {
+      } else if (assignment.container_type === 'CONTRACT' ||
+                 assignment.container_type === 'CONTRACT_FLEET_COORDINATOR' ||
+                 assignment.container_type === 'CONTRACT_WORKFLOW') {
         operation = 'contract';
       } else if (assignment.container_type === 'PURCHASE') {
         operation = 'shipyard';

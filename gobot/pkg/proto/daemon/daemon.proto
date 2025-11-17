@@ -22,6 +22,9 @@ service DaemonService {
   // BatchContractWorkflow executes batch contract workflow operations
   rpc BatchContractWorkflow(BatchContractWorkflowRequest) returns (BatchContractWorkflowResponse);
 
+  // ContractFleetCoordinator manages a pool of ships for continuous contract execution
+  rpc ContractFleetCoordinator(ContractFleetCoordinatorRequest) returns (ContractFleetCoordinatorResponse);
+
   // ScoutTour executes market scouting tour operations (single ship)
   rpc ScoutTour(ScoutTourRequest) returns (ScoutTourResponse);
 
@@ -152,6 +155,19 @@ message BatchContractWorkflowResponse {
   string ship_symbol = 2;
   int32 iterations = 3;
   string status = 4;
+}
+
+// ContractFleetCoordinatorRequest initiates contract fleet coordination with multiple ships
+message ContractFleetCoordinatorRequest {
+  repeated string ship_symbols = 1;
+  int32 player_id = 2;
+  optional string agent_symbol = 3;
+}
+
+message ContractFleetCoordinatorResponse {
+  string container_id = 1;
+  repeated string ship_symbols = 2;
+  string status = 3;
 }
 
 // ScoutTourRequest initiates market scouting tour

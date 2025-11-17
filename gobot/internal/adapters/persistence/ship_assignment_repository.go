@@ -145,6 +145,36 @@ func (r *ShipAssignmentRepositoryGORM) Release(
 	return nil
 }
 
+// Transfer transfers a ship assignment from one container to another
+// This is used by the contract fleet coordinator to transfer ships between
+// the coordinator and worker containers
+func (r *ShipAssignmentRepositoryGORM) Transfer(
+	ctx context.Context,
+	shipSymbol string,
+	fromContainerID string,
+	toContainerID string,
+) error {
+	now := time.Now()
+
+	result := r.db.WithContext(ctx).
+		Model(&ShipAssignmentModel{}).
+		Where("ship_symbol = ? AND container_id = ? AND status = ?", shipSymbol, fromContainerID, "active").
+		Updates(map[string]interface{}{
+			"container_id": toContainerID,
+			"assigned_at":  now,
+		})
+
+	if result.Error != nil {
+		return fmt.Errorf("failed to transfer ship assignment: %w", result.Error)
+	}
+
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("no active assignment found for ship %s with container %s", shipSymbol, fromContainerID)
+	}
+
+	return nil
+}
+
 // ReleaseByContainer releases all ship assignments for a container
 func (r *ShipAssignmentRepositoryGORM) ReleaseByContainer(
 	ctx context.Context,

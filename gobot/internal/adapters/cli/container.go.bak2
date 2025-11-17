@@ -69,7 +69,7 @@ func newContainerListCommand() *cobra.Command {
 			// Display containers in table format
 			fmt.Printf("%-55s %-15s %-12s %-10s %s\n",
 				"CONTAINER ID", "TYPE", "STATUS", "ITERATION", "CREATED")
-			fmt.Println("──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────")
+			fmt.Println("─────────────────────────────────────────────────────────────────────────────────")
 
 			for _, c := range containers {
 				createdAt := formatTimestamp(c.CreatedAt)
@@ -79,7 +79,7 @@ func newContainerListCommand() *cobra.Command {
 				}
 
 				fmt.Printf("%-55s %-15s %-12s %-10s %s\n",
-					c.ContainerID,
+					truncate(c.ContainerID, 30),
 					c.ContainerType,
 					c.Status,
 					iteration,

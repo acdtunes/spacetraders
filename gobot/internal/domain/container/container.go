@@ -37,17 +37,18 @@ const (
 type ContainerType string
 
 const (
-	ContainerTypeNavigate              ContainerType = "NAVIGATE"
-	ContainerTypeDock                  ContainerType = "DOCK"
-	ContainerTypeOrbit                 ContainerType = "ORBIT"
-	ContainerTypeRefuel                ContainerType = "REFUEL"
-	ContainerTypeScout                 ContainerType = "SCOUT"
-	ContainerTypeMining                ContainerType = "MINING"
-	ContainerTypeContract              ContainerType = "CONTRACT"
-	ContainerTypeBatchContractWorkflow ContainerType = "BATCH_CONTRACT_WORKFLOW"
-	ContainerTypeTrading               ContainerType = "TRADING"
-	ContainerTypeScoutFleetAssignment  ContainerType = "SCOUT_FLEET_ASSIGNMENT"
-	ContainerTypePurchase              ContainerType = "PURCHASE"
+	ContainerTypeNavigate             ContainerType = "NAVIGATE"
+	ContainerTypeDock                 ContainerType = "DOCK"
+	ContainerTypeOrbit                ContainerType = "ORBIT"
+	ContainerTypeRefuel               ContainerType = "REFUEL"
+	ContainerTypeScout                ContainerType = "SCOUT"
+	ContainerTypeMining               ContainerType = "MINING"
+	ContainerTypeContract             ContainerType = "CONTRACT"
+	ContainerTypeContractWorkflow     ContainerType = "CONTRACT_WORKFLOW"
+	ContainerTypeContractFleetCoordinator ContainerType = "CONTRACT_FLEET_COORDINATOR"
+	ContainerTypeTrading              ContainerType = "TRADING"
+	ContainerTypeScoutFleetAssignment ContainerType = "SCOUT_FLEET_ASSIGNMENT"
+	ContainerTypePurchase             ContainerType = "PURCHASE"
 )
 
 // Container represents a background operation running in the daemon
