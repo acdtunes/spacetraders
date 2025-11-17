@@ -22,11 +22,22 @@ func NewShipAssignmentRepository(db *gorm.DB) *ShipAssignmentRepositoryGORM {
 }
 
 // Insert creates a new ship assignment record in the database
-// Uses UPSERT pattern to handle reassigning ships that have released assignments
+// Returns error if ship already has an active assignment
 func (r *ShipAssignmentRepositoryGORM) Insert(
 	ctx context.Context,
 	assignment *daemon.ShipAssignment,
 ) error {
+	// Check for existing active assignment
+	existingAssignment, err := r.FindByShip(ctx, assignment.ShipSymbol(), assignment.PlayerID())
+	if err != nil {
+		return fmt.Errorf("failed to check existing assignment: %w", err)
+	}
+
+	if existingAssignment != nil && existingAssignment.Status() == "active" {
+		return fmt.Errorf("ship %s is already assigned to container %s",
+			assignment.ShipSymbol(), existingAssignment.ContainerID())
+	}
+
 	model := &ShipAssignmentModel{
 		ShipSymbol:  assignment.ShipSymbol(),
 		PlayerID:    assignment.PlayerID(),

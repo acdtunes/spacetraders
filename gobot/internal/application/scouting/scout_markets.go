@@ -214,11 +214,8 @@ func (h *ScoutMarketsHandler) Handle(ctx context.Context, request common.Request
 			return nil, fmt.Errorf("failed to create container for %s: %w", shipSymbol, err)
 		}
 
-		// Persist ship assignment to database
-		assignment := daemon.NewShipAssignment(shipSymbol, int(cmd.PlayerID), containerID, nil)
-		if err := h.shipAssignmentRepo.Insert(ctx, assignment); err != nil {
-			return nil, fmt.Errorf("failed to persist ship assignment for %s: %w", shipSymbol, err)
-		}
+		// Ship assignment is now automatically created by ContainerRunner.Start()
+		// based on the "ship_symbol" config value
 
 		newContainerIDs = append(newContainerIDs, containerID)
 	}

@@ -9,6 +9,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
 )
 
 // ContainerRunner executes a container operation in a background goroutine
@@ -98,6 +99,13 @@ func (r *ContainerRunner) Start() error {
 		); err != nil {
 			r.log("ERROR", fmt.Sprintf("Failed to persist RUNNING status: %v", err), nil)
 		}
+	}
+
+	// Create ship assignments if this container uses ships
+	// This prevents concurrent containers from operating on the same ship
+	if err := r.createShipAssignments(); err != nil {
+		r.log("ERROR", fmt.Sprintf("Failed to create ship assignments: %v", err), nil)
+		return fmt.Errorf("failed to create ship assignments: %w", err)
 	}
 
 	// Execute the container operation
@@ -367,6 +375,40 @@ func (r *ContainerRunner) GetLogs(limit *int, level *string) []LogEntry {
 	}
 
 	return filtered
+}
+
+// createShipAssignments creates ship assignments from container metadata
+// Checks for "ship_symbol" (single ship) in the metadata map
+// This prevents concurrent containers from operating on the same ship
+func (r *ContainerRunner) createShipAssignments() error {
+	if r.shipAssignmentRepo == nil {
+		return nil
+	}
+
+	metadata := r.containerEntity.Metadata()
+
+	// Check for single ship
+	if shipSymbol, ok := metadata["ship_symbol"].(string); ok {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		// Create ship assignment
+		assignment := daemon.NewShipAssignment(
+			shipSymbol,
+			r.containerEntity.PlayerID(),
+			r.containerEntity.ID(),
+			nil,
+		)
+
+		if err := r.shipAssignmentRepo.Insert(ctx, assignment); err != nil {
+			return fmt.Errorf("failed to assign ship %s: %w", shipSymbol, err)
+		}
+
+		r.log("INFO", fmt.Sprintf("Assigned ship %s to container", shipSymbol), nil)
+	}
+
+	// No ship_symbol in config = no ships to assign (e.g., scout-fleet-assignment)
+	return nil
 }
 
 // releaseShipAssignments releases all ship assignments for this container
