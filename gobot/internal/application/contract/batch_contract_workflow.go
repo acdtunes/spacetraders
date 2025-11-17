@@ -251,7 +251,17 @@ func (h *BatchContractWorkflowHandler) processIteration(
 			fmt.Printf("[WORKFLOW] Starting multi-trip purchase: %d trips needed\n", trips)
 
 			for trip := 0; trip < trips; trip++ {
-				unitsThisTrip := min(ship.Cargo().Capacity, unitsToPurchase)
+				// Calculate available cargo space (capacity - current load)
+				availableSpace := ship.Cargo().Capacity - ship.Cargo().Units
+
+				// Use available space, not total capacity
+				unitsThisTrip := min(availableSpace, unitsToPurchase)
+
+				// Skip if no space available
+				if unitsThisTrip <= 0 {
+					fmt.Printf("[WORKFLOW] No cargo space available, ending purchase loop\n")
+					break
+				}
 
 				// Navigate to seller
 				if err := h.navigateToWaypoint(ctx, ship, cheapestMarket, cmd.PlayerID); err != nil {
