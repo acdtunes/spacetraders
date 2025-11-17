@@ -52,6 +52,9 @@ type navigateShipHandlerContext struct {
 	graphLoadedFromCache bool
 	graphSavedToDatabase bool
 	waypointsSavedToDatabase bool
+
+	// Test control flags
+	skipWaypointSave bool  // If true, don't save waypoints when creating ships
 }
 
 func (ctx *navigateShipHandlerContext) reset() {
@@ -233,9 +236,11 @@ func (ctx *navigateShipHandlerContext) shipIsAtWithFuel(shipSymbol, location str
 			}
 			wp.SystemSymbol = systemSymbol
 
-			// Save waypoint to waypoint repository so it can be found by enricher
-			if err := ctx.waypointRepo.Save(context.Background(), wp); err != nil {
-				return fmt.Errorf("failed to save waypoint %s: %w", location, err)
+			// Save waypoint to waypoint repository ONLY if skipWaypointSave is false
+			if !ctx.skipWaypointSave {
+				if err := ctx.waypointRepo.Save(context.Background(), wp); err != nil {
+					return fmt.Errorf("failed to save waypoint %s: %w", location, err)
+				}
 			}
 		}
 		waypoint = wp
@@ -343,7 +348,16 @@ func (ctx *navigateShipHandlerContext) systemHasZeroWaypointsInCache(systemSymbo
 		"waypoints": map[string]interface{}{},
 	}
 
-	return ctx.graphRepo.Save(context.Background(), systemSymbol, graphData)
+	// Save empty graph to database
+	if err := ctx.graphRepo.Save(context.Background(), systemSymbol, graphData); err != nil {
+		return err
+	}
+
+	// Set flag to prevent waypoints from being saved when ship is created
+	// AND prevent graph from being built by waypoint provider
+	ctx.skipWaypointSave = true
+
+	return nil
 }
 
 func (ctx *navigateShipHandlerContext) systemHasWaypointsCached(systemSymbol string, count int) error {
@@ -351,8 +365,12 @@ func (ctx *navigateShipHandlerContext) systemHasWaypointsCached(systemSymbol str
 }
 
 func (ctx *navigateShipHandlerContext) waypointIsNOTInTheCache(waypointSymbol string) error {
-	// Ensure waypoint is NOT in cache
+	// Ensure waypoint is NOT in cache - delete from context map
 	delete(ctx.waypoints, waypointSymbol)
+
+	// Set flag to prevent waypoints from being saved when ship is created
+	ctx.skipWaypointSave = true
+
 	return nil
 }
 
@@ -743,13 +761,13 @@ func (m *mockGraphBuilder) BuildSystemGraph(ctx context.Context, systemSymbol st
 	// For testing, load waypoints from repository and build graph
 	waypoints, err := m.waypointRepo.ListBySystem(ctx, systemSymbol)
 	if err != nil {
-		// Return empty graph if no waypoints
+		// If can't load waypoints, return empty graph (test scenario control)
 		return map[string]interface{}{
 			"waypoints": map[string]interface{}{},
 		}, nil
 	}
 
-	// Build graph structure from waypoints
+	// Build graph structure from waypoints (even if empty)
 	waypointMap := make(map[string]interface{})
 	for _, wp := range waypoints {
 		waypointMap[wp.Symbol] = map[string]interface{}{
