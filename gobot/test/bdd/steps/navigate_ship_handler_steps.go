@@ -265,9 +265,31 @@ func (ctx *navigateShipHandlerContext) systemHasNoCachedGraph(systemSymbol strin
 }
 
 func (ctx *navigateShipHandlerContext) theAPIWillReturnWaypointsForSystem(count int, systemSymbol string) error {
-	// Configure mock API to return waypoints
-	// This would be called by SystemGraphProvider when building graph
-	// For now, this is a placeholder - actual implementation would need mock setup
+	// Create waypoints that the mock graph builder will find
+	// This simulates fetching from API and saving to waypoint repository
+	letters := []string{"A", "B", "C", "D", "E", "F", "G", "H", "I", "J"}
+
+	for i := 0; i < count; i++ {
+		letter := letters[i%len(letters)]
+		wpSymbol := fmt.Sprintf("%s-%s1", systemSymbol, letter)
+
+		wp, err := shared.NewWaypoint(wpSymbol, float64(i*10), float64(i*10))
+		if err != nil {
+			return fmt.Errorf("failed to create waypoint %s: %w", wpSymbol, err)
+		}
+
+		wp.SystemSymbol = systemSymbol
+		wp.Type = "PLANET"
+		wp.HasFuel = false // Default to no fuel
+
+		// Save to waypoint repository so graph builder can find it
+		if err := ctx.waypointRepo.Save(context.Background(), wp); err != nil {
+			return fmt.Errorf("failed to save waypoint %s: %w", wpSymbol, err)
+		}
+
+		ctx.waypoints[wpSymbol] = wp
+	}
+
 	return nil
 }
 
