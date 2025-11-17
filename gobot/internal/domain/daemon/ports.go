@@ -47,4 +47,7 @@ type ShipAssignmentRepository interface {
 
 	// ReleaseByContainer releases all ship assignments for a container
 	ReleaseByContainer(ctx context.Context, containerID string, playerID int, reason string) error
+
+	// ReleaseAllActive releases all active ship assignments (used for daemon startup cleanup)
+	ReleaseAllActive(ctx context.Context, reason string) (int, error)
 }

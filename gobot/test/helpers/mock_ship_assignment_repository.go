@@ -83,3 +83,13 @@ func (m *MockShipAssignmentRepository) ReleaseByContainer(ctx context.Context, c
 
 	return nil
 }
+
+// ReleaseAllActive releases all active ship assignments (used for daemon startup cleanup)
+func (m *MockShipAssignmentRepository) ReleaseAllActive(ctx context.Context, reason string) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	count := len(m.assignments)
+	m.assignments = make(map[string]*daemon.ShipAssignment)
+	return count, nil
+}

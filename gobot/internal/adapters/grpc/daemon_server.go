@@ -24,10 +24,11 @@ import (
 // DaemonServer implements the gRPC daemon service
 // Handles CLI requests and orchestrates background container operations
 type DaemonServer struct {
-	mediator      common.Mediator
-	listener      net.Listener
-	logRepo       persistence.ContainerLogRepository
-	containerRepo *persistence.ContainerRepositoryGORM
+	mediator             common.Mediator
+	listener             net.Listener
+	logRepo              persistence.ContainerLogRepository
+	containerRepo        *persistence.ContainerRepositoryGORM
+	shipAssignmentRepo   *persistence.ShipAssignmentRepositoryGORM
 
 	// Container orchestration
 	containers   map[string]*ContainerRunner
@@ -43,6 +44,7 @@ func NewDaemonServer(
 	mediator common.Mediator,
 	logRepo persistence.ContainerLogRepository,
 	containerRepo *persistence.ContainerRepositoryGORM,
+	shipAssignmentRepo *persistence.ShipAssignmentRepositoryGORM,
 	socketPath string,
 ) (*DaemonServer, error) {
 	// Remove existing socket file if present
@@ -63,13 +65,14 @@ func NewDaemonServer(
 	}
 
 	server := &DaemonServer{
-		mediator:      mediator,
-		logRepo:       logRepo,
-		containerRepo: containerRepo,
-		listener:      listener,
-		containers:    make(map[string]*ContainerRunner),
-		shutdownChan:  make(chan os.Signal, 1),
-		done:          make(chan struct{}),
+		mediator:           mediator,
+		logRepo:            logRepo,
+		containerRepo:      containerRepo,
+		shipAssignmentRepo: shipAssignmentRepo,
+		listener:           listener,
+		containers:         make(map[string]*ContainerRunner),
+		shutdownChan:       make(chan os.Signal, 1),
+		done:               make(chan struct{}),
 	}
 
 	// Setup signal handling
@@ -81,6 +84,19 @@ func NewDaemonServer(
 // Start begins serving gRPC requests
 func (s *DaemonServer) Start() error {
 	fmt.Printf("Daemon server listening on unix socket: %s\n", s.listener.Addr().String())
+
+	// Release all zombie assignments from previous daemon runs
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if s.shipAssignmentRepo != nil {
+		count, err := s.shipAssignmentRepo.ReleaseAllActive(ctx, "daemon_restart")
+		if err != nil {
+			fmt.Printf("Warning: Failed to release zombie assignments: %v\n", err)
+		} else if count > 0 {
+			fmt.Printf("Released %d zombie ship assignment(s) on daemon startup\n", count)
+		}
+	}
 
 	// Start shutdown handler
 	go s.handleShutdown()
@@ -160,7 +176,7 @@ func (s *DaemonServer) NavigateShip(ctx context.Context, shipSymbol, destination
 	}
 
 	// Create and start container runner
-	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo)
+	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipAssignmentRepo)
 	s.registerContainer(containerID, runner)
 
 	// Start container in background
@@ -198,7 +214,7 @@ func (s *DaemonServer) DockShip(ctx context.Context, shipSymbol string, playerID
 		return "", fmt.Errorf("failed to persist container: %w", err)
 	}
 
-	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo)
+	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipAssignmentRepo)
 	s.registerContainer(containerID, runner)
 
 	go func() {
@@ -235,7 +251,7 @@ func (s *DaemonServer) OrbitShip(ctx context.Context, shipSymbol string, playerI
 		return "", fmt.Errorf("failed to persist container: %w", err)
 	}
 
-	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo)
+	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipAssignmentRepo)
 	s.registerContainer(containerID, runner)
 
 	go func() {
@@ -278,7 +294,7 @@ func (s *DaemonServer) RefuelShip(ctx context.Context, shipSymbol string, player
 		return "", fmt.Errorf("failed to persist container: %w", err)
 	}
 
-	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo)
+	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipAssignmentRepo)
 	s.registerContainer(containerID, runner)
 
 	go func() {
@@ -321,7 +337,7 @@ func (s *DaemonServer) BatchContractWorkflow(ctx context.Context, shipSymbol str
 	}
 
 	// Create and start container runner
-	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo)
+	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipAssignmentRepo)
 	s.registerContainer(containerID, runner)
 
 	// Start container in background
@@ -366,7 +382,7 @@ func (s *DaemonServer) ScoutTour(ctx context.Context, containerID string, shipSy
 	}
 
 	// Create and start container runner
-	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo)
+	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipAssignmentRepo)
 	s.registerContainer(containerID, runner)
 
 	// Start container in background
@@ -446,7 +462,7 @@ func (s *DaemonServer) AssignScoutingFleet(
 	}
 
 	// Create container runner
-	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo)
+	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipAssignmentRepo)
 	s.registerContainer(containerID, runner)
 
 	// Start container in background
