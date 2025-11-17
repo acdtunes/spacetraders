@@ -460,17 +460,33 @@ func NewMyHandler(repo ports.Repository, client ports.APIClient) *MyHandler {
 
 ## Database Configuration
 
-**Production:** PostgreSQL (configured via environment variables)
+**Production:** PostgreSQL (configured via `.env` file)
 
 **Tests:** SQLite in-memory (`:memory:`)
 
-**Environment variables:**
-- `DB_HOST` - Database host
-- `DB_PORT` - Database port
-- `DB_USER` - Database user
-- `DB_PASSWORD` - Database password
-- `DB_NAME` - Database name
-- `ROUTING_SERVICE_ADDR` - Routing service address (e.g., `localhost:50051`)
+**Configuration file:** `.env` (in project root - **never commit this file**)
+
+**Environment variables:** See `.env.example` or `.env` for the full list of available configuration options.
+
+**Primary connection string format:**
+```bash
+DATABASE_URL=postgresql://username:password@host:port/database
+```
+
+**Alternative individual environment variables (with ST_ prefix):**
+- `ST_DATABASE_TYPE` - Database type (`postgres` or `sqlite`)
+- `ST_DATABASE_HOST` - Database host
+- `ST_DATABASE_PORT` - Database port
+- `ST_DATABASE_USER` - Database user
+- `ST_DATABASE_PASSWORD` - Database password
+- `ST_DATABASE_NAME` - Database name
+- `ST_DATABASE_SSLMODE` - SSL mode
+
+**Other important environment variables:**
+- `ST_ROUTING_ADDRESS` - Routing service address (e.g., `localhost:50051`)
+- `SPACETRADERS_SOCKET` - Daemon socket path (default: `/tmp/spacetraders-daemon.sock`)
+
+**Connecting to database:** Use credentials from your `.env` file
 
 ## Common Pitfalls
 

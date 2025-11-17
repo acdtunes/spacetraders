@@ -80,12 +80,10 @@ func (h *NegotiateContractHandler) Handle(ctx context.Context, request common.Re
 
 	// 5. Call API to negotiate contract
 	result, err := h.apiClient.NegotiateContract(ctx, cmd.ShipSymbol, player.Token)
-	if err != nil {
-		return nil, fmt.Errorf("failed to negotiate contract: %w", err)
-	}
 
 	// 6. Handle error 4511 - agent already has active contract
-	if result.ErrorCode == 4511 {
+	// Note: API client now parses JSON before checking status, so result.ErrorCode is populated even on errors
+	if result != nil && result.ErrorCode == 4511 {
 		// Fetch existing contract from API
 		existingContractData, err := h.apiClient.GetContract(ctx, result.ExistingContractID, player.Token)
 		if err != nil {

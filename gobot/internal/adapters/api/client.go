@@ -452,7 +452,7 @@ func (c *SpaceTradersClient) NegotiateContract(ctx context.Context, shipSymbol, 
 
 	// Send empty body as required by API
 	emptyBody := map[string]interface{}{}
-	err := c.request(ctx, "POST", path, token, emptyBody, &response)
+	err := c.requestWithErrorParsing(ctx, "POST", path, token, emptyBody, &response)
 
 	// Check for error 4511 - agent already has contract
 	if response.Error != nil && response.Error.Code == 4511 {
@@ -1168,6 +1168,64 @@ func (c *SpaceTradersClient) request(ctx context.Context, method, path, token st
 		return fmt.Errorf("max retries exceeded: %w", lastErr)
 	}
 	return fmt.Errorf("max retries exceeded")
+}
+
+// requestWithErrorParsing is like request() but unmarshals JSON BEFORE checking status codes
+// This allows callers to inspect error details (like error code 4511) even when status is 4xx
+func (c *SpaceTradersClient) requestWithErrorParsing(ctx context.Context, method, path, token string, body interface{}, result interface{}) error {
+	url := c.baseURL + path
+
+	// Wait for rate limiter
+	if err := c.rateLimiter.Wait(ctx); err != nil {
+		return fmt.Errorf("rate limiter error: %w", err)
+	}
+
+	// Prepare request body
+	var reqBody io.Reader
+	if body != nil {
+		jsonData, err := json.Marshal(body)
+		if err != nil {
+			return fmt.Errorf("failed to marshal request body: %w", err)
+		}
+		reqBody = bytes.NewBuffer(jsonData)
+	}
+
+	// Create HTTP request
+	req, err := http.NewRequestWithContext(ctx, method, url, reqBody)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	// Execute HTTP request
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("network error: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Read response body
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response: %w", err)
+	}
+
+	// Parse JSON FIRST, even for error responses
+	if result != nil {
+		if err := json.Unmarshal(respBody, result); err != nil {
+			return fmt.Errorf("failed to unmarshal response: %w", err)
+		}
+	}
+
+	// NOW check status code (JSON is already parsed into result)
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil // Success
+	}
+
+	// Return error for non-2xx (but JSON is already in result for caller to inspect)
+	return fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(respBody))
 }
 
 // retryableError represents an error that should trigger a retry

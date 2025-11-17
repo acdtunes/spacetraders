@@ -152,6 +152,7 @@ func (h *BatchContractWorkflowHandler) processIteration(
 	}
 
 	// Step 3: Evaluate profitability (log only - always accept)
+	fmt.Printf("[WORKFLOW] Evaluating contract profitability for contract %s\n", contract.ContractID())
 	profitabilityQuery := &EvaluateContractProfitabilityQuery{
 		Contract:        contract,
 		ShipSymbol:      cmd.ShipSymbol,
@@ -159,7 +160,9 @@ func (h *BatchContractWorkflowHandler) processIteration(
 		FuelCostPerTrip: 0, // Simplified for now
 	}
 
+	fmt.Println("[WORKFLOW] Calling profitability query...")
 	profitabilityResp, err := h.mediator.Send(ctx, profitabilityQuery)
+	fmt.Printf("[WORKFLOW] Profitability query returned: err=%v\n", err)
 	if err != nil {
 		// Log warning but continue (non-fatal)
 		fmt.Printf("WARNING: Failed to evaluate profitability: %v\n", err)
@@ -169,6 +172,7 @@ func (h *BatchContractWorkflowHandler) processIteration(
 			fmt.Printf("WARNING: Contract unprofitable (%s) but accepting anyway\n", profitResult.Reason)
 		}
 	}
+	fmt.Println("[WORKFLOW] Profitability evaluation complete")
 
 	// Step 4: Accept contract (skip if already accepted)
 	if !contract.Accepted() {
@@ -189,19 +193,28 @@ func (h *BatchContractWorkflowHandler) processIteration(
 	}
 
 	// Step 5: Process each delivery
+	fmt.Printf("[WORKFLOW] Processing %d deliveries\n", len(contract.Terms().Deliveries))
 	for _, delivery := range contract.Terms().Deliveries {
 		unitsRemaining := delivery.UnitsRequired - delivery.UnitsFulfilled
+		fmt.Printf("[WORKFLOW] Delivery: %s, required=%d, fulfilled=%d, remaining=%d\n",
+			delivery.TradeSymbol, delivery.UnitsRequired, delivery.UnitsFulfilled, unitsRemaining)
 		if unitsRemaining == 0 {
+			fmt.Println("[WORKFLOW] Delivery already fulfilled, skipping")
 			continue // Already fulfilled
 		}
+		fmt.Println("[WORKFLOW] Processing delivery...")
 
 		// Step 6: Reload ship state (critical for fresh cargo data)
+		fmt.Println("[WORKFLOW] Reloading ship state...")
 		ship, err := h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
 		if err != nil {
+			fmt.Printf("[WORKFLOW] ERROR: Failed to reload ship: %v\n", err)
 			return fmt.Errorf("failed to reload ship: %w", err)
 		}
+		fmt.Printf("[WORKFLOW] Ship loaded: cargo=%d/%d\n", ship.Cargo().Units, ship.Cargo().Capacity)
 
 		currentUnits := ship.Cargo().GetItemUnits(delivery.TradeSymbol)
+		fmt.Printf("[WORKFLOW] Current %s units in cargo: %d\n", delivery.TradeSymbol, currentUnits)
 
 		// Step 7: Jettison wrong cargo if needed
 		hasWrongCargo := ship.Cargo().HasItemsOtherThan(delivery.TradeSymbol)
@@ -222,15 +235,19 @@ func (h *BatchContractWorkflowHandler) processIteration(
 
 		// Step 8: Calculate purchase needs
 		unitsToPurchase := unitsRemaining - currentUnits
+		fmt.Printf("[WORKFLOW] Units to purchase: %d (remaining=%d - current=%d)\n", unitsToPurchase, unitsRemaining, currentUnits)
 
 		if unitsToPurchase > 0 {
 			// Get profitability result for cheapest market
+			fmt.Println("[WORKFLOW] Getting cheapest market from profitability result...")
 			profitResult := profitabilityResp.(*ProfitabilityResult)
 			cheapestMarket := profitResult.CheapestMarketWaypoint
+			fmt.Printf("[WORKFLOW] Cheapest market: %s\n", cheapestMarket)
 
 			// Step 9: Multi-trip loop
 			trips := int(math.Ceil(float64(unitsToPurchase) / float64(ship.Cargo().Capacity)))
 			result.TotalTrips += trips
+			fmt.Printf("[WORKFLOW] Starting multi-trip delivery: %d trips needed\n", trips)
 
 			for trip := 0; trip < trips; trip++ {
 				unitsThisTrip := min(ship.Cargo().Capacity, unitsToPurchase)
@@ -360,11 +377,11 @@ func (h *BatchContractWorkflowHandler) navigateToWaypoint(
 		return nil
 	}
 
-	navigateCmd := &appShip.NavigateToWaypointCommand{
+	// Use HIGH-LEVEL NavigateShipCommand (handles route planning, refueling, multi-hop)
+	navigateCmd := &appShip.NavigateShipCommand{
 		ShipSymbol:  ship.ShipSymbol(),
 		Destination: destination,
 		PlayerID:    playerID,
-		FlightMode:  "", // Use ship default
 	}
 
 	_, err := h.mediator.Send(ctx, navigateCmd)
