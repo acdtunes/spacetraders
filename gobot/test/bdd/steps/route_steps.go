@@ -192,15 +192,33 @@ func (rc *routeContext) theRouteShouldHavePlayerID(playerID int) error {
 }
 
 func (rc *routeContext) theRouteShouldHaveSegments(count int) error {
-	if len(rc.route.Segments()) != count {
-		return fmt.Errorf("expected %d segments but got %d", count, len(rc.route.Segments()))
+	// Check local route first, fall back to shared route (from navigate ship handler)
+	route := rc.route
+	if route == nil && sharedRoute != nil {
+		route = sharedRoute
+	}
+	if route == nil {
+		return fmt.Errorf("no route available (neither local nor shared)")
+	}
+
+	if len(route.Segments()) != count {
+		return fmt.Errorf("expected %d segments but got %d", count, len(route.Segments()))
 	}
 	return nil
 }
 
 func (rc *routeContext) theRouteShouldHaveStatus(status string) error {
-	if string(rc.route.Status()) != status {
-		return fmt.Errorf("expected status '%s' but got '%s'", status, rc.route.Status())
+	// Check local route first, fall back to shared route (from navigate ship handler)
+	route := rc.route
+	if route == nil && sharedRoute != nil {
+		route = sharedRoute
+	}
+	if route == nil {
+		return fmt.Errorf("no route available (neither local nor shared)")
+	}
+
+	if string(route.Status()) != status {
+		return fmt.Errorf("expected status '%s' but got '%s'", status, route.Status())
 	}
 	return nil
 }

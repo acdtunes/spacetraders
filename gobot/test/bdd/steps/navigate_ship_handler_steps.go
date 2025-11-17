@@ -503,6 +503,10 @@ func (ctx *navigateShipHandlerContext) iNavigateToShip(shipSymbol, destination s
 	ctx.err = err
 	if err == nil {
 		ctx.response = response.(*appShip.NavigateShipResponse)
+		// Share route with route_steps.go for cross-context assertions
+		if ctx.response.Route != nil {
+			sharedRoute = ctx.response.Route
+		}
 	}
 
 	return nil

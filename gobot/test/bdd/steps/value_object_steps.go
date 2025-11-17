@@ -6,6 +6,7 @@ import (
 	"math"
 	"strings"
 
+	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/cucumber/godog"
 )
@@ -20,6 +21,7 @@ var (
 	sharedShip         interface { Fuel() *shared.Fuel; Cargo() *shared.Cargo }
 	sharedMarket       interface{ GoodsCount() int; WaypointSymbol() string } // For scouting market context
 	sharedContainer    interface{ IsRunning() bool; IsFinished() bool; IsStopping() bool } // For container lifecycle/state checks
+	sharedRoute        *navigation.Route // For navigate ship handler -> route step sharing
 )
 
 type valueObjectContext struct {
@@ -57,6 +59,7 @@ func (voc *valueObjectContext) reset() {
 	sharedWaypointMap = make(map[string]*shared.Waypoint)
 	sharedShip = nil
 	sharedMarket = nil
+	sharedRoute = nil
 }
 
 // Waypoint steps
