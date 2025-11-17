@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/ship"
 	"github.com/andrescamacho/spacetraders-go/internal/application/shipyard"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
+	domaindaemon "github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
 	pb "github.com/andrescamacho/spacetraders-go/pkg/proto/daemon"
 	"google.golang.org/grpc"
 )
@@ -98,6 +100,17 @@ func (s *DaemonServer) Start() error {
 		}
 	}
 
+	// Recover RUNNING containers from previous daemon instance
+	// This runs in the background to avoid blocking daemon startup
+	go func() {
+		recoveryCtx, recoveryCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer recoveryCancel()
+
+		if err := s.RecoverRunningContainers(recoveryCtx); err != nil {
+			fmt.Printf("Warning: Container recovery failed: %v\n", err)
+		}
+	}()
+
 	// Start shutdown handler
 	go s.handleShutdown()
 
@@ -133,8 +146,8 @@ func (s *DaemonServer) handleShutdown() {
 	<-s.shutdownChan
 	fmt.Println("\nShutdown signal received, stopping daemon...")
 
-	// Stop all running containers
-	s.stopAllContainers()
+	// Interrupt all container goroutines and mark as INTERRUPTED in DB for recovery
+	s.interruptAllContainers()
 
 	// Close listener
 	if s.listener != nil {
@@ -142,6 +155,176 @@ func (s *DaemonServer) handleShutdown() {
 	}
 
 	close(s.done)
+}
+
+// RecoverRunningContainers recovers containers that were RUNNING or INTERRUPTED when daemon stopped
+// INTERRUPTED = graceful shutdown (daemon called interruptAllContainers)
+// RUNNING = ungraceful shutdown (kill -9, crash) - backwards compatibility
+func (s *DaemonServer) RecoverRunningContainers(ctx context.Context) error {
+	// Query database for INTERRUPTED containers (graceful shutdown)
+	interruptedContainers, err := s.containerRepo.ListByStatus(ctx, container.ContainerStatusInterrupted, nil)
+	if err != nil {
+		return fmt.Errorf("failed to list INTERRUPTED containers: %w", err)
+	}
+
+	// Query database for RUNNING containers (ungraceful shutdown - backwards compatibility)
+	runningContainers, err := s.containerRepo.ListByStatus(ctx, container.ContainerStatusRunning, nil)
+	if err != nil {
+		return fmt.Errorf("failed to list RUNNING containers: %w", err)
+	}
+
+	// Combine both lists
+	allContainers := append(interruptedContainers, runningContainers...)
+
+	if len(allContainers) == 0 {
+		fmt.Println("No containers to recover")
+		return nil
+	}
+
+	fmt.Printf("Recovering %d container(s) from previous daemon instance (%d INTERRUPTED, %d RUNNING)...\n",
+		len(allContainers), len(interruptedContainers), len(runningContainers))
+
+	recoveredCount := 0
+	failedCount := 0
+
+	for _, containerModel := range allContainers {
+		// Parse container config from JSON
+		var config map[string]interface{}
+		if err := json.Unmarshal([]byte(containerModel.Config), &config); err != nil {
+			fmt.Printf("Container %s: Failed to parse config JSON, marking as FAILED: %v\n", containerModel.ID, err)
+			s.markContainerFailed(ctx, containerModel, "invalid_config", fmt.Sprintf("JSON parse error: %v", err))
+			failedCount++
+			continue
+		}
+
+		// Recover based on command type
+		switch containerModel.CommandType {
+		case "scout_tour":
+			if err := s.recoverScoutTourContainer(ctx, containerModel, config); err != nil {
+				fmt.Printf("Container %s: Recovery failed: %v\n", containerModel.ID, err)
+				s.markContainerFailed(ctx, containerModel, "recovery_failed", err.Error())
+				failedCount++
+			} else {
+				recoveredCount++
+			}
+
+		default:
+			fmt.Printf("Container %s: Unknown command type '%s', marking as FAILED\n", containerModel.ID, containerModel.CommandType)
+			s.markContainerFailed(ctx, containerModel, "unknown_command_type", fmt.Sprintf("type: %s", containerModel.CommandType))
+			failedCount++
+		}
+	}
+
+	fmt.Printf("Container recovery complete: %d recovered, %d failed\n", recoveredCount, failedCount)
+	return nil
+}
+
+// recoverScoutTourContainer recovers a scout_tour container
+func (s *DaemonServer) recoverScoutTourContainer(ctx context.Context, containerModel *persistence.ContainerModel, config map[string]interface{}) error {
+	// Extract configuration
+	shipSymbol, ok := config["ship_symbol"].(string)
+	if !ok {
+		return fmt.Errorf("missing or invalid ship_symbol in config")
+	}
+
+	marketsRaw, ok := config["markets"].([]interface{})
+	if !ok {
+		return fmt.Errorf("missing or invalid markets in config")
+	}
+
+	markets := make([]string, len(marketsRaw))
+	for i, m := range marketsRaw {
+		markets[i], ok = m.(string)
+		if !ok {
+			return fmt.Errorf("invalid market entry at index %d", i)
+		}
+	}
+
+	iterations, ok := config["iterations"].(float64) // JSON numbers are float64
+	if !ok {
+		return fmt.Errorf("missing or invalid iterations in config")
+	}
+
+	// Recreate scout tour command
+	cmd := &scouting.ScoutTourCommand{
+		PlayerID:   uint(containerModel.PlayerID),
+		ShipSymbol: shipSymbol,
+		Markets:    markets,
+		Iterations: int(iterations),
+	}
+
+	// Re-assign ship using UPSERT (will update old released assignment)
+	assignment := containerModel.ID // Container ID serves as assignment container reference
+	assignmentEntity := &persistence.ShipAssignmentModel{
+		ShipSymbol:  shipSymbol,
+		PlayerID:    containerModel.PlayerID,
+		ContainerID: assignment,
+		Status:      "active",
+		AssignedAt:  containerModel.StartedAt,
+	}
+
+	// Use UPSERT to handle reassignment
+	if err := s.shipAssignmentRepo.Insert(ctx, containerModelToShipAssignment(assignmentEntity)); err != nil {
+		return fmt.Errorf("failed to reassign ship %s: %w", shipSymbol, err)
+	}
+
+	// Recreate container entity (without database insert - already exists)
+	containerEntity := container.NewContainer(
+		containerModel.ID,
+		container.ContainerType(containerModel.ContainerType),
+		containerModel.PlayerID,
+		int(iterations),
+		config,
+		nil, // Use default RealClock for production
+	)
+
+	// Restore restart count from database
+	for i := 0; i < containerModel.RestartCount; i++ {
+		containerEntity.IncrementRestartCount()
+	}
+
+	// Create and start container runner
+	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipAssignmentRepo)
+	s.registerContainer(containerModel.ID, runner)
+
+	// Start container in background
+	go func() {
+		if err := runner.Start(); err != nil {
+			fmt.Printf("Recovered container %s failed: %v\n", containerModel.ID, err)
+		}
+	}()
+
+	fmt.Printf("Recovered container %s (scout_tour for ship %s)\n", containerModel.ID, shipSymbol)
+	return nil
+}
+
+// markContainerFailed marks a container as FAILED in the database
+func (s *DaemonServer) markContainerFailed(ctx context.Context, containerModel *persistence.ContainerModel, reason string, details string) {
+	exitCode := 1
+	now := time.Now()
+
+	if err := s.containerRepo.UpdateStatus(
+		ctx,
+		containerModel.ID,
+		containerModel.PlayerID,
+		container.ContainerStatusFailed,
+		&now,      // stoppedAt
+		&exitCode, // exitCode
+		fmt.Sprintf("%s: %s", reason, details),
+	); err != nil {
+		fmt.Printf("Warning: Failed to mark container %s as FAILED: %v\n", containerModel.ID, err)
+	}
+}
+
+// containerModelToShipAssignment converts a ShipAssignmentModel to domain entity
+// This is a helper for the recovery process
+func containerModelToShipAssignment(model *persistence.ShipAssignmentModel) *domaindaemon.ShipAssignment {
+	return domaindaemon.NewShipAssignment(
+		model.ShipSymbol,
+		model.PlayerID,
+		model.ContainerID,
+		nil, // Clock not needed
+	)
 }
 
 // NavigateShip handles ship navigation requests
@@ -439,7 +622,7 @@ func (s *DaemonServer) AssignScoutingFleet(
 	containerID := fmt.Sprintf("scout-fleet-assignment-%s-%d", systemSymbol, time.Now().UnixNano())
 
 	// Create assign scouting fleet command (will execute inside container)
-	cmd := &scouting.AssignFleetCommand{
+	cmd := &scouting.AssignScoutingFleetCommand{
 		PlayerID:     uint(playerID),
 		SystemSymbol: systemSymbol,
 	}
@@ -530,6 +713,48 @@ func (s *DaemonServer) registerContainer(containerID string, runner *ContainerRu
 	s.containersMu.Lock()
 	defer s.containersMu.Unlock()
 	s.containers[containerID] = runner
+}
+
+// interruptAllContainers interrupts all container goroutines and marks them as INTERRUPTED
+// Allows containers to be recovered on daemon restart
+func (s *DaemonServer) interruptAllContainers() {
+	s.containersMu.Lock()
+	runners := make([]*ContainerRunner, 0, len(s.containers))
+	for _, runner := range s.containers {
+		runners = append(runners, runner)
+	}
+	s.containersMu.Unlock()
+
+	fmt.Printf("Interrupting %d running container(s) (will be recovered on restart)...\n", len(runners))
+
+	// Cancel all container contexts to stop goroutines
+	for _, runner := range runners {
+		runner.cancelFunc() // Stop goroutine execution
+	}
+
+	// Wait briefly for goroutines to exit
+	time.Sleep(1 * time.Second)
+
+	// Mark all containers as INTERRUPTED in database
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	for _, runner := range runners {
+		now := time.Now()
+		if err := s.containerRepo.UpdateStatus(
+			ctx,
+			runner.containerEntity.ID(),
+			runner.containerEntity.PlayerID(),
+			container.ContainerStatusInterrupted,
+			&now,  // stoppedAt - when daemon interrupted
+			nil,   // exitCode - nil for interruption
+			"daemon_shutdown", // exitReason
+		); err != nil {
+			fmt.Printf("Warning: Failed to mark container %s as INTERRUPTED: %v\n", runner.containerEntity.ID(), err)
+		}
+	}
+
+	fmt.Println("All containers interrupted and marked as INTERRUPTED in database")
 }
 
 func (s *DaemonServer) stopAllContainers() {

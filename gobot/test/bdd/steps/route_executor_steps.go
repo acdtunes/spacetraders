@@ -12,6 +12,7 @@ import (
 	appShip "github.com/andrescamacho/spacetraders-go/internal/application/ship"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/api"
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/graph"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	domainNavigation "github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
@@ -99,7 +100,9 @@ func (ctx *routeExecutorContext) reset() {
 	ctx.apiClient = helpers.NewMockAPIClient()
 	ctx.playerRepo = persistence.NewGormPlayerRepository(ctx.db)
 	ctx.waypointRepo = persistence.NewGormWaypointRepository(ctx.db)
-	ctx.shipRepo = api.NewAPIShipRepository(ctx.apiClient, ctx.playerRepo, ctx.waypointRepo)
+	graphBuilder := helpers.NewMockGraphBuilder(ctx.apiClient, ctx.waypointRepo)
+	waypointProvider := graph.NewWaypointProvider(ctx.waypointRepo, graphBuilder)
+	ctx.shipRepo = api.NewAPIShipRepository(ctx.apiClient, ctx.playerRepo, ctx.waypointRepo, waypointProvider)
 
 	// Initialize mediator
 	ctx.mediator = common.NewMediator()

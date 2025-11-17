@@ -107,7 +107,6 @@ func (h *ScoutTourHandler) Handle(ctx context.Context, request common.Request) (
 				return nil, fmt.Errorf("failed to reload ship after navigation: %w", err)
 			}
 
-			// Ensure ship is docked
 			log.Printf("[ScoutTour] Docking %s at %s", cmd.ShipSymbol, marketWaypoint)
 			dockCmd := &shipapp.DockShipCommand{
 				ShipSymbol: cmd.ShipSymbol,

@@ -57,7 +57,9 @@ func (ctx *transactionLimitContext) reset() {
 	ctx.mockPlayerRepo = helpers.NewMockPlayerRepository()
 	ctx.mockWaypointRepo = helpers.NewMockWaypointRepository()
 	ctx.apiClient = helpers.NewMockAPIClient()
-	ctx.shipRepo = api.NewAPIShipRepository(ctx.apiClient, ctx.mockPlayerRepo, ctx.mockWaypointRepo)
+	// Note: Using nil for waypointProvider since this test uses MockWaypointRepository
+	// and doesn't require graph functionality
+	ctx.shipRepo = api.NewAPIShipRepository(ctx.apiClient, ctx.mockPlayerRepo, ctx.mockWaypointRepo, nil)
 	ctx.marketRepo = helpers.NewMockMarketRepository()
 
 	// Configure default purchase behavior (tracks transaction count)

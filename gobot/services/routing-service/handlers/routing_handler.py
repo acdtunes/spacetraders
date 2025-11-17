@@ -243,60 +243,53 @@ class RoutingServiceHandler(routing_pb2_grpc.RoutingServiceServicer):
                     ships_utilized += 1
                     total_assigned += len(waypoints)
 
-                    # Optimize tour for this ship
+                    # VRP already optimized the waypoint order - use it directly!
+                    # Legacy implementation does NOT call TSP after VRP
                     ship_config = request.ship_configs[ship_symbol]
-                    tour_result = self.engine.optimize_tour(
-                        graph=graph,
-                        waypoints=waypoints,
-                        start=ship_config.current_location,
-                        fuel_capacity=ship_config.fuel_capacity,
-                        engine_speed=ship_config.engine_speed
+
+                    # Build route steps by planning routes between consecutive waypoints
+                    # VRP gives us optimized visit order, we just need pathfinding for each leg
+                    route_steps = []
+
+                    # Plan route from ship's current location to first waypoint
+                    current_location = ship_config.current_location
+
+                    for waypoint in waypoints:
+                        leg_route = self.engine.find_optimal_path(
+                            graph=graph,
+                            start=current_location,
+                            goal=waypoint,
+                            current_fuel=ship_config.fuel_capacity,
+                            fuel_capacity=ship_config.fuel_capacity,
+                            engine_speed=ship_config.engine_speed
+                        )
+
+                        if leg_route:
+                            for step in leg_route['steps']:
+                                action = routing_pb2.ROUTE_ACTION_TRAVEL if step['action'] == 'TRAVEL' else routing_pb2.ROUTE_ACTION_REFUEL
+
+                                route_step = routing_pb2.RouteStep(
+                                    action=action,
+                                    waypoint=step['waypoint'],
+                                    fuel_cost=step['fuel_cost'],
+                                    time_seconds=step['time'],
+                                    distance=step.get('distance', 0.0)
+                                )
+
+                                if step['action'] == 'REFUEL' and 'refuel_amount' in step:
+                                    route_step.refuel_amount = step['refuel_amount']
+
+                                route_steps.append(route_step)
+
+                        # Move to next waypoint
+                        current_location = waypoint
+
+                    pb_assignments[ship_symbol] = routing_pb2.ShipTour(
+                        waypoints=waypoints,  # Use VRP order as-is
+                        route_steps=route_steps,
+                        total_time_seconds=sum(step.time_seconds for step in route_steps),
+                        total_distance=sum(step.distance for step in route_steps)
                     )
-
-                    if tour_result:
-                        # Build route steps for this tour
-                        route_steps = []
-                        for leg in tour_result['legs']:
-                            leg_route = self.engine.find_optimal_path(
-                                graph=graph,
-                                start=leg['from'],
-                                goal=leg['to'],
-                                current_fuel=ship_config.fuel_capacity,
-                                fuel_capacity=ship_config.fuel_capacity,
-                                engine_speed=ship_config.engine_speed
-                            )
-
-                            if leg_route:
-                                for step in leg_route['steps']:
-                                    action = routing_pb2.ROUTE_ACTION_TRAVEL if step['action'] == 'TRAVEL' else routing_pb2.ROUTE_ACTION_REFUEL
-
-                                    route_step = routing_pb2.RouteStep(
-                                        action=action,
-                                        waypoint=step['waypoint'],
-                                        fuel_cost=step['fuel_cost'],
-                                        time_seconds=step['time'],
-                                        distance=step.get('distance', 0.0)
-                                    )
-
-                                    if step['action'] == 'REFUEL' and 'refuel_amount' in step:
-                                        route_step.refuel_amount = step['refuel_amount']
-
-                                    route_steps.append(route_step)
-
-                        pb_assignments[ship_symbol] = routing_pb2.ShipTour(
-                            waypoints=tour_result['ordered_waypoints'],
-                            route_steps=route_steps,
-                            total_time_seconds=tour_result['total_time'],
-                            total_distance=tour_result['total_distance']
-                        )
-                    else:
-                        # Fallback: just return waypoints without route
-                        pb_assignments[ship_symbol] = routing_pb2.ShipTour(
-                            waypoints=waypoints,
-                            route_steps=[],
-                            total_time_seconds=0,
-                            total_distance=0.0
-                        )
 
             return routing_pb2.PartitionFleetResponse(
                 assignments=pb_assignments,

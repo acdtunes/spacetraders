@@ -55,3 +55,9 @@ func (c *DaemonClientLocal) CreateScoutTourContainer(
 	_, err := c.server.ScoutTour(ctx, containerID, cmd.ShipSymbol, cmd.Markets, cmd.Iterations, int(playerID))
 	return err
 }
+
+// StopContainer stops a running container
+func (c *DaemonClientLocal) StopContainer(ctx context.Context, containerID string) error {
+	// Call server's StopContainer method directly (bypasses gRPC layer)
+	return c.server.StopContainer(containerID)
+}

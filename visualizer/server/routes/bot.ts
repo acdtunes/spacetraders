@@ -25,32 +25,41 @@ function getOperationFromContainerId(containerId: string): string | null {
   return 'idle';
 }
 
-// Get all ship assignments (Go bot - queries ship_assignments table joined with containers)
+// Get all ship assignments (Go bot - uses ship_assignments table as source of truth)
 router.get('/assignments', async (req, res) => {
   const client = await pool.connect();
   try {
     // Get all agents to fetch their ships
     const agents = await db.getAllAgents();
 
-    // Get all ship assignments with container details
-    const result = await client.query(`
+    // Get ship assignments with container details
+    const assignmentsResult = await client.query(`
       SELECT
         sa.ship_symbol,
         sa.player_id,
-        sa.container_id as assigned_to,
-        sa.container_id as daemon_id,
+        sa.container_id,
         sa.status,
         sa.assigned_at,
         sa.released_at,
-        c.config as metadata
+        c.config
       FROM ship_assignments sa
       LEFT JOIN containers c ON sa.container_id = c.id AND sa.player_id = c.player_id
     `);
 
     // Create a map of ship symbols to assignments
     const assignmentsByShip = new Map();
-    result.rows.forEach((row: any) => {
+    assignmentsResult.rows.forEach((row: any) => {
       assignmentsByShip.set(row.ship_symbol, row);
+    });
+
+    // Get player_id mapping for agents
+    const playerMappingsResult = await client.query(`
+      SELECT id as player_id, agent_symbol
+      FROM players
+    `);
+    const agentToPlayerMap = new Map<string, number>();
+    playerMappingsResult.rows.forEach((row: any) => {
+      agentToPlayerMap.set(row.agent_symbol, row.player_id);
     });
 
     // Fetch all ships from SpaceTraders API and merge with assignments
@@ -60,20 +69,21 @@ router.get('/assignments', async (req, res) => {
         const stClient = new SpaceTradersClient(API_BASE_URL, agent.token);
         const shipsResponse = await stClient.get('/my/ships');
         const ships = shipsResponse.data;
+        const playerId = agentToPlayerMap.get(agent.symbol);
 
         for (const ship of ships) {
           const assignment = assignmentsByShip.get(ship.symbol);
 
-          if (assignment && assignment.status === 'active' && assignment.daemon_id) {
-            // Ship has an active assignment with a container
-            const config = typeof assignment.metadata === 'string' ? JSON.parse(assignment.metadata) : assignment.metadata;
-            const operation = getOperationFromContainerId(assignment.daemon_id);
+          if (assignment && assignment.status === 'active' && assignment.container_id) {
+            // Ship has active assignment with container
+            const config = typeof assignment.config === 'string' ? JSON.parse(assignment.config) : assignment.config;
+            const operation = getOperationFromContainerId(assignment.container_id);
 
             assignments.push({
               ship_symbol: ship.symbol,
               player_id: assignment.player_id,
-              assigned_to: assignment.assigned_to,
-              daemon_id: assignment.daemon_id,
+              assigned_to: assignment.container_id,
+              daemon_id: assignment.container_id,
               status: assignment.status,
               assigned_at: assignment.assigned_at,
               released_at: assignment.released_at,
@@ -81,15 +91,15 @@ router.get('/assignments', async (req, res) => {
               operation,
             });
           } else {
-            // Ship is idle (no assignment, or assignment without container)
+            // Ship is idle (not in ship_assignments or no container)
             assignments.push({
               ship_symbol: ship.symbol,
-              player_id: assignment?.player_id || null,
+              player_id: playerId,
               assigned_to: null,
               daemon_id: null,
               status: 'active',
-              assigned_at: assignment?.assigned_at || null,
-              released_at: assignment?.released_at || null,
+              assigned_at: null,
+              released_at: null,
               metadata: null,
               operation: 'idle',
             });
@@ -400,7 +410,12 @@ router.get('/tours/:systemSymbol', async (req, res) => {
           }
         }
 
-        // Calculate total distance
+        // Make tour cyclical if it isn't already (append starting waypoint to end)
+        if (tourOrder.length > 0 && tourOrder[0] !== tourOrder[tourOrder.length - 1]) {
+          tourOrder.push(tourOrder[0]);
+        }
+
+        // Calculate total distance (including return to start)
         let totalDistance = 0;
         for (let i = 0; i < tourOrder.length - 1; i++) {
           const from = waypoints[tourOrder[i]];

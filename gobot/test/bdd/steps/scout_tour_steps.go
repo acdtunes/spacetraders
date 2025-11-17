@@ -11,6 +11,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/api"
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/graph"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/application/scouting"
@@ -58,7 +59,9 @@ func (c *scoutTourContext) reset() error {
 	c.playerRepo = persistence.NewGormPlayerRepository(helpers.SharedTestDB)
 	c.waypointRepo = persistence.NewGormWaypointRepository(helpers.SharedTestDB)
 	c.mockAPIClient = helpers.NewMockAPIClient()
-	c.shipRepo = api.NewAPIShipRepository(c.mockAPIClient, c.playerRepo, c.waypointRepo)
+	graphBuilder := helpers.NewMockGraphBuilder(c.mockAPIClient, c.waypointRepo)
+	waypointProvider := graph.NewWaypointProvider(c.waypointRepo, graphBuilder)
+	c.shipRepo = api.NewAPIShipRepository(c.mockAPIClient, c.playerRepo, c.waypointRepo, waypointProvider)
 	c.mockPlayerRepo = helpers.NewMockPlayerRepository()
 
 	// Create a mock mediator that handles navigation and dock commands

@@ -131,8 +131,14 @@ export class BotPollingService {
       this.setPlayerMappings(playerMappings);
       this.setAssignments(assignments);
 
-      // Extract unique player IDs from assignments
-      const playerIds = Array.from(new Set(assignments.map((a) => a.player_id))).sort((a, b) => a - b);
+      // Extract unique player IDs from assignments (filter out null values)
+      const playerIds = Array.from(
+        new Set(
+          assignments
+            .map((a) => a.player_id)
+            .filter((id): id is number => id !== null)
+        )
+      ).sort((a, b) => a - b);
     this.setAvailablePlayers(playerIds);
 
     // If we have a current system, fetch system-specific data

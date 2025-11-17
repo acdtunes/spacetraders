@@ -160,21 +160,21 @@ func (h *AssignScoutingFleetHandler) filterScoutShips(ships []*navigation.Ship, 
 // filterNonFuelStations filters out waypoints with FUEL_STATION type
 func (h *AssignScoutingFleetHandler) filterNonFuelStations(waypoints []*shared.Waypoint) []*shared.Waypoint {
 	var filtered []*shared.Waypoint
+	var fuelStationCount int
 
 	for _, waypoint := range waypoints {
-		// Check if waypoint has FUEL_STATION trait
-		hasFuelStation := false
-		for _, trait := range waypoint.Traits {
-			if trait == "FUEL_STATION" {
-				hasFuelStation = true
-				break
-			}
-		}
-
-		if !hasFuelStation {
+		// Check if waypoint type is FUEL_STATION
+		// FUEL_STATION is a waypoint TYPE, not a trait
+		if waypoint.Type != "FUEL_STATION" {
 			filtered = append(filtered, waypoint)
+		} else {
+			fuelStationCount++
+			fmt.Printf("[DEBUG filterNonFuelStations] Filtered out FUEL_STATION: %s (type=%s)\n", waypoint.Symbol, waypoint.Type)
 		}
 	}
+
+	fmt.Printf("[DEBUG filterNonFuelStations] Total marketplaces: %d, Fuel stations filtered: %d, Non-fuel markets: %d\n",
+		len(waypoints), fuelStationCount, len(filtered))
 
 	return filtered
 }

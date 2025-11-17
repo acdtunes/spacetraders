@@ -29,6 +29,10 @@ type DaemonClient interface {
 	// playerID: Player who owns this operation
 	// command: The scout tour command to execute in the container
 	CreateScoutTourContainer(ctx context.Context, containerID string, playerID uint, command interface{}) error
+
+	// StopContainer stops a running container
+	// containerID: The container to stop
+	StopContainer(ctx context.Context, containerID string) error
 }
 
 // ShipAssignmentRepository defines persistence operations for ship assignments

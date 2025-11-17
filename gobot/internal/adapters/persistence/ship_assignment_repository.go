@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
 )
@@ -21,6 +22,7 @@ func NewShipAssignmentRepository(db *gorm.DB) *ShipAssignmentRepositoryGORM {
 }
 
 // Insert creates a new ship assignment record in the database
+// Uses UPSERT pattern to handle reassigning ships that have released assignments
 func (r *ShipAssignmentRepositoryGORM) Insert(
 	ctx context.Context,
 	assignment *daemon.ShipAssignment,
@@ -33,7 +35,13 @@ func (r *ShipAssignmentRepositoryGORM) Insert(
 		AssignedAt:  &[]time.Time{assignment.AssignedAt()}[0],
 	}
 
-	if err := r.db.WithContext(ctx).Create(model).Error; err != nil {
+	// Use UPSERT: on conflict with (ship_symbol, player_id), update the row
+	// This allows reassigning ships that have old "released" assignments
+	if err := r.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "ship_symbol"}, {Name: "player_id"}},
+		DoUpdates: clause.AssignmentColumns([]string{"container_id", "status", "assigned_at", "released_at", "release_reason"}),
+		UpdateAll: false,
+	}).Create(model).Error; err != nil {
 		return fmt.Errorf("failed to insert ship assignment: %w", err)
 	}
 

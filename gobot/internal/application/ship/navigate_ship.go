@@ -102,14 +102,45 @@ func (h *NavigateShipHandler) Handle(ctx context.Context, request common.Request
 		return nil, err
 	}
 
-	// 5. Check if ship is already at destination (idempotent command)
+	// 5. Handle IN_TRANSIT from previous navigation (CRITICAL for idempotency!)
+	// Ship might be IN_TRANSIT to its current location - must wait before proceeding
 	log.Printf("[NAVIGATE] Ship %s at %s, destination %s", ship.ShipSymbol(), ship.CurrentLocation().Symbol, cmd.Destination)
+	if ship.NavStatus() == domainNavigation.NavStatusInTransit {
+		log.Printf("[NAVIGATE] Ship is IN_TRANSIT, waiting for arrival before checking destination...")
+
+		// Create a temporary route with no segments to trigger waitForCurrentTransit
+		emptyRoute, err := domainNavigation.NewRoute(
+			fmt.Sprintf("%s_wait_transit", ship.ShipSymbol()),
+			ship.ShipSymbol(),
+			cmd.PlayerID,
+			[]*domainNavigation.RouteSegment{},
+			ship.FuelCapacity(),
+			false,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create temporary route: %w", err)
+		}
+
+		// Wait for current transit using route executor logic
+		if err := h.routeExecutor.ExecuteRoute(ctx, emptyRoute, ship, cmd.PlayerID); err != nil {
+			return nil, fmt.Errorf("failed to wait for current transit: %w", err)
+		}
+
+		// Reload ship after transit completes
+		ship, err = h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to reload ship after transit: %w", err)
+		}
+		log.Printf("[NAVIGATE] Ship arrived, status now: %s", ship.NavStatus())
+	}
+
+	// 6. Check if ship is already at destination (idempotent command)
 	if ship.CurrentLocation().Symbol == cmd.Destination {
 		log.Printf("[NAVIGATE] Ship already at destination, returning early")
 		return h.handleAlreadyAtDestination(cmd, ship)
 	}
 
-	// 6. Plan route using routing engine
+	// 7. Plan route using routing engine
 	log.Printf("[NAVIGATE] Planning route from %s to %s", ship.CurrentLocation().Symbol, cmd.Destination)
 	route, err := h.routePlanner.PlanRoute(ctx, ship, cmd.Destination, waypointObjects)
 	if err != nil {

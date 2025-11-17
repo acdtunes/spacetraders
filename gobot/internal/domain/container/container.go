@@ -28,6 +28,9 @@ const (
 
 	// ContainerStatusStopped indicates container was stopped by user
 	ContainerStatusStopped ContainerStatus = "STOPPED"
+
+	// ContainerStatusInterrupted indicates container was running when daemon stopped, pending recovery
+	ContainerStatusInterrupted ContainerStatus = "INTERRUPTED"
 )
 
 // ContainerType categorizes the operation type

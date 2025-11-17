@@ -201,7 +201,7 @@ func (ctx *assignmentCleanupContext) aNavigationContainerIsCreatedForShipAndPlay
 	ctxTimeout, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if err := ctx.containerRepo.Insert(ctxTimeout, containerEntity, "navigate_ship"); err != nil {
+	if err := ctx.containerRepo.Add(ctxTimeout, containerEntity, "navigate_ship"); err != nil {
 		return fmt.Errorf("failed to persist container: %w", err)
 	}
 
@@ -231,7 +231,7 @@ func (ctx *assignmentCleanupContext) aScoutMarketsContainerIsCreatedForAllShipsA
 	ctxTimeout, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if err := ctx.containerRepo.Insert(ctxTimeout, containerEntity, "scout_markets"); err != nil {
+	if err := ctx.containerRepo.Add(ctxTimeout, containerEntity, "scout_markets"); err != nil {
 		return fmt.Errorf("failed to persist container: %w", err)
 	}
 
@@ -348,7 +348,7 @@ func (ctx *assignmentCleanupContext) aNewNavigationContainerIsCreatedForShipAndP
 	ctxTimeout, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if err := ctx.containerRepo.Insert(ctxTimeout, containerEntity, "navigate_ship"); err != nil {
+	if err := ctx.containerRepo.Add(ctxTimeout, containerEntity, "navigate_ship"); err != nil {
 		return fmt.Errorf("failed to persist new container: %w", err)
 	}
 

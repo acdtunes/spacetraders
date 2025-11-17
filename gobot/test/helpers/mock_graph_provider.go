@@ -60,7 +60,7 @@ func (m *MockGraphProvider) SetGraph(systemSymbol string, distanceGraph map[stri
 }
 
 // GetGraph retrieves a system graph (implements system.ISystemGraphProvider)
-func (m *MockGraphProvider) GetGraph(ctx context.Context, systemSymbol string, forceRefresh bool) (*system.GraphLoadResult, error) {
+func (m *MockGraphProvider) GetGraph(ctx context.Context, systemSymbol string, forceRefresh bool, playerID int) (*system.GraphLoadResult, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 

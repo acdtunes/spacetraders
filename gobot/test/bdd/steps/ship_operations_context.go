@@ -10,6 +10,7 @@ import (
 
 	appShip "github.com/andrescamacho/spacetraders-go/internal/application/ship"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/api"
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/graph"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
@@ -69,7 +70,12 @@ func (ctx *shipOperationsContext) reset() {
 	ctx.apiClient = helpers.NewMockAPIClient()
 	ctx.playerRepo = persistence.NewGormPlayerRepository(helpers.SharedTestDB)
 	ctx.waypointRepo = persistence.NewGormWaypointRepository(helpers.SharedTestDB)
-	ctx.shipRepo = api.NewAPIShipRepository(ctx.apiClient, ctx.playerRepo, ctx.waypointRepo)
+
+	// Create graph builder and waypoint provider
+	graphBuilder := helpers.NewMockGraphBuilder(ctx.apiClient, ctx.waypointRepo)
+	waypointProvider := graph.NewWaypointProvider(ctx.waypointRepo, graphBuilder)
+
+	ctx.shipRepo = api.NewAPIShipRepository(ctx.apiClient, ctx.playerRepo, ctx.waypointRepo, waypointProvider)
 
 	ctx.dockHandler = appShip.NewDockShipHandler(ctx.shipRepo)
 	ctx.orbitHandler = appShip.NewOrbitShipHandler(ctx.shipRepo)

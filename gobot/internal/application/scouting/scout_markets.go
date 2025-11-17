@@ -65,7 +65,36 @@ func (h *ScoutMarketsHandler) Handle(ctx context.Context, request common.Request
 		return nil, fmt.Errorf("invalid request type")
 	}
 
+	// 0. Stop existing scout-tour containers for the ships in this command
+	// This ensures VRP recalculation with fresh ship positions
+	// User explicitly ran scout-all-markets, so we want to redistribute work
+	for _, shipSymbol := range cmd.ShipSymbols {
+		// Check if ship has an active assignment
+		assignment, err := h.shipAssignmentRepo.FindByShip(ctx, shipSymbol, int(cmd.PlayerID))
+		if err != nil {
+			return nil, fmt.Errorf("failed to query ship assignment for %s: %w", shipSymbol, err)
+		}
+
+		if assignment != nil && assignment.Status() == "active" {
+			// Stop the container and release the ship
+			containerID := assignment.ContainerID()
+			fmt.Printf("[ScoutMarkets] Stopping existing container %s for ship %s (scout-all-markets reset)\n", containerID, shipSymbol)
+
+			if err := h.daemonClient.StopContainer(ctx, containerID); err != nil {
+				// Non-fatal: container might already be stopped or not found
+				fmt.Printf("[ScoutMarkets] Warning: Failed to stop container %s: %v\n", containerID, err)
+			}
+
+			// Release ship assignment
+			if err := h.shipAssignmentRepo.Release(ctx, shipSymbol, int(cmd.PlayerID), "scout_all_markets_reset"); err != nil {
+				// Non-fatal: assignment might already be released
+				fmt.Printf("[ScoutMarkets] Warning: Failed to release ship %s: %v\n", shipSymbol, err)
+			}
+		}
+	}
+
 	// 1. Query ship assignments to find existing active assignments (source of truth)
+	// After cleanup above, this should find no active assignments for the requested ships
 	shipsWithContainers := make(map[string]string) // ship -> container_id
 	reusedContainers := []string{}
 

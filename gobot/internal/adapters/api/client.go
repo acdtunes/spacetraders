@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"strconv"
 	"time"
@@ -21,36 +21,30 @@ import (
 )
 
 const (
-	baseURL           = "https://api.spacetraders.io/v2"
-	defaultTimeout    = 30 * time.Second
-	defaultMaxRetries = 5
+	baseURL            = "https://api.spacetraders.io/v2"
+	defaultTimeout     = 30 * time.Second
+	defaultMaxRetries  = 5
 	defaultBackoffBase = time.Second
-	defaultCircuitThreshold = 5
-	defaultCircuitTimeout = 60 * time.Second
 )
 
 // SpaceTradersClient implements the APIClient interface
 type SpaceTradersClient struct {
-	httpClient     *http.Client
-	rateLimiter    *rate.Limiter
-	baseURL        string
-	maxRetries     int
-	backoffBase    time.Duration
-	circuitBreaker *CircuitBreaker
-	clock          shared.Clock
+	httpClient  *http.Client
+	rateLimiter *rate.Limiter
+	baseURL     string
+	maxRetries  int
+	backoffBase time.Duration
+	clock       shared.Clock
 }
 
 // NewSpaceTradersClient creates a new SpaceTraders API client with default settings
 // Rate limit: 2 requests per second with burst of 2
-// Retry: max 5 attempts with 1s exponential backoff
-// Circuit breaker: opens after 5 consecutive failures, timeout 60s
+// Retry: max 5 attempts with 1s exponential backoff + jitter
 func NewSpaceTradersClient() *SpaceTradersClient {
 	return NewSpaceTradersClientWithConfig(
 		baseURL,
 		defaultMaxRetries,
 		defaultBackoffBase,
-		defaultCircuitThreshold,
-		defaultCircuitTimeout,
 		nil, // Use RealClock by default
 	)
 }
@@ -61,8 +55,6 @@ func NewSpaceTradersClientWithConfig(
 	baseURL string,
 	maxRetries int,
 	backoffBase time.Duration,
-	circuitThreshold int,
-	circuitTimeout time.Duration,
 	clock shared.Clock,
 ) *SpaceTradersClient {
 	if clock == nil {
@@ -72,12 +64,11 @@ func NewSpaceTradersClientWithConfig(
 		httpClient: &http.Client{
 			Timeout: defaultTimeout,
 		},
-		rateLimiter:    rate.NewLimiter(rate.Limit(2), 2), // 2 req/sec, burst 2
-		baseURL:        baseURL,
-		maxRetries:     maxRetries,
-		backoffBase:    backoffBase,
-		circuitBreaker: NewCircuitBreaker(circuitThreshold, circuitTimeout, clock),
-		clock:          clock,
+		rateLimiter: rate.NewLimiter(rate.Limit(2), 2), // 2 req/sec, burst 2
+		baseURL:     baseURL,
+		maxRetries:  maxRetries,
+		backoffBase: backoffBase,
+		clock:       clock,
 	}
 }
 
@@ -991,195 +982,192 @@ func (c *SpaceTradersClient) parseContractData(data map[string]interface{}) (*po
 	}, nil
 }
 
-// request makes an HTTP request with rate limiting, circuit breaker, and retries
+// addJitter adds random jitter to a duration to avoid thundering herd
+// Returns a duration between 50% and 150% of the original value
+func addJitter(d time.Duration) time.Duration {
+	jitter := 0.5 + rand.Float64() // 0.5 to 1.5
+	return time.Duration(float64(d) * jitter)
+}
+
+// request makes an HTTP request with rate limiting and exponential backoff retries
 func (c *SpaceTradersClient) request(ctx context.Context, method, path, token string, body interface{}, result interface{}) error {
 	url := c.baseURL + path
 
 	var lastErr error
 
-	// Wrap the entire retry loop in circuit breaker
-	// Circuit breaker only opens after ALL retries fail
-	err := c.circuitBreaker.Call(func() error {
-		// Attempt the request with retries
-		for attempt := 0; attempt <= c.maxRetries; attempt++ {
-			// Wait for rate limiter
-			if err := c.rateLimiter.Wait(ctx); err != nil {
-				return fmt.Errorf("rate limiter error: %w", err)
-			}
-
-			// Prepare request body
-			var reqBody io.Reader
-			if body != nil {
-				jsonData, err := json.Marshal(body)
-				if err != nil {
-					return fmt.Errorf("failed to marshal request body: %w", err)
-				}
-				reqBody = bytes.NewBuffer(jsonData)
-			}
-
-			// Create HTTP request
-			req, err := http.NewRequestWithContext(ctx, method, url, reqBody)
-			if err != nil {
-				return fmt.Errorf("failed to create request: %w", err)
-			}
-
-			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("Authorization", "Bearer "+token)
-
-			// Execute HTTP request
-			resp, err := c.httpClient.Do(req)
-			if err != nil {
-				// Network error - retryable
-				lastErr = &retryableError{
-					message: fmt.Errorf("network error: %w", err).Error(),
-				}
-
-				// Last attempt - don't sleep, just record error
-				if attempt >= c.maxRetries {
-					break
-				}
-
-				// Check for context cancellation before sleeping
-				if ctx.Err() != nil {
-					return fmt.Errorf("context cancelled: %w", ctx.Err())
-				}
-
-				// Calculate backoff and sleep using clock (instant in tests with MockClock)
-				backoffDelay := c.backoffBase * time.Duration(1<<attempt)
-				c.clock.Sleep(backoffDelay)
-				continue
-			}
-
-			// Only close response body if we have a valid response
-			if resp != nil && resp.Body != nil {
-				defer resp.Body.Close()
-			}
-
-			// Read response body
-			respBody, err := io.ReadAll(resp.Body)
-			if err != nil {
-				return fmt.Errorf("failed to read response: %w", err)
-			}
-
-			// Handle 429 Too Many Requests - retryable
-			if resp.StatusCode == http.StatusTooManyRequests {
-				fmt.Printf("[DEBUG] Got 429, attempt=%d\n", attempt)
-				var retryAfterDuration time.Duration
-
-				// Check for Retry-After header
-				if retryAfter := resp.Header.Get("Retry-After"); retryAfter != "" {
-					if seconds, err := strconv.Atoi(retryAfter); err == nil {
-						retryAfterDuration = time.Duration(seconds) * time.Second
-					}
-				}
-
-				lastErr = &retryableError{
-					message:    "rate limited (429)",
-					retryAfter: retryAfterDuration,
-				}
-
-				// Last attempt - don't sleep
-				if attempt >= c.maxRetries {
-					fmt.Printf("[DEBUG] Last attempt reached, breaking\n")
-					break
-				}
-
-				// Check for context cancellation before sleeping
-				if ctx.Err() != nil {
-					return fmt.Errorf("context cancelled: %w", ctx.Err())
-				}
-
-				// Calculate backoff delay
-				backoffDelay := c.backoffBase * time.Duration(1<<attempt)
-				if retryAfterDuration > 0 {
-					backoffDelay = retryAfterDuration
-				}
-
-				fmt.Printf("[DEBUG] Sleeping for %v before retry\n", backoffDelay)
-				// Sleep using clock (instant in tests with MockClock)
-				c.clock.Sleep(backoffDelay)
-				fmt.Printf("[DEBUG] Sleep done, continuing to next attempt\n")
-				continue
-			}
-
-			// Handle 503 Service Unavailable - retryable
-			if resp.StatusCode == http.StatusServiceUnavailable {
-				lastErr = &retryableError{
-					message: "service unavailable (503)",
-				}
-
-				// Last attempt - don't sleep
-				if attempt >= c.maxRetries {
-					break
-				}
-
-				// Check for context cancellation before sleeping
-				if ctx.Err() != nil {
-					return fmt.Errorf("context cancelled: %w", ctx.Err())
-				}
-
-				// Calculate backoff and sleep using clock (instant in tests with MockClock)
-				backoffDelay := c.backoffBase * time.Duration(1<<attempt)
-				c.clock.Sleep(backoffDelay)
-				continue
-			}
-
-			// Handle 5xx server errors - retryable
-			if resp.StatusCode >= 500 {
-				lastErr = &retryableError{
-					message: fmt.Sprintf("server error (%d)", resp.StatusCode),
-				}
-
-				// Last attempt - don't sleep
-				if attempt >= c.maxRetries {
-					break
-				}
-
-				// Check for context cancellation before sleeping
-				if ctx.Err() != nil {
-					return fmt.Errorf("context cancelled: %w", ctx.Err())
-				}
-
-				// Calculate backoff and sleep using clock (instant in tests with MockClock)
-				backoffDelay := c.backoffBase * time.Duration(1<<attempt)
-				c.clock.Sleep(backoffDelay)
-				continue
-			}
-
-			// Handle 4xx client errors (except 429) - NOT retryable
-			if resp.StatusCode >= 400 && resp.StatusCode < 500 {
-				return fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(respBody))
-			}
-
-			// Handle non-2xx status codes - NOT retryable
-			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-				return fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(respBody))
-			}
-
-			// Parse response if result is provided
-			if result != nil {
-				if err := json.Unmarshal(respBody, result); err != nil {
-					return fmt.Errorf("failed to unmarshal response: %w", err)
-				}
-			}
-
-			// Success!
-			return nil
+	// Attempt the request with exponential backoff + jitter retries
+	for attempt := 0; attempt <= c.maxRetries; attempt++ {
+		// Wait for rate limiter
+		if err := c.rateLimiter.Wait(ctx); err != nil {
+			return fmt.Errorf("rate limiter error: %w", err)
 		}
 
-		// All retries exhausted
-		if lastErr != nil {
-			return fmt.Errorf("max retries exceeded: %w", lastErr)
+		// Prepare request body
+		var reqBody io.Reader
+		if body != nil {
+			jsonData, err := json.Marshal(body)
+			if err != nil {
+				return fmt.Errorf("failed to marshal request body: %w", err)
+			}
+			reqBody = bytes.NewBuffer(jsonData)
 		}
-		return fmt.Errorf("max retries exceeded")
-	})
 
-	// Circuit breaker open - fail immediately
-	if errors.Is(err, ErrCircuitOpen) {
-		return fmt.Errorf("circuit breaker open: %w", err)
+		// Create HTTP request
+		req, err := http.NewRequestWithContext(ctx, method, url, reqBody)
+		if err != nil {
+			return fmt.Errorf("failed to create request: %w", err)
+		}
+
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+token)
+
+		// Execute HTTP request
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			// Network error - retryable
+			lastErr = &retryableError{
+				message: fmt.Errorf("network error: %w", err).Error(),
+			}
+
+			// Last attempt - don't sleep, just record error
+			if attempt >= c.maxRetries {
+				break
+			}
+
+			// Check for context cancellation before sleeping
+			if ctx.Err() != nil {
+				return fmt.Errorf("context cancelled: %w", ctx.Err())
+			}
+
+			// Calculate backoff with jitter and sleep using clock (instant in tests with MockClock)
+			backoffDelay := addJitter(c.backoffBase * time.Duration(1<<attempt))
+			c.clock.Sleep(backoffDelay)
+			continue
+		}
+
+		// Only close response body if we have a valid response
+		if resp != nil && resp.Body != nil {
+			defer resp.Body.Close()
+		}
+
+		// Read response body
+		respBody, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return fmt.Errorf("failed to read response: %w", err)
+		}
+
+		// Handle 429 Too Many Requests - retryable
+		if resp.StatusCode == http.StatusTooManyRequests {
+			fmt.Printf("[DEBUG] Got 429, attempt=%d\n", attempt)
+			var retryAfterDuration time.Duration
+
+			// Check for Retry-After header
+			if retryAfter := resp.Header.Get("Retry-After"); retryAfter != "" {
+				if seconds, err := strconv.Atoi(retryAfter); err == nil {
+					retryAfterDuration = time.Duration(seconds) * time.Second
+				}
+			}
+
+			lastErr = &retryableError{
+				message:    "rate limited (429)",
+				retryAfter: retryAfterDuration,
+			}
+
+			// Last attempt - don't sleep
+			if attempt >= c.maxRetries {
+				fmt.Printf("[DEBUG] Last attempt reached, breaking\n")
+				break
+			}
+
+			// Check for context cancellation before sleeping
+			if ctx.Err() != nil {
+				return fmt.Errorf("context cancelled: %w", ctx.Err())
+			}
+
+			// Calculate backoff delay with jitter (unless server provided Retry-After)
+			backoffDelay := addJitter(c.backoffBase * time.Duration(1<<attempt))
+			if retryAfterDuration > 0 {
+				// Use server-provided Retry-After value without jitter
+				backoffDelay = retryAfterDuration
+			}
+
+			fmt.Printf("[DEBUG] Sleeping for %v before retry\n", backoffDelay)
+			// Sleep using clock (instant in tests with MockClock)
+			c.clock.Sleep(backoffDelay)
+			fmt.Printf("[DEBUG] Sleep done, continuing to next attempt\n")
+			continue
+		}
+
+		// Handle 503 Service Unavailable - retryable
+		if resp.StatusCode == http.StatusServiceUnavailable {
+			lastErr = &retryableError{
+				message: "service unavailable (503)",
+			}
+
+			// Last attempt - don't sleep
+			if attempt >= c.maxRetries {
+				break
+			}
+
+			// Check for context cancellation before sleeping
+			if ctx.Err() != nil {
+				return fmt.Errorf("context cancelled: %w", ctx.Err())
+			}
+
+			// Calculate backoff with jitter and sleep using clock (instant in tests with MockClock)
+			backoffDelay := addJitter(c.backoffBase * time.Duration(1<<attempt))
+			c.clock.Sleep(backoffDelay)
+			continue
+		}
+
+		// Handle 5xx server errors - retryable
+		if resp.StatusCode >= 500 {
+			lastErr = &retryableError{
+				message: fmt.Sprintf("server error (%d)", resp.StatusCode),
+			}
+
+			// Last attempt - don't sleep
+			if attempt >= c.maxRetries {
+				break
+			}
+
+			// Check for context cancellation before sleeping
+			if ctx.Err() != nil {
+				return fmt.Errorf("context cancelled: %w", ctx.Err())
+			}
+
+			// Calculate backoff with jitter and sleep using clock (instant in tests with MockClock)
+			backoffDelay := addJitter(c.backoffBase * time.Duration(1<<attempt))
+			c.clock.Sleep(backoffDelay)
+			continue
+		}
+
+		// Handle 4xx client errors (except 429) - NOT retryable
+		if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+			return fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(respBody))
+		}
+
+		// Handle non-2xx status codes - NOT retryable
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(respBody))
+		}
+
+		// Parse response if result is provided
+		if result != nil {
+			if err := json.Unmarshal(respBody, result); err != nil {
+				return fmt.Errorf("failed to unmarshal response: %w", err)
+			}
+		}
+
+		// Success!
+		return nil
 	}
 
-	return err
+	// All retries exhausted
+	if lastErr != nil {
+		return fmt.Errorf("max retries exceeded: %w", lastErr)
+	}
+	return fmt.Errorf("max retries exceeded")
 }
 
 // retryableError represents an error that should trigger a retry
@@ -1192,22 +1180,3 @@ func (e *retryableError) Error() string {
 	return e.message
 }
 
-// GetCircuitBreakerState returns the current circuit breaker state (for testing)
-func (c *SpaceTradersClient) GetCircuitBreakerState() CircuitState {
-	return c.circuitBreaker.GetState()
-}
-
-// GetCircuitBreakerFailureCount returns the consecutive failure count (for testing)
-func (c *SpaceTradersClient) GetCircuitBreakerFailureCount() int {
-	return c.circuitBreaker.GetFailureCount()
-}
-
-// SetCircuitBreakerState sets the circuit breaker state (for testing)
-func (c *SpaceTradersClient) SetCircuitBreakerState(state CircuitState, failures int, lastFailure time.Time) {
-	c.circuitBreaker.SetState(state, failures, lastFailure)
-}
-
-// ResetCircuitBreaker resets the circuit breaker to closed state (for testing)
-func (c *SpaceTradersClient) ResetCircuitBreaker() {
-	c.circuitBreaker.Reset()
-}

@@ -259,8 +259,25 @@ func (e *RouteExecutor) waitForCurrentTransit(
 		*ship = *freshShip
 	}
 
-	// Call arrive() if still IN_TRANSIT
+	// Poll API until ship is no longer IN_TRANSIT (handles API lag)
+	maxRetries := 5
+	retryDelay := 2 * time.Second
+	for i := 0; i < maxRetries && ship.NavStatus() == domainNavigation.NavStatusInTransit; i++ {
+		log.Printf("[ROUTE EXECUTOR] Ship still IN_TRANSIT after initial wait (attempt %d/%d), polling API in %v...", i+1, maxRetries, retryDelay)
+		e.clock.Sleep(retryDelay)
+
+		if e.shipRepo != nil {
+			freshShip, err := e.shipRepo.FindBySymbol(ctx, ship.ShipSymbol(), playerID)
+			if err != nil {
+				return fmt.Errorf("failed to sync ship after transit retry: %w", err)
+			}
+			*ship = *freshShip
+		}
+	}
+
+	// If still IN_TRANSIT after retries, call arrive() as last resort
 	if ship.NavStatus() == domainNavigation.NavStatusInTransit {
+		log.Printf("[ROUTE EXECUTOR] WARNING: Ship still IN_TRANSIT after %d retries, forcing arrival in domain model", maxRetries)
 		if err := ship.Arrive(); err != nil {
 			return fmt.Errorf("failed to mark ship as arrived: %w", err)
 		}
@@ -377,8 +394,27 @@ func (e *RouteExecutor) waitForArrival(
 		*ship = *freshShip
 	}
 
-	// Call arrive() if still IN_TRANSIT
+	// Poll API until ship is no longer IN_TRANSIT (handles API lag)
+	// The SpaceTraders API is the source of truth, not our domain model
+	maxRetries := 5
+	retryDelay := 2 * time.Second
+	for i := 0; i < maxRetries && ship.NavStatus() == domainNavigation.NavStatusInTransit; i++ {
+		log.Printf("[ROUTE EXECUTOR] Ship still IN_TRANSIT after wait (attempt %d/%d), polling API in %v...", i+1, maxRetries, retryDelay)
+		e.clock.Sleep(retryDelay)
+
+		if e.shipRepo != nil {
+			freshShip, err := e.shipRepo.FindBySymbol(ctx, ship.ShipSymbol(), playerID)
+			if err != nil {
+				return fmt.Errorf("failed to sync ship after arrival retry: %w", err)
+			}
+			*ship = *freshShip
+		}
+	}
+
+	// If still IN_TRANSIT after retries, call arrive() as last resort
+	// This updates our domain model even if API is lagging
 	if ship.NavStatus() == domainNavigation.NavStatusInTransit {
+		log.Printf("[ROUTE EXECUTOR] WARNING: Ship still IN_TRANSIT after %d retries, forcing arrival in domain model", maxRetries)
 		if err := ship.Arrive(); err != nil {
 			return fmt.Errorf("failed to mark ship as arrived: %w", err)
 		}

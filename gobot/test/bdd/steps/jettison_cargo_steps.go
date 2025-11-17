@@ -9,6 +9,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/api"
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/graph"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	appShip "github.com/andrescamacho/spacetraders-go/internal/application/ship"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
@@ -59,7 +60,9 @@ func (ctx *jettisonCargoContext) reset() {
 	// Create real repositories
 	ctx.playerRepo = persistence.NewGormPlayerRepository(helpers.SharedTestDB)
 	waypointRepo := persistence.NewGormWaypointRepository(helpers.SharedTestDB)
-	ctx.shipRepo = api.NewAPIShipRepository(ctx.apiClient, ctx.playerRepo, waypointRepo)
+	graphBuilder := helpers.NewMockGraphBuilder(ctx.apiClient, waypointRepo)
+	waypointProvider := graph.NewWaypointProvider(waypointRepo, graphBuilder)
+	ctx.shipRepo = api.NewAPIShipRepository(ctx.apiClient, ctx.playerRepo, waypointRepo, waypointProvider)
 
 	ctx.handler = appShip.NewJettisonCargoHandler(ctx.shipRepo, ctx.playerRepo, ctx.apiClient)
 }

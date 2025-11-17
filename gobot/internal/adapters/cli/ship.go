@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/api"
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/graph"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/ship"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
@@ -492,7 +493,7 @@ Examples:
 			playerRepo := persistence.NewGormPlayerRepository(db)
 			apiClient := api.NewSpaceTradersClient()
 			waypointRepo := persistence.NewGormWaypointRepository(db)
-			graphBuilder := api.NewGraphBuilder(apiClient, waypointRepo)
+			graphBuilder := api.NewGraphBuilder(apiClient, playerRepo, waypointRepo)
 			waypointProvider := graph.NewWaypointProvider(waypointRepo, graphBuilder)
 			shipRepo := api.NewAPIShipRepository(apiClient, playerRepo, waypointRepo, waypointProvider)
 			marketRepo := persistence.NewMarketRepository(db)

@@ -9,6 +9,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/api"
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/graph"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/scouting"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
@@ -52,7 +53,9 @@ func (c *scoutMarketsContext) reset() error {
 	c.apiClient = helpers.NewMockAPIClient()
 	c.playerRepo = persistence.NewGormPlayerRepository(helpers.SharedTestDB)
 	c.waypointRepo = persistence.NewGormWaypointRepository(helpers.SharedTestDB)
-	c.shipRepo = api.NewAPIShipRepository(c.apiClient, c.playerRepo, c.waypointRepo)
+	graphBuilder := helpers.NewMockGraphBuilder(c.apiClient, c.waypointRepo)
+	waypointProvider := graph.NewWaypointProvider(c.waypointRepo, graphBuilder)
+	c.shipRepo = api.NewAPIShipRepository(c.apiClient, c.playerRepo, c.waypointRepo, waypointProvider)
 	c.mockPlayerRepo = helpers.NewMockPlayerRepository()
 	c.mockRoutingClient = helpers.NewMockRoutingClient()
 	c.mockDaemonClient = helpers.NewMockDaemonClient()

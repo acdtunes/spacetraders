@@ -132,6 +132,25 @@ func (r *ContainerRunner) Stop() error {
 	r.containerEntity.MarkStopped()
 	r.mu.Unlock()
 
+	// Persist STOPPED status to database
+	if r.containerRepo != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		now := time.Now()
+		if err := r.containerRepo.UpdateStatus(
+			ctx,
+			r.containerEntity.ID(),
+			r.containerEntity.PlayerID(),
+			container.ContainerStatusStopped,
+			&now,      // stoppedAt
+			nil,       // exitCode (nil for graceful stop)
+			"stopped", // exitReason
+		); err != nil {
+			r.log("ERROR", fmt.Sprintf("Failed to persist STOPPED status: %v", err), nil)
+		}
+	}
+
 	// Release ship assignments for this container
 	r.releaseShipAssignments("stopped")
 

@@ -100,6 +100,20 @@ func (c *DaemonClientGRPC) CreateScoutTourContainer(
 	return nil
 }
 
+// StopContainer stops a running container
+func (c *DaemonClientGRPC) StopContainer(ctx context.Context, containerID string) error {
+	req := &pb.StopContainerRequest{
+		ContainerId: containerID,
+	}
+
+	_, err := c.client.StopContainer(ctx, req)
+	if err != nil {
+		return fmt.Errorf("failed to stop container: %w", err)
+	}
+
+	return nil
+}
+
 // Helper function to create int32 pointer
 func intPtr(val int32) *int32 {
 	return &val

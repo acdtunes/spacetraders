@@ -377,10 +377,8 @@ class ORToolsRoutingEngine:
         if start not in graph:
             return None
 
-        # Remove start from waypoints if present to avoid duplicates
-        # This happens when a ship's current location is also one of the markets to visit
-        waypoints_without_start = [wp for wp in waypoints if wp != start]
-        all_waypoints = [start] + waypoints_without_start
+        # Build complete waypoint list: start + targets
+        all_waypoints = [start] + waypoints
         for wp in all_waypoints:
             if wp not in graph:
                 return None
@@ -426,9 +424,9 @@ class ORToolsRoutingEngine:
         transit_callback_index = routing.RegisterTransitCallback(distance_callback)
         routing.SetArcCostEvaluatorOfAllVehicles(transit_callback_index)
 
-        # Add constraint: must visit all waypoints
-        for node in range(1, n):
-            routing.AddDisjunction([manager.NodeToIndex(node)], 999999)
+        # TSP: All waypoints are mandatory by default (no need for AddDisjunction)
+        # The routing model with num_vehicles=1 automatically creates a Hamiltonian path
+        # that visits all nodes exactly once
 
         # Configure solver
         search_parameters = pywrapcp.DefaultRoutingSearchParameters()

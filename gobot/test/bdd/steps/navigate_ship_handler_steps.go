@@ -68,20 +68,22 @@ func (ctx *navigateShipHandlerContext) reset() {
 	ctx.routingClient = helpers.NewMockRoutingClient()
 	ctx.mockClock = shared.NewMockClock(time.Now())
 
-	// Create ship repository (API-based)
-	ctx.shipRepo = api.NewAPIShipRepository(ctx.apiClient, ctx.playerRepo, ctx.waypointRepo)
-
 	// Create mock graph builder
 	ctx.graphBuilder = &mockGraphBuilder{
 		apiClient:    ctx.apiClient,
 		waypointRepo: ctx.waypointRepo,
 	}
 
+	// Create waypoint provider
+	waypointProvider := graph.NewWaypointProvider(ctx.waypointRepo, ctx.graphBuilder)
+
+	// Create ship repository (API-based)
+	ctx.shipRepo = api.NewAPIShipRepository(ctx.apiClient, ctx.playerRepo, ctx.waypointRepo, waypointProvider)
+
 	// Create graph provider
 	ctx.graphProvider = graph.NewSystemGraphProvider(
 		ctx.graphRepo,
 		ctx.graphBuilder,
-		1, // Default playerID
 	)
 
 	// Create handler dependencies
