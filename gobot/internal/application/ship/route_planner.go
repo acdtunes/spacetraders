@@ -57,6 +57,11 @@ func (p *RoutePlanner) PlanRoute(
 		return nil, fmt.Errorf("routing client error: %w", err)
 	}
 
+	// If routing client returned no route, return nil to let caller handle it
+	if routeResponse == nil {
+		return nil, nil
+	}
+
 	// Convert route response to Route domain entity
 	return p.createRouteFromPlan(routeResponse, ship, waypoints)
 }

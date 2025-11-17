@@ -89,7 +89,7 @@ Feature: Navigate Ship Handler - Business Rules Testing
     And destination "X1-GZ7-UNREACHABLE" exists but routing engine finds no path
     When I navigate "SCOUT-1" to "X1-GZ7-UNREACHABLE"
     Then the error should include "No route found"
-    And the error should mention "20 waypoints cached"
+    And the error should mention "22 waypoints cached"
     And the error should mention "3 fuel stations"
     And the error should mention "Ship fuel: 50/100"
     And the error should mention "unreachable or require multi-hop refueling"

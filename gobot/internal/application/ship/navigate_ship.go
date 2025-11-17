@@ -248,7 +248,7 @@ func (h *NavigateShipHandler) buildNoRouteFoundError(
 		}
 	}
 
-	return fmt.Errorf("no route found from %s to %s - "+
+	return fmt.Errorf("No route found from %s to %s - "+
 		"routing engine could not find a valid path - "+
 		"system %s has %d waypoints cached with %d fuel stations - "+
 		"ship fuel: %d/%d - "+

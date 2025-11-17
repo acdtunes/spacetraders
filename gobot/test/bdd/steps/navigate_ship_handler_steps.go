@@ -452,6 +452,32 @@ func (ctx *navigateShipHandlerContext) shipIsAtWithFuelOutOfCapacity(shipSymbol,
 		wp.SystemSymbol = shared.ExtractSystemSymbol(location)
 		waypoint = wp
 		ctx.waypoints[location] = waypoint
+
+		// Save waypoint to database so ship location can be loaded
+		if err := ctx.waypointRepo.Save(context.Background(), wp); err != nil {
+			return fmt.Errorf("failed to save waypoint %s: %w", location, err)
+		}
+
+		// Add to graph cache if it exists
+		systemSymbol := shared.ExtractSystemSymbol(location)
+		graph, err := ctx.graphRepo.Get(context.Background(), systemSymbol)
+		if err == nil && graph != nil {
+			// Graph exists, add this waypoint to it
+			graphWaypoints, ok := graph["waypoints"].(map[string]interface{})
+			if !ok {
+				graphWaypoints = make(map[string]interface{})
+				graph["waypoints"] = graphWaypoints
+			}
+			graphWaypoints[location] = map[string]interface{}{
+				"symbol":       location,
+				"systemSymbol": systemSymbol,
+				"x":            wp.X,
+				"y":            wp.Y,
+				"type":         "PLANET",
+				"has_fuel":     wp.HasFuel,
+			}
+			ctx.graphRepo.Save(context.Background(), systemSymbol, graph)
+		}
 	}
 
 	fuelObj, _ := shared.NewFuel(fuel, capacity)
@@ -481,6 +507,25 @@ func (ctx *navigateShipHandlerContext) destinationExistsButRoutingEngineFindsNoP
 	wp.SystemSymbol = systemSymbol
 	ctx.waypoints[destination] = wp
 	ctx.waypointRepo.Save(context.Background(), wp)
+
+	// Add to graph cache
+	graph, err := ctx.graphRepo.Get(context.Background(), systemSymbol)
+	if err == nil && graph != nil {
+		graphWaypoints, ok := graph["waypoints"].(map[string]interface{})
+		if !ok {
+			graphWaypoints = make(map[string]interface{})
+			graph["waypoints"] = graphWaypoints
+		}
+		graphWaypoints[destination] = map[string]interface{}{
+			"symbol":       destination,
+			"systemSymbol": systemSymbol,
+			"x":            wp.X,
+			"y":            wp.Y,
+			"type":         "PLANET",
+			"has_fuel":     wp.HasFuel,
+		}
+		ctx.graphRepo.Save(context.Background(), systemSymbol, graph)
+	}
 
 	// Configure routing client to return no route
 	ctx.routingClient.SetShouldReturnNoRoute(true)
