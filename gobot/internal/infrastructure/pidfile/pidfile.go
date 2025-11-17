@@ -63,6 +63,51 @@ func (p *PIDFile) Release() error {
 	return nil
 }
 
+// KillExisting kills the process referenced in the PID file and removes the file
+func (p *PIDFile) KillExisting() error {
+	// Read the PID file
+	data, err := os.ReadFile(p.path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // No PID file to kill
+		}
+		return fmt.Errorf("failed to read PID file: %w", err)
+	}
+
+	pidStr := strings.TrimSpace(string(data))
+	pid, err := strconv.Atoi(pidStr)
+	if err != nil {
+		// Invalid PID - just remove the file
+		_ = os.Remove(p.path)
+		return nil
+	}
+
+	// Find the process
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		// Process doesn't exist - remove stale PID file
+		_ = os.Remove(p.path)
+		return nil
+	}
+
+	// Send SIGTERM to allow graceful shutdown
+	if err := process.Signal(syscall.SIGTERM); err != nil {
+		if err == syscall.ESRCH {
+			// Process doesn't exist - remove stale PID file
+			_ = os.Remove(p.path)
+			return nil
+		}
+		return fmt.Errorf("failed to send SIGTERM to process %d: %w", pid, err)
+	}
+
+	// Remove the PID file
+	if err := os.Remove(p.path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to remove PID file after killing process: %w", err)
+	}
+
+	return nil
+}
+
 // isProcessRunning checks if a process with the given PID is running
 func isProcessRunning(pid int) bool {
 	// Send signal 0 to check if process exists

@@ -638,8 +638,42 @@ func (s *DaemonServer) GetShip(ctx context.Context, shipSymbol string, playerID 
 
 // GetShipyardListings retrieves available ships at a shipyard
 func (s *DaemonServer) GetShipyardListings(ctx context.Context, systemSymbol, waypointSymbol string, playerID *int, agentSymbol string) ([]*pb.ShipListing, string, int32, error) {
-	// TODO: Implement GetShipyardListings - currently not tested
-	return nil, "", 0, fmt.Errorf("GetShipyardListings not yet implemented")
+	// Require player ID for now (agent symbol resolution can be added later)
+	if playerID == nil || *playerID == 0 {
+		return nil, "", 0, fmt.Errorf("player_id is required")
+	}
+
+	// Create query
+	query := &shipyard.GetShipyardListingsQuery{
+		SystemSymbol:   systemSymbol,
+		WaypointSymbol: waypointSymbol,
+		PlayerID:       *playerID,
+	}
+
+	// Execute via mediator
+	response, err := s.mediator.Send(ctx, query)
+	if err != nil {
+		return nil, "", 0, fmt.Errorf("failed to get shipyard listings: %w", err)
+	}
+
+	// Convert response
+	listingsResp, ok := response.(*shipyard.GetShipyardListingsResponse)
+	if !ok {
+		return nil, "", 0, fmt.Errorf("unexpected response type")
+	}
+
+	// Convert to protobuf format
+	listings := make([]*pb.ShipListing, len(listingsResp.Shipyard.Listings))
+	for i, listing := range listingsResp.Shipyard.Listings {
+		listings[i] = &pb.ShipListing{
+			ShipType:      listing.ShipType,
+			Name:          listing.Name,
+			Description:   listing.Description,
+			PurchasePrice: int32(listing.PurchasePrice),
+		}
+	}
+
+	return listings, listingsResp.Shipyard.Symbol, int32(listingsResp.Shipyard.ModificationFee), nil
 }
 
 // PurchaseShip purchases a single ship from a shipyard

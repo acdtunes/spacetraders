@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shipyard"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/ports"
@@ -40,7 +41,11 @@ func NewGetShipyardListingsHandler(
 }
 
 // Handle executes the GetShipyardListings query
-func (h *GetShipyardListingsHandler) Handle(ctx context.Context, query *GetShipyardListingsQuery) (*GetShipyardListingsResponse, error) {
+func (h *GetShipyardListingsHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {
+	query, ok := request.(*GetShipyardListingsQuery)
+	if !ok {
+		return nil, fmt.Errorf("invalid request type")
+	}
 	// Get player to retrieve auth token
 	player, err := h.playerRepo.FindByID(ctx, query.PlayerID)
 	if err != nil {

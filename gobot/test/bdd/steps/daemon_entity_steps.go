@@ -322,6 +322,9 @@ func (dec *daemonEntityContext) theAssignmentShouldSucceed() error {
 }
 
 func (dec *daemonEntityContext) shipShouldBeAssigned(shipSymbol string) error {
+	if dec.manager == nil {
+		dec.manager = daemon.NewShipAssignmentManager(dec.clock)
+	}
 	assignment, exists := dec.manager.GetAssignment(shipSymbol)
 	if !exists {
 		return fmt.Errorf("expected ship '%s' to be assigned but it was not", shipSymbol)
@@ -398,6 +401,9 @@ func (dec *daemonEntityContext) theAssignmentShouldFailWithError(expectedErr str
 }
 
 func (dec *daemonEntityContext) shipShouldStillBeAssignedToContainer(shipSymbol, containerID string) error {
+	if dec.manager == nil {
+		dec.manager = daemon.NewShipAssignmentManager(dec.clock)
+	}
 	assignment, exists := dec.manager.GetAssignment(shipSymbol)
 	if !exists {
 		return fmt.Errorf("expected ship '%s' to be assigned but it was not", shipSymbol)
@@ -418,6 +424,9 @@ func (dec *daemonEntityContext) theAssignmentForShipIsReleased(shipSymbol string
 }
 
 func (dec *daemonEntityContext) shipShouldBeAssignedToContainer(shipSymbol, containerID string) error {
+	if dec.manager == nil {
+		dec.manager = daemon.NewShipAssignmentManager(dec.clock)
+	}
 	assignment, exists := dec.manager.GetAssignment(shipSymbol)
 	if !exists {
 		return fmt.Errorf("expected ship '%s' to be assigned but it was not", shipSymbol)
@@ -521,6 +530,9 @@ func (dec *daemonEntityContext) allAssignmentsShouldBeReleased() error {
 }
 
 func (dec *daemonEntityContext) allReleaseReasonsShouldBe(expected string) error {
+	if dec.manager == nil {
+		dec.manager = daemon.NewShipAssignmentManager(dec.clock)
+	}
 	for shipSymbol, _ := range dec.assignments {
 		assignment, _ := dec.manager.GetAssignment(shipSymbol)
 		if assignment.ReleaseReason() == nil {
@@ -542,6 +554,9 @@ func (dec *daemonEntityContext) theOperationShouldSucceed() error {
 }
 
 func (dec *daemonEntityContext) shipAssignmentShouldHaveReleaseReason(shipSymbol, expected string) error {
+	if dec.manager == nil {
+		dec.manager = daemon.NewShipAssignmentManager(dec.clock)
+	}
 	assignment, exists := dec.manager.GetAssignment(shipSymbol)
 	if !exists {
 		return fmt.Errorf("no assignment found for ship '%s'", shipSymbol)
@@ -596,6 +611,9 @@ func (dec *daemonEntityContext) assignmentsShouldBeCleaned(expected int) error {
 }
 
 func (dec *daemonEntityContext) shipAssignmentShouldBeReleasedWithReason(shipSymbol, expected string) error {
+	if dec.manager == nil {
+		dec.manager = daemon.NewShipAssignmentManager(dec.clock)
+	}
 	assignment, exists := dec.manager.GetAssignment(shipSymbol)
 	if !exists {
 		return fmt.Errorf("no assignment found for ship '%s'", shipSymbol)
@@ -614,6 +632,9 @@ func (dec *daemonEntityContext) shipAssignmentShouldBeReleasedWithReason(shipSym
 }
 
 func (dec *daemonEntityContext) shipAssignmentShouldRemainActive(shipSymbol string) error {
+	if dec.manager == nil {
+		dec.manager = daemon.NewShipAssignmentManager(dec.clock)
+	}
 	assignment, exists := dec.manager.GetAssignment(shipSymbol)
 	if !exists {
 		return fmt.Errorf("no assignment found for ship '%s'", shipSymbol)
@@ -994,6 +1015,8 @@ func InitializeDaemonEntityScenarios(sc *godog.ScenarioContext) {
 	sc.Step(`^the ship assignment should have operation "([^"]*)"$`, ctx.theShipAssignmentShouldHaveOperation)
 	// NOTE: Following steps will be overridden by ship_assignment_steps.go for infrastructure tests (registered later)
 	sc.Step(`^the ship assignment status should be "([^"]*)"$`, ctx.theShipAssignmentStatusShouldBe)
+	sc.Step(`^the ship assignment operation should be "([^"]*)"$`, ctx.theShipAssignmentShouldHaveOperation)
+	sc.Step(`^the ship assignment player_id should be (\d+)$`, ctx.theShipAssignmentShouldHavePlayerID)
 	sc.Step(`^the ship assignment should have an assigned_at timestamp$`, ctx.theShipAssignmentShouldHaveAnAssignedAtTimestamp)
 	sc.Step(`^the ship assignment should not have a released_at timestamp$`, ctx.theShipAssignmentShouldNotHaveAReleasedAtTimestamp)
 	sc.Step(`^the ship assignment should not have a release reason$`, ctx.theShipAssignmentShouldNotHaveAReleaseReason)
@@ -1023,6 +1046,10 @@ func InitializeDaemonEntityScenarios(sc *godog.ScenarioContext) {
 	// Ship Assignment Manager steps
 	sc.Step(`^I assign ship "([^"]*)" to container "([^"]*)" with player (\d+) and operation "([^"]*)"$`,
 		ctx.iAssignShipToContainerWithPlayerAndOperation)
+	sc.Step(`^I assign ship "([^"]*)" to container "([^"]*)" with operation "([^"]*)"$`,
+		func(shipSymbol, containerID, operation string) error {
+			return ctx.iAssignShipToContainerWithPlayerAndOperation(shipSymbol, containerID, 1, operation)
+		})
 	sc.Step(`^the assignment should succeed$`, ctx.theAssignmentShouldSucceed)
 	sc.Step(`^ship "([^"]*)" should be assigned$`, ctx.shipShouldBeAssigned)
 	sc.Step(`^the assignment should have ship symbol "([^"]*)"$`, ctx.theAssignmentShouldHaveShipSymbol)

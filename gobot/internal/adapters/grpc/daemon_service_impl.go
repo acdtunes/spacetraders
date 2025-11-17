@@ -430,3 +430,109 @@ func (s *daemonServiceImpl) GetShip(ctx context.Context, req *pb.GetShipRequest)
 		Ship: shipDetail,
 	}, nil
 }
+
+// GetShipyardListings retrieves available ships at a shipyard
+func (s *daemonServiceImpl) GetShipyardListings(ctx context.Context, req *pb.GetShipyardListingsRequest) (*pb.GetShipyardListingsResponse, error) {
+	// Resolve player ID from request
+	var playerID *int
+	if req.PlayerId != 0 {
+		pid := int(req.PlayerId)
+		playerID = &pid
+	}
+
+	agentSymbol := ""
+	if req.AgentSymbol != nil {
+		agentSymbol = *req.AgentSymbol
+	}
+
+	// Call daemon's GetShipyardListings method
+	listings, shipyardSymbol, modificationFee, err := s.daemon.GetShipyardListings(ctx, req.SystemSymbol, req.WaypointSymbol, playerID, agentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get shipyard listings: %w", err)
+	}
+
+	return &pb.GetShipyardListingsResponse{
+		Listings:        listings,
+		ShipyardSymbol:  shipyardSymbol,
+		ModificationFee: modificationFee,
+	}, nil
+}
+
+// PurchaseShip purchases a single ship from a shipyard
+func (s *daemonServiceImpl) PurchaseShip(ctx context.Context, req *pb.PurchaseShipRequest) (*pb.PurchaseShipResponse, error) {
+	// Resolve player ID from request
+	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve player: %w", err)
+	}
+
+	// Convert optional shipyard waypoint
+	var shipyardWaypoint *string
+	if req.ShipyardWaypoint != nil {
+		shipyardWaypoint = req.ShipyardWaypoint
+	}
+
+	// Call daemon's PurchaseShip method
+	containerID, purchasedShipSymbol, purchasePrice, agentCredits, status, err := s.daemon.PurchaseShip(
+		ctx,
+		req.PurchasingShipSymbol,
+		req.ShipType,
+		playerID,
+		shipyardWaypoint,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to purchase ship: %w", err)
+	}
+
+	return &pb.PurchaseShipResponse{
+		ContainerId:         containerID,
+		PurchasedShipSymbol: purchasedShipSymbol,
+		PurchasePrice:       int32(purchasePrice),
+		AgentCredits:        int32(agentCredits),
+		Status:              status,
+	}, nil
+}
+
+// BatchPurchaseShips purchases multiple ships from a shipyard as a background operation
+func (s *daemonServiceImpl) BatchPurchaseShips(ctx context.Context, req *pb.BatchPurchaseShipsRequest) (*pb.BatchPurchaseShipsResponse, error) {
+	// Resolve player ID from request
+	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve player: %w", err)
+	}
+
+	// Convert optional parameters
+	var shipyardWaypoint *string
+	if req.ShipyardWaypoint != nil {
+		shipyardWaypoint = req.ShipyardWaypoint
+	}
+
+	var iterations *int
+	if req.Iterations != nil {
+		iter := int(*req.Iterations)
+		iterations = &iter
+	}
+
+	// Call daemon's BatchPurchaseShips method
+	containerID, shipsToPurchase, maxBudget, resolvedShipyard, status, err := s.daemon.BatchPurchaseShips(
+		ctx,
+		req.PurchasingShipSymbol,
+		req.ShipType,
+		int(req.Quantity),
+		int(req.MaxBudget),
+		playerID,
+		shipyardWaypoint,
+		iterations,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to batch purchase ships: %w", err)
+	}
+
+	return &pb.BatchPurchaseShipsResponse{
+		ContainerId:      containerID,
+		ShipsToPurchase:  shipsToPurchase,
+		MaxBudget:        maxBudget,
+		ShipyardWaypoint: resolvedShipyard,
+		Status:           status,
+	}, nil
+}
