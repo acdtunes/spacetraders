@@ -33,7 +33,8 @@ type IGraphBuilder interface {
 // ISystemGraphProvider defines operations for system graph management with caching
 type ISystemGraphProvider interface {
 	// GetGraph retrieves system navigation graph (checks cache first, builds from API if needed)
-	GetGraph(ctx context.Context, systemSymbol string, forceRefresh bool) (*GraphLoadResult, error)
+	// playerID is required for API authentication when building graphs
+	GetGraph(ctx context.Context, systemSymbol string, forceRefresh bool, playerID int) (*GraphLoadResult, error)
 }
 
 // DTOs for system operations

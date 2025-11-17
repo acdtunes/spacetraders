@@ -21,8 +21,8 @@ func NewContainerRepository(db *gorm.DB) *ContainerRepositoryGORM {
 	return &ContainerRepositoryGORM{db: db}
 }
 
-// Insert creates a new container record in the database
-func (r *ContainerRepositoryGORM) Insert(
+// Add creates a new container record in the database
+func (r *ContainerRepositoryGORM) Add(
 	ctx context.Context,
 	containerEntity *container.Container,
 	commandType string,

@@ -155,7 +155,7 @@ func (s *DaemonServer) NavigateShip(ctx context.Context, shipSymbol, destination
 	)
 
 	// Persist container to database
-	if err := s.containerRepo.Insert(ctx, containerEntity, "navigate_ship"); err != nil {
+	if err := s.containerRepo.Add(ctx, containerEntity, "navigate_ship"); err != nil {
 		return "", fmt.Errorf("failed to persist container: %w", err)
 	}
 
@@ -194,7 +194,7 @@ func (s *DaemonServer) DockShip(ctx context.Context, shipSymbol string, playerID
 	)
 
 	// Persist container to database
-	if err := s.containerRepo.Insert(ctx, containerEntity, "dock_ship"); err != nil {
+	if err := s.containerRepo.Add(ctx, containerEntity, "dock_ship"); err != nil {
 		return "", fmt.Errorf("failed to persist container: %w", err)
 	}
 
@@ -231,7 +231,7 @@ func (s *DaemonServer) OrbitShip(ctx context.Context, shipSymbol string, playerI
 	)
 
 	// Persist container to database
-	if err := s.containerRepo.Insert(ctx, containerEntity, "orbit_ship"); err != nil {
+	if err := s.containerRepo.Add(ctx, containerEntity, "orbit_ship"); err != nil {
 		return "", fmt.Errorf("failed to persist container: %w", err)
 	}
 
@@ -274,7 +274,7 @@ func (s *DaemonServer) RefuelShip(ctx context.Context, shipSymbol string, player
 	)
 
 	// Persist container to database
-	if err := s.containerRepo.Insert(ctx, containerEntity, "refuel_ship"); err != nil {
+	if err := s.containerRepo.Add(ctx, containerEntity, "refuel_ship"); err != nil {
 		return "", fmt.Errorf("failed to persist container: %w", err)
 	}
 
@@ -316,7 +316,7 @@ func (s *DaemonServer) BatchContractWorkflow(ctx context.Context, shipSymbol str
 	)
 
 	// Persist container to database
-	if err := s.containerRepo.Insert(ctx, containerEntity, "batch_contract_workflow"); err != nil {
+	if err := s.containerRepo.Add(ctx, containerEntity, "batch_contract_workflow"); err != nil {
 		return "", fmt.Errorf("failed to persist container: %w", err)
 	}
 
@@ -361,7 +361,7 @@ func (s *DaemonServer) ScoutTour(ctx context.Context, containerID string, shipSy
 	)
 
 	// Persist container to database
-	if err := s.containerRepo.Insert(ctx, containerEntity, "scout_tour"); err != nil {
+	if err := s.containerRepo.Add(ctx, containerEntity, "scout_tour"); err != nil {
 		return "", fmt.Errorf("failed to persist container: %w", err)
 	}
 
@@ -441,7 +441,7 @@ func (s *DaemonServer) AssignScoutingFleet(
 	)
 
 	// Persist container to database
-	if err := s.containerRepo.Insert(ctx, containerEntity, "scout_fleet_assignment"); err != nil {
+	if err := s.containerRepo.Add(ctx, containerEntity, "scout_fleet_assignment"); err != nil {
 		return "", fmt.Errorf("failed to persist container: %w", err)
 	}
 
@@ -706,6 +706,11 @@ func (s *DaemonServer) PurchaseShip(ctx context.Context, purchasingShipSymbol, s
 		nil, // Use real clock
 	)
 
+	// Persist container to database before starting (prevents foreign key violations in logs)
+	if err := s.containerRepo.Add(ctx, containerEntity, "purchase_ship"); err != nil {
+		return "", "", 0, 0, "", fmt.Errorf("failed to persist container: %w", err)
+	}
+
 	// Create and start container runner
 	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo)
 
@@ -759,6 +764,11 @@ func (s *DaemonServer) BatchPurchaseShips(ctx context.Context, purchasingShipSym
 		},
 		nil, // Use real clock
 	)
+
+	// Persist container to database before starting (prevents foreign key violations in logs)
+	if err := s.containerRepo.Add(ctx, containerEntity, "batch_purchase_ships"); err != nil {
+		return "", 0, 0, "", "", fmt.Errorf("failed to persist container: %w", err)
+	}
 
 	// Create and start container runner
 	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo)

@@ -122,7 +122,7 @@ func (h *ScoutMarketsHandler) Handle(ctx context.Context, request common.Request
 	}
 
 	// 5. Get system graph
-	graphResult, err := h.graphProvider.GetGraph(ctx, cmd.SystemSymbol, false)
+	graphResult, err := h.graphProvider.GetGraph(ctx, cmd.SystemSymbol, false, int(cmd.PlayerID))
 	if err != nil {
 		return nil, fmt.Errorf("failed to get graph: %w", err)
 	}

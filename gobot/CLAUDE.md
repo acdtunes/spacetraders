@@ -154,6 +154,26 @@ Each command has:
 - Response type (e.g., `NavigateShipResponse`)
 - Handler with `Handle(ctx, request)` method
 
+##### Navigation Command Hierarchy
+
+**CRITICAL:** The codebase has TWO navigation commands with different purposes:
+
+1. **NavigateShipCommand** (HIGH-LEVEL) ✅
+   - **USE THIS for all application workflows**
+   - Handles complete navigation with route planning
+   - Features: multi-hop routing, refueling stops, flight mode optimization
+   - Used by: Business logic, workflows, CLI commands
+   - Location: `application/ship/navigate_ship.go`
+
+2. **NavigateToWaypointCommand** (LOW-LEVEL) ⚠️
+   - **INTERNAL USE ONLY** - used by RouteExecutor
+   - Simple atomic single-hop navigation (orbit → navigate API call)
+   - NO route planning, NO refueling, NO optimization
+   - Used by: RouteExecutor (executing planned route segments)
+   - Location: `application/ship/navigate_to_waypoint.go`
+
+**Rule:** Always use `NavigateShipCommand` unless you're implementing low-level route execution logic.
+
 #### Queries (Read Operations)
 
 Located in `application/{domain}/queries/`:

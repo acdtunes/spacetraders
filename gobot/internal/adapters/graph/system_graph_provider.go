@@ -15,24 +15,21 @@ import (
 type SystemGraphProvider struct {
 	graphRepo    system.SystemGraphRepository
 	graphBuilder system.IGraphBuilder
-	playerID     int
 }
 
 // NewSystemGraphProvider creates a new system graph provider
 func NewSystemGraphProvider(
 	graphRepo system.SystemGraphRepository,
 	graphBuilder system.IGraphBuilder,
-	playerID int,
 ) system.ISystemGraphProvider {
 	return &SystemGraphProvider{
 		graphRepo:    graphRepo,
 		graphBuilder: graphBuilder,
-		playerID:     playerID,
 	}
 }
 
 // GetGraph retrieves system navigation graph (checks cache first, builds from API if needed)
-func (p *SystemGraphProvider) GetGraph(ctx context.Context, systemSymbol string, forceRefresh bool) (*system.GraphLoadResult, error) {
+func (p *SystemGraphProvider) GetGraph(ctx context.Context, systemSymbol string, forceRefresh bool, playerID int) (*system.GraphLoadResult, error) {
 	// Try loading from database cache first (unless force refresh)
 	if !forceRefresh {
 		graph, err := p.loadFromDatabase(ctx, systemSymbol)
@@ -49,7 +46,7 @@ func (p *SystemGraphProvider) GetGraph(ctx context.Context, systemSymbol string,
 	}
 
 	// Build from API and cache it
-	graph, err := p.buildFromAPI(ctx, systemSymbol)
+	graph, err := p.buildFromAPI(ctx, systemSymbol, playerID)
 	if err != nil {
 		return nil, err
 	}
@@ -78,11 +75,11 @@ func (p *SystemGraphProvider) loadFromDatabase(ctx context.Context, systemSymbol
 }
 
 // buildFromAPI builds graph from API and saves to database
-func (p *SystemGraphProvider) buildFromAPI(ctx context.Context, systemSymbol string) (map[string]interface{}, error) {
+func (p *SystemGraphProvider) buildFromAPI(ctx context.Context, systemSymbol string, playerID int) (map[string]interface{}, error) {
 	log.Printf("Building navigation graph for %s from API", systemSymbol)
 
-	// Build the graph using this player's API client
-	graph, err := p.graphBuilder.BuildSystemGraph(ctx, systemSymbol, p.playerID)
+	// Build the graph using the specified player's API client
+	graph, err := p.graphBuilder.BuildSystemGraph(ctx, systemSymbol, playerID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build graph for %s: %w", systemSymbol, err)
 	}

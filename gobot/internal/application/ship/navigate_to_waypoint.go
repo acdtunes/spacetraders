@@ -10,7 +10,19 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
 
-// NavigateToWaypointCommand - Command to navigate a ship to a waypoint
+// NavigateToWaypointCommand - LOW-LEVEL atomic command for single-hop navigation
+//
+// ⚠️  WARNING: This is a LOW-LEVEL command used internally by RouteExecutor.
+// ⚠️  DO NOT use this directly in application workflows!
+// ⚠️  Use NavigateShipCommand instead for route planning + multi-hop navigation.
+//
+// This command performs a simple orbit → navigate → API call without:
+// - Route planning
+// - Refueling stops
+// - Multi-hop navigation
+// - Flight mode optimization
+//
+// Only use this command if you're implementing low-level route execution logic.
 type NavigateToWaypointCommand struct {
 	ShipSymbol  string
 	Destination string

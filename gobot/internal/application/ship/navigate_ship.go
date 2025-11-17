@@ -11,7 +11,18 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
 
-// NavigateShipCommand represents a command to navigate a ship to a destination
+// NavigateShipCommand - HIGH-LEVEL command for ship navigation with route planning
+//
+// ✅ USE THIS for all application workflows that need ship navigation.
+//
+// This command handles:
+// - Multi-hop route planning (via OR-Tools routing service)
+// - Automatic refueling stops
+// - Flight mode optimization (BURN > CRUISE > DRIFT)
+// - Fuel constraint checking
+// - Complete route execution
+//
+// This is the PRIMARY navigation command for business logic.
 type NavigateShipCommand struct {
 	ShipSymbol  string
 	Destination string
@@ -73,7 +84,7 @@ func (h *NavigateShipHandler) Handle(ctx context.Context, request common.Request
 
 	// 2. Extract system symbol and get system graph
 	systemSymbol := ExtractSystemSymbol(ship.CurrentLocation().Symbol)
-	graphResult, err := h.graphProvider.GetGraph(ctx, systemSymbol, false)
+	graphResult, err := h.graphProvider.GetGraph(ctx, systemSymbol, false, cmd.PlayerID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get system graph: %w", err)
 	}

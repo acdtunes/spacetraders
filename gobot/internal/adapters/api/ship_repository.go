@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/graph"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
@@ -14,9 +15,10 @@ import (
 // APIShipRepository implements ShipRepository using the SpaceTraders API
 // This repository adapts API responses to domain entities
 type APIShipRepository struct {
-	apiClient    ports.APIClient
-	playerRepo   player.PlayerRepository
-	waypointRepo system.WaypointRepository
+	apiClient        ports.APIClient
+	playerRepo       player.PlayerRepository
+	waypointRepo     system.WaypointRepository
+	waypointProvider *graph.WaypointProvider
 }
 
 // NewAPIShipRepository creates a new API ship repository
@@ -24,11 +26,13 @@ func NewAPIShipRepository(
 	apiClient ports.APIClient,
 	playerRepo player.PlayerRepository,
 	waypointRepo system.WaypointRepository,
+	waypointProvider *graph.WaypointProvider,
 ) *APIShipRepository {
 	return &APIShipRepository{
-		apiClient:    apiClient,
-		playerRepo:   playerRepo,
-		waypointRepo: waypointRepo,
+		apiClient:        apiClient,
+		playerRepo:       playerRepo,
+		waypointRepo:     waypointRepo,
+		waypointProvider: waypointProvider,
 	}
 }
 
@@ -253,10 +257,10 @@ func (r *APIShipRepository) JettisonCargo(ctx context.Context, ship *navigation.
 
 // shipDataToDomain converts API ship DTO to domain entity
 func (r *APIShipRepository) shipDataToDomain(ctx context.Context, data *navigation.ShipData, playerID int) (*navigation.Ship, error) {
-	// Get current location waypoint from repository
-	location, err := r.waypointRepo.FindBySymbol(ctx, data.Location, shared.ExtractSystemSymbol(data.Location))
+	// Get current location waypoint (auto-fetches from API if not cached)
+	location, err := r.waypointProvider.GetWaypoint(ctx, data.Location, shared.ExtractSystemSymbol(data.Location), playerID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get location waypoint: %w", err)
+		return nil, fmt.Errorf("failed to get location waypoint %s: %w", data.Location, err)
 	}
 
 	// Create fuel value object

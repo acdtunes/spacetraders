@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/graph"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/application/ship"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
@@ -39,11 +40,12 @@ type PurchaseShipResponse struct {
 
 // PurchaseShipHandler handles the PurchaseShip command
 type PurchaseShipHandler struct {
-	shipRepo     navigation.ShipRepository
-	playerRepo   player.PlayerRepository
-	waypointRepo system.WaypointRepository
-	apiClient    ports.APIClient
-	mediator     common.Mediator
+	shipRepo         navigation.ShipRepository
+	playerRepo       player.PlayerRepository
+	waypointRepo     system.WaypointRepository
+	waypointProvider *graph.WaypointProvider
+	apiClient        ports.APIClient
+	mediator         common.Mediator
 }
 
 // NewPurchaseShipHandler creates a new PurchaseShipHandler
@@ -51,15 +53,17 @@ func NewPurchaseShipHandler(
 	shipRepo navigation.ShipRepository,
 	playerRepo player.PlayerRepository,
 	waypointRepo system.WaypointRepository,
+	waypointProvider *graph.WaypointProvider,
 	apiClient ports.APIClient,
 	mediator common.Mediator,
 ) *PurchaseShipHandler {
 	return &PurchaseShipHandler{
-		shipRepo:     shipRepo,
-		playerRepo:   playerRepo,
-		waypointRepo: waypointRepo,
-		apiClient:    apiClient,
-		mediator:     mediator,
+		shipRepo:         shipRepo,
+		playerRepo:       playerRepo,
+		waypointRepo:     waypointRepo,
+		waypointProvider: waypointProvider,
+		apiClient:        apiClient,
+		mediator:         mediator,
 	}
 }
 
@@ -94,7 +98,7 @@ func (h *PurchaseShipHandler) Handle(ctx context.Context, request common.Request
 
 	// 4. Navigate to shipyard if not already there
 	if purchasingShip.CurrentLocation().Symbol != shipyardWaypoint {
-		navCmd := &ship.NavigateToWaypointCommand{
+		navCmd := &ship.NavigateShipCommand{
 			ShipSymbol:  cmd.PurchasingShipSymbol,
 			Destination: shipyardWaypoint,
 			PlayerID:    cmd.PlayerID,
@@ -255,15 +259,10 @@ func (h *PurchaseShipHandler) convertShipDataToEntity(
 	waypointSymbol string,
 	systemSymbol string,
 ) (*navigation.Ship, error) {
-	// Get waypoint details from repository
-	waypoint, err := h.waypointRepo.FindBySymbol(ctx, waypointSymbol, systemSymbol)
+	// Get waypoint details (auto-fetches from API if not cached)
+	waypoint, err := h.waypointProvider.GetWaypoint(ctx, waypointSymbol, systemSymbol, playerID)
 	if err != nil {
-		// Fallback: create basic waypoint from symbol
-		waypoint, err = shared.NewWaypoint(waypointSymbol, 0, 0)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create waypoint: %w", err)
-		}
-		waypoint.SystemSymbol = systemSymbol
+		return nil, fmt.Errorf("failed to get waypoint %s: %w", waypointSymbol, err)
 	}
 
 	// Convert cargo inventory
