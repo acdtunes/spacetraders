@@ -114,7 +114,14 @@ func (ctx *routeNavigationUndefinedContext) shipStartsAtWithFuel(shipSymbol, loc
 
 func (ctx *routeNavigationUndefinedContext) shipIsAtWithFuel(shipSymbol, location string, fuel int) error {
 	waypoint, _ := shared.NewWaypoint(location, 0, 0)
-	fuelObj, _ := shared.NewFuel(fuel, 100)
+
+	// Use stored fuel capacity if set, otherwise default to 100
+	fuelCapacity := ctx.fuelCapacity
+	if fuelCapacity == 0 {
+		fuelCapacity = 100
+	}
+
+	fuelObj, _ := shared.NewFuel(fuel, fuelCapacity)
 	cargo, _ := shared.NewCargo(100, 0, []*shared.CargoItem{})
 
 	ship, err := navigation.NewShip(
@@ -122,7 +129,7 @@ func (ctx *routeNavigationUndefinedContext) shipIsAtWithFuel(shipSymbol, locatio
 		1,
 		waypoint,
 		fuelObj,
-		100, // fuelCapacity
+		fuelCapacity, // use stored or default fuel capacity
 		100, // cargoCapacity
 		cargo,
 		30, // engineSpeed
@@ -207,10 +214,8 @@ func (ctx *routeNavigationUndefinedContext) shipIsIN_TRANSITToArrivingInSeconds(
 }
 
 func (ctx *routeNavigationUndefinedContext) shipHasFuelCapacity(shipSymbol string, capacity int) error {
-	ship := ctx.ships[shipSymbol]
-	if ship == nil {
-		return fmt.Errorf("ship %s not found", shipSymbol)
-	}
+	// Store fuel capacity for when ship is created
+	// Ship might not exist yet, so don't require it
 	ctx.fuelCapacity = capacity
 	return nil
 }
