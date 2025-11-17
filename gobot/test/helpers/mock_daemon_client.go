@@ -94,6 +94,22 @@ func (m *MockDaemonClient) CreateScoutTourContainer(ctx context.Context, contain
 	return nil
 }
 
+// StopContainer stops a running container
+func (m *MockDaemonClient) StopContainer(ctx context.Context, containerID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Find and update the container status
+	for i, c := range m.containers {
+		if c.ID == containerID {
+			m.containers[i].Status = "STOPPED"
+			break
+		}
+	}
+
+	return nil
+}
+
 // GetCreatedContainers returns the list of container IDs created during the test
 func (m *MockDaemonClient) GetCreatedContainers() []string {
 	m.mu.RLock()
