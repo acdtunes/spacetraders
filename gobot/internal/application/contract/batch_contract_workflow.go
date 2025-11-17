@@ -237,6 +237,7 @@ func (h *BatchContractWorkflowHandler) processIteration(
 		unitsToPurchase := unitsRemaining - currentUnits
 		fmt.Printf("[WORKFLOW] Units to purchase: %d (remaining=%d - current=%d)\n", unitsToPurchase, unitsRemaining, currentUnits)
 
+		// Step 9: Purchase cargo if needed
 		if unitsToPurchase > 0 {
 			// Get profitability result for cheapest market
 			fmt.Println("[WORKFLOW] Getting cheapest market from profitability result...")
@@ -244,10 +245,10 @@ func (h *BatchContractWorkflowHandler) processIteration(
 			cheapestMarket := profitResult.CheapestMarketWaypoint
 			fmt.Printf("[WORKFLOW] Cheapest market: %s\n", cheapestMarket)
 
-			// Step 9: Multi-trip loop
+			// Multi-trip purchase loop
 			trips := int(math.Ceil(float64(unitsToPurchase) / float64(ship.Cargo().Capacity)))
 			result.TotalTrips += trips
-			fmt.Printf("[WORKFLOW] Starting multi-trip delivery: %d trips needed\n", trips)
+			fmt.Printf("[WORKFLOW] Starting multi-trip purchase: %d trips needed\n", trips)
 
 			for trip := 0; trip < trips; trip++ {
 				unitsThisTrip := min(ship.Cargo().Capacity, unitsToPurchase)
@@ -277,45 +278,57 @@ func (h *BatchContractWorkflowHandler) processIteration(
 
 				_ = purchaseResp // Response unused after error check removed
 
-				// Navigate to delivery destination
-				if err := h.navigateToWaypoint(ctx, ship, delivery.DestinationSymbol, cmd.PlayerID); err != nil {
-					return fmt.Errorf("failed to navigate to delivery: %w", err)
-				}
-
-				// Dock at delivery
-				if err := h.dockShip(ctx, ship, cmd.PlayerID); err != nil {
-					return fmt.Errorf("failed to dock at delivery: %w", err)
-				}
-
-				// Deliver cargo
-				deliverCmd := &DeliverContractCommand{
-					ContractID:  contract.ContractID(),
-					ShipSymbol:  cmd.ShipSymbol,
-					TradeSymbol: delivery.TradeSymbol,
-					Units:       unitsThisTrip,
-					PlayerID:    cmd.PlayerID,
-				}
-
-				deliverResp, err := h.mediator.Send(ctx, deliverCmd)
-				if err != nil {
-					return fmt.Errorf("failed to deliver cargo: %w", err)
-				}
-
-				deliverResult := deliverResp.(*DeliverContractResponse)
-
-				contract = deliverResult.Contract
 				unitsToPurchase -= unitsThisTrip
 
-				// Reload ship for next trip
+				// Reload ship after purchase
 				ship, err = h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
 				if err != nil {
-					return fmt.Errorf("failed to reload ship: %w", err)
+					return fmt.Errorf("failed to reload ship after purchase: %w", err)
 				}
 			}
 		}
+
+		// Step 10: Deliver all cargo for this delivery item
+		// This handles both fresh purchases and recovered cargo from interruptions
+		ship, err = h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
+		if err != nil {
+			return fmt.Errorf("failed to reload ship before delivery: %w", err)
+		}
+
+		unitsToDeliver := ship.Cargo().GetItemUnits(delivery.TradeSymbol)
+		fmt.Printf("[WORKFLOW] Delivering %d units of %s\n", unitsToDeliver, delivery.TradeSymbol)
+
+		if unitsToDeliver > 0 {
+			// Navigate to delivery destination
+			if err := h.navigateToWaypoint(ctx, ship, delivery.DestinationSymbol, cmd.PlayerID); err != nil {
+				return fmt.Errorf("failed to navigate to delivery: %w", err)
+			}
+
+			// Dock at delivery
+			if err := h.dockShip(ctx, ship, cmd.PlayerID); err != nil {
+				return fmt.Errorf("failed to dock at delivery: %w", err)
+			}
+
+			// Deliver cargo
+			deliverCmd := &DeliverContractCommand{
+				ContractID:  contract.ContractID(),
+				ShipSymbol:  cmd.ShipSymbol,
+				TradeSymbol: delivery.TradeSymbol,
+				Units:       unitsToDeliver,
+				PlayerID:    cmd.PlayerID,
+			}
+
+			deliverResp, err := h.mediator.Send(ctx, deliverCmd)
+			if err != nil {
+				return fmt.Errorf("failed to deliver cargo: %w", err)
+			}
+
+			deliverResult := deliverResp.(*DeliverContractResponse)
+			contract = deliverResult.Contract
+		}
 	}
 
-	// Step 10: Fulfill contract
+	// Step 11: Fulfill contract
 	fulfillCmd := &FulfillContractCommand{
 		ContractID: contract.ContractID(),
 		PlayerID:   cmd.PlayerID,
