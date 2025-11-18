@@ -94,7 +94,7 @@ func (dc *DistributionChecker) IsRebalancingNeeded(
 	return needsRebalancing, avgDistance, nil
 }
 
-// AssignShipsToMarkets distributes ships across target markets using greedy allocation
+// AssignShipsToMarkets distributes ships across target markets using balanced round-robin
 // Returns a map of ship symbol to assigned market waypoint
 func (dc *DistributionChecker) AssignShipsToMarkets(
 	ctx context.Context,
@@ -119,6 +119,16 @@ func (dc *DistributionChecker) AssignShipsToMarkets(
 		return nil, fmt.Errorf("invalid graph format: missing waypoints")
 	}
 
+	// Calculate max ships per market to ensure balanced distribution
+	// E.g., 5 ships, 3 markets -> max 2 ships per market (some get 2, some get 1)
+	maxPerMarket := (len(ships) + len(targetMarkets) - 1) / len(targetMarkets) // Ceiling division
+
+	// Cap at 2 ships per market - no need to cluster all ships at one location
+	// With 5 ships and 1 market, only 2 go there; others stay put
+	if maxPerMarket > 2 {
+		maxPerMarket = 2
+	}
+
 	// Track how many ships assigned to each market
 	marketCounts := make(map[string]int)
 	for _, market := range targetMarkets {
@@ -128,10 +138,10 @@ func (dc *DistributionChecker) AssignShipsToMarkets(
 	// Assignment map: ship symbol -> market waypoint
 	assignments := make(map[string]string)
 
-	// Greedy assignment: for each ship, find the nearest market with fewest assignments
+	// Round-robin assignment: for each ship, find the nearest market that isn't full
 	for _, ship := range ships {
 		bestMarket := ""
-		bestScore := math.MaxFloat64
+		bestDistance := math.MaxFloat64
 
 		// Get ship's current waypoint coordinates
 		shipWp, ok := waypointsRaw[ship.CurrentLocation().Symbol].(map[string]interface{})
@@ -142,6 +152,11 @@ func (dc *DistributionChecker) AssignShipsToMarkets(
 		shipY := shipWp["y"].(float64)
 
 		for _, marketWaypoint := range targetMarkets {
+			// Skip markets that have reached their capacity
+			if marketCounts[marketWaypoint] >= maxPerMarket {
+				continue
+			}
+
 			// Get market waypoint coordinates
 			marketWp, ok := waypointsRaw[marketWaypoint].(map[string]interface{})
 			if !ok {
@@ -151,15 +166,10 @@ func (dc *DistributionChecker) AssignShipsToMarkets(
 			marketY := marketWp["y"].(float64)
 
 			distance := calculateDistance(shipX, shipY, marketX, marketY)
-			count := marketCounts[marketWaypoint]
 
-			// Score = distance + penalty for markets that already have ships
-			// This encourages even distribution while preferring nearby markets
-			penalty := float64(count) * 100.0 // Arbitrary penalty weight
-			score := distance + penalty
-
-			if score < bestScore {
-				bestScore = score
+			// Simple distance-based selection among available markets
+			if distance < bestDistance {
+				bestDistance = distance
 				bestMarket = marketWaypoint
 			}
 		}

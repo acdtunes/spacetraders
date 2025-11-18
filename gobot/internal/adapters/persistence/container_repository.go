@@ -175,3 +175,105 @@ func (r *ContainerRepositoryGORM) Delete(
 
 	return nil
 }
+
+// ContainerInfo represents basic container information for coordinators
+type ContainerInfo struct {
+	ID            string
+	ContainerType string
+	Status        string
+}
+
+// ListByStatusSimple returns simplified container info (for coordinators)
+func (r *ContainerRepositoryGORM) ListByStatusSimple(
+	ctx context.Context,
+	status string,
+	playerID *int,
+) ([]ContainerInfo, error) {
+	var models []*ContainerModel
+
+	query := r.db.WithContext(ctx).Where("status = ?", status)
+
+	if playerID != nil {
+		query = query.Where("player_id = ?", *playerID)
+	}
+
+	if err := query.Find(&models).Error; err != nil {
+		return nil, fmt.Errorf("failed to list containers by status: %w", err)
+	}
+
+	// Convert to ContainerInfo
+	result := make([]ContainerInfo, len(models))
+	for i, model := range models {
+		result[i] = ContainerInfo{
+			ID:            model.ID,
+			ContainerType: model.ContainerType,
+			Status:        model.Status,
+		}
+	}
+
+	return result, nil
+}
+
+// CreateIfNoActiveWorker atomically creates a worker container only if no other
+// CONTRACT_WORKFLOW container is RUNNING for the player. Returns true if created,
+// false if another worker already exists.
+func (r *ContainerRepositoryGORM) CreateIfNoActiveWorker(
+	ctx context.Context,
+	containerEntity *container.Container,
+	commandType string,
+) (bool, error) {
+	var created bool
+
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Lock and check for existing active workers
+		var count int64
+		if err := tx.Model(&ContainerModel{}).
+			Where("container_type = ? AND status = ? AND player_id = ?",
+				"CONTRACT_WORKFLOW", "RUNNING", containerEntity.PlayerID()).
+			Count(&count).Error; err != nil {
+			return fmt.Errorf("failed to count active workers: %w", err)
+		}
+
+		if count > 0 {
+			// Another worker already exists
+			created = false
+			return nil
+		}
+
+		// No active worker, create new one
+		configJSON, err := json.Marshal(containerEntity.Metadata())
+		if err != nil {
+			return fmt.Errorf("failed to serialize config: %w", err)
+		}
+
+		now := time.Now()
+		restartPolicy := "no"
+		if containerEntity.MaxRestarts() > 0 {
+			restartPolicy = "on-failure"
+		}
+
+		model := &ContainerModel{
+			ID:            containerEntity.ID(),
+			PlayerID:      containerEntity.PlayerID(),
+			ContainerType: string(containerEntity.Type()),
+			CommandType:   commandType,
+			Status:        string(containerEntity.Status()),
+			RestartPolicy: restartPolicy,
+			RestartCount:  containerEntity.RestartCount(),
+			Config:        string(configJSON),
+			StartedAt:     &now,
+			StoppedAt:     nil,
+			ExitCode:      nil,
+			ExitReason:    "",
+		}
+
+		if err := tx.Create(model).Error; err != nil {
+			return fmt.Errorf("failed to insert container: %w", err)
+		}
+
+		created = true
+		return nil
+	})
+
+	return created, err
+}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
@@ -33,6 +34,11 @@ type ContractFleetCoordinatorResponse struct {
 	Errors             []string
 }
 
+// ContainerRepository interface for querying container state
+type ContainerRepository interface {
+	ListByStatusSimple(ctx context.Context, status string, playerID *int) ([]persistence.ContainerInfo, error)
+}
+
 // ContractFleetCoordinatorHandler implements the fleet coordinator logic
 type ContractFleetCoordinatorHandler struct {
 	mediator           common.Mediator
@@ -42,6 +48,7 @@ type ContractFleetCoordinatorHandler struct {
 	shipAssignmentRepo daemon.ShipAssignmentRepository
 	daemonClient       daemon.DaemonClient // For creating worker containers
 	graphProvider      system.ISystemGraphProvider // For distance calculations
+	containerRepo      ContainerRepository // For checking existing workers
 }
 
 // NewContractFleetCoordinatorHandler creates a new fleet coordinator handler
@@ -53,6 +60,7 @@ func NewContractFleetCoordinatorHandler(
 	shipAssignmentRepo daemon.ShipAssignmentRepository,
 	daemonClient daemon.DaemonClient,
 	graphProvider system.ISystemGraphProvider,
+	containerRepo ContainerRepository,
 ) *ContractFleetCoordinatorHandler {
 	return &ContractFleetCoordinatorHandler{
 		mediator:           mediator,
@@ -62,6 +70,7 @@ func NewContractFleetCoordinatorHandler(
 		shipAssignmentRepo: shipAssignmentRepo,
 		daemonClient:       daemonClient,
 		graphProvider:      graphProvider,
+		containerRepo:      containerRepo,
 	}
 }
 
@@ -120,17 +129,15 @@ func (h *ContractFleetCoordinatorHandler) Handle(ctx context.Context, request co
 	if err != nil {
 		logger.Log("WARNING", fmt.Sprintf("Failed to check for existing workers: %v", err), nil)
 	} else if len(existingWorkers) > 0 {
-		logger.Log("INFO", fmt.Sprintf("Found %d existing worker containers, waiting for completion...", len(existingWorkers)), nil)
-		// Wait for existing worker to signal completion
-		select {
-		case shipSymbol := <-completionChan:
-			logger.Log("INFO", fmt.Sprintf("Existing worker completed for ship %s", shipSymbol), nil)
-		case <-time.After(5 * time.Minute):
-			// Timeout waiting for existing worker
-			logger.Log("WARNING", "Timeout waiting for existing worker, proceeding...", nil)
-		case <-ctx.Done():
-			return result, ctx.Err()
+		logger.Log("WARNING", fmt.Sprintf("Found %d existing CONTRACT_WORKFLOW workers from previous session - stopping them to prevent conflicts", len(existingWorkers)), nil)
+		// Stop all existing workers to prevent multiple workers running simultaneously
+		for _, worker := range existingWorkers {
+			logger.Log("INFO", fmt.Sprintf("Stopping existing worker container: %s", worker.ID), nil)
+			if err := h.daemonClient.StopContainer(ctx, worker.ID); err != nil {
+				logger.Log("ERROR", fmt.Sprintf("Failed to stop existing worker %s: %v", worker.ID, err), nil)
+			}
 		}
+		logger.Log("INFO", "All existing workers stopped, coordinator will create new workers as needed", nil)
 	}
 
 	// Step 4: Main coordinator loop (infinite)
@@ -169,6 +176,26 @@ func (h *ContractFleetCoordinatorHandler) Handle(ctx context.Context, request co
 				return result, ctx.Err()
 			}
 			continue // Loop back to check for available ships
+		}
+
+		// CRITICAL CHECK: Prevent multiple workers by checking if any worker is already running
+		// This prevents race conditions when negotiation fails early in the loop
+		existingActiveWorkers, err := h.findExistingWorkers(ctx, cmd.PlayerID)
+		if err != nil {
+			logger.Log("WARNING", fmt.Sprintf("Failed to check for active workers: %v", err), nil)
+		} else if len(existingActiveWorkers) > 0 {
+			logger.Log("WARNING", fmt.Sprintf("Found %d active CONTRACT_WORKFLOW workers - waiting instead of creating new worker", len(existingActiveWorkers)), nil)
+			select {
+			case shipSymbol := <-completionChan:
+				logger.Log("INFO", fmt.Sprintf("Active worker completed for ship %s", shipSymbol), nil)
+				// Loop back to create new worker
+			case <-time.After(1 * time.Minute):
+				logger.Log("WARNING", "Timeout waiting for active worker, will check again", nil)
+			case <-ctx.Done():
+				_ = ReleasePoolAssignments(ctx, cmd.ContainerID, cmd.PlayerID, h.shipAssignmentRepo, "coordinator_stopped")
+				return result, ctx.Err()
+			}
+			continue
 		}
 
 		// Negotiate contract (use any ship from pool for negotiation)
@@ -395,8 +422,20 @@ func (h *ContractFleetCoordinatorHandler) negotiateContract(
 func (h *ContractFleetCoordinatorHandler) findExistingWorkers(
 	ctx context.Context,
 	playerID int,
-) ([]daemon.Container, error) {
-	// This is a placeholder - actual implementation would query the container repository
-	// for containers of type ContractWorkflow with status RUNNING or INTERRUPTED
-	return []daemon.Container{}, nil
+) ([]persistence.ContainerInfo, error) {
+	// Query for RUNNING contract workflow containers
+	runningWorkers, err := h.containerRepo.ListByStatusSimple(ctx, "RUNNING", &playerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query running workers: %w", err)
+	}
+
+	// Filter for CONTRACT_WORKFLOW type only
+	var workers []persistence.ContainerInfo
+	for _, container := range runningWorkers {
+		if container.ContainerType == "CONTRACT_WORKFLOW" {
+			workers = append(workers, container)
+		}
+	}
+
+	return workers, nil
 }

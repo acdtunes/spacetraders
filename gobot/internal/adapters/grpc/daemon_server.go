@@ -688,9 +688,15 @@ func (s *DaemonServer) PersistContractWorkflow(
 		nil, // Use default RealClock for production
 	)
 
-	// Persist container to database
-	if err := s.containerRepo.Add(ctx, containerEntity, "contract_workflow"); err != nil {
+	// Atomically check for existing worker and create new one
+	// This prevents multiple workers from running simultaneously
+	created, err := s.containerRepo.CreateIfNoActiveWorker(ctx, containerEntity, "contract_workflow")
+	if err != nil {
 		return fmt.Errorf("failed to persist container: %w", err)
+	}
+
+	if !created {
+		return fmt.Errorf("CONTRACT_WORKFLOW container already running for player %d", playerID)
 	}
 
 	return nil
