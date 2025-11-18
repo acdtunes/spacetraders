@@ -141,3 +141,20 @@ type ContractModel struct {
 func (ContractModel) TableName() string {
 	return "contracts"
 }
+
+// ContractPurchaseHistoryModel represents the contract_purchase_history table
+// Tracks where contract cargo purchases are made for intelligent ship positioning
+type ContractPurchaseHistoryModel struct {
+	ID             int          `gorm:"column:id;primaryKey;autoIncrement"`
+	PlayerID       int          `gorm:"column:player_id;not null;index:idx_player_system_time"`
+	Player         *PlayerModel `gorm:"foreignKey:PlayerID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
+	SystemSymbol   string       `gorm:"column:system_symbol;not null;index:idx_player_system_time"`
+	WaypointSymbol string       `gorm:"column:waypoint_symbol;not null"`
+	TradeGood      string       `gorm:"column:trade_good;not null"`
+	PurchasedAt    time.Time    `gorm:"column:purchased_at;not null;index:idx_player_system_time"`
+	ContractID     string       `gorm:"column:contract_id;not null"`
+}
+
+func (ContractPurchaseHistoryModel) TableName() string {
+	return "contract_purchase_history"
+}

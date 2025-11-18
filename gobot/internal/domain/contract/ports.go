@@ -37,3 +37,19 @@ type DeliveryData struct {
 	UnitsRequired     int
 	UnitsFulfilled    int
 }
+
+// PurchaseHistoryRepository defines the interface for contract purchase history persistence
+type PurchaseHistoryRepository interface {
+	Insert(ctx context.Context, history *PurchaseHistory) error
+	FindRecentMarkets(ctx context.Context, playerID int, systemSymbol string, limit int, sinceDays int) ([]string, error)
+}
+
+// PurchaseHistoryData is the DTO for purchase history
+type PurchaseHistoryData struct {
+	PlayerID       int
+	SystemSymbol   string
+	WaypointSymbol string
+	TradeGood      string
+	PurchasedAt    string // RFC3339 format
+	ContractID     string
+}

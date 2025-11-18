@@ -21,6 +21,12 @@ type ContractFleetCoordinatorCommand struct {
 	ContainerID string   // Coordinator's own container ID
 }
 
+// CoordinatorMetadata stores state for the coordinator's infinite loop
+type CoordinatorMetadata struct {
+	LastRebalanceTime time.Time
+	RebalanceInterval time.Duration
+}
+
 // ContractFleetCoordinatorResponse contains the coordinator execution results
 type ContractFleetCoordinatorResponse struct {
 	ContractsCompleted int
@@ -71,6 +77,12 @@ func (h *ContractFleetCoordinatorHandler) Handle(ctx context.Context, request co
 	result := &ContractFleetCoordinatorResponse{
 		ContractsCompleted: 0,
 		Errors:             []string{},
+	}
+
+	// Initialize coordinator metadata for rebalancing
+	metadata := &CoordinatorMetadata{
+		LastRebalanceTime: time.Time{}, // Zero time = never rebalanced
+		RebalanceInterval: 10 * time.Minute,
 	}
 
 	// Step 1: Validate that ships are not already assigned to active containers
@@ -273,6 +285,52 @@ func (h *ContractFleetCoordinatorHandler) Handle(ctx context.Context, request co
 				assignment := daemon.NewShipAssignment(completedShip, cmd.PlayerID, cmd.ContainerID, nil)
 				_ = h.shipAssignmentRepo.Insert(ctx, assignment)
 			}
+
+			// Check if rebalancing is needed (time-gated)
+			if time.Since(metadata.LastRebalanceTime) >= metadata.RebalanceInterval {
+				logger.Log("INFO", "Rebalance interval reached, checking fleet distribution...", nil)
+
+				// Extract system symbol from first ship
+				var systemSymbol string
+				if len(availableShips) > 0 {
+					firstShip, err := h.shipRepo.FindBySymbol(ctx, availableShips[0], cmd.PlayerID)
+					if err == nil {
+						// Extract system from waypoint (e.g., X1-ABC123-XY456Z -> X1-ABC123)
+						currentLocation := firstShip.CurrentLocation().Symbol
+						for i := len(currentLocation) - 1; i >= 0; i-- {
+							if currentLocation[i] == '-' {
+								systemSymbol = currentLocation[:i]
+								break
+							}
+						}
+					}
+				}
+
+				if systemSymbol != "" {
+					rebalanceCmd := &RebalanceContractFleetCommand{
+						CoordinatorID: cmd.ContainerID,
+						PlayerID:      cmd.PlayerID,
+						SystemSymbol:  systemSymbol,
+					}
+
+					rebalanceResp, err := h.mediator.Send(ctx, rebalanceCmd)
+					if err != nil {
+						logger.Log("WARNING", fmt.Sprintf("Rebalancing failed: %v", err), nil)
+					} else {
+						result := rebalanceResp.(*RebalanceContractFleetResponse)
+						if result.RebalancingSkipped {
+							logger.Log("INFO", fmt.Sprintf("Rebalancing skipped: %s", result.SkipReason), nil)
+						} else {
+							logger.Log("INFO", fmt.Sprintf("Rebalancing complete: %d ships repositioned", result.ShipsMoved), nil)
+						}
+					}
+				} else {
+					logger.Log("WARNING", "Could not determine system symbol for rebalancing", nil)
+				}
+
+				metadata.LastRebalanceTime = time.Now()
+			}
+
 			// Loop back to negotiate next contract
 			continue
 
