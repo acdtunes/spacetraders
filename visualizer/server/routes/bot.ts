@@ -53,14 +53,36 @@ router.get('/assignments', async (req, res) => {
 
     // Fetch all ships from SpaceTraders API and merge with assignments
     const assignments = [];
+    const processedShips = new Set<string>();
+
     for (const agent of agents) {
       try {
         const stClient = new SpaceTradersClient(API_BASE_URL, agent.token);
-        const shipsResponse = await stClient.get('/my/ships');
-        const ships = shipsResponse.data;
+
+        // Fetch all pages of ships
+        let ships: any[] = [];
+        let page = 1;
+        let hasMorePages = true;
+
+        while (hasMorePages) {
+          const shipsResponse = await stClient.get(`/my/ships?page=${page}&limit=20`);
+          ships = ships.concat(shipsResponse.data);
+
+          // Check if there are more pages
+          const meta = shipsResponse.meta;
+          if (meta && meta.total && meta.page * meta.limit >= meta.total) {
+            hasMorePages = false;
+          } else if (!shipsResponse.data || shipsResponse.data.length === 0) {
+            hasMorePages = false;
+          } else {
+            page++;
+          }
+        }
+
         const playerId = agentToPlayerMap.get(agent.symbol);
 
         for (const ship of ships) {
+          processedShips.add(ship.symbol);
           const assignment = assignmentsByShip.get(ship.symbol);
 
           if (assignment && assignment.status === 'active' && assignment.container_id) {
@@ -109,6 +131,38 @@ router.get('/assignments', async (req, res) => {
         console.error(`Failed to fetch ships for agent ${agent.symbol}:`, error);
       }
     }
+
+    // Add ships that have assignments but weren't found in SpaceTraders API
+    // (e.g., newly purchased ships that haven't appeared in API yet)
+    assignmentsResult.rows.forEach((row: any) => {
+      if (row.status === 'active' && row.container_id && !processedShips.has(row.ship_symbol)) {
+        const config = typeof row.config === 'string' ? JSON.parse(row.config) : row.config;
+
+        // Map container_type to operation name
+        let operation = 'idle';
+        if (row.container_type === 'SCOUT') {
+          operation = 'scout-markets';
+        } else if (row.container_type === 'CONTRACT' ||
+                   row.container_type === 'CONTRACT_FLEET_COORDINATOR' ||
+                   row.container_type === 'CONTRACT_WORKFLOW') {
+          operation = 'contract';
+        } else if (row.container_type === 'PURCHASE') {
+          operation = 'shipyard';
+        }
+
+        assignments.push({
+          ship_symbol: row.ship_symbol,
+          player_id: row.player_id,
+          assigned_to: row.container_id,
+          daemon_id: row.container_id,
+          status: row.status,
+          assigned_at: row.assigned_at,
+          released_at: row.released_at,
+          metadata: config,
+          operation,
+        });
+      }
+    });
 
     res.json({ assignments });
   } catch (error) {
