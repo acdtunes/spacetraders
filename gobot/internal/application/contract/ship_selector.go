@@ -71,6 +71,12 @@ func SelectClosestShip(
 			return "", 0, fmt.Errorf("failed to load ship %s: %w", shipSymbol, err)
 		}
 
+		// Skip ships that are currently in transit (e.g., rebalancing)
+		if ship.NavStatus() == navigation.NavStatusInTransit {
+			fmt.Printf("[SHIP_SELECTOR] Skipping %s (IN_TRANSIT)\n", shipSymbol)
+			continue
+		}
+
 		// PRIORITY CHECK: Does ship already have the required cargo?
 		if requiredCargoSymbol != "" {
 			cargoUnits := ship.Cargo().GetItemUnits(requiredCargoSymbol)
@@ -119,6 +125,11 @@ func SelectClosestShip(
 	if shipWithCargo != "" {
 		fmt.Printf("[SHIP_SELECTOR] Selected %s (has required cargo)\n", shipWithCargo)
 		return shipWithCargo, 0, nil
+	}
+
+	// Check if any ship was found (all might have been filtered out)
+	if closestShip == "" {
+		return "", 0, fmt.Errorf("no available ships found (all are in transit)")
 	}
 
 	fmt.Printf("[SHIP_SELECTOR] Selected %s (closest by distance: %.2f units)\n", closestShip, minDistance)
