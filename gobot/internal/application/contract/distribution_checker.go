@@ -30,6 +30,7 @@ func calculateDistance(x1, y1, x2, y2 float64) float64 {
 
 // IsRebalancingNeeded checks if ships are poorly distributed relative to target markets
 // Returns true if average distance from ships to nearest target exceeds threshold
+// OR if ships are clustered (more than 2 ships at the same waypoint)
 func (dc *DistributionChecker) IsRebalancingNeeded(
 	ctx context.Context,
 	ships []*navigation.Ship,
@@ -52,6 +53,23 @@ func (dc *DistributionChecker) IsRebalancingNeeded(
 	waypointsRaw, ok := graphResult.Graph["waypoints"].(map[string]interface{})
 	if !ok {
 		return false, 0, fmt.Errorf("invalid graph format: missing waypoints")
+	}
+
+	// Check for clustering: count ships at each waypoint
+	// Max allowed per waypoint is 2 (matches AssignShipsToMarkets cap)
+	const maxPerWaypoint = 2
+	waypointCounts := make(map[string]int)
+	for _, ship := range ships {
+		waypointCounts[ship.CurrentLocation().Symbol]++
+	}
+
+	// If any waypoint has more than allowed, we need to rebalance
+	for _, count := range waypointCounts {
+		if count > maxPerWaypoint {
+			// Ships are clustered - return true to trigger rebalancing
+			// Use avgDistance=0 since the real issue is clustering, not distance
+			return true, 0, nil
+		}
 	}
 
 	// Calculate distance from each ship to its nearest target market
