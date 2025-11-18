@@ -143,7 +143,7 @@ func (h *AssignScoutingFleetHandler) filterScoutShips(ships []*navigation.Ship, 
 
 	for _, ship := range ships {
 		// Check if ship is in the specified system
-		shipSystem := extractSystemSymbol(ship.CurrentLocation().Symbol)
+		shipSystem := shared.ExtractSystemSymbol(ship.CurrentLocation().Symbol)
 		if shipSystem != systemSymbol {
 			continue
 		}

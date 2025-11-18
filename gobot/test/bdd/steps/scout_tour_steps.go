@@ -265,13 +265,18 @@ func (c *scoutTourContext) iExecuteScoutTourCommandWithShipMarketsAndNIteration(
 		Iterations: iterations,
 	}
 
+	// Create market scanner
+	marketScanner := shipapp.NewMarketScanner(
+		c.mockAPIClient,
+		c.marketRepo,
+		c.playerRepo,
+	)
+
 	// Create handler
 	c.handler = scouting.NewScoutTourHandler(
 		c.shipRepo,
-		c.marketRepo,
-		c.mockAPIClient,
-		c.mockPlayerRepo,
 		c.mediator,
+		marketScanner,
 	)
 
 	c.startTime = time.Now()

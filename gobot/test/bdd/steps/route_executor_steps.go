@@ -115,6 +115,7 @@ func (ctx *routeExecutorContext) reset() {
 		ctx.shipRepo,
 		ctx.mediator,
 		ctx.clock,
+		nil, // marketScanner not needed for route executor tests
 	)
 
 	ctx.executionErr = nil

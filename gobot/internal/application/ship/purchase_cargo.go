@@ -3,6 +3,7 @@ package ship
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
@@ -34,9 +35,10 @@ type PurchaseCargoResponse struct {
 	TransactionCount int // Number of API transactions executed
 }
 
-// MarketRepository defines operations for market data access
+// MarketRepository defines operations for market data access and persistence
 type MarketRepository interface {
 	GetMarketData(ctx context.Context, playerID uint, waypointSymbol string) (*market.Market, error)
+	UpsertMarketData(ctx context.Context, playerID uint, waypointSymbol string, goods []market.TradeGood, timestamp time.Time) error
 }
 
 // PurchaseCargoHandler orchestrates cargo purchase operations for ships.

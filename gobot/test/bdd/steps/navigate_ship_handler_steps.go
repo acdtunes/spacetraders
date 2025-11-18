@@ -96,7 +96,7 @@ func (ctx *navigateShipHandlerContext) reset() {
 		shipRepo:  ctx.shipRepo,
 	}
 
-	ctx.routeExecutor = appShip.NewRouteExecutor(ctx.shipRepo, mockMediator, ctx.mockClock)
+	ctx.routeExecutor = appShip.NewRouteExecutor(ctx.shipRepo, mockMediator, ctx.mockClock, nil)
 
 	// Create handler
 	ctx.handler = appShip.NewNavigateShipHandler(
