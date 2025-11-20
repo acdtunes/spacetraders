@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	pb "github.com/andrescamacho/spacetraders-go/pkg/proto/daemon"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -72,22 +73,6 @@ type MarketAssignment struct {
 	Markets []string
 }
 
-type RouteSegment struct {
-	From       string
-	To         string
-	FlightMode string
-	FuelCost   int
-	TravelTime int // seconds
-}
-
-type ShipRoute struct {
-	ShipSymbol string
-	ShipType   string
-	Segments   []RouteSegment
-	TotalFuel  int
-	TotalTime  int // seconds
-}
-
 type MiningOperationResponse struct {
 	ContainerID    string
 	AsteroidField  string
@@ -96,7 +81,7 @@ type MiningOperationResponse struct {
 	Status         string
 	// Dry-run results
 	MarketSymbol string
-	ShipRoutes   []ShipRoute
+	ShipRoutes   []common.ShipRouteDTO
 	Errors       []string
 }
 
@@ -747,11 +732,11 @@ func (c *DaemonClient) MiningOperation(
 
 	// Convert ship routes for dry-run
 	if len(resp.ShipRoutes) > 0 {
-		result.ShipRoutes = make([]ShipRoute, len(resp.ShipRoutes))
+		result.ShipRoutes = make([]common.ShipRouteDTO, len(resp.ShipRoutes))
 		for i, route := range resp.ShipRoutes {
-			segments := make([]RouteSegment, len(route.Segments))
+			segments := make([]common.RouteSegmentDTO, len(route.Segments))
 			for j, seg := range route.Segments {
-				segments[j] = RouteSegment{
+				segments[j] = common.RouteSegmentDTO{
 					From:       seg.From,
 					To:         seg.To,
 					FlightMode: seg.FlightMode,
@@ -759,7 +744,7 @@ func (c *DaemonClient) MiningOperation(
 					TravelTime: int(seg.TravelTime),
 				}
 			}
-			result.ShipRoutes[i] = ShipRoute{
+			result.ShipRoutes[i] = common.ShipRouteDTO{
 				ShipSymbol: route.ShipSymbol,
 				ShipType:   route.ShipType,
 				Segments:   segments,

@@ -964,7 +964,7 @@ type MiningOperationResult struct {
 	ContainerID   string
 	AsteroidField string
 	MarketSymbol  string
-	ShipRoutes    []mining.ShipRoute
+	ShipRoutes    []common.ShipRouteDTO
 	Errors        []string
 }
 

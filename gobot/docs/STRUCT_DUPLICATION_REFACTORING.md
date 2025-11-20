@@ -12,6 +12,7 @@ This document outlines a comprehensive plan to eliminate struct duplication acro
 **Completed:**
 - **Phase 2.3**: CargoItem consolidation - 3 struct variants reduced to 1 canonical `shared.CargoItem`
 - **Phase 3.1**: Market/TradeGood Domain Unification - Migrated from `domain/trading/` to `domain/market/` as canonical implementation
+- **Phase 1.3**: RouteSegment/ShipRoute consolidation - 4 struct variants (2 RouteSegment + 2 ShipRoute) reduced to shared DTOs in `common/route_dto.go` with conversion helper
 
 ---
 
@@ -302,6 +303,23 @@ func (rs *RouteSegment) ToDTO() RouteSegmentDTO {
 
 **Tests:** Route entity BDD tests, navigation handler tests
 
+**Status:** ✅ **COMPLETED** (2025-11-20)
+
+**Implementation Summary:**
+- Created `internal/application/common/route_dto.go` with `RouteSegmentDTO`, `ShipRouteDTO`, and conversion helper `RouteSegmentToDTO()`
+- Deleted duplicate `RouteSegment` and `ShipRoute` structs from mining coordinator (lines 39-54)
+- Deleted duplicate `RouteSegment` and `ShipRoute` structs from CLI daemon client (lines 75-89)
+- Updated `MiningCoordinatorResponse.ShipRoutes` to use `[]common.ShipRouteDTO`
+- Updated `MiningOperationResponse.ShipRoutes` to use `[]common.ShipRouteDTO`
+- Updated `MiningOperationResult.ShipRoutes` in daemon server to use `[]common.ShipRouteDTO`
+- Used conversion helper `common.RouteSegmentToDTO()` in `combineTransportRoutes()` function
+- Applied Option 3 (conversion helper in common package) to maintain hexagonal architecture
+
+**Files Modified:** 5 files (route_dto.go created, mining_coordinator_command.go, daemon_client.go, daemon_server.go, daemon_service_impl.go)
+**Lines Removed:** ~40 lines of duplicate code
+**All BDD Tests:** ✅ Passing
+**Build Status:** ✅ Success
+
 ---
 
 ### Phase 2: DTO Cleanup (Medium Risk, 2-3 hours)
@@ -540,11 +558,12 @@ git commit -m "refactor: Phase 3 - Unify market domain"
 ## Success Metrics
 
 ### Quantitative
-- **Structs eliminated:** 6 of 10-12 completed (CargoItem variants: 3, Market/TradeGood: 2, Container: 1 renamed)
-- **Files modified:** 18 of ~20 (persistence, application layer, daemon main, adapter implementations)
+- **Structs eliminated:** 9 of 10-12 completed (CargoItem variants: 3, Market/TradeGood: 2, RouteSegment variants: 2, ShipRoute variants: 2)
+- **Files modified:** 23 of ~25 (persistence, application layer, daemon main, adapter implementations, gRPC layer)
+- **Files created:** 1 (`internal/application/common/route_dto.go`)
 - **Packages deleted:** 1 (`internal/domain/trading`)
-- **Lines of code reduced:** ~160 of 200-300 target
-- **Test pass rate:** Pending verification (Container refactoring)
+- **Lines of code reduced:** ~200 of 200-300 target
+- **Test pass rate:** 100% (All BDD tests passing)
 
 ### Qualitative
 - Clearer architectural boundaries (domain vs DTO)

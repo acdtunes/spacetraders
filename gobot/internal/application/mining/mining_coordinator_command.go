@@ -35,33 +35,15 @@ type MiningCoordinatorCommand struct {
 	MaxLegTime        int      // Max time per leg in minutes (0 = no limit)
 }
 
-// RouteSegment represents a single leg of a planned route
-type RouteSegment struct {
-	From       string // Origin waypoint
-	To         string // Destination waypoint
-	FlightMode string // CRUISE, DRIFT, BURN, STEALTH
-	FuelCost   int    // Fuel required
-	TravelTime int    // Time in seconds
-}
-
-// ShipRoute contains a ship's planned route
-type ShipRoute struct {
-	ShipSymbol string         // Ship identifier
-	ShipType   string         // "miner" or "transport"
-	Segments   []RouteSegment // Route segments
-	TotalFuel  int            // Total fuel for route
-	TotalTime  int            // Total time in seconds
-}
-
 // MiningCoordinatorResponse contains the coordinator execution results
 type MiningCoordinatorResponse struct {
 	TotalTransfers int
 	TotalRevenue   int
 	Errors         []string
 	// Dry-run results
-	AsteroidField string      // Selected asteroid (dry-run)
-	MarketSymbol  string      // Market for transport loop (dry-run)
-	ShipRoutes    []ShipRoute // Planned routes for all ships (dry-run)
+	AsteroidField string               // Selected asteroid (dry-run)
+	MarketSymbol  string               // Market for transport loop (dry-run)
+	ShipRoutes    []common.ShipRouteDTO // Planned routes for all ships (dry-run)
 }
 
 // TransportRoutePlan contains the planned routes for a transport ship
@@ -574,7 +556,7 @@ func (h *MiningCoordinatorHandler) planDryRunRoutes(
 
 	result := &MiningCoordinatorResponse{
 		AsteroidField: cmd.AsteroidField,
-		ShipRoutes:    []ShipRoute{},
+		ShipRoutes:    []common.ShipRouteDTO{},
 		Errors:        []string{},
 	}
 
@@ -1028,13 +1010,13 @@ func (h *MiningCoordinatorHandler) convertRouteToShipRoute(
 	shipSymbol string,
 	shipType string,
 	routeResp *routing.RouteResponse,
-) ShipRoute {
-	segments := []RouteSegment{}
+) common.ShipRouteDTO {
+	segments := []common.RouteSegmentDTO{}
 	prevWaypoint := startWaypoint
 
 	for _, step := range routeResp.Steps {
 		if step.Action == routing.RouteActionTravel {
-			segments = append(segments, RouteSegment{
+			segments = append(segments, common.RouteSegmentDTO{
 				From:       prevWaypoint,
 				To:         step.Waypoint,
 				FlightMode: step.Mode,
@@ -1045,7 +1027,7 @@ func (h *MiningCoordinatorHandler) convertRouteToShipRoute(
 		}
 	}
 
-	return ShipRoute{
+	return common.ShipRouteDTO{
 		ShipSymbol: shipSymbol,
 		ShipType:   shipType,
 		Segments:   segments,
@@ -1059,21 +1041,15 @@ func (h *MiningCoordinatorHandler) combineTransportRoutes(
 	startWaypoint string,
 	shipSymbol string,
 	route1, route2, route3 *navigation.Route,
-) ShipRoute {
-	segments := []RouteSegment{}
+) common.ShipRouteDTO {
+	segments := []common.RouteSegmentDTO{}
 	totalFuel := 0
 	totalTime := 0
 
 	// Helper to convert segments from a Route
 	addRouteSegments := func(route *navigation.Route) {
 		for _, seg := range route.Segments() {
-			segments = append(segments, RouteSegment{
-				From:       seg.FromWaypoint.Symbol,
-				To:         seg.ToWaypoint.Symbol,
-				FlightMode: seg.FlightMode.String(),
-				FuelCost:   seg.FuelRequired,
-				TravelTime: seg.TravelTime,
-			})
+			segments = append(segments, common.RouteSegmentToDTO(seg))
 		}
 		totalFuel += route.TotalFuelRequired()
 		totalTime += route.TotalTravelTime()
@@ -1084,7 +1060,7 @@ func (h *MiningCoordinatorHandler) combineTransportRoutes(
 	addRouteSegments(route2) // market -> asteroid
 	addRouteSegments(route3) // asteroid -> market
 
-	return ShipRoute{
+	return common.ShipRouteDTO{
 		ShipSymbol: shipSymbol,
 		ShipType:   "transport",
 		Segments:   segments,
