@@ -31,6 +31,7 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	// Container steps registered BEFORE ship steps to handle container-specific error assertions
 	steps.InitializeValueObjectScenarios(sc)
 	steps.RegisterContainerSteps(sc)
+	steps.RegisterRouteSteps(sc)
 	steps.InitializeShipScenario(sc)
 	steps.InitializeContainerIDSteps(sc)
 }
