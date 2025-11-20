@@ -10,10 +10,12 @@ var (
 	ErrInvalidCommandType = errors.New("invalid command type")
 )
 
-// ContainerInfo represents a background daemon container
+// ContainerInfo represents container metadata for daemon client communication.
+// This is a lightweight DTO used at the gRPC boundary.
+// PlayerID uses the domain standard int type.
 type ContainerInfo struct {
 	ID       string
-	PlayerID int
+	PlayerID int    // Domain standard int type
 	Status   string // "STARTING", "RUNNING", "STOPPED", "FAILED", etc.
 	Type     string // "scout-tour", "navigate", "contract", etc.
 }

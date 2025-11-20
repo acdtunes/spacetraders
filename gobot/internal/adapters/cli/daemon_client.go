@@ -97,11 +97,14 @@ type ContractFleetCoordinatorResponse struct {
 	Status      string
 }
 
-type ContainerInfo struct{
+// ContainerInfo mirrors the protobuf ContainerInfo message for CLI display.
+// This struct includes all fields needed for user-facing container information.
+// Note: PlayerID is int32 per protobuf requirements (converted from domain int).
+type ContainerInfo struct {
 	ContainerID      string
 	ContainerType    string
 	Status           string
-	PlayerID         int32
+	PlayerID         int32 // Protobuf int32 (convert from domain int)
 	CreatedAt        string
 	UpdatedAt        string
 	CurrentIteration int32

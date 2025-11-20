@@ -176,7 +176,9 @@ func (r *ContainerRepositoryGORM) Delete(
 	return nil
 }
 
-// ContainerSummary represents basic container information for coordinators
+// ContainerSummary is an internal query result struct for simplified container lookups.
+// For full container data, use the Container domain entity.
+// This struct is used by coordinators to check container status efficiently.
 type ContainerSummary struct {
 	ID            string
 	ContainerType string
