@@ -227,7 +227,7 @@ func (b *GraphBuilder) BuildSystemGraph(ctx context.Context, systemSymbol string
 
 	// Save waypoints with traits to waypoints table (2hr TTL)
 	for _, waypointObj := range waypointObjects {
-		if err := b.waypointRepo.Save(ctx, waypointObj); err != nil {
+		if err := b.waypointRepo.Add(ctx, waypointObj); err != nil {
 			log.Printf("Warning: failed to save waypoint %s: %v", waypointObj.Symbol, err)
 			// Continue - caching failure shouldn't break the operation
 		}

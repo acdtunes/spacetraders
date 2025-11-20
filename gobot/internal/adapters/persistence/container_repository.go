@@ -159,8 +159,8 @@ func (r *ContainerRepositoryGORM) ListAll(
 	return models, nil
 }
 
-// Delete removes a container record
-func (r *ContainerRepositoryGORM) Delete(
+// Remove removes a container record
+func (r *ContainerRepositoryGORM) Remove(
 	ctx context.Context,
 	containerID string,
 	playerID int,
@@ -170,7 +170,7 @@ func (r *ContainerRepositoryGORM) Delete(
 		Delete(&ContainerModel{})
 
 	if result.Error != nil {
-		return fmt.Errorf("failed to delete container: %w", result.Error)
+		return fmt.Errorf("failed to remove container: %w", result.Error)
 	}
 
 	return nil

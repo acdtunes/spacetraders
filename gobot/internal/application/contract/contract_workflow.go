@@ -502,8 +502,8 @@ func (h *ContractWorkflowHandler) trackPurchase(
 		return fmt.Errorf("failed to create purchase history: %w", err)
 	}
 
-	if err := h.purchaseHistoryRepo.Insert(ctx, history); err != nil {
-		return fmt.Errorf("failed to insert purchase history: %w", err)
+	if err := h.purchaseHistoryRepo.Add(ctx, history); err != nil {
+		return fmt.Errorf("failed to add purchase history: %w", err)
 	}
 
 	return nil

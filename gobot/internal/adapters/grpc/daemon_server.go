@@ -531,7 +531,7 @@ func (s *DaemonServer) recoverContainer(ctx context.Context, containerModel *per
 			AssignedAt:  containerModel.StartedAt,
 		}
 
-		if err := s.shipAssignmentRepo.Insert(ctx, containerModelToShipAssignment(assignmentEntity)); err != nil {
+		if err := s.shipAssignmentRepo.Assign(ctx, containerModelToShipAssignment(assignmentEntity)); err != nil {
 			return fmt.Errorf("failed to reassign ship %s: %w", shipSymbol, err)
 		}
 	}

@@ -469,7 +469,7 @@ func (r *ContainerRunner) createShipAssignments() error {
 			nil,
 		)
 
-		if err := r.shipAssignmentRepo.Insert(ctx, assignment); err != nil {
+		if err := r.shipAssignmentRepo.Assign(ctx, assignment); err != nil {
 			return fmt.Errorf("failed to assign ship %s: %w", shipSymbol, err)
 		}
 

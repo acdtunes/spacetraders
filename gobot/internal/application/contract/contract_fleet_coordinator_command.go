@@ -330,7 +330,7 @@ func (h *ContractFleetCoordinatorHandler) Handle(ctx context.Context, request co
 				logger.Log("WARNING", fmt.Sprintf("Failed to transfer ship %s back to coordinator: %v", completedShip, err), nil)
 				// Fallback: try inserting new assignment if transfer fails
 				assignment := daemon.NewShipAssignment(completedShip, cmd.PlayerID, cmd.ContainerID, nil)
-				_ = h.shipAssignmentRepo.Insert(ctx, assignment)
+				_ = h.shipAssignmentRepo.Assign(ctx, assignment)
 			}
 
 			// Check if rebalancing is needed (time-gated)

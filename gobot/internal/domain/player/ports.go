@@ -6,7 +6,7 @@ import "context"
 type PlayerRepository interface {
 	FindByID(ctx context.Context, playerID int) (*Player, error)
 	FindByAgentSymbol(ctx context.Context, agentSymbol string) (*Player, error)
-	Save(ctx context.Context, player *Player) error
+	Add(ctx context.Context, player *Player) error
 }
 
 // DTOs for player operations

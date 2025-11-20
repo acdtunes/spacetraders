@@ -97,7 +97,7 @@ func (p *SystemGraphProvider) buildFromAPI(ctx context.Context, systemSymbol str
 
 // saveToDatabase saves graph to database cache
 func (p *SystemGraphProvider) saveToDatabase(ctx context.Context, systemSymbol string, graph map[string]interface{}) error {
-	if err := p.graphRepo.Save(ctx, systemSymbol, graph); err != nil {
+	if err := p.graphRepo.Add(ctx, systemSymbol, graph); err != nil {
 		return fmt.Errorf("failed to save graph: %w", err)
 	}
 

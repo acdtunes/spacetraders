@@ -11,7 +11,7 @@ type WaypointRepository interface {
 	FindBySymbol(ctx context.Context, symbol, systemSymbol string) (*shared.Waypoint, error)
 	ListBySystem(ctx context.Context, systemSymbol string) ([]*shared.Waypoint, error)
 	ListBySystemWithTrait(ctx context.Context, systemSymbol, trait string) ([]*shared.Waypoint, error)
-	Save(ctx context.Context, waypoint *shared.Waypoint) error
+	Add(ctx context.Context, waypoint *shared.Waypoint) error
 }
 
 // SystemGraphRepository defines operations for system graph persistence
@@ -19,8 +19,8 @@ type SystemGraphRepository interface {
 	// Get retrieves a graph for a system from cache
 	Get(ctx context.Context, systemSymbol string) (map[string]interface{}, error)
 
-	// Save persists a graph for a system
-	Save(ctx context.Context, systemSymbol string, graph map[string]interface{}) error
+	// Add persists a graph for a system
+	Add(ctx context.Context, systemSymbol string, graph map[string]interface{}) error
 }
 
 // IGraphBuilder defines operations for building system graphs from API

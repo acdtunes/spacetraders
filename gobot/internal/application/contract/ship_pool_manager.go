@@ -68,7 +68,7 @@ func CreatePoolAssignments(
 			nil, // Use nil for clock - the entity will use default
 		)
 
-		if err := shipAssignmentRepo.Insert(ctx, assignment); err != nil {
+		if err := shipAssignmentRepo.Assign(ctx, assignment); err != nil {
 			return fmt.Errorf("failed to assign ship %s to coordinator: %w", shipSymbol, err)
 		}
 

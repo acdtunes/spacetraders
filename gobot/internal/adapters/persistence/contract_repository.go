@@ -58,8 +58,8 @@ func (r *GormContractRepository) FindActiveContracts(ctx context.Context, player
 	return contracts, nil
 }
 
-// Save persists a contract to the database
-func (r *GormContractRepository) Save(ctx context.Context, c *contract.Contract) error {
+// Add persists a contract to the database
+func (r *GormContractRepository) Add(ctx context.Context, c *contract.Contract) error {
 	model, err := r.entityToModel(c)
 	if err != nil {
 		return fmt.Errorf("failed to convert contract to model: %w", err)
@@ -68,7 +68,7 @@ func (r *GormContractRepository) Save(ctx context.Context, c *contract.Contract)
 	// Upsert: create or update
 	result := r.db.WithContext(ctx).Save(model)
 	if result.Error != nil {
-		return fmt.Errorf("failed to save contract: %w", result.Error)
+		return fmt.Errorf("failed to add contract: %w", result.Error)
 	}
 
 	return nil

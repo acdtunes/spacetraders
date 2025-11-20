@@ -97,7 +97,7 @@ func (h *DeliverContractHandler) Handle(ctx context.Context, request common.Requ
 	}
 
 	// 6. Save updated contract to repository
-	if err := h.contractRepo.Save(ctx, contract); err != nil {
+	if err := h.contractRepo.Add(ctx, contract); err != nil {
 		return nil, fmt.Errorf("failed to save contract: %w", err)
 	}
 

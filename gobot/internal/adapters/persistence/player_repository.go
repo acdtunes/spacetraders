@@ -47,8 +47,8 @@ func (r *GormPlayerRepository) FindByAgentSymbol(ctx context.Context, agentSymbo
 	return r.modelToPlayer(&model)
 }
 
-// Save persists a player
-func (r *GormPlayerRepository) Save(ctx context.Context, player *player.Player) error {
+// Add persists a player
+func (r *GormPlayerRepository) Add(ctx context.Context, player *player.Player) error {
 	model, err := r.playerToModel(player)
 	if err != nil {
 		return fmt.Errorf("failed to convert player to model: %w", err)
@@ -57,7 +57,7 @@ func (r *GormPlayerRepository) Save(ctx context.Context, player *player.Player) 
 	// Upsert: create or update
 	result := r.db.WithContext(ctx).Save(model)
 	if result.Error != nil {
-		return fmt.Errorf("failed to save player: %w", result.Error)
+		return fmt.Errorf("failed to add player: %w", result.Error)
 	}
 
 	return nil

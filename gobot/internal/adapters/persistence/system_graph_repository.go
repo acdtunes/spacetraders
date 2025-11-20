@@ -47,8 +47,8 @@ func (r *GormSystemGraphRepository) Get(ctx context.Context, systemSymbol string
 	return graph, nil
 }
 
-// Save persists a graph for a system (upsert)
-func (r *GormSystemGraphRepository) Save(ctx context.Context, systemSymbol string, graph map[string]interface{}) error {
+// Add persists a graph for a system (upsert)
+func (r *GormSystemGraphRepository) Add(ctx context.Context, systemSymbol string, graph map[string]interface{}) error {
 	// Marshal to JSON
 	graphJSON, err := json.Marshal(graph)
 	if err != nil {
@@ -72,7 +72,7 @@ func (r *GormSystemGraphRepository) Save(ctx context.Context, systemSymbol strin
 		Create(&model).Error
 
 	if err != nil {
-		return fmt.Errorf("failed to save system graph: %w", err)
+		return fmt.Errorf("failed to add system graph: %w", err)
 	}
 
 	return nil

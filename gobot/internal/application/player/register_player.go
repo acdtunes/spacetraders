@@ -55,7 +55,7 @@ func (h *RegisterPlayerHandler) Handle(ctx context.Context, request common.Reque
 		Credits:     0, // Will be synced from API later
 	}
 
-	if err := h.playerRepo.Save(ctx, player); err != nil {
+	if err := h.playerRepo.Add(ctx, player); err != nil {
 		return nil, fmt.Errorf("failed to save player: %w", err)
 	}
 
@@ -126,7 +126,7 @@ func (h *SyncPlayerHandler) Handle(ctx context.Context, request common.Request) 
 	updated = true
 
 	if updated {
-		if err := h.playerRepo.Save(ctx, player); err != nil {
+		if err := h.playerRepo.Add(ctx, player); err != nil {
 			return nil, fmt.Errorf("failed to save player updates: %w", err)
 		}
 	}

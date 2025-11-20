@@ -6,12 +6,12 @@ import "context"
 type ContractRepository interface {
 	FindByID(ctx context.Context, contractID string, playerID int) (*Contract, error)
 	FindActiveContracts(ctx context.Context, playerID int) ([]*Contract, error)
-	Save(ctx context.Context, contract *Contract) error
+	Add(ctx context.Context, contract *Contract) error
 }
 
 // PurchaseHistoryRepository defines the interface for contract purchase history persistence
 type PurchaseHistoryRepository interface {
-	Insert(ctx context.Context, history *PurchaseHistory) error
+	Add(ctx context.Context, history *PurchaseHistory) error
 	FindRecentMarkets(ctx context.Context, playerID int, systemSymbol string, limit int, sinceDays int) ([]string, error)
 }
 

@@ -94,7 +94,7 @@ func (h *NegotiateContractHandler) Handle(ctx context.Context, request common.Re
 		existingContract := h.convertToDomain(existingContractData, cmd.PlayerID)
 
 		// Save to database
-		if err := h.contractRepo.Save(ctx, existingContract); err != nil {
+		if err := h.contractRepo.Add(ctx, existingContract); err != nil {
 			return nil, fmt.Errorf("failed to save existing contract: %w", err)
 		}
 
@@ -118,7 +118,7 @@ func (h *NegotiateContractHandler) Handle(ctx context.Context, request common.Re
 	newContract := h.convertToDomain(result.Contract, cmd.PlayerID)
 
 	// 8. Save contract to database
-	if err := h.contractRepo.Save(ctx, newContract); err != nil {
+	if err := h.contractRepo.Add(ctx, newContract); err != nil {
 		return nil, fmt.Errorf("failed to save contract: %w", err)
 	}
 

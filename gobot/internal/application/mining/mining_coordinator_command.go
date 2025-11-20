@@ -305,7 +305,7 @@ func (h *MiningCoordinatorHandler) Handle(ctx context.Context, request common.Re
 			}
 			h.releasePoolAssignments(ctx, cmd.ContainerID, cmd.PlayerID)
 			operation.Stop()
-			h.operationRepo.Update(ctx, operation)
+			h.operationRepo.Save(ctx, operation)
 			return result, ctx.Err()
 
 		case transportSymbol := <-transportAvailabilityChan:
@@ -392,7 +392,7 @@ func (h *MiningCoordinatorHandler) getOrCreateOperation(
 		// Resume existing operation
 		if operation.IsPending() {
 			operation.Start()
-			h.operationRepo.Update(ctx, operation)
+			h.operationRepo.Save(ctx, operation)
 		}
 		return operation, nil
 	}
@@ -411,12 +411,12 @@ func (h *MiningCoordinatorHandler) getOrCreateOperation(
 		nil,
 	)
 
-	if err := h.operationRepo.Insert(ctx, operation); err != nil {
+	if err := h.operationRepo.Add(ctx, operation); err != nil {
 		return nil, fmt.Errorf("failed to insert operation: %w", err)
 	}
 
 	operation.Start()
-	h.operationRepo.Update(ctx, operation)
+	h.operationRepo.Save(ctx, operation)
 
 	return operation, nil
 }

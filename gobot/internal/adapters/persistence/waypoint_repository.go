@@ -123,8 +123,8 @@ func (r *GormWaypointRepository) ListBySystemWithFuel(ctx context.Context, syste
 	return waypoints, nil
 }
 
-// Save persists a waypoint
-func (r *GormWaypointRepository) Save(ctx context.Context, waypoint *shared.Waypoint) error {
+// Add persists a waypoint
+func (r *GormWaypointRepository) Add(ctx context.Context, waypoint *shared.Waypoint) error {
 	model, err := r.waypointToModel(waypoint)
 	if err != nil {
 		return fmt.Errorf("failed to convert waypoint to model: %w", err)
@@ -133,7 +133,7 @@ func (r *GormWaypointRepository) Save(ctx context.Context, waypoint *shared.Wayp
 	// Upsert: create or update
 	result := r.db.WithContext(ctx).Save(model)
 	if result.Error != nil {
-		return fmt.Errorf("failed to save waypoint: %w", result.Error)
+		return fmt.Errorf("failed to add waypoint: %w", result.Error)
 	}
 
 	return nil

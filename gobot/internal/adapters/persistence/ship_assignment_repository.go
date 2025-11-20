@@ -21,9 +21,8 @@ func NewShipAssignmentRepository(db *gorm.DB) *ShipAssignmentRepositoryGORM {
 	return &ShipAssignmentRepositoryGORM{db: db}
 }
 
-// Insert creates a new ship assignment record in the database
-// Returns error if ship already has an active assignment
-func (r *ShipAssignmentRepositoryGORM) Insert(
+// Assign creates or updates a ship assignment
+func (r *ShipAssignmentRepositoryGORM) Assign(
 	ctx context.Context,
 	assignment *daemon.ShipAssignment,
 ) error {
@@ -53,18 +52,10 @@ func (r *ShipAssignmentRepositoryGORM) Insert(
 		DoUpdates: clause.AssignmentColumns([]string{"container_id", "status", "assigned_at", "released_at", "release_reason"}),
 		UpdateAll: false,
 	}).Create(model).Error; err != nil {
-		return fmt.Errorf("failed to insert ship assignment: %w", err)
+		return fmt.Errorf("failed to assign ship: %w", err)
 	}
 
 	return nil
-}
-
-// Assign creates or updates a ship assignment (alias for Insert with upsert behavior)
-func (r *ShipAssignmentRepositoryGORM) Assign(
-	ctx context.Context,
-	assignment *daemon.ShipAssignment,
-) error {
-	return r.Insert(ctx, assignment)
 }
 
 // FindByShip retrieves the active assignment for a ship

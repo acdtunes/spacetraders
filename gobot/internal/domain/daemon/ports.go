@@ -71,10 +71,7 @@ type DaemonClient interface {
 
 // ShipAssignmentRepository defines persistence operations for ship assignments
 type ShipAssignmentRepository interface {
-	// Insert creates a new ship assignment record
-	Insert(ctx context.Context, assignment *ShipAssignment) error
-
-	// Assign creates or updates a ship assignment (alias for Insert with upsert behavior)
+	// Assign creates or updates a ship assignment
 	Assign(ctx context.Context, assignment *ShipAssignment) error
 
 	// FindByShip retrieves the active assignment for a ship

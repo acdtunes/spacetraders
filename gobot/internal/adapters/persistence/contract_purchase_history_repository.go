@@ -19,13 +19,13 @@ func NewGormPurchaseHistoryRepository(db *gorm.DB) *GormPurchaseHistoryRepositor
 	return &GormPurchaseHistoryRepository{db: db}
 }
 
-// Insert saves a new purchase history record
-func (r *GormPurchaseHistoryRepository) Insert(ctx context.Context, history *contract.PurchaseHistory) error {
+// Add saves a new purchase history record
+func (r *GormPurchaseHistoryRepository) Add(ctx context.Context, history *contract.PurchaseHistory) error {
 	model := r.entityToModel(history)
 
 	result := r.db.WithContext(ctx).Create(model)
 	if result.Error != nil {
-		return fmt.Errorf("failed to insert purchase history: %w", result.Error)
+		return fmt.Errorf("failed to add purchase history: %w", result.Error)
 	}
 
 	return nil

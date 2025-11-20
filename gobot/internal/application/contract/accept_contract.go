@@ -72,7 +72,7 @@ func (h *AcceptContractHandler) Handle(ctx context.Context, request common.Reque
 	}
 
 	// 5. Save updated contract to database
-	if err := h.contractRepo.Save(ctx, contract); err != nil {
+	if err := h.contractRepo.Add(ctx, contract); err != nil {
 		return nil, fmt.Errorf("failed to save contract: %w", err)
 	}
 

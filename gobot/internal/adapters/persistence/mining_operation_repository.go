@@ -19,15 +19,15 @@ func NewMiningOperationRepository(db *gorm.DB) *MiningOperationRepository {
 	return &MiningOperationRepository{db: db}
 }
 
-// Insert creates a new mining operation in the database
-func (r *MiningOperationRepository) Insert(ctx context.Context, op *mining.MiningOperation) error {
+// Add creates a new mining operation in the database
+func (r *MiningOperationRepository) Add(ctx context.Context, op *mining.MiningOperation) error {
 	model, err := r.toModel(op)
 	if err != nil {
 		return fmt.Errorf("failed to convert to model: %w", err)
 	}
 
 	if err := r.db.WithContext(ctx).Create(model).Error; err != nil {
-		return fmt.Errorf("failed to insert mining operation: %w", err)
+		return fmt.Errorf("failed to add mining operation: %w", err)
 	}
 
 	return nil
@@ -48,26 +48,26 @@ func (r *MiningOperationRepository) FindByID(ctx context.Context, id string, pla
 	return r.toEntity(&model)
 }
 
-// Update persists changes to an existing mining operation
-func (r *MiningOperationRepository) Update(ctx context.Context, op *mining.MiningOperation) error {
+// Save persists changes to an existing mining operation
+func (r *MiningOperationRepository) Save(ctx context.Context, op *mining.MiningOperation) error {
 	model, err := r.toModel(op)
 	if err != nil {
 		return fmt.Errorf("failed to convert to model: %w", err)
 	}
 
 	if err := r.db.WithContext(ctx).Save(model).Error; err != nil {
-		return fmt.Errorf("failed to update mining operation: %w", err)
+		return fmt.Errorf("failed to save mining operation: %w", err)
 	}
 
 	return nil
 }
 
-// Delete removes a mining operation from the database
-func (r *MiningOperationRepository) Delete(ctx context.Context, id string, playerID int) error {
+// Remove removes a mining operation from the database
+func (r *MiningOperationRepository) Remove(ctx context.Context, id string, playerID int) error {
 	if err := r.db.WithContext(ctx).
 		Where("id = ? AND player_id = ?", id, playerID).
 		Delete(&MiningOperationModel{}).Error; err != nil {
-		return fmt.Errorf("failed to delete mining operation: %w", err)
+		return fmt.Errorf("failed to remove mining operation: %w", err)
 	}
 
 	return nil

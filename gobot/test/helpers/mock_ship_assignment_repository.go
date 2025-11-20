@@ -21,17 +21,12 @@ func NewMockShipAssignmentRepository() *MockShipAssignmentRepository {
 	}
 }
 
-// Insert creates a new ship assignment record
-func (m *MockShipAssignmentRepository) Insert(ctx context.Context, assignment *daemon.ShipAssignment) error {
+// Assign creates or updates a ship assignment
+func (m *MockShipAssignmentRepository) Assign(ctx context.Context, assignment *daemon.ShipAssignment) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.assignments[assignment.ShipSymbol()] = assignment
 	return nil
-}
-
-// Assign creates or updates a ship assignment (alias for Insert with upsert behavior)
-func (m *MockShipAssignmentRepository) Assign(ctx context.Context, assignment *daemon.ShipAssignment) error {
-	return m.Insert(ctx, assignment)
 }
 
 // FindByShip retrieves the active assignment for a ship
