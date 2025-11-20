@@ -81,10 +81,23 @@ func (p *RoutePlanner) createRouteFromPlan(
 	}
 
 	// Log routing service response
-	logger.Log("DEBUG", fmt.Sprintf("[ROUTE PLANNER] Routing service returned %d steps", len(routePlan.Steps)), nil)
+	logger.Log("INFO", "Route planning completed by routing service", map[string]interface{}{
+		"ship_symbol": ship.ShipSymbol(),
+		"action":      "route_plan_received",
+		"step_count":  len(routePlan.Steps),
+		"origin":      ship.CurrentLocation().Symbol,
+	})
 	for i, step := range routePlan.Steps {
-		logger.Log("DEBUG", fmt.Sprintf("[ROUTE PLANNER]   Step %d: Action=%v, Waypoint=%s, Mode=%s, Fuel=%d, Time=%d",
-			i, step.Action, step.Waypoint, step.Mode, step.FuelCost, step.TimeSeconds), nil)
+		logger.Log("INFO", "Route planning step", map[string]interface{}{
+			"ship_symbol":  ship.ShipSymbol(),
+			"action":       "route_step",
+			"step_index":   i,
+			"step_action":  string(step.Action),
+			"waypoint":     step.Waypoint,
+			"flight_mode":  step.Mode,
+			"fuel_cost":    step.FuelCost,
+			"time_seconds": step.TimeSeconds,
+		})
 	}
 
 	// Check if first action is REFUEL (ship at fuel station with low fuel)
@@ -153,11 +166,22 @@ func (p *RoutePlanner) createRouteFromPlan(
 		return nil, fmt.Errorf("route plan has no TRAVEL steps")
 	}
 
-	// DEBUG: Log created segments
-	fmt.Printf("[ROUTE PLANNER] Created %d route segments:\n", len(segments))
+	// Log created segments
+	logger.Log("INFO", "Route segments created", map[string]interface{}{
+		"ship_symbol":   ship.ShipSymbol(),
+		"action":        "segments_created",
+		"segment_count": len(segments),
+	})
 	for i, seg := range segments {
-		fmt.Printf("[ROUTE PLANNER]   Segment %d: %s → %s (fuel=%d, refuel=%v)\n",
-			i, seg.FromWaypoint.Symbol, seg.ToWaypoint.Symbol, seg.FuelRequired, seg.RequiresRefuel)
+		logger.Log("INFO", "Route segment details", map[string]interface{}{
+			"ship_symbol":     ship.ShipSymbol(),
+			"action":          "route_segment",
+			"segment_index":   i,
+			"from_waypoint":   seg.FromWaypoint.Symbol,
+			"to_waypoint":     seg.ToWaypoint.Symbol,
+			"fuel_required":   seg.FuelRequired,
+			"requires_refuel": seg.RequiresRefuel,
+		})
 	}
 
 	// Generate route ID

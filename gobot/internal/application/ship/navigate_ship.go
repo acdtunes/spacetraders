@@ -93,7 +93,12 @@ func (h *NavigateShipHandler) Handle(ctx context.Context, request common.Request
 		return nil, fmt.Errorf("failed to get system graph: %w", err)
 	}
 
-	logger.Log("INFO", fmt.Sprintf("Loaded graph for %s from %s", systemSymbol, graphResult.Source), nil)
+	logger.Log("INFO", "System graph loaded", map[string]interface{}{
+		"ship_symbol":   cmd.ShipSymbol,
+		"action":        "load_graph",
+		"system_symbol": systemSymbol,
+		"source":        graphResult.Source,
+	})
 
 	// 3. Enrich waypoints with fuel station data
 	waypointObjects, err := h.waypointEnricher.EnrichGraphWaypoints(ctx, graphResult.Graph, systemSymbol)
@@ -108,9 +113,19 @@ func (h *NavigateShipHandler) Handle(ctx context.Context, request common.Request
 
 	// 5. Handle IN_TRANSIT from previous navigation (CRITICAL for idempotency!)
 	// Ship might be IN_TRANSIT to its current location - must wait before proceeding
-	logger.Log("INFO", fmt.Sprintf("[NAVIGATE] Ship %s at %s, destination %s", ship.ShipSymbol(), ship.CurrentLocation().Symbol, cmd.Destination), nil)
+	logger.Log("INFO", "Ship navigation requested", map[string]interface{}{
+		"ship_symbol": ship.ShipSymbol(),
+		"action":      "navigate",
+		"current":     ship.CurrentLocation().Symbol,
+		"destination": cmd.Destination,
+		"status":      string(ship.NavStatus()),
+	})
 	if ship.NavStatus() == domainNavigation.NavStatusInTransit {
-		logger.Log("INFO", "[NAVIGATE] Ship is IN_TRANSIT, waiting for arrival before checking destination...", nil)
+		logger.Log("INFO", "Ship in transit - waiting for arrival", map[string]interface{}{
+			"ship_symbol": ship.ShipSymbol(),
+			"action":      "wait_arrival",
+			"status":      "IN_TRANSIT",
+		})
 
 		// Create a temporary route with no segments to trigger waitForCurrentTransit
 		emptyRoute, err := domainNavigation.NewRoute(
@@ -135,17 +150,32 @@ func (h *NavigateShipHandler) Handle(ctx context.Context, request common.Request
 		if err != nil {
 			return nil, fmt.Errorf("failed to reload ship after transit: %w", err)
 		}
-		logger.Log("INFO", fmt.Sprintf("[NAVIGATE] Ship arrived, status now: %s", ship.NavStatus()), nil)
+		logger.Log("INFO", "Ship arrived at destination", map[string]interface{}{
+			"ship_symbol": ship.ShipSymbol(),
+			"action":      "arrival_complete",
+			"status":      string(ship.NavStatus()),
+			"location":    ship.CurrentLocation().Symbol,
+		})
 	}
 
 	// 6. Check if ship is already at destination (idempotent command)
 	if ship.CurrentLocation().Symbol == cmd.Destination {
-		logger.Log("INFO", "[NAVIGATE] Ship already at destination, returning early", nil)
+		logger.Log("INFO", "Ship already at destination", map[string]interface{}{
+			"ship_symbol": ship.ShipSymbol(),
+			"action":      "navigate",
+			"destination": cmd.Destination,
+			"result":      "already_present",
+		})
 		return h.handleAlreadyAtDestination(cmd, ship)
 	}
 
 	// 7. Plan route using routing engine
-	logger.Log("INFO", fmt.Sprintf("[NAVIGATE] Planning route from %s to %s", ship.CurrentLocation().Symbol, cmd.Destination), nil)
+	logger.Log("INFO", "Route planning initiated", map[string]interface{}{
+		"ship_symbol": ship.ShipSymbol(),
+		"action":      "plan_route",
+		"origin":      ship.CurrentLocation().Symbol,
+		"destination": cmd.Destination,
+	})
 	route, err := h.routePlanner.PlanRoute(ctx, ship, cmd.Destination, waypointObjects, cmd.PreferCruise)
 	if err != nil {
 		return nil, fmt.Errorf("failed to plan route: %w", err)

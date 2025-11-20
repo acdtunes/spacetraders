@@ -94,38 +94,64 @@ func (e *RouteExecutor) ExecuteRoute(
 	segmentCount := 0
 	for {
 		segment := route.NextSegment()
-		logger.Log("INFO", fmt.Sprintf("[ROUTE EXECUTOR] Loop iteration %d: segment=%v, currentIndex=%d, totalSegments=%d",
-			segmentCount, segment != nil, route.CurrentSegmentIndex(), len(route.Segments())), nil)
 
 		if segment == nil {
-			logger.Log("INFO", "[ROUTE EXECUTOR] NextSegment() returned nil, breaking loop", nil)
+			logger.Log("INFO", "Route execution complete - no more segments", map[string]interface{}{
+				"ship_symbol":     ship.ShipSymbol(),
+				"action":          "route_complete",
+				"segments_executed": segmentCount,
+				"total_segments":  len(route.Segments()),
+			})
 			break // Route complete
 		}
 
-		logger.Log("INFO", fmt.Sprintf("[ROUTE EXECUTOR] Executing segment %d: %s → %s",
-			segmentCount, segment.FromWaypoint.Symbol, segment.ToWaypoint.Symbol), nil)
+		logger.Log("INFO", "Route segment execution started", map[string]interface{}{
+			"ship_symbol":   ship.ShipSymbol(),
+			"action":        "execute_segment",
+			"segment_index": segmentCount,
+			"from":          segment.FromWaypoint.Symbol,
+			"to":            segment.ToWaypoint.Symbol,
+		})
 
 		if err := e.executeSegment(ctx, segment, ship, playerID); err != nil {
-			logger.Log("ERROR", fmt.Sprintf("[ROUTE EXECUTOR] Segment execution failed: %v", err), nil)
+			logger.Log("ERROR", "Route segment execution failed", map[string]interface{}{
+				"ship_symbol":   ship.ShipSymbol(),
+				"action":        "execute_segment",
+				"segment_index": segmentCount,
+				"from":          segment.FromWaypoint.Symbol,
+				"to":            segment.ToWaypoint.Symbol,
+				"error":         err.Error(),
+			})
 			route.FailRoute(err.Error())
 			return err
 		}
 
-		logger.Log("INFO", fmt.Sprintf("[ROUTE EXECUTOR] Segment %d completed successfully", segmentCount), nil)
+		logger.Log("INFO", "Route segment completed successfully", map[string]interface{}{
+			"ship_symbol":   ship.ShipSymbol(),
+			"action":        "segment_complete",
+			"segment_index": segmentCount,
+		})
 
 		// Complete segment in route
 		if err := route.CompleteSegment(); err != nil {
-			logger.Log("ERROR", fmt.Sprintf("[ROUTE EXECUTOR] CompleteSegment() failed: %v", err), nil)
+			logger.Log("ERROR", "Failed to mark segment as complete", map[string]interface{}{
+				"ship_symbol":   ship.ShipSymbol(),
+				"action":        "complete_segment",
+				"segment_index": segmentCount,
+				"error":         err.Error(),
+			})
 			return err
 		}
-
-		logger.Log("INFO", fmt.Sprintf("[ROUTE EXECUTOR] After CompleteSegment: currentIndex=%d, status=%s",
-			route.CurrentSegmentIndex(), route.Status()), nil)
 
 		segmentCount++
 	}
 
-	logger.Log("INFO", fmt.Sprintf("[ROUTE EXECUTOR] Loop finished after %d segments, route status=%s", segmentCount, route.Status()), nil)
+	logger.Log("INFO", "Route execution finished", map[string]interface{}{
+		"ship_symbol":     ship.ShipSymbol(),
+		"action":          "route_finished",
+		"segments_executed": segmentCount,
+		"status":          string(route.Status()),
+	})
 
 	return nil
 }
@@ -152,8 +178,12 @@ func (e *RouteExecutor) executeSegment(
 	// 2. Pre-departure refuel check (prevent DRIFT at fuel stations with low fuel)
 	// Use domain decision method
 	if ship.ShouldPreventDriftMode(segment, 0.9) {
-		logger.Log("INFO", fmt.Sprintf("Pre-departure refuel: preventing DRIFT mode with low fuel at %s",
-			segment.FromWaypoint.Symbol), nil)
+		logger.Log("INFO", "Ship refueling to prevent DRIFT mode", map[string]interface{}{
+			"ship_symbol": ship.ShipSymbol(),
+			"action":      "pre_departure_refuel",
+			"waypoint":    segment.FromWaypoint.Symbol,
+			"reason":      "low_fuel_at_fuel_station",
+		})
 		if err := e.refuelShip(ctx, ship, playerID); err != nil {
 			return err
 		}
@@ -167,8 +197,15 @@ func (e *RouteExecutor) executeSegment(
 	// Use the better mode (higher enum value = faster: DRIFT=0 < CRUISE=1 < BURN=2)
 	flightMode := segment.FlightMode
 	if optimalMode > segment.FlightMode {
-		logger.Log("INFO", fmt.Sprintf("Upgrading flight mode from %s to %s after refuel (distance=%.1f, fuel=%d/%d)",
-			segment.FlightMode.Name(), optimalMode.Name(), distance, ship.Fuel().Current, ship.Fuel().Capacity), nil)
+		logger.Log("INFO", "Ship flight mode upgraded after refuel", map[string]interface{}{
+			"ship_symbol":   ship.ShipSymbol(),
+			"action":        "upgrade_flight_mode",
+			"from_mode":     segment.FlightMode.Name(),
+			"to_mode":       optimalMode.Name(),
+			"distance":      distance,
+			"fuel_current":  ship.Fuel().Current,
+			"fuel_capacity": ship.Fuel().Capacity,
+		})
 		flightMode = optimalMode
 	}
 
@@ -200,12 +237,20 @@ func (e *RouteExecutor) executeSegment(
 		return fmt.Errorf("unexpected response type: %T", navResp)
 	}
 
-	logger.Log("INFO", fmt.Sprintf("[ROUTE EXECUTOR] NavigateToWaypoint response: Status=%s, ArrivalTimeStr='%s'",
-		navResponse.Status, navResponse.ArrivalTimeStr), nil)
+	logger.Log("INFO", "Ship navigation command executed", map[string]interface{}{
+		"ship_symbol":    ship.ShipSymbol(),
+		"action":         "navigate_command_sent",
+		"status":         navResponse.Status,
+		"arrival_time":   navResponse.ArrivalTimeStr,
+	})
 
 	// Check if already at destination (idempotent case)
 	if navResponse.Status == "already_at_destination" {
-		logger.Log("INFO", "[ROUTE EXECUTOR] Ship already at destination, skipping wait", nil)
+		logger.Log("INFO", "Ship already at segment destination", map[string]interface{}{
+			"ship_symbol": ship.ShipSymbol(),
+			"action":      "navigate",
+			"result":      "already_present",
+		})
 		return nil
 	}
 
@@ -215,7 +260,12 @@ func (e *RouteExecutor) executeSegment(
 			return err
 		}
 	} else {
-		logger.Log("WARNING", fmt.Sprintf("[ROUTE EXECUTOR] WARNING: ArrivalTimeStr is empty for Status=%s", navResponse.Status), nil)
+		logger.Log("WARNING", "Navigation response missing arrival time", map[string]interface{}{
+			"ship_symbol": ship.ShipSymbol(),
+			"action":      "navigate",
+			"status":      navResponse.Status,
+			"warning":     "empty_arrival_time",
+		})
 	}
 
 	// Re-sync ship after arrival (if using real repository)
@@ -230,7 +280,11 @@ func (e *RouteExecutor) executeSegment(
 	// 6. Opportunistic refueling (90% safety check)
 	// Use domain decision method
 	if ship.ShouldRefuelOpportunistically(segment.ToWaypoint, 0.9) && !segment.RequiresRefuel {
-		logger.Log("INFO", fmt.Sprintf("Opportunistic refuel at %s", segment.ToWaypoint.Symbol), nil)
+		logger.Log("INFO", "Ship performing opportunistic refuel", map[string]interface{}{
+			"ship_symbol": ship.ShipSymbol(),
+			"action":      "opportunistic_refuel",
+			"waypoint":    segment.ToWaypoint.Symbol,
+		})
 		if err := e.refuelShip(ctx, ship, playerID); err != nil {
 			return err
 		}
@@ -238,7 +292,11 @@ func (e *RouteExecutor) executeSegment(
 
 	// 7. Planned refueling (required by routing engine)
 	if segment.RequiresRefuel {
-		logger.Log("INFO", fmt.Sprintf("Planned refuel at %s", segment.ToWaypoint.Symbol), nil)
+		logger.Log("INFO", "Ship performing planned refuel", map[string]interface{}{
+			"ship_symbol": ship.ShipSymbol(),
+			"action":      "planned_refuel",
+			"waypoint":    segment.ToWaypoint.Symbol,
+		})
 		if err := e.refuelShip(ctx, ship, playerID); err != nil {
 			return err
 		}
@@ -247,11 +305,20 @@ func (e *RouteExecutor) executeSegment(
 	// 8. Automatic market scanning at marketplace waypoints
 	if e.marketScanner != nil && e.isMarketplace(segment.ToWaypoint) {
 		logger := common.LoggerFromContext(ctx)
-		logger.Log("INFO", fmt.Sprintf("[ROUTE EXECUTOR] Detected marketplace at %s, scanning market data", segment.ToWaypoint.Symbol), nil)
+		logger.Log("INFO", "Marketplace detected - scanning market data", map[string]interface{}{
+			"ship_symbol": ship.ShipSymbol(),
+			"action":      "scan_market",
+			"waypoint":    segment.ToWaypoint.Symbol,
+		})
 
 		// Market scanning is non-fatal - log errors but continue route execution
 		if err := e.marketScanner.ScanAndSaveMarket(ctx, uint(playerID), segment.ToWaypoint.Symbol); err != nil {
-			logger.Log("ERROR", fmt.Sprintf("[ROUTE EXECUTOR] Market scan failed at %s: %v", segment.ToWaypoint.Symbol, err), nil)
+			logger.Log("ERROR", "Market scan failed", map[string]interface{}{
+				"ship_symbol": ship.ShipSymbol(),
+				"action":      "scan_market",
+				"waypoint":    segment.ToWaypoint.Symbol,
+				"error":       err.Error(),
+			})
 			// Continue execution - market scanning failure should not fail navigation
 		}
 	}
@@ -268,8 +335,11 @@ func (e *RouteExecutor) waitForCurrentTransit(
 	// Extract logger from context
 	logger := common.LoggerFromContext(ctx)
 
-	logger.Log("INFO", fmt.Sprintf("Ship %s is IN_TRANSIT from previous command, fetching arrival time from API...",
-		ship.ShipSymbol()), nil)
+	logger.Log("INFO", "Ship in transit from previous command", map[string]interface{}{
+		"ship_symbol": ship.ShipSymbol(),
+		"action":      "wait_previous_transit",
+		"status":      "IN_TRANSIT",
+	})
 
 	// Fetch ship data from API to get arrival time (matches Python implementation)
 	if e.shipRepo != nil {
@@ -282,7 +352,11 @@ func (e *RouteExecutor) waitForCurrentTransit(
 		if shipData.NavStatus == "IN_TRANSIT" && shipData.ArrivalTime != "" {
 			waitTime := CalculateArrivalWaitTime(shipData.ArrivalTime)
 			if waitTime > 0 {
-				logger.Log("INFO", fmt.Sprintf("Waiting %d seconds for ship to complete previous transit", waitTime+3), nil)
+				logger.Log("INFO", "Waiting for ship to complete previous transit", map[string]interface{}{
+					"ship_symbol":  ship.ShipSymbol(),
+					"action":       "wait_transit",
+					"wait_seconds": waitTime + 3,
+				})
 				e.clock.Sleep(time.Duration(waitTime+3) * time.Second) // +3 second buffer
 			}
 		}
@@ -301,7 +375,13 @@ func (e *RouteExecutor) waitForCurrentTransit(
 	maxRetries := 5
 	retryDelay := 2 * time.Second
 	for i := 0; i < maxRetries && ship.NavStatus() == domainNavigation.NavStatusInTransit; i++ {
-		logger.Log("INFO", fmt.Sprintf("[ROUTE EXECUTOR] Ship still IN_TRANSIT after initial wait (attempt %d/%d), polling API in %v...", i+1, maxRetries, retryDelay), nil)
+		logger.Log("INFO", "Ship still in transit - polling API", map[string]interface{}{
+			"ship_symbol":  ship.ShipSymbol(),
+			"action":       "poll_transit_status",
+			"attempt":      i + 1,
+			"max_retries":  maxRetries,
+			"retry_delay":  retryDelay.String(),
+		})
 		e.clock.Sleep(retryDelay)
 
 		if e.shipRepo != nil {
@@ -315,13 +395,22 @@ func (e *RouteExecutor) waitForCurrentTransit(
 
 	// If still IN_TRANSIT after retries, call arrive() as last resort
 	if ship.NavStatus() == domainNavigation.NavStatusInTransit {
-		logger.Log("INFO", fmt.Sprintf("[ROUTE EXECUTOR] WARNING: Ship still IN_TRANSIT after %d retries, forcing arrival in domain model", maxRetries), nil)
+		logger.Log("INFO", "Ship still in transit after retries - forcing arrival", map[string]interface{}{
+			"ship_symbol": ship.ShipSymbol(),
+			"action":      "force_arrival",
+			"retries":     maxRetries,
+			"warning":     "api_lag_detected",
+		})
 		if err := ship.Arrive(); err != nil {
 			return fmt.Errorf("failed to mark ship as arrived: %w", err)
 		}
 	}
 
-	logger.Log("INFO", fmt.Sprintf("Ship arrived, status now: %s", ship.NavStatus()), nil)
+	logger.Log("INFO", "Ship arrival confirmed", map[string]interface{}{
+		"ship_symbol": ship.ShipSymbol(),
+		"action":      "arrival_confirmed",
+		"status":      string(ship.NavStatus()),
+	})
 	return nil
 }
 
@@ -334,7 +423,11 @@ func (e *RouteExecutor) refuelBeforeDeparture(
 	// Extract logger from context
 	logger := common.LoggerFromContext(ctx)
 
-	logger.Log("INFO", fmt.Sprintf("Refueling before departure at %s", ship.CurrentLocation().Symbol), nil)
+	logger.Log("INFO", "Ship refueling before departure", map[string]interface{}{
+		"ship_symbol": ship.ShipSymbol(),
+		"action":      "refuel_before_departure",
+		"waypoint":    ship.CurrentLocation().Symbol,
+	})
 
 	// Dock for refuel (via DockShipCommand)
 	// Command handler updates ship state in memory
@@ -424,7 +517,11 @@ func (e *RouteExecutor) waitForArrival(
 	waitTime := CalculateArrivalWaitTime(arrivalTimeStr)
 
 	if waitTime > 0 {
-		logger.Log("INFO", fmt.Sprintf("Waiting %d seconds for ship to arrive", waitTime+3), nil)
+		logger.Log("INFO", "Waiting for ship to arrive at destination", map[string]interface{}{
+			"ship_symbol":  ship.ShipSymbol(),
+			"action":       "wait_arrival",
+			"wait_seconds": waitTime + 3,
+		})
 		// Uses clock for testability (instant in tests, real sleep in production)
 		e.clock.Sleep(time.Duration(waitTime+3) * time.Second) // +3 second buffer
 	}
@@ -443,7 +540,13 @@ func (e *RouteExecutor) waitForArrival(
 	maxRetries := 5
 	retryDelay := 2 * time.Second
 	for i := 0; i < maxRetries && ship.NavStatus() == domainNavigation.NavStatusInTransit; i++ {
-		logger.Log("INFO", fmt.Sprintf("[ROUTE EXECUTOR] Ship still IN_TRANSIT after wait (attempt %d/%d), polling API in %v...", i+1, maxRetries, retryDelay), nil)
+		logger.Log("INFO", "Ship still in transit after wait - polling API", map[string]interface{}{
+			"ship_symbol": ship.ShipSymbol(),
+			"action":      "poll_arrival_status",
+			"attempt":     i + 1,
+			"max_retries": maxRetries,
+			"retry_delay": retryDelay.String(),
+		})
 		e.clock.Sleep(retryDelay)
 
 		if e.shipRepo != nil {
@@ -458,7 +561,12 @@ func (e *RouteExecutor) waitForArrival(
 	// If still IN_TRANSIT after retries, call arrive() as last resort
 	// This updates our domain model even if API is lagging
 	if ship.NavStatus() == domainNavigation.NavStatusInTransit {
-		logger.Log("INFO", fmt.Sprintf("[ROUTE EXECUTOR] WARNING: Ship still IN_TRANSIT after %d retries, forcing arrival in domain model", maxRetries), nil)
+		logger.Log("INFO", "Ship still in transit after retries - forcing arrival", map[string]interface{}{
+			"ship_symbol": ship.ShipSymbol(),
+			"action":      "force_arrival",
+			"retries":     maxRetries,
+			"warning":     "api_lag_detected",
+		})
 		if err := ship.Arrive(); err != nil {
 			return fmt.Errorf("failed to mark ship as arrived: %w", err)
 		}

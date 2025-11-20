@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
@@ -37,9 +38,18 @@ func SelectClosestShip(
 	requiredCargoSymbol string,
 	playerID int,
 ) (string, float64, error) {
+	logger := common.LoggerFromContext(ctx)
+
 	if len(shipSymbols) == 0 {
 		return "", 0, fmt.Errorf("no ships available for selection")
 	}
+
+	logger.Log("INFO", "Ship selection initiated", map[string]interface{}{
+		"action":          "select_ship",
+		"candidate_count": len(shipSymbols),
+		"target_waypoint": targetWaypointSymbol,
+		"required_cargo":  requiredCargoSymbol,
+	})
 
 	// 1. Fetch all ships from repository
 	var ships []*navigation.Ship
@@ -85,8 +95,14 @@ func SelectClosestShip(
 		return "", 0, err
 	}
 
-	// 4. Log selection for debugging
-	fmt.Printf("[SHIP_SELECTOR] Selected %s - %s\n", result.Ship.ShipSymbol(), result.Reason)
+	// 4. Log selection decision
+	logger.Log("INFO", "Ship selection completed", map[string]interface{}{
+		"action":          "ship_selected",
+		"selected_ship":   result.Ship.ShipSymbol(),
+		"distance":        result.Distance,
+		"reason":          result.Reason,
+		"target_waypoint": targetWaypointSymbol,
+	})
 
 	return result.Ship.ShipSymbol(), result.Distance, nil
 }

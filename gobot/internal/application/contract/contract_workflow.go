@@ -103,7 +103,12 @@ func (h *RunWorkflowHandler) Handle(ctx context.Context, request common.Request)
 	// Transfer ship back to coordinator if applicable
 	if cmd.CoordinatorID != "" {
 		if err := h.transferShipBackToCoordinator(ctx, cmd); err != nil {
-			logger.Log("WARNING", fmt.Sprintf("Failed to transfer ship back to coordinator: %v", err), nil)
+			logger.Log("WARNING", "Ship transfer back to coordinator failed", map[string]interface{}{
+				"ship_symbol":    cmd.ShipSymbol,
+				"action":         "transfer_to_coordinator",
+				"coordinator_id": cmd.CoordinatorID,
+				"error":          err.Error(),
+			})
 		}
 	}
 
@@ -111,10 +116,17 @@ func (h *RunWorkflowHandler) Handle(ctx context.Context, request common.Request)
 	if cmd.CompletionCallback != nil {
 		select {
 		case cmd.CompletionCallback <- cmd.ShipSymbol:
-			logger.Log("INFO", fmt.Sprintf("Signaled completion for ship %s", cmd.ShipSymbol), nil)
+			logger.Log("INFO", "Contract workflow completion signaled", map[string]interface{}{
+				"ship_symbol": cmd.ShipSymbol,
+				"action":      "signal_completion",
+			})
 		default:
 			// Channel full or closed, log but don't error
-			logger.Log("WARNING", fmt.Sprintf("Could not signal completion for ship %s (channel full/closed)", cmd.ShipSymbol), nil)
+			logger.Log("WARNING", "Contract workflow completion signal failed", map[string]interface{}{
+				"ship_symbol": cmd.ShipSymbol,
+				"action":      "signal_completion",
+				"reason":      "channel_full_or_closed",
+			})
 		}
 	}
 
@@ -142,10 +154,17 @@ func (h *RunWorkflowHandler) executeWorkflow(
 		// Resume existing active contract
 		contract = activeContracts[0]
 		wasNegotiated = false
-		logger.Log("INFO", fmt.Sprintf("Resuming existing contract: %s", contract.ContractID()), nil)
+		logger.Log("INFO", "Resuming existing active contract", map[string]interface{}{
+			"ship_symbol": cmd.ShipSymbol,
+			"action":      "resume_contract",
+			"contract_id": contract.ContractID(),
+		})
 	} else {
 		// Step 2: Negotiate new contract
-		logger.Log("INFO", "Negotiating new contract", nil)
+		logger.Log("INFO", "Contract negotiation initiated", map[string]interface{}{
+			"ship_symbol": cmd.ShipSymbol,
+			"action":      "negotiate_contract",
+		})
 		negotiateCmd := &NegotiateContractCommand{
 			ShipSymbol: cmd.ShipSymbol,
 			PlayerID:   cmd.PlayerID,
@@ -163,12 +182,20 @@ func (h *RunWorkflowHandler) executeWorkflow(
 
 		if wasNegotiated {
 			result.Negotiated = true
-			logger.Log("INFO", fmt.Sprintf("Contract negotiated: %s", contract.ContractID()), nil)
+			logger.Log("INFO", "Contract negotiation successful", map[string]interface{}{
+				"ship_symbol": cmd.ShipSymbol,
+				"action":      "contract_negotiated",
+				"contract_id": contract.ContractID(),
+			})
 		}
 	}
 
 	// Step 3: Evaluate profitability (log only - always accept)
-	logger.Log("INFO", fmt.Sprintf("Evaluating contract profitability for contract %s", contract.ContractID()), nil)
+	logger.Log("INFO", "Contract profitability evaluation initiated", map[string]interface{}{
+		"ship_symbol": cmd.ShipSymbol,
+		"action":      "evaluate_profitability",
+		"contract_id": contract.ContractID(),
+	})
 	profitabilityQuery := &EvaluateContractProfitabilityQuery{
 		Contract:        contract,
 		ShipSymbol:      cmd.ShipSymbol,
@@ -179,13 +206,27 @@ func (h *RunWorkflowHandler) executeWorkflow(
 	profitabilityResp, err := h.mediator.Send(ctx, profitabilityQuery)
 	if err != nil {
 		// Log warning but continue (non-fatal)
-		logger.Log("WARNING", fmt.Sprintf("Failed to evaluate profitability: %v", err), nil)
+		logger.Log("WARNING", "Contract profitability evaluation failed", map[string]interface{}{
+			"ship_symbol": cmd.ShipSymbol,
+			"action":      "evaluate_profitability",
+			"contract_id": contract.ContractID(),
+			"error":       err.Error(),
+		})
 	} else {
 		profitResult := profitabilityResp.(*ProfitabilityResult)
 		if !profitResult.IsProfitable {
-			logger.Log("WARNING", fmt.Sprintf("Contract unprofitable (%s) but accepting anyway", profitResult.Reason), nil)
+			logger.Log("WARNING", "Contract unprofitable but accepting anyway", map[string]interface{}{
+				"ship_symbol": cmd.ShipSymbol,
+				"action":      "accept_unprofitable",
+				"contract_id": contract.ContractID(),
+				"reason":      profitResult.Reason,
+			})
 		} else {
-			logger.Log("INFO", "Contract is profitable", nil)
+			logger.Log("INFO", "Contract profitability confirmed", map[string]interface{}{
+				"ship_symbol": cmd.ShipSymbol,
+				"action":      "profitability_check",
+				"contract_id": contract.ContractID(),
+			})
 		}
 	}
 
@@ -208,38 +249,75 @@ func (h *RunWorkflowHandler) executeWorkflow(
 	}
 
 	// Step 5: Process each delivery
-	logger.Log("INFO", fmt.Sprintf("Processing %d deliveries", len(contract.Terms().Deliveries)), nil)
+	logger.Log("INFO", "Contract deliveries processing started", map[string]interface{}{
+		"ship_symbol":    cmd.ShipSymbol,
+		"action":         "process_deliveries",
+		"contract_id":    contract.ContractID(),
+		"delivery_count": len(contract.Terms().Deliveries),
+	})
 	for _, delivery := range contract.Terms().Deliveries {
 		unitsRemaining := delivery.UnitsRequired - delivery.UnitsFulfilled
-		logger.Log("INFO", fmt.Sprintf("Delivery: %s, required=%d, fulfilled=%d, remaining=%d",
-			delivery.TradeSymbol, delivery.UnitsRequired, delivery.UnitsFulfilled, unitsRemaining), nil)
+		logger.Log("INFO", "Contract delivery status", map[string]interface{}{
+			"ship_symbol":    cmd.ShipSymbol,
+			"action":         "check_delivery",
+			"trade_symbol":   delivery.TradeSymbol,
+			"units_required": delivery.UnitsRequired,
+			"units_fulfilled": delivery.UnitsFulfilled,
+			"units_remaining": unitsRemaining,
+		})
 		if unitsRemaining == 0 {
-			logger.Log("INFO", "Delivery already fulfilled, skipping", nil)
+			logger.Log("INFO", "Contract delivery already fulfilled", map[string]interface{}{
+				"ship_symbol":  cmd.ShipSymbol,
+				"action":       "skip_delivery",
+				"trade_symbol": delivery.TradeSymbol,
+			})
 			continue // Already fulfilled
 		}
-		logger.Log("INFO", "Processing delivery...", nil)
+		logger.Log("INFO", "Contract delivery processing initiated", map[string]interface{}{
+			"ship_symbol":  cmd.ShipSymbol,
+			"action":       "process_delivery",
+			"trade_symbol": delivery.TradeSymbol,
+		})
 
 		// Step 6: Reload ship state (critical for fresh cargo data)
-		logger.Log("INFO", "Reloading ship state...", nil)
+		logger.Log("INFO", "Ship state reload initiated", map[string]interface{}{
+			"ship_symbol": cmd.ShipSymbol,
+			"action":      "reload_ship_state",
+		})
 		ship, err := h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
 		if err != nil {
-			logger.Log("ERROR", fmt.Sprintf("Failed to reload ship: %v", err), nil)
+			logger.Log("ERROR", "Ship state reload failed", map[string]interface{}{
+				"ship_symbol": cmd.ShipSymbol,
+				"action":      "reload_ship_state",
+				"error":       err.Error(),
+			})
 			return fmt.Errorf("failed to reload ship: %w", err)
 		}
-		logger.Log("INFO", fmt.Sprintf("Ship loaded: cargo=%d/%d", ship.Cargo().Units, ship.Cargo().Capacity), nil)
+		logger.Log("INFO", "Ship state loaded successfully", map[string]interface{}{
+			"ship_symbol":    cmd.ShipSymbol,
+			"action":         "ship_state_loaded",
+			"cargo_units":    ship.Cargo().Units,
+			"cargo_capacity": ship.Cargo().Capacity,
+		})
 
 		currentUnits := ship.Cargo().GetItemUnits(delivery.TradeSymbol)
-		logger.Log("INFO", fmt.Sprintf("Current %s units in cargo: %d", delivery.TradeSymbol, currentUnits), nil)
+		logger.Log("INFO", "Current cargo units checked", map[string]interface{}{
+			"ship_symbol":  cmd.ShipSymbol,
+			"action":       "check_cargo_units",
+			"trade_symbol": delivery.TradeSymbol,
+			"units":        currentUnits,
+		})
 
 		// Step 7: Jettison wrong cargo if needed
 		hasWrongCargo := ship.Cargo().HasItemsOtherThan(delivery.TradeSymbol)
 		needsSpace := currentUnits < unitsRemaining || ship.Cargo().IsFull()
 
-		logger.Log("DEBUG", fmt.Sprintf("Jettison check: hasWrongCargo=%v, needsSpace=%v, currentUnits=%d, unitsRemaining=%d, isFull=%v",
-			hasWrongCargo, needsSpace, currentUnits, unitsRemaining, ship.Cargo().IsFull()), nil)
-
 		if hasWrongCargo && needsSpace {
-			logger.Log("INFO", "Jettisoning wrong cargo...", nil)
+			logger.Log("INFO", "Jettisoning wrong cargo", map[string]interface{}{
+				"ship_symbol":  cmd.ShipSymbol,
+				"action":       "jettison_cargo",
+				"keep_symbol":  delivery.TradeSymbol,
+			})
 			if err := h.jettisonWrongCargo(ctx, ship, delivery.TradeSymbol, cmd.PlayerID); err != nil {
 				return fmt.Errorf("failed to jettison cargo: %w", err)
 			}
@@ -250,24 +328,46 @@ func (h *RunWorkflowHandler) executeWorkflow(
 				return fmt.Errorf("failed to reload ship after jettison: %w", err)
 			}
 			currentUnits = ship.Cargo().GetItemUnits(delivery.TradeSymbol)
-			logger.Log("INFO", fmt.Sprintf("Jettison complete, cargo now: %d/%d", ship.Cargo().Units, ship.Cargo().Capacity), nil)
+			logger.Log("INFO", "Cargo jettison completed", map[string]interface{}{
+				"ship_symbol":    cmd.ShipSymbol,
+				"action":         "jettison_complete",
+				"cargo_units":    ship.Cargo().Units,
+				"cargo_capacity": ship.Cargo().Capacity,
+			})
 		}
 
 		// Step 8: Calculate purchase needs
 		unitsToPurchase := unitsRemaining - currentUnits
-		logger.Log("INFO", fmt.Sprintf("Units to purchase: %d (remaining=%d - current=%d)", unitsToPurchase, unitsRemaining, currentUnits), nil)
+		logger.Log("INFO", "Purchase needs calculated", map[string]interface{}{
+			"ship_symbol":      cmd.ShipSymbol,
+			"action":           "calculate_purchase",
+			"trade_symbol":     delivery.TradeSymbol,
+			"units_to_purchase": unitsToPurchase,
+			"units_remaining":  unitsRemaining,
+			"units_current":    currentUnits,
+		})
 
 		// Step 9: Purchase cargo if needed
 		if unitsToPurchase > 0 {
 			// Get profitability result for cheapest market
 			profitResult := profitabilityResp.(*ProfitabilityResult)
 			cheapestMarket := profitResult.CheapestMarketWaypoint
-			logger.Log("INFO", fmt.Sprintf("Cheapest market: %s", cheapestMarket), nil)
+			logger.Log("INFO", "Cheapest market identified", map[string]interface{}{
+				"ship_symbol":    cmd.ShipSymbol,
+				"action":         "identify_market",
+				"market_symbol":  cheapestMarket,
+				"trade_symbol":   delivery.TradeSymbol,
+			})
 
 			// Multi-trip purchase loop
 			trips := int(math.Ceil(float64(unitsToPurchase) / float64(ship.Cargo().Capacity)))
 			result.TotalTrips += trips
-			logger.Log("INFO", fmt.Sprintf("Starting multi-trip purchase: %d trips needed", trips), nil)
+			logger.Log("INFO", "Multi-trip purchase initiated", map[string]interface{}{
+				"ship_symbol":  cmd.ShipSymbol,
+				"action":       "start_multi_trip",
+				"trips_needed": trips,
+				"trade_symbol": delivery.TradeSymbol,
+			})
 
 			for trip := 0; trip < trips; trip++ {
 				// Calculate available cargo space (capacity - current load)
@@ -278,7 +378,11 @@ func (h *RunWorkflowHandler) executeWorkflow(
 
 				// Skip if no space available
 				if unitsThisTrip <= 0 {
-					logger.Log("WARNING", "No cargo space available, ending purchase loop", nil)
+					logger.Log("WARNING", "Purchase loop terminated due to no cargo space", map[string]interface{}{
+						"ship_symbol":  cmd.ShipSymbol,
+						"action":       "purchase_loop_ended",
+						"reason":       "no_cargo_space",
+					})
 					break
 				}
 
@@ -326,7 +430,12 @@ func (h *RunWorkflowHandler) executeWorkflow(
 		}
 
 		unitsToDeliver := ship.Cargo().GetItemUnits(delivery.TradeSymbol)
-		logger.Log("INFO", fmt.Sprintf("Delivering %d units of %s", unitsToDeliver, delivery.TradeSymbol), nil)
+		logger.Log("INFO", "Contract cargo delivery initiated", map[string]interface{}{
+			"ship_symbol":  cmd.ShipSymbol,
+			"action":       "deliver_cargo",
+			"trade_symbol": delivery.TradeSymbol,
+			"units":        unitsToDeliver,
+		})
 
 		if unitsToDeliver > 0 {
 			// Navigate to delivery destination (returns updated ship)
@@ -394,7 +503,11 @@ func (h *RunWorkflowHandler) transferShipBackToCoordinator(
 
 	// TODO: Get actual worker container ID from context
 	// For now, we'll skip the transfer and let the coordinator handle it
-	logger.Log("INFO", fmt.Sprintf("Ship transfer back to coordinator: %s -> %s", cmd.ShipSymbol, cmd.CoordinatorID), nil)
+	logger.Log("INFO", "Ship transfer to coordinator initiated", map[string]interface{}{
+		"ship_symbol":    cmd.ShipSymbol,
+		"action":         "transfer_to_coordinator",
+		"coordinator_id": cmd.CoordinatorID,
+	})
 
 	return nil
 }

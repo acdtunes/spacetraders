@@ -51,6 +51,8 @@ func (h *EvaluateCargoValueHandler) Handle(ctx context.Context, request common.R
 		return nil, fmt.Errorf("invalid request type")
 	}
 
+	logger := common.LoggerFromContext(ctx)
+
 	// If no items, return empty response
 	if len(query.CargoItems) == 0 {
 		return &EvaluateCargoValueResponse{
@@ -58,6 +60,13 @@ func (h *EvaluateCargoValueHandler) Handle(ctx context.Context, request common.R
 			JettisonItems: []CargoItemValue{},
 		}, nil
 	}
+
+	logger.Log("INFO", "Cargo value evaluation initiated", map[string]interface{}{
+		"action":            "evaluate_cargo",
+		"item_count":        len(query.CargoItems),
+		"price_threshold":   query.MinPriceThreshold,
+		"system_symbol":     query.SystemSymbol,
+	})
 
 	// 1. Fetch market prices for all cargo items
 	itemValues := make([]CargoItemValue, len(query.CargoItems))
@@ -72,8 +81,12 @@ func (h *EvaluateCargoValueHandler) Handle(ctx context.Context, request common.R
 		price, err := h.getBestMarketPrice(ctx, item.Symbol, query.SystemSymbol, query.PlayerID)
 		if err != nil {
 			// If we can't find market data, use 0 (item will be jettisoned)
-			logger := common.LoggerFromContext(ctx)
-			logger.Log("WARNING", fmt.Sprintf("Could not find market price for %s: %v", item.Symbol, err), nil)
+			logger.Log("WARNING", "Market price lookup failed for cargo item", map[string]interface{}{
+				"action":        "price_lookup_failed",
+				"cargo_symbol":  item.Symbol,
+				"system_symbol": query.SystemSymbol,
+				"error":         err.Error(),
+			})
 			price = 0
 		}
 
@@ -95,6 +108,13 @@ func (h *EvaluateCargoValueHandler) Handle(ctx context.Context, request common.R
 			jettisonItems = append(jettisonItems, item)
 		}
 	}
+
+	logger.Log("INFO", "Cargo value evaluation completed", map[string]interface{}{
+		"action":         "cargo_evaluation_complete",
+		"keep_count":     len(keepItems),
+		"jettison_count": len(jettisonItems),
+		"threshold":      query.MinPriceThreshold,
+	})
 
 	return &EvaluateCargoValueResponse{
 		KeepItems:     keepItems,

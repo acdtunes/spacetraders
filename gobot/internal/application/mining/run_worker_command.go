@@ -103,7 +103,11 @@ func (h *RunWorkerHandler) executeMining(
 
 	// 2. Navigate to asteroid field if not there
 	if ship.CurrentLocation().Symbol != cmd.AsteroidField {
-		logger.Log("INFO", fmt.Sprintf("Navigating to asteroid field %s", cmd.AsteroidField), nil)
+		logger.Log("INFO", "Miner navigating to asteroid field", map[string]interface{}{
+			"ship_symbol": cmd.ShipSymbol,
+			"action":      "navigate_to_asteroid",
+			"destination": cmd.AsteroidField,
+		})
 
 		navCmd := &appShip.NavigateShipCommand{
 			ShipSymbol:  cmd.ShipSymbol,
@@ -123,14 +127,22 @@ func (h *RunWorkerHandler) executeMining(
 		}
 	}
 
-	logger.Log("INFO", fmt.Sprintf("Starting continuous mining at %s", cmd.AsteroidField), nil)
+	logger.Log("INFO", "Miner continuous mining started", map[string]interface{}{
+		"ship_symbol": cmd.ShipSymbol,
+		"action":      "start_mining",
+		"asteroid":    cmd.AsteroidField,
+	})
 
 	// 3. Main mining loop - runs indefinitely until context cancelled
 	for {
 		// Check for context cancellation
 		select {
 		case <-ctx.Done():
-			logger.Log("INFO", "Mining operation cancelled", nil)
+			logger.Log("INFO", "Mining operation cancelled", map[string]interface{}{
+				"ship_symbol": cmd.ShipSymbol,
+				"action":      "mining_cancelled",
+				"extractions": result.ExtractionCount,
+			})
 			return ctx.Err()
 		default:
 		}
@@ -149,12 +161,16 @@ func (h *RunWorkerHandler) executeMining(
 		extraction := extractResp.(*ExtractResourcesResponse)
 		result.ExtractionCount++
 
-		logger.Log("INFO", fmt.Sprintf("Extracted %d units of %s (total extractions: %d)",
-			extraction.YieldUnits, extraction.YieldSymbol, result.ExtractionCount), nil)
+		logger.Log("INFO", "Resources extracted successfully", map[string]interface{}{
+			"ship_symbol":      cmd.ShipSymbol,
+			"action":           "extract_resources",
+			"yield_units":      extraction.YieldUnits,
+			"yield_symbol":     extraction.YieldSymbol,
+			"extraction_count": result.ExtractionCount,
+		})
 
 		// 3b. Wait for cooldown
 		if extraction.CooldownDuration > 0 {
-			logger.Log("DEBUG", fmt.Sprintf("Waiting %v for cooldown", extraction.CooldownDuration), nil)
 			h.clock.Sleep(extraction.CooldownDuration)
 		}
 
@@ -166,8 +182,12 @@ func (h *RunWorkerHandler) executeMining(
 
 		// Check if cargo is full - only then do we jettison and potentially transfer
 		if ship.IsCargoFull() {
-			logger.Log("INFO", fmt.Sprintf("Cargo full (%d/%d), evaluating for jettison",
-				ship.Cargo().Units, ship.Cargo().Capacity), nil)
+			logger.Log("INFO", "Miner cargo full - evaluating for jettison", map[string]interface{}{
+				"ship_symbol":   cmd.ShipSymbol,
+				"action":        "cargo_full",
+				"cargo_units":   ship.Cargo().Units,
+				"cargo_capacity": ship.Cargo().Capacity,
+			})
 
 			// 3g. Evaluate cargo value and jettison low-value items only when full
 			cargoItems := make([]CargoItemValue, len(ship.Cargo().Inventory))
@@ -204,9 +224,19 @@ func (h *RunWorkerHandler) executeMining(
 
 					_, err := h.mediator.Send(ctx, jettisonCmd)
 					if err != nil {
-						logger.Log("WARNING", fmt.Sprintf("Failed to jettison %s: %v", item.Symbol, err), nil)
+						logger.Log("WARNING", "Cargo jettison failed", map[string]interface{}{
+							"ship_symbol":  cmd.ShipSymbol,
+							"action":       "jettison",
+							"cargo_symbol": item.Symbol,
+							"error":        err.Error(),
+						})
 					} else {
-						logger.Log("INFO", fmt.Sprintf("Jettisoned %d units of %s (low value)", item.Units, item.Symbol), nil)
+						logger.Log("INFO", "Low-value cargo jettisoned", map[string]interface{}{
+							"ship_symbol":  cmd.ShipSymbol,
+							"action":       "jettison",
+							"cargo_symbol": item.Symbol,
+							"units":        item.Units,
+						})
 					}
 				}
 			}
@@ -219,8 +249,12 @@ func (h *RunWorkerHandler) executeMining(
 
 			// If still full after jettisoning, transfer to transport
 			if ship.IsCargoFull() {
-				logger.Log("INFO", fmt.Sprintf("Still full with valuable cargo (%d/%d), requesting transport",
-					ship.Cargo().Units, ship.Cargo().Capacity), nil)
+				logger.Log("INFO", "Miner still full with valuable cargo - requesting transport", map[string]interface{}{
+					"ship_symbol":    cmd.ShipSymbol,
+					"action":         "request_transport",
+					"cargo_units":    ship.Cargo().Units,
+					"cargo_capacity": ship.Cargo().Capacity,
+				})
 
 				// 3i. Request transport and transfer what fits
 				unitsTransferred, err := h.requestAndTransferToTransport(ctx, cmd, ship)
@@ -231,19 +265,17 @@ func (h *RunWorkerHandler) executeMining(
 				result.TransferCount++
 				result.TotalUnitsTransferred += unitsTransferred
 
-				logger.Log("INFO", fmt.Sprintf("Transferred %d units to transport (total transfers: %d)",
-					unitsTransferred, result.TransferCount), nil)
-			} else {
-				logger.Log("DEBUG", fmt.Sprintf("Cargo at %d/%d after jettison, continuing mining",
-					ship.Cargo().Units, ship.Cargo().Capacity), nil)
+				logger.Log("INFO", "Cargo transferred to transport successfully", map[string]interface{}{
+					"ship_symbol":      cmd.ShipSymbol,
+					"action":           "transfer_complete",
+					"units_transferred": unitsTransferred,
+					"transfer_count":   result.TransferCount,
+				})
 			}
 
 			// Continue mining - miner may still have some cargo but has space now
 			continue
 		}
-
-		logger.Log("DEBUG", fmt.Sprintf("Cargo at %d/%d, continuing mining",
-			ship.Cargo().Units, ship.Cargo().Capacity), nil)
 	}
 }
 
@@ -256,7 +288,10 @@ func (h *RunWorkerHandler) requestAndTransferToTransport(
 	logger := common.LoggerFromContext(ctx)
 
 	// Send request for transport
-	logger.Log("INFO", fmt.Sprintf("Requesting transport for miner %s", cmd.ShipSymbol), nil)
+	logger.Log("INFO", "Miner requesting transport", map[string]interface{}{
+		"ship_symbol": cmd.ShipSymbol,
+		"action":      "request_transport",
+	})
 
 	select {
 	case cmd.TransportRequestChan <- cmd.ShipSymbol:
@@ -269,7 +304,11 @@ func (h *RunWorkerHandler) requestAndTransferToTransport(
 	var transportSymbol string
 	select {
 	case transportSymbol = <-cmd.TransportAssignChan:
-		logger.Log("INFO", fmt.Sprintf("Assigned transport %s", transportSymbol), nil)
+		logger.Log("INFO", "Transport assigned to miner", map[string]interface{}{
+			"ship_symbol": cmd.ShipSymbol,
+			"action":      "transport_assigned",
+			"transport":   transportSymbol,
+		})
 	case <-ctx.Done():
 		return 0, ctx.Err()
 	}
@@ -286,7 +325,11 @@ func (h *RunWorkerHandler) requestAndTransferToTransport(
 		// Check how much space is available
 		availableSpace := transportShip.AvailableCargoSpace()
 		if availableSpace == 0 {
-			logger.Log("INFO", "Transport cargo full, stopping transfer", nil)
+			logger.Log("INFO", "Transport cargo full - stopping transfer", map[string]interface{}{
+				"ship_symbol": cmd.ShipSymbol,
+				"action":      "transfer_stopped",
+				"transport":   transportSymbol,
+			})
 			break
 		}
 
@@ -294,8 +337,14 @@ func (h *RunWorkerHandler) requestAndTransferToTransport(
 		unitsToTransfer := item.Units
 		if unitsToTransfer > availableSpace {
 			unitsToTransfer = availableSpace
-			logger.Log("INFO", fmt.Sprintf("Transferring partial cargo: %d of %d units of %s (transport space: %d)",
-				unitsToTransfer, item.Units, item.Symbol, availableSpace), nil)
+			logger.Log("INFO", "Transferring partial cargo to transport", map[string]interface{}{
+				"ship_symbol":     cmd.ShipSymbol,
+				"action":          "partial_transfer",
+				"cargo_symbol":    item.Symbol,
+				"units_partial":   unitsToTransfer,
+				"units_total":     item.Units,
+				"available_space": availableSpace,
+			})
 		}
 
 		transferCmd := &TransferCargoCommand{
@@ -308,18 +357,34 @@ func (h *RunWorkerHandler) requestAndTransferToTransport(
 
 		_, err := h.mediator.Send(ctx, transferCmd)
 		if err != nil {
-			logger.Log("WARNING", fmt.Sprintf("Failed to transfer %s: %v", item.Symbol, err), nil)
+			logger.Log("WARNING", "Cargo transfer failed", map[string]interface{}{
+				"ship_symbol":  cmd.ShipSymbol,
+				"action":       "transfer",
+				"cargo_symbol": item.Symbol,
+				"transport":    transportSymbol,
+				"error":        err.Error(),
+			})
 			continue
 		}
 
 		totalTransferred += unitsToTransfer
-		logger.Log("DEBUG", fmt.Sprintf("Transferred %d units of %s to %s",
-			unitsToTransfer, item.Symbol, transportSymbol), nil)
+		logger.Log("INFO", "Cargo transferred to transport", map[string]interface{}{
+			"ship_symbol":  cmd.ShipSymbol,
+			"action":       "transfer",
+			"cargo_symbol": item.Symbol,
+			"units":        unitsToTransfer,
+			"transport":    transportSymbol,
+		})
 
 		// Reload transport to get updated cargo space
 		transportShip, err = h.shipRepo.FindBySymbol(ctx, transportSymbol, cmd.PlayerID)
 		if err != nil {
-			logger.Log("WARNING", fmt.Sprintf("Failed to reload transport: %v", err), nil)
+			logger.Log("WARNING", "Failed to reload transport ship", map[string]interface{}{
+				"ship_symbol": cmd.ShipSymbol,
+				"action":      "reload_transport",
+				"transport":   transportSymbol,
+				"error":       err.Error(),
+			})
 			break
 		}
 	}
@@ -330,7 +395,7 @@ func (h *RunWorkerHandler) requestAndTransferToTransport(
 		MinerSymbol:     cmd.ShipSymbol,
 		TransportSymbol: transportSymbol,
 	}:
-		logger.Log("DEBUG", "Signaled transfer completion to coordinator", nil)
+		// Transfer completion signal sent
 	case <-ctx.Done():
 		return totalTransferred, ctx.Err()
 	}

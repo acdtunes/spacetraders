@@ -78,7 +78,12 @@ func (h *ScoutTourHandler) Handle(ctx context.Context, request common.Request) (
 		// Navigate to market once (if not already there)
 		// Market scan happens automatically via NavigateShipCommand
 		if ship.CurrentLocation().Symbol != marketWaypoint {
-			logger.Log("INFO", fmt.Sprintf("[ScoutTour] Navigating %s to %s (stationary scout)", cmd.ShipSymbol, marketWaypoint), nil)
+			logger.Log("INFO", "Ship navigating to stationary scout position", map[string]interface{}{
+				"ship_symbol": cmd.ShipSymbol,
+				"action":      "navigate",
+				"destination": marketWaypoint,
+				"tour_type":   "stationary_scout",
+			})
 			navCmd := &shipapp.NavigateShipCommand{
 				ShipSymbol:  cmd.ShipSymbol,
 				Destination: marketWaypoint,
@@ -90,13 +95,29 @@ func (h *ScoutTourHandler) Handle(ctx context.Context, request common.Request) (
 			}
 
 			navResult := navResp.(*shipapp.NavigateShipResponse)
-			logger.Log("INFO", fmt.Sprintf("[ScoutTour] Navigation complete: status=%s, fuel=%d (market scanned automatically)", navResult.Status, navResult.FuelRemaining), nil)
+			logger.Log("INFO", "Ship navigation complete - market scanned", map[string]interface{}{
+				"ship_symbol":   cmd.ShipSymbol,
+				"action":        "navigation_complete",
+				"status":        navResult.Status,
+				"fuel":          navResult.FuelRemaining,
+				"market_scanned": true,
+			})
 			response.MarketsVisited++
 		} else {
 			// Already at market, perform initial scan
-			logger.Log("INFO", fmt.Sprintf("[ScoutTour] Ship already at %s, performing initial market scan", marketWaypoint), nil)
+			logger.Log("INFO", "Ship performing initial market scan", map[string]interface{}{
+				"ship_symbol": cmd.ShipSymbol,
+				"action":      "scan_market",
+				"waypoint":    marketWaypoint,
+				"reason":      "already_present",
+			})
 			if err := h.marketScanner.ScanAndSaveMarket(ctx, cmd.PlayerID, marketWaypoint); err != nil {
-				logger.Log("ERROR", fmt.Sprintf("[ScoutTour] Initial market scan failed: %v", err), nil)
+				logger.Log("ERROR", "Initial market scan failed", map[string]interface{}{
+					"ship_symbol": cmd.ShipSymbol,
+					"action":      "scan_market",
+					"waypoint":    marketWaypoint,
+					"error":       err.Error(),
+				})
 				// Non-fatal - continue with tour
 			} else {
 				response.MarketsVisited++
@@ -107,20 +128,39 @@ func (h *ScoutTourHandler) Handle(ctx context.Context, request common.Request) (
 
 		// Continue scanning every 60 seconds for remaining iterations
 		for iteration := 1; iteration < cmd.Iterations || cmd.Iterations == -1; iteration++ {
-			logger.Log("INFO", "[ScoutTour] Waiting 60 seconds before next scan...", nil)
+			logger.Log("INFO", "Waiting before next market scan", map[string]interface{}{
+				"ship_symbol": cmd.ShipSymbol,
+				"action":      "wait_scan",
+				"duration":    "60s",
+			})
 
 			// Context-aware sleep - respects context cancellation for graceful shutdown
 			select {
 			case <-time.After(60 * time.Second):
 				// Continue to next scan
 			case <-ctx.Done():
-				logger.Log("INFO", fmt.Sprintf("[ScoutTour] Context cancelled, stopping after %d iterations", response.Iterations), nil)
+				logger.Log("INFO", "Scout tour cancelled by context", map[string]interface{}{
+					"ship_symbol": cmd.ShipSymbol,
+					"action":      "tour_cancelled",
+					"iterations_completed": response.Iterations,
+				})
 				return response, nil
 			}
 
-			logger.Log("INFO", fmt.Sprintf("[ScoutTour] Scanning market at %s (iteration %d)", marketWaypoint, iteration+1), nil)
+			logger.Log("INFO", "Scanning market at waypoint", map[string]interface{}{
+				"ship_symbol": cmd.ShipSymbol,
+				"action":      "scan_market",
+				"waypoint":    marketWaypoint,
+				"iteration":   iteration + 1,
+			})
 			if err := h.marketScanner.ScanAndSaveMarket(ctx, cmd.PlayerID, marketWaypoint); err != nil {
-				logger.Log("ERROR", fmt.Sprintf("[ScoutTour] Market scan failed: %v", err), nil)
+				logger.Log("ERROR", "Market scan failed", map[string]interface{}{
+					"ship_symbol": cmd.ShipSymbol,
+					"action":      "scan_market",
+					"waypoint":    marketWaypoint,
+					"iteration":   iteration + 1,
+					"error":       err.Error(),
+				})
 				// Non-fatal - continue scanning
 			} else {
 				response.MarketsVisited++
@@ -134,7 +174,13 @@ func (h *ScoutTourHandler) Handle(ctx context.Context, request common.Request) (
 			for _, marketWaypoint := range tourOrder {
 				// Navigate to waypoint using NavigateShip
 				// Market scan happens automatically via MarketScanner in RouteExecutor
-				logger.Log("INFO", fmt.Sprintf("[ScoutTour] Navigating %s to %s", cmd.ShipSymbol, marketWaypoint), nil)
+				logger.Log("INFO", "Ship navigating to market on tour", map[string]interface{}{
+					"ship_symbol": cmd.ShipSymbol,
+					"action":      "navigate",
+					"destination": marketWaypoint,
+					"tour_type":   "multi_market",
+					"iteration":   iteration + 1,
+				})
 				navCmd := &shipapp.NavigateShipCommand{
 					ShipSymbol:  cmd.ShipSymbol,
 					Destination: marketWaypoint,
@@ -146,7 +192,13 @@ func (h *ScoutTourHandler) Handle(ctx context.Context, request common.Request) (
 				}
 
 				navResult := navResp.(*shipapp.NavigateShipResponse)
-				logger.Log("INFO", fmt.Sprintf("[ScoutTour] Navigation complete: status=%s, fuel=%d (market scanned automatically)", navResult.Status, navResult.FuelRemaining), nil)
+				logger.Log("INFO", "Ship navigation complete - market scanned", map[string]interface{}{
+					"ship_symbol":    cmd.ShipSymbol,
+					"action":         "navigation_complete",
+					"status":         navResult.Status,
+					"fuel":           navResult.FuelRemaining,
+					"market_scanned": true,
+				})
 
 				response.MarketsVisited++
 			}

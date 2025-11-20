@@ -64,6 +64,8 @@ func (h *ScoutMarketsHandler) Handle(ctx context.Context, request common.Request
 		return nil, fmt.Errorf("invalid request type")
 	}
 
+	logger := common.LoggerFromContext(ctx)
+
 	// 0. Stop existing scout-tour containers for the ships in this command
 	// This ensures VRP recalculation with fresh ship positions
 	// User explicitly ran scout-all-markets, so we want to redistribute work
@@ -77,17 +79,31 @@ func (h *ScoutMarketsHandler) Handle(ctx context.Context, request common.Request
 		if assignment != nil && assignment.Status() == "active" {
 			// Stop the container and release the ship
 			containerID := assignment.ContainerID()
-			fmt.Printf("[ScoutMarkets] Stopping existing container %s for ship %s (scout-all-markets reset)\n", containerID, shipSymbol)
+			logger.Log("INFO", "Stopping existing scout container for reset", map[string]interface{}{
+				"ship_symbol":  shipSymbol,
+				"action":       "stop_existing_container",
+				"container_id": containerID,
+				"reason":       "scout_all_markets_reset",
+			})
 
 			if err := h.daemonClient.StopContainer(ctx, containerID); err != nil {
 				// Non-fatal: container might already be stopped or not found
-				fmt.Printf("[ScoutMarkets] Warning: Failed to stop container %s: %v\n", containerID, err)
+				logger.Log("WARNING", "Scout container stop failed", map[string]interface{}{
+					"ship_symbol":  shipSymbol,
+					"action":       "stop_container",
+					"container_id": containerID,
+					"error":        err.Error(),
+				})
 			}
 
 			// Release ship assignment
 			if err := h.shipAssignmentRepo.Release(ctx, shipSymbol, int(cmd.PlayerID), "scout_all_markets_reset"); err != nil {
 				// Non-fatal: assignment might already be released
-				fmt.Printf("[ScoutMarkets] Warning: Failed to release ship %s: %v\n", shipSymbol, err)
+				logger.Log("WARNING", "Ship assignment release failed", map[string]interface{}{
+					"ship_symbol": shipSymbol,
+					"action":      "release_ship",
+					"error":       err.Error(),
+				})
 			}
 		}
 	}
@@ -162,17 +178,14 @@ func (h *ScoutMarketsHandler) Handle(ctx context.Context, request common.Request
 	}
 
 	// 6. Run VRP optimization
-	fmt.Printf("[DEBUG ScoutMarkets] Ships needing containers: %d, Markets: %v\n", len(shipsNeedingContainers), cmd.Markets)
 	var assignments map[string][]string
 	if len(shipsNeedingContainers) == 1 {
 		// Single ship: assign all markets
-		fmt.Printf("[DEBUG ScoutMarkets] Single ship path - assigning all markets to %s\n", shipsNeedingContainers[0])
 		assignments = map[string][]string{
 			shipsNeedingContainers[0]: cmd.Markets,
 		}
 	} else {
 		// Multi-ship: use VRP via routing client
-		fmt.Printf("[DEBUG ScoutMarkets] Multi-ship path - calling VRP for %d ships and %d markets\n", len(shipsNeedingContainers), len(cmd.Markets))
 		vrpRequest := &routing.VRPRequest{
 			SystemSymbol:    cmd.SystemSymbol,
 			ShipSymbols:     shipsNeedingContainers,
@@ -189,7 +202,6 @@ func (h *ScoutMarketsHandler) Handle(ctx context.Context, request common.Request
 		// Extract market assignments from VRP response
 		assignments = make(map[string][]string)
 		for shipSymbol, tourData := range vrpResponse.Assignments {
-			fmt.Printf("[DEBUG ScoutMarkets] VRP assigned %d markets to %s: %v\n", len(tourData.Waypoints), shipSymbol, tourData.Waypoints)
 			assignments[shipSymbol] = tourData.Waypoints
 		}
 	}

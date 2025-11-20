@@ -96,11 +96,22 @@ func (h *RunTransportWorkerHandler) executeTransport(
 	// Strategy: Go to market first (BURN), refuel, then CRUISE to asteroid
 	// This matches the dry-run route planning logic exactly
 	if transportShip.CurrentLocation().Symbol != cmd.AsteroidField {
-		logger.Log("INFO", fmt.Sprintf("Navigating to asteroid field %s via market %s", cmd.AsteroidField, cmd.MarketSymbol), nil)
+		logger.Log("INFO", "Transport navigating to asteroid via market", map[string]interface{}{
+			"ship_symbol": cmd.ShipSymbol,
+			"action":      "navigate_to_asteroid",
+			"asteroid":    cmd.AsteroidField,
+			"via_market":  cmd.MarketSymbol,
+		})
 
 		// Step 1: Navigate to market (BURN for speed, will refuel there)
 		if transportShip.CurrentLocation().Symbol != cmd.MarketSymbol {
-			logger.Log("INFO", fmt.Sprintf("Step 1: BURN to market %s", cmd.MarketSymbol), nil)
+			logger.Log("INFO", "Transport navigating to market with BURN mode", map[string]interface{}{
+				"ship_symbol": cmd.ShipSymbol,
+				"action":      "navigate_to_market",
+				"destination": cmd.MarketSymbol,
+				"flight_mode": "BURN",
+				"step":        1,
+			})
 			navToMarketCmd := &appShip.NavigateShipCommand{
 				ShipSymbol:   cmd.ShipSymbol,
 				Destination:  cmd.MarketSymbol,
@@ -114,7 +125,12 @@ func (h *RunTransportWorkerHandler) executeTransport(
 		}
 
 		// Step 2: Dock and refuel to full
-		logger.Log("INFO", "Step 2: Docking and refueling to full", nil)
+		logger.Log("INFO", "Transport docking and refueling", map[string]interface{}{
+			"ship_symbol": cmd.ShipSymbol,
+			"action":      "dock_and_refuel",
+			"location":    cmd.MarketSymbol,
+			"step":        2,
+		})
 		dockCmd := &appShip.DockShipCommand{
 			ShipSymbol: cmd.ShipSymbol,
 			PlayerID:   cmd.PlayerID,
@@ -128,11 +144,22 @@ func (h *RunTransportWorkerHandler) executeTransport(
 		}
 		_, err = h.mediator.Send(ctx, refuelCmd)
 		if err != nil {
-			logger.Log("WARNING", fmt.Sprintf("Failed to refuel: %v", err), nil)
+			logger.Log("WARNING", "Transport refuel failed", map[string]interface{}{
+				"ship_symbol": cmd.ShipSymbol,
+				"action":      "refuel",
+				"location":    cmd.MarketSymbol,
+				"error":       err.Error(),
+			})
 		}
 
 		// Step 3: CRUISE to asteroid (preserves fuel for return trip)
-		logger.Log("INFO", fmt.Sprintf("Step 3: CRUISE to asteroid %s", cmd.AsteroidField), nil)
+		logger.Log("INFO", "Transport navigating to asteroid with CRUISE mode", map[string]interface{}{
+			"ship_symbol": cmd.ShipSymbol,
+			"action":      "navigate_to_asteroid",
+			"destination": cmd.AsteroidField,
+			"flight_mode": "CRUISE",
+			"step":        3,
+		})
 		navToAsteroidCmd := &appShip.NavigateShipCommand{
 			ShipSymbol:   cmd.ShipSymbol,
 			Destination:  cmd.AsteroidField,
@@ -151,21 +178,29 @@ func (h *RunTransportWorkerHandler) executeTransport(
 		}
 	}
 
-	logger.Log("INFO", fmt.Sprintf("Transport positioned at %s, starting passive cargo receiving", cmd.AsteroidField), nil)
+	logger.Log("INFO", "Transport positioned and ready for cargo receiving", map[string]interface{}{
+		"ship_symbol": cmd.ShipSymbol,
+		"action":      "start_receiving",
+		"location":    cmd.AsteroidField,
+		"mode":        "passive",
+	})
 
 	// 3. Main transport loop - runs indefinitely until context cancelled
 	for {
 		// Check for context cancellation
 		select {
 		case <-ctx.Done():
-			logger.Log("INFO", "Transport operation cancelled", nil)
+			logger.Log("INFO", "Transport operation cancelled by context", map[string]interface{}{
+				"ship_symbol":     cmd.ShipSymbol,
+				"action":          "operation_cancelled",
+				"selling_cycles":  result.SellingCycles,
+				"total_revenue":   result.TotalRevenue,
+			})
 			return ctx.Err()
 		default:
 		}
 
 		// 3a. Signal availability to coordinator
-		logger.Log("DEBUG", "Signaling availability to coordinator", nil)
-
 		select {
 		case cmd.AvailabilityChan <- cmd.ShipSymbol:
 			// Availability signaled
@@ -174,12 +209,14 @@ func (h *RunTransportWorkerHandler) executeTransport(
 		}
 
 		// 3b. Wait for cargo transfer notification
-		logger.Log("DEBUG", "Waiting for cargo transfer", nil)
-
 		select {
 		case <-cmd.CargoReceivedChan:
 			// Cargo was transferred to us
-			logger.Log("DEBUG", "Received cargo transfer notification", nil)
+			logger.Log("INFO", "Transport received cargo from miner", map[string]interface{}{
+				"ship_symbol": cmd.ShipSymbol,
+				"action":      "cargo_received",
+				"location":    cmd.AsteroidField,
+			})
 		case <-ctx.Done():
 			return ctx.Err()
 		}
@@ -192,11 +229,15 @@ func (h *RunTransportWorkerHandler) executeTransport(
 
 		// 3d. Check if cargo is at least 95% full (or truly full)
 		cargoUsage := float64(transportShip.Cargo().Units) / float64(transportShip.Cargo().Capacity)
-		logger.Log("DEBUG", fmt.Sprintf("Cargo at %.1f%% (%d/%d)",
-			cargoUsage*100, transportShip.Cargo().Units, transportShip.Cargo().Capacity), nil)
 
 		if cargoUsage >= 0.95 || transportShip.IsCargoFull() {
-			logger.Log("INFO", fmt.Sprintf("Cargo is %.1f%% full, executing selling route", cargoUsage*100), nil)
+			logger.Log("INFO", "Transport cargo threshold reached, executing selling route", map[string]interface{}{
+				"ship_symbol":    cmd.ShipSymbol,
+				"action":         "execute_selling_route",
+				"cargo_usage":    fmt.Sprintf("%.1f%%", cargoUsage*100),
+				"cargo_units":    transportShip.Cargo().Units,
+				"cargo_capacity": transportShip.Cargo().Capacity,
+			})
 
 			// 3e. Execute selling route via TourSellingCommand
 			tourCmd := &trading.RunTourSellingCommand{
@@ -215,8 +256,14 @@ func (h *RunTransportWorkerHandler) executeTransport(
 			result.TotalMarketsVisited += tourResult.MarketsVisited
 			result.TotalRevenue += tourResult.TotalRevenue
 
-			logger.Log("INFO", fmt.Sprintf("Completed selling cycle %d: %d markets, %d credits",
-				result.SellingCycles, tourResult.MarketsVisited, tourResult.TotalRevenue), nil)
+			logger.Log("INFO", "Transport selling cycle completed", map[string]interface{}{
+				"ship_symbol":    cmd.ShipSymbol,
+				"action":         "selling_cycle_complete",
+				"cycle_number":   result.SellingCycles,
+				"markets_visited": tourResult.MarketsVisited,
+				"cycle_revenue":  tourResult.TotalRevenue,
+				"total_revenue":  result.TotalRevenue,
+			})
 
 			// Note: executeSellRoute already includes return to asteroid via OptimizeFueledTour
 
@@ -226,7 +273,11 @@ func (h *RunTransportWorkerHandler) executeTransport(
 				return fmt.Errorf("failed to reload transport ship: %w", err)
 			}
 
-			logger.Log("INFO", "Returned to asteroid field, resuming passive receiving", nil)
+			logger.Log("INFO", "Transport returned to asteroid field", map[string]interface{}{
+				"ship_symbol": cmd.ShipSymbol,
+				"action":      "resume_receiving",
+				"location":    cmd.AsteroidField,
+			})
 		}
 
 		// Continue loop - will signal availability again
@@ -250,7 +301,11 @@ func (h *RunTransportWorkerHandler) returnToAsteroid(
 		return nil
 	}
 
-	logger.Log("INFO", fmt.Sprintf("Returning to asteroid field %s", cmd.AsteroidField), nil)
+	logger.Log("INFO", "Transport returning to asteroid field", map[string]interface{}{
+		"ship_symbol": cmd.ShipSymbol,
+		"action":      "return_to_asteroid",
+		"destination": cmd.AsteroidField,
+	})
 
 	navCmd := &appShip.NavigateShipCommand{
 		ShipSymbol:   cmd.ShipSymbol,

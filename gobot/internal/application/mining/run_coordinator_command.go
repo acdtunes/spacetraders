@@ -182,7 +182,10 @@ func (h *RunCoordinatorHandler) Handle(ctx context.Context, request common.Reque
 	var marketSymbol string
 	if cmd.AsteroidField == "" && cmd.MiningType != "" {
 		// Auto-select asteroid AND market together using optimization
-		logger.Log("INFO", fmt.Sprintf("Auto-selecting asteroid for mining type: %s", cmd.MiningType), nil)
+		logger.Log("INFO", "Asteroid auto-selection initiated", map[string]interface{}{
+			"action":      "select_asteroid",
+			"mining_type": cmd.MiningType,
+		})
 		selectedAsteroid, selectedMarket, err := h.selectAsteroidAndMarket(
 			ctx,
 			cmd.MiningType,
@@ -195,7 +198,11 @@ func (h *RunCoordinatorHandler) Handle(ctx context.Context, request common.Reque
 		}
 		cmd.AsteroidField = selectedAsteroid
 		marketSymbol = selectedMarket
-		logger.Log("INFO", fmt.Sprintf("Selected asteroid: %s, market: %s", selectedAsteroid, selectedMarket), nil)
+		logger.Log("INFO", "Asteroid and market selected", map[string]interface{}{
+			"action":    "select_asteroid",
+			"asteroid":  selectedAsteroid,
+			"market":    selectedMarket,
+		})
 	} else if cmd.AsteroidField != "" {
 		// User specified asteroid - just find the closest market
 		parts := strings.Split(cmd.AsteroidField, "-")
@@ -209,7 +216,11 @@ func (h *RunCoordinatorHandler) Handle(ctx context.Context, request common.Reque
 		if err != nil {
 			return nil, fmt.Errorf("failed to find market for transport loop: %w", err)
 		}
-		logger.Log("INFO", fmt.Sprintf("Found market for transport loop: %s", marketSymbol), nil)
+		logger.Log("INFO", "Market found for transport loop", map[string]interface{}{
+			"action":   "find_market",
+			"asteroid": cmd.AsteroidField,
+			"market":   marketSymbol,
+		})
 	} else {
 		return nil, fmt.Errorf("no asteroid field specified and no mining type provided for auto-selection")
 	}
@@ -226,8 +237,12 @@ func (h *RunCoordinatorHandler) Handle(ctx context.Context, request common.Reque
 	}
 
 	// Step 2: Create ship pool assignments
-	logger.Log("INFO", fmt.Sprintf("Creating ship pool: %d miners, %d transports",
-		len(cmd.MinerShips), len(cmd.TransportShips)), nil)
+	logger.Log("INFO", "Ship pool creation initiated", map[string]interface{}{
+		"action":           "create_ship_pool",
+		"miner_count":      len(cmd.MinerShips),
+		"transport_count":  len(cmd.TransportShips),
+		"container_id":     cmd.ContainerID,
+	})
 
 	allShips := append(cmd.MinerShips, cmd.TransportShips...)
 	if err := h.createPoolAssignments(ctx, allShips, cmd.ContainerID, cmd.PlayerID); err != nil {
@@ -255,13 +270,20 @@ func (h *RunCoordinatorHandler) Handle(ctx context.Context, request common.Reque
 	var workerContainerIDs []string
 
 	// Step 4: Spawn transport workers (they run continuously)
-	logger.Log("INFO", "Spawning transport workers...", nil)
+	logger.Log("INFO", "Transport workers spawning", map[string]interface{}{
+		"action":           "spawn_transports",
+		"transport_count":  len(cmd.TransportShips),
+	})
 	for _, transportShip := range cmd.TransportShips {
 		containerID, err := h.spawnTransportWorker(ctx, cmd, transportShip, marketSymbol,
 			transportAvailabilityChan, transportCargoReceivedChans[transportShip])
 		if err != nil {
 			errMsg := fmt.Sprintf("Failed to spawn transport worker for %s: %v", transportShip, err)
-			logger.Log("ERROR", errMsg, nil)
+			logger.Log("ERROR", "Transport worker spawn failed", map[string]interface{}{
+				"action":      "spawn_transport",
+				"ship_symbol": transportShip,
+				"error":       err.Error(),
+			})
 			result.Errors = append(result.Errors, errMsg)
 		} else {
 			workerContainerIDs = append(workerContainerIDs, containerID)
@@ -269,13 +291,20 @@ func (h *RunCoordinatorHandler) Handle(ctx context.Context, request common.Reque
 	}
 
 	// Step 5: Spawn mining workers (they run continuously)
-	logger.Log("INFO", "Spawning mining workers...", nil)
+	logger.Log("INFO", "Mining workers spawning", map[string]interface{}{
+		"action":      "spawn_miners",
+		"miner_count": len(cmd.MinerShips),
+	})
 	for _, minerShip := range cmd.MinerShips {
 		containerID, err := h.spawnMiningWorker(ctx, cmd, minerShip,
 			minerRequestChan, minerAssignChans[minerShip], transferCompleteChan)
 		if err != nil {
 			errMsg := fmt.Sprintf("Failed to spawn mining worker for %s: %v", minerShip, err)
-			logger.Log("ERROR", errMsg, nil)
+			logger.Log("ERROR", "Mining worker spawn failed", map[string]interface{}{
+				"action":      "spawn_miner",
+				"ship_symbol": minerShip,
+				"error":       err.Error(),
+			})
 			result.Errors = append(result.Errors, errMsg)
 		} else {
 			workerContainerIDs = append(workerContainerIDs, containerID)
@@ -283,7 +312,10 @@ func (h *RunCoordinatorHandler) Handle(ctx context.Context, request common.Reque
 	}
 
 	// Step 6: Main coordination loop
-	logger.Log("INFO", "Starting coordination loop", nil)
+	logger.Log("INFO", "Coordination loop started", map[string]interface{}{
+		"action":          "start_coordination",
+		"container_id":    cmd.ContainerID,
+	})
 
 	// Available transport pool
 	availableTransports := []string{}
@@ -298,10 +330,17 @@ func (h *RunCoordinatorHandler) Handle(ctx context.Context, request common.Reque
 		select {
 		case <-ctx.Done():
 			// Context cancelled, stop all workers and cleanup
-			logger.Log("INFO", "Coordinator shutdown requested", nil)
+			logger.Log("INFO", "Coordinator shutdown requested", map[string]interface{}{
+				"action":        "shutdown_coordinator",
+				"container_id":  cmd.ContainerID,
+				"worker_count":  len(workerContainerIDs),
+			})
 			// Stop all worker containers
 			for _, containerID := range workerContainerIDs {
-				logger.Log("INFO", fmt.Sprintf("Stopping worker container: %s", containerID), nil)
+				logger.Log("INFO", "Worker container stopping", map[string]interface{}{
+					"action":              "stop_worker",
+					"worker_container_id": containerID,
+				})
 				_ = h.daemonClient.StopContainer(ctx, containerID)
 			}
 			h.releasePoolAssignments(ctx, cmd.ContainerID, cmd.PlayerID)
@@ -314,8 +353,6 @@ func (h *RunCoordinatorHandler) Handle(ctx context.Context, request common.Reque
 			if transportShip, err := h.shipRepo.FindBySymbol(ctx, transportSymbol, cmd.PlayerID); err == nil {
 				transportCargoLevels[transportSymbol] = transportShip.Cargo().Units
 			}
-			logger.Log("DEBUG", fmt.Sprintf("Transport %s available (pool size: %d, cargo: %d)",
-				transportSymbol, len(availableTransports)+1, transportCargoLevels[transportSymbol]), nil)
 
 			// Check if there are waiting miners
 			if len(waitingMiners) > 0 {
@@ -326,7 +363,12 @@ func (h *RunCoordinatorHandler) Handle(ctx context.Context, request common.Reque
 				// Send transport to miner
 				select {
 				case minerAssignChans[minerSymbol] <- transportSymbol:
-					logger.Log("INFO", fmt.Sprintf("Assigned transport %s to waiting miner %s", transportSymbol, minerSymbol), nil)
+					logger.Log("INFO", "Transport assigned to waiting miner", map[string]interface{}{
+						"action":         "assign_transport",
+						"transport":      transportSymbol,
+						"miner":          minerSymbol,
+						"cargo_units":    transportCargoLevels[transportSymbol],
+					})
 				case <-ctx.Done():
 					return result, ctx.Err()
 				}
@@ -337,7 +379,6 @@ func (h *RunCoordinatorHandler) Handle(ctx context.Context, request common.Reque
 
 		case minerSymbol := <-minerRequestChan:
 			// Miner requesting transport
-			logger.Log("DEBUG", fmt.Sprintf("Miner %s requesting transport (available: %d)", minerSymbol, len(availableTransports)), nil)
 
 			if len(availableTransports) > 0 {
 			// Select transport with most cargo to fill it first
@@ -355,26 +396,38 @@ func (h *RunCoordinatorHandler) Handle(ctx context.Context, request common.Reque
 				// Send transport to miner
 				select {
 				case minerAssignChans[minerSymbol] <- transportSymbol:
-					logger.Log("INFO", fmt.Sprintf("Assigned transport %s to miner %s (cargo: %d)", transportSymbol, minerSymbol, bestCargo), nil)
+					logger.Log("INFO", "Transport assigned to miner", map[string]interface{}{
+						"action":      "assign_transport",
+						"transport":   transportSymbol,
+						"miner":       minerSymbol,
+						"cargo_units": bestCargo,
+					})
 				case <-ctx.Done():
 					return result, ctx.Err()
 				}
 			} else {
 				// No transport available, add to waiting queue
 				waitingMiners = append(waitingMiners, minerSymbol)
-				logger.Log("INFO", fmt.Sprintf("Miner %s waiting for transport (queue: %d)", minerSymbol, len(waitingMiners)), nil)
+				logger.Log("INFO", "Miner waiting for transport", map[string]interface{}{
+					"action":      "miner_waiting",
+					"miner":       minerSymbol,
+					"queue_depth": len(waitingMiners),
+				})
 			}
 
 		case transfer := <-transferCompleteChan:
 			// Miner completed transferring cargo to transport
 			result.TotalTransfers++
-			logger.Log("INFO", fmt.Sprintf("Transfer %d complete: %s -> %s",
-				result.TotalTransfers, transfer.MinerSymbol, transfer.TransportSymbol), nil)
+			logger.Log("INFO", "Cargo transfer complete", map[string]interface{}{
+				"action":         "transfer_complete",
+				"miner":          transfer.MinerSymbol,
+				"transport":      transfer.TransportSymbol,
+				"transfer_count": result.TotalTransfers,
+			})
 
 			// Notify the transport that cargo was received
 			select {
 			case transportCargoReceivedChans[transfer.TransportSymbol] <- struct{}{}:
-				logger.Log("DEBUG", fmt.Sprintf("Notified transport %s of cargo receipt", transfer.TransportSymbol), nil)
 			case <-ctx.Done():
 				return result, ctx.Err()
 			}
@@ -481,7 +534,11 @@ func (h *RunCoordinatorHandler) spawnMiningWorker(
 	}
 
 	// Step 1: Persist worker container
-	logger.Log("INFO", fmt.Sprintf("Persisting mining worker %s", workerContainerID), nil)
+	logger.Log("INFO", "Mining worker container persisting", map[string]interface{}{
+		"action":              "persist_mining_worker",
+		"ship_symbol":         shipSymbol,
+		"worker_container_id": workerContainerID,
+	})
 	if err := h.daemonClient.PersistMiningWorkerContainer(ctx, workerContainerID, uint(cmd.PlayerID), workerCmd); err != nil {
 		return "", fmt.Errorf("failed to persist worker: %w", err)
 	}
@@ -498,7 +555,11 @@ func (h *RunCoordinatorHandler) spawnMiningWorker(
 		return "", fmt.Errorf("failed to start worker: %w", err)
 	}
 
-	logger.Log("INFO", fmt.Sprintf("Mining worker started for %s", shipSymbol), nil)
+	logger.Log("INFO", "Mining worker started successfully", map[string]interface{}{
+		"action":              "start_mining_worker",
+		"ship_symbol":         shipSymbol,
+		"worker_container_id": workerContainerID,
+	})
 	return workerContainerID, nil
 }
 
@@ -526,7 +587,11 @@ func (h *RunCoordinatorHandler) spawnTransportWorker(
 	}
 
 	// Step 1: Persist worker container
-	logger.Log("INFO", fmt.Sprintf("Persisting transport worker %s", workerContainerID), nil)
+	logger.Log("INFO", "Transport worker container persisting", map[string]interface{}{
+		"action":              "persist_transport_worker",
+		"ship_symbol":         shipSymbol,
+		"worker_container_id": workerContainerID,
+	})
 	if err := h.daemonClient.PersistTransportWorkerContainer(ctx, workerContainerID, uint(cmd.PlayerID), workerCmd); err != nil {
 		return "", fmt.Errorf("failed to persist worker: %w", err)
 	}
@@ -543,7 +608,11 @@ func (h *RunCoordinatorHandler) spawnTransportWorker(
 		return "", fmt.Errorf("failed to start worker: %w", err)
 	}
 
-	logger.Log("INFO", fmt.Sprintf("Transport worker started for %s", shipSymbol), nil)
+	logger.Log("INFO", "Transport worker started successfully", map[string]interface{}{
+		"action":              "start_transport_worker",
+		"ship_symbol":         shipSymbol,
+		"worker_container_id": workerContainerID,
+	})
 	return workerContainerID, nil
 }
 
@@ -553,7 +622,11 @@ func (h *RunCoordinatorHandler) planDryRunRoutes(
 	cmd *RunCoordinatorCommand,
 	logger common.ContainerLogger,
 ) (*RunCoordinatorResponse, error) {
-	logger.Log("INFO", "Dry-run mode: planning routes for all ships", nil)
+	logger.Log("INFO", "Dry-run mode initiated", map[string]interface{}{
+		"action":      "dry_run_start",
+		"ship_count":  len(cmd.MinerShips) + len(cmd.TransportShips),
+		"asteroid":    cmd.AsteroidField,
+	})
 
 	result := &RunCoordinatorResponse{
 		AsteroidField: cmd.AsteroidField,
@@ -584,7 +657,11 @@ func (h *RunCoordinatorHandler) planDryRunRoutes(
 		return nil, fmt.Errorf("failed to find market: %w", err)
 	}
 	result.MarketSymbol = marketSymbol
-	logger.Log("INFO", fmt.Sprintf("Found market for transport loop: %s", marketSymbol), nil)
+	logger.Log("INFO", "Market found for dry-run transport loop", map[string]interface{}{
+		"action":   "find_market",
+		"market":   marketSymbol,
+		"asteroid": cmd.AsteroidField,
+	})
 
 	// Plan routes for each miner: current position -> asteroid
 	for _, minerSymbol := range cmd.MinerShips {
@@ -645,18 +722,35 @@ func (h *RunCoordinatorHandler) planDryRunRoutes(
 	}
 
 	// Log detailed route information
-	logger.Log("INFO", fmt.Sprintf("Dry-run complete: planned routes for %d ships", len(result.ShipRoutes)), nil)
-	logger.Log("INFO", fmt.Sprintf("Selected asteroid: %s", result.AsteroidField), nil)
-	logger.Log("INFO", fmt.Sprintf("Selected market: %s", result.MarketSymbol), nil)
+	logger.Log("INFO", "Dry-run planning complete", map[string]interface{}{
+		"action":       "dry_run_complete",
+		"ships_planned": len(result.ShipRoutes),
+		"asteroid":     result.AsteroidField,
+		"market":       result.MarketSymbol,
+	})
 
 	for _, route := range result.ShipRoutes {
 		totalMins := route.TotalTime / 60
-		logger.Log("INFO", fmt.Sprintf("Route for %s (%s): %d segments, %d min total, %d fuel",
-			route.ShipSymbol, route.ShipType, len(route.Segments), totalMins, route.TotalFuel), nil)
+		logger.Log("INFO", "Ship route planned", map[string]interface{}{
+			"action":        "route_planned",
+			"ship_symbol":   route.ShipSymbol,
+			"ship_type":     route.ShipType,
+			"segment_count": len(route.Segments),
+			"total_minutes": totalMins,
+			"total_fuel":    route.TotalFuel,
+		})
 		for i, seg := range route.Segments {
 			segMins := seg.TravelTime / 60
-			logger.Log("INFO", fmt.Sprintf("  %d. %s → %s [%s, %d min, %d fuel]",
-				i+1, seg.From, seg.To, seg.FlightMode, segMins, seg.FuelCost), nil)
+			logger.Log("INFO", "Route segment details", map[string]interface{}{
+				"action":       "segment_details",
+				"ship_symbol":  route.ShipSymbol,
+				"segment_num":  i + 1,
+				"from":         seg.From,
+				"to":           seg.To,
+				"flight_mode":  seg.FlightMode,
+				"travel_mins":  segMins,
+				"fuel_cost":    seg.FuelCost,
+			})
 		}
 	}
 
@@ -1097,18 +1191,6 @@ func extractWaypointData(graph map[string]interface{}) ([]*system.WaypointData, 
 		// Check for has_fuel as bool
 		if hasFuel, ok := wpMap["has_fuel"].(bool); ok {
 			wp.HasFuel = hasFuel
-			// Debug: log key waypoints
-			if symbol == "X1-AU21-H51" || symbol == "X1-AU21-I56" || symbol == "X1-AU21-J58" {
-				fmt.Printf("[DEBUG] extractWaypointData: %s has_fuel=%v\n", symbol, hasFuel)
-			}
-		} else if hasFuelRaw, exists := wpMap["has_fuel"]; exists {
-			// Debug: log if has_fuel exists but wrong type
-			fmt.Printf("[DEBUG] Waypoint %s has_fuel is type %T, value %v\n", symbol, hasFuelRaw, hasFuelRaw)
-		} else {
-			// Debug: log if has_fuel doesn't exist
-			if symbol == "X1-AU21-H51" || symbol == "X1-AU21-I56" || symbol == "X1-AU21-J58" {
-				fmt.Printf("[DEBUG] extractWaypointData: %s has_fuel MISSING\n", symbol)
-			}
 		}
 
 		waypointData = append(waypointData, wp)
