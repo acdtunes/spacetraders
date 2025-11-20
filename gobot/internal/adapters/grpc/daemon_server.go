@@ -24,6 +24,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/routing"
 	pb "github.com/andrescamacho/spacetraders-go/pkg/proto/daemon"
+	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 	"google.golang.org/grpc"
 )
 
@@ -609,7 +610,7 @@ func containerModelToShipAssignment(model *persistence.ShipAssignmentModel) *dom
 // This will be called by the gRPC handler when proto is generated
 func (s *DaemonServer) NavigateShip(ctx context.Context, shipSymbol, destination string, playerID int) (string, error) {
 	// Create container ID
-	containerID := generateContainerID("navigate", shipSymbol)
+	containerID := utils.GenerateContainerID("navigate", shipSymbol)
 
 	// Create navigation command
 	cmd := &ship.NavigateShipCommand{
@@ -652,7 +653,7 @@ func (s *DaemonServer) NavigateShip(ctx context.Context, shipSymbol, destination
 
 // DockShip handles ship docking requests
 func (s *DaemonServer) DockShip(ctx context.Context, shipSymbol string, playerID int) (string, error) {
-	containerID := generateContainerID("dock", shipSymbol)
+	containerID := utils.GenerateContainerID("dock", shipSymbol)
 
 	cmd := &ship.DockShipCommand{
 		ShipSymbol: shipSymbol,
@@ -689,7 +690,7 @@ func (s *DaemonServer) DockShip(ctx context.Context, shipSymbol string, playerID
 
 // OrbitShip handles ship orbit requests
 func (s *DaemonServer) OrbitShip(ctx context.Context, shipSymbol string, playerID int) (string, error) {
-	containerID := generateContainerID("orbit", shipSymbol)
+	containerID := utils.GenerateContainerID("orbit", shipSymbol)
 
 	cmd := &ship.OrbitShipCommand{
 		ShipSymbol: shipSymbol,
@@ -726,7 +727,7 @@ func (s *DaemonServer) OrbitShip(ctx context.Context, shipSymbol string, playerI
 
 // RefuelShip handles ship refuel requests
 func (s *DaemonServer) RefuelShip(ctx context.Context, shipSymbol string, playerID int, units *int) (string, error) {
-	containerID := generateContainerID("refuel", shipSymbol)
+	containerID := utils.GenerateContainerID("refuel", shipSymbol)
 
 	cmd := &ship.RefuelShipCommand{
 		ShipSymbol: shipSymbol,
@@ -769,8 +770,8 @@ func (s *DaemonServer) RefuelShip(ctx context.Context, shipSymbol string, player
 
 // BatchContractWorkflow handles batch contract workflow requests
 func (s *DaemonServer) BatchContractWorkflow(ctx context.Context, shipSymbol string, iterations, playerID int) (string, error) {
-	// Create container ID with iterations for batch execution
-	containerID := fmt.Sprintf("batch_contract_workflow-%s-%d", shipSymbol, time.Now().UnixNano())
+	// Create container ID
+	containerID := utils.GenerateContainerID("batch_contract_workflow", shipSymbol)
 
 	// Delegate to ContractWorkflow (with no completion callback)
 	// Note: iterations parameter is ignored for now - ContractWorkflow always does 1 iteration
@@ -912,7 +913,7 @@ func (s *DaemonServer) StartContractWorkflow(
 // ContractFleetCoordinator creates a fleet coordinator for multi-ship contract operations
 func (s *DaemonServer) ContractFleetCoordinator(ctx context.Context, shipSymbols []string, playerID int) (string, error) {
 	// Create container ID
-	containerID := generateContainerID("contract_fleet_coordinator", shipSymbols[0])
+	containerID := utils.GenerateContainerID("contract_fleet_coordinator", shipSymbols[0])
 
 	// Create contract fleet coordinator command
 	cmd := &contract.RunFleetCoordinatorCommand{
@@ -989,9 +990,9 @@ func (s *DaemonServer) MiningOperation(
 	// Create container ID
 	var containerID string
 	if dryRun {
-		containerID = generateContainerID("mining_dry_run", minerShips[0])
+		containerID = utils.GenerateContainerID("mining_dry_run", minerShips[0])
 	} else {
-		containerID = generateContainerID("mining_coordinator", minerShips[0])
+		containerID = utils.GenerateContainerID("mining_coordinator", minerShips[0])
 	}
 
 	// Create mining coordinator command
@@ -1219,7 +1220,7 @@ func (s *DaemonServer) AssignScoutingFleet(
 	playerID int,
 ) (string, error) {
 	// Generate container ID
-	containerID := fmt.Sprintf("scout-fleet-assignment-%s-%d", systemSymbol, time.Now().UnixNano())
+	containerID := utils.GenerateContainerID("scout-fleet-assignment", systemSymbol)
 
 	// Create assign scouting fleet command (will execute inside container)
 	cmd := &scouting.AssignScoutingFleetCommand{
@@ -1540,7 +1541,7 @@ func (s *DaemonServer) PurchaseShip(ctx context.Context, purchasingShipSymbol, s
 	}
 
 	// Create container ID
-	containerID := generateContainerID("purchase_ship", purchasingShipSymbol)
+	containerID := utils.GenerateContainerID("purchase_ship", purchasingShipSymbol)
 
 	// Create container for this operation
 	containerEntity := container.NewContainer(
@@ -1597,7 +1598,7 @@ func (s *DaemonServer) BatchPurchaseShips(ctx context.Context, purchasingShipSym
 	}
 
 	// Create container ID
-	containerID := generateContainerID("batch_purchase_ships", purchasingShipSymbol)
+	containerID := utils.GenerateContainerID("batch_purchase_ships", purchasingShipSymbol)
 
 	// Create container for this operation
 	containerEntity := container.NewContainer(
@@ -2014,10 +2015,4 @@ func (s *DaemonServer) StartMiningCoordinatorContainer(
 	}()
 
 	return nil
-}
-
-// Utility functions
-
-func generateContainerID(operation, shipSymbol string) string {
-	return fmt.Sprintf("%s-%s-%d", operation, shipSymbol, time.Now().UnixNano())
 }

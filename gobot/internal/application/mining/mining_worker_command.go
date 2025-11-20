@@ -91,7 +91,7 @@ func (h *RunWorkerHandler) Handle(ctx context.Context, request common.Request) (
 func (h *RunWorkerHandler) executeMining(
 	ctx context.Context,
 	cmd *RunWorkerCommand,
-	result *WorkerResponse,
+	result *RunWorkerResponse,
 ) error {
 	logger := common.LoggerFromContext(ctx)
 

@@ -14,7 +14,7 @@ func TestFeatures(t *testing.T) {
 		ScenarioInitializer: InitializeScenario,
 		Options: &godog.Options{
 			Format:   "pretty",
-			Paths:    []string{"features/domain"},
+			Paths:    []string{"features/domain", "features/utils"},
 			TestingT: t,
 		},
 	}
@@ -30,6 +30,7 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	// for shared steps like "the result should be true/false"
 	steps.InitializeValueObjectScenarios(sc)
 	steps.InitializeShipScenario(sc)
+	steps.InitializeContainerIDSteps(sc)
 }
 
 func TestMain(m *testing.M) {

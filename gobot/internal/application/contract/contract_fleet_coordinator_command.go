@@ -12,6 +12,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
+	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )
 
 // RunFleetCoordinatorCommand manages a pool of ships for continuous contract execution.
@@ -268,7 +269,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 		logger.Log("INFO", fmt.Sprintf("Selected %s (distance: %.2f units)", selectedShip, distance), nil)
 
 		// Create worker container ID
-		workerContainerID := fmt.Sprintf("contract-work-%s-%d", selectedShip, time.Now().Unix())
+		workerContainerID := utils.GenerateContainerID("contract-work", selectedShip)
 
 		// Create worker command
 		workerCmd := &RunWorkflowCommand{

@@ -3,15 +3,13 @@ package scouting
 import (
 	"context"
 	"fmt"
-	"strings"
-
-	"github.com/google/uuid"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/routing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
+	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )
 
 // ScoutMarketsCommand orchestrates fleet deployment for market scouting
@@ -198,9 +196,7 @@ func (h *ScoutMarketsHandler) Handle(ctx context.Context, request common.Request
 	// 7. Create scout-tour containers for ships needing them
 	newContainerIDs := []string{}
 	for shipSymbol, markets := range assignments {
-		containerID := fmt.Sprintf("scout-tour-%s-%s",
-			strings.ToLower(shipSymbol),
-			generateShortUUID())
+		containerID := utils.GenerateContainerID("scout-tour", shipSymbol)
 
 		scoutTourCmd := &ScoutTourCommand{
 			PlayerID:   cmd.PlayerID,
@@ -235,13 +231,6 @@ func (h *ScoutMarketsHandler) Handle(ctx context.Context, request common.Request
 		Assignments:      assignments,
 		ReusedContainers: reusedContainers,
 	}, nil
-}
-
-// generateShortUUID generates an 8-character hex UUID
-func generateShortUUID() string {
-	id := uuid.New()
-	// Use first 8 characters of the UUID string (without hyphens)
-	return strings.ReplaceAll(id.String(), "-", "")[:8]
 }
 
 // extractWaypointData converts graph format to routing waypoint data

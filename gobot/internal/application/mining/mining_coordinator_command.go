@@ -6,7 +6,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	appShip "github.com/andrescamacho/spacetraders-go/internal/application/ship"
@@ -17,6 +16,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/routing"
 	domainShared "github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
+	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )
 
 // RunCoordinatorCommand manages a fleet of mining and transport ships
@@ -466,9 +466,9 @@ func (h *RunCoordinatorHandler) spawnMiningWorker(
 ) (string, error) {
 	logger := common.LoggerFromContext(ctx)
 
-	workerContainerID := fmt.Sprintf("mining-worker-%s-%d", shipSymbol, time.Now().Unix())
+	workerContainerID := utils.GenerateContainerID("mining-worker", shipSymbol)
 
-	workerCmd := &WorkerCommand{
+	workerCmd := &RunWorkerCommand{
 		ShipSymbol:           shipSymbol,
 		PlayerID:             cmd.PlayerID,
 		AsteroidField:        cmd.AsteroidField,
@@ -512,7 +512,7 @@ func (h *RunCoordinatorHandler) spawnTransportWorker(
 ) (string, error) {
 	logger := common.LoggerFromContext(ctx)
 
-	workerContainerID := fmt.Sprintf("transport-worker-%s-%d", shipSymbol, time.Now().Unix())
+	workerContainerID := utils.GenerateContainerID("transport-worker", shipSymbol)
 
 	workerCmd := &RunTransportWorkerCommand{
 		ShipSymbol:        shipSymbol,
@@ -551,7 +551,7 @@ func (h *RunCoordinatorHandler) planDryRunRoutes(
 	ctx context.Context,
 	cmd *RunCoordinatorCommand,
 	logger common.ContainerLogger,
-) (*CoordinatorResponse, error) {
+) (*RunCoordinatorResponse, error) {
 	logger.Log("INFO", "Dry-run mode: planning routes for all ships", nil)
 
 	result := &RunCoordinatorResponse{

@@ -7,6 +7,7 @@ import (
 
 	playerApp "github.com/andrescamacho/spacetraders-go/internal/application/player"
 	pb "github.com/andrescamacho/spacetraders-go/pkg/proto/daemon"
+	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )
 
 // daemonServiceImpl implements the DaemonServiceServer interface
@@ -213,7 +214,7 @@ func (s *daemonServiceImpl) ScoutTour(ctx context.Context, req *pb.ScoutTourRequ
 	}
 
 	// Generate container ID for this scout tour
-	containerID := generateContainerID("scout_tour", req.ShipSymbol)
+	containerID := utils.GenerateContainerID("scout_tour", req.ShipSymbol)
 
 	_, err = s.daemon.ScoutTour(ctx, containerID, req.ShipSymbol, req.Markets, int(req.Iterations), playerID)
 	if err != nil {
@@ -651,7 +652,7 @@ func (s *daemonServiceImpl) TourSell(ctx context.Context, req *pb.TourSellReques
 	}
 
 	// Generate container ID for this tour sell operation
-	containerID := generateContainerID("tour_sell", req.ShipSymbol)
+	containerID := utils.GenerateContainerID("tour_sell", req.ShipSymbol)
 
 	// Get optional return waypoint
 	returnWaypoint := ""
