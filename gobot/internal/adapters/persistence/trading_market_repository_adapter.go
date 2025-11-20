@@ -3,6 +3,7 @@ package persistence
 import (
 	"context"
 
+	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 )
 
@@ -73,4 +74,28 @@ func (a *TradingMarketRepositoryAdapter) FindCheapestMarketSelling(ctx context.C
 		SellPrice:      result.SellPrice,
 		Supply:         result.Supply,
 	}, nil
+}
+
+// FindBestMarketBuying adapts the method from persistence to trading domain
+func (a *TradingMarketRepositoryAdapter) FindBestMarketBuying(ctx context.Context, goodSymbol, systemSymbol string, playerID int) (*trading.BestMarketBuyingResult, error) {
+	result, err := a.marketRepo.FindBestMarketBuying(ctx, goodSymbol, systemSymbol, playerID)
+	if err != nil {
+		return nil, err
+	}
+
+	if result == nil {
+		return nil, nil
+	}
+
+	return &trading.BestMarketBuyingResult{
+		WaypointSymbol: result.WaypointSymbol,
+		TradeSymbol:    result.TradeSymbol,
+		PurchasePrice:  result.PurchasePrice,
+		Supply:         result.Supply,
+	}, nil
+}
+
+// ListMarketsInSystem adapts the method from persistence to return market.Market slice
+func (a *TradingMarketRepositoryAdapter) ListMarketsInSystem(ctx context.Context, playerID uint, systemSymbol string, maxAgeMinutes int) ([]market.Market, error) {
+	return a.marketRepo.ListMarketsInSystem(ctx, playerID, systemSymbol, maxAgeMinutes)
 }

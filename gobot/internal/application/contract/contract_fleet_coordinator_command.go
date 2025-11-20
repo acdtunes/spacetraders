@@ -140,12 +140,19 @@ func (h *ContractFleetCoordinatorHandler) Handle(ctx context.Context, request co
 		logger.Log("INFO", "All existing workers stopped, coordinator will create new workers as needed", nil)
 	}
 
+	// Track current active worker container ID for cleanup on shutdown
+	var activeWorkerContainerID string
+
 	// Step 4: Main coordinator loop (infinite)
 	// Execute one contract at a time (game constraint: one active contract per player)
 	for {
 		select {
 		case <-ctx.Done():
 			// Context cancelled, release pool and exit
+			if activeWorkerContainerID != "" {
+				logger.Log("INFO", fmt.Sprintf("Stopping active worker container: %s", activeWorkerContainerID), nil)
+				_ = h.daemonClient.StopContainer(ctx, activeWorkerContainerID)
+			}
 			_ = ReleasePoolAssignments(ctx, cmd.ContainerID, cmd.PlayerID, h.shipAssignmentRepo, "coordinator_stopped")
 			return result, ctx.Err()
 		default:
@@ -168,10 +175,15 @@ func (h *ContractFleetCoordinatorHandler) Handle(ctx context.Context, request co
 			select {
 			case shipSymbol := <-completionChan:
 				logger.Log("INFO", fmt.Sprintf("Ship %s completed, back in pool", shipSymbol), nil)
+				activeWorkerContainerID = "" // Worker completed
 				// Loop immediately to assign next contract
 			case <-time.After(30 * time.Second):
 				// Timeout, check again
 			case <-ctx.Done():
+				if activeWorkerContainerID != "" {
+					logger.Log("INFO", fmt.Sprintf("Stopping active worker container: %s", activeWorkerContainerID), nil)
+					_ = h.daemonClient.StopContainer(ctx, activeWorkerContainerID)
+				}
 				_ = ReleasePoolAssignments(ctx, cmd.ContainerID, cmd.PlayerID, h.shipAssignmentRepo, "coordinator_stopped")
 				return result, ctx.Err()
 			}
@@ -188,10 +200,15 @@ func (h *ContractFleetCoordinatorHandler) Handle(ctx context.Context, request co
 			select {
 			case shipSymbol := <-completionChan:
 				logger.Log("INFO", fmt.Sprintf("Active worker completed for ship %s", shipSymbol), nil)
+				activeWorkerContainerID = "" // Worker completed
 				// Loop back to create new worker
 			case <-time.After(1 * time.Minute):
 				logger.Log("WARNING", "Timeout waiting for active worker, will check again", nil)
 			case <-ctx.Done():
+				if activeWorkerContainerID != "" {
+					logger.Log("INFO", fmt.Sprintf("Stopping active worker container: %s", activeWorkerContainerID), nil)
+					_ = h.daemonClient.StopContainer(ctx, activeWorkerContainerID)
+				}
 				_ = ReleasePoolAssignments(ctx, cmd.ContainerID, cmd.PlayerID, h.shipAssignmentRepo, "coordinator_stopped")
 				return result, ctx.Err()
 			}
@@ -295,6 +312,8 @@ func (h *ContractFleetCoordinatorHandler) Handle(ctx context.Context, request co
 			continue
 		}
 
+		activeWorkerContainerID = workerContainerID
+
 		// Block waiting for worker completion
 		logger.Log("INFO", fmt.Sprintf("Waiting for %s to complete contract...", selectedShip), nil)
 		logger.Log("DEBUG", "Entering select block for completion signal", nil)
@@ -303,6 +322,7 @@ func (h *ContractFleetCoordinatorHandler) Handle(ctx context.Context, request co
 			logger.Log("INFO", fmt.Sprintf("Contract completed by %s", completedShip), nil)
 			logger.Log("DEBUG", "Received completion signal, about to continue loop", nil)
 			result.ContractsCompleted++
+			activeWorkerContainerID = "" // Worker completed
 
 			// Transfer ship back from worker to coordinator (atomic, prevents race conditions)
 			// Worker container still owns the ship at this point
@@ -372,6 +392,10 @@ func (h *ContractFleetCoordinatorHandler) Handle(ctx context.Context, request co
 
 		case <-ctx.Done():
 			logger.Log("INFO", "Context cancelled, exiting coordinator", nil)
+			if activeWorkerContainerID != "" {
+				logger.Log("INFO", fmt.Sprintf("Stopping active worker container: %s", activeWorkerContainerID), nil)
+				_ = h.daemonClient.StopContainer(ctx, activeWorkerContainerID)
+			}
 			_ = ReleasePoolAssignments(ctx, cmd.ContainerID, cmd.PlayerID, h.shipAssignmentRepo, "coordinator_stopped")
 			return result, ctx.Err()
 		}

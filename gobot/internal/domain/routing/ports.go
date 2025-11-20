@@ -10,19 +10,22 @@ import (
 type RoutingClient interface {
 	PlanRoute(ctx context.Context, request *RouteRequest) (*RouteResponse, error)
 	OptimizeTour(ctx context.Context, request *TourRequest) (*TourResponse, error)
+	OptimizeFueledTour(ctx context.Context, request *FueledTourRequest) (*FueledTourResponse, error)
 	PartitionFleet(ctx context.Context, request *VRPRequest) (*VRPResponse, error)
 }
 
 // DTOs for routing operations
 
 type RouteRequest struct {
-	SystemSymbol   string
-	StartWaypoint  string
-	GoalWaypoint   string
-	CurrentFuel    int
-	FuelCapacity   int
-	EngineSpeed    int
-	Waypoints      []*system.WaypointData
+	SystemSymbol  string
+	StartWaypoint string
+	GoalWaypoint  string
+	CurrentFuel   int
+	FuelCapacity  int
+	EngineSpeed   int
+	Waypoints     []*system.WaypointData
+	FuelEfficient bool // When true, removes DRIFT penalty for fuel-efficient routes
+	PreferCruise  bool // When true, prefer CRUISE over BURN for fuel efficiency
 }
 
 type RouteResponse struct {
@@ -60,6 +63,50 @@ type TourResponse struct {
 	VisitOrder       []string
 	CombinedRoute    []*RouteStepData
 	TotalTimeSeconds int
+}
+
+// FueledTourRequest for globally fuel-optimized tour
+type FueledTourRequest struct {
+	SystemSymbol    string
+	StartWaypoint   string
+	TargetWaypoints []string
+	ReturnWaypoint  string // Optional: set to return after tour
+	CurrentFuel     int
+	FuelCapacity    int
+	EngineSpeed     int
+	AllWaypoints    []*system.WaypointData
+}
+
+// FueledTourResponse with legs containing flight modes and refuel flags
+type FueledTourResponse struct {
+	VisitOrder       []string
+	Legs             []*TourLegData
+	TotalTimeSeconds int
+	TotalFuelCost    int
+	TotalDistance    float64
+	RefuelStops      int
+}
+
+// TourLegData represents a single leg of a fueled tour
+type TourLegData struct {
+	FromWaypoint      string
+	ToWaypoint        string
+	FlightMode        string // "BURN", "CRUISE", or "DRIFT"
+	FuelCost          int
+	TimeSeconds       int
+	Distance          float64
+	RefuelBefore      bool
+	RefuelAmount      int
+	IntermediateStops []*IntermediateStopData
+}
+
+// IntermediateStopData for multi-hop legs with refuel stops
+type IntermediateStopData struct {
+	Waypoint     string
+	FlightMode   string
+	FuelCost     int
+	TimeSeconds  int
+	RefuelAmount int
 }
 
 type VRPRequest struct {

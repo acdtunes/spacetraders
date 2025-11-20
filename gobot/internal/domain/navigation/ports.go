@@ -51,6 +51,7 @@ type ShipData struct {
 	CargoUnits      int
 	EngineSpeed     int
 	FrameSymbol     string // Frame type (e.g., "FRAME_PROBE", "FRAME_DRONE", "FRAME_MINER")
+	Role            string // Ship role from registration (e.g., "EXCAVATOR", "COMMAND", "SATELLITE")
 	Cargo           *CargoData
 }
 

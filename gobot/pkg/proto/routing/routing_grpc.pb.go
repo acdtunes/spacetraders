@@ -19,9 +19,10 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	RoutingService_PlanRoute_FullMethodName      = "/routing.RoutingService/PlanRoute"
-	RoutingService_OptimizeTour_FullMethodName   = "/routing.RoutingService/OptimizeTour"
-	RoutingService_PartitionFleet_FullMethodName = "/routing.RoutingService/PartitionFleet"
+	RoutingService_PlanRoute_FullMethodName          = "/routing.RoutingService/PlanRoute"
+	RoutingService_OptimizeTour_FullMethodName       = "/routing.RoutingService/OptimizeTour"
+	RoutingService_OptimizeFueledTour_FullMethodName = "/routing.RoutingService/OptimizeFueledTour"
+	RoutingService_PartitionFleet_FullMethodName     = "/routing.RoutingService/PartitionFleet"
 )
 
 // RoutingServiceClient is the client API for RoutingService service.
@@ -36,6 +37,9 @@ type RoutingServiceClient interface {
 	PlanRoute(ctx context.Context, in *PlanRouteRequest, opts ...grpc.CallOption) (*PlanRouteResponse, error)
 	// OptimizeTour solves TSP for visiting multiple waypoints optimally
 	OptimizeTour(ctx context.Context, in *OptimizeTourRequest, opts ...grpc.CallOption) (*OptimizeTourResponse, error)
+	// OptimizeFueledTour solves TSP with global fuel optimization
+	// Returns visit order + flight modes + refuel stops to minimize total travel time
+	OptimizeFueledTour(ctx context.Context, in *OptimizeFueledTourRequest, opts ...grpc.CallOption) (*OptimizeFueledTourResponse, error)
 	// PartitionFleet solves VRP to distribute waypoints across multiple ships
 	PartitionFleet(ctx context.Context, in *PartitionFleetRequest, opts ...grpc.CallOption) (*PartitionFleetResponse, error)
 }
@@ -68,6 +72,16 @@ func (c *routingServiceClient) OptimizeTour(ctx context.Context, in *OptimizeTou
 	return out, nil
 }
 
+func (c *routingServiceClient) OptimizeFueledTour(ctx context.Context, in *OptimizeFueledTourRequest, opts ...grpc.CallOption) (*OptimizeFueledTourResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(OptimizeFueledTourResponse)
+	err := c.cc.Invoke(ctx, RoutingService_OptimizeFueledTour_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *routingServiceClient) PartitionFleet(ctx context.Context, in *PartitionFleetRequest, opts ...grpc.CallOption) (*PartitionFleetResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(PartitionFleetResponse)
@@ -90,6 +104,9 @@ type RoutingServiceServer interface {
 	PlanRoute(context.Context, *PlanRouteRequest) (*PlanRouteResponse, error)
 	// OptimizeTour solves TSP for visiting multiple waypoints optimally
 	OptimizeTour(context.Context, *OptimizeTourRequest) (*OptimizeTourResponse, error)
+	// OptimizeFueledTour solves TSP with global fuel optimization
+	// Returns visit order + flight modes + refuel stops to minimize total travel time
+	OptimizeFueledTour(context.Context, *OptimizeFueledTourRequest) (*OptimizeFueledTourResponse, error)
 	// PartitionFleet solves VRP to distribute waypoints across multiple ships
 	PartitionFleet(context.Context, *PartitionFleetRequest) (*PartitionFleetResponse, error)
 	mustEmbedUnimplementedRoutingServiceServer()
@@ -107,6 +124,9 @@ func (UnimplementedRoutingServiceServer) PlanRoute(context.Context, *PlanRouteRe
 }
 func (UnimplementedRoutingServiceServer) OptimizeTour(context.Context, *OptimizeTourRequest) (*OptimizeTourResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method OptimizeTour not implemented")
+}
+func (UnimplementedRoutingServiceServer) OptimizeFueledTour(context.Context, *OptimizeFueledTourRequest) (*OptimizeFueledTourResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method OptimizeFueledTour not implemented")
 }
 func (UnimplementedRoutingServiceServer) PartitionFleet(context.Context, *PartitionFleetRequest) (*PartitionFleetResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method PartitionFleet not implemented")
@@ -168,6 +188,24 @@ func _RoutingService_OptimizeTour_Handler(srv interface{}, ctx context.Context, 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _RoutingService_OptimizeFueledTour_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(OptimizeFueledTourRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RoutingServiceServer).OptimizeFueledTour(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RoutingService_OptimizeFueledTour_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RoutingServiceServer).OptimizeFueledTour(ctx, req.(*OptimizeFueledTourRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _RoutingService_PartitionFleet_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(PartitionFleetRequest)
 	if err := dec(in); err != nil {
@@ -200,6 +238,10 @@ var RoutingService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "OptimizeTour",
 			Handler:    _RoutingService_OptimizeTour_Handler,
+		},
+		{
+			MethodName: "OptimizeFueledTour",
+			Handler:    _RoutingService_OptimizeFueledTour_Handler,
 		},
 		{
 			MethodName: "PartitionFleet",

@@ -565,3 +565,44 @@ func (m *MockAPIClient) PurchaseShip(ctx context.Context, shipType, waypointSymb
 
 	return nil, fmt.Errorf("not implemented in mock")
 }
+
+func (m *MockAPIClient) ExtractResources(ctx context.Context, shipSymbol string, token string) (*infraports.ExtractionResult, error) {
+	m.mu.RLock()
+	shouldError := m.shouldError
+	errorMsg := m.errorMsg
+	m.mu.RUnlock()
+
+	if shouldError {
+		return nil, fmt.Errorf("%s", errorMsg)
+	}
+
+	// Return a mock extraction result
+	return &infraports.ExtractionResult{
+		ShipSymbol:      shipSymbol,
+		YieldSymbol:     "IRON_ORE",
+		YieldUnits:      10,
+		CooldownSeconds: 60,
+		CooldownExpires: "",
+		Cargo:           nil,
+	}, nil
+}
+
+func (m *MockAPIClient) TransferCargo(ctx context.Context, fromShipSymbol, toShipSymbol, goodSymbol string, units int, token string) (*infraports.TransferResult, error) {
+	m.mu.RLock()
+	shouldError := m.shouldError
+	errorMsg := m.errorMsg
+	m.mu.RUnlock()
+
+	if shouldError {
+		return nil, fmt.Errorf("%s", errorMsg)
+	}
+
+	// Return a mock transfer result
+	return &infraports.TransferResult{
+		FromShip:         fromShipSymbol,
+		ToShip:           toShipSymbol,
+		GoodSymbol:       goodSymbol,
+		UnitsTransferred: units,
+		RemainingCargo:   nil,
+	}, nil
+}

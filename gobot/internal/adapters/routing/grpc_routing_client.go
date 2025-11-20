@@ -53,13 +53,15 @@ func (c *GRPCRoutingClient) Close() error {
 func (c *GRPCRoutingClient) PlanRoute(ctx context.Context, req *domainRouting.RouteRequest) (*domainRouting.RouteResponse, error) {
 	// Convert to protobuf request
 	pbReq := &pb.PlanRouteRequest{
-		SystemSymbol:   req.SystemSymbol,
-		StartWaypoint:  req.StartWaypoint,
-		GoalWaypoint:   req.GoalWaypoint,
-		CurrentFuel:    int32(req.CurrentFuel),
-		FuelCapacity:   int32(req.FuelCapacity),
-		EngineSpeed:    int32(req.EngineSpeed),
-		Waypoints:      convertWaypointsToPb(req.Waypoints),
+		SystemSymbol:  req.SystemSymbol,
+		StartWaypoint: req.StartWaypoint,
+		GoalWaypoint:  req.GoalWaypoint,
+		CurrentFuel:   int32(req.CurrentFuel),
+		FuelCapacity:  int32(req.FuelCapacity),
+		EngineSpeed:   int32(req.EngineSpeed),
+		Waypoints:     convertWaypointsToPb(req.Waypoints),
+		FuelEfficient: req.FuelEfficient,
+		PreferCruise:  req.PreferCruise,
 	}
 
 	// Call gRPC service
@@ -117,6 +119,82 @@ func (c *GRPCRoutingClient) OptimizeTour(ctx context.Context, req *domainRouting
 		VisitOrder:       pbResp.VisitOrder,
 		CombinedRoute:    convertRouteStepsFromPb(pbResp.RouteSteps),
 		TotalTimeSeconds: int(pbResp.TotalTimeSeconds),
+	}, nil
+}
+
+// OptimizeFueledTour implements RoutingClient.OptimizeFueledTour using gRPC
+// This endpoint globally optimizes visit order + flight modes + refuel stops
+func (c *GRPCRoutingClient) OptimizeFueledTour(ctx context.Context, req *domainRouting.FueledTourRequest) (*domainRouting.FueledTourResponse, error) {
+	// Convert to protobuf request
+	pbReq := &pb.OptimizeFueledTourRequest{
+		SystemSymbol:    req.SystemSymbol,
+		StartWaypoint:   req.StartWaypoint,
+		TargetWaypoints: req.TargetWaypoints,
+		CurrentFuel:     int32(req.CurrentFuel),
+		FuelCapacity:    int32(req.FuelCapacity),
+		EngineSpeed:     int32(req.EngineSpeed),
+		AllWaypoints:    convertWaypointsToPb(req.AllWaypoints),
+	}
+
+	// Set optional return waypoint
+	if req.ReturnWaypoint != "" {
+		pbReq.ReturnWaypoint = &req.ReturnWaypoint
+	}
+
+	// Call gRPC service
+	pbResp, err := c.client.OptimizeFueledTour(ctx, pbReq)
+	if err != nil {
+		return nil, fmt.Errorf("gRPC OptimizeFueledTour failed: %w", err)
+	}
+
+	if !pbResp.Success {
+		errorMsg := "unknown error"
+		if pbResp.ErrorMessage != nil {
+			errorMsg = *pbResp.ErrorMessage
+		}
+		return nil, fmt.Errorf("fueled tour optimization failed: %s", errorMsg)
+	}
+
+	// Convert legs from protobuf
+	legs := make([]*domainRouting.TourLegData, len(pbResp.Legs))
+	for i, pbLeg := range pbResp.Legs {
+		// Convert intermediate stops
+		stops := make([]*domainRouting.IntermediateStopData, len(pbLeg.IntermediateStops))
+		for j, pbStop := range pbLeg.IntermediateStops {
+			stops[j] = &domainRouting.IntermediateStopData{
+				Waypoint:     pbStop.Waypoint,
+				FlightMode:   pbStop.FlightMode,
+				FuelCost:     int(pbStop.FuelCost),
+				TimeSeconds:  int(pbStop.TimeSeconds),
+				RefuelAmount: int(pbStop.RefuelAmount),
+			}
+		}
+
+		refuelAmount := 0
+		if pbLeg.RefuelAmount != nil {
+			refuelAmount = int(*pbLeg.RefuelAmount)
+		}
+
+		legs[i] = &domainRouting.TourLegData{
+			FromWaypoint:      pbLeg.FromWaypoint,
+			ToWaypoint:        pbLeg.ToWaypoint,
+			FlightMode:        pbLeg.FlightMode,
+			FuelCost:          int(pbLeg.FuelCost),
+			TimeSeconds:       int(pbLeg.TimeSeconds),
+			Distance:          pbLeg.Distance,
+			RefuelBefore:      pbLeg.RefuelBefore,
+			RefuelAmount:      refuelAmount,
+			IntermediateStops: stops,
+		}
+	}
+
+	return &domainRouting.FueledTourResponse{
+		VisitOrder:       pbResp.VisitOrder,
+		Legs:             legs,
+		TotalTimeSeconds: int(pbResp.TotalTimeSeconds),
+		TotalFuelCost:    int(pbResp.TotalFuelCost),
+		TotalDistance:    pbResp.TotalDistance,
+		RefuelStops:      int(pbResp.RefuelStops),
 	}, nil
 }
 

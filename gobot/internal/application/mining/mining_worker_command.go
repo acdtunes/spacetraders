@@ -1,0 +1,339 @@
+package mining
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	appShip "github.com/andrescamacho/spacetraders-go/internal/application/ship"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+)
+
+// TransferComplete signals that a miner has completed transferring cargo to a transport
+type TransferComplete struct {
+	MinerSymbol     string
+	TransportSymbol string
+}
+
+// MiningWorkerCommand orchestrates continuous mining with transport-as-sink pattern
+// Miner mines until cargo is full, requests transport, transfers cargo, then resumes mining
+type MiningWorkerCommand struct {
+	ShipSymbol           string
+	PlayerID             int
+	AsteroidField        string                  // Waypoint symbol of asteroid
+	TopNOres             int                     // Deprecated: no longer used, threshold hardcoded to 50
+	CoordinatorID        string                  // Parent coordinator container ID
+	TransportRequestChan chan<- string           // Send miner symbol to request transport
+	TransportAssignChan  <-chan string           // Receive assigned transport symbol
+	TransferCompleteChan chan<- TransferComplete // Signal transfer completion to coordinator
+}
+
+// MiningWorkerResponse contains mining execution results
+type MiningWorkerResponse struct {
+	ExtractionCount int
+	TransferCount   int
+	TotalUnitsTransferred int
+	Error           string
+}
+
+// MiningWorkerHandler implements the mining worker workflow
+type MiningWorkerHandler struct {
+	mediator           common.Mediator
+	shipRepo           navigation.ShipRepository
+	shipAssignmentRepo daemon.ShipAssignmentRepository
+	clock              shared.Clock
+}
+
+// NewMiningWorkerHandler creates a new mining worker handler
+func NewMiningWorkerHandler(
+	mediator common.Mediator,
+	shipRepo navigation.ShipRepository,
+	shipAssignmentRepo daemon.ShipAssignmentRepository,
+	clock shared.Clock,
+) *MiningWorkerHandler {
+	if clock == nil {
+		clock = shared.NewRealClock()
+	}
+	return &MiningWorkerHandler{
+		mediator:           mediator,
+		shipRepo:           shipRepo,
+		shipAssignmentRepo: shipAssignmentRepo,
+		clock:              clock,
+	}
+}
+
+// Handle executes the mining worker command
+func (h *MiningWorkerHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {
+	cmd, ok := request.(*MiningWorkerCommand)
+	if !ok {
+		return nil, fmt.Errorf("invalid request type")
+	}
+
+	result := &MiningWorkerResponse{
+		ExtractionCount:       0,
+		TransferCount:         0,
+		TotalUnitsTransferred: 0,
+		Error:                 "",
+	}
+
+	// Execute continuous mining workflow
+	if err := h.executeMining(ctx, cmd, result); err != nil {
+		result.Error = err.Error()
+		return result, err
+	}
+
+	return result, nil
+}
+
+// executeMining handles the main mining workflow with transport-as-sink pattern
+func (h *MiningWorkerHandler) executeMining(
+	ctx context.Context,
+	cmd *MiningWorkerCommand,
+	result *MiningWorkerResponse,
+) error {
+	logger := common.LoggerFromContext(ctx)
+
+	// 1. Load ship and check current location
+	ship, err := h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
+	if err != nil {
+		return fmt.Errorf("failed to load ship: %w", err)
+	}
+
+	// 2. Navigate to asteroid field if not there
+	if ship.CurrentLocation().Symbol != cmd.AsteroidField {
+		logger.Log("INFO", fmt.Sprintf("Navigating to asteroid field %s", cmd.AsteroidField), nil)
+
+		navCmd := &appShip.NavigateShipCommand{
+			ShipSymbol:  cmd.ShipSymbol,
+			Destination: cmd.AsteroidField,
+			PlayerID:    cmd.PlayerID,
+		}
+
+		_, err := h.mediator.Send(ctx, navCmd)
+		if err != nil {
+			return fmt.Errorf("failed to navigate to asteroid: %w", err)
+		}
+
+		// Reload ship after navigation
+		ship, err = h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
+		if err != nil {
+			return fmt.Errorf("failed to reload ship after navigation: %w", err)
+		}
+	}
+
+	logger.Log("INFO", fmt.Sprintf("Starting continuous mining at %s", cmd.AsteroidField), nil)
+
+	// 3. Main mining loop - runs indefinitely until context cancelled
+	for {
+		// Check for context cancellation
+		select {
+		case <-ctx.Done():
+			logger.Log("INFO", "Mining operation cancelled", nil)
+			return ctx.Err()
+		default:
+		}
+
+		// 3a. Extract resources
+		extractCmd := &ExtractResourcesCommand{
+			ShipSymbol: cmd.ShipSymbol,
+			PlayerID:   cmd.PlayerID,
+		}
+
+		extractResp, err := h.mediator.Send(ctx, extractCmd)
+		if err != nil {
+			return fmt.Errorf("failed to extract resources: %w", err)
+		}
+
+		extraction := extractResp.(*ExtractResourcesResponse)
+		result.ExtractionCount++
+
+		logger.Log("INFO", fmt.Sprintf("Extracted %d units of %s (total extractions: %d)",
+			extraction.YieldUnits, extraction.YieldSymbol, result.ExtractionCount), nil)
+
+		// 3b. Wait for cooldown
+		if extraction.CooldownDuration > 0 {
+			logger.Log("DEBUG", fmt.Sprintf("Waiting %v for cooldown", extraction.CooldownDuration), nil)
+			h.clock.Sleep(extraction.CooldownDuration)
+		}
+
+		// 3c. Reload ship to get updated cargo
+		ship, err = h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
+		if err != nil {
+			return fmt.Errorf("failed to reload ship: %w", err)
+		}
+
+		// Check if cargo is full - only then do we jettison and potentially transfer
+		if ship.IsCargoFull() {
+			logger.Log("INFO", fmt.Sprintf("Cargo full (%d/%d), evaluating for jettison",
+				ship.Cargo().Units, ship.Cargo().Capacity), nil)
+
+			// 3g. Evaluate cargo value and jettison low-value items only when full
+			cargoItems := make([]CargoItemValue, len(ship.Cargo().Inventory))
+			for i, item := range ship.Cargo().Inventory {
+				cargoItems[i] = CargoItemValue{
+					Symbol: item.Symbol,
+					Units:  item.Units,
+					Price:  0, // Will be looked up
+				}
+			}
+
+			evalQuery := &EvaluateCargoValueQuery{
+				CargoItems:   cargoItems,
+				MinPriceThreshold: 50, // Jettison ores < 50 credits/unit,
+				SystemSymbol: shared.ExtractSystemSymbol(ship.CurrentLocation().Symbol),
+				PlayerID:     cmd.PlayerID,
+			}
+
+			evalResp, err := h.mediator.Send(ctx, evalQuery)
+			if err != nil {
+				// Log warning but continue - we'll keep all cargo if we can't evaluate
+				logger.Log("WARNING", fmt.Sprintf("Failed to evaluate cargo value: %v", err), nil)
+			} else {
+				evalResult := evalResp.(*EvaluateCargoValueResponse)
+
+				// Jettison low-value items to make space
+				for _, item := range evalResult.JettisonItems {
+					jettisonCmd := &appShip.JettisonCargoCommand{
+						ShipSymbol: cmd.ShipSymbol,
+						PlayerID:   cmd.PlayerID,
+						GoodSymbol: item.Symbol,
+						Units:      item.Units,
+					}
+
+					_, err := h.mediator.Send(ctx, jettisonCmd)
+					if err != nil {
+						logger.Log("WARNING", fmt.Sprintf("Failed to jettison %s: %v", item.Symbol, err), nil)
+					} else {
+						logger.Log("INFO", fmt.Sprintf("Jettisoned %d units of %s (low value)", item.Units, item.Symbol), nil)
+					}
+				}
+			}
+
+			// 3h. Reload ship and check if still full (with only valuable cargo)
+			ship, err = h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
+			if err != nil {
+				return fmt.Errorf("failed to reload ship after jettison: %w", err)
+			}
+
+			// If still full after jettisoning, transfer to transport
+			if ship.IsCargoFull() {
+				logger.Log("INFO", fmt.Sprintf("Still full with valuable cargo (%d/%d), requesting transport",
+					ship.Cargo().Units, ship.Cargo().Capacity), nil)
+
+				// 3i. Request transport and transfer what fits
+				unitsTransferred, err := h.requestAndTransferToTransport(ctx, cmd, ship)
+				if err != nil {
+					return fmt.Errorf("failed to transfer to transport: %w", err)
+				}
+
+				result.TransferCount++
+				result.TotalUnitsTransferred += unitsTransferred
+
+				logger.Log("INFO", fmt.Sprintf("Transferred %d units to transport (total transfers: %d)",
+					unitsTransferred, result.TransferCount), nil)
+			} else {
+				logger.Log("DEBUG", fmt.Sprintf("Cargo at %d/%d after jettison, continuing mining",
+					ship.Cargo().Units, ship.Cargo().Capacity), nil)
+			}
+
+			// Continue mining - miner may still have some cargo but has space now
+			continue
+		}
+
+		logger.Log("DEBUG", fmt.Sprintf("Cargo at %d/%d, continuing mining",
+			ship.Cargo().Units, ship.Cargo().Capacity), nil)
+	}
+}
+
+// requestAndTransferToTransport requests a transport and transfers all cargo to it
+func (h *MiningWorkerHandler) requestAndTransferToTransport(
+	ctx context.Context,
+	cmd *MiningWorkerCommand,
+	ship *navigation.Ship,
+) (int, error) {
+	logger := common.LoggerFromContext(ctx)
+
+	// Send request for transport
+	logger.Log("INFO", fmt.Sprintf("Requesting transport for miner %s", cmd.ShipSymbol), nil)
+
+	select {
+	case cmd.TransportRequestChan <- cmd.ShipSymbol:
+		// Request sent
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	}
+
+	// Wait for transport assignment
+	var transportSymbol string
+	select {
+	case transportSymbol = <-cmd.TransportAssignChan:
+		logger.Log("INFO", fmt.Sprintf("Assigned transport %s", transportSymbol), nil)
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	}
+
+	// Load transport ship to check available space
+	transportShip, err := h.shipRepo.FindBySymbol(ctx, transportSymbol, cmd.PlayerID)
+	if err != nil {
+		return 0, fmt.Errorf("failed to load transport ship: %w", err)
+	}
+
+	// Transfer cargo to transport, respecting available space
+	totalTransferred := 0
+	for _, item := range ship.Cargo().Inventory {
+		// Check how much space is available
+		availableSpace := transportShip.AvailableCargoSpace()
+		if availableSpace == 0 {
+			logger.Log("INFO", "Transport cargo full, stopping transfer", nil)
+			break
+		}
+
+		// Transfer only what fits
+		unitsToTransfer := item.Units
+		if unitsToTransfer > availableSpace {
+			unitsToTransfer = availableSpace
+			logger.Log("INFO", fmt.Sprintf("Transferring partial cargo: %d of %d units of %s (transport space: %d)",
+				unitsToTransfer, item.Units, item.Symbol, availableSpace), nil)
+		}
+
+		transferCmd := &TransferCargoCommand{
+			FromShip:   cmd.ShipSymbol,
+			ToShip:     transportSymbol,
+			GoodSymbol: item.Symbol,
+			Units:      unitsToTransfer,
+			PlayerID:   cmd.PlayerID,
+		}
+
+		_, err := h.mediator.Send(ctx, transferCmd)
+		if err != nil {
+			logger.Log("WARNING", fmt.Sprintf("Failed to transfer %s: %v", item.Symbol, err), nil)
+			continue
+		}
+
+		totalTransferred += unitsToTransfer
+		logger.Log("DEBUG", fmt.Sprintf("Transferred %d units of %s to %s",
+			unitsToTransfer, item.Symbol, transportSymbol), nil)
+
+		// Reload transport to get updated cargo space
+		transportShip, err = h.shipRepo.FindBySymbol(ctx, transportSymbol, cmd.PlayerID)
+		if err != nil {
+			logger.Log("WARNING", fmt.Sprintf("Failed to reload transport: %v", err), nil)
+			break
+		}
+	}
+
+	// Signal transfer completion to coordinator
+	select {
+	case cmd.TransferCompleteChan <- TransferComplete{
+		MinerSymbol:     cmd.ShipSymbol,
+		TransportSymbol: transportSymbol,
+	}:
+		logger.Log("DEBUG", "Signaled transfer completion to coordinator", nil)
+	case <-ctx.Done():
+		return totalTransferred, ctx.Err()
+	}
+
+	return totalTransferred, nil
+}

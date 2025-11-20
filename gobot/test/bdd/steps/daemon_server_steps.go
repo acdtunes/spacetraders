@@ -323,7 +323,7 @@ func (ctx *daemonServerContext) iStartTheDaemonServerOnSocket(socketPath string)
 	}
 
 	// Create daemon server
-	server, err := grpc.NewDaemonServer(ctx.mediator, ctx.logRepo, ctx.containerRepo, ctx.shipAssignmentRepo, socketPath)
+	server, err := grpc.NewDaemonServer(ctx.mediator, ctx.logRepo, ctx.containerRepo, ctx.shipAssignmentRepo, nil, nil, socketPath)
 	if err != nil {
 		ctx.startErr = err
 		return nil
@@ -350,7 +350,7 @@ func (ctx *daemonServerContext) iAttemptToStartTheDaemonServerOnInvalidSocket(so
 	// The daemon should fail to create the socket
 
 	// Create daemon server
-	server, err := grpc.NewDaemonServer(ctx.mediator, ctx.logRepo, ctx.containerRepo, ctx.shipAssignmentRepo, socketPath)
+	server, err := grpc.NewDaemonServer(ctx.mediator, ctx.logRepo, ctx.containerRepo, ctx.shipAssignmentRepo, nil, nil, socketPath)
 	if err != nil {
 		ctx.startErr = err
 		return nil

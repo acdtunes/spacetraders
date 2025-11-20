@@ -247,7 +247,7 @@ func (ctx *navigateShipHandlerContext) shipIsAtWithFuel(shipSymbol, location str
 
 	ship, err := navigation.NewShip(
 		shipSymbol, ctx.playerID, waypoint, fuel, 100,
-		40, cargo, 30, "FRAME_EXPLORER", navigation.NavStatusInOrbit,
+		40, cargo, 30, "FRAME_EXPLORER", "", navigation.NavStatusInOrbit,
 	)
 	if err != nil {
 		return err
@@ -419,7 +419,7 @@ func (ctx *navigateShipHandlerContext) shipIsAtWithFuelOutOfCapacity(shipSymbol,
 
 	ship, err := navigation.NewShip(
 		shipSymbol, ctx.playerID, waypoint, fuelObj, capacity,
-		40, cargo, 30, "FRAME_EXPLORER", navigation.NavStatusInOrbit,
+		40, cargo, 30, "FRAME_EXPLORER", "", navigation.NavStatusInOrbit,
 	)
 	if err != nil {
 		return err

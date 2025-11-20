@@ -14,11 +14,15 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/application/contract"
+	"github.com/andrescamacho/spacetraders-go/internal/application/mining"
 	"github.com/andrescamacho/spacetraders-go/internal/application/scouting"
 	"github.com/andrescamacho/spacetraders-go/internal/application/ship"
 	"github.com/andrescamacho/spacetraders-go/internal/application/shipyard"
+	"github.com/andrescamacho/spacetraders-go/internal/application/trading"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	domaindaemon "github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/routing"
 	pb "github.com/andrescamacho/spacetraders-go/pkg/proto/daemon"
 	"google.golang.org/grpc"
 )
@@ -34,6 +38,9 @@ type DaemonServer struct {
 	logRepo              persistence.ContainerLogRepository
 	containerRepo        *persistence.ContainerRepositoryGORM
 	shipAssignmentRepo   *persistence.ShipAssignmentRepositoryGORM
+	waypointRepo         *persistence.GormWaypointRepository
+	shipRepo             navigation.ShipRepository
+	routingClient        routing.RoutingClient
 
 	// Container orchestration
 	containers   map[string]*ContainerRunner
@@ -41,6 +48,10 @@ type DaemonServer struct {
 
 	// Command factory registry - maps command types to their factory functions
 	commandFactories map[string]CommandFactory
+
+	// Pending worker commands cache - stores commands with channels before start
+	pendingWorkerCommands   map[string]interface{}
+	pendingWorkerCommandsMu sync.RWMutex
 
 	// Shutdown coordination
 	shutdownChan chan os.Signal
@@ -53,6 +64,9 @@ func NewDaemonServer(
 	logRepo persistence.ContainerLogRepository,
 	containerRepo *persistence.ContainerRepositoryGORM,
 	shipAssignmentRepo *persistence.ShipAssignmentRepositoryGORM,
+	waypointRepo *persistence.GormWaypointRepository,
+	shipRepo navigation.ShipRepository,
+	routingClient routing.RoutingClient,
 	socketPath string,
 ) (*DaemonServer, error) {
 	// Remove existing socket file if present
@@ -73,15 +87,19 @@ func NewDaemonServer(
 	}
 
 	server := &DaemonServer{
-		mediator:           mediator,
-		logRepo:            logRepo,
-		containerRepo:      containerRepo,
-		shipAssignmentRepo: shipAssignmentRepo,
-		listener:           listener,
-		containers:         make(map[string]*ContainerRunner),
-		commandFactories:   make(map[string]CommandFactory),
-		shutdownChan:       make(chan os.Signal, 1),
-		done:               make(chan struct{}),
+		mediator:              mediator,
+		logRepo:               logRepo,
+		containerRepo:         containerRepo,
+		shipAssignmentRepo:    shipAssignmentRepo,
+		waypointRepo:          waypointRepo,
+		shipRepo:              shipRepo,
+		routingClient:         routingClient,
+		listener:              listener,
+		containers:            make(map[string]*ContainerRunner),
+		commandFactories:      make(map[string]CommandFactory),
+		pendingWorkerCommands: make(map[string]interface{}),
+		shutdownChan:          make(chan os.Signal, 1),
+		done:                  make(chan struct{}),
 	}
 
 	// Register command factories for recovery
@@ -228,6 +246,122 @@ func (s *DaemonServer) registerCommandFactories() {
 			MaxBudget:            int(maxBudget),
 			PlayerID:             playerID,
 			ShipyardWaypoint:     shipyardWaypoint,
+		}, nil
+	}
+
+	// Mining worker factory
+	s.commandFactories["mining_worker"] = func(config map[string]interface{}, playerID int) (interface{}, error) {
+		shipSymbol, ok := config["ship_symbol"].(string)
+		if !ok {
+			return nil, fmt.Errorf("missing or invalid ship_symbol")
+		}
+
+		asteroidField, ok := config["asteroid_field"].(string)
+		if !ok {
+			return nil, fmt.Errorf("missing or invalid asteroid_field")
+		}
+
+		topNOres := 3 // Default
+		if val, ok := config["top_n_ores"].(float64); ok {
+			topNOres = int(val)
+		}
+
+		coordinatorID, _ := config["coordinator_id"].(string) // Optional
+
+		return &mining.MiningWorkerCommand{
+			ShipSymbol:           shipSymbol,
+			PlayerID:             playerID,
+			AsteroidField:        asteroidField,
+			TopNOres:             topNOres,
+			CoordinatorID:        coordinatorID,
+			TransportRequestChan: nil, // Set at runtime by coordinator
+			TransportAssignChan:  nil, // Set at runtime by coordinator
+			TransferCompleteChan: nil, // Set at runtime by coordinator
+		}, nil
+	}
+
+	// Transport worker factory
+	s.commandFactories["transport_worker"] = func(config map[string]interface{}, playerID int) (interface{}, error) {
+		shipSymbol, ok := config["ship_symbol"].(string)
+		if !ok {
+			return nil, fmt.Errorf("missing or invalid ship_symbol")
+		}
+
+		asteroidField, ok := config["asteroid_field"].(string)
+		if !ok {
+			return nil, fmt.Errorf("missing or invalid asteroid_field")
+		}
+
+		coordinatorID, _ := config["coordinator_id"].(string) // Optional
+
+		return &mining.TransportWorkerCommand{
+			ShipSymbol:        shipSymbol,
+			PlayerID:          playerID,
+			AsteroidField:     asteroidField,
+			CoordinatorID:     coordinatorID,
+			AvailabilityChan:  nil, // Set at runtime by coordinator
+			CargoReceivedChan: nil, // Set at runtime by coordinator
+		}, nil
+	}
+
+	// Mining coordinator factory
+	s.commandFactories["mining_coordinator"] = func(config map[string]interface{}, playerID int) (interface{}, error) {
+		miningOperationID, ok := config["mining_operation_id"].(string)
+		if !ok {
+			return nil, fmt.Errorf("missing or invalid mining_operation_id")
+		}
+
+		asteroidField, ok := config["asteroid_field"].(string)
+		if !ok {
+			return nil, fmt.Errorf("missing or invalid asteroid_field")
+		}
+
+		containerID, ok := config["container_id"].(string)
+		if !ok {
+			return nil, fmt.Errorf("missing or invalid container_id")
+		}
+
+		// Parse miner ships
+		minerShipsRaw, ok := config["miner_ships"].([]interface{})
+		if !ok {
+			return nil, fmt.Errorf("missing or invalid miner_ships")
+		}
+
+		minerShips := make([]string, len(minerShipsRaw))
+		for i, m := range minerShipsRaw {
+			minerShips[i], ok = m.(string)
+			if !ok {
+				return nil, fmt.Errorf("invalid miner ship at index %d", i)
+			}
+		}
+
+		// Parse transport ships
+		transportShipsRaw, ok := config["transport_ships"].([]interface{})
+		if !ok {
+			return nil, fmt.Errorf("missing or invalid transport_ships")
+		}
+
+		transportShips := make([]string, len(transportShipsRaw))
+		for i, t := range transportShipsRaw {
+			transportShips[i], ok = t.(string)
+			if !ok {
+				return nil, fmt.Errorf("invalid transport ship at index %d", i)
+			}
+		}
+
+		topNOres := 3
+		if val, ok := config["top_n_ores"].(float64); ok {
+			topNOres = int(val)
+		}
+
+		return &mining.MiningCoordinatorCommand{
+			MiningOperationID: miningOperationID,
+			PlayerID:          playerID,
+			AsteroidField:     asteroidField,
+			MinerShips:        minerShips,
+			TransportShips:    transportShips,
+			TopNOres:          topNOres,
+			ContainerID:       containerID,
 		}, nil
 	}
 }
@@ -825,6 +959,139 @@ func (s *DaemonServer) ContractFleetCoordinator(ctx context.Context, shipSymbols
 	return containerID, nil
 }
 
+// MiningOperationResult contains the result of a mining operation
+type MiningOperationResult struct {
+	ContainerID   string
+	AsteroidField string
+	MarketSymbol  string
+	ShipRoutes    []mining.ShipRoute
+	Errors        []string
+}
+
+// MiningOperation starts a mining operation with Transport-as-Sink pattern
+func (s *DaemonServer) MiningOperation(
+	ctx context.Context,
+	asteroidField string,
+	minerShips []string,
+	transportShips []string,
+	topNOres int,
+	miningType string,
+	force bool,
+	dryRun bool,
+	maxLegTime int,
+	playerID int,
+) (*MiningOperationResult, error) {
+	// Validate we have either an asteroid field or mining type
+	if asteroidField == "" && miningType == "" {
+		return nil, fmt.Errorf("no asteroid field specified and no mining type provided")
+	}
+
+	// Create container ID
+	var containerID string
+	if dryRun {
+		containerID = generateContainerID("mining_dry_run", minerShips[0])
+	} else {
+		containerID = generateContainerID("mining_coordinator", minerShips[0])
+	}
+
+	// Create mining coordinator command
+	cmd := &mining.MiningCoordinatorCommand{
+		MiningOperationID: containerID,
+		PlayerID:          playerID,
+		AsteroidField:     asteroidField,
+		MinerShips:        minerShips,
+		TransportShips:    transportShips,
+		TopNOres:          topNOres,
+		ContainerID:       containerID,
+		MiningType:        miningType,
+		Force:             force,
+		DryRun:            dryRun,
+		MaxLegTime:        maxLegTime,
+	}
+
+	// Convert ship arrays to interface{} for metadata
+	minerShipsInterface := make([]interface{}, len(minerShips))
+	for i, s := range minerShips {
+		minerShipsInterface[i] = s
+	}
+
+	transportShipsInterface := make([]interface{}, len(transportShips))
+	for i, s := range transportShips {
+		transportShipsInterface[i] = s
+	}
+
+	// Set iterations: 1 for dry-run (single execution), -1 for normal (infinite)
+	iterations := -1
+	if dryRun {
+		iterations = 1
+	}
+
+	// Create container for this operation
+	containerEntity := container.NewContainer(
+		containerID,
+		container.ContainerTypeMiningCoordinator,
+		playerID,
+		iterations,
+		map[string]interface{}{
+			"mining_operation_id": containerID,
+			"asteroid_field":      asteroidField,
+			"miner_ships":         minerShipsInterface,
+			"transport_ships":     transportShipsInterface,
+			"top_n_ores":          topNOres,
+			"container_id":        containerID,
+			"mining_type":         miningType,
+			"force":               force,
+			"dry_run":             dryRun,
+			"max_leg_time":        maxLegTime,
+		},
+		nil, // Use default RealClock for production
+	)
+
+	// Persist container to database
+	if err := s.containerRepo.Add(ctx, containerEntity, "mining_coordinator"); err != nil {
+		return nil, fmt.Errorf("failed to persist container: %w", err)
+	}
+
+	// Create and start container runner
+	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipAssignmentRepo)
+	s.registerContainer(containerID, runner)
+
+	// Start container in background
+	go func() {
+		if err := runner.Start(); err != nil {
+			fmt.Printf("Container %s failed: %v\n", containerID, err)
+		}
+	}()
+
+	return &MiningOperationResult{
+		ContainerID:   containerID,
+		AsteroidField: asteroidField,
+	}, nil
+}
+
+
+// extractSystemSymbol extracts system symbol from a waypoint symbol
+func extractSystemSymbol(waypointSymbol string) string {
+	// Waypoint format: X1-GZ7-B12 -> System: X1-GZ7
+	parts := make([]string, 0)
+	current := ""
+	for _, c := range waypointSymbol {
+		if c == '-' {
+			parts = append(parts, current)
+			current = ""
+		} else {
+			current += string(c)
+		}
+	}
+	if current != "" {
+		parts = append(parts, current)
+	}
+	if len(parts) >= 2 {
+		return parts[0] + "-" + parts[1]
+	}
+	return waypointSymbol
+}
+
 // ScoutTour handles market scouting tour requests (single ship)
 func (s *DaemonServer) ScoutTour(ctx context.Context, containerID string, shipSymbol string, markets []string, iterations, playerID int) (string, error) {
 	// Use provided container ID from caller
@@ -853,6 +1120,47 @@ func (s *DaemonServer) ScoutTour(ctx context.Context, containerID string, shipSy
 
 	// Persist container to database
 	if err := s.containerRepo.Add(ctx, containerEntity, "scout_tour"); err != nil {
+		return "", fmt.Errorf("failed to persist container: %w", err)
+	}
+
+	// Create and start container runner
+	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipAssignmentRepo)
+	s.registerContainer(containerID, runner)
+
+	// Start container in background
+	go func() {
+		if err := runner.Start(); err != nil {
+			fmt.Printf("Container %s failed: %v\n", containerID, err)
+		}
+	}()
+
+	return containerID, nil
+}
+
+// TourSell handles cargo selling tour requests (single ship)
+func (s *DaemonServer) TourSell(ctx context.Context, containerID string, shipSymbol string, returnWaypoint string, playerID int) (string, error) {
+	// Create tour sell command
+	cmd := &trading.TourSellingCommand{
+		ShipSymbol:     shipSymbol,
+		PlayerID:       playerID,
+		ReturnWaypoint: returnWaypoint,
+	}
+
+	// Create container for this operation (single iteration)
+	containerEntity := container.NewContainer(
+		containerID,
+		container.ContainerTypeTrading,
+		playerID,
+		1, // Single iteration for tour sell
+		map[string]interface{}{
+			"ship_symbol":     shipSymbol,
+			"return_waypoint": returnWaypoint,
+		},
+		nil, // Use default RealClock for production
+	)
+
+	// Persist container to database
+	if err := s.containerRepo.Add(ctx, containerEntity, "tour_sell"); err != nil {
 		return "", fmt.Errorf("failed to persist container: %w", err)
 	}
 
@@ -1172,6 +1480,7 @@ func (s *DaemonServer) GetShip(ctx context.Context, shipSymbol string, playerID 
 		CargoCapacity:  int32(domainShip.CargoCapacity()),
 		CargoInventory: cargoItems,
 		EngineSpeed:    int32(domainShip.EngineSpeed()),
+		Role:           domainShip.Role(),
 	}
 
 	return shipDetail, nil
@@ -1323,6 +1632,388 @@ func (s *DaemonServer) BatchPurchaseShips(ctx context.Context, purchasingShipSym
 	runner.Start()
 
 	return containerID, int32(quantity), int32(maxBudget), cmd.ShipyardWaypoint, "starting", nil
+}
+
+// PersistMiningWorkerContainer creates a mining worker container in DB (does NOT start it)
+func (s *DaemonServer) PersistMiningWorkerContainer(
+	ctx context.Context,
+	containerID string,
+	playerID uint,
+	command interface{},
+) error {
+	cmd, ok := command.(*mining.MiningWorkerCommand)
+	if !ok {
+		return fmt.Errorf("invalid command type for mining worker")
+	}
+
+	// Create container entity
+	containerEntity := container.NewContainer(
+		containerID,
+		container.ContainerTypeMiningWorker,
+		int(playerID),
+		1, // Worker containers are single iteration
+		map[string]interface{}{
+			"ship_symbol":    cmd.ShipSymbol,
+			"asteroid_field": cmd.AsteroidField,
+			"top_n_ores":     cmd.TopNOres,
+			"coordinator_id": cmd.CoordinatorID,
+		},
+		nil, // Use default RealClock for production
+	)
+
+	// Persist container to database
+	if err := s.containerRepo.Add(ctx, containerEntity, "mining_worker"); err != nil {
+		return fmt.Errorf("failed to persist container: %w", err)
+	}
+
+	// Cache the command with channels for StartMiningWorkerContainer
+	s.pendingWorkerCommandsMu.Lock()
+	s.pendingWorkerCommands[containerID] = cmd
+	s.pendingWorkerCommandsMu.Unlock()
+
+	return nil
+}
+
+// StartMiningWorkerContainer starts a previously persisted mining worker container
+func (s *DaemonServer) StartMiningWorkerContainer(
+	ctx context.Context,
+	containerID string,
+	completionCallback chan<- string,
+) error {
+	// Try to get cached command with channels first
+	s.pendingWorkerCommandsMu.Lock()
+	cachedCmd, hasCached := s.pendingWorkerCommands[containerID]
+	if hasCached {
+		delete(s.pendingWorkerCommands, containerID)
+	}
+	s.pendingWorkerCommandsMu.Unlock()
+
+	var cmd *mining.MiningWorkerCommand
+	var config map[string]interface{}
+	var playerID int
+
+	if hasCached {
+		// Use cached command with channels
+		cmd = cachedCmd.(*mining.MiningWorkerCommand)
+		playerID = cmd.PlayerID
+		config = map[string]interface{}{
+			"ship_symbol":    cmd.ShipSymbol,
+			"asteroid_field": cmd.AsteroidField,
+			"top_n_ores":     cmd.TopNOres,
+			"coordinator_id": cmd.CoordinatorID,
+		}
+	} else {
+		// Fallback: Load from database (for recovery - channels will be nil)
+		allContainers, err := s.containerRepo.ListAll(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("failed to list containers: %w", err)
+		}
+
+		var containerModel *persistence.ContainerModel
+		for _, c := range allContainers {
+			if c.ID == containerID {
+				containerModel = c
+				break
+			}
+		}
+
+		if containerModel == nil {
+			return fmt.Errorf("container %s not found", containerID)
+		}
+
+		// Parse config
+		if err := json.Unmarshal([]byte(containerModel.Config), &config); err != nil {
+			return fmt.Errorf("failed to parse config: %w", err)
+		}
+
+		// Extract fields
+		shipSymbol := config["ship_symbol"].(string)
+		asteroidField := config["asteroid_field"].(string)
+		topNOres := 3
+		if val, ok := config["top_n_ores"].(float64); ok {
+			topNOres = int(val)
+		}
+		coordinatorID, _ := config["coordinator_id"].(string)
+
+		playerID = containerModel.PlayerID
+		cmd = &mining.MiningWorkerCommand{
+			ShipSymbol:           shipSymbol,
+			PlayerID:             playerID,
+			AsteroidField:        asteroidField,
+			TopNOres:             topNOres,
+			CoordinatorID:        coordinatorID,
+			TransportRequestChan: nil, // Not available from DB recovery
+			TransportAssignChan:  nil, // Not available from DB recovery
+			TransferCompleteChan: nil, // Not available from DB recovery
+		}
+	}
+
+	// Create container entity
+	containerEntity := container.NewContainer(
+		containerID,
+		container.ContainerTypeMiningWorker,
+		playerID,
+		1, // Worker containers are single iteration
+		config,
+		nil,
+	)
+
+	// Create and start container runner
+	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipAssignmentRepo)
+	if completionCallback != nil {
+		runner.SetCompletionCallback(completionCallback)
+	}
+	s.registerContainer(containerID, runner)
+
+	// Start container in background
+	go func() {
+		if err := runner.Start(); err != nil {
+			fmt.Printf("Container %s failed: %v\n", containerID, err)
+		}
+	}()
+
+	return nil
+}
+
+// PersistTransportWorkerContainer creates a transport worker container in DB (does NOT start it)
+func (s *DaemonServer) PersistTransportWorkerContainer(
+	ctx context.Context,
+	containerID string,
+	playerID uint,
+	command interface{},
+) error {
+	cmd, ok := command.(*mining.TransportWorkerCommand)
+	if !ok {
+		return fmt.Errorf("invalid command type for transport worker")
+	}
+
+	// Create container entity
+	containerEntity := container.NewContainer(
+		containerID,
+		container.ContainerTypeTransportWorker,
+		int(playerID),
+		1, // Worker containers are single iteration
+		map[string]interface{}{
+			"ship_symbol":    cmd.ShipSymbol,
+			"asteroid_field": cmd.AsteroidField,
+			"coordinator_id": cmd.CoordinatorID,
+		},
+		nil, // Use default RealClock for production
+	)
+
+	// Persist container to database
+	if err := s.containerRepo.Add(ctx, containerEntity, "transport_worker"); err != nil {
+		return fmt.Errorf("failed to persist container: %w", err)
+	}
+
+	// Cache the command with channels for StartTransportWorkerContainer
+	s.pendingWorkerCommandsMu.Lock()
+	s.pendingWorkerCommands[containerID] = cmd
+	s.pendingWorkerCommandsMu.Unlock()
+
+	return nil
+}
+
+// StartTransportWorkerContainer starts a previously persisted transport worker container
+func (s *DaemonServer) StartTransportWorkerContainer(
+	ctx context.Context,
+	containerID string,
+	completionCallback chan<- string,
+) error {
+	// Try to get cached command with channels first
+	s.pendingWorkerCommandsMu.Lock()
+	cachedCmd, hasCached := s.pendingWorkerCommands[containerID]
+	if hasCached {
+		delete(s.pendingWorkerCommands, containerID)
+	}
+	s.pendingWorkerCommandsMu.Unlock()
+
+	var cmd *mining.TransportWorkerCommand
+	var config map[string]interface{}
+	var playerID int
+
+	if hasCached {
+		// Use cached command with channels
+		cmd = cachedCmd.(*mining.TransportWorkerCommand)
+		playerID = cmd.PlayerID
+		config = map[string]interface{}{
+			"ship_symbol":    cmd.ShipSymbol,
+			"asteroid_field": cmd.AsteroidField,
+			"coordinator_id": cmd.CoordinatorID,
+		}
+	} else {
+		// Fallback: Load from database (for recovery - channels will be nil)
+		allContainers, err := s.containerRepo.ListAll(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("failed to list containers: %w", err)
+		}
+
+		var containerModel *persistence.ContainerModel
+		for _, c := range allContainers {
+			if c.ID == containerID {
+				containerModel = c
+				break
+			}
+		}
+
+		if containerModel == nil {
+			return fmt.Errorf("container %s not found", containerID)
+		}
+
+		// Parse config
+		if err := json.Unmarshal([]byte(containerModel.Config), &config); err != nil {
+			return fmt.Errorf("failed to parse config: %w", err)
+		}
+
+		// Extract fields
+		shipSymbol := config["ship_symbol"].(string)
+		asteroidField := config["asteroid_field"].(string)
+		coordinatorID, _ := config["coordinator_id"].(string)
+
+		playerID = containerModel.PlayerID
+		cmd = &mining.TransportWorkerCommand{
+			ShipSymbol:        shipSymbol,
+			PlayerID:          playerID,
+			AsteroidField:     asteroidField,
+			CoordinatorID:     coordinatorID,
+			AvailabilityChan:  nil, // Not available from DB recovery
+			CargoReceivedChan: nil, // Not available from DB recovery
+		}
+	}
+
+	// Create container entity
+	containerEntity := container.NewContainer(
+		containerID,
+		container.ContainerTypeTransportWorker,
+		playerID,
+		1, // Worker containers are single iteration
+		config,
+		nil,
+	)
+
+	// Create and start container runner
+	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipAssignmentRepo)
+	if completionCallback != nil {
+		runner.SetCompletionCallback(completionCallback)
+	}
+	s.registerContainer(containerID, runner)
+
+	// Start container in background
+	go func() {
+		if err := runner.Start(); err != nil {
+			fmt.Printf("Container %s failed: %v\n", containerID, err)
+		}
+	}()
+
+	return nil
+}
+
+// PersistMiningCoordinatorContainer creates a mining coordinator container in DB (does NOT start it)
+func (s *DaemonServer) PersistMiningCoordinatorContainer(
+	ctx context.Context,
+	containerID string,
+	playerID uint,
+	command interface{},
+) error {
+	cmd, ok := command.(*mining.MiningCoordinatorCommand)
+	if !ok {
+		return fmt.Errorf("invalid command type for mining coordinator")
+	}
+
+	// Convert ship arrays to interface{} for JSON
+	minerShipsInterface := make([]interface{}, len(cmd.MinerShips))
+	for i, s := range cmd.MinerShips {
+		minerShipsInterface[i] = s
+	}
+
+	transportShipsInterface := make([]interface{}, len(cmd.TransportShips))
+	for i, s := range cmd.TransportShips {
+		transportShipsInterface[i] = s
+	}
+
+	// Create container entity
+	containerEntity := container.NewContainer(
+		containerID,
+		container.ContainerTypeMiningCoordinator,
+		int(playerID),
+		-1, // Infinite iterations for coordinator
+		map[string]interface{}{
+			"mining_operation_id": cmd.MiningOperationID,
+			"asteroid_field":      cmd.AsteroidField,
+			"miner_ships":         minerShipsInterface,
+			"transport_ships":     transportShipsInterface,
+			"top_n_ores":          cmd.TopNOres,
+			"container_id":        cmd.ContainerID,
+		},
+		nil, // Use default RealClock for production
+	)
+
+	// Persist container to database
+	if err := s.containerRepo.Add(ctx, containerEntity, "mining_coordinator"); err != nil {
+		return fmt.Errorf("failed to persist container: %w", err)
+	}
+
+	return nil
+}
+
+// StartMiningCoordinatorContainer starts a previously persisted mining coordinator container
+func (s *DaemonServer) StartMiningCoordinatorContainer(
+	ctx context.Context,
+	containerID string,
+) error {
+	// Load container from database
+	allContainers, err := s.containerRepo.ListAll(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to list containers: %w", err)
+	}
+
+	var containerModel *persistence.ContainerModel
+	for _, c := range allContainers {
+		if c.ID == containerID {
+			containerModel = c
+			break
+		}
+	}
+
+	if containerModel == nil {
+		return fmt.Errorf("container %s not found", containerID)
+	}
+
+	// Parse config
+	var config map[string]interface{}
+	if err := json.Unmarshal([]byte(containerModel.Config), &config); err != nil {
+		return fmt.Errorf("failed to parse config: %w", err)
+	}
+
+	// Use factory to create command
+	factory := s.commandFactories["mining_coordinator"]
+	cmd, err := factory(config, containerModel.PlayerID)
+	if err != nil {
+		return fmt.Errorf("failed to create command: %w", err)
+	}
+
+	// Create container entity from model
+	containerEntity := container.NewContainer(
+		containerModel.ID,
+		container.ContainerType(containerModel.ContainerType),
+		containerModel.PlayerID,
+		-1, // Coordinator runs indefinitely
+		config,
+		nil,
+	)
+
+	// Create and start container runner
+	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipAssignmentRepo)
+	s.registerContainer(containerID, runner)
+
+	// Start container in background
+	go func() {
+		if err := runner.Start(); err != nil {
+			fmt.Printf("Container %s failed: %v\n", containerID, err)
+		}
+	}()
+
+	return nil
 }
 
 // Utility functions

@@ -23,9 +23,10 @@ import (
 //
 // This is the PRIMARY navigation command for business logic.
 type NavigateShipCommand struct {
-	ShipSymbol  string
-	Destination string
-	PlayerID    int
+	ShipSymbol   string
+	Destination  string
+	PlayerID     int
+	PreferCruise bool // When true, prefer CRUISE over BURN (for asteroid ↔ market loop only)
 }
 
 // NavigateShipResponse represents the result of navigation
@@ -145,7 +146,7 @@ func (h *NavigateShipHandler) Handle(ctx context.Context, request common.Request
 
 	// 7. Plan route using routing engine
 	logger.Log("INFO", fmt.Sprintf("[NAVIGATE] Planning route from %s to %s", ship.CurrentLocation().Symbol, cmd.Destination), nil)
-	route, err := h.routePlanner.PlanRoute(ctx, ship, cmd.Destination, waypointObjects)
+	route, err := h.routePlanner.PlanRoute(ctx, ship, cmd.Destination, waypointObjects, cmd.PreferCruise)
 	if err != nil {
 		return nil, fmt.Errorf("failed to plan route: %w", err)
 	}

@@ -141,7 +141,7 @@ func (ctx *assignmentCleanupContext) theDaemonServerIsRunningOnSocket(socketPath
 	}
 
 	// Create daemon server
-	server, err := grpc.NewDaemonServer(ctx.mediator, ctx.logRepo, ctx.containerRepo, ctx.shipAssignmentRepo, socketPath)
+	server, err := grpc.NewDaemonServer(ctx.mediator, ctx.logRepo, ctx.containerRepo, ctx.shipAssignmentRepo, nil, nil, socketPath)
 	if err != nil {
 		return err
 	}

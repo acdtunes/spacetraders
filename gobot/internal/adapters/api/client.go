@@ -79,6 +79,9 @@ func (c *SpaceTradersClient) GetShip(ctx context.Context, symbol, token string) 
 	var response struct {
 		Data struct {
 			Symbol     string `json:"symbol"`
+			Registration struct {
+				Role string `json:"role"`
+			} `json:"registration"`
 			Nav        struct {
 				SystemSymbol   string `json:"systemSymbol"`
 				WaypointSymbol string `json:"waypointSymbol"`
@@ -148,6 +151,7 @@ func (c *SpaceTradersClient) GetShip(ctx context.Context, symbol, token string) 
 		CargoUnits:    response.Data.Cargo.Units,
 		EngineSpeed:   response.Data.Engine.Speed,
 		FrameSymbol:   response.Data.Frame.Symbol,
+		Role:          response.Data.Registration.Role,
 		Cargo:         cargo,
 	}, nil
 }
@@ -165,6 +169,9 @@ func (c *SpaceTradersClient) ListShips(ctx context.Context, token string) ([]*na
 		var response struct {
 			Data []struct {
 				Symbol     string `json:"symbol"`
+				Registration struct {
+					Role string `json:"role"`
+				} `json:"registration"`
 				Nav        struct {
 					SystemSymbol   string `json:"systemSymbol"`
 					WaypointSymbol string `json:"waypointSymbol"`
@@ -236,6 +243,7 @@ func (c *SpaceTradersClient) ListShips(ctx context.Context, token string) ([]*na
 				CargoUnits:    ship.Cargo.Units,
 				EngineSpeed:   ship.Engine.Speed,
 				FrameSymbol:   ship.Frame.Symbol,
+				Role:          ship.Registration.Role,
 				Cargo:         cargo,
 			})
 		}
@@ -627,6 +635,127 @@ func (c *SpaceTradersClient) JettisonCargo(ctx context.Context, shipSymbol, good
 	}
 
 	return nil
+}
+
+// ExtractResources extracts resources from an asteroid
+func (c *SpaceTradersClient) ExtractResources(ctx context.Context, shipSymbol string, token string) (*ports.ExtractionResult, error) {
+	path := fmt.Sprintf("/my/ships/%s/extract", shipSymbol)
+
+	// Send empty body as required by API (survey support can be added later)
+	emptyBody := map[string]interface{}{}
+
+	var response struct {
+		Data struct {
+			Extraction struct {
+				ShipSymbol string `json:"shipSymbol"`
+				Yield      struct {
+					Symbol string `json:"symbol"`
+					Units  int    `json:"units"`
+				} `json:"yield"`
+			} `json:"extraction"`
+			Cooldown struct {
+				ShipSymbol       string `json:"shipSymbol"`
+				TotalSeconds     int    `json:"totalSeconds"`
+				RemainingSeconds int    `json:"remainingSeconds"`
+				Expiration       string `json:"expiration"`
+			} `json:"cooldown"`
+			Cargo struct {
+				Capacity  int `json:"capacity"`
+				Units     int `json:"units"`
+				Inventory []struct {
+					Symbol      string `json:"symbol"`
+					Name        string `json:"name"`
+					Description string `json:"description"`
+					Units       int    `json:"units"`
+				} `json:"inventory"`
+			} `json:"cargo"`
+		} `json:"data"`
+	}
+
+	if err := c.request(ctx, "POST", path, token, emptyBody, &response); err != nil {
+		return nil, fmt.Errorf("failed to extract resources: %w", err)
+	}
+
+	// Convert cargo inventory
+	inventory := make([]navigation.CargoItemData, len(response.Data.Cargo.Inventory))
+	for i, item := range response.Data.Cargo.Inventory {
+		inventory[i] = navigation.CargoItemData{
+			Symbol:      item.Symbol,
+			Name:        item.Name,
+			Description: item.Description,
+			Units:       item.Units,
+		}
+	}
+
+	cargo := &navigation.CargoData{
+		Capacity:  response.Data.Cargo.Capacity,
+		Units:     response.Data.Cargo.Units,
+		Inventory: inventory,
+	}
+
+	return &ports.ExtractionResult{
+		ShipSymbol:       response.Data.Extraction.ShipSymbol,
+		YieldSymbol:      response.Data.Extraction.Yield.Symbol,
+		YieldUnits:       response.Data.Extraction.Yield.Units,
+		CooldownSeconds:  response.Data.Cooldown.RemainingSeconds,
+		CooldownExpires:  response.Data.Cooldown.Expiration,
+		Cargo:            cargo,
+	}, nil
+}
+
+// TransferCargo transfers cargo from one ship to another at the same waypoint
+func (c *SpaceTradersClient) TransferCargo(ctx context.Context, fromShipSymbol, toShipSymbol, goodSymbol string, units int, token string) (*ports.TransferResult, error) {
+	path := fmt.Sprintf("/my/ships/%s/transfer", fromShipSymbol)
+
+	body := map[string]interface{}{
+		"tradeSymbol": goodSymbol,
+		"units":       units,
+		"shipSymbol":  toShipSymbol,
+	}
+
+	var response struct {
+		Data struct {
+			Cargo struct {
+				Capacity  int `json:"capacity"`
+				Units     int `json:"units"`
+				Inventory []struct {
+					Symbol      string `json:"symbol"`
+					Name        string `json:"name"`
+					Description string `json:"description"`
+					Units       int    `json:"units"`
+				} `json:"inventory"`
+			} `json:"cargo"`
+		} `json:"data"`
+	}
+
+	if err := c.request(ctx, "POST", path, token, body, &response); err != nil {
+		return nil, fmt.Errorf("failed to transfer cargo: %w", err)
+	}
+
+	// Convert cargo inventory (remaining cargo on source ship)
+	inventory := make([]navigation.CargoItemData, len(response.Data.Cargo.Inventory))
+	for i, item := range response.Data.Cargo.Inventory {
+		inventory[i] = navigation.CargoItemData{
+			Symbol:      item.Symbol,
+			Name:        item.Name,
+			Description: item.Description,
+			Units:       item.Units,
+		}
+	}
+
+	cargo := &navigation.CargoData{
+		Capacity:  response.Data.Cargo.Capacity,
+		Units:     response.Data.Cargo.Units,
+		Inventory: inventory,
+	}
+
+	return &ports.TransferResult{
+		FromShip:        fromShipSymbol,
+		ToShip:          toShipSymbol,
+		GoodSymbol:      goodSymbol,
+		UnitsTransferred: units,
+		RemainingCargo:  cargo,
+	}, nil
 }
 
 // GetMarket retrieves market data for a waypoint

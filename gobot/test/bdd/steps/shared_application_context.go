@@ -148,7 +148,7 @@ func sharedShipForPlayerAtWithStatus(shipSymbol string, playerID int, location, 
 
 	ship, err := navigation.NewShip(
 		shipSymbol, playerID, waypoint, fuel, 100,
-		40, cargo, 30, "FRAME_EXPLORER", navStatus,
+		40, cargo, 30, "FRAME_EXPLORER", "", navStatus,
 	)
 	if err != nil {
 		return err
@@ -167,7 +167,7 @@ func sharedShipForPlayerInTransitTo(shipSymbol string, playerID int, destination
 
 	ship, err := navigation.NewShip(
 		shipSymbol, playerID, waypoint, fuel, 100,
-		40, cargo, 30, "FRAME_EXPLORER", navigation.NavStatusInOrbit,
+		40, cargo, 30, "FRAME_EXPLORER", "", navigation.NavStatusInOrbit,
 	)
 	if err != nil {
 		return err

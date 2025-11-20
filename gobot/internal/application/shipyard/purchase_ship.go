@@ -301,6 +301,7 @@ func (h *PurchaseShipHandler) convertShipDataToEntity(
 		cargo,
 		shipData.EngineSpeed,
 		shipData.FrameSymbol,
+		shipData.Role,
 		navStatus,
 	)
 	if err != nil {

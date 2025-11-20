@@ -29,6 +29,8 @@ Examples:
 	cmd.AddCommand(newWorkflowBatchContractCommand())
 	cmd.AddCommand(newWorkflowScoutMarketsCommand())
 	cmd.AddCommand(newWorkflowScoutAllMarketsCommand())
+	cmd.AddCommand(newWorkflowMiningCommand())
+	cmd.AddCommand(newWorkflowTourSellCommand())
 
 	return cmd
 }
@@ -325,6 +327,150 @@ Examples:
 	return cmd
 }
 
+// newWorkflowMiningCommand creates the workflow mining subcommand
+func newWorkflowMiningCommand() *cobra.Command {
+	var (
+		asteroidField string
+		minersCsv     string
+		transportsCsv string
+		topNOres      int
+		miningType    string
+		force         bool
+		dryRun        bool
+		maxLegTime    int
+	)
+
+	cmd := &cobra.Command{
+		Use:   "mining",
+		Short: "Start mining operation with Transport-as-Sink pattern",
+		Long: `Start a coordinated mining operation with miners and transports.
+
+Miners extract resources from the asteroid field and transfer cargo to waiting transports.
+Transports sell cargo at the best available market and return for more.
+
+Mining types (traits on asteroid fields):
+  common_metals    - COMMON_METAL_DEPOSITS
+  precious_metals  - PRECIOUS_METAL_DEPOSITS
+  rare_metals      - RARE_METAL_DEPOSITS
+  minerals         - MINERAL_DEPOSITS
+  ice              - ICE_CRYSTALS
+  gas              - EXPLOSIVE_GASES
+
+The daemon will:
+- Auto-select best asteroid field based on mining type and fuel constraints
+- Deploy miners to the asteroid field
+- Miners extract, jettison low-value ores, and transfer to transports
+- Transports wait at asteroid, receive cargo, sell at best market, and return
+- Coordinate transfers between miners and transports via channels
+
+Examples:
+  # Auto-select asteroid for common metals
+  spacetraders workflow mining --mining-type common_metals --miners MINER-1,MINER-2 --transports TRANSPORT-1 --agent ENDURANCE
+
+  # Specific asteroid with 2 miners and 1 transport
+  spacetraders workflow mining --asteroid X1-ABC-123 --miners MINER-1,MINER-2 --transports TRANSPORT-1 --agent ENDURANCE
+
+  # Mining with custom ore selection (keep top 5 valuable ores)
+  spacetraders workflow mining --mining-type precious_metals --miners MINER-1 --transports TRANSPORT-1,TRANSPORT-2 --top-n-ores 5 --agent ENDURANCE
+
+  # Force selection even if fuel validation fails
+  spacetraders workflow mining --mining-type rare_metals --miners MINER-1 --transports TRANSPORT-1 --force --agent ENDURANCE`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			// Validate flags - need either asteroid or mining-type
+			if asteroidField == "" && miningType == "" {
+				return fmt.Errorf("either --asteroid or --mining-type flag is required")
+			}
+			if minersCsv == "" {
+				return fmt.Errorf("--miners flag is required")
+			}
+			if transportsCsv == "" {
+				return fmt.Errorf("--transports flag is required")
+			}
+
+			// Parse CSV inputs
+			miners := parseCsvList(minersCsv)
+			transports := parseCsvList(transportsCsv)
+
+			if len(miners) == 0 {
+				return fmt.Errorf("at least one miner is required")
+			}
+			if len(transports) == 0 {
+				return fmt.Errorf("at least one transport is required")
+			}
+
+			// Resolve player from flags or defaults
+			playerIdent, err := resolvePlayerIdentifier()
+			if err != nil {
+				return err
+			}
+
+			// Create gRPC client
+			client, err := NewDaemonClient(socketPath)
+			if err != nil {
+				return fmt.Errorf("failed to connect to daemon: %w", err)
+			}
+			defer client.Close()
+
+			// Execute mining operation command
+			// Dry-run needs more time for asteroid selection (many routing calls)
+			timeout := 30 * time.Second
+			if dryRun {
+				timeout = 300 * time.Second // 5 minutes for selection
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), timeout)
+			defer cancel()
+
+			if dryRun {
+				fmt.Printf("DRY RUN: Selecting asteroid for %s (this may take a few minutes)...\n", miningType)
+			} else if asteroidField != "" {
+				fmt.Printf("Starting mining operation at %s...\n", asteroidField)
+			} else {
+				fmt.Printf("Starting mining operation for %s...\n", miningType)
+			}
+			fmt.Printf("  Miners:     %s\n", strings.Join(miners, ", "))
+			fmt.Printf("  Transports: %s\n\n", strings.Join(transports, ", "))
+
+			result, err := client.MiningOperation(ctx, asteroidField, miners, transports, topNOres, miningType, force, dryRun, maxLegTime, playerIdent.PlayerID, playerIdent.AgentSymbol)
+			if err != nil {
+				return fmt.Errorf("mining operation failed: %w", err)
+			}
+
+			// Display result
+			if dryRun {
+				fmt.Println("✓ Dry run started - selecting asteroid and planning routes")
+				fmt.Printf("  Container ID: %s\n", result.ContainerID)
+				fmt.Printf("  Miners:       %s\n", strings.Join(result.MinerShips, ", "))
+				fmt.Printf("  Transports:   %s\n", strings.Join(result.TransportShips, ", "))
+				fmt.Printf("\nView results with: spacetraders container logs %s\n", result.ContainerID)
+				fmt.Println("\nRemove --dry-run to start the actual operation")
+			} else {
+				fmt.Println("✓ Mining operation started successfully")
+				fmt.Printf("  Container ID:   %s\n", result.ContainerID)
+				fmt.Printf("  Asteroid Field: %s\n", result.AsteroidField)
+				fmt.Printf("  Miners:         %s\n", strings.Join(result.MinerShips, ", "))
+				fmt.Printf("  Transports:     %s\n", strings.Join(result.TransportShips, ", "))
+				fmt.Printf("  Top N Ores:     %d\n", topNOres)
+				fmt.Printf("  Status:         %s\n", result.Status)
+				fmt.Printf("\nTrack progress with: spacetraders container logs %s\n", result.ContainerID)
+			}
+
+			return nil
+		},
+	}
+
+	// Command-specific flags
+	cmd.Flags().StringVar(&asteroidField, "asteroid", "", "Asteroid field waypoint symbol (or use --mining-type for auto-select)")
+	cmd.Flags().StringVar(&minersCsv, "miners", "", "Comma-separated list of miner ship symbols (required)")
+	cmd.Flags().StringVar(&transportsCsv, "transports", "", "Comma-separated list of transport ship symbols (required)")
+	cmd.Flags().IntVar(&topNOres, "top-n-ores", 3, "Number of ore types to keep (default: 3)")
+	cmd.Flags().StringVar(&miningType, "mining-type", "", "Mining type: common_metals, precious_metals, rare_metals, minerals, ice, gas")
+	cmd.Flags().BoolVar(&force, "force", false, "Override fuel validation warnings")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Only select asteroid, don't start operation")
+	cmd.Flags().IntVar(&maxLegTime, "max-leg-time", 0, "Max time per leg in minutes (0 = no limit)")
+
+	return cmd
+}
+
 // parseCsvList parses a CSV string into a slice of trimmed strings
 func parseCsvList(csv string) []string {
 	parts := strings.Split(csv, ",")
@@ -336,4 +482,80 @@ func parseCsvList(csv string) []string {
 		}
 	}
 	return result
+}
+
+// newWorkflowTourSellCommand creates the workflow tour-sell subcommand
+func newWorkflowTourSellCommand() *cobra.Command {
+	var (
+		shipSymbol     string
+		returnWaypoint string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "tour-sell",
+		Short: "Execute optimized cargo selling tour",
+		Long: `Execute an optimized cargo selling tour for a ship with cargo.
+
+The daemon will:
+- Find best markets for each cargo type in ship's system
+- Optimize route using TSP with fuel constraints
+- Visit each market and sell designated goods
+- Return to starting waypoint or specified return point
+
+Examples:
+  # Sell all cargo on ship
+  spacetraders workflow tour-sell --ship HAULER-1 --agent ENDURANCE
+
+  # Sell cargo and return to specific waypoint
+  spacetraders workflow tour-sell --ship HAULER-1 --return-waypoint X1-GZ7-A1 --agent ENDURANCE`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			// Validate flags
+			if shipSymbol == "" {
+				return fmt.Errorf("--ship flag is required")
+			}
+
+			// Resolve player from flags or defaults
+			playerIdent, err := resolvePlayerIdentifier()
+			if err != nil {
+				return err
+			}
+
+			// Create gRPC client
+			client, err := NewDaemonClient(socketPath)
+			if err != nil {
+				return fmt.Errorf("failed to connect to daemon: %w", err)
+			}
+			defer client.Close()
+
+			// Execute tour sell command (container-based, returns immediately)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			fmt.Printf("Starting tour selling for ship %s...\n", shipSymbol)
+			if returnWaypoint != "" {
+				fmt.Printf("  Return waypoint: %s\n", returnWaypoint)
+			}
+			fmt.Println()
+
+			result, err := client.TourSell(ctx, shipSymbol, returnWaypoint, playerIdent.PlayerID, playerIdent.AgentSymbol)
+			if err != nil {
+				return fmt.Errorf("tour sell failed: %w", err)
+			}
+
+			// Display container info
+			fmt.Println("Tour sell container started")
+			fmt.Printf("  Container ID: %s\n", result.ContainerID)
+			fmt.Printf("  Ship:         %s\n", result.ShipSymbol)
+			fmt.Printf("  Status:       %s\n", result.Status)
+			fmt.Println("\nUse 'spacetraders container logs --container-id " + result.ContainerID + "' to view progress")
+
+			return nil
+		},
+	}
+
+	// Command-specific flags
+	cmd.Flags().StringVar(&shipSymbol, "ship", "", "Ship symbol with cargo to sell (required)")
+	cmd.Flags().StringVar(&returnWaypoint, "return-waypoint", "", "Optional waypoint to return to after selling")
+
+	return cmd
 }

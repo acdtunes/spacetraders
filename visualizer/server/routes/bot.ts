@@ -94,11 +94,17 @@ router.get('/assignments', async (req, res) => {
             if (assignment.container_type === 'SCOUT') {
               operation = 'scout-markets';
             } else if (assignment.container_type === 'CONTRACT' ||
-                       assignment.container_type === 'CONTRACT_FLEET_COORDINATOR' ||
-                       assignment.container_type === 'CONTRACT_WORKFLOW') {
+                       assignment.container_type === 'CONTRACT_FLEET_COORDINATOR') {
               operation = 'contract';
+            } else if (assignment.container_type === 'CONTRACT_WORKFLOW') {
+              operation = 'contract-active';
             } else if (assignment.container_type === 'PURCHASE') {
               operation = 'shipyard';
+            } else if (assignment.container_type === 'MINING_COORDINATOR' ||
+                       assignment.container_type === 'MINING_WORKER') {
+              operation = 'mine';
+            } else if (assignment.container_type === 'TRANSPORT_WORKER') {
+              operation = 'transport';
             }
 
             assignments.push({
@@ -143,11 +149,17 @@ router.get('/assignments', async (req, res) => {
         if (row.container_type === 'SCOUT') {
           operation = 'scout-markets';
         } else if (row.container_type === 'CONTRACT' ||
-                   row.container_type === 'CONTRACT_FLEET_COORDINATOR' ||
-                   row.container_type === 'CONTRACT_WORKFLOW') {
+                   row.container_type === 'CONTRACT_FLEET_COORDINATOR') {
           operation = 'contract';
+        } else if (row.container_type === 'CONTRACT_WORKFLOW') {
+          operation = 'contract-active';
         } else if (row.container_type === 'PURCHASE') {
           operation = 'shipyard';
+        } else if (row.container_type === 'MINING_COORDINATOR' ||
+                   row.container_type === 'MINING_WORKER') {
+          operation = 'mine';
+        } else if (row.container_type === 'TRANSPORT_WORKER') {
+          operation = 'transport';
         }
 
         assignments.push({
@@ -220,11 +232,17 @@ router.get('/assignments/:shipSymbol', async (req, res) => {
       if (assignment.container_type === 'SCOUT') {
         operation = 'scout-markets';
       } else if (assignment.container_type === 'CONTRACT' ||
-                 assignment.container_type === 'CONTRACT_FLEET_COORDINATOR' ||
-                 assignment.container_type === 'CONTRACT_WORKFLOW') {
+                 assignment.container_type === 'CONTRACT_FLEET_COORDINATOR') {
         operation = 'contract';
+      } else if (assignment.container_type === 'CONTRACT_WORKFLOW') {
+        operation = 'contract-active';
       } else if (assignment.container_type === 'PURCHASE') {
         operation = 'shipyard';
+      } else if (assignment.container_type === 'MINING_COORDINATOR' ||
+                 assignment.container_type === 'MINING_WORKER') {
+        operation = 'mine';
+      } else if (assignment.container_type === 'TRANSPORT_WORKER') {
+        operation = 'transport';
       }
 
       const parsed = {

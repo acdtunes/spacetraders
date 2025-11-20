@@ -37,6 +37,10 @@ type APIClient interface {
 	PurchaseCargo(ctx context.Context, shipSymbol, goodSymbol string, units int, token string) (*PurchaseResult, error)
 	SellCargo(ctx context.Context, shipSymbol, goodSymbol string, units int, token string) (*SellResult, error)
 	JettisonCargo(ctx context.Context, shipSymbol, goodSymbol string, units int, token string) error
+	TransferCargo(ctx context.Context, fromShipSymbol, toShipSymbol, goodSymbol string, units int, token string) (*TransferResult, error)
+
+	// Mining operations
+	ExtractResources(ctx context.Context, shipSymbol string, token string) (*ExtractionResult, error)
 
 	// Market operations
 	GetMarket(ctx context.Context, systemSymbol, waypointSymbol, token string) (*MarketData, error)
@@ -90,6 +94,25 @@ type PurchaseResult struct {
 type SellResult struct {
 	TotalRevenue int
 	UnitsSold    int
+}
+
+// ExtractionResult contains the result of extracting resources from an asteroid
+type ExtractionResult struct {
+	ShipSymbol      string
+	YieldSymbol     string
+	YieldUnits      int
+	CooldownSeconds int
+	CooldownExpires string // ISO8601 timestamp
+	Cargo           *navigation.CargoData
+}
+
+// TransferResult contains the result of transferring cargo between ships
+type TransferResult struct {
+	FromShip         string
+	ToShip           string
+	GoodSymbol       string
+	UnitsTransferred int
+	RemainingCargo   *navigation.CargoData // Remaining cargo on source ship
 }
 
 // Market DTOs

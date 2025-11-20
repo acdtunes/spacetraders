@@ -217,3 +217,50 @@ func (r *MarketRepositoryGORM) FindCheapestMarketSelling(
 	}, nil
 }
 
+// FindBestMarketBuying finds the market with the highest purchase price for a specific good in a system
+// This returns the best market to sell to (where we get paid the most)
+func (r *MarketRepositoryGORM) FindBestMarketBuying(
+	ctx context.Context,
+	goodSymbol string,
+	systemSymbol string,
+	playerID int,
+) (*trading.BestMarketBuyingResult, error) {
+	var result struct {
+		WaypointSymbol string
+		TradeSymbol    string
+		PurchasePrice  int
+		Supply         *string
+	}
+
+	err := r.db.WithContext(ctx).
+		Table("market_data").
+		Select("waypoint_symbol, good_symbol as trade_symbol, purchase_price, supply").
+		Where("player_id = ?", playerID).
+		Where("waypoint_symbol LIKE ?", systemSymbol+"-%").
+		Where("good_symbol = ?", goodSymbol).
+		Order("purchase_price DESC").
+		Limit(1).
+		Scan(&result).Error
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to find best market buying: %w", err)
+	}
+
+	// If no result found, return nil (not an error)
+	if result.WaypointSymbol == "" {
+		return nil, nil
+	}
+
+	supply := ""
+	if result.Supply != nil {
+		supply = *result.Supply
+	}
+
+	return &trading.BestMarketBuyingResult{
+		WaypointSymbol: result.WaypointSymbol,
+		TradeSymbol:    result.TradeSymbol,
+		PurchasePrice:  result.PurchasePrice,
+		Supply:         supply,
+	}, nil
+}
+

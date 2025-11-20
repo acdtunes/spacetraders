@@ -47,6 +47,24 @@ type DaemonClient interface {
 	// StopContainer stops a running container
 	// containerID: The container to stop
 	StopContainer(ctx context.Context, containerID string) error
+
+	// PersistMiningWorkerContainer creates (but does NOT start) a mining worker container in DB
+	PersistMiningWorkerContainer(ctx context.Context, containerID string, playerID uint, command interface{}) error
+
+	// StartMiningWorkerContainer starts a previously persisted mining worker container
+	StartMiningWorkerContainer(ctx context.Context, containerID string, completionCallback chan<- string) error
+
+	// PersistTransportWorkerContainer creates (but does NOT start) a transport worker container in DB
+	PersistTransportWorkerContainer(ctx context.Context, containerID string, playerID uint, command interface{}) error
+
+	// StartTransportWorkerContainer starts a previously persisted transport worker container
+	StartTransportWorkerContainer(ctx context.Context, containerID string, completionCallback chan<- string) error
+
+	// PersistMiningCoordinatorContainer creates (but does NOT start) a mining coordinator container in DB
+	PersistMiningCoordinatorContainer(ctx context.Context, containerID string, playerID uint, command interface{}) error
+
+	// StartMiningCoordinatorContainer starts a previously persisted mining coordinator container
+	StartMiningCoordinatorContainer(ctx context.Context, containerID string) error
 }
 
 // ShipAssignmentRepository defines persistence operations for ship assignments
@@ -54,8 +72,14 @@ type ShipAssignmentRepository interface {
 	// Insert creates a new ship assignment record
 	Insert(ctx context.Context, assignment *ShipAssignment) error
 
+	// Assign creates or updates a ship assignment (alias for Insert with upsert behavior)
+	Assign(ctx context.Context, assignment *ShipAssignment) error
+
 	// FindByShip retrieves the active assignment for a ship
 	FindByShip(ctx context.Context, shipSymbol string, playerID int) (*ShipAssignment, error)
+
+	// FindByShipSymbol retrieves the assignment for a ship by symbol
+	FindByShipSymbol(ctx context.Context, shipSymbol string, playerID int) (*ShipAssignment, error)
 
 	// FindByContainer retrieves all ship assignments for a container
 	FindByContainer(ctx context.Context, containerID string, playerID int) ([]*ShipAssignment, error)

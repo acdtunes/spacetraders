@@ -86,7 +86,15 @@ type PlanRouteRequest struct {
 	// Ship engine speed (for time calculations)
 	EngineSpeed int32 `protobuf:"varint,6,opt,name=engine_speed,json=engineSpeed,proto3" json:"engine_speed,omitempty"`
 	// All waypoints in the system (graph nodes)
-	Waypoints     []*Waypoint `protobuf:"bytes,7,rep,name=waypoints,proto3" json:"waypoints,omitempty"`
+	Waypoints []*Waypoint `protobuf:"bytes,7,rep,name=waypoints,proto3" json:"waypoints,omitempty"`
+	// Optional: Enable fuel-efficient routing mode
+	// When true, removes DRIFT penalty to allow DRIFT-assisted routes
+	// Useful for mining operations where fuel preservation is important
+	FuelEfficient bool `protobuf:"varint,8,opt,name=fuel_efficient,json=fuelEfficient,proto3" json:"fuel_efficient,omitempty"`
+	// Optional: Prefer CRUISE mode over BURN
+	// When true, routes will use CRUISE instead of BURN for fuel efficiency
+	// DRIFT penalty still applies (use fuel_efficient to remove DRIFT penalty)
+	PreferCruise  bool `protobuf:"varint,9,opt,name=prefer_cruise,json=preferCruise,proto3" json:"prefer_cruise,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -168,6 +176,20 @@ func (x *PlanRouteRequest) GetWaypoints() []*Waypoint {
 		return x.Waypoints
 	}
 	return nil
+}
+
+func (x *PlanRouteRequest) GetFuelEfficient() bool {
+	if x != nil {
+		return x.FuelEfficient
+	}
+	return false
+}
+
+func (x *PlanRouteRequest) GetPreferCruise() bool {
+	if x != nil {
+		return x.PreferCruise
+	}
+	return false
 }
 
 type Waypoint struct {
@@ -622,6 +644,420 @@ func (x *OptimizeTourResponse) GetErrorMessage() string {
 	return ""
 }
 
+// OptimizeFueledTourRequest solves TSP with global fuel optimization
+// This endpoint jointly optimizes: visit order + flight modes + refuel stops
+// to minimize total travel time while ensuring fuel feasibility
+type OptimizeFueledTourRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// System symbol
+	SystemSymbol string `protobuf:"bytes,1,opt,name=system_symbol,json=systemSymbol,proto3" json:"system_symbol,omitempty"`
+	// Starting waypoint (ship's current location)
+	StartWaypoint string `protobuf:"bytes,2,opt,name=start_waypoint,json=startWaypoint,proto3" json:"start_waypoint,omitempty"`
+	// Waypoints to visit (order to be optimized)
+	TargetWaypoints []string `protobuf:"bytes,3,rep,name=target_waypoints,json=targetWaypoints,proto3" json:"target_waypoints,omitempty"`
+	// Optional return waypoint (default: no return)
+	// Set to return to asteroid after selling
+	ReturnWaypoint *string `protobuf:"bytes,4,opt,name=return_waypoint,json=returnWaypoint,proto3,oneof" json:"return_waypoint,omitempty"`
+	// Ship fuel specifications
+	CurrentFuel  int32 `protobuf:"varint,5,opt,name=current_fuel,json=currentFuel,proto3" json:"current_fuel,omitempty"`    // Current fuel level
+	FuelCapacity int32 `protobuf:"varint,6,opt,name=fuel_capacity,json=fuelCapacity,proto3" json:"fuel_capacity,omitempty"` // Maximum fuel capacity
+	EngineSpeed  int32 `protobuf:"varint,7,opt,name=engine_speed,json=engineSpeed,proto3" json:"engine_speed,omitempty"`    // Ship engine speed
+	// All waypoints in system (for distance/fuel station calculations)
+	AllWaypoints  []*Waypoint `protobuf:"bytes,8,rep,name=all_waypoints,json=allWaypoints,proto3" json:"all_waypoints,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *OptimizeFueledTourRequest) Reset() {
+	*x = OptimizeFueledTourRequest{}
+	mi := &file_pkg_proto_routing_routing_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *OptimizeFueledTourRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*OptimizeFueledTourRequest) ProtoMessage() {}
+
+func (x *OptimizeFueledTourRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_proto_routing_routing_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use OptimizeFueledTourRequest.ProtoReflect.Descriptor instead.
+func (*OptimizeFueledTourRequest) Descriptor() ([]byte, []int) {
+	return file_pkg_proto_routing_routing_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *OptimizeFueledTourRequest) GetSystemSymbol() string {
+	if x != nil {
+		return x.SystemSymbol
+	}
+	return ""
+}
+
+func (x *OptimizeFueledTourRequest) GetStartWaypoint() string {
+	if x != nil {
+		return x.StartWaypoint
+	}
+	return ""
+}
+
+func (x *OptimizeFueledTourRequest) GetTargetWaypoints() []string {
+	if x != nil {
+		return x.TargetWaypoints
+	}
+	return nil
+}
+
+func (x *OptimizeFueledTourRequest) GetReturnWaypoint() string {
+	if x != nil && x.ReturnWaypoint != nil {
+		return *x.ReturnWaypoint
+	}
+	return ""
+}
+
+func (x *OptimizeFueledTourRequest) GetCurrentFuel() int32 {
+	if x != nil {
+		return x.CurrentFuel
+	}
+	return 0
+}
+
+func (x *OptimizeFueledTourRequest) GetFuelCapacity() int32 {
+	if x != nil {
+		return x.FuelCapacity
+	}
+	return 0
+}
+
+func (x *OptimizeFueledTourRequest) GetEngineSpeed() int32 {
+	if x != nil {
+		return x.EngineSpeed
+	}
+	return 0
+}
+
+func (x *OptimizeFueledTourRequest) GetAllWaypoints() []*Waypoint {
+	if x != nil {
+		return x.AllWaypoints
+	}
+	return nil
+}
+
+type OptimizeFueledTourResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Optimized visit order (waypoint symbols, not including start/return)
+	VisitOrder []string `protobuf:"bytes,1,rep,name=visit_order,json=visitOrder,proto3" json:"visit_order,omitempty"`
+	// Individual legs with full navigation details
+	Legs []*TourLeg `protobuf:"bytes,2,rep,name=legs,proto3" json:"legs,omitempty"`
+	// Summary totals
+	TotalTimeSeconds int32   `protobuf:"varint,3,opt,name=total_time_seconds,json=totalTimeSeconds,proto3" json:"total_time_seconds,omitempty"`
+	TotalFuelCost    int32   `protobuf:"varint,4,opt,name=total_fuel_cost,json=totalFuelCost,proto3" json:"total_fuel_cost,omitempty"`
+	TotalDistance    float64 `protobuf:"fixed64,5,opt,name=total_distance,json=totalDistance,proto3" json:"total_distance,omitempty"`
+	// Number of refuel stops required
+	RefuelStops int32 `protobuf:"varint,6,opt,name=refuel_stops,json=refuelStops,proto3" json:"refuel_stops,omitempty"`
+	// Success indicator
+	Success bool `protobuf:"varint,7,opt,name=success,proto3" json:"success,omitempty"`
+	// Error message if optimization failed
+	ErrorMessage  *string `protobuf:"bytes,8,opt,name=error_message,json=errorMessage,proto3,oneof" json:"error_message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *OptimizeFueledTourResponse) Reset() {
+	*x = OptimizeFueledTourResponse{}
+	mi := &file_pkg_proto_routing_routing_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *OptimizeFueledTourResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*OptimizeFueledTourResponse) ProtoMessage() {}
+
+func (x *OptimizeFueledTourResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_proto_routing_routing_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use OptimizeFueledTourResponse.ProtoReflect.Descriptor instead.
+func (*OptimizeFueledTourResponse) Descriptor() ([]byte, []int) {
+	return file_pkg_proto_routing_routing_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *OptimizeFueledTourResponse) GetVisitOrder() []string {
+	if x != nil {
+		return x.VisitOrder
+	}
+	return nil
+}
+
+func (x *OptimizeFueledTourResponse) GetLegs() []*TourLeg {
+	if x != nil {
+		return x.Legs
+	}
+	return nil
+}
+
+func (x *OptimizeFueledTourResponse) GetTotalTimeSeconds() int32 {
+	if x != nil {
+		return x.TotalTimeSeconds
+	}
+	return 0
+}
+
+func (x *OptimizeFueledTourResponse) GetTotalFuelCost() int32 {
+	if x != nil {
+		return x.TotalFuelCost
+	}
+	return 0
+}
+
+func (x *OptimizeFueledTourResponse) GetTotalDistance() float64 {
+	if x != nil {
+		return x.TotalDistance
+	}
+	return 0
+}
+
+func (x *OptimizeFueledTourResponse) GetRefuelStops() int32 {
+	if x != nil {
+		return x.RefuelStops
+	}
+	return 0
+}
+
+func (x *OptimizeFueledTourResponse) GetSuccess() bool {
+	if x != nil {
+		return x.Success
+	}
+	return false
+}
+
+func (x *OptimizeFueledTourResponse) GetErrorMessage() string {
+	if x != nil && x.ErrorMessage != nil {
+		return *x.ErrorMessage
+	}
+	return ""
+}
+
+type TourLeg struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// From waypoint symbol
+	FromWaypoint string `protobuf:"bytes,1,opt,name=from_waypoint,json=fromWaypoint,proto3" json:"from_waypoint,omitempty"`
+	// To waypoint symbol (the market/target)
+	ToWaypoint string `protobuf:"bytes,2,opt,name=to_waypoint,json=toWaypoint,proto3" json:"to_waypoint,omitempty"`
+	// Flight mode: "BURN", "CRUISE", or "DRIFT"
+	FlightMode string `protobuf:"bytes,3,opt,name=flight_mode,json=flightMode,proto3" json:"flight_mode,omitempty"`
+	// Fuel cost for this leg
+	FuelCost int32 `protobuf:"varint,4,opt,name=fuel_cost,json=fuelCost,proto3" json:"fuel_cost,omitempty"`
+	// Travel time in seconds
+	TimeSeconds int32 `protobuf:"varint,5,opt,name=time_seconds,json=timeSeconds,proto3" json:"time_seconds,omitempty"`
+	// Distance traveled
+	Distance float64 `protobuf:"fixed64,6,opt,name=distance,proto3" json:"distance,omitempty"`
+	// Whether to refuel BEFORE departing this leg
+	RefuelBefore bool `protobuf:"varint,7,opt,name=refuel_before,json=refuelBefore,proto3" json:"refuel_before,omitempty"`
+	// If refuel_before is true, how much fuel to add
+	RefuelAmount *int32 `protobuf:"varint,8,opt,name=refuel_amount,json=refuelAmount,proto3,oneof" json:"refuel_amount,omitempty"`
+	// Intermediate waypoints for multi-hop legs (refuel stops)
+	IntermediateStops []*IntermediateStop `protobuf:"bytes,9,rep,name=intermediate_stops,json=intermediateStops,proto3" json:"intermediate_stops,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *TourLeg) Reset() {
+	*x = TourLeg{}
+	mi := &file_pkg_proto_routing_routing_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TourLeg) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TourLeg) ProtoMessage() {}
+
+func (x *TourLeg) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_proto_routing_routing_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TourLeg.ProtoReflect.Descriptor instead.
+func (*TourLeg) Descriptor() ([]byte, []int) {
+	return file_pkg_proto_routing_routing_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *TourLeg) GetFromWaypoint() string {
+	if x != nil {
+		return x.FromWaypoint
+	}
+	return ""
+}
+
+func (x *TourLeg) GetToWaypoint() string {
+	if x != nil {
+		return x.ToWaypoint
+	}
+	return ""
+}
+
+func (x *TourLeg) GetFlightMode() string {
+	if x != nil {
+		return x.FlightMode
+	}
+	return ""
+}
+
+func (x *TourLeg) GetFuelCost() int32 {
+	if x != nil {
+		return x.FuelCost
+	}
+	return 0
+}
+
+func (x *TourLeg) GetTimeSeconds() int32 {
+	if x != nil {
+		return x.TimeSeconds
+	}
+	return 0
+}
+
+func (x *TourLeg) GetDistance() float64 {
+	if x != nil {
+		return x.Distance
+	}
+	return 0
+}
+
+func (x *TourLeg) GetRefuelBefore() bool {
+	if x != nil {
+		return x.RefuelBefore
+	}
+	return false
+}
+
+func (x *TourLeg) GetRefuelAmount() int32 {
+	if x != nil && x.RefuelAmount != nil {
+		return *x.RefuelAmount
+	}
+	return 0
+}
+
+func (x *TourLeg) GetIntermediateStops() []*IntermediateStop {
+	if x != nil {
+		return x.IntermediateStops
+	}
+	return nil
+}
+
+type IntermediateStop struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Waypoint symbol (must be a fuel station)
+	Waypoint string `protobuf:"bytes,1,opt,name=waypoint,proto3" json:"waypoint,omitempty"`
+	// Flight mode TO this stop
+	FlightMode string `protobuf:"bytes,2,opt,name=flight_mode,json=flightMode,proto3" json:"flight_mode,omitempty"`
+	// Fuel cost to reach this stop
+	FuelCost int32 `protobuf:"varint,3,opt,name=fuel_cost,json=fuelCost,proto3" json:"fuel_cost,omitempty"`
+	// Travel time to this stop
+	TimeSeconds int32 `protobuf:"varint,4,opt,name=time_seconds,json=timeSeconds,proto3" json:"time_seconds,omitempty"`
+	// Fuel to add at this stop
+	RefuelAmount  int32 `protobuf:"varint,5,opt,name=refuel_amount,json=refuelAmount,proto3" json:"refuel_amount,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *IntermediateStop) Reset() {
+	*x = IntermediateStop{}
+	mi := &file_pkg_proto_routing_routing_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *IntermediateStop) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*IntermediateStop) ProtoMessage() {}
+
+func (x *IntermediateStop) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_proto_routing_routing_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use IntermediateStop.ProtoReflect.Descriptor instead.
+func (*IntermediateStop) Descriptor() ([]byte, []int) {
+	return file_pkg_proto_routing_routing_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *IntermediateStop) GetWaypoint() string {
+	if x != nil {
+		return x.Waypoint
+	}
+	return ""
+}
+
+func (x *IntermediateStop) GetFlightMode() string {
+	if x != nil {
+		return x.FlightMode
+	}
+	return ""
+}
+
+func (x *IntermediateStop) GetFuelCost() int32 {
+	if x != nil {
+		return x.FuelCost
+	}
+	return 0
+}
+
+func (x *IntermediateStop) GetTimeSeconds() int32 {
+	if x != nil {
+		return x.TimeSeconds
+	}
+	return 0
+}
+
+func (x *IntermediateStop) GetRefuelAmount() int32 {
+	if x != nil {
+		return x.RefuelAmount
+	}
+	return 0
+}
+
 // PartitionFleetRequest solves VRP for multiple ships
 type PartitionFleetRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -643,7 +1079,7 @@ type PartitionFleetRequest struct {
 
 func (x *PartitionFleetRequest) Reset() {
 	*x = PartitionFleetRequest{}
-	mi := &file_pkg_proto_routing_routing_proto_msgTypes[6]
+	mi := &file_pkg_proto_routing_routing_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -655,7 +1091,7 @@ func (x *PartitionFleetRequest) String() string {
 func (*PartitionFleetRequest) ProtoMessage() {}
 
 func (x *PartitionFleetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_proto_routing_routing_proto_msgTypes[6]
+	mi := &file_pkg_proto_routing_routing_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -668,7 +1104,7 @@ func (x *PartitionFleetRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PartitionFleetRequest.ProtoReflect.Descriptor instead.
 func (*PartitionFleetRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_proto_routing_routing_proto_rawDescGZIP(), []int{6}
+	return file_pkg_proto_routing_routing_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *PartitionFleetRequest) GetSystemSymbol() string {
@@ -729,7 +1165,7 @@ type ShipConfig struct {
 
 func (x *ShipConfig) Reset() {
 	*x = ShipConfig{}
-	mi := &file_pkg_proto_routing_routing_proto_msgTypes[7]
+	mi := &file_pkg_proto_routing_routing_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -741,7 +1177,7 @@ func (x *ShipConfig) String() string {
 func (*ShipConfig) ProtoMessage() {}
 
 func (x *ShipConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_proto_routing_routing_proto_msgTypes[7]
+	mi := &file_pkg_proto_routing_routing_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -754,7 +1190,7 @@ func (x *ShipConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ShipConfig.ProtoReflect.Descriptor instead.
 func (*ShipConfig) Descriptor() ([]byte, []int) {
-	return file_pkg_proto_routing_routing_proto_rawDescGZIP(), []int{7}
+	return file_pkg_proto_routing_routing_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *ShipConfig) GetCurrentLocation() string {
@@ -802,7 +1238,7 @@ type PartitionFleetResponse struct {
 
 func (x *PartitionFleetResponse) Reset() {
 	*x = PartitionFleetResponse{}
-	mi := &file_pkg_proto_routing_routing_proto_msgTypes[8]
+	mi := &file_pkg_proto_routing_routing_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -814,7 +1250,7 @@ func (x *PartitionFleetResponse) String() string {
 func (*PartitionFleetResponse) ProtoMessage() {}
 
 func (x *PartitionFleetResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_proto_routing_routing_proto_msgTypes[8]
+	mi := &file_pkg_proto_routing_routing_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -827,7 +1263,7 @@ func (x *PartitionFleetResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PartitionFleetResponse.ProtoReflect.Descriptor instead.
 func (*PartitionFleetResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_proto_routing_routing_proto_rawDescGZIP(), []int{8}
+	return file_pkg_proto_routing_routing_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *PartitionFleetResponse) GetAssignments() map[string]*ShipTour {
@@ -881,7 +1317,7 @@ type ShipTour struct {
 
 func (x *ShipTour) Reset() {
 	*x = ShipTour{}
-	mi := &file_pkg_proto_routing_routing_proto_msgTypes[9]
+	mi := &file_pkg_proto_routing_routing_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -893,7 +1329,7 @@ func (x *ShipTour) String() string {
 func (*ShipTour) ProtoMessage() {}
 
 func (x *ShipTour) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_proto_routing_routing_proto_msgTypes[9]
+	mi := &file_pkg_proto_routing_routing_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -906,7 +1342,7 @@ func (x *ShipTour) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ShipTour.ProtoReflect.Descriptor instead.
 func (*ShipTour) Descriptor() ([]byte, []int) {
-	return file_pkg_proto_routing_routing_proto_rawDescGZIP(), []int{9}
+	return file_pkg_proto_routing_routing_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *ShipTour) GetWaypoints() []string {
@@ -941,7 +1377,7 @@ var File_pkg_proto_routing_routing_proto protoreflect.FileDescriptor
 
 const file_pkg_proto_routing_routing_proto_rawDesc = "" +
 	"\n" +
-	"\x1fpkg/proto/routing/routing.proto\x12\arouting\"\x9f\x02\n" +
+	"\x1fpkg/proto/routing/routing.proto\x12\arouting\"\xeb\x02\n" +
 	"\x10PlanRouteRequest\x12#\n" +
 	"\rsystem_symbol\x18\x01 \x01(\tR\fsystemSymbol\x12%\n" +
 	"\x0estart_waypoint\x18\x02 \x01(\tR\rstartWaypoint\x12#\n" +
@@ -949,7 +1385,9 @@ const file_pkg_proto_routing_routing_proto_rawDesc = "" +
 	"\fcurrent_fuel\x18\x04 \x01(\x05R\vcurrentFuel\x12#\n" +
 	"\rfuel_capacity\x18\x05 \x01(\x05R\ffuelCapacity\x12!\n" +
 	"\fengine_speed\x18\x06 \x01(\x05R\vengineSpeed\x12/\n" +
-	"\twaypoints\x18\a \x03(\v2\x11.routing.WaypointR\twaypoints\"\x8c\x01\n" +
+	"\twaypoints\x18\a \x03(\v2\x11.routing.WaypointR\twaypoints\x12%\n" +
+	"\x0efuel_efficient\x18\b \x01(\bR\rfuelEfficient\x12#\n" +
+	"\rprefer_cruise\x18\t \x01(\bR\fpreferCruise\"\x8c\x01\n" +
 	"\bWaypoint\x12\x16\n" +
 	"\x06symbol\x18\x01 \x01(\tR\x06symbol\x12\f\n" +
 	"\x01x\x18\x02 \x01(\x01R\x01x\x12\f\n" +
@@ -992,7 +1430,48 @@ const file_pkg_proto_routing_routing_proto_rawDesc = "" +
 	"\x0etotal_distance\x18\x04 \x01(\x01R\rtotalDistance\x12\x18\n" +
 	"\asuccess\x18\x05 \x01(\bR\asuccess\x12(\n" +
 	"\rerror_message\x18\x06 \x01(\tH\x00R\ferrorMessage\x88\x01\x01B\x10\n" +
-	"\x0e_error_message\"\x8b\x03\n" +
+	"\x0e_error_message\"\xf7\x02\n" +
+	"\x19OptimizeFueledTourRequest\x12#\n" +
+	"\rsystem_symbol\x18\x01 \x01(\tR\fsystemSymbol\x12%\n" +
+	"\x0estart_waypoint\x18\x02 \x01(\tR\rstartWaypoint\x12)\n" +
+	"\x10target_waypoints\x18\x03 \x03(\tR\x0ftargetWaypoints\x12,\n" +
+	"\x0freturn_waypoint\x18\x04 \x01(\tH\x00R\x0ereturnWaypoint\x88\x01\x01\x12!\n" +
+	"\fcurrent_fuel\x18\x05 \x01(\x05R\vcurrentFuel\x12#\n" +
+	"\rfuel_capacity\x18\x06 \x01(\x05R\ffuelCapacity\x12!\n" +
+	"\fengine_speed\x18\a \x01(\x05R\vengineSpeed\x126\n" +
+	"\rall_waypoints\x18\b \x03(\v2\x11.routing.WaypointR\fallWaypointsB\x12\n" +
+	"\x10_return_waypoint\"\xd9\x02\n" +
+	"\x1aOptimizeFueledTourResponse\x12\x1f\n" +
+	"\vvisit_order\x18\x01 \x03(\tR\n" +
+	"visitOrder\x12$\n" +
+	"\x04legs\x18\x02 \x03(\v2\x10.routing.TourLegR\x04legs\x12,\n" +
+	"\x12total_time_seconds\x18\x03 \x01(\x05R\x10totalTimeSeconds\x12&\n" +
+	"\x0ftotal_fuel_cost\x18\x04 \x01(\x05R\rtotalFuelCost\x12%\n" +
+	"\x0etotal_distance\x18\x05 \x01(\x01R\rtotalDistance\x12!\n" +
+	"\frefuel_stops\x18\x06 \x01(\x05R\vrefuelStops\x12\x18\n" +
+	"\asuccess\x18\a \x01(\bR\asuccess\x12(\n" +
+	"\rerror_message\x18\b \x01(\tH\x00R\ferrorMessage\x88\x01\x01B\x10\n" +
+	"\x0e_error_message\"\xf7\x02\n" +
+	"\aTourLeg\x12#\n" +
+	"\rfrom_waypoint\x18\x01 \x01(\tR\ffromWaypoint\x12\x1f\n" +
+	"\vto_waypoint\x18\x02 \x01(\tR\n" +
+	"toWaypoint\x12\x1f\n" +
+	"\vflight_mode\x18\x03 \x01(\tR\n" +
+	"flightMode\x12\x1b\n" +
+	"\tfuel_cost\x18\x04 \x01(\x05R\bfuelCost\x12!\n" +
+	"\ftime_seconds\x18\x05 \x01(\x05R\vtimeSeconds\x12\x1a\n" +
+	"\bdistance\x18\x06 \x01(\x01R\bdistance\x12#\n" +
+	"\rrefuel_before\x18\a \x01(\bR\frefuelBefore\x12(\n" +
+	"\rrefuel_amount\x18\b \x01(\x05H\x00R\frefuelAmount\x88\x01\x01\x12H\n" +
+	"\x12intermediate_stops\x18\t \x03(\v2\x19.routing.IntermediateStopR\x11intermediateStopsB\x10\n" +
+	"\x0e_refuel_amount\"\xb4\x01\n" +
+	"\x10IntermediateStop\x12\x1a\n" +
+	"\bwaypoint\x18\x01 \x01(\tR\bwaypoint\x12\x1f\n" +
+	"\vflight_mode\x18\x02 \x01(\tR\n" +
+	"flightMode\x12\x1b\n" +
+	"\tfuel_cost\x18\x03 \x01(\x05R\bfuelCost\x12!\n" +
+	"\ftime_seconds\x18\x04 \x01(\x05R\vtimeSeconds\x12#\n" +
+	"\rrefuel_amount\x18\x05 \x01(\x05R\frefuelAmount\"\x8b\x03\n" +
 	"\x15PartitionFleetRequest\x12#\n" +
 	"\rsystem_symbol\x18\x01 \x01(\tR\fsystemSymbol\x12!\n" +
 	"\fship_symbols\x18\x02 \x03(\tR\vshipSymbols\x12)\n" +
@@ -1030,10 +1509,11 @@ const file_pkg_proto_routing_routing_proto_rawDesc = "" +
 	"\vRouteAction\x12\x1c\n" +
 	"\x18ROUTE_ACTION_UNSPECIFIED\x10\x00\x12\x17\n" +
 	"\x13ROUTE_ACTION_TRAVEL\x10\x01\x12\x17\n" +
-	"\x13ROUTE_ACTION_REFUEL\x10\x022\xf4\x01\n" +
+	"\x13ROUTE_ACTION_REFUEL\x10\x022\xd3\x02\n" +
 	"\x0eRoutingService\x12B\n" +
 	"\tPlanRoute\x12\x19.routing.PlanRouteRequest\x1a\x1a.routing.PlanRouteResponse\x12K\n" +
-	"\fOptimizeTour\x12\x1c.routing.OptimizeTourRequest\x1a\x1d.routing.OptimizeTourResponse\x12Q\n" +
+	"\fOptimizeTour\x12\x1c.routing.OptimizeTourRequest\x1a\x1d.routing.OptimizeTourResponse\x12]\n" +
+	"\x12OptimizeFueledTour\x12\".routing.OptimizeFueledTourRequest\x1a#.routing.OptimizeFueledTourResponse\x12Q\n" +
 	"\x0ePartitionFleet\x12\x1e.routing.PartitionFleetRequest\x1a\x1f.routing.PartitionFleetResponseB<Z:github.com/andrescamacho/spacetraders-go/pkg/proto/routingb\x06proto3"
 
 var (
@@ -1049,21 +1529,25 @@ func file_pkg_proto_routing_routing_proto_rawDescGZIP() []byte {
 }
 
 var file_pkg_proto_routing_routing_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_pkg_proto_routing_routing_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
+var file_pkg_proto_routing_routing_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
 var file_pkg_proto_routing_routing_proto_goTypes = []any{
-	(RouteAction)(0),               // 0: routing.RouteAction
-	(*PlanRouteRequest)(nil),       // 1: routing.PlanRouteRequest
-	(*Waypoint)(nil),               // 2: routing.Waypoint
-	(*PlanRouteResponse)(nil),      // 3: routing.PlanRouteResponse
-	(*RouteStep)(nil),              // 4: routing.RouteStep
-	(*OptimizeTourRequest)(nil),    // 5: routing.OptimizeTourRequest
-	(*OptimizeTourResponse)(nil),   // 6: routing.OptimizeTourResponse
-	(*PartitionFleetRequest)(nil),  // 7: routing.PartitionFleetRequest
-	(*ShipConfig)(nil),             // 8: routing.ShipConfig
-	(*PartitionFleetResponse)(nil), // 9: routing.PartitionFleetResponse
-	(*ShipTour)(nil),               // 10: routing.ShipTour
-	nil,                            // 11: routing.PartitionFleetRequest.ShipConfigsEntry
-	nil,                            // 12: routing.PartitionFleetResponse.AssignmentsEntry
+	(RouteAction)(0),                   // 0: routing.RouteAction
+	(*PlanRouteRequest)(nil),           // 1: routing.PlanRouteRequest
+	(*Waypoint)(nil),                   // 2: routing.Waypoint
+	(*PlanRouteResponse)(nil),          // 3: routing.PlanRouteResponse
+	(*RouteStep)(nil),                  // 4: routing.RouteStep
+	(*OptimizeTourRequest)(nil),        // 5: routing.OptimizeTourRequest
+	(*OptimizeTourResponse)(nil),       // 6: routing.OptimizeTourResponse
+	(*OptimizeFueledTourRequest)(nil),  // 7: routing.OptimizeFueledTourRequest
+	(*OptimizeFueledTourResponse)(nil), // 8: routing.OptimizeFueledTourResponse
+	(*TourLeg)(nil),                    // 9: routing.TourLeg
+	(*IntermediateStop)(nil),           // 10: routing.IntermediateStop
+	(*PartitionFleetRequest)(nil),      // 11: routing.PartitionFleetRequest
+	(*ShipConfig)(nil),                 // 12: routing.ShipConfig
+	(*PartitionFleetResponse)(nil),     // 13: routing.PartitionFleetResponse
+	(*ShipTour)(nil),                   // 14: routing.ShipTour
+	nil,                                // 15: routing.PartitionFleetRequest.ShipConfigsEntry
+	nil,                                // 16: routing.PartitionFleetResponse.AssignmentsEntry
 }
 var file_pkg_proto_routing_routing_proto_depIdxs = []int32{
 	2,  // 0: routing.PlanRouteRequest.waypoints:type_name -> routing.Waypoint
@@ -1071,23 +1555,28 @@ var file_pkg_proto_routing_routing_proto_depIdxs = []int32{
 	0,  // 2: routing.RouteStep.action:type_name -> routing.RouteAction
 	2,  // 3: routing.OptimizeTourRequest.all_waypoints:type_name -> routing.Waypoint
 	4,  // 4: routing.OptimizeTourResponse.route_steps:type_name -> routing.RouteStep
-	11, // 5: routing.PartitionFleetRequest.ship_configs:type_name -> routing.PartitionFleetRequest.ShipConfigsEntry
-	2,  // 6: routing.PartitionFleetRequest.all_waypoints:type_name -> routing.Waypoint
-	12, // 7: routing.PartitionFleetResponse.assignments:type_name -> routing.PartitionFleetResponse.AssignmentsEntry
-	4,  // 8: routing.ShipTour.route_steps:type_name -> routing.RouteStep
-	8,  // 9: routing.PartitionFleetRequest.ShipConfigsEntry.value:type_name -> routing.ShipConfig
-	10, // 10: routing.PartitionFleetResponse.AssignmentsEntry.value:type_name -> routing.ShipTour
-	1,  // 11: routing.RoutingService.PlanRoute:input_type -> routing.PlanRouteRequest
-	5,  // 12: routing.RoutingService.OptimizeTour:input_type -> routing.OptimizeTourRequest
-	7,  // 13: routing.RoutingService.PartitionFleet:input_type -> routing.PartitionFleetRequest
-	3,  // 14: routing.RoutingService.PlanRoute:output_type -> routing.PlanRouteResponse
-	6,  // 15: routing.RoutingService.OptimizeTour:output_type -> routing.OptimizeTourResponse
-	9,  // 16: routing.RoutingService.PartitionFleet:output_type -> routing.PartitionFleetResponse
-	14, // [14:17] is the sub-list for method output_type
-	11, // [11:14] is the sub-list for method input_type
-	11, // [11:11] is the sub-list for extension type_name
-	11, // [11:11] is the sub-list for extension extendee
-	0,  // [0:11] is the sub-list for field type_name
+	2,  // 5: routing.OptimizeFueledTourRequest.all_waypoints:type_name -> routing.Waypoint
+	9,  // 6: routing.OptimizeFueledTourResponse.legs:type_name -> routing.TourLeg
+	10, // 7: routing.TourLeg.intermediate_stops:type_name -> routing.IntermediateStop
+	15, // 8: routing.PartitionFleetRequest.ship_configs:type_name -> routing.PartitionFleetRequest.ShipConfigsEntry
+	2,  // 9: routing.PartitionFleetRequest.all_waypoints:type_name -> routing.Waypoint
+	16, // 10: routing.PartitionFleetResponse.assignments:type_name -> routing.PartitionFleetResponse.AssignmentsEntry
+	4,  // 11: routing.ShipTour.route_steps:type_name -> routing.RouteStep
+	12, // 12: routing.PartitionFleetRequest.ShipConfigsEntry.value:type_name -> routing.ShipConfig
+	14, // 13: routing.PartitionFleetResponse.AssignmentsEntry.value:type_name -> routing.ShipTour
+	1,  // 14: routing.RoutingService.PlanRoute:input_type -> routing.PlanRouteRequest
+	5,  // 15: routing.RoutingService.OptimizeTour:input_type -> routing.OptimizeTourRequest
+	7,  // 16: routing.RoutingService.OptimizeFueledTour:input_type -> routing.OptimizeFueledTourRequest
+	11, // 17: routing.RoutingService.PartitionFleet:input_type -> routing.PartitionFleetRequest
+	3,  // 18: routing.RoutingService.PlanRoute:output_type -> routing.PlanRouteResponse
+	6,  // 19: routing.RoutingService.OptimizeTour:output_type -> routing.OptimizeTourResponse
+	8,  // 20: routing.RoutingService.OptimizeFueledTour:output_type -> routing.OptimizeFueledTourResponse
+	13, // 21: routing.RoutingService.PartitionFleet:output_type -> routing.PartitionFleetResponse
+	18, // [18:22] is the sub-list for method output_type
+	14, // [14:18] is the sub-list for method input_type
+	14, // [14:14] is the sub-list for extension type_name
+	14, // [14:14] is the sub-list for extension extendee
+	0,  // [0:14] is the sub-list for field type_name
 }
 
 func init() { file_pkg_proto_routing_routing_proto_init() }
@@ -1099,14 +1588,17 @@ func file_pkg_proto_routing_routing_proto_init() {
 	file_pkg_proto_routing_routing_proto_msgTypes[2].OneofWrappers = []any{}
 	file_pkg_proto_routing_routing_proto_msgTypes[3].OneofWrappers = []any{}
 	file_pkg_proto_routing_routing_proto_msgTypes[5].OneofWrappers = []any{}
+	file_pkg_proto_routing_routing_proto_msgTypes[6].OneofWrappers = []any{}
+	file_pkg_proto_routing_routing_proto_msgTypes[7].OneofWrappers = []any{}
 	file_pkg_proto_routing_routing_proto_msgTypes[8].OneofWrappers = []any{}
+	file_pkg_proto_routing_routing_proto_msgTypes[12].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pkg_proto_routing_routing_proto_rawDesc), len(file_pkg_proto_routing_routing_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   12,
+			NumMessages:   16,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

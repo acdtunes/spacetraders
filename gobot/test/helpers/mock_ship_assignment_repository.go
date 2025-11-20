@@ -29,6 +29,11 @@ func (m *MockShipAssignmentRepository) Insert(ctx context.Context, assignment *d
 	return nil
 }
 
+// Assign creates or updates a ship assignment (alias for Insert with upsert behavior)
+func (m *MockShipAssignmentRepository) Assign(ctx context.Context, assignment *daemon.ShipAssignment) error {
+	return m.Insert(ctx, assignment)
+}
+
 // FindByShip retrieves the active assignment for a ship
 func (m *MockShipAssignmentRepository) FindByShip(ctx context.Context, shipSymbol string, playerID int) (*daemon.ShipAssignment, error) {
 	m.mu.RLock()
@@ -40,6 +45,11 @@ func (m *MockShipAssignmentRepository) FindByShip(ctx context.Context, shipSymbo
 	}
 
 	return assignment, nil
+}
+
+// FindByShipSymbol retrieves the assignment for a ship by symbol (alias for FindByShip)
+func (m *MockShipAssignmentRepository) FindByShipSymbol(ctx context.Context, shipSymbol string, playerID int) (*daemon.ShipAssignment, error) {
+	return m.FindByShip(ctx, shipSymbol, playerID)
 }
 
 // FindByContainer retrieves all ship assignments for a container
@@ -67,6 +77,26 @@ func (m *MockShipAssignmentRepository) Release(ctx context.Context, shipSymbol s
 	}
 
 	delete(m.assignments, shipSymbol)
+	return nil
+}
+
+// Transfer transfers a ship assignment from one container to another
+func (m *MockShipAssignmentRepository) Transfer(ctx context.Context, shipSymbol string, fromContainerID string, toContainerID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	assignment, ok := m.assignments[shipSymbol]
+	if !ok {
+		return fmt.Errorf("ship assignment not found: %s", shipSymbol)
+	}
+
+	if assignment.ContainerID() != fromContainerID {
+		return fmt.Errorf("ship %s is not assigned to container %s", shipSymbol, fromContainerID)
+	}
+
+	// Create a new assignment with the new container ID
+	newAssignment := daemon.NewShipAssignment(shipSymbol, assignment.PlayerID(), toContainerID, nil)
+	m.assignments[shipSymbol] = newAssignment
 	return nil
 }
 

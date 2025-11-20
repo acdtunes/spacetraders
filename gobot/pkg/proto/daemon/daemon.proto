@@ -63,6 +63,12 @@ service DaemonService {
 
   // GetShipyardListings retrieves available ships at a shipyard
   rpc GetShipyardListings(GetShipyardListingsRequest) returns (GetShipyardListingsResponse);
+
+  // MiningOperation starts a mining operation with Transport-as-Sink pattern
+  rpc MiningOperation(MiningOperationRequest) returns (MiningOperationResponse);
+
+  // TourSell executes optimized cargo selling tour for a ship
+  rpc TourSell(TourSellRequest) returns (TourSellResponse);
 }
 
 // NavigateShipRequest initiates ship navigation
@@ -347,6 +353,7 @@ message ShipDetail {
   int32 cargo_capacity = 7;
   repeated CargoItem cargo_inventory = 8;
   int32 engine_speed = 9;
+  string role = 10;
 }
 
 // PurchaseShipRequest requests purchase of a single ship
@@ -411,4 +418,69 @@ message CargoItem {
   string symbol = 1;
   string name = 2;
   int32 units = 3;
+}
+
+// MiningOperationRequest starts a mining operation with miners and transports
+message MiningOperationRequest {
+  optional string asteroid_field = 1; // Optional: specific waypoint, or auto-select based on mining_type
+  repeated string miner_ships = 2;    // Ships for mining
+  repeated string transport_ships = 3; // Ships for transport
+  int32 top_n_ores = 4;               // Number of ore types to keep (default: 3)
+  int32 player_id = 5;
+  optional string agent_symbol = 6;
+  optional string mining_type = 7;    // Type: common_metals, precious_metals, rare_metals, minerals, ice, gas
+  bool force = 8;                     // Override fuel validation warnings
+  bool dry_run = 9;                   // If true, only select asteroid without starting operation
+  int32 max_leg_time = 10;            // Max time per leg in minutes (0 = no limit)
+}
+
+message MiningOperationResponse {
+  string container_id = 1;
+  string asteroid_field = 2;
+  repeated string miner_ships = 3;
+  repeated string transport_ships = 4;
+  string status = 5;
+  // Dry-run results
+  string market_symbol = 6;              // Market for transport loop
+  repeated ShipRoute ship_routes = 7;    // Planned routes for all ships
+  repeated string errors = 8;            // Any errors during route planning
+}
+
+// RouteSegment represents a single leg of a planned route
+message RouteSegment {
+  string from = 1;
+  string to = 2;
+  string flight_mode = 3;  // CRUISE, DRIFT, BURN, STEALTH
+  int32 fuel_cost = 4;
+  int32 travel_time = 5;   // seconds
+}
+
+// ShipRoute contains a ship's planned route
+message ShipRoute {
+  string ship_symbol = 1;
+  string ship_type = 2;    // "miner" or "transport"
+  repeated RouteSegment segments = 3;
+  int32 total_fuel = 4;
+  int32 total_time = 5;    // seconds
+}
+
+// TourSellRequest executes optimized cargo selling tour
+message TourSellRequest {
+  string ship_symbol = 1;
+  int32 player_id = 2;
+  optional string agent_symbol = 3;
+  optional string return_waypoint = 4; // Optional waypoint to return to after selling
+}
+
+message TourSellResponse {
+  string container_id = 1;
+  string ship_symbol = 2;
+  string status = 3;
+}
+
+message SoldItem {
+  string symbol = 1;
+  int32 units = 2;
+  int32 revenue = 3;
+  string market = 4;
 }

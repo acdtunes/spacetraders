@@ -96,6 +96,7 @@ func (ctx *routeNavigationUndefinedContext) aShipAtWithUnitsOfFuelAndCapacity(sh
 		cargo,
 		30, // engineSpeed
 		"FRAME_DRONE", // frameSymbol
+		"",
 		navigation.NavStatusInOrbit,
 	)
 	if err != nil {
@@ -127,6 +128,7 @@ func (ctx *routeNavigationUndefinedContext) shipIsAtWithFuel(shipSymbol, locatio
 		cargo,
 		30, // engineSpeed
 		"FRAME_DRONE", // frameSymbol
+		"",
 		navigation.NavStatusInOrbit,
 	)
 	if err != nil {
@@ -170,6 +172,7 @@ func (ctx *routeNavigationUndefinedContext) shipIsDOCKEDAt(shipSymbol, location 
 		cargo,
 		30, // engineSpeed
 		"FRAME_DRONE", // frameSymbol
+		"",
 		navigation.NavStatusDocked,
 	)
 	if err != nil {
@@ -195,6 +198,7 @@ func (ctx *routeNavigationUndefinedContext) shipIsIN_TRANSITToArrivingInSeconds(
 		cargo,
 		30, // engineSpeed
 		"FRAME_DRONE", // frameSymbol
+		"",
 		navigation.NavStatusInTransit,
 	)
 	if err != nil {

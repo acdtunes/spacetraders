@@ -196,7 +196,7 @@ func (ctx *evaluateContractProfitabilityContext) aShipWithCargoCapacity(capacity
 		100,
 		capacity,
 		cargo,
-		30, "FRAME_EXPLORER", navigation.NavStatusDocked,
+		30, "FRAME_EXPLORER", "", navigation.NavStatusDocked,
 	)
 	if err != nil {
 		return err

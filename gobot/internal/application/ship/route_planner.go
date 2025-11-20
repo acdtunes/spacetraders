@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	domainNavigation "github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	domainRouting "github.com/andrescamacho/spacetraders-go/internal/domain/routing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
@@ -28,6 +29,7 @@ func (p *RoutePlanner) PlanRoute(
 	ship *domainNavigation.Ship,
 	destination string,
 	waypoints map[string]*shared.Waypoint,
+	preferCruise bool,
 ) (*domainNavigation.Route, error) {
 	// Convert waypoints to DTO
 	waypointData := make([]*system.WaypointData, 0, len(waypoints))
@@ -49,6 +51,7 @@ func (p *RoutePlanner) PlanRoute(
 		FuelCapacity:  ship.FuelCapacity(),
 		EngineSpeed:   ship.EngineSpeed(),
 		Waypoints:     waypointData,
+		PreferCruise:  preferCruise,
 	}
 
 	// Call routing client
@@ -58,16 +61,18 @@ func (p *RoutePlanner) PlanRoute(
 	}
 
 	// Convert route response to Route domain entity
-	return p.createRouteFromPlan(routeResponse, ship, waypoints)
+	return p.createRouteFromPlan(ctx, routeResponse, ship, waypoints)
 }
 
 // createRouteFromPlan creates Route entity from routing engine plan
 // Extracted from navigate_ship.go:379-469
 func (p *RoutePlanner) createRouteFromPlan(
+	ctx context.Context,
 	routePlan *domainRouting.RouteResponse,
 	ship *domainNavigation.Ship,
 	waypointObjects map[string]*shared.Waypoint,
 ) (*domainNavigation.Route, error) {
+	logger := common.LoggerFromContext(ctx)
 	segments := []*domainNavigation.RouteSegment{}
 	refuelBeforeDeparture := false
 
@@ -75,11 +80,11 @@ func (p *RoutePlanner) createRouteFromPlan(
 		return nil, fmt.Errorf("no route found: routing engine returned empty plan")
 	}
 
-	// DEBUG: Log routing service response
-	fmt.Printf("[ROUTE PLANNER] Routing service returned %d steps:\n", len(routePlan.Steps))
+	// Log routing service response
+	logger.Log("DEBUG", fmt.Sprintf("[ROUTE PLANNER] Routing service returned %d steps", len(routePlan.Steps)), nil)
 	for i, step := range routePlan.Steps {
-		fmt.Printf("[ROUTE PLANNER]   Step %d: Action=%v, Waypoint=%s, Mode=%s, Fuel=%d, Time=%d\n",
-			i, step.Action, step.Waypoint, step.Mode, step.FuelCost, step.TimeSeconds)
+		logger.Log("DEBUG", fmt.Sprintf("[ROUTE PLANNER]   Step %d: Action=%v, Waypoint=%s, Mode=%s, Fuel=%d, Time=%d",
+			i, step.Action, step.Waypoint, step.Mode, step.FuelCost, step.TimeSeconds), nil)
 	}
 
 	// Check if first action is REFUEL (ship at fuel station with low fuel)

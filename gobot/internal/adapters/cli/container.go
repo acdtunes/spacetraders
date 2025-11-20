@@ -159,7 +159,7 @@ func newContainerStopCommand() *cobra.Command {
 			}
 			defer client.Close()
 
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
 
 			result, err := client.StopContainer(ctx, containerID)

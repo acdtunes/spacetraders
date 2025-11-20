@@ -134,3 +134,147 @@ func (m *MockDaemonClient) Reset() {
 	m.scoutTourCommands = make(map[string]interface{})
 	m.CreatedContainers = []*container.Container{}
 }
+
+// CreateContractWorkflowContainer creates AND STARTS a contract workflow container
+func (m *MockDaemonClient) CreateContractWorkflowContainer(ctx context.Context, containerID string, playerID uint, command interface{}, completionCallback chan<- string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.createdContainers = append(m.createdContainers, containerID)
+	m.containers = append(m.containers, Container{
+		ID:       containerID,
+		PlayerID: playerID,
+		Status:   "RUNNING",
+		Type:     "contract-workflow",
+	})
+
+	return nil
+}
+
+// PersistContractWorkflowContainer creates but does NOT start a contract workflow container
+func (m *MockDaemonClient) PersistContractWorkflowContainer(ctx context.Context, containerID string, playerID uint, command interface{}) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.createdContainers = append(m.createdContainers, containerID)
+	m.containers = append(m.containers, Container{
+		ID:       containerID,
+		PlayerID: playerID,
+		Status:   "PENDING",
+		Type:     "contract-workflow",
+	})
+
+	return nil
+}
+
+// StartContractWorkflowContainer starts a previously persisted contract workflow container
+func (m *MockDaemonClient) StartContractWorkflowContainer(ctx context.Context, containerID string, completionCallback chan<- string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Find and update the container status
+	for i, c := range m.containers {
+		if c.ID == containerID {
+			m.containers[i].Status = "RUNNING"
+			break
+		}
+	}
+
+	return nil
+}
+
+// PersistMiningWorkerContainer creates but does NOT start a mining worker container
+func (m *MockDaemonClient) PersistMiningWorkerContainer(ctx context.Context, containerID string, playerID uint, command interface{}) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.createdContainers = append(m.createdContainers, containerID)
+	m.containers = append(m.containers, Container{
+		ID:       containerID,
+		PlayerID: playerID,
+		Status:   "PENDING",
+		Type:     "mining-worker",
+	})
+
+	return nil
+}
+
+// StartMiningWorkerContainer starts a previously persisted mining worker container
+func (m *MockDaemonClient) StartMiningWorkerContainer(ctx context.Context, containerID string, completionCallback chan<- string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Find and update the container status
+	for i, c := range m.containers {
+		if c.ID == containerID {
+			m.containers[i].Status = "RUNNING"
+			break
+		}
+	}
+
+	return nil
+}
+
+// PersistTransportWorkerContainer creates but does NOT start a transport worker container
+func (m *MockDaemonClient) PersistTransportWorkerContainer(ctx context.Context, containerID string, playerID uint, command interface{}) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.createdContainers = append(m.createdContainers, containerID)
+	m.containers = append(m.containers, Container{
+		ID:       containerID,
+		PlayerID: playerID,
+		Status:   "PENDING",
+		Type:     "transport-worker",
+	})
+
+	return nil
+}
+
+// StartTransportWorkerContainer starts a previously persisted transport worker container
+func (m *MockDaemonClient) StartTransportWorkerContainer(ctx context.Context, containerID string, completionCallback chan<- string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Find and update the container status
+	for i, c := range m.containers {
+		if c.ID == containerID {
+			m.containers[i].Status = "RUNNING"
+			break
+		}
+	}
+
+	return nil
+}
+
+// PersistMiningCoordinatorContainer creates but does NOT start a mining coordinator container
+func (m *MockDaemonClient) PersistMiningCoordinatorContainer(ctx context.Context, containerID string, playerID uint, command interface{}) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.createdContainers = append(m.createdContainers, containerID)
+	m.containers = append(m.containers, Container{
+		ID:       containerID,
+		PlayerID: playerID,
+		Status:   "PENDING",
+		Type:     "mining-coordinator",
+	})
+
+	return nil
+}
+
+// StartMiningCoordinatorContainer starts a previously persisted mining coordinator container
+func (m *MockDaemonClient) StartMiningCoordinatorContainer(ctx context.Context, containerID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Find and update the container status
+	for i, c := range m.containers {
+		if c.ID == containerID {
+			m.containers[i].Status = "RUNNING"
+			break
+		}
+	}
+
+	return nil
+}

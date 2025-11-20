@@ -14,6 +14,10 @@ service RoutingService {
   // OptimizeTour solves TSP for visiting multiple waypoints optimally
   rpc OptimizeTour(OptimizeTourRequest) returns (OptimizeTourResponse);
 
+  // OptimizeFueledTour solves TSP with global fuel optimization
+  // Returns visit order + flight modes + refuel stops to minimize total travel time
+  rpc OptimizeFueledTour(OptimizeFueledTourRequest) returns (OptimizeFueledTourResponse);
+
   // PartitionFleet solves VRP to distribute waypoints across multiple ships
   rpc PartitionFleet(PartitionFleetRequest) returns (PartitionFleetResponse);
 }
@@ -40,6 +44,16 @@ message PlanRouteRequest {
 
   // All waypoints in the system (graph nodes)
   repeated Waypoint waypoints = 7;
+
+  // Optional: Enable fuel-efficient routing mode
+  // When true, removes DRIFT penalty to allow DRIFT-assisted routes
+  // Useful for mining operations where fuel preservation is important
+  bool fuel_efficient = 8;
+
+  // Optional: Prefer CRUISE mode over BURN
+  // When true, routes will use CRUISE instead of BURN for fuel efficiency
+  // DRIFT penalty still applies (use fuel_efficient to remove DRIFT penalty)
+  bool prefer_cruise = 9;
 }
 
 message Waypoint {
@@ -148,6 +162,100 @@ message OptimizeTourResponse {
 
   // Error message if optimization failed
   optional string error_message = 6;
+}
+
+// OptimizeFueledTourRequest solves TSP with global fuel optimization
+// This endpoint jointly optimizes: visit order + flight modes + refuel stops
+// to minimize total travel time while ensuring fuel feasibility
+message OptimizeFueledTourRequest {
+  // System symbol
+  string system_symbol = 1;
+
+  // Starting waypoint (ship's current location)
+  string start_waypoint = 2;
+
+  // Waypoints to visit (order to be optimized)
+  repeated string target_waypoints = 3;
+
+  // Optional return waypoint (default: no return)
+  // Set to return to asteroid after selling
+  optional string return_waypoint = 4;
+
+  // Ship fuel specifications
+  int32 current_fuel = 5;     // Current fuel level
+  int32 fuel_capacity = 6;    // Maximum fuel capacity
+  int32 engine_speed = 7;     // Ship engine speed
+
+  // All waypoints in system (for distance/fuel station calculations)
+  repeated Waypoint all_waypoints = 8;
+}
+
+message OptimizeFueledTourResponse {
+  // Optimized visit order (waypoint symbols, not including start/return)
+  repeated string visit_order = 1;
+
+  // Individual legs with full navigation details
+  repeated TourLeg legs = 2;
+
+  // Summary totals
+  int32 total_time_seconds = 3;
+  int32 total_fuel_cost = 4;
+  double total_distance = 5;
+
+  // Number of refuel stops required
+  int32 refuel_stops = 6;
+
+  // Success indicator
+  bool success = 7;
+
+  // Error message if optimization failed
+  optional string error_message = 8;
+}
+
+message TourLeg {
+  // From waypoint symbol
+  string from_waypoint = 1;
+
+  // To waypoint symbol (the market/target)
+  string to_waypoint = 2;
+
+  // Flight mode: "BURN", "CRUISE", or "DRIFT"
+  string flight_mode = 3;
+
+  // Fuel cost for this leg
+  int32 fuel_cost = 4;
+
+  // Travel time in seconds
+  int32 time_seconds = 5;
+
+  // Distance traveled
+  double distance = 6;
+
+  // Whether to refuel BEFORE departing this leg
+  bool refuel_before = 7;
+
+  // If refuel_before is true, how much fuel to add
+  optional int32 refuel_amount = 8;
+
+  // Intermediate waypoints for multi-hop legs (refuel stops)
+  repeated IntermediateStop intermediate_stops = 9;
+}
+
+message IntermediateStop {
+  // Waypoint symbol (must be a fuel station)
+  string waypoint = 1;
+
+  // Flight mode TO this stop
+  string flight_mode = 2;
+
+  // Fuel cost to reach this stop
+  int32 fuel_cost = 3;
+
+  // Travel time to this stop
+  int32 time_seconds = 4;
+
+  // Fuel to add at this stop
+  int32 refuel_amount = 5;
 }
 
 // PartitionFleetRequest solves VRP for multiple ships

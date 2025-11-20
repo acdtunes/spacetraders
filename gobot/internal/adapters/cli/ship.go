@@ -181,6 +181,7 @@ Examples:
 			fmt.Printf("Ship Information\n")
 			fmt.Printf("================\n\n")
 			fmt.Printf("Ship Symbol:    %s\n", s.Symbol)
+			fmt.Printf("Role:           %s\n", s.Role)
 			fmt.Printf("Location:       %s\n", s.Location)
 			fmt.Printf("Nav Status:     %s\n", s.NavStatus)
 			fmt.Printf("Fuel:           %d / %d\n", s.FuelCurrent, s.FuelCapacity)

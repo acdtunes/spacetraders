@@ -131,7 +131,7 @@ func (ctx *transactionLimitContext) aShipDockedAtWaypoint(shipSymbol, waypointSy
 
 	ship, err := navigation.NewShip(
 		shipSymbol, ctx.playerID, waypoint, fuel, 100,
-		100, cargo, 30, "FRAME_EXPLORER", navigation.NavStatusDocked,
+		100, cargo, 30, "FRAME_EXPLORER", "", navigation.NavStatusDocked,
 	)
 	if err != nil {
 		return err
@@ -156,7 +156,7 @@ func (ctx *transactionLimitContext) theShipHasUnitsOfCargoSpace(units int) error
 
 	newShip, err := navigation.NewShip(
 		ship.ShipSymbol(), ship.PlayerID(), waypoint, fuel, ship.FuelCapacity(),
-		units, cargo, ship.EngineSpeed(), "FRAME_EXPLORER", navigation.NavStatusDocked,
+		units, cargo, ship.EngineSpeed(), "FRAME_EXPLORER", "", navigation.NavStatusDocked,
 	)
 	if err != nil {
 		return err
@@ -183,7 +183,7 @@ func (ctx *transactionLimitContext) theShipHasUnitsOfInCargo(units int, goodSymb
 
 	newShip, err := navigation.NewShip(
 		ship.ShipSymbol(), ship.PlayerID(), waypoint, fuel, ship.FuelCapacity(),
-		ship.CargoCapacity(), cargo, ship.EngineSpeed(), "FRAME_EXPLORER", navigation.NavStatusDocked,
+		ship.CargoCapacity(), cargo, ship.EngineSpeed(), "FRAME_EXPLORER", "", navigation.NavStatusDocked,
 	)
 	if err != nil {
 		return err

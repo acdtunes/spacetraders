@@ -122,6 +122,35 @@ func (c *MockRoutingClient) OptimizeTour(ctx context.Context, req *domainRouting
 	}, nil
 }
 
+// OptimizeFueledTour returns waypoints with basic fuel planning (no global optimization for POC)
+func (c *MockRoutingClient) OptimizeFueledTour(ctx context.Context, req *domainRouting.FueledTourRequest) (*domainRouting.FueledTourResponse, error) {
+	// Simple implementation: return waypoints in order with basic legs
+	legs := make([]*domainRouting.TourLegData, len(req.TargetWaypoints))
+
+	prevWaypoint := req.StartWaypoint
+	for i, wp := range req.TargetWaypoints {
+		legs[i] = &domainRouting.TourLegData{
+			FromWaypoint: prevWaypoint,
+			ToWaypoint:   wp,
+			FlightMode:   "CRUISE",
+			FuelCost:     10,
+			TimeSeconds:  100,
+			Distance:     10.0,
+			RefuelBefore: false,
+		}
+		prevWaypoint = wp
+	}
+
+	return &domainRouting.FueledTourResponse{
+		VisitOrder:       req.TargetWaypoints,
+		Legs:             legs,
+		TotalTimeSeconds: len(req.TargetWaypoints) * 100,
+		TotalFuelCost:    len(req.TargetWaypoints) * 10,
+		TotalDistance:    float64(len(req.TargetWaypoints)) * 10.0,
+		RefuelStops:      0,
+	}, nil
+}
+
 // PartitionFleet returns simple 1:1 ship-to-market assignment (no VRP optimization)
 func (c *MockRoutingClient) PartitionFleet(ctx context.Context, req *domainRouting.VRPRequest) (*domainRouting.VRPResponse, error) {
 	// Simple implementation: assign first N markets to first N ships

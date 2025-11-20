@@ -62,7 +62,9 @@ class RoutingServiceHandler(routing_pb2_grpc.RoutingServiceServicer):
                 goal=request.goal_waypoint,
                 current_fuel=request.current_fuel,
                 fuel_capacity=request.fuel_capacity,
-                engine_speed=request.engine_speed
+                engine_speed=request.engine_speed,
+                fuel_efficient=request.fuel_efficient,
+                prefer_cruise=request.prefer_cruise
             )
 
             if result is None:
@@ -183,6 +185,94 @@ class RoutingServiceHandler(routing_pb2_grpc.RoutingServiceServicer):
         except Exception as e:
             logger.error(f"OptimizeTour error: {e}", exc_info=True)
             return routing_pb2.OptimizeTourResponse(
+                success=False,
+                error_message=str(e)
+            )
+
+    def OptimizeFueledTour(self, request: routing_pb2.OptimizeFueledTourRequest, context) -> routing_pb2.OptimizeFueledTourResponse:
+        """
+        Optimize tour with global fuel constraints.
+
+        Uses time-based TSP where cost matrix is computed using actual
+        fuel-constrained travel times via Dijkstra pathfinding.
+
+        Args:
+            request: OptimizeFueledTourRequest with waypoints, ship specs, return waypoint
+            context: gRPC context
+
+        Returns:
+            OptimizeFueledTourResponse with legs containing flight modes and refuel flags
+        """
+        try:
+            logger.info(f"OptimizeFueledTour: {len(request.target_waypoints)} waypoints from {request.start_waypoint}")
+
+            # Build waypoint graph
+            graph = self._build_waypoint_graph(request.all_waypoints)
+
+            # Get optional return waypoint
+            return_waypoint = request.return_waypoint if request.HasField('return_waypoint') else None
+
+            # Optimize fueled tour
+            result = self.engine.optimize_fueled_tour(
+                graph=graph,
+                waypoints=list(request.target_waypoints),
+                start=request.start_waypoint,
+                return_waypoint=return_waypoint,
+                current_fuel=request.current_fuel,
+                fuel_capacity=request.fuel_capacity,
+                engine_speed=request.engine_speed
+            )
+
+            if result is None:
+                return routing_pb2.OptimizeFueledTourResponse(
+                    success=False,
+                    error_message="Failed to optimize fueled tour"
+                )
+
+            # Convert legs to protobuf TourLeg messages
+            pb_legs = []
+            for leg in result['legs']:
+                # Convert intermediate stops
+                pb_stops = []
+                for stop in leg.get('intermediate_stops', []):
+                    pb_stop = routing_pb2.IntermediateStop(
+                        waypoint=stop['waypoint'],
+                        flight_mode=stop['flight_mode'],
+                        fuel_cost=stop['fuel_cost'],
+                        time_seconds=stop['time_seconds'],
+                        refuel_amount=stop['refuel_amount']
+                    )
+                    pb_stops.append(pb_stop)
+
+                pb_leg = routing_pb2.TourLeg(
+                    from_waypoint=leg['from_waypoint'],
+                    to_waypoint=leg['to_waypoint'],
+                    flight_mode=leg['flight_mode'],
+                    fuel_cost=leg['fuel_cost'],
+                    time_seconds=leg['time_seconds'],
+                    distance=leg['distance'],
+                    refuel_before=leg['refuel_before'],
+                    intermediate_stops=pb_stops
+                )
+
+                if leg['refuel_before'] and leg['refuel_amount'] > 0:
+                    pb_leg.refuel_amount = leg['refuel_amount']
+
+                pb_legs.append(pb_leg)
+
+            return routing_pb2.OptimizeFueledTourResponse(
+                visit_order=result['ordered_waypoints'],
+                legs=pb_legs,
+                total_time_seconds=result['total_time'],
+                total_fuel_cost=result['total_fuel_cost'],
+                total_distance=result['total_distance'],
+                refuel_stops=result['refuel_stops'],
+                success=True
+            )
+
+        except Exception as e:
+            logger.error(f"OptimizeFueledTour error: {e}", exc_info=True)
+            return routing_pb2.OptimizeFueledTourResponse(
                 success=False,
                 error_message=str(e)
             )

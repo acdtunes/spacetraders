@@ -1233,7 +1233,7 @@ func (dec *daemonEntityContext) aShipInTransitForSeconds(shipSymbol string, seco
 	fuel, _ := shared.NewFuel(100, 100)
 	cargo, _ := shared.NewCargo(0, 100, nil)
 	waypoint, _ := shared.NewWaypoint("TEST-WP", 0, 0)
-	ship, _ := navigation.NewShip(shipSymbol, 1, waypoint, fuel, 100, 100, cargo, 30, "FRAME_PROBE", navigation.NavStatusInTransit)
+	ship, _ := navigation.NewShip(shipSymbol, 1, waypoint, fuel, 100, 100, cargo, 30, "FRAME_PROBE", "", navigation.NavStatusInTransit)
 	dec.ships[shipSymbol] = ship
 	return nil
 }
@@ -1266,7 +1266,7 @@ func (dec *daemonEntityContext) aShipDockedForSeconds(shipSymbol string, seconds
 	fuel, _ := shared.NewFuel(100, 100)
 	cargo, _ := shared.NewCargo(0, 100, nil)
 	waypoint, _ := shared.NewWaypoint("TEST-WP", 0, 0)
-	ship, _ := navigation.NewShip(shipSymbol, 1, waypoint, fuel, 100, 100, cargo, 30, "FRAME_PROBE", navigation.NavStatusDocked)
+	ship, _ := navigation.NewShip(shipSymbol, 1, waypoint, fuel, 100, 100, cargo, 30, "FRAME_PROBE", "", navigation.NavStatusDocked)
 	dec.ships[shipSymbol] = ship
 	return nil
 }
@@ -1348,7 +1348,7 @@ func (dec *daemonEntityContext) aShipIsStuckInTransit(shipSymbol string) error {
 	fuel, _ := shared.NewFuel(100, 100)
 	cargo, _ := shared.NewCargo(0, 100, nil)
 	waypoint, _ := shared.NewWaypoint("TEST-WP", 0, 0)
-	ship, _ := navigation.NewShip(shipSymbol, 1, waypoint, fuel, 100, 100, cargo, 30, "FRAME_PROBE", navigation.NavStatusInTransit)
+	ship, _ := navigation.NewShip(shipSymbol, 1, waypoint, fuel, 100, 100, cargo, 30, "FRAME_PROBE", "", navigation.NavStatusInTransit)
 	dec.ships[shipSymbol] = ship
 	return nil
 }
@@ -1360,7 +1360,7 @@ func (dec *daemonEntityContext) theHealthMonitorAttemptsRecoveryFor(shipSymbol s
 		fuel, _ := shared.NewFuel(100, 100)
 		cargo, _ := shared.NewCargo(0, 100, nil)
 		waypoint, _ := shared.NewWaypoint("TEST-WP", 0, 0)
-		ship, _ = navigation.NewShip(shipSymbol, 1, waypoint, fuel, 100, 100, cargo, 30, "FRAME_PROBE", navigation.NavStatusInTransit)
+		ship, _ = navigation.NewShip(shipSymbol, 1, waypoint, fuel, 100, 100, cargo, 30, "FRAME_PROBE", "", navigation.NavStatusInTransit)
 	}
 
 	err := dec.healthMonitor.AttemptRecovery(context.Background(), shipSymbol, ship, dec.containers)
@@ -1422,7 +1422,7 @@ func (dec *daemonEntityContext) theHealthMonitorAbandonsShips(count int) error {
 		fuel, _ := shared.NewFuel(100, 100)
 		cargo, _ := shared.NewCargo(0, 100, nil)
 		waypoint, _ := shared.NewWaypoint("TEST-WP", 0, 0)
-		ship, _ := navigation.NewShip(shipSymbol, 1, waypoint, fuel, 100, 100, cargo, 30, "FRAME_PROBE", navigation.NavStatusInTransit)
+		ship, _ := navigation.NewShip(shipSymbol, 1, waypoint, fuel, 100, 100, cargo, 30, "FRAME_PROBE", "", navigation.NavStatusInTransit)
 		dec.healthMonitor.AttemptRecovery(context.Background(), shipSymbol, ship, dec.containers)
 	}
 	return nil

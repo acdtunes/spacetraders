@@ -129,7 +129,7 @@ func (ctx *purchaseCargoContext) aShipForPlayerDockedAtMarketplace(shipSymbol st
 
 	ship, err := navigation.NewShip(
 		shipSymbol, playerID, waypoint, fuel, 100,
-		100, cargo, 30, "FRAME_EXPLORER", navigation.NavStatusDocked,
+		100, cargo, 30, "FRAME_EXPLORER", "", navigation.NavStatusDocked,
 	)
 	if err != nil {
 		return err
@@ -165,7 +165,7 @@ func (ctx *purchaseCargoContext) aShipForPlayerInOrbitAt(shipSymbol string, play
 
 	ship, err := navigation.NewShip(
 		shipSymbol, playerID, waypoint, fuel, 100,
-		100, cargo, 30, "FRAME_EXPLORER", navigation.NavStatusInOrbit,
+		100, cargo, 30, "FRAME_EXPLORER", "", navigation.NavStatusInOrbit,
 	)
 	if err != nil {
 		return err

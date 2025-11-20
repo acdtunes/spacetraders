@@ -158,3 +158,45 @@ type ContractPurchaseHistoryModel struct {
 func (ContractPurchaseHistoryModel) TableName() string {
 	return "contract_purchase_history"
 }
+
+// MiningOperationModel represents the mining_operations table
+type MiningOperationModel struct {
+	ID             string       `gorm:"column:id;primaryKey;not null"`
+	PlayerID       int          `gorm:"column:player_id;primaryKey;not null"`
+	Player         *PlayerModel `gorm:"foreignKey:PlayerID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
+	AsteroidField  string       `gorm:"column:asteroid_field;not null"`
+	Status         string       `gorm:"column:status;default:'PENDING'"`
+	TopNOres       int          `gorm:"column:top_n_ores;default:3"`
+	MinerShips     string       `gorm:"column:miner_ships;type:text;not null"`     // JSON array
+	TransportShips string       `gorm:"column:transport_ships;type:text;not null"` // JSON array
+	BatchThreshold int          `gorm:"column:batch_threshold;default:3"`
+	BatchTimeout   int          `gorm:"column:batch_timeout;default:300"` // seconds
+	MaxIterations  int          `gorm:"column:max_iterations;default:-1"`
+	LastError      string       `gorm:"column:last_error;type:text"`
+	CreatedAt      time.Time    `gorm:"column:created_at;not null;autoCreateTime"`
+	UpdatedAt      time.Time    `gorm:"column:updated_at;not null;autoUpdateTime"`
+	StartedAt      *time.Time   `gorm:"column:started_at"`
+	StoppedAt      *time.Time   `gorm:"column:stopped_at"`
+}
+
+func (MiningOperationModel) TableName() string {
+	return "mining_operations"
+}
+
+// CargoTransferQueueModel represents the cargo_transfer_queue table
+type CargoTransferQueueModel struct {
+	ID                int          `gorm:"column:id;primaryKey;autoIncrement"`
+	MiningOperationID string       `gorm:"column:mining_operation_id;not null;index"`
+	MinerShip         string       `gorm:"column:miner_ship;not null;index"`
+	TransportShip     string       `gorm:"column:transport_ship"`
+	Status            string       `gorm:"column:status;default:'PENDING'"`
+	CargoManifest     string       `gorm:"column:cargo_manifest;type:text;not null"` // JSON
+	CreatedAt         time.Time    `gorm:"column:created_at;not null;autoCreateTime"`
+	CompletedAt       *time.Time   `gorm:"column:completed_at"`
+	PlayerID          int          `gorm:"column:player_id;not null"`
+	Player            *PlayerModel `gorm:"foreignKey:PlayerID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
+}
+
+func (CargoTransferQueueModel) TableName() string {
+	return "cargo_transfer_queue"
+}

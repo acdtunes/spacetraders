@@ -110,7 +110,7 @@ func (ctx *batchContractWorkflowContext) aShipOwnedByPlayerAtWaypoint(shipSymbol
 
 	ship, err := navigation.NewShip(
 		shipSymbol, playerID, waypoint, fuel, 100,
-		40, cargo, 30, "FRAME_EXPLORER", navigation.NavStatusDocked,
+		40, cargo, 30, "FRAME_EXPLORER", "", navigation.NavStatusDocked,
 	)
 	if err != nil {
 		return err
@@ -133,7 +133,7 @@ func (ctx *batchContractWorkflowContext) theShipHasCargoCapacity(shipSymbol stri
 
 	newShip, err := navigation.NewShip(
 		shipSymbol, ship.PlayerID(), waypoint, fuel, 100,
-		capacity, cargo, 30, "FRAME_EXPLORER", navigation.NavStatusDocked,
+		capacity, cargo, 30, "FRAME_EXPLORER", "", navigation.NavStatusDocked,
 	)
 	if err != nil {
 		return err
@@ -278,7 +278,7 @@ func (ctx *batchContractWorkflowContext) theShipHasCargo(shipSymbol string, tabl
 
 	newShip, err := navigation.NewShip(
 		shipSymbol, ship.PlayerID(), waypoint, fuel, 100,
-		ship.Cargo().Capacity, cargo, 30, "FRAME_EXPLORER", navigation.NavStatusDocked,
+		ship.Cargo().Capacity, cargo, 30, "FRAME_EXPLORER", "", navigation.NavStatusDocked,
 	)
 	if err != nil {
 		return err

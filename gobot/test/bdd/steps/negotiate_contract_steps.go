@@ -103,7 +103,7 @@ func (ctx *negotiateContractContext) aShipForPlayerInTransitTo(shipSymbol string
 
 	ship, err := navigation.NewShip(
 		shipSymbol, playerID, waypoint, fuel, 100,
-		40, cargo, 30, "FRAME_EXPLORER", navigation.NavStatusInOrbit,
+		40, cargo, 30, "FRAME_EXPLORER", "", navigation.NavStatusInOrbit,
 	)
 	if err != nil {
 		return err

@@ -162,6 +162,7 @@ func (c *scoutMarketsContext) iHaveAShipAtWaypointInSystem(shipSymbol, waypointS
 		cargo,
 		50,    // engine speed
 		"FRAME_EXPLORER",
+		"",
 		navigation.NavStatusInOrbit, // initial status
 	)
 	if err != nil {

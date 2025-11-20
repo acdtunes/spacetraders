@@ -43,6 +43,10 @@ func (m *mockRoutingClientForPlanner) PartitionFleet(ctx context.Context, reques
 	return nil, fmt.Errorf("not implemented")
 }
 
+func (m *mockRoutingClientForPlanner) OptimizeFueledTour(ctx context.Context, request *domainRouting.FueledTourRequest) (*domainRouting.FueledTourResponse, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+
 func (ctx *routePlannerContext) reset() {
 	ctx.ship = nil
 	ctx.waypoints = make(map[string]*shared.Waypoint)

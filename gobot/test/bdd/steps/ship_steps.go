@@ -86,7 +86,7 @@ func (sc *shipContext) iCreateAShipWithSymbolPlayerAtFuelCargoSpeedStatus(
 
 	sc.ship, sc.err = navigation.NewShip(
 		symbol, playerID, waypoint, fuel, fuelCapacity,
-		cargoCapacity, cargo, speed, "FRAME_EXPLORER", navStatus,
+		cargoCapacity, cargo, speed, "FRAME_EXPLORER", "", navStatus,
 	)
 	return sc.err
 }
@@ -97,7 +97,7 @@ func (sc *shipContext) iAttemptToCreateAShipWithEmptyShipSymbol() error {
 	cargo, _ := shared.NewCargo(40, 0, []*shared.CargoItem{})
 
 	sc.ship, sc.err = navigation.NewShip(
-		"", 1, waypoint, fuel, 100, 40, cargo, 30, "FRAME_EXPLORER", navigation.NavStatusInOrbit,
+		"", 1, waypoint, fuel, 100, 40, cargo, 30, "FRAME_EXPLORER", "", navigation.NavStatusInOrbit,
 	)
 	return nil
 }
@@ -108,7 +108,7 @@ func (sc *shipContext) iAttemptToCreateAShipWithPlayerID(playerID int) error {
 	cargo, _ := shared.NewCargo(40, 0, []*shared.CargoItem{})
 
 	sc.ship, sc.err = navigation.NewShip(
-		"SHIP-1", playerID, waypoint, fuel, 100, 40, cargo, 30, "FRAME_EXPLORER", navigation.NavStatusInOrbit,
+		"SHIP-1", playerID, waypoint, fuel, 100, 40, cargo, 30, "FRAME_EXPLORER", "", navigation.NavStatusInOrbit,
 	)
 	return nil
 }
@@ -119,7 +119,7 @@ func (sc *shipContext) iAttemptToCreateAShipWithFuelCapacity(fuelCapacity int) e
 	cargo, _ := shared.NewCargo(40, 0, []*shared.CargoItem{})
 
 	sc.ship, sc.err = navigation.NewShip(
-		"SHIP-1", 1, waypoint, fuel, fuelCapacity, 40, cargo, 30, "FRAME_EXPLORER", navigation.NavStatusInOrbit,
+		"SHIP-1", 1, waypoint, fuel, fuelCapacity, 40, cargo, 30, "FRAME_EXPLORER", "", navigation.NavStatusInOrbit,
 	)
 	return nil
 }
@@ -130,7 +130,7 @@ func (sc *shipContext) iAttemptToCreateAShipWithFuelObjectCapacityButFuelCapacit
 	cargo, _ := shared.NewCargo(40, 0, []*shared.CargoItem{})
 
 	sc.ship, sc.err = navigation.NewShip(
-		"SHIP-1", 1, waypoint, fuel, fuelCapParam, 40, cargo, 30, "FRAME_EXPLORER", navigation.NavStatusInOrbit,
+		"SHIP-1", 1, waypoint, fuel, fuelCapParam, 40, cargo, 30, "FRAME_EXPLORER", "", navigation.NavStatusInOrbit,
 	)
 	return nil
 }
@@ -141,7 +141,7 @@ func (sc *shipContext) iAttemptToCreateAShipWithCargoCapacity(cargoCapacity int)
 	cargo, _ := shared.NewCargo(0, 0, []*shared.CargoItem{})
 
 	sc.ship, sc.err = navigation.NewShip(
-		"SHIP-1", 1, waypoint, fuel, 100, cargoCapacity, cargo, 30, "FRAME_EXPLORER", navigation.NavStatusInOrbit,
+		"SHIP-1", 1, waypoint, fuel, 100, cargoCapacity, cargo, 30, "FRAME_EXPLORER", "", navigation.NavStatusInOrbit,
 	)
 	return nil
 }
@@ -157,7 +157,7 @@ func (sc *shipContext) iAttemptToCreateAShipWithCargoUnits(cargoUnits int) error
 	}
 
 	sc.ship, sc.err = navigation.NewShip(
-		"SHIP-1", 1, waypoint, fuel, 100, 40, cargo, 30, "FRAME_EXPLORER", navigation.NavStatusInOrbit,
+		"SHIP-1", 1, waypoint, fuel, 100, 40, cargo, 30, "FRAME_EXPLORER", "", navigation.NavStatusInOrbit,
 	)
 	return nil
 }
@@ -172,7 +172,7 @@ func (sc *shipContext) iAttemptToCreateAShipWithCargoCapacityAndCargoUnits(capac
 	}
 
 	sc.ship, sc.err = navigation.NewShip(
-		"SHIP-1", 1, waypoint, fuel, 100, capacity, cargo, 30, "FRAME_EXPLORER", navigation.NavStatusInOrbit,
+		"SHIP-1", 1, waypoint, fuel, 100, capacity, cargo, 30, "FRAME_EXPLORER", "", navigation.NavStatusInOrbit,
 	)
 	return nil
 }
@@ -183,7 +183,7 @@ func (sc *shipContext) iAttemptToCreateAShipWithEngineSpeed(speed int) error {
 	cargo, _ := shared.NewCargo(40, 0, []*shared.CargoItem{})
 
 	sc.ship, sc.err = navigation.NewShip(
-		"SHIP-1", 1, waypoint, fuel, 100, 40, cargo, speed, "FRAME_EXPLORER", navigation.NavStatusInOrbit,
+		"SHIP-1", 1, waypoint, fuel, 100, 40, cargo, speed, "FRAME_EXPLORER", "", navigation.NavStatusInOrbit,
 	)
 	return nil
 }
@@ -194,7 +194,7 @@ func (sc *shipContext) iAttemptToCreateAShipWithNavStatus(status string) error {
 	cargo, _ := shared.NewCargo(40, 0, []*shared.CargoItem{})
 
 	sc.ship, sc.err = navigation.NewShip(
-		"SHIP-1", 1, waypoint, fuel, 100, 40, cargo, 30, "FRAME_EXPLORER", navigation.NavStatus(status),
+		"SHIP-1", 1, waypoint, fuel, 100, 40, cargo, 30, "FRAME_EXPLORER", "", navigation.NavStatus(status),
 	)
 	return nil
 }
@@ -282,7 +282,7 @@ func (sc *shipContext) aDockedShipAt(location string) error {
 	cargo, _ := shared.NewCargo(40, 0, []*shared.CargoItem{})
 
 	sc.ship, sc.err = navigation.NewShip(
-		"SHIP-1", 1, waypoint, fuel, 100, 40, cargo, 30, "FRAME_EXPLORER", navigation.NavStatusDocked,
+		"SHIP-1", 1, waypoint, fuel, 100, 40, cargo, 30, "FRAME_EXPLORER", "", navigation.NavStatusDocked,
 	)
 	return sc.err
 }
@@ -293,7 +293,7 @@ func (sc *shipContext) aShipInOrbitAt(location string) error {
 	cargo, _ := shared.NewCargo(40, 0, []*shared.CargoItem{})
 
 	sc.ship, sc.err = navigation.NewShip(
-		"SHIP-1", 1, waypoint, fuel, 100, 40, cargo, 30, "FRAME_EXPLORER", navigation.NavStatusInOrbit,
+		"SHIP-1", 1, waypoint, fuel, 100, 40, cargo, 30, "FRAME_EXPLORER", "", navigation.NavStatusInOrbit,
 	)
 	return sc.err
 }
@@ -304,7 +304,7 @@ func (sc *shipContext) aShipInTransitTo(destination string) error {
 	cargo, _ := shared.NewCargo(40, 0, []*shared.CargoItem{})
 
 	sc.ship, sc.err = navigation.NewShip(
-		"SHIP-1", 1, waypoint, fuel, 100, 40, cargo, 30, "FRAME_EXPLORER", navigation.NavStatusInTransit,
+		"SHIP-1", 1, waypoint, fuel, 100, 40, cargo, 30, "FRAME_EXPLORER", "", navigation.NavStatusInTransit,
 	)
 	return sc.err
 }
@@ -444,7 +444,7 @@ func (sc *shipContext) aShipWithUnitsOfFuel(units int) error {
 	cargo, _ := shared.NewCargo(40, 0, []*shared.CargoItem{})
 
 	sc.ship, sc.err = navigation.NewShip(
-		"SHIP-1", 1, waypoint, fuel, 100, 40, cargo, 30, "FRAME_EXPLORER", navigation.NavStatusInOrbit,
+		"SHIP-1", 1, waypoint, fuel, 100, 40, cargo, 30, "FRAME_EXPLORER", "", navigation.NavStatusInOrbit,
 	)
 	sharedShip = sc.ship // Share ship with other contexts
 	return sc.err
@@ -456,7 +456,7 @@ func (sc *shipContext) aShipWithUnitsOfFuelAndCapacity(current, capacity int) er
 	cargo, _ := shared.NewCargo(40, 0, []*shared.CargoItem{})
 
 	sc.ship, sc.err = navigation.NewShip(
-		"SHIP-1", 1, waypoint, fuel, capacity, 40, cargo, 30, "FRAME_EXPLORER", navigation.NavStatusInOrbit,
+		"SHIP-1", 1, waypoint, fuel, capacity, 40, cargo, 30, "FRAME_EXPLORER", "", navigation.NavStatusInOrbit,
 	)
 	return sc.err
 }
@@ -504,7 +504,7 @@ func (sc *shipContext) aShipAtWithCoordinatesAndUnitsOfFuel(location string, x, 
 	cargo, _ := shared.NewCargo(40, 0, []*shared.CargoItem{})
 
 	sc.ship, sc.err = navigation.NewShip(
-		"SHIP-1", 1, waypoint, fuelObj, 100, 40, cargo, 30, "FRAME_EXPLORER", navigation.NavStatusInOrbit,
+		"SHIP-1", 1, waypoint, fuelObj, 100, 40, cargo, 30, "FRAME_EXPLORER", "", navigation.NavStatusInOrbit,
 	)
 	return sc.err
 }
@@ -535,7 +535,7 @@ func (sc *shipContext) aShipAtWithCoordinates(location string, x, y float64) err
 	cargo, _ := shared.NewCargo(40, 0, []*shared.CargoItem{})
 
 	sc.ship, sc.err = navigation.NewShip(
-		"SHIP-1", 1, waypoint, fuel, 100, 40, cargo, 30, "FRAME_EXPLORER", navigation.NavStatusInOrbit,
+		"SHIP-1", 1, waypoint, fuel, 100, 40, cargo, 30, "FRAME_EXPLORER", "", navigation.NavStatusInOrbit,
 	)
 	return sc.err
 }
@@ -585,7 +585,7 @@ func (sc *shipContext) aShipAtWithCoordinatesAndEngineSpeed(location string, x, 
 	cargo, _ := shared.NewCargo(40, 0, []*shared.CargoItem{})
 
 	sc.ship, sc.err = navigation.NewShip(
-		"SHIP-1", 1, waypoint, fuel, 100, 40, cargo, speed, "FRAME_EXPLORER", navigation.NavStatusInOrbit,
+		"SHIP-1", 1, waypoint, fuel, 100, 40, cargo, speed, "FRAME_EXPLORER", "", navigation.NavStatusInOrbit,
 	)
 	return sc.err
 }
@@ -636,7 +636,7 @@ func (sc *shipContext) aShipWithUnitsOfFuelAtDistance(fuel int, distance float64
 	}
 
 	sc.ship, sc.err = navigation.NewShip(
-		"SHIP-1", 1, waypoint, fuelObj, capacity, 40, cargo, 30, "FRAME_EXPLORER", navigation.NavStatusInOrbit,
+		"SHIP-1", 1, waypoint, fuelObj, capacity, 40, cargo, 30, "FRAME_EXPLORER", "", navigation.NavStatusInOrbit,
 	)
 	return sc.err
 }
@@ -666,7 +666,7 @@ func (sc *shipContext) aShipWithCargoCapacityAndCargoUnits(capacity, units int) 
 	}
 
 	sc.ship, sc.err = navigation.NewShip(
-		"SHIP-1", 1, waypoint, fuel, 100, capacity, cargo, 30, "FRAME_EXPLORER", navigation.NavStatusInOrbit,
+		"SHIP-1", 1, waypoint, fuel, 100, capacity, cargo, 30, "FRAME_EXPLORER", "", navigation.NavStatusInOrbit,
 	)
 	sharedShip = sc.ship // Share ship with other contexts
 	return sc.err
@@ -711,7 +711,7 @@ func (sc *shipContext) aShipAt(location string) error {
 	cargo, _ := shared.NewCargo(40, 0, []*shared.CargoItem{})
 
 	sc.ship, sc.err = navigation.NewShip(
-		"SHIP-1", 1, waypoint, fuel, 100, 40, cargo, 30, "FRAME_EXPLORER", navigation.NavStatusInOrbit,
+		"SHIP-1", 1, waypoint, fuel, 100, 40, cargo, 30, "FRAME_EXPLORER", "", navigation.NavStatusInOrbit,
 	)
 	return sc.err
 }
@@ -758,7 +758,7 @@ func (sc *shipContext) aShipAtWithUnitsOfFuelAndCapacity(location string, curren
 	}
 
 	sc.ship, sc.err = navigation.NewShip(
-		"SHIP-1", 1, waypoint, fuel, fuelCapacity, 40, cargo, 30, "FRAME_EXPLORER", navigation.NavStatusInOrbit,
+		"SHIP-1", 1, waypoint, fuel, fuelCapacity, 40, cargo, 30, "FRAME_EXPLORER", "", navigation.NavStatusInOrbit,
 	)
 	sharedShip = sc.ship  // Update shared ship for cross-context steps
 	return sc.err

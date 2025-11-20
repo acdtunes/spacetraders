@@ -132,14 +132,14 @@ func (b *GraphBuilder) BuildSystemGraph(ctx context.Context, systemSymbol string
 			}
 		}
 
-		// 1. STRUCTURE-ONLY data for navigation graph (no traits, no has_fuel)
+		// Navigation graph data with has_fuel for fuel-aware routing
 		waypoints[wp.Symbol] = map[string]interface{}{
 			"type":         wp.Type,
 			"x":            wp.X,
 			"y":            wp.Y,
 			"systemSymbol": systemSymbol,
 			"orbitals":     orbitals,
-			// NO traits or has_fuel - structure only for routing
+			"has_fuel":     hasFuel,
 		}
 
 		// 2. FULL waypoint object with traits for waypoints table

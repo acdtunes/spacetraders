@@ -46,6 +46,7 @@ type Ship struct {
 	cargo           *shared.Cargo
 	engineSpeed     int
 	frameSymbol     string // Frame type (e.g., "FRAME_PROBE", "FRAME_DRONE", "FRAME_MINER")
+	role            string // Ship role from registration (e.g., "EXCAVATOR", "COMMAND", "SATELLITE")
 	navStatus       NavStatus
 }
 
@@ -60,6 +61,7 @@ func NewShip(
 	cargo *shared.Cargo,
 	engineSpeed int,
 	frameSymbol string,
+	role string,
 	navStatus NavStatus,
 ) (*Ship, error) {
 	s := &Ship{
@@ -72,6 +74,7 @@ func NewShip(
 		cargo:           cargo,
 		engineSpeed:     engineSpeed,
 		frameSymbol:     frameSymbol,
+		role:            role,
 		navStatus:       navStatus,
 	}
 
@@ -179,6 +182,11 @@ func (s *Ship) FrameSymbol() string {
 	return s.frameSymbol
 }
 
+// Role returns the ship's role from registration
+func (s *Ship) Role() string {
+	return s.role
+}
+
 // Frame Type Queries
 
 // IsProbe checks if ship is a probe type (FRAME_PROBE)
@@ -191,9 +199,10 @@ func (s *Ship) IsDrone() bool {
 	return s.frameSymbol == "FRAME_DRONE"
 }
 
-// IsScoutType checks if ship is either a probe or drone (suitable for scouting)
+// IsScoutType checks if ship is suitable for scouting (SATELLITE role)
+// Excludes EXCAVATOR and other mining/hauling roles
 func (s *Ship) IsScoutType() bool {
-	return s.IsProbe() || s.IsDrone()
+	return s.role == "SATELLITE"
 }
 
 // Navigation Status Management

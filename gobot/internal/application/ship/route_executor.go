@@ -159,22 +159,35 @@ func (e *RouteExecutor) executeSegment(
 		}
 	}
 
-	// 3. Set flight mode (via SetFlightModeCommand)
+	// 3. Determine flight mode - recalculate if we have more fuel than planned
+	// Calculate distance for this segment
+	distance := segment.FromWaypoint.DistanceTo(segment.ToWaypoint)
+	optimalMode := ship.SelectOptimalFlightMode(distance)
+
+	// Use the better mode (higher enum value = faster: DRIFT=0 < CRUISE=1 < BURN=2)
+	flightMode := segment.FlightMode
+	if optimalMode > segment.FlightMode {
+		logger.Log("INFO", fmt.Sprintf("Upgrading flight mode from %s to %s after refuel (distance=%.1f, fuel=%d/%d)",
+			segment.FlightMode.Name(), optimalMode.Name(), distance, ship.Fuel().Current, ship.Fuel().Capacity), nil)
+		flightMode = optimalMode
+	}
+
+	// 4. Set flight mode (via SetFlightModeCommand)
 	setModeCmd := &SetFlightModeCommand{
 		ShipSymbol: ship.ShipSymbol(),
 		PlayerID:   playerID,
-		Mode:       segment.FlightMode,
+		Mode:       flightMode,
 	}
 	if _, err := e.mediator.Send(ctx, setModeCmd); err != nil {
 		return fmt.Errorf("failed to set flight mode: %w", err)
 	}
 
-	// 4. Navigate to waypoint (via NavigateToWaypointCommand)
+	// 5. Navigate to waypoint (via NavigateToWaypointCommand)
 	navCmd := &NavigateToWaypointCommand{
 		ShipSymbol:  ship.ShipSymbol(),
 		Destination: segment.ToWaypoint.Symbol,
 		PlayerID:    playerID,
-		FlightMode:  segment.FlightMode.Name(),
+		FlightMode:  flightMode.Name(),
 	}
 	navResp, err := e.mediator.Send(ctx, navCmd)
 	if err != nil {

@@ -38,6 +38,8 @@ const (
 	DaemonService_PurchaseShip_FullMethodName             = "/daemon.DaemonService/PurchaseShip"
 	DaemonService_BatchPurchaseShips_FullMethodName       = "/daemon.DaemonService/BatchPurchaseShips"
 	DaemonService_GetShipyardListings_FullMethodName      = "/daemon.DaemonService/GetShipyardListings"
+	DaemonService_MiningOperation_FullMethodName          = "/daemon.DaemonService/MiningOperation"
+	DaemonService_TourSell_FullMethodName                 = "/daemon.DaemonService/TourSell"
 )
 
 // DaemonServiceClient is the client API for DaemonService service.
@@ -85,6 +87,10 @@ type DaemonServiceClient interface {
 	BatchPurchaseShips(ctx context.Context, in *BatchPurchaseShipsRequest, opts ...grpc.CallOption) (*BatchPurchaseShipsResponse, error)
 	// GetShipyardListings retrieves available ships at a shipyard
 	GetShipyardListings(ctx context.Context, in *GetShipyardListingsRequest, opts ...grpc.CallOption) (*GetShipyardListingsResponse, error)
+	// MiningOperation starts a mining operation with Transport-as-Sink pattern
+	MiningOperation(ctx context.Context, in *MiningOperationRequest, opts ...grpc.CallOption) (*MiningOperationResponse, error)
+	// TourSell executes optimized cargo selling tour for a ship
+	TourSell(ctx context.Context, in *TourSellRequest, opts ...grpc.CallOption) (*TourSellResponse, error)
 }
 
 type daemonServiceClient struct {
@@ -285,6 +291,26 @@ func (c *daemonServiceClient) GetShipyardListings(ctx context.Context, in *GetSh
 	return out, nil
 }
 
+func (c *daemonServiceClient) MiningOperation(ctx context.Context, in *MiningOperationRequest, opts ...grpc.CallOption) (*MiningOperationResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(MiningOperationResponse)
+	err := c.cc.Invoke(ctx, DaemonService_MiningOperation_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) TourSell(ctx context.Context, in *TourSellRequest, opts ...grpc.CallOption) (*TourSellResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TourSellResponse)
+	err := c.cc.Invoke(ctx, DaemonService_TourSell_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // DaemonServiceServer is the server API for DaemonService service.
 // All implementations must embed UnimplementedDaemonServiceServer
 // for forward compatibility.
@@ -330,6 +356,10 @@ type DaemonServiceServer interface {
 	BatchPurchaseShips(context.Context, *BatchPurchaseShipsRequest) (*BatchPurchaseShipsResponse, error)
 	// GetShipyardListings retrieves available ships at a shipyard
 	GetShipyardListings(context.Context, *GetShipyardListingsRequest) (*GetShipyardListingsResponse, error)
+	// MiningOperation starts a mining operation with Transport-as-Sink pattern
+	MiningOperation(context.Context, *MiningOperationRequest) (*MiningOperationResponse, error)
+	// TourSell executes optimized cargo selling tour for a ship
+	TourSell(context.Context, *TourSellRequest) (*TourSellResponse, error)
 	mustEmbedUnimplementedDaemonServiceServer()
 }
 
@@ -396,6 +426,12 @@ func (UnimplementedDaemonServiceServer) BatchPurchaseShips(context.Context, *Bat
 }
 func (UnimplementedDaemonServiceServer) GetShipyardListings(context.Context, *GetShipyardListingsRequest) (*GetShipyardListingsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetShipyardListings not implemented")
+}
+func (UnimplementedDaemonServiceServer) MiningOperation(context.Context, *MiningOperationRequest) (*MiningOperationResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method MiningOperation not implemented")
+}
+func (UnimplementedDaemonServiceServer) TourSell(context.Context, *TourSellRequest) (*TourSellResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method TourSell not implemented")
 }
 func (UnimplementedDaemonServiceServer) mustEmbedUnimplementedDaemonServiceServer() {}
 func (UnimplementedDaemonServiceServer) testEmbeddedByValue()                       {}
@@ -760,6 +796,42 @@ func _DaemonService_GetShipyardListings_Handler(srv interface{}, ctx context.Con
 	return interceptor(ctx, in, info, handler)
 }
 
+func _DaemonService_MiningOperation_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(MiningOperationRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).MiningOperation(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_MiningOperation_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).MiningOperation(ctx, req.(*MiningOperationRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_TourSell_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TourSellRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).TourSell(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_TourSell_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).TourSell(ctx, req.(*TourSellRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // DaemonService_ServiceDesc is the grpc.ServiceDesc for DaemonService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -842,6 +914,14 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetShipyardListings",
 			Handler:    _DaemonService_GetShipyardListings_Handler,
+		},
+		{
+			MethodName: "MiningOperation",
+			Handler:    _DaemonService_MiningOperation_Handler,
+		},
+		{
+			MethodName: "TourSell",
+			Handler:    _DaemonService_TourSell_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

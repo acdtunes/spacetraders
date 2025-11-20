@@ -87,6 +87,35 @@ func (m *MockRoutingClient) OptimizeTour(ctx context.Context, request *routing.T
 	return nil, fmt.Errorf("OptimizeTour not implemented in mock")
 }
 
+// OptimizeFueledTour implements fueled tour optimization
+func (m *MockRoutingClient) OptimizeFueledTour(ctx context.Context, request *routing.FueledTourRequest) (*routing.FueledTourResponse, error) {
+	// Simple implementation: return waypoints in order with basic legs
+	legs := make([]*routing.TourLegData, len(request.TargetWaypoints))
+
+	prevWaypoint := request.StartWaypoint
+	for i, wp := range request.TargetWaypoints {
+		legs[i] = &routing.TourLegData{
+			FromWaypoint: prevWaypoint,
+			ToWaypoint:   wp,
+			FlightMode:   "CRUISE",
+			FuelCost:     10,
+			TimeSeconds:  100,
+			Distance:     10.0,
+			RefuelBefore: false,
+		}
+		prevWaypoint = wp
+	}
+
+	return &routing.FueledTourResponse{
+		VisitOrder:       request.TargetWaypoints,
+		Legs:             legs,
+		TotalTimeSeconds: len(request.TargetWaypoints) * 100,
+		TotalFuelCost:    len(request.TargetWaypoints) * 10,
+		TotalDistance:    float64(len(request.TargetWaypoints)) * 10.0,
+		RefuelStops:      0,
+	}, nil
+}
+
 // PartitionFleet implements VRP fleet partitioning
 func (m *MockRoutingClient) PartitionFleet(ctx context.Context, request *routing.VRPRequest) (*routing.VRPResponse, error) {
 	m.mu.RLock()

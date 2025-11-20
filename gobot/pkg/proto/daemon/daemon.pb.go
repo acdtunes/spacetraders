@@ -2268,6 +2268,7 @@ type ShipDetail struct {
 	CargoCapacity  int32                  `protobuf:"varint,7,opt,name=cargo_capacity,json=cargoCapacity,proto3" json:"cargo_capacity,omitempty"`
 	CargoInventory []*CargoItem           `protobuf:"bytes,8,rep,name=cargo_inventory,json=cargoInventory,proto3" json:"cargo_inventory,omitempty"`
 	EngineSpeed    int32                  `protobuf:"varint,9,opt,name=engine_speed,json=engineSpeed,proto3" json:"engine_speed,omitempty"`
+	Role           string                 `protobuf:"bytes,10,opt,name=role,proto3" json:"role,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -2363,6 +2364,13 @@ func (x *ShipDetail) GetEngineSpeed() int32 {
 		return x.EngineSpeed
 	}
 	return 0
+}
+
+func (x *ShipDetail) GetRole() string {
+	if x != nil {
+		return x.Role
+	}
+	return ""
 }
 
 // PurchaseShipRequest requests purchase of a single ship
@@ -2952,6 +2960,575 @@ func (x *CargoItem) GetUnits() int32 {
 	return 0
 }
 
+// MiningOperationRequest starts a mining operation with miners and transports
+type MiningOperationRequest struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	AsteroidField  *string                `protobuf:"bytes,1,opt,name=asteroid_field,json=asteroidField,proto3,oneof" json:"asteroid_field,omitempty"` // Optional: specific waypoint, or auto-select based on mining_type
+	MinerShips     []string               `protobuf:"bytes,2,rep,name=miner_ships,json=minerShips,proto3" json:"miner_ships,omitempty"`                // Ships for mining
+	TransportShips []string               `protobuf:"bytes,3,rep,name=transport_ships,json=transportShips,proto3" json:"transport_ships,omitempty"`    // Ships for transport
+	TopNOres       int32                  `protobuf:"varint,4,opt,name=top_n_ores,json=topNOres,proto3" json:"top_n_ores,omitempty"`                   // Number of ore types to keep (default: 3)
+	PlayerId       int32                  `protobuf:"varint,5,opt,name=player_id,json=playerId,proto3" json:"player_id,omitempty"`
+	AgentSymbol    *string                `protobuf:"bytes,6,opt,name=agent_symbol,json=agentSymbol,proto3,oneof" json:"agent_symbol,omitempty"`
+	MiningType     *string                `protobuf:"bytes,7,opt,name=mining_type,json=miningType,proto3,oneof" json:"mining_type,omitempty"` // Type: common_metals, precious_metals, rare_metals, minerals, ice, gas
+	Force          bool                   `protobuf:"varint,8,opt,name=force,proto3" json:"force,omitempty"`                                  // Override fuel validation warnings
+	DryRun         bool                   `protobuf:"varint,9,opt,name=dry_run,json=dryRun,proto3" json:"dry_run,omitempty"`                  // If true, only select asteroid without starting operation
+	MaxLegTime     int32                  `protobuf:"varint,10,opt,name=max_leg_time,json=maxLegTime,proto3" json:"max_leg_time,omitempty"`   // Max time per leg in minutes (0 = no limit)
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *MiningOperationRequest) Reset() {
+	*x = MiningOperationRequest{}
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[45]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MiningOperationRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MiningOperationRequest) ProtoMessage() {}
+
+func (x *MiningOperationRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[45]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MiningOperationRequest.ProtoReflect.Descriptor instead.
+func (*MiningOperationRequest) Descriptor() ([]byte, []int) {
+	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{45}
+}
+
+func (x *MiningOperationRequest) GetAsteroidField() string {
+	if x != nil && x.AsteroidField != nil {
+		return *x.AsteroidField
+	}
+	return ""
+}
+
+func (x *MiningOperationRequest) GetMinerShips() []string {
+	if x != nil {
+		return x.MinerShips
+	}
+	return nil
+}
+
+func (x *MiningOperationRequest) GetTransportShips() []string {
+	if x != nil {
+		return x.TransportShips
+	}
+	return nil
+}
+
+func (x *MiningOperationRequest) GetTopNOres() int32 {
+	if x != nil {
+		return x.TopNOres
+	}
+	return 0
+}
+
+func (x *MiningOperationRequest) GetPlayerId() int32 {
+	if x != nil {
+		return x.PlayerId
+	}
+	return 0
+}
+
+func (x *MiningOperationRequest) GetAgentSymbol() string {
+	if x != nil && x.AgentSymbol != nil {
+		return *x.AgentSymbol
+	}
+	return ""
+}
+
+func (x *MiningOperationRequest) GetMiningType() string {
+	if x != nil && x.MiningType != nil {
+		return *x.MiningType
+	}
+	return ""
+}
+
+func (x *MiningOperationRequest) GetForce() bool {
+	if x != nil {
+		return x.Force
+	}
+	return false
+}
+
+func (x *MiningOperationRequest) GetDryRun() bool {
+	if x != nil {
+		return x.DryRun
+	}
+	return false
+}
+
+func (x *MiningOperationRequest) GetMaxLegTime() int32 {
+	if x != nil {
+		return x.MaxLegTime
+	}
+	return 0
+}
+
+type MiningOperationResponse struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	ContainerId    string                 `protobuf:"bytes,1,opt,name=container_id,json=containerId,proto3" json:"container_id,omitempty"`
+	AsteroidField  string                 `protobuf:"bytes,2,opt,name=asteroid_field,json=asteroidField,proto3" json:"asteroid_field,omitempty"`
+	MinerShips     []string               `protobuf:"bytes,3,rep,name=miner_ships,json=minerShips,proto3" json:"miner_ships,omitempty"`
+	TransportShips []string               `protobuf:"bytes,4,rep,name=transport_ships,json=transportShips,proto3" json:"transport_ships,omitempty"`
+	Status         string                 `protobuf:"bytes,5,opt,name=status,proto3" json:"status,omitempty"`
+	// Dry-run results
+	MarketSymbol  string       `protobuf:"bytes,6,opt,name=market_symbol,json=marketSymbol,proto3" json:"market_symbol,omitempty"` // Market for transport loop
+	ShipRoutes    []*ShipRoute `protobuf:"bytes,7,rep,name=ship_routes,json=shipRoutes,proto3" json:"ship_routes,omitempty"`       // Planned routes for all ships
+	Errors        []string     `protobuf:"bytes,8,rep,name=errors,proto3" json:"errors,omitempty"`                                 // Any errors during route planning
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *MiningOperationResponse) Reset() {
+	*x = MiningOperationResponse{}
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[46]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MiningOperationResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MiningOperationResponse) ProtoMessage() {}
+
+func (x *MiningOperationResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[46]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MiningOperationResponse.ProtoReflect.Descriptor instead.
+func (*MiningOperationResponse) Descriptor() ([]byte, []int) {
+	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{46}
+}
+
+func (x *MiningOperationResponse) GetContainerId() string {
+	if x != nil {
+		return x.ContainerId
+	}
+	return ""
+}
+
+func (x *MiningOperationResponse) GetAsteroidField() string {
+	if x != nil {
+		return x.AsteroidField
+	}
+	return ""
+}
+
+func (x *MiningOperationResponse) GetMinerShips() []string {
+	if x != nil {
+		return x.MinerShips
+	}
+	return nil
+}
+
+func (x *MiningOperationResponse) GetTransportShips() []string {
+	if x != nil {
+		return x.TransportShips
+	}
+	return nil
+}
+
+func (x *MiningOperationResponse) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *MiningOperationResponse) GetMarketSymbol() string {
+	if x != nil {
+		return x.MarketSymbol
+	}
+	return ""
+}
+
+func (x *MiningOperationResponse) GetShipRoutes() []*ShipRoute {
+	if x != nil {
+		return x.ShipRoutes
+	}
+	return nil
+}
+
+func (x *MiningOperationResponse) GetErrors() []string {
+	if x != nil {
+		return x.Errors
+	}
+	return nil
+}
+
+// RouteSegment represents a single leg of a planned route
+type RouteSegment struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	From          string                 `protobuf:"bytes,1,opt,name=from,proto3" json:"from,omitempty"`
+	To            string                 `protobuf:"bytes,2,opt,name=to,proto3" json:"to,omitempty"`
+	FlightMode    string                 `protobuf:"bytes,3,opt,name=flight_mode,json=flightMode,proto3" json:"flight_mode,omitempty"` // CRUISE, DRIFT, BURN, STEALTH
+	FuelCost      int32                  `protobuf:"varint,4,opt,name=fuel_cost,json=fuelCost,proto3" json:"fuel_cost,omitempty"`
+	TravelTime    int32                  `protobuf:"varint,5,opt,name=travel_time,json=travelTime,proto3" json:"travel_time,omitempty"` // seconds
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RouteSegment) Reset() {
+	*x = RouteSegment{}
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[47]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RouteSegment) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RouteSegment) ProtoMessage() {}
+
+func (x *RouteSegment) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[47]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RouteSegment.ProtoReflect.Descriptor instead.
+func (*RouteSegment) Descriptor() ([]byte, []int) {
+	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{47}
+}
+
+func (x *RouteSegment) GetFrom() string {
+	if x != nil {
+		return x.From
+	}
+	return ""
+}
+
+func (x *RouteSegment) GetTo() string {
+	if x != nil {
+		return x.To
+	}
+	return ""
+}
+
+func (x *RouteSegment) GetFlightMode() string {
+	if x != nil {
+		return x.FlightMode
+	}
+	return ""
+}
+
+func (x *RouteSegment) GetFuelCost() int32 {
+	if x != nil {
+		return x.FuelCost
+	}
+	return 0
+}
+
+func (x *RouteSegment) GetTravelTime() int32 {
+	if x != nil {
+		return x.TravelTime
+	}
+	return 0
+}
+
+// ShipRoute contains a ship's planned route
+type ShipRoute struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ShipSymbol    string                 `protobuf:"bytes,1,opt,name=ship_symbol,json=shipSymbol,proto3" json:"ship_symbol,omitempty"`
+	ShipType      string                 `protobuf:"bytes,2,opt,name=ship_type,json=shipType,proto3" json:"ship_type,omitempty"` // "miner" or "transport"
+	Segments      []*RouteSegment        `protobuf:"bytes,3,rep,name=segments,proto3" json:"segments,omitempty"`
+	TotalFuel     int32                  `protobuf:"varint,4,opt,name=total_fuel,json=totalFuel,proto3" json:"total_fuel,omitempty"`
+	TotalTime     int32                  `protobuf:"varint,5,opt,name=total_time,json=totalTime,proto3" json:"total_time,omitempty"` // seconds
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ShipRoute) Reset() {
+	*x = ShipRoute{}
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[48]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ShipRoute) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ShipRoute) ProtoMessage() {}
+
+func (x *ShipRoute) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[48]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ShipRoute.ProtoReflect.Descriptor instead.
+func (*ShipRoute) Descriptor() ([]byte, []int) {
+	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{48}
+}
+
+func (x *ShipRoute) GetShipSymbol() string {
+	if x != nil {
+		return x.ShipSymbol
+	}
+	return ""
+}
+
+func (x *ShipRoute) GetShipType() string {
+	if x != nil {
+		return x.ShipType
+	}
+	return ""
+}
+
+func (x *ShipRoute) GetSegments() []*RouteSegment {
+	if x != nil {
+		return x.Segments
+	}
+	return nil
+}
+
+func (x *ShipRoute) GetTotalFuel() int32 {
+	if x != nil {
+		return x.TotalFuel
+	}
+	return 0
+}
+
+func (x *ShipRoute) GetTotalTime() int32 {
+	if x != nil {
+		return x.TotalTime
+	}
+	return 0
+}
+
+// TourSellRequest executes optimized cargo selling tour
+type TourSellRequest struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	ShipSymbol     string                 `protobuf:"bytes,1,opt,name=ship_symbol,json=shipSymbol,proto3" json:"ship_symbol,omitempty"`
+	PlayerId       int32                  `protobuf:"varint,2,opt,name=player_id,json=playerId,proto3" json:"player_id,omitempty"`
+	AgentSymbol    *string                `protobuf:"bytes,3,opt,name=agent_symbol,json=agentSymbol,proto3,oneof" json:"agent_symbol,omitempty"`
+	ReturnWaypoint *string                `protobuf:"bytes,4,opt,name=return_waypoint,json=returnWaypoint,proto3,oneof" json:"return_waypoint,omitempty"` // Optional waypoint to return to after selling
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *TourSellRequest) Reset() {
+	*x = TourSellRequest{}
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[49]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TourSellRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TourSellRequest) ProtoMessage() {}
+
+func (x *TourSellRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[49]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TourSellRequest.ProtoReflect.Descriptor instead.
+func (*TourSellRequest) Descriptor() ([]byte, []int) {
+	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{49}
+}
+
+func (x *TourSellRequest) GetShipSymbol() string {
+	if x != nil {
+		return x.ShipSymbol
+	}
+	return ""
+}
+
+func (x *TourSellRequest) GetPlayerId() int32 {
+	if x != nil {
+		return x.PlayerId
+	}
+	return 0
+}
+
+func (x *TourSellRequest) GetAgentSymbol() string {
+	if x != nil && x.AgentSymbol != nil {
+		return *x.AgentSymbol
+	}
+	return ""
+}
+
+func (x *TourSellRequest) GetReturnWaypoint() string {
+	if x != nil && x.ReturnWaypoint != nil {
+		return *x.ReturnWaypoint
+	}
+	return ""
+}
+
+type TourSellResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ContainerId   string                 `protobuf:"bytes,1,opt,name=container_id,json=containerId,proto3" json:"container_id,omitempty"`
+	ShipSymbol    string                 `protobuf:"bytes,2,opt,name=ship_symbol,json=shipSymbol,proto3" json:"ship_symbol,omitempty"`
+	Status        string                 `protobuf:"bytes,3,opt,name=status,proto3" json:"status,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TourSellResponse) Reset() {
+	*x = TourSellResponse{}
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[50]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TourSellResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TourSellResponse) ProtoMessage() {}
+
+func (x *TourSellResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[50]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TourSellResponse.ProtoReflect.Descriptor instead.
+func (*TourSellResponse) Descriptor() ([]byte, []int) {
+	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{50}
+}
+
+func (x *TourSellResponse) GetContainerId() string {
+	if x != nil {
+		return x.ContainerId
+	}
+	return ""
+}
+
+func (x *TourSellResponse) GetShipSymbol() string {
+	if x != nil {
+		return x.ShipSymbol
+	}
+	return ""
+}
+
+func (x *TourSellResponse) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+type SoldItem struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Symbol        string                 `protobuf:"bytes,1,opt,name=symbol,proto3" json:"symbol,omitempty"`
+	Units         int32                  `protobuf:"varint,2,opt,name=units,proto3" json:"units,omitempty"`
+	Revenue       int32                  `protobuf:"varint,3,opt,name=revenue,proto3" json:"revenue,omitempty"`
+	Market        string                 `protobuf:"bytes,4,opt,name=market,proto3" json:"market,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SoldItem) Reset() {
+	*x = SoldItem{}
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[51]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SoldItem) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SoldItem) ProtoMessage() {}
+
+func (x *SoldItem) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[51]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SoldItem.ProtoReflect.Descriptor instead.
+func (*SoldItem) Descriptor() ([]byte, []int) {
+	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{51}
+}
+
+func (x *SoldItem) GetSymbol() string {
+	if x != nil {
+		return x.Symbol
+	}
+	return ""
+}
+
+func (x *SoldItem) GetUnits() int32 {
+	if x != nil {
+		return x.Units
+	}
+	return 0
+}
+
+func (x *SoldItem) GetRevenue() int32 {
+	if x != nil {
+		return x.Revenue
+	}
+	return 0
+}
+
+func (x *SoldItem) GetMarket() string {
+	if x != nil {
+		return x.Market
+	}
+	return ""
+}
+
 var File_pkg_proto_daemon_daemon_proto protoreflect.FileDescriptor
 
 const file_pkg_proto_daemon_daemon_proto_rawDesc = "" +
@@ -3159,7 +3736,7 @@ const file_pkg_proto_daemon_daemon_proto_rawDesc = "" +
 	"_player_idB\x0f\n" +
 	"\r_agent_symbol\"9\n" +
 	"\x0fGetShipResponse\x12&\n" +
-	"\x04ship\x18\x01 \x01(\v2\x12.daemon.ShipDetailR\x04ship\"\xce\x02\n" +
+	"\x04ship\x18\x01 \x01(\v2\x12.daemon.ShipDetailR\x04ship\"\xe2\x02\n" +
 	"\n" +
 	"ShipDetail\x12\x16\n" +
 	"\x06symbol\x18\x01 \x01(\tR\x06symbol\x12\x1a\n" +
@@ -3172,7 +3749,9 @@ const file_pkg_proto_daemon_daemon_proto_rawDesc = "" +
 	"cargoUnits\x12%\n" +
 	"\x0ecargo_capacity\x18\a \x01(\x05R\rcargoCapacity\x12:\n" +
 	"\x0fcargo_inventory\x18\b \x03(\v2\x11.daemon.CargoItemR\x0ecargoInventory\x12!\n" +
-	"\fengine_speed\x18\t \x01(\x05R\vengineSpeed\"\x86\x02\n" +
+	"\fengine_speed\x18\t \x01(\x05R\vengineSpeed\x12\x12\n" +
+	"\x04role\x18\n" +
+	" \x01(\tR\x04role\"\x86\x02\n" +
 	"\x13PurchaseShipRequest\x124\n" +
 	"\x16purchasing_ship_symbol\x18\x01 \x01(\tR\x14purchasingShipSymbol\x12\x1b\n" +
 	"\tship_type\x18\x02 \x01(\tR\bshipType\x12\x1b\n" +
@@ -3227,7 +3806,72 @@ const file_pkg_proto_daemon_daemon_proto_rawDesc = "" +
 	"\tCargoItem\x12\x16\n" +
 	"\x06symbol\x18\x01 \x01(\tR\x06symbol\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x14\n" +
-	"\x05units\x18\x03 \x01(\x05R\x05units2\xf1\v\n" +
+	"\x05units\x18\x03 \x01(\x05R\x05units\"\x9c\x03\n" +
+	"\x16MiningOperationRequest\x12*\n" +
+	"\x0easteroid_field\x18\x01 \x01(\tH\x00R\rasteroidField\x88\x01\x01\x12\x1f\n" +
+	"\vminer_ships\x18\x02 \x03(\tR\n" +
+	"minerShips\x12'\n" +
+	"\x0ftransport_ships\x18\x03 \x03(\tR\x0etransportShips\x12\x1c\n" +
+	"\n" +
+	"top_n_ores\x18\x04 \x01(\x05R\btopNOres\x12\x1b\n" +
+	"\tplayer_id\x18\x05 \x01(\x05R\bplayerId\x12&\n" +
+	"\fagent_symbol\x18\x06 \x01(\tH\x01R\vagentSymbol\x88\x01\x01\x12$\n" +
+	"\vmining_type\x18\a \x01(\tH\x02R\n" +
+	"miningType\x88\x01\x01\x12\x14\n" +
+	"\x05force\x18\b \x01(\bR\x05force\x12\x17\n" +
+	"\adry_run\x18\t \x01(\bR\x06dryRun\x12 \n" +
+	"\fmax_leg_time\x18\n" +
+	" \x01(\x05R\n" +
+	"maxLegTimeB\x11\n" +
+	"\x0f_asteroid_fieldB\x0f\n" +
+	"\r_agent_symbolB\x0e\n" +
+	"\f_mining_type\"\xb6\x02\n" +
+	"\x17MiningOperationResponse\x12!\n" +
+	"\fcontainer_id\x18\x01 \x01(\tR\vcontainerId\x12%\n" +
+	"\x0easteroid_field\x18\x02 \x01(\tR\rasteroidField\x12\x1f\n" +
+	"\vminer_ships\x18\x03 \x03(\tR\n" +
+	"minerShips\x12'\n" +
+	"\x0ftransport_ships\x18\x04 \x03(\tR\x0etransportShips\x12\x16\n" +
+	"\x06status\x18\x05 \x01(\tR\x06status\x12#\n" +
+	"\rmarket_symbol\x18\x06 \x01(\tR\fmarketSymbol\x122\n" +
+	"\vship_routes\x18\a \x03(\v2\x11.daemon.ShipRouteR\n" +
+	"shipRoutes\x12\x16\n" +
+	"\x06errors\x18\b \x03(\tR\x06errors\"\x91\x01\n" +
+	"\fRouteSegment\x12\x12\n" +
+	"\x04from\x18\x01 \x01(\tR\x04from\x12\x0e\n" +
+	"\x02to\x18\x02 \x01(\tR\x02to\x12\x1f\n" +
+	"\vflight_mode\x18\x03 \x01(\tR\n" +
+	"flightMode\x12\x1b\n" +
+	"\tfuel_cost\x18\x04 \x01(\x05R\bfuelCost\x12\x1f\n" +
+	"\vtravel_time\x18\x05 \x01(\x05R\n" +
+	"travelTime\"\xb9\x01\n" +
+	"\tShipRoute\x12\x1f\n" +
+	"\vship_symbol\x18\x01 \x01(\tR\n" +
+	"shipSymbol\x12\x1b\n" +
+	"\tship_type\x18\x02 \x01(\tR\bshipType\x120\n" +
+	"\bsegments\x18\x03 \x03(\v2\x14.daemon.RouteSegmentR\bsegments\x12\x1d\n" +
+	"\n" +
+	"total_fuel\x18\x04 \x01(\x05R\ttotalFuel\x12\x1d\n" +
+	"\n" +
+	"total_time\x18\x05 \x01(\x05R\ttotalTime\"\xca\x01\n" +
+	"\x0fTourSellRequest\x12\x1f\n" +
+	"\vship_symbol\x18\x01 \x01(\tR\n" +
+	"shipSymbol\x12\x1b\n" +
+	"\tplayer_id\x18\x02 \x01(\x05R\bplayerId\x12&\n" +
+	"\fagent_symbol\x18\x03 \x01(\tH\x00R\vagentSymbol\x88\x01\x01\x12,\n" +
+	"\x0freturn_waypoint\x18\x04 \x01(\tH\x01R\x0ereturnWaypoint\x88\x01\x01B\x0f\n" +
+	"\r_agent_symbolB\x12\n" +
+	"\x10_return_waypoint\"n\n" +
+	"\x10TourSellResponse\x12!\n" +
+	"\fcontainer_id\x18\x01 \x01(\tR\vcontainerId\x12\x1f\n" +
+	"\vship_symbol\x18\x02 \x01(\tR\n" +
+	"shipSymbol\x12\x16\n" +
+	"\x06status\x18\x03 \x01(\tR\x06status\"j\n" +
+	"\bSoldItem\x12\x16\n" +
+	"\x06symbol\x18\x01 \x01(\tR\x06symbol\x12\x14\n" +
+	"\x05units\x18\x02 \x01(\x05R\x05units\x12\x18\n" +
+	"\arevenue\x18\x03 \x01(\x05R\arevenue\x12\x16\n" +
+	"\x06market\x18\x04 \x01(\tR\x06market2\x84\r\n" +
 	"\rDaemonService\x12I\n" +
 	"\fNavigateShip\x12\x1b.daemon.NavigateShipRequest\x1a\x1c.daemon.NavigateShipResponse\x12=\n" +
 	"\bDockShip\x12\x17.daemon.DockShipRequest\x1a\x18.daemon.DockShipResponse\x12@\n" +
@@ -3248,7 +3892,9 @@ const file_pkg_proto_daemon_daemon_proto_rawDesc = "" +
 	"\aGetShip\x12\x16.daemon.GetShipRequest\x1a\x17.daemon.GetShipResponse\x12I\n" +
 	"\fPurchaseShip\x12\x1b.daemon.PurchaseShipRequest\x1a\x1c.daemon.PurchaseShipResponse\x12[\n" +
 	"\x12BatchPurchaseShips\x12!.daemon.BatchPurchaseShipsRequest\x1a\".daemon.BatchPurchaseShipsResponse\x12^\n" +
-	"\x13GetShipyardListings\x12\".daemon.GetShipyardListingsRequest\x1a#.daemon.GetShipyardListingsResponseB;Z9github.com/andrescamacho/spacetraders-go/pkg/proto/daemonb\x06proto3"
+	"\x13GetShipyardListings\x12\".daemon.GetShipyardListingsRequest\x1a#.daemon.GetShipyardListingsResponse\x12R\n" +
+	"\x0fMiningOperation\x12\x1e.daemon.MiningOperationRequest\x1a\x1f.daemon.MiningOperationResponse\x12=\n" +
+	"\bTourSell\x12\x17.daemon.TourSellRequest\x1a\x18.daemon.TourSellResponseB;Z9github.com/andrescamacho/spacetraders-go/pkg/proto/daemonb\x06proto3"
 
 var (
 	file_pkg_proto_daemon_daemon_proto_rawDescOnce sync.Once
@@ -3262,7 +3908,7 @@ func file_pkg_proto_daemon_daemon_proto_rawDescGZIP() []byte {
 	return file_pkg_proto_daemon_daemon_proto_rawDescData
 }
 
-var file_pkg_proto_daemon_daemon_proto_msgTypes = make([]protoimpl.MessageInfo, 46)
+var file_pkg_proto_daemon_daemon_proto_msgTypes = make([]protoimpl.MessageInfo, 53)
 var file_pkg_proto_daemon_daemon_proto_goTypes = []any{
 	(*NavigateShipRequest)(nil),              // 0: daemon.NavigateShipRequest
 	(*NavigateShipResponse)(nil),             // 1: daemon.NavigateShipResponse
@@ -3309,10 +3955,17 @@ var file_pkg_proto_daemon_daemon_proto_goTypes = []any{
 	(*GetShipyardListingsResponse)(nil),      // 42: daemon.GetShipyardListingsResponse
 	(*ShipListing)(nil),                      // 43: daemon.ShipListing
 	(*CargoItem)(nil),                        // 44: daemon.CargoItem
-	nil,                                      // 45: daemon.ScoutMarketsResponse.AssignmentsEntry
+	(*MiningOperationRequest)(nil),           // 45: daemon.MiningOperationRequest
+	(*MiningOperationResponse)(nil),          // 46: daemon.MiningOperationResponse
+	(*RouteSegment)(nil),                     // 47: daemon.RouteSegment
+	(*ShipRoute)(nil),                        // 48: daemon.ShipRoute
+	(*TourSellRequest)(nil),                  // 49: daemon.TourSellRequest
+	(*TourSellResponse)(nil),                 // 50: daemon.TourSellResponse
+	(*SoldItem)(nil),                         // 51: daemon.SoldItem
+	nil,                                      // 52: daemon.ScoutMarketsResponse.AssignmentsEntry
 }
 var file_pkg_proto_daemon_daemon_proto_depIdxs = []int32{
-	45, // 0: daemon.ScoutMarketsResponse.assignments:type_name -> daemon.ScoutMarketsResponse.AssignmentsEntry
+	52, // 0: daemon.ScoutMarketsResponse.assignments:type_name -> daemon.ScoutMarketsResponse.AssignmentsEntry
 	21, // 1: daemon.ListContainersResponse.containers:type_name -> daemon.ContainerInfo
 	21, // 2: daemon.GetContainerResponse.container:type_name -> daemon.ContainerInfo
 	28, // 3: daemon.GetContainerLogsResponse.logs:type_name -> daemon.LogEntry
@@ -3320,50 +3973,56 @@ var file_pkg_proto_daemon_daemon_proto_depIdxs = []int32{
 	36, // 5: daemon.GetShipResponse.ship:type_name -> daemon.ShipDetail
 	44, // 6: daemon.ShipDetail.cargo_inventory:type_name -> daemon.CargoItem
 	43, // 7: daemon.GetShipyardListingsResponse.listings:type_name -> daemon.ShipListing
-	16, // 8: daemon.ScoutMarketsResponse.AssignmentsEntry.value:type_name -> daemon.MarketAssignment
-	0,  // 9: daemon.DaemonService.NavigateShip:input_type -> daemon.NavigateShipRequest
-	2,  // 10: daemon.DaemonService.DockShip:input_type -> daemon.DockShipRequest
-	4,  // 11: daemon.DaemonService.OrbitShip:input_type -> daemon.OrbitShipRequest
-	6,  // 12: daemon.DaemonService.RefuelShip:input_type -> daemon.RefuelShipRequest
-	8,  // 13: daemon.DaemonService.BatchContractWorkflow:input_type -> daemon.BatchContractWorkflowRequest
-	10, // 14: daemon.DaemonService.ContractFleetCoordinator:input_type -> daemon.ContractFleetCoordinatorRequest
-	12, // 15: daemon.DaemonService.ScoutTour:input_type -> daemon.ScoutTourRequest
-	14, // 16: daemon.DaemonService.ScoutMarkets:input_type -> daemon.ScoutMarketsRequest
-	17, // 17: daemon.DaemonService.AssignScoutingFleet:input_type -> daemon.AssignScoutingFleetRequest
-	19, // 18: daemon.DaemonService.ListContainers:input_type -> daemon.ListContainersRequest
-	22, // 19: daemon.DaemonService.GetContainer:input_type -> daemon.GetContainerRequest
-	24, // 20: daemon.DaemonService.StopContainer:input_type -> daemon.StopContainerRequest
-	26, // 21: daemon.DaemonService.GetContainerLogs:input_type -> daemon.GetContainerLogsRequest
-	29, // 22: daemon.DaemonService.HealthCheck:input_type -> daemon.HealthCheckRequest
-	31, // 23: daemon.DaemonService.ListShips:input_type -> daemon.ListShipsRequest
-	34, // 24: daemon.DaemonService.GetShip:input_type -> daemon.GetShipRequest
-	37, // 25: daemon.DaemonService.PurchaseShip:input_type -> daemon.PurchaseShipRequest
-	39, // 26: daemon.DaemonService.BatchPurchaseShips:input_type -> daemon.BatchPurchaseShipsRequest
-	41, // 27: daemon.DaemonService.GetShipyardListings:input_type -> daemon.GetShipyardListingsRequest
-	1,  // 28: daemon.DaemonService.NavigateShip:output_type -> daemon.NavigateShipResponse
-	3,  // 29: daemon.DaemonService.DockShip:output_type -> daemon.DockShipResponse
-	5,  // 30: daemon.DaemonService.OrbitShip:output_type -> daemon.OrbitShipResponse
-	7,  // 31: daemon.DaemonService.RefuelShip:output_type -> daemon.RefuelShipResponse
-	9,  // 32: daemon.DaemonService.BatchContractWorkflow:output_type -> daemon.BatchContractWorkflowResponse
-	11, // 33: daemon.DaemonService.ContractFleetCoordinator:output_type -> daemon.ContractFleetCoordinatorResponse
-	13, // 34: daemon.DaemonService.ScoutTour:output_type -> daemon.ScoutTourResponse
-	15, // 35: daemon.DaemonService.ScoutMarkets:output_type -> daemon.ScoutMarketsResponse
-	18, // 36: daemon.DaemonService.AssignScoutingFleet:output_type -> daemon.AssignScoutingFleetResponse
-	20, // 37: daemon.DaemonService.ListContainers:output_type -> daemon.ListContainersResponse
-	23, // 38: daemon.DaemonService.GetContainer:output_type -> daemon.GetContainerResponse
-	25, // 39: daemon.DaemonService.StopContainer:output_type -> daemon.StopContainerResponse
-	27, // 40: daemon.DaemonService.GetContainerLogs:output_type -> daemon.GetContainerLogsResponse
-	30, // 41: daemon.DaemonService.HealthCheck:output_type -> daemon.HealthCheckResponse
-	32, // 42: daemon.DaemonService.ListShips:output_type -> daemon.ListShipsResponse
-	35, // 43: daemon.DaemonService.GetShip:output_type -> daemon.GetShipResponse
-	38, // 44: daemon.DaemonService.PurchaseShip:output_type -> daemon.PurchaseShipResponse
-	40, // 45: daemon.DaemonService.BatchPurchaseShips:output_type -> daemon.BatchPurchaseShipsResponse
-	42, // 46: daemon.DaemonService.GetShipyardListings:output_type -> daemon.GetShipyardListingsResponse
-	28, // [28:47] is the sub-list for method output_type
-	9,  // [9:28] is the sub-list for method input_type
-	9,  // [9:9] is the sub-list for extension type_name
-	9,  // [9:9] is the sub-list for extension extendee
-	0,  // [0:9] is the sub-list for field type_name
+	48, // 8: daemon.MiningOperationResponse.ship_routes:type_name -> daemon.ShipRoute
+	47, // 9: daemon.ShipRoute.segments:type_name -> daemon.RouteSegment
+	16, // 10: daemon.ScoutMarketsResponse.AssignmentsEntry.value:type_name -> daemon.MarketAssignment
+	0,  // 11: daemon.DaemonService.NavigateShip:input_type -> daemon.NavigateShipRequest
+	2,  // 12: daemon.DaemonService.DockShip:input_type -> daemon.DockShipRequest
+	4,  // 13: daemon.DaemonService.OrbitShip:input_type -> daemon.OrbitShipRequest
+	6,  // 14: daemon.DaemonService.RefuelShip:input_type -> daemon.RefuelShipRequest
+	8,  // 15: daemon.DaemonService.BatchContractWorkflow:input_type -> daemon.BatchContractWorkflowRequest
+	10, // 16: daemon.DaemonService.ContractFleetCoordinator:input_type -> daemon.ContractFleetCoordinatorRequest
+	12, // 17: daemon.DaemonService.ScoutTour:input_type -> daemon.ScoutTourRequest
+	14, // 18: daemon.DaemonService.ScoutMarkets:input_type -> daemon.ScoutMarketsRequest
+	17, // 19: daemon.DaemonService.AssignScoutingFleet:input_type -> daemon.AssignScoutingFleetRequest
+	19, // 20: daemon.DaemonService.ListContainers:input_type -> daemon.ListContainersRequest
+	22, // 21: daemon.DaemonService.GetContainer:input_type -> daemon.GetContainerRequest
+	24, // 22: daemon.DaemonService.StopContainer:input_type -> daemon.StopContainerRequest
+	26, // 23: daemon.DaemonService.GetContainerLogs:input_type -> daemon.GetContainerLogsRequest
+	29, // 24: daemon.DaemonService.HealthCheck:input_type -> daemon.HealthCheckRequest
+	31, // 25: daemon.DaemonService.ListShips:input_type -> daemon.ListShipsRequest
+	34, // 26: daemon.DaemonService.GetShip:input_type -> daemon.GetShipRequest
+	37, // 27: daemon.DaemonService.PurchaseShip:input_type -> daemon.PurchaseShipRequest
+	39, // 28: daemon.DaemonService.BatchPurchaseShips:input_type -> daemon.BatchPurchaseShipsRequest
+	41, // 29: daemon.DaemonService.GetShipyardListings:input_type -> daemon.GetShipyardListingsRequest
+	45, // 30: daemon.DaemonService.MiningOperation:input_type -> daemon.MiningOperationRequest
+	49, // 31: daemon.DaemonService.TourSell:input_type -> daemon.TourSellRequest
+	1,  // 32: daemon.DaemonService.NavigateShip:output_type -> daemon.NavigateShipResponse
+	3,  // 33: daemon.DaemonService.DockShip:output_type -> daemon.DockShipResponse
+	5,  // 34: daemon.DaemonService.OrbitShip:output_type -> daemon.OrbitShipResponse
+	7,  // 35: daemon.DaemonService.RefuelShip:output_type -> daemon.RefuelShipResponse
+	9,  // 36: daemon.DaemonService.BatchContractWorkflow:output_type -> daemon.BatchContractWorkflowResponse
+	11, // 37: daemon.DaemonService.ContractFleetCoordinator:output_type -> daemon.ContractFleetCoordinatorResponse
+	13, // 38: daemon.DaemonService.ScoutTour:output_type -> daemon.ScoutTourResponse
+	15, // 39: daemon.DaemonService.ScoutMarkets:output_type -> daemon.ScoutMarketsResponse
+	18, // 40: daemon.DaemonService.AssignScoutingFleet:output_type -> daemon.AssignScoutingFleetResponse
+	20, // 41: daemon.DaemonService.ListContainers:output_type -> daemon.ListContainersResponse
+	23, // 42: daemon.DaemonService.GetContainer:output_type -> daemon.GetContainerResponse
+	25, // 43: daemon.DaemonService.StopContainer:output_type -> daemon.StopContainerResponse
+	27, // 44: daemon.DaemonService.GetContainerLogs:output_type -> daemon.GetContainerLogsResponse
+	30, // 45: daemon.DaemonService.HealthCheck:output_type -> daemon.HealthCheckResponse
+	32, // 46: daemon.DaemonService.ListShips:output_type -> daemon.ListShipsResponse
+	35, // 47: daemon.DaemonService.GetShip:output_type -> daemon.GetShipResponse
+	38, // 48: daemon.DaemonService.PurchaseShip:output_type -> daemon.PurchaseShipResponse
+	40, // 49: daemon.DaemonService.BatchPurchaseShips:output_type -> daemon.BatchPurchaseShipsResponse
+	42, // 50: daemon.DaemonService.GetShipyardListings:output_type -> daemon.GetShipyardListingsResponse
+	46, // 51: daemon.DaemonService.MiningOperation:output_type -> daemon.MiningOperationResponse
+	50, // 52: daemon.DaemonService.TourSell:output_type -> daemon.TourSellResponse
+	32, // [32:53] is the sub-list for method output_type
+	11, // [11:32] is the sub-list for method input_type
+	11, // [11:11] is the sub-list for extension type_name
+	11, // [11:11] is the sub-list for extension extendee
+	0,  // [0:11] is the sub-list for field type_name
 }
 
 func init() { file_pkg_proto_daemon_daemon_proto_init() }
@@ -3387,13 +4046,15 @@ func file_pkg_proto_daemon_daemon_proto_init() {
 	file_pkg_proto_daemon_daemon_proto_msgTypes[37].OneofWrappers = []any{}
 	file_pkg_proto_daemon_daemon_proto_msgTypes[39].OneofWrappers = []any{}
 	file_pkg_proto_daemon_daemon_proto_msgTypes[41].OneofWrappers = []any{}
+	file_pkg_proto_daemon_daemon_proto_msgTypes[45].OneofWrappers = []any{}
+	file_pkg_proto_daemon_daemon_proto_msgTypes[49].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pkg_proto_daemon_daemon_proto_rawDesc), len(file_pkg_proto_daemon_daemon_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   46,
+			NumMessages:   53,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -106,10 +106,18 @@ class ORToolsRoutingEngine:
         goal: str,
         current_fuel: int,
         fuel_capacity: int,
-        engine_speed: int
+        engine_speed: int,
+        fuel_efficient: bool = False,
+        prefer_cruise: bool = False
     ) -> Optional[Dict[str, Any]]:
         """
         Find optimal path using Dijkstra with fuel constraints.
+
+        Args:
+            fuel_efficient: When True, removes DRIFT penalty to allow DRIFT-assisted routes
+                           for fuel preservation (used by mining transports)
+            prefer_cruise: When True, prefer CRUISE over BURN for fuel efficiency
+                          (DRIFT penalty still applies unless fuel_efficient is True)
 
         Returns dict with:
         - steps: List of route steps (TRAVEL or REFUEL actions)
@@ -117,7 +125,7 @@ class ORToolsRoutingEngine:
         - total_time: Total time in seconds
         - total_distance: Total distance traveled
         """
-        logger.info(f"Finding path: {start} -> {goal}, fuel={current_fuel}/{fuel_capacity}")
+        logger.info(f"Finding path: {start} -> {goal}, fuel={current_fuel}/{fuel_capacity}, fuel_efficient={fuel_efficient}, prefer_cruise={prefer_cruise}")
 
         if start not in graph or goal not in graph:
             logger.error(f"Start or goal not in graph")
@@ -205,45 +213,28 @@ class ORToolsRoutingEngine:
                     continue
 
             # Option 1: Refuel at current waypoint (if has fuel)
-            must_refuel = False
-            should_refuel_90 = False
-
+            # Add refuel option to queue - Dijkstra will determine if it's optimal
             if current_wp.has_fuel and fuel_remaining < fuel_capacity:
-                # 90% rule - always refuel when below 90% capacity
-                fuel_threshold = int(fuel_capacity * 0.9)
-                should_refuel_90 = fuel_remaining < fuel_threshold
-
-                # Check if MUST refuel
-                if goal in graph:
-                    goal_wp = graph[goal]
-                    distance_to_goal = current_wp.distance_to(goal_wp)
-                    cruise_fuel_needed = self.calculate_fuel_cost(distance_to_goal, FlightMode.CRUISE)
-
-                    if fuel_remaining < cruise_fuel_needed:
-                        must_refuel = True
-
-                if should_refuel_90 or must_refuel:
-                    refuel_amount = fuel_capacity - fuel_remaining
-                    refuel_step = {
-                        'action': 'REFUEL',
-                        'waypoint': current,
-                        'fuel_cost': 0,
-                        'time': 0,
-                        'refuel_amount': refuel_amount
-                    }
-                    new_path = path + [refuel_step]
-                    heapq.heappush(pq, (
-                        total_time,
-                        counter,
-                        current,
-                        fuel_capacity,
-                        total_fuel_used,
-                        new_path
-                    ))
-                    counter += 1
-
-                    if must_refuel or should_refuel_90:
-                        continue
+                refuel_amount = fuel_capacity - fuel_remaining
+                refuel_step = {
+                    'action': 'REFUEL',
+                    'waypoint': current,
+                    'fuel_cost': 0,
+                    'time': 0,
+                    'refuel_amount': refuel_amount
+                }
+                new_path = path + [refuel_step]
+                heapq.heappush(pq, (
+                    total_time,
+                    counter,
+                    current,
+                    fuel_capacity,
+                    total_fuel_used,
+                    new_path
+                ))
+                counter += 1
+            # Don't force refuel - continue to explore all neighbor options
+            # Dijkstra will find the optimal path by comparing total travel times
 
             # Option 2: Travel to neighboring waypoints
             for neighbor_symbol, neighbor in graph.items():
@@ -260,57 +251,101 @@ class ORToolsRoutingEngine:
                     travel_time = self.ORBITAL_HOP_TIME
                     fuel_cost = 0
                     mode = FlightMode.CRUISE
-                else:
-                    # Select flight mode: NEVER use DRIFT
-                    SAFETY_MARGIN = 4
-                    is_goal = (neighbor_symbol == goal)
 
-                    burn_cost = self.calculate_fuel_cost(distance, FlightMode.BURN)
-                    cruise_cost = self.calculate_fuel_cost(distance, FlightMode.CRUISE)
+                    # Create travel step for orbital hop
+                    travel_step = {
+                        'action': 'TRAVEL',
+                        'waypoint': neighbor_symbol,
+                        'fuel_cost': fuel_cost,
+                        'time': travel_time,
+                        'mode': mode.mode_name,
+                        'distance': distance
+                    }
 
-                    if fuel_remaining >= burn_cost + SAFETY_MARGIN:
-                        mode = FlightMode.BURN
-                        fuel_cost = burn_cost
-                    elif fuel_remaining >= cruise_cost + SAFETY_MARGIN:
-                        mode = FlightMode.CRUISE
-                        fuel_cost = cruise_cost
-                    elif is_goal and fuel_remaining >= cruise_cost:
-                        # Allow exact fuel for final hop
-                        mode = FlightMode.CRUISE
-                        fuel_cost = cruise_cost
-                    else:
-                        # Insufficient fuel - skip this neighbor
-                        continue
+                    new_path = path + [travel_step]
+                    new_fuel = fuel_remaining - fuel_cost
+                    new_time = total_time + travel_time
+                    new_fuel_used = total_fuel_used + fuel_cost
 
-                    travel_time = self.calculate_travel_time(distance, mode, engine_speed)
-
-                if fuel_cost > fuel_remaining:
+                    heapq.heappush(pq, (
+                        new_time,
+                        counter,
+                        neighbor_symbol,
+                        new_fuel,
+                        new_fuel_used,
+                        new_path
+                    ))
+                    counter += 1
                     continue
 
-                # Create travel step
-                travel_step = {
-                    'action': 'TRAVEL',
-                    'waypoint': neighbor_symbol,
-                    'fuel_cost': fuel_cost,
-                    'time': travel_time,
-                    'mode': mode.mode_name,
-                    'distance': distance
-                }
+                # Explore viable flight modes for this neighbor
+                # NEVER use DRIFT except as last resort for final destination
+                SAFETY_MARGIN = 4
+                is_goal = (neighbor_symbol == goal)
 
-                new_path = path + [travel_step]
-                new_fuel = fuel_remaining - fuel_cost
-                new_time = total_time + travel_time
-                new_fuel_used = total_fuel_used + fuel_cost
+                burn_cost = self.calculate_fuel_cost(distance, FlightMode.BURN)
+                cruise_cost = self.calculate_fuel_cost(distance, FlightMode.CRUISE)
 
-                heapq.heappush(pq, (
-                    new_time,
-                    counter,
-                    neighbor_symbol,
-                    new_fuel,
-                    new_fuel_used,
-                    new_path
-                ))
-                counter += 1
+                # Build list of viable modes (mode, fuel_cost)
+                viable_modes = []
+
+                # Check BURN (skip if prefer_cruise is set)
+                if not prefer_cruise:
+                    if fuel_remaining >= burn_cost + SAFETY_MARGIN:
+                        viable_modes.append((FlightMode.BURN, burn_cost))
+                    elif is_goal and fuel_remaining >= burn_cost:
+                        viable_modes.append((FlightMode.BURN, burn_cost))
+
+                # Check CRUISE
+                if fuel_remaining >= cruise_cost + SAFETY_MARGIN:
+                    viable_modes.append((FlightMode.CRUISE, cruise_cost))
+                elif is_goal and fuel_remaining >= cruise_cost:
+                    viable_modes.append((FlightMode.CRUISE, cruise_cost))
+
+                # DRIFT: Only as absolute last resort with massive time penalty
+                # This ensures BURN/CRUISE paths are always preferred
+                if len(viable_modes) == 0:
+                    drift_cost = self.calculate_fuel_cost(distance, FlightMode.DRIFT)
+                    if fuel_remaining >= drift_cost:
+                        viable_modes.append((FlightMode.DRIFT, drift_cost))
+
+                # Skip if no viable modes
+                if not viable_modes:
+                    continue
+
+                # Add a path for each viable mode to let Dijkstra find optimal
+                for mode, fuel_cost in viable_modes:
+                    travel_time = self.calculate_travel_time(distance, mode, engine_speed)
+
+                    # Add massive penalty to DRIFT so it's only chosen as last resort
+                    # UNLESS fuel_efficient mode is enabled (for mining transports)
+                    if mode == FlightMode.DRIFT and not fuel_efficient:
+                        travel_time += 100000  # 100k second penalty
+
+                    # Create travel step
+                    travel_step = {
+                        'action': 'TRAVEL',
+                        'waypoint': neighbor_symbol,
+                        'fuel_cost': fuel_cost,
+                        'time': travel_time,
+                        'mode': mode.mode_name,
+                        'distance': distance
+                    }
+
+                    new_path = path + [travel_step]
+                    new_fuel = fuel_remaining - fuel_cost
+                    new_time = total_time + travel_time
+                    new_fuel_used = total_fuel_used + fuel_cost
+
+                    heapq.heappush(pq, (
+                        new_time,
+                        counter,
+                        neighbor_symbol,
+                        new_fuel,
+                        new_fuel_used,
+                        new_path
+                    ))
+                    counter += 1
 
         logger.error(f"No path found from {start} to {goal}")
         return None
@@ -514,6 +549,268 @@ class ORToolsRoutingEngine:
             'total_distance': total_distance,
             'total_fuel_cost': total_fuel_cost,
             'total_time': total_time
+        }
+
+    def optimize_fueled_tour(
+        self,
+        graph: Dict[str, Waypoint],
+        waypoints: List[str],
+        start: str,
+        return_waypoint: Optional[str],
+        current_fuel: int,
+        fuel_capacity: int,
+        engine_speed: int
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Optimize tour with global fuel constraints using time-based TSP.
+
+        This builds a cost matrix using actual fuel-constrained travel times,
+        then solves TSP to minimize total travel time while tracking fuel state.
+
+        Returns dict with:
+        - ordered_waypoints: Optimized visit order
+        - legs: List of TourLeg dicts with flight mode, refuel flags, etc.
+        - total_time: Total travel time
+        - total_fuel_cost: Total fuel consumed
+        - total_distance: Total distance
+        - refuel_stops: Number of refuel stops
+        """
+        logger.info(f"OptimizeFueledTour: start={start}, waypoints={waypoints}, return={return_waypoint}")
+
+        if start not in graph:
+            logger.error(f"Start waypoint {start} not in graph")
+            return None
+
+        # Build complete node list
+        nodes = [start] + waypoints
+        if return_waypoint and return_waypoint not in nodes:
+            nodes.append(return_waypoint)
+
+        for wp in nodes:
+            if wp not in graph:
+                logger.error(f"Waypoint {wp} not in graph")
+                return None
+
+        # Trivial case: no waypoints to visit
+        if len(waypoints) == 0:
+            return {
+                'ordered_waypoints': [start],
+                'legs': [],
+                'total_time': 0,
+                'total_fuel_cost': 0,
+                'total_distance': 0.0,
+                'refuel_stops': 0
+            }
+
+        # Build time-based cost matrix using Dijkstra pathfinding
+        # Each cost[i][j] = actual travel time from i to j with full fuel
+        n = len(nodes)
+        cost_matrix = [[0] * n for _ in range(n)]
+        path_cache = {}  # Cache pathfinding results: (from, to) -> path_result
+
+        logger.info(f"Building {n}x{n} fuel-aware cost matrix")
+
+        for i, from_symbol in enumerate(nodes):
+            for j, to_symbol in enumerate(nodes):
+                if i == j:
+                    continue
+
+                # Use Dijkstra to find optimal path with fuel constraints
+                # Assume full fuel at start of each leg (will refuel at markets)
+                path_result = self.find_optimal_path(
+                    graph, from_symbol, to_symbol,
+                    current_fuel=fuel_capacity,  # Assume full tank
+                    fuel_capacity=fuel_capacity,
+                    engine_speed=engine_speed
+                )
+
+                if path_result:
+                    cost_matrix[i][j] = path_result['total_time']
+                    path_cache[(from_symbol, to_symbol)] = path_result
+                else:
+                    # Unreachable - use large penalty
+                    cost_matrix[i][j] = 1_000_000
+                    logger.warning(f"No path found from {from_symbol} to {to_symbol}")
+
+        # Create OR-Tools TSP routing model
+        manager = pywrapcp.RoutingIndexManager(n, 1, 0)
+        routing = pywrapcp.RoutingModel(manager)
+
+        def time_callback(from_index: int, to_index: int) -> int:
+            from_node = manager.IndexToNode(from_index)
+            to_node = manager.IndexToNode(to_index)
+            return cost_matrix[from_node][to_node]
+
+        transit_callback_index = routing.RegisterTransitCallback(time_callback)
+        routing.SetArcCostEvaluatorOfAllVehicles(transit_callback_index)
+
+        # If return_waypoint is specified and different from start,
+        # we need to force the tour to end at return_waypoint
+        if return_waypoint and return_waypoint in nodes and return_waypoint != start:
+            return_idx = nodes.index(return_waypoint)
+            # Create a model where the end is at return_waypoint
+            # This is tricky with OR-Tools, so we'll handle it by including
+            # return_waypoint in the tour and just not requiring return to start
+            pass  # Standard TSP will work since we included return_waypoint in nodes
+
+        # Configure solver
+        search_parameters = pywrapcp.DefaultRoutingSearchParameters()
+        search_parameters.first_solution_strategy = (
+            routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
+        )
+        search_parameters.local_search_metaheuristic = (
+            routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
+        )
+        search_parameters.time_limit.seconds = self._tsp_timeout
+
+        # Solve
+        solution = routing.SolveWithParameters(search_parameters)
+
+        if not solution:
+            logger.error("TSP solver found no solution")
+            return None
+
+        # Extract ordered waypoints from solution
+        ordered_nodes = []
+        index = routing.Start(0)
+        while not routing.IsEnd(index):
+            node = manager.IndexToNode(index)
+            ordered_nodes.append(nodes[node])
+            index = solution.Value(routing.NextVar(index))
+
+        # If we have a return waypoint, append it if not already last
+        if return_waypoint and (not ordered_nodes or ordered_nodes[-1] != return_waypoint):
+            ordered_nodes.append(return_waypoint)
+
+        logger.info(f"TSP solution: {ordered_nodes}")
+
+        # Build legs with fuel tracking
+        legs = []
+        fuel_state = current_fuel  # Track actual fuel state
+        total_time = 0
+        total_fuel_cost = 0
+        total_distance = 0.0
+        refuel_stops = 0
+
+        for i in range(len(ordered_nodes) - 1):
+            from_wp = ordered_nodes[i]
+            to_wp = ordered_nodes[i + 1]
+
+            # For the first leg, always compute path with actual current fuel
+            # since cached paths assume full fuel which may not match reality
+            if i == 0:
+                logger.info(f"Computing first leg {from_wp} -> {to_wp} with actual fuel {fuel_state}")
+                path_result = self.find_optimal_path(
+                    graph, from_wp, to_wp,
+                    current_fuel=fuel_state,
+                    fuel_capacity=fuel_capacity,
+                    engine_speed=engine_speed
+                )
+                if not path_result:
+                    logger.error(f"No path found for first leg {from_wp} -> {to_wp}")
+                    return None
+            else:
+                # Get cached path result for subsequent legs
+                path_key = (from_wp, to_wp)
+                if path_key not in path_cache:
+                    # Compute path if not cached (shouldn't happen)
+                    path_result = self.find_optimal_path(
+                        graph, from_wp, to_wp,
+                        current_fuel=fuel_capacity,
+                        fuel_capacity=fuel_capacity,
+                        engine_speed=engine_speed
+                    )
+                    if not path_result:
+                        logger.error(f"No path found for leg {from_wp} -> {to_wp}")
+                        continue
+                else:
+                    path_result = path_cache[path_key]
+
+            # Determine if we need to refuel before this leg
+            refuel_before = False
+            refuel_amount = 0
+
+            # Check if we have enough fuel for this leg
+            leg_fuel_cost = path_result['total_fuel_cost']
+            if fuel_state < leg_fuel_cost:
+                # Need to refuel - check if current location has fuel
+                if graph[from_wp].has_fuel:
+                    refuel_before = True
+                    refuel_amount = fuel_capacity - fuel_state
+                    fuel_state = fuel_capacity
+                    refuel_stops += 1
+                    logger.info(f"Refueling {refuel_amount} at {from_wp} before leg to {to_wp}")
+                else:
+                    # Can't refuel here - try re-computing path with actual fuel state
+                    # This may find a path that uses less fuel (e.g., via refuel stops)
+                    logger.info(f"Re-computing path {from_wp} -> {to_wp} with actual fuel {fuel_state}")
+                    recomputed_path = self.find_optimal_path(
+                        graph, from_wp, to_wp,
+                        current_fuel=fuel_state,
+                        fuel_capacity=fuel_capacity,
+                        engine_speed=engine_speed
+                    )
+                    if recomputed_path:
+                        path_result = recomputed_path
+                        leg_fuel_cost = path_result['total_fuel_cost']
+                        logger.info(f"Re-computed path uses {leg_fuel_cost} fuel")
+                    else:
+                        logger.error(f"No valid path from {from_wp} to {to_wp} with {fuel_state} fuel")
+                        return None
+
+            # Extract flight mode from path steps
+            flight_mode = "CRUISE"  # Default
+            intermediate_stops = []
+
+            for step in path_result['steps']:
+                if step['action'] == 'TRAVEL':
+                    flight_mode = step.get('mode', 'CRUISE')
+                elif step['action'] == 'REFUEL':
+                    intermediate_stops.append({
+                        'waypoint': step['waypoint'],
+                        'flight_mode': 'CRUISE',  # Mode before this stop
+                        'fuel_cost': 0,
+                        'time_seconds': step.get('time', 0),
+                        'refuel_amount': step.get('refuel_amount', fuel_capacity)
+                    })
+                    refuel_stops += 1
+
+            # Update fuel state
+            fuel_state -= leg_fuel_cost
+
+            # Build leg
+            leg = {
+                'from_waypoint': from_wp,
+                'to_waypoint': to_wp,
+                'flight_mode': flight_mode,
+                'fuel_cost': leg_fuel_cost,
+                'time_seconds': path_result['total_time'],
+                'distance': path_result['total_distance'],
+                'refuel_before': refuel_before,
+                'refuel_amount': refuel_amount if refuel_before else 0,
+                'intermediate_stops': intermediate_stops
+            }
+            legs.append(leg)
+
+            total_time += path_result['total_time']
+            total_fuel_cost += leg_fuel_cost
+            total_distance += path_result['total_distance']
+
+        # Extract visit order (excluding start and return)
+        ordered_waypoints = [wp for wp in ordered_nodes if wp not in [start, return_waypoint]]
+        if not ordered_waypoints and ordered_nodes:
+            # If all nodes are start/return, just use ordered_nodes without first
+            ordered_waypoints = ordered_nodes[1:] if len(ordered_nodes) > 1 else []
+
+        logger.info(f"FueledTour complete: {len(legs)} legs, {total_time}s, {refuel_stops} refuels")
+
+        return {
+            'ordered_waypoints': ordered_waypoints,
+            'legs': legs,
+            'total_time': total_time,
+            'total_fuel_cost': total_fuel_cost,
+            'total_distance': total_distance,
+            'refuel_stops': refuel_stops
         }
 
     def optimize_fleet_tour(

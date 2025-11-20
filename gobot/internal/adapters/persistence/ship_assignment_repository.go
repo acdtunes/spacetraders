@@ -59,6 +59,14 @@ func (r *ShipAssignmentRepositoryGORM) Insert(
 	return nil
 }
 
+// Assign creates or updates a ship assignment (alias for Insert with upsert behavior)
+func (r *ShipAssignmentRepositoryGORM) Assign(
+	ctx context.Context,
+	assignment *daemon.ShipAssignment,
+) error {
+	return r.Insert(ctx, assignment)
+}
+
 // FindByShip retrieves the active assignment for a ship
 func (r *ShipAssignmentRepositoryGORM) FindByShip(
 	ctx context.Context,
@@ -88,6 +96,16 @@ func (r *ShipAssignmentRepositoryGORM) FindByShip(
 	)
 
 	return assignment, nil
+}
+
+// FindByShipSymbol retrieves the assignment for a ship by symbol
+// This is an alias for FindByShip for interface compatibility
+func (r *ShipAssignmentRepositoryGORM) FindByShipSymbol(
+	ctx context.Context,
+	shipSymbol string,
+	playerID int,
+) (*daemon.ShipAssignment, error) {
+	return r.FindByShip(ctx, shipSymbol, playerID)
 }
 
 // FindByContainer retrieves all ship assignments for a container
