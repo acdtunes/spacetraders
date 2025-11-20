@@ -6,6 +6,7 @@ import (
 
 	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
 // FindPurchaseMarket finds the cheapest market for purchasing goods needed for a contract delivery.
@@ -38,7 +39,7 @@ func FindPurchaseMarket(
 		}
 
 		// Extract system from destination (e.g., X1-GZ7-A1 -> X1-GZ7)
-		system := extractSystem(delivery.DestinationSymbol)
+		system := shared.ExtractSystemSymbol(delivery.DestinationSymbol)
 
 		// Find cheapest market selling this good
 		cheapestMarket, err := marketRepo.FindCheapestMarketSelling(

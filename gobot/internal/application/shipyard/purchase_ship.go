@@ -3,7 +3,6 @@ package shipyard
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/graph"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
@@ -134,7 +133,7 @@ func (h *PurchaseShipHandler) Handle(ctx context.Context, request common.Request
 	}
 
 	// 6. Get shipyard listings and validate ship type is available
-	systemSymbol := extractSystemFromWaypoint(shipyardWaypoint)
+	systemSymbol := shared.ExtractSystemSymbol(shipyardWaypoint)
 	query := &GetShipyardListingsQuery{
 		SystemSymbol:   systemSymbol,
 		WaypointSymbol: shipyardWaypoint,
@@ -309,14 +308,4 @@ func (h *PurchaseShipHandler) convertShipDataToEntity(
 	}
 
 	return ship, nil
-}
-
-// extractSystemFromWaypoint extracts the system symbol from a waypoint symbol
-// e.g., "X1-GZ7-AB12" -> "X1-GZ7"
-func extractSystemFromWaypoint(waypoint string) string {
-	parts := strings.Split(waypoint, "-")
-	if len(parts) >= 2 {
-		return strings.Join(parts[:2], "-")
-	}
-	return waypoint
 }

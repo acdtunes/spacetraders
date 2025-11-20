@@ -87,7 +87,7 @@ func (h *NavigateShipHandler) Handle(ctx context.Context, request common.Request
 	}
 
 	// 2. Extract system symbol and get system graph
-	systemSymbol := ExtractSystemSymbol(ship.CurrentLocation().Symbol)
+	systemSymbol := shared.ExtractSystemSymbol(ship.CurrentLocation().Symbol)
 	graphResult, err := h.graphProvider.GetGraph(ctx, systemSymbol, false, cmd.PlayerID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get system graph: %w", err)

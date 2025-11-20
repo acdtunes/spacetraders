@@ -6,19 +6,6 @@ import (
 	"time"
 )
 
-// ExtractSystemSymbol extracts system symbol from waypoint symbol
-// Format: SYSTEM-SECTOR-WAYPOINT -> SYSTEM-SECTOR
-// Example: X1-ABC123-AB12 -> X1-ABC123
-func ExtractSystemSymbol(waypointSymbol string) string {
-	// Find the last hyphen
-	for i := len(waypointSymbol) - 1; i >= 0; i-- {
-		if waypointSymbol[i] == '-' {
-			return waypointSymbol[:i]
-		}
-	}
-	return waypointSymbol
-}
-
 // CalculateArrivalWaitTime calculates seconds to wait until arrival
 //
 // Args:

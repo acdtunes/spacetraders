@@ -3,14 +3,18 @@ package contract
 import (
 	"context"
 	"fmt"
-	"math"
 
+	"github.com/andrescamacho/spacetraders-go/internal/domain/fleet"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
 
-// SelectClosestShip selects the ship closest to the target waypoint
-// from a list of ship symbols. Prioritizes ships that already have the required cargo.
+// SelectClosestShip selects the ship closest to the target waypoint from a list of ship symbols.
+// This is a thin application layer wrapper that:
+// 1. Fetches ships from repository
+// 2. Fetches target waypoint coordinates
+// 3. Delegates selection logic to domain FleetSelector service
 //
 // Parameters:
 //   - shipSymbols: List of ship symbols to consider
@@ -21,8 +25,8 @@ import (
 //   - playerID: Player ID for ship lookups
 //
 // Returns:
-//   - shipSymbol: The symbol of the closest ship
-//   - distance: The distance from the closest ship to the target
+//   - shipSymbol: The symbol of the selected ship
+//   - distance: The distance from the selected ship to the target
 //   - error: Any error encountered
 func SelectClosestShip(
 	ctx context.Context,
@@ -37,10 +41,18 @@ func SelectClosestShip(
 		return "", 0, fmt.Errorf("no ships available for selection")
 	}
 
-	// Extract system symbol from target
-	systemSymbol := extractSystem(targetWaypointSymbol)
+	// 1. Fetch all ships from repository
+	var ships []*navigation.Ship
+	for _, shipSymbol := range shipSymbols {
+		ship, err := shipRepo.FindBySymbol(ctx, shipSymbol, playerID)
+		if err != nil {
+			return "", 0, fmt.Errorf("failed to load ship %s: %w", shipSymbol, err)
+		}
+		ships = append(ships, ship)
+	}
 
-	// Load system graph to get waypoint coordinates
+	// 2. Fetch target waypoint coordinates from graph
+	systemSymbol := shared.ExtractSystemSymbol(targetWaypointSymbol)
 	graphResult, err := graphProvider.GetGraph(ctx, systemSymbol, false, playerID)
 	if err != nil {
 		return "", 0, fmt.Errorf("failed to load system graph: %w", err)
@@ -60,81 +72,21 @@ func SelectClosestShip(
 	targetX := targetWpRaw["x"].(float64)
 	targetY := targetWpRaw["y"].(float64)
 
-	var closestShip string
-	minDistance := math.MaxFloat64
-	var shipWithCargo string
-
-	for _, shipSymbol := range shipSymbols {
-		// Load ship to get current location and cargo
-		ship, err := shipRepo.FindBySymbol(ctx, shipSymbol, playerID)
-		if err != nil {
-			return "", 0, fmt.Errorf("failed to load ship %s: %w", shipSymbol, err)
-		}
-
-		// PRIORITY CHECK: Does ship already have the required cargo?
-		// Check this BEFORE transit status - a ship with cargo should be selected
-		// even if in transit (it's likely mid-delivery after daemon restart)
-		if requiredCargoSymbol != "" {
-			cargoUnits := ship.Cargo().GetItemUnits(requiredCargoSymbol)
-			if cargoUnits > 0 {
-				fmt.Printf("[SHIP_SELECTOR] %s has %d units of %s in cargo - PRIORITY SELECTION\n",
-					shipSymbol, cargoUnits, requiredCargoSymbol)
-				shipWithCargo = shipSymbol
-				// Don't break - continue checking all ships to log distances
-			}
-		}
-
-		// Skip ships that are currently in transit (e.g., rebalancing)
-		// But only if they don't have the required cargo (checked above)
-		if ship.NavStatus() == navigation.NavStatusInTransit {
-			fmt.Printf("[SHIP_SELECTOR] Skipping %s (IN_TRANSIT)\n", shipSymbol)
-			continue
-		}
-
-		currentLocation := ship.CurrentLocation()
-
-		// Calculate Euclidean distance
-		var distance float64
-		if currentLocation.Symbol == targetWaypointSymbol {
-			distance = 0
-		} else {
-			// Get current location coordinates
-			currentWpRaw, ok := waypointsRaw[currentLocation.Symbol].(map[string]interface{})
-			if !ok {
-				fmt.Printf("[SHIP_SELECTOR] Warning: Waypoint %s not in graph, using heuristic distance\n", currentLocation.Symbol)
-				distance = 100
-			} else {
-				currentX := currentWpRaw["x"].(float64)
-				currentY := currentWpRaw["y"].(float64)
-
-				// Calculate Euclidean distance
-				dx := targetX - currentX
-				dy := targetY - currentY
-				distance = math.Sqrt(dx*dx + dy*dy)
-			}
-		}
-
-		// Track closest ship (as fallback if no ship has cargo)
-		if distance < minDistance {
-			minDistance = distance
-			closestShip = shipSymbol
-		}
-
-		fmt.Printf("[SHIP_SELECTOR] %s at %s, distance to %s: %.2f units\n",
-			shipSymbol, currentLocation.Symbol, targetWaypointSymbol, distance)
+	// Create target waypoint
+	targetWaypoint, err := shared.NewWaypoint(targetWaypointSymbol, targetX, targetY)
+	if err != nil {
+		return "", 0, fmt.Errorf("failed to create target waypoint: %w", err)
 	}
 
-	// Priority: Ship with cargo > Closest ship by distance
-	if shipWithCargo != "" {
-		fmt.Printf("[SHIP_SELECTOR] Selected %s (has required cargo)\n", shipWithCargo)
-		return shipWithCargo, 0, nil
+	// 3. Delegate to domain service for selection logic
+	selector := fleet.NewSelector()
+	result, err := selector.SelectOptimalShip(ships, targetWaypoint, requiredCargoSymbol)
+	if err != nil {
+		return "", 0, err
 	}
 
-	// Check if any ship was found (all might have been filtered out)
-	if closestShip == "" {
-		return "", 0, fmt.Errorf("no available ships found (all are in transit)")
-	}
+	// 4. Log selection for debugging
+	fmt.Printf("[SHIP_SELECTOR] Selected %s - %s\n", result.Ship.ShipSymbol(), result.Reason)
 
-	fmt.Printf("[SHIP_SELECTOR] Selected %s (closest by distance: %.2f units)\n", closestShip, minDistance)
-	return closestShip, minDistance, nil
+	return result.Ship.ShipSymbol(), result.Distance, nil
 }
