@@ -10,10 +10,10 @@ var (
 	ErrInvalidCommandType = errors.New("invalid command type")
 )
 
-// Container represents a background daemon container
-type Container struct {
+// ContainerInfo represents a background daemon container
+type ContainerInfo struct {
 	ID       string
-	PlayerID uint
+	PlayerID int
 	Status   string // "STARTING", "RUNNING", "STOPPED", "FAILED", etc.
 	Type     string // "scout-tour", "navigate", "contract", etc.
 }
@@ -22,7 +22,7 @@ type Container struct {
 // This interface allows application layer commands to query and create background containers
 type DaemonClient interface {
 	// ListContainers retrieves all containers for a player
-	ListContainers(ctx context.Context, playerID uint) ([]Container, error)
+	ListContainers(ctx context.Context, playerID uint) ([]ContainerInfo, error)
 
 	// CreateScoutTourContainer creates a background container for scout tour operations
 	// containerID: Unique container identifier (e.g., "scout-tour-scout-1-abc12345")

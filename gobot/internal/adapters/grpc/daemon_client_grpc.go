@@ -48,7 +48,7 @@ func (c *DaemonClientGRPC) Close() error {
 }
 
 // ListContainers retrieves all containers for a player
-func (c *DaemonClientGRPC) ListContainers(ctx context.Context, playerID uint) ([]daemon.Container, error) {
+func (c *DaemonClientGRPC) ListContainers(ctx context.Context, playerID uint) ([]daemon.ContainerInfo, error) {
 	req := &pb.ListContainersRequest{
 		PlayerId: intPtr(int32(playerID)),
 	}
@@ -58,11 +58,11 @@ func (c *DaemonClientGRPC) ListContainers(ctx context.Context, playerID uint) ([
 		return nil, fmt.Errorf("failed to list containers: %w", err)
 	}
 
-	containers := make([]daemon.Container, 0, len(resp.Containers))
+	containers := make([]daemon.ContainerInfo, 0, len(resp.Containers))
 	for _, pbCont := range resp.Containers {
-		containers = append(containers, daemon.Container{
+		containers = append(containers, daemon.ContainerInfo{
 			ID:       pbCont.ContainerId,
-			PlayerID: uint(pbCont.PlayerId),
+			PlayerID: int(pbCont.PlayerId),
 			Status:   pbCont.Status,
 			Type:     pbCont.ContainerType,
 		})

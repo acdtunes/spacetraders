@@ -22,15 +22,15 @@ func NewDaemonClientLocal(server *DaemonServer) *DaemonClientLocal {
 }
 
 // ListContainers retrieves all containers for a player
-func (c *DaemonClientLocal) ListContainers(ctx context.Context, playerID uint) ([]daemon.Container, error) {
+func (c *DaemonClientLocal) ListContainers(ctx context.Context, playerID uint) ([]daemon.ContainerInfo, error) {
 	playerIDInt := int(playerID)
 	containers := c.server.ListContainers(&playerIDInt, nil)
 
-	result := make([]daemon.Container, 0, len(containers))
+	result := make([]daemon.ContainerInfo, 0, len(containers))
 	for _, cont := range containers {
-		result = append(result, daemon.Container{
+		result = append(result, daemon.ContainerInfo{
 			ID:       cont.ID(),
-			PlayerID: uint(cont.PlayerID()),
+			PlayerID: cont.PlayerID(),
 			Status:   string(cont.Status()),
 			Type:     string(cont.Type()),
 		})

@@ -8,8 +8,8 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
 )
 
-// Container is an alias for daemon.Container for convenience
-type Container = daemon.Container
+// Container is an alias for daemon.ContainerInfo for convenience
+type Container = daemon.ContainerInfo
 
 // MockContainer represents a simplified container for testing
 type MockContainer struct {
@@ -54,7 +54,7 @@ func (m *MockDaemonClient) AddContainer(container interface{}) {
 		// Also add to containers list for compatibility
 		m.containers = append(m.containers, Container{
 			ID:       v.ID,
-			PlayerID: uint(v.PlayerID),
+			PlayerID: v.PlayerID,
 			Status:   v.Status,
 			Type:     v.Type,
 		})
@@ -68,7 +68,7 @@ func (m *MockDaemonClient) ListContainers(ctx context.Context, playerID uint) ([
 
 	result := []Container{}
 	for _, c := range m.containers {
-		if c.PlayerID == playerID {
+		if c.PlayerID == int(playerID) {
 			result = append(result, c)
 		}
 	}
@@ -86,7 +86,7 @@ func (m *MockDaemonClient) CreateScoutTourContainer(ctx context.Context, contain
 	// Add to containers list
 	m.containers = append(m.containers, Container{
 		ID:       containerID,
-		PlayerID: playerID,
+		PlayerID: int(playerID),
 		Status:   "RUNNING",
 		Type:     "scout-tour",
 	})
@@ -143,7 +143,7 @@ func (m *MockDaemonClient) CreateContractWorkflowContainer(ctx context.Context, 
 	m.createdContainers = append(m.createdContainers, containerID)
 	m.containers = append(m.containers, Container{
 		ID:       containerID,
-		PlayerID: playerID,
+		PlayerID: int(playerID),
 		Status:   "RUNNING",
 		Type:     "contract-workflow",
 	})
@@ -159,7 +159,7 @@ func (m *MockDaemonClient) PersistContractWorkflowContainer(ctx context.Context,
 	m.createdContainers = append(m.createdContainers, containerID)
 	m.containers = append(m.containers, Container{
 		ID:       containerID,
-		PlayerID: playerID,
+		PlayerID: int(playerID),
 		Status:   "PENDING",
 		Type:     "contract-workflow",
 	})
@@ -191,7 +191,7 @@ func (m *MockDaemonClient) PersistMiningWorkerContainer(ctx context.Context, con
 	m.createdContainers = append(m.createdContainers, containerID)
 	m.containers = append(m.containers, Container{
 		ID:       containerID,
-		PlayerID: playerID,
+		PlayerID: int(playerID),
 		Status:   "PENDING",
 		Type:     "mining-worker",
 	})
@@ -223,7 +223,7 @@ func (m *MockDaemonClient) PersistTransportWorkerContainer(ctx context.Context, 
 	m.createdContainers = append(m.createdContainers, containerID)
 	m.containers = append(m.containers, Container{
 		ID:       containerID,
-		PlayerID: playerID,
+		PlayerID: int(playerID),
 		Status:   "PENDING",
 		Type:     "transport-worker",
 	})
@@ -255,7 +255,7 @@ func (m *MockDaemonClient) PersistMiningCoordinatorContainer(ctx context.Context
 	m.createdContainers = append(m.createdContainers, containerID)
 	m.containers = append(m.containers, Container{
 		ID:       containerID,
-		PlayerID: playerID,
+		PlayerID: int(playerID),
 		Status:   "PENDING",
 		Type:     "mining-coordinator",
 	})

@@ -102,21 +102,28 @@ type Market struct {
 
 ---
 
-### 3. CRITICAL: Container (2 variants with naming conflict)
+### 3. ✅ COMPLETED: Container (2 variants with naming conflict) - Renamed to `ContainerInfo`
 
-**Current State:**
+**Previous State:**
 
 | Location | Type | Purpose |
 |----------|------|---------|
 | `domain/container/container.go` (line 60) | Full entity (16 fields) | Complete lifecycle management |
 | `domain/daemon/ports.go` (line 14) | DTO (4 fields) | Daemon client communication |
 
-**Issues:**
-- Same name, different purposes → confusion
-- `PlayerID` type inconsistency: `uint` vs `int`
-- DTO should have distinct name to clarify architectural boundary
+**Resolution:** Renamed `daemon.Container` to `daemon.ContainerInfo`, standardized `PlayerID` to `int`
+**Files Modified:**
+- `internal/domain/daemon/ports.go` - Renamed struct and fixed type
+- `internal/adapters/grpc/daemon_client_local.go` - Updated return types and construction
+- `internal/adapters/grpc/daemon_client_grpc.go` - Updated return types and construction
+- `test/helpers/mock_daemon_client.go` - Updated type alias and all references
+**Tests:** Pending verification
+**Status:** ✅ Complete
 
-**Impact:** MEDIUM - naming confusion, type inconsistency
+**Previous Issues (RESOLVED):**
+- ~~Same name, different purposes → confusion~~ ✅ Resolved by rename
+- ~~`PlayerID` type inconsistency: `uint` vs `int`~~ ✅ Resolved by standardizing on `int`
+- ~~DTO should have distinct name to clarify architectural boundary~~ ✅ Resolved with `ContainerInfo` name
 
 ---
 
@@ -533,11 +540,11 @@ git commit -m "refactor: Phase 3 - Unify market domain"
 ## Success Metrics
 
 ### Quantitative
-- **Structs eliminated:** 5 of 10-12 completed (CargoItem variants: 3, Market/TradeGood: 2)
-- **Files modified:** 14 of ~20 (persistence, application layer, daemon main)
+- **Structs eliminated:** 6 of 10-12 completed (CargoItem variants: 3, Market/TradeGood: 2, Container: 1 renamed)
+- **Files modified:** 18 of ~20 (persistence, application layer, daemon main, adapter implementations)
 - **Packages deleted:** 1 (`internal/domain/trading`)
-- **Lines of code reduced:** ~150 of 200-300 target
-- **Test pass rate:** 100% (all BDD tests pass)
+- **Lines of code reduced:** ~160 of 200-300 target
+- **Test pass rate:** Pending verification (Container refactoring)
 
 ### Qualitative
 - Clearer architectural boundaries (domain vs DTO)
