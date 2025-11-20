@@ -14,9 +14,9 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 )
 
-// FleetCoordinatorCommand manages a pool of ships for continuous contract execution.
+// RunFleetCoordinatorCommand manages a pool of ships for continuous contract execution.
 // It assigns contracts to the ship closest to the purchase market.
-type FleetCoordinatorCommand struct {
+type RunFleetCoordinatorCommand struct {
 	PlayerID    int
 	ShipSymbols []string // Pool of ships to use for contracts
 	ContainerID string   // Coordinator's own container ID
@@ -28,8 +28,8 @@ type CoordinatorMetadata struct {
 	RebalanceInterval time.Duration
 }
 
-// FleetCoordinatorResponse contains the coordinator execution results
-type FleetCoordinatorResponse struct {
+// RunFleetCoordinatorResponse contains the coordinator execution results
+type RunFleetCoordinatorResponse struct {
 	ContractsCompleted int
 	Errors             []string
 }
@@ -39,8 +39,8 @@ type ContainerRepository interface {
 	ListByStatusSimple(ctx context.Context, status string, playerID *int) ([]persistence.ContainerSummary, error)
 }
 
-// FleetCoordinatorHandler implements the fleet coordinator logic
-type FleetCoordinatorHandler struct {
+// RunFleetCoordinatorHandler implements the fleet coordinator logic
+type RunFleetCoordinatorHandler struct {
 	mediator           common.Mediator
 	shipRepo           navigation.ShipRepository
 	contractRepo       domainContract.ContractRepository
@@ -51,8 +51,8 @@ type FleetCoordinatorHandler struct {
 	containerRepo      ContainerRepository // For checking existing workers
 }
 
-// NewFleetCoordinatorHandler creates a new fleet coordinator handler
-func NewFleetCoordinatorHandler(
+// NewRunFleetCoordinatorHandler creates a new fleet coordinator handler
+func NewRunFleetCoordinatorHandler(
 	mediator common.Mediator,
 	shipRepo navigation.ShipRepository,
 	contractRepo domainContract.ContractRepository,
@@ -61,8 +61,8 @@ func NewFleetCoordinatorHandler(
 	daemonClient daemon.DaemonClient,
 	graphProvider system.ISystemGraphProvider,
 	containerRepo ContainerRepository,
-) *FleetCoordinatorHandler {
-	return &FleetCoordinatorHandler{
+) *RunFleetCoordinatorHandler {
+	return &RunFleetCoordinatorHandler{
 		mediator:           mediator,
 		shipRepo:           shipRepo,
 		contractRepo:       contractRepo,
@@ -75,15 +75,15 @@ func NewFleetCoordinatorHandler(
 }
 
 // Handle executes the fleet coordinator command
-func (h *FleetCoordinatorHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {
+func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {
 	logger := common.LoggerFromContext(ctx)
 
-	cmd, ok := request.(*FleetCoordinatorCommand)
+	cmd, ok := request.(*RunFleetCoordinatorCommand)
 	if !ok {
 		return nil, fmt.Errorf("invalid request type")
 	}
 
-	result := &FleetCoordinatorResponse{
+	result := &RunFleetCoordinatorResponse{
 		ContractsCompleted: 0,
 		Errors:             []string{},
 	}
@@ -271,7 +271,7 @@ func (h *FleetCoordinatorHandler) Handle(ctx context.Context, request common.Req
 		workerContainerID := fmt.Sprintf("contract-work-%s-%d", selectedShip, time.Now().Unix())
 
 		// Create worker command
-		workerCmd := &WorkflowCommand{
+		workerCmd := &RunWorkflowCommand{
 			ShipSymbol:         selectedShip,
 			PlayerID:           cmd.PlayerID,
 			CoordinatorID:      cmd.ContainerID,
@@ -406,7 +406,7 @@ func (h *FleetCoordinatorHandler) Handle(ctx context.Context, request common.Req
 }
 
 // negotiateContract negotiates a new contract
-func (h *FleetCoordinatorHandler) negotiateContract(
+func (h *RunFleetCoordinatorHandler) negotiateContract(
 	ctx context.Context,
 	shipSymbol string,
 	playerID int,
@@ -443,7 +443,7 @@ func (h *FleetCoordinatorHandler) negotiateContract(
 }
 
 // findExistingWorkers finds any existing ContractWorkflow containers that might still be running
-func (h *FleetCoordinatorHandler) findExistingWorkers(
+func (h *RunFleetCoordinatorHandler) findExistingWorkers(
 	ctx context.Context,
 	playerID int,
 ) ([]persistence.ContainerSummary, error) {

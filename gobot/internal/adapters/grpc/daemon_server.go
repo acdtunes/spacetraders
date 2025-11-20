@@ -156,7 +156,7 @@ func (s *DaemonServer) registerCommandFactories() {
 
 		coordinatorID, _ := config["coordinator_id"].(string) // Optional
 
-		return &contract.WorkflowCommand{
+		return &contract.RunWorkflowCommand{
 			ShipSymbol:         shipSymbol,
 			PlayerID:           playerID,
 			CoordinatorID:      coordinatorID,
@@ -186,7 +186,7 @@ func (s *DaemonServer) registerCommandFactories() {
 			return nil, fmt.Errorf("missing or invalid container_id")
 		}
 
-		return &contract.FleetCoordinatorCommand{
+		return &contract.RunFleetCoordinatorCommand{
 			PlayerID:    playerID,
 			ShipSymbols: shipSymbols,
 			ContainerID: containerID,
@@ -268,7 +268,7 @@ func (s *DaemonServer) registerCommandFactories() {
 
 		coordinatorID, _ := config["coordinator_id"].(string) // Optional
 
-		return &mining.WorkerCommand{
+		return &mining.RunWorkerCommand{
 			ShipSymbol:           shipSymbol,
 			PlayerID:             playerID,
 			AsteroidField:        asteroidField,
@@ -294,7 +294,7 @@ func (s *DaemonServer) registerCommandFactories() {
 
 		coordinatorID, _ := config["coordinator_id"].(string) // Optional
 
-		return &mining.TransportWorkerCommand{
+		return &mining.RunTransportWorkerCommand{
 			ShipSymbol:        shipSymbol,
 			PlayerID:          playerID,
 			AsteroidField:     asteroidField,
@@ -354,7 +354,7 @@ func (s *DaemonServer) registerCommandFactories() {
 			topNOres = int(val)
 		}
 
-		return &mining.CoordinatorCommand{
+		return &mining.RunCoordinatorCommand{
 			MiningOperationID: miningOperationID,
 			PlayerID:          playerID,
 			AsteroidField:     asteroidField,
@@ -874,7 +874,7 @@ func (s *DaemonServer) StartContractWorkflow(
 	coordinatorID, _ := config["coordinator_id"].(string)
 
 	// Create command
-	cmd := &contract.WorkflowCommand{
+	cmd := &contract.RunWorkflowCommand{
 		ShipSymbol:         shipSymbol,
 		PlayerID:           containerModel.PlayerID,
 		CoordinatorID:      coordinatorID,
@@ -915,7 +915,7 @@ func (s *DaemonServer) ContractFleetCoordinator(ctx context.Context, shipSymbols
 	containerID := generateContainerID("contract_fleet_coordinator", shipSymbols[0])
 
 	// Create contract fleet coordinator command
-	cmd := &contract.FleetCoordinatorCommand{
+	cmd := &contract.RunFleetCoordinatorCommand{
 		PlayerID:    playerID,
 		ShipSymbols: shipSymbols,
 		ContainerID: containerID,
@@ -995,7 +995,7 @@ func (s *DaemonServer) MiningOperation(
 	}
 
 	// Create mining coordinator command
-	cmd := &mining.CoordinatorCommand{
+	cmd := &mining.RunCoordinatorCommand{
 		MiningOperationID: containerID,
 		PlayerID:          playerID,
 		AsteroidField:     asteroidField,
@@ -1140,7 +1140,7 @@ func (s *DaemonServer) ScoutTour(ctx context.Context, containerID string, shipSy
 // TourSell handles cargo selling tour requests (single ship)
 func (s *DaemonServer) TourSell(ctx context.Context, containerID string, shipSymbol string, returnWaypoint string, playerID int) (string, error) {
 	// Create tour sell command
-	cmd := &trading.TourSellingCommand{
+	cmd := &trading.RunTourSellingCommand{
 		ShipSymbol:     shipSymbol,
 		PlayerID:       playerID,
 		ReturnWaypoint: returnWaypoint,
@@ -1641,7 +1641,7 @@ func (s *DaemonServer) PersistMiningWorkerContainer(
 	playerID uint,
 	command interface{},
 ) error {
-	cmd, ok := command.(*mining.WorkerCommand)
+	cmd, ok := command.(*mining.RunWorkerCommand)
 	if !ok {
 		return fmt.Errorf("invalid command type for mining worker")
 	}
@@ -1688,13 +1688,13 @@ func (s *DaemonServer) StartMiningWorkerContainer(
 	}
 	s.pendingWorkerCommandsMu.Unlock()
 
-	var cmd *mining.WorkerCommand
+	var cmd *mining.RunWorkerCommand
 	var config map[string]interface{}
 	var playerID int
 
 	if hasCached {
 		// Use cached command with channels
-		cmd = cachedCmd.(*mining.WorkerCommand)
+		cmd = cachedCmd.(*mining.RunWorkerCommand)
 		playerID = cmd.PlayerID
 		config = map[string]interface{}{
 			"ship_symbol":    cmd.ShipSymbol,
@@ -1736,7 +1736,7 @@ func (s *DaemonServer) StartMiningWorkerContainer(
 		coordinatorID, _ := config["coordinator_id"].(string)
 
 		playerID = containerModel.PlayerID
-		cmd = &mining.WorkerCommand{
+		cmd = &mining.RunWorkerCommand{
 			ShipSymbol:           shipSymbol,
 			PlayerID:             playerID,
 			AsteroidField:        asteroidField,
@@ -1782,7 +1782,7 @@ func (s *DaemonServer) PersistTransportWorkerContainer(
 	playerID uint,
 	command interface{},
 ) error {
-	cmd, ok := command.(*mining.TransportWorkerCommand)
+	cmd, ok := command.(*mining.RunTransportWorkerCommand)
 	if !ok {
 		return fmt.Errorf("invalid command type for transport worker")
 	}
@@ -1828,13 +1828,13 @@ func (s *DaemonServer) StartTransportWorkerContainer(
 	}
 	s.pendingWorkerCommandsMu.Unlock()
 
-	var cmd *mining.TransportWorkerCommand
+	var cmd *mining.RunTransportWorkerCommand
 	var config map[string]interface{}
 	var playerID int
 
 	if hasCached {
 		// Use cached command with channels
-		cmd = cachedCmd.(*mining.TransportWorkerCommand)
+		cmd = cachedCmd.(*mining.RunTransportWorkerCommand)
 		playerID = cmd.PlayerID
 		config = map[string]interface{}{
 			"ship_symbol":    cmd.ShipSymbol,
@@ -1871,7 +1871,7 @@ func (s *DaemonServer) StartTransportWorkerContainer(
 		coordinatorID, _ := config["coordinator_id"].(string)
 
 		playerID = containerModel.PlayerID
-		cmd = &mining.TransportWorkerCommand{
+		cmd = &mining.RunTransportWorkerCommand{
 			ShipSymbol:        shipSymbol,
 			PlayerID:          playerID,
 			AsteroidField:     asteroidField,
@@ -1915,7 +1915,7 @@ func (s *DaemonServer) PersistMiningCoordinatorContainer(
 	playerID uint,
 	command interface{},
 ) error {
-	cmd, ok := command.(*mining.CoordinatorCommand)
+	cmd, ok := command.(*mining.RunCoordinatorCommand)
 	if !ok {
 		return fmt.Errorf("invalid command type for mining coordinator")
 	}

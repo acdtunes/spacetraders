@@ -110,9 +110,9 @@ func (c *DaemonClientGRPC) CreateContractWorkflowContainer(
 	completionCallback chan<- string,
 ) error {
 	// Type assert to ContractWorkflowCommand
-	_, ok := command.(*contract.WorkflowCommand)
+	_, ok := command.(*contract.RunWorkflowCommand)
 	if !ok {
-		return fmt.Errorf("invalid command type: expected *contract.WorkflowCommand, got %T", command)
+		return fmt.Errorf("invalid command type: expected *contract.RunWorkflowCommand, got %T", command)
 	}
 
 	// This method is a placeholder - gRPC implementation would send the command to the daemon

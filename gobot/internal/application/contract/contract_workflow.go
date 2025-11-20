@@ -13,16 +13,16 @@ import (
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )
 
-// WorkflowCommand orchestrates complete contract workflow execution
-type WorkflowCommand struct {
+// RunWorkflowCommand orchestrates complete contract workflow execution
+type RunWorkflowCommand struct {
 	ShipSymbol         string
 	PlayerID           int
 	CoordinatorID      string           // Parent coordinator container ID (optional)
 	CompletionCallback chan<- string    // Signal completion to coordinator (optional)
 }
 
-// WorkflowResponse contains workflow execution results
-type WorkflowResponse struct {
+// RunWorkflowResponse contains workflow execution results
+type RunWorkflowResponse struct {
 	Negotiated  bool
 	Accepted    bool
 	Fulfilled   bool
@@ -31,7 +31,7 @@ type WorkflowResponse struct {
 	Error       string
 }
 
-// WorkflowHandler implements the complete contract workflow
+// RunWorkflowHandler implements the complete contract workflow
 // following the exact Python implementation pattern:
 //
 // 1. Check for existing active contracts (idempotency)
@@ -54,21 +54,21 @@ type WorkflowResponse struct {
 // 7. Calculate profit
 // 8. Transfer ship back to coordinator (if applicable)
 // 9. Signal completion via channel (if applicable)
-type WorkflowHandler struct {
+type RunWorkflowHandler struct {
 	mediator           common.Mediator
 	shipRepo           navigation.ShipRepository
 	contractRepo       domainContract.ContractRepository
 	shipAssignmentRepo daemon.ShipAssignmentRepository
 }
 
-// NewWorkflowHandler creates a new contract workflow handler
-func NewWorkflowHandler(
+// NewRunWorkflowHandler creates a new contract workflow handler
+func NewRunWorkflowHandler(
 	mediator common.Mediator,
 	shipRepo navigation.ShipRepository,
 	contractRepo domainContract.ContractRepository,
 	shipAssignmentRepo daemon.ShipAssignmentRepository,
-) *WorkflowHandler {
-	return &WorkflowHandler{
+) *RunWorkflowHandler {
+	return &RunWorkflowHandler{
 		mediator:           mediator,
 		shipRepo:           shipRepo,
 		contractRepo:       contractRepo,
@@ -77,13 +77,13 @@ func NewWorkflowHandler(
 }
 
 // Handle executes the contract workflow command
-func (h *WorkflowHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {
-	cmd, ok := request.(*WorkflowCommand)
+func (h *RunWorkflowHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {
+	cmd, ok := request.(*RunWorkflowCommand)
 	if !ok {
 		return nil, fmt.Errorf("invalid request type")
 	}
 
-	result := &WorkflowResponse{
+	result := &RunWorkflowResponse{
 		Negotiated:  false,
 		Accepted:    false,
 		Fulfilled:   false,
@@ -122,10 +122,10 @@ func (h *WorkflowHandler) Handle(ctx context.Context, request common.Request) (c
 }
 
 // executeWorkflow handles the contract workflow execution
-func (h *WorkflowHandler) executeWorkflow(
+func (h *RunWorkflowHandler) executeWorkflow(
 	ctx context.Context,
-	cmd *WorkflowCommand,
-	result *WorkflowResponse,
+	cmd *RunWorkflowCommand,
+	result *RunWorkflowResponse,
 ) error {
 	logger := common.LoggerFromContext(ctx)
 
@@ -382,9 +382,9 @@ func (h *WorkflowHandler) executeWorkflow(
 }
 
 // transferShipBackToCoordinator transfers ship assignment from worker back to coordinator
-func (h *WorkflowHandler) transferShipBackToCoordinator(
+func (h *RunWorkflowHandler) transferShipBackToCoordinator(
 	ctx context.Context,
-	cmd *WorkflowCommand,
+	cmd *RunWorkflowCommand,
 ) error {
 	logger := common.LoggerFromContext(ctx)
 
@@ -400,7 +400,7 @@ func (h *WorkflowHandler) transferShipBackToCoordinator(
 }
 
 // jettisonWrongCargo jettisons all cargo items except the specified symbol
-func (h *WorkflowHandler) jettisonWrongCargo(
+func (h *RunWorkflowHandler) jettisonWrongCargo(
 	ctx context.Context,
 	ship *navigation.Ship,
 	keepSymbol string,
@@ -428,7 +428,7 @@ func (h *WorkflowHandler) jettisonWrongCargo(
 }
 
 // navigateToWaypoint navigates ship to destination and returns updated ship state
-func (h *WorkflowHandler) navigateToWaypoint(
+func (h *RunWorkflowHandler) navigateToWaypoint(
 	ctx context.Context,
 	shipSymbol string,
 	destination string,
@@ -451,7 +451,7 @@ func (h *WorkflowHandler) navigateToWaypoint(
 }
 
 // dockShip docks ship (idempotent)
-func (h *WorkflowHandler) dockShip(
+func (h *RunWorkflowHandler) dockShip(
 	ctx context.Context,
 	ship *navigation.Ship,
 	playerID int,

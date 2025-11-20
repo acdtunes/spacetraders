@@ -12,9 +12,9 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
 
-// TransportWorkerCommand orchestrates passive cargo receiving and selling
+// RunTransportWorkerCommand orchestrates passive cargo receiving and selling
 // Transport waits at asteroid field as a cargo sink for miners
-type TransportWorkerCommand struct {
+type RunTransportWorkerCommand struct {
 	ShipSymbol        string
 	PlayerID          int
 	AsteroidField     string           // Waypoint to wait at and return to
@@ -24,30 +24,30 @@ type TransportWorkerCommand struct {
 	CargoReceivedChan <-chan struct{}  // Receive signal that cargo was transferred
 }
 
-// TransportWorkerResponse contains transport execution results
-type TransportWorkerResponse struct {
+// RunTransportWorkerResponse contains transport execution results
+type RunTransportWorkerResponse struct {
 	SellingCycles     int
 	TotalMarketsVisited int
 	TotalRevenue      int
 	Error             string
 }
 
-// TransportWorkerHandler implements the transport worker workflow
-type TransportWorkerHandler struct {
+// RunTransportWorkerHandler implements the transport worker workflow
+type RunTransportWorkerHandler struct {
 	mediator           common.Mediator
 	shipRepo           navigation.ShipRepository
 	shipAssignmentRepo daemon.ShipAssignmentRepository
 	graphProvider      system.ISystemGraphProvider
 }
 
-// NewTransportWorkerHandler creates a new transport worker handler
-func NewTransportWorkerHandler(
+// NewRunTransportWorkerHandler creates a new transport worker handler
+func NewRunTransportWorkerHandler(
 	mediator common.Mediator,
 	shipRepo navigation.ShipRepository,
 	shipAssignmentRepo daemon.ShipAssignmentRepository,
 	graphProvider system.ISystemGraphProvider,
-) *TransportWorkerHandler {
-	return &TransportWorkerHandler{
+) *RunTransportWorkerHandler {
+	return &RunTransportWorkerHandler{
 		mediator:           mediator,
 		shipRepo:           shipRepo,
 		shipAssignmentRepo: shipAssignmentRepo,
@@ -56,13 +56,13 @@ func NewTransportWorkerHandler(
 }
 
 // Handle executes the transport worker command
-func (h *TransportWorkerHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {
-	cmd, ok := request.(*TransportWorkerCommand)
+func (h *RunTransportWorkerHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {
+	cmd, ok := request.(*RunTransportWorkerCommand)
 	if !ok {
 		return nil, fmt.Errorf("invalid request type")
 	}
 
-	result := &TransportWorkerResponse{
+	result := &RunTransportWorkerResponse{
 		SellingCycles:       0,
 		TotalMarketsVisited: 0,
 		TotalRevenue:        0,
@@ -79,10 +79,10 @@ func (h *TransportWorkerHandler) Handle(ctx context.Context, request common.Requ
 }
 
 // executeTransport handles the main transport workflow with passive cargo receiving
-func (h *TransportWorkerHandler) executeTransport(
+func (h *RunTransportWorkerHandler) executeTransport(
 	ctx context.Context,
-	cmd *TransportWorkerCommand,
-	result *TransportWorkerResponse,
+	cmd *RunTransportWorkerCommand,
+	result *RunTransportWorkerResponse,
 ) error {
 	logger := common.LoggerFromContext(ctx)
 
@@ -199,7 +199,7 @@ func (h *TransportWorkerHandler) executeTransport(
 			logger.Log("INFO", fmt.Sprintf("Cargo is %.1f%% full, executing selling route", cargoUsage*100), nil)
 
 			// 3e. Execute selling route via TourSellingCommand
-			tourCmd := &trading.TourSellingCommand{
+			tourCmd := &trading.RunTourSellingCommand{
 				ShipSymbol:     cmd.ShipSymbol,
 				PlayerID:       cmd.PlayerID,
 				ReturnWaypoint: cmd.AsteroidField,
@@ -210,7 +210,7 @@ func (h *TransportWorkerHandler) executeTransport(
 				return fmt.Errorf("failed to execute sell route: %w", err)
 			}
 
-			tourResult := tourResp.(*trading.TourSellingResponse)
+			tourResult := tourResp.(*trading.RunTourSellingResponse)
 			result.SellingCycles++
 			result.TotalMarketsVisited += tourResult.MarketsVisited
 			result.TotalRevenue += tourResult.TotalRevenue
@@ -234,9 +234,9 @@ func (h *TransportWorkerHandler) executeTransport(
 }
 
 // returnToAsteroid navigates the transport back to the asteroid field
-func (h *TransportWorkerHandler) returnToAsteroid(
+func (h *RunTransportWorkerHandler) returnToAsteroid(
 	ctx context.Context,
-	cmd *TransportWorkerCommand,
+	cmd *RunTransportWorkerCommand,
 ) error {
 	logger := common.LoggerFromContext(ctx)
 

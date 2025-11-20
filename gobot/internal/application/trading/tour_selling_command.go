@@ -14,15 +14,15 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 )
 
-// TourSellingCommand executes optimized cargo selling tour
-type TourSellingCommand struct {
+// RunTourSellingCommand executes optimized cargo selling tour
+type RunTourSellingCommand struct {
 	ShipSymbol      string
 	PlayerID        int
 	ReturnWaypoint  string // Optional waypoint to return to after selling
 }
 
-// TourSellingResponse contains tour execution results
-type TourSellingResponse struct {
+// RunTourSellingResponse contains tour execution results
+type RunTourSellingResponse struct {
 	MarketsVisited int
 	TotalRevenue   int
 	ItemsSold      []SoldItem
@@ -36,8 +36,8 @@ type SoldItem struct {
 	Market   string
 }
 
-// TourSellingHandler implements the tour selling workflow
-type TourSellingHandler struct {
+// RunTourSellingHandler implements the tour selling workflow
+type RunTourSellingHandler struct {
 	mediator      common.Mediator
 	shipRepo      navigation.ShipRepository
 	marketRepo    market.MarketRepository
@@ -45,15 +45,15 @@ type TourSellingHandler struct {
 	graphProvider system.ISystemGraphProvider
 }
 
-// NewTourSellingHandler creates a new tour selling handler
-func NewTourSellingHandler(
+// NewRunTourSellingHandler creates a new tour selling handler
+func NewRunTourSellingHandler(
 	mediator common.Mediator,
 	shipRepo navigation.ShipRepository,
 	marketRepo market.MarketRepository,
 	routingClient routing.RoutingClient,
 	graphProvider system.ISystemGraphProvider,
-) *TourSellingHandler {
-	return &TourSellingHandler{
+) *RunTourSellingHandler {
+	return &RunTourSellingHandler{
 		mediator:      mediator,
 		shipRepo:      shipRepo,
 		marketRepo:    marketRepo,
@@ -63,8 +63,8 @@ func NewTourSellingHandler(
 }
 
 // Handle executes the tour selling command
-func (h *TourSellingHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {
-	cmd, ok := request.(*TourSellingCommand)
+func (h *RunTourSellingHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {
+	cmd, ok := request.(*RunTourSellingCommand)
 	if !ok {
 		return nil, fmt.Errorf("invalid request type")
 	}
@@ -81,7 +81,7 @@ func (h *TourSellingHandler) Handle(ctx context.Context, request common.Request)
 		return nil, fmt.Errorf("failed to execute sell route: %w", err)
 	}
 
-	return &TourSellingResponse{
+	return &RunTourSellingResponse{
 		MarketsVisited: marketsVisited,
 		TotalRevenue:   revenue,
 		ItemsSold:      itemsSold,
@@ -89,9 +89,9 @@ func (h *TourSellingHandler) Handle(ctx context.Context, request common.Request)
 }
 
 // executeSellRoute finds best markets and sells cargo using globally optimized fueled tour
-func (h *TourSellingHandler) executeSellRoute(
+func (h *RunTourSellingHandler) executeSellRoute(
 	ctx context.Context,
-	cmd *TourSellingCommand,
+	cmd *RunTourSellingCommand,
 	ship *navigation.Ship,
 ) (int, int, []SoldItem, error) {
 	logger := common.LoggerFromContext(ctx)
@@ -294,7 +294,7 @@ func (h *TourSellingHandler) executeSellRoute(
 
 // findBestMarketsForCargo finds the best markets for the ship's cargo
 // Returns a map of market waypoint -> list of goods to sell there
-func (h *TourSellingHandler) findBestMarketsForCargo(
+func (h *RunTourSellingHandler) findBestMarketsForCargo(
 	ctx context.Context,
 	ship *navigation.Ship,
 	playerID int,
