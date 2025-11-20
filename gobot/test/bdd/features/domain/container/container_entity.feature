@@ -48,17 +48,17 @@ Feature: Container Entity
   Scenario: Cannot start container already running
     Given a container in "RUNNING" state
     When I attempt to start the container
-    Then the operation should fail with error "cannot start container in RUNNING state"
+    Then the container operation should fail with error "cannot start container in RUNNING state"
 
   Scenario: Cannot start completed container
     Given a container in "COMPLETED" state
     When I attempt to start the container
-    Then the operation should fail with error "cannot start container in COMPLETED state"
+    Then the container operation should fail with error "cannot start container in COMPLETED state"
 
   Scenario: Cannot start failed container without restart
     Given a container in "FAILED" state
     When I attempt to start the container
-    Then the operation should fail with error "cannot start container in FAILED state"
+    Then the container operation should fail with error "cannot start container in FAILED state"
 
   # ============================================================================
   # State Machine: Complete Transition
@@ -73,17 +73,17 @@ Feature: Container Entity
   Scenario: Cannot complete container in pending state
     Given a container in "PENDING" state
     When I attempt to complete the container
-    Then the operation should fail with error "cannot complete container in PENDING state"
+    Then the container operation should fail with error "cannot complete container in PENDING state"
 
   Scenario: Cannot complete already completed container
     Given a container in "COMPLETED" state
     When I attempt to complete the container
-    Then the operation should fail with error "cannot complete container in COMPLETED state"
+    Then the container operation should fail with error "cannot complete container in COMPLETED state"
 
   Scenario: Cannot complete stopped container
     Given a container in "STOPPED" state
     When I attempt to complete the container
-    Then the operation should fail with error "cannot complete container in STOPPED state"
+    Then the container operation should fail with error "cannot complete container in STOPPED state"
 
   # ============================================================================
   # State Machine: Fail Transition
@@ -111,12 +111,12 @@ Feature: Container Entity
   Scenario: Cannot fail completed container
     Given a container in "COMPLETED" state
     When I attempt to fail the container with error "too late"
-    Then the operation should fail with error "cannot fail container in COMPLETED state"
+    Then the container operation should fail with error "cannot fail container in COMPLETED state"
 
   Scenario: Cannot fail stopped container
     Given a container in "STOPPED" state
     When I attempt to fail the container with error "too late"
-    Then the operation should fail with error "cannot fail container in STOPPED state"
+    Then the container operation should fail with error "cannot fail container in STOPPED state"
 
   # ============================================================================
   # State Machine: Stop Transition (Two-Phase)
@@ -149,17 +149,17 @@ Feature: Container Entity
   Scenario: Cannot stop completed container
     Given a container in "COMPLETED" state
     When I attempt to stop the container
-    Then the operation should fail with error "cannot stop container in COMPLETED state"
+    Then the container operation should fail with error "cannot stop container in COMPLETED state"
 
   Scenario: Cannot stop already stopped container
     Given a container in "STOPPED" state
     When I attempt to stop the container
-    Then the operation should fail with error "cannot stop container in STOPPED state"
+    Then the container operation should fail with error "cannot stop container in STOPPED state"
 
   Scenario: Cannot mark stopped when not in stopping state
     Given a container in "RUNNING" state
     When I attempt to mark the container as stopped
-    Then the operation should fail with error "cannot mark stopped when not in stopping state"
+    Then the container operation should fail with error "cannot mark stopped when not in stopping state"
 
   # ============================================================================
   # Iteration Control: Infinite Loop
@@ -224,17 +224,17 @@ Feature: Container Entity
   Scenario: Cannot increment iteration in pending state
     Given a container in "PENDING" state at iteration 0
     When I attempt to increment the container iteration
-    Then the operation should fail with error "cannot increment iteration in PENDING state"
+    Then the container operation should fail with error "cannot increment iteration in PENDING state"
 
   Scenario: Cannot increment iteration in completed state
     Given a container in "COMPLETED" state at iteration 5
     When I attempt to increment the container iteration
-    Then the operation should fail with error "cannot increment iteration in COMPLETED state"
+    Then the container operation should fail with error "cannot increment iteration in COMPLETED state"
 
   Scenario: Cannot increment iteration in stopped state
     Given a container in "STOPPED" state at iteration 3
     When I attempt to increment the container iteration
-    Then the operation should fail with error "cannot increment iteration in STOPPED state"
+    Then the container operation should fail with error "cannot increment iteration in STOPPED state"
 
   # ============================================================================
   # Restart Management: Eligibility
@@ -290,12 +290,12 @@ Feature: Container Entity
   Scenario: Cannot reset container at max restarts
     Given a container in "FAILED" state with restart_count 3
     When I attempt to reset container for restart
-    Then the operation should fail with error "container cannot be restarted (restarts: 3/3)"
+    Then the container operation should fail with error "container cannot be restarted (restarts: 3/3)"
 
   Scenario: Cannot reset running container
     Given a container in "RUNNING" state with restart_count 0
     When I attempt to reset container for restart
-    Then the operation should fail with error "container cannot be restarted (restarts: 0/3)"
+    Then the container operation should fail with error "container cannot be restarted (restarts: 0/3)"
 
   Scenario: Reset preserves container identity
     Given a container with id "mining-1" in "FAILED" state with restart_count 1

@@ -685,7 +685,7 @@ func (cc *containerContext) theDurationShouldBeApproximatelySeconds(expectedSeco
 	return nil
 }
 
-func (cc *containerContext) theOperationShouldFailWithError(expectedError string) error {
+func (cc *containerContext) theContainerOperationShouldFailWithError(expectedError string) error {
 	if cc.err == nil {
 		return fmt.Errorf("expected error '%s', but operation succeeded", expectedError)
 	}
@@ -767,7 +767,7 @@ func RegisterContainerSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^the container player_id should be (\d+)$`, cc.theContainerPlayerIDShouldBe)
 	ctx.Step(`^the duration should be (\d+) seconds$`, cc.theDurationShouldBeSeconds)
 	ctx.Step(`^the duration should be approximately (\d+) seconds$`, cc.theDurationShouldBeApproximatelySeconds)
-	ctx.Step(`^the operation should fail with error "([^"]*)"$`, cc.theOperationShouldFailWithError)
+	ctx.Step(`^the container operation should fail with error "([^"]*)"$`, cc.theContainerOperationShouldFailWithError)
 
 	// Container-specific boolean assertions
 	ctx.Step(`^the container should continue$`, cc.theContainerShouldContinue)
