@@ -9,6 +9,7 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	appShip "github.com/andrescamacho/spacetraders-go/internal/application/ship"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	domainMining "github.com/andrescamacho/spacetraders-go/internal/domain/mining"
@@ -126,7 +127,7 @@ type RunCoordinatorHandler struct {
 	mediator           common.Mediator
 	shipRepo           navigation.ShipRepository
 	operationRepo      domainMining.OperationRepository
-	shipAssignmentRepo daemon.ShipAssignmentRepository
+	shipAssignmentRepo container.ShipAssignmentRepository
 	daemonClient       daemon.DaemonClient
 	routingClient      routing.RoutingClient
 	routePlanner       *appShip.RoutePlanner
@@ -140,7 +141,7 @@ func NewRunCoordinatorHandler(
 	mediator common.Mediator,
 	shipRepo navigation.ShipRepository,
 	operationRepo domainMining.OperationRepository,
-	shipAssignmentRepo daemon.ShipAssignmentRepository,
+	shipAssignmentRepo container.ShipAssignmentRepository,
 	daemonClient daemon.DaemonClient,
 	routingClient routing.RoutingClient,
 	routePlanner *appShip.RoutePlanner,
@@ -429,7 +430,7 @@ func (h *RunCoordinatorHandler) createPoolAssignments(
 	playerID int,
 ) error {
 	for _, ship := range ships {
-		assignment := daemon.NewShipAssignment(ship, playerID, containerID, nil)
+		assignment := container.NewShipAssignment(ship, playerID, containerID, nil)
 		if err := h.shipAssignmentRepo.Assign(ctx, assignment); err != nil {
 			return fmt.Errorf("failed to assign %s: %w", ship, err)
 		}

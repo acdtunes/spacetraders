@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 )
 
 // FindCoordinatorShips returns the list of ship symbols currently owned by the coordinator.
@@ -22,7 +22,7 @@ func FindCoordinatorShips(
 	ctx context.Context,
 	coordinatorID string,
 	playerID int,
-	shipAssignmentRepo daemon.ShipAssignmentRepository,
+	shipAssignmentRepo container.ShipAssignmentRepository,
 ) ([]string, error) {
 	// Find all ship assignments for this coordinator
 	assignments, err := shipAssignmentRepo.FindByContainer(ctx, coordinatorID, playerID)
@@ -58,10 +58,10 @@ func CreatePoolAssignments(
 	shipSymbols []string,
 	coordinatorID string,
 	playerID int,
-	shipAssignmentRepo daemon.ShipAssignmentRepository,
+	shipAssignmentRepo container.ShipAssignmentRepository,
 ) error {
 	for _, shipSymbol := range shipSymbols {
-		assignment := daemon.NewShipAssignment(
+		assignment := container.NewShipAssignment(
 			shipSymbol,
 			playerID,
 			coordinatorID,
@@ -94,7 +94,7 @@ func ReleasePoolAssignments(
 	ctx context.Context,
 	coordinatorID string,
 	playerID int,
-	shipAssignmentRepo daemon.ShipAssignmentRepository,
+	shipAssignmentRepo container.ShipAssignmentRepository,
 	reason string,
 ) error {
 	if err := shipAssignmentRepo.ReleaseByContainer(ctx, coordinatorID, playerID, reason); err != nil {

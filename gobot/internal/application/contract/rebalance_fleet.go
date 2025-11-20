@@ -6,7 +6,7 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	appShip "github.com/andrescamacho/spacetraders-go/internal/application/ship"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
@@ -33,7 +33,7 @@ type RebalanceContractFleetResponse struct {
 type RebalanceContractFleetHandler struct {
 	mediator            common.Mediator
 	shipRepo            navigation.ShipRepository
-	shipAssignmentRepo  daemon.ShipAssignmentRepository
+	shipAssignmentRepo  container.ShipAssignmentRepository
 	graphProvider       system.ISystemGraphProvider
 	marketRepo          MarketRepository
 	distributionChecker *DistributionChecker
@@ -48,7 +48,7 @@ type MarketRepository interface {
 func NewRebalanceContractFleetHandler(
 	mediator common.Mediator,
 	shipRepo navigation.ShipRepository,
-	shipAssignmentRepo daemon.ShipAssignmentRepository,
+	shipAssignmentRepo container.ShipAssignmentRepository,
 	graphProvider system.ISystemGraphProvider,
 	marketRepo MarketRepository,
 ) *RebalanceContractFleetHandler {

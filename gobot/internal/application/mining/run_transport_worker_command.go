@@ -7,7 +7,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	appShip "github.com/andrescamacho/spacetraders-go/internal/application/ship"
 	"github.com/andrescamacho/spacetraders-go/internal/application/trading"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
@@ -36,7 +36,7 @@ type RunTransportWorkerResponse struct {
 type RunTransportWorkerHandler struct {
 	mediator           common.Mediator
 	shipRepo           navigation.ShipRepository
-	shipAssignmentRepo daemon.ShipAssignmentRepository
+	shipAssignmentRepo container.ShipAssignmentRepository
 	graphProvider      system.ISystemGraphProvider
 }
 
@@ -44,7 +44,7 @@ type RunTransportWorkerHandler struct {
 func NewRunTransportWorkerHandler(
 	mediator common.Mediator,
 	shipRepo navigation.ShipRepository,
-	shipAssignmentRepo daemon.ShipAssignmentRepository,
+	shipAssignmentRepo container.ShipAssignmentRepository,
 	graphProvider system.ISystemGraphProvider,
 ) *RunTransportWorkerHandler {
 	return &RunTransportWorkerHandler{

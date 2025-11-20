@@ -20,7 +20,6 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/shipyard"
 	"github.com/andrescamacho/spacetraders-go/internal/application/trading"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
-	domaindaemon "github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/routing"
 	pb "github.com/andrescamacho/spacetraders-go/pkg/proto/daemon"
@@ -597,8 +596,8 @@ func (s *DaemonServer) markContainerFailed(ctx context.Context, containerModel *
 
 // containerModelToShipAssignment converts a ShipAssignmentModel to domain entity
 // This is a helper for the recovery process
-func containerModelToShipAssignment(model *persistence.ShipAssignmentModel) *domaindaemon.ShipAssignment {
-	return domaindaemon.NewShipAssignment(
+func containerModelToShipAssignment(model *persistence.ShipAssignmentModel) *container.ShipAssignment {
+	return container.NewShipAssignment(
 		model.ShipSymbol,
 		model.PlayerID,
 		model.ContainerID,

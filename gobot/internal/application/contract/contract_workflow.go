@@ -7,8 +7,8 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	appShip "github.com/andrescamacho/spacetraders-go/internal/application/ship"
+	domainContainer "github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )
@@ -58,7 +58,7 @@ type RunWorkflowHandler struct {
 	mediator           common.Mediator
 	shipRepo           navigation.ShipRepository
 	contractRepo       domainContract.ContractRepository
-	shipAssignmentRepo daemon.ShipAssignmentRepository
+	shipAssignmentRepo domainContainer.ShipAssignmentRepository
 }
 
 // NewRunWorkflowHandler creates a new contract workflow handler
@@ -66,7 +66,7 @@ func NewRunWorkflowHandler(
 	mediator common.Mediator,
 	shipRepo navigation.ShipRepository,
 	contractRepo domainContract.ContractRepository,
-	shipAssignmentRepo daemon.ShipAssignmentRepository,
+	shipAssignmentRepo domainContainer.ShipAssignmentRepository,
 ) *RunWorkflowHandler {
 	return &RunWorkflowHandler{
 		mediator:           mediator,

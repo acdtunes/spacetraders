@@ -8,6 +8,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
+	domainContainer "github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
@@ -46,7 +47,7 @@ type RunFleetCoordinatorHandler struct {
 	shipRepo           navigation.ShipRepository
 	contractRepo       domainContract.ContractRepository
 	marketRepo         market.MarketRepository
-	shipAssignmentRepo daemon.ShipAssignmentRepository
+	shipAssignmentRepo domainContainer.ShipAssignmentRepository
 	daemonClient       daemon.DaemonClient // For creating worker containers
 	graphProvider      system.ISystemGraphProvider // For distance calculations
 	containerRepo      ContainerRepository // For checking existing workers
@@ -58,7 +59,7 @@ func NewRunFleetCoordinatorHandler(
 	shipRepo navigation.ShipRepository,
 	contractRepo domainContract.ContractRepository,
 	marketRepo market.MarketRepository,
-	shipAssignmentRepo daemon.ShipAssignmentRepository,
+	shipAssignmentRepo domainContainer.ShipAssignmentRepository,
 	daemonClient daemon.DaemonClient,
 	graphProvider system.ISystemGraphProvider,
 	containerRepo ContainerRepository,
@@ -330,7 +331,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			if err := h.shipAssignmentRepo.Transfer(ctx, completedShip, workerContainerID, cmd.ContainerID); err != nil {
 				logger.Log("WARNING", fmt.Sprintf("Failed to transfer ship %s back to coordinator: %v", completedShip, err), nil)
 				// Fallback: try inserting new assignment if transfer fails
-				assignment := daemon.NewShipAssignment(completedShip, cmd.PlayerID, cmd.ContainerID, nil)
+				assignment := domainContainer.NewShipAssignment(completedShip, cmd.PlayerID, cmd.ContainerID, nil)
 				_ = h.shipAssignmentRepo.Assign(ctx, assignment)
 			}
 

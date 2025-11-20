@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/routing"
@@ -36,7 +37,7 @@ type ScoutMarketsHandler struct {
 	graphProvider          system.ISystemGraphProvider
 	routingClient          routing.RoutingClient
 	daemonClient           daemon.DaemonClient
-	shipAssignmentRepo     daemon.ShipAssignmentRepository
+	shipAssignmentRepo     container.ShipAssignmentRepository
 }
 
 // NewScoutMarketsHandler creates a new scout markets handler
@@ -45,7 +46,7 @@ func NewScoutMarketsHandler(
 	graphProvider system.ISystemGraphProvider,
 	routingClient routing.RoutingClient,
 	daemonClient daemon.DaemonClient,
-	shipAssignmentRepo daemon.ShipAssignmentRepository,
+	shipAssignmentRepo container.ShipAssignmentRepository,
 ) *ScoutMarketsHandler {
 	return &ScoutMarketsHandler{
 		shipRepo:               shipRepo,

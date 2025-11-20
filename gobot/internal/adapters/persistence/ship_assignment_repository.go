@@ -8,7 +8,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
-	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 )
 
 // ShipAssignmentRepositoryGORM implements ship assignment persistence using GORM
@@ -24,7 +24,7 @@ func NewShipAssignmentRepository(db *gorm.DB) *ShipAssignmentRepositoryGORM {
 // Assign creates or updates a ship assignment
 func (r *ShipAssignmentRepositoryGORM) Assign(
 	ctx context.Context,
-	assignment *daemon.ShipAssignment,
+	assignment *container.ShipAssignment,
 ) error {
 	// Check for existing active assignment
 	existingAssignment, err := r.FindByShip(ctx, assignment.ShipSymbol(), assignment.PlayerID())
@@ -63,7 +63,7 @@ func (r *ShipAssignmentRepositoryGORM) FindByShip(
 	ctx context.Context,
 	shipSymbol string,
 	playerID int,
-) (*daemon.ShipAssignment, error) {
+) (*container.ShipAssignment, error) {
 	var model ShipAssignmentModel
 
 	err := r.db.WithContext(ctx).
@@ -79,7 +79,7 @@ func (r *ShipAssignmentRepositoryGORM) FindByShip(
 	}
 
 	// Convert model to domain entity
-	assignment := daemon.NewShipAssignment(
+	assignment := container.NewShipAssignment(
 		model.ShipSymbol,
 		model.PlayerID,
 		model.ContainerID,
@@ -95,7 +95,7 @@ func (r *ShipAssignmentRepositoryGORM) FindByShipSymbol(
 	ctx context.Context,
 	shipSymbol string,
 	playerID int,
-) (*daemon.ShipAssignment, error) {
+) (*container.ShipAssignment, error) {
 	return r.FindByShip(ctx, shipSymbol, playerID)
 }
 
@@ -104,7 +104,7 @@ func (r *ShipAssignmentRepositoryGORM) FindByContainer(
 	ctx context.Context,
 	containerID string,
 	playerID int,
-) ([]*daemon.ShipAssignment, error) {
+) ([]*container.ShipAssignment, error) {
 	var models []ShipAssignmentModel
 
 	err := r.db.WithContext(ctx).
@@ -115,9 +115,9 @@ func (r *ShipAssignmentRepositoryGORM) FindByContainer(
 		return nil, fmt.Errorf("failed to find container assignments: %w", err)
 	}
 
-	assignments := make([]*daemon.ShipAssignment, 0, len(models))
+	assignments := make([]*container.ShipAssignment, 0, len(models))
 	for _, model := range models {
-		assignment := daemon.NewShipAssignment(
+		assignment := container.NewShipAssignment(
 			model.ShipSymbol,
 			model.PlayerID,
 			model.ContainerID,

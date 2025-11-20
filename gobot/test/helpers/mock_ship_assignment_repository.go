@@ -5,24 +5,24 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 )
 
 // MockShipAssignmentRepository is a test double for ShipAssignmentRepository interface
 type MockShipAssignmentRepository struct {
 	mu          sync.RWMutex
-	assignments map[string]*daemon.ShipAssignment // shipSymbol -> assignment
+	assignments map[string]*container.ShipAssignment // shipSymbol -> assignment
 }
 
 // NewMockShipAssignmentRepository creates a new mock ship assignment repository
 func NewMockShipAssignmentRepository() *MockShipAssignmentRepository {
 	return &MockShipAssignmentRepository{
-		assignments: make(map[string]*daemon.ShipAssignment),
+		assignments: make(map[string]*container.ShipAssignment),
 	}
 }
 
 // Assign creates or updates a ship assignment
-func (m *MockShipAssignmentRepository) Assign(ctx context.Context, assignment *daemon.ShipAssignment) error {
+func (m *MockShipAssignmentRepository) Assign(ctx context.Context, assignment *container.ShipAssignment) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.assignments[assignment.ShipSymbol()] = assignment
@@ -30,7 +30,7 @@ func (m *MockShipAssignmentRepository) Assign(ctx context.Context, assignment *d
 }
 
 // FindByShip retrieves the active assignment for a ship
-func (m *MockShipAssignmentRepository) FindByShip(ctx context.Context, shipSymbol string, playerID int) (*daemon.ShipAssignment, error) {
+func (m *MockShipAssignmentRepository) FindByShip(ctx context.Context, shipSymbol string, playerID int) (*container.ShipAssignment, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -43,16 +43,16 @@ func (m *MockShipAssignmentRepository) FindByShip(ctx context.Context, shipSymbo
 }
 
 // FindByShipSymbol retrieves the assignment for a ship by symbol (alias for FindByShip)
-func (m *MockShipAssignmentRepository) FindByShipSymbol(ctx context.Context, shipSymbol string, playerID int) (*daemon.ShipAssignment, error) {
+func (m *MockShipAssignmentRepository) FindByShipSymbol(ctx context.Context, shipSymbol string, playerID int) (*container.ShipAssignment, error) {
 	return m.FindByShip(ctx, shipSymbol, playerID)
 }
 
 // FindByContainer retrieves all ship assignments for a container
-func (m *MockShipAssignmentRepository) FindByContainer(ctx context.Context, containerID string, playerID int) ([]*daemon.ShipAssignment, error) {
+func (m *MockShipAssignmentRepository) FindByContainer(ctx context.Context, containerID string, playerID int) ([]*container.ShipAssignment, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	var result []*daemon.ShipAssignment
+	var result []*container.ShipAssignment
 	for _, assignment := range m.assignments {
 		if assignment.ContainerID() == containerID {
 			result = append(result, assignment)
@@ -90,7 +90,7 @@ func (m *MockShipAssignmentRepository) Transfer(ctx context.Context, shipSymbol 
 	}
 
 	// Create a new assignment with the new container ID
-	newAssignment := daemon.NewShipAssignment(shipSymbol, assignment.PlayerID(), toContainerID, nil)
+	newAssignment := container.NewShipAssignment(shipSymbol, assignment.PlayerID(), toContainerID, nil)
 	m.assignments[shipSymbol] = newAssignment
 	return nil
 }
@@ -115,6 +115,6 @@ func (m *MockShipAssignmentRepository) ReleaseAllActive(ctx context.Context, rea
 	defer m.mu.Unlock()
 
 	count := len(m.assignments)
-	m.assignments = make(map[string]*daemon.ShipAssignment)
+	m.assignments = make(map[string]*container.ShipAssignment)
 	return count, nil
 }

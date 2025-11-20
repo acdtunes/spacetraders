@@ -84,7 +84,7 @@ func (hm *HealthMonitor) GetMetrics() *RecoveryMetrics {
 // Returns true if check was skipped due to cooldown, false if executed
 func (hm *HealthMonitor) RunCheck(
 	ctx context.Context,
-	assignments map[string]*ShipAssignment,
+	assignments map[string]*container.ShipAssignment,
 	containers map[string]*container.Container,
 	ships map[string]*navigation.Ship,
 ) (bool, error) {
@@ -125,7 +125,7 @@ func (hm *HealthMonitor) RunCheck(
 // CleanStaleAssignments releases assignments for non-existent containers
 func (hm *HealthMonitor) CleanStaleAssignments(
 	ctx context.Context,
-	assignments map[string]*ShipAssignment,
+	assignments map[string]*container.ShipAssignment,
 	existingContainerIDs map[string]bool,
 ) (int, error) {
 	cleaned := 0

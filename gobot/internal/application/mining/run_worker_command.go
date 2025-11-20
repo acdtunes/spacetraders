@@ -6,7 +6,7 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	appShip "github.com/andrescamacho/spacetraders-go/internal/application/ship"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
@@ -42,7 +42,7 @@ type RunWorkerResponse struct {
 type RunWorkerHandler struct {
 	mediator           common.Mediator
 	shipRepo           navigation.ShipRepository
-	shipAssignmentRepo daemon.ShipAssignmentRepository
+	shipAssignmentRepo container.ShipAssignmentRepository
 	clock              shared.Clock
 }
 
@@ -50,7 +50,7 @@ type RunWorkerHandler struct {
 func NewRunWorkerHandler(
 	mediator common.Mediator,
 	shipRepo navigation.ShipRepository,
-	shipAssignmentRepo daemon.ShipAssignmentRepository,
+	shipAssignmentRepo container.ShipAssignmentRepository,
 	clock shared.Clock,
 ) *RunWorkerHandler {
 	if clock == nil {

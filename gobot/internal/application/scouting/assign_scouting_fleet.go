@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/routing"
@@ -34,7 +35,7 @@ type AssignScoutingFleetHandler struct {
 	graphProvider      system.ISystemGraphProvider
 	routingClient      routing.RoutingClient
 	daemonClient       daemon.DaemonClient
-	shipAssignmentRepo daemon.ShipAssignmentRepository
+	shipAssignmentRepo container.ShipAssignmentRepository
 }
 
 // NewAssignScoutingFleetHandler creates a new assign scouting fleet handler
@@ -44,7 +45,7 @@ func NewAssignScoutingFleetHandler(
 	graphProvider system.ISystemGraphProvider,
 	routingClient routing.RoutingClient,
 	daemonClient daemon.DaemonClient,
-	shipAssignmentRepo daemon.ShipAssignmentRepository,
+	shipAssignmentRepo container.ShipAssignmentRepository,
 ) *AssignScoutingFleetHandler {
 	return &AssignScoutingFleetHandler{
 		shipRepo:           shipRepo,

@@ -9,7 +9,6 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
 )
 
 // ContainerRunner executes a container operation in a background goroutine
@@ -462,7 +461,7 @@ func (r *ContainerRunner) createShipAssignments() error {
 		}
 
 		// Create ship assignment
-		assignment := daemon.NewShipAssignment(
+		assignment := container.NewShipAssignment(
 			shipSymbol,
 			r.containerEntity.PlayerID(),
 			r.containerEntity.ID(),
