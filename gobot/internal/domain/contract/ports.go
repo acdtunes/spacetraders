@@ -9,35 +9,6 @@ type ContractRepository interface {
 	Save(ctx context.Context, contract *Contract) error
 }
 
-type ContractData struct {
-	ContractID    string
-	PlayerID      int
-	FactionSymbol string
-	Type          string
-	Terms         ContractTermsData
-	Accepted      bool
-	Fulfilled     bool
-}
-
-type ContractTermsData struct {
-	Payment          PaymentData
-	Deliveries       []DeliveryData
-	DeadlineToAccept string
-	Deadline         string
-}
-
-type PaymentData struct {
-	OnAccepted  int
-	OnFulfilled int
-}
-
-type DeliveryData struct {
-	TradeSymbol       string
-	DestinationSymbol string
-	UnitsRequired     int
-	UnitsFulfilled    int
-}
-
 // PurchaseHistoryRepository defines the interface for contract purchase history persistence
 type PurchaseHistoryRepository interface {
 	Insert(ctx context.Context, history *PurchaseHistory) error

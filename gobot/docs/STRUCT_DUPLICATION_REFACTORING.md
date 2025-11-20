@@ -147,9 +147,9 @@ type Market struct {
 
 ---
 
-### 5. MODERATE: Payment/Delivery Structs (3 identical sets)
+### 5. ✅ COMPLETED: Payment/Delivery Structs (3 identical sets) - Deleted unused domain port DTOs
 
-**Current State:**
+**Previous State:**
 
 | Location | Structs | Purpose |
 |----------|---------|---------|
@@ -157,18 +157,25 @@ type Market struct {
 | `domain/contract/ports.go` (29-39) | PaymentData, DeliveryData | Contract persistence DTOs |
 | `infrastructure/ports/api_client.go` (76-86) | PaymentData, DeliveryData | API communication DTOs |
 
-**Issues:**
-- Sets 2 and 3 are **100% IDENTICAL**
-- Complete duplication of DTO definitions
-- No code reuse between API client and contract ports
+**Resolution:** Deleted unused domain port DTOs (PaymentData, DeliveryData, ContractData, ContractTermsData)
+**Files Modified:**
+- `internal/domain/contract/ports.go` - Deleted lines 12-39 (4 unused DTO structs)
 
-**Impact:** HIGH - affects contract workflows and API integration
+**Previous Issues (RESOLVED):**
+- ~~Sets 2 and 3 are **100% IDENTICAL**~~ ✅ Domain port DTOs deleted (unused)
+- ~~Complete duplication of DTO definitions~~ ✅ Only infrastructure and domain value objects remain
+- ~~No code reuse between API client and contract ports~~ ✅ Proper separation maintained
+
+**Status:** ✅ Complete
+**Tests:** ✅ All BDD tests passing
+**Build:** ✅ Successful
+**Lines Removed:** ~28 lines of duplicate code
 
 ---
 
-### 6. MODERATE: ContractTerms (3 variants)
+### 6. ✅ COMPLETED: ContractTerms (3 variants) - Resolved with Payment/Delivery cleanup
 
-**Current State:**
+**Previous State:**
 
 | Location | Lines | Differences |
 |----------|-------|-------------|
@@ -176,11 +183,15 @@ type Market struct {
 | `domain/contract/ports.go` | 22-28 | Uses DTOs (PaymentData, DeliveryData) |
 | `infrastructure/ports/api_client.go` | 69-74 | Uses DTOs, different field ordering |
 
-**Issues:**
-- Variants 2 and 3 are functionally identical
-- Resolves automatically with Payment/Delivery cleanup
+**Resolution:** Deleted unused `ContractTermsData` from domain/contract/ports.go (part of Issue #5)
+**Files Modified:**
+- `internal/domain/contract/ports.go` - Deleted as part of DTO cleanup
 
-**Impact:** MEDIUM - tied to Issue #5
+**Previous Issues (RESOLVED):**
+- ~~Variants 2 and 3 are functionally identical~~ ✅ Domain port version deleted
+- ~~Resolves automatically with Payment/Delivery cleanup~~ ✅ Resolved together
+
+**Status:** ✅ Complete (tied to Issue #5)
 
 ---
 
@@ -558,11 +569,11 @@ git commit -m "refactor: Phase 3 - Unify market domain"
 ## Success Metrics
 
 ### Quantitative
-- **Structs eliminated:** 9 of 10-12 completed (CargoItem variants: 3, Market/TradeGood: 2, RouteSegment variants: 2, ShipRoute variants: 2)
-- **Files modified:** 23 of ~25 (persistence, application layer, daemon main, adapter implementations, gRPC layer)
+- **Structs eliminated:** 14 of 10-12 completed (CargoItem: 3, Market/TradeGood: 2, Container: 1 renamed, RouteSegment: 2, ShipRoute: 2, Payment/Delivery/ContractTerms: 4)
+- **Files modified:** 24 of ~25 (persistence, application layer, daemon main, adapter implementations, gRPC layer, domain ports)
 - **Files created:** 1 (`internal/application/common/route_dto.go`)
 - **Packages deleted:** 1 (`internal/domain/trading`)
-- **Lines of code reduced:** ~200 of 200-300 target
+- **Lines of code reduced:** ~228 of 200-300 target (exceeded goal!)
 - **Test pass rate:** 100% (All BDD tests passing)
 
 ### Qualitative
