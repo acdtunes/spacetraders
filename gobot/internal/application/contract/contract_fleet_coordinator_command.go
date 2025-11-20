@@ -36,7 +36,7 @@ type ContractFleetCoordinatorResponse struct {
 
 // ContainerRepository interface for querying container state
 type ContainerRepository interface {
-	ListByStatusSimple(ctx context.Context, status string, playerID *int) ([]persistence.ContainerInfo, error)
+	ListByStatusSimple(ctx context.Context, status string, playerID *int) ([]persistence.ContainerSummary, error)
 }
 
 // ContractFleetCoordinatorHandler implements the fleet coordinator logic
@@ -446,7 +446,7 @@ func (h *ContractFleetCoordinatorHandler) negotiateContract(
 func (h *ContractFleetCoordinatorHandler) findExistingWorkers(
 	ctx context.Context,
 	playerID int,
-) ([]persistence.ContainerInfo, error) {
+) ([]persistence.ContainerSummary, error) {
 	// Query for RUNNING contract workflow containers
 	runningWorkers, err := h.containerRepo.ListByStatusSimple(ctx, "RUNNING", &playerID)
 	if err != nil {
@@ -454,7 +454,7 @@ func (h *ContractFleetCoordinatorHandler) findExistingWorkers(
 	}
 
 	// Filter for CONTRACT_WORKFLOW type only
-	var workers []persistence.ContainerInfo
+	var workers []persistence.ContainerSummary
 	for _, container := range runningWorkers {
 		if container.ContainerType == "CONTRACT_WORKFLOW" {
 			workers = append(workers, container)

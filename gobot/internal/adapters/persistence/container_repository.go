@@ -176,8 +176,8 @@ func (r *ContainerRepositoryGORM) Delete(
 	return nil
 }
 
-// ContainerInfo represents basic container information for coordinators
-type ContainerInfo struct {
+// ContainerSummary represents basic container information for coordinators
+type ContainerSummary struct {
 	ID            string
 	ContainerType string
 	Status        string
@@ -188,7 +188,7 @@ func (r *ContainerRepositoryGORM) ListByStatusSimple(
 	ctx context.Context,
 	status string,
 	playerID *int,
-) ([]ContainerInfo, error) {
+) ([]ContainerSummary, error) {
 	var models []*ContainerModel
 
 	query := r.db.WithContext(ctx).Where("status = ?", status)
@@ -201,10 +201,10 @@ func (r *ContainerRepositoryGORM) ListByStatusSimple(
 		return nil, fmt.Errorf("failed to list containers by status: %w", err)
 	}
 
-	// Convert to ContainerInfo
-	result := make([]ContainerInfo, len(models))
+	// Convert to ContainerSummary
+	result := make([]ContainerSummary, len(models))
 	for i, model := range models {
-		result[i] = ContainerInfo{
+		result[i] = ContainerSummary{
 			ID:            model.ID,
 			ContainerType: model.ContainerType,
 			Status:        model.Status,
