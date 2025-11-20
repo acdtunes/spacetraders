@@ -59,6 +59,22 @@ func (voc *valueObjectContext) reset() {
 	sharedMarket = nil
 }
 
+// parseFlightMode converts a string mode name to FlightMode constant
+func parseFlightMode(mode string) shared.FlightMode {
+	switch strings.ToUpper(mode) {
+	case "CRUISE":
+		return shared.FlightModeCruise
+	case "DRIFT":
+		return shared.FlightModeDrift
+	case "BURN":
+		return shared.FlightModeBurn
+	case "STEALTH":
+		return shared.FlightModeStealth
+	default:
+		return shared.FlightModeCruise
+	}
+}
+
 // Waypoint steps
 func (voc *valueObjectContext) iCreateAWaypointWithSymbolXY(symbol string, x, y float64) error {
 	voc.waypoint, voc.err = shared.NewWaypoint(symbol, x, y)

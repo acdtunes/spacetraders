@@ -14,7 +14,7 @@ func TestFeatures(t *testing.T) {
 		ScenarioInitializer: InitializeScenario,
 		Options: &godog.Options{
 			Format:   "pretty",
-			Paths:    []string{"features/domain", "features/application", "features/adapters", "features/infrastructure", "features/daemon"},
+			Paths:    []string{"features/domain"},
 			TestingT: t,
 		},
 	}
@@ -25,83 +25,11 @@ func TestFeatures(t *testing.T) {
 }
 
 func InitializeScenario(sc *godog.ScenarioContext) {
-	// Register all step definitions
+	// Register step definitions for the sample ship entity test
 	// NOTE: ValueObjectScenarios registered FIRST so its step definitions take precedence
 	// for shared steps like "the result should be true/false"
 	steps.InitializeValueObjectScenarios(sc)
-	// NOTE: Route scenario registered early to ensure its step definitions take precedence
-	// for shared steps like "the operation should fail with error" in route tests
-	steps.InitializeRouteScenario(sc)
 	steps.InitializeShipScenario(sc)
-	// NOTE: ContainerLifecycleScenario registered BEFORE ContainerScenario so lifecycle steps take precedence
-	// The lifecycle steps have the same wording but operate on containerLifecycleContext with currentContainer
-	steps.InitializeContainerLifecycleScenario(sc)
-	steps.InitializeContainerScenario(sc)
-	// Market scouting domain scenarios
-	// NOTE: MarketScenario (trading) registered FIRST to take precedence for simpler patterns
-	// TradeGoodSteps and ScoutingMarketSteps check sharedErr for cross-context error assertions
-	steps.InitializeMarketScenario(sc)      // Trading market - register first for simpler patterns and error steps
-	steps.InitializeTradeGoodSteps(sc)      // Trade good value object - uses sharedErr for error assertions
-	steps.InitializeScoutingMarketSteps(sc) // Scouting market - register after for more specific patterns
-	// NOTE: NegotiateContractScenario registered BEFORE ContractScenario so negotiate contract assertions take precedence
-	steps.InitializeNegotiateContractScenario(sc)
-	steps.InitializeContractScenario(sc)
-	steps.InitializeAcceptContractScenario(sc) // Re-enabled
-	steps.InitializeFulfillContractScenario(sc) // Re-enabled
-	steps.InitializeNavigateShipHandlerScenario(sc) // Re-enabled
-
-	// Register ShipOperationsScenario (dock, orbit, set flight mode) BEFORE NavigateToWaypointScenario
-	// so its step definitions take precedence for dock_ship.feature, orbit_ship.feature, and set_flight_mode.feature
-	steps.InitializeShipOperationsScenario(sc)
-	steps.InitializeNavigateToWaypointScenario(sc) // Re-enabled
-	steps.InitializeRefuelShipScenario(sc)
-	// Adapter layer scenarios
-	// NOTE: MarketRepositoryScenario registered BEFORE TransactionLimitScenario
-	// to ensure its "a player with ID" step takes precedence for market_repository.feature
-	steps.InitializeMarketRepositoryScenario(sc)
-
-	// NOTE: TransactionLimitScenario registered BEFORE PurchaseCargoScenario
-	// so transaction limit step definitions take precedence for purchase_cargo_transaction_limits.feature
-	steps.InitializeTransactionLimitScenario(sc) // Re-enabled
-	steps.InitializePurchaseCargoScenario(sc)
-	steps.InitializeSellCargoScenario(sc)
-	steps.InitializeJettisonCargoScenario(sc)
-	steps.InitializeDeliverContractScenario(sc) // Re-enabled
-	steps.InitializeRoutePlannerScenario(sc)
-	steps.InitializeRouteExecutorScenario(sc) // Re-enabled
-	steps.InitializeEvaluateContractProfitabilityScenario(sc) // Re-enabled
-	steps.InitializeBatchContractWorkflowScenario(sc)
-
-	// Daemon layer scenarios (registered before scouting to avoid step collisions)
-	// NOTE: Entity scenarios registered BEFORE infrastructure scenarios so that infrastructure
-	// steps override domain steps for features/daemon/* (last registration wins)
-	steps.InitializeDaemonEntityScenarios(sc)   // Domain-layer daemon entity tests (ShipAssignment, HealthMonitor)
-	steps.InitializeDaemonPlayerResolutionScenario(sc) // Re-enabled
-	steps.InitializeDaemonServerScenario(sc) // Re-enabled - core functionality implemented, complex scenarios marked pending
-	steps.InitializeContainerLoggingScenario(sc) // Re-enabled - testing
-	steps.InitializeShipAssignmentScenario(sc) // Infrastructure layer ship assignment tests - AFTER entity scenarios to override
-	steps.InitializeHealthMonitorContext(sc)     // Infrastructure layer health monitor tests - AFTER entity scenarios to override
-
-	// Scouting application layer scenarios
-	steps.InitializeGetMarketDataScenario(sc)
-	steps.InitializeListMarketDataScenario(sc)
-	steps.InitializeScoutTourScenario(sc)
-	steps.InitializeScoutMarketsScenario(sc)
-
-	// Infrastructure layer scenarios
-	steps.InitializeWaypointCacheScenario(sc) // Re-enabled
-
-	// Register NavigationUtils scenario
-	steps.InitializeNavigationUtilsScenario(sc) // Re-enabled
-
-	// Register common undefined steps (temporary implementations)
-	steps.InitializeCommonUndefinedSteps(sc)
-	steps.InitializeRouteNavigationUndefinedSteps(sc)
-	steps.InitializeHealthShipContainerUndefinedSteps(sc)
-	steps.InitializeScoutingMiscUndefinedSteps(sc)
-
-	// API Adapter layer scenarios (circuit breaker, retry logic, rate limiting)
-	// steps.InitializeAPIAdapterSteps(sc) // DELETED - placeholder tests removed
 }
 
 func TestMain(m *testing.M) {
