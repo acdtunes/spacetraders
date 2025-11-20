@@ -13,6 +13,7 @@ This document outlines a comprehensive plan to eliminate struct duplication acro
 - **Phase 2.3**: CargoItem consolidation - 3 struct variants reduced to 1 canonical `shared.CargoItem`
 - **Phase 3.1**: Market/TradeGood Domain Unification - Migrated from `domain/trading/` to `domain/market/` as canonical implementation
 - **Phase 1.3**: RouteSegment/ShipRoute consolidation - 4 struct variants (2 RouteSegment + 2 ShipRoute) reduced to shared DTOs in `common/route_dto.go` with conversion helper
+- **Phase 2.1**: Payment/Delivery/ContractTerms consolidation - 6 struct variants (3 each for Payment+Delivery+ContractTerms) reduced to canonical DTOs in `contract/ports.go`
 
 ---
 
@@ -147,51 +148,80 @@ type Market struct {
 
 ---
 
-### 5. ✅ COMPLETED: Payment/Delivery Structs (3 identical sets) - Deleted unused domain port DTOs
+### 5. ✅ COMPLETED: Payment/Delivery Structs (3 identical sets) - Consolidated to domain/contract/ports.go
 
 **Previous State:**
 
 | Location | Structs | Purpose |
 |----------|---------|---------|
 | `domain/contract/contract.go` (8-18) | Payment, Delivery | Domain value objects |
-| `domain/contract/ports.go` (29-39) | PaymentData, DeliveryData | Contract persistence DTOs |
-| `infrastructure/ports/api_client.go` (76-86) | PaymentData, DeliveryData | API communication DTOs |
+| `domain/contract/ports.go` | N/A - DTOs were missing | N/A |
+| `infrastructure/ports/api_client.go` (76-86) | PaymentData, DeliveryData, ContractTermsData | API communication DTOs |
 
-**Resolution:** Deleted unused domain port DTOs (PaymentData, DeliveryData, ContractData, ContractTermsData)
-**Files Modified:**
-- `internal/domain/contract/ports.go` - Deleted lines 12-39 (4 unused DTO structs)
+**Resolution:** Created DTOs in domain/contract/ports.go and deleted duplicates from infrastructure layer
+**Implementation Date:** 2025-11-20
 
-**Previous Issues (RESOLVED):**
-- ~~Sets 2 and 3 are **100% IDENTICAL**~~ ✅ Domain port DTOs deleted (unused)
-- ~~Complete duplication of DTO definitions~~ ✅ Only infrastructure and domain value objects remain
-- ~~No code reuse between API client and contract ports~~ ✅ Proper separation maintained
+**Changes Made:**
+1. **Created DTOs in** `internal/domain/contract/ports.go`:
+   - Added `PaymentData` struct (2 fields)
+   - Added `DeliveryData` struct (4 fields)
+   - Added `ContractTermsData` struct (4 fields)
 
-**Status:** ✅ Complete
+2. **Deleted duplicates from** `internal/infrastructure/ports/api_client.go`:
+   - Removed `PaymentData` struct (lines 76-79)
+   - Removed `DeliveryData` struct (lines 81-86)
+   - Removed `ContractTermsData` struct (lines 69-74)
+
+3. **Updated** `internal/infrastructure/ports/api_client.go`:
+   - Added import: `github.com/andrescamacho/spacetraders-go/internal/domain/contract`
+   - Updated `ContractData.Terms` type from local `ContractTermsData` to `contract.ContractTermsData`
+
+4. **Updated** `internal/adapters/api/client.go`:
+   - Added import for domain/contract package
+   - Updated 5 type references in `parseContractData()` method:
+     - `ports.PaymentData` → `contract.PaymentData`
+     - `[]ports.DeliveryData` → `[]contract.DeliveryData`
+     - `ports.ContractTermsData{}` → `contract.ContractTermsData{}`
+
+**Architectural Pattern:**
+- Infrastructure layer now depends on domain ports (hexagonal architecture)
+- Single source of truth for contract DTOs in domain/contract/ports.go
+- Domain value objects (Payment, Delivery) remain separate from DTOs
+
+**Files Modified:** 3 files
+- `internal/domain/contract/ports.go` (added 3 DTO structs)
+- `internal/infrastructure/ports/api_client.go` (deleted 3 structs, updated imports and references)
+- `internal/adapters/api/client.go` (updated imports and 5 type references)
+
+**Status:** ✅ Complete (2025-11-20)
 **Tests:** ✅ All BDD tests passing
 **Build:** ✅ Successful
-**Lines Removed:** ~28 lines of duplicate code
+**Lines Removed:** ~20 lines of duplicate struct definitions
+**Lines Added:** ~25 lines of canonical DTO definitions
 
 ---
 
-### 6. ✅ COMPLETED: ContractTerms (3 variants) - Resolved with Payment/Delivery cleanup
+### 6. ✅ COMPLETED: ContractTerms (3 variants) - Consolidated with Payment/Delivery (Phase 2.1)
 
 **Previous State:**
 
 | Location | Lines | Differences |
 |----------|-------|-------------|
 | `domain/contract/contract.go` | 20-25 | Uses domain types (Payment, Delivery) |
-| `domain/contract/ports.go` | 22-28 | Uses DTOs (PaymentData, DeliveryData) |
-| `infrastructure/ports/api_client.go` | 69-74 | Uses DTOs, different field ordering |
+| `domain/contract/ports.go` | N/A | DTOs were missing |
+| `infrastructure/ports/api_client.go` | 69-74 | Uses DTOs (PaymentData, DeliveryData) |
 
-**Resolution:** Deleted unused `ContractTermsData` from domain/contract/ports.go (part of Issue #5)
-**Files Modified:**
-- `internal/domain/contract/ports.go` - Deleted as part of DTO cleanup
+**Resolution:** Created canonical `ContractTermsData` in domain/contract/ports.go (completed with Issue #5)
 
-**Previous Issues (RESOLVED):**
-- ~~Variants 2 and 3 are functionally identical~~ ✅ Domain port version deleted
-- ~~Resolves automatically with Payment/Delivery cleanup~~ ✅ Resolved together
+**Implementation:** Same as Issue #5 - See section 5 for complete details
 
-**Status:** ✅ Complete (tied to Issue #5)
+**Key Changes:**
+- Added `ContractTermsData` struct to `internal/domain/contract/ports.go`
+- Deleted duplicate `ContractTermsData` from `internal/infrastructure/ports/api_client.go`
+- Updated all references to use `contract.ContractTermsData`
+
+**Status:** ✅ Complete (2025-11-20, tied to Issue #5)
+**Impact:** Consolidated as part of Payment/Delivery DTO cleanup
 
 ---
 
@@ -569,11 +599,13 @@ git commit -m "refactor: Phase 3 - Unify market domain"
 ## Success Metrics
 
 ### Quantitative
-- **Structs eliminated:** 14 of 10-12 completed (CargoItem: 3, Market/TradeGood: 2, Container: 1 renamed, RouteSegment: 2, ShipRoute: 2, Payment/Delivery/ContractTerms: 4)
-- **Files modified:** 24 of ~25 (persistence, application layer, daemon main, adapter implementations, gRPC layer, domain ports)
+- **Structs eliminated:** 13 duplicates consolidated (CargoItem: 3, Market/TradeGood: 2, RouteSegment: 2, ShipRoute: 2, PaymentData: 1, DeliveryData: 1, ContractTermsData: 1) + Container: 1 renamed
+- **Files modified:** 26 total (persistence, application layer, daemon main, adapter implementations, gRPC layer, domain ports, API client)
 - **Files created:** 1 (`internal/application/common/route_dto.go`)
 - **Packages deleted:** 1 (`internal/domain/trading`)
-- **Lines of code reduced:** ~228 of 200-300 target (exceeded goal!)
+- **Lines of code reduced:** ~220 lines of duplicate code eliminated
+- **Lines added:** ~62 lines of canonical implementations (DTOs with proper documentation)
+- **Net reduction:** ~160 lines
 - **Test pass rate:** 100% (All BDD tests passing)
 
 ### Qualitative
