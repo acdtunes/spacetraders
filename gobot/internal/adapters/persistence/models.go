@@ -182,21 +182,3 @@ type MiningOperationModel struct {
 func (MiningOperationModel) TableName() string {
 	return "mining_operations"
 }
-
-// CargoTransferQueueModel represents the cargo_transfer_queue table
-type CargoTransferQueueModel struct {
-	ID                int          `gorm:"column:id;primaryKey;autoIncrement"`
-	MiningOperationID string       `gorm:"column:mining_operation_id;not null;index"`
-	MinerShip         string       `gorm:"column:miner_ship;not null;index"`
-	TransportShip     string       `gorm:"column:transport_ship"`
-	Status            string       `gorm:"column:status;default:'PENDING'"`
-	CargoManifest     string       `gorm:"column:cargo_manifest;type:text;not null"` // JSON
-	CreatedAt         time.Time    `gorm:"column:created_at;not null;autoCreateTime"`
-	CompletedAt       *time.Time   `gorm:"column:completed_at"`
-	PlayerID          int          `gorm:"column:player_id;not null"`
-	Player            *PlayerModel `gorm:"foreignKey:PlayerID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
-}
-
-func (CargoTransferQueueModel) TableName() string {
-	return "cargo_transfer_queue"
-}
