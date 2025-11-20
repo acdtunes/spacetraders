@@ -13,7 +13,6 @@ import (
 
 	"golang.org/x/time/rate"
 
-	"github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
@@ -1060,7 +1059,7 @@ func (c *SpaceTradersClient) parseContractData(data map[string]interface{}) (*po
 	deadline, _ := termsData["deadline"].(string)
 
 	// Parse payment
-	var payment contract.PaymentData
+	var payment ports.PaymentData
 	if paymentData, ok := termsData["payment"].(map[string]interface{}); ok {
 		if onAccepted, ok := paymentData["onAccepted"].(float64); ok {
 			payment.OnAccepted = int(onAccepted)
@@ -1071,9 +1070,9 @@ func (c *SpaceTradersClient) parseContractData(data map[string]interface{}) (*po
 	}
 
 	// Parse deliveries
-	var deliveries []contract.DeliveryData
+	var deliveries []ports.DeliveryData
 	if deliveriesData, ok := termsData["deliver"].([]interface{}); ok {
-		deliveries = make([]contract.DeliveryData, len(deliveriesData))
+		deliveries = make([]ports.DeliveryData, len(deliveriesData))
 		for i, deliveryItem := range deliveriesData {
 			if delivery, ok := deliveryItem.(map[string]interface{}); ok {
 				tradeSymbol, _ := delivery["tradeSymbol"].(string)
@@ -1087,7 +1086,7 @@ func (c *SpaceTradersClient) parseContractData(data map[string]interface{}) (*po
 					unitsFulfilled = int(uf)
 				}
 
-				deliveries[i] = contract.DeliveryData{
+				deliveries[i] = ports.DeliveryData{
 					TradeSymbol:       tradeSymbol,
 					DestinationSymbol: destinationSymbol,
 					UnitsRequired:     unitsRequired,
@@ -1101,7 +1100,7 @@ func (c *SpaceTradersClient) parseContractData(data map[string]interface{}) (*po
 		ID:            id,
 		FactionSymbol: factionSymbol,
 		Type:          contractType,
-		Terms: contract.ContractTermsData{
+		Terms: ports.ContractTermsData{
 			DeadlineToAccept: deadlineToAccept,
 			Deadline:         deadline,
 			Payment:          payment,

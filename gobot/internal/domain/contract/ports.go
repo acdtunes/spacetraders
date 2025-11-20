@@ -24,27 +24,3 @@ type PurchaseHistoryData struct {
 	PurchasedAt    string // RFC3339 format
 	ContractID     string
 }
-
-// Contract DTOs for API and persistence boundaries
-
-// PaymentData is the DTO for contract payment terms
-type PaymentData struct {
-	OnAccepted  int
-	OnFulfilled int
-}
-
-// DeliveryData is the DTO for contract delivery requirements
-type DeliveryData struct {
-	TradeSymbol       string
-	DestinationSymbol string
-	UnitsRequired     int
-	UnitsFulfilled    int
-}
-
-// ContractTermsData is the DTO for contract terms
-type ContractTermsData struct {
-	DeadlineToAccept string
-	Deadline         string
-	Payment          PaymentData
-	Deliveries       []DeliveryData
-}

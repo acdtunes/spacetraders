@@ -3,7 +3,6 @@ package ports
 import (
 	"context"
 
-	"github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
@@ -62,9 +61,28 @@ type ContractData struct {
 	ID            string
 	FactionSymbol string
 	Type          string
-	Terms         contract.ContractTermsData
+	Terms         ContractTermsData
 	Accepted      bool
 	Fulfilled     bool
+}
+
+type ContractTermsData struct {
+	DeadlineToAccept string
+	Deadline         string
+	Payment          PaymentData
+	Deliveries       []DeliveryData
+}
+
+type PaymentData struct {
+	OnAccepted  int
+	OnFulfilled int
+}
+
+type DeliveryData struct {
+	TradeSymbol       string
+	DestinationSymbol string
+	UnitsRequired     int
+	UnitsFulfilled    int
 }
 
 // Cargo DTOs
