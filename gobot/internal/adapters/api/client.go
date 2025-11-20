@@ -118,9 +118,9 @@ func (c *SpaceTradersClient) GetShip(ctx context.Context, symbol, token string) 
 	}
 
 	// Convert cargo inventory
-	inventory := make([]navigation.CargoItemData, len(response.Data.Cargo.Inventory))
+	inventory := make([]shared.CargoItem, len(response.Data.Cargo.Inventory))
 	for i, item := range response.Data.Cargo.Inventory {
-		inventory[i] = navigation.CargoItemData{
+		inventory[i] = shared.CargoItem{
 			Symbol:      item.Symbol,
 			Name:        item.Name,
 			Description: item.Description,
@@ -217,9 +217,9 @@ func (c *SpaceTradersClient) ListShips(ctx context.Context, token string) ([]*na
 		// Convert this page's ships
 		for _, ship := range response.Data {
 			// Convert cargo inventory
-			inventory := make([]navigation.CargoItemData, len(ship.Cargo.Inventory))
+			inventory := make([]shared.CargoItem, len(ship.Cargo.Inventory))
 			for j, item := range ship.Cargo.Inventory {
-				inventory[j] = navigation.CargoItemData{
+				inventory[j] = shared.CargoItem{
 					Symbol:      item.Symbol,
 					Name:        item.Name,
 					Description: item.Description,
@@ -677,9 +677,9 @@ func (c *SpaceTradersClient) ExtractResources(ctx context.Context, shipSymbol st
 	}
 
 	// Convert cargo inventory
-	inventory := make([]navigation.CargoItemData, len(response.Data.Cargo.Inventory))
+	inventory := make([]shared.CargoItem, len(response.Data.Cargo.Inventory))
 	for i, item := range response.Data.Cargo.Inventory {
-		inventory[i] = navigation.CargoItemData{
+		inventory[i] = shared.CargoItem{
 			Symbol:      item.Symbol,
 			Name:        item.Name,
 			Description: item.Description,
@@ -733,9 +733,9 @@ func (c *SpaceTradersClient) TransferCargo(ctx context.Context, fromShipSymbol, 
 	}
 
 	// Convert cargo inventory (remaining cargo on source ship)
-	inventory := make([]navigation.CargoItemData, len(response.Data.Cargo.Inventory))
+	inventory := make([]shared.CargoItem, len(response.Data.Cargo.Inventory))
 	for i, item := range response.Data.Cargo.Inventory {
-		inventory[i] = navigation.CargoItemData{
+		inventory[i] = shared.CargoItem{
 			Symbol:      item.Symbol,
 			Name:        item.Name,
 			Description: item.Description,
@@ -967,11 +967,11 @@ func (c *SpaceTradersClient) convertShipData(data map[string]interface{}) (*navi
 	cargoUnits := int(cargoData["units"].(float64))
 
 	// Extract cargo inventory
-	var inventory []navigation.CargoItemData
+	var inventory []shared.CargoItem
 	if inventoryRaw, ok := cargoData["inventory"].([]interface{}); ok {
 		for _, item := range inventoryRaw {
 			itemMap := item.(map[string]interface{})
-			inventory = append(inventory, navigation.CargoItemData{
+			inventory = append(inventory, shared.CargoItem{
 				Symbol:      itemMap["symbol"].(string),
 				Name:        itemMap["name"].(string),
 				Description: itemMap["description"].(string),

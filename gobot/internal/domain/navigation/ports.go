@@ -58,14 +58,7 @@ type ShipData struct {
 type CargoData struct {
 	Capacity  int
 	Units     int
-	Inventory []CargoItemData
-}
-
-type CargoItemData struct {
-	Symbol      string
-	Name        string
-	Description string
-	Units       int
+	Inventory []shared.CargoItem
 }
 
 type NavigationResult struct {

@@ -205,9 +205,9 @@ func (m *MockAPIClient) GetShip(ctx context.Context, symbol, token string) (*nav
 // shipToData converts a domain Ship to ShipData DTO
 func (m *MockAPIClient) shipToData(ship *navigation.Ship) *navigation.ShipData {
 	// Convert cargo inventory
-	var inventoryData []navigation.CargoItemData
+	var inventoryData []shared.CargoItem
 	for _, item := range ship.Cargo().Inventory {
-		inventoryData = append(inventoryData, navigation.CargoItemData{
+		inventoryData = append(inventoryData, shared.CargoItem{
 			Symbol:      item.Symbol,
 			Name:        item.Name,
 			Description: item.Description,

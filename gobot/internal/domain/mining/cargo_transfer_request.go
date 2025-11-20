@@ -2,6 +2,8 @@ package mining
 
 import (
 	"time"
+
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
 // TransferStatus represents the state of a cargo transfer request
@@ -13,20 +15,14 @@ const (
 	TransferStatusCompleted  TransferStatus = "COMPLETED"
 )
 
-// CargoItem represents a single item in cargo manifest
-type CargoItem struct {
-	Symbol string
-	Units  int
-}
-
 // CargoTransferRequest represents an immutable transfer request between ships
 // This is a value object that tracks the transfer of cargo from a miner to a transport.
 type CargoTransferRequest struct {
 	id                string
 	miningOperationID string
 	minerShip         string
-	transportShip     string         // May be empty if pending assignment
-	cargoManifest     []CargoItem    // Items to transfer
+	transportShip     string                // May be empty if pending assignment
+	cargoManifest     []shared.CargoItem    // Items to transfer
 	status            TransferStatus
 	createdAt         time.Time
 	completedAt       *time.Time
@@ -37,10 +33,10 @@ func NewCargoTransferRequest(
 	id string,
 	miningOperationID string,
 	minerShip string,
-	cargoManifest []CargoItem,
+	cargoManifest []shared.CargoItem,
 ) *CargoTransferRequest {
 	// Copy cargo manifest to ensure immutability
-	manifest := make([]CargoItem, len(cargoManifest))
+	manifest := make([]shared.CargoItem, len(cargoManifest))
 	copy(manifest, cargoManifest)
 
 	return &CargoTransferRequest{
@@ -55,20 +51,20 @@ func NewCargoTransferRequest(
 
 // Getters
 
-func (r *CargoTransferRequest) ID() string                  { return r.id }
-func (r *CargoTransferRequest) MiningOperationID() string   { return r.miningOperationID }
-func (r *CargoTransferRequest) MinerShip() string           { return r.minerShip }
-func (r *CargoTransferRequest) TransportShip() string       { return r.transportShip }
-func (r *CargoTransferRequest) CargoManifest() []CargoItem  { return r.cargoManifest }
-func (r *CargoTransferRequest) Status() TransferStatus      { return r.status }
-func (r *CargoTransferRequest) CreatedAt() time.Time        { return r.createdAt }
-func (r *CargoTransferRequest) CompletedAt() *time.Time     { return r.completedAt }
+func (r *CargoTransferRequest) ID() string                        { return r.id }
+func (r *CargoTransferRequest) MiningOperationID() string         { return r.miningOperationID }
+func (r *CargoTransferRequest) MinerShip() string                 { return r.minerShip }
+func (r *CargoTransferRequest) TransportShip() string             { return r.transportShip }
+func (r *CargoTransferRequest) CargoManifest() []shared.CargoItem { return r.cargoManifest }
+func (r *CargoTransferRequest) Status() TransferStatus            { return r.status }
+func (r *CargoTransferRequest) CreatedAt() time.Time              { return r.createdAt }
+func (r *CargoTransferRequest) CompletedAt() *time.Time           { return r.completedAt }
 
 // Value object operations - return new instances
 
 // WithTransportShip returns a new CargoTransferRequest with the transport ship assigned
 func (r *CargoTransferRequest) WithTransportShip(transportShip string) *CargoTransferRequest {
-	manifest := make([]CargoItem, len(r.cargoManifest))
+	manifest := make([]shared.CargoItem, len(r.cargoManifest))
 	copy(manifest, r.cargoManifest)
 
 	return &CargoTransferRequest{
@@ -85,7 +81,7 @@ func (r *CargoTransferRequest) WithTransportShip(transportShip string) *CargoTra
 
 // WithCompleted returns a new CargoTransferRequest marked as completed
 func (r *CargoTransferRequest) WithCompleted(completedAt time.Time) *CargoTransferRequest {
-	manifest := make([]CargoItem, len(r.cargoManifest))
+	manifest := make([]shared.CargoItem, len(r.cargoManifest))
 	copy(manifest, r.cargoManifest)
 
 	return &CargoTransferRequest{
@@ -132,7 +128,7 @@ type CargoTransferRequestData struct {
 	MiningOperationID string
 	MinerShip         string
 	TransportShip     string
-	CargoManifest     []CargoItem
+	CargoManifest     []shared.CargoItem
 	Status            string
 	CreatedAt         time.Time
 	CompletedAt       *time.Time
@@ -154,7 +150,7 @@ func (r *CargoTransferRequest) ToData() *CargoTransferRequestData {
 
 // CargoTransferRequestFromData creates a CargoTransferRequest from a DTO
 func CargoTransferRequestFromData(data *CargoTransferRequestData) *CargoTransferRequest {
-	manifest := make([]CargoItem, len(data.CargoManifest))
+	manifest := make([]shared.CargoItem, len(data.CargoManifest))
 	copy(manifest, data.CargoManifest)
 
 	return &CargoTransferRequest{
