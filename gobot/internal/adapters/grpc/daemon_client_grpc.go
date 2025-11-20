@@ -50,7 +50,7 @@ func (c *DaemonClientGRPC) Close() error {
 // ListContainers retrieves all containers for a player
 func (c *DaemonClientGRPC) ListContainers(ctx context.Context, playerID uint) ([]daemon.ContainerInfo, error) {
 	req := &pb.ListContainersRequest{
-		PlayerId: intPtr(int32(playerID)),
+		PlayerId: intPtr(ToProtobufPlayerID(int(playerID))),
 	}
 
 	resp, err := c.client.ListContainers(ctx, req)
@@ -62,7 +62,7 @@ func (c *DaemonClientGRPC) ListContainers(ctx context.Context, playerID uint) ([
 	for _, pbCont := range resp.Containers {
 		containers = append(containers, daemon.ContainerInfo{
 			ID:       pbCont.ContainerId,
-			PlayerID: int(pbCont.PlayerId),
+			PlayerID: FromProtobufPlayerID(pbCont.PlayerId),
 			Status:   pbCont.Status,
 			Type:     pbCont.ContainerType,
 		})
@@ -88,7 +88,7 @@ func (c *DaemonClientGRPC) CreateScoutTourContainer(
 		ShipSymbol: cmd.ShipSymbol,
 		Markets:    cmd.Markets,
 		Iterations: int32(cmd.Iterations),
-		PlayerId:   int32(playerID),
+		PlayerId:   ToProtobufPlayerID(int(playerID)),
 	}
 
 	// Note: The daemon server handles container ID generation internally

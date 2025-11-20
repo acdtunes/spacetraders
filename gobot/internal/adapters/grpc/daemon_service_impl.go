@@ -298,7 +298,7 @@ func (s *daemonServiceImpl) ListContainers(ctx context.Context, req *pb.ListCont
 	// Handle optional filters
 	var playerID *int
 	if req.PlayerId != nil {
-		p := int(*req.PlayerId)
+		p := FromProtobufPlayerID(*req.PlayerId)
 		playerID = &p
 	}
 
@@ -317,7 +317,7 @@ func (s *daemonServiceImpl) ListContainers(ctx context.Context, req *pb.ListCont
 			ContainerId:      cont.ID(),
 			ContainerType:    string(cont.Type()),
 			Status:           string(cont.Status()),
-			PlayerId:         int32(cont.PlayerID()),
+			PlayerId:         ToProtobufPlayerID(cont.PlayerID()),
 			CreatedAt:        cont.CreatedAt().Format("2006-01-02T15:04:05Z"),
 			UpdatedAt:        cont.UpdatedAt().Format("2006-01-02T15:04:05Z"),
 			CurrentIteration: int32(cont.CurrentIteration()),
@@ -348,7 +348,7 @@ func (s *daemonServiceImpl) GetContainer(ctx context.Context, req *pb.GetContain
 		ContainerId:      container.ID(),
 		ContainerType:    string(container.Type()),
 		Status:           string(container.Status()),
-		PlayerId:         int32(container.PlayerID()),
+		PlayerId:         ToProtobufPlayerID(container.PlayerID()),
 		CreatedAt:        container.CreatedAt().Format("2006-01-02T15:04:05Z"),
 		UpdatedAt:        container.UpdatedAt().Format("2006-01-02T15:04:05Z"),
 		CurrentIteration: int32(container.CurrentIteration()),
@@ -408,7 +408,7 @@ func (s *daemonServiceImpl) ListShips(ctx context.Context, req *pb.ListShipsRequ
 	// Convert player ID from proto
 	var playerID *int
 	if req.PlayerId != nil {
-		pid := int(*req.PlayerId)
+		pid := FromProtobufPlayerID(*req.PlayerId)
 		playerID = &pid
 	}
 
@@ -433,7 +433,7 @@ func (s *daemonServiceImpl) GetShip(ctx context.Context, req *pb.GetShipRequest)
 	// Convert player ID from proto
 	var playerID *int
 	if req.PlayerId != nil {
-		pid := int(*req.PlayerId)
+		pid := FromProtobufPlayerID(*req.PlayerId)
 		playerID = &pid
 	}
 
@@ -458,7 +458,7 @@ func (s *daemonServiceImpl) GetShipyardListings(ctx context.Context, req *pb.Get
 	// Resolve player ID from request
 	var playerID *int
 	if req.PlayerId != 0 {
-		pid := int(req.PlayerId)
+		pid := FromProtobufPlayerID(req.PlayerId)
 		playerID = &pid
 	}
 
