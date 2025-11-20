@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/andrescamacho/spacetraders-go/internal/domain/fleet"
+	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
@@ -79,7 +79,7 @@ func SelectClosestShip(
 	}
 
 	// 3. Delegate to domain service for selection logic
-	selector := fleet.NewSelector()
+	selector := domainContract.NewShipSelector()
 	result, err := selector.SelectOptimalShip(ships, targetWaypoint, requiredCargoSymbol)
 	if err != nil {
 		return "", 0, err

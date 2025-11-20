@@ -1,4 +1,4 @@
-package fleet
+package contract
 
 import (
 	"fmt"
@@ -15,12 +15,12 @@ type SelectionResult struct {
 	Reason   string // Why this ship was selected (e.g., "has cargo", "closest")
 }
 
-// Selector implements fleet ship selection business logic
-type Selector struct{}
+// ShipSelector implements ship selection business logic for contract deliveries
+type ShipSelector struct{}
 
-// NewSelector creates a new fleet selector
-func NewSelector() *Selector {
-	return &Selector{}
+// NewShipSelector creates a new ship selector
+func NewShipSelector() *ShipSelector {
+	return &ShipSelector{}
 }
 
 // SelectOptimalShip selects the best ship from a fleet for a target location.
@@ -38,7 +38,7 @@ func NewSelector() *Selector {
 // Returns:
 //   - SelectionResult with selected ship, distance, and reason
 //   - Error if no suitable ship found
-func (s *Selector) SelectOptimalShip(
+func (s *ShipSelector) SelectOptimalShip(
 	ships []*navigation.Ship,
 	targetWaypoint *shared.Waypoint,
 	requiredCargoSymbol string,
@@ -117,7 +117,7 @@ func (s *Selector) SelectOptimalShip(
 // Returns:
 //   - SelectionResult with selected ship and distance
 //   - Error if no suitable ship found
-func (s *Selector) SelectClosestShipByDistance(
+func (s *ShipSelector) SelectClosestShipByDistance(
 	ships []*navigation.Ship,
 	targetWaypoint *shared.Waypoint,
 	excludeInTransit bool,

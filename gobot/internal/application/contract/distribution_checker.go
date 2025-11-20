@@ -4,24 +4,24 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/andrescamacho/spacetraders-go/internal/domain/fleet"
+	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
 
 // DistributionChecker is a thin application layer wrapper for fleet distribution logic.
-// It fetches waypoint data and delegates business logic to domain FleetDistributionService.
+// It fetches waypoint data and delegates business logic to domain FleetAssigner.
 type DistributionChecker struct {
-	graphProvider       system.ISystemGraphProvider
-	distributionService *fleet.DistributionService
+	graphProvider system.ISystemGraphProvider
+	fleetAssigner *domainContract.FleetAssigner
 }
 
 // NewDistributionChecker creates a new distribution checker
 func NewDistributionChecker(graphProvider system.ISystemGraphProvider) *DistributionChecker {
 	return &DistributionChecker{
-		graphProvider:       graphProvider,
-		distributionService: fleet.NewDistributionService(),
+		graphProvider: graphProvider,
+		fleetAssigner: domainContract.NewFleetAssigner(),
 	}
 }
 
@@ -51,7 +51,7 @@ func (dc *DistributionChecker) IsRebalancingNeeded(
 	}
 
 	// 2. Delegate to domain service for business logic
-	needsRebalancing, metrics, err := dc.distributionService.IsRebalancingNeeded(
+	needsRebalancing, metrics, err := dc.fleetAssigner.IsRebalancingNeeded(
 		ships,
 		targetWaypoints,
 		distanceThreshold,
@@ -87,7 +87,7 @@ func (dc *DistributionChecker) AssignShipsToMarkets(
 	}
 
 	// 2. Delegate to domain service for assignment logic
-	domainAssignments, err := dc.distributionService.AssignShipsToTargets(ships, targetWaypoints)
+	domainAssignments, err := dc.fleetAssigner.AssignShipsToTargets(ships, targetWaypoints)
 	if err != nil {
 		return nil, fmt.Errorf("ship assignment failed: %w", err)
 	}

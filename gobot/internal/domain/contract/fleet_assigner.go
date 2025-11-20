@@ -1,4 +1,4 @@
-package fleet
+package contract
 
 import (
 	"fmt"
@@ -32,12 +32,12 @@ type Assignment struct {
 	Distance        float64
 }
 
-// DistributionService implements fleet distribution business logic
-type DistributionService struct{}
+// FleetAssigner implements fleet assignment business logic for contract operations
+type FleetAssigner struct{}
 
-// NewDistributionService creates a new distribution service
-func NewDistributionService() *DistributionService {
-	return &DistributionService{}
+// NewFleetAssigner creates a new fleet assigner
+func NewFleetAssigner() *FleetAssigner {
+	return &FleetAssigner{}
 }
 
 // IsRebalancingNeeded evaluates if fleet rebalancing is required based on:
@@ -56,7 +56,7 @@ func NewDistributionService() *DistributionService {
 // Returns:
 //   - needsRebalancing: True if rebalancing should be triggered
 //   - metrics: Distribution statistics for decision-making
-func (ds *DistributionService) IsRebalancingNeeded(
+func (fa *FleetAssigner) IsRebalancingNeeded(
 	ships []*navigation.Ship,
 	targetWaypoints []*shared.Waypoint,
 	distanceThreshold float64,
@@ -129,7 +129,7 @@ func (ds *DistributionService) IsRebalancingNeeded(
 //
 // Returns:
 //   - assignments: List of ship-to-waypoint assignments with distances
-func (ds *DistributionService) AssignShipsToTargets(
+func (fa *FleetAssigner) AssignShipsToTargets(
 	ships []*navigation.Ship,
 	targetWaypoints []*shared.Waypoint,
 ) ([]Assignment, error) {
@@ -200,7 +200,7 @@ func (ds *DistributionService) AssignShipsToTargets(
 //
 // Returns:
 //   - quality score: Average distance to nearest target (lower is better)
-func (ds *DistributionService) CalculateDistributionQuality(
+func (fa *FleetAssigner) CalculateDistributionQuality(
 	ships []*navigation.Ship,
 	targetWaypoints []*shared.Waypoint,
 ) (float64, error) {
