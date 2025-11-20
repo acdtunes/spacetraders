@@ -6,7 +6,6 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	appShip "github.com/andrescamacho/spacetraders-go/internal/application/ship"
-	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
@@ -34,26 +33,31 @@ type RebalanceContractFleetResponse struct {
 type RebalanceContractFleetHandler struct {
 	mediator            common.Mediator
 	shipRepo            navigation.ShipRepository
-	purchaseHistoryRepo domainContract.PurchaseHistoryRepository
 	shipAssignmentRepo  daemon.ShipAssignmentRepository
 	graphProvider       system.ISystemGraphProvider
+	marketRepo          MarketRepository
 	distributionChecker *DistributionChecker
+}
+
+// MarketRepository defines the interface for market data access needed by rebalancing
+type MarketRepository interface {
+	FindAllMarketsInSystem(ctx context.Context, systemSymbol string, playerID int) ([]string, error)
 }
 
 // NewRebalanceContractFleetHandler creates a new rebalance fleet handler
 func NewRebalanceContractFleetHandler(
 	mediator common.Mediator,
 	shipRepo navigation.ShipRepository,
-	purchaseHistoryRepo domainContract.PurchaseHistoryRepository,
 	shipAssignmentRepo daemon.ShipAssignmentRepository,
 	graphProvider system.ISystemGraphProvider,
+	marketRepo MarketRepository,
 ) *RebalanceContractFleetHandler {
 	return &RebalanceContractFleetHandler{
 		mediator:            mediator,
 		shipRepo:            shipRepo,
-		purchaseHistoryRepo: purchaseHistoryRepo,
 		shipAssignmentRepo:  shipAssignmentRepo,
 		graphProvider:       graphProvider,
+		marketRepo:          marketRepo,
 		distributionChecker: NewDistributionChecker(graphProvider),
 	}
 }
@@ -77,24 +81,24 @@ func (h *RebalanceContractFleetHandler) Handle(ctx context.Context, request comm
 		Assignments:        make(map[string]string),
 	}
 
-	// Step 1: Get historical markets from purchase history (last 1 day, top 5)
-	logger.Log("INFO", "Querying historical purchase markets (1 day window, top 5)", nil)
-	targetMarkets, err := h.purchaseHistoryRepo.FindRecentMarkets(ctx, cmd.PlayerID, cmd.SystemSymbol, 5, 1)
+	// Step 1: Get all markets in the system
+	logger.Log("INFO", "Discovering all markets in system", nil)
+	targetMarkets, err := h.marketRepo.FindAllMarketsInSystem(ctx, cmd.SystemSymbol, cmd.PlayerID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query purchase history: %w", err)
+		return nil, fmt.Errorf("failed to discover markets in system: %w", err)
 	}
 
 	result.TargetMarkets = targetMarkets
 
-	// Step 2: Check if we have historical data
+	// Step 2: Check if we have market data
 	if len(targetMarkets) == 0 {
-		logger.Log("WARNING", "No purchase history found - skipping rebalancing", nil)
+		logger.Log("WARNING", "No markets found in system - skipping rebalancing", nil)
 		result.RebalancingSkipped = true
-		result.SkipReason = "No historical purchase data available"
+		result.SkipReason = "No markets available in system"
 		return result, nil
 	}
 
-	logger.Log("INFO", fmt.Sprintf("Found %d target markets: %v", len(targetMarkets), targetMarkets), nil)
+	logger.Log("INFO", fmt.Sprintf("Found %d markets in system: %v", len(targetMarkets), targetMarkets), nil)
 
 	// Step 3: Get idle ships from coordinator pool
 	shipSymbols, err := FindCoordinatorShips(ctx, cmd.CoordinatorID, cmd.PlayerID, h.shipAssignmentRepo)

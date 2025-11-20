@@ -55,11 +55,10 @@ type ContractWorkflowResponse struct {
 // 8. Transfer ship back to coordinator (if applicable)
 // 9. Signal completion via channel (if applicable)
 type ContractWorkflowHandler struct {
-	mediator            common.Mediator
-	shipRepo            navigation.ShipRepository
-	contractRepo        domainContract.ContractRepository
-	shipAssignmentRepo  daemon.ShipAssignmentRepository
-	purchaseHistoryRepo domainContract.PurchaseHistoryRepository
+	mediator           common.Mediator
+	shipRepo           navigation.ShipRepository
+	contractRepo       domainContract.ContractRepository
+	shipAssignmentRepo daemon.ShipAssignmentRepository
 }
 
 // NewContractWorkflowHandler creates a new contract workflow handler
@@ -68,14 +67,12 @@ func NewContractWorkflowHandler(
 	shipRepo navigation.ShipRepository,
 	contractRepo domainContract.ContractRepository,
 	shipAssignmentRepo daemon.ShipAssignmentRepository,
-	purchaseHistoryRepo domainContract.PurchaseHistoryRepository,
 ) *ContractWorkflowHandler {
 	return &ContractWorkflowHandler{
-		mediator:            mediator,
-		shipRepo:            shipRepo,
-		contractRepo:        contractRepo,
-		shipAssignmentRepo:  shipAssignmentRepo,
-		purchaseHistoryRepo: purchaseHistoryRepo,
+		mediator:           mediator,
+		shipRepo:           shipRepo,
+		contractRepo:       contractRepo,
+		shipAssignmentRepo: shipAssignmentRepo,
 	}
 }
 
@@ -311,11 +308,6 @@ func (h *ContractWorkflowHandler) executeWorkflow(
 
 				_ = purchaseResp // Response unused after error check removed
 
-				// Track purchase for fleet rebalancing (non-fatal if fails)
-				if err := h.trackPurchase(ctx, cmd.PlayerID, cheapestMarket, delivery.TradeSymbol, contract.ContractID()); err != nil {
-					logger.Log("WARNING", fmt.Sprintf("Failed to track purchase history: %v", err), nil)
-				}
-
 				unitsToPurchase -= unitsThisTrip
 
 				// Reload ship after purchase
@@ -479,47 +471,3 @@ func (h *ContractWorkflowHandler) dockShip(
 	return nil
 }
 
-// trackPurchase records purchase history for fleet rebalancing
-func (h *ContractWorkflowHandler) trackPurchase(
-	ctx context.Context,
-	playerID int,
-	waypointSymbol string,
-	tradeGood string,
-	contractID string,
-) error {
-	// Extract system symbol from waypoint (format: X1-ABC123-XY456Z)
-	// System symbol is everything before the last hyphen group
-	systemSymbol := extractSystemFromWaypoint(waypointSymbol)
-
-	history, err := domainContract.NewPurchaseHistory(
-		playerID,
-		systemSymbol,
-		waypointSymbol,
-		tradeGood,
-		contractID,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to create purchase history: %w", err)
-	}
-
-	if err := h.purchaseHistoryRepo.Add(ctx, history); err != nil {
-		return fmt.Errorf("failed to add purchase history: %w", err)
-	}
-
-	return nil
-}
-
-// extractSystemFromWaypoint extracts system symbol from waypoint symbol
-// Example: X1-ABC123-XY456Z -> X1-ABC123
-func extractSystemFromWaypoint(waypointSymbol string) string {
-	// Waypoint format: SECTOR-SYSTEM-WAYPOINT (e.g., X1-ABC123-XY456Z)
-	// System format: SECTOR-SYSTEM (e.g., X1-ABC123)
-	// Find the last hyphen and take everything before it
-	for i := len(waypointSymbol) - 1; i >= 0; i-- {
-		if waypointSymbol[i] == '-' {
-			return waypointSymbol[:i]
-		}
-	}
-	// Fallback (shouldn't happen with valid waypoint symbols)
-	return waypointSymbol
-}

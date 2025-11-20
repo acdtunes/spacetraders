@@ -7,6 +7,7 @@ type MarketRepository interface {
 	GetMarketData(ctx context.Context, waypointSymbol string, playerID int) (*Market, error)
 	FindCheapestMarketSelling(ctx context.Context, goodSymbol, systemSymbol string, playerID int) (*CheapestMarketResult, error)
 	FindBestMarketBuying(ctx context.Context, goodSymbol, systemSymbol string, playerID int) (*BestMarketBuyingResult, error)
+	FindAllMarketsInSystem(ctx context.Context, systemSymbol string, playerID int) ([]string, error)
 }
 
 // DTOs for data transfer
