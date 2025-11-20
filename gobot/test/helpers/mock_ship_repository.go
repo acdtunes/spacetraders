@@ -66,9 +66,9 @@ func (m *MockShipRepository) FindAllByPlayer(ctx context.Context, playerID int) 
 }
 
 // Navigate executes ship navigation
-func (m *MockShipRepository) Navigate(ctx context.Context, ship *navigation.Ship, destination *shared.Waypoint, playerID int) (*navigation.NavigationResult, error) {
+func (m *MockShipRepository) Navigate(ctx context.Context, ship *navigation.Ship, destination *shared.Waypoint, playerID int) (*navigation.Result, error) {
 	// Mock implementation - minimal functionality for tests
-	return &navigation.NavigationResult{}, nil
+	return &navigation.Result{}, nil
 }
 
 // Dock docks the ship

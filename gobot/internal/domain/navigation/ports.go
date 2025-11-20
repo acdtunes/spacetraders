@@ -20,7 +20,7 @@ type ShipRepository interface {
 
 	// Navigate executes ship navigation (updates via API)
 	// Returns navigation result with arrival time from API
-	Navigate(ctx context.Context, ship *Ship, destination *shared.Waypoint, playerID int) (*NavigationResult, error)
+	Navigate(ctx context.Context, ship *Ship, destination *shared.Waypoint, playerID int) (*Result, error)
 
 	// Dock docks the ship (updates via API)
 	Dock(ctx context.Context, ship *Ship, playerID int) error
@@ -61,7 +61,7 @@ type CargoData struct {
 	Inventory []shared.CargoItem
 }
 
-type NavigationResult struct {
+type Result struct {
 	Destination      string
 	ArrivalTime      int    // Calculated seconds
 	ArrivalTimeStr   string // ISO8601 timestamp from API (e.g., "2024-01-01T12:00:00Z")

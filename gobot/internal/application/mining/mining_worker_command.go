@@ -17,9 +17,9 @@ type TransferComplete struct {
 	TransportSymbol string
 }
 
-// MiningWorkerCommand orchestrates continuous mining with transport-as-sink pattern
+// WorkerCommand orchestrates continuous mining with transport-as-sink pattern
 // Miner mines until cargo is full, requests transport, transfers cargo, then resumes mining
-type MiningWorkerCommand struct {
+type WorkerCommand struct {
 	ShipSymbol           string
 	PlayerID             int
 	AsteroidField        string                  // Waypoint symbol of asteroid
@@ -30,33 +30,33 @@ type MiningWorkerCommand struct {
 	TransferCompleteChan chan<- TransferComplete // Signal transfer completion to coordinator
 }
 
-// MiningWorkerResponse contains mining execution results
-type MiningWorkerResponse struct {
+// WorkerResponse contains mining execution results
+type WorkerResponse struct {
 	ExtractionCount int
 	TransferCount   int
 	TotalUnitsTransferred int
 	Error           string
 }
 
-// MiningWorkerHandler implements the mining worker workflow
-type MiningWorkerHandler struct {
+// WorkerHandler implements the mining worker workflow
+type WorkerHandler struct {
 	mediator           common.Mediator
 	shipRepo           navigation.ShipRepository
 	shipAssignmentRepo daemon.ShipAssignmentRepository
 	clock              shared.Clock
 }
 
-// NewMiningWorkerHandler creates a new mining worker handler
-func NewMiningWorkerHandler(
+// NewWorkerHandler creates a new mining worker handler
+func NewWorkerHandler(
 	mediator common.Mediator,
 	shipRepo navigation.ShipRepository,
 	shipAssignmentRepo daemon.ShipAssignmentRepository,
 	clock shared.Clock,
-) *MiningWorkerHandler {
+) *WorkerHandler {
 	if clock == nil {
 		clock = shared.NewRealClock()
 	}
-	return &MiningWorkerHandler{
+	return &WorkerHandler{
 		mediator:           mediator,
 		shipRepo:           shipRepo,
 		shipAssignmentRepo: shipAssignmentRepo,
@@ -65,13 +65,13 @@ func NewMiningWorkerHandler(
 }
 
 // Handle executes the mining worker command
-func (h *MiningWorkerHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {
-	cmd, ok := request.(*MiningWorkerCommand)
+func (h *WorkerHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {
+	cmd, ok := request.(*WorkerCommand)
 	if !ok {
 		return nil, fmt.Errorf("invalid request type")
 	}
 
-	result := &MiningWorkerResponse{
+	result := &WorkerResponse{
 		ExtractionCount:       0,
 		TransferCount:         0,
 		TotalUnitsTransferred: 0,
@@ -88,10 +88,10 @@ func (h *MiningWorkerHandler) Handle(ctx context.Context, request common.Request
 }
 
 // executeMining handles the main mining workflow with transport-as-sink pattern
-func (h *MiningWorkerHandler) executeMining(
+func (h *WorkerHandler) executeMining(
 	ctx context.Context,
-	cmd *MiningWorkerCommand,
-	result *MiningWorkerResponse,
+	cmd *WorkerCommand,
+	result *WorkerResponse,
 ) error {
 	logger := common.LoggerFromContext(ctx)
 
@@ -248,9 +248,9 @@ func (h *MiningWorkerHandler) executeMining(
 }
 
 // requestAndTransferToTransport requests a transport and transfers all cargo to it
-func (h *MiningWorkerHandler) requestAndTransferToTransport(
+func (h *WorkerHandler) requestAndTransferToTransport(
 	ctx context.Context,
-	cmd *MiningWorkerCommand,
+	cmd *WorkerCommand,
 	ship *navigation.Ship,
 ) (int, error) {
 	logger := common.LoggerFromContext(ctx)

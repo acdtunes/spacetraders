@@ -82,7 +82,7 @@ func (r *GormContractRepository) modelToEntity(model *ContractModel) (*contract.
 		return nil, fmt.Errorf("failed to unmarshal deliveries: %w", err)
 	}
 
-	terms := contract.ContractTerms{
+	terms := contract.Terms{
 		Payment: contract.Payment{
 			OnAccepted:  model.PaymentOnAccepted,
 			OnFulfilled: model.PaymentOnFulfilled,

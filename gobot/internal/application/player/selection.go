@@ -8,21 +8,21 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
 )
 
-// PlayerSelectionOptions holds inputs for player selection
-type PlayerSelectionOptions struct {
+// SelectionOptions holds inputs for player selection
+type SelectionOptions struct {
 	PlayerIDFlag    *int   // --player-id flag (highest priority)
 	AgentSymbolFlag string // --agent flag
 	UserConfig      *config.UserConfig
 }
 
-// PlayerResolver resolves which player to use based on priority logic
-type PlayerResolver struct {
+// Resolver resolves which player to use based on priority logic
+type Resolver struct {
 	playerRepo player.PlayerRepository
 }
 
-// NewPlayerResolver creates a new PlayerResolver
-func NewPlayerResolver(playerRepo player.PlayerRepository) *PlayerResolver {
-	return &PlayerResolver{
+// NewResolver creates a new Resolver
+func NewResolver(playerRepo player.PlayerRepository) *Resolver {
+	return &Resolver{
 		playerRepo: playerRepo,
 	}
 }
@@ -33,7 +33,7 @@ func NewPlayerResolver(playerRepo player.PlayerRepository) *PlayerResolver {
 // 3. config default player
 // 4. auto-select if only one player exists
 // 5. error if ambiguous
-func (r *PlayerResolver) ResolvePlayer(ctx context.Context, opts *PlayerSelectionOptions) (*player.Player, error) {
+func (r *Resolver) ResolvePlayer(ctx context.Context, opts *SelectionOptions) (*player.Player, error) {
 	// Priority 1: --player-id flag
 	if opts.PlayerIDFlag != nil {
 		player, err := r.playerRepo.FindByID(ctx, *opts.PlayerIDFlag)
@@ -78,7 +78,7 @@ func (r *PlayerResolver) ResolvePlayer(ctx context.Context, opts *PlayerSelectio
 }
 
 // GetPlayerToken is a convenience method to resolve player and return token
-func (r *PlayerResolver) GetPlayerToken(ctx context.Context, opts *PlayerSelectionOptions) (string, int, error) {
+func (r *Resolver) GetPlayerToken(ctx context.Context, opts *SelectionOptions) (string, int, error) {
 	player, err := r.ResolvePlayer(ctx, opts)
 	if err != nil {
 		return "", 0, err

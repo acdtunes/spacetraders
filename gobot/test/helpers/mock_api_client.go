@@ -252,7 +252,7 @@ func (m *MockAPIClient) ListShips(ctx context.Context, token string) ([]*navigat
 	return shipsData, nil
 }
 
-func (m *MockAPIClient) NavigateShip(ctx context.Context, symbol, destination, token string) (*navigation.NavigationResult, error) {
+func (m *MockAPIClient) NavigateShip(ctx context.Context, symbol, destination, token string) (*navigation.Result, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -308,7 +308,7 @@ func (m *MockAPIClient) NavigateShip(ctx context.Context, symbol, destination, t
 	}
 
 	// Mock navigation result with instant arrival
-	return &navigation.NavigationResult{
+	return &navigation.Result{
 		Destination:      destination,
 		ArrivalTime:      0, // Instant arrival in mock
 		ArrivalTimeStr:   "",

@@ -12,8 +12,8 @@ type MarketRepository interface {
 
 // DTOs for data transfer
 
-// MarketData represents market information from external sources
-type MarketData struct {
+// Data represents market information from external sources
+type Data struct {
 	WaypointSymbol string
 	TradeGoods     []TradeGoodData
 }

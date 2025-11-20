@@ -66,7 +66,7 @@ func (c *DaemonClientLocal) CreateContractWorkflowContainer(
 	completionCallback chan<- string,
 ) error {
 	// Type assert to ContractWorkflowCommand
-	cmd, ok := command.(*contract.ContractWorkflowCommand)
+	cmd, ok := command.(*contract.WorkflowCommand)
 	if !ok {
 		return daemon.ErrInvalidCommandType
 	}
@@ -84,7 +84,7 @@ func (c *DaemonClientLocal) PersistContractWorkflowContainer(
 	command interface{},
 ) error {
 	// Type assert to ContractWorkflowCommand
-	cmd, ok := command.(*contract.ContractWorkflowCommand)
+	cmd, ok := command.(*contract.WorkflowCommand)
 	if !ok {
 		return daemon.ErrInvalidCommandType
 	}

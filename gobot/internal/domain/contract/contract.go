@@ -17,7 +17,7 @@ type Delivery struct {
 	UnitsFulfilled    int
 }
 
-type ContractTerms struct {
+type Terms struct {
 	Payment          Payment
 	Deliveries       []Delivery
 	DeadlineToAccept string
@@ -29,13 +29,13 @@ type Contract struct {
 	playerID      int
 	factionSymbol string
 	contractType  string
-	terms         ContractTerms
+	terms         Terms
 	accepted      bool
 	fulfilled     bool
 }
 
 // NewContract creates a new contract
-func NewContract(contractID string, playerID int, factionSymbol, contractType string, terms ContractTerms) (*Contract, error) {
+func NewContract(contractID string, playerID int, factionSymbol, contractType string, terms Terms) (*Contract, error) {
 	if contractID == "" {
 		return nil, fmt.Errorf("contract ID cannot be empty")
 	}
@@ -64,7 +64,7 @@ func (c *Contract) ContractID() string    { return c.contractID }
 func (c *Contract) PlayerID() int         { return c.playerID }
 func (c *Contract) FactionSymbol() string { return c.factionSymbol }
 func (c *Contract) Type() string          { return c.contractType }
-func (c *Contract) Terms() ContractTerms  { return c.terms }
+func (c *Contract) Terms() Terms  { return c.terms }
 func (c *Contract) Accepted() bool        { return c.accepted }
 func (c *Contract) Fulfilled() bool       { return c.fulfilled }
 

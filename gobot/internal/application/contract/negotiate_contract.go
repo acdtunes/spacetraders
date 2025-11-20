@@ -142,7 +142,7 @@ func (h *NegotiateContractHandler) convertToDomain(data *infraPorts.ContractData
 	}
 
 	// Build contract terms
-	terms := contract.ContractTerms{
+	terms := contract.Terms{
 		Payment: contract.Payment{
 			OnAccepted:  data.Terms.Payment.OnAccepted,
 			OnFulfilled: data.Terms.Payment.OnFulfilled,

@@ -14,7 +14,7 @@ type APIClient interface {
 	// Ship operations
 	GetShip(ctx context.Context, symbol, token string) (*navigation.ShipData, error)
 	ListShips(ctx context.Context, token string) ([]*navigation.ShipData, error)
-	NavigateShip(ctx context.Context, symbol, destination, token string) (*navigation.NavigationResult, error)
+	NavigateShip(ctx context.Context, symbol, destination, token string) (*navigation.Result, error)
 	OrbitShip(ctx context.Context, symbol, token string) error
 	DockShip(ctx context.Context, symbol, token string) error
 	RefuelShip(ctx context.Context, symbol, token string, units *int) (*navigation.RefuelResult, error)

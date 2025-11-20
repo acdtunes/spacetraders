@@ -256,7 +256,7 @@ func (c *SpaceTradersClient) ListShips(ctx context.Context, token string) ([]*na
 }
 
 // NavigateShip navigates a ship to a destination
-func (c *SpaceTradersClient) NavigateShip(ctx context.Context, symbol, destination, token string) (*navigation.NavigationResult, error) {
+func (c *SpaceTradersClient) NavigateShip(ctx context.Context, symbol, destination, token string) (*navigation.Result, error) {
 	path := fmt.Sprintf("/my/ships/%s/navigate", symbol)
 
 	body := map[string]string{
@@ -289,7 +289,7 @@ func (c *SpaceTradersClient) NavigateShip(ctx context.Context, symbol, destinati
 	// Parse arrival time for legacy ArrivalTime field (can be removed later)
 	arrivalTime := 0
 
-	return &navigation.NavigationResult{
+	return &navigation.Result{
 		Destination:    response.Data.Nav.WaypointSymbol,
 		ArrivalTime:    arrivalTime,
 		ArrivalTimeStr: arrivalTimeStr, // ISO8601 string from API

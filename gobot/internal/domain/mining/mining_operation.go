@@ -18,10 +18,10 @@ const (
 	OperationStatusFailed    OperationStatus = "FAILED"
 )
 
-// MiningOperation represents a complete mining operation aggregate root
+// Operation represents a complete mining operation aggregate root
 // It orchestrates mining ships extracting from asteroids and transport ships
 // selling the cargo at optimal markets.
-type MiningOperation struct {
+type Operation struct {
 	id             string
 	playerID       int
 	asteroidField  string // Waypoint symbol of the asteroid field
@@ -50,8 +50,8 @@ type MiningOperation struct {
 	clock shared.Clock
 }
 
-// NewMiningOperation creates a new mining operation instance
-func NewMiningOperation(
+// NewOperation creates a new mining operation instance
+func NewOperation(
 	id string,
 	playerID int,
 	asteroidField string,
@@ -62,7 +62,7 @@ func NewMiningOperation(
 	batchTimeout int,
 	maxIterations int,
 	clock shared.Clock,
-) *MiningOperation {
+) *Operation {
 	if clock == nil {
 		clock = shared.NewRealClock()
 	}
@@ -75,7 +75,7 @@ func NewMiningOperation(
 	copy(transports, transportShips)
 
 	now := clock.Now()
-	return &MiningOperation{
+	return &Operation{
 		id:             id,
 		playerID:       playerID,
 		asteroidField:  asteroidField,
@@ -94,26 +94,26 @@ func NewMiningOperation(
 
 // Getters
 
-func (op *MiningOperation) ID() string                    { return op.id }
-func (op *MiningOperation) PlayerID() int                 { return op.playerID }
-func (op *MiningOperation) AsteroidField() string         { return op.asteroidField }
-func (op *MiningOperation) Status() OperationStatus       { return op.status }
-func (op *MiningOperation) TopNOres() int                 { return op.topNOres }
-func (op *MiningOperation) MinerShips() []string          { return op.minerShips }
-func (op *MiningOperation) TransportShips() []string      { return op.transportShips }
-func (op *MiningOperation) BatchThreshold() int           { return op.batchThreshold }
-func (op *MiningOperation) BatchTimeout() int             { return op.batchTimeout }
-func (op *MiningOperation) MaxIterations() int            { return op.maxIterations }
-func (op *MiningOperation) LastError() error              { return op.lastError }
-func (op *MiningOperation) CreatedAt() time.Time          { return op.createdAt }
-func (op *MiningOperation) UpdatedAt() time.Time          { return op.updatedAt }
-func (op *MiningOperation) StartedAt() *time.Time         { return op.startedAt }
-func (op *MiningOperation) StoppedAt() *time.Time         { return op.stoppedAt }
+func (op *Operation) ID() string                    { return op.id }
+func (op *Operation) PlayerID() int                 { return op.playerID }
+func (op *Operation) AsteroidField() string         { return op.asteroidField }
+func (op *Operation) Status() OperationStatus       { return op.status }
+func (op *Operation) TopNOres() int                 { return op.topNOres }
+func (op *Operation) MinerShips() []string          { return op.minerShips }
+func (op *Operation) TransportShips() []string      { return op.transportShips }
+func (op *Operation) BatchThreshold() int           { return op.batchThreshold }
+func (op *Operation) BatchTimeout() int             { return op.batchTimeout }
+func (op *Operation) MaxIterations() int            { return op.maxIterations }
+func (op *Operation) LastError() error              { return op.lastError }
+func (op *Operation) CreatedAt() time.Time          { return op.createdAt }
+func (op *Operation) UpdatedAt() time.Time          { return op.updatedAt }
+func (op *Operation) StartedAt() *time.Time         { return op.startedAt }
+func (op *Operation) StoppedAt() *time.Time         { return op.stoppedAt }
 
 // State transition methods
 
 // Start transitions the operation from PENDING to RUNNING
-func (op *MiningOperation) Start() error {
+func (op *Operation) Start() error {
 	if op.status != OperationStatusPending {
 		return fmt.Errorf("cannot start operation in %s state", op.status)
 	}
@@ -130,7 +130,7 @@ func (op *MiningOperation) Start() error {
 }
 
 // Stop transitions the operation to STOPPED state
-func (op *MiningOperation) Stop() error {
+func (op *Operation) Stop() error {
 	if op.status == OperationStatusCompleted || op.status == OperationStatusStopped {
 		return fmt.Errorf("cannot stop operation in %s state", op.status)
 	}
@@ -143,7 +143,7 @@ func (op *MiningOperation) Stop() error {
 }
 
 // Complete transitions the operation to COMPLETED state
-func (op *MiningOperation) Complete() error {
+func (op *Operation) Complete() error {
 	if op.status != OperationStatusRunning {
 		return fmt.Errorf("cannot complete operation in %s state", op.status)
 	}
@@ -156,7 +156,7 @@ func (op *MiningOperation) Complete() error {
 }
 
 // Fail transitions the operation to FAILED state with error
-func (op *MiningOperation) Fail(err error) error {
+func (op *Operation) Fail(err error) error {
 	if op.status == OperationStatusCompleted || op.status == OperationStatusStopped {
 		return fmt.Errorf("cannot fail operation in %s state", op.status)
 	}
@@ -172,7 +172,7 @@ func (op *MiningOperation) Fail(err error) error {
 // Validation methods
 
 // Validate checks all invariants for the mining operation
-func (op *MiningOperation) Validate() error {
+func (op *Operation) Validate() error {
 	if !op.HasMiners() {
 		return fmt.Errorf("operation must have at least 1 miner ship")
 	}
@@ -203,38 +203,38 @@ func (op *MiningOperation) Validate() error {
 }
 
 // HasMiners returns true if the operation has at least one miner ship
-func (op *MiningOperation) HasMiners() bool {
+func (op *Operation) HasMiners() bool {
 	return len(op.minerShips) > 0
 }
 
 // HasTransports returns true if the operation has at least one transport ship
-func (op *MiningOperation) HasTransports() bool {
+func (op *Operation) HasTransports() bool {
 	return len(op.transportShips) > 0
 }
 
 // State queries
 
 // IsRunning returns true if the operation is currently executing
-func (op *MiningOperation) IsRunning() bool {
+func (op *Operation) IsRunning() bool {
 	return op.status == OperationStatusRunning
 }
 
 // IsFinished returns true if the operation has completed, failed, or stopped
-func (op *MiningOperation) IsFinished() bool {
+func (op *Operation) IsFinished() bool {
 	return op.status == OperationStatusCompleted ||
 		op.status == OperationStatusFailed ||
 		op.status == OperationStatusStopped
 }
 
 // IsPending returns true if the operation hasn't started yet
-func (op *MiningOperation) IsPending() bool {
+func (op *Operation) IsPending() bool {
 	return op.status == OperationStatusPending
 }
 
 // Runtime calculation
 
 // RuntimeDuration calculates how long the operation has been running
-func (op *MiningOperation) RuntimeDuration() time.Duration {
+func (op *Operation) RuntimeDuration() time.Duration {
 	if op.startedAt == nil {
 		return 0
 	}
@@ -248,13 +248,13 @@ func (op *MiningOperation) RuntimeDuration() time.Duration {
 }
 
 // String provides human-readable representation
-func (op *MiningOperation) String() string {
-	return fmt.Sprintf("MiningOperation[%s, status=%s, asteroid=%s, miners=%d, transports=%d]",
+func (op *Operation) String() string {
+	return fmt.Sprintf("Operation[%s, status=%s, asteroid=%s, miners=%d, transports=%d]",
 		op.id, op.status, op.asteroidField, len(op.minerShips), len(op.transportShips))
 }
 
-// MiningOperationData is the DTO for persisting mining operations
-type MiningOperationData struct {
+// OperationData is the DTO for persisting mining operations
+type OperationData struct {
 	ID             string
 	PlayerID       int
 	AsteroidField  string
@@ -273,13 +273,13 @@ type MiningOperationData struct {
 }
 
 // ToData converts the entity to a DTO for persistence
-func (op *MiningOperation) ToData() *MiningOperationData {
+func (op *Operation) ToData() *OperationData {
 	var lastErr string
 	if op.lastError != nil {
 		lastErr = op.lastError.Error()
 	}
 
-	return &MiningOperationData{
+	return &OperationData{
 		ID:             op.id,
 		PlayerID:       op.playerID,
 		AsteroidField:  op.asteroidField,
@@ -298,8 +298,8 @@ func (op *MiningOperation) ToData() *MiningOperationData {
 	}
 }
 
-// FromData creates a MiningOperation entity from a DTO
-func FromData(data *MiningOperationData, clock shared.Clock) *MiningOperation {
+// FromData creates a Operation entity from a DTO
+func FromData(data *OperationData, clock shared.Clock) *Operation {
 	if clock == nil {
 		clock = shared.NewRealClock()
 	}
@@ -309,7 +309,7 @@ func FromData(data *MiningOperationData, clock shared.Clock) *MiningOperation {
 		lastErr = fmt.Errorf("%s", data.LastError)
 	}
 
-	return &MiningOperation{
+	return &Operation{
 		id:             data.ID,
 		playerID:       data.PlayerID,
 		asteroidField:  data.AsteroidField,

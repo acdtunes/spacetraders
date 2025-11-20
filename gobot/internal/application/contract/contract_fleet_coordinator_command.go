@@ -14,9 +14,9 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 )
 
-// ContractFleetCoordinatorCommand manages a pool of ships for continuous contract execution.
+// FleetCoordinatorCommand manages a pool of ships for continuous contract execution.
 // It assigns contracts to the ship closest to the purchase market.
-type ContractFleetCoordinatorCommand struct {
+type FleetCoordinatorCommand struct {
 	PlayerID    int
 	ShipSymbols []string // Pool of ships to use for contracts
 	ContainerID string   // Coordinator's own container ID
@@ -28,8 +28,8 @@ type CoordinatorMetadata struct {
 	RebalanceInterval time.Duration
 }
 
-// ContractFleetCoordinatorResponse contains the coordinator execution results
-type ContractFleetCoordinatorResponse struct {
+// FleetCoordinatorResponse contains the coordinator execution results
+type FleetCoordinatorResponse struct {
 	ContractsCompleted int
 	Errors             []string
 }
@@ -39,8 +39,8 @@ type ContainerRepository interface {
 	ListByStatusSimple(ctx context.Context, status string, playerID *int) ([]persistence.ContainerSummary, error)
 }
 
-// ContractFleetCoordinatorHandler implements the fleet coordinator logic
-type ContractFleetCoordinatorHandler struct {
+// FleetCoordinatorHandler implements the fleet coordinator logic
+type FleetCoordinatorHandler struct {
 	mediator           common.Mediator
 	shipRepo           navigation.ShipRepository
 	contractRepo       domainContract.ContractRepository
@@ -51,8 +51,8 @@ type ContractFleetCoordinatorHandler struct {
 	containerRepo      ContainerRepository // For checking existing workers
 }
 
-// NewContractFleetCoordinatorHandler creates a new fleet coordinator handler
-func NewContractFleetCoordinatorHandler(
+// NewFleetCoordinatorHandler creates a new fleet coordinator handler
+func NewFleetCoordinatorHandler(
 	mediator common.Mediator,
 	shipRepo navigation.ShipRepository,
 	contractRepo domainContract.ContractRepository,
@@ -61,8 +61,8 @@ func NewContractFleetCoordinatorHandler(
 	daemonClient daemon.DaemonClient,
 	graphProvider system.ISystemGraphProvider,
 	containerRepo ContainerRepository,
-) *ContractFleetCoordinatorHandler {
-	return &ContractFleetCoordinatorHandler{
+) *FleetCoordinatorHandler {
+	return &FleetCoordinatorHandler{
 		mediator:           mediator,
 		shipRepo:           shipRepo,
 		contractRepo:       contractRepo,
@@ -75,15 +75,15 @@ func NewContractFleetCoordinatorHandler(
 }
 
 // Handle executes the fleet coordinator command
-func (h *ContractFleetCoordinatorHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {
+func (h *FleetCoordinatorHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {
 	logger := common.LoggerFromContext(ctx)
 
-	cmd, ok := request.(*ContractFleetCoordinatorCommand)
+	cmd, ok := request.(*FleetCoordinatorCommand)
 	if !ok {
 		return nil, fmt.Errorf("invalid request type")
 	}
 
-	result := &ContractFleetCoordinatorResponse{
+	result := &FleetCoordinatorResponse{
 		ContractsCompleted: 0,
 		Errors:             []string{},
 	}
@@ -271,7 +271,7 @@ func (h *ContractFleetCoordinatorHandler) Handle(ctx context.Context, request co
 		workerContainerID := fmt.Sprintf("contract-work-%s-%d", selectedShip, time.Now().Unix())
 
 		// Create worker command
-		workerCmd := &ContractWorkflowCommand{
+		workerCmd := &WorkflowCommand{
 			ShipSymbol:         selectedShip,
 			PlayerID:           cmd.PlayerID,
 			CoordinatorID:      cmd.ContainerID,
@@ -406,7 +406,7 @@ func (h *ContractFleetCoordinatorHandler) Handle(ctx context.Context, request co
 }
 
 // negotiateContract negotiates a new contract
-func (h *ContractFleetCoordinatorHandler) negotiateContract(
+func (h *FleetCoordinatorHandler) negotiateContract(
 	ctx context.Context,
 	shipSymbol string,
 	playerID int,
@@ -443,7 +443,7 @@ func (h *ContractFleetCoordinatorHandler) negotiateContract(
 }
 
 // findExistingWorkers finds any existing ContractWorkflow containers that might still be running
-func (h *ContractFleetCoordinatorHandler) findExistingWorkers(
+func (h *FleetCoordinatorHandler) findExistingWorkers(
 	ctx context.Context,
 	playerID int,
 ) ([]persistence.ContainerSummary, error) {

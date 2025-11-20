@@ -9,7 +9,7 @@ import (
 	"gorm.io/gorm"
 )
 
-// MiningOperationRepository implements the mining.MiningOperationRepository interface
+// MiningOperationRepository implements the mining.OperationRepository interface
 type MiningOperationRepository struct {
 	db *gorm.DB
 }
@@ -20,7 +20,7 @@ func NewMiningOperationRepository(db *gorm.DB) *MiningOperationRepository {
 }
 
 // Add creates a new mining operation in the database
-func (r *MiningOperationRepository) Add(ctx context.Context, op *mining.MiningOperation) error {
+func (r *MiningOperationRepository) Add(ctx context.Context, op *mining.Operation) error {
 	model, err := r.toModel(op)
 	if err != nil {
 		return fmt.Errorf("failed to convert to model: %w", err)
@@ -34,7 +34,7 @@ func (r *MiningOperationRepository) Add(ctx context.Context, op *mining.MiningOp
 }
 
 // FindByID retrieves a mining operation by its ID and player ID
-func (r *MiningOperationRepository) FindByID(ctx context.Context, id string, playerID int) (*mining.MiningOperation, error) {
+func (r *MiningOperationRepository) FindByID(ctx context.Context, id string, playerID int) (*mining.Operation, error) {
 	var model MiningOperationModel
 	if err := r.db.WithContext(ctx).
 		Where("id = ? AND player_id = ?", id, playerID).
@@ -49,7 +49,7 @@ func (r *MiningOperationRepository) FindByID(ctx context.Context, id string, pla
 }
 
 // Save persists changes to an existing mining operation
-func (r *MiningOperationRepository) Save(ctx context.Context, op *mining.MiningOperation) error {
+func (r *MiningOperationRepository) Save(ctx context.Context, op *mining.Operation) error {
 	model, err := r.toModel(op)
 	if err != nil {
 		return fmt.Errorf("failed to convert to model: %w", err)
@@ -74,12 +74,12 @@ func (r *MiningOperationRepository) Remove(ctx context.Context, id string, playe
 }
 
 // FindActive retrieves all active (RUNNING) operations for a player
-func (r *MiningOperationRepository) FindActive(ctx context.Context, playerID int) ([]*mining.MiningOperation, error) {
+func (r *MiningOperationRepository) FindActive(ctx context.Context, playerID int) ([]*mining.Operation, error) {
 	return r.FindByStatus(ctx, playerID, mining.OperationStatusRunning)
 }
 
 // FindByStatus retrieves all operations with a given status for a player
-func (r *MiningOperationRepository) FindByStatus(ctx context.Context, playerID int, status mining.OperationStatus) ([]*mining.MiningOperation, error) {
+func (r *MiningOperationRepository) FindByStatus(ctx context.Context, playerID int, status mining.OperationStatus) ([]*mining.Operation, error) {
 	var models []MiningOperationModel
 	if err := r.db.WithContext(ctx).
 		Where("player_id = ? AND status = ?", playerID, string(status)).
@@ -87,7 +87,7 @@ func (r *MiningOperationRepository) FindByStatus(ctx context.Context, playerID i
 		return nil, fmt.Errorf("failed to find mining operations: %w", err)
 	}
 
-	operations := make([]*mining.MiningOperation, len(models))
+	operations := make([]*mining.Operation, len(models))
 	for i, model := range models {
 		op, err := r.toEntity(&model)
 		if err != nil {
@@ -100,7 +100,7 @@ func (r *MiningOperationRepository) FindByStatus(ctx context.Context, playerID i
 }
 
 // toModel converts a domain entity to a database model
-func (r *MiningOperationRepository) toModel(op *mining.MiningOperation) (*MiningOperationModel, error) {
+func (r *MiningOperationRepository) toModel(op *mining.Operation) (*MiningOperationModel, error) {
 	data := op.ToData()
 
 	// Serialize ship arrays to JSON
@@ -134,7 +134,7 @@ func (r *MiningOperationRepository) toModel(op *mining.MiningOperation) (*Mining
 }
 
 // toEntity converts a database model to a domain entity
-func (r *MiningOperationRepository) toEntity(model *MiningOperationModel) (*mining.MiningOperation, error) {
+func (r *MiningOperationRepository) toEntity(model *MiningOperationModel) (*mining.Operation, error) {
 	// Deserialize ship arrays from JSON
 	var minerShips []string
 	if err := json.Unmarshal([]byte(model.MinerShips), &minerShips); err != nil {
@@ -146,7 +146,7 @@ func (r *MiningOperationRepository) toEntity(model *MiningOperationModel) (*mini
 		return nil, fmt.Errorf("failed to unmarshal transport ships: %w", err)
 	}
 
-	data := &mining.MiningOperationData{
+	data := &mining.OperationData{
 		ID:             model.ID,
 		PlayerID:       model.PlayerID,
 		AsteroidField:  model.AsteroidField,

@@ -19,9 +19,9 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
 
-// MiningCoordinatorCommand manages a fleet of mining and transport ships
+// CoordinatorCommand manages a fleet of mining and transport ships
 // using the Transport-as-Sink pattern
-type MiningCoordinatorCommand struct {
+type CoordinatorCommand struct {
 	MiningOperationID string
 	PlayerID          int
 	AsteroidField     string   // Waypoint symbol (may be empty if MiningType is set)
@@ -35,8 +35,8 @@ type MiningCoordinatorCommand struct {
 	MaxLegTime        int      // Max time per leg in minutes (0 = no limit)
 }
 
-// MiningCoordinatorResponse contains the coordinator execution results
-type MiningCoordinatorResponse struct {
+// CoordinatorResponse contains the coordinator execution results
+type CoordinatorResponse struct {
 	TotalTransfers int
 	TotalRevenue   int
 	Errors         []string
@@ -121,11 +121,11 @@ type MiningMarketRepository interface {
 	ListMarketsInSystem(ctx context.Context, playerID uint, systemSymbol string, maxAgeMinutes int) ([]market.Market, error)
 }
 
-// MiningCoordinatorHandler implements the mining fleet coordinator logic
-type MiningCoordinatorHandler struct {
+// CoordinatorHandler implements the mining fleet coordinator logic
+type CoordinatorHandler struct {
 	mediator           common.Mediator
 	shipRepo           navigation.ShipRepository
-	operationRepo      domainMining.MiningOperationRepository
+	operationRepo      domainMining.OperationRepository
 	shipAssignmentRepo daemon.ShipAssignmentRepository
 	daemonClient       daemon.DaemonClient
 	routingClient      routing.RoutingClient
@@ -135,11 +135,11 @@ type MiningCoordinatorHandler struct {
 	waypointRepo       system.WaypointRepository
 }
 
-// NewMiningCoordinatorHandler creates a new mining coordinator handler
-func NewMiningCoordinatorHandler(
+// NewCoordinatorHandler creates a new mining coordinator handler
+func NewCoordinatorHandler(
 	mediator common.Mediator,
 	shipRepo navigation.ShipRepository,
-	operationRepo domainMining.MiningOperationRepository,
+	operationRepo domainMining.OperationRepository,
 	shipAssignmentRepo daemon.ShipAssignmentRepository,
 	daemonClient daemon.DaemonClient,
 	routingClient routing.RoutingClient,
@@ -147,8 +147,8 @@ func NewMiningCoordinatorHandler(
 	graphProvider system.ISystemGraphProvider,
 	marketRepo MiningMarketRepository,
 	waypointRepo system.WaypointRepository,
-) *MiningCoordinatorHandler {
-	return &MiningCoordinatorHandler{
+) *CoordinatorHandler {
+	return &CoordinatorHandler{
 		mediator:           mediator,
 		shipRepo:           shipRepo,
 		operationRepo:      operationRepo,
@@ -163,15 +163,15 @@ func NewMiningCoordinatorHandler(
 }
 
 // Handle executes the mining coordinator command
-func (h *MiningCoordinatorHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {
+func (h *CoordinatorHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {
 	logger := common.LoggerFromContext(ctx)
 
-	cmd, ok := request.(*MiningCoordinatorCommand)
+	cmd, ok := request.(*CoordinatorCommand)
 	if !ok {
 		return nil, fmt.Errorf("invalid request type")
 	}
 
-	result := &MiningCoordinatorResponse{
+	result := &CoordinatorResponse{
 		TotalTransfers: 0,
 		TotalRevenue:   0,
 		Errors:         []string{},
@@ -382,10 +382,10 @@ func (h *MiningCoordinatorHandler) Handle(ctx context.Context, request common.Re
 }
 
 // getOrCreateOperation loads or creates the mining operation
-func (h *MiningCoordinatorHandler) getOrCreateOperation(
+func (h *CoordinatorHandler) getOrCreateOperation(
 	ctx context.Context,
-	cmd *MiningCoordinatorCommand,
-) (*domainMining.MiningOperation, error) {
+	cmd *CoordinatorCommand,
+) (*domainMining.Operation, error) {
 	// Try to load existing operation
 	operation, err := h.operationRepo.FindByID(ctx, cmd.MiningOperationID, cmd.PlayerID)
 	if err == nil && operation != nil {
@@ -398,7 +398,7 @@ func (h *MiningCoordinatorHandler) getOrCreateOperation(
 	}
 
 	// Create new operation
-	operation = domainMining.NewMiningOperation(
+	operation = domainMining.NewOperation(
 		cmd.MiningOperationID,
 		cmd.PlayerID,
 		cmd.AsteroidField,
@@ -422,7 +422,7 @@ func (h *MiningCoordinatorHandler) getOrCreateOperation(
 }
 
 // createPoolAssignments creates ship assignments for all ships
-func (h *MiningCoordinatorHandler) createPoolAssignments(
+func (h *CoordinatorHandler) createPoolAssignments(
 	ctx context.Context,
 	ships []string,
 	containerID string,
@@ -438,7 +438,7 @@ func (h *MiningCoordinatorHandler) createPoolAssignments(
 }
 
 // releasePoolAssignments releases all ship assignments
-func (h *MiningCoordinatorHandler) releasePoolAssignments(
+func (h *CoordinatorHandler) releasePoolAssignments(
 	ctx context.Context,
 	containerID string,
 	playerID int,
@@ -456,9 +456,9 @@ func (h *MiningCoordinatorHandler) releasePoolAssignments(
 }
 
 // spawnMiningWorker creates and starts a mining worker for a ship
-func (h *MiningCoordinatorHandler) spawnMiningWorker(
+func (h *CoordinatorHandler) spawnMiningWorker(
 	ctx context.Context,
-	cmd *MiningCoordinatorCommand,
+	cmd *CoordinatorCommand,
 	shipSymbol string,
 	requestChan chan<- string,
 	assignChan <-chan string,
@@ -468,7 +468,7 @@ func (h *MiningCoordinatorHandler) spawnMiningWorker(
 
 	workerContainerID := fmt.Sprintf("mining-worker-%s-%d", shipSymbol, time.Now().Unix())
 
-	workerCmd := &MiningWorkerCommand{
+	workerCmd := &WorkerCommand{
 		ShipSymbol:           shipSymbol,
 		PlayerID:             cmd.PlayerID,
 		AsteroidField:        cmd.AsteroidField,
@@ -502,9 +502,9 @@ func (h *MiningCoordinatorHandler) spawnMiningWorker(
 }
 
 // spawnTransportWorker creates and starts a transport worker for a ship
-func (h *MiningCoordinatorHandler) spawnTransportWorker(
+func (h *CoordinatorHandler) spawnTransportWorker(
 	ctx context.Context,
-	cmd *MiningCoordinatorCommand,
+	cmd *CoordinatorCommand,
 	shipSymbol string,
 	marketSymbol string,
 	availabilityChan chan<- string,
@@ -547,14 +547,14 @@ func (h *MiningCoordinatorHandler) spawnTransportWorker(
 }
 
 // planDryRunRoutes plans routes for all ships without starting workers
-func (h *MiningCoordinatorHandler) planDryRunRoutes(
+func (h *CoordinatorHandler) planDryRunRoutes(
 	ctx context.Context,
-	cmd *MiningCoordinatorCommand,
+	cmd *CoordinatorCommand,
 	logger common.ContainerLogger,
-) (*MiningCoordinatorResponse, error) {
+) (*CoordinatorResponse, error) {
 	logger.Log("INFO", "Dry-run mode: planning routes for all ships", nil)
 
-	result := &MiningCoordinatorResponse{
+	result := &CoordinatorResponse{
 		AsteroidField: cmd.AsteroidField,
 		ShipRoutes:    []common.ShipRouteDTO{},
 		Errors:        []string{},
@@ -664,7 +664,7 @@ func (h *MiningCoordinatorHandler) planDryRunRoutes(
 
 // selectAsteroidAndMarket selects the best asteroid field based on mining type and travel time
 // Returns both the asteroid symbol and the nearest market symbol
-func (h *MiningCoordinatorHandler) selectAsteroidAndMarket(
+func (h *CoordinatorHandler) selectAsteroidAndMarket(
 	ctx context.Context,
 	miningType string,
 	transportShips []string,
@@ -937,7 +937,7 @@ func (h *MiningCoordinatorHandler) selectAsteroidAndMarket(
 }
 
 // findClosestMarketWithFuel finds the closest market with fuel near the asteroid
-func (h *MiningCoordinatorHandler) findClosestMarketWithFuel(
+func (h *CoordinatorHandler) findClosestMarketWithFuel(
 	ctx context.Context,
 	playerID int,
 	asteroidSymbol string,
@@ -1005,7 +1005,7 @@ func (h *MiningCoordinatorHandler) findClosestMarketWithFuel(
 }
 
 // convertRouteToShipRoute converts a routing response to ShipRoute format
-func (h *MiningCoordinatorHandler) convertRouteToShipRoute(
+func (h *CoordinatorHandler) convertRouteToShipRoute(
 	startWaypoint string,
 	shipSymbol string,
 	shipType string,
@@ -1037,7 +1037,7 @@ func (h *MiningCoordinatorHandler) convertRouteToShipRoute(
 }
 
 // combineTransportRoutes combines multiple routes into a single ShipRoute for transports
-func (h *MiningCoordinatorHandler) combineTransportRoutes(
+func (h *CoordinatorHandler) combineTransportRoutes(
 	startWaypoint string,
 	shipSymbol string,
 	route1, route2, route3 *navigation.Route,
