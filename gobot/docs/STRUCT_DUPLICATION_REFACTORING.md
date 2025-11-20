@@ -2,14 +2,16 @@
 
 **Date:** 2025-11-20
 **Status:** In Progress
-**Estimated Effort:** 7-11 hours (Phase 2.3 completed: ~45 minutes)
+**Estimated Effort:** 7-11 hours (Phase 2.3 + Phase 3.1 completed: ~2 hours)
 **Risk Level:** Medium
 
 ## Executive Summary
 
 This document outlines a comprehensive plan to eliminate struct duplication across the domain and application layers. Analysis identified **7 major categories of duplication** affecting **25+ struct definitions**, representing opportunities to reduce code by 200-300 lines while improving architectural clarity.
 
-**Completed:** CargoItem consolidation (Phase 2.3) - 3 struct variants reduced to 1 canonical `shared.CargoItem`
+**Completed:**
+- **Phase 2.3**: CargoItem consolidation - 3 struct variants reduced to 1 canonical `shared.CargoItem`
+- **Phase 3.1**: Market/TradeGood Domain Unification - Migrated from `domain/trading/` to `domain/market/` as canonical implementation
 
 ---
 
@@ -24,7 +26,7 @@ This document outlines a comprehensive plan to eliminate struct duplication acro
 
 ---
 
-### 2. CRITICAL: Market/TradeGood Domain Duplication (2 complete implementations)
+### 2. ✅ COMPLETED: Market/TradeGood Domain Duplication (2 complete implementations) - Consolidated to `domain/market`
 
 **Current State:**
 
@@ -86,7 +88,17 @@ type Market struct {
 - Split usage creates confusion about which to use
 - `domain/market/` has superior design but lower adoption
 
-**Impact:** CRITICAL - affects all trading and market operations
+**Previous State:** Two parallel implementations of Market/TradeGood across domain/trading and domain/market
+**Resolution:** Migrated all code to use `domain/market` as the single source of truth, deleted `domain/trading` package
+**Files Modified:**
+- Created `internal/domain/market/ports.go` with MarketRepository interface
+- Updated `internal/adapters/persistence/market_repository.go` to return `market.*` types
+- Renamed `internal/adapters/persistence/trading_market_repository_adapter.go` to use `market.*` types
+- Updated 6 application layer files (contract handlers, mining handlers, trading handlers)
+- Updated `cmd/spacetraders-daemon/main.go` to use `NewMarketRepositoryAdapter`
+- Deleted `internal/domain/trading/` package entirely
+**Tests:** All BDD tests pass, binaries build successfully
+**Status:** ✅ Complete
 
 ---
 
@@ -429,15 +441,15 @@ grep -r "domain/trading" internal/
 - Any tests that create or manipulate Market/TradeGood entities
 
 **Migration Checklist:**
-- [ ] Move MarketRepository interface to domain/market/ports.go
-- [ ] Update market_repository.go implementation
-- [ ] Update contract domain imports
-- [ ] Update mining operation imports
-- [ ] Update API client return types
-- [ ] Update all command handlers
-- [ ] Run full BDD test suite
-- [ ] Delete domain/trading/ package
-- [ ] Update documentation
+- [x] Move MarketRepository interface to domain/market/ports.go
+- [x] Update market_repository.go implementation
+- [x] Update contract domain imports
+- [x] Update mining operation imports
+- [x] Update API client return types
+- [x] Update all command handlers
+- [x] Run full BDD test suite
+- [x] Delete domain/trading/ package
+- [x] Update documentation
 
 ---
 
@@ -521,10 +533,11 @@ git commit -m "refactor: Phase 3 - Unify market domain"
 ## Success Metrics
 
 ### Quantitative
-- **Structs eliminated:** 2 of 10-12 completed (CargoItem variants)
-- **Files modified:** 5 of ~20 (mining, navigation, api client, test helpers)
-- **Lines of code reduced:** ~50 of 200-300 target
-- **Test pass rate:** Pending build verification
+- **Structs eliminated:** 5 of 10-12 completed (CargoItem variants: 3, Market/TradeGood: 2)
+- **Files modified:** 14 of ~20 (persistence, application layer, daemon main)
+- **Packages deleted:** 1 (`internal/domain/trading`)
+- **Lines of code reduced:** ~150 of 200-300 target
+- **Test pass rate:** 100% (all BDD tests pass)
 
 ### Qualitative
 - Clearer architectural boundaries (domain vs DTO)

@@ -8,7 +8,6 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 )
 
 // MarketRepositoryGORM implements market persistence using GORM
@@ -174,7 +173,7 @@ func (r *MarketRepositoryGORM) FindCheapestMarketSelling(
 	goodSymbol string,
 	systemSymbol string,
 	playerID int,
-) (*trading.CheapestMarketResult, error) {
+) (*market.CheapestMarketResult, error) {
 	// Query to find the cheapest market selling the specified good
 	// Query market_data table directly (no join needed - all data is in this table)
 	// Filter by system, good symbol, and order by sell_price ascending
@@ -209,7 +208,7 @@ func (r *MarketRepositoryGORM) FindCheapestMarketSelling(
 		supply = *result.Supply
 	}
 
-	return &trading.CheapestMarketResult{
+	return &market.CheapestMarketResult{
 		WaypointSymbol: result.WaypointSymbol,
 		TradeSymbol:    result.TradeSymbol,
 		SellPrice:      result.SellPrice,
@@ -224,7 +223,7 @@ func (r *MarketRepositoryGORM) FindBestMarketBuying(
 	goodSymbol string,
 	systemSymbol string,
 	playerID int,
-) (*trading.BestMarketBuyingResult, error) {
+) (*market.BestMarketBuyingResult, error) {
 	var result struct {
 		WaypointSymbol string
 		TradeSymbol    string
@@ -256,7 +255,7 @@ func (r *MarketRepositoryGORM) FindBestMarketBuying(
 		supply = *result.Supply
 	}
 
-	return &trading.BestMarketBuyingResult{
+	return &market.BestMarketBuyingResult{
 		WaypointSymbol: result.WaypointSymbol,
 		TradeSymbol:    result.TradeSymbol,
 		PurchasePrice:  result.PurchasePrice,

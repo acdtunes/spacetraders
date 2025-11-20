@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 )
 
 // FindPurchaseMarket finds the cheapest market for purchasing goods needed for a contract delivery.
@@ -25,7 +25,7 @@ import (
 func FindPurchaseMarket(
 	ctx context.Context,
 	contract *domainContract.Contract,
-	marketRepo trading.MarketRepository,
+	marketRepo market.MarketRepository,
 	playerID int,
 ) (string, error) {
 	deliveries := contract.Terms().Deliveries

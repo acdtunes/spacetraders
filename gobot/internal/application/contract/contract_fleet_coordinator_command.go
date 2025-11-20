@@ -11,7 +11,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 )
 
 // ContractFleetCoordinatorCommand manages a pool of ships for continuous contract execution.
@@ -44,7 +44,7 @@ type ContractFleetCoordinatorHandler struct {
 	mediator           common.Mediator
 	shipRepo           navigation.ShipRepository
 	contractRepo       domainContract.ContractRepository
-	marketRepo         trading.MarketRepository
+	marketRepo         market.MarketRepository
 	shipAssignmentRepo daemon.ShipAssignmentRepository
 	daemonClient       daemon.DaemonClient // For creating worker containers
 	graphProvider      system.ISystemGraphProvider // For distance calculations
@@ -56,7 +56,7 @@ func NewContractFleetCoordinatorHandler(
 	mediator common.Mediator,
 	shipRepo navigation.ShipRepository,
 	contractRepo domainContract.ContractRepository,
-	marketRepo trading.MarketRepository,
+	marketRepo market.MarketRepository,
 	shipAssignmentRepo daemon.ShipAssignmentRepository,
 	daemonClient daemon.DaemonClient,
 	graphProvider system.ISystemGraphProvider,

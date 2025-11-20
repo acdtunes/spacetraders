@@ -11,7 +11,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/routing"
 	domainShared "github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 )
 
 // TourSellingCommand executes optimized cargo selling tour
@@ -40,7 +40,7 @@ type SoldItem struct {
 type TourSellingHandler struct {
 	mediator      common.Mediator
 	shipRepo      navigation.ShipRepository
-	marketRepo    trading.MarketRepository
+	marketRepo    market.MarketRepository
 	routingClient routing.RoutingClient
 	graphProvider system.ISystemGraphProvider
 }
@@ -49,7 +49,7 @@ type TourSellingHandler struct {
 func NewTourSellingHandler(
 	mediator common.Mediator,
 	shipRepo navigation.ShipRepository,
-	marketRepo trading.MarketRepository,
+	marketRepo market.MarketRepository,
 	routingClient routing.RoutingClient,
 	graphProvider system.ISystemGraphProvider,
 ) *TourSellingHandler {

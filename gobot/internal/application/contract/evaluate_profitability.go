@@ -9,7 +9,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 )
 
 const (
@@ -48,13 +48,13 @@ type ProfitabilityResult struct {
 // is_profitable = net_profit >= -5000  (accepts losses up to 5000 credits)
 type EvaluateContractProfitabilityHandler struct {
 	shipRepo   navigation.ShipRepository
-	marketRepo trading.MarketRepository
+	marketRepo market.MarketRepository
 }
 
 // NewEvaluateContractProfitabilityHandler creates a new handler
 func NewEvaluateContractProfitabilityHandler(
 	shipRepo navigation.ShipRepository,
-	marketRepo trading.MarketRepository,
+	marketRepo market.MarketRepository,
 ) *EvaluateContractProfitabilityHandler {
 	return &EvaluateContractProfitabilityHandler{
 		shipRepo:   shipRepo,

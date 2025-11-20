@@ -6,7 +6,7 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 )
 
 // CargoItemValue represents a cargo item with its market value
@@ -32,12 +32,12 @@ type EvaluateCargoValueResponse struct {
 
 // EvaluateCargoValueHandler - Handles cargo value evaluation queries
 type EvaluateCargoValueHandler struct {
-	marketRepo trading.MarketRepository
+	marketRepo market.MarketRepository
 }
 
 // NewEvaluateCargoValueHandler creates a new evaluate cargo value handler
 func NewEvaluateCargoValueHandler(
-	marketRepo trading.MarketRepository,
+	marketRepo market.MarketRepository,
 ) *EvaluateCargoValueHandler {
 	return &EvaluateCargoValueHandler{
 		marketRepo: marketRepo,
