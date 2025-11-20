@@ -28,10 +28,11 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	// Register step definitions for the sample ship entity test
 	// NOTE: ValueObjectScenarios registered FIRST so its step definitions take precedence
 	// for shared steps like "the result should be true/false"
+	// Container steps registered BEFORE ship steps to handle container-specific error assertions
 	steps.InitializeValueObjectScenarios(sc)
+	steps.RegisterContainerSteps(sc)
 	steps.InitializeShipScenario(sc)
 	steps.InitializeContainerIDSteps(sc)
-	steps.RegisterContainerSteps(sc)
 }
 
 func TestMain(m *testing.M) {

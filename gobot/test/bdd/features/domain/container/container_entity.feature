@@ -168,17 +168,17 @@ Feature: Container Entity
   Scenario: Infinite loop container never stops iterating
     Given a container with max_iterations -1 at iteration 0
     When I check if container should continue
-    Then the result should be true
+    Then the container should continue
 
   Scenario: Infinite loop container should continue at high iterations
     Given a container with max_iterations -1 at iteration 100
     When I check if container should continue
-    Then the result should be true
+    Then the container should continue
 
   Scenario: Infinite loop container should continue at very high iterations
     Given a container with max_iterations -1 at iteration 999999
     When I check if container should continue
-    Then the result should be true
+    Then the container should continue
 
   # ============================================================================
   # Iteration Control: Finite Loop
@@ -187,30 +187,30 @@ Feature: Container Entity
   Scenario: Finite loop container should continue below limit
     Given a container with max_iterations 5 at iteration 0
     When I check if container should continue
-    Then the result should be true
+    Then the container should continue
 
   Scenario: Finite loop container should continue at limit minus one
     Given a container with max_iterations 5 at iteration 4
     When I check if container should continue
-    Then the result should be true
+    Then the container should continue
 
   Scenario: Finite loop container stops at limit
     Given a container with max_iterations 5 at iteration 5
     When I check if container should continue
-    Then the result should be false
+    Then the container should not continue
 
   Scenario: Finite loop container stops beyond limit
     Given a container with max_iterations 5 at iteration 6
     When I check if container should continue
-    Then the result should be false
+    Then the container should not continue
 
   Scenario: Single iteration container
     Given a container with max_iterations 1 at iteration 0
     When I check if container should continue
-    Then the result should be true
+    Then the container should continue
     And when I increment the container iteration
     And I check if container should continue
-    Then the result should be false
+    Then the container should not continue
 
   # ============================================================================
   # Iteration Control: Increment
@@ -243,37 +243,37 @@ Feature: Container Entity
   Scenario: Failed container can restart under limit
     Given a container in "FAILED" state with restart_count 0
     When I check if container can restart
-    Then the result should be true
+    Then the container can restart
 
   Scenario: Failed container can restart at limit minus one
     Given a container in "FAILED" state with restart_count 2
     When I check if container can restart
-    Then the result should be true
+    Then the container can restart
 
   Scenario: Failed container cannot restart at max restarts
     Given a container in "FAILED" state with restart_count 3
     When I check if container can restart
-    Then the result should be false
+    Then the container cannot restart
 
   Scenario: Failed container cannot restart beyond max restarts
     Given a container in "FAILED" state with restart_count 4
     When I check if container can restart
-    Then the result should be false
+    Then the container cannot restart
 
   Scenario: Running container cannot restart
     Given a container in "RUNNING" state with restart_count 0
     When I check if container can restart
-    Then the result should be false
+    Then the container cannot restart
 
   Scenario: Pending container cannot restart
     Given a container in "PENDING" state with restart_count 0
     When I check if container can restart
-    Then the result should be false
+    Then the container cannot restart
 
   Scenario: Completed container cannot restart
     Given a container in "COMPLETED" state with restart_count 0
     When I check if container can restart
-    Then the result should be false
+    Then the container cannot restart
 
   # ============================================================================
   # Restart Management: Reset
@@ -295,7 +295,7 @@ Feature: Container Entity
   Scenario: Cannot reset running container
     Given a container in "RUNNING" state with restart_count 0
     When I attempt to reset container for restart
-    Then the operation should fail with error "container cannot be restarted"
+    Then the operation should fail with error "container cannot be restarted (restarts: 0/3)"
 
   Scenario: Reset preserves container identity
     Given a container with id "mining-1" in "FAILED" state with restart_count 1
@@ -393,49 +393,49 @@ Feature: Container Entity
   Scenario: IsRunning returns true for running container
     Given a container in "RUNNING" state
     When I check if container is running
-    Then the result should be true
+    Then the container is running
 
   Scenario: IsRunning returns false for pending container
     Given a container in "PENDING" state
     When I check if container is running
-    Then the result should be false
+    Then the container is not running
 
   Scenario: IsRunning returns false for completed container
     Given a container in "COMPLETED" state
     When I check if container is running
-    Then the result should be false
+    Then the container is not running
 
   Scenario: IsFinished returns true for completed container
     Given a container in "COMPLETED" state
     When I check if container is finished
-    Then the result should be true
+    Then the container is finished
 
   Scenario: IsFinished returns true for failed container
     Given a container in "FAILED" state
     When I check if container is finished
-    Then the result should be true
+    Then the container is finished
 
   Scenario: IsFinished returns true for stopped container
     Given a container in "STOPPED" state
     When I check if container is finished
-    Then the result should be true
+    Then the container is finished
 
   Scenario: IsFinished returns false for running container
     Given a container in "RUNNING" state
     When I check if container is finished
-    Then the result should be false
+    Then the container is not finished
 
   Scenario: IsFinished returns false for pending container
     Given a container in "PENDING" state
     When I check if container is finished
-    Then the result should be false
+    Then the container is not finished
 
   Scenario: IsStopping returns true for stopping container
     Given a container in "STOPPING" state
     When I check if container is stopping
-    Then the result should be true
+    Then the container is stopping
 
   Scenario: IsStopping returns false for running container
     Given a container in "RUNNING" state
     When I check if container is stopping
-    Then the result should be false
+    Then the container is not stopping

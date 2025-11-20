@@ -90,6 +90,7 @@ func (cc *containerContext) aContainerInState(status string) error {
 		_ = cc.container.Start()
 		return cc.container.Fail(fmt.Errorf("test error"))
 	case "STOPPED":
+		// Stop from PENDING goes directly to STOPPED
 		return cc.container.Stop()
 	case "STOPPING":
 		_ = cc.container.Start()
@@ -164,7 +165,9 @@ func (cc *containerContext) aContainerInStateAtIteration(status string, iteratio
 	case "COMPLETED":
 		return cc.container.Complete()
 	case "STOPPED":
-		return cc.container.Stop()
+		// Stop requires two-phase: STOPPING -> STOPPED
+		_ = cc.container.Stop()
+		return cc.container.MarkStopped()
 	case "FAILED":
 		return cc.container.Fail(fmt.Errorf("test error"))
 	default:
@@ -587,9 +590,74 @@ func (cc *containerContext) theContainerPlayerIDShouldBe(expected int) error {
 	return nil
 }
 
-func (cc *containerContext) theResultShouldBe(expected bool) error {
-	if cc.boolResult != expected {
-		return fmt.Errorf("expected result %t, got %t", expected, cc.boolResult)
+// Container-specific boolean assertions to avoid conflicts with value_object_steps
+
+func (cc *containerContext) theContainerShouldContinue() error {
+	if !cc.boolResult {
+		return fmt.Errorf("expected container to continue, but it should not")
+	}
+	return nil
+}
+
+func (cc *containerContext) theContainerShouldNotContinue() error {
+	if cc.boolResult {
+		return fmt.Errorf("expected container to not continue, but it should")
+	}
+	return nil
+}
+
+func (cc *containerContext) theContainerCanRestart() error {
+	if !cc.boolResult {
+		return fmt.Errorf("expected container to be able to restart, but it cannot")
+	}
+	return nil
+}
+
+func (cc *containerContext) theContainerCannotRestart() error {
+	if cc.boolResult {
+		return fmt.Errorf("expected container to not be able to restart, but it can")
+	}
+	return nil
+}
+
+func (cc *containerContext) theContainerIsRunning() error {
+	if !cc.boolResult {
+		return fmt.Errorf("expected container to be running, but it is not")
+	}
+	return nil
+}
+
+func (cc *containerContext) theContainerIsNotRunning() error {
+	if cc.boolResult {
+		return fmt.Errorf("expected container to not be running, but it is")
+	}
+	return nil
+}
+
+func (cc *containerContext) theContainerIsFinished() error {
+	if !cc.boolResult {
+		return fmt.Errorf("expected container to be finished, but it is not")
+	}
+	return nil
+}
+
+func (cc *containerContext) theContainerIsNotFinished() error {
+	if cc.boolResult {
+		return fmt.Errorf("expected container to not be finished, but it is")
+	}
+	return nil
+}
+
+func (cc *containerContext) theContainerIsStopping() error {
+	if !cc.boolResult {
+		return fmt.Errorf("expected container to be stopping, but it is not")
+	}
+	return nil
+}
+
+func (cc *containerContext) theContainerIsNotStopping() error {
+	if cc.boolResult {
+		return fmt.Errorf("expected container to not be stopping, but it is")
 	}
 	return nil
 }
@@ -697,8 +765,19 @@ func RegisterContainerSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^the container id should be "([^"]*)"$`, cc.theContainerIDShouldBe)
 	ctx.Step(`^the container type should be "([^"]*)"$`, cc.theContainerTypeShouldBe)
 	ctx.Step(`^the container player_id should be (\d+)$`, cc.theContainerPlayerIDShouldBe)
-	ctx.Step(`^the result should be (true|false)$`, cc.theResultShouldBe)
 	ctx.Step(`^the duration should be (\d+) seconds$`, cc.theDurationShouldBeSeconds)
 	ctx.Step(`^the duration should be approximately (\d+) seconds$`, cc.theDurationShouldBeApproximatelySeconds)
 	ctx.Step(`^the operation should fail with error "([^"]*)"$`, cc.theOperationShouldFailWithError)
+
+	// Container-specific boolean assertions
+	ctx.Step(`^the container should continue$`, cc.theContainerShouldContinue)
+	ctx.Step(`^the container should not continue$`, cc.theContainerShouldNotContinue)
+	ctx.Step(`^the container can restart$`, cc.theContainerCanRestart)
+	ctx.Step(`^the container cannot restart$`, cc.theContainerCannotRestart)
+	ctx.Step(`^the container is running$`, cc.theContainerIsRunning)
+	ctx.Step(`^the container is not running$`, cc.theContainerIsNotRunning)
+	ctx.Step(`^the container is finished$`, cc.theContainerIsFinished)
+	ctx.Step(`^the container is not finished$`, cc.theContainerIsNotFinished)
+	ctx.Step(`^the container is stopping$`, cc.theContainerIsStopping)
+	ctx.Step(`^the container is not stopping$`, cc.theContainerIsNotStopping)
 }
