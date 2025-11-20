@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	appShip "github.com/andrescamacho/spacetraders-go/internal/application/ship"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	domainMining "github.com/andrescamacho/spacetraders-go/internal/domain/mining"
@@ -66,9 +67,9 @@ type MiningCoordinatorResponse struct {
 // TransportRoutePlan contains the planned routes for a transport ship
 // This is the shared route planning result used by both dry-run and real mode
 type TransportRoutePlan struct {
-	ToMarket    *routing.RouteResponse // Current position -> Market (BURN)
-	ToAsteroid  *routing.RouteResponse // Market -> Asteroid (CRUISE)
-	ToMarketRet *routing.RouteResponse // Asteroid -> Market (CRUISE)
+	ToMarket    *navigation.Route // Current position -> Market (BURN)
+	ToAsteroid  *navigation.Route // Market -> Asteroid (CRUISE)
+	ToMarketRet *navigation.Route // Asteroid -> Market (CRUISE)
 }
 
 // PlanTransportRoute plans the initial route for a transport ship
@@ -76,57 +77,52 @@ type TransportRoutePlan struct {
 // This function is used by both dry-run mode and actual transport workers
 func PlanTransportRoute(
 	ctx context.Context,
-	routingClient routing.RoutingClient,
+	routePlanner *appShip.RoutePlanner,
 	ship *navigation.Ship,
 	marketSymbol string,
 	asteroidField string,
 	waypoints []*system.WaypointData,
 	systemSymbol string,
 ) (*TransportRoutePlan, error) {
+	// Convert waypoints to map[string]*shared.Waypoint for RoutePlanner
+	waypointMap := make(map[string]*domainShared.Waypoint)
+	for _, wp := range waypoints {
+		waypointMap[wp.Symbol] = &domainShared.Waypoint{
+			Symbol:       wp.Symbol,
+			SystemSymbol: systemSymbol,
+			X:            wp.X,
+			Y:            wp.Y,
+			HasFuel:      wp.HasFuel,
+		}
+	}
+
 	// Route 1: current -> market (BURN for speed, will refuel there)
-	toMarket, err := routingClient.PlanRoute(ctx, &routing.RouteRequest{
-		SystemSymbol:  systemSymbol,
-		StartWaypoint: ship.CurrentLocation().Symbol,
-		GoalWaypoint:  marketSymbol,
-		CurrentFuel:   ship.Fuel().Current,
-		FuelCapacity:  ship.Fuel().Capacity,
-		EngineSpeed:   ship.EngineSpeed(),
-		Waypoints:     waypoints,
-		FuelEfficient: false,
-		PreferCruise:  false, // BURN to market (can refuel there)
-	})
+	// Uses ship's current fuel - RoutePlanner handles refuel stops automatically
+	toMarket, err := routePlanner.PlanRoute(ctx, ship, marketSymbol, waypointMap, false)
 	if err != nil {
 		return nil, fmt.Errorf("failed to plan route to market: %w", err)
 	}
 
 	// Route 2: market -> asteroid (CRUISE to preserve fuel for return)
-	toAsteroid, err := routingClient.PlanRoute(ctx, &routing.RouteRequest{
-		SystemSymbol:  systemSymbol,
-		StartWaypoint: marketSymbol,
-		GoalWaypoint:  asteroidField,
-		CurrentFuel:   ship.Fuel().Capacity, // Full after refuel at market
-		FuelCapacity:  ship.Fuel().Capacity,
-		EngineSpeed:   ship.EngineSpeed(),
-		Waypoints:     waypoints,
-		FuelEfficient: false,
-		PreferCruise:  true, // CRUISE to asteroid (no fuel there)
-	})
+	// Create temporary ship state at market with full fuel
+	marketWp := waypointMap[marketSymbol]
+	if marketWp == nil {
+		return nil, fmt.Errorf("market waypoint %s not found in waypoint map", marketSymbol)
+	}
+	shipAtMarket := ship.CloneAtLocation(marketWp, ship.Fuel().Capacity)
+	toAsteroid, err := routePlanner.PlanRoute(ctx, shipAtMarket, asteroidField, waypointMap, true)
 	if err != nil {
 		return nil, fmt.Errorf("failed to plan route to asteroid: %w", err)
 	}
 
 	// Route 3: asteroid -> market (CRUISE to make it back)
-	toMarketRet, err := routingClient.PlanRoute(ctx, &routing.RouteRequest{
-		SystemSymbol:  systemSymbol,
-		StartWaypoint: asteroidField,
-		GoalWaypoint:  marketSymbol,
-		CurrentFuel:   ship.Fuel().Capacity, // Assume started with full fuel
-		FuelCapacity:  ship.Fuel().Capacity,
-		EngineSpeed:   ship.EngineSpeed(),
-		Waypoints:     waypoints,
-		FuelEfficient: false,
-		PreferCruise:  true, // CRUISE from asteroid (preserve fuel)
-	})
+	// Create temporary ship state at asteroid with full fuel
+	asteroidWp := waypointMap[asteroidField]
+	if asteroidWp == nil {
+		return nil, fmt.Errorf("asteroid waypoint %s not found in waypoint map", asteroidField)
+	}
+	shipAtAsteroid := ship.CloneAtLocation(asteroidWp, ship.Fuel().Capacity)
+	toMarketRet, err := routePlanner.PlanRoute(ctx, shipAtAsteroid, marketSymbol, waypointMap, true)
 	if err != nil {
 		return nil, fmt.Errorf("failed to plan route back to market: %w", err)
 	}
@@ -151,6 +147,7 @@ type MiningCoordinatorHandler struct {
 	shipAssignmentRepo daemon.ShipAssignmentRepository
 	daemonClient       daemon.DaemonClient
 	routingClient      routing.RoutingClient
+	routePlanner       *appShip.RoutePlanner
 	graphProvider      system.ISystemGraphProvider
 	marketRepo         MiningMarketRepository
 	waypointRepo       system.WaypointRepository
@@ -164,6 +161,7 @@ func NewMiningCoordinatorHandler(
 	shipAssignmentRepo daemon.ShipAssignmentRepository,
 	daemonClient daemon.DaemonClient,
 	routingClient routing.RoutingClient,
+	routePlanner *appShip.RoutePlanner,
 	graphProvider system.ISystemGraphProvider,
 	marketRepo MiningMarketRepository,
 	waypointRepo system.WaypointRepository,
@@ -175,6 +173,7 @@ func NewMiningCoordinatorHandler(
 		shipAssignmentRepo: shipAssignmentRepo,
 		daemonClient:       daemonClient,
 		routingClient:      routingClient,
+		routePlanner:       routePlanner,
 		graphProvider:      graphProvider,
 		marketRepo:         marketRepo,
 		waypointRepo:       waypointRepo,
@@ -645,7 +644,7 @@ func (h *MiningCoordinatorHandler) planDryRunRoutes(
 		// Use shared route planning function
 		routePlan, err := PlanTransportRoute(
 			ctx,
-			h.routingClient,
+			h.routePlanner,
 			ship,
 			marketSymbol,
 			cmd.AsteroidField,
@@ -1055,64 +1054,35 @@ func (h *MiningCoordinatorHandler) convertRouteToShipRoute(
 	}
 }
 
-// combineTransportRoutes combines multiple route responses into a single ShipRoute for transports
+// combineTransportRoutes combines multiple routes into a single ShipRoute for transports
 func (h *MiningCoordinatorHandler) combineTransportRoutes(
 	startWaypoint string,
 	shipSymbol string,
-	route1, route2, route3 *routing.RouteResponse,
+	route1, route2, route3 *navigation.Route,
 ) ShipRoute {
 	segments := []RouteSegment{}
 	totalFuel := 0
 	totalTime := 0
 
-	// Add route 1 (current -> asteroid)
-	prevWaypoint := startWaypoint
-	for _, step := range route1.Steps {
-		if step.Action == routing.RouteActionTravel {
+	// Helper to convert segments from a Route
+	addRouteSegments := func(route *navigation.Route) {
+		for _, seg := range route.Segments() {
 			segments = append(segments, RouteSegment{
-				From:       prevWaypoint,
-				To:         step.Waypoint,
-				FlightMode: step.Mode,
-				FuelCost:   step.FuelCost,
-				TravelTime: step.TimeSeconds,
+				From:       seg.FromWaypoint.Symbol,
+				To:         seg.ToWaypoint.Symbol,
+				FlightMode: seg.FlightMode.String(),
+				FuelCost:   seg.FuelRequired,
+				TravelTime: seg.TravelTime,
 			})
-			prevWaypoint = step.Waypoint
 		}
+		totalFuel += route.TotalFuelRequired()
+		totalTime += route.TotalTravelTime()
 	}
-	totalFuel += route1.TotalFuelCost
-	totalTime += route1.TotalTimeSeconds
 
-	// Add route 2 (asteroid -> market)
-	for _, step := range route2.Steps {
-		if step.Action == routing.RouteActionTravel {
-			segments = append(segments, RouteSegment{
-				From:       prevWaypoint,
-				To:         step.Waypoint,
-				FlightMode: step.Mode,
-				FuelCost:   step.FuelCost,
-				TravelTime: step.TimeSeconds,
-			})
-			prevWaypoint = step.Waypoint
-		}
-	}
-	totalFuel += route2.TotalFuelCost
-	totalTime += route2.TotalTimeSeconds
-
-	// Add route 3 (market -> asteroid)
-	for _, step := range route3.Steps {
-		if step.Action == routing.RouteActionTravel {
-			segments = append(segments, RouteSegment{
-				From:       prevWaypoint,
-				To:         step.Waypoint,
-				FlightMode: step.Mode,
-				FuelCost:   step.FuelCost,
-				TravelTime: step.TimeSeconds,
-			})
-			prevWaypoint = step.Waypoint
-		}
-	}
-	totalFuel += route3.TotalFuelCost
-	totalTime += route3.TotalTimeSeconds
+	// Add all three route legs
+	addRouteSegments(route1) // current -> market
+	addRouteSegments(route2) // market -> asteroid
+	addRouteSegments(route3) // asteroid -> market
 
 	return ShipRoute{
 		ShipSymbol: shipSymbol,
@@ -1147,8 +1117,21 @@ func extractWaypointData(graph map[string]interface{}) ([]*system.WaypointData, 
 		if y, ok := wpMap["y"].(float64); ok {
 			wp.Y = y
 		}
+		// Check for has_fuel as bool
 		if hasFuel, ok := wpMap["has_fuel"].(bool); ok {
 			wp.HasFuel = hasFuel
+			// Debug: log key waypoints
+			if symbol == "X1-AU21-H51" || symbol == "X1-AU21-I56" || symbol == "X1-AU21-J58" {
+				fmt.Printf("[DEBUG] extractWaypointData: %s has_fuel=%v\n", symbol, hasFuel)
+			}
+		} else if hasFuelRaw, exists := wpMap["has_fuel"]; exists {
+			// Debug: log if has_fuel exists but wrong type
+			fmt.Printf("[DEBUG] Waypoint %s has_fuel is type %T, value %v\n", symbol, hasFuelRaw, hasFuelRaw)
+		} else {
+			// Debug: log if has_fuel doesn't exist
+			if symbol == "X1-AU21-H51" || symbol == "X1-AU21-I56" || symbol == "X1-AU21-J58" {
+				fmt.Printf("[DEBUG] extractWaypointData: %s has_fuel MISSING\n", symbol)
+			}
 		}
 
 		waypointData = append(waypointData, wp)

@@ -3,6 +3,7 @@ package trading
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	appShip "github.com/andrescamacho/spacetraders-go/internal/application/ship"
@@ -206,10 +207,23 @@ func (h *TourSellingHandler) executeSellRoute(
 			FlightMode:  leg.FlightMode,
 		}
 
-		_, err := h.mediator.Send(ctx, navCmd)
+		navResp, err := h.mediator.Send(ctx, navCmd)
 		if err != nil {
 			logger.Log("WARNING", fmt.Sprintf("Failed to navigate to %s: %v", leg.ToWaypoint, err), nil)
 			continue
+		}
+
+		// Wait for navigation to complete before proceeding
+		if navResult, ok := navResp.(*appShip.NavigateToWaypointResponse); ok {
+			if navResult.Status == "navigating" && navResult.ArrivalTime > 0 {
+				logger.Log("INFO", fmt.Sprintf("Waiting %d seconds for ship to arrive at %s", navResult.ArrivalTime, leg.ToWaypoint), nil)
+				select {
+				case <-time.After(time.Duration(navResult.ArrivalTime) * time.Second):
+					// Navigation complete
+				case <-ctx.Done():
+					return marketsVisited, totalRevenue, itemsSold, ctx.Err()
+				}
+			}
 		}
 
 		// Check if this is a market we need to sell at (not the return leg)

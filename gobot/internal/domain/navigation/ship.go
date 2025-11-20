@@ -187,6 +187,27 @@ func (s *Ship) Role() string {
 	return s.role
 }
 
+// CloneAtLocation creates a copy of the ship at a different location with specified fuel
+// This is used for route planning to simulate ship state at intermediate waypoints
+func (s *Ship) CloneAtLocation(location *shared.Waypoint, currentFuel int) *Ship {
+	return &Ship{
+		shipSymbol:      s.shipSymbol,
+		playerID:        s.playerID,
+		currentLocation: location,
+		fuel: &shared.Fuel{
+			Current:  currentFuel,
+			Capacity: s.fuelCapacity,
+		},
+		fuelCapacity:  s.fuelCapacity,
+		cargoCapacity: s.cargoCapacity,
+		cargo:         s.cargo, // Share cargo (immutable for planning)
+		engineSpeed:   s.engineSpeed,
+		frameSymbol:   s.frameSymbol,
+		role:          s.role,
+		navStatus:     NavStatusInOrbit, // Assume in orbit for routing
+	}
+}
+
 // Frame Type Queries
 
 // IsProbe checks if ship is a probe type (FRAME_PROBE)

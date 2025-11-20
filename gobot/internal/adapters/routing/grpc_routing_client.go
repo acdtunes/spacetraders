@@ -254,6 +254,10 @@ func (c *GRPCRoutingClient) PartitionFleet(ctx context.Context, req *domainRouti
 func convertWaypointsToPb(waypoints []*system.WaypointData) []*pb.Waypoint {
 	pbWaypoints := make([]*pb.Waypoint, len(waypoints))
 	for i, wp := range waypoints {
+		// Debug: Log has_fuel for key waypoints
+		if wp.Symbol == "X1-AU21-H51" || wp.Symbol == "X1-AU21-I56" || wp.Symbol == "X1-AU21-J58" {
+			fmt.Printf("[DEBUG] convertWaypointsToPb: %s HasFuel=%v\n", wp.Symbol, wp.HasFuel)
+		}
 		pbWaypoints[i] = &pb.Waypoint{
 			Symbol:  wp.Symbol,
 			X:       wp.X,

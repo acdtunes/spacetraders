@@ -70,7 +70,6 @@ func (m *mediator) Send(ctx context.Context, request Request) (Response, error) 
 	return handler.Handle(ctx, request)
 }
 
-// Helper function to register handlers with type inference
 func RegisterHandler[T Request](m Mediator, handler RequestHandler) error {
 	var zero T
 	requestType := reflect.TypeOf(zero)

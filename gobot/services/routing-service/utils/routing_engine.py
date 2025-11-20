@@ -224,6 +224,7 @@ class ORToolsRoutingEngine:
                     'refuel_amount': refuel_amount
                 }
                 new_path = path + [refuel_step]
+
                 heapq.heappush(pq, (
                     total_time,
                     counter,
