@@ -558,7 +558,6 @@ classDiagram
         -baseURL string
         -httpClient http.Client
         -rateLimiter rate.Limiter
-        -circuitBreaker CircuitBreaker
         +GetShip(ctx, symbol, token) ShipData
         +NavigateShip(ctx, symbol, dest, token) NavResult
         +OrbitShip(ctx, symbol, token) error
@@ -568,24 +567,12 @@ classDiagram
         -request(method, path, token, body) error
     }
 
-    class CircuitBreaker {
-        -state CircuitState
-        -failures int
-        -maxFailures int
-        -timeout duration
-        +Execute(fn) error
-        +RecordSuccess()
-        +RecordFailure()
-        +IsOpen() bool
-    }
-
     class GraphBuilder {
         -client APIClient
         -waypointRepo WaypointRepository
         +BuildSystemGraph(ctx, system, playerID) map
     }
 
-    SpaceTradersClient --> CircuitBreaker
     SpaceTradersClient ..|> APIClient
 ```
 
@@ -1306,7 +1293,7 @@ The SpaceTraders Go Bot demonstrates a well-structured implementation of Hexagon
 3. **Scalability** - Goroutine-based concurrency with proper lifecycle management
 4. **Testability** - BDD tests in isolated directory, mock adapters
 5. **Extensibility** - Easy to add new commands, repositories, and adapters
-6. **Performance** - Caching strategies, rate limiting, circuit breakers
+6. **Performance** - Caching strategies, rate limiting, retry with exponential backoff
 
 The architecture supports complex workflows like multi-hop navigation with fuel constraints, fleet partitioning, and automated contract fulfillment while maintaining code clarity and maintainability.
 
