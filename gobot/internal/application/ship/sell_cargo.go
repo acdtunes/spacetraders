@@ -8,6 +8,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	infraPorts "github.com/andrescamacho/spacetraders-go/internal/infrastructure/ports"
+	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )
 
 // SellCargoCommand requests cargo sale from a ship at its current docked location.
@@ -111,7 +112,7 @@ func (h *SellCargoHandler) Handle(ctx context.Context, request common.Request) (
 	unitsRemaining := cmd.Units
 
 	for unitsRemaining > 0 {
-		unitsToSell := min(unitsRemaining, transactionLimit)
+		unitsToSell := utils.Min(unitsRemaining, transactionLimit)
 
 		result, err := h.apiClient.SellCargo(ctx, cmd.ShipSymbol, cmd.GoodSymbol, unitsToSell, player.Token)
 		if err != nil {

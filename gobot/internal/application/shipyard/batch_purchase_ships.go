@@ -8,6 +8,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/ports"
+	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )
 
 // BatchPurchaseShipsCommand is a command to purchase multiple ships of the same type in a batch
@@ -120,7 +121,7 @@ func (h *BatchPurchaseShipsHandler) Handle(ctx context.Context, request common.R
 		maxByBudget := cmd.MaxBudget / shipPrice
 		maxByCredits := agentData.Credits / shipPrice
 
-		purchasableCount = min(maxByQuantity, maxByBudget, maxByCredits)
+		purchasableCount = utils.Min3(maxByQuantity, maxByBudget, maxByCredits)
 	} else {
 		// Shipyard will be discovered on first purchase
 		// We'll purchase up to quantity requested
@@ -189,16 +190,4 @@ func (h *BatchPurchaseShipsHandler) Handle(ctx context.Context, request common.R
 		TotalCost:           totalSpent,
 		ShipsPurchasedCount: len(purchasedShips),
 	}, nil
-}
-
-// min returns the minimum of three integers
-func min(a, b, c int) int {
-	result := a
-	if b < result {
-		result = b
-	}
-	if c < result {
-		result = c
-	}
-	return result
 }

@@ -10,16 +10,8 @@ import (
 	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )
-
-// min returns the minimum of two integers.
-// Used to calculate units per trip when cargo capacity limits the purchase amount.
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
 
 // ContractWorkflowCommand orchestrates complete contract workflow execution
 type ContractWorkflowCommand struct {
@@ -285,7 +277,7 @@ func (h *ContractWorkflowHandler) executeWorkflow(
 				availableSpace := ship.Cargo().Capacity - ship.Cargo().Units
 
 				// Use available space, not total capacity
-				unitsThisTrip := min(availableSpace, unitsToPurchase)
+				unitsThisTrip := utils.Min(availableSpace, unitsToPurchase)
 
 				// Skip if no space available
 				if unitsThisTrip <= 0 {

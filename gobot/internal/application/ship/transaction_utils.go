@@ -52,13 +52,6 @@ func getTransactionLimit(
 	return limit
 }
 
-// min returns the minimum of two integers.
-//
-// This utility is used in transaction splitting loops to determine how many units
+// Note: min utility has been moved to pkg/utils.Min
+// This is used in transaction splitting loops to determine how many units
 // to process in each API call (capped by either remaining units or transaction limit).
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
