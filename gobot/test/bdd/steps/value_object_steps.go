@@ -896,6 +896,15 @@ func (voc *valueObjectContext) iAttemptToCreateACargoManifestWithCapacityAndUnit
 	return nil
 }
 
+func (voc *valueObjectContext) iAttemptToCreateACargoManifestWithCapacityAndTheItems(capacity int) error {
+	totalUnits := 0
+	for _, item := range voc.cargoItems {
+		totalUnits += item.Units
+	}
+	voc.cargo, voc.err = shared.NewCargo(capacity, totalUnits, voc.cargoItems)
+	return nil
+}
+
 func (voc *valueObjectContext) iAttemptToCreateACargoManifestWithCapacityUnitsAndTheItems(capacity, units int) error {
 	voc.cargo, voc.err = shared.NewCargo(capacity, units, voc.cargoItems)
 	return nil
@@ -1226,7 +1235,7 @@ func InitializeValueObjectScenarios(ctx *godog.ScenarioContext) {
 	ctx.Step(`^cargo item creation should fail with error "([^"]*)"$`, voc.cargoItemCreationShouldFailWithError)
 	ctx.Step(`^the cargo item should have symbol "([^"]*)"$`, voc.theCargoItemShouldHaveSymbol)
 	ctx.Step(`^the cargo item should have name "([^"]*)"$`, voc.theCargoItemShouldHaveName)
-	ctx.Step(`^the cargo item should have units (\d+)$`, voc.theCargoItemShouldHaveUnits)
+	ctx.Step(`^the cargo item should have (\d+) units$`, voc.theCargoItemShouldHaveUnits)
 
 	// Cargo construction steps
 	ctx.Step(`^a cargo item with symbol "([^"]*)" and units (\d+)$`, voc.aCargoItemWithSymbolAndUnits)
@@ -1238,7 +1247,7 @@ func InitializeValueObjectScenarios(ctx *godog.ScenarioContext) {
 	ctx.Step(`^I attempt to create cargo with capacity (\d+), units (\d+), and inventory$`, voc.iAttemptToCreateCargoWithCapacityUnitsAndInventory)
 	ctx.Step(`^cargo creation should fail with error "([^"]*)"$`, voc.cargoCreationShouldFailWithError)
 	ctx.Step(`^the cargo should have capacity (\d+)$`, voc.theCargoShouldHaveCapacity)
-	ctx.Step(`^the cargo should have units (\d+)$`, voc.theCargoShouldHaveUnits)
+	ctx.Step(`^the cargo should have (\d+) units$`, voc.theCargoShouldHaveUnits)
 	ctx.Step(`^the cargo inventory should contain (\d+) items$`, voc.theCargoInventoryShouldContainItems)
 	ctx.Step(`^the cargo should be empty$`, voc.theCargoShouldBeEmpty)
 
@@ -1290,6 +1299,7 @@ func InitializeValueObjectScenarios(ctx *godog.ScenarioContext) {
 	ctx.Step(`^the cargo string should be "([^"]*)"$`, voc.theCargoStringShouldBe)
 	ctx.Step(`^I attempt to create a cargo manifest with capacity (-?\d+) and no items$`, voc.iAttemptToCreateACargoManifestWithCapacityAndNoItems)
 	ctx.Step(`^I attempt to create a cargo manifest with capacity (\d+) and units (-?\d+)$`, voc.iAttemptToCreateACargoManifestWithCapacityAndUnits)
+	ctx.Step(`^I attempt to create a cargo manifest with capacity (\d+) and the items$`, voc.iAttemptToCreateACargoManifestWithCapacityAndTheItems)
 	ctx.Step(`^I attempt to create a cargo manifest with capacity (\d+), units (\d+), and the items$`, voc.iAttemptToCreateACargoManifestWithCapacityUnitsAndTheItems)
 	ctx.Step(`^the cargo creation should fail with error "([^"]*)"$`, voc.theCargoCreationShouldFailWithError)
 }
