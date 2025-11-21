@@ -295,58 +295,15 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			logger.Log("INFO", fmt.Sprintf("Contract completed by %s", completedShip), nil)
 			logger.Log("DEBUG", "Received completion signal, about to continue loop", nil)
 			result.ContractsCompleted++
-			activeWorkerContainerID = "" // Worker completed
+			activeWorkerContainerID = ""
 
-			// Transfer ship back from worker to coordinator (atomic, prevents race conditions)
-			// Worker container still owns the ship at this point
-			if err := h.shipAssignmentRepo.Transfer(ctx, completedShip, workerContainerID, cmd.ContainerID); err != nil {
-				logger.Log("WARNING", fmt.Sprintf("Failed to transfer ship %s back to coordinator: %v", completedShip, err), nil)
-				// Fallback: try inserting new assignment if transfer fails
-				assignment := domainContainer.NewShipAssignment(completedShip, cmd.PlayerID.Value(), cmd.ContainerID, nil)
-				_ = h.shipAssignmentRepo.Assign(ctx, assignment)
-			}
+			h.transferShipBackToCoordinator(ctx, completedShip, workerContainerID, cmd)
 
-			// Check if rebalancing is needed (time-gated)
 			if time.Since(metadata.LastRebalanceTime) >= metadata.RebalanceInterval {
-				logger.Log("INFO", "Rebalance interval reached, checking fleet distribution...", nil)
-
-				// Extract system symbol from first ship
-				var systemSymbol string
-				if len(availableShips) > 0 {
-					firstShip, err := h.shipRepo.FindBySymbol(ctx, availableShips[0], shared.MustNewPlayerID(cmd.PlayerID.Value()))
-					if err == nil {
-						// Extract system from waypoint (e.g., X1-ABC123-XY456Z -> X1-ABC123)
-						currentLocation := firstShip.CurrentLocation().Symbol
-						systemSymbol = shared.ExtractSystemSymbol(currentLocation)
-					}
-				}
-
-				if systemSymbol != "" {
-					rebalanceCmd := &RebalanceContractFleetCommand{
-						CoordinatorID: cmd.ContainerID,
-						PlayerID:      cmd.PlayerID,
-						SystemSymbol:  systemSymbol,
-					}
-
-					rebalanceResp, err := h.mediator.Send(ctx, rebalanceCmd)
-					if err != nil {
-						logger.Log("WARNING", fmt.Sprintf("Rebalancing failed: %v", err), nil)
-					} else {
-						result := rebalanceResp.(*RebalanceContractFleetResponse)
-						if result.RebalancingSkipped {
-							logger.Log("INFO", fmt.Sprintf("Rebalancing skipped: %s", result.SkipReason), nil)
-						} else {
-							logger.Log("INFO", fmt.Sprintf("Rebalancing complete: %d ships repositioned", result.ShipsMoved), nil)
-						}
-					}
-				} else {
-					logger.Log("WARNING", "Could not determine system symbol for rebalancing", nil)
-				}
-
+				h.executeRebalancingIfNeeded(ctx, cmd, availableShips)
 				metadata.LastRebalanceTime = time.Now()
 			}
 
-			// Loop back to negotiate next contract
 			continue
 
 		case <-time.After(30 * time.Minute):
@@ -491,4 +448,72 @@ func (h *RunFleetCoordinatorHandler) findExistingWorkers(
 	}
 
 	return workers, nil
+}
+
+func (h *RunFleetCoordinatorHandler) transferShipBackToCoordinator(
+	ctx context.Context,
+	completedShip string,
+	workerContainerID string,
+	cmd *RunFleetCoordinatorCommand,
+) {
+	logger := common.LoggerFromContext(ctx)
+
+	if err := h.shipAssignmentRepo.Transfer(ctx, completedShip, workerContainerID, cmd.ContainerID); err != nil {
+		logger.Log("WARNING", fmt.Sprintf("Failed to transfer ship %s back to coordinator: %v", completedShip, err), nil)
+		// Fallback: try inserting new assignment if transfer fails
+		assignment := domainContainer.NewShipAssignment(completedShip, cmd.PlayerID.Value(), cmd.ContainerID, nil)
+		_ = h.shipAssignmentRepo.Assign(ctx, assignment)
+	}
+}
+
+func (h *RunFleetCoordinatorHandler) executeRebalancingIfNeeded(
+	ctx context.Context,
+	cmd *RunFleetCoordinatorCommand,
+	availableShips []string,
+) {
+	logger := common.LoggerFromContext(ctx)
+	logger.Log("INFO", "Rebalance interval reached, checking fleet distribution...", nil)
+
+	systemSymbol := h.extractSystemSymbolFromShips(ctx, availableShips, cmd.PlayerID.Value())
+	if systemSymbol == "" {
+		logger.Log("WARNING", "Could not determine system symbol for rebalancing", nil)
+		return
+	}
+
+	rebalanceCmd := &RebalanceContractFleetCommand{
+		CoordinatorID: cmd.ContainerID,
+		PlayerID:      cmd.PlayerID,
+		SystemSymbol:  systemSymbol,
+	}
+
+	rebalanceResp, err := h.mediator.Send(ctx, rebalanceCmd)
+	if err != nil {
+		logger.Log("WARNING", fmt.Sprintf("Rebalancing failed: %v", err), nil)
+		return
+	}
+
+	result := rebalanceResp.(*RebalanceContractFleetResponse)
+	if result.RebalancingSkipped {
+		logger.Log("INFO", fmt.Sprintf("Rebalancing skipped: %s", result.SkipReason), nil)
+	} else {
+		logger.Log("INFO", fmt.Sprintf("Rebalancing complete: %d ships repositioned", result.ShipsMoved), nil)
+	}
+}
+
+func (h *RunFleetCoordinatorHandler) extractSystemSymbolFromShips(
+	ctx context.Context,
+	availableShips []string,
+	playerID int,
+) string {
+	if len(availableShips) == 0 {
+		return ""
+	}
+
+	firstShip, err := h.shipRepo.FindBySymbol(ctx, availableShips[0], shared.MustNewPlayerID(playerID))
+	if err != nil {
+		return ""
+	}
+
+	currentLocation := firstShip.CurrentLocation().Symbol
+	return shared.ExtractSystemSymbol(currentLocation)
 }
