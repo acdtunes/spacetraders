@@ -104,6 +104,14 @@ func (m *MockAPIClient) AddShip(ship *navigation.Ship) {
 	m.ships[ship.ShipSymbol()] = ship
 }
 
+// GetShipFromMock retrieves a ship from the mock's internal storage
+func (m *MockAPIClient) GetShipFromMock(shipSymbol string) (*navigation.Ship, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	ship, exists := m.ships[shipSymbol]
+	return ship, exists
+}
+
 // AddPlayer registers a player and their token for authorization validation
 func (m *MockAPIClient) AddPlayer(p *player.Player) {
 	m.mu.Lock()
