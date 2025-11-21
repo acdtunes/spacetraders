@@ -57,64 +57,101 @@ func (h *EvaluateContractProfitabilityHandler) Handle(ctx context.Context, reque
 		return nil, fmt.Errorf("invalid request type")
 	}
 
-	// 1. Fetch ship to get cargo capacity
-	ship, err := h.shipRepo.FindBySymbol(ctx, query.ShipSymbol, query.PlayerID)
+	ship, err := h.fetchShip(ctx, query.ShipSymbol, query.PlayerID)
+	if err != nil {
+		return nil, err
+	}
+
+	marketPrices, cheapestMarketWaypoint, err := h.buildMarketPricesMap(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+
+	profitabilityCtx := h.buildProfitabilityContext(ship, marketPrices, cheapestMarketWaypoint, query.FuelCostPerTrip)
+
+	evaluation, err := h.delegateCalculationToDomain(query.Contract, profitabilityCtx)
+	if err != nil {
+		return nil, err
+	}
+
+	return h.convertToApplicationDTO(evaluation), nil
+}
+
+func (h *EvaluateContractProfitabilityHandler) fetchShip(ctx context.Context, shipSymbol string, playerID shared.PlayerID) (*navigation.Ship, error) {
+	ship, err := h.shipRepo.FindBySymbol(ctx, shipSymbol, playerID)
 	if err != nil {
 		return nil, fmt.Errorf("ship not found: %w", err)
 	}
+	return ship, nil
+}
 
-	// 2. Build market prices map by fetching cheapest markets for each delivery
+func (h *EvaluateContractProfitabilityHandler) buildMarketPricesMap(ctx context.Context, query *EvaluateContractProfitabilityQuery) (map[string]int, string, error) {
 	marketPrices := make(map[string]int)
 	var cheapestMarketWaypoint string
 
 	for _, delivery := range query.Contract.Terms().Deliveries {
 		unitsNeeded := delivery.UnitsRequired - delivery.UnitsFulfilled
 		if unitsNeeded == 0 {
-			continue // Already fulfilled
+			continue
 		}
 
-		// Extract system from destination (find last hyphen)
-		systemSymbol := delivery.DestinationSymbol
-		for i := len(delivery.DestinationSymbol) - 1; i >= 0; i-- {
-			if delivery.DestinationSymbol[i] == '-' {
-				systemSymbol = delivery.DestinationSymbol[:i]
-				break
-			}
-		}
+		systemSymbol := h.extractSystemFromDestination(delivery.DestinationSymbol)
 
-		// Find cheapest market selling this good
-		cheapestMarket, err := h.marketRepo.FindCheapestMarketSelling(ctx, delivery.TradeSymbol, systemSymbol, query.PlayerID.Value())
+		cheapestMarket, err := h.findCheapestMarket(ctx, delivery.TradeSymbol, systemSymbol, query.PlayerID.Value())
 		if err != nil {
-			return nil, fmt.Errorf("failed to find market for %s: %w", delivery.TradeSymbol, err)
-		}
-		if cheapestMarket == nil {
-			return nil, fmt.Errorf("no market found selling %s in system %s", delivery.TradeSymbol, systemSymbol)
+			return nil, "", err
 		}
 
-		// Store price for this trade good
 		marketPrices[delivery.TradeSymbol] = cheapestMarket.SellPrice
 
-		// Store first cheapest market waypoint (primary purchasing location)
 		if cheapestMarketWaypoint == "" {
 			cheapestMarketWaypoint = cheapestMarket.WaypointSymbol
 		}
 	}
 
-	// 3. Build profitability context
-	profitabilityCtx := domainContract.ProfitabilityContext{
+	return marketPrices, cheapestMarketWaypoint, nil
+}
+
+func (h *EvaluateContractProfitabilityHandler) extractSystemFromDestination(destinationSymbol string) string {
+	systemSymbol := destinationSymbol
+	for i := len(destinationSymbol) - 1; i >= 0; i-- {
+		if destinationSymbol[i] == '-' {
+			systemSymbol = destinationSymbol[:i]
+			break
+		}
+	}
+	return systemSymbol
+}
+
+func (h *EvaluateContractProfitabilityHandler) findCheapestMarket(ctx context.Context, tradeSymbol string, systemSymbol string, playerID int) (*market.CheapestMarketResult, error) {
+	cheapestMarket, err := h.marketRepo.FindCheapestMarketSelling(ctx, tradeSymbol, systemSymbol, playerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find market for %s: %w", tradeSymbol, err)
+	}
+	if cheapestMarket == nil {
+		return nil, fmt.Errorf("no market found selling %s in system %s", tradeSymbol, systemSymbol)
+	}
+	return cheapestMarket, nil
+}
+
+func (h *EvaluateContractProfitabilityHandler) buildProfitabilityContext(ship *navigation.Ship, marketPrices map[string]int, cheapestMarketWaypoint string, fuelCostPerTrip int) domainContract.ProfitabilityContext {
+	return domainContract.ProfitabilityContext{
 		MarketPrices:           marketPrices,
 		CargoCapacity:          ship.Cargo().Capacity,
-		FuelCostPerTrip:        query.FuelCostPerTrip,
+		FuelCostPerTrip:        fuelCostPerTrip,
 		CheapestMarketWaypoint: cheapestMarketWaypoint,
 	}
+}
 
-	// 4. Delegate calculation to domain entity
-	evaluation, err := query.Contract.EvaluateProfitability(profitabilityCtx)
+func (h *EvaluateContractProfitabilityHandler) delegateCalculationToDomain(contract *domainContract.Contract, profitabilityCtx domainContract.ProfitabilityContext) (*domainContract.ProfitabilityEvaluation, error) {
+	evaluation, err := contract.EvaluateProfitability(profitabilityCtx)
 	if err != nil {
 		return nil, fmt.Errorf("profitability evaluation failed: %w", err)
 	}
+	return evaluation, nil
+}
 
-	// 5. Convert domain result to application DTO
+func (h *EvaluateContractProfitabilityHandler) convertToApplicationDTO(evaluation *domainContract.ProfitabilityEvaluation) *ProfitabilityResult {
 	return &ProfitabilityResult{
 		IsProfitable:           evaluation.IsProfitable,
 		NetProfit:              evaluation.NetProfit,
@@ -122,5 +159,5 @@ func (h *EvaluateContractProfitabilityHandler) Handle(ctx context.Context, reque
 		TripsRequired:          evaluation.TripsRequired,
 		CheapestMarketWaypoint: evaluation.CheapestMarketWaypoint,
 		Reason:                 evaluation.Reason,
-	}, nil
+	}
 }
