@@ -419,27 +419,22 @@ func (ctx *shipyardApplicationContext) theAPIWillReturnAnErrorWhenPurchasingAShi
 
 func (ctx *shipyardApplicationContext) iQueryShipyardListingsFor(waypointSymbol, agentSymbol string) error {
 	// Find player
-	var playerID shared.PlayerID
-	var token string
-
 	p, err := ctx.playerRepo.FindByAgentSymbol(context.Background(), agentSymbol)
 	if err != nil {
-		// Player not found - use dummy values to test error path
-		playerID, _ = shared.NewPlayerID(999)
-		token = "invalid-token"
-	} else {
-		playerID = p.ID
-		token = p.Token
+		// Player not found - store error and return without executing handler
+		ctx.lastError = fmt.Errorf("player not found: %w", err)
+		ctx.lastShipyard = nil
+		return nil
 	}
 
 	// Create context with token
-	cmdCtx := common.WithPlayerToken(context.Background(), token)
+	cmdCtx := common.WithPlayerToken(context.Background(), p.Token)
 
 	// Create query
 	query := &shipyardQueries.GetShipyardListingsQuery{
 		SystemSymbol:   shared.ExtractSystemSymbol(waypointSymbol),
 		WaypointSymbol: waypointSymbol,
-		PlayerID:       playerID,
+		PlayerID:       p.ID,
 	}
 
 	// Execute handler
