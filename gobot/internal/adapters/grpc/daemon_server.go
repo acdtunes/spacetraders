@@ -878,6 +878,7 @@ func (s *DaemonServer) StartContractWorkflow(
 	cmd := &contract.RunWorkflowCommand{
 		ShipSymbol:         shipSymbol,
 		PlayerID:           shared.MustNewPlayerID(containerModel.PlayerID),
+		ContainerID:        containerModel.ID,
 		CoordinatorID:      coordinatorID,
 		CompletionCallback: completionCallback,
 	}

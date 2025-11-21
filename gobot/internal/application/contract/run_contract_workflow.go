@@ -18,6 +18,7 @@ import (
 type RunWorkflowCommand struct {
 	ShipSymbol         string
 	PlayerID           shared.PlayerID
+	ContainerID        string           // This worker's container ID (optional)
 	CoordinatorID      string           // Parent coordinator container ID (optional)
 	CompletionCallback chan<- string    // Signal completion to coordinator (optional)
 }
@@ -668,16 +669,35 @@ func (h *RunWorkflowHandler) transferShipBackToCoordinator(
 ) error {
 	logger := common.LoggerFromContext(ctx)
 
-	// Note: Container ID will need to be passed via metadata when this handler is invoked
-	// For now, we'll need to get it from somewhere. This is a placeholder.
-	// The actual container ID should come from the container runner context.
+	// If no container ID provided, cannot transfer
+	if cmd.ContainerID == "" {
+		logger.Log("WARNING", "Cannot transfer ship: worker container ID not provided", map[string]interface{}{
+			"ship_symbol":    cmd.ShipSymbol,
+			"action":         "transfer_to_coordinator",
+			"coordinator_id": cmd.CoordinatorID,
+		})
+		return nil
+	}
 
-	// TODO: Get actual worker container ID from context
-	// For now, we'll skip the transfer and let the coordinator handle it
-	logger.Log("INFO", "Ship transfer to coordinator initiated", map[string]interface{}{
+	if err := h.shipAssignmentRepo.Transfer(ctx, cmd.ShipSymbol, cmd.ContainerID, cmd.CoordinatorID); err != nil {
+		logger.Log("WARNING", "Failed to transfer ship back to coordinator", map[string]interface{}{
+			"ship_symbol":    cmd.ShipSymbol,
+			"action":         "transfer_to_coordinator",
+			"coordinator_id": cmd.CoordinatorID,
+			"worker_id":      cmd.ContainerID,
+			"error":          err.Error(),
+		})
+		// Fallback: try inserting new assignment if transfer fails
+		assignment := domainContainer.NewShipAssignment(cmd.ShipSymbol, cmd.PlayerID.Value(), cmd.CoordinatorID, nil)
+		_ = h.shipAssignmentRepo.Assign(ctx, assignment)
+		return err
+	}
+
+	logger.Log("INFO", "Ship successfully transferred back to coordinator", map[string]interface{}{
 		"ship_symbol":    cmd.ShipSymbol,
 		"action":         "transfer_to_coordinator",
 		"coordinator_id": cmd.CoordinatorID,
+		"worker_id":      cmd.ContainerID,
 	})
 
 	return nil

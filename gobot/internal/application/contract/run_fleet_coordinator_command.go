@@ -247,6 +247,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 		workerCmd := &RunWorkflowCommand{
 			ShipSymbol:         selectedShip,
 			PlayerID:           cmd.PlayerID,
+			ContainerID:        workerContainerID,
 			CoordinatorID:      cmd.ContainerID,
 			CompletionCallback: completionChan,
 		}
