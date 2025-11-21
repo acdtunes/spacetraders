@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
 // FindPurchaseMarket finds the cheapest market for purchasing goods needed for a contract delivery.
@@ -38,14 +40,7 @@ func FindPurchaseMarket(
 		}
 
 		// Extract system from destination (e.g., X1-GZ7-A1 -> X1-GZ7)
-		// Find last hyphen to extract system symbol
-		system := delivery.DestinationSymbol
-		for i := len(delivery.DestinationSymbol) - 1; i >= 0; i-- {
-			if delivery.DestinationSymbol[i] == '-' {
-				system = delivery.DestinationSymbol[:i]
-				break
-			}
-		}
+		system := shared.ExtractSystemSymbol(delivery.DestinationSymbol)
 
 		// Find cheapest market selling this good
 		cheapestMarket, err := marketRepo.FindCheapestMarketSelling(
@@ -61,8 +56,13 @@ func FindPurchaseMarket(
 			return "", fmt.Errorf("no market found selling %s in system %s", delivery.TradeSymbol, system)
 		}
 
-		fmt.Printf("[MARKET_FINDER] Cheapest market for %s: %s (price: %d)\n",
-			delivery.TradeSymbol, cheapestMarket.WaypointSymbol, cheapestMarket.SellPrice)
+		logger := common.LoggerFromContext(ctx)
+		logger.Log("INFO", "Cheapest market found", map[string]interface{}{
+			"action":      "find_cheapest_market",
+			"trade_symbol": delivery.TradeSymbol,
+			"market":       cheapestMarket.WaypointSymbol,
+			"sell_price":   cheapestMarket.SellPrice,
+		})
 
 		return cheapestMarket.WaypointSymbol, nil
 	}

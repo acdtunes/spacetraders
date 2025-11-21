@@ -871,7 +871,12 @@ func (h *RunCoordinatorHandler) selectAsteroidAndMarket(
 		return pairs[i].distance < pairs[j].distance
 	})
 
-	fmt.Printf("Asteroid selection: %d asteroids × top 5 markets = %d pairs to evaluate\n", len(asteroids), len(pairs))
+	logger := common.LoggerFromContext(ctx)
+	logger.Log("INFO", "Asteroid selection initiated", map[string]interface{}{
+		"action":      "evaluate_pairs",
+		"asteroids":   len(asteroids),
+		"pairs":       len(pairs),
+	})
 
 	// Route pairs in order with early termination
 	type routeResult struct {
@@ -997,7 +1002,10 @@ func (h *RunCoordinatorHandler) selectAsteroidAndMarket(
 		allResults = append(allResults, result)
 	}
 
-	fmt.Printf("Evaluated %d valid asteroid-market pairs\n", len(allResults))
+	logger.Log("INFO", "Asteroid evaluation complete", map[string]interface{}{
+		"action":      "evaluate_complete",
+		"valid_pairs": len(allResults),
+	})
 
 	// If no valid results found
 	if len(allResults) == 0 {
@@ -1014,8 +1022,12 @@ func (h *RunCoordinatorHandler) selectAsteroidAndMarket(
 	// Handle force flag for fuel capacity warnings
 	if selectedResult.roundTripFuel > fuelCapacity {
 		if force {
-			fmt.Printf("WARNING: Selected asteroid %s requires %d fuel for round trip but transport capacity is %d. Proceeding with --force.\n",
-				selectedResult.asteroid.Symbol, selectedResult.roundTripFuel, fuelCapacity)
+			logger.Log("WARNING", "Fuel capacity exceeded but proceeding with --force", map[string]interface{}{
+				"action":            "force_override",
+				"asteroid":          selectedResult.asteroid.Symbol,
+				"required_fuel":     selectedResult.roundTripFuel,
+				"transport_capacity": fuelCapacity,
+			})
 		} else {
 			return "", "", fmt.Errorf("asteroid %s requires %d fuel but capacity is %d. Use --force to override",
 				selectedResult.asteroid.Symbol, selectedResult.roundTripFuel, fuelCapacity)
@@ -1023,10 +1035,15 @@ func (h *RunCoordinatorHandler) selectAsteroidAndMarket(
 	}
 
 	travelMins := selectedResult.roundTripTime / 60
-	fmt.Printf("Auto-selected asteroid %s (%s) - %d min round trip via market %s (fuel: %d/%d)\n",
-		selectedResult.asteroid.Symbol, trait,
-		travelMins, selectedResult.market.Symbol,
-		selectedResult.roundTripFuel, fuelCapacity)
+	logger.Log("INFO", "Asteroid auto-selected", map[string]interface{}{
+		"action":         "asteroid_selected",
+		"asteroid":       selectedResult.asteroid.Symbol,
+		"trait":          trait,
+		"travel_minutes": travelMins,
+		"market":         selectedResult.market.Symbol,
+		"fuel_required":  selectedResult.roundTripFuel,
+		"fuel_capacity":  fuelCapacity,
+	})
 
 	return selectedResult.asteroid.Symbol, selectedResult.market.Symbol, nil
 }

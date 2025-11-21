@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 )
 
@@ -36,8 +37,13 @@ func FindCoordinatorShips(
 		shipSymbols = append(shipSymbols, assignment.ShipSymbol())
 	}
 
-	fmt.Printf("[SHIP_POOL] Coordinator %s owns %d ships: %v\n",
-		coordinatorID, len(shipSymbols), shipSymbols)
+	logger := common.LoggerFromContext(ctx)
+	logger.Log("INFO", "Coordinator ships retrieved", map[string]interface{}{
+		"action":         "find_coordinator_ships",
+		"coordinator_id": coordinatorID,
+		"ship_count":     len(shipSymbols),
+		"ships":          shipSymbols,
+	})
 
 	return shipSymbols, nil
 }
@@ -60,6 +66,8 @@ func CreatePoolAssignments(
 	playerID int,
 	shipAssignmentRepo container.ShipAssignmentRepository,
 ) error {
+	logger := common.LoggerFromContext(ctx)
+
 	for _, shipSymbol := range shipSymbols {
 		assignment := container.NewShipAssignment(
 			shipSymbol,
@@ -72,10 +80,17 @@ func CreatePoolAssignments(
 			return fmt.Errorf("failed to assign ship %s to coordinator: %w", shipSymbol, err)
 		}
 
-		fmt.Printf("[SHIP_POOL] Assigned %s to coordinator %s\n", shipSymbol, coordinatorID)
+		logger.Log("INFO", "Ship assigned to coordinator", map[string]interface{}{
+			"action":         "assign_ship",
+			"ship_symbol":    shipSymbol,
+			"coordinator_id": coordinatorID,
+		})
 	}
 
-	fmt.Printf("[SHIP_POOL] Created pool with %d ships\n", len(shipSymbols))
+	logger.Log("INFO", "Ship pool created", map[string]interface{}{
+		"action":     "create_pool",
+		"ship_count": len(shipSymbols),
+	})
 
 	return nil
 }
@@ -101,8 +116,12 @@ func ReleasePoolAssignments(
 		return fmt.Errorf("failed to release pool assignments: %w", err)
 	}
 
-	fmt.Printf("[SHIP_POOL] Released all ships for coordinator %s (reason: %s)\n",
-		coordinatorID, reason)
+	logger := common.LoggerFromContext(ctx)
+	logger.Log("INFO", "Ship pool released", map[string]interface{}{
+		"action":         "release_pool",
+		"coordinator_id": coordinatorID,
+		"reason":         reason,
+	})
 
 	return nil
 }

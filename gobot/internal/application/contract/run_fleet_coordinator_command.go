@@ -7,13 +7,13 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
-	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	domainContainer "github.com/andrescamacho/spacetraders-go/internal/domain/container"
+	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )
 
@@ -49,9 +49,9 @@ type RunFleetCoordinatorHandler struct {
 	contractRepo       domainContract.ContractRepository
 	marketRepo         market.MarketRepository
 	shipAssignmentRepo domainContainer.ShipAssignmentRepository
-	daemonClient       daemon.DaemonClient // For creating worker containers
+	daemonClient       daemon.DaemonClient         // For creating worker containers
 	graphProvider      system.ISystemGraphProvider // For distance calculations
-	containerRepo      ContainerRepository // For checking existing workers
+	containerRepo      ContainerRepository         // For checking existing workers
 }
 
 // NewRunFleetCoordinatorHandler creates a new fleet coordinator handler
@@ -317,12 +317,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 					if err == nil {
 						// Extract system from waypoint (e.g., X1-ABC123-XY456Z -> X1-ABC123)
 						currentLocation := firstShip.CurrentLocation().Symbol
-						for i := len(currentLocation) - 1; i >= 0; i-- {
-							if currentLocation[i] == '-' {
-								systemSymbol = currentLocation[:i]
-								break
-							}
-						}
+						systemSymbol = shared.ExtractSystemSymbol(currentLocation)
 					}
 				}
 

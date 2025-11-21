@@ -62,14 +62,7 @@ func SelectClosestShip(
 	}
 
 	// 2. Fetch target waypoint coordinates from graph
-	// Extract system symbol (find last hyphen)
-	systemSymbol := targetWaypointSymbol
-	for i := len(targetWaypointSymbol) - 1; i >= 0; i-- {
-		if targetWaypointSymbol[i] == '-' {
-			systemSymbol = targetWaypointSymbol[:i]
-			break
-		}
-	}
+	systemSymbol := shared.ExtractSystemSymbol(targetWaypointSymbol)
 	graphResult, err := graphProvider.GetGraph(ctx, systemSymbol, false, playerID)
 	if err != nil {
 		return "", 0, fmt.Errorf("failed to load system graph: %w", err)

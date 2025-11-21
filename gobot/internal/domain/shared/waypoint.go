@@ -23,20 +23,11 @@ func NewWaypoint(symbol string, x, y float64) (*Waypoint, error) {
 		return nil, NewValidationError("symbol", "cannot be empty")
 	}
 
-	// Extract system symbol by finding last hyphen
-	systemSymbol := symbol
-	for i := len(symbol) - 1; i >= 0; i-- {
-		if symbol[i] == '-' {
-			systemSymbol = symbol[:i]
-			break
-		}
-	}
-
 	return &Waypoint{
 		Symbol:       symbol,
 		X:            x,
 		Y:            y,
-		SystemSymbol: systemSymbol,
+		SystemSymbol: ExtractSystemSymbol(symbol),
 		Traits:       []string{},
 		Orbitals:     []string{},
 	}, nil
@@ -66,4 +57,18 @@ func (w *Waypoint) IsOrbitalOf(other *Waypoint) bool {
 
 func (w *Waypoint) String() string {
 	return fmt.Sprintf("Waypoint(%s)", w.Symbol)
+}
+
+// ExtractSystemSymbol extracts the system symbol from a waypoint symbol
+// by finding the last hyphen and returning everything before it.
+// Example: "X1-AB12-C3D4" -> "X1-AB12"
+func ExtractSystemSymbol(waypointSymbol string) string {
+	systemSymbol := waypointSymbol
+	for i := len(waypointSymbol) - 1; i >= 0; i-- {
+		if waypointSymbol[i] == '-' {
+			systemSymbol = waypointSymbol[:i]
+			break
+		}
+	}
+	return systemSymbol
 }

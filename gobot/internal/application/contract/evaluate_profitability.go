@@ -95,7 +95,7 @@ func (h *EvaluateContractProfitabilityHandler) buildMarketPricesMap(ctx context.
 			continue
 		}
 
-		systemSymbol := h.extractSystemFromDestination(delivery.DestinationSymbol)
+		systemSymbol := shared.ExtractSystemSymbol(delivery.DestinationSymbol)
 
 		cheapestMarket, err := h.findCheapestMarket(ctx, delivery.TradeSymbol, systemSymbol, query.PlayerID.Value())
 		if err != nil {
@@ -110,17 +110,6 @@ func (h *EvaluateContractProfitabilityHandler) buildMarketPricesMap(ctx context.
 	}
 
 	return marketPrices, cheapestMarketWaypoint, nil
-}
-
-func (h *EvaluateContractProfitabilityHandler) extractSystemFromDestination(destinationSymbol string) string {
-	systemSymbol := destinationSymbol
-	for i := len(destinationSymbol) - 1; i >= 0; i-- {
-		if destinationSymbol[i] == '-' {
-			systemSymbol = destinationSymbol[:i]
-			break
-		}
-	}
-	return systemSymbol
 }
 
 func (h *EvaluateContractProfitabilityHandler) findCheapestMarket(ctx context.Context, tradeSymbol string, systemSymbol string, playerID int) (*market.CheapestMarketResult, error) {
