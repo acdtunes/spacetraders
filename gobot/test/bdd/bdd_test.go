@@ -42,6 +42,10 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	// All shipyard handlers (query listings, purchase, batch purchase) share a single context
 	steps.InitializeShipyardApplicationScenarios(sc)
 
+	// Scouting application layer tests - UNIFIED CONTEXT
+	// All scouting handlers share a single context to eliminate step conflicts
+	steps.InitializeScoutingApplicationScenarios(sc)
+
 	// Domain layer contract tests
 	steps.RegisterContractSteps(sc)
 	steps.RegisterMarketSteps(sc)

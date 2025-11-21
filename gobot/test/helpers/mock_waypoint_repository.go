@@ -107,3 +107,11 @@ func (m *MockWaypointRepository) ListBySystemExcludingTrait(ctx context.Context,
 
 	return waypoints, nil
 }
+
+// Add adds a waypoint to the repository
+func (m *MockWaypointRepository) Add(ctx context.Context, waypoint *shared.Waypoint) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.waypoints[waypoint.Symbol] = waypoint
+	return nil
+}
