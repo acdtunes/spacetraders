@@ -148,6 +148,14 @@ func (ctx *shipyardApplicationContext) setupDefaultMockBehaviors() {
 		// Calculate new credits after purchase
 		newCredits := currentCredits - price
 
+		// Update the mock API client with new credits so future GetAgent() calls see the updated balance
+		player, err := ctx.playerRepo.FindByAgentSymbol(ctxAPI, agentSymbol)
+		if err == nil {
+			player.Credits = newCredits
+			ctx.playerRepo.Add(ctxAPI, player)
+			ctx.apiClient.UpdatePlayer(player)
+		}
+
 		return helpers.CreateTestShipPurchaseResult(agentSymbol, shipSymbol, shipType, waypointSymbol, price, newCredits), nil
 	})
 
@@ -186,7 +194,14 @@ func (ctx *shipyardApplicationContext) thePlayerHasCredits(agentSymbol string, c
 
 	p.Credits = credits
 	// Re-add to update (GORM repository uses Add for upsert)
-	return ctx.playerRepo.Add(context.Background(), p)
+	if err := ctx.playerRepo.Add(context.Background(), p); err != nil {
+		return err
+	}
+
+	// Also update the MockAPIClient so GetAgent() returns correct credits
+	ctx.apiClient.UpdatePlayer(p)
+
+	return nil
 }
 
 func (ctx *shipyardApplicationContext) aShipExistsForPlayerAtWaypoint(shipSymbol, agentSymbol, waypointSymbol string) error {
@@ -544,6 +559,13 @@ func (ctx *shipyardApplicationContext) executeBatchPurchaseCommand(quantity int,
 		// Register all purchased ships in the mock API client
 		for _, ship := range ctx.createdShips {
 			ctx.apiClient.AddShip(ship)
+		}
+	} else {
+		// Even on error, create empty response for assertions
+		ctx.lastBatchResp = &shipyardCommands.BatchPurchaseShipsResponse{
+			PurchasedShips:      []*navigation.Ship{},
+			TotalCost:           0,
+			ShipsPurchasedCount: 0,
 		}
 	}
 
