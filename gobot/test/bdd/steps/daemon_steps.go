@@ -13,16 +13,16 @@ import (
 )
 
 type daemonContext struct {
-	healthMonitor      *daemon.HealthMonitor
-	clock              *shared.MockClock
-	assignments        map[string]*container.ShipAssignment
-	containers         map[string]*container.Container
-	ships              map[string]*navigation.Ship
-	cleaned            int
+	healthMonitor        *daemon.HealthMonitor
+	clock                *shared.MockClock
+	assignments          map[string]*container.ShipAssignment
+	containers           map[string]*container.Container
+	ships                map[string]*navigation.Ship
+	cleaned              int
 	suspiciousContainers []string
-	stuckShips         []string
-	healthCheckSkipped bool
-	err                error
+	stuckShips           []string
+	healthCheckSkipped   bool
+	err                  error
 }
 
 func (dc *daemonContext) reset() {
@@ -222,8 +222,8 @@ func (dc *daemonContext) onlyContainerExists(containerID string) error {
 	c := container.NewContainer(
 		containerID,
 		container.ContainerTypeMining,
-		1,  // playerID
-		10, // maxIterations
+		1,   // playerID
+		10,  // maxIterations
 		nil, // metadata
 		dc.clock,
 	)
@@ -236,16 +236,16 @@ func (dc *daemonContext) containersAndExist(containerID1, containerID2 string) e
 	c1 := container.NewContainer(
 		containerID1,
 		container.ContainerTypeMining,
-		1,  // playerID
-		10, // maxIterations
+		1,   // playerID
+		10,  // maxIterations
 		nil, // metadata
 		dc.clock,
 	)
 	c2 := container.NewContainer(
 		containerID2,
 		container.ContainerTypeMining,
-		1,  // playerID
-		10, // maxIterations
+		1,   // playerID
+		10,  // maxIterations
 		nil, // metadata
 		dc.clock,
 	)
@@ -304,8 +304,8 @@ func (dc *daemonContext) aRunningContainerWithInfiniteIterations(containerID str
 	c := container.NewContainer(
 		containerID,
 		container.ContainerTypeMining,
-		1,  // playerID
-		-1, // -1 = infinite
+		1,   // playerID
+		-1,  // -1 = infinite
 		nil, // metadata
 		dc.clock,
 	)
@@ -371,8 +371,8 @@ func (dc *daemonContext) aPendingContainerWithInfiniteIterations(containerID str
 	c := container.NewContainer(
 		containerID,
 		container.ContainerTypeMining,
-		1,  // playerID
-		-1, // -1 = infinite
+		1,   // playerID
+		-1,  // -1 = infinite
 		nil, // metadata
 		dc.clock,
 	)

@@ -65,138 +65,192 @@ func (h *BatchPurchaseShipsHandler) Handle(ctx context.Context, request common.R
 		return nil, fmt.Errorf("invalid request type")
 	}
 
-	// 1. Validate quantity and budget
-	if cmd.Quantity <= 0 || cmd.MaxBudget <= 0 {
-		return &BatchPurchaseShipsResponse{
-			PurchasedShips:      []*navigation.Ship{},
-			TotalCost:           0,
-			ShipsPurchasedCount: 0,
-		}, nil
+	if response := h.validatePurchaseRequest(cmd.Quantity, cmd.MaxBudget); response != nil {
+		return response, nil
 	}
 
-	// 2. Get player token from context
 	token, err := common.PlayerTokenFromContext(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	// 3. Get shipyard listings to determine ship price (if shipyard provided)
-	// This helps us calculate max purchasable count upfront
-	var shipPrice int
-	var purchasableCount int
-	shipyardWaypoint := cmd.ShipyardWaypoint
-
-	if shipyardWaypoint != "" {
-		// Get shipyard listings to determine price
-		// Extract system symbol (find last hyphen)
-		systemSymbol := shipyardWaypoint
-		for i := len(shipyardWaypoint) - 1; i >= 0; i-- {
-			if shipyardWaypoint[i] == '-' {
-				systemSymbol = shipyardWaypoint[:i]
-				break
-			}
-		}
-		query := &queries.GetShipyardListingsQuery{
-			SystemSymbol:   systemSymbol,
-			WaypointSymbol: shipyardWaypoint,
-			PlayerID:       cmd.PlayerID,
-		}
-		shipyardResp, err := h.mediator.Send(ctx, query)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get shipyard listings: %w", err)
-		}
-
-		shipyardListings, ok := shipyardResp.(*queries.GetShipyardListingsResponse)
-		if !ok {
-			return nil, fmt.Errorf("invalid response type from GetShipyardListings")
-		}
-
-		// Find ship type in listings
-		listing, found := shipyardListings.Shipyard.FindListingByType(cmd.ShipType)
-		if !found {
-			return nil, fmt.Errorf("ship type %s not available at shipyard %s", cmd.ShipType, shipyardWaypoint)
-		}
-
-		shipPrice = listing.PurchasePrice
-
-		// Get current credits from API
-		agentData, err := h.apiClient.GetAgent(ctx, token)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get agent data: %w", err)
-		}
-
-		// Calculate maximum ships that can be purchased
-		maxByQuantity := cmd.Quantity
-		maxByBudget := cmd.MaxBudget / shipPrice
-		maxByCredits := agentData.Credits / shipPrice
-
-		purchasableCount = utils.Min3(maxByQuantity, maxByBudget, maxByCredits)
-	} else {
-		// Shipyard will be discovered on first purchase
-		// We'll purchase up to quantity requested
-		purchasableCount = cmd.Quantity
+	shipPrice, purchasableCount, shipyardWaypoint, err := h.calculatePurchasableCount(ctx, cmd, token)
+	if err != nil {
+		return nil, err
 	}
 
-	// 4. Purchase ships in loop
-	// Each PurchaseShipCommand will fetch fresh credits from API before purchase
-	// First purchase will auto-discover shipyard if not provided
-	var purchasedShips []*navigation.Ship
-	totalSpent := 0
-
-	for i := 0; i < purchasableCount; i++ {
-		// Call PurchaseShipCommand via mediator
-		// NOTE: PurchaseShipCommand will auto-discover shipyard on first call if not provided
-		// After first purchase, use the discovered shipyard location
-		purchaseCmd := &PurchaseShipCommand{
-			PurchasingShipSymbol: cmd.PurchasingShipSymbol,
-			ShipType:             cmd.ShipType,
-			PlayerID:             cmd.PlayerID,
-			ShipyardWaypoint:     shipyardWaypoint,
-		}
-
-		resp, err := h.mediator.Send(ctx, purchaseCmd)
-		if err != nil {
-			// If we've already purchased some ships, return what we have
-			// rather than failing completely
-			if len(purchasedShips) > 0 {
-				return &BatchPurchaseShipsResponse{
-					PurchasedShips:      purchasedShips,
-					TotalCost:           totalSpent,
-					ShipsPurchasedCount: len(purchasedShips),
-				}, nil
-			}
-			return nil, fmt.Errorf("failed to purchase ship %d of %d: %w", i+1, purchasableCount, err)
-		}
-
-		purchaseResp, ok := resp.(*PurchaseShipResponse)
-		if !ok {
-			return nil, fmt.Errorf("invalid response type from PurchaseShip")
-		}
-
-		purchasedShips = append(purchasedShips, purchaseResp.Ship)
-		totalSpent += purchaseResp.PurchasePrice
-
-		// After first purchase, capture the shipyard location for subsequent purchases
-		if shipyardWaypoint == "" && i == 0 {
-			// Get the shipyard waypoint from the first purchased ship's location
-			shipyardWaypoint = purchaseResp.Ship.CurrentLocation().Symbol
-		}
-
-		// Check if we've exceeded budget (safety check)
-		if totalSpent+shipPrice > cmd.MaxBudget {
-			break
-		}
-
-		// Check if we've exhausted credits (using the returned agent credits from last purchase)
-		if purchaseResp.AgentCredits < shipPrice {
-			break
-		}
+	purchasedShips, totalSpent, err := h.executePurchaseLoop(ctx, cmd, purchasableCount, shipyardWaypoint, shipPrice)
+	if err != nil {
+		return nil, err
 	}
 
-	// 5. Return response with purchased ships
 	return &BatchPurchaseShipsResponse{
 		PurchasedShips:      purchasedShips,
 		TotalCost:           totalSpent,
 		ShipsPurchasedCount: len(purchasedShips),
 	}, nil
+}
+
+// validatePurchaseRequest validates quantity and budget constraints
+// Returns early-return response if validation fails, nil if valid
+func (h *BatchPurchaseShipsHandler) validatePurchaseRequest(quantity int, maxBudget int) *BatchPurchaseShipsResponse {
+	if quantity <= 0 || maxBudget <= 0 {
+		return &BatchPurchaseShipsResponse{
+			PurchasedShips:      []*navigation.Ship{},
+			TotalCost:           0,
+			ShipsPurchasedCount: 0,
+		}
+	}
+	return nil
+}
+
+// calculatePurchasableCount determines how many ships can be purchased
+// Considers: requested quantity, budget constraints, agent credits
+// Returns: ship price, purchasable count, shipyard waypoint, error
+func (h *BatchPurchaseShipsHandler) calculatePurchasableCount(
+	ctx context.Context,
+	cmd *BatchPurchaseShipsCommand,
+	token string,
+) (shipPrice int, purchasableCount int, shipyardWaypoint string, err error) {
+	shipyardWaypoint = cmd.ShipyardWaypoint
+
+	if shipyardWaypoint != "" {
+		shipPrice, err = h.getShipPriceFromShipyard(ctx, shipyardWaypoint, cmd.ShipType, cmd.PlayerID)
+		if err != nil {
+			return 0, 0, "", err
+		}
+
+		agentData, err := h.apiClient.GetAgent(ctx, token)
+		if err != nil {
+			return 0, 0, "", fmt.Errorf("failed to get agent data: %w", err)
+		}
+
+		purchasableCount = h.calculateMaxPurchasableShips(cmd.Quantity, cmd.MaxBudget, agentData.Credits, shipPrice)
+	} else {
+		purchasableCount = cmd.Quantity
+	}
+
+	return shipPrice, purchasableCount, shipyardWaypoint, nil
+}
+
+// getShipPriceFromShipyard fetches shipyard data and gets price for ship type
+// Returns: ship purchase price, error
+func (h *BatchPurchaseShipsHandler) getShipPriceFromShipyard(
+	ctx context.Context,
+	shipyardWaypoint string,
+	shipType string,
+	playerID shared.PlayerID,
+) (int, error) {
+	systemSymbol := shared.ExtractSystemSymbol(shipyardWaypoint)
+
+	query := &queries.GetShipyardListingsQuery{
+		SystemSymbol:   systemSymbol,
+		WaypointSymbol: shipyardWaypoint,
+		PlayerID:       playerID,
+	}
+	shipyardResp, err := h.mediator.Send(ctx, query)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get shipyard listings: %w", err)
+	}
+
+	shipyardListings, ok := shipyardResp.(*queries.GetShipyardListingsResponse)
+	if !ok {
+		return 0, fmt.Errorf("invalid response type from GetShipyardListings")
+	}
+
+	listing, found := shipyardListings.Shipyard.FindListingByType(shipType)
+	if !found {
+		return 0, fmt.Errorf("ship type %s not available at shipyard %s", shipType, shipyardWaypoint)
+	}
+
+	return listing.PurchasePrice, nil
+}
+
+// calculateMaxPurchasableShips applies all constraints to determine max purchasable count
+// Returns: minimum of quantity requested, budget allows, credits allow
+func (h *BatchPurchaseShipsHandler) calculateMaxPurchasableShips(
+	requestedQuantity int,
+	maxBudget int,
+	agentCredits int,
+	shipPrice int,
+) int {
+	maxByQuantity := requestedQuantity
+	maxByBudget := maxBudget / shipPrice
+	maxByCredits := agentCredits / shipPrice
+	return utils.Min3(maxByQuantity, maxByBudget, maxByCredits)
+}
+
+// executePurchaseLoop purchases ships one at a time up to purchasable count
+// Handles partial success, captures shipyard location from first purchase
+// Returns: purchased ships, total spent, error
+func (h *BatchPurchaseShipsHandler) executePurchaseLoop(
+	ctx context.Context,
+	cmd *BatchPurchaseShipsCommand,
+	purchasableCount int,
+	shipyardWaypoint string,
+	shipPrice int,
+) ([]*navigation.Ship, int, error) {
+	var purchasedShips []*navigation.Ship
+	totalSpent := 0
+
+	for i := 0; i < purchasableCount; i++ {
+		purchaseResp, err := h.purchaseShip(ctx, cmd, shipyardWaypoint)
+		if err != nil {
+			if len(purchasedShips) > 0 {
+				return purchasedShips, totalSpent, nil
+			}
+			return nil, 0, fmt.Errorf("failed to purchase ship %d of %d: %w", i+1, purchasableCount, err)
+		}
+
+		purchasedShips = append(purchasedShips, purchaseResp.Ship)
+		totalSpent += purchaseResp.PurchasePrice
+
+		if shipyardWaypoint == "" && i == 0 {
+			shipyardWaypoint = purchaseResp.Ship.CurrentLocation().Symbol
+		}
+
+		if !h.hasRemainingBudgetAndCredits(totalSpent, purchaseResp.AgentCredits, shipPrice, cmd.MaxBudget) {
+			break
+		}
+	}
+
+	return purchasedShips, totalSpent, nil
+}
+
+// purchaseShip purchases a single ship via the PurchaseShipCommand
+// Returns: purchase response, error
+func (h *BatchPurchaseShipsHandler) purchaseShip(
+	ctx context.Context,
+	cmd *BatchPurchaseShipsCommand,
+	shipyardWaypoint string,
+) (*PurchaseShipResponse, error) {
+	purchaseCmd := &PurchaseShipCommand{
+		PurchasingShipSymbol: cmd.PurchasingShipSymbol,
+		ShipType:             cmd.ShipType,
+		PlayerID:             cmd.PlayerID,
+		ShipyardWaypoint:     shipyardWaypoint,
+	}
+
+	resp, err := h.mediator.Send(ctx, purchaseCmd)
+	if err != nil {
+		return nil, err
+	}
+
+	purchaseResp, ok := resp.(*PurchaseShipResponse)
+	if !ok {
+		return nil, fmt.Errorf("invalid response type from PurchaseShip")
+	}
+
+	return purchaseResp, nil
+}
+
+// hasRemainingBudgetAndCredits checks if we can afford another ship purchase
+// Returns: true if both budget and credits allow another purchase
+func (h *BatchPurchaseShipsHandler) hasRemainingBudgetAndCredits(
+	totalSpent int,
+	remainingCredits int,
+	shipPrice int,
+	maxBudget int,
+) bool {
+	return totalSpent+shipPrice <= maxBudget && remainingCredits >= shipPrice
 }

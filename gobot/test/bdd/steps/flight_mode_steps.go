@@ -9,11 +9,11 @@ import (
 )
 
 type flightModeContext struct {
-	flightMode   shared.FlightMode
-	stringRep    string
-	isValidName  bool
-	parseErr     error
-	parsedMode   shared.FlightMode
+	flightMode  shared.FlightMode
+	stringRep   string
+	isValidName bool
+	parseErr    error
+	parsedMode  shared.FlightMode
 }
 
 func (fmc *flightModeContext) reset() {

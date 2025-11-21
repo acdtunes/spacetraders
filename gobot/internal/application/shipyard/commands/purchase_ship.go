@@ -37,6 +37,12 @@ type PurchaseShipResponse struct {
 	TransactionTime string
 }
 
+// shipyardCandidate represents a potential shipyard with its distance from current location
+type shipyardCandidate struct {
+	waypoint string
+	distance float64
+}
+
 // PurchaseShipHandler handles the PurchaseShip command
 type PurchaseShipHandler struct {
 	shipRepo         navigation.ShipRepository
@@ -73,68 +79,176 @@ func (h *PurchaseShipHandler) Handle(ctx context.Context, request common.Request
 		return nil, fmt.Errorf("invalid request type")
 	}
 
-	// 1. Get player token from context
 	token, err := common.PlayerTokenFromContext(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	// 2. Load purchasing ship from API
+	purchasingShip, err := h.loadPurchasingShip(ctx, cmd)
+	if err != nil {
+		return nil, err
+	}
+
+	shipyardWaypoint, err := h.resolveShipyardWaypoint(ctx, cmd, purchasingShip, token)
+	if err != nil {
+		return nil, err
+	}
+
+	purchasingShip, err = h.prepareShipForPurchase(ctx, cmd, shipyardWaypoint, purchasingShip)
+	if err != nil {
+		return nil, err
+	}
+
+	purchasePrice, systemSymbol, err := h.validateAndGetShipPrice(ctx, cmd, shipyardWaypoint)
+	if err != nil {
+		return nil, err
+	}
+
+	agentCredits, err := h.ensureSufficientCredits(ctx, token, purchasePrice)
+	if err != nil {
+		return nil, err
+	}
+
+	purchaseResult, err := h.apiClient.PurchaseShip(ctx, cmd.ShipType, shipyardWaypoint, token)
+	if err != nil {
+		return nil, fmt.Errorf("failed to purchase ship: %w", err)
+	}
+
+	newShip, err := h.convertShipDataToEntity(ctx, purchaseResult.Ship, cmd.PlayerID, shipyardWaypoint, systemSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert ship data: %w", err)
+	}
+
+	return &PurchaseShipResponse{
+		Ship:            newShip,
+		PurchasePrice:   purchaseResult.Transaction.Price,
+		AgentCredits:    agentCredits,
+		TransactionTime: purchaseResult.Transaction.Timestamp,
+	}, nil
+}
+
+// loadPurchasingShip fetches the ship that will make the purchase
+// Returns: purchasing ship entity, error
+func (h *PurchaseShipHandler) loadPurchasingShip(
+	ctx context.Context,
+	cmd *PurchaseShipCommand,
+) (*navigation.Ship, error) {
 	purchasingShip, err := h.shipRepo.FindBySymbol(ctx, cmd.PurchasingShipSymbol, cmd.PlayerID)
 	if err != nil {
 		return nil, fmt.Errorf("purchasing ship not found: %w", err)
 	}
+	return purchasingShip, nil
+}
 
-	// 3. Auto-discover shipyard if not provided
-	shipyardWaypoint := cmd.ShipyardWaypoint
-	if shipyardWaypoint == "" {
-		discoveredWaypoint, err := h.discoverNearestShipyard(ctx, purchasingShip, cmd.ShipType, token)
-		if err != nil {
-			return nil, fmt.Errorf("failed to discover shipyard: %w", err)
-		}
-		shipyardWaypoint = discoveredWaypoint
+// resolveShipyardWaypoint determines the target shipyard (provided or auto-discovered)
+// Returns: shipyard waypoint symbol, error
+func (h *PurchaseShipHandler) resolveShipyardWaypoint(
+	ctx context.Context,
+	cmd *PurchaseShipCommand,
+	purchasingShip *navigation.Ship,
+	token string,
+) (string, error) {
+	if cmd.ShipyardWaypoint != "" {
+		return cmd.ShipyardWaypoint, nil
 	}
 
-	// 4. Navigate to shipyard if not already there
-	if purchasingShip.CurrentLocation().Symbol != shipyardWaypoint {
-		navCmd := &commands.NavigateRouteCommand{
-			ShipSymbol:  cmd.PurchasingShipSymbol,
-			Destination: shipyardWaypoint,
-			PlayerID:    cmd.PlayerID,
-		}
-		_, err := h.mediator.Send(ctx, navCmd)
-		if err != nil {
-			return nil, fmt.Errorf("failed to navigate to shipyard: %w", err)
-		}
+	discoveredWaypoint, err := h.discoverNearestShipyard(ctx, purchasingShip, cmd.ShipType, token)
+	if err != nil {
+		return "", fmt.Errorf("failed to discover shipyard: %w", err)
+	}
+	return discoveredWaypoint, nil
+}
 
-		// Reload ship after navigation
-		purchasingShip, err = h.shipRepo.FindBySymbol(ctx, cmd.PurchasingShipSymbol, cmd.PlayerID)
-		if err != nil {
-			return nil, fmt.Errorf("failed to reload ship after navigation: %w", err)
-		}
+// prepareShipForPurchase ensures ship is at shipyard and docked
+// Combines navigation and docking steps
+// Returns: prepared ship (reloaded after movements), error
+func (h *PurchaseShipHandler) prepareShipForPurchase(
+	ctx context.Context,
+	cmd *PurchaseShipCommand,
+	shipyardWaypoint string,
+	purchasingShip *navigation.Ship,
+) (*navigation.Ship, error) {
+	var err error
+	purchasingShip, err = h.navigateToShipyard(ctx, cmd, shipyardWaypoint, purchasingShip)
+	if err != nil {
+		return nil, err
 	}
 
-	// 5. Dock ship if in orbit
-	if purchasingShip.NavStatus() == navigation.NavStatusInOrbit {
-		dockCmd := &commands.DockShipCommand{
-			ShipSymbol: cmd.PurchasingShipSymbol,
-			PlayerID:   cmd.PlayerID,
-		}
-		_, err := h.mediator.Send(ctx, dockCmd)
-		if err != nil {
-			return nil, fmt.Errorf("failed to dock ship: %w", err)
-		}
-
-		// Reload ship after docking
-		purchasingShip, err = h.shipRepo.FindBySymbol(ctx, cmd.PurchasingShipSymbol, cmd.PlayerID)
-		if err != nil {
-			return nil, fmt.Errorf("failed to reload ship after docking: %w", err)
-		}
+	purchasingShip, err = h.dockShipIfNeeded(ctx, cmd, purchasingShip)
+	if err != nil {
+		return nil, err
 	}
 
-	// 6. Get shipyard listings and validate ship type is available
-	// Extract system symbol using domain function
+	return purchasingShip, nil
+}
+
+// navigateToShipyard moves ship to shipyard waypoint if not already there
+// Returns: reloaded ship after navigation, error
+func (h *PurchaseShipHandler) navigateToShipyard(
+	ctx context.Context,
+	cmd *PurchaseShipCommand,
+	shipyardWaypoint string,
+	purchasingShip *navigation.Ship,
+) (*navigation.Ship, error) {
+	if purchasingShip.CurrentLocation().Symbol == shipyardWaypoint {
+		return purchasingShip, nil
+	}
+
+	navCmd := &commands.NavigateRouteCommand{
+		ShipSymbol:  cmd.PurchasingShipSymbol,
+		Destination: shipyardWaypoint,
+		PlayerID:    cmd.PlayerID,
+	}
+	_, err := h.mediator.Send(ctx, navCmd)
+	if err != nil {
+		return nil, fmt.Errorf("failed to navigate to shipyard: %w", err)
+	}
+
+	purchasingShip, err = h.shipRepo.FindBySymbol(ctx, cmd.PurchasingShipSymbol, cmd.PlayerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to reload ship after navigation: %w", err)
+	}
+
+	return purchasingShip, nil
+}
+
+// dockShipIfNeeded docks the ship if currently in orbit
+// Returns: reloaded ship after docking, error
+func (h *PurchaseShipHandler) dockShipIfNeeded(
+	ctx context.Context,
+	cmd *PurchaseShipCommand,
+	purchasingShip *navigation.Ship,
+) (*navigation.Ship, error) {
+	if purchasingShip.NavStatus() != navigation.NavStatusInOrbit {
+		return purchasingShip, nil
+	}
+
+	dockCmd := &commands.DockShipCommand{
+		ShipSymbol: cmd.PurchasingShipSymbol,
+		PlayerID:   cmd.PlayerID,
+	}
+	_, err := h.mediator.Send(ctx, dockCmd)
+	if err != nil {
+		return nil, fmt.Errorf("failed to dock ship: %w", err)
+	}
+
+	purchasingShip, err = h.shipRepo.FindBySymbol(ctx, cmd.PurchasingShipSymbol, cmd.PlayerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to reload ship after docking: %w", err)
+	}
+
+	return purchasingShip, nil
+}
+
+// validateAndGetShipPrice gets shipyard listings and validates ship availability
+// Returns: purchase price for ship type, system symbol, error
+func (h *PurchaseShipHandler) validateAndGetShipPrice(
+	ctx context.Context,
+	cmd *PurchaseShipCommand,
+	shipyardWaypoint string,
+) (int, string, error) {
 	systemSymbol := shared.ExtractSystemSymbol(shipyardWaypoint)
+
 	query := &queries.GetShipyardListingsQuery{
 		SystemSymbol:   systemSymbol,
 		WaypointSymbol: shipyardWaypoint,
@@ -142,51 +256,39 @@ func (h *PurchaseShipHandler) Handle(ctx context.Context, request common.Request
 	}
 	shipyardResp, err := h.mediator.Send(ctx, query)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get shipyard listings: %w", err)
+		return 0, "", fmt.Errorf("failed to get shipyard listings: %w", err)
 	}
 
 	shipyardListings, ok := shipyardResp.(*queries.GetShipyardListingsResponse)
 	if !ok {
-		return nil, fmt.Errorf("invalid response type from GetShipyardListings")
+		return 0, "", fmt.Errorf("invalid response type from GetShipyardListings")
 	}
 
-	// 7. Find ship type in listings and get price
 	listing, found := shipyardListings.Shipyard.FindListingByType(cmd.ShipType)
 	if !found {
-		return nil, fmt.Errorf("ship type %s not available at shipyard %s", cmd.ShipType, shipyardWaypoint)
+		return 0, "", fmt.Errorf("ship type %s not available at shipyard %s", cmd.ShipType, shipyardWaypoint)
 	}
 
-	purchasePrice := listing.PurchasePrice
+	return listing.PurchasePrice, systemSymbol, nil
+}
 
-	// 8. Validate player has sufficient credits
+// ensureSufficientCredits validates player has enough credits for purchase
+// Returns: agent credits after validation, error
+func (h *PurchaseShipHandler) ensureSufficientCredits(
+	ctx context.Context,
+	token string,
+	purchasePrice int,
+) (int, error) {
 	agentData, err := h.apiClient.GetAgent(ctx, token)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get agent data: %w", err)
+		return 0, fmt.Errorf("failed to get agent data: %w", err)
 	}
 
 	if agentData.Credits < purchasePrice {
-		return nil, fmt.Errorf("insufficient credits: have %d, need %d", agentData.Credits, purchasePrice)
+		return 0, fmt.Errorf("insufficient credits: have %d, need %d", agentData.Credits, purchasePrice)
 	}
 
-	// 9. Call API to purchase ship
-	purchaseResult, err := h.apiClient.PurchaseShip(ctx, cmd.ShipType, shipyardWaypoint, token)
-	if err != nil {
-		return nil, fmt.Errorf("failed to purchase ship: %w", err)
-	}
-
-	// 10. Convert API ship data to domain entity
-	newShip, err := h.convertShipDataToEntity(ctx, purchaseResult.Ship, cmd.PlayerID, shipyardWaypoint, systemSymbol)
-	if err != nil {
-		return nil, fmt.Errorf("failed to convert ship data: %w", err)
-	}
-
-	// 11. Return the new ship
-	return &PurchaseShipResponse{
-		Ship:            newShip,
-		PurchasePrice:   purchaseResult.Transaction.Price,
-		AgentCredits:    purchaseResult.Agent.Credits,
-		TransactionTime: purchaseResult.Transaction.Timestamp,
-	}, nil
+	return agentData.Credits, nil
 }
 
 // discoverNearestShipyard discovers the nearest shipyard that sells the desired ship type
@@ -198,57 +300,108 @@ func (h *PurchaseShipHandler) discoverNearestShipyard(
 ) (string, error) {
 	systemSymbol := purchasingShip.CurrentLocation().SystemSymbol
 
-	// Find waypoints with SHIPYARD trait
-	shipyardWaypoints, err := h.waypointRepo.ListBySystemWithTrait(ctx, systemSymbol, "SHIPYARD")
+	shipyardWaypoints, err := h.getShipyardWaypoints(ctx, systemSymbol)
 	if err != nil {
-		return "", fmt.Errorf("failed to find shipyards: %w", err)
+		return "", err
 	}
 
-	if len(shipyardWaypoints) == 0 {
-		return "", fmt.Errorf("no shipyards found in system %s", systemSymbol)
+	candidates, err := h.filterShipyardsBySupportedType(
+		ctx, shipyardWaypoints, systemSymbol, shipType, token, purchasingShip.CurrentLocation(),
+	)
+	if err != nil {
+		return "", err
 	}
 
-	// For each shipyard, check if it sells the desired ship type
-	type shipyardCandidate struct {
-		waypoint string
-		distance float64
-	}
-	var validShipyards []shipyardCandidate
-
-	for _, waypoint := range shipyardWaypoints {
-		// Get shipyard listings
-		shipyardData, err := h.apiClient.GetShipyard(ctx, systemSymbol, waypoint.Symbol, token)
-		if err != nil {
-			// Skip waypoints where shipyard data cannot be retrieved
-			continue
-		}
-
-		// Check if this shipyard sells the desired ship type
-		for _, shipTypeInfo := range shipyardData.ShipTypes {
-			if shipTypeInfo.Type == shipType {
-				distance := purchasingShip.CurrentLocation().DistanceTo(waypoint)
-				validShipyards = append(validShipyards, shipyardCandidate{
-					waypoint: waypoint.Symbol,
-					distance: distance,
-				})
-				break
-			}
-		}
-	}
-
-	if len(validShipyards) == 0 {
+	if len(candidates) == 0 {
 		return "", fmt.Errorf("no shipyards in system %s sell %s", systemSymbol, shipType)
 	}
 
-	// Find the nearest shipyard
-	nearest := validShipyards[0]
-	for _, candidate := range validShipyards[1:] {
+	return h.findNearestShipyard(candidates), nil
+}
+
+// getShipyardWaypoints fetches all waypoints in system with SHIPYARD trait
+// Returns: waypoint array, error
+func (h *PurchaseShipHandler) getShipyardWaypoints(
+	ctx context.Context,
+	systemSymbol string,
+) ([]*shared.Waypoint, error) {
+	shipyardWaypoints, err := h.waypointRepo.ListBySystemWithTrait(ctx, systemSymbol, "SHIPYARD")
+	if err != nil {
+		return nil, fmt.Errorf("failed to find shipyards: %w", err)
+	}
+
+	if len(shipyardWaypoints) == 0 {
+		return nil, fmt.Errorf("no shipyards found in system %s", systemSymbol)
+	}
+
+	return shipyardWaypoints, nil
+}
+
+// filterShipyardsBySupportedType finds shipyards that sell the desired ship type
+// Returns: array of shipyard candidates with distances
+func (h *PurchaseShipHandler) filterShipyardsBySupportedType(
+	ctx context.Context,
+	waypoints []*shared.Waypoint,
+	systemSymbol string,
+	shipType string,
+	token string,
+	currentLocation *shared.Waypoint,
+) ([]shipyardCandidate, error) {
+	var validShipyards []shipyardCandidate
+
+	for _, waypoint := range waypoints {
+		sells, err := h.doesShipyardSellType(ctx, systemSymbol, waypoint, shipType, token)
+		if err != nil {
+			continue
+		}
+
+		if sells {
+			distance := currentLocation.DistanceTo(waypoint)
+			validShipyards = append(validShipyards, shipyardCandidate{
+				waypoint: waypoint.Symbol,
+				distance: distance,
+			})
+		}
+	}
+
+	return validShipyards, nil
+}
+
+// doesShipyardSellType checks if a specific shipyard sells the ship type
+// Returns: true if shipyard supports type, false otherwise, error
+func (h *PurchaseShipHandler) doesShipyardSellType(
+	ctx context.Context,
+	systemSymbol string,
+	waypoint *shared.Waypoint,
+	shipType string,
+	token string,
+) (bool, error) {
+	shipyardData, err := h.apiClient.GetShipyard(ctx, systemSymbol, waypoint.Symbol, token)
+	if err != nil {
+		return false, err
+	}
+
+	for _, shipTypeInfo := range shipyardData.ShipTypes {
+		if shipTypeInfo.Type == shipType {
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
+// findNearestShipyard selects the closest shipyard from candidates
+// Returns: waypoint symbol of nearest shipyard
+func (h *PurchaseShipHandler) findNearestShipyard(
+	candidates []shipyardCandidate,
+) string {
+	nearest := candidates[0]
+	for _, candidate := range candidates[1:] {
 		if candidate.distance < nearest.distance {
 			nearest = candidate
 		}
 	}
-
-	return nearest.waypoint, nil
+	return nearest.waypoint
 }
 
 // convertShipDataToEntity converts API ship data to domain entity
@@ -259,38 +412,21 @@ func (h *PurchaseShipHandler) convertShipDataToEntity(
 	waypointSymbol string,
 	systemSymbol string,
 ) (*navigation.Ship, error) {
-	// Get waypoint details (auto-fetches from API if not cached)
-	waypoint, err := h.waypointProvider.GetWaypoint(ctx, waypointSymbol, systemSymbol, playerID.Value())
+	waypoint, err := h.getWaypointDetails(ctx, waypointSymbol, systemSymbol, playerID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get waypoint %s: %w", waypointSymbol, err)
+		return nil, err
 	}
 
-	// Convert cargo inventory
-	var inventory []*shared.CargoItem
-	for _, item := range shipData.Cargo.Inventory {
-		cargoItem, err := shared.NewCargoItem(item.Symbol, item.Name, item.Description, item.Units)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create cargo item: %w", err)
-		}
-		inventory = append(inventory, cargoItem)
-	}
-
-	// Create cargo
-	cargo, err := shared.NewCargo(shipData.Cargo.Capacity, shipData.Cargo.Units, inventory)
+	cargoItems, err := h.convertInventoryItems(shipData.Cargo.Inventory)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create cargo: %w", err)
+		return nil, err
 	}
 
-	// Create fuel
-	fuel, err := shared.NewFuel(shipData.FuelCurrent, shipData.FuelCapacity)
+	cargo, fuel, navStatus, err := h.createShipValueObjects(shipData, cargoItems)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create fuel: %w", err)
+		return nil, err
 	}
 
-	// Parse nav status - NavStatus is a string type
-	navStatus := navigation.NavStatus(shipData.NavStatus)
-
-	// Create ship using constructor
 	ship, err := navigation.NewShip(
 		shipData.Symbol,
 		playerID,
@@ -309,4 +445,56 @@ func (h *PurchaseShipHandler) convertShipDataToEntity(
 	}
 
 	return ship, nil
+}
+
+// getWaypointDetails fetches waypoint data for ship's current location
+// Returns: waypoint entity, error
+func (h *PurchaseShipHandler) getWaypointDetails(
+	ctx context.Context,
+	waypointSymbol string,
+	systemSymbol string,
+	playerID shared.PlayerID,
+) (*shared.Waypoint, error) {
+	waypoint, err := h.waypointProvider.GetWaypoint(ctx, waypointSymbol, systemSymbol, playerID.Value())
+	if err != nil {
+		return nil, fmt.Errorf("failed to get waypoint %s: %w", waypointSymbol, err)
+	}
+	return waypoint, nil
+}
+
+// convertInventoryItems converts API cargo data to domain cargo items
+// Returns: cargo item array, error
+func (h *PurchaseShipHandler) convertInventoryItems(
+	inventoryData []shared.CargoItem,
+) ([]*shared.CargoItem, error) {
+	var inventory []*shared.CargoItem
+	for _, item := range inventoryData {
+		cargoItem, err := shared.NewCargoItem(item.Symbol, item.Name, item.Description, item.Units)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create cargo item: %w", err)
+		}
+		inventory = append(inventory, cargoItem)
+	}
+	return inventory, nil
+}
+
+// createShipValueObjects creates domain value objects from API data
+// Returns: cargo, fuel, navStatus value objects, error
+func (h *PurchaseShipHandler) createShipValueObjects(
+	shipData *navigation.ShipData,
+	cargoItems []*shared.CargoItem,
+) (*shared.Cargo, *shared.Fuel, navigation.NavStatus, error) {
+	cargo, err := shared.NewCargo(shipData.Cargo.Capacity, shipData.Cargo.Units, cargoItems)
+	if err != nil {
+		return nil, nil, "", fmt.Errorf("failed to create cargo: %w", err)
+	}
+
+	fuel, err := shared.NewFuel(shipData.FuelCurrent, shipData.FuelCapacity)
+	if err != nil {
+		return nil, nil, "", fmt.Errorf("failed to create fuel: %w", err)
+	}
+
+	navStatus := navigation.NavStatus(shipData.NavStatus)
+
+	return cargo, fuel, navStatus, nil
 }
