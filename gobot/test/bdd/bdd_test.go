@@ -37,6 +37,7 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	steps.InitializeShipScenario(sc)
 	steps.InitializeContainerIDSteps(sc)
 	steps.InitializeMiningSteps(sc)
+	steps.InitializeSystemScenario(sc)
 }
 
 func TestMain(m *testing.M) {
