@@ -718,8 +718,8 @@ func (h *RunWorkflowHandler) navigateToWaypoint(
 	destination string,
 	playerID shared.PlayerID,
 ) (*navigation.Ship, error) {
-	// Use HIGH-LEVEL NavigateShipCommand (handles route planning, refueling, multi-hop, idempotency)
-	navigateCmd := &appShip.NavigateShipCommand{
+	// Use HIGH-LEVEL NavigateRouteCommand (handles route planning, refueling, multi-hop, idempotency)
+	navigateCmd := &appShip.NavigateRouteCommand{
 		ShipSymbol:  shipSymbol,
 		Destination: destination,
 		PlayerID:    playerID,
@@ -730,7 +730,7 @@ func (h *RunWorkflowHandler) navigateToWaypoint(
 		return nil, fmt.Errorf("failed to navigate: %w", err)
 	}
 
-	navResp := resp.(*appShip.NavigateShipResponse)
+	navResp := resp.(*appShip.NavigateRouteResponse)
 	return navResp.Ship, nil
 }
 

@@ -109,7 +109,7 @@ func (h *RunWorkerHandler) executeMining(
 			"destination": cmd.AsteroidField,
 		})
 
-		navCmd := &appShip.NavigateShipCommand{
+		navCmd := &appShip.NavigateRouteCommand{
 			ShipSymbol:  cmd.ShipSymbol,
 			Destination: cmd.AsteroidField,
 			PlayerID:    cmd.PlayerID,

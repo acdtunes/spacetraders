@@ -270,7 +270,7 @@ func (h *RebalanceContractFleetHandler) executeParallelRepositioning(
 		go func(shipSymbol, destination string) {
 			logger.Log("INFO", fmt.Sprintf("Repositioning %s to %s", shipSymbol, destination), nil)
 
-			navigateCmd := &appShip.NavigateShipCommand{
+			navigateCmd := &appShip.NavigateRouteCommand{
 				ShipSymbol:  shipSymbol,
 				Destination: destination,
 				PlayerID:    cmd.PlayerID,

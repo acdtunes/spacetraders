@@ -200,7 +200,7 @@ func (h *RunTourSellingHandler) executeSellRoute(
 		h.mediator.Send(ctx, orbitCmd)
 
 		// Use the flight mode that was calculated by routing service
-		navCmd := &appShip.NavigateToWaypointCommand{
+		navCmd := &appShip.NavigateDirectCommand{
 			ShipSymbol:  cmd.ShipSymbol,
 			Destination: leg.ToWaypoint,
 			PlayerID:    cmd.PlayerID,
@@ -214,7 +214,7 @@ func (h *RunTourSellingHandler) executeSellRoute(
 		}
 
 		// Wait for navigation to complete before proceeding
-		if navResult, ok := navResp.(*appShip.NavigateToWaypointResponse); ok {
+		if navResult, ok := navResp.(*appShip.NavigateDirectResponse); ok {
 			if navResult.Status == "navigating" && navResult.ArrivalTime > 0 {
 				logger.Log("INFO", fmt.Sprintf("Waiting %d seconds for ship to arrive at %s", navResult.ArrivalTime, leg.ToWaypoint), nil)
 				select {

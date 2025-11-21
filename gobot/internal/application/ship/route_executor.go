@@ -13,11 +13,11 @@ import (
 // RouteExecutor executes routes by orchestrating atomic ship commands via mediator
 //
 // This is the CRITICAL orchestration service that replaces the executeRoute() method
-// in NavigateShipHandler. It uses the mediator pattern to send atomic commands:
+// in NavigateRouteHandler. It uses the mediator pattern to send atomic commands:
 // - OrbitShipCommand
 // - DockShipCommand
 // - RefuelShipCommand
-// - NavigateToWaypointCommand
+// - NavigateDirectCommand
 // - SetFlightModeCommand
 //
 // It follows the exact same logic as the Python implementation with all safety features:
@@ -253,7 +253,7 @@ func (e *RouteExecutor) setShipFlightMode(ctx context.Context, ship *domainNavig
 func (e *RouteExecutor) navigateToSegmentDestination(ctx context.Context, segment *domainNavigation.RouteSegment, ship *domainNavigation.Ship, playerID shared.PlayerID, flightMode shared.FlightMode) error {
 	logger := common.LoggerFromContext(ctx)
 
-	navCmd := &NavigateToWaypointCommand{
+	navCmd := &NavigateDirectCommand{
 		ShipSymbol:  ship.ShipSymbol(),
 		Destination: segment.ToWaypoint.Symbol,
 		PlayerID:    playerID,
@@ -264,7 +264,7 @@ func (e *RouteExecutor) navigateToSegmentDestination(ctx context.Context, segmen
 		return fmt.Errorf("failed to navigate: %w", err)
 	}
 
-	navResponse, ok := navResp.(*NavigateToWaypointResponse)
+	navResponse, ok := navResp.(*NavigateDirectResponse)
 	if !ok {
 		return fmt.Errorf("unexpected response type: %T", navResp)
 	}

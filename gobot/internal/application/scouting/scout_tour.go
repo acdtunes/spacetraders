@@ -85,7 +85,7 @@ func (h *ScoutTourHandler) Handle(ctx context.Context, request common.Request) (
 				"destination": marketWaypoint,
 				"tour_type":   "stationary_scout",
 			})
-			navCmd := &shipapp.NavigateShipCommand{
+			navCmd := &shipapp.NavigateRouteCommand{
 				ShipSymbol:  cmd.ShipSymbol,
 				Destination: marketWaypoint,
 				PlayerID:    cmd.PlayerID,
@@ -95,7 +95,7 @@ func (h *ScoutTourHandler) Handle(ctx context.Context, request common.Request) (
 				return nil, fmt.Errorf("failed to navigate to %s: %w", marketWaypoint, err)
 			}
 
-			navResult := navResp.(*shipapp.NavigateShipResponse)
+			navResult := navResp.(*shipapp.NavigateRouteResponse)
 			logger.Log("INFO", "Ship navigation complete - market scanned", map[string]interface{}{
 				"ship_symbol":   cmd.ShipSymbol,
 				"action":        "navigation_complete",
@@ -182,7 +182,7 @@ func (h *ScoutTourHandler) Handle(ctx context.Context, request common.Request) (
 					"tour_type":   "multi_market",
 					"iteration":   iteration + 1,
 				})
-				navCmd := &shipapp.NavigateShipCommand{
+				navCmd := &shipapp.NavigateRouteCommand{
 					ShipSymbol:  cmd.ShipSymbol,
 					Destination: marketWaypoint,
 					PlayerID:    cmd.PlayerID,
@@ -192,7 +192,7 @@ func (h *ScoutTourHandler) Handle(ctx context.Context, request common.Request) (
 					return nil, fmt.Errorf("failed to navigate to %s: %w", marketWaypoint, err)
 				}
 
-				navResult := navResp.(*shipapp.NavigateShipResponse)
+				navResult := navResp.(*shipapp.NavigateRouteResponse)
 				logger.Log("INFO", "Ship navigation complete - market scanned", map[string]interface{}{
 					"ship_symbol":    cmd.ShipSymbol,
 					"action":         "navigation_complete",

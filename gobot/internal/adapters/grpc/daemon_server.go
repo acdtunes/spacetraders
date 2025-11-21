@@ -613,7 +613,7 @@ func (s *DaemonServer) NavigateShip(ctx context.Context, shipSymbol, destination
 	containerID := utils.GenerateContainerID("navigate", shipSymbol)
 
 	// Create navigation command
-	cmd := &ship.NavigateShipCommand{
+	cmd := &ship.NavigateRouteCommand{
 		ShipSymbol:  shipSymbol,
 		Destination: destination,
 		PlayerID:    shared.MustNewPlayerID(playerID),

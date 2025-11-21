@@ -8,8 +8,8 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/routing"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )
@@ -34,11 +34,11 @@ type ScoutMarketsResponse struct {
 
 // ScoutMarketsHandler handles the scout markets command
 type ScoutMarketsHandler struct {
-	shipRepo               navigation.ShipRepository
-	graphProvider          system.ISystemGraphProvider
-	routingClient          routing.RoutingClient
-	daemonClient           daemon.DaemonClient
-	shipAssignmentRepo     container.ShipAssignmentRepository
+	shipRepo           navigation.ShipRepository
+	graphProvider      system.ISystemGraphProvider
+	routingClient      routing.RoutingClient
+	daemonClient       daemon.DaemonClient
+	shipAssignmentRepo container.ShipAssignmentRepository
 }
 
 // NewScoutMarketsHandler creates a new scout markets handler
@@ -50,11 +50,11 @@ func NewScoutMarketsHandler(
 	shipAssignmentRepo container.ShipAssignmentRepository,
 ) *ScoutMarketsHandler {
 	return &ScoutMarketsHandler{
-		shipRepo:               shipRepo,
-		graphProvider:          graphProvider,
-		routingClient:          routingClient,
-		daemonClient:           daemonClient,
-		shipAssignmentRepo:     shipAssignmentRepo,
+		shipRepo:           shipRepo,
+		graphProvider:      graphProvider,
+		routingClient:      routingClient,
+		daemonClient:       daemonClient,
+		shipAssignmentRepo: shipAssignmentRepo,
 	}
 }
 
@@ -223,9 +223,6 @@ func (h *ScoutMarketsHandler) Handle(ctx context.Context, request common.Request
 		if err != nil {
 			return nil, fmt.Errorf("failed to create container for %s: %w", shipSymbol, err)
 		}
-
-		// Ship assignment is now automatically created by ContainerRunner.Start()
-		// based on the "ship_symbol" config value
 
 		newContainerIDs = append(newContainerIDs, containerID)
 	}

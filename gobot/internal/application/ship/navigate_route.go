@@ -10,7 +10,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
 
-// NavigateShipCommand - HIGH-LEVEL command for ship navigation with route planning
+// NavigateRouteCommand - HIGH-LEVEL command for ship navigation with route planning
 //
 // ✅ USE THIS for all application workflows that need ship navigation.
 //
@@ -22,15 +22,15 @@ import (
 // - Complete route execution
 //
 // This is the PRIMARY navigation command for business logic.
-type NavigateShipCommand struct {
+type NavigateRouteCommand struct {
 	ShipSymbol   string
 	Destination  string
 	PlayerID     shared.PlayerID
 	PreferCruise bool // When true, prefer CRUISE over BURN (for asteroid ↔ market loop only)
 }
 
-// NavigateShipResponse represents the result of navigation
-type NavigateShipResponse struct {
+// NavigateRouteResponse represents the result of navigation
+type NavigateRouteResponse struct {
 	Status          string // "completed", "already_at_destination"
 	ArrivalTime     int
 	CurrentLocation string
@@ -39,12 +39,12 @@ type NavigateShipResponse struct {
 	Ship            *domainNavigation.Ship // Updated ship state after navigation
 }
 
-// NavigateShipHandler handles the NavigateShip command with full Python feature parity
+// NavigateRouteHandler handles the NavigateRoute command with full Python feature parity
 // This is a thin orchestrator that delegates to specialized services:
 // - WaypointEnricher: Enriches graph waypoints with fuel station data
 // - RoutePlanner: Plans routes using routing client
 // - RouteExecutor: Executes routes using mediator to orchestrate atomic commands
-type NavigateShipHandler struct {
+type NavigateRouteHandler struct {
 	shipRepo         domainNavigation.ShipRepository
 	graphProvider    system.ISystemGraphProvider
 	waypointEnricher *WaypointEnricher
@@ -52,15 +52,15 @@ type NavigateShipHandler struct {
 	routeExecutor    *RouteExecutor
 }
 
-// NewNavigateShipHandler creates a new NavigateShipHandler with extracted services
-func NewNavigateShipHandler(
+// NewNavigateRouteHandler creates a new NavigateRouteHandler with extracted services
+func NewNavigateRouteHandler(
 	shipRepo domainNavigation.ShipRepository,
 	graphProvider system.ISystemGraphProvider,
 	waypointEnricher *WaypointEnricher,
 	routePlanner *RoutePlanner,
 	routeExecutor *RouteExecutor,
-) *NavigateShipHandler {
-	return &NavigateShipHandler{
+) *NavigateRouteHandler {
+	return &NavigateRouteHandler{
 		shipRepo:         shipRepo,
 		graphProvider:    graphProvider,
 		waypointEnricher: waypointEnricher,
@@ -69,11 +69,11 @@ func NewNavigateShipHandler(
 	}
 }
 
-// Handle executes the NavigateShip command using extracted services
-func (h *NavigateShipHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {
-	cmd, ok := request.(*NavigateShipCommand)
+// Handle executes the NavigateRoute command using extracted services
+func (h *NavigateRouteHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {
+	cmd, ok := request.(*NavigateRouteCommand)
 	if !ok {
-		return nil, fmt.Errorf("invalid request type: expected *NavigateShipCommand")
+		return nil, fmt.Errorf("invalid request type: expected *NavigateRouteCommand")
 	}
 
 	logger := common.LoggerFromContext(ctx)
@@ -112,7 +112,7 @@ func (h *NavigateShipHandler) Handle(ctx context.Context, request common.Request
 		return nil, fmt.Errorf("failed to reload ship after navigation: %w", err)
 	}
 
-	return &NavigateShipResponse{
+	return &NavigateRouteResponse{
 		Status:          "completed",
 		ArrivalTime:     route.TotalTravelTime(),
 		CurrentLocation: cmd.Destination,
@@ -122,7 +122,7 @@ func (h *NavigateShipHandler) Handle(ctx context.Context, request common.Request
 	}, nil
 }
 
-func (h *NavigateShipHandler) loadAndPrepareShip(ctx context.Context, cmd *NavigateShipCommand, logger common.ContainerLogger) (*domainNavigation.Ship, error) {
+func (h *NavigateRouteHandler) loadAndPrepareShip(ctx context.Context, cmd *NavigateRouteCommand, logger common.ContainerLogger) (*domainNavigation.Ship, error) {
 	ship, err := h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get ship: %w", err)
@@ -143,7 +143,7 @@ func (h *NavigateShipHandler) loadAndPrepareShip(ctx context.Context, cmd *Navig
 	return ship, nil
 }
 
-func (h *NavigateShipHandler) waitForInTransitCompletion(ctx context.Context, cmd *NavigateShipCommand, ship *domainNavigation.Ship, logger common.ContainerLogger) (*domainNavigation.Ship, error) {
+func (h *NavigateRouteHandler) waitForInTransitCompletion(ctx context.Context, cmd *NavigateRouteCommand, ship *domainNavigation.Ship, logger common.ContainerLogger) (*domainNavigation.Ship, error) {
 	logger.Log("INFO", "Ship in transit - waiting for arrival", map[string]interface{}{
 		"ship_symbol": ship.ShipSymbol(),
 		"action":      "wait_arrival",
@@ -181,7 +181,7 @@ func (h *NavigateShipHandler) waitForInTransitCompletion(ctx context.Context, cm
 	return ship, nil
 }
 
-func (h *NavigateShipHandler) loadAndEnrichWaypoints(ctx context.Context, cmd *NavigateShipCommand, ship *domainNavigation.Ship, logger common.ContainerLogger) (map[string]*shared.Waypoint, string, error) {
+func (h *NavigateRouteHandler) loadAndEnrichWaypoints(ctx context.Context, cmd *NavigateRouteCommand, ship *domainNavigation.Ship, logger common.ContainerLogger) (map[string]*shared.Waypoint, string, error) {
 	systemSymbol := ship.CurrentLocation().SystemSymbol
 	graphResult, err := h.graphProvider.GetGraph(ctx, systemSymbol, false, cmd.PlayerID.Value())
 	if err != nil {
@@ -203,7 +203,7 @@ func (h *NavigateShipHandler) loadAndEnrichWaypoints(ctx context.Context, cmd *N
 	return waypointObjects, systemSymbol, nil
 }
 
-func (h *NavigateShipHandler) planAndExecuteRoute(ctx context.Context, cmd *NavigateShipCommand, ship *domainNavigation.Ship, waypointObjects map[string]*shared.Waypoint, systemSymbol string, logger common.ContainerLogger) (*domainNavigation.Route, error) {
+func (h *NavigateRouteHandler) planAndExecuteRoute(ctx context.Context, cmd *NavigateRouteCommand, ship *domainNavigation.Ship, waypointObjects map[string]*shared.Waypoint, systemSymbol string, logger common.ContainerLogger) (*domainNavigation.Route, error) {
 	logger.Log("INFO", "Route planning initiated", map[string]interface{}{
 		"ship_symbol": ship.ShipSymbol(),
 		"action":      "plan_route",
@@ -235,7 +235,7 @@ func (h *NavigateShipHandler) planAndExecuteRoute(ctx context.Context, cmd *Navi
 }
 
 // validateWaypointCache validates waypoint cache has necessary data
-func (h *NavigateShipHandler) validateWaypointCache(
+func (h *NavigateRouteHandler) validateWaypointCache(
 	waypointObjects map[string]*shared.Waypoint,
 	ship *domainNavigation.Ship,
 	destination string,
@@ -265,10 +265,10 @@ func (h *NavigateShipHandler) validateWaypointCache(
 }
 
 // handleAlreadyAtDestination handles the case where ship is already at destination
-func (h *NavigateShipHandler) handleAlreadyAtDestination(
-	cmd *NavigateShipCommand,
+func (h *NavigateRouteHandler) handleAlreadyAtDestination(
+	cmd *NavigateRouteCommand,
 	ship *domainNavigation.Ship,
-) (*NavigateShipResponse, error) {
+) (*NavigateRouteResponse, error) {
 	// Ship is already at destination - create empty route and mark as completed
 	routeID := fmt.Sprintf("%s_already_at_destination", cmd.ShipSymbol)
 	route, err := domainNavigation.NewRoute(
@@ -286,7 +286,7 @@ func (h *NavigateShipHandler) handleAlreadyAtDestination(
 	route.StartExecution()
 	route.CompleteSegment() // Sets status to COMPLETED since no segments
 
-	return &NavigateShipResponse{
+	return &NavigateRouteResponse{
 		Status:          "already_at_destination",
 		CurrentLocation: ship.CurrentLocation().Symbol,
 		FuelRemaining:   ship.Fuel().Current,
@@ -296,7 +296,7 @@ func (h *NavigateShipHandler) handleAlreadyAtDestination(
 }
 
 // buildNoRouteFoundError builds detailed error message when routing fails
-func (h *NavigateShipHandler) buildNoRouteFoundError(
+func (h *NavigateRouteHandler) buildNoRouteFoundError(
 	ship *domainNavigation.Ship,
 	destination string,
 	systemSymbol string,

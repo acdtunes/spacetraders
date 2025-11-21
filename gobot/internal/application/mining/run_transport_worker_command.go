@@ -113,7 +113,7 @@ func (h *RunTransportWorkerHandler) executeTransport(
 				"flight_mode": "BURN",
 				"step":        1,
 			})
-			navToMarketCmd := &appShip.NavigateShipCommand{
+			navToMarketCmd := &appShip.NavigateRouteCommand{
 				ShipSymbol:   cmd.ShipSymbol,
 				Destination:  cmd.MarketSymbol,
 				PlayerID:     cmd.PlayerID,
@@ -161,7 +161,7 @@ func (h *RunTransportWorkerHandler) executeTransport(
 			"flight_mode": "CRUISE",
 			"step":        3,
 		})
-		navToAsteroidCmd := &appShip.NavigateShipCommand{
+		navToAsteroidCmd := &appShip.NavigateRouteCommand{
 			ShipSymbol:   cmd.ShipSymbol,
 			Destination:  cmd.AsteroidField,
 			PlayerID:     cmd.PlayerID,
@@ -308,7 +308,7 @@ func (h *RunTransportWorkerHandler) returnToAsteroid(
 		"destination": cmd.AsteroidField,
 	})
 
-	navCmd := &appShip.NavigateShipCommand{
+	navCmd := &appShip.NavigateRouteCommand{
 		ShipSymbol:   cmd.ShipSymbol,
 		Destination:  cmd.AsteroidField,
 		PlayerID:     cmd.PlayerID,

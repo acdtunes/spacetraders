@@ -97,7 +97,7 @@ func (h *PurchaseShipHandler) Handle(ctx context.Context, request common.Request
 
 	// 4. Navigate to shipyard if not already there
 	if purchasingShip.CurrentLocation().Symbol != shipyardWaypoint {
-		navCmd := &ship.NavigateShipCommand{
+		navCmd := &ship.NavigateRouteCommand{
 			ShipSymbol:  cmd.PurchasingShipSymbol,
 			Destination: shipyardWaypoint,
 			PlayerID:    cmd.PlayerID,

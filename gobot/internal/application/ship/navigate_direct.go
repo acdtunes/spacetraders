@@ -10,11 +10,11 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
 
-// NavigateToWaypointCommand - LOW-LEVEL atomic command for single-hop navigation
+// NavigateDirectCommand - LOW-LEVEL atomic command for single-hop navigation
 //
 // ⚠️  WARNING: This is a LOW-LEVEL command used internally by RouteExecutor.
 // ⚠️  DO NOT use this directly in application workflows!
-// ⚠️  Use NavigateShipCommand instead for route planning + multi-hop navigation.
+// ⚠️  Use NavigateRouteCommand instead for route planning + multi-hop navigation.
 //
 // This command performs a simple orbit → navigate → API call without:
 // - Route planning
@@ -23,41 +23,41 @@ import (
 // - Flight mode optimization
 //
 // Only use this command if you're implementing low-level route execution logic.
-type NavigateToWaypointCommand struct {
+type NavigateDirectCommand struct {
 	ShipSymbol  string
 	Destination string
 	PlayerID    shared.PlayerID
 	FlightMode  string // Optional, uses ship default if empty
 }
 
-// NavigateToWaypointResponse - Response from navigate to waypoint command
-type NavigateToWaypointResponse struct {
+// NavigateDirectResponse - Response from navigate direct command
+type NavigateDirectResponse struct {
 	ArrivalTime    int    // Calculated seconds
 	ArrivalTimeStr string // ISO8601 from API (e.g., "2024-01-01T12:00:00Z")
 	FuelConsumed   int
 	Status         string // "navigating", "already_at_destination"
 }
 
-// NavigateToWaypointHandler - Handles navigate to waypoint commands
-type NavigateToWaypointHandler struct {
+// NavigateDirectHandler - Handles navigate direct commands
+type NavigateDirectHandler struct {
 	shipRepo     navigation.ShipRepository
 	waypointRepo system.WaypointRepository
 }
 
-// NewNavigateToWaypointHandler creates a new navigate to waypoint handler
-func NewNavigateToWaypointHandler(
+// NewNavigateDirectHandler creates a new navigate direct handler
+func NewNavigateDirectHandler(
 	shipRepo navigation.ShipRepository,
 	waypointRepo system.WaypointRepository,
-) *NavigateToWaypointHandler {
-	return &NavigateToWaypointHandler{
+) *NavigateDirectHandler {
+	return &NavigateDirectHandler{
 		shipRepo:     shipRepo,
 		waypointRepo: waypointRepo,
 	}
 }
 
-// Handle executes the navigate to waypoint command
-func (h *NavigateToWaypointHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {
-	cmd, ok := request.(*NavigateToWaypointCommand)
+// Handle executes the navigate direct command
+func (h *NavigateDirectHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {
+	cmd, ok := request.(*NavigateDirectCommand)
 	if !ok {
 		return nil, fmt.Errorf("invalid request type")
 	}
@@ -77,7 +77,7 @@ func (h *NavigateToWaypointHandler) Handle(ctx context.Context, request common.R
 	}
 
 	if ship.IsAtLocation(destination) {
-		return &NavigateToWaypointResponse{
+		return &NavigateDirectResponse{
 			Status: "already_at_destination",
 		}, nil
 	}
@@ -91,7 +91,7 @@ func (h *NavigateToWaypointHandler) Handle(ctx context.Context, request common.R
 		return nil, fmt.Errorf("failed to navigate: %w", err)
 	}
 
-	return &NavigateToWaypointResponse{
+	return &NavigateDirectResponse{
 		Status:         "navigating",
 		ArrivalTime:    navResult.ArrivalTime,
 		ArrivalTimeStr: navResult.ArrivalTimeStr,
@@ -99,7 +99,7 @@ func (h *NavigateToWaypointHandler) Handle(ctx context.Context, request common.R
 	}, nil
 }
 
-func (h *NavigateToWaypointHandler) loadShip(ctx context.Context, cmd *NavigateToWaypointCommand) (*navigation.Ship, error) {
+func (h *NavigateDirectHandler) loadShip(ctx context.Context, cmd *NavigateDirectCommand) (*navigation.Ship, error) {
 	ship, err := h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
 	if err != nil {
 		return nil, fmt.Errorf("ship not found: %w", err)
@@ -107,7 +107,7 @@ func (h *NavigateToWaypointHandler) loadShip(ctx context.Context, cmd *NavigateT
 	return ship, nil
 }
 
-func (h *NavigateToWaypointHandler) loadDestinationWaypoint(ctx context.Context, destinationSymbol string) (*shared.Waypoint, error) {
+func (h *NavigateDirectHandler) loadDestinationWaypoint(ctx context.Context, destinationSymbol string) (*shared.Waypoint, error) {
 	systemSymbol := shared.ExtractSystemSymbol(destinationSymbol)
 	destination, err := h.waypointRepo.FindBySymbol(ctx, destinationSymbol, systemSymbol)
 	if err != nil {
