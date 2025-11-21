@@ -12,16 +12,16 @@ import (
 )
 
 type fleetManagementContext struct {
-	ships              []*navigation.Ship
-	targetWaypoints    []*shared.Waypoint
-	fleetAssigner      *contract.FleetAssigner
-	shipSelector       *contract.ShipSelector
-	needsRebalancing   bool
-	metrics            *contract.DistributionMetrics
-	assignments        []contract.Assignment
-	selectionResult    *contract.SelectionResult
-	qualityScore       float64
-	err                error
+	ships            []*navigation.Ship
+	targetWaypoints  []*shared.Waypoint
+	fleetAssigner    *contract.FleetAssigner
+	shipSelector     *contract.ShipSelector
+	needsRebalancing bool
+	metrics          *contract.DistributionMetrics
+	assignments      []contract.Assignment
+	selectionResult  *contract.SelectionResult
+	qualityScore     float64
+	err              error
 }
 
 func (fmc *fleetManagementContext) reset() {

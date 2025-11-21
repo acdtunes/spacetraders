@@ -47,21 +47,37 @@ func (h *GetShipyardListingsHandler) Handle(ctx context.Context, request common.
 	if !ok {
 		return nil, fmt.Errorf("invalid request type")
 	}
-	// Get player token from context
+
 	token, err := common.PlayerTokenFromContext(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	// Call API to get shipyard data
 	shipyardData, err := h.apiClient.GetShipyard(ctx, query.SystemSymbol, query.WaypointSymbol, token)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get shipyard: %w", err)
 	}
 
-	// Convert API data to domain model
-	listings := make([]shipyard.ShipListing, len(shipyardData.Ships))
-	for i, ship := range shipyardData.Ships {
+	shipListings := h.convertShipListings(shipyardData.Ships)
+	shipTypes := h.extractShipTypeStrings(shipyardData.ShipTypes)
+
+	shipyardDomain, err := h.buildShipyardDomain(shipyardData, shipListings, shipTypes)
+	if err != nil {
+		return nil, err
+	}
+
+	return &GetShipyardListingsResponse{
+		Shipyard: shipyardDomain,
+	}, nil
+}
+
+// convertShipListings converts API ship listings to domain model
+// Returns: array of domain ShipListing objects
+func (h *GetShipyardListingsHandler) convertShipListings(
+	apiShips []ports.ShipListingData,
+) []shipyard.ShipListing {
+	listings := make([]shipyard.ShipListing, len(apiShips))
+	for i, ship := range apiShips {
 		listings[i] = shipyard.ShipListing{
 			ShipType:      ship.Type,
 			Name:          ship.Name,
@@ -74,21 +90,33 @@ func (h *GetShipyardListingsHandler) Handle(ctx context.Context, request common.
 			Mounts:        ship.Mounts,
 		}
 	}
+	return listings
+}
 
-	shipTypes := make([]string, len(shipyardData.ShipTypes))
-	for i, st := range shipyardData.ShipTypes {
+// extractShipTypeStrings extracts ship type names from API structures
+// Returns: array of ship type strings
+func (h *GetShipyardListingsHandler) extractShipTypeStrings(
+	apiShipTypes []ports.ShipTypeInfo,
+) []string {
+	shipTypes := make([]string, len(apiShipTypes))
+	for i, st := range apiShipTypes {
 		shipTypes[i] = st.Type
 	}
+	return shipTypes
+}
 
-	shipyardDomain := shipyard.Shipyard{
+// buildShipyardDomain constructs the domain Shipyard entity from API data
+// Returns: shipyard domain object, error
+func (h *GetShipyardListingsHandler) buildShipyardDomain(
+	shipyardData *ports.ShipyardData,
+	shipListings []shipyard.ShipListing,
+	shipTypes []string,
+) (shipyard.Shipyard, error) {
+	return shipyard.Shipyard{
 		Symbol:          shipyardData.Symbol,
 		ShipTypes:       shipTypes,
-		Listings:        listings,
+		Listings:        shipListings,
 		Transactions:    shipyardData.Transactions,
 		ModificationFee: shipyardData.ModificationFee,
-	}
-
-	return &GetShipyardListingsResponse{
-		Shipyard: shipyardDomain,
 	}, nil
 }
