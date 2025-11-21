@@ -30,6 +30,7 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	// for shared steps like "the result should be true/false"
 	// Container steps registered BEFORE ship steps to handle container-specific error assertions
 	steps.InitializeValueObjectScenarios(sc)
+	steps.InitializeLifecycleStateMachineScenario(sc)
 	steps.RegisterContainerSteps(sc)
 
 	// Contract application layer tests - UNIFIED CONTEXT
