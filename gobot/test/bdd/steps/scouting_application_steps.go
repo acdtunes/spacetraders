@@ -185,6 +185,12 @@ func (ctx *scoutingApplicationContext) createShipFixture(shipSymbol string, play
 		return err
 	}
 
+	// Determine role based on frame type
+	role := "SATELLITE"
+	if frameType == "FRAME_FRIGATE" {
+		role = "COMMAND"
+	}
+
 	// Use the proper constructor instead of reflection
 	ship, err := navigation.NewShip(
 		shipSymbol,
@@ -196,7 +202,7 @@ func (ctx *scoutingApplicationContext) createShipFixture(shipSymbol string, play
 		cargo,
 		30, // engineSpeed
 		frameType,
-		"SATELLITE", // role
+		role,
 		navigation.NavStatusInOrbit,
 	)
 	if err != nil {
@@ -234,6 +240,7 @@ func (ctx *scoutingApplicationContext) aFuelStationMarketplaceInSystem(waypointS
 	if err != nil {
 		return err
 	}
+	wp.Type = "FUEL_STATION"
 	wp.Traits = []string{"MARKETPLACE"}
 	wp.SystemSymbol = systemSymbol
 	ctx.waypointRepo.AddWaypoint(wp)
@@ -261,7 +268,8 @@ func (ctx *scoutingApplicationContext) marketDataExistsForWaypointWithPlayerScan
 	}
 	goods = append(goods, *good)
 
-	timestamp := ctx.clock.Now().Add(-time.Duration(minutesAgo) * time.Minute)
+	// Use real time, not mock clock, because the repository uses time.Now() for age filtering
+	timestamp := time.Now().Add(-time.Duration(minutesAgo) * time.Minute)
 	return ctx.marketRepo.UpsertMarketData(context.Background(), uint(playerID), waypointSymbol, goods, timestamp)
 }
 

@@ -81,6 +81,15 @@ func (h *ScoutMarketsHandler) Handle(ctx context.Context, request common.Request
 		return response, err
 	}
 
+	// Early return if no markets to scout
+	if len(cmd.Markets) == 0 {
+		return &ScoutMarketsResponse{
+			ContainerIDs:     reusedContainers,
+			Assignments:      make(map[string][]string),
+			ReusedContainers: reusedContainers,
+		}, nil
+	}
+
 	// Load ship data & graph
 	shipConfigs, err := h.loadShipConfigurations(ctx, shipsNeedingContainers, cmd.PlayerID)
 	if err != nil {
