@@ -163,10 +163,34 @@ func (e *RouteExecutor) executeSegment(
 	ship *domainNavigation.Ship,
 	playerID shared.PlayerID,
 ) error {
-	// Extract logger from context
-	logger := common.LoggerFromContext(ctx)
+	if err := e.ensureShipInOrbit(ctx, ship, playerID); err != nil {
+		return err
+	}
 
-	// 1. Ensure in orbit (via OrbitShipCommand)
+	if err := e.handlePreDepartureRefuel(ctx, segment, ship, playerID); err != nil {
+		return err
+	}
+
+	flightMode := e.selectOptimalFlightMode(ctx, segment, ship)
+
+	if err := e.setShipFlightMode(ctx, ship, playerID, flightMode); err != nil {
+		return err
+	}
+
+	if err := e.navigateToSegmentDestination(ctx, segment, ship, playerID, flightMode); err != nil {
+		return err
+	}
+
+	if err := e.handlePostArrivalRefueling(ctx, segment, ship, playerID); err != nil {
+		return err
+	}
+
+	e.scanMarketIfPresent(ctx, segment, ship, playerID)
+
+	return nil
+}
+
+func (e *RouteExecutor) ensureShipInOrbit(ctx context.Context, ship *domainNavigation.Ship, playerID shared.PlayerID) error {
 	orbitCmd := &OrbitShipCommand{
 		ShipSymbol: ship.ShipSymbol(),
 		PlayerID:   playerID,
@@ -174,9 +198,11 @@ func (e *RouteExecutor) executeSegment(
 	if _, err := e.mediator.Send(ctx, orbitCmd); err != nil {
 		return fmt.Errorf("failed to orbit: %w", err)
 	}
+	return nil
+}
 
-	// 2. Pre-departure refuel check (prevent DRIFT at fuel stations with low fuel)
-	// Use domain decision method
+func (e *RouteExecutor) handlePreDepartureRefuel(ctx context.Context, segment *domainNavigation.RouteSegment, ship *domainNavigation.Ship, playerID shared.PlayerID) error {
+	logger := common.LoggerFromContext(ctx)
 	if ship.ShouldPreventDriftMode(segment, 0.9) {
 		logger.Log("INFO", "Ship refueling to prevent DRIFT mode", map[string]interface{}{
 			"ship_symbol": ship.ShipSymbol(),
@@ -188,13 +214,14 @@ func (e *RouteExecutor) executeSegment(
 			return err
 		}
 	}
+	return nil
+}
 
-	// 3. Determine flight mode - recalculate if we have more fuel than planned
-	// Calculate distance for this segment
+func (e *RouteExecutor) selectOptimalFlightMode(ctx context.Context, segment *domainNavigation.RouteSegment, ship *domainNavigation.Ship) shared.FlightMode {
+	logger := common.LoggerFromContext(ctx)
 	distance := segment.FromWaypoint.DistanceTo(segment.ToWaypoint)
 	optimalMode := ship.SelectOptimalFlightMode(distance)
 
-	// Use the better mode (higher enum value = faster: DRIFT=0 < CRUISE=1 < BURN=2)
 	flightMode := segment.FlightMode
 	if optimalMode > segment.FlightMode {
 		logger.Log("INFO", "Ship flight mode upgraded after refuel", map[string]interface{}{
@@ -208,8 +235,10 @@ func (e *RouteExecutor) executeSegment(
 		})
 		flightMode = optimalMode
 	}
+	return flightMode
+}
 
-	// 4. Set flight mode (via SetFlightModeCommand)
+func (e *RouteExecutor) setShipFlightMode(ctx context.Context, ship *domainNavigation.Ship, playerID shared.PlayerID, flightMode shared.FlightMode) error {
 	setModeCmd := &SetFlightModeCommand{
 		ShipSymbol: ship.ShipSymbol(),
 		PlayerID:   playerID,
@@ -218,8 +247,12 @@ func (e *RouteExecutor) executeSegment(
 	if _, err := e.mediator.Send(ctx, setModeCmd); err != nil {
 		return fmt.Errorf("failed to set flight mode: %w", err)
 	}
+	return nil
+}
 
-	// 5. Navigate to waypoint (via NavigateToWaypointCommand)
+func (e *RouteExecutor) navigateToSegmentDestination(ctx context.Context, segment *domainNavigation.RouteSegment, ship *domainNavigation.Ship, playerID shared.PlayerID, flightMode shared.FlightMode) error {
+	logger := common.LoggerFromContext(ctx)
+
 	navCmd := &NavigateToWaypointCommand{
 		ShipSymbol:  ship.ShipSymbol(),
 		Destination: segment.ToWaypoint.Symbol,
@@ -231,20 +264,18 @@ func (e *RouteExecutor) executeSegment(
 		return fmt.Errorf("failed to navigate: %w", err)
 	}
 
-	// 5. Wait for arrival
 	navResponse, ok := navResp.(*NavigateToWaypointResponse)
 	if !ok {
 		return fmt.Errorf("unexpected response type: %T", navResp)
 	}
 
 	logger.Log("INFO", "Ship navigation command executed", map[string]interface{}{
-		"ship_symbol":    ship.ShipSymbol(),
-		"action":         "navigate_command_sent",
-		"status":         navResponse.Status,
-		"arrival_time":   navResponse.ArrivalTimeStr,
+		"ship_symbol":  ship.ShipSymbol(),
+		"action":       "navigate_command_sent",
+		"status":       navResponse.Status,
+		"arrival_time": navResponse.ArrivalTimeStr,
 	})
 
-	// Check if already at destination (idempotent case)
 	if navResponse.Status == "already_at_destination" {
 		logger.Log("INFO", "Ship already at segment destination", map[string]interface{}{
 			"ship_symbol": ship.ShipSymbol(),
@@ -254,7 +285,6 @@ func (e *RouteExecutor) executeSegment(
 		return nil
 	}
 
-	// Wait for arrival (Status="navigating")
 	if navResponse.ArrivalTimeStr != "" {
 		if err := e.waitForArrival(ctx, ship, navResponse.ArrivalTimeStr, playerID); err != nil {
 			return err
@@ -268,17 +298,20 @@ func (e *RouteExecutor) executeSegment(
 		})
 	}
 
-	// Re-sync ship after arrival (if using real repository)
 	if e.shipRepo != nil {
 		freshShip, err := e.shipRepo.FindBySymbol(ctx, ship.ShipSymbol(), playerID)
 		if err != nil {
 			return fmt.Errorf("failed to sync ship: %w", err)
 		}
-		*ship = *freshShip // Update ship state
+		*ship = *freshShip
 	}
 
-	// 6. Opportunistic refueling (90% safety check)
-	// Use domain decision method
+	return nil
+}
+
+func (e *RouteExecutor) handlePostArrivalRefueling(ctx context.Context, segment *domainNavigation.RouteSegment, ship *domainNavigation.Ship, playerID shared.PlayerID) error {
+	logger := common.LoggerFromContext(ctx)
+
 	if ship.ShouldRefuelOpportunistically(segment.ToWaypoint, 0.9) && !segment.RequiresRefuel {
 		logger.Log("INFO", "Ship performing opportunistic refuel", map[string]interface{}{
 			"ship_symbol": ship.ShipSymbol(),
@@ -290,7 +323,6 @@ func (e *RouteExecutor) executeSegment(
 		}
 	}
 
-	// 7. Planned refueling (required by routing engine)
 	if segment.RequiresRefuel {
 		logger.Log("INFO", "Ship performing planned refuel", map[string]interface{}{
 			"ship_symbol": ship.ShipSymbol(),
@@ -302,7 +334,10 @@ func (e *RouteExecutor) executeSegment(
 		}
 	}
 
-	// 8. Automatic market scanning at marketplace waypoints
+	return nil
+}
+
+func (e *RouteExecutor) scanMarketIfPresent(ctx context.Context, segment *domainNavigation.RouteSegment, ship *domainNavigation.Ship, playerID shared.PlayerID) {
 	if e.marketScanner != nil && e.isMarketplace(segment.ToWaypoint) {
 		logger := common.LoggerFromContext(ctx)
 		logger.Log("INFO", "Marketplace detected - scanning market data", map[string]interface{}{
@@ -311,7 +346,6 @@ func (e *RouteExecutor) executeSegment(
 			"waypoint":    segment.ToWaypoint.Symbol,
 		})
 
-		// Market scanning is non-fatal - log errors but continue route execution
 		if err := e.marketScanner.ScanAndSaveMarket(ctx, uint(playerID.Value()), segment.ToWaypoint.Symbol); err != nil {
 			logger.Log("ERROR", "Market scan failed", map[string]interface{}{
 				"ship_symbol": ship.ShipSymbol(),
@@ -319,11 +353,8 @@ func (e *RouteExecutor) executeSegment(
 				"waypoint":    segment.ToWaypoint.Symbol,
 				"error":       err.Error(),
 			})
-			// Continue execution - market scanning failure should not fail navigation
 		}
 	}
-
-	return nil
 }
 
 // waitForCurrentTransit waits for ship to complete its current transit

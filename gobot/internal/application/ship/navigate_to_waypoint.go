@@ -62,65 +62,59 @@ func (h *NavigateToWaypointHandler) Handle(ctx context.Context, request common.R
 		return nil, fmt.Errorf("invalid request type")
 	}
 
-	// Validate destination
 	if cmd.Destination == "" {
 		return nil, fmt.Errorf("invalid destination waypoint")
 	}
 
-	// 1. Load ship from repository
-	ship, err := h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
+	ship, err := h.loadShip(ctx, cmd)
 	if err != nil {
-		return nil, fmt.Errorf("ship not found: %w", err)
+		return nil, err
 	}
 
-	// 2. Load destination waypoint from repository (to get correct HasFuel and other properties)
-	// Extract system symbol from destination (find last hyphen)
-	systemSymbol := cmd.Destination
-	for i := len(cmd.Destination) - 1; i >= 0; i-- {
-		if cmd.Destination[i] == '-' {
-			systemSymbol = cmd.Destination[:i]
-			break
-		}
-	}
-	destination, err := h.waypointRepo.FindBySymbol(ctx, cmd.Destination, systemSymbol)
+	destination, err := h.loadDestinationWaypoint(ctx, cmd.Destination)
 	if err != nil {
-		// Fallback: create waypoint if not found in repository
-		// This can happen in tests or when waypoint hasn't been synced yet
-		destination, err = shared.NewWaypoint(cmd.Destination, 0, 0)
-		if err != nil {
-			return nil, fmt.Errorf("invalid destination: %w", err)
-		}
+		return nil, err
 	}
 
-	// 3. Check if already at destination (idempotent)
 	if ship.IsAtLocation(destination) {
 		return &NavigateToWaypointResponse{
 			Status: "already_at_destination",
 		}, nil
 	}
 
-	// 4. Ensure ship is in orbit (auto-orbit if docked)
-	_, err = ship.EnsureInOrbit()
-	if err != nil {
+	if _, err = ship.EnsureInOrbit(); err != nil {
 		return nil, fmt.Errorf("failed to ensure ship in orbit: %w", err)
 	}
 
-	// 5. Set flight mode if specified
-	// Note: In real implementation, we would call shipRepo.SetFlightMode
-	// For now, we skip this as it's an optional feature
-
-	// 6. Navigate via repository (calls API and updates ship state)
-	// Note: Navigate() internally calls StartTransit() and ConsumeFuel() on the ship
 	navResult, err := h.shipRepo.Navigate(ctx, ship, destination, cmd.PlayerID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to navigate: %w", err)
 	}
 
-	// 7. Return successful navigation response
 	return &NavigateToWaypointResponse{
 		Status:         "navigating",
 		ArrivalTime:    navResult.ArrivalTime,
 		ArrivalTimeStr: navResult.ArrivalTimeStr,
 		FuelConsumed:   navResult.FuelConsumed,
 	}, nil
+}
+
+func (h *NavigateToWaypointHandler) loadShip(ctx context.Context, cmd *NavigateToWaypointCommand) (*navigation.Ship, error) {
+	ship, err := h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
+	if err != nil {
+		return nil, fmt.Errorf("ship not found: %w", err)
+	}
+	return ship, nil
+}
+
+func (h *NavigateToWaypointHandler) loadDestinationWaypoint(ctx context.Context, destinationSymbol string) (*shared.Waypoint, error) {
+	systemSymbol := extractSystemSymbolFromWaypoint(destinationSymbol)
+	destination, err := h.waypointRepo.FindBySymbol(ctx, destinationSymbol, systemSymbol)
+	if err != nil {
+		destination, err = shared.NewWaypoint(destinationSymbol, 0, 0)
+		if err != nil {
+			return nil, fmt.Errorf("invalid destination: %w", err)
+		}
+	}
+	return destination, nil
 }

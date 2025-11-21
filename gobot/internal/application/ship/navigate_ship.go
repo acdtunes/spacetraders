@@ -70,95 +70,28 @@ func NewNavigateShipHandler(
 }
 
 // Handle executes the NavigateShip command using extracted services
-// This is a thin orchestrator (~150 lines) that delegates to specialized services
 func (h *NavigateShipHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {
 	cmd, ok := request.(*NavigateShipCommand)
 	if !ok {
 		return nil, fmt.Errorf("invalid request type: expected *NavigateShipCommand")
 	}
 
-	// Extract logger from context
 	logger := common.LoggerFromContext(ctx)
 
-	// 1. Load ship from repository
-	ship, err := h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
+	ship, err := h.loadAndPrepareShip(ctx, cmd, logger)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get ship: %w", err)
+		return nil, err
 	}
 
-	// 2. Extract system symbol and get system graph
-	systemSymbol := ship.CurrentLocation().SystemSymbol
-	graphResult, err := h.graphProvider.GetGraph(ctx, systemSymbol, false, cmd.PlayerID.Value())
+	waypointObjects, systemSymbol, err := h.loadAndEnrichWaypoints(ctx, cmd, ship, logger)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get system graph: %w", err)
+		return nil, err
 	}
 
-	logger.Log("INFO", "System graph loaded", map[string]interface{}{
-		"ship_symbol":   cmd.ShipSymbol,
-		"action":        "load_graph",
-		"system_symbol": systemSymbol,
-		"source":        graphResult.Source,
-	})
-
-	// 3. Enrich waypoints with fuel station data
-	waypointObjects, err := h.waypointEnricher.EnrichGraphWaypoints(ctx, graphResult.Graph, systemSymbol)
-	if err != nil {
-		return nil, fmt.Errorf("failed to enrich waypoints: %w", err)
-	}
-
-	// 4. Validate waypoint cache
 	if err := h.validateWaypointCache(waypointObjects, ship, cmd.Destination, systemSymbol); err != nil {
 		return nil, err
 	}
 
-	// 5. Handle IN_TRANSIT from previous navigation (CRITICAL for idempotency!)
-	// Ship might be IN_TRANSIT to its current location - must wait before proceeding
-	logger.Log("INFO", "Ship navigation requested", map[string]interface{}{
-		"ship_symbol": ship.ShipSymbol(),
-		"action":      "navigate",
-		"current":     ship.CurrentLocation().Symbol,
-		"destination": cmd.Destination,
-		"status":      string(ship.NavStatus()),
-	})
-	if ship.NavStatus() == domainNavigation.NavStatusInTransit {
-		logger.Log("INFO", "Ship in transit - waiting for arrival", map[string]interface{}{
-			"ship_symbol": ship.ShipSymbol(),
-			"action":      "wait_arrival",
-			"status":      "IN_TRANSIT",
-		})
-
-		// Create a temporary route with no segments to trigger waitForCurrentTransit
-		emptyRoute, err := domainNavigation.NewRoute(
-			fmt.Sprintf("%s_wait_transit", ship.ShipSymbol()),
-			ship.ShipSymbol(),
-			cmd.PlayerID.Value(),
-			[]*domainNavigation.RouteSegment{},
-			ship.FuelCapacity(),
-			false,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create temporary route: %w", err)
-		}
-
-		// Wait for current transit using route executor logic
-		if err := h.routeExecutor.ExecuteRoute(ctx, emptyRoute, ship, cmd.PlayerID); err != nil {
-			return nil, fmt.Errorf("failed to wait for current transit: %w", err)
-		}
-
-		// Reload ship after transit completes
-		ship, err = h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
-		if err != nil {
-			return nil, fmt.Errorf("failed to reload ship after transit: %w", err)
-		}
-		logger.Log("INFO", "Ship arrived at destination", map[string]interface{}{
-			"ship_symbol": ship.ShipSymbol(),
-			"action":      "arrival_complete",
-			"status":      string(ship.NavStatus()),
-			"location":    ship.CurrentLocation().Symbol,
-		})
-	}
-
-	// 6. Check if ship is already at destination (idempotent command)
 	if ship.CurrentLocation().Symbol == cmd.Destination {
 		logger.Log("INFO", "Ship already at destination", map[string]interface{}{
 			"ship_symbol": ship.ShipSymbol(),
@@ -169,13 +102,115 @@ func (h *NavigateShipHandler) Handle(ctx context.Context, request common.Request
 		return h.handleAlreadyAtDestination(cmd, ship)
 	}
 
-	// 7. Plan route using routing engine
+	route, err := h.planAndExecuteRoute(ctx, cmd, ship, waypointObjects, systemSymbol, logger)
+	if err != nil {
+		return nil, err
+	}
+
+	finalShip, err := h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to reload ship after navigation: %w", err)
+	}
+
+	return &NavigateShipResponse{
+		Status:          "completed",
+		ArrivalTime:     route.TotalTravelTime(),
+		CurrentLocation: cmd.Destination,
+		FuelRemaining:   finalShip.Fuel().Current,
+		Route:           route,
+		Ship:            finalShip,
+	}, nil
+}
+
+func (h *NavigateShipHandler) loadAndPrepareShip(ctx context.Context, cmd *NavigateShipCommand, logger common.ContainerLogger) (*domainNavigation.Ship, error) {
+	ship, err := h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get ship: %w", err)
+	}
+
+	logger.Log("INFO", "Ship navigation requested", map[string]interface{}{
+		"ship_symbol": ship.ShipSymbol(),
+		"action":      "navigate",
+		"current":     ship.CurrentLocation().Symbol,
+		"destination": cmd.Destination,
+		"status":      string(ship.NavStatus()),
+	})
+
+	if ship.NavStatus() == domainNavigation.NavStatusInTransit {
+		return h.waitForInTransitCompletion(ctx, cmd, ship, logger)
+	}
+
+	return ship, nil
+}
+
+func (h *NavigateShipHandler) waitForInTransitCompletion(ctx context.Context, cmd *NavigateShipCommand, ship *domainNavigation.Ship, logger common.ContainerLogger) (*domainNavigation.Ship, error) {
+	logger.Log("INFO", "Ship in transit - waiting for arrival", map[string]interface{}{
+		"ship_symbol": ship.ShipSymbol(),
+		"action":      "wait_arrival",
+		"status":      "IN_TRANSIT",
+	})
+
+	emptyRoute, err := domainNavigation.NewRoute(
+		fmt.Sprintf("%s_wait_transit", ship.ShipSymbol()),
+		ship.ShipSymbol(),
+		cmd.PlayerID.Value(),
+		[]*domainNavigation.RouteSegment{},
+		ship.FuelCapacity(),
+		false,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create temporary route: %w", err)
+	}
+
+	if err := h.routeExecutor.ExecuteRoute(ctx, emptyRoute, ship, cmd.PlayerID); err != nil {
+		return nil, fmt.Errorf("failed to wait for current transit: %w", err)
+	}
+
+	ship, err = h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to reload ship after transit: %w", err)
+	}
+
+	logger.Log("INFO", "Ship arrived at destination", map[string]interface{}{
+		"ship_symbol": ship.ShipSymbol(),
+		"action":      "arrival_complete",
+		"status":      string(ship.NavStatus()),
+		"location":    ship.CurrentLocation().Symbol,
+	})
+
+	return ship, nil
+}
+
+func (h *NavigateShipHandler) loadAndEnrichWaypoints(ctx context.Context, cmd *NavigateShipCommand, ship *domainNavigation.Ship, logger common.ContainerLogger) (map[string]*shared.Waypoint, string, error) {
+	systemSymbol := ship.CurrentLocation().SystemSymbol
+	graphResult, err := h.graphProvider.GetGraph(ctx, systemSymbol, false, cmd.PlayerID.Value())
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to get system graph: %w", err)
+	}
+
+	logger.Log("INFO", "System graph loaded", map[string]interface{}{
+		"ship_symbol":   cmd.ShipSymbol,
+		"action":        "load_graph",
+		"system_symbol": systemSymbol,
+		"source":        graphResult.Source,
+	})
+
+	waypointObjects, err := h.waypointEnricher.EnrichGraphWaypoints(ctx, graphResult.Graph, systemSymbol)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to enrich waypoints: %w", err)
+	}
+
+	return waypointObjects, systemSymbol, nil
+}
+
+func (h *NavigateShipHandler) planAndExecuteRoute(ctx context.Context, cmd *NavigateShipCommand, ship *domainNavigation.Ship, waypointObjects map[string]*shared.Waypoint, systemSymbol string, logger common.ContainerLogger) (*domainNavigation.Route, error) {
 	logger.Log("INFO", "Route planning initiated", map[string]interface{}{
 		"ship_symbol": ship.ShipSymbol(),
 		"action":      "plan_route",
 		"origin":      ship.CurrentLocation().Symbol,
 		"destination": cmd.Destination,
 	})
+
 	route, err := h.routePlanner.PlanRoute(ctx, ship, cmd.Destination, waypointObjects, cmd.PreferCruise)
 	if err != nil {
 		return nil, fmt.Errorf("failed to plan route: %w", err)
@@ -185,7 +220,6 @@ func (h *NavigateShipHandler) Handle(ctx context.Context, request common.Request
 		return nil, h.buildNoRouteFoundError(ship, cmd.Destination, systemSymbol, waypointObjects)
 	}
 
-	// 7. Execute route with all safety features
 	defer func() {
 		if r := recover(); r != nil {
 			route.FailRoute(fmt.Sprintf("panic during execution: %v", r))
@@ -197,21 +231,7 @@ func (h *NavigateShipHandler) Handle(ctx context.Context, request common.Request
 		return nil, fmt.Errorf("failed to execute route: %w", err)
 	}
 
-	// 8. Reload ship to get final state after navigation
-	finalShip, err := h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to reload ship after navigation: %w", err)
-	}
-
-	// 9. Return success response with updated ship
-	return &NavigateShipResponse{
-		Status:          "completed",
-		ArrivalTime:     route.TotalTravelTime(),
-		CurrentLocation: cmd.Destination,
-		FuelRemaining:   finalShip.Fuel().Current,
-		Route:           route,
-		Ship:            finalShip,
-	}, nil
+	return route, nil
 }
 
 // validateWaypointCache validates waypoint cache has necessary data

@@ -42,28 +42,11 @@ func (h *ListShipsHandler) Handle(ctx context.Context, request common.Request) (
 		return nil, fmt.Errorf("invalid request type: expected *ListShipsQuery")
 	}
 
-	// Validate that at least one identifier is provided
-	if query.PlayerID == nil && query.AgentSymbol == "" {
-		return nil, fmt.Errorf("either player_id or agent_symbol must be provided")
+	playerID, err := h.resolvePlayerID(ctx, query.PlayerID, query.AgentSymbol)
+	if err != nil {
+		return nil, err
 	}
 
-	// Resolve player ID if agent symbol is provided
-	var playerID shared.PlayerID
-	if query.PlayerID != nil {
-		pid, err := shared.NewPlayerID(*query.PlayerID)
-		if err != nil {
-			return nil, fmt.Errorf("invalid player ID: %w", err)
-		}
-		playerID = pid
-	} else {
-		player, err := h.playerRepo.FindByAgentSymbol(ctx, query.AgentSymbol)
-		if err != nil {
-			return nil, fmt.Errorf("failed to find player by agent symbol: %w", err)
-		}
-		playerID = player.ID
-	}
-
-	// Get all ships for the player
 	ships, err := h.shipRepo.FindAllByPlayer(ctx, playerID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list ships: %w", err)
@@ -72,4 +55,24 @@ func (h *ListShipsHandler) Handle(ctx context.Context, request common.Request) (
 	return &ListShipsResponse{
 		Ships: ships,
 	}, nil
+}
+
+func (h *ListShipsHandler) resolvePlayerID(ctx context.Context, playerID *int, agentSymbol string) (shared.PlayerID, error) {
+	if playerID == nil && agentSymbol == "" {
+		return shared.PlayerID{}, fmt.Errorf("either player_id or agent_symbol must be provided")
+	}
+
+	if playerID != nil {
+		pid, err := shared.NewPlayerID(*playerID)
+		if err != nil {
+			return shared.PlayerID{}, fmt.Errorf("invalid player ID: %w", err)
+		}
+		return pid, nil
+	}
+
+	player, err := h.playerRepo.FindByAgentSymbol(ctx, agentSymbol)
+	if err != nil {
+		return shared.PlayerID{}, fmt.Errorf("failed to find player by agent symbol: %w", err)
+	}
+	return player.ID, nil
 }

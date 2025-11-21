@@ -65,22 +65,40 @@ func (p *RoutePlanner) PlanRoute(
 }
 
 // createRouteFromPlan creates Route entity from routing engine plan
-// Extracted from navigate_ship.go:379-469
 func (p *RoutePlanner) createRouteFromPlan(
 	ctx context.Context,
 	routePlan *domainRouting.RouteResponse,
 	ship *domainNavigation.Ship,
 	waypointObjects map[string]*shared.Waypoint,
 ) (*domainNavigation.Route, error) {
-	logger := common.LoggerFromContext(ctx)
-	segments := []*domainNavigation.RouteSegment{}
-	refuelBeforeDeparture := false
-
 	if len(routePlan.Steps) == 0 {
 		return nil, fmt.Errorf("no route found: routing engine returned empty plan")
 	}
 
-	// Log routing service response
+	p.logRoutePlan(ctx, routePlan, ship)
+
+	refuelBeforeDeparture := p.checkForInitialRefuel(routePlan)
+	segments, err := p.processRoutePlanSteps(routePlan, ship, waypointObjects)
+	if err != nil {
+		return nil, err
+	}
+
+	p.logCreatedSegments(ctx, segments, ship)
+
+	routeID := fmt.Sprintf("%s_%d", ship.ShipSymbol(), routePlan.TotalTimeSeconds)
+
+	return domainNavigation.NewRoute(
+		routeID,
+		ship.ShipSymbol(),
+		ship.PlayerID().Value(),
+		segments,
+		ship.FuelCapacity(),
+		refuelBeforeDeparture,
+	)
+}
+
+func (p *RoutePlanner) logRoutePlan(ctx context.Context, routePlan *domainRouting.RouteResponse, ship *domainNavigation.Ship) {
+	logger := common.LoggerFromContext(ctx)
 	logger.Log("INFO", "Route planning completed by routing service", map[string]interface{}{
 		"ship_symbol": ship.ShipSymbol(),
 		"action":      "route_plan_received",
@@ -99,66 +117,28 @@ func (p *RoutePlanner) createRouteFromPlan(
 			"time_seconds": step.TimeSeconds,
 		})
 	}
+}
 
-	// Check if first action is REFUEL (ship at fuel station with low fuel)
-	if routePlan.Steps[0].Action == domainRouting.RouteActionRefuel {
-		refuelBeforeDeparture = true
-	}
+func (p *RoutePlanner) checkForInitialRefuel(routePlan *domainRouting.RouteResponse) bool {
+	return routePlan.Steps[0].Action == domainRouting.RouteActionRefuel
+}
 
-	var fromWaypoint *shared.Waypoint
+func (p *RoutePlanner) processRoutePlanSteps(
+	routePlan *domainRouting.RouteResponse,
+	ship *domainNavigation.Ship,
+	waypointObjects map[string]*shared.Waypoint,
+) ([]*domainNavigation.RouteSegment, error) {
+	segments := []*domainNavigation.RouteSegment{}
+
 	for _, step := range routePlan.Steps {
 		if step.Action == domainRouting.RouteActionTravel {
-			// Find the from_waypoint (previous step's destination or start)
-			if len(segments) > 0 {
-				fromWaypoint = segments[len(segments)-1].ToWaypoint
-			} else {
-				fromWaypoint = ship.CurrentLocation()
+			segment, err := p.createSegmentFromTravelStep(step, segments, ship, waypointObjects)
+			if err != nil {
+				return nil, err
 			}
-
-			toWaypoint, ok := waypointObjects[step.Waypoint]
-			if !ok {
-				return nil, fmt.Errorf("waypoint %s not found in cache", step.Waypoint)
-			}
-
-			// Determine flight mode from step (routing engine uses BURN-first logic)
-			flightMode := shared.FlightModeCruise // Default fallback
-			if step.Mode != "" {
-				switch step.Mode {
-				case "BURN":
-					flightMode = shared.FlightModeBurn
-				case "CRUISE":
-					flightMode = shared.FlightModeCruise
-				case "DRIFT":
-					flightMode = shared.FlightModeDrift
-				case "STEALTH":
-					flightMode = shared.FlightModeStealth
-				}
-			}
-
-			segment := domainNavigation.NewRouteSegment(
-				fromWaypoint,
-				toWaypoint,
-				fromWaypoint.DistanceTo(toWaypoint),
-				step.FuelCost,
-				step.TimeSeconds,
-				flightMode,
-				false, // Will be updated if next step is REFUEL
-			)
 			segments = append(segments, segment)
 		} else if step.Action == domainRouting.RouteActionRefuel {
-			// Mark previous segment as requiring refuel (mid-route refueling)
-			if len(segments) > 0 {
-				prev := segments[len(segments)-1]
-				segments[len(segments)-1] = domainNavigation.NewRouteSegment(
-					prev.FromWaypoint,
-					prev.ToWaypoint,
-					prev.Distance,
-					prev.FuelRequired,
-					prev.TravelTime,
-					prev.FlightMode,
-					true, // Requires refuel
-				)
-			}
+			p.markLastSegmentForRefuel(&segments)
 		}
 	}
 
@@ -166,7 +146,74 @@ func (p *RoutePlanner) createRouteFromPlan(
 		return nil, fmt.Errorf("route plan has no TRAVEL steps")
 	}
 
-	// Log created segments
+	return segments, nil
+}
+
+func (p *RoutePlanner) createSegmentFromTravelStep(
+	step *domainRouting.RouteStepData,
+	existingSegments []*domainNavigation.RouteSegment,
+	ship *domainNavigation.Ship,
+	waypointObjects map[string]*shared.Waypoint,
+) (*domainNavigation.RouteSegment, error) {
+	fromWaypoint := p.determineFromWaypoint(existingSegments, ship)
+
+	toWaypoint, ok := waypointObjects[step.Waypoint]
+	if !ok {
+		return nil, fmt.Errorf("waypoint %s not found in cache", step.Waypoint)
+	}
+
+	flightMode := p.parseFlightMode(step.Mode)
+
+	return domainNavigation.NewRouteSegment(
+		fromWaypoint,
+		toWaypoint,
+		fromWaypoint.DistanceTo(toWaypoint),
+		step.FuelCost,
+		step.TimeSeconds,
+		flightMode,
+		false,
+	), nil
+}
+
+func (p *RoutePlanner) determineFromWaypoint(segments []*domainNavigation.RouteSegment, ship *domainNavigation.Ship) *shared.Waypoint {
+	if len(segments) > 0 {
+		return segments[len(segments)-1].ToWaypoint
+	}
+	return ship.CurrentLocation()
+}
+
+func (p *RoutePlanner) parseFlightMode(mode string) shared.FlightMode {
+	switch mode {
+	case "BURN":
+		return shared.FlightModeBurn
+	case "CRUISE":
+		return shared.FlightModeCruise
+	case "DRIFT":
+		return shared.FlightModeDrift
+	case "STEALTH":
+		return shared.FlightModeStealth
+	default:
+		return shared.FlightModeCruise
+	}
+}
+
+func (p *RoutePlanner) markLastSegmentForRefuel(segments *[]*domainNavigation.RouteSegment) {
+	if len(*segments) > 0 {
+		prev := (*segments)[len(*segments)-1]
+		(*segments)[len(*segments)-1] = domainNavigation.NewRouteSegment(
+			prev.FromWaypoint,
+			prev.ToWaypoint,
+			prev.Distance,
+			prev.FuelRequired,
+			prev.TravelTime,
+			prev.FlightMode,
+			true,
+		)
+	}
+}
+
+func (p *RoutePlanner) logCreatedSegments(ctx context.Context, segments []*domainNavigation.RouteSegment, ship *domainNavigation.Ship) {
+	logger := common.LoggerFromContext(ctx)
 	logger.Log("INFO", "Route segments created", map[string]interface{}{
 		"ship_symbol":   ship.ShipSymbol(),
 		"action":        "segments_created",
@@ -183,16 +230,4 @@ func (p *RoutePlanner) createRouteFromPlan(
 			"requires_refuel": seg.RequiresRefuel,
 		})
 	}
-
-	// Generate route ID
-	routeID := fmt.Sprintf("%s_%d", ship.ShipSymbol(), routePlan.TotalTimeSeconds)
-
-	return domainNavigation.NewRoute(
-		routeID,
-		ship.ShipSymbol(),
-		ship.PlayerID().Value(),
-		segments,
-		ship.FuelCapacity(),
-		refuelBeforeDeparture,
-	)
 }
