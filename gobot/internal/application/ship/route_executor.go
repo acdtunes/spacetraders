@@ -381,7 +381,11 @@ func (e *RouteExecutor) waitForCurrentTransit(
 
 		// If ship is still IN_TRANSIT and has arrival time, wait for it
 		if shipData.NavStatus == "IN_TRANSIT" && shipData.ArrivalTime != "" {
-			waitTime := CalculateArrivalWaitTime(shipData.ArrivalTime)
+			arrivalTime, err := shared.NewArrivalTime(shipData.ArrivalTime)
+			if err != nil {
+				return fmt.Errorf("failed to parse arrival time: %w", err)
+			}
+			waitTime := arrivalTime.CalculateWaitTime()
 			if waitTime > 0 {
 				logger.Log("INFO", "Waiting for ship to complete previous transit", map[string]interface{}{
 					"ship_symbol":  ship.ShipSymbol(),
@@ -544,8 +548,12 @@ func (e *RouteExecutor) waitForArrival(
 	// Extract logger from context
 	logger := common.LoggerFromContext(ctx)
 
-	// Calculate wait time from API arrival time (use NavigationUtils)
-	waitTime := CalculateArrivalWaitTime(arrivalTimeStr)
+	// Calculate wait time from API arrival time using ArrivalTime value object
+	arrivalTime, err := shared.NewArrivalTime(arrivalTimeStr)
+	if err != nil {
+		return fmt.Errorf("failed to parse arrival time: %w", err)
+	}
+	waitTime := arrivalTime.CalculateWaitTime()
 
 	if waitTime > 0 {
 		logger.Log("INFO", "Waiting for ship to arrive at destination", map[string]interface{}{
