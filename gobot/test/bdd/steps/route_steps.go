@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
@@ -19,6 +20,10 @@ type routeContext struct {
 	intResult         int
 	currentSegment    *navigation.RouteSegment
 	remainingSegments []*navigation.RouteSegment
+	stringResult      string
+	routeIDResult     string
+	shipSymbolResult  string
+	playerIDResult    int
 }
 
 func (rc *routeContext) reset() {
@@ -582,4 +587,153 @@ func RegisterRouteSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^the route is failed$`, rc.theRouteIsFailed)
 	ctx.Step(`^the route is not failed$`, rc.theRouteIsNotFailed)
 	ctx.Step(`^the original route segments should be unchanged$`, rc.theOriginalRouteSegmentsShouldBeUnchanged)
+
+	// Route getter steps
+	ctx.Step(`^a route with id "([^"]*)" from "([^"]*)" to "([^"]*)" with one segment$`, rc.aRouteWithIdFromToWithOneSegment)
+	ctx.Step(`^a route for ship "([^"]*)" from "([^"]*)" to "([^"]*)" with one segment$`, rc.aRouteForShipFromToWithOneSegment)
+	ctx.Step(`^a route for player (\d+) from "([^"]*)" to "([^"]*)" with one segment$`, rc.aRouteForPlayerFromToWithOneSegment)
+	ctx.Step(`^a route with id "([^"]*)" in "([^"]*)" state$`, rc.aRouteWithIdInState)
+	ctx.Step(`^I get the route ID$`, rc.iGetTheRouteID)
+	ctx.Step(`^the route ID should be "([^"]*)"$`, rc.theRouteIDShouldBe)
+	ctx.Step(`^I get the route ship symbol$`, rc.iGetTheRouteShipSymbol)
+	ctx.Step(`^the route ship symbol should be "([^"]*)"$`, rc.theRouteShipSymbolShouldBe)
+	ctx.Step(`^I get the route player ID$`, rc.iGetTheRoutePlayerID)
+	ctx.Step(`^the route player ID should be (\d+)$`, rc.theRoutePlayerIDShouldBe)
+	ctx.Step(`^I get the route string representation$`, rc.iGetTheRouteStringRepresentation)
+	ctx.Step(`^the route string should contain "([^"]*)"$`, rc.theRouteStringShouldContain)
+}
+
+// Route getter step definitions
+
+func (rc *routeContext) aRouteWithIdFromToWithOneSegment(routeID, from, to string) error {
+	origin, err := shared.NewWaypoint(from, 0, 0)
+	if err != nil {
+		return err
+	}
+	destination, err := shared.NewWaypoint(to, 100, 100)
+	if err != nil {
+		return err
+	}
+
+	segment := navigation.NewRouteSegment(origin, destination, 50.0, 25, 100, shared.FlightModeCruise, false)
+
+	rc.route, err = navigation.NewRoute(routeID, "SHIP-1", 1, []*navigation.RouteSegment{segment}, 100, false)
+	return err
+}
+
+func (rc *routeContext) aRouteForShipFromToWithOneSegment(shipSymbol, from, to string) error {
+	origin, err := shared.NewWaypoint(from, 0, 0)
+	if err != nil {
+		return err
+	}
+	destination, err := shared.NewWaypoint(to, 100, 100)
+	if err != nil {
+		return err
+	}
+
+	segment := navigation.NewRouteSegment(origin, destination, 50.0, 25, 100, shared.FlightModeCruise, false)
+
+	rc.route, err = navigation.NewRoute("route-1", shipSymbol, 1, []*navigation.RouteSegment{segment}, 100, false)
+	return err
+}
+
+func (rc *routeContext) aRouteForPlayerFromToWithOneSegment(playerID int, from, to string) error {
+	origin, err := shared.NewWaypoint(from, 0, 0)
+	if err != nil {
+		return err
+	}
+	destination, err := shared.NewWaypoint(to, 100, 100)
+	if err != nil {
+		return err
+	}
+
+	segment := navigation.NewRouteSegment(origin, destination, 50.0, 25, 100, shared.FlightModeCruise, false)
+
+	rc.route, err = navigation.NewRoute("route-1", "SHIP-1", playerID, []*navigation.RouteSegment{segment}, 100, false)
+	return err
+}
+
+func (rc *routeContext) aRouteWithIdInState(routeID, state string) error {
+	origin, err := shared.NewWaypoint("X1-A1", 0, 0)
+	if err != nil {
+		return err
+	}
+	destination, err := shared.NewWaypoint("X1-B2", 100, 100)
+	if err != nil {
+		return err
+	}
+
+	segment := navigation.NewRouteSegment(origin, destination, 50.0, 25, 100, shared.FlightModeCruise, false)
+
+	rc.route, err = navigation.NewRoute(routeID, "SHIP-1", 1, []*navigation.RouteSegment{segment}, 100, false)
+	if err != nil {
+		return err
+	}
+
+	// Set state if needed
+	if state == "EXECUTING" {
+		return rc.route.StartExecution()
+	}
+
+	return nil
+}
+
+func (rc *routeContext) iGetTheRouteID() error {
+	if rc.route == nil {
+		return fmt.Errorf("no route available")
+	}
+	rc.routeIDResult = rc.route.RouteID()
+	return nil
+}
+
+func (rc *routeContext) theRouteIDShouldBe(expected string) error {
+	if rc.routeIDResult != expected {
+		return fmt.Errorf("expected route ID %s, got %s", expected, rc.routeIDResult)
+	}
+	return nil
+}
+
+func (rc *routeContext) iGetTheRouteShipSymbol() error {
+	if rc.route == nil {
+		return fmt.Errorf("no route available")
+	}
+	rc.shipSymbolResult = rc.route.ShipSymbol()
+	return nil
+}
+
+func (rc *routeContext) theRouteShipSymbolShouldBe(expected string) error {
+	if rc.shipSymbolResult != expected {
+		return fmt.Errorf("expected ship symbol %s, got %s", expected, rc.shipSymbolResult)
+	}
+	return nil
+}
+
+func (rc *routeContext) iGetTheRoutePlayerID() error {
+	if rc.route == nil {
+		return fmt.Errorf("no route available")
+	}
+	rc.playerIDResult = int(rc.route.PlayerID())
+	return nil
+}
+
+func (rc *routeContext) theRoutePlayerIDShouldBe(expected int) error {
+	if rc.playerIDResult != expected {
+		return fmt.Errorf("expected player ID %d, got %d", expected, rc.playerIDResult)
+	}
+	return nil
+}
+
+func (rc *routeContext) iGetTheRouteStringRepresentation() error {
+	if rc.route == nil {
+		return fmt.Errorf("no route available")
+	}
+	rc.stringResult = rc.route.String()
+	return nil
+}
+
+func (rc *routeContext) theRouteStringShouldContain(expected string) error {
+	if !strings.Contains(rc.stringResult, expected) {
+		return fmt.Errorf("expected route string to contain '%s', but got '%s'", expected, rc.stringResult)
+	}
+	return nil
 }

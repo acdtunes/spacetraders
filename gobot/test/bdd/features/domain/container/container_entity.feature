@@ -439,3 +439,36 @@ Feature: Container Entity
     Given a container in "RUNNING" state
     When I check if container is stopping
     Then the container is not stopping
+  # ============================================================================
+  # Container Getter Tests
+  # ============================================================================
+
+  Scenario: MaxRestarts returns default value
+    Given a container in "PENDING" state
+    When I get the container max restarts
+    Then the max restarts should be 3
+
+  Scenario: CreatedAt returns creation timestamp
+    Given a container in "PENDING" state
+    When I get the container created_at timestamp
+    Then the created_at timestamp should not be nil
+
+  Scenario: UpdatedAt returns last update timestamp
+    Given a container in "RUNNING" state
+    When I get the container updated_at timestamp
+    Then the updated_at timestamp should not be nil
+
+  Scenario: Metadata returns container metadata map
+    Given a container with metadata:
+      | key      | value   |
+      | location | X1-A1   |
+      | priority | high    |
+    When I get the container metadata
+    Then the metadata map should contain "location"
+    And the metadata map should contain "priority"
+
+  Scenario: String representation includes container ID and status
+    Given a container with id "mining-1" in "RUNNING" state
+    When I get the container string representation
+    Then the string should contain "mining-1"
+    And the string should contain "RUNNING"

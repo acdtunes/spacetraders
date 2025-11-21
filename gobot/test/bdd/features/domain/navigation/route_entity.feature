@@ -220,3 +220,28 @@ Feature: Route Entity
     When I get the remaining segments
     And I modify the returned segments array
     Then the original route segments should be unchanged
+
+  # ============================================================================
+  # Route Getter Tests
+  # ============================================================================
+
+  Scenario: RouteID returns route identifier
+    Given a route with id "route-123" from "X1-A1" to "X1-B2" with one segment
+    When I get the route ID
+    Then the route ID should be "route-123"
+
+  Scenario: ShipSymbol returns ship identifier
+    Given a route for ship "SHIP-ABC" from "X1-A1" to "X1-B2" with one segment
+    When I get the route ship symbol
+    Then the route ship symbol should be "SHIP-ABC"
+
+  Scenario: PlayerID returns player identifier
+    Given a route for player 42 from "X1-A1" to "X1-B2" with one segment
+    When I get the route player ID
+    Then the route player ID should be 42
+
+  Scenario: String representation includes route ID and status
+    Given a route with id "route-789" in "PLANNED" state
+    When I get the route string representation
+    Then the route string should contain "route-789"
+    And the route string should contain "PLANNED"

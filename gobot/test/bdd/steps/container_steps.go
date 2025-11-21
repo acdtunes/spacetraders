@@ -41,6 +41,9 @@ type containerContext struct {
 	metadataExists     bool
 	clock              *shared.MockClock
 	existingContainers map[string]bool
+	timeResult         time.Time
+	metadataResult     map[string]interface{}
+	stringResult       string
 }
 
 func (cc *containerContext) reset() {
@@ -248,6 +251,40 @@ func (cc *containerContext) aContainerWithIDInStateWithRestartCount(id string, s
 	}
 
 	return nil
+}
+
+func (cc *containerContext) aContainerWithIDInState(id string, status string) error {
+	cc.container = container.NewContainer(
+		id,
+		container.ContainerTypeMining,
+		1,
+		10,
+		nil,
+		cc.clock,
+	)
+
+	// Transition to target state
+	switch status {
+	case "PENDING":
+		return nil
+	case "RUNNING":
+		return cc.container.Start()
+	case "COMPLETED":
+		_ = cc.container.Start()
+		return cc.container.Complete()
+	case "FAILED":
+		_ = cc.container.Start()
+		return cc.container.Fail(fmt.Errorf("test error"))
+	case "STOPPED":
+		_ = cc.container.Start()
+		_ = cc.container.Stop()
+		return cc.container.MarkStopped()
+	case "STOPPING":
+		_ = cc.container.Start()
+		return cc.container.Stop()
+	default:
+		return fmt.Errorf("unknown status: %s", status)
+	}
 }
 
 // Metadata Setup Steps
@@ -737,6 +774,7 @@ func RegisterContainerSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^a container in "([^"]*)" state at iteration (\d+)$`, cc.aContainerInStateAtIteration)
 	ctx.Step(`^a container with max_iterations (-?\d+) at iteration (\d+)$`, cc.aContainerWithMaxIterationsAtIteration)
 	ctx.Step(`^a container with id "([^"]*)" in "([^"]*)" state with restart_count (\d+)$`, cc.aContainerWithIDInStateWithRestartCount)
+	ctx.Step(`^a container with id "([^"]*)" in "([^"]*)" state$`, cc.aContainerWithIDInState)
 	ctx.Step(`^a container with no metadata$`, cc.aContainerWithNoMetadata)
 	ctx.Step(`^a container with metadata:$`, cc.aContainerWithMetadata)
 	ctx.Step(`^a container started (\d+) minutes ago in "([^"]*)" state$`, cc.aContainerStartedMinutesAgoInState)
@@ -860,6 +898,18 @@ func RegisterContainerSteps(ctx *godog.ScenarioContext) {
 		advanceSharedClock(time.Duration(seconds) * time.Second)
 		return nil
 	})
+
+	// Container getter steps
+	ctx.Step(`^I get the container max restarts$`, cc.iGetTheContainerMaxRestarts)
+	ctx.Step(`^the max restarts should be (\d+)$`, cc.theMaxRestartsShouldBe)
+	ctx.Step(`^I get the container created_at timestamp$`, cc.iGetTheContainerCreatedAtTimestamp)
+	ctx.Step(`^the created_at timestamp should not be nil$`, cc.theCreatedAtTimestampShouldNotBeNil)
+	ctx.Step(`^I get the container updated_at timestamp$`, cc.iGetTheContainerUpdatedAtTimestamp)
+	ctx.Step(`^the updated_at timestamp should not be nil$`, cc.theUpdatedAtTimestampShouldNotBeNil)
+	ctx.Step(`^I get the container metadata$`, cc.iGetTheContainerMetadata)
+	ctx.Step(`^the metadata map should contain "([^"]*)"$`, cc.theMetadataMapShouldContain)
+	ctx.Step(`^I get the container string representation$`, cc.iGetTheContainerStringRepresentation)
+	ctx.Step(`^the string should contain "([^"]*)"$`, cc.theStringShouldContain)
 }
 
 // ============================================================================
@@ -1213,6 +1263,87 @@ func (cc *containerContext) theAssignmentShipSymbolShouldBe(expectedShipSymbol s
 func (cc *containerContext) assignmentsShouldBeCleaned(expectedCount int) error {
 	if cc.intResult != expectedCount {
 		return fmt.Errorf("expected %d assignments to be cleaned, got %d", expectedCount, cc.intResult)
+	}
+	return nil
+}
+
+
+// Getter step definitions
+
+func (cc *containerContext) iGetTheContainerMaxRestarts() error {
+	if cc.container == nil {
+		return fmt.Errorf("no container to check")
+	}
+	cc.intResult = cc.container.MaxRestarts()
+	return nil
+}
+
+func (cc *containerContext) theMaxRestartsShouldBe(expected int) error {
+	if cc.intResult != expected {
+		return fmt.Errorf("expected max restarts %d, got %d", expected, cc.intResult)
+	}
+	return nil
+}
+
+func (cc *containerContext) iGetTheContainerCreatedAtTimestamp() error {
+	if cc.container == nil {
+		return fmt.Errorf("no container to check")
+	}
+	cc.timeResult = cc.container.CreatedAt()
+	return nil
+}
+
+func (cc *containerContext) theCreatedAtTimestampShouldNotBeNil() error {
+	if cc.timeResult.IsZero() {
+		return fmt.Errorf("expected created_at timestamp to not be nil, but it was zero")
+	}
+	return nil
+}
+
+func (cc *containerContext) iGetTheContainerUpdatedAtTimestamp() error {
+	if cc.container == nil {
+		return fmt.Errorf("no container to check")
+	}
+	cc.timeResult = cc.container.UpdatedAt()
+	return nil
+}
+
+func (cc *containerContext) theUpdatedAtTimestampShouldNotBeNil() error {
+	if cc.timeResult.IsZero() {
+		return fmt.Errorf("expected updated_at timestamp to not be nil, but it was zero")
+	}
+	return nil
+}
+
+func (cc *containerContext) iGetTheContainerMetadata() error {
+	if cc.container == nil {
+		return fmt.Errorf("no container to check")
+	}
+	cc.metadataResult = cc.container.Metadata()
+	return nil
+}
+
+func (cc *containerContext) theMetadataMapShouldContain(key string) error {
+	if cc.metadataResult == nil {
+		return fmt.Errorf("metadata map is nil")
+	}
+	if _, exists := cc.metadataResult[key]; !exists {
+		return fmt.Errorf("expected metadata map to contain key '%s', but it does not", key)
+	}
+	return nil
+}
+
+func (cc *containerContext) iGetTheContainerStringRepresentation() error {
+	if cc.container == nil {
+		return fmt.Errorf("no container to check")
+	}
+	cc.stringResult = cc.container.String()
+	return nil
+}
+
+func (cc *containerContext) theStringShouldContain(expected string) error {
+	if !strings.Contains(cc.stringResult, expected) {
+		return fmt.Errorf("expected string to contain '%s', but got '%s'", expected, cc.stringResult)
 	}
 	return nil
 }

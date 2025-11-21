@@ -16,6 +16,7 @@ type shipContext struct {
 	err               error
 	boolResult        bool
 	intResult         int
+	stringResult      string
 	waypoints         map[string]*shared.Waypoint
 	flightMode        shared.FlightMode
 	stateChangeResult bool
@@ -27,7 +28,8 @@ func (sc *shipContext) reset() {
 	sc.err = nil
 	sc.boolResult = false
 	sc.intResult = 0
-	sc.waypoints = sharedWaypointMap // Use shared waypoint map
+	sc.stringResult = ""
+	sc.waypoints = sharedWaypointMap  // Use shared waypoint map
 	sc.flightMode = shared.FlightModeCruise
 	sc.stateChangeResult = false
 	// Reset shared ship (shared with value_object_steps)
@@ -1016,6 +1018,20 @@ func InitializeShipScenario(ctx *godog.ScenarioContext) {
 	ctx.Step(`^the cloned ship should have ship symbol "([^"]*)"$`, sc.theClonedShipShouldHaveShipSymbol)
 	ctx.Step(`^the cloned ship should have frame symbol "([^"]*)"$`, sc.theClonedShipShouldHaveFrameSymbol)
 	ctx.Step(`^the cloned ship should have role "([^"]*)"$`, sc.theClonedShipShouldHaveRole)
+
+	// Ship helper methods
+	ctx.Step(`^I get the ship string representation$`, sc.iGetTheShipStringRepresentation)
+	ctx.Step(`^the ship string should contain "([^"]*)"$`, sc.theShipStringShouldContain)
+	ctx.Step(`^a ship at waypoint "([^"]*)" with empty cargo$`, sc.aShipAtWaypointWithEmptyCargo)
+	ctx.Step(`^cargo should be empty$`, sc.cargoShouldBeEmpty)
+	ctx.Step(`^cargo should not be empty$`, sc.cargoShouldNotBeEmpty)
+	ctx.Step(`^cargo should be full$`, sc.cargoShouldBeFull)
+	ctx.Step(`^cargo should not be full$`, sc.cargoShouldNotBeFull)
+	ctx.Step(`^a ship at waypoint "([^"]*)" with (\d+) units of "([^"]*)" and capacity (\d+)$`, sc.aShipAtWaypointWithUnitsOfAndCapacity)
+	ctx.Step(`^I check if ship has cargo space for (\d+) units$`, sc.iCheckIfShipHasCargoSpaceForUnits)
+	ctx.Step(`^ship should have cargo space$`, sc.shipShouldHaveCargoSpace)
+	ctx.Step(`^ship should not have cargo space$`, sc.shipShouldNotHaveCargoSpace)
+	ctx.Step(`^available cargo space should be (\d+)$`, sc.availableCargoSpaceShouldBe)
 }
 
 // ============================================================================
@@ -1184,6 +1200,120 @@ func (sc *shipContext) theClonedShipShouldHaveShipSymbol(expected string) error 
 	return nil
 }
 
+// Ship helper method implementations
+
+func (sc *shipContext) iGetTheShipStringRepresentation() error {
+	if sc.ship == nil {
+		return fmt.Errorf("ship is nil")
+	}
+	sc.stringResult = sc.ship.String()
+	return nil
+}
+
+func (sc *shipContext) theShipStringShouldContain(expected string) error {
+	if !strings.Contains(sc.stringResult, expected) {
+		return fmt.Errorf("expected ship string to contain '%s', but got '%s'", expected, sc.stringResult)
+	}
+	return nil
+}
+
+func (sc *shipContext) aShipAtWaypointWithEmptyCargo(waypointSymbol string) error {
+	waypoint, err := shared.NewWaypoint(waypointSymbol, 0, 0)
+	if err != nil {
+		return err
+	}
+
+	fuel, err := shared.NewFuel(50, 100)
+	if err != nil {
+		return err
+	}
+
+	cargo, err := shared.NewCargo(100, 0, []*shared.CargoItem{})
+	if err != nil {
+		return err
+	}
+
+	sc.ship, err = navigation.NewShip("SHIP-1", shared.MustNewPlayerID(1), waypoint, fuel, 100, 100, cargo, 10, "FRAME_MINER", "EXCAVATOR", navigation.NavStatusInOrbit)
+	sharedShip = sc.ship  // Update shared ship for cross-context steps
+	return err
+}
+
+func (sc *shipContext) cargoShouldBeEmpty() error {
+	if !sharedBoolResult {
+		return fmt.Errorf("expected cargo to be empty, but it was not")
+	}
+	return nil
+}
+
+func (sc *shipContext) cargoShouldNotBeEmpty() error {
+	if sharedBoolResult {
+		return fmt.Errorf("expected cargo to not be empty, but it was")
+	}
+	return nil
+}
+
+func (sc *shipContext) cargoShouldBeFull() error {
+	if !sharedBoolResult {
+		return fmt.Errorf("expected cargo to be full, but it was not")
+	}
+	return nil
+}
+
+func (sc *shipContext) cargoShouldNotBeFull() error {
+	if sharedBoolResult {
+		return fmt.Errorf("expected cargo to not be full, but it was")
+	}
+	return nil
+}
+
+func (sc *shipContext) aShipAtWaypointWithUnitsOfAndCapacity(waypointSymbol string, units int, itemSymbol string, capacity int) error {
+	waypoint, err := shared.NewWaypoint(waypointSymbol, 0, 0)
+	if err != nil {
+		return err
+	}
+
+	fuel, err := shared.NewFuel(50, 100)
+	if err != nil {
+		return err
+	}
+
+	item, err := shared.NewCargoItem(itemSymbol, itemSymbol, "Test item", units)
+	if err != nil {
+		return err
+	}
+
+	cargo, err := shared.NewCargo(capacity, units, []*shared.CargoItem{item})
+	if err != nil {
+		return err
+	}
+
+	sc.ship, err = navigation.NewShip("SHIP-1", shared.MustNewPlayerID(1), waypoint, fuel, 100, capacity, cargo, 10, "FRAME_MINER", "EXCAVATOR", navigation.NavStatusInOrbit)
+	sharedShip = sc.ship  // Update shared ship for cross-context steps
+	return err
+}
+
+func (sc *shipContext) iCheckIfShipHasCargoSpaceForUnits(requiredUnits int) error {
+	if sc.ship == nil {
+		return fmt.Errorf("ship is nil")
+	}
+	sc.boolResult = sc.ship.HasCargoSpace(requiredUnits)
+	return nil
+}
+
+func (sc *shipContext) shipShouldHaveCargoSpace() error {
+	if !sc.boolResult {
+		return fmt.Errorf("expected ship to have cargo space, but it did not")
+	}
+	return nil
+}
+
+func (sc *shipContext) shipShouldNotHaveCargoSpace() error {
+	if sc.boolResult {
+		return fmt.Errorf("expected ship to not have cargo space, but it did")
+	}
+	return nil
+}
+
 func (sc *shipContext) theClonedShipShouldHaveFrameSymbol(expected string) error {
 	if sc.clonedShip == nil {
 		return fmt.Errorf("cloned ship is nil")
@@ -1202,6 +1332,13 @@ func (sc *shipContext) theClonedShipShouldHaveRole(expected string) error {
 	actual := sc.clonedShip.Role()
 	if actual != expected {
 		return fmt.Errorf("expected cloned ship role %s, got %s", expected, actual)
+	}
+	return nil
+}
+
+func (sc *shipContext) availableCargoSpaceShouldBe(expected int) error {
+	if sc.intResult != expected {
+		return fmt.Errorf("expected available cargo space to be %d, got %d", expected, sc.intResult)
 	}
 	return nil
 }
