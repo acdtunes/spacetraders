@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	"github.com/andrescamacho/spacetraders-go/internal/application/ship/strategies"
 	domainNavigation "github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
@@ -60,33 +61,45 @@ type (
 // 2. Refuel before departure if needed
 // 3. Execute each segment step-by-step
 // 4. Pre-departure refuel check (prevent DRIFT mode at fuel stations)
-// 5. Opportunistic refueling (90% rule)
+// 5. Opportunistic refueling (configurable via strategy)
 // 6. Planned refueling (required by routing engine)
 // 7. Automatic market scanning at marketplace waypoints
+//
+// The refueling behavior is now extensible via the Strategy pattern:
+//   - ConservativeRefuelStrategy: Maintains high fuel levels (default)
+//   - MinimalRefuelStrategy: Only refuels when necessary
+//   - AlwaysTopOffStrategy: Refuels at every opportunity
 type RouteExecutor struct {
 	shipRepo      domainNavigation.ShipRepository
 	mediator      common.Mediator
 	clock         shared.Clock
 	marketScanner *MarketScanner
+	refuelStrategy strategies.RefuelStrategy
 }
 
 // NewRouteExecutor creates a new route executor
 // If clock is nil, uses RealClock (production behavior)
-// marketScanner can be nil to disable automatic market scanning
+// If marketScanner is nil, disables automatic market scanning
+// If refuelStrategy is nil, uses default ConservativeRefuelStrategy (90% threshold)
 func NewRouteExecutor(
 	shipRepo domainNavigation.ShipRepository,
 	mediator common.Mediator,
 	clock shared.Clock,
 	marketScanner *MarketScanner,
+	refuelStrategy strategies.RefuelStrategy,
 ) *RouteExecutor {
 	if clock == nil {
 		clock = shared.NewRealClock()
 	}
+	if refuelStrategy == nil {
+		refuelStrategy = strategies.NewDefaultRefuelStrategy()
+	}
 	return &RouteExecutor{
-		shipRepo:      shipRepo,
-		mediator:      mediator,
-		clock:         clock,
-		marketScanner: marketScanner,
+		shipRepo:       shipRepo,
+		mediator:       mediator,
+		clock:          clock,
+		marketScanner:  marketScanner,
+		refuelStrategy: refuelStrategy,
 	}
 }
 
@@ -238,12 +251,13 @@ func (e *RouteExecutor) ensureShipInOrbit(ctx context.Context, ship *domainNavig
 
 func (e *RouteExecutor) handlePreDepartureRefuel(ctx context.Context, segment *domainNavigation.RouteSegment, ship *domainNavigation.Ship, playerID shared.PlayerID) error {
 	logger := common.LoggerFromContext(ctx)
-	if ship.ShouldPreventDriftMode(segment, 0.9) {
-		logger.Log("INFO", "Ship refueling to prevent DRIFT mode", map[string]interface{}{
-			"ship_symbol": ship.ShipSymbol(),
-			"action":      "pre_departure_refuel",
-			"waypoint":    segment.FromWaypoint.Symbol,
-			"reason":      "low_fuel_at_fuel_station",
+	if e.refuelStrategy.ShouldRefuelBeforeDeparture(ship, segment) {
+		logger.Log("INFO", "Ship refueling before departure", map[string]interface{}{
+			"ship_symbol":     ship.ShipSymbol(),
+			"action":          "pre_departure_refuel",
+			"waypoint":        segment.FromWaypoint.Symbol,
+			"reason":          "strategy_decision",
+			"refuel_strategy": e.refuelStrategy.GetStrategyName(),
 		})
 		if err := e.refuelShip(ctx, ship, playerID); err != nil {
 			return err
@@ -347,17 +361,20 @@ func (e *RouteExecutor) navigateToSegmentDestination(ctx context.Context, segmen
 func (e *RouteExecutor) handlePostArrivalRefueling(ctx context.Context, segment *domainNavigation.RouteSegment, ship *domainNavigation.Ship, playerID shared.PlayerID) error {
 	logger := common.LoggerFromContext(ctx)
 
-	if ship.ShouldRefuelOpportunistically(segment.ToWaypoint, 0.9) && !segment.RequiresRefuel {
+	// Check for opportunistic refueling (strategy-based)
+	if e.refuelStrategy.ShouldRefuelAfterArrival(ship, segment) {
 		logger.Log("INFO", "Ship performing opportunistic refuel", map[string]interface{}{
-			"ship_symbol": ship.ShipSymbol(),
-			"action":      "opportunistic_refuel",
-			"waypoint":    segment.ToWaypoint.Symbol,
+			"ship_symbol":     ship.ShipSymbol(),
+			"action":          "opportunistic_refuel",
+			"waypoint":        segment.ToWaypoint.Symbol,
+			"refuel_strategy": e.refuelStrategy.GetStrategyName(),
 		})
 		if err := e.refuelShip(ctx, ship, playerID); err != nil {
 			return err
 		}
 	}
 
+	// Always honor planned refuels from routing engine
 	if segment.RequiresRefuel {
 		logger.Log("INFO", "Ship performing planned refuel", map[string]interface{}{
 			"ship_symbol": ship.ShipSymbol(),
