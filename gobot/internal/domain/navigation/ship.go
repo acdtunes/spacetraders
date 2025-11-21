@@ -37,17 +37,19 @@ var validNavStatuses = map[NavStatus]bool{
 // - IN_TRANSIT -> Arrive() -> IN_ORBIT
 // - IN_ORBIT -> Dock() -> DOCKED
 type Ship struct {
-	shipSymbol      string
-	playerID        shared.PlayerID
-	currentLocation *shared.Waypoint
-	fuel            *shared.Fuel
-	fuelCapacity    int
-	cargoCapacity   int
-	cargo           *shared.Cargo
-	engineSpeed     int
-	frameSymbol     string // Frame type (e.g., "FRAME_PROBE", "FRAME_DRONE", "FRAME_MINER")
-	role            string // Ship role from registration (e.g., "EXCAVATOR", "COMMAND", "SATELLITE")
-	navStatus       NavStatus
+	shipSymbol         string
+	playerID           shared.PlayerID
+	currentLocation    *shared.Waypoint
+	fuel               *shared.Fuel
+	fuelCapacity       int
+	cargoCapacity      int
+	cargo              *shared.Cargo
+	engineSpeed        int
+	frameSymbol        string // Frame type (e.g., "FRAME_PROBE", "FRAME_DRONE", "FRAME_MINER")
+	role               string // Ship role from registration (e.g., "EXCAVATOR", "COMMAND", "SATELLITE")
+	navStatus          NavStatus
+	fuelService        *ShipFuelService
+	navigationCalc     *ShipNavigationCalculator
 }
 
 // NewShip creates a new Ship entity with validation
@@ -76,6 +78,8 @@ func NewShip(
 		frameSymbol:     frameSymbol,
 		role:            role,
 		navStatus:       navStatus,
+		fuelService:     NewShipFuelService(),
+		navigationCalc:  NewShipNavigationCalculator(),
 	}
 
 	if err := s.validate(); err != nil {
@@ -198,13 +202,15 @@ func (s *Ship) CloneAtLocation(location *shared.Waypoint, currentFuel int) *Ship
 			Current:  currentFuel,
 			Capacity: s.fuelCapacity,
 		},
-		fuelCapacity:  s.fuelCapacity,
-		cargoCapacity: s.cargoCapacity,
-		cargo:         s.cargo, // Share cargo (immutable for planning)
-		engineSpeed:   s.engineSpeed,
-		frameSymbol:   s.frameSymbol,
-		role:          s.role,
-		navStatus:     NavStatusInOrbit, // Assume in orbit for routing
+		fuelCapacity:   s.fuelCapacity,
+		cargoCapacity:  s.cargoCapacity,
+		cargo:          s.cargo, // Share cargo (immutable for planning)
+		engineSpeed:    s.engineSpeed,
+		frameSymbol:    s.frameSymbol,
+		role:           s.role,
+		navStatus:      NavStatusInOrbit, // Assume in orbit for routing
+		fuelService:    s.fuelService,
+		navigationCalc: s.navigationCalc,
 	}
 }
 
@@ -352,7 +358,7 @@ func (s *Ship) Refuel(amount int) error {
 
 // RefuelToFull refuels ship to full capacity and returns amount added
 func (s *Ship) RefuelToFull() (int, error) {
-	fuelNeeded := s.fuelCapacity - s.fuel.Current
+	fuelNeeded := s.fuelService.CalculateFuelNeededToFull(s.fuel.Current, s.fuelCapacity)
 	if fuelNeeded > 0 {
 		if err := s.Refuel(fuelNeeded); err != nil {
 			return 0, err
@@ -365,38 +371,28 @@ func (s *Ship) RefuelToFull() (int, error) {
 
 // CanNavigateTo checks if ship can navigate to destination with current fuel
 func (s *Ship) CanNavigateTo(destination *shared.Waypoint) bool {
-	distance := s.currentLocation.DistanceTo(destination)
-	minFuelRequired := shared.FlightModeDrift.FuelCost(distance)
-	return s.fuel.Current >= minFuelRequired
+	return s.fuelService.CanShipNavigateTo(s.fuel.Current, s.currentLocation, destination)
 }
 
 // CalculateFuelForTrip calculates fuel required for trip to destination
 func (s *Ship) CalculateFuelForTrip(destination *shared.Waypoint, mode shared.FlightMode) int {
-	distance := s.currentLocation.DistanceTo(destination)
-	return mode.FuelCost(distance)
+	return s.fuelService.CalculateFuelRequired(s.currentLocation, destination, mode)
 }
 
 // NeedsRefuelForJourney checks if ship needs refueling before journey
 func (s *Ship) NeedsRefuelForJourney(destination *shared.Waypoint, safetyMargin float64) bool {
-	distance := s.currentLocation.DistanceTo(destination)
-	fuelRequired := shared.FlightModeCruise.FuelCost(distance)
-	return !s.fuel.CanTravel(fuelRequired, safetyMargin)
+	return s.fuelService.ShouldRefuelForJourney(s.fuel, s.currentLocation, destination, safetyMargin)
 }
 
 // CalculateTravelTime calculates travel time to destination
 func (s *Ship) CalculateTravelTime(destination *shared.Waypoint, mode shared.FlightMode) int {
-	distance := s.currentLocation.DistanceTo(destination)
-	return mode.TravelTime(distance, s.engineSpeed)
+	return s.navigationCalc.CalculateTravelTime(s.currentLocation, destination, mode, s.engineSpeed)
 }
 
 // SelectOptimalFlightMode selects optimal flight mode for a given distance
 func (s *Ship) SelectOptimalFlightMode(distance float64) shared.FlightMode {
-	// Calculate costs for each mode
-	cruiseCost := shared.FlightModeCruise.FuelCost(distance)
-
-	// Use shared SelectOptimalFlightMode with ship's current fuel
 	// Safety margin of 4 ensures we don't run out mid-flight
-	return shared.SelectOptimalFlightMode(s.fuel.Current, cruiseCost, 4)
+	return s.fuelService.SelectOptimalFlightMode(s.fuel.Current, distance, 4)
 }
 
 // Cargo Management
@@ -452,7 +448,7 @@ func (s *Ship) IsInTransit() bool {
 
 // IsAtLocation checks if ship is at specified waypoint
 func (s *Ship) IsAtLocation(waypoint *shared.Waypoint) bool {
-	return s.currentLocation.Symbol == waypoint.Symbol
+	return s.navigationCalc.IsAtLocation(s.currentLocation, waypoint)
 }
 
 func (s *Ship) String() string {
