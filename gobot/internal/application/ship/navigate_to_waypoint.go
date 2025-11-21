@@ -108,7 +108,7 @@ func (h *NavigateToWaypointHandler) loadShip(ctx context.Context, cmd *NavigateT
 }
 
 func (h *NavigateToWaypointHandler) loadDestinationWaypoint(ctx context.Context, destinationSymbol string) (*shared.Waypoint, error) {
-	systemSymbol := extractSystemSymbolFromWaypoint(destinationSymbol)
+	systemSymbol := shared.ExtractSystemSymbol(destinationSymbol)
 	destination, err := h.waypointRepo.FindBySymbol(ctx, destinationSymbol, systemSymbol)
 	if err != nil {
 		destination, err = shared.NewWaypoint(destinationSymbol, 0, 0)

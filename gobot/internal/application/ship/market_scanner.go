@@ -8,6 +8,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	infraports "github.com/andrescamacho/spacetraders-go/internal/infrastructure/ports"
 )
 
@@ -42,7 +43,7 @@ func (s *MarketScanner) ScanAndSaveMarket(ctx context.Context, playerID uint, wa
 		return fmt.Errorf("failed to get player token: %w", err)
 	}
 
-	systemSymbol := extractSystemSymbolFromWaypoint(waypointSymbol)
+	systemSymbol := shared.ExtractSystemSymbol(waypointSymbol)
 	logger.Log("INFO", fmt.Sprintf("[MarketScanner] Scanning market at %s", waypointSymbol), nil)
 
 	marketData, err := s.apiClient.GetMarket(ctx, systemSymbol, waypointSymbol, token)
@@ -65,15 +66,6 @@ func (s *MarketScanner) ScanAndSaveMarket(ctx context.Context, playerID uint, wa
 	logger.Log("INFO", fmt.Sprintf("[MarketScanner] Successfully scanned and saved market data for %s (%d goods)", waypointSymbol, len(tradeGoods)), nil)
 
 	return nil
-}
-
-func extractSystemSymbolFromWaypoint(waypointSymbol string) string {
-	for i := len(waypointSymbol) - 1; i >= 0; i-- {
-		if waypointSymbol[i] == '-' {
-			return waypointSymbol[:i]
-		}
-	}
-	return waypointSymbol
 }
 
 func (s *MarketScanner) convertAPIGoodsToDomain(apiGoods []infraports.TradeGoodData, logger common.ContainerLogger) ([]market.TradeGood, error) {
