@@ -108,12 +108,12 @@ Feature: Shipyard Operations
     And the ship "TEST-AGENT-1" is at waypoint "X1-SYSTEM-S1"
     And the ship "TEST-AGENT-1" is docked
     When I purchase a "SHIP_MINING_DRONE" ship using "TEST-AGENT-1" at "X1-SYSTEM-S1" as "TEST-AGENT"
-    Then the purchase should fail with error "ship type not available"
+    Then the purchase should fail with error "not available"
 
   Scenario: Purchase fails when no shipyards in system
     Given there are no shipyards in system "X1-SYSTEM"
     When I purchase a "SHIP_MINING_DRONE" ship using "TEST-AGENT-1" without specifying shipyard as "TEST-AGENT"
-    Then the purchase should fail with error "no shipyards found"
+    Then the purchase should fail with error "no shipyards"
 
   Scenario: Purchase fails when purchasing ship not found
     Given the shipyard at "X1-SYSTEM-S1" has the following ships:
@@ -228,4 +228,4 @@ Feature: Shipyard Operations
     And the ship "TEST-AGENT-1" is at waypoint "X1-SYSTEM-S1"
     And the ship "TEST-AGENT-1" is docked
     When I batch purchase 3 "SHIP_MINING_DRONE" ships using "TEST-AGENT-1" at "X1-SYSTEM-S1" as "TEST-AGENT"
-    Then the batch purchase should fail with error "ship type not available"
+    Then the batch purchase should fail with error "not available"
