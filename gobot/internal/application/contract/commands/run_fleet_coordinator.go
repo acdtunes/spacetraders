@@ -8,6 +8,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	appContract "github.com/andrescamacho/spacetraders-go/internal/application/contract"
+	contractTypes "github.com/andrescamacho/spacetraders-go/internal/application/contract/types"
 	domainContainer "github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
@@ -18,24 +19,14 @@ import (
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )
 
-// RunFleetCoordinatorCommand manages a pool of ships for continuous contract execution.
-// It assigns contracts to the ship closest to the purchase market.
-type RunFleetCoordinatorCommand struct {
-	PlayerID    shared.PlayerID
-	ShipSymbols []string // Pool of ships to use for contracts
-	ContainerID string   // Coordinator's own container ID
-}
+// Type aliases for convenience
+type RunFleetCoordinatorCommand = contractTypes.RunFleetCoordinatorCommand
+type RunFleetCoordinatorResponse = contractTypes.RunFleetCoordinatorResponse
 
 // CoordinatorMetadata stores state for the coordinator's infinite loop
 type CoordinatorMetadata struct {
 	LastRebalanceTime time.Time
 	RebalanceInterval time.Duration
-}
-
-// RunFleetCoordinatorResponse contains the coordinator execution results
-type RunFleetCoordinatorResponse struct {
-	ContractsCompleted int
-	Errors             []string
 }
 
 // ContainerRepository interface for querying container state

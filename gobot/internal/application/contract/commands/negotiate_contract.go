@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	contractTypes "github.com/andrescamacho/spacetraders-go/internal/application/contract/types"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
@@ -12,17 +13,9 @@ import (
 	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 )
 
-// NegotiateContractCommand - Command to negotiate a new contract
-type NegotiateContractCommand struct {
-	ShipSymbol string
-	PlayerID   shared.PlayerID
-}
-
-// NegotiateContractResponse - Response from negotiate contract command
-type NegotiateContractResponse struct {
-	Contract      *contract.Contract
-	WasNegotiated bool // false if existing contract returned (error 4511)
-}
+// Type aliases for convenience
+type NegotiateContractCommand = contractTypes.NegotiateContractCommand
+type NegotiateContractResponse = contractTypes.NegotiateContractResponse
 
 // NegotiateContractHandler - Handles negotiate contract commands
 type NegotiateContractHandler struct {

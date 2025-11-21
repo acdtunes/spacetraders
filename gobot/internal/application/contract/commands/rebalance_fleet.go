@@ -5,31 +5,17 @@ import (
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	contractTypes "github.com/andrescamacho/spacetraders-go/internal/application/contract/types"
 	appContract "github.com/andrescamacho/spacetraders-go/internal/application/contract"
 	appShipCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
 
-// RebalanceContractFleetCommand rebalances idle contract fleet ships across strategic markets
-type RebalanceContractFleetCommand struct {
-	CoordinatorID string
-	PlayerID      shared.PlayerID
-	SystemSymbol  string
-}
-
-// RebalanceContractFleetResponse contains rebalancing execution results
-type RebalanceContractFleetResponse struct {
-	ShipsMoved         int
-	TargetMarkets      []string
-	AverageDistance    float64
-	DistanceThreshold  float64
-	RebalancingSkipped bool
-	SkipReason         string
-	Assignments        map[string]string // ship symbol -> market waypoint
-}
+// Type aliases for convenience
+type RebalanceContractFleetCommand = contractTypes.RebalanceContractFleetCommand
+type RebalanceContractFleetResponse = contractTypes.RebalanceContractFleetResponse
 
 // RebalanceContractFleetHandler implements fleet rebalancing logic
 type RebalanceContractFleetHandler struct {

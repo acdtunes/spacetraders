@@ -5,26 +5,15 @@ import (
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	contractTypes "github.com/andrescamacho/spacetraders-go/internal/application/contract/types"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 )
 
-// DeliverContractCommand - Command to deliver cargo for a contract
-type DeliverContractCommand struct {
-	ContractID  string
-	ShipSymbol  string
-	TradeSymbol string
-	Units       int
-	PlayerID    shared.PlayerID
-}
-
-// DeliverContractResponse - Response from deliver contract command
-type DeliverContractResponse struct {
-	Contract       *contract.Contract
-	UnitsDelivered int
-}
+// Type aliases for convenience
+type DeliverContractCommand = contractTypes.DeliverContractCommand
+type DeliverContractResponse = contractTypes.DeliverContractResponse
 
 // DeliverContractHandler - Handles deliver contract commands
 type DeliverContractHandler struct {

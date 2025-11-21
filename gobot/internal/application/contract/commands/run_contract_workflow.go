@@ -6,6 +6,7 @@ import (
 	"math"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	contractTypes "github.com/andrescamacho/spacetraders-go/internal/application/contract/types"
 	contractQueries "github.com/andrescamacho/spacetraders-go/internal/application/contract/queries"
 	appShipCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands"
 	domainContainer "github.com/andrescamacho/spacetraders-go/internal/domain/container"
@@ -15,24 +16,9 @@ import (
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )
 
-// RunWorkflowCommand orchestrates complete contract workflow execution
-type RunWorkflowCommand struct {
-	ShipSymbol         string
-	PlayerID           shared.PlayerID
-	ContainerID        string        // This worker's container ID (optional)
-	CoordinatorID      string        // Parent coordinator container ID (optional)
-	CompletionCallback chan<- string // Signal completion to coordinator (optional)
-}
-
-// RunWorkflowResponse contains workflow execution results
-type RunWorkflowResponse struct {
-	Negotiated  bool
-	Accepted    bool
-	Fulfilled   bool
-	TotalProfit int
-	TotalTrips  int
-	Error       string
-}
+// Type aliases for convenience
+type RunWorkflowCommand = contractTypes.RunWorkflowCommand
+type RunWorkflowResponse = contractTypes.RunWorkflowResponse
 
 // RunWorkflowHandler implements the complete contract workflow
 // following the exact Python implementation pattern:

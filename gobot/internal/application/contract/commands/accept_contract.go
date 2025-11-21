@@ -5,22 +5,15 @@ import (
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	contractTypes "github.com/andrescamacho/spacetraders-go/internal/application/contract/types"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 )
 
-// AcceptContractCommand - Command to accept a contract
-type AcceptContractCommand struct {
-	ContractID string
-	PlayerID   shared.PlayerID
-}
-
-// AcceptContractResponse - Response from accept contract command
-type AcceptContractResponse struct {
-	Contract *contract.Contract
-}
+// Type aliases for convenience
+type AcceptContractCommand = contractTypes.AcceptContractCommand
+type AcceptContractResponse = contractTypes.AcceptContractResponse
 
 // AcceptContractHandler - Handles accept contract commands
 type AcceptContractHandler struct {
