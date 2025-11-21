@@ -33,23 +33,26 @@ var (
 )
 
 type valueObjectContext struct {
-	waypoint        *shared.Waypoint
-	fuel            *shared.Fuel
-	originalFuel    *shared.Fuel
-	cargo           *shared.Cargo
-	cargoItem       *shared.CargoItem
-	cargoItems      []*shared.CargoItem // List for building inventory
-	flightMode      shared.FlightMode
-	arrivalTime     *shared.ArrivalTime
-	timestamp       string
-	err             error
-	floatResult     float64
-	intResult       int
-	boolResult      bool
-	stringResult    string
-	waypointSymbol  string
-	waypointMap     map[string]*shared.Waypoint
-	otherCargoItems []*shared.CargoItem
+	waypoint         *shared.Waypoint
+	fuel             *shared.Fuel
+	originalFuel     *shared.Fuel
+	cargo            *shared.Cargo
+	cargoItem        *shared.CargoItem
+	cargoItems       []*shared.CargoItem // List for building inventory
+	flightMode       shared.FlightMode
+	arrivalTime      *shared.ArrivalTime
+	timestamp        string
+	err              error
+	floatResult      float64
+	intResult        int
+	boolResult       bool
+	stringResult     string
+	waypointSymbol   string
+	waypointMap      map[string]*shared.Waypoint
+	otherCargoItems  []*shared.CargoItem
+	targetWaypoints  []*shared.Waypoint // For FindNearestWaypoint tests
+	nearestWaypoint  *shared.Waypoint   // Result from FindNearestWaypoint
+	nearestDistance  float64            // Distance to nearest waypoint
 }
 
 func (voc *valueObjectContext) reset() {
@@ -70,6 +73,9 @@ func (voc *valueObjectContext) reset() {
 	voc.waypointSymbol = ""
 	voc.waypointMap = make(map[string]*shared.Waypoint)
 	voc.otherCargoItems = nil
+	voc.targetWaypoints = nil
+	voc.nearestWaypoint = nil
+	voc.nearestDistance = 0
 	// Reset shared variables
 	sharedBoolResult = false
 	sharedIntResult = 0
@@ -1142,6 +1148,75 @@ func splitCSV(csv string) []string {
 	return parts
 }
 
+// FindNearestWaypoint steps
+func (voc *valueObjectContext) aListOfTargetWaypoints(table *godog.Table) error {
+	voc.targetWaypoints = []*shared.Waypoint{}
+
+	for i, row := range table.Rows {
+		if i == 0 {
+			continue // Skip header
+		}
+
+		symbol := row.Cells[0].Value
+		var x, y float64
+		fmt.Sscanf(row.Cells[1].Value, "%f", &x)
+		fmt.Sscanf(row.Cells[2].Value, "%f", &y)
+
+		wp, err := shared.NewWaypoint(symbol, x, y)
+		if err != nil {
+			return err
+		}
+
+		voc.targetWaypoints = append(voc.targetWaypoints, wp)
+		voc.waypointMap[symbol] = wp
+	}
+
+	return nil
+}
+
+func (voc *valueObjectContext) anEmptyListOfTargetWaypoints() error {
+	voc.targetWaypoints = []*shared.Waypoint{}
+	return nil
+}
+
+func (voc *valueObjectContext) iFindTheNearestWaypointFromToTheTargetList(fromSymbol string) error {
+	fromWaypoint := voc.waypointMap[fromSymbol]
+	if fromWaypoint == nil {
+		return fmt.Errorf("waypoint %s not found", fromSymbol)
+	}
+
+	voc.nearestWaypoint, voc.nearestDistance = shared.FindNearestWaypoint(fromWaypoint, voc.targetWaypoints)
+	return nil
+}
+
+func (voc *valueObjectContext) theNearestWaypointShouldBe(expectedSymbol string) error {
+	if voc.nearestWaypoint == nil {
+		return fmt.Errorf("expected nearest waypoint %s but got nil", expectedSymbol)
+	}
+
+	if voc.nearestWaypoint.Symbol != expectedSymbol {
+		return fmt.Errorf("expected nearest waypoint %s but got %s", expectedSymbol, voc.nearestWaypoint.Symbol)
+	}
+
+	return nil
+}
+
+func (voc *valueObjectContext) theNearestWaypointShouldBeNil() error {
+	if voc.nearestWaypoint != nil {
+		return fmt.Errorf("expected nearest waypoint to be nil but got %s", voc.nearestWaypoint.Symbol)
+	}
+	return nil
+}
+
+func (voc *valueObjectContext) theDistanceToNearestWaypointShouldBe(expected float64) error {
+	// Use a small epsilon for floating point comparison
+	epsilon := 0.0001
+	if math.Abs(voc.nearestDistance-expected) > epsilon {
+		return fmt.Errorf("expected distance %f but got %f", expected, voc.nearestDistance)
+	}
+	return nil
+}
+
 // InitializeValueObjectScenarios registers all value object-related step definitions
 func InitializeValueObjectScenarios(ctx *godog.ScenarioContext) {
 	voc := &valueObjectContext{}
@@ -1183,6 +1258,14 @@ func InitializeValueObjectScenarios(ctx *godog.ScenarioContext) {
 	ctx.Step(`^a waypoint with symbol "([^"]*)" at coordinates \(([^,]+), ([^)]+)\)$`, voc.aWaypointWithSymbolAtCoordinates)
 	ctx.Step(`^I get the system symbol from the waypoint$`, voc.iGetTheSystemSymbolFromTheWaypoint)
 	ctx.Step(`^the waypoint's system symbol should be "([^"]*)"$`, voc.theWaypointsSystemSymbolShouldBe)
+
+	// FindNearestWaypoint steps
+	ctx.Step(`^a list of target waypoints:$`, voc.aListOfTargetWaypoints)
+	ctx.Step(`^an empty list of target waypoints$`, voc.anEmptyListOfTargetWaypoints)
+	ctx.Step(`^I find the nearest waypoint from "([^"]*)" to the target list$`, voc.iFindTheNearestWaypointFromToTheTargetList)
+	ctx.Step(`^the nearest waypoint should be "([^"]*)"$`, voc.theNearestWaypointShouldBe)
+	ctx.Step(`^the nearest waypoint should be nil$`, voc.theNearestWaypointShouldBeNil)
+	ctx.Step(`^the distance to nearest waypoint should be ([0-9.]+)$`, voc.theDistanceToNearestWaypointShouldBe)
 
 	// ArrivalTime steps
 	ctx.Step(`^an ISO8601 timestamp "([^"]*)"$`, voc.anISO8601Timestamp)

@@ -40,6 +40,27 @@ func (w *Waypoint) DistanceTo(other *Waypoint) float64 {
 	return math.Sqrt(dx*dx + dy*dy)
 }
 
+// FindNearestWaypoint returns the nearest waypoint from a list and its distance
+// Returns nil and 0 if targets list is empty
+func FindNearestWaypoint(from *Waypoint, targets []*Waypoint) (*Waypoint, float64) {
+	if len(targets) == 0 {
+		return nil, 0
+	}
+
+	nearest := targets[0]
+	minDistance := from.DistanceTo(targets[0])
+
+	for _, target := range targets[1:] {
+		distance := from.DistanceTo(target)
+		if distance < minDistance {
+			minDistance = distance
+			nearest = target
+		}
+	}
+
+	return nearest, minDistance
+}
+
 // IsOrbitalOf checks if this waypoint orbits another
 func (w *Waypoint) IsOrbitalOf(other *Waypoint) bool {
 	for _, orbital := range w.Orbitals {

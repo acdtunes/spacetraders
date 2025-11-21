@@ -1,0 +1,4007 @@
+
+<!DOCTYPE html>
+<html>
+	<head>
+		<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+		<title>container: Go Coverage Report</title>
+		<style>
+			body {
+				background: black;
+				color: rgb(80, 80, 80);
+			}
+			body, pre, #legend span {
+				font-family: Menlo, monospace;
+				font-weight: bold;
+			}
+			#topbar {
+				background: black;
+				position: fixed;
+				top: 0; left: 0; right: 0;
+				height: 42px;
+				border-bottom: 1px solid rgb(80, 80, 80);
+			}
+			#content {
+				margin-top: 50px;
+			}
+			#nav, #legend {
+				float: left;
+				margin-left: 10px;
+			}
+			#legend {
+				margin-top: 12px;
+			}
+			#nav {
+				margin-top: 10px;
+			}
+			#legend span {
+				margin: 0 5px;
+			}
+			.cov0 { color: rgb(192, 0, 0) }
+.cov1 { color: rgb(128, 128, 128) }
+.cov2 { color: rgb(116, 140, 131) }
+.cov3 { color: rgb(104, 152, 134) }
+.cov4 { color: rgb(92, 164, 137) }
+.cov5 { color: rgb(80, 176, 140) }
+.cov6 { color: rgb(68, 188, 143) }
+.cov7 { color: rgb(56, 200, 146) }
+.cov8 { color: rgb(44, 212, 149) }
+.cov9 { color: rgb(32, 224, 152) }
+.cov10 { color: rgb(20, 236, 155) }
+
+		</style>
+	</head>
+	<body>
+		<div id="topbar">
+			<div id="nav">
+				<select id="files">
+				
+				<option value="file0">github.com/andrescamacho/spacetraders-go/internal/domain/container/container.go (93.9%)</option>
+				
+				<option value="file1">github.com/andrescamacho/spacetraders-go/internal/domain/container/ship_assignment.go (89.4%)</option>
+				
+				<option value="file2">github.com/andrescamacho/spacetraders-go/internal/domain/contract/contract.go (94.6%)</option>
+				
+				<option value="file3">github.com/andrescamacho/spacetraders-go/internal/domain/contract/fleet_assigner.go (0.0%)</option>
+				
+				<option value="file4">github.com/andrescamacho/spacetraders-go/internal/domain/contract/ship_selector.go (0.0%)</option>
+				
+				<option value="file5">github.com/andrescamacho/spacetraders-go/internal/domain/daemon/health_monitor.go (0.0%)</option>
+				
+				<option value="file6">github.com/andrescamacho/spacetraders-go/internal/domain/market/market.go (100.0%)</option>
+				
+				<option value="file7">github.com/andrescamacho/spacetraders-go/internal/domain/market/trade_good.go (100.0%)</option>
+				
+				<option value="file8">github.com/andrescamacho/spacetraders-go/internal/domain/mining/cargo_transfer_request.go (96.4%)</option>
+				
+				<option value="file9">github.com/andrescamacho/spacetraders-go/internal/domain/mining/mining_operation.go (92.1%)</option>
+				
+				<option value="file10">github.com/andrescamacho/spacetraders-go/internal/domain/navigation/route.go (85.3%)</option>
+				
+				<option value="file11">github.com/andrescamacho/spacetraders-go/internal/domain/navigation/ship.go (71.9%)</option>
+				
+				<option value="file12">github.com/andrescamacho/spacetraders-go/internal/domain/player/player.go (0.0%)</option>
+				
+				<option value="file13">github.com/andrescamacho/spacetraders-go/internal/domain/shared/arrival_time.go (84.2%)</option>
+				
+				<option value="file14">github.com/andrescamacho/spacetraders-go/internal/domain/shared/cargo.go (100.0%)</option>
+				
+				<option value="file15">github.com/andrescamacho/spacetraders-go/internal/domain/shared/clock.go (40.0%)</option>
+				
+				<option value="file16">github.com/andrescamacho/spacetraders-go/internal/domain/shared/errors.go (41.7%)</option>
+				
+				<option value="file17">github.com/andrescamacho/spacetraders-go/internal/domain/shared/flight_mode.go (62.5%)</option>
+				
+				<option value="file18">github.com/andrescamacho/spacetraders-go/internal/domain/shared/fuel.go (57.1%)</option>
+				
+				<option value="file19">github.com/andrescamacho/spacetraders-go/internal/domain/shared/player_id.go (72.7%)</option>
+				
+				<option value="file20">github.com/andrescamacho/spacetraders-go/internal/domain/shared/waypoint.go (55.0%)</option>
+				
+				<option value="file21">github.com/andrescamacho/spacetraders-go/internal/domain/system/navigation_graph.go (100.0%)</option>
+				
+				</select>
+			</div>
+			<div id="legend">
+				<span>not tracked</span>
+			
+				<span class="cov0">not covered</span>
+				<span class="cov8">covered</span>
+			
+			</div>
+		</div>
+		<div id="content">
+		
+		<pre class="file" id="file0" style="display: none">package container
+
+import (
+        "fmt"
+        "time"
+
+        "github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+)
+
+// ContainerStatus represents the lifecycle state of a container
+type ContainerStatus string
+
+const (
+        // ContainerStatusPending indicates container is queued but not started
+        ContainerStatusPending ContainerStatus = "PENDING"
+
+        // ContainerStatusRunning indicates container is actively executing
+        ContainerStatusRunning ContainerStatus = "RUNNING"
+
+        // ContainerStatusCompleted indicates container finished successfully
+        ContainerStatusCompleted ContainerStatus = "COMPLETED"
+
+        // ContainerStatusFailed indicates container encountered an error
+        ContainerStatusFailed ContainerStatus = "FAILED"
+
+        // ContainerStatusStopping indicates container is gracefully shutting down
+        ContainerStatusStopping ContainerStatus = "STOPPING"
+
+        // ContainerStatusStopped indicates container was stopped by user
+        ContainerStatusStopped ContainerStatus = "STOPPED"
+
+        // ContainerStatusInterrupted indicates container was running when daemon stopped, pending recovery
+        ContainerStatusInterrupted ContainerStatus = "INTERRUPTED"
+)
+
+// ContainerType categorizes the operation type
+type ContainerType string
+
+const (
+        ContainerTypeNavigate               ContainerType = "NAVIGATE"
+        ContainerTypeDock                   ContainerType = "DOCK"
+        ContainerTypeOrbit                  ContainerType = "ORBIT"
+        ContainerTypeRefuel                 ContainerType = "REFUEL"
+        ContainerTypeScout                  ContainerType = "SCOUT"
+        ContainerTypeMining                 ContainerType = "MINING"
+        ContainerTypeMiningWorker           ContainerType = "MINING_WORKER"
+        ContainerTypeMiningCoordinator      ContainerType = "MINING_COORDINATOR"
+        ContainerTypeTransportWorker        ContainerType = "TRANSPORT_WORKER"
+        ContainerTypeContract               ContainerType = "CONTRACT"
+        ContainerTypeContractWorkflow       ContainerType = "CONTRACT_WORKFLOW"
+        ContainerTypeContractFleetCoordinator ContainerType = "CONTRACT_FLEET_COORDINATOR"
+        ContainerTypeTrading                ContainerType = "TRADING"
+        ContainerTypeScoutFleetAssignment   ContainerType = "SCOUT_FLEET_ASSIGNMENT"
+        ContainerTypePurchase               ContainerType = "PURCHASE"
+)
+
+// Container represents a background operation running in the daemon
+// Containers are the unit of work orchestration - each runs in its own goroutine
+// and can be started, stopped, monitored, and restarted independently.
+type Container struct {
+        id           string
+        containerType ContainerType
+        status       ContainerStatus
+        playerID     int
+
+        // Iteration tracking for looping operations
+        currentIteration int
+        maxIterations    int // -1 for infinite
+
+        // Restart tracking
+        restartCount int
+        maxRestarts  int
+
+        // Lifecycle timestamps
+        createdAt time.Time
+        updatedAt time.Time
+        startedAt *time.Time
+        stoppedAt *time.Time
+
+        // Operation-specific metadata (JSON-serializable)
+        metadata map[string]interface{}
+
+        // Error tracking
+        lastError error
+
+        // Time provider for testability
+        clock shared.Clock
+}
+
+// NewContainer creates a new container instance
+// If clock is nil, uses RealClock (production behavior)
+func NewContainer(
+        id string,
+        containerType ContainerType,
+        playerID int,
+        maxIterations int,
+        metadata map[string]interface{},
+        clock shared.Clock,
+) *Container <span class="cov8" title="1">{
+        // Default to real clock if not provided
+        if clock == nil </span><span class="cov0" title="0">{
+                clock = shared.NewRealClock()
+        }</span>
+
+        <span class="cov8" title="1">now := clock.Now()
+        return &amp;Container{
+                id:               id,
+                containerType:    containerType,
+                status:           ContainerStatusPending,
+                playerID:         playerID,
+                currentIteration: 0,
+                maxIterations:    maxIterations,
+                restartCount:     0,
+                maxRestarts:      3, // Default: allow 3 restarts
+                createdAt:        now,
+                updatedAt:        now,
+                metadata:         metadata,
+                clock:            clock,
+        }</span>
+}
+
+// Getters
+
+func (c *Container) ID() string                           <span class="cov8" title="1">{ return c.id }</span>
+func (c *Container) Type() ContainerType                  <span class="cov8" title="1">{ return c.containerType }</span>
+func (c *Container) Status() ContainerStatus              <span class="cov8" title="1">{ return c.status }</span>
+func (c *Container) PlayerID() int                        <span class="cov8" title="1">{ return c.playerID }</span>
+func (c *Container) CurrentIteration() int                <span class="cov8" title="1">{ return c.currentIteration }</span>
+func (c *Container) MaxIterations() int                   <span class="cov8" title="1">{ return c.maxIterations }</span>
+func (c *Container) RestartCount() int                    <span class="cov8" title="1">{ return c.restartCount }</span>
+func (c *Container) MaxRestarts() int                     <span class="cov0" title="0">{ return c.maxRestarts }</span>
+func (c *Container) CreatedAt() time.Time                 <span class="cov0" title="0">{ return c.createdAt }</span>
+func (c *Container) UpdatedAt() time.Time                 <span class="cov0" title="0">{ return c.updatedAt }</span>
+func (c *Container) StartedAt() *time.Time                <span class="cov8" title="1">{ return c.startedAt }</span>
+func (c *Container) StoppedAt() *time.Time                <span class="cov8" title="1">{ return c.stoppedAt }</span>
+func (c *Container) Metadata() map[string]interface{}     <span class="cov0" title="0">{ return c.metadata }</span>
+func (c *Container) LastError() error                     <span class="cov8" title="1">{ return c.lastError }</span>
+
+// State transition methods
+
+// Start transitions container to RUNNING state
+func (c *Container) Start() error <span class="cov8" title="1">{
+        if c.status != ContainerStatusPending &amp;&amp; c.status != ContainerStatusStopped </span><span class="cov8" title="1">{
+                return fmt.Errorf("cannot start container in %s state", c.status)
+        }</span>
+
+        <span class="cov8" title="1">now := c.clock.Now()
+        c.status = ContainerStatusRunning
+        c.startedAt = &amp;now
+        c.updatedAt = now
+        return nil</span>
+}
+
+// Complete transitions container to COMPLETED state
+func (c *Container) Complete() error <span class="cov8" title="1">{
+        if c.status != ContainerStatusRunning </span><span class="cov8" title="1">{
+                return fmt.Errorf("cannot complete container in %s state", c.status)
+        }</span>
+
+        <span class="cov8" title="1">now := c.clock.Now()
+        c.status = ContainerStatusCompleted
+        c.stoppedAt = &amp;now
+        c.updatedAt = now
+        return nil</span>
+}
+
+// Fail transitions container to FAILED state with error
+func (c *Container) Fail(err error) error <span class="cov8" title="1">{
+        if c.status == ContainerStatusCompleted || c.status == ContainerStatusStopped </span><span class="cov8" title="1">{
+                return fmt.Errorf("cannot fail container in %s state", c.status)
+        }</span>
+
+        <span class="cov8" title="1">now := c.clock.Now()
+        c.status = ContainerStatusFailed
+        c.lastError = err
+        c.stoppedAt = &amp;now
+        c.updatedAt = now
+        return nil</span>
+}
+
+// Stop transitions container to STOPPING then STOPPED state
+func (c *Container) Stop() error <span class="cov8" title="1">{
+        if c.status == ContainerStatusCompleted || c.status == ContainerStatusStopped </span><span class="cov8" title="1">{
+                return fmt.Errorf("cannot stop container in %s state", c.status)
+        }</span>
+
+        <span class="cov8" title="1">now := c.clock.Now()
+        // First go to STOPPING to signal graceful shutdown
+        if c.status == ContainerStatusRunning </span><span class="cov8" title="1">{
+                c.status = ContainerStatusStopping
+                c.updatedAt = now
+                return nil
+        }</span>
+
+        // Then finalize to STOPPED
+        <span class="cov8" title="1">c.status = ContainerStatusStopped
+        c.stoppedAt = &amp;now
+        c.updatedAt = now
+        return nil</span>
+}
+
+// MarkStopped finalizes the stop transition
+func (c *Container) MarkStopped() error <span class="cov8" title="1">{
+        if c.status != ContainerStatusStopping </span><span class="cov8" title="1">{
+                return fmt.Errorf("cannot mark stopped when not in stopping state")
+        }</span>
+
+        <span class="cov8" title="1">now := c.clock.Now()
+        c.status = ContainerStatusStopped
+        c.stoppedAt = &amp;now
+        c.updatedAt = now
+        return nil</span>
+}
+
+// Iteration management
+
+// IncrementIteration advances the iteration counter
+func (c *Container) IncrementIteration() error <span class="cov8" title="1">{
+        if c.status != ContainerStatusRunning </span><span class="cov8" title="1">{
+                return fmt.Errorf("cannot increment iteration in %s state", c.status)
+        }</span>
+
+        <span class="cov8" title="1">c.currentIteration++
+        c.updatedAt = c.clock.Now()
+        return nil</span>
+}
+
+// ShouldContinue checks if container should continue iterating
+func (c *Container) ShouldContinue() bool <span class="cov8" title="1">{
+        // Infinite loop: maxIterations = -1
+        if c.maxIterations == -1 </span><span class="cov8" title="1">{
+                return true
+        }</span>
+
+        // Finite loop: check if more iterations remain
+        <span class="cov8" title="1">return c.currentIteration &lt; c.maxIterations</span>
+}
+
+// Restart management
+
+// CanRestart checks if container is eligible for restart
+func (c *Container) CanRestart() bool <span class="cov8" title="1">{
+        if c.status != ContainerStatusFailed </span><span class="cov8" title="1">{
+                return false
+        }</span>
+
+        <span class="cov8" title="1">return c.restartCount &lt; c.maxRestarts</span>
+}
+
+// IncrementRestartCount advances the restart counter
+func (c *Container) IncrementRestartCount() <span class="cov8" title="1">{
+        c.restartCount++
+        c.updatedAt = c.clock.Now()
+}</span>
+
+// ResetForRestart prepares container for restart attempt
+func (c *Container) ResetForRestart() error <span class="cov8" title="1">{
+        if !c.CanRestart() </span><span class="cov8" title="1">{
+                return fmt.Errorf("container cannot be restarted (restarts: %d/%d)",
+                        c.restartCount, c.maxRestarts)
+        }</span>
+
+        <span class="cov8" title="1">c.status = ContainerStatusPending
+        c.lastError = nil
+        c.stoppedAt = nil
+        c.IncrementRestartCount()
+        c.updatedAt = c.clock.Now()
+        return nil</span>
+}
+
+// Metadata management
+
+// UpdateMetadata merges new metadata into existing metadata
+func (c *Container) UpdateMetadata(updates map[string]interface{}) <span class="cov8" title="1">{
+        if c.metadata == nil </span><span class="cov8" title="1">{
+                c.metadata = make(map[string]interface{})
+        }</span>
+
+        <span class="cov8" title="1">for key, value := range updates </span><span class="cov8" title="1">{
+                c.metadata[key] = value
+        }</span>
+
+        <span class="cov8" title="1">c.updatedAt = c.clock.Now()</span>
+}
+
+// GetMetadataValue retrieves a specific metadata value
+func (c *Container) GetMetadataValue(key string) (interface{}, bool) <span class="cov8" title="1">{
+        if c.metadata == nil </span><span class="cov8" title="1">{
+                return nil, false
+        }</span>
+
+        <span class="cov8" title="1">value, exists := c.metadata[key]
+        return value, exists</span>
+}
+
+// State queries
+
+// IsRunning returns true if container is currently executing
+func (c *Container) IsRunning() bool <span class="cov8" title="1">{
+        return c.status == ContainerStatusRunning
+}</span>
+
+// IsFinished returns true if container has completed or failed
+func (c *Container) IsFinished() bool <span class="cov8" title="1">{
+        return c.status == ContainerStatusCompleted ||
+                c.status == ContainerStatusFailed ||
+                c.status == ContainerStatusStopped
+}</span>
+
+// IsStopping returns true if container is gracefully shutting down
+func (c *Container) IsStopping() bool <span class="cov8" title="1">{
+        return c.status == ContainerStatusStopping
+}</span>
+
+// Runtime calculation
+
+// RuntimeDuration calculates how long the container has been running
+func (c *Container) RuntimeDuration() time.Duration <span class="cov8" title="1">{
+        if c.startedAt == nil </span><span class="cov8" title="1">{
+                return 0
+        }</span>
+
+        <span class="cov8" title="1">endTime := c.clock.Now()
+        if c.stoppedAt != nil </span><span class="cov8" title="1">{
+                endTime = *c.stoppedAt
+        }</span>
+
+        <span class="cov8" title="1">return endTime.Sub(*c.startedAt)</span>
+}
+
+// String provides human-readable representation
+func (c *Container) String() string <span class="cov0" title="0">{
+        return fmt.Sprintf("Container[%s, type=%s, status=%s, iteration=%d/%d, restarts=%d]",
+                c.id, c.containerType, c.status, c.currentIteration, c.maxIterations, c.restartCount)
+}</span>
+</pre>
+		
+		<pre class="file" id="file1" style="display: none">package container
+
+import (
+        "context"
+        "fmt"
+        "time"
+
+        "github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+)
+
+// AssignmentStatus represents the state of a ship assignment
+type AssignmentStatus string
+
+const (
+        // AssignmentStatusActive indicates ship is currently assigned and locked
+        AssignmentStatusActive AssignmentStatus = "active"
+
+        // AssignmentStatusReleased indicates ship has been released from assignment
+        AssignmentStatusReleased AssignmentStatus = "released"
+)
+
+// ShipAssignment represents a ship being assigned to a container operation
+// This provides ship-level locking to prevent concurrent operations on the same ship
+type ShipAssignment struct {
+        shipSymbol    string
+        playerID      int
+        containerID   string
+        status        AssignmentStatus
+        assignedAt    time.Time
+        releasedAt    *time.Time
+        releaseReason *string
+        clock         shared.Clock
+}
+
+// NewShipAssignment creates a new active ship assignment
+func NewShipAssignment(
+        shipSymbol string,
+        playerID int,
+        containerID string,
+        clock shared.Clock,
+) *ShipAssignment <span class="cov8" title="1">{
+        if clock == nil </span><span class="cov0" title="0">{
+                clock = shared.NewRealClock()
+        }</span>
+
+        <span class="cov8" title="1">return &amp;ShipAssignment{
+                shipSymbol:  shipSymbol,
+                playerID:    playerID,
+                containerID: containerID,
+                status:      AssignmentStatusActive,
+                assignedAt:  clock.Now(),
+                clock:       clock,
+        }</span>
+}
+
+// Getters
+
+func (sa *ShipAssignment) ShipSymbol() string           <span class="cov8" title="1">{ return sa.shipSymbol }</span>
+func (sa *ShipAssignment) PlayerID() int                <span class="cov8" title="1">{ return sa.playerID }</span>
+func (sa *ShipAssignment) ContainerID() string          <span class="cov8" title="1">{ return sa.containerID }</span>
+func (sa *ShipAssignment) Status() AssignmentStatus     <span class="cov8" title="1">{ return sa.status }</span>
+func (sa *ShipAssignment) AssignedAt() time.Time        <span class="cov0" title="0">{ return sa.assignedAt }</span>
+func (sa *ShipAssignment) ReleasedAt() *time.Time       <span class="cov8" title="1">{ return sa.releasedAt }</span>
+func (sa *ShipAssignment) ReleaseReason() *string       <span class="cov8" title="1">{ return sa.releaseReason }</span>
+
+// Release marks the assignment as released with a reason
+func (sa *ShipAssignment) Release(reason string) error <span class="cov8" title="1">{
+        if sa.status == AssignmentStatusReleased </span><span class="cov8" title="1">{
+                return fmt.Errorf("assignment already released")
+        }</span>
+
+        <span class="cov8" title="1">now := sa.clock.Now()
+        sa.status = AssignmentStatusReleased
+        sa.releasedAt = &amp;now
+        sa.releaseReason = &amp;reason
+
+        return nil</span>
+}
+
+// ForceRelease forcefully releases the assignment regardless of current state
+// Used for cleaning up stale assignments
+func (sa *ShipAssignment) ForceRelease(reason string) error <span class="cov8" title="1">{
+        now := sa.clock.Now()
+        sa.status = AssignmentStatusReleased
+        sa.releasedAt = &amp;now
+        sa.releaseReason = &amp;reason
+
+        return nil
+}</span>
+
+// IsStale checks if the assignment is older than the given timeout duration
+func (sa *ShipAssignment) IsStale(timeout time.Duration) bool <span class="cov8" title="1">{
+        if sa.status == AssignmentStatusReleased </span><span class="cov8" title="1">{
+                return false
+        }</span>
+
+        <span class="cov8" title="1">age := sa.clock.Now().Sub(sa.assignedAt)
+        return age &gt; timeout</span>
+}
+
+// IsActive returns true if the assignment is currently active
+func (sa *ShipAssignment) IsActive() bool <span class="cov8" title="1">{
+        return sa.status == AssignmentStatusActive
+}</span>
+
+// String provides human-readable representation
+func (sa *ShipAssignment) String() string <span class="cov0" title="0">{
+        return fmt.Sprintf("ShipAssignment[ship=%s, container=%s, status=%s]",
+                sa.shipSymbol, sa.containerID, sa.status)
+}</span>
+
+// ShipAssignmentManager manages ship assignments and enforces locking
+type ShipAssignmentManager struct {
+        assignments map[string]*ShipAssignment // key: shipSymbol
+        clock       shared.Clock
+}
+
+// NewShipAssignmentManager creates a new ship assignment manager
+func NewShipAssignmentManager(clock shared.Clock) *ShipAssignmentManager <span class="cov8" title="1">{
+        if clock == nil </span><span class="cov0" title="0">{
+                clock = shared.NewRealClock()
+        }</span>
+
+        <span class="cov8" title="1">return &amp;ShipAssignmentManager{
+                assignments: make(map[string]*ShipAssignment),
+                clock:       clock,
+        }</span>
+}
+
+// AssignShip assigns a ship to a container operation
+// Returns error if ship is already assigned to another container
+func (sam *ShipAssignmentManager) AssignShip(
+        ctx context.Context,
+        shipSymbol string,
+        playerID int,
+        containerID string,
+) (*ShipAssignment, error) <span class="cov8" title="1">{
+        // Check if ship is already assigned
+        if existing, exists := sam.assignments[shipSymbol]; exists </span><span class="cov8" title="1">{
+                if existing.IsActive() </span><span class="cov8" title="1">{
+                        return nil, fmt.Errorf("ship is already assigned to another container")
+                }</span>
+        }
+
+        // Create new assignment
+        <span class="cov8" title="1">assignment := NewShipAssignment(shipSymbol, playerID, containerID, sam.clock)
+        sam.assignments[shipSymbol] = assignment
+
+        return assignment, nil</span>
+}
+
+// GetAssignment retrieves the current assignment for a ship
+func (sam *ShipAssignmentManager) GetAssignment(shipSymbol string) (*ShipAssignment, bool) <span class="cov8" title="1">{
+        assignment, exists := sam.assignments[shipSymbol]
+        return assignment, exists
+}</span>
+
+// ReleaseAssignment releases a ship from its current assignment
+func (sam *ShipAssignmentManager) ReleaseAssignment(shipSymbol string, reason string) error <span class="cov8" title="1">{
+        assignment, exists := sam.assignments[shipSymbol]
+        if !exists </span><span class="cov8" title="1">{
+                return fmt.Errorf("no assignment found for ship %s", shipSymbol)
+        }</span>
+
+        <span class="cov8" title="1">return assignment.Release(reason)</span>
+}
+
+// ReleaseAll releases all active assignments with the given reason
+func (sam *ShipAssignmentManager) ReleaseAll(reason string) error <span class="cov8" title="1">{
+        for _, assignment := range sam.assignments </span><span class="cov8" title="1">{
+                if assignment.IsActive() </span><span class="cov8" title="1">{
+                        if err := assignment.Release(reason); err != nil </span><span class="cov0" title="0">{
+                                return err
+                        }</span>
+                }
+        }
+        <span class="cov8" title="1">return nil</span>
+}
+
+// CleanOrphanedAssignments releases assignments for non-existent containers
+func (sam *ShipAssignmentManager) CleanOrphanedAssignments(
+        existingContainerIDs map[string]bool,
+) (int, error) <span class="cov8" title="1">{
+        cleaned := 0
+
+        for _, assignment := range sam.assignments </span><span class="cov8" title="1">{
+                if !assignment.IsActive() </span><span class="cov8" title="1">{
+                        continue</span>
+                }
+
+                // Check if container exists
+                <span class="cov8" title="1">if !existingContainerIDs[assignment.ContainerID()] </span><span class="cov8" title="1">{
+                        if err := assignment.Release("orphaned_cleanup"); err != nil </span><span class="cov0" title="0">{
+                                return cleaned, err
+                        }</span>
+                        <span class="cov8" title="1">cleaned++</span>
+                }
+        }
+
+        <span class="cov8" title="1">return cleaned, nil</span>
+}
+
+// CleanStaleAssignments releases assignments older than the timeout
+func (sam *ShipAssignmentManager) CleanStaleAssignments(timeout time.Duration) (int, error) <span class="cov8" title="1">{
+        cleaned := 0
+
+        for _, assignment := range sam.assignments </span><span class="cov8" title="1">{
+                if !assignment.IsActive() </span><span class="cov8" title="1">{
+                        continue</span>
+                }
+
+                <span class="cov8" title="1">if assignment.IsStale(timeout) </span><span class="cov8" title="1">{
+                        if err := assignment.ForceRelease("stale_timeout"); err != nil </span><span class="cov0" title="0">{
+                                return cleaned, err
+                        }</span>
+                        <span class="cov8" title="1">cleaned++</span>
+                }
+        }
+
+        <span class="cov8" title="1">return cleaned, nil</span>
+}
+</pre>
+		
+		<pre class="file" id="file2" style="display: none">package contract
+
+import (
+        "fmt"
+        "time"
+
+        "github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+)
+
+type Payment struct {
+        OnAccepted  int
+        OnFulfilled int
+}
+
+type Delivery struct {
+        TradeSymbol       string
+        DestinationSymbol string
+        UnitsRequired     int
+        UnitsFulfilled    int
+}
+
+type Terms struct {
+        Payment          Payment
+        Deliveries       []Delivery
+        DeadlineToAccept string
+        Deadline         string
+}
+
+type Contract struct {
+        contractID    string
+        playerID      shared.PlayerID
+        factionSymbol string
+        contractType  string
+        terms         Terms
+        accepted      bool
+        fulfilled     bool
+}
+
+// NewContract creates a new contract
+func NewContract(contractID string, playerID shared.PlayerID, factionSymbol, contractType string, terms Terms) (*Contract, error) <span class="cov8" title="1">{
+        if contractID == "" </span><span class="cov8" title="1">{
+                return nil, fmt.Errorf("contract ID cannot be empty")
+        }</span>
+        <span class="cov8" title="1">if playerID.IsZero() </span><span class="cov8" title="1">{
+                return nil, fmt.Errorf("invalid player ID")
+        }</span>
+        <span class="cov8" title="1">if factionSymbol == "" </span><span class="cov8" title="1">{
+                return nil, fmt.Errorf("faction symbol cannot be empty")
+        }</span>
+        <span class="cov8" title="1">if len(terms.Deliveries) == 0 </span><span class="cov8" title="1">{
+                return nil, fmt.Errorf("contract must have at least one delivery")
+        }</span>
+
+        <span class="cov8" title="1">return &amp;Contract{
+                contractID:    contractID,
+                playerID:      playerID,
+                factionSymbol: factionSymbol,
+                contractType:  contractType,
+                terms:         terms,
+                accepted:      false,
+                fulfilled:     false,
+        }, nil</span>
+}
+
+func (c *Contract) ContractID() string    <span class="cov0" title="0">{ return c.contractID }</span>
+func (c *Contract) PlayerID() shared.PlayerID <span class="cov0" title="0">{ return c.playerID }</span>
+func (c *Contract) FactionSymbol() string <span class="cov0" title="0">{ return c.factionSymbol }</span>
+func (c *Contract) Type() string          <span class="cov0" title="0">{ return c.contractType }</span>
+func (c *Contract) Terms() Terms  <span class="cov8" title="1">{ return c.terms }</span>
+func (c *Contract) Accepted() bool        <span class="cov8" title="1">{ return c.accepted }</span>
+func (c *Contract) Fulfilled() bool       <span class="cov8" title="1">{ return c.fulfilled }</span>
+
+// Accept accepts the contract (MUTABLE - modifies in place)
+func (c *Contract) Accept() error <span class="cov8" title="1">{
+        if c.fulfilled </span><span class="cov8" title="1">{
+                return fmt.Errorf("contract already fulfilled")
+        }</span>
+        <span class="cov8" title="1">if c.accepted </span><span class="cov8" title="1">{
+                return fmt.Errorf("contract already accepted")
+        }</span>
+        <span class="cov8" title="1">c.accepted = true
+        return nil</span>
+}
+
+// DeliverCargo updates delivery progress (MUTABLE)
+func (c *Contract) DeliverCargo(tradeSymbol string, units int) error <span class="cov8" title="1">{
+        if !c.accepted </span><span class="cov8" title="1">{
+                return fmt.Errorf("contract not accepted")
+        }</span>
+
+        <span class="cov8" title="1">var delivery *Delivery
+        for i := range c.terms.Deliveries </span><span class="cov8" title="1">{
+                if c.terms.Deliveries[i].TradeSymbol == tradeSymbol </span><span class="cov8" title="1">{
+                        delivery = &amp;c.terms.Deliveries[i]
+                        break</span>
+                }
+        }
+
+        <span class="cov8" title="1">if delivery == nil </span><span class="cov8" title="1">{
+                return fmt.Errorf("trade symbol not in contract")
+        }</span>
+
+        <span class="cov8" title="1">if delivery.UnitsFulfilled+units &gt; delivery.UnitsRequired </span><span class="cov8" title="1">{
+                return fmt.Errorf("units exceed required")
+        }</span>
+
+        <span class="cov8" title="1">delivery.UnitsFulfilled += units
+        return nil</span>
+}
+
+// CanFulfill checks if all deliveries are complete
+func (c *Contract) CanFulfill() bool <span class="cov8" title="1">{
+        for _, delivery := range c.terms.Deliveries </span><span class="cov8" title="1">{
+                if delivery.UnitsFulfilled &lt; delivery.UnitsRequired </span><span class="cov8" title="1">{
+                        return false
+                }</span>
+        }
+        <span class="cov8" title="1">return true</span>
+}
+
+// Fulfill marks contract as fulfilled (MUTABLE)
+func (c *Contract) Fulfill() error <span class="cov8" title="1">{
+        if !c.accepted </span><span class="cov8" title="1">{
+                return fmt.Errorf("contract not accepted")
+        }</span>
+        <span class="cov8" title="1">if !c.CanFulfill() </span><span class="cov8" title="1">{
+                return fmt.Errorf("deliveries not complete")
+        }</span>
+        <span class="cov8" title="1">c.fulfilled = true
+        return nil</span>
+}
+
+// IsExpired checks if contract is past deadline
+func (c *Contract) IsExpired() bool <span class="cov8" title="1">{
+        deadline, err := time.Parse(time.RFC3339, c.terms.Deadline)
+        if err != nil </span><span class="cov8" title="1">{
+                return false
+        }</span>
+        <span class="cov8" title="1">return time.Now().UTC().After(deadline)</span>
+}
+
+// ProfitabilityContext contains market and ship data needed for profitability calculation
+type ProfitabilityContext struct {
+        // MarketPrices maps trade_symbol to sell_price at the cheapest market
+        MarketPrices map[string]int
+        // CargoCapacity is the ship's cargo hold capacity
+        CargoCapacity int
+        // FuelCostPerTrip is the fuel cost for a round trip (delivery + return)
+        FuelCostPerTrip int
+        // CheapestMarketWaypoint is the primary market waypoint for purchasing
+        CheapestMarketWaypoint string
+}
+
+// ProfitabilityEvaluation contains the results of profitability calculation
+type ProfitabilityEvaluation struct {
+        IsProfitable           bool
+        NetProfit              int
+        TotalPayment           int
+        PurchaseCost           int
+        FuelCost               int
+        TripsRequired          int
+        CheapestMarketWaypoint string
+        Reason                 string
+}
+
+const (
+        // MinProfitThreshold defines the minimum acceptable net profit.
+        // Contracts with profits &gt;= -5000 are considered profitable (accepts losses up to 5000 credits).
+        // This allows taking small losses to avoid opportunity cost of idle ships.
+        MinProfitThreshold = -5000
+)
+
+// EvaluateProfitability calculates contract profitability given market conditions.
+//
+// Business Rules:
+//   - total_payment = on_accepted + on_fulfilled
+//   - purchase_cost = sum(market_price * units_needed for each delivery)
+//   - trips_required = ceil(total_units / cargo_capacity)
+//   - fuel_cost = trips_required * fuel_cost_per_trip
+//   - net_profit = total_payment - (purchase_cost + fuel_cost)
+//   - is_profitable = net_profit &gt;= MinProfitThreshold (-5000)
+//
+// Parameters:
+//   - ctx: Market prices, cargo capacity, and fuel costs
+//
+// Returns:
+//   - ProfitabilityEvaluation with all calculated metrics
+//   - Error if market prices are missing for required goods
+func (c *Contract) EvaluateProfitability(ctx ProfitabilityContext) (*ProfitabilityEvaluation, error) <span class="cov8" title="1">{
+        // 1. Calculate total payment
+        totalPayment := c.terms.Payment.OnAccepted + c.terms.Payment.OnFulfilled
+
+        // 2. Calculate purchase cost and total units needed
+        purchaseCost := 0
+        totalUnits := 0
+
+        for _, delivery := range c.terms.Deliveries </span><span class="cov8" title="1">{
+                unitsNeeded := delivery.UnitsRequired - delivery.UnitsFulfilled
+                if unitsNeeded == 0 </span><span class="cov8" title="1">{
+                        continue</span> // Delivery already fulfilled
+                }
+
+                // Look up market price for this trade good
+                <span class="cov8" title="1">sellPrice, ok := ctx.MarketPrices[delivery.TradeSymbol]
+                if !ok </span><span class="cov8" title="1">{
+                        return nil, fmt.Errorf("missing market price for %s", delivery.TradeSymbol)
+                }</span>
+
+                <span class="cov8" title="1">purchaseCost += sellPrice * unitsNeeded
+                totalUnits += unitsNeeded</span>
+        }
+
+        // 3. Calculate trips required (ceiling division)
+        <span class="cov8" title="1">tripsRequired := 0
+        if ctx.CargoCapacity &gt; 0 &amp;&amp; totalUnits &gt; 0 </span><span class="cov8" title="1">{
+                tripsRequired = (totalUnits + ctx.CargoCapacity - 1) / ctx.CargoCapacity
+        }</span>
+
+        // 4. Calculate fuel cost
+        <span class="cov8" title="1">fuelCost := tripsRequired * ctx.FuelCostPerTrip
+
+        // 5. Calculate net profit
+        netProfit := totalPayment - (purchaseCost + fuelCost)
+
+        // 6. Determine profitability
+        isProfitable := netProfit &gt;= MinProfitThreshold
+
+        // 7. Generate reason
+        var reason string
+        if netProfit &gt; 0 </span><span class="cov8" title="1">{
+                reason = "Profitable"
+        }</span> else<span class="cov8" title="1"> if netProfit &gt;= MinProfitThreshold </span><span class="cov8" title="1">{
+                reason = "Acceptable small loss (avoids opportunity cost)"
+        }</span> else<span class="cov8" title="1"> {
+                reason = "Loss exceeds acceptable threshold"
+        }</span>
+
+        <span class="cov8" title="1">return &amp;ProfitabilityEvaluation{
+                IsProfitable:           isProfitable,
+                NetProfit:              netProfit,
+                TotalPayment:           totalPayment,
+                PurchaseCost:           purchaseCost,
+                FuelCost:               fuelCost,
+                TripsRequired:          tripsRequired,
+                CheapestMarketWaypoint: ctx.CheapestMarketWaypoint,
+                Reason:                 reason,
+        }, nil</span>
+}
+</pre>
+		
+		<pre class="file" id="file3" style="display: none">package contract
+
+import (
+        "fmt"
+        "math"
+
+        "github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+        "github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+)
+
+const (
+        // MaxShipsPerWaypoint defines the maximum allowed ships at a single waypoint
+        // to prevent clustering. Beyond this threshold, rebalancing is triggered.
+        MaxShipsPerWaypoint = 2
+
+        // MaxShipsPerMarket defines the maximum ships assigned to a single market
+        // during distribution to ensure balanced fleet coverage.
+        MaxShipsPerMarket = 2
+)
+
+// DistributionMetrics contains statistics about fleet distribution
+type DistributionMetrics struct {
+        AverageDistance float64
+        IsClustered     bool
+        ClusteredAt     string // Waypoint symbol where clustering detected
+}
+
+// Assignment represents a ship-to-waypoint assignment
+type Assignment struct {
+        ShipSymbol      string
+        TargetWaypoint  string
+        Distance        float64
+}
+
+// FleetAssigner implements fleet assignment business logic for contract operations
+type FleetAssigner struct{}
+
+// NewFleetAssigner creates a new fleet assigner
+func NewFleetAssigner() *FleetAssigner <span class="cov0" title="0">{
+        return &amp;FleetAssigner{}
+}</span>
+
+// IsRebalancingNeeded evaluates if fleet rebalancing is required based on:
+// 1. Clustering: More than MaxShipsPerWaypoint ships at same location
+// 2. Distance: Average distance to nearest target exceeds threshold
+//
+// Business Rules:
+//   - Clustering takes priority over distance (immediate rebalance needed)
+//   - Distance threshold allows tuning of rebalancing sensitivity
+//
+// Parameters:
+//   - ships: Current fleet
+//   - targetWaypoints: Destination waypoints (markets, fuel stations, etc.)
+//   - distanceThreshold: Maximum acceptable average distance
+//
+// Returns:
+//   - needsRebalancing: True if rebalancing should be triggered
+//   - metrics: Distribution statistics for decision-making
+func (fa *FleetAssigner) IsRebalancingNeeded(
+        ships []*navigation.Ship,
+        targetWaypoints []*shared.Waypoint,
+        distanceThreshold float64,
+) (bool, *DistributionMetrics, error) <span class="cov0" title="0">{
+        if len(ships) == 0 || len(targetWaypoints) == 0 </span><span class="cov0" title="0">{
+                return false, &amp;DistributionMetrics{}, nil
+        }</span>
+
+        // Check for clustering: count ships at each waypoint
+        <span class="cov0" title="0">waypointCounts := make(map[string]int)
+        for _, ship := range ships </span><span class="cov0" title="0">{
+                waypointCounts[ship.CurrentLocation().Symbol]++
+        }</span>
+
+        // If any waypoint has more than allowed, clustering detected
+        <span class="cov0" title="0">for waypoint, count := range waypointCounts </span><span class="cov0" title="0">{
+                if count &gt; MaxShipsPerWaypoint </span><span class="cov0" title="0">{
+                        // Clustering detected - immediate rebalancing needed
+                        return true, &amp;DistributionMetrics{
+                                AverageDistance: 0, // Not relevant when clustering
+                                IsClustered:     true,
+                                ClusteredAt:     waypoint,
+                        }, nil
+                }</span>
+        }
+
+        // Calculate average distance from each ship to its nearest target
+        <span class="cov0" title="0">totalDistance := 0.0
+        for _, ship := range ships </span><span class="cov0" title="0">{
+                minDistance := math.MaxFloat64
+                currentLocation := ship.CurrentLocation()
+
+                for _, targetWaypoint := range targetWaypoints </span><span class="cov0" title="0">{
+                        distance := currentLocation.DistanceTo(targetWaypoint)
+                        if distance &lt; minDistance </span><span class="cov0" title="0">{
+                                minDistance = distance
+                        }</span>
+                }
+
+                <span class="cov0" title="0">totalDistance += minDistance</span>
+        }
+
+        <span class="cov0" title="0">avgDistance := totalDistance / float64(len(ships))
+        needsRebalancing := avgDistance &gt; distanceThreshold
+
+        return needsRebalancing, &amp;DistributionMetrics{
+                AverageDistance: avgDistance,
+                IsClustered:     false,
+                ClusteredAt:     "",
+        }, nil</span>
+}
+
+// AssignShipsToTargets distributes ships across target waypoints using
+// balanced round-robin with distance optimization.
+//
+// Business Rules:
+//   - Maximum MaxShipsPerMarket ships per target (prevents over-concentration)
+//   - Assigns each ship to nearest available target
+//   - Ensures balanced distribution across all targets
+//
+// Algorithm:
+//   1. Calculate max ships per target (balanced distribution)
+//   2. Cap at MaxShipsPerMarket to prevent clustering
+//   3. For each ship, select nearest target with capacity
+//   4. Track assignments and capacities
+//
+// Parameters:
+//   - ships: Fleet to distribute
+//   - targetWaypoints: Destination waypoints for assignment
+//
+// Returns:
+//   - assignments: List of ship-to-waypoint assignments with distances
+func (fa *FleetAssigner) AssignShipsToTargets(
+        ships []*navigation.Ship,
+        targetWaypoints []*shared.Waypoint,
+) ([]Assignment, error) <span class="cov0" title="0">{
+        if len(ships) == 0 || len(targetWaypoints) == 0 </span><span class="cov0" title="0">{
+                return []Assignment{}, nil
+        }</span>
+
+        // Calculate max ships per target for balanced distribution
+        // E.g., 5 ships, 3 targets -&gt; max 2 ships per target (ceiling division)
+        <span class="cov0" title="0">maxPerTarget := (len(ships) + len(targetWaypoints) - 1) / len(targetWaypoints)
+
+        // Cap at MaxShipsPerMarket - no need to cluster all ships at one location
+        if maxPerTarget &gt; MaxShipsPerMarket </span><span class="cov0" title="0">{
+                maxPerTarget = MaxShipsPerMarket
+        }</span>
+
+        // Track how many ships assigned to each target
+        <span class="cov0" title="0">targetCounts := make(map[string]int)
+        for _, waypoint := range targetWaypoints </span><span class="cov0" title="0">{
+                targetCounts[waypoint.Symbol] = 0
+        }</span>
+
+        // Assignment list
+        <span class="cov0" title="0">var assignments []Assignment
+
+        // For each ship, find nearest target with available capacity
+        for _, ship := range ships </span><span class="cov0" title="0">{
+                var bestTarget *shared.Waypoint
+                bestDistance := math.MaxFloat64
+                currentLocation := ship.CurrentLocation()
+
+                for _, targetWaypoint := range targetWaypoints </span><span class="cov0" title="0">{
+                        // Skip targets at capacity
+                        if targetCounts[targetWaypoint.Symbol] &gt;= maxPerTarget </span><span class="cov0" title="0">{
+                                continue</span>
+                        }
+
+                        <span class="cov0" title="0">distance := currentLocation.DistanceTo(targetWaypoint)
+
+                        // Select nearest available target
+                        if distance &lt; bestDistance </span><span class="cov0" title="0">{
+                                bestDistance = distance
+                                bestTarget = targetWaypoint
+                        }</span>
+                }
+
+                // Assign ship to best target (if found)
+                <span class="cov0" title="0">if bestTarget != nil </span><span class="cov0" title="0">{
+                        assignments = append(assignments, Assignment{
+                                ShipSymbol:     ship.ShipSymbol(),
+                                TargetWaypoint: bestTarget.Symbol,
+                                Distance:       bestDistance,
+                        })
+                        targetCounts[bestTarget.Symbol]++
+                }</span>
+                // Note: Ships without assignment remain at current location
+        }
+
+        <span class="cov0" title="0">return assignments, nil</span>
+}
+
+// CalculateDistributionQuality evaluates how well a fleet is distributed
+// relative to target waypoints. Lower scores indicate better distribution.
+//
+// Parameters:
+//   - ships: Current fleet
+//   - targetWaypoints: Target locations
+//
+// Returns:
+//   - quality score: Average distance to nearest target (lower is better)
+func (fa *FleetAssigner) CalculateDistributionQuality(
+        ships []*navigation.Ship,
+        targetWaypoints []*shared.Waypoint,
+) (float64, error) <span class="cov0" title="0">{
+        if len(ships) == 0 || len(targetWaypoints) == 0 </span><span class="cov0" title="0">{
+                return 0, fmt.Errorf("ships and targets cannot be empty")
+        }</span>
+
+        <span class="cov0" title="0">totalDistance := 0.0
+        for _, ship := range ships </span><span class="cov0" title="0">{
+                minDistance := math.MaxFloat64
+                currentLocation := ship.CurrentLocation()
+
+                for _, targetWaypoint := range targetWaypoints </span><span class="cov0" title="0">{
+                        distance := currentLocation.DistanceTo(targetWaypoint)
+                        if distance &lt; minDistance </span><span class="cov0" title="0">{
+                                minDistance = distance
+                        }</span>
+                }
+
+                <span class="cov0" title="0">totalDistance += minDistance</span>
+        }
+
+        <span class="cov0" title="0">return totalDistance / float64(len(ships)), nil</span>
+}
+</pre>
+		
+		<pre class="file" id="file4" style="display: none">package contract
+
+import (
+        "fmt"
+        "math"
+
+        "github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+        "github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+)
+
+// SelectionResult contains the result of ship selection
+type SelectionResult struct {
+        Ship     *navigation.Ship
+        Distance float64
+        Reason   string // Why this ship was selected (e.g., "has cargo", "closest")
+}
+
+// ShipSelector implements ship selection business logic for contract deliveries
+type ShipSelector struct{}
+
+// NewShipSelector creates a new ship selector
+func NewShipSelector() *ShipSelector <span class="cov0" title="0">{
+        return &amp;ShipSelector{}
+}</span>
+
+// SelectOptimalShip selects the best ship from a fleet for a target location.
+//
+// Business Rules:
+// 1. Ships with required cargo have absolute priority (even if in transit)
+// 2. Ships in transit are excluded (unless they have cargo)
+// 3. Select closest ship by Euclidean distance as fallback
+//
+// Parameters:
+//   - ships: Available ships to choose from
+//   - targetWaypoint: Destination waypoint
+//   - requiredCargoSymbol: Optional cargo type for priority selection
+//
+// Returns:
+//   - SelectionResult with selected ship, distance, and reason
+//   - Error if no suitable ship found
+func (s *ShipSelector) SelectOptimalShip(
+        ships []*navigation.Ship,
+        targetWaypoint *shared.Waypoint,
+        requiredCargoSymbol string,
+) (*SelectionResult, error) <span class="cov0" title="0">{
+        if len(ships) == 0 </span><span class="cov0" title="0">{
+                return nil, fmt.Errorf("no ships available for selection")
+        }</span>
+
+        <span class="cov0" title="0">if targetWaypoint == nil </span><span class="cov0" title="0">{
+                return nil, fmt.Errorf("target waypoint cannot be nil")
+        }</span>
+
+        <span class="cov0" title="0">var closestShip *navigation.Ship
+        minDistance := math.MaxFloat64
+        var shipWithCargo *navigation.Ship
+
+        for _, ship := range ships </span><span class="cov0" title="0">{
+                if s.hasRequiredCargo(ship, requiredCargoSymbol) </span><span class="cov0" title="0">{
+                        shipWithCargo = ship
+                }</span>
+
+                <span class="cov0" title="0">if s.shouldSkipShipInTransit(ship, shipWithCargo) </span><span class="cov0" title="0">{
+                        continue</span>
+                }
+
+                <span class="cov0" title="0">closestShip, minDistance = s.updateClosestShip(ship, targetWaypoint, closestShip, minDistance)</span>
+        }
+
+        <span class="cov0" title="0">if shipWithCargo != nil </span><span class="cov0" title="0">{
+                return s.buildCargoSelectionResult(shipWithCargo, requiredCargoSymbol), nil
+        }</span>
+
+        <span class="cov0" title="0">if closestShip == nil </span><span class="cov0" title="0">{
+                return nil, fmt.Errorf("no available ships found (all are in transit)")
+        }</span>
+
+        <span class="cov0" title="0">return s.buildDistanceSelectionResult(closestShip, minDistance), nil</span>
+}
+
+func (s *ShipSelector) hasRequiredCargo(ship *navigation.Ship, requiredCargoSymbol string) bool <span class="cov0" title="0">{
+        if requiredCargoSymbol == "" </span><span class="cov0" title="0">{
+                return false
+        }</span>
+        <span class="cov0" title="0">cargoUnits := ship.Cargo().GetItemUnits(requiredCargoSymbol)
+        return cargoUnits &gt; 0</span>
+}
+
+func (s *ShipSelector) shouldSkipShipInTransit(ship *navigation.Ship, shipWithCargo *navigation.Ship) bool <span class="cov0" title="0">{
+        return ship.NavStatus() == navigation.NavStatusInTransit &amp;&amp; shipWithCargo != ship
+}</span>
+
+func (s *ShipSelector) updateClosestShip(
+        ship *navigation.Ship,
+        targetWaypoint *shared.Waypoint,
+        currentClosest *navigation.Ship,
+        currentMinDistance float64,
+) (*navigation.Ship, float64) <span class="cov0" title="0">{
+        currentLocation := ship.CurrentLocation()
+        distance := currentLocation.DistanceTo(targetWaypoint)
+
+        if distance &lt; currentMinDistance </span><span class="cov0" title="0">{
+                return ship, distance
+        }</span>
+
+        <span class="cov0" title="0">return currentClosest, currentMinDistance</span>
+}
+
+func (s *ShipSelector) buildCargoSelectionResult(ship *navigation.Ship, requiredCargoSymbol string) *SelectionResult <span class="cov0" title="0">{
+        return &amp;SelectionResult{
+                Ship:     ship,
+                Distance: 0,
+                Reason:   fmt.Sprintf("has %s in cargo (priority)", requiredCargoSymbol),
+        }
+}</span>
+
+func (s *ShipSelector) buildDistanceSelectionResult(ship *navigation.Ship, distance float64) *SelectionResult <span class="cov0" title="0">{
+        return &amp;SelectionResult{
+                Ship:     ship,
+                Distance: distance,
+                Reason:   fmt.Sprintf("closest by distance (%.2f units)", distance),
+        }
+}</span>
+
+// SelectClosestShipByDistance selects the closest ship to a target waypoint
+// without any cargo priority logic. Useful for simple rebalancing operations.
+//
+// Parameters:
+//   - ships: Available ships to choose from
+//   - targetWaypoint: Destination waypoint
+//   - excludeInTransit: If true, skip ships currently in transit
+//
+// Returns:
+//   - SelectionResult with selected ship and distance
+//   - Error if no suitable ship found
+func (s *ShipSelector) SelectClosestShipByDistance(
+        ships []*navigation.Ship,
+        targetWaypoint *shared.Waypoint,
+        excludeInTransit bool,
+) (*SelectionResult, error) <span class="cov0" title="0">{
+        if len(ships) == 0 </span><span class="cov0" title="0">{
+                return nil, fmt.Errorf("no ships available for selection")
+        }</span>
+
+        <span class="cov0" title="0">if targetWaypoint == nil </span><span class="cov0" title="0">{
+                return nil, fmt.Errorf("target waypoint cannot be nil")
+        }</span>
+
+        <span class="cov0" title="0">var closestShip *navigation.Ship
+        minDistance := math.MaxFloat64
+
+        for _, ship := range ships </span><span class="cov0" title="0">{
+                if s.shouldExcludeShip(ship, excludeInTransit) </span><span class="cov0" title="0">{
+                        continue</span>
+                }
+
+                <span class="cov0" title="0">closestShip, minDistance = s.updateClosestShip(ship, targetWaypoint, closestShip, minDistance)</span>
+        }
+
+        <span class="cov0" title="0">if closestShip == nil </span><span class="cov0" title="0">{
+                return nil, fmt.Errorf("no available ships found")
+        }</span>
+
+        <span class="cov0" title="0">return &amp;SelectionResult{
+                Ship:     closestShip,
+                Distance: minDistance,
+                Reason:   "closest by distance",
+        }, nil</span>
+}
+
+func (s *ShipSelector) shouldExcludeShip(ship *navigation.Ship, excludeInTransit bool) bool <span class="cov0" title="0">{
+        return excludeInTransit &amp;&amp; ship.NavStatus() == navigation.NavStatusInTransit
+}</span>
+</pre>
+		
+		<pre class="file" id="file5" style="display: none">package daemon
+
+import (
+        "context"
+        "time"
+
+        "github.com/andrescamacho/spacetraders-go/internal/domain/container"
+        "github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+        "github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+)
+
+// RecoveryMetrics tracks health monitor recovery statistics
+type RecoveryMetrics struct {
+        SuccessfulRecoveries int
+        FailedRecoveries     int
+        AbandonedShips       int
+}
+
+// HealthMonitor monitors container and ship health, detecting stuck operations
+// and attempting recovery when possible
+type HealthMonitor struct {
+        checkInterval      time.Duration
+        recoveryTimeout    time.Duration
+        maxRecoveryAttempts int
+        lastCheckTime      *time.Time
+        watchList          map[string]time.Time // ship symbol -&gt; added time
+        recoveryAttempts   map[string]int       // ship symbol -&gt; attempt count
+        metrics            *RecoveryMetrics
+        clock              shared.Clock
+}
+
+// NewHealthMonitor creates a new health monitor instance
+func NewHealthMonitor(
+        checkInterval time.Duration,
+        recoveryTimeout time.Duration,
+        clock shared.Clock,
+) *HealthMonitor <span class="cov0" title="0">{
+        if clock == nil </span><span class="cov0" title="0">{
+                clock = shared.NewRealClock()
+        }</span>
+
+        <span class="cov0" title="0">return &amp;HealthMonitor{
+                checkInterval:       checkInterval,
+                recoveryTimeout:     recoveryTimeout,
+                maxRecoveryAttempts: 5, // Default: 5 attempts before abandoning
+                watchList:           make(map[string]time.Time),
+                recoveryAttempts:    make(map[string]int),
+                metrics: &amp;RecoveryMetrics{
+                        SuccessfulRecoveries: 0,
+                        FailedRecoveries:     0,
+                        AbandonedShips:       0,
+                },
+                clock: clock,
+        }</span>
+}
+
+// Getters
+
+func (hm *HealthMonitor) CheckInterval() time.Duration   <span class="cov0" title="0">{ return hm.checkInterval }</span>
+func (hm *HealthMonitor) RecoveryTimeout() time.Duration <span class="cov0" title="0">{ return hm.recoveryTimeout }</span>
+func (hm *HealthMonitor) GetLastCheckTime() *time.Time   <span class="cov0" title="0">{ return hm.lastCheckTime }</span>
+
+// SetLastCheckTime updates the last check timestamp (for testing)
+func (hm *HealthMonitor) SetLastCheckTime(t time.Time) <span class="cov0" title="0">{
+        hm.lastCheckTime = &amp;t
+}</span>
+
+// SetMaxRecoveryAttempts configures max recovery attempts before abandoning
+func (hm *HealthMonitor) SetMaxRecoveryAttempts(max int) <span class="cov0" title="0">{
+        hm.maxRecoveryAttempts = max
+}</span>
+
+// GetRecoveryAttemptCount returns the number of recovery attempts for a ship
+func (hm *HealthMonitor) GetRecoveryAttemptCount(shipSymbol string) int <span class="cov0" title="0">{
+        return hm.recoveryAttempts[shipSymbol]
+}</span>
+
+// GetMetrics returns current recovery metrics
+func (hm *HealthMonitor) GetMetrics() *RecoveryMetrics <span class="cov0" title="0">{
+        return hm.metrics
+}</span>
+
+// RunCheck performs a complete health check cycle
+// Returns true if check was skipped due to cooldown, false if executed
+func (hm *HealthMonitor) RunCheck(
+        ctx context.Context,
+        assignments map[string]*container.ShipAssignment,
+        containers map[string]*container.Container,
+        ships map[string]*navigation.Ship,
+) (bool, error) <span class="cov0" title="0">{
+        now := hm.clock.Now()
+
+        // Check cooldown
+        if hm.lastCheckTime != nil </span><span class="cov0" title="0">{
+                elapsed := now.Sub(*hm.lastCheckTime)
+                if elapsed &lt; hm.checkInterval </span><span class="cov0" title="0">{
+                        return true, nil // Skipped due to cooldown
+                }</span>
+        }
+
+        // Update last check time
+        <span class="cov0" title="0">hm.lastCheckTime = &amp;now
+
+        // Clean stale assignments
+        existingContainerIDs := make(map[string]bool)
+        for id := range containers </span><span class="cov0" title="0">{
+                existingContainerIDs[id] = true
+        }</span>
+
+        <span class="cov0" title="0">_, err := hm.CleanStaleAssignments(ctx, assignments, existingContainerIDs)
+        if err != nil </span><span class="cov0" title="0">{
+                return false, err
+        }</span>
+
+        // Detect stuck ships
+        // Note: routes are passed as nil for now - in real implementation this would come from repository
+        <span class="cov0" title="0">_ = hm.DetectStuckShips(ctx, ships, containers, nil)
+
+        // Detect infinite loops
+        _ = hm.DetectInfiniteLoops(ctx, containers)
+
+        return false, nil</span> // Executed
+}
+
+// CleanStaleAssignments releases assignments for non-existent containers
+func (hm *HealthMonitor) CleanStaleAssignments(
+        ctx context.Context,
+        assignments map[string]*container.ShipAssignment,
+        existingContainerIDs map[string]bool,
+) (int, error) <span class="cov0" title="0">{
+        cleaned := 0
+
+        for _, assignment := range assignments </span><span class="cov0" title="0">{
+                if !assignment.IsActive() </span><span class="cov0" title="0">{
+                        continue</span>
+                }
+
+                // Check if container exists
+                <span class="cov0" title="0">if !existingContainerIDs[assignment.ContainerID()] </span><span class="cov0" title="0">{
+                        if err := assignment.Release("stale_cleanup"); err != nil </span><span class="cov0" title="0">{
+                                return cleaned, err
+                        }</span>
+                        <span class="cov0" title="0">cleaned++</span>
+                }
+        }
+
+        <span class="cov0" title="0">return cleaned, nil</span>
+}
+
+// DetectStuckShips identifies ships that have been in IN_TRANSIT state too long
+func (hm *HealthMonitor) DetectStuckShips(
+        ctx context.Context,
+        ships map[string]*navigation.Ship,
+        containers map[string]*container.Container,
+        routes map[string]*navigation.Route,
+) []string <span class="cov0" title="0">{
+        stuckShips := []string{}
+        now := hm.clock.Now()
+
+        for shipSymbol, ship := range ships </span><span class="cov0" title="0">{
+                // Only check ships in transit
+                if ship.NavStatus() != navigation.NavStatusInTransit </span><span class="cov0" title="0">{
+                        continue</span>
+                }
+
+                // Calculate how long ship has been in transit
+                // Note: We need a way to get the last state change time from the ship
+                // For now, we'll use a simplified approach based on the ship's internal state
+
+                // Check if ship has exceeded recovery timeout
+                // This is a simplified check - in production we'd need proper timestamp tracking
+                <span class="cov0" title="0">if hm.isShipStuck(ship, now) </span><span class="cov0" title="0">{
+                        stuckShips = append(stuckShips, shipSymbol)
+
+                        // Check for route-ship state mismatch
+                        if routes != nil </span><span class="cov0" title="0">{
+                                if route, exists := routes[shipSymbol]; exists </span><span class="cov0" title="0">{
+                                        if route.Status() == navigation.RouteStatusCompleted </span>{<span class="cov0" title="0">
+                                                // Critical: route is completed but ship still in transit
+                                                // This indicates a missing arrival call
+                                        }</span>
+                                }
+                        }
+                }
+        }
+
+        <span class="cov0" title="0">return stuckShips</span>
+}
+
+// isShipStuck checks if a ship has been stuck in transit too long
+// This is a placeholder - real implementation would check actual timestamps
+func (hm *HealthMonitor) isShipStuck(ship *navigation.Ship, now time.Time) bool <span class="cov0" title="0">{
+        // TODO: Implement proper timestamp tracking in Ship entity
+        // For now, this is a stub that always returns false
+        return false
+}</span>
+
+// DetectInfiniteLoops identifies containers with suspicious rapid iteration patterns
+func (hm *HealthMonitor) DetectInfiniteLoops(
+        ctx context.Context,
+        containers map[string]*container.Container,
+) []string <span class="cov0" title="0">{
+        suspicious := []string{}
+
+        for containerID, c := range containers </span><span class="cov0" title="0">{
+                if !c.IsRunning() </span><span class="cov0" title="0">{
+                        continue</span>
+                }
+
+                // Check for infinite loop containers with rapid iterations
+                <span class="cov0" title="0">if c.MaxIterations() == -1 </span><span class="cov0" title="0">{
+                        // Calculate average iteration duration
+                        runtime, exists := c.GetMetadataValue("runtime_seconds")
+                        if !exists </span><span class="cov0" title="0">{
+                                continue</span>
+                        }
+
+                        <span class="cov0" title="0">runtimeSeconds, ok := runtime.(int)
+                        if !ok </span><span class="cov0" title="0">{
+                                continue</span>
+                        }
+
+                        <span class="cov0" title="0">iterations := c.CurrentIteration()
+                        if iterations == 0 </span><span class="cov0" title="0">{
+                                continue</span>
+                        }
+
+                        <span class="cov0" title="0">avgDuration := float64(runtimeSeconds) / float64(iterations)
+
+                        // Flag if iterations complete suspiciously fast (&lt; 5 seconds avg)
+                        if avgDuration &lt; 5.0 </span><span class="cov0" title="0">{
+                                suspicious = append(suspicious, containerID)
+                        }</span>
+                }
+        }
+
+        <span class="cov0" title="0">return suspicious</span>
+}
+
+// AttemptRecovery attempts to recover a stuck ship
+func (hm *HealthMonitor) AttemptRecovery(
+        ctx context.Context,
+        shipSymbol string,
+        ship *navigation.Ship,
+        containers map[string]*container.Container,
+) error <span class="cov0" title="0">{
+        // Check max recovery attempts
+        attempts := hm.recoveryAttempts[shipSymbol]
+        if attempts &gt;= hm.maxRecoveryAttempts </span><span class="cov0" title="0">{
+                // Abandon ship
+                hm.metrics.AbandonedShips++
+                return nil
+        }</span>
+
+        // Record attempt
+        <span class="cov0" title="0">hm.recoveryAttempts[shipSymbol] = attempts + 1
+
+        // Attempt recovery by forcing arrival
+        // In real implementation, this would:
+        // 1. Fetch current ship state from API
+        // 2. Check if ship actually arrived
+        // 3. Force transition if needed
+        // 4. Update database
+
+        // For now, stub implementation
+        if ship.NavStatus() == navigation.NavStatusInTransit </span><span class="cov0" title="0">{
+                // Simulate successful recovery
+                hm.metrics.SuccessfulRecoveries++
+        }</span>
+
+        <span class="cov0" title="0">return nil</span>
+}
+
+// RecordRecoveryAttempt records a recovery attempt result (for testing)
+func (hm *HealthMonitor) RecordRecoveryAttempt(shipSymbol string, success bool) <span class="cov0" title="0">{
+        attempts := hm.recoveryAttempts[shipSymbol]
+        hm.recoveryAttempts[shipSymbol] = attempts + 1
+
+        if success </span><span class="cov0" title="0">{
+                hm.metrics.SuccessfulRecoveries++
+        }</span> else<span class="cov0" title="0"> {
+                hm.metrics.FailedRecoveries++
+        }</span>
+}
+
+// AddToWatchList adds a ship to the health monitor watch list
+func (hm *HealthMonitor) AddToWatchList(shipSymbol string) <span class="cov0" title="0">{
+        hm.watchList[shipSymbol] = hm.clock.Now()
+}</span>
+
+// RemoveFromWatchList removes a ship from the watch list and resets recovery attempts
+func (hm *HealthMonitor) RemoveFromWatchList(shipSymbol string) <span class="cov0" title="0">{
+        delete(hm.watchList, shipSymbol)
+        delete(hm.recoveryAttempts, shipSymbol)
+}</span>
+</pre>
+		
+		<pre class="file" id="file6" style="display: none">package market
+
+import (
+        "errors"
+        "time"
+)
+
+// Market represents an immutable snapshot of market data at a specific waypoint and time.
+type Market struct {
+        waypointSymbol string
+        tradeGoods     []TradeGood
+        lastUpdated    time.Time
+}
+
+// NewMarket creates a new Market with validation
+func NewMarket(waypointSymbol string, tradeGoods []TradeGood, lastUpdated time.Time) (*Market, error) <span class="cov8" title="1">{
+        if waypointSymbol == "" </span><span class="cov8" title="1">{
+                return nil, errors.New("waypoint symbol cannot be empty")
+        }</span>
+
+        <span class="cov8" title="1">if lastUpdated.IsZero() </span><span class="cov8" title="1">{
+                return nil, errors.New("timestamp cannot be empty")
+        }</span>
+
+        // Create defensive copy of trade goods to ensure immutability
+        <span class="cov8" title="1">goodsCopy := make([]TradeGood, len(tradeGoods))
+        copy(goodsCopy, tradeGoods)
+
+        return &amp;Market{
+                waypointSymbol: waypointSymbol,
+                tradeGoods:     goodsCopy,
+                lastUpdated:    lastUpdated,
+        }, nil</span>
+}
+
+func (m *Market) WaypointSymbol() string <span class="cov8" title="1">{
+        return m.waypointSymbol
+}</span>
+
+func (m *Market) TradeGoods() []TradeGood <span class="cov8" title="1">{
+        // Return defensive copy to maintain immutability
+        goodsCopy := make([]TradeGood, len(m.tradeGoods))
+        copy(goodsCopy, m.tradeGoods)
+        return goodsCopy
+}</span>
+
+func (m *Market) LastUpdated() time.Time <span class="cov8" title="1">{
+        return m.lastUpdated
+}</span>
+
+// FindGood searches for a specific trade good by symbol
+func (m *Market) FindGood(symbol string) *TradeGood <span class="cov8" title="1">{
+        for i := range m.tradeGoods </span><span class="cov8" title="1">{
+                if m.tradeGoods[i].Symbol() == symbol </span><span class="cov8" title="1">{
+                        good := m.tradeGoods[i]
+                        return &amp;good
+                }</span>
+        }
+        <span class="cov8" title="1">return nil</span>
+}
+
+// HasGood checks if the market has a specific trade good
+func (m *Market) HasGood(symbol string) bool <span class="cov8" title="1">{
+        return m.FindGood(symbol) != nil
+}</span>
+
+// GoodsCount returns the number of trade goods in the market
+func (m *Market) GoodsCount() int <span class="cov8" title="1">{
+        return len(m.tradeGoods)
+}</span>
+
+// GetTransactionLimit returns the trade volume limit for a good.
+// Returns 0 if good not found (signals caller to use single transaction fallback).
+func (m *Market) GetTransactionLimit(symbol string) int <span class="cov8" title="1">{
+        good := m.FindGood(symbol)
+        if good == nil </span><span class="cov8" title="1">{
+                return 0 // Signal: market doesn't have this good
+        }</span>
+        <span class="cov8" title="1">return good.TradeVolume()</span>
+}
+</pre>
+		
+		<pre class="file" id="file7" style="display: none">package market
+
+import (
+        "errors"
+        "fmt"
+)
+
+// TradeGood represents a single commodity available at a market (immutable value object).
+// Prices follow the market's perspective:
+// - PurchasePrice: What the market PAYS when buying from ships (market bids)
+// - SellPrice: What the market CHARGES when selling to ships (market asks)
+type TradeGood struct {
+        symbol        string
+        supply        *string // SCARCE, LIMITED, MODERATE, HIGH, ABUNDANT (or nil)
+        activity      *string // WEAK, GROWING, STRONG, RESTRICTED (or nil)
+        purchasePrice int     // What ship RECEIVES when selling to market
+        sellPrice     int     // What ship PAYS when buying from market
+        tradeVolume   int     // Trading volume
+}
+
+// Valid supply values
+var validSupplyValues = map[string]bool{
+        "SCARCE":    true,
+        "LIMITED":   true,
+        "MODERATE":  true,
+        "HIGH":      true,
+        "ABUNDANT":  true,
+}
+
+// Valid activity values
+var validActivityValues = map[string]bool{
+        "WEAK":       true,
+        "GROWING":    true,
+        "STRONG":     true,
+        "RESTRICTED": true,
+}
+
+// NewTradeGood creates a new TradeGood with validation
+func NewTradeGood(symbol string, supply *string, activity *string, purchasePrice, sellPrice, tradeVolume int) (*TradeGood, error) <span class="cov8" title="1">{
+        // Validate symbol
+        if symbol == "" </span><span class="cov8" title="1">{
+                return nil, errors.New("symbol cannot be empty")
+        }</span>
+
+        // Validate prices
+        <span class="cov8" title="1">if purchasePrice &lt; 0 </span><span class="cov8" title="1">{
+                return nil, errors.New("purchase price must be non-negative")
+        }</span>
+        <span class="cov8" title="1">if sellPrice &lt; 0 </span><span class="cov8" title="1">{
+                return nil, errors.New("sell price must be non-negative")
+        }</span>
+
+        // Validate trade volume
+        <span class="cov8" title="1">if tradeVolume &lt; 0 </span><span class="cov8" title="1">{
+                return nil, errors.New("trade volume must be non-negative")
+        }</span>
+
+        // Validate supply if provided
+        <span class="cov8" title="1">if supply != nil &amp;&amp; *supply != "" </span><span class="cov8" title="1">{
+                if !validSupplyValues[*supply] </span><span class="cov8" title="1">{
+                        return nil, fmt.Errorf("invalid supply value: %s", *supply)
+                }</span>
+        }
+
+        // Validate activity if provided
+        <span class="cov8" title="1">if activity != nil &amp;&amp; *activity != "" </span><span class="cov8" title="1">{
+                if !validActivityValues[*activity] </span><span class="cov8" title="1">{
+                        return nil, fmt.Errorf("invalid activity value: %s", *activity)
+                }</span>
+        }
+
+        <span class="cov8" title="1">return &amp;TradeGood{
+                symbol:        symbol,
+                supply:        supply,
+                activity:      activity,
+                purchasePrice: purchasePrice,
+                sellPrice:     sellPrice,
+                tradeVolume:   tradeVolume,
+        }, nil</span>
+}
+
+// Getters (TradeGood is immutable, so only provide read access)
+
+func (t *TradeGood) Symbol() string <span class="cov8" title="1">{
+        return t.symbol
+}</span>
+
+func (t *TradeGood) Supply() *string <span class="cov8" title="1">{
+        return t.supply
+}</span>
+
+func (t *TradeGood) Activity() *string <span class="cov8" title="1">{
+        return t.activity
+}</span>
+
+func (t *TradeGood) PurchasePrice() int <span class="cov8" title="1">{
+        return t.purchasePrice
+}</span>
+
+func (t *TradeGood) SellPrice() int <span class="cov8" title="1">{
+        return t.sellPrice
+}</span>
+
+func (t *TradeGood) TradeVolume() int <span class="cov8" title="1">{
+        return t.tradeVolume
+}</span>
+</pre>
+		
+		<pre class="file" id="file8" style="display: none">package mining
+
+import (
+        "time"
+
+        "github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+)
+
+// TransferStatus represents the state of a cargo transfer request
+type TransferStatus string
+
+const (
+        TransferStatusPending    TransferStatus = "PENDING"
+        TransferStatusInProgress TransferStatus = "IN_PROGRESS"
+        TransferStatusCompleted  TransferStatus = "COMPLETED"
+)
+
+// CargoTransferRequest represents an immutable transfer request between ships
+// This is a value object that tracks the transfer of cargo from a miner to a transport.
+type CargoTransferRequest struct {
+        id                string
+        miningOperationID string
+        minerShip         string
+        transportShip     string                // May be empty if pending assignment
+        cargoManifest     []shared.CargoItem    // Items to transfer
+        status            TransferStatus
+        createdAt         time.Time
+        completedAt       *time.Time
+}
+
+// NewCargoTransferRequest creates a new cargo transfer request
+func NewCargoTransferRequest(
+        id string,
+        miningOperationID string,
+        minerShip string,
+        cargoManifest []shared.CargoItem,
+) *CargoTransferRequest <span class="cov8" title="1">{
+        // Copy cargo manifest to ensure immutability
+        manifest := make([]shared.CargoItem, len(cargoManifest))
+        copy(manifest, cargoManifest)
+
+        return &amp;CargoTransferRequest{
+                id:                id,
+                miningOperationID: miningOperationID,
+                minerShip:         minerShip,
+                cargoManifest:     manifest,
+                status:            TransferStatusPending,
+                createdAt:         time.Now(),
+        }
+}</span>
+
+// Getters
+
+func (r *CargoTransferRequest) ID() string                        <span class="cov8" title="1">{ return r.id }</span>
+func (r *CargoTransferRequest) MiningOperationID() string         <span class="cov8" title="1">{ return r.miningOperationID }</span>
+func (r *CargoTransferRequest) MinerShip() string                 <span class="cov8" title="1">{ return r.minerShip }</span>
+func (r *CargoTransferRequest) TransportShip() string             <span class="cov8" title="1">{ return r.transportShip }</span>
+func (r *CargoTransferRequest) CargoManifest() []shared.CargoItem <span class="cov8" title="1">{ return r.cargoManifest }</span>
+func (r *CargoTransferRequest) Status() TransferStatus            <span class="cov8" title="1">{ return r.status }</span>
+func (r *CargoTransferRequest) CreatedAt() time.Time              <span class="cov0" title="0">{ return r.createdAt }</span>
+func (r *CargoTransferRequest) CompletedAt() *time.Time           <span class="cov8" title="1">{ return r.completedAt }</span>
+
+// Value object operations - return new instances
+
+// WithTransportShip returns a new CargoTransferRequest with the transport ship assigned
+func (r *CargoTransferRequest) WithTransportShip(transportShip string) *CargoTransferRequest <span class="cov8" title="1">{
+        manifest := make([]shared.CargoItem, len(r.cargoManifest))
+        copy(manifest, r.cargoManifest)
+
+        return &amp;CargoTransferRequest{
+                id:                r.id,
+                miningOperationID: r.miningOperationID,
+                minerShip:         r.minerShip,
+                transportShip:     transportShip,
+                cargoManifest:     manifest,
+                status:            TransferStatusInProgress,
+                createdAt:         r.createdAt,
+                completedAt:       r.completedAt,
+        }
+}</span>
+
+// WithCompleted returns a new CargoTransferRequest marked as completed
+func (r *CargoTransferRequest) WithCompleted(completedAt time.Time) *CargoTransferRequest <span class="cov8" title="1">{
+        manifest := make([]shared.CargoItem, len(r.cargoManifest))
+        copy(manifest, r.cargoManifest)
+
+        return &amp;CargoTransferRequest{
+                id:                r.id,
+                miningOperationID: r.miningOperationID,
+                minerShip:         r.minerShip,
+                transportShip:     r.transportShip,
+                cargoManifest:     manifest,
+                status:            TransferStatusCompleted,
+                createdAt:         r.createdAt,
+                completedAt:       &amp;completedAt,
+        }
+}</span>
+
+// State queries
+
+// IsPending returns true if the transfer is waiting for assignment
+func (r *CargoTransferRequest) IsPending() bool <span class="cov8" title="1">{
+        return r.status == TransferStatusPending
+}</span>
+
+// IsInProgress returns true if the transfer is being executed
+func (r *CargoTransferRequest) IsInProgress() bool <span class="cov8" title="1">{
+        return r.status == TransferStatusInProgress
+}</span>
+
+// IsCompleted returns true if the transfer has been completed
+func (r *CargoTransferRequest) IsCompleted() bool <span class="cov8" title="1">{
+        return r.status == TransferStatusCompleted
+}</span>
+
+// TotalUnits calculates the total cargo units in the manifest
+func (r *CargoTransferRequest) TotalUnits() int <span class="cov8" title="1">{
+        total := 0
+        for _, item := range r.cargoManifest </span><span class="cov8" title="1">{
+                total += item.Units
+        }</span>
+        <span class="cov8" title="1">return total</span>
+}
+
+// CargoTransferRequestData is the DTO for persisting cargo transfer requests
+type CargoTransferRequestData struct {
+        ID                string
+        MiningOperationID string
+        MinerShip         string
+        TransportShip     string
+        CargoManifest     []shared.CargoItem
+        Status            string
+        CreatedAt         time.Time
+        CompletedAt       *time.Time
+}
+
+// ToData converts the value object to a DTO for persistence
+func (r *CargoTransferRequest) ToData() *CargoTransferRequestData <span class="cov8" title="1">{
+        return &amp;CargoTransferRequestData{
+                ID:                r.id,
+                MiningOperationID: r.miningOperationID,
+                MinerShip:         r.minerShip,
+                TransportShip:     r.transportShip,
+                CargoManifest:     r.cargoManifest,
+                Status:            string(r.status),
+                CreatedAt:         r.createdAt,
+                CompletedAt:       r.completedAt,
+        }
+}</span>
+
+// CargoTransferRequestFromData creates a CargoTransferRequest from a DTO
+func CargoTransferRequestFromData(data *CargoTransferRequestData) *CargoTransferRequest <span class="cov8" title="1">{
+        manifest := make([]shared.CargoItem, len(data.CargoManifest))
+        copy(manifest, data.CargoManifest)
+
+        return &amp;CargoTransferRequest{
+                id:                data.ID,
+                miningOperationID: data.MiningOperationID,
+                minerShip:         data.MinerShip,
+                transportShip:     data.TransportShip,
+                cargoManifest:     manifest,
+                status:            TransferStatus(data.Status),
+                createdAt:         data.CreatedAt,
+                completedAt:       data.CompletedAt,
+        }
+}</span>
+</pre>
+		
+		<pre class="file" id="file9" style="display: none">package mining
+
+import (
+        "fmt"
+        "time"
+
+        "github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+)
+
+// OperationStatus represents the lifecycle state of a mining operation
+type OperationStatus string
+
+const (
+        OperationStatusPending   OperationStatus = "PENDING"
+        OperationStatusRunning   OperationStatus = "RUNNING"
+        OperationStatusCompleted OperationStatus = "COMPLETED"
+        OperationStatusStopped   OperationStatus = "STOPPED"
+        OperationStatusFailed    OperationStatus = "FAILED"
+)
+
+// Operation represents a complete mining operation aggregate root
+// It orchestrates mining ships extracting from asteroids and transport ships
+// selling the cargo at optimal markets.
+type Operation struct {
+        id             string
+        playerID       int
+        asteroidField  string // Waypoint symbol of the asteroid field
+        status         OperationStatus
+        topNOres       int      // Number of ore types to keep (jettison rest)
+        minerShips     []string // Ship symbols for mining
+        transportShips []string // Ship symbols for transport
+
+        // Batch collection configuration
+        batchThreshold int // Number of miners to accumulate before spawning transport
+        batchTimeout   int // Seconds to wait before spawning transport anyway
+
+        // Iteration control
+        maxIterations int // -1 for infinite
+
+        // Error tracking
+        lastError error
+
+        // Lifecycle timestamps
+        createdAt time.Time
+        updatedAt time.Time
+        startedAt *time.Time
+        stoppedAt *time.Time
+
+        // Time provider for testability
+        clock shared.Clock
+}
+
+// NewOperation creates a new mining operation instance
+func NewOperation(
+        id string,
+        playerID int,
+        asteroidField string,
+        minerShips []string,
+        transportShips []string,
+        topNOres int,
+        batchThreshold int,
+        batchTimeout int,
+        maxIterations int,
+        clock shared.Clock,
+) *Operation <span class="cov8" title="1">{
+        if clock == nil </span><span class="cov0" title="0">{
+                clock = shared.NewRealClock()
+        }</span>
+
+        // Copy slices to avoid external mutation
+        <span class="cov8" title="1">miners := make([]string, len(minerShips))
+        copy(miners, minerShips)
+
+        transports := make([]string, len(transportShips))
+        copy(transports, transportShips)
+
+        now := clock.Now()
+        return &amp;Operation{
+                id:             id,
+                playerID:       playerID,
+                asteroidField:  asteroidField,
+                status:         OperationStatusPending,
+                topNOres:       topNOres,
+                minerShips:     miners,
+                transportShips: transports,
+                batchThreshold: batchThreshold,
+                batchTimeout:   batchTimeout,
+                maxIterations:  maxIterations,
+                createdAt:      now,
+                updatedAt:      now,
+                clock:          clock,
+        }</span>
+}
+
+// Getters
+
+func (op *Operation) ID() string                    <span class="cov0" title="0">{ return op.id }</span>
+func (op *Operation) PlayerID() int                 <span class="cov0" title="0">{ return op.playerID }</span>
+func (op *Operation) AsteroidField() string         <span class="cov8" title="1">{ return op.asteroidField }</span>
+func (op *Operation) Status() OperationStatus       <span class="cov8" title="1">{ return op.status }</span>
+func (op *Operation) TopNOres() int                 <span class="cov8" title="1">{ return op.topNOres }</span>
+func (op *Operation) MinerShips() []string          <span class="cov8" title="1">{ return op.minerShips }</span>
+func (op *Operation) TransportShips() []string      <span class="cov8" title="1">{ return op.transportShips }</span>
+func (op *Operation) BatchThreshold() int           <span class="cov8" title="1">{ return op.batchThreshold }</span>
+func (op *Operation) BatchTimeout() int             <span class="cov8" title="1">{ return op.batchTimeout }</span>
+func (op *Operation) MaxIterations() int            <span class="cov8" title="1">{ return op.maxIterations }</span>
+func (op *Operation) LastError() error              <span class="cov8" title="1">{ return op.lastError }</span>
+func (op *Operation) CreatedAt() time.Time          <span class="cov0" title="0">{ return op.createdAt }</span>
+func (op *Operation) UpdatedAt() time.Time          <span class="cov0" title="0">{ return op.updatedAt }</span>
+func (op *Operation) StartedAt() *time.Time         <span class="cov8" title="1">{ return op.startedAt }</span>
+func (op *Operation) StoppedAt() *time.Time         <span class="cov8" title="1">{ return op.stoppedAt }</span>
+
+// State transition methods
+
+// Start transitions the operation from PENDING to RUNNING
+func (op *Operation) Start() error <span class="cov8" title="1">{
+        if op.status != OperationStatusPending </span><span class="cov8" title="1">{
+                return fmt.Errorf("cannot start operation in %s state", op.status)
+        }</span>
+
+        <span class="cov8" title="1">if err := op.Validate(); err != nil </span><span class="cov8" title="1">{
+                return fmt.Errorf("operation validation failed: %w", err)
+        }</span>
+
+        <span class="cov8" title="1">now := op.clock.Now()
+        op.status = OperationStatusRunning
+        op.startedAt = &amp;now
+        op.updatedAt = now
+        return nil</span>
+}
+
+// Stop transitions the operation to STOPPED state
+func (op *Operation) Stop() error <span class="cov8" title="1">{
+        if op.status == OperationStatusCompleted || op.status == OperationStatusStopped </span><span class="cov8" title="1">{
+                return fmt.Errorf("cannot stop operation in %s state", op.status)
+        }</span>
+
+        <span class="cov8" title="1">now := op.clock.Now()
+        op.status = OperationStatusStopped
+        op.stoppedAt = &amp;now
+        op.updatedAt = now
+        return nil</span>
+}
+
+// Complete transitions the operation to COMPLETED state
+func (op *Operation) Complete() error <span class="cov8" title="1">{
+        if op.status != OperationStatusRunning </span><span class="cov8" title="1">{
+                return fmt.Errorf("cannot complete operation in %s state", op.status)
+        }</span>
+
+        <span class="cov8" title="1">now := op.clock.Now()
+        op.status = OperationStatusCompleted
+        op.stoppedAt = &amp;now
+        op.updatedAt = now
+        return nil</span>
+}
+
+// Fail transitions the operation to FAILED state with error
+func (op *Operation) Fail(err error) error <span class="cov8" title="1">{
+        if op.status == OperationStatusCompleted || op.status == OperationStatusStopped </span><span class="cov8" title="1">{
+                return fmt.Errorf("cannot fail operation in %s state", op.status)
+        }</span>
+
+        <span class="cov8" title="1">now := op.clock.Now()
+        op.status = OperationStatusFailed
+        op.lastError = err
+        op.stoppedAt = &amp;now
+        op.updatedAt = now
+        return nil</span>
+}
+
+// Validation methods
+
+// Validate checks all invariants for the mining operation
+func (op *Operation) Validate() error <span class="cov8" title="1">{
+        if !op.HasMiners() </span><span class="cov8" title="1">{
+                return fmt.Errorf("operation must have at least 1 miner ship")
+        }</span>
+
+        <span class="cov8" title="1">if !op.HasTransports() </span><span class="cov8" title="1">{
+                return fmt.Errorf("operation must have at least 1 transport ship")
+        }</span>
+
+        <span class="cov8" title="1">if op.topNOres &lt; 1 </span><span class="cov8" title="1">{
+                return fmt.Errorf("topNOres must be &gt;= 1, got %d", op.topNOres)
+        }</span>
+
+        <span class="cov8" title="1">if op.asteroidField == "" </span><span class="cov8" title="1">{
+                return fmt.Errorf("asteroid field waypoint must be specified")
+        }</span>
+
+        // BatchThreshold and BatchTimeout are optional (0 means not used in Transport-as-Sink pattern)
+        // Only validate if they're provided (non-zero)
+        <span class="cov8" title="1">if op.batchThreshold &lt; 0 </span><span class="cov8" title="1">{
+                return fmt.Errorf("batchThreshold must be &gt;= 0, got %d", op.batchThreshold)
+        }</span>
+
+        <span class="cov8" title="1">if op.batchTimeout &lt; 0 </span><span class="cov8" title="1">{
+                return fmt.Errorf("batchTimeout must be &gt;= 0, got %d", op.batchTimeout)
+        }</span>
+
+        <span class="cov8" title="1">return nil</span>
+}
+
+// HasMiners returns true if the operation has at least one miner ship
+func (op *Operation) HasMiners() bool <span class="cov8" title="1">{
+        return len(op.minerShips) &gt; 0
+}</span>
+
+// HasTransports returns true if the operation has at least one transport ship
+func (op *Operation) HasTransports() bool <span class="cov8" title="1">{
+        return len(op.transportShips) &gt; 0
+}</span>
+
+// State queries
+
+// IsRunning returns true if the operation is currently executing
+func (op *Operation) IsRunning() bool <span class="cov8" title="1">{
+        return op.status == OperationStatusRunning
+}</span>
+
+// IsFinished returns true if the operation has completed, failed, or stopped
+func (op *Operation) IsFinished() bool <span class="cov8" title="1">{
+        return op.status == OperationStatusCompleted ||
+                op.status == OperationStatusFailed ||
+                op.status == OperationStatusStopped
+}</span>
+
+// IsPending returns true if the operation hasn't started yet
+func (op *Operation) IsPending() bool <span class="cov8" title="1">{
+        return op.status == OperationStatusPending
+}</span>
+
+// Runtime calculation
+
+// RuntimeDuration calculates how long the operation has been running
+func (op *Operation) RuntimeDuration() time.Duration <span class="cov8" title="1">{
+        if op.startedAt == nil </span><span class="cov8" title="1">{
+                return 0
+        }</span>
+
+        <span class="cov8" title="1">endTime := op.clock.Now()
+        if op.stoppedAt != nil </span><span class="cov8" title="1">{
+                endTime = *op.stoppedAt
+        }</span>
+
+        <span class="cov8" title="1">return endTime.Sub(*op.startedAt)</span>
+}
+
+// String provides human-readable representation
+func (op *Operation) String() string <span class="cov0" title="0">{
+        return fmt.Sprintf("Operation[%s, status=%s, asteroid=%s, miners=%d, transports=%d]",
+                op.id, op.status, op.asteroidField, len(op.minerShips), len(op.transportShips))
+}</span>
+
+// OperationData is the DTO for persisting mining operations
+type OperationData struct {
+        ID             string
+        PlayerID       int
+        AsteroidField  string
+        Status         string
+        TopNOres       int
+        MinerShips     []string
+        TransportShips []string
+        BatchThreshold int
+        BatchTimeout   int
+        MaxIterations  int
+        LastError      string
+        CreatedAt      time.Time
+        UpdatedAt      time.Time
+        StartedAt      *time.Time
+        StoppedAt      *time.Time
+}
+
+// ToData converts the entity to a DTO for persistence
+func (op *Operation) ToData() *OperationData <span class="cov8" title="1">{
+        var lastErr string
+        if op.lastError != nil </span><span class="cov8" title="1">{
+                lastErr = op.lastError.Error()
+        }</span>
+
+        <span class="cov8" title="1">return &amp;OperationData{
+                ID:             op.id,
+                PlayerID:       op.playerID,
+                AsteroidField:  op.asteroidField,
+                Status:         string(op.status),
+                TopNOres:       op.topNOres,
+                MinerShips:     op.minerShips,
+                TransportShips: op.transportShips,
+                BatchThreshold: op.batchThreshold,
+                BatchTimeout:   op.batchTimeout,
+                MaxIterations:  op.maxIterations,
+                LastError:      lastErr,
+                CreatedAt:      op.createdAt,
+                UpdatedAt:      op.updatedAt,
+                StartedAt:      op.startedAt,
+                StoppedAt:      op.stoppedAt,
+        }</span>
+}
+
+// FromData creates a Operation entity from a DTO
+func FromData(data *OperationData, clock shared.Clock) *Operation <span class="cov8" title="1">{
+        if clock == nil </span><span class="cov0" title="0">{
+                clock = shared.NewRealClock()
+        }</span>
+
+        <span class="cov8" title="1">var lastErr error
+        if data.LastError != "" </span><span class="cov8" title="1">{
+                lastErr = fmt.Errorf("%s", data.LastError)
+        }</span>
+
+        <span class="cov8" title="1">return &amp;Operation{
+                id:             data.ID,
+                playerID:       data.PlayerID,
+                asteroidField:  data.AsteroidField,
+                status:         OperationStatus(data.Status),
+                topNOres:       data.TopNOres,
+                minerShips:     data.MinerShips,
+                transportShips: data.TransportShips,
+                batchThreshold: data.BatchThreshold,
+                batchTimeout:   data.BatchTimeout,
+                maxIterations:  data.MaxIterations,
+                lastError:      lastErr,
+                createdAt:      data.CreatedAt,
+                updatedAt:      data.UpdatedAt,
+                startedAt:      data.StartedAt,
+                stoppedAt:      data.StoppedAt,
+                clock:          clock,
+        }</span>
+}
+</pre>
+		
+		<pre class="file" id="file10" style="display: none">package navigation
+
+import (
+        "fmt"
+
+        "github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+)
+
+// RouteStatus represents route execution status
+type RouteStatus string
+
+const (
+        RouteStatusPlanned   RouteStatus = "PLANNED"
+        RouteStatusExecuting RouteStatus = "EXECUTING"
+        RouteStatusCompleted RouteStatus = "COMPLETED"
+        RouteStatusFailed    RouteStatus = "FAILED"
+        RouteStatusAborted   RouteStatus = "ABORTED"
+)
+
+// RouteSegment represents an immutable route segment
+type RouteSegment struct {
+        FromWaypoint   *shared.Waypoint
+        ToWaypoint     *shared.Waypoint
+        Distance       float64
+        FuelRequired   int
+        TravelTime     int
+        FlightMode     shared.FlightMode
+        RequiresRefuel bool
+}
+
+// NewRouteSegment creates a new route segment
+func NewRouteSegment(
+        from, to *shared.Waypoint,
+        distance float64,
+        fuelRequired, travelTime int,
+        mode shared.FlightMode,
+        requiresRefuel bool,
+) *RouteSegment <span class="cov8" title="1">{
+        return &amp;RouteSegment{
+                FromWaypoint:   from,
+                ToWaypoint:     to,
+                Distance:       distance,
+                FuelRequired:   fuelRequired,
+                TravelTime:     travelTime,
+                FlightMode:     mode,
+                RequiresRefuel: requiresRefuel,
+        }
+}</span>
+
+func (r *RouteSegment) String() string <span class="cov0" title="0">{
+        refuel := ""
+        if r.RequiresRefuel </span><span class="cov0" title="0">{
+                refuel = " [REFUEL]"
+        }</span>
+        <span class="cov0" title="0">return fmt.Sprintf("%s → %s (%.1fu, %d⛽, %s)%s",
+                r.FromWaypoint.Symbol, r.ToWaypoint.Symbol,
+                r.Distance, r.FuelRequired, r.FlightMode, refuel)</span>
+}
+
+// Route aggregate root - represents a complete navigation plan
+//
+// Invariants:
+// - Segments form connected path (segment[i].to == segment[i+1].from)
+// - Total fuel required does not exceed ship capacity
+// - Route can only be executed from PLANNED status
+type Route struct {
+        routeID               string
+        shipSymbol            string
+        playerID              int
+        segments              []*RouteSegment
+        shipFuelCapacity      int
+        refuelBeforeDeparture bool
+        status                RouteStatus
+        currentSegmentIndex   int
+}
+
+// NewRoute creates a new route with validation
+func NewRoute(
+        routeID, shipSymbol string,
+        playerID int,
+        segments []*RouteSegment,
+        shipFuelCapacity int,
+        refuelBeforeDeparture bool,
+) (*Route, error) <span class="cov8" title="1">{
+        r := &amp;Route{
+                routeID:               routeID,
+                shipSymbol:            shipSymbol,
+                playerID:              playerID,
+                segments:              segments,
+                shipFuelCapacity:      shipFuelCapacity,
+                refuelBeforeDeparture: refuelBeforeDeparture,
+                status:                RouteStatusPlanned,
+                currentSegmentIndex:   0,
+        }
+
+        // Only validate if we have segments
+        if len(segments) &gt; 0 </span><span class="cov8" title="1">{
+                if err := r.validate(); err != nil </span><span class="cov8" title="1">{
+                        return nil, err
+                }</span>
+        }
+
+        <span class="cov8" title="1">return r, nil</span>
+}
+
+func (r *Route) validate() error <span class="cov8" title="1">{
+        // Check segments form connected path
+        for i := 0; i &lt; len(r.segments)-1; i++ </span><span class="cov8" title="1">{
+                current := r.segments[i]
+                next := r.segments[i+1]
+                if current.ToWaypoint.Symbol != next.FromWaypoint.Symbol </span><span class="cov8" title="1">{
+                        return fmt.Errorf("segments not connected: %s → %s",
+                                current.ToWaypoint.Symbol, next.FromWaypoint.Symbol)
+                }</span>
+        }
+
+        // Check fuel requirements don't exceed capacity
+        <span class="cov8" title="1">maxFuelNeeded := 0
+        for _, seg := range r.segments </span><span class="cov8" title="1">{
+                if seg.FuelRequired &gt; maxFuelNeeded </span><span class="cov8" title="1">{
+                        maxFuelNeeded = seg.FuelRequired
+                }</span>
+        }
+        <span class="cov8" title="1">if maxFuelNeeded &gt; r.shipFuelCapacity </span><span class="cov8" title="1">{
+                return fmt.Errorf("segment requires %d fuel but ship capacity is %d",
+                        maxFuelNeeded, r.shipFuelCapacity)
+        }</span>
+
+        <span class="cov8" title="1">return nil</span>
+}
+
+// Getters
+
+func (r *Route) RouteID() string <span class="cov0" title="0">{
+        return r.routeID
+}</span>
+
+func (r *Route) ShipSymbol() string <span class="cov0" title="0">{
+        return r.shipSymbol
+}</span>
+
+func (r *Route) PlayerID() int <span class="cov0" title="0">{
+        return r.playerID
+}</span>
+
+func (r *Route) Segments() []*RouteSegment <span class="cov8" title="1">{
+        // Return a copy to prevent mutation
+        segments := make([]*RouteSegment, len(r.segments))
+        copy(segments, r.segments)
+        return segments
+}</span>
+
+func (r *Route) Status() RouteStatus <span class="cov8" title="1">{
+        return r.status
+}</span>
+
+func (r *Route) CurrentSegmentIndex() int <span class="cov8" title="1">{
+        return r.currentSegmentIndex
+}</span>
+
+func (r *Route) RefuelBeforeDeparture() bool <span class="cov0" title="0">{
+        return r.refuelBeforeDeparture
+}</span>
+
+// Route execution
+
+// StartExecution begins route execution
+func (r *Route) StartExecution() error <span class="cov8" title="1">{
+        if r.status != RouteStatusPlanned </span><span class="cov8" title="1">{
+                return fmt.Errorf("cannot start route in status %s", r.status)
+        }</span>
+        <span class="cov8" title="1">r.status = RouteStatusExecuting
+        return nil</span>
+}
+
+// CompleteSegment marks current segment as complete and advances
+func (r *Route) CompleteSegment() error <span class="cov8" title="1">{
+        if r.status != RouteStatusExecuting </span><span class="cov8" title="1">{
+                return fmt.Errorf("cannot complete segment when route status is %s", r.status)
+        }</span>
+
+        <span class="cov8" title="1">r.currentSegmentIndex++
+
+        // Check if route complete
+        if r.currentSegmentIndex &gt;= len(r.segments) </span><span class="cov8" title="1">{
+                r.status = RouteStatusCompleted
+        }</span>
+
+        <span class="cov8" title="1">return nil</span>
+}
+
+// FailRoute marks route as failed
+func (r *Route) FailRoute(reason string) <span class="cov8" title="1">{
+        r.status = RouteStatusFailed
+}</span>
+
+// AbortRoute aborts route execution
+func (r *Route) AbortRoute(reason string) <span class="cov8" title="1">{
+        r.status = RouteStatusAborted
+}</span>
+
+// Route queries
+
+// TotalDistance calculates total distance of route
+func (r *Route) TotalDistance() float64 <span class="cov8" title="1">{
+        total := 0.0
+        for _, seg := range r.segments </span><span class="cov8" title="1">{
+                total += seg.Distance
+        }</span>
+        <span class="cov8" title="1">return total</span>
+}
+
+// TotalFuelRequired calculates total fuel required (assuming refuels at stops)
+func (r *Route) TotalFuelRequired() int <span class="cov8" title="1">{
+        total := 0
+        for _, seg := range r.segments </span><span class="cov8" title="1">{
+                total += seg.FuelRequired
+        }</span>
+        <span class="cov8" title="1">return total</span>
+}
+
+// TotalTravelTime calculates total travel time in seconds
+func (r *Route) TotalTravelTime() int <span class="cov8" title="1">{
+        total := 0
+        for _, seg := range r.segments </span><span class="cov8" title="1">{
+                total += seg.TravelTime
+        }</span>
+        <span class="cov8" title="1">return total</span>
+}
+
+// CurrentSegment gets current segment being executed
+func (r *Route) CurrentSegment() *RouteSegment <span class="cov8" title="1">{
+        if r.currentSegmentIndex &lt; len(r.segments) </span><span class="cov8" title="1">{
+                return r.segments[r.currentSegmentIndex]
+        }</span>
+        <span class="cov8" title="1">return nil</span>
+}
+
+// RemainingSegments gets remaining segments to execute
+func (r *Route) RemainingSegments() []*RouteSegment <span class="cov8" title="1">{
+        if r.currentSegmentIndex &gt;= len(r.segments) </span><span class="cov8" title="1">{
+                return []*RouteSegment{}
+        }</span>
+        <span class="cov8" title="1">remaining := make([]*RouteSegment, len(r.segments)-r.currentSegmentIndex)
+        copy(remaining, r.segments[r.currentSegmentIndex:])
+        return remaining</span>
+}
+
+func (r *Route) String() string <span class="cov0" title="0">{
+        return fmt.Sprintf("Route(id=%s, ship=%s, segments=%d, status=%s)",
+                r.routeID, r.shipSymbol, len(r.segments), r.status)
+}</span>
+
+// NextSegment returns the next segment to execute (current segment)
+// Returns nil if route is complete
+func (r *Route) NextSegment() *RouteSegment <span class="cov0" title="0">{
+        return r.CurrentSegment()
+}</span>
+
+// HasRefuelAtStart checks if route requires refuel before departure
+func (r *Route) HasRefuelAtStart() bool <span class="cov8" title="1">{
+        return r.refuelBeforeDeparture
+}</span>
+
+// IsComplete checks if route execution is complete
+func (r *Route) IsComplete() bool <span class="cov8" title="1">{
+        return r.status == RouteStatusCompleted
+}</span>
+
+// IsFailed checks if route execution has failed
+func (r *Route) IsFailed() bool <span class="cov8" title="1">{
+        return r.status == RouteStatusFailed
+}</span>
+</pre>
+		
+		<pre class="file" id="file11" style="display: none">package navigation
+
+import (
+        "fmt"
+
+        "github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+)
+
+// NavStatus represents ship navigation status
+type NavStatus string
+
+const (
+        NavStatusDocked    NavStatus = "DOCKED"
+        NavStatusInOrbit   NavStatus = "IN_ORBIT"
+        NavStatusInTransit NavStatus = "IN_TRANSIT"
+)
+
+var validNavStatuses = map[NavStatus]bool{
+        NavStatusDocked:    true,
+        NavStatusInOrbit:   true,
+        NavStatusInTransit: true,
+}
+
+// Ship entity - represents a player's spacecraft with navigation capabilities
+//
+// Invariants:
+// - ShipSymbol must be unique and non-empty
+// - PlayerID must be positive
+// - NavStatus must be one of: IN_ORBIT, DOCKED, IN_TRANSIT
+// - Fuel operations respect capacity limits
+// - CargoUnits cannot exceed CargoCapacity
+// - EngineSpeed must be positive
+//
+// Navigation state machine:
+// - DOCKED -&gt; Depart() -&gt; IN_ORBIT
+// - IN_ORBIT -&gt; Navigate() -&gt; IN_TRANSIT
+// - IN_TRANSIT -&gt; Arrive() -&gt; IN_ORBIT
+// - IN_ORBIT -&gt; Dock() -&gt; DOCKED
+type Ship struct {
+        shipSymbol      string
+        playerID        shared.PlayerID
+        currentLocation *shared.Waypoint
+        fuel            *shared.Fuel
+        fuelCapacity    int
+        cargoCapacity   int
+        cargo           *shared.Cargo
+        engineSpeed     int
+        frameSymbol     string // Frame type (e.g., "FRAME_PROBE", "FRAME_DRONE", "FRAME_MINER")
+        role            string // Ship role from registration (e.g., "EXCAVATOR", "COMMAND", "SATELLITE")
+        navStatus       NavStatus
+}
+
+// NewShip creates a new Ship entity with validation
+func NewShip(
+        shipSymbol string,
+        playerID shared.PlayerID,
+        currentLocation *shared.Waypoint,
+        fuel *shared.Fuel,
+        fuelCapacity int,
+        cargoCapacity int,
+        cargo *shared.Cargo,
+        engineSpeed int,
+        frameSymbol string,
+        role string,
+        navStatus NavStatus,
+) (*Ship, error) <span class="cov8" title="1">{
+        s := &amp;Ship{
+                shipSymbol:      shipSymbol,
+                playerID:        playerID,
+                currentLocation: currentLocation,
+                fuel:            fuel,
+                fuelCapacity:    fuelCapacity,
+                cargoCapacity:   cargoCapacity,
+                cargo:           cargo,
+                engineSpeed:     engineSpeed,
+                frameSymbol:     frameSymbol,
+                role:            role,
+                navStatus:       navStatus,
+        }
+
+        if err := s.validate(); err != nil </span><span class="cov8" title="1">{
+                return nil, err
+        }</span>
+
+        <span class="cov8" title="1">return s, nil</span>
+}
+
+func (s *Ship) validate() error <span class="cov8" title="1">{
+        if s.shipSymbol == "" </span><span class="cov8" title="1">{
+                return shared.NewInvalidShipDataError("ship_symbol cannot be empty")
+        }</span>
+
+        <span class="cov8" title="1">if s.playerID.IsZero() </span><span class="cov0" title="0">{
+                return shared.NewInvalidShipDataError("player_id must be positive")
+        }</span>
+
+        <span class="cov8" title="1">if s.fuel == nil </span><span class="cov0" title="0">{
+                return shared.NewInvalidShipDataError("fuel cannot be nil")
+        }</span>
+
+        <span class="cov8" title="1">if s.fuelCapacity &lt; 0 </span><span class="cov8" title="1">{
+                return shared.NewInvalidShipDataError("fuel_capacity cannot be negative")
+        }</span>
+
+        <span class="cov8" title="1">if s.fuel.Capacity != s.fuelCapacity </span><span class="cov8" title="1">{
+                return shared.NewInvalidShipDataError("fuel capacity must match fuel_capacity")
+        }</span>
+
+        <span class="cov8" title="1">if s.cargo == nil </span><span class="cov0" title="0">{
+                return shared.NewInvalidShipDataError("cargo cannot be nil")
+        }</span>
+
+        <span class="cov8" title="1">if s.cargoCapacity &lt; 0 </span><span class="cov8" title="1">{
+                return shared.NewInvalidShipDataError("cargo_capacity cannot be negative")
+        }</span>
+
+        <span class="cov8" title="1">if s.cargo.Units &lt; 0 </span><span class="cov0" title="0">{
+                return shared.NewInvalidShipDataError("cargo_units cannot be negative")
+        }</span>
+
+        <span class="cov8" title="1">if s.cargo.Units &gt; s.cargoCapacity </span><span class="cov0" title="0">{
+                return shared.NewInvalidShipDataError("cargo_units cannot exceed cargo_capacity")
+        }</span>
+
+        <span class="cov8" title="1">if s.engineSpeed &lt;= 0 </span><span class="cov8" title="1">{
+                return shared.NewInvalidShipDataError("engine_speed must be positive")
+        }</span>
+
+        <span class="cov8" title="1">if !validNavStatuses[s.navStatus] </span><span class="cov8" title="1">{
+                return shared.NewInvalidShipDataError(fmt.Sprintf("invalid nav_status: %s", s.navStatus))
+        }</span>
+
+        <span class="cov8" title="1">return nil</span>
+}
+
+// Getters
+
+func (s *Ship) ShipSymbol() string <span class="cov8" title="1">{
+        return s.shipSymbol
+}</span>
+
+func (s *Ship) PlayerID() shared.PlayerID <span class="cov8" title="1">{
+        return s.playerID
+}</span>
+
+func (s *Ship) CurrentLocation() *shared.Waypoint <span class="cov8" title="1">{
+        return s.currentLocation
+}</span>
+
+func (s *Ship) Fuel() *shared.Fuel <span class="cov8" title="1">{
+        return s.fuel
+}</span>
+
+func (s *Ship) FuelCapacity() int <span class="cov8" title="1">{
+        return s.fuelCapacity
+}</span>
+
+func (s *Ship) CargoCapacity() int <span class="cov8" title="1">{
+        return s.cargoCapacity
+}</span>
+
+func (s *Ship) Cargo() *shared.Cargo <span class="cov8" title="1">{
+        return s.cargo
+}</span>
+
+func (s *Ship) CargoUnits() int <span class="cov8" title="1">{
+        if s.cargo == nil </span><span class="cov0" title="0">{
+                return 0
+        }</span>
+        <span class="cov8" title="1">return s.cargo.Units</span>
+}
+
+func (s *Ship) EngineSpeed() int <span class="cov8" title="1">{
+        return s.engineSpeed
+}</span>
+
+func (s *Ship) NavStatus() NavStatus <span class="cov0" title="0">{
+        return s.navStatus
+}</span>
+
+func (s *Ship) FrameSymbol() string <span class="cov8" title="1">{
+        return s.frameSymbol
+}</span>
+
+// Role returns the ship's role from registration
+func (s *Ship) Role() string <span class="cov8" title="1">{
+        return s.role
+}</span>
+
+// CloneAtLocation creates a copy of the ship at a different location with specified fuel
+// This is used for route planning to simulate ship state at intermediate waypoints
+func (s *Ship) CloneAtLocation(location *shared.Waypoint, currentFuel int) *Ship <span class="cov8" title="1">{
+        return &amp;Ship{
+                shipSymbol:      s.shipSymbol,
+                playerID:        s.playerID,
+                currentLocation: location,
+                fuel: &amp;shared.Fuel{
+                        Current:  currentFuel,
+                        Capacity: s.fuelCapacity,
+                },
+                fuelCapacity:  s.fuelCapacity,
+                cargoCapacity: s.cargoCapacity,
+                cargo:         s.cargo, // Share cargo (immutable for planning)
+                engineSpeed:   s.engineSpeed,
+                frameSymbol:   s.frameSymbol,
+                role:          s.role,
+                navStatus:     NavStatusInOrbit, // Assume in orbit for routing
+        }
+}</span>
+
+// Frame Type Queries
+
+// IsProbe checks if ship is a probe type (FRAME_PROBE)
+func (s *Ship) IsProbe() bool <span class="cov8" title="1">{
+        return s.frameSymbol == "FRAME_PROBE"
+}</span>
+
+// IsDrone checks if ship is a drone type (FRAME_DRONE)
+func (s *Ship) IsDrone() bool <span class="cov8" title="1">{
+        return s.frameSymbol == "FRAME_DRONE"
+}</span>
+
+// IsScoutType checks if ship is suitable for scouting (SATELLITE role)
+// Excludes EXCAVATOR and other mining/hauling roles
+func (s *Ship) IsScoutType() bool <span class="cov8" title="1">{
+        return s.role == "SATELLITE"
+}</span>
+
+// Navigation Status Management
+
+// EnsureInOrbit ensures ship is in orbit (state machine orchestration)
+//
+// Transitions:
+// - DOCKED → IN_ORBIT (automatic transition)
+// - IN_ORBIT → IN_ORBIT (no-op)
+// - IN_TRANSIT → error (cannot transition while traveling)
+//
+// Returns true if state was changed, false if already in orbit
+func (s *Ship) EnsureInOrbit() (bool, error) <span class="cov8" title="1">{
+        if s.navStatus == NavStatusInOrbit </span><span class="cov8" title="1">{
+                return false, nil
+        }</span>
+
+        <span class="cov8" title="1">if s.navStatus == NavStatusInTransit </span><span class="cov8" title="1">{
+                return false, shared.NewInvalidNavStatusError("cannot orbit while in transit")
+        }</span>
+
+        // Must be docked, use internal transition
+        <span class="cov8" title="1">if err := s.depart(); err != nil </span><span class="cov0" title="0">{
+                return false, err
+        }</span>
+        <span class="cov8" title="1">return true, nil</span>
+}
+
+// EnsureDocked ensures ship is docked (state machine orchestration)
+//
+// Transitions:
+// - IN_ORBIT → DOCKED (automatic transition)
+// - DOCKED → DOCKED (no-op)
+// - IN_TRANSIT → error (cannot transition while traveling)
+//
+// Returns true if state was changed, false if already docked
+func (s *Ship) EnsureDocked() (bool, error) <span class="cov8" title="1">{
+        if s.navStatus == NavStatusDocked </span><span class="cov8" title="1">{
+                return false, nil
+        }</span>
+
+        <span class="cov8" title="1">if s.navStatus == NavStatusInTransit </span><span class="cov8" title="1">{
+                return false, shared.NewInvalidNavStatusError("cannot dock while in transit")
+        }</span>
+
+        // Must be in orbit, use internal transition
+        <span class="cov8" title="1">if err := s.dock(); err != nil </span><span class="cov0" title="0">{
+                return false, err
+        }</span>
+        <span class="cov8" title="1">return true, nil</span>
+}
+
+// depart transitions from docked to orbit (internal state transition)
+func (s *Ship) depart() error <span class="cov8" title="1">{
+        if s.navStatus != NavStatusDocked </span><span class="cov0" title="0">{
+                return shared.NewInvalidNavStatusError(fmt.Sprintf("ship must be docked to depart, currently: %s", s.navStatus))
+        }</span>
+        <span class="cov8" title="1">s.navStatus = NavStatusInOrbit
+        return nil</span>
+}
+
+// dock transitions from orbit to docked (internal state transition)
+func (s *Ship) dock() error <span class="cov8" title="1">{
+        if s.navStatus != NavStatusInOrbit </span><span class="cov0" title="0">{
+                return shared.NewInvalidNavStatusError(fmt.Sprintf("ship must be in orbit to dock, currently: %s", s.navStatus))
+        }</span>
+        <span class="cov8" title="1">s.navStatus = NavStatusDocked
+        return nil</span>
+}
+
+// Arrive transitions from in-transit to orbit
+func (s *Ship) Arrive() error <span class="cov8" title="1">{
+        if s.navStatus != NavStatusInTransit </span><span class="cov8" title="1">{
+                return shared.NewInvalidNavStatusError(fmt.Sprintf("ship must be in transit to arrive, currently: %s", s.navStatus))
+        }</span>
+        <span class="cov8" title="1">s.navStatus = NavStatusInOrbit
+        return nil</span>
+}
+
+// StartTransit begins transit to destination
+func (s *Ship) StartTransit(destination *shared.Waypoint) error <span class="cov8" title="1">{
+        if s.navStatus != NavStatusInOrbit </span><span class="cov8" title="1">{
+                return shared.NewInvalidNavStatusError(fmt.Sprintf("ship must be in orbit to start transit, currently: %s", s.navStatus))
+        }</span>
+        <span class="cov8" title="1">if s.currentLocation.Symbol == destination.Symbol </span><span class="cov8" title="1">{
+                return fmt.Errorf("cannot transit to same location")
+        }</span>
+        <span class="cov8" title="1">s.navStatus = NavStatusInTransit
+        s.currentLocation = destination
+        return nil</span>
+}
+
+// Fuel Management
+
+// ConsumeFuel consumes fuel from ship's tanks
+func (s *Ship) ConsumeFuel(amount int) error <span class="cov8" title="1">{
+        if amount &lt; 0 </span><span class="cov8" title="1">{
+                return fmt.Errorf("fuel amount cannot be negative")
+        }</span>
+
+        <span class="cov8" title="1">if s.fuel.Current &lt; amount </span><span class="cov8" title="1">{
+                return shared.NewInsufficientFuelError(amount, s.fuel.Current)
+        }</span>
+
+        <span class="cov8" title="1">newFuel, err := s.fuel.Consume(amount)
+        if err != nil </span><span class="cov0" title="0">{
+                return err
+        }</span>
+        <span class="cov8" title="1">s.fuel = newFuel
+        return nil</span>
+}
+
+// Refuel adds fuel to ship's tanks
+func (s *Ship) Refuel(amount int) error <span class="cov8" title="1">{
+        if amount &lt; 0 </span><span class="cov8" title="1">{
+                return fmt.Errorf("fuel amount cannot be negative")
+        }</span>
+
+        <span class="cov8" title="1">newFuel, err := s.fuel.Add(amount)
+        if err != nil </span><span class="cov0" title="0">{
+                return err
+        }</span>
+        <span class="cov8" title="1">s.fuel = newFuel
+        return nil</span>
+}
+
+// RefuelToFull refuels ship to full capacity and returns amount added
+func (s *Ship) RefuelToFull() (int, error) <span class="cov8" title="1">{
+        fuelNeeded := s.fuelCapacity - s.fuel.Current
+        if fuelNeeded &gt; 0 </span><span class="cov8" title="1">{
+                if err := s.Refuel(fuelNeeded); err != nil </span><span class="cov0" title="0">{
+                        return 0, err
+                }</span>
+        }
+        <span class="cov8" title="1">return fuelNeeded, nil</span>
+}
+
+// Navigation Calculations
+
+// CanNavigateTo checks if ship can navigate to destination with current fuel
+func (s *Ship) CanNavigateTo(destination *shared.Waypoint) bool <span class="cov8" title="1">{
+        distance := s.currentLocation.DistanceTo(destination)
+        minFuelRequired := shared.FlightModeDrift.FuelCost(distance)
+        return s.fuel.Current &gt;= minFuelRequired
+}</span>
+
+// CalculateFuelForTrip calculates fuel required for trip to destination
+func (s *Ship) CalculateFuelForTrip(destination *shared.Waypoint, mode shared.FlightMode) int <span class="cov8" title="1">{
+        distance := s.currentLocation.DistanceTo(destination)
+        return mode.FuelCost(distance)
+}</span>
+
+// NeedsRefuelForJourney checks if ship needs refueling before journey
+func (s *Ship) NeedsRefuelForJourney(destination *shared.Waypoint, safetyMargin float64) bool <span class="cov8" title="1">{
+        distance := s.currentLocation.DistanceTo(destination)
+        fuelRequired := shared.FlightModeCruise.FuelCost(distance)
+        return !s.fuel.CanTravel(fuelRequired, safetyMargin)
+}</span>
+
+// CalculateTravelTime calculates travel time to destination
+func (s *Ship) CalculateTravelTime(destination *shared.Waypoint, mode shared.FlightMode) int <span class="cov8" title="1">{
+        distance := s.currentLocation.DistanceTo(destination)
+        return mode.TravelTime(distance, s.engineSpeed)
+}</span>
+
+// SelectOptimalFlightMode selects optimal flight mode for a given distance
+func (s *Ship) SelectOptimalFlightMode(distance float64) shared.FlightMode <span class="cov8" title="1">{
+        // Calculate costs for each mode
+        cruiseCost := shared.FlightModeCruise.FuelCost(distance)
+
+        // Use shared SelectOptimalFlightMode with ship's current fuel
+        // Safety margin of 4 ensures we don't run out mid-flight
+        return shared.SelectOptimalFlightMode(s.fuel.Current, cruiseCost, 4)
+}</span>
+
+// Cargo Management
+
+// HasCargoSpace checks if ship has available cargo space
+func (s *Ship) HasCargoSpace(units int) bool <span class="cov8" title="1">{
+        if s.cargo == nil </span><span class="cov0" title="0">{
+                return units &lt;= s.cargoCapacity
+        }</span>
+        <span class="cov8" title="1">return (s.cargo.Units + units) &lt;= s.cargoCapacity</span>
+}
+
+// AvailableCargoSpace returns available cargo space
+func (s *Ship) AvailableCargoSpace() int <span class="cov8" title="1">{
+        if s.cargo == nil </span><span class="cov0" title="0">{
+                return s.cargoCapacity
+        }</span>
+        <span class="cov8" title="1">return s.cargo.AvailableCapacity()</span>
+}
+
+// IsCargoEmpty checks if cargo hold is empty
+func (s *Ship) IsCargoEmpty() bool <span class="cov0" title="0">{
+        if s.cargo == nil </span><span class="cov0" title="0">{
+                return true
+        }</span>
+        <span class="cov0" title="0">return s.cargo.IsEmpty()</span>
+}
+
+// IsCargoFull checks if cargo hold is full
+func (s *Ship) IsCargoFull() bool <span class="cov0" title="0">{
+        if s.cargo == nil </span><span class="cov0" title="0">{
+                return false
+        }</span>
+        <span class="cov0" title="0">return s.cargo.Units &gt;= s.cargoCapacity</span>
+}
+
+// State Queries
+
+// IsDocked checks if ship is docked
+func (s *Ship) IsDocked() bool <span class="cov8" title="1">{
+        return s.navStatus == NavStatusDocked
+}</span>
+
+// IsInOrbit checks if ship is in orbit
+func (s *Ship) IsInOrbit() bool <span class="cov8" title="1">{
+        return s.navStatus == NavStatusInOrbit
+}</span>
+
+// IsInTransit checks if ship is in transit
+func (s *Ship) IsInTransit() bool <span class="cov8" title="1">{
+        return s.navStatus == NavStatusInTransit
+}</span>
+
+// IsAtLocation checks if ship is at specified waypoint
+func (s *Ship) IsAtLocation(waypoint *shared.Waypoint) bool <span class="cov8" title="1">{
+        return s.currentLocation.Symbol == waypoint.Symbol
+}</span>
+
+func (s *Ship) String() string <span class="cov0" title="0">{
+        return fmt.Sprintf("Ship(symbol=%s, location=%s, status=%s, fuel=%s)",
+                s.shipSymbol, s.currentLocation.Symbol, s.navStatus, s.fuel)
+}</span>
+
+// Route Execution Decision Methods
+
+// ShouldRefuelOpportunistically determines if ship should refuel at a waypoint
+// even if not planned by routing engine (defense-in-depth safety check)
+//
+// Returns true if:
+// - Ship is at a fuel station
+// - Fuel is below safety threshold (safetyMargin, e.g., 0.9 = 90%)
+// - Ship has fuel capacity &gt; 0
+func (s *Ship) ShouldRefuelOpportunistically(waypoint *shared.Waypoint, safetyMargin float64) bool <span class="cov0" title="0">{
+        if s.fuelCapacity == 0 </span><span class="cov0" title="0">{
+                return false
+        }</span>
+
+        <span class="cov0" title="0">if !waypoint.HasFuel </span><span class="cov0" title="0">{
+                return false
+        }</span>
+
+        // Check if ship is at this waypoint
+        <span class="cov0" title="0">if s.currentLocation.Symbol != waypoint.Symbol </span><span class="cov0" title="0">{
+                return false
+        }</span>
+
+        <span class="cov0" title="0">fuelPercentage := float64(s.fuel.Current) / float64(s.fuelCapacity)
+        return fuelPercentage &lt; safetyMargin</span>
+}
+
+// ShouldPreventDriftMode determines if ship should refuel before using DRIFT mode
+// to prevent unnecessary fuel emergencies at fuel stations
+//
+// Returns true if:
+// - Segment uses DRIFT mode
+// - Ship is at the segment's starting waypoint (departure point)
+// - Starting waypoint has fuel
+// - Fuel is below safety threshold
+func (s *Ship) ShouldPreventDriftMode(segment *RouteSegment, safetyMargin float64) bool <span class="cov0" title="0">{
+        if s.fuelCapacity == 0 </span><span class="cov0" title="0">{
+                return false
+        }</span>
+
+        // Check if using DRIFT mode
+        <span class="cov0" title="0">if segment.FlightMode != shared.FlightModeDrift </span><span class="cov0" title="0">{
+                return false
+        }</span>
+
+        // Check if at departure waypoint
+        <span class="cov0" title="0">if s.currentLocation.Symbol != segment.FromWaypoint.Symbol </span><span class="cov0" title="0">{
+                return false
+        }</span>
+
+        // Check if departure waypoint has fuel
+        <span class="cov0" title="0">if !segment.FromWaypoint.HasFuel </span><span class="cov0" title="0">{
+                return false
+        }</span>
+
+        <span class="cov0" title="0">fuelPercentage := float64(s.fuel.Current) / float64(s.fuelCapacity)
+        return fuelPercentage &lt; safetyMargin</span>
+}
+</pre>
+		
+		<pre class="file" id="file12" style="display: none">package player
+
+import "github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+
+// Player represents a SpaceTraders agent/player
+type Player struct {
+        ID              shared.PlayerID
+        AgentSymbol     string
+        Token           string
+        Credits         int
+        StartingFaction string
+        Metadata        map[string]interface{}
+}
+
+// NewPlayer creates a new player
+func NewPlayer(id shared.PlayerID, agentSymbol, token string) *Player <span class="cov0" title="0">{
+        return &amp;Player{
+                ID:          id,
+                AgentSymbol: agentSymbol,
+                Token:       token,
+                Metadata:    make(map[string]interface{}),
+        }
+}</span>
+</pre>
+		
+		<pre class="file" id="file13" style="display: none">package shared
+
+import (
+        "fmt"
+        "strings"
+        "time"
+)
+
+// ArrivalTime represents an immutable arrival time from the SpaceTraders API
+// This value object encapsulates the ISO8601 timestamp and provides domain logic
+// for calculating wait times until arrival.
+type ArrivalTime struct {
+        timestamp string // ISO8601 format (e.g., "2024-01-01T12:00:00Z")
+}
+
+// NewArrivalTime creates a new ArrivalTime value object with validation
+// The timestamp must be in ISO8601 format (RFC3339).
+//
+// Args:
+//   timestamp: ISO8601 format arrival time from API (e.g., "2024-01-01T12:00:00Z")
+//
+// Returns:
+//   ArrivalTime value object or error if timestamp is invalid
+func NewArrivalTime(timestamp string) (*ArrivalTime, error) <span class="cov8" title="1">{
+        if timestamp == "" </span><span class="cov8" title="1">{
+                return nil, fmt.Errorf("arrival time timestamp cannot be empty")
+        }</span>
+
+        // Normalize timestamp (handle both Z suffix and +00:00 suffix)
+        <span class="cov8" title="1">normalizedTimestamp := strings.Replace(timestamp, "Z", "+00:00", 1)
+
+        // Validate timestamp format
+        _, err := time.Parse(time.RFC3339, normalizedTimestamp)
+        if err != nil </span><span class="cov8" title="1">{
+                return nil, fmt.Errorf("invalid arrival time format: %w", err)
+        }</span>
+
+        <span class="cov8" title="1">return &amp;ArrivalTime{
+                timestamp: timestamp,
+        }, nil</span>
+}
+
+// CalculateWaitTime calculates the number of seconds to wait until arrival
+// Returns 0 if the arrival time is in the past or if parsing fails.
+//
+// Returns:
+//   Seconds to wait (minimum 0)
+func (a *ArrivalTime) CalculateWaitTime() int <span class="cov8" title="1">{
+        // Normalize timestamp (handle both Z suffix and +00:00 suffix)
+        normalizedTimestamp := strings.Replace(a.timestamp, "Z", "+00:00", 1)
+
+        arrivalTime, err := time.Parse(time.RFC3339, normalizedTimestamp)
+        if err != nil </span><span class="cov0" title="0">{
+                return 0
+        }</span>
+
+        <span class="cov8" title="1">now := time.Now().UTC()
+        waitSeconds := arrivalTime.Sub(now).Seconds()
+
+        if waitSeconds &lt; 0 </span><span class="cov8" title="1">{
+                return 0
+        }</span>
+
+        <span class="cov0" title="0">return int(waitSeconds)</span>
+}
+
+// Timestamp returns the raw ISO8601 timestamp string
+func (a *ArrivalTime) Timestamp() string <span class="cov8" title="1">{
+        return a.timestamp
+}</span>
+
+// HasArrived checks if the arrival time is in the past
+func (a *ArrivalTime) HasArrived() bool <span class="cov8" title="1">{
+        return a.CalculateWaitTime() == 0
+}</span>
+
+func (a *ArrivalTime) String() string <span class="cov0" title="0">{
+        return fmt.Sprintf("ArrivalTime(%s)", a.timestamp)
+}</span>
+</pre>
+		
+		<pre class="file" id="file14" style="display: none">package shared
+
+import "fmt"
+
+// CargoItem represents an individual cargo item in ship's hold
+type CargoItem struct {
+        Symbol      string
+        Name        string
+        Description string
+        Units       int
+}
+
+// NewCargoItem creates a new cargo item with validation
+func NewCargoItem(symbol, name, description string, units int) (*CargoItem, error) <span class="cov8" title="1">{
+        if units &lt; 0 </span><span class="cov8" title="1">{
+                return nil, fmt.Errorf("cargo units cannot be negative")
+        }</span>
+        <span class="cov8" title="1">if symbol == "" </span><span class="cov8" title="1">{
+                return nil, fmt.Errorf("cargo symbol cannot be empty")
+        }</span>
+
+        <span class="cov8" title="1">return &amp;CargoItem{
+                Symbol:      symbol,
+                Name:        name,
+                Description: description,
+                Units:       units,
+        }, nil</span>
+}
+
+// Cargo represents ship cargo manifest with detailed inventory
+type Cargo struct {
+        Capacity  int
+        Units     int
+        Inventory []*CargoItem
+}
+
+// NewCargo creates a new cargo manifest with validation
+func NewCargo(capacity, units int, inventory []*CargoItem) (*Cargo, error) <span class="cov8" title="1">{
+        if units &lt; 0 </span><span class="cov8" title="1">{
+                return nil, fmt.Errorf("cargo_units cannot be negative")
+        }</span>
+        <span class="cov8" title="1">if capacity &lt; 0 </span><span class="cov8" title="1">{
+                return nil, fmt.Errorf("cargo_capacity cannot be negative")
+        }</span>
+        <span class="cov8" title="1">if units &gt; capacity </span><span class="cov8" title="1">{
+                return nil, fmt.Errorf("cargo_units cannot exceed cargo_capacity")
+        }</span>
+
+        // Verify inventory sum matches total units
+        <span class="cov8" title="1">inventorySum := 0
+        for _, item := range inventory </span><span class="cov8" title="1">{
+                inventorySum += item.Units
+        }</span>
+        <span class="cov8" title="1">if inventorySum != units </span><span class="cov8" title="1">{
+                return nil, fmt.Errorf("inventory sum %d != total units %d", inventorySum, units)
+        }</span>
+
+        <span class="cov8" title="1">return &amp;Cargo{
+                Capacity:  capacity,
+                Units:     units,
+                Inventory: inventory,
+        }, nil</span>
+}
+
+// HasItem checks if cargo contains at least minUnits of specific item
+func (c *Cargo) HasItem(symbol string, minUnits int) bool <span class="cov8" title="1">{
+        return c.GetItemUnits(symbol) &gt;= minUnits
+}</span>
+
+// GetItemUnits gets units of specific trade good in cargo (0 if not present)
+func (c *Cargo) GetItemUnits(symbol string) int <span class="cov8" title="1">{
+        for _, item := range c.Inventory </span><span class="cov8" title="1">{
+                if item.Symbol == symbol </span><span class="cov8" title="1">{
+                        return item.Units
+                }</span>
+        }
+        <span class="cov8" title="1">return 0</span>
+}
+
+// HasItemsOtherThan checks if cargo contains items other than specified symbol
+func (c *Cargo) HasItemsOtherThan(symbol string) bool <span class="cov8" title="1">{
+        for _, item := range c.Inventory </span><span class="cov8" title="1">{
+                if item.Symbol != symbol &amp;&amp; item.Units &gt; 0 </span><span class="cov8" title="1">{
+                        return true
+                }</span>
+        }
+        <span class="cov8" title="1">return false</span>
+}
+
+// GetOtherItems returns all cargo items except the specified symbol
+func (c *Cargo) GetOtherItems(symbol string) []*CargoItem <span class="cov8" title="1">{
+        var others []*CargoItem
+        for _, item := range c.Inventory </span><span class="cov8" title="1">{
+                if item.Symbol != symbol </span><span class="cov8" title="1">{
+                        others = append(others, item)
+                }</span>
+        }
+        <span class="cov8" title="1">return others</span>
+}
+
+// AvailableCapacity calculates available cargo space
+func (c *Cargo) AvailableCapacity() int <span class="cov8" title="1">{
+        return c.Capacity - c.Units
+}</span>
+
+// IsEmpty checks if cargo hold is empty
+func (c *Cargo) IsEmpty() bool <span class="cov8" title="1">{
+        return c.Units == 0
+}</span>
+
+// IsFull checks if cargo hold is full
+func (c *Cargo) IsFull() bool <span class="cov8" title="1">{
+        return c.Units &gt;= c.Capacity
+}</span>
+
+func (c *Cargo) String() string <span class="cov8" title="1">{
+        return fmt.Sprintf("Cargo(%d/%d)", c.Units, c.Capacity)
+}</span>
+</pre>
+		
+		<pre class="file" id="file15" style="display: none">package shared
+
+import "time"
+
+// Clock is an abstraction for time operations, allowing time to be mocked in tests
+type Clock interface {
+        Now() time.Time
+        Sleep(d time.Duration)
+}
+
+// RealClock implements Clock using the actual system time
+type RealClock struct{}
+
+// Now returns the current system time
+func (r *RealClock) Now() time.Time <span class="cov0" title="0">{
+        return time.Now()
+}</span>
+
+// Sleep blocks for the given duration
+func (r *RealClock) Sleep(d time.Duration) <span class="cov0" title="0">{
+        time.Sleep(d)
+}</span>
+
+// MockClock implements Clock with a controllable time for testing
+type MockClock struct {
+        CurrentTime time.Time
+}
+
+// Now returns the mock's current time
+func (m *MockClock) Now() time.Time <span class="cov8" title="1">{
+        return m.CurrentTime
+}</span>
+
+// Sleep advances the mock clock without blocking (instant in tests)
+func (m *MockClock) Sleep(d time.Duration) <span class="cov0" title="0">{
+        m.CurrentTime = m.CurrentTime.Add(d)
+}</span>
+
+// Advance moves the mock clock forward by the given duration
+func (m *MockClock) Advance(d time.Duration) <span class="cov8" title="1">{
+        m.CurrentTime = m.CurrentTime.Add(d)
+}</span>
+
+// SetTime sets the mock clock to a specific time
+func (m *MockClock) SetTime(t time.Time) <span class="cov0" title="0">{
+        m.CurrentTime = t
+}</span>
+
+// NewMockClock creates a MockClock starting at the given time
+// If zero time is provided, starts at current time
+func NewMockClock(startTime time.Time) *MockClock <span class="cov8" title="1">{
+        if startTime.IsZero() </span><span class="cov0" title="0">{
+                startTime = time.Now()
+        }</span>
+        <span class="cov8" title="1">return &amp;MockClock{CurrentTime: startTime}</span>
+}
+
+// NewRealClock creates a RealClock instance
+func NewRealClock() Clock <span class="cov0" title="0">{
+        return &amp;RealClock{}
+}</span>
+</pre>
+		
+		<pre class="file" id="file16" style="display: none">package shared
+
+import "fmt"
+
+// DomainError is the base error type for all domain errors
+type DomainError struct {
+        Message string
+}
+
+func (e *DomainError) Error() string <span class="cov8" title="1">{
+        return e.Message
+}</span>
+
+func NewDomainError(message string) *DomainError <span class="cov0" title="0">{
+        return &amp;DomainError{Message: message}
+}</span>
+
+// Ship-related errors
+
+type ShipError struct {
+        *DomainError
+}
+
+func NewShipError(message string) *ShipError <span class="cov8" title="1">{
+        return &amp;ShipError{DomainError: &amp;DomainError{Message: message}}
+}</span>
+
+type InvalidNavStatusError struct {
+        *ShipError
+}
+
+func NewInvalidNavStatusError(message string) *InvalidNavStatusError <span class="cov8" title="1">{
+        return &amp;InvalidNavStatusError{ShipError: NewShipError(message)}
+}</span>
+
+type InsufficientFuelError struct {
+        *ShipError
+        Required  int
+        Available int
+}
+
+func NewInsufficientFuelError(required, available int) *InsufficientFuelError <span class="cov8" title="1">{
+        return &amp;InsufficientFuelError{
+                ShipError: NewShipError(fmt.Sprintf("insufficient fuel: need %d, have %d", required, available)),
+                Required:  required,
+                Available: available,
+        }
+}</span>
+
+type InvalidShipDataError struct {
+        *ShipError
+}
+
+func NewInvalidShipDataError(message string) *InvalidShipDataError <span class="cov8" title="1">{
+        return &amp;InvalidShipDataError{ShipError: NewShipError(message)}
+}</span>
+
+// Validation error
+
+type ValidationError struct {
+        Field   string
+        Message string
+}
+
+func (e *ValidationError) Error() string <span class="cov0" title="0">{
+        return fmt.Sprintf("%s: %s", e.Field, e.Message)
+}</span>
+
+func NewValidationError(field, message string) *ValidationError <span class="cov0" title="0">{
+        return &amp;ValidationError{Field: field, Message: message}
+}</span>
+
+// Ship Assignment errors
+
+type ShipAssignmentError struct {
+        *DomainError
+        ShipSymbol  string
+        ContainerID string
+}
+
+func NewShipAssignmentError(message, shipSymbol, containerID string) *ShipAssignmentError <span class="cov0" title="0">{
+        return &amp;ShipAssignmentError{
+                DomainError: &amp;DomainError{Message: message},
+                ShipSymbol:  shipSymbol,
+                ContainerID: containerID,
+        }
+}</span>
+
+type ShipAlreadyAssignedError struct {
+        *ShipAssignmentError
+}
+
+func NewShipAlreadyAssignedError(shipSymbol, currentContainerID string) *ShipAlreadyAssignedError <span class="cov0" title="0">{
+        return &amp;ShipAlreadyAssignedError{
+                ShipAssignmentError: NewShipAssignmentError(
+                        fmt.Sprintf("ship %s is already assigned to container %s", shipSymbol, currentContainerID),
+                        shipSymbol,
+                        currentContainerID,
+                ),
+        }
+}</span>
+
+type ShipLockedError struct {
+        *ShipAssignmentError
+}
+
+func NewShipLockedError(shipSymbol, containerID string) *ShipLockedError <span class="cov0" title="0">{
+        return &amp;ShipLockedError{
+                ShipAssignmentError: NewShipAssignmentError(
+                        fmt.Sprintf("ship %s is locked by container %s", shipSymbol, containerID),
+                        shipSymbol,
+                        containerID,
+                ),
+        }
+}</span>
+
+type ShipPlayerMismatchError struct {
+        *ShipAssignmentError
+        ExpectedPlayerID int
+        ActualPlayerID   int
+}
+
+func NewShipPlayerMismatchError(shipSymbol string, expectedPlayerID, actualPlayerID int) *ShipPlayerMismatchError <span class="cov0" title="0">{
+        return &amp;ShipPlayerMismatchError{
+                ShipAssignmentError: NewShipAssignmentError(
+                        fmt.Sprintf("ship %s player_id mismatch: expected %d, got %d", shipSymbol, expectedPlayerID, actualPlayerID),
+                        shipSymbol,
+                        "",
+                ),
+                ExpectedPlayerID: expectedPlayerID,
+                ActualPlayerID:   actualPlayerID,
+        }
+}</span>
+</pre>
+		
+		<pre class="file" id="file17" style="display: none">package shared
+
+import (
+        "fmt"
+        "math"
+)
+
+// FlightMode represents flight mode with time/fuel characteristics
+type FlightMode int
+
+const (
+        FlightModeCruise FlightMode = iota
+        FlightModeDrift
+        FlightModeBurn
+        FlightModeStealth
+)
+
+type flightModeConfig struct {
+        Name           string
+        TimeMultiplier int
+        FuelRate       float64
+}
+
+var flightModeConfigs = map[FlightMode]flightModeConfig{
+        FlightModeCruise:  {"CRUISE", 31, 1.0},     // Fast, standard fuel
+        FlightModeDrift:   {"DRIFT", 26, 0.003},    // Slow, minimal fuel
+        FlightModeBurn:    {"BURN", 15, 2.0},       // Very fast, high fuel
+        FlightModeStealth: {"STEALTH", 50, 1.0},    // Very slow, stealthy
+}
+
+// Name returns the mode name
+func (f FlightMode) Name() string <span class="cov8" title="1">{
+        if config, ok := flightModeConfigs[f]; ok </span><span class="cov8" title="1">{
+                return config.Name
+        }</span>
+        <span class="cov0" title="0">return "UNKNOWN"</span>
+}
+
+// FuelCost calculates fuel cost for given distance
+func (f FlightMode) FuelCost(distance float64) int <span class="cov8" title="1">{
+        if distance == 0 </span><span class="cov8" title="1">{
+                return 0
+        }</span>
+        <span class="cov8" title="1">config := flightModeConfigs[f]
+        cost := distance * config.FuelRate
+        if cost &lt; 1 </span><span class="cov8" title="1">{
+                return 1
+        }</span>
+        <span class="cov8" title="1">return int(math.Ceil(cost))</span>
+}
+
+// TravelTime calculates travel time in seconds
+func (f FlightMode) TravelTime(distance float64, engineSpeed int) int <span class="cov8" title="1">{
+        if distance == 0 </span><span class="cov0" title="0">{
+                return 0
+        }</span>
+        <span class="cov8" title="1">config := flightModeConfigs[f]
+        if engineSpeed &lt; 1 </span><span class="cov0" title="0">{
+                engineSpeed = 1
+        }</span>
+        <span class="cov8" title="1">time := (distance * float64(config.TimeMultiplier)) / float64(engineSpeed)
+        if time &lt; 1 </span><span class="cov0" title="0">{
+                return 1
+        }</span>
+        <span class="cov8" title="1">return int(time)</span>
+}
+
+// SelectOptimal selects optimal mode prioritizing speed while maintaining safety margin
+//
+// Strategy: ALWAYS minimize travel time. Use fastest mode that leaves
+// at least safetyMargin fuel remaining.
+//
+// Special case: If fuel exactly equals burn cost, select BURN (willing to use all fuel).
+//
+// Priority order: BURN &gt; CRUISE &gt; DRIFT
+func SelectOptimalFlightMode(currentFuel, fuelCost, safetyMargin int) FlightMode <span class="cov8" title="1">{
+        // Try BURN first (fastest: 2x fuel cost)
+        burnConfig := flightModeConfigs[FlightModeBurn]
+        cruiseConfig := flightModeConfigs[FlightModeCruise]
+        burnCost := int(float64(fuelCost) * burnConfig.FuelRate / cruiseConfig.FuelRate)
+
+        // Special case: exact match to burn threshold → use BURN (unless safety margin is very high)
+        if currentFuel == burnCost+safetyMargin &amp;&amp; safetyMargin &lt; burnCost </span><span class="cov0" title="0">{
+                return FlightModeBurn
+        }</span>
+
+        // Check BURN with safety margin (need MORE than minimum + margin for safety)
+        <span class="cov8" title="1">if currentFuel &gt; burnCost+safetyMargin </span><span class="cov8" title="1">{
+                return FlightModeBurn
+        }</span>
+
+        // Special case: exact match to cruise threshold → use CRUISE (unless safety margin is very high)
+        <span class="cov8" title="1">if currentFuel == fuelCost+safetyMargin &amp;&amp; safetyMargin &lt; fuelCost </span><span class="cov0" title="0">{
+                return FlightModeCruise
+        }</span>
+
+        // Try CRUISE next (standard: 1x fuel cost - need MORE than minimum + margin)
+        <span class="cov8" title="1">if currentFuel &gt; fuelCost+safetyMargin </span><span class="cov8" title="1">{
+                return FlightModeCruise
+        }</span>
+
+        // Fall back to DRIFT (slowest but most fuel efficient)
+        <span class="cov8" title="1">return FlightModeDrift</span>
+}
+
+func (f FlightMode) String() string <span class="cov0" title="0">{
+        return f.Name()
+}</span>
+
+// IsValidFlightModeName checks if a mode name string is valid
+func IsValidFlightModeName(modeName string) bool <span class="cov0" title="0">{
+        for _, config := range flightModeConfigs </span><span class="cov0" title="0">{
+                if config.Name == modeName </span><span class="cov0" title="0">{
+                        return true
+                }</span>
+        }
+        <span class="cov0" title="0">return false</span>
+}
+
+// ParseFlightMode parses a flight mode name string into a FlightMode
+func ParseFlightMode(modeName string) (FlightMode, error) <span class="cov0" title="0">{
+        for mode, config := range flightModeConfigs </span><span class="cov0" title="0">{
+                if config.Name == modeName </span><span class="cov0" title="0">{
+                        return mode, nil
+                }</span>
+        }
+        <span class="cov0" title="0">return FlightModeCruise, fmt.Errorf("invalid flight mode: %s", modeName)</span>
+}
+</pre>
+		
+		<pre class="file" id="file18" style="display: none">package shared
+
+import "fmt"
+
+// Fuel represents an immutable fuel state
+type Fuel struct {
+        Current  int
+        Capacity int
+}
+
+// NewFuel creates a new fuel value object with validation
+func NewFuel(current, capacity int) (*Fuel, error) <span class="cov8" title="1">{
+        if current &lt; 0 </span><span class="cov0" title="0">{
+                return nil, fmt.Errorf("current fuel cannot be negative")
+        }</span>
+        <span class="cov8" title="1">if capacity &lt; 0 </span><span class="cov0" title="0">{
+                return nil, fmt.Errorf("fuel capacity cannot be negative")
+        }</span>
+        <span class="cov8" title="1">if current &gt; capacity </span><span class="cov0" title="0">{
+                return nil, fmt.Errorf("current fuel cannot exceed capacity")
+        }</span>
+
+        <span class="cov8" title="1">return &amp;Fuel{
+                Current:  current,
+                Capacity: capacity,
+        }, nil</span>
+}
+
+// Percentage returns fuel as percentage of capacity
+func (f *Fuel) Percentage() float64 <span class="cov0" title="0">{
+        if f.Capacity == 0 </span><span class="cov0" title="0">{
+                return 0.0
+        }</span>
+        <span class="cov0" title="0">return float64(f.Current) / float64(f.Capacity) * 100.0</span>
+}
+
+// Consume returns new Fuel with amount consumed
+func (f *Fuel) Consume(amount int) (*Fuel, error) <span class="cov8" title="1">{
+        if amount &lt; 0 </span><span class="cov0" title="0">{
+                return nil, fmt.Errorf("fuel amount cannot be negative")
+        }</span>
+        <span class="cov8" title="1">newCurrent := f.Current - amount
+        if newCurrent &lt; 0 </span><span class="cov0" title="0">{
+                newCurrent = 0
+        }</span>
+        <span class="cov8" title="1">return &amp;Fuel{
+                Current:  newCurrent,
+                Capacity: f.Capacity,
+        }, nil</span>
+}
+
+// Add returns new Fuel with amount added
+func (f *Fuel) Add(amount int) (*Fuel, error) <span class="cov8" title="1">{
+        if amount &lt; 0 </span><span class="cov0" title="0">{
+                return nil, fmt.Errorf("add amount cannot be negative")
+        }</span>
+        <span class="cov8" title="1">newCurrent := f.Current + amount
+        if newCurrent &gt; f.Capacity </span><span class="cov8" title="1">{
+                newCurrent = f.Capacity
+        }</span>
+        <span class="cov8" title="1">return &amp;Fuel{
+                Current:  newCurrent,
+                Capacity: f.Capacity,
+        }, nil</span>
+}
+
+// CanTravel checks if sufficient fuel for travel with safety margin
+func (f *Fuel) CanTravel(required int, safetyMargin float64) bool <span class="cov8" title="1">{
+        // Cannot travel if fuel tank is empty
+        if f.Current == 0 </span><span class="cov0" title="0">{
+                return false
+        }</span>
+        <span class="cov8" title="1">requiredWithMargin := int(float64(required) * (1 + safetyMargin))
+        return f.Current &gt;= requiredWithMargin</span>
+}
+
+// IsFull checks if fuel is at capacity
+func (f *Fuel) IsFull() bool <span class="cov0" title="0">{
+        return f.Current == f.Capacity
+}</span>
+
+func (f *Fuel) String() string <span class="cov0" title="0">{
+        return fmt.Sprintf("Fuel(%d/%d)", f.Current, f.Capacity)
+}</span>
+</pre>
+		
+		<pre class="file" id="file19" style="display: none">package shared
+
+import "fmt"
+
+// PlayerID is a value object representing a player's unique identifier
+type PlayerID struct {
+        value int
+}
+
+// NewPlayerID creates a new PlayerID value object
+func NewPlayerID(id int) (PlayerID, error) <span class="cov8" title="1">{
+        if id &lt;= 0 </span><span class="cov8" title="1">{
+                return PlayerID{}, fmt.Errorf("player_id must be positive")
+        }</span>
+        <span class="cov8" title="1">return PlayerID{value: id}, nil</span>
+}
+
+// MustNewPlayerID creates a new PlayerID value object, panicking if invalid
+// Use this only when you're certain the ID is valid (e.g., from database)
+func MustNewPlayerID(id int) PlayerID <span class="cov8" title="1">{
+        playerID, err := NewPlayerID(id)
+        if err != nil </span><span class="cov0" title="0">{
+                panic(err)</span>
+        }
+        <span class="cov8" title="1">return playerID</span>
+}
+
+// Value returns the integer value of the PlayerID
+func (p PlayerID) Value() int <span class="cov8" title="1">{
+        return p.value
+}</span>
+
+// String returns a string representation of the PlayerID
+func (p PlayerID) String() string <span class="cov0" title="0">{
+        return fmt.Sprintf("%d", p.value)
+}</span>
+
+// Equals checks if two PlayerIDs are equal
+func (p PlayerID) Equals(other PlayerID) bool <span class="cov0" title="0">{
+        return p.value == other.value
+}</span>
+
+// IsZero checks if the PlayerID is the zero value (uninitialized)
+func (p PlayerID) IsZero() bool <span class="cov8" title="1">{
+        return p.value == 0
+}</span>
+</pre>
+		
+		<pre class="file" id="file20" style="display: none">package shared
+
+import (
+        "fmt"
+        "math"
+)
+
+// Waypoint represents an immutable location in space
+type Waypoint struct {
+        Symbol       string   `json:"symbol"`
+        X            float64  `json:"x"`
+        Y            float64  `json:"y"`
+        SystemSymbol string   `json:"systemSymbol"`
+        Type         string   `json:"type"`
+        Traits       []string `json:"traits,omitempty"`
+        HasFuel      bool     `json:"has_fuel"`
+        Orbitals     []string `json:"orbitals,omitempty"`
+}
+
+// NewWaypoint creates a new waypoint with validation
+func NewWaypoint(symbol string, x, y float64) (*Waypoint, error) <span class="cov8" title="1">{
+        if symbol == "" </span><span class="cov0" title="0">{
+                return nil, NewValidationError("symbol", "cannot be empty")
+        }</span>
+
+        <span class="cov8" title="1">return &amp;Waypoint{
+                Symbol:       symbol,
+                X:            x,
+                Y:            y,
+                SystemSymbol: ExtractSystemSymbol(symbol),
+                Traits:       []string{},
+                Orbitals:     []string{},
+        }, nil</span>
+}
+
+// DistanceTo calculates Euclidean distance to another waypoint
+func (w *Waypoint) DistanceTo(other *Waypoint) float64 <span class="cov8" title="1">{
+        dx := other.X - w.X
+        dy := other.Y - w.Y
+        return math.Sqrt(dx*dx + dy*dy)
+}</span>
+
+// IsOrbitalOf checks if this waypoint orbits another
+func (w *Waypoint) IsOrbitalOf(other *Waypoint) bool <span class="cov0" title="0">{
+        for _, orbital := range w.Orbitals </span><span class="cov0" title="0">{
+                if orbital == other.Symbol </span><span class="cov0" title="0">{
+                        return true
+                }</span>
+        }
+        <span class="cov0" title="0">for _, orbital := range other.Orbitals </span><span class="cov0" title="0">{
+                if orbital == w.Symbol </span><span class="cov0" title="0">{
+                        return true
+                }</span>
+        }
+        <span class="cov0" title="0">return false</span>
+}
+
+func (w *Waypoint) String() string <span class="cov0" title="0">{
+        return fmt.Sprintf("Waypoint(%s)", w.Symbol)
+}</span>
+
+// ExtractSystemSymbol extracts the system symbol from a waypoint symbol
+// by finding the last hyphen and returning everything before it.
+// Example: "X1-AB12-C3D4" -&gt; "X1-AB12"
+func ExtractSystemSymbol(waypointSymbol string) string <span class="cov8" title="1">{
+        systemSymbol := waypointSymbol
+        for i := len(waypointSymbol) - 1; i &gt;= 0; i-- </span><span class="cov8" title="1">{
+                if waypointSymbol[i] == '-' </span><span class="cov8" title="1">{
+                        systemSymbol = waypointSymbol[:i]
+                        break</span>
+                }
+        }
+        <span class="cov8" title="1">return systemSymbol</span>
+}
+</pre>
+		
+		<pre class="file" id="file21" style="display: none">package system
+
+import (
+        "fmt"
+
+        "github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+)
+
+// NavigationGraph represents a system's navigation graph with waypoints and edges
+// This replaces the map[string]interface{} structure used throughout the codebase
+type NavigationGraph struct {
+        SystemSymbol string                      `json:"system"`
+        Waypoints    map[string]*shared.Waypoint `json:"waypoints"`
+        Edges        []GraphEdge                 `json:"edges"`
+}
+
+// GraphEdge represents a connection between two waypoints
+type GraphEdge struct {
+        From     string   `json:"from"`
+        To       string   `json:"to"`
+        Distance float64  `json:"distance"`
+        Type     EdgeType `json:"type"`
+}
+
+// EdgeType defines the type of connection between waypoints
+type EdgeType string
+
+const (
+        EdgeTypeOrbital EdgeType = "orbital" // Zero-distance orbital relationship
+        EdgeTypeNormal  EdgeType = "normal"  // Standard travel edge
+)
+
+// NewNavigationGraph creates a new navigation graph
+func NewNavigationGraph(systemSymbol string) *NavigationGraph <span class="cov8" title="1">{
+        return &amp;NavigationGraph{
+                SystemSymbol: systemSymbol,
+                Waypoints:    make(map[string]*shared.Waypoint),
+                Edges:        []GraphEdge{},
+        }
+}</span>
+
+// AddWaypoint adds a waypoint to the graph
+func (g *NavigationGraph) AddWaypoint(waypoint *shared.Waypoint) <span class="cov8" title="1">{
+        g.Waypoints[waypoint.Symbol] = waypoint
+}</span>
+
+// AddEdge adds a bidirectional edge between two waypoints
+func (g *NavigationGraph) AddEdge(from, to string, distance float64, edgeType EdgeType) <span class="cov8" title="1">{
+        g.Edges = append(g.Edges,
+                GraphEdge{From: from, To: to, Distance: distance, Type: edgeType},
+                GraphEdge{From: to, To: from, Distance: distance, Type: edgeType},
+        )
+}</span>
+
+// GetWaypoint retrieves a waypoint by symbol
+func (g *NavigationGraph) GetWaypoint(symbol string) (*shared.Waypoint, error) <span class="cov8" title="1">{
+        waypoint, exists := g.Waypoints[symbol]
+        if !exists </span><span class="cov8" title="1">{
+                return nil, fmt.Errorf("waypoint %s not found in graph", symbol)
+        }</span>
+        <span class="cov8" title="1">return waypoint, nil</span>
+}
+
+// HasWaypoint checks if a waypoint exists in the graph
+func (g *NavigationGraph) HasWaypoint(symbol string) bool <span class="cov8" title="1">{
+        _, exists := g.Waypoints[symbol]
+        return exists
+}</span>
+
+// GetEdges returns all edges from a specific waypoint
+func (g *NavigationGraph) GetEdges(fromSymbol string) []GraphEdge <span class="cov8" title="1">{
+        var edges []GraphEdge
+        for _, edge := range g.Edges </span><span class="cov8" title="1">{
+                if edge.From == fromSymbol </span><span class="cov8" title="1">{
+                        edges = append(edges, edge)
+                }</span>
+        }
+        <span class="cov8" title="1">return edges</span>
+}
+
+// WaypointCount returns the number of waypoints in the graph
+func (g *NavigationGraph) WaypointCount() int <span class="cov8" title="1">{
+        return len(g.Waypoints)
+}</span>
+
+// EdgeCount returns the number of edges in the graph
+func (g *NavigationGraph) EdgeCount() int <span class="cov8" title="1">{
+        return len(g.Edges)
+}</span>
+
+// GetFuelStations returns all waypoints that have fuel available
+func (g *NavigationGraph) GetFuelStations() []*shared.Waypoint <span class="cov8" title="1">{
+        var fuelStations []*shared.Waypoint
+        for _, waypoint := range g.Waypoints </span><span class="cov8" title="1">{
+                if waypoint.HasFuel </span><span class="cov8" title="1">{
+                        fuelStations = append(fuelStations, waypoint)
+                }</span>
+        }
+        <span class="cov8" title="1">return fuelStations</span>
+}
+</pre>
+		
+		</div>
+	</body>
+	<script>
+	(function() {
+		var files = document.getElementById('files');
+		var visible;
+		files.addEventListener('change', onChange, false);
+		function select(part) {
+			if (visible)
+				visible.style.display = 'none';
+			visible = document.getElementById(part);
+			if (!visible)
+				return;
+			files.value = part;
+			visible.style.display = 'block';
+			location.hash = part;
+		}
+		function onChange() {
+			select(files.value);
+			window.scrollTo(0, 0);
+		}
+		if (location.hash != "") {
+			select(location.hash.substr(1));
+		}
+		if (!visible) {
+			select("file0");
+		}
+	})();
+	</script>
+</html>
