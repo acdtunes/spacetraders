@@ -6,12 +6,11 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	scoutingQuery "github.com/andrescamacho/spacetraders-go/internal/application/scouting/queries"
-	shipPkg "github.com/andrescamacho/spacetraders-go/internal/application/ship"
+	"github.com/andrescamacho/spacetraders-go/internal/application/ship/strategies"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	infraPorts "github.com/andrescamacho/spacetraders-go/internal/infrastructure/ports"
-	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )
 
 // PurchaseCargoCommand requests cargo purchase for a ship at its current docked location.
@@ -39,119 +38,65 @@ type PurchaseCargoResponse struct {
 
 // PurchaseCargoHandler orchestrates cargo purchase operations for ships.
 //
-// This handler implements automatic transaction splitting when the requested units
-// exceed the market's per-transaction limit. It fetches market data to determine
-// the limit and executes multiple API calls as needed.
+// This handler has been refactored to use the Strategy pattern, delegating to
+// CargoTransactionHandler with a PurchaseStrategy. This eliminates ~90% code
+// duplication with SellCargoHandler.
 //
-// Fallback strategy: If market data is unavailable, the handler attempts a single
-// transaction with all requested units.
+// The handler maintains backward compatibility by preserving the same public API
+// (PurchaseCargoCommand and PurchaseCargoResponse).
 type PurchaseCargoHandler struct {
-	shipRepo   navigation.ShipRepository
-	playerRepo player.PlayerRepository
-	apiClient  infraPorts.APIClient
-	marketRepo scoutingQuery.MarketRepository
+	delegate *CargoTransactionHandler
 }
 
 // NewPurchaseCargoHandler creates a new purchase cargo handler with required dependencies.
+//
+// Internally, this creates a CargoTransactionHandler with a PurchaseStrategy,
+// eliminating the need for duplicated logic.
 func NewPurchaseCargoHandler(
 	shipRepo navigation.ShipRepository,
 	playerRepo player.PlayerRepository,
 	apiClient infraPorts.APIClient,
 	marketRepo scoutingQuery.MarketRepository,
 ) *PurchaseCargoHandler {
+	strategy := strategies.NewPurchaseStrategy(apiClient)
+	delegate := NewCargoTransactionHandler(strategy, shipRepo, playerRepo, marketRepo)
+
 	return &PurchaseCargoHandler{
-		shipRepo:   shipRepo,
-		playerRepo: playerRepo,
-		apiClient:  apiClient,
-		marketRepo: marketRepo,
+		delegate: delegate,
 	}
 }
 
-// Handle executes the purchase cargo command with automatic transaction splitting.
+// Handle executes the purchase cargo command by delegating to the unified handler.
+//
+// This method maintains backward compatibility by:
+//  1. Converting PurchaseCargoCommand to CargoTransactionCommand
+//  2. Delegating to the unified handler
+//  3. Converting CargoTransactionResponse back to PurchaseCargoResponse
 func (h *PurchaseCargoHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {
 	cmd, ok := request.(*PurchaseCargoCommand)
 	if !ok {
 		return nil, fmt.Errorf("invalid request type")
 	}
 
-	token, err := h.getPlayerToken(ctx)
+	// Convert to unified command
+	unifiedCmd := &CargoTransactionCommand{
+		ShipSymbol: cmd.ShipSymbol,
+		GoodSymbol: cmd.GoodSymbol,
+		Units:      cmd.Units,
+		PlayerID:   cmd.PlayerID,
+	}
+
+	// Delegate to unified handler
+	response, err := h.delegate.Handle(ctx, unifiedCmd)
 	if err != nil {
 		return nil, err
 	}
 
-	ship, err := h.loadShip(ctx, cmd)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := h.validateShipDockedForPurchase(ship); err != nil {
-		return nil, err
-	}
-
-	if err := h.validateSufficientCargoSpace(ship, cmd.Units); err != nil {
-		return nil, err
-	}
-
-	transactionLimit := h.getTransactionLimit(ctx, ship, cmd)
-
-	return h.executePurchaseTransactions(ctx, cmd, token, transactionLimit)
-}
-
-func (h *PurchaseCargoHandler) getPlayerToken(ctx context.Context) (string, error) {
-	return common.PlayerTokenFromContext(ctx)
-}
-
-func (h *PurchaseCargoHandler) loadShip(ctx context.Context, cmd *PurchaseCargoCommand) (*navigation.Ship, error) {
-	ship, err := h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
-	if err != nil {
-		return nil, fmt.Errorf("ship not found: %w", err)
-	}
-	return ship, nil
-}
-
-func (h *PurchaseCargoHandler) validateShipDockedForPurchase(ship *navigation.Ship) error {
-	if !ship.IsDocked() {
-		return fmt.Errorf("ship must be docked to purchase cargo")
-	}
-	return nil
-}
-
-func (h *PurchaseCargoHandler) validateSufficientCargoSpace(ship *navigation.Ship, unitsNeeded int) error {
-	availableSpace := ship.AvailableCargoSpace()
-	if availableSpace < unitsNeeded {
-		return fmt.Errorf("insufficient cargo space: need %d, have %d", unitsNeeded, availableSpace)
-	}
-	return nil
-}
-
-func (h *PurchaseCargoHandler) getTransactionLimit(ctx context.Context, ship *navigation.Ship, cmd *PurchaseCargoCommand) int {
-	waypointSymbol := ship.CurrentLocation().Symbol
-	return shipPkg.GetTransactionLimit(ctx, h.marketRepo, waypointSymbol, cmd.GoodSymbol, cmd.PlayerID.Value(), cmd.Units)
-}
-
-func (h *PurchaseCargoHandler) executePurchaseTransactions(ctx context.Context, cmd *PurchaseCargoCommand, token string, transactionLimit int) (*PurchaseCargoResponse, error) {
-	totalCost := 0
-	unitsAdded := 0
-	transactionCount := 0
-	unitsRemaining := cmd.Units
-
-	for unitsRemaining > 0 {
-		unitsToBuy := utils.Min(unitsRemaining, transactionLimit)
-
-		result, err := h.apiClient.PurchaseCargo(ctx, cmd.ShipSymbol, cmd.GoodSymbol, unitsToBuy, token)
-		if err != nil {
-			return nil, fmt.Errorf("partial failure: failed to purchase cargo after %d successful transactions (%d units added, %d credits spent): %w", transactionCount, unitsAdded, totalCost, err)
-		}
-
-		totalCost += result.TotalCost
-		unitsAdded += result.UnitsAdded
-		transactionCount++
-		unitsRemaining -= unitsToBuy
-	}
-
+	// Convert back to specific response type for backward compatibility
+	unifiedResp := response.(*CargoTransactionResponse)
 	return &PurchaseCargoResponse{
-		TotalCost:        totalCost,
-		UnitsAdded:       unitsAdded,
-		TransactionCount: transactionCount,
+		TotalCost:        unifiedResp.TotalAmount,
+		UnitsAdded:       unifiedResp.UnitsProcessed,
+		TransactionCount: unifiedResp.TransactionCount,
 	}, nil
 }

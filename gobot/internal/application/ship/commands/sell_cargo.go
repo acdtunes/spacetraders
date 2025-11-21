@@ -6,12 +6,11 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	scoutingQuery "github.com/andrescamacho/spacetraders-go/internal/application/scouting/queries"
-	shipPkg "github.com/andrescamacho/spacetraders-go/internal/application/ship"
+	"github.com/andrescamacho/spacetraders-go/internal/application/ship/strategies"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	infraPorts "github.com/andrescamacho/spacetraders-go/internal/infrastructure/ports"
-	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )
 
 // SellCargoCommand requests cargo sale from a ship at its current docked location.
@@ -39,119 +38,65 @@ type SellCargoResponse struct {
 
 // SellCargoHandler orchestrates cargo sale operations for ships.
 //
-// This handler implements automatic transaction splitting when the requested units
-// exceed the market's per-transaction limit. It fetches market data to determine
-// the limit and executes multiple API calls as needed.
+// This handler has been refactored to use the Strategy pattern, delegating to
+// CargoTransactionHandler with a SellStrategy. This eliminates ~90% code
+// duplication with PurchaseCargoHandler.
 //
-// Fallback strategy: If market data is unavailable, the handler attempts a single
-// transaction with all requested units.
+// The handler maintains backward compatibility by preserving the same public API
+// (SellCargoCommand and SellCargoResponse).
 type SellCargoHandler struct {
-	shipRepo   navigation.ShipRepository
-	playerRepo player.PlayerRepository
-	apiClient  infraPorts.APIClient
-	marketRepo scoutingQuery.MarketRepository
+	delegate *CargoTransactionHandler
 }
 
 // NewSellCargoHandler creates a new sell cargo handler with required dependencies.
+//
+// Internally, this creates a CargoTransactionHandler with a SellStrategy,
+// eliminating the need for duplicated logic.
 func NewSellCargoHandler(
 	shipRepo navigation.ShipRepository,
 	playerRepo player.PlayerRepository,
 	apiClient infraPorts.APIClient,
 	marketRepo scoutingQuery.MarketRepository,
 ) *SellCargoHandler {
+	strategy := strategies.NewSellStrategy(apiClient)
+	delegate := NewCargoTransactionHandler(strategy, shipRepo, playerRepo, marketRepo)
+
 	return &SellCargoHandler{
-		shipRepo:   shipRepo,
-		playerRepo: playerRepo,
-		apiClient:  apiClient,
-		marketRepo: marketRepo,
+		delegate: delegate,
 	}
 }
 
-// Handle executes the sell cargo command with automatic transaction splitting.
+// Handle executes the sell cargo command by delegating to the unified handler.
+//
+// This method maintains backward compatibility by:
+//  1. Converting SellCargoCommand to CargoTransactionCommand
+//  2. Delegating to the unified handler
+//  3. Converting CargoTransactionResponse back to SellCargoResponse
 func (h *SellCargoHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {
 	cmd, ok := request.(*SellCargoCommand)
 	if !ok {
 		return nil, fmt.Errorf("invalid request type")
 	}
 
-	token, err := h.getPlayerToken(ctx)
+	// Convert to unified command
+	unifiedCmd := &CargoTransactionCommand{
+		ShipSymbol: cmd.ShipSymbol,
+		GoodSymbol: cmd.GoodSymbol,
+		Units:      cmd.Units,
+		PlayerID:   cmd.PlayerID,
+	}
+
+	// Delegate to unified handler
+	response, err := h.delegate.Handle(ctx, unifiedCmd)
 	if err != nil {
 		return nil, err
 	}
 
-	ship, err := h.loadShip(ctx, cmd)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := h.validateShipDockedForSale(ship); err != nil {
-		return nil, err
-	}
-
-	if err := h.validateSufficientCargoForSale(ship, cmd); err != nil {
-		return nil, err
-	}
-
-	transactionLimit := h.getTransactionLimit(ctx, ship, cmd)
-
-	return h.executeSaleTransactions(ctx, cmd, token, transactionLimit)
-}
-
-func (h *SellCargoHandler) getPlayerToken(ctx context.Context) (string, error) {
-	return common.PlayerTokenFromContext(ctx)
-}
-
-func (h *SellCargoHandler) loadShip(ctx context.Context, cmd *SellCargoCommand) (*navigation.Ship, error) {
-	ship, err := h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
-	if err != nil {
-		return nil, fmt.Errorf("ship not found: %w", err)
-	}
-	return ship, nil
-}
-
-func (h *SellCargoHandler) validateShipDockedForSale(ship *navigation.Ship) error {
-	if !ship.IsDocked() {
-		return fmt.Errorf("ship must be docked to sell cargo")
-	}
-	return nil
-}
-
-func (h *SellCargoHandler) validateSufficientCargoForSale(ship *navigation.Ship, cmd *SellCargoCommand) error {
-	currentUnits := ship.Cargo().GetItemUnits(cmd.GoodSymbol)
-	if currentUnits < cmd.Units {
-		return fmt.Errorf("insufficient cargo: need %d, have %d", cmd.Units, currentUnits)
-	}
-	return nil
-}
-
-func (h *SellCargoHandler) getTransactionLimit(ctx context.Context, ship *navigation.Ship, cmd *SellCargoCommand) int {
-	waypointSymbol := ship.CurrentLocation().Symbol
-	return shipPkg.GetTransactionLimit(ctx, h.marketRepo, waypointSymbol, cmd.GoodSymbol, cmd.PlayerID.Value(), cmd.Units)
-}
-
-func (h *SellCargoHandler) executeSaleTransactions(ctx context.Context, cmd *SellCargoCommand, token string, transactionLimit int) (*SellCargoResponse, error) {
-	totalRevenue := 0
-	unitsSold := 0
-	transactionCount := 0
-	unitsRemaining := cmd.Units
-
-	for unitsRemaining > 0 {
-		unitsToSell := utils.Min(unitsRemaining, transactionLimit)
-
-		result, err := h.apiClient.SellCargo(ctx, cmd.ShipSymbol, cmd.GoodSymbol, unitsToSell, token)
-		if err != nil {
-			return nil, fmt.Errorf("partial failure: failed to sell cargo after %d successful transactions (%d units sold, %d credits earned): %w", transactionCount, unitsSold, totalRevenue, err)
-		}
-
-		totalRevenue += result.TotalRevenue
-		unitsSold += result.UnitsSold
-		transactionCount++
-		unitsRemaining -= unitsToSell
-	}
-
+	// Convert back to specific response type for backward compatibility
+	unifiedResp := response.(*CargoTransactionResponse)
 	return &SellCargoResponse{
-		TotalRevenue:     totalRevenue,
-		UnitsSold:        unitsSold,
-		TransactionCount: transactionCount,
+		TotalRevenue:     unifiedResp.TotalAmount,
+		UnitsSold:        unifiedResp.UnitsProcessed,
+		TransactionCount: unifiedResp.TransactionCount,
 	}, nil
 }
