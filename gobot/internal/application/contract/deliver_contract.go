@@ -52,57 +52,89 @@ func (h *DeliverContractHandler) Handle(ctx context.Context, request common.Requ
 		return nil, fmt.Errorf("invalid request type")
 	}
 
-	// 1. Get player token
-	player, err := h.playerRepo.FindByID(ctx, cmd.PlayerID)
+	player, err := h.getPlayerToken(ctx, cmd.PlayerID)
 	if err != nil {
-		return nil, fmt.Errorf("player not found: %w", err)
-	}
-
-	// 2. Load contract from repository
-	contract, err := h.contractRepo.FindByID(ctx, cmd.ContractID, cmd.PlayerID)
-	if err != nil {
-		return nil, fmt.Errorf("contract not found: %w", err)
-	}
-
-	// 3. Validate delivery using domain logic (BEFORE calling API)
-	if err := contract.DeliverCargo(cmd.TradeSymbol, cmd.Units); err != nil {
 		return nil, err
 	}
 
-	// 4. Call API to deliver cargo
-	deliveryData, err := h.apiClient.DeliverContract(
-		ctx,
-		cmd.ContractID,
-		cmd.ShipSymbol,
-		cmd.TradeSymbol,
-		cmd.Units,
-		player.Token,
-	)
+	contract, err := h.loadContract(ctx, cmd.ContractID, cmd.PlayerID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to deliver cargo: %w", err)
+		return nil, err
 	}
 
-	// 5. Update contract with actual delivery data from API response
-	// The domain entity's DeliverCargo already updated the units,
-	// but we need to sync with the API's actual response
-	terms := contract.Terms()
-	for i := range terms.Deliveries {
-		// Find matching delivery in API response
-		for _, apiDelivery := range deliveryData.Terms.Deliveries {
-			if terms.Deliveries[i].TradeSymbol == apiDelivery.TradeSymbol {
-				// Update the units fulfilled from API
-				terms.Deliveries[i].UnitsFulfilled = apiDelivery.UnitsFulfilled
-			}
-		}
+	if err := h.validateDeliveryInDomain(contract, cmd.TradeSymbol, cmd.Units); err != nil {
+		return nil, err
 	}
 
-	// 6. Save updated contract to repository
-	if err := h.contractRepo.Add(ctx, contract); err != nil {
-		return nil, fmt.Errorf("failed to save contract: %w", err)
+	deliveryData, err := h.callDeliverCargoAPI(ctx, cmd, player.Token)
+	if err != nil {
+		return nil, err
+	}
+
+	h.syncDeliveryDataFromAPI(contract, deliveryData)
+
+	if err := h.saveContract(ctx, contract); err != nil {
+		return nil, err
 	}
 
 	return &DeliverContractResponse{
 		Contract:       contract,
 		UnitsDelivered: cmd.Units,
 	}, nil
+}
+
+func (h *DeliverContractHandler) getPlayerToken(ctx context.Context, playerID int) (*player.Player, error) {
+	player, err := h.playerRepo.FindByID(ctx, playerID)
+	if err != nil {
+		return nil, fmt.Errorf("player not found: %w", err)
+	}
+	return player, nil
+}
+
+func (h *DeliverContractHandler) loadContract(ctx context.Context, contractID string, playerID int) (*contract.Contract, error) {
+	contract, err := h.contractRepo.FindByID(ctx, contractID, playerID)
+	if err != nil {
+		return nil, fmt.Errorf("contract not found: %w", err)
+	}
+	return contract, nil
+}
+
+func (h *DeliverContractHandler) validateDeliveryInDomain(contract *contract.Contract, tradeSymbol string, units int) error {
+	if err := contract.DeliverCargo(tradeSymbol, units); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (h *DeliverContractHandler) callDeliverCargoAPI(ctx context.Context, cmd *DeliverContractCommand, token string) (*ports.ContractData, error) {
+	deliveryData, err := h.apiClient.DeliverContract(
+		ctx,
+		cmd.ContractID,
+		cmd.ShipSymbol,
+		cmd.TradeSymbol,
+		cmd.Units,
+		token,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to deliver cargo: %w", err)
+	}
+	return deliveryData, nil
+}
+
+func (h *DeliverContractHandler) syncDeliveryDataFromAPI(contract *contract.Contract, deliveryData *ports.ContractData) {
+	terms := contract.Terms()
+	for i := range terms.Deliveries {
+		for _, apiDelivery := range deliveryData.Terms.Deliveries {
+			if terms.Deliveries[i].TradeSymbol == apiDelivery.TradeSymbol {
+				terms.Deliveries[i].UnitsFulfilled = apiDelivery.UnitsFulfilled
+			}
+		}
+	}
+}
+
+func (h *DeliverContractHandler) saveContract(ctx context.Context, contract *contract.Contract) error {
+	if err := h.contractRepo.Add(ctx, contract); err != nil {
+		return fmt.Errorf("failed to save contract: %w", err)
+	}
+	return nil
 }

@@ -96,50 +96,20 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 		RebalanceInterval: 10 * time.Minute,
 	}
 
-	// Step 1: Validate that ships are not already assigned to active containers
-	logger.Log("INFO", "Validating ship availability...", nil)
-	for _, shipSymbol := range cmd.ShipSymbols {
-		assignment, err := h.shipAssignmentRepo.FindByShip(ctx, shipSymbol, cmd.PlayerID)
-		if err != nil {
-			return nil, fmt.Errorf("failed to check assignment for %s: %w", shipSymbol, err)
-		}
-
-		if assignment != nil && assignment.Status() == "active" {
-			return nil, fmt.Errorf("ship %s is already assigned to container %s - cannot create overlapping coordinator",
-				shipSymbol, assignment.ContainerID())
-		}
+	if err := h.validateShipAvailability(ctx, cmd); err != nil {
+		return nil, err
 	}
 
-	// Step 2: Create ship assignments for all pooled ships
-	logger.Log("INFO", fmt.Sprintf("Initializing ship pool with %d ships", len(cmd.ShipSymbols)), nil)
-	if err := CreatePoolAssignments(
-		ctx,
-		cmd.ShipSymbols,
-		cmd.ContainerID,
-		cmd.PlayerID,
-		h.shipAssignmentRepo,
-	); err != nil {
-		return nil, fmt.Errorf("failed to create pool assignments: %w", err)
+	if err := h.initializeShipPool(ctx, cmd); err != nil {
+		return nil, err
 	}
 
-	// Step 2: Create unbuffered completion channel for worker notifications
+	// Create unbuffered completion channel for worker notifications
 	// IMPORTANT: Unbuffered so signals are only received when actively waiting
 	completionChan := make(chan string)
 
-	// Step 3: Check for existing worker containers (recovery scenario)
-	existingWorkers, err := h.findExistingWorkers(ctx, cmd.PlayerID)
-	if err != nil {
-		logger.Log("WARNING", fmt.Sprintf("Failed to check for existing workers: %v", err), nil)
-	} else if len(existingWorkers) > 0 {
-		logger.Log("WARNING", fmt.Sprintf("Found %d existing CONTRACT_WORKFLOW workers from previous session - stopping them to prevent conflicts", len(existingWorkers)), nil)
-		// Stop all existing workers to prevent multiple workers running simultaneously
-		for _, worker := range existingWorkers {
-			logger.Log("INFO", fmt.Sprintf("Stopping existing worker container: %s", worker.ID), nil)
-			if err := h.daemonClient.StopContainer(ctx, worker.ID); err != nil {
-				logger.Log("ERROR", fmt.Sprintf("Failed to stop existing worker %s: %v", worker.ID, err), nil)
-			}
-		}
-		logger.Log("INFO", "All existing workers stopped, coordinator will create new workers as needed", nil)
+	if err := h.stopExistingWorkers(ctx, cmd.PlayerID); err != nil {
+		logger.Log("WARNING", fmt.Sprintf("Failed during existing worker cleanup: %v", err), nil)
 	}
 
 	// Track current active worker container ID for cleanup on shutdown
@@ -405,6 +375,67 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 		// This line should NEVER be reached (all cases have continue/return)
 		logger.Log("ERROR", "CRITICAL: Code execution fell through select statement!", nil)
 	}
+}
+
+func (h *RunFleetCoordinatorHandler) validateShipAvailability(ctx context.Context, cmd *RunFleetCoordinatorCommand) error {
+	logger := common.LoggerFromContext(ctx)
+	logger.Log("INFO", "Validating ship availability...", nil)
+
+	for _, shipSymbol := range cmd.ShipSymbols {
+		assignment, err := h.shipAssignmentRepo.FindByShip(ctx, shipSymbol, cmd.PlayerID)
+		if err != nil {
+			return fmt.Errorf("failed to check assignment for %s: %w", shipSymbol, err)
+		}
+
+		if assignment != nil && assignment.Status() == "active" {
+			return fmt.Errorf("ship %s is already assigned to container %s - cannot create overlapping coordinator",
+				shipSymbol, assignment.ContainerID())
+		}
+	}
+
+	return nil
+}
+
+func (h *RunFleetCoordinatorHandler) initializeShipPool(ctx context.Context, cmd *RunFleetCoordinatorCommand) error {
+	logger := common.LoggerFromContext(ctx)
+	logger.Log("INFO", fmt.Sprintf("Initializing ship pool with %d ships", len(cmd.ShipSymbols)), nil)
+
+	if err := CreatePoolAssignments(
+		ctx,
+		cmd.ShipSymbols,
+		cmd.ContainerID,
+		cmd.PlayerID,
+		h.shipAssignmentRepo,
+	); err != nil {
+		return fmt.Errorf("failed to create pool assignments: %w", err)
+	}
+
+	return nil
+}
+
+func (h *RunFleetCoordinatorHandler) stopExistingWorkers(ctx context.Context, playerID int) error {
+	logger := common.LoggerFromContext(ctx)
+
+	existingWorkers, err := h.findExistingWorkers(ctx, playerID)
+	if err != nil {
+		return fmt.Errorf("failed to check for existing workers: %w", err)
+	}
+
+	if len(existingWorkers) == 0 {
+		return nil
+	}
+
+	logger.Log("WARNING", fmt.Sprintf("Found %d existing CONTRACT_WORKFLOW workers from previous session - stopping them to prevent conflicts", len(existingWorkers)), nil)
+
+	for _, worker := range existingWorkers {
+		logger.Log("INFO", fmt.Sprintf("Stopping existing worker container: %s", worker.ID), nil)
+		if err := h.daemonClient.StopContainer(ctx, worker.ID); err != nil {
+			logger.Log("ERROR", fmt.Sprintf("Failed to stop existing worker %s: %v", worker.ID, err), nil)
+		}
+	}
+
+	logger.Log("INFO", "All existing workers stopped, coordinator will create new workers as needed", nil)
+	return nil
 }
 
 // negotiateContract negotiates a new contract

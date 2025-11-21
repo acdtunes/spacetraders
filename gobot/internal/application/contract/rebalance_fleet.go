@@ -69,8 +69,6 @@ func (h *RebalanceContractFleetHandler) Handle(ctx context.Context, request comm
 		return nil, fmt.Errorf("invalid request type")
 	}
 
-	logger := common.LoggerFromContext(ctx)
-
 	result := &RebalanceContractFleetResponse{
 		ShipsMoved:         0,
 		TargetMarkets:      []string{},
@@ -81,29 +79,74 @@ func (h *RebalanceContractFleetHandler) Handle(ctx context.Context, request comm
 		Assignments:        make(map[string]string),
 	}
 
-	// Step 1: Get all markets in the system
+	targetMarkets, skip := h.discoverSystemMarkets(ctx, cmd, result)
+	if skip {
+		return result, nil
+	}
+
+	ships, skip := h.getCoordinatorShips(ctx, cmd, result)
+	if skip {
+		return result, nil
+	}
+
+	needsRebalancing, skip := h.checkIfRebalancingNeeded(ctx, cmd, ships, targetMarkets, result)
+	if skip {
+		return result, nil
+	}
+
+	if !needsRebalancing {
+		return result, nil
+	}
+
+	if err := h.assignShipsToMarkets(ctx, cmd, ships, targetMarkets, result); err != nil {
+		return nil, err
+	}
+
+	if err := h.executeParallelRepositioning(ctx, cmd, ships, result); err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
+
+func (h *RebalanceContractFleetHandler) discoverSystemMarkets(
+	ctx context.Context,
+	cmd *RebalanceContractFleetCommand,
+	result *RebalanceContractFleetResponse,
+) ([]string, bool) {
+	logger := common.LoggerFromContext(ctx)
+
 	logger.Log("INFO", "Discovering all markets in system", nil)
 	targetMarkets, err := h.marketRepo.FindAllMarketsInSystem(ctx, cmd.SystemSymbol, cmd.PlayerID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to discover markets in system: %w", err)
+		logger.Log("ERROR", fmt.Sprintf("Failed to discover markets: %v", err), nil)
+		return nil, true
 	}
 
 	result.TargetMarkets = targetMarkets
 
-	// Step 2: Check if we have market data
 	if len(targetMarkets) == 0 {
 		logger.Log("WARNING", "No markets found in system - skipping rebalancing", nil)
 		result.RebalancingSkipped = true
 		result.SkipReason = "No markets available in system"
-		return result, nil
+		return nil, true
 	}
 
 	logger.Log("INFO", fmt.Sprintf("Found %d markets in system: %v", len(targetMarkets), targetMarkets), nil)
+	return targetMarkets, false
+}
 
-	// Step 3: Get idle ships from coordinator pool
+func (h *RebalanceContractFleetHandler) getCoordinatorShips(
+	ctx context.Context,
+	cmd *RebalanceContractFleetCommand,
+	result *RebalanceContractFleetResponse,
+) ([]*navigation.Ship, bool) {
+	logger := common.LoggerFromContext(ctx)
+
 	shipSymbols, err := FindCoordinatorShips(ctx, cmd.CoordinatorID, cmd.PlayerID, h.shipAssignmentRepo)
 	if err != nil {
-		return nil, fmt.Errorf("failed to find coordinator ships: %w", err)
+		logger.Log("ERROR", fmt.Sprintf("Failed to find coordinator ships: %v", err), nil)
+		return nil, true
 	}
 
 	logger.Log("INFO", fmt.Sprintf("Found %d ships in coordinator pool", len(shipSymbols)), nil)
@@ -112,16 +155,15 @@ func (h *RebalanceContractFleetHandler) Handle(ctx context.Context, request comm
 		logger.Log("INFO", "No ships in coordinator pool - skipping rebalancing", nil)
 		result.RebalancingSkipped = true
 		result.SkipReason = "No ships in coordinator pool"
-		return result, nil
+		return nil, true
 	}
 
-	// Load ship objects from symbols
 	ships := make([]*navigation.Ship, 0, len(shipSymbols))
 	for _, shipSymbol := range shipSymbols {
 		ship, err := h.shipRepo.FindBySymbol(ctx, shipSymbol, cmd.PlayerID)
 		if err != nil {
 			logger.Log("WARNING", fmt.Sprintf("Failed to load ship %s: %v", shipSymbol, err), nil)
-			continue // Skip ships that can't be loaded
+			continue
 		}
 		ships = append(ships, ship)
 	}
@@ -130,10 +172,21 @@ func (h *RebalanceContractFleetHandler) Handle(ctx context.Context, request comm
 		logger.Log("WARNING", "No ships could be loaded - skipping rebalancing", nil)
 		result.RebalancingSkipped = true
 		result.SkipReason = "Failed to load ship data"
-		return result, nil
+		return nil, true
 	}
 
-	// Step 4: Check if rebalancing is needed
+	return ships, false
+}
+
+func (h *RebalanceContractFleetHandler) checkIfRebalancingNeeded(
+	ctx context.Context,
+	cmd *RebalanceContractFleetCommand,
+	ships []*navigation.Ship,
+	targetMarkets []string,
+	result *RebalanceContractFleetResponse,
+) (bool, bool) {
+	logger := common.LoggerFromContext(ctx)
+
 	logger.Log("INFO", fmt.Sprintf("Checking distribution (threshold: %.1f distance units)", result.DistanceThreshold), nil)
 	needsRebalancing, avgDistance, err := h.distributionChecker.IsRebalancingNeeded(
 		ctx,
@@ -144,7 +197,8 @@ func (h *RebalanceContractFleetHandler) Handle(ctx context.Context, request comm
 		result.DistanceThreshold,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to check distribution: %w", err)
+		logger.Log("ERROR", fmt.Sprintf("Failed to check distribution: %v", err), nil)
+		return false, true
 	}
 
 	result.AverageDistance = avgDistance
@@ -154,23 +208,42 @@ func (h *RebalanceContractFleetHandler) Handle(ctx context.Context, request comm
 		logger.Log("INFO", "Fleet already well-distributed - skipping rebalancing", nil)
 		result.RebalancingSkipped = true
 		result.SkipReason = fmt.Sprintf("Fleet well-distributed (avg distance %.1f < threshold %.1f)", avgDistance, result.DistanceThreshold)
-		return result, nil
+		return false, true
 	}
 
-	// Step 5: Assign ships to markets
+	return true, false
+}
+
+func (h *RebalanceContractFleetHandler) assignShipsToMarkets(
+	ctx context.Context,
+	cmd *RebalanceContractFleetCommand,
+	ships []*navigation.Ship,
+	targetMarkets []string,
+	result *RebalanceContractFleetResponse,
+) error {
+	logger := common.LoggerFromContext(ctx)
+
 	logger.Log("INFO", "Assigning ships to markets...", nil)
 	assignments, err := h.distributionChecker.AssignShipsToMarkets(ctx, ships, targetMarkets, cmd.SystemSymbol, cmd.PlayerID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to assign ships to markets: %w", err)
+		return fmt.Errorf("failed to assign ships to markets: %w", err)
 	}
 
 	result.Assignments = assignments
 	logger.Log("INFO", fmt.Sprintf("Generated %d ship assignments", len(assignments)), nil)
+	return nil
+}
 
-	// Step 6: Execute repositioning (parallel navigation)
+func (h *RebalanceContractFleetHandler) executeParallelRepositioning(
+	ctx context.Context,
+	cmd *RebalanceContractFleetCommand,
+	ships []*navigation.Ship,
+	result *RebalanceContractFleetResponse,
+) error {
+	logger := common.LoggerFromContext(ctx)
+
 	logger.Log("INFO", "Starting ship repositioning (parallel)...", nil)
 
-	// Create a channel to collect results
 	type navResult struct {
 		shipSymbol string
 		success    bool
@@ -178,17 +251,14 @@ func (h *RebalanceContractFleetHandler) Handle(ctx context.Context, request comm
 	}
 	resultsChan := make(chan navResult, len(ships))
 
-	// Track number of ships to reposition
 	shipsToReposition := 0
 
-	// Launch goroutines for parallel navigation
 	for _, ship := range ships {
-		targetMarket, hasAssignment := assignments[ship.ShipSymbol()]
+		targetMarket, hasAssignment := result.Assignments[ship.ShipSymbol()]
 		if !hasAssignment {
 			continue
 		}
 
-		// Skip if ship is already at target market
 		if ship.CurrentLocation().Symbol == targetMarket {
 			logger.Log("INFO", fmt.Sprintf("Ship %s already at target %s - skipping", ship.ShipSymbol(), targetMarket), nil)
 			continue
@@ -196,7 +266,6 @@ func (h *RebalanceContractFleetHandler) Handle(ctx context.Context, request comm
 
 		shipsToReposition++
 
-		// Launch navigation in goroutine
 		go func(shipSymbol, destination string) {
 			logger.Log("INFO", fmt.Sprintf("Repositioning %s to %s", shipSymbol, destination), nil)
 
@@ -215,7 +284,6 @@ func (h *RebalanceContractFleetHandler) Handle(ctx context.Context, request comm
 		}(ship.ShipSymbol(), targetMarket)
 	}
 
-	// Collect results from all goroutines
 	for i := 0; i < shipsToReposition; i++ {
 		navRes := <-resultsChan
 		if navRes.success {
@@ -227,5 +295,5 @@ func (h *RebalanceContractFleetHandler) Handle(ctx context.Context, request comm
 	}
 
 	logger.Log("INFO", fmt.Sprintf("Rebalancing complete: %d/%d ships repositioned", result.ShipsMoved, shipsToReposition), nil)
-	return result, nil
+	return nil
 }

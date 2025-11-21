@@ -48,35 +48,67 @@ func (h *AcceptContractHandler) Handle(ctx context.Context, request common.Reque
 		return nil, fmt.Errorf("invalid request type")
 	}
 
-	// 1. Get player token
-	player, err := h.playerRepo.FindByID(ctx, cmd.PlayerID)
+	player, err := h.getPlayerToken(ctx, cmd.PlayerID)
 	if err != nil {
-		return nil, fmt.Errorf("player not found: %w", err)
-	}
-
-	// 2. Load contract from database
-	contract, err := h.contractRepo.FindByID(ctx, cmd.ContractID, cmd.PlayerID)
-	if err != nil {
-		return nil, fmt.Errorf("contract not found: %w", err)
-	}
-
-	// 3. Accept contract using domain method (validates not already accepted)
-	if err := contract.Accept(); err != nil {
 		return nil, err
 	}
 
-	// 4. Call API to accept contract
-	_, err = h.apiClient.AcceptContract(ctx, cmd.ContractID, player.Token)
+	contract, err := h.loadContract(ctx, cmd.ContractID, cmd.PlayerID)
 	if err != nil {
-		return nil, fmt.Errorf("API error: %w", err)
+		return nil, err
 	}
 
-	// 5. Save updated contract to database
-	if err := h.contractRepo.Add(ctx, contract); err != nil {
-		return nil, fmt.Errorf("failed to save contract: %w", err)
+	if err := h.acceptContractInDomain(contract); err != nil {
+		return nil, err
+	}
+
+	if err := h.callAcceptContractAPI(ctx, cmd.ContractID, player.Token); err != nil {
+		return nil, err
+	}
+
+	if err := h.saveContract(ctx, contract); err != nil {
+		return nil, err
 	}
 
 	return &AcceptContractResponse{
 		Contract: contract,
 	}, nil
+}
+
+func (h *AcceptContractHandler) getPlayerToken(ctx context.Context, playerID int) (*player.Player, error) {
+	player, err := h.playerRepo.FindByID(ctx, playerID)
+	if err != nil {
+		return nil, fmt.Errorf("player not found: %w", err)
+	}
+	return player, nil
+}
+
+func (h *AcceptContractHandler) loadContract(ctx context.Context, contractID string, playerID int) (*contract.Contract, error) {
+	contract, err := h.contractRepo.FindByID(ctx, contractID, playerID)
+	if err != nil {
+		return nil, fmt.Errorf("contract not found: %w", err)
+	}
+	return contract, nil
+}
+
+func (h *AcceptContractHandler) acceptContractInDomain(contract *contract.Contract) error {
+	if err := contract.Accept(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (h *AcceptContractHandler) callAcceptContractAPI(ctx context.Context, contractID string, token string) error {
+	_, err := h.apiClient.AcceptContract(ctx, contractID, token)
+	if err != nil {
+		return fmt.Errorf("API error: %w", err)
+	}
+	return nil
+}
+
+func (h *AcceptContractHandler) saveContract(ctx context.Context, contract *contract.Contract) error {
+	if err := h.contractRepo.Add(ctx, contract); err != nil {
+		return fmt.Errorf("failed to save contract: %w", err)
+	}
+	return nil
 }
