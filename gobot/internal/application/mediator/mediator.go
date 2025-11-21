@@ -1,21 +1,10 @@
-package common
+package mediator
 
 import (
 	"context"
 	"fmt"
 	"reflect"
 )
-
-// Request represents a command or query
-type Request interface{}
-
-// Response represents the result of handling a request
-type Response interface{}
-
-// RequestHandler handles a specific request type
-type RequestHandler interface {
-	Handle(ctx context.Context, request Request) (Response, error)
-}
 
 // Mediator dispatches requests to their handlers
 type Mediator interface {
@@ -93,6 +82,7 @@ func (m *mediator) Send(ctx context.Context, request Request) (Response, error) 
 	return next(ctx, request)
 }
 
+// RegisterHandler is a type-safe helper for registering handlers using generics
 func RegisterHandler[T Request](m Mediator, handler RequestHandler) error {
 	var zero T
 	requestType := reflect.TypeOf(zero)

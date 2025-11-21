@@ -1,10 +1,11 @@
-package common
+package auth
 
 import (
 	"context"
 	"fmt"
 	"reflect"
 
+	"github.com/andrescamacho/spacetraders-go/internal/application/mediator"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
@@ -31,14 +32,11 @@ func PlayerTokenFromContext(ctx context.Context) (string, error) {
 	return token, nil
 }
 
-// Middleware is a function that wraps handler execution with cross-cutting concerns
-type Middleware func(ctx context.Context, request Request, next func(context.Context, Request) (Response, error)) (Response, error)
-
 // PlayerTokenMiddleware creates middleware that injects player tokens into context
 // It extracts player identification (PlayerID or AgentSymbol) from the request,
 // fetches the player from the repository, and injects the token into context
-func PlayerTokenMiddleware(playerRepo player.PlayerRepository) Middleware {
-	return func(ctx context.Context, request Request, next func(context.Context, Request) (Response, error)) (Response, error) {
+func PlayerTokenMiddleware(playerRepo player.PlayerRepository) mediator.Middleware {
+	return func(ctx context.Context, request mediator.Request, next mediator.HandlerFunc) (mediator.Response, error) {
 		// Extract player identifier from request using reflection
 		playerID, agentSymbol := extractPlayerIdentifier(request)
 
@@ -70,7 +68,7 @@ func PlayerTokenMiddleware(playerRepo player.PlayerRepository) Middleware {
 
 // extractPlayerIdentifier uses reflection to extract player identification from request
 // Returns (playerID, agentSymbol) - one or both may be set
-func extractPlayerIdentifier(request Request) (shared.PlayerID, string) {
+func extractPlayerIdentifier(request mediator.Request) (shared.PlayerID, string) {
 	var playerID shared.PlayerID
 	var agentSymbol string
 

@@ -1,4 +1,4 @@
-package common
+package dtos
 
 import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
