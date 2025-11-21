@@ -32,10 +32,10 @@ type (
 		PlayerID   shared.PlayerID
 	}
 	NavigateDirectCommand struct {
-		ShipSymbol   string
-		Destination  string
-		FlightMode   string
-		PlayerID     shared.PlayerID
+		ShipSymbol  string
+		Destination string
+		FlightMode  string
+		PlayerID    shared.PlayerID
 	}
 	NavigateDirectResponse struct {
 		Status         string
@@ -132,10 +132,10 @@ func (e *RouteExecutor) ExecuteRoute(
 
 		if segment == nil {
 			logger.Log("INFO", "Route execution complete - no more segments", map[string]interface{}{
-				"ship_symbol":     ship.ShipSymbol(),
-				"action":          "route_complete",
+				"ship_symbol":       ship.ShipSymbol(),
+				"action":            "route_complete",
 				"segments_executed": segmentCount,
-				"total_segments":  len(route.Segments()),
+				"total_segments":    len(route.Segments()),
 			})
 			break // Route complete
 		}
@@ -182,10 +182,10 @@ func (e *RouteExecutor) ExecuteRoute(
 	}
 
 	logger.Log("INFO", "Route execution finished", map[string]interface{}{
-		"ship_symbol":     ship.ShipSymbol(),
-		"action":          "route_finished",
+		"ship_symbol":       ship.ShipSymbol(),
+		"action":            "route_finished",
 		"segments_executed": segmentCount,
-		"status":          string(route.Status()),
+		"status":            string(route.Status()),
 	})
 
 	return nil
@@ -446,11 +446,11 @@ func (e *RouteExecutor) waitForCurrentTransit(
 	retryDelay := 2 * time.Second
 	for i := 0; i < maxRetries && ship.NavStatus() == domainNavigation.NavStatusInTransit; i++ {
 		logger.Log("INFO", "Ship still in transit - polling API", map[string]interface{}{
-			"ship_symbol":  ship.ShipSymbol(),
-			"action":       "poll_transit_status",
-			"attempt":      i + 1,
-			"max_retries":  maxRetries,
-			"retry_delay":  retryDelay.String(),
+			"ship_symbol": ship.ShipSymbol(),
+			"action":      "poll_transit_status",
+			"attempt":     i + 1,
+			"max_retries": maxRetries,
+			"retry_delay": retryDelay.String(),
 		})
 		e.clock.Sleep(retryDelay)
 

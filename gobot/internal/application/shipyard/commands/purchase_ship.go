@@ -25,7 +25,7 @@ import (
 type PurchaseShipCommand struct {
 	PurchasingShipSymbol string
 	ShipType             string
-	PlayerID   shared.PlayerID
+	PlayerID             shared.PlayerID
 	ShipyardWaypoint     string // Optional - will auto-discover if empty
 }
 

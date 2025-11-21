@@ -1216,4 +1216,3 @@ func (cc *containerContext) assignmentsShouldBeCleaned(expectedCount int) error 
 	}
 	return nil
 }
-

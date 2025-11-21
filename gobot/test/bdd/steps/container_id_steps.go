@@ -6,8 +6,8 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/cucumber/godog"
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
+	"github.com/cucumber/godog"
 )
 
 type containerIDContext struct {

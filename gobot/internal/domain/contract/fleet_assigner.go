@@ -27,9 +27,9 @@ type DistributionMetrics struct {
 
 // Assignment represents a ship-to-waypoint assignment
 type Assignment struct {
-	ShipSymbol      string
-	TargetWaypoint  string
-	Distance        float64
+	ShipSymbol     string
+	TargetWaypoint string
+	Distance       float64
 }
 
 // FleetAssigner implements fleet assignment business logic for contract operations
@@ -118,10 +118,10 @@ func (fa *FleetAssigner) IsRebalancingNeeded(
 //   - Ensures balanced distribution across all targets
 //
 // Algorithm:
-//   1. Calculate max ships per target (balanced distribution)
-//   2. Cap at MaxShipsPerMarket to prevent clustering
-//   3. For each ship, select nearest target with capacity
-//   4. Track assignments and capacities
+//  1. Calculate max ships per target (balanced distribution)
+//  2. Cap at MaxShipsPerMarket to prevent clustering
+//  3. For each ship, select nearest target with capacity
+//  4. Track assignments and capacities
 //
 // Parameters:
 //   - ships: Fleet to distribute

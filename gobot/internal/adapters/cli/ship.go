@@ -1,9 +1,9 @@
 package cli
 
 import (
-	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"context"
 	"fmt"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"os"
 	"text/tabwriter"
 	"time"

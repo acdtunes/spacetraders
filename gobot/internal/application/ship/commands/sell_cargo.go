@@ -8,8 +8,8 @@ import (
 	scoutingQuery "github.com/andrescamacho/spacetraders-go/internal/application/scouting/queries"
 	shipPkg "github.com/andrescamacho/spacetraders-go/internal/application/ship"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	infraPorts "github.com/andrescamacho/spacetraders-go/internal/infrastructure/ports"
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )
@@ -21,10 +21,10 @@ import (
 //   - Ship must have sufficient cargo of the specified type
 //   - Automatically splits large sales into multiple API transactions based on market limits
 type SellCargoCommand struct {
-	ShipSymbol string // Ship symbol (e.g., "SHIP-1")
-	GoodSymbol string // Trade good symbol (e.g., "IRON_ORE")
-	Units      int    // Total units to sell
-	PlayerID   shared.PlayerID    // Player ID for authorization
+	ShipSymbol string          // Ship symbol (e.g., "SHIP-1")
+	GoodSymbol string          // Trade good symbol (e.g., "IRON_ORE")
+	Units      int             // Total units to sell
+	PlayerID   shared.PlayerID // Player ID for authorization
 }
 
 // SellCargoResponse contains the results of a cargo sale operation.

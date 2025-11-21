@@ -10,20 +10,20 @@ import (
 )
 
 type contractContext struct {
-	contractID         string
-	playerID           int
-	faction            string
-	contractType       string
-	deliveries         []contract.Delivery
-	payment            contract.Payment
-	deadlineToAccept   string
-	deadline           string
-	contract           *contract.Contract
-	err                error
-	boolResult         bool
-	profitabilityEval  *contract.ProfitabilityEvaluation
-	profitabilityCtx   contract.ProfitabilityContext
-	marketPricesMap    map[string]int
+	contractID        string
+	playerID          int
+	faction           string
+	contractType      string
+	deliveries        []contract.Delivery
+	payment           contract.Payment
+	deadlineToAccept  string
+	deadline          string
+	contract          *contract.Contract
+	err               error
+	boolResult        bool
+	profitabilityEval *contract.ProfitabilityEvaluation
+	profitabilityCtx  contract.ProfitabilityContext
+	marketPricesMap   map[string]int
 }
 
 func (cc *contractContext) reset() {

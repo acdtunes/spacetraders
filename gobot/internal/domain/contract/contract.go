@@ -62,13 +62,13 @@ func NewContract(contractID string, playerID shared.PlayerID, factionSymbol, con
 	}, nil
 }
 
-func (c *Contract) ContractID() string    { return c.contractID }
+func (c *Contract) ContractID() string        { return c.contractID }
 func (c *Contract) PlayerID() shared.PlayerID { return c.playerID }
-func (c *Contract) FactionSymbol() string { return c.factionSymbol }
-func (c *Contract) Type() string          { return c.contractType }
-func (c *Contract) Terms() Terms  { return c.terms }
-func (c *Contract) Accepted() bool        { return c.accepted }
-func (c *Contract) Fulfilled() bool       { return c.fulfilled }
+func (c *Contract) FactionSymbol() string     { return c.factionSymbol }
+func (c *Contract) Type() string              { return c.contractType }
+func (c *Contract) Terms() Terms              { return c.terms }
+func (c *Contract) Accepted() bool            { return c.accepted }
+func (c *Contract) Fulfilled() bool           { return c.fulfilled }
 
 // Accept accepts the contract (MUTABLE - modifies in place)
 func (c *Contract) Accept() error {

@@ -8,8 +8,8 @@ import (
 	scoutingQuery "github.com/andrescamacho/spacetraders-go/internal/application/scouting/queries"
 	shipPkg "github.com/andrescamacho/spacetraders-go/internal/application/ship"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	infraPorts "github.com/andrescamacho/spacetraders-go/internal/infrastructure/ports"
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )
@@ -21,10 +21,10 @@ import (
 //   - Ship must have sufficient available cargo space
 //   - Automatically splits large purchases into multiple API transactions based on market limits
 type PurchaseCargoCommand struct {
-	ShipSymbol string // Ship symbol (e.g., "SHIP-1")
-	GoodSymbol string // Trade good symbol (e.g., "IRON_ORE")
-	Units      int    // Total units to purchase
-	PlayerID   shared.PlayerID    // Player ID for authorization
+	ShipSymbol string          // Ship symbol (e.g., "SHIP-1")
+	GoodSymbol string          // Trade good symbol (e.g., "IRON_ORE")
+	Units      int             // Total units to purchase
+	PlayerID   shared.PlayerID // Player ID for authorization
 }
 
 // PurchaseCargoResponse contains the results of a cargo purchase operation.

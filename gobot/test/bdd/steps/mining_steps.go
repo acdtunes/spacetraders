@@ -13,33 +13,33 @@ import (
 )
 
 type miningContext struct {
-	operation        *mining.Operation
-	transferRequest  *mining.CargoTransferRequest
-	newRequest       *mining.CargoTransferRequest
-	operationData    *mining.OperationData
-	requestData      *mining.CargoTransferRequestData
-	err              error
-	boolResult       bool
-	intResult        int
-	durationResult   time.Duration
-	clock            *shared.MockClock
+	operation       *mining.Operation
+	transferRequest *mining.CargoTransferRequest
+	newRequest      *mining.CargoTransferRequest
+	operationData   *mining.OperationData
+	requestData     *mining.CargoTransferRequestData
+	err             error
+	boolResult      bool
+	intResult       int
+	durationResult  time.Duration
+	clock           *shared.MockClock
 
 	// Builder fields for operation creation
-	opID             string
-	playerID         int
-	asteroidField    string
-	topNOres         int
-	batchThreshold   int
-	batchTimeout     int
-	maxIterations    int
-	minerShips       []string
-	transportShips   []string
+	opID           string
+	playerID       int
+	asteroidField  string
+	topNOres       int
+	batchThreshold int
+	batchTimeout   int
+	maxIterations  int
+	minerShips     []string
+	transportShips []string
 
 	// Builder fields for cargo transfer request
-	requestID        string
-	miningOpID       string
-	minerShip        string
-	cargoItems       []shared.CargoItem
+	requestID  string
+	miningOpID string
+	minerShip  string
+	cargoItems []shared.CargoItem
 }
 
 func (mc *miningContext) reset() {
@@ -823,7 +823,7 @@ func (mc *miningContext) theNewRequestShouldHaveCargo(cargoSpec string) error {
 	parts := strings.Split(cargoSpec, ":")
 	symbol := parts[0]
 	expectedUnits, _ := strconv.Atoi(parts[1])
-	
+
 	for _, item := range mc.newRequest.CargoManifest() {
 		if item.Symbol == symbol && item.Units == expectedUnits {
 			return nil
@@ -874,7 +874,7 @@ func (mc *miningContext) aCargoTransferRequestWithIDInState(id, status string) e
 		mc.cargoItems = []shared.CargoItem{*item}
 	}
 	mc.transferRequest = mining.NewCargoTransferRequest(id, "test-operation", "MINER-1", mc.cargoItems)
-	
+
 	if status == "IN_PROGRESS" {
 		mc.transferRequest = mc.transferRequest.WithTransportShip("TRANSPORT-1")
 	}
@@ -968,4 +968,3 @@ func (mc *miningContext) modifyingTheNewRequestCargoShouldNotAffectTheOriginal()
 	// Just verify they're separate
 	return nil
 }
-

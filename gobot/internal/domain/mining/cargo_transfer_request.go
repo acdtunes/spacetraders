@@ -21,8 +21,8 @@ type CargoTransferRequest struct {
 	id                string
 	miningOperationID string
 	minerShip         string
-	transportShip     string                // May be empty if pending assignment
-	cargoManifest     []shared.CargoItem    // Items to transfer
+	transportShip     string             // May be empty if pending assignment
+	cargoManifest     []shared.CargoItem // Items to transfer
 	status            TransferStatus
 	createdAt         time.Time
 	completedAt       *time.Time

@@ -285,4 +285,3 @@ func (r *MarketRepositoryGORM) FindAllMarketsInSystem(
 
 	return waypoints, nil
 }
-

@@ -13,13 +13,23 @@ import (
 // Shared assertion variables across contexts
 // These are used when steps from different contexts need to share assertion data
 var (
-	sharedBoolResult   bool
-	sharedIntResult    int
-	sharedErr          error
-	sharedWaypointMap  map[string]*shared.Waypoint
-	sharedShip         interface { Fuel() *shared.Fuel; Cargo() *shared.Cargo }
-	sharedMarket       interface{ GoodsCount() int; WaypointSymbol() string } // For scouting market context
-	sharedContainer    interface{ IsRunning() bool; IsFinished() bool; IsStopping() bool } // For container lifecycle/state checks
+	sharedBoolResult  bool
+	sharedIntResult   int
+	sharedErr         error
+	sharedWaypointMap map[string]*shared.Waypoint
+	sharedShip        interface {
+		Fuel() *shared.Fuel
+		Cargo() *shared.Cargo
+	}
+	sharedMarket interface {
+		GoodsCount() int
+		WaypointSymbol() string
+	} // For scouting market context
+	sharedContainer interface {
+		IsRunning() bool
+		IsFinished() bool
+		IsStopping() bool
+	} // For container lifecycle/state checks
 )
 
 type valueObjectContext struct {
@@ -379,7 +389,7 @@ func (voc *valueObjectContext) iAttemptToConsumeUnitsOfFuel(units int) error {
 	if err != nil {
 		voc.err = err
 		sharedErr = err // Set shared error for cross-context assertions
-		return nil // Don't fail the step, capture the error
+		return nil      // Don't fail the step, capture the error
 	}
 	voc.fuel = newFuel
 	return nil

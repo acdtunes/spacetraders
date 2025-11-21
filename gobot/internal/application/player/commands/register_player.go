@@ -7,8 +7,8 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
-	infraPorts "github.com/andrescamacho/spacetraders-go/internal/infrastructure/ports"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	infraPorts "github.com/andrescamacho/spacetraders-go/internal/infrastructure/ports"
 )
 
 // RegisterPlayerCommand represents a command to register a new player

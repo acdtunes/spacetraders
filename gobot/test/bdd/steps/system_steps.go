@@ -10,11 +10,11 @@ import (
 )
 
 type systemContext struct {
-	graph              *system.NavigationGraph
-	retrievedWaypoint  *shared.Waypoint
-	retrievalErr       error
-	edgesFromWaypoint  []system.GraphEdge
-	fuelStations       []*shared.Waypoint
+	graph             *system.NavigationGraph
+	retrievedWaypoint *shared.Waypoint
+	retrievalErr      error
+	edgesFromWaypoint []system.GraphEdge
+	fuelStations      []*shared.Waypoint
 }
 
 func (sc *systemContext) reset() {

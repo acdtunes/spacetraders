@@ -19,14 +19,14 @@ type RecoveryMetrics struct {
 // HealthMonitor monitors container and ship health, detecting stuck operations
 // and attempting recovery when possible
 type HealthMonitor struct {
-	checkInterval      time.Duration
-	recoveryTimeout    time.Duration
+	checkInterval       time.Duration
+	recoveryTimeout     time.Duration
 	maxRecoveryAttempts int
-	lastCheckTime      *time.Time
-	watchList          map[string]time.Time // ship symbol -> added time
-	recoveryAttempts   map[string]int       // ship symbol -> attempt count
-	metrics            *RecoveryMetrics
-	clock              shared.Clock
+	lastCheckTime       *time.Time
+	watchList           map[string]time.Time // ship symbol -> added time
+	recoveryAttempts    map[string]int       // ship symbol -> attempt count
+	metrics             *RecoveryMetrics
+	clock               shared.Clock
 }
 
 // NewHealthMonitor creates a new health monitor instance

@@ -94,21 +94,21 @@ func NewOperation(
 
 // Getters
 
-func (op *Operation) ID() string                    { return op.id }
-func (op *Operation) PlayerID() int                 { return op.playerID }
-func (op *Operation) AsteroidField() string         { return op.asteroidField }
-func (op *Operation) Status() OperationStatus       { return op.status }
-func (op *Operation) TopNOres() int                 { return op.topNOres }
-func (op *Operation) MinerShips() []string          { return op.minerShips }
-func (op *Operation) TransportShips() []string      { return op.transportShips }
-func (op *Operation) BatchThreshold() int           { return op.batchThreshold }
-func (op *Operation) BatchTimeout() int             { return op.batchTimeout }
-func (op *Operation) MaxIterations() int            { return op.maxIterations }
-func (op *Operation) LastError() error              { return op.lastError }
-func (op *Operation) CreatedAt() time.Time          { return op.createdAt }
-func (op *Operation) UpdatedAt() time.Time          { return op.updatedAt }
-func (op *Operation) StartedAt() *time.Time         { return op.startedAt }
-func (op *Operation) StoppedAt() *time.Time         { return op.stoppedAt }
+func (op *Operation) ID() string               { return op.id }
+func (op *Operation) PlayerID() int            { return op.playerID }
+func (op *Operation) AsteroidField() string    { return op.asteroidField }
+func (op *Operation) Status() OperationStatus  { return op.status }
+func (op *Operation) TopNOres() int            { return op.topNOres }
+func (op *Operation) MinerShips() []string     { return op.minerShips }
+func (op *Operation) TransportShips() []string { return op.transportShips }
+func (op *Operation) BatchThreshold() int      { return op.batchThreshold }
+func (op *Operation) BatchTimeout() int        { return op.batchTimeout }
+func (op *Operation) MaxIterations() int       { return op.maxIterations }
+func (op *Operation) LastError() error         { return op.lastError }
+func (op *Operation) CreatedAt() time.Time     { return op.createdAt }
+func (op *Operation) UpdatedAt() time.Time     { return op.updatedAt }
+func (op *Operation) StartedAt() *time.Time    { return op.startedAt }
+func (op *Operation) StoppedAt() *time.Time    { return op.stoppedAt }
 
 // State transition methods
 

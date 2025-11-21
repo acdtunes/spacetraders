@@ -42,8 +42,8 @@ type RunCoordinatorResponse struct {
 	TotalRevenue   int
 	Errors         []string
 	// Dry-run results
-	AsteroidField string               // Selected asteroid (dry-run)
-	MarketSymbol  string               // Market for transport loop (dry-run)
+	AsteroidField string                // Selected asteroid (dry-run)
+	MarketSymbol  string                // Market for transport loop (dry-run)
 	ShipRoutes    []common.ShipRouteDTO // Planned routes for all ships (dry-run)
 }
 
@@ -199,9 +199,9 @@ func (h *RunCoordinatorHandler) Handle(ctx context.Context, request common.Reque
 		cmd.AsteroidField = selectedAsteroid
 		marketSymbol = selectedMarket
 		logger.Log("INFO", "Asteroid and market selected", map[string]interface{}{
-			"action":    "select_asteroid",
-			"asteroid":  selectedAsteroid,
-			"market":    selectedMarket,
+			"action":   "select_asteroid",
+			"asteroid": selectedAsteroid,
+			"market":   selectedMarket,
 		})
 	} else if cmd.AsteroidField != "" {
 		// User specified asteroid - just find the closest market
@@ -238,10 +238,10 @@ func (h *RunCoordinatorHandler) Handle(ctx context.Context, request common.Reque
 
 	// Step 2: Create ship pool assignments
 	logger.Log("INFO", "Ship pool creation initiated", map[string]interface{}{
-		"action":           "create_ship_pool",
-		"miner_count":      len(cmd.MinerShips),
-		"transport_count":  len(cmd.TransportShips),
-		"container_id":     cmd.ContainerID,
+		"action":          "create_ship_pool",
+		"miner_count":     len(cmd.MinerShips),
+		"transport_count": len(cmd.TransportShips),
+		"container_id":    cmd.ContainerID,
 	})
 
 	allShips := append(cmd.MinerShips, cmd.TransportShips...)
@@ -271,8 +271,8 @@ func (h *RunCoordinatorHandler) Handle(ctx context.Context, request common.Reque
 
 	// Step 4: Spawn transport workers (they run continuously)
 	logger.Log("INFO", "Transport workers spawning", map[string]interface{}{
-		"action":           "spawn_transports",
-		"transport_count":  len(cmd.TransportShips),
+		"action":          "spawn_transports",
+		"transport_count": len(cmd.TransportShips),
 	})
 	for _, transportShip := range cmd.TransportShips {
 		containerID, err := h.spawnTransportWorker(ctx, cmd, transportShip, marketSymbol,
@@ -313,8 +313,8 @@ func (h *RunCoordinatorHandler) Handle(ctx context.Context, request common.Reque
 
 	// Step 6: Main coordination loop
 	logger.Log("INFO", "Coordination loop started", map[string]interface{}{
-		"action":          "start_coordination",
-		"container_id":    cmd.ContainerID,
+		"action":       "start_coordination",
+		"container_id": cmd.ContainerID,
 	})
 
 	// Available transport pool
@@ -331,9 +331,9 @@ func (h *RunCoordinatorHandler) Handle(ctx context.Context, request common.Reque
 		case <-ctx.Done():
 			// Context cancelled, stop all workers and cleanup
 			logger.Log("INFO", "Coordinator shutdown requested", map[string]interface{}{
-				"action":        "shutdown_coordinator",
-				"container_id":  cmd.ContainerID,
-				"worker_count":  len(workerContainerIDs),
+				"action":       "shutdown_coordinator",
+				"container_id": cmd.ContainerID,
+				"worker_count": len(workerContainerIDs),
 			})
 			// Stop all worker containers
 			for _, containerID := range workerContainerIDs {
@@ -364,10 +364,10 @@ func (h *RunCoordinatorHandler) Handle(ctx context.Context, request common.Reque
 				select {
 				case minerAssignChans[minerSymbol] <- transportSymbol:
 					logger.Log("INFO", "Transport assigned to waiting miner", map[string]interface{}{
-						"action":         "assign_transport",
-						"transport":      transportSymbol,
-						"miner":          minerSymbol,
-						"cargo_units":    transportCargoLevels[transportSymbol],
+						"action":      "assign_transport",
+						"transport":   transportSymbol,
+						"miner":       minerSymbol,
+						"cargo_units": transportCargoLevels[transportSymbol],
 					})
 				case <-ctx.Done():
 					return result, ctx.Err()
@@ -381,17 +381,17 @@ func (h *RunCoordinatorHandler) Handle(ctx context.Context, request common.Reque
 			// Miner requesting transport
 
 			if len(availableTransports) > 0 {
-			// Select transport with most cargo to fill it first
-			bestIdx := 0
-			bestCargo := transportCargoLevels[availableTransports[0]]
-			for i, ts := range availableTransports {
-				if transportCargoLevels[ts] > bestCargo {
-					bestIdx = i
-					bestCargo = transportCargoLevels[ts]
+				// Select transport with most cargo to fill it first
+				bestIdx := 0
+				bestCargo := transportCargoLevels[availableTransports[0]]
+				for i, ts := range availableTransports {
+					if transportCargoLevels[ts] > bestCargo {
+						bestIdx = i
+						bestCargo = transportCargoLevels[ts]
+					}
 				}
-			}
-			transportSymbol := availableTransports[bestIdx]
-			availableTransports = append(availableTransports[:bestIdx], availableTransports[bestIdx+1:]...)
+				transportSymbol := availableTransports[bestIdx]
+				availableTransports = append(availableTransports[:bestIdx], availableTransports[bestIdx+1:]...)
 
 				// Send transport to miner
 				select {
@@ -459,8 +459,8 @@ func (h *RunCoordinatorHandler) getOrCreateOperation(
 		cmd.MinerShips,
 		cmd.TransportShips,
 		cmd.TopNOres,
-		0, // BatchThreshold not used in Transport-as-Sink
-		0, // BatchTimeout not used in Transport-as-Sink
+		0,  // BatchThreshold not used in Transport-as-Sink
+		0,  // BatchTimeout not used in Transport-as-Sink
 		-1, // Infinite iterations
 		nil,
 	)
@@ -623,9 +623,9 @@ func (h *RunCoordinatorHandler) planDryRunRoutes(
 	logger common.ContainerLogger,
 ) (*RunCoordinatorResponse, error) {
 	logger.Log("INFO", "Dry-run mode initiated", map[string]interface{}{
-		"action":      "dry_run_start",
-		"ship_count":  len(cmd.MinerShips) + len(cmd.TransportShips),
-		"asteroid":    cmd.AsteroidField,
+		"action":     "dry_run_start",
+		"ship_count": len(cmd.MinerShips) + len(cmd.TransportShips),
+		"asteroid":   cmd.AsteroidField,
 	})
 
 	result := &RunCoordinatorResponse{
@@ -723,10 +723,10 @@ func (h *RunCoordinatorHandler) planDryRunRoutes(
 
 	// Log detailed route information
 	logger.Log("INFO", "Dry-run planning complete", map[string]interface{}{
-		"action":       "dry_run_complete",
+		"action":        "dry_run_complete",
 		"ships_planned": len(result.ShipRoutes),
-		"asteroid":     result.AsteroidField,
-		"market":       result.MarketSymbol,
+		"asteroid":      result.AsteroidField,
+		"market":        result.MarketSymbol,
 	})
 
 	for _, route := range result.ShipRoutes {
@@ -742,14 +742,14 @@ func (h *RunCoordinatorHandler) planDryRunRoutes(
 		for i, seg := range route.Segments {
 			segMins := seg.TravelTime / 60
 			logger.Log("INFO", "Route segment details", map[string]interface{}{
-				"action":       "segment_details",
-				"ship_symbol":  route.ShipSymbol,
-				"segment_num":  i + 1,
-				"from":         seg.From,
-				"to":           seg.To,
-				"flight_mode":  seg.FlightMode,
-				"travel_mins":  segMins,
-				"fuel_cost":    seg.FuelCost,
+				"action":      "segment_details",
+				"ship_symbol": route.ShipSymbol,
+				"segment_num": i + 1,
+				"from":        seg.From,
+				"to":          seg.To,
+				"flight_mode": seg.FlightMode,
+				"travel_mins": segMins,
+				"fuel_cost":   seg.FuelCost,
 			})
 		}
 	}
@@ -873,9 +873,9 @@ func (h *RunCoordinatorHandler) selectAsteroidAndMarket(
 
 	logger := common.LoggerFromContext(ctx)
 	logger.Log("INFO", "Asteroid selection initiated", map[string]interface{}{
-		"action":      "evaluate_pairs",
-		"asteroids":   len(asteroids),
-		"pairs":       len(pairs),
+		"action":    "evaluate_pairs",
+		"asteroids": len(asteroids),
+		"pairs":     len(pairs),
 	})
 
 	// Route pairs in order with early termination
@@ -1023,9 +1023,9 @@ func (h *RunCoordinatorHandler) selectAsteroidAndMarket(
 	if selectedResult.roundTripFuel > fuelCapacity {
 		if force {
 			logger.Log("WARNING", "Fuel capacity exceeded but proceeding with --force", map[string]interface{}{
-				"action":            "force_override",
-				"asteroid":          selectedResult.asteroid.Symbol,
-				"required_fuel":     selectedResult.roundTripFuel,
+				"action":             "force_override",
+				"asteroid":           selectedResult.asteroid.Symbol,
+				"required_fuel":      selectedResult.roundTripFuel,
 				"transport_capacity": fuelCapacity,
 			})
 		} else {

@@ -48,7 +48,7 @@ func (r *ShipAssignmentRepositoryGORM) Assign(
 	// Use UPSERT: on conflict with (ship_symbol, player_id), update the row
 	// This allows reassigning ships that have old "released" assignments
 	if err := r.db.WithContext(ctx).Clauses(clause.OnConflict{
-		Columns: []clause.Column{{Name: "ship_symbol"}, {Name: "player_id"}},
+		Columns:   []clause.Column{{Name: "ship_symbol"}, {Name: "player_id"}},
 		DoUpdates: clause.AssignmentColumns([]string{"container_id", "status", "assigned_at", "released_at", "release_reason"}),
 		UpdateAll: false,
 	}).Create(model).Error; err != nil {

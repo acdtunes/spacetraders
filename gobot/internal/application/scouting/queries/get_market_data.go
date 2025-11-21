@@ -19,7 +19,7 @@ type MarketRepository interface {
 
 // GetMarketDataQuery - Query to retrieve market data for a waypoint
 type GetMarketDataQuery struct {
-	PlayerID     shared.PlayerID
+	PlayerID       shared.PlayerID
 	WaypointSymbol string
 }
 
@@ -59,7 +59,7 @@ func (h *GetMarketDataHandler) Handle(ctx context.Context, request common.Reques
 
 // ListMarketDataQuery - Query to retrieve all market data in a system
 type ListMarketDataQuery struct {
-	PlayerID     shared.PlayerID
+	PlayerID      shared.PlayerID
 	SystemSymbol  string
 	MaxAgeMinutes int
 }

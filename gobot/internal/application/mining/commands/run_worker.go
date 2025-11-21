@@ -33,10 +33,10 @@ type RunWorkerCommand struct {
 
 // RunWorkerResponse contains mining execution results
 type RunWorkerResponse struct {
-	ExtractionCount int
-	TransferCount   int
+	ExtractionCount       int
+	TransferCount         int
 	TotalUnitsTransferred int
-	Error           string
+	Error                 string
 }
 
 // RunWorkerHandler implements the mining worker workflow
@@ -184,9 +184,9 @@ func (h *RunWorkerHandler) executeMining(
 		// Check if cargo is full - only then do we jettison and potentially transfer
 		if ship.IsCargoFull() {
 			logger.Log("INFO", "Miner cargo full - evaluating for jettison", map[string]interface{}{
-				"ship_symbol":   cmd.ShipSymbol,
-				"action":        "cargo_full",
-				"cargo_units":   ship.Cargo().Units,
+				"ship_symbol":    cmd.ShipSymbol,
+				"action":         "cargo_full",
+				"cargo_units":    ship.Cargo().Units,
 				"cargo_capacity": ship.Cargo().Capacity,
 			})
 
@@ -201,10 +201,10 @@ func (h *RunWorkerHandler) executeMining(
 			}
 
 			evalQuery := &miningQueries.EvaluateCargoValueQuery{
-				CargoItems:   cargoItems,
+				CargoItems:        cargoItems,
 				MinPriceThreshold: 50, // Jettison ores < 50 credits/unit,
-				SystemSymbol: ship.CurrentLocation().SystemSymbol,
-				PlayerID:     cmd.PlayerID.Value(),
+				SystemSymbol:      ship.CurrentLocation().SystemSymbol,
+				PlayerID:          cmd.PlayerID.Value(),
 			}
 
 			evalResp, err := h.mediator.Send(ctx, evalQuery)
@@ -267,10 +267,10 @@ func (h *RunWorkerHandler) executeMining(
 				result.TotalUnitsTransferred += unitsTransferred
 
 				logger.Log("INFO", "Cargo transferred to transport successfully", map[string]interface{}{
-					"ship_symbol":      cmd.ShipSymbol,
-					"action":           "transfer_complete",
+					"ship_symbol":       cmd.ShipSymbol,
+					"action":            "transfer_complete",
 					"units_transferred": unitsTransferred,
-					"transfer_count":   result.TransferCount,
+					"transfer_count":    result.TransferCount,
 				})
 			}
 

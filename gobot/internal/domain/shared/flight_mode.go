@@ -22,10 +22,10 @@ type flightModeConfig struct {
 }
 
 var flightModeConfigs = map[FlightMode]flightModeConfig{
-	FlightModeCruise:  {"CRUISE", 31, 1.0},     // Fast, standard fuel
-	FlightModeDrift:   {"DRIFT", 26, 0.003},    // Slow, minimal fuel
-	FlightModeBurn:    {"BURN", 15, 2.0},       // Very fast, high fuel
-	FlightModeStealth: {"STEALTH", 50, 1.0},    // Very slow, stealthy
+	FlightModeCruise:  {"CRUISE", 31, 1.0},  // Fast, standard fuel
+	FlightModeDrift:   {"DRIFT", 26, 0.003}, // Slow, minimal fuel
+	FlightModeBurn:    {"BURN", 15, 2.0},    // Very fast, high fuel
+	FlightModeStealth: {"STEALTH", 50, 1.0}, // Very slow, stealthy
 }
 
 // Name returns the mode name

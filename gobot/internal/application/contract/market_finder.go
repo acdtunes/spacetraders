@@ -58,7 +58,7 @@ func FindPurchaseMarket(
 
 		logger := common.LoggerFromContext(ctx)
 		logger.Log("INFO", "Cheapest market found", map[string]interface{}{
-			"action":      "find_cheapest_market",
+			"action":       "find_cheapest_market",
 			"trade_symbol": delivery.TradeSymbol,
 			"market":       cheapestMarket.WaypointSymbol,
 			"sell_price":   cheapestMarket.SellPrice,

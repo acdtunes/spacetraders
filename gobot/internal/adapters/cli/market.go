@@ -1,9 +1,9 @@
 package cli
 
 import (
-	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"context"
 	"fmt"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"os"
 	"text/tabwriter"
 
@@ -94,7 +94,7 @@ Examples:
 
 			// Execute query
 			response, err := handler.Handle(ctx, &scoutingQuery.GetMarketDataQuery{
-				PlayerID:   shared.MustNewPlayerID(int(resolvedPlayerID)),
+				PlayerID:       shared.MustNewPlayerID(int(resolvedPlayerID)),
 				WaypointSymbol: waypointSymbol,
 			})
 			if err != nil {
@@ -219,7 +219,7 @@ Examples:
 
 			// Execute query
 			response, err := handler.Handle(ctx, &scoutingQuery.ListMarketDataQuery{
-				PlayerID:   shared.MustNewPlayerID(int(resolvedPlayerID)),
+				PlayerID:      shared.MustNewPlayerID(int(resolvedPlayerID)),
 				SystemSymbol:  systemSymbol,
 				MaxAgeMinutes: maxAgeMinutes,
 			})
