@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	"github.com/andrescamacho/spacetraders-go/internal/application/mining/coordination"
 	appShip "github.com/andrescamacho/spacetraders-go/internal/application/ship"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
@@ -249,22 +250,12 @@ func (h *RunCoordinatorHandler) Handle(ctx context.Context, request common.Reque
 		return nil, fmt.Errorf("failed to create pool assignments: %w", err)
 	}
 
-	// Step 3: Create coordination channels
-	transportAvailabilityChan := make(chan string, len(cmd.TransportShips))
-	minerRequestChan := make(chan string, len(cmd.MinerShips))
-	transferCompleteChan := make(chan TransferComplete, len(cmd.MinerShips))
+	// Step 3: Create transport coordinator (abstracts channel-based coordination)
+	coordinator := coordination.NewChannelTransportCoordinator(cmd.MinerShips, cmd.TransportShips)
+	defer coordinator.Shutdown() // Ensure channels are closed on exit
 
-	// Per-miner channels for receiving assigned transport
-	minerAssignChans := make(map[string]chan string)
-	for _, miner := range cmd.MinerShips {
-		minerAssignChans[miner] = make(chan string)
-	}
-
-	// Per-transport channels for receiving cargo notification
-	transportCargoReceivedChans := make(map[string]chan struct{})
-	for _, transport := range cmd.TransportShips {
-		transportCargoReceivedChans[transport] = make(chan struct{})
-	}
+	// Get raw channels for coordinator's main loop
+	minerRequestChan, transportAvailabilityChan, transferCompleteChan, minerAssignChans := coordinator.GetChannels()
 
 	// Track all spawned worker container IDs for cleanup on shutdown
 	var workerContainerIDs []string
@@ -275,8 +266,7 @@ func (h *RunCoordinatorHandler) Handle(ctx context.Context, request common.Reque
 		"transport_count": len(cmd.TransportShips),
 	})
 	for _, transportShip := range cmd.TransportShips {
-		containerID, err := h.spawnTransportWorker(ctx, cmd, transportShip, marketSymbol,
-			transportAvailabilityChan, transportCargoReceivedChans[transportShip])
+		containerID, err := h.spawnTransportWorker(ctx, cmd, transportShip, marketSymbol, coordinator)
 		if err != nil {
 			errMsg := fmt.Sprintf("Failed to spawn transport worker for %s: %v", transportShip, err)
 			logger.Log("ERROR", "Transport worker spawn failed", map[string]interface{}{
@@ -296,8 +286,7 @@ func (h *RunCoordinatorHandler) Handle(ctx context.Context, request common.Reque
 		"miner_count": len(cmd.MinerShips),
 	})
 	for _, minerShip := range cmd.MinerShips {
-		containerID, err := h.spawnMiningWorker(ctx, cmd, minerShip,
-			minerRequestChan, minerAssignChans[minerShip], transferCompleteChan)
+		containerID, err := h.spawnMiningWorker(ctx, cmd, minerShip, coordinator)
 		if err != nil {
 			errMsg := fmt.Sprintf("Failed to spawn mining worker for %s: %v", minerShip, err)
 			logger.Log("ERROR", "Mining worker spawn failed", map[string]interface{}{
@@ -426,10 +415,8 @@ func (h *RunCoordinatorHandler) Handle(ctx context.Context, request common.Reque
 			})
 
 			// Notify the transport that cargo was received
-			select {
-			case transportCargoReceivedChans[transfer.TransportSymbol] <- struct{}{}:
-			case <-ctx.Done():
-				return result, ctx.Err()
+			if err := coordinator.NotifyCargoReceived(ctx, transfer.TransportSymbol); err != nil {
+				logger.Log("WARNING", fmt.Sprintf("Failed to notify transport %s of cargo received: %v", transfer.TransportSymbol, err), nil)
 			}
 		}
 	}
@@ -514,23 +501,19 @@ func (h *RunCoordinatorHandler) spawnMiningWorker(
 	ctx context.Context,
 	cmd *RunCoordinatorCommand,
 	shipSymbol string,
-	requestChan chan<- string,
-	assignChan <-chan string,
-	transferCompleteChan chan<- TransferComplete,
+	coordinator *coordination.ChannelTransportCoordinator,
 ) (string, error) {
 	logger := common.LoggerFromContext(ctx)
 
 	workerContainerID := utils.GenerateContainerID("mining-worker", shipSymbol)
 
 	workerCmd := &RunWorkerCommand{
-		ShipSymbol:           shipSymbol,
-		PlayerID:             cmd.PlayerID,
-		AsteroidField:        cmd.AsteroidField,
-		TopNOres:             cmd.TopNOres,
-		CoordinatorID:        cmd.ContainerID,
-		TransportRequestChan: requestChan,
-		TransportAssignChan:  assignChan,
-		TransferCompleteChan: transferCompleteChan,
+		ShipSymbol:    shipSymbol,
+		PlayerID:      cmd.PlayerID,
+		AsteroidField: cmd.AsteroidField,
+		TopNOres:      cmd.TopNOres,
+		CoordinatorID: cmd.ContainerID,
+		Coordinator:   coordinator,
 	}
 
 	// Step 1: Persist worker container
@@ -569,21 +552,19 @@ func (h *RunCoordinatorHandler) spawnTransportWorker(
 	cmd *RunCoordinatorCommand,
 	shipSymbol string,
 	marketSymbol string,
-	availabilityChan chan<- string,
-	cargoReceivedChan <-chan struct{},
+	coordinator *coordination.ChannelTransportCoordinator,
 ) (string, error) {
 	logger := common.LoggerFromContext(ctx)
 
 	workerContainerID := utils.GenerateContainerID("transport-worker", shipSymbol)
 
 	workerCmd := &RunTransportWorkerCommand{
-		ShipSymbol:        shipSymbol,
-		PlayerID:          cmd.PlayerID,
-		AsteroidField:     cmd.AsteroidField,
-		MarketSymbol:      marketSymbol,
-		CoordinatorID:     cmd.ContainerID,
-		AvailabilityChan:  availabilityChan,
-		CargoReceivedChan: cargoReceivedChan,
+		ShipSymbol:    shipSymbol,
+		PlayerID:      cmd.PlayerID,
+		AsteroidField: cmd.AsteroidField,
+		MarketSymbol:  marketSymbol,
+		CoordinatorID: cmd.ContainerID,
+		Coordinator:   coordinator,
 	}
 
 	// Step 1: Persist worker container

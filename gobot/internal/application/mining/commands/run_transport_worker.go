@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	"github.com/andrescamacho/spacetraders-go/internal/application/mining/ports"
 	appShipCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands"
 	tradingCmd "github.com/andrescamacho/spacetraders-go/internal/application/trading/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
@@ -16,13 +17,12 @@ import (
 // RunTransportWorkerCommand orchestrates passive cargo receiving and selling
 // Transport waits at asteroid field as a cargo sink for miners
 type RunTransportWorkerCommand struct {
-	ShipSymbol        string
-	PlayerID          shared.PlayerID
-	AsteroidField     string          // Waypoint to wait at and return to
-	MarketSymbol      string          // Nearest market with fuel for refueling
-	CoordinatorID     string          // Parent coordinator container ID
-	AvailabilityChan  chan<- string   // Signal transport is available at asteroid
-	CargoReceivedChan <-chan struct{} // Receive signal that cargo was transferred
+	ShipSymbol    string
+	PlayerID      shared.PlayerID
+	AsteroidField string // Waypoint to wait at and return to
+	MarketSymbol  string // Nearest market with fuel for refueling
+	CoordinatorID string // Parent coordinator container ID
+	Coordinator   ports.TransportCoordinator
 }
 
 // RunTransportWorkerResponse contains transport execution results
@@ -201,26 +201,20 @@ func (h *RunTransportWorkerHandler) executeTransport(
 		default:
 		}
 
-		// 3a. Signal availability to coordinator
-		select {
-		case cmd.AvailabilityChan <- cmd.ShipSymbol:
-			// Availability signaled
-		case <-ctx.Done():
-			return ctx.Err()
+		// 3a. Signal availability and wait for cargo (blocking operation)
+		if err := cmd.Coordinator.SignalAvailability(ctx, cmd.ShipSymbol); err != nil {
+			if err == context.Canceled || err == context.DeadlineExceeded {
+				return err
+			}
+			return fmt.Errorf("failed to signal availability: %w", err)
 		}
 
-		// 3b. Wait for cargo transfer notification
-		select {
-		case <-cmd.CargoReceivedChan:
-			// Cargo was transferred to us
-			logger.Log("INFO", "Transport received cargo from miner", map[string]interface{}{
-				"ship_symbol": cmd.ShipSymbol,
-				"action":      "cargo_received",
-				"location":    cmd.AsteroidField,
-			})
-		case <-ctx.Done():
-			return ctx.Err()
-		}
+		// Cargo was transferred to us
+		logger.Log("INFO", "Transport received cargo from miner", map[string]interface{}{
+			"ship_symbol": cmd.ShipSymbol,
+			"action":      "cargo_received",
+			"location":    cmd.AsteroidField,
+		})
 
 		// 3c. Reload ship to check cargo level
 		transportShip, err = h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)

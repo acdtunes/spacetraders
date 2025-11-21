@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	"github.com/andrescamacho/spacetraders-go/internal/application/mining/ports"
 	miningQueries "github.com/andrescamacho/spacetraders-go/internal/application/mining/queries"
 	appShipCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
@@ -12,23 +13,15 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// TransferComplete signals that a miner has completed transferring cargo to a transport
-type TransferComplete struct {
-	MinerSymbol     string
-	TransportSymbol string
-}
-
 // RunWorkerCommand orchestrates continuous mining with transport-as-sink pattern
 // Miner mines until cargo is full, requests transport, transfers cargo, then resumes mining
 type RunWorkerCommand struct {
-	ShipSymbol           string
-	PlayerID             shared.PlayerID
-	AsteroidField        string                  // Waypoint symbol of asteroid
-	TopNOres             int                     // Deprecated: no longer used, threshold hardcoded to 50
-	CoordinatorID        string                  // Parent coordinator container ID
-	TransportRequestChan chan<- string           // Send miner symbol to request transport
-	TransportAssignChan  <-chan string           // Receive assigned transport symbol
-	TransferCompleteChan chan<- TransferComplete // Signal transfer completion to coordinator
+	ShipSymbol    string
+	PlayerID      shared.PlayerID
+	AsteroidField string // Waypoint symbol of asteroid
+	TopNOres      int    // Deprecated: no longer used, threshold hardcoded to 50
+	CoordinatorID string // Parent coordinator container ID
+	Coordinator   ports.TransportCoordinator
 }
 
 // RunWorkerResponse contains mining execution results
@@ -288,31 +281,22 @@ func (h *RunWorkerHandler) requestAndTransferToTransport(
 ) (int, error) {
 	logger := common.LoggerFromContext(ctx)
 
-	// Send request for transport
+	// Request transport via coordinator
 	logger.Log("INFO", "Miner requesting transport", map[string]interface{}{
 		"ship_symbol": cmd.ShipSymbol,
 		"action":      "request_transport",
 	})
 
-	select {
-	case cmd.TransportRequestChan <- cmd.ShipSymbol:
-		// Request sent
-	case <-ctx.Done():
-		return 0, ctx.Err()
+	transportSymbol, err := cmd.Coordinator.RequestTransport(ctx, cmd.ShipSymbol)
+	if err != nil {
+		return 0, fmt.Errorf("failed to request transport: %w", err)
 	}
 
-	// Wait for transport assignment
-	var transportSymbol string
-	select {
-	case transportSymbol = <-cmd.TransportAssignChan:
-		logger.Log("INFO", "Transport assigned to miner", map[string]interface{}{
-			"ship_symbol": cmd.ShipSymbol,
-			"action":      "transport_assigned",
-			"transport":   transportSymbol,
-		})
-	case <-ctx.Done():
-		return 0, ctx.Err()
-	}
+	logger.Log("INFO", "Transport assigned to miner", map[string]interface{}{
+		"ship_symbol": cmd.ShipSymbol,
+		"action":      "transport_assigned",
+		"transport":   transportSymbol,
+	})
 
 	// Load transport ship to check available space
 	transportShip, err := h.shipRepo.FindBySymbol(ctx, transportSymbol, cmd.PlayerID)
@@ -391,14 +375,8 @@ func (h *RunWorkerHandler) requestAndTransferToTransport(
 	}
 
 	// Signal transfer completion to coordinator
-	select {
-	case cmd.TransferCompleteChan <- TransferComplete{
-		MinerSymbol:     cmd.ShipSymbol,
-		TransportSymbol: transportSymbol,
-	}:
-		// Transfer completion signal sent
-	case <-ctx.Done():
-		return totalTransferred, ctx.Err()
+	if err := cmd.Coordinator.NotifyTransferComplete(ctx, cmd.ShipSymbol, transportSymbol); err != nil {
+		return totalTransferred, fmt.Errorf("failed to notify transfer complete: %w", err)
 	}
 
 	return totalTransferred, nil
