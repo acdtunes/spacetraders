@@ -54,9 +54,6 @@ type IWaypointConverter interface {
 	// Returns:
 	//   Map of waypoint_symbol -> Waypoint objects
 	ConvertGraphToWaypoints(graph map[string]interface{}, waypointTraits map[string]*shared.Waypoint) map[string]*shared.Waypoint
-
-	// ConvertWaypointFromMap converts a single waypoint from map[string]interface{} to domain Waypoint
-	ConvertWaypointFromMap(symbol string, wpMap map[string]interface{}) *shared.Waypoint
 }
 
 // DTOs for system operations

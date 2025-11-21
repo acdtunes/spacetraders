@@ -11,14 +11,12 @@ import (
 // WaypointEnricher enriches graph waypoints with trait data from database
 type WaypointEnricher struct {
 	waypointRepo system.WaypointRepository
-	converter    system.IWaypointConverter
 }
 
 // NewWaypointEnricher creates a new waypoint enricher
-func NewWaypointEnricher(waypointRepo system.WaypointRepository, converter system.IWaypointConverter) *WaypointEnricher {
+func NewWaypointEnricher(waypointRepo system.WaypointRepository) *WaypointEnricher {
 	return &WaypointEnricher{
 		waypointRepo: waypointRepo,
-		converter:    converter,
 	}
 }
 

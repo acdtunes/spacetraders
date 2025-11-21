@@ -62,17 +62,7 @@ func (c *WaypointConverter) ConvertGraphToWaypoints(
 	return waypointObjects
 }
 
-// ConvertWaypointFromMap converts a single waypoint from map[string]interface{} to domain Waypoint
-//
-// This method handles the extraction of waypoint data from the graph format
-func (c *WaypointConverter) ConvertWaypointFromMap(
-	symbol string,
-	wpMap map[string]interface{},
-) *shared.Waypoint {
-	return c.convertWaypointFromMap(symbol, wpMap)
-}
-
-// convertWaypointFromMap is the internal implementation
+// convertWaypointFromMap is the internal implementation for converting a single waypoint
 func (c *WaypointConverter) convertWaypointFromMap(
 	symbol string,
 	wpMap map[string]interface{},
