@@ -51,7 +51,3 @@ func getTransactionLimit(
 
 	return limit
 }
-
-// Note: min utility has been moved to pkg/utils.Min
-// This is used in transaction splitting loops to determine how many units
-// to process in each API call (capped by either remaining units or transaction limit).

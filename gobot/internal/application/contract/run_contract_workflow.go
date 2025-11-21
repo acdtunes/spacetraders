@@ -495,6 +495,56 @@ func (h *RunWorkflowHandler) calculatePurchaseNeeds(
 	return unitsToPurchase
 }
 
+func (h *RunWorkflowHandler) executeSinglePurchaseTrip(
+	ctx context.Context,
+	cmd *RunWorkflowCommand,
+	ship *navigation.Ship,
+	tradeSymbol string,
+	cheapestMarket string,
+	unitsToPurchase int,
+) (*navigation.Ship, int, bool, error) {
+	logger := common.LoggerFromContext(ctx)
+
+	availableSpace := ship.Cargo().Capacity - ship.Cargo().Units
+	unitsThisTrip := utils.Min(availableSpace, unitsToPurchase)
+
+	if unitsThisTrip <= 0 {
+		logger.Log("WARNING", "Purchase loop terminated due to no cargo space", map[string]interface{}{
+			"ship_symbol": cmd.ShipSymbol,
+			"action":      "purchase_loop_ended",
+			"reason":      "no_cargo_space",
+		})
+		return ship, unitsToPurchase, true, nil
+	}
+
+	var err error
+	ship, err = h.navigateAndDock(ctx, cmd.ShipSymbol, cheapestMarket, cmd.PlayerID)
+	if err != nil {
+		return nil, 0, false, fmt.Errorf("failed to navigate to market: %w", err)
+	}
+
+	purchaseCmd := &appShip.PurchaseCargoCommand{
+		ShipSymbol: ship.ShipSymbol(),
+		GoodSymbol: tradeSymbol,
+		Units:      unitsThisTrip,
+		PlayerID:   cmd.PlayerID,
+	}
+
+	_, err = h.mediator.Send(ctx, purchaseCmd)
+	if err != nil {
+		return nil, 0, false, fmt.Errorf("failed to purchase cargo: %w", err)
+	}
+
+	unitsToPurchase -= unitsThisTrip
+
+	ship, err = h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
+	if err != nil {
+		return nil, 0, false, fmt.Errorf("failed to reload ship after purchase: %w", err)
+	}
+
+	return ship, unitsToPurchase, false, nil
+}
+
 func (h *RunWorkflowHandler) executePurchaseLoop(
 	ctx context.Context,
 	cmd *RunWorkflowCommand,
@@ -523,45 +573,14 @@ func (h *RunWorkflowHandler) executePurchaseLoop(
 	})
 
 	for trip := 0; trip < trips; trip++ {
-		availableSpace := ship.Cargo().Capacity - ship.Cargo().Units
-		unitsThisTrip := utils.Min(availableSpace, unitsToPurchase)
-
-		if unitsThisTrip <= 0 {
-			logger.Log("WARNING", "Purchase loop terminated due to no cargo space", map[string]interface{}{
-				"ship_symbol": cmd.ShipSymbol,
-				"action":      "purchase_loop_ended",
-				"reason":      "no_cargo_space",
-			})
-			break
-		}
-
+		var shouldBreak bool
 		var err error
-		ship, err = h.navigateToWaypoint(ctx, cmd.ShipSymbol, cheapestMarket, cmd.PlayerID)
+		ship, unitsToPurchase, shouldBreak, err = h.executeSinglePurchaseTrip(ctx, cmd, ship, tradeSymbol, cheapestMarket, unitsToPurchase)
 		if err != nil {
-			return nil, fmt.Errorf("failed to navigate to market: %w", err)
+			return nil, err
 		}
-
-		if err := h.dockShip(ctx, ship, cmd.PlayerID); err != nil {
-			return nil, fmt.Errorf("failed to dock at market: %w", err)
-		}
-
-		purchaseCmd := &appShip.PurchaseCargoCommand{
-			ShipSymbol: ship.ShipSymbol(),
-			GoodSymbol: tradeSymbol,
-			Units:      unitsThisTrip,
-			PlayerID:   cmd.PlayerID,
-		}
-
-		_, err = h.mediator.Send(ctx, purchaseCmd)
-		if err != nil {
-			return nil, fmt.Errorf("failed to purchase cargo: %w", err)
-		}
-
-		unitsToPurchase -= unitsThisTrip
-
-		ship, err = h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
-		if err != nil {
-			return nil, fmt.Errorf("failed to reload ship after purchase: %w", err)
+		if shouldBreak {
+			break
 		}
 	}
 
@@ -594,13 +613,9 @@ func (h *RunWorkflowHandler) deliverContractCargo(
 		return contract, nil
 	}
 
-	ship, err = h.navigateToWaypoint(ctx, cmd.ShipSymbol, delivery.DestinationSymbol, cmd.PlayerID)
+	ship, err = h.navigateAndDock(ctx, cmd.ShipSymbol, delivery.DestinationSymbol, cmd.PlayerID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to navigate to delivery: %w", err)
-	}
-
-	if err := h.dockShip(ctx, ship, cmd.PlayerID); err != nil {
-		return nil, fmt.Errorf("failed to dock at delivery: %w", err)
 	}
 
 	deliverCmd := &DeliverContractCommand{
@@ -717,6 +732,25 @@ func (h *RunWorkflowHandler) navigateToWaypoint(
 
 	navResp := resp.(*appShip.NavigateShipResponse)
 	return navResp.Ship, nil
+}
+
+// navigateAndDock navigates to destination and docks in one operation
+func (h *RunWorkflowHandler) navigateAndDock(
+	ctx context.Context,
+	shipSymbol string,
+	destination string,
+	playerID shared.PlayerID,
+) (*navigation.Ship, error) {
+	ship, err := h.navigateToWaypoint(ctx, shipSymbol, destination, playerID)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := h.dockShip(ctx, ship, playerID); err != nil {
+		return nil, err
+	}
+
+	return ship, nil
 }
 
 // dockShip docks ship (idempotent)
