@@ -20,11 +20,11 @@ type TradeGood struct {
 
 // Valid supply values
 var validSupplyValues = map[string]bool{
-	"SCARCE":    true,
-	"LIMITED":   true,
-	"MODERATE":  true,
-	"HIGH":      true,
-	"ABUNDANT":  true,
+	"SCARCE":   true,
+	"LIMITED":  true,
+	"MODERATE": true,
+	"HIGH":     true,
+	"ABUNDANT": true,
 }
 
 // Valid activity values

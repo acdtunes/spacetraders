@@ -78,11 +78,11 @@ func (c *SpaceTradersClient) GetShip(ctx context.Context, symbol, token string) 
 
 	var response struct {
 		Data struct {
-			Symbol     string `json:"symbol"`
+			Symbol       string `json:"symbol"`
 			Registration struct {
 				Role string `json:"role"`
 			} `json:"registration"`
-			Nav        struct {
+			Nav struct {
 				SystemSymbol   string `json:"systemSymbol"`
 				WaypointSymbol string `json:"waypointSymbol"`
 				Status         string `json:"status"`
@@ -168,11 +168,11 @@ func (c *SpaceTradersClient) ListShips(ctx context.Context, token string) ([]*na
 
 		var response struct {
 			Data []struct {
-				Symbol     string `json:"symbol"`
+				Symbol       string `json:"symbol"`
 				Registration struct {
 					Role string `json:"role"`
 				} `json:"registration"`
-				Nav        struct {
+				Nav struct {
 					SystemSymbol   string `json:"systemSymbol"`
 					WaypointSymbol string `json:"waypointSymbol"`
 					Status         string `json:"status"`
@@ -401,12 +401,12 @@ func (c *SpaceTradersClient) ListWaypoints(ctx context.Context, systemSymbol, to
 
 	var response struct {
 		Data []struct {
-			Symbol   string  `json:"symbol"`
-			Type     string  `json:"type"`
-			X        float64 `json:"x"`
-			Y        float64 `json:"y"`
+			Symbol   string                   `json:"symbol"`
+			Type     string                   `json:"type"`
+			X        float64                  `json:"x"`
+			Y        float64                  `json:"y"`
 			Traits   []map[string]interface{} `json:"traits"`
-			Orbitals []map[string]string `json:"orbitals"`
+			Orbitals []map[string]string      `json:"orbitals"`
 		} `json:"data"`
 		Meta struct {
 			Total int `json:"total"`
@@ -694,12 +694,12 @@ func (c *SpaceTradersClient) ExtractResources(ctx context.Context, shipSymbol st
 	}
 
 	return &ports.ExtractionResult{
-		ShipSymbol:       response.Data.Extraction.ShipSymbol,
-		YieldSymbol:      response.Data.Extraction.Yield.Symbol,
-		YieldUnits:       response.Data.Extraction.Yield.Units,
-		CooldownSeconds:  response.Data.Cooldown.RemainingSeconds,
-		CooldownExpires:  response.Data.Cooldown.Expiration,
-		Cargo:            cargo,
+		ShipSymbol:      response.Data.Extraction.ShipSymbol,
+		YieldSymbol:     response.Data.Extraction.Yield.Symbol,
+		YieldUnits:      response.Data.Extraction.Yield.Units,
+		CooldownSeconds: response.Data.Cooldown.RemainingSeconds,
+		CooldownExpires: response.Data.Cooldown.Expiration,
+		Cargo:           cargo,
 	}, nil
 }
 
@@ -750,11 +750,11 @@ func (c *SpaceTradersClient) TransferCargo(ctx context.Context, fromShipSymbol, 
 	}
 
 	return &ports.TransferResult{
-		FromShip:        fromShipSymbol,
-		ToShip:          toShipSymbol,
-		GoodSymbol:      goodSymbol,
+		FromShip:         fromShipSymbol,
+		ToShip:           toShipSymbol,
+		GoodSymbol:       goodSymbol,
 		UnitsTransferred: units,
-		RemainingCargo:  cargo,
+		RemainingCargo:   cargo,
 	}, nil
 }
 
@@ -802,8 +802,8 @@ func (c *SpaceTradersClient) GetShipyard(ctx context.Context, systemSymbol, wayp
 
 	var response struct {
 		Data struct {
-			Symbol          string `json:"symbol"`
-			ShipTypes       []struct {
+			Symbol    string `json:"symbol"`
+			ShipTypes []struct {
 				Type string `json:"type"`
 			} `json:"shipTypes"`
 			Ships []struct {
@@ -1366,4 +1366,3 @@ type retryableError struct {
 func (e *retryableError) Error() string {
 	return e.message
 }
-

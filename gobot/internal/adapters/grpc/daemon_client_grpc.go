@@ -4,10 +4,10 @@ import (
 	"context"
 	"fmt"
 
-	pb "github.com/andrescamacho/spacetraders-go/pkg/proto/daemon"
 	contractCmd "github.com/andrescamacho/spacetraders-go/internal/application/contract/commands"
 	scoutingCmd "github.com/andrescamacho/spacetraders-go/internal/application/scouting/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
+	pb "github.com/andrescamacho/spacetraders-go/pkg/proto/daemon"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )

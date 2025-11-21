@@ -6,8 +6,8 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
-	infraPorts "github.com/andrescamacho/spacetraders-go/internal/infrastructure/ports"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	infraPorts "github.com/andrescamacho/spacetraders-go/internal/infrastructure/ports"
 )
 
 // GetPlayerQuery represents a query to get a player by ID or agent symbol

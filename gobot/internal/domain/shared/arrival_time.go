@@ -17,10 +17,12 @@ type ArrivalTime struct {
 // The timestamp must be in ISO8601 format (RFC3339).
 //
 // Args:
-//   timestamp: ISO8601 format arrival time from API (e.g., "2024-01-01T12:00:00Z")
+//
+//	timestamp: ISO8601 format arrival time from API (e.g., "2024-01-01T12:00:00Z")
 //
 // Returns:
-//   ArrivalTime value object or error if timestamp is invalid
+//
+//	ArrivalTime value object or error if timestamp is invalid
 func NewArrivalTime(timestamp string) (*ArrivalTime, error) {
 	if timestamp == "" {
 		return nil, fmt.Errorf("arrival time timestamp cannot be empty")
@@ -44,7 +46,8 @@ func NewArrivalTime(timestamp string) (*ArrivalTime, error) {
 // Returns 0 if the arrival time is in the past or if parsing fails.
 //
 // Returns:
-//   Seconds to wait (minimum 0)
+//
+//	Seconds to wait (minimum 0)
 func (a *ArrivalTime) CalculateWaitTime() int {
 	// Normalize timestamp (handle both Z suffix and +00:00 suffix)
 	normalizedTimestamp := strings.Replace(a.timestamp, "Z", "+00:00", 1)

@@ -18,19 +18,19 @@ import (
 type RunTransportWorkerCommand struct {
 	ShipSymbol        string
 	PlayerID          shared.PlayerID
-	AsteroidField     string           // Waypoint to wait at and return to
-	MarketSymbol      string           // Nearest market with fuel for refueling
-	CoordinatorID     string           // Parent coordinator container ID
-	AvailabilityChan  chan<- string    // Signal transport is available at asteroid
-	CargoReceivedChan <-chan struct{}  // Receive signal that cargo was transferred
+	AsteroidField     string          // Waypoint to wait at and return to
+	MarketSymbol      string          // Nearest market with fuel for refueling
+	CoordinatorID     string          // Parent coordinator container ID
+	AvailabilityChan  chan<- string   // Signal transport is available at asteroid
+	CargoReceivedChan <-chan struct{} // Receive signal that cargo was transferred
 }
 
 // RunTransportWorkerResponse contains transport execution results
 type RunTransportWorkerResponse struct {
-	SellingCycles     int
+	SellingCycles       int
 	TotalMarketsVisited int
-	TotalRevenue      int
-	Error             string
+	TotalRevenue        int
+	Error               string
 }
 
 // RunTransportWorkerHandler implements the transport worker workflow
@@ -192,10 +192,10 @@ func (h *RunTransportWorkerHandler) executeTransport(
 		select {
 		case <-ctx.Done():
 			logger.Log("INFO", "Transport operation cancelled by context", map[string]interface{}{
-				"ship_symbol":     cmd.ShipSymbol,
-				"action":          "operation_cancelled",
-				"selling_cycles":  result.SellingCycles,
-				"total_revenue":   result.TotalRevenue,
+				"ship_symbol":    cmd.ShipSymbol,
+				"action":         "operation_cancelled",
+				"selling_cycles": result.SellingCycles,
+				"total_revenue":  result.TotalRevenue,
 			})
 			return ctx.Err()
 		default:
@@ -258,12 +258,12 @@ func (h *RunTransportWorkerHandler) executeTransport(
 			result.TotalRevenue += tourResult.TotalRevenue
 
 			logger.Log("INFO", "Transport selling cycle completed", map[string]interface{}{
-				"ship_symbol":    cmd.ShipSymbol,
-				"action":         "selling_cycle_complete",
-				"cycle_number":   result.SellingCycles,
+				"ship_symbol":     cmd.ShipSymbol,
+				"action":          "selling_cycle_complete",
+				"cycle_number":    result.SellingCycles,
 				"markets_visited": tourResult.MarketsVisited,
-				"cycle_revenue":  tourResult.TotalRevenue,
-				"total_revenue":  result.TotalRevenue,
+				"cycle_revenue":   tourResult.TotalRevenue,
+				"total_revenue":   result.TotalRevenue,
 			})
 
 			// Note: executeSellRoute already includes return to asteroid via OptimizeFueledTour

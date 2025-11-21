@@ -19,9 +19,9 @@ import (
 type RunWorkflowCommand struct {
 	ShipSymbol         string
 	PlayerID           shared.PlayerID
-	ContainerID        string           // This worker's container ID (optional)
-	CoordinatorID      string           // Parent coordinator container ID (optional)
-	CompletionCallback chan<- string    // Signal completion to coordinator (optional)
+	ContainerID        string        // This worker's container ID (optional)
+	CoordinatorID      string        // Parent coordinator container ID (optional)
+	CompletionCallback chan<- string // Signal completion to coordinator (optional)
 }
 
 // RunWorkflowResponse contains workflow execution results
@@ -42,17 +42,18 @@ type RunWorkflowResponse struct {
 // 3. Evaluate profitability (log only, always accept)
 // 4. Accept contract (skip if already accepted)
 // 5. For each delivery:
-//    - Reload ship state
-//    - Jettison wrong cargo if needed
-//    - Calculate purchase needs
-//    - Execute multi-trip loop if units > cargo capacity
-//    - For each trip:
-//      * Navigate to seller
-//      * Dock
-//      * Purchase with transaction splitting (handled by PurchaseCargoHandler)
-//      * Navigate to delivery
-//      * Dock
-//      * Deliver cargo
+//   - Reload ship state
+//   - Jettison wrong cargo if needed
+//   - Calculate purchase needs
+//   - Execute multi-trip loop if units > cargo capacity
+//   - For each trip:
+//   - Navigate to seller
+//   - Dock
+//   - Purchase with transaction splitting (handled by PurchaseCargoHandler)
+//   - Navigate to delivery
+//   - Dock
+//   - Deliver cargo
+//
 // 6. Fulfill contract
 // 7. Calculate profit
 // 8. Transfer ship back to coordinator (if applicable)
@@ -794,4 +795,3 @@ func (h *RunWorkflowHandler) dockShip(
 
 	return nil
 }
-

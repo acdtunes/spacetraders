@@ -55,13 +55,13 @@ func NewShipAssignment(
 
 // Getters
 
-func (sa *ShipAssignment) ShipSymbol() string           { return sa.shipSymbol }
-func (sa *ShipAssignment) PlayerID() int                { return sa.playerID }
-func (sa *ShipAssignment) ContainerID() string          { return sa.containerID }
-func (sa *ShipAssignment) Status() AssignmentStatus     { return sa.status }
-func (sa *ShipAssignment) AssignedAt() time.Time        { return sa.assignedAt }
-func (sa *ShipAssignment) ReleasedAt() *time.Time       { return sa.releasedAt }
-func (sa *ShipAssignment) ReleaseReason() *string       { return sa.releaseReason }
+func (sa *ShipAssignment) ShipSymbol() string       { return sa.shipSymbol }
+func (sa *ShipAssignment) PlayerID() int            { return sa.playerID }
+func (sa *ShipAssignment) ContainerID() string      { return sa.containerID }
+func (sa *ShipAssignment) Status() AssignmentStatus { return sa.status }
+func (sa *ShipAssignment) AssignedAt() time.Time    { return sa.assignedAt }
+func (sa *ShipAssignment) ReleasedAt() *time.Time   { return sa.releasedAt }
+func (sa *ShipAssignment) ReleaseReason() *string   { return sa.releaseReason }
 
 // Release marks the assignment as released with a reason
 func (sa *ShipAssignment) Release(reason string) error {

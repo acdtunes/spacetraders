@@ -61,10 +61,10 @@ func (h *EvaluateCargoValueHandler) Handle(ctx context.Context, request common.R
 	}
 
 	logger.Log("INFO", "Cargo value evaluation initiated", map[string]interface{}{
-		"action":            "evaluate_cargo",
-		"item_count":        len(query.CargoItems),
-		"price_threshold":   query.MinPriceThreshold,
-		"system_symbol":     query.SystemSymbol,
+		"action":          "evaluate_cargo",
+		"item_count":      len(query.CargoItems),
+		"price_threshold": query.MinPriceThreshold,
+		"system_symbol":   query.SystemSymbol,
 	})
 
 	// 1. Fetch market prices for all cargo items

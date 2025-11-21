@@ -36,14 +36,14 @@ type CommandFactory func(config map[string]interface{}, playerID int) (interface
 // DaemonServer implements the gRPC daemon service
 // Handles CLI requests and orchestrates background container operations
 type DaemonServer struct {
-	mediator             common.Mediator
-	listener             net.Listener
-	logRepo              persistence.ContainerLogRepository
-	containerRepo        *persistence.ContainerRepositoryGORM
-	shipAssignmentRepo   *persistence.ShipAssignmentRepositoryGORM
-	waypointRepo         *persistence.GormWaypointRepository
-	shipRepo             navigation.ShipRepository
-	routingClient        routing.RoutingClient
+	mediator           common.Mediator
+	listener           net.Listener
+	logRepo            persistence.ContainerLogRepository
+	containerRepo      *persistence.ContainerRepositoryGORM
+	shipAssignmentRepo *persistence.ShipAssignmentRepositoryGORM
+	waypointRepo       *persistence.GormWaypointRepository
+	shipRepo           navigation.ShipRepository
+	routingClient      routing.RoutingClient
 
 	// Container orchestration
 	containers   map[string]*ContainerRunner
@@ -1073,7 +1073,6 @@ func (s *DaemonServer) MiningOperation(
 	}, nil
 }
 
-
 // extractSystemSymbol extracts system symbol from a waypoint symbol
 func extractSystemSymbol(waypointSymbol string) string {
 	// Waypoint format: X1-GZ7-B12 -> System: X1-GZ7
@@ -1358,8 +1357,8 @@ func (s *DaemonServer) interruptAllContainers() {
 			runner.containerEntity.ID(),
 			runner.containerEntity.PlayerID(),
 			container.ContainerStatusInterrupted,
-			&now,  // stoppedAt - when daemon interrupted
-			nil,   // exitCode - nil for interruption
+			&now,              // stoppedAt - when daemon interrupted
+			nil,               // exitCode - nil for interruption
 			"daemon_shutdown", // exitReason
 		); err != nil {
 			fmt.Printf("Warning: Failed to mark container %s as INTERRUPTED: %v\n", runner.containerEntity.ID(), err)
@@ -1613,8 +1612,8 @@ func (s *DaemonServer) BatchPurchaseShips(ctx context.Context, purchasingShipSym
 			"ship_symbol": purchasingShipSymbol,
 			"ship_type":   shipType,
 			"quantity":    quantity,
-			"max_budget":      maxBudget,
-			"shipyard":        cmd.ShipyardWaypoint,
+			"max_budget":  maxBudget,
+			"shipyard":    cmd.ShipyardWaypoint,
 		},
 		nil, // Use real clock
 	)

@@ -26,10 +26,10 @@ type WaypointModel struct {
 	Type           string  `gorm:"column:type;not null"`
 	X              float64 `gorm:"column:x;not null"`
 	Y              float64 `gorm:"column:y;not null"`
-	Traits         string  `gorm:"column:traits;type:text"` // JSON array as text
+	Traits         string  `gorm:"column:traits;type:text"`            // JSON array as text
 	HasFuel        int     `gorm:"column:has_fuel;not null;default:0"` // 0 or 1 (SQLite compatible)
-	Orbitals       string  `gorm:"column:orbitals;type:text"` // JSON array as text
-	SyncedAt       string  `gorm:"column:synced_at"` // ISO timestamp string
+	Orbitals       string  `gorm:"column:orbitals;type:text"`          // JSON array as text
+	SyncedAt       string  `gorm:"column:synced_at"`                   // ISO timestamp string
 }
 
 func (WaypointModel) TableName() string {
@@ -38,19 +38,19 @@ func (WaypointModel) TableName() string {
 
 // ContainerModel represents the containers table
 type ContainerModel struct {
-	ID            string     `gorm:"column:id;primaryKey;not null"`
-	PlayerID      int        `gorm:"column:player_id;primaryKey;not null;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
+	ID            string       `gorm:"column:id;primaryKey;not null"`
+	PlayerID      int          `gorm:"column:player_id;primaryKey;not null;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
 	Player        *PlayerModel `gorm:"foreignKey:PlayerID;references:ID"`
-	ContainerType string     `gorm:"column:container_type"`
-	CommandType   string     `gorm:"column:command_type"`
-	Status        string     `gorm:"column:status"`
-	RestartPolicy string     `gorm:"column:restart_policy"`
-	RestartCount  int        `gorm:"column:restart_count;default:0"`
-	Config        string     `gorm:"column:config;type:text"` // JSON as text
-	StartedAt     *time.Time `gorm:"column:started_at"`
-	StoppedAt     *time.Time `gorm:"column:stopped_at"`
-	ExitCode      *int       `gorm:"column:exit_code"`
-	ExitReason    string     `gorm:"column:exit_reason"`
+	ContainerType string       `gorm:"column:container_type"`
+	CommandType   string       `gorm:"column:command_type"`
+	Status        string       `gorm:"column:status"`
+	RestartPolicy string       `gorm:"column:restart_policy"`
+	RestartCount  int          `gorm:"column:restart_count;default:0"`
+	Config        string       `gorm:"column:config;type:text"` // JSON as text
+	StartedAt     *time.Time   `gorm:"column:started_at"`
+	StoppedAt     *time.Time   `gorm:"column:stopped_at"`
+	ExitCode      *int         `gorm:"column:exit_code"`
+	ExitReason    string       `gorm:"column:exit_reason"`
 }
 
 func (ContainerModel) TableName() string {
@@ -59,14 +59,14 @@ func (ContainerModel) TableName() string {
 
 // ContainerLogModel represents the container_logs table
 type ContainerLogModel struct {
-	ID          int       `gorm:"column:id;primaryKey;autoIncrement"`
-	ContainerID string    `gorm:"column:container_id;not null"`
-	PlayerID    int       `gorm:"column:player_id;not null"`
+	ID          int             `gorm:"column:id;primaryKey;autoIncrement"`
+	ContainerID string          `gorm:"column:container_id;not null"`
+	PlayerID    int             `gorm:"column:player_id;not null"`
 	Container   *ContainerModel `gorm:"foreignKey:ContainerID,PlayerID;references:ID,PlayerID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
-	Timestamp   time.Time `gorm:"column:timestamp;not null"`
-	Level       string    `gorm:"column:level;not null;default:'INFO'"`
-	Message     string    `gorm:"column:message;type:text;not null"`
-	Metadata    string    `gorm:"column:metadata;type:jsonb"` // JSON metadata (JSONB for PostgreSQL, TEXT for SQLite)
+	Timestamp   time.Time       `gorm:"column:timestamp;not null"`
+	Level       string          `gorm:"column:level;not null;default:'INFO'"`
+	Message     string          `gorm:"column:message;type:text;not null"`
+	Metadata    string          `gorm:"column:metadata;type:jsonb"` // JSON metadata (JSONB for PostgreSQL, TEXT for SQLite)
 }
 
 func (ContainerLogModel) TableName() string {

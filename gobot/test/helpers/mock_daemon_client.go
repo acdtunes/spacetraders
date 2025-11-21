@@ -23,11 +23,11 @@ type MockContainer struct {
 type MockDaemonClient struct {
 	mu sync.RWMutex
 
-	containers         []Container
-	mockContainers     []*MockContainer              // Simplified containers with metadata
-	createdContainers  []string                       // Track container IDs created during test
-	scoutTourCommands  map[string]interface{}         // containerID -> command
-	CreatedContainers  []*container.Container         // Domain container entities created during test
+	containers        []Container
+	mockContainers    []*MockContainer       // Simplified containers with metadata
+	createdContainers []string               // Track container IDs created during test
+	scoutTourCommands map[string]interface{} // containerID -> command
+	CreatedContainers []*container.Container // Domain container entities created during test
 }
 
 // NewMockDaemonClient creates a new mock daemon client

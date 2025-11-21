@@ -37,31 +37,31 @@ const (
 type ContainerType string
 
 const (
-	ContainerTypeNavigate               ContainerType = "NAVIGATE"
-	ContainerTypeDock                   ContainerType = "DOCK"
-	ContainerTypeOrbit                  ContainerType = "ORBIT"
-	ContainerTypeRefuel                 ContainerType = "REFUEL"
-	ContainerTypeScout                  ContainerType = "SCOUT"
-	ContainerTypeMining                 ContainerType = "MINING"
-	ContainerTypeMiningWorker           ContainerType = "MINING_WORKER"
-	ContainerTypeMiningCoordinator      ContainerType = "MINING_COORDINATOR"
-	ContainerTypeTransportWorker        ContainerType = "TRANSPORT_WORKER"
-	ContainerTypeContract               ContainerType = "CONTRACT"
-	ContainerTypeContractWorkflow       ContainerType = "CONTRACT_WORKFLOW"
+	ContainerTypeNavigate                 ContainerType = "NAVIGATE"
+	ContainerTypeDock                     ContainerType = "DOCK"
+	ContainerTypeOrbit                    ContainerType = "ORBIT"
+	ContainerTypeRefuel                   ContainerType = "REFUEL"
+	ContainerTypeScout                    ContainerType = "SCOUT"
+	ContainerTypeMining                   ContainerType = "MINING"
+	ContainerTypeMiningWorker             ContainerType = "MINING_WORKER"
+	ContainerTypeMiningCoordinator        ContainerType = "MINING_COORDINATOR"
+	ContainerTypeTransportWorker          ContainerType = "TRANSPORT_WORKER"
+	ContainerTypeContract                 ContainerType = "CONTRACT"
+	ContainerTypeContractWorkflow         ContainerType = "CONTRACT_WORKFLOW"
 	ContainerTypeContractFleetCoordinator ContainerType = "CONTRACT_FLEET_COORDINATOR"
-	ContainerTypeTrading                ContainerType = "TRADING"
-	ContainerTypeScoutFleetAssignment   ContainerType = "SCOUT_FLEET_ASSIGNMENT"
-	ContainerTypePurchase               ContainerType = "PURCHASE"
+	ContainerTypeTrading                  ContainerType = "TRADING"
+	ContainerTypeScoutFleetAssignment     ContainerType = "SCOUT_FLEET_ASSIGNMENT"
+	ContainerTypePurchase                 ContainerType = "PURCHASE"
 )
 
 // Container represents a background operation running in the daemon
 // Containers are the unit of work orchestration - each runs in its own goroutine
 // and can be started, stopped, monitored, and restarted independently.
 type Container struct {
-	id           string
+	id            string
 	containerType ContainerType
-	status       ContainerStatus
-	playerID     int
+	status        ContainerStatus
+	playerID      int
 
 	// Iteration tracking for looping operations
 	currentIteration int
@@ -121,20 +121,20 @@ func NewContainer(
 
 // Getters
 
-func (c *Container) ID() string                           { return c.id }
-func (c *Container) Type() ContainerType                  { return c.containerType }
-func (c *Container) Status() ContainerStatus              { return c.status }
-func (c *Container) PlayerID() int                        { return c.playerID }
-func (c *Container) CurrentIteration() int                { return c.currentIteration }
-func (c *Container) MaxIterations() int                   { return c.maxIterations }
-func (c *Container) RestartCount() int                    { return c.restartCount }
-func (c *Container) MaxRestarts() int                     { return c.maxRestarts }
-func (c *Container) CreatedAt() time.Time                 { return c.createdAt }
-func (c *Container) UpdatedAt() time.Time                 { return c.updatedAt }
-func (c *Container) StartedAt() *time.Time                { return c.startedAt }
-func (c *Container) StoppedAt() *time.Time                { return c.stoppedAt }
-func (c *Container) Metadata() map[string]interface{}     { return c.metadata }
-func (c *Container) LastError() error                     { return c.lastError }
+func (c *Container) ID() string                       { return c.id }
+func (c *Container) Type() ContainerType              { return c.containerType }
+func (c *Container) Status() ContainerStatus          { return c.status }
+func (c *Container) PlayerID() int                    { return c.playerID }
+func (c *Container) CurrentIteration() int            { return c.currentIteration }
+func (c *Container) MaxIterations() int               { return c.maxIterations }
+func (c *Container) RestartCount() int                { return c.restartCount }
+func (c *Container) MaxRestarts() int                 { return c.maxRestarts }
+func (c *Container) CreatedAt() time.Time             { return c.createdAt }
+func (c *Container) UpdatedAt() time.Time             { return c.updatedAt }
+func (c *Container) StartedAt() *time.Time            { return c.startedAt }
+func (c *Container) StoppedAt() *time.Time            { return c.stoppedAt }
+func (c *Container) Metadata() map[string]interface{} { return c.metadata }
+func (c *Container) LastError() error                 { return c.lastError }
 
 // State transition methods
 

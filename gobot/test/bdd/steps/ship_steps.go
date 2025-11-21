@@ -27,7 +27,7 @@ func (sc *shipContext) reset() {
 	sc.err = nil
 	sc.boolResult = false
 	sc.intResult = 0
-	sc.waypoints = sharedWaypointMap  // Use shared waypoint map
+	sc.waypoints = sharedWaypointMap // Use shared waypoint map
 	sc.flightMode = shared.FlightModeCruise
 	sc.stateChangeResult = false
 	// Reset shared ship (shared with value_object_steps)
@@ -41,7 +41,7 @@ func (sc *shipContext) getOrCreateWaypoint(symbol string, x, y float64) *shared.
 	}
 	wp, _ := shared.NewWaypoint(symbol, x, y)
 	sc.waypoints[symbol] = wp
-	sharedWaypointMap[symbol] = wp  // Also update shared map
+	sharedWaypointMap[symbol] = wp // Also update shared map
 	return wp
 }
 
@@ -780,7 +780,7 @@ func (sc *shipContext) aShipAtWithUnitsOfFuelAndCapacity(location string, curren
 	sc.ship, sc.err = navigation.NewShip(
 		"SHIP-1", shared.MustNewPlayerID(1), waypoint, fuel, fuelCapacity, 40, cargo, 30, "FRAME_EXPLORER", "", navigation.NavStatusInOrbit,
 	)
-	sharedShip = sc.ship  // Update shared ship for cross-context steps
+	sharedShip = sc.ship // Update shared ship for cross-context steps
 	return sc.err
 }
 
@@ -1033,8 +1033,8 @@ func (sc *shipContext) aShipWithFrameSymbol(frameSymbol string) error {
 		40,
 		&shared.Cargo{Capacity: 40, Units: 0, Inventory: []*shared.CargoItem{}},
 		10,
-		frameSymbol,           // Frame symbol
-		"COMMAND",             // Default role
+		frameSymbol,                 // Frame symbol
+		"COMMAND",                   // Default role
 		navigation.NavStatusInOrbit, // Nav status
 	)
 	if err != nil {
@@ -1055,8 +1055,8 @@ func (sc *shipContext) aShipWithRole(role string) error {
 		40,
 		&shared.Cargo{Capacity: 40, Units: 0, Inventory: []*shared.CargoItem{}},
 		10,
-		"FRAME_FRIGATE",         // Default frame
-		role,                    // Role
+		"FRAME_FRIGATE",             // Default frame
+		role,                        // Role
 		navigation.NavStatusInOrbit, // Nav status
 	)
 	if err != nil {
@@ -1205,4 +1205,3 @@ func (sc *shipContext) theClonedShipShouldHaveRole(expected string) error {
 	}
 	return nil
 }
-

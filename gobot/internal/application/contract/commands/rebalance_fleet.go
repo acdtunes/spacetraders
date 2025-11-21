@@ -22,13 +22,13 @@ type RebalanceContractFleetCommand struct {
 
 // RebalanceContractFleetResponse contains rebalancing execution results
 type RebalanceContractFleetResponse struct {
-	ShipsMoved          int
-	TargetMarkets       []string
-	AverageDistance     float64
-	DistanceThreshold   float64
-	RebalancingSkipped  bool
-	SkipReason          string
-	Assignments         map[string]string // ship symbol -> market waypoint
+	ShipsMoved         int
+	TargetMarkets      []string
+	AverageDistance    float64
+	DistanceThreshold  float64
+	RebalancingSkipped bool
+	SkipReason         string
+	Assignments        map[string]string // ship symbol -> market waypoint
 }
 
 // RebalanceContractFleetHandler implements fleet rebalancing logic

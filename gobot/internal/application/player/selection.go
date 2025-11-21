@@ -5,8 +5,8 @@ import (
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
-	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
 )
 
 // SelectionOptions holds inputs for player selection

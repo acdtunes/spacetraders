@@ -8,4 +8,3 @@ type ContractRepository interface {
 	FindActiveContracts(ctx context.Context, playerID int) ([]*Contract, error)
 	Add(ctx context.Context, contract *Contract) error
 }
-

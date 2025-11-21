@@ -12,8 +12,8 @@ import (
 // MockPlayerRepository is a test double for PlayerRepository interface
 type MockPlayerRepository struct {
 	mu      sync.RWMutex
-	players map[int]*player.Player       // playerID -> player
-	byAgent map[string]*player.Player    // agentSymbol -> player
+	players map[int]*player.Player    // playerID -> player
+	byAgent map[string]*player.Player // agentSymbol -> player
 }
 
 // NewMockPlayerRepository creates a new mock player repository

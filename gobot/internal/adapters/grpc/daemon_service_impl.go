@@ -152,8 +152,8 @@ func (s *daemonServiceImpl) RefuelShip(ctx context.Context, req *pb.RefuelShipRe
 	response := &pb.RefuelShipResponse{
 		ContainerId: containerID,
 		ShipSymbol:  req.ShipSymbol,
-		FuelAdded:   0,   // TODO: Get from actual operation result
-		CreditsCost: 0,   // TODO: Get from actual operation result
+		FuelAdded:   0, // TODO: Get from actual operation result
+		CreditsCost: 0, // TODO: Get from actual operation result
 		Status:      "PENDING",
 	}
 

@@ -65,20 +65,59 @@ func (h *ScoutMarketsHandler) Handle(ctx context.Context, request common.Request
 		return nil, fmt.Errorf("invalid request type")
 	}
 
+	// Cleanup phase
+	if err := h.stopExistingContainers(ctx, cmd); err != nil {
+		return nil, err
+	}
+
+	// Identify reuse opportunities
+	shipsWithContainers, reusedContainers, shipsNeedingContainers, err := h.identifyContainerReuse(ctx, cmd.ShipSymbols, cmd.PlayerID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Early return if all ships already have containers
+	if response, shouldReturn, err := h.handleAllShipsHaveContainers(shipsWithContainers, reusedContainers); shouldReturn {
+		return response, err
+	}
+
+	// Load ship data & graph
+	shipConfigs, err := h.loadShipConfigurations(ctx, shipsNeedingContainers, cmd.PlayerID)
+	if err != nil {
+		return nil, err
+	}
+
+	waypointData, err := h.loadSystemGraph(ctx, cmd.SystemSymbol, uint(cmd.PlayerID.Value()))
+	if err != nil {
+		return nil, err
+	}
+
+	// Calculate assignments
+	assignments, err := h.calculateMarketAssignments(ctx, shipsNeedingContainers, cmd.Markets, shipConfigs, waypointData)
+	if err != nil {
+		return nil, err
+	}
+
+	// Create containers
+	newContainerIDs, err := h.createScoutContainers(ctx, assignments, cmd)
+	if err != nil {
+		return nil, err
+	}
+
+	return h.buildFinalResponse(reusedContainers, newContainerIDs, assignments, shipsWithContainers), nil
+}
+
+// stopExistingContainers stops all existing scouting containers and releases ship assignments
+func (h *ScoutMarketsHandler) stopExistingContainers(ctx context.Context, cmd *ScoutMarketsCommand) error {
 	logger := common.LoggerFromContext(ctx)
 
-	// 0. Stop existing scout-tour containers for the ships in this command
-	// This ensures VRP recalculation with fresh ship positions
-	// User explicitly ran scout-all-markets, so we want to redistribute work
 	for _, shipSymbol := range cmd.ShipSymbols {
-		// Check if ship has an active assignment
-		assignment, err := h.shipAssignmentRepo.FindByShip(ctx, shipSymbol, int(cmd.PlayerID.Value()))
+		assignment, err := h.queryShipAssignment(ctx, shipSymbol, cmd.PlayerID)
 		if err != nil {
-			return nil, fmt.Errorf("failed to query ship assignment for %s: %w", shipSymbol, err)
+			return fmt.Errorf("failed to query ship assignment for %s: %w", shipSymbol, err)
 		}
 
 		if assignment != nil && assignment.Status() == "active" {
-			// Stop the container and release the ship
 			containerID := assignment.ContainerID()
 			logger.Log("INFO", "Stopping existing scout container for reset", map[string]interface{}{
 				"ship_symbol":  shipSymbol,
@@ -88,7 +127,6 @@ func (h *ScoutMarketsHandler) Handle(ctx context.Context, request common.Request
 			})
 
 			if err := h.daemonClient.StopContainer(ctx, containerID); err != nil {
-				// Non-fatal: container might already be stopped or not found
 				logger.Log("WARNING", "Scout container stop failed", map[string]interface{}{
 					"ship_symbol":  shipSymbol,
 					"action":       "stop_container",
@@ -97,9 +135,7 @@ func (h *ScoutMarketsHandler) Handle(ctx context.Context, request common.Request
 				})
 			}
 
-			// Release ship assignment
 			if err := h.shipAssignmentRepo.Release(ctx, shipSymbol, int(cmd.PlayerID.Value()), "scout_all_markets_reset"); err != nil {
-				// Non-fatal: assignment might already be released
 				logger.Log("WARNING", "Ship assignment release failed", map[string]interface{}{
 					"ship_symbol": shipSymbol,
 					"action":      "release_ship",
@@ -109,15 +145,27 @@ func (h *ScoutMarketsHandler) Handle(ctx context.Context, request common.Request
 		}
 	}
 
-	// 1. Query ship assignments to find existing active assignments (source of truth)
-	// After cleanup above, this should find no active assignments for the requested ships
-	shipsWithContainers := make(map[string]string) // ship -> container_id
+	return nil
+}
+
+// queryShipAssignment queries the database for a ship's current container assignment
+func (h *ScoutMarketsHandler) queryShipAssignment(ctx context.Context, shipSymbol string, playerID shared.PlayerID) (*container.ShipAssignment, error) {
+	return h.shipAssignmentRepo.FindByShip(ctx, shipSymbol, int(playerID.Value()))
+}
+
+// identifyContainerReuse determines which ships can reuse existing containers vs need new ones
+func (h *ScoutMarketsHandler) identifyContainerReuse(
+	ctx context.Context,
+	shipSymbols []string,
+	playerID shared.PlayerID,
+) (map[string]string, []string, []string, error) {
+	shipsWithContainers := make(map[string]string)
 	reusedContainers := []string{}
 
-	for _, shipSymbol := range cmd.ShipSymbols {
-		assignment, err := h.shipAssignmentRepo.FindByShip(ctx, shipSymbol, int(cmd.PlayerID.Value()))
+	for _, shipSymbol := range shipSymbols {
+		assignment, err := h.queryShipAssignment(ctx, shipSymbol, playerID)
 		if err != nil {
-			return nil, fmt.Errorf("failed to query ship assignment for %s: %w", shipSymbol, err)
+			return nil, nil, nil, fmt.Errorf("failed to query ship assignment for %s: %w", shipSymbol, err)
 		}
 
 		if assignment != nil && assignment.Status() == "active" {
@@ -126,35 +174,49 @@ func (h *ScoutMarketsHandler) Handle(ctx context.Context, request common.Request
 		}
 	}
 
-	// 2. Partition ships: with_containers vs needing_containers
 	shipsNeedingContainers := []string{}
-	for _, ship := range cmd.ShipSymbols {
+	for _, ship := range shipSymbols {
 		if _, exists := shipsWithContainers[ship]; !exists {
 			shipsNeedingContainers = append(shipsNeedingContainers, ship)
 		}
 	}
 
-	// 3. Early return if all ships have containers
-	if len(shipsNeedingContainers) == 0 {
-		allContainerIDs := []string{}
-		assignments := make(map[string][]string)
-		for ship, containerID := range shipsWithContainers {
-			allContainerIDs = append(allContainerIDs, containerID)
-			assignments[ship] = []string{} // Unknown assignments for reused
-		}
+	return shipsWithContainers, reusedContainers, shipsNeedingContainers, nil
+}
 
-		return &ScoutMarketsResponse{
-			ContainerIDs:     allContainerIDs,
-			Assignments:      assignments,
-			ReusedContainers: reusedContainers,
-		}, nil
+// handleAllShipsHaveContainers handles the early return scenario when all ships already have containers
+func (h *ScoutMarketsHandler) handleAllShipsHaveContainers(
+	shipsWithContainers map[string]string,
+	reusedContainers []string,
+) (*ScoutMarketsResponse, bool, error) {
+	if len(shipsWithContainers) == 0 {
+		return nil, false, nil
 	}
 
-	// 4. Load ships and get current locations + specs
+	allContainerIDs := []string{}
+	assignments := make(map[string][]string)
+	for ship, containerID := range shipsWithContainers {
+		allContainerIDs = append(allContainerIDs, containerID)
+		assignments[ship] = []string{}
+	}
+
+	return &ScoutMarketsResponse{
+		ContainerIDs:     allContainerIDs,
+		Assignments:      assignments,
+		ReusedContainers: reusedContainers,
+	}, true, nil
+}
+
+// loadShipConfigurations loads ship data and prepares routing configurations
+func (h *ScoutMarketsHandler) loadShipConfigurations(
+	ctx context.Context,
+	shipSymbols []string,
+	playerID shared.PlayerID,
+) (map[string]*routing.ShipConfigData, error) {
 	shipConfigs := make(map[string]*routing.ShipConfigData)
 
-	for _, shipSymbol := range shipsNeedingContainers {
-		shipData, err := h.shipRepo.FindBySymbol(ctx, shipSymbol, cmd.PlayerID)
+	for _, shipSymbol := range shipSymbols {
+		shipData, err := h.shipRepo.FindBySymbol(ctx, shipSymbol, playerID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to load ship %s: %w", shipSymbol, err)
 		}
@@ -166,49 +228,71 @@ func (h *ScoutMarketsHandler) Handle(ctx context.Context, request common.Request
 		}
 	}
 
-	// 5. Get system graph
-	graphResult, err := h.graphProvider.GetGraph(ctx, cmd.SystemSymbol, false, cmd.PlayerID.Value())
+	return shipConfigs, nil
+}
+
+// loadSystemGraph fetches the navigation graph and converts waypoints to routing format
+func (h *ScoutMarketsHandler) loadSystemGraph(
+	ctx context.Context,
+	systemSymbol string,
+	playerID uint,
+) ([]*system.WaypointData, error) {
+	graphResult, err := h.graphProvider.GetGraph(ctx, systemSymbol, false, int(playerID))
 	if err != nil {
 		return nil, fmt.Errorf("failed to get graph: %w", err)
 	}
 
-	// Convert graph to waypoint data
 	waypointData, err := extractWaypointData(graphResult.Graph)
 	if err != nil {
 		return nil, fmt.Errorf("failed to extract waypoint data: %w", err)
 	}
 
-	// 6. Run VRP optimization
-	var assignments map[string][]string
+	return waypointData, nil
+}
+
+// calculateMarketAssignments determines which ships should visit which markets
+func (h *ScoutMarketsHandler) calculateMarketAssignments(
+	ctx context.Context,
+	shipsNeedingContainers []string,
+	markets []string,
+	shipConfigs map[string]*routing.ShipConfigData,
+	waypointData []*system.WaypointData,
+) (map[string][]string, error) {
 	if len(shipsNeedingContainers) == 1 {
-		// Single ship: assign all markets
-		assignments = map[string][]string{
-			shipsNeedingContainers[0]: cmd.Markets,
-		}
-	} else {
-		// Multi-ship: use VRP via routing client
-		vrpRequest := &routing.VRPRequest{
-			SystemSymbol:    cmd.SystemSymbol,
-			ShipSymbols:     shipsNeedingContainers,
-			MarketWaypoints: cmd.Markets,
-			ShipConfigs:     shipConfigs,
-			AllWaypoints:    waypointData,
-		}
-
-		vrpResponse, err := h.routingClient.PartitionFleet(ctx, vrpRequest)
-		if err != nil {
-			return nil, fmt.Errorf("VRP optimization failed: %w", err)
-		}
-
-		// Extract market assignments from VRP response
-		assignments = make(map[string][]string)
-		for shipSymbol, tourData := range vrpResponse.Assignments {
-			assignments[shipSymbol] = tourData.Waypoints
-		}
+		return map[string][]string{
+			shipsNeedingContainers[0]: markets,
+		}, nil
 	}
 
-	// 7. Create scout-tour containers for ships needing them
+	vrpRequest := &routing.VRPRequest{
+		SystemSymbol:    "",
+		ShipSymbols:     shipsNeedingContainers,
+		MarketWaypoints: markets,
+		ShipConfigs:     shipConfigs,
+		AllWaypoints:    waypointData,
+	}
+
+	vrpResponse, err := h.routingClient.PartitionFleet(ctx, vrpRequest)
+	if err != nil {
+		return nil, fmt.Errorf("VRP optimization failed: %w", err)
+	}
+
+	assignments := make(map[string][]string)
+	for shipSymbol, tourData := range vrpResponse.Assignments {
+		assignments[shipSymbol] = tourData.Waypoints
+	}
+
+	return assignments, nil
+}
+
+// createScoutContainers creates container instances for each ship assignment
+func (h *ScoutMarketsHandler) createScoutContainers(
+	ctx context.Context,
+	assignments map[string][]string,
+	cmd *ScoutMarketsCommand,
+) ([]string, error) {
 	newContainerIDs := []string{}
+
 	for shipSymbol, markets := range assignments {
 		containerID := utils.GenerateContainerID("scout-tour", shipSymbol)
 
@@ -227,10 +311,18 @@ func (h *ScoutMarketsHandler) Handle(ctx context.Context, request common.Request
 		newContainerIDs = append(newContainerIDs, containerID)
 	}
 
-	// 8. Combine results
-	allContainerIDs := append(reusedContainers, newContainerIDs...)
+	return newContainerIDs, nil
+}
 
-	// Add reused containers to assignments (with empty markets list)
+// buildFinalResponse assembles the final response with all container and assignment details
+func (h *ScoutMarketsHandler) buildFinalResponse(
+	reusedContainerIDs []string,
+	newContainerIDs []string,
+	assignments map[string][]string,
+	shipsWithContainers map[string]string,
+) *ScoutMarketsResponse {
+	allContainerIDs := append(reusedContainerIDs, newContainerIDs...)
+
 	for ship := range shipsWithContainers {
 		if _, exists := assignments[ship]; !exists {
 			assignments[ship] = []string{}
@@ -240,8 +332,8 @@ func (h *ScoutMarketsHandler) Handle(ctx context.Context, request common.Request
 	return &ScoutMarketsResponse{
 		ContainerIDs:     allContainerIDs,
 		Assignments:      assignments,
-		ReusedContainers: reusedContainers,
-	}, nil
+		ReusedContainers: reusedContainerIDs,
+	}
 }
 
 // extractWaypointData converts graph format to routing waypoint data

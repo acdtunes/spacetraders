@@ -7,18 +7,18 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	appShip "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/routing"
 	domainShared "github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 )
 
 // RunTourSellingCommand executes optimized cargo selling tour
 type RunTourSellingCommand struct {
-	ShipSymbol      string
-	PlayerID   domainShared.PlayerID
-	ReturnWaypoint  string // Optional waypoint to return to after selling
+	ShipSymbol     string
+	PlayerID       domainShared.PlayerID
+	ReturnWaypoint string // Optional waypoint to return to after selling
 }
 
 // RunTourSellingResponse contains tour execution results
@@ -30,10 +30,10 @@ type RunTourSellingResponse struct {
 
 // SoldItem represents a single item sold during the tour
 type SoldItem struct {
-	Symbol   string
-	Units    int
-	Revenue  int
-	Market   string
+	Symbol  string
+	Units   int
+	Revenue int
+	Market  string
 }
 
 // RunTourSellingHandler implements the tour selling workflow

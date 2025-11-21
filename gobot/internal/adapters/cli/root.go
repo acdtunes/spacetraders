@@ -9,10 +9,10 @@ import (
 
 var (
 	// Global flags
-	socketPath string
-	playerID   int
+	socketPath  string
+	playerID    int
 	agentSymbol string
-	verbose    bool
+	verbose     bool
 )
 
 // NewRootCommand creates the root command for the CLI

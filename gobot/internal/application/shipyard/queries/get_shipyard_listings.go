@@ -15,7 +15,7 @@ import (
 type GetShipyardListingsQuery struct {
 	SystemSymbol   string
 	WaypointSymbol string
-	PlayerID   shared.PlayerID
+	PlayerID       shared.PlayerID
 }
 
 // GetShipyardListingsResponse contains the shipyard data
@@ -25,7 +25,7 @@ type GetShipyardListingsResponse struct {
 
 // GetShipyardListingsHandler handles the GetShipyardListings query
 type GetShipyardListingsHandler struct {
-	apiClient ports.APIClient
+	apiClient  ports.APIClient
 	playerRepo player.PlayerRepository
 	// graphBuilder is unused for now but kept for consistency
 }

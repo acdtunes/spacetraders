@@ -48,11 +48,11 @@ type MockAPIClient struct {
 	errorMsg    string
 
 	// Custom function handlers
-	purchaseCargoFunc    func(ctx context.Context, shipSymbol, goodSymbol string, units int, token string) (*PurchaseCargoResult, error)
-	sellCargoFunc        func(ctx context.Context, shipSymbol, goodSymbol string, units int, token string) (*SellCargoResult, error)
-	acceptContractFunc   func(ctx context.Context, contractID, token string) (*infraports.ContractData, error)
-	deliverContractFunc  func(ctx context.Context, contractID, shipSymbol, tradeSymbol string, units int, token string) (*infraports.ContractData, error)
-	fulfillContractFunc  func(ctx context.Context, contractID, token string) (*infraports.ContractData, error)
+	purchaseCargoFunc   func(ctx context.Context, shipSymbol, goodSymbol string, units int, token string) (*PurchaseCargoResult, error)
+	sellCargoFunc       func(ctx context.Context, shipSymbol, goodSymbol string, units int, token string) (*SellCargoResult, error)
+	acceptContractFunc  func(ctx context.Context, contractID, token string) (*infraports.ContractData, error)
+	deliverContractFunc func(ctx context.Context, contractID, shipSymbol, tradeSymbol string, units int, token string) (*infraports.ContractData, error)
+	fulfillContractFunc func(ctx context.Context, contractID, token string) (*infraports.ContractData, error)
 }
 
 // NewMockAPIClient creates a new mock API client
@@ -309,10 +309,10 @@ func (m *MockAPIClient) NavigateShip(ctx context.Context, symbol, destination, t
 
 	// Mock navigation result with instant arrival
 	return &navigation.Result{
-		Destination:      destination,
-		ArrivalTime:      0, // Instant arrival in mock
-		ArrivalTimeStr:   "",
-		FuelConsumed:     fuelConsumed,
+		Destination:    destination,
+		ArrivalTime:    0, // Instant arrival in mock
+		ArrivalTimeStr: "",
+		FuelConsumed:   fuelConsumed,
 	}, nil
 }
 

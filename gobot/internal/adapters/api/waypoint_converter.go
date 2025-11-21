@@ -22,12 +22,14 @@ func NewWaypointConverter() *WaypointConverter {
 // - ship_selector.go
 //
 // Args:
-//   graph: Graph structure with waypoints data (map[string]interface{})
-//   waypointTraits: Optional lookup map of Waypoint objects with full trait data
-//                   Maps waypoint_symbol -> Waypoint from database
+//
+//	graph: Graph structure with waypoints data (map[string]interface{})
+//	waypointTraits: Optional lookup map of Waypoint objects with full trait data
+//	                Maps waypoint_symbol -> Waypoint from database
 //
 // Returns:
-//   Map of waypoint_symbol -> Waypoint objects
+//
+//	Map of waypoint_symbol -> Waypoint objects
 func (c *WaypointConverter) ConvertGraphToWaypoints(
 	graph map[string]interface{},
 	waypointTraits map[string]*shared.Waypoint,

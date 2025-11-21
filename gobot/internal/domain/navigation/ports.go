@@ -41,18 +41,18 @@ type ShipRepository interface {
 // DTOs for ship operations
 
 type ShipData struct {
-	Symbol          string
-	Location        string
-	NavStatus       string
-	ArrivalTime     string // ISO8601 timestamp when IN_TRANSIT (e.g., "2024-01-01T12:00:00Z"), empty otherwise
-	FuelCurrent     int
-	FuelCapacity    int
-	CargoCapacity   int
-	CargoUnits      int
-	EngineSpeed     int
-	FrameSymbol     string // Frame type (e.g., "FRAME_PROBE", "FRAME_DRONE", "FRAME_MINER")
-	Role            string // Ship role from registration (e.g., "EXCAVATOR", "COMMAND", "SATELLITE")
-	Cargo           *CargoData
+	Symbol        string
+	Location      string
+	NavStatus     string
+	ArrivalTime   string // ISO8601 timestamp when IN_TRANSIT (e.g., "2024-01-01T12:00:00Z"), empty otherwise
+	FuelCurrent   int
+	FuelCapacity  int
+	CargoCapacity int
+	CargoUnits    int
+	EngineSpeed   int
+	FrameSymbol   string // Frame type (e.g., "FRAME_PROBE", "FRAME_DRONE", "FRAME_MINER")
+	Role          string // Ship role from registration (e.g., "EXCAVATOR", "COMMAND", "SATELLITE")
+	Cargo         *CargoData
 }
 
 type CargoData struct {
@@ -62,13 +62,13 @@ type CargoData struct {
 }
 
 type Result struct {
-	Destination      string
-	ArrivalTime      int    // Calculated seconds
-	ArrivalTimeStr   string // ISO8601 timestamp from API (e.g., "2024-01-01T12:00:00Z")
-	FuelConsumed     int
+	Destination    string
+	ArrivalTime    int    // Calculated seconds
+	ArrivalTimeStr string // ISO8601 timestamp from API (e.g., "2024-01-01T12:00:00Z")
+	FuelConsumed   int
 }
 
 type RefuelResult struct {
-	FuelAdded int
+	FuelAdded   int
 	CreditsCost int
 }

@@ -12,9 +12,9 @@ import (
 type MockRoutingClient struct {
 	mu sync.RWMutex
 
-	vrpEnabled       bool
-	vrpResult        map[string][]string // ship -> markets assignment
-	shouldReturnNoRoute bool             // For testing "no route found" scenarios
+	vrpEnabled          bool
+	vrpResult           map[string][]string    // ship -> markets assignment
+	shouldReturnNoRoute bool                   // For testing "no route found" scenarios
 	customRouteResponse *routing.RouteResponse // Custom route response for testing
 }
 

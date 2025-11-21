@@ -6,16 +6,16 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 )
 
 // EvaluateContractProfitabilityQuery is a query to evaluate contract profitability
 type EvaluateContractProfitabilityQuery struct {
 	Contract        *domainContract.Contract
 	ShipSymbol      string
-	PlayerID   shared.PlayerID
+	PlayerID        shared.PlayerID
 	FuelCostPerTrip int // Fuel cost per round trip (for delivery and return)
 }
 
