@@ -56,54 +56,70 @@ func (s *ShipSelector) SelectOptimalShip(
 	var shipWithCargo *navigation.Ship
 
 	for _, ship := range ships {
-		// PRIORITY CHECK: Does ship already have the required cargo?
-		// This takes absolute priority - even over transit status
-		if requiredCargoSymbol != "" {
-			cargoUnits := ship.Cargo().GetItemUnits(requiredCargoSymbol)
-			if cargoUnits > 0 {
-				// Ship has cargo - select immediately (priority selection)
-				shipWithCargo = ship
-				// Continue checking all ships to find truly closest as tiebreaker
-			}
+		if s.hasRequiredCargo(ship, requiredCargoSymbol) {
+			shipWithCargo = ship
 		}
 
-		// Skip ships in transit UNLESS they have the required cargo
-		// (cargo ships might be mid-delivery after daemon restart)
-		if ship.NavStatus() == navigation.NavStatusInTransit && shipWithCargo != ship {
+		if s.shouldSkipShipInTransit(ship, shipWithCargo) {
 			continue
 		}
 
-		// Calculate distance to target
-		currentLocation := ship.CurrentLocation()
-		distance := currentLocation.DistanceTo(targetWaypoint)
-
-		// Track closest ship as fallback
-		if distance < minDistance {
-			minDistance = distance
-			closestShip = ship
-		}
+		closestShip, minDistance = s.updateClosestShip(ship, targetWaypoint, closestShip, minDistance)
 	}
 
-	// Priority: Ship with cargo > Closest ship by distance
 	if shipWithCargo != nil {
-		// Return with 0 distance since cargo presence is more important than distance
-		return &SelectionResult{
-			Ship:     shipWithCargo,
-			Distance: 0,
-			Reason:   fmt.Sprintf("has %s in cargo (priority)", requiredCargoSymbol),
-		}, nil
+		return s.buildCargoSelectionResult(shipWithCargo, requiredCargoSymbol), nil
 	}
 
-	// Fallback to closest ship
 	if closestShip == nil {
 		return nil, fmt.Errorf("no available ships found (all are in transit)")
 	}
 
+	return s.buildDistanceSelectionResult(closestShip, minDistance), nil
+}
+
+func (s *ShipSelector) hasRequiredCargo(ship *navigation.Ship, requiredCargoSymbol string) bool {
+	if requiredCargoSymbol == "" {
+		return false
+	}
+	cargoUnits := ship.Cargo().GetItemUnits(requiredCargoSymbol)
+	return cargoUnits > 0
+}
+
+func (s *ShipSelector) shouldSkipShipInTransit(ship *navigation.Ship, shipWithCargo *navigation.Ship) bool {
+	return ship.NavStatus() == navigation.NavStatusInTransit && shipWithCargo != ship
+}
+
+func (s *ShipSelector) updateClosestShip(
+	ship *navigation.Ship,
+	targetWaypoint *shared.Waypoint,
+	currentClosest *navigation.Ship,
+	currentMinDistance float64,
+) (*navigation.Ship, float64) {
+	currentLocation := ship.CurrentLocation()
+	distance := currentLocation.DistanceTo(targetWaypoint)
+
+	if distance < currentMinDistance {
+		return ship, distance
+	}
+
+	return currentClosest, currentMinDistance
+}
+
+func (s *ShipSelector) buildCargoSelectionResult(ship *navigation.Ship, requiredCargoSymbol string) *SelectionResult {
 	return &SelectionResult{
-		Ship:     closestShip,
-		Distance: minDistance,
-		Reason:   fmt.Sprintf("closest by distance (%.2f units)", minDistance),
-	}, nil
+		Ship:     ship,
+		Distance: 0,
+		Reason:   fmt.Sprintf("has %s in cargo (priority)", requiredCargoSymbol),
+	}
+}
+
+func (s *ShipSelector) buildDistanceSelectionResult(ship *navigation.Ship, distance float64) *SelectionResult {
+	return &SelectionResult{
+		Ship:     ship,
+		Distance: distance,
+		Reason:   fmt.Sprintf("closest by distance (%.2f units)", distance),
+	}
 }
 
 // SelectClosestShipByDistance selects the closest ship to a target waypoint
@@ -134,19 +150,11 @@ func (s *ShipSelector) SelectClosestShipByDistance(
 	minDistance := math.MaxFloat64
 
 	for _, ship := range ships {
-		// Skip in-transit ships if requested
-		if excludeInTransit && ship.NavStatus() == navigation.NavStatusInTransit {
+		if s.shouldExcludeShip(ship, excludeInTransit) {
 			continue
 		}
 
-		// Calculate distance to target
-		currentLocation := ship.CurrentLocation()
-		distance := currentLocation.DistanceTo(targetWaypoint)
-
-		if distance < minDistance {
-			minDistance = distance
-			closestShip = ship
-		}
+		closestShip, minDistance = s.updateClosestShip(ship, targetWaypoint, closestShip, minDistance)
 	}
 
 	if closestShip == nil {
@@ -158,4 +166,8 @@ func (s *ShipSelector) SelectClosestShipByDistance(
 		Distance: minDistance,
 		Reason:   "closest by distance",
 	}, nil
+}
+
+func (s *ShipSelector) shouldExcludeShip(ship *navigation.Ship, excludeInTransit bool) bool {
+	return excludeInTransit && ship.NavStatus() == navigation.NavStatusInTransit
 }

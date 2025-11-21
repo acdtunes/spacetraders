@@ -32,6 +32,7 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	steps.InitializeValueObjectScenarios(sc)
 	steps.RegisterContainerSteps(sc)
 	steps.RegisterContractSteps(sc)
+	steps.RegisterMarketSteps(sc)
 	steps.RegisterRouteSteps(sc)
 	steps.InitializeShipScenario(sc)
 	steps.InitializeContainerIDSteps(sc)
