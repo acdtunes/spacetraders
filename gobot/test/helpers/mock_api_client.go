@@ -40,6 +40,9 @@ type MockAPIClient struct {
 	// Waypoint storage for navigation
 	waypoints map[string]*shared.Waypoint // waypointSymbol -> waypoint
 
+	// Shipyard storage
+	shipyards map[string]*infraports.ShipyardData // waypointSymbol -> shipyard data
+
 	// Call tracking
 	getMarketCalls []string // Track which waypoints were queried
 
@@ -53,6 +56,8 @@ type MockAPIClient struct {
 	acceptContractFunc  func(ctx context.Context, contractID, token string) (*infraports.ContractData, error)
 	deliverContractFunc func(ctx context.Context, contractID, shipSymbol, tradeSymbol string, units int, token string) (*infraports.ContractData, error)
 	fulfillContractFunc func(ctx context.Context, contractID, token string) (*infraports.ContractData, error)
+	getShipyardFunc     func(ctx context.Context, systemSymbol, waypointSymbol, token string) (*infraports.ShipyardData, error)
+	purchaseShipFunc    func(ctx context.Context, shipType, waypointSymbol, token string) (*infraports.ShipPurchaseResult, error)
 }
 
 // NewMockAPIClient creates a new mock API client
@@ -62,6 +67,7 @@ func NewMockAPIClient() *MockAPIClient {
 		ships:          make(map[string]*navigation.Ship),
 		players:        make(map[int]string),
 		waypoints:      make(map[string]*shared.Waypoint),
+		shipyards:      make(map[string]*infraports.ShipyardData),
 		getMarketCalls: []string{},
 	}
 }
@@ -178,6 +184,36 @@ func (m *MockAPIClient) SetFulfillContractFunc(f func(ctx context.Context, contr
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.fulfillContractFunc = f
+}
+
+// SetShipyardData configures the mock to return specific shipyard data for a waypoint
+func (m *MockAPIClient) SetShipyardData(waypointSymbol string, data *infraports.ShipyardData) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.shipyards[waypointSymbol] = data
+}
+
+// SetGetShipyardFunc sets a custom function for GetShipyard calls
+func (m *MockAPIClient) SetGetShipyardFunc(f func(ctx context.Context, systemSymbol, waypointSymbol, token string) (*infraports.ShipyardData, error)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.getShipyardFunc = f
+}
+
+// SetPurchaseShipFunc sets a custom function for PurchaseShip calls
+func (m *MockAPIClient) SetPurchaseShipFunc(f func(ctx context.Context, shipType, waypointSymbol, token string) (*infraports.ShipPurchaseResult, error)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.purchaseShipFunc = f
+}
+
+// ResetShipyardMocks clears shipyard state for test isolation
+func (m *MockAPIClient) ResetShipyardMocks() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.shipyards = make(map[string]*infraports.ShipyardData)
+	m.getShipyardFunc = nil
+	m.purchaseShipFunc = nil
 }
 
 // Implement other APIClient interface methods as no-ops
@@ -539,10 +575,22 @@ func (m *MockAPIClient) GetShipyard(ctx context.Context, systemSymbol, waypointS
 	m.mu.RLock()
 	shouldError := m.shouldError
 	errorMsg := m.errorMsg
+	fn := m.getShipyardFunc
+	shipyard := m.shipyards[waypointSymbol]
 	m.mu.RUnlock()
 
 	if shouldError {
 		return nil, fmt.Errorf("%s", errorMsg)
+	}
+
+	// Use custom function if provided
+	if fn != nil {
+		return fn(ctx, systemSymbol, waypointSymbol, token)
+	}
+
+	// Return stored shipyard data if available
+	if shipyard != nil {
+		return shipyard, nil
 	}
 
 	// Return empty shipyard data
@@ -557,10 +605,16 @@ func (m *MockAPIClient) PurchaseShip(ctx context.Context, shipType, waypointSymb
 	m.mu.RLock()
 	shouldError := m.shouldError
 	errorMsg := m.errorMsg
+	fn := m.purchaseShipFunc
 	m.mu.RUnlock()
 
 	if shouldError {
 		return nil, fmt.Errorf("%s", errorMsg)
+	}
+
+	// Use custom function if provided
+	if fn != nil {
+		return fn(ctx, shipType, waypointSymbol, token)
 	}
 
 	return nil, fmt.Errorf("not implemented in mock")

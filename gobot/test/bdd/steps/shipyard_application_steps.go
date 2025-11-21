@@ -1,0 +1,895 @@
+package steps
+
+import (
+	"context"
+	"fmt"
+	"strconv"
+	"strings"
+
+	"github.com/cucumber/godog"
+	"gorm.io/gorm"
+
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
+	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	shipyardCommands "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/commands"
+	shipyardQueries "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/queries"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shipyard"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
+	infraPorts "github.com/andrescamacho/spacetraders-go/internal/infrastructure/ports"
+	"github.com/andrescamacho/spacetraders-go/test/helpers"
+)
+
+// shipyardApplicationContext is a unified context for ALL shipyard application layer handlers
+type shipyardApplicationContext struct {
+	// Database and repositories (REAL, not mocked)
+	db           *gorm.DB
+	playerRepo   *persistence.GormPlayerRepository
+	shipRepo     *persistence.GormShipRepository
+	waypointRepo *persistence.GormWaypointRepository
+
+	// All handlers under test
+	getListingsHandler   *shipyardQueries.GetShipyardListingsHandler
+	purchaseShipHandler  *shipyardCommands.PurchaseShipHandler
+	batchPurchaseHandler *shipyardCommands.BatchPurchaseShipsHandler
+
+	// Mocks
+	apiClient        *helpers.MockAPIClient
+	mediator         *helpers.MockMediator
+	waypointProvider *helpers.MockWaypointProvider
+
+	// State tracking for assertions
+	lastError              error
+	lastShipyard           *shipyard.Shipyard
+	lastPurchaseResp       *shipyardCommands.PurchaseShipResponse
+	lastBatchResp          *shipyardCommands.BatchPurchaseShipsResponse
+	lastShip               *navigation.Ship
+	autoDiscoveredShipyard string
+
+	// Track created ships for batch purchase assertions
+	createdShips []*navigation.Ship
+}
+
+func (ctx *shipyardApplicationContext) reset() {
+	ctx.lastError = nil
+	ctx.lastShipyard = nil
+	ctx.lastPurchaseResp = nil
+	ctx.lastBatchResp = nil
+	ctx.lastShip = nil
+	ctx.autoDiscoveredShipyard = ""
+	ctx.createdShips = []*navigation.Ship{}
+
+	// Truncate all tables for test isolation
+	if err := helpers.TruncateAllTables(); err != nil {
+		panic(fmt.Errorf("failed to truncate tables: %w", err))
+	}
+
+	// Use shared test DB with REAL GORM repositories
+	ctx.db = helpers.SharedTestDB
+	ctx.playerRepo = persistence.NewGormPlayerRepository(helpers.SharedTestDB)
+	ctx.shipRepo = persistence.NewGormShipRepository(helpers.SharedTestDB)
+	ctx.waypointRepo = persistence.NewGormWaypointRepository(helpers.SharedTestDB)
+
+	// Create mock API client
+	ctx.apiClient = helpers.NewMockAPIClient()
+
+	// Create mock mediator
+	ctx.mediator = helpers.NewMockMediator()
+
+	// Create mock waypoint provider
+	ctx.waypointProvider = helpers.NewMockWaypointProvider()
+
+	// Create handlers
+	ctx.getListingsHandler = shipyardQueries.NewGetShipyardListingsHandler(ctx.apiClient, ctx.playerRepo)
+	ctx.purchaseShipHandler = shipyardCommands.NewPurchaseShipHandler(
+		ctx.shipRepo,
+		ctx.playerRepo,
+		ctx.waypointRepo,
+		ctx.waypointProvider,
+		ctx.apiClient,
+		ctx.mediator,
+	)
+	ctx.batchPurchaseHandler = shipyardCommands.NewBatchPurchaseShipsHandler(
+		ctx.playerRepo,
+		ctx.apiClient,
+		ctx.mediator,
+	)
+
+	// Setup default mock behaviors
+	ctx.setupDefaultMockBehaviors()
+}
+
+// setupDefaultMockBehaviors configures the mock API and mediator with default behaviors
+func (ctx *shipyardApplicationContext) setupDefaultMockBehaviors() {
+	// Setup purchase ship counter for generating unique ship symbols
+	purchaseCount := 0
+
+	// Default PurchaseShip function - generates new ships with unique symbols
+	ctx.apiClient.SetPurchaseShipFunc(func(ctxAPI context.Context, shipType, waypointSymbol, token string) (*infraPorts.ShipPurchaseResult, error) {
+		// Get player from token to determine agent symbol
+		var agentSymbol string
+		var newCredits int
+
+		// Extract player from context if possible
+		for playerID, playerToken := range map[int]string{} {
+			if playerToken == token {
+				p, err := ctx.playerRepo.FindByID(ctxAPI, shared.PlayerID{})
+				if err == nil {
+					agentSymbol = fmt.Sprintf("AGENT-%d", playerID)
+					newCredits = p.Credits
+				}
+				break
+			}
+		}
+
+		// Fallback defaults
+		if agentSymbol == "" {
+			agentSymbol = "TEST-AGENT"
+			newCredits = 450000 // Default after one purchase
+		}
+
+		purchaseCount++
+		shipSymbol := fmt.Sprintf("%s-SHIP-%d", agentSymbol, purchaseCount)
+
+		// Find the ship listing to get the price
+		shipyardData, err := ctx.apiClient.GetShipyard(ctxAPI, shared.ExtractSystemSymbol(waypointSymbol), waypointSymbol, token)
+		if err != nil {
+			return nil, err
+		}
+
+		var price int
+		for _, listing := range shipyardData.Ships {
+			if listing.Type == shipType {
+				price = listing.PurchasePrice
+				break
+			}
+		}
+
+		return helpers.CreateTestShipPurchaseResult(agentSymbol, shipSymbol, shipType, waypointSymbol, price, newCredits), nil
+	})
+
+	// Default GetAgent function
+	ctx.apiClient.SetError(false, "")
+}
+
+// ============================================================================
+// Given Steps (Test Setup)
+// ============================================================================
+
+func (ctx *shipyardApplicationContext) aPlayerExistsWithCredits(agentSymbol string, credits int) error {
+	// Create player ID from a hash of agent symbol for consistency
+	playerID := 1
+	pid, err := shared.NewPlayerID(playerID)
+	if err != nil {
+		return err
+	}
+
+	p := player.NewPlayer(pid, agentSymbol, "token-"+agentSymbol)
+	p.Credits = credits
+
+	// Add to mock API client for authorization
+	ctx.apiClient.AddPlayer(p)
+
+	// Save to database
+	return ctx.playerRepo.Add(context.Background(), p)
+}
+
+func (ctx *shipyardApplicationContext) thePlayerHasCredits(agentSymbol string, credits int) error {
+	// Find and update existing player
+	players, err := ctx.playerRepo.ListAll(context.Background())
+	if err != nil {
+		return err
+	}
+
+	for _, p := range players {
+		if p.AgentSymbol == agentSymbol {
+			p.Credits = credits
+			return ctx.playerRepo.Update(context.Background(), p)
+		}
+	}
+
+	return fmt.Errorf("player %s not found", agentSymbol)
+}
+
+func (ctx *shipyardApplicationContext) aShipExistsForPlayerAtWaypoint(shipSymbol, agentSymbol, waypointSymbol string) error {
+	// Find player
+	players, err := ctx.playerRepo.ListAll(context.Background())
+	if err != nil {
+		return err
+	}
+
+	var playerID shared.PlayerID
+	for _, p := range players {
+		if p.AgentSymbol == agentSymbol {
+			playerID = p.ID
+			break
+		}
+	}
+
+	// Create waypoint
+	waypoint, err := ctx.waypointRepo.FindBySymbol(context.Background(), waypointSymbol)
+	if err != nil {
+		// Waypoint doesn't exist, create it
+		systemSymbol := shared.ExtractSystemSymbol(waypointSymbol)
+		waypoint, err = shared.NewWaypoint(waypointSymbol, 0, 0)
+		if err != nil {
+			return err
+		}
+		if err := ctx.waypointRepo.SaveSystemGraph(context.Background(), systemSymbol, map[string]*shared.Waypoint{waypointSymbol: waypoint}); err != nil {
+			return err
+		}
+	}
+
+	// Create ship
+	fuel, _ := shared.NewFuel(100, 100)
+	cargo, _ := shared.NewCargo(40, 0, []*shared.CargoItem{})
+
+	ship, err := navigation.NewShip(
+		shipSymbol,
+		playerID,
+		waypoint,
+		fuel,
+		100,
+		40,
+		cargo,
+		30,
+		"FRAME_PROBE",
+		"COMMAND",
+		navigation.NavStatusDocked,
+	)
+	if err != nil {
+		return err
+	}
+
+	// Add to mock API client for GetShip calls
+	ctx.apiClient.AddShip(ship)
+
+	// Save to database
+	return ctx.shipRepo.Add(context.Background(), ship)
+}
+
+func (ctx *shipyardApplicationContext) theShipIsDocked(shipSymbol string) error {
+	ship, err := ctx.shipRepo.FindBySymbol(context.Background(), shipSymbol, shared.PlayerID{})
+	if err != nil {
+		return err
+	}
+
+	ship.EnsureDocked()
+	return ctx.shipRepo.Update(context.Background(), ship)
+}
+
+func (ctx *shipyardApplicationContext) theShipIsInOrbit(shipSymbol string) error {
+	ship, err := ctx.shipRepo.FindBySymbol(context.Background(), shipSymbol, shared.PlayerID{})
+	if err != nil {
+		return err
+	}
+
+	ship.EnsureInOrbit()
+	return ctx.shipRepo.Update(context.Background(), ship)
+}
+
+func (ctx *shipyardApplicationContext) aWaypointExistsWithShipyardAtCoordinates(waypointSymbol string, x, y int) error {
+	waypoint, err := helpers.CreateTestWaypointWithShipyard(waypointSymbol, x, y)
+	if err != nil {
+		return err
+	}
+
+	// Add to waypoint provider
+	ctx.waypointProvider.SetWaypoint(waypoint)
+
+	// Add to mock API client
+	ctx.apiClient.AddWaypoint(waypoint)
+
+	// Save to database
+	systemSymbol := shared.ExtractSystemSymbol(waypointSymbol)
+	return ctx.waypointRepo.SaveSystemGraph(context.Background(), systemSymbol, map[string]*shared.Waypoint{waypointSymbol: waypoint})
+}
+
+func (ctx *shipyardApplicationContext) aWaypointExistsAtCoordinates(waypointSymbol string, x, y int) error {
+	waypoint, err := helpers.CreateTestWaypoint(waypointSymbol, x, y)
+	if err != nil {
+		return err
+	}
+
+	// Add to waypoint provider
+	ctx.waypointProvider.SetWaypoint(waypoint)
+
+	// Add to mock API client
+	ctx.apiClient.AddWaypoint(waypoint)
+
+	// Save to database
+	systemSymbol := shared.ExtractSystemSymbol(waypointSymbol)
+	return ctx.waypointRepo.SaveSystemGraph(context.Background(), systemSymbol, map[string]*shared.Waypoint{waypointSymbol: waypoint})
+}
+
+func (ctx *shipyardApplicationContext) theShipIsAtWaypoint(shipSymbol, waypointSymbol string) error {
+	ship, err := ctx.shipRepo.FindBySymbol(context.Background(), shipSymbol, shared.PlayerID{})
+	if err != nil {
+		return err
+	}
+
+	// Get waypoint
+	waypoint, err := ctx.waypointRepo.FindBySymbol(context.Background(), waypointSymbol)
+	if err != nil {
+		return err
+	}
+
+	// Update ship location (using reflection or recreating ship)
+	// For now, we'll delete and recreate
+	if err := ctx.shipRepo.Delete(context.Background(), ship); err != nil {
+		return err
+	}
+
+	newShip, err := navigation.NewShip(
+		ship.ShipSymbol(),
+		ship.PlayerID(),
+		waypoint,
+		ship.Fuel(),
+		ship.FuelCapacity(),
+		ship.CargoCapacity(),
+		ship.Cargo(),
+		ship.EngineSpeed(),
+		ship.FrameSymbol(),
+		ship.Role(),
+		ship.NavStatus(),
+	)
+	if err != nil {
+		return err
+	}
+
+	// Update mock API client
+	ctx.apiClient.AddShip(newShip)
+
+	return ctx.shipRepo.Add(context.Background(), newShip)
+}
+
+func (ctx *shipyardApplicationContext) theShipyardHasTheFollowingShips(waypointSymbol string, table *godog.Table) error {
+	if len(table.Rows) < 2 {
+		return fmt.Errorf("table must have header and at least one row")
+	}
+
+	// Parse table
+	var listings []infraPorts.ShipListingData
+	for i, row := range table.Rows[1:] {
+		if len(row.Cells) < 2 {
+			return fmt.Errorf("row %d: expected at least 2 columns", i+1)
+		}
+
+		shipType := row.Cells[0].Value
+		price, err := strconv.Atoi(row.Cells[1].Value)
+		if err != nil {
+			return fmt.Errorf("row %d: invalid price: %w", i+1, err)
+		}
+
+		listing := helpers.CreateTestShipListing(shipType, price)
+		listings = append(listings, listing)
+	}
+
+	// Create shipyard data
+	shipyardData := helpers.CreateTestShipyardData(waypointSymbol, listings...)
+
+	// Set in mock API client
+	ctx.apiClient.SetShipyardData(waypointSymbol, shipyardData)
+
+	return nil
+}
+
+func (ctx *shipyardApplicationContext) theShipyardHasNoShipsForSale(waypointSymbol string) error {
+	shipyardData := helpers.CreateTestShipyardData(waypointSymbol)
+	ctx.apiClient.SetShipyardData(waypointSymbol, shipyardData)
+	return nil
+}
+
+func (ctx *shipyardApplicationContext) theAPIWillReturnAnErrorWhenGettingShipyard(waypointSymbol string) error {
+	ctx.apiClient.SetGetShipyardFunc(func(ctxAPI context.Context, systemSymbol, waypointSym, token string) (*infraPorts.ShipyardData, error) {
+		if waypointSym == waypointSymbol {
+			return nil, fmt.Errorf("API error getting shipyard")
+		}
+		return ctx.apiClient.GetShipyard(ctxAPI, systemSymbol, waypointSym, token)
+	})
+	return nil
+}
+
+func (ctx *shipyardApplicationContext) navigationWillSucceedFromTo(fromWaypoint, toWaypoint string) error {
+	// Default mediator behavior already handles this
+	// Just ensure ship will be updated to the destination
+	return nil
+}
+
+func (ctx *shipyardApplicationContext) navigationWillFailFromTo(fromWaypoint, toWaypoint string) error {
+	ctx.mediator.SetSendFunc(func(ctxMed context.Context, request interface{}) (interface{}, error) {
+		return nil, fmt.Errorf("navigation failed")
+	})
+	return nil
+}
+
+func (ctx *shipyardApplicationContext) waypointIsTheNearestShipyardTo(shipyardWaypoint, fromWaypoint string) error {
+	// The shipyard is already set up with the SHIPYARD trait in the database
+	// The handler will find it via the waypoint repository
+	return nil
+}
+
+func (ctx *shipyardApplicationContext) thereAreNoShipyardsInSystem(systemSymbol string) error {
+	// Don't add any waypoints with SHIPYARD trait for this system
+	// The existing waypoints don't have SHIPYARD trait
+	return nil
+}
+
+func (ctx *shipyardApplicationContext) theAPIWillReturnAnErrorWhenPurchasingAShip() error {
+	ctx.apiClient.SetPurchaseShipFunc(func(ctxAPI context.Context, shipType, waypointSymbol, token string) (*infraPorts.ShipPurchaseResult, error) {
+		return nil, fmt.Errorf("API error purchasing ship")
+	})
+	return nil
+}
+
+// ============================================================================
+// When Steps (Execute Commands/Queries)
+// ============================================================================
+
+func (ctx *shipyardApplicationContext) iQueryShipyardListingsFor(waypointSymbol, agentSymbol string) error {
+	// Find player
+	players, err := ctx.playerRepo.ListAll(context.Background())
+	if err != nil {
+		return err
+	}
+
+	var playerID shared.PlayerID
+	var token string
+	found := false
+	for _, p := range players {
+		if p.AgentSymbol == agentSymbol {
+			playerID = p.ID
+			token = p.Token
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		// Player not found - use dummy values to test error path
+		playerID, _ = shared.NewPlayerID(999)
+		token = "invalid-token"
+	}
+
+	// Create context with token
+	cmdCtx := common.WithPlayerToken(context.Background(), token)
+
+	// Create query
+	query := &shipyardQueries.GetShipyardListingsQuery{
+		SystemSymbol:   shared.ExtractSystemSymbol(waypointSymbol),
+		WaypointSymbol: waypointSymbol,
+		PlayerID:       playerID,
+	}
+
+	// Execute handler
+	response, err := ctx.getListingsHandler.Handle(cmdCtx, query)
+
+	// Store results
+	ctx.lastError = err
+	if err == nil {
+		resp := response.(*shipyardQueries.GetShipyardListingsResponse)
+		ctx.lastShipyard = resp.Shipyard
+	}
+
+	return nil
+}
+
+func (ctx *shipyardApplicationContext) iPurchaseAShipUsingAt(shipType, purchasingShipSymbol, waypointSymbol, agentSymbol string) error {
+	return ctx.executePurchaseCommand(shipType, purchasingShipSymbol, waypointSymbol, agentSymbol, false)
+}
+
+func (ctx *shipyardApplicationContext) iPurchaseAShipUsingWithoutSpecifyingShipyard(shipType, purchasingShipSymbol, agentSymbol string) error {
+	return ctx.executePurchaseCommand(shipType, purchasingShipSymbol, "", agentSymbol, true)
+}
+
+func (ctx *shipyardApplicationContext) executePurchaseCommand(shipType, purchasingShipSymbol, waypointSymbol, agentSymbol string, autoDiscover bool) error {
+	// Find player
+	players, err := ctx.playerRepo.ListAll(context.Background())
+	if err != nil {
+		return err
+	}
+
+	var playerID shared.PlayerID
+	var token string
+	found := false
+	for _, p := range players {
+		if p.AgentSymbol == agentSymbol {
+			playerID = p.ID
+			token = p.Token
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		return fmt.Errorf("player %s not found", agentSymbol)
+	}
+
+	// Create context with token
+	cmdCtx := common.WithPlayerToken(context.Background(), token)
+
+	// Create command
+	cmd := &shipyardCommands.PurchaseShipCommand{
+		PurchasingShipSymbol: purchasingShipSymbol,
+		ShipType:             shipType,
+		PlayerID:             playerID,
+		ShipyardWaypoint:     waypointSymbol,
+	}
+
+	// Execute handler
+	response, err := ctx.purchaseShipHandler.Handle(cmdCtx, cmd)
+
+	// Store results
+	ctx.lastError = err
+	if err == nil {
+		ctx.lastPurchaseResp = response.(*shipyardCommands.PurchaseShipResponse)
+		ctx.lastShip = ctx.lastPurchaseResp.Ship
+
+		if autoDiscover && waypointSymbol == "" {
+			ctx.autoDiscoveredShipyard = ctx.lastShip.CurrentLocation().Symbol
+		}
+	}
+
+	return nil
+}
+
+func (ctx *shipyardApplicationContext) iBatchPurchaseShipsUsingAt(quantity int, shipType, purchasingShipSymbol, waypointSymbol, agentSymbol string) error {
+	return ctx.executeBatchPurchaseCommand(quantity, shipType, 0, purchasingShipSymbol, waypointSymbol, agentSymbol)
+}
+
+func (ctx *shipyardApplicationContext) iBatchPurchaseShipsWithMaxBudgetUsingAt(quantity int, shipType string, maxBudget int, purchasingShipSymbol, waypointSymbol, agentSymbol string) error {
+	return ctx.executeBatchPurchaseCommand(quantity, shipType, maxBudget, purchasingShipSymbol, waypointSymbol, agentSymbol)
+}
+
+func (ctx *shipyardApplicationContext) executeBatchPurchaseCommand(quantity int, shipType string, maxBudget int, purchasingShipSymbol, waypointSymbol, agentSymbol string) error {
+	// Find player
+	players, err := ctx.playerRepo.ListAll(context.Background())
+	if err != nil {
+		return err
+	}
+
+	var playerID shared.PlayerID
+	var token string
+	found := false
+	for _, p := range players {
+		if p.AgentSymbol == agentSymbol {
+			playerID = p.ID
+			token = p.Token
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		return fmt.Errorf("player %s not found", agentSymbol)
+	}
+
+	// Create context with token
+	cmdCtx := common.WithPlayerToken(context.Background(), token)
+
+	// Create command
+	cmd := &shipyardCommands.BatchPurchaseShipsCommand{
+		PurchasingShipSymbol: purchasingShipSymbol,
+		ShipType:             shipType,
+		Quantity:             quantity,
+		MaxBudget:            maxBudget,
+		PlayerID:             playerID,
+		ShipyardWaypoint:     waypointSymbol,
+	}
+
+	// Execute handler
+	response, err := ctx.batchPurchaseHandler.Handle(cmdCtx, cmd)
+
+	// Store results
+	ctx.lastError = err
+	if err == nil {
+		ctx.lastBatchResp = response.(*shipyardCommands.BatchPurchaseShipsResponse)
+		// Store created ships for assertions
+		ctx.createdShips = ctx.lastBatchResp.Ships
+	}
+
+	return nil
+}
+
+// ============================================================================
+// Then Steps (Assertions)
+// ============================================================================
+
+func (ctx *shipyardApplicationContext) theQueryShouldSucceed() error {
+	if ctx.lastError != nil {
+		return fmt.Errorf("expected query to succeed, but got error: %v", ctx.lastError)
+	}
+	return nil
+}
+
+func (ctx *shipyardApplicationContext) theQueryShouldFail() error {
+	if ctx.lastError == nil {
+		return fmt.Errorf("expected query to fail, but it succeeded")
+	}
+	return nil
+}
+
+func (ctx *shipyardApplicationContext) theQueryShouldFailWithError(expectedError string) error {
+	if ctx.lastError == nil {
+		return fmt.Errorf("expected query to fail, but it succeeded")
+	}
+	if !strings.Contains(strings.ToLower(ctx.lastError.Error()), strings.ToLower(expectedError)) {
+		return fmt.Errorf("expected error containing '%s', got: %v", expectedError, ctx.lastError)
+	}
+	return nil
+}
+
+func (ctx *shipyardApplicationContext) theShipyardShouldHaveShipTypesAvailable(expectedCount int) error {
+	if ctx.lastShipyard == nil {
+		return fmt.Errorf("no shipyard data available")
+	}
+	if len(ctx.lastShipyard.ShipTypes()) != expectedCount {
+		return fmt.Errorf("expected %d ship types, got %d", expectedCount, len(ctx.lastShipyard.ShipTypes()))
+	}
+	return nil
+}
+
+func (ctx *shipyardApplicationContext) theShipyardShouldHaveAListingForPricedAt(shipType string, price int) error {
+	if ctx.lastShipyard == nil {
+		return fmt.Errorf("no shipyard data available")
+	}
+
+	listing, found := ctx.lastShipyard.FindListingByType(shipType)
+	if !found {
+		return fmt.Errorf("ship type %s not found in shipyard", shipType)
+	}
+
+	if listing.PurchasePrice != price {
+		return fmt.Errorf("expected price %d for %s, got %d", price, shipType, listing.PurchasePrice)
+	}
+
+	return nil
+}
+
+func (ctx *shipyardApplicationContext) thePurchaseShouldSucceed() error {
+	if ctx.lastError != nil {
+		return fmt.Errorf("expected purchase to succeed, but got error: %v", ctx.lastError)
+	}
+	if ctx.lastPurchaseResp == nil {
+		return fmt.Errorf("expected purchase response, but got nil")
+	}
+	return nil
+}
+
+func (ctx *shipyardApplicationContext) thePurchaseShouldFail() error {
+	if ctx.lastError == nil {
+		return fmt.Errorf("expected purchase to fail, but it succeeded")
+	}
+	return nil
+}
+
+func (ctx *shipyardApplicationContext) thePurchaseShouldFailWithError(expectedError string) error {
+	if ctx.lastError == nil {
+		return fmt.Errorf("expected purchase to fail, but it succeeded")
+	}
+	if !strings.Contains(strings.ToLower(ctx.lastError.Error()), strings.ToLower(expectedError)) {
+		return fmt.Errorf("expected error containing '%s', got: %v", expectedError, ctx.lastError)
+	}
+	return nil
+}
+
+func (ctx *shipyardApplicationContext) thePlayerShouldHaveCreditsRemaining(agentSymbol string, expectedCredits int) error {
+	// Find player in database
+	players, err := ctx.playerRepo.ListAll(context.Background())
+	if err != nil {
+		return err
+	}
+
+	for _, p := range players {
+		if p.AgentSymbol == agentSymbol {
+			if p.Credits != expectedCredits {
+				return fmt.Errorf("expected player %s to have %d credits, got %d", agentSymbol, expectedCredits, p.Credits)
+			}
+			return nil
+		}
+	}
+
+	return fmt.Errorf("player %s not found", agentSymbol)
+}
+
+func (ctx *shipyardApplicationContext) aNewShipShouldBeCreatedForPlayer(agentSymbol string) error {
+	if ctx.lastShip == nil {
+		return fmt.Errorf("no ship was created")
+	}
+
+	// Verify ship was persisted to database
+	ship, err := ctx.shipRepo.FindBySymbol(context.Background(), ctx.lastShip.ShipSymbol(), ctx.lastShip.PlayerID())
+	if err != nil {
+		return fmt.Errorf("ship not found in database: %w", err)
+	}
+
+	if ship == nil {
+		return fmt.Errorf("ship not persisted to database")
+	}
+
+	return nil
+}
+
+func (ctx *shipyardApplicationContext) theNewShipShouldBeAtWaypoint(waypointSymbol string) error {
+	if ctx.lastShip == nil {
+		return fmt.Errorf("no ship was created")
+	}
+
+	if ctx.lastShip.CurrentLocation().Symbol != waypointSymbol {
+		return fmt.Errorf("expected ship to be at %s, got %s", waypointSymbol, ctx.lastShip.CurrentLocation().Symbol)
+	}
+
+	return nil
+}
+
+func (ctx *shipyardApplicationContext) theNewShipShouldBeDocked() error {
+	if ctx.lastShip == nil {
+		return fmt.Errorf("no ship was created")
+	}
+
+	if ctx.lastShip.NavStatus() != navigation.NavStatusDocked {
+		return fmt.Errorf("expected ship to be docked, got %s", ctx.lastShip.NavStatus())
+	}
+
+	return nil
+}
+
+func (ctx *shipyardApplicationContext) theMediatorShouldHaveBeenCalledToNavigateFromTo(fromWaypoint, toWaypoint string) error {
+	callLog := ctx.mediator.GetCallLog()
+
+	// Check if any call matches navigation to destination
+	for _, call := range callLog {
+		if strings.Contains(call, "NavigateRoute") && strings.Contains(call, toWaypoint) {
+			return nil
+		}
+	}
+
+	return fmt.Errorf("mediator was not called to navigate from %s to %s. Call log: %v", fromWaypoint, toWaypoint, callLog)
+}
+
+func (ctx *shipyardApplicationContext) theMediatorShouldHaveBeenCalledToDockTheShip() error {
+	callLog := ctx.mediator.GetCallLog()
+
+	for _, call := range callLog {
+		if strings.Contains(call, "DockShip") {
+			return nil
+		}
+	}
+
+	return fmt.Errorf("mediator was not called to dock ship. Call log: %v", callLog)
+}
+
+func (ctx *shipyardApplicationContext) theShipyardShouldHaveBeenAutoDiscovered(expectedShipyard string) error {
+	if ctx.autoDiscoveredShipyard == "" {
+		return fmt.Errorf("no shipyard was auto-discovered")
+	}
+
+	if ctx.autoDiscoveredShipyard != expectedShipyard {
+		return fmt.Errorf("expected auto-discovered shipyard %s, got %s", expectedShipyard, ctx.autoDiscoveredShipyard)
+	}
+
+	return nil
+}
+
+func (ctx *shipyardApplicationContext) theBatchPurchaseShouldSucceed() error {
+	if ctx.lastError != nil {
+		return fmt.Errorf("expected batch purchase to succeed, but got error: %v", ctx.lastError)
+	}
+	if ctx.lastBatchResp == nil {
+		return fmt.Errorf("expected batch purchase response, but got nil")
+	}
+	return nil
+}
+
+func (ctx *shipyardApplicationContext) theBatchPurchaseShouldSucceedWithPartialResults() error {
+	// Batch purchase can succeed even with partial results
+	if ctx.lastBatchResp == nil {
+		return fmt.Errorf("expected batch purchase response, but got nil")
+	}
+	return nil
+}
+
+func (ctx *shipyardApplicationContext) theBatchPurchaseShouldFail() error {
+	if ctx.lastError == nil {
+		return fmt.Errorf("expected batch purchase to fail, but it succeeded")
+	}
+	return nil
+}
+
+func (ctx *shipyardApplicationContext) theBatchPurchaseShouldFailWithError(expectedError string) error {
+	if ctx.lastError == nil {
+		return fmt.Errorf("expected batch purchase to fail, but it succeeded")
+	}
+	if !strings.Contains(strings.ToLower(ctx.lastError.Error()), strings.ToLower(expectedError)) {
+		return fmt.Errorf("expected error containing '%s', got: %v", expectedError, ctx.lastError)
+	}
+	return nil
+}
+
+func (ctx *shipyardApplicationContext) shipsShouldHaveBeenPurchased(expectedCount int) error {
+	if ctx.lastBatchResp == nil {
+		return fmt.Errorf("no batch purchase response available")
+	}
+
+	actualCount := len(ctx.lastBatchResp.Ships)
+	if actualCount != expectedCount {
+		return fmt.Errorf("expected %d ships to be purchased, got %d", expectedCount, actualCount)
+	}
+
+	return nil
+}
+
+func (ctx *shipyardApplicationContext) allPurchasedShipsShouldBeAtWaypoint(waypointSymbol string) error {
+	if ctx.lastBatchResp == nil {
+		return fmt.Errorf("no batch purchase response available")
+	}
+
+	for i, ship := range ctx.lastBatchResp.Ships {
+		if ship.CurrentLocation().Symbol != waypointSymbol {
+			return fmt.Errorf("ship %d (%s) is at %s, expected %s", i, ship.ShipSymbol(), ship.CurrentLocation().Symbol, waypointSymbol)
+		}
+	}
+
+	return nil
+}
+
+// ==================== REGISTRATION ====================
+
+func InitializeShipyardApplicationScenarios(sc *godog.ScenarioContext) {
+	ctx := &shipyardApplicationContext{}
+
+	sc.Before(func(context.Context, *godog.Scenario) (context.Context, error) {
+		ctx.reset()
+		return context.Background(), nil
+	})
+
+	// Register Given steps
+	sc.Step(`^a player "([^"]*)" exists with (\d+) credits$`, ctx.aPlayerExistsWithCredits)
+	sc.Step(`^the player "([^"]*)" has (\d+) credits$`, ctx.thePlayerHasCredits)
+	sc.Step(`^a ship "([^"]*)" exists for player "([^"]*)" at waypoint "([^"]*)"$`, ctx.aShipExistsForPlayerAtWaypoint)
+	sc.Step(`^the ship "([^"]*)" is docked$`, ctx.theShipIsDocked)
+	sc.Step(`^the ship "([^"]*)" is in orbit$`, ctx.theShipIsInOrbit)
+	sc.Step(`^a waypoint "([^"]*)" exists with a shipyard at coordinates \((\d+), (\d+)\)$`, ctx.aWaypointExistsWithShipyardAtCoordinates)
+	sc.Step(`^a waypoint "([^"]*)" exists at coordinates \((\d+), (\d+)\)$`, ctx.aWaypointExistsAtCoordinates)
+	sc.Step(`^the ship "([^"]*)" is at waypoint "([^"]*)"$`, ctx.theShipIsAtWaypoint)
+	sc.Step(`^the shipyard at "([^"]*)" has the following ships:$`, ctx.theShipyardHasTheFollowingShips)
+	sc.Step(`^the shipyard at "([^"]*)" has no ships for sale$`, ctx.theShipyardHasNoShipsForSale)
+	sc.Step(`^the API will return an error when getting shipyard "([^"]*)"$`, ctx.theAPIWillReturnAnErrorWhenGettingShipyard)
+	sc.Step(`^navigation will succeed from "([^"]*)" to "([^"]*)"$`, ctx.navigationWillSucceedFromTo)
+	sc.Step(`^navigation will fail from "([^"]*)" to "([^"]*)"$`, ctx.navigationWillFailFromTo)
+	sc.Step(`^waypoint "([^"]*)" is the nearest shipyard to "([^"]*)"$`, ctx.waypointIsTheNearestShipyardTo)
+	sc.Step(`^there are no shipyards in system "([^"]*)"$`, ctx.thereAreNoShipyardsInSystem)
+	sc.Step(`^the API will return an error when purchasing a ship$`, ctx.theAPIWillReturnAnErrorWhenPurchasingAShip)
+
+	// Register When steps
+	sc.Step(`^I query shipyard listings for "([^"]*)" as "([^"]*)"$`, ctx.iQueryShipyardListingsFor)
+	sc.Step(`^I purchase a "([^"]*)" ship using "([^"]*)" at "([^"]*)" as "([^"]*)"$`, ctx.iPurchaseAShipUsingAt)
+	sc.Step(`^I purchase a "([^"]*)" ship using "([^"]*)" without specifying shipyard as "([^"]*)"$`, ctx.iPurchaseAShipUsingWithoutSpecifyingShipyard)
+	sc.Step(`^I batch purchase (\d+) "([^"]*)" ships using "([^"]*)" at "([^"]*)" as "([^"]*)"$`, ctx.iBatchPurchaseShipsUsingAt)
+	sc.Step(`^I batch purchase (\d+) "([^"]*)" ships with max budget (\d+) using "([^"]*)" at "([^"]*)" as "([^"]*)"$`, ctx.iBatchPurchaseShipsWithMaxBudgetUsingAt)
+
+	// Register Then steps
+	sc.Step(`^the query should succeed$`, ctx.theQueryShouldSucceed)
+	sc.Step(`^the query should fail$`, ctx.theQueryShouldFail)
+	sc.Step(`^the query should fail with error "([^"]*)"$`, ctx.theQueryShouldFailWithError)
+	sc.Step(`^the shipyard should have (\d+) ship types available$`, ctx.theShipyardShouldHaveShipTypesAvailable)
+	sc.Step(`^the shipyard should have a listing for "([^"]*)" priced at (\d+)$`, ctx.theShipyardShouldHaveAListingForPricedAt)
+	sc.Step(`^the purchase should succeed$`, ctx.thePurchaseShouldSucceed)
+	sc.Step(`^the purchase should fail$`, ctx.thePurchaseShouldFail)
+	sc.Step(`^the purchase should fail with error "([^"]*)"$`, ctx.thePurchaseShouldFailWithError)
+	sc.Step(`^the player "([^"]*)" should have (\d+) credits remaining$`, ctx.thePlayerShouldHaveCreditsRemaining)
+	sc.Step(`^a new ship should be created for player "([^"]*)"$`, ctx.aNewShipShouldBeCreatedForPlayer)
+	sc.Step(`^the new ship should be at waypoint "([^"]*)"$`, ctx.theNewShipShouldBeAtWaypoint)
+	sc.Step(`^the new ship should be docked$`, ctx.theNewShipShouldBeDocked)
+	sc.Step(`^the mediator should have been called to navigate from "([^"]*)" to "([^"]*)"$`, ctx.theMediatorShouldHaveBeenCalledToNavigateFromTo)
+	sc.Step(`^the mediator should have been called to dock the ship$`, ctx.theMediatorShouldHaveBeenCalledToDockTheShip)
+	sc.Step(`^the shipyard "([^"]*)" should have been auto-discovered$`, ctx.theShipyardShouldHaveBeenAutoDiscovered)
+	sc.Step(`^the batch purchase should succeed$`, ctx.theBatchPurchaseShouldSucceed)
+	sc.Step(`^the batch purchase should succeed with partial results$`, ctx.theBatchPurchaseShouldSucceedWithPartialResults)
+	sc.Step(`^the batch purchase should fail$`, ctx.theBatchPurchaseShouldFail)
+	sc.Step(`^the batch purchase should fail with error "([^"]*)"$`, ctx.theBatchPurchaseShouldFailWithError)
+	sc.Step(`^(\d+) ships should have been purchased$`, ctx.shipsShouldHaveBeenPurchased)
+	sc.Step(`^all purchased ships should be at waypoint "([^"]*)"$`, ctx.allPurchasedShipsShouldBeAtWaypoint)
+}
