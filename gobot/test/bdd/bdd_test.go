@@ -14,7 +14,7 @@ func TestFeatures(t *testing.T) {
 		ScenarioInitializer: InitializeScenario,
 		Options: &godog.Options{
 			Format:   "pretty",
-			Paths:    []string{"features/domain", "features/utils"},
+			Paths:    []string{"features/domain", "features/utils", "features/application"},
 			TestingT: t,
 		},
 	}
@@ -38,6 +38,14 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	steps.InitializeContainerIDSteps(sc)
 	steps.InitializeMiningSteps(sc)
 	steps.InitializeSystemScenario(sc)
+
+	// Contract application layer tests
+	steps.InitializeAcceptContractHandlerScenario(sc)
+	// TODO: Implement remaining step files
+	// steps.InitializeDeliverContractHandlerScenario(sc)
+	// steps.InitializeFulfillContractHandlerScenario(sc)
+	// steps.InitializeNegotiateContractHandlerScenario(sc)
+	// steps.InitializeEvaluateProfitabilityHandlerScenario(sc)
 }
 
 func TestMain(m *testing.M) {
