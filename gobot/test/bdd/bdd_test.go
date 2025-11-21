@@ -41,9 +41,9 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 
 	// Contract application layer tests
 	steps.InitializeAcceptContractHandlerScenario(sc)
+	steps.InitializeDeliverContractHandlerScenario(sc)
+	steps.InitializeFulfillContractHandlerScenario(sc)
 	// TODO: Implement remaining step files
-	// steps.InitializeDeliverContractHandlerScenario(sc)
-	// steps.InitializeFulfillContractHandlerScenario(sc)
 	// steps.InitializeNegotiateContractHandlerScenario(sc)
 	// steps.InitializeEvaluateProfitabilityHandlerScenario(sc)
 }
