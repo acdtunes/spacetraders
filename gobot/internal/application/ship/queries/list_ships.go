@@ -7,7 +7,6 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
 // ListShipsQuery represents a query to list all ships for a player
@@ -23,15 +22,15 @@ type ListShipsResponse struct {
 
 // ListShipsHandler handles the ListShips query
 type ListShipsHandler struct {
-	shipRepo   navigation.ShipRepository
-	playerRepo player.PlayerRepository
+	shipRepo       navigation.ShipRepository
+	playerResolver *common.PlayerResolver
 }
 
 // NewListShipsHandler creates a new ListShipsHandler
 func NewListShipsHandler(shipRepo navigation.ShipRepository, playerRepo player.PlayerRepository) *ListShipsHandler {
 	return &ListShipsHandler{
-		shipRepo:   shipRepo,
-		playerRepo: playerRepo,
+		shipRepo:       shipRepo,
+		playerResolver: common.NewPlayerResolver(playerRepo),
 	}
 }
 
@@ -42,7 +41,7 @@ func (h *ListShipsHandler) Handle(ctx context.Context, request common.Request) (
 		return nil, fmt.Errorf("invalid request type: expected *ListShipsQuery")
 	}
 
-	playerID, err := h.resolvePlayerID(ctx, query.PlayerID, query.AgentSymbol)
+	playerID, err := h.playerResolver.ResolvePlayerID(ctx, query.PlayerID, query.AgentSymbol)
 	if err != nil {
 		return nil, err
 	}
@@ -55,24 +54,4 @@ func (h *ListShipsHandler) Handle(ctx context.Context, request common.Request) (
 	return &ListShipsResponse{
 		Ships: ships,
 	}, nil
-}
-
-func (h *ListShipsHandler) resolvePlayerID(ctx context.Context, playerID *int, agentSymbol string) (shared.PlayerID, error) {
-	if playerID == nil && agentSymbol == "" {
-		return shared.PlayerID{}, fmt.Errorf("either player_id or agent_symbol must be provided")
-	}
-
-	if playerID != nil {
-		pid, err := shared.NewPlayerID(*playerID)
-		if err != nil {
-			return shared.PlayerID{}, fmt.Errorf("invalid player ID: %w", err)
-		}
-		return pid, nil
-	}
-
-	player, err := h.playerRepo.FindByAgentSymbol(ctx, agentSymbol)
-	if err != nil {
-		return shared.PlayerID{}, fmt.Errorf("failed to find player by agent symbol: %w", err)
-	}
-	return player.ID, nil
 }
