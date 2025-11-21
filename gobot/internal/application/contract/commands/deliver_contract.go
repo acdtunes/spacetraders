@@ -89,6 +89,13 @@ func (h *DeliverContractHandler) loadContract(ctx context.Context, contractID st
 	if err != nil {
 		return nil, fmt.Errorf("contract not found: %w", err)
 	}
+
+	// Validate player exists
+	_, err = h.playerRepo.FindByID(ctx, contract.PlayerID())
+	if err != nil {
+		return nil, fmt.Errorf("player not found: %w", err)
+	}
+
 	return contract, nil
 }
 

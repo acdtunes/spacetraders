@@ -31,6 +31,13 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	// Container steps registered BEFORE ship steps to handle container-specific error assertions
 	steps.InitializeValueObjectScenarios(sc)
 	steps.RegisterContainerSteps(sc)
+
+	// Contract application layer tests - UNIFIED CONTEXT
+	// Registered BEFORE domain layer to take precedence for overlapping step definitions
+	// All accept, deliver, fulfill handlers share a single context to eliminate step conflicts
+	steps.InitializeContractApplicationScenarios(sc)
+
+	// Domain layer contract tests
 	steps.RegisterContractSteps(sc)
 	steps.RegisterMarketSteps(sc)
 	steps.RegisterRouteSteps(sc)
@@ -38,14 +45,6 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	steps.InitializeContainerIDSteps(sc)
 	steps.InitializeMiningSteps(sc)
 	steps.InitializeSystemScenario(sc)
-
-	// Contract application layer tests
-	steps.InitializeAcceptContractHandlerScenario(sc)
-	steps.InitializeDeliverContractHandlerScenario(sc)
-	steps.InitializeFulfillContractHandlerScenario(sc)
-	// TODO: Implement remaining step files
-	// steps.InitializeNegotiateContractHandlerScenario(sc)
-	// steps.InitializeEvaluateProfitabilityHandlerScenario(sc)
 }
 
 func TestMain(m *testing.M) {

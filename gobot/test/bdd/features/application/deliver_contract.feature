@@ -21,13 +21,13 @@ Feature: Deliver Contract Command
     Given a player with ID 1 and token "test-token" exists in the database
     And an accepted contract "CONTRACT-3" for player 1 with delivery of 100 "IRON_ORE" to waypoint "X1-A1"
     When I try to execute deliver contract command for "CONTRACT-3" with 150 units of "IRON_ORE" from ship "SHIP-1"
-    Then the command should return an error containing "exceeds required"
+    Then the command should return an error containing "units exceed required"
 
   Scenario: Cannot deliver invalid trade symbol
     Given a player with ID 1 and token "test-token" exists in the database
     And an accepted contract "CONTRACT-4" for player 1 with delivery of 100 "IRON_ORE" to waypoint "X1-A1"
     When I try to execute deliver contract command for "CONTRACT-4" with 50 units of "COPPER_ORE" from ship "SHIP-1"
-    Then the command should return an error containing "invalid trade symbol"
+    Then the command should return an error containing "trade symbol not in contract"
 
   Scenario: Contract not found error
     Given a player with ID 1 and token "test-token" exists in the database
