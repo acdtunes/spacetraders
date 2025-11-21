@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	appContract "github.com/andrescamacho/spacetraders-go/internal/application/contract"
 	contractTypes "github.com/andrescamacho/spacetraders-go/internal/application/contract/types"
+	contractServices "github.com/andrescamacho/spacetraders-go/internal/application/contract/services"
 	domainContainer "github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
@@ -29,23 +29,18 @@ type CoordinatorMetadata struct {
 	RebalanceInterval time.Duration
 }
 
-// ContainerRepository interface for querying container state
-type ContainerRepository interface {
-	ListByStatusSimple(ctx context.Context, status string, playerID *int) ([]persistence.ContainerSummary, error)
-}
-
 // RunFleetCoordinatorHandler implements the fleet coordinator logic
 type RunFleetCoordinatorHandler struct {
-	mediator           common.Mediator
-	shipRepo           navigation.ShipRepository
-	contractRepo       domainContract.ContractRepository
-	marketRepo         market.MarketRepository
-	shipAssignmentRepo domainContainer.ShipAssignmentRepository
-	daemonClient       daemon.DaemonClient         // For creating worker containers
-	graphProvider      system.ISystemGraphProvider // For distance calculations
-	converter          system.IWaypointConverter   // For waypoint conversions
-	containerRepo      ContainerRepository         // For checking existing workers
-	clock              shared.Clock                // For time operations (mockable for tests)
+	fleetPoolManager       *contractServices.FleetPoolManager
+	workerLifecycleManager *contractServices.WorkerLifecycleManager
+	contractMarketService  *contractServices.ContractMarketService
+	marketRepo             market.MarketRepository
+	shipRepo               navigation.ShipRepository
+	shipAssignmentRepo     domainContainer.ShipAssignmentRepository
+	daemonClient           daemon.DaemonClient
+	graphProvider          system.ISystemGraphProvider
+	converter              system.IWaypointConverter
+	clock                  shared.Clock
 }
 
 // NewRunFleetCoordinatorHandler creates a new fleet coordinator handler
@@ -59,7 +54,7 @@ func NewRunFleetCoordinatorHandler(
 	daemonClient daemon.DaemonClient,
 	graphProvider system.ISystemGraphProvider,
 	converter system.IWaypointConverter,
-	containerRepo ContainerRepository,
+	containerRepo contractServices.ContainerRepository,
 	clock shared.Clock,
 ) *RunFleetCoordinatorHandler {
 	// Default to RealClock if not provided
@@ -67,17 +62,21 @@ func NewRunFleetCoordinatorHandler(
 		clock = shared.NewRealClock()
 	}
 
+	fleetPoolManager := contractServices.NewFleetPoolManager(mediator, shipRepo, shipAssignmentRepo)
+	workerLifecycleManager := contractServices.NewWorkerLifecycleManager(daemonClient, containerRepo)
+	contractMarketService := contractServices.NewContractMarketService(mediator, contractRepo)
+
 	return &RunFleetCoordinatorHandler{
-		mediator:           mediator,
-		shipRepo:           shipRepo,
-		contractRepo:       contractRepo,
-		marketRepo:         marketRepo,
-		shipAssignmentRepo: shipAssignmentRepo,
-		daemonClient:       daemonClient,
-		graphProvider:      graphProvider,
-		converter:          converter,
-		containerRepo:      containerRepo,
-		clock:              clock,
+		fleetPoolManager:       fleetPoolManager,
+		workerLifecycleManager: workerLifecycleManager,
+		contractMarketService:  contractMarketService,
+		marketRepo:             marketRepo,
+		shipRepo:               shipRepo,
+		shipAssignmentRepo:     shipAssignmentRepo,
+		daemonClient:           daemonClient,
+		graphProvider:          graphProvider,
+		converter:              converter,
+		clock:                  clock,
 	}
 }
 
@@ -101,11 +100,11 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 		RebalanceInterval: 10 * time.Minute,
 	}
 
-	if err := h.validateShipAvailability(ctx, cmd); err != nil {
+	if err := h.fleetPoolManager.ValidateShipAvailability(ctx, cmd.ShipSymbols, cmd.ContainerID, cmd.PlayerID.Value()); err != nil {
 		return nil, err
 	}
 
-	if err := h.initializeShipPool(ctx, cmd); err != nil {
+	if err := h.fleetPoolManager.InitializeShipPool(ctx, cmd.ShipSymbols, cmd.ContainerID, cmd.PlayerID.Value()); err != nil {
 		return nil, err
 	}
 
@@ -113,7 +112,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 	// IMPORTANT: Unbuffered so signals are only received when actively waiting
 	completionChan := make(chan string)
 
-	if err := h.stopExistingWorkers(ctx, cmd.PlayerID.Value()); err != nil {
+	if err := h.workerLifecycleManager.StopExistingWorkers(ctx, cmd.PlayerID.Value()); err != nil {
 		logger.Log("WARNING", fmt.Sprintf("Failed during existing worker cleanup: %v", err), nil)
 	}
 
@@ -128,7 +127,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			// Context cancelled, release pool and exit
 			if activeWorkerContainerID != "" {
 				logger.Log("INFO", fmt.Sprintf("Stopping active worker container: %s", activeWorkerContainerID), nil)
-				_ = h.daemonClient.StopContainer(ctx, activeWorkerContainerID)
+				_ = h.workerLifecycleManager.StopWorkerContainer(ctx, activeWorkerContainerID)
 			}
 			_ = appContract.ReleasePoolAssignments(ctx, cmd.ContainerID, cmd.PlayerID.Value(), h.shipAssignmentRepo, "coordinator_stopped")
 			return result, ctx.Err()
@@ -159,7 +158,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			case <-ctx.Done():
 				if activeWorkerContainerID != "" {
 					logger.Log("INFO", fmt.Sprintf("Stopping active worker container: %s", activeWorkerContainerID), nil)
-					_ = h.daemonClient.StopContainer(ctx, activeWorkerContainerID)
+					_ = h.workerLifecycleManager.StopWorkerContainer(ctx, activeWorkerContainerID)
 				}
 				_ = appContract.ReleasePoolAssignments(ctx, cmd.ContainerID, cmd.PlayerID.Value(), h.shipAssignmentRepo, "coordinator_stopped")
 				return result, ctx.Err()
@@ -169,7 +168,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 
 		// CRITICAL CHECK: Prevent multiple workers by checking if any worker is already running
 		// This prevents race conditions when negotiation fails early in the loop
-		existingActiveWorkers, err := h.findExistingWorkers(ctx, cmd.PlayerID.Value())
+		existingActiveWorkers, err := h.workerLifecycleManager.FindExistingWorkers(ctx, cmd.PlayerID.Value())
 		if err != nil {
 			logger.Log("WARNING", fmt.Sprintf("Failed to check for active workers: %v", err), nil)
 		} else if len(existingActiveWorkers) > 0 {
@@ -184,7 +183,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			case <-ctx.Done():
 				if activeWorkerContainerID != "" {
 					logger.Log("INFO", fmt.Sprintf("Stopping active worker container: %s", activeWorkerContainerID), nil)
-					_ = h.daemonClient.StopContainer(ctx, activeWorkerContainerID)
+					_ = h.workerLifecycleManager.StopWorkerContainer(ctx, activeWorkerContainerID)
 				}
 				_ = appContract.ReleasePoolAssignments(ctx, cmd.ContainerID, cmd.PlayerID.Value(), h.shipAssignmentRepo, "coordinator_stopped")
 				return result, ctx.Err()
@@ -194,7 +193,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 
 		// Negotiate contract (use any ship from pool for negotiation)
 		logger.Log("INFO", "Negotiating new contract...", nil)
-		contract, err := h.negotiateContract(ctx, availableShips[0], cmd.PlayerID.Value())
+		contract, err := h.contractMarketService.NegotiateContract(ctx, availableShips[0], cmd.PlayerID.Value())
 		if err != nil {
 			errMsg := fmt.Sprintf("Failed to negotiate contract: %v", err)
 			logger.Log("ERROR", errMsg, nil)
@@ -274,7 +273,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			logger.Log("ERROR", errMsg, nil)
 			result.Errors = append(result.Errors, errMsg)
 			// Clean up: stop worker container on transfer failure
-			_ = h.daemonClient.StopContainer(ctx, workerContainerID)
+			_ = h.workerLifecycleManager.StopWorkerContainer(ctx, workerContainerID)
 			h.clock.Sleep(10 * time.Second)
 			continue
 		}
@@ -301,10 +300,10 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			result.ContractsCompleted++
 			activeWorkerContainerID = ""
 
-			h.transferShipBackToCoordinator(ctx, completedShip, workerContainerID, cmd)
+			h.fleetPoolManager.TransferShipBackToCoordinator(ctx, completedShip, workerContainerID, cmd.ContainerID, cmd.PlayerID.Value())
 
 			if h.clock.Now().Sub(metadata.LastRebalanceTime) >= metadata.RebalanceInterval {
-				h.executeRebalancingIfNeeded(ctx, cmd, availableShips)
+				h.fleetPoolManager.ExecuteRebalancingIfNeeded(ctx, cmd.ContainerID, cmd.PlayerID, availableShips)
 				metadata.LastRebalanceTime = h.clock.Now()
 			}
 
@@ -322,7 +321,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			logger.Log("INFO", "Context cancelled, exiting coordinator", nil)
 			if activeWorkerContainerID != "" {
 				logger.Log("INFO", fmt.Sprintf("Stopping active worker container: %s", activeWorkerContainerID), nil)
-				_ = h.daemonClient.StopContainer(ctx, activeWorkerContainerID)
+				_ = h.workerLifecycleManager.StopWorkerContainer(ctx, activeWorkerContainerID)
 			}
 			_ = appContract.ReleasePoolAssignments(ctx, cmd.ContainerID, cmd.PlayerID.Value(), h.shipAssignmentRepo, "coordinator_stopped")
 			return result, ctx.Err()
@@ -333,190 +332,3 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 	}
 }
 
-func (h *RunFleetCoordinatorHandler) validateShipAvailability(ctx context.Context, cmd *RunFleetCoordinatorCommand) error {
-	logger := common.LoggerFromContext(ctx)
-	logger.Log("INFO", "Validating ship availability...", nil)
-
-	for _, shipSymbol := range cmd.ShipSymbols {
-		assignment, err := h.shipAssignmentRepo.FindByShip(ctx, shipSymbol, cmd.PlayerID.Value())
-		if err != nil {
-			return fmt.Errorf("failed to check assignment for %s: %w", shipSymbol, err)
-		}
-
-		if assignment != nil && assignment.Status() == "active" {
-			return fmt.Errorf("ship %s is already assigned to container %s - cannot create overlapping coordinator",
-				shipSymbol, assignment.ContainerID())
-		}
-	}
-
-	return nil
-}
-
-func (h *RunFleetCoordinatorHandler) initializeShipPool(ctx context.Context, cmd *RunFleetCoordinatorCommand) error {
-	logger := common.LoggerFromContext(ctx)
-	logger.Log("INFO", fmt.Sprintf("Initializing ship pool with %d ships", len(cmd.ShipSymbols)), nil)
-
-	if err := appContract.CreatePoolAssignments(
-		ctx,
-		cmd.ShipSymbols,
-		cmd.ContainerID,
-		cmd.PlayerID.Value(),
-		h.shipAssignmentRepo,
-	); err != nil {
-		return fmt.Errorf("failed to create pool assignments: %w", err)
-	}
-
-	return nil
-}
-
-func (h *RunFleetCoordinatorHandler) stopExistingWorkers(ctx context.Context, playerID int) error {
-	logger := common.LoggerFromContext(ctx)
-
-	existingWorkers, err := h.findExistingWorkers(ctx, playerID)
-	if err != nil {
-		return fmt.Errorf("failed to check for existing workers: %w", err)
-	}
-
-	if len(existingWorkers) == 0 {
-		return nil
-	}
-
-	logger.Log("WARNING", fmt.Sprintf("Found %d existing CONTRACT_WORKFLOW workers from previous session - stopping them to prevent conflicts", len(existingWorkers)), nil)
-
-	for _, worker := range existingWorkers {
-		logger.Log("INFO", fmt.Sprintf("Stopping existing worker container: %s", worker.ID), nil)
-		if err := h.daemonClient.StopContainer(ctx, worker.ID); err != nil {
-			logger.Log("ERROR", fmt.Sprintf("Failed to stop existing worker %s: %v", worker.ID, err), nil)
-		}
-	}
-
-	logger.Log("INFO", "All existing workers stopped, coordinator will create new workers as needed", nil)
-	return nil
-}
-
-// negotiateContract negotiates a new contract
-func (h *RunFleetCoordinatorHandler) negotiateContract(
-	ctx context.Context,
-	shipSymbol string,
-	playerID int,
-) (*domainContract.Contract, error) {
-	// Check for existing active contracts first
-	activeContracts, err := h.contractRepo.FindActiveContracts(ctx, playerID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to check active contracts: %w", err)
-	}
-
-	logger := common.LoggerFromContext(ctx)
-
-	if len(activeContracts) > 0 {
-		// Resume existing contract
-		logger.Log("INFO", fmt.Sprintf("Resuming existing active contract: %s", activeContracts[0].ContractID()), nil)
-		return activeContracts[0], nil
-	}
-
-	// Negotiate new contract
-	negotiateCmd := &NegotiateContractCommand{
-		ShipSymbol: shipSymbol,
-		PlayerID:   shared.MustNewPlayerID(playerID),
-	}
-
-	negotiateResp, err := h.mediator.Send(ctx, negotiateCmd)
-	if err != nil {
-		return nil, fmt.Errorf("failed to negotiate: %w", err)
-	}
-
-	negotiateResult := negotiateResp.(*NegotiateContractResponse)
-	logger.Log("INFO", fmt.Sprintf("Negotiated contract: %s", negotiateResult.Contract.ContractID()), nil)
-
-	return negotiateResult.Contract, nil
-}
-
-// findExistingWorkers finds any existing ContractWorkflow containers that might still be running
-func (h *RunFleetCoordinatorHandler) findExistingWorkers(
-	ctx context.Context,
-	playerID int,
-) ([]persistence.ContainerSummary, error) {
-	// Query for RUNNING contract workflow containers
-	runningWorkers, err := h.containerRepo.ListByStatusSimple(ctx, "RUNNING", &playerID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query running workers: %w", err)
-	}
-
-	// Filter for CONTRACT_WORKFLOW type only
-	var workers []persistence.ContainerSummary
-	for _, container := range runningWorkers {
-		if container.ContainerType == "CONTRACT_WORKFLOW" {
-			workers = append(workers, container)
-		}
-	}
-
-	return workers, nil
-}
-
-func (h *RunFleetCoordinatorHandler) transferShipBackToCoordinator(
-	ctx context.Context,
-	completedShip string,
-	workerContainerID string,
-	cmd *RunFleetCoordinatorCommand,
-) {
-	logger := common.LoggerFromContext(ctx)
-
-	if err := h.shipAssignmentRepo.Transfer(ctx, completedShip, workerContainerID, cmd.ContainerID); err != nil {
-		logger.Log("WARNING", fmt.Sprintf("Failed to transfer ship %s back to coordinator: %v", completedShip, err), nil)
-		// Fallback: try inserting new assignment if transfer fails
-		assignment := domainContainer.NewShipAssignment(completedShip, cmd.PlayerID.Value(), cmd.ContainerID, nil)
-		_ = h.shipAssignmentRepo.Assign(ctx, assignment)
-	}
-}
-
-func (h *RunFleetCoordinatorHandler) executeRebalancingIfNeeded(
-	ctx context.Context,
-	cmd *RunFleetCoordinatorCommand,
-	availableShips []string,
-) {
-	logger := common.LoggerFromContext(ctx)
-	logger.Log("INFO", "Rebalance interval reached, checking fleet distribution...", nil)
-
-	systemSymbol := h.extractSystemSymbolFromShips(ctx, availableShips, cmd.PlayerID.Value())
-	if systemSymbol == "" {
-		logger.Log("WARNING", "Could not determine system symbol for rebalancing", nil)
-		return
-	}
-
-	rebalanceCmd := &RebalanceContractFleetCommand{
-		CoordinatorID: cmd.ContainerID,
-		PlayerID:      cmd.PlayerID,
-		SystemSymbol:  systemSymbol,
-	}
-
-	rebalanceResp, err := h.mediator.Send(ctx, rebalanceCmd)
-	if err != nil {
-		logger.Log("WARNING", fmt.Sprintf("Rebalancing failed: %v", err), nil)
-		return
-	}
-
-	result := rebalanceResp.(*RebalanceContractFleetResponse)
-	if result.RebalancingSkipped {
-		logger.Log("INFO", fmt.Sprintf("Rebalancing skipped: %s", result.SkipReason), nil)
-	} else {
-		logger.Log("INFO", fmt.Sprintf("Rebalancing complete: %d ships repositioned", result.ShipsMoved), nil)
-	}
-}
-
-func (h *RunFleetCoordinatorHandler) extractSystemSymbolFromShips(
-	ctx context.Context,
-	availableShips []string,
-	playerID int,
-) string {
-	if len(availableShips) == 0 {
-		return ""
-	}
-
-	firstShip, err := h.shipRepo.FindBySymbol(ctx, availableShips[0], shared.MustNewPlayerID(playerID))
-	if err != nil {
-		return ""
-	}
-
-	currentLocation := firstShip.CurrentLocation().Symbol
-	return shared.ExtractSystemSymbol(currentLocation)
-}
