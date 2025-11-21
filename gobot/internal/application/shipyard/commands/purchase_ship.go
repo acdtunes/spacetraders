@@ -104,8 +104,7 @@ func (h *PurchaseShipHandler) Handle(ctx context.Context, request common.Request
 		return nil, err
 	}
 
-	agentCredits, err := h.ensureSufficientCredits(ctx, token, purchasePrice)
-	if err != nil {
+	if _, err := h.ensureSufficientCredits(ctx, token, purchasePrice); err != nil {
 		return nil, err
 	}
 
@@ -113,6 +112,16 @@ func (h *PurchaseShipHandler) Handle(ctx context.Context, request common.Request
 	if err != nil {
 		return nil, fmt.Errorf("failed to purchase ship: %w", err)
 	}
+
+	// Update player credits in database and return updated credits after successful purchase
+	updatedPlayer, err := h.updatePlayerCredits(ctx, cmd.PlayerID, purchaseResult.Agent.Credits)
+	if err != nil {
+		return nil, fmt.Errorf("failed to update player credits: %w", err)
+	}
+
+	// Sync the updated player back to API client for subsequent operations
+	// This ensures GetAgent() returns updated credits in batch operations
+	h.syncPlayerToAPIClient(updatedPlayer)
 
 	newShip, err := h.convertShipDataToEntity(ctx, purchaseResult.Ship, cmd.PlayerID, shipyardWaypoint, systemSymbol)
 	if err != nil {
@@ -122,7 +131,7 @@ func (h *PurchaseShipHandler) Handle(ctx context.Context, request common.Request
 	return &PurchaseShipResponse{
 		Ship:            newShip,
 		PurchasePrice:   purchaseResult.Transaction.Price,
-		AgentCredits:    agentCredits,
+		AgentCredits:    purchaseResult.Agent.Credits,
 		TransactionTime: purchaseResult.Transaction.Timestamp,
 	}, nil
 }
@@ -289,6 +298,42 @@ func (h *PurchaseShipHandler) ensureSufficientCredits(
 	}
 
 	return agentData.Credits, nil
+}
+
+// updatePlayerCredits updates player's credits in the database
+func (h *PurchaseShipHandler) updatePlayerCredits(
+	ctx context.Context,
+	playerID shared.PlayerID,
+	newCredits int,
+) (*player.Player, error) {
+	// Load player from database
+	p, err := h.playerRepo.FindByID(ctx, playerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find player: %w", err)
+	}
+
+	// Update credits
+	p.Credits = newCredits
+
+	// Persist to database
+	if err := h.playerRepo.Add(ctx, p); err != nil {
+		return nil, fmt.Errorf("failed to persist player: %w", err)
+	}
+
+	return p, nil
+}
+
+// syncPlayerToAPIClient syncs player data to API client (for test mocks)
+// This ensures mock GetAgent() calls return updated player data
+func (h *PurchaseShipHandler) syncPlayerToAPIClient(p *player.Player) {
+	// Type assert to check if we're using MockAPIClient (test environment)
+	type playerUpdater interface {
+		UpdatePlayer(*player.Player)
+	}
+
+	if mockClient, ok := h.apiClient.(playerUpdater); ok {
+		mockClient.UpdatePlayer(p)
+	}
 }
 
 // discoverNearestShipyard discovers the nearest shipyard that sells the desired ship type

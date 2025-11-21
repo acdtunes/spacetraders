@@ -18,7 +18,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shipyard"
-	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
+	infraPorts "github.com/andrescamacho/spacetraders-go/internal/infrastructure/ports"
 	"github.com/andrescamacho/spacetraders-go/test/helpers"
 )
 
@@ -104,6 +104,10 @@ func (ctx *shipyardApplicationContext) reset() {
 		ctx.apiClient,
 	)
 
+	// Register handlers with mock mediator
+	ctx.mediator.SetShipyardListingsHandler(ctx.getListingsHandler)
+	ctx.mediator.SetPurchaseShipHandler(ctx.purchaseShipHandler)
+
 	// Setup default mock behaviors
 	ctx.setupDefaultMockBehaviors()
 }
@@ -114,28 +118,15 @@ func (ctx *shipyardApplicationContext) setupDefaultMockBehaviors() {
 	purchaseCount := 0
 
 	// Default PurchaseShip function - generates new ships with unique symbols
-	ctx.apiClient.SetPurchaseShipFunc(func(ctxAPI context.Context, shipType, waypointSymbol, token string) (*domainPorts.ShipPurchaseResult, error) {
-		// Get player from token to determine agent symbol
-		var agentSymbol string
-		var newCredits int
-
-		// Extract player from context if possible
-		for playerID, playerToken := range map[int]string{} {
-			if playerToken == token {
-				p, err := ctx.playerRepo.FindByID(ctxAPI, shared.PlayerID{})
-				if err == nil {
-					agentSymbol = fmt.Sprintf("AGENT-%d", playerID)
-					newCredits = p.Credits
-				}
-				break
-			}
+	ctx.apiClient.SetPurchaseShipFunc(func(ctxAPI context.Context, shipType, waypointSymbol, token string) (*infraPorts.ShipPurchaseResult, error) {
+		// Get agent data to determine current credits
+		agentData, err := ctx.apiClient.GetAgent(ctxAPI, token)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get agent: %w", err)
 		}
 
-		// Fallback defaults
-		if agentSymbol == "" {
-			agentSymbol = "TEST-AGENT"
-			newCredits = 450000 // Default after one purchase
-		}
+		agentSymbol := agentData.Symbol
+		currentCredits := agentData.Credits
 
 		purchaseCount++
 		shipSymbol := fmt.Sprintf("%s-SHIP-%d", agentSymbol, purchaseCount)
@@ -153,6 +144,9 @@ func (ctx *shipyardApplicationContext) setupDefaultMockBehaviors() {
 				break
 			}
 		}
+
+		// Calculate new credits after purchase
+		newCredits := currentCredits - price
 
 		return helpers.CreateTestShipPurchaseResult(agentSymbol, shipSymbol, shipType, waypointSymbol, price, newCredits), nil
 	})
@@ -346,7 +340,7 @@ func (ctx *shipyardApplicationContext) theShipyardHasTheFollowingShips(waypointS
 	}
 
 	// Parse table
-	var listings []domainPorts.ShipListingData
+	var listings []infraPorts.ShipListingData
 	for i, row := range table.Rows[1:] {
 		if len(row.Cells) < 2 {
 			return fmt.Errorf("row %d: expected at least 2 columns", i+1)
@@ -378,7 +372,7 @@ func (ctx *shipyardApplicationContext) theShipyardHasNoShipsForSale(waypointSymb
 }
 
 func (ctx *shipyardApplicationContext) theAPIWillReturnAnErrorWhenGettingShipyard(waypointSymbol string) error {
-	ctx.apiClient.SetGetShipyardFunc(func(ctxAPI context.Context, systemSymbol, waypointSym, token string) (*domainPorts.ShipyardData, error) {
+	ctx.apiClient.SetGetShipyardFunc(func(ctxAPI context.Context, systemSymbol, waypointSym, token string) (*infraPorts.ShipyardData, error) {
 		if waypointSym == waypointSymbol {
 			return nil, fmt.Errorf("API error getting shipyard")
 		}
@@ -413,7 +407,7 @@ func (ctx *shipyardApplicationContext) thereAreNoShipyardsInSystem(systemSymbol 
 }
 
 func (ctx *shipyardApplicationContext) theAPIWillReturnAnErrorWhenPurchasingAShip() error {
-	ctx.apiClient.SetPurchaseShipFunc(func(ctxAPI context.Context, shipType, waypointSymbol, token string) (*domainPorts.ShipPurchaseResult, error) {
+	ctx.apiClient.SetPurchaseShipFunc(func(ctxAPI context.Context, shipType, waypointSymbol, token string) (*infraPorts.ShipPurchaseResult, error) {
 		return nil, fmt.Errorf("API error purchasing ship")
 	})
 	return nil
@@ -499,6 +493,9 @@ func (ctx *shipyardApplicationContext) executePurchaseCommand(shipType, purchasi
 		ctx.lastPurchaseResp = response.(*shipyardCommands.PurchaseShipResponse)
 		ctx.lastShip = ctx.lastPurchaseResp.Ship
 
+		// Register the purchased ship in the mock API client so it can be retrieved later
+		ctx.apiClient.AddShip(ctx.lastShip)
+
 		if autoDiscover && waypointSymbol == "" {
 			ctx.autoDiscoveredShipyard = ctx.lastShip.CurrentLocation().Symbol
 		}
@@ -508,7 +505,8 @@ func (ctx *shipyardApplicationContext) executePurchaseCommand(shipType, purchasi
 }
 
 func (ctx *shipyardApplicationContext) iBatchPurchaseShipsUsingAt(quantity int, shipType, purchasingShipSymbol, waypointSymbol, agentSymbol string) error {
-	return ctx.executeBatchPurchaseCommand(quantity, shipType, 0, purchasingShipSymbol, waypointSymbol, agentSymbol)
+	// Pass large maxBudget to indicate no budget constraint
+	return ctx.executeBatchPurchaseCommand(quantity, shipType, 1000000000, purchasingShipSymbol, waypointSymbol, agentSymbol)
 }
 
 func (ctx *shipyardApplicationContext) iBatchPurchaseShipsWithMaxBudgetUsingAt(quantity int, shipType string, maxBudget int, purchasingShipSymbol, waypointSymbol, agentSymbol string) error {
@@ -547,6 +545,11 @@ func (ctx *shipyardApplicationContext) executeBatchPurchaseCommand(quantity int,
 		ctx.lastBatchResp = response.(*shipyardCommands.BatchPurchaseShipsResponse)
 		// Store created ships for assertions
 		ctx.createdShips = ctx.lastBatchResp.PurchasedShips
+
+		// Register all purchased ships in the mock API client
+		for _, ship := range ctx.createdShips {
+			ctx.apiClient.AddShip(ship)
+		}
 	}
 
 	return nil
@@ -635,14 +638,20 @@ func (ctx *shipyardApplicationContext) thePurchaseShouldFailWithError(expectedEr
 }
 
 func (ctx *shipyardApplicationContext) thePlayerShouldHaveCreditsRemaining(agentSymbol string, expectedCredits int) error {
-	// Find player in database
+	// Find player in database to get token
 	p, err := ctx.playerRepo.FindByAgentSymbol(context.Background(), agentSymbol)
 	if err != nil {
 		return fmt.Errorf("player %s not found: %w", agentSymbol, err)
 	}
 
-	if p.Credits != expectedCredits {
-		return fmt.Errorf("expected player %s to have %d credits, got %d", agentSymbol, expectedCredits, p.Credits)
+	// Get agent data from API client (where credits are actually stored)
+	agentData, err := ctx.apiClient.GetAgent(context.Background(), p.Token)
+	if err != nil {
+		return fmt.Errorf("failed to get agent data for %s: %w", agentSymbol, err)
+	}
+
+	if agentData.Credits != expectedCredits {
+		return fmt.Errorf("expected player %s to have %d credits, got %d", agentSymbol, expectedCredits, agentData.Credits)
 	}
 
 	return nil

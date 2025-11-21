@@ -35,7 +35,8 @@ type MockAPIClient struct {
 	ships map[string]*navigation.Ship // shipSymbol -> ship
 
 	// Player storage for authorization
-	players map[int]string // playerID -> token
+	players       map[int]string         // playerID -> token (for authorization)
+	playersByToken map[string]*player.Player // token -> player (for GetAgent)
 
 	// Waypoint storage for navigation
 	waypoints map[string]*shared.Waypoint // waypointSymbol -> waypoint
@@ -66,6 +67,7 @@ func NewMockAPIClient() *MockAPIClient {
 		marketData:     make(map[string]*domainPorts.MarketData),
 		ships:          make(map[string]*navigation.Ship),
 		players:        make(map[int]string),
+		playersByToken: make(map[string]*player.Player),
 		waypoints:      make(map[string]*shared.Waypoint),
 		shipyards:      make(map[string]*domainPorts.ShipyardData),
 		getMarketCalls: []string{},
@@ -117,6 +119,14 @@ func (m *MockAPIClient) AddPlayer(p *player.Player) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.players[p.ID.Value()] = p.Token
+	m.playersByToken[p.Token] = p
+}
+
+// UpdatePlayer updates an existing player's data in the mock
+func (m *MockAPIClient) UpdatePlayer(p *player.Player) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.playersByToken[p.Token] = p
 }
 
 // GetMarket implements the APIClient interface
@@ -456,7 +466,23 @@ func (m *MockAPIClient) SetFlightMode(ctx context.Context, symbol, flightMode, t
 }
 
 func (m *MockAPIClient) GetAgent(ctx context.Context, token string) (*player.AgentData, error) {
-	return nil, fmt.Errorf("not implemented in mock")
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	// Find player by token
+	p, exists := m.playersByToken[token]
+	if !exists {
+		return nil, fmt.Errorf("player not found for token")
+	}
+
+	// Return agent data (use defaults for fields not in Player entity)
+	return &player.AgentData{
+		AccountID:       fmt.Sprintf("account-%d", p.ID.Value()),
+		Symbol:          p.AgentSymbol,
+		Headquarters:    "X1-SYSTEM-HQ",
+		Credits:         p.Credits,
+		StartingFaction: p.StartingFaction,
+	}, nil
 }
 
 func (m *MockAPIClient) ListWaypoints(ctx context.Context, systemSymbol, token string, page, limit int) (*system.WaypointsListResponse, error) {

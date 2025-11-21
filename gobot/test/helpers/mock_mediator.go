@@ -7,15 +7,22 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	shipCommands "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands"
+	shipyardCommands "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/commands"
+	shipyardQueries "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/queries"
 )
 
 // MockMediator is a test double for the Mediator interface
-// Required because PurchaseShipCommand internally uses:
+// Required because BatchPurchaseShipsCommand internally uses:
+// - PurchaseShipCommand - to purchase individual ships
+// And PurchaseShipCommand internally uses:
 // - NavigateRouteCommand - to move purchasing ship to shipyard
 // - DockShipCommand - to dock ship before purchase
+// - GetShipyardListingsQuery - to query shipyard listings
 type MockMediator struct {
-	sendFunc func(ctx context.Context, request common.Request) (common.Response, error)
-	callLog  []string // Track which commands were called
+	sendFunc                func(ctx context.Context, request common.Request) (common.Response, error)
+	callLog                 []string                                         // Track which commands were called
+	shipyardListingsHandler *shipyardQueries.GetShipyardListingsHandler     // Handler for shipyard listings queries
+	purchaseShipHandler     *shipyardCommands.PurchaseShipHandler           // Handler for purchase ship commands
 }
 
 // NewMockMediator creates a new MockMediator
@@ -48,6 +55,22 @@ func (m *MockMediator) Send(ctx context.Context, request common.Request) (common
 			Status: "docked",
 		}, nil
 
+	case *shipyardQueries.GetShipyardListingsQuery:
+		// If handler is registered, use it
+		if m.shipyardListingsHandler != nil {
+			m.callLog = append(m.callLog, fmt.Sprintf("GetShipyardListings:%s", req.WaypointSymbol))
+			return m.shipyardListingsHandler.Handle(ctx, req)
+		}
+		return nil, fmt.Errorf("GetShipyardListingsHandler not registered in mock mediator")
+
+	case *shipyardCommands.PurchaseShipCommand:
+		// If handler is registered, use it
+		if m.purchaseShipHandler != nil {
+			m.callLog = append(m.callLog, fmt.Sprintf("PurchaseShip:%s@%s", req.ShipType, req.ShipyardWaypoint))
+			return m.purchaseShipHandler.Handle(ctx, req)
+		}
+		return nil, fmt.Errorf("PurchaseShipHandler not registered in mock mediator")
+
 	default:
 		return nil, fmt.Errorf("unsupported request type: %T", request)
 	}
@@ -56,6 +79,16 @@ func (m *MockMediator) Send(ctx context.Context, request common.Request) (common
 // SetSendFunc sets a custom function for Send calls
 func (m *MockMediator) SetSendFunc(fn func(ctx context.Context, request common.Request) (common.Response, error)) {
 	m.sendFunc = fn
+}
+
+// SetShipyardListingsHandler registers a handler for GetShipyardListingsQuery
+func (m *MockMediator) SetShipyardListingsHandler(handler *shipyardQueries.GetShipyardListingsHandler) {
+	m.shipyardListingsHandler = handler
+}
+
+// SetPurchaseShipHandler registers a handler for PurchaseShipCommand
+func (m *MockMediator) SetPurchaseShipHandler(handler *shipyardCommands.PurchaseShipHandler) {
+	m.purchaseShipHandler = handler
 }
 
 // GetCallLog returns the list of commands that were called
