@@ -64,52 +64,87 @@ func (h *AssignScoutingFleetHandler) Handle(ctx context.Context, request common.
 		return nil, fmt.Errorf("invalid request type")
 	}
 
-	// 1. Get all ships for the player
+	_, scoutShips, err := h.validateAndLoadShips(ctx, cmd)
+	if err != nil {
+		return nil, err
+	}
+
+	marketSymbols, err := h.loadAndFilterMarketplaces(ctx, cmd.SystemSymbol)
+	if err != nil {
+		return nil, err
+	}
+
+	scoutCmd := h.buildScoutMarketsCommand(cmd, extractShipSymbols(scoutShips), marketSymbols)
+
+	scoutResult, err := h.executeScoutMarkets(ctx, scoutCmd)
+	if err != nil {
+		return nil, err
+	}
+
+	return h.buildResponse(extractShipSymbols(scoutShips), scoutResult), nil
+}
+
+// validateAndLoadShips loads all ships and filters for scout-capable ships
+func (h *AssignScoutingFleetHandler) validateAndLoadShips(
+	ctx context.Context,
+	cmd *AssignScoutingFleetCommand,
+) ([]*navigation.Ship, []*navigation.Ship, error) {
 	ships, err := h.shipRepo.FindAllByPlayer(ctx, cmd.PlayerID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list ships: %w", err)
+		return nil, nil, fmt.Errorf("failed to list ships: %w", err)
 	}
 
-	// 2. Filter ships to only probe/satellite types in the specified system
 	scoutShips := h.filterScoutShips(ships, cmd.SystemSymbol)
 	if len(scoutShips) == 0 {
-		return nil, fmt.Errorf("no probe or satellite ships found")
+		return nil, nil, fmt.Errorf("no probe or satellite ships found")
 	}
 
-	// 3. Get all waypoints with MARKETPLACE trait in the system
-	marketplaces, err := h.waypointRepo.ListBySystemWithTrait(ctx, cmd.SystemSymbol, "MARKETPLACE")
+	return ships, scoutShips, nil
+}
+
+// loadAndFilterMarketplaces loads system marketplaces and filters out fuel stations
+func (h *AssignScoutingFleetHandler) loadAndFilterMarketplaces(
+	ctx context.Context,
+	systemSymbol string,
+) ([]string, error) {
+	marketplaces, err := h.waypointRepo.ListBySystemWithTrait(ctx, systemSymbol, "MARKETPLACE")
 	if err != nil {
 		return nil, fmt.Errorf("failed to list marketplaces: %w", err)
 	}
 
-	// 4. Filter out FUEL_STATION waypoints
 	nonFuelStationMarkets := h.filterNonFuelStations(marketplaces)
 	if len(nonFuelStationMarkets) == 0 {
 		return nil, fmt.Errorf("no non-fuel-station marketplaces found")
 	}
 
-	// 5. Extract market symbols
 	marketSymbols := make([]string, len(nonFuelStationMarkets))
 	for i, waypoint := range nonFuelStationMarkets {
 		marketSymbols[i] = waypoint.Symbol
 	}
 
-	// 6. Extract ship symbols
-	shipSymbols := make([]string, len(scoutShips))
-	for i, ship := range scoutShips {
-		shipSymbols[i] = ship.ShipSymbol()
-	}
+	return marketSymbols, nil
+}
 
-	// 7. Use the existing ScoutMarketsHandler to assign ships
-	// This handles VRP optimization, container reuse, and scout-tour creation
-	scoutMarketsCmd := &ScoutMarketsCommand{
+// buildScoutMarketsCommand constructs the ScoutMarketsCommand with all required parameters
+func (h *AssignScoutingFleetHandler) buildScoutMarketsCommand(
+	cmd *AssignScoutingFleetCommand,
+	shipSymbols []string,
+	marketSymbols []string,
+) *ScoutMarketsCommand {
+	return &ScoutMarketsCommand{
 		PlayerID:     cmd.PlayerID,
 		ShipSymbols:  shipSymbols,
 		SystemSymbol: cmd.SystemSymbol,
 		Markets:      marketSymbols,
-		Iterations:   -1, // Infinite loop
+		Iterations:   -1,
 	}
+}
 
+// executeScoutMarkets creates the ScoutMarketsHandler and executes the command
+func (h *AssignScoutingFleetHandler) executeScoutMarkets(
+	ctx context.Context,
+	scoutCmd *ScoutMarketsCommand,
+) (*ScoutMarketsResponse, error) {
 	scoutMarketsHandler := NewScoutMarketsHandler(
 		h.shipRepo,
 		h.graphProvider,
@@ -118,23 +153,39 @@ func (h *AssignScoutingFleetHandler) Handle(ctx context.Context, request common.
 		h.shipAssignmentRepo,
 	)
 
-	scoutResponse, err := scoutMarketsHandler.Handle(ctx, scoutMarketsCmd)
+	scoutResponse, err := scoutMarketsHandler.Handle(ctx, scoutCmd)
 	if err != nil {
 		return nil, fmt.Errorf("failed to assign scout markets: %w", err)
 	}
 
-	// 8. Convert response
 	scoutResult, ok := scoutResponse.(*ScoutMarketsResponse)
 	if !ok {
 		return nil, fmt.Errorf("unexpected response type from scout markets")
 	}
 
+	return scoutResult, nil
+}
+
+// buildResponse assembles the final response
+func (h *AssignScoutingFleetHandler) buildResponse(
+	shipSymbols []string,
+	scoutResult *ScoutMarketsResponse,
+) *AssignScoutingFleetResponse {
 	return &AssignScoutingFleetResponse{
 		AssignedShips:    shipSymbols,
 		Assignments:      scoutResult.Assignments,
 		ReusedContainers: scoutResult.ReusedContainers,
 		ContainerIDs:     scoutResult.ContainerIDs,
-	}, nil
+	}
+}
+
+// extractShipSymbols extracts ship symbols from a slice of Ship entities
+func extractShipSymbols(ships []*navigation.Ship) []string {
+	shipSymbols := make([]string, len(ships))
+	for i, ship := range ships {
+		shipSymbols[i] = ship.ShipSymbol()
+	}
+	return shipSymbols
 }
 
 // filterScoutShips filters ships to only probe/drone types in the specified system
