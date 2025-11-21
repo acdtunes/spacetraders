@@ -38,6 +38,10 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	steps.InitializeContainerIDSteps(sc)
 	steps.InitializeMiningSteps(sc)
 	steps.InitializeSystemScenario(sc)
+	steps.InitializeDaemonScenario(sc)
+	steps.InitializeFleetManagementScenario(sc)
+	steps.InitializeFuelScenario(sc)
+	steps.InitializeFlightModeScenario(sc)
 }
 
 func TestMain(m *testing.M) {
