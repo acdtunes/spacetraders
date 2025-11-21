@@ -3,7 +3,6 @@ package steps
 import (
 	"context"
 	"fmt"
-	"reflect"
 	"strings"
 	"time"
 
@@ -176,32 +175,41 @@ func (ctx *scoutingApplicationContext) createShipFixture(shipSymbol string, play
 		return err
 	}
 
-	ship := &navigation.Ship{}
-	shipValue := reflect.ValueOf(ship).Elem()
-
-	setField := func(name string, value interface{}) {
-		field := shipValue.FieldByName(name)
-		if field.IsValid() && field.CanSet() {
-			field.Set(reflect.ValueOf(value))
-		}
+	fuel, err := shared.NewFuel(100, 100)
+	if err != nil {
+		return err
 	}
 
-	setField("shipSymbol", shipSymbol)
-	setField("playerID", pid)
-	setField("currentLocation", location)
-	setField("frameType", frameType)
+	cargo, err := shared.NewCargo(100, 0, []*shared.CargoItem{})
+	if err != nil {
+		return err
+	}
 
-	fuel, _ := shared.NewFuel(100, 100)
-	setField("fuel", fuel)
-
-	cargo, _ := shared.NewCargo(0, 100, []*shared.CargoItem{})
-	setField("cargo", cargo)
-
-	setField("engineSpeed", int64(30))
+	// Use the proper constructor instead of reflection
+	ship, err := navigation.NewShip(
+		shipSymbol,
+		pid,
+		location,
+		fuel,
+		100, // fuelCapacity
+		100, // cargoCapacity
+		cargo,
+		30, // engineSpeed
+		frameType,
+		"SATELLITE", // role
+		navigation.NavStatusInOrbit,
+	)
+	if err != nil {
+		return err
+	}
 
 	ctx.testShips[shipSymbol] = ship
 	ctx.shipRepo.Ships[shipSymbol] = ship
 	ctx.shipRepo.ShipsByPlayer[playerID] = append(ctx.shipRepo.ShipsByPlayer[playerID], ship)
+
+	// Extract system symbol and ensure graph exists
+	systemSymbol := location.SystemSymbol
+	ctx.ensureGraphForSystem(systemSymbol)
 
 	return nil
 }
@@ -212,7 +220,12 @@ func (ctx *scoutingApplicationContext) aMarketplaceInSystem(waypointSymbol strin
 		return err
 	}
 	wp.Traits = []string{"MARKETPLACE"}
+	wp.SystemSymbol = systemSymbol
 	ctx.waypointRepo.AddWaypoint(wp)
+
+	// Ensure graph exists for this system and add waypoint to it
+	ctx.ensureGraphForSystem(systemSymbol)
+
 	return nil
 }
 
@@ -222,7 +235,12 @@ func (ctx *scoutingApplicationContext) aFuelStationMarketplaceInSystem(waypointS
 		return err
 	}
 	wp.Traits = []string{"MARKETPLACE"}
+	wp.SystemSymbol = systemSymbol
 	ctx.waypointRepo.AddWaypoint(wp)
+
+	// Ensure graph exists for this system
+	ctx.ensureGraphForSystem(systemSymbol)
+
 	return nil
 }
 
@@ -681,6 +699,12 @@ func (ctx *scoutingApplicationContext) assignmentsShouldBeEmpty() error {
 }
 
 // ==================== HELPER FUNCTIONS ====================
+
+func (ctx *scoutingApplicationContext) ensureGraphForSystem(systemSymbol string) {
+	// Set up a simple graph with all waypoints connected
+	// This is a simplified mock - distances don't matter for these tests
+	ctx.graphProvider.SetGraph(systemSymbol, map[string]map[string]float64{})
+}
 
 func parseStringList(input string) []string {
 	input = strings.Trim(input, "[]")
