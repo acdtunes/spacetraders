@@ -289,11 +289,9 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 
 		// Block waiting for worker completion
 		logger.Log("INFO", fmt.Sprintf("Waiting for %s to complete contract...", selectedShip), nil)
-		logger.Log("DEBUG", "Entering select block for completion signal", nil)
 		select {
 		case completedShip := <-completionChan:
 			logger.Log("INFO", fmt.Sprintf("Contract completed by %s", completedShip), nil)
-			logger.Log("DEBUG", "Received completion signal, about to continue loop", nil)
 			result.ContractsCompleted++
 			activeWorkerContainerID = ""
 
@@ -309,7 +307,6 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 		case <-time.After(30 * time.Minute):
 			// Timeout waiting for worker
 			logger.Log("ERROR", fmt.Sprintf("Timeout waiting for worker %s", selectedShip), nil)
-			logger.Log("DEBUG", "Select timed out after 30 minutes, continuing loop", nil)
 			errMsg := fmt.Sprintf("Worker timeout for ship %s", selectedShip)
 			result.Errors = append(result.Errors, errMsg)
 			// Loop back to try again
