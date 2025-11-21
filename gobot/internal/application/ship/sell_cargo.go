@@ -6,6 +6,7 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	infraPorts "github.com/andrescamacho/spacetraders-go/internal/infrastructure/ports"
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
@@ -21,7 +22,7 @@ type SellCargoCommand struct {
 	ShipSymbol string // Ship symbol (e.g., "SHIP-1")
 	GoodSymbol string // Trade good symbol (e.g., "IRON_ORE")
 	Units      int    // Total units to sell
-	PlayerID   int    // Player ID for authorization
+	PlayerID   shared.PlayerID    // Player ID for authorization
 }
 
 // SellCargoResponse contains the results of a cargo sale operation.
@@ -78,10 +79,10 @@ func (h *SellCargoHandler) Handle(ctx context.Context, request common.Request) (
 		return nil, fmt.Errorf("invalid request type")
 	}
 
-	// 1. Load player to get token
-	player, err := h.playerRepo.FindByID(ctx, cmd.PlayerID)
+	// 1. Get player token from context
+	token, err := common.PlayerTokenFromContext(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("player not found: %w", err)
+		return nil, err
 	}
 
 	// 2. Load ship from repository
@@ -103,7 +104,7 @@ func (h *SellCargoHandler) Handle(ctx context.Context, request common.Request) (
 
 	// 5. Get transaction limit from market (shared utility)
 	waypointSymbol := ship.CurrentLocation().Symbol
-	transactionLimit := getTransactionLimit(ctx, h.marketRepo, waypointSymbol, cmd.GoodSymbol, cmd.PlayerID, cmd.Units)
+	transactionLimit := getTransactionLimit(ctx, h.marketRepo, waypointSymbol, cmd.GoodSymbol, cmd.PlayerID.Value(), cmd.Units)
 
 	// 6. Execute sales with transaction splitting
 	totalRevenue := 0
@@ -114,7 +115,7 @@ func (h *SellCargoHandler) Handle(ctx context.Context, request common.Request) (
 	for unitsRemaining > 0 {
 		unitsToSell := utils.Min(unitsRemaining, transactionLimit)
 
-		result, err := h.apiClient.SellCargo(ctx, cmd.ShipSymbol, cmd.GoodSymbol, unitsToSell, player.Token)
+		result, err := h.apiClient.SellCargo(ctx, cmd.ShipSymbol, cmd.GoodSymbol, unitsToSell, token)
 		if err != nil {
 			return nil, fmt.Errorf("partial failure: failed to sell cargo after %d successful transactions (%d units sold, %d credits earned): %w", transactionCount, unitsSold, totalRevenue, err)
 		}

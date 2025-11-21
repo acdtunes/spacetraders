@@ -7,13 +7,14 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	infraPorts "github.com/andrescamacho/spacetraders-go/internal/infrastructure/ports"
 )
 
 // FulfillContractCommand - Command to fulfill a contract
 type FulfillContractCommand struct {
 	ContractID string
-	PlayerID   int
+	PlayerID   shared.PlayerID
 }
 
 // FulfillContractResponse - Response from fulfill contract command
@@ -48,12 +49,12 @@ func (h *FulfillContractHandler) Handle(ctx context.Context, request common.Requ
 		return nil, fmt.Errorf("invalid request type")
 	}
 
-	player, err := h.getPlayerToken(ctx, cmd.PlayerID)
+	token, err := common.PlayerTokenFromContext(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	contract, err := h.loadContract(ctx, cmd.ContractID, cmd.PlayerID)
+	contract, err := h.loadContract(ctx, cmd.ContractID, cmd.PlayerID.Value())
 	if err != nil {
 		return nil, err
 	}
@@ -62,7 +63,7 @@ func (h *FulfillContractHandler) Handle(ctx context.Context, request common.Requ
 		return nil, err
 	}
 
-	if err := h.callFulfillContractAPI(ctx, cmd.ContractID, player.Token); err != nil {
+	if err := h.callFulfillContractAPI(ctx, cmd.ContractID, token); err != nil {
 		return nil, err
 	}
 
@@ -73,14 +74,6 @@ func (h *FulfillContractHandler) Handle(ctx context.Context, request common.Requ
 	return &FulfillContractResponse{
 		Contract: contract,
 	}, nil
-}
-
-func (h *FulfillContractHandler) getPlayerToken(ctx context.Context, playerID int) (*player.Player, error) {
-	player, err := h.playerRepo.FindByID(ctx, playerID)
-	if err != nil {
-		return nil, fmt.Errorf("player not found: %w", err)
-	}
-	return player, nil
 }
 
 func (h *FulfillContractHandler) loadContract(ctx context.Context, contractID string, playerID int) (*contract.Contract, error) {

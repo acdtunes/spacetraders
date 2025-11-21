@@ -3,6 +3,8 @@ package contract
 import (
 	"fmt"
 	"time"
+
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
 type Payment struct {
@@ -26,7 +28,7 @@ type Terms struct {
 
 type Contract struct {
 	contractID    string
-	playerID      int
+	playerID      shared.PlayerID
 	factionSymbol string
 	contractType  string
 	terms         Terms
@@ -35,11 +37,11 @@ type Contract struct {
 }
 
 // NewContract creates a new contract
-func NewContract(contractID string, playerID int, factionSymbol, contractType string, terms Terms) (*Contract, error) {
+func NewContract(contractID string, playerID shared.PlayerID, factionSymbol, contractType string, terms Terms) (*Contract, error) {
 	if contractID == "" {
 		return nil, fmt.Errorf("contract ID cannot be empty")
 	}
-	if playerID <= 0 {
+	if playerID.IsZero() {
 		return nil, fmt.Errorf("invalid player ID")
 	}
 	if factionSymbol == "" {
@@ -61,7 +63,7 @@ func NewContract(contractID string, playerID int, factionSymbol, contractType st
 }
 
 func (c *Contract) ContractID() string    { return c.contractID }
-func (c *Contract) PlayerID() int         { return c.playerID }
+func (c *Contract) PlayerID() shared.PlayerID { return c.playerID }
 func (c *Contract) FactionSymbol() string { return c.factionSymbol }
 func (c *Contract) Type() string          { return c.contractType }
 func (c *Contract) Terms() Terms  { return c.terms }

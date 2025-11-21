@@ -6,12 +6,13 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
 // RefuelShipCommand - Command to refuel a ship at its current waypoint
 type RefuelShipCommand struct {
 	ShipSymbol string
-	PlayerID   int
+	PlayerID   shared.PlayerID
 	Units      *int // nil = full refuel
 }
 

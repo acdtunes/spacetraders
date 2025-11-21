@@ -21,7 +21,7 @@ type TransferComplete struct {
 // Miner mines until cargo is full, requests transport, transfers cargo, then resumes mining
 type RunWorkerCommand struct {
 	ShipSymbol           string
-	PlayerID             int
+	PlayerID             shared.PlayerID
 	AsteroidField        string                  // Waypoint symbol of asteroid
 	TopNOres             int                     // Deprecated: no longer used, threshold hardcoded to 50
 	CoordinatorID        string                  // Parent coordinator container ID
@@ -203,7 +203,7 @@ func (h *RunWorkerHandler) executeMining(
 				CargoItems:   cargoItems,
 				MinPriceThreshold: 50, // Jettison ores < 50 credits/unit,
 				SystemSymbol: ship.CurrentLocation().SystemSymbol,
-				PlayerID:     cmd.PlayerID,
+				PlayerID:     cmd.PlayerID.Value(),
 			}
 
 			evalResp, err := h.mediator.Send(ctx, evalQuery)

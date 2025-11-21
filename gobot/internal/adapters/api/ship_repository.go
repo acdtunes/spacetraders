@@ -38,7 +38,7 @@ func NewShipRepository(
 
 // FindBySymbol retrieves a ship by symbol and player ID from API
 // Converts API DTO to domain entity with full waypoint reconstruction
-func (r *ShipRepository) FindBySymbol(ctx context.Context, symbol string, playerID int) (*navigation.Ship, error) {
+func (r *ShipRepository) FindBySymbol(ctx context.Context, symbol string, playerID shared.PlayerID) (*navigation.Ship, error) {
 	// Get player token
 	player, err := r.playerRepo.FindByID(ctx, playerID)
 	if err != nil {
@@ -61,7 +61,7 @@ func (r *ShipRepository) FindBySymbol(ctx context.Context, symbol string, player
 }
 
 // GetShipData retrieves raw ship data from API (includes arrival time for IN_TRANSIT ships)
-func (r *ShipRepository) GetShipData(ctx context.Context, symbol string, playerID int) (*navigation.ShipData, error) {
+func (r *ShipRepository) GetShipData(ctx context.Context, symbol string, playerID shared.PlayerID) (*navigation.ShipData, error) {
 	// Get player token
 	player, err := r.playerRepo.FindByID(ctx, playerID)
 	if err != nil {
@@ -79,7 +79,7 @@ func (r *ShipRepository) GetShipData(ctx context.Context, symbol string, playerI
 
 // FindAllByPlayer retrieves all ships for a player from API
 // Converts API DTOs to domain entities with full waypoint reconstruction
-func (r *ShipRepository) FindAllByPlayer(ctx context.Context, playerID int) ([]*navigation.Ship, error) {
+func (r *ShipRepository) FindAllByPlayer(ctx context.Context, playerID shared.PlayerID) ([]*navigation.Ship, error) {
 	// Get player token
 	player, err := r.playerRepo.FindByID(ctx, playerID)
 	if err != nil {
@@ -107,7 +107,7 @@ func (r *ShipRepository) FindAllByPlayer(ctx context.Context, playerID int) ([]*
 
 // Navigate executes ship navigation via API
 // Returns navigation result with arrival time from API (following Python implementation pattern)
-func (r *ShipRepository) Navigate(ctx context.Context, ship *navigation.Ship, destination *shared.Waypoint, playerID int) (*navigation.Result, error) {
+func (r *ShipRepository) Navigate(ctx context.Context, ship *navigation.Ship, destination *shared.Waypoint, playerID shared.PlayerID) (*navigation.Result, error) {
 	// Get player token
 	player, err := r.playerRepo.FindByID(ctx, playerID)
 	if err != nil {
@@ -134,7 +134,7 @@ func (r *ShipRepository) Navigate(ctx context.Context, ship *navigation.Ship, de
 }
 
 // Dock docks the ship via API (idempotent)
-func (r *ShipRepository) Dock(ctx context.Context, ship *navigation.Ship, playerID int) error {
+func (r *ShipRepository) Dock(ctx context.Context, ship *navigation.Ship, playerID shared.PlayerID) error {
 	// Get player token
 	player, err := r.playerRepo.FindByID(ctx, playerID)
 	if err != nil {
@@ -159,7 +159,7 @@ func (r *ShipRepository) Dock(ctx context.Context, ship *navigation.Ship, player
 }
 
 // Orbit puts ship in orbit via API (idempotent)
-func (r *ShipRepository) Orbit(ctx context.Context, ship *navigation.Ship, playerID int) error {
+func (r *ShipRepository) Orbit(ctx context.Context, ship *navigation.Ship, playerID shared.PlayerID) error {
 	// Get player token
 	player, err := r.playerRepo.FindByID(ctx, playerID)
 	if err != nil {
@@ -184,7 +184,7 @@ func (r *ShipRepository) Orbit(ctx context.Context, ship *navigation.Ship, playe
 }
 
 // Refuel refuels the ship via API
-func (r *ShipRepository) Refuel(ctx context.Context, ship *navigation.Ship, playerID int, units *int) error {
+func (r *ShipRepository) Refuel(ctx context.Context, ship *navigation.Ship, playerID shared.PlayerID, units *int) error {
 	// Get player token
 	player, err := r.playerRepo.FindByID(ctx, playerID)
 	if err != nil {
@@ -217,7 +217,7 @@ func (r *ShipRepository) Refuel(ctx context.Context, ship *navigation.Ship, play
 }
 
 // SetFlightMode sets the ship's flight mode via API
-func (r *ShipRepository) SetFlightMode(ctx context.Context, ship *navigation.Ship, playerID int, mode string) error {
+func (r *ShipRepository) SetFlightMode(ctx context.Context, ship *navigation.Ship, playerID shared.PlayerID, mode string) error {
 	// Get player token
 	player, err := r.playerRepo.FindByID(ctx, playerID)
 	if err != nil {
@@ -237,7 +237,7 @@ func (r *ShipRepository) SetFlightMode(ctx context.Context, ship *navigation.Shi
 }
 
 // JettisonCargo jettisons cargo from the ship via API
-func (r *ShipRepository) JettisonCargo(ctx context.Context, ship *navigation.Ship, playerID int, goodSymbol string, units int) error {
+func (r *ShipRepository) JettisonCargo(ctx context.Context, ship *navigation.Ship, playerID shared.PlayerID, goodSymbol string, units int) error {
 	// Get player token
 	player, err := r.playerRepo.FindByID(ctx, playerID)
 	if err != nil {
@@ -256,7 +256,7 @@ func (r *ShipRepository) JettisonCargo(ctx context.Context, ship *navigation.Shi
 }
 
 // shipDataToDomain converts API ship DTO to domain entity
-func (r *ShipRepository) shipDataToDomain(ctx context.Context, data *navigation.ShipData, playerID int) (*navigation.Ship, error) {
+func (r *ShipRepository) shipDataToDomain(ctx context.Context, data *navigation.ShipData, playerID shared.PlayerID) (*navigation.Ship, error) {
 	// Get current location waypoint (auto-fetches from API if not cached)
 	// Extract system symbol (find last hyphen)
 	systemSymbol := data.Location
@@ -266,7 +266,7 @@ func (r *ShipRepository) shipDataToDomain(ctx context.Context, data *navigation.
 			break
 		}
 	}
-	location, err := r.waypointProvider.GetWaypoint(ctx, data.Location, systemSymbol, playerID)
+	location, err := r.waypointProvider.GetWaypoint(ctx, data.Location, systemSymbol, playerID.Value())
 	if err != nil {
 		return nil, fmt.Errorf("failed to get location waypoint %s: %w", data.Location, err)
 	}

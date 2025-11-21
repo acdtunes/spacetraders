@@ -8,13 +8,14 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	infraPorts "github.com/andrescamacho/spacetraders-go/internal/infrastructure/ports"
 )
 
 // NegotiateContractCommand - Command to negotiate a new contract
 type NegotiateContractCommand struct {
 	ShipSymbol string
-	PlayerID   int
+	PlayerID   shared.PlayerID
 }
 
 // NegotiateContractResponse - Response from negotiate contract command
@@ -53,7 +54,7 @@ func (h *NegotiateContractHandler) Handle(ctx context.Context, request common.Re
 		return nil, fmt.Errorf("invalid request type")
 	}
 
-	player, err := h.getPlayerToken(ctx, cmd.PlayerID)
+	token, err := common.PlayerTokenFromContext(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -67,9 +68,9 @@ func (h *NegotiateContractHandler) Handle(ctx context.Context, request common.Re
 		return nil, err
 	}
 
-	result, err := h.callNegotiateContractAPI(ctx, cmd.ShipSymbol, player.Token)
+	result, err := h.callNegotiateContractAPI(ctx, cmd.ShipSymbol, token)
 
-	if existingContract, wasExisting := h.handleExistingContractError(ctx, result, err, player.Token, cmd.PlayerID); wasExisting {
+	if existingContract, wasExisting := h.handleExistingContractError(ctx, result, err, token, cmd.PlayerID); wasExisting {
 		return existingContract, nil
 	}
 
@@ -93,15 +94,7 @@ func (h *NegotiateContractHandler) Handle(ctx context.Context, request common.Re
 	}, nil
 }
 
-func (h *NegotiateContractHandler) getPlayerToken(ctx context.Context, playerID int) (*player.Player, error) {
-	player, err := h.playerRepo.FindByID(ctx, playerID)
-	if err != nil {
-		return nil, fmt.Errorf("player not found: %w", err)
-	}
-	return player, nil
-}
-
-func (h *NegotiateContractHandler) loadShip(ctx context.Context, shipSymbol string, playerID int) (*navigation.Ship, error) {
+func (h *NegotiateContractHandler) loadShip(ctx context.Context, shipSymbol string, playerID shared.PlayerID) (*navigation.Ship, error) {
 	ship, err := h.shipRepo.FindBySymbol(ctx, shipSymbol, playerID)
 	if err != nil {
 		return nil, fmt.Errorf("ship not found: %w", err)
@@ -109,7 +102,7 @@ func (h *NegotiateContractHandler) loadShip(ctx context.Context, shipSymbol stri
 	return ship, nil
 }
 
-func (h *NegotiateContractHandler) ensureShipDocked(ctx context.Context, ship *navigation.Ship, playerID int) error {
+func (h *NegotiateContractHandler) ensureShipDocked(ctx context.Context, ship *navigation.Ship, playerID shared.PlayerID) error {
 	stateChanged, err := ship.EnsureDocked()
 	if err != nil {
 		return err
@@ -134,7 +127,7 @@ func (h *NegotiateContractHandler) handleExistingContractError(
 	result *infraPorts.ContractNegotiationResult,
 	err error,
 	token string,
-	playerID int,
+	playerID shared.PlayerID,
 ) (*NegotiateContractResponse, bool) {
 	if result != nil && result.ErrorCode == 4511 {
 		existingContractData, err := h.apiClient.GetContract(ctx, result.ExistingContractID, token)
@@ -164,7 +157,7 @@ func (h *NegotiateContractHandler) saveContract(ctx context.Context, contract *c
 }
 
 // convertToDomain converts API contract data to domain entity
-func (h *NegotiateContractHandler) convertToDomain(data *infraPorts.ContractData, playerID int) *contract.Contract {
+func (h *NegotiateContractHandler) convertToDomain(data *infraPorts.ContractData, playerID shared.PlayerID) *contract.Contract {
 	// Convert deliveries
 	deliveries := make([]contract.Delivery, len(data.Terms.Deliveries))
 	for i, d := range data.Terms.Deliveries {

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"context"
 	"fmt"
 	"os"
@@ -513,7 +514,7 @@ Examples:
 				if err != nil {
 					return fmt.Errorf("failed to resolve player from agent symbol: %w", err)
 				}
-				resolvedPlayerID = player.ID
+				resolvedPlayerID = player.ID.Value()
 			}
 
 			// Execute command
@@ -521,7 +522,7 @@ Examples:
 				ShipSymbol: shipSymbol,
 				GoodSymbol: goodSymbol,
 				Units:      units,
-				PlayerID:   resolvedPlayerID,
+				PlayerID:   shared.MustNewPlayerID(resolvedPlayerID),
 			})
 			if err != nil {
 				return fmt.Errorf("sell cargo command failed: %w", err)

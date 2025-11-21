@@ -24,7 +24,7 @@ import (
 // using the Transport-as-Sink pattern
 type RunCoordinatorCommand struct {
 	MiningOperationID string
-	PlayerID          int
+	PlayerID          domainShared.PlayerID
 	AsteroidField     string   // Waypoint symbol (may be empty if MiningType is set)
 	MinerShips        []string // Ships for mining
 	TransportShips    []string // Ships for transport
@@ -191,7 +191,7 @@ func (h *RunCoordinatorHandler) Handle(ctx context.Context, request common.Reque
 			cmd.MiningType,
 			cmd.TransportShips,
 			cmd.Force,
-			cmd.PlayerID,
+			cmd.PlayerID.Value(),
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to auto-select asteroid: %w", err)
@@ -212,7 +212,7 @@ func (h *RunCoordinatorHandler) Handle(ctx context.Context, request common.Reque
 		systemSymbol := parts[0] + "-" + parts[1]
 
 		var err error
-		marketSymbol, err = h.findClosestMarketWithFuel(ctx, cmd.PlayerID, cmd.AsteroidField, systemSymbol)
+		marketSymbol, err = h.findClosestMarketWithFuel(ctx, cmd.PlayerID.Value(), cmd.AsteroidField, systemSymbol)
 		if err != nil {
 			return nil, fmt.Errorf("failed to find market for transport loop: %w", err)
 		}
@@ -245,7 +245,7 @@ func (h *RunCoordinatorHandler) Handle(ctx context.Context, request common.Reque
 	})
 
 	allShips := append(cmd.MinerShips, cmd.TransportShips...)
-	if err := h.createPoolAssignments(ctx, allShips, cmd.ContainerID, cmd.PlayerID); err != nil {
+	if err := h.createPoolAssignments(ctx, allShips, cmd.ContainerID, cmd.PlayerID.Value()); err != nil {
 		return nil, fmt.Errorf("failed to create pool assignments: %w", err)
 	}
 
@@ -343,7 +343,7 @@ func (h *RunCoordinatorHandler) Handle(ctx context.Context, request common.Reque
 				})
 				_ = h.daemonClient.StopContainer(ctx, containerID)
 			}
-			h.releasePoolAssignments(ctx, cmd.ContainerID, cmd.PlayerID)
+			h.releasePoolAssignments(ctx, cmd.ContainerID, cmd.PlayerID.Value())
 			operation.Stop()
 			h.operationRepo.Save(ctx, operation)
 			return result, ctx.Err()
@@ -441,7 +441,7 @@ func (h *RunCoordinatorHandler) getOrCreateOperation(
 	cmd *RunCoordinatorCommand,
 ) (*domainMining.Operation, error) {
 	// Try to load existing operation
-	operation, err := h.operationRepo.FindByID(ctx, cmd.MiningOperationID, cmd.PlayerID)
+	operation, err := h.operationRepo.FindByID(ctx, cmd.MiningOperationID, cmd.PlayerID.Value())
 	if err == nil && operation != nil {
 		// Resume existing operation
 		if operation.IsPending() {
@@ -454,7 +454,7 @@ func (h *RunCoordinatorHandler) getOrCreateOperation(
 	// Create new operation
 	operation = domainMining.NewOperation(
 		cmd.MiningOperationID,
-		cmd.PlayerID,
+		cmd.PlayerID.Value(),
 		cmd.AsteroidField,
 		cmd.MinerShips,
 		cmd.TransportShips,
@@ -539,7 +539,7 @@ func (h *RunCoordinatorHandler) spawnMiningWorker(
 		"ship_symbol":         shipSymbol,
 		"worker_container_id": workerContainerID,
 	})
-	if err := h.daemonClient.PersistMiningWorkerContainer(ctx, workerContainerID, uint(cmd.PlayerID), workerCmd); err != nil {
+	if err := h.daemonClient.PersistMiningWorkerContainer(ctx, workerContainerID, uint(cmd.PlayerID.Value()), workerCmd); err != nil {
 		return "", fmt.Errorf("failed to persist worker: %w", err)
 	}
 
@@ -592,7 +592,7 @@ func (h *RunCoordinatorHandler) spawnTransportWorker(
 		"ship_symbol":         shipSymbol,
 		"worker_container_id": workerContainerID,
 	})
-	if err := h.daemonClient.PersistTransportWorkerContainer(ctx, workerContainerID, uint(cmd.PlayerID), workerCmd); err != nil {
+	if err := h.daemonClient.PersistTransportWorkerContainer(ctx, workerContainerID, uint(cmd.PlayerID.Value()), workerCmd); err != nil {
 		return "", fmt.Errorf("failed to persist worker: %w", err)
 	}
 
@@ -642,7 +642,7 @@ func (h *RunCoordinatorHandler) planDryRunRoutes(
 	systemSymbol := parts[0] + "-" + parts[1]
 
 	// Get waypoint data for routing
-	graphResult, err := h.graphProvider.GetGraph(ctx, systemSymbol, false, cmd.PlayerID)
+	graphResult, err := h.graphProvider.GetGraph(ctx, systemSymbol, false, cmd.PlayerID.Value())
 	if err != nil {
 		return nil, fmt.Errorf("failed to get graph for system %s: %w", systemSymbol, err)
 	}
@@ -652,7 +652,7 @@ func (h *RunCoordinatorHandler) planDryRunRoutes(
 	}
 
 	// Find the closest market with fuel to the asteroid
-	marketSymbol, err := h.findClosestMarketWithFuel(ctx, cmd.PlayerID, cmd.AsteroidField, systemSymbol)
+	marketSymbol, err := h.findClosestMarketWithFuel(ctx, cmd.PlayerID.Value(), cmd.AsteroidField, systemSymbol)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find market: %w", err)
 	}
@@ -787,7 +787,7 @@ func (h *RunCoordinatorHandler) selectAsteroidAndMarket(
 	}
 
 	// Get first transport ship to determine system and fuel capacity
-	transportShip, err := h.shipRepo.FindBySymbol(ctx, transportShips[0], playerID)
+	transportShip, err := h.shipRepo.FindBySymbol(ctx, transportShips[0], domainShared.MustNewPlayerID(playerID))
 	if err != nil {
 		return "", "", fmt.Errorf("failed to get transport ship %s: %w", transportShips[0], err)
 	}

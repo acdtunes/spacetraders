@@ -6,6 +6,7 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	infraPorts "github.com/andrescamacho/spacetraders-go/internal/infrastructure/ports"
 )
@@ -16,7 +17,7 @@ type TransferCargoCommand struct {
 	ToShip     string
 	GoodSymbol string
 	Units      int
-	PlayerID   int
+	PlayerID   shared.PlayerID
 }
 
 // TransferCargoResponse - Response from transfer cargo command
@@ -52,10 +53,10 @@ func (h *TransferCargoHandler) Handle(ctx context.Context, request common.Reques
 		return nil, fmt.Errorf("invalid request type")
 	}
 
-	// 1. Load player to get token
-	player, err := h.playerRepo.FindByID(ctx, cmd.PlayerID)
+	// 1. Get player token from context
+	token, err := common.PlayerTokenFromContext(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("player not found: %w", err)
+		return nil, err
 	}
 
 	// 2. Load both ships from repository
@@ -106,7 +107,7 @@ func (h *TransferCargoHandler) Handle(ctx context.Context, request common.Reques
 	}
 
 	// 7. Call API to transfer cargo
-	result, err := h.apiClient.TransferCargo(ctx, cmd.FromShip, cmd.ToShip, cmd.GoodSymbol, cmd.Units, player.Token)
+	result, err := h.apiClient.TransferCargo(ctx, cmd.FromShip, cmd.ToShip, cmd.GoodSymbol, cmd.Units, token)
 	if err != nil {
 		return nil, fmt.Errorf("failed to transfer cargo: %w", err)
 	}

@@ -25,7 +25,7 @@ import (
 type PurchaseShipCommand struct {
 	PurchasingShipSymbol string
 	ShipType             string
-	PlayerID             int
+	PlayerID   shared.PlayerID
 	ShipyardWaypoint     string // Optional - will auto-discover if empty
 }
 
@@ -73,10 +73,10 @@ func (h *PurchaseShipHandler) Handle(ctx context.Context, request common.Request
 		return nil, fmt.Errorf("invalid request type")
 	}
 
-	// 1. Get player for token and credits
-	player, err := h.playerRepo.FindByID(ctx, cmd.PlayerID)
+	// 1. Get player token from context
+	token, err := common.PlayerTokenFromContext(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("player not found: %w", err)
+		return nil, err
 	}
 
 	// 2. Load purchasing ship from API
@@ -88,7 +88,7 @@ func (h *PurchaseShipHandler) Handle(ctx context.Context, request common.Request
 	// 3. Auto-discover shipyard if not provided
 	shipyardWaypoint := cmd.ShipyardWaypoint
 	if shipyardWaypoint == "" {
-		discoveredWaypoint, err := h.discoverNearestShipyard(ctx, purchasingShip, cmd.ShipType, player.Token)
+		discoveredWaypoint, err := h.discoverNearestShipyard(ctx, purchasingShip, cmd.ShipType, token)
 		if err != nil {
 			return nil, fmt.Errorf("failed to discover shipyard: %w", err)
 		}
@@ -165,7 +165,7 @@ func (h *PurchaseShipHandler) Handle(ctx context.Context, request common.Request
 	purchasePrice := listing.PurchasePrice
 
 	// 8. Validate player has sufficient credits
-	agentData, err := h.apiClient.GetAgent(ctx, player.Token)
+	agentData, err := h.apiClient.GetAgent(ctx, token)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get agent data: %w", err)
 	}
@@ -175,7 +175,7 @@ func (h *PurchaseShipHandler) Handle(ctx context.Context, request common.Request
 	}
 
 	// 9. Call API to purchase ship
-	purchaseResult, err := h.apiClient.PurchaseShip(ctx, cmd.ShipType, shipyardWaypoint, player.Token)
+	purchaseResult, err := h.apiClient.PurchaseShip(ctx, cmd.ShipType, shipyardWaypoint, token)
 	if err != nil {
 		return nil, fmt.Errorf("failed to purchase ship: %w", err)
 	}
@@ -261,12 +261,12 @@ func (h *PurchaseShipHandler) discoverNearestShipyard(
 func (h *PurchaseShipHandler) convertShipDataToEntity(
 	ctx context.Context,
 	shipData *navigation.ShipData,
-	playerID int,
+	playerID shared.PlayerID,
 	waypointSymbol string,
 	systemSymbol string,
 ) (*navigation.Ship, error) {
 	// Get waypoint details (auto-fetches from API if not cached)
-	waypoint, err := h.waypointProvider.GetWaypoint(ctx, waypointSymbol, systemSymbol, playerID)
+	waypoint, err := h.waypointProvider.GetWaypoint(ctx, waypointSymbol, systemSymbol, playerID.Value())
 	if err != nil {
 		return nil, fmt.Errorf("failed to get waypoint %s: %w", waypointSymbol, err)
 	}

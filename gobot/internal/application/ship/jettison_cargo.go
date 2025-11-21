@@ -6,6 +6,7 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	infraPorts "github.com/andrescamacho/spacetraders-go/internal/infrastructure/ports"
 )
@@ -13,7 +14,7 @@ import (
 // JettisonCargoCommand - Command to jettison cargo from a ship
 type JettisonCargoCommand struct {
 	ShipSymbol string
-	PlayerID   int
+	PlayerID   shared.PlayerID
 	GoodSymbol string
 	Units      int
 }
@@ -50,10 +51,10 @@ func (h *JettisonCargoHandler) Handle(ctx context.Context, request common.Reques
 		return nil, fmt.Errorf("invalid request type")
 	}
 
-	// 1. Load player to get token
-	player, err := h.playerRepo.FindByID(ctx, cmd.PlayerID)
+	// 1. Get player token from context
+	token, err := common.PlayerTokenFromContext(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("player not found: %w", err)
+		return nil, err
 	}
 
 	// 2. Load ship from repository
@@ -82,7 +83,7 @@ func (h *JettisonCargoHandler) Handle(ctx context.Context, request common.Reques
 	}
 
 	// 6. Call API to jettison cargo
-	if err := h.apiClient.JettisonCargo(ctx, cmd.ShipSymbol, cmd.GoodSymbol, cmd.Units, player.Token); err != nil {
+	if err := h.apiClient.JettisonCargo(ctx, cmd.ShipSymbol, cmd.GoodSymbol, cmd.Units, token); err != nil {
 		return nil, fmt.Errorf("failed to jettison cargo: %w", err)
 	}
 

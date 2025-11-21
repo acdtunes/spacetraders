@@ -48,7 +48,11 @@ func (b *GraphBuilder) BuildSystemGraph(ctx context.Context, systemSymbol string
 	log.Printf("Building graph for system %s...", systemSymbol)
 
 	// Get player token
-	player, err := b.playerRepo.FindByID(ctx, playerID)
+	playerIDValue, err := shared.NewPlayerID(playerID)
+	if err != nil {
+		return nil, fmt.Errorf("invalid player ID: %w", err)
+	}
+	player, err := b.playerRepo.FindByID(ctx, playerIDValue)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get player: %w", err)
 	}

@@ -8,13 +8,14 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	infraPorts "github.com/andrescamacho/spacetraders-go/internal/infrastructure/ports"
 )
 
 // ExtractResourcesCommand - Command to extract resources from an asteroid
 type ExtractResourcesCommand struct {
 	ShipSymbol string
-	PlayerID   int
+	PlayerID   shared.PlayerID
 }
 
 // ExtractResourcesResponse - Response from extract resources command
@@ -52,10 +53,10 @@ func (h *ExtractResourcesHandler) Handle(ctx context.Context, request common.Req
 		return nil, fmt.Errorf("invalid request type")
 	}
 
-	// 1. Load player to get token
-	player, err := h.playerRepo.FindByID(ctx, cmd.PlayerID)
+	// 1. Get player token from context
+	token, err := common.PlayerTokenFromContext(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("player not found: %w", err)
+		return nil, err
 	}
 
 	// 2. Load ship from repository
@@ -78,7 +79,7 @@ func (h *ExtractResourcesHandler) Handle(ctx context.Context, request common.Req
 	}
 
 	// 5. Call API to extract resources
-	result, err := h.apiClient.ExtractResources(ctx, cmd.ShipSymbol, player.Token)
+	result, err := h.apiClient.ExtractResources(ctx, cmd.ShipSymbol, token)
 	if err != nil {
 		return nil, fmt.Errorf("failed to extract resources: %w", err)
 	}

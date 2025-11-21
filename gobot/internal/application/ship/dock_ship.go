@@ -6,12 +6,13 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
 // DockShipCommand - Command to dock a ship at its current waypoint
 type DockShipCommand struct {
 	ShipSymbol string
-	PlayerID   int
+	PlayerID   shared.PlayerID
 }
 
 // DockShipResponse - Response from dock ship command

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/contract"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"gorm.io/gorm"
 )
 
@@ -93,9 +94,13 @@ func (r *GormContractRepository) modelToEntity(model *ContractModel) (*contract.
 	}
 
 	// Create new contract using constructor
+	playerID, err := shared.NewPlayerID(model.PlayerID)
+	if err != nil {
+		return nil, fmt.Errorf("invalid player ID in database: %w", err)
+	}
 	c, err := contract.NewContract(
 		model.ID,
-		model.PlayerID,
+		playerID,
 		model.FactionSymbol,
 		model.Type,
 		terms,
@@ -142,7 +147,7 @@ func (r *GormContractRepository) entityToModel(c *contract.Contract) (*ContractM
 
 	return &ContractModel{
 		ID:                 c.ContractID(),
-		PlayerID:           c.PlayerID(),
+		PlayerID:           c.PlayerID().Value(),
 		FactionSymbol:      c.FactionSymbol(),
 		Type:               c.Type(),
 		Accepted:           c.Accepted(),

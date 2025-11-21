@@ -7,6 +7,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/ports"
 )
 
@@ -16,7 +17,7 @@ type DeliverContractCommand struct {
 	ShipSymbol  string
 	TradeSymbol string
 	Units       int
-	PlayerID    int
+	PlayerID    shared.PlayerID
 }
 
 // DeliverContractResponse - Response from deliver contract command
@@ -52,12 +53,12 @@ func (h *DeliverContractHandler) Handle(ctx context.Context, request common.Requ
 		return nil, fmt.Errorf("invalid request type")
 	}
 
-	player, err := h.getPlayerToken(ctx, cmd.PlayerID)
+	token, err := common.PlayerTokenFromContext(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	contract, err := h.loadContract(ctx, cmd.ContractID, cmd.PlayerID)
+	contract, err := h.loadContract(ctx, cmd.ContractID, cmd.PlayerID.Value())
 	if err != nil {
 		return nil, err
 	}
@@ -66,7 +67,7 @@ func (h *DeliverContractHandler) Handle(ctx context.Context, request common.Requ
 		return nil, err
 	}
 
-	deliveryData, err := h.callDeliverCargoAPI(ctx, cmd, player.Token)
+	deliveryData, err := h.callDeliverCargoAPI(ctx, cmd, token)
 	if err != nil {
 		return nil, err
 	}
@@ -81,14 +82,6 @@ func (h *DeliverContractHandler) Handle(ctx context.Context, request common.Requ
 		Contract:       contract,
 		UnitsDelivered: cmd.Units,
 	}, nil
-}
-
-func (h *DeliverContractHandler) getPlayerToken(ctx context.Context, playerID int) (*player.Player, error) {
-	player, err := h.playerRepo.FindByID(ctx, playerID)
-	if err != nil {
-		return nil, fmt.Errorf("player not found: %w", err)
-	}
-	return player, nil
 }
 
 func (h *DeliverContractHandler) loadContract(ctx context.Context, contractID string, playerID int) (*contract.Contract, error) {

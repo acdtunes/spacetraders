@@ -8,6 +8,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	infraPorts "github.com/andrescamacho/spacetraders-go/internal/infrastructure/ports"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
 // RegisterPlayerCommand represents a command to register a new player
@@ -100,12 +101,22 @@ func (h *SyncPlayerHandler) Handle(ctx context.Context, request common.Request) 
 		return nil, fmt.Errorf("invalid request type: expected *SyncPlayerCommand")
 	}
 
-	player, err := h.playerRepo.FindByID(ctx, cmd.PlayerID)
+	// Get token from context (injected by middleware)
+	token, err := common.PlayerTokenFromContext(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("player token not found in context: %w", err)
+	}
+
+	playerID, err := shared.NewPlayerID(cmd.PlayerID)
+	if err != nil {
+		return nil, fmt.Errorf("invalid player ID: %w", err)
+	}
+	player, err := h.playerRepo.FindByID(ctx, playerID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find player: %w", err)
 	}
 
-	agentData, err := h.apiClient.GetAgent(ctx, player.Token)
+	agentData, err := h.apiClient.GetAgent(ctx, token)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get agent data from API: %w", err)
 	}

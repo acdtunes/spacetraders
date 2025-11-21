@@ -7,6 +7,7 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
 // MarketRepository defines operations for market data persistence
@@ -18,7 +19,7 @@ type MarketRepository interface {
 
 // GetMarketDataQuery - Query to retrieve market data for a waypoint
 type GetMarketDataQuery struct {
-	PlayerID       uint
+	PlayerID     shared.PlayerID
 	WaypointSymbol string
 }
 
@@ -46,7 +47,7 @@ func (h *GetMarketDataHandler) Handle(ctx context.Context, request common.Reques
 		return nil, fmt.Errorf("invalid request type")
 	}
 	// Get market data from repository
-	marketData, err := h.marketRepo.GetMarketData(ctx, query.PlayerID, query.WaypointSymbol)
+	marketData, err := h.marketRepo.GetMarketData(ctx, uint(query.PlayerID.Value()), query.WaypointSymbol)
 	if err != nil {
 		return nil, err
 	}
@@ -58,7 +59,7 @@ func (h *GetMarketDataHandler) Handle(ctx context.Context, request common.Reques
 
 // ListMarketDataQuery - Query to retrieve all market data in a system
 type ListMarketDataQuery struct {
-	PlayerID      uint
+	PlayerID     shared.PlayerID
 	SystemSymbol  string
 	MaxAgeMinutes int
 }
@@ -87,7 +88,7 @@ func (h *ListMarketDataHandler) Handle(ctx context.Context, request common.Reque
 		return nil, fmt.Errorf("invalid request type")
 	}
 	// Get all markets in system from repository
-	markets, err := h.marketRepo.ListMarketsInSystem(ctx, query.PlayerID, query.SystemSymbol, query.MaxAgeMinutes)
+	markets, err := h.marketRepo.ListMarketsInSystem(ctx, uint(query.PlayerID.Value()), query.SystemSymbol, query.MaxAgeMinutes)
 	if err != nil {
 		return nil, err
 	}

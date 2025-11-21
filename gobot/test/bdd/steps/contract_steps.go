@@ -5,6 +5,7 @@ import (
 	"strconv"
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/contract"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/cucumber/godog"
 )
 
@@ -146,9 +147,23 @@ func (cc *contractContext) iCreateTheContract() error {
 		DeadlineToAccept: cc.deadlineToAccept,
 		Deadline:         cc.deadline,
 	}
+
+	// For testing invalid player IDs (0 or negative), we need to pass the zero value PlayerID
+	// to let the Contract's domain validation handle it with the proper error message
+	var playerIDValue shared.PlayerID
+	if cc.playerID > 0 {
+		var err error
+		playerIDValue, err = shared.NewPlayerID(cc.playerID)
+		if err != nil {
+			cc.err = err
+			return nil
+		}
+	}
+	// If cc.playerID <= 0, playerIDValue remains zero value and Contract validation will catch it
+
 	cc.contract, cc.err = contract.NewContract(
 		cc.contractID,
-		cc.playerID,
+		playerIDValue,
 		cc.faction,
 		cc.contractType,
 		terms,

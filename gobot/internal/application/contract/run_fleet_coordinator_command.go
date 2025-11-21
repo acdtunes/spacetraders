@@ -11,6 +11,7 @@ import (
 	domainContainer "github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
@@ -19,7 +20,7 @@ import (
 // RunFleetCoordinatorCommand manages a pool of ships for continuous contract execution.
 // It assigns contracts to the ship closest to the purchase market.
 type RunFleetCoordinatorCommand struct {
-	PlayerID    int
+	PlayerID    shared.PlayerID
 	ShipSymbols []string // Pool of ships to use for contracts
 	ContainerID string   // Coordinator's own container ID
 }
@@ -108,7 +109,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 	// IMPORTANT: Unbuffered so signals are only received when actively waiting
 	completionChan := make(chan string)
 
-	if err := h.stopExistingWorkers(ctx, cmd.PlayerID); err != nil {
+	if err := h.stopExistingWorkers(ctx, cmd.PlayerID.Value()); err != nil {
 		logger.Log("WARNING", fmt.Sprintf("Failed during existing worker cleanup: %v", err), nil)
 	}
 
@@ -125,14 +126,14 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 				logger.Log("INFO", fmt.Sprintf("Stopping active worker container: %s", activeWorkerContainerID), nil)
 				_ = h.daemonClient.StopContainer(ctx, activeWorkerContainerID)
 			}
-			_ = ReleasePoolAssignments(ctx, cmd.ContainerID, cmd.PlayerID, h.shipAssignmentRepo, "coordinator_stopped")
+			_ = ReleasePoolAssignments(ctx, cmd.ContainerID, cmd.PlayerID.Value(), h.shipAssignmentRepo, "coordinator_stopped")
 			return result, ctx.Err()
 		default:
 			// Continue with contract assignment
 		}
 
 		// Find ships currently owned by coordinator
-		availableShips, err := FindCoordinatorShips(ctx, cmd.ContainerID, cmd.PlayerID, h.shipAssignmentRepo)
+		availableShips, err := FindCoordinatorShips(ctx, cmd.ContainerID, cmd.PlayerID.Value(), h.shipAssignmentRepo)
 		if err != nil {
 			errMsg := fmt.Sprintf("Failed to find coordinator ships: %v", err)
 			logger.Log("ERROR", errMsg, nil)
@@ -156,7 +157,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 					logger.Log("INFO", fmt.Sprintf("Stopping active worker container: %s", activeWorkerContainerID), nil)
 					_ = h.daemonClient.StopContainer(ctx, activeWorkerContainerID)
 				}
-				_ = ReleasePoolAssignments(ctx, cmd.ContainerID, cmd.PlayerID, h.shipAssignmentRepo, "coordinator_stopped")
+				_ = ReleasePoolAssignments(ctx, cmd.ContainerID, cmd.PlayerID.Value(), h.shipAssignmentRepo, "coordinator_stopped")
 				return result, ctx.Err()
 			}
 			continue // Loop back to check for available ships
@@ -164,7 +165,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 
 		// CRITICAL CHECK: Prevent multiple workers by checking if any worker is already running
 		// This prevents race conditions when negotiation fails early in the loop
-		existingActiveWorkers, err := h.findExistingWorkers(ctx, cmd.PlayerID)
+		existingActiveWorkers, err := h.findExistingWorkers(ctx, cmd.PlayerID.Value())
 		if err != nil {
 			logger.Log("WARNING", fmt.Sprintf("Failed to check for active workers: %v", err), nil)
 		} else if len(existingActiveWorkers) > 0 {
@@ -181,7 +182,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 					logger.Log("INFO", fmt.Sprintf("Stopping active worker container: %s", activeWorkerContainerID), nil)
 					_ = h.daemonClient.StopContainer(ctx, activeWorkerContainerID)
 				}
-				_ = ReleasePoolAssignments(ctx, cmd.ContainerID, cmd.PlayerID, h.shipAssignmentRepo, "coordinator_stopped")
+				_ = ReleasePoolAssignments(ctx, cmd.ContainerID, cmd.PlayerID.Value(), h.shipAssignmentRepo, "coordinator_stopped")
 				return result, ctx.Err()
 			}
 			continue
@@ -189,7 +190,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 
 		// Negotiate contract (use any ship from pool for negotiation)
 		logger.Log("INFO", "Negotiating new contract...", nil)
-		contract, err := h.negotiateContract(ctx, availableShips[0], cmd.PlayerID)
+		contract, err := h.negotiateContract(ctx, availableShips[0], cmd.PlayerID.Value())
 		if err != nil {
 			errMsg := fmt.Sprintf("Failed to negotiate contract: %v", err)
 			logger.Log("ERROR", errMsg, nil)
@@ -200,7 +201,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 
 		// Find purchase market for contract
 		logger.Log("INFO", "Finding purchase market...", nil)
-		purchaseMarket, err := FindPurchaseMarket(ctx, contract, h.marketRepo, cmd.PlayerID)
+		purchaseMarket, err := FindPurchaseMarket(ctx, contract, h.marketRepo, cmd.PlayerID.Value())
 		if err != nil {
 			errMsg := fmt.Sprintf("Failed to find purchase market: %v", err)
 			logger.Log("ERROR", errMsg, nil)
@@ -227,7 +228,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			h.graphProvider,
 			purchaseMarket,
 			requiredCargo,
-			cmd.PlayerID,
+			cmd.PlayerID.Value(),
 		)
 		if err != nil {
 			errMsg := fmt.Sprintf("Failed to select ship: %v", err)
@@ -252,7 +253,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 
 		// Step 1: Persist worker container to DB (synchronous, no start)
 		logger.Log("INFO", fmt.Sprintf("Persisting worker container %s for %s", workerContainerID, selectedShip), nil)
-		if err := h.daemonClient.PersistContractWorkflowContainer(ctx, workerContainerID, uint(cmd.PlayerID), workerCmd); err != nil {
+		if err := h.daemonClient.PersistContractWorkflowContainer(ctx, workerContainerID, uint(cmd.PlayerID.Value()), workerCmd); err != nil {
 			errMsg := fmt.Sprintf("Failed to persist worker container: %v", err)
 			logger.Log("ERROR", errMsg, nil)
 			result.Errors = append(result.Errors, errMsg)
@@ -301,7 +302,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			if err := h.shipAssignmentRepo.Transfer(ctx, completedShip, workerContainerID, cmd.ContainerID); err != nil {
 				logger.Log("WARNING", fmt.Sprintf("Failed to transfer ship %s back to coordinator: %v", completedShip, err), nil)
 				// Fallback: try inserting new assignment if transfer fails
-				assignment := domainContainer.NewShipAssignment(completedShip, cmd.PlayerID, cmd.ContainerID, nil)
+				assignment := domainContainer.NewShipAssignment(completedShip, cmd.PlayerID.Value(), cmd.ContainerID, nil)
 				_ = h.shipAssignmentRepo.Assign(ctx, assignment)
 			}
 
@@ -312,7 +313,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 				// Extract system symbol from first ship
 				var systemSymbol string
 				if len(availableShips) > 0 {
-					firstShip, err := h.shipRepo.FindBySymbol(ctx, availableShips[0], cmd.PlayerID)
+					firstShip, err := h.shipRepo.FindBySymbol(ctx, availableShips[0], shared.MustNewPlayerID(cmd.PlayerID.Value()))
 					if err == nil {
 						// Extract system from waypoint (e.g., X1-ABC123-XY456Z -> X1-ABC123)
 						currentLocation := firstShip.CurrentLocation().Symbol
@@ -368,7 +369,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 				logger.Log("INFO", fmt.Sprintf("Stopping active worker container: %s", activeWorkerContainerID), nil)
 				_ = h.daemonClient.StopContainer(ctx, activeWorkerContainerID)
 			}
-			_ = ReleasePoolAssignments(ctx, cmd.ContainerID, cmd.PlayerID, h.shipAssignmentRepo, "coordinator_stopped")
+			_ = ReleasePoolAssignments(ctx, cmd.ContainerID, cmd.PlayerID.Value(), h.shipAssignmentRepo, "coordinator_stopped")
 			return result, ctx.Err()
 		}
 
@@ -382,7 +383,7 @@ func (h *RunFleetCoordinatorHandler) validateShipAvailability(ctx context.Contex
 	logger.Log("INFO", "Validating ship availability...", nil)
 
 	for _, shipSymbol := range cmd.ShipSymbols {
-		assignment, err := h.shipAssignmentRepo.FindByShip(ctx, shipSymbol, cmd.PlayerID)
+		assignment, err := h.shipAssignmentRepo.FindByShip(ctx, shipSymbol, cmd.PlayerID.Value())
 		if err != nil {
 			return fmt.Errorf("failed to check assignment for %s: %w", shipSymbol, err)
 		}
@@ -404,7 +405,7 @@ func (h *RunFleetCoordinatorHandler) initializeShipPool(ctx context.Context, cmd
 		ctx,
 		cmd.ShipSymbols,
 		cmd.ContainerID,
-		cmd.PlayerID,
+		cmd.PlayerID.Value(),
 		h.shipAssignmentRepo,
 	); err != nil {
 		return fmt.Errorf("failed to create pool assignments: %w", err)
@@ -461,7 +462,7 @@ func (h *RunFleetCoordinatorHandler) negotiateContract(
 	// Negotiate new contract
 	negotiateCmd := &NegotiateContractCommand{
 		ShipSymbol: shipSymbol,
-		PlayerID:   playerID,
+		PlayerID:   shared.MustNewPlayerID(playerID),
 	}
 
 	negotiateResp, err := h.mediator.Send(ctx, negotiateCmd)

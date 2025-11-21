@@ -40,7 +40,7 @@ func (s *daemonServiceImpl) resolvePlayerID(ctx context.Context, playerID int32,
 			return 0, fmt.Errorf("unexpected response type from GetPlayerQuery")
 		}
 
-		return getPlayerResp.Player.ID, nil
+		return getPlayerResp.Player.ID.Value(), nil
 	}
 
 	// Neither player_id nor agent_symbol provided

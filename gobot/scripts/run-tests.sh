@@ -211,7 +211,11 @@ echo -e "${BOLD}Pass Rate:   ${RATE_COLOR}${PASS_RATE}%${NC}\n"
 echo -e "${CYAN}${BOLD}════════════════════════════════════════════════════════════${NC}\n"
 
 # Final status
-if [ "$TOTAL_FAIL" -eq 0 ]; then
+if [ "$TOTAL_TESTS" -eq 0 ]; then
+    echo -e "${RED}${BOLD}❌ NO TESTS FOUND${NC}"
+    echo -e "${YELLOW}No test files were discovered or executed${NC}\n"
+    EXIT_CODE=1
+elif [ "$TOTAL_FAIL" -eq 0 ]; then
     if [ "$BDD_TOTAL" -gt 0 ] && [ "$BDD_UNDEFINED" -gt 0 ]; then
         echo -e "${YELLOW}${BOLD}⚠️  TESTS PASSED (${BDD_UNDEFINED} undefined scenarios)${NC}"
         echo -e "${CYAN}Undefined scenarios have no step implementations yet${NC}\n"

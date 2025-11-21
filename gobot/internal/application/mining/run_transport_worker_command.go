@@ -9,6 +9,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/trading"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
 
@@ -16,7 +17,7 @@ import (
 // Transport waits at asteroid field as a cargo sink for miners
 type RunTransportWorkerCommand struct {
 	ShipSymbol        string
-	PlayerID          int
+	PlayerID          shared.PlayerID
 	AsteroidField     string           // Waypoint to wait at and return to
 	MarketSymbol      string           // Nearest market with fuel for refueling
 	CoordinatorID     string           // Parent coordinator container ID

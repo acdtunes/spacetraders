@@ -38,7 +38,7 @@ var validNavStatuses = map[NavStatus]bool{
 // - IN_ORBIT -> Dock() -> DOCKED
 type Ship struct {
 	shipSymbol      string
-	playerID        int
+	playerID        shared.PlayerID
 	currentLocation *shared.Waypoint
 	fuel            *shared.Fuel
 	fuelCapacity    int
@@ -53,7 +53,7 @@ type Ship struct {
 // NewShip creates a new Ship entity with validation
 func NewShip(
 	shipSymbol string,
-	playerID int,
+	playerID shared.PlayerID,
 	currentLocation *shared.Waypoint,
 	fuel *shared.Fuel,
 	fuelCapacity int,
@@ -90,7 +90,7 @@ func (s *Ship) validate() error {
 		return shared.NewInvalidShipDataError("ship_symbol cannot be empty")
 	}
 
-	if s.playerID <= 0 {
+	if s.playerID.IsZero() {
 		return shared.NewInvalidShipDataError("player_id must be positive")
 	}
 
@@ -139,7 +139,7 @@ func (s *Ship) ShipSymbol() string {
 	return s.shipSymbol
 }
 
-func (s *Ship) PlayerID() int {
+func (s *Ship) PlayerID() shared.PlayerID {
 	return s.playerID
 }
 

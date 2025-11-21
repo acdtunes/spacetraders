@@ -6,6 +6,7 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
 // SelectionOptions holds inputs for player selection
@@ -36,7 +37,11 @@ func NewResolver(playerRepo player.PlayerRepository) *Resolver {
 func (r *Resolver) ResolvePlayer(ctx context.Context, opts *SelectionOptions) (*player.Player, error) {
 	// Priority 1: --player-id flag
 	if opts.PlayerIDFlag != nil {
-		player, err := r.playerRepo.FindByID(ctx, *opts.PlayerIDFlag)
+		playerID, err := shared.NewPlayerID(*opts.PlayerIDFlag)
+		if err != nil {
+			return nil, fmt.Errorf("invalid player ID: %w", err)
+		}
+		player, err := r.playerRepo.FindByID(ctx, playerID)
 		if err != nil {
 			return nil, fmt.Errorf("player with ID %d not found: %w", *opts.PlayerIDFlag, err)
 		}
@@ -55,7 +60,11 @@ func (r *Resolver) ResolvePlayer(ctx context.Context, opts *SelectionOptions) (*
 	// Priority 3: config default player
 	if opts.UserConfig != nil {
 		if opts.UserConfig.DefaultPlayerID != nil {
-			player, err := r.playerRepo.FindByID(ctx, *opts.UserConfig.DefaultPlayerID)
+			playerID, err := shared.NewPlayerID(*opts.UserConfig.DefaultPlayerID)
+			if err != nil {
+				return nil, fmt.Errorf("invalid default player ID: %w", err)
+			}
+			player, err := r.playerRepo.FindByID(ctx, playerID)
 			if err != nil {
 				return nil, fmt.Errorf("default player (ID %d) not found: %w", *opts.UserConfig.DefaultPlayerID, err)
 			}
@@ -83,5 +92,5 @@ func (r *Resolver) GetPlayerToken(ctx context.Context, opts *SelectionOptions) (
 	if err != nil {
 		return "", 0, err
 	}
-	return player.Token, player.ID, nil
+	return player.Token, player.ID.Value(), nil
 }

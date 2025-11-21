@@ -26,7 +26,7 @@ import (
 type NavigateToWaypointCommand struct {
 	ShipSymbol  string
 	Destination string
-	PlayerID    int
+	PlayerID    shared.PlayerID
 	FlightMode  string // Optional, uses ship default if empty
 }
 

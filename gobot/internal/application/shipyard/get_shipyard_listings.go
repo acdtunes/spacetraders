@@ -6,6 +6,7 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shipyard"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/ports"
 )
@@ -14,7 +15,7 @@ import (
 type GetShipyardListingsQuery struct {
 	SystemSymbol   string
 	WaypointSymbol string
-	PlayerID       int
+	PlayerID   shared.PlayerID
 }
 
 // GetShipyardListingsResponse contains the shipyard data
@@ -46,14 +47,14 @@ func (h *GetShipyardListingsHandler) Handle(ctx context.Context, request common.
 	if !ok {
 		return nil, fmt.Errorf("invalid request type")
 	}
-	// Get player to retrieve auth token
-	player, err := h.playerRepo.FindByID(ctx, query.PlayerID)
+	// Get player token from context
+	token, err := common.PlayerTokenFromContext(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to find player: %w", err)
+		return nil, err
 	}
 
 	// Call API to get shipyard data
-	shipyardData, err := h.apiClient.GetShipyard(ctx, query.SystemSymbol, query.WaypointSymbol, player.Token)
+	shipyardData, err := h.apiClient.GetShipyard(ctx, query.SystemSymbol, query.WaypointSymbol, token)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get shipyard: %w", err)
 	}

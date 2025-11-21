@@ -8,6 +8,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/routing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
@@ -17,7 +18,7 @@ import (
 // Uses VRP optimization to distribute markets across multiple ships
 // Idempotent: reuses existing containers for ships that already have them
 type ScoutMarketsCommand struct {
-	PlayerID     uint
+	PlayerID     shared.PlayerID
 	ShipSymbols  []string
 	SystemSymbol string
 	Markets      []string
@@ -71,7 +72,7 @@ func (h *ScoutMarketsHandler) Handle(ctx context.Context, request common.Request
 	// User explicitly ran scout-all-markets, so we want to redistribute work
 	for _, shipSymbol := range cmd.ShipSymbols {
 		// Check if ship has an active assignment
-		assignment, err := h.shipAssignmentRepo.FindByShip(ctx, shipSymbol, int(cmd.PlayerID))
+		assignment, err := h.shipAssignmentRepo.FindByShip(ctx, shipSymbol, int(cmd.PlayerID.Value()))
 		if err != nil {
 			return nil, fmt.Errorf("failed to query ship assignment for %s: %w", shipSymbol, err)
 		}
@@ -97,7 +98,7 @@ func (h *ScoutMarketsHandler) Handle(ctx context.Context, request common.Request
 			}
 
 			// Release ship assignment
-			if err := h.shipAssignmentRepo.Release(ctx, shipSymbol, int(cmd.PlayerID), "scout_all_markets_reset"); err != nil {
+			if err := h.shipAssignmentRepo.Release(ctx, shipSymbol, int(cmd.PlayerID.Value()), "scout_all_markets_reset"); err != nil {
 				// Non-fatal: assignment might already be released
 				logger.Log("WARNING", "Ship assignment release failed", map[string]interface{}{
 					"ship_symbol": shipSymbol,
@@ -114,7 +115,7 @@ func (h *ScoutMarketsHandler) Handle(ctx context.Context, request common.Request
 	reusedContainers := []string{}
 
 	for _, shipSymbol := range cmd.ShipSymbols {
-		assignment, err := h.shipAssignmentRepo.FindByShip(ctx, shipSymbol, int(cmd.PlayerID))
+		assignment, err := h.shipAssignmentRepo.FindByShip(ctx, shipSymbol, int(cmd.PlayerID.Value()))
 		if err != nil {
 			return nil, fmt.Errorf("failed to query ship assignment for %s: %w", shipSymbol, err)
 		}
@@ -153,7 +154,7 @@ func (h *ScoutMarketsHandler) Handle(ctx context.Context, request common.Request
 	shipConfigs := make(map[string]*routing.ShipConfigData)
 
 	for _, shipSymbol := range shipsNeedingContainers {
-		shipData, err := h.shipRepo.FindBySymbol(ctx, shipSymbol, int(cmd.PlayerID))
+		shipData, err := h.shipRepo.FindBySymbol(ctx, shipSymbol, cmd.PlayerID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to load ship %s: %w", shipSymbol, err)
 		}
@@ -166,7 +167,7 @@ func (h *ScoutMarketsHandler) Handle(ctx context.Context, request common.Request
 	}
 
 	// 5. Get system graph
-	graphResult, err := h.graphProvider.GetGraph(ctx, cmd.SystemSymbol, false, int(cmd.PlayerID))
+	graphResult, err := h.graphProvider.GetGraph(ctx, cmd.SystemSymbol, false, cmd.PlayerID.Value())
 	if err != nil {
 		return nil, fmt.Errorf("failed to get graph: %w", err)
 	}
@@ -218,7 +219,7 @@ func (h *ScoutMarketsHandler) Handle(ctx context.Context, request common.Request
 			Iterations: cmd.Iterations,
 		}
 
-		err := h.daemonClient.CreateScoutTourContainer(ctx, containerID, cmd.PlayerID, scoutTourCmd)
+		err := h.daemonClient.CreateScoutTourContainer(ctx, containerID, uint(cmd.PlayerID.Value()), scoutTourCmd)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create container for %s: %w", shipSymbol, err)
 		}

@@ -47,7 +47,7 @@ func (r *MockContractRepository) FindByID(ctx context.Context, contractID string
 	}
 
 	// Verify player ownership
-	if c.PlayerID() != playerID {
+	if c.PlayerID().Value() != playerID {
 		return nil, fmt.Errorf("contract not found")
 	}
 
@@ -65,7 +65,7 @@ func (r *MockContractRepository) FindActiveContracts(ctx context.Context, player
 
 	var activeContracts []*contract.Contract
 	for _, c := range r.contracts {
-		if c.PlayerID() == playerID && c.Accepted() && !c.Fulfilled() {
+		if c.PlayerID().Value() == playerID && c.Accepted() && !c.Fulfilled() {
 			activeContracts = append(activeContracts, c)
 		}
 	}

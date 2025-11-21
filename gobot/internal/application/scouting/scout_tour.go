@@ -8,11 +8,12 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	shipapp "github.com/andrescamacho/spacetraders-go/internal/application/ship"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
 // ScoutTourCommand - Command to execute a market scouting tour with a single ship
 type ScoutTourCommand struct {
-	PlayerID   uint
+	PlayerID     shared.PlayerID
 	ShipSymbol string
 	Markets    []string // Waypoint symbols to scout
 	Iterations int      // Number of complete tours (-1 for infinite)
@@ -56,7 +57,7 @@ func (h *ScoutTourHandler) Handle(ctx context.Context, request common.Request) (
 	logger := common.LoggerFromContext(ctx)
 
 	// 1. Load ship to get current position
-	ship, err := h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, int(cmd.PlayerID))
+	ship, err := h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find ship: %w", err)
 	}
@@ -87,7 +88,7 @@ func (h *ScoutTourHandler) Handle(ctx context.Context, request common.Request) (
 			navCmd := &shipapp.NavigateShipCommand{
 				ShipSymbol:  cmd.ShipSymbol,
 				Destination: marketWaypoint,
-				PlayerID:    int(cmd.PlayerID),
+				PlayerID:    cmd.PlayerID,
 			}
 			navResp, err := h.mediator.Send(ctx, navCmd)
 			if err != nil {
@@ -111,7 +112,7 @@ func (h *ScoutTourHandler) Handle(ctx context.Context, request common.Request) (
 				"waypoint":    marketWaypoint,
 				"reason":      "already_present",
 			})
-			if err := h.marketScanner.ScanAndSaveMarket(ctx, cmd.PlayerID, marketWaypoint); err != nil {
+			if err := h.marketScanner.ScanAndSaveMarket(ctx, uint(cmd.PlayerID.Value()), marketWaypoint); err != nil {
 				logger.Log("ERROR", "Initial market scan failed", map[string]interface{}{
 					"ship_symbol": cmd.ShipSymbol,
 					"action":      "scan_market",
@@ -153,7 +154,7 @@ func (h *ScoutTourHandler) Handle(ctx context.Context, request common.Request) (
 				"waypoint":    marketWaypoint,
 				"iteration":   iteration + 1,
 			})
-			if err := h.marketScanner.ScanAndSaveMarket(ctx, cmd.PlayerID, marketWaypoint); err != nil {
+			if err := h.marketScanner.ScanAndSaveMarket(ctx, uint(cmd.PlayerID.Value()), marketWaypoint); err != nil {
 				logger.Log("ERROR", "Market scan failed", map[string]interface{}{
 					"ship_symbol": cmd.ShipSymbol,
 					"action":      "scan_market",
@@ -184,7 +185,7 @@ func (h *ScoutTourHandler) Handle(ctx context.Context, request common.Request) (
 				navCmd := &shipapp.NavigateShipCommand{
 					ShipSymbol:  cmd.ShipSymbol,
 					Destination: marketWaypoint,
-					PlayerID:    int(cmd.PlayerID),
+					PlayerID:    cmd.PlayerID,
 				}
 				navResp, err := h.mediator.Send(ctx, navCmd)
 				if err != nil {

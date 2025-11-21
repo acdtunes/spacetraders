@@ -36,11 +36,11 @@ func NewMarketScanner(
 func (s *MarketScanner) ScanAndSaveMarket(ctx context.Context, playerID uint, waypointSymbol string) error {
 	logger := common.LoggerFromContext(ctx)
 
-	// Get player to retrieve API token
-	playerEntity, err := s.playerRepo.FindByID(ctx, int(playerID))
+	// Get player token from context
+	token, err := common.PlayerTokenFromContext(ctx)
 	if err != nil {
-		logger.Log("ERROR", fmt.Sprintf("[MarketScanner] Failed to get player %d: %v", playerID, err), nil)
-		return fmt.Errorf("failed to get player: %w", err)
+		logger.Log("ERROR", fmt.Sprintf("[MarketScanner] Failed to get player token: %v", err), nil)
+		return fmt.Errorf("failed to get player token: %w", err)
 	}
 
 	// Extract system symbol from waypoint (e.g., "X1-TEST-A1" -> "X1-TEST")
@@ -56,7 +56,7 @@ func (s *MarketScanner) ScanAndSaveMarket(ctx context.Context, playerID uint, wa
 	logger.Log("INFO", fmt.Sprintf("[MarketScanner] Scanning market at %s", waypointSymbol), nil)
 
 	// Get market data from API
-	marketData, err := s.apiClient.GetMarket(ctx, systemSymbol, waypointSymbol, playerEntity.Token)
+	marketData, err := s.apiClient.GetMarket(ctx, systemSymbol, waypointSymbol, token)
 	if err != nil {
 		logger.Log("ERROR", fmt.Sprintf("[MarketScanner] Failed to get market data for %s: %v", waypointSymbol, err), nil)
 		return fmt.Errorf("failed to get market data for %s: %w", waypointSymbol, err)

@@ -92,7 +92,7 @@ func (p *RoutePlanner) createRouteFromPlan(
 			"ship_symbol":  ship.ShipSymbol(),
 			"action":       "route_step",
 			"step_index":   i,
-			"step_action":  string(step.Action),
+			"step_action":  int(step.Action),
 			"waypoint":     step.Waypoint,
 			"flight_mode":  step.Mode,
 			"fuel_cost":    step.FuelCost,
@@ -190,7 +190,7 @@ func (p *RoutePlanner) createRouteFromPlan(
 	return domainNavigation.NewRoute(
 		routeID,
 		ship.ShipSymbol(),
-		ship.PlayerID(),
+		ship.PlayerID().Value(),
 		segments,
 		ship.FuelCapacity(),
 		refuelBeforeDeparture,

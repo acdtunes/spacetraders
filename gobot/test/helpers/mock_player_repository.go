@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
 // MockPlayerRepository is a test double for PlayerRepository interface
@@ -27,18 +28,18 @@ func NewMockPlayerRepository() *MockPlayerRepository {
 func (m *MockPlayerRepository) AddPlayer(p *player.Player) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.players[p.ID] = p
+	m.players[p.ID.Value()] = p
 	m.byAgent[p.AgentSymbol] = p
 }
 
 // FindByID retrieves a player by ID
-func (m *MockPlayerRepository) FindByID(ctx context.Context, playerID int) (*player.Player, error) {
+func (m *MockPlayerRepository) FindByID(ctx context.Context, playerID shared.PlayerID) (*player.Player, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	p, ok := m.players[playerID]
+	p, ok := m.players[playerID.Value()]
 	if !ok {
-		return nil, fmt.Errorf("player not found: %d", playerID)
+		return nil, fmt.Errorf("player not found: %d", playerID.Value())
 	}
 
 	return p, nil
@@ -61,7 +62,7 @@ func (m *MockPlayerRepository) FindByAgentSymbol(ctx context.Context, agentSymbo
 func (m *MockPlayerRepository) Save(ctx context.Context, p *player.Player) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.players[p.ID] = p
+	m.players[p.ID.Value()] = p
 	m.byAgent[p.AgentSymbol] = p
 	return nil
 }

@@ -65,7 +65,7 @@ func (e *RouteExecutor) ExecuteRoute(
 	ctx context.Context,
 	route *domainNavigation.Route,
 	ship *domainNavigation.Ship,
-	playerID int,
+	playerID shared.PlayerID,
 ) error {
 	// Extract logger from context
 	logger := common.LoggerFromContext(ctx)
@@ -161,7 +161,7 @@ func (e *RouteExecutor) executeSegment(
 	ctx context.Context,
 	segment *domainNavigation.RouteSegment,
 	ship *domainNavigation.Ship,
-	playerID int,
+	playerID shared.PlayerID,
 ) error {
 	// Extract logger from context
 	logger := common.LoggerFromContext(ctx)
@@ -312,7 +312,7 @@ func (e *RouteExecutor) executeSegment(
 		})
 
 		// Market scanning is non-fatal - log errors but continue route execution
-		if err := e.marketScanner.ScanAndSaveMarket(ctx, uint(playerID), segment.ToWaypoint.Symbol); err != nil {
+		if err := e.marketScanner.ScanAndSaveMarket(ctx, uint(playerID.Value()), segment.ToWaypoint.Symbol); err != nil {
 			logger.Log("ERROR", "Market scan failed", map[string]interface{}{
 				"ship_symbol": ship.ShipSymbol(),
 				"action":      "scan_market",
@@ -330,7 +330,7 @@ func (e *RouteExecutor) executeSegment(
 func (e *RouteExecutor) waitForCurrentTransit(
 	ctx context.Context,
 	ship *domainNavigation.Ship,
-	playerID int,
+	playerID shared.PlayerID,
 ) error {
 	// Extract logger from context
 	logger := common.LoggerFromContext(ctx)
@@ -418,7 +418,7 @@ func (e *RouteExecutor) waitForCurrentTransit(
 func (e *RouteExecutor) refuelBeforeDeparture(
 	ctx context.Context,
 	ship *domainNavigation.Ship,
-	playerID int,
+	playerID shared.PlayerID,
 ) error {
 	// Extract logger from context
 	logger := common.LoggerFromContext(ctx)
@@ -467,7 +467,7 @@ func (e *RouteExecutor) refuelBeforeDeparture(
 func (e *RouteExecutor) refuelShip(
 	ctx context.Context,
 	ship *domainNavigation.Ship,
-	playerID int,
+	playerID shared.PlayerID,
 ) error {
 	// Dock for refuel (via DockShipCommand)
 	// Command handler updates ship state in memory
@@ -508,7 +508,7 @@ func (e *RouteExecutor) waitForArrival(
 	ctx context.Context,
 	ship *domainNavigation.Ship,
 	arrivalTimeStr string,
-	playerID int,
+	playerID shared.PlayerID,
 ) error {
 	// Extract logger from context
 	logger := common.LoggerFromContext(ctx)

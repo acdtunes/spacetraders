@@ -54,7 +54,7 @@ func SelectClosestShip(
 	// 1. Fetch all ships from repository
 	var ships []*navigation.Ship
 	for _, shipSymbol := range shipSymbols {
-		ship, err := shipRepo.FindBySymbol(ctx, shipSymbol, playerID)
+		ship, err := shipRepo.FindBySymbol(ctx, shipSymbol, shared.MustNewPlayerID(playerID))
 		if err != nil {
 			return "", 0, fmt.Errorf("failed to load ship %s: %w", shipSymbol, err)
 		}

@@ -25,7 +25,7 @@ import (
 type NavigateShipCommand struct {
 	ShipSymbol   string
 	Destination  string
-	PlayerID     int
+	PlayerID     shared.PlayerID
 	PreferCruise bool // When true, prefer CRUISE over BURN (for asteroid ↔ market loop only)
 }
 
@@ -88,7 +88,7 @@ func (h *NavigateShipHandler) Handle(ctx context.Context, request common.Request
 
 	// 2. Extract system symbol and get system graph
 	systemSymbol := ship.CurrentLocation().SystemSymbol
-	graphResult, err := h.graphProvider.GetGraph(ctx, systemSymbol, false, cmd.PlayerID)
+	graphResult, err := h.graphProvider.GetGraph(ctx, systemSymbol, false, cmd.PlayerID.Value())
 	if err != nil {
 		return nil, fmt.Errorf("failed to get system graph: %w", err)
 	}
@@ -131,7 +131,7 @@ func (h *NavigateShipHandler) Handle(ctx context.Context, request common.Request
 		emptyRoute, err := domainNavigation.NewRoute(
 			fmt.Sprintf("%s_wait_transit", ship.ShipSymbol()),
 			ship.ShipSymbol(),
-			cmd.PlayerID,
+			cmd.PlayerID.Value(),
 			[]*domainNavigation.RouteSegment{},
 			ship.FuelCapacity(),
 			false,
@@ -254,7 +254,7 @@ func (h *NavigateShipHandler) handleAlreadyAtDestination(
 	route, err := domainNavigation.NewRoute(
 		routeID,
 		cmd.ShipSymbol,
-		cmd.PlayerID,
+		cmd.PlayerID.Value(),
 		[]*domainNavigation.RouteSegment{}, // No segments needed
 		ship.FuelCapacity(),
 		false,

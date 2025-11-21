@@ -6,12 +6,13 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
 // OrbitShipCommand - Command to put a ship into orbit at its current waypoint
 type OrbitShipCommand struct {
 	ShipSymbol string
-	PlayerID   int
+	PlayerID   shared.PlayerID
 }
 
 // OrbitShipResponse - Response from orbit ship command

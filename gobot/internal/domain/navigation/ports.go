@@ -10,32 +10,32 @@ import (
 // Following hexagonal architecture: repositories abstract both database and API operations
 type ShipRepository interface {
 	// FindBySymbol retrieves a ship (from API with waypoint reconstruction)
-	FindBySymbol(ctx context.Context, symbol string, playerID int) (*Ship, error)
+	FindBySymbol(ctx context.Context, symbol string, playerID shared.PlayerID) (*Ship, error)
 
 	// GetShipData retrieves raw ship data from API (includes arrival time for IN_TRANSIT ships)
-	GetShipData(ctx context.Context, symbol string, playerID int) (*ShipData, error)
+	GetShipData(ctx context.Context, symbol string, playerID shared.PlayerID) (*ShipData, error)
 
 	// FindAllByPlayer retrieves all ships for a player (from API with waypoint reconstruction)
-	FindAllByPlayer(ctx context.Context, playerID int) ([]*Ship, error)
+	FindAllByPlayer(ctx context.Context, playerID shared.PlayerID) ([]*Ship, error)
 
 	// Navigate executes ship navigation (updates via API)
 	// Returns navigation result with arrival time from API
-	Navigate(ctx context.Context, ship *Ship, destination *shared.Waypoint, playerID int) (*Result, error)
+	Navigate(ctx context.Context, ship *Ship, destination *shared.Waypoint, playerID shared.PlayerID) (*Result, error)
 
 	// Dock docks the ship (updates via API)
-	Dock(ctx context.Context, ship *Ship, playerID int) error
+	Dock(ctx context.Context, ship *Ship, playerID shared.PlayerID) error
 
 	// Orbit puts ship in orbit (updates via API)
-	Orbit(ctx context.Context, ship *Ship, playerID int) error
+	Orbit(ctx context.Context, ship *Ship, playerID shared.PlayerID) error
 
 	// Refuel refuels the ship (updates via API)
-	Refuel(ctx context.Context, ship *Ship, playerID int, units *int) error
+	Refuel(ctx context.Context, ship *Ship, playerID shared.PlayerID, units *int) error
 
 	// SetFlightMode sets the ship's flight mode (updates via API)
-	SetFlightMode(ctx context.Context, ship *Ship, playerID int, mode string) error
+	SetFlightMode(ctx context.Context, ship *Ship, playerID shared.PlayerID, mode string) error
 
 	// JettisonCargo jettisons cargo from the ship (updates via API)
-	JettisonCargo(ctx context.Context, ship *Ship, playerID int, goodSymbol string, units int) error
+	JettisonCargo(ctx context.Context, ship *Ship, playerID shared.PlayerID, goodSymbol string, units int) error
 }
 
 // DTOs for ship operations

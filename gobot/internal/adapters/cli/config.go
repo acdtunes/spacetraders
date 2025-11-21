@@ -194,12 +194,12 @@ Examples:
 				}
 
 				// Also set player ID for convenience
-				if err := userConfigHandler.SetDefaultPlayer(player.ID); err != nil {
+				if err := userConfigHandler.SetDefaultPlayer(player.ID.Value()); err != nil {
 					return fmt.Errorf("failed to set default player ID: %w", err)
 				}
 
 				verifiedPlayer = &persistence.PlayerModel{
-					ID:          player.ID,
+					ID:          player.ID.Value(),
 					AgentSymbol: player.AgentSymbol,
 				}
 			}

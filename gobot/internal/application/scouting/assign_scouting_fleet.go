@@ -16,7 +16,7 @@ import (
 // AssignScoutingFleetCommand automatically assigns all probe/satellite ships to market scouting
 // Filters out FUEL_STATION marketplaces
 type AssignScoutingFleetCommand struct {
-	PlayerID     uint
+	PlayerID     shared.PlayerID
 	SystemSymbol string
 }
 
@@ -65,7 +65,7 @@ func (h *AssignScoutingFleetHandler) Handle(ctx context.Context, request common.
 	}
 
 	// 1. Get all ships for the player
-	ships, err := h.shipRepo.FindAllByPlayer(ctx, int(cmd.PlayerID))
+	ships, err := h.shipRepo.FindAllByPlayer(ctx, cmd.PlayerID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list ships: %w", err)
 	}

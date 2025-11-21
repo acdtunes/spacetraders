@@ -6,6 +6,7 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 )
 
@@ -47,9 +48,13 @@ func (h *ListShipsHandler) Handle(ctx context.Context, request common.Request) (
 	}
 
 	// Resolve player ID if agent symbol is provided
-	playerID := 0
+	var playerID shared.PlayerID
 	if query.PlayerID != nil {
-		playerID = *query.PlayerID
+		pid, err := shared.NewPlayerID(*query.PlayerID)
+		if err != nil {
+			return nil, fmt.Errorf("invalid player ID: %w", err)
+		}
+		playerID = pid
 	} else {
 		player, err := h.playerRepo.FindByAgentSymbol(ctx, query.AgentSymbol)
 		if err != nil {

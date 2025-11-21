@@ -10,13 +10,14 @@ import (
 	domainContainer "github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )
 
 // RunWorkflowCommand orchestrates complete contract workflow execution
 type RunWorkflowCommand struct {
 	ShipSymbol         string
-	PlayerID           int
+	PlayerID           shared.PlayerID
 	CoordinatorID      string           // Parent coordinator container ID (optional)
 	CompletionCallback chan<- string    // Signal completion to coordinator (optional)
 }
@@ -180,7 +181,7 @@ func (h *RunWorkflowHandler) findOrNegotiateContract(
 ) (*domainContract.Contract, bool, error) {
 	logger := common.LoggerFromContext(ctx)
 
-	activeContracts, err := h.contractRepo.FindActiveContracts(ctx, cmd.PlayerID)
+	activeContracts, err := h.contractRepo.FindActiveContracts(ctx, cmd.PlayerID.Value())
 	if err != nil {
 		return nil, false, fmt.Errorf("failed to check active contracts: %w", err)
 	}
@@ -276,7 +277,7 @@ func (h *RunWorkflowHandler) evaluateContractProfitability(
 func (h *RunWorkflowHandler) acceptContractIfNeeded(
 	ctx context.Context,
 	contract *domainContract.Contract,
-	playerID int,
+	playerID shared.PlayerID,
 	result *RunWorkflowResponse,
 ) (*domainContract.Contract, error) {
 	if contract.Accepted() {
@@ -391,7 +392,7 @@ func (h *RunWorkflowHandler) processSingleDelivery(
 func (h *RunWorkflowHandler) reloadShipState(
 	ctx context.Context,
 	shipSymbol string,
-	playerID int,
+	playerID shared.PlayerID,
 	tradeSymbol string,
 ) (*navigation.Ship, int, error) {
 	logger := common.LoggerFromContext(ctx)
@@ -435,7 +436,7 @@ func (h *RunWorkflowHandler) jettisonWrongCargoIfNeeded(
 	tradeSymbol string,
 	currentUnits int,
 	unitsRemaining int,
-	playerID int,
+	playerID shared.PlayerID,
 ) (*navigation.Ship, int, error) {
 	logger := common.LoggerFromContext(ctx)
 
@@ -452,7 +453,7 @@ func (h *RunWorkflowHandler) jettisonWrongCargoIfNeeded(
 		"keep_symbol": tradeSymbol,
 	})
 
-	if err := h.jettisonWrongCargo(ctx, ship, tradeSymbol, playerID); err != nil {
+	if err := h.jettisonWrongCargo(ctx, ship, tradeSymbol, playerID.Value()); err != nil {
 		return nil, 0, fmt.Errorf("failed to jettison cargo: %w", err)
 	}
 
@@ -622,7 +623,7 @@ func (h *RunWorkflowHandler) deliverContractCargo(
 func (h *RunWorkflowHandler) fulfillContract(
 	ctx context.Context,
 	contract *domainContract.Contract,
-	playerID int,
+	playerID shared.PlayerID,
 ) error {
 	fulfillCmd := &FulfillContractCommand{
 		ContractID: contract.ContractID(),
@@ -679,7 +680,7 @@ func (h *RunWorkflowHandler) jettisonWrongCargo(
 	for _, item := range wrongItems {
 		jettisonCmd := &appShip.JettisonCargoCommand{
 			ShipSymbol: ship.ShipSymbol(),
-			PlayerID:   playerID,
+			PlayerID:   shared.MustNewPlayerID(playerID),
 			GoodSymbol: item.Symbol,
 			Units:      item.Units,
 		}
@@ -700,7 +701,7 @@ func (h *RunWorkflowHandler) navigateToWaypoint(
 	ctx context.Context,
 	shipSymbol string,
 	destination string,
-	playerID int,
+	playerID shared.PlayerID,
 ) (*navigation.Ship, error) {
 	// Use HIGH-LEVEL NavigateShipCommand (handles route planning, refueling, multi-hop, idempotency)
 	navigateCmd := &appShip.NavigateShipCommand{
@@ -722,7 +723,7 @@ func (h *RunWorkflowHandler) navigateToWaypoint(
 func (h *RunWorkflowHandler) dockShip(
 	ctx context.Context,
 	ship *navigation.Ship,
-	playerID int,
+	playerID shared.PlayerID,
 ) error {
 	dockCmd := &appShip.DockShipCommand{
 		ShipSymbol: ship.ShipSymbol(),

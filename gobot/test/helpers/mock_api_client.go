@@ -102,7 +102,7 @@ func (m *MockAPIClient) AddShip(ship *navigation.Ship) {
 func (m *MockAPIClient) AddPlayer(p *player.Player) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.players[p.ID] = p.Token
+	m.players[p.ID.Value()] = p.Token
 }
 
 // GetMarket implements the APIClient interface
@@ -192,7 +192,7 @@ func (m *MockAPIClient) GetShip(ctx context.Context, symbol, token string) (*nav
 	}
 
 	// Validate authorization: token must match ship's owner
-	expectedToken, hasPlayer := m.players[ship.PlayerID()]
+	expectedToken, hasPlayer := m.players[ship.PlayerID().Value()]
 	if hasPlayer && expectedToken != token {
 		// Token doesn't match - unauthorized access
 		return nil, fmt.Errorf("ship not found")

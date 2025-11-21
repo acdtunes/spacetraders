@@ -6,6 +6,7 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/ports"
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
@@ -25,7 +26,7 @@ type BatchPurchaseShipsCommand struct {
 	ShipType             string
 	Quantity             int
 	MaxBudget            int
-	PlayerID             int
+	PlayerID   shared.PlayerID
 	ShipyardWaypoint     string // Optional - will auto-discover if empty
 }
 
@@ -72,10 +73,10 @@ func (h *BatchPurchaseShipsHandler) Handle(ctx context.Context, request common.R
 		}, nil
 	}
 
-	// 2. Get player for token
-	player, err := h.playerRepo.FindByID(ctx, cmd.PlayerID)
+	// 2. Get player token from context
+	token, err := common.PlayerTokenFromContext(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("player not found: %w", err)
+		return nil, err
 	}
 
 	// 3. Get shipyard listings to determine ship price (if shipyard provided)
@@ -118,7 +119,7 @@ func (h *BatchPurchaseShipsHandler) Handle(ctx context.Context, request common.R
 		shipPrice = listing.PurchasePrice
 
 		// Get current credits from API
-		agentData, err := h.apiClient.GetAgent(ctx, player.Token)
+		agentData, err := h.apiClient.GetAgent(ctx, token)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get agent data: %w", err)
 		}

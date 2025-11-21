@@ -1,8 +1,10 @@
 package player
 
+import "github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+
 // Player represents a SpaceTraders agent/player
 type Player struct {
-	ID              int
+	ID              shared.PlayerID
 	AgentSymbol     string
 	Token           string
 	Credits         int
@@ -11,7 +13,7 @@ type Player struct {
 }
 
 // NewPlayer creates a new player
-func NewPlayer(id int, agentSymbol, token string) *Player {
+func NewPlayer(id shared.PlayerID, agentSymbol, token string) *Player {
 	return &Player{
 		ID:          id,
 		AgentSymbol: agentSymbol,

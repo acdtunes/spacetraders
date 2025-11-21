@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"context"
 	"fmt"
 	"os"
@@ -88,12 +89,12 @@ Examples:
 				if err != nil {
 					return fmt.Errorf("failed to resolve player from agent symbol: %w", err)
 				}
-				resolvedPlayerID = uint(player.ID)
+				resolvedPlayerID = uint(player.ID.Value())
 			}
 
 			// Execute query
 			response, err := handler.Handle(ctx, &scouting.GetMarketDataQuery{
-				PlayerID:       resolvedPlayerID,
+				PlayerID:   shared.MustNewPlayerID(int(resolvedPlayerID)),
 				WaypointSymbol: waypointSymbol,
 			})
 			if err != nil {
@@ -213,12 +214,12 @@ Examples:
 				if err != nil {
 					return fmt.Errorf("failed to resolve player from agent symbol: %w", err)
 				}
-				resolvedPlayerID = uint(player.ID)
+				resolvedPlayerID = uint(player.ID.Value())
 			}
 
 			// Execute query
 			response, err := handler.Handle(ctx, &scouting.ListMarketDataQuery{
-				PlayerID:      resolvedPlayerID,
+				PlayerID:   shared.MustNewPlayerID(int(resolvedPlayerID)),
 				SystemSymbol:  systemSymbol,
 				MaxAgeMinutes: maxAgeMinutes,
 			})

@@ -17,7 +17,7 @@ import (
 // RunTourSellingCommand executes optimized cargo selling tour
 type RunTourSellingCommand struct {
 	ShipSymbol      string
-	PlayerID        int
+	PlayerID   domainShared.PlayerID
 	ReturnWaypoint  string // Optional waypoint to return to after selling
 }
 
@@ -97,7 +97,7 @@ func (h *RunTourSellingHandler) executeSellRoute(
 	logger := common.LoggerFromContext(ctx)
 
 	// Find best markets for cargo (returns map of market -> goods to sell there)
-	marketGoods, err := h.findBestMarketsForCargo(ctx, ship, cmd.PlayerID)
+	marketGoods, err := h.findBestMarketsForCargo(ctx, ship, cmd.PlayerID.Value())
 	if err != nil {
 		return 0, 0, nil, fmt.Errorf("failed to find markets: %w", err)
 	}
@@ -115,7 +115,7 @@ func (h *RunTourSellingHandler) executeSellRoute(
 
 	// Get system graph for waypoint data
 	systemSymbol := ship.CurrentLocation().SystemSymbol
-	graphResult, err := h.graphProvider.GetGraph(ctx, systemSymbol, false, cmd.PlayerID)
+	graphResult, err := h.graphProvider.GetGraph(ctx, systemSymbol, false, cmd.PlayerID.Value())
 	if err != nil {
 		return 0, 0, nil, fmt.Errorf("failed to get system graph: %w", err)
 	}

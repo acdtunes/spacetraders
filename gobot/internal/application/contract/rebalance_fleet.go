@@ -8,13 +8,14 @@ import (
 	appShip "github.com/andrescamacho/spacetraders-go/internal/application/ship"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
 
 // RebalanceContractFleetCommand rebalances idle contract fleet ships across strategic markets
 type RebalanceContractFleetCommand struct {
 	CoordinatorID string
-	PlayerID      int
+	PlayerID      shared.PlayerID
 	SystemSymbol  string
 }
 
@@ -117,7 +118,7 @@ func (h *RebalanceContractFleetHandler) discoverSystemMarkets(
 	logger := common.LoggerFromContext(ctx)
 
 	logger.Log("INFO", "Discovering all markets in system", nil)
-	targetMarkets, err := h.marketRepo.FindAllMarketsInSystem(ctx, cmd.SystemSymbol, cmd.PlayerID)
+	targetMarkets, err := h.marketRepo.FindAllMarketsInSystem(ctx, cmd.SystemSymbol, cmd.PlayerID.Value())
 	if err != nil {
 		logger.Log("ERROR", fmt.Sprintf("Failed to discover markets: %v", err), nil)
 		return nil, true
@@ -143,7 +144,7 @@ func (h *RebalanceContractFleetHandler) getCoordinatorShips(
 ) ([]*navigation.Ship, bool) {
 	logger := common.LoggerFromContext(ctx)
 
-	shipSymbols, err := FindCoordinatorShips(ctx, cmd.CoordinatorID, cmd.PlayerID, h.shipAssignmentRepo)
+	shipSymbols, err := FindCoordinatorShips(ctx, cmd.CoordinatorID, cmd.PlayerID.Value(), h.shipAssignmentRepo)
 	if err != nil {
 		logger.Log("ERROR", fmt.Sprintf("Failed to find coordinator ships: %v", err), nil)
 		return nil, true
@@ -193,7 +194,7 @@ func (h *RebalanceContractFleetHandler) checkIfRebalancingNeeded(
 		ships,
 		targetMarkets,
 		cmd.SystemSymbol,
-		cmd.PlayerID,
+		cmd.PlayerID.Value(),
 		result.DistanceThreshold,
 	)
 	if err != nil {
@@ -224,7 +225,7 @@ func (h *RebalanceContractFleetHandler) assignShipsToMarkets(
 	logger := common.LoggerFromContext(ctx)
 
 	logger.Log("INFO", "Assigning ships to markets...", nil)
-	assignments, err := h.distributionChecker.AssignShipsToMarkets(ctx, ships, targetMarkets, cmd.SystemSymbol, cmd.PlayerID)
+	assignments, err := h.distributionChecker.AssignShipsToMarkets(ctx, ships, targetMarkets, cmd.SystemSymbol, cmd.PlayerID.Value())
 	if err != nil {
 		return fmt.Errorf("failed to assign ships to markets: %w", err)
 	}

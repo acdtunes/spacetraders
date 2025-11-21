@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"gorm.io/gorm"
 )
 
@@ -20,12 +21,12 @@ func NewGormPlayerRepository(db *gorm.DB) *GormPlayerRepository {
 }
 
 // FindByID retrieves a player by ID
-func (r *GormPlayerRepository) FindByID(ctx context.Context, playerID int) (*player.Player, error) {
+func (r *GormPlayerRepository) FindByID(ctx context.Context, playerID shared.PlayerID) (*player.Player, error) {
 	var model PlayerModel
-	result := r.db.WithContext(ctx).Where("id = ?", playerID).First(&model)
+	result := r.db.WithContext(ctx).Where("id = ?", playerID.Value()).First(&model)
 	if result.Error != nil {
 		if result.Error == gorm.ErrRecordNotFound {
-			return nil, fmt.Errorf("player not found: %d", playerID)
+			return nil, fmt.Errorf("player not found: %s", playerID.String())
 		}
 		return nil, fmt.Errorf("failed to find player: %w", result.Error)
 	}
@@ -74,8 +75,13 @@ func (r *GormPlayerRepository) modelToPlayer(model *PlayerModel) (*player.Player
 		}
 	}
 
+	playerID, err := shared.NewPlayerID(model.ID)
+	if err != nil {
+		return nil, fmt.Errorf("invalid player ID in database: %w", err)
+	}
+
 	return &player.Player{
-		ID:          model.ID,
+		ID:          playerID,
 		AgentSymbol: model.AgentSymbol,
 		Token:       model.Token,
 		Credits:     0, // Credits set to 0 - will be populated by handler from API
@@ -96,7 +102,7 @@ func (r *GormPlayerRepository) playerToModel(player *player.Player) (*PlayerMode
 	}
 
 	return &PlayerModel{
-		ID:          player.ID,
+		ID:          player.ID.Value(),
 		AgentSymbol: player.AgentSymbol,
 		Token:       player.Token,
 		// Credits field intentionally omitted - not persisted to database

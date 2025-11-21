@@ -12,7 +12,7 @@ import (
 // SetFlightModeCommand - Command to set ship's flight mode
 type SetFlightModeCommand struct {
 	ShipSymbol string
-	PlayerID   int
+	PlayerID   shared.PlayerID
 	Mode       shared.FlightMode
 }
 

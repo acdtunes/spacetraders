@@ -7,6 +7,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	infraPorts "github.com/andrescamacho/spacetraders-go/internal/infrastructure/ports"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
 // GetPlayerQuery represents a query to get a player by ID or agent symbol
@@ -51,7 +52,11 @@ func (h *GetPlayerHandler) Handle(ctx context.Context, request common.Request) (
 
 	// Priority: PlayerID > AgentSymbol
 	if query.PlayerID != nil {
-		player, err = h.playerRepo.FindByID(ctx, *query.PlayerID)
+		playerID, err := shared.NewPlayerID(*query.PlayerID)
+		if err != nil {
+			return nil, fmt.Errorf("invalid player ID: %w", err)
+		}
+		player, err = h.playerRepo.FindByID(ctx, playerID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to find player by ID: %w", err)
 		}
@@ -62,7 +67,13 @@ func (h *GetPlayerHandler) Handle(ctx context.Context, request common.Request) (
 		}
 	}
 
-	agent, err := h.apiClient.GetAgent(ctx, player.Token)
+	// Get token from context (injected by middleware)
+	token, err := common.PlayerTokenFromContext(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("player token not found in context: %w", err)
+	}
+
+	agent, err := h.apiClient.GetAgent(ctx, token)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch agent credits from API: %w", err)
 	}

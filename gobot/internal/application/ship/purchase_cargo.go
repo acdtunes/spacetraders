@@ -8,6 +8,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	infraPorts "github.com/andrescamacho/spacetraders-go/internal/infrastructure/ports"
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
@@ -23,7 +24,7 @@ type PurchaseCargoCommand struct {
 	ShipSymbol string // Ship symbol (e.g., "SHIP-1")
 	GoodSymbol string // Trade good symbol (e.g., "IRON_ORE")
 	Units      int    // Total units to purchase
-	PlayerID   int    // Player ID for authorization
+	PlayerID   shared.PlayerID    // Player ID for authorization
 }
 
 // PurchaseCargoResponse contains the results of a cargo purchase operation.
@@ -86,10 +87,10 @@ func (h *PurchaseCargoHandler) Handle(ctx context.Context, request common.Reques
 		return nil, fmt.Errorf("invalid request type")
 	}
 
-	// 1. Load player to get token
-	player, err := h.playerRepo.FindByID(ctx, cmd.PlayerID)
+	// 1. Get player token from context
+	token, err := common.PlayerTokenFromContext(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("player not found: %w", err)
+		return nil, err
 	}
 
 	// 2. Load ship from repository
@@ -111,7 +112,7 @@ func (h *PurchaseCargoHandler) Handle(ctx context.Context, request common.Reques
 
 	// 5. Get transaction limit from market (shared utility)
 	waypointSymbol := ship.CurrentLocation().Symbol
-	transactionLimit := getTransactionLimit(ctx, h.marketRepo, waypointSymbol, cmd.GoodSymbol, cmd.PlayerID, cmd.Units)
+	transactionLimit := getTransactionLimit(ctx, h.marketRepo, waypointSymbol, cmd.GoodSymbol, cmd.PlayerID.Value(), cmd.Units)
 
 	// 6. Execute purchases with transaction splitting
 	totalCost := 0
@@ -122,7 +123,7 @@ func (h *PurchaseCargoHandler) Handle(ctx context.Context, request common.Reques
 	for unitsRemaining > 0 {
 		unitsToBuy := utils.Min(unitsRemaining, transactionLimit)
 
-		result, err := h.apiClient.PurchaseCargo(ctx, cmd.ShipSymbol, cmd.GoodSymbol, unitsToBuy, player.Token)
+		result, err := h.apiClient.PurchaseCargo(ctx, cmd.ShipSymbol, cmd.GoodSymbol, unitsToBuy, token)
 		if err != nil {
 			return nil, fmt.Errorf("partial failure: failed to purchase cargo after %d successful transactions (%d units added, %d credits spent): %w", transactionCount, unitsAdded, totalCost, err)
 		}

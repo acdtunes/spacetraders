@@ -7,6 +7,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 )
 
@@ -14,7 +15,7 @@ import (
 type EvaluateContractProfitabilityQuery struct {
 	Contract        *domainContract.Contract
 	ShipSymbol      string
-	PlayerID        int
+	PlayerID   shared.PlayerID
 	FuelCostPerTrip int // Fuel cost per round trip (for delivery and return)
 }
 
@@ -82,7 +83,7 @@ func (h *EvaluateContractProfitabilityHandler) Handle(ctx context.Context, reque
 		}
 
 		// Find cheapest market selling this good
-		cheapestMarket, err := h.marketRepo.FindCheapestMarketSelling(ctx, delivery.TradeSymbol, systemSymbol, query.PlayerID)
+		cheapestMarket, err := h.marketRepo.FindCheapestMarketSelling(ctx, delivery.TradeSymbol, systemSymbol, query.PlayerID.Value())
 		if err != nil {
 			return nil, fmt.Errorf("failed to find market for %s: %w", delivery.TradeSymbol, err)
 		}
