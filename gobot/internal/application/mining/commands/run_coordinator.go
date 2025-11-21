@@ -9,6 +9,7 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/application/mining/coordination"
+	"github.com/andrescamacho/spacetraders-go/internal/application/mining/ports"
 	appShip "github.com/andrescamacho/spacetraders-go/internal/application/ship"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
@@ -501,7 +502,7 @@ func (h *RunCoordinatorHandler) spawnMiningWorker(
 	ctx context.Context,
 	cmd *RunCoordinatorCommand,
 	shipSymbol string,
-	coordinator *coordination.ChannelTransportCoordinator,
+	coordinator ports.TransportCoordinator,
 ) (string, error) {
 	logger := common.LoggerFromContext(ctx)
 
@@ -552,7 +553,7 @@ func (h *RunCoordinatorHandler) spawnTransportWorker(
 	cmd *RunCoordinatorCommand,
 	shipSymbol string,
 	marketSymbol string,
-	coordinator *coordination.ChannelTransportCoordinator,
+	coordinator ports.TransportCoordinator,
 ) (string, error) {
 	logger := common.LoggerFromContext(ctx)
 
