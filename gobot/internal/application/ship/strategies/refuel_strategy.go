@@ -141,15 +141,7 @@ func NewAlwaysTopOffStrategy() *AlwaysTopOffStrategy {
 // ShouldRefuelBeforeDeparture always refuels if at a fuel station.
 func (s *AlwaysTopOffStrategy) ShouldRefuelBeforeDeparture(ship *navigation.Ship, segment *navigation.RouteSegment) bool {
 	// Always refuel if fuel is not at maximum and we're at a fuel station
-	waypoint := segment.FromWaypoint
-	hasFuel := false
-	for _, trait := range waypoint.Traits {
-		if trait == "MARKETPLACE" {
-			hasFuel = true
-			break
-		}
-	}
-	if !hasFuel {
+	if !segment.FromWaypoint.IsMarketplace() {
 		return false
 	}
 
@@ -159,15 +151,7 @@ func (s *AlwaysTopOffStrategy) ShouldRefuelBeforeDeparture(ship *navigation.Ship
 // ShouldRefuelAfterArrival always refuels if at a fuel station and not at max.
 func (s *AlwaysTopOffStrategy) ShouldRefuelAfterArrival(ship *navigation.Ship, segment *navigation.RouteSegment) bool {
 	// Check if destination has fuel available
-	waypoint := segment.ToWaypoint
-	hasFuel := false
-	for _, trait := range waypoint.Traits {
-		if trait == "MARKETPLACE" {
-			hasFuel = true
-			break
-		}
-	}
-	if !hasFuel {
+	if !segment.ToWaypoint.IsMarketplace() {
 		return false
 	}
 

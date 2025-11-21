@@ -390,7 +390,7 @@ func (e *RouteExecutor) handlePostArrivalRefueling(ctx context.Context, segment 
 }
 
 func (e *RouteExecutor) scanMarketIfPresent(ctx context.Context, segment *domainNavigation.RouteSegment, ship *domainNavigation.Ship, playerID shared.PlayerID) {
-	if e.marketScanner != nil && e.isMarketplace(segment.ToWaypoint) {
+	if e.marketScanner != nil && segment.ToWaypoint.IsMarketplace() {
 		logger := common.LoggerFromContext(ctx)
 		logger.Log("INFO", "Marketplace detected - scanning market data", map[string]interface{}{
 			"ship_symbol": ship.ShipSymbol(),
@@ -664,14 +664,4 @@ func (e *RouteExecutor) waitForArrival(
 	}
 
 	return nil
-}
-
-// isMarketplace checks if a waypoint has the MARKETPLACE trait
-func (e *RouteExecutor) isMarketplace(waypoint *shared.Waypoint) bool {
-	for _, trait := range waypoint.Traits {
-		if trait == "MARKETPLACE" {
-			return true
-		}
-	}
-	return false
 }
