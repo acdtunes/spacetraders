@@ -51,43 +51,70 @@ func (h *JettisonCargoHandler) Handle(ctx context.Context, request common.Reques
 		return nil, fmt.Errorf("invalid request type")
 	}
 
-	// 1. Get player token from context
-	token, err := common.PlayerTokenFromContext(ctx)
+	token, err := h.getPlayerToken(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	// 2. Load ship from repository
-	ship, err := h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
-	if err != nil {
-		return nil, fmt.Errorf("ship not found: %w", err)
-	}
-
-	// 3. Validate ship has enough cargo
-	currentUnits := ship.Cargo().GetItemUnits(cmd.GoodSymbol)
-	if currentUnits < cmd.Units {
-		return nil, fmt.Errorf("insufficient cargo: have %d units of %s, need %d", currentUnits, cmd.GoodSymbol, cmd.Units)
-	}
-
-	// 4. Ensure ship is in orbit (auto-orbit if needed)
-	stateChanged, err := ship.EnsureInOrbit()
+	ship, err := h.loadShip(ctx, cmd)
 	if err != nil {
 		return nil, err
 	}
 
-	// 5. If state was changed, call repository to orbit via API
-	if stateChanged {
-		if err := h.shipRepo.Orbit(ctx, ship, cmd.PlayerID); err != nil {
-			return nil, fmt.Errorf("failed to orbit ship: %w", err)
-		}
+	if err := h.validateSufficientCargo(ship, cmd); err != nil {
+		return nil, err
 	}
 
-	// 6. Call API to jettison cargo
-	if err := h.apiClient.JettisonCargo(ctx, cmd.ShipSymbol, cmd.GoodSymbol, cmd.Units, token); err != nil {
-		return nil, fmt.Errorf("failed to jettison cargo: %w", err)
+	if err := h.ensureShipInOrbitForJettison(ctx, ship, cmd.PlayerID); err != nil {
+		return nil, err
+	}
+
+	if err := h.jettisonCargoViaAPI(ctx, cmd, token); err != nil {
+		return nil, err
 	}
 
 	return &JettisonCargoResponse{
 		UnitsJettisoned: cmd.Units,
 	}, nil
+}
+
+func (h *JettisonCargoHandler) getPlayerToken(ctx context.Context) (string, error) {
+	return common.PlayerTokenFromContext(ctx)
+}
+
+func (h *JettisonCargoHandler) loadShip(ctx context.Context, cmd *JettisonCargoCommand) (*navigation.Ship, error) {
+	ship, err := h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
+	if err != nil {
+		return nil, fmt.Errorf("ship not found: %w", err)
+	}
+	return ship, nil
+}
+
+func (h *JettisonCargoHandler) validateSufficientCargo(ship *navigation.Ship, cmd *JettisonCargoCommand) error {
+	currentUnits := ship.Cargo().GetItemUnits(cmd.GoodSymbol)
+	if currentUnits < cmd.Units {
+		return fmt.Errorf("insufficient cargo: have %d units of %s, need %d", currentUnits, cmd.GoodSymbol, cmd.Units)
+	}
+	return nil
+}
+
+func (h *JettisonCargoHandler) ensureShipInOrbitForJettison(ctx context.Context, ship *navigation.Ship, playerID shared.PlayerID) error {
+	stateChanged, err := ship.EnsureInOrbit()
+	if err != nil {
+		return err
+	}
+
+	if stateChanged {
+		if err := h.shipRepo.Orbit(ctx, ship, playerID); err != nil {
+			return fmt.Errorf("failed to orbit ship: %w", err)
+		}
+	}
+	return nil
+}
+
+func (h *JettisonCargoHandler) jettisonCargoViaAPI(ctx context.Context, cmd *JettisonCargoCommand, token string) error {
+	if err := h.apiClient.JettisonCargo(ctx, cmd.ShipSymbol, cmd.GoodSymbol, cmd.Units, token); err != nil {
+		return fmt.Errorf("failed to jettison cargo: %w", err)
+	}
+	return nil
 }

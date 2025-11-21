@@ -41,31 +41,40 @@ func (h *DockShipHandler) Handle(ctx context.Context, request common.Request) (c
 		return nil, fmt.Errorf("invalid request type")
 	}
 
-	// 1. Load ship from repository
-	ship, err := h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
-	if err != nil {
-		return nil, fmt.Errorf("ship not found: %w", err)
-	}
-
-	// 2. Use domain method to ensure ship is docked (idempotent)
-	stateChanged, err := ship.EnsureDocked()
+	ship, err := h.loadShip(ctx, cmd)
 	if err != nil {
 		return nil, err
 	}
 
-	// 3. If state was changed, call repository to dock via API
-	if stateChanged {
-		if err := h.shipRepo.Dock(ctx, ship, cmd.PlayerID); err != nil {
-			return nil, fmt.Errorf("failed to dock ship: %w", err)
-		}
-
-		return &DockShipResponse{
-			Status: "docked",
-		}, nil
+	stateChanged, err := h.ensureShipDocked(ship)
+	if err != nil {
+		return nil, err
 	}
 
-	// Ship was already docked
+	if stateChanged {
+		return h.dockShipViaAPI(ctx, ship, cmd.PlayerID)
+	}
+
 	return &DockShipResponse{
 		Status: "already_docked",
 	}, nil
+}
+
+func (h *DockShipHandler) loadShip(ctx context.Context, cmd *DockShipCommand) (*navigation.Ship, error) {
+	ship, err := h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
+	if err != nil {
+		return nil, fmt.Errorf("ship not found: %w", err)
+	}
+	return ship, nil
+}
+
+func (h *DockShipHandler) ensureShipDocked(ship *navigation.Ship) (bool, error) {
+	return ship.EnsureDocked()
+}
+
+func (h *DockShipHandler) dockShipViaAPI(ctx context.Context, ship *navigation.Ship, playerID shared.PlayerID) (*DockShipResponse, error) {
+	if err := h.shipRepo.Dock(ctx, ship, playerID); err != nil {
+		return nil, fmt.Errorf("failed to dock ship: %w", err)
+	}
+	return &DockShipResponse{Status: "docked"}, nil
 }

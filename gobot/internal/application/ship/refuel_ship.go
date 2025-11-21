@@ -44,47 +44,71 @@ func (h *RefuelShipHandler) Handle(ctx context.Context, request common.Request) 
 		return nil, fmt.Errorf("invalid request type")
 	}
 
-	// 1. Load ship from repository
-	ship, err := h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
-	if err != nil {
-		return nil, fmt.Errorf("ship not found: %w", err)
-	}
-
-	// 2. Validate ship is at a fuel station
-	if !ship.CurrentLocation().HasFuel {
-		return nil, fmt.Errorf("waypoint does not have fuel station")
-	}
-
-	// 3. Ensure ship is docked (auto-dock if needed)
-	stateChanged, err := ship.EnsureDocked()
+	ship, err := h.loadShip(ctx, cmd)
 	if err != nil {
 		return nil, err
 	}
 
-	// 4. If state was changed, call repository to dock via API
-	if stateChanged {
-		if err := h.shipRepo.Dock(ctx, ship, cmd.PlayerID); err != nil {
-			return nil, fmt.Errorf("failed to dock ship: %w", err)
-		}
+	if err := h.validateAtFuelStation(ship); err != nil {
+		return nil, err
 	}
 
-	// 5. Get fuel before refueling to calculate amount added
+	if err := h.ensureShipDockedForRefuel(ctx, ship, cmd.PlayerID); err != nil {
+		return nil, err
+	}
+
 	fuelBefore := ship.Fuel().Current
 
-	// 6. Call repository to refuel via API (repository will update ship state)
-	if err := h.shipRepo.Refuel(ctx, ship, cmd.PlayerID, cmd.Units); err != nil {
-		return nil, fmt.Errorf("failed to refuel ship: %w", err)
+	if err := h.refuelShipViaAPI(ctx, ship, cmd); err != nil {
+		return nil, err
 	}
 
-	// 7. Calculate fuel added based on before/after comparison
-	fuelAdded := ship.Fuel().Current - fuelBefore
+	return h.buildRefuelResponse(ship, fuelBefore), nil
+}
 
-	// 8. Calculate cost (100 credits per unit is standard)
+func (h *RefuelShipHandler) loadShip(ctx context.Context, cmd *RefuelShipCommand) (*navigation.Ship, error) {
+	ship, err := h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
+	if err != nil {
+		return nil, fmt.Errorf("ship not found: %w", err)
+	}
+	return ship, nil
+}
+
+func (h *RefuelShipHandler) validateAtFuelStation(ship *navigation.Ship) error {
+	if !ship.CurrentLocation().HasFuel {
+		return fmt.Errorf("waypoint does not have fuel station")
+	}
+	return nil
+}
+
+func (h *RefuelShipHandler) ensureShipDockedForRefuel(ctx context.Context, ship *navigation.Ship, playerID shared.PlayerID) error {
+	stateChanged, err := ship.EnsureDocked()
+	if err != nil {
+		return err
+	}
+
+	if stateChanged {
+		if err := h.shipRepo.Dock(ctx, ship, playerID); err != nil {
+			return fmt.Errorf("failed to dock ship: %w", err)
+		}
+	}
+	return nil
+}
+
+func (h *RefuelShipHandler) refuelShipViaAPI(ctx context.Context, ship *navigation.Ship, cmd *RefuelShipCommand) error {
+	if err := h.shipRepo.Refuel(ctx, ship, cmd.PlayerID, cmd.Units); err != nil {
+		return fmt.Errorf("failed to refuel ship: %w", err)
+	}
+	return nil
+}
+
+func (h *RefuelShipHandler) buildRefuelResponse(ship *navigation.Ship, fuelBefore int) *RefuelShipResponse {
+	fuelAdded := ship.Fuel().Current - fuelBefore
 	creditsCost := fuelAdded * 100
 
 	return &RefuelShipResponse{
 		FuelAdded:   fuelAdded,
 		CurrentFuel: ship.Fuel().Current,
 		CreditsCost: creditsCost,
-	}, nil
+	}
 }

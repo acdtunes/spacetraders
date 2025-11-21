@@ -41,31 +41,40 @@ func (h *OrbitShipHandler) Handle(ctx context.Context, request common.Request) (
 		return nil, fmt.Errorf("invalid request type")
 	}
 
-	// 1. Load ship from repository
-	ship, err := h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
-	if err != nil {
-		return nil, fmt.Errorf("ship not found: %w", err)
-	}
-
-	// 2. Use domain method to ensure ship is in orbit (idempotent)
-	stateChanged, err := ship.EnsureInOrbit()
+	ship, err := h.loadShip(ctx, cmd)
 	if err != nil {
 		return nil, err
 	}
 
-	// 3. If state was changed, call repository to orbit via API
-	if stateChanged {
-		if err := h.shipRepo.Orbit(ctx, ship, cmd.PlayerID); err != nil {
-			return nil, fmt.Errorf("failed to orbit ship: %w", err)
-		}
-
-		return &OrbitShipResponse{
-			Status: "in_orbit",
-		}, nil
+	stateChanged, err := h.ensureShipInOrbit(ship)
+	if err != nil {
+		return nil, err
 	}
 
-	// Ship was already in orbit
+	if stateChanged {
+		return h.orbitShipViaAPI(ctx, ship, cmd.PlayerID)
+	}
+
 	return &OrbitShipResponse{
 		Status: "already_in_orbit",
 	}, nil
+}
+
+func (h *OrbitShipHandler) loadShip(ctx context.Context, cmd *OrbitShipCommand) (*navigation.Ship, error) {
+	ship, err := h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
+	if err != nil {
+		return nil, fmt.Errorf("ship not found: %w", err)
+	}
+	return ship, nil
+}
+
+func (h *OrbitShipHandler) ensureShipInOrbit(ship *navigation.Ship) (bool, error) {
+	return ship.EnsureInOrbit()
+}
+
+func (h *OrbitShipHandler) orbitShipViaAPI(ctx context.Context, ship *navigation.Ship, playerID shared.PlayerID) (*OrbitShipResponse, error) {
+	if err := h.shipRepo.Orbit(ctx, ship, playerID); err != nil {
+		return nil, fmt.Errorf("failed to orbit ship: %w", err)
+	}
+	return &OrbitShipResponse{Status: "in_orbit"}, nil
 }

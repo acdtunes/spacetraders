@@ -74,47 +74,68 @@ func NewPurchaseCargoHandler(
 }
 
 // Handle executes the purchase cargo command with automatic transaction splitting.
-//
-// The handler performs the following steps:
-//  1. Load player and ship data
-//  2. Validate business rules (docked, sufficient cargo space)
-//  3. Determine transaction limit from market data
-//  4. Split purchase into multiple transactions if needed
-//  5. Execute purchases sequentially, accumulating results
 func (h *PurchaseCargoHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {
 	cmd, ok := request.(*PurchaseCargoCommand)
 	if !ok {
 		return nil, fmt.Errorf("invalid request type")
 	}
 
-	// 1. Get player token from context
-	token, err := common.PlayerTokenFromContext(ctx)
+	token, err := h.getPlayerToken(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	// 2. Load ship from repository
+	ship, err := h.loadShip(ctx, cmd)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := h.validateShipDockedForPurchase(ship); err != nil {
+		return nil, err
+	}
+
+	if err := h.validateSufficientCargoSpace(ship, cmd.Units); err != nil {
+		return nil, err
+	}
+
+	transactionLimit := h.getTransactionLimit(ctx, ship, cmd)
+
+	return h.executePurchaseTransactions(ctx, cmd, token, transactionLimit)
+}
+
+func (h *PurchaseCargoHandler) getPlayerToken(ctx context.Context) (string, error) {
+	return common.PlayerTokenFromContext(ctx)
+}
+
+func (h *PurchaseCargoHandler) loadShip(ctx context.Context, cmd *PurchaseCargoCommand) (*navigation.Ship, error) {
 	ship, err := h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
 	if err != nil {
 		return nil, fmt.Errorf("ship not found: %w", err)
 	}
+	return ship, nil
+}
 
-	// 3. Validate ship is docked (business rule)
+func (h *PurchaseCargoHandler) validateShipDockedForPurchase(ship *navigation.Ship) error {
 	if !ship.IsDocked() {
-		return nil, fmt.Errorf("ship must be docked to purchase cargo")
+		return fmt.Errorf("ship must be docked to purchase cargo")
 	}
+	return nil
+}
 
-	// 4. Validate cargo space (business rule)
+func (h *PurchaseCargoHandler) validateSufficientCargoSpace(ship *navigation.Ship, unitsNeeded int) error {
 	availableSpace := ship.AvailableCargoSpace()
-	if availableSpace < cmd.Units {
-		return nil, fmt.Errorf("insufficient cargo space: need %d, have %d", cmd.Units, availableSpace)
+	if availableSpace < unitsNeeded {
+		return fmt.Errorf("insufficient cargo space: need %d, have %d", unitsNeeded, availableSpace)
 	}
+	return nil
+}
 
-	// 5. Get transaction limit from market (shared utility)
+func (h *PurchaseCargoHandler) getTransactionLimit(ctx context.Context, ship *navigation.Ship, cmd *PurchaseCargoCommand) int {
 	waypointSymbol := ship.CurrentLocation().Symbol
-	transactionLimit := getTransactionLimit(ctx, h.marketRepo, waypointSymbol, cmd.GoodSymbol, cmd.PlayerID.Value(), cmd.Units)
+	return getTransactionLimit(ctx, h.marketRepo, waypointSymbol, cmd.GoodSymbol, cmd.PlayerID.Value(), cmd.Units)
+}
 
-	// 6. Execute purchases with transaction splitting
+func (h *PurchaseCargoHandler) executePurchaseTransactions(ctx context.Context, cmd *PurchaseCargoCommand, token string, transactionLimit int) (*PurchaseCargoResponse, error) {
 	totalCost := 0
 	unitsAdded := 0
 	transactionCount := 0

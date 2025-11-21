@@ -66,47 +66,68 @@ func NewSellCargoHandler(
 }
 
 // Handle executes the sell cargo command with automatic transaction splitting.
-//
-// The handler performs the following steps:
-//  1. Load player and ship data
-//  2. Validate business rules (docked, sufficient cargo)
-//  3. Determine transaction limit from market data
-//  4. Split sale into multiple transactions if needed
-//  5. Execute sales sequentially, accumulating results
 func (h *SellCargoHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {
 	cmd, ok := request.(*SellCargoCommand)
 	if !ok {
 		return nil, fmt.Errorf("invalid request type")
 	}
 
-	// 1. Get player token from context
-	token, err := common.PlayerTokenFromContext(ctx)
+	token, err := h.getPlayerToken(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	// 2. Load ship from repository
+	ship, err := h.loadShip(ctx, cmd)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := h.validateShipDockedForSale(ship); err != nil {
+		return nil, err
+	}
+
+	if err := h.validateSufficientCargoForSale(ship, cmd); err != nil {
+		return nil, err
+	}
+
+	transactionLimit := h.getTransactionLimit(ctx, ship, cmd)
+
+	return h.executeSaleTransactions(ctx, cmd, token, transactionLimit)
+}
+
+func (h *SellCargoHandler) getPlayerToken(ctx context.Context) (string, error) {
+	return common.PlayerTokenFromContext(ctx)
+}
+
+func (h *SellCargoHandler) loadShip(ctx context.Context, cmd *SellCargoCommand) (*navigation.Ship, error) {
 	ship, err := h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
 	if err != nil {
 		return nil, fmt.Errorf("ship not found: %w", err)
 	}
+	return ship, nil
+}
 
-	// 3. Validate ship is docked (business rule)
+func (h *SellCargoHandler) validateShipDockedForSale(ship *navigation.Ship) error {
 	if !ship.IsDocked() {
-		return nil, fmt.Errorf("ship must be docked to sell cargo")
+		return fmt.Errorf("ship must be docked to sell cargo")
 	}
+	return nil
+}
 
-	// 4. Validate ship has enough cargo (business rule)
+func (h *SellCargoHandler) validateSufficientCargoForSale(ship *navigation.Ship, cmd *SellCargoCommand) error {
 	currentUnits := ship.Cargo().GetItemUnits(cmd.GoodSymbol)
 	if currentUnits < cmd.Units {
-		return nil, fmt.Errorf("insufficient cargo: need %d, have %d", cmd.Units, currentUnits)
+		return fmt.Errorf("insufficient cargo: need %d, have %d", cmd.Units, currentUnits)
 	}
+	return nil
+}
 
-	// 5. Get transaction limit from market (shared utility)
+func (h *SellCargoHandler) getTransactionLimit(ctx context.Context, ship *navigation.Ship, cmd *SellCargoCommand) int {
 	waypointSymbol := ship.CurrentLocation().Symbol
-	transactionLimit := getTransactionLimit(ctx, h.marketRepo, waypointSymbol, cmd.GoodSymbol, cmd.PlayerID.Value(), cmd.Units)
+	return getTransactionLimit(ctx, h.marketRepo, waypointSymbol, cmd.GoodSymbol, cmd.PlayerID.Value(), cmd.Units)
+}
 
-	// 6. Execute sales with transaction splitting
+func (h *SellCargoHandler) executeSaleTransactions(ctx context.Context, cmd *SellCargoCommand, token string, transactionLimit int) (*SellCargoResponse, error) {
 	totalRevenue := 0
 	unitsSold := 0
 	transactionCount := 0

@@ -42,25 +42,44 @@ func (h *SetFlightModeHandler) Handle(ctx context.Context, request common.Reques
 		return nil, fmt.Errorf("invalid request type")
 	}
 
-	// 1. Load ship from repository
+	ship, err := h.loadShip(ctx, cmd)
+	if err != nil {
+		return nil, err
+	}
+
+	modeName, err := h.validateFlightMode(cmd.Mode)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := h.setFlightModeViaAPI(ctx, ship, cmd.PlayerID, modeName); err != nil {
+		return nil, err
+	}
+
+	return &SetFlightModeResponse{
+		CurrentMode: cmd.Mode,
+	}, nil
+}
+
+func (h *SetFlightModeHandler) loadShip(ctx context.Context, cmd *SetFlightModeCommand) (*navigation.Ship, error) {
 	ship, err := h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
 	if err != nil {
 		return nil, fmt.Errorf("ship not found: %w", err)
 	}
+	return ship, nil
+}
 
-	// 2. Validate flight mode is one of the valid modes
-	modeName := cmd.Mode.Name()
+func (h *SetFlightModeHandler) validateFlightMode(mode shared.FlightMode) (string, error) {
+	modeName := mode.Name()
 	if !shared.IsValidFlightModeName(modeName) {
-		return nil, fmt.Errorf("invalid flight mode: %s", modeName)
+		return "", fmt.Errorf("invalid flight mode: %s", modeName)
 	}
+	return modeName, nil
+}
 
-	// 3. Call repository to set flight mode via API
-	if err := h.shipRepo.SetFlightMode(ctx, ship, cmd.PlayerID, modeName); err != nil {
-		return nil, fmt.Errorf("failed to set flight mode: %w", err)
+func (h *SetFlightModeHandler) setFlightModeViaAPI(ctx context.Context, ship *navigation.Ship, playerID shared.PlayerID, modeName string) error {
+	if err := h.shipRepo.SetFlightMode(ctx, ship, playerID, modeName); err != nil {
+		return fmt.Errorf("failed to set flight mode: %w", err)
 	}
-
-	// 4. Return success response
-	return &SetFlightModeResponse{
-		CurrentMode: cmd.Mode,
-	}, nil
+	return nil
 }
