@@ -11,7 +11,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
-	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/ports"
+	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 )
 
 // PurchaseShipCommand is a command to purchase a ship from a shipyard
@@ -49,7 +49,7 @@ type PurchaseShipHandler struct {
 	playerRepo       player.PlayerRepository
 	waypointRepo     system.WaypointRepository
 	waypointProvider system.IWaypointProvider
-	apiClient        ports.APIClient
+	apiClient        domainPorts.APIClient
 	mediator         common.Mediator
 }
 
@@ -59,7 +59,7 @@ func NewPurchaseShipHandler(
 	playerRepo player.PlayerRepository,
 	waypointRepo system.WaypointRepository,
 	waypointProvider system.IWaypointProvider,
-	apiClient ports.APIClient,
+	apiClient domainPorts.APIClient,
 	mediator common.Mediator,
 ) *PurchaseShipHandler {
 	return &PurchaseShipHandler{

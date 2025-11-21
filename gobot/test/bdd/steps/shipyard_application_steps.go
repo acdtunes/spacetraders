@@ -18,7 +18,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shipyard"
-	infraPorts "github.com/andrescamacho/spacetraders-go/internal/infrastructure/ports"
+	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	"github.com/andrescamacho/spacetraders-go/test/helpers"
 )
 
@@ -114,7 +114,7 @@ func (ctx *shipyardApplicationContext) setupDefaultMockBehaviors() {
 	purchaseCount := 0
 
 	// Default PurchaseShip function - generates new ships with unique symbols
-	ctx.apiClient.SetPurchaseShipFunc(func(ctxAPI context.Context, shipType, waypointSymbol, token string) (*infraPorts.ShipPurchaseResult, error) {
+	ctx.apiClient.SetPurchaseShipFunc(func(ctxAPI context.Context, shipType, waypointSymbol, token string) (*domainPorts.ShipPurchaseResult, error) {
 		// Get player from token to determine agent symbol
 		var agentSymbol string
 		var newCredits int
@@ -346,7 +346,7 @@ func (ctx *shipyardApplicationContext) theShipyardHasTheFollowingShips(waypointS
 	}
 
 	// Parse table
-	var listings []infraPorts.ShipListingData
+	var listings []domainPorts.ShipListingData
 	for i, row := range table.Rows[1:] {
 		if len(row.Cells) < 2 {
 			return fmt.Errorf("row %d: expected at least 2 columns", i+1)
@@ -378,7 +378,7 @@ func (ctx *shipyardApplicationContext) theShipyardHasNoShipsForSale(waypointSymb
 }
 
 func (ctx *shipyardApplicationContext) theAPIWillReturnAnErrorWhenGettingShipyard(waypointSymbol string) error {
-	ctx.apiClient.SetGetShipyardFunc(func(ctxAPI context.Context, systemSymbol, waypointSym, token string) (*infraPorts.ShipyardData, error) {
+	ctx.apiClient.SetGetShipyardFunc(func(ctxAPI context.Context, systemSymbol, waypointSym, token string) (*domainPorts.ShipyardData, error) {
 		if waypointSym == waypointSymbol {
 			return nil, fmt.Errorf("API error getting shipyard")
 		}
@@ -413,7 +413,7 @@ func (ctx *shipyardApplicationContext) thereAreNoShipyardsInSystem(systemSymbol 
 }
 
 func (ctx *shipyardApplicationContext) theAPIWillReturnAnErrorWhenPurchasingAShip() error {
-	ctx.apiClient.SetPurchaseShipFunc(func(ctxAPI context.Context, shipType, waypointSymbol, token string) (*infraPorts.ShipPurchaseResult, error) {
+	ctx.apiClient.SetPurchaseShipFunc(func(ctxAPI context.Context, shipType, waypointSymbol, token string) (*domainPorts.ShipPurchaseResult, error) {
 		return nil, fmt.Errorf("API error purchasing ship")
 	})
 	return nil

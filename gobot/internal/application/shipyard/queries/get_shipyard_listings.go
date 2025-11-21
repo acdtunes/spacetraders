@@ -8,7 +8,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shipyard"
-	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/ports"
+	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 )
 
 // GetShipyardListingsQuery is a query to get available ships at a shipyard
@@ -25,14 +25,14 @@ type GetShipyardListingsResponse struct {
 
 // GetShipyardListingsHandler handles the GetShipyardListings query
 type GetShipyardListingsHandler struct {
-	apiClient  ports.APIClient
+	apiClient  domainPorts.APIClient
 	playerRepo player.PlayerRepository
 	// graphBuilder is unused for now but kept for consistency
 }
 
 // NewGetShipyardListingsHandler creates a new GetShipyardListingsHandler
 func NewGetShipyardListingsHandler(
-	apiClient ports.APIClient,
+	apiClient domainPorts.APIClient,
 	playerRepo player.PlayerRepository,
 ) *GetShipyardListingsHandler {
 	return &GetShipyardListingsHandler{
@@ -74,7 +74,7 @@ func (h *GetShipyardListingsHandler) Handle(ctx context.Context, request common.
 // convertShipListings converts API ship listings to domain model
 // Returns: array of domain ShipListing objects
 func (h *GetShipyardListingsHandler) convertShipListings(
-	apiShips []ports.ShipListingData,
+	apiShips []domainPorts.ShipListingData,
 ) []shipyard.ShipListing {
 	listings := make([]shipyard.ShipListing, len(apiShips))
 	for i, ship := range apiShips {
@@ -96,7 +96,7 @@ func (h *GetShipyardListingsHandler) convertShipListings(
 // extractShipTypeStrings extracts ship type names from API structures
 // Returns: array of ship type strings
 func (h *GetShipyardListingsHandler) extractShipTypeStrings(
-	apiShipTypes []ports.ShipTypeInfo,
+	apiShipTypes []domainPorts.ShipTypeInfo,
 ) []string {
 	shipTypes := make([]string, len(apiShipTypes))
 	for i, st := range apiShipTypes {
@@ -108,7 +108,7 @@ func (h *GetShipyardListingsHandler) extractShipTypeStrings(
 // buildShipyardDomain constructs the domain Shipyard entity from API data
 // Returns: shipyard domain object, error
 func (h *GetShipyardListingsHandler) buildShipyardDomain(
-	shipyardData *ports.ShipyardData,
+	shipyardData *domainPorts.ShipyardData,
 	shipListings []shipyard.ShipListing,
 	shipTypes []string,
 ) (shipyard.Shipyard, error) {

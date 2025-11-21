@@ -7,7 +7,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
-	infraPorts "github.com/andrescamacho/spacetraders-go/internal/infrastructure/ports"
+	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 )
 
 // GetPlayerQuery represents a query to get a player by ID or agent symbol
@@ -24,11 +24,11 @@ type GetPlayerResponse struct {
 // GetPlayerHandler handles the GetPlayer query
 type GetPlayerHandler struct {
 	playerRepo player.PlayerRepository
-	apiClient  infraPorts.APIClient
+	apiClient  domainPorts.APIClient
 }
 
 // NewGetPlayerHandler creates a new GetPlayerHandler
-func NewGetPlayerHandler(playerRepo player.PlayerRepository, apiClient infraPorts.APIClient) *GetPlayerHandler {
+func NewGetPlayerHandler(playerRepo player.PlayerRepository, apiClient domainPorts.APIClient) *GetPlayerHandler {
 	return &GetPlayerHandler{
 		playerRepo: playerRepo,
 		apiClient:  apiClient,

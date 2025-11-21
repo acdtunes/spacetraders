@@ -8,7 +8,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
-	infraPorts "github.com/andrescamacho/spacetraders-go/internal/infrastructure/ports"
+	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 )
 
 // AcceptContractCommand - Command to accept a contract
@@ -26,14 +26,14 @@ type AcceptContractResponse struct {
 type AcceptContractHandler struct {
 	contractRepo contract.ContractRepository
 	playerRepo   player.PlayerRepository
-	apiClient    infraPorts.APIClient
+	apiClient    domainPorts.APIClient
 }
 
 // NewAcceptContractHandler creates a new accept contract handler
 func NewAcceptContractHandler(
 	contractRepo contract.ContractRepository,
 	playerRepo player.PlayerRepository,
-	apiClient infraPorts.APIClient,
+	apiClient domainPorts.APIClient,
 ) *AcceptContractHandler {
 	return &AcceptContractHandler{
 		contractRepo: contractRepo,

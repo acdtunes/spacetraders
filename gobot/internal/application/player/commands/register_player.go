@@ -8,7 +8,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
-	infraPorts "github.com/andrescamacho/spacetraders-go/internal/infrastructure/ports"
+	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 )
 
 // RegisterPlayerCommand represents a command to register a new player
@@ -80,13 +80,13 @@ type SyncPlayerResponse struct {
 // This syncs player credits and metadata from the SpaceTraders API
 type SyncPlayerHandler struct {
 	playerRepo player.PlayerRepository
-	apiClient  infraPorts.APIClient
+	apiClient  domainPorts.APIClient
 }
 
 // NewSyncPlayerHandler creates a new SyncPlayerHandler
 func NewSyncPlayerHandler(
 	playerRepo player.PlayerRepository,
-	apiClient infraPorts.APIClient,
+	apiClient domainPorts.APIClient,
 ) *SyncPlayerHandler {
 	return &SyncPlayerHandler{
 		playerRepo: playerRepo,

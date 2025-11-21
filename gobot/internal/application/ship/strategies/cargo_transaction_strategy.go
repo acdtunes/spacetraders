@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
-	infraPorts "github.com/andrescamacho/spacetraders-go/internal/infrastructure/ports"
+	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 )
 
 // CargoTransactionStrategy defines the interface for different types of cargo transactions.
@@ -43,11 +43,11 @@ type TransactionResult struct {
 // Business rules enforced:
 //   - Ship must have sufficient available cargo space
 type PurchaseStrategy struct {
-	apiClient infraPorts.APIClient
+	apiClient domainPorts.APIClient
 }
 
 // NewPurchaseStrategy creates a new purchase strategy instance.
-func NewPurchaseStrategy(apiClient infraPorts.APIClient) *PurchaseStrategy {
+func NewPurchaseStrategy(apiClient domainPorts.APIClient) *PurchaseStrategy {
 	return &PurchaseStrategy{
 		apiClient: apiClient,
 	}
@@ -85,11 +85,11 @@ func (s *PurchaseStrategy) GetTransactionType() string {
 // Business rules enforced:
 //   - Ship must have sufficient cargo of the specified type
 type SellStrategy struct {
-	apiClient infraPorts.APIClient
+	apiClient domainPorts.APIClient
 }
 
 // NewSellStrategy creates a new sell strategy instance.
-func NewSellStrategy(apiClient infraPorts.APIClient) *SellStrategy {
+func NewSellStrategy(apiClient domainPorts.APIClient) *SellStrategy {
 	return &SellStrategy{
 		apiClient: apiClient,
 	}

@@ -8,7 +8,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
-	infraPorts "github.com/andrescamacho/spacetraders-go/internal/infrastructure/ports"
+	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 )
 
 // TransferCargoCommand - Command to transfer cargo between ships
@@ -30,14 +30,14 @@ type TransferCargoResponse struct {
 type TransferCargoHandler struct {
 	shipRepo   navigation.ShipRepository
 	playerRepo player.PlayerRepository
-	apiClient  infraPorts.APIClient
+	apiClient  domainPorts.APIClient
 }
 
 // NewTransferCargoHandler creates a new transfer cargo handler
 func NewTransferCargoHandler(
 	shipRepo navigation.ShipRepository,
 	playerRepo player.PlayerRepository,
-	apiClient infraPorts.APIClient,
+	apiClient domainPorts.APIClient,
 ) *TransferCargoHandler {
 	return &TransferCargoHandler{
 		shipRepo:   shipRepo,

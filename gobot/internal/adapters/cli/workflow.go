@@ -343,9 +343,9 @@ func newWorkflowMiningCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "mining",
 		Short: "Start mining operation with Transport-as-Sink pattern",
-		Long: `Start a coordinated mining operation with miners and transports.
+		Long: `Start a coordinated mining operation with miners and transdomainPorts.
 
-Miners extract resources from the asteroid field and transfer cargo to waiting transports.
+Miners extract resources from the asteroid field and transfer cargo to waiting transdomainPorts.
 Transports sell cargo at the best available market and return for more.
 
 Mining types (traits on asteroid fields):

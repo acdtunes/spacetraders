@@ -10,7 +10,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
-	infraPorts "github.com/andrescamacho/spacetraders-go/internal/infrastructure/ports"
+	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 )
 
 // PurchaseCargoCommand requests cargo purchase for a ship at its current docked location.
@@ -55,7 +55,7 @@ type PurchaseCargoHandler struct {
 func NewPurchaseCargoHandler(
 	shipRepo navigation.ShipRepository,
 	playerRepo player.PlayerRepository,
-	apiClient infraPorts.APIClient,
+	apiClient domainPorts.APIClient,
 	marketRepo scoutingQuery.MarketRepository,
 ) *PurchaseCargoHandler {
 	strategy := strategies.NewPurchaseStrategy(apiClient)

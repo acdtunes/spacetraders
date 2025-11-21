@@ -7,9 +7,9 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
+	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
-	infraports "github.com/andrescamacho/spacetraders-go/internal/infrastructure/ports"
 )
 
 // PurchaseCargoResult represents the result of a purchase operation
@@ -29,7 +29,7 @@ type MockAPIClient struct {
 	mu sync.RWMutex
 
 	// Market data responses
-	marketData map[string]*infraports.MarketData // waypoint -> market data
+	marketData map[string]*domainPorts.MarketData // waypoint -> market data
 
 	// Ship storage for GetShip
 	ships map[string]*navigation.Ship // shipSymbol -> ship
@@ -41,7 +41,7 @@ type MockAPIClient struct {
 	waypoints map[string]*shared.Waypoint // waypointSymbol -> waypoint
 
 	// Shipyard storage
-	shipyards map[string]*infraports.ShipyardData // waypointSymbol -> shipyard data
+	shipyards map[string]*domainPorts.ShipyardData // waypointSymbol -> shipyard data
 
 	// Call tracking
 	getMarketCalls []string // Track which waypoints were queried
@@ -53,21 +53,21 @@ type MockAPIClient struct {
 	// Custom function handlers
 	purchaseCargoFunc   func(ctx context.Context, shipSymbol, goodSymbol string, units int, token string) (*PurchaseCargoResult, error)
 	sellCargoFunc       func(ctx context.Context, shipSymbol, goodSymbol string, units int, token string) (*SellCargoResult, error)
-	acceptContractFunc  func(ctx context.Context, contractID, token string) (*infraports.ContractData, error)
-	deliverContractFunc func(ctx context.Context, contractID, shipSymbol, tradeSymbol string, units int, token string) (*infraports.ContractData, error)
-	fulfillContractFunc func(ctx context.Context, contractID, token string) (*infraports.ContractData, error)
-	getShipyardFunc     func(ctx context.Context, systemSymbol, waypointSymbol, token string) (*infraports.ShipyardData, error)
-	purchaseShipFunc    func(ctx context.Context, shipType, waypointSymbol, token string) (*infraports.ShipPurchaseResult, error)
+	acceptContractFunc  func(ctx context.Context, contractID, token string) (*domainPorts.ContractData, error)
+	deliverContractFunc func(ctx context.Context, contractID, shipSymbol, tradeSymbol string, units int, token string) (*domainPorts.ContractData, error)
+	fulfillContractFunc func(ctx context.Context, contractID, token string) (*domainPorts.ContractData, error)
+	getShipyardFunc     func(ctx context.Context, systemSymbol, waypointSymbol, token string) (*domainPorts.ShipyardData, error)
+	purchaseShipFunc    func(ctx context.Context, shipType, waypointSymbol, token string) (*domainPorts.ShipPurchaseResult, error)
 }
 
 // NewMockAPIClient creates a new mock API client
 func NewMockAPIClient() *MockAPIClient {
 	return &MockAPIClient{
-		marketData:     make(map[string]*infraports.MarketData),
+		marketData:     make(map[string]*domainPorts.MarketData),
 		ships:          make(map[string]*navigation.Ship),
 		players:        make(map[int]string),
 		waypoints:      make(map[string]*shared.Waypoint),
-		shipyards:      make(map[string]*infraports.ShipyardData),
+		shipyards:      make(map[string]*domainPorts.ShipyardData),
 		getMarketCalls: []string{},
 	}
 }
@@ -80,10 +80,10 @@ func (m *MockAPIClient) AddWaypoint(waypoint *shared.Waypoint) {
 }
 
 // SetMarketData configures the mock to return specific market data for a waypoint
-func (m *MockAPIClient) SetMarketData(waypoint string, goods []infraports.TradeGoodData) {
+func (m *MockAPIClient) SetMarketData(waypoint string, goods []domainPorts.TradeGoodData) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.marketData[waypoint] = &infraports.MarketData{
+	m.marketData[waypoint] = &domainPorts.MarketData{
 		Symbol:     waypoint,
 		TradeGoods: goods,
 	}
@@ -120,7 +120,7 @@ func (m *MockAPIClient) AddPlayer(p *player.Player) {
 }
 
 // GetMarket implements the APIClient interface
-func (m *MockAPIClient) GetMarket(ctx context.Context, systemSymbol, waypointSymbol, token string) (*infraports.MarketData, error) {
+func (m *MockAPIClient) GetMarket(ctx context.Context, systemSymbol, waypointSymbol, token string) (*domainPorts.MarketData, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -135,9 +135,9 @@ func (m *MockAPIClient) GetMarket(ctx context.Context, systemSymbol, waypointSym
 	}
 
 	// Return empty market data if not configured
-	return &infraports.MarketData{
+	return &domainPorts.MarketData{
 		Symbol:     waypointSymbol,
-		TradeGoods: []infraports.TradeGoodData{},
+		TradeGoods: []domainPorts.TradeGoodData{},
 	}, nil
 }
 
@@ -175,41 +175,41 @@ func (m *MockAPIClient) SetSellCargoFunc(f func(ctx context.Context, shipSymbol,
 }
 
 // SetAcceptContractFunc sets a custom function for AcceptContract calls
-func (m *MockAPIClient) SetAcceptContractFunc(f func(ctx context.Context, contractID, token string) (*infraports.ContractData, error)) {
+func (m *MockAPIClient) SetAcceptContractFunc(f func(ctx context.Context, contractID, token string) (*domainPorts.ContractData, error)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.acceptContractFunc = f
 }
 
-func (m *MockAPIClient) SetDeliverContractFunc(f func(ctx context.Context, contractID, shipSymbol, tradeSymbol string, units int, token string) (*infraports.ContractData, error)) {
+func (m *MockAPIClient) SetDeliverContractFunc(f func(ctx context.Context, contractID, shipSymbol, tradeSymbol string, units int, token string) (*domainPorts.ContractData, error)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.deliverContractFunc = f
 }
 
 // SetFulfillContractFunc sets a custom function for FulfillContract calls
-func (m *MockAPIClient) SetFulfillContractFunc(f func(ctx context.Context, contractID, token string) (*infraports.ContractData, error)) {
+func (m *MockAPIClient) SetFulfillContractFunc(f func(ctx context.Context, contractID, token string) (*domainPorts.ContractData, error)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.fulfillContractFunc = f
 }
 
 // SetShipyardData configures the mock to return specific shipyard data for a waypoint
-func (m *MockAPIClient) SetShipyardData(waypointSymbol string, data *infraports.ShipyardData) {
+func (m *MockAPIClient) SetShipyardData(waypointSymbol string, data *domainPorts.ShipyardData) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.shipyards[waypointSymbol] = data
 }
 
 // SetGetShipyardFunc sets a custom function for GetShipyard calls
-func (m *MockAPIClient) SetGetShipyardFunc(f func(ctx context.Context, systemSymbol, waypointSymbol, token string) (*infraports.ShipyardData, error)) {
+func (m *MockAPIClient) SetGetShipyardFunc(f func(ctx context.Context, systemSymbol, waypointSymbol, token string) (*domainPorts.ShipyardData, error)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.getShipyardFunc = f
 }
 
 // SetPurchaseShipFunc sets a custom function for PurchaseShip calls
-func (m *MockAPIClient) SetPurchaseShipFunc(f func(ctx context.Context, shipType, waypointSymbol, token string) (*infraports.ShipPurchaseResult, error)) {
+func (m *MockAPIClient) SetPurchaseShipFunc(f func(ctx context.Context, shipType, waypointSymbol, token string) (*domainPorts.ShipPurchaseResult, error)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.purchaseShipFunc = f
@@ -219,7 +219,7 @@ func (m *MockAPIClient) SetPurchaseShipFunc(f func(ctx context.Context, shipType
 func (m *MockAPIClient) ResetShipyardMocks() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.shipyards = make(map[string]*infraports.ShipyardData)
+	m.shipyards = make(map[string]*domainPorts.ShipyardData)
 	m.getShipyardFunc = nil
 	m.purchaseShipFunc = nil
 }
@@ -463,15 +463,15 @@ func (m *MockAPIClient) ListWaypoints(ctx context.Context, systemSymbol, token s
 	return nil, fmt.Errorf("not implemented in mock")
 }
 
-func (m *MockAPIClient) NegotiateContract(ctx context.Context, shipSymbol, token string) (*infraports.ContractNegotiationResult, error) {
+func (m *MockAPIClient) NegotiateContract(ctx context.Context, shipSymbol, token string) (*domainPorts.ContractNegotiationResult, error) {
 	return nil, fmt.Errorf("not implemented in mock")
 }
 
-func (m *MockAPIClient) GetContract(ctx context.Context, contractID, token string) (*infraports.ContractData, error) {
+func (m *MockAPIClient) GetContract(ctx context.Context, contractID, token string) (*domainPorts.ContractData, error) {
 	return nil, fmt.Errorf("not implemented in mock")
 }
 
-func (m *MockAPIClient) AcceptContract(ctx context.Context, contractID, token string) (*infraports.ContractData, error) {
+func (m *MockAPIClient) AcceptContract(ctx context.Context, contractID, token string) (*domainPorts.ContractData, error) {
 	m.mu.RLock()
 	fn := m.acceptContractFunc
 	shouldError := m.shouldError
@@ -487,13 +487,13 @@ func (m *MockAPIClient) AcceptContract(ctx context.Context, contractID, token st
 	}
 
 	// Default successful response (basic mock)
-	return &infraports.ContractData{
+	return &domainPorts.ContractData{
 		ID:       contractID,
 		Accepted: true,
 	}, nil
 }
 
-func (m *MockAPIClient) DeliverContract(ctx context.Context, contractID, shipSymbol, tradeSymbol string, units int, token string) (*infraports.ContractData, error) {
+func (m *MockAPIClient) DeliverContract(ctx context.Context, contractID, shipSymbol, tradeSymbol string, units int, token string) (*domainPorts.ContractData, error) {
 	m.mu.RLock()
 	fn := m.deliverContractFunc
 	m.mu.RUnlock()
@@ -505,7 +505,7 @@ func (m *MockAPIClient) DeliverContract(ctx context.Context, contractID, shipSym
 	return nil, fmt.Errorf("not implemented in mock")
 }
 
-func (m *MockAPIClient) FulfillContract(ctx context.Context, contractID, token string) (*infraports.ContractData, error) {
+func (m *MockAPIClient) FulfillContract(ctx context.Context, contractID, token string) (*domainPorts.ContractData, error) {
 	m.mu.RLock()
 	fn := m.fulfillContractFunc
 	shouldError := m.shouldError
@@ -521,13 +521,13 @@ func (m *MockAPIClient) FulfillContract(ctx context.Context, contractID, token s
 	}
 
 	// Default successful response (basic mock)
-	return &infraports.ContractData{
+	return &domainPorts.ContractData{
 		ID:        contractID,
 		Fulfilled: true,
 	}, nil
 }
 
-func (m *MockAPIClient) PurchaseCargo(ctx context.Context, shipSymbol, goodSymbol string, units int, token string) (*infraports.PurchaseResult, error) {
+func (m *MockAPIClient) PurchaseCargo(ctx context.Context, shipSymbol, goodSymbol string, units int, token string) (*domainPorts.PurchaseResult, error) {
 	m.mu.RLock()
 	fn := m.purchaseCargoFunc
 	m.mu.RUnlock()
@@ -537,7 +537,7 @@ func (m *MockAPIClient) PurchaseCargo(ctx context.Context, shipSymbol, goodSymbo
 		if err != nil {
 			return nil, err
 		}
-		return &infraports.PurchaseResult{
+		return &domainPorts.PurchaseResult{
 			TotalCost:  result.TotalCost,
 			UnitsAdded: result.UnitsAdded,
 		}, nil
@@ -546,7 +546,7 @@ func (m *MockAPIClient) PurchaseCargo(ctx context.Context, shipSymbol, goodSymbo
 	return nil, fmt.Errorf("not implemented in mock")
 }
 
-func (m *MockAPIClient) SellCargo(ctx context.Context, shipSymbol, goodSymbol string, units int, token string) (*infraports.SellResult, error) {
+func (m *MockAPIClient) SellCargo(ctx context.Context, shipSymbol, goodSymbol string, units int, token string) (*domainPorts.SellResult, error) {
 	m.mu.RLock()
 	fn := m.sellCargoFunc
 	m.mu.RUnlock()
@@ -556,7 +556,7 @@ func (m *MockAPIClient) SellCargo(ctx context.Context, shipSymbol, goodSymbol st
 		if err != nil {
 			return nil, err
 		}
-		return &infraports.SellResult{
+		return &domainPorts.SellResult{
 			TotalRevenue: result.TotalRevenue,
 			UnitsSold:    result.UnitsSold,
 		}, nil
@@ -579,7 +579,7 @@ func (m *MockAPIClient) JettisonCargo(ctx context.Context, shipSymbol, goodSymbo
 	return nil
 }
 
-func (m *MockAPIClient) GetShipyard(ctx context.Context, systemSymbol, waypointSymbol, token string) (*infraports.ShipyardData, error) {
+func (m *MockAPIClient) GetShipyard(ctx context.Context, systemSymbol, waypointSymbol, token string) (*domainPorts.ShipyardData, error) {
 	m.mu.RLock()
 	shouldError := m.shouldError
 	errorMsg := m.errorMsg
@@ -602,14 +602,14 @@ func (m *MockAPIClient) GetShipyard(ctx context.Context, systemSymbol, waypointS
 	}
 
 	// Return empty shipyard data
-	return &infraports.ShipyardData{
+	return &domainPorts.ShipyardData{
 		Symbol:    waypointSymbol,
-		ShipTypes: []infraports.ShipTypeInfo{},
-		Ships:     []infraports.ShipListingData{},
+		ShipTypes: []domainPorts.ShipTypeInfo{},
+		Ships:     []domainPorts.ShipListingData{},
 	}, nil
 }
 
-func (m *MockAPIClient) PurchaseShip(ctx context.Context, shipType, waypointSymbol, token string) (*infraports.ShipPurchaseResult, error) {
+func (m *MockAPIClient) PurchaseShip(ctx context.Context, shipType, waypointSymbol, token string) (*domainPorts.ShipPurchaseResult, error) {
 	m.mu.RLock()
 	shouldError := m.shouldError
 	errorMsg := m.errorMsg
@@ -628,7 +628,7 @@ func (m *MockAPIClient) PurchaseShip(ctx context.Context, shipType, waypointSymb
 	return nil, fmt.Errorf("not implemented in mock")
 }
 
-func (m *MockAPIClient) ExtractResources(ctx context.Context, shipSymbol string, token string) (*infraports.ExtractionResult, error) {
+func (m *MockAPIClient) ExtractResources(ctx context.Context, shipSymbol string, token string) (*domainPorts.ExtractionResult, error) {
 	m.mu.RLock()
 	shouldError := m.shouldError
 	errorMsg := m.errorMsg
@@ -639,7 +639,7 @@ func (m *MockAPIClient) ExtractResources(ctx context.Context, shipSymbol string,
 	}
 
 	// Return a mock extraction result
-	return &infraports.ExtractionResult{
+	return &domainPorts.ExtractionResult{
 		ShipSymbol:      shipSymbol,
 		YieldSymbol:     "IRON_ORE",
 		YieldUnits:      10,
@@ -649,7 +649,7 @@ func (m *MockAPIClient) ExtractResources(ctx context.Context, shipSymbol string,
 	}, nil
 }
 
-func (m *MockAPIClient) TransferCargo(ctx context.Context, fromShipSymbol, toShipSymbol, goodSymbol string, units int, token string) (*infraports.TransferResult, error) {
+func (m *MockAPIClient) TransferCargo(ctx context.Context, fromShipSymbol, toShipSymbol, goodSymbol string, units int, token string) (*domainPorts.TransferResult, error) {
 	m.mu.RLock()
 	shouldError := m.shouldError
 	errorMsg := m.errorMsg
@@ -660,7 +660,7 @@ func (m *MockAPIClient) TransferCargo(ctx context.Context, fromShipSymbol, toShi
 	}
 
 	// Return a mock transfer result
-	return &infraports.TransferResult{
+	return &domainPorts.TransferResult{
 		FromShip:         fromShipSymbol,
 		ToShip:           toShipSymbol,
 		GoodSymbol:       goodSymbol,

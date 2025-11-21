@@ -8,7 +8,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
-	infraPorts "github.com/andrescamacho/spacetraders-go/internal/infrastructure/ports"
+	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 )
 
 // FulfillContractCommand - Command to fulfill a contract
@@ -26,14 +26,14 @@ type FulfillContractResponse struct {
 type FulfillContractHandler struct {
 	contractRepo contract.ContractRepository
 	playerRepo   player.PlayerRepository
-	apiClient    infraPorts.APIClient
+	apiClient    domainPorts.APIClient
 }
 
 // NewFulfillContractHandler creates a new fulfill contract handler
 func NewFulfillContractHandler(
 	contractRepo contract.ContractRepository,
 	playerRepo player.PlayerRepository,
-	apiClient infraPorts.APIClient,
+	apiClient domainPorts.APIClient,
 ) *FulfillContractHandler {
 	return &FulfillContractHandler{
 		contractRepo: contractRepo,
