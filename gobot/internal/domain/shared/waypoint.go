@@ -24,11 +24,12 @@ func NewWaypoint(symbol string, x, y float64) (*Waypoint, error) {
 	}
 
 	return &Waypoint{
-		Symbol:   symbol,
-		X:        x,
-		Y:        y,
-		Traits:   []string{},
-		Orbitals: []string{},
+		Symbol:       symbol,
+		X:            x,
+		Y:            y,
+		SystemSymbol: ExtractSystemSymbol(symbol),
+		Traits:       []string{},
+		Orbitals:     []string{},
 	}, nil
 }
 

@@ -792,7 +792,7 @@ func (h *RunCoordinatorHandler) selectAsteroidAndMarket(
 		return "", "", fmt.Errorf("failed to get transport ship %s: %w", transportShips[0], err)
 	}
 
-	systemSymbol := domainShared.ExtractSystemSymbol(transportShip.CurrentLocation().Symbol)
+	systemSymbol := transportShip.CurrentLocation().SystemSymbol
 	fuelCapacity := transportShip.FuelCapacity()
 	engineSpeed := transportShip.EngineSpeed()
 

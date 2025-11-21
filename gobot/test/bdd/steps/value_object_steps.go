@@ -23,17 +23,19 @@ var (
 )
 
 type valueObjectContext struct {
-	waypoint       *shared.Waypoint
-	fuel           *shared.Fuel
-	originalFuel   *shared.Fuel
-	cargo          *shared.Cargo
-	cargoItem      *shared.CargoItem
-	flightMode     shared.FlightMode
-	err            error
-	floatResult    float64
-	intResult      int
-	boolResult     bool
-	waypointMap    map[string]*shared.Waypoint
+	waypoint        *shared.Waypoint
+	fuel            *shared.Fuel
+	originalFuel    *shared.Fuel
+	cargo           *shared.Cargo
+	cargoItem       *shared.CargoItem
+	flightMode      shared.FlightMode
+	err             error
+	floatResult     float64
+	intResult       int
+	boolResult      bool
+	stringResult    string
+	waypointSymbol  string
+	waypointMap     map[string]*shared.Waypoint
 	otherCargoItems []*shared.CargoItem
 }
 
@@ -48,6 +50,8 @@ func (voc *valueObjectContext) reset() {
 	voc.floatResult = 0
 	voc.intResult = 0
 	voc.boolResult = false
+	voc.stringResult = ""
+	voc.waypointSymbol = ""
 	voc.waypointMap = make(map[string]*shared.Waypoint)
 	voc.otherCargoItems = nil
 	// Reset shared variables
@@ -124,6 +128,50 @@ func (voc *valueObjectContext) theDistanceShouldBe(expected float64) error {
 func (voc *valueObjectContext) theDistanceShouldBeApproximately(expected float64) error {
 	if math.Abs(voc.floatResult-expected) > 0.1 {
 		return fmt.Errorf("expected distance approximately %.2f but got %.2f", expected, voc.floatResult)
+	}
+	return nil
+}
+
+// System symbol extraction steps
+func (voc *valueObjectContext) aWaypointSymbol(symbol string) error {
+	voc.waypointSymbol = symbol
+	return nil
+}
+
+func (voc *valueObjectContext) iExtractTheSystemSymbol() error {
+	voc.stringResult = shared.ExtractSystemSymbol(voc.waypointSymbol)
+	return nil
+}
+
+func (voc *valueObjectContext) theSystemSymbolShouldBe(expected string) error {
+	if voc.stringResult != expected {
+		return fmt.Errorf("expected system symbol '%s' but got '%s'", expected, voc.stringResult)
+	}
+	return nil
+}
+
+func (voc *valueObjectContext) aWaypointWithSymbolAtCoordinates(symbol string, x, y float64) error {
+	wp, err := shared.NewWaypoint(symbol, x, y)
+	if err != nil {
+		return err
+	}
+	voc.waypoint = wp
+	voc.waypointMap[symbol] = wp
+	sharedWaypointMap[symbol] = wp
+	return nil
+}
+
+func (voc *valueObjectContext) iGetTheSystemSymbolFromTheWaypoint() error {
+	if voc.waypoint == nil {
+		return fmt.Errorf("no waypoint available")
+	}
+	voc.stringResult = voc.waypoint.SystemSymbol
+	return nil
+}
+
+func (voc *valueObjectContext) theWaypointsSystemSymbolShouldBe(expected string) error {
+	if voc.stringResult != expected {
+		return fmt.Errorf("expected waypoint's system symbol '%s' but got '%s'", expected, voc.stringResult)
 	}
 	return nil
 }
@@ -784,6 +832,14 @@ func InitializeValueObjectScenarios(ctx *godog.ScenarioContext) {
 	ctx.Step(`^the waypoint should have y coordinate ([0-9.]+)$`, func(coord float64) error {
 		return voc.theWaypointShouldHaveYCoordinate("", coord)
 	})
+
+	// System symbol extraction steps
+	ctx.Step(`^a waypoint symbol "([^"]*)"$`, voc.aWaypointSymbol)
+	ctx.Step(`^I extract the system symbol$`, voc.iExtractTheSystemSymbol)
+	ctx.Step(`^the system symbol should be "([^"]*)"$`, voc.theSystemSymbolShouldBe)
+	ctx.Step(`^a waypoint with symbol "([^"]*)" at coordinates \(([^,]+), ([^)]+)\)$`, voc.aWaypointWithSymbolAtCoordinates)
+	ctx.Step(`^I get the system symbol from the waypoint$`, voc.iGetTheSystemSymbolFromTheWaypoint)
+	ctx.Step(`^the waypoint's system symbol should be "([^"]*)"$`, voc.theWaypointsSystemSymbolShouldBe)
 
 	// Fuel steps
 	ctx.Step(`^I create fuel with current (\d+) and capacity (\d+)$`, voc.iCreateFuelWithCurrentAndCapacity)

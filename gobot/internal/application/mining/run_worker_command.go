@@ -202,7 +202,7 @@ func (h *RunWorkerHandler) executeMining(
 			evalQuery := &EvaluateCargoValueQuery{
 				CargoItems:   cargoItems,
 				MinPriceThreshold: 50, // Jettison ores < 50 credits/unit,
-				SystemSymbol: shared.ExtractSystemSymbol(ship.CurrentLocation().Symbol),
+				SystemSymbol: ship.CurrentLocation().SystemSymbol,
 				PlayerID:     cmd.PlayerID,
 			}
 

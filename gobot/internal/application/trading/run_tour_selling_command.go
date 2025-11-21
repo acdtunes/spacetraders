@@ -114,7 +114,7 @@ func (h *RunTourSellingHandler) executeSellRoute(
 	}
 
 	// Get system graph for waypoint data
-	systemSymbol := domainShared.ExtractSystemSymbol(ship.CurrentLocation().Symbol)
+	systemSymbol := ship.CurrentLocation().SystemSymbol
 	graphResult, err := h.graphProvider.GetGraph(ctx, systemSymbol, false, cmd.PlayerID)
 	if err != nil {
 		return 0, 0, nil, fmt.Errorf("failed to get system graph: %w", err)
@@ -301,7 +301,7 @@ func (h *RunTourSellingHandler) findBestMarketsForCargo(
 ) (map[string][]string, error) {
 	// Map market -> goods to sell there
 	marketGoods := make(map[string][]string)
-	systemSymbol := domainShared.ExtractSystemSymbol(ship.CurrentLocation().Symbol)
+	systemSymbol := ship.CurrentLocation().SystemSymbol
 
 	// Find best market for each cargo item (highest purchase price)
 	for _, item := range ship.Cargo().Inventory {

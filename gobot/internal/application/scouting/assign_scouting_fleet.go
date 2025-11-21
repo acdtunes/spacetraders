@@ -144,7 +144,7 @@ func (h *AssignScoutingFleetHandler) filterScoutShips(ships []*navigation.Ship, 
 
 	for _, ship := range ships {
 		// Check if ship is in the specified system
-		shipSystem := shared.ExtractSystemSymbol(ship.CurrentLocation().Symbol)
+		shipSystem := ship.CurrentLocation().SystemSymbol
 		if shipSystem != systemSymbol {
 			continue
 		}
@@ -163,8 +163,6 @@ func (h *AssignScoutingFleetHandler) filterNonFuelStations(waypoints []*shared.W
 	var filtered []*shared.Waypoint
 
 	for _, waypoint := range waypoints {
-		// Check if waypoint type is FUEL_STATION
-		// FUEL_STATION is a waypoint TYPE, not a trait
 		if waypoint.Type != "FUEL_STATION" {
 			filtered = append(filtered, waypoint)
 		}
