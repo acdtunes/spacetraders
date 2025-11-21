@@ -48,35 +48,67 @@ func (h *FulfillContractHandler) Handle(ctx context.Context, request common.Requ
 		return nil, fmt.Errorf("invalid request type")
 	}
 
-	// 1. Get player token
-	player, err := h.playerRepo.FindByID(ctx, cmd.PlayerID)
+	player, err := h.getPlayerToken(ctx, cmd.PlayerID)
 	if err != nil {
-		return nil, fmt.Errorf("player not found: %w", err)
-	}
-
-	// 2. Load contract from database
-	contract, err := h.contractRepo.FindByID(ctx, cmd.ContractID, cmd.PlayerID)
-	if err != nil {
-		return nil, fmt.Errorf("contract not found: %w", err)
-	}
-
-	// 3. Fulfill contract using domain method (validates deliveries are complete)
-	if err := contract.Fulfill(); err != nil {
 		return nil, err
 	}
 
-	// 4. Call API to fulfill contract
-	_, err = h.apiClient.FulfillContract(ctx, cmd.ContractID, player.Token)
+	contract, err := h.loadContract(ctx, cmd.ContractID, cmd.PlayerID)
 	if err != nil {
-		return nil, fmt.Errorf("API error: %w", err)
+		return nil, err
 	}
 
-	// 5. Save updated contract to database
-	if err := h.contractRepo.Add(ctx, contract); err != nil {
-		return nil, fmt.Errorf("failed to save contract: %w", err)
+	if err := h.fulfillContractInDomain(contract); err != nil {
+		return nil, err
+	}
+
+	if err := h.callFulfillContractAPI(ctx, cmd.ContractID, player.Token); err != nil {
+		return nil, err
+	}
+
+	if err := h.saveContract(ctx, contract); err != nil {
+		return nil, err
 	}
 
 	return &FulfillContractResponse{
 		Contract: contract,
 	}, nil
+}
+
+func (h *FulfillContractHandler) getPlayerToken(ctx context.Context, playerID int) (*player.Player, error) {
+	player, err := h.playerRepo.FindByID(ctx, playerID)
+	if err != nil {
+		return nil, fmt.Errorf("player not found: %w", err)
+	}
+	return player, nil
+}
+
+func (h *FulfillContractHandler) loadContract(ctx context.Context, contractID string, playerID int) (*contract.Contract, error) {
+	contract, err := h.contractRepo.FindByID(ctx, contractID, playerID)
+	if err != nil {
+		return nil, fmt.Errorf("contract not found: %w", err)
+	}
+	return contract, nil
+}
+
+func (h *FulfillContractHandler) fulfillContractInDomain(contract *contract.Contract) error {
+	if err := contract.Fulfill(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (h *FulfillContractHandler) callFulfillContractAPI(ctx context.Context, contractID string, token string) error {
+	_, err := h.apiClient.FulfillContract(ctx, contractID, token)
+	if err != nil {
+		return fmt.Errorf("API error: %w", err)
+	}
+	return nil
+}
+
+func (h *FulfillContractHandler) saveContract(ctx context.Context, contract *contract.Contract) error {
+	if err := h.contractRepo.Add(ctx, contract); err != nil {
+		return fmt.Errorf("failed to save contract: %w", err)
+	}
+	return nil
 }
