@@ -2,9 +2,11 @@ package ship
 
 import (
 	"context"
+
+	scoutingQuery "github.com/andrescamacho/spacetraders-go/internal/application/scouting/queries"
 )
 
-// getTransactionLimit retrieves the transaction limit for a trade good from market data.
+// GetTransactionLimit retrieves the transaction limit for a trade good from market data.
 //
 // This function attempts to fetch market data for the specified waypoint and extract
 // the transaction limit for the given trade good. If market data is unavailable or
@@ -28,9 +30,9 @@ import (
 //
 // Returns:
 //   - Transaction limit (units per API call). Either the market's limit or requestedUnits.
-func getTransactionLimit(
+func GetTransactionLimit(
 	ctx context.Context,
-	marketRepo MarketRepository,
+	marketRepo scoutingQuery.MarketRepository,
 	waypointSymbol string,
 	goodSymbol string,
 	playerID int,

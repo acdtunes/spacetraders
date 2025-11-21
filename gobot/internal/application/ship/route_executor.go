@@ -10,6 +10,41 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
+// Local command type definitions to avoid circular imports
+// These mirror the actual command types in the commands subpackage
+type (
+	OrbitShipCommand struct {
+		ShipSymbol string
+		PlayerID   shared.PlayerID
+	}
+	DockShipCommand struct {
+		ShipSymbol string
+		PlayerID   shared.PlayerID
+	}
+	RefuelShipCommand struct {
+		ShipSymbol string
+		PlayerID   shared.PlayerID
+		Units      *int
+	}
+	SetFlightModeCommand struct {
+		ShipSymbol string
+		Mode       shared.FlightMode
+		PlayerID   shared.PlayerID
+	}
+	NavigateDirectCommand struct {
+		ShipSymbol   string
+		Destination  string
+		FlightMode   string
+		PlayerID     shared.PlayerID
+	}
+	NavigateDirectResponse struct {
+		Status         string
+		ArrivalTimeStr string
+		FuelConsumed   int
+		TravelDuration int
+	}
+)
+
 // RouteExecutor executes routes by orchestrating atomic ship commands via mediator
 //
 // This is the CRITICAL orchestration service that replaces the executeRoute() method

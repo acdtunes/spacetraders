@@ -163,14 +163,14 @@ Each command has:
    - Handles complete navigation with route planning
    - Features: multi-hop routing, refueling stops, flight mode optimization
    - Used by: Business logic, workflows, CLI commands
-   - Location: `application/ship/navigate_route.go`
+   - Location: `application/ship/commands/navigate_route.go`
 
 2. **NavigateDirectCommand** (LOW-LEVEL) ⚠️
    - **INTERNAL USE ONLY** - used by RouteExecutor
    - Simple atomic single-hop navigation (orbit → navigate API call)
    - NO route planning, NO refueling, NO optimization
    - Used by: RouteExecutor (executing planned route segments)
-   - Location: `application/ship/navigate_direct.go`
+   - Location: `application/ship/commands/navigate_direct.go`
 
 **Rule:** Always use `NavigateRouteCommand` unless you're implementing low-level route execution logic.
 

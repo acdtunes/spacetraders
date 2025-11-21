@@ -1,0 +1,261 @@
+package commands
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/routing"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
+	"github.com/andrescamacho/spacetraders-go/pkg/utils"
+)
+
+// ScoutMarketsCommand orchestrates fleet deployment for market scouting
+// Uses VRP optimization to distribute markets across multiple ships
+// Idempotent: reuses existing containers for ships that already have them
+type ScoutMarketsCommand struct {
+	PlayerID     shared.PlayerID
+	ShipSymbols  []string
+	SystemSymbol string
+	Markets      []string
+	Iterations   int // Number of iterations (-1 for infinite)
+}
+
+// ScoutMarketsResponse contains container IDs and market assignments
+type ScoutMarketsResponse struct {
+	ContainerIDs     []string            // All container IDs (new + reused)
+	Assignments      map[string][]string // ship_symbol -> markets assigned
+	ReusedContainers []string            // Subset of ContainerIDs that were reused
+}
+
+// ScoutMarketsHandler handles the scout markets command
+type ScoutMarketsHandler struct {
+	shipRepo           navigation.ShipRepository
+	graphProvider      system.ISystemGraphProvider
+	routingClient      routing.RoutingClient
+	daemonClient       daemon.DaemonClient
+	shipAssignmentRepo container.ShipAssignmentRepository
+}
+
+// NewScoutMarketsHandler creates a new scout markets handler
+func NewScoutMarketsHandler(
+	shipRepo navigation.ShipRepository,
+	graphProvider system.ISystemGraphProvider,
+	routingClient routing.RoutingClient,
+	daemonClient daemon.DaemonClient,
+	shipAssignmentRepo container.ShipAssignmentRepository,
+) *ScoutMarketsHandler {
+	return &ScoutMarketsHandler{
+		shipRepo:           shipRepo,
+		graphProvider:      graphProvider,
+		routingClient:      routingClient,
+		daemonClient:       daemonClient,
+		shipAssignmentRepo: shipAssignmentRepo,
+	}
+}
+
+// Handle executes the scout markets command
+func (h *ScoutMarketsHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {
+	cmd, ok := request.(*ScoutMarketsCommand)
+	if !ok {
+		return nil, fmt.Errorf("invalid request type")
+	}
+
+	logger := common.LoggerFromContext(ctx)
+
+	// 0. Stop existing scout-tour containers for the ships in this command
+	// This ensures VRP recalculation with fresh ship positions
+	// User explicitly ran scout-all-markets, so we want to redistribute work
+	for _, shipSymbol := range cmd.ShipSymbols {
+		// Check if ship has an active assignment
+		assignment, err := h.shipAssignmentRepo.FindByShip(ctx, shipSymbol, int(cmd.PlayerID.Value()))
+		if err != nil {
+			return nil, fmt.Errorf("failed to query ship assignment for %s: %w", shipSymbol, err)
+		}
+
+		if assignment != nil && assignment.Status() == "active" {
+			// Stop the container and release the ship
+			containerID := assignment.ContainerID()
+			logger.Log("INFO", "Stopping existing scout container for reset", map[string]interface{}{
+				"ship_symbol":  shipSymbol,
+				"action":       "stop_existing_container",
+				"container_id": containerID,
+				"reason":       "scout_all_markets_reset",
+			})
+
+			if err := h.daemonClient.StopContainer(ctx, containerID); err != nil {
+				// Non-fatal: container might already be stopped or not found
+				logger.Log("WARNING", "Scout container stop failed", map[string]interface{}{
+					"ship_symbol":  shipSymbol,
+					"action":       "stop_container",
+					"container_id": containerID,
+					"error":        err.Error(),
+				})
+			}
+
+			// Release ship assignment
+			if err := h.shipAssignmentRepo.Release(ctx, shipSymbol, int(cmd.PlayerID.Value()), "scout_all_markets_reset"); err != nil {
+				// Non-fatal: assignment might already be released
+				logger.Log("WARNING", "Ship assignment release failed", map[string]interface{}{
+					"ship_symbol": shipSymbol,
+					"action":      "release_ship",
+					"error":       err.Error(),
+				})
+			}
+		}
+	}
+
+	// 1. Query ship assignments to find existing active assignments (source of truth)
+	// After cleanup above, this should find no active assignments for the requested ships
+	shipsWithContainers := make(map[string]string) // ship -> container_id
+	reusedContainers := []string{}
+
+	for _, shipSymbol := range cmd.ShipSymbols {
+		assignment, err := h.shipAssignmentRepo.FindByShip(ctx, shipSymbol, int(cmd.PlayerID.Value()))
+		if err != nil {
+			return nil, fmt.Errorf("failed to query ship assignment for %s: %w", shipSymbol, err)
+		}
+
+		if assignment != nil && assignment.Status() == "active" {
+			shipsWithContainers[shipSymbol] = assignment.ContainerID()
+			reusedContainers = append(reusedContainers, assignment.ContainerID())
+		}
+	}
+
+	// 2. Partition ships: with_containers vs needing_containers
+	shipsNeedingContainers := []string{}
+	for _, ship := range cmd.ShipSymbols {
+		if _, exists := shipsWithContainers[ship]; !exists {
+			shipsNeedingContainers = append(shipsNeedingContainers, ship)
+		}
+	}
+
+	// 3. Early return if all ships have containers
+	if len(shipsNeedingContainers) == 0 {
+		allContainerIDs := []string{}
+		assignments := make(map[string][]string)
+		for ship, containerID := range shipsWithContainers {
+			allContainerIDs = append(allContainerIDs, containerID)
+			assignments[ship] = []string{} // Unknown assignments for reused
+		}
+
+		return &ScoutMarketsResponse{
+			ContainerIDs:     allContainerIDs,
+			Assignments:      assignments,
+			ReusedContainers: reusedContainers,
+		}, nil
+	}
+
+	// 4. Load ships and get current locations + specs
+	shipConfigs := make(map[string]*routing.ShipConfigData)
+
+	for _, shipSymbol := range shipsNeedingContainers {
+		shipData, err := h.shipRepo.FindBySymbol(ctx, shipSymbol, cmd.PlayerID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load ship %s: %w", shipSymbol, err)
+		}
+
+		shipConfigs[shipSymbol] = &routing.ShipConfigData{
+			CurrentLocation: shipData.CurrentLocation().Symbol,
+			FuelCapacity:    shipData.FuelCapacity(),
+			EngineSpeed:     shipData.EngineSpeed(),
+		}
+	}
+
+	// 5. Get system graph
+	graphResult, err := h.graphProvider.GetGraph(ctx, cmd.SystemSymbol, false, cmd.PlayerID.Value())
+	if err != nil {
+		return nil, fmt.Errorf("failed to get graph: %w", err)
+	}
+
+	// Convert graph to waypoint data
+	waypointData, err := extractWaypointData(graphResult.Graph)
+	if err != nil {
+		return nil, fmt.Errorf("failed to extract waypoint data: %w", err)
+	}
+
+	// 6. Run VRP optimization
+	var assignments map[string][]string
+	if len(shipsNeedingContainers) == 1 {
+		// Single ship: assign all markets
+		assignments = map[string][]string{
+			shipsNeedingContainers[0]: cmd.Markets,
+		}
+	} else {
+		// Multi-ship: use VRP via routing client
+		vrpRequest := &routing.VRPRequest{
+			SystemSymbol:    cmd.SystemSymbol,
+			ShipSymbols:     shipsNeedingContainers,
+			MarketWaypoints: cmd.Markets,
+			ShipConfigs:     shipConfigs,
+			AllWaypoints:    waypointData,
+		}
+
+		vrpResponse, err := h.routingClient.PartitionFleet(ctx, vrpRequest)
+		if err != nil {
+			return nil, fmt.Errorf("VRP optimization failed: %w", err)
+		}
+
+		// Extract market assignments from VRP response
+		assignments = make(map[string][]string)
+		for shipSymbol, tourData := range vrpResponse.Assignments {
+			assignments[shipSymbol] = tourData.Waypoints
+		}
+	}
+
+	// 7. Create scout-tour containers for ships needing them
+	newContainerIDs := []string{}
+	for shipSymbol, markets := range assignments {
+		containerID := utils.GenerateContainerID("scout-tour", shipSymbol)
+
+		scoutTourCmd := &ScoutTourCommand{
+			PlayerID:   cmd.PlayerID,
+			ShipSymbol: shipSymbol,
+			Markets:    markets,
+			Iterations: cmd.Iterations,
+		}
+
+		err := h.daemonClient.CreateScoutTourContainer(ctx, containerID, uint(cmd.PlayerID.Value()), scoutTourCmd)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create container for %s: %w", shipSymbol, err)
+		}
+
+		newContainerIDs = append(newContainerIDs, containerID)
+	}
+
+	// 8. Combine results
+	allContainerIDs := append(reusedContainers, newContainerIDs...)
+
+	// Add reused containers to assignments (with empty markets list)
+	for ship := range shipsWithContainers {
+		if _, exists := assignments[ship]; !exists {
+			assignments[ship] = []string{}
+		}
+	}
+
+	return &ScoutMarketsResponse{
+		ContainerIDs:     allContainerIDs,
+		Assignments:      assignments,
+		ReusedContainers: reusedContainers,
+	}, nil
+}
+
+// extractWaypointData converts graph format to routing waypoint data
+func extractWaypointData(graph *system.NavigationGraph) ([]*system.WaypointData, error) {
+	waypointData := make([]*system.WaypointData, 0, len(graph.Waypoints))
+
+	for symbol, waypoint := range graph.Waypoints {
+		waypointData = append(waypointData, &system.WaypointData{
+			Symbol:  symbol,
+			X:       waypoint.X,
+			Y:       waypoint.Y,
+			HasFuel: waypoint.HasFuel,
+		})
+	}
+
+	return waypointData, nil
+}

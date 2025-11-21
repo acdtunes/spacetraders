@@ -5,8 +5,8 @@ import (
 	"fmt"
 
 	pb "github.com/andrescamacho/spacetraders-go/pkg/proto/daemon"
-	"github.com/andrescamacho/spacetraders-go/internal/application/contract"
-	"github.com/andrescamacho/spacetraders-go/internal/application/scouting"
+	contractCmd "github.com/andrescamacho/spacetraders-go/internal/application/contract/commands"
+	scoutingCmd "github.com/andrescamacho/spacetraders-go/internal/application/scouting/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -79,9 +79,9 @@ func (c *DaemonClientGRPC) CreateScoutTourContainer(
 	command interface{},
 ) error {
 	// Type assert to ScoutTourCommand
-	cmd, ok := command.(*scouting.ScoutTourCommand)
+	cmd, ok := command.(*scoutingCmd.ScoutTourCommand)
 	if !ok {
-		return fmt.Errorf("invalid command type: expected *scouting.ScoutTourCommand, got %T", command)
+		return fmt.Errorf("invalid command type: expected *scoutingCmd.ScoutTourCommand, got %T", command)
 	}
 
 	req := &pb.ScoutTourRequest{
@@ -110,9 +110,9 @@ func (c *DaemonClientGRPC) CreateContractWorkflowContainer(
 	completionCallback chan<- string,
 ) error {
 	// Type assert to ContractWorkflowCommand
-	_, ok := command.(*contract.RunWorkflowCommand)
+	_, ok := command.(*contractCmd.RunWorkflowCommand)
 	if !ok {
-		return fmt.Errorf("invalid command type: expected *contract.RunWorkflowCommand, got %T", command)
+		return fmt.Errorf("invalid command type: expected *contractCmd.RunWorkflowCommand, got %T", command)
 	}
 
 	// This method is a placeholder - gRPC implementation would send the command to the daemon

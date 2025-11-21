@@ -13,12 +13,14 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
-	"github.com/andrescamacho/spacetraders-go/internal/application/contract"
-	"github.com/andrescamacho/spacetraders-go/internal/application/mining"
-	"github.com/andrescamacho/spacetraders-go/internal/application/scouting"
-	"github.com/andrescamacho/spacetraders-go/internal/application/ship"
-	"github.com/andrescamacho/spacetraders-go/internal/application/shipyard"
-	"github.com/andrescamacho/spacetraders-go/internal/application/trading"
+	contractCmd "github.com/andrescamacho/spacetraders-go/internal/application/contract/commands"
+	miningCmd "github.com/andrescamacho/spacetraders-go/internal/application/mining/commands"
+	scoutingCmd "github.com/andrescamacho/spacetraders-go/internal/application/scouting/commands"
+	shipCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands"
+	shipQuery "github.com/andrescamacho/spacetraders-go/internal/application/ship/queries"
+	shipyardCmd "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/commands"
+	shipyardQuery "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/queries"
+	tradingCmd "github.com/andrescamacho/spacetraders-go/internal/application/trading/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/routing"
@@ -140,7 +142,7 @@ func (s *DaemonServer) registerCommandFactories() {
 			return nil, fmt.Errorf("missing or invalid iterations")
 		}
 
-		return &scouting.ScoutTourCommand{
+		return &scoutingCmd.ScoutTourCommand{
 			PlayerID:   shared.MustNewPlayerID(int(playerID)),
 			ShipSymbol: shipSymbol,
 			Markets:    markets,
@@ -157,7 +159,7 @@ func (s *DaemonServer) registerCommandFactories() {
 
 		coordinatorID, _ := config["coordinator_id"].(string) // Optional
 
-		return &contract.RunWorkflowCommand{
+		return &contractCmd.RunWorkflowCommand{
 			ShipSymbol:         shipSymbol,
 			PlayerID:           shared.MustNewPlayerID(playerID),
 			CoordinatorID:      coordinatorID,
@@ -187,7 +189,7 @@ func (s *DaemonServer) registerCommandFactories() {
 			return nil, fmt.Errorf("missing or invalid container_id")
 		}
 
-		return &contract.RunFleetCoordinatorCommand{
+		return &contractCmd.RunFleetCoordinatorCommand{
 			PlayerID:    shared.MustNewPlayerID(playerID),
 			ShipSymbols: shipSymbols,
 			ContainerID: containerID,
@@ -208,7 +210,7 @@ func (s *DaemonServer) registerCommandFactories() {
 
 		shipyardWaypoint, _ := config["shipyard"].(string) // Optional
 
-		return &shipyard.PurchaseShipCommand{
+		return &shipyardCmd.PurchaseShipCommand{
 			PurchasingShipSymbol: shipSymbol,
 			ShipType:             shipType,
 			PlayerID:             shared.MustNewPlayerID(playerID),
@@ -240,7 +242,7 @@ func (s *DaemonServer) registerCommandFactories() {
 
 		shipyardWaypoint, _ := config["shipyard"].(string) // Optional
 
-		return &shipyard.BatchPurchaseShipsCommand{
+		return &shipyardCmd.BatchPurchaseShipsCommand{
 			PurchasingShipSymbol: shipSymbol,
 			ShipType:             shipType,
 			Quantity:             int(quantity),
@@ -269,7 +271,7 @@ func (s *DaemonServer) registerCommandFactories() {
 
 		coordinatorID, _ := config["coordinator_id"].(string) // Optional
 
-		return &mining.RunWorkerCommand{
+		return &miningCmd.RunWorkerCommand{
 			ShipSymbol:           shipSymbol,
 			PlayerID:             shared.MustNewPlayerID(playerID),
 			AsteroidField:        asteroidField,
@@ -295,7 +297,7 @@ func (s *DaemonServer) registerCommandFactories() {
 
 		coordinatorID, _ := config["coordinator_id"].(string) // Optional
 
-		return &mining.RunTransportWorkerCommand{
+		return &miningCmd.RunTransportWorkerCommand{
 			ShipSymbol:        shipSymbol,
 			PlayerID:          shared.MustNewPlayerID(playerID),
 			AsteroidField:     asteroidField,
@@ -355,7 +357,7 @@ func (s *DaemonServer) registerCommandFactories() {
 			topNOres = int(val)
 		}
 
-		return &mining.RunCoordinatorCommand{
+		return &miningCmd.RunCoordinatorCommand{
 			MiningOperationID: miningOperationID,
 			PlayerID:          shared.MustNewPlayerID(playerID),
 			AsteroidField:     asteroidField,
@@ -613,7 +615,7 @@ func (s *DaemonServer) NavigateShip(ctx context.Context, shipSymbol, destination
 	containerID := utils.GenerateContainerID("navigate", shipSymbol)
 
 	// Create navigation command
-	cmd := &ship.NavigateRouteCommand{
+	cmd := &shipCmd.NavigateRouteCommand{
 		ShipSymbol:  shipSymbol,
 		Destination: destination,
 		PlayerID:    shared.MustNewPlayerID(playerID),
@@ -655,7 +657,7 @@ func (s *DaemonServer) NavigateShip(ctx context.Context, shipSymbol, destination
 func (s *DaemonServer) DockShip(ctx context.Context, shipSymbol string, playerID int) (string, error) {
 	containerID := utils.GenerateContainerID("dock", shipSymbol)
 
-	cmd := &ship.DockShipCommand{
+	cmd := &shipCmd.DockShipCommand{
 		ShipSymbol: shipSymbol,
 		PlayerID:   shared.MustNewPlayerID(playerID),
 	}
@@ -692,7 +694,7 @@ func (s *DaemonServer) DockShip(ctx context.Context, shipSymbol string, playerID
 func (s *DaemonServer) OrbitShip(ctx context.Context, shipSymbol string, playerID int) (string, error) {
 	containerID := utils.GenerateContainerID("orbit", shipSymbol)
 
-	cmd := &ship.OrbitShipCommand{
+	cmd := &shipCmd.OrbitShipCommand{
 		ShipSymbol: shipSymbol,
 		PlayerID:   shared.MustNewPlayerID(playerID),
 	}
@@ -729,7 +731,7 @@ func (s *DaemonServer) OrbitShip(ctx context.Context, shipSymbol string, playerI
 func (s *DaemonServer) RefuelShip(ctx context.Context, shipSymbol string, playerID int, units *int) (string, error) {
 	containerID := utils.GenerateContainerID("refuel", shipSymbol)
 
-	cmd := &ship.RefuelShipCommand{
+	cmd := &shipCmd.RefuelShipCommand{
 		ShipSymbol: shipSymbol,
 		PlayerID:   shared.MustNewPlayerID(playerID),
 		Units:      units,
@@ -875,7 +877,7 @@ func (s *DaemonServer) StartContractWorkflow(
 	coordinatorID, _ := config["coordinator_id"].(string)
 
 	// Create command
-	cmd := &contract.RunWorkflowCommand{
+	cmd := &contractCmd.RunWorkflowCommand{
 		ShipSymbol:         shipSymbol,
 		PlayerID:           shared.MustNewPlayerID(containerModel.PlayerID),
 		ContainerID:        containerModel.ID,
@@ -917,7 +919,7 @@ func (s *DaemonServer) ContractFleetCoordinator(ctx context.Context, shipSymbols
 	containerID := utils.GenerateContainerID("contract_fleet_coordinator", shipSymbols[0])
 
 	// Create contract fleet coordinator command
-	cmd := &contract.RunFleetCoordinatorCommand{
+	cmd := &contractCmd.RunFleetCoordinatorCommand{
 		PlayerID:    shared.MustNewPlayerID(playerID),
 		ShipSymbols: shipSymbols,
 		ContainerID: containerID,
@@ -997,7 +999,7 @@ func (s *DaemonServer) MiningOperation(
 	}
 
 	// Create mining coordinator command
-	cmd := &mining.RunCoordinatorCommand{
+	cmd := &miningCmd.RunCoordinatorCommand{
 		MiningOperationID: containerID,
 		PlayerID:          shared.MustNewPlayerID(playerID),
 		AsteroidField:     asteroidField,
@@ -1099,7 +1101,7 @@ func (s *DaemonServer) ScoutTour(ctx context.Context, containerID string, shipSy
 	// Use provided container ID from caller
 
 	// Create scout tour command
-	cmd := &scouting.ScoutTourCommand{
+	cmd := &scoutingCmd.ScoutTourCommand{
 		PlayerID:   shared.MustNewPlayerID(int(playerID)),
 		ShipSymbol: shipSymbol,
 		Markets:    markets,
@@ -1142,7 +1144,7 @@ func (s *DaemonServer) ScoutTour(ctx context.Context, containerID string, shipSy
 // TourSell handles cargo selling tour requests (single ship)
 func (s *DaemonServer) TourSell(ctx context.Context, containerID string, shipSymbol string, returnWaypoint string, playerID int) (string, error) {
 	// Create tour sell command
-	cmd := &trading.RunTourSellingCommand{
+	cmd := &tradingCmd.RunTourSellingCommand{
 		ShipSymbol:     shipSymbol,
 		PlayerID:       shared.MustNewPlayerID(playerID),
 		ReturnWaypoint: returnWaypoint,
@@ -1190,7 +1192,7 @@ func (s *DaemonServer) ScoutMarkets(
 	playerID int,
 ) ([]string, map[string][]string, []string, error) {
 	// Create scout markets command
-	cmd := &scouting.ScoutMarketsCommand{
+	cmd := &scoutingCmd.ScoutMarketsCommand{
 		PlayerID:     shared.MustNewPlayerID(int(playerID)),
 		ShipSymbols:  shipSymbols,
 		SystemSymbol: systemSymbol,
@@ -1205,7 +1207,7 @@ func (s *DaemonServer) ScoutMarkets(
 	}
 
 	// Type assert response
-	scoutResp, ok := response.(*scouting.ScoutMarketsResponse)
+	scoutResp, ok := response.(*scoutingCmd.ScoutMarketsResponse)
 	if !ok {
 		return nil, nil, nil, fmt.Errorf("invalid response type from scout markets handler")
 	}
@@ -1224,7 +1226,7 @@ func (s *DaemonServer) AssignScoutingFleet(
 	containerID := utils.GenerateContainerID("scout-fleet-assignment", systemSymbol)
 
 	// Create assign scouting fleet command (will execute inside container)
-	cmd := &scouting.AssignScoutingFleetCommand{
+	cmd := &scoutingCmd.AssignScoutingFleetCommand{
 		PlayerID:     shared.MustNewPlayerID(int(playerID)),
 		SystemSymbol: systemSymbol,
 	}
@@ -1403,7 +1405,7 @@ func (s *DaemonServer) stopAllContainers() {
 // ListShips handles ship listing requests
 func (s *DaemonServer) ListShips(ctx context.Context, playerID *int, agentSymbol string) ([]*pb.ShipInfo, error) {
 	// Create query
-	query := &ship.ListShipsQuery{
+	query := &shipQuery.ListShipsQuery{
 		PlayerID:    playerID,
 		AgentSymbol: agentSymbol,
 	}
@@ -1415,7 +1417,7 @@ func (s *DaemonServer) ListShips(ctx context.Context, playerID *int, agentSymbol
 	}
 
 	// Convert response
-	listResp, ok := response.(*ship.ListShipsResponse)
+	listResp, ok := response.(*shipQuery.ListShipsResponse)
 	if !ok {
 		return nil, fmt.Errorf("unexpected response type")
 	}
@@ -1441,7 +1443,7 @@ func (s *DaemonServer) ListShips(ctx context.Context, playerID *int, agentSymbol
 // GetShip handles ship detail requests
 func (s *DaemonServer) GetShip(ctx context.Context, shipSymbol string, playerID *int, agentSymbol string) (*pb.ShipDetail, error) {
 	// Create query
-	query := &ship.GetShipQuery{
+	query := &shipQuery.GetShipQuery{
 		ShipSymbol:  shipSymbol,
 		PlayerID:    playerID,
 		AgentSymbol: agentSymbol,
@@ -1454,7 +1456,7 @@ func (s *DaemonServer) GetShip(ctx context.Context, shipSymbol string, playerID 
 	}
 
 	// Convert response
-	getResp, ok := response.(*ship.GetShipResponse)
+	getResp, ok := response.(*shipQuery.GetShipResponse)
 	if !ok {
 		return nil, fmt.Errorf("unexpected response type")
 	}
@@ -1496,7 +1498,7 @@ func (s *DaemonServer) GetShipyardListings(ctx context.Context, systemSymbol, wa
 	}
 
 	// Create query
-	query := &shipyard.GetShipyardListingsQuery{
+	query := &shipyardQuery.GetShipyardListingsQuery{
 		SystemSymbol:   systemSymbol,
 		WaypointSymbol: waypointSymbol,
 		PlayerID:       shared.MustNewPlayerID(*playerID),
@@ -1509,7 +1511,7 @@ func (s *DaemonServer) GetShipyardListings(ctx context.Context, systemSymbol, wa
 	}
 
 	// Convert response
-	listingsResp, ok := response.(*shipyard.GetShipyardListingsResponse)
+	listingsResp, ok := response.(*shipyardQuery.GetShipyardListingsResponse)
 	if !ok {
 		return nil, "", 0, fmt.Errorf("unexpected response type")
 	}
@@ -1531,7 +1533,7 @@ func (s *DaemonServer) GetShipyardListings(ctx context.Context, systemSymbol, wa
 // PurchaseShip purchases a single ship from a shipyard
 func (s *DaemonServer) PurchaseShip(ctx context.Context, purchasingShipSymbol, shipType string, playerID int, shipyardWaypoint *string) (string, string, int32, int32, string, error) {
 	// Create purchase command
-	cmd := &shipyard.PurchaseShipCommand{
+	cmd := &shipyardCmd.PurchaseShipCommand{
 		PurchasingShipSymbol: purchasingShipSymbol,
 		ShipType:             shipType,
 		PlayerID:             shared.MustNewPlayerID(playerID),
@@ -1580,7 +1582,7 @@ func (s *DaemonServer) PurchaseShip(ctx context.Context, purchasingShipSymbol, s
 // BatchPurchaseShips purchases multiple ships from a shipyard as a background operation
 func (s *DaemonServer) BatchPurchaseShips(ctx context.Context, purchasingShipSymbol, shipType string, quantity, maxBudget, playerID int, shipyardWaypoint *string, iterations *int) (string, int32, int32, string, string, error) {
 	// Create batch purchase command
-	cmd := &shipyard.BatchPurchaseShipsCommand{
+	cmd := &shipyardCmd.BatchPurchaseShipsCommand{
 		PurchasingShipSymbol: purchasingShipSymbol,
 		ShipType:             shipType,
 		Quantity:             quantity,
@@ -1643,7 +1645,7 @@ func (s *DaemonServer) PersistMiningWorkerContainer(
 	playerID uint,
 	command interface{},
 ) error {
-	cmd, ok := command.(*mining.RunWorkerCommand)
+	cmd, ok := command.(*miningCmd.RunWorkerCommand)
 	if !ok {
 		return fmt.Errorf("invalid command type for mining worker")
 	}
@@ -1690,13 +1692,13 @@ func (s *DaemonServer) StartMiningWorkerContainer(
 	}
 	s.pendingWorkerCommandsMu.Unlock()
 
-	var cmd *mining.RunWorkerCommand
+	var cmd *miningCmd.RunWorkerCommand
 	var config map[string]interface{}
 	var playerID int
 
 	if hasCached {
 		// Use cached command with channels
-		cmd = cachedCmd.(*mining.RunWorkerCommand)
+		cmd = cachedCmd.(*miningCmd.RunWorkerCommand)
 		playerID = cmd.PlayerID.Value()
 		config = map[string]interface{}{
 			"ship_symbol":    cmd.ShipSymbol,
@@ -1738,7 +1740,7 @@ func (s *DaemonServer) StartMiningWorkerContainer(
 		coordinatorID, _ := config["coordinator_id"].(string)
 
 		playerID = containerModel.PlayerID
-		cmd = &mining.RunWorkerCommand{
+		cmd = &miningCmd.RunWorkerCommand{
 			ShipSymbol:           shipSymbol,
 			PlayerID:             shared.MustNewPlayerID(playerID),
 			AsteroidField:        asteroidField,
@@ -1784,7 +1786,7 @@ func (s *DaemonServer) PersistTransportWorkerContainer(
 	playerID uint,
 	command interface{},
 ) error {
-	cmd, ok := command.(*mining.RunTransportWorkerCommand)
+	cmd, ok := command.(*miningCmd.RunTransportWorkerCommand)
 	if !ok {
 		return fmt.Errorf("invalid command type for transport worker")
 	}
@@ -1830,13 +1832,13 @@ func (s *DaemonServer) StartTransportWorkerContainer(
 	}
 	s.pendingWorkerCommandsMu.Unlock()
 
-	var cmd *mining.RunTransportWorkerCommand
+	var cmd *miningCmd.RunTransportWorkerCommand
 	var config map[string]interface{}
 	var playerID int
 
 	if hasCached {
 		// Use cached command with channels
-		cmd = cachedCmd.(*mining.RunTransportWorkerCommand)
+		cmd = cachedCmd.(*miningCmd.RunTransportWorkerCommand)
 		playerID = cmd.PlayerID.Value()
 		config = map[string]interface{}{
 			"ship_symbol":    cmd.ShipSymbol,
@@ -1873,7 +1875,7 @@ func (s *DaemonServer) StartTransportWorkerContainer(
 		coordinatorID, _ := config["coordinator_id"].(string)
 
 		playerID = containerModel.PlayerID
-		cmd = &mining.RunTransportWorkerCommand{
+		cmd = &miningCmd.RunTransportWorkerCommand{
 			ShipSymbol:        shipSymbol,
 			PlayerID:          shared.MustNewPlayerID(playerID),
 			AsteroidField:     asteroidField,
@@ -1917,7 +1919,7 @@ func (s *DaemonServer) PersistMiningCoordinatorContainer(
 	playerID uint,
 	command interface{},
 ) error {
-	cmd, ok := command.(*mining.RunCoordinatorCommand)
+	cmd, ok := command.(*miningCmd.RunCoordinatorCommand)
 	if !ok {
 		return fmt.Errorf("invalid command type for mining coordinator")
 	}

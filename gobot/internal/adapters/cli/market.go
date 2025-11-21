@@ -10,7 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
-	"github.com/andrescamacho/spacetraders-go/internal/application/scouting"
+	scoutingQuery "github.com/andrescamacho/spacetraders-go/internal/application/scouting/queries"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 )
@@ -76,7 +76,7 @@ Examples:
 			// Create repositories and handler
 			playerRepo := persistence.NewGormPlayerRepository(db)
 			marketRepo := persistence.NewMarketRepository(db)
-			handler := scouting.NewGetMarketDataHandler(marketRepo)
+			handler := scoutingQuery.NewGetMarketDataHandler(marketRepo)
 
 			// Resolve player ID from identifier
 			ctx := context.Background()
@@ -93,7 +93,7 @@ Examples:
 			}
 
 			// Execute query
-			response, err := handler.Handle(ctx, &scouting.GetMarketDataQuery{
+			response, err := handler.Handle(ctx, &scoutingQuery.GetMarketDataQuery{
 				PlayerID:   shared.MustNewPlayerID(int(resolvedPlayerID)),
 				WaypointSymbol: waypointSymbol,
 			})
@@ -101,7 +101,7 @@ Examples:
 				return fmt.Errorf("failed to get market data: %w", err)
 			}
 
-			result, ok := response.(*scouting.GetMarketDataResponse)
+			result, ok := response.(*scoutingQuery.GetMarketDataResponse)
 			if !ok {
 				return fmt.Errorf("unexpected response type")
 			}
@@ -201,7 +201,7 @@ Examples:
 			// Create repositories and handler
 			playerRepo := persistence.NewGormPlayerRepository(db)
 			marketRepo := persistence.NewMarketRepository(db)
-			handler := scouting.NewListMarketDataHandler(marketRepo)
+			handler := scoutingQuery.NewListMarketDataHandler(marketRepo)
 
 			// Resolve player ID from identifier
 			ctx := context.Background()
@@ -218,7 +218,7 @@ Examples:
 			}
 
 			// Execute query
-			response, err := handler.Handle(ctx, &scouting.ListMarketDataQuery{
+			response, err := handler.Handle(ctx, &scoutingQuery.ListMarketDataQuery{
 				PlayerID:   shared.MustNewPlayerID(int(resolvedPlayerID)),
 				SystemSymbol:  systemSymbol,
 				MaxAgeMinutes: maxAgeMinutes,
@@ -227,7 +227,7 @@ Examples:
 				return fmt.Errorf("failed to list markets: %w", err)
 			}
 
-			result, ok := response.(*scouting.ListMarketDataResponse)
+			result, ok := response.(*scoutingQuery.ListMarketDataResponse)
 			if !ok {
 				return fmt.Errorf("unexpected response type")
 			}

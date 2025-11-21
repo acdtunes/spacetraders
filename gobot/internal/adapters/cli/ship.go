@@ -13,7 +13,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/api"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/graph"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
-	"github.com/andrescamacho/spacetraders-go/internal/application/ship"
+	shipCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 )
@@ -502,7 +502,7 @@ Examples:
 			marketRepo := persistence.NewMarketRepository(db)
 
 			// Create handler
-			handler := ship.NewSellCargoHandler(shipRepo, playerRepo, apiClient, marketRepo)
+			handler := shipCmd.NewSellCargoHandler(shipRepo, playerRepo, apiClient, marketRepo)
 
 			// Resolve player ID
 			ctx := context.Background()
@@ -519,7 +519,7 @@ Examples:
 			}
 
 			// Execute command
-			response, err := handler.Handle(ctx, &ship.SellCargoCommand{
+			response, err := handler.Handle(ctx, &shipCmd.SellCargoCommand{
 				ShipSymbol: shipSymbol,
 				GoodSymbol: goodSymbol,
 				Units:      units,
@@ -529,7 +529,7 @@ Examples:
 				return fmt.Errorf("sell cargo command failed: %w", err)
 			}
 
-			result, ok := response.(*ship.SellCargoResponse)
+			result, ok := response.(*shipCmd.SellCargoResponse)
 			if !ok {
 				return fmt.Errorf("unexpected response type")
 			}

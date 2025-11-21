@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	scoutingQuery "github.com/andrescamacho/spacetraders-go/internal/application/scouting/queries"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
@@ -15,14 +16,14 @@ import (
 // MarketScanner handles automatic market scanning and data persistence
 type MarketScanner struct {
 	apiClient  infraports.APIClient
-	marketRepo MarketRepository
+	marketRepo scoutingQuery.MarketRepository
 	playerRepo player.PlayerRepository
 }
 
 // NewMarketScanner creates a new market scanner service
 func NewMarketScanner(
 	apiClient infraports.APIClient,
-	marketRepo MarketRepository,
+	marketRepo scoutingQuery.MarketRepository,
 	playerRepo player.PlayerRepository,
 ) *MarketScanner {
 	return &MarketScanner{

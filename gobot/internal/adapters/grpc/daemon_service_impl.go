@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	playerApp "github.com/andrescamacho/spacetraders-go/internal/application/player"
+	playerQuery "github.com/andrescamacho/spacetraders-go/internal/application/player/queries"
 	pb "github.com/andrescamacho/spacetraders-go/pkg/proto/daemon"
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )
@@ -28,14 +28,14 @@ func (s *daemonServiceImpl) resolvePlayerID(ctx context.Context, playerID int32,
 
 	// If agent_symbol is provided, resolve it to player_id
 	if agentSymbol != nil && *agentSymbol != "" {
-		response, err := s.daemon.mediator.Send(ctx, &playerApp.GetPlayerQuery{
+		response, err := s.daemon.mediator.Send(ctx, &playerQuery.GetPlayerQuery{
 			AgentSymbol: *agentSymbol,
 		})
 		if err != nil {
 			return 0, fmt.Errorf("failed to resolve agent symbol %s to player_id: %w", *agentSymbol, err)
 		}
 
-		getPlayerResp, ok := response.(*playerApp.GetPlayerResponse)
+		getPlayerResp, ok := response.(*playerQuery.GetPlayerResponse)
 		if !ok {
 			return 0, fmt.Errorf("unexpected response type from GetPlayerQuery")
 		}

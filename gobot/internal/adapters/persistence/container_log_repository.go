@@ -2,6 +2,7 @@ package persistence
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 	"time"
 
@@ -12,7 +13,7 @@ import (
 // ContainerLogRepository manages container log persistence
 type ContainerLogRepository interface {
 	// Log writes a log entry to the database with deduplication
-	Log(ctx context.Context, containerID string, playerID int, message, level string) error
+	Log(ctx context.Context, containerID string, playerID int, message, level string, metadata map[string]interface{}) error
 
 	// GetLogs retrieves logs for a container with optional filtering
 	GetLogs(ctx context.Context, containerID string, playerID int, limit int, level *string, since *time.Time) ([]ContainerLogEntry, error)
@@ -29,6 +30,7 @@ type ContainerLogEntry struct {
 	Timestamp   time.Time
 	Level       string
 	Message     string
+	Metadata    map[string]interface{}
 }
 
 // GormContainerLogRepository is a GORM-based implementation
@@ -59,7 +61,7 @@ func NewGormContainerLogRepository(db *gorm.DB, clock shared.Clock) *GormContain
 }
 
 // Log writes a log entry with time-windowed deduplication
-func (r *GormContainerLogRepository) Log(ctx context.Context, containerID string, playerID int, message, level string) error {
+func (r *GormContainerLogRepository) Log(ctx context.Context, containerID string, playerID int, message, level string, metadata map[string]interface{}) error {
 	now := r.clock.Now()
 	cacheKey := containerID + "|" + message
 
@@ -84,6 +86,18 @@ func (r *GormContainerLogRepository) Log(ctx context.Context, containerID string
 	r.dedupCache[cacheKey] = now
 	r.dedupMu.Unlock()
 
+	// Marshal metadata to JSON string
+	var metadataJSON string
+	if metadata != nil && len(metadata) > 0 {
+		jsonBytes, err := json.Marshal(metadata)
+		if err != nil {
+			// Log warning but continue (metadata is optional)
+			metadataJSON = ""
+		} else {
+			metadataJSON = string(jsonBytes)
+		}
+	}
+
 	// Persist to database
 	logEntry := &ContainerLogModel{
 		ContainerID: containerID,
@@ -91,6 +105,7 @@ func (r *GormContainerLogRepository) Log(ctx context.Context, containerID string
 		Timestamp:   now,
 		Level:       level,
 		Message:     message,
+		Metadata:    metadataJSON,
 	}
 
 	return r.db.WithContext(ctx).Create(logEntry).Error
@@ -134,6 +149,15 @@ func (r *GormContainerLogRepository) GetLogs(ctx context.Context, containerID st
 	// Convert models to entries
 	entries := make([]ContainerLogEntry, len(models))
 	for i, model := range models {
+		// Unmarshal metadata if present
+		var metadata map[string]interface{}
+		if model.Metadata != "" {
+			if err := json.Unmarshal([]byte(model.Metadata), &metadata); err != nil {
+				// If unmarshal fails, leave metadata as nil
+				metadata = nil
+			}
+		}
+
 		entries[i] = ContainerLogEntry{
 			ID:          model.ID,
 			ContainerID: model.ContainerID,
@@ -141,6 +165,7 @@ func (r *GormContainerLogRepository) GetLogs(ctx context.Context, containerID st
 			Timestamp:   model.Timestamp,
 			Level:       model.Level,
 			Message:     model.Message,
+			Metadata:    metadata,
 		}
 	}
 
@@ -171,6 +196,15 @@ func (r *GormContainerLogRepository) GetLogsWithOffset(ctx context.Context, cont
 	// Convert models to entries
 	entries := make([]ContainerLogEntry, len(models))
 	for i, model := range models {
+		// Unmarshal metadata if present
+		var metadata map[string]interface{}
+		if model.Metadata != "" {
+			if err := json.Unmarshal([]byte(model.Metadata), &metadata); err != nil {
+				// If unmarshal fails, leave metadata as nil
+				metadata = nil
+			}
+		}
+
 		entries[i] = ContainerLogEntry{
 			ID:          model.ID,
 			ContainerID: model.ContainerID,
@@ -178,6 +212,7 @@ func (r *GormContainerLogRepository) GetLogsWithOffset(ctx context.Context, cont
 			Timestamp:   model.Timestamp,
 			Level:       model.Level,
 			Message:     model.Message,
+			Metadata:    metadata,
 		}
 	}
 

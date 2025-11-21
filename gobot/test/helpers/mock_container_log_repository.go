@@ -21,7 +21,7 @@ func NewMockContainerLogRepository() *MockContainerLogRepository {
 }
 
 // Log writes a log entry (in-memory only for testing)
-func (m *MockContainerLogRepository) Log(ctx context.Context, containerID string, playerID int, message, level string) error {
+func (m *MockContainerLogRepository) Log(ctx context.Context, containerID string, playerID int, message, level string, metadata map[string]interface{}) error {
 	if m.LogErr != nil {
 		return m.LogErr
 	}
@@ -32,6 +32,7 @@ func (m *MockContainerLogRepository) Log(ctx context.Context, containerID string
 		Message:     message,
 		Level:       level,
 		Timestamp:   time.Now(),
+		Metadata:    metadata,
 	}
 
 	m.Logs[containerID] = append(m.Logs[containerID], entry)

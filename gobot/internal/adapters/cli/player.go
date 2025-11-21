@@ -11,7 +11,8 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/api"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
-	"github.com/andrescamacho/spacetraders-go/internal/application/player"
+	playerCmd "github.com/andrescamacho/spacetraders-go/internal/application/player/commands"
+	playerQuery "github.com/andrescamacho/spacetraders-go/internal/application/player/queries"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 )
@@ -83,7 +84,7 @@ Example:
 
 			// Create repository and handler
 			playerRepo := persistence.NewGormPlayerRepository(db)
-			handler := player.NewRegisterPlayerHandler(playerRepo)
+			handler := playerCmd.NewRegisterPlayerHandler(playerRepo)
 
 			// Prepare metadata
 			metadata := make(map[string]interface{})
@@ -93,7 +94,7 @@ Example:
 
 			// Execute command
 			ctx := context.Background()
-			response, err := handler.Handle(ctx, &player.RegisterPlayerCommand{
+			response, err := handler.Handle(ctx, &playerCmd.RegisterPlayerCommand{
 				AgentSymbol: agentSymbol,
 				Token:       token,
 				Metadata:    metadata,
@@ -102,7 +103,7 @@ Example:
 				return fmt.Errorf("failed to register player: %w", err)
 			}
 
-			result := response.(*player.RegisterPlayerResponse)
+			result := response.(*playerCmd.RegisterPlayerResponse)
 
 			fmt.Println("✓ Player registered successfully")
 			fmt.Printf("  Agent Symbol: %s\n", result.Player.AgentSymbol)
@@ -216,7 +217,7 @@ Examples:
 			// Create repository, API client, and handler
 			playerRepo := persistence.NewGormPlayerRepository(db)
 			apiClient := api.NewSpaceTradersClient()
-			handler := player.NewGetPlayerHandler(playerRepo, apiClient)
+			handler := playerQuery.NewGetPlayerHandler(playerRepo, apiClient)
 
 			// Execute command
 			ctx := context.Background()
@@ -225,7 +226,7 @@ Examples:
 				playerIDPtr = &playerIdent.PlayerID
 			}
 
-			response, err := handler.Handle(ctx, &player.GetPlayerQuery{
+			response, err := handler.Handle(ctx, &playerQuery.GetPlayerQuery{
 				PlayerID:    playerIDPtr,
 				AgentSymbol: playerIdent.AgentSymbol,
 			})
@@ -233,7 +234,7 @@ Examples:
 				return fmt.Errorf("failed to get player: %w", err)
 			}
 
-			result := response.(*player.GetPlayerResponse)
+			result := response.(*playerQuery.GetPlayerResponse)
 			p := result.Player
 
 			// Display player info

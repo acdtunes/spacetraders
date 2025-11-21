@@ -66,6 +66,7 @@ type ContainerLogModel struct {
 	Timestamp   time.Time `gorm:"column:timestamp;not null"`
 	Level       string    `gorm:"column:level;not null;default:'INFO'"`
 	Message     string    `gorm:"column:message;type:text;not null"`
+	Metadata    string    `gorm:"column:metadata;type:jsonb"` // JSON metadata (JSONB for PostgreSQL, TEXT for SQLite)
 }
 
 func (ContainerLogModel) TableName() string {

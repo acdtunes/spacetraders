@@ -393,7 +393,7 @@ func (r *ContainerRunner) Log(level, message string, metadata map[string]interfa
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
-		if err := r.logRepo.Log(ctx, r.containerEntity.ID(), r.containerEntity.PlayerID(), message, level); err != nil {
+		if err := r.logRepo.Log(ctx, r.containerEntity.ID(), r.containerEntity.PlayerID(), message, level, metadata); err != nil {
 			// Log error to stdout if DB write fails (but don't block execution)
 			fmt.Printf("[%s] [%s] ERROR: Failed to persist log to DB: %v\n",
 				time.Now().Format(time.RFC3339),

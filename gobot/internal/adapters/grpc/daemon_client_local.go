@@ -3,8 +3,8 @@ package grpc
 import (
 	"context"
 
-	"github.com/andrescamacho/spacetraders-go/internal/application/contract"
-	"github.com/andrescamacho/spacetraders-go/internal/application/scouting"
+	contractCmd "github.com/andrescamacho/spacetraders-go/internal/application/contract/commands"
+	scoutingCmd "github.com/andrescamacho/spacetraders-go/internal/application/scouting/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
 )
 
@@ -47,7 +47,7 @@ func (c *DaemonClientLocal) CreateScoutTourContainer(
 	command interface{},
 ) error {
 	// Type assert to ScoutTourCommand
-	cmd, ok := command.(*scouting.ScoutTourCommand)
+	cmd, ok := command.(*scoutingCmd.ScoutTourCommand)
 	if !ok {
 		return daemon.ErrInvalidCommandType
 	}
@@ -66,7 +66,7 @@ func (c *DaemonClientLocal) CreateContractWorkflowContainer(
 	completionCallback chan<- string,
 ) error {
 	// Type assert to ContractWorkflowCommand
-	cmd, ok := command.(*contract.RunWorkflowCommand)
+	cmd, ok := command.(*contractCmd.RunWorkflowCommand)
 	if !ok {
 		return daemon.ErrInvalidCommandType
 	}
@@ -84,7 +84,7 @@ func (c *DaemonClientLocal) PersistContractWorkflowContainer(
 	command interface{},
 ) error {
 	// Type assert to ContractWorkflowCommand
-	cmd, ok := command.(*contract.RunWorkflowCommand)
+	cmd, ok := command.(*contractCmd.RunWorkflowCommand)
 	if !ok {
 		return daemon.ErrInvalidCommandType
 	}
