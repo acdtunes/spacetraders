@@ -7,14 +7,14 @@ import (
 
 // Waypoint represents an immutable location in space
 type Waypoint struct {
-	Symbol       string
-	X            float64
-	Y            float64
-	SystemSymbol string
-	Type         string
-	Traits       []string
-	HasFuel      bool
-	Orbitals     []string
+	Symbol       string   `json:"symbol"`
+	X            float64  `json:"x"`
+	Y            float64  `json:"y"`
+	SystemSymbol string   `json:"systemSymbol"`
+	Type         string   `json:"type"`
+	Traits       []string `json:"traits,omitempty"`
+	HasFuel      bool     `json:"has_fuel"`
+	Orbitals     []string `json:"orbitals,omitempty"`
 }
 
 // NewWaypoint creates a new waypoint with validation

@@ -9,17 +9,17 @@ import (
 // NavigationGraph represents a system's navigation graph with waypoints and edges
 // This replaces the map[string]interface{} structure used throughout the codebase
 type NavigationGraph struct {
-	SystemSymbol string
-	Waypoints    map[string]*shared.Waypoint
-	Edges        []GraphEdge
+	SystemSymbol string                      `json:"system"`
+	Waypoints    map[string]*shared.Waypoint `json:"waypoints"`
+	Edges        []GraphEdge                 `json:"edges"`
 }
 
 // GraphEdge represents a connection between two waypoints
 type GraphEdge struct {
-	From     string
-	To       string
-	Distance float64
-	Type     EdgeType
+	From     string   `json:"from"`
+	To       string   `json:"to"`
+	Distance float64  `json:"distance"`
+	Type     EdgeType `json:"type"`
 }
 
 // EdgeType defines the type of connection between waypoints
@@ -97,85 +97,4 @@ func (g *NavigationGraph) GetFuelStations() []*shared.Waypoint {
 		}
 	}
 	return fuelStations
-}
-
-// ToLegacyFormat converts the graph to the legacy map[string]interface{} format
-// This is needed for backward compatibility with existing code that expects this format
-// TODO: Remove this once all code is updated to use NavigationGraph directly
-func (g *NavigationGraph) ToLegacyFormat() map[string]interface{} {
-	waypoints := make(map[string]interface{})
-	for symbol, wp := range g.Waypoints {
-		waypoints[symbol] = map[string]interface{}{
-			"type":         wp.Type,
-			"x":            wp.X,
-			"y":            wp.Y,
-			"systemSymbol": wp.SystemSymbol,
-			"orbitals":     wp.Orbitals,
-			"has_fuel":     wp.HasFuel,
-		}
-	}
-
-	edges := make([]interface{}, len(g.Edges))
-	for i, edge := range g.Edges {
-		edges[i] = map[string]interface{}{
-			"from":     edge.From,
-			"to":       edge.To,
-			"distance": edge.Distance,
-			"type":     string(edge.Type),
-		}
-	}
-
-	return map[string]interface{}{
-		"system":    g.SystemSymbol,
-		"waypoints": waypoints,
-		"edges":     edges,
-	}
-}
-
-// FromLegacyFormat creates a NavigationGraph from the legacy map[string]interface{} format
-// This enables gradual migration from the old format to the new typed structure
-func FromLegacyFormat(data map[string]interface{}, converter IWaypointConverter) (*NavigationGraph, error) {
-	systemSymbol, ok := data["system"].(string)
-	if !ok {
-		return nil, fmt.Errorf("invalid graph format: missing or invalid system symbol")
-	}
-
-	graph := NewNavigationGraph(systemSymbol)
-
-	// Convert waypoints using the converter
-	if converter != nil {
-		waypointObjects := converter.ConvertGraphToWaypoints(data, nil)
-		for _, wp := range waypointObjects {
-			graph.AddWaypoint(wp)
-		}
-	}
-
-	// Convert edges
-	if edgesRaw, ok := data["edges"].([]interface{}); ok {
-		for _, edgeRaw := range edgesRaw {
-			if edgeMap, ok := edgeRaw.(map[string]interface{}); ok {
-				from, _ := edgeMap["from"].(string)
-				to, _ := edgeMap["to"].(string)
-				distance, _ := edgeMap["distance"].(float64)
-				edgeTypeStr, _ := edgeMap["type"].(string)
-
-				// Note: AddEdge adds bidirectional edges, so only add one direction
-				// Skip if we've already added the reverse edge
-				alreadyAdded := false
-				for _, existing := range graph.Edges {
-					if existing.From == to && existing.To == from {
-						alreadyAdded = true
-						break
-					}
-				}
-
-				if !alreadyAdded {
-					edgeType := EdgeType(edgeTypeStr)
-					graph.AddEdge(from, to, distance, edgeType)
-				}
-			}
-		}
-	}
-
-	return graph, nil
 }
