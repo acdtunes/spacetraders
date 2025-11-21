@@ -4,15 +4,41 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"sync"
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/cucumber/godog"
 )
 
+// Shared waypoints registry for navigation-related step contexts
+// This allows fuel service and navigation calculator contexts to share waypoints
+var (
+	sharedNavigationWaypoints   = make(map[string]*shared.Waypoint)
+	sharedNavigationWaypointsMu sync.RWMutex
+)
+
+func resetSharedNavigationWaypoints() {
+	sharedNavigationWaypointsMu.Lock()
+	defer sharedNavigationWaypointsMu.Unlock()
+	sharedNavigationWaypoints = make(map[string]*shared.Waypoint)
+}
+
+func setSharedNavigationWaypoint(symbol string, waypoint *shared.Waypoint) {
+	sharedNavigationWaypointsMu.Lock()
+	defer sharedNavigationWaypointsMu.Unlock()
+	sharedNavigationWaypoints[symbol] = waypoint
+}
+
+func getSharedNavigationWaypoint(symbol string) (*shared.Waypoint, bool) {
+	sharedNavigationWaypointsMu.RLock()
+	defer sharedNavigationWaypointsMu.RUnlock()
+	wp, exists := sharedNavigationWaypoints[symbol]
+	return wp, exists
+}
+
 type shipNavigationCalculatorContext struct {
 	calculator     *navigation.ShipNavigationCalculator
-	waypoints      map[string]*shared.Waypoint
 	intResult      int
 	floatResult    float64
 	boolResult     bool
@@ -20,10 +46,10 @@ type shipNavigationCalculatorContext struct {
 
 func (snc *shipNavigationCalculatorContext) reset() {
 	snc.calculator = navigation.NewShipNavigationCalculator()
-	snc.waypoints = make(map[string]*shared.Waypoint)
 	snc.intResult = 0
 	snc.floatResult = 0.0
 	snc.boolResult = false
+	resetSharedNavigationWaypoints()
 }
 
 // Background Steps
@@ -33,27 +59,16 @@ func (snc *shipNavigationCalculatorContext) aShipNavigationCalculator() error {
 	return nil
 }
 
-// Waypoint Setup Steps (reusing from fuel service)
-
-func (snc *shipNavigationCalculatorContext) waypointAtCoordinates(symbol string, x, y float64) error {
-	waypoint, err := shared.NewWaypoint(symbol, x, y)
-	if err != nil {
-		return err
-	}
-	snc.waypoints[symbol] = waypoint
-	return nil
-}
-
 // Action Steps - Calculate Travel Time
 
 func (snc *shipNavigationCalculatorContext) iCalculateTravelTimeFromToInModeWithEngineSpeed(
 	from, to, mode string, engineSpeed int,
 ) error {
-	fromWaypoint, exists := snc.waypoints[from]
+	fromWaypoint, exists := getSharedNavigationWaypoint(from)
 	if !exists {
 		return fmt.Errorf("waypoint %s not found", from)
 	}
-	toWaypoint, exists := snc.waypoints[to]
+	toWaypoint, exists := getSharedNavigationWaypoint(to)
 	if !exists {
 		return fmt.Errorf("waypoint %s not found", to)
 	}
@@ -84,11 +99,11 @@ func (snc *shipNavigationCalculatorContext) iCalculateTravelTimeFromToInModeWith
 // Action Steps - Calculate Distance
 
 func (snc *shipNavigationCalculatorContext) iCalculateDistanceFromTo(from, to string) error {
-	fromWaypoint, exists := snc.waypoints[from]
+	fromWaypoint, exists := getSharedNavigationWaypoint(from)
 	if !exists {
 		return fmt.Errorf("waypoint %s not found", from)
 	}
-	toWaypoint, exists := snc.waypoints[to]
+	toWaypoint, exists := getSharedNavigationWaypoint(to)
 	if !exists {
 		return fmt.Errorf("waypoint %s not found", to)
 	}
@@ -102,11 +117,11 @@ func (snc *shipNavigationCalculatorContext) iCalculateDistanceFromTo(from, to st
 func (snc *shipNavigationCalculatorContext) iCheckIfAtLocationWhenCurrentIs(
 	target, current string,
 ) error {
-	currentWaypoint, exists := snc.waypoints[current]
+	currentWaypoint, exists := getSharedNavigationWaypoint(current)
 	if !exists {
 		return fmt.Errorf("current waypoint %s not found", current)
 	}
-	targetWaypoint, exists := snc.waypoints[target]
+	targetWaypoint, exists := getSharedNavigationWaypoint(target)
 	if !exists {
 		return fmt.Errorf("target waypoint %s not found", target)
 	}
@@ -117,14 +132,14 @@ func (snc *shipNavigationCalculatorContext) iCheckIfAtLocationWhenCurrentIs(
 
 // Assertion Steps
 
-func (snc *shipNavigationCalculatorContext) theTravelTimeShouldBeSeconds(expected int) error {
+func (snc *shipNavigationCalculatorContext) theCalculatorTravelTimeShouldBeSeconds(expected int) error {
 	if snc.intResult != expected {
 		return fmt.Errorf("expected travel time %d seconds, got %d", expected, snc.intResult)
 	}
 	return nil
 }
 
-func (snc *shipNavigationCalculatorContext) theDistanceShouldBe(expected float64) error {
+func (snc *shipNavigationCalculatorContext) theCalculatorDistanceShouldBe(expected float64) error {
 	// Use a small epsilon for floating point comparison
 	epsilon := 0.0001
 	if math.Abs(snc.floatResult-expected) > epsilon {
@@ -133,7 +148,7 @@ func (snc *shipNavigationCalculatorContext) theDistanceShouldBe(expected float64
 	return nil
 }
 
-func (snc *shipNavigationCalculatorContext) theResultShouldBe(expectedStr string) error {
+func (snc *shipNavigationCalculatorContext) theCalculatorResultShouldBe(expectedStr string) error {
 	expected := expectedStr == "true"
 	if snc.boolResult != expected {
 		return fmt.Errorf("expected result %t, got %t", expected, snc.boolResult)
@@ -153,20 +168,19 @@ func RegisterShipNavigationCalculatorSteps(sc *godog.ScenarioContext) {
 	// Background
 	sc.Step(`^a ship navigation calculator$`, snc.aShipNavigationCalculator)
 
-	// Waypoint setup (shared with fuel service)
-	sc.Step(`^waypoint "([^"]*)" at coordinates \(([^,]+), ([^)]+)\)$`,
-		snc.waypointAtCoordinates)
+	// Note: Waypoint setup steps are handled by ship_fuel_service_steps.go
+	// Both contexts share the sharedNavigationWaypoints registry
 
 	// Actions
 	sc.Step(`^I calculate travel time from "([^"]*)" to "([^"]*)" in ([A-Z]+) mode with engine speed (\d+)$`,
 		snc.iCalculateTravelTimeFromToInModeWithEngineSpeed)
-	sc.Step(`^I calculate distance from "([^"]*)" to "([^"]*)"$`,
+	sc.Step(`^I calculate navigation distance from "([^"]*)" to "([^"]*)"$`,
 		snc.iCalculateDistanceFromTo)
 	sc.Step(`^I check if at location "([^"]*)" when current is "([^"]*)"$`,
 		snc.iCheckIfAtLocationWhenCurrentIs)
 
 	// Assertions
-	sc.Step(`^the travel time should be (\d+) seconds$`, snc.theTravelTimeShouldBeSeconds)
-	sc.Step(`^the distance should be ([0-9.]+)$`, snc.theDistanceShouldBe)
-	sc.Step(`^the result should be (true|false)$`, snc.theResultShouldBe)
+	sc.Step(`^the calculator travel time should be (\d+) seconds$`, snc.theCalculatorTravelTimeShouldBeSeconds)
+	sc.Step(`^the calculator distance should be ([0-9.]+)$`, snc.theCalculatorDistanceShouldBe)
+	sc.Step(`^the calculator result should be (true|false)$`, snc.theCalculatorResultShouldBe)
 }

@@ -11,7 +11,6 @@ import (
 
 type shipFuelServiceContext struct {
 	service       *navigation.ShipFuelService
-	waypoints     map[string]*shared.Waypoint
 	fuelState     *shared.Fuel
 	boolResult    bool
 	intResult     int
@@ -22,13 +21,13 @@ type shipFuelServiceContext struct {
 
 func (sfc *shipFuelServiceContext) reset() {
 	sfc.service = navigation.NewShipFuelService()
-	sfc.waypoints = make(map[string]*shared.Waypoint)
 	sfc.fuelState = nil
 	sfc.boolResult = false
 	sfc.intResult = 0
 	sfc.flightMode = shared.FlightModeCruise
 	sfc.fromWaypoint = ""
 	sfc.toWaypoint = ""
+	resetSharedNavigationWaypoints()
 }
 
 // Background Steps
@@ -45,7 +44,7 @@ func (sfc *shipFuelServiceContext) waypointAtCoordinates(symbol string, x, y flo
 	if err != nil {
 		return err
 	}
-	sfc.waypoints[symbol] = waypoint
+	setSharedNavigationWaypoint(symbol, waypoint)
 	return nil
 }
 
@@ -57,7 +56,7 @@ func (sfc *shipFuelServiceContext) waypointAtCoordinatesWithFuelAvailable(
 		return err
 	}
 	waypoint.HasFuel = true
-	sfc.waypoints[symbol] = waypoint
+	setSharedNavigationWaypoint(symbol, waypoint)
 	return nil
 }
 
@@ -69,7 +68,7 @@ func (sfc *shipFuelServiceContext) waypointAtCoordinatesWithoutFuel(
 		return err
 	}
 	waypoint.HasFuel = false
-	sfc.waypoints[symbol] = waypoint
+	setSharedNavigationWaypoint(symbol, waypoint)
 	return nil
 }
 
@@ -91,11 +90,11 @@ func (sfc *shipFuelServiceContext) aFuelStateWithUnitsOfFuelAndCapacity(
 func (sfc *shipFuelServiceContext) iCalculateFuelRequiredFromToInMode(
 	from, to, mode string,
 ) error {
-	fromWaypoint, exists := sfc.waypoints[from]
+	fromWaypoint, exists := getSharedNavigationWaypoint(from)
 	if !exists {
 		return fmt.Errorf("waypoint %s not found", from)
 	}
-	toWaypoint, exists := sfc.waypoints[to]
+	toWaypoint, exists := getSharedNavigationWaypoint(to)
 	if !exists {
 		return fmt.Errorf("waypoint %s not found", to)
 	}
@@ -123,11 +122,11 @@ func (sfc *shipFuelServiceContext) iCalculateFuelRequiredFromToInMode(
 func (sfc *shipFuelServiceContext) iCheckIfShipWithUnitsOfFuelCanNavigateFromTo(
 	fuel int, from, to string,
 ) error {
-	fromWaypoint, exists := sfc.waypoints[from]
+	fromWaypoint, exists := getSharedNavigationWaypoint(from)
 	if !exists {
 		return fmt.Errorf("waypoint %s not found", from)
 	}
-	toWaypoint, exists := sfc.waypoints[to]
+	toWaypoint, exists := getSharedNavigationWaypoint(to)
 	if !exists {
 		return fmt.Errorf("waypoint %s not found", to)
 	}
@@ -145,11 +144,11 @@ func (sfc *shipFuelServiceContext) iCheckIfRefuelNeededFromToWithSafetyMargin(
 		return fmt.Errorf("fuel state not initialized")
 	}
 
-	fromWaypoint, exists := sfc.waypoints[from]
+	fromWaypoint, exists := getSharedNavigationWaypoint(from)
 	if !exists {
 		return fmt.Errorf("waypoint %s not found", from)
 	}
-	toWaypoint, exists := sfc.waypoints[to]
+	toWaypoint, exists := getSharedNavigationWaypoint(to)
 	if !exists {
 		return fmt.Errorf("waypoint %s not found", to)
 	}
@@ -181,7 +180,7 @@ func (sfc *shipFuelServiceContext) iCheckIfShouldRefuelOpportunisticallyAtWithTh
 		return fmt.Errorf("fuel state not initialized")
 	}
 
-	wp, exists := sfc.waypoints[waypoint]
+	wp, exists := getSharedNavigationWaypoint(waypoint)
 	if !exists {
 		return fmt.Errorf("waypoint %s not found", waypoint)
 	}
@@ -206,14 +205,14 @@ func (sfc *shipFuelServiceContext) iCalculateFuelNeededToFullWithCurrentAndCapac
 
 // Assertion Steps
 
-func (sfc *shipFuelServiceContext) theFuelRequiredShouldBeUnits(expected int) error {
+func (sfc *shipFuelServiceContext) theServiceFuelRequiredShouldBeUnits(expected int) error {
 	if sfc.intResult != expected {
 		return fmt.Errorf("expected fuel required %d, got %d", expected, sfc.intResult)
 	}
 	return nil
 }
 
-func (sfc *shipFuelServiceContext) theResultShouldBe(expectedStr string) error {
+func (sfc *shipFuelServiceContext) theServiceResultShouldBe(expectedStr string) error {
 	expected := expectedStr == "true"
 	if sfc.boolResult != expected {
 		return fmt.Errorf("expected result %t, got %t", expected, sfc.boolResult)
@@ -229,7 +228,7 @@ func (sfc *shipFuelServiceContext) theSelectedFlightModeShouldBe(expected string
 	return nil
 }
 
-func (sfc *shipFuelServiceContext) theFuelNeededShouldBeUnits(expected int) error {
+func (sfc *shipFuelServiceContext) theServiceFuelNeededShouldBeUnits(expected int) error {
 	if sfc.intResult != expected {
 		return fmt.Errorf("expected fuel needed %d, got %d", expected, sfc.intResult)
 	}
@@ -275,8 +274,8 @@ func RegisterShipFuelServiceSteps(sc *godog.ScenarioContext) {
 		sfc.iCalculateFuelNeededToFullWithCurrentAndCapacity)
 
 	// Assertions
-	sc.Step(`^the fuel required should be (\d+) units$`, sfc.theFuelRequiredShouldBeUnits)
-	sc.Step(`^the result should be (true|false)$`, sfc.theResultShouldBe)
+	sc.Step(`^the service fuel required should be (\d+) units$`, sfc.theServiceFuelRequiredShouldBeUnits)
+	sc.Step(`^the service result should be (true|false)$`, sfc.theServiceResultShouldBe)
 	sc.Step(`^the selected flight mode should be "([^"]*)"$`, sfc.theSelectedFlightModeShouldBe)
-	sc.Step(`^the fuel needed should be (\d+) units$`, sfc.theFuelNeededShouldBeUnits)
+	sc.Step(`^the service fuel needed should be (\d+) units$`, sfc.theServiceFuelNeededShouldBeUnits)
 }
