@@ -77,7 +77,7 @@ func (h *FulfillContractHandler) Handle(ctx context.Context, request common.Requ
 }
 
 func (h *FulfillContractHandler) loadContract(ctx context.Context, contractID string, playerID int) (*contract.Contract, error) {
-	contract, err := h.contractRepo.FindByID(ctx, contractID, playerID)
+	contract, err := h.contractRepo.FindByID(ctx, contractID)
 	if err != nil {
 		return nil, fmt.Errorf("contract not found: %w", err)
 	}

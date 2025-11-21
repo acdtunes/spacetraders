@@ -124,7 +124,7 @@ func (MarketData) TableName() string {
 // ContractModel represents the contracts table
 type ContractModel struct {
 	ID                 string       `gorm:"column:id;primaryKey;not null"`
-	PlayerID           int          `gorm:"column:player_id;primaryKey;not null"`
+	PlayerID           int          `gorm:"column:player_id;index;not null"`
 	Player             *PlayerModel `gorm:"foreignKey:PlayerID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
 	FactionSymbol      string       `gorm:"column:faction_symbol;not null"`
 	Type               string       `gorm:"column:type;not null"`

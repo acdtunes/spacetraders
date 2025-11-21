@@ -33,7 +33,7 @@ func (r *MockContractRepository) AddContract(c *contract.Contract) {
 }
 
 // FindByID finds a contract by ID
-func (r *MockContractRepository) FindByID(ctx context.Context, contractID string, playerID int) (*contract.Contract, error) {
+func (r *MockContractRepository) FindByID(ctx context.Context, contractID string) (*contract.Contract, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -43,11 +43,6 @@ func (r *MockContractRepository) FindByID(ctx context.Context, contractID string
 
 	c, ok := r.contracts[contractID]
 	if !ok {
-		return nil, fmt.Errorf("contract not found")
-	}
-
-	// Verify player ownership
-	if c.PlayerID().Value() != playerID {
 		return nil, fmt.Errorf("contract not found")
 	}
 

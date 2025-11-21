@@ -21,10 +21,10 @@ func NewGormContractRepository(db *gorm.DB) *GormContractRepository {
 	return &GormContractRepository{db: db}
 }
 
-// FindByID retrieves a contract by ID and player ID
-func (r *GormContractRepository) FindByID(ctx context.Context, contractID string, playerID int) (*contract.Contract, error) {
+// FindByID retrieves a contract by ID
+func (r *GormContractRepository) FindByID(ctx context.Context, contractID string) (*contract.Contract, error) {
 	var model ContractModel
-	result := r.db.WithContext(ctx).Where("id = ? AND player_id = ?", contractID, playerID).First(&model)
+	result := r.db.WithContext(ctx).Where("id = ?", contractID).First(&model)
 
 	if result.Error != nil {
 		if result.Error == gorm.ErrRecordNotFound {
