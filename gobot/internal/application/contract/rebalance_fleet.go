@@ -37,6 +37,7 @@ type RebalanceContractFleetHandler struct {
 	shipAssignmentRepo  container.ShipAssignmentRepository
 	graphProvider       system.ISystemGraphProvider
 	marketRepo          MarketRepository
+	converter           system.IWaypointConverter
 	distributionChecker *DistributionChecker
 }
 
@@ -52,6 +53,7 @@ func NewRebalanceContractFleetHandler(
 	shipAssignmentRepo container.ShipAssignmentRepository,
 	graphProvider system.ISystemGraphProvider,
 	marketRepo MarketRepository,
+	converter system.IWaypointConverter,
 ) *RebalanceContractFleetHandler {
 	return &RebalanceContractFleetHandler{
 		mediator:            mediator,
@@ -59,7 +61,8 @@ func NewRebalanceContractFleetHandler(
 		shipAssignmentRepo:  shipAssignmentRepo,
 		graphProvider:       graphProvider,
 		marketRepo:          marketRepo,
-		distributionChecker: NewDistributionChecker(graphProvider),
+		converter:           converter,
+		distributionChecker: NewDistributionChecker(graphProvider, converter),
 	}
 }
 

@@ -317,7 +317,7 @@ func (h *RunTourSellingHandler) findBestMarketsForCargo(
 }
 
 // FindNearestFuelStation finds the nearest waypoint with fuel to the target waypoint
-func FindNearestFuelStation(graph map[string]interface{}, targetWaypoint string) string {
+func FindNearestFuelStation(graph *system.NavigationGraph, targetWaypoint string) string {
 	// Extract waypoint data and convert to domain value objects
 	waypointData, err := extractWaypointData(graph)
 	if err != nil || len(waypointData) == 0 {
@@ -361,35 +361,15 @@ func FindNearestFuelStation(graph map[string]interface{}, targetWaypoint string)
 }
 
 // extractWaypointData converts graph format to routing waypoint data
-func extractWaypointData(graph map[string]interface{}) ([]*system.WaypointData, error) {
-	waypoints, ok := graph["waypoints"].(map[string]interface{})
-	if !ok {
-		return nil, fmt.Errorf("invalid graph format: missing waypoints")
-	}
+func extractWaypointData(graph *system.NavigationGraph) ([]*system.WaypointData, error) {
+	waypointData := make([]*system.WaypointData, 0, len(graph.Waypoints))
 
-	waypointData := make([]*system.WaypointData, 0, len(waypoints))
-	for symbol, data := range waypoints {
-		wpMap, ok := data.(map[string]interface{})
-		if !ok {
-			continue
-		}
-
-		x, _ := wpMap["x"].(float64)
-		y, _ := wpMap["y"].(float64)
-
-		// has_fuel can be bool or float64 (from database integer)
-		var hasFuel bool
-		if v, ok := wpMap["has_fuel"].(bool); ok {
-			hasFuel = v
-		} else if v, ok := wpMap["has_fuel"].(float64); ok {
-			hasFuel = v == 1
-		}
-
+	for symbol, waypoint := range graph.Waypoints {
 		waypointData = append(waypointData, &system.WaypointData{
 			Symbol:  symbol,
-			X:       x,
-			Y:       y,
-			HasFuel: hasFuel,
+			X:       waypoint.X,
+			Y:       waypoint.Y,
+			HasFuel: waypoint.HasFuel,
 		})
 	}
 

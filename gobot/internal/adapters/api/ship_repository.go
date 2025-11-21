@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/andrescamacho/spacetraders-go/internal/adapters/graph"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
@@ -18,7 +17,7 @@ type ShipRepository struct {
 	apiClient        ports.APIClient
 	playerRepo       player.PlayerRepository
 	waypointRepo     system.WaypointRepository
-	waypointProvider *graph.WaypointProvider
+	waypointProvider system.IWaypointProvider
 }
 
 // NewShipRepository creates a new API ship repository
@@ -26,7 +25,7 @@ func NewShipRepository(
 	apiClient ports.APIClient,
 	playerRepo player.PlayerRepository,
 	waypointRepo system.WaypointRepository,
-	waypointProvider *graph.WaypointProvider,
+	waypointProvider system.IWaypointProvider,
 ) *ShipRepository {
 	return &ShipRepository{
 		apiClient:        apiClient,
@@ -258,14 +257,8 @@ func (r *ShipRepository) JettisonCargo(ctx context.Context, ship *navigation.Shi
 // shipDataToDomain converts API ship DTO to domain entity
 func (r *ShipRepository) shipDataToDomain(ctx context.Context, data *navigation.ShipData, playerID shared.PlayerID) (*navigation.Ship, error) {
 	// Get current location waypoint (auto-fetches from API if not cached)
-	// Extract system symbol (find last hyphen)
-	systemSymbol := data.Location
-	for i := len(data.Location) - 1; i >= 0; i-- {
-		if data.Location[i] == '-' {
-			systemSymbol = data.Location[:i]
-			break
-		}
-	}
+	// Extract system symbol using domain function
+	systemSymbol := shared.ExtractSystemSymbol(data.Location)
 	location, err := r.waypointProvider.GetWaypoint(ctx, data.Location, systemSymbol, playerID.Value())
 	if err != nil {
 		return nil, fmt.Errorf("failed to get location waypoint %s: %w", data.Location, err)

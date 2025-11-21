@@ -1182,35 +1182,16 @@ func (h *RunCoordinatorHandler) combineTransportRoutes(
 }
 
 // extractWaypointData converts graph format to routing waypoint data
-func extractWaypointData(graph map[string]interface{}) ([]*system.WaypointData, error) {
-	waypoints, ok := graph["waypoints"].(map[string]interface{})
-	if !ok {
-		return nil, fmt.Errorf("invalid graph format: missing waypoints")
-	}
+func extractWaypointData(graph *system.NavigationGraph) ([]*system.WaypointData, error) {
+	waypointData := make([]*system.WaypointData, 0, len(graph.Waypoints))
 
-	waypointData := make([]*system.WaypointData, 0, len(waypoints))
-	for symbol, data := range waypoints {
-		wpMap, ok := data.(map[string]interface{})
-		if !ok {
-			continue
-		}
-
-		wp := &system.WaypointData{
-			Symbol: symbol,
-		}
-
-		if x, ok := wpMap["x"].(float64); ok {
-			wp.X = x
-		}
-		if y, ok := wpMap["y"].(float64); ok {
-			wp.Y = y
-		}
-		// Check for has_fuel as bool
-		if hasFuel, ok := wpMap["has_fuel"].(bool); ok {
-			wp.HasFuel = hasFuel
-		}
-
-		waypointData = append(waypointData, wp)
+	for symbol, waypoint := range graph.Waypoints {
+		waypointData = append(waypointData, &system.WaypointData{
+			Symbol:  symbol,
+			X:       waypoint.X,
+			Y:       waypoint.Y,
+			HasFuel: waypoint.HasFuel,
+		})
 	}
 
 	return waypointData, nil

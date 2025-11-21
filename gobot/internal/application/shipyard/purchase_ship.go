@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/andrescamacho/spacetraders-go/internal/adapters/graph"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/application/ship"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
@@ -42,7 +41,7 @@ type PurchaseShipHandler struct {
 	shipRepo         navigation.ShipRepository
 	playerRepo       player.PlayerRepository
 	waypointRepo     system.WaypointRepository
-	waypointProvider *graph.WaypointProvider
+	waypointProvider system.IWaypointProvider
 	apiClient        ports.APIClient
 	mediator         common.Mediator
 }
@@ -52,7 +51,7 @@ func NewPurchaseShipHandler(
 	shipRepo navigation.ShipRepository,
 	playerRepo player.PlayerRepository,
 	waypointRepo system.WaypointRepository,
-	waypointProvider *graph.WaypointProvider,
+	waypointProvider system.IWaypointProvider,
 	apiClient ports.APIClient,
 	mediator common.Mediator,
 ) *PurchaseShipHandler {
@@ -133,14 +132,8 @@ func (h *PurchaseShipHandler) Handle(ctx context.Context, request common.Request
 	}
 
 	// 6. Get shipyard listings and validate ship type is available
-	// Extract system symbol (find last hyphen)
-	systemSymbol := shipyardWaypoint
-	for i := len(shipyardWaypoint) - 1; i >= 0; i-- {
-		if shipyardWaypoint[i] == '-' {
-			systemSymbol = shipyardWaypoint[:i]
-			break
-		}
-	}
+	// Extract system symbol using domain function
+	systemSymbol := shared.ExtractSystemSymbol(shipyardWaypoint)
 	query := &GetShipyardListingsQuery{
 		SystemSymbol:   systemSymbol,
 		WaypointSymbol: shipyardWaypoint,

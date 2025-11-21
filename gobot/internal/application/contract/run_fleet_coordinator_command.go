@@ -51,6 +51,7 @@ type RunFleetCoordinatorHandler struct {
 	shipAssignmentRepo domainContainer.ShipAssignmentRepository
 	daemonClient       daemon.DaemonClient         // For creating worker containers
 	graphProvider      system.ISystemGraphProvider // For distance calculations
+	converter          system.IWaypointConverter   // For waypoint conversions
 	containerRepo      ContainerRepository         // For checking existing workers
 }
 
@@ -63,6 +64,7 @@ func NewRunFleetCoordinatorHandler(
 	shipAssignmentRepo domainContainer.ShipAssignmentRepository,
 	daemonClient daemon.DaemonClient,
 	graphProvider system.ISystemGraphProvider,
+	converter system.IWaypointConverter,
 	containerRepo ContainerRepository,
 ) *RunFleetCoordinatorHandler {
 	return &RunFleetCoordinatorHandler{
@@ -73,6 +75,7 @@ func NewRunFleetCoordinatorHandler(
 		shipAssignmentRepo: shipAssignmentRepo,
 		daemonClient:       daemonClient,
 		graphProvider:      graphProvider,
+		converter:          converter,
 		containerRepo:      containerRepo,
 	}
 }
@@ -226,6 +229,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			availableShips,
 			h.shipRepo,
 			h.graphProvider,
+			h.converter,
 			purchaseMarket,
 			requiredCargo,
 			cmd.PlayerID.Value(),

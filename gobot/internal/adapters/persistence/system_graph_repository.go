@@ -13,18 +13,20 @@ import (
 
 // GormSystemGraphRepository implements SystemGraphRepository using GORM
 type GormSystemGraphRepository struct {
-	db *gorm.DB
+	db        *gorm.DB
+	converter system.IWaypointConverter
 }
 
 // NewGormSystemGraphRepository creates a new GORM-based system graph repository
-func NewGormSystemGraphRepository(db *gorm.DB) system.SystemGraphRepository {
+func NewGormSystemGraphRepository(db *gorm.DB, converter system.IWaypointConverter) system.SystemGraphRepository {
 	return &GormSystemGraphRepository{
-		db: db,
+		db:        db,
+		converter: converter,
 	}
 }
 
 // Get retrieves a graph for a system from cache
-func (r *GormSystemGraphRepository) Get(ctx context.Context, systemSymbol string) (map[string]interface{}, error) {
+func (r *GormSystemGraphRepository) Get(ctx context.Context, systemSymbol string) (*system.NavigationGraph, error) {
 	var model SystemGraphModel
 
 	err := r.db.WithContext(ctx).
@@ -38,19 +40,28 @@ func (r *GormSystemGraphRepository) Get(ctx context.Context, systemSymbol string
 		return nil, fmt.Errorf("failed to get system graph: %w", err)
 	}
 
-	// Parse JSON
-	var graph map[string]interface{}
-	if err := json.Unmarshal([]byte(model.GraphData), &graph); err != nil {
+	// Parse JSON to legacy format first
+	var legacyGraph map[string]interface{}
+	if err := json.Unmarshal([]byte(model.GraphData), &legacyGraph); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal graph data: %w", err)
+	}
+
+	// Convert from legacy format to NavigationGraph
+	graph, err := system.FromLegacyFormat(legacyGraph, r.converter)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert legacy graph format: %w", err)
 	}
 
 	return graph, nil
 }
 
 // Add persists a graph for a system (upsert)
-func (r *GormSystemGraphRepository) Add(ctx context.Context, systemSymbol string, graph map[string]interface{}) error {
+func (r *GormSystemGraphRepository) Add(ctx context.Context, systemSymbol string, graph *system.NavigationGraph) error {
+	// Convert to legacy format for JSON serialization
+	legacyGraph := graph.ToLegacyFormat()
+
 	// Marshal to JSON
-	graphJSON, err := json.Marshal(graph)
+	graphJSON, err := json.Marshal(legacyGraph)
 	if err != nil {
 		return fmt.Errorf("failed to marshal graph: %w", err)
 	}

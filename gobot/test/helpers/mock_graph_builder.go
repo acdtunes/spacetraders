@@ -22,30 +22,20 @@ func NewMockGraphBuilder(apiClient *MockAPIClient, waypointRepo *persistence.Gor
 }
 
 // BuildSystemGraph builds a system graph for testing
-func (m *MockGraphBuilder) BuildSystemGraph(ctx context.Context, systemSymbol string, playerID int) (map[string]interface{}, error) {
+func (m *MockGraphBuilder) BuildSystemGraph(ctx context.Context, systemSymbol string, playerID int) (*system.NavigationGraph, error) {
 	// For testing, load waypoints from repository and build graph
 	waypoints, err := m.waypointRepo.ListBySystem(ctx, systemSymbol)
 	if err != nil {
 		// Return empty graph if no waypoints
-		return map[string]interface{}{
-			"waypoints": map[string]interface{}{},
-		}, nil
+		return system.NewNavigationGraph(systemSymbol), nil
 	}
 
 	// Build graph structure from waypoints
-	waypointMap := make(map[string]interface{})
+	graph := system.NewNavigationGraph(systemSymbol)
 	for _, wp := range waypoints {
-		waypointMap[wp.Symbol] = map[string]interface{}{
-			"symbol":       wp.Symbol,
-			"systemSymbol": wp.SystemSymbol,
-			"x":            wp.X,
-			"y":            wp.Y,
-			"type":         wp.Type,
-			"has_fuel":     wp.HasFuel,
-		}
+		graph.AddWaypoint(wp)
 	}
 
-	return map[string]interface{}{
-		"waypoints": waypointMap,
-	}, nil
+	// Note: For testing, we don't add edges. Tests can add edges if needed.
+	return graph, nil
 }

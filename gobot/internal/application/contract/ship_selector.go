@@ -21,6 +21,7 @@ import (
 //   - shipSymbols: List of ship symbols to consider
 //   - shipRepo: Repository to fetch ship details
 //   - graphProvider: For loading waypoint coordinates
+//   - converter: For converting graph waypoint data to domain objects
 //   - targetWaypointSymbol: The destination waypoint symbol
 //   - requiredCargoSymbol: The cargo needed for delivery (optional, for prioritization)
 //   - playerID: Player ID for ship lookups
@@ -34,6 +35,7 @@ func SelectClosestShip(
 	shipSymbols []string,
 	shipRepo navigation.ShipRepository,
 	graphProvider system.ISystemGraphProvider,
+	converter system.IWaypointConverter,
 	targetWaypointSymbol string,
 	requiredCargoSymbol string,
 	playerID int,
@@ -68,24 +70,10 @@ func SelectClosestShip(
 		return "", 0, fmt.Errorf("failed to load system graph: %w", err)
 	}
 
-	// Extract waypoints map
-	waypointsRaw, ok := graphResult.Graph["waypoints"].(map[string]interface{})
-	if !ok {
-		return "", 0, fmt.Errorf("invalid graph format: missing waypoints")
-	}
-
-	// Get target waypoint coordinates
-	targetWpRaw, ok := waypointsRaw[targetWaypointSymbol].(map[string]interface{})
+	// Get target waypoint from navigation graph
+	targetWaypoint, ok := graphResult.Graph.Waypoints[targetWaypointSymbol]
 	if !ok {
 		return "", 0, fmt.Errorf("target waypoint %s not found in graph", targetWaypointSymbol)
-	}
-	targetX := targetWpRaw["x"].(float64)
-	targetY := targetWpRaw["y"].(float64)
-
-	// Create target waypoint
-	targetWaypoint, err := shared.NewWaypoint(targetWaypointSymbol, targetX, targetY)
-	if err != nil {
-		return "", 0, fmt.Errorf("failed to create target waypoint: %w", err)
 	}
 
 	// 3. Delegate to domain service for selection logic

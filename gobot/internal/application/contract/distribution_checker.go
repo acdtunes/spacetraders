@@ -15,13 +15,15 @@ import (
 type DistributionChecker struct {
 	graphProvider system.ISystemGraphProvider
 	fleetAssigner *domainContract.FleetAssigner
+	converter     system.IWaypointConverter
 }
 
 // NewDistributionChecker creates a new distribution checker
-func NewDistributionChecker(graphProvider system.ISystemGraphProvider) *DistributionChecker {
+func NewDistributionChecker(graphProvider system.ISystemGraphProvider, converter system.IWaypointConverter) *DistributionChecker {
 	return &DistributionChecker{
 		graphProvider: graphProvider,
 		fleetAssigner: domainContract.NewFleetAssigner(),
+		converter:     converter,
 	}
 }
 
@@ -131,12 +133,7 @@ func (dc *DistributionChecker) fetchWaypoints(
 		return nil, err
 	}
 
-	waypointsRaw, err := dc.extractWaypointsMap(graphResult)
-	if err != nil {
-		return nil, err
-	}
-
-	return dc.buildWaypointObjects(waypointSymbols, waypointsRaw)
+	return dc.buildWaypointObjects(waypointSymbols, graphResult.Graph)
 }
 
 func (dc *DistributionChecker) getSystemGraph(
@@ -151,35 +148,17 @@ func (dc *DistributionChecker) getSystemGraph(
 	return graphResult, nil
 }
 
-func (dc *DistributionChecker) extractWaypointsMap(graphResult *system.GraphLoadResult) (map[string]interface{}, error) {
-	waypointsRaw, ok := graphResult.Graph["waypoints"].(map[string]interface{})
-	if !ok {
-		return nil, fmt.Errorf("invalid graph format: missing waypoints")
-	}
-	return waypointsRaw, nil
-}
-
 func (dc *DistributionChecker) buildWaypointObjects(
 	waypointSymbols []string,
-	waypointsRaw map[string]interface{},
+	graph *system.NavigationGraph,
 ) ([]*shared.Waypoint, error) {
 	var waypoints []*shared.Waypoint
 	for _, symbol := range waypointSymbols {
-		wpRaw, ok := waypointsRaw[symbol].(map[string]interface{})
+		waypoint, ok := graph.Waypoints[symbol]
 		if !ok {
 			continue
 		}
-
-		x := wpRaw["x"].(float64)
-		y := wpRaw["y"].(float64)
-
-		waypoint, err := shared.NewWaypoint(symbol, x, y)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create waypoint %s: %w", symbol, err)
-		}
-
 		waypoints = append(waypoints, waypoint)
 	}
-
 	return waypoints, nil
 }

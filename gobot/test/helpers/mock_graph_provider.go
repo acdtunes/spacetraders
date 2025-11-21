@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
 
@@ -12,13 +13,13 @@ import (
 type MockGraphProvider struct {
 	mu sync.RWMutex
 
-	graphs map[string]map[string]interface{} // systemSymbol -> graph
+	graphs map[string]*system.NavigationGraph // systemSymbol -> graph
 }
 
 // NewMockGraphProvider creates a new mock graph provider
 func NewMockGraphProvider() *MockGraphProvider {
 	return &MockGraphProvider{
-		graphs: make(map[string]map[string]interface{}),
+		graphs: make(map[string]*system.NavigationGraph),
 	}
 }
 
@@ -27,36 +28,26 @@ func (m *MockGraphProvider) SetGraph(systemSymbol string, distanceGraph map[stri
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Convert distance graph to the expected format
-	waypoints := make(map[string]interface{})
-	edges := []map[string]interface{}{}
+	// Build NavigationGraph
+	graph := system.NewNavigationGraph(systemSymbol)
 
-	// Build waypoints map
+	// Build waypoints
 	for waypointSymbol := range distanceGraph {
-		waypoints[waypointSymbol] = map[string]interface{}{
-			"symbol":   waypointSymbol,
-			"x":        0.0,
-			"y":        0.0,
-			"has_fuel": true, // Assume all waypoints have fuel for simplicity
-		}
+		// Create waypoint at 0,0 with fuel for simplicity
+		waypoint, _ := shared.NewWaypoint(waypointSymbol, 0.0, 0.0)
+		waypoint.SystemSymbol = systemSymbol
+		waypoint.HasFuel = true
+		graph.AddWaypoint(waypoint)
 	}
 
-	// Build edges list
+	// Build edges
 	for from, destinations := range distanceGraph {
 		for to, distance := range destinations {
-			edges = append(edges, map[string]interface{}{
-				"from":     from,
-				"to":       to,
-				"distance": distance,
-				"type":     "orbital",
-			})
+			graph.AddEdge(from, to, distance, system.EdgeTypeOrbital)
 		}
 	}
 
-	m.graphs[systemSymbol] = map[string]interface{}{
-		"waypoints": waypoints,
-		"edges":     edges,
-	}
+	m.graphs[systemSymbol] = graph
 }
 
 // GetGraph retrieves a system graph (implements system.ISystemGraphProvider)
@@ -80,5 +71,5 @@ func (m *MockGraphProvider) GetGraph(ctx context.Context, systemSymbol string, f
 func (m *MockGraphProvider) Reset() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.graphs = make(map[string]map[string]interface{})
+	m.graphs = make(map[string]*system.NavigationGraph)
 }

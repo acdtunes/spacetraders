@@ -245,28 +245,15 @@ func (h *ScoutMarketsHandler) Handle(ctx context.Context, request common.Request
 }
 
 // extractWaypointData converts graph format to routing waypoint data
-func extractWaypointData(graph map[string]interface{}) ([]*system.WaypointData, error) {
-	waypoints, ok := graph["waypoints"].(map[string]interface{})
-	if !ok {
-		return nil, fmt.Errorf("invalid graph format: missing waypoints")
-	}
+func extractWaypointData(graph *system.NavigationGraph) ([]*system.WaypointData, error) {
+	waypointData := make([]*system.WaypointData, 0, len(graph.Waypoints))
 
-	waypointData := make([]*system.WaypointData, 0, len(waypoints))
-	for symbol, data := range waypoints {
-		wpMap, ok := data.(map[string]interface{})
-		if !ok {
-			continue
-		}
-
-		x, _ := wpMap["x"].(float64)
-		y, _ := wpMap["y"].(float64)
-		hasFuel, _ := wpMap["has_fuel"].(bool)
-
+	for symbol, waypoint := range graph.Waypoints {
 		waypointData = append(waypointData, &system.WaypointData{
 			Symbol:  symbol,
-			X:       x,
-			Y:       y,
-			HasFuel: hasFuel,
+			X:       waypoint.X,
+			Y:       waypoint.Y,
+			HasFuel: waypoint.HasFuel,
 		})
 	}
 
