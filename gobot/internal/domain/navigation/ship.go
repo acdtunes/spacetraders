@@ -479,7 +479,7 @@ func (s *Ship) ShouldRefuelOpportunistically(waypoint *shared.Waypoint, safetyMa
 		return false
 	}
 
-	fuelPercentage := float64(s.fuel.Current) / float64(s.fuelCapacity)
+	fuelPercentage := s.fuel.Percentage() / 100.0
 	return fuelPercentage < safetyMargin
 }
 
@@ -511,6 +511,6 @@ func (s *Ship) ShouldPreventDriftMode(segment *RouteSegment, safetyMargin float6
 		return false
 	}
 
-	fuelPercentage := float64(s.fuel.Current) / float64(s.fuelCapacity)
+	fuelPercentage := s.fuel.Percentage() / 100.0
 	return fuelPercentage < safetyMargin
 }
