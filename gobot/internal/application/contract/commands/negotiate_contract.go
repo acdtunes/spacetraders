@@ -5,31 +5,24 @@ import (
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	contractTypes "github.com/andrescamacho/spacetraders-go/internal/application/contract/types"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
-	infraPorts "github.com/andrescamacho/spacetraders-go/internal/infrastructure/ports"
+	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 )
 
-// NegotiateContractCommand - Command to negotiate a new contract
-type NegotiateContractCommand struct {
-	ShipSymbol string
-	PlayerID   shared.PlayerID
-}
-
-// NegotiateContractResponse - Response from negotiate contract command
-type NegotiateContractResponse struct {
-	Contract      *contract.Contract
-	WasNegotiated bool // false if existing contract returned (error 4511)
-}
+// Type aliases for convenience
+type NegotiateContractCommand = contractTypes.NegotiateContractCommand
+type NegotiateContractResponse = contractTypes.NegotiateContractResponse
 
 // NegotiateContractHandler - Handles negotiate contract commands
 type NegotiateContractHandler struct {
 	contractRepo contract.ContractRepository
 	shipRepo     navigation.ShipRepository
 	playerRepo   player.PlayerRepository
-	apiClient    infraPorts.APIClient
+	apiClient    domainPorts.APIClient
 }
 
 // NewNegotiateContractHandler creates a new negotiate contract handler
@@ -37,7 +30,7 @@ func NewNegotiateContractHandler(
 	contractRepo contract.ContractRepository,
 	shipRepo navigation.ShipRepository,
 	playerRepo player.PlayerRepository,
-	apiClient infraPorts.APIClient,
+	apiClient domainPorts.APIClient,
 ) *NegotiateContractHandler {
 	return &NegotiateContractHandler{
 		contractRepo: contractRepo,
@@ -117,14 +110,14 @@ func (h *NegotiateContractHandler) ensureShipDocked(ctx context.Context, ship *n
 	return nil
 }
 
-func (h *NegotiateContractHandler) callNegotiateContractAPI(ctx context.Context, shipSymbol string, token string) (*infraPorts.ContractNegotiationResult, error) {
+func (h *NegotiateContractHandler) callNegotiateContractAPI(ctx context.Context, shipSymbol string, token string) (*domainPorts.ContractNegotiationResult, error) {
 	result, err := h.apiClient.NegotiateContract(ctx, shipSymbol, token)
 	return result, err
 }
 
 func (h *NegotiateContractHandler) handleExistingContractError(
 	ctx context.Context,
-	result *infraPorts.ContractNegotiationResult,
+	result *domainPorts.ContractNegotiationResult,
 	err error,
 	token string,
 	playerID shared.PlayerID,
@@ -157,7 +150,7 @@ func (h *NegotiateContractHandler) saveContract(ctx context.Context, contract *c
 }
 
 // convertToDomain converts API contract data to domain entity
-func (h *NegotiateContractHandler) convertToDomain(data *infraPorts.ContractData, playerID shared.PlayerID) *contract.Contract {
+func (h *NegotiateContractHandler) convertToDomain(data *domainPorts.ContractData, playerID shared.PlayerID) *contract.Contract {
 	// Convert deliveries
 	deliveries := make([]contract.Delivery, len(data.Terms.Deliveries))
 	for i, d := range data.Terms.Deliveries {

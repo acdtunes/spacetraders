@@ -17,7 +17,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
-	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/ports"
+	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 )
 
 const (
@@ -443,7 +443,7 @@ func (c *SpaceTradersClient) ListWaypoints(ctx context.Context, systemSymbol, to
 
 // NegotiateContract negotiates a new contract for the ship
 // Special handling for error 4511 (agent already has contract)
-func (c *SpaceTradersClient) NegotiateContract(ctx context.Context, shipSymbol, token string) (*ports.ContractNegotiationResult, error) {
+func (c *SpaceTradersClient) NegotiateContract(ctx context.Context, shipSymbol, token string) (*domainPorts.ContractNegotiationResult, error) {
 	path := fmt.Sprintf("/my/ships/%s/negotiate/contract", shipSymbol)
 
 	var response struct {
@@ -464,7 +464,7 @@ func (c *SpaceTradersClient) NegotiateContract(ctx context.Context, shipSymbol, 
 
 	// Check for error 4511 - agent already has contract
 	if response.Error != nil && response.Error.Code == 4511 {
-		return &ports.ContractNegotiationResult{
+		return &domainPorts.ContractNegotiationResult{
 			ErrorCode:          4511,
 			ExistingContractID: response.Error.Data.ContractID,
 		}, nil
@@ -484,13 +484,13 @@ func (c *SpaceTradersClient) NegotiateContract(ctx context.Context, shipSymbol, 
 		return nil, fmt.Errorf("failed to parse contract: %w", err)
 	}
 
-	return &ports.ContractNegotiationResult{
+	return &domainPorts.ContractNegotiationResult{
 		Contract: contractData,
 	}, nil
 }
 
 // GetContract retrieves contract details
-func (c *SpaceTradersClient) GetContract(ctx context.Context, contractID, token string) (*ports.ContractData, error) {
+func (c *SpaceTradersClient) GetContract(ctx context.Context, contractID, token string) (*domainPorts.ContractData, error) {
 	path := fmt.Sprintf("/my/contracts/%s", contractID)
 
 	var response struct {
@@ -505,7 +505,7 @@ func (c *SpaceTradersClient) GetContract(ctx context.Context, contractID, token 
 }
 
 // AcceptContract accepts a contract
-func (c *SpaceTradersClient) AcceptContract(ctx context.Context, contractID, token string) (*ports.ContractData, error) {
+func (c *SpaceTradersClient) AcceptContract(ctx context.Context, contractID, token string) (*domainPorts.ContractData, error) {
 	path := fmt.Sprintf("/my/contracts/%s/accept", contractID)
 
 	var response struct {
@@ -524,7 +524,7 @@ func (c *SpaceTradersClient) AcceptContract(ctx context.Context, contractID, tok
 }
 
 // DeliverContract delivers cargo to a contract
-func (c *SpaceTradersClient) DeliverContract(ctx context.Context, contractID, shipSymbol, tradeSymbol string, units int, token string) (*ports.ContractData, error) {
+func (c *SpaceTradersClient) DeliverContract(ctx context.Context, contractID, shipSymbol, tradeSymbol string, units int, token string) (*domainPorts.ContractData, error) {
 	path := fmt.Sprintf("/my/contracts/%s/deliver", contractID)
 
 	body := map[string]interface{}{
@@ -547,7 +547,7 @@ func (c *SpaceTradersClient) DeliverContract(ctx context.Context, contractID, sh
 }
 
 // FulfillContract fulfills a contract
-func (c *SpaceTradersClient) FulfillContract(ctx context.Context, contractID, token string) (*ports.ContractData, error) {
+func (c *SpaceTradersClient) FulfillContract(ctx context.Context, contractID, token string) (*domainPorts.ContractData, error) {
 	path := fmt.Sprintf("/my/contracts/%s/fulfill", contractID)
 
 	var response struct {
@@ -566,7 +566,7 @@ func (c *SpaceTradersClient) FulfillContract(ctx context.Context, contractID, to
 }
 
 // PurchaseCargo purchases cargo at the current market
-func (c *SpaceTradersClient) PurchaseCargo(ctx context.Context, shipSymbol, goodSymbol string, units int, token string) (*ports.PurchaseResult, error) {
+func (c *SpaceTradersClient) PurchaseCargo(ctx context.Context, shipSymbol, goodSymbol string, units int, token string) (*domainPorts.PurchaseResult, error) {
 	path := fmt.Sprintf("/my/ships/%s/purchase", shipSymbol)
 
 	body := map[string]interface{}{
@@ -587,14 +587,14 @@ func (c *SpaceTradersClient) PurchaseCargo(ctx context.Context, shipSymbol, good
 		return nil, fmt.Errorf("failed to purchase cargo: %w", err)
 	}
 
-	return &ports.PurchaseResult{
+	return &domainPorts.PurchaseResult{
 		TotalCost:  response.Data.Transaction.TotalPrice,
 		UnitsAdded: response.Data.Transaction.Units,
 	}, nil
 }
 
 // SellCargo sells cargo from the ship
-func (c *SpaceTradersClient) SellCargo(ctx context.Context, shipSymbol, goodSymbol string, units int, token string) (*ports.SellResult, error) {
+func (c *SpaceTradersClient) SellCargo(ctx context.Context, shipSymbol, goodSymbol string, units int, token string) (*domainPorts.SellResult, error) {
 	path := fmt.Sprintf("/my/ships/%s/sell", shipSymbol)
 
 	body := map[string]interface{}{
@@ -615,7 +615,7 @@ func (c *SpaceTradersClient) SellCargo(ctx context.Context, shipSymbol, goodSymb
 		return nil, fmt.Errorf("failed to sell cargo: %w", err)
 	}
 
-	return &ports.SellResult{
+	return &domainPorts.SellResult{
 		TotalRevenue: response.Data.Transaction.TotalPrice,
 		UnitsSold:    response.Data.Transaction.Units,
 	}, nil
@@ -638,7 +638,7 @@ func (c *SpaceTradersClient) JettisonCargo(ctx context.Context, shipSymbol, good
 }
 
 // ExtractResources extracts resources from an asteroid
-func (c *SpaceTradersClient) ExtractResources(ctx context.Context, shipSymbol string, token string) (*ports.ExtractionResult, error) {
+func (c *SpaceTradersClient) ExtractResources(ctx context.Context, shipSymbol string, token string) (*domainPorts.ExtractionResult, error) {
 	path := fmt.Sprintf("/my/ships/%s/extract", shipSymbol)
 
 	// Send empty body as required by API (survey support can be added later)
@@ -693,7 +693,7 @@ func (c *SpaceTradersClient) ExtractResources(ctx context.Context, shipSymbol st
 		Inventory: inventory,
 	}
 
-	return &ports.ExtractionResult{
+	return &domainPorts.ExtractionResult{
 		ShipSymbol:      response.Data.Extraction.ShipSymbol,
 		YieldSymbol:     response.Data.Extraction.Yield.Symbol,
 		YieldUnits:      response.Data.Extraction.Yield.Units,
@@ -704,7 +704,7 @@ func (c *SpaceTradersClient) ExtractResources(ctx context.Context, shipSymbol st
 }
 
 // TransferCargo transfers cargo from one ship to another at the same waypoint
-func (c *SpaceTradersClient) TransferCargo(ctx context.Context, fromShipSymbol, toShipSymbol, goodSymbol string, units int, token string) (*ports.TransferResult, error) {
+func (c *SpaceTradersClient) TransferCargo(ctx context.Context, fromShipSymbol, toShipSymbol, goodSymbol string, units int, token string) (*domainPorts.TransferResult, error) {
 	path := fmt.Sprintf("/my/ships/%s/transfer", fromShipSymbol)
 
 	body := map[string]interface{}{
@@ -749,7 +749,7 @@ func (c *SpaceTradersClient) TransferCargo(ctx context.Context, fromShipSymbol, 
 		Inventory: inventory,
 	}
 
-	return &ports.TransferResult{
+	return &domainPorts.TransferResult{
 		FromShip:         fromShipSymbol,
 		ToShip:           toShipSymbol,
 		GoodSymbol:       goodSymbol,
@@ -759,7 +759,7 @@ func (c *SpaceTradersClient) TransferCargo(ctx context.Context, fromShipSymbol, 
 }
 
 // GetMarket retrieves market data for a waypoint
-func (c *SpaceTradersClient) GetMarket(ctx context.Context, systemSymbol, waypointSymbol, token string) (*ports.MarketData, error) {
+func (c *SpaceTradersClient) GetMarket(ctx context.Context, systemSymbol, waypointSymbol, token string) (*domainPorts.MarketData, error) {
 	path := fmt.Sprintf("/systems/%s/waypoints/%s/market", systemSymbol, waypointSymbol)
 
 	var response struct {
@@ -779,9 +779,9 @@ func (c *SpaceTradersClient) GetMarket(ctx context.Context, systemSymbol, waypoi
 		return nil, fmt.Errorf("failed to get market: %w", err)
 	}
 
-	tradeGoods := make([]ports.TradeGoodData, len(response.Data.TradeGoods))
+	tradeGoods := make([]domainPorts.TradeGoodData, len(response.Data.TradeGoods))
 	for i, good := range response.Data.TradeGoods {
-		tradeGoods[i] = ports.TradeGoodData{
+		tradeGoods[i] = domainPorts.TradeGoodData{
 			Symbol:        good.Symbol,
 			Supply:        good.Supply,
 			SellPrice:     good.SellPrice,
@@ -790,14 +790,14 @@ func (c *SpaceTradersClient) GetMarket(ctx context.Context, systemSymbol, waypoi
 		}
 	}
 
-	return &ports.MarketData{
+	return &domainPorts.MarketData{
 		Symbol:     response.Data.Symbol,
 		TradeGoods: tradeGoods,
 	}, nil
 }
 
 // GetShipyard retrieves shipyard data for a waypoint
-func (c *SpaceTradersClient) GetShipyard(ctx context.Context, systemSymbol, waypointSymbol, token string) (*ports.ShipyardData, error) {
+func (c *SpaceTradersClient) GetShipyard(ctx context.Context, systemSymbol, waypointSymbol, token string) (*domainPorts.ShipyardData, error) {
 	path := fmt.Sprintf("/systems/%s/waypoints/%s/shipyard", systemSymbol, waypointSymbol)
 
 	var response struct {
@@ -827,17 +827,17 @@ func (c *SpaceTradersClient) GetShipyard(ctx context.Context, systemSymbol, wayp
 	}
 
 	// Convert ship types
-	shipTypes := make([]ports.ShipTypeInfo, len(response.Data.ShipTypes))
+	shipTypes := make([]domainPorts.ShipTypeInfo, len(response.Data.ShipTypes))
 	for i, st := range response.Data.ShipTypes {
-		shipTypes[i] = ports.ShipTypeInfo{
+		shipTypes[i] = domainPorts.ShipTypeInfo{
 			Type: st.Type,
 		}
 	}
 
 	// Convert ship listings
-	ships := make([]ports.ShipListingData, len(response.Data.Ships))
+	ships := make([]domainPorts.ShipListingData, len(response.Data.Ships))
 	for i, ship := range response.Data.Ships {
-		ships[i] = ports.ShipListingData{
+		ships[i] = domainPorts.ShipListingData{
 			Type:          ship.Type,
 			Name:          ship.Name,
 			Description:   ship.Description,
@@ -850,7 +850,7 @@ func (c *SpaceTradersClient) GetShipyard(ctx context.Context, systemSymbol, wayp
 		}
 	}
 
-	return &ports.ShipyardData{
+	return &domainPorts.ShipyardData{
 		Symbol:          response.Data.Symbol,
 		ShipTypes:       shipTypes,
 		Ships:           ships,
@@ -860,7 +860,7 @@ func (c *SpaceTradersClient) GetShipyard(ctx context.Context, systemSymbol, wayp
 }
 
 // PurchaseShip purchases a ship at a shipyard
-func (c *SpaceTradersClient) PurchaseShip(ctx context.Context, shipType, waypointSymbol, token string) (*ports.ShipPurchaseResult, error) {
+func (c *SpaceTradersClient) PurchaseShip(ctx context.Context, shipType, waypointSymbol, token string) (*domainPorts.ShipPurchaseResult, error) {
 	path := "/my/ships"
 
 	body := map[string]interface{}{
@@ -909,7 +909,7 @@ func (c *SpaceTradersClient) PurchaseShip(ctx context.Context, shipType, waypoin
 	}
 
 	// Convert transaction data
-	transaction := &ports.ShipPurchaseTransaction{
+	transaction := &domainPorts.ShipPurchaseTransaction{
 		WaypointSymbol: response.Data.Transaction.WaypointSymbol,
 		ShipSymbol:     response.Data.Transaction.ShipSymbol,
 		ShipType:       response.Data.Transaction.ShipType,
@@ -918,7 +918,7 @@ func (c *SpaceTradersClient) PurchaseShip(ctx context.Context, shipType, waypoin
 		Timestamp:      response.Data.Transaction.Timestamp,
 	}
 
-	return &ports.ShipPurchaseResult{
+	return &domainPorts.ShipPurchaseResult{
 		Agent:       agentData,
 		Ship:        shipData,
 		Transaction: transaction,
@@ -1017,7 +1017,7 @@ func (c *SpaceTradersClient) convertShipData(data map[string]interface{}) (*navi
 }
 
 // parseContractData parses contract data from API response
-func (c *SpaceTradersClient) parseContractData(data map[string]interface{}) (*ports.ContractData, error) {
+func (c *SpaceTradersClient) parseContractData(data map[string]interface{}) (*domainPorts.ContractData, error) {
 	// Extract contract ID
 	id, ok := data["id"].(string)
 	if !ok {
@@ -1059,7 +1059,7 @@ func (c *SpaceTradersClient) parseContractData(data map[string]interface{}) (*po
 	deadline, _ := termsData["deadline"].(string)
 
 	// Parse payment
-	var payment ports.PaymentData
+	var payment domainPorts.PaymentData
 	if paymentData, ok := termsData["payment"].(map[string]interface{}); ok {
 		if onAccepted, ok := paymentData["onAccepted"].(float64); ok {
 			payment.OnAccepted = int(onAccepted)
@@ -1070,9 +1070,9 @@ func (c *SpaceTradersClient) parseContractData(data map[string]interface{}) (*po
 	}
 
 	// Parse deliveries
-	var deliveries []ports.DeliveryData
+	var deliveries []domainPorts.DeliveryData
 	if deliveriesData, ok := termsData["deliver"].([]interface{}); ok {
-		deliveries = make([]ports.DeliveryData, len(deliveriesData))
+		deliveries = make([]domainPorts.DeliveryData, len(deliveriesData))
 		for i, deliveryItem := range deliveriesData {
 			if delivery, ok := deliveryItem.(map[string]interface{}); ok {
 				tradeSymbol, _ := delivery["tradeSymbol"].(string)
@@ -1086,7 +1086,7 @@ func (c *SpaceTradersClient) parseContractData(data map[string]interface{}) (*po
 					unitsFulfilled = int(uf)
 				}
 
-				deliveries[i] = ports.DeliveryData{
+				deliveries[i] = domainPorts.DeliveryData{
 					TradeSymbol:       tradeSymbol,
 					DestinationSymbol: destinationSymbol,
 					UnitsRequired:     unitsRequired,
@@ -1096,11 +1096,11 @@ func (c *SpaceTradersClient) parseContractData(data map[string]interface{}) (*po
 		}
 	}
 
-	return &ports.ContractData{
+	return &domainPorts.ContractData{
 		ID:            id,
 		FactionSymbol: factionSymbol,
 		Type:          contractType,
-		Terms: ports.ContractTermsData{
+		Terms: domainPorts.ContractTermsData{
 			DeadlineToAccept: deadlineToAccept,
 			Deadline:         deadline,
 			Payment:          payment,

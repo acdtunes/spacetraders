@@ -272,14 +272,12 @@ func (s *DaemonServer) registerCommandFactories() {
 		coordinatorID, _ := config["coordinator_id"].(string) // Optional
 
 		return &miningCmd.RunWorkerCommand{
-			ShipSymbol:           shipSymbol,
-			PlayerID:             shared.MustNewPlayerID(playerID),
-			AsteroidField:        asteroidField,
-			TopNOres:             topNOres,
-			CoordinatorID:        coordinatorID,
-			TransportRequestChan: nil, // Set at runtime by coordinator
-			TransportAssignChan:  nil, // Set at runtime by coordinator
-			TransferCompleteChan: nil, // Set at runtime by coordinator
+			ShipSymbol:    shipSymbol,
+			PlayerID:      shared.MustNewPlayerID(playerID),
+			AsteroidField: asteroidField,
+			TopNOres:      topNOres,
+			CoordinatorID: coordinatorID,
+			Coordinator:   nil, // Set at runtime by coordinator when spawning worker
 		}, nil
 	}
 
@@ -296,14 +294,15 @@ func (s *DaemonServer) registerCommandFactories() {
 		}
 
 		coordinatorID, _ := config["coordinator_id"].(string) // Optional
+		marketSymbol, _ := config["market_symbol"].(string)   // Optional
 
 		return &miningCmd.RunTransportWorkerCommand{
-			ShipSymbol:        shipSymbol,
-			PlayerID:          shared.MustNewPlayerID(playerID),
-			AsteroidField:     asteroidField,
-			CoordinatorID:     coordinatorID,
-			AvailabilityChan:  nil, // Set at runtime by coordinator
-			CargoReceivedChan: nil, // Set at runtime by coordinator
+			ShipSymbol:    shipSymbol,
+			PlayerID:      shared.MustNewPlayerID(playerID),
+			AsteroidField: asteroidField,
+			MarketSymbol:  marketSymbol,
+			CoordinatorID: coordinatorID,
+			Coordinator:   nil, // Set at runtime by coordinator when spawning worker
 		}, nil
 	}
 
@@ -1740,14 +1739,12 @@ func (s *DaemonServer) StartMiningWorkerContainer(
 
 		playerID = containerModel.PlayerID
 		cmd = &miningCmd.RunWorkerCommand{
-			ShipSymbol:           shipSymbol,
-			PlayerID:             shared.MustNewPlayerID(playerID),
-			AsteroidField:        asteroidField,
-			TopNOres:             topNOres,
-			CoordinatorID:        coordinatorID,
-			TransportRequestChan: nil, // Not available from DB recovery
-			TransportAssignChan:  nil, // Not available from DB recovery
-			TransferCompleteChan: nil, // Not available from DB recovery
+			ShipSymbol:    shipSymbol,
+			PlayerID:      shared.MustNewPlayerID(playerID),
+			AsteroidField: asteroidField,
+			TopNOres:      topNOres,
+			CoordinatorID: coordinatorID,
+			Coordinator:   nil, // Not available from DB recovery - worker must reconnect
 		}
 	}
 
@@ -1874,13 +1871,14 @@ func (s *DaemonServer) StartTransportWorkerContainer(
 		coordinatorID, _ := config["coordinator_id"].(string)
 
 		playerID = containerModel.PlayerID
+		marketSymbol, _ := config["market_symbol"].(string)
 		cmd = &miningCmd.RunTransportWorkerCommand{
-			ShipSymbol:        shipSymbol,
-			PlayerID:          shared.MustNewPlayerID(playerID),
-			AsteroidField:     asteroidField,
-			CoordinatorID:     coordinatorID,
-			AvailabilityChan:  nil, // Not available from DB recovery
-			CargoReceivedChan: nil, // Not available from DB recovery
+			ShipSymbol:    shipSymbol,
+			PlayerID:      shared.MustNewPlayerID(playerID),
+			AsteroidField: asteroidField,
+			MarketSymbol:  marketSymbol,
+			CoordinatorID: coordinatorID,
+			Coordinator:   nil, // Not available from DB recovery - worker must reconnect
 		}
 	}
 

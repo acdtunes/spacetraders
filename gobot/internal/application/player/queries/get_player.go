@@ -6,8 +6,7 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
-	infraPorts "github.com/andrescamacho/spacetraders-go/internal/infrastructure/ports"
+	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 )
 
 // GetPlayerQuery represents a query to get a player by ID or agent symbol
@@ -23,15 +22,17 @@ type GetPlayerResponse struct {
 
 // GetPlayerHandler handles the GetPlayer query
 type GetPlayerHandler struct {
-	playerRepo player.PlayerRepository
-	apiClient  infraPorts.APIClient
+	playerRepo     player.PlayerRepository
+	apiClient      domainPorts.APIClient
+	playerResolver *common.PlayerResolver
 }
 
 // NewGetPlayerHandler creates a new GetPlayerHandler
-func NewGetPlayerHandler(playerRepo player.PlayerRepository, apiClient infraPorts.APIClient) *GetPlayerHandler {
+func NewGetPlayerHandler(playerRepo player.PlayerRepository, apiClient domainPorts.APIClient) *GetPlayerHandler {
 	return &GetPlayerHandler{
-		playerRepo: playerRepo,
-		apiClient:  apiClient,
+		playerRepo:     playerRepo,
+		apiClient:      apiClient,
+		playerResolver: common.NewPlayerResolver(playerRepo),
 	}
 }
 
@@ -42,29 +43,16 @@ func (h *GetPlayerHandler) Handle(ctx context.Context, request common.Request) (
 		return nil, fmt.Errorf("invalid request type: expected *GetPlayerQuery")
 	}
 
-	// Validate that at least one identifier is provided
-	if query.PlayerID == nil && query.AgentSymbol == "" {
-		return nil, fmt.Errorf("either player_id or agent_symbol must be provided")
+	// Resolve player ID using common utility
+	playerID, err := h.playerResolver.ResolvePlayerID(ctx, query.PlayerID, query.AgentSymbol)
+	if err != nil {
+		return nil, err
 	}
 
-	var player *player.Player
-	var err error
-
-	// Priority: PlayerID > AgentSymbol
-	if query.PlayerID != nil {
-		playerID, err := shared.NewPlayerID(*query.PlayerID)
-		if err != nil {
-			return nil, fmt.Errorf("invalid player ID: %w", err)
-		}
-		player, err = h.playerRepo.FindByID(ctx, playerID)
-		if err != nil {
-			return nil, fmt.Errorf("failed to find player by ID: %w", err)
-		}
-	} else {
-		player, err = h.playerRepo.FindByAgentSymbol(ctx, query.AgentSymbol)
-		if err != nil {
-			return nil, fmt.Errorf("failed to find player by agent symbol: %w", err)
-		}
+	// Fetch player entity
+	player, err := h.playerRepo.FindByID(ctx, playerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find player: %w", err)
 	}
 
 	// Get token from context (injected by middleware)

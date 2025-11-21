@@ -9,19 +9,19 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
-	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/ports"
+	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 )
 
 // GraphBuilder builds system navigation graphs from API data
 type GraphBuilder struct {
-	apiClient    ports.APIClient
+	apiClient    domainPorts.APIClient
 	playerRepo   player.PlayerRepository
 	waypointRepo system.WaypointRepository
 }
 
 // NewGraphBuilder creates a new graph builder
 func NewGraphBuilder(
-	apiClient ports.APIClient,
+	apiClient domainPorts.APIClient,
 	playerRepo player.PlayerRepository,
 	waypointRepo system.WaypointRepository,
 ) system.IGraphBuilder {

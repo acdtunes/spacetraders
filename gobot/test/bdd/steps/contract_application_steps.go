@@ -14,8 +14,8 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/contract/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
+	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
-	infraPorts "github.com/andrescamacho/spacetraders-go/internal/infrastructure/ports"
 	"github.com/andrescamacho/spacetraders-go/test/helpers"
 )
 
@@ -89,7 +89,7 @@ func (ctx *contractApplicationContext) reset() {
 // setupDefaultMockBehaviors configures the mock API to return successful responses
 func (ctx *contractApplicationContext) setupDefaultMockBehaviors() {
 	// DeliverContract mock - returns the updated contract data with accumulated totals
-	ctx.apiClient.SetDeliverContractFunc(func(ctxAPI context.Context, contractID, shipSymbol, tradeSymbol string, units int, token string) (*infraPorts.ContractData, error) {
+	ctx.apiClient.SetDeliverContractFunc(func(ctxAPI context.Context, contractID, shipSymbol, tradeSymbol string, units int, token string) (*domainPorts.ContractData, error) {
 		// Load the current contract state from repository to get existing deliveries
 		existingContract, err := ctx.contractRepo.FindByID(ctxAPI, contractID)
 		if err != nil {
@@ -107,10 +107,10 @@ func (ctx *contractApplicationContext) setupDefaultMockBehaviors() {
 		}
 
 		// Return the accumulated total, simulating what the real API would return
-		return &infraPorts.ContractData{
+		return &domainPorts.ContractData{
 			ID: contractID,
-			Terms: infraPorts.ContractTermsData{
-				Deliveries: []infraPorts.DeliveryData{
+			Terms: domainPorts.ContractTermsData{
+				Deliveries: []domainPorts.DeliveryData{
 					{
 						TradeSymbol:    tradeSymbol,
 						UnitsFulfilled: accumulatedUnits,
@@ -121,16 +121,16 @@ func (ctx *contractApplicationContext) setupDefaultMockBehaviors() {
 	})
 
 	// FulfillContract mock - returns the updated contract data
-	ctx.apiClient.SetFulfillContractFunc(func(ctxAPI context.Context, contractID, token string) (*infraPorts.ContractData, error) {
-		return &infraPorts.ContractData{
+	ctx.apiClient.SetFulfillContractFunc(func(ctxAPI context.Context, contractID, token string) (*domainPorts.ContractData, error) {
+		return &domainPorts.ContractData{
 			ID:       contractID,
 			Fulfilled: true,
 		}, nil
 	})
 
 	// AcceptContract mock - returns the updated contract data
-	ctx.apiClient.SetAcceptContractFunc(func(ctxAPI context.Context, contractID, token string) (*infraPorts.ContractData, error) {
-		return &infraPorts.ContractData{
+	ctx.apiClient.SetAcceptContractFunc(func(ctxAPI context.Context, contractID, token string) (*domainPorts.ContractData, error) {
+		return &domainPorts.ContractData{
 			ID:       contractID,
 			Accepted: true,
 		}, nil

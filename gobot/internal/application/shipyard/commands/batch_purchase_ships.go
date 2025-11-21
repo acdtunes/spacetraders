@@ -9,7 +9,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
-	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/ports"
+	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )
 
@@ -42,14 +42,14 @@ type BatchPurchaseShipsResponse struct {
 type BatchPurchaseShipsHandler struct {
 	playerRepo player.PlayerRepository
 	mediator   common.Mediator
-	apiClient  ports.APIClient
+	apiClient  domainPorts.APIClient
 }
 
 // NewBatchPurchaseShipsHandler creates a new BatchPurchaseShipsHandler
 func NewBatchPurchaseShipsHandler(
 	playerRepo player.PlayerRepository,
 	mediator common.Mediator,
-	apiClient ports.APIClient,
+	apiClient domainPorts.APIClient,
 ) *BatchPurchaseShipsHandler {
 	return &BatchPurchaseShipsHandler{
 		playerRepo: playerRepo,

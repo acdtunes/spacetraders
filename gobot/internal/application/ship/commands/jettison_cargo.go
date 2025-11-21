@@ -8,7 +8,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
-	infraPorts "github.com/andrescamacho/spacetraders-go/internal/infrastructure/ports"
+	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 )
 
 // JettisonCargoCommand - Command to jettison cargo from a ship
@@ -28,14 +28,14 @@ type JettisonCargoResponse struct {
 type JettisonCargoHandler struct {
 	shipRepo   navigation.ShipRepository
 	playerRepo player.PlayerRepository
-	apiClient  infraPorts.APIClient
+	apiClient  domainPorts.APIClient
 }
 
 // NewJettisonCargoHandler creates a new jettison cargo handler
 func NewJettisonCargoHandler(
 	shipRepo navigation.ShipRepository,
 	playerRepo player.PlayerRepository,
-	apiClient infraPorts.APIClient,
+	apiClient domainPorts.APIClient,
 ) *JettisonCargoHandler {
 	return &JettisonCargoHandler{
 		shipRepo:   shipRepo,

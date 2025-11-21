@@ -80,6 +80,49 @@ func (w *Waypoint) String() string {
 	return fmt.Sprintf("Waypoint(%s)", w.Symbol)
 }
 
+// HasTrait checks if the waypoint has the specified trait.
+//
+// Traits indicate special characteristics of a waypoint:
+//   - "MARKETPLACE": Has a market for buying/selling goods
+//   - "SHIPYARD": Has a shipyard for purchasing ships
+//   - "UNCHARTED": Not yet explored
+//   - etc.
+//
+// This method encapsulates trait checking logic that was previously scattered
+// across application layer (RouteExecutor, etc.), following Tell Don't Ask principle.
+func (w *Waypoint) HasTrait(trait string) bool {
+	for _, t := range w.Traits {
+		if t == trait {
+			return true
+		}
+	}
+	return false
+}
+
+// IsMarketplace checks if this waypoint has a marketplace.
+//
+// This is a convenience method for the common trait check.
+// Marketplaces allow ships to buy/sell cargo and refuel.
+func (w *Waypoint) IsMarketplace() bool {
+	return w.HasTrait("MARKETPLACE")
+}
+
+// IsShipyard checks if this waypoint has a shipyard.
+//
+// This is a convenience method for the common trait check.
+// Shipyards allow agents to purchase new ships.
+func (w *Waypoint) IsShipyard() bool {
+	return w.HasTrait("SHIPYARD")
+}
+
+// IsUncharted checks if this waypoint is uncharted.
+//
+// This is a convenience method for the common trait check.
+// Uncharted waypoints need to be surveyed before accessing their features.
+func (w *Waypoint) IsUncharted() bool {
+	return w.HasTrait("UNCHARTED")
+}
+
 // ExtractSystemSymbol extracts the system symbol from a waypoint symbol
 // by finding the last hyphen and returning everything before it.
 // Example: "X1-AB12-C3D4" -> "X1-AB12"

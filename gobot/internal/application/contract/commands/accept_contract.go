@@ -5,35 +5,28 @@ import (
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	contractTypes "github.com/andrescamacho/spacetraders-go/internal/application/contract/types"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
-	infraPorts "github.com/andrescamacho/spacetraders-go/internal/infrastructure/ports"
+	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 )
 
-// AcceptContractCommand - Command to accept a contract
-type AcceptContractCommand struct {
-	ContractID string
-	PlayerID   shared.PlayerID
-}
-
-// AcceptContractResponse - Response from accept contract command
-type AcceptContractResponse struct {
-	Contract *contract.Contract
-}
+// Type aliases for convenience
+type AcceptContractCommand = contractTypes.AcceptContractCommand
+type AcceptContractResponse = contractTypes.AcceptContractResponse
 
 // AcceptContractHandler - Handles accept contract commands
 type AcceptContractHandler struct {
 	contractRepo contract.ContractRepository
 	playerRepo   player.PlayerRepository
-	apiClient    infraPorts.APIClient
+	apiClient    domainPorts.APIClient
 }
 
 // NewAcceptContractHandler creates a new accept contract handler
 func NewAcceptContractHandler(
 	contractRepo contract.ContractRepository,
 	playerRepo player.PlayerRepository,
-	apiClient infraPorts.APIClient,
+	apiClient domainPorts.APIClient,
 ) *AcceptContractHandler {
 	return &AcceptContractHandler{
 		contractRepo: contractRepo,

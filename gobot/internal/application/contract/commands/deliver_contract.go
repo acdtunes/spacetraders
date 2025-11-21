@@ -5,38 +5,27 @@ import (
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	contractTypes "github.com/andrescamacho/spacetraders-go/internal/application/contract/types"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
-	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/ports"
+	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 )
 
-// DeliverContractCommand - Command to deliver cargo for a contract
-type DeliverContractCommand struct {
-	ContractID  string
-	ShipSymbol  string
-	TradeSymbol string
-	Units       int
-	PlayerID    shared.PlayerID
-}
-
-// DeliverContractResponse - Response from deliver contract command
-type DeliverContractResponse struct {
-	Contract       *contract.Contract
-	UnitsDelivered int
-}
+// Type aliases for convenience
+type DeliverContractCommand = contractTypes.DeliverContractCommand
+type DeliverContractResponse = contractTypes.DeliverContractResponse
 
 // DeliverContractHandler - Handles deliver contract commands
 type DeliverContractHandler struct {
 	contractRepo contract.ContractRepository
-	apiClient    ports.APIClient
+	apiClient    domainPorts.APIClient
 	playerRepo   player.PlayerRepository
 }
 
 // NewDeliverContractHandler creates a new deliver contract handler
 func NewDeliverContractHandler(
 	contractRepo contract.ContractRepository,
-	apiClient ports.APIClient,
+	apiClient domainPorts.APIClient,
 	playerRepo player.PlayerRepository,
 ) *DeliverContractHandler {
 	return &DeliverContractHandler{
@@ -106,7 +95,7 @@ func (h *DeliverContractHandler) validateDeliveryInDomain(contract *contract.Con
 	return nil
 }
 
-func (h *DeliverContractHandler) callDeliverCargoAPI(ctx context.Context, cmd *DeliverContractCommand, token string) (*ports.ContractData, error) {
+func (h *DeliverContractHandler) callDeliverCargoAPI(ctx context.Context, cmd *DeliverContractCommand, token string) (*domainPorts.ContractData, error) {
 	deliveryData, err := h.apiClient.DeliverContract(
 		ctx,
 		cmd.ContractID,
@@ -121,7 +110,7 @@ func (h *DeliverContractHandler) callDeliverCargoAPI(ctx context.Context, cmd *D
 	return deliveryData, nil
 }
 
-func (h *DeliverContractHandler) syncDeliveryDataFromAPI(contract *contract.Contract, deliveryData *ports.ContractData) {
+func (h *DeliverContractHandler) syncDeliveryDataFromAPI(contract *contract.Contract, deliveryData *domainPorts.ContractData) {
 	terms := contract.Terms()
 	for i := range terms.Deliveries {
 		for _, apiDelivery := range deliveryData.Terms.Deliveries {

@@ -9,20 +9,20 @@ import (
 	scoutingQuery "github.com/andrescamacho/spacetraders-go/internal/application/scouting/queries"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
+	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
-	infraports "github.com/andrescamacho/spacetraders-go/internal/infrastructure/ports"
 )
 
 // MarketScanner handles automatic market scanning and data persistence
 type MarketScanner struct {
-	apiClient  infraports.APIClient
+	apiClient  domainPorts.APIClient
 	marketRepo scoutingQuery.MarketRepository
 	playerRepo player.PlayerRepository
 }
 
 // NewMarketScanner creates a new market scanner service
 func NewMarketScanner(
-	apiClient infraports.APIClient,
+	apiClient domainPorts.APIClient,
 	marketRepo scoutingQuery.MarketRepository,
 	playerRepo player.PlayerRepository,
 ) *MarketScanner {
@@ -69,7 +69,7 @@ func (s *MarketScanner) ScanAndSaveMarket(ctx context.Context, playerID uint, wa
 	return nil
 }
 
-func (s *MarketScanner) convertAPIGoodsToDomain(apiGoods []infraports.TradeGoodData, logger common.ContainerLogger) ([]market.TradeGood, error) {
+func (s *MarketScanner) convertAPIGoodsToDomain(apiGoods []domainPorts.TradeGoodData, logger common.ContainerLogger) ([]market.TradeGood, error) {
 	tradeGoods := make([]market.TradeGood, 0, len(apiGoods))
 	for _, apiGood := range apiGoods {
 		good, err := market.NewTradeGood(

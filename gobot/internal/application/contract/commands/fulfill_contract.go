@@ -5,35 +5,28 @@ import (
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	contractTypes "github.com/andrescamacho/spacetraders-go/internal/application/contract/types"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
-	infraPorts "github.com/andrescamacho/spacetraders-go/internal/infrastructure/ports"
+	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 )
 
-// FulfillContractCommand - Command to fulfill a contract
-type FulfillContractCommand struct {
-	ContractID string
-	PlayerID   shared.PlayerID
-}
-
-// FulfillContractResponse - Response from fulfill contract command
-type FulfillContractResponse struct {
-	Contract *contract.Contract
-}
+// Type aliases for convenience
+type FulfillContractCommand = contractTypes.FulfillContractCommand
+type FulfillContractResponse = contractTypes.FulfillContractResponse
 
 // FulfillContractHandler - Handles fulfill contract commands
 type FulfillContractHandler struct {
 	contractRepo contract.ContractRepository
 	playerRepo   player.PlayerRepository
-	apiClient    infraPorts.APIClient
+	apiClient    domainPorts.APIClient
 }
 
 // NewFulfillContractHandler creates a new fulfill contract handler
 func NewFulfillContractHandler(
 	contractRepo contract.ContractRepository,
 	playerRepo player.PlayerRepository,
-	apiClient infraPorts.APIClient,
+	apiClient domainPorts.APIClient,
 ) *FulfillContractHandler {
 	return &FulfillContractHandler{
 		contractRepo: contractRepo,

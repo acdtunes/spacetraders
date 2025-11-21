@@ -7,17 +7,17 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
-	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/ports"
+	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 )
 
 // CreateTestShipyardData builds a ShipyardData with configurable listings
-func CreateTestShipyardData(waypointSymbol string, listings ...ports.ShipListingData) *ports.ShipyardData {
-	shipTypes := make([]ports.ShipTypeInfo, len(listings))
+func CreateTestShipyardData(waypointSymbol string, listings ...domainPorts.ShipListingData) *domainPorts.ShipyardData {
+	shipTypes := make([]domainPorts.ShipTypeInfo, len(listings))
 	for i, listing := range listings {
-		shipTypes[i] = ports.ShipTypeInfo{Type: listing.Type}
+		shipTypes[i] = domainPorts.ShipTypeInfo{Type: listing.Type}
 	}
 
-	return &ports.ShipyardData{
+	return &domainPorts.ShipyardData{
 		Symbol:          waypointSymbol,
 		ShipTypes:       shipTypes,
 		Ships:           listings,
@@ -27,8 +27,8 @@ func CreateTestShipyardData(waypointSymbol string, listings ...ports.ShipListing
 }
 
 // CreateTestShipListing builds a ShipListingData with sensible defaults
-func CreateTestShipListing(shipType string, price int) ports.ShipListingData {
-	return ports.ShipListingData{
+func CreateTestShipListing(shipType string, price int) domainPorts.ShipListingData {
+	return domainPorts.ShipListingData{
 		Type:          shipType,
 		Name:          fmt.Sprintf("%s Ship", shipType),
 		Description:   fmt.Sprintf("A %s class vessel", shipType),
@@ -42,8 +42,8 @@ func CreateTestShipListing(shipType string, price int) ports.ShipListingData {
 }
 
 // CreateTestShipPurchaseResult builds a ShipPurchaseResult
-func CreateTestShipPurchaseResult(agentSymbol, shipSymbol, shipType, waypointSymbol string, price, newCredits int) *ports.ShipPurchaseResult {
-	return &ports.ShipPurchaseResult{
+func CreateTestShipPurchaseResult(agentSymbol, shipSymbol, shipType, waypointSymbol string, price, newCredits int) *domainPorts.ShipPurchaseResult {
+	return &domainPorts.ShipPurchaseResult{
 		Agent: &player.AgentData{
 			AccountID: agentSymbol,
 			Symbol:    agentSymbol,
@@ -66,7 +66,7 @@ func CreateTestShipPurchaseResult(agentSymbol, shipSymbol, shipType, waypointSym
 				Inventory: []shared.CargoItem{},
 			},
 		},
-		Transaction: &ports.ShipPurchaseTransaction{
+		Transaction: &domainPorts.ShipPurchaseTransaction{
 			WaypointSymbol: waypointSymbol,
 			ShipSymbol:     shipSymbol,
 			ShipType:       shipType,

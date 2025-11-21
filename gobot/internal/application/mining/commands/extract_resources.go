@@ -9,7 +9,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
-	infraPorts "github.com/andrescamacho/spacetraders-go/internal/infrastructure/ports"
+	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 )
 
 // ExtractResourcesCommand - Command to extract resources from an asteroid
@@ -30,14 +30,14 @@ type ExtractResourcesResponse struct {
 type ExtractResourcesHandler struct {
 	shipRepo   navigation.ShipRepository
 	playerRepo player.PlayerRepository
-	apiClient  infraPorts.APIClient
+	apiClient  domainPorts.APIClient
 }
 
 // NewExtractResourcesHandler creates a new extract resources handler
 func NewExtractResourcesHandler(
 	shipRepo navigation.ShipRepository,
 	playerRepo player.PlayerRepository,
-	apiClient infraPorts.APIClient,
+	apiClient domainPorts.APIClient,
 ) *ExtractResourcesHandler {
 	return &ExtractResourcesHandler{
 		shipRepo:   shipRepo,

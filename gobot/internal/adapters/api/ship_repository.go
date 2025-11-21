@@ -8,13 +8,13 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
-	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/ports"
+	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 )
 
 // ShipRepository implements ShipRepository using the SpaceTraders API
 // This repository adapts API responses to domain entities
 type ShipRepository struct {
-	apiClient        ports.APIClient
+	apiClient        domainPorts.APIClient
 	playerRepo       player.PlayerRepository
 	waypointRepo     system.WaypointRepository
 	waypointProvider system.IWaypointProvider
@@ -22,7 +22,7 @@ type ShipRepository struct {
 
 // NewShipRepository creates a new API ship repository
 func NewShipRepository(
-	apiClient ports.APIClient,
+	apiClient domainPorts.APIClient,
 	playerRepo player.PlayerRepository,
 	waypointRepo system.WaypointRepository,
 	waypointProvider system.IWaypointProvider,

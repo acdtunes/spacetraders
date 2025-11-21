@@ -7,7 +7,6 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
 // GetShipQuery represents a query to get ship details
@@ -24,15 +23,15 @@ type GetShipResponse struct {
 
 // GetShipHandler handles the GetShip query
 type GetShipHandler struct {
-	shipRepo   navigation.ShipRepository
-	playerRepo player.PlayerRepository
+	shipRepo       navigation.ShipRepository
+	playerResolver *common.PlayerResolver
 }
 
 // NewGetShipHandler creates a new GetShipHandler
 func NewGetShipHandler(shipRepo navigation.ShipRepository, playerRepo player.PlayerRepository) *GetShipHandler {
 	return &GetShipHandler{
-		shipRepo:   shipRepo,
-		playerRepo: playerRepo,
+		shipRepo:       shipRepo,
+		playerResolver: common.NewPlayerResolver(playerRepo),
 	}
 }
 
@@ -47,7 +46,7 @@ func (h *GetShipHandler) Handle(ctx context.Context, request common.Request) (co
 		return nil, fmt.Errorf("ship_symbol is required")
 	}
 
-	playerID, err := h.resolvePlayerID(ctx, query.PlayerID, query.AgentSymbol)
+	playerID, err := h.playerResolver.ResolvePlayerID(ctx, query.PlayerID, query.AgentSymbol)
 	if err != nil {
 		return nil, err
 	}
@@ -60,24 +59,4 @@ func (h *GetShipHandler) Handle(ctx context.Context, request common.Request) (co
 	return &GetShipResponse{
 		Ship: ship,
 	}, nil
-}
-
-func (h *GetShipHandler) resolvePlayerID(ctx context.Context, playerID *int, agentSymbol string) (shared.PlayerID, error) {
-	if playerID == nil && agentSymbol == "" {
-		return shared.PlayerID{}, fmt.Errorf("either player_id or agent_symbol must be provided")
-	}
-
-	if playerID != nil {
-		pid, err := shared.NewPlayerID(*playerID)
-		if err != nil {
-			return shared.PlayerID{}, fmt.Errorf("invalid player ID: %w", err)
-		}
-		return pid, nil
-	}
-
-	player, err := h.playerRepo.FindByAgentSymbol(ctx, agentSymbol)
-	if err != nil {
-		return shared.PlayerID{}, fmt.Errorf("failed to find player by agent symbol: %w", err)
-	}
-	return player.ID, nil
 }
