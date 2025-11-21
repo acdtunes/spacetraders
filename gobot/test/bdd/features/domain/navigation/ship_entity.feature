@@ -515,3 +515,87 @@ Feature: Ship Entity
     Given a ship in orbit at "X1-A1"
     When I attempt to start transit to "X1-A1"
     Then the operation should fail with error "cannot transit to same location"
+  # ============================================================================
+  # Ship Frame Type Detection Tests
+  # ============================================================================
+
+  Scenario: IsProbe returns true for probe frame
+    Given a ship with frame symbol "FRAME_PROBE"
+    When I check if the ship is a probe
+    Then the result should be true
+
+  Scenario: IsProbe returns false for non-probe frame
+    Given a ship with frame symbol "FRAME_MINER"
+    When I check if the ship is a probe
+    Then the result should be false
+
+  Scenario: IsDrone returns true for drone frame
+    Given a ship with frame symbol "FRAME_DRONE"
+    When I check if the ship is a drone
+    Then the result should be true
+
+  Scenario: IsDrone returns false for non-drone frame
+    Given a ship with frame symbol "FRAME_FRIGATE"
+    When I check if the ship is a drone
+    Then the result should be false
+
+  Scenario: IsScoutType returns true for satellite role
+    Given a ship with role "SATELLITE"
+    When I check if the ship is a scout type
+    Then the result should be true
+
+  Scenario: IsScoutType returns false for excavator role
+    Given a ship with role "EXCAVATOR"
+    When I check if the ship is a scout type
+    Then the result should be false
+
+  Scenario: IsScoutType returns false for hauler role
+    Given a ship with role "HAULER"
+    When I check if the ship is a scout type
+    Then the result should be false
+
+  # ============================================================================
+  # Cargo State Query Tests
+  # ============================================================================
+
+  Scenario: IsCargoEmpty returns true for ship with no cargo
+    Given a ship with cargo capacity 40 and cargo units 0
+    When I check if cargo is empty
+    Then the result should be true
+
+  Scenario: IsCargoEmpty returns false for ship with cargo
+    Given a ship with cargo capacity 40 and cargo units 20
+    When I check if cargo is empty
+    Then the result should be false
+
+  Scenario: IsCargoFull returns true for ship at capacity
+    Given a ship with cargo capacity 40 and cargo units 40
+    When I check if cargo is full
+    Then the result should be true
+
+  Scenario: IsCargoFull returns false for ship with available space
+    Given a ship with cargo capacity 40 and cargo units 20
+    When I check if cargo is full
+    Then the result should be false
+
+  # ============================================================================
+  # Clone At Location Tests
+  # ============================================================================
+
+  Scenario: Clone ship at different location with specified fuel
+    Given a ship in orbit at "X1-A1" with 100 units of fuel
+    And a waypoint "X1-B2" at coordinates (50, 50)
+    When I clone the ship at location "X1-B2" with 60 units of fuel
+    Then the cloned ship should be at location "X1-B2"
+    And the cloned ship should have 60 units of fuel
+    And the cloned ship should be in orbit
+    And the cloned ship should have same ship symbol as original
+    And the cloned ship should have same cargo capacity as original
+
+  Scenario: Clone ship preserves ship properties
+    Given a ship with symbol "PROBE-1" with frame "FRAME_PROBE" and role "SATELLITE"
+    And a waypoint "X1-DEST" at coordinates (100, 100)
+    When I clone the ship at location "X1-DEST" with 40 units of fuel
+    Then the cloned ship should have ship symbol "PROBE-1"
+    And the cloned ship should have frame symbol "FRAME_PROBE"
+    And the cloned ship should have role "SATELLITE"

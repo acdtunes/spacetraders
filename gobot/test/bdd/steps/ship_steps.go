@@ -12,6 +12,7 @@ import (
 
 type shipContext struct {
 	ship              *navigation.Ship
+	clonedShip        *navigation.Ship
 	err               error
 	boolResult        bool
 	intResult         int
@@ -22,6 +23,7 @@ type shipContext struct {
 
 func (sc *shipContext) reset() {
 	sc.ship = nil
+	sc.clonedShip = nil
 	sc.err = nil
 	sc.boolResult = false
 	sc.intResult = 0
@@ -297,6 +299,17 @@ func (sc *shipContext) aDockedShipAt(location string) error {
 func (sc *shipContext) aShipInOrbitAt(location string) error {
 	waypoint := sc.getOrCreateWaypoint(location, 0, 0)
 	fuel, _ := shared.NewFuel(100, 100)
+	cargo, _ := shared.NewCargo(40, 0, []*shared.CargoItem{})
+
+	sc.ship, sc.err = navigation.NewShip(
+		"SHIP-1", shared.MustNewPlayerID(1), waypoint, fuel, 100, 40, cargo, 30, "FRAME_EXPLORER", "", navigation.NavStatusInOrbit,
+	)
+	return sc.err
+}
+
+func (sc *shipContext) aShipInOrbitAtWithUnitsOfFuel(location string, fuelUnits int) error {
+	waypoint := sc.getOrCreateWaypoint(location, 0, 0)
+	fuel, _ := shared.NewFuel(fuelUnits, 100)
 	cargo, _ := shared.NewCargo(40, 0, []*shared.CargoItem{})
 
 	sc.ship, sc.err = navigation.NewShip(
@@ -909,6 +922,7 @@ func InitializeShipScenario(ctx *godog.ScenarioContext) {
 	// Navigation state machine
 	ctx.Step(`^a docked ship at "([^"]*)"$`, sc.aDockedShipAt)
 	ctx.Step(`^a ship in orbit at "([^"]*)"$`, sc.aShipInOrbitAt)
+	ctx.Step(`^a ship in orbit at "([^"]*)" with (\d+) units of fuel$`, sc.aShipInOrbitAtWithUnitsOfFuel)
 	ctx.Step(`^a ship in transit to "([^"]*)"$`, sc.aShipInTransitTo)
 	ctx.Step(`^the ship departs$`, sc.theShipDeparts)
 	ctx.Step(`^I attempt to depart the ship$`, sc.iAttemptToDepartTheShip)
@@ -983,4 +997,212 @@ func InitializeShipScenario(ctx *godog.ScenarioContext) {
 	ctx.Step(`^a route segment requiring (\d+) units of fuel in DRIFT mode$`, sc.aRouteSegmentRequiringUnitsOfFuelInDRIFTMode)
 	ctx.Step(`^a route segment requiring (\d+) units of fuel in CRUISE mode$`, sc.aRouteSegmentRequiringUnitsOfFuelInCRUISEMode)
 	ctx.Step(`^I check if ship should prevent drift mode with threshold ([0-9.]+)$`, sc.iCheckIfShipShouldPreventDriftModeWithThreshold)
+
+	// Ship type detection
+	ctx.Step(`^a ship with frame symbol "([^"]*)"$`, sc.aShipWithFrameSymbol)
+	ctx.Step(`^a ship with role "([^"]*)"$`, sc.aShipWithRole)
+	ctx.Step(`^a ship with symbol "([^"]*)" with frame "([^"]*)" and role "([^"]*)"$`, sc.aShipWithSymbolWithFrameAndRole)
+	ctx.Step(`^I check if the ship is a probe$`, sc.iCheckIfTheShipIsAProbe)
+	ctx.Step(`^I check if the ship is a drone$`, sc.iCheckIfTheShipIsADrone)
+	ctx.Step(`^I check if the ship is a scout type$`, sc.iCheckIfTheShipIsAScoutType)
+
+	// Clone at location
+	ctx.Step(`^I clone the ship at location "([^"]*)" with (\d+) units of fuel$`, sc.iCloneTheShipAtLocationWithUnitsOfFuel)
+	ctx.Step(`^the cloned ship should be at location "([^"]*)"$`, sc.theClonedShipShouldBeAtLocation)
+	ctx.Step(`^the cloned ship should have (\d+) units of fuel$`, sc.theClonedShipShouldHaveUnitsOfFuel)
+	ctx.Step(`^the cloned ship should be in orbit$`, sc.theClonedShipShouldBeInOrbit)
+	ctx.Step(`^the cloned ship should have same ship symbol as original$`, sc.theClonedShipShouldHaveSameShipSymbolAsOriginal)
+	ctx.Step(`^the cloned ship should have same cargo capacity as original$`, sc.theClonedShipShouldHaveSameCargoCapacityAsOriginal)
+	ctx.Step(`^the cloned ship should have ship symbol "([^"]*)"$`, sc.theClonedShipShouldHaveShipSymbol)
+	ctx.Step(`^the cloned ship should have frame symbol "([^"]*)"$`, sc.theClonedShipShouldHaveFrameSymbol)
+	ctx.Step(`^the cloned ship should have role "([^"]*)"$`, sc.theClonedShipShouldHaveRole)
 }
+
+// ============================================================================
+// Ship Type Detection Steps
+// ============================================================================
+
+func (sc *shipContext) aShipWithFrameSymbol(frameSymbol string) error {
+	playerID := shared.MustNewPlayerID(1)
+	ship, err := navigation.NewShip(
+		"TEST-SHIP",
+		playerID,
+		&shared.Waypoint{Symbol: "X1-A1", X: 0, Y: 0, Type: "PLANET"},
+		&shared.Fuel{Current: 100, Capacity: 100},
+		100,
+		40,
+		&shared.Cargo{Capacity: 40, Units: 0, Inventory: []*shared.CargoItem{}},
+		10,
+		frameSymbol,           // Frame symbol
+		"COMMAND",             // Default role
+		navigation.NavStatusInOrbit, // Nav status
+	)
+	if err != nil {
+		return err
+	}
+	sc.ship = ship
+	return nil
+}
+
+func (sc *shipContext) aShipWithRole(role string) error {
+	playerID := shared.MustNewPlayerID(1)
+	ship, err := navigation.NewShip(
+		"TEST-SHIP",
+		playerID,
+		&shared.Waypoint{Symbol: "X1-A1", X: 0, Y: 0, Type: "PLANET"},
+		&shared.Fuel{Current: 100, Capacity: 100},
+		100,
+		40,
+		&shared.Cargo{Capacity: 40, Units: 0, Inventory: []*shared.CargoItem{}},
+		10,
+		"FRAME_FRIGATE",         // Default frame
+		role,                    // Role
+		navigation.NavStatusInOrbit, // Nav status
+	)
+	if err != nil {
+		return err
+	}
+	sc.ship = ship
+	return nil
+}
+
+func (sc *shipContext) aShipWithSymbolWithFrameAndRole(symbol, frameSymbol, role string) error {
+	playerID := shared.MustNewPlayerID(1)
+	ship, err := navigation.NewShip(
+		symbol,
+		playerID,
+		&shared.Waypoint{Symbol: "X1-A1", X: 0, Y: 0, Type: "PLANET"},
+		&shared.Fuel{Current: 100, Capacity: 100},
+		100,
+		40,
+		&shared.Cargo{Capacity: 40, Units: 0, Inventory: []*shared.CargoItem{}},
+		10,
+		frameSymbol,
+		role,
+		navigation.NavStatusInOrbit, // Nav status
+	)
+	if err != nil {
+		return err
+	}
+	sc.ship = ship
+	return nil
+}
+
+func (sc *shipContext) iCheckIfTheShipIsAProbe() error {
+	sc.boolResult = sc.ship.IsProbe()
+	sharedBoolResult = sc.boolResult
+	return nil
+}
+
+func (sc *shipContext) iCheckIfTheShipIsADrone() error {
+	sc.boolResult = sc.ship.IsDrone()
+	sharedBoolResult = sc.boolResult
+	return nil
+}
+
+func (sc *shipContext) iCheckIfTheShipIsAScoutType() error {
+	sc.boolResult = sc.ship.IsScoutType()
+	sharedBoolResult = sc.boolResult
+	return nil
+}
+
+// ============================================================================
+// Clone At Location Steps
+// ============================================================================
+
+func (sc *shipContext) iCloneTheShipAtLocationWithUnitsOfFuel(waypointSymbol string, fuel int) error {
+	waypoint, exists := sc.waypoints[waypointSymbol]
+	if !exists {
+		return fmt.Errorf("waypoint %s not found", waypointSymbol)
+	}
+	sc.clonedShip = sc.ship.CloneAtLocation(waypoint, fuel)
+	return nil
+}
+
+func (sc *shipContext) theClonedShipShouldBeAtLocation(expectedLocation string) error {
+	if sc.clonedShip == nil {
+		return fmt.Errorf("cloned ship is nil")
+	}
+	actual := sc.clonedShip.CurrentLocation().Symbol
+	if actual != expectedLocation {
+		return fmt.Errorf("expected cloned ship at %s, got %s", expectedLocation, actual)
+	}
+	return nil
+}
+
+func (sc *shipContext) theClonedShipShouldHaveUnitsOfFuel(expectedFuel int) error {
+	if sc.clonedShip == nil {
+		return fmt.Errorf("cloned ship is nil")
+	}
+	actual := sc.clonedShip.Fuel().Current
+	if actual != expectedFuel {
+		return fmt.Errorf("expected cloned ship to have %d fuel, got %d", expectedFuel, actual)
+	}
+	return nil
+}
+
+func (sc *shipContext) theClonedShipShouldBeInOrbit() error {
+	if sc.clonedShip == nil {
+		return fmt.Errorf("cloned ship is nil")
+	}
+	if !sc.clonedShip.IsInOrbit() {
+		return fmt.Errorf("expected cloned ship to be in orbit, got nav status %v", sc.clonedShip.NavStatus())
+	}
+	return nil
+}
+
+func (sc *shipContext) theClonedShipShouldHaveSameShipSymbolAsOriginal() error {
+	if sc.clonedShip == nil {
+		return fmt.Errorf("cloned ship is nil")
+	}
+	if sc.clonedShip.ShipSymbol() != sc.ship.ShipSymbol() {
+		return fmt.Errorf("expected cloned ship symbol %s, got %s",
+			sc.ship.ShipSymbol(), sc.clonedShip.ShipSymbol())
+	}
+	return nil
+}
+
+func (sc *shipContext) theClonedShipShouldHaveSameCargoCapacityAsOriginal() error {
+	if sc.clonedShip == nil {
+		return fmt.Errorf("cloned ship is nil")
+	}
+	if sc.clonedShip.CargoCapacity() != sc.ship.CargoCapacity() {
+		return fmt.Errorf("expected cloned ship cargo capacity %d, got %d",
+			sc.ship.CargoCapacity(), sc.clonedShip.CargoCapacity())
+	}
+	return nil
+}
+
+func (sc *shipContext) theClonedShipShouldHaveShipSymbol(expected string) error {
+	if sc.clonedShip == nil {
+		return fmt.Errorf("cloned ship is nil")
+	}
+	actual := sc.clonedShip.ShipSymbol()
+	if actual != expected {
+		return fmt.Errorf("expected cloned ship symbol %s, got %s", expected, actual)
+	}
+	return nil
+}
+
+func (sc *shipContext) theClonedShipShouldHaveFrameSymbol(expected string) error {
+	if sc.clonedShip == nil {
+		return fmt.Errorf("cloned ship is nil")
+	}
+	actual := sc.clonedShip.FrameSymbol()
+	if actual != expected {
+		return fmt.Errorf("expected cloned ship frame symbol %s, got %s", expected, actual)
+	}
+	return nil
+}
+
+func (sc *shipContext) theClonedShipShouldHaveRole(expected string) error {
+	if sc.clonedShip == nil {
+		return fmt.Errorf("cloned ship is nil")
+	}
+	actual := sc.clonedShip.Role()
+	if actual != expected {
+		return fmt.Errorf("expected cloned ship role %s, got %s", expected, actual)
+	}
+	return nil
+}
+
