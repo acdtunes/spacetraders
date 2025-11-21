@@ -54,9 +54,11 @@ type RunFleetCoordinatorHandler struct {
 	graphProvider      system.ISystemGraphProvider // For distance calculations
 	converter          system.IWaypointConverter   // For waypoint conversions
 	containerRepo      ContainerRepository         // For checking existing workers
+	clock              shared.Clock                // For time operations (mockable for tests)
 }
 
 // NewRunFleetCoordinatorHandler creates a new fleet coordinator handler
+// The clock parameter is optional - if nil, defaults to RealClock for production use
 func NewRunFleetCoordinatorHandler(
 	mediator common.Mediator,
 	shipRepo navigation.ShipRepository,
@@ -67,7 +69,13 @@ func NewRunFleetCoordinatorHandler(
 	graphProvider system.ISystemGraphProvider,
 	converter system.IWaypointConverter,
 	containerRepo ContainerRepository,
+	clock shared.Clock,
 ) *RunFleetCoordinatorHandler {
+	// Default to RealClock if not provided
+	if clock == nil {
+		clock = shared.NewRealClock()
+	}
+
 	return &RunFleetCoordinatorHandler{
 		mediator:           mediator,
 		shipRepo:           shipRepo,
@@ -78,6 +86,7 @@ func NewRunFleetCoordinatorHandler(
 		graphProvider:      graphProvider,
 		converter:          converter,
 		containerRepo:      containerRepo,
+		clock:              clock,
 	}
 }
 
@@ -142,7 +151,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			errMsg := fmt.Sprintf("Failed to find coordinator ships: %v", err)
 			logger.Log("ERROR", errMsg, nil)
 			result.Errors = append(result.Errors, errMsg)
-			time.Sleep(10 * time.Second)
+			h.clock.Sleep(10 * time.Second)
 			continue
 		}
 
@@ -199,7 +208,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			errMsg := fmt.Sprintf("Failed to negotiate contract: %v", err)
 			logger.Log("ERROR", errMsg, nil)
 			result.Errors = append(result.Errors, errMsg)
-			time.Sleep(30 * time.Second)
+			h.clock.Sleep(30 * time.Second)
 			continue
 		}
 
@@ -210,7 +219,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			errMsg := fmt.Sprintf("Failed to find purchase market: %v", err)
 			logger.Log("ERROR", errMsg, nil)
 			result.Errors = append(result.Errors, errMsg)
-			time.Sleep(30 * time.Second)
+			h.clock.Sleep(30 * time.Second)
 			continue
 		}
 
@@ -239,7 +248,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			errMsg := fmt.Sprintf("Failed to select ship: %v", err)
 			logger.Log("ERROR", errMsg, nil)
 			result.Errors = append(result.Errors, errMsg)
-			time.Sleep(10 * time.Second)
+			h.clock.Sleep(10 * time.Second)
 			continue
 		}
 
@@ -263,7 +272,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			errMsg := fmt.Sprintf("Failed to persist worker container: %v", err)
 			logger.Log("ERROR", errMsg, nil)
 			result.Errors = append(result.Errors, errMsg)
-			time.Sleep(10 * time.Second)
+			h.clock.Sleep(10 * time.Second)
 			continue
 		}
 
@@ -275,7 +284,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			result.Errors = append(result.Errors, errMsg)
 			// Clean up: stop worker container on transfer failure
 			_ = h.daemonClient.StopContainer(ctx, workerContainerID)
-			time.Sleep(10 * time.Second)
+			h.clock.Sleep(10 * time.Second)
 			continue
 		}
 
@@ -287,7 +296,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			result.Errors = append(result.Errors, errMsg)
 			// Transfer ship back to coordinator on failure
 			_ = h.shipAssignmentRepo.Transfer(ctx, selectedShip, workerContainerID, cmd.ContainerID)
-			time.Sleep(10 * time.Second)
+			h.clock.Sleep(10 * time.Second)
 			continue
 		}
 
@@ -303,9 +312,9 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 
 			h.transferShipBackToCoordinator(ctx, completedShip, workerContainerID, cmd)
 
-			if time.Since(metadata.LastRebalanceTime) >= metadata.RebalanceInterval {
+			if h.clock.Now().Sub(metadata.LastRebalanceTime) >= metadata.RebalanceInterval {
 				h.executeRebalancingIfNeeded(ctx, cmd, availableShips)
-				metadata.LastRebalanceTime = time.Now()
+				metadata.LastRebalanceTime = h.clock.Now()
 			}
 
 			continue

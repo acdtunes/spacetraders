@@ -187,6 +187,7 @@ func (h *NegotiateContractHandler) convertToDomain(data *infraPorts.ContractData
 		data.FactionSymbol,
 		data.Type,
 		terms,
+		nil, // Use default RealClock
 	)
 
 	// Restore state from API data

@@ -104,6 +104,7 @@ func (r *GormContractRepository) modelToEntity(model *ContractModel) (*contract.
 		model.FactionSymbol,
 		model.Type,
 		terms,
+		nil, // Use default RealClock
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create contract entity: %w", err)

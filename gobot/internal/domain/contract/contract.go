@@ -34,10 +34,12 @@ type Contract struct {
 	terms         Terms
 	accepted      bool
 	fulfilled     bool
+	clock         shared.Clock
 }
 
 // NewContract creates a new contract
-func NewContract(contractID string, playerID shared.PlayerID, factionSymbol, contractType string, terms Terms) (*Contract, error) {
+// The clock parameter is optional - if nil, defaults to RealClock for production use
+func NewContract(contractID string, playerID shared.PlayerID, factionSymbol, contractType string, terms Terms, clock shared.Clock) (*Contract, error) {
 	if contractID == "" {
 		return nil, fmt.Errorf("contract ID cannot be empty")
 	}
@@ -51,6 +53,11 @@ func NewContract(contractID string, playerID shared.PlayerID, factionSymbol, con
 		return nil, fmt.Errorf("contract must have at least one delivery")
 	}
 
+	// Default to RealClock if not provided
+	if clock == nil {
+		clock = shared.NewRealClock()
+	}
+
 	return &Contract{
 		contractID:    contractID,
 		playerID:      playerID,
@@ -59,6 +66,7 @@ func NewContract(contractID string, playerID shared.PlayerID, factionSymbol, con
 		terms:         terms,
 		accepted:      false,
 		fulfilled:     false,
+		clock:         clock,
 	}, nil
 }
 
@@ -136,7 +144,7 @@ func (c *Contract) IsExpired() bool {
 	if err != nil {
 		return false
 	}
-	return time.Now().UTC().After(deadline)
+	return c.clock.Now().UTC().After(deadline)
 }
 
 // ProfitabilityContext contains market and ship data needed for profitability calculation

@@ -81,6 +81,12 @@ func (h *FulfillContractHandler) loadContract(ctx context.Context, contractID st
 	if err != nil {
 		return nil, fmt.Errorf("contract not found: %w", err)
 	}
+
+	// Validate contract belongs to the requesting player
+	if contract.PlayerID().Value() != playerID {
+		return nil, fmt.Errorf("contract not found")
+	}
+
 	return contract, nil
 }
 

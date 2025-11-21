@@ -167,6 +167,7 @@ func (cc *contractContext) iCreateTheContract() error {
 		cc.faction,
 		cc.contractType,
 		terms,
+		nil, // Use default RealClock
 	)
 	return nil
 }
