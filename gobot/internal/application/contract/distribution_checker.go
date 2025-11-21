@@ -44,13 +44,19 @@ func (dc *DistributionChecker) IsRebalancingNeeded(
 		return false, 0, nil
 	}
 
-	// 1. Fetch waypoint coordinates from graph
 	targetWaypoints, err := dc.fetchWaypoints(ctx, targetMarkets, systemSymbol, playerID)
 	if err != nil {
 		return false, 0, err
 	}
 
-	// 2. Delegate to domain service for business logic
+	return dc.checkDistribution(ships, targetWaypoints, distanceThreshold)
+}
+
+func (dc *DistributionChecker) checkDistribution(
+	ships []*navigation.Ship,
+	targetWaypoints []*shared.Waypoint,
+	distanceThreshold float64,
+) (bool, float64, error) {
 	needsRebalancing, metrics, err := dc.fleetAssigner.IsRebalancingNeeded(
 		ships,
 		targetWaypoints,
@@ -80,25 +86,36 @@ func (dc *DistributionChecker) AssignShipsToMarkets(
 		return make(map[string]string), nil
 	}
 
-	// 1. Fetch waypoint coordinates from graph
 	targetWaypoints, err := dc.fetchWaypoints(ctx, targetMarkets, systemSymbol, playerID)
 	if err != nil {
 		return nil, err
 	}
 
-	// 2. Delegate to domain service for assignment logic
+	domainAssignments, err := dc.delegateShipAssignment(ships, targetWaypoints)
+	if err != nil {
+		return nil, err
+	}
+
+	return dc.convertAssignmentsToDTO(domainAssignments), nil
+}
+
+func (dc *DistributionChecker) delegateShipAssignment(
+	ships []*navigation.Ship,
+	targetWaypoints []*shared.Waypoint,
+) ([]domainContract.Assignment, error) {
 	domainAssignments, err := dc.fleetAssigner.AssignShipsToTargets(ships, targetWaypoints)
 	if err != nil {
 		return nil, fmt.Errorf("ship assignment failed: %w", err)
 	}
+	return domainAssignments, nil
+}
 
-	// 3. Convert domain assignments to application DTO (map[string]string)
+func (dc *DistributionChecker) convertAssignmentsToDTO(domainAssignments []domainContract.Assignment) map[string]string {
 	assignments := make(map[string]string)
 	for _, assignment := range domainAssignments {
 		assignments[assignment.ShipSymbol] = assignment.TargetWaypoint
 	}
-
-	return assignments, nil
+	return assignments
 }
 
 // fetchWaypoints fetches waypoint objects from the graph provider.
@@ -109,24 +126,48 @@ func (dc *DistributionChecker) fetchWaypoints(
 	systemSymbol string,
 	playerID int,
 ) ([]*shared.Waypoint, error) {
-	// Get system graph for coordinate lookup
+	graphResult, err := dc.getSystemGraph(ctx, systemSymbol, playerID)
+	if err != nil {
+		return nil, err
+	}
+
+	waypointsRaw, err := dc.extractWaypointsMap(graphResult)
+	if err != nil {
+		return nil, err
+	}
+
+	return dc.buildWaypointObjects(waypointSymbols, waypointsRaw)
+}
+
+func (dc *DistributionChecker) getSystemGraph(
+	ctx context.Context,
+	systemSymbol string,
+	playerID int,
+) (*system.GraphLoadResult, error) {
 	graphResult, err := dc.graphProvider.GetGraph(ctx, systemSymbol, false, playerID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get system graph: %w", err)
 	}
+	return graphResult, nil
+}
 
-	// Extract waypoints map
+func (dc *DistributionChecker) extractWaypointsMap(graphResult *system.GraphLoadResult) (map[string]interface{}, error) {
 	waypointsRaw, ok := graphResult.Graph["waypoints"].(map[string]interface{})
 	if !ok {
 		return nil, fmt.Errorf("invalid graph format: missing waypoints")
 	}
+	return waypointsRaw, nil
+}
 
-	// Build waypoint objects
+func (dc *DistributionChecker) buildWaypointObjects(
+	waypointSymbols []string,
+	waypointsRaw map[string]interface{},
+) ([]*shared.Waypoint, error) {
 	var waypoints []*shared.Waypoint
 	for _, symbol := range waypointSymbols {
 		wpRaw, ok := waypointsRaw[symbol].(map[string]interface{})
 		if !ok {
-			continue // Skip unknown waypoints
+			continue
 		}
 
 		x := wpRaw["x"].(float64)
