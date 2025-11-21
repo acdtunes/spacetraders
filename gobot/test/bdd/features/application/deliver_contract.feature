@@ -8,14 +8,14 @@ Feature: Deliver Contract Command
     And an accepted contract "CONTRACT-1" for player 1 with delivery of 100 "IRON_ORE" to waypoint "X1-A1"
     When I execute deliver contract command for "CONTRACT-1" with 50 units of "IRON_ORE" from ship "SHIP-1"
     Then the command should succeed
-    And the delivery for "IRON_ORE" should show 50 units fulfilled
+    And the contract should have delivery for "IRON_ORE" with 50 units fulfilled
 
   Scenario: Deliver remaining cargo completes delivery
     Given a player with ID 1 and token "test-token" exists in the database
     And an accepted contract "CONTRACT-2" for player 1 with 50 of 100 "IRON_ORE" already delivered to waypoint "X1-A1"
     When I execute deliver contract command for "CONTRACT-2" with 50 units of "IRON_ORE" from ship "SHIP-1"
     Then the command should succeed
-    And the delivery for "IRON_ORE" should show 100 units fulfilled
+    And the contract should have delivery for "IRON_ORE" with 100 units fulfilled
 
   Scenario: Cannot deliver more than required
     Given a player with ID 1 and token "test-token" exists in the database

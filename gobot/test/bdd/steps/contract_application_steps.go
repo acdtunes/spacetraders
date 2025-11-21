@@ -652,7 +652,7 @@ func InitializeContractApplicationScenarios(sc *godog.ScenarioContext) {
 	sc.Step(`^the contract should be marked as accepted$`, ctx.theContractShouldBeMarkedAsAccepted)
 	sc.Step(`^the contract should still not be fulfilled$`, ctx.theContractShouldStillNotBeFulfilled)
 	sc.Step(`^the contract should be persisted with accepted status$`, ctx.theContractShouldBePersistedWithAcceptedStatus)
-	sc.Step(`^the delivery for "([^"]*)" should show (\d+) units fulfilled$`, ctx.theDeliveryForShouldShowUnitsFulfilled)
+	sc.Step(`^the contract should have delivery for "([^"]*)" with (\d+) units fulfilled$`, ctx.theDeliveryForShouldShowUnitsFulfilled)
 	sc.Step(`^the contract should be marked as fulfilled$`, ctx.theContractShouldBeMarkedAsFulfilled)
 	sc.Step(`^the contract should be persisted with fulfilled status$`, ctx.theContractShouldBePersistedWithFulfilledStatus)
 }
