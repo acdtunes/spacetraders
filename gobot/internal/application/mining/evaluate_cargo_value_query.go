@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 )
 
@@ -138,6 +137,12 @@ func (h *EvaluateCargoValueHandler) getBestMarketPrice(ctx context.Context, symb
 }
 
 // getSystemFromWaypoint extracts the system symbol from a waypoint symbol
+// Finds the last hyphen and returns everything before it
 func getSystemFromWaypoint(waypointSymbol string) string {
-	return shared.ExtractSystemSymbol(waypointSymbol)
+	for i := len(waypointSymbol) - 1; i >= 0; i-- {
+		if waypointSymbol[i] == '-' {
+			return waypointSymbol[:i]
+		}
+	}
+	return waypointSymbol
 }

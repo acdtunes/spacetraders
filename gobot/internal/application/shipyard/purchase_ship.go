@@ -133,7 +133,14 @@ func (h *PurchaseShipHandler) Handle(ctx context.Context, request common.Request
 	}
 
 	// 6. Get shipyard listings and validate ship type is available
-	systemSymbol := shared.ExtractSystemSymbol(shipyardWaypoint)
+	// Extract system symbol (find last hyphen)
+	systemSymbol := shipyardWaypoint
+	for i := len(shipyardWaypoint) - 1; i >= 0; i-- {
+		if shipyardWaypoint[i] == '-' {
+			systemSymbol = shipyardWaypoint[:i]
+			break
+		}
+	}
 	query := &GetShipyardListingsQuery{
 		SystemSymbol:   systemSymbol,
 		WaypointSymbol: shipyardWaypoint,

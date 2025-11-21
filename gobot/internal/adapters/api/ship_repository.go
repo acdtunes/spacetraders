@@ -258,7 +258,15 @@ func (r *ShipRepository) JettisonCargo(ctx context.Context, ship *navigation.Shi
 // shipDataToDomain converts API ship DTO to domain entity
 func (r *ShipRepository) shipDataToDomain(ctx context.Context, data *navigation.ShipData, playerID int) (*navigation.Ship, error) {
 	// Get current location waypoint (auto-fetches from API if not cached)
-	location, err := r.waypointProvider.GetWaypoint(ctx, data.Location, shared.ExtractSystemSymbol(data.Location), playerID)
+	// Extract system symbol (find last hyphen)
+	systemSymbol := data.Location
+	for i := len(data.Location) - 1; i >= 0; i-- {
+		if data.Location[i] == '-' {
+			systemSymbol = data.Location[:i]
+			break
+		}
+	}
+	location, err := r.waypointProvider.GetWaypoint(ctx, data.Location, systemSymbol, playerID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get location waypoint %s: %w", data.Location, err)
 	}

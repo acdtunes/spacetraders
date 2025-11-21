@@ -8,7 +8,6 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	infraports "github.com/andrescamacho/spacetraders-go/internal/infrastructure/ports"
 )
 
@@ -45,7 +44,14 @@ func (s *MarketScanner) ScanAndSaveMarket(ctx context.Context, playerID uint, wa
 	}
 
 	// Extract system symbol from waypoint (e.g., "X1-TEST-A1" -> "X1-TEST")
-	systemSymbol := shared.ExtractSystemSymbol(waypointSymbol)
+	// Find last hyphen to extract system symbol
+	systemSymbol := waypointSymbol
+	for i := len(waypointSymbol) - 1; i >= 0; i-- {
+		if waypointSymbol[i] == '-' {
+			systemSymbol = waypointSymbol[:i]
+			break
+		}
+	}
 
 	logger.Log("INFO", fmt.Sprintf("[MarketScanner] Scanning market at %s", waypointSymbol), nil)
 

@@ -139,7 +139,14 @@ func (voc *valueObjectContext) aWaypointSymbol(symbol string) error {
 }
 
 func (voc *valueObjectContext) iExtractTheSystemSymbol() error {
-	voc.stringResult = shared.ExtractSystemSymbol(voc.waypointSymbol)
+	// Extract system symbol by finding last hyphen
+	voc.stringResult = voc.waypointSymbol
+	for i := len(voc.waypointSymbol) - 1; i >= 0; i-- {
+		if voc.waypointSymbol[i] == '-' {
+			voc.stringResult = voc.waypointSymbol[:i]
+			break
+		}
+	}
 	return nil
 }
 

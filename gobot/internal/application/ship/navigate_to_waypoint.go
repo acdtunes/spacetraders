@@ -74,8 +74,14 @@ func (h *NavigateToWaypointHandler) Handle(ctx context.Context, request common.R
 	}
 
 	// 2. Load destination waypoint from repository (to get correct HasFuel and other properties)
-	// Extract system symbol from destination
-	systemSymbol := shared.ExtractSystemSymbol(cmd.Destination)
+	// Extract system symbol from destination (find last hyphen)
+	systemSymbol := cmd.Destination
+	for i := len(cmd.Destination) - 1; i >= 0; i-- {
+		if cmd.Destination[i] == '-' {
+			systemSymbol = cmd.Destination[:i]
+			break
+		}
+	}
 	destination, err := h.waypointRepo.FindBySymbol(ctx, cmd.Destination, systemSymbol)
 	if err != nil {
 		// Fallback: create waypoint if not found in repository

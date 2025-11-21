@@ -8,7 +8,6 @@ import (
 	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
 // EvaluateContractProfitabilityQuery is a query to evaluate contract profitability
@@ -73,8 +72,14 @@ func (h *EvaluateContractProfitabilityHandler) Handle(ctx context.Context, reque
 			continue // Already fulfilled
 		}
 
-		// Extract system from destination
-		systemSymbol := shared.ExtractSystemSymbol(delivery.DestinationSymbol)
+		// Extract system from destination (find last hyphen)
+		systemSymbol := delivery.DestinationSymbol
+		for i := len(delivery.DestinationSymbol) - 1; i >= 0; i-- {
+			if delivery.DestinationSymbol[i] == '-' {
+				systemSymbol = delivery.DestinationSymbol[:i]
+				break
+			}
+		}
 
 		// Find cheapest market selling this good
 		cheapestMarket, err := h.marketRepo.FindCheapestMarketSelling(ctx, delivery.TradeSymbol, systemSymbol, query.PlayerID)
