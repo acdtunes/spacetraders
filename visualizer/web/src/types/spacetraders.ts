@@ -301,3 +301,94 @@ export interface PlayerMapping {
   player_id: number;
   agent_symbol: string;
 }
+
+// Financial Ledger types
+export type TransactionType =
+  | 'REFUEL'
+  | 'PURCHASE_CARGO'
+  | 'SELL_CARGO'
+  | 'PURCHASE_SHIP'
+  | 'CONTRACT_ACCEPTED'
+  | 'CONTRACT_FULFILLED';
+
+export type TransactionCategory =
+  | 'FUEL_COSTS'
+  | 'TRADING_REVENUE'
+  | 'TRADING_COSTS'
+  | 'SHIP_INVESTMENTS'
+  | 'CONTRACT_REVENUE';
+
+export interface FinancialTransaction {
+  id: string;
+  player_id: number;
+  timestamp: string;
+  transaction_type: TransactionType;
+  category: TransactionCategory;
+  amount: number;
+  balance_before: number;
+  balance_after: number;
+  description: string;
+  metadata: {
+    ship_symbol?: string;
+    good_symbol?: string;
+    waypoint?: string;
+    units?: number;
+    price_per_unit?: number;
+    [key: string]: any;
+  } | null;
+  related_entity_type: string | null;
+  related_entity_id: string | null;
+}
+
+export interface CategoryCashFlow {
+  category: TransactionCategory;
+  total_inflow: number;
+  total_outflow: number;
+  net_flow: number;
+  transaction_count: number;
+}
+
+export interface CashFlowData {
+  period: {
+    start: string;
+    end: string;
+  };
+  summary: {
+    total_inflow: number;
+    total_outflow: number;
+    net_cash_flow: number;
+  };
+  categories: CategoryCashFlow[];
+}
+
+export interface ProfitLossData {
+  period: {
+    start: string;
+    end: string;
+  };
+  revenue: {
+    total: number;
+    breakdown: Record<string, number>;
+  };
+  expenses: {
+    total: number;
+    breakdown: Record<string, number>;
+  };
+  net_profit: number;
+  profit_margin: number;
+}
+
+export interface BalanceDataPoint {
+  timestamp: string;
+  balance: number;
+  transaction_id: string;
+  transaction_type: TransactionType;
+  amount: number;
+}
+
+export interface BalanceHistoryData {
+  dataPoints: BalanceDataPoint[];
+  current_balance: number;
+  starting_balance: number;
+  net_change: number;
+}
