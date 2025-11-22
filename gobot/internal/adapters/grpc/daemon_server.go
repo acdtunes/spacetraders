@@ -14,6 +14,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	contractCmd "github.com/andrescamacho/spacetraders-go/internal/application/contract/commands"
+	goodsCmd "github.com/andrescamacho/spacetraders-go/internal/application/goods/commands"
 	miningCmd "github.com/andrescamacho/spacetraders-go/internal/application/mining/commands"
 	scoutingCmd "github.com/andrescamacho/spacetraders-go/internal/application/scouting/commands"
 	shipCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands"
@@ -45,6 +46,7 @@ type DaemonServer struct {
 	waypointRepo       *persistence.GormWaypointRepository
 	shipRepo           navigation.ShipRepository
 	routingClient      routing.RoutingClient
+	goodsFactoryRepo   *persistence.GormGoodsFactoryRepository
 
 	// Container orchestration
 	containers   map[string]*ContainerRunner
@@ -71,6 +73,7 @@ func NewDaemonServer(
 	waypointRepo *persistence.GormWaypointRepository,
 	shipRepo navigation.ShipRepository,
 	routingClient routing.RoutingClient,
+	goodsFactoryRepo *persistence.GormGoodsFactoryRepository,
 	socketPath string,
 ) (*DaemonServer, error) {
 	// Remove existing socket file if present
@@ -98,6 +101,7 @@ func NewDaemonServer(
 		waypointRepo:          waypointRepo,
 		shipRepo:              shipRepo,
 		routingClient:         routingClient,
+		goodsFactoryRepo:      goodsFactoryRepo,
 		listener:              listener,
 		containers:            make(map[string]*ContainerRunner),
 		commandFactories:      make(map[string]CommandFactory),
@@ -365,6 +369,25 @@ func (s *DaemonServer) registerCommandFactories() {
 			TransportShips:    transportShips,
 			TopNOres:          topNOres,
 			ContainerID:       containerID,
+		}, nil
+	}
+
+	// Goods factory coordinator factory
+	s.commandFactories["goods_factory_coordinator"] = func(config map[string]interface{}, playerID int) (interface{}, error) {
+		targetGood, ok := config["target_good"].(string)
+		if !ok {
+			return nil, fmt.Errorf("missing or invalid target_good")
+		}
+
+		systemSymbol, ok := config["system_symbol"].(string)
+		if !ok {
+			return nil, fmt.Errorf("missing or invalid system_symbol")
+		}
+
+		return &goodsCmd.RunFactoryCoordinatorCommand{
+			PlayerID:     playerID,
+			TargetGood:   targetGood,
+			SystemSymbol: systemSymbol,
 		}, nil
 	}
 }
@@ -2014,4 +2037,121 @@ func (s *DaemonServer) StartMiningCoordinatorContainer(
 	}()
 
 	return nil
+}
+
+// StartGoodsFactory creates and starts a goods factory coordinator container
+func (s *DaemonServer) StartGoodsFactory(
+	ctx context.Context,
+	targetGood string,
+	systemSymbol string,
+	playerID int,
+) (*GoodsFactoryResult, error) {
+	// Generate container ID
+	containerID := utils.GenerateContainerID("goods_factory", targetGood)
+
+	// Create factory coordinator command
+	cmd := &goodsCmd.RunFactoryCoordinatorCommand{
+		PlayerID:     playerID,
+		TargetGood:   targetGood,
+		SystemSymbol: systemSymbol,
+	}
+
+	// Create container metadata
+	metadata := map[string]interface{}{
+		"target_good":   targetGood,
+		"system_symbol": systemSymbol,
+	}
+
+	// Create container entity (iterations = 1 for single production run)
+	containerEntity := container.NewContainer(
+		containerID,
+		container.ContainerType("goods_factory_coordinator"),
+		playerID,
+		1, // Single production run
+		metadata,
+		nil, // Use default RealClock
+	)
+
+	// Persist container to database
+	if err := s.containerRepo.Add(ctx, containerEntity, "goods_factory_coordinator"); err != nil {
+		return nil, fmt.Errorf("failed to persist container: %w", err)
+	}
+
+	// Create and start container runner
+	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipAssignmentRepo)
+	s.registerContainer(containerID, runner)
+
+	// Start container in background
+	go func() {
+		if err := runner.Start(); err != nil {
+			fmt.Printf("Container %s failed: %v\n", containerID, err)
+		}
+	}()
+
+	return &GoodsFactoryResult{
+		FactoryID:  containerID,
+		TargetGood: targetGood,
+		NodesTotal: 0, // Will be populated as factory runs
+	}, nil
+}
+
+// StopGoodsFactory stops a running goods factory container
+func (s *DaemonServer) StopGoodsFactory(
+	ctx context.Context,
+	factoryID string,
+	playerID int,
+) error {
+	// Stop the container using existing container stop logic
+	return s.StopContainer(factoryID)
+}
+
+// GetFactoryStatus retrieves the status of a goods factory from the repository
+func (s *DaemonServer) GetFactoryStatus(
+	ctx context.Context,
+	factoryID string,
+	playerID int,
+) (*GoodsFactoryStatus, error) {
+	// Query factory from repository
+	factory, err := s.goodsFactoryRepo.FindByID(ctx, factoryID, playerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find factory: %w", err)
+	}
+
+	// Serialize dependency tree to JSON
+	treeJSON, err := json.Marshal(factory.DependencyTree())
+	if err != nil {
+		return nil, fmt.Errorf("failed to serialize dependency tree: %w", err)
+	}
+
+	return &GoodsFactoryStatus{
+		FactoryID:        factory.ID(),
+		TargetGood:       factory.TargetGood(),
+		Status:           string(factory.Status()),
+		DependencyTree:   string(treeJSON),
+		QuantityAcquired: factory.QuantityAcquired(),
+		TotalCost:        factory.TotalCost(),
+		NodesCompleted:   factory.CompletedNodes(),
+		NodesTotal:       factory.TotalNodes(),
+		SystemSymbol:     factory.SystemSymbol(),
+	}, nil
+}
+
+// GoodsFactoryResult contains the result of starting a goods factory
+type GoodsFactoryResult struct {
+	FactoryID  string
+	TargetGood string
+	NodesTotal int
+}
+
+// GoodsFactoryStatus contains detailed status information for a goods factory
+type GoodsFactoryStatus struct {
+	FactoryID        string
+	TargetGood       string
+	Status           string
+	DependencyTree   string
+	QuantityAcquired int
+	TotalCost        int
+	NodesCompleted   int
+	NodesTotal       int
+	SystemSymbol     string
 }
