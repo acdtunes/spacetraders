@@ -86,7 +86,6 @@ func (s *GraphService) GetWaypoint(ctx context.Context, waypointSymbol, systemSy
 	// Try loading from database cache first
 	waypoint, err := s.waypointRepo.FindBySymbol(ctx, waypointSymbol, systemSymbol)
 	if err == nil && waypoint != nil {
-		log.Printf("Waypoint cache hit for %s", waypointSymbol)
 		return waypoint, nil
 	}
 
