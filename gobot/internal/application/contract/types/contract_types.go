@@ -109,9 +109,10 @@ type RunWorkflowResponse struct {
 // ============================================================================
 
 // RunFleetCoordinatorCommand orchestrates multiple ships executing contracts.
+// Ships are discovered dynamically - no pre-assignment needed.
 type RunFleetCoordinatorCommand struct {
 	PlayerID    shared.PlayerID
-	ShipSymbols []string // Pool of ships to use for contracts
+	ShipSymbols []string // Deprecated: kept for backward compatibility, no longer used
 	ContainerID string   // Coordinator's own container ID
 }
 

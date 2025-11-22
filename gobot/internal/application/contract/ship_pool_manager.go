@@ -91,7 +91,13 @@ func FindIdleLightHaulers(
 			continue
 		}
 
-		// Filter 2: Only idle ships (no active assignment)
+		// Filter 2: Exclude ships in transit (even without assignment)
+		// Ships being balanced or navigating are not available for new contracts
+		if ship.NavStatus() == navigation.NavStatusInTransit {
+			continue
+		}
+
+		// Filter 3: Only idle ships (no active assignment)
 		assignment, err := shipAssignmentRepo.FindByShip(ctx, ship.ShipSymbol(), playerID.Value())
 		if err != nil {
 			// If error fetching assignment, assume ship is not assigned

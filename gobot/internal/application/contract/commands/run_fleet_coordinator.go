@@ -269,26 +269,27 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			continue
 		}
 
-		// Step 2: Transfer ship from coordinator to worker (atomic, no race condition)
-		logger.Log("INFO", fmt.Sprintf("Transferring %s to worker container", selectedShip), nil)
-		if err := h.shipAssignmentRepo.Transfer(ctx, selectedShip, cmd.ContainerID, workerContainerID); err != nil {
-			errMsg := fmt.Sprintf("Failed to transfer ship %s: %v", selectedShip, err)
+		// Step 2: Assign ship to worker (dynamic discovery - no pre-assignment needed)
+		logger.Log("INFO", fmt.Sprintf("Assigning %s to worker container", selectedShip), nil)
+		assignment := domainContainer.NewShipAssignment(selectedShip, cmd.PlayerID.Value(), workerContainerID, h.clock)
+		if err := h.shipAssignmentRepo.Assign(ctx, assignment); err != nil {
+			errMsg := fmt.Sprintf("Failed to assign ship %s: %v", selectedShip, err)
 			logger.Log("ERROR", errMsg, nil)
 			result.Errors = append(result.Errors, errMsg)
-			// Clean up: stop worker container on transfer failure
+			// Clean up: stop worker container on assignment failure
 			_ = h.workerLifecycleManager.StopWorkerContainer(ctx, workerContainerID)
 			h.clock.Sleep(10 * time.Second)
 			continue
 		}
 
-		// Step 3: Start the worker container (ship is safely transferred)
+		// Step 3: Start the worker container (ship is safely assigned)
 		logger.Log("INFO", fmt.Sprintf("Starting worker container for %s", selectedShip), nil)
 		if err := h.daemonClient.StartContractWorkflowContainer(ctx, workerContainerID, completionChan); err != nil {
 			errMsg := fmt.Sprintf("Failed to start worker container: %v", err)
 			logger.Log("ERROR", errMsg, nil)
 			result.Errors = append(result.Errors, errMsg)
-			// Transfer ship back to coordinator on failure
-			_ = h.shipAssignmentRepo.Transfer(ctx, selectedShip, workerContainerID, cmd.ContainerID)
+			// Clean up: release assignment on failure (ship returns to idle pool)
+			_ = h.shipAssignmentRepo.Release(ctx, selectedShip, cmd.PlayerID.Value(), "worker_start_failed")
 			h.clock.Sleep(10 * time.Second)
 			continue
 		}

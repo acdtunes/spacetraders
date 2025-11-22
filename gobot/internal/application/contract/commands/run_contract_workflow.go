@@ -88,17 +88,9 @@ func (h *RunWorkflowHandler) Handle(ctx context.Context, request common.Request)
 
 	logger := common.LoggerFromContext(ctx)
 
-	// Transfer ship back to coordinator if applicable
-	if cmd.CoordinatorID != "" {
-		if err := h.transferShipBackToCoordinator(ctx, cmd); err != nil {
-			logger.Log("WARNING", "Ship transfer back to coordinator failed", map[string]interface{}{
-				"ship_symbol":    cmd.ShipSymbol,
-				"action":         "transfer_to_coordinator",
-				"coordinator_id": cmd.CoordinatorID,
-				"error":          err.Error(),
-			})
-		}
-	}
+	// NOTE: With dynamic discovery, ships are NOT transferred back to coordinator
+	// They are released by ContainerRunner and discovered dynamically in the next iteration
+	// The ContainerRunner releases ship assignments on completion/failure
 
 	// Signal completion if callback provided
 	if cmd.CompletionCallback != nil {

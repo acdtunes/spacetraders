@@ -147,6 +147,7 @@ type MarketData struct {
 type TradeGoodData struct {
 	Symbol        string
 	Supply        string
+	Activity      string
 	SellPrice     int
 	PurchasePrice int
 	TradeVolume   int

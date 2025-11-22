@@ -49,6 +49,7 @@ const (
 	ContainerTypeContract                 ContainerType = "CONTRACT"
 	ContainerTypeContractWorkflow         ContainerType = "CONTRACT_WORKFLOW"
 	ContainerTypeContractFleetCoordinator ContainerType = "CONTRACT_FLEET_COORDINATOR"
+	ContainerTypeBalancing                ContainerType = "BALANCING"
 	ContainerTypeTrading                  ContainerType = "TRADING"
 	ContainerTypeScoutFleetAssignment     ContainerType = "SCOUT_FLEET_ASSIGNMENT"
 	ContainerTypePurchase                 ContainerType = "PURCHASE"

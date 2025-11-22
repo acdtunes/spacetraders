@@ -914,22 +914,20 @@ func (s *DaemonServer) StartContractWorkflow(
 }
 
 // ContractFleetCoordinator creates a fleet coordinator for multi-ship contract operations
+// Ships are discovered dynamically - no pre-assignment needed
 func (s *DaemonServer) ContractFleetCoordinator(ctx context.Context, shipSymbols []string, playerID int) (string, error) {
-	// Create container ID
-	containerID := utils.GenerateContainerID("contract_fleet_coordinator", shipSymbols[0])
+	// Create container ID using player ID instead of ship symbol (no ships pre-assigned)
+	containerID := utils.GenerateContainerID("contract_fleet_coordinator", fmt.Sprintf("player-%d", playerID))
 
-	// Create contract fleet coordinator command
+	// Create contract fleet coordinator command (no ship symbols - uses dynamic discovery)
 	cmd := &contractCmd.RunFleetCoordinatorCommand{
 		PlayerID:    shared.MustNewPlayerID(playerID),
-		ShipSymbols: shipSymbols,
+		ShipSymbols: nil, // Dynamic discovery - no pre-assignment
 		ContainerID: containerID,
 	}
 
-	// Convert ship symbols to interface{} for metadata
-	shipSymbolsInterface := make([]interface{}, len(shipSymbols))
-	for i, s := range shipSymbols {
-		shipSymbolsInterface[i] = s
-	}
+	// No ship symbols metadata needed
+	var shipSymbolsInterface []interface{}
 
 	// Create container for this operation
 	containerEntity := container.NewContainer(

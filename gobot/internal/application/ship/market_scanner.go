@@ -75,7 +75,7 @@ func (s *MarketScanner) convertAPIGoodsToDomain(apiGoods []domainPorts.TradeGood
 		good, err := market.NewTradeGood(
 			apiGood.Symbol,
 			&apiGood.Supply,
-			nil,
+			&apiGood.Activity,
 			apiGood.SellPrice,
 			apiGood.PurchasePrice,
 			apiGood.TradeVolume,

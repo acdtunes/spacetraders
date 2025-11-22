@@ -63,6 +63,7 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	// Domain services
 	steps.RegisterShipFuelServiceSteps(sc)
 	steps.RegisterShipNavigationCalculatorSteps(sc)
+	steps.RegisterShipBalancerSteps(sc)
 }
 
 func TestMain(m *testing.M) {

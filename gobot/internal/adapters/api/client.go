@@ -768,6 +768,7 @@ func (c *SpaceTradersClient) GetMarket(ctx context.Context, systemSymbol, waypoi
 			TradeGoods []struct {
 				Symbol        string `json:"symbol"`
 				Supply        string `json:"supply"`
+				Activity      string `json:"activity"`
 				SellPrice     int    `json:"sellPrice"`
 				PurchasePrice int    `json:"purchasePrice"`
 				TradeVolume   int    `json:"tradeVolume"`
@@ -784,6 +785,7 @@ func (c *SpaceTradersClient) GetMarket(ctx context.Context, systemSymbol, waypoi
 		tradeGoods[i] = domainPorts.TradeGoodData{
 			Symbol:        good.Symbol,
 			Supply:        good.Supply,
+			Activity:      good.Activity,
 			SellPrice:     good.SellPrice,
 			PurchasePrice: good.PurchasePrice,
 			TradeVolume:   good.TradeVolume,

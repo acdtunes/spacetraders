@@ -97,7 +97,7 @@ router.get('/assignments', async (req, res) => {
                        assignment.container_type === 'CONTRACT_FLEET_COORDINATOR') {
               operation = 'contract';
             } else if (assignment.container_type === 'CONTRACT_WORKFLOW') {
-              operation = 'contract-active';
+              operation = 'contract';
             } else if (assignment.container_type === 'PURCHASE') {
               operation = 'shipyard';
             } else if (assignment.container_type === 'MINING_COORDINATOR' ||
@@ -152,7 +152,7 @@ router.get('/assignments', async (req, res) => {
                    row.container_type === 'CONTRACT_FLEET_COORDINATOR') {
           operation = 'contract';
         } else if (row.container_type === 'CONTRACT_WORKFLOW') {
-          operation = 'contract-active';
+          operation = 'contract';
         } else if (row.container_type === 'PURCHASE') {
           operation = 'shipyard';
         } else if (row.container_type === 'MINING_COORDINATOR' ||
@@ -235,7 +235,7 @@ router.get('/assignments/:shipSymbol', async (req, res) => {
                  assignment.container_type === 'CONTRACT_FLEET_COORDINATOR') {
         operation = 'contract';
       } else if (assignment.container_type === 'CONTRACT_WORKFLOW') {
-        operation = 'contract-active';
+        operation = 'contract';
       } else if (assignment.container_type === 'PURCHASE') {
         operation = 'shipyard';
       } else if (assignment.container_type === 'MINING_COORDINATOR' ||

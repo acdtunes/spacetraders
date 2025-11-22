@@ -265,6 +265,7 @@ func (r *MarketRepositoryGORM) FindBestMarketBuying(
 
 // FindAllMarketsInSystem returns all distinct market waypoint symbols in a system
 // This is used for fleet rebalancing to discover all available markets
+// Excludes FUEL_STATION waypoints (filters by type, not by trade good count)
 func (r *MarketRepositoryGORM) FindAllMarketsInSystem(
 	ctx context.Context,
 	systemSymbol string,
@@ -272,11 +273,14 @@ func (r *MarketRepositoryGORM) FindAllMarketsInSystem(
 ) ([]string, error) {
 	var waypoints []string
 
+	// Query waypoints table for marketplaces excluding fuel stations
+	// Same filtering logic as scout operation (assign_scouting_fleet.go:216-219)
 	err := r.db.WithContext(ctx).
-		Table("market_data").
-		Select("DISTINCT waypoint_symbol").
-		Where("player_id = ?", playerID).
-		Where("waypoint_symbol LIKE ?", systemSymbol+"-%").
+		Table("waypoints").
+		Select("waypoint_symbol").
+		Where("system_symbol = ?", systemSymbol).
+		Where("type != ?", "FUEL_STATION").
+		Where("traits LIKE ?", "%MARKETPLACE%").
 		Pluck("waypoint_symbol", &waypoints).Error
 
 	if err != nil {
