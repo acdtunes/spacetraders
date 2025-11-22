@@ -177,6 +177,23 @@ func (e *RouteExecutor) executeSegment(
 	ship *domainNavigation.Ship,
 	playerID shared.PlayerID,
 ) error {
+	// Reload ship to get latest state before segment execution
+	// This prevents stale state issues from rapid navigation
+	if e.shipRepo != nil {
+		freshShip, err := e.shipRepo.FindBySymbol(ctx, ship.ShipSymbol(), playerID)
+		if err != nil {
+			return fmt.Errorf("failed to reload ship before segment: %w", err)
+		}
+		*ship = *freshShip
+	}
+
+	// Check if ship is in transit and wait for arrival before proceeding
+	if ship.NavStatus() == domainNavigation.NavStatusInTransit {
+		if err := e.waitForCurrentTransit(ctx, ship, playerID); err != nil {
+			return fmt.Errorf("failed to wait for transit before segment: %w", err)
+		}
+	}
+
 	if err := e.ensureShipInOrbit(ctx, ship, playerID); err != nil {
 		return err
 	}
