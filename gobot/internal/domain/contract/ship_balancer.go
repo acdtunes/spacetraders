@@ -11,7 +11,8 @@ import (
 const (
 	// ProximityRadius defines the distance threshold (in units) for counting nearby ships.
 	// Ships within this radius of a market are considered "covering" that market.
-	ProximityRadius = 500.0
+	// Reduced from 500 to 100 to create localized coverage zones in the ~1500-unit system.
+	ProximityRadius = 100.0
 
 	// CoverageWeight determines how heavily coverage (number of nearby ships) affects
 	// the balancing score. Higher weight means coverage gaps are prioritized over distance.

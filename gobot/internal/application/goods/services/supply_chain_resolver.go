@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	appgoods "github.com/andrescamacho/spacetraders-go/internal/application/goods"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/goods"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 )
@@ -159,7 +158,7 @@ func (r *SupplyChainResolver) findExportMarket(
 
 // ValidateChain checks if a good can be produced with the current supply chain map
 func (r *SupplyChainResolver) ValidateChain(targetGood string) error {
-	return appgoods.ValidateSupplyChain(targetGood)
+	return goods.ValidateSupplyChain(targetGood)
 }
 
 // DetectCycles checks if there are any circular dependencies in the supply chain map

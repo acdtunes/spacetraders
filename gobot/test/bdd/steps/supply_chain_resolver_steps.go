@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strings"
 
-	appgoods "github.com/andrescamacho/spacetraders-go/internal/application/goods"
 	"github.com/andrescamacho/spacetraders-go/internal/application/goods/services"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/goods"
 	"github.com/andrescamacho/spacetraders-go/test/helpers"
@@ -40,7 +39,7 @@ func (ctx *supplyChainResolverContext) reset() {
 
 func (ctx *supplyChainResolverContext) aSupplyChainMap() error {
 	// Use the default supply chain map
-	ctx.supplyChainMap = appgoods.ExportToImportMap
+	ctx.supplyChainMap = goods.ExportToImportMap
 	ctx.resolver = services.NewSupplyChainResolver(ctx.supplyChainMap, ctx.mockMarketRepo)
 	return nil
 }
