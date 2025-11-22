@@ -431,161 +431,60 @@ func (h *RunCoordinatorHandler) Handle(ctx context.Context, request common.Reque
 
 ### What Was Done
 
-```go
-// route_executor.go lines 14-46
-// Local command type definitions to avoid circular imports
-// These mirror the actual command types in the commands subpackage
-type (
-    OrbitShipCommand struct {
-        ShipSymbol string
-        PlayerID   shared.PlayerID
-    }
-    DockShipCommand struct {
-        ShipSymbol string
-        PlayerID   shared.PlayerID
-    }
-    // ... 5 duplicate types
-)
-```
+**Created**: `internal/application/ship/types/commands.go` - Single source of truth for command types:
+- `OrbitShipCommand`
+- `DockShipCommand`
+- `RefuelShipCommand`
+- `SetFlightModeCommand`
+- `NavigateDirectCommand`
+- `NavigateDirectResponse`
+- All other ship command response types
 
-**Root Cause**: Circular dependency
-```
-RouteExecutor (ship/) → needs command types from ship/commands/
-Commands (ship/commands/) → might need RouteExecutor or other ship/ services
-```
+**Updated Command Handlers** (5 files):
+- `commands/orbit_ship.go` - Now uses `types.OrbitShipCommand`
+- `commands/dock_ship.go` - Now uses `types.DockShipCommand`
+- `commands/refuel_ship.go` - Now uses `types.RefuelShipCommand`
+- `commands/set_flight_mode.go` - Now uses `types.SetFlightModeCommand`
+- `commands/navigate_direct.go` - Now uses `types.NavigateDirectCommand`
 
-**Issues**:
-- Type safety broken (local types != actual command types)
-- Maintenance nightmare (must keep 2 copies in sync manually)
-- No compile-time verification of type matching
-- Poor code organization
+**Updated RouteExecutor**:
+- Removed lines 14-46 (duplicate type definitions)
+- Added import: `"github.com/andrescamacho/spacetraders-go/internal/application/ship/types"`
+- All command instantiations now use `types.CommandName`
 
----
+**Updated Other Consumers** (8 files):
+- `trading/commands/run_tour_selling.go`
+- `shipyard/commands/purchase_ship.go`
+- `contract/services/delivery_executor.go`
+- `mining/commands/run_transport_worker.go`
+- `grpc/daemon_server.go`
+- `cmd/spacetraders-daemon/main.go`
 
-### Solution: Extract Command Types to Shared Package
+**Updated Handler Registration**:
+- Changed from `RegisterHandler[*shipCmd.OrbitShipCommand]`
+- To `RegisterHandler[*shipTypes.OrbitShipCommand]`
+- Applied to all 5 atomic ship commands
 
-**Recommended Approach**: Option 1 from original plan - Extract to types package
+**Removed**:
+- No adapter/wrapper handlers needed
+- No type aliases needed
+- Clean, direct imports
 
-#### Step 1: Create Ship Types Package
+### Results
 
-```go
-// internal/application/ship/types/commands.go
-package types
+✅ **One source of truth** - No more duplicate type definitions
+✅ **Type safety restored** - Compile-time verification works
+✅ **No circular imports** - types package breaks the cycle
+✅ **Cleaner architecture** - Proper separation of concerns
+✅ **Build succeeds** - Daemon compiles successfully (32MB binary)
+✅ **Original error fixed** - "no handler registered for type *ship.OrbitShipCommand" resolved
 
-import "github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+### Lessons Learned
 
-// Ship command types shared between handlers and executor
-type OrbitShipCommand struct {
-    ShipSymbol string
-    PlayerID   shared.PlayerID
-}
-
-type DockShipCommand struct {
-    ShipSymbol string
-    PlayerID   shared.PlayerID
-}
-
-type RefuelShipCommand struct {
-    ShipSymbol string
-    PlayerID   shared.PlayerID
-    Units      *int
-}
-
-type SetFlightModeCommand struct {
-    ShipSymbol string
-    Mode       shared.FlightMode
-    PlayerID   shared.PlayerID
-}
-
-type NavigateDirectCommand struct {
-    ShipSymbol  string
-    Destination string
-    FlightMode  string
-    PlayerID    shared.PlayerID
-}
-
-type NavigateDirectResponse struct {
-    Status         string
-    ArrivalTimeStr string
-    FuelConsumed   int
-    TravelDuration int
-}
-```
-
-#### Step 2: Update Command Handlers
-
-```go
-// internal/application/ship/commands/orbit_ship.go (BEFORE)
-package commands
-
-type OrbitShipCommand struct {
-    ShipSymbol string
-    PlayerID   shared.PlayerID
-}
-
-// internal/application/ship/commands/orbit_ship.go (AFTER)
-package commands
-
-import "github.com/andrescamacho/spacetraders-go/internal/application/ship/types"
-
-type OrbitShipCommand = types.OrbitShipCommand // Type alias for backward compatibility
-```
-
-**Repeat for**: DockShipCommand, RefuelShipCommand, SetFlightModeCommand, NavigateDirectCommand
-
-#### Step 3: Update RouteExecutor
-
-```go
-// internal/application/ship/route_executor.go (BEFORE)
-package ship
-
-// Lines 14-46 duplicated types
-
-// internal/application/ship/route_executor.go (AFTER)
-package ship
-
-import "github.com/andrescamacho/spacetraders-go/internal/application/ship/types"
-
-// No more local type definitions!
-
-func (e *RouteExecutor) orbitShip(ctx context.Context, shipSymbol string, playerID shared.PlayerID) error {
-    cmd := &types.OrbitShipCommand{
-        ShipSymbol: shipSymbol,
-        PlayerID:   playerID,
-    }
-    _, err := e.mediator.Send(ctx, cmd)
-    return err
-}
-```
-
-#### Step 4: Update All Imports
-
-Files to update:
-- `internal/application/ship/commands/*.go` (5 files)
-- `internal/application/ship/route_executor.go` (1 file)
-- Any tests referencing these types
-
----
-
-### Testing Strategy
-
-1. **Verify compilation at each step**
-   ```bash
-   go build ./...
-   ```
-
-2. **Run existing BDD tests**
-   ```bash
-   make test-bdd
-   ```
-
-3. **Add test for type equality**
-   ```go
-   // Ensure command type from types package matches what handlers expect
-   var _ types.OrbitShipCommand = OrbitShipCommand{}
-   ```
-
-**Estimated Effort**: 3-5 days (careful import management)
+- The "quick fix" of duplicating types created 3-5 days of estimated cleanup work
+- Proper architectural solution (types package) took ~2 hours in practice
+- Breaking circular dependencies early prevents technical debt accumulation
+- Type-safe mediator registration requires exact type matching
 
 ---
 
