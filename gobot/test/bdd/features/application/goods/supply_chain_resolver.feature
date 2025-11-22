@@ -35,7 +35,7 @@ Feature: Supply Chain Resolver
       | ELECTRONICS| SILICON_CRYSTALS, COPPER |
       | COPPER     | COPPER_ORE |
     And market "X1-C1" sells "SILICON_CRYSTALS" with activity "STRONG" and supply "ABUNDANT"
-    And market "X1-C2" sells "COPPER_ORE" with activity "MODERATE" and supply "HIGH"
+    And market "X1-C2" sells "COPPER_ORE" with activity "GROWING" and supply "HIGH"
     And "ELECTRONICS" is not available in any market
     And "COPPER" is not available in any market
     When I build dependency tree for "ELECTRONICS" in system "X1"
@@ -62,9 +62,9 @@ Feature: Supply Chain Resolver
     When I build dependency tree for "ADVANCED_CIRCUITRY" in system "X1"
     Then the tree should have root "ADVANCED_CIRCUITRY" with acquisition method "FABRICATE"
     And the tree depth should be 4
-    And the tree should have 5 total nodes
+    And the tree should have 6 total nodes
     And the tree should contain 2 BUY nodes
-    And the tree should contain 3 FABRICATE nodes
+    And the tree should contain 4 FABRICATE nodes
 
   # ============================================================================
   # Buy vs Fabricate Strategy
@@ -76,7 +76,7 @@ Feature: Supply Chain Resolver
     When I build dependency tree for "MACHINERY" in system "X1"
     Then the tree should have root "MACHINERY" with acquisition method "BUY"
     And the root should have 0 children
-    Because the good is available for purchase we skip fabrication
+    # Because the good is available for purchase we skip fabrication
 
   Scenario: Fabricate intermediate good if not available
     Given a supply chain map with:
@@ -98,7 +98,7 @@ Feature: Supply Chain Resolver
       | ELECTRONICS| SILICON_CRYSTALS, COPPER |
       | COPPER     | COPPER_ORE         |
     And market "X1-G1" sells "IRON" with activity "STRONG" and supply "ABUNDANT"
-    And market "X1-G2" sells "SILICON_CRYSTALS" with activity "MODERATE" and supply "HIGH"
+    And market "X1-G2" sells "SILICON_CRYSTALS" with activity "GROWING" and supply "HIGH"
     And market "X1-G3" sells "COPPER_ORE" with activity "GROWING" and supply "MODERATE"
     And "EQUIPMENT" is not available in any market
     And "ELECTRONICS" is not available in any market
@@ -154,7 +154,7 @@ Feature: Supply Chain Resolver
     Given an empty supply chain map
     When I validate the supply chain for "MYSTERY_GOOD"
     Then validation should succeed
-    Because raw materials dont need to be in the map
+    # Because raw materials dont need to be in the map
 
   # ============================================================================
   # Market Data Population
@@ -172,9 +172,9 @@ Feature: Supply Chain Resolver
 
   Scenario: FABRICATE nodes have no market data
     Given a supply chain map with "IRON" requiring "IRON_ORE"
-    And market "X1-I1" sells "IRON_ORE" with activity "MODERATE" and supply "HIGH"
+    And market "X1-I1" sells "IRON_ORE" with activity "GROWING" and supply "HIGH"
     And "IRON" is not available in any market
     When I build dependency tree for "IRON" in system "X1"
     Then node "IRON" should have empty market activity
     And node "IRON" should have empty supply level
-    Because FABRICATE nodes will find markets during execution
+    # Because FABRICATE nodes will find markets during execution

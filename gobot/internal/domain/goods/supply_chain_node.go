@@ -92,12 +92,19 @@ func (n *SupplyChainNode) TotalDepth() int {
 // FlattenToList returns a breadth-first traversal of all nodes
 func (n *SupplyChainNode) FlattenToList() []*SupplyChainNode {
 	result := make([]*SupplyChainNode, 0)
+	seen := make(map[string]bool)
 	queue := []*SupplyChainNode{n}
 
 	for len(queue) > 0 {
 		current := queue[0]
 		queue = queue[1:]
 
+		// Skip if we've already processed this good
+		if seen[current.Good] {
+			continue
+		}
+
+		seen[current.Good] = true
 		result = append(result, current)
 
 		for _, child := range current.Children {
