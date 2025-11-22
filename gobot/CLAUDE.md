@@ -594,3 +594,169 @@ cd services/routing-service
 source venv/bin/activate
 python3 test_service.py
 ```
+
+## Metrics & Monitoring
+
+The daemon includes comprehensive Prometheus metrics and Grafana dashboards for observability. Metrics are **opt-in** and disabled by default.
+
+### Enabling Metrics
+
+Add to your `.env` file:
+```bash
+ST_METRICS_ENABLED=true
+ST_METRICS_PORT=9090
+ST_METRICS_HOST=localhost
+ST_METRICS_PATH=/metrics
+```
+
+Start the daemon:
+```bash
+./bin/spacetraders-daemon
+```
+
+Metrics are now exposed at `http://localhost:9090/metrics` in Prometheus text format.
+
+### Starting the Metrics Stack
+
+Start Prometheus and Grafana with Docker Compose:
+
+```bash
+# Start the metrics stack
+docker-compose -f docker-compose.metrics.yml up -d
+
+# Check status
+docker-compose -f docker-compose.metrics.yml ps
+
+# View logs
+docker-compose -f docker-compose.metrics.yml logs -f
+
+# Stop the stack
+docker-compose -f docker-compose.metrics.yml down
+```
+
+Access points:
+- **Prometheus UI:** http://localhost:9091
+- **Grafana UI:** http://localhost:3000 (login: admin/admin)
+
+### Available Metrics
+
+#### Container & Operational Metrics
+- `spacetraders_daemon_container_running_total` - Currently running containers by type
+- `spacetraders_daemon_container_total` - Container lifecycle events (completed/failed/stopped)
+- `spacetraders_daemon_container_duration_seconds` - Container execution time distribution
+- `spacetraders_daemon_container_restarts_total` - Container restart count
+- `spacetraders_daemon_container_iterations_total` - Worker iteration completions
+- `spacetraders_daemon_ships_total` - Ship count by role and location
+- `spacetraders_daemon_ship_status_total` - Ship count by navigation status
+
+#### Navigation Metrics
+- `spacetraders_daemon_routes_total` - Route events by status (completed/failed)
+- `spacetraders_daemon_route_duration_seconds` - Route execution time
+- `spacetraders_daemon_route_distance_traveled_total` - Cumulative distance
+- `spacetraders_daemon_route_fuel_consumed_total` - Cumulative fuel consumption
+- `spacetraders_daemon_route_segments_completed_total` - Route segment count
+- `spacetraders_daemon_fuel_purchased_units_total` - Fuel purchased by waypoint
+- `spacetraders_daemon_fuel_consumed_units_total` - Fuel consumed by flight mode
+- `spacetraders_daemon_fuel_efficiency_ratio` - Distance per fuel unit
+
+#### Financial Metrics
+- `spacetraders_daemon_player_credits_balance` - Current credits by agent
+- `spacetraders_daemon_transactions_total` - Transaction count by type/category
+- `spacetraders_daemon_transaction_amount` - Transaction amount distribution
+- `spacetraders_daemon_total_revenue` - Revenue by category
+- `spacetraders_daemon_total_expenses` - Expenses by category
+- `spacetraders_daemon_net_profit` - Net profit (revenue - expenses)
+- `spacetraders_daemon_trade_profit_per_unit` - Trade profitability per unit
+- `spacetraders_daemon_trade_margin_percent` - Trade margin percentage
+
+#### Command Metrics
+- `spacetraders_daemon_commands_total` - Command executions by type and status
+- `spacetraders_daemon_command_duration_seconds` - Command execution time
+
+#### API Metrics
+- `spacetraders_daemon_api_requests_total` - API requests by method/endpoint/status
+- `spacetraders_daemon_api_request_duration_seconds` - API request latency
+- `spacetraders_daemon_api_retries_total` - API retry attempts by reason
+- `spacetraders_daemon_api_rate_limit_wait_seconds` - Rate limiter wait time
+
+### Grafana Dashboards
+
+Three pre-configured dashboards are automatically loaded:
+
+**1. Operational Dashboard** (`spacetraders-operational`)
+- Running containers gauge
+- Container completion/failure rates
+- Ship status distribution
+- Container duration percentiles
+
+**2. Navigation Dashboard** (`spacetraders-navigation`)
+- Route completion rates
+- Route duration percentiles
+- Fuel consumption by flight mode
+- Distance traveled
+- Fuel efficiency trends
+
+**3. Financial Dashboard** (`spacetraders-financial`)
+- Credits balance over time
+- Revenue vs expenses by category
+- Net profit gauge
+- Transaction volume breakdown
+- Trade profitability analysis
+
+### Architecture
+
+**Metrics Collection Pattern:**
+- Metrics collectors live in `internal/adapters/metrics/`
+- Global singleton pattern for easy instrumentation
+- Hexagonal architecture compliance (adapters observe domain events)
+- Zero impact on domain layer
+
+**Collector Lifecycle:**
+- Initialized in `DaemonServer.NewDaemonServer()` if enabled
+- Polling collectors (containers, ships, P&L) run as goroutines
+- Event-based collectors (routes, transactions) record synchronously
+- Graceful shutdown with context cancellation
+
+**Adding New Metrics:**
+
+1. Define metric in appropriate collector:
+```go
+// In internal/adapters/metrics/my_metrics.go
+myMetric := prometheus.NewCounterVec(
+    prometheus.CounterOpts{
+        Namespace: "spacetraders",
+        Subsystem: "daemon",
+        Name:      "my_metric_total",
+        Help:      "Description of my metric",
+    },
+    []string{"label1", "label2"},
+)
+```
+
+2. Register in collector's `Register()` method
+
+3. Record events where they occur:
+```go
+metrics.RecordMyEvent(playerID, value)
+```
+
+### Troubleshooting
+
+**Metrics endpoint returns 404:**
+- Check `ST_METRICS_ENABLED=true` in `.env`
+- Restart daemon to pick up config changes
+
+**Prometheus shows daemon target as "Down":**
+- Verify daemon is running with metrics enabled
+- Check `host.docker.internal` resolves from Prometheus container
+- On Linux, use `--add-host=host.docker.internal:host-gateway` in docker-compose
+
+**Grafana dashboards show "No Data":**
+- Verify Prometheus is scraping successfully (check targets page)
+- Ensure daemon has processed some activity to generate metrics
+- Check time range in Grafana (default: last 1 hour)
+
+**High memory usage:**
+- Metrics retention is handled by Prometheus, not the daemon
+- Adjust Prometheus `--storage.tsdb.retention.time` in docker-compose
+- Default retention: 15 days
