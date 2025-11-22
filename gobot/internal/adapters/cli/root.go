@@ -27,7 +27,7 @@ Examples:
   spacetraders ship navigate --ship AGENT-1 --destination X1-GZ7-B1
   spacetraders ship dock --ship AGENT-1
   spacetraders shipyard list X1-GZ7 X1-GZ7-A1
-  spacetraders shipyard purchase --ship AGENT-1 --type SHIP_PROBE
+  spacetraders shipyard purchase --ship AGENT-1 --type SHIP_PROBE --quantity 3
   spacetraders market get --waypoint X1-GZ7-A1
   spacetraders workflow batch-contract --ship AGENT-1 --iterations 5
   spacetraders container list
