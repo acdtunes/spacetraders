@@ -13,7 +13,9 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/api"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/graph"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
+	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	shipCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands"
+	"github.com/andrescamacho/spacetraders-go/internal/application/setup"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 )
@@ -501,8 +503,17 @@ Examples:
 			shipRepo := api.NewShipRepository(apiClient, playerRepo, waypointRepo, graphService)
 			marketRepo := persistence.NewMarketRepository(db)
 
+			// Create mediator with ledger handlers registered
+			transactionRepo := persistence.NewGormTransactionRepository(db)
+			playerResolver := common.NewPlayerResolver(playerRepo)
+			registry := setup.NewHandlerRegistry(transactionRepo, playerResolver, nil)
+			mediator, err := registry.CreateConfiguredMediator()
+			if err != nil {
+				return fmt.Errorf("failed to create mediator: %w", err)
+			}
+
 			// Create handler
-			handler := shipCmd.NewSellCargoHandler(shipRepo, playerRepo, apiClient, marketRepo)
+			handler := shipCmd.NewSellCargoHandler(shipRepo, playerRepo, apiClient, marketRepo, mediator)
 
 			// Resolve player ID
 			ctx := context.Background()

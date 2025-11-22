@@ -26,6 +26,7 @@ type contractApplicationContext struct {
 	db           *gorm.DB
 	contractRepo *persistence.GormContractRepository
 	playerRepo   *persistence.GormPlayerRepository
+	mediator     common.Mediator
 
 	// All handlers
 	acceptHandler  *commands.AcceptContractHandler
@@ -66,11 +67,17 @@ func (ctx *contractApplicationContext) reset() {
 	// Mock clock starting at fixed time
 	ctx.clock = shared.NewMockClock(time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC))
 
+	// Create a mediator for handlers that need it
+	// Note: In tests, handlers that record transactions won't actually record them
+	// unless we register the ledger handlers, but that's okay for basic contract tests
+	ctx.mediator = common.NewMediator()
+
 	// Create all handlers with shared infrastructure
 	ctx.acceptHandler = commands.NewAcceptContractHandler(
 		ctx.contractRepo,
 		ctx.playerRepo,
 		ctx.apiClient,
+		ctx.mediator,
 	)
 
 	ctx.deliverHandler = commands.NewDeliverContractHandler(
@@ -83,6 +90,7 @@ func (ctx *contractApplicationContext) reset() {
 		ctx.contractRepo,
 		ctx.playerRepo,
 		ctx.apiClient,
+		ctx.mediator,
 	)
 }
 
