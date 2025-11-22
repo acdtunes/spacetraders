@@ -69,6 +69,15 @@ service DaemonService {
 
   // TourSell executes optimized cargo selling tour for a ship
   rpc TourSell(TourSellRequest) returns (TourSellResponse);
+
+  // StartGoodsFactory initiates automated goods production using supply chain fabrication
+  rpc StartGoodsFactory(StartGoodsFactoryRequest) returns (StartGoodsFactoryResponse);
+
+  // StopGoodsFactory stops a running goods factory operation
+  rpc StopGoodsFactory(StopGoodsFactoryRequest) returns (StopGoodsFactoryResponse);
+
+  // GetFactoryStatus retrieves status and progress of a goods factory
+  rpc GetFactoryStatus(GetFactoryStatusRequest) returns (GetFactoryStatusResponse);
 }
 
 // NavigateShipRequest initiates ship navigation
@@ -482,4 +491,53 @@ message SoldItem {
   int32 units = 2;
   int32 revenue = 3;
   string market = 4;
+}
+
+// StartGoodsFactoryRequest initiates automated goods production
+message StartGoodsFactoryRequest {
+  int32 player_id = 1;
+  string target_good = 2;
+  optional string system_symbol = 3; // Optional: defaults to current system
+  optional string agent_symbol = 4;
+}
+
+// StartGoodsFactoryResponse returns factory details
+message StartGoodsFactoryResponse {
+  string factory_id = 1;
+  string target_good = 2;
+  string status = 3;
+  string message = 4; // e.g., "Dependency tree built, 5 nodes to process"
+  int32 nodes_total = 5;
+}
+
+// StopGoodsFactoryRequest stops a factory operation
+message StopGoodsFactoryRequest {
+  int32 player_id = 1;
+  string factory_id = 2;
+}
+
+// StopGoodsFactoryResponse confirms factory stopped
+message StopGoodsFactoryResponse {
+  string factory_id = 1;
+  string status = 2;
+  string message = 3;
+}
+
+// GetFactoryStatusRequest retrieves factory status
+message GetFactoryStatusRequest {
+  int32 player_id = 1;
+  string factory_id = 2;
+}
+
+// GetFactoryStatusResponse returns detailed factory status
+message GetFactoryStatusResponse {
+  string factory_id = 1;
+  string target_good = 2;
+  string status = 3;
+  string dependency_tree = 4; // JSON-encoded dependency tree
+  int32 quantity_acquired = 5; // 0 if not yet complete
+  int32 total_cost = 6;
+  int32 nodes_completed = 7;
+  int32 nodes_total = 8;
+  string system_symbol = 9;
 }
