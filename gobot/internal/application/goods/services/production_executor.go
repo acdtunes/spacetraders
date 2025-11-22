@@ -373,37 +373,47 @@ func (e *ProductionExecutor) NavigateAndDock(
 		return nil, fmt.Errorf("failed to navigate to %s: %w", destination, err)
 	}
 
-	// Wait for ship to arrive if still in transit
-	// Poll until ship is no longer IN_TRANSIT
+	// Poll for ship arrival and dock using domain layer
+	// NavigateRouteCommand already waited for travel time, this is just a safety check
+	// for any API/database propagation delays (should only take a few seconds at most)
 	var ship *navigation.Ship
-	maxAttempts := 60 // 60 seconds timeout (1 sec per poll)
+	maxAttempts := 10 // 10 seconds timeout (1 sec per poll)
 	for attempt := 0; attempt < maxAttempts; attempt++ {
+		// Reload ship from API
 		ship, err = e.shipRepo.FindBySymbol(ctx, shipSymbol, playerID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to reload ship after navigation: %w", err)
 		}
 
-		// If ship is no longer in transit, we can proceed to dock
-		if ship.NavStatus() != navigation.NavStatusInTransit {
+		// Try to dock using domain's idempotent EnsureDocked
+		_, dockErr := ship.EnsureDocked()
+		if dockErr == nil {
+			// Successfully docked (or was already docked)
 			break
 		}
 
+		// If error is "in transit", wait and retry
+		// If error is something else, fail immediately
+		if ship.NavStatus() != navigation.NavStatusInTransit {
+			return nil, fmt.Errorf("unexpected dock error: %w", dockErr)
+		}
+
+		// Ship still in transit, wait before retry
 		// Check for context cancellation
 		select {
 		case <-ctx.Done():
-			return nil, fmt.Errorf("navigation wait cancelled: %w", ctx.Err())
+			return nil, fmt.Errorf("dock wait cancelled: %w", ctx.Err())
 		default:
-			// Wait 1 second before next poll
 			e.clock.Sleep(1 * time.Second)
 		}
 	}
 
 	// Final check - if still in transit after timeout, return error
 	if ship.NavStatus() == navigation.NavStatusInTransit {
-		return nil, fmt.Errorf("ship %s still in transit after waiting for arrival", shipSymbol)
+		return nil, fmt.Errorf("ship %s still in transit after %d seconds", shipSymbol, maxAttempts)
 	}
 
-	// Dock at destination
+	// Persist dock state to API
 	dockCmd := &shipTypes.DockShipCommand{
 		ShipSymbol: shipSymbol,
 		PlayerID:   playerID,
@@ -411,7 +421,7 @@ func (e *ProductionExecutor) NavigateAndDock(
 
 	_, err = e.mediator.Send(ctx, dockCmd)
 	if err != nil {
-		return nil, fmt.Errorf("failed to dock at %s: %w", destination, err)
+		return nil, fmt.Errorf("failed to persist dock state: %w", err)
 	}
 
 	// Reload ship again to get docked state

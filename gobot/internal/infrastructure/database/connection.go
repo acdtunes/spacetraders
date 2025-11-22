@@ -94,6 +94,7 @@ func AutoMigrate(db *gorm.DB) error {
 		&persistence.MarketData{},
 		&persistence.ContractModel{},
 		&persistence.GoodsFactoryModel{},
+		&persistence.TransactionModel{},
 	)
 }
 
