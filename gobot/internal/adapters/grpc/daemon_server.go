@@ -174,29 +174,16 @@ func (s *DaemonServer) registerCommandFactories() {
 
 	// Contract fleet coordinator factory (multi-ship coordination)
 	s.commandFactories["contract_fleet_coordinator"] = func(config map[string]interface{}, playerID int) (interface{}, error) {
-		shipSymbolsInterface, ok := config["ship_symbols"].([]interface{})
-		if !ok {
-			return nil, fmt.Errorf("missing or invalid ship_symbols")
-		}
-
-		// Convert []interface{} to []string
-		shipSymbols := make([]string, len(shipSymbolsInterface))
-		for i, v := range shipSymbolsInterface {
-			shipSymbol, ok := v.(string)
-			if !ok {
-				return nil, fmt.Errorf("invalid ship_symbol at index %d", i)
-			}
-			shipSymbols[i] = shipSymbol
-		}
-
 		containerID, ok := config["container_id"].(string)
 		if !ok {
 			return nil, fmt.Errorf("missing or invalid container_id")
 		}
 
+		// ship_symbols is deprecated and no longer required (dynamic discovery is used)
+		// Pass empty array for backward compatibility
 		return &contractCmd.RunFleetCoordinatorCommand{
 			PlayerID:    shared.MustNewPlayerID(playerID),
-			ShipSymbols: shipSymbols,
+			ShipSymbols: []string{}, // Deprecated field, no longer used
 			ContainerID: containerID,
 		}, nil
 	}
