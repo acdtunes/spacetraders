@@ -46,10 +46,12 @@ func (r *SupplyChainResolver) BuildDependencyTree(
 	playerID int,
 ) (*goods.SupplyChainNode, error) {
 	visited := make(map[string]bool)
-	return r.buildTreeRecursive(ctx, targetGood, systemSymbol, playerID, visited, []string{})
+	// Force fabrication for the target good (root), even if available in markets
+	return r.buildTreeRecursive(ctx, targetGood, systemSymbol, playerID, visited, []string{}, true)
 }
 
 // buildTreeRecursive is the internal recursive function for tree building
+// isTargetGood forces fabrication for the root good, even if available in markets
 func (r *SupplyChainResolver) buildTreeRecursive(
 	ctx context.Context,
 	goodSymbol string,
@@ -57,6 +59,7 @@ func (r *SupplyChainResolver) buildTreeRecursive(
 	playerID int,
 	visited map[string]bool,
 	path []string,
+	isTargetGood bool,
 ) (*goods.SupplyChainNode, error) {
 	// Detect cycles
 	if visited[goodSymbol] {
@@ -74,17 +77,20 @@ func (r *SupplyChainResolver) buildTreeRecursive(
 	currentPath := append(path, goodSymbol)
 
 	// Check if available in any market (prefer buying)
-	marketData, err := r.findExportMarket(ctx, goodSymbol, systemSymbol, playerID)
-	if err == nil && marketData != nil {
-		// Good is available for purchase
-		node := goods.NewSupplyChainNode(goodSymbol, goods.AcquisitionBuy)
-		node.MarketActivity = marketData.Activity
-		node.SupplyLevel = marketData.Supply
-		node.WaypointSymbol = marketData.WaypointSymbol
-		return node, nil
+	// BUT: skip this check for the target good - we want to fabricate it!
+	if !isTargetGood {
+		marketData, err := r.findExportMarket(ctx, goodSymbol, systemSymbol, playerID)
+		if err == nil && marketData != nil {
+			// Good is available for purchase
+			node := goods.NewSupplyChainNode(goodSymbol, goods.AcquisitionBuy)
+			node.MarketActivity = marketData.Activity
+			node.SupplyLevel = marketData.Supply
+			node.WaypointSymbol = marketData.WaypointSymbol
+			return node, nil
+		}
 	}
 
-	// Not available for purchase, check if it can be fabricated
+	// Not available for purchase (or is target good), check if it can be fabricated
 	inputs, exists := r.supplyChainMap[goodSymbol]
 	if !exists {
 		// Good cannot be purchased or fabricated
@@ -94,9 +100,9 @@ func (r *SupplyChainResolver) buildTreeRecursive(
 	// Create fabrication node
 	node := goods.NewSupplyChainNode(goodSymbol, goods.AcquisitionFabricate)
 
-	// Recursively build trees for all required inputs
+	// Recursively build trees for all required inputs (not target goods)
 	for _, inputGood := range inputs {
-		childNode, err := r.buildTreeRecursive(ctx, inputGood, systemSymbol, playerID, visited, currentPath)
+		childNode, err := r.buildTreeRecursive(ctx, inputGood, systemSymbol, playerID, visited, currentPath, false)
 		if err != nil {
 			return nil, err
 		}

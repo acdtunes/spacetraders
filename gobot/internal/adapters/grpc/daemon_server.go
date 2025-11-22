@@ -455,6 +455,11 @@ func (s *DaemonServer) registerCommandFactories() {
 
 	// Goods factory coordinator factory
 	s.commandFactories["goods_factory_coordinator"] = func(config map[string]interface{}, playerID int) (interface{}, error) {
+		containerID, ok := config["container_id"].(string)
+		if !ok {
+			return nil, fmt.Errorf("missing or invalid container_id")
+		}
+
 		targetGood, ok := config["target_good"].(string)
 		if !ok {
 			return nil, fmt.Errorf("missing or invalid target_good")
@@ -469,6 +474,7 @@ func (s *DaemonServer) registerCommandFactories() {
 			PlayerID:     playerID,
 			TargetGood:   targetGood,
 			SystemSymbol: systemSymbol,
+			ContainerID:  containerID,
 		}, nil
 	}
 }
@@ -2213,12 +2219,14 @@ func (s *DaemonServer) StartGoodsFactory(
 		PlayerID:     playerID,
 		TargetGood:   targetGood,
 		SystemSymbol: systemSymbol,
+		ContainerID:  containerID,
 	}
 
 	// Create container metadata
 	metadata := map[string]interface{}{
-		"target_good":   targetGood,
-		"system_symbol": systemSymbol,
+		"target_good":    targetGood,
+		"system_symbol":  systemSymbol,
+		"container_id":   containerID,
 	}
 
 	// Create container entity (iterations = 1 for single production run)

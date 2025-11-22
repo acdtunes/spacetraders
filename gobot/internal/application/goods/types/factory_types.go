@@ -37,6 +37,7 @@ type RunFactoryCoordinatorCommand struct {
 	PlayerID     int
 	TargetGood   string
 	SystemSymbol string // Where to produce (defaults to current system)
+	ContainerID  string // Container ID for ship assignment tracking
 }
 
 // RunFactoryCoordinatorResponse contains the result of the coordinator operation

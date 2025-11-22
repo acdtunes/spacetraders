@@ -105,6 +105,8 @@ router.get('/assignments', async (req, res) => {
               operation = 'mine';
             } else if (assignment.container_type === 'TRANSPORT_WORKER') {
               operation = 'transport';
+            } else if (assignment.container_type === 'goods_factory_coordinator') {
+              operation = 'factory';
             }
 
             assignments.push({
@@ -160,6 +162,8 @@ router.get('/assignments', async (req, res) => {
           operation = 'mine';
         } else if (row.container_type === 'TRANSPORT_WORKER') {
           operation = 'transport';
+        } else if (row.container_type === 'goods_factory_coordinator') {
+          operation = 'factory';
         }
 
         assignments.push({
@@ -243,6 +247,8 @@ router.get('/assignments/:shipSymbol', async (req, res) => {
         operation = 'mine';
       } else if (assignment.container_type === 'TRANSPORT_WORKER') {
         operation = 'transport';
+      } else if (assignment.container_type === 'goods_factory_coordinator') {
+        operation = 'factory';
       }
 
       const parsed = {

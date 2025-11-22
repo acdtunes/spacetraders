@@ -106,7 +106,7 @@ func (e *ProductionExecutor) buyGood(
 		return nil, fmt.Errorf("failed to find market selling %s: %w", node.Good, err)
 	}
 
-	logger.Log("INFO", "Found export market for purchase", map[string]interface{}{
+	logger.Log("INFO", fmt.Sprintf("Found export market for %s purchase", node.Good), map[string]interface{}{
 		"good":            node.Good,
 		"market":          marketResult.WaypointSymbol,
 		"price":           marketResult.Price,
@@ -146,7 +146,7 @@ func (e *ProductionExecutor) buyGood(
 		return nil, fmt.Errorf("unexpected response type from purchase command")
 	}
 
-	logger.Log("INFO", "Purchased good from market", map[string]interface{}{
+	logger.Log("INFO", fmt.Sprintf("Purchased %d units of %s for %d credits", response.UnitsAdded, node.Good, response.TotalCost), map[string]interface{}{
 		"good":             node.Good,
 		"quantity":         response.UnitsAdded,
 		"total_cost":       response.TotalCost,
@@ -172,7 +172,7 @@ func (e *ProductionExecutor) fabricateGood(
 	totalCost := 0
 
 	// Step 1: Recursively produce all required inputs
-	logger.Log("INFO", "Producing inputs for fabrication", map[string]interface{}{
+	logger.Log("INFO", fmt.Sprintf("Starting fabrication of %s (requires %d inputs)", node.Good, len(node.Children)), map[string]interface{}{
 		"good":         node.Good,
 		"input_count":  len(node.Children),
 	})
@@ -183,7 +183,7 @@ func (e *ProductionExecutor) fabricateGood(
 			return nil, fmt.Errorf("failed to produce input %s: %w", child.Good, err)
 		}
 		totalCost += result.TotalCost
-		logger.Log("INFO", "Produced input good", map[string]interface{}{
+		logger.Log("INFO", fmt.Sprintf("Produced input: %d units of %s (cost: %d credits)", result.QuantityAcquired, child.Good, result.TotalCost), map[string]interface{}{
 			"input_good":  child.Good,
 			"quantity":    result.QuantityAcquired,
 			"cost":        result.TotalCost,
@@ -196,7 +196,7 @@ func (e *ProductionExecutor) fabricateGood(
 		return nil, fmt.Errorf("failed to find import market for %s: %w", node.Good, err)
 	}
 
-	logger.Log("INFO", "Found manufacturing waypoint", map[string]interface{}{
+	logger.Log("INFO", fmt.Sprintf("Found manufacturing waypoint for %s at %s", node.Good, importMarket.WaypointSymbol), map[string]interface{}{
 		"good":            node.Good,
 		"waypoint":        importMarket.WaypointSymbol,
 		"purchase_price":  importMarket.Price,
@@ -277,7 +277,7 @@ func (e *ProductionExecutor) PollForProduction(
 		// Check if good appears in exports
 		tradeGood := marketData.FindGood(good)
 		if tradeGood != nil {
-			logger.Log("INFO", "Production complete - good available in market", map[string]interface{}{
+			logger.Log("INFO", fmt.Sprintf("Production complete: %s now available at %s (polled %d times)", good, waypointSymbol, attempt+1), map[string]interface{}{
 				"good":            good,
 				"waypoint":        waypointSymbol,
 				"poll_attempts":   attempt + 1,
@@ -311,6 +311,13 @@ func (e *ProductionExecutor) PollForProduction(
 			if !ok {
 				return 0, 0, fmt.Errorf("unexpected response type from purchase command")
 			}
+
+			logger.Log("INFO", fmt.Sprintf("Purchased fabricated output: %d units of %s for %d credits", response.UnitsAdded, good, response.TotalCost), map[string]interface{}{
+				"good":       good,
+				"quantity":   response.UnitsAdded,
+				"total_cost": response.TotalCost,
+				"waypoint":   waypointSymbol,
+			})
 
 			return response.UnitsAdded, response.TotalCost, nil
 		}
@@ -422,7 +429,7 @@ func (e *ProductionExecutor) deliverInputs(
 
 		totalRevenue += response.TotalRevenue
 
-		logger.Log("INFO", "Delivered input to manufacturing waypoint", map[string]interface{}{
+		logger.Log("INFO", fmt.Sprintf("Delivered input: %d units of %s (revenue: %d credits)", response.UnitsSold, item.Symbol, response.TotalRevenue), map[string]interface{}{
 			"input_good":  item.Symbol,
 			"units":       response.UnitsSold,
 			"revenue":     response.TotalRevenue,

@@ -10,6 +10,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/contract"
 	goodsServices "github.com/andrescamacho/spacetraders-go/internal/application/goods/services"
 	goodsTypes "github.com/andrescamacho/spacetraders-go/internal/application/goods/types"
+	appShipCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/goods"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
@@ -206,15 +207,24 @@ func (h *RunFactoryCoordinatorHandler) executeCoordination(
 
 	// Step 5: Execute production in parallel levels
 	if err := h.executeParallelProduction(ctx, cmd, parallelLevels, idleShips, response); err != nil {
+		// Release all ship assignments on error
+		h.releaseAllShipAssignments(ctx, cmd.ContainerID, cmd.PlayerID, "production_failed")
 		return fmt.Errorf("parallel production failed: %w", err)
 	}
 
+	// Step 6: Release all ship assignments on successful completion
+	if err := h.releaseAllShipAssignments(ctx, cmd.ContainerID, cmd.PlayerID, "factory_completed"); err != nil {
+		logger.Log("WARNING", "Failed to release ship assignments", map[string]interface{}{
+			"error": err.Error(),
+		})
+	}
+
 	logger.Log("INFO", "Factory coordinator completed", map[string]interface{}{
-		"factory_id":       response.FactoryID,
-		"target_good":      cmd.TargetGood,
-		"quantity":         response.QuantityAcquired,
-		"total_cost":       response.TotalCost,
-		"nodes_completed":  response.NodesCompleted,
+		"factory_id":      response.FactoryID,
+		"target_good":     cmd.TargetGood,
+		"quantity":        response.QuantityAcquired,
+		"total_cost":      response.TotalCost,
+		"nodes_completed": response.NodesCompleted,
 	})
 
 	return nil
@@ -230,6 +240,7 @@ func (h *RunFactoryCoordinatorHandler) executeParallelProduction(
 ) error {
 	logger := common.LoggerFromContext(ctx)
 	shipsUsed := make(map[string]bool)
+	var shipsUsedMutex sync.Mutex // Protect concurrent map access
 	totalCost := 0
 	nodesCompleted := 0
 
@@ -244,7 +255,7 @@ func (h *RunFactoryCoordinatorHandler) executeParallelProduction(
 	discoveryCtx, cancelDiscovery := context.WithCancel(ctx)
 	defer cancelDiscovery()
 
-	go h.shipPoolRefresher(discoveryCtx, cmd.PlayerID, shipPool, shipsUsed)
+	go h.shipPoolRefresher(discoveryCtx, cmd.PlayerID, shipPool, shipsUsed, &shipsUsedMutex)
 
 	logger.Log("INFO", "Starting parallel production", map[string]interface{}{
 		"factory_id":         response.FactoryID,
@@ -263,8 +274,37 @@ func (h *RunFactoryCoordinatorHandler) executeParallelProduction(
 			"nodes_count": len(level.Nodes),
 		})
 
+		// Build delivery destinations map for this level's BUY nodes
+		// If next level has FABRICATE nodes, BUY nodes should deliver there
+		deliveryDestinations := make(map[string]string) // good -> import waypoint
+		if levelIdx+1 < len(levels) {
+			nextLevel := levels[levelIdx+1]
+			for _, fabricNode := range nextLevel.Nodes {
+				if fabricNode.AcquisitionMethod == goods.AcquisitionFabricate {
+					// Find import market for this fabrication node
+					importMarket, err := h.marketLocator.FindImportMarket(ctx, fabricNode.Good, cmd.SystemSymbol, cmd.PlayerID)
+					if err != nil {
+						logger.Log("WARNING", "Could not find import market for fabrication destination", map[string]interface{}{
+							"good":  fabricNode.Good,
+							"error": err.Error(),
+						})
+						continue
+					}
+					// All children of this fabrication node should deliver to this import market
+					for _, child := range fabricNode.Children {
+						deliveryDestinations[child.Good] = importMarket.WaypointSymbol
+						logger.Log("INFO", "Mapped delivery destination for input", map[string]interface{}{
+							"input_good":         child.Good,
+							"destination":        importMarket.WaypointSymbol,
+							"fabrication_target": fabricNode.Good,
+						})
+					}
+				}
+			}
+		}
+
 		// Execute all nodes in this level in parallel
-		results, err := h.executeLevelParallel(ctx, cmd, level.Nodes, shipPool, shipsUsed)
+		results, err := h.executeLevelParallel(ctx, cmd, level.Nodes, shipPool, shipsUsed, &shipsUsedMutex, deliveryDestinations)
 		if err != nil {
 			return fmt.Errorf("level %d execution failed: %w", levelIdx, err)
 		}
@@ -318,14 +358,14 @@ func (h *RunFactoryCoordinatorHandler) executeParallelProduction(
 // 5. Exit gracefully on context cancellation
 //
 // Thread safety:
-// - shipsUsed map: workers write unique keys (ship symbol), refresher only reads
+// - shipsUsed map: protected by mutex for concurrent access
 // - shipPool channel: Go channels are concurrency-safe
-// - No mutex needed due to non-overlapping access patterns
 func (h *RunFactoryCoordinatorHandler) shipPoolRefresher(
 	ctx context.Context,
 	playerID int,
 	shipPool chan *navigation.Ship,
 	shipsUsed map[string]bool,
+	shipsUsedMutex *sync.Mutex,
 ) {
 	logger := common.LoggerFromContext(ctx)
 	ticker := time.NewTicker(30 * time.Second)
@@ -366,15 +406,21 @@ func (h *RunFactoryCoordinatorHandler) shipPoolRefresher(
 			addedShips := make([]string, 0)
 
 			for _, ship := range newIdleShips {
-				// Skip if ship already in use by this factory
-				if shipsUsed[ship.ShipSymbol()] {
+				// Skip if ship already in use by this factory (check with lock)
+				shipsUsedMutex.Lock()
+				alreadyUsed := shipsUsed[ship.ShipSymbol()]
+				shipsUsedMutex.Unlock()
+
+				if alreadyUsed {
 					continue
 				}
 
 				// Attempt non-blocking send to pool
 				select {
 				case shipPool <- ship:
+					shipsUsedMutex.Lock()
 					shipsUsed[ship.ShipSymbol()] = true
+					shipsUsedMutex.Unlock()
 					addedShips = append(addedShips, ship.ShipSymbol())
 					addedCount++
 				default:
@@ -403,6 +449,8 @@ func (h *RunFactoryCoordinatorHandler) executeLevelParallel(
 	nodes []*goods.SupplyChainNode,
 	shipPool chan *navigation.Ship,
 	shipsUsed map[string]bool,
+	shipsUsedMutex *sync.Mutex,
+	deliveryDestinations map[string]string,
 ) ([]*goodsServices.ProductionResult, error) {
 	logger := common.LoggerFromContext(ctx)
 
@@ -427,17 +475,79 @@ func (h *RunFactoryCoordinatorHandler) executeLevelParallel(
 			ship := <-shipPool
 			defer func() { shipPool <- ship }() // Return ship to pool
 
-			logger.Log("INFO", "Worker starting production", map[string]interface{}{
-				"good":        n.Good,
-				"ship_symbol": ship.ShipSymbol(),
-				"method":      n.AcquisitionMethod,
-			})
+			// Check if this ship already has the needed cargo (for BUY nodes)
+			hasNeededCargo := false
+			if n.IsLeaf() && n.AcquisitionMethod == goods.AcquisitionBuy {
+				for _, item := range ship.Cargo().Inventory {
+					if item.Symbol == n.Good && item.Units > 0 {
+						hasNeededCargo = true
+						logger.Log("INFO", fmt.Sprintf("Ship %s already has %d units of %s - will deliver directly", ship.ShipSymbol(), item.Units, n.Good), map[string]interface{}{
+							"ship_symbol": ship.ShipSymbol(),
+							"good":        n.Good,
+							"units":       item.Units,
+						})
+						break
+					}
+				}
+			}
 
-			// Track ship usage
-			shipsUsed[ship.ShipSymbol()] = true
+			if !hasNeededCargo {
+				logger.Log("INFO", fmt.Sprintf("Worker starting: %s %s using ship %s", n.AcquisitionMethod, n.Good, ship.ShipSymbol()), map[string]interface{}{
+					"good":        n.Good,
+					"ship_symbol": ship.ShipSymbol(),
+					"method":      n.AcquisitionMethod,
+				})
+			} else {
+				logger.Log("INFO", fmt.Sprintf("Worker starting: DELIVER %s using ship %s (cargo already onboard)", n.Good, ship.ShipSymbol()), map[string]interface{}{
+					"good":        n.Good,
+					"ship_symbol": ship.ShipSymbol(),
+					"method":      "DELIVER",
+				})
+			}
+
+			// Track ship usage and persist assignment
+			shipsUsedMutex.Lock()
+			alreadyAssigned := shipsUsed[ship.ShipSymbol()]
+			if !alreadyAssigned {
+				shipsUsed[ship.ShipSymbol()] = true
+			}
+			shipsUsedMutex.Unlock()
+
+			// Persist ship assignment if this is the first time using this ship
+			if !alreadyAssigned {
+				assignment := container.NewShipAssignment(
+					ship.ShipSymbol(),
+					cmd.PlayerID,
+					cmd.ContainerID,
+					h.clock,
+				)
+				if err := h.shipAssignmentRepo.Assign(ctx, assignment); err != nil {
+					logger.Log("WARNING", "Failed to persist ship assignment", map[string]interface{}{
+						"ship_symbol": ship.ShipSymbol(),
+						"error":       err.Error(),
+					})
+				} else {
+					logger.Log("INFO", "Ship assigned to factory", map[string]interface{}{
+						"ship_symbol":  ship.ShipSymbol(),
+						"container_id": cmd.ContainerID,
+					})
+				}
+			}
+
+			// Get delivery destination for this good (if any)
+			deliveryDest := deliveryDestinations[n.Good]
 
 			// Execute production for this node only (non-recursive)
-			result, err := h.produceNodeOnly(ctx, ship, n, cmd.SystemSymbol, cmd.PlayerID)
+			var result *goodsServices.ProductionResult
+			var err error
+
+			if hasNeededCargo && deliveryDest != "" {
+				// Ship already has cargo - just deliver it
+				result, err = h.deliverExistingCargo(ctx, ship, n.Good, deliveryDest, cmd.PlayerID)
+			} else {
+				// Normal production (buy or fabricate)
+				result, err = h.produceNodeOnly(ctx, ship, n, cmd.SystemSymbol, cmd.PlayerID, deliveryDest)
+			}
 
 			// Send result back
 			resultChan <- workerResult{
@@ -452,7 +562,7 @@ func (h *RunFactoryCoordinatorHandler) executeLevelParallel(
 					"error": err.Error(),
 				})
 			} else {
-				logger.Log("INFO", "Worker completed production", map[string]interface{}{
+				logger.Log("INFO", fmt.Sprintf("Worker completed: %s %s (%d units, %d credits)", n.AcquisitionMethod, n.Good, result.QuantityAcquired, result.TotalCost), map[string]interface{}{
 					"good":     n.Good,
 					"quantity": result.QuantityAcquired,
 					"cost":     result.TotalCost,
@@ -497,15 +607,48 @@ func (h *RunFactoryCoordinatorHandler) produceNodeOnly(
 	node *goods.SupplyChainNode,
 	systemSymbol string,
 	playerID int,
+	deliveryDest string,
 ) (*goodsServices.ProductionResult, error) {
-	// For leaf nodes (BUY), just purchase directly
+	logger := common.LoggerFromContext(ctx)
+
+	// For leaf nodes (BUY), purchase and optionally deliver
 	if node.IsLeaf() {
-		return h.productionExecutor.ProduceGood(ctx, ship, node, systemSymbol, playerID)
+		// First, buy the goods
+		result, err := h.productionExecutor.ProduceGood(ctx, ship, node, systemSymbol, playerID)
+		if err != nil {
+			return nil, err
+		}
+
+		// If there's a delivery destination, deliver the cargo there
+		if deliveryDest != "" {
+			logger.Log("INFO", fmt.Sprintf("Delivering %d units of %s to %s", result.QuantityAcquired, node.Good, deliveryDest), map[string]interface{}{
+				"good":        node.Good,
+				"quantity":    result.QuantityAcquired,
+				"destination": deliveryDest,
+			})
+
+			deliveryResult, err := h.deliverCargo(ctx, ship.ShipSymbol(), node.Good, deliveryDest, playerID)
+			if err != nil {
+				return nil, fmt.Errorf("failed to deliver %s to %s: %w", node.Good, deliveryDest, err)
+			}
+
+			// Update result with delivery revenue (negative cost)
+			result.TotalCost -= deliveryResult.TotalRevenue
+			result.WaypointSymbol = deliveryDest
+
+			logger.Log("INFO", fmt.Sprintf("Delivered %d units of %s for %d credits revenue", deliveryResult.UnitsSold, node.Good, deliveryResult.TotalRevenue), map[string]interface{}{
+				"good":     node.Good,
+				"units":    deliveryResult.UnitsSold,
+				"revenue":  deliveryResult.TotalRevenue,
+				"location": deliveryDest,
+			})
+		}
+
+		return result, nil
 	}
 
 	// For fabrication nodes, we assume children are already completed
 	// Just deliver inputs and purchase output
-	logger := common.LoggerFromContext(ctx)
 	playerIDValue := shared.MustNewPlayerID(playerID)
 
 	// Find manufacturing waypoint
@@ -628,4 +771,130 @@ func countNodesByMethod(nodes []*goods.SupplyChainNode, method goods.Acquisition
 		}
 	}
 	return count
+}
+
+// deliverCargo navigates to destination, docks, and sells the specified good
+func (h *RunFactoryCoordinatorHandler) deliverCargo(
+	ctx context.Context,
+	shipSymbol string,
+	good string,
+	destination string,
+	playerID int,
+) (*appShipCmd.SellCargoResponse, error) {
+	playerIDValue := shared.MustNewPlayerID(playerID)
+
+	// Navigate and dock at destination
+	ship, err := h.navigateAndDock(ctx, shipSymbol, destination, playerIDValue)
+	if err != nil {
+		return nil, fmt.Errorf("failed to navigate to delivery destination: %w", err)
+	}
+
+	// Find the cargo item and sell it
+	var unitsToSell int
+	for _, item := range ship.Cargo().Inventory {
+		if item.Symbol == good {
+			unitsToSell = item.Units
+			break
+		}
+	}
+
+	if unitsToSell == 0 {
+		return nil, fmt.Errorf("ship %s has no %s in cargo to deliver", shipSymbol, good)
+	}
+
+	// Sell the cargo
+	sellCmd := &appShipCmd.SellCargoCommand{
+		ShipSymbol: shipSymbol,
+		GoodSymbol: good,
+		Units:      unitsToSell,
+		PlayerID:   playerIDValue,
+	}
+
+	sellResp, err := h.mediator.Send(ctx, sellCmd)
+	if err != nil {
+		return nil, fmt.Errorf("failed to sell cargo: %w", err)
+	}
+
+	response, ok := sellResp.(*appShipCmd.SellCargoResponse)
+	if !ok {
+		return nil, fmt.Errorf("unexpected response type from sell command")
+	}
+
+	return response, nil
+}
+
+// deliverExistingCargo delivers cargo that's already on the ship (skips buying)
+func (h *RunFactoryCoordinatorHandler) deliverExistingCargo(
+	ctx context.Context,
+	ship *navigation.Ship,
+	good string,
+	destination string,
+	playerID int,
+) (*goodsServices.ProductionResult, error) {
+	logger := common.LoggerFromContext(ctx)
+
+	// Find quantity in cargo
+	var quantity int
+	for _, item := range ship.Cargo().Inventory {
+		if item.Symbol == good {
+			quantity = item.Units
+			break
+		}
+	}
+
+	if quantity == 0 {
+		return nil, fmt.Errorf("ship %s has no %s in cargo", ship.ShipSymbol(), good)
+	}
+
+	logger.Log("INFO", fmt.Sprintf("Delivering existing cargo: %d units of %s to %s", quantity, good, destination), map[string]interface{}{
+		"ship":        ship.ShipSymbol(),
+		"good":        good,
+		"quantity":    quantity,
+		"destination": destination,
+	})
+
+	// Deliver to destination
+	deliveryResult, err := h.deliverCargo(ctx, ship.ShipSymbol(), good, destination, playerID)
+	if err != nil {
+		return nil, err
+	}
+
+	logger.Log("INFO", fmt.Sprintf("Existing cargo delivered: %d units of %s for %d credits", deliveryResult.UnitsSold, good, deliveryResult.TotalRevenue), map[string]interface{}{
+		"good":     good,
+		"units":    deliveryResult.UnitsSold,
+		"revenue":  deliveryResult.TotalRevenue,
+		"location": destination,
+	})
+
+	// Return result with negative cost (revenue from selling)
+	return &goodsServices.ProductionResult{
+		QuantityAcquired: deliveryResult.UnitsSold,
+		TotalCost:        -deliveryResult.TotalRevenue, // Negative because we earned money
+		WaypointSymbol:   destination,
+	}, nil
+}
+
+// releaseAllShipAssignments releases all ship assignments for the factory container
+func (h *RunFactoryCoordinatorHandler) releaseAllShipAssignments(
+	ctx context.Context,
+	containerID string,
+	playerID int,
+	reason string,
+) error {
+	logger := common.LoggerFromContext(ctx)
+
+	if err := h.shipAssignmentRepo.ReleaseByContainer(ctx, containerID, playerID, reason); err != nil {
+		logger.Log("ERROR", "Failed to release ship assignments", map[string]interface{}{
+			"container_id": containerID,
+			"error":        err.Error(),
+		})
+		return err
+	}
+
+	logger.Log("INFO", "Released all ship assignments", map[string]interface{}{
+		"container_id": containerID,
+		"reason":       reason,
+	})
+
+	return nil
 }
