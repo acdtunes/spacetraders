@@ -658,16 +658,16 @@ func (c *DaemonClient) BatchPurchaseShips(ctx context.Context, purchasingShipSym
 	return resp, nil
 }
 
-// ContractFleetCoordinator starts a contract fleet coordinator with multiple ships
+// ContractFleetCoordinator starts a contract fleet coordinator
+// Uses all available idle light hauler ships (no pre-assignment needed)
 func (c *DaemonClient) ContractFleetCoordinator(
 	ctx context.Context,
-	shipSymbols []string,
+	shipSymbols []string, // Deprecated: kept for backward compatibility, ignored by server
 	playerID int,
 	agentSymbol string,
 ) (*ContractFleetCoordinatorResponse, error) {
 	req := &pb.ContractFleetCoordinatorRequest{
-		ShipSymbols: shipSymbols,
-		PlayerId:    int32(playerID),
+		PlayerId: int32(playerID),
 	}
 	if agentSymbol != "" {
 		req.AgentSymbol = &agentSymbol

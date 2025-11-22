@@ -23,12 +23,6 @@ import (
 type RunFleetCoordinatorCommand = contractTypes.RunFleetCoordinatorCommand
 type RunFleetCoordinatorResponse = contractTypes.RunFleetCoordinatorResponse
 
-// CoordinatorMetadata stores state for the coordinator's infinite loop
-type CoordinatorMetadata struct {
-	LastRebalanceTime time.Time
-	RebalanceInterval time.Duration
-}
-
 // RunFleetCoordinatorHandler implements the fleet coordinator logic
 type RunFleetCoordinatorHandler struct {
 	fleetPoolManager       *contractServices.FleetPoolManager
@@ -94,19 +88,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 		Errors:             []string{},
 	}
 
-	// Initialize coordinator metadata for rebalancing
-	metadata := &CoordinatorMetadata{
-		LastRebalanceTime: time.Time{}, // Zero time = never rebalanced
-		RebalanceInterval: 10 * time.Minute,
-	}
-
-	if err := h.fleetPoolManager.ValidateShipAvailability(ctx, cmd.ShipSymbols, cmd.ContainerID, cmd.PlayerID.Value()); err != nil {
-		return nil, err
-	}
-
-	if err := h.fleetPoolManager.InitializeShipPool(ctx, cmd.ShipSymbols, cmd.ContainerID, cmd.PlayerID.Value()); err != nil {
-		return nil, err
-	}
+	// No pool initialization - ships are discovered dynamically
 
 	// Create unbuffered completion channel for worker notifications
 	// IMPORTANT: Unbuffered so signals are only received when actively waiting
@@ -119,26 +101,28 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 	// Track current active worker container ID for cleanup on shutdown
 	var activeWorkerContainerID string
 
+	// Track previous ship for balancing logic
+	var previousShipSymbol string
+
 	// Step 4: Main coordinator loop (infinite)
 	// Execute one contract at a time (game constraint: one active contract per player)
 	for {
 		select {
 		case <-ctx.Done():
-			// Context cancelled, release pool and exit
+			// Context cancelled, exit
 			if activeWorkerContainerID != "" {
 				logger.Log("INFO", fmt.Sprintf("Stopping active worker container: %s", activeWorkerContainerID), nil)
 				_ = h.workerLifecycleManager.StopWorkerContainer(ctx, activeWorkerContainerID)
 			}
-			_ = appContract.ReleasePoolAssignments(ctx, cmd.ContainerID, cmd.PlayerID.Value(), h.shipAssignmentRepo, "coordinator_stopped")
 			return result, ctx.Err()
 		default:
 			// Continue with contract assignment
 		}
 
-		// Find ships currently owned by coordinator
-		availableShips, err := appContract.FindCoordinatorShips(ctx, cmd.ContainerID, cmd.PlayerID.Value(), h.shipAssignmentRepo)
+		// Dynamically discover all idle light hauler ships
+		_, availableShips, err := appContract.FindIdleLightHaulers(ctx, cmd.PlayerID, h.shipRepo, h.shipAssignmentRepo)
 		if err != nil {
-			errMsg := fmt.Sprintf("Failed to find coordinator ships: %v", err)
+			errMsg := fmt.Sprintf("Failed to find idle haulers: %v", err)
 			logger.Log("ERROR", errMsg, nil)
 			result.Errors = append(result.Errors, errMsg)
 			h.clock.Sleep(10 * time.Second)
@@ -160,7 +144,6 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 					logger.Log("INFO", fmt.Sprintf("Stopping active worker container: %s", activeWorkerContainerID), nil)
 					_ = h.workerLifecycleManager.StopWorkerContainer(ctx, activeWorkerContainerID)
 				}
-				_ = appContract.ReleasePoolAssignments(ctx, cmd.ContainerID, cmd.PlayerID.Value(), h.shipAssignmentRepo, "coordinator_stopped")
 				return result, ctx.Err()
 			}
 			continue // Loop back to check for available ships
@@ -185,7 +168,6 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 					logger.Log("INFO", fmt.Sprintf("Stopping active worker container: %s", activeWorkerContainerID), nil)
 					_ = h.workerLifecycleManager.StopWorkerContainer(ctx, activeWorkerContainerID)
 				}
-				_ = appContract.ReleasePoolAssignments(ctx, cmd.ContainerID, cmd.PlayerID.Value(), h.shipAssignmentRepo, "coordinator_stopped")
 				return result, ctx.Err()
 			}
 			continue
@@ -244,6 +226,27 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 
 		logger.Log("INFO", fmt.Sprintf("Selected %s (distance: %.2f units)", selectedShip, distance), nil)
 
+		// If selected ship is different from previous ship, balance previous ship's position
+		if previousShipSymbol != "" && previousShipSymbol != selectedShip {
+			logger.Log("INFO", fmt.Sprintf("Selected ship changed from %s to %s - balancing previous ship position", previousShipSymbol, selectedShip), nil)
+
+			// Launch balancing command asynchronously (fire-and-forget)
+			go func(shipSymbol string, playerID shared.PlayerID) {
+				balanceCmd := &BalanceShipPositionCommand{
+					ShipSymbol: shipSymbol,
+					PlayerID:   playerID,
+				}
+				// Create background context since parent context may be cancelled
+				balanceCtx := context.Background()
+				balanceCtx = common.WithLogger(balanceCtx, common.LoggerFromContext(ctx))
+
+				_, err := h.fleetPoolManager.GetMediator().Send(balanceCtx, balanceCmd)
+				if err != nil {
+					logger.Log("WARNING", fmt.Sprintf("Failed to balance ship %s position: %v", shipSymbol, err), nil)
+				}
+			}(previousShipSymbol, cmd.PlayerID)
+		}
+
 		// Create worker container ID
 		workerContainerID := utils.GenerateContainerID("contract-work", selectedShip)
 
@@ -300,12 +303,11 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			result.ContractsCompleted++
 			activeWorkerContainerID = ""
 
-			h.fleetPoolManager.TransferShipBackToCoordinator(ctx, completedShip, workerContainerID, cmd.ContainerID, cmd.PlayerID.Value())
+			// Ship will no longer be transferred back to coordinator - it's automatically available
+			// since we're using dynamic discovery instead of pool assignments
 
-			if h.clock.Now().Sub(metadata.LastRebalanceTime) >= metadata.RebalanceInterval {
-				h.fleetPoolManager.ExecuteRebalancingIfNeeded(ctx, cmd.ContainerID, cmd.PlayerID, availableShips)
-				metadata.LastRebalanceTime = h.clock.Now()
-			}
+			// Store completed ship as previous ship for potential balancing in next iteration
+			previousShipSymbol = completedShip
 
 			continue
 
@@ -323,7 +325,6 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 				logger.Log("INFO", fmt.Sprintf("Stopping active worker container: %s", activeWorkerContainerID), nil)
 				_ = h.workerLifecycleManager.StopWorkerContainer(ctx, activeWorkerContainerID)
 			}
-			_ = appContract.ReleasePoolAssignments(ctx, cmd.ContainerID, cmd.PlayerID.Value(), h.shipAssignmentRepo, "coordinator_stopped")
 			return result, ctx.Err()
 		}
 

@@ -142,3 +142,22 @@ type RebalanceContractFleetResponse struct {
 	SkipReason         string
 	Assignments        map[string]string // ship symbol -> market waypoint
 }
+
+// ============================================================================
+// Ship Balancing
+// ============================================================================
+
+// BalanceShipPositionCommand requests repositioning a ship to optimize fleet distribution.
+type BalanceShipPositionCommand struct {
+	ShipSymbol string
+	PlayerID   shared.PlayerID
+}
+
+// BalanceShipPositionResponse contains ship balancing results.
+type BalanceShipPositionResponse struct {
+	TargetMarket  string  // Waypoint symbol of selected market
+	NearbyHaulers int     // Number of haulers already near this market
+	Distance      float64 // Distance from ship to target market
+	Score         float64 // Balancing score (lower is better)
+	Navigated     bool    // Whether navigation was successful
+}

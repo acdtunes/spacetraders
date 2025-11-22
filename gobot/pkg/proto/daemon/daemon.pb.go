@@ -701,12 +701,12 @@ func (x *BatchContractWorkflowResponse) GetStatus() string {
 	return ""
 }
 
-// ContractFleetCoordinatorRequest initiates contract fleet coordination with multiple ships
+// ContractFleetCoordinatorRequest initiates contract fleet coordination
+// Uses all available idle light hauler ships (no pre-assignment needed)
 type ContractFleetCoordinatorRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	ShipSymbols   []string               `protobuf:"bytes,1,rep,name=ship_symbols,json=shipSymbols,proto3" json:"ship_symbols,omitempty"`
-	PlayerId      int32                  `protobuf:"varint,2,opt,name=player_id,json=playerId,proto3" json:"player_id,omitempty"`
-	AgentSymbol   *string                `protobuf:"bytes,3,opt,name=agent_symbol,json=agentSymbol,proto3,oneof" json:"agent_symbol,omitempty"`
+	PlayerId      int32                  `protobuf:"varint,1,opt,name=player_id,json=playerId,proto3" json:"player_id,omitempty"`
+	AgentSymbol   *string                `protobuf:"bytes,2,opt,name=agent_symbol,json=agentSymbol,proto3,oneof" json:"agent_symbol,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -741,13 +741,6 @@ func (*ContractFleetCoordinatorRequest) Descriptor() ([]byte, []int) {
 	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{10}
 }
 
-func (x *ContractFleetCoordinatorRequest) GetShipSymbols() []string {
-	if x != nil {
-		return x.ShipSymbols
-	}
-	return nil
-}
-
 func (x *ContractFleetCoordinatorRequest) GetPlayerId() int32 {
 	if x != nil {
 		return x.PlayerId
@@ -765,8 +758,7 @@ func (x *ContractFleetCoordinatorRequest) GetAgentSymbol() string {
 type ContractFleetCoordinatorResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	ContainerId   string                 `protobuf:"bytes,1,opt,name=container_id,json=containerId,proto3" json:"container_id,omitempty"`
-	ShipSymbols   []string               `protobuf:"bytes,2,rep,name=ship_symbols,json=shipSymbols,proto3" json:"ship_symbols,omitempty"`
-	Status        string                 `protobuf:"bytes,3,opt,name=status,proto3" json:"status,omitempty"`
+	Status        string                 `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -806,13 +798,6 @@ func (x *ContractFleetCoordinatorResponse) GetContainerId() string {
 		return x.ContainerId
 	}
 	return ""
-}
-
-func (x *ContractFleetCoordinatorResponse) GetShipSymbols() []string {
-	if x != nil {
-		return x.ShipSymbols
-	}
-	return nil
 }
 
 func (x *ContractFleetCoordinatorResponse) GetStatus() string {
@@ -3602,16 +3587,14 @@ const file_pkg_proto_daemon_daemon_proto_rawDesc = "" +
 	"\n" +
 	"iterations\x18\x03 \x01(\x05R\n" +
 	"iterations\x12\x16\n" +
-	"\x06status\x18\x04 \x01(\tR\x06status\"\x9a\x01\n" +
-	"\x1fContractFleetCoordinatorRequest\x12!\n" +
-	"\fship_symbols\x18\x01 \x03(\tR\vshipSymbols\x12\x1b\n" +
-	"\tplayer_id\x18\x02 \x01(\x05R\bplayerId\x12&\n" +
-	"\fagent_symbol\x18\x03 \x01(\tH\x00R\vagentSymbol\x88\x01\x01B\x0f\n" +
-	"\r_agent_symbol\"\x80\x01\n" +
+	"\x06status\x18\x04 \x01(\tR\x06status\"w\n" +
+	"\x1fContractFleetCoordinatorRequest\x12\x1b\n" +
+	"\tplayer_id\x18\x01 \x01(\x05R\bplayerId\x12&\n" +
+	"\fagent_symbol\x18\x02 \x01(\tH\x00R\vagentSymbol\x88\x01\x01B\x0f\n" +
+	"\r_agent_symbol\"]\n" +
 	" ContractFleetCoordinatorResponse\x12!\n" +
-	"\fcontainer_id\x18\x01 \x01(\tR\vcontainerId\x12!\n" +
-	"\fship_symbols\x18\x02 \x03(\tR\vshipSymbols\x12\x16\n" +
-	"\x06status\x18\x03 \x01(\tR\x06status\"\xc3\x01\n" +
+	"\fcontainer_id\x18\x01 \x01(\tR\vcontainerId\x12\x16\n" +
+	"\x06status\x18\x02 \x01(\tR\x06status\"\xc3\x01\n" +
 	"\x10ScoutTourRequest\x12\x1f\n" +
 	"\vship_symbol\x18\x01 \x01(\tR\n" +
 	"shipSymbol\x12\x18\n" +

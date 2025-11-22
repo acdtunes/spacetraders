@@ -183,7 +183,8 @@ func (s *daemonServiceImpl) BatchContractWorkflow(ctx context.Context, req *pb.B
 	return response, nil
 }
 
-// ContractFleetCoordinator starts a contract fleet coordinator with multiple ships
+// ContractFleetCoordinator starts a contract fleet coordinator
+// Uses all available idle light hauler ships (no pre-assignment needed)
 func (s *daemonServiceImpl) ContractFleetCoordinator(ctx context.Context, req *pb.ContractFleetCoordinatorRequest) (*pb.ContractFleetCoordinatorResponse, error) {
 	// Resolve player ID from request (supports both player_id and agent_symbol)
 	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)
@@ -191,14 +192,14 @@ func (s *daemonServiceImpl) ContractFleetCoordinator(ctx context.Context, req *p
 		return nil, fmt.Errorf("failed to resolve player: %w", err)
 	}
 
-	containerID, err := s.daemon.ContractFleetCoordinator(ctx, req.ShipSymbols, playerID)
+	// No ship symbols needed - coordinator discovers idle haulers dynamically
+	containerID, err := s.daemon.ContractFleetCoordinator(ctx, nil, playerID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start contract fleet coordinator: %w", err)
 	}
 
 	response := &pb.ContractFleetCoordinatorResponse{
 		ContainerId: containerID,
-		ShipSymbols: req.ShipSymbols,
 		Status:      "RUNNING",
 	}
 

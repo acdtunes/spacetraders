@@ -6,6 +6,8 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
 // FindCoordinatorShips returns the list of ship symbols currently owned by the coordinator.
@@ -48,80 +50,69 @@ func FindCoordinatorShips(
 	return shipSymbols, nil
 }
 
-// CreatePoolAssignments creates ship assignments for all ships in the pool,
-// assigning them to the coordinator container.
+// FindIdleLightHaulers finds all idle light hauler ships for a player.
+//
+// A ship is considered an "idle light hauler" if:
+//   1. Ship role is "HAULER"
+//   2. Ship has no active assignment (no ShipAssignment record, or status is "idle")
+//
+// This provides a dynamic pool of available haulers without requiring pre-assignment.
 //
 // Parameters:
-//   - shipSymbols: List of ship symbols to assign to the pool
-//   - coordinatorID: The container ID of the coordinator
-//   - playerID: Player ID for ship assignments
-//   - shipAssignmentRepo: Repository to create assignments
+//   - ctx: Context for cancellation and logging
+//   - playerID: Player ID to find ships for
+//   - shipRepo: Repository to query ships
+//   - shipAssignmentRepo: Repository to check assignment status
 //
 // Returns:
+//   - ships: List of idle hauler ship entities
+//   - shipSymbols: List of idle hauler ship symbols (for convenience)
 //   - error: Any error encountered
-func CreatePoolAssignments(
+func FindIdleLightHaulers(
 	ctx context.Context,
-	shipSymbols []string,
-	coordinatorID string,
-	playerID int,
+	playerID shared.PlayerID,
+	shipRepo navigation.ShipRepository,
 	shipAssignmentRepo container.ShipAssignmentRepository,
-) error {
+) ([]*navigation.Ship, []string, error) {
 	logger := common.LoggerFromContext(ctx)
 
-	for _, shipSymbol := range shipSymbols {
-		assignment := container.NewShipAssignment(
-			shipSymbol,
-			playerID,
-			coordinatorID,
-			nil, // Use nil for clock - the entity will use default
-		)
+	// Fetch all ships for player
+	allShips, err := shipRepo.FindAllByPlayer(ctx, playerID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to fetch ships: %w", err)
+	}
 
-		if err := shipAssignmentRepo.Assign(ctx, assignment); err != nil {
-			return fmt.Errorf("failed to assign ship %s to coordinator: %w", shipSymbol, err)
+	var idleHaulers []*navigation.Ship
+	var idleHaulerSymbols []string
+
+	for _, ship := range allShips {
+		// Filter 1: Only haulers
+		if ship.Role() != "HAULER" {
+			continue
 		}
 
-		logger.Log("INFO", "Ship assigned to coordinator", map[string]interface{}{
-			"action":         "assign_ship",
-			"ship_symbol":    shipSymbol,
-			"coordinator_id": coordinatorID,
-		})
+		// Filter 2: Only idle ships (no active assignment)
+		assignment, err := shipAssignmentRepo.FindByShip(ctx, ship.ShipSymbol(), playerID.Value())
+		if err != nil {
+			// If error fetching assignment, assume ship is not assigned
+			idleHaulers = append(idleHaulers, ship)
+			idleHaulerSymbols = append(idleHaulerSymbols, ship.ShipSymbol())
+			continue
+		}
+
+		// Include ships with no assignment or idle status
+		if assignment == nil || assignment.Status() == "idle" {
+			idleHaulers = append(idleHaulers, ship)
+			idleHaulerSymbols = append(idleHaulerSymbols, ship.ShipSymbol())
+		}
 	}
 
-	logger.Log("INFO", "Ship pool created", map[string]interface{}{
-		"action":     "create_pool",
-		"ship_count": len(shipSymbols),
+	logger.Log("INFO", "Idle light haulers discovered", map[string]interface{}{
+		"action":           "find_idle_haulers",
+		"total_ships":      len(allShips),
+		"idle_haulers":     len(idleHaulers),
+		"hauler_symbols":   idleHaulerSymbols,
 	})
 
-	return nil
-}
-
-// ReleasePoolAssignments releases all ship assignments owned by the coordinator.
-//
-// Parameters:
-//   - coordinatorID: The container ID of the coordinator
-//   - playerID: Player ID for ship assignments
-//   - shipAssignmentRepo: Repository to release assignments
-//   - reason: Reason for release (e.g., "coordinator_stopped")
-//
-// Returns:
-//   - error: Any error encountered
-func ReleasePoolAssignments(
-	ctx context.Context,
-	coordinatorID string,
-	playerID int,
-	shipAssignmentRepo container.ShipAssignmentRepository,
-	reason string,
-) error {
-	if err := shipAssignmentRepo.ReleaseByContainer(ctx, coordinatorID, playerID, reason); err != nil {
-		return fmt.Errorf("failed to release pool assignments: %w", err)
-	}
-
-	logger := common.LoggerFromContext(ctx)
-	logger.Log("INFO", "Ship pool released", map[string]interface{}{
-		"action":         "release_pool",
-		"coordinator_id": coordinatorID,
-		"reason":         reason,
-	})
-
-	return nil
+	return idleHaulers, idleHaulerSymbols, nil
 }

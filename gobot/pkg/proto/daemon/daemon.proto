@@ -163,17 +163,16 @@ message BatchContractWorkflowResponse {
   string status = 4;
 }
 
-// ContractFleetCoordinatorRequest initiates contract fleet coordination with multiple ships
+// ContractFleetCoordinatorRequest initiates contract fleet coordination
+// Uses all available idle light hauler ships (no pre-assignment needed)
 message ContractFleetCoordinatorRequest {
-  repeated string ship_symbols = 1;
-  int32 player_id = 2;
-  optional string agent_symbol = 3;
+  int32 player_id = 1;
+  optional string agent_symbol = 2;
 }
 
 message ContractFleetCoordinatorResponse {
   string container_id = 1;
-  repeated string ship_symbols = 2;
-  string status = 3;
+  string status = 2;
 }
 
 // ScoutTourRequest initiates market scouting tour
