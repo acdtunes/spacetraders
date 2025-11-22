@@ -143,3 +143,44 @@ func (s *ShipFuelService) CalculateFuelNeededToFull(currentFuel int, fuelCapacit
 	}
 	return fuelNeeded
 }
+
+// ShouldPreventDriftMode determines if a ship should refuel before using DRIFT mode
+// to prevent unnecessary fuel emergencies at fuel stations.
+//
+// Returns true if:
+//   - Segment uses DRIFT mode
+//   - Starting waypoint has fuel
+//   - Fuel is below safety threshold
+//
+// Parameters:
+//   - fuel: Ship's current fuel state
+//   - fuelCapacity: Ship's maximum fuel capacity
+//   - segment: Route segment to evaluate
+//   - safetyThreshold: Fuel percentage threshold (e.g., 0.9 = 90%)
+//
+// Returns:
+//   - true if refueling is recommended before drift mode
+func (s *ShipFuelService) ShouldPreventDriftMode(
+	fuel *shared.Fuel,
+	fuelCapacity int,
+	segmentFlightMode shared.FlightMode,
+	fromWaypointHasFuel bool,
+	safetyThreshold float64,
+) bool {
+	if fuelCapacity == 0 {
+		return false
+	}
+
+	// Check if using DRIFT mode
+	if segmentFlightMode != shared.FlightModeDrift {
+		return false
+	}
+
+	// Check if departure waypoint has fuel
+	if !fromWaypointHasFuel {
+		return false
+	}
+
+	fuelPercentage := float64(fuel.Current) / float64(fuelCapacity)
+	return fuelPercentage < safetyThreshold
+}

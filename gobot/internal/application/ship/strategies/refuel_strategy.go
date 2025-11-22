@@ -45,7 +45,8 @@ type RefuelStrategy interface {
 //
 // This is the default strategy and matches the original hardcoded behavior.
 type ConservativeRefuelStrategy struct {
-	threshold float64 // Fuel percentage threshold (0.0 to 1.0)
+	threshold   float64 // Fuel percentage threshold (0.0 to 1.0)
+	fuelService *navigation.ShipFuelService
 }
 
 // NewConservativeRefuelStrategy creates a conservative strategy with the given threshold.
@@ -59,7 +60,8 @@ type ConservativeRefuelStrategy struct {
 //   - 0.5 (50%): Moderate risk tolerance
 func NewConservativeRefuelStrategy(threshold float64) *ConservativeRefuelStrategy {
 	return &ConservativeRefuelStrategy{
-		threshold: threshold,
+		threshold:   threshold,
+		fuelService: navigation.NewShipFuelService(),
 	}
 }
 
@@ -72,7 +74,13 @@ func NewDefaultRefuelStrategy() *ConservativeRefuelStrategy {
 
 // ShouldRefuelBeforeDeparture checks if fuel would drop below threshold during flight.
 func (s *ConservativeRefuelStrategy) ShouldRefuelBeforeDeparture(ship *navigation.Ship, segment *navigation.RouteSegment) bool {
-	return ship.ShouldPreventDriftMode(segment, s.threshold)
+	return s.fuelService.ShouldPreventDriftMode(
+		ship.Fuel(),
+		ship.FuelCapacity(),
+		segment.FlightMode,
+		segment.FromWaypoint.HasFuel,
+		s.threshold,
+	)
 }
 
 // ShouldRefuelAfterArrival checks if at a fuel station with fuel below threshold.
@@ -81,7 +89,18 @@ func (s *ConservativeRefuelStrategy) ShouldRefuelAfterArrival(ship *navigation.S
 	if segment.RequiresRefuel {
 		return false
 	}
-	return ship.ShouldRefuelOpportunistically(segment.ToWaypoint, s.threshold)
+
+	// Check if ship is at the waypoint before checking opportunistic refuel
+	if ship.CurrentLocation().Symbol != segment.ToWaypoint.Symbol {
+		return false
+	}
+
+	return s.fuelService.ShouldRefuelOpportunistically(
+		ship.Fuel(),
+		ship.FuelCapacity(),
+		segment.ToWaypoint,
+		s.threshold,
+	)
 }
 
 // GetStrategyName returns the strategy name for logging.
@@ -98,17 +117,27 @@ func (s *ConservativeRefuelStrategy) GetStrategyName() string {
 //
 // Use case: Speed-critical routes where minimizing stops is more important than
 // maintaining high fuel reserves.
-type MinimalRefuelStrategy struct{}
+type MinimalRefuelStrategy struct {
+	fuelService *navigation.ShipFuelService
+}
 
 // NewMinimalRefuelStrategy creates a minimal refuel strategy.
 func NewMinimalRefuelStrategy() *MinimalRefuelStrategy {
-	return &MinimalRefuelStrategy{}
+	return &MinimalRefuelStrategy{
+		fuelService: navigation.NewShipFuelService(),
+	}
 }
 
 // ShouldRefuelBeforeDeparture only refuels if insufficient fuel to reach destination.
 func (s *MinimalRefuelStrategy) ShouldRefuelBeforeDeparture(ship *navigation.Ship, segment *navigation.RouteSegment) bool {
 	// Use a very low threshold (10% buffer only)
-	return ship.ShouldPreventDriftMode(segment, 0.1)
+	return s.fuelService.ShouldPreventDriftMode(
+		ship.Fuel(),
+		ship.FuelCapacity(),
+		segment.FlightMode,
+		segment.FromWaypoint.HasFuel,
+		0.1,
+	)
 }
 
 // ShouldRefuelAfterArrival never refuels opportunistically.
