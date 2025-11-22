@@ -9,6 +9,12 @@ import type {
   MarketTransaction,
   SystemGraph,
   OperationSummary,
+  FinancialTransaction,
+  TransactionCategory,
+  TransactionType,
+  CashFlowData,
+  ProfitLossData,
+  BalanceHistoryData,
 } from '../../types/spacetraders';
 
 /**
@@ -153,4 +159,105 @@ export async function getOperationsSummary(): Promise<OperationSummary[]> {
 export async function getPlayerMappings(): Promise<Map<string, number>> {
   const response = await fetchApi<{ players: Array<{ agent_symbol: string; player_id: number }> }>('/bot/players');
   return new Map(response.players.map(p => [p.agent_symbol, p.player_id]));
+}
+
+// ==================== Financial Ledger API Functions ====================
+
+interface GetTransactionsParams {
+  playerId: number;
+  limit?: number;
+  offset?: number;
+  category?: TransactionCategory;
+  type?: TransactionType;
+  startDate?: string;
+  endDate?: string;
+  search?: string;
+}
+
+/**
+ * Get financial transactions with filtering and pagination
+ */
+export async function getFinancialTransactions(
+  params: GetTransactionsParams
+): Promise<{ transactions: FinancialTransaction[]; total: number }> {
+  const queryParams = new URLSearchParams();
+  queryParams.append('player_id', params.playerId.toString());
+  if (params.limit) queryParams.append('limit', params.limit.toString());
+  if (params.offset) queryParams.append('offset', params.offset.toString());
+  if (params.category) queryParams.append('category', params.category);
+  if (params.type) queryParams.append('type', params.type);
+  if (params.startDate) queryParams.append('start_date', params.startDate);
+  if (params.endDate) queryParams.append('end_date', params.endDate);
+  if (params.search) queryParams.append('search', params.search);
+
+  const response = await fetchApi<{
+    transactions: FinancialTransaction[];
+    total: number;
+    page: number;
+    limit: number;
+  }>(`/bot/ledger/transactions?${queryParams.toString()}`);
+
+  return {
+    transactions: response.transactions,
+    total: response.total,
+  };
+}
+
+/**
+ * Get cash flow analysis for a player
+ */
+export async function getCashFlow(
+  playerId: number,
+  startDate?: string,
+  endDate?: string
+): Promise<CashFlowData> {
+  const queryParams = new URLSearchParams();
+  queryParams.append('player_id', playerId.toString());
+  if (startDate) queryParams.append('start_date', startDate);
+  if (endDate) queryParams.append('end_date', endDate);
+
+  const response = await fetchApi<CashFlowData>(
+    `/bot/ledger/cash-flow?${queryParams.toString()}`
+  );
+  return response;
+}
+
+/**
+ * Get profit & loss statement for a player
+ */
+export async function getProfitLoss(
+  playerId: number,
+  startDate?: string,
+  endDate?: string
+): Promise<ProfitLossData> {
+  const queryParams = new URLSearchParams();
+  queryParams.append('player_id', playerId.toString());
+  if (startDate) queryParams.append('start_date', startDate);
+  if (endDate) queryParams.append('end_date', endDate);
+
+  const response = await fetchApi<ProfitLossData>(
+    `/bot/ledger/profit-loss?${queryParams.toString()}`
+  );
+  return response;
+}
+
+/**
+ * Get balance history for a player
+ */
+export async function getBalanceHistory(
+  playerId: number,
+  startDate?: string,
+  endDate?: string,
+  interval?: 'hourly' | 'daily' | 'auto'
+): Promise<BalanceHistoryData> {
+  const queryParams = new URLSearchParams();
+  queryParams.append('player_id', playerId.toString());
+  if (startDate) queryParams.append('start_date', startDate);
+  if (endDate) queryParams.append('end_date', endDate);
+  if (interval) queryParams.append('interval', interval);
+
+  const response = await fetchApi<BalanceHistoryData>(
+    `/bot/ledger/balance-history?${queryParams.toString()}`
+  );
+  return response;
 }

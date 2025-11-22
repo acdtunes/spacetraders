@@ -694,4 +694,383 @@ router.get('/players', async (req, res) => {
   }
 });
 
+// ==================== Financial Ledger Endpoints ====================
+
+// Get financial transactions
+router.get('/ledger/transactions', async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const playerId = req.query.player_id ? parseInt(req.query.player_id as string, 10) : null;
+    const limit = Math.min(parseInt(req.query.limit as string) || 50, 1000);
+    const offset = parseInt(req.query.offset as string) || 0;
+    const category = req.query.category as string | undefined;
+    const type = req.query.type as string | undefined;
+    const startDate = req.query.start_date as string | undefined;
+    const endDate = req.query.end_date as string | undefined;
+    const search = req.query.search as string | undefined;
+
+    if (!playerId) {
+      return res.status(400).json({ error: 'player_id is required' });
+    }
+
+    // Validate date range
+    if (startDate && endDate && new Date(startDate) > new Date(endDate)) {
+      return res.status(400).json({ error: 'start_date must be before end_date' });
+    }
+
+    // Build dynamic query
+    const params: any[] = [playerId];
+    let paramIndex = 2;
+    let whereConditions = ['player_id = $1'];
+
+    if (category) {
+      whereConditions.push(`category = $${paramIndex}`);
+      params.push(category);
+      paramIndex++;
+    }
+
+    if (type) {
+      whereConditions.push(`transaction_type = $${paramIndex}`);
+      params.push(type);
+      paramIndex++;
+    }
+
+    if (startDate) {
+      whereConditions.push(`timestamp >= $${paramIndex}`);
+      params.push(startDate);
+      paramIndex++;
+    }
+
+    if (endDate) {
+      whereConditions.push(`timestamp <= $${paramIndex}`);
+      params.push(endDate);
+      paramIndex++;
+    }
+
+    if (search) {
+      whereConditions.push(`description ILIKE $${paramIndex}`);
+      params.push(`%${search}%`);
+      paramIndex++;
+    }
+
+    const whereClause = whereConditions.join(' AND ');
+
+    // Get total count
+    const countResult = await client.query(
+      `SELECT COUNT(*) as total FROM transactions WHERE ${whereClause}`,
+      params
+    );
+    const total = parseInt(countResult.rows[0].total, 10);
+
+    // Get transactions
+    const result = await client.query(`
+      SELECT
+        id,
+        player_id,
+        timestamp,
+        transaction_type,
+        category,
+        amount,
+        balance_before,
+        balance_after,
+        description,
+        metadata,
+        related_entity_type,
+        related_entity_id
+      FROM transactions
+      WHERE ${whereClause}
+      ORDER BY timestamp DESC
+      LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
+    `, [...params, limit, offset]);
+
+    const page = Math.floor(offset / limit) + 1;
+
+    res.json({
+      transactions: result.rows,
+      total,
+      page,
+      limit
+    });
+  } catch (error) {
+    console.error('Failed to fetch transactions:', error);
+    res.status(500).json({ error: 'Failed to fetch transactions' });
+  } finally {
+    client.release();
+  }
+});
+
+// Get cash flow analysis
+router.get('/ledger/cash-flow', async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const playerId = req.query.player_id ? parseInt(req.query.player_id as string, 10) : null;
+    const startDate = req.query.start_date as string | undefined;
+    const endDate = req.query.end_date as string | undefined;
+
+    if (!playerId) {
+      return res.status(400).json({ error: 'player_id is required' });
+    }
+
+    // Validate date range
+    if (startDate && endDate && new Date(startDate) > new Date(endDate)) {
+      return res.status(400).json({ error: 'start_date must be before end_date' });
+    }
+
+    const params: any[] = [playerId];
+    let paramIndex = 2;
+    let whereConditions = ['player_id = $1'];
+
+    if (startDate) {
+      whereConditions.push(`timestamp >= $${paramIndex}`);
+      params.push(startDate);
+      paramIndex++;
+    }
+
+    if (endDate) {
+      whereConditions.push(`timestamp <= $${paramIndex}`);
+      params.push(endDate);
+      paramIndex++;
+    }
+
+    const whereClause = whereConditions.join(' AND ');
+
+    // Get period bounds
+    const periodResult = await client.query(`
+      SELECT
+        MIN(timestamp) as start,
+        MAX(timestamp) as end
+      FROM transactions
+      WHERE ${whereClause}
+    `, params);
+
+    // Get category breakdown
+    const categoriesResult = await client.query(`
+      SELECT
+        category,
+        SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) as total_inflow,
+        SUM(CASE WHEN amount < 0 THEN amount ELSE 0 END) as total_outflow,
+        SUM(amount) as net_flow,
+        COUNT(*) as transaction_count
+      FROM transactions
+      WHERE ${whereClause}
+      GROUP BY category
+      ORDER BY net_flow DESC
+    `, params);
+
+    // Calculate summary
+    const summary = categoriesResult.rows.reduce((acc, row) => ({
+      total_inflow: acc.total_inflow + parseFloat(row.total_inflow),
+      total_outflow: acc.total_outflow + parseFloat(row.total_outflow),
+      net_cash_flow: acc.net_cash_flow + parseFloat(row.net_flow)
+    }), { total_inflow: 0, total_outflow: 0, net_cash_flow: 0 });
+
+    res.json({
+      period: {
+        start: periodResult.rows[0].start || (startDate || null),
+        end: periodResult.rows[0].end || (endDate || null)
+      },
+      summary,
+      categories: categoriesResult.rows
+    });
+  } catch (error) {
+    console.error('Failed to fetch cash flow:', error);
+    res.status(500).json({ error: 'Failed to fetch cash flow' });
+  } finally {
+    client.release();
+  }
+});
+
+// Get profit & loss statement
+router.get('/ledger/profit-loss', async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const playerId = req.query.player_id ? parseInt(req.query.player_id as string, 10) : null;
+    const startDate = req.query.start_date as string | undefined;
+    const endDate = req.query.end_date as string | undefined;
+
+    if (!playerId) {
+      return res.status(400).json({ error: 'player_id is required' });
+    }
+
+    // Validate date range
+    if (startDate && endDate && new Date(startDate) > new Date(endDate)) {
+      return res.status(400).json({ error: 'start_date must be before end_date' });
+    }
+
+    const params: any[] = [playerId];
+    let paramIndex = 2;
+    let whereConditions = ['player_id = $1'];
+
+    if (startDate) {
+      whereConditions.push(`timestamp >= $${paramIndex}`);
+      params.push(startDate);
+      paramIndex++;
+    }
+
+    if (endDate) {
+      whereConditions.push(`timestamp <= $${paramIndex}`);
+      params.push(endDate);
+      paramIndex++;
+    }
+
+    const whereClause = whereConditions.join(' AND ');
+
+    // Get period bounds
+    const periodResult = await client.query(`
+      SELECT
+        MIN(timestamp) as start,
+        MAX(timestamp) as end
+      FROM transactions
+      WHERE ${whereClause}
+    `, params);
+
+    // Get revenue (positive amounts)
+    const revenueResult = await client.query(`
+      SELECT
+        category,
+        SUM(amount) as total
+      FROM transactions
+      WHERE ${whereClause}
+        AND amount > 0
+      GROUP BY category
+    `, params);
+
+    // Get expenses (negative amounts)
+    const expensesResult = await client.query(`
+      SELECT
+        category,
+        SUM(amount) as total
+      FROM transactions
+      WHERE ${whereClause}
+        AND amount < 0
+      GROUP BY category
+    `, params);
+
+    // Build revenue breakdown
+    const revenueBreakdown: Record<string, number> = {};
+    let totalRevenue = 0;
+    revenueResult.rows.forEach(row => {
+      const amount = parseFloat(row.total);
+      revenueBreakdown[row.category] = amount;
+      totalRevenue += amount;
+    });
+
+    // Build expenses breakdown
+    const expensesBreakdown: Record<string, number> = {};
+    let totalExpenses = 0;
+    expensesResult.rows.forEach(row => {
+      const amount = parseFloat(row.total);
+      expensesBreakdown[row.category] = amount;
+      totalExpenses += amount;
+    });
+
+    const netProfit = totalRevenue + totalExpenses; // expenses are negative
+    const profitMargin = totalRevenue > 0 ? netProfit / totalRevenue : 0;
+
+    res.json({
+      period: {
+        start: periodResult.rows[0].start || (startDate || null),
+        end: periodResult.rows[0].end || (endDate || null)
+      },
+      revenue: {
+        total: totalRevenue,
+        breakdown: revenueBreakdown
+      },
+      expenses: {
+        total: totalExpenses,
+        breakdown: expensesBreakdown
+      },
+      net_profit: netProfit,
+      profit_margin: profitMargin
+    });
+  } catch (error) {
+    console.error('Failed to fetch profit & loss:', error);
+    res.status(500).json({ error: 'Failed to fetch profit & loss' });
+  } finally {
+    client.release();
+  }
+});
+
+// Get balance history
+router.get('/ledger/balance-history', async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const playerId = req.query.player_id ? parseInt(req.query.player_id as string, 10) : null;
+    const startDate = req.query.start_date as string | undefined;
+    const endDate = req.query.end_date as string | undefined;
+    const interval = req.query.interval as string | undefined;
+
+    if (!playerId) {
+      return res.status(400).json({ error: 'player_id is required' });
+    }
+
+    // Validate date range
+    if (startDate && endDate && new Date(startDate) > new Date(endDate)) {
+      return res.status(400).json({ error: 'start_date must be before end_date' });
+    }
+
+    const params: any[] = [playerId];
+    let paramIndex = 2;
+    let whereConditions = ['player_id = $1'];
+
+    if (startDate) {
+      whereConditions.push(`timestamp >= $${paramIndex}`);
+      params.push(startDate);
+      paramIndex++;
+    }
+
+    if (endDate) {
+      whereConditions.push(`timestamp <= $${paramIndex}`);
+      params.push(endDate);
+      paramIndex++;
+    }
+
+    const whereClause = whereConditions.join(' AND ');
+
+    // Get balance data points
+    const result = await client.query(`
+      SELECT
+        timestamp,
+        balance_after as balance,
+        id as transaction_id,
+        transaction_type,
+        amount
+      FROM transactions
+      WHERE ${whereClause}
+      ORDER BY timestamp ASC
+    `, params);
+
+    // Get current balance (latest transaction)
+    const currentBalanceResult = await client.query(`
+      SELECT balance_after
+      FROM transactions
+      WHERE player_id = $1
+      ORDER BY timestamp DESC
+      LIMIT 1
+    `, [playerId]);
+
+    const currentBalance = currentBalanceResult.rows.length > 0
+      ? parseFloat(currentBalanceResult.rows[0].balance_after)
+      : 0;
+
+    const startingBalance = result.rows.length > 0
+      ? parseFloat(result.rows[0].balance) - parseFloat(result.rows[0].amount)
+      : currentBalance;
+
+    const netChange = currentBalance - startingBalance;
+
+    res.json({
+      dataPoints: result.rows,
+      current_balance: currentBalance,
+      starting_balance: startingBalance,
+      net_change: netChange
+    });
+  } catch (error) {
+    console.error('Failed to fetch balance history:', error);
+    res.status(500).json({ error: 'Failed to fetch balance history' });
+  } finally {
+    client.release();
+  }
+});
+
 export default router;

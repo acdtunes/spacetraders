@@ -14,6 +14,12 @@ import type {
   MarketData,
   ScoutTour,
   TradeOpportunityData,
+  FinancialTransaction,
+  TransactionCategory,
+  TransactionType,
+  CashFlowData,
+  ProfitLossData,
+  BalanceHistoryData,
 } from '../types/spacetraders';
 import { getTourId } from '../utils/tourHelpers';
 
@@ -177,6 +183,40 @@ export interface AppState {
   // Agent to player_id mapping
   playerMappings: Map<string, number>;
   setPlayerMappings: (mappings: Map<string, number>) => void;
+
+  // Financial Ledger
+  financialTransactions: FinancialTransaction[];
+  transactionTotal: number;
+  cashFlowData: CashFlowData | null;
+  profitLossData: ProfitLossData | null;
+  balanceHistory: BalanceHistoryData | null;
+  setFinancialTransactions: (transactions: FinancialTransaction[], total: number) => void;
+  setCashFlowData: (data: CashFlowData) => void;
+  setProfitLossData: (data: ProfitLossData) => void;
+  setBalanceHistory: (data: BalanceHistoryData) => void;
+
+  // Financial UI state
+  showFinancialDashboard: boolean;
+  financialTab: 'overview' | 'transactions' | 'cashflow' | 'profitloss';
+  financialDateRange: {
+    start: Date;
+    end: Date;
+    preset: '24h' | '7d' | '30d' | 'all' | 'custom';
+  };
+  transactionFilters: {
+    category: TransactionCategory | null;
+    type: TransactionType | null;
+    search: string;
+  };
+  transactionPagination: {
+    page: number;
+    limit: number;
+  };
+  setFinancialTab: (tab: 'overview' | 'transactions' | 'cashflow' | 'profitloss') => void;
+  setFinancialDateRange: (range: { start: Date; end: Date; preset: '24h' | '7d' | '30d' | 'all' | 'custom' }) => void;
+  setTransactionFilters: (filters: Partial<AppState['transactionFilters']>) => void;
+  setTransactionPagination: (pagination: Partial<AppState['transactionPagination']>) => void;
+  toggleFinancialDashboard: () => void;
 }
 
 const storeInitializer: StateCreator<AppState, [], []> = (set) => ({
@@ -430,6 +470,48 @@ const storeInitializer: StateCreator<AppState, [], []> = (set) => ({
   // Agent to player_id mapping
   playerMappings: new Map(),
   setPlayerMappings: (mappings) => set({ playerMappings: mappings }),
+
+  // Financial Ledger
+  financialTransactions: [],
+  transactionTotal: 0,
+  cashFlowData: null,
+  profitLossData: null,
+  balanceHistory: null,
+  setFinancialTransactions: (transactions, total) =>
+    set({ financialTransactions: transactions, transactionTotal: total }),
+  setCashFlowData: (data) => set({ cashFlowData: data }),
+  setProfitLossData: (data) => set({ profitLossData: data }),
+  setBalanceHistory: (data) => set({ balanceHistory: data }),
+
+  // Financial UI state
+  showFinancialDashboard: false,
+  financialTab: 'overview',
+  financialDateRange: {
+    start: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000), // 7 days ago
+    end: new Date(),
+    preset: '7d',
+  },
+  transactionFilters: {
+    category: null,
+    type: null,
+    search: '',
+  },
+  transactionPagination: {
+    page: 1,
+    limit: 50,
+  },
+  setFinancialTab: (tab) => set({ financialTab: tab }),
+  setFinancialDateRange: (range) => set({ financialDateRange: range }),
+  setTransactionFilters: (filters) =>
+    set((state) => ({
+      transactionFilters: { ...state.transactionFilters, ...filters },
+    })),
+  setTransactionPagination: (pagination) =>
+    set((state) => ({
+      transactionPagination: { ...state.transactionPagination, ...pagination },
+    })),
+  toggleFinancialDashboard: () =>
+    set((state) => ({ showFinancialDashboard: !state.showFinancialDashboard })),
 });
 
 export const createAppStore = () => createStore<AppState>(storeInitializer);
