@@ -64,11 +64,22 @@ const (
 // Container represents a background operation running in the daemon
 // Containers are the unit of work orchestration - each runs in its own goroutine
 // and can be started, stopped, monitored, and restarted independently.
+//
+// Lifecycle Integration:
+// - Uses LifecycleStateMachine for core state management and timestamps
+// - Adds Container-specific states (STOPPING, INTERRUPTED)
+// - Adds Container-specific features (iterations, restarts, metadata)
 type Container struct {
 	id            string
 	containerType ContainerType
-	status        ContainerStatus
 	playerID      int
+
+	// Core lifecycle managed by state machine
+	lifecycle *shared.LifecycleStateMachine
+
+	// Container-specific state extensions
+	stopping    bool // Indicates STOPPING state (graceful shutdown)
+	interrupted bool // Indicates INTERRUPTED state (daemon crash recovery)
 
 	// Iteration tracking for looping operations
 	currentIteration int
@@ -78,19 +89,10 @@ type Container struct {
 	restartCount int
 	maxRestarts  int
 
-	// Lifecycle timestamps
-	createdAt time.Time
-	updatedAt time.Time
-	startedAt *time.Time
-	stoppedAt *time.Time
-
 	// Operation-specific metadata (JSON-serializable)
 	metadata map[string]interface{}
 
-	// Error tracking
-	lastError error
-
-	// Time provider for testability
+	// Time provider for testability (delegated to lifecycle)
 	clock shared.Clock
 }
 
@@ -109,18 +111,17 @@ func NewContainer(
 		clock = shared.NewRealClock()
 	}
 
-	now := clock.Now()
 	return &Container{
 		id:               id,
 		containerType:    containerType,
-		status:           ContainerStatusPending,
 		playerID:         playerID,
+		lifecycle:        shared.NewLifecycleStateMachine(clock),
+		stopping:         false,
+		interrupted:      false,
 		currentIteration: 0,
 		maxIterations:    maxIterations,
 		restartCount:     0,
 		maxRestarts:      MaxRestartAttempts,
-		createdAt:        now,
-		updatedAt:        now,
 		metadata:         metadata,
 		clock:            clock,
 	}
@@ -130,105 +131,131 @@ func NewContainer(
 
 func (c *Container) ID() string                       { return c.id }
 func (c *Container) Type() ContainerType              { return c.containerType }
-func (c *Container) Status() ContainerStatus          { return c.status }
 func (c *Container) PlayerID() int                    { return c.playerID }
 func (c *Container) CurrentIteration() int            { return c.currentIteration }
 func (c *Container) MaxIterations() int               { return c.maxIterations }
 func (c *Container) RestartCount() int                { return c.restartCount }
 func (c *Container) MaxRestarts() int                 { return c.maxRestarts }
-func (c *Container) CreatedAt() time.Time             { return c.createdAt }
-func (c *Container) UpdatedAt() time.Time             { return c.updatedAt }
-func (c *Container) StartedAt() *time.Time            { return c.startedAt }
-func (c *Container) StoppedAt() *time.Time            { return c.stoppedAt }
 func (c *Container) Metadata() map[string]interface{} { return c.metadata }
-func (c *Container) LastError() error                 { return c.lastError }
+
+// Lifecycle timestamp accessors (delegate to lifecycle machine)
+
+func (c *Container) CreatedAt() time.Time  { return c.lifecycle.CreatedAt() }
+func (c *Container) UpdatedAt() time.Time  { return c.lifecycle.UpdatedAt() }
+func (c *Container) StartedAt() *time.Time { return c.lifecycle.StartedAt() }
+func (c *Container) StoppedAt() *time.Time { return c.lifecycle.StoppedAt() }
+func (c *Container) LastError() error      { return c.lifecycle.LastError() }
+
+// Status returns the current container status
+// Maps LifecycleStatus to ContainerStatus with Container-specific extensions
+func (c *Container) Status() ContainerStatus {
+	// Check Container-specific states first
+	if c.stopping {
+		return ContainerStatusStopping
+	}
+	if c.interrupted {
+		return ContainerStatusInterrupted
+	}
+
+	// Map lifecycle states to container states
+	switch c.lifecycle.Status() {
+	case shared.LifecycleStatusPending:
+		return ContainerStatusPending
+	case shared.LifecycleStatusRunning:
+		return ContainerStatusRunning
+	case shared.LifecycleStatusCompleted:
+		return ContainerStatusCompleted
+	case shared.LifecycleStatusFailed:
+		return ContainerStatusFailed
+	case shared.LifecycleStatusStopped:
+		return ContainerStatusStopped
+	default:
+		return ContainerStatusPending // Safe default
+	}
+}
 
 // State transition methods
 
 // Start transitions container to RUNNING state
+// Delegates to lifecycle state machine
 func (c *Container) Start() error {
-	if c.status != ContainerStatusPending && c.status != ContainerStatusStopped {
-		return fmt.Errorf("cannot start container in %s state", c.status)
+	status := c.Status()
+	if status != ContainerStatusPending && status != ContainerStatusStopped {
+		return fmt.Errorf("cannot start container in %s state", status)
 	}
 
-	now := c.clock.Now()
-	c.status = ContainerStatusRunning
-	c.startedAt = &now
-	c.updatedAt = now
-	return nil
+	// Clear Container-specific flags
+	c.stopping = false
+	c.interrupted = false
+
+	return c.lifecycle.Start()
 }
 
 // Complete transitions container to COMPLETED state
+// Delegates to lifecycle state machine
 func (c *Container) Complete() error {
-	if c.status != ContainerStatusRunning {
-		return fmt.Errorf("cannot complete container in %s state", c.status)
+	status := c.Status()
+	if status != ContainerStatusRunning {
+		return fmt.Errorf("cannot complete container in %s state", status)
 	}
 
-	now := c.clock.Now()
-	c.status = ContainerStatusCompleted
-	c.stoppedAt = &now
-	c.updatedAt = now
-	return nil
+	c.stopping = false
+	return c.lifecycle.Complete()
 }
 
 // Fail transitions container to FAILED state with error
+// Delegates to lifecycle state machine with error tracking
 func (c *Container) Fail(err error) error {
-	if c.status == ContainerStatusCompleted || c.status == ContainerStatusStopped {
-		return fmt.Errorf("cannot fail container in %s state", c.status)
+	status := c.Status()
+	if status == ContainerStatusCompleted || status == ContainerStatusStopped {
+		return fmt.Errorf("cannot fail container in %s state", status)
 	}
 
-	now := c.clock.Now()
-	c.status = ContainerStatusFailed
-	c.lastError = err
-	c.stoppedAt = &now
-	c.updatedAt = now
-	return nil
+	c.stopping = false
+	return c.lifecycle.Fail(err)
 }
 
 // Stop transitions container to STOPPING then STOPPED state
+// STOPPING is a Container-specific state for graceful shutdown
 func (c *Container) Stop() error {
-	if c.status == ContainerStatusCompleted || c.status == ContainerStatusStopped {
-		return fmt.Errorf("cannot stop container in %s state", c.status)
+	status := c.Status()
+	if status == ContainerStatusCompleted || status == ContainerStatusStopped {
+		return fmt.Errorf("cannot stop container in %s state", status)
 	}
 
-	now := c.clock.Now()
 	// First go to STOPPING to signal graceful shutdown
-	if c.status == ContainerStatusRunning {
-		c.status = ContainerStatusStopping
-		c.updatedAt = now
+	if status == ContainerStatusRunning {
+		c.stopping = true
+		c.lifecycle.UpdateTimestamp()
 		return nil
 	}
 
 	// Then finalize to STOPPED
-	c.status = ContainerStatusStopped
-	c.stoppedAt = &now
-	c.updatedAt = now
-	return nil
+	c.stopping = false
+	return c.lifecycle.Stop()
 }
 
 // MarkStopped finalizes the stop transition
+// Transitions from STOPPING to STOPPED
 func (c *Container) MarkStopped() error {
-	if c.status != ContainerStatusStopping {
+	if c.Status() != ContainerStatusStopping {
 		return fmt.Errorf("cannot mark stopped when not in stopping state")
 	}
 
-	now := c.clock.Now()
-	c.status = ContainerStatusStopped
-	c.stoppedAt = &now
-	c.updatedAt = now
-	return nil
+	c.stopping = false
+	return c.lifecycle.Stop()
 }
 
 // Iteration management
 
 // IncrementIteration advances the iteration counter
 func (c *Container) IncrementIteration() error {
-	if c.status != ContainerStatusRunning {
-		return fmt.Errorf("cannot increment iteration in %s state", c.status)
+	if c.Status() != ContainerStatusRunning {
+		return fmt.Errorf("cannot increment iteration in %s state", c.Status())
 	}
 
 	c.currentIteration++
-	c.updatedAt = c.clock.Now()
+	c.lifecycle.UpdateTimestamp()
 	return nil
 }
 
@@ -247,7 +274,7 @@ func (c *Container) ShouldContinue() bool {
 
 // CanRestart checks if container is eligible for restart
 func (c *Container) CanRestart() bool {
-	if c.status != ContainerStatusFailed {
+	if c.Status() != ContainerStatusFailed {
 		return false
 	}
 
@@ -257,21 +284,21 @@ func (c *Container) CanRestart() bool {
 // IncrementRestartCount advances the restart counter
 func (c *Container) IncrementRestartCount() {
 	c.restartCount++
-	c.updatedAt = c.clock.Now()
+	c.lifecycle.UpdateTimestamp()
 }
 
 // ResetForRestart prepares container for restart attempt
+// Delegates to lifecycle state machine for state reset
 func (c *Container) ResetForRestart() error {
 	if !c.CanRestart() {
 		return fmt.Errorf("container cannot be restarted (restarts: %d/%d)",
 			c.restartCount, c.maxRestarts)
 	}
 
-	c.status = ContainerStatusPending
-	c.lastError = nil
-	c.stoppedAt = nil
+	c.stopping = false
+	c.interrupted = false
+	c.lifecycle.ResetForRestart()
 	c.IncrementRestartCount()
-	c.updatedAt = c.clock.Now()
 	return nil
 }
 
@@ -287,7 +314,7 @@ func (c *Container) UpdateMetadata(updates map[string]interface{}) {
 		c.metadata[key] = value
 	}
 
-	c.updatedAt = c.clock.Now()
+	c.lifecycle.UpdateTimestamp()
 }
 
 // GetMetadataValue retrieves a specific metadata value
@@ -304,39 +331,32 @@ func (c *Container) GetMetadataValue(key string) (interface{}, bool) {
 
 // IsRunning returns true if container is currently executing
 func (c *Container) IsRunning() bool {
-	return c.status == ContainerStatusRunning
+	return c.Status() == ContainerStatusRunning
 }
 
 // IsFinished returns true if container has completed or failed
 func (c *Container) IsFinished() bool {
-	return c.status == ContainerStatusCompleted ||
-		c.status == ContainerStatusFailed ||
-		c.status == ContainerStatusStopped
+	status := c.Status()
+	return status == ContainerStatusCompleted ||
+		status == ContainerStatusFailed ||
+		status == ContainerStatusStopped
 }
 
 // IsStopping returns true if container is gracefully shutting down
 func (c *Container) IsStopping() bool {
-	return c.status == ContainerStatusStopping
+	return c.stopping
 }
 
 // Runtime calculation
 
 // RuntimeDuration calculates how long the container has been running
+// Delegates to lifecycle state machine
 func (c *Container) RuntimeDuration() time.Duration {
-	if c.startedAt == nil {
-		return 0
-	}
-
-	endTime := c.clock.Now()
-	if c.stoppedAt != nil {
-		endTime = *c.stoppedAt
-	}
-
-	return endTime.Sub(*c.startedAt)
+	return c.lifecycle.RuntimeDuration()
 }
 
 // String provides human-readable representation
 func (c *Container) String() string {
 	return fmt.Sprintf("Container[%s, type=%s, status=%s, iteration=%d/%d, restarts=%d]",
-		c.id, c.containerType, c.status, c.currentIteration, c.maxIterations, c.restartCount)
+		c.id, c.containerType, c.Status(), c.currentIteration, c.maxIterations, c.restartCount)
 }

@@ -235,7 +235,8 @@ func (e *RouteExecutor) handlePreDepartureRefuel(ctx context.Context, segment *d
 func (e *RouteExecutor) selectOptimalFlightMode(ctx context.Context, segment *domainNavigation.RouteSegment, ship *domainNavigation.Ship) shared.FlightMode {
 	logger := common.LoggerFromContext(ctx)
 	distance := segment.FromWaypoint.DistanceTo(segment.ToWaypoint)
-	optimalMode := ship.SelectOptimalFlightMode(distance)
+	fuelService := domainNavigation.NewShipFuelService()
+	optimalMode := fuelService.SelectOptimalFlightMode(ship.Fuel().Current, distance, domainNavigation.DefaultFuelSafetyMargin)
 
 	flightMode := segment.FlightMode
 	if optimalMode > segment.FlightMode {

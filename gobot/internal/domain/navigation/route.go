@@ -2,6 +2,7 @@ package navigation
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
@@ -63,6 +64,10 @@ func (r *RouteSegment) String() string {
 // - Segments form connected path (segment[i].to == segment[i+1].from)
 // - Total fuel required does not exceed ship capacity
 // - Route can only be executed from PLANNED status
+//
+// Lifecycle Integration:
+// - Uses LifecycleStateMachine for timestamp and error management
+// - Maps RouteStatus to LifecycleStatus for consistent lifecycle handling
 type Route struct {
 	routeID               string
 	shipSymbol            string
@@ -70,7 +75,7 @@ type Route struct {
 	segments              []*RouteSegment
 	shipFuelCapacity      int
 	refuelBeforeDeparture bool
-	status                RouteStatus
+	lifecycle             *shared.LifecycleStateMachine
 	currentSegmentIndex   int
 }
 
@@ -89,7 +94,7 @@ func NewRoute(
 		segments:              segments,
 		shipFuelCapacity:      shipFuelCapacity,
 		refuelBeforeDeparture: refuelBeforeDeparture,
-		status:                RouteStatusPlanned,
+		lifecycle:             shared.NewLifecycleStateMachine(nil), // Use real clock
 		currentSegmentIndex:   0,
 	}
 
@@ -150,8 +155,45 @@ func (r *Route) Segments() []*RouteSegment {
 	return segments
 }
 
+// Status returns the current route status
+// Maps LifecycleStatus to RouteStatus for domain-specific semantics
 func (r *Route) Status() RouteStatus {
-	return r.status
+	switch r.lifecycle.Status() {
+	case shared.LifecycleStatusPending:
+		return RouteStatusPlanned
+	case shared.LifecycleStatusRunning:
+		return RouteStatusExecuting
+	case shared.LifecycleStatusCompleted:
+		return RouteStatusCompleted
+	case shared.LifecycleStatusFailed:
+		return RouteStatusFailed
+	case shared.LifecycleStatusStopped:
+		return RouteStatusAborted
+	default:
+		return RouteStatusPlanned // Safe default
+	}
+}
+
+// Lifecycle timestamp accessors
+
+func (r *Route) CreatedAt() time.Time {
+	return r.lifecycle.CreatedAt()
+}
+
+func (r *Route) UpdatedAt() time.Time {
+	return r.lifecycle.UpdatedAt()
+}
+
+func (r *Route) StartedAt() *time.Time {
+	return r.lifecycle.StartedAt()
+}
+
+func (r *Route) CompletedAt() *time.Time {
+	return r.lifecycle.StoppedAt()
+}
+
+func (r *Route) LastError() error {
+	return r.lifecycle.LastError()
 }
 
 func (r *Route) CurrentSegmentIndex() int {
@@ -165,38 +207,44 @@ func (r *Route) RefuelBeforeDeparture() bool {
 // Route execution
 
 // StartExecution begins route execution
+// Delegates to lifecycle state machine for state management
 func (r *Route) StartExecution() error {
-	if r.status != RouteStatusPlanned {
-		return fmt.Errorf("cannot start route in status %s", r.status)
+	status := r.Status()
+	if status != RouteStatusPlanned {
+		return fmt.Errorf("cannot start route in status %s", status)
 	}
-	r.status = RouteStatusExecuting
-	return nil
+	return r.lifecycle.Start()
 }
 
 // CompleteSegment marks current segment as complete and advances
 func (r *Route) CompleteSegment() error {
-	if r.status != RouteStatusExecuting {
-		return fmt.Errorf("cannot complete segment when route status is %s", r.status)
+	status := r.Status()
+	if status != RouteStatusExecuting {
+		return fmt.Errorf("cannot complete segment when route status is %s", status)
 	}
 
 	r.currentSegmentIndex++
+	r.lifecycle.UpdateTimestamp()
 
 	// Check if route complete
 	if r.currentSegmentIndex >= len(r.segments) {
-		r.status = RouteStatusCompleted
+		return r.lifecycle.Complete()
 	}
 
 	return nil
 }
 
 // FailRoute marks route as failed
+// Delegates to lifecycle state machine with error tracking
 func (r *Route) FailRoute(reason string) {
-	r.status = RouteStatusFailed
+	err := fmt.Errorf("route failed: %s", reason)
+	_ = r.lifecycle.Fail(err) // Ignore error, failure always succeeds
 }
 
 // AbortRoute aborts route execution
+// Delegates to lifecycle state machine
 func (r *Route) AbortRoute(reason string) {
-	r.status = RouteStatusAborted
+	_ = r.lifecycle.Stop() // Ignore error, stop always succeeds
 }
 
 // Route queries
@@ -248,7 +296,7 @@ func (r *Route) RemainingSegments() []*RouteSegment {
 
 func (r *Route) String() string {
 	return fmt.Sprintf("Route(id=%s, ship=%s, segments=%d, status=%s)",
-		r.routeID, r.shipSymbol, len(r.segments), r.status)
+		r.routeID, r.shipSymbol, len(r.segments), r.Status())
 }
 
 // NextSegment returns the next segment to execute (current segment)
@@ -264,10 +312,10 @@ func (r *Route) HasRefuelAtStart() bool {
 
 // IsComplete checks if route execution is complete
 func (r *Route) IsComplete() bool {
-	return r.status == RouteStatusCompleted
+	return r.Status() == RouteStatusCompleted
 }
 
 // IsFailed checks if route execution has failed
 func (r *Route) IsFailed() bool {
-	return r.status == RouteStatusFailed
+	return r.Status() == RouteStatusFailed
 }
