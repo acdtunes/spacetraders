@@ -538,6 +538,13 @@ func (h *PurchaseShipHandler) convertShipDataToEntity(
 		return nil, err
 	}
 
+	// Convert modules
+	var modules []*navigation.ShipModule
+	for _, mod := range shipData.Modules {
+		module := navigation.NewShipModule(mod.Symbol, mod.Capacity, mod.Range)
+		modules = append(modules, module)
+	}
+
 	ship, err := navigation.NewShip(
 		shipData.Symbol,
 		playerID,
@@ -549,6 +556,7 @@ func (h *PurchaseShipHandler) convertShipDataToEntity(
 		shipData.EngineSpeed,
 		shipData.FrameSymbol,
 		shipData.Role,
+		modules,
 		navStatus,
 	)
 	if err != nil {

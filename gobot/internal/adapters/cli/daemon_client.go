@@ -48,6 +48,16 @@ type RefuelResponse struct {
 	Status      string
 }
 
+type JumpResponse struct {
+	Success           bool
+	NavigatedToGate   bool
+	JumpGateSymbol    string
+	DestinationSystem string
+	CooldownSeconds   int32
+	Message           string
+	Error             string
+}
+
 type BatchContractWorkflowResponse struct {
 	ContainerID string
 	ShipSymbol  string
@@ -286,6 +296,39 @@ func (c *DaemonClient) RefuelShip(
 		FuelAdded:   resp.FuelAdded,
 		CreditsCost: resp.CreditsCost,
 		Status:      resp.Status,
+	}, nil
+}
+
+// JumpShip executes a jump to a different star system via jump gate
+func (c *DaemonClient) JumpShip(
+	ctx context.Context,
+	shipSymbol string,
+	destinationSystem string,
+	playerID int,
+	agentSymbol string,
+) (*JumpResponse, error) {
+	req := &pb.JumpShipRequest{
+		ShipSymbol:        shipSymbol,
+		DestinationSystem: destinationSystem,
+		PlayerId:          int32(playerID),
+	}
+	if agentSymbol != "" {
+		req.AgentSymbol = &agentSymbol
+	}
+
+	resp, err := c.client.JumpShip(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("gRPC call failed: %w", err)
+	}
+
+	return &JumpResponse{
+		Success:           resp.Success,
+		NavigatedToGate:   resp.NavigatedToGate,
+		JumpGateSymbol:    resp.JumpGateSymbol,
+		DestinationSystem: resp.DestinationSystem,
+		CooldownSeconds:   resp.CooldownSeconds,
+		Message:           resp.Message,
+		Error:             resp.Error,
 	}, nil
 }
 

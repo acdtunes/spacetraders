@@ -42,6 +42,10 @@ type APIClient interface {
 	DockShip(ctx context.Context, symbol, token string) error
 	RefuelShip(ctx context.Context, symbol, token string, units *int) (*navigation.RefuelResult, error)
 	SetFlightMode(ctx context.Context, symbol, flightMode, token string) error
+	JumpShip(ctx context.Context, shipSymbol, systemSymbol, token string) (*JumpResult, error)
+
+	// Jump gate operations
+	GetJumpGate(ctx context.Context, systemSymbol, waypointSymbol, token string) (*JumpGateData, error)
 
 	// Player operations
 	GetAgent(ctx context.Context, token string) (*player.AgentData, error)
@@ -136,6 +140,19 @@ type TransferResult struct {
 	GoodSymbol       string
 	UnitsTransferred int
 	RemainingCargo   *navigation.CargoData // Remaining cargo on source ship
+}
+
+// Jump DTOs
+type JumpResult struct {
+	DestinationSystem   string
+	DestinationWaypoint string
+	CooldownSeconds     int
+	TotalPrice          int
+}
+
+type JumpGateData struct {
+	Symbol      string
+	Connections []string
 }
 
 // Market DTOs

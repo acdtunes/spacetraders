@@ -79,9 +79,16 @@ type ShipData struct {
 	CargoCapacity int
 	CargoUnits    int
 	EngineSpeed   int
-	FrameSymbol   string // Frame type (e.g., "FRAME_PROBE", "FRAME_DRONE", "FRAME_MINER")
-	Role          string // Ship role from registration (e.g., "EXCAVATOR", "COMMAND", "SATELLITE")
+	FrameSymbol   string       // Frame type (e.g., "FRAME_PROBE", "FRAME_DRONE", "FRAME_MINER")
+	Role          string       // Ship role from registration (e.g., "EXCAVATOR", "COMMAND", "SATELLITE")
+	Modules       []ModuleData // Installed ship modules (jump drives, mining equipment, etc.)
 	Cargo         *CargoData
+}
+
+type ModuleData struct {
+	Symbol   string
+	Capacity int
+	Range    int
 }
 
 type CargoData struct {

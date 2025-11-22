@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	playerQuery "github.com/andrescamacho/spacetraders-go/internal/application/player/queries"
+	shipCommands "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands"
 	pb "github.com/andrescamacho/spacetraders-go/pkg/proto/daemon"
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )
@@ -158,6 +159,53 @@ func (s *daemonServiceImpl) RefuelShip(ctx context.Context, req *pb.RefuelShipRe
 	}
 
 	return response, nil
+}
+
+// JumpShip executes a jump to a different star system via jump gate
+func (s *daemonServiceImpl) JumpShip(ctx context.Context, req *pb.JumpShipRequest) (*pb.JumpShipResponse, error) {
+	// Import command dynamically to avoid circular dependencies
+	// We'll need to add the import at the top of the file
+	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)
+	if err != nil {
+		return &pb.JumpShipResponse{
+			Success: false,
+			Error:   fmt.Sprintf("failed to resolve player: %v", err),
+		}, nil
+	}
+
+	// Call the JumpShip command handler through mediator
+	// We'll need to import the commands package
+	cmd := &shipCommands.JumpShipCommand{
+		ShipSymbol:        req.ShipSymbol,
+		DestinationSystem: req.DestinationSystem,
+		PlayerID:          &playerID,
+	}
+
+	result, err := s.daemon.mediator.Send(ctx, cmd)
+	if err != nil {
+		return &pb.JumpShipResponse{
+			Success: false,
+			Error:   err.Error(),
+		}, nil
+	}
+
+	resp, ok := result.(*shipCommands.JumpShipResponse)
+	if !ok {
+		return &pb.JumpShipResponse{
+			Success: false,
+			Error:   "unexpected response type from JumpShipCommand",
+		}, nil
+	}
+
+	return &pb.JumpShipResponse{
+		Success:          resp.Success,
+		NavigatedToGate:  resp.NavigatedToGate,
+		JumpGateSymbol:   resp.JumpGateSymbol,
+		DestinationSystem: resp.DestinationSystem,
+		CooldownSeconds:  int32(resp.CooldownSeconds),
+		Message:          resp.Message,
+		Error:            "",
+	}, nil
 }
 
 // BatchContractWorkflow executes batch contract workflow
