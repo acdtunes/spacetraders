@@ -15,8 +15,8 @@ const (
 	// AssignmentStatusActive indicates ship is currently assigned and locked
 	AssignmentStatusActive AssignmentStatus = "active"
 
-	// AssignmentStatusReleased indicates ship has been released from assignment
-	AssignmentStatusReleased AssignmentStatus = "released"
+	// AssignmentStatusIdle indicates ship has been released from assignment
+	AssignmentStatusIdle AssignmentStatus = "idle"
 )
 
 // ShipAssignment represents a ship being assigned to a container operation
@@ -63,14 +63,15 @@ func (sa *ShipAssignment) AssignedAt() time.Time    { return sa.assignedAt }
 func (sa *ShipAssignment) ReleasedAt() *time.Time   { return sa.releasedAt }
 func (sa *ShipAssignment) ReleaseReason() *string   { return sa.releaseReason }
 
-// Release marks the assignment as released with a reason
+// Release marks the assignment as idle with a reason
 func (sa *ShipAssignment) Release(reason string) error {
-	if sa.status == AssignmentStatusReleased {
-		return fmt.Errorf("assignment already released")
+	if sa.status == AssignmentStatusIdle {
+		return fmt.Errorf("assignment already idle")
 	}
 
 	now := sa.clock.Now()
-	sa.status = AssignmentStatusReleased
+	sa.status = AssignmentStatusIdle
+	sa.containerID = "" // Clear container reference
 	sa.releasedAt = &now
 	sa.releaseReason = &reason
 
@@ -81,7 +82,8 @@ func (sa *ShipAssignment) Release(reason string) error {
 // Used for cleaning up stale assignments
 func (sa *ShipAssignment) ForceRelease(reason string) error {
 	now := sa.clock.Now()
-	sa.status = AssignmentStatusReleased
+	sa.status = AssignmentStatusIdle
+	sa.containerID = "" // Clear container reference
 	sa.releasedAt = &now
 	sa.releaseReason = &reason
 
@@ -90,7 +92,7 @@ func (sa *ShipAssignment) ForceRelease(reason string) error {
 
 // IsStale checks if the assignment is older than the given timeout duration
 func (sa *ShipAssignment) IsStale(timeout time.Duration) bool {
-	if sa.status == AssignmentStatusReleased {
+	if sa.status == AssignmentStatusIdle {
 		return false
 	}
 

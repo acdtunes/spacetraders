@@ -293,7 +293,7 @@ func (dc *daemonContext) assignmentForShouldBeReleased(shipSymbol string) error 
 		return fmt.Errorf("assignment for %s not found", shipSymbol)
 	}
 	if assignment.IsActive() {
-		return fmt.Errorf("expected assignment for %s to be released, but it's still active", shipSymbol)
+		return fmt.Errorf("expected assignment for %s to be idle, but it's still active", shipSymbol)
 	}
 	return nil
 }
@@ -699,7 +699,7 @@ func InitializeDaemonScenario(ctx *godog.ScenarioContext) {
 	ctx.Step(`^I clean stale assignments$`, dc.iCleanStaleAssignments)
 	ctx.Step(`^(\d+) stale assignments should be cleaned$`, dc.assignmentsShouldBeCleaned)
 	ctx.Step(`^assignment for "([^"]*)" should still be active$`, dc.assignmentForShouldStillBeActive)
-	ctx.Step(`^assignment for "([^"]*)" should be released$`, dc.assignmentForShouldBeReleased)
+	ctx.Step(`^assignment for "([^"]*)" should be idle$`, dc.assignmentForShouldBeReleased)
 
 	// Containers
 	ctx.Step(`^a running container "([^"]*)" with infinite iterations$`, dc.aRunningContainerWithInfiniteIterations)

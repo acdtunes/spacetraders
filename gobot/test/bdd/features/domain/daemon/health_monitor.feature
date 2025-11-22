@@ -53,8 +53,8 @@ Feature: Daemon Health Monitor
     When I clean stale assignments
     Then 2 stale assignments should be cleaned
     And assignment for "SHIP-A" should still be active
-    And assignment for "SHIP-B" should be released
-    And assignment for "SHIP-C" should be released
+    And assignment for "SHIP-B" should be idle
+    And assignment for "SHIP-C" should be idle
 
   Scenario: No cleanup when all assignments are valid
     Given a health monitor with check interval 5 minutes and recovery timeout 30 minutes
@@ -192,4 +192,4 @@ Feature: Daemon Health Monitor
     And only container "MINING-1" exists
     When I run full health check
     Then health check should be executed
-    And assignment for "SHIP-B" should be released
+    And assignment for "SHIP-B" should be idle

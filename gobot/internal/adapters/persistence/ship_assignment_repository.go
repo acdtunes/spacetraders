@@ -46,7 +46,7 @@ func (r *ShipAssignmentRepositoryGORM) Assign(
 	}
 
 	// Use UPSERT: on conflict with (ship_symbol, player_id), update the row
-	// This allows reassigning ships that have old "released" assignments
+	// This allows reassigning ships that have old "idle" assignments
 	if err := r.db.WithContext(ctx).Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "ship_symbol"}, {Name: "player_id"}},
 		DoUpdates: clause.AssignmentColumns([]string{"container_id", "status", "assigned_at", "released_at", "release_reason"}),
@@ -129,7 +129,7 @@ func (r *ShipAssignmentRepositoryGORM) FindByContainer(
 	return assignments, nil
 }
 
-// Release marks a ship assignment as released
+// Release marks a ship assignment as idle and clears the container reference
 func (r *ShipAssignmentRepositoryGORM) Release(
 	ctx context.Context,
 	shipSymbol string,
@@ -142,7 +142,8 @@ func (r *ShipAssignmentRepositoryGORM) Release(
 		Model(&ShipAssignmentModel{}).
 		Where("ship_symbol = ? AND player_id = ? AND status = ?", shipSymbol, playerID, "active").
 		Updates(map[string]interface{}{
-			"status":         "released",
+			"status":         "idle",
+			"container_id":   nil,
 			"released_at":    now,
 			"release_reason": reason,
 		})
@@ -197,7 +198,8 @@ func (r *ShipAssignmentRepositoryGORM) ReleaseByContainer(
 		Model(&ShipAssignmentModel{}).
 		Where("container_id = ? AND player_id = ? AND status = ?", containerID, playerID, "active").
 		Updates(map[string]interface{}{
-			"status":         "released",
+			"status":         "idle",
+			"container_id":   nil,
 			"released_at":    now,
 			"release_reason": reason,
 		})
@@ -222,7 +224,8 @@ func (r *ShipAssignmentRepositoryGORM) ReleaseAllActive(
 		Model(&ShipAssignmentModel{}).
 		Where("status = ?", "active").
 		Updates(map[string]interface{}{
-			"status":         "released",
+			"status":         "idle",
+			"container_id":   nil,
 			"released_at":    now,
 			"release_reason": reason,
 		})

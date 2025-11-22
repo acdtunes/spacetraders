@@ -884,8 +884,8 @@ func RegisterContainerSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^the assignment should not exist$`, cc.theAssignmentShouldNotExist)
 	ctx.Step(`^the release should succeed$`, cc.theReleaseShouldSucceed)
 	ctx.Step(`^the release should fail with error "([^"]*)"$`, cc.theReleaseShouldFailWithError)
-	ctx.Step(`^all assignments should be released$`, cc.allAssignmentsShouldBeReleased)
-	ctx.Step(`^the assignment for "([^"]*)" should be released$`, cc.theAssignmentForShouldBeReleased)
+	ctx.Step(`^all assignments should be idle$`, cc.allAssignmentsShouldBeReleased)
+	ctx.Step(`^the assignment for "([^"]*)" should be idle$`, cc.theAssignmentForShouldBeReleased)
 	ctx.Step(`^the assignment for "([^"]*)" should be active$`, cc.theAssignmentForShouldBeActive)
 	ctx.Step(`^(\d+) assignments? should be cleaned$`, cc.assignmentsShouldBeCleaned)
 	ctx.Step(`^the assignment should be active$`, cc.theAssignmentShouldBeActive)
@@ -926,7 +926,7 @@ func (cc *containerContext) iCreateAShipAssignmentForShipPlayerContainer(
 func (cc *containerContext) aShipAssignmentForShipInState(shipSymbol string, status string) error {
 	cc.assignment = container.NewShipAssignment(shipSymbol, 1, "test-container", cc.clock)
 
-	if status == "released" {
+	if status == "idle" {
 		cc.err = cc.assignment.Release("test_release")
 	}
 

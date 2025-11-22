@@ -78,6 +78,7 @@ func (ctx *shipyardApplicationContext) reset() {
 		ctx.repos.GraphService,
 		ctx.apiClient,
 		ctx.mediator,
+		ctx.repos.ShipAssignmentRepo,
 	)
 	ctx.batchPurchaseHandler = shipyardCommands.NewBatchPurchaseShipsHandler(
 		ctx.repos.PlayerRepo,

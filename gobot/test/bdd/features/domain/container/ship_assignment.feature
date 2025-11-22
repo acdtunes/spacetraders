@@ -24,26 +24,26 @@ Feature: Ship Assignment Entity
     Given a ship assignment for ship "MINER-1" in "active" state
     When I release the ship assignment with reason "task_complete"
     Then the ship assignment should not be active
-    And the ship assignment status should be "released"
+    And the ship assignment status should be "idle"
     And the ship assignment released_at should not be nil
     And the ship assignment release_reason should be "task_complete"
 
-  Scenario: Cannot release already released assignment
-    Given a ship assignment for ship "MINER-1" in "released" state
+  Scenario: Cannot release already idle assignment
+    Given a ship assignment for ship "MINER-1" in "idle" state
     When I attempt to release the ship assignment with reason "duplicate_release"
-    Then the ship assignment operation should fail with error "assignment already released"
+    Then the ship assignment operation should fail with error "assignment already idle"
 
   Scenario: Force release active assignment
     Given a ship assignment for ship "MINER-1" in "active" state
     When I force release the ship assignment with reason "stale_timeout"
     Then the ship assignment should not be active
-    And the ship assignment status should be "released"
+    And the ship assignment status should be "idle"
     And the ship assignment release_reason should be "stale_timeout"
 
-  Scenario: Force release already released assignment
-    Given a ship assignment for ship "MINER-1" in "released" state
+  Scenario: Force release already idle assignment
+    Given a ship assignment for ship "MINER-1" in "idle" state
     When I force release the ship assignment with reason "cleanup"
-    Then the ship assignment status should be "released"
+    Then the ship assignment status should be "idle"
     And the ship assignment release_reason should be "cleanup"
 
   # ============================================================================
@@ -61,8 +61,8 @@ Feature: Ship Assignment Entity
     And I check if the assignment is stale with timeout 300 seconds
     Then the ship assignment should be stale
 
-  Scenario: Released assignment is never stale
-    Given a ship assignment for ship "MINER-1" in "released" state
+  Scenario: Idle assignment is never stale
+    Given a ship assignment for ship "MINER-1" in "idle" state
     When I advance time by 600 seconds
     And I check if the assignment is stale with timeout 300 seconds
     Then the ship assignment should not be stale
@@ -123,7 +123,7 @@ Feature: Ship Assignment Entity
     And I assign ship "MINER-2" player 1 to container "container-123"
     And I assign ship "TRANSPORT-1" player 1 to container "container-456"
     When I release all assignments with reason "shutdown"
-    Then all assignments should be released
+    Then all assignments should be idle
 
   Scenario: Release all skips already released assignments
     Given a ship assignment manager
@@ -131,7 +131,7 @@ Feature: Ship Assignment Entity
     And I assign ship "MINER-2" player 1 to container "container-123"
     And I release assignment for ship "MINER-1" with reason "early_release"
     When I release all assignments with reason "shutdown"
-    Then the assignment for "MINER-2" should be released
+    Then the assignment for "MINER-2" should be idle
 
   # ============================================================================
   # Orphaned Assignment Cleanup Tests
@@ -144,7 +144,7 @@ Feature: Ship Assignment Entity
     And I assign ship "TRANSPORT-1" player 1 to container "container-789"
     When I clean orphaned assignments for existing containers "container-123,container-789"
     Then 1 assignment should be cleaned
-    And the assignment for "MINER-2" should be released
+    And the assignment for "MINER-2" should be idle
     And the assignment for "MINER-1" should be active
     And the assignment for "TRANSPORT-1" should be active
 
@@ -164,7 +164,7 @@ Feature: Ship Assignment Entity
     And I release assignment for ship "MINER-1" with reason "early_release"
     When I clean orphaned assignments for existing containers "container-789"
     Then 1 assignment should be cleaned
-    And the assignment for "MINER-2" should be released
+    And the assignment for "MINER-2" should be idle
 
   # ============================================================================
   # Stale Assignment Cleanup Tests
@@ -178,8 +178,8 @@ Feature: Ship Assignment Entity
     And I assign ship "TRANSPORT-1" player 1 to container "container-789"
     When I clean stale assignments with timeout 300 seconds
     Then 2 assignments should be cleaned
-    And the assignment for "MINER-1" should be released
-    And the assignment for "MINER-2" should be released
+    And the assignment for "MINER-1" should be idle
+    And the assignment for "MINER-2" should be idle
     And the assignment for "TRANSPORT-1" should be active
 
   Scenario: Clean stale assignments with no stale assignments
@@ -198,4 +198,4 @@ Feature: Ship Assignment Entity
     And I release assignment for ship "MINER-1" with reason "early_release"
     When I clean stale assignments with timeout 300 seconds
     Then 1 assignment should be cleaned
-    And the assignment for "MINER-2" should be released
+    And the assignment for "MINER-2" should be idle
