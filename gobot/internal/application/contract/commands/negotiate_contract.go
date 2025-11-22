@@ -63,8 +63,13 @@ func (h *NegotiateContractHandler) Handle(ctx context.Context, request common.Re
 
 	result, err := h.callNegotiateContractAPI(ctx, cmd.ShipSymbol, token)
 
-	if existingContract, wasExisting := h.handleExistingContractError(ctx, result, err, token, cmd.PlayerID); wasExisting {
-		return existingContract, nil
+	// Check for error 4511 (existing contract) and handle it
+	existingContractResp, handleErr := h.handleExistingContractError(ctx, result, err, token, cmd.PlayerID)
+	if handleErr != nil {
+		return nil, handleErr
+	}
+	if existingContractResp != nil {
+		return existingContractResp, nil
 	}
 
 	if err != nil {
@@ -121,25 +126,25 @@ func (h *NegotiateContractHandler) handleExistingContractError(
 	err error,
 	token string,
 	playerID shared.PlayerID,
-) (*NegotiateContractResponse, bool) {
+) (*NegotiateContractResponse, error) {
 	if result != nil && result.ErrorCode == 4511 {
 		existingContractData, err := h.apiClient.GetContract(ctx, result.ExistingContractID, token)
 		if err != nil {
-			return nil, false
+			return nil, fmt.Errorf("failed to fetch existing contract %s: %w", result.ExistingContractID, err)
 		}
 
 		existingContract := h.convertToDomain(existingContractData, playerID)
 
 		if err := h.contractRepo.Add(ctx, existingContract); err != nil {
-			return nil, false
+			return nil, fmt.Errorf("failed to save existing contract: %w", err)
 		}
 
 		return &NegotiateContractResponse{
 			Contract:      existingContract,
 			WasNegotiated: false,
-		}, true
+		}, nil
 	}
-	return nil, false
+	return nil, nil
 }
 
 func (h *NegotiateContractHandler) saveContract(ctx context.Context, contract *contract.Contract) error {
