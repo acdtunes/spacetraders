@@ -38,6 +38,7 @@ Examples:
 // newGoodsProduceCommand creates the goods produce subcommand
 func newGoodsProduceCommand() *cobra.Command {
 	var systemSymbol string
+	var iterations int
 
 	cmd := &cobra.Command{
 		Use:   "produce <good>",
@@ -83,7 +84,14 @@ Examples:
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 
-			result, err := client.StartGoodsFactory(ctx, targetGood, &systemSymbol, playerIdent.PlayerID, &playerIdent.AgentSymbol)
+			// Convert iterations to *int32 for protobuf (nil if default)
+			var maxIterations *int32
+			if iterations != 0 {
+				iter := int32(iterations)
+				maxIterations = &iter
+			}
+
+			result, err := client.StartGoodsFactory(ctx, targetGood, &systemSymbol, playerIdent.PlayerID, &playerIdent.AgentSymbol, maxIterations)
 			if err != nil {
 				return fmt.Errorf("failed to start goods factory: %w", err)
 			}
@@ -107,6 +115,7 @@ Examples:
 	}
 
 	cmd.Flags().StringVar(&systemSymbol, "system", "", "System symbol where production will occur (required)")
+	cmd.Flags().IntVar(&iterations, "iterations", 1, "Number of production iterations (-1 for infinite, 0 or 1 for single run, >1 for specific count)")
 
 	return cmd
 }

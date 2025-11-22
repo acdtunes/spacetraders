@@ -79,12 +79,13 @@ func (e *ProductionExecutor) ProduceGood(
 	node *goods.SupplyChainNode,
 	systemSymbol string,
 	playerID int,
+	opContext *shared.OperationContext, // Operation context for transaction linking
 ) (*ProductionResult, error) {
 	switch node.AcquisitionMethod {
 	case goods.AcquisitionBuy:
-		return e.buyGood(ctx, ship, node, systemSymbol, playerID)
+		return e.buyGood(ctx, ship, node, systemSymbol, playerID, opContext)
 	case goods.AcquisitionFabricate:
-		return e.fabricateGood(ctx, ship, node, systemSymbol, playerID)
+		return e.fabricateGood(ctx, ship, node, systemSymbol, playerID, opContext)
 	default:
 		return nil, fmt.Errorf("unknown acquisition method: %s", node.AcquisitionMethod)
 	}
@@ -97,6 +98,7 @@ func (e *ProductionExecutor) buyGood(
 	node *goods.SupplyChainNode,
 	systemSymbol string,
 	playerID int,
+	opContext *shared.OperationContext, // Operation context for transaction linking
 ) (*ProductionResult, error) {
 	logger := common.LoggerFromContext(ctx)
 
@@ -133,6 +135,7 @@ func (e *ProductionExecutor) buyGood(
 		GoodSymbol: node.Good,
 		Units:      availableSpace,
 		PlayerID:   playerIDValue,
+		Context:    opContext, // Link transaction to container
 	}
 
 	purchaseResp, err := e.mediator.Send(ctx, purchaseCmd)
@@ -167,6 +170,7 @@ func (e *ProductionExecutor) fabricateGood(
 	node *goods.SupplyChainNode,
 	systemSymbol string,
 	playerID int,
+	opContext *shared.OperationContext, // Operation context for transaction linking
 ) (*ProductionResult, error) {
 	logger := common.LoggerFromContext(ctx)
 	totalCost := 0
@@ -178,7 +182,7 @@ func (e *ProductionExecutor) fabricateGood(
 	})
 
 	for _, child := range node.Children {
-		result, err := e.ProduceGood(ctx, ship, child, systemSymbol, playerID)
+		result, err := e.ProduceGood(ctx, ship, child, systemSymbol, playerID, opContext)
 		if err != nil {
 			return nil, fmt.Errorf("failed to produce input %s: %w", child.Good, err)
 		}
@@ -210,7 +214,7 @@ func (e *ProductionExecutor) fabricateGood(
 	}
 
 	// Step 4: Deliver all inputs by selling cargo
-	deliveryCost, err := e.deliverInputs(ctx, updatedShip, playerIDValue)
+	deliveryCost, err := e.deliverInputs(ctx, updatedShip, playerIDValue, opContext)
 	if err != nil {
 		return nil, fmt.Errorf("failed to deliver inputs: %w", err)
 	}
@@ -223,7 +227,7 @@ func (e *ProductionExecutor) fabricateGood(
 	})
 
 	// Step 5: Poll for production until output good appears
-	quantity, cost, err := e.PollForProduction(ctx, node.Good, importMarket.WaypointSymbol, updatedShip.ShipSymbol(), playerIDValue)
+	quantity, cost, err := e.PollForProduction(ctx, node.Good, importMarket.WaypointSymbol, updatedShip.ShipSymbol(), playerIDValue, opContext)
 	if err != nil {
 		return nil, fmt.Errorf("failed during production polling: %w", err)
 	}
@@ -246,6 +250,7 @@ func (e *ProductionExecutor) PollForProduction(
 	waypointSymbol string,
 	shipSymbol string,
 	playerID shared.PlayerID,
+	opContext *shared.OperationContext, // Operation context for transaction linking
 ) (int, int, error) {
 	logger := common.LoggerFromContext(ctx)
 
@@ -300,6 +305,7 @@ func (e *ProductionExecutor) PollForProduction(
 				GoodSymbol: good,
 				Units:      availableSpace,
 				PlayerID:   playerID,
+				Context:    opContext, // Link transaction to container
 			}
 
 			purchaseResp, err := e.mediator.Send(ctx, purchaseCmd)
@@ -438,6 +444,7 @@ func (e *ProductionExecutor) deliverInputs(
 	ctx context.Context,
 	ship *navigation.Ship,
 	playerID shared.PlayerID,
+	opContext *shared.OperationContext, // Operation context for transaction linking
 ) (int, error) {
 	logger := common.LoggerFromContext(ctx)
 	totalRevenue := 0
@@ -449,6 +456,7 @@ func (e *ProductionExecutor) deliverInputs(
 			GoodSymbol: item.Symbol,
 			Units:      item.Units,
 			PlayerID:   playerID,
+			Context:    opContext, // Link transaction to container
 		}
 
 		sellResp, err := e.mediator.Send(ctx, sellCmd)

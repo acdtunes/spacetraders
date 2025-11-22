@@ -143,7 +143,7 @@ func (h *RunWorkflowHandler) executeWorkflow(
 		result.Accepted = true
 	}
 
-	contract, err = h.deliveryExecutor.ProcessAllDeliveries(ctx, cmd.ShipSymbol, cmd.PlayerID, contract, profitabilityResp, result)
+	contract, err = h.deliveryExecutor.ProcessAllDeliveries(ctx, cmd.ShipSymbol, cmd.PlayerID, contract, profitabilityResp, result, cmd.ContainerID)
 	if err != nil {
 		return err
 	}

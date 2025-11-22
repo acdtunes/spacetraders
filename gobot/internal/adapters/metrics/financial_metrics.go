@@ -207,18 +207,22 @@ func (c *FinancialMetricsCollector) updateProfitLoss() {
 		return
 	}
 
-	// TODO: Support multiple players - for now hardcode player ID 1
-	// This should be configurable or detected from active sessions
-	playerID := 1
+	// TODO: Support multiple players dynamically
+	// For now, use player ID 11 (COOPER) - the typical player in the database
+	// Future enhancement: Query database for all active players or make configurable
+	playerID := 11
 
-	// Execute GetProfitLossQuery
+	// Execute GetProfitLossQuery for all-time P&L
+	// Use epoch start and far future to capture all transactions
 	query := &ledgerQueries.GetProfitLossQuery{
-		PlayerID: playerID,
+		PlayerID:  playerID,
+		StartDate: time.Unix(0, 0),           // Epoch start (1970-01-01)
+		EndDate:   time.Now().Add(24 * time.Hour), // Tomorrow to ensure we get everything
 	}
 
 	response, err := c.mediator.Send(context.Background(), query)
 	if err != nil {
-		log.Printf("Failed to fetch profit/loss for metrics: %v", err)
+		log.Printf("Failed to fetch profit/loss for player %d: %v", playerID, err)
 		return
 	}
 

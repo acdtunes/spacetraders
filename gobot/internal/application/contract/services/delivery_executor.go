@@ -49,8 +49,15 @@ func (e *DeliveryExecutor) ProcessAllDeliveries(
 	contract *domainContract.Contract,
 	profitabilityResp common.Response,
 	result *RunWorkflowResponse,
+	containerID string, // Container ID for operation context linking
 ) (*domainContract.Contract, error) {
 	logger := common.LoggerFromContext(ctx)
+
+	// Create operation context for transaction linking
+	var opContext *shared.OperationContext
+	if containerID != "" {
+		opContext = shared.NewOperationContext(containerID, "contract_workflow")
+	}
 
 	logger.Log("INFO", "Contract deliveries processing started", map[string]interface{}{
 		"ship_symbol":    shipSymbol,
@@ -86,7 +93,7 @@ func (e *DeliveryExecutor) ProcessAllDeliveries(
 		})
 
 		var err error
-		contract, err = e.ProcessSingleDelivery(ctx, shipSymbol, playerID, contract, delivery, profitabilityResp, result)
+		contract, err = e.ProcessSingleDelivery(ctx, shipSymbol, playerID, contract, delivery, profitabilityResp, result, opContext)
 		if err != nil {
 			return nil, err
 		}
@@ -104,6 +111,7 @@ func (e *DeliveryExecutor) ProcessSingleDelivery(
 	delivery domainContract.Delivery,
 	profitabilityResp common.Response,
 	result *RunWorkflowResponse,
+	opContext *shared.OperationContext, // Operation context for transaction linking
 ) (*domainContract.Contract, error) {
 	ship, currentUnits, err := e.cargoManager.ReloadShipState(ctx, shipSymbol, playerID, delivery.TradeSymbol)
 	if err != nil {
@@ -120,7 +128,7 @@ func (e *DeliveryExecutor) ProcessSingleDelivery(
 
 	if unitsToPurchase > 0 {
 		profitResult := profitabilityResp.(*contractQueries.ProfitabilityResult)
-		ship, err = e.ExecutePurchaseLoop(ctx, shipSymbol, playerID, ship, delivery.TradeSymbol, unitsToPurchase, profitResult.CheapestMarketWaypoint, result)
+		ship, err = e.ExecutePurchaseLoop(ctx, shipSymbol, playerID, ship, delivery.TradeSymbol, unitsToPurchase, profitResult.CheapestMarketWaypoint, result, opContext)
 		if err != nil {
 			return nil, err
 		}
@@ -144,6 +152,7 @@ func (e *DeliveryExecutor) ExecutePurchaseLoop(
 	unitsToPurchase int,
 	cheapestMarket string,
 	result *RunWorkflowResponse,
+	opContext *shared.OperationContext, // Operation context for transaction linking
 ) (*navigation.Ship, error) {
 	logger := common.LoggerFromContext(ctx)
 
@@ -166,7 +175,7 @@ func (e *DeliveryExecutor) ExecutePurchaseLoop(
 	for trip := 0; trip < trips; trip++ {
 		var shouldBreak bool
 		var err error
-		ship, unitsToPurchase, shouldBreak, err = e.executeSinglePurchaseTrip(ctx, shipSymbol, playerID, ship, tradeSymbol, cheapestMarket, unitsToPurchase)
+		ship, unitsToPurchase, shouldBreak, err = e.executeSinglePurchaseTrip(ctx, shipSymbol, playerID, ship, tradeSymbol, cheapestMarket, unitsToPurchase, opContext)
 		if err != nil {
 			return nil, err
 		}
@@ -187,6 +196,7 @@ func (e *DeliveryExecutor) executeSinglePurchaseTrip(
 	tradeSymbol string,
 	cheapestMarket string,
 	unitsToPurchase int,
+	opContext *shared.OperationContext, // Operation context for transaction linking
 ) (*navigation.Ship, int, bool, error) {
 	logger := common.LoggerFromContext(ctx)
 
@@ -213,6 +223,7 @@ func (e *DeliveryExecutor) executeSinglePurchaseTrip(
 		GoodSymbol: tradeSymbol,
 		Units:      unitsThisTrip,
 		PlayerID:   playerID,
+		Context:    opContext, // Link transaction to container
 	}
 
 	_, err = e.mediator.Send(ctx, purchaseCmd)

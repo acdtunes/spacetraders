@@ -132,12 +132,14 @@ func (h *RunFactoryWorkerHandler) executeProduction(
 	}
 
 	// Execute production using ProductionExecutor
+	// Note: Factory worker doesn't have container context, so opContext is nil
 	result, err := h.productionExecutor.ProduceGood(
 		ctx,
 		ship,
 		cmd.ProductionNode,
 		cmd.SystemSymbol,
 		cmd.PlayerID,
+		nil, // No operation context for standalone worker
 	)
 	if err != nil {
 		return fmt.Errorf("production failed: %w", err)

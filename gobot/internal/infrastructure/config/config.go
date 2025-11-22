@@ -45,6 +45,13 @@ func LoadConfig(configPath string) (*Config, error) {
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.AutomaticEnv()
 
+	// Explicitly bind nested environment variables (viper doesn't auto-bind nested structs)
+	// Metrics
+	v.BindEnv("metrics.enabled", "ST_METRICS_ENABLED")
+	v.BindEnv("metrics.port", "ST_METRICS_PORT")
+	v.BindEnv("metrics.host", "ST_METRICS_HOST")
+	v.BindEnv("metrics.path", "ST_METRICS_PATH")
+
 	// Read config file (optional - don't error if missing)
 	if err := v.ReadInConfig(); err != nil {
 		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {

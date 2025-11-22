@@ -499,6 +499,7 @@ message StartGoodsFactoryRequest {
   string target_good = 2;
   optional string system_symbol = 3; // Optional: defaults to current system
   optional string agent_symbol = 4;
+  optional int32 max_iterations = 5; // Optional: -1 for infinite, 0 or unset for single run, >0 for specific count
 }
 
 // StartGoodsFactoryResponse returns factory details

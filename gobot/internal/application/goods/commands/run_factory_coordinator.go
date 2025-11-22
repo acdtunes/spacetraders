@@ -148,6 +148,12 @@ func (h *RunFactoryCoordinatorHandler) executeCoordination(
 ) error {
 	logger := common.LoggerFromContext(ctx)
 
+	// Create operation context for transaction linking
+	var opContext *shared.OperationContext
+	if cmd.ContainerID != "" {
+		opContext = shared.NewOperationContext(cmd.ContainerID, "factory_workflow")
+	}
+
 	logger.Log("INFO", "Starting factory coordinator", map[string]interface{}{
 		"factory_id":    response.FactoryID,
 		"target_good":   cmd.TargetGood,
@@ -206,7 +212,7 @@ func (h *RunFactoryCoordinatorHandler) executeCoordination(
 	})
 
 	// Step 5: Execute production in parallel levels
-	if err := h.executeParallelProduction(ctx, cmd, parallelLevels, idleShips, response); err != nil {
+	if err := h.executeParallelProduction(ctx, cmd, parallelLevels, idleShips, response, opContext); err != nil {
 		// Release all ship assignments on error
 		h.releaseAllShipAssignments(ctx, cmd.ContainerID, cmd.PlayerID, "production_failed")
 		return fmt.Errorf("parallel production failed: %w", err)
@@ -237,6 +243,7 @@ func (h *RunFactoryCoordinatorHandler) executeParallelProduction(
 	levels []goodsServices.ParallelLevel,
 	idleShips []*navigation.Ship,
 	response *RunFactoryCoordinatorResponse,
+	opContext *shared.OperationContext, // Operation context for transaction linking
 ) error {
 	logger := common.LoggerFromContext(ctx)
 	shipsUsed := make(map[string]bool)
@@ -305,7 +312,7 @@ func (h *RunFactoryCoordinatorHandler) executeParallelProduction(
 		}
 
 		// Execute all nodes in this level in parallel
-		results, err := h.executeLevelParallel(ctx, cmd, level.Nodes, shipPool, shipsUsed, &shipsUsedMutex, deliveryDestinations)
+		results, err := h.executeLevelParallel(ctx, cmd, level.Nodes, shipPool, shipsUsed, &shipsUsedMutex, deliveryDestinations, opContext)
 		if err != nil {
 			return fmt.Errorf("level %d execution failed: %w", levelIdx, err)
 		}
@@ -452,6 +459,7 @@ func (h *RunFactoryCoordinatorHandler) executeLevelParallel(
 	shipsUsed map[string]bool,
 	shipsUsedMutex *sync.Mutex,
 	deliveryDestinations map[string]string,
+	opContext *shared.OperationContext, // Operation context for transaction linking
 ) ([]*goodsServices.ProductionResult, error) {
 	logger := common.LoggerFromContext(ctx)
 
@@ -544,10 +552,10 @@ func (h *RunFactoryCoordinatorHandler) executeLevelParallel(
 
 			if hasNeededCargo && deliveryDest != "" {
 				// Ship already has cargo - just deliver it
-				result, err = h.deliverExistingCargo(ctx, ship, n.Good, deliveryDest, cmd.PlayerID)
+				result, err = h.deliverExistingCargo(ctx, ship, n.Good, deliveryDest, cmd.PlayerID, opContext)
 			} else {
 				// Normal production (buy or fabricate)
-				result, err = h.produceNodeOnly(ctx, ship, n, cmd.SystemSymbol, cmd.PlayerID, deliveryDest)
+				result, err = h.produceNodeOnly(ctx, ship, n, cmd.SystemSymbol, cmd.PlayerID, deliveryDest, opContext)
 			}
 
 			// Send result back
@@ -609,13 +617,14 @@ func (h *RunFactoryCoordinatorHandler) produceNodeOnly(
 	systemSymbol string,
 	playerID int,
 	deliveryDest string,
+	opContext *shared.OperationContext, // Operation context for transaction linking
 ) (*goodsServices.ProductionResult, error) {
 	logger := common.LoggerFromContext(ctx)
 
 	// For leaf nodes (BUY), purchase and optionally deliver
 	if node.IsLeaf() {
 		// First, buy the goods
-		result, err := h.productionExecutor.ProduceGood(ctx, ship, node, systemSymbol, playerID)
+		result, err := h.productionExecutor.ProduceGood(ctx, ship, node, systemSymbol, playerID, opContext)
 		if err != nil {
 			return nil, err
 		}
@@ -628,7 +637,7 @@ func (h *RunFactoryCoordinatorHandler) produceNodeOnly(
 				"destination": deliveryDest,
 			})
 
-			deliveryResult, err := h.deliverCargo(ctx, ship.ShipSymbol(), node.Good, deliveryDest, playerID)
+			deliveryResult, err := h.deliverCargo(ctx, ship.ShipSymbol(), node.Good, deliveryDest, playerID, opContext)
 			if err != nil {
 				return nil, fmt.Errorf("failed to deliver %s to %s: %w", node.Good, deliveryDest, err)
 			}
@@ -678,7 +687,7 @@ func (h *RunFactoryCoordinatorHandler) produceNodeOnly(
 		}
 		// In a real implementation, we'd transfer cargo from child workers
 		// For now, we'll produce inputs inline
-		result, err := h.productionExecutor.ProduceGood(ctx, updatedShip, child, systemSymbol, playerID)
+		result, err := h.productionExecutor.ProduceGood(ctx, updatedShip, child, systemSymbol, playerID, opContext)
 		if err != nil {
 			return nil, fmt.Errorf("failed to produce input %s: %w", child.Good, err)
 		}
@@ -692,7 +701,7 @@ func (h *RunFactoryCoordinatorHandler) produceNodeOnly(
 	}
 
 	// Poll for production and purchase output
-	quantity, cost, err := h.pollForProduction(ctx, node.Good, exportMarket.WaypointSymbol, updatedShip, playerIDValue)
+	quantity, cost, err := h.pollForProduction(ctx, node.Good, exportMarket.WaypointSymbol, updatedShip, playerIDValue, opContext)
 	if err != nil {
 		return nil, err
 	}
@@ -723,8 +732,9 @@ func (h *RunFactoryCoordinatorHandler) pollForProduction(
 	waypointSymbol string,
 	ship *navigation.Ship,
 	playerID shared.PlayerID,
+	opContext *shared.OperationContext, // Operation context for transaction linking
 ) (int, int, error) {
-	return h.productionExecutor.PollForProduction(ctx, good, waypointSymbol, ship.ShipSymbol(), playerID)
+	return h.productionExecutor.PollForProduction(ctx, good, waypointSymbol, ship.ShipSymbol(), playerID, opContext)
 }
 
 // sumCosts sums the total cost from a list of production results
@@ -781,6 +791,7 @@ func (h *RunFactoryCoordinatorHandler) deliverCargo(
 	good string,
 	destination string,
 	playerID int,
+	opContext *shared.OperationContext, // Operation context for transaction linking
 ) (*appShipCmd.SellCargoResponse, error) {
 	playerIDValue := shared.MustNewPlayerID(playerID)
 
@@ -809,6 +820,7 @@ func (h *RunFactoryCoordinatorHandler) deliverCargo(
 		GoodSymbol: good,
 		Units:      unitsToSell,
 		PlayerID:   playerIDValue,
+		Context:    opContext, // Link transaction to container
 	}
 
 	sellResp, err := h.mediator.Send(ctx, sellCmd)
@@ -831,6 +843,7 @@ func (h *RunFactoryCoordinatorHandler) deliverExistingCargo(
 	good string,
 	destination string,
 	playerID int,
+	opContext *shared.OperationContext, // Operation context for transaction linking
 ) (*goodsServices.ProductionResult, error) {
 	logger := common.LoggerFromContext(ctx)
 
@@ -855,7 +868,7 @@ func (h *RunFactoryCoordinatorHandler) deliverExistingCargo(
 	})
 
 	// Deliver to destination
-	deliveryResult, err := h.deliverCargo(ctx, ship.ShipSymbol(), good, destination, playerID)
+	deliveryResult, err := h.deliverCargo(ctx, ship.ShipSymbol(), good, destination, playerID, opContext)
 	if err != nil {
 		return nil, err
 	}

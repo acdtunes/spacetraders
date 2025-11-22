@@ -269,7 +269,8 @@
               "legend": false
             }
           },
-          "mappings": []
+          "mappings": [],
+          "unit": "short"
         }
       },
       "gridPos": {
@@ -299,7 +300,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (category) (rate(spacetraders_daemon_transactions_total[5m]))",
+          "expr": "spacetraders_daemon_transactions_total",
           "legendFormat": "{{category}}",
           "refId": "A"
         }

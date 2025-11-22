@@ -34,10 +34,11 @@ type WorkerResult struct {
 
 // RunFactoryCoordinatorCommand initiates a factory coordinator for fleet-based production
 type RunFactoryCoordinatorCommand struct {
-	PlayerID     int
-	TargetGood   string
-	SystemSymbol string // Where to produce (defaults to current system)
-	ContainerID  string // Container ID for ship assignment tracking
+	PlayerID      int
+	TargetGood    string
+	SystemSymbol  string // Where to produce (defaults to current system)
+	ContainerID   string // Container ID for ship assignment tracking
+	MaxIterations int    // Maximum iterations to run (-1 for infinite, 0 for single run, >0 for specific count)
 }
 
 // RunFactoryCoordinatorResponse contains the result of the coordinator operation

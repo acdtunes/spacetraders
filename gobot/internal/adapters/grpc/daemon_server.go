@@ -138,6 +138,9 @@ func NewDaemonServer(
 
 	// Initialize metrics collector if enabled
 	if metricsConfig != nil && metricsConfig.Enabled {
+		// Initialize the Prometheus registry
+		metrics.InitRegistry()
+
 		// Create container info getter function
 		getContainers := func() map[string]metrics.ContainerInfo {
 			server.containersMu.RLock()
@@ -486,11 +489,23 @@ func (s *DaemonServer) registerCommandFactories() {
 			return nil, fmt.Errorf("missing or invalid system_symbol")
 		}
 
+		// Extract max_iterations from config (default to 1 if not present for backward compatibility)
+		maxIterations := 1
+		if val, ok := config["max_iterations"]; ok {
+			switch v := val.(type) {
+			case int:
+				maxIterations = v
+			case float64:
+				maxIterations = int(v)
+			}
+		}
+
 		return &goodsCmd.RunFactoryCoordinatorCommand{
-			PlayerID:     playerID,
-			TargetGood:   targetGood,
-			SystemSymbol: systemSymbol,
-			ContainerID:  containerID,
+			PlayerID:      playerID,
+			TargetGood:    targetGood,
+			SystemSymbol:  systemSymbol,
+			ContainerID:   containerID,
+			MaxIterations: maxIterations,
 		}, nil
 	}
 }
@@ -2234,16 +2249,23 @@ func (s *DaemonServer) StartGoodsFactory(
 	targetGood string,
 	systemSymbol string,
 	playerID int,
+	maxIterations int,
 ) (*GoodsFactoryResult, error) {
+	// Default to 1 iteration if not specified (0 or negative values except -1)
+	if maxIterations == 0 {
+		maxIterations = 1
+	}
+
 	// Generate container ID
 	containerID := utils.GenerateContainerID("goods_factory", targetGood)
 
 	// Create factory coordinator command
 	cmd := &goodsCmd.RunFactoryCoordinatorCommand{
-		PlayerID:     playerID,
-		TargetGood:   targetGood,
-		SystemSymbol: systemSymbol,
-		ContainerID:  containerID,
+		PlayerID:      playerID,
+		TargetGood:    targetGood,
+		SystemSymbol:  systemSymbol,
+		ContainerID:   containerID,
+		MaxIterations: maxIterations,
 	}
 
 	// Create container metadata
@@ -2251,14 +2273,15 @@ func (s *DaemonServer) StartGoodsFactory(
 		"target_good":    targetGood,
 		"system_symbol":  systemSymbol,
 		"container_id":   containerID,
+		"max_iterations": maxIterations,
 	}
 
-	// Create container entity (iterations = 1 for single production run)
+	// Create container entity with specified iterations
 	containerEntity := container.NewContainer(
 		containerID,
 		container.ContainerType("goods_factory_coordinator"),
 		playerID,
-		1, // Single production run
+		maxIterations,
 		metadata,
 		nil, // Use default RealClock
 	)

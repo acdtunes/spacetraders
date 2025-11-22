@@ -691,8 +691,14 @@ func (s *daemonServiceImpl) StartGoodsFactory(ctx context.Context, req *pb.Start
 		return nil, fmt.Errorf("system_symbol is required")
 	}
 
+	// Extract max_iterations (default to 1 if not provided)
+	maxIterations := 1
+	if req.MaxIterations != nil {
+		maxIterations = int(*req.MaxIterations)
+	}
+
 	// Start goods factory
-	result, err := s.daemon.StartGoodsFactory(ctx, req.TargetGood, systemSymbol, playerID)
+	result, err := s.daemon.StartGoodsFactory(ctx, req.TargetGood, systemSymbol, playerID, maxIterations)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start goods factory: %w", err)
 	}
