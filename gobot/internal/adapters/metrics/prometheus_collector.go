@@ -2,6 +2,8 @@ package metrics
 
 import (
 	"github.com/prometheus/client_golang/prometheus"
+
+	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 )
 
 const (
@@ -15,17 +17,29 @@ var (
 	// Registry is the global Prometheus registry for all metrics
 	Registry *prometheus.Registry
 
-	// globalCollector is the singleton metrics collector
+	// globalCollector is the singleton container metrics collector
 	// Set by SetGlobalCollector() when metrics are enabled
 	globalCollector MetricsRecorder
+
+	// globalNavigationCollector is the singleton navigation metrics collector
+	// Set by SetGlobalNavigationCollector() when metrics are enabled
+	globalNavigationCollector NavigationMetricsRecorder
 )
 
-// MetricsRecorder defines the interface for recording metrics events
+// MetricsRecorder defines the interface for recording container metrics events
 // This interface is used by domain/application code to record metrics
 type MetricsRecorder interface {
 	RecordContainerCompletion(containerInfo ContainerInfo)
 	RecordContainerRestart(containerInfo ContainerInfo)
 	RecordContainerIteration(containerInfo ContainerInfo)
+}
+
+// NavigationMetricsRecorder defines the interface for recording navigation metrics
+type NavigationMetricsRecorder interface {
+	RecordRouteCompletion(playerID int, status navigation.RouteStatus, duration float64, distance int, fuelConsumed int)
+	RecordSegmentCompletion(playerID int, distance int, fuelRequired int)
+	RecordFuelPurchase(playerID int, waypoint string, units int)
+	RecordFuelConsumption(playerID int, flightMode navigation.FlightMode, units int)
 }
 
 // InitRegistry initializes the Prometheus registry
@@ -69,5 +83,38 @@ func RecordContainerRestart(containerInfo ContainerInfo) {
 func RecordContainerIteration(containerInfo ContainerInfo) {
 	if globalCollector != nil {
 		globalCollector.RecordContainerIteration(containerInfo)
+	}
+}
+
+// SetGlobalNavigationCollector sets the global navigation metrics collector
+func SetGlobalNavigationCollector(collector NavigationMetricsRecorder) {
+	globalNavigationCollector = collector
+}
+
+// RecordRouteCompletion records a route completion event globally
+func RecordRouteCompletion(playerID int, status navigation.RouteStatus, duration float64, distance int, fuelConsumed int) {
+	if globalNavigationCollector != nil {
+		globalNavigationCollector.RecordRouteCompletion(playerID, status, duration, distance, fuelConsumed)
+	}
+}
+
+// RecordSegmentCompletion records a route segment completion globally
+func RecordSegmentCompletion(playerID int, distance int, fuelRequired int) {
+	if globalNavigationCollector != nil {
+		globalNavigationCollector.RecordSegmentCompletion(playerID, distance, fuelRequired)
+	}
+}
+
+// RecordFuelPurchase records a fuel purchase event globally
+func RecordFuelPurchase(playerID int, waypoint string, units int) {
+	if globalNavigationCollector != nil {
+		globalNavigationCollector.RecordFuelPurchase(playerID, waypoint, units)
+	}
+}
+
+// RecordFuelConsumption records fuel consumption globally
+func RecordFuelConsumption(playerID int, flightMode navigation.FlightMode, units int) {
+	if globalNavigationCollector != nil {
+		globalNavigationCollector.RecordFuelConsumption(playerID, flightMode, units)
 	}
 }
