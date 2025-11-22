@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
@@ -214,6 +215,10 @@ func (r *ContainerRunner) execute() {
 				r.containerEntity.ResetForRestart()
 				r.containerEntity.Start()
 				r.mu.Unlock()
+
+				// Record restart metrics
+				metrics.RecordContainerRestart(r.containerEntity)
+
 				continue
 			}
 
@@ -224,6 +229,9 @@ func (r *ContainerRunner) execute() {
 		r.mu.Lock()
 		r.containerEntity.IncrementIteration()
 		r.mu.Unlock()
+
+		// Record iteration metrics
+		metrics.RecordContainerIteration(r.containerEntity)
 
 		r.log("INFO", fmt.Sprintf("Iteration %d completed",
 			r.containerEntity.CurrentIteration()), nil)
@@ -242,6 +250,9 @@ func (r *ContainerRunner) execute() {
 	r.mu.Lock()
 	r.containerEntity.Complete()
 	r.mu.Unlock()
+
+	// Record completion metrics
+	metrics.RecordContainerCompletion(r.containerEntity)
 
 	r.log("INFO", "Container completed successfully", map[string]interface{}{
 		"iterations": r.containerEntity.CurrentIteration(),
@@ -328,6 +339,9 @@ func (r *ContainerRunner) handleError(err error) {
 	r.mu.Lock()
 	r.containerEntity.Fail(err)
 	r.mu.Unlock()
+
+	// Record failure metrics
+	metrics.RecordContainerCompletion(r.containerEntity)
 
 	// Persist failure to database
 	if r.containerRepo != nil {
