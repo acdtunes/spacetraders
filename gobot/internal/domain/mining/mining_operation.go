@@ -25,7 +25,6 @@ type Operation struct {
 	id             string
 	playerID       int
 	asteroidField  string // Waypoint symbol of the asteroid field
-	status         OperationStatus
 	topNOres       int      // Number of ore types to keep (jettison rest)
 	minerShips     []string // Ship symbols for mining
 	transportShips []string // Ship symbols for transport
@@ -37,17 +36,8 @@ type Operation struct {
 	// Iteration control
 	maxIterations int // -1 for infinite
 
-	// Error tracking
-	lastError error
-
-	// Lifecycle timestamps
-	createdAt time.Time
-	updatedAt time.Time
-	startedAt *time.Time
-	stoppedAt *time.Time
-
-	// Time provider for testability
-	clock shared.Clock
+	// Lifecycle state machine handles status, timestamps, and errors
+	lifecycle *shared.LifecycleStateMachine
 }
 
 // NewOperation creates a new mining operation instance
@@ -63,10 +53,6 @@ func NewOperation(
 	maxIterations int,
 	clock shared.Clock,
 ) *Operation {
-	if clock == nil {
-		clock = shared.NewRealClock()
-	}
-
 	// Copy slices to avoid external mutation
 	miners := make([]string, len(minerShips))
 	copy(miners, minerShips)
@@ -74,21 +60,17 @@ func NewOperation(
 	transports := make([]string, len(transportShips))
 	copy(transports, transportShips)
 
-	now := clock.Now()
 	return &Operation{
 		id:             id,
 		playerID:       playerID,
 		asteroidField:  asteroidField,
-		status:         OperationStatusPending,
 		topNOres:       topNOres,
 		minerShips:     miners,
 		transportShips: transports,
 		batchThreshold: batchThreshold,
 		batchTimeout:   batchTimeout,
 		maxIterations:  maxIterations,
-		createdAt:      now,
-		updatedAt:      now,
-		clock:          clock,
+		lifecycle:      shared.NewLifecycleStateMachine(clock),
 	}
 }
 
@@ -97,76 +79,88 @@ func NewOperation(
 func (op *Operation) ID() string               { return op.id }
 func (op *Operation) PlayerID() int            { return op.playerID }
 func (op *Operation) AsteroidField() string    { return op.asteroidField }
-func (op *Operation) Status() OperationStatus  { return op.status }
 func (op *Operation) TopNOres() int            { return op.topNOres }
 func (op *Operation) MinerShips() []string     { return op.minerShips }
 func (op *Operation) TransportShips() []string { return op.transportShips }
 func (op *Operation) BatchThreshold() int      { return op.batchThreshold }
 func (op *Operation) BatchTimeout() int        { return op.batchTimeout }
 func (op *Operation) MaxIterations() int       { return op.maxIterations }
-func (op *Operation) LastError() error         { return op.lastError }
-func (op *Operation) CreatedAt() time.Time     { return op.createdAt }
-func (op *Operation) UpdatedAt() time.Time     { return op.updatedAt }
-func (op *Operation) StartedAt() *time.Time    { return op.startedAt }
-func (op *Operation) StoppedAt() *time.Time    { return op.stoppedAt }
+
+// Lifecycle getters delegated to state machine
+func (op *Operation) LastError() error      { return op.lifecycle.LastError() }
+func (op *Operation) CreatedAt() time.Time  { return op.lifecycle.CreatedAt() }
+func (op *Operation) UpdatedAt() time.Time  { return op.lifecycle.UpdatedAt() }
+func (op *Operation) StartedAt() *time.Time { return op.lifecycle.StartedAt() }
+func (op *Operation) StoppedAt() *time.Time { return op.lifecycle.StoppedAt() }
+
+// Status converts from LifecycleStatus to OperationStatus
+func (op *Operation) Status() OperationStatus {
+	switch op.lifecycle.Status() {
+	case shared.LifecycleStatusPending:
+		return OperationStatusPending
+	case shared.LifecycleStatusRunning:
+		return OperationStatusRunning
+	case shared.LifecycleStatusCompleted:
+		return OperationStatusCompleted
+	case shared.LifecycleStatusStopped:
+		return OperationStatusStopped
+	case shared.LifecycleStatusFailed:
+		return OperationStatusFailed
+	default:
+		return OperationStatusPending // Safe default
+	}
+}
 
 // State transition methods
 
 // Start transitions the operation from PENDING to RUNNING
 func (op *Operation) Start() error {
-	if op.status != OperationStatusPending {
-		return fmt.Errorf("cannot start operation in %s state", op.status)
+	// Check if we can start from current state
+	status := op.lifecycle.Status()
+	if status != shared.LifecycleStatusPending {
+		return fmt.Errorf("cannot start operation in %s state", op.Status())
 	}
 
+	// Validate before starting
 	if err := op.Validate(); err != nil {
 		return fmt.Errorf("operation validation failed: %w", err)
 	}
 
-	now := op.clock.Now()
-	op.status = OperationStatusRunning
-	op.startedAt = &now
-	op.updatedAt = now
-	return nil
+	// Delegate to lifecycle state machine
+	return op.lifecycle.Start()
 }
 
 // Stop transitions the operation to STOPPED state
 func (op *Operation) Stop() error {
-	if op.status == OperationStatusCompleted || op.status == OperationStatusStopped {
-		return fmt.Errorf("cannot stop operation in %s state", op.status)
+	// Check if we can stop from current state
+	status := op.lifecycle.Status()
+	if status == shared.LifecycleStatusCompleted || status == shared.LifecycleStatusStopped {
+		return fmt.Errorf("cannot stop operation in %s state", op.Status())
 	}
 
-	now := op.clock.Now()
-	op.status = OperationStatusStopped
-	op.stoppedAt = &now
-	op.updatedAt = now
-	return nil
+	return op.lifecycle.Stop()
 }
 
 // Complete transitions the operation to COMPLETED state
 func (op *Operation) Complete() error {
-	if op.status != OperationStatusRunning {
-		return fmt.Errorf("cannot complete operation in %s state", op.status)
+	// Check if we can complete from current state
+	status := op.lifecycle.Status()
+	if status != shared.LifecycleStatusRunning {
+		return fmt.Errorf("cannot complete operation in %s state", op.Status())
 	}
 
-	now := op.clock.Now()
-	op.status = OperationStatusCompleted
-	op.stoppedAt = &now
-	op.updatedAt = now
-	return nil
+	return op.lifecycle.Complete()
 }
 
 // Fail transitions the operation to FAILED state with error
 func (op *Operation) Fail(err error) error {
-	if op.status == OperationStatusCompleted || op.status == OperationStatusStopped {
-		return fmt.Errorf("cannot fail operation in %s state", op.status)
+	// Check if we can fail from current state
+	status := op.lifecycle.Status()
+	if status == shared.LifecycleStatusCompleted || status == shared.LifecycleStatusStopped {
+		return fmt.Errorf("cannot fail operation in %s state", op.Status())
 	}
 
-	now := op.clock.Now()
-	op.status = OperationStatusFailed
-	op.lastError = err
-	op.stoppedAt = &now
-	op.updatedAt = now
-	return nil
+	return op.lifecycle.Fail(err)
 }
 
 // Validation methods
@@ -216,41 +210,30 @@ func (op *Operation) HasTransports() bool {
 
 // IsRunning returns true if the operation is currently executing
 func (op *Operation) IsRunning() bool {
-	return op.status == OperationStatusRunning
+	return op.lifecycle.IsRunning()
 }
 
 // IsFinished returns true if the operation has completed, failed, or stopped
 func (op *Operation) IsFinished() bool {
-	return op.status == OperationStatusCompleted ||
-		op.status == OperationStatusFailed ||
-		op.status == OperationStatusStopped
+	return op.lifecycle.IsFinished()
 }
 
 // IsPending returns true if the operation hasn't started yet
 func (op *Operation) IsPending() bool {
-	return op.status == OperationStatusPending
+	return op.lifecycle.IsPending()
 }
 
 // Runtime calculation
 
 // RuntimeDuration calculates how long the operation has been running
 func (op *Operation) RuntimeDuration() time.Duration {
-	if op.startedAt == nil {
-		return 0
-	}
-
-	endTime := op.clock.Now()
-	if op.stoppedAt != nil {
-		endTime = *op.stoppedAt
-	}
-
-	return endTime.Sub(*op.startedAt)
+	return op.lifecycle.RuntimeDuration()
 }
 
 // String provides human-readable representation
 func (op *Operation) String() string {
 	return fmt.Sprintf("Operation[%s, status=%s, asteroid=%s, miners=%d, transports=%d]",
-		op.id, op.status, op.asteroidField, len(op.minerShips), len(op.transportShips))
+		op.id, op.Status(), op.asteroidField, len(op.minerShips), len(op.transportShips))
 }
 
 // OperationData is the DTO for persisting mining operations
@@ -275,15 +258,15 @@ type OperationData struct {
 // ToData converts the entity to a DTO for persistence
 func (op *Operation) ToData() *OperationData {
 	var lastErr string
-	if op.lastError != nil {
-		lastErr = op.lastError.Error()
+	if op.lifecycle.LastError() != nil {
+		lastErr = op.lifecycle.LastError().Error()
 	}
 
 	return &OperationData{
 		ID:             op.id,
 		PlayerID:       op.playerID,
 		AsteroidField:  op.asteroidField,
-		Status:         string(op.status),
+		Status:         string(op.Status()), // Convert via Status() method
 		TopNOres:       op.topNOres,
 		MinerShips:     op.minerShips,
 		TransportShips: op.transportShips,
@@ -291,40 +274,61 @@ func (op *Operation) ToData() *OperationData {
 		BatchTimeout:   op.batchTimeout,
 		MaxIterations:  op.maxIterations,
 		LastError:      lastErr,
-		CreatedAt:      op.createdAt,
-		UpdatedAt:      op.updatedAt,
-		StartedAt:      op.startedAt,
-		StoppedAt:      op.stoppedAt,
+		CreatedAt:      op.lifecycle.CreatedAt(),
+		UpdatedAt:      op.lifecycle.UpdatedAt(),
+		StartedAt:      op.lifecycle.StartedAt(),
+		StoppedAt:      op.lifecycle.StoppedAt(),
 	}
 }
 
 // FromData creates a Operation entity from a DTO
 func FromData(data *OperationData, clock shared.Clock) *Operation {
-	if clock == nil {
-		clock = shared.NewRealClock()
+	// Create lifecycle state machine
+	lifecycle := shared.NewLifecycleStateMachine(clock)
+
+	// Convert OperationStatus to LifecycleStatus
+	var lifecycleStatus shared.LifecycleStatus
+	switch OperationStatus(data.Status) {
+	case OperationStatusPending:
+		lifecycleStatus = shared.LifecycleStatusPending
+	case OperationStatusRunning:
+		lifecycleStatus = shared.LifecycleStatusRunning
+	case OperationStatusCompleted:
+		lifecycleStatus = shared.LifecycleStatusCompleted
+	case OperationStatusStopped:
+		lifecycleStatus = shared.LifecycleStatusStopped
+	case OperationStatusFailed:
+		lifecycleStatus = shared.LifecycleStatusFailed
+	default:
+		lifecycleStatus = shared.LifecycleStatusPending
 	}
 
+	// Parse last error
 	var lastErr error
 	if data.LastError != "" {
 		lastErr = fmt.Errorf("%s", data.LastError)
 	}
 
+	// Recover lifecycle state from persistence
+	lifecycle.RecoverFromPersistence(
+		lifecycleStatus,
+		data.CreatedAt,
+		data.UpdatedAt,
+		data.StartedAt,
+		data.StoppedAt,
+		lastErr,
+	)
+
 	return &Operation{
 		id:             data.ID,
 		playerID:       data.PlayerID,
 		asteroidField:  data.AsteroidField,
-		status:         OperationStatus(data.Status),
 		topNOres:       data.TopNOres,
 		minerShips:     data.MinerShips,
 		transportShips: data.TransportShips,
 		batchThreshold: data.BatchThreshold,
 		batchTimeout:   data.BatchTimeout,
 		maxIterations:  data.MaxIterations,
-		lastError:      lastErr,
-		createdAt:      data.CreatedAt,
-		updatedAt:      data.UpdatedAt,
-		startedAt:      data.StartedAt,
-		stoppedAt:      data.StoppedAt,
-		clock:          clock,
+		lifecycle:      lifecycle,
 	}
 }

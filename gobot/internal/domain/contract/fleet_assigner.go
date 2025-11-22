@@ -86,16 +86,8 @@ func (fa *FleetAssigner) IsRebalancingNeeded(
 	// Calculate average distance from each ship to its nearest target
 	totalDistance := 0.0
 	for _, ship := range ships {
-		minDistance := math.MaxFloat64
 		currentLocation := ship.CurrentLocation()
-
-		for _, targetWaypoint := range targetWaypoints {
-			distance := currentLocation.DistanceTo(targetWaypoint)
-			if distance < minDistance {
-				minDistance = distance
-			}
-		}
-
+		_, minDistance := shared.FindNearestWaypoint(currentLocation, targetWaypoints)
 		totalDistance += minDistance
 	}
 
@@ -210,16 +202,8 @@ func (fa *FleetAssigner) CalculateDistributionQuality(
 
 	totalDistance := 0.0
 	for _, ship := range ships {
-		minDistance := math.MaxFloat64
 		currentLocation := ship.CurrentLocation()
-
-		for _, targetWaypoint := range targetWaypoints {
-			distance := currentLocation.DistanceTo(targetWaypoint)
-			if distance < minDistance {
-				minDistance = distance
-			}
-		}
-
+		_, minDistance := shared.FindNearestWaypoint(currentLocation, targetWaypoints)
 		totalDistance += minDistance
 	}
 

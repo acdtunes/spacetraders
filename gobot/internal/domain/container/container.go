@@ -54,6 +54,13 @@ const (
 	ContainerTypePurchase                 ContainerType = "PURCHASE"
 )
 
+const (
+	// MaxRestartAttempts defines the maximum number of automatic restart attempts
+	// for a failed container. This prevents infinite restart loops while allowing
+	// recovery from transient failures.
+	MaxRestartAttempts = 3
+)
+
 // Container represents a background operation running in the daemon
 // Containers are the unit of work orchestration - each runs in its own goroutine
 // and can be started, stopped, monitored, and restarted independently.
@@ -111,7 +118,7 @@ func NewContainer(
 		currentIteration: 0,
 		maxIterations:    maxIterations,
 		restartCount:     0,
-		maxRestarts:      3, // Default: allow 3 restarts
+		maxRestarts:      MaxRestartAttempts,
 		createdAt:        now,
 		updatedAt:        now,
 		metadata:         metadata,
