@@ -31,3 +31,23 @@ type WorkerResult struct {
 	TotalCost        int
 	Error            error
 }
+
+// RunFactoryCoordinatorCommand initiates a factory coordinator for fleet-based production
+type RunFactoryCoordinatorCommand struct {
+	PlayerID     int
+	TargetGood   string
+	SystemSymbol string // Where to produce (defaults to current system)
+}
+
+// RunFactoryCoordinatorResponse contains the result of the coordinator operation
+type RunFactoryCoordinatorResponse struct {
+	FactoryID        string
+	TargetGood       string
+	QuantityAcquired int
+	TotalCost        int
+	NodesCompleted   int
+	NodesTotal       int
+	ShipsUsed        int
+	Completed        bool
+	Error            string
+}
