@@ -5,8 +5,10 @@ import (
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	"github.com/andrescamacho/spacetraders-go/internal/application/contract"
 	goodsServices "github.com/andrescamacho/spacetraders-go/internal/application/goods/services"
 	goodsTypes "github.com/andrescamacho/spacetraders-go/internal/application/goods/types"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/goods"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
@@ -24,22 +26,23 @@ type RunFactoryCoordinatorResponse = goodsTypes.RunFactoryCoordinatorResponse
 // 1. Build dependency tree using SupplyChainResolver
 // 2. Flatten tree to get all production nodes
 // 3. Discover idle ships for parallel execution
-// 4. Create and start worker containers for each node
-// 5. Wait on completion channels
-// 6. Loop until target good is acquired
-// 7. Cleanup: release ships, mark factory completed
+// 4. Execute production sequentially (MVP)
+//    TODO: Parallel workers with goroutines and channels
+// 5. Return results with quantity acquired
 //
 // Error Handling:
-// - Worker failure → retry with different ship
-// - No idle ships → wait with timeout
-// - Market unavailable → backoff and retry
+// - Worker failure → retry with different ship (TODO)
+// - No idle ships → return error
+// - Market unavailable → backoff and retry (handled by ProductionExecutor)
 type RunFactoryCoordinatorHandler struct {
-	mediator      common.Mediator
-	shipRepo      navigation.ShipRepository
-	marketRepo    market.MarketRepository
-	resolver      *goodsServices.SupplyChainResolver
-	marketLocator *goodsServices.MarketLocator
-	clock         shared.Clock
+	mediator           common.Mediator
+	shipRepo           navigation.ShipRepository
+	marketRepo         market.MarketRepository
+	shipAssignmentRepo container.ShipAssignmentRepository
+	resolver           *goodsServices.SupplyChainResolver
+	marketLocator      *goodsServices.MarketLocator
+	productionExecutor *goodsServices.ProductionExecutor
+	clock              shared.Clock
 }
 
 // NewRunFactoryCoordinatorHandler creates a new factory coordinator handler
@@ -47,17 +50,28 @@ func NewRunFactoryCoordinatorHandler(
 	mediator common.Mediator,
 	shipRepo navigation.ShipRepository,
 	marketRepo market.MarketRepository,
+	shipAssignmentRepo container.ShipAssignmentRepository,
 	resolver *goodsServices.SupplyChainResolver,
 	marketLocator *goodsServices.MarketLocator,
 	clock shared.Clock,
 ) *RunFactoryCoordinatorHandler {
+	productionExecutor := goodsServices.NewProductionExecutor(
+		mediator,
+		shipRepo,
+		marketRepo,
+		marketLocator,
+		clock,
+	)
+
 	return &RunFactoryCoordinatorHandler{
-		mediator:      mediator,
-		shipRepo:      shipRepo,
-		marketRepo:    marketRepo,
-		resolver:      resolver,
-		marketLocator: marketLocator,
-		clock:         clock,
+		mediator:           mediator,
+		shipRepo:           shipRepo,
+		marketRepo:         marketRepo,
+		shipAssignmentRepo: shipAssignmentRepo,
+		resolver:           resolver,
+		marketLocator:      marketLocator,
+		productionExecutor: productionExecutor,
+		clock:              clock,
 	}
 }
 
@@ -123,18 +137,88 @@ func (h *RunFactoryCoordinatorHandler) executeCoordination(
 		"fabricate_nodes": countNodesByMethod(nodes, goods.AcquisitionFabricate),
 	})
 
-	// TODO: Step 3: Discover idle ships for parallel execution
-	// TODO: Step 4: Create worker containers for production nodes
-	// TODO: Step 5: Start workers in goroutines with completion channels
-	// TODO: Step 6: Wait on completion channels and track progress
-	// TODO: Step 7: Loop until target good is acquired
-	// TODO: Step 8: Cleanup: release ships, update factory status
+	// Step 3: Discover idle ships
+	playerID := shared.MustNewPlayerID(cmd.PlayerID)
+	idleShips, idleShipSymbols, err := contract.FindIdleLightHaulers(
+		ctx,
+		playerID,
+		h.shipRepo,
+		h.shipAssignmentRepo,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to discover idle ships: %w", err)
+	}
 
-	// For now, return success with tree built
-	logger.Log("INFO", "Factory coordinator workflow placeholder", map[string]interface{}{
+	if len(idleShips) == 0 {
+		return fmt.Errorf("no idle hauler ships available for production")
+	}
+
+	logger.Log("INFO", "Discovered idle ships for production", map[string]interface{}{
+		"factory_id":  response.FactoryID,
+		"ship_count":  len(idleShips),
+		"ship_symbols": idleShipSymbols,
+	})
+
+	// Step 4: Execute production (sequential MVP implementation)
+	// TODO: Implement parallel worker execution with goroutines and channels
+	// TODO: Create worker containers via daemon client
+	// TODO: Coordinate completion via unbuffered channels
+	// For now, execute sequentially with the first available ship
+	if err := h.executeSequentialProduction(ctx, cmd, dependencyTree, idleShips[0], response); err != nil {
+		return fmt.Errorf("sequential production failed: %w", err)
+	}
+
+	logger.Log("INFO", "Factory coordinator completed", map[string]interface{}{
+		"factory_id":       response.FactoryID,
+		"target_good":      cmd.TargetGood,
+		"quantity":         response.QuantityAcquired,
+		"total_cost":       response.TotalCost,
+		"nodes_completed":  response.NodesCompleted,
+	})
+
+	return nil
+}
+
+// executeSequentialProduction executes production sequentially with a single ship (MVP)
+func (h *RunFactoryCoordinatorHandler) executeSequentialProduction(
+	ctx context.Context,
+	cmd *RunFactoryCoordinatorCommand,
+	dependencyTree *goods.SupplyChainNode,
+	ship *navigation.Ship,
+	response *RunFactoryCoordinatorResponse,
+) error {
+	logger := common.LoggerFromContext(ctx)
+
+	logger.Log("INFO", "Starting sequential production (MVP mode)", map[string]interface{}{
+		"factory_id":  response.FactoryID,
+		"ship_symbol": ship.ShipSymbol(),
+		"target_good": cmd.TargetGood,
+	})
+
+	// Execute production for the root node (will recursively produce inputs)
+	result, err := h.productionExecutor.ProduceGood(
+		ctx,
+		ship,
+		dependencyTree,
+		cmd.SystemSymbol,
+		cmd.PlayerID,
+	)
+	if err != nil {
+		return fmt.Errorf("production execution failed: %w", err)
+	}
+
+	// Update response with results
+	response.QuantityAcquired = result.QuantityAcquired
+	response.TotalCost = result.TotalCost
+	response.NodesCompleted = response.NodesTotal // All nodes completed in recursive execution
+	response.ShipsUsed = 1
+
+	logger.Log("INFO", "Sequential production completed", map[string]interface{}{
 		"factory_id":  response.FactoryID,
 		"target_good": cmd.TargetGood,
-		"note":        "Full fleet coordination not yet implemented",
+		"quantity":    result.QuantityAcquired,
+		"total_cost":  result.TotalCost,
+		"waypoint":    result.WaypointSymbol,
 	})
 
 	return nil
