@@ -23,13 +23,12 @@ and purchase new vessels for your fleet.
 Examples:
   spacetraders shipyard list X1-GZ7 X1-GZ7-A1 --player-id 1
   spacetraders shipyard purchase --ship AGENT-1 --type SHIP_PROBE --player-id 1
-  spacetraders shipyard batch-purchase --ship AGENT-1 --type SHIP_PROBE --quantity 5 --budget 500000 --player-id 1`,
+  spacetraders shipyard purchase --ship AGENT-1 --type SHIP_PROBE --quantity 5 --budget 500000 --player-id 1`,
 	}
 
 	// Add subcommands
 	cmd.AddCommand(newShipyardListCommand())
 	cmd.AddCommand(newShipyardPurchaseCommand())
-	cmd.AddCommand(newShipyardBatchPurchaseCommand())
 
 	return cmd
 }
@@ -119,108 +118,33 @@ func newShipyardPurchaseCommand() *cobra.Command {
 	var (
 		purchasingShip   string
 		shipType         string
-		shipyardWaypoint string
-	)
-
-	cmd := &cobra.Command{
-		Use:   "purchase",
-		Short: "Purchase a ship from a shipyard",
-		Long: `Purchase a ship from a shipyard.
-
-The purchasing ship will:
-1. Auto-discover nearest shipyard that sells the desired ship type (if not specified)
-2. Navigate to the shipyard waypoint if not already there
-3. Dock if in orbit
-4. Purchase the specified ship type
-5. Return the new ship entity
-
-The operation runs in a background container that can be monitored.
-
-Examples:
-  spacetraders shipyard purchase --ship AGENT-1 --type SHIP_PROBE --player-id 1
-  spacetraders shipyard purchase --ship AGENT-1 --type SHIP_MINING_DRONE --waypoint X1-GZ7-A1 --player-id 1
-  spacetraders shipyard purchase --ship AGENT-1 --type SHIP_PROBE --agent ENDURANCE`,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			// Validate flags
-			if purchasingShip == "" {
-				return fmt.Errorf("--ship flag is required")
-			}
-			if shipType == "" {
-				return fmt.Errorf("--type flag is required")
-			}
-
-			// Resolve player from flags or defaults
-			playerIdent, err := resolvePlayerIdentifier()
-			if err != nil {
-				return err
-			}
-
-			// Get daemon client
-			client, err := NewDaemonClient(socketPath)
-			if err != nil {
-				return fmt.Errorf("failed to connect to daemon: %w", err)
-			}
-			defer client.Close()
-
-			// Call daemon via gRPC
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-
-			response, err := client.PurchaseShip(ctx, purchasingShip, shipType, playerIdent.PlayerID, playerIdent.AgentSymbol, shipyardWaypoint)
-			if err != nil {
-				return fmt.Errorf("failed to purchase ship: %w", err)
-			}
-
-			// Display result
-			fmt.Println("✓ Ship purchase started successfully")
-			fmt.Printf("  Container ID:     %s\n", response.ContainerId)
-			fmt.Printf("  Purchasing Ship:  %s\n", purchasingShip)
-			fmt.Printf("  Ship Type:        %s\n", shipType)
-			if shipyardWaypoint != "" {
-				fmt.Printf("  Shipyard:         %s\n", shipyardWaypoint)
-			} else {
-				fmt.Printf("  Shipyard:         Auto-discovering...\n")
-			}
-			fmt.Printf("  Status:           %s\n", response.Status)
-			fmt.Printf("\nTrack progress with: spacetraders container logs %s\n", response.ContainerId)
-
-			return nil
-		},
-	}
-
-	cmd.Flags().StringVar(&purchasingShip, "ship", "", "Ship symbol to use for navigation (required)")
-	cmd.Flags().StringVar(&shipType, "type", "", "Ship type to purchase (e.g., SHIP_PROBE, SHIP_MINING_DRONE) (required)")
-	cmd.Flags().StringVar(&shipyardWaypoint, "waypoint", "", "Shipyard waypoint (optional - will auto-discover if not provided)")
-
-	return cmd
-}
-
-// newShipyardBatchPurchaseCommand creates the shipyard batch-purchase subcommand
-func newShipyardBatchPurchaseCommand() *cobra.Command {
-	var (
-		purchasingShip   string
-		shipType         string
 		quantity         int
 		maxBudget        int
 		shipyardWaypoint string
 	)
 
 	cmd := &cobra.Command{
-		Use:   "batch-purchase",
-		Short: "Purchase multiple ships in batch",
-		Long: `Purchase multiple ships of the same type in a batch.
+		Use:   "purchase",
+		Short: "Purchase ships from a shipyard",
+		Long: `Purchase one or more ships from a shipyard.
 
-The command will purchase as many ships as possible within constraints:
-- Quantity requested
-- Maximum budget allocated
+The command will purchase ships within the following constraints:
+- Quantity requested (default: 1)
+- Maximum budget allocated (if specified, 0 = no limit)
 - Player's available credits
 
-The purchasing ship will be used to navigate to the shipyard if needed.
+The purchasing ship will:
+1. Auto-discover nearest shipyard that sells the desired ship type (if not specified)
+2. Navigate to the shipyard waypoint if not already there
+3. Dock if in orbit
+4. Purchase the specified ship(s)
+
 The operation runs in a background container that can be monitored.
 
 Examples:
-  spacetraders shipyard batch-purchase --ship AGENT-1 --type SHIP_PROBE --quantity 5 --budget 500000 --player-id 1
-  spacetraders shipyard batch-purchase --ship AGENT-1 --type SHIP_MINING_DRONE --quantity 10 --budget 1000000 --waypoint X1-GZ7-A1 --player-id 1`,
+  spacetraders shipyard purchase --ship AGENT-1 --type SHIP_PROBE --player-id 1
+  spacetraders shipyard purchase --ship AGENT-1 --type SHIP_PROBE --quantity 5 --budget 500000 --player-id 1
+  spacetraders shipyard purchase --ship AGENT-1 --type SHIP_MINING_DRONE --quantity 10 --waypoint X1-GZ7-A1 --player-id 1`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Validate flags
 			if purchasingShip == "" {
@@ -232,8 +156,8 @@ Examples:
 			if quantity <= 0 {
 				return fmt.Errorf("--quantity must be greater than 0")
 			}
-			if maxBudget <= 0 {
-				return fmt.Errorf("--budget must be greater than 0")
+			if maxBudget < 0 {
+				return fmt.Errorf("--budget cannot be negative")
 			}
 
 			// Resolve player from flags or defaults
@@ -259,12 +183,16 @@ Examples:
 			}
 
 			// Display result
-			fmt.Println("✓ Batch ship purchase started successfully")
+			fmt.Println("✓ Ship purchase started successfully")
 			fmt.Printf("  Container ID:     %s\n", response.ContainerId)
 			fmt.Printf("  Purchasing Ship:  %s\n", purchasingShip)
 			fmt.Printf("  Ship Type:        %s\n", shipType)
 			fmt.Printf("  Quantity:         %d\n", quantity)
-			fmt.Printf("  Max Budget:       %d credits\n", maxBudget)
+			if maxBudget > 0 {
+				fmt.Printf("  Max Budget:       %d credits\n", maxBudget)
+			} else {
+				fmt.Printf("  Max Budget:       No limit\n")
+			}
 			if shipyardWaypoint != "" {
 				fmt.Printf("  Shipyard:         %s\n", shipyardWaypoint)
 			} else {
@@ -279,8 +207,8 @@ Examples:
 
 	cmd.Flags().StringVar(&purchasingShip, "ship", "", "Ship symbol to use for navigation (required)")
 	cmd.Flags().StringVar(&shipType, "type", "", "Ship type to purchase (e.g., SHIP_PROBE, SHIP_MINING_DRONE) (required)")
-	cmd.Flags().IntVar(&quantity, "quantity", 0, "Number of ships to purchase (required)")
-	cmd.Flags().IntVar(&maxBudget, "budget", 0, "Maximum budget in credits (required)")
+	cmd.Flags().IntVar(&quantity, "quantity", 1, "Number of ships to purchase (default: 1)")
+	cmd.Flags().IntVar(&maxBudget, "budget", 0, "Maximum budget in credits (0 = no limit, default: 0)")
 	cmd.Flags().StringVar(&shipyardWaypoint, "waypoint", "", "Shipyard waypoint (optional - will auto-discover if not provided)")
 
 	return cmd
