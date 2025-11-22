@@ -166,3 +166,25 @@ type MiningOperationModel struct {
 func (MiningOperationModel) TableName() string {
 	return "mining_operations"
 }
+
+// GoodsFactoryModel represents the goods_factories table
+type GoodsFactoryModel struct {
+	ID               string       `gorm:"column:id;primaryKey;not null"`
+	PlayerID         int          `gorm:"column:player_id;index;not null"`
+	Player           *PlayerModel `gorm:"foreignKey:PlayerID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
+	TargetGood       string       `gorm:"column:target_good;not null"`
+	SystemSymbol     string       `gorm:"column:system_symbol;not null"`
+	DependencyTree   string       `gorm:"column:dependency_tree;type:text;not null"` // JSON-serialized SupplyChainNode
+	Status           string       `gorm:"column:status;index;not null"`
+	Metadata         string       `gorm:"column:metadata;type:jsonb"`           // JSON metadata
+	QuantityAcquired int          `gorm:"column:quantity_acquired;default:0"`   // Set on completion
+	TotalCost        int          `gorm:"column:total_cost;default:0"`          // Set on completion
+	CreatedAt        time.Time    `gorm:"column:created_at;not null;autoCreateTime"`
+	UpdatedAt        time.Time    `gorm:"column:updated_at;not null;autoUpdateTime"`
+	StartedAt        *time.Time   `gorm:"column:started_at"`
+	CompletedAt      *time.Time   `gorm:"column:completed_at"`
+}
+
+func (GoodsFactoryModel) TableName() string {
+	return "goods_factories"
+}
