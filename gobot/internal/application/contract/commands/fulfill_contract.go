@@ -6,6 +6,8 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	contractTypes "github.com/andrescamacho/spacetraders-go/internal/application/contract/types"
+	ledgerCommands "github.com/andrescamacho/spacetraders-go/internal/application/ledger/commands"
+	"github.com/andrescamacho/spacetraders-go/internal/application/logging"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
@@ -20,6 +22,7 @@ type FulfillContractHandler struct {
 	contractRepo contract.ContractRepository
 	playerRepo   player.PlayerRepository
 	apiClient    domainPorts.APIClient
+	mediator     common.Mediator
 }
 
 // NewFulfillContractHandler creates a new fulfill contract handler
@@ -27,11 +30,13 @@ func NewFulfillContractHandler(
 	contractRepo contract.ContractRepository,
 	playerRepo player.PlayerRepository,
 	apiClient domainPorts.APIClient,
+	mediator common.Mediator,
 ) *FulfillContractHandler {
 	return &FulfillContractHandler{
 		contractRepo: contractRepo,
 		playerRepo:   playerRepo,
 		apiClient:    apiClient,
+		mediator:     mediator,
 	}
 }
 
@@ -56,12 +61,28 @@ func (h *FulfillContractHandler) Handle(ctx context.Context, request common.Requ
 		return nil, err
 	}
 
+	// Fetch balance before fulfilling
+	balanceBefore, err := h.fetchCurrentCredits(ctx, token)
+	if err != nil {
+		// Log warning but don't fail the operation
+		logger := logging.LoggerFromContext(ctx)
+		logger.Log("WARN", "Failed to fetch credits before fulfilling contract, ledger entry will not be recorded", map[string]interface{}{
+			"error":       err.Error(),
+			"contract_id": cmd.ContractID,
+		})
+	}
+
 	if err := h.callFulfillContractAPI(ctx, cmd.ContractID, token); err != nil {
 		return nil, err
 	}
 
 	if err := h.saveContract(ctx, contract); err != nil {
 		return nil, err
+	}
+
+	// Record transaction asynchronously (non-blocking)
+	if balanceBefore > 0 {
+		go h.recordContractFulfillment(ctx, contract, balanceBefore)
 	}
 
 	return &FulfillContractResponse{
@@ -103,4 +124,62 @@ func (h *FulfillContractHandler) saveContract(ctx context.Context, contract *con
 		return fmt.Errorf("failed to save contract: %w", err)
 	}
 	return nil
+}
+
+// fetchCurrentCredits fetches the player's current credits from the API
+func (h *FulfillContractHandler) fetchCurrentCredits(ctx context.Context, token string) (int, error) {
+	agent, err := h.apiClient.GetAgent(ctx, token)
+	if err != nil {
+		return 0, fmt.Errorf("failed to fetch agent credits: %w", err)
+	}
+	return agent.Credits, nil
+}
+
+// recordContractFulfillment records the contract fulfillment payment in the ledger
+func (h *FulfillContractHandler) recordContractFulfillment(
+	ctx context.Context,
+	contract *contract.Contract,
+	balanceBefore int,
+) {
+	logger := logging.LoggerFromContext(ctx)
+
+	payment := contract.Terms().Payment.OnFulfilled
+	balanceAfter := balanceBefore + payment
+
+	// Build metadata
+	metadata := map[string]interface{}{
+		"contract_id":   contract.ContractID(),
+		"faction":       contract.FactionSymbol(),
+		"contract_type": contract.Type(),
+	}
+
+	// Create record transaction command
+	recordCmd := &ledgerCommands.RecordTransactionCommand{
+		PlayerID:          contract.PlayerID().Value(),
+		TransactionType:   "CONTRACT_FULFILLED",
+		Amount:            payment, // Positive for income
+		BalanceBefore:     balanceBefore,
+		BalanceAfter:      balanceAfter,
+		Description:       fmt.Sprintf("Fulfilled %s contract from %s", contract.Type(), contract.FactionSymbol()),
+		Metadata:          metadata,
+		RelatedEntityType: "contract",
+		RelatedEntityID:   contract.ContractID(),
+	}
+
+	// Record transaction via mediator
+	_, err := h.mediator.Send(context.Background(), recordCmd)
+	if err != nil {
+		// Log error but don't fail the operation
+		logger.Log("ERROR", "Failed to record contract fulfillment transaction in ledger", map[string]interface{}{
+			"error":       err.Error(),
+			"contract_id": contract.ContractID(),
+			"payment":     payment,
+			"player_id":   contract.PlayerID().Value(),
+		})
+	} else {
+		logger.Log("DEBUG", "Contract fulfillment transaction recorded in ledger", map[string]interface{}{
+			"contract_id": contract.ContractID(),
+			"payment":     payment,
+		})
+	}
 }

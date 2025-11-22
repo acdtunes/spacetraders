@@ -58,6 +58,7 @@ Examples:
 	rootCmd.AddCommand(NewMarketCommand())
 	rootCmd.AddCommand(NewContractCommand())
 	rootCmd.AddCommand(NewGoodsCommand())
+	rootCmd.AddCommand(NewLedgerCommand())
 	rootCmd.AddCommand(NewWorkflowCommand())
 	rootCmd.AddCommand(NewContainerCommand())
 	rootCmd.AddCommand(NewHealthCommand())

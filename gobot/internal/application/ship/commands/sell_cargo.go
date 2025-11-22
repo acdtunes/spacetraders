@@ -57,9 +57,10 @@ func NewSellCargoHandler(
 	playerRepo player.PlayerRepository,
 	apiClient domainPorts.APIClient,
 	marketRepo scoutingQuery.MarketRepository,
+	mediator common.Mediator,
 ) *SellCargoHandler {
 	strategy := strategies.NewSellStrategy(apiClient)
-	delegate := NewCargoTransactionHandler(strategy, shipRepo, playerRepo, marketRepo)
+	delegate := NewCargoTransactionHandler(strategy, shipRepo, playerRepo, marketRepo, apiClient, mediator)
 
 	return &SellCargoHandler{
 		delegate: delegate,

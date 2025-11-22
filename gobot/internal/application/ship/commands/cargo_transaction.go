@@ -3,13 +3,17 @@ package commands
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	ledgerCommands "github.com/andrescamacho/spacetraders-go/internal/application/ledger/commands"
+	"github.com/andrescamacho/spacetraders-go/internal/application/logging"
 	scoutingQuery "github.com/andrescamacho/spacetraders-go/internal/application/scouting/queries"
 	shipPkg "github.com/andrescamacho/spacetraders-go/internal/application/ship"
 	"github.com/andrescamacho/spacetraders-go/internal/application/ship/strategies"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
+	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )
@@ -55,6 +59,7 @@ type CargoTransactionResponse struct {
 //   - Fetch transaction limit from market
 //   - Execute transactions in batches via strategy
 //   - Accumulate results
+//   - Record financial transactions in ledger
 //
 // The handler is Open/Closed:
 //   - Open for extension: New transaction types (trade, donate) can be added by implementing CargoTransactionStrategy
@@ -64,6 +69,8 @@ type CargoTransactionHandler struct {
 	shipRepo   navigation.ShipRepository
 	playerRepo player.PlayerRepository
 	marketRepo scoutingQuery.MarketRepository
+	apiClient  domainPorts.APIClient
+	mediator   common.Mediator
 }
 
 // NewCargoTransactionHandler creates a new cargo transaction handler with the given strategy.
@@ -77,12 +84,16 @@ func NewCargoTransactionHandler(
 	shipRepo navigation.ShipRepository,
 	playerRepo player.PlayerRepository,
 	marketRepo scoutingQuery.MarketRepository,
+	apiClient domainPorts.APIClient,
+	mediator common.Mediator,
 ) *CargoTransactionHandler {
 	return &CargoTransactionHandler{
 		strategy:   strategy,
 		shipRepo:   shipRepo,
 		playerRepo: playerRepo,
 		marketRepo: marketRepo,
+		apiClient:  apiClient,
+		mediator:   mediator,
 	}
 }
 
@@ -93,9 +104,11 @@ func NewCargoTransactionHandler(
 //  2. Load ship from repository
 //  3. Validate ship is docked
 //  4. Delegate precondition validation to strategy
-//  5. Determine transaction limit from market
-//  6. Execute transactions in batches
-//  7. Return accumulated results
+//  5. Fetch current player balance (for ledger)
+//  6. Determine transaction limit from market
+//  7. Execute transactions in batches
+//  8. Record transaction in ledger (async)
+//  9. Return accumulated results
 func (h *CargoTransactionHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {
 	cmd, ok := request.(*CargoTransactionCommand)
 	if !ok {
@@ -120,9 +133,31 @@ func (h *CargoTransactionHandler) Handle(ctx context.Context, request common.Req
 		return nil, err
 	}
 
+	// Fetch current credits (balance before)
+	balanceBefore, err := h.fetchCurrentCredits(ctx)
+	if err != nil {
+		// Log warning but don't fail the operation
+		logger := logging.LoggerFromContext(ctx)
+		logger.Log("WARN", "Failed to fetch credits before cargo transaction, ledger entry will not be recorded", map[string]interface{}{
+			"error": err.Error(),
+			"ship":  cmd.ShipSymbol,
+			"good":  cmd.GoodSymbol,
+		})
+	}
+
 	transactionLimit := h.getTransactionLimit(ctx, ship, cmd)
 
-	return h.executeTransactions(ctx, cmd, token, transactionLimit)
+	response, err := h.executeTransactions(ctx, cmd, token, transactionLimit)
+	if err != nil {
+		return nil, err
+	}
+
+	// Record transaction asynchronously (non-blocking)
+	if balanceBefore > 0 { // Only record if we successfully fetched balance
+		go h.recordCargoTransaction(ctx, cmd, ship.CurrentLocation().Symbol, response, balanceBefore)
+	}
+
+	return response, nil
 }
 
 // getPlayerToken retrieves the player token from the context.
@@ -191,4 +226,90 @@ func (h *CargoTransactionHandler) executeTransactions(ctx context.Context, cmd *
 		UnitsProcessed:   unitsProcessed,
 		TransactionCount: transactionCount,
 	}, nil
+}
+
+// fetchCurrentCredits fetches the player's current credits from the API
+func (h *CargoTransactionHandler) fetchCurrentCredits(ctx context.Context) (int, error) {
+	token, err := common.PlayerTokenFromContext(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("player token not found in context: %w", err)
+	}
+
+	agent, err := h.apiClient.GetAgent(ctx, token)
+	if err != nil {
+		return 0, fmt.Errorf("failed to fetch agent credits: %w", err)
+	}
+
+	return agent.Credits, nil
+}
+
+// recordCargoTransaction records the cargo transaction in the ledger
+func (h *CargoTransactionHandler) recordCargoTransaction(
+	ctx context.Context,
+	cmd *CargoTransactionCommand,
+	waypointSymbol string,
+	response *CargoTransactionResponse,
+	balanceBefore int,
+) {
+	logger := logging.LoggerFromContext(ctx)
+
+	// Determine transaction type and amount sign
+	transactionTypeStr := strings.ToUpper(h.strategy.GetTransactionType())
+	var ledgerTxType string
+	var amount int
+	var balanceAfter int
+
+	if transactionTypeStr == "PURCHASE" {
+		ledgerTxType = "PURCHASE_CARGO"
+		amount = -response.TotalAmount // Negative for expense
+		balanceAfter = balanceBefore - response.TotalAmount
+	} else if transactionTypeStr == "SELL" {
+		ledgerTxType = "SELL_CARGO"
+		amount = response.TotalAmount // Positive for income
+		balanceAfter = balanceBefore + response.TotalAmount
+	} else {
+		logger.Log("ERROR", "Unknown transaction type for ledger recording", map[string]interface{}{
+			"type": transactionTypeStr,
+		})
+		return
+	}
+
+	// Build metadata
+	metadata := map[string]interface{}{
+		"ship_symbol": cmd.ShipSymbol,
+		"good_symbol": cmd.GoodSymbol,
+		"units":       response.UnitsProcessed,
+		"waypoint":    waypointSymbol,
+	}
+
+	// Create record transaction command
+	recordCmd := &ledgerCommands.RecordTransactionCommand{
+		PlayerID:        cmd.PlayerID.Value(),
+		TransactionType: ledgerTxType,
+		Amount:          amount,
+		BalanceBefore:   balanceBefore,
+		BalanceAfter:    balanceAfter,
+		Description:     fmt.Sprintf("%s %d units of %s at %s", transactionTypeStr, response.UnitsProcessed, cmd.GoodSymbol, waypointSymbol),
+		Metadata:        metadata,
+	}
+
+	// Record transaction via mediator
+	_, err := h.mediator.Send(context.Background(), recordCmd)
+	if err != nil {
+		// Log error but don't fail the operation
+		logger.Log("ERROR", "Failed to record cargo transaction in ledger", map[string]interface{}{
+			"error":     err.Error(),
+			"ship":      cmd.ShipSymbol,
+			"good":      cmd.GoodSymbol,
+			"amount":    response.TotalAmount,
+			"player_id": cmd.PlayerID.Value(),
+		})
+	} else {
+		logger.Log("DEBUG", "Cargo transaction recorded in ledger", map[string]interface{}{
+			"ship":   cmd.ShipSymbol,
+			"good":   cmd.GoodSymbol,
+			"amount": response.TotalAmount,
+			"type":   ledgerTxType,
+		})
+	}
 }

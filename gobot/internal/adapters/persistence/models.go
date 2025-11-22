@@ -192,3 +192,25 @@ type GoodsFactoryModel struct {
 func (GoodsFactoryModel) TableName() string {
 	return "goods_factories"
 }
+
+// TransactionModel represents the transactions table
+type TransactionModel struct {
+	ID                string       `gorm:"column:id;primaryKey;size:36;not null"`
+	PlayerID          int          `gorm:"column:player_id;index:idx_player_timestamp;not null"`
+	Player            *PlayerModel `gorm:"foreignKey:PlayerID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
+	Timestamp         time.Time    `gorm:"column:timestamp;index:idx_player_timestamp;not null"`
+	TransactionType   string       `gorm:"column:transaction_type;index:idx_type;size:50;not null"`
+	Category          string       `gorm:"column:category;index:idx_category;size:50;not null"`
+	Amount            int          `gorm:"column:amount;not null"` // Positive for income, negative for expenses
+	BalanceBefore     int          `gorm:"column:balance_before;not null"`
+	BalanceAfter      int          `gorm:"column:balance_after;not null"`
+	Description       string       `gorm:"column:description;type:text"`
+	Metadata          string       `gorm:"column:metadata;type:jsonb"`                               // JSON metadata
+	RelatedEntityType string       `gorm:"column:related_entity_type;index:idx_related;size:50"`    // e.g., "contract", "factory"
+	RelatedEntityID   string       `gorm:"column:related_entity_id;index:idx_related;size:100"`     // ID of related entity
+	CreatedAt         time.Time    `gorm:"column:created_at;not null;autoCreateTime"`
+}
+
+func (TransactionModel) TableName() string {
+	return "transactions"
+}

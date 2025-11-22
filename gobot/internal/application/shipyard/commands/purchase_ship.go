@@ -5,6 +5,8 @@ import (
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	ledgerCommands "github.com/andrescamacho/spacetraders-go/internal/application/ledger/commands"
+	"github.com/andrescamacho/spacetraders-go/internal/application/logging"
 	"github.com/andrescamacho/spacetraders-go/internal/application/ship/commands"
 	shipTypes "github.com/andrescamacho/spacetraders-go/internal/application/ship/types"
 	"github.com/andrescamacho/spacetraders-go/internal/application/shipyard/queries"
@@ -109,7 +111,8 @@ func (h *PurchaseShipHandler) Handle(ctx context.Context, request common.Request
 		return nil, err
 	}
 
-	if _, err := h.ensureSufficientCredits(ctx, token, purchasePrice); err != nil {
+	balanceBefore, err := h.ensureSufficientCredits(ctx, token, purchasePrice)
+	if err != nil {
 		return nil, err
 	}
 
@@ -137,6 +140,9 @@ func (h *PurchaseShipHandler) Handle(ctx context.Context, request common.Request
 	if err := h.createIdleAssignment(ctx, newShip.ShipSymbol(), cmd.PlayerID); err != nil {
 		return nil, fmt.Errorf("failed to create ship assignment: %w", err)
 	}
+
+	// Record transaction asynchronously (non-blocking)
+	go h.recordShipPurchaseTransaction(ctx, cmd, shipyardWaypoint, purchaseResult, balanceBefore)
 
 	return &PurchaseShipResponse{
 		Ship:            newShip,
@@ -343,6 +349,56 @@ func (h *PurchaseShipHandler) syncPlayerToAPIClient(p *player.Player) {
 
 	if mockClient, ok := h.apiClient.(playerUpdater); ok {
 		mockClient.UpdatePlayer(p)
+	}
+}
+
+// recordShipPurchaseTransaction records the ship purchase transaction in the ledger
+func (h *PurchaseShipHandler) recordShipPurchaseTransaction(
+	ctx context.Context,
+	cmd *PurchaseShipCommand,
+	shipyardWaypoint string,
+	purchaseResult *domainPorts.ShipPurchaseResult,
+	balanceBefore int,
+) {
+	logger := logging.LoggerFromContext(ctx)
+
+	// Calculate balance after
+	balanceAfter := balanceBefore - purchaseResult.Transaction.Price
+
+	// Build metadata
+	metadata := map[string]interface{}{
+		"ship_type":       cmd.ShipType,
+		"ship_symbol":     purchaseResult.Transaction.ShipSymbol,
+		"waypoint":        shipyardWaypoint,
+		"transaction_id":  purchaseResult.Transaction.ShipSymbol, // Use ship symbol as transaction reference
+	}
+
+	// Create record transaction command
+	recordCmd := &ledgerCommands.RecordTransactionCommand{
+		PlayerID:        cmd.PlayerID.Value(),
+		TransactionType: "PURCHASE_SHIP",
+		Amount:          -purchaseResult.Transaction.Price, // Negative for expense
+		BalanceBefore:   balanceBefore,
+		BalanceAfter:    balanceAfter,
+		Description:     fmt.Sprintf("Purchased %s ship at %s", cmd.ShipType, shipyardWaypoint),
+		Metadata:        metadata,
+	}
+
+	// Record transaction via mediator
+	_, err := h.mediator.Send(context.Background(), recordCmd)
+	if err != nil {
+		// Log error but don't fail the operation
+		logger.Log("ERROR", "Failed to record ship purchase transaction in ledger", map[string]interface{}{
+			"error":      err.Error(),
+			"ship_type":  cmd.ShipType,
+			"price":      purchaseResult.Transaction.Price,
+			"player_id":  cmd.PlayerID.Value(),
+		})
+	} else {
+		logger.Log("DEBUG", "Ship purchase transaction recorded in ledger", map[string]interface{}{
+			"ship_type": cmd.ShipType,
+			"price":     purchaseResult.Transaction.Price,
+		})
 	}
 }
 
