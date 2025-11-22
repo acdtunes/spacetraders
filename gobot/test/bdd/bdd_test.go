@@ -33,8 +33,13 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	steps.InitializeLifecycleStateMachineScenario(sc)
 	steps.RegisterContainerSteps(sc)
 
+	// Scouting application layer tests - UNIFIED CONTEXT
+	// Registered BEFORE contract to take precedence for scouting-specific features
+	// All scouting handlers share a single context to eliminate step conflicts
+	steps.InitializeScoutingApplicationScenarios(sc)
+
 	// Contract application layer tests - UNIFIED CONTEXT
-	// Registered BEFORE domain layer to take precedence for overlapping step definitions
+	// Registered AFTER scouting to allow scouting steps to take precedence
 	// All accept, deliver, fulfill handlers share a single context to eliminate step conflicts
 	steps.InitializeContractApplicationScenarios(sc)
 
