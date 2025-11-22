@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"gorm.io/gorm"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
@@ -79,6 +80,7 @@ type DaemonServer struct {
 	containerMetricsCollector MetricsCollector
 	financialMetricsCollector *metrics.FinancialMetricsCollector
 	commandMetricsCollector   *metrics.CommandMetricsCollector
+	marketMetricsCollector    *metrics.MarketMetricsCollector
 
 	// Shutdown coordination
 	shutdownChan chan os.Signal
@@ -88,6 +90,7 @@ type DaemonServer struct {
 // NewDaemonServer creates a new daemon server instance
 func NewDaemonServer(
 	mediator common.Mediator,
+	db *gorm.DB,
 	logRepo persistence.ContainerLogRepository,
 	containerRepo *persistence.ContainerRepositoryGORM,
 	shipAssignmentRepo *persistence.ShipAssignmentRepositoryGORM,
@@ -202,6 +205,19 @@ func NewDaemonServer(
 
 		// Set global API collector for API client to use
 		metrics.SetGlobalAPICollector(apiCollector)
+
+		// Create market metrics collector
+		marketCollector := metrics.NewMarketMetricsCollector(db)
+		if err := marketCollector.Register(); err != nil {
+			listener.Close()
+			return nil, fmt.Errorf("failed to register market metrics collector: %w", err)
+		}
+
+		// Set global market collector for MarketScanner to use
+		metrics.SetGlobalMarketCollector(marketCollector)
+
+		// Store reference for lifecycle management
+		server.marketMetricsCollector = marketCollector
 	}
 
 	// Register command factories for recovery
@@ -514,6 +530,11 @@ func (s *DaemonServer) Start() error {
 		if s.financialMetricsCollector != nil {
 			s.financialMetricsCollector.Start(context.Background())
 		}
+
+		// Start market metrics collector
+		if s.marketMetricsCollector != nil {
+			s.marketMetricsCollector.Start(context.Background())
+		}
 	}
 
 	// Recover RUNNING containers from previous daemon instance
@@ -601,6 +622,9 @@ func (s *DaemonServer) stopMetricsServer() {
 	}
 	if s.financialMetricsCollector != nil {
 		s.financialMetricsCollector.Stop()
+	}
+	if s.marketMetricsCollector != nil {
+		s.marketMetricsCollector.Stop()
 	}
 
 	// Shutdown HTTP server with timeout

@@ -33,6 +33,10 @@ var (
 	// globalAPICollector is the singleton API metrics collector
 	// Set by SetGlobalAPICollector() when metrics are enabled
 	globalAPICollector *APIMetricsCollector
+
+	// globalMarketCollector is the singleton market metrics collector
+	// Set by SetGlobalMarketCollector() when metrics are enabled
+	globalMarketCollector *MarketMetricsCollector
 )
 
 // MetricsRecorder defines the interface for recording container metrics events
@@ -162,4 +166,15 @@ func SetGlobalAPICollector(collector *APIMetricsCollector) {
 // Returns nil if metrics are not enabled
 func GetGlobalAPICollector() *APIMetricsCollector {
 	return globalAPICollector
+}
+
+// SetGlobalMarketCollector sets the global market metrics collector
+func SetGlobalMarketCollector(collector *MarketMetricsCollector) {
+	globalMarketCollector = collector
+}
+
+// GetGlobalMarketCollector returns the global market metrics collector
+// Returns nil if metrics are not enabled
+func GetGlobalMarketCollector() *MarketMetricsCollector {
+	return globalMarketCollector
 }
