@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	scoutingQuery "github.com/andrescamacho/spacetraders-go/internal/application/scouting/queries"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
@@ -36,11 +37,18 @@ func NewMarketScanner(
 // ScanAndSaveMarket scans a market at the given waypoint and saves the data to the database.
 // This is a non-fatal operation - errors are logged but do not fail the caller's operation.
 func (s *MarketScanner) ScanAndSaveMarket(ctx context.Context, playerID uint, waypointSymbol string) error {
+	// Start timing for metrics
+	startTime := time.Now()
+
 	logger := common.LoggerFromContext(ctx)
 
 	token, err := common.PlayerTokenFromContext(ctx)
 	if err != nil {
 		logger.Log("ERROR", fmt.Sprintf("[MarketScanner] Failed to get player token: %v", err), nil)
+		// Record failed scan in metrics
+		if collector := metrics.GetGlobalMarketCollector(); collector != nil {
+			collector.RecordScan(int(playerID), waypointSymbol, time.Since(startTime), err)
+		}
 		return fmt.Errorf("failed to get player token: %w", err)
 	}
 
@@ -50,21 +58,38 @@ func (s *MarketScanner) ScanAndSaveMarket(ctx context.Context, playerID uint, wa
 	marketData, err := s.apiClient.GetMarket(ctx, systemSymbol, waypointSymbol, token)
 	if err != nil {
 		logger.Log("ERROR", fmt.Sprintf("[MarketScanner] Failed to get market data for %s: %v", waypointSymbol, err), nil)
+		// Record failed scan in metrics
+		if collector := metrics.GetGlobalMarketCollector(); collector != nil {
+			collector.RecordScan(int(playerID), waypointSymbol, time.Since(startTime), err)
+		}
 		return fmt.Errorf("failed to get market data for %s: %w", waypointSymbol, err)
 	}
 
 	tradeGoods, err := s.convertAPIGoodsToDomain(marketData.TradeGoods, logger)
 	if err != nil {
+		// Record failed scan in metrics
+		if collector := metrics.GetGlobalMarketCollector(); collector != nil {
+			collector.RecordScan(int(playerID), waypointSymbol, time.Since(startTime), err)
+		}
 		return err
 	}
 
 	err = s.marketRepo.UpsertMarketData(ctx, playerID, waypointSymbol, tradeGoods, time.Now())
 	if err != nil {
 		logger.Log("ERROR", fmt.Sprintf("[MarketScanner] Failed to persist market data for %s: %v", waypointSymbol, err), nil)
+		// Record failed scan in metrics
+		if collector := metrics.GetGlobalMarketCollector(); collector != nil {
+			collector.RecordScan(int(playerID), waypointSymbol, time.Since(startTime), err)
+		}
 		return fmt.Errorf("failed to persist market data: %w", err)
 	}
 
 	logger.Log("INFO", fmt.Sprintf("[MarketScanner] Successfully scanned and saved market data for %s (%d goods)", waypointSymbol, len(tradeGoods)), nil)
+
+	// Record successful scan in metrics
+	if collector := metrics.GetGlobalMarketCollector(); collector != nil {
+		collector.RecordScan(int(playerID), waypointSymbol, time.Since(startTime), nil)
+	}
 
 	return nil
 }
