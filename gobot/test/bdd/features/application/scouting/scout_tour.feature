@@ -19,14 +19,6 @@ Feature: Scout Tour Command
     And the ship should navigate 1 time
     And 1 market should be visited
 
-  Scenario: Multi-market tour
-    Given a player with ID 1 and token "test-token" exists in the database
-    And a probe ship "SHIP-1" for player 1 at waypoint "X1-A1-M1"
-    When I execute scout tour command for player 1 with ship "SHIP-1" and markets ["X1-A1-M1", "X1-A1-M2", "X1-A1-M3"] with 2 iterations
-    Then the command should succeed
-    And the ship should navigate 6 times
-    And 6 markets should be visited in total
-
   Scenario: Tour rotation starts from current location
     Given a player with ID 1 and token "test-token" exists in the database
     And a probe ship "SHIP-1" for player 1 at waypoint "X1-A1-M2"

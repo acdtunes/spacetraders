@@ -7,9 +7,7 @@ import (
 	"time"
 
 	"github.com/cucumber/godog"
-	"gorm.io/gorm"
 
-	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	scoutingCommands "github.com/andrescamacho/spacetraders-go/internal/application/scouting/commands"
 	scoutingQueries "github.com/andrescamacho/spacetraders-go/internal/application/scouting/queries"
@@ -25,10 +23,8 @@ import (
 
 // scoutingApplicationContext is a unified context for ALL scouting application layer handlers
 type scoutingApplicationContext struct {
-	// Shared infrastructure
-	db         *gorm.DB
-	playerRepo *persistence.GormPlayerRepository
-	marketRepo *persistence.MarketRepositoryGORM
+	// Real repositories
+	repos *helpers.TestRepositories
 
 	// All handlers
 	assignFleetHandler  *scoutingCommands.AssignScoutingFleetHandler
@@ -41,18 +37,13 @@ type scoutingApplicationContext struct {
 	lastError    error
 	lastResponse interface{}
 
-	// Mocks
-	apiClient       *helpers.MockAPIClient
-	shipRepo        *helpers.MockShipRepository
-	waypointRepo    *helpers.MockWaypointRepository
-	assignmentRepo  *helpers.MockShipAssignmentRepository
-	daemonClient    *helpers.MockDaemonClient
-	routingClient   *helpers.MockRoutingClient
-	graphProvider   *helpers.MockGraphProvider
-	mediator        *helpers.MockMediator
-	marketScanner   *ship.MarketScanner
-	clock           *shared.MockClock
-	stopContainerFn func(string) // Track stop calls
+	// Mocks (only external services)
+	apiClient     *helpers.MockAPIClient
+	daemonClient  *helpers.MockDaemonClient
+	routingClient *helpers.MockRoutingClient
+	mediator      *helpers.MockMediator
+	marketScanner *ship.MarketScanner
+	clock         *shared.MockClock
 
 	// Test fixtures
 	testShips         map[string]*navigation.Ship
@@ -71,24 +62,18 @@ func (ctx *scoutingApplicationContext) reset() {
 		panic(fmt.Errorf("failed to truncate tables: %w", err))
 	}
 
-	// Real repositories
-	ctx.db = helpers.SharedTestDB
-	ctx.playerRepo = persistence.NewGormPlayerRepository(helpers.SharedTestDB)
-	ctx.marketRepo = persistence.NewMarketRepository(helpers.SharedTestDB)
-
-	// Create mocks
+	// Create mocks (only external services)
 	ctx.apiClient = helpers.NewMockAPIClient()
-	ctx.shipRepo = helpers.NewMockShipRepository()
-	ctx.waypointRepo = helpers.NewMockWaypointRepository()
-	ctx.assignmentRepo = helpers.NewMockShipAssignmentRepository()
 	ctx.daemonClient = helpers.NewMockDaemonClient()
 	ctx.routingClient = helpers.NewMockRoutingClient()
-	ctx.graphProvider = helpers.NewMockGraphProvider()
 	ctx.mediator = helpers.NewMockMediator()
 	ctx.clock = shared.NewMockClock(time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC))
 
+	// Create real repositories
+	ctx.repos = helpers.NewTestRepositories(ctx.apiClient, ctx.clock)
+
 	// Setup market scanner with real repos
-	ctx.marketScanner = ship.NewMarketScanner(ctx.apiClient, ctx.marketRepo, ctx.playerRepo)
+	ctx.marketScanner = ship.NewMarketScanner(ctx.apiClient, ctx.repos.MarketRepo, ctx.repos.PlayerRepo)
 
 	// Setup default mediator behavior
 	ctx.mediator.SetSendFunc(func(ctxMed context.Context, request common.Request) (common.Response, error) {
@@ -101,34 +86,29 @@ func (ctx *scoutingApplicationContext) reset() {
 		return nil, nil
 	})
 
-	// Setup stop container tracking
-	ctx.stopContainerFn = func(id string) {
-		ctx.stoppedContainers = append(ctx.stoppedContainers, id)
-	}
-
-	// Create handlers - note: using adapter to convert MockShipRepository methods
+	// Create handlers with real repositories
 	ctx.assignFleetHandler = scoutingCommands.NewAssignScoutingFleetHandler(
-		ctx.shipRepo,
-		ctx.waypointRepo,
-		ctx.graphProvider,
+		ctx.repos.ShipRepo,
+		ctx.repos.WaypointRepo,
+		ctx.repos.GraphService,
 		ctx.routingClient,
 		ctx.daemonClient,
-		ctx.assignmentRepo,
+		ctx.repos.ShipAssignmentRepo,
 	)
 	ctx.scoutMarketsHandler = scoutingCommands.NewScoutMarketsHandler(
-		ctx.shipRepo,
-		ctx.graphProvider,
+		ctx.repos.ShipRepo,
+		ctx.repos.GraphService,
 		ctx.routingClient,
 		ctx.daemonClient,
-		ctx.assignmentRepo,
+		ctx.repos.ShipAssignmentRepo,
 	)
 	ctx.scoutTourHandler = scoutingCommands.NewScoutTourHandler(
-		ctx.shipRepo,
+		ctx.repos.ShipRepo,
 		ctx.mediator,
 		ctx.marketScanner,
 	)
-	ctx.getMarketHandler = scoutingQueries.NewGetMarketDataHandler(ctx.marketRepo)
-	ctx.listMarketsHandler = scoutingQueries.NewListMarketDataHandler(ctx.marketRepo)
+	ctx.getMarketHandler = scoutingQueries.NewGetMarketDataHandler(ctx.repos.MarketRepo)
+	ctx.listMarketsHandler = scoutingQueries.NewListMarketDataHandler(ctx.repos.MarketRepo)
 }
 
 // ==================== GIVEN STEPS ====================
@@ -149,7 +129,12 @@ func (ctx *scoutingApplicationContext) aPlayerWithIDAndTokenExistsInTheDatabase(
 	}
 
 	p := player.NewPlayer(pid, fmt.Sprintf("AGENT-%d", playerID), token)
-	return ctx.playerRepo.Add(context.Background(), p)
+
+	// Add to API mock so ListShips can find player by token
+	ctx.apiClient.AddPlayer(p)
+
+	// Add to database
+	return ctx.repos.PlayerRepo.Add(context.Background(), p)
 }
 
 func (ctx *scoutingApplicationContext) aProbeShipForPlayerAtWaypoint(shipSymbol string, playerID int, waypointSymbol string) error {
@@ -210,12 +195,17 @@ func (ctx *scoutingApplicationContext) createShipFixture(shipSymbol string, play
 	}
 
 	ctx.testShips[shipSymbol] = ship
-	ctx.shipRepo.Ships[shipSymbol] = ship
-	ctx.shipRepo.ShipsByPlayer[playerID] = append(ctx.shipRepo.ShipsByPlayer[playerID], ship)
 
-	// Extract system symbol and ensure graph exists
-	systemSymbol := location.SystemSymbol
-	ctx.ensureGraphForSystem(systemSymbol)
+	// Store ship in API mock (so real ShipRepository can fetch it)
+	ctx.apiClient.AddShip(ship)
+
+	// Store waypoint in API mock (so graph builder can fetch it)
+	ctx.apiClient.AddWaypoint(location)
+
+	// Store waypoint in database
+	if err := ctx.repos.WaypointRepo.Add(context.Background(), location); err != nil {
+		return fmt.Errorf("failed to add waypoint to database: %w", err)
+	}
 
 	return nil
 }
@@ -227,12 +217,12 @@ func (ctx *scoutingApplicationContext) aMarketplaceInSystem(waypointSymbol strin
 	}
 	wp.Traits = []string{"MARKETPLACE"}
 	wp.SystemSymbol = systemSymbol
-	ctx.waypointRepo.AddWaypoint(wp)
 
-	// Ensure graph exists for this system and add waypoint to it
-	ctx.ensureGraphForSystem(systemSymbol)
+	// Add waypoint to API mock so graph builder can fetch it
+	ctx.apiClient.AddWaypoint(wp)
 
-	return nil
+	// Store waypoint in real database
+	return ctx.repos.WaypointRepo.Add(context.Background(), wp)
 }
 
 func (ctx *scoutingApplicationContext) aFuelStationMarketplaceInSystem(waypointSymbol string, systemSymbol string) error {
@@ -243,17 +233,17 @@ func (ctx *scoutingApplicationContext) aFuelStationMarketplaceInSystem(waypointS
 	wp.Type = "FUEL_STATION"
 	wp.Traits = []string{"MARKETPLACE"}
 	wp.SystemSymbol = systemSymbol
-	ctx.waypointRepo.AddWaypoint(wp)
 
-	// Ensure graph exists for this system
-	ctx.ensureGraphForSystem(systemSymbol)
+	// Add waypoint to API mock so graph builder can fetch it
+	ctx.apiClient.AddWaypoint(wp)
 
-	return nil
+	// Store waypoint in real database
+	return ctx.repos.WaypointRepo.Add(context.Background(), wp)
 }
 
 func (ctx *scoutingApplicationContext) shipHasAnExistingActiveContainer(shipSymbol string, containerID string, playerID int) error {
 	assignment := container.NewShipAssignment(shipSymbol, playerID, containerID, nil)
-	return ctx.assignmentRepo.Assign(context.Background(), assignment)
+	return ctx.repos.ShipAssignmentRepo.Assign(context.Background(), assignment)
 }
 
 func (ctx *scoutingApplicationContext) marketDataExistsForWaypointWithPlayer(waypointSymbol string, playerID int) error {
@@ -270,7 +260,7 @@ func (ctx *scoutingApplicationContext) marketDataExistsForWaypointWithPlayerScan
 
 	// Use real time, not mock clock, because the repository uses time.Now() for age filtering
 	timestamp := time.Now().Add(-time.Duration(minutesAgo) * time.Minute)
-	return ctx.marketRepo.UpsertMarketData(context.Background(), uint(playerID), waypointSymbol, goods, timestamp)
+	return ctx.repos.MarketRepo.UpsertMarketData(context.Background(), uint(playerID), waypointSymbol, goods, timestamp)
 }
 
 func (ctx *scoutingApplicationContext) vrpAssignsToAnd(markets1 string, ship1 string, markets2 string, ship2 string) error {
@@ -707,12 +697,6 @@ func (ctx *scoutingApplicationContext) assignmentsShouldBeEmpty() error {
 }
 
 // ==================== HELPER FUNCTIONS ====================
-
-func (ctx *scoutingApplicationContext) ensureGraphForSystem(systemSymbol string) {
-	// Set up a simple graph with all waypoints connected
-	// This is a simplified mock - distances don't matter for these tests
-	ctx.graphProvider.SetGraph(systemSymbol, map[string]map[string]float64{})
-}
 
 func parseStringList(input string) []string {
 	input = strings.Trim(input, "[]")

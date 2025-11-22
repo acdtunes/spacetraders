@@ -96,6 +96,11 @@ func (m *MockMediator) GetCallLog() []string {
 	return append([]string{}, m.callLog...)
 }
 
+// GetCallCount returns the number of commands that were called
+func (m *MockMediator) GetCallCount() int {
+	return len(m.callLog)
+}
+
 // ClearCallLog clears the call log
 func (m *MockMediator) ClearCallLog() {
 	m.callLog = []string{}

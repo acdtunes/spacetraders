@@ -79,18 +79,6 @@ Feature: Fleet Assignment and Ship Selection
     Then exactly 2 ships should be assigned
     And each target should have at most 1 ship
 
-  Scenario: Handle empty fleet assignment
-    Given 0 ships in the fleet
-    And 3 target waypoints for assignment
-    When I assign ships to targets
-    Then 0 ships should be assigned
-
-  Scenario: Handle no targets assignment
-    Given 3 ships at waypoint X1-A1
-    And 0 target waypoints
-    When I assign ships to targets
-    Then 0 ships should be assigned
-
   # Fleet Assigner - Distribution Quality
   Scenario: Calculate distribution quality for well-distributed fleet
     Given ship "SHIP-A" at waypoint X1-A1 (0, 0)

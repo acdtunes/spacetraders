@@ -1,64 +1,51 @@
 # Domain Layer Refactoring Plan
 
 **Date:** 2025-11-21
-**Status:** Planning
-**Scope:** `internal/domain/` package refactoring
+**Status:** Ready for Implementation
+**Scope:** `internal/domain/` package improvements
 
 ---
 
 ## Executive Summary
 
-This document outlines refactoring opportunities identified in the domain layer through systematic analysis of code duplication, SOLID principle violations, cohesion, and coupling issues.
+This plan addresses code quality issues in the domain layer to improve maintainability, testability, and adherence to SOLID principles.
 
-**Key Findings:**
-- 15 refactoring opportunities identified
-- ~200+ lines of duplicated code
-- 1 major SRP violation (Ship entity - 521 lines)
-- Multiple instances of scattered business logic
+**Key Opportunities:**
+- 8 refactoring opportunities identified
+- ~370 lines of code can be eliminated through deduplication
+- Several SOLID principle violations to address
+- Estimated effort: 10-14 days
 
-**Expected Impact:**
-- Reduce code duplication by 200+ lines
-- Improve testability and maintainability
-- Better adherence to SOLID principles
-- Clearer separation of concerns
-
----
-
-## Table of Contents
-
-1. [High Severity Issues (P0-P1)](#high-severity-issues)
-2. [Medium Severity Issues (P2-P3)](#medium-severity-issues)
-3. [Code Smells](#code-smells)
-4. [Refactoring Roadmap](#refactoring-roadmap)
-5. [Implementation Guidelines](#implementation-guidelines)
+**Expected Benefits:**
+- Reduced code duplication by ~370 lines
+- Better separation of concerns
+- Improved testability through focused components
+- Easier to extend and maintain
 
 ---
 
-## High Severity Issues
+## Refactoring Opportunities
 
-### 1. Duplicate State Machine Pattern (P0)
+### Priority 0 (Immediate) - Foundation Work
 
-**Severity:** HIGH
-**Impact:** 150+ lines of duplicated code
-**Priority:** P0 (Immediate)
+#### 1. Extract Lifecycle State Machine Pattern
 
-#### Problem
+**Problem:**
+Three entities (Container, MiningOperation, Route) implement nearly identical state machine logic with duplicated lifecycle methods and timestamp tracking.
 
-Three entities implement nearly identical lifecycle state machines:
-
+**Current Duplication:**
 - **Container** (`internal/domain/container/container.go:139-213`)
 - **MiningOperation** (`internal/domain/mining/mining_operation.go:115-170`)
 - **Route** (`internal/domain/navigation/route.go:167-200`)
 
-**Duplicated Logic:**
+All three implement:
 - State transitions: `Start()`, `Complete()`, `Fail()`, `Stop()`
 - State queries: `IsRunning()`, `IsFinished()`
-- Timestamp tracking: `createdAt`, `updatedAt`, `startedAt`, `stoppedAt`
+- Timestamps: `createdAt`, `updatedAt`, `startedAt`, `stoppedAt`
 - Runtime calculations: `RuntimeDuration()`
 
-#### Solution
-
-Extract common state machine behavior into reusable component:
+**Solution:**
+Create a reusable lifecycle state machine component using composition.
 
 ```go
 // domain/shared/lifecycle_state_machine.go
@@ -72,170 +59,85 @@ type LifecycleStateMachine struct {
     clock     Clock
 }
 
-func NewLifecycleStateMachine(clock Clock) *LifecycleStateMachine { ... }
-
-func (sm *LifecycleStateMachine) Start() error { ... }
-func (sm *LifecycleStateMachine) Complete() error { ... }
-func (sm *LifecycleStateMachine) Fail(err error) error { ... }
-func (sm *LifecycleStateMachine) Stop() error { ... }
-func (sm *LifecycleStateMachine) IsRunning() bool { ... }
-func (sm *LifecycleStateMachine) IsFinished() bool { ... }
-func (sm *LifecycleStateMachine) RuntimeDuration() time.Duration { ... }
+func NewLifecycleStateMachine(clock Clock) *LifecycleStateMachine
+func (sm *LifecycleStateMachine) Start() error
+func (sm *LifecycleStateMachine) Complete() error
+func (sm *LifecycleStateMachine) Fail(err error) error
+func (sm *LifecycleStateMachine) Stop() error
+func (sm *LifecycleStateMachine) IsRunning() bool
+func (sm *LifecycleStateMachine) IsFinished() bool
+func (sm *LifecycleStateMachine) RuntimeDuration() time.Duration
 ```
 
-**Refactor entities to use composition:**
-
+Refactor entities to use composition:
 ```go
 type Container struct {
     lifecycle *shared.LifecycleStateMachine
-    // ... other container-specific fields
+    // ... container-specific fields
 }
 ```
 
-#### Action Items
+**Impact:**
+- Eliminates ~150 lines of duplication
+- Single source of truth for lifecycle behavior
+- Easier to test lifecycle logic in isolation
 
-- [ ] Create `domain/shared/lifecycle_state_machine.go`
-- [ ] Write BDD tests for lifecycle state machine
-- [ ] Refactor Container to use LifecycleStateMachine
-- [ ] Refactor MiningOperation to use LifecycleStateMachine
-- [ ] Refactor Route to use LifecycleStateMachine
-- [ ] Update all related BDD tests
+**Effort:** 2-3 days
 
 ---
 
-### 2. Ship Entity SRP Violation (P0)
+#### 2. Complete Ship Entity Decomposition
 
-**Severity:** HIGH
-**Impact:** 521-line entity with multiple responsibilities
-**Priority:** P0 (Immediate)
+**Problem:**
+Ship entity is 516 lines with multiple responsibilities. While `ShipFuelService` and `ShipNavigationCalculator` have been extracted, the Ship entity still contains many wrapper methods and hasn't been sufficiently reduced.
 
-#### Problem
+**Current State:**
+- Ship.go: 516 lines (target: ~250 lines)
+- ShipFuelService: EXISTS (146 lines) ✓
+- ShipNavigationCalculator: EXISTS (67 lines) ✓
 
-Ship entity (`internal/domain/navigation/ship.go`) violates Single Responsibility Principle with 6 distinct responsibilities:
+**Remaining Work:**
+Remove unnecessary wrapper methods from Ship entity. Ship should only contain:
+- Core state management (dock, orbit, transit)
+- Direct fuel/cargo operations
+- Simple getters and state queries
 
-1. **State Management** (lines 239-317): 8 methods for navigation state transitions
-2. **Fuel Management** (lines 319-362): 3 methods for fuel operations
-3. **Navigation Calculations** (lines 364-400): 5 methods for distance/time/fuel calculations
-4. **Cargo Management** (lines 402-434): 5 methods for cargo queries
-5. **State Queries** (lines 436-456): 4 methods for status checks
-6. **Route Execution Decisions** (lines 463-520): 2 complex refueling decision methods
+Move complex logic entirely to services:
+- Refueling decisions → ShipFuelService
+- Navigation calculations → ShipNavigationCalculator
 
-**Impact:**
-- Difficult to test in isolation
-- High complexity (30+ methods)
-- Mixes business logic with domain calculations
-- Hard to maintain and extend
-
-#### Solution
-
-**Extract Domain Services:**
-
-1. **ShipFuelService** - Fuel management and refueling decisions
-   ```go
-   // domain/navigation/ship_fuel_service.go
-   type ShipFuelService struct {
-       clock Clock
-   }
-
-   func (s *ShipFuelService) ShouldRefuelOpportunistically(ship *Ship, safetyMargin float64) bool
-   func (s *ShipFuelService) ShouldPreventDriftMode(ship *Ship, fuelCost int, safetyMargin int) bool
-   func (s *ShipFuelService) CalculateRefuelAmount(ship *Ship, strategy RefuelStrategy) int
-   ```
-
-2. **ShipNavigationCalculator** - Navigation math and calculations
-   ```go
-   // domain/navigation/ship_navigation_calculator.go
-   type ShipNavigationCalculator struct {}
-
-   func (c *ShipNavigationCalculator) TravelTime(ship *Ship, destination *Waypoint, mode FlightMode) int
-   func (c *ShipNavigationCalculator) FuelRequired(ship *Ship, destination *Waypoint, mode FlightMode) int
-   func (c *ShipNavigationCalculator) CanNavigateTo(ship *Ship, destination *Waypoint) bool
-   func (c *ShipNavigationCalculator) SelectOptimalFlightMode(ship *Ship, destination *Waypoint, safetyMargin int) FlightMode
-   ```
-
-3. **Keep in Ship Entity:**
-   - Core state: location, fuel, cargo, navigation status
-   - Simple state transitions: `Depart()`, `Dock()`, `Orbit()`, `StartTransit()`, `Arrive()`
-   - Simple getters and state queries
-   - Direct fuel/cargo operations: `ConsumeFuel()`, `Refuel()`, `HasCargoSpace()`
-
-**Expected Reduction:** Ship entity from 521 lines to ~250 lines
-
-#### Action Items
-
-- [ ] Create `domain/navigation/ship_fuel_service.go`
-- [ ] Extract fuel decision methods to ShipFuelService
-- [ ] Create `domain/navigation/ship_navigation_calculator.go`
-- [ ] Extract navigation calculation methods to ShipNavigationCalculator
-- [ ] Update Ship entity to use services where appropriate
-- [ ] Write BDD tests for new services
-- [ ] Update existing BDD tests to reflect new structure
-
----
-
-### 3. Scattered Fuel Logic (P1)
-
-**Severity:** HIGH
-**Impact:** Low cohesion across 3+ files
-**Priority:** P1 (High)
-
-#### Problem
-
-Fuel-related logic scattered across multiple files without cohesive organization:
-
-- **Fuel value object:** `internal/domain/shared/fuel.go`
-- **Fuel operations in Ship:** `internal/domain/navigation/ship.go:320-362`
-- **Fuel decision logic in Ship:** `internal/domain/navigation/ship.go:465-520`
-- **Flight mode fuel calculations:** `internal/domain/shared/flight_mode.go:39-50`
-
-**Impact:**
-- Difficult to understand complete fuel management behavior
-- Changes require updates across multiple files
-- Duplicated fuel percentage calculations
-
-#### Solution
-
-Centralize fuel management in ShipFuelService (see Issue #2) and consolidate calculations:
-
-1. Move all refueling decision logic to ShipFuelService
-2. Use `Fuel.Percentage()` method instead of recalculating
-3. Document fuel safety policies in one place
-
-**Example Consolidation:**
-
+**Example Cleanup:**
 ```go
-// BEFORE: Ship.go duplicates fuel percentage calculation
-fuelPercentage := float64(s.fuel.Current) / float64(s.fuelCapacity)
+// REMOVE from Ship entity (lines 459-516)
+func (s *Ship) ShouldRefuelOpportunistically(...) bool
+func (s *Ship) ShouldPreventDriftMode(...) bool
 
-// AFTER: Use Fuel value object method
-fuelPercentage := s.fuel.Percentage() / 100.0
+// Keep simple operations
+func (s *Ship) ConsumeFuel(amount int) error
+func (s *Ship) Refuel(amount int) error
 ```
 
-#### Action Items
+**Impact:**
+- Ship.go from 516 to ~250 lines
+- Clearer separation of concerns
+- Better SRP compliance
 
-- [ ] Consolidate fuel logic in ShipFuelService
-- [ ] Remove duplicate fuel percentage calculations in Ship (lines 486, 518)
-- [ ] Use `Fuel.Percentage()` method consistently
-- [ ] Document fuel safety policies and thresholds
-- [ ] Update BDD tests
+**Effort:** 1-2 days
 
 ---
 
-### 4. Duplicate Distance Calculation (P1)
+### Priority 1 (High) - High-Value Improvements
 
-**Severity:** HIGH
-**Impact:** ~30 lines duplicated across 3 locations
-**Priority:** P1 (High)
+#### 3. Eliminate Duplicate Distance Calculations
 
-#### Problem
+**Problem:**
+The "find nearest waypoint" pattern is duplicated across 3 locations:
 
-Same "find nearest waypoint" pattern repeated 3 times:
+1. `internal/domain/contract/fleet_assigner.go:87-100`
+2. `internal/domain/contract/fleet_assigner.go:211-224`
+3. `internal/domain/contract/ship_selector.go:93-106`
 
-- `internal/domain/contract/fleet_assigner.go:89-100`
-- `internal/domain/contract/fleet_assigner.go:212-222`
-- `internal/domain/contract/ship_selector.go:99-100`
-
-**Pattern:**
+**Duplicated Pattern:**
 ```go
 for _, ship := range ships {
     minDistance := math.MaxFloat64
@@ -250,141 +152,96 @@ for _, ship := range ships {
 }
 ```
 
-#### Solution
-
-Extract to utility method in `domain/shared/waypoint.go`:
+**Solution:**
+Extract to utility methods in `domain/shared/waypoint.go`:
 
 ```go
 // FindNearestWaypoint returns the nearest waypoint from a list and its distance
-func FindNearestWaypoint(from *Waypoint, targets []*Waypoint) (*Waypoint, float64) {
-    if len(targets) == 0 {
-        return nil, 0
-    }
+func FindNearestWaypoint(from *Waypoint, targets []*Waypoint) (*Waypoint, float64)
 
-    nearest := targets[0]
-    minDistance := from.DistanceTo(targets[0])
-
-    for _, target := range targets[1:] {
-        distance := from.DistanceTo(target)
-        if distance < minDistance {
-            minDistance = distance
-            nearest = target
-        }
-    }
-
-    return nearest, minDistance
-}
-
-// CalculateTotalDistanceToNearestWaypoints calculates sum of distances from each ship to its nearest target
-func CalculateTotalDistanceToNearestWaypoints(ships []*Ship, targets []*Waypoint) float64 {
-    total := 0.0
-    for _, ship := range ships {
-        _, distance := FindNearestWaypoint(ship.CurrentLocation(), targets)
-        total += distance
-    }
-    return total
-}
+// CalculateTotalDistanceToNearestWaypoints calculates sum of distances
+func CalculateTotalDistanceToNearestWaypoints(ships []*Ship, targets []*Waypoint) float64
 ```
 
-#### Action Items
+**Impact:**
+- Eliminates ~30 lines of duplication
+- Reusable navigation utilities
+- Consistent distance calculations
 
-- [ ] Add `FindNearestWaypoint()` to `domain/shared/waypoint.go`
-- [ ] Add `CalculateTotalDistanceToNearestWaypoints()` helper
-- [ ] Replace duplicate implementations in FleetAssigner
-- [ ] Replace duplicate implementation in ShipSelector
-- [ ] Write BDD tests for new utility methods
+**Effort:** 1 day
 
 ---
 
-### 5. Contract Profitability Misplaced (P1)
+#### 4. Extract Contract Profitability Service
 
-**Severity:** HIGH
-**Impact:** 107 lines of complex logic in wrong place
-**Priority:** P1 (High)
+**Problem:**
+Contract entity contains a 76-line profitability calculation method (`EvaluateProfitability` at lines 181-256) that performs complex domain service logic rather than entity behavior.
 
-#### Problem
+**Current Location:**
+`internal/domain/contract/contract.go:181-256`
 
-Complex profitability calculation embedded in Contract entity (`internal/domain/contract/contract.go:142-248`):
-
-- 107-line `CalculateProfitability()` method
-- Complex domain service logic (not entity behavior)
-- Mixes contract state management with profitability analysis
-- Contract entity becomes responsible for financial calculations
-
-**Impact:**
-- Contract entity too complex
+**Issues:**
+- Complex financial calculations embedded in entity
+- Violates Single Responsibility Principle
 - Difficult to test profitability logic in isolation
-- Violates SRP
+- Contract becomes responsible for business analysis
 
-#### Solution
-
+**Solution:**
 Extract to dedicated domain service:
 
 ```go
 // domain/contract/contract_profitability_service.go
-type ContractProfitabilityService struct {
-    // Dependencies if needed
-}
+type ContractProfitabilityService struct{}
 
-func NewContractProfitabilityService() *ContractProfitabilityService {
-    return &ContractProfitabilityService{}
-}
+func NewContractProfitabilityService() *ContractProfitabilityService
 
-func (s *ContractProfitabilityService) CalculateProfitability(
+func (s *ContractProfitabilityService) EvaluateProfitability(
     contract *Contract,
-    ships []*Ship,
-    markets map[string]*Market,
-) (*ContractProfitability, error) {
-    // Move 107-line calculation here
-}
+    context ProfitabilityContext,
+) (*ProfitabilityEvaluation, error)
 
 func (s *ContractProfitabilityService) EstimateRevenue(...) int
 func (s *ContractProfitabilityService) EstimateTravelCosts(...) int
 func (s *ContractProfitabilityService) EstimatePurchaseCosts(...) int
 ```
 
-**Contract entity simplifies to:**
+Contract entity simplifies to delegation:
 ```go
-// Contract just delegates to service
-func (c *Contract) CalculateProfitability(service *ContractProfitabilityService, ...) (*ContractProfitability, error) {
-    return service.CalculateProfitability(c, ships, markets)
+func (c *Contract) EvaluateProfitability(
+    service *ContractProfitabilityService,
+    context ProfitabilityContext,
+) (*ProfitabilityEvaluation, error) {
+    return service.EvaluateProfitability(c, context)
 }
 ```
 
-#### Action Items
+**Impact:**
+- Better SRP compliance
+- Easier to test profitability logic
+- Contract entity focuses on contract lifecycle
 
-- [ ] Create `domain/contract/contract_profitability_service.go`
-- [ ] Move profitability calculation logic to service
-- [ ] Update Contract entity to delegate to service
-- [ ] Write BDD tests for ContractProfitabilityService
-- [ ] Update existing contract BDD tests
+**Effort:** 2 days
 
 ---
 
-## Medium Severity Issues
+### Priority 2 (Medium) - SOLID Compliance
 
-### 6. ShipRepository Interface Segregation Violation (P2)
+#### 5. Split ShipRepository Interface (ISP)
 
-**Severity:** MEDIUM
-**Impact:** Fat interface with 10 methods mixing concerns
-**Priority:** P2 (Medium)
+**Problem:**
+ShipRepository interface violates Interface Segregation Principle with 10 methods mixing different concerns.
 
-#### Problem
-
-ShipRepository interface (`internal/domain/navigation/ports.go:9-39`) violates Interface Segregation Principle:
-
-**Mixed Concerns:**
+**Current Interface** (`internal/domain/navigation/ports.go:9-39`):
 - Query operations: `FindBySymbol`, `GetShipData`, `FindAllByPlayer`
 - Navigation commands: `Navigate`, `Dock`, `Orbit`, `Refuel`, `SetFlightMode`
 - Cargo operations: `JettisonCargo`
 
-**Impact:**
-- Implementations must implement all methods even if only needing subset
+**Issues:**
+- Implementations must implement all methods even if only needing a subset
 - Difficult to mock in tests (must mock all 10 methods)
 - Violates ISP
 
-#### Solution
-
+**Solution:**
 Split into focused interfaces:
 
 ```go
@@ -411,7 +268,7 @@ type ShipCargoRepository interface {
     JettisonCargo(ctx context.Context, agentSymbol, shipSymbol, cargoSymbol string, units int) (*Cargo, error)
 }
 
-// ShipRepository combines all interfaces for convenience
+// ShipRepository combines all for convenience
 type ShipRepository interface {
     ShipQueryRepository
     ShipCommandRepository
@@ -419,26 +276,21 @@ type ShipRepository interface {
 }
 ```
 
-#### Action Items
+**Impact:**
+- Better ISP compliance
+- Easier testing (mock only needed interfaces)
+- Clear separation of query/command responsibilities
 
-- [ ] Split ShipRepository into focused interfaces
-- [ ] Update adapter implementations
-- [ ] Update command handlers to use specific interfaces
-- [ ] Update dependency injection to use focused interfaces where possible
-- [ ] Update tests to mock only needed interfaces
+**Effort:** 2-3 days
 
 ---
 
-### 7. FlightMode Open/Closed Violation (P2)
+#### 6. Apply Strategy Pattern to FlightMode Selection
 
-**Severity:** MEDIUM
-**Impact:** Hard to extend with new flight modes
-**Priority:** P2 (Medium)
+**Problem:**
+`SelectOptimalFlightMode` function (`internal/domain/shared/flight_mode.go:76-104`) uses hard-coded if-else logic that violates Open/Closed Principle.
 
-#### Problem
-
-`SelectOptimalFlightMode` function (`internal/domain/shared/flight_mode.go:76-104`) uses hard-coded if-else logic:
-
+**Current Implementation:**
 ```go
 func SelectOptimalFlightMode(currentFuel, fuelCost, safetyMargin int) FlightMode {
     burnCost := int(float64(fuelCost) * burnConfig.FuelRate / cruiseConfig.FuelRate)
@@ -452,13 +304,12 @@ func SelectOptimalFlightMode(currentFuel, fuelCost, safetyMargin int) FlightMode
 }
 ```
 
-**Impact:**
+**Issues:**
 - Adding new flight modes requires modifying this function
 - Not open for extension
 - Complex branching logic (cyclomatic complexity ~8)
 
-#### Solution
-
+**Solution:**
 Strategy pattern with priority-based selection:
 
 ```go
@@ -470,10 +321,7 @@ type FlightModeStrategy interface {
 }
 
 type BurnModeStrategy struct{}
-func (s *BurnModeStrategy) CanUse(currentFuel, fuelCost, safetyMargin int) bool {
-    burnCost := calculateBurnCost(fuelCost)
-    return currentFuel > burnCost+safetyMargin
-}
+func (s *BurnModeStrategy) CanUse(currentFuel, fuelCost, safetyMargin int) bool
 func (s *BurnModeStrategy) Priority() int { return 3 }
 func (s *BurnModeStrategy) Mode() FlightMode { return FlightModeBurn }
 
@@ -482,7 +330,6 @@ type FlightModeSelector struct {
 }
 
 func (s *FlightModeSelector) SelectOptimalMode(currentFuel, fuelCost, safetyMargin int) FlightMode {
-    // Sort by priority, return first usable mode
     for _, strategy := range s.strategies {
         if strategy.CanUse(currentFuel, fuelCost, safetyMargin) {
             return strategy.Mode()
@@ -492,87 +339,32 @@ func (s *FlightModeSelector) SelectOptimalMode(currentFuel, fuelCost, safetyMarg
 }
 ```
 
-#### Action Items
+**Impact:**
+- Better OCP compliance
+- Easy to add new flight modes
+- More maintainable and testable
 
-- [ ] Create `domain/shared/flight_mode_selector.go`
-- [ ] Implement strategy interfaces for each flight mode
-- [ ] Replace `SelectOptimalFlightMode` with selector
-- [ ] Write BDD tests for selector
-- [ ] Update existing tests
-
----
-
-### 8. Data Clump: Timestamp Fields (P3)
-
-**Severity:** MEDIUM
-**Impact:** Same 4-5 fields repeated across 3+ entities
-**Priority:** P3 (Low)
-
-#### Problem
-
-Same timestamp fields repeated across entities:
-
-- **Container:** `internal/domain/container/container.go:74-78`
-- **MiningOperation:** `internal/domain/mining/mining_operation.go:43-47`
-- **ShipAssignment:** `internal/domain/container/ship_assignment.go:29-31`
-
-**Pattern:**
-```go
-createdAt time.Time
-updatedAt time.Time
-startedAt *time.Time
-stoppedAt *time.Time
-```
-
-#### Solution
-
-Extract to value object (already part of LifecycleStateMachine refactoring):
-
-```go
-// domain/shared/lifecycle_timestamps.go
-type LifecycleTimestamps struct {
-    CreatedAt time.Time
-    UpdatedAt time.Time
-    StartedAt *time.Time
-    StoppedAt *time.Time
-}
-
-func (t *LifecycleTimestamps) RuntimeDuration() time.Duration {
-    if t.StartedAt == nil || t.StoppedAt == nil {
-        return 0
-    }
-    return t.StoppedAt.Sub(*t.StartedAt)
-}
-```
-
-**Note:** This is automatically addressed by the LifecycleStateMachine refactoring (Issue #1).
-
-#### Action Items
-
-- [ ] Handled by LifecycleStateMachine refactoring
-- [ ] Verify all entities use consistent timestamp handling
+**Effort:** 2 days
 
 ---
 
-### 9. Magic Numbers (P3)
+### Priority 3 (Low) - Code Quality Polish
 
-**Severity:** MEDIUM
-**Impact:** Unclear business rules
-**Priority:** P3 (Low)
+#### 7. Extract Magic Numbers to Named Constants
 
-#### Problem
+**Problem:**
+Hard-coded magic numbers throughout domain layer make business rules unclear.
 
-Hard-coded magic numbers throughout domain layer:
+**Current Magic Numbers:**
 
-| Location | Value | Context |
-|----------|-------|---------|
-| `container/container.go:114` | 3 | Max restarts |
-| `contract/fleet_assigner.go:12-18` | 2 | Max ships per waypoint |
-| `navigation/ship.go:399` | 4 | Fuel safety margin |
-| `contract/contract.go:170` | -5000 | Min profit threshold |
+| Location | Line | Value | Context |
+|----------|------|-------|---------|
+| `container/container.go` | 114 | 3 | Max restarts |
+| `contract/fleet_assigner.go` | 14, 18 | 2 | Max ships per waypoint/market |
+| `navigation/ship.go` | 394 | 4 | Fuel safety margin |
+| `contract/contract.go` | 178 | -5000 | Min profit threshold |
 
-#### Solution
-
+**Solution:**
 Extract to named constants with business reasoning:
 
 ```go
@@ -608,224 +400,168 @@ const (
 )
 ```
 
-#### Action Items
+**Impact:**
+- Better code readability
+- Documented business policies
+- Easier to adjust thresholds
 
-- [ ] Extract magic numbers to named constants
-- [ ] Add business reasoning in comments
-- [ ] Document domain policies
-- [ ] Consider making some values configurable (future enhancement)
-
----
-
-## Code Smells
-
-### 10. Long Method: SelectOptimalFlightMode (P2)
-
-**Location:** `internal/domain/shared/flight_mode.go:76-104`
-**Complexity:** Cyclomatic complexity ~8
-**Lines:** 29 lines
-
-**Issue:** Complex branching logic with multiple special cases.
-
-**Solution:** Addressed by FlightMode Strategy Pattern refactoring (Issue #7).
+**Effort:** 1 day
 
 ---
 
-### 11. Feature Envy: Ship methods operating on Fuel (P2)
+#### 8. Polish Fuel Logic Consistency
 
-**Locations:**
-- `internal/domain/navigation/ship.go:465-520`
+**Problem:**
+Minor inconsistencies in fuel logic usage across the codebase.
 
-**Issue:** Ship methods extensively query Fuel object state:
+**Findings:**
+- Ship.go has duplicate fuel percentage calculations (lines 482, 514)
+- Already uses `Fuel.Percentage()` method (good!)
+- ShipFuelService consolidates most logic (good!)
 
-```go
-func (s *Ship) ShouldRefuelOpportunistically(...) bool {
-    fuelPercentage := float64(s.fuel.Current) / float64(s.fuelCapacity)
-    return fuelPercentage < safetyMargin
-}
-```
+**Solution:**
+Minor cleanup to ensure complete consistency:
 
-**Solution:** Move to Fuel value object or ShipFuelService (addressed by Issues #2 and #3):
+1. Review all fuel percentage calculations use `Fuel.Percentage()`
+2. Ensure all refueling decisions go through ShipFuelService
+3. Document fuel safety policies in ShipFuelService
 
-```go
-// Option 1: Fuel value object method
-func (f *Fuel) IsBelowSafetyMargin(margin float64) bool {
-    return f.Percentage()/100.0 < margin
-}
+**Impact:**
+- Complete fuel logic consolidation
+- Consistent fuel handling patterns
 
-// Option 2: ShipFuelService method
-func (s *ShipFuelService) ShouldRefuelOpportunistically(ship *Ship, margin float64) bool {
-    return ship.Fuel().IsBelowSafetyMargin(margin)
-}
-```
+**Effort:** 0.5 days
 
 ---
 
-### 12. Missing Abstractions
+## Implementation Roadmap
 
-#### 12.1 No Explicit Fleet Domain Services (P3)
+### Phase 1: Foundation (P0) - 3-5 Days
 
-**Location:** `internal/domain/contract/`
+**Sprint 1.1: Lifecycle State Machine Extraction**
+- Create `domain/shared/lifecycle_state_machine.go`
+- Write comprehensive BDD tests for state machine
+- Refactor Container entity to use lifecycle component
+- Refactor MiningOperation entity to use lifecycle component
+- Refactor Route entity to use lifecycle component
+- Update all related BDD tests
 
-**Issue:** FleetAssigner and ShipSelector are domain services but not explicitly modeled:
-- Located in contract package
-- Apply to general ship navigation, not contract-specific
-- No clear "fleet" domain concept
-
-**Recommendation:** Consider creating `domain/fleet/` package with explicit domain services.
-
----
-
-#### 12.2 Missing Route Builder (P3)
-
-**Location:** `internal/domain/navigation/route.go:77-104`
-
-**Issue:** Complex route validation in constructor. Route building with segments should use builder pattern.
-
-**Recommendation:**
-```go
-// domain/navigation/route_builder.go
-type RouteBuilder struct {
-    shipSymbol  string
-    origin      *shared.Waypoint
-    destination *shared.Waypoint
-    segments    []RouteSegment
-    clock       shared.Clock
-}
-
-func NewRouteBuilder(shipSymbol string) *RouteBuilder
-func (b *RouteBuilder) AddSegment(segment RouteSegment) *RouteBuilder
-func (b *RouteBuilder) Build() (*Route, error) // Validates and constructs
-```
-
----
-
-## Refactoring Roadmap
-
-### Phase 1: Foundation (P0 - Immediate)
-
-**Goal:** Eliminate major duplication and SRP violations
-
-#### Sprint 1.1: State Machine Extraction
-- [ ] Create `domain/shared/lifecycle_state_machine.go`
-- [ ] Write comprehensive BDD tests for state machine
-- [ ] Refactor Container entity
-- [ ] Refactor MiningOperation entity
-- [ ] Refactor Route entity
-- [ ] Update all related BDD tests
-
-**Estimated Effort:** 2-3 days
+**Estimated:** 2-3 days
 **Impact:** -150 lines of duplication
 
-#### Sprint 1.2: Ship Entity Decomposition
-- [ ] Create `domain/navigation/ship_fuel_service.go`
-- [ ] Create `domain/navigation/ship_navigation_calculator.go`
-- [ ] Extract methods to appropriate services
-- [ ] Update Ship entity
-- [ ] Write BDD tests for new services
-- [ ] Update existing ship BDD tests
+**Sprint 1.2: Complete Ship Entity Cleanup**
+- Remove unnecessary wrapper methods from Ship entity
+- Ensure all complex logic is in services
+- Update Ship entity to focus on core responsibilities
+- Update BDD tests
 
-**Estimated Effort:** 3-4 days
-**Impact:** Ship.go from 521 to ~250 lines
+**Estimated:** 1-2 days
+**Impact:** Ship.go from 516 to ~250 lines
 
 ---
 
-### Phase 2: High-Value Improvements (P1 - High Priority)
+### Phase 2: High-Value Improvements (P1) - 3-4 Days
 
-#### Sprint 2.1: Fuel Logic Consolidation
-- [ ] Consolidate fuel logic in ShipFuelService
-- [ ] Remove duplicate fuel percentage calculations
-- [ ] Use `Fuel.Percentage()` consistently
-- [ ] Document fuel policies
-- [ ] Update BDD tests
+**Sprint 2.1: Distance Calculation Utilities**
+- Add `FindNearestWaypoint()` to `domain/shared/waypoint.go`
+- Add `CalculateTotalDistanceToNearestWaypoints()` helper
+- Replace duplicate implementations in FleetAssigner (2 locations)
+- Replace duplicate implementation in ShipSelector
+- Write BDD tests for new utilities
 
-**Estimated Effort:** 1-2 days
-**Impact:** Better cohesion, -20 lines duplication
-
-#### Sprint 2.2: Distance Calculations
-- [ ] Add `FindNearestWaypoint()` to waypoint.go
-- [ ] Add helper methods for common patterns
-- [ ] Replace duplicate implementations
-- [ ] Write BDD tests
-
-**Estimated Effort:** 1 day
+**Estimated:** 1 day
 **Impact:** -30 lines duplication
 
-#### Sprint 2.3: Contract Profitability Service
-- [ ] Create `domain/contract/contract_profitability_service.go`
-- [ ] Extract profitability calculation
-- [ ] Update Contract entity
-- [ ] Write BDD tests
-- [ ] Update existing tests
+**Sprint 2.2: Contract Profitability Service**
+- Create `domain/contract/contract_profitability_service.go`
+- Extract profitability calculation logic to service
+- Update Contract entity to delegate to service
+- Write BDD tests for service
+- Update existing contract BDD tests
 
-**Estimated Effort:** 2 days
-**Impact:** Better SRP compliance, improved testability
+**Estimated:** 2 days
+**Impact:** Better SRP, improved testability
+
+**Sprint 2.3: Fuel Logic Polish**
+- Review and consolidate all fuel logic
+- Ensure consistent use of `Fuel.Percentage()`
+- Document fuel policies in ShipFuelService
+- Update BDD tests
+
+**Estimated:** 0.5 days
+**Impact:** Complete fuel consolidation
 
 ---
 
-### Phase 3: SOLID Compliance (P2 - Medium Priority)
+### Phase 3: SOLID & Polish (P2-P3) - 4-5 Days
 
-#### Sprint 3.1: Interface Segregation
-- [ ] Split ShipRepository interface
-- [ ] Update adapter implementations
-- [ ] Update command handlers
-- [ ] Update dependency injection
-- [ ] Update tests
+**Sprint 3.1: Interface Segregation**
+- Split ShipRepository into focused interfaces
+- Update adapter implementations
+- Update command handlers to use specific interfaces
+- Update dependency injection
+- Update tests
 
-**Estimated Effort:** 2-3 days
+**Estimated:** 2-3 days
 **Impact:** Better ISP compliance, easier testing
 
-#### Sprint 3.2: FlightMode Extensibility
-- [ ] Create flight mode selector with strategies
-- [ ] Implement strategy for each mode
-- [ ] Replace `SelectOptimalFlightMode`
-- [ ] Write BDD tests
-- [ ] Update existing tests
+**Sprint 3.2: FlightMode Strategy Pattern**
+- Create `domain/shared/flight_mode_selector.go`
+- Implement strategy interfaces for each flight mode
+- Replace `SelectOptimalFlightMode` with selector
+- Write BDD tests for selector
+- Update existing tests
 
-**Estimated Effort:** 2 days
-**Impact:** Better OCP compliance, more maintainable
+**Estimated:** 2 days
+**Impact:** Better OCP compliance
 
----
+**Sprint 3.3: Magic Numbers Extraction**
+- Extract all magic numbers to named constants
+- Add business reasoning comments
+- Document domain policies
 
-### Phase 4: Polish (P3 - Low Priority)
-
-#### Sprint 4.1: Magic Numbers
-- [ ] Extract to named constants
-- [ ] Add business reasoning comments
-- [ ] Document domain policies
-
-**Estimated Effort:** 1 day
-**Impact:** Better code readability
-
-#### Sprint 4.2: Missing Abstractions (Optional)
-- [ ] Consider fleet domain services
-- [ ] Consider route builder pattern
-- [ ] Evaluate value vs. effort
-
-**Estimated Effort:** 2-3 days (if pursued)
-**Impact:** Better domain model clarity
+**Estimated:** 1 day
+**Impact:** Better readability
 
 ---
 
-## Implementation Guidelines
-
-### Testing Strategy
+## Testing Strategy
 
 **CRITICAL:** All refactoring must maintain or improve test coverage.
 
-1. **BDD Tests First:**
-   - Write BDD tests for new components before refactoring
-   - Ensure existing BDD tests pass after refactoring
+### BDD Testing Approach
+
+1. **Tests First:**
+   - Write BDD tests for new components BEFORE refactoring
+   - Ensure existing BDD tests pass AFTER refactoring
    - Add new scenarios for extracted functionality
 
 2. **Test Location:**
    - All tests in `test/bdd/` directory
-   - Never create `*_test.go` files alongside production code
+   - NEVER create `*_test.go` files alongside production code
    - Follow existing BDD test patterns
 
 3. **Coverage Target:**
-   - Maintain current domain coverage (68.3%)
+   - Maintain current domain coverage
    - Aim to improve coverage with new tests
+   - Focus on behavior-driven scenarios
+
+### Test Execution
+
+```bash
+# Run all BDD tests
+make test-bdd
+
+# Run specific feature
+go test ./test/bdd/... -v -godog.paths=test/bdd/features/domain/shared/lifecycle_state_machine.feature
+
+# Generate coverage
+make test-coverage
+```
+
+---
+
+## Implementation Guidelines
 
 ### Refactoring Principles
 
@@ -863,116 +599,47 @@ For each refactoring PR:
 - [ ] No breaking changes to public APIs (or documented)
 - [ ] Performance implications considered
 
-### Risk Mitigation
-
-**High-Risk Refactorings:**
-- Ship entity decomposition (touches many files)
-- State machine extraction (affects 3 entities)
-- Interface splits (affects adapters)
-
-**Mitigation Strategies:**
-1. Feature flags for gradual rollout (if applicable)
-2. Comprehensive BDD tests before refactoring
-3. Pair programming for complex changes
-4. Extra review scrutiny
-5. Rollback plan documented
-
 ---
 
 ## Success Metrics
 
 ### Quantitative Metrics
 
-- **Code Duplication:** Reduce by 200+ lines
-- **Ship Entity Size:** Reduce from 521 to ~250 lines
-- **Test Coverage:** Maintain or improve 68.3%
-- **Cyclomatic Complexity:** Reduce in key methods
-- **Build Time:** Should not increase
+- **Code Duplication:** Reduce by ~370 lines
+- **Ship Entity Size:** Reduce from 516 to ~250 lines
+- **Test Coverage:** Maintain or improve current coverage
+- **Cyclomatic Complexity:** Reduce in SelectOptimalFlightMode and profitability calculations
 
 ### Qualitative Metrics
 
 - **Maintainability:** Easier to add new features
 - **Testability:** Services can be tested in isolation
 - **Clarity:** Clearer separation of concerns
-- **Extensibility:** New flight modes, states easier to add
+- **Extensibility:** New flight modes and states easier to add
 
 ---
 
-## Appendix A: Files Requiring Changes
+## Priority Summary
 
-### Phase 1 (P0)
-
-**New Files:**
-- `internal/domain/shared/lifecycle_state_machine.go`
-- `internal/domain/navigation/ship_fuel_service.go`
-- `internal/domain/navigation/ship_navigation_calculator.go`
-- `test/bdd/features/domain/shared/lifecycle_state_machine.feature`
-- `test/bdd/steps/lifecycle_state_machine_steps.go`
-
-**Modified Files:**
-- `internal/domain/container/container.go`
-- `internal/domain/mining/mining_operation.go`
-- `internal/domain/navigation/route.go`
-- `internal/domain/navigation/ship.go`
-- Multiple BDD test files
-
-### Phase 2 (P1)
-
-**New Files:**
-- `internal/domain/contract/contract_profitability_service.go`
-
-**Modified Files:**
-- `internal/domain/shared/waypoint.go`
-- `internal/domain/contract/contract.go`
-- `internal/domain/contract/fleet_assigner.go`
-- `internal/domain/contract/ship_selector.go`
-- Multiple BDD test files
-
-### Phase 3 (P2)
-
-**New Files:**
-- `internal/domain/shared/flight_mode_selector.go`
-
-**Modified Files:**
-- `internal/domain/navigation/ports.go`
-- `internal/domain/shared/flight_mode.go`
-- Adapter implementations (persistence, API, gRPC)
-- Multiple BDD test files
+| Priority | Issues | Total Effort | Impact |
+|----------|--------|--------------|--------|
+| P0 (Immediate) | #1, #2 | 3-5 days | -150 LOC, Ship cleanup |
+| P1 (High) | #3, #4, #8 | 3-4 days | -30 LOC, better SRP |
+| P2 (Medium) | #5, #6 | 4-5 days | Better SOLID compliance |
+| P3 (Low) | #7 | 1 day | Better readability |
+| **Total** | **8 issues** | **10-14 days** | **~370 LOC reduction** |
 
 ---
 
-## Appendix B: Summary Table
+## Getting Started
 
-| # | Issue | Severity | Priority | LOC Impact | Effort (days) |
-|---|-------|----------|----------|------------|---------------|
-| 1 | Duplicate State Machine | HIGH | P0 | -150 | 2-3 |
-| 2 | Ship SRP Violation | HIGH | P0 | -271 | 3-4 |
-| 3 | Scattered Fuel Logic | HIGH | P1 | -20 | 1-2 |
-| 4 | Duplicate Distance Calc | HIGH | P1 | -30 | 1 |
-| 5 | Contract Profitability | HIGH | P1 | -107 | 2 |
-| 6 | ShipRepository ISP | MEDIUM | P2 | - | 2-3 |
-| 7 | FlightMode OCP | MEDIUM | P2 | +50/-29 | 2 |
-| 8 | Timestamp Data Clump | MEDIUM | P3 | (Part of #1) | - |
-| 9 | Magic Numbers | MEDIUM | P3 | +10 | 1 |
-| **Total** | | | | **-547 lines** | **14-18 days** |
-
----
-
-## Conclusion
-
-This refactoring plan addresses systematic issues in the domain layer while maintaining backward compatibility and test coverage. The phased approach allows for incremental improvements with manageable risk.
-
-**Next Steps:**
-1. Review and approve this plan
-2. Create GitHub issues for each sprint
-3. Begin Phase 1, Sprint 1.1 (State Machine Extraction)
-4. Track progress in project board
-
-**Questions or Concerns:** Discuss with team before beginning implementation.
+1. **Review this plan** with the team
+2. **Create GitHub issues** for each sprint
+3. **Begin Phase 1, Sprint 1.1** (Lifecycle State Machine)
+4. **Track progress** using project board
 
 ---
 
 **Document Version:** 1.0
-**Last Updated:** 2025-11-21
-**Author:** Domain Layer Analysis
-**Status:** Awaiting Approval
+**Created:** 2025-11-21
+**Status:** Ready for Implementation

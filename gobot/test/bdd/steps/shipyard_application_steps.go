@@ -5,40 +5,35 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/cucumber/godog"
-	"gorm.io/gorm"
 
-	"github.com/andrescamacho/spacetraders-go/internal/adapters/api"
-	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	shipyardCommands "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/commands"
 	shipyardQueries "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/queries"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
+	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shipyard"
-	infraPorts "github.com/andrescamacho/spacetraders-go/internal/infrastructure/ports"
 	"github.com/andrescamacho/spacetraders-go/test/helpers"
 )
 
 // shipyardApplicationContext is a unified context for ALL shipyard application layer handlers
 type shipyardApplicationContext struct {
-	// Database and repositories (REAL, not mocked)
-	db           *gorm.DB
-	playerRepo   *persistence.GormPlayerRepository
-	shipRepo     *api.ShipRepository
-	waypointRepo *persistence.GormWaypointRepository
+	// Real repositories
+	repos *helpers.TestRepositories
 
 	// All handlers under test
 	getListingsHandler   *shipyardQueries.GetShipyardListingsHandler
 	purchaseShipHandler  *shipyardCommands.PurchaseShipHandler
 	batchPurchaseHandler *shipyardCommands.BatchPurchaseShipsHandler
 
-	// Mocks
-	apiClient        *helpers.MockAPIClient
-	mediator         *helpers.MockMediator
-	waypointProvider *helpers.MockWaypointProvider
+	// Mocks (only external services)
+	apiClient *helpers.MockAPIClient
+	mediator  *helpers.MockMediator
+	clock     *shared.MockClock
 
 	// State tracking for assertions
 	lastError              error
@@ -66,40 +61,26 @@ func (ctx *shipyardApplicationContext) reset() {
 		panic(fmt.Errorf("failed to truncate tables: %w", err))
 	}
 
-	// Use shared test DB with REAL GORM repositories
-	ctx.db = helpers.SharedTestDB
-	ctx.playerRepo = persistence.NewGormPlayerRepository(helpers.SharedTestDB)
-	ctx.waypointRepo = persistence.NewGormWaypointRepository(helpers.SharedTestDB)
-
-	// Create mock API client
+	// Create mocks (only external services)
 	ctx.apiClient = helpers.NewMockAPIClient()
-
-	// Create mock mediator
 	ctx.mediator = helpers.NewMockMediator()
+	ctx.clock = shared.NewMockClock(time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC))
 
-	// Create mock waypoint provider
-	ctx.waypointProvider = helpers.NewMockWaypointProvider()
-
-	// Create API ship repository (uses API client, not persistence)
-	ctx.shipRepo = api.NewShipRepository(
-		ctx.apiClient,
-		ctx.playerRepo,
-		ctx.waypointRepo,
-		ctx.waypointProvider,
-	)
+	// Create real repositories
+	ctx.repos = helpers.NewTestRepositories(ctx.apiClient, ctx.clock)
 
 	// Create handlers
-	ctx.getListingsHandler = shipyardQueries.NewGetShipyardListingsHandler(ctx.apiClient, ctx.playerRepo)
+	ctx.getListingsHandler = shipyardQueries.NewGetShipyardListingsHandler(ctx.apiClient, ctx.repos.PlayerRepo)
 	ctx.purchaseShipHandler = shipyardCommands.NewPurchaseShipHandler(
-		ctx.shipRepo,
-		ctx.playerRepo,
-		ctx.waypointRepo,
-		ctx.waypointProvider,
+		ctx.repos.ShipRepo,
+		ctx.repos.PlayerRepo,
+		ctx.repos.WaypointRepo,
+		ctx.repos.GraphService,
 		ctx.apiClient,
 		ctx.mediator,
 	)
 	ctx.batchPurchaseHandler = shipyardCommands.NewBatchPurchaseShipsHandler(
-		ctx.playerRepo,
+		ctx.repos.PlayerRepo,
 		ctx.mediator,
 		ctx.apiClient,
 	)
@@ -118,7 +99,7 @@ func (ctx *shipyardApplicationContext) setupDefaultMockBehaviors() {
 	purchaseCount := 0
 
 	// Default PurchaseShip function - generates new ships with unique symbols
-	ctx.apiClient.SetPurchaseShipFunc(func(ctxAPI context.Context, shipType, waypointSymbol, token string) (*infraPorts.ShipPurchaseResult, error) {
+	ctx.apiClient.SetPurchaseShipFunc(func(ctxAPI context.Context, shipType, waypointSymbol, token string) (*domainPorts.ShipPurchaseResult, error) {
 		// Get agent data to determine current credits
 		agentData, err := ctx.apiClient.GetAgent(ctxAPI, token)
 		if err != nil {
@@ -149,10 +130,10 @@ func (ctx *shipyardApplicationContext) setupDefaultMockBehaviors() {
 		newCredits := currentCredits - price
 
 		// Update the mock API client with new credits so future GetAgent() calls see the updated balance
-		player, err := ctx.playerRepo.FindByAgentSymbol(ctxAPI, agentSymbol)
+		player, err := ctx.repos.PlayerRepo.FindByAgentSymbol(ctxAPI, agentSymbol)
 		if err == nil {
 			player.Credits = newCredits
-			ctx.playerRepo.Add(ctxAPI, player)
+			ctx.repos.PlayerRepo.Add(ctxAPI, player)
 			ctx.apiClient.UpdatePlayer(player)
 		}
 
@@ -182,19 +163,19 @@ func (ctx *shipyardApplicationContext) aPlayerExistsWithCredits(agentSymbol stri
 	ctx.apiClient.AddPlayer(p)
 
 	// Save to database
-	return ctx.playerRepo.Add(context.Background(), p)
+	return ctx.repos.PlayerRepo.Add(context.Background(), p)
 }
 
 func (ctx *shipyardApplicationContext) thePlayerHasCredits(agentSymbol string, credits int) error {
 	// Find and update existing player
-	p, err := ctx.playerRepo.FindByAgentSymbol(context.Background(), agentSymbol)
+	p, err := ctx.repos.PlayerRepo.FindByAgentSymbol(context.Background(), agentSymbol)
 	if err != nil {
 		return fmt.Errorf("player %s not found: %w", agentSymbol, err)
 	}
 
 	p.Credits = credits
 	// Re-add to update (GORM repository uses Add for upsert)
-	if err := ctx.playerRepo.Add(context.Background(), p); err != nil {
+	if err := ctx.repos.PlayerRepo.Add(context.Background(), p); err != nil {
 		return err
 	}
 
@@ -206,7 +187,7 @@ func (ctx *shipyardApplicationContext) thePlayerHasCredits(agentSymbol string, c
 
 func (ctx *shipyardApplicationContext) aShipExistsForPlayerAtWaypoint(shipSymbol, agentSymbol, waypointSymbol string) error {
 	// Find player
-	p, err := ctx.playerRepo.FindByAgentSymbol(context.Background(), agentSymbol)
+	p, err := ctx.repos.PlayerRepo.FindByAgentSymbol(context.Background(), agentSymbol)
 	if err != nil {
 		return fmt.Errorf("player %s not found: %w", agentSymbol, err)
 	}
@@ -215,14 +196,14 @@ func (ctx *shipyardApplicationContext) aShipExistsForPlayerAtWaypoint(shipSymbol
 
 	// Create waypoint
 	systemSymbol := shared.ExtractSystemSymbol(waypointSymbol)
-	waypoint, err := ctx.waypointRepo.FindBySymbol(context.Background(), waypointSymbol, systemSymbol)
+	waypoint, err := ctx.repos.WaypointRepo.FindBySymbol(context.Background(), waypointSymbol, systemSymbol)
 	if err != nil {
 		// Waypoint doesn't exist, create it
 		waypoint, err = shared.NewWaypoint(waypointSymbol, 0, 0)
 		if err != nil {
 			return err
 		}
-		if err := ctx.waypointRepo.Add(context.Background(), waypoint); err != nil {
+		if err := ctx.repos.WaypointRepo.Add(context.Background(), waypoint); err != nil {
 			return err
 		}
 	}
@@ -285,14 +266,11 @@ func (ctx *shipyardApplicationContext) aWaypointExistsWithShipyardAtCoordinates(
 		return err
 	}
 
-	// Add to waypoint provider
-	ctx.waypointProvider.SetWaypoint(waypoint)
-
 	// Add to mock API client
 	ctx.apiClient.AddWaypoint(waypoint)
 
 	// Save to database
-	return ctx.waypointRepo.Add(context.Background(), waypoint)
+	return ctx.repos.WaypointRepo.Add(context.Background(), waypoint)
 }
 
 func (ctx *shipyardApplicationContext) aWaypointExistsAtCoordinates(waypointSymbol string, x, y int) error {
@@ -301,14 +279,11 @@ func (ctx *shipyardApplicationContext) aWaypointExistsAtCoordinates(waypointSymb
 		return err
 	}
 
-	// Add to waypoint provider
-	ctx.waypointProvider.SetWaypoint(waypoint)
-
 	// Add to mock API client
 	ctx.apiClient.AddWaypoint(waypoint)
 
 	// Save to database
-	return ctx.waypointRepo.Add(context.Background(), waypoint)
+	return ctx.repos.WaypointRepo.Add(context.Background(), waypoint)
 }
 
 func (ctx *shipyardApplicationContext) theShipIsAtWaypoint(shipSymbol, waypointSymbol string) error {
@@ -320,7 +295,7 @@ func (ctx *shipyardApplicationContext) theShipIsAtWaypoint(shipSymbol, waypointS
 
 	// Get waypoint
 	systemSymbol := shared.ExtractSystemSymbol(waypointSymbol)
-	waypoint, err := ctx.waypointRepo.FindBySymbol(context.Background(), waypointSymbol, systemSymbol)
+	waypoint, err := ctx.repos.WaypointRepo.FindBySymbol(context.Background(), waypointSymbol, systemSymbol)
 	if err != nil {
 		return fmt.Errorf("waypoint %s not found: %w", waypointSymbol, err)
 	}
@@ -355,7 +330,7 @@ func (ctx *shipyardApplicationContext) theShipyardHasTheFollowingShips(waypointS
 	}
 
 	// Parse table
-	var listings []infraPorts.ShipListingData
+	var listings []domainPorts.ShipListingData
 	for i, row := range table.Rows[1:] {
 		if len(row.Cells) < 2 {
 			return fmt.Errorf("row %d: expected at least 2 columns", i+1)
@@ -387,7 +362,7 @@ func (ctx *shipyardApplicationContext) theShipyardHasNoShipsForSale(waypointSymb
 }
 
 func (ctx *shipyardApplicationContext) theAPIWillReturnAnErrorWhenGettingShipyard(waypointSymbol string) error {
-	ctx.apiClient.SetGetShipyardFunc(func(ctxAPI context.Context, systemSymbol, waypointSym, token string) (*infraPorts.ShipyardData, error) {
+	ctx.apiClient.SetGetShipyardFunc(func(ctxAPI context.Context, systemSymbol, waypointSym, token string) (*domainPorts.ShipyardData, error) {
 		if waypointSym == waypointSymbol {
 			return nil, fmt.Errorf("API error getting shipyard")
 		}
@@ -422,7 +397,7 @@ func (ctx *shipyardApplicationContext) thereAreNoShipyardsInSystem(systemSymbol 
 }
 
 func (ctx *shipyardApplicationContext) theAPIWillReturnAnErrorWhenPurchasingAShip() error {
-	ctx.apiClient.SetPurchaseShipFunc(func(ctxAPI context.Context, shipType, waypointSymbol, token string) (*infraPorts.ShipPurchaseResult, error) {
+	ctx.apiClient.SetPurchaseShipFunc(func(ctxAPI context.Context, shipType, waypointSymbol, token string) (*domainPorts.ShipPurchaseResult, error) {
 		return nil, fmt.Errorf("API error purchasing ship")
 	})
 	return nil
@@ -434,7 +409,7 @@ func (ctx *shipyardApplicationContext) theAPIWillReturnAnErrorWhenPurchasingAShi
 
 func (ctx *shipyardApplicationContext) iQueryShipyardListingsFor(waypointSymbol, agentSymbol string) error {
 	// Find player
-	p, err := ctx.playerRepo.FindByAgentSymbol(context.Background(), agentSymbol)
+	p, err := ctx.repos.PlayerRepo.FindByAgentSymbol(context.Background(), agentSymbol)
 	if err != nil {
 		// Player not found - store error and return without executing handler
 		ctx.lastError = fmt.Errorf("player not found: %w", err)
@@ -475,7 +450,7 @@ func (ctx *shipyardApplicationContext) iPurchaseAShipUsingWithoutSpecifyingShipy
 
 func (ctx *shipyardApplicationContext) executePurchaseCommand(shipType, purchasingShipSymbol, waypointSymbol, agentSymbol string, autoDiscover bool) error {
 	// Find player
-	p, err := ctx.playerRepo.FindByAgentSymbol(context.Background(), agentSymbol)
+	p, err := ctx.repos.PlayerRepo.FindByAgentSymbol(context.Background(), agentSymbol)
 	if err != nil {
 		return fmt.Errorf("player %s not found: %w", agentSymbol, err)
 	}
@@ -525,7 +500,7 @@ func (ctx *shipyardApplicationContext) iBatchPurchaseShipsWithMaxBudgetUsingAt(q
 
 func (ctx *shipyardApplicationContext) executeBatchPurchaseCommand(quantity int, shipType string, maxBudget int, purchasingShipSymbol, waypointSymbol, agentSymbol string) error {
 	// Find player
-	p, err := ctx.playerRepo.FindByAgentSymbol(context.Background(), agentSymbol)
+	p, err := ctx.repos.PlayerRepo.FindByAgentSymbol(context.Background(), agentSymbol)
 	if err != nil {
 		return fmt.Errorf("player %s not found: %w", agentSymbol, err)
 	}
@@ -656,7 +631,7 @@ func (ctx *shipyardApplicationContext) thePurchaseShouldFailWithError(expectedEr
 
 func (ctx *shipyardApplicationContext) thePlayerShouldHaveCreditsRemaining(agentSymbol string, expectedCredits int) error {
 	// Find player in database to get token
-	p, err := ctx.playerRepo.FindByAgentSymbol(context.Background(), agentSymbol)
+	p, err := ctx.repos.PlayerRepo.FindByAgentSymbol(context.Background(), agentSymbol)
 	if err != nil {
 		return fmt.Errorf("player %s not found: %w", agentSymbol, err)
 	}
@@ -680,7 +655,7 @@ func (ctx *shipyardApplicationContext) aNewShipShouldBeCreatedForPlayer(agentSym
 	}
 
 	// Verify ship was persisted to database
-	ship, err := ctx.shipRepo.FindBySymbol(context.Background(), ctx.lastShip.ShipSymbol(), ctx.lastShip.PlayerID())
+	ship, err := ctx.repos.ShipRepo.FindBySymbol(context.Background(), ctx.lastShip.ShipSymbol(), ctx.lastShip.PlayerID())
 	if err != nil {
 		return fmt.Errorf("ship not found in database: %w", err)
 	}

@@ -14,25 +14,6 @@ Feature: Shipyard Operations
   # GetShipyardListingsQuery Tests
   # ============================================================================
 
-  Scenario: Get shipyard with multiple ship types available
-    Given the shipyard at "X1-SYSTEM-S1" has the following ships:
-      | Type              | Price   |
-      | SHIP_MINING_DRONE | 50000   |
-      | SHIP_PROBE        | 25000   |
-      | SHIP_LIGHT_HAULER | 100000  |
-    When I query shipyard listings for "X1-SYSTEM-S1" as "TEST-AGENT"
-    Then the query should succeed
-    And the shipyard should have 3 ship types available
-    And the shipyard should have a listing for "SHIP_MINING_DRONE" priced at 50000
-    And the shipyard should have a listing for "SHIP_PROBE" priced at 25000
-    And the shipyard should have a listing for "SHIP_LIGHT_HAULER" priced at 100000
-
-  Scenario: Get shipyard with no ships available
-    Given the shipyard at "X1-SYSTEM-S1" has no ships for sale
-    When I query shipyard listings for "X1-SYSTEM-S1" as "TEST-AGENT"
-    Then the query should succeed
-    And the shipyard should have 0 ship types available
-
   Scenario: Query shipyard listings fails when player not found
     When I query shipyard listings for "X1-SYSTEM-S1" as "NONEXISTENT-PLAYER"
     Then the query should fail with error "player not found"

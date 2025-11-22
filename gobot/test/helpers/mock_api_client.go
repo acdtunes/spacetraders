@@ -285,6 +285,8 @@ func (m *MockAPIClient) shipToData(ship *navigation.Ship) *navigation.ShipData {
 		CargoCapacity: ship.CargoCapacity(),
 		CargoUnits:    ship.Cargo().Units,
 		EngineSpeed:   ship.EngineSpeed(),
+		FrameSymbol:   ship.FrameSymbol(),
+		Role:          ship.Role(),
 		Cargo:         cargoData,
 	}
 }
@@ -297,10 +299,20 @@ func (m *MockAPIClient) ListShips(ctx context.Context, token string) ([]*navigat
 		return nil, fmt.Errorf("%s", m.errorMsg)
 	}
 
-	// Convert all ships to ShipData DTOs
+	// Find player by token to get their ID
+	player, exists := m.playersByToken[token]
+	if !exists {
+		// No player found for this token - return empty list
+		return []*navigation.ShipData{}, nil
+	}
+
+	// Convert ships belonging to this player to ShipData DTOs
 	var shipsData []*navigation.ShipData
 	for _, ship := range m.ships {
-		shipsData = append(shipsData, m.shipToData(ship))
+		// Only include ships that belong to this player
+		if ship.PlayerID().Value() == player.ID.Value() {
+			shipsData = append(shipsData, m.shipToData(ship))
+		}
 	}
 
 	return shipsData, nil
@@ -486,7 +498,38 @@ func (m *MockAPIClient) GetAgent(ctx context.Context, token string) (*player.Age
 }
 
 func (m *MockAPIClient) ListWaypoints(ctx context.Context, systemSymbol, token string, page, limit int) (*system.WaypointsListResponse, error) {
-	return nil, fmt.Errorf("not implemented in mock")
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if m.shouldError {
+		return nil, fmt.Errorf("%s", m.errorMsg)
+	}
+
+	// Filter waypoints by system symbol and convert to API data format
+	var waypointData []system.WaypointAPIData
+	for _, wp := range m.waypoints {
+		wpSystemSymbol := shared.ExtractSystemSymbol(wp.Symbol)
+		if wpSystemSymbol == systemSymbol {
+			waypointData = append(waypointData, system.WaypointAPIData{
+				Symbol:   wp.Symbol,
+				Type:     "ASTEROID", // Default type for tests
+				X:        wp.X,
+				Y:        wp.Y,
+				Traits:   []map[string]interface{}{}, // Empty traits for tests
+				Orbitals: []map[string]string{},      // Empty orbitals for tests
+			})
+		}
+	}
+
+	// Simple pagination - just return all waypoints for now (tests don't need multi-page)
+	return &system.WaypointsListResponse{
+		Data: waypointData,
+		Meta: system.PaginationMeta{
+			Total: len(waypointData),
+			Page:  page,
+			Limit: limit,
+		},
+	}, nil
 }
 
 func (m *MockAPIClient) NegotiateContract(ctx context.Context, shipSymbol, token string) (*domainPorts.ContractNegotiationResult, error) {
