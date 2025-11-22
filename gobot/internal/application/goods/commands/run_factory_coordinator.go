@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/application/contract"
@@ -233,15 +234,24 @@ func (h *RunFactoryCoordinatorHandler) executeParallelProduction(
 	nodesCompleted := 0
 
 	// Create a ship pool for parallel workers
-	shipPool := make(chan *navigation.Ship, len(idleShips))
+	// Capacity: 2× initial ships to accommodate dynamic discovery
+	shipPool := make(chan *navigation.Ship, len(idleShips)*2)
 	for _, ship := range idleShips {
 		shipPool <- ship
 	}
 
+	// Launch background ship discoverer
+	discoveryCtx, cancelDiscovery := context.WithCancel(ctx)
+	defer cancelDiscovery()
+
+	go h.shipPoolRefresher(discoveryCtx, cmd.PlayerID, shipPool, shipsUsed)
+
 	logger.Log("INFO", "Starting parallel production", map[string]interface{}{
-		"factory_id":      response.FactoryID,
-		"levels":          len(levels),
-		"available_ships": len(idleShips),
+		"factory_id":         response.FactoryID,
+		"levels":             len(levels),
+		"available_ships":    len(idleShips),
+		"discovery_enabled":  true,
+		"discovery_interval": "30s",
 	})
 
 	// Execute each level sequentially, but nodes within each level in parallel
@@ -287,13 +297,103 @@ func (h *RunFactoryCoordinatorHandler) executeParallelProduction(
 	}
 
 	logger.Log("INFO", "Parallel production completed", map[string]interface{}{
-		"factory_id":      response.FactoryID,
-		"total_cost":      totalCost,
-		"ships_used":      len(shipsUsed),
-		"nodes_completed": nodesCompleted,
+		"factory_id":       response.FactoryID,
+		"total_cost":       totalCost,
+		"ships_used":       len(shipsUsed),
+		"ships_discovered": len(shipsUsed) - len(idleShips),
+		"nodes_completed":  nodesCompleted,
 	})
 
 	return nil
+}
+
+// shipPoolRefresher runs a background goroutine that periodically discovers new idle ships
+// and adds them to the ship pool, allowing blocked workers to acquire ships mid-execution.
+//
+// Discovery process:
+// 1. Poll every 30 seconds for newly idle ships
+// 2. Filter out ships already in the pool (via shipsUsed map)
+// 3. Attempt non-blocking send to shipPool (skip if full)
+// 4. Log newly added ships for observability
+// 5. Exit gracefully on context cancellation
+//
+// Thread safety:
+// - shipsUsed map: workers write unique keys (ship symbol), refresher only reads
+// - shipPool channel: Go channels are concurrency-safe
+// - No mutex needed due to non-overlapping access patterns
+func (h *RunFactoryCoordinatorHandler) shipPoolRefresher(
+	ctx context.Context,
+	playerID int,
+	shipPool chan *navigation.Ship,
+	shipsUsed map[string]bool,
+) {
+	logger := common.LoggerFromContext(ctx)
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	playerIDValue := shared.MustNewPlayerID(playerID)
+	discoveryCount := 0
+
+	logger.Log("INFO", "Ship pool refresher started", map[string]interface{}{
+		"interval": "30s",
+	})
+
+	for {
+		select {
+		case <-ctx.Done():
+			logger.Log("INFO", "Ship pool refresher stopped", map[string]interface{}{
+				"total_discoveries": discoveryCount,
+			})
+			return
+
+		case <-ticker.C:
+			// Re-discover idle ships
+			newIdleShips, _, err := contract.FindIdleLightHaulers(
+				ctx,
+				playerIDValue,
+				h.shipRepo,
+				h.shipAssignmentRepo,
+			)
+			if err != nil {
+				logger.Log("WARNING", "Failed to refresh ship pool", map[string]interface{}{
+					"error": err.Error(),
+				})
+				continue
+			}
+
+			// Add newly discovered ships to pool (non-blocking)
+			addedCount := 0
+			addedShips := make([]string, 0)
+
+			for _, ship := range newIdleShips {
+				// Skip if ship already in use by this factory
+				if shipsUsed[ship.ShipSymbol()] {
+					continue
+				}
+
+				// Attempt non-blocking send to pool
+				select {
+				case shipPool <- ship:
+					shipsUsed[ship.ShipSymbol()] = true
+					addedShips = append(addedShips, ship.ShipSymbol())
+					addedCount++
+				default:
+					// Channel full, skip this ship
+					// Will retry on next tick if ship still idle
+				}
+			}
+
+			if addedCount > 0 {
+				discoveryCount += addedCount
+				logger.Log("INFO", "Added new ships to pool", map[string]interface{}{
+					"added_count":        addedCount,
+					"added_ships":        addedShips,
+					"total_discoveries":  discoveryCount,
+					"pool_capacity_used": fmt.Sprintf("%d/%d", len(shipsUsed), cap(shipPool)),
+				})
+			}
+		}
+	}
 }
 
 // executeLevelParallel executes all nodes in a level in parallel using goroutines
