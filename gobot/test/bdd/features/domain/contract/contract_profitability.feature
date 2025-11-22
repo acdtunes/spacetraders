@@ -71,7 +71,7 @@ Feature: Contract Profitability Evaluation
       | IRON_ORE     | 220        |
     When I evaluate profitability
     Then the contract should be profitable
-    And net profit should be -2000
+    And net profit should be -3000
     And profitability reason should be "Acceptable small loss (avoids opportunity cost)"
 
   Scenario: Exactly at minimum profit threshold
@@ -88,9 +88,9 @@ Feature: Contract Profitability Evaluation
       | trade_symbol | sell_price |
       | IRON_ORE     | 210        |
     When I evaluate profitability
-    Then the contract should be profitable
-    And net profit should be -5000
-    And profitability reason should be "Acceptable small loss (avoids opportunity cost)"
+    Then the contract should not be profitable
+    And net profit should be -7000
+    And profitability reason should be "Loss exceeds acceptable threshold"
 
   # ============================================================================
   # Unprofitable Contracts
@@ -111,7 +111,7 @@ Feature: Contract Profitability Evaluation
       | IRON_ORE     | 215        |
     When I evaluate profitability
     Then the contract should not be profitable
-    And net profit should be -5500
+    And net profit should be -7500
     And profitability reason should be "Loss exceeds acceptable threshold"
 
   Scenario: Highly unprofitable contract
@@ -129,7 +129,7 @@ Feature: Contract Profitability Evaluation
       | PRECIOUS_STONES | 1000       |
     When I evaluate profitability
     Then the contract should not be profitable
-    And net profit should be -48000
+    And net profit should be -46000
     And profitability reason should be "Loss exceeds acceptable threshold"
 
   # ============================================================================

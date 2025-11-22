@@ -75,6 +75,19 @@ func (cc *contractContext) contractDeliveries(table *godog.Table) error {
 			UnitsFulfilled:    unitsFulfilled,
 		})
 	}
+
+	// If contract already exists, recreate it with the new deliveries
+	if cc.contract != nil {
+		wasAccepted := cc.contract.Accepted()
+		cc.contract = nil
+		if err := cc.iCreateTheContract(); err != nil {
+			return err
+		}
+		if wasAccepted {
+			return cc.contract.Accept()
+		}
+	}
+
 	return nil
 }
 
@@ -329,6 +342,32 @@ func (cc *contractContext) profitabilityContext(table *godog.Table) error {
 }
 
 func (cc *contractContext) iEvaluateProfitability() error {
+	// Create contract if it doesn't exist yet (for profitability evaluation scenarios)
+	if cc.contract == nil {
+		// Set minimal defaults for profitability evaluation
+		if cc.contractID == "" {
+			cc.contractID = "CONTRACT-1"
+		}
+		if cc.playerID == 0 {
+			cc.playerID = 1
+		}
+		if cc.faction == "" {
+			cc.faction = "COMMERCE"
+		}
+		if cc.contractType == "" {
+			cc.contractType = "PROCUREMENT"
+		}
+		if cc.deadline == "" {
+			cc.deadline = "2099-12-31T23:59:59Z"
+			cc.deadlineToAccept = "2099-11-30T23:59:59Z"
+		}
+		// Create the contract now
+		if err := cc.iCreateTheContract(); err != nil {
+			// Store the error but return nil so the scenario can continue and check for error
+			cc.err = err
+			return nil
+		}
+	}
 	cc.profitabilityEval, cc.err = cc.contract.EvaluateProfitability(cc.profitabilityCtx)
 	return nil
 }
@@ -556,6 +595,7 @@ func RegisterContractSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^a contract with:$`, ctx.aContractWith)
 	sc.Step(`^contract deliveries:$`, ctx.contractDeliveries)
 	sc.Step(`^contract payment:$`, ctx.contractPayment)
+	sc.Step(`^a contract with payment:$`, ctx.contractPayment)
 	sc.Step(`^contract deadlines:$`, ctx.contractDeadlines)
 	sc.Step(`^the contract has deliveries:$`, ctx.theContractHasDeliveries)
 	sc.Step(`^a valid unaccepted contract$`, ctx.aValidUnacceptedContract)
