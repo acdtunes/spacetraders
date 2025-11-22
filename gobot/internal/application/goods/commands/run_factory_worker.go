@@ -44,12 +44,14 @@ type RunFactoryWorkerHandler struct {
 
 // NewRunFactoryWorkerHandler creates a new factory worker handler
 func NewRunFactoryWorkerHandler(
+	mediator common.Mediator,
 	shipRepo navigation.ShipRepository,
 	marketRepo market.MarketRepository,
 	marketLocator *goodsServices.MarketLocator,
 	clock shared.Clock,
 ) *RunFactoryWorkerHandler {
 	productionExecutor := goodsServices.NewProductionExecutor(
+		mediator,
 		shipRepo,
 		marketRepo,
 		marketLocator,
