@@ -373,10 +373,34 @@ func (e *ProductionExecutor) NavigateAndDock(
 		return nil, fmt.Errorf("failed to navigate to %s: %w", destination, err)
 	}
 
-	// Reload ship to get updated state
-	ship, err := e.shipRepo.FindBySymbol(ctx, shipSymbol, playerID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to reload ship after navigation: %w", err)
+	// Wait for ship to arrive if still in transit
+	// Poll until ship is no longer IN_TRANSIT
+	var ship *navigation.Ship
+	maxAttempts := 60 // 60 seconds timeout (1 sec per poll)
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		ship, err = e.shipRepo.FindBySymbol(ctx, shipSymbol, playerID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to reload ship after navigation: %w", err)
+		}
+
+		// If ship is no longer in transit, we can proceed to dock
+		if ship.NavStatus() != navigation.NavStatusInTransit {
+			break
+		}
+
+		// Check for context cancellation
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("navigation wait cancelled: %w", ctx.Err())
+		default:
+			// Wait 1 second before next poll
+			e.clock.Sleep(1 * time.Second)
+		}
+	}
+
+	// Final check - if still in transit after timeout, return error
+	if ship.NavStatus() == navigation.NavStatusInTransit {
+		return nil, fmt.Errorf("ship %s still in transit after waiting for arrival", shipSymbol)
 	}
 
 	// Dock at destination
