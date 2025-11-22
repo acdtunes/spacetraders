@@ -4,9 +4,53 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// ShipFuelService provides fuel management calculations and decisions for ships
+// ShipFuelService provides fuel management calculations and decisions for ships.
+//
 // This service contains stateless fuel-related logic extracted from the Ship entity
-// to improve separation of concerns and testability.
+// to improve separation of concerns and testability. All fuel-related decisions
+// should go through this service to ensure consistency.
+//
+// # Fuel Safety Policies
+//
+// The service implements several safety policies to prevent fuel emergencies:
+//
+// 1. Safety Thresholds:
+//   - Conservative: 90% (default) - Maintain high fuel levels
+//   - Balanced: 70% - Moderate fuel reserves
+//   - Minimal: 10-20% - Only refuel when necessary
+//   - Safety margins are expressed as percentages (0.0 to 1.0)
+//
+// 2. Refueling Strategies:
+//   - Opportunistic: Refuel at fuel stations when below threshold
+//   - Preventive: Refuel before DRIFT mode to avoid emergencies
+//   - Journey-based: Ensure sufficient fuel for planned routes
+//
+// 3. Flight Mode Selection:
+//   - Prioritizes BURN mode when fuel permits (fastest)
+//   - Falls back to CRUISE when fuel is moderate
+//   - Uses DRIFT only when fuel is critically low
+//   - Maintains safety margin to prevent running out mid-flight
+//
+// 4. Fuel Percentage Calculations:
+//   - All percentage calculations MUST use Fuel.Percentage()
+//   - This ensures consistency across the codebase
+//   - Returns percentage as 0-100 (not 0.0-1.0)
+//
+// # Usage Examples
+//
+//	service := NewShipFuelService()
+//
+//	// Check if ship can reach destination
+//	canNavigate := service.CanShipNavigateTo(currentFuel, from, to)
+//
+//	// Determine if refueling needed before journey
+//	needsRefuel := service.ShouldRefuelForJourney(fuel, from, to, 0.1)
+//
+//	// Select optimal flight mode based on available fuel
+//	mode := service.SelectOptimalFlightMode(currentFuel, distance, safetyMargin)
+//
+//	// Check for opportunistic refueling
+//	shouldRefuel := service.ShouldRefuelOpportunistically(fuel, capacity, waypoint, 0.9)
 type ShipFuelService struct{}
 
 // NewShipFuelService creates a new fuel service instance
@@ -124,7 +168,8 @@ func (s *ShipFuelService) ShouldRefuelOpportunistically(
 		return false
 	}
 
-	fuelPercentage := float64(fuel.Current) / float64(fuelCapacity)
+	// Use Fuel.Percentage() for consistent fuel percentage calculations
+	fuelPercentage := fuel.Percentage() / 100.0
 	return fuelPercentage < safetyThreshold
 }
 
@@ -181,6 +226,7 @@ func (s *ShipFuelService) ShouldPreventDriftMode(
 		return false
 	}
 
-	fuelPercentage := float64(fuel.Current) / float64(fuelCapacity)
+	// Use Fuel.Percentage() for consistent fuel percentage calculations
+	fuelPercentage := fuel.Percentage() / 100.0
 	return fuelPercentage < safetyThreshold
 }
