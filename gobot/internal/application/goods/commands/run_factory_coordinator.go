@@ -281,21 +281,22 @@ func (h *RunFactoryCoordinatorHandler) executeParallelProduction(
 			nextLevel := levels[levelIdx+1]
 			for _, fabricNode := range nextLevel.Nodes {
 				if fabricNode.AcquisitionMethod == goods.AcquisitionFabricate {
-					// Find import market for this fabrication node
-					importMarket, err := h.marketLocator.FindImportMarket(ctx, fabricNode.Good, cmd.SystemSymbol, cmd.PlayerID)
+					// Find export market for this fabrication node (markets that manufacture it)
+					// These markets will IMPORT the raw materials needed for production
+					exportMarket, err := h.marketLocator.FindExportMarket(ctx, fabricNode.Good, cmd.SystemSymbol, cmd.PlayerID)
 					if err != nil {
-						logger.Log("WARNING", "Could not find import market for fabrication destination", map[string]interface{}{
+						logger.Log("WARNING", "Could not find export market for fabrication destination", map[string]interface{}{
 							"good":  fabricNode.Good,
 							"error": err.Error(),
 						})
 						continue
 					}
-					// All children of this fabrication node should deliver to this import market
+					// All children of this fabrication node should deliver to this manufacturing waypoint
 					for _, child := range fabricNode.Children {
-						deliveryDestinations[child.Good] = importMarket.WaypointSymbol
+						deliveryDestinations[child.Good] = exportMarket.WaypointSymbol
 						logger.Log("INFO", "Mapped delivery destination for input", map[string]interface{}{
 							"input_good":         child.Good,
-							"destination":        importMarket.WaypointSymbol,
+							"destination":        exportMarket.WaypointSymbol,
 							"fabrication_target": fabricNode.Good,
 						})
 					}
@@ -651,19 +652,19 @@ func (h *RunFactoryCoordinatorHandler) produceNodeOnly(
 	// Just deliver inputs and purchase output
 	playerIDValue := shared.MustNewPlayerID(playerID)
 
-	// Find manufacturing waypoint
-	importMarket, err := h.marketLocator.FindImportMarket(ctx, node.Good, systemSymbol, playerID)
+	// Find manufacturing waypoint (market that exports/produces this good)
+	exportMarket, err := h.marketLocator.FindExportMarket(ctx, node.Good, systemSymbol, playerID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to find import market for %s: %w", node.Good, err)
+		return nil, fmt.Errorf("failed to find export market for %s: %w", node.Good, err)
 	}
 
 	logger.Log("INFO", "Found manufacturing waypoint for parallel node", map[string]interface{}{
 		"good":     node.Good,
-		"waypoint": importMarket.WaypointSymbol,
+		"waypoint": exportMarket.WaypointSymbol,
 	})
 
 	// Navigate and dock at manufacturing waypoint
-	updatedShip, err := h.navigateAndDock(ctx, ship.ShipSymbol(), importMarket.WaypointSymbol, playerIDValue)
+	updatedShip, err := h.navigateAndDock(ctx, ship.ShipSymbol(), exportMarket.WaypointSymbol, playerIDValue)
 	if err != nil {
 		return nil, fmt.Errorf("failed to navigate to manufacturing waypoint: %w", err)
 	}
@@ -691,7 +692,7 @@ func (h *RunFactoryCoordinatorHandler) produceNodeOnly(
 	}
 
 	// Poll for production and purchase output
-	quantity, cost, err := h.pollForProduction(ctx, node.Good, importMarket.WaypointSymbol, updatedShip, playerIDValue)
+	quantity, cost, err := h.pollForProduction(ctx, node.Good, exportMarket.WaypointSymbol, updatedShip, playerIDValue)
 	if err != nil {
 		return nil, err
 	}
@@ -701,7 +702,7 @@ func (h *RunFactoryCoordinatorHandler) produceNodeOnly(
 	return &goodsServices.ProductionResult{
 		QuantityAcquired: quantity,
 		TotalCost:        totalCost,
-		WaypointSymbol:   importMarket.WaypointSymbol,
+		WaypointSymbol:   exportMarket.WaypointSymbol,
 	}, nil
 }
 

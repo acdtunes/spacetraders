@@ -181,6 +181,12 @@ func (h *RefuelShipHandler) recordRefuelTransaction(
 		Metadata:        metadata,
 	}
 
+	// Propagate operation context if present
+	if cmd.Context != nil && cmd.Context.IsValid() {
+		recordCmd.RelatedEntityType = "container"
+		recordCmd.RelatedEntityID = cmd.Context.ContainerID
+	}
+
 	// Record transaction via mediator
 	_, err := h.mediator.Send(context.Background(), recordCmd)
 	if err != nil {

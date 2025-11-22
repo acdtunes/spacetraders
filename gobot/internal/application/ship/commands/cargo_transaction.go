@@ -31,10 +31,11 @@ import (
 //   - Transaction-specific preconditions are validated by the strategy
 //   - Automatically splits large transactions based on market limits
 type CargoTransactionCommand struct {
-	ShipSymbol string          // Ship symbol (e.g., "SHIP-1")
-	GoodSymbol string          // Trade good symbol (e.g., "IRON_ORE")
-	Units      int             // Total units to transaction
-	PlayerID   shared.PlayerID // Player ID for authorization
+	ShipSymbol string                   // Ship symbol (e.g., "SHIP-1")
+	GoodSymbol string                   // Trade good symbol (e.g., "IRON_ORE")
+	Units      int                      // Total units to transaction
+	PlayerID   shared.PlayerID          // Player ID for authorization
+	Context    *shared.OperationContext // Optional: links transaction to parent operation
 }
 
 // CargoTransactionResponse contains the unified results of a cargo transaction.
@@ -291,6 +292,12 @@ func (h *CargoTransactionHandler) recordCargoTransaction(
 		BalanceAfter:    balanceAfter,
 		Description:     fmt.Sprintf("%s %d units of %s at %s", transactionTypeStr, response.UnitsProcessed, cmd.GoodSymbol, waypointSymbol),
 		Metadata:        metadata,
+	}
+
+	// Propagate operation context if present
+	if cmd.Context != nil && cmd.Context.IsValid() {
+		recordCmd.RelatedEntityType = "container"
+		recordCmd.RelatedEntityID = cmd.Context.ContainerID
 	}
 
 	// Record transaction via mediator

@@ -31,6 +31,7 @@ type RefuelShipCommand struct {
 	ShipSymbol string
 	PlayerID   shared.PlayerID
 	Units      *int // nil = refuel to full
+	Context    *shared.OperationContext // Optional: links transaction to parent operation
 }
 
 // RefuelShipResponse - Response from refuel ship command

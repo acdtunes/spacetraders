@@ -20,10 +20,11 @@ import (
 //   - Ship must have sufficient cargo of the specified type
 //   - Automatically splits large sales into multiple API transactions based on market limits
 type SellCargoCommand struct {
-	ShipSymbol string          // Ship symbol (e.g., "SHIP-1")
-	GoodSymbol string          // Trade good symbol (e.g., "IRON_ORE")
-	Units      int             // Total units to sell
-	PlayerID   shared.PlayerID // Player ID for authorization
+	ShipSymbol string                   // Ship symbol (e.g., "SHIP-1")
+	GoodSymbol string                   // Trade good symbol (e.g., "IRON_ORE")
+	Units      int                      // Total units to sell
+	PlayerID   shared.PlayerID          // Player ID for authorization
+	Context    *shared.OperationContext // Optional: links transaction to parent operation
 }
 
 // SellCargoResponse contains the results of a cargo sale operation.
@@ -85,6 +86,7 @@ func (h *SellCargoHandler) Handle(ctx context.Context, request common.Request) (
 		GoodSymbol: cmd.GoodSymbol,
 		Units:      cmd.Units,
 		PlayerID:   cmd.PlayerID,
+		Context:    cmd.Context, // Propagate operation context
 	}
 
 	// Delegate to unified handler
