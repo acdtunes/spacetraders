@@ -17,14 +17,15 @@ import (
 // ProductionExecutor orchestrates the production of goods by coordinating ship operations.
 // It handles both purchasing goods from markets (BUY) and manufacturing them (FABRICATE).
 type ProductionExecutor struct {
-	mediator      common.Mediator
-	shipRepo      navigation.ShipRepository
-	marketRepo    market.MarketRepository
-	marketLocator *MarketLocator
-	clock         shared.Clock
+	mediator         common.Mediator
+	shipRepo         navigation.ShipRepository
+	marketRepo       market.MarketRepository
+	marketLocator    *MarketLocator
+	clock            shared.Clock
+	pollingIntervals []time.Duration // Configurable polling intervals
 }
 
-// NewProductionExecutor creates a new production executor
+// NewProductionExecutor creates a new production executor with default polling intervals
 func NewProductionExecutor(
 	mediator common.Mediator,
 	shipRepo navigation.ShipRepository,
@@ -32,12 +33,32 @@ func NewProductionExecutor(
 	marketLocator *MarketLocator,
 	clock shared.Clock,
 ) *ProductionExecutor {
+	return NewProductionExecutorWithConfig(
+		mediator,
+		shipRepo,
+		marketRepo,
+		marketLocator,
+		clock,
+		[]time.Duration{30 * time.Second, 60 * time.Second}, // Default intervals
+	)
+}
+
+// NewProductionExecutorWithConfig creates a new production executor with custom polling intervals
+func NewProductionExecutorWithConfig(
+	mediator common.Mediator,
+	shipRepo navigation.ShipRepository,
+	marketRepo market.MarketRepository,
+	marketLocator *MarketLocator,
+	clock shared.Clock,
+	pollingIntervals []time.Duration,
+) *ProductionExecutor {
 	return &ProductionExecutor{
-		mediator:      mediator,
-		shipRepo:      shipRepo,
-		marketRepo:    marketRepo,
-		marketLocator: marketLocator,
-		clock:         clock,
+		mediator:         mediator,
+		shipRepo:         shipRepo,
+		marketRepo:       marketRepo,
+		marketLocator:    marketLocator,
+		clock:            clock,
+		pollingIntervals: pollingIntervals,
 	}
 }
 
@@ -95,7 +116,7 @@ func (e *ProductionExecutor) buyGood(
 
 	// Navigate to market and dock
 	playerIDValue := shared.MustNewPlayerID(playerID)
-	updatedShip, err := e.navigateAndDock(ctx, ship.ShipSymbol(), marketResult.WaypointSymbol, playerIDValue)
+	updatedShip, err := e.NavigateAndDock(ctx, ship.ShipSymbol(), marketResult.WaypointSymbol, playerIDValue)
 	if err != nil {
 		return nil, fmt.Errorf("failed to navigate to market: %w", err)
 	}
@@ -183,7 +204,7 @@ func (e *ProductionExecutor) fabricateGood(
 
 	// Step 3: Navigate to manufacturing waypoint and dock
 	playerIDValue := shared.MustNewPlayerID(playerID)
-	updatedShip, err := e.navigateAndDock(ctx, ship.ShipSymbol(), importMarket.WaypointSymbol, playerIDValue)
+	updatedShip, err := e.NavigateAndDock(ctx, ship.ShipSymbol(), importMarket.WaypointSymbol, playerIDValue)
 	if err != nil {
 		return nil, fmt.Errorf("failed to navigate to manufacturing waypoint: %w", err)
 	}
@@ -202,7 +223,7 @@ func (e *ProductionExecutor) fabricateGood(
 	})
 
 	// Step 5: Poll for production until output good appears
-	quantity, cost, err := e.pollForProduction(ctx, node.Good, importMarket.WaypointSymbol, updatedShip.ShipSymbol(), playerIDValue)
+	quantity, cost, err := e.PollForProduction(ctx, node.Good, importMarket.WaypointSymbol, updatedShip.ShipSymbol(), playerIDValue)
 	if err != nil {
 		return nil, fmt.Errorf("failed during production polling: %w", err)
 	}
@@ -216,10 +237,10 @@ func (e *ProductionExecutor) fabricateGood(
 	}, nil
 }
 
-// pollForProduction polls the market database until the output good appears in exports.
+// PollForProduction polls the market database until the output good appears in exports.
 // Uses exponential backoff with NO timeout - polls indefinitely until good appears or context cancelled.
 // Returns quantity purchased and cost.
-func (e *ProductionExecutor) pollForProduction(
+func (e *ProductionExecutor) PollForProduction(
 	ctx context.Context,
 	good string,
 	waypointSymbol string,
@@ -228,10 +249,13 @@ func (e *ProductionExecutor) pollForProduction(
 ) (int, int, error) {
 	logger := common.LoggerFromContext(ctx)
 
-	// Polling intervals: starts fast, settles to 60s
-	intervals := []time.Duration{
-		30 * time.Second, // Initial poll - catch fast production
-		60 * time.Second, // Settled interval
+	// Use configured polling intervals (or defaults if not set)
+	intervals := e.pollingIntervals
+	if len(intervals) == 0 {
+		intervals = []time.Duration{
+			30 * time.Second, // Initial poll - catch fast production
+			60 * time.Second, // Settled interval
+		}
 	}
 
 	attempt := 0
@@ -323,8 +347,8 @@ func (e *ProductionExecutor) pollForProduction(
 	}
 }
 
-// navigateAndDock navigates to a waypoint and docks the ship
-func (e *ProductionExecutor) navigateAndDock(
+// NavigateAndDock navigates to a waypoint and docks the ship
+func (e *ProductionExecutor) NavigateAndDock(
 	ctx context.Context,
 	shipSymbol string,
 	destination string,

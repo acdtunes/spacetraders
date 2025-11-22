@@ -51,6 +51,10 @@ type GoodsFactory struct {
 	// Tracking metrics (set during execution)
 	quantityAcquired int
 	totalCost        int // Credits spent on purchases
+	shipsUsed        int // Number of ships utilized
+	marketQueries    int // Number of market queries performed
+	parallelLevels   int // Number of parallel execution levels
+	estimatedSpeedup float64 // Estimated speedup from parallelization
 }
 
 // NewGoodsFactory creates a new goods factory instance
@@ -95,6 +99,10 @@ func (f *GoodsFactory) Status() FactoryStatus            { return f.status }
 func (f *GoodsFactory) Metadata() map[string]interface{} { return f.metadata }
 func (f *GoodsFactory) QuantityAcquired() int            { return f.quantityAcquired }
 func (f *GoodsFactory) TotalCost() int                   { return f.totalCost }
+func (f *GoodsFactory) ShipsUsed() int                   { return f.shipsUsed }
+func (f *GoodsFactory) MarketQueries() int               { return f.marketQueries }
+func (f *GoodsFactory) ParallelLevels() int              { return f.parallelLevels }
+func (f *GoodsFactory) EstimatedSpeedup() float64        { return f.estimatedSpeedup }
 
 // Lifecycle timestamp accessors (delegate to lifecycle machine)
 
@@ -226,6 +234,81 @@ func (f *GoodsFactory) SetQuantityAcquired(quantity int) {
 func (f *GoodsFactory) AddCost(cost int) {
 	f.totalCost += cost
 	f.lifecycle.UpdateTimestamp()
+}
+
+// SetShipsUsed updates the ships used metric
+func (f *GoodsFactory) SetShipsUsed(count int) {
+	f.shipsUsed = count
+	f.lifecycle.UpdateTimestamp()
+}
+
+// IncrementMarketQueries increments the market queries counter
+func (f *GoodsFactory) IncrementMarketQueries() {
+	f.marketQueries++
+	f.lifecycle.UpdateTimestamp()
+}
+
+// SetParallelMetrics updates parallel execution metrics
+func (f *GoodsFactory) SetParallelMetrics(levels int, speedup float64) {
+	f.parallelLevels = levels
+	f.estimatedSpeedup = speedup
+	f.lifecycle.UpdateTimestamp()
+}
+
+// AverageProductionTimePerNode calculates average time per node
+func (f *GoodsFactory) AverageProductionTimePerNode() time.Duration {
+	total := f.TotalNodes()
+	if total == 0 {
+		return 0
+	}
+
+	runtime := f.RuntimeDuration()
+	return runtime / time.Duration(total)
+}
+
+// EfficiencyMetrics returns various efficiency metrics
+func (f *GoodsFactory) EfficiencyMetrics() map[string]interface{} {
+	metrics := make(map[string]interface{})
+
+	// Cost per unit
+	if f.quantityAcquired > 0 {
+		metrics["cost_per_unit"] = float64(f.totalCost) / float64(f.quantityAcquired)
+	} else {
+		metrics["cost_per_unit"] = 0.0
+	}
+
+	// Nodes per minute
+	runtime := f.RuntimeDuration()
+	if runtime > 0 {
+		nodesPerMinute := float64(f.CompletedNodes()) / runtime.Minutes()
+		metrics["nodes_per_minute"] = nodesPerMinute
+	} else {
+		metrics["nodes_per_minute"] = 0.0
+	}
+
+	// Parallel efficiency
+	if f.parallelLevels > 0 {
+		metrics["parallel_levels"] = f.parallelLevels
+		metrics["estimated_speedup"] = f.estimatedSpeedup
+	}
+
+	// Ship utilization
+	if f.shipsUsed > 0 {
+		metrics["ships_used"] = f.shipsUsed
+		if f.parallelLevels > 0 {
+			metrics["avg_ships_per_level"] = float64(f.shipsUsed) / float64(f.parallelLevels)
+		}
+	}
+
+	// Market queries
+	if f.marketQueries > 0 {
+		metrics["market_queries"] = f.marketQueries
+		if f.TotalNodes() > 0 {
+			metrics["queries_per_node"] = float64(f.marketQueries) / float64(f.TotalNodes())
+		}
+	}
+
+	return metrics
 }
 
 // Metadata management
