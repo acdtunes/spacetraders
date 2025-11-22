@@ -7,6 +7,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/application/mining/ports"
 	appShipCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands"
+	shipTypes "github.com/andrescamacho/spacetraders-go/internal/application/ship/types"
 	tradingCmd "github.com/andrescamacho/spacetraders-go/internal/application/trading/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
@@ -132,13 +133,13 @@ func (h *RunTransportWorkerHandler) executeTransport(
 			"location":    cmd.MarketSymbol,
 			"step":        2,
 		})
-		dockCmd := &appShipCmd.DockShipCommand{
+		dockCmd := &shipTypes.DockShipCommand{
 			ShipSymbol: cmd.ShipSymbol,
 			PlayerID:   cmd.PlayerID,
 		}
 		h.mediator.Send(ctx, dockCmd)
 
-		refuelCmd := &appShipCmd.RefuelShipCommand{
+		refuelCmd := &shipTypes.RefuelShipCommand{
 			ShipSymbol: cmd.ShipSymbol,
 			PlayerID:   cmd.PlayerID,
 			Units:      nil, // nil = full refuel

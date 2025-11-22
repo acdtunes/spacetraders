@@ -7,43 +7,9 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/application/ship/strategies"
+	"github.com/andrescamacho/spacetraders-go/internal/application/ship/types"
 	domainNavigation "github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
-)
-
-// Local command type definitions to avoid circular imports
-// These mirror the actual command types in the commands subpackage
-type (
-	OrbitShipCommand struct {
-		ShipSymbol string
-		PlayerID   shared.PlayerID
-	}
-	DockShipCommand struct {
-		ShipSymbol string
-		PlayerID   shared.PlayerID
-	}
-	RefuelShipCommand struct {
-		ShipSymbol string
-		PlayerID   shared.PlayerID
-		Units      *int
-	}
-	SetFlightModeCommand struct {
-		ShipSymbol string
-		Mode       shared.FlightMode
-		PlayerID   shared.PlayerID
-	}
-	NavigateDirectCommand struct {
-		ShipSymbol  string
-		Destination string
-		FlightMode  string
-		PlayerID    shared.PlayerID
-	}
-	NavigateDirectResponse struct {
-		Status         string
-		ArrivalTimeStr string
-		FuelConsumed   int
-		TravelDuration int
-	}
 )
 
 // RouteExecutor executes routes by orchestrating atomic ship commands via mediator
@@ -239,7 +205,7 @@ func (e *RouteExecutor) executeSegment(
 }
 
 func (e *RouteExecutor) ensureShipInOrbit(ctx context.Context, ship *domainNavigation.Ship, playerID shared.PlayerID) error {
-	orbitCmd := &OrbitShipCommand{
+	orbitCmd := &types.OrbitShipCommand{
 		ShipSymbol: ship.ShipSymbol(),
 		PlayerID:   playerID,
 	}
@@ -288,7 +254,7 @@ func (e *RouteExecutor) selectOptimalFlightMode(ctx context.Context, segment *do
 }
 
 func (e *RouteExecutor) setShipFlightMode(ctx context.Context, ship *domainNavigation.Ship, playerID shared.PlayerID, flightMode shared.FlightMode) error {
-	setModeCmd := &SetFlightModeCommand{
+	setModeCmd := &types.SetFlightModeCommand{
 		ShipSymbol: ship.ShipSymbol(),
 		PlayerID:   playerID,
 		Mode:       flightMode,
@@ -302,7 +268,7 @@ func (e *RouteExecutor) setShipFlightMode(ctx context.Context, ship *domainNavig
 func (e *RouteExecutor) navigateToSegmentDestination(ctx context.Context, segment *domainNavigation.RouteSegment, ship *domainNavigation.Ship, playerID shared.PlayerID, flightMode shared.FlightMode) error {
 	logger := common.LoggerFromContext(ctx)
 
-	navCmd := &NavigateDirectCommand{
+	navCmd := &types.NavigateDirectCommand{
 		ShipSymbol:  ship.ShipSymbol(),
 		Destination: segment.ToWaypoint.Symbol,
 		PlayerID:    playerID,
@@ -313,7 +279,7 @@ func (e *RouteExecutor) navigateToSegmentDestination(ctx context.Context, segmen
 		return fmt.Errorf("failed to navigate: %w", err)
 	}
 
-	navResponse, ok := navResp.(*NavigateDirectResponse)
+	navResponse, ok := navResp.(*types.NavigateDirectResponse)
 	if !ok {
 		return fmt.Errorf("unexpected response type: %T", navResp)
 	}
@@ -518,7 +484,7 @@ func (e *RouteExecutor) refuelBeforeDeparture(
 
 	// Dock for refuel (via DockShipCommand)
 	// Command handler updates ship state in memory
-	dockCmd := &DockShipCommand{
+	dockCmd := &types.DockShipCommand{
 		ShipSymbol: ship.ShipSymbol(),
 		PlayerID:   playerID,
 	}
@@ -528,7 +494,7 @@ func (e *RouteExecutor) refuelBeforeDeparture(
 
 	// Refuel (via RefuelShipCommand)
 	// Command handler updates ship state in memory
-	refuelCmd := &RefuelShipCommand{
+	refuelCmd := &types.RefuelShipCommand{
 		ShipSymbol: ship.ShipSymbol(),
 		PlayerID:   playerID,
 		Units:      nil, // Full refuel
@@ -539,7 +505,7 @@ func (e *RouteExecutor) refuelBeforeDeparture(
 
 	// Return to orbit (via OrbitShipCommand)
 	// Command handler updates ship state in memory
-	orbitCmd := &OrbitShipCommand{
+	orbitCmd := &types.OrbitShipCommand{
 		ShipSymbol: ship.ShipSymbol(),
 		PlayerID:   playerID,
 	}
@@ -558,7 +524,7 @@ func (e *RouteExecutor) refuelShip(
 ) error {
 	// Dock for refuel (via DockShipCommand)
 	// Command handler updates ship state in memory
-	dockCmd := &DockShipCommand{
+	dockCmd := &types.DockShipCommand{
 		ShipSymbol: ship.ShipSymbol(),
 		PlayerID:   playerID,
 	}
@@ -568,7 +534,7 @@ func (e *RouteExecutor) refuelShip(
 
 	// Refuel (via RefuelShipCommand)
 	// Command handler updates ship state in memory
-	refuelCmd := &RefuelShipCommand{
+	refuelCmd := &types.RefuelShipCommand{
 		ShipSymbol: ship.ShipSymbol(),
 		PlayerID:   playerID,
 		Units:      nil, // Full refuel
@@ -579,7 +545,7 @@ func (e *RouteExecutor) refuelShip(
 
 	// Return to orbit (via OrbitShipCommand)
 	// Command handler updates ship state in memory
-	orbitCmd := &OrbitShipCommand{
+	orbitCmd := &types.OrbitShipCommand{
 		ShipSymbol: ship.ShipSymbol(),
 		PlayerID:   playerID,
 	}

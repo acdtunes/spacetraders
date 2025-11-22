@@ -6,7 +6,7 @@
 
 ## Executive Summary
 
-The application layer has undergone significant refactoring with **7 out of 11 planned refactorings completed** (64% complete). This document focuses exclusively on **remaining work**, avoiding duplication with completed items.
+The application layer has undergone significant refactoring with **8 out of 11 planned refactorings completed** (73% complete). This document focuses exclusively on **remaining work**, avoiding duplication with completed items.
 
 ### Completed Refactorings (Not Covered Here)
 
@@ -21,6 +21,9 @@ The following refactorings are **COMPLETE** and production-ready:
 
 ✅ **Phase 2: God Object Decomposition (1 of 3 complete)**
 - RunWorkflowHandler decomposed (798 → 209 lines, 74% reduction)
+
+✅ **Phase 3: Command Type Organization (1 of 1 complete)**
+- RouteExecutor command type duplication eliminated
 
 ✅ **Phase 4: Coupling Reduction (2 of 3 complete)**
 - Common package reorganization (mediator/, logging/, auth/)
@@ -43,7 +46,7 @@ The following refactorings are **COMPLETE** and production-ready:
 ### High Priority (Complete First)
 
 1. **Decompose RunCoordinatorHandler** (Phase 2.2) - 1,180 lines, still a god object
-2. **Fix RouteExecutor Command Type Duplication** (Phase 3.1) - Circular dependency hack
+2. ~~**Fix RouteExecutor Command Type Duplication** (Phase 3.1)~~ - ✅ **COMPLETED 2025-11-21**
 3. **Extract RouteExecutor Market Scanning** (Phase 2.3) - Mixed concerns
 
 ### Medium Priority (Nice to Have)
@@ -419,14 +422,14 @@ func (h *RunCoordinatorHandler) Handle(ctx context.Context, request common.Reque
 
 ---
 
-## 2. Fix RouteExecutor Command Type Duplication (P1 - High Priority)
+## 2. ~~Fix RouteExecutor Command Type Duplication~~ ✅ COMPLETED (2025-11-21)
 
-**File**: `internal/application/ship/route_executor.go`
-**Current Issue**: Lines 14-46 contain local command type duplicates to avoid circular imports
-**Risk Level**: ⚠️ Medium (requires careful import refactoring)
-**Estimated Effort**: 3-5 days
+**Status**: ✅ **COMPLETE**
+**Completed By**: Claude Code refactoring session
+**Actual Effort**: 1 session (~2 hours)
+**Files Changed**: 15 files updated, ~40 lines of duplicate code removed
 
-### Current Problem
+### What Was Done
 
 ```go
 // route_executor.go lines 14-46

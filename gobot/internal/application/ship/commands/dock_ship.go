@@ -5,20 +5,10 @@ import (
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	"github.com/andrescamacho/spacetraders-go/internal/application/ship/types"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
-
-// DockShipCommand - Command to dock a ship at its current waypoint
-type DockShipCommand struct {
-	ShipSymbol string
-	PlayerID   shared.PlayerID
-}
-
-// DockShipResponse - Response from dock ship command
-type DockShipResponse struct {
-	Status string // "docked" or "already_docked"
-}
 
 // DockShipHandler - Handles dock ship commands
 type DockShipHandler struct {
@@ -36,7 +26,7 @@ func NewDockShipHandler(
 
 // Handle executes the dock ship command
 func (h *DockShipHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {
-	cmd, ok := request.(*DockShipCommand)
+	cmd, ok := request.(*types.DockShipCommand)
 	if !ok {
 		return nil, fmt.Errorf("invalid request type")
 	}
@@ -55,12 +45,12 @@ func (h *DockShipHandler) Handle(ctx context.Context, request common.Request) (c
 		return h.dockShipViaAPI(ctx, ship, cmd.PlayerID)
 	}
 
-	return &DockShipResponse{
+	return &types.DockShipResponse{
 		Status: "already_docked",
 	}, nil
 }
 
-func (h *DockShipHandler) loadShip(ctx context.Context, cmd *DockShipCommand) (*navigation.Ship, error) {
+func (h *DockShipHandler) loadShip(ctx context.Context, cmd *types.DockShipCommand) (*navigation.Ship, error) {
 	ship, err := h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
 	if err != nil {
 		return nil, fmt.Errorf("ship not found: %w", err)
@@ -72,9 +62,9 @@ func (h *DockShipHandler) ensureShipDocked(ship *navigation.Ship) (bool, error) 
 	return ship.EnsureDocked()
 }
 
-func (h *DockShipHandler) dockShipViaAPI(ctx context.Context, ship *navigation.Ship, playerID shared.PlayerID) (*DockShipResponse, error) {
+func (h *DockShipHandler) dockShipViaAPI(ctx context.Context, ship *navigation.Ship, playerID shared.PlayerID) (*types.DockShipResponse, error) {
 	if err := h.shipRepo.Dock(ctx, ship, playerID); err != nil {
 		return nil, fmt.Errorf("failed to dock ship: %w", err)
 	}
-	return &DockShipResponse{Status: "docked"}, nil
+	return &types.DockShipResponse{Status: "docked"}, nil
 }

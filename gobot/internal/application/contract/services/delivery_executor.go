@@ -9,6 +9,7 @@ import (
 	contractTypes "github.com/andrescamacho/spacetraders-go/internal/application/contract/types"
 	contractQueries "github.com/andrescamacho/spacetraders-go/internal/application/contract/queries"
 	appShipCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands"
+	shipTypes "github.com/andrescamacho/spacetraders-go/internal/application/ship/types"
 	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
@@ -327,7 +328,7 @@ func (e *DeliveryExecutor) dockShip(
 	ship *navigation.Ship,
 	playerID shared.PlayerID,
 ) error {
-	dockCmd := &appShipCmd.DockShipCommand{
+	dockCmd := &shipTypes.DockShipCommand{
 		ShipSymbol: ship.ShipSymbol(),
 		PlayerID:   playerID,
 	}

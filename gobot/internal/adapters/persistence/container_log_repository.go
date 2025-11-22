@@ -86,17 +86,20 @@ func (r *GormContainerLogRepository) Log(ctx context.Context, containerID string
 	r.dedupCache[cacheKey] = now
 	r.dedupMu.Unlock()
 
-	// Marshal metadata to JSON string
-	var metadataJSON string
+	// Marshal metadata to JSON string (or nil for NULL in database)
+	var metadataJSON *string
 	if metadata != nil && len(metadata) > 0 {
 		jsonBytes, err := json.Marshal(metadata)
 		if err != nil {
 			// Log warning but continue (metadata is optional)
-			metadataJSON = ""
+			// Leave nil which will be stored as NULL
+			metadataJSON = nil
 		} else {
-			metadataJSON = string(jsonBytes)
+			jsonStr := string(jsonBytes)
+			metadataJSON = &jsonStr
 		}
 	}
+	// If metadata is nil or empty, metadataJSON remains nil which GORM will store as NULL
 
 	// Persist to database
 	logEntry := &ContainerLogModel{
@@ -151,8 +154,8 @@ func (r *GormContainerLogRepository) GetLogs(ctx context.Context, containerID st
 	for i, model := range models {
 		// Unmarshal metadata if present
 		var metadata map[string]interface{}
-		if model.Metadata != "" {
-			if err := json.Unmarshal([]byte(model.Metadata), &metadata); err != nil {
+		if model.Metadata != nil && *model.Metadata != "" {
+			if err := json.Unmarshal([]byte(*model.Metadata), &metadata); err != nil {
 				// If unmarshal fails, leave metadata as nil
 				metadata = nil
 			}
@@ -198,8 +201,8 @@ func (r *GormContainerLogRepository) GetLogsWithOffset(ctx context.Context, cont
 	for i, model := range models {
 		// Unmarshal metadata if present
 		var metadata map[string]interface{}
-		if model.Metadata != "" {
-			if err := json.Unmarshal([]byte(model.Metadata), &metadata); err != nil {
+		if model.Metadata != nil && *model.Metadata != "" {
+			if err := json.Unmarshal([]byte(*model.Metadata), &metadata); err != nil {
 				// If unmarshal fails, leave metadata as nil
 				metadata = nil
 			}

@@ -7,6 +7,7 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	appShip "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands"
+	shipTypes "github.com/andrescamacho/spacetraders-go/internal/application/ship/types"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/routing"
@@ -170,14 +171,14 @@ func (h *RunTourSellingHandler) executeSellRoute(
 			logger.Log("INFO", fmt.Sprintf("Refueling %d units before leg to %s", leg.RefuelAmount, leg.ToWaypoint), nil)
 
 			// Make sure we're docked to refuel
-			dockCmd := &appShip.DockShipCommand{
+			dockCmd := &shipTypes.DockShipCommand{
 				ShipSymbol: cmd.ShipSymbol,
 				PlayerID:   cmd.PlayerID,
 			}
 			h.mediator.Send(ctx, dockCmd)
 
 			refuelAmount := leg.RefuelAmount
-			refuelCmd := &appShip.RefuelShipCommand{
+			refuelCmd := &shipTypes.RefuelShipCommand{
 				ShipSymbol: cmd.ShipSymbol,
 				PlayerID:   cmd.PlayerID,
 				Units:      &refuelAmount,
@@ -193,14 +194,14 @@ func (h *RunTourSellingHandler) executeSellRoute(
 			leg.FromWaypoint, leg.ToWaypoint, leg.FlightMode, leg.FuelCost), nil)
 
 		// Orbit before navigating
-		orbitCmd := &appShip.OrbitShipCommand{
+		orbitCmd := &shipTypes.OrbitShipCommand{
 			ShipSymbol: cmd.ShipSymbol,
 			PlayerID:   cmd.PlayerID,
 		}
 		h.mediator.Send(ctx, orbitCmd)
 
 		// Use the flight mode that was calculated by routing service
-		navCmd := &appShip.NavigateDirectCommand{
+		navCmd := &shipTypes.NavigateDirectCommand{
 			ShipSymbol:  cmd.ShipSymbol,
 			Destination: leg.ToWaypoint,
 			PlayerID:    cmd.PlayerID,
@@ -214,7 +215,7 @@ func (h *RunTourSellingHandler) executeSellRoute(
 		}
 
 		// Wait for navigation to complete before proceeding
-		if navResult, ok := navResp.(*appShip.NavigateDirectResponse); ok {
+		if navResult, ok := navResp.(*shipTypes.NavigateDirectResponse); ok {
 			if navResult.Status == "navigating" && navResult.ArrivalTime > 0 {
 				logger.Log("INFO", fmt.Sprintf("Waiting %d seconds for ship to arrive at %s", navResult.ArrivalTime, leg.ToWaypoint), nil)
 				select {
@@ -230,7 +231,7 @@ func (h *RunTourSellingHandler) executeSellRoute(
 		goodsToSell := marketGoods[leg.ToWaypoint]
 		if len(goodsToSell) > 0 {
 			// Dock at market before selling
-			dockCmd := &appShip.DockShipCommand{
+			dockCmd := &shipTypes.DockShipCommand{
 				ShipSymbol: cmd.ShipSymbol,
 				PlayerID:   cmd.PlayerID,
 			}

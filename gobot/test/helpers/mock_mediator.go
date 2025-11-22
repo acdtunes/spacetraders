@@ -7,6 +7,7 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	shipCommands "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands"
+	shipTypes "github.com/andrescamacho/spacetraders-go/internal/application/ship/types"
 	shipyardCommands "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/commands"
 	shipyardQueries "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/queries"
 )
@@ -49,9 +50,9 @@ func (m *MockMediator) Send(ctx context.Context, request common.Request) (common
 			FuelRemaining:   100,
 		}, nil
 
-	case *shipCommands.DockShipCommand:
+	case *shipTypes.DockShipCommand:
 		m.callLog = append(m.callLog, fmt.Sprintf("DockShip:%s", req.ShipSymbol))
-		return &shipCommands.DockShipResponse{
+		return &shipTypes.DockShipResponse{
 			Status: "docked",
 		}, nil
 

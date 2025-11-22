@@ -6,6 +6,7 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/application/ship/commands"
+	shipTypes "github.com/andrescamacho/spacetraders-go/internal/application/ship/types"
 	"github.com/andrescamacho/spacetraders-go/internal/application/shipyard/queries"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
@@ -232,7 +233,7 @@ func (h *PurchaseShipHandler) dockShipIfNeeded(
 		return purchasingShip, nil
 	}
 
-	dockCmd := &commands.DockShipCommand{
+	dockCmd := &shipTypes.DockShipCommand{
 		ShipSymbol: cmd.PurchasingShipSymbol,
 		PlayerID:   cmd.PlayerID,
 	}

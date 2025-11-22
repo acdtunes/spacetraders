@@ -11,6 +11,12 @@ This directory contains SQL migration scripts for schema changes that cannot be 
 - `002_add_foreign_key_constraints.down.sql` - Rollback for foreign key constraints
 - `003_drop_operation_column.up.sql` - Drops redundant `operation` column from `ship_assignments`
 - `003_drop_operation_column.down.sql` - Rollback for operation column removal
+- `004_add_mining_tables.up.sql` - Adds mining operations tables
+- `004_add_mining_tables.down.sql` - Rollback for mining tables
+- `005_drop_contract_purchase_history.up.sql` - Drops contract purchase history tables
+- `005_drop_contract_purchase_history.down.sql` - Rollback for contract purchase history removal
+- `006_add_metadata_column.up.sql` - Adds metadata JSONB column to container_logs table
+- `006_add_metadata_column.down.sql` - Rollback for metadata column
 
 ## Running Migrations
 
@@ -22,8 +28,14 @@ psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME -f migrations/000_cleanup_o
 psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME -f migrations/001_normalize_id_columns.up.sql
 psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME -f migrations/002_add_foreign_key_constraints.up.sql
 psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME -f migrations/003_drop_operation_column.up.sql
+psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME -f migrations/004_add_mining_tables.up.sql
+psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME -f migrations/005_drop_contract_purchase_history.up.sql
+psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME -f migrations/006_add_metadata_column.up.sql
 
 # Rollback migrations (down) - run in reverse order
+psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME -f migrations/006_add_metadata_column.down.sql
+psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME -f migrations/005_drop_contract_purchase_history.down.sql
+psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME -f migrations/004_add_mining_tables.down.sql
 psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME -f migrations/003_drop_operation_column.down.sql
 psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME -f migrations/002_add_foreign_key_constraints.down.sql
 psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME -f migrations/001_normalize_id_columns.down.sql
@@ -44,6 +56,9 @@ psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME -f migrations/000_cleanup_o
 psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME -f migrations/001_normalize_id_columns.up.sql
 psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME -f migrations/002_add_foreign_key_constraints.up.sql
 psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME -f migrations/003_drop_operation_column.up.sql
+psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME -f migrations/004_add_mining_tables.up.sql
+psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME -f migrations/005_drop_contract_purchase_history.up.sql
+psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME -f migrations/006_add_metadata_column.up.sql
 ```
 
 ## Testing
@@ -57,13 +72,19 @@ For test databases using SQLite in-memory, these migrations are **not needed**. 
 1. First run `000_cleanup_orphaned_data.sql`
 2. Then run `001_normalize_id_columns.up.sql`
 3. Then run `002_add_foreign_key_constraints.up.sql`
-4. Finally run `003_drop_operation_column.up.sql`
+4. Then run `003_drop_operation_column.up.sql`
+5. Then run `004_add_mining_tables.up.sql`
+6. Then run `005_drop_contract_purchase_history.up.sql`
+7. Finally run `006_add_metadata_column.up.sql`
 
 When rolling back, run in **reverse order**:
 
-1. First run `003_drop_operation_column.down.sql`
-2. Then run `002_add_foreign_key_constraints.down.sql`
-3. Finally run `001_normalize_id_columns.down.sql`
+1. First run `006_add_metadata_column.down.sql`
+2. Then run `005_drop_contract_purchase_history.down.sql`
+3. Then run `004_add_mining_tables.down.sql`
+4. Then run `003_drop_operation_column.down.sql`
+5. Then run `002_add_foreign_key_constraints.down.sql`
+6. Finally run `001_normalize_id_columns.down.sql`
 
 ## Notes
 

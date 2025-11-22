@@ -17,6 +17,7 @@ import (
 	miningCmd "github.com/andrescamacho/spacetraders-go/internal/application/mining/commands"
 	scoutingCmd "github.com/andrescamacho/spacetraders-go/internal/application/scouting/commands"
 	shipCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands"
+	shipTypes "github.com/andrescamacho/spacetraders-go/internal/application/ship/types"
 	shipQuery "github.com/andrescamacho/spacetraders-go/internal/application/ship/queries"
 	shipyardCmd "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/commands"
 	shipyardQuery "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/queries"
@@ -656,7 +657,7 @@ func (s *DaemonServer) NavigateShip(ctx context.Context, shipSymbol, destination
 func (s *DaemonServer) DockShip(ctx context.Context, shipSymbol string, playerID int) (string, error) {
 	containerID := utils.GenerateContainerID("dock", shipSymbol)
 
-	cmd := &shipCmd.DockShipCommand{
+	cmd := &shipTypes.DockShipCommand{
 		ShipSymbol: shipSymbol,
 		PlayerID:   shared.MustNewPlayerID(playerID),
 	}
@@ -693,7 +694,7 @@ func (s *DaemonServer) DockShip(ctx context.Context, shipSymbol string, playerID
 func (s *DaemonServer) OrbitShip(ctx context.Context, shipSymbol string, playerID int) (string, error) {
 	containerID := utils.GenerateContainerID("orbit", shipSymbol)
 
-	cmd := &shipCmd.OrbitShipCommand{
+	cmd := &shipTypes.OrbitShipCommand{
 		ShipSymbol: shipSymbol,
 		PlayerID:   shared.MustNewPlayerID(playerID),
 	}
@@ -730,7 +731,7 @@ func (s *DaemonServer) OrbitShip(ctx context.Context, shipSymbol string, playerI
 func (s *DaemonServer) RefuelShip(ctx context.Context, shipSymbol string, playerID int, units *int) (string, error) {
 	containerID := utils.GenerateContainerID("refuel", shipSymbol)
 
-	cmd := &shipCmd.RefuelShipCommand{
+	cmd := &shipTypes.RefuelShipCommand{
 		ShipSymbol: shipSymbol,
 		PlayerID:   shared.MustNewPlayerID(playerID),
 		Units:      units,
