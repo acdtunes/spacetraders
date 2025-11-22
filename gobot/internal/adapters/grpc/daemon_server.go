@@ -5,12 +5,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	contractCmd "github.com/andrescamacho/spacetraders-go/internal/application/contract/commands"
@@ -27,6 +31,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/routing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
 	pb "github.com/andrescamacho/spacetraders-go/pkg/proto/daemon"
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 	"google.golang.org/grpc"
@@ -34,6 +39,15 @@ import (
 
 // CommandFactory creates a command instance from configuration
 type CommandFactory func(config map[string]interface{}, playerID int) (interface{}, error)
+
+// MetricsCollector defines the interface for metrics collection
+type MetricsCollector interface {
+	Start(ctx context.Context)
+	Stop()
+	RecordContainerCompletion(containerInfo metrics.ContainerInfo)
+	RecordContainerRestart(containerInfo metrics.ContainerInfo)
+	RecordContainerIteration(containerInfo metrics.ContainerInfo)
+}
 
 // DaemonServer implements the gRPC daemon service
 // Handles CLI requests and orchestrates background container operations
@@ -59,6 +73,13 @@ type DaemonServer struct {
 	pendingWorkerCommands   map[string]interface{}
 	pendingWorkerCommandsMu sync.RWMutex
 
+	// Metrics
+	metricsServer            *http.Server
+	metricsConfig            *config.MetricsConfig
+	containerMetricsCollector MetricsCollector
+	financialMetricsCollector *metrics.FinancialMetricsCollector
+	commandMetricsCollector   *metrics.CommandMetricsCollector
+
 	// Shutdown coordination
 	shutdownChan chan os.Signal
 	done         chan struct{}
@@ -75,6 +96,7 @@ func NewDaemonServer(
 	routingClient routing.RoutingClient,
 	goodsFactoryRepo *persistence.GormGoodsFactoryRepository,
 	socketPath string,
+	metricsConfig *config.MetricsConfig,
 ) (*DaemonServer, error) {
 	// Remove existing socket file if present
 	if err := os.RemoveAll(socketPath); err != nil {
@@ -106,8 +128,80 @@ func NewDaemonServer(
 		containers:            make(map[string]*ContainerRunner),
 		commandFactories:      make(map[string]CommandFactory),
 		pendingWorkerCommands: make(map[string]interface{}),
+		metricsConfig:         metricsConfig,
 		shutdownChan:          make(chan os.Signal, 1),
 		done:                  make(chan struct{}),
+	}
+
+	// Initialize metrics collector if enabled
+	if metricsConfig != nil && metricsConfig.Enabled {
+		// Create container info getter function
+		getContainers := func() map[string]metrics.ContainerInfo {
+			server.containersMu.RLock()
+			defer server.containersMu.RUnlock()
+
+			containerInfoMap := make(map[string]metrics.ContainerInfo)
+			for id, runner := range server.containers {
+				containerInfoMap[id] = runner.Container()
+			}
+			return containerInfoMap
+		}
+
+		// Create container metrics collector
+		collector := metrics.NewContainerMetricsCollector(getContainers, shipRepo)
+		if err := collector.Register(); err != nil {
+			listener.Close()
+			return nil, fmt.Errorf("failed to register container metrics collector: %w", err)
+		}
+		server.containerMetricsCollector = collector
+
+		// Set global collector for metrics recording
+		metrics.SetGlobalCollector(collector)
+
+		// Create navigation metrics collector
+		navCollector := metrics.NewNavigationMetricsCollector()
+		if err := navCollector.Register(); err != nil {
+			listener.Close()
+			return nil, fmt.Errorf("failed to register navigation metrics collector: %w", err)
+		}
+
+		// Set global navigation collector for metrics recording
+		metrics.SetGlobalNavigationCollector(navCollector)
+
+		// Create financial metrics collector
+		finCollector := metrics.NewFinancialMetricsCollector(mediator)
+		if err := finCollector.Register(); err != nil {
+			listener.Close()
+			return nil, fmt.Errorf("failed to register financial metrics collector: %w", err)
+		}
+
+		// Set global financial collector for metrics recording
+		metrics.SetGlobalFinancialCollector(finCollector)
+
+		// Store reference for lifecycle management
+		server.financialMetricsCollector = finCollector
+
+		// Create command metrics collector
+		cmdCollector := metrics.NewCommandMetricsCollector()
+		if err := cmdCollector.Register(); err != nil {
+			listener.Close()
+			return nil, fmt.Errorf("failed to register command metrics collector: %w", err)
+		}
+		server.commandMetricsCollector = cmdCollector
+
+		// Register Prometheus middleware with mediator
+		// This wraps all command/query executions to record metrics
+		mediator.RegisterMiddleware(metrics.PrometheusMiddleware(cmdCollector))
+
+		// Create API metrics collector
+		apiCollector := metrics.NewAPIMetricsCollector()
+		if err := apiCollector.Register(); err != nil {
+			listener.Close()
+			return nil, fmt.Errorf("failed to register API metrics collector: %w", err)
+		}
+
+		// Set global API collector for API client to use
+		metrics.SetGlobalAPICollector(apiCollector)
 	}
 
 	// Register command factories for recovery
@@ -396,6 +490,26 @@ func (s *DaemonServer) Start() error {
 		}
 	}
 
+	// Start metrics server if enabled
+	if s.metricsConfig != nil && s.metricsConfig.Enabled {
+		if err := s.startMetricsServer(); err != nil {
+			fmt.Printf("Warning: Failed to start metrics server: %v\n", err)
+		} else {
+			fmt.Printf("Metrics server listening on %s:%d%s\n",
+				s.metricsConfig.Host, s.metricsConfig.Port, s.metricsConfig.Path)
+		}
+
+		// Start container metrics collector
+		if s.containerMetricsCollector != nil {
+			s.containerMetricsCollector.Start(context.Background())
+		}
+
+		// Start financial metrics collector
+		if s.financialMetricsCollector != nil {
+			s.financialMetricsCollector.Start(context.Background())
+		}
+	}
+
 	// Recover RUNNING containers from previous daemon instance
 	// This runs in the background to avoid blocking daemon startup
 	go func() {
@@ -437,10 +551,68 @@ func (s *DaemonServer) Start() error {
 	}
 }
 
+// startMetricsServer starts the HTTP server for Prometheus metrics
+func (s *DaemonServer) startMetricsServer() error {
+	if s.metricsConfig == nil || !s.metricsConfig.Enabled {
+		return nil
+	}
+
+	// Create HTTP mux for metrics endpoint
+	mux := http.NewServeMux()
+	mux.Handle(s.metricsConfig.Path, promhttp.HandlerFor(
+		metrics.GetRegistry(),
+		promhttp.HandlerOpts{
+			EnableOpenMetrics: true,
+		},
+	))
+
+	// Create HTTP server
+	addr := fmt.Sprintf("%s:%d", s.metricsConfig.Host, s.metricsConfig.Port)
+	s.metricsServer = &http.Server{
+		Addr:    addr,
+		Handler: mux,
+	}
+
+	// Start server in goroutine
+	go func() {
+		if err := s.metricsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			fmt.Printf("Metrics server error: %v\n", err)
+		}
+	}()
+
+	return nil
+}
+
+// stopMetricsServer gracefully stops the HTTP metrics server
+func (s *DaemonServer) stopMetricsServer() {
+	if s.metricsServer == nil {
+		return
+	}
+
+	// Stop metrics collectors first
+	if s.containerMetricsCollector != nil {
+		s.containerMetricsCollector.Stop()
+	}
+	if s.financialMetricsCollector != nil {
+		s.financialMetricsCollector.Stop()
+	}
+
+	// Shutdown HTTP server with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := s.metricsServer.Shutdown(ctx); err != nil {
+		fmt.Printf("Error shutting down metrics server: %v\n", err)
+	}
+}
+
 // handleShutdown manages graceful shutdown
 func (s *DaemonServer) handleShutdown() {
 	<-s.shutdownChan
 	fmt.Println("\nShutdown signal received, stopping daemon...")
+
+	// Stop metrics server and collector
+	s.stopMetricsServer()
 
 	// Interrupt all container goroutines and mark as INTERRUPTED in DB for recovery
 	s.interruptAllContainers()

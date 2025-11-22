@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/application/ship/strategies"
 	"github.com/andrescamacho/spacetraders-go/internal/application/ship/types"
@@ -137,6 +138,17 @@ func (e *RouteExecutor) ExecuteRoute(
 				"error":         err.Error(),
 			})
 			route.FailRoute(err.Error())
+
+			// Record route failure metrics
+			duration := time.Since(route.CreatedAt()).Seconds()
+			metrics.RecordRouteCompletion(
+				route.PlayerID(),
+				route.Status(),
+				duration,
+				int(route.TotalDistance()),
+				route.TotalFuelRequired(),
+			)
+
 			return err
 		}
 
@@ -157,8 +169,25 @@ func (e *RouteExecutor) ExecuteRoute(
 			return err
 		}
 
+		// Record segment completion metrics
+		metrics.RecordSegmentCompletion(
+			route.PlayerID(),
+			int(segment.Distance),
+			segment.FuelRequired,
+		)
+
 		segmentCount++
 	}
+
+	// Record route completion metrics
+	duration := time.Since(route.CreatedAt()).Seconds()
+	metrics.RecordRouteCompletion(
+		route.PlayerID(),
+		route.Status(),
+		duration,
+		int(route.TotalDistance()),
+		route.TotalFuelRequired(),
+	)
 
 	logger.Log("INFO", "Route execution finished", map[string]interface{}{
 		"ship_symbol":       ship.ShipSymbol(),
@@ -330,6 +359,14 @@ func (e *RouteExecutor) navigateToSegmentDestination(ctx context.Context, segmen
 			"warning":     "empty_arrival_time",
 		})
 	}
+
+	// Record fuel consumption metrics
+	// The segment's fuel required is consumed during this navigation
+	metrics.RecordFuelConsumption(
+		playerID.Value(),
+		flightMode,
+		segment.FuelRequired,
+	)
 
 	if e.shipRepo != nil {
 		freshShip, err := e.shipRepo.FindBySymbol(ctx, ship.ShipSymbol(), playerID)

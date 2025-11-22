@@ -118,4 +118,16 @@ func SetDefaults(cfg *Config) {
 	if cfg.Logging.Rotation.MaxAge == 0 {
 		cfg.Logging.Rotation.MaxAge = 28 // days
 	}
+
+	// Metrics defaults
+	// Note: Metrics are disabled by default (opt-in via ST_METRICS_ENABLED=true)
+	if cfg.Metrics.Port == 0 {
+		cfg.Metrics.Port = 9090
+	}
+	if cfg.Metrics.Host == "" {
+		cfg.Metrics.Host = "localhost"
+	}
+	if cfg.Metrics.Path == "" {
+		cfg.Metrics.Path = "/metrics"
+	}
 }

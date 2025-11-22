@@ -27,14 +27,22 @@ const (
 	defaultBackoffBase = time.Second
 )
 
+// APIMetricsRecorder defines the interface for recording API metrics
+type APIMetricsRecorder interface {
+	RecordAPIRequest(method string, endpoint string, statusCode int, duration float64)
+	RecordAPIRetry(method string, endpoint string, reason string)
+	RecordRateLimitWait(method string, endpoint string, duration float64)
+}
+
 // SpaceTradersClient implements the APIClient interface
 type SpaceTradersClient struct {
-	httpClient  *http.Client
-	rateLimiter *rate.Limiter
-	baseURL     string
-	maxRetries  int
-	backoffBase time.Duration
-	clock       shared.Clock
+	httpClient       *http.Client
+	rateLimiter      *rate.Limiter
+	baseURL          string
+	maxRetries       int
+	backoffBase      time.Duration
+	clock            shared.Clock
+	metricsCollector APIMetricsRecorder
 }
 
 // NewSpaceTradersClient creates a new SpaceTraders API client with default settings
@@ -51,6 +59,7 @@ func NewSpaceTradersClient() *SpaceTradersClient {
 
 // NewSpaceTradersClientWithConfig creates a new SpaceTraders API client with custom configuration
 // If clock is nil, uses RealClock for production
+// Automatically uses the global API metrics collector if one is set
 func NewSpaceTradersClientWithConfig(
 	baseURL string,
 	maxRetries int,
@@ -60,16 +69,30 @@ func NewSpaceTradersClientWithConfig(
 	if clock == nil {
 		clock = shared.NewRealClock()
 	}
-	return &SpaceTradersClient{
+
+	client := &SpaceTradersClient{
 		httpClient: &http.Client{
 			Timeout: defaultTimeout,
 		},
-		rateLimiter: rate.NewLimiter(rate.Limit(2), 2), // 2 req/sec, burst 2
-		baseURL:     baseURL,
-		maxRetries:  maxRetries,
-		backoffBase: backoffBase,
-		clock:       clock,
+		rateLimiter:      rate.NewLimiter(rate.Limit(2), 2), // 2 req/sec, burst 2
+		baseURL:          baseURL,
+		maxRetries:       maxRetries,
+		backoffBase:      backoffBase,
+		clock:            clock,
+		metricsCollector: nil,
 	}
+
+	// Auto-wire global metrics collector if available
+	// This requires importing the metrics package, which we'll add
+	// For now, callers can use SetMetricsCollector() to enable metrics
+
+	return client
+}
+
+// SetMetricsCollector sets the metrics collector for the client
+// This allows metrics to be enabled after client construction
+func (c *SpaceTradersClient) SetMetricsCollector(collector APIMetricsRecorder) {
+	c.metricsCollector = collector
 }
 
 // GetShip retrieves ship details
@@ -1120,17 +1143,41 @@ func addJitter(d time.Duration) time.Duration {
 	return time.Duration(float64(d) * jitter)
 }
 
+// extractEndpoint extracts the endpoint path without query parameters for metrics
+// Example: "/my/ships?page=1&limit=20" -> "/my/ships"
+func extractEndpoint(path string) string {
+	// Find the position of '?' which marks the start of query parameters
+	for i, ch := range path {
+		if ch == '?' {
+			return path[:i]
+		}
+	}
+	return path
+}
+
 // request makes an HTTP request with rate limiting and exponential backoff retries
 func (c *SpaceTradersClient) request(ctx context.Context, method, path, token string, body interface{}, result interface{}) error {
 	url := c.baseURL + path
 
 	var lastErr error
+	var finalStatusCode int
+
+	// Start overall timer for metrics
+	overallStart := time.Now()
+
+	// Extract clean endpoint path (before query params) for metrics
+	endpoint := extractEndpoint(path)
 
 	// Attempt the request with exponential backoff + jitter retries
 	for attempt := 0; attempt <= c.maxRetries; attempt++ {
-		// Wait for rate limiter
+		// Track rate limiter wait time
+		rateLimitStart := time.Now()
 		if err := c.rateLimiter.Wait(ctx); err != nil {
 			return fmt.Errorf("rate limiter error: %w", err)
+		}
+		if c.metricsCollector != nil {
+			rateLimitDuration := time.Since(rateLimitStart).Seconds()
+			c.metricsCollector.RecordRateLimitWait(method, endpoint, rateLimitDuration)
 		}
 
 		// Prepare request body
@@ -1158,6 +1205,11 @@ func (c *SpaceTradersClient) request(ctx context.Context, method, path, token st
 			// Network error - retryable
 			lastErr = &retryableError{
 				message: fmt.Errorf("network error: %w", err).Error(),
+			}
+
+			// Record retry attempt for metrics
+			if c.metricsCollector != nil && attempt > 0 {
+				c.metricsCollector.RecordAPIRetry(method, endpoint, "network_error")
 			}
 
 			// Last attempt - don't sleep, just record error
@@ -1204,9 +1256,15 @@ func (c *SpaceTradersClient) request(ctx context.Context, method, path, token st
 				retryAfter: retryAfterDuration,
 			}
 
+			// Record retry attempt for metrics
+			if c.metricsCollector != nil && attempt > 0 {
+				c.metricsCollector.RecordAPIRetry(method, endpoint, "rate_limited_429")
+			}
+
 			// Last attempt - don't sleep
 			if attempt >= c.maxRetries {
 				fmt.Printf("[DEBUG] Last attempt reached, breaking\n")
+				finalStatusCode = resp.StatusCode
 				break
 			}
 
@@ -1235,8 +1293,14 @@ func (c *SpaceTradersClient) request(ctx context.Context, method, path, token st
 				message: "service unavailable (503)",
 			}
 
+			// Record retry attempt for metrics
+			if c.metricsCollector != nil && attempt > 0 {
+				c.metricsCollector.RecordAPIRetry(method, endpoint, "service_unavailable_503")
+			}
+
 			// Last attempt - don't sleep
 			if attempt >= c.maxRetries {
+				finalStatusCode = resp.StatusCode
 				break
 			}
 
@@ -1257,8 +1321,14 @@ func (c *SpaceTradersClient) request(ctx context.Context, method, path, token st
 				message: fmt.Sprintf("server error (%d)", resp.StatusCode),
 			}
 
+			// Record retry attempt for metrics
+			if c.metricsCollector != nil && attempt > 0 {
+				c.metricsCollector.RecordAPIRetry(method, endpoint, "server_error_5xx")
+			}
+
 			// Last attempt - don't sleep
 			if attempt >= c.maxRetries {
+				finalStatusCode = resp.StatusCode
 				break
 			}
 
@@ -1275,11 +1345,21 @@ func (c *SpaceTradersClient) request(ctx context.Context, method, path, token st
 
 		// Handle 4xx client errors (except 429) - NOT retryable
 		if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+			// Record final metrics for 4xx error
+			if c.metricsCollector != nil {
+				duration := time.Since(overallStart).Seconds()
+				c.metricsCollector.RecordAPIRequest(method, endpoint, resp.StatusCode, duration)
+			}
 			return fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(respBody))
 		}
 
 		// Handle non-2xx status codes - NOT retryable
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			// Record final metrics for unexpected status code
+			if c.metricsCollector != nil {
+				duration := time.Since(overallStart).Seconds()
+				c.metricsCollector.RecordAPIRequest(method, endpoint, resp.StatusCode, duration)
+			}
 			return fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(respBody))
 		}
 
@@ -1290,11 +1370,21 @@ func (c *SpaceTradersClient) request(ctx context.Context, method, path, token st
 			}
 		}
 
-		// Success!
+		// Success! Record final metrics
+		if c.metricsCollector != nil {
+			duration := time.Since(overallStart).Seconds()
+			c.metricsCollector.RecordAPIRequest(method, endpoint, resp.StatusCode, duration)
+		}
 		return nil
 	}
 
-	// All retries exhausted
+	// All retries exhausted - record final metrics if we have a status code
+	if c.metricsCollector != nil && finalStatusCode > 0 {
+		duration := time.Since(overallStart).Seconds()
+		c.metricsCollector.RecordAPIRequest(method, endpoint, finalStatusCode, duration)
+	}
+
+	// Return error
 	if lastErr != nil {
 		return fmt.Errorf("max retries exceeded: %w", lastErr)
 	}

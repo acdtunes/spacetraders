@@ -1,0 +1,26 @@
+global:
+  scrape_interval: 15s      # Scrape targets every 15 seconds
+  evaluation_interval: 15s  # Evaluate rules every 15 seconds
+  external_labels:
+    cluster: 'spacetraders'
+    environment: 'development'
+
+# Scrape configurations
+scrape_configs:
+  # SpaceTraders Daemon metrics
+  - job_name: 'spacetraders-daemon'
+    static_configs:
+      - targets: ['host.docker.internal:9090']  # Daemon's metrics endpoint
+        labels:
+          service: 'daemon'
+          instance: 'local'
+
+    # Scrape timeout (must be less than scrape_interval)
+    scrape_timeout: 10s
+
+    # Metric relabeling (optional - for filtering/renaming)
+    metric_relabel_configs:
+      # Keep only spacetraders_* metrics (drop any other exposed metrics)
+      - source_labels: [__name__]
+        regex: 'spacetraders_.*'
+        action: keep
