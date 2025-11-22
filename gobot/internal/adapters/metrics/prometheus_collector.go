@@ -29,6 +29,10 @@ var (
 	// globalFinancialCollector is the singleton financial metrics collector
 	// Set by SetGlobalFinancialCollector() when metrics are enabled
 	globalFinancialCollector FinancialMetricsRecorder
+
+	// globalAPICollector is the singleton API metrics collector
+	// Set by SetGlobalAPICollector() when metrics are enabled
+	globalAPICollector *APIMetricsCollector
 )
 
 // MetricsRecorder defines the interface for recording container metrics events
@@ -147,4 +151,15 @@ func RecordTrade(playerID int, goodSymbol string, buyPrice int, sellPrice int, q
 	if globalFinancialCollector != nil {
 		globalFinancialCollector.RecordTrade(playerID, goodSymbol, buyPrice, sellPrice, quantity)
 	}
+}
+
+// SetGlobalAPICollector sets the global API metrics collector
+func SetGlobalAPICollector(collector *APIMetricsCollector) {
+	globalAPICollector = collector
+}
+
+// GetGlobalAPICollector returns the global API metrics collector
+// Returns nil if metrics are not enabled
+func GetGlobalAPICollector() *APIMetricsCollector {
+	return globalAPICollector
 }

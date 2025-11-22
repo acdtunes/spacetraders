@@ -78,6 +78,7 @@ type DaemonServer struct {
 	metricsConfig            *config.MetricsConfig
 	containerMetricsCollector MetricsCollector
 	financialMetricsCollector *metrics.FinancialMetricsCollector
+	commandMetricsCollector   *metrics.CommandMetricsCollector
 
 	// Shutdown coordination
 	shutdownChan chan os.Signal
@@ -179,6 +180,28 @@ func NewDaemonServer(
 
 		// Store reference for lifecycle management
 		server.financialMetricsCollector = finCollector
+
+		// Create command metrics collector
+		cmdCollector := metrics.NewCommandMetricsCollector()
+		if err := cmdCollector.Register(); err != nil {
+			listener.Close()
+			return nil, fmt.Errorf("failed to register command metrics collector: %w", err)
+		}
+		server.commandMetricsCollector = cmdCollector
+
+		// Register Prometheus middleware with mediator
+		// This wraps all command/query executions to record metrics
+		mediator.RegisterMiddleware(metrics.PrometheusMiddleware(cmdCollector))
+
+		// Create API metrics collector
+		apiCollector := metrics.NewAPIMetricsCollector()
+		if err := apiCollector.Register(); err != nil {
+			listener.Close()
+			return nil, fmt.Errorf("failed to register API metrics collector: %w", err)
+		}
+
+		// Set global API collector for API client to use
+		metrics.SetGlobalAPICollector(apiCollector)
 	}
 
 	// Register command factories for recovery
