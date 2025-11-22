@@ -158,6 +158,10 @@ func (s *Ship) CurrentLocation() *shared.Waypoint {
 	return s.currentLocation
 }
 
+func (s *Ship) IsAtLocation(waypoint *shared.Waypoint) bool {
+	return s.currentLocation.Symbol == waypoint.Symbol
+}
+
 func (s *Ship) Fuel() *shared.Fuel {
 	return s.fuel
 }
