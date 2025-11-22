@@ -673,3 +673,83 @@ func (s *daemonServiceImpl) TourSell(ctx context.Context, req *pb.TourSellReques
 		Status:      "RUNNING",
 	}, nil
 }
+
+// StartGoodsFactory implements the StartGoodsFactory RPC
+func (s *daemonServiceImpl) StartGoodsFactory(ctx context.Context, req *pb.StartGoodsFactoryRequest) (*pb.StartGoodsFactoryResponse, error) {
+	// Resolve player ID
+	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve player: %w", err)
+	}
+
+	// Default system symbol if not provided (would need to get current system from a ship)
+	systemSymbol := ""
+	if req.SystemSymbol != nil {
+		systemSymbol = *req.SystemSymbol
+	} else {
+		// TODO: Default to a system - for now require it
+		return nil, fmt.Errorf("system_symbol is required")
+	}
+
+	// Start goods factory
+	result, err := s.daemon.StartGoodsFactory(ctx, req.TargetGood, systemSymbol, playerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to start goods factory: %w", err)
+	}
+
+	return &pb.StartGoodsFactoryResponse{
+		FactoryId:  result.FactoryID,
+		TargetGood: result.TargetGood,
+		Status:     "RUNNING",
+		Message:    fmt.Sprintf("Goods factory started for %s", req.TargetGood),
+		NodesTotal: int32(result.NodesTotal),
+	}, nil
+}
+
+// StopGoodsFactory implements the StopGoodsFactory RPC
+func (s *daemonServiceImpl) StopGoodsFactory(ctx context.Context, req *pb.StopGoodsFactoryRequest) (*pb.StopGoodsFactoryResponse, error) {
+	// Resolve player ID
+	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve player: %w", err)
+	}
+
+	// Stop the factory
+	err = s.daemon.StopGoodsFactory(ctx, req.FactoryId, playerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to stop goods factory: %w", err)
+	}
+
+	return &pb.StopGoodsFactoryResponse{
+		FactoryId: req.FactoryId,
+		Status:    "STOPPED",
+		Message:   "Goods factory stopped successfully",
+	}, nil
+}
+
+// GetFactoryStatus implements the GetFactoryStatus RPC
+func (s *daemonServiceImpl) GetFactoryStatus(ctx context.Context, req *pb.GetFactoryStatusRequest) (*pb.GetFactoryStatusResponse, error) {
+	// Resolve player ID
+	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve player: %w", err)
+	}
+
+	// Get factory status
+	status, err := s.daemon.GetFactoryStatus(ctx, req.FactoryId, playerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get factory status: %w", err)
+	}
+
+	return &pb.GetFactoryStatusResponse{
+		FactoryId:        status.FactoryID,
+		TargetGood:       status.TargetGood,
+		Status:           status.Status,
+		DependencyTree:   status.DependencyTree,
+		QuantityAcquired: int32(status.QuantityAcquired),
+		TotalCost:        int32(status.TotalCost),
+		NodesCompleted:   int32(status.NodesCompleted),
+		NodesTotal:       int32(status.NodesTotal),
+		SystemSymbol:     status.SystemSymbol,
+	}, nil
+}

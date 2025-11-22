@@ -790,3 +790,107 @@ func (c *DaemonClient) TourSell(
 		Status:      resp.Status,
 	}, nil
 }
+
+// StartGoodsFactory starts a goods factory for automated production
+func (c *DaemonClient) StartGoodsFactory(
+	ctx context.Context,
+	targetGood string,
+	systemSymbol *string,
+	playerID int,
+	agentSymbol *string,
+) (*StartGoodsFactoryResult, error) {
+	resp, err := c.client.StartGoodsFactory(ctx, &pb.StartGoodsFactoryRequest{
+		PlayerId:     int32(playerID),
+		TargetGood:   targetGood,
+		SystemSymbol: systemSymbol,
+		AgentSymbol:  agentSymbol,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &StartGoodsFactoryResult{
+		FactoryID:  resp.FactoryId,
+		TargetGood: resp.TargetGood,
+		Status:     resp.Status,
+		Message:    resp.Message,
+		NodesTotal: int(resp.NodesTotal),
+	}, nil
+}
+
+// StopGoodsFactory stops a running goods factory
+func (c *DaemonClient) StopGoodsFactory(
+	ctx context.Context,
+	factoryID string,
+	playerID int,
+) (*StopGoodsFactoryResult, error) {
+	resp, err := c.client.StopGoodsFactory(ctx, &pb.StopGoodsFactoryRequest{
+		PlayerId:  int32(playerID),
+		FactoryId: factoryID,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &StopGoodsFactoryResult{
+		FactoryID: resp.FactoryId,
+		Status:    resp.Status,
+		Message:   resp.Message,
+	}, nil
+}
+
+// GetFactoryStatus retrieves the status of a goods factory
+func (c *DaemonClient) GetFactoryStatus(
+	ctx context.Context,
+	factoryID string,
+	playerID int,
+) (*GoodsFactoryStatusResult, error) {
+	resp, err := c.client.GetFactoryStatus(ctx, &pb.GetFactoryStatusRequest{
+		PlayerId:  int32(playerID),
+		FactoryId: factoryID,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &GoodsFactoryStatusResult{
+		FactoryID:        resp.FactoryId,
+		TargetGood:       resp.TargetGood,
+		Status:           resp.Status,
+		DependencyTree:   resp.DependencyTree,
+		QuantityAcquired: int(resp.QuantityAcquired),
+		TotalCost:        int(resp.TotalCost),
+		NodesCompleted:   int(resp.NodesCompleted),
+		NodesTotal:       int(resp.NodesTotal),
+		SystemSymbol:     resp.SystemSymbol,
+	}, nil
+}
+
+// StartGoodsFactoryResult contains the result of starting a goods factory
+type StartGoodsFactoryResult struct {
+	FactoryID  string
+	TargetGood string
+	Status     string
+	Message    string
+	NodesTotal int
+}
+
+// StopGoodsFactoryResult contains the result of stopping a goods factory
+type StopGoodsFactoryResult struct {
+	FactoryID string
+	Status    string
+	Message   string
+}
+
+// GoodsFactoryStatusResult contains detailed status of a goods factory
+type GoodsFactoryStatusResult struct {
+	FactoryID        string
+	TargetGood       string
+	Status           string
+	DependencyTree   string
+	QuantityAcquired int
+	TotalCost        int
+	NodesCompleted   int
+	NodesTotal       int
+	SystemSymbol     string
+}
