@@ -178,15 +178,11 @@ const (
 	MinProfitThreshold = -5000
 )
 
-// EvaluateProfitability calculates contract profitability given market conditions.
+// EvaluateProfitability delegates profitability calculation to ContractProfitabilityService.
 //
-// Business Rules:
-//   - total_payment = on_accepted + on_fulfilled
-//   - purchase_cost = sum(market_price * units_needed for each delivery)
-//   - trips_required = ceil(total_units / cargo_capacity)
-//   - fuel_cost = trips_required * fuel_cost_per_trip
-//   - net_profit = total_payment - (purchase_cost + fuel_cost)
-//   - is_profitable = net_profit >= MinProfitThreshold (-5000)
+// This method provides a convenient API for contract profitability evaluation while
+// maintaining proper separation of concerns. The actual business logic resides in
+// ContractProfitabilityService.
 //
 // Parameters:
 //   - ctx: Market prices, cargo capacity, and fuel costs
@@ -195,62 +191,6 @@ const (
 //   - ProfitabilityEvaluation with all calculated metrics
 //   - Error if market prices are missing for required goods
 func (c *Contract) EvaluateProfitability(ctx ProfitabilityContext) (*ProfitabilityEvaluation, error) {
-	// 1. Calculate total payment
-	totalPayment := c.terms.Payment.OnAccepted + c.terms.Payment.OnFulfilled
-
-	// 2. Calculate purchase cost and total units needed
-	purchaseCost := 0
-	totalUnits := 0
-
-	for _, delivery := range c.terms.Deliveries {
-		unitsNeeded := delivery.UnitsRequired - delivery.UnitsFulfilled
-		if unitsNeeded == 0 {
-			continue // Delivery already fulfilled
-		}
-
-		// Look up market price for this trade good
-		sellPrice, ok := ctx.MarketPrices[delivery.TradeSymbol]
-		if !ok {
-			return nil, fmt.Errorf("missing market price for %s", delivery.TradeSymbol)
-		}
-
-		purchaseCost += sellPrice * unitsNeeded
-		totalUnits += unitsNeeded
-	}
-
-	// 3. Calculate trips required (ceiling division)
-	tripsRequired := 0
-	if ctx.CargoCapacity > 0 && totalUnits > 0 {
-		tripsRequired = (totalUnits + ctx.CargoCapacity - 1) / ctx.CargoCapacity
-	}
-
-	// 4. Calculate fuel cost
-	fuelCost := tripsRequired * ctx.FuelCostPerTrip
-
-	// 5. Calculate net profit
-	netProfit := totalPayment - (purchaseCost + fuelCost)
-
-	// 6. Determine profitability
-	isProfitable := netProfit >= MinProfitThreshold
-
-	// 7. Generate reason
-	var reason string
-	if netProfit > 0 {
-		reason = "Profitable"
-	} else if netProfit >= MinProfitThreshold {
-		reason = "Acceptable small loss (avoids opportunity cost)"
-	} else {
-		reason = "Loss exceeds acceptable threshold"
-	}
-
-	return &ProfitabilityEvaluation{
-		IsProfitable:           isProfitable,
-		NetProfit:              netProfit,
-		TotalPayment:           totalPayment,
-		PurchaseCost:           purchaseCost,
-		FuelCost:               fuelCost,
-		TripsRequired:          tripsRequired,
-		CheapestMarketWaypoint: ctx.CheapestMarketWaypoint,
-		Reason:                 reason,
-	}, nil
+	service := NewContractProfitabilityService()
+	return service.EvaluateProfitability(c, ctx)
 }

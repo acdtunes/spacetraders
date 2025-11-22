@@ -375,31 +375,10 @@ func (s *Ship) RefuelToFull() (int, error) {
 }
 
 // Navigation Calculations
-
-// CanNavigateTo checks if ship can navigate to destination with current fuel
-func (s *Ship) CanNavigateTo(destination *shared.Waypoint) bool {
-	return s.fuelService.CanShipNavigateTo(s.fuel.Current, s.currentLocation, destination)
-}
-
-// CalculateFuelForTrip calculates fuel required for trip to destination
-func (s *Ship) CalculateFuelForTrip(destination *shared.Waypoint, mode shared.FlightMode) int {
-	return s.fuelService.CalculateFuelRequired(s.currentLocation, destination, mode)
-}
-
-// NeedsRefuelForJourney checks if ship needs refueling before journey
-func (s *Ship) NeedsRefuelForJourney(destination *shared.Waypoint, safetyMargin float64) bool {
-	return s.fuelService.ShouldRefuelForJourney(s.fuel, s.currentLocation, destination, safetyMargin)
-}
-
-// CalculateTravelTime calculates travel time to destination
-func (s *Ship) CalculateTravelTime(destination *shared.Waypoint, mode shared.FlightMode) int {
-	return s.navigationCalc.CalculateTravelTime(s.currentLocation, destination, mode, s.engineSpeed)
-}
-
-// SelectOptimalFlightMode selects optimal flight mode for a given distance
-func (s *Ship) SelectOptimalFlightMode(distance float64) shared.FlightMode {
-	return s.fuelService.SelectOptimalFlightMode(s.fuel.Current, distance, DefaultFuelSafetyMargin)
-}
+//
+// NOTE: Navigation calculation methods have been moved to ShipFuelService and
+// ShipNavigationCalculator to improve separation of concerns. Callers should use
+// these services directly for navigation and fuel calculations.
 
 // Cargo Management
 
@@ -452,71 +431,13 @@ func (s *Ship) IsInTransit() bool {
 	return s.navStatus == NavStatusInTransit
 }
 
-// IsAtLocation checks if ship is at specified waypoint
-func (s *Ship) IsAtLocation(waypoint *shared.Waypoint) bool {
-	return s.navigationCalc.IsAtLocation(s.currentLocation, waypoint)
-}
-
 func (s *Ship) String() string {
 	return fmt.Sprintf("Ship(symbol=%s, location=%s, status=%s, fuel=%s)",
 		s.shipSymbol, s.currentLocation.Symbol, s.navStatus, s.fuel)
 }
 
 // Route Execution Decision Methods
-
-// ShouldRefuelOpportunistically determines if ship should refuel at a waypoint
-// even if not planned by routing engine (defense-in-depth safety check)
 //
-// Returns true if:
-// - Ship is at a fuel station
-// - Fuel is below safety threshold (safetyMargin, e.g., 0.9 = 90%)
-// - Ship has fuel capacity > 0
-func (s *Ship) ShouldRefuelOpportunistically(waypoint *shared.Waypoint, safetyMargin float64) bool {
-	if s.fuelCapacity == 0 {
-		return false
-	}
-
-	if !waypoint.HasFuel {
-		return false
-	}
-
-	// Check if ship is at this waypoint
-	if s.currentLocation.Symbol != waypoint.Symbol {
-		return false
-	}
-
-	fuelPercentage := s.fuel.Percentage() / 100.0
-	return fuelPercentage < safetyMargin
-}
-
-// ShouldPreventDriftMode determines if ship should refuel before using DRIFT mode
-// to prevent unnecessary fuel emergencies at fuel stations
-//
-// Returns true if:
-// - Segment uses DRIFT mode
-// - Ship is at the segment's starting waypoint (departure point)
-// - Starting waypoint has fuel
-// - Fuel is below safety threshold
-func (s *Ship) ShouldPreventDriftMode(segment *RouteSegment, safetyMargin float64) bool {
-	if s.fuelCapacity == 0 {
-		return false
-	}
-
-	// Check if using DRIFT mode
-	if segment.FlightMode != shared.FlightModeDrift {
-		return false
-	}
-
-	// Check if at departure waypoint
-	if s.currentLocation.Symbol != segment.FromWaypoint.Symbol {
-		return false
-	}
-
-	// Check if departure waypoint has fuel
-	if !segment.FromWaypoint.HasFuel {
-		return false
-	}
-
-	fuelPercentage := s.fuel.Percentage() / 100.0
-	return fuelPercentage < safetyMargin
-}
+// NOTE: Refueling decision methods have been moved to ShipFuelService to improve
+// separation of concerns and enforce Tell-Don't-Ask principle. Callers should use
+// ShipFuelService methods directly for refueling decisions.

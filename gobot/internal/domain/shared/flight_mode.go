@@ -65,7 +65,11 @@ func (f FlightMode) TravelTime(distance float64, engineSpeed int) int {
 	return int(time)
 }
 
-// SelectOptimal selects optimal mode prioritizing speed while maintaining safety margin
+// SelectOptimalFlightMode selects best flight mode based on available fuel.
+//
+// This function delegates to FlightModeSelector which implements the Strategy pattern.
+// The Strategy pattern allows new flight modes to be added without modifying this code,
+// adhering to the Open/Closed Principle.
 //
 // Strategy: ALWAYS minimize travel time. Use fastest mode that leaves
 // at least safetyMargin fuel remaining.
@@ -73,34 +77,17 @@ func (f FlightMode) TravelTime(distance float64, engineSpeed int) int {
 // Special case: If fuel exactly equals burn cost, select BURN (willing to use all fuel).
 //
 // Priority order: BURN > CRUISE > DRIFT
+//
+// Parameters:
+//   - currentFuel: Ship's current fuel level
+//   - fuelCost: Fuel cost for CRUISE mode (baseline)
+//   - safetyMargin: Minimum fuel to keep as reserve
+//
+// Returns:
+//   - Optimal flight mode (BURN, CRUISE, or DRIFT)
 func SelectOptimalFlightMode(currentFuel, fuelCost, safetyMargin int) FlightMode {
-	// Try BURN first (fastest: 2x fuel cost)
-	burnConfig := flightModeConfigs[FlightModeBurn]
-	cruiseConfig := flightModeConfigs[FlightModeCruise]
-	burnCost := int(float64(fuelCost) * burnConfig.FuelRate / cruiseConfig.FuelRate)
-
-	// Special case: exact match to burn threshold → use BURN (unless safety margin is very high)
-	if currentFuel == burnCost+safetyMargin && safetyMargin < burnCost {
-		return FlightModeBurn
-	}
-
-	// Check BURN with safety margin (need MORE than minimum + margin for safety)
-	if currentFuel > burnCost+safetyMargin {
-		return FlightModeBurn
-	}
-
-	// Special case: exact match to cruise threshold → use CRUISE (unless safety margin is very high)
-	if currentFuel == fuelCost+safetyMargin && safetyMargin < fuelCost {
-		return FlightModeCruise
-	}
-
-	// Try CRUISE next (standard: 1x fuel cost - need MORE than minimum + margin)
-	if currentFuel > fuelCost+safetyMargin {
-		return FlightModeCruise
-	}
-
-	// Fall back to DRIFT (slowest but most fuel efficient)
-	return FlightModeDrift
+	selector := NewFlightModeSelector()
+	return selector.SelectOptimalMode(currentFuel, fuelCost, safetyMargin)
 }
 
 func (f FlightMode) String() string {

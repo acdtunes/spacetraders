@@ -20,6 +20,8 @@ type shipContext struct {
 	waypoints         map[string]*shared.Waypoint
 	flightMode        shared.FlightMode
 	stateChangeResult bool
+	fuelService       *navigation.ShipFuelService
+	navigationCalc    *navigation.ShipNavigationCalculator
 }
 
 func (sc *shipContext) reset() {
@@ -32,6 +34,8 @@ func (sc *shipContext) reset() {
 	sc.waypoints = sharedWaypointMap  // Use shared waypoint map
 	sc.flightMode = shared.FlightModeCruise
 	sc.stateChangeResult = false
+	sc.fuelService = navigation.NewShipFuelService()
+	sc.navigationCalc = navigation.NewShipNavigationCalculator()
 	// Reset shared ship (shared with value_object_steps)
 	sharedShip = nil
 }
@@ -538,7 +542,7 @@ func (sc *shipContext) aWaypointAtCoordinates(symbol string, x, y float64) error
 
 func (sc *shipContext) iCheckIfTheShipCanNavigateTo(destination string) error {
 	destWaypoint := sc.waypoints[destination]
-	sc.boolResult = sc.ship.CanNavigateTo(destWaypoint)
+	sc.boolResult = sc.fuelService.CanShipNavigateTo(sc.ship.Fuel().Current, sc.ship.CurrentLocation(), destWaypoint)
 	sharedBoolResult = sc.boolResult
 	return nil
 }
@@ -575,7 +579,7 @@ func (sc *shipContext) iCalculateFuelRequiredToWithMode(destination, mode string
 	case "STEALTH":
 		flightMode = shared.FlightModeStealth
 	}
-	sc.intResult = sc.ship.CalculateFuelForTrip(destWaypoint, flightMode)
+	sc.intResult = sc.fuelService.CalculateFuelRequired(sc.ship.CurrentLocation(), destWaypoint, flightMode)
 	sharedIntResult = sc.intResult
 	return nil
 }
@@ -589,14 +593,14 @@ func (sc *shipContext) theFuelRequiredShouldBeUnits(units int) error {
 
 func (sc *shipContext) iCheckIfTheShipNeedsRefuelForJourneyTo(destination string) error {
 	destWaypoint := sc.waypoints[destination]
-	sc.boolResult = sc.ship.NeedsRefuelForJourney(destWaypoint, 0.1)
+	sc.boolResult = sc.fuelService.ShouldRefuelForJourney(sc.ship.Fuel(), sc.ship.CurrentLocation(), destWaypoint, 0.1)
 	sharedBoolResult = sc.boolResult
 	return nil
 }
 
 func (sc *shipContext) iCheckIfTheShipNeedsRefuelForJourneyToWithSafetyMargin(destination string, margin float64) error {
 	destWaypoint := sc.waypoints[destination]
-	sc.boolResult = sc.ship.NeedsRefuelForJourney(destWaypoint, margin)
+	sc.boolResult = sc.fuelService.ShouldRefuelForJourney(sc.ship.Fuel(), sc.ship.CurrentLocation(), destWaypoint, margin)
 	sharedBoolResult = sc.boolResult
 	return nil
 }
@@ -625,7 +629,7 @@ func (sc *shipContext) iCalculateTravelTimeToWithMode(destination, mode string) 
 	case "STEALTH":
 		flightMode = shared.FlightModeStealth
 	}
-	sc.intResult = sc.ship.CalculateTravelTime(destWaypoint, flightMode)
+	sc.intResult = sc.navigationCalc.CalculateTravelTime(sc.ship.CurrentLocation(), destWaypoint, flightMode, sc.ship.EngineSpeed())
 	sharedIntResult = sc.intResult
 	return nil
 }
@@ -664,7 +668,7 @@ func (sc *shipContext) aShipWithUnitsOfFuelAtDistance(fuel int, distance float64
 }
 
 func (sc *shipContext) iSelectOptimalFlightModeForDistance(distance float64) error {
-	sc.flightMode = sc.ship.SelectOptimalFlightMode(distance)
+	sc.flightMode = sc.fuelService.SelectOptimalFlightMode(sc.ship.Fuel().Current, distance, navigation.DefaultFuelSafetyMargin)
 	return nil
 }
 
@@ -761,7 +765,7 @@ func (sc *shipContext) iCheckIfTheShipIsAtLocation(location string) error {
 	if waypoint == nil {
 		waypoint = sc.getOrCreateWaypoint(location, 0, 0)
 	}
-	sc.boolResult = sc.ship.IsAtLocation(waypoint)
+	sc.boolResult = sc.navigationCalc.IsAtLocation(sc.ship.CurrentLocation(), waypoint)
 	sharedBoolResult = sc.boolResult
 	return nil
 }
