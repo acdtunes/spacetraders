@@ -863,6 +863,10 @@ func (c *DaemonClient) GetFactoryStatus(
 		NodesCompleted:   int(resp.NodesCompleted),
 		NodesTotal:       int(resp.NodesTotal),
 		SystemSymbol:     resp.SystemSymbol,
+		ShipsUsed:        int(resp.ShipsUsed),
+		MarketQueries:    int(resp.MarketQueries),
+		ParallelLevels:   int(resp.ParallelLevels),
+		EstimatedSpeedup: float64(resp.EstimatedSpeedup),
 	}, nil
 }
 
@@ -893,4 +897,8 @@ type GoodsFactoryStatusResult struct {
 	NodesCompleted   int
 	NodesTotal       int
 	SystemSymbol     string
+	ShipsUsed        int
+	MarketQueries    int
+	ParallelLevels   int
+	EstimatedSpeedup float64
 }

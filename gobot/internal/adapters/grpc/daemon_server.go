@@ -2120,6 +2120,10 @@ func (s *DaemonServer) GetFactoryStatus(
 		NodesCompleted:   factory.CompletedNodes(),
 		NodesTotal:       factory.TotalNodes(),
 		SystemSymbol:     factory.SystemSymbol(),
+		ShipsUsed:        factory.ShipsUsed(),
+		MarketQueries:    factory.MarketQueries(),
+		ParallelLevels:   factory.ParallelLevels(),
+		EstimatedSpeedup: factory.EstimatedSpeedup(),
 	}, nil
 }
 
@@ -2141,4 +2145,8 @@ type GoodsFactoryStatus struct {
 	NodesCompleted   int
 	NodesTotal       int
 	SystemSymbol     string
+	ShipsUsed        int
+	MarketQueries    int
+	ParallelLevels   int
+	EstimatedSpeedup float64
 }

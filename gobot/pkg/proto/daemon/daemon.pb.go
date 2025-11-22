@@ -3839,6 +3839,10 @@ type GetFactoryStatusResponse struct {
 	NodesCompleted   int32                  `protobuf:"varint,7,opt,name=nodes_completed,json=nodesCompleted,proto3" json:"nodes_completed,omitempty"`
 	NodesTotal       int32                  `protobuf:"varint,8,opt,name=nodes_total,json=nodesTotal,proto3" json:"nodes_total,omitempty"`
 	SystemSymbol     string                 `protobuf:"bytes,9,opt,name=system_symbol,json=systemSymbol,proto3" json:"system_symbol,omitempty"`
+	ShipsUsed        int32                  `protobuf:"varint,10,opt,name=ships_used,json=shipsUsed,proto3" json:"ships_used,omitempty"`
+	MarketQueries    int32                  `protobuf:"varint,11,opt,name=market_queries,json=marketQueries,proto3" json:"market_queries,omitempty"`
+	ParallelLevels   int32                  `protobuf:"varint,12,opt,name=parallel_levels,json=parallelLevels,proto3" json:"parallel_levels,omitempty"`
+	EstimatedSpeedup float32                `protobuf:"fixed32,13,opt,name=estimated_speedup,json=estimatedSpeedup,proto3" json:"estimated_speedup,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
@@ -3934,6 +3938,34 @@ func (x *GetFactoryStatusResponse) GetSystemSymbol() string {
 		return x.SystemSymbol
 	}
 	return ""
+}
+
+func (x *GetFactoryStatusResponse) GetShipsUsed() int32 {
+	if x != nil {
+		return x.ShipsUsed
+	}
+	return 0
+}
+
+func (x *GetFactoryStatusResponse) GetMarketQueries() int32 {
+	if x != nil {
+		return x.MarketQueries
+	}
+	return 0
+}
+
+func (x *GetFactoryStatusResponse) GetParallelLevels() int32 {
+	if x != nil {
+		return x.ParallelLevels
+	}
+	return 0
+}
+
+func (x *GetFactoryStatusResponse) GetEstimatedSpeedup() float32 {
+	if x != nil {
+		return x.EstimatedSpeedup
+	}
+	return 0
 }
 
 var File_pkg_proto_daemon_daemon_proto protoreflect.FileDescriptor

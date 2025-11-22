@@ -179,6 +179,10 @@ type GoodsFactoryModel struct {
 	Metadata         string       `gorm:"column:metadata;type:jsonb"`           // JSON metadata
 	QuantityAcquired int          `gorm:"column:quantity_acquired;default:0"`   // Set on completion
 	TotalCost        int          `gorm:"column:total_cost;default:0"`          // Set on completion
+	ShipsUsed        int          `gorm:"column:ships_used;default:0"`          // Number of ships utilized
+	MarketQueries    int          `gorm:"column:market_queries;default:0"`      // Number of market queries
+	ParallelLevels   int          `gorm:"column:parallel_levels;default:0"`     // Number of parallel levels
+	EstimatedSpeedup float64      `gorm:"column:estimated_speedup;default:0"`   // Estimated speedup factor
 	CreatedAt        time.Time    `gorm:"column:created_at;not null;autoCreateTime"`
 	UpdatedAt        time.Time    `gorm:"column:updated_at;not null;autoUpdateTime"`
 	StartedAt        *time.Time   `gorm:"column:started_at"`
