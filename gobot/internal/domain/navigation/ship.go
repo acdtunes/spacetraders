@@ -21,6 +21,13 @@ var validNavStatuses = map[NavStatus]bool{
 	NavStatusInTransit: true,
 }
 
+const (
+	// DefaultFuelSafetyMargin is the minimum fuel reserve (in units) to maintain
+	// for safety during navigation. Prevents running out of fuel due to
+	// miscalculations or unexpected detours.
+	DefaultFuelSafetyMargin = 4
+)
+
 // Ship entity - represents a player's spacecraft with navigation capabilities
 //
 // Invariants:
@@ -391,8 +398,7 @@ func (s *Ship) CalculateTravelTime(destination *shared.Waypoint, mode shared.Fli
 
 // SelectOptimalFlightMode selects optimal flight mode for a given distance
 func (s *Ship) SelectOptimalFlightMode(distance float64) shared.FlightMode {
-	// Safety margin of 4 ensures we don't run out mid-flight
-	return s.fuelService.SelectOptimalFlightMode(s.fuel.Current, distance, 4)
+	return s.fuelService.SelectOptimalFlightMode(s.fuel.Current, distance, DefaultFuelSafetyMargin)
 }
 
 // Cargo Management
