@@ -60,6 +60,7 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	steps.InitializeFuelScenario(sc)
 	steps.InitializeFlightModeScenario(sc)
 	steps.RegisterGoodsFactorySteps(sc)
+	steps.RegisterSupplyChainResolverSteps(sc)
 
 	// Domain services
 	steps.RegisterShipFuelServiceSteps(sc)
