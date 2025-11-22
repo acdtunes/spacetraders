@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/ledger"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
@@ -98,6 +99,35 @@ func (h *RecordTransactionHandler) Handle(ctx context.Context, request common.Re
 	if err := h.transactionRepo.Create(ctx, transaction); err != nil {
 		return nil, fmt.Errorf("failed to persist transaction: %w", err)
 	}
+
+	// Record transaction metrics
+	// Extract category from transaction metadata (if available)
+	category := ""
+	if transaction.Category() != "" {
+		category = string(transaction.Category())
+	}
+
+	// Extract agent symbol from metadata (if available)
+	agentSymbol := ""
+	if cmd.Metadata != nil {
+		if agent, ok := cmd.Metadata["agent"].(string); ok {
+			agentSymbol = agent
+		}
+	}
+	// Fallback to a default agent if not provided
+	if agentSymbol == "" {
+		agentSymbol = "UNKNOWN"
+	}
+
+	// Record the transaction metrics
+	metrics.RecordTransaction(
+		cmd.PlayerID,
+		agentSymbol,
+		cmd.TransactionType,
+		category,
+		cmd.Amount,
+		cmd.BalanceAfter,
+	)
 
 	return &RecordTransactionResponse{
 		TransactionID: transaction.ID().String(),

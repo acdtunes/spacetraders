@@ -74,9 +74,10 @@ type DaemonServer struct {
 	pendingWorkerCommandsMu sync.RWMutex
 
 	// Metrics
-	metricsServer     *http.Server
-	metricsConfig     *config.MetricsConfig
-	metricsCollector  MetricsCollector
+	metricsServer            *http.Server
+	metricsConfig            *config.MetricsConfig
+	containerMetricsCollector MetricsCollector
+	financialMetricsCollector *metrics.FinancialMetricsCollector
 
 	// Shutdown coordination
 	shutdownChan chan os.Signal
@@ -151,7 +152,7 @@ func NewDaemonServer(
 			listener.Close()
 			return nil, fmt.Errorf("failed to register container metrics collector: %w", err)
 		}
-		server.metricsCollector = collector
+		server.containerMetricsCollector = collector
 
 		// Set global collector for metrics recording
 		metrics.SetGlobalCollector(collector)
@@ -165,6 +166,19 @@ func NewDaemonServer(
 
 		// Set global navigation collector for metrics recording
 		metrics.SetGlobalNavigationCollector(navCollector)
+
+		// Create financial metrics collector
+		finCollector := metrics.NewFinancialMetricsCollector(mediator)
+		if err := finCollector.Register(); err != nil {
+			listener.Close()
+			return nil, fmt.Errorf("failed to register financial metrics collector: %w", err)
+		}
+
+		// Set global financial collector for metrics recording
+		metrics.SetGlobalFinancialCollector(finCollector)
+
+		// Store reference for lifecycle management
+		server.financialMetricsCollector = finCollector
 	}
 
 	// Register command factories for recovery
@@ -462,9 +476,14 @@ func (s *DaemonServer) Start() error {
 				s.metricsConfig.Host, s.metricsConfig.Port, s.metricsConfig.Path)
 		}
 
-		// Start metrics collector
-		if s.metricsCollector != nil {
-			s.metricsCollector.Start(context.Background())
+		// Start container metrics collector
+		if s.containerMetricsCollector != nil {
+			s.containerMetricsCollector.Start(context.Background())
+		}
+
+		// Start financial metrics collector
+		if s.financialMetricsCollector != nil {
+			s.financialMetricsCollector.Start(context.Background())
 		}
 	}
 
@@ -547,9 +566,12 @@ func (s *DaemonServer) stopMetricsServer() {
 		return
 	}
 
-	// Stop metrics collector first
-	if s.metricsCollector != nil {
-		s.metricsCollector.Stop()
+	// Stop metrics collectors first
+	if s.containerMetricsCollector != nil {
+		s.containerMetricsCollector.Stop()
+	}
+	if s.financialMetricsCollector != nil {
+		s.financialMetricsCollector.Stop()
 	}
 
 	// Shutdown HTTP server with timeout

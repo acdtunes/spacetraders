@@ -25,6 +25,10 @@ var (
 	// globalNavigationCollector is the singleton navigation metrics collector
 	// Set by SetGlobalNavigationCollector() when metrics are enabled
 	globalNavigationCollector NavigationMetricsRecorder
+
+	// globalFinancialCollector is the singleton financial metrics collector
+	// Set by SetGlobalFinancialCollector() when metrics are enabled
+	globalFinancialCollector FinancialMetricsRecorder
 )
 
 // MetricsRecorder defines the interface for recording container metrics events
@@ -41,6 +45,12 @@ type NavigationMetricsRecorder interface {
 	RecordSegmentCompletion(playerID int, distance int, fuelRequired int)
 	RecordFuelPurchase(playerID int, waypoint string, units int)
 	RecordFuelConsumption(playerID int, flightMode shared.FlightMode, units int)
+}
+
+// FinancialMetricsRecorder defines the interface for recording financial metrics
+type FinancialMetricsRecorder interface {
+	RecordTransaction(playerID int, agentSymbol string, transactionType string, category string, amount int, creditsBalance int)
+	RecordTrade(playerID int, goodSymbol string, buyPrice int, sellPrice int, quantity int)
 }
 
 // InitRegistry initializes the Prometheus registry
@@ -117,5 +127,24 @@ func RecordFuelPurchase(playerID int, waypoint string, units int) {
 func RecordFuelConsumption(playerID int, flightMode shared.FlightMode, units int) {
 	if globalNavigationCollector != nil {
 		globalNavigationCollector.RecordFuelConsumption(playerID, flightMode, units)
+	}
+}
+
+// SetGlobalFinancialCollector sets the global financial metrics collector
+func SetGlobalFinancialCollector(collector FinancialMetricsRecorder) {
+	globalFinancialCollector = collector
+}
+
+// RecordTransaction records a transaction event globally
+func RecordTransaction(playerID int, agentSymbol string, transactionType string, category string, amount int, creditsBalance int) {
+	if globalFinancialCollector != nil {
+		globalFinancialCollector.RecordTransaction(playerID, agentSymbol, transactionType, category, amount, creditsBalance)
+	}
+}
+
+// RecordTrade records trade profitability metrics globally
+func RecordTrade(playerID int, goodSymbol string, buyPrice int, sellPrice int, quantity int) {
+	if globalFinancialCollector != nil {
+		globalFinancialCollector.RecordTrade(playerID, goodSymbol, buyPrice, sellPrice, quantity)
 	}
 }
