@@ -111,7 +111,20 @@ func (sbc *shipBalancerContext) theFollowingIdleHaulersExist(table *godog.Table)
 		fmt.Sscanf(row.Cells[1].Value, "%f", &x)
 		fmt.Sscanf(row.Cells[2].Value, "%f", &y)
 
-		location, err := shared.NewWaypoint(fmt.Sprintf("LOC-%s", symbol), x, y)
+		// Check if there's a market at these exact coordinates
+		// If so, use the market symbol so ship counts work
+		var locationSymbol string
+		for marketSymbol, market := range sbc.marketLookup {
+			if market.X == x && market.Y == y {
+				locationSymbol = marketSymbol
+				break
+			}
+		}
+		if locationSymbol == "" {
+			locationSymbol = fmt.Sprintf("LOC-%s", symbol)
+		}
+
+		location, err := shared.NewWaypoint(locationSymbol, x, y)
 		if err != nil {
 			return err
 		}
@@ -287,8 +300,8 @@ func (sbc *shipBalancerContext) thereShouldBeNearbyHaulersAtTheTargetMarket(expe
 	if sbc.result == nil {
 		return fmt.Errorf("result is nil")
 	}
-	if sbc.result.NearbyHaulers != expectedCount {
-		return fmt.Errorf("expected %d nearby haulers, got %d", expectedCount, sbc.result.NearbyHaulers)
+	if sbc.result.AssignedShips != expectedCount {
+		return fmt.Errorf("expected %d assigned ships, got %d", expectedCount, sbc.result.AssignedShips)
 	}
 	return nil
 }
@@ -397,6 +410,7 @@ func RegisterShipBalancerSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^the selected market should not be "([^"]*)"$`, ctx.theSelectedMarketShouldNotBe)
 	sc.Step(`^the balancing score should be approximately ([\d.]+)$`, ctx.theBalancingScoreShouldBeApproximately)
 	sc.Step(`^there should be (\d+) nearby haulers at the target market$`, ctx.thereShouldBeNearbyHaulersAtTheTargetMarket)
+	sc.Step(`^there should be (\d+) assigned ships at the target market$`, ctx.thereShouldBeNearbyHaulersAtTheTargetMarket)
 	sc.Step(`^the distance to target should be ([\d.]+)$`, ctx.theDistanceToTargetShouldBe)
 	sc.Step(`^the distance to target should be less than ([\d.]+)$`, ctx.theDistanceToTargetShouldBeLessThan)
 	sc.Step(`^the operation should fail with error "([^"]*)"$`, ctx.theOperationShouldFailWithError)

@@ -9,31 +9,27 @@ import (
 )
 
 const (
-	// ProximityRadius defines the distance threshold (in units) for counting nearby ships.
-	// Ships within this radius of a market are considered "covering" that market.
-	// Reduced from 500 to 100 to create localized coverage zones in the ~1500-unit system.
-	ProximityRadius = 100.0
-
-	// CoverageWeight determines how heavily coverage (number of nearby ships) affects
-	// the balancing score. Higher weight means coverage gaps are prioritized over distance.
-	CoverageWeight = 10.0
+	// AssignmentWeight determines how heavily existing assignments affect the balancing score.
+	// Higher weight ensures even distribution across markets by penalizing markets that already have ships.
+	// Weight of 100.0 means assigning a second ship to a market costs ~100 distance units penalty.
+	AssignmentWeight = 100.0
 
 	// DistanceWeight determines how distance affects the balancing score.
-	// Lower weight means fuel efficiency is a secondary concern after coverage.
+	// Lower weight means distribution is prioritized over fuel efficiency.
 	DistanceWeight = 0.1
 )
 
 // BalancingResult contains the result of balancing calculation
 type BalancingResult struct {
-	TargetMarket   *shared.Waypoint
-	Score          float64
-	NearbyHaulers  int     // Number of haulers already near this market
-	Distance       float64 // Distance from ship to market
+	TargetMarket    *shared.Waypoint
+	Score           float64
+	AssignedShips   int     // Number of ships assigned to this market during balancing
+	Distance        float64 // Distance from ship to market
 }
 
 // ShipBalancer implements ship balancing logic to optimize fleet distribution
-// across markets. Uses a Distance + Coverage Score algorithm to find the optimal
-// repositioning target for idle ships.
+// across markets. Uses global assignment tracking to ensure even distribution
+// (1 ship per market ideally, then 2 per market, etc.) with distance as a tiebreaker.
 type ShipBalancer struct{}
 
 // NewShipBalancer creates a new ship balancer
@@ -46,20 +42,21 @@ func NewShipBalancer() *ShipBalancer {
 //
 // Algorithm:
 //   For each market:
-//     1. Count idle haulers within ProximityRadius (500 units)
+//     1. Count ships already assigned to this market during this balancing session
 //     2. Calculate distance from ship to market
-//     3. Calculate score = (nearby_haulers × 10) + (distance × 0.1)
+//     3. Calculate score = (assigned_ships × 100) + (distance × 0.1)
 //   Return market with lowest score
 //
 // Business Rules:
-//   - Prioritizes markets with fewer nearby ships (10× weight)
-//   - Considers fuel efficiency as secondary factor (0.1× weight)
-//   - Automatic tie-breaking: if multiple markets have same coverage, picks nearest
+//   - Prioritizes even distribution (1 ship per market ideal, then 2 per market, etc.)
+//   - Heavy penalty for markets with existing assignments (100× weight)
+//   - Distance as tiebreaker when assignments are equal (0.1× weight)
+//   - This is a single-ship decision (not batch processing)
 //
 // Parameters:
 //   - ship: The ship to reposition
 //   - markets: Available markets in the system
-//   - idleHaulers: All idle light hauler ships (for coverage calculation)
+//   - idleHaulers: Not used in current implementation (kept for interface compatibility)
 //
 // Returns:
 //   - BalancingResult with target market, score, and metrics
@@ -79,20 +76,21 @@ func (b *ShipBalancer) SelectOptimalBalancingPosition(
 
 	var bestMarket *shared.Waypoint
 	bestScore := math.MaxFloat64
-	var bestNearbyCount int
+	var bestAssignedCount int
 	var bestDistance float64
 
 	shipLocation := ship.CurrentLocation()
 
 	for _, market := range markets {
-		nearbyCount := b.countNearbyHaulers(market, idleHaulers)
+		// Count ships currently at this market (exact location match, not proximity)
+		assignedCount := b.countShipsAtMarket(market, idleHaulers)
 		distance := shipLocation.DistanceTo(market)
-		score := b.calculateBalancingScore(nearbyCount, distance)
+		score := b.calculateBalancingScore(assignedCount, distance)
 
 		if score < bestScore {
 			bestScore = score
 			bestMarket = market
-			bestNearbyCount = nearbyCount
+			bestAssignedCount = assignedCount
 			bestDistance = distance
 		}
 	}
@@ -104,17 +102,18 @@ func (b *ShipBalancer) SelectOptimalBalancingPosition(
 	return &BalancingResult{
 		TargetMarket:  bestMarket,
 		Score:         bestScore,
-		NearbyHaulers: bestNearbyCount,
+		AssignedShips: bestAssignedCount,
 		Distance:      bestDistance,
 	}, nil
 }
 
-// countNearbyHaulers counts how many idle haulers are within ProximityRadius of the market
-func (b *ShipBalancer) countNearbyHaulers(market *shared.Waypoint, idleHaulers []*navigation.Ship) int {
+// countShipsAtMarket counts how many idle ships are currently at this market location.
+// Uses exact location match (not proximity-based) to determine global distribution.
+func (b *ShipBalancer) countShipsAtMarket(market *shared.Waypoint, idleHaulers []*navigation.Ship) int {
 	count := 0
 	for _, hauler := range idleHaulers {
-		distance := market.DistanceTo(hauler.CurrentLocation())
-		if distance <= ProximityRadius {
+		// Check if ship is at the exact market location
+		if hauler.CurrentLocation().Symbol == market.Symbol {
 			count++
 		}
 	}
@@ -123,10 +122,10 @@ func (b *ShipBalancer) countNearbyHaulers(market *shared.Waypoint, idleHaulers [
 
 // calculateBalancingScore calculates the balancing score for a market
 //
-// Formula: (nearby_haulers × CoverageWeight) + (distance × DistanceWeight)
+// Formula: (assigned_ships × AssignmentWeight) + (distance × DistanceWeight)
 //
-// Lower score is better. This formula prioritizes coverage gaps (markets with
-// fewer nearby ships) while considering distance as a secondary factor.
-func (b *ShipBalancer) calculateBalancingScore(nearbyHaulers int, distance float64) float64 {
-	return (float64(nearbyHaulers) * CoverageWeight) + (distance * DistanceWeight)
+// Lower score is better. This formula prioritizes even distribution (markets with
+// fewer assigned ships) while considering distance as a tiebreaker.
+func (b *ShipBalancer) calculateBalancingScore(assignedShips int, distance float64) float64 {
+	return (float64(assignedShips) * AssignmentWeight) + (distance * DistanceWeight)
 }

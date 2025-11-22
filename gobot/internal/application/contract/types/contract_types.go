@@ -157,7 +157,7 @@ type BalanceShipPositionCommand struct {
 // BalanceShipPositionResponse contains ship balancing results.
 type BalanceShipPositionResponse struct {
 	TargetMarket  string  // Waypoint symbol of selected market
-	NearbyHaulers int     // Number of haulers already near this market
+	AssignedShips int     // Number of ships assigned to this market during balancing
 	Distance      float64 // Distance from ship to target market
 	Score         float64 // Balancing score (lower is better)
 	Navigated     bool    // Whether navigation was successful

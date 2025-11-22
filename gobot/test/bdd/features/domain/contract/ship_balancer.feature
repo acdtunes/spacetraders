@@ -1,7 +1,7 @@
 Feature: Ship Balancer
   As a contract coordinator
   I want to intelligently balance ship positions across markets
-  So that idle haulers are optimally distributed for efficient contract assignment
+  So that idle haulers are evenly distributed for efficient contract assignment
 
   Background:
     Given the following markets exist:
@@ -11,99 +11,101 @@ Feature: Ship Balancer
       | MARKET-C    | 0    | 100  |
       | MARKET-D    | 100  | 100  |
 
-  # Distance + Coverage Score Algorithm Tests
-  # Score = (nearby_haulers × 10) + (distance × 0.1)
+  # Global Assignment Tracking Algorithm Tests
+  # Score = (assigned_ships × 100) + (distance × 0.1)
   # Lower score is better
+  # Goal: Even distribution (1 ship per market ideal, then 2 per market, etc.)
 
-  Scenario: Select market with no nearby haulers (highest priority)
-    Given ship "HAULER-1" is at location (50, 50)
+  Scenario: Select empty market over occupied market
+    Given ship "HAULER-1" is at location (80, 90)
     And the following idle haulers exist:
       | symbol      | x    | y    |
-      | HAULER-2    | 10   | 0    |
-      | HAULER-3    | 10   | 5    |
-      | HAULER-4    | 90   | 0    |
+      | HAULER-2    | 0    | 0    |
+      | HAULER-3    | 0    | 0    |
     When I calculate the optimal balancing position for "HAULER-1"
+    # MARKET-A has 2 ships (score = 200 + distance)
+    # MARKET-B/C/D have 0 ships (score = 0 + distance)
+    # MARKET-D is closest to HAULER-1 at (80,90): distance = 22.4
     Then the selected market should be "MARKET-D"
-    And the balancing score should be approximately 7.1
-    And there should be 0 nearby haulers at the target market
+    And there should be 0 assigned ships at the target market
 
-  Scenario: Prefer market with fewer nearby haulers over closer market
-    Given ship "HAULER-1" is at location (0, 50)
-    And the following idle haulers exist:
-      | symbol      | x    | y    |
-      | HAULER-2    | 5    | 45   |
-      | HAULER-3    | 5    | 55   |
-      | HAULER-4    | 10   | 50   |
-    When I calculate the optimal balancing position for "HAULER-1"
-    # MARKET-A is closest (50 units) but has 3 nearby haulers (score = 35)
-    # MARKET-C has 3 nearby haulers and is same distance (score = 35)
-    # MARKET-B and MARKET-D have 0 nearby haulers
-    # MARKET-B is closer (111.8 units, score = 11.18)
-    # MARKET-D is farther (141.4 units, score = 14.14)
-    Then the selected market should be "MARKET-B"
-    And there should be 0 nearby haulers at the target market
-
-  Scenario: Select nearest market when coverage is equal
+  Scenario: Distance tiebreaker when all markets are empty
     Given ship "HAULER-1" is at location (25, 0)
     And no other idle haulers exist
     When I calculate the optimal balancing position for "HAULER-1"
+    # All markets have 0 ships, so picks nearest
+    # MARKET-A is at 25 units, MARKET-B at 75 units
     Then the selected market should be "MARKET-A"
     And the distance to target should be 25.0
 
-  Scenario: Distance tiebreaker with equal coverage
-    Given ship "HAULER-1" is at location (25, 0)
+  Scenario: Avoid market with existing ships
+    Given ship "HAULER-1" is at location (50, 0)
     And the following idle haulers exist:
       | symbol      | x    | y    |
-      | HAULER-2    | 200  | 0    |
-      | HAULER-3    | 0    | 200  |
-      | HAULER-4    | 100  | 200  |
+      | HAULER-2    | 100  | 0    |
     When I calculate the optimal balancing position for "HAULER-1"
-    # All markets have 0 nearby haulers (all haulers >100 units away)
-    # Ship equidistant to MARKET-A and MARKET-B, picks first evaluated
+    # MARKET-B (100, 0) has 1 ship: score = 100 + 50 = 150
+    # MARKET-A (0, 0) has 0 ships: score = 0 + 50 = 5
+    # Even though both are equidistant, MARKET-A wins (no ships)
     Then the selected market should be "MARKET-A"
-    And the distance to target should be 25.0
+    And there should be 0 assigned ships at the target market
 
-  Scenario: Heavy coverage penalty outweighs distance savings
-    Given ship "HAULER-1" is at location (0, 0)
-    And the following idle haulers exist:
-      | symbol      | x    | y    |
-      | HAULER-2    | 5    | 5    |
-      | HAULER-3    | 10   | 10   |
-      | HAULER-4    | 15   | 15   |
-    When I calculate the optimal balancing position for "HAULER-1"
-    # MARKET-A is closest but has 3 nearby haulers (score = 30)
-    # MARKET-B/C/D have 0 nearby haulers (scores ~10-14)
-    Then the selected market should not be "MARKET-A"
-
-  Scenario: Multiple haulers within proximity radius
-    Given ship "HAULER-1" is at location (0, 0)
-    And the following idle haulers exist within 100 units of MARKET-A:
-      | symbol      | x    | y    |
-      | HAULER-2    | 20   | 0    |
-      | HAULER-3    | 40   | 0    |
-      | HAULER-4    | 60   | 0    |
-      | HAULER-5    | 80   | 0    |
-    When I calculate the optimal balancing position for "HAULER-1"
-    Then the selected market should not be "MARKET-A"
-    And MARKET-A should have 4 nearby haulers
-
-  Scenario: Ship at exact market location
-    Given ship "HAULER-1" is at location (0, 0)
-    And no other idle haulers exist
-    When I calculate the optimal balancing position for "HAULER-1"
-    Then the selected market should be "MARKET-A"
-    And the distance to target should be 0.0
-
-  Scenario: All markets have equal coverage
+  Scenario: Even distribution across multiple markets
     Given ship "HAULER-1" is at location (50, 50)
     And the following idle haulers exist:
       | symbol      | x    | y    |
       | HAULER-2    | 0    | 0    |
-      | HAULER-3    | 100  | 0    |
-      | HAULER-4    | 0    | 100  |
-      | HAULER-5    | 100  | 100  |
+      | HAULER-3    | 100  | 100  |
     When I calculate the optimal balancing position for "HAULER-1"
-    # All markets have 1 nearby hauler, so picks closest
+    # MARKET-A has 1 ship: score = 100 + 70.7 ≈ 170.7
+    # MARKET-B has 0 ships: score = 0 + 70.7 ≈ 7.07
+    # MARKET-C has 0 ships: score = 0 + 70.7 ≈ 7.07
+    # MARKET-D has 1 ship: score = 100 + 70.7 ≈ 170.7
+    # Picks B or C (both empty and equidistant)
+    Then the selected market should not be "MARKET-A"
+    And the selected market should not be "MARKET-D"
+
+  Scenario: Heavy penalty for second ship to same market
+    Given ship "HAULER-1" is at location (10, 0)
+    And the following idle haulers exist:
+      | symbol      | x    | y    |
+      | HAULER-2    | 0    | 0    |
+    When I calculate the optimal balancing position for "HAULER-1"
+    # MARKET-A (0, 0) has 1 ship: score = 100 + 10 = 110
+    # MARKET-B (100, 0) has 0 ships: score = 0 + 90 = 9
+    # Even though MARKET-B is 9x farther, it wins (penalty for MARKET-A)
+    Then the selected market should be "MARKET-B"
+
+  Scenario: Select nearest empty market when multiple options exist
+    Given ship "HAULER-1" is at location (110, 0)
+    And the following idle haulers exist:
+      | symbol      | x    | y    |
+      | HAULER-2    | 0    | 0    |
+    When I calculate the optimal balancing position for "HAULER-1"
+    # MARKET-A (0, 0) has 1 ship: score = 100 + 110 = 210
+    # MARKET-B (100, 0) has 0 ships: score = 0 + 10 = 1
+    # MARKET-C (0, 100) has 0 ships: score = 0 + 141.4 = 14.14
+    # MARKET-D (100, 100) has 0 ships: score = 0 + 100 = 10
+    Then the selected market should be "MARKET-B"
+    And the distance to target should be 10.0
+
+  Scenario: All markets occupied - select least crowded
+    Given ship "HAULER-1" is at location (50, 50)
+    And the following idle haulers exist:
+      | symbol      | x    | y    |
+      | HAULER-2    | 0    | 0    |
+      | HAULER-3    | 0    | 0    |
+      | HAULER-4    | 100  | 0    |
+      | HAULER-5    | 0    | 100  |
+      | HAULER-6    | 0    | 100  |
+      | HAULER-7    | 0    | 100  |
+      | HAULER-8    | 100  | 100  |
+    When I calculate the optimal balancing position for "HAULER-1"
+    # MARKET-A has 2 ships: score = 200 + 70.7 ≈ 270.7
+    # MARKET-B has 1 ship: score = 100 + 70.7 ≈ 170.7
+    # MARKET-C has 3 ships: score = 300 + 70.7 ≈ 370.7
+    # MARKET-D has 1 ship: score = 100 + 70.7 ≈ 170.7
+    # Picks B or D (both have 1 ship, equidistant)
     Then the distance to target should be less than 100.0
 
   # TODO: Fix error scenario test setup
@@ -119,14 +121,3 @@ Feature: Ship Balancer
   #   And markets exist
   #   When I attempt to calculate the optimal balancing position for a nil ship
   #   Then the operation should fail with error "ship cannot be nil"
-
-  Scenario: Proximity radius boundary (100 units)
-    Given ship "HAULER-1" is at location (0, 0)
-    And the following idle haulers exist:
-      | symbol      | x    | y    |
-      | HAULER-2    | 99   | 0    |
-      | HAULER-3    | 101  | 0    |
-    When I calculate the optimal balancing position for "HAULER-1"
-    And I check haulers within 100 units of MARKET-A
-    # HAULER-2 is within radius (99 < 100), HAULER-3 is outside (101 > 100)
-    Then there should be 1 nearby hauler at "MARKET-A"
