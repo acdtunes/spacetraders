@@ -540,4 +540,8 @@ message GetFactoryStatusResponse {
   int32 nodes_completed = 7;
   int32 nodes_total = 8;
   string system_symbol = 9;
+  int32 ships_used = 10; // Number of ships utilized
+  int32 market_queries = 11; // Number of market queries performed
+  int32 parallel_levels = 12; // Number of parallel execution levels
+  float estimated_speedup = 13; // Estimated speedup from parallelization
 }

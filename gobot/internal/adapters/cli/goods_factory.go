@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/andrescamacho/spacetraders-go/internal/domain/goods"
 	"github.com/spf13/cobra"
 )
 
@@ -169,15 +170,26 @@ Examples:
 				fmt.Printf("  Total Cost:       %d credits\n", status.TotalCost)
 			}
 
-			// Optionally display dependency tree
+			// Display dependency tree if requested
 			if showTree && status.DependencyTree != "" {
 				fmt.Println("\nDependency Tree:")
-				var tree interface{}
+
+				// Parse the tree JSON
+				var tree *goods.SupplyChainNode
 				if err := json.Unmarshal([]byte(status.DependencyTree), &tree); err != nil {
-					fmt.Printf("  (raw) %s\n", status.DependencyTree)
+					// Fallback to raw JSON
+					var rawTree interface{}
+					if err := json.Unmarshal([]byte(status.DependencyTree), &rawTree); err != nil {
+						fmt.Printf("  (raw) %s\n", status.DependencyTree)
+					} else {
+						prettyJSON, _ := json.MarshalIndent(rawTree, "  ", "  ")
+						fmt.Printf("  %s\n", prettyJSON)
+					}
 				} else {
-					prettyJSON, _ := json.MarshalIndent(tree, "  ", "  ")
-					fmt.Printf("  %s\n", prettyJSON)
+					// Use rich tree formatter
+					formatter := NewTreeFormatter(true, true) // colors and emojis
+					fmt.Println(formatter.FormatTree(tree))
+					fmt.Println("\n" + formatter.FormatTreeSummary(tree))
 				}
 			}
 
@@ -185,7 +197,7 @@ Examples:
 		},
 	}
 
-	cmd.Flags().BoolVar(&showTree, "tree", false, "Display the full dependency tree")
+	cmd.Flags().BoolVar(&showTree, "tree", false, "Display the full dependency tree with visual indicators")
 
 	return cmd
 }
