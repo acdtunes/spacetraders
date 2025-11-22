@@ -6,6 +6,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
 // NavigationMetricsCollector handles all navigation and fuel-related metrics
@@ -202,11 +203,11 @@ func (c *NavigationMetricsCollector) RecordFuelPurchase(
 // RecordFuelConsumption records fuel consumption
 func (c *NavigationMetricsCollector) RecordFuelConsumption(
 	playerID int,
-	flightMode navigation.FlightMode,
+	flightMode shared.FlightMode,
 	units int,
 ) {
 	playerIDStr := strconv.Itoa(playerID)
-	flightModeStr := string(flightMode)
+	flightModeStr := flightMode.Name()
 
 	c.fuelConsumed.WithLabelValues(playerIDStr, flightModeStr).Add(float64(units))
 }

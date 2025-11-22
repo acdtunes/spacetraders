@@ -4,6 +4,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
 const (
@@ -39,7 +40,7 @@ type NavigationMetricsRecorder interface {
 	RecordRouteCompletion(playerID int, status navigation.RouteStatus, duration float64, distance int, fuelConsumed int)
 	RecordSegmentCompletion(playerID int, distance int, fuelRequired int)
 	RecordFuelPurchase(playerID int, waypoint string, units int)
-	RecordFuelConsumption(playerID int, flightMode navigation.FlightMode, units int)
+	RecordFuelConsumption(playerID int, flightMode shared.FlightMode, units int)
 }
 
 // InitRegistry initializes the Prometheus registry
@@ -113,7 +114,7 @@ func RecordFuelPurchase(playerID int, waypoint string, units int) {
 }
 
 // RecordFuelConsumption records fuel consumption globally
-func RecordFuelConsumption(playerID int, flightMode navigation.FlightMode, units int) {
+func RecordFuelConsumption(playerID int, flightMode shared.FlightMode, units int) {
 	if globalNavigationCollector != nil {
 		globalNavigationCollector.RecordFuelConsumption(playerID, flightMode, units)
 	}

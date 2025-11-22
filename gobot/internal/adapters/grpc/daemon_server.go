@@ -145,16 +145,26 @@ func NewDaemonServer(
 			return containerInfoMap
 		}
 
-		// Create metrics collector
+		// Create container metrics collector
 		collector := metrics.NewContainerMetricsCollector(getContainers, shipRepo)
 		if err := collector.Register(); err != nil {
 			listener.Close()
-			return nil, fmt.Errorf("failed to register metrics collector: %w", err)
+			return nil, fmt.Errorf("failed to register container metrics collector: %w", err)
 		}
 		server.metricsCollector = collector
 
 		// Set global collector for metrics recording
 		metrics.SetGlobalCollector(collector)
+
+		// Create navigation metrics collector
+		navCollector := metrics.NewNavigationMetricsCollector()
+		if err := navCollector.Register(); err != nil {
+			listener.Close()
+			return nil, fmt.Errorf("failed to register navigation metrics collector: %w", err)
+		}
+
+		// Set global navigation collector for metrics recording
+		metrics.SetGlobalNavigationCollector(navCollector)
 	}
 
 	// Register command factories for recovery

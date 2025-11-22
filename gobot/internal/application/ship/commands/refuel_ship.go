@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	ledgerCommands "github.com/andrescamacho/spacetraders-go/internal/application/ledger/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/application/logging"
@@ -71,6 +72,13 @@ func (h *RefuelShipHandler) Handle(ctx context.Context, request common.Request) 
 	}
 
 	response := h.buildRefuelResponse(ship, fuelBefore)
+
+	// Record fuel purchase metrics
+	metrics.RecordFuelPurchase(
+		cmd.PlayerID.Value(),
+		ship.CurrentLocation().Symbol,
+		response.FuelAdded,
+	)
 
 	// Record transaction asynchronously (non-blocking)
 	if balanceBefore > 0 { // Only record if we successfully fetched balance
