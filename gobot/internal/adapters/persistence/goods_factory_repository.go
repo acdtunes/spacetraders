@@ -130,6 +130,10 @@ func (r *GormGoodsFactoryRepository) entityToModel(factory *goods.GoodsFactory) 
 		Metadata:         string(metadataJSON),
 		QuantityAcquired: factory.QuantityAcquired(),
 		TotalCost:        factory.TotalCost(),
+		ShipsUsed:        factory.ShipsUsed(),
+		MarketQueries:    factory.MarketQueries(),
+		ParallelLevels:   factory.ParallelLevels(),
+		EstimatedSpeedup: factory.EstimatedSpeedup(),
 	}
 
 	// Set timestamps from lifecycle
@@ -176,7 +180,7 @@ func (r *GormGoodsFactoryRepository) modelToEntity(model *GoodsFactoryModel) (*g
 		nil, // clock - will default to RealClock
 	)
 
-	// Restore quantity and cost from database
+	// Restore metrics from database
 	if model.QuantityAcquired > 0 {
 		factory.SetQuantityAcquired(model.QuantityAcquired)
 	}
@@ -185,6 +189,21 @@ func (r *GormGoodsFactoryRepository) modelToEntity(model *GoodsFactoryModel) (*g
 	// Note: We can't set it directly, but since it starts at 0, adding works
 	if model.TotalCost > 0 {
 		factory.AddCost(model.TotalCost)
+	}
+
+	// Restore additional metrics
+	if model.ShipsUsed > 0 {
+		factory.SetShipsUsed(model.ShipsUsed)
+	}
+
+	if model.MarketQueries > 0 {
+		for i := 0; i < model.MarketQueries; i++ {
+			factory.IncrementMarketQueries()
+		}
+	}
+
+	if model.ParallelLevels > 0 || model.EstimatedSpeedup > 0 {
+		factory.SetParallelMetrics(model.ParallelLevels, model.EstimatedSpeedup)
 	}
 
 	// Restore status using lifecycle state machine

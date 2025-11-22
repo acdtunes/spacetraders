@@ -751,5 +751,9 @@ func (s *daemonServiceImpl) GetFactoryStatus(ctx context.Context, req *pb.GetFac
 		NodesCompleted:   int32(status.NodesCompleted),
 		NodesTotal:       int32(status.NodesTotal),
 		SystemSymbol:     status.SystemSymbol,
+		ShipsUsed:        int32(status.ShipsUsed),
+		MarketQueries:    int32(status.MarketQueries),
+		ParallelLevels:   int32(status.ParallelLevels),
+		EstimatedSpeedup: float32(status.EstimatedSpeedup),
 	}, nil
 }
