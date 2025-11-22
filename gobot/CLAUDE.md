@@ -760,3 +760,188 @@ metrics.RecordMyEvent(playerID, value)
 - Metrics retention is handled by Prometheus, not the daemon
 - Adjust Prometheus `--storage.tsdb.retention.time` in docker-compose
 - Default retention: 15 days
+
+## Ledger System
+
+The daemon includes a comprehensive double-entry ledger system for tracking all financial transactions.
+
+### Transaction Types & Categories
+
+**Transaction Types:**
+- `DEBIT` - Money leaving the account (expenses)
+- `CREDIT` - Money entering the account (income)
+
+**Transaction Categories:**
+- `CARGO_TRADE` - Buy/sell cargo transactions
+- `SHIP_PURCHASE` - Ship acquisition costs
+- `REFUEL` - Fuel purchase costs
+- `CONTRACT_PAYMENT` - Contract rewards and deliveries
+- `CONTRACT_ADVANCE` - Upfront contract payments
+- `SHIP_MAINTENANCE` - Ship repair and maintenance
+- `AGENT_REGISTRATION` - New agent creation costs
+- `STARTING_BALANCE` - Initial credits from registration
+
+### Recording Transactions
+
+Transactions are automatically recorded by command handlers:
+
+```go
+// In a command handler
+import "github.com/andrescamacho/spacetraders-go/internal/application/ledger/commands"
+
+// Record a transaction
+recordCmd := &commands.RecordTransactionCommand{
+    PlayerID:    playerID,
+    Amount:      1000,
+    Type:        ledger.TransactionTypeCredit,
+    Category:    ledger.CategoryCargoTrade,
+    Description: "Sold IRON_ORE",
+    Metadata: map[string]string{
+        "good":     "IRON_ORE",
+        "quantity": "10",
+        "waypoint": "X1-AU21-K82",
+    },
+}
+_, err := h.mediator.Send(ctx, recordCmd)
+```
+
+### Querying Transactions
+
+**Get Transaction History:**
+```bash
+./bin/spacetraders ledger transactions --player 1 --limit 20
+```
+
+**Get Cash Flow Analysis:**
+```bash
+./bin/spacetraders ledger cash-flow --player 1 --category CARGO_TRADE
+```
+
+**Get Profit & Loss Statement:**
+```bash
+./bin/spacetraders ledger profit-loss --player 1
+```
+
+### Implementation Details
+
+**Domain Layer** (`internal/domain/ledger/`)
+- `Transaction` - Immutable transaction entity with validation
+- `TransactionID` - Value object for unique transaction IDs
+- `TransactionType` - DEBIT/CREDIT enumeration
+- `Category` - Transaction category enumeration
+
+**Application Layer** (`internal/application/ledger/`)
+- `RecordTransactionCommand` - Creates new transaction entries
+- `GetTransactionsQuery` - Retrieves transaction history
+- `GetCashFlowQuery` - Analyzes income/expenses by category
+- `GetProfitLossQuery` - Generates P&L statements
+
+**Persistence** (`internal/adapters/persistence/`)
+- `TransactionRepository` - PostgreSQL storage with indexing
+- Automatically tracks created_at timestamps
+- Supports filtering by date, category, and type
+
+## Ship Balancing Algorithm
+
+The contract fleet coordinator uses a global assignment tracking algorithm to distribute idle haulers evenly across markets.
+
+### Algorithm Design
+
+**Scoring Formula:**
+```
+score = (assigned_ships × 100) + (distance × 0.1)
+```
+
+Lower scores are better. The algorithm:
+1. Counts ships at each market (exact location match, not proximity)
+2. Heavily penalizes markets with existing ships (100× weight)
+3. Uses distance as a tiebreaker (0.1× weight)
+4. Ensures even distribution: 1 ship per market ideal, then 2 per market, etc.
+
+**Example:**
+- Market A with 1 ship at 10 units: score = 100 + 1 = 101
+- Market B with 0 ships at 90 units: score = 0 + 9 = 9
+- **Result:** Market B wins despite being 9× farther
+
+### Implementation
+
+**Domain Layer** (`internal/domain/contract/ship_balancer.go`)
+```go
+type ShipBalancer struct{}
+
+func (b *ShipBalancer) SelectOptimalBalancingPosition(
+    ship *navigation.Ship,
+    markets []*shared.Waypoint,
+    idleHaulers []*navigation.Ship,
+) (*BalancingResult, error)
+```
+
+**Key Constants:**
+- `AssignmentWeight = 100.0` - Penalty multiplier for existing ships
+- `DistanceWeight = 0.1` - Distance factor for fuel efficiency
+
+**Result:**
+```go
+type BalancingResult struct {
+    TargetMarket  *shared.Waypoint
+    Score         float64
+    AssignedShips int     // Ships at this market
+    Distance      float64 // Distance to market
+}
+```
+
+### BDD Test Coverage
+
+Location: `test/bdd/features/domain/contract/ship_balancer.feature`
+
+Key scenarios:
+- Select empty market over occupied market
+- Distance tiebreaker when all markets empty
+- Heavy penalty for second ship to same market
+- Even distribution across multiple markets
+- All markets occupied - select least crowded
+
+## Navigation Resilience
+
+The `RouteExecutor` includes resilience mechanisms to handle timing issues in multi-segment routes.
+
+### In-Transit State Handling
+
+**Problem:** Scout tours were failing with "cannot orbit while in transit" errors when navigating rapidly between waypoints.
+
+**Solution:** The executor now checks ship state before each segment:
+
+```go
+// In RouteExecutor.executeSegment()
+// 1. Reload ship to get latest state
+freshShip, err := e.shipRepo.FindBySymbol(ctx, ship.ShipSymbol(), playerID)
+*ship = *freshShip
+
+// 2. Wait for any in-transit movement to complete
+if ship.NavStatus() == domainNavigation.NavStatusInTransit {
+    err := e.waitForCurrentTransit(ctx, ship, playerID)
+}
+
+// 3. Now safe to orbit
+err := e.ensureShipInOrbit(ctx, ship, playerID)
+```
+
+### Key Pattern
+
+**Always reload ship state before operations:**
+- Prevents stale state issues
+- Handles rapid navigation cycles
+- Waits for arrivals before new commands
+- Eliminates race conditions
+
+This pattern is critical for:
+- Scout tours visiting multiple markets
+- Contract delivery routes
+- Mining operations with frequent trips
+
+### Error Prevention
+
+The resilience improvements prevent:
+1. **"cannot orbit while in transit"** - Ship state machine violations
+2. **API 4214 errors** - Duplicate navigation commands
+3. **Race conditions** - Stale ship state between segments
