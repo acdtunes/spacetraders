@@ -87,7 +87,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (player_id) (rate(spacetraders_daemon_total_revenue[5m])) * 3600",
+          "expr": "sum by (player_id) (deriv(spacetraders_daemon_total_revenue[5m])) * 3600",
           "legendFormat": "Player {{player_id}}",
           "refId": "A"
         }
@@ -174,7 +174,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "(sum by (player_id) (rate(spacetraders_daemon_total_revenue[5m])) - sum by (player_id) (rate(spacetraders_daemon_total_expenses[5m]))) * 3600",
+          "expr": "(sum by (player_id) (deriv(spacetraders_daemon_total_revenue[5m])) - sum by (player_id) (deriv(spacetraders_daemon_total_expenses[5m]))) * 3600",
           "legendFormat": "Player {{player_id}}",
           "refId": "A"
         }
