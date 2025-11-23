@@ -66,3 +66,7 @@ Thumbs.db
 /mcp/node_modules/
 /mcp/build/
 /mcp/var/
+
+# Python routing service generated files
+services/routing-service/generated/*.py
+!services/routing-service/generated/__init__.py
