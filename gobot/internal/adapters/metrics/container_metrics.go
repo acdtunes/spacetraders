@@ -252,52 +252,63 @@ func (c *ContainerMetricsCollector) updateShipMetrics() {
 		return
 	}
 
-	// TODO: Support multiple players - for now hardcode player ID 1
-	// This should be configurable or detected from active containers
-	playerID := 1
-
-	// Get all ships for the player
-	ships, err := c.shipRepo.FindAllByPlayer(c.ctx, shared.MustNewPlayerID(playerID))
-	if err != nil {
-		log.Printf("Failed to list ships for metrics: %v", err)
+	// Get unique player IDs from active containers
+	containers := c.getContainers()
+	if len(containers) == 0 {
+		// No active containers, skip ship metrics
 		return
+	}
+
+	playerIDs := make(map[int]bool)
+	for _, containerInfo := range containers {
+		playerIDs[containerInfo.PlayerID()] = true
 	}
 
 	// Reset gauges
 	c.shipsTotal.Reset()
 	c.shipStatusTotal.Reset()
 
-	// Count ships by role, location, and status
-	shipsByRole := make(map[string]map[string]int)     // role -> location -> count
-	shipsByStatus := make(map[string]int)              // status -> count
-
-	for _, ship := range ships {
-		role := ship.Role()
-		location := ship.CurrentLocation().Symbol
-		status := string(ship.NavStatus())
-
-		// Initialize maps
-		if shipsByRole[role] == nil {
-			shipsByRole[role] = make(map[string]int)
+	// Collect metrics for each player with active containers
+	for playerID := range playerIDs {
+		// Get all ships for the player
+		ships, err := c.shipRepo.FindAllByPlayer(c.ctx, shared.MustNewPlayerID(playerID))
+		if err != nil {
+			log.Printf("Failed to list ships for player %d: %v", playerID, err)
+			continue // Skip this player but continue with others
 		}
 
-		// Increment counters
-		shipsByRole[role][location]++
-		shipsByStatus[status]++
-	}
+		// Count ships by role, location, and status
+		shipsByRole := make(map[string]map[string]int)     // role -> location -> count
+		shipsByStatus := make(map[string]int)              // status -> count
 
-	playerIDStr := strconv.Itoa(playerID)
+		for _, ship := range ships {
+			role := ship.Role()
+			location := ship.CurrentLocation().Symbol
+			status := string(ship.NavStatus())
 
-	// Update ship count by role/location
-	for role, locationMap := range shipsByRole {
-		for location, count := range locationMap {
-			c.shipsTotal.WithLabelValues(playerIDStr, role, location).Set(float64(count))
+			// Initialize maps
+			if shipsByRole[role] == nil {
+				shipsByRole[role] = make(map[string]int)
+			}
+
+			// Increment counters
+			shipsByRole[role][location]++
+			shipsByStatus[status]++
 		}
-	}
 
-	// Update ship count by status
-	for status, count := range shipsByStatus {
-		c.shipStatusTotal.WithLabelValues(playerIDStr, status).Set(float64(count))
+		playerIDStr := strconv.Itoa(playerID)
+
+		// Update ship count by role/location
+		for role, locationMap := range shipsByRole {
+			for location, count := range locationMap {
+				c.shipsTotal.WithLabelValues(playerIDStr, role, location).Set(float64(count))
+			}
+		}
+
+		// Update ship count by status
+		for status, count := range shipsByStatus {
+			c.shipStatusTotal.WithLabelValues(playerIDStr, status).Set(float64(count))
+		}
 	}
 }
 
