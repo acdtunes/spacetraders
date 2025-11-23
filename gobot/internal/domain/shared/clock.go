@@ -11,9 +11,9 @@ type Clock interface {
 // RealClock implements Clock using the actual system time
 type RealClock struct{}
 
-// Now returns the current system time
+// Now returns the current system time in UTC
 func (r *RealClock) Now() time.Time {
-	return time.Now()
+	return time.Now().UTC()
 }
 
 // Sleep blocks for the given duration

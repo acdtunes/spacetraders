@@ -12,7 +12,7 @@ import (
 
 // MarketRepository defines operations for market data persistence
 type MarketRepository interface {
-	GetMarketData(ctx context.Context, playerID uint, waypointSymbol string) (*market.Market, error)
+	GetMarketData(ctx context.Context, waypointSymbol string, playerID int) (*market.Market, error)
 	UpsertMarketData(ctx context.Context, playerID uint, waypointSymbol string, goods []market.TradeGood, timestamp time.Time) error
 	ListMarketsInSystem(ctx context.Context, playerID uint, systemSymbol string, maxAgeMinutes int) ([]market.Market, error)
 }
@@ -47,7 +47,7 @@ func (h *GetMarketDataHandler) Handle(ctx context.Context, request common.Reques
 		return nil, fmt.Errorf("invalid request type")
 	}
 	// Get market data from repository
-	marketData, err := h.marketRepo.GetMarketData(ctx, uint(query.PlayerID.Value()), query.WaypointSymbol)
+	marketData, err := h.marketRepo.GetMarketData(ctx, query.WaypointSymbol, query.PlayerID.Value())
 	if err != nil {
 		return nil, err
 	}

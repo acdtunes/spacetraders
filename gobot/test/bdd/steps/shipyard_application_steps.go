@@ -224,6 +224,7 @@ func (ctx *shipyardApplicationContext) aShipExistsForPlayerAtWaypoint(shipSymbol
 		30,
 		"FRAME_PROBE",
 		"COMMAND",
+		[]*navigation.ShipModule{}, // modules
 		navigation.NavStatusDocked,
 	)
 	if err != nil {
@@ -313,6 +314,7 @@ func (ctx *shipyardApplicationContext) theShipIsAtWaypoint(shipSymbol, waypointS
 		ship.EngineSpeed(),
 		ship.FrameSymbol(),
 		ship.Role(),
+		[]*navigation.ShipModule{}, // modules
 		ship.NavStatus(),
 	)
 	if err != nil {

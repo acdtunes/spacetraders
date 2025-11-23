@@ -21,8 +21,8 @@ func NewMarketRepositoryAdapter(marketRepo *MarketRepositoryGORM) *MarketReposit
 
 // GetMarketData adapts the method signature from persistence (uint playerID) to market domain (int playerID)
 func (a *MarketRepositoryAdapter) GetMarketData(ctx context.Context, waypointSymbol string, playerID int) (*market.Market, error) {
-	// Call the persistence layer with uint(playerID)
-	return a.marketRepo.GetMarketData(ctx, uint(playerID), waypointSymbol)
+	// Call the persistence layer (now uses int directly, no conversion needed)
+	return a.marketRepo.GetMarketData(ctx, waypointSymbol, playerID)
 }
 
 // FindCheapestMarketSelling passes through to the underlying repository

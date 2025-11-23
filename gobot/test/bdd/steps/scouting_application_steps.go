@@ -188,6 +188,7 @@ func (ctx *scoutingApplicationContext) createShipFixture(shipSymbol string, play
 		30, // engineSpeed
 		frameType,
 		role,
+		[]*navigation.ShipModule{}, // modules
 		navigation.NavStatusInOrbit,
 	)
 	if err != nil {

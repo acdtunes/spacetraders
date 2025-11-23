@@ -21,11 +21,23 @@ export function BalanceChart({ data }: BalanceChartProps) {
     displayTime: format(new Date(point.timestamp), 'MMM dd HH:mm'),
   }));
 
-  const formatCurrency = (value: number) => {
-    if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
-    if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`;
-    return value.toFixed(0);
+  const formatCurrency = (value: number | null | undefined) => {
+    const num = Number(value) || 0;
+    if (Math.abs(num) >= 1_000_000) return `${(num / 1_000_000).toFixed(1)}M`;
+    if (Math.abs(num) >= 1_000) return `${(num / 1_000).toFixed(1)}K`;
+    return num.toFixed(0);
   };
+
+  // Calculate Y-axis domain with padding for better visualization
+  const balances = chartData.map(d => d.balance);
+  const minBalance = Math.min(...balances);
+  const maxBalance = Math.max(...balances);
+  const range = maxBalance - minBalance;
+  const padding = range * 0.1; // 10% padding on each side
+  const yDomain = [
+    Math.max(0, Math.floor(minBalance - padding)),
+    Math.ceil(maxBalance + padding)
+  ];
 
   return (
     <div className="w-full h-64">
@@ -41,6 +53,7 @@ export function BalanceChart({ data }: BalanceChartProps) {
             stroke="#9CA3AF"
             tick={{ fill: '#9CA3AF', fontSize: 12 }}
             tickFormatter={formatCurrency}
+            domain={yDomain}
           />
           <Tooltip
             contentStyle={{

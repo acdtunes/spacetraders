@@ -3,11 +3,11 @@ import { useStore } from '../store/useStore';
 import {
   getFinancialTransactions,
   getCashFlow,
-  getProfitLoss,
+  getOperationPL,
   getBalanceHistory,
 } from '../services/api/bot';
 
-const POLLING_INTERVAL = 15000; // 15 seconds
+const POLLING_INTERVAL = 10000; // 10 seconds
 
 export function useFinancialPolling() {
   const {
@@ -17,7 +17,7 @@ export function useFinancialPolling() {
     transactionPagination,
     setFinancialTransactions,
     setCashFlowData,
-    setProfitLossData,
+    setOperationPLData,
     setBalanceHistory,
   } = useStore();
 
@@ -36,7 +36,7 @@ export function useFinancialPolling() {
         const endDate = financialDateRange.end.toISOString();
 
         // Fetch all financial data in parallel
-        const [transactions, cashFlow, profitLoss, balanceHistory] = await Promise.all([
+        const [transactions, cashFlow, operationPL, balanceHistory] = await Promise.all([
           getFinancialTransactions({
             playerId: selectedPlayerId,
             limit: transactionPagination.limit,
@@ -48,14 +48,14 @@ export function useFinancialPolling() {
             endDate,
           }),
           getCashFlow(selectedPlayerId, startDate, endDate),
-          getProfitLoss(selectedPlayerId, startDate, endDate),
+          getOperationPL(selectedPlayerId, startDate, endDate),
           getBalanceHistory(selectedPlayerId, startDate, endDate),
         ]);
 
         // Update store
         setFinancialTransactions(transactions.transactions, transactions.total);
         setCashFlowData(cashFlow);
-        setProfitLossData(profitLoss);
+        setOperationPLData(operationPL);
         setBalanceHistory(balanceHistory);
       } catch (error) {
         console.error('Failed to fetch financial data:', error);
@@ -81,7 +81,7 @@ export function useFinancialPolling() {
     transactionPagination,
     setFinancialTransactions,
     setCashFlowData,
-    setProfitLossData,
+    setOperationPLData,
     setBalanceHistory,
   ]);
 }

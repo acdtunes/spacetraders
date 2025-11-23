@@ -34,10 +34,10 @@ export function MapView() {
     toggleMarketFreshness,
   } = useStore();
   const spaceMapRef = useRef<SpaceMapRef>(null);
-  const [isRightSidebarOpen, setIsRightSidebarOpen] = useState(true);
+  const [isRightSidebarOpen, setIsRightSidebarOpen] = useState(false);
   const [rightSidebarTab, setRightSidebarTab] = useState<'ships' | 'details' | 'search'>('ships');
-  const [isOperationsSidebarOpen, setIsOperationsSidebarOpen] = useState(true);
-  const [isMarketsSidebarOpen, setIsMarketsSidebarOpen] = useState(true);
+  const [isOperationsSidebarOpen, setIsOperationsSidebarOpen] = useState(false);
+  const [isMarketsSidebarOpen, setIsMarketsSidebarOpen] = useState(false);
 
   const handleFocusOn = useCallback((x: number, y: number, scale?: number) => {
     spaceMapRef.current?.focusOn(x, y, scale);

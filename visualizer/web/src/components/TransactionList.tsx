@@ -11,10 +11,11 @@ export function TransactionList() {
     setTransactionPagination,
   } = useStore();
 
-  const formatCurrency = (value: number) => {
-    if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(2)}M`;
-    if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`;
-    return value.toFixed(0);
+  const formatCurrency = (value: number | null | undefined) => {
+    const num = Number(value) || 0;
+    if (Math.abs(num) >= 1_000_000) return `${(num / 1_000_000).toFixed(2)}M`;
+    if (Math.abs(num) >= 1_000) return `${(num / 1_000).toFixed(1)}K`;
+    return num.toFixed(0);
   };
 
   const totalPages = Math.ceil(transactionTotal / transactionPagination.limit);

@@ -89,17 +89,26 @@ func (f *ArbitrageOpportunityFinder) FindOpportunities(
 
 	for _, waypointSymbol := range marketWaypoints {
 		// Load market data
+		fmt.Printf("DEBUG: Calling GetMarketData(ctx, %s, %d)\n", waypointSymbol, playerID)
 		m, err := f.marketRepo.GetMarketData(ctx, waypointSymbol, playerID)
 		if err != nil {
 			// Skip markets with errors (may be temporarily unavailable)
+			fmt.Printf("DEBUG: Failed to load market %s: %v\n", waypointSymbol, err)
 			continue
 		}
+		if m == nil {
+			fmt.Printf("DEBUG: Market %s returned nil (no error, just no data)\n", waypointSymbol)
+			continue
+		}
+		goodsCount := len(m.TradeGoods())
+		fmt.Printf("DEBUG: Market %s has %d trade goods\n", waypointSymbol, goodsCount)
 		markets[waypointSymbol] = m
 
 		// Load waypoint data
 		wp, err := f.waypointProvider.GetWaypoint(ctx, waypointSymbol, systemSymbol, playerID)
 		if err != nil {
 			// Skip waypoints with errors
+			fmt.Printf("DEBUG: Failed to load waypoint %s: %v\n", waypointSymbol, err)
 			continue
 		}
 		waypoints[waypointSymbol] = wp
@@ -122,7 +131,7 @@ func (f *ArbitrageOpportunityFinder) FindOpportunities(
 
 	for waypointSymbol, m := range markets {
 		wp := waypoints[waypointSymbol]
-		if wp == nil {
+		if wp == nil || m == nil {
 			continue
 		}
 
@@ -156,31 +165,33 @@ func (f *ArbitrageOpportunityFinder) FindOpportunities(
 	opportunities := []*trading.ArbitrageOpportunity{}
 
 	for good, markets := range goodsMap {
-		// For each good, try all combinations of (seller, buyer) pairs
-		for _, sellMarket := range markets.sellers {
-			for _, buyMarket := range markets.buyers {
+		// For each good, try all combinations of (buy, sell) pairs
+		// Note: markets.sellers = markets we BUY from (they sell to us)
+		//       markets.buyers = markets we SELL to (they buy from us)
+		for _, buyMarket := range markets.sellers {
+			for _, sellMarket := range markets.buyers {
 				// Don't trade with same market
-				if sellMarket.waypoint.Symbol == buyMarket.waypoint.Symbol {
+				if buyMarket.waypoint.Symbol == sellMarket.waypoint.Symbol {
 					continue
 				}
 
 				// Get trade goods
-				sellGood := sellMarket.market.FindGood(good)
 				buyGood := buyMarket.market.FindGood(good)
+				sellGood := sellMarket.market.FindGood(good)
 
-				if sellGood == nil || buyGood == nil {
+				if buyGood == nil || sellGood == nil {
 					continue
 				}
 
 				// Analyze pair using domain service
 				opp, err := f.analyzer.AnalyzeMarketPair(
 					good,
-					sellMarket.market,
-					sellGood,
 					buyMarket.market,
 					buyGood,
-					sellMarket.waypoint,
+					sellMarket.market,
+					sellGood,
 					buyMarket.waypoint,
+					sellMarket.waypoint,
 					cargoCapacity,
 					minMargin,
 				)
@@ -200,6 +211,12 @@ func (f *ArbitrageOpportunityFinder) FindOpportunities(
 
 	// Step 5: Check if we found any opportunities
 	if len(opportunities) == 0 {
+		// Debug: log why we found no opportunities
+		fmt.Printf("DEBUG: Scanned %d markets, found %d unique goods\n", len(markets), len(goodsMap))
+		for good, mkts := range goodsMap {
+			fmt.Printf("DEBUG: Good %s: %d sellers (buy from), %d buyers (sell to)\n",
+				good, len(mkts.sellers), len(mkts.buyers))
+		}
 		return nil, trading.ErrNoOpportunitiesFound
 	}
 

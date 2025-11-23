@@ -324,6 +324,7 @@ export interface FinancialTransaction {
   timestamp: string;
   transaction_type: TransactionType;
   category: TransactionCategory;
+  operation_type?: string | null;
   amount: number;
   balance_before: number;
   balance_after: number;
@@ -391,4 +392,26 @@ export interface BalanceHistoryData {
   current_balance: number;
   starting_balance: number;
   net_change: number;
+}
+
+export interface OperationPLBreakdown {
+  operation: string;
+  revenue: number;
+  expenses: number;
+  net_profit: number;
+  transaction_count: number;
+  breakdown: Record<string, number>;
+}
+
+export interface OperationPLData {
+  period: {
+    start: string;
+    end: string;
+  };
+  summary: {
+    total_revenue: number;
+    total_expenses: number;
+    net_profit: number;
+  };
+  operations: OperationPLBreakdown[];
 }

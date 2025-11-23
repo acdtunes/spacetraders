@@ -365,8 +365,16 @@ func (h *PurchaseShipHandler) recordShipPurchaseTransaction(
 	// Calculate balance after
 	balanceAfter := balanceBefore - purchaseResult.Transaction.Price
 
+	// Fetch player to get agent symbol
+	playerData, err := h.playerRepo.FindByID(ctx, cmd.PlayerID)
+	agentSymbol := "UNKNOWN"
+	if err == nil && playerData != nil {
+		agentSymbol = playerData.AgentSymbol
+	}
+
 	// Build metadata
 	metadata := map[string]interface{}{
+		"agent":           agentSymbol,
 		"ship_type":       cmd.ShipType,
 		"ship_symbol":     purchaseResult.Transaction.ShipSymbol,
 		"waypoint":        shipyardWaypoint,
@@ -385,7 +393,7 @@ func (h *PurchaseShipHandler) recordShipPurchaseTransaction(
 	}
 
 	// Record transaction via mediator
-	_, err := h.mediator.Send(context.Background(), recordCmd)
+	_, err = h.mediator.Send(context.Background(), recordCmd)
 	if err != nil {
 		// Log error but don't fail the operation
 		logger.Log("ERROR", "Failed to record ship purchase transaction in ledger", map[string]interface{}{

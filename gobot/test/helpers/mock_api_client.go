@@ -737,3 +737,39 @@ func (m *MockAPIClient) TransferCargo(ctx context.Context, fromShipSymbol, toShi
 		RemainingCargo:   nil,
 	}, nil
 }
+
+func (m *MockAPIClient) JumpShip(ctx context.Context, shipSymbol, systemSymbol, token string) (*domainPorts.JumpResult, error) {
+	m.mu.RLock()
+	shouldError := m.shouldError
+	errorMsg := m.errorMsg
+	m.mu.RUnlock()
+
+	if shouldError {
+		return nil, fmt.Errorf("%s", errorMsg)
+	}
+
+	// Return a mock jump result
+	return &domainPorts.JumpResult{
+		DestinationSystem:   systemSymbol,
+		DestinationWaypoint: systemSymbol + "-JUMPGATE",
+		CooldownSeconds:     0,
+		TotalPrice:          0,
+	}, nil
+}
+
+func (m *MockAPIClient) GetJumpGate(ctx context.Context, systemSymbol, waypointSymbol, token string) (*domainPorts.JumpGateData, error) {
+	m.mu.RLock()
+	shouldError := m.shouldError
+	errorMsg := m.errorMsg
+	m.mu.RUnlock()
+
+	if shouldError {
+		return nil, fmt.Errorf("%s", errorMsg)
+	}
+
+	// Return a mock jump gate with no connections
+	return &domainPorts.JumpGateData{
+		Symbol:      waypointSymbol,
+		Connections: []string{},
+	}, nil
+}

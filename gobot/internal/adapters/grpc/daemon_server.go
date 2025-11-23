@@ -301,6 +301,30 @@ func (s *DaemonServer) registerCommandFactories() {
 		}, nil
 	}
 
+	// Arbitrage coordinator factory (multi-ship trading coordination)
+	s.commandFactories["arbitrage_coordinator"] = func(config map[string]interface{}, playerID int) (interface{}, error) {
+		containerID, ok := config["container_id"].(string)
+		if !ok {
+			return nil, fmt.Errorf("missing or invalid container_id")
+		}
+
+		systemSymbol, ok := config["system_symbol"].(string)
+		if !ok {
+			return nil, fmt.Errorf("missing or invalid system_symbol")
+		}
+
+		minMargin, _ := config["min_margin"].(float64) // Optional, defaults in handler
+		maxWorkers, _ := config["max_workers"].(int)   // Optional, defaults in handler
+
+		return &tradingCmd.RunArbitrageCoordinatorCommand{
+			SystemSymbol: systemSymbol,
+			PlayerID:     playerID,
+			ContainerID:  containerID,
+			MinMargin:    minMargin,
+			MaxWorkers:   maxWorkers,
+		}, nil
+	}
+
 	// Purchase ship factory
 	s.commandFactories["purchase_ship"] = func(config map[string]interface{}, playerID int) (interface{}, error) {
 		shipSymbol, ok := config["ship_symbol"].(string)
@@ -1171,6 +1195,54 @@ func (s *DaemonServer) ContractFleetCoordinator(ctx context.Context, shipSymbols
 
 	// Persist container to database
 	if err := s.containerRepo.Add(ctx, containerEntity, "contract_fleet_coordinator"); err != nil {
+		return "", fmt.Errorf("failed to persist container: %w", err)
+	}
+
+	// Create and start container runner
+	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipAssignmentRepo)
+	s.registerContainer(containerID, runner)
+
+	// Start container in background
+	go func() {
+		if err := runner.Start(); err != nil {
+			fmt.Printf("Container %s failed: %v\n", containerID, err)
+		}
+	}()
+
+	return containerID, nil
+}
+
+// ArbitrageCoordinator creates an arbitrage coordinator for automated trading operations
+func (s *DaemonServer) ArbitrageCoordinator(ctx context.Context, systemSymbol string, playerID int, minMargin float64, maxWorkers int) (string, error) {
+	// Create container ID
+	containerID := utils.GenerateContainerID("arbitrage_coordinator", systemSymbol)
+
+	// Create arbitrage coordinator command
+	cmd := &tradingCmd.RunArbitrageCoordinatorCommand{
+		SystemSymbol: systemSymbol,
+		PlayerID:     playerID,
+		ContainerID:  containerID,
+		MinMargin:    minMargin,
+		MaxWorkers:   maxWorkers,
+	}
+
+	// Create container for this operation
+	containerEntity := container.NewContainer(
+		containerID,
+		container.ContainerTypeArbitrageCoordinator,
+		playerID,
+		-1, // Infinite iterations
+		map[string]interface{}{
+			"system_symbol": systemSymbol,
+			"min_margin":    minMargin,
+			"max_workers":   maxWorkers,
+			"container_id":  containerID,
+		},
+		nil, // Use default RealClock
+	)
+
+	// Persist container to database
+	if err := s.containerRepo.Add(ctx, containerEntity, "arbitrage_coordinator"); err != nil {
 		return "", fmt.Errorf("failed to persist container: %w", err)
 	}
 

@@ -70,8 +70,8 @@ func (r *MarketRepositoryGORM) UpsertMarketData(
 // Database schema: multiple rows in market_data, one per (waypoint, good)
 func (r *MarketRepositoryGORM) GetMarketData(
 	ctx context.Context,
-	playerID uint,
 	waypointSymbol string,
+	playerID int,
 ) (*market.Market, error) {
 	// Query all goods for this waypoint
 	var marketDataRecords []MarketData

@@ -991,6 +991,134 @@ router.get('/ledger/profit-loss', async (req, res) => {
   }
 });
 
+// Get profit & loss statement by operation type
+router.get('/ledger/profit-loss-by-operation', async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const playerId = req.query.player_id ? parseInt(req.query.player_id as string, 10) : null;
+    const startDate = req.query.start_date as string | undefined;
+    const endDate = req.query.end_date as string | undefined;
+
+    if (!playerId) {
+      return res.status(400).json({ error: 'player_id is required' });
+    }
+
+    // Validate date range
+    if (startDate && endDate && new Date(startDate) > new Date(endDate)) {
+      return res.status(400).json({ error: 'start_date must be before end_date' });
+    }
+
+    const params: any[] = [playerId];
+    let paramIndex = 2;
+    let whereConditions = ['player_id = $1'];
+
+    if (startDate) {
+      whereConditions.push(`timestamp >= $${paramIndex}`);
+      params.push(startDate);
+      paramIndex++;
+    }
+
+    if (endDate) {
+      whereConditions.push(`timestamp <= $${paramIndex}`);
+      params.push(endDate);
+      paramIndex++;
+    }
+
+    const whereClause = whereConditions.join(' AND ');
+
+    // Get period bounds
+    const periodResult = await client.query(`
+      SELECT
+        MIN(timestamp) as start,
+        MAX(timestamp) as end
+      FROM transactions
+      WHERE ${whereClause}
+    `, params);
+
+    // Get breakdown by operation type and category
+    const operationBreakdownResult = await client.query(`
+      SELECT
+        operation_type,
+        category,
+        SUM(amount) as total,
+        COUNT(*) as transaction_count
+      FROM transactions
+      WHERE ${whereClause}
+        AND operation_type IS NOT NULL
+      GROUP BY operation_type, category
+      ORDER BY operation_type, category
+    `, params);
+
+    // Get overall totals by operation
+    const operationTotalsResult = await client.query(`
+      SELECT
+        operation_type,
+        SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) as revenue,
+        SUM(CASE WHEN amount < 0 THEN amount ELSE 0 END) as expenses,
+        SUM(amount) as net_profit,
+        COUNT(*) as transaction_count
+      FROM transactions
+      WHERE ${whereClause}
+        AND operation_type IS NOT NULL
+      GROUP BY operation_type
+      ORDER BY operation_type
+    `, params);
+
+    // Build operation breakdown structure
+    const operations: any[] = [];
+    const operationMap = new Map();
+
+    // Initialize operations from totals
+    operationTotalsResult.rows.forEach(row => {
+      const operation = {
+        operation: row.operation_type,
+        revenue: parseFloat(row.revenue) || 0,
+        expenses: parseFloat(row.expenses) || 0,
+        net_profit: parseFloat(row.net_profit) || 0,
+        transaction_count: parseInt(row.transaction_count, 10),
+        breakdown: {} as Record<string, number>
+      };
+      operations.push(operation);
+      operationMap.set(row.operation_type, operation);
+    });
+
+    // Add category breakdown to each operation
+    operationBreakdownResult.rows.forEach(row => {
+      const operation = operationMap.get(row.operation_type);
+      if (operation) {
+        operation.breakdown[row.category] = parseFloat(row.total);
+      }
+    });
+
+    // Calculate summary
+    const summary = {
+      total_revenue: 0,
+      total_expenses: 0,
+      net_profit: 0
+    };
+
+    operations.forEach(op => {
+      summary.total_revenue += op.revenue;
+      summary.total_expenses += op.expenses;
+      summary.net_profit += op.net_profit;
+    });
+
+    res.json({
+      period: {
+        start: periodResult.rows[0].start || (startDate || null),
+        end: periodResult.rows[0].end || (endDate || null)
+      },
+      summary,
+      operations
+    });
+  } catch (error) {
+    console.error('Failed to fetch operation-based P&L:', error);
+    res.status(500).json({ error: 'Failed to fetch operation-based P&L' });
+  } finally {
+    client.release();
+  }
+});
+
 // Get balance history
 router.get('/ledger/balance-history', async (req, res) => {
   const client = await pool.connect();

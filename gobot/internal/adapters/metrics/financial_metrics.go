@@ -11,6 +11,7 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	ledgerQueries "github.com/andrescamacho/spacetraders-go/internal/application/ledger/queries"
+	playerQueries "github.com/andrescamacho/spacetraders-go/internal/application/player/queries"
 )
 
 // FinancialMetricsCollector handles all financial metrics (credits, transactions, P&L)
@@ -233,6 +234,23 @@ func (c *FinancialMetricsCollector) updateProfitLoss() {
 	}
 
 	playerIDStr := strconv.Itoa(playerID)
+
+	// Fetch current player data (including real-time credits and agent symbol) from API
+	getPlayerQuery := &playerQueries.GetPlayerQuery{
+		PlayerID: &playerID,
+	}
+
+	playerResp, err := c.mediator.Send(context.Background(), getPlayerQuery)
+	if err == nil {
+		if playerData, ok := playerResp.(*playerQueries.GetPlayerResponse); ok && playerData.Player != nil {
+			// Update credits balance with actual agent symbol and current credits
+			c.creditsBalance.WithLabelValues(playerIDStr, playerData.Player.AgentSymbol).Set(float64(playerData.Player.Credits))
+		} else {
+			log.Printf("Unexpected response type for GetPlayer query: %T", playerResp)
+		}
+	} else {
+		log.Printf("Failed to fetch player %d for balance update: %v", playerID, err)
+	}
 
 	// Update revenue metrics by category
 	for category, amount := range plResponse.RevenueBreakdown {

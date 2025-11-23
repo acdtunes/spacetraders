@@ -18,8 +18,8 @@ import type {
   TransactionCategory,
   TransactionType,
   CashFlowData,
-  ProfitLossData,
   BalanceHistoryData,
+  OperationPLData,
 } from '../types/spacetraders';
 import { getTourId } from '../utils/tourHelpers';
 
@@ -188,20 +188,20 @@ export interface AppState {
   financialTransactions: FinancialTransaction[];
   transactionTotal: number;
   cashFlowData: CashFlowData | null;
-  profitLossData: ProfitLossData | null;
+  operationPLData: OperationPLData | null;
   balanceHistory: BalanceHistoryData | null;
   setFinancialTransactions: (transactions: FinancialTransaction[], total: number) => void;
   setCashFlowData: (data: CashFlowData) => void;
-  setProfitLossData: (data: ProfitLossData) => void;
+  setOperationPLData: (data: OperationPLData) => void;
   setBalanceHistory: (data: BalanceHistoryData) => void;
 
   // Financial UI state
   showFinancialDashboard: boolean;
-  financialTab: 'overview' | 'transactions' | 'cashflow' | 'profitloss';
+  financialTab: 'overview' | 'transactions' | 'cashflow' | 'profitloss' | 'operations';
   financialDateRange: {
     start: Date;
     end: Date;
-    preset: '24h' | '7d' | '30d' | 'all' | 'custom';
+    preset: '5m' | '15m' | '30m' | '1h' | '3h' | '6h' | '12h' | '24h' | '2d' | '7d' | '30d' | 'all' | 'custom';
   };
   transactionFilters: {
     category: TransactionCategory | null;
@@ -212,8 +212,8 @@ export interface AppState {
     page: number;
     limit: number;
   };
-  setFinancialTab: (tab: 'overview' | 'transactions' | 'cashflow' | 'profitloss') => void;
-  setFinancialDateRange: (range: { start: Date; end: Date; preset: '24h' | '7d' | '30d' | 'all' | 'custom' }) => void;
+  setFinancialTab: (tab: 'overview' | 'transactions' | 'cashflow' | 'profitloss' | 'operations') => void;
+  setFinancialDateRange: (range: { start: Date; end: Date; preset: '5m' | '15m' | '30m' | '1h' | '3h' | '6h' | '12h' | '24h' | '2d' | '7d' | '30d' | 'all' | 'custom' }) => void;
   setTransactionFilters: (filters: Partial<AppState['transactionFilters']>) => void;
   setTransactionPagination: (pagination: Partial<AppState['transactionPagination']>) => void;
   toggleFinancialDashboard: () => void;
@@ -475,12 +475,12 @@ const storeInitializer: StateCreator<AppState, [], []> = (set) => ({
   financialTransactions: [],
   transactionTotal: 0,
   cashFlowData: null,
-  profitLossData: null,
+  operationPLData: null,
   balanceHistory: null,
   setFinancialTransactions: (transactions, total) =>
     set({ financialTransactions: transactions, transactionTotal: total }),
   setCashFlowData: (data) => set({ cashFlowData: data }),
-  setProfitLossData: (data) => set({ profitLossData: data }),
+  setOperationPLData: (data) => set({ operationPLData: data }),
   setBalanceHistory: (data) => set({ balanceHistory: data }),
 
   // Financial UI state

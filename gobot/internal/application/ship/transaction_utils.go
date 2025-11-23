@@ -39,7 +39,7 @@ func GetTransactionLimit(
 	requestedUnits int,
 ) int {
 	// Try to fetch market data
-	marketData, err := marketRepo.GetMarketData(ctx, uint(playerID), waypointSymbol)
+	marketData, err := marketRepo.GetMarketData(ctx, waypointSymbol, playerID)
 	if err != nil || marketData == nil {
 		// Market data unavailable - use single transaction fallback
 		return requestedUnits

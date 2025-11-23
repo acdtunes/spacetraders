@@ -72,6 +72,7 @@ func (fmc *fleetManagementContext) createShipAt(symbol string, waypointSymbol st
 		10, // engineSpeed
 		"FRAME_HAULER",
 		"HAULER",
+		[]*navigation.ShipModule{}, // modules
 		navigation.NavStatusDocked,
 	)
 	if err != nil {
@@ -115,6 +116,7 @@ func (fmc *fleetManagementContext) createShipAtWithStatus(symbol, waypointSymbol
 		10, // engineSpeed
 		"FRAME_HAULER",
 		"HAULER",
+		[]*navigation.ShipModule{}, // modules
 		status,
 	)
 	if err != nil {

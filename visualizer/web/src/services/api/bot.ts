@@ -15,6 +15,7 @@ import type {
   CashFlowData,
   ProfitLossData,
   BalanceHistoryData,
+  OperationPLData,
 } from '../../types/spacetraders';
 
 /**
@@ -237,6 +238,25 @@ export async function getProfitLoss(
 
   const response = await fetchApi<ProfitLossData>(
     `/bot/ledger/profit-loss?${queryParams.toString()}`
+  );
+  return response;
+}
+
+/**
+ * Get profit & loss statement by operation type for a player
+ */
+export async function getOperationPL(
+  playerId: number,
+  startDate?: string,
+  endDate?: string
+): Promise<OperationPLData> {
+  const queryParams = new URLSearchParams();
+  queryParams.append('player_id', playerId.toString());
+  if (startDate) queryParams.append('start_date', startDate);
+  if (endDate) queryParams.append('end_date', endDate);
+
+  const response = await fetchApi<OperationPLData>(
+    `/bot/ledger/profit-loss-by-operation?${queryParams.toString()}`
   );
   return response;
 }

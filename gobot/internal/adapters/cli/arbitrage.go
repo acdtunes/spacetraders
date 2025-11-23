@@ -6,6 +6,9 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
+	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
+	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 )
 
 // NewArbitrageCommand creates the arbitrage command with subcommands
@@ -71,11 +74,34 @@ Examples:
 			}
 			defer client.Close()
 
+			// Resolve agent symbol to player ID if needed
+			resolvedPlayerID := playerIdent.PlayerID
+			if resolvedPlayerID == 0 && playerIdent.AgentSymbol != "" {
+				// Need to connect to database to resolve agent symbol
+				cfg, err := config.LoadConfig("")
+				if err != nil {
+					return fmt.Errorf("failed to load config: %w", err)
+				}
+
+				db, err := database.NewConnection(&cfg.Database)
+				if err != nil {
+					return fmt.Errorf("failed to connect to database: %w", err)
+				}
+
+				playerRepo := persistence.NewGormPlayerRepository(db)
+				ctx := context.Background()
+				player, err := playerRepo.FindByAgentSymbol(ctx, playerIdent.AgentSymbol)
+				if err != nil {
+					return fmt.Errorf("failed to resolve agent %s to player ID: %w", playerIdent.AgentSymbol, err)
+				}
+				resolvedPlayerID = player.ID.Value()
+			}
+
 			// Scan for opportunities
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 
-			result, err := client.ScanArbitrageOpportunities(ctx, systemSymbol, playerIdent.PlayerID, minMargin, limit)
+			result, err := client.ScanArbitrageOpportunities(ctx, systemSymbol, resolvedPlayerID, minMargin, limit)
 			if err != nil {
 				return fmt.Errorf("failed to scan opportunities: %w", err)
 			}
@@ -144,11 +170,34 @@ Examples:
 			}
 			defer client.Close()
 
+			// Resolve agent symbol to player ID if needed
+			resolvedPlayerID := playerIdent.PlayerID
+			if resolvedPlayerID == 0 && playerIdent.AgentSymbol != "" {
+				// Need to connect to database to resolve agent symbol
+				cfg, err := config.LoadConfig("")
+				if err != nil {
+					return fmt.Errorf("failed to load config: %w", err)
+				}
+
+				db, err := database.NewConnection(&cfg.Database)
+				if err != nil {
+					return fmt.Errorf("failed to connect to database: %w", err)
+				}
+
+				playerRepo := persistence.NewGormPlayerRepository(db)
+				ctx := context.Background()
+				player, err := playerRepo.FindByAgentSymbol(ctx, playerIdent.AgentSymbol)
+				if err != nil {
+					return fmt.Errorf("failed to resolve agent %s to player ID: %w", playerIdent.AgentSymbol, err)
+				}
+				resolvedPlayerID = player.ID.Value()
+			}
+
 			// Start coordinator
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 
-			result, err := client.StartArbitrageCoordinator(ctx, systemSymbol, playerIdent.PlayerID, minMargin, maxWorkers)
+			result, err := client.StartArbitrageCoordinator(ctx, systemSymbol, resolvedPlayerID, minMargin, maxWorkers)
 			if err != nil {
 				return fmt.Errorf("failed to start coordinator: %w", err)
 			}

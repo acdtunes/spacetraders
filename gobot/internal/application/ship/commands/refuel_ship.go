@@ -10,27 +10,31 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/logging"
 	"github.com/andrescamacho/spacetraders-go/internal/application/ship/types"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
 // RefuelShipHandler - Handles refuel ship commands
 type RefuelShipHandler struct {
-	shipRepo  navigation.ShipRepository
-	apiClient domainPorts.APIClient
-	mediator  common.Mediator
+	shipRepo   navigation.ShipRepository
+	playerRepo player.PlayerRepository
+	apiClient  domainPorts.APIClient
+	mediator   common.Mediator
 }
 
 // NewRefuelShipHandler creates a new refuel ship handler
 func NewRefuelShipHandler(
 	shipRepo navigation.ShipRepository,
+	playerRepo player.PlayerRepository,
 	apiClient domainPorts.APIClient,
 	mediator common.Mediator,
 ) *RefuelShipHandler {
 	return &RefuelShipHandler{
-		shipRepo:  shipRepo,
-		apiClient: apiClient,
-		mediator:  mediator,
+		shipRepo:   shipRepo,
+		playerRepo: playerRepo,
+		apiClient:  apiClient,
+		mediator:   mediator,
 	}
 }
 
@@ -164,8 +168,16 @@ func (h *RefuelShipHandler) recordRefuelTransaction(
 	// Calculate balance after
 	balanceAfter := balanceBefore - response.CreditsCost
 
+	// Fetch player to get agent symbol
+	playerData, err := h.playerRepo.FindByID(ctx, cmd.PlayerID)
+	agentSymbol := "UNKNOWN"
+	if err == nil && playerData != nil {
+		agentSymbol = playerData.AgentSymbol
+	}
+
 	// Build metadata
 	metadata := map[string]interface{}{
+		"agent":       agentSymbol,
 		"ship_symbol": cmd.ShipSymbol,
 		"fuel_added":  response.FuelAdded,
 	}
@@ -188,7 +200,7 @@ func (h *RefuelShipHandler) recordRefuelTransaction(
 	}
 
 	// Record transaction via mediator
-	_, err := h.mediator.Send(context.Background(), recordCmd)
+	_, err = h.mediator.Send(context.Background(), recordCmd)
 	if err != nil {
 		// Log error but don't fail the operation
 		logger.Log("ERROR", "Failed to record refuel transaction in ledger", map[string]interface{}{

@@ -5,7 +5,7 @@
 CREATE TABLE IF NOT EXISTS transactions (
     id VARCHAR(36) PRIMARY KEY NOT NULL,
     player_id INT NOT NULL,
-    timestamp TIMESTAMP NOT NULL,
+    timestamp TIMESTAMPTZ NOT NULL,
     transaction_type VARCHAR(50) NOT NULL,
     category VARCHAR(50) NOT NULL,
     amount INT NOT NULL,
@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS transactions (
     metadata JSONB,
     related_entity_type VARCHAR(50),
     related_entity_id VARCHAR(100),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (player_id) REFERENCES players(id) ON DELETE CASCADE
 );
 

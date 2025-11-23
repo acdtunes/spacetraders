@@ -4,18 +4,19 @@ import { useStore } from '../store/useStore';
 import { format } from 'date-fns';
 
 export function OverviewTab() {
-  const { balanceHistory, cashFlowData, profitLossData, financialTransactions } = useStore();
+  const { balanceHistory, cashFlowData, operationPLData, financialTransactions } = useStore();
 
-  const formatCurrency = (value: number) => {
-    if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(2)}M`;
-    if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`;
-    return value.toFixed(0);
+  const formatCurrency = (value: number | null | undefined) => {
+    const num = Number(value) || 0;
+    if (Math.abs(num) >= 1_000_000) return `${(num / 1_000_000).toFixed(2)}M`;
+    if (Math.abs(num) >= 1_000) return `${(num / 1_000).toFixed(1)}K`;
+    return num.toFixed(0);
   };
 
   const currentBalance = balanceHistory?.current_balance || 0;
-  const totalRevenue = cashFlowData?.summary.total_inflow || 0;
-  const totalExpenses = cashFlowData?.summary.total_outflow || 0;
-  const netProfit = profitLossData?.net_profit || 0;
+  const totalRevenue = operationPLData?.summary.total_revenue || 0;
+  const totalExpenses = operationPLData?.summary.total_expenses || 0;
+  const netProfit = operationPLData?.summary.net_profit || 0;
 
   // Get top categories by net flow
   const topCategories = (cashFlowData?.categories || [])

@@ -146,8 +146,16 @@ func (h *FulfillContractHandler) recordContractFulfillment(
 	payment := contract.Terms().Payment.OnFulfilled
 	balanceAfter := balanceBefore + payment
 
+	// Fetch player to get agent symbol
+	playerData, err := h.playerRepo.FindByID(ctx, contract.PlayerID())
+	agentSymbol := "UNKNOWN"
+	if err == nil && playerData != nil {
+		agentSymbol = playerData.AgentSymbol
+	}
+
 	// Build metadata
 	metadata := map[string]interface{}{
+		"agent":         agentSymbol,
 		"contract_id":   contract.ContractID(),
 		"faction":       contract.FactionSymbol(),
 		"contract_type": contract.Type(),
@@ -167,7 +175,7 @@ func (h *FulfillContractHandler) recordContractFulfillment(
 	}
 
 	// Record transaction via mediator
-	_, err := h.mediator.Send(context.Background(), recordCmd)
+	_, err = h.mediator.Send(context.Background(), recordCmd)
 	if err != nil {
 		// Log error but don't fail the operation
 		logger.Log("ERROR", "Failed to record contract fulfillment transaction in ledger", map[string]interface{}{

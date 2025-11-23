@@ -275,8 +275,16 @@ func (h *CargoTransactionHandler) recordCargoTransaction(
 		return
 	}
 
+	// Fetch player to get agent symbol
+	playerData, err := h.playerRepo.FindByID(ctx, cmd.PlayerID)
+	agentSymbol := "UNKNOWN"
+	if err == nil && playerData != nil {
+		agentSymbol = playerData.AgentSymbol
+	}
+
 	// Build metadata
 	metadata := map[string]interface{}{
+		"agent":       agentSymbol,
 		"ship_symbol": cmd.ShipSymbol,
 		"good_symbol": cmd.GoodSymbol,
 		"units":       response.UnitsProcessed,
@@ -301,7 +309,7 @@ func (h *CargoTransactionHandler) recordCargoTransaction(
 	}
 
 	// Record transaction via mediator
-	_, err := h.mediator.Send(context.Background(), recordCmd)
+	_, err = h.mediator.Send(context.Background(), recordCmd)
 	if err != nil {
 		// Log error but don't fail the operation
 		logger.Log("ERROR", "Failed to record cargo transaction in ledger", map[string]interface{}{

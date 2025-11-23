@@ -7,7 +7,6 @@ import (
 
 	playerQuery "github.com/andrescamacho/spacetraders-go/internal/application/player/queries"
 	shipCommands "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands"
-	tradingCommands "github.com/andrescamacho/spacetraders-go/internal/application/trading/commands"
 	tradingQueries "github.com/andrescamacho/spacetraders-go/internal/application/trading/queries"
 	pb "github.com/andrescamacho/spacetraders-go/pkg/proto/daemon"
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
@@ -874,20 +873,14 @@ func (s *daemonServiceImpl) StartArbitrageCoordinator(ctx context.Context, req *
 		maxWorkers = 10
 	}
 
-	// Generate container ID
-	containerID := utils.GenerateContainerID("arbitrage_coordinator", req.SystemSymbol)
-
-	// Execute coordinator command via mediator
-	cmd := &tradingCommands.RunArbitrageCoordinatorCommand{
-		SystemSymbol: req.SystemSymbol,
-		PlayerID:     playerID,
-		ContainerID:  containerID,
-		MinMargin:    req.MinMargin,
-		MaxWorkers:   maxWorkers,
+	// Default min margin if not provided
+	minMargin := req.MinMargin
+	if minMargin <= 0 {
+		minMargin = 10.0
 	}
 
-	// Send command asynchronously (coordinator runs in background)
-	_, err := s.daemon.mediator.Send(ctx, cmd)
+	// Start coordinator via DaemonServer (creates container and runs in background)
+	containerID, err := s.daemon.ArbitrageCoordinator(ctx, req.SystemSymbol, playerID, minMargin, maxWorkers)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start arbitrage coordinator: %w", err)
 	}
@@ -895,7 +888,7 @@ func (s *daemonServiceImpl) StartArbitrageCoordinator(ctx context.Context, req *
 	return &pb.StartArbitrageCoordinatorResponse{
 		ContainerId:  containerID,
 		SystemSymbol: req.SystemSymbol,
-		MinMargin:    req.MinMargin,
+		MinMargin:    minMargin,
 		MaxWorkers:   int32(maxWorkers),
 		Status:       "RUNNING",
 		Message:      "Arbitrage coordinator started successfully",

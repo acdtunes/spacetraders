@@ -470,6 +470,7 @@ func (dc *daemonContext) aShipInTransitAtWaypoint(shipSymbol, waypointSymbol str
 		10, // engineSpeed
 		"FRAME_MINER",
 		"COMMAND",
+		[]*navigation.ShipModule{}, // modules
 		navigation.NavStatusDocked,
 	)
 	if err != nil {
@@ -563,6 +564,7 @@ func (dc *daemonContext) aShipDockedAtWaypoint(shipSymbol, waypointSymbol string
 		10, // engineSpeed
 		"FRAME_MINER",
 		"COMMAND",
+		[]*navigation.ShipModule{}, // modules
 		navigation.NavStatusDocked,
 	)
 	if err != nil {
@@ -598,6 +600,7 @@ func (dc *daemonContext) aShipInOrbitAtWaypoint(shipSymbol, waypointSymbol strin
 		10, // engineSpeed
 		"FRAME_MINER",
 		"COMMAND",
+		[]*navigation.ShipModule{}, // modules
 		navigation.NavStatusDocked,
 	)
 	if err != nil {

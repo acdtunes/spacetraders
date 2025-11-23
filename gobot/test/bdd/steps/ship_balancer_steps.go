@@ -88,6 +88,7 @@ func (sbc *shipBalancerContext) shipIsAtLocation(shipSymbol string, x, y float64
 		30,                            // engineSpeed
 		"FRAME_LIGHT_FREIGHTER",       // frameType
 		"HAULER",                      // role
+		[]*navigation.ShipModule{},    // modules
 		navigation.NavStatusInOrbit,   // navStatus
 	)
 	if err != nil {
@@ -150,6 +151,7 @@ func (sbc *shipBalancerContext) theFollowingIdleHaulersExist(table *godog.Table)
 			30,                          // engineSpeed
 			"FRAME_LIGHT_FREIGHTER",     // frameType
 			"HAULER",                    // role
+			[]*navigation.ShipModule{},  // modules
 			navigation.NavStatusInOrbit, // navStatus
 		)
 		if err != nil {
