@@ -15,13 +15,13 @@ interface MarketFreshnessRingProps {
  * Using custom color palette that transitions from green → yellow → orange → red
  */
 function getFreshnessColor(hoursOld: number): string {
-  if (hoursOld < 0.25) return '#7AE622'; // sgbus-green - Very fresh (< 15 min)
-  if (hoursOld < 0.5) return '#90C01C'; // apple-green - Fresh (15-30 min)
-  if (hoursOld < 1) return '#A59917'; // old-gold - Recent (30-60 min)
-  if (hoursOld < 2) return '#BB7311'; // tigers-eye - Acceptable (1-2 hours)
-  if (hoursOld < 3) return '#D14D0B'; // syracuse-red-orange - Moderate (2-3 hours)
-  if (hoursOld < 4) return '#E62606'; // chili-red - Stale (3-4 hours)
-  return '#FC0000'; // off-red - Extremely stale (> 4 hours)
+  if (hoursOld < 0.0625) return '#7AE622'; // sgbus-green - Very fresh (< 3.75 min)
+  if (hoursOld < 0.125) return '#90C01C'; // apple-green - Fresh (3.75-7.5 min)
+  if (hoursOld < 0.25) return '#A59917'; // old-gold - Recent (7.5-15 min)
+  if (hoursOld < 0.5) return '#BB7311'; // tigers-eye - Acceptable (15-30 min)
+  if (hoursOld < 0.75) return '#D14D0B'; // syracuse-red-orange - Moderate (30-45 min)
+  if (hoursOld < 1) return '#E62606'; // chili-red - Stale (45-60 min)
+  return '#FC0000'; // off-red - Extremely stale (> 1 hour)
 }
 
 /**
@@ -67,13 +67,13 @@ export const MarketFreshnessRing = memo(function MarketFreshnessRing({
 
   // Pulse intensity varies smoothly with age - fresher data pulses more intensely
   const pulseIntensity =
-    age < 0.25 ? 1.0 :     // < 15 min: maximum pulse
-    age < 0.5 ? 0.95 :     // 15-30 min: very strong
-    age < 1 ? 0.85 :       // 30-60 min: strong
-    age < 2 ? 0.70 :       // 1-2 hours: good
-    age < 3 ? 0.50 :       // 2-3 hours: moderate
-    age < 4 ? 0.30 :       // 3-4 hours: weak
-    0.15;                  // > 4 hours: minimal pulse (extremely stale)
+    age < 0.0625 ? 1.0 :   // < 3.75 min: maximum pulse
+    age < 0.125 ? 0.95 :   // 3.75-7.5 min: very strong
+    age < 0.25 ? 0.85 :    // 7.5-15 min: strong
+    age < 0.5 ? 0.70 :     // 15-30 min: good
+    age < 0.75 ? 0.50 :    // 30-45 min: moderate
+    age < 1 ? 0.30 :       // 45-60 min: weak
+    0.15;                  // > 1 hour: minimal pulse (extremely stale)
 
   return (
     <Group listening={false}>
