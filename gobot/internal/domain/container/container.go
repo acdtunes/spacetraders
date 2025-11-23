@@ -53,6 +53,8 @@ const (
 	ContainerTypeTrading                  ContainerType = "TRADING"
 	ContainerTypeScoutFleetAssignment     ContainerType = "SCOUT_FLEET_ASSIGNMENT"
 	ContainerTypePurchase                 ContainerType = "PURCHASE"
+	ContainerTypeArbitrageCoordinator     ContainerType = "ARBITRAGE_COORDINATOR"
+	ContainerTypeArbitrageWorker          ContainerType = "ARBITRAGE_WORKER"
 )
 
 const (

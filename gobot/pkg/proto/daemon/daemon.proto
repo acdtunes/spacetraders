@@ -81,6 +81,12 @@ service DaemonService {
 
   // GetFactoryStatus retrieves status and progress of a goods factory
   rpc GetFactoryStatus(GetFactoryStatusRequest) returns (GetFactoryStatusResponse);
+
+  // ScanArbitrageOpportunities scans markets for profitable arbitrage opportunities
+  rpc ScanArbitrageOpportunities(ScanArbitrageOpportunitiesRequest) returns (ScanArbitrageOpportunitiesResponse);
+
+  // StartArbitrageCoordinator initiates automated arbitrage trading operations
+  rpc StartArbitrageCoordinator(StartArbitrageCoordinatorRequest) returns (StartArbitrageCoordinatorResponse);
 }
 
 // NavigateShipRequest initiates ship navigation
@@ -566,4 +572,53 @@ message GetFactoryStatusResponse {
   int32 market_queries = 11; // Number of market queries performed
   int32 parallel_levels = 12; // Number of parallel execution levels
   float estimated_speedup = 13; // Estimated speedup from parallelization
+}
+
+// ScanArbitrageOpportunitiesRequest scans for arbitrage opportunities
+message ScanArbitrageOpportunitiesRequest {
+  int32 player_id = 1;
+  string system_symbol = 2; // System to scan (e.g., "X1-AU21")
+  double min_margin = 3; // Minimum profit margin percentage (default 10.0)
+  int32 limit = 4; // Maximum opportunities to return (default 20)
+}
+
+// ArbitrageOpportunity represents a single arbitrage opportunity
+message ArbitrageOpportunity {
+  string good = 1;
+  string buy_market = 2;
+  string sell_market = 3;
+  int32 buy_price = 4;
+  int32 sell_price = 5;
+  int32 profit_per_unit = 6;
+  double profit_margin = 7;
+  int32 estimated_profit = 8;
+  double distance = 9;
+  string buy_supply = 10;
+  string sell_activity = 11;
+  double score = 12;
+}
+
+// ScanArbitrageOpportunitiesResponse returns scan results
+message ScanArbitrageOpportunitiesResponse {
+  repeated ArbitrageOpportunity opportunities = 1;
+  int32 total_scanned = 2;
+  string system_symbol = 3;
+}
+
+// StartArbitrageCoordinatorRequest starts arbitrage coordinator
+message StartArbitrageCoordinatorRequest {
+  int32 player_id = 1;
+  string system_symbol = 2; // System to trade in (e.g., "X1-AU21")
+  double min_margin = 3; // Minimum profit margin percentage (default 10.0)
+  int32 max_workers = 4; // Maximum parallel workers (default 10)
+}
+
+// StartArbitrageCoordinatorResponse returns coordinator details
+message StartArbitrageCoordinatorResponse {
+  string container_id = 1;
+  string system_symbol = 2;
+  double min_margin = 3;
+  int32 max_workers = 4;
+  string status = 5;
+  string message = 6;
 }

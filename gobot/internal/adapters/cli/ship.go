@@ -582,7 +582,16 @@ Examples:
 			// Create mediator with ledger handlers registered
 			transactionRepo := persistence.NewGormTransactionRepository(db)
 			playerResolver := common.NewPlayerResolver(playerRepo)
-			registry := setup.NewHandlerRegistry(transactionRepo, playerResolver, nil)
+			registry := setup.NewHandlerRegistry(
+				transactionRepo,
+				playerResolver,
+				nil, // clock (defaults to real clock)
+				nil, // marketRepo (not needed for this CLI command)
+				nil, // shipRepo (not needed for this CLI command)
+				nil, // waypointProvider (not needed for this CLI command)
+				nil, // shipAssignmentRepo (not needed for this CLI command)
+				nil, // daemonClient (not needed for this CLI command)
+			)
 			mediator, err := registry.CreateConfiguredMediator()
 			if err != nil {
 				return fmt.Errorf("failed to create mediator: %w", err)

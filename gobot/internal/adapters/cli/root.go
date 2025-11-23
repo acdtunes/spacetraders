@@ -62,6 +62,7 @@ Examples:
 	rootCmd.AddCommand(NewWorkflowCommand())
 	rootCmd.AddCommand(NewContainerCommand())
 	rootCmd.AddCommand(NewHealthCommand())
+	rootCmd.AddCommand(NewArbitrageCommand())
 
 	return rootCmd
 }

@@ -7,15 +7,29 @@ import (
 	ledgerCommands "github.com/andrescamacho/spacetraders-go/internal/application/ledger/commands"
 	ledgerQueries "github.com/andrescamacho/spacetraders-go/internal/application/ledger/queries"
 	"github.com/andrescamacho/spacetraders-go/internal/application/mediator"
+	tradingCommands "github.com/andrescamacho/spacetraders-go/internal/application/trading/commands"
+	tradingQueries "github.com/andrescamacho/spacetraders-go/internal/application/trading/queries"
+	tradingServices "github.com/andrescamacho/spacetraders-go/internal/application/trading/services"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/ledger"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 )
 
 // HandlerRegistry holds all application dependencies for handler creation
 type HandlerRegistry struct {
-	transactionRepo ledger.TransactionRepository
-	playerResolver  *common.PlayerResolver
-	clock           shared.Clock
+	transactionRepo    ledger.TransactionRepository
+	playerResolver     *common.PlayerResolver
+	clock              shared.Clock
+	marketRepo         market.MarketRepository
+	shipRepo           navigation.ShipRepository
+	waypointProvider   system.IWaypointProvider
+	shipAssignmentRepo container.ShipAssignmentRepository
+	daemonClient       daemon.DaemonClient
 }
 
 // NewHandlerRegistry creates a new handler registry with required dependencies
@@ -23,6 +37,11 @@ func NewHandlerRegistry(
 	transactionRepo ledger.TransactionRepository,
 	playerResolver *common.PlayerResolver,
 	clock shared.Clock,
+	marketRepo market.MarketRepository,
+	shipRepo navigation.ShipRepository,
+	waypointProvider system.IWaypointProvider,
+	shipAssignmentRepo container.ShipAssignmentRepository,
+	daemonClient daemon.DaemonClient,
 ) *HandlerRegistry {
 	// Default to real clock if not provided
 	if clock == nil {
@@ -30,9 +49,14 @@ func NewHandlerRegistry(
 	}
 
 	return &HandlerRegistry{
-		transactionRepo: transactionRepo,
-		playerResolver:  playerResolver,
-		clock:           clock,
+		transactionRepo:    transactionRepo,
+		playerResolver:     playerResolver,
+		clock:              clock,
+		marketRepo:         marketRepo,
+		shipRepo:           shipRepo,
+		waypointProvider:   waypointProvider,
+		shipAssignmentRepo: shipAssignmentRepo,
+		daemonClient:       daemonClient,
 	}
 }
 
@@ -87,6 +111,59 @@ func (r *HandlerRegistry) RegisterLedgerHandlers(m common.Mediator) error {
 	return nil
 }
 
+// RegisterArbitrageHandlers registers all arbitrage trading command and query handlers
+//
+// This method registers:
+//   - FindArbitrageOpportunitiesQuery → FindArbitrageOpportunitiesHandler
+//   - RunArbitrageWorkerCommand → RunArbitrageWorkerHandler
+//   - RunArbitrageCoordinatorCommand → RunArbitrageCoordinatorHandler
+func (r *HandlerRegistry) RegisterArbitrageHandlers(m common.Mediator) error {
+	// Create analyzer and services
+	analyzer := trading.NewArbitrageAnalyzer()
+	opportunityFinder := tradingServices.NewArbitrageOpportunityFinder(
+		r.marketRepo,
+		r.waypointProvider,
+		analyzer,
+	)
+	executor := tradingServices.NewArbitrageExecutor(m, r.shipRepo)
+
+	// Register FindArbitrageOpportunitiesQuery handler
+	findOpportunitiesHandler := tradingQueries.NewFindArbitrageOpportunitiesHandler(opportunityFinder)
+	if err := m.Register(
+		reflect.TypeOf(&tradingQueries.FindArbitrageOpportunitiesQuery{}),
+		findOpportunitiesHandler,
+	); err != nil {
+		return err
+	}
+
+	// Register RunArbitrageWorkerCommand handler
+	workerHandler := tradingCommands.NewRunArbitrageWorkerHandler(executor, r.shipRepo)
+	if err := m.Register(
+		reflect.TypeOf(&tradingCommands.RunArbitrageWorkerCommand{}),
+		workerHandler,
+	); err != nil {
+		return err
+	}
+
+	// Register RunArbitrageCoordinatorCommand handler
+	coordinatorHandler := tradingCommands.NewRunArbitrageCoordinatorHandler(
+		opportunityFinder,
+		r.shipRepo,
+		r.shipAssignmentRepo,
+		r.daemonClient,
+		m,
+		r.clock,
+	)
+	if err := m.Register(
+		reflect.TypeOf(&tradingCommands.RunArbitrageCoordinatorCommand{}),
+		coordinatorHandler,
+	); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 // CreateConfiguredMediator creates a new mediator with all ledger handlers registered
 //
 // This is a convenience method that creates a mediator and registers all ledger handlers.
@@ -96,6 +173,13 @@ func (r *HandlerRegistry) CreateConfiguredMediator() (common.Mediator, error) {
 
 	if err := r.RegisterLedgerHandlers(m); err != nil {
 		return nil, err
+	}
+
+	// Register arbitrage handlers if dependencies are available
+	if r.marketRepo != nil && r.shipRepo != nil && r.waypointProvider != nil {
+		if err := r.RegisterArbitrageHandlers(m); err != nil {
+			return nil, err
+		}
 	}
 
 	return m, nil
