@@ -63,7 +63,7 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 24,
+        "w": 12,
         "x": 0,
         "y": 0
       },
@@ -87,12 +87,99 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "deriv(spacetraders_daemon_player_credits_balance[5m]) * 3600",
-          "legendFormat": "{{agent}} - Credits/Hour",
+          "expr": "sum by (player_id) (rate(spacetraders_daemon_total_revenue[5m])) * 3600",
+          "legendFormat": "Player {{player_id}}",
           "refId": "A"
         }
       ],
-      "title": "Credits per Hour (Income Rate)",
+      "title": "Gross Income per Hour",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": true,
+            "axisColorMode": "text",
+            "axisLabel": "Credits/Hour",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "id": 2,
+      "options": {
+        "legend": {
+          "calcs": ["last", "mean"],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "(sum by (player_id) (rate(spacetraders_daemon_total_revenue[5m])) - sum by (player_id) (rate(spacetraders_daemon_total_expenses[5m]))) * 3600",
+          "legendFormat": "Player {{player_id}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Net P/L per Hour",
       "type": "timeseries"
     }
   ],
