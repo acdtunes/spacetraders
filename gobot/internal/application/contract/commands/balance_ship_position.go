@@ -94,6 +94,10 @@ func (h *BalanceShipPositionHandler) Handle(ctx context.Context, request common.
 		// Continue anyway - balancing is best-effort
 	}
 
+	// Add operation context to ctx for transaction tracking
+	opContext := shared.NewOperationContext(balancingContainerID, "balance_ship_position")
+	ctx = shared.WithOperationContext(ctx, opContext)
+
 	// Ensure container is cleaned up on exit (success or failure)
 	defer func() {
 		_ = h.containerRepo.Remove(ctx, balancingContainerID, cmd.PlayerID.Value())

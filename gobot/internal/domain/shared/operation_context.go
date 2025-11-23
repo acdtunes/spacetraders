@@ -68,7 +68,7 @@ func (c *OperationContext) String() string {
 // Maps from container command types to user-facing operation types:
 //   - arbitrage_worker → arbitrage
 //   - contract_workflow → contract
-//   - balance_ship_position → rebalancing
+//   - balance_ship_position → fleet rebalancing
 //   - goods_factory_coordinator → factory
 func (c *OperationContext) NormalizedOperationType() string {
 	if c == nil || c.OperationType == "" {
@@ -81,7 +81,7 @@ func (c *OperationContext) NormalizedOperationType() string {
 	case "contract_workflow":
 		return "contract"
 	case "balance_ship_position":
-		return "rebalancing"
+		return "fleet rebalancing"
 	case "goods_factory_coordinator":
 		return "factory"
 	default:
