@@ -54,6 +54,7 @@ type Ship struct {
 	engineSpeed        int
 	frameSymbol        string // Frame type (e.g., "FRAME_PROBE", "FRAME_DRONE", "FRAME_MINER")
 	role               string // Ship role from registration (e.g., "EXCAVATOR", "COMMAND", "SATELLITE")
+	modules            []*ShipModule // Installed ship modules (jump drives, mining equipment, etc.)
 	navStatus          NavStatus
 	fuelService        *ShipFuelService
 	navigationCalc     *ShipNavigationCalculator
@@ -71,6 +72,7 @@ func NewShip(
 	engineSpeed int,
 	frameSymbol string,
 	role string,
+	modules []*ShipModule,
 	navStatus NavStatus,
 ) (*Ship, error) {
 	s := &Ship{
@@ -84,6 +86,7 @@ func NewShip(
 		engineSpeed:     engineSpeed,
 		frameSymbol:     frameSymbol,
 		role:            role,
+		modules:         modules,
 		navStatus:       navStatus,
 		fuelService:     NewShipFuelService(),
 		navigationCalc:  NewShipNavigationCalculator(),
@@ -202,6 +205,31 @@ func (s *Ship) Role() string {
 	return s.role
 }
 
+// Modules returns the ship's installed modules
+func (s *Ship) Modules() []*ShipModule {
+	return s.modules
+}
+
+// HasJumpDrive checks if ship has any jump drive module installed
+func (s *Ship) HasJumpDrive() bool {
+	for _, module := range s.modules {
+		if module.IsJumpDrive() {
+			return true
+		}
+	}
+	return false
+}
+
+// GetJumpDriveRange returns the range of the ship's jump drive, or 0 if none
+func (s *Ship) GetJumpDriveRange() int {
+	for _, module := range s.modules {
+		if module.IsJumpDrive() {
+			return module.Range()
+		}
+	}
+	return 0
+}
+
 // CloneAtLocation creates a copy of the ship at a different location with specified fuel
 // This is used for route planning to simulate ship state at intermediate waypoints
 func (s *Ship) CloneAtLocation(location *shared.Waypoint, currentFuel int) *Ship {
@@ -219,6 +247,7 @@ func (s *Ship) CloneAtLocation(location *shared.Waypoint, currentFuel int) *Ship
 		engineSpeed:    s.engineSpeed,
 		frameSymbol:    s.frameSymbol,
 		role:           s.role,
+		modules:        s.modules, // Share modules (immutable)
 		navStatus:      NavStatusInOrbit, // Assume in orbit for routing
 		fuelService:    s.fuelService,
 		navigationCalc: s.navigationCalc,

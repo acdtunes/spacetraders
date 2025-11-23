@@ -19,6 +19,9 @@ service DaemonService {
   // RefuelShip refuels a ship at its current location
   rpc RefuelShip(RefuelShipRequest) returns (RefuelShipResponse);
 
+  // JumpShip executes a jump to a different star system via jump gate
+  rpc JumpShip(JumpShipRequest) returns (JumpShipResponse);
+
   // BatchContractWorkflow executes batch contract workflow operations
   rpc BatchContractWorkflow(BatchContractWorkflowRequest) returns (BatchContractWorkflowResponse);
 
@@ -155,6 +158,24 @@ message RefuelShipResponse {
   int32 fuel_added = 3;
   int32 credits_cost = 4;
   string status = 5;
+}
+
+// JumpShipRequest initiates a jump to another system
+message JumpShipRequest {
+  string ship_symbol = 1;
+  string destination_system = 2;
+  int32 player_id = 3;
+  optional string agent_symbol = 4;
+}
+
+message JumpShipResponse {
+  bool success = 1;
+  bool navigated_to_gate = 2;
+  string jump_gate_symbol = 3;
+  string destination_system = 4;
+  int32 cooldown_seconds = 5;
+  string message = 6;
+  string error = 7;
 }
 
 // BatchContractWorkflowRequest initiates batch contract workflow

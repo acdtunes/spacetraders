@@ -288,6 +288,13 @@ func (r *ShipRepository) shipDataToDomain(ctx context.Context, data *navigation.
 		return nil, fmt.Errorf("failed to create cargo: %w", err)
 	}
 
+	// Convert modules
+	var modules []*navigation.ShipModule
+	for _, mod := range data.Modules {
+		module := navigation.NewShipModule(mod.Symbol, mod.Capacity, mod.Range)
+		modules = append(modules, module)
+	}
+
 	// Convert nav status
 	navStatus := navigation.NavStatus(data.NavStatus)
 
@@ -303,6 +310,7 @@ func (r *ShipRepository) shipDataToDomain(ctx context.Context, data *navigation.
 		data.EngineSpeed,
 		data.FrameSymbol,
 		data.Role,
+		modules,
 		navStatus,
 	)
 }

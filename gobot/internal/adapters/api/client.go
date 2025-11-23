@@ -133,6 +133,11 @@ func (c *SpaceTradersClient) GetShip(ctx context.Context, symbol, token string) 
 			Frame struct {
 				Symbol string `json:"symbol"`
 			} `json:"frame"`
+			Modules []struct {
+				Symbol   string `json:"symbol"`
+				Capacity int    `json:"capacity"`
+				Range    int    `json:"range"`
+			} `json:"modules"`
 		} `json:"data"`
 	}
 
@@ -157,6 +162,16 @@ func (c *SpaceTradersClient) GetShip(ctx context.Context, symbol, token string) 
 		Inventory: inventory,
 	}
 
+	// Convert modules
+	modules := make([]navigation.ModuleData, len(response.Data.Modules))
+	for i, mod := range response.Data.Modules {
+		modules[i] = navigation.ModuleData{
+			Symbol:   mod.Symbol,
+			Capacity: mod.Capacity,
+			Range:    mod.Range,
+		}
+	}
+
 	// Extract arrival time if ship is IN_TRANSIT
 	arrivalTime := ""
 	if response.Data.Nav.Route != nil {
@@ -175,6 +190,7 @@ func (c *SpaceTradersClient) GetShip(ctx context.Context, symbol, token string) 
 		EngineSpeed:   response.Data.Engine.Speed,
 		FrameSymbol:   response.Data.Frame.Symbol,
 		Role:          response.Data.Registration.Role,
+		Modules:       modules,
 		Cargo:         cargo,
 	}, nil
 }
@@ -389,6 +405,67 @@ func (c *SpaceTradersClient) SetFlightMode(ctx context.Context, symbol, flightMo
 	}
 
 	return nil
+}
+
+// JumpShip executes a jump through a jump gate to a different system
+func (c *SpaceTradersClient) JumpShip(ctx context.Context, shipSymbol, systemSymbol, token string) (*domainPorts.JumpResult, error) {
+	path := fmt.Sprintf("/my/ships/%s/jump", shipSymbol)
+
+	body := map[string]string{
+		"systemSymbol": systemSymbol,
+	}
+
+	var response struct {
+		Data struct {
+			Nav struct {
+				SystemSymbol   string `json:"systemSymbol"`
+				WaypointSymbol string `json:"waypointSymbol"`
+			} `json:"nav"`
+			Cooldown struct {
+				ShipSymbol       string `json:"shipSymbol"`
+				TotalSeconds     int    `json:"totalSeconds"`
+				RemainingSeconds int    `json:"remainingSeconds"`
+				Expiration       string `json:"expiration"`
+			} `json:"cooldown"`
+			Transaction struct {
+				WaypointSymbol string `json:"waypointSymbol"`
+				ShipSymbol     string `json:"shipSymbol"`
+				TotalPrice     int    `json:"totalPrice"`
+			} `json:"transaction"`
+		} `json:"data"`
+	}
+
+	if err := c.request(ctx, "POST", path, token, body, &response); err != nil {
+		return nil, fmt.Errorf("failed to jump ship: %w", err)
+	}
+
+	return &domainPorts.JumpResult{
+		DestinationSystem:  response.Data.Nav.SystemSymbol,
+		DestinationWaypoint: response.Data.Nav.WaypointSymbol,
+		CooldownSeconds:    response.Data.Cooldown.RemainingSeconds,
+		TotalPrice:         response.Data.Transaction.TotalPrice,
+	}, nil
+}
+
+// GetJumpGate retrieves information about a jump gate waypoint
+func (c *SpaceTradersClient) GetJumpGate(ctx context.Context, systemSymbol, waypointSymbol, token string) (*domainPorts.JumpGateData, error) {
+	path := fmt.Sprintf("/systems/%s/waypoints/%s/jump-gate", systemSymbol, waypointSymbol)
+
+	var response struct {
+		Data struct {
+			Symbol      string   `json:"symbol"`
+			Connections []string `json:"connections"`
+		} `json:"data"`
+	}
+
+	if err := c.request(ctx, "GET", path, token, nil, &response); err != nil {
+		return nil, fmt.Errorf("failed to get jump gate: %w", err)
+	}
+
+	return &domainPorts.JumpGateData{
+		Symbol:      response.Data.Symbol,
+		Connections: response.Data.Connections,
+	}, nil
 }
 
 // GetAgent retrieves agent information

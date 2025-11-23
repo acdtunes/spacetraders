@@ -46,6 +46,7 @@ Examples:
 	cmd.AddCommand(newShipDockCommand())
 	cmd.AddCommand(newShipOrbitCommand())
 	cmd.AddCommand(newShipRefuelCommand())
+	cmd.AddCommand(newShipJumpCommand())
 	cmd.AddCommand(newShipSellCommand())
 
 	return cmd
@@ -444,6 +445,81 @@ Examples:
 
 	cmd.Flags().StringVar(&shipSymbol, "ship", "", "Ship symbol to refuel (required)")
 	cmd.Flags().IntVar(&units, "units", 0, "Specific fuel units to purchase (omit for full tank)")
+
+	return cmd
+}
+
+// newShipJumpCommand creates the ship jump subcommand
+func newShipJumpCommand() *cobra.Command {
+	var (
+		shipSymbol        string
+		destinationSystem string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "jump",
+		Short: "Jump a ship to a different star system via jump gate",
+		Long: `Jump a ship to a different star system using a jump gate.
+
+If the ship is not currently at a jump gate, it will automatically navigate to
+the nearest jump gate in the current system before jumping.
+
+The ship must have a jump drive module installed to use this command.
+
+Examples:
+  spacetraders ship jump --ship PROBE-1 --system X1-ALPHA --player-id 1
+  spacetraders ship jump --ship PROBE-1 --system X1-ALPHA --agent ENDURANCE`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if shipSymbol == "" {
+				return fmt.Errorf("--ship flag is required")
+			}
+			if destinationSystem == "" {
+				return fmt.Errorf("--system flag is required")
+			}
+
+			// Resolve player from flags or defaults
+			playerIdent, err := resolvePlayerIdentifier()
+			if err != nil {
+				return err
+			}
+
+			client, err := NewDaemonClient(socketPath)
+			if err != nil {
+				return fmt.Errorf("failed to connect to daemon: %w", err)
+			}
+			defer client.Close()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+
+			fmt.Printf("Initiating jump for ship %s to system %s...\n", shipSymbol, destinationSystem)
+
+			result, err := client.JumpShip(ctx, shipSymbol, destinationSystem, playerIdent.PlayerID, playerIdent.AgentSymbol)
+			if err != nil {
+				return fmt.Errorf("jump failed: %w", err)
+			}
+
+			if !result.Success {
+				return fmt.Errorf("jump failed: %s", result.Error)
+			}
+
+			// Display results
+			if result.NavigatedToGate {
+				fmt.Printf("✓ Navigated to jump gate: %s\n", result.JumpGateSymbol)
+			}
+
+			fmt.Printf("✓ %s\n", result.Message)
+
+			if result.CooldownSeconds > 0 {
+				fmt.Printf("⏱  Jump cooldown: %d seconds\n", result.CooldownSeconds)
+			}
+
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&shipSymbol, "ship", "", "Ship symbol to jump (required)")
+	cmd.Flags().StringVar(&destinationSystem, "system", "", "Destination system symbol (e.g., X1-ALPHA) (required)")
 
 	return cmd
 }

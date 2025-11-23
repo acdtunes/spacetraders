@@ -123,6 +123,14 @@ func (w *Waypoint) IsUncharted() bool {
 	return w.HasTrait("UNCHARTED")
 }
 
+// IsJumpGate checks if this waypoint is a jump gate.
+//
+// Jump gates allow ships to travel between star systems.
+// Ships must be at a jump gate waypoint to execute a jump.
+func (w *Waypoint) IsJumpGate() bool {
+	return w.Type == "JUMP_GATE"
+}
+
 // ExtractSystemSymbol extracts the system symbol from a waypoint symbol
 // by finding the last hyphen and returning everything before it.
 // Example: "X1-AB12-C3D4" -> "X1-AB12"
