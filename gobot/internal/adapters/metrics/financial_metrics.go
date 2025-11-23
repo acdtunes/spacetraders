@@ -93,7 +93,7 @@ func NewFinancialMetricsCollector(
 				Name:      "total_revenue",
 				Help:      "Total revenue by category",
 			},
-			[]string{"player_id", "category"},
+			[]string{"player_id", "agent", "category"},
 		),
 
 		// Total expenses by category
@@ -104,7 +104,7 @@ func NewFinancialMetricsCollector(
 				Name:      "total_expenses",
 				Help:      "Total expenses by category",
 			},
-			[]string{"player_id", "category"},
+			[]string{"player_id", "agent", "category"},
 		),
 
 		// Net profit
@@ -255,25 +255,30 @@ func (c *FinancialMetricsCollector) updateProfitLoss() {
 		}
 
 		playerResp, err := c.mediator.Send(context.Background(), getPlayerQuery)
-		if err == nil {
-			if playerData, ok := playerResp.(*playerQueries.GetPlayerResponse); ok && playerData.Player != nil {
-				// Update credits balance with actual agent symbol and current credits
-				c.creditsBalance.WithLabelValues(playerIDStr, playerData.Player.AgentSymbol).Set(float64(playerData.Player.Credits))
-			} else {
-				log.Printf("Unexpected response type for GetPlayer query: %T", playerResp)
-			}
-		} else {
+		if err != nil {
 			log.Printf("Failed to fetch player %d for balance update: %v", playerID, err)
+			continue // Skip this player if we can't fetch their data
 		}
+
+		playerData, ok := playerResp.(*playerQueries.GetPlayerResponse)
+		if !ok || playerData.Player == nil {
+			log.Printf("Unexpected response type for GetPlayer query: %T", playerResp)
+			continue
+		}
+
+		agentSymbol := playerData.Player.AgentSymbol
+
+		// Update credits balance with actual agent symbol and current credits
+		c.creditsBalance.WithLabelValues(playerIDStr, agentSymbol).Set(float64(playerData.Player.Credits))
 
 		// Update revenue metrics by category
 		for category, amount := range plResponse.RevenueBreakdown {
-			c.totalRevenue.WithLabelValues(playerIDStr, category).Set(float64(amount))
+			c.totalRevenue.WithLabelValues(playerIDStr, agentSymbol, category).Set(float64(amount))
 		}
 
 		// Update expense metrics by category
 		for category, amount := range plResponse.ExpenseBreakdown {
-			c.totalExpenses.WithLabelValues(playerIDStr, category).Set(float64(amount))
+			c.totalExpenses.WithLabelValues(playerIDStr, agentSymbol, category).Set(float64(amount))
 		}
 
 		// Update net profit
