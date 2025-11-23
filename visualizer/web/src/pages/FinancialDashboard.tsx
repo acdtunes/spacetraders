@@ -38,12 +38,7 @@ export function FinancialDashboard() {
         {/* Header */}
         <header className="mb-6">
           <div className="flex items-center justify-between mb-4">
-            <div>
-              <h1 className="text-3xl font-bold">Financial Dashboard</h1>
-              <p className="text-gray-400 mt-1">
-                Analytics for Player {selectedPlayerId}
-              </p>
-            </div>
+            <h1 className="text-3xl font-bold">Financial Dashboard</h1>
             <div className="flex items-center gap-2">
               <DateRangePicker />
               <button
