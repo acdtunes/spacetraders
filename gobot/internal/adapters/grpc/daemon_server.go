@@ -175,7 +175,7 @@ func NewDaemonServer(
 		metrics.SetGlobalNavigationCollector(navCollector)
 
 		// Create financial metrics collector
-		finCollector := metrics.NewFinancialMetricsCollector(mediator)
+		finCollector := metrics.NewFinancialMetricsCollector(mediator, getContainers)
 		if err := finCollector.Register(); err != nil {
 			listener.Close()
 			return nil, fmt.Errorf("failed to register financial metrics collector: %w", err)

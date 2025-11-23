@@ -17,7 +17,8 @@ import (
 // FinancialMetricsCollector handles all financial metrics (credits, transactions, P&L)
 type FinancialMetricsCollector struct {
 	// Dependencies
-	mediator common.Mediator
+	mediator      common.Mediator
+	getContainers func() map[string]ContainerInfo // Function to get current containers
 
 	// Balance metrics
 	creditsBalance *prometheus.GaugeVec
@@ -42,9 +43,13 @@ type FinancialMetricsCollector struct {
 }
 
 // NewFinancialMetricsCollector creates a new financial metrics collector
-func NewFinancialMetricsCollector(mediator common.Mediator) *FinancialMetricsCollector {
+func NewFinancialMetricsCollector(
+	mediator common.Mediator,
+	getContainers func() map[string]ContainerInfo,
+) *FinancialMetricsCollector {
 	return &FinancialMetricsCollector{
-		mediator: mediator,
+		mediator:      mediator,
+		getContainers: getContainers,
 
 		// Current credits balance gauge
 		creditsBalance: prometheus.NewGaugeVec(
@@ -208,62 +213,72 @@ func (c *FinancialMetricsCollector) updateProfitLoss() {
 		return
 	}
 
-	// TODO: Support multiple players dynamically
-	// For now, use player ID 11 (COOPER) - the typical player in the database
-	// Future enhancement: Query database for all active players or make configurable
-	playerID := 11
-
-	// Execute GetProfitLossQuery for all-time P&L
-	// Use epoch start and far future to capture all transactions
-	query := &ledgerQueries.GetProfitLossQuery{
-		PlayerID:  playerID,
-		StartDate: time.Unix(0, 0),           // Epoch start (1970-01-01)
-		EndDate:   time.Now().Add(24 * time.Hour), // Tomorrow to ensure we get everything
-	}
-
-	response, err := c.mediator.Send(context.Background(), query)
-	if err != nil {
-		log.Printf("Failed to fetch profit/loss for player %d: %v", playerID, err)
+	// Get unique player IDs from active containers
+	containers := c.getContainers()
+	if len(containers) == 0 {
+		// No active containers, skip P&L metrics
 		return
 	}
 
-	plResponse, ok := response.(*ledgerQueries.GetProfitLossResponse)
-	if !ok {
-		log.Printf("Unexpected response type for P&L query: %T", response)
-		return
+	playerIDs := make(map[int]bool)
+	for _, containerInfo := range containers {
+		playerIDs[containerInfo.PlayerID()] = true
 	}
 
-	playerIDStr := strconv.Itoa(playerID)
-
-	// Fetch current player data (including real-time credits and agent symbol) from API
-	getPlayerQuery := &playerQueries.GetPlayerQuery{
-		PlayerID: &playerID,
-	}
-
-	playerResp, err := c.mediator.Send(context.Background(), getPlayerQuery)
-	if err == nil {
-		if playerData, ok := playerResp.(*playerQueries.GetPlayerResponse); ok && playerData.Player != nil {
-			// Update credits balance with actual agent symbol and current credits
-			c.creditsBalance.WithLabelValues(playerIDStr, playerData.Player.AgentSymbol).Set(float64(playerData.Player.Credits))
-		} else {
-			log.Printf("Unexpected response type for GetPlayer query: %T", playerResp)
+	// Collect metrics for each player with active containers
+	for playerID := range playerIDs {
+		// Execute GetProfitLossQuery for all-time P&L
+		// Use epoch start and far future to capture all transactions
+		query := &ledgerQueries.GetProfitLossQuery{
+			PlayerID:  playerID,
+			StartDate: time.Unix(0, 0),                // Epoch start (1970-01-01)
+			EndDate:   time.Now().Add(24 * time.Hour), // Tomorrow to ensure we get everything
 		}
-	} else {
-		log.Printf("Failed to fetch player %d for balance update: %v", playerID, err)
-	}
 
-	// Update revenue metrics by category
-	for category, amount := range plResponse.RevenueBreakdown {
-		c.totalRevenue.WithLabelValues(playerIDStr, category).Set(float64(amount))
-	}
+		response, err := c.mediator.Send(context.Background(), query)
+		if err != nil {
+			log.Printf("Failed to fetch profit/loss for player %d: %v", playerID, err)
+			continue // Skip this player but continue with others
+		}
 
-	// Update expense metrics by category
-	for category, amount := range plResponse.ExpenseBreakdown {
-		c.totalExpenses.WithLabelValues(playerIDStr, category).Set(float64(amount))
-	}
+		plResponse, ok := response.(*ledgerQueries.GetProfitLossResponse)
+		if !ok {
+			log.Printf("Unexpected response type for P&L query: %T", response)
+			continue
+		}
 
-	// Update net profit
-	c.netProfit.WithLabelValues(playerIDStr).Set(float64(plResponse.NetProfit))
+		playerIDStr := strconv.Itoa(playerID)
+
+		// Fetch current player data (including real-time credits and agent symbol) from API
+		getPlayerQuery := &playerQueries.GetPlayerQuery{
+			PlayerID: &playerID,
+		}
+
+		playerResp, err := c.mediator.Send(context.Background(), getPlayerQuery)
+		if err == nil {
+			if playerData, ok := playerResp.(*playerQueries.GetPlayerResponse); ok && playerData.Player != nil {
+				// Update credits balance with actual agent symbol and current credits
+				c.creditsBalance.WithLabelValues(playerIDStr, playerData.Player.AgentSymbol).Set(float64(playerData.Player.Credits))
+			} else {
+				log.Printf("Unexpected response type for GetPlayer query: %T", playerResp)
+			}
+		} else {
+			log.Printf("Failed to fetch player %d for balance update: %v", playerID, err)
+		}
+
+		// Update revenue metrics by category
+		for category, amount := range plResponse.RevenueBreakdown {
+			c.totalRevenue.WithLabelValues(playerIDStr, category).Set(float64(amount))
+		}
+
+		// Update expense metrics by category
+		for category, amount := range plResponse.ExpenseBreakdown {
+			c.totalExpenses.WithLabelValues(playerIDStr, category).Set(float64(amount))
+		}
+
+		// Update net profit
+		c.netProfit.WithLabelValues(playerIDStr).Set(float64(plResponse.NetProfit))
+	}
 }
 
 // RecordTransaction records a transaction event
