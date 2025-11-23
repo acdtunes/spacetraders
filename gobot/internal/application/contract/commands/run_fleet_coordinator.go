@@ -202,11 +202,48 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 
 		// Extract required cargo for delivery (for ship selection prioritization)
 		var requiredCargo string
+		var unitsNeeded int
 		for _, delivery := range contract.Terms().Deliveries {
 			if delivery.UnitsRequired > delivery.UnitsFulfilled {
 				requiredCargo = delivery.TradeSymbol
+				unitsNeeded = delivery.UnitsRequired - delivery.UnitsFulfilled
 				break
 			}
+		}
+
+		// Check for in-flight cargo from active workers (prevent duplicate purchases on restart)
+		inFlightCargo, err := h.calculateInFlightCargo(ctx, requiredCargo, cmd.PlayerID.Value())
+		if err != nil {
+			logger.Log("WARNING", fmt.Sprintf("Failed to calculate in-flight cargo: %v", err), nil)
+			// Continue anyway - better to risk duplication than block indefinitely
+		}
+
+		// If there's already enough in-flight cargo, wait for delivery instead of assigning new work
+		if inFlightCargo >= unitsNeeded {
+			logger.Log("INFO", fmt.Sprintf("Contract already has %d units of %s in-flight (needed: %d) - waiting for delivery instead of assigning new ship",
+				inFlightCargo, requiredCargo, unitsNeeded), nil)
+			// Wait for worker completion
+			select {
+			case shipSymbol := <-completionChan:
+				logger.Log("INFO", fmt.Sprintf("Active worker completed for ship %s", shipSymbol), nil)
+				activeWorkerContainerID = "" // Worker completed
+				// Loop back to check contract status
+			case <-time.After(1 * time.Minute):
+				logger.Log("INFO", "Timeout waiting for delivery, will re-check", nil)
+			case <-ctx.Done():
+				if activeWorkerContainerID != "" {
+					logger.Log("INFO", fmt.Sprintf("Stopping active worker container: %s", activeWorkerContainerID), nil)
+					_ = h.workerLifecycleManager.StopWorkerContainer(ctx, activeWorkerContainerID)
+				}
+				return result, ctx.Err()
+			}
+			continue
+		}
+
+		// Log remaining units needed after accounting for in-flight cargo
+		if inFlightCargo > 0 {
+			logger.Log("INFO", fmt.Sprintf("Contract needs %d more units of %s (%d in-flight, %d required, %d fulfilled)",
+				unitsNeeded-inFlightCargo, requiredCargo, inFlightCargo, unitsNeeded+contract.Terms().Deliveries[0].UnitsFulfilled, contract.Terms().Deliveries[0].UnitsFulfilled), nil)
 		}
 
 		// Select closest ship to purchase market (prioritizes ships with required cargo)
@@ -337,5 +374,60 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 		// This line should NEVER be reached (all cases have continue/return)
 		logger.Log("ERROR", "CRITICAL: Code execution fell through select statement!", nil)
 	}
+}
+
+// calculateInFlightCargo calculates the total cargo of a specific trade symbol
+// that is currently held by ships working on active contract workflows.
+// This is used during restart recovery to prevent duplicate cargo purchases.
+func (h *RunFleetCoordinatorHandler) calculateInFlightCargo(
+	ctx context.Context,
+	tradeSymbol string,
+	playerID int,
+) (int, error) {
+	logger := common.LoggerFromContext(ctx)
+
+	// Find all active CONTRACT_WORKFLOW containers
+	activeWorkers, err := h.workerLifecycleManager.FindExistingWorkers(ctx, playerID)
+	if err != nil {
+		return 0, fmt.Errorf("failed to find existing workers: %w", err)
+	}
+
+	if len(activeWorkers) == 0 {
+		return 0, nil
+	}
+
+	totalInFlight := 0
+
+	// For each active worker, find its assigned ships and check their cargo
+	for _, worker := range activeWorkers {
+		assignments, err := h.shipAssignmentRepo.FindByContainer(ctx, worker.ID, playerID)
+		if err != nil {
+			logger.Log("WARNING", fmt.Sprintf("Failed to get assignments for container %s: %v", worker.ID, err), nil)
+			continue
+		}
+
+		for _, assignment := range assignments {
+			ship, err := h.shipRepo.FindBySymbol(ctx, assignment.ShipSymbol(), shared.MustNewPlayerID(playerID))
+			if err != nil {
+				logger.Log("WARNING", fmt.Sprintf("Failed to load ship %s cargo: %v", assignment.ShipSymbol(), err), nil)
+				continue
+			}
+
+			// Count cargo of the required trade symbol
+			for _, item := range ship.Cargo().Inventory {
+				if item.Symbol == tradeSymbol {
+					totalInFlight += item.Units
+					logger.Log("INFO", fmt.Sprintf("Found %d units of %s in ship %s cargo (worker %s)",
+						item.Units, tradeSymbol, assignment.ShipSymbol(), worker.ID), nil)
+				}
+			}
+		}
+	}
+
+	if totalInFlight > 0 {
+		logger.Log("INFO", fmt.Sprintf("Total in-flight cargo: %d units of %s", totalInFlight, tradeSymbol), nil)
+	}
+
+	return totalInFlight, nil
 }
 
