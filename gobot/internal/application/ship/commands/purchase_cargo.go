@@ -19,12 +19,14 @@ import (
 //   - Ship must be docked at a marketplace
 //   - Ship must have sufficient available cargo space
 //   - Automatically splits large purchases into multiple API transactions based on market limits
+//
+// To link transactions to a parent operation, add OperationContext to the context using
+// shared.WithOperationContext() before sending this command.
 type PurchaseCargoCommand struct {
-	ShipSymbol string                   // Ship symbol (e.g., "SHIP-1")
-	GoodSymbol string                   // Trade good symbol (e.g., "IRON_ORE")
-	Units      int                      // Total units to purchase
-	PlayerID   shared.PlayerID          // Player ID for authorization
-	Context    *shared.OperationContext // Optional: links transaction to parent operation
+	ShipSymbol string          // Ship symbol (e.g., "SHIP-1")
+	GoodSymbol string          // Trade good symbol (e.g., "IRON_ORE")
+	Units      int             // Total units to purchase
+	PlayerID   shared.PlayerID // Player ID for authorization
 }
 
 // PurchaseCargoResponse contains the results of a cargo purchase operation.
@@ -86,7 +88,6 @@ func (h *PurchaseCargoHandler) Handle(ctx context.Context, request common.Reques
 		GoodSymbol: cmd.GoodSymbol,
 		Units:      cmd.Units,
 		PlayerID:   cmd.PlayerID,
-		Context:    cmd.Context, // Propagate operation context
 	}
 
 	// Delegate to unified handler

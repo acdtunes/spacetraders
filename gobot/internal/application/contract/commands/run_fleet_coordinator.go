@@ -188,12 +188,17 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 		logger.Log("INFO", "Finding purchase market...", nil)
 		purchaseMarket, err := appContract.FindPurchaseMarket(ctx, contract, h.marketRepo, cmd.PlayerID.Value())
 		if err != nil {
-			errMsg := fmt.Sprintf("Failed to find purchase market: %v", err)
-			logger.Log("ERROR", errMsg, nil)
-			result.Errors = append(result.Errors, errMsg)
+			// Market data not yet available - this is expected while scouts are scanning
+			logger.Log("INFO", "Purchase market not yet available - waiting for scouts to scan market data", map[string]interface{}{
+				"contract_id": contract.ContractID(),
+				"error":       err.Error(),
+			})
+			// Sleep and retry - scouts will eventually scan the required market
 			h.clock.Sleep(30 * time.Second)
 			continue
 		}
+
+		logger.Log("INFO", "Cheapest market found", nil)
 
 		// Extract required cargo for delivery (for ship selection prioritization)
 		var requiredCargo string

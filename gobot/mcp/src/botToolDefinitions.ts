@@ -243,7 +243,7 @@ export const botToolDefinitions: Tool[] = [
         },
         max_budget: {
           type: "integer",
-          description: "Maximum total credits to spend on purchases"
+          description: "Maximum total credits to spend on purchases (0 = unlimited, only constrained by available credits)"
         },
         shipyard: {
           type: "string",

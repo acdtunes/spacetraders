@@ -148,10 +148,10 @@ func (h *RunFactoryCoordinatorHandler) executeCoordination(
 ) error {
 	logger := common.LoggerFromContext(ctx)
 
-	// Create operation context for transaction linking
-	var opContext *shared.OperationContext
+	// Create operation context for transaction linking and add to context
 	if cmd.ContainerID != "" {
-		opContext = shared.NewOperationContext(cmd.ContainerID, "factory_workflow")
+		opContext := shared.NewOperationContext(cmd.ContainerID, "factory_workflow")
+		ctx = shared.WithOperationContext(ctx, opContext)
 	}
 
 	logger.Log("INFO", "Starting factory coordinator", map[string]interface{}{
@@ -212,7 +212,7 @@ func (h *RunFactoryCoordinatorHandler) executeCoordination(
 	})
 
 	// Step 5: Execute production in parallel levels
-	if err := h.executeParallelProduction(ctx, cmd, parallelLevels, idleShips, response, opContext); err != nil {
+	if err := h.executeParallelProduction(ctx, cmd, parallelLevels, idleShips, response); err != nil {
 		// Release all ship assignments on error
 		h.releaseAllShipAssignments(ctx, cmd.ContainerID, cmd.PlayerID, "production_failed")
 		return fmt.Errorf("parallel production failed: %w", err)
@@ -237,14 +237,16 @@ func (h *RunFactoryCoordinatorHandler) executeCoordination(
 }
 
 // executeParallelProduction executes production levels in parallel
+// Operation context is retrieved from ctx using shared.OperationContextFromContext if present
 func (h *RunFactoryCoordinatorHandler) executeParallelProduction(
 	ctx context.Context,
 	cmd *RunFactoryCoordinatorCommand,
 	levels []goodsServices.ParallelLevel,
 	idleShips []*navigation.Ship,
 	response *RunFactoryCoordinatorResponse,
-	opContext *shared.OperationContext, // Operation context for transaction linking
 ) error {
+	// Get operation context from context
+	opContext := shared.OperationContextFromContext(ctx)
 	logger := common.LoggerFromContext(ctx)
 	shipsUsed := make(map[string]bool)
 	var shipsUsedMutex sync.Mutex // Protect concurrent map access
@@ -820,7 +822,6 @@ func (h *RunFactoryCoordinatorHandler) deliverCargo(
 		GoodSymbol: good,
 		Units:      unitsToSell,
 		PlayerID:   playerIDValue,
-		Context:    opContext, // Link transaction to container
 	}
 
 	sellResp, err := h.mediator.Send(ctx, sellCmd)

@@ -27,11 +27,12 @@ type DockShipResponse struct {
 }
 
 // RefuelShipCommand - Command to refuel a ship at its current waypoint
+// To link transactions to a parent operation, add OperationContext to the context using
+// shared.WithOperationContext() before sending this command.
 type RefuelShipCommand struct {
 	ShipSymbol string
 	PlayerID   shared.PlayerID
 	Units      *int // nil = refuel to full
-	Context    *shared.OperationContext // Optional: links transaction to parent operation
 }
 
 // RefuelShipResponse - Response from refuel ship command

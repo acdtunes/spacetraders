@@ -82,9 +82,9 @@ func (e *ArbitrageExecutor) Execute(
 	}
 
 	// Create operation context for transaction tracking
-	var opContext *shared.OperationContext
 	if containerID != "" {
-		opContext = shared.NewOperationContext(containerID, "arbitrage_worker")
+		opContext := shared.NewOperationContext(containerID, "arbitrage_worker")
+		ctx = shared.WithOperationContext(ctx, opContext)
 	}
 
 	playerIDValue := shared.MustNewPlayerID(playerID)
@@ -109,7 +109,6 @@ func (e *ArbitrageExecutor) Execute(
 		Destination:  opportunity.BuyMarket().Symbol,
 		PlayerID:     playerIDValue,
 		PreferCruise: false, // Use BURN for speed
-		Context:      opContext,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("navigation to buy market failed: %w", err)
@@ -154,7 +153,6 @@ func (e *ArbitrageExecutor) Execute(
 		GoodSymbol: opportunity.Good(),
 		Units:      availableSpace,
 		PlayerID:   playerIDValue,
-		Context:    opContext, // Auto-record transaction
 	})
 	if err != nil {
 		return nil, fmt.Errorf("purchase failed: %w", err)
@@ -182,7 +180,6 @@ func (e *ArbitrageExecutor) Execute(
 		Destination:  opportunity.SellMarket().Symbol,
 		PlayerID:     playerIDValue,
 		PreferCruise: false,
-		Context:      opContext,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("navigation to sell market failed: %w", err)
@@ -216,7 +213,6 @@ func (e *ArbitrageExecutor) Execute(
 		GoodSymbol: opportunity.Good(),
 		Units:      result.UnitsPurchased,
 		PlayerID:   playerIDValue,
-		Context:    opContext, // Auto-record transaction
 	})
 	if err != nil {
 		return nil, fmt.Errorf("sale failed: %w", err)

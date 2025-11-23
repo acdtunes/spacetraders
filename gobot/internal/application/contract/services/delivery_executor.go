@@ -53,10 +53,10 @@ func (e *DeliveryExecutor) ProcessAllDeliveries(
 ) (*domainContract.Contract, error) {
 	logger := common.LoggerFromContext(ctx)
 
-	// Create operation context for transaction linking
-	var opContext *shared.OperationContext
+	// Create operation context for transaction linking and add to context
 	if containerID != "" {
-		opContext = shared.NewOperationContext(containerID, "contract_workflow")
+		opContext := shared.NewOperationContext(containerID, "contract_workflow")
+		ctx = shared.WithOperationContext(ctx, opContext)
 	}
 
 	logger.Log("INFO", "Contract deliveries processing started", map[string]interface{}{
@@ -93,7 +93,7 @@ func (e *DeliveryExecutor) ProcessAllDeliveries(
 		})
 
 		var err error
-		contract, err = e.ProcessSingleDelivery(ctx, shipSymbol, playerID, contract, delivery, profitabilityResp, result, opContext)
+		contract, err = e.ProcessSingleDelivery(ctx, shipSymbol, playerID, contract, delivery, profitabilityResp, result, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -223,7 +223,6 @@ func (e *DeliveryExecutor) executeSinglePurchaseTrip(
 		GoodSymbol: tradeSymbol,
 		Units:      unitsThisTrip,
 		PlayerID:   playerID,
-		Context:    opContext, // Link transaction to container
 	}
 
 	_, err = e.mediator.Send(ctx, purchaseCmd)
@@ -257,12 +256,21 @@ func (e *DeliveryExecutor) DeliverContractCargo(
 		return nil, fmt.Errorf("failed to reload ship before delivery: %w", err)
 	}
 
-	unitsToDeliver := ship.Cargo().GetItemUnits(delivery.TradeSymbol)
+	// Calculate how many units to deliver - cap at remaining units needed
+	unitsInCargo := ship.Cargo().GetItemUnits(delivery.TradeSymbol)
+	unitsRemaining := delivery.UnitsRequired - delivery.UnitsFulfilled
+	unitsToDeliver := unitsInCargo
+	if unitsToDeliver > unitsRemaining {
+		unitsToDeliver = unitsRemaining
+	}
+
 	logger.Log("INFO", "Contract cargo delivery initiated", map[string]interface{}{
-		"ship_symbol":  shipSymbol,
-		"action":       "deliver_cargo",
-		"trade_symbol": delivery.TradeSymbol,
-		"units":        unitsToDeliver,
+		"ship_symbol":     shipSymbol,
+		"action":          "deliver_cargo",
+		"trade_symbol":    delivery.TradeSymbol,
+		"units_in_cargo":  unitsInCargo,
+		"units_remaining": unitsRemaining,
+		"units_to_deliver": unitsToDeliver,
 	})
 
 	if unitsToDeliver == 0 {

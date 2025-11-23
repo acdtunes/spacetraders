@@ -28,12 +28,14 @@ type RouteExecutor = ship.RouteExecutor
 // - Complete route execution
 //
 // This is the PRIMARY navigation command for business logic.
+//
+// To link transactions to a parent operation, add OperationContext to the context using
+// shared.WithOperationContext() before sending this command.
 type NavigateRouteCommand struct {
 	ShipSymbol   string
 	Destination  string
 	PlayerID     shared.PlayerID
-	PreferCruise bool                     // When true, prefer CRUISE over BURN (for asteroid ↔ market loop only)
-	Context      *shared.OperationContext // Optional: links transactions to parent operation
+	PreferCruise bool // When true, prefer CRUISE over BURN (for asteroid ↔ market loop only)
 }
 
 // NavigateRouteResponse represents the result of navigation
@@ -169,7 +171,7 @@ func (h *NavigateRouteHandler) waitForInTransitCompletion(ctx context.Context, c
 		return nil, fmt.Errorf("failed to create temporary route: %w", err)
 	}
 
-	if err := h.routeExecutor.ExecuteRoute(ctx, emptyRoute, ship, cmd.PlayerID, cmd.Context); err != nil {
+	if err := h.routeExecutor.ExecuteRoute(ctx, emptyRoute, ship, cmd.PlayerID); err != nil {
 		return nil, fmt.Errorf("failed to wait for current transit: %w", err)
 	}
 
@@ -233,7 +235,7 @@ func (h *NavigateRouteHandler) planAndExecuteRoute(ctx context.Context, cmd *Nav
 		}
 	}()
 
-	if err := h.routeExecutor.ExecuteRoute(ctx, route, ship, cmd.PlayerID, cmd.Context); err != nil {
+	if err := h.routeExecutor.ExecuteRoute(ctx, route, ship, cmd.PlayerID); err != nil {
 		route.FailRoute(err.Error())
 		return nil, fmt.Errorf("failed to execute route: %w", err)
 	}

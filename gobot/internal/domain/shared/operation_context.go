@@ -1,5 +1,14 @@
 package shared
 
+import "context"
+
+// contextKey is a type for context keys to avoid collisions
+type contextKey int
+
+const (
+	operationContextKey contextKey = iota
+)
+
 // OperationContext provides traceability from high-level operations (containers)
 // down to individual financial transactions.
 //
@@ -79,4 +88,17 @@ func (c *OperationContext) NormalizedOperationType() string {
 		// Return as-is for unknown types
 		return c.OperationType
 	}
+}
+
+// WithOperationContext adds an operation context to the context
+func WithOperationContext(ctx context.Context, opCtx *OperationContext) context.Context {
+	return context.WithValue(ctx, operationContextKey, opCtx)
+}
+
+// OperationContextFromContext extracts the operation context from context, or returns nil if not found
+func OperationContextFromContext(ctx context.Context) *OperationContext {
+	if opCtx, ok := ctx.Value(operationContextKey).(*OperationContext); ok {
+		return opCtx
+	}
+	return nil
 }

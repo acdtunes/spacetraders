@@ -30,12 +30,14 @@ import (
 //   - Ship must be docked at a marketplace
 //   - Transaction-specific preconditions are validated by the strategy
 //   - Automatically splits large transactions based on market limits
+//
+// To link transactions to a parent operation, add OperationContext to the context using
+// shared.WithOperationContext() before sending this command.
 type CargoTransactionCommand struct {
-	ShipSymbol string                   // Ship symbol (e.g., "SHIP-1")
-	GoodSymbol string                   // Trade good symbol (e.g., "IRON_ORE")
-	Units      int                      // Total units to transaction
-	PlayerID   shared.PlayerID          // Player ID for authorization
-	Context    *shared.OperationContext // Optional: links transaction to parent operation
+	ShipSymbol string          // Ship symbol (e.g., "SHIP-1")
+	GoodSymbol string          // Trade good symbol (e.g., "IRON_ORE")
+	Units      int             // Total units to transaction
+	PlayerID   shared.PlayerID // Player ID for authorization
 }
 
 // CargoTransactionResponse contains the unified results of a cargo transaction.
@@ -302,11 +304,11 @@ func (h *CargoTransactionHandler) recordCargoTransaction(
 		Metadata:        metadata,
 	}
 
-	// Propagate operation context if present
-	if cmd.Context != nil && cmd.Context.IsValid() {
+	// Propagate operation context if present in the context
+	if opCtx := shared.OperationContextFromContext(ctx); opCtx != nil && opCtx.IsValid() {
 		recordCmd.RelatedEntityType = "container"
-		recordCmd.RelatedEntityID = cmd.Context.ContainerID
-		recordCmd.OperationType = cmd.Context.NormalizedOperationType()
+		recordCmd.RelatedEntityID = opCtx.ContainerID
+		recordCmd.OperationType = opCtx.NormalizedOperationType()
 	}
 
 	// Record transaction via mediator

@@ -141,8 +141,8 @@ func (h *PurchaseShipHandler) Handle(ctx context.Context, request common.Request
 		return nil, fmt.Errorf("failed to create ship assignment: %w", err)
 	}
 
-	// Record transaction asynchronously (non-blocking)
-	go h.recordShipPurchaseTransaction(ctx, cmd, shipyardWaypoint, purchaseResult, balanceBefore)
+	// Record transaction synchronously to ensure it's saved
+	h.recordShipPurchaseTransaction(ctx, cmd, shipyardWaypoint, purchaseResult, balanceBefore)
 
 	return &PurchaseShipResponse{
 		Ship:            newShip,
@@ -390,10 +390,11 @@ func (h *PurchaseShipHandler) recordShipPurchaseTransaction(
 		BalanceAfter:    balanceAfter,
 		Description:     fmt.Sprintf("Purchased %s ship at %s", cmd.ShipType, shipyardWaypoint),
 		Metadata:        metadata,
+		OperationType:   "fleet expansion", // Ship purchases are fleet expansion operations
 	}
 
-	// Record transaction via mediator
-	_, err = h.mediator.Send(context.Background(), recordCmd)
+	// Record transaction via mediator (use passed context, not Background)
+	_, err = h.mediator.Send(ctx, recordCmd)
 	if err != nil {
 		// Log error but don't fail the operation
 		logger.Log("ERROR", "Failed to record ship purchase transaction in ledger", map[string]interface{}{

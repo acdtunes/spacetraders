@@ -17,7 +17,7 @@ import (
 //
 // The command will purchase as many ships as possible within constraints:
 // - Quantity requested
-// - Maximum budget allocated
+// - Maximum budget allocated (0 = unlimited budget, only constrained by credits)
 // - Player's available credits
 //
 // The purchasing ship will be used to navigate to the shipyard if needed.
@@ -26,7 +26,7 @@ type BatchPurchaseShipsCommand struct {
 	PurchasingShipSymbol string
 	ShipType             string
 	Quantity             int
-	MaxBudget            int
+	MaxBudget            int    // 0 = unlimited budget
 	PlayerID             shared.PlayerID
 	ShipyardWaypoint     string // Optional - will auto-discover if empty
 }
@@ -93,8 +93,16 @@ func (h *BatchPurchaseShipsHandler) Handle(ctx context.Context, request common.R
 
 // validatePurchaseRequest validates quantity and budget constraints
 // Returns early-return response if validation fails, nil if valid
+// Note: maxBudget == 0 is treated as unlimited budget (only constrained by credits)
 func (h *BatchPurchaseShipsHandler) validatePurchaseRequest(quantity int, maxBudget int) *BatchPurchaseShipsResponse {
-	if quantity <= 0 || maxBudget <= 0 {
+	if quantity <= 0 {
+		return &BatchPurchaseShipsResponse{
+			PurchasedShips:      []*navigation.Ship{},
+			TotalCost:           0,
+			ShipsPurchasedCount: 0,
+		}
+	}
+	if maxBudget < 0 {
 		return &BatchPurchaseShipsResponse{
 			PurchasedShips:      []*navigation.Ship{},
 			TotalCost:           0,
@@ -168,6 +176,7 @@ func (h *BatchPurchaseShipsHandler) getShipPriceFromShipyard(
 
 // calculateMaxPurchasableShips applies all constraints to determine max purchasable count
 // Returns: minimum of quantity requested, budget allows, credits allow
+// Note: maxBudget == 0 means unlimited budget (only constrained by quantity and credits)
 func (h *BatchPurchaseShipsHandler) calculateMaxPurchasableShips(
 	requestedQuantity int,
 	maxBudget int,
@@ -175,8 +184,14 @@ func (h *BatchPurchaseShipsHandler) calculateMaxPurchasableShips(
 	shipPrice int,
 ) int {
 	maxByQuantity := requestedQuantity
-	maxByBudget := maxBudget / shipPrice
 	maxByCredits := agentCredits / shipPrice
+
+	// maxBudget == 0 means unlimited budget
+	if maxBudget == 0 {
+		return utils.Min(maxByQuantity, maxByCredits)
+	}
+
+	maxByBudget := maxBudget / shipPrice
 	return utils.Min3(maxByQuantity, maxByBudget, maxByCredits)
 }
 
@@ -246,11 +261,23 @@ func (h *BatchPurchaseShipsHandler) purchaseShip(
 
 // hasRemainingBudgetAndCredits checks if we can afford another ship purchase
 // Returns: true if both budget and credits allow another purchase
+// Note: maxBudget == 0 means unlimited budget (only check credits)
 func (h *BatchPurchaseShipsHandler) hasRemainingBudgetAndCredits(
 	totalSpent int,
 	remainingCredits int,
 	shipPrice int,
 	maxBudget int,
 ) bool {
-	return totalSpent+shipPrice <= maxBudget && remainingCredits >= shipPrice
+	// Check credits constraint
+	if remainingCredits < shipPrice {
+		return false
+	}
+
+	// maxBudget == 0 means unlimited budget - only credits matter
+	if maxBudget == 0 {
+		return true
+	}
+
+	// Check budget constraint
+	return totalSpent+shipPrice <= maxBudget
 }

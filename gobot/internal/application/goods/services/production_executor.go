@@ -135,7 +135,6 @@ func (e *ProductionExecutor) buyGood(
 		GoodSymbol: node.Good,
 		Units:      availableSpace,
 		PlayerID:   playerIDValue,
-		Context:    opContext, // Link transaction to container
 	}
 
 	purchaseResp, err := e.mediator.Send(ctx, purchaseCmd)
@@ -305,7 +304,6 @@ func (e *ProductionExecutor) PollForProduction(
 				GoodSymbol: good,
 				Units:      availableSpace,
 				PlayerID:   playerID,
-				Context:    opContext, // Link transaction to container
 			}
 
 			purchaseResp, err := e.mediator.Send(ctx, purchaseCmd)
@@ -456,7 +454,6 @@ func (e *ProductionExecutor) deliverInputs(
 			GoodSymbol: item.Symbol,
 			Units:      item.Units,
 			PlayerID:   playerID,
-			Context:    opContext, // Link transaction to container
 		}
 
 		sellResp, err := e.mediator.Send(ctx, sellCmd)

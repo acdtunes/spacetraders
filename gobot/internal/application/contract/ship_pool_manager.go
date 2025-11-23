@@ -120,5 +120,29 @@ func FindIdleLightHaulers(
 		"hauler_symbols":   idleHaulerSymbols,
 	})
 
+	// Fallback: If no haulers found, use the first available idle ship (typically ship-1)
+	if len(idleHaulers) == 0 && len(allShips) > 0 {
+		for _, ship := range allShips {
+			// Skip ships in transit
+			if ship.NavStatus() == navigation.NavStatusInTransit {
+				continue
+			}
+
+			// Check assignment
+			assignment, err := shipAssignmentRepo.FindByShip(ctx, ship.ShipSymbol(), playerID.Value())
+			if err != nil || assignment == nil || assignment.Status() == "idle" {
+				idleHaulers = append(idleHaulers, ship)
+				idleHaulerSymbols = append(idleHaulerSymbols, ship.ShipSymbol())
+
+				logger.Log("INFO", "Using fallback ship (no haulers available)", map[string]interface{}{
+					"action":      "fallback_ship",
+					"ship_symbol": ship.ShipSymbol(),
+					"ship_role":   ship.Role(),
+				})
+				break // Only use first available ship as fallback
+			}
+		}
+	}
+
 	return idleHaulers, idleHaulerSymbols, nil
 }

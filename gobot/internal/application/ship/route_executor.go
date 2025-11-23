@@ -77,13 +77,13 @@ func NewRouteExecutor(
 // - Uses domain decision methods (ShouldRefuelOpportunistically, ShouldPreventDriftMode)
 // - Follows exact Python implementation logic
 //
-// The operationContext parameter (optional) links all transactions to the parent operation
+// The operation context (if any) should be added to ctx using shared.WithOperationContext()
+// before calling this method. It will be automatically propagated to all child operations.
 func (e *RouteExecutor) ExecuteRoute(
 	ctx context.Context,
 	route *domainNavigation.Route,
 	ship *domainNavigation.Ship,
 	playerID shared.PlayerID,
-	operationContext *shared.OperationContext,
 ) error {
 	// Extract logger from context
 	logger := common.LoggerFromContext(ctx)
@@ -103,7 +103,7 @@ func (e *RouteExecutor) ExecuteRoute(
 
 	// 2. Refuel before departure if needed (ship at fuel station with low fuel)
 	if route.HasRefuelAtStart() {
-		if err := e.refuelBeforeDeparture(ctx, ship, playerID, operationContext); err != nil {
+		if err := e.refuelBeforeDeparture(ctx, ship, playerID); err != nil {
 			return err
 		}
 	}
@@ -131,7 +131,7 @@ func (e *RouteExecutor) ExecuteRoute(
 			"to":            segment.ToWaypoint.Symbol,
 		})
 
-		if err := e.executeSegment(ctx, segment, ship, playerID, operationContext); err != nil {
+		if err := e.executeSegment(ctx, segment, ship, playerID); err != nil {
 			logger.Log("ERROR", "Route segment execution failed", map[string]interface{}{
 				"ship_symbol":   ship.ShipSymbol(),
 				"action":        "execute_segment",
@@ -208,7 +208,6 @@ func (e *RouteExecutor) executeSegment(
 	segment *domainNavigation.RouteSegment,
 	ship *domainNavigation.Ship,
 	playerID shared.PlayerID,
-	operationContext *shared.OperationContext,
 ) error {
 	// Reload ship to get latest state before segment execution
 	// This prevents stale state issues from rapid navigation
@@ -275,7 +274,7 @@ func (e *RouteExecutor) handlePreDepartureRefuel(ctx context.Context, segment *d
 			"reason":          "strategy_decision",
 			"refuel_strategy": e.refuelStrategy.GetStrategyName(),
 		})
-		if err := e.refuelShip(ctx, ship, playerID, operationContext); err != nil {
+		if err := e.refuelShip(ctx, ship, playerID); err != nil {
 			return err
 		}
 	}
@@ -394,7 +393,7 @@ func (e *RouteExecutor) handlePostArrivalRefueling(ctx context.Context, segment 
 			"waypoint":        segment.ToWaypoint.Symbol,
 			"refuel_strategy": e.refuelStrategy.GetStrategyName(),
 		})
-		if err := e.refuelShip(ctx, ship, playerID, operationContext); err != nil {
+		if err := e.refuelShip(ctx, ship, playerID); err != nil {
 			return err
 		}
 	}
@@ -406,7 +405,7 @@ func (e *RouteExecutor) handlePostArrivalRefueling(ctx context.Context, segment 
 			"action":      "planned_refuel",
 			"waypoint":    segment.ToWaypoint.Symbol,
 		})
-		if err := e.refuelShip(ctx, ship, playerID, operationContext); err != nil {
+		if err := e.refuelShip(ctx, ship, playerID); err != nil {
 			return err
 		}
 	}
@@ -531,7 +530,6 @@ func (e *RouteExecutor) refuelBeforeDeparture(
 	ctx context.Context,
 	ship *domainNavigation.Ship,
 	playerID shared.PlayerID,
-	operationContext *shared.OperationContext,
 ) error {
 	// Extract logger from context
 	logger := common.LoggerFromContext(ctx)
@@ -558,7 +556,6 @@ func (e *RouteExecutor) refuelBeforeDeparture(
 		ShipSymbol: ship.ShipSymbol(),
 		PlayerID:   playerID,
 		Units:      nil, // Full refuel
-		Context:    operationContext,
 	}
 	if _, err := e.mediator.Send(ctx, refuelCmd); err != nil {
 		return fmt.Errorf("failed to refuel: %w", err)
@@ -582,7 +579,6 @@ func (e *RouteExecutor) refuelShip(
 	ctx context.Context,
 	ship *domainNavigation.Ship,
 	playerID shared.PlayerID,
-	operationContext *shared.OperationContext,
 ) error {
 	// Dock for refuel (via DockShipCommand)
 	// Command handler updates ship state in memory
@@ -600,7 +596,6 @@ func (e *RouteExecutor) refuelShip(
 		ShipSymbol: ship.ShipSymbol(),
 		PlayerID:   playerID,
 		Units:      nil, // Full refuel
-		Context:    operationContext,
 	}
 	if _, err := e.mediator.Send(ctx, refuelCmd); err != nil {
 		return fmt.Errorf("failed to refuel: %w", err)
