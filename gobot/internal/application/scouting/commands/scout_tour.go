@@ -253,15 +253,26 @@ func (h *ScoutTourHandler) executeMultiMarketTour(
 			}
 
 			logger := common.LoggerFromContext(ctx)
-			logger.Log("INFO", "Ship navigation complete - market scanned", map[string]interface{}{
-				"ship_symbol":    cmd.ShipSymbol,
-				"action":         "navigation_complete",
-				"status":         navResult.Status,
-				"fuel":           navResult.FuelRemaining,
-				"market_scanned": true,
+			logger.Log("INFO", "Ship navigation complete - scanning market", map[string]interface{}{
+				"ship_symbol": cmd.ShipSymbol,
+				"action":      "navigation_complete",
+				"status":      navResult.Status,
+				"fuel":        navResult.FuelRemaining,
 			})
 
-			response.MarketsVisited++
+			// Scan the market after arriving
+			if err := h.marketScanner.ScanAndSaveMarket(ctx, uint(cmd.PlayerID.Value()), marketWaypoint); err != nil {
+				logger.Log("ERROR", "Market scan failed", map[string]interface{}{
+					"ship_symbol": cmd.ShipSymbol,
+					"action":      "scan_market",
+					"waypoint":    marketWaypoint,
+					"iteration":   iteration + 1,
+					"error":       err.Error(),
+				})
+				// Continue to next market even if scan fails
+			} else {
+				response.MarketsVisited++
+			}
 		}
 
 		response.Iterations++
