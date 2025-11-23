@@ -947,3 +947,82 @@ type GoodsFactoryStatusResult struct {
 	ParallelLevels   int
 	EstimatedSpeedup float64
 }
+
+// ArbitrageOpportunityResult represents a single arbitrage opportunity
+type ArbitrageOpportunityResult struct {
+	Good            string
+	BuyMarket       string
+	SellMarket      string
+	BuyPrice        int
+	SellPrice       int
+	ProfitPerUnit   int
+	ProfitMargin    float64
+	EstimatedProfit int
+	Distance        float64
+	BuySupply       string
+	SellActivity    string
+	Score           float64
+}
+
+// ScanArbitrageOpportunitiesResult contains scan results
+type ScanArbitrageOpportunitiesResult struct {
+	Opportunities []ArbitrageOpportunityResult
+	TotalScanned  int
+	SystemSymbol  string
+}
+
+// StartArbitrageCoordinatorResult contains the result of starting arbitrage coordinator
+type StartArbitrageCoordinatorResult struct {
+	ContainerID  string
+	SystemSymbol string
+	MinMargin    float64
+	MaxWorkers   int
+	Status       string
+	Message      string
+}
+
+// ScanArbitrageOpportunities scans for arbitrage opportunities in a system
+// TODO: Requires protobuf definition in pkg/proto/daemon/daemon.proto
+func (c *DaemonClient) ScanArbitrageOpportunities(
+	ctx context.Context,
+	systemSymbol string,
+	playerID int,
+	minMargin float64,
+	limit int,
+) (*ScanArbitrageOpportunitiesResult, error) {
+	// TODO: Implement after adding protobuf definition
+	// resp, err := c.client.ScanArbitrageOpportunities(ctx, &pb.ScanArbitrageOpportunitiesRequest{
+	// 	PlayerId:     int32(playerID),
+	// 	SystemSymbol: systemSymbol,
+	// 	MinMargin:    minMargin,
+	// 	Limit:        int32(limit),
+	// })
+	// if err != nil {
+	// 	return nil, err
+	// }
+
+	return nil, fmt.Errorf("ScanArbitrageOpportunities not yet implemented - requires protobuf definition")
+}
+
+// StartArbitrageCoordinator starts an arbitrage coordinator
+// TODO: Requires protobuf definition in pkg/proto/daemon/daemon.proto
+func (c *DaemonClient) StartArbitrageCoordinator(
+	ctx context.Context,
+	systemSymbol string,
+	playerID int,
+	minMargin float64,
+	maxWorkers int,
+) (*StartArbitrageCoordinatorResult, error) {
+	// TODO: Implement after adding protobuf definition
+	// resp, err := c.client.StartArbitrageCoordinator(ctx, &pb.StartArbitrageCoordinatorRequest{
+	// 	PlayerId:     int32(playerID),
+	// 	SystemSymbol: systemSymbol,
+	// 	MinMargin:    minMargin,
+	// 	MaxWorkers:   int32(maxWorkers),
+	// })
+	// if err != nil {
+	// 	return nil, err
+	// }
+
+	return nil, fmt.Errorf("StartArbitrageCoordinator not yet implemented - requires protobuf definition")
+}

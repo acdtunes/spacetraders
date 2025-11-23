@@ -181,7 +181,7 @@ Examples:
 }
 
 // displayOpportunities formats and displays arbitrage opportunities
-func displayOpportunities(opps []OpportunityResult) {
+func displayOpportunities(opps []ArbitrageOpportunityResult) {
 	// Table header
 	fmt.Println("┌──────┬────────────────┬────────────────┬────────────────┬───────────┬────────┬─────────┬───────┐")
 	fmt.Println("│ Rank │ Good           │ Buy Market     │ Sell Market    │ Margin %  │ Profit │ Supply  │ Score │")
@@ -211,18 +211,3 @@ func truncateString(s string, maxLen int) string {
 	return s[:maxLen-3] + "..."
 }
 
-// OpportunityResult represents an arbitrage opportunity for display
-type OpportunityResult struct {
-	Good            string
-	BuyMarket       string
-	SellMarket      string
-	BuyPrice        int
-	SellPrice       int
-	ProfitPerUnit   int
-	ProfitMargin    float64
-	EstimatedProfit int
-	Distance        float64
-	BuySupply       string
-	SellActivity    string
-	Score           float64
-}
