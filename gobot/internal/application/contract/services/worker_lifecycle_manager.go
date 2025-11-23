@@ -6,7 +6,10 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
 // ContainerRepository interface for querying container state
@@ -14,20 +17,31 @@ type ContainerRepository interface {
 	ListByStatusSimple(ctx context.Context, status string, playerID *int) ([]persistence.ContainerSummary, error)
 }
 
+// ShipAssignmentRepository interface for querying ship assignments
+type ShipAssignmentRepository interface {
+	FindByContainer(ctx context.Context, containerID string, playerID int) ([]*container.ShipAssignment, error)
+}
+
 // WorkerLifecycleManager handles worker container lifecycle operations
 type WorkerLifecycleManager struct {
-	daemonClient  daemon.DaemonClient
-	containerRepo ContainerRepository
+	daemonClient         daemon.DaemonClient
+	containerRepo        ContainerRepository
+	shipRepo             navigation.ShipRepository
+	shipAssignmentRepo   ShipAssignmentRepository
 }
 
 // NewWorkerLifecycleManager creates a new worker lifecycle manager service
 func NewWorkerLifecycleManager(
 	daemonClient daemon.DaemonClient,
 	containerRepo ContainerRepository,
+	shipRepo navigation.ShipRepository,
+	shipAssignmentRepo ShipAssignmentRepository,
 ) *WorkerLifecycleManager {
 	return &WorkerLifecycleManager{
-		daemonClient:  daemonClient,
-		containerRepo: containerRepo,
+		daemonClient:       daemonClient,
+		containerRepo:      containerRepo,
+		shipRepo:           shipRepo,
+		shipAssignmentRepo: shipAssignmentRepo,
 	}
 }
 
@@ -53,7 +67,9 @@ func (m *WorkerLifecycleManager) FindExistingWorkers(
 	return workers, nil
 }
 
-// StopExistingWorkers stops all existing worker containers from previous sessions
+// StopExistingWorkers stops existing worker containers with resilience logic:
+// - If a worker's ship has cargo, let it continue (resilient restart)
+// - If a worker's ship is empty, stop it (cleanup stale containers)
 func (m *WorkerLifecycleManager) StopExistingWorkers(ctx context.Context, playerID int) error {
 	logger := common.LoggerFromContext(ctx)
 
@@ -66,16 +82,68 @@ func (m *WorkerLifecycleManager) StopExistingWorkers(ctx context.Context, player
 		return nil
 	}
 
-	logger.Log("WARNING", fmt.Sprintf("Found %d existing CONTRACT_WORKFLOW workers from previous session - stopping them to prevent conflicts", len(existingWorkers)), nil)
+	logger.Log("INFO", fmt.Sprintf("Found %d existing CONTRACT_WORKFLOW workers - checking for in-progress deliveries", len(existingWorkers)), nil)
+
+	stoppedCount := 0
+	resumedCount := 0
 
 	for _, worker := range existingWorkers {
-		logger.Log("INFO", fmt.Sprintf("Stopping existing worker container: %s", worker.ID), nil)
-		if err := m.daemonClient.StopContainer(ctx, worker.ID); err != nil {
-			logger.Log("ERROR", fmt.Sprintf("Failed to stop existing worker %s: %v", worker.ID, err), nil)
+		// Get ship assignments for this container
+		assignments, err := m.shipAssignmentRepo.FindByContainer(ctx, worker.ID, playerID)
+		if err != nil {
+			logger.Log("WARNING", fmt.Sprintf("Failed to get assignments for container %s: %v - stopping it", worker.ID, err), nil)
+			_ = m.daemonClient.StopContainer(ctx, worker.ID)
+			stoppedCount++
+			continue
+		}
+
+		if len(assignments) == 0 {
+			logger.Log("INFO", fmt.Sprintf("Container %s has no assignments - stopping it", worker.ID), nil)
+			_ = m.daemonClient.StopContainer(ctx, worker.ID)
+			stoppedCount++
+			continue
+		}
+
+		// Check if any assigned ship has cargo (indicating in-progress delivery)
+		hasCargoInProgress := false
+		for _, assignment := range assignments {
+			ship, err := m.shipRepo.FindBySymbol(ctx, assignment.ShipSymbol(), shared.MustNewPlayerID(playerID))
+			if err != nil {
+				logger.Log("WARNING", fmt.Sprintf("Failed to load ship %s: %v", assignment.ShipSymbol(), err), nil)
+				continue
+			}
+
+			if !ship.Cargo().IsEmpty() {
+				logger.Log("INFO", fmt.Sprintf("Ship %s has %d units of cargo - allowing container %s to resume and complete delivery",
+					assignment.ShipSymbol(), ship.Cargo().Units, worker.ID), map[string]interface{}{
+					"container_id": worker.ID,
+					"ship_symbol":  assignment.ShipSymbol(),
+					"cargo_units":  ship.Cargo().Units,
+					"action":       "resume_delivery",
+				})
+				hasCargoInProgress = true
+				break
+			}
+		}
+
+		if hasCargoInProgress {
+			// Don't stop this container - let it resume and complete delivery
+			resumedCount++
+		} else {
+			// No cargo found, safe to stop this container
+			logger.Log("INFO", fmt.Sprintf("Container %s has no cargo in progress - stopping it", worker.ID), nil)
+			_ = m.daemonClient.StopContainer(ctx, worker.ID)
+			stoppedCount++
 		}
 	}
 
-	logger.Log("INFO", "All existing workers stopped, coordinator will create new workers as needed", nil)
+	if resumedCount > 0 {
+		logger.Log("INFO", fmt.Sprintf("Resilient restart: %d workers with cargo will continue delivery, %d empty workers stopped",
+			resumedCount, stoppedCount), nil)
+	} else if stoppedCount > 0 {
+		logger.Log("INFO", fmt.Sprintf("Stopped %d empty worker containers", stoppedCount), nil)
+	}
+
 	return nil
 }
 

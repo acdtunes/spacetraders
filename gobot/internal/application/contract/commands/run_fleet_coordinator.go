@@ -57,7 +57,7 @@ func NewRunFleetCoordinatorHandler(
 	}
 
 	fleetPoolManager := contractServices.NewFleetPoolManager(mediator, shipRepo, shipAssignmentRepo)
-	workerLifecycleManager := contractServices.NewWorkerLifecycleManager(daemonClient, containerRepo)
+	workerLifecycleManager := contractServices.NewWorkerLifecycleManager(daemonClient, containerRepo, shipRepo, shipAssignmentRepo)
 	contractMarketService := contractServices.NewContractMarketService(mediator, contractRepo)
 
 	return &RunFleetCoordinatorHandler{
