@@ -22,6 +22,7 @@ type RecordTransactionCommand struct {
 	Metadata          map[string]interface{}
 	RelatedEntityType string
 	RelatedEntityID   string
+	OperationType     string     // Optional: operation type (e.g., "contract", "arbitrage", "rebalancing", "factory")
 	Timestamp         *time.Time // Optional: if provided, use this timestamp; otherwise use current time
 }
 
@@ -90,6 +91,7 @@ func (h *RecordTransactionHandler) Handle(ctx context.Context, request common.Re
 		cmd.Metadata,
 		cmd.RelatedEntityType,
 		cmd.RelatedEntityID,
+		cmd.OperationType,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create transaction: %w", err)

@@ -166,6 +166,7 @@ func (h *AcceptContractHandler) recordContractAcceptance(
 		Metadata:          metadata,
 		RelatedEntityType: "contract",
 		RelatedEntityID:   contract.ContractID(),
+		OperationType:     "contract",
 	}
 
 	// Record transaction via mediator

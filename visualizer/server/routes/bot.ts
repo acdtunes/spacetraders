@@ -1038,30 +1038,28 @@ router.get('/ledger/profit-loss-by-operation', async (req, res) => {
     // Get breakdown by operation type and category
     const operationBreakdownResult = await client.query(`
       SELECT
-        operation_type,
+        COALESCE(operation_type, 'unassigned') as operation_type,
         category,
         SUM(amount) as total,
         COUNT(*) as transaction_count
       FROM transactions
       WHERE ${whereClause}
-        AND operation_type IS NOT NULL
-      GROUP BY operation_type, category
-      ORDER BY operation_type, category
+      GROUP BY COALESCE(operation_type, 'unassigned'), category
+      ORDER BY COALESCE(operation_type, 'unassigned'), category
     `, params);
 
     // Get overall totals by operation
     const operationTotalsResult = await client.query(`
       SELECT
-        operation_type,
+        COALESCE(operation_type, 'unassigned') as operation_type,
         SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) as revenue,
         SUM(CASE WHEN amount < 0 THEN amount ELSE 0 END) as expenses,
         SUM(amount) as net_profit,
         COUNT(*) as transaction_count
       FROM transactions
       WHERE ${whereClause}
-        AND operation_type IS NOT NULL
-      GROUP BY operation_type
-      ORDER BY operation_type
+      GROUP BY COALESCE(operation_type, 'unassigned')
+      ORDER BY COALESCE(operation_type, 'unassigned')
     `, params);
 
     // Build operation breakdown structure

@@ -172,6 +172,7 @@ func (h *FulfillContractHandler) recordContractFulfillment(
 		Metadata:          metadata,
 		RelatedEntityType: "contract",
 		RelatedEntityID:   contract.ContractID(),
+		OperationType:     "contract",
 	}
 
 	// Record transaction via mediator

@@ -590,6 +590,7 @@ Examples:
 				nil, // shipRepo (not needed for this CLI command)
 				nil, // waypointProvider (not needed for this CLI command)
 				nil, // shipAssignmentRepo (not needed for this CLI command)
+				nil, // containerRepo (not needed for this CLI command)
 				nil, // daemonClient (not needed for this CLI command)
 			)
 			mediator, err := registry.CreateConfiguredMediator()

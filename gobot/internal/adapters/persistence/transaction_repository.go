@@ -192,6 +192,7 @@ func (r *GormTransactionRepository) modelToTransaction(model *TransactionModel) 
 		metadata,
 		model.RelatedEntityType,
 		model.RelatedEntityID,
+		model.OperationType,
 	), nil
 }
 
@@ -220,5 +221,6 @@ func (r *GormTransactionRepository) transactionToModel(tx *ledger.Transaction) (
 		Metadata:          metadataJSON,
 		RelatedEntityType: tx.RelatedEntityType(),
 		RelatedEntityID:   tx.RelatedEntityID(),
+		OperationType:     tx.OperationType(),
 	}, nil
 }

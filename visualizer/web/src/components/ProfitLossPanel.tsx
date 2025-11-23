@@ -7,6 +7,7 @@ const OPERATION_COLORS: Record<string, string> = {
   OPERATIONAL: '#F59E0B',
   MINING: '#3B82F6',
   TRANSPORT: '#EC4899',
+  UNASSIGNED: '#6B7280',
 };
 
 export function ProfitLossPanel() {

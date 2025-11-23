@@ -29,6 +29,7 @@ type HandlerRegistry struct {
 	shipRepo           navigation.ShipRepository
 	waypointProvider   system.IWaypointProvider
 	shipAssignmentRepo container.ShipAssignmentRepository
+	containerRepo      tradingCommands.ContainerRepository
 	daemonClient       daemon.DaemonClient
 }
 
@@ -41,6 +42,7 @@ func NewHandlerRegistry(
 	shipRepo navigation.ShipRepository,
 	waypointProvider system.IWaypointProvider,
 	shipAssignmentRepo container.ShipAssignmentRepository,
+	containerRepo tradingCommands.ContainerRepository,
 	daemonClient daemon.DaemonClient,
 ) *HandlerRegistry {
 	// Default to real clock if not provided
@@ -56,6 +58,7 @@ func NewHandlerRegistry(
 		shipRepo:           shipRepo,
 		waypointProvider:   waypointProvider,
 		shipAssignmentRepo: shipAssignmentRepo,
+		containerRepo:      containerRepo,
 		daemonClient:       daemonClient,
 	}
 }
@@ -150,6 +153,7 @@ func (r *HandlerRegistry) RegisterArbitrageHandlers(m common.Mediator) error {
 		opportunityFinder,
 		r.shipRepo,
 		r.shipAssignmentRepo,
+		r.containerRepo,
 		r.daemonClient,
 		m,
 		r.clock,

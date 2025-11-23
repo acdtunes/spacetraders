@@ -306,6 +306,7 @@ func (h *CargoTransactionHandler) recordCargoTransaction(
 	if cmd.Context != nil && cmd.Context.IsValid() {
 		recordCmd.RelatedEntityType = "container"
 		recordCmd.RelatedEntityID = cmd.Context.ContainerID
+		recordCmd.OperationType = cmd.Context.NormalizedOperationType()
 	}
 
 	// Record transaction via mediator

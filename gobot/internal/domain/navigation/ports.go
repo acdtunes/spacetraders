@@ -38,7 +38,8 @@ type ShipCommandRepository interface {
 	Orbit(ctx context.Context, ship *Ship, playerID shared.PlayerID) error
 
 	// Refuel refuels the ship (updates via API)
-	Refuel(ctx context.Context, ship *Ship, playerID shared.PlayerID, units *int) error
+	// Returns RefuelResult with actual cost from API
+	Refuel(ctx context.Context, ship *Ship, playerID shared.PlayerID, units *int) (*RefuelResult, error)
 
 	// SetFlightMode sets the ship's flight mode (updates via API)
 	SetFlightMode(ctx context.Context, ship *Ship, playerID shared.PlayerID, mode string) error

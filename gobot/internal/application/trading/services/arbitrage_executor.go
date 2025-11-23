@@ -109,6 +109,7 @@ func (e *ArbitrageExecutor) Execute(
 		Destination:  opportunity.BuyMarket().Symbol,
 		PlayerID:     playerIDValue,
 		PreferCruise: false, // Use BURN for speed
+		Context:      opContext,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("navigation to buy market failed: %w", err)
@@ -181,6 +182,7 @@ func (e *ArbitrageExecutor) Execute(
 		Destination:  opportunity.SellMarket().Symbol,
 		PlayerID:     playerIDValue,
 		PreferCruise: false,
+		Context:      opContext,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("navigation to sell market failed: %w", err)

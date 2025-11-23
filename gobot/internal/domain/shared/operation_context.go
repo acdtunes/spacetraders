@@ -54,3 +54,29 @@ func (c *OperationContext) String() string {
 	}
 	return c.OperationType + ":" + c.ContainerID
 }
+
+// NormalizedOperationType converts command_type to normalized operation_type for ledger
+// Maps from container command types to user-facing operation types:
+//   - arbitrage_worker → arbitrage
+//   - contract_workflow → contract
+//   - balance_ship_position → rebalancing
+//   - goods_factory_coordinator → factory
+func (c *OperationContext) NormalizedOperationType() string {
+	if c == nil || c.OperationType == "" {
+		return ""
+	}
+
+	switch c.OperationType {
+	case "arbitrage_worker":
+		return "arbitrage"
+	case "contract_workflow":
+		return "contract"
+	case "balance_ship_position":
+		return "rebalancing"
+	case "goods_factory_coordinator":
+		return "factory"
+	default:
+		// Return as-is for unknown types
+		return c.OperationType
+	}
+}

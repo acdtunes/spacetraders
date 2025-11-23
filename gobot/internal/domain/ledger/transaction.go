@@ -22,6 +22,7 @@ type Transaction struct {
 	metadata          map[string]interface{}
 	relatedEntityType string // e.g., "contract", "factory", "ship_purchase"
 	relatedEntityID   string // ID of related entity
+	operationType     string // e.g., "contract", "arbitrage", "rebalancing", "factory"
 }
 
 // NewTransaction creates a new transaction with validation
@@ -36,6 +37,7 @@ func NewTransaction(
 	metadata map[string]interface{},
 	relatedEntityType string,
 	relatedEntityID string,
+	operationType string,
 ) (*Transaction, error) {
 	// Generate new transaction ID
 	id := NewTransactionID()
@@ -79,6 +81,7 @@ func NewTransaction(
 		metadata:          metadata,
 		relatedEntityType: relatedEntityType,
 		relatedEntityID:   relatedEntityID,
+		operationType:     operationType,
 	}
 
 	// Validate invariants
@@ -104,6 +107,7 @@ func ReconstructTransaction(
 	metadata map[string]interface{},
 	relatedEntityType string,
 	relatedEntityID string,
+	operationType string,
 ) *Transaction {
 	return &Transaction{
 		id:                id,
@@ -118,6 +122,7 @@ func ReconstructTransaction(
 		metadata:          metadata,
 		relatedEntityType: relatedEntityType,
 		relatedEntityID:   relatedEntityID,
+		operationType:     operationType,
 	}
 }
 
@@ -210,6 +215,10 @@ func (t *Transaction) RelatedEntityType() string {
 
 func (t *Transaction) RelatedEntityID() string {
 	return t.relatedEntityID
+}
+
+func (t *Transaction) OperationType() string {
+	return t.operationType
 }
 
 // Business logic methods

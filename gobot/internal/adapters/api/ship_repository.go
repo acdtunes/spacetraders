@@ -183,17 +183,17 @@ func (r *ShipRepository) Orbit(ctx context.Context, ship *navigation.Ship, playe
 }
 
 // Refuel refuels the ship via API
-func (r *ShipRepository) Refuel(ctx context.Context, ship *navigation.Ship, playerID shared.PlayerID, units *int) error {
+func (r *ShipRepository) Refuel(ctx context.Context, ship *navigation.Ship, playerID shared.PlayerID, units *int) (*navigation.RefuelResult, error) {
 	// Get player token
 	player, err := r.playerRepo.FindByID(ctx, playerID)
 	if err != nil {
-		return fmt.Errorf("failed to find player: %w", err)
+		return nil, fmt.Errorf("failed to find player: %w", err)
 	}
 
 	// Call API to refuel ship
 	refuelResult, err := r.apiClient.RefuelShip(ctx, ship.ShipSymbol(), player.Token, units)
 	if err != nil {
-		return fmt.Errorf("failed to refuel ship: %w", err)
+		return nil, fmt.Errorf("failed to refuel ship: %w", err)
 	}
 
 	// Update ship domain entity state
@@ -201,18 +201,16 @@ func (r *ShipRepository) Refuel(ctx context.Context, ship *navigation.Ship, play
 	if units != nil {
 		// Add specific amount
 		if err := ship.Refuel(*units); err != nil {
-			return fmt.Errorf("failed to update ship fuel: %w", err)
+			return nil, fmt.Errorf("failed to update ship fuel: %w", err)
 		}
 	} else {
 		// Refuel to full
 		if _, err := ship.RefuelToFull(); err != nil {
-			return fmt.Errorf("failed to update ship fuel: %w", err)
+			return nil, fmt.Errorf("failed to update ship fuel: %w", err)
 		}
 	}
 
-	_ = refuelResult // Acknowledge we have the result
-
-	return nil
+	return refuelResult, nil
 }
 
 // SetFlightMode sets the ship's flight mode via API

@@ -208,6 +208,7 @@ type TransactionModel struct {
 	Metadata          string       `gorm:"column:metadata;type:jsonb"`                               // JSON metadata
 	RelatedEntityType string       `gorm:"column:related_entity_type;index:idx_related;size:50"`    // e.g., "contract", "factory"
 	RelatedEntityID   string       `gorm:"column:related_entity_id;index:idx_related;size:100"`     // ID of related entity
+	OperationType     string       `gorm:"column:operation_type;size:50"`                            // e.g., "contract", "arbitrage", "rebalancing", "factory"
 	CreatedAt         time.Time    `gorm:"column:created_at;not null;autoCreateTime"`
 }
 

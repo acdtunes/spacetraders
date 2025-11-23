@@ -17,6 +17,11 @@ import (
 	"github.com/google/uuid"
 )
 
+// ContainerRepository defines persistence operations for containers
+type ContainerRepository interface {
+	Add(ctx context.Context, containerEntity *container.Container, commandType string) error
+}
+
 // RunArbitrageCoordinatorCommand coordinates parallel arbitrage trading operations
 type RunArbitrageCoordinatorCommand struct {
 	SystemSymbol string  // System to scan for opportunities
@@ -48,6 +53,7 @@ type RunArbitrageCoordinatorHandler struct {
 	opportunityFinder  *services.ArbitrageOpportunityFinder
 	shipRepo           navigation.ShipRepository
 	shipAssignmentRepo container.ShipAssignmentRepository
+	containerRepo      ContainerRepository
 	daemonClient       daemon.DaemonClient
 	mediator           common.Mediator
 	clock              shared.Clock
@@ -58,6 +64,7 @@ func NewRunArbitrageCoordinatorHandler(
 	opportunityFinder *services.ArbitrageOpportunityFinder,
 	shipRepo navigation.ShipRepository,
 	shipAssignmentRepo container.ShipAssignmentRepository,
+	containerRepo ContainerRepository,
 	daemonClient daemon.DaemonClient,
 	mediator common.Mediator,
 	clock shared.Clock,
@@ -70,6 +77,7 @@ func NewRunArbitrageCoordinatorHandler(
 		opportunityFinder:  opportunityFinder,
 		shipRepo:           shipRepo,
 		shipAssignmentRepo: shipAssignmentRepo,
+		containerRepo:      containerRepo,
 		daemonClient:       daemonClient,
 		mediator:           mediator,
 		clock:              clock,
@@ -251,6 +259,31 @@ func (h *RunArbitrageCoordinatorHandler) spawnWorkers(
 				ContainerID: workerID,
 			}
 
+			// Create worker container entity
+			workerContainer := container.NewContainer(
+				workerID,
+				container.ContainerTypeArbitrageWorker,
+				cmd.PlayerID,
+				1, // Single iteration (execute one trade)
+				map[string]interface{}{
+					"ship_symbol":  shipSymbol,
+					"good":         opportunity.Good(),
+					"buy_market":   opportunity.BuyMarket(),
+					"sell_market":  opportunity.SellMarket(),
+					"profit":       opportunity.EstimatedProfit(),
+					"margin":       opportunity.ProfitMargin(),
+					"container_id": workerID,
+				},
+				h.clock,
+			)
+
+			// Persist worker container BEFORE ship assignment
+			err := h.containerRepo.Add(ctx, workerContainer, "arbitrage_worker")
+			if err != nil {
+				logger.Log("ERROR", fmt.Sprintf("Failed to persist worker container %s: %v", workerID, err), nil)
+				return
+			}
+
 			// Assign ship to worker (atomic)
 			assignment := container.NewShipAssignment(
 				shipSymbol,
@@ -258,7 +291,7 @@ func (h *RunArbitrageCoordinatorHandler) spawnWorkers(
 				workerID,
 				h.clock,
 			)
-			err := h.shipAssignmentRepo.Assign(ctx, assignment)
+			err = h.shipAssignmentRepo.Assign(ctx, assignment)
 			if err != nil {
 				logger.Log("ERROR", fmt.Sprintf("Failed to assign ship %s: %v", shipSymbol, err), nil)
 				return

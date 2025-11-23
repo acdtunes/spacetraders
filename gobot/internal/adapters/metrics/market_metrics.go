@@ -321,10 +321,11 @@ func (c *MarketMetricsCollector) getActivePlayersAndSystems() ([]int, []string) 
 	}
 
 	// Query to get distinct player_id and system combinations
+	// PostgreSQL-compatible: Extract system symbol (first two parts: X1-AU21)
 	err := c.db.Raw(`
 		SELECT DISTINCT
 			player_id,
-			SUBSTRING_INDEX(waypoint_symbol, '-', 2) as system_symbol
+			split_part(waypoint_symbol, '-', 1) || '-' || split_part(waypoint_symbol, '-', 2) as system_symbol
 		FROM market_data
 	`).Scan(&results).Error
 
@@ -398,8 +399,9 @@ func (c *MarketMetricsCollector) updateCoverageMetrics(playerID int, systemSymbo
 		Age int64
 	}
 
+	// PostgreSQL-compatible: Calculate age in seconds
 	err = c.db.Raw(`
-		SELECT TIMESTAMPDIFF(SECOND, last_updated, NOW()) as age
+		SELECT EXTRACT(EPOCH FROM (NOW() - last_updated))::bigint as age
 		FROM (
 			SELECT DISTINCT waypoint_symbol, MAX(last_updated) as last_updated
 			FROM market_data
@@ -556,6 +558,7 @@ func (c *MarketMetricsCollector) updateTradingOpportunities(playerID int, system
 		MaxWaypoint     string
 	}
 
+	// PostgreSQL-compatible: Include player_id in GROUP BY to avoid ungrouped column error
 	err := c.db.Raw(`
 		SELECT
 			good_symbol,
@@ -563,18 +566,18 @@ func (c *MarketMetricsCollector) updateTradingOpportunities(playerID int, system
 			MAX(purchase_price) as max_purchase_price,
 			(SELECT waypoint_symbol FROM market_data md2
 			 WHERE md2.good_symbol = md1.good_symbol
-			 AND md2.player_id = md1.player_id
+			 AND md2.player_id = ?
 			 AND md2.waypoint_symbol LIKE ?
 			 ORDER BY sell_price ASC LIMIT 1) as min_waypoint,
 			(SELECT waypoint_symbol FROM market_data md3
 			 WHERE md3.good_symbol = md1.good_symbol
-			 AND md3.player_id = md1.player_id
+			 AND md3.player_id = ?
 			 AND md3.waypoint_symbol LIKE ?
 			 ORDER BY purchase_price DESC LIMIT 1) as max_waypoint
 		FROM market_data md1
 		WHERE player_id = ? AND waypoint_symbol LIKE ?
 		GROUP BY good_symbol
-	`, systemSymbol+"-%", systemSymbol+"-%", playerID, systemSymbol+"-%").Scan(&priceData).Error
+	`, playerID, systemSymbol+"-%", playerID, systemSymbol+"-%", playerID, systemSymbol+"-%").Scan(&priceData).Error
 
 	if err != nil {
 		log.Printf("Failed to get trading opportunity data: %v", err)

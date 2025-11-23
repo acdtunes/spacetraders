@@ -71,11 +71,12 @@ func (h *RefuelShipHandler) Handle(ctx context.Context, request common.Request) 
 
 	fuelBefore := ship.Fuel().Current
 
-	if err := h.refuelShipViaAPI(ctx, ship, cmd); err != nil {
+	refuelResult, err := h.refuelShipViaAPI(ctx, ship, cmd)
+	if err != nil {
 		return nil, err
 	}
 
-	response := h.buildRefuelResponse(ship, fuelBefore)
+	response := h.buildRefuelResponse(ship, fuelBefore, refuelResult)
 
 	// Record fuel purchase metrics
 	metrics.RecordFuelPurchase(
@@ -121,21 +122,21 @@ func (h *RefuelShipHandler) ensureShipDockedForRefuel(ctx context.Context, ship 
 	return nil
 }
 
-func (h *RefuelShipHandler) refuelShipViaAPI(ctx context.Context, ship *navigation.Ship, cmd *types.RefuelShipCommand) error {
-	if err := h.shipRepo.Refuel(ctx, ship, cmd.PlayerID, cmd.Units); err != nil {
-		return fmt.Errorf("failed to refuel ship: %w", err)
+func (h *RefuelShipHandler) refuelShipViaAPI(ctx context.Context, ship *navigation.Ship, cmd *types.RefuelShipCommand) (*navigation.RefuelResult, error) {
+	result, err := h.shipRepo.Refuel(ctx, ship, cmd.PlayerID, cmd.Units)
+	if err != nil {
+		return nil, fmt.Errorf("failed to refuel ship: %w", err)
 	}
-	return nil
+	return result, nil
 }
 
-func (h *RefuelShipHandler) buildRefuelResponse(ship *navigation.Ship, fuelBefore int) *types.RefuelShipResponse {
+func (h *RefuelShipHandler) buildRefuelResponse(ship *navigation.Ship, fuelBefore int, refuelResult *navigation.RefuelResult) *types.RefuelShipResponse {
 	fuelAdded := ship.Fuel().Current - fuelBefore
-	creditsCost := fuelAdded * 100
 
 	return &types.RefuelShipResponse{
 		FuelAdded:    fuelAdded,
 		CurrentFuel:  ship.Fuel().Current,
-		CreditsCost:  creditsCost,
+		CreditsCost:  refuelResult.CreditsCost, // Use actual cost from API
 		Status:       "refueled",
 		FuelCapacity: ship.Fuel().Capacity,
 	}
@@ -197,6 +198,7 @@ func (h *RefuelShipHandler) recordRefuelTransaction(
 	if cmd.Context != nil && cmd.Context.IsValid() {
 		recordCmd.RelatedEntityType = "container"
 		recordCmd.RelatedEntityID = cmd.Context.ContainerID
+		recordCmd.OperationType = cmd.Context.NormalizedOperationType()
 	}
 
 	// Record transaction via mediator
