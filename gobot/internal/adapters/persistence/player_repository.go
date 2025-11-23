@@ -99,6 +99,9 @@ func (r *GormPlayerRepository) playerToModel(player *player.Player) (*PlayerMode
 			return nil, fmt.Errorf("failed to marshal metadata: %w", err)
 		}
 		metadataJSON = string(bytes)
+	} else {
+		// Use empty JSON object for nil metadata (JSONB column rejects empty strings)
+		metadataJSON = "{}"
 	}
 
 	return &PlayerModel{

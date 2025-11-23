@@ -78,7 +78,7 @@ type ShipAssignmentModel struct {
 	ShipSymbol    string          `gorm:"column:ship_symbol;primaryKey;not null"`
 	PlayerID      int             `gorm:"column:player_id;primaryKey;not null"`
 	Player        *PlayerModel    `gorm:"foreignKey:PlayerID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
-	ContainerID   string          `gorm:"column:container_id"`
+	ContainerID   *string         `gorm:"column:container_id"` // Pointer to support NULL for idle ships
 	Container     *ContainerModel `gorm:"foreignKey:ContainerID,PlayerID;references:ID,PlayerID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL;"`
 	Status        string          `gorm:"column:status;default:'idle'"`
 	AssignedAt    *time.Time      `gorm:"column:assigned_at"`

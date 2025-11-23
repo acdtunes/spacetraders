@@ -37,10 +37,17 @@ func (r *ShipAssignmentRepositoryGORM) Assign(
 			assignment.ShipSymbol(), existingAssignment.ContainerID())
 	}
 
+	// Convert empty container ID to NULL for database (FK constraint compatibility)
+	containerID := assignment.ContainerID()
+	var containerIDPtr *string
+	if containerID != "" {
+		containerIDPtr = &containerID
+	}
+
 	model := &ShipAssignmentModel{
 		ShipSymbol:  assignment.ShipSymbol(),
 		PlayerID:    assignment.PlayerID(),
-		ContainerID: assignment.ContainerID(),
+		ContainerID: containerIDPtr, // Use pointer to support NULL
 		Status:      string(assignment.Status()),
 		AssignedAt:  &[]time.Time{assignment.AssignedAt()}[0],
 	}
@@ -78,11 +85,16 @@ func (r *ShipAssignmentRepositoryGORM) FindByShip(
 		return nil, fmt.Errorf("failed to find ship assignment: %w", err)
 	}
 
-	// Convert model to domain entity
+	// Convert model to domain entity (handle NULL container_id)
+	containerID := ""
+	if model.ContainerID != nil {
+		containerID = *model.ContainerID
+	}
+
 	assignment := container.NewShipAssignment(
 		model.ShipSymbol,
 		model.PlayerID,
-		model.ContainerID,
+		containerID,
 		nil, // Clock not needed for retrieval
 	)
 
@@ -117,10 +129,16 @@ func (r *ShipAssignmentRepositoryGORM) FindByContainer(
 
 	assignments := make([]*container.ShipAssignment, 0, len(models))
 	for _, model := range models {
+		// Handle NULL container_id
+		containerID := ""
+		if model.ContainerID != nil {
+			containerID = *model.ContainerID
+		}
+
 		assignment := container.NewShipAssignment(
 			model.ShipSymbol,
 			model.PlayerID,
-			model.ContainerID,
+			containerID,
 			nil, // Clock not needed for retrieval
 		)
 		assignments = append(assignments, assignment)

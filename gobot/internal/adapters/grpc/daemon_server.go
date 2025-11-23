@@ -780,7 +780,7 @@ func (s *DaemonServer) recoverContainer(ctx context.Context, containerModel *per
 		assignmentEntity := &persistence.ShipAssignmentModel{
 			ShipSymbol:  shipSymbol,
 			PlayerID:    containerModel.PlayerID,
-			ContainerID: containerModel.ID,
+			ContainerID: &containerModel.ID, // Convert string to *string
 			Status:      "active",
 			AssignedAt:  containerModel.StartedAt,
 		}
@@ -851,10 +851,16 @@ func (s *DaemonServer) markContainerFailed(ctx context.Context, containerModel *
 // containerModelToShipAssignment converts a ShipAssignmentModel to domain entity
 // This is a helper for the recovery process
 func containerModelToShipAssignment(model *persistence.ShipAssignmentModel) *container.ShipAssignment {
+	// Handle NULL container_id
+	containerID := ""
+	if model.ContainerID != nil {
+		containerID = *model.ContainerID
+	}
+
 	return container.NewShipAssignment(
 		model.ShipSymbol,
 		model.PlayerID,
-		model.ContainerID,
+		containerID,
 		nil, // Clock not needed
 	)
 }
