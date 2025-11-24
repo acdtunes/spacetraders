@@ -131,7 +131,7 @@ func (r *HandlerRegistry) RegisterArbitrageHandlers(m common.Mediator) error {
 		r.waypointProvider,
 		analyzer,
 	)
-	executor := tradingServices.NewArbitrageExecutor(m, r.shipRepo, r.arbitrageExecutionLogRepo, r.marketRepo)
+	executor := tradingServices.NewArbitrageExecutor(m, r.shipRepo, r.arbitrageExecutionLogRepo)
 
 	// Register FindArbitrageOpportunitiesQuery handler
 	findOpportunitiesHandler := tradingQueries.NewFindArbitrageOpportunitiesHandler(opportunityFinder)
@@ -143,7 +143,7 @@ func (r *HandlerRegistry) RegisterArbitrageHandlers(m common.Mediator) error {
 	}
 
 	// Register RunArbitrageWorkerCommand handler
-	workerHandler := tradingCommands.NewRunArbitrageWorkerHandler(executor, r.shipRepo)
+	workerHandler := tradingCommands.NewRunArbitrageWorkerHandler(executor, r.shipRepo, r.marketRepo, m)
 	if err := m.Register(
 		reflect.TypeOf(&tradingCommands.RunArbitrageWorkerCommand{}),
 		workerHandler,
@@ -157,7 +157,6 @@ func (r *HandlerRegistry) RegisterArbitrageHandlers(m common.Mediator) error {
 		r.shipRepo,
 		r.shipAssignmentRepo,
 		r.containerRepo,
-		r.logRepo,
 		r.daemonClient,
 		m,
 		r.clock,
