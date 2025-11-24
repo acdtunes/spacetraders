@@ -11,14 +11,16 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	ledgerQueries "github.com/andrescamacho/spacetraders-go/internal/application/ledger/queries"
-	playerQueries "github.com/andrescamacho/spacetraders-go/internal/application/player/queries"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
 // FinancialMetricsCollector handles all financial metrics (credits, transactions, P&L)
 type FinancialMetricsCollector struct {
 	// Dependencies
 	mediator      common.Mediator
-	getContainers func() map[string]ContainerInfo // Function to get current containers
+	playerRepo    player.PlayerRepository           // For fetching player data
+	getContainers func() map[string]ContainerInfo   // Function to get current containers
 
 	// Balance metrics
 	creditsBalance *prometheus.GaugeVec
@@ -45,10 +47,12 @@ type FinancialMetricsCollector struct {
 // NewFinancialMetricsCollector creates a new financial metrics collector
 func NewFinancialMetricsCollector(
 	mediator common.Mediator,
+	playerRepo player.PlayerRepository,
 	getContainers func() map[string]ContainerInfo,
 ) *FinancialMetricsCollector {
 	return &FinancialMetricsCollector{
 		mediator:      mediator,
+		playerRepo:    playerRepo,
 		getContainers: getContainers,
 
 		// Current credits balance gauge
@@ -249,27 +253,17 @@ func (c *FinancialMetricsCollector) updateProfitLoss() {
 
 		playerIDStr := strconv.Itoa(playerID)
 
-		// Fetch current player data (including real-time credits and agent symbol) from API
-		getPlayerQuery := &playerQueries.GetPlayerQuery{
-			PlayerID: &playerID,
-		}
-
-		playerResp, err := c.mediator.Send(context.Background(), getPlayerQuery)
+		// Fetch player data from database to get agent symbol
+		playerEntity, err := c.playerRepo.FindByID(context.Background(), shared.MustNewPlayerID(playerID))
 		if err != nil {
-			log.Printf("Failed to fetch player %d for balance update: %v", playerID, err)
+			log.Printf("Failed to fetch player %d from database: %v", playerID, err)
 			continue // Skip this player if we can't fetch their data
 		}
 
-		playerData, ok := playerResp.(*playerQueries.GetPlayerResponse)
-		if !ok || playerData.Player == nil {
-			log.Printf("Unexpected response type for GetPlayer query: %T", playerResp)
-			continue
-		}
+		agentSymbol := playerEntity.AgentSymbol
 
-		agentSymbol := playerData.Player.AgentSymbol
-
-		// Update credits balance with actual agent symbol and current credits
-		c.creditsBalance.WithLabelValues(playerIDStr, agentSymbol).Set(float64(playerData.Player.Credits))
+		// Update credits balance with database credits value
+		c.creditsBalance.WithLabelValues(playerIDStr, agentSymbol).Set(float64(playerEntity.Credits))
 
 		// Update revenue metrics by category
 		for category, amount := range plResponse.RevenueBreakdown {

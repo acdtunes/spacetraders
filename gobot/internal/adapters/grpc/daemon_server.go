@@ -30,6 +30,7 @@ import (
 	tradingCmd "github.com/andrescamacho/spacetraders-go/internal/application/trading/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/routing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
@@ -96,6 +97,7 @@ func NewDaemonServer(
 	shipAssignmentRepo *persistence.ShipAssignmentRepositoryGORM,
 	waypointRepo *persistence.GormWaypointRepository,
 	shipRepo navigation.ShipRepository,
+	playerRepo player.PlayerRepository,
 	routingClient routing.RoutingClient,
 	goodsFactoryRepo *persistence.GormGoodsFactoryRepository,
 	socketPath string,
@@ -175,7 +177,7 @@ func NewDaemonServer(
 		metrics.SetGlobalNavigationCollector(navCollector)
 
 		// Create financial metrics collector
-		finCollector := metrics.NewFinancialMetricsCollector(mediator, getContainers)
+		finCollector := metrics.NewFinancialMetricsCollector(mediator, playerRepo, getContainers)
 		if err := finCollector.Register(); err != nil {
 			listener.Close()
 			return nil, fmt.Errorf("failed to register financial metrics collector: %w", err)
