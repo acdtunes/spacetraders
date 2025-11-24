@@ -20,6 +20,21 @@ import (
 	"github.com/google/uuid"
 )
 
+// workerLogger is a lightweight logger for arbitrage workers
+// It implements the ContainerLogger interface and logs to stdout with container ID
+type workerLogger struct {
+	containerID string
+}
+
+// Log implements the ContainerLogger interface
+func (w *workerLogger) Log(level, message string, metadata map[string]interface{}) {
+	timestamp := time.Now().Format(time.RFC3339)
+	fmt.Printf("[%s] [%s] %s: %s\n", timestamp, w.containerID, level, message)
+	if metadata != nil && len(metadata) > 0 {
+		fmt.Printf("[%s] [%s]   metadata: %+v\n", timestamp, w.containerID, metadata)
+	}
+}
+
 // ContainerRepository defines persistence operations for containers
 type ContainerRepository interface {
 	Add(ctx context.Context, containerEntity *container.Container, commandType string) error
@@ -222,7 +237,9 @@ func (h *RunArbitrageCoordinatorHandler) discoverIdleShips(
 	}
 }
 
-// spawnWorkers spawns parallel workers for available ships and opportunities
+// spawnWorkers spawns parallel workers for available ships and opportunities.
+// Uses profit-first assignment: for each opportunity (sorted by profitability),
+// assigns the closest available ship to minimize travel costs.
 func (h *RunArbitrageCoordinatorHandler) spawnWorkers(
 	ctx context.Context,
 	cmd *RunArbitrageCoordinatorCommand,
@@ -277,28 +294,92 @@ func (h *RunArbitrageCoordinatorHandler) spawnWorkers(
 		}
 	}
 
+	// Load full ship entities to get their locations
+	playerID := shared.MustNewPlayerID(cmd.PlayerID)
+	shipEntities := make(map[string]*navigation.Ship)
+	for _, shipSymbol := range idleShips {
+		ship, err := h.shipRepo.FindBySymbol(ctx, shipSymbol, playerID)
+		if err != nil {
+			logger.Log("ERROR", fmt.Sprintf("Failed to load ship %s: %v", shipSymbol, err), nil)
+			continue
+		}
+		shipEntities[shipSymbol] = ship
+	}
+
+	// Assign ships to opportunities using profit-first algorithm:
+	// For each opportunity (sorted by profitability), find the closest ship
+	type assignment struct {
+		shipSymbol string
+		opportunity *trading.ArbitrageOpportunity
+		distance   float64
+	}
+
+	var assignments []assignment
+	availableShips := make(map[string]*navigation.Ship)
+	for k, v := range shipEntities {
+		availableShips[k] = v
+	}
+
+	// Limit to min(ships, opportunities, maxWorkers)
+	maxAssignments := len(availableShips)
+	if maxAssignments > len(opportunities) {
+		maxAssignments = len(opportunities)
+	}
+	if maxAssignments > maxWorkers {
+		maxAssignments = maxWorkers
+	}
+
+	// For each opportunity (in order of profitability), assign closest ship
+	for i := 0; i < len(opportunities) && len(assignments) < maxAssignments; i++ {
+		opp := opportunities[i]
+		buyMarket := opp.BuyMarket()
+
+		// Find closest available ship to the buy market
+		var closestShip string
+		var closestDistance float64 = -1
+
+		for shipSymbol, ship := range availableShips {
+			distance := ship.CurrentLocation().DistanceTo(buyMarket)
+			if closestDistance < 0 || distance < closestDistance {
+				closestDistance = distance
+				closestShip = shipSymbol
+			}
+		}
+
+		if closestShip == "" {
+			break // No more ships available
+		}
+
+		// Assign ship to this opportunity
+		assignments = append(assignments, assignment{
+			shipSymbol: closestShip,
+			opportunity: opp,
+			distance:   closestDistance,
+		})
+
+		// Remove ship from available pool
+		delete(availableShips, closestShip)
+
+		logger.Log("INFO", fmt.Sprintf("Assigned ship %s to opportunity %s (distance: %.1f, margin: %.1f%%)",
+			closestShip, opp.Good(), closestDistance, opp.ProfitMargin()), map[string]interface{}{
+			"ship": closestShip,
+			"good": opp.Good(),
+			"buy_market": opp.BuyMarket().Symbol,
+			"distance": closestDistance,
+			"margin": opp.ProfitMargin(),
+		})
+	}
+
+	logger.Log("INFO", fmt.Sprintf("Spawning %d arbitrage workers with optimal assignments", len(assignments)), map[string]interface{}{
+		"workers": len(assignments),
+	})
+
 	// Spawn workers in parallel (goroutines)
 	var wg sync.WaitGroup
 
-	// Limit to min(idle ships, opportunities, maxWorkers)
-	numWorkers := len(idleShips)
-	if numWorkers > len(opportunities) {
-		numWorkers = len(opportunities)
-	}
-	if numWorkers > maxWorkers {
-		numWorkers = maxWorkers
-	}
-
-	logger.Log("INFO", fmt.Sprintf("Spawning %d arbitrage workers", numWorkers), map[string]interface{}{
-		"workers": numWorkers,
-	})
-
-	for i := 0; i < numWorkers; i++ {
-		ship := idleShips[i]
-		opp := opportunities[i]
-
+	for _, assign := range assignments {
 		wg.Add(1)
-		go func(shipSymbol string, opportunity *trading.ArbitrageOpportunity) {
+		go func(shipSymbol string, opportunity *trading.ArbitrageOpportunity, distance float64) {
 			defer wg.Done()
 
 			// Create worker container ID
@@ -313,12 +394,14 @@ func (h *RunArbitrageCoordinatorHandler) spawnWorkers(
 				MinBalance:  cmd.MinBalance,
 			}
 
-			// Create worker container entity
+			// Create worker container entity with parent coordinator ID
+			parentContainerID := cmd.ContainerID
 			workerContainer := container.NewContainer(
 				workerID,
 				container.ContainerTypeArbitrageWorker,
 				cmd.PlayerID,
-				1, // Single iteration (execute one trade)
+				1,                    // Single iteration (execute one trade)
+				&parentContainerID,   // Link to parent coordinator for cascading stop
 				map[string]interface{}{
 					"ship_symbol":  shipSymbol,
 					"good":         opportunity.Good(),
@@ -365,12 +448,16 @@ func (h *RunArbitrageCoordinatorHandler) spawnWorkers(
 				shipSymbol, opportunity.Good(), opportunity.ProfitMargin()), nil)
 
 			// Mark container as RUNNING
-			now := h.clock.Now()
-			if err := h.containerRepo.UpdateStatus(ctx, workerID, cmd.PlayerID, container.ContainerStatusRunning, &now, nil, ""); err != nil {
+			if err := h.containerRepo.UpdateStatus(ctx, workerID, cmd.PlayerID, container.ContainerStatusRunning, nil, nil, ""); err != nil {
 				logger.Log("ERROR", fmt.Sprintf("Failed to update container status to RUNNING: %v", err), nil)
 			}
 
-			_, err = h.mediator.Send(ctx, workerCmd)
+			// Create worker-specific context with its own logger
+			// This ensures worker logs go to the worker container, not the coordinator
+			workerLogger := &workerLogger{containerID: workerID}
+			workerCtx := common.WithLogger(ctx, workerLogger)
+
+			_, err = h.mediator.Send(workerCtx, workerCmd)
 
 			// Mark container as COMPLETED or FAILED
 			completedAt := h.clock.Now()
@@ -391,13 +478,13 @@ func (h *RunArbitrageCoordinatorHandler) spawnWorkers(
 				logger.Log("ERROR", fmt.Sprintf("Failed to update container status to COMPLETED: %v", updateErr), nil)
 			}
 
-		}(ship, opp)
+		}(assign.shipSymbol, assign.opportunity, assign.distance)
 	}
 
 	// Wait for batch completion
 	wg.Wait()
 
-	logger.Log("INFO", fmt.Sprintf("Batch of %d workers completed", numWorkers), nil)
+	logger.Log("INFO", fmt.Sprintf("Batch of %d workers completed", len(assignments)), nil)
 }
 
 // resumeInterruptedTrades finds ships with cargo from interrupted workers and completes their trades
