@@ -287,6 +287,9 @@ message ContainerInfo {
 
   // Restart tracking
   int32 restart_count = 9;
+
+  // Parent container ID (null for root containers)
+  optional string parent_container_id = 10;
 }
 
 // GetContainerRequest retrieves container details
@@ -611,6 +614,7 @@ message StartArbitrageCoordinatorRequest {
   string system_symbol = 2; // System to trade in (e.g., "X1-AU21")
   double min_margin = 3; // Minimum profit margin percentage (default 10.0)
   int32 max_workers = 4; // Maximum parallel workers (default 10)
+  int32 min_balance = 5; // Minimum credit balance to maintain (default 0 = no limit)
 }
 
 // StartArbitrageCoordinatorResponse returns coordinator details
@@ -619,6 +623,7 @@ message StartArbitrageCoordinatorResponse {
   string system_symbol = 2;
   double min_margin = 3;
   int32 max_workers = 4;
-  string status = 5;
-  string message = 6;
+  int32 min_balance = 5;
+  string status = 6;
+  string message = 7;
 }

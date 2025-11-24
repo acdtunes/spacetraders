@@ -83,7 +83,8 @@ func (h *BalanceShipPositionHandler) Handle(ctx context.Context, request common.
 		balancingContainerID,
 		domainContainer.ContainerTypeBalancing,
 		cmd.PlayerID.Value(),
-		1, // maxIterations: balancing is single-shot
+		1,   // maxIterations: balancing is single-shot
+		nil, // parentContainerID: root container
 		metadata,
 		shared.NewRealClock(),
 	)
