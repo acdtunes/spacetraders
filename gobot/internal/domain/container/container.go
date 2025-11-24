@@ -72,6 +72,11 @@ const (
 // - Uses LifecycleStateMachine for core state management and timestamps
 // - Adds Container-specific states (STOPPING, INTERRUPTED)
 // - Adds Container-specific features (iterations, restarts, metadata)
+//
+// Parent-Child Relationship:
+// - parentContainerID tracks which coordinator spawned this container
+// - NULL/nil = root container (coordinator, standalone worker)
+// - Non-nil = child container spawned by a coordinator
 type Container struct {
 	id            string
 	containerType ContainerType
@@ -83,6 +88,9 @@ type Container struct {
 	// Container-specific state extensions
 	stopping    bool // Indicates STOPPING state (graceful shutdown)
 	interrupted bool // Indicates INTERRUPTED state (daemon crash recovery)
+
+	// Parent-child relationship tracking
+	parentContainerID *string // ID of parent coordinator (nil for root containers)
 
 	// Iteration tracking for looping operations
 	currentIteration int
@@ -101,11 +109,14 @@ type Container struct {
 
 // NewContainer creates a new container instance
 // If clock is nil, uses RealClock (production behavior)
+// parentContainerID should be nil for root containers (coordinators, standalone workers)
+// and non-nil for child containers spawned by coordinators
 func NewContainer(
 	id string,
 	containerType ContainerType,
 	playerID int,
 	maxIterations int,
+	parentContainerID *string,
 	metadata map[string]interface{},
 	clock shared.Clock,
 ) *Container {
@@ -115,18 +126,19 @@ func NewContainer(
 	}
 
 	return &Container{
-		id:               id,
-		containerType:    containerType,
-		playerID:         playerID,
-		lifecycle:        shared.NewLifecycleStateMachine(clock),
-		stopping:         false,
-		interrupted:      false,
-		currentIteration: 0,
-		maxIterations:    maxIterations,
-		restartCount:     0,
-		maxRestarts:      MaxRestartAttempts,
-		metadata:         metadata,
-		clock:            clock,
+		id:                id,
+		containerType:     containerType,
+		playerID:          playerID,
+		lifecycle:         shared.NewLifecycleStateMachine(clock),
+		stopping:          false,
+		interrupted:       false,
+		parentContainerID: parentContainerID,
+		currentIteration:  0,
+		maxIterations:     maxIterations,
+		restartCount:      0,
+		maxRestarts:       MaxRestartAttempts,
+		metadata:          metadata,
+		clock:             clock,
 	}
 }
 
@@ -135,11 +147,17 @@ func NewContainer(
 func (c *Container) ID() string                       { return c.id }
 func (c *Container) Type() ContainerType              { return c.containerType }
 func (c *Container) PlayerID() int                    { return c.playerID }
+func (c *Container) ParentContainerID() *string       { return c.parentContainerID }
 func (c *Container) CurrentIteration() int            { return c.currentIteration }
 func (c *Container) MaxIterations() int               { return c.maxIterations }
 func (c *Container) RestartCount() int                { return c.restartCount }
 func (c *Container) MaxRestarts() int                 { return c.maxRestarts }
 func (c *Container) Metadata() map[string]interface{} { return c.metadata }
+
+// IsRootContainer returns true if this container has no parent (coordinator or standalone worker)
+func (c *Container) IsRootContainer() bool {
+	return c.parentContainerID == nil
+}
 
 // Lifecycle timestamp accessors (delegate to lifecycle machine)
 

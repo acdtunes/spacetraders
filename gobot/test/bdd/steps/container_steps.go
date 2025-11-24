@@ -67,7 +67,7 @@ func (cc *containerContext) iCreateAContainerWithIDTypePlayerMaxIterations(
 	id string, containerType string, playerID int, maxIterations int,
 ) error {
 	ct := container.ContainerType(containerType)
-	cc.container = container.NewContainer(id, ct, playerID, maxIterations, nil, cc.clock)
+	cc.container = container.NewContainer(id, ct, playerID, maxIterations, nil, nil, cc.clock)
 	return nil
 }
 
@@ -85,7 +85,7 @@ func (cc *containerContext) iCreateAContainerWithIDTypePlayerMaxIterationsMetada
 	}
 
 	ct := container.ContainerType(containerType)
-	cc.container = container.NewContainer(id, ct, playerID, maxIterations, metadata, cc.clock)
+	cc.container = container.NewContainer(id, ct, playerID, maxIterations, nil, metadata, cc.clock)
 	return nil
 }
 
@@ -97,7 +97,8 @@ func (cc *containerContext) aContainerInState(status string) error {
 		container.ContainerTypeMining,
 		1,
 		10,
-		nil,
+		nil, // parentContainerID
+		nil, // metadata
 		cc.clock,
 	)
 
@@ -131,7 +132,8 @@ func (cc *containerContext) aContainerInStateWithRestartCount(status string, res
 		container.ContainerTypeMining,
 		1,
 		10,
-		nil,
+		nil, // parentContainerID
+		nil, // metadata
 		cc.clock,
 	)
 
@@ -164,7 +166,8 @@ func (cc *containerContext) aContainerInStateAtIteration(status string, iteratio
 		container.ContainerTypeMining,
 		1,
 		10,
-		nil,
+		nil, // parentContainerID
+		nil, // metadata
 		cc.clock,
 	)
 
@@ -206,7 +209,8 @@ func (cc *containerContext) aContainerWithMaxIterationsAtIteration(maxIterations
 		container.ContainerTypeMining,
 		1,
 		maxIterations,
-		nil,
+		nil, // parentContainerID
+		nil, // metadata
 		cc.clock,
 	)
 
@@ -230,7 +234,8 @@ func (cc *containerContext) aContainerWithIDInStateWithRestartCount(id string, s
 		container.ContainerTypeMining,
 		1,
 		10,
-		nil,
+		nil, // parentContainerID
+		nil, // metadata
 		cc.clock,
 	)
 
@@ -259,7 +264,8 @@ func (cc *containerContext) aContainerWithIDInState(id string, status string) er
 		container.ContainerTypeMining,
 		1,
 		10,
-		nil,
+		nil, // parentContainerID
+		nil, // metadata
 		cc.clock,
 	)
 
@@ -295,7 +301,8 @@ func (cc *containerContext) aContainerWithNoMetadata() error {
 		container.ContainerTypeMining,
 		1,
 		10,
-		nil,
+		nil, // parentContainerID
+		nil, // metadata
 		cc.clock,
 	)
 	return nil
@@ -317,7 +324,8 @@ func (cc *containerContext) aContainerWithMetadata(table *godog.Table) error {
 		container.ContainerTypeMining,
 		1,
 		10,
-		metadata,
+		nil,      // parentContainerID
+		metadata, // metadata
 		cc.clock,
 	)
 	return nil
@@ -331,7 +339,8 @@ func (cc *containerContext) aContainerStartedMinutesAgoInState(minutes int, stat
 		container.ContainerTypeMining,
 		1,
 		10,
-		nil,
+		nil, // parentContainerID
+		nil, // metadata
 		cc.clock,
 	)
 
@@ -360,7 +369,8 @@ func (cc *containerContext) aContainerThatRanForMinutesAndIsNow(minutes int, sta
 		container.ContainerTypeMining,
 		1,
 		10,
-		nil,
+		nil, // parentContainerID
+		nil, // metadata
 		cc.clock,
 	)
 

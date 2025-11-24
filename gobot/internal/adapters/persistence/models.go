@@ -38,19 +38,20 @@ func (WaypointModel) TableName() string {
 
 // ContainerModel represents the containers table
 type ContainerModel struct {
-	ID            string       `gorm:"column:id;primaryKey;not null"`
-	PlayerID      int          `gorm:"column:player_id;primaryKey;not null;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
-	Player        *PlayerModel `gorm:"foreignKey:PlayerID;references:ID"`
-	ContainerType string       `gorm:"column:container_type"`
-	CommandType   string       `gorm:"column:command_type"`
-	Status        string       `gorm:"column:status"`
-	RestartPolicy string       `gorm:"column:restart_policy"`
-	RestartCount  int          `gorm:"column:restart_count;default:0"`
-	Config        string       `gorm:"column:config;type:text"` // JSON as text
-	StartedAt     *time.Time   `gorm:"column:started_at"`
-	StoppedAt     *time.Time   `gorm:"column:stopped_at"`
-	ExitCode      *int         `gorm:"column:exit_code"`
-	ExitReason    string       `gorm:"column:exit_reason"`
+	ID                string       `gorm:"column:id;primaryKey;not null"`
+	PlayerID          int          `gorm:"column:player_id;primaryKey;not null;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
+	Player            *PlayerModel `gorm:"foreignKey:PlayerID;references:ID"`
+	ContainerType     string       `gorm:"column:container_type"`
+	CommandType       string       `gorm:"column:command_type"`
+	Status            string       `gorm:"column:status"`
+	ParentContainerID *string      `gorm:"column:parent_container_id;index:idx_containers_parent_player"` // ID of parent coordinator (NULL for root containers)
+	RestartPolicy     string       `gorm:"column:restart_policy"`
+	RestartCount      int          `gorm:"column:restart_count;default:0"`
+	Config            string       `gorm:"column:config;type:text"` // JSON as text
+	StartedAt         *time.Time   `gorm:"column:started_at"`
+	StoppedAt         *time.Time   `gorm:"column:stopped_at"`
+	ExitCode          *int         `gorm:"column:exit_code"`
+	ExitReason        string       `gorm:"column:exit_reason"`
 }
 
 func (ContainerModel) TableName() string {

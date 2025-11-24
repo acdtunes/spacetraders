@@ -224,6 +224,7 @@ func (dc *daemonContext) onlyContainerExists(containerID string) error {
 		container.ContainerTypeMining,
 		1,   // playerID
 		10,  // maxIterations
+		nil, // parentContainerID
 		nil, // metadata
 		dc.clock,
 	)
@@ -238,6 +239,7 @@ func (dc *daemonContext) containersAndExist(containerID1, containerID2 string) e
 		container.ContainerTypeMining,
 		1,   // playerID
 		10,  // maxIterations
+		nil, // parentContainerID
 		nil, // metadata
 		dc.clock,
 	)
@@ -246,6 +248,7 @@ func (dc *daemonContext) containersAndExist(containerID1, containerID2 string) e
 		container.ContainerTypeMining,
 		1,   // playerID
 		10,  // maxIterations
+		nil, // parentContainerID
 		nil, // metadata
 		dc.clock,
 	)
@@ -306,6 +309,7 @@ func (dc *daemonContext) aRunningContainerWithInfiniteIterations(containerID str
 		container.ContainerTypeMining,
 		1,   // playerID
 		-1,  // -1 = infinite
+		nil, // parentContainerID
 		nil, // metadata
 		dc.clock,
 	)
@@ -357,6 +361,7 @@ func (dc *daemonContext) aRunningContainerWithMaxIterations(containerID string, 
 		container.ContainerTypeMining,
 		1, // playerID
 		maxIterations,
+		nil, // parentContainerID
 		nil, // metadata
 		dc.clock,
 	)
@@ -373,6 +378,7 @@ func (dc *daemonContext) aPendingContainerWithInfiniteIterations(containerID str
 		container.ContainerTypeMining,
 		1,   // playerID
 		-1,  // -1 = infinite
+		nil, // parentContainerID
 		nil, // metadata
 		dc.clock,
 	)

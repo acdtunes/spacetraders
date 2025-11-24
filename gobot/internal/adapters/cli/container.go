@@ -31,11 +31,15 @@ func NewContainerCommand() *cobra.Command {
 // newContainerListCommand lists all containers
 func newContainerListCommand() *cobra.Command {
 	var status string
+	var showAll bool
 
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List all containers",
-		Long:  `List all background containers with their status.`,
+		Long: `List all background containers with their status.
+
+By default, only active containers (RUNNING, INTERRUPTED) are shown.
+Use --show-all to see containers in all states including completed and failed.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, err := NewDaemonClient(socketPath)
 			if err != nil {
@@ -51,10 +55,17 @@ func newContainerListCommand() *cobra.Command {
 				playerIDPtr = &playerID
 			}
 
+			// Determine status filter
 			var statusPtr *string
-			if status != "" {
+			if showAll {
+				// Show all container statuses
+				allStatuses := "PENDING,RUNNING,COMPLETED,FAILED,STOPPING,STOPPED,INTERRUPTED"
+				statusPtr = &allStatuses
+			} else if status != "" {
+				// Use explicit status filter
 				statusPtr = &status
 			}
+			// else: nil = use daemon's default (RUNNING,INTERRUPTED)
 
 			containers, err := client.ListContainers(ctx, playerIDPtr, statusPtr)
 			if err != nil {
@@ -93,7 +104,8 @@ func newContainerListCommand() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&status, "status", "", "Filter by status (RUNNING, COMPLETED, FAILED, etc.)")
+	cmd.Flags().StringVar(&status, "status", "", "Filter by status (RUNNING, COMPLETED, FAILED, etc.) or comma-separated list")
+	cmd.Flags().BoolVar(&showAll, "show-all", false, "Show containers in all states (default: only RUNNING and INTERRUPTED)")
 
 	return cmd
 }
@@ -240,7 +252,7 @@ Examples:
 			for i := len(logs) - 1; i >= 0; i-- {
 				log := logs[i]
 				fmt.Printf("[%s] [%s] %s\n",
-					log.Timestamp.Format("2006-01-02 15:04:05"),
+					log.Timestamp.UTC().Format("2006-01-02 15:04:05"),
 					log.Level,
 					log.Message,
 				)

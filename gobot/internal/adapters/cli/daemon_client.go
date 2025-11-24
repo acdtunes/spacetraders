@@ -977,6 +977,7 @@ type StartArbitrageCoordinatorResult struct {
 	SystemSymbol string
 	MinMargin    float64
 	MaxWorkers   int
+	MinBalance   int
 	Status       string
 	Message      string
 }
@@ -1032,12 +1033,14 @@ func (c *DaemonClient) StartArbitrageCoordinator(
 	playerID int,
 	minMargin float64,
 	maxWorkers int,
+	minBalance int,
 ) (*StartArbitrageCoordinatorResult, error) {
 	resp, err := c.client.StartArbitrageCoordinator(ctx, &pb.StartArbitrageCoordinatorRequest{
 		PlayerId:     int32(playerID),
 		SystemSymbol: systemSymbol,
 		MinMargin:    minMargin,
 		MaxWorkers:   int32(maxWorkers),
+		MinBalance:   int32(minBalance),
 	})
 	if err != nil {
 		return nil, err
@@ -1048,6 +1051,7 @@ func (c *DaemonClient) StartArbitrageCoordinator(
 		SystemSymbol: resp.SystemSymbol,
 		MinMargin:    resp.MinMargin,
 		MaxWorkers:   int(resp.MaxWorkers),
+		MinBalance:   int(resp.MinBalance),
 		Status:       resp.Status,
 		Message:      resp.Message,
 	}, nil

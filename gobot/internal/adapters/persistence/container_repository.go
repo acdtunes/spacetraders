@@ -43,18 +43,19 @@ func (r *ContainerRepositoryGORM) Add(
 	}
 
 	model := &ContainerModel{
-		ID:            containerEntity.ID(),
-		PlayerID:      containerEntity.PlayerID(),
-		ContainerType: string(containerEntity.Type()),
-		CommandType:   commandType,
-		Status:        string(containerEntity.Status()),
-		RestartPolicy: restartPolicy,
-		RestartCount:  containerEntity.RestartCount(),
-		Config:        string(configJSON),
-		StartedAt:     &now,
-		StoppedAt:     nil,
-		ExitCode:      nil,
-		ExitReason:    "",
+		ID:                containerEntity.ID(),
+		PlayerID:          containerEntity.PlayerID(),
+		ContainerType:     string(containerEntity.Type()),
+		CommandType:       commandType,
+		Status:            string(containerEntity.Status()),
+		ParentContainerID: containerEntity.ParentContainerID(),
+		RestartPolicy:     restartPolicy,
+		RestartCount:      containerEntity.RestartCount(),
+		Config:            string(configJSON),
+		StartedAt:         &now,
+		StoppedAt:         nil,
+		ExitCode:          nil,
+		ExitReason:        "",
 	}
 
 	if err := r.db.WithContext(ctx).Create(model).Error; err != nil {
@@ -255,18 +256,19 @@ func (r *ContainerRepositoryGORM) CreateIfNoActiveWorker(
 		}
 
 		model := &ContainerModel{
-			ID:            containerEntity.ID(),
-			PlayerID:      containerEntity.PlayerID(),
-			ContainerType: string(containerEntity.Type()),
-			CommandType:   commandType,
-			Status:        string(containerEntity.Status()),
-			RestartPolicy: restartPolicy,
-			RestartCount:  containerEntity.RestartCount(),
-			Config:        string(configJSON),
-			StartedAt:     &now,
-			StoppedAt:     nil,
-			ExitCode:      nil,
-			ExitReason:    "",
+			ID:                containerEntity.ID(),
+			PlayerID:          containerEntity.PlayerID(),
+			ContainerType:     string(containerEntity.Type()),
+			CommandType:       commandType,
+			Status:            string(containerEntity.Status()),
+			ParentContainerID: containerEntity.ParentContainerID(),
+			RestartPolicy:     restartPolicy,
+			RestartCount:      containerEntity.RestartCount(),
+			Config:            string(configJSON),
+			StartedAt:         &now,
+			StoppedAt:         nil,
+			ExitCode:          nil,
+			ExitReason:        "",
 		}
 
 		if err := tx.Create(model).Error; err != nil {
@@ -278,4 +280,25 @@ func (r *ContainerRepositoryGORM) CreateIfNoActiveWorker(
 	})
 
 	return created, err
+}
+
+// FindChildContainers retrieves all direct children of a parent container
+// Returns empty slice if no children found (not an error)
+func (r *ContainerRepositoryGORM) FindChildContainers(
+	ctx context.Context,
+	parentContainerID string,
+	playerID int,
+) ([]*ContainerModel, error) {
+	var models []*ContainerModel
+
+	err := r.db.WithContext(ctx).
+		Where("parent_container_id = ? AND player_id = ?", parentContainerID, playerID).
+		Order("started_at ASC"). // Oldest children first for consistent ordering
+		Find(&models).Error
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to find child containers: %w", err)
+	}
+
+	return models, nil
 }

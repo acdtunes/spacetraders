@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -317,6 +318,7 @@ func (s *DaemonServer) registerCommandFactories() {
 
 		minMargin, _ := config["min_margin"].(float64) // Optional, defaults in handler
 		maxWorkers, _ := config["max_workers"].(int)   // Optional, defaults in handler
+		minBalance, _ := config["min_balance"].(int)   // Optional, defaults to 0 (no limit)
 
 		return &tradingCmd.RunArbitrageCoordinatorCommand{
 			SystemSymbol: systemSymbol,
@@ -324,6 +326,7 @@ func (s *DaemonServer) registerCommandFactories() {
 			ContainerID:  containerID,
 			MinMargin:    minMargin,
 			MaxWorkers:   maxWorkers,
+			MinBalance:   minBalance,
 		}, nil
 	}
 
@@ -804,6 +807,7 @@ func (s *DaemonServer) recoverContainer(ctx context.Context, containerModel *per
 		container.ContainerType(containerModel.ContainerType),
 		containerModel.PlayerID,
 		iterations,
+		containerModel.ParentContainerID, // Restore parent-child relationship
 		config,
 		nil, // Use default RealClock for production
 	)
@@ -886,6 +890,7 @@ func (s *DaemonServer) NavigateShip(ctx context.Context, shipSymbol, destination
 		container.ContainerTypeNavigate,
 		playerID,
 		1, // Single iteration for navigate
+		nil, // No parent container
 		map[string]interface{}{
 			"ship_symbol": shipSymbol,
 			"destination": destination,
@@ -926,6 +931,7 @@ func (s *DaemonServer) DockShip(ctx context.Context, shipSymbol string, playerID
 		container.ContainerTypeDock,
 		playerID,
 		1, // Single iteration for dock
+		nil, // No parent container
 		map[string]interface{}{
 			"ship_symbol": shipSymbol,
 		},
@@ -963,6 +969,7 @@ func (s *DaemonServer) OrbitShip(ctx context.Context, shipSymbol string, playerI
 		container.ContainerTypeOrbit,
 		playerID,
 		1, // Single iteration for orbit
+		nil, // No parent container
 		map[string]interface{}{
 			"ship_symbol": shipSymbol,
 		},
@@ -1008,6 +1015,7 @@ func (s *DaemonServer) RefuelShip(ctx context.Context, shipSymbol string, player
 		container.ContainerTypeRefuel,
 		playerID,
 		1, // Single iteration for refuel
+		nil, // No parent container
 		metadata,
 		nil, // Use default RealClock for production
 	)
@@ -1077,6 +1085,7 @@ func (s *DaemonServer) PersistContractWorkflow(
 		container.ContainerTypeContractWorkflow,
 		playerID,
 		iterations,
+		&coordinatorID, // Link to parent coordinator container
 		map[string]interface{}{
 			"ship_symbol":    shipSymbol,
 			"coordinator_id": coordinatorID,
@@ -1151,6 +1160,7 @@ func (s *DaemonServer) StartContractWorkflow(
 		container.ContainerType(containerModel.ContainerType),
 		containerModel.PlayerID,
 		1, // Worker containers are single iteration
+		nil, // No parent container
 		config,
 		nil,
 	)
@@ -1194,6 +1204,7 @@ func (s *DaemonServer) ContractFleetCoordinator(ctx context.Context, shipSymbols
 		container.ContainerTypeContractFleetCoordinator,
 		playerID,
 		-1, // Infinite iterations
+		nil, // No parent container
 		map[string]interface{}{
 			"ship_symbols": shipSymbolsInterface,
 			"container_id": containerID,
@@ -1221,7 +1232,7 @@ func (s *DaemonServer) ContractFleetCoordinator(ctx context.Context, shipSymbols
 }
 
 // ArbitrageCoordinator creates an arbitrage coordinator for automated trading operations
-func (s *DaemonServer) ArbitrageCoordinator(ctx context.Context, systemSymbol string, playerID int, minMargin float64, maxWorkers int) (string, error) {
+func (s *DaemonServer) ArbitrageCoordinator(ctx context.Context, systemSymbol string, playerID int, minMargin float64, maxWorkers int, minBalance int) (string, error) {
 	// Create container ID
 	containerID := utils.GenerateContainerID("arbitrage_coordinator", systemSymbol)
 
@@ -1232,6 +1243,7 @@ func (s *DaemonServer) ArbitrageCoordinator(ctx context.Context, systemSymbol st
 		ContainerID:  containerID,
 		MinMargin:    minMargin,
 		MaxWorkers:   maxWorkers,
+		MinBalance:   minBalance,
 	}
 
 	// Create container for this operation
@@ -1240,10 +1252,12 @@ func (s *DaemonServer) ArbitrageCoordinator(ctx context.Context, systemSymbol st
 		container.ContainerTypeArbitrageCoordinator,
 		playerID,
 		-1, // Infinite iterations
+		nil, // No parent container
 		map[string]interface{}{
 			"system_symbol": systemSymbol,
 			"min_margin":    minMargin,
 			"max_workers":   maxWorkers,
+			"min_balance":   minBalance,
 			"container_id":  containerID,
 		},
 		nil, // Use default RealClock
@@ -1341,6 +1355,7 @@ func (s *DaemonServer) MiningOperation(
 		container.ContainerTypeMiningCoordinator,
 		playerID,
 		iterations,
+		nil, // No parent container
 		map[string]interface{}{
 			"mining_operation_id": containerID,
 			"asteroid_field":      asteroidField,
@@ -1418,6 +1433,7 @@ func (s *DaemonServer) ScoutTour(ctx context.Context, containerID string, shipSy
 		container.ContainerTypeScout,
 		playerID,
 		iterations,
+		nil, // No parent container
 		map[string]interface{}{
 			"ship_symbol": shipSymbol,
 			"markets":     markets,
@@ -1460,6 +1476,7 @@ func (s *DaemonServer) TourSell(ctx context.Context, containerID string, shipSym
 		container.ContainerTypeTrading,
 		playerID,
 		1, // Single iteration for tour sell
+		nil, // No parent container
 		map[string]interface{}{
 			"ship_symbol":     shipSymbol,
 			"return_waypoint": returnWaypoint,
@@ -1541,6 +1558,7 @@ func (s *DaemonServer) AssignScoutingFleet(
 		container.ContainerTypeScoutFleetAssignment,
 		playerID,
 		1, // One-time execution
+		nil, // No parent container
 		map[string]interface{}{
 			"system_symbol": systemSymbol,
 		},
@@ -1572,6 +1590,20 @@ func (s *DaemonServer) ListContainers(playerID *int, status *string) []*containe
 	defer s.containersMu.RUnlock()
 
 	containers := make([]*container.Container, 0, len(s.containers))
+
+	// Parse comma-separated status filter into map for O(1) lookup
+	var allowedStatuses map[string]bool
+	if status != nil && *status != "" {
+		allowedStatuses = make(map[string]bool)
+		statuses := strings.Split(*status, ",")
+		for _, s := range statuses {
+			trimmed := strings.TrimSpace(s)
+			if trimmed != "" {
+				allowedStatuses[trimmed] = true
+			}
+		}
+	}
+
 	for _, runner := range s.containers {
 		cont := runner.Container()
 
@@ -1579,8 +1611,12 @@ func (s *DaemonServer) ListContainers(playerID *int, status *string) []*containe
 		if playerID != nil && cont.PlayerID() != *playerID {
 			continue
 		}
-		if status != nil && string(cont.Status()) != *status {
-			continue
+
+		// Filter by status (if filter provided)
+		if allowedStatuses != nil {
+			if !allowedStatuses[string(cont.Status())] {
+				continue
+			}
 		}
 
 		containers = append(containers, cont)
@@ -1856,6 +1892,7 @@ func (s *DaemonServer) PurchaseShip(ctx context.Context, purchasingShipSymbol, s
 		container.ContainerTypePurchase,
 		playerID,
 		1, // Single iteration
+		nil, // No parent container
 		map[string]interface{}{
 			"ship_symbol": purchasingShipSymbol,
 			"ship_type":   shipType,
@@ -1913,6 +1950,7 @@ func (s *DaemonServer) BatchPurchaseShips(ctx context.Context, purchasingShipSym
 		container.ContainerTypePurchase,
 		playerID,
 		iterCount,
+		nil, // No parent container
 		map[string]interface{}{
 			"ship_symbol": purchasingShipSymbol,
 			"ship_type":   shipType,
@@ -1960,6 +1998,7 @@ func (s *DaemonServer) PersistMiningWorkerContainer(
 		container.ContainerTypeMiningWorker,
 		int(playerID),
 		1, // Worker containers are single iteration
+		&cmd.CoordinatorID, // Link to parent coordinator container
 		map[string]interface{}{
 			"ship_symbol":    cmd.ShipSymbol,
 			"asteroid_field": cmd.AsteroidField,
@@ -2060,6 +2099,7 @@ func (s *DaemonServer) StartMiningWorkerContainer(
 		container.ContainerTypeMiningWorker,
 		playerID,
 		1, // Worker containers are single iteration
+		nil, // No parent container
 		config,
 		nil,
 	)
@@ -2099,6 +2139,7 @@ func (s *DaemonServer) PersistTransportWorkerContainer(
 		container.ContainerTypeTransportWorker,
 		int(playerID),
 		1, // Worker containers are single iteration
+		&cmd.CoordinatorID, // Link to parent coordinator container
 		map[string]interface{}{
 			"ship_symbol":    cmd.ShipSymbol,
 			"asteroid_field": cmd.AsteroidField,
@@ -2194,6 +2235,7 @@ func (s *DaemonServer) StartTransportWorkerContainer(
 		container.ContainerTypeTransportWorker,
 		playerID,
 		1, // Worker containers are single iteration
+		nil, // No parent container
 		config,
 		nil,
 	)
@@ -2244,6 +2286,7 @@ func (s *DaemonServer) PersistMiningCoordinatorContainer(
 		container.ContainerTypeMiningCoordinator,
 		int(playerID),
 		-1, // Infinite iterations for coordinator
+		nil, // No parent container
 		map[string]interface{}{
 			"mining_operation_id": cmd.MiningOperationID,
 			"asteroid_field":      cmd.AsteroidField,
@@ -2305,6 +2348,7 @@ func (s *DaemonServer) StartMiningCoordinatorContainer(
 		container.ContainerType(containerModel.ContainerType),
 		containerModel.PlayerID,
 		-1, // Coordinator runs indefinitely
+		nil, // No parent container
 		config,
 		nil,
 	)
@@ -2362,6 +2406,7 @@ func (s *DaemonServer) StartGoodsFactory(
 		container.ContainerType("goods_factory_coordinator"),
 		playerID,
 		maxIterations,
+		nil, // No parent container
 		metadata,
 		nil, // Use default RealClock
 	)

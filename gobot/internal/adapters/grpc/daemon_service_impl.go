@@ -353,9 +353,17 @@ func (s *daemonServiceImpl) ListContainers(ctx context.Context, req *pb.ListCont
 		playerID = &p
 	}
 
+	// Apply status filter with smart defaults
 	var status *string
-	if req.Status != nil {
+	if req.Status != nil && *req.Status != "" {
+		// User explicitly requested a status - use as-is
 		status = req.Status
+	} else {
+		// DEFAULT: Only show active containers (RUNNING, INTERRUPTED)
+		// Rationale: Operators care about what's currently active, not history
+		// Use comma-separated list for multiple statuses
+		defaultStatuses := "RUNNING,INTERRUPTED"
+		status = &defaultStatuses
 	}
 
 	// Get containers from daemon
@@ -364,16 +372,22 @@ func (s *daemonServiceImpl) ListContainers(ctx context.Context, req *pb.ListCont
 	// Convert to protobuf response
 	pbContainers := make([]*pb.ContainerInfo, 0, len(containers))
 	for _, cont := range containers {
+		var parentID *string
+		if cont.ParentContainerID() != nil {
+			parentID = cont.ParentContainerID()
+		}
+
 		pbContainers = append(pbContainers, &pb.ContainerInfo{
-			ContainerId:      cont.ID(),
-			ContainerType:    string(cont.Type()),
-			Status:           string(cont.Status()),
-			PlayerId:         ToProtobufPlayerID(cont.PlayerID()),
-			CreatedAt:        cont.CreatedAt().Format("2006-01-02T15:04:05Z"),
-			UpdatedAt:        cont.UpdatedAt().Format("2006-01-02T15:04:05Z"),
-			CurrentIteration: int32(cont.CurrentIteration()),
-			MaxIterations:    int32(cont.MaxIterations()),
-			RestartCount:     int32(cont.RestartCount()),
+			ContainerId:       cont.ID(),
+			ContainerType:     string(cont.Type()),
+			Status:            string(cont.Status()),
+			PlayerId:          ToProtobufPlayerID(cont.PlayerID()),
+			ParentContainerId: parentID,
+			CreatedAt:         cont.CreatedAt().Format("2006-01-02T15:04:05Z"),
+			UpdatedAt:         cont.UpdatedAt().Format("2006-01-02T15:04:05Z"),
+			CurrentIteration:  int32(cont.CurrentIteration()),
+			MaxIterations:     int32(cont.MaxIterations()),
+			RestartCount:      int32(cont.RestartCount()),
 		})
 	}
 
@@ -879,8 +893,11 @@ func (s *daemonServiceImpl) StartArbitrageCoordinator(ctx context.Context, req *
 		minMargin = 10.0
 	}
 
+	// Default min balance (0 = no limit)
+	minBalance := int(req.MinBalance)
+
 	// Start coordinator via DaemonServer (creates container and runs in background)
-	containerID, err := s.daemon.ArbitrageCoordinator(ctx, req.SystemSymbol, playerID, minMargin, maxWorkers)
+	containerID, err := s.daemon.ArbitrageCoordinator(ctx, req.SystemSymbol, playerID, minMargin, maxWorkers, minBalance)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start arbitrage coordinator: %w", err)
 	}
@@ -890,6 +907,7 @@ func (s *daemonServiceImpl) StartArbitrageCoordinator(ctx context.Context, req *
 		SystemSymbol: req.SystemSymbol,
 		MinMargin:    minMargin,
 		MaxWorkers:   int32(maxWorkers),
+		MinBalance:   int32(minBalance),
 		Status:       "RUNNING",
 		Message:      "Arbitrage coordinator started successfully",
 	}, nil
