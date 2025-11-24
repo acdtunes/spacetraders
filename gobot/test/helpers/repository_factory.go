@@ -6,6 +6,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/api"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/graph"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/ports"
@@ -21,6 +22,7 @@ type TestRepositories struct {
 	SystemGraphRepo      system.SystemGraphRepository
 	ShipAssignmentRepo   *persistence.ShipAssignmentRepositoryGORM
 	MarketRepo           *persistence.MarketRepositoryGORM
+	PriceHistoryRepo     market.MarketPriceHistoryRepository
 	ContractRepo         *persistence.GormContractRepository
 	ContainerRepo        *persistence.ContainerRepositoryGORM
 	ContainerLogRepo     *persistence.GormContainerLogRepository
@@ -42,6 +44,7 @@ func NewTestRepositories(apiClient ports.APIClient, clock shared.Clock) *TestRep
 	systemGraphRepo := persistence.NewGormSystemGraphRepository(db)
 	shipAssignmentRepo := persistence.NewShipAssignmentRepository(db)
 	marketRepo := persistence.NewMarketRepository(db)
+	priceHistoryRepo := persistence.NewGormMarketPriceHistoryRepository(db)
 	contractRepo := persistence.NewGormContractRepository(db)
 	containerRepo := persistence.NewContainerRepository(db)
 	containerLogRepo := persistence.NewGormContainerLogRepository(db, clock)
@@ -61,6 +64,7 @@ func NewTestRepositories(apiClient ports.APIClient, clock shared.Clock) *TestRep
 		SystemGraphRepo:     systemGraphRepo,
 		ShipAssignmentRepo:  shipAssignmentRepo,
 		MarketRepo:          marketRepo,
+		PriceHistoryRepo:    priceHistoryRepo,
 		ContractRepo:        contractRepo,
 		ContainerRepo:       containerRepo,
 		ContainerLogRepo:    containerLogRepo,

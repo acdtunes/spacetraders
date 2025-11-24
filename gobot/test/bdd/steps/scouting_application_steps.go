@@ -73,7 +73,7 @@ func (ctx *scoutingApplicationContext) reset() {
 	ctx.repos = helpers.NewTestRepositories(ctx.apiClient, ctx.clock)
 
 	// Setup market scanner with real repos
-	ctx.marketScanner = ship.NewMarketScanner(ctx.apiClient, ctx.repos.MarketRepo, ctx.repos.PlayerRepo)
+	ctx.marketScanner = ship.NewMarketScanner(ctx.apiClient, ctx.repos.MarketRepo, ctx.repos.PlayerRepo, ctx.repos.PriceHistoryRepo)
 
 	// Setup default mediator behavior
 	ctx.mediator.SetSendFunc(func(ctxMed context.Context, request common.Request) (common.Response, error) {
