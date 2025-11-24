@@ -378,7 +378,7 @@ func run(cfg *config.Config) error {
 	analyzer := trading.NewArbitrageAnalyzer()
 	opportunityFinder := tradingServices.NewArbitrageOpportunityFinder(tradingMarketRepo, graphService, analyzer)
 	arbitrageExecutionLogRepo := persistence.NewGormArbitrageExecutionLogRepository(db)
-	arbitrageExecutor := tradingServices.NewArbitrageExecutor(med, shipRepo, arbitrageExecutionLogRepo)
+	arbitrageExecutor := tradingServices.NewArbitrageExecutor(med, shipRepo, arbitrageExecutionLogRepo, marketRepo)
 
 	findArbitrageOpportunitiesHandler := tradingQuery.NewFindArbitrageOpportunitiesHandler(opportunityFinder)
 	if err := mediator.RegisterHandler[*tradingQuery.FindArbitrageOpportunitiesQuery](med, findArbitrageOpportunitiesHandler); err != nil {
@@ -457,7 +457,7 @@ func run(cfg *config.Config) error {
 
 	// Arbitrage coordinator handler (depends on daemonClientLocal)
 	arbitrageCoordinatorHandler := tradingCmd.NewRunArbitrageCoordinatorHandler(
-		opportunityFinder, shipRepo, shipAssignmentRepo, containerRepo, daemonClientLocal, med, nil, // nil = use RealClock
+		opportunityFinder, shipRepo, shipAssignmentRepo, containerRepo, containerLogRepo, daemonClientLocal, med, nil, // nil = use RealClock
 	)
 	if err := mediator.RegisterHandler[*tradingCmd.RunArbitrageCoordinatorCommand](med, arbitrageCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register RunArbitrageCoordinator handler: %w", err)

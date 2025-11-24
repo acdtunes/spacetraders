@@ -3,11 +3,12 @@ package commands
 import (
 	"context"
 	"fmt"
-	"sync"
 	"time"
 
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/application/contract"
+	"github.com/andrescamacho/spacetraders-go/internal/application/logging"
 	playerQueries "github.com/andrescamacho/spacetraders-go/internal/application/player/queries"
 	shipCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands"
 	shipTypes "github.com/andrescamacho/spacetraders-go/internal/application/ship/types"
@@ -20,19 +21,39 @@ import (
 	"github.com/google/uuid"
 )
 
-// workerLogger is a lightweight logger for arbitrage workers
-// It implements the ContainerLogger interface and logs to stdout with container ID
-type workerLogger struct {
+// dbLogger writes logs to both stdout and the container log database
+// Implements the logging.ContainerLogger interface
+type dbLogger struct {
 	containerID string
+	playerID    int
+	logRepo     persistence.ContainerLogRepository
 }
 
 // Log implements the ContainerLogger interface
-func (w *workerLogger) Log(level, message string, metadata map[string]interface{}) {
+// Writes to stdout immediately and persists to database asynchronously
+func (d *dbLogger) Log(level, message string, metadata map[string]interface{}) {
 	timestamp := time.Now().Format(time.RFC3339)
-	fmt.Printf("[%s] [%s] %s: %s\n", timestamp, w.containerID, level, message)
+
+	// Print to stdout immediately (for real-time monitoring)
+	fmt.Printf("[%s] [%s] %s: %s\n", timestamp, d.containerID, level, message)
 	if metadata != nil && len(metadata) > 0 {
-		fmt.Printf("[%s] [%s]   metadata: %+v\n", timestamp, w.containerID, metadata)
+		fmt.Printf("[%s] [%s]   metadata: %+v\n", timestamp, d.containerID, metadata)
 	}
+
+	// Persist to database asynchronously (matches ContainerRunner pattern)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		if err := d.logRepo.Log(ctx, d.containerID, d.playerID, message, level, metadata); err != nil {
+			// Log error to stdout if DB write fails (but don't block execution)
+			fmt.Printf("[%s] [%s] ERROR: Failed to persist log to DB: %v\n",
+				time.Now().Format(time.RFC3339),
+				d.containerID,
+				err,
+			)
+		}
+	}()
 }
 
 // ContainerRepository defines persistence operations for containers
@@ -74,6 +95,7 @@ type RunArbitrageCoordinatorHandler struct {
 	shipRepo           navigation.ShipRepository
 	shipAssignmentRepo container.ShipAssignmentRepository
 	containerRepo      ContainerRepository
+	logRepo            persistence.ContainerLogRepository
 	daemonClient       daemon.DaemonClient
 	mediator           common.Mediator
 	clock              shared.Clock
@@ -85,6 +107,7 @@ func NewRunArbitrageCoordinatorHandler(
 	shipRepo navigation.ShipRepository,
 	shipAssignmentRepo container.ShipAssignmentRepository,
 	containerRepo ContainerRepository,
+	logRepo persistence.ContainerLogRepository,
 	daemonClient daemon.DaemonClient,
 	mediator common.Mediator,
 	clock shared.Clock,
@@ -98,6 +121,7 @@ func NewRunArbitrageCoordinatorHandler(
 		shipRepo:           shipRepo,
 		shipAssignmentRepo: shipAssignmentRepo,
 		containerRepo:      containerRepo,
+		logRepo:            logRepo,
 		daemonClient:       daemonClient,
 		mediator:           mediator,
 		clock:              clock,
@@ -374,13 +398,9 @@ func (h *RunArbitrageCoordinatorHandler) spawnWorkers(
 		"workers": len(assignments),
 	})
 
-	// Spawn workers in parallel (goroutines)
-	var wg sync.WaitGroup
-
+	// Spawn workers in parallel (goroutines) - fire and forget
 	for _, assign := range assignments {
-		wg.Add(1)
 		go func(shipSymbol string, opportunity *trading.ArbitrageOpportunity, distance float64) {
-			defer wg.Done()
 
 			// Create worker container ID
 			workerID := fmt.Sprintf("arbitrage-worker-%s-%s", shipSymbol, uuid.New().String()[:8])
@@ -452,10 +472,14 @@ func (h *RunArbitrageCoordinatorHandler) spawnWorkers(
 				logger.Log("ERROR", fmt.Sprintf("Failed to update container status to RUNNING: %v", err), nil)
 			}
 
-			// Create worker-specific context with its own logger
-			// This ensures worker logs go to the worker container, not the coordinator
-			workerLogger := &workerLogger{containerID: workerID}
-			workerCtx := common.WithLogger(ctx, workerLogger)
+			// Create worker-specific context with database-backed logger
+			// This ensures worker logs go to both stdout AND the worker's container log in the database
+			workerLogger := &dbLogger{
+				containerID: workerID,
+				playerID:    cmd.PlayerID,
+				logRepo:     h.logRepo,
+			}
+			workerCtx := logging.WithLogger(ctx, workerLogger)
 
 			_, err = h.mediator.Send(workerCtx, workerCmd)
 
@@ -481,10 +505,7 @@ func (h *RunArbitrageCoordinatorHandler) spawnWorkers(
 		}(assign.shipSymbol, assign.opportunity, assign.distance)
 	}
 
-	// Wait for batch completion
-	wg.Wait()
-
-	logger.Log("INFO", fmt.Sprintf("Batch of %d workers completed", len(assignments)), nil)
+	logger.Log("INFO", fmt.Sprintf("Spawned %d workers asynchronously", len(assignments)), nil)
 }
 
 // resumeInterruptedTrades finds ships with cargo from interrupted workers and completes their trades
