@@ -22,15 +22,16 @@ import (
 
 // HandlerRegistry holds all application dependencies for handler creation
 type HandlerRegistry struct {
-	transactionRepo    ledger.TransactionRepository
-	playerResolver     *common.PlayerResolver
-	clock              shared.Clock
-	marketRepo         market.MarketRepository
-	shipRepo           navigation.ShipRepository
-	waypointProvider   system.IWaypointProvider
-	shipAssignmentRepo container.ShipAssignmentRepository
-	containerRepo      tradingCommands.ContainerRepository
-	daemonClient       daemon.DaemonClient
+	transactionRepo           ledger.TransactionRepository
+	playerResolver            *common.PlayerResolver
+	clock                     shared.Clock
+	marketRepo                market.MarketRepository
+	shipRepo                  navigation.ShipRepository
+	waypointProvider          system.IWaypointProvider
+	shipAssignmentRepo        container.ShipAssignmentRepository
+	containerRepo             tradingCommands.ContainerRepository
+	daemonClient              daemon.DaemonClient
+	arbitrageExecutionLogRepo trading.ArbitrageExecutionLogRepository
 }
 
 // NewHandlerRegistry creates a new handler registry with required dependencies
@@ -44,6 +45,7 @@ func NewHandlerRegistry(
 	shipAssignmentRepo container.ShipAssignmentRepository,
 	containerRepo tradingCommands.ContainerRepository,
 	daemonClient daemon.DaemonClient,
+	arbitrageExecutionLogRepo trading.ArbitrageExecutionLogRepository,
 ) *HandlerRegistry {
 	// Default to real clock if not provided
 	if clock == nil {
@@ -51,15 +53,16 @@ func NewHandlerRegistry(
 	}
 
 	return &HandlerRegistry{
-		transactionRepo:    transactionRepo,
-		playerResolver:     playerResolver,
-		clock:              clock,
-		marketRepo:         marketRepo,
-		shipRepo:           shipRepo,
-		waypointProvider:   waypointProvider,
-		shipAssignmentRepo: shipAssignmentRepo,
-		containerRepo:      containerRepo,
-		daemonClient:       daemonClient,
+		transactionRepo:           transactionRepo,
+		playerResolver:            playerResolver,
+		clock:                     clock,
+		marketRepo:                marketRepo,
+		shipRepo:                  shipRepo,
+		waypointProvider:          waypointProvider,
+		shipAssignmentRepo:        shipAssignmentRepo,
+		containerRepo:             containerRepo,
+		daemonClient:              daemonClient,
+		arbitrageExecutionLogRepo: arbitrageExecutionLogRepo,
 	}
 }
 
@@ -128,7 +131,7 @@ func (r *HandlerRegistry) RegisterArbitrageHandlers(m common.Mediator) error {
 		r.waypointProvider,
 		analyzer,
 	)
-	executor := tradingServices.NewArbitrageExecutor(m, r.shipRepo)
+	executor := tradingServices.NewArbitrageExecutor(m, r.shipRepo, r.arbitrageExecutionLogRepo)
 
 	// Register FindArbitrageOpportunitiesQuery handler
 	findOpportunitiesHandler := tradingQueries.NewFindArbitrageOpportunitiesHandler(opportunityFinder)
