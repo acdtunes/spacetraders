@@ -150,8 +150,9 @@ type RebalanceContractFleetResponse struct {
 
 // BalanceShipPositionCommand requests repositioning a ship to optimize fleet distribution.
 type BalanceShipPositionCommand struct {
-	ShipSymbol string
-	PlayerID   shared.PlayerID
+	ShipSymbol    string
+	PlayerID      shared.PlayerID
+	CoordinatorID string // ID of coordinator that spawned this balancing operation (empty for manual balancing)
 }
 
 // BalanceShipPositionResponse contains ship balancing results.

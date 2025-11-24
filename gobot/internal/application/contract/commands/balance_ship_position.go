@@ -76,15 +76,23 @@ func (h *BalanceShipPositionHandler) Handle(ctx context.Context, request common.
 	// 1. Create temporary container record to satisfy foreign key constraint
 	balancingContainerID := fmt.Sprintf("ship-balancing-%s", cmd.ShipSymbol)
 	metadata := map[string]interface{}{
-		"ship_symbol": cmd.ShipSymbol,
+		"ship_symbol":    cmd.ShipSymbol,
+		"coordinator_id": cmd.CoordinatorID,
+	}
+
+	// Use coordinator ID as parent if provided (spawned by coordinator)
+	// Otherwise nil for manual/standalone balancing operations
+	var parentContainerID *string
+	if cmd.CoordinatorID != "" {
+		parentContainerID = &cmd.CoordinatorID
 	}
 
 	balancingContainer := domainContainer.NewContainer(
 		balancingContainerID,
 		domainContainer.ContainerTypeBalancing,
 		cmd.PlayerID.Value(),
-		1,   // maxIterations: balancing is single-shot
-		nil, // parentContainerID: root container
+		1, // maxIterations: balancing is single-shot
+		parentContainerID,
 		metadata,
 		shared.NewRealClock(),
 	)

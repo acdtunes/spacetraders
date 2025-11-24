@@ -273,10 +273,11 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			logger.Log("INFO", fmt.Sprintf("Selected ship changed from %s to %s - balancing previous ship position", previousShipSymbol, selectedShip), nil)
 
 			// Launch balancing command asynchronously (fire-and-forget)
-			go func(shipSymbol string, playerID shared.PlayerID) {
+			go func(shipSymbol string, playerID shared.PlayerID, coordinatorID string) {
 				balanceCmd := &BalanceShipPositionCommand{
-					ShipSymbol: shipSymbol,
-					PlayerID:   playerID,
+					ShipSymbol:    shipSymbol,
+					PlayerID:      playerID,
+					CoordinatorID: coordinatorID,
 				}
 				// Create background context since parent context may be cancelled
 				balanceCtx := context.Background()
@@ -286,7 +287,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 				if err != nil {
 					logger.Log("WARNING", fmt.Sprintf("Failed to balance ship %s position: %v", shipSymbol, err), nil)
 				}
-			}(previousShipSymbol, cmd.PlayerID)
+			}(previousShipSymbol, cmd.PlayerID, cmd.ContainerID)
 		}
 
 		// Create worker container ID
