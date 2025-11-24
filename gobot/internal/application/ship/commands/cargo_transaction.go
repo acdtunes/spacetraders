@@ -136,18 +136,6 @@ func (h *CargoTransactionHandler) Handle(ctx context.Context, request common.Req
 		return nil, err
 	}
 
-	// Fetch current credits (balance before)
-	balanceBefore, err := h.fetchCurrentCredits(ctx)
-	if err != nil {
-		// Log warning but don't fail the operation
-		logger := logging.LoggerFromContext(ctx)
-		logger.Log("WARN", "Failed to fetch credits before cargo transaction, ledger entry will not be recorded", map[string]interface{}{
-			"error": err.Error(),
-			"ship":  cmd.ShipSymbol,
-			"good":  cmd.GoodSymbol,
-		})
-	}
-
 	transactionLimit := h.getTransactionLimit(ctx, ship, cmd)
 
 	response, err := h.executeTransactions(ctx, cmd, token, transactionLimit)
@@ -155,10 +143,8 @@ func (h *CargoTransactionHandler) Handle(ctx context.Context, request common.Req
 		return nil, err
 	}
 
-	// Record transaction asynchronously (non-blocking)
-	if balanceBefore > 0 { // Only record if we successfully fetched balance
-		go h.recordCargoTransaction(ctx, cmd, ship.CurrentLocation().Symbol, response, balanceBefore)
-	}
+	// Note: Ledger recording now happens inside executeTransactions after each batch
+	// This ensures partial purchases are recorded even if later batches fail
 
 	return response, nil
 }
@@ -199,8 +185,9 @@ func (h *CargoTransactionHandler) getTransactionLimit(ctx context.Context, ship 
 // The method:
 //  1. Splits the total units into batches based on transaction limit
 //  2. Executes each batch via the strategy
-//  3. Accumulates results (total amount, units processed, transaction count)
-//  4. Returns error on first failure with partial success information
+//  3. Records ledger entry immediately after each successful batch
+//  4. Accumulates results (total amount, units processed, transaction count)
+//  5. Returns error on first failure with partial success information (partial success is already recorded)
 func (h *CargoTransactionHandler) executeTransactions(ctx context.Context, cmd *CargoTransactionCommand, token string, transactionLimit int) (*CargoTransactionResponse, error) {
 	totalAmount := 0
 	unitsProcessed := 0
@@ -209,11 +196,27 @@ func (h *CargoTransactionHandler) executeTransactions(ctx context.Context, cmd *
 
 	transactionType := h.strategy.GetTransactionType()
 
+	// Get initial balance for ledger recording
+	balanceBefore, err := h.fetchCurrentCredits(ctx)
+	if err != nil {
+		// Continue without ledger recording if balance fetch fails
+		balanceBefore = 0
+	}
+	runningBalance := balanceBefore
+
+	// Get ship location for ledger recording
+	ship, err := h.loadShip(ctx, cmd)
+	if err != nil {
+		return nil, err
+	}
+	waypointSymbol := ship.CurrentLocation().Symbol
+
 	for unitsRemaining > 0 {
 		unitsToProcess := utils.Min(unitsRemaining, transactionLimit)
 
 		result, err := h.strategy.Execute(ctx, cmd.ShipSymbol, cmd.GoodSymbol, unitsToProcess, token)
 		if err != nil {
+			// Return error but partial success is already recorded in ledger
 			return nil, fmt.Errorf("partial failure: failed to %s cargo after %d successful transactions (%d units processed, %d credits): %w",
 				transactionType, transactionCount, unitsProcessed, totalAmount, err)
 		}
@@ -222,6 +225,24 @@ func (h *CargoTransactionHandler) executeTransactions(ctx context.Context, cmd *
 		unitsProcessed += result.UnitsProcessed
 		transactionCount++
 		unitsRemaining -= unitsToProcess
+
+		// CRITICAL: Record ledger entry immediately after each successful batch
+		// This ensures partial purchases are tracked even if later batches fail
+		if balanceBefore > 0 {
+			batchResponse := &CargoTransactionResponse{
+				TotalAmount:      result.TotalAmount,
+				UnitsProcessed:   result.UnitsProcessed,
+				TransactionCount: 1,
+			}
+			h.recordCargoTransaction(ctx, cmd, waypointSymbol, batchResponse, runningBalance)
+
+			// Update running balance for next batch
+			if transactionType == "purchase" {
+				runningBalance -= result.TotalAmount
+			} else {
+				runningBalance += result.TotalAmount
+			}
+		}
 	}
 
 	return &CargoTransactionResponse{

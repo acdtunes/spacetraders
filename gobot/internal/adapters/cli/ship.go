@@ -592,6 +592,7 @@ Examples:
 				nil, // shipAssignmentRepo (not needed for this CLI command)
 				nil, // containerRepo (not needed for this CLI command)
 				nil, // daemonClient (not needed for this CLI command)
+				nil, // arbitrageExecutionLogRepo (not needed for this CLI command)
 			)
 			mediator, err := registry.CreateConfiguredMediator()
 			if err != nil {
@@ -601,11 +602,19 @@ Examples:
 			// Create handler
 			handler := shipCmd.NewSellCargoHandler(shipRepo, playerRepo, apiClient, marketRepo, mediator)
 
-			// Resolve player ID
+			// Resolve player ID and load player token
 			ctx := context.Background()
 			var resolvedPlayerID int
+			var playerToken string
+
 			if playerIdent.PlayerID > 0 {
 				resolvedPlayerID = playerIdent.PlayerID
+				// Load player to get token
+				player, err := playerRepo.FindByID(ctx, shared.MustNewPlayerID(resolvedPlayerID))
+				if err != nil {
+					return fmt.Errorf("failed to load player: %w", err)
+				}
+				playerToken = player.Token
 			} else {
 				// Look up player by agent symbol
 				player, err := playerRepo.FindByAgentSymbol(ctx, playerIdent.AgentSymbol)
@@ -613,7 +622,11 @@ Examples:
 					return fmt.Errorf("failed to resolve player from agent symbol: %w", err)
 				}
 				resolvedPlayerID = player.ID.Value()
+				playerToken = player.Token
 			}
+
+			// Add player token to context for ledger recording
+			ctx = common.WithPlayerToken(ctx, playerToken)
 
 			// Execute command
 			response, err := handler.Handle(ctx, &shipCmd.SellCargoCommand{
