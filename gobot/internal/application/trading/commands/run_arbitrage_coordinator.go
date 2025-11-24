@@ -398,61 +398,84 @@ func (h *RunArbitrageCoordinatorHandler) spawnWorkers(
 		"workers": len(assignments),
 	})
 
-	// Spawn workers in parallel (goroutines) - fire and forget
+	// Pre-assign ships synchronously BEFORE spawning goroutines to prevent race condition
+	// where next discovery cycle picks up same ships before workers mark them as assigned
+	type workerSetup struct {
+		shipSymbol string
+		workerID   string
+		workerCmd  *RunArbitrageWorkerCommand
+	}
+	var readyWorkers []workerSetup
+
 	for _, assign := range assignments {
-		go func(shipSymbol string, opportunity *trading.ArbitrageOpportunity, distance float64) {
+		shipSymbol := assign.shipSymbol
+		opportunity := assign.opportunity
 
-			// Create worker container ID
-			workerID := fmt.Sprintf("arbitrage-worker-%s-%s", shipSymbol, uuid.New().String()[:8])
+		// Create worker container ID
+		workerID := fmt.Sprintf("arbitrage-worker-%s-%s", shipSymbol, uuid.New().String()[:8])
 
-			// Create worker command
-			workerCmd := &RunArbitrageWorkerCommand{
-				ShipSymbol:  shipSymbol,
-				Opportunity: opportunity,
-				PlayerID:    cmd.PlayerID,
-				ContainerID: workerID,
-				MinBalance:  cmd.MinBalance,
-			}
+		// Create worker container entity with parent coordinator ID
+		parentContainerID := cmd.ContainerID
+		workerContainer := container.NewContainer(
+			workerID,
+			container.ContainerTypeArbitrageWorker,
+			cmd.PlayerID,
+			1,                  // Single iteration (execute one trade)
+			&parentContainerID, // Link to parent coordinator for cascading stop
+			map[string]interface{}{
+				"ship_symbol": shipSymbol,
+				"good":        opportunity.Good(),
+				"buy_market":  opportunity.BuyMarket(),
+				"sell_market": opportunity.SellMarket(),
+				"profit":      opportunity.EstimatedProfit(),
+				"margin":      opportunity.ProfitMargin(),
+			},
+			h.clock,
+		)
 
-			// Create worker container entity with parent coordinator ID
-			parentContainerID := cmd.ContainerID
-			workerContainer := container.NewContainer(
-				workerID,
-				container.ContainerTypeArbitrageWorker,
-				cmd.PlayerID,
-				1,                    // Single iteration (execute one trade)
-				&parentContainerID,   // Link to parent coordinator for cascading stop
-				map[string]interface{}{
-					"ship_symbol":  shipSymbol,
-					"good":         opportunity.Good(),
-					"buy_market":   opportunity.BuyMarket(),
-					"sell_market":  opportunity.SellMarket(),
-					"profit":       opportunity.EstimatedProfit(),
-					"margin":       opportunity.ProfitMargin(),
-					"container_id": workerID,
-				},
-				h.clock,
-			)
+		// Persist worker container
+		err := h.containerRepo.Add(ctx, workerContainer, "arbitrage_worker")
+		if err != nil {
+			logger.Log("ERROR", fmt.Sprintf("Failed to persist worker container %s: %v", workerID, err), nil)
+			continue // Skip this ship
+		}
 
-			// Persist worker container BEFORE ship assignment
-			err := h.containerRepo.Add(ctx, workerContainer, "arbitrage_worker")
-			if err != nil {
-				logger.Log("ERROR", fmt.Sprintf("Failed to persist worker container %s: %v", workerID, err), nil)
-				return
-			}
+		// Assign ship to worker (synchronous - prevents race condition)
+		assignment := container.NewShipAssignment(
+			shipSymbol,
+			cmd.PlayerID,
+			workerID,
+			h.clock,
+		)
+		err = h.shipAssignmentRepo.Assign(ctx, assignment)
+		if err != nil {
+			logger.Log("ERROR", fmt.Sprintf("Failed to assign ship %s: %v", shipSymbol, err), nil)
+			continue // Skip this ship (may already be assigned by another coordinator)
+		}
 
-			// Assign ship to worker (atomic)
-			assignment := container.NewShipAssignment(
-				shipSymbol,
-				cmd.PlayerID,
-				workerID,
-				h.clock,
-			)
-			err = h.shipAssignmentRepo.Assign(ctx, assignment)
-			if err != nil {
-				logger.Log("ERROR", fmt.Sprintf("Failed to assign ship %s: %v", shipSymbol, err), nil)
-				return
-			}
+		// Create worker command
+		workerCmd := &RunArbitrageWorkerCommand{
+			ShipSymbol:  shipSymbol,
+			Opportunity: opportunity,
+			PlayerID:    cmd.PlayerID,
+			ContainerID: workerID,
+			MinBalance:  cmd.MinBalance,
+		}
+
+		// Ship is now assigned - safe to spawn worker
+		readyWorkers = append(readyWorkers, workerSetup{
+			shipSymbol: shipSymbol,
+			workerID:   workerID,
+			workerCmd:  workerCmd,
+		})
+
+		logger.Log("INFO", fmt.Sprintf("Assigned ship %s to worker %s (good=%s margin=%.1f%%)",
+			shipSymbol, workerID, opportunity.Good(), opportunity.ProfitMargin()), nil)
+	}
+
+	// Now spawn workers in parallel - all ships are already marked as assigned
+	for _, setup := range readyWorkers {
+		go func(shipSymbol string, workerID string, workerCmd *RunArbitrageWorkerCommand) {
 
 			// Ensure ship assignment is ALWAYS released, even on early exit or interruption
 			defer func() {
@@ -463,9 +486,8 @@ func (h *RunArbitrageCoordinatorHandler) spawnWorkers(
 			}()
 
 			// Execute worker directly (synchronous execution in this goroutine)
-			// This is different from contract coordinator which uses daemon client
-			logger.Log("INFO", fmt.Sprintf("Starting arbitrage worker: ship=%s good=%s margin=%.1f%%",
-				shipSymbol, opportunity.Good(), opportunity.ProfitMargin()), nil)
+			logger.Log("INFO", fmt.Sprintf("Starting arbitrage worker: ship=%s good=%s",
+				shipSymbol, workerCmd.Opportunity.Good()), nil)
 
 			// Mark container as RUNNING
 			if err := h.containerRepo.UpdateStatus(ctx, workerID, cmd.PlayerID, container.ContainerStatusRunning, nil, nil, ""); err != nil {
@@ -473,7 +495,6 @@ func (h *RunArbitrageCoordinatorHandler) spawnWorkers(
 			}
 
 			// Create worker-specific context with database-backed logger
-			// This ensures worker logs go to both stdout AND the worker's container log in the database
 			workerLogger := &dbLogger{
 				containerID: workerID,
 				playerID:    cmd.PlayerID,
@@ -481,7 +502,7 @@ func (h *RunArbitrageCoordinatorHandler) spawnWorkers(
 			}
 			workerCtx := logging.WithLogger(ctx, workerLogger)
 
-			_, err = h.mediator.Send(workerCtx, workerCmd)
+			_, err := h.mediator.Send(workerCtx, workerCmd)
 
 			// Mark container as COMPLETED or FAILED
 			completedAt := h.clock.Now()
@@ -495,17 +516,17 @@ func (h *RunArbitrageCoordinatorHandler) spawnWorkers(
 			}
 
 			logger.Log("INFO", fmt.Sprintf("Arbitrage worker completed: ship=%s good=%s",
-				shipSymbol, opportunity.Good()), nil)
+				shipSymbol, workerCmd.Opportunity.Good()), nil)
 
 			exitCode := 0
 			if updateErr := h.containerRepo.UpdateStatus(ctx, workerID, cmd.PlayerID, container.ContainerStatusCompleted, &completedAt, &exitCode, "success"); updateErr != nil {
 				logger.Log("ERROR", fmt.Sprintf("Failed to update container status to COMPLETED: %v", updateErr), nil)
 			}
 
-		}(assign.shipSymbol, assign.opportunity, assign.distance)
+		}(setup.shipSymbol, setup.workerID, setup.workerCmd)
 	}
 
-	logger.Log("INFO", fmt.Sprintf("Spawned %d workers asynchronously", len(assignments)), nil)
+	logger.Log("INFO", fmt.Sprintf("Spawned %d workers asynchronously (all ships pre-assigned)", len(readyWorkers)), nil)
 }
 
 // resumeInterruptedTrades finds ships with cargo from interrupted workers and completes their trades
