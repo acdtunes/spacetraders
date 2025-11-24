@@ -16,9 +16,10 @@ import (
 
 // MarketScanner handles automatic market scanning and data persistence
 type MarketScanner struct {
-	apiClient  domainPorts.APIClient
-	marketRepo scoutingQuery.MarketRepository
-	playerRepo player.PlayerRepository
+	apiClient        domainPorts.APIClient
+	marketRepo       scoutingQuery.MarketRepository
+	playerRepo       player.PlayerRepository
+	priceHistoryRepo market.MarketPriceHistoryRepository
 }
 
 // NewMarketScanner creates a new market scanner service
@@ -26,11 +27,13 @@ func NewMarketScanner(
 	apiClient domainPorts.APIClient,
 	marketRepo scoutingQuery.MarketRepository,
 	playerRepo player.PlayerRepository,
+	priceHistoryRepo market.MarketPriceHistoryRepository,
 ) *MarketScanner {
 	return &MarketScanner{
-		apiClient:  apiClient,
-		marketRepo: marketRepo,
-		playerRepo: playerRepo,
+		apiClient:        apiClient,
+		marketRepo:       marketRepo,
+		playerRepo:       playerRepo,
+		priceHistoryRepo: priceHistoryRepo,
 	}
 }
 
@@ -74,6 +77,14 @@ func (s *MarketScanner) ScanAndSaveMarket(ctx context.Context, playerID uint, wa
 		return err
 	}
 
+	// Get existing market data before upserting to detect price changes
+	existingMarket, err := s.marketRepo.GetMarketData(ctx, waypointSymbol, int(playerID))
+	if err != nil {
+		logger.Log("ERROR", fmt.Sprintf("[MarketScanner] Failed to get existing market data for %s: %v", waypointSymbol, err), nil)
+		// Don't fail the scan if we can't get existing data - just skip price history recording
+		existingMarket = nil
+	}
+
 	err = s.marketRepo.UpsertMarketData(ctx, playerID, waypointSymbol, tradeGoods, time.Now())
 	if err != nil {
 		logger.Log("ERROR", fmt.Sprintf("[MarketScanner] Failed to persist market data for %s: %v", waypointSymbol, err), nil)
@@ -82,6 +93,11 @@ func (s *MarketScanner) ScanAndSaveMarket(ctx context.Context, playerID uint, wa
 			collector.RecordScan(int(playerID), waypointSymbol, time.Since(startTime), err)
 		}
 		return fmt.Errorf("failed to persist market data: %w", err)
+	}
+
+	// Record price changes in history if repository is available
+	if s.priceHistoryRepo != nil && existingMarket != nil {
+		s.recordPriceChanges(ctx, existingMarket, waypointSymbol, tradeGoods, int(playerID), logger)
 	}
 
 	logger.Log("INFO", fmt.Sprintf("[MarketScanner] Successfully scanned and saved market data for %s (%d goods)", waypointSymbol, len(tradeGoods)), nil)
@@ -112,4 +128,90 @@ func (s *MarketScanner) convertAPIGoodsToDomain(apiGoods []domainPorts.TradeGood
 		tradeGoods = append(tradeGoods, *good)
 	}
 	return tradeGoods, nil
+}
+
+// recordPriceChanges compares old and new market data and records changes to price history
+func (s *MarketScanner) recordPriceChanges(
+	ctx context.Context,
+	existingMarket *market.Market,
+	waypointSymbol string,
+	newGoods []market.TradeGood,
+	playerID int,
+	logger common.ContainerLogger,
+) {
+	// Build map of old goods for quick lookup
+	oldGoods := make(map[string]market.TradeGood)
+	for _, good := range existingMarket.TradeGoods() {
+		oldGoods[good.Symbol()] = good
+	}
+
+	// Compare each good in new market data
+	for _, newGood := range newGoods {
+		oldGood, exists := oldGoods[newGood.Symbol()]
+
+		// Record if good is new or any relevant field changed
+		if !exists || s.pricesChanged(&oldGood, &newGood) {
+			playerIDObj, err := shared.NewPlayerID(playerID)
+			if err != nil {
+				logger.Log("ERROR", fmt.Sprintf("[MarketScanner] Invalid player ID: %v", err), nil)
+				continue
+			}
+
+			history, err := market.NewMarketPriceHistory(
+				waypointSymbol,
+				newGood.Symbol(),
+				playerIDObj,
+				newGood.PurchasePrice(),
+				newGood.SellPrice(),
+				newGood.Supply(),
+				newGood.Activity(),
+				newGood.TradeVolume(),
+			)
+
+			if err != nil {
+				logger.Log("ERROR", fmt.Sprintf("[MarketScanner] Failed to create price history: %v", err), nil)
+				continue
+			}
+
+			if err := s.priceHistoryRepo.RecordPriceChange(ctx, history); err != nil {
+				logger.Log("ERROR", fmt.Sprintf("[MarketScanner] Failed to record price change: %v", err), nil)
+				// Don't fail the scan if price history recording fails
+			}
+		}
+	}
+}
+
+// pricesChanged checks if any relevant field changed between old and new trade goods
+func (s *MarketScanner) pricesChanged(old, new *market.TradeGood) bool {
+	if old.PurchasePrice() != new.PurchasePrice() {
+		return true
+	}
+	if old.SellPrice() != new.SellPrice() {
+		return true
+	}
+	if old.TradeVolume() != new.TradeVolume() {
+		return true
+	}
+
+	// Compare supply (both could be nil)
+	oldSupply := old.Supply()
+	newSupply := new.Supply()
+	if (oldSupply == nil) != (newSupply == nil) {
+		return true
+	}
+	if oldSupply != nil && newSupply != nil && *oldSupply != *newSupply {
+		return true
+	}
+
+	// Compare activity (both could be nil)
+	oldActivity := old.Activity()
+	newActivity := new.Activity()
+	if (oldActivity == nil) != (newActivity == nil) {
+		return true
+	}
+	if oldActivity != nil && newActivity != nil && *oldActivity != *newActivity {
+		return true
+	}
+
+	return false
 }
