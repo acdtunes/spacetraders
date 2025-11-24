@@ -38,7 +38,8 @@ type ArbitrageExecutor struct {
 	mediator    common.Mediator
 	shipRepo    navigation.ShipRepository
 	logRepo     trading.ArbitrageExecutionLogRepository
-	purchaseMu  sync.Mutex // Prevents concurrent purchases from draining account
+	marketRepo  scoutingQueries.MarketRepository // For querying prices (cargo valuation)
+	purchaseMu  sync.Mutex                       // Prevents concurrent purchases from draining account
 }
 
 // NewArbitrageExecutor creates a new arbitrage executor service
@@ -46,11 +47,13 @@ func NewArbitrageExecutor(
 	mediator common.Mediator,
 	shipRepo navigation.ShipRepository,
 	logRepo trading.ArbitrageExecutionLogRepository,
+	marketRepo scoutingQueries.MarketRepository,
 ) *ArbitrageExecutor {
 	return &ArbitrageExecutor{
-		mediator: mediator,
-		shipRepo: shipRepo,
-		logRepo:  logRepo,
+		mediator:   mediator,
+		shipRepo:   shipRepo,
+		logRepo:    logRepo,
+		marketRepo: marketRepo,
 	}
 }
 
@@ -161,10 +164,38 @@ func (e *ArbitrageExecutor) Execute(
 		return nil, executionErr
 	}
 
-	// Step 3: Purchase cargo (with safety checks)
+	// Step 3: Ensure ship has cargo space (clear existing cargo if needed)
+	if !ship.Cargo().IsEmpty() {
+		logger.Log("INFO", "Ship has existing cargo, clearing before arbitrage", map[string]interface{}{
+			"ship":        ship.ShipSymbol(),
+			"cargo_units": ship.Cargo().Units,
+			"cargo_items": len(ship.Cargo().Inventory),
+		})
+
+		// Handle existing cargo: sell if valuable (>=20K), else jettison
+		err := e.handleExistingCargo(ctx, ship, playerIDValue, logger)
+		if err != nil {
+			executionErr = fmt.Errorf("failed to clear existing cargo: %w", err)
+			return nil, executionErr
+		}
+
+		// Reload ship to get updated cargo status after clearing
+		ship, err = e.shipRepo.FindBySymbol(ctx, ship.ShipSymbol(), playerIDValue)
+		if err != nil {
+			executionErr = fmt.Errorf("failed to reload ship after clearing cargo: %w", err)
+			return nil, executionErr
+		}
+
+		logger.Log("INFO", "Cargo cleared successfully", map[string]interface{}{
+			"ship":        ship.ShipSymbol(),
+			"cargo_units": ship.Cargo().Units,
+		})
+	}
+
+	// Verify we now have space
 	availableSpace := ship.Cargo().AvailableCapacity()
 	if availableSpace <= 0 {
-		executionErr = fmt.Errorf("ship has no available cargo space")
+		executionErr = fmt.Errorf("ship still has no cargo space after clearing")
 		return nil, executionErr
 	}
 
@@ -478,6 +509,128 @@ func (e *ArbitrageExecutor) Execute(
 	e.logExecution(ctx, ship, opportunity, result, containerID, playerID, true, "")
 
 	return result, nil
+}
+
+// handleExistingCargo clears cargo from the ship before arbitrage trade.
+// If cargo value >= 20K credits, it sells the cargo. Otherwise, it jettisons it.
+//
+// This ensures the ship has space for the arbitrage purchase, maximizing profit
+// by selling valuable cargo and quickly discarding low-value cargo.
+//
+// Parameters:
+//   - ctx: Context for the operation
+//   - ship: Ship with cargo to clear
+//   - playerID: Player identifier
+//   - logger: Logger for tracking decisions
+//
+// Returns error if cargo clearing fails.
+func (e *ArbitrageExecutor) handleExistingCargo(
+	ctx context.Context,
+	ship *navigation.Ship,
+	playerID shared.PlayerID,
+	logger common.ContainerLogger,
+) error {
+	const valueThreshold = 20000
+
+	// Get ship's current cargo inventory
+	cargo := ship.Cargo()
+	waypointSymbol := ship.CurrentLocation().Symbol
+
+	// Query market data at ship's current location
+	marketQuery := &scoutingQueries.GetMarketDataQuery{
+		PlayerID:       playerID,
+		WaypointSymbol: waypointSymbol,
+	}
+
+	marketResp, err := e.mediator.Send(ctx, marketQuery)
+	if err != nil {
+		return fmt.Errorf("failed to query market for cargo valuation: %w", err)
+	}
+
+	marketData := marketResp.(*scoutingQueries.GetMarketDataResponse).Market
+
+	// Calculate total cargo value at current market
+	totalValue := 0
+	for _, item := range cargo.Inventory {
+		good := marketData.FindGood(item.Symbol)
+		if good == nil {
+			logger.Log("WARN", "Market doesn't trade cargo item", map[string]interface{}{
+				"item":   item.Symbol,
+				"market": waypointSymbol,
+			})
+			continue
+		}
+
+		itemValue := item.Units * good.PurchasePrice()
+		totalValue += itemValue
+
+		logger.Log("DEBUG", "Cargo item valuation", map[string]interface{}{
+			"good":       item.Symbol,
+			"units":      item.Units,
+			"unit_price": good.PurchasePrice(),
+			"item_value": itemValue,
+		})
+	}
+
+	logger.Log("INFO", "Cargo value calculated", map[string]interface{}{
+		"total_value": totalValue,
+		"threshold":   valueThreshold,
+		"items":       len(cargo.Inventory),
+	})
+
+	if totalValue >= valueThreshold {
+		// Sell cargo (we're already docked at buy market)
+		logger.Log("INFO", "Selling valuable cargo before arbitrage", map[string]interface{}{
+			"cargo_value": totalValue,
+			"ship":        ship.ShipSymbol(),
+		})
+
+		for _, item := range cargo.Inventory {
+			sellCmd := &shipCmd.SellCargoCommand{
+				ShipSymbol: ship.ShipSymbol(),
+				GoodSymbol: item.Symbol,
+				Units:      item.Units,
+				PlayerID:   playerID,
+			}
+
+			_, err := e.mediator.Send(ctx, sellCmd)
+			if err != nil {
+				return fmt.Errorf("failed to sell cargo item %s: %w", item.Symbol, err)
+			}
+
+			logger.Log("INFO", "Cargo item sold", map[string]interface{}{
+				"good":  item.Symbol,
+				"units": item.Units,
+			})
+		}
+	} else {
+		// Jettison cargo (not worth selling)
+		logger.Log("INFO", "Jettisoning low-value cargo before arbitrage", map[string]interface{}{
+			"cargo_value": totalValue,
+			"ship":        ship.ShipSymbol(),
+		})
+
+		for _, item := range cargo.Inventory {
+			jettisonCmd := &shipCmd.JettisonCargoCommand{
+				ShipSymbol: ship.ShipSymbol(),
+				GoodSymbol: item.Symbol,
+				Units:      item.Units,
+				PlayerID:   playerID,
+			}
+
+			_, err := e.mediator.Send(ctx, jettisonCmd)
+			if err != nil {
+				return fmt.Errorf("failed to jettison cargo item %s: %w", item.Symbol, err)
+			}
+
+			logger.Log("INFO", "Cargo item jettisoned", map[string]interface{}{
+				"good":  item.Symbol,
+				"units": item.Units,
+			})
+		}
+	}
+
+	return nil
 }
 
 // logExecution captures execution data for ML training.
