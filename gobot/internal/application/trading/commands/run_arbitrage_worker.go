@@ -17,6 +17,7 @@ type RunArbitrageWorkerCommand struct {
 	Opportunity *trading.ArbitrageOpportunity  // Opportunity to execute
 	PlayerID    int                            // Player identifier
 	ContainerID string                         // Container ID for ledger tracking
+	MinBalance  int                            // Minimum credit balance to maintain (0 = no limit)
 }
 
 // RunArbitrageWorkerResponse contains the results of the arbitrage run
@@ -88,6 +89,7 @@ func (h *RunArbitrageWorkerHandler) Handle(
 		cmd.Opportunity,
 		cmd.PlayerID,
 		cmd.ContainerID,
+		cmd.MinBalance,
 	)
 	if err != nil {
 		errMsg := fmt.Sprintf("execution failed: %v", err)
