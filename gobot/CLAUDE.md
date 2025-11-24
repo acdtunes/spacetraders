@@ -945,3 +945,93 @@ The resilience improvements prevent:
 1. **"cannot orbit while in transit"** - Ship state machine violations
 2. **API 4214 errors** - Duplicate navigation commands
 3. **Race conditions** - Stale ship state between segments
+
+## Timezone Awareness
+
+### Database Timestamps
+
+**CRITICAL:** All database timestamps use UTC with explicit timezone awareness.
+
+**Migration 015** (`migrations/015_fix_timezone_timestamps.up.sql`) enforces:
+- All timestamp columns use `TIMESTAMP WITH TIME ZONE` (timestamptz)
+- Database stores all times in UTC internally
+- PostgreSQL `NOW()` returns timestamptz (UTC with timezone offset)
+- Application code must use timezone-aware timestamps
+
+**Affected Tables:**
+- `containers` (started_at, stopped_at)
+- `container_logs` (timestamp)
+- `arbitrage_execution_logs` (executed_at, validation_time, execution_time)
+- `market_prices` (recorded_at)
+- `market_price_history` (recorded_at)
+- `transactions` (created_at)
+
+### Go Time Handling
+
+**Always use `time.Now()` for current time:**
+```go
+now := time.Now()  // Returns time in local timezone with offset
+```
+
+**Database insertion:**
+```go
+// GORM automatically converts time.Time to UTC for timestamptz columns
+model.StartedAt = time.Now()  // Stored as UTC in database
+```
+
+**Querying:**
+```go
+// PostgreSQL NOW() returns current time in UTC
+query := "SELECT * FROM containers WHERE started_at > NOW() - INTERVAL '10 minutes'"
+// Comparisons work correctly because both sides are timezone-aware
+```
+
+### Log Timestamps
+
+**Format:** RFC3339 with timezone offset
+```
+[2025-11-24T15:23:21-03:00] [container-id] INFO: message
+```
+
+**Implementation:**
+```go
+timestamp := time.Now().Format(time.RFC3339)
+// Produces: 2025-11-24T15:23:21-03:00 (includes local timezone offset)
+```
+
+### Debugging Timezone Issues
+
+**Check current timezone:**
+```bash
+# System timezone
+date
+# Output: Mon Nov 24 15:13:00 -03 2025
+
+# PostgreSQL timezone
+psql -c "SHOW TIMEZONE;"
+# Output: UTC (or America/Argentina/Buenos_Aires)
+
+# Database timestamps
+psql -c "SELECT NOW();"
+# Output: 2025-11-24 18:13:00+00 (UTC)
+```
+
+**Timezone mismatch symptoms:**
+1. Log timestamps ahead/behind actual time
+2. Query filters returning unexpected results
+3. "Recent activity" queries missing records
+
+**Fix:**
+- Ensure PostgreSQL uses UTC or correct timezone
+- Verify Go application reads system timezone correctly
+- Check migration 015 has been applied
+- All timestamp columns must be `timestamptz`, not `timestamp`
+
+### Best Practices
+
+1. **Always store UTC in database** - Let PostgreSQL handle timezone conversions
+2. **Use `time.Now()` in Go** - Never construct timestamps manually
+3. **Include timezone in logs** - Use RFC3339 format
+4. **Query with NOW()** - PostgreSQL handles timezone-aware comparisons
+5. **Avoid string timestamps** - Use proper time.Time types
+6. **Test across timezones** - Verify behavior in different timezone settings
