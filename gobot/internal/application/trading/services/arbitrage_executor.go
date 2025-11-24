@@ -35,11 +35,10 @@ type ArbitrageResult struct {
 // ArbitrageExecutor executes a complete arbitrage cycle: buy → navigate → sell.
 // This is an application service that orchestrates the workflow using existing commands.
 type ArbitrageExecutor struct {
-	mediator    common.Mediator
-	shipRepo    navigation.ShipRepository
-	logRepo     trading.ArbitrageExecutionLogRepository
-	marketRepo  scoutingQueries.MarketRepository // For querying prices (cargo valuation)
-	purchaseMu  sync.Mutex                       // Prevents concurrent purchases from draining account
+	mediator   common.Mediator
+	shipRepo   navigation.ShipRepository
+	logRepo    trading.ArbitrageExecutionLogRepository
+	purchaseMu sync.Mutex // Prevents concurrent purchases from draining account
 }
 
 // NewArbitrageExecutor creates a new arbitrage executor service
@@ -47,13 +46,11 @@ func NewArbitrageExecutor(
 	mediator common.Mediator,
 	shipRepo navigation.ShipRepository,
 	logRepo trading.ArbitrageExecutionLogRepository,
-	marketRepo scoutingQueries.MarketRepository,
 ) *ArbitrageExecutor {
 	return &ArbitrageExecutor{
-		mediator:   mediator,
-		shipRepo:   shipRepo,
-		logRepo:    logRepo,
-		marketRepo: marketRepo,
+		mediator: mediator,
+		shipRepo: shipRepo,
+		logRepo:  logRepo,
 	}
 }
 
@@ -205,8 +202,8 @@ func (e *ArbitrageExecutor) Execute(
 
 	// CRITICAL SECTION: Lock to prevent concurrent purchases from draining account
 	// This ensures balance check + purchase limits + validation are atomic across all workers
+	// NOTE: Lock is manually released after purchase completes (not deferred) to avoid blocking other workers
 	e.purchaseMu.Lock()
-	defer e.purchaseMu.Unlock()
 
 	logger.Log("INFO", "Acquired purchase lock", map[string]interface{}{
 		"ship": ship.ShipSymbol(),
@@ -220,12 +217,14 @@ func (e *ArbitrageExecutor) Execute(
 
 	resp, err := e.mediator.Send(ctx, getPlayerQuery)
 	if err != nil {
+		e.purchaseMu.Unlock()
 		executionErr = fmt.Errorf("failed to query player balance: %w", err)
 		return nil, executionErr
 	}
 
 	playerResp, ok := resp.(*playerQueries.GetPlayerResponse)
 	if !ok {
+		e.purchaseMu.Unlock()
 		executionErr = fmt.Errorf("invalid response from GetPlayerQuery")
 		return nil, executionErr
 	}
