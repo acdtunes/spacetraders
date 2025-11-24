@@ -226,6 +226,25 @@ func (e *RouteExecutor) executeSegment(
 		}
 	}
 
+	// Reload ship one more time immediately before orbit check to ensure
+	// we have the absolute latest state and prevent race conditions
+	// where ship enters transit between reload and orbit attempt
+	if e.shipRepo != nil {
+		freshShip, err := e.shipRepo.FindBySymbol(ctx, ship.ShipSymbol(), playerID)
+		if err != nil {
+			return fmt.Errorf("failed to reload ship before orbit: %w", err)
+		}
+		*ship = *freshShip
+	}
+
+	// Final check: if ship is STILL in transit after all our waiting and reloading,
+	// wait one more time to ensure we don't hit "cannot orbit while in transit"
+	if ship.NavStatus() == domainNavigation.NavStatusInTransit {
+		if err := e.waitForCurrentTransit(ctx, ship, playerID); err != nil {
+			return fmt.Errorf("failed to wait for transit before orbit: %w", err)
+		}
+	}
+
 	if err := e.ensureShipInOrbit(ctx, ship, playerID); err != nil {
 		return err
 	}
