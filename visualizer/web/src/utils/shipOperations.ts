@@ -14,6 +14,7 @@ export function getOperationEmoji(operationType: OperationType | null | undefine
     'contract': '📜',
     'factory': '⚙️',
     'shipyard': '🏭',
+    'arbitrage': '💹',
     'idle': '💤',
   };
 
@@ -34,6 +35,7 @@ export function getOperationName(operationType: OperationType | null | undefined
     'contract': 'Contract',
     'factory': 'Factory',
     'shipyard': 'Shipyard',
+    'arbitrage': 'Arbitrage',
     'idle': 'Idle',
   };
 
@@ -54,6 +56,7 @@ export function getOperationColor(operationType: OperationType | null | undefine
     'contract': '#8B5CF6', // purple-500
     'factory': '#EF4444', // red-500
     'shipyard': '#EC4899', // pink-500
+    'arbitrage': '#06B6D4', // cyan-500
     'idle': '#6B7280', // gray-500
   };
 
