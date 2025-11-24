@@ -66,6 +66,9 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	steps.RegisterShipFuelServiceSteps(sc)
 	steps.RegisterShipNavigationCalculatorSteps(sc)
 	steps.RegisterShipBalancerSteps(sc)
+
+	// Trading/arbitrage application layer tests
+	steps.InitializeArbitrageCoordinatorScenario(sc)
 }
 
 func TestMain(m *testing.M) {
