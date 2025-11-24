@@ -278,3 +278,35 @@ func (m *MockDaemonClient) StartMiningCoordinatorContainer(ctx context.Context, 
 
 	return nil
 }
+
+// PersistArbitrageWorkerContainer creates but does NOT start an arbitrage worker container
+func (m *MockDaemonClient) PersistArbitrageWorkerContainer(ctx context.Context, containerID string, playerID uint, command interface{}) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.createdContainers = append(m.createdContainers, containerID)
+	m.containers = append(m.containers, Container{
+		ID:       containerID,
+		PlayerID: int(playerID),
+		Status:   "PENDING",
+		Type:     "arbitrage-worker",
+	})
+
+	return nil
+}
+
+// StartArbitrageWorkerContainer starts a previously persisted arbitrage worker container
+func (m *MockDaemonClient) StartArbitrageWorkerContainer(ctx context.Context, containerID string, completionCallback chan<- string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Find and update the container status
+	for i, c := range m.containers {
+		if c.ID == containerID {
+			m.containers[i].Status = "RUNNING"
+			break
+		}
+	}
+
+	return nil
+}
