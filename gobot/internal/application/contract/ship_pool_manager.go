@@ -91,13 +91,18 @@ func FindIdleLightHaulers(
 			continue
 		}
 
-		// Filter 2: Exclude ships in transit (even without assignment)
+		// Filter 2: Must have cargo capacity (excludes probes/satellites tagged as haulers)
+		if ship.CargoCapacity() == 0 {
+			continue
+		}
+
+		// Filter 3: Exclude ships in transit (even without assignment)
 		// Ships being balanced or navigating are not available for new contracts
 		if ship.NavStatus() == navigation.NavStatusInTransit {
 			continue
 		}
 
-		// Filter 3: Only idle ships (no active assignment)
+		// Filter 4: Only idle ships (no active assignment)
 		assignment, err := shipAssignmentRepo.FindByShip(ctx, ship.ShipSymbol(), playerID.Value())
 		if err != nil {
 			// If error fetching assignment, assume ship is not assigned
