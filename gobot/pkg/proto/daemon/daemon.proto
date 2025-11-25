@@ -90,6 +90,9 @@ service DaemonService {
 
   // StartManufacturingCoordinator initiates automated manufacturing arbitrage operations
   rpc StartManufacturingCoordinator(StartManufacturingCoordinatorRequest) returns (StartManufacturingCoordinatorResponse);
+
+  // StartParallelManufacturingCoordinator initiates parallel task-based manufacturing operations
+  rpc StartParallelManufacturingCoordinator(StartParallelManufacturingCoordinatorRequest) returns (StartParallelManufacturingCoordinatorResponse);
 }
 
 // NavigateShipRequest initiates ship navigation
@@ -642,6 +645,26 @@ message StartManufacturingCoordinatorRequest {
 
 // StartManufacturingCoordinatorResponse returns coordinator details
 message StartManufacturingCoordinatorResponse {
+  string container_id = 1;
+  string system_symbol = 2;
+  int32 min_price = 3;
+  int32 max_workers = 4;
+  int32 min_balance = 5;
+  string status = 6;
+  string message = 7;
+}
+
+// StartParallelManufacturingCoordinatorRequest starts parallel task-based manufacturing coordinator
+message StartParallelManufacturingCoordinatorRequest {
+  int32 player_id = 1;
+  string system_symbol = 2; // System to manufacture in (e.g., "X1-AU21")
+  int32 min_price = 3; // Minimum purchase price threshold (default 1000)
+  int32 max_workers = 4; // Maximum parallel workers (default 5)
+  int32 min_balance = 5; // Minimum credit balance to maintain (default 0 = no limit)
+}
+
+// StartParallelManufacturingCoordinatorResponse returns coordinator details
+message StartParallelManufacturingCoordinatorResponse {
   string container_id = 1;
   string system_symbol = 2;
   int32 min_price = 3;

@@ -35,6 +35,7 @@ import (
 	tradingCmd "github.com/andrescamacho/spacetraders-go/internal/application/trading/commands"
 	tradingQuery "github.com/andrescamacho/spacetraders-go/internal/application/trading/queries"
 	tradingServices "github.com/andrescamacho/spacetraders-go/internal/application/trading/services"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 	domainRouting "github.com/andrescamacho/spacetraders-go/internal/domain/routing"
@@ -263,8 +264,8 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to register BatchPurchaseShips handler: %w", err)
 	}
 
-	// Cargo handlers
-	purchaseCargoHandler := shipCmd.NewPurchaseCargoHandler(shipRepo, playerRepo, apiClient, marketRepo, med)
+	// Cargo handlers (pass marketScanner to refresh market data after transactions)
+	purchaseCargoHandler := shipCmd.NewPurchaseCargoHandler(shipRepo, playerRepo, apiClient, marketRepo, med, marketScanner)
 	if err := mediator.RegisterHandler[*shipCmd.PurchaseCargoCommand](med, purchaseCargoHandler); err != nil {
 		return fmt.Errorf("failed to register PurchaseCargo handler: %w", err)
 	}
@@ -369,7 +370,7 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to register TourSelling handler: %w", err)
 	}
 
-	sellCargoHandler := shipCmd.NewSellCargoHandler(shipRepo, playerRepo, apiClient, marketRepo, med)
+	sellCargoHandler := shipCmd.NewSellCargoHandler(shipRepo, playerRepo, apiClient, marketRepo, med, marketScanner)
 	if err := mediator.RegisterHandler[*shipCmd.SellCargoCommand](med, sellCargoHandler); err != nil {
 		return fmt.Errorf("failed to register SellCargo handler: %w", err)
 	}
@@ -486,6 +487,53 @@ func run(cfg *config.Config) error {
 	)
 	if err := mediator.RegisterHandler[*tradingCmd.RunManufacturingCoordinatorCommand](med, manufacturingCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register RunManufacturingCoordinator handler: %w", err)
+	}
+
+	// Parallel manufacturing handlers
+	// Create manufacturing repositories
+	manufacturingPipelineRepo := persistence.NewGormManufacturingPipelineRepository(db)
+	manufacturingTaskRepo := persistence.NewGormManufacturingTaskRepository(db)
+	manufacturingFactoryStateRepo := persistence.NewGormManufacturingFactoryStateRepository(db)
+
+	// Create task queue (in-memory with DB backing)
+	taskQueue := tradingServices.NewTaskQueue()
+
+	// Create factory state tracker
+	factoryTracker := manufacturing.NewFactoryStateTracker()
+
+	// Create pipeline planner
+	pipelinePlanner := tradingServices.NewPipelinePlanner(goodsMarketLocator)
+
+	// Manufacturing task worker handler
+	manufacturingTaskWorkerHandler := tradingCmd.NewRunManufacturingTaskWorkerHandler(
+		shipRepo,
+		tradingMarketRepo,
+		manufacturingTaskRepo,
+		med,
+	)
+	if err := mediator.RegisterHandler[*tradingCmd.RunManufacturingTaskWorkerCommand](med, manufacturingTaskWorkerHandler); err != nil {
+		return fmt.Errorf("failed to register RunManufacturingTaskWorker handler: %w", err)
+	}
+
+	// Parallel manufacturing coordinator handler
+	// Note: SupplyMonitor is created at runtime in the Handle method (needs playerID)
+	parallelManufacturingCoordinatorHandler := tradingCmd.NewRunParallelManufacturingCoordinatorHandler(
+		manufacturingDemandFinder,
+		pipelinePlanner,
+		taskQueue,
+		factoryTracker,
+		shipRepo,
+		shipAssignmentRepo,
+		manufacturingPipelineRepo,
+		manufacturingTaskRepo,
+		manufacturingFactoryStateRepo,
+		tradingMarketRepo, // For SupplyMonitor creation
+		med,
+		daemonClientLocal, // For spawning worker containers
+		nil,               // Use default RealClock
+	)
+	if err := mediator.RegisterHandler[*tradingCmd.RunParallelManufacturingCoordinatorCommand](med, parallelManufacturingCoordinatorHandler); err != nil {
+		return fmt.Errorf("failed to register RunParallelManufacturingCoordinator handler: %w", err)
 	}
 
 	fmt.Println("\n✓ Daemon is ready to accept connections")

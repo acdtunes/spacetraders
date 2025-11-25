@@ -201,3 +201,22 @@ func (c *DaemonClientLocal) StartManufacturingWorkerContainer(
 ) error {
 	return c.server.StartManufacturingWorkerContainer(ctx, containerID, completionCallback)
 }
+
+// PersistManufacturingTaskWorkerContainer creates (but does NOT start) a manufacturing task worker container in DB
+func (c *DaemonClientLocal) PersistManufacturingTaskWorkerContainer(
+	ctx context.Context,
+	containerID string,
+	playerID uint,
+	command interface{},
+) error {
+	return c.server.PersistManufacturingTaskWorkerContainer(ctx, containerID, playerID, command)
+}
+
+// StartManufacturingTaskWorkerContainer starts a previously persisted manufacturing task worker container
+func (c *DaemonClientLocal) StartManufacturingTaskWorkerContainer(
+	ctx context.Context,
+	containerID string,
+	completionCallback chan<- string,
+) error {
+	return c.server.StartManufacturingTaskWorkerContainer(ctx, containerID, completionCallback)
+}
