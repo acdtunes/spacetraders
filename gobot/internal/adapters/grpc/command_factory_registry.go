@@ -1,0 +1,317 @@
+package grpc
+
+import (
+	"fmt"
+
+	contractCmd "github.com/andrescamacho/spacetraders-go/internal/application/contract/commands"
+	goodsCmd "github.com/andrescamacho/spacetraders-go/internal/application/goods/commands"
+	miningCmd "github.com/andrescamacho/spacetraders-go/internal/application/mining/commands"
+	scoutingCmd "github.com/andrescamacho/spacetraders-go/internal/application/scouting/commands"
+	shipyardCmd "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/commands"
+	tradingCmd "github.com/andrescamacho/spacetraders-go/internal/application/trading/commands"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+)
+
+// registerCommandFactories registers command factories for container recovery
+// Adding a new container type only requires adding a factory here - no changes to recovery logic
+func (s *DaemonServer) registerCommandFactories() {
+	// Scout tour factory
+	s.commandFactories["scout_tour"] = func(config map[string]interface{}, playerID int) (interface{}, error) {
+		shipSymbol, ok := config["ship_symbol"].(string)
+		if !ok {
+			return nil, fmt.Errorf("missing or invalid ship_symbol")
+		}
+
+		marketsRaw, ok := config["markets"].([]interface{})
+		if !ok {
+			return nil, fmt.Errorf("missing or invalid markets")
+		}
+
+		markets := make([]string, len(marketsRaw))
+		for i, m := range marketsRaw {
+			markets[i], ok = m.(string)
+			if !ok {
+				return nil, fmt.Errorf("invalid market entry at index %d", i)
+			}
+		}
+
+		iterations, ok := config["iterations"].(float64)
+		if !ok {
+			return nil, fmt.Errorf("missing or invalid iterations")
+		}
+
+		return &scoutingCmd.ScoutTourCommand{
+			PlayerID:   shared.MustNewPlayerID(int(playerID)),
+			ShipSymbol: shipSymbol,
+			Markets:    markets,
+			Iterations: int(iterations),
+		}, nil
+	}
+
+	// Contract workflow factory (single contract execution)
+	s.commandFactories["contract_workflow"] = func(config map[string]interface{}, playerID int) (interface{}, error) {
+		shipSymbol, ok := config["ship_symbol"].(string)
+		if !ok {
+			return nil, fmt.Errorf("missing or invalid ship_symbol")
+		}
+
+		coordinatorID, _ := config["coordinator_id"].(string) // Optional
+
+		return &contractCmd.RunWorkflowCommand{
+			ShipSymbol:         shipSymbol,
+			PlayerID:           shared.MustNewPlayerID(playerID),
+			CoordinatorID:      coordinatorID,
+			CompletionCallback: nil, // Will be set by container runner if needed
+		}, nil
+	}
+
+	// Contract fleet coordinator factory (multi-ship coordination)
+	s.commandFactories["contract_fleet_coordinator"] = func(config map[string]interface{}, playerID int) (interface{}, error) {
+		containerID, ok := config["container_id"].(string)
+		if !ok {
+			return nil, fmt.Errorf("missing or invalid container_id")
+		}
+
+		// ship_symbols is deprecated and no longer required (dynamic discovery is used)
+		// Pass empty array for backward compatibility
+		return &contractCmd.RunFleetCoordinatorCommand{
+			PlayerID:    shared.MustNewPlayerID(playerID),
+			ShipSymbols: []string{}, // Deprecated field, no longer used
+			ContainerID: containerID,
+		}, nil
+	}
+
+	// Arbitrage coordinator factory (multi-ship trading coordination)
+	s.commandFactories["arbitrage_coordinator"] = func(config map[string]interface{}, playerID int) (interface{}, error) {
+		containerID, ok := config["container_id"].(string)
+		if !ok {
+			return nil, fmt.Errorf("missing or invalid container_id")
+		}
+
+		systemSymbol, ok := config["system_symbol"].(string)
+		if !ok {
+			return nil, fmt.Errorf("missing or invalid system_symbol")
+		}
+
+		minMargin, _ := config["min_margin"].(float64) // Optional, defaults in handler
+		maxWorkers, _ := config["max_workers"].(int)   // Optional, defaults in handler
+		minBalance, _ := config["min_balance"].(int)   // Optional, defaults to 0 (no limit)
+
+		return &tradingCmd.RunArbitrageCoordinatorCommand{
+			SystemSymbol: systemSymbol,
+			PlayerID:     playerID,
+			ContainerID:  containerID,
+			MinMargin:    minMargin,
+			MaxWorkers:   maxWorkers,
+			MinBalance:   minBalance,
+		}, nil
+	}
+
+	// Purchase ship factory
+	s.commandFactories["purchase_ship"] = func(config map[string]interface{}, playerID int) (interface{}, error) {
+		shipSymbol, ok := config["ship_symbol"].(string)
+		if !ok {
+			return nil, fmt.Errorf("missing or invalid ship_symbol")
+		}
+
+		shipType, ok := config["ship_type"].(string)
+		if !ok {
+			return nil, fmt.Errorf("missing or invalid ship_type")
+		}
+
+		shipyardWaypoint, _ := config["shipyard"].(string) // Optional
+
+		return &shipyardCmd.PurchaseShipCommand{
+			PurchasingShipSymbol: shipSymbol,
+			ShipType:             shipType,
+			PlayerID:             shared.MustNewPlayerID(playerID),
+			ShipyardWaypoint:     shipyardWaypoint,
+		}, nil
+	}
+
+	// Batch purchase ships factory
+	s.commandFactories["batch_purchase_ships"] = func(config map[string]interface{}, playerID int) (interface{}, error) {
+		shipSymbol, ok := config["ship_symbol"].(string)
+		if !ok {
+			return nil, fmt.Errorf("missing or invalid ship_symbol")
+		}
+
+		shipType, ok := config["ship_type"].(string)
+		if !ok {
+			return nil, fmt.Errorf("missing or invalid ship_type")
+		}
+
+		quantity, ok := config["quantity"].(float64)
+		if !ok {
+			return nil, fmt.Errorf("missing or invalid quantity")
+		}
+
+		maxBudget, ok := config["max_budget"].(float64)
+		if !ok {
+			return nil, fmt.Errorf("missing or invalid max_budget")
+		}
+
+		shipyardWaypoint, _ := config["shipyard"].(string) // Optional
+
+		return &shipyardCmd.BatchPurchaseShipsCommand{
+			PurchasingShipSymbol: shipSymbol,
+			ShipType:             shipType,
+			Quantity:             int(quantity),
+			MaxBudget:            int(maxBudget),
+			PlayerID:             shared.MustNewPlayerID(playerID),
+			ShipyardWaypoint:     shipyardWaypoint,
+		}, nil
+	}
+
+	// Mining worker factory
+	s.commandFactories["mining_worker"] = func(config map[string]interface{}, playerID int) (interface{}, error) {
+		shipSymbol, ok := config["ship_symbol"].(string)
+		if !ok {
+			return nil, fmt.Errorf("missing or invalid ship_symbol")
+		}
+
+		asteroidField, ok := config["asteroid_field"].(string)
+		if !ok {
+			return nil, fmt.Errorf("missing or invalid asteroid_field")
+		}
+
+		topNOres := 3 // Default
+		if val, ok := config["top_n_ores"].(float64); ok {
+			topNOres = int(val)
+		}
+
+		coordinatorID, _ := config["coordinator_id"].(string) // Optional
+
+		return &miningCmd.RunWorkerCommand{
+			ShipSymbol:    shipSymbol,
+			PlayerID:      shared.MustNewPlayerID(playerID),
+			AsteroidField: asteroidField,
+			TopNOres:      topNOres,
+			CoordinatorID: coordinatorID,
+			Coordinator:   nil, // Set at runtime by coordinator when spawning worker
+		}, nil
+	}
+
+	// Transport worker factory
+	s.commandFactories["transport_worker"] = func(config map[string]interface{}, playerID int) (interface{}, error) {
+		shipSymbol, ok := config["ship_symbol"].(string)
+		if !ok {
+			return nil, fmt.Errorf("missing or invalid ship_symbol")
+		}
+
+		asteroidField, ok := config["asteroid_field"].(string)
+		if !ok {
+			return nil, fmt.Errorf("missing or invalid asteroid_field")
+		}
+
+		coordinatorID, _ := config["coordinator_id"].(string) // Optional
+		marketSymbol, _ := config["market_symbol"].(string)   // Optional
+
+		return &miningCmd.RunTransportWorkerCommand{
+			ShipSymbol:    shipSymbol,
+			PlayerID:      shared.MustNewPlayerID(playerID),
+			AsteroidField: asteroidField,
+			MarketSymbol:  marketSymbol,
+			CoordinatorID: coordinatorID,
+			Coordinator:   nil, // Set at runtime by coordinator when spawning worker
+		}, nil
+	}
+
+	// Mining coordinator factory
+	s.commandFactories["mining_coordinator"] = func(config map[string]interface{}, playerID int) (interface{}, error) {
+		miningOperationID, ok := config["mining_operation_id"].(string)
+		if !ok {
+			return nil, fmt.Errorf("missing or invalid mining_operation_id")
+		}
+
+		asteroidField, ok := config["asteroid_field"].(string)
+		if !ok {
+			return nil, fmt.Errorf("missing or invalid asteroid_field")
+		}
+
+		containerID, ok := config["container_id"].(string)
+		if !ok {
+			return nil, fmt.Errorf("missing or invalid container_id")
+		}
+
+		// Parse miner ships
+		minerShipsRaw, ok := config["miner_ships"].([]interface{})
+		if !ok {
+			return nil, fmt.Errorf("missing or invalid miner_ships")
+		}
+
+		minerShips := make([]string, len(minerShipsRaw))
+		for i, m := range minerShipsRaw {
+			minerShips[i], ok = m.(string)
+			if !ok {
+				return nil, fmt.Errorf("invalid miner ship at index %d", i)
+			}
+		}
+
+		// Parse transport ships
+		transportShipsRaw, ok := config["transport_ships"].([]interface{})
+		if !ok {
+			return nil, fmt.Errorf("missing or invalid transport_ships")
+		}
+
+		transportShips := make([]string, len(transportShipsRaw))
+		for i, t := range transportShipsRaw {
+			transportShips[i], ok = t.(string)
+			if !ok {
+				return nil, fmt.Errorf("invalid transport ship at index %d", i)
+			}
+		}
+
+		topNOres := 3
+		if val, ok := config["top_n_ores"].(float64); ok {
+			topNOres = int(val)
+		}
+
+		return &miningCmd.RunCoordinatorCommand{
+			MiningOperationID: miningOperationID,
+			PlayerID:          shared.MustNewPlayerID(playerID),
+			AsteroidField:     asteroidField,
+			MinerShips:        minerShips,
+			TransportShips:    transportShips,
+			TopNOres:          topNOres,
+			ContainerID:       containerID,
+		}, nil
+	}
+
+	// Goods factory coordinator factory
+	s.commandFactories["goods_factory_coordinator"] = func(config map[string]interface{}, playerID int) (interface{}, error) {
+		containerID, ok := config["container_id"].(string)
+		if !ok {
+			return nil, fmt.Errorf("missing or invalid container_id")
+		}
+
+		targetGood, ok := config["target_good"].(string)
+		if !ok {
+			return nil, fmt.Errorf("missing or invalid target_good")
+		}
+
+		systemSymbol, ok := config["system_symbol"].(string)
+		if !ok {
+			return nil, fmt.Errorf("missing or invalid system_symbol")
+		}
+
+		// Extract max_iterations from config (default to 1 if not present for backward compatibility)
+		maxIterations := 1
+		if val, ok := config["max_iterations"]; ok {
+			switch v := val.(type) {
+			case int:
+				maxIterations = v
+			case float64:
+				maxIterations = int(v)
+			}
+		}
+
+		return &goodsCmd.RunFactoryCoordinatorCommand{
+			PlayerID:      playerID,
+			TargetGood:    targetGood,
+			SystemSymbol:  systemSymbol,
+			ContainerID:   containerID,
+			MaxIterations: maxIterations,
+		}, nil
+	}
+}
