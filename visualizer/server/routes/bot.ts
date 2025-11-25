@@ -8,6 +8,17 @@ import * as db from '../db/storage.js';
 const router = Router();
 const API_BASE_URL = 'https://api.spacetraders.io/v2';
 
+// Normalize operation type for display
+function normalizeOperationType(opType: string | null): string {
+  if (!opType) return 'unassigned';
+
+  const normalizations: Record<string, string> = {
+    'manufacturing_arbitrage': 'manufacturing',
+  };
+
+  return normalizations[opType] || opType;
+}
+
 // PostgreSQL connection pool
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL || 'postgresql://spacetraders:dev_password@localhost:5432/spacetraders'
@@ -110,8 +121,7 @@ router.get('/assignments', async (req, res) => {
             } else if (assignment.container_type === 'ARBITRAGE_COORDINATOR' ||
                        assignment.container_type === 'ARBITRAGE_WORKER') {
               operation = 'arbitrage';
-            } else if (assignment.container_type === 'MANUFACTURING_COORDINATOR' ||
-                       assignment.container_type === 'MANUFACTURING_WORKER') {
+            } else if (assignment.container_type === 'MANUFACTURING_TASK_WORKER') {
               operation = 'manufacturing';
             }
 
@@ -173,8 +183,7 @@ router.get('/assignments', async (req, res) => {
         } else if (row.container_type === 'ARBITRAGE_COORDINATOR' ||
                    row.container_type === 'ARBITRAGE_WORKER') {
           operation = 'arbitrage';
-        } else if (row.container_type === 'MANUFACTURING_COORDINATOR' ||
-                   row.container_type === 'MANUFACTURING_WORKER') {
+        } else if (row.container_type === 'MANUFACTURING_TASK_WORKER') {
           operation = 'manufacturing';
         }
 
@@ -264,8 +273,7 @@ router.get('/assignments/:shipSymbol', async (req, res) => {
       } else if (assignment.container_type === 'ARBITRAGE_COORDINATOR' ||
                  assignment.container_type === 'ARBITRAGE_WORKER') {
         operation = 'arbitrage';
-      } else if (assignment.container_type === 'MANUFACTURING_COORDINATOR' ||
-                 assignment.container_type === 'MANUFACTURING_WORKER') {
+      } else if (assignment.container_type === 'MANUFACTURING_TASK_WORKER') {
         operation = 'manufacturing';
       }
 
@@ -1054,30 +1062,44 @@ router.get('/ledger/profit-loss-by-operation', async (req, res) => {
     `, params);
 
     // Get breakdown by operation type and category
+    // Normalize operation_type (e.g., manufacturing_arbitrage -> manufacturing)
     const operationBreakdownResult = await client.query(`
       SELECT
-        COALESCE(operation_type, 'unassigned') as operation_type,
+        CASE
+          WHEN operation_type = 'manufacturing_arbitrage' THEN 'manufacturing'
+          ELSE COALESCE(operation_type, 'unassigned')
+        END as operation_type,
         category,
         SUM(amount) as total,
         COUNT(*) as transaction_count
       FROM transactions
       WHERE ${whereClause}
-      GROUP BY COALESCE(operation_type, 'unassigned'), category
-      ORDER BY COALESCE(operation_type, 'unassigned'), category
+      GROUP BY CASE
+          WHEN operation_type = 'manufacturing_arbitrage' THEN 'manufacturing'
+          ELSE COALESCE(operation_type, 'unassigned')
+        END, category
+      ORDER BY operation_type, category
     `, params);
 
     // Get overall totals by operation
+    // Normalize operation_type (e.g., manufacturing_arbitrage -> manufacturing)
     const operationTotalsResult = await client.query(`
       SELECT
-        COALESCE(operation_type, 'unassigned') as operation_type,
+        CASE
+          WHEN operation_type = 'manufacturing_arbitrage' THEN 'manufacturing'
+          ELSE COALESCE(operation_type, 'unassigned')
+        END as operation_type,
         SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) as revenue,
         SUM(CASE WHEN amount < 0 THEN amount ELSE 0 END) as expenses,
         SUM(amount) as net_profit,
         COUNT(*) as transaction_count
       FROM transactions
       WHERE ${whereClause}
-      GROUP BY COALESCE(operation_type, 'unassigned')
-      ORDER BY COALESCE(operation_type, 'unassigned')
+      GROUP BY CASE
+          WHEN operation_type = 'manufacturing_arbitrage' THEN 'manufacturing'
+          ELSE COALESCE(operation_type, 'unassigned')
+        END
+      ORDER BY operation_type
     `, params);
 
     // Build operation breakdown structure
