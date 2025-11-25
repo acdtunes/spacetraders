@@ -182,3 +182,22 @@ func (c *DaemonClientLocal) StartArbitrageWorkerContainer(
 ) error {
 	return c.server.StartArbitrageWorkerContainer(ctx, containerID, completionCallback)
 }
+
+// PersistManufacturingWorkerContainer creates (but does NOT start) a manufacturing worker container in DB
+func (c *DaemonClientLocal) PersistManufacturingWorkerContainer(
+	ctx context.Context,
+	containerID string,
+	playerID uint,
+	command interface{},
+) error {
+	return c.server.PersistManufacturingWorkerContainer(ctx, containerID, playerID, command)
+}
+
+// StartManufacturingWorkerContainer starts a previously persisted manufacturing worker container
+func (c *DaemonClientLocal) StartManufacturingWorkerContainer(
+	ctx context.Context,
+	containerID string,
+	completionCallback chan<- string,
+) error {
+	return c.server.StartManufacturingWorkerContainer(ctx, containerID, completionCallback)
+}

@@ -463,6 +463,31 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to register RunArbitrageCoordinator handler: %w", err)
 	}
 
+	// Manufacturing handlers (depends on daemonClientLocal)
+	// Create production executor for manufacturing workers
+	productionExecutor := goodsServices.NewProductionExecutor(med, shipRepo, marketRepoAdapter, goodsMarketLocator, nil)
+
+	// Create demand finder for manufacturing opportunities
+	manufacturingDemandFinder := tradingServices.NewManufacturingDemandFinder(
+		tradingMarketRepo, graphService, goods.ExportToImportMap, goodsResolver,
+	)
+
+	// Manufacturing worker handler
+	manufacturingWorkerHandler := tradingCmd.NewRunManufacturingWorkerHandler(
+		productionExecutor, shipRepo, tradingMarketRepo, med, nil,
+	)
+	if err := mediator.RegisterHandler[*tradingCmd.RunManufacturingWorkerCommand](med, manufacturingWorkerHandler); err != nil {
+		return fmt.Errorf("failed to register RunManufacturingWorker handler: %w", err)
+	}
+
+	// Manufacturing coordinator handler
+	manufacturingCoordinatorHandler := tradingCmd.NewRunManufacturingCoordinatorHandler(
+		manufacturingDemandFinder, shipRepo, shipAssignmentRepo, containerRepo, daemonClientLocal, med, nil,
+	)
+	if err := mediator.RegisterHandler[*tradingCmd.RunManufacturingCoordinatorCommand](med, manufacturingCoordinatorHandler); err != nil {
+		return fmt.Errorf("failed to register RunManufacturingCoordinator handler: %w", err)
+	}
+
 	fmt.Println("\n✓ Daemon is ready to accept connections")
 	fmt.Println("Press Ctrl+C to stop")
 

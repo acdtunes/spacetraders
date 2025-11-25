@@ -310,3 +310,35 @@ func (m *MockDaemonClient) StartArbitrageWorkerContainer(ctx context.Context, co
 
 	return nil
 }
+
+// PersistManufacturingWorkerContainer creates but does NOT start a manufacturing worker container
+func (m *MockDaemonClient) PersistManufacturingWorkerContainer(ctx context.Context, containerID string, playerID uint, command interface{}) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.createdContainers = append(m.createdContainers, containerID)
+	m.containers = append(m.containers, Container{
+		ID:       containerID,
+		PlayerID: int(playerID),
+		Status:   "PENDING",
+		Type:     "manufacturing-worker",
+	})
+
+	return nil
+}
+
+// StartManufacturingWorkerContainer starts a previously persisted manufacturing worker container
+func (m *MockDaemonClient) StartManufacturingWorkerContainer(ctx context.Context, containerID string, completionCallback chan<- string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Find and update the container status
+	for i, c := range m.containers {
+		if c.ID == containerID {
+			m.containers[i].Status = "RUNNING"
+			break
+		}
+	}
+
+	return nil
+}

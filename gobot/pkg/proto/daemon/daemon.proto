@@ -87,6 +87,9 @@ service DaemonService {
 
   // StartArbitrageCoordinator initiates automated arbitrage trading operations
   rpc StartArbitrageCoordinator(StartArbitrageCoordinatorRequest) returns (StartArbitrageCoordinatorResponse);
+
+  // StartManufacturingCoordinator initiates automated manufacturing arbitrage operations
+  rpc StartManufacturingCoordinator(StartManufacturingCoordinatorRequest) returns (StartManufacturingCoordinatorResponse);
 }
 
 // NavigateShipRequest initiates ship navigation
@@ -622,6 +625,26 @@ message StartArbitrageCoordinatorResponse {
   string container_id = 1;
   string system_symbol = 2;
   double min_margin = 3;
+  int32 max_workers = 4;
+  int32 min_balance = 5;
+  string status = 6;
+  string message = 7;
+}
+
+// StartManufacturingCoordinatorRequest starts manufacturing coordinator
+message StartManufacturingCoordinatorRequest {
+  int32 player_id = 1;
+  string system_symbol = 2; // System to manufacture in (e.g., "X1-AU21")
+  int32 min_price = 3; // Minimum purchase price threshold (default 1000)
+  int32 max_workers = 4; // Maximum parallel workers (default 5)
+  int32 min_balance = 5; // Minimum credit balance to maintain (default 0 = no limit)
+}
+
+// StartManufacturingCoordinatorResponse returns coordinator details
+message StartManufacturingCoordinatorResponse {
+  string container_id = 1;
+  string system_symbol = 2;
+  int32 min_price = 3;
   int32 max_workers = 4;
   int32 min_balance = 5;
   string status = 6;

@@ -29,4 +29,7 @@ type ShipAssignmentRepository interface {
 
 	// ReleaseAllActive releases all active ship assignments (used for daemon startup cleanup)
 	ReleaseAllActive(ctx context.Context, reason string) (int, error)
+
+	// CountByContainerPrefix counts active assignments where container ID starts with prefix
+	CountByContainerPrefix(ctx context.Context, prefix string, playerID int) (int, error)
 }

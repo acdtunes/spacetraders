@@ -21,6 +21,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	contractCmd "github.com/andrescamacho/spacetraders-go/internal/application/contract/commands"
 	goodsCmd "github.com/andrescamacho/spacetraders-go/internal/application/goods/commands"
+	goodsServices "github.com/andrescamacho/spacetraders-go/internal/application/goods/services"
 	miningCmd "github.com/andrescamacho/spacetraders-go/internal/application/mining/commands"
 	scoutingCmd "github.com/andrescamacho/spacetraders-go/internal/application/scouting/commands"
 	shipCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands"
@@ -31,6 +32,7 @@ import (
 	tradingCmd "github.com/andrescamacho/spacetraders-go/internal/application/trading/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/goods"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/routing"
@@ -59,6 +61,7 @@ type MetricsCollector interface {
 type DaemonServer struct {
 	mediator           common.Mediator
 	listener           net.Listener
+	db                 *gorm.DB // Database for creating repositories on demand
 	logRepo            persistence.ContainerLogRepository
 	containerRepo      *persistence.ContainerRepositoryGORM
 	shipAssignmentRepo *persistence.ShipAssignmentRepositoryGORM
@@ -125,6 +128,7 @@ func NewDaemonServer(
 
 	server := &DaemonServer{
 		mediator:              mediator,
+		db:                    db,
 		logRepo:               logRepo,
 		containerRepo:         containerRepo,
 		shipAssignmentRepo:    shipAssignmentRepo,
@@ -1474,6 +1478,239 @@ func (s *DaemonServer) StartArbitrageWorkerContainer(
 	}()
 
 	return nil
+}
+
+// PersistManufacturingWorkerContainer creates (but does NOT start) a manufacturing worker container in DB
+func (s *DaemonServer) PersistManufacturingWorkerContainer(
+	ctx context.Context,
+	containerID string,
+	playerID uint,
+	command interface{},
+) error {
+	// Type assert to RunManufacturingWorkerCommand
+	cmd, ok := command.(*tradingCmd.RunManufacturingWorkerCommand)
+	if !ok {
+		return daemon.ErrInvalidCommandType
+	}
+
+	// Extract opportunity details for metadata
+	opportunity := cmd.Opportunity
+	var parentContainerID *string
+	if cmd.CoordinatorID != "" {
+		parentContainerID = &cmd.CoordinatorID
+	}
+
+	// Create container entity (single iteration for worker containers)
+	// Store opportunity data for reconstruction (simpler than arbitrage - no waypoint reconstruction needed)
+	iterations := 1
+	containerEntity := container.NewContainer(
+		containerID,
+		container.ContainerTypeManufacturingWorker,
+		int(playerID),
+		iterations,
+		parentContainerID, // Link to parent coordinator container
+		map[string]interface{}{
+			"ship_symbol":     cmd.ShipSymbol,
+			"player_id":       cmd.PlayerID,
+			"system_symbol":   cmd.SystemSymbol,
+			"good":            opportunity.Good(),
+			"sell_market":     opportunity.SellMarket().Symbol,
+			"sell_x":          opportunity.SellMarket().X,
+			"sell_y":          opportunity.SellMarket().Y,
+			"sell_system":     opportunity.SellMarket().SystemSymbol,
+			"purchase_price":  opportunity.PurchasePrice(),
+			"activity":        opportunity.Activity(),
+			"supply":          opportunity.Supply(),
+			"tree_depth":      opportunity.TreeDepth(),
+			"input_count":     opportunity.InputCount(),
+			"score":           opportunity.Score(),
+		},
+		nil, // Use default RealClock for production
+	)
+
+	// Persist container
+	if err := s.containerRepo.Add(ctx, containerEntity, "manufacturing_worker"); err != nil {
+		return fmt.Errorf("failed to persist manufacturing worker container: %w", err)
+	}
+
+	return nil
+}
+
+// StartManufacturingWorkerContainer starts a previously persisted manufacturing worker container
+func (s *DaemonServer) StartManufacturingWorkerContainer(
+	ctx context.Context,
+	containerID string,
+	completionCallback chan<- string,
+) error {
+	// Load container from database
+	allContainers, err := s.containerRepo.ListAll(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to list containers: %w", err)
+	}
+
+	var containerModel *persistence.ContainerModel
+	for _, c := range allContainers {
+		if c.ID == containerID {
+			containerModel = c
+			break
+		}
+	}
+
+	if containerModel == nil {
+		return fmt.Errorf("container %s not found", containerID)
+	}
+
+	// Parse config
+	var config map[string]interface{}
+	if err := json.Unmarshal([]byte(containerModel.Config), &config); err != nil {
+		return fmt.Errorf("failed to parse config: %w", err)
+	}
+
+	// Extract fields
+	shipSymbol := config["ship_symbol"].(string)
+	playerID := int(config["player_id"].(float64))
+	systemSymbol := config["system_symbol"].(string)
+
+	// Reconstruct sell market waypoint
+	sellMarket, err := shared.NewWaypoint(
+		config["sell_market"].(string),
+		config["sell_x"].(float64),
+		config["sell_y"].(float64),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to create sell market waypoint: %w", err)
+	}
+	sellMarket.SystemSymbol = config["sell_system"].(string)
+
+	// Extract optional fields with defaults
+	activity := ""
+	if val, ok := config["activity"].(string); ok {
+		activity = val
+	}
+	supply := ""
+	if val, ok := config["supply"].(string); ok {
+		supply = val
+	}
+
+	// Rebuild dependency tree using supply chain resolver
+	resolver := s.getSupplyChainResolver(playerID)
+	dependencyTree, err := resolver.BuildDependencyTree(ctx, config["good"].(string), systemSymbol, playerID)
+	if err != nil {
+		return fmt.Errorf("failed to rebuild dependency tree: %w", err)
+	}
+
+	// Reconstruct opportunity
+	opportunity, err := trading.NewManufacturingOpportunity(
+		config["good"].(string),
+		sellMarket,
+		int(config["purchase_price"].(float64)),
+		activity,
+		supply,
+		dependencyTree,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to reconstruct manufacturing opportunity: %w", err)
+	}
+
+	// Extract coordinator ID if present
+	coordinatorID := ""
+	if containerModel.ParentContainerID != nil {
+		coordinatorID = *containerModel.ParentContainerID
+	}
+
+	// Create command
+	cmd := &tradingCmd.RunManufacturingWorkerCommand{
+		ShipSymbol:    shipSymbol,
+		Opportunity:   opportunity,
+		PlayerID:      playerID,
+		ContainerID:   containerID,
+		CoordinatorID: coordinatorID,
+		SystemSymbol:  systemSymbol,
+	}
+
+	// Create container entity from model
+	containerEntity := container.NewContainer(
+		containerModel.ID,
+		container.ContainerType(containerModel.ContainerType),
+		containerModel.PlayerID,
+		1, // Worker containers are single iteration
+		nil, // No parent container needed for reconstruction
+		config,
+		nil,
+	)
+
+	// Create and start container runner
+	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipAssignmentRepo)
+	if completionCallback != nil {
+		runner.SetCompletionCallback(completionCallback)
+	}
+	s.registerContainer(containerID, runner)
+
+	// Start container in background
+	go func() {
+		if err := runner.Start(); err != nil {
+			fmt.Printf("Container %s failed: %v\n", containerID, err)
+		}
+	}()
+
+	return nil
+}
+
+// ManufacturingCoordinator creates a manufacturing coordinator for automated manufacturing operations
+func (s *DaemonServer) ManufacturingCoordinator(ctx context.Context, systemSymbol string, playerID int, minPrice int, maxWorkers int, minBalance int) (string, error) {
+	// Create container ID
+	containerID := utils.GenerateContainerID("manufacturing_coordinator", systemSymbol)
+
+	// Create manufacturing coordinator command
+	cmd := &tradingCmd.RunManufacturingCoordinatorCommand{
+		SystemSymbol:     systemSymbol,
+		PlayerID:         playerID,
+		ContainerID:      containerID,
+		MinPurchasePrice: minPrice,
+		MaxWorkers:       maxWorkers,
+		MinBalance:       minBalance,
+	}
+
+	// Create container for this operation
+	containerEntity := container.NewContainer(
+		containerID,
+		container.ContainerTypeManufacturingCoordinator,
+		playerID,
+		-1, // Infinite iterations
+		nil, // No parent container
+		map[string]interface{}{
+			"system_symbol": systemSymbol,
+			"min_price":     minPrice,
+			"max_workers":   maxWorkers,
+			"min_balance":   minBalance,
+			"container_id":  containerID,
+		},
+		nil, // Use default RealClock
+	)
+
+	// Persist container to database
+	if err := s.containerRepo.Add(ctx, containerEntity, "manufacturing_coordinator"); err != nil {
+		return "", fmt.Errorf("failed to persist container: %w", err)
+	}
+
+	// Create and start container runner
+	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipAssignmentRepo)
+	s.registerContainer(containerID, runner)
+
+	// Start container in background
+	go func() {
+		if err := runner.Start(); err != nil {
+			fmt.Printf("Container %s failed: %v\n", containerID, err)
+		}
+	}()
+
+	return containerID, nil
+}
+
+// getSupplyChainResolver creates a supply chain resolver for rebuilding dependency trees
+func (s *DaemonServer) getSupplyChainResolver(playerID int) *goodsServices.SupplyChainResolver {
+	marketRepo := persistence.NewMarketRepository(s.db)
+	return goodsServices.NewSupplyChainResolver(goods.ExportToImportMap, marketRepo)
 }
 
 // MiningOperationResult contains the result of a mining operation

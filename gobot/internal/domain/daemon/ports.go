@@ -89,4 +89,12 @@ type DaemonClient interface {
 	// StartArbitrageWorkerContainer starts a previously persisted arbitrage worker container
 	// completionCallback: Optional channel to signal completion to coordinator
 	StartArbitrageWorkerContainer(ctx context.Context, containerID string, completionCallback chan<- string) error
+
+	// PersistManufacturingWorkerContainer creates (but does NOT start) a manufacturing worker container in DB
+	// This allows assigning ships to the container before starting it
+	PersistManufacturingWorkerContainer(ctx context.Context, containerID string, playerID uint, command interface{}) error
+
+	// StartManufacturingWorkerContainer starts a previously persisted manufacturing worker container
+	// completionCallback: Optional channel to signal completion to coordinator
+	StartManufacturingWorkerContainer(ctx context.Context, containerID string, completionCallback chan<- string) error
 }
