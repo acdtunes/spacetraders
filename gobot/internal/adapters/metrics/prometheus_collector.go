@@ -1,6 +1,8 @@
 package metrics
 
 import (
+	"time"
+
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
@@ -37,6 +39,10 @@ var (
 	// globalMarketCollector is the singleton market metrics collector
 	// Set by SetGlobalMarketCollector() when metrics are enabled
 	globalMarketCollector *MarketMetricsCollector
+
+	// globalManufacturingCollector is the singleton manufacturing metrics collector
+	// Set by SetGlobalManufacturingCollector() when metrics are enabled
+	globalManufacturingCollector *ManufacturingMetricsCollector
 )
 
 // MetricsRecorder defines the interface for recording container metrics events
@@ -177,4 +183,64 @@ func SetGlobalMarketCollector(collector *MarketMetricsCollector) {
 // Returns nil if metrics are not enabled
 func GetGlobalMarketCollector() *MarketMetricsCollector {
 	return globalMarketCollector
+}
+
+// SetGlobalManufacturingCollector sets the global manufacturing metrics collector
+func SetGlobalManufacturingCollector(collector *ManufacturingMetricsCollector) {
+	globalManufacturingCollector = collector
+}
+
+// GetGlobalManufacturingCollector returns the global manufacturing metrics collector
+// Returns nil if metrics are not enabled
+func GetGlobalManufacturingCollector() *ManufacturingMetricsCollector {
+	return globalManufacturingCollector
+}
+
+// RecordManufacturingPipelineCompletion records a pipeline completion event globally
+func RecordManufacturingPipelineCompletion(playerID int, productGood, status string, duration time.Duration, profit int) {
+	if globalManufacturingCollector != nil {
+		globalManufacturingCollector.RecordPipelineCompletion(playerID, productGood, status, duration, profit)
+	}
+}
+
+// RecordManufacturingTaskCompletion records a task completion event globally
+func RecordManufacturingTaskCompletion(playerID int, taskType, status string, duration time.Duration) {
+	if globalManufacturingCollector != nil {
+		globalManufacturingCollector.RecordTaskCompletion(playerID, taskType, status, duration)
+	}
+}
+
+// RecordManufacturingTaskRetry records a task retry event globally
+func RecordManufacturingTaskRetry(playerID int, taskType string) {
+	if globalManufacturingCollector != nil {
+		globalManufacturingCollector.RecordTaskRetry(playerID, taskType)
+	}
+}
+
+// RecordManufacturingSupplyTransition records a supply level change event globally
+func RecordManufacturingSupplyTransition(playerID int, good, fromLevel, toLevel string) {
+	if globalManufacturingCollector != nil {
+		globalManufacturingCollector.RecordSupplyTransition(playerID, good, fromLevel, toLevel)
+	}
+}
+
+// RecordManufacturingFactoryCycle records a factory production cycle completion globally
+func RecordManufacturingFactoryCycle(playerID int, factorySymbol, outputGood string) {
+	if globalManufacturingCollector != nil {
+		globalManufacturingCollector.RecordFactoryCycle(playerID, factorySymbol, outputGood)
+	}
+}
+
+// RecordManufacturingCost records a manufacturing cost globally
+func RecordManufacturingCost(playerID int, costType string, amount int) {
+	if globalManufacturingCollector != nil {
+		globalManufacturingCollector.RecordCost(playerID, costType, amount)
+	}
+}
+
+// RecordManufacturingRevenue records manufacturing revenue globally
+func RecordManufacturingRevenue(playerID int, amount int) {
+	if globalManufacturingCollector != nil {
+		globalManufacturingCollector.RecordRevenue(playerID, amount)
+	}
 }
