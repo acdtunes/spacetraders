@@ -116,11 +116,21 @@ func (f *ManufacturingDemandFinder) FindHighDemandManufacturables(
 		if err != nil {
 			continue // Skip markets we can't access
 		}
+		if marketData == nil {
+			continue // No market data for this waypoint
+		}
 
 		// Check each trade good
 		for _, tradeGood := range marketData.TradeGoods() {
 			goodSymbol := tradeGood.Symbol()
 			purchasePrice := tradeGood.PurchasePrice()
+
+			// CRITICAL: Only consider IMPORT goods - these are markets that BUY/CONSUME
+			// EXPORT markets sell goods (factories), EXCHANGE markets trade both ways
+			// We want to sell to markets that NEED the goods (IMPORT type)
+			if tradeGood.TradeType() != market.TradeTypeImport {
+				continue // Skip export and exchange markets
+			}
 
 			// Skip if price below threshold
 			if purchasePrice < config.MinPurchasePrice {
@@ -140,6 +150,20 @@ func (f *ManufacturingDemandFinder) FindHighDemandManufacturables(
 			supply := ""
 			if tradeGood.Supply() != nil {
 				supply = *tradeGood.Supply()
+			}
+
+			// CRITICAL: Only consider markets with WEAK or RESTRICTED activity
+			// See docs/PARALLEL_MANUFACTURING_SYSTEM_DESIGN.md - Sell Market Selection
+			// STRONG (20.3% drift) and GROWING (33.6% drift) are too volatile
+			if activity != "WEAK" && activity != "RESTRICTED" {
+				continue // Skip volatile markets
+			}
+
+			// CRITICAL: Only sell to markets with SCARCE or LIMITED supply
+			// Symmetry with BUY logic (HIGH/ABUNDANT for buying)
+			// Markets that need goods (low supply) pay higher prices
+			if supply != "SCARCE" && supply != "LIMITED" {
+				continue // Skip markets that already have enough supply
 			}
 
 			// Track best price for this good
