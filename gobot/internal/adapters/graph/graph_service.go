@@ -44,7 +44,6 @@ func (s *GraphService) GetGraph(ctx context.Context, systemSymbol string, forceR
 		if err != nil {
 			log.Printf("Error loading graph from database: %v", err)
 		} else if graph != nil {
-			log.Printf("Graph cache hit for %s", systemSymbol)
 			return &system.GraphLoadResult{
 				Graph:   graph,
 				Source:  "database",
