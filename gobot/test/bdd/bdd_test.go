@@ -69,6 +69,9 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 
 	// Trading/arbitrage application layer tests
 	steps.InitializeArbitrageCoordinatorScenario(sc)
+
+	// Manufacturing domain layer tests
+	steps.InitializeManufacturingTaskScenario(sc)
 }
 
 func TestMain(m *testing.M) {

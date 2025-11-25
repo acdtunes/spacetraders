@@ -122,6 +122,7 @@ func (mc *marketContext) iCreateTheTradeGood() error {
 		mc.tradeGoodPurchasePrice,
 		mc.tradeGoodSellPrice,
 		mc.tradeGoodTradeVolume,
+		market.TradeType(""), // empty trade type for tests
 	)
 	return nil
 }
@@ -243,7 +244,7 @@ func (mc *marketContext) tradeGoodsForMarket(table *godog.Table) error {
 		fmt.Sscanf(row.Cells[4].Value, "%d", &sellPrice)
 		fmt.Sscanf(row.Cells[5].Value, "%d", &tradeVolume)
 
-		good, err := market.NewTradeGood(symbol, supply, activity, purchasePrice, sellPrice, tradeVolume)
+		good, err := market.NewTradeGood(symbol, supply, activity, purchasePrice, sellPrice, tradeVolume, market.TradeType(""))
 		if err != nil {
 			return err
 		}

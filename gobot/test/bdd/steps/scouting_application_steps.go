@@ -253,7 +253,7 @@ func (ctx *scoutingApplicationContext) marketDataExistsForWaypointWithPlayer(way
 
 func (ctx *scoutingApplicationContext) marketDataExistsForWaypointWithPlayerScannedMinutesAgo(waypointSymbol string, playerID int, minutesAgo int) error {
 	goods := []market.TradeGood{}
-	good, err := market.NewTradeGood("IRON_ORE", stringPtr("MODERATE"), nil, 10, 15, 100)
+	good, err := market.NewTradeGood("IRON_ORE", stringPtr("MODERATE"), nil, 10, 15, 100, market.TradeType(""))
 	if err != nil {
 		return err
 	}
