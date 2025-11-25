@@ -168,6 +168,7 @@ type TradeGoodData struct {
 	SellPrice     int
 	PurchasePrice int
 	TradeVolume   int
+	TradeType     string // EXPORT, IMPORT, or EXCHANGE
 }
 
 // Shipyard DTOs

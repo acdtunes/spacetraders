@@ -864,7 +864,16 @@ func (c *SpaceTradersClient) GetMarket(ctx context.Context, systemSymbol, waypoi
 
 	var response struct {
 		Data struct {
-			Symbol     string `json:"symbol"`
+			Symbol  string `json:"symbol"`
+			Exports []struct {
+				Symbol string `json:"symbol"`
+			} `json:"exports"`
+			Imports []struct {
+				Symbol string `json:"symbol"`
+			} `json:"imports"`
+			Exchange []struct {
+				Symbol string `json:"symbol"`
+			} `json:"exchange"`
 			TradeGoods []struct {
 				Symbol        string `json:"symbol"`
 				Supply        string `json:"supply"`
@@ -880,8 +889,33 @@ func (c *SpaceTradersClient) GetMarket(ctx context.Context, systemSymbol, waypoi
 		return nil, fmt.Errorf("failed to get market: %w", err)
 	}
 
+	// Build lookup maps for trade type classification
+	exportGoods := make(map[string]bool)
+	importGoods := make(map[string]bool)
+	exchangeGoods := make(map[string]bool)
+
+	for _, e := range response.Data.Exports {
+		exportGoods[e.Symbol] = true
+	}
+	for _, i := range response.Data.Imports {
+		importGoods[i.Symbol] = true
+	}
+	for _, x := range response.Data.Exchange {
+		exchangeGoods[x.Symbol] = true
+	}
+
 	tradeGoods := make([]domainPorts.TradeGoodData, len(response.Data.TradeGoods))
 	for i, good := range response.Data.TradeGoods {
+		// Determine trade type based on which array contains this good
+		var tradeType string
+		if exportGoods[good.Symbol] {
+			tradeType = "EXPORT"
+		} else if importGoods[good.Symbol] {
+			tradeType = "IMPORT"
+		} else if exchangeGoods[good.Symbol] {
+			tradeType = "EXCHANGE"
+		}
+
 		tradeGoods[i] = domainPorts.TradeGoodData{
 			Symbol:        good.Symbol,
 			Supply:        good.Supply,
@@ -889,6 +923,7 @@ func (c *SpaceTradersClient) GetMarket(ctx context.Context, systemSymbol, waypoi
 			SellPrice:     good.SellPrice,
 			PurchasePrice: good.PurchasePrice,
 			TradeVolume:   good.TradeVolume,
+			TradeType:     tradeType,
 		}
 	}
 

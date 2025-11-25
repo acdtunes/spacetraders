@@ -8,15 +8,30 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 )
 
+// AcquisitionStrategy determines how the resolver chooses between buying and fabricating goods
+type AcquisitionStrategy string
+
+const (
+	// StrategyPreferBuy always buys if a market exists (fastest, default)
+	StrategyPreferBuy AcquisitionStrategy = "prefer-buy"
+
+	// StrategyPreferFabricate always fabricates if a recipe exists (deepest supply chain)
+	StrategyPreferFabricate AcquisitionStrategy = "prefer-fabricate"
+
+	// StrategySmart fabricates when supply is SCARCE/LIMITED, buys when MODERATE/HIGH/ABUNDANT
+	StrategySmart AcquisitionStrategy = "smart"
+)
+
 // SupplyChainResolver builds dependency trees for goods production.
 // It determines whether each good should be bought or fabricated based on
-// market availability, following the "always buy if available" strategy.
+// market availability and the configured acquisition strategy.
 type SupplyChainResolver struct {
 	supplyChainMap map[string][]string
 	marketRepo     market.MarketRepository
+	strategy       AcquisitionStrategy
 }
 
-// NewSupplyChainResolver creates a new supply chain resolver
+// NewSupplyChainResolver creates a new supply chain resolver with default strategy (prefer-buy)
 func NewSupplyChainResolver(
 	supplyChainMap map[string][]string,
 	marketRepo market.MarketRepository,
@@ -24,7 +39,31 @@ func NewSupplyChainResolver(
 	return &SupplyChainResolver{
 		supplyChainMap: supplyChainMap,
 		marketRepo:     marketRepo,
+		strategy:       StrategyPreferBuy,
 	}
+}
+
+// NewSupplyChainResolverWithStrategy creates a resolver with a specific acquisition strategy
+func NewSupplyChainResolverWithStrategy(
+	supplyChainMap map[string][]string,
+	marketRepo market.MarketRepository,
+	strategy AcquisitionStrategy,
+) *SupplyChainResolver {
+	return &SupplyChainResolver{
+		supplyChainMap: supplyChainMap,
+		marketRepo:     marketRepo,
+		strategy:       strategy,
+	}
+}
+
+// SetStrategy changes the acquisition strategy
+func (r *SupplyChainResolver) SetStrategy(strategy AcquisitionStrategy) {
+	r.strategy = strategy
+}
+
+// Strategy returns the current acquisition strategy
+func (r *SupplyChainResolver) Strategy() AcquisitionStrategy {
+	return r.strategy
 }
 
 // BuildDependencyTree constructs a complete dependency tree for producing a target good.
@@ -76,12 +115,12 @@ func (r *SupplyChainResolver) buildTreeRecursive(
 	// Add to path for cycle detection
 	currentPath := append(path, goodSymbol)
 
-	// Check if available in any market (prefer buying)
-	// BUT: skip this check for the target good - we want to fabricate it!
+	// Decide whether to BUY or FABRICATE based on strategy
+	// The target good is always fabricated, so skip this check for root
 	if !isTargetGood {
-		marketData, err := r.findExportMarket(ctx, goodSymbol, systemSymbol, playerID)
-		if err == nil && marketData != nil {
-			// Good is available for purchase
+		shouldBuy, marketData := r.shouldBuyGood(ctx, goodSymbol, systemSymbol, playerID)
+		if shouldBuy && marketData != nil {
+			// Strategy says to buy this good
 			node := goods.NewSupplyChainNode(goodSymbol, goods.AcquisitionBuy)
 			node.MarketActivity = marketData.Activity
 			node.SupplyLevel = marketData.Supply
@@ -90,15 +129,26 @@ func (r *SupplyChainResolver) buildTreeRecursive(
 		}
 	}
 
-	// Not available for purchase (or is target good), check if it can be fabricated
+	// Strategy says to fabricate (or good not available for purchase)
 	inputs, exists := r.supplyChainMap[goodSymbol]
 	if !exists {
 		// Good cannot be purchased or fabricated
 		return nil, &goods.ErrUnknownGood{Good: goodSymbol}
 	}
 
-	// Create fabrication node
+	// CRITICAL: Verify a factory (EXPORT market) exists in THIS system for the fabricated good
+	// A factory is a market that EXPORTS (produces) the good - not IMPORT or EXCHANGE
+	factory, err := r.findFactory(ctx, goodSymbol, systemSymbol, playerID)
+	if err != nil {
+		return nil, fmt.Errorf("error finding factory for %s: %w", goodSymbol, err)
+	}
+	if factory == nil {
+		return nil, fmt.Errorf("no factory in system %s exports %s - cannot manufacture (only IMPORT/EXCHANGE markets exist)", systemSymbol, goodSymbol)
+	}
+
+	// Create fabrication node with factory location
 	node := goods.NewSupplyChainNode(goodSymbol, goods.AcquisitionFabricate)
+	node.WaypointSymbol = factory.WaypointSymbol
 
 	// Recursively build trees for all required inputs (not target goods)
 	for _, inputGood := range inputs {
@@ -112,54 +162,126 @@ func (r *SupplyChainResolver) buildTreeRecursive(
 	return node, nil
 }
 
-// findExportMarket queries markets to find where a good is sold
-// Returns market data if found, nil if not available
-func (r *SupplyChainResolver) findExportMarket(
+// findFactory finds a market that EXPORTS (produces) a specific good.
+// Only returns markets with trade_type=EXPORT, which are actual factories.
+// Returns nil if no factory produces this good in the system.
+func (r *SupplyChainResolver) findFactory(
 	ctx context.Context,
 	goodSymbol string,
 	systemSymbol string,
 	playerID int,
 ) (*MarketResult, error) {
-	// Use FindCheapestMarketSelling to check if the good is available
-	cheapestMarket, err := r.marketRepo.FindCheapestMarketSelling(ctx, goodSymbol, systemSymbol, playerID)
+	factory, err := r.marketRepo.FindFactoryForGood(ctx, goodSymbol, systemSymbol, playerID)
+	if err != nil {
+		return nil, err
+	}
+	if factory == nil {
+		return nil, nil // No factory exports this good
+	}
+
+	return &MarketResult{
+		WaypointSymbol: factory.WaypointSymbol,
+		Activity:       factory.Activity,
+		Supply:         factory.Supply,
+		Price:          factory.SellPrice,
+	}, nil
+}
+
+// findBestMarketToBuyFrom queries markets to find the best market to buy a good from.
+// Uses scored selection preferring EXPORT > EXCHANGE > IMPORT trade types,
+// then ABUNDANT > HIGH > MODERATE > LIMITED > SCARCE supply levels.
+// Returns market data if found, nil if not available.
+func (r *SupplyChainResolver) findBestMarketToBuyFrom(
+	ctx context.Context,
+	goodSymbol string,
+	systemSymbol string,
+	playerID int,
+) (*MarketResult, error) {
+	// Use FindBestMarketForBuying which scores markets by trade_type, supply, and activity
+	bestMarket, err := r.marketRepo.FindBestMarketForBuying(ctx, goodSymbol, systemSymbol, playerID)
 	if err != nil {
 		// If error is "not found", the good is not available in any market
 		// This is expected behavior, not an error
 		return nil, nil
 	}
 
-	if cheapestMarket == nil {
+	if bestMarket == nil {
 		return nil, nil // Not available in any market
 	}
 
-	// Get full market data to extract activity and supply
-	marketData, err := r.marketRepo.GetMarketData(ctx, cheapestMarket.WaypointSymbol, playerID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get market data: %w", err)
+	return &MarketResult{
+		WaypointSymbol: bestMarket.WaypointSymbol,
+		Activity:       bestMarket.Activity,
+		Supply:         bestMarket.Supply,
+		Price:          bestMarket.SellPrice,
+	}, nil
+}
+
+// shouldBuyGood determines whether to buy a good based on the acquisition strategy.
+// Returns (shouldBuy, marketData) - if shouldBuy is false, the good should be fabricated instead.
+func (r *SupplyChainResolver) shouldBuyGood(
+	ctx context.Context,
+	goodSymbol string,
+	systemSymbol string,
+	playerID int,
+) (bool, *MarketResult) {
+	// First, check if a market exists to buy from
+	marketData, err := r.findBestMarketToBuyFrom(ctx, goodSymbol, systemSymbol, playerID)
+	if err != nil || marketData == nil {
+		// No market available - must fabricate (if possible)
+		return false, nil
 	}
 
-	// Extract trade good details
-	tradeGood := marketData.FindGood(goodSymbol)
-	if tradeGood == nil {
-		return nil, nil
-	}
+	// Check if fabrication is even possible
+	_, canFabricate := r.supplyChainMap[goodSymbol]
 
-	result := &MarketResult{
-		WaypointSymbol: cheapestMarket.WaypointSymbol,
-		Activity:       "",
-		Supply:         "",
-		Price:          cheapestMarket.SellPrice,
-	}
+	switch r.strategy {
+	case StrategyPreferBuy:
+		// Always buy if market exists (original behavior)
+		return true, marketData
 
-	// Extract activity and supply if available
-	if tradeGood.Activity() != nil {
-		result.Activity = *tradeGood.Activity()
-	}
-	if tradeGood.Supply() != nil {
-		result.Supply = *tradeGood.Supply()
-	}
+	case StrategyPreferFabricate:
+		// Fabricate if recipe exists AND supply is not good (HIGH/ABUNDANT)
+		// This is more aggressive than "smart" - fabricates for MODERATE supply too
+		if !canFabricate {
+			// No recipe - must buy
+			return true, marketData
+		}
 
-	return result, nil
+		// Only buy if supply is excellent
+		switch marketData.Supply {
+		case "HIGH", "ABUNDANT":
+			// Good supply - buy directly
+			return true, marketData
+		default:
+			// SCARCE, LIMITED, MODERATE, or unknown - prefer fabrication
+			return false, marketData
+		}
+
+	case StrategySmart:
+		// Fabricate if supply is poor (SCARCE/LIMITED), buy if supply is good
+		if !canFabricate {
+			// No recipe - must buy
+			return true, marketData
+		}
+
+		// Check supply level - fabricate if SCARCE or LIMITED
+		switch marketData.Supply {
+		case "SCARCE", "LIMITED":
+			// Poor supply - prefer fabrication to increase supply
+			return false, marketData
+		case "MODERATE", "HIGH", "ABUNDANT":
+			// Good supply - buy directly
+			return true, marketData
+		default:
+			// Unknown supply level - default to buying
+			return true, marketData
+		}
+
+	default:
+		// Unknown strategy - default to buying
+		return true, marketData
+	}
 }
 
 // ValidateChain checks if a good can be produced with the current supply chain map

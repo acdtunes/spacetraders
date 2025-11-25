@@ -120,6 +120,7 @@ func (s *MarketScanner) convertAPIGoodsToDomain(apiGoods []domainPorts.TradeGood
 			apiGood.SellPrice,
 			apiGood.PurchasePrice,
 			apiGood.TradeVolume,
+			market.TradeType(apiGood.TradeType),
 		)
 		if err != nil {
 			logger.Log("ERROR", fmt.Sprintf("[MarketScanner] Failed to create trade good: %v", err), nil)

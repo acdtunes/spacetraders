@@ -81,6 +81,11 @@ func (e *ProductionExecutor) ProduceGood(
 	playerID int,
 	opContext *shared.OperationContext, // Operation context for transaction linking
 ) (*ProductionResult, error) {
+	// Add operation context to Go context for transaction tagging
+	if opContext != nil && opContext.IsValid() {
+		ctx = shared.WithOperationContext(ctx, opContext)
+	}
+
 	switch node.AcquisitionMethod {
 	case goods.AcquisitionBuy:
 		return e.buyGood(ctx, ship, node, systemSymbol, playerID, opContext)
