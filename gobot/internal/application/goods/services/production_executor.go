@@ -114,6 +114,7 @@ func (e *ProductionExecutor) buyGood(
 		"price":           marketResult.Price,
 		"activity":        marketResult.Activity,
 		"supply":          marketResult.Supply,
+		"trade_volume":    marketResult.TradeVolume,
 	})
 
 	// Navigate to market and dock
@@ -123,17 +124,25 @@ func (e *ProductionExecutor) buyGood(
 		return nil, fmt.Errorf("failed to navigate to market: %w", err)
 	}
 
-	// Calculate purchase quantity (available cargo space)
+	// Calculate purchase quantity (capped by cargo space and trade volume)
 	availableSpace := updatedShip.Cargo().Capacity - updatedShip.Cargo().Units
 	if availableSpace <= 0 {
 		return nil, fmt.Errorf("no cargo space available for purchase")
 	}
 
-	// Purchase cargo (whatever is available up to cargo capacity)
+	// Cap at trade volume to leave room for other inputs
+	purchaseQty := min(availableSpace, marketResult.TradeVolume)
+	if purchaseQty <= 0 {
+		return nil, fmt.Errorf("trade volume is zero for %s", node.Good)
+	}
+
+	logger.Log("INFO", fmt.Sprintf("Purchasing %d units of %s (cargo: %d, trade_volume: %d)", purchaseQty, node.Good, availableSpace, marketResult.TradeVolume), nil)
+
+	// Purchase cargo (capped by trade volume)
 	purchaseCmd := &appShipCmd.PurchaseCargoCommand{
 		ShipSymbol: updatedShip.ShipSymbol(),
 		GoodSymbol: node.Good,
-		Units:      availableSpace,
+		Units:      purchaseQty,
 		PlayerID:   playerIDValue,
 	}
 
@@ -193,40 +202,45 @@ func (e *ProductionExecutor) fabricateGood(
 		})
 	}
 
-	// Step 2: Find manufacturing waypoint that imports this good
-	importMarket, err := e.marketLocator.FindImportMarket(ctx, node.Good, systemSymbol, playerID)
+	// Step 2: Find manufacturing waypoint that EXPORTS this good (factory)
+	// CRITICAL: We need an EXPORT market (factory that produces and sells cheap),
+	// NOT an import market (consumer that buys at high price).
+	// The factory EXPORTS the finished good (low sell price) and IMPORTS the inputs.
+	factoryMarket, err := e.marketLocator.FindExportMarket(ctx, node.Good, systemSymbol, playerID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to find import market for %s: %w", node.Good, err)
+		return nil, fmt.Errorf("failed to find factory (export market) for %s: %w", node.Good, err)
 	}
 
-	logger.Log("INFO", fmt.Sprintf("Found manufacturing waypoint for %s at %s", node.Good, importMarket.WaypointSymbol), map[string]interface{}{
-		"good":            node.Good,
-		"waypoint":        importMarket.WaypointSymbol,
-		"purchase_price":  importMarket.Price,
+	logger.Log("INFO", fmt.Sprintf("Found factory (export market) for %s at %s", node.Good, factoryMarket.WaypointSymbol), map[string]interface{}{
+		"good":       node.Good,
+		"waypoint":   factoryMarket.WaypointSymbol,
+		"sell_price": factoryMarket.Price, // Factory's sell price (what we pay to buy)
 	})
 
-	// Step 3: Navigate to manufacturing waypoint and dock
+	// Step 3: Navigate to factory and dock
 	playerIDValue := shared.MustNewPlayerID(playerID)
-	updatedShip, err := e.NavigateAndDock(ctx, ship.ShipSymbol(), importMarket.WaypointSymbol, playerIDValue)
+	updatedShip, err := e.NavigateAndDock(ctx, ship.ShipSymbol(), factoryMarket.WaypointSymbol, playerIDValue)
 	if err != nil {
-		return nil, fmt.Errorf("failed to navigate to manufacturing waypoint: %w", err)
+		return nil, fmt.Errorf("failed to navigate to factory: %w", err)
 	}
 
-	// Step 4: Deliver all inputs by selling cargo
+	// Step 4: Deliver all inputs by selling cargo to the factory
+	// The factory IMPORTS the inputs (we sell to them)
 	deliveryCost, err := e.deliverInputs(ctx, updatedShip, playerIDValue, opContext)
 	if err != nil {
 		return nil, fmt.Errorf("failed to deliver inputs: %w", err)
 	}
 	totalCost -= deliveryCost // Revenue from selling inputs (negative cost)
 
-	logger.Log("INFO", "Delivered inputs to manufacturing waypoint", map[string]interface{}{
-		"good":              node.Good,
-		"waypoint":          importMarket.WaypointSymbol,
-		"delivery_revenue":  deliveryCost,
+	logger.Log("INFO", "Delivered inputs to factory", map[string]interface{}{
+		"good":             node.Good,
+		"waypoint":         factoryMarket.WaypointSymbol,
+		"delivery_revenue": deliveryCost,
 	})
 
-	// Step 5: Poll for production until output good appears
-	quantity, cost, err := e.PollForProduction(ctx, node.Good, importMarket.WaypointSymbol, updatedShip.ShipSymbol(), playerIDValue, opContext)
+	// Step 5: Poll for production until output good supply increases, then purchase
+	// The factory EXPORTS the finished good (we buy from them at their sell price)
+	quantity, cost, err := e.PollForProduction(ctx, node.Good, factoryMarket.WaypointSymbol, updatedShip.ShipSymbol(), playerIDValue, opContext)
 	if err != nil {
 		return nil, fmt.Errorf("failed during production polling: %w", err)
 	}
@@ -236,7 +250,7 @@ func (e *ProductionExecutor) fabricateGood(
 	return &ProductionResult{
 		QuantityAcquired: quantity,
 		TotalCost:        totalCost,
-		WaypointSymbol:   importMarket.WaypointSymbol,
+		WaypointSymbol:   factoryMarket.WaypointSymbol,
 	}, nil
 }
 
@@ -299,10 +313,18 @@ func (e *ProductionExecutor) PollForProduction(
 				return 0, 0, fmt.Errorf("no cargo space available for output")
 			}
 
+			// Cap at trade volume
+			purchaseQty := min(availableSpace, tradeGood.TradeVolume())
+			if purchaseQty <= 0 {
+				return 0, 0, fmt.Errorf("trade volume is zero for %s", good)
+			}
+
+			logger.Log("INFO", fmt.Sprintf("Purchasing %d units of fabricated %s (cargo: %d, trade_volume: %d)", purchaseQty, good, availableSpace, tradeGood.TradeVolume()), nil)
+
 			purchaseCmd := &appShipCmd.PurchaseCargoCommand{
 				ShipSymbol: shipSymbol,
 				GoodSymbol: good,
-				Units:      availableSpace,
+				Units:      purchaseQty,
 				PlayerID:   playerID,
 			}
 

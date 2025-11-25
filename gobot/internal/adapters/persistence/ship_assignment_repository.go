@@ -254,3 +254,25 @@ func (r *ShipAssignmentRepositoryGORM) ReleaseAllActive(
 
 	return int(result.RowsAffected), nil
 }
+
+// CountByContainerPrefix counts active assignments where container ID starts with prefix
+func (r *ShipAssignmentRepositoryGORM) CountByContainerPrefix(
+	ctx context.Context,
+	prefix string,
+	playerID int,
+) (int, error) {
+	var count int64
+
+	result := r.db.WithContext(ctx).
+		Model(&ShipAssignmentModel{}).
+		Where("container_id LIKE ?", prefix+"%").
+		Where("player_id = ?", playerID).
+		Where("status = ?", "active").
+		Count(&count)
+
+	if result.Error != nil {
+		return 0, fmt.Errorf("failed to count assignments by prefix: %w", result.Error)
+	}
+
+	return int(count), nil
+}

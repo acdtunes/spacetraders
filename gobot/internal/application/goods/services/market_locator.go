@@ -43,6 +43,7 @@ type MarketLocatorResult struct {
 	Activity       string // WEAK, GROWING, STRONG, RESTRICTED
 	Supply         string // SCARCE, LIMITED, MODERATE, HIGH, ABUNDANT
 	Price          int    // sell_price (for exports) or purchase_price (for imports)
+	TradeVolume    int    // Maximum units per transaction
 }
 
 // FindImportMarket finds a market that wants to buy a good (imports it).
@@ -80,6 +81,7 @@ func (l *MarketLocator) FindImportMarket(
 		Activity:       "",
 		Supply:         bestMarket.Supply,
 		Price:          bestMarket.PurchasePrice,
+		TradeVolume:    tradeGood.TradeVolume(),
 	}
 
 	// Extract activity if available
@@ -210,6 +212,7 @@ func (l *MarketLocator) FindExportMarket(
 		Activity:       "",
 		Supply:         cheapestMarket.Supply,
 		Price:          cheapestMarket.SellPrice,
+		TradeVolume:    tradeGood.TradeVolume(),
 	}
 
 	// Extract activity if available
@@ -271,6 +274,7 @@ func (l *MarketLocator) FindBestExportMarket(
 				Activity:       activity,
 				Supply:         supply,
 				Price:          tradeGood.SellPrice(),
+				TradeVolume:    tradeGood.TradeVolume(),
 			}
 		}
 	}

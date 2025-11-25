@@ -125,11 +125,16 @@ func FindIdleLightHaulers(
 		"hauler_symbols":   idleHaulerSymbols,
 	})
 
-	// Fallback: If no haulers found, use the first available idle ship (typically ship-1)
+	// Fallback: If no haulers found, use the first available idle ship with cargo capacity
 	if len(idleHaulers) == 0 && len(allShips) > 0 {
 		for _, ship := range allShips {
 			// Skip ships in transit
 			if ship.NavStatus() == navigation.NavStatusInTransit {
+				continue
+			}
+
+			// Skip ships with no cargo capacity (probes/satellites)
+			if ship.CargoCapacity() == 0 {
 				continue
 			}
 
@@ -140,9 +145,10 @@ func FindIdleLightHaulers(
 				idleHaulerSymbols = append(idleHaulerSymbols, ship.ShipSymbol())
 
 				logger.Log("INFO", "Using fallback ship (no haulers available)", map[string]interface{}{
-					"action":      "fallback_ship",
-					"ship_symbol": ship.ShipSymbol(),
-					"ship_role":   ship.Role(),
+					"action":         "fallback_ship",
+					"ship_symbol":    ship.ShipSymbol(),
+					"ship_role":      ship.Role(),
+					"cargo_capacity": ship.CargoCapacity(),
 				})
 				break // Only use first available ship as fallback
 			}
