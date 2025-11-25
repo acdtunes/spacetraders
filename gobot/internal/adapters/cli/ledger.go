@@ -420,7 +420,7 @@ func displayProfitLoss(response *queries.GetProfitLossResponse) {
 
 	fmt.Println("\n─────────────────────────────────────────────────────────────────────────────")
 	fmt.Printf("NET PROFIT:               %s\n", formatAmount(response.NetProfit))
-	fmt.Println("─────────────────────────────────────────────────────────────────────────────\n")
+	fmt.Println("─────────────────────────────────────────────────────────────────────────────")
 }
 
 // displayCashFlow formats and displays cash flow report
@@ -461,7 +461,7 @@ func displayCashFlow(response *queries.GetCashFlowResponse) {
 	)
 
 	w.Flush()
-	fmt.Println("─────────────────────────────────────────────────────────────────────────────\n")
+	fmt.Println("─────────────────────────────────────────────────────────────────────────────")
 }
 
 // formatAmount formats an amount with +/- sign
@@ -474,8 +474,26 @@ func formatAmount(amount int) string {
 
 // formatCredits formats credits with thousands separator
 func formatCredits(credits int) string {
-	if credits >= 0 {
-		return fmt.Sprintf("%,d", credits)
+	if credits < 0 {
+		return "-" + addThousandsSeparator(-credits)
 	}
-	return fmt.Sprintf("-%,d", -credits)
+	return addThousandsSeparator(credits)
+}
+
+// addThousandsSeparator adds commas to a number (e.g., 1234567 -> "1,234,567")
+func addThousandsSeparator(n int) string {
+	str := fmt.Sprintf("%d", n)
+	if len(str) <= 3 {
+		return str
+	}
+
+	// Insert commas from right to left
+	var result []byte
+	for i, c := range str {
+		if i > 0 && (len(str)-i)%3 == 0 {
+			result = append(result, ',')
+		}
+		result = append(result, byte(c))
+	}
+	return string(result)
 }
