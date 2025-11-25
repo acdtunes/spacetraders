@@ -55,15 +55,18 @@ type PurchaseCargoHandler struct {
 //
 // Internally, this creates a CargoTransactionHandler with a PurchaseStrategy,
 // eliminating the need for duplicated logic.
+//
+// The marketRefresher is optional - if nil, market data will not be refreshed after purchases.
 func NewPurchaseCargoHandler(
 	shipRepo navigation.ShipRepository,
 	playerRepo player.PlayerRepository,
 	apiClient domainPorts.APIClient,
 	marketRepo scoutingQuery.MarketRepository,
 	mediator common.Mediator,
+	marketRefresher MarketRefresher,
 ) *PurchaseCargoHandler {
 	strategy := strategies.NewPurchaseStrategy(apiClient)
-	delegate := NewCargoTransactionHandler(strategy, shipRepo, playerRepo, marketRepo, apiClient, mediator)
+	delegate := NewCargoTransactionHandler(strategy, shipRepo, playerRepo, marketRepo, apiClient, mediator, marketRefresher)
 
 	return &PurchaseCargoHandler{
 		delegate: delegate,

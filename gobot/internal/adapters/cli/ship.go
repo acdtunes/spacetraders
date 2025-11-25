@@ -599,8 +599,8 @@ Examples:
 				return fmt.Errorf("failed to create mediator: %w", err)
 			}
 
-			// Create handler
-			handler := shipCmd.NewSellCargoHandler(shipRepo, playerRepo, apiClient, marketRepo, mediator)
+			// Create handler (nil marketRefresher - CLI doesn't refresh market data after transactions)
+			handler := shipCmd.NewSellCargoHandler(shipRepo, playerRepo, apiClient, marketRepo, mediator, nil)
 
 			// Resolve player ID and load player token
 			ctx := context.Background()

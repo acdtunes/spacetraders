@@ -18,6 +18,13 @@ import (
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )
 
+// MarketRefresher defines the interface for refreshing market data after transactions.
+// This interface allows the CargoTransactionHandler to refresh prices without
+// creating import cycles with scouting/commands.
+type MarketRefresher interface {
+	ScanAndSaveMarket(ctx context.Context, playerID uint, waypointSymbol string) error
+}
+
 // CargoTransactionCommand represents a unified command for cargo transactions (purchase or sell).
 //
 // This unified command replaces separate PurchaseCargoCommand and SellCargoCommand,
@@ -68,12 +75,13 @@ type CargoTransactionResponse struct {
 //   - Open for extension: New transaction types (trade, donate) can be added by implementing CargoTransactionStrategy
 //   - Closed for modification: Handler logic doesn't change when adding new transaction types
 type CargoTransactionHandler struct {
-	strategy   strategies.CargoTransactionStrategy
-	shipRepo   navigation.ShipRepository
-	playerRepo player.PlayerRepository
-	marketRepo scoutingQuery.MarketRepository
-	apiClient  domainPorts.APIClient
-	mediator   common.Mediator
+	strategy        strategies.CargoTransactionStrategy
+	shipRepo        navigation.ShipRepository
+	playerRepo      player.PlayerRepository
+	marketRepo      scoutingQuery.MarketRepository
+	apiClient       domainPorts.APIClient
+	mediator        common.Mediator
+	marketRefresher MarketRefresher // Optional: refreshes market data after transactions
 }
 
 // NewCargoTransactionHandler creates a new cargo transaction handler with the given strategy.
@@ -82,6 +90,8 @@ type CargoTransactionHandler struct {
 //   - NewCargoTransactionHandler(NewPurchaseStrategy(...)) - for purchases
 //   - NewCargoTransactionHandler(NewSellStrategy(...)) - for sales
 //   - NewCargoTransactionHandler(NewTradeStrategy(...)) - future: for trades
+//
+// The marketRefresher is optional - if nil, market data will not be refreshed after transactions.
 func NewCargoTransactionHandler(
 	strategy strategies.CargoTransactionStrategy,
 	shipRepo navigation.ShipRepository,
@@ -89,14 +99,16 @@ func NewCargoTransactionHandler(
 	marketRepo scoutingQuery.MarketRepository,
 	apiClient domainPorts.APIClient,
 	mediator common.Mediator,
+	marketRefresher MarketRefresher,
 ) *CargoTransactionHandler {
 	return &CargoTransactionHandler{
-		strategy:   strategy,
-		shipRepo:   shipRepo,
-		playerRepo: playerRepo,
-		marketRepo: marketRepo,
-		apiClient:  apiClient,
-		mediator:   mediator,
+		strategy:        strategy,
+		shipRepo:        shipRepo,
+		playerRepo:      playerRepo,
+		marketRepo:      marketRepo,
+		apiClient:       apiClient,
+		mediator:        mediator,
+		marketRefresher: marketRefresher,
 	}
 }
 
@@ -243,6 +255,9 @@ func (h *CargoTransactionHandler) executeTransactions(ctx context.Context, cmd *
 				runningBalance += result.TotalAmount
 			}
 		}
+
+		// Refresh market data after each successful batch to keep prices up-to-date
+		h.refreshMarketData(ctx, cmd.PlayerID, waypointSymbol)
 	}
 
 	return &CargoTransactionResponse{
@@ -349,6 +364,31 @@ func (h *CargoTransactionHandler) recordCargoTransaction(
 			"good":   cmd.GoodSymbol,
 			"amount": response.TotalAmount,
 			"type":   ledgerTxType,
+		})
+	}
+}
+
+// refreshMarketData triggers a market data refresh after a successful transaction.
+// This ensures that price data remains up-to-date after buy/sell operations.
+// The refresh is non-blocking - errors are logged but don't fail the transaction.
+func (h *CargoTransactionHandler) refreshMarketData(ctx context.Context, playerID shared.PlayerID, waypointSymbol string) {
+	// Skip if no market refresher is configured
+	if h.marketRefresher == nil {
+		return
+	}
+
+	logger := logging.LoggerFromContext(ctx)
+
+	err := h.marketRefresher.ScanAndSaveMarket(ctx, uint(playerID.Value()), waypointSymbol)
+	if err != nil {
+		// Log error but don't fail the transaction - market refresh is non-critical
+		logger.Log("WARN", "Failed to refresh market data after transaction", map[string]interface{}{
+			"waypoint": waypointSymbol,
+			"error":    err.Error(),
+		})
+	} else {
+		logger.Log("DEBUG", "Market data refreshed after transaction", map[string]interface{}{
+			"waypoint": waypointSymbol,
 		})
 	}
 }
