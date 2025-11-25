@@ -430,6 +430,192 @@ Result: Buy 18 units of LASER_RIFLES
         (maintains HIGH supply, maximizes within constraints)
 ```
 
+### Sell Market Selection
+
+Choosing the right market to sell our manufactured goods is critical for profit maximization. The criteria are derived from our data analysis.
+
+#### Hard Requirements
+
+A valid sell market MUST:
+1. **Import the good** - Market actively purchases this type of good
+2. **Have WEAK or RESTRICTED activity** - Stable sell prices (5-14% drift)
+
+Markets with STRONG or GROWING activity are excluded:
+- STRONG: 20.3% price drift, -17.46 profit/sec (LOSING)
+- GROWING: 33.6% price drift, -517.18 profit/sec (CATASTROPHIC)
+
+#### Scoring Formula
+
+Among valid markets, we score using a weighted formula:
+
+```
+score = (price × 0.40) + (activityScore × 0.30) + (supplyScore × 0.20) + (depthBonus × 0.10)
+```
+
+| Factor | Weight | Description |
+|--------|--------|-------------|
+| **Purchase Price** | 40% | Higher price = more profit per unit |
+| **Activity Level** | 30% | WEAK=100, RESTRICTED=75 (price stability) |
+| **Supply Level** | 20% | LOW/SCARCE=100 (high demand, can absorb volume) |
+| **Dependency Depth** | 10% | Deeper supply chains = less competition |
+
+#### Activity Level Scoring
+
+| Activity | Score | Price Drift | Reasoning |
+|----------|-------|-------------|-----------|
+| **WEAK** | 100 | 5.1% | Most stable, predictable prices |
+| **RESTRICTED** | 75 | 14.5% | Acceptable risk, often high profit |
+| STRONG | 0 | 20.3% | Too volatile, excluded |
+| GROWING | 0 | 33.6% | Extremely volatile, excluded |
+
+#### Supply Level Scoring (at Sell Market)
+
+| Supply | Score | Reasoning |
+|--------|-------|-----------|
+| SCARCE | 100 | Desperate demand, will pay premium |
+| LIMITED | 80 | Strong demand, good prices |
+| MODERATE | 60 | Balanced market |
+| HIGH | 40 | Well-supplied, prices dropping |
+| ABUNDANT | 20 | Oversupplied, low prices |
+
+**Note:** This is the OPPOSITE of buy-side scoring. When buying, we want HIGH supply (stable). When selling, we want LOW supply (high demand).
+
+#### Implementation
+
+```go
+// SellMarketSelector finds optimal markets to sell manufactured goods
+type SellMarketSelector struct {
+    marketRepo market.MarketRepository
+}
+
+type SellMarketScore struct {
+    WaypointSymbol string
+    PurchasePrice  int     // What market pays for our goods
+    Activity       string
+    Supply         string
+    Score          float64
+}
+
+func (s *SellMarketSelector) SelectBestSellMarket(
+    ctx context.Context,
+    good string,
+    systemSymbol string,
+    playerID int,
+) (*SellMarketScore, error) {
+    // Find all markets that IMPORT this good
+    importMarkets := s.findImportMarkets(ctx, good, systemSymbol, playerID)
+
+    var validMarkets []*SellMarketScore
+
+    for _, market := range importMarkets {
+        tradeGood := market.FindGood(good)
+        if tradeGood == nil {
+            continue
+        }
+
+        activity := "WEAK"
+        if tradeGood.Activity() != nil {
+            activity = *tradeGood.Activity()
+        }
+
+        // HARD FILTER: Activity must be WEAK or RESTRICTED
+        if activity != "WEAK" && activity != "RESTRICTED" {
+            continue // Skip volatile markets
+        }
+
+        supply := "MODERATE"
+        if tradeGood.Supply() != nil {
+            supply = *tradeGood.Supply()
+        }
+
+        score := s.calculateScore(tradeGood.PurchasePrice(), activity, supply)
+
+        validMarkets = append(validMarkets, &SellMarketScore{
+            WaypointSymbol: market.WaypointSymbol(),
+            PurchasePrice:  tradeGood.PurchasePrice(),
+            Activity:       activity,
+            Supply:         supply,
+            Score:          score,
+        })
+    }
+
+    if len(validMarkets) == 0 {
+        return nil, fmt.Errorf("no valid sell markets for %s", good)
+    }
+
+    // Sort by score descending
+    sort.Slice(validMarkets, func(i, j int) bool {
+        return validMarkets[i].Score > validMarkets[j].Score
+    })
+
+    return validMarkets[0], nil
+}
+
+func (s *SellMarketSelector) calculateScore(price int, activity, supply string) float64 {
+    // Normalize price (0-100 scale, assume max price ~50000)
+    priceScore := float64(price) / 500.0 // 50000 = 100
+    if priceScore > 100 {
+        priceScore = 100
+    }
+
+    // Activity score
+    activityScores := map[string]float64{
+        "WEAK":       100,
+        "RESTRICTED": 75,
+        "STRONG":     0,  // Should be filtered out
+        "GROWING":    0,  // Should be filtered out
+    }
+    activityScore := activityScores[activity]
+
+    // Supply score (inverse - low supply = high demand = good for selling)
+    supplyScores := map[string]float64{
+        "SCARCE":   100,
+        "LIMITED":  80,
+        "MODERATE": 60,
+        "HIGH":     40,
+        "ABUNDANT": 20,
+    }
+    supplyScore := supplyScores[supply]
+
+    // Weighted combination
+    return (priceScore * 0.40) + (activityScore * 0.30) + (supplyScore * 0.20)
+    // Note: depthBonus (0.10) is added by PipelinePlanner based on supply chain depth
+}
+```
+
+#### Example: Selecting LASER_RIFLES Sell Market
+
+```
+Available Markets Importing LASER_RIFLES:
+
+Market       | Price  | Activity   | Supply   | Eligible | Score
+-------------|--------|------------|----------|----------|-------
+X1-YZ19-A1   | 31,699 | WEAK       | LIMITED  | ✓        | 84.1
+X1-YZ19-C2   | 28,500 | RESTRICTED | MODERATE | ✓        | 68.5
+X1-YZ19-B4   | 35,000 | GROWING    | SCARCE   | ✗        | (excluded)
+X1-YZ19-D1   | 25,000 | WEAK       | HIGH     | ✓        | 62.0
+
+Calculation for X1-YZ19-A1:
+├── Price score:    31699/500 = 63.4 (capped at 100)
+├── Activity score: WEAK = 100
+├── Supply score:   LIMITED = 80
+└── Total:          (63.4×0.4) + (100×0.3) + (80×0.2) = 25.4 + 30 + 16 = 71.4
+
+Winner: X1-YZ19-A1 (WEAK activity + LIMITED supply + good price)
+```
+
+#### Why Not Just Pick Highest Price?
+
+The highest price (X1-YZ19-B4 at 35,000) has GROWING activity:
+- **33.6% price drift** = By the time we arrive, price could be ~23,000
+- **-517.18 profit/sec** = Statistically losing money
+
+The moderate price (X1-YZ19-A1 at 31,699) with WEAK activity:
+- **5.1% price drift** = Price likely still ~30,000+ when we arrive
+- **+8.31 profit/sec** = Statistically profitable
+
+**Stability beats peak prices.**
+
 #### Manufacturing Input Balance
 
 For manufacturing, multiple inputs must be delivered. With a 40-unit cargo ship:
@@ -469,6 +655,7 @@ Total: 4 tasks across 4 ships (3x faster)
 - Success Metrics
 - **Adaptive Manufacturing Strategy** (NEW)
 - **Trade Size Calculation** (NEW)
+- **Sell Market Selection** (NEW)
 
 **Technical Design (below)**
 1. [Current State Analysis](#current-state-analysis)
@@ -481,8 +668,8 @@ Total: 4 tasks across 4 ships (3x faster)
 8. [Worker Design](#worker-design)
 9. [Supply Monitoring](#supply-monitoring)
 10. [Multi-Product Pipeline](#multi-product-pipeline)
-11. [Implementation Plan](#implementation-plan)
-12. [Migration Strategy](#migration-strategy)
+11. **[Resilience & Recovery](#resilience--recovery)** (NEW)
+12. [Implementation Plan](#implementation-plan)
 
 ---
 
@@ -1243,6 +1430,670 @@ func (p *PipelinePlanner) createTasksFromTree(
 
 ---
 
+## Resilience & Recovery
+
+The manufacturing system MUST survive daemon restarts without losing progress or materials. This requires:
+
+1. **Persistent State** - All state stored in database, not memory
+2. **Idempotent Operations** - Tasks can be safely retried
+3. **Cargo Tracking** - Know what each ship is carrying
+4. **Automatic Recovery** - Resume from where we left off
+
+### Design Principles
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         RESILIENCE PRINCIPLES                                │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  1. DATABASE IS THE SOURCE OF TRUTH                                          │
+│     - All task/pipeline state persisted to PostgreSQL                       │
+│     - In-memory state is a cache, not authoritative                         │
+│     - State survives daemon restart                                          │
+│                                                                              │
+│  2. IDEMPOTENT TASK EXECUTION                                                │
+│     - Tasks can be retried safely                                            │
+│     - "Navigate to X" is safe if already at X                               │
+│     - "Buy 40 units" checks cargo first                                      │
+│     - "Sell cargo" handles partial inventory                                 │
+│                                                                              │
+│  3. CARGO = INVESTMENT                                                       │
+│     - Ship cargo represents credits spent                                    │
+│     - Never lose track of cargo                                              │
+│     - On restart: reconcile cargo → resume or liquidate                     │
+│                                                                              │
+│  4. FAIL-SAFE RECOVERY                                                       │
+│     - Coordinator startup scans for incomplete work                          │
+│     - Ships with cargo get priority task assignment                          │
+│     - Stranded materials can be sold to recover investment                   │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Database Schema
+
+#### Manufacturing Pipelines Table
+
+```sql
+CREATE TABLE manufacturing_pipelines (
+    id              VARCHAR(64) PRIMARY KEY,
+    player_id       INTEGER NOT NULL REFERENCES players(id),
+    product_good    VARCHAR(64) NOT NULL,      -- Final product (LASER_RIFLES)
+    sell_market     VARCHAR(64) NOT NULL,      -- Target sell market
+    expected_price  INTEGER NOT NULL,          -- Expected sale price
+
+    status          VARCHAR(32) NOT NULL,      -- PLANNING, EXECUTING, COMPLETED, FAILED
+
+    -- Financials
+    total_cost      INTEGER DEFAULT 0,         -- Cumulative costs
+    total_revenue   INTEGER DEFAULT 0,         -- Revenue from sales
+    net_profit      INTEGER DEFAULT 0,         -- Revenue - costs
+
+    -- Timestamps
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    started_at      TIMESTAMPTZ,
+    completed_at    TIMESTAMPTZ,
+
+    CONSTRAINT valid_status CHECK (status IN ('PLANNING', 'EXECUTING', 'COMPLETED', 'FAILED', 'CANCELLED'))
+);
+
+CREATE INDEX idx_pipelines_status ON manufacturing_pipelines(status);
+CREATE INDEX idx_pipelines_player ON manufacturing_pipelines(player_id);
+```
+
+#### Manufacturing Tasks Table
+
+```sql
+CREATE TABLE manufacturing_tasks (
+    id              VARCHAR(64) PRIMARY KEY,
+    pipeline_id     VARCHAR(64) NOT NULL REFERENCES manufacturing_pipelines(id) ON DELETE CASCADE,
+    player_id       INTEGER NOT NULL REFERENCES players(id),
+
+    task_type       VARCHAR(32) NOT NULL,      -- ACQUIRE, DELIVER, COLLECT, SELL
+    status          VARCHAR(32) NOT NULL,      -- PENDING, READY, ASSIGNED, EXECUTING, COMPLETED, FAILED
+
+    -- What
+    good            VARCHAR(64) NOT NULL,
+    quantity        INTEGER DEFAULT 0,         -- Target quantity (0 = fill cargo)
+    actual_quantity INTEGER DEFAULT 0,         -- Actual quantity handled
+
+    -- Where
+    source_market   VARCHAR(64),               -- For ACQUIRE: where to buy
+    target_market   VARCHAR(64),               -- For DELIVER/SELL: destination
+    factory_symbol  VARCHAR(64),               -- For COLLECT: factory location
+
+    -- Execution
+    assigned_ship   VARCHAR(64),               -- Ship symbol executing this task
+    priority        INTEGER DEFAULT 0,         -- Higher = more urgent
+    retry_count     INTEGER DEFAULT 0,         -- Number of retries
+    max_retries     INTEGER DEFAULT 3,         -- Max retry attempts
+
+    -- Results
+    total_cost      INTEGER DEFAULT 0,         -- Cost incurred
+    total_revenue   INTEGER DEFAULT 0,         -- Revenue earned
+    error_message   TEXT,                      -- Last error if failed
+
+    -- Timestamps
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    ready_at        TIMESTAMPTZ,               -- When task became ready
+    started_at      TIMESTAMPTZ,               -- When execution began
+    completed_at    TIMESTAMPTZ,               -- When completed/failed
+
+    CONSTRAINT valid_task_type CHECK (task_type IN ('ACQUIRE', 'DELIVER', 'COLLECT', 'SELL')),
+    CONSTRAINT valid_task_status CHECK (status IN ('PENDING', 'READY', 'ASSIGNED', 'EXECUTING', 'COMPLETED', 'FAILED'))
+);
+
+CREATE INDEX idx_tasks_pipeline ON manufacturing_tasks(pipeline_id);
+CREATE INDEX idx_tasks_status ON manufacturing_tasks(status);
+CREATE INDEX idx_tasks_ship ON manufacturing_tasks(assigned_ship);
+CREATE INDEX idx_tasks_ready ON manufacturing_tasks(status, priority DESC) WHERE status = 'READY';
+```
+
+#### Task Dependencies Table
+
+```sql
+CREATE TABLE manufacturing_task_dependencies (
+    task_id         VARCHAR(64) NOT NULL REFERENCES manufacturing_tasks(id) ON DELETE CASCADE,
+    depends_on_id   VARCHAR(64) NOT NULL REFERENCES manufacturing_tasks(id) ON DELETE CASCADE,
+
+    PRIMARY KEY (task_id, depends_on_id)
+);
+
+CREATE INDEX idx_deps_depends_on ON manufacturing_task_dependencies(depends_on_id);
+```
+
+#### Factory States Table
+
+```sql
+CREATE TABLE manufacturing_factory_states (
+    id              SERIAL PRIMARY KEY,
+    factory_symbol  VARCHAR(64) NOT NULL,
+    output_good     VARCHAR(64) NOT NULL,
+    player_id       INTEGER NOT NULL REFERENCES players(id),
+    pipeline_id     VARCHAR(64) REFERENCES manufacturing_pipelines(id) ON DELETE CASCADE,
+
+    -- Input tracking (JSONB for flexibility)
+    required_inputs JSONB NOT NULL,            -- ["DIAMONDS", "PLATINUM", "ADV_CIRCUITRY"]
+    delivered_inputs JSONB DEFAULT '{}',       -- {"DIAMONDS": {"delivered": true, "quantity": 40, "ship": "AGENT-1"}}
+
+    -- Production state
+    all_inputs_delivered BOOLEAN DEFAULT FALSE,
+    current_supply       VARCHAR(32),          -- SCARCE, LIMITED, MODERATE, HIGH, ABUNDANT
+    previous_supply      VARCHAR(32),          -- Supply before we delivered
+    ready_for_collection BOOLEAN DEFAULT FALSE,
+
+    -- Timestamps
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    inputs_completed_at  TIMESTAMPTZ,
+    ready_at             TIMESTAMPTZ,          -- When supply reached HIGH
+
+    UNIQUE(factory_symbol, output_good, pipeline_id)
+);
+
+CREATE INDEX idx_factory_pending ON manufacturing_factory_states(ready_for_collection)
+    WHERE ready_for_collection = FALSE;
+```
+
+### Recovery on Startup
+
+When the coordinator starts, it must recover state from the database:
+
+```go
+// application/trading/commands/run_parallel_manufacturing_coordinator.go
+
+func (c *ParallelManufacturingCoordinator) recoverState(ctx context.Context) error {
+    logger := common.LoggerFromContext(ctx)
+    logger.Log("INFO", "Recovering manufacturing state from database...", nil)
+
+    // Step 1: Load incomplete pipelines
+    pipelines, err := c.pipelineRepo.FindByStatus(ctx, c.playerID,
+        []string{"PLANNING", "EXECUTING"})
+    if err != nil {
+        return fmt.Errorf("failed to load pipelines: %w", err)
+    }
+    logger.Log("INFO", fmt.Sprintf("Found %d incomplete pipelines", len(pipelines)), nil)
+
+    for _, pipeline := range pipelines {
+        c.activePipelines[pipeline.ID()] = pipeline
+    }
+
+    // Step 2: Load incomplete tasks and rebuild queue
+    tasks, err := c.taskRepo.FindIncomplete(ctx, c.playerID)
+    if err != nil {
+        return fmt.Errorf("failed to load tasks: %w", err)
+    }
+    logger.Log("INFO", fmt.Sprintf("Found %d incomplete tasks", len(tasks)), nil)
+
+    for _, task := range tasks {
+        // Re-evaluate task readiness
+        if c.areTaskDependenciesMet(ctx, task) {
+            task.MarkReady()
+            c.taskRepo.Update(ctx, task)
+        }
+        c.taskQueue.Enqueue(task)
+    }
+
+    // Step 3: Load factory states
+    factoryStates, err := c.factoryStateRepo.FindPending(ctx, c.playerID)
+    if err != nil {
+        return fmt.Errorf("failed to load factory states: %w", err)
+    }
+    for _, state := range factoryStates {
+        c.factoryTracker.LoadState(state)
+    }
+
+    // Step 4: Reconcile ship cargo
+    err = c.reconcileShipCargo(ctx)
+    if err != nil {
+        logger.Log("WARN", fmt.Sprintf("Cargo reconciliation warning: %v", err), nil)
+    }
+
+    logger.Log("INFO", "State recovery complete", map[string]interface{}{
+        "pipelines":      len(c.activePipelines),
+        "tasks_in_queue": c.taskQueue.Size(),
+        "factory_states": len(factoryStates),
+    })
+
+    return nil
+}
+```
+
+### Cargo Reconciliation
+
+Ships may have cargo from interrupted tasks. We must handle this:
+
+```go
+// Cargo reconciliation: what to do with ships that have cargo from interrupted work
+
+func (c *ParallelManufacturingCoordinator) reconcileShipCargo(ctx context.Context) error {
+    logger := common.LoggerFromContext(ctx)
+
+    // Get all ships for this player
+    ships, err := c.shipRepo.FindByPlayer(ctx, c.playerID)
+    if err != nil {
+        return err
+    }
+
+    for _, ship := range ships {
+        if ship.IsCargoEmpty() {
+            continue // No cargo to reconcile
+        }
+
+        // Check if this ship has an assigned task
+        assignedTask, err := c.taskRepo.FindByAssignedShip(ctx, ship.ShipSymbol())
+        if err != nil {
+            return err
+        }
+
+        if assignedTask != nil {
+            // Ship has cargo AND an assigned task
+            // Check if task matches cargo
+            if c.cargoMatchesTask(ship, assignedTask) {
+                // Resume the task
+                logger.Log("INFO", fmt.Sprintf("Resuming task %s for ship %s with existing cargo",
+                    assignedTask.ID(), ship.ShipSymbol()), nil)
+                c.resumeTask(ctx, ship, assignedTask)
+            } else {
+                // Cargo doesn't match task - something went wrong
+                // Create a LIQUIDATE task to sell cargo and recover investment
+                logger.Log("WARN", fmt.Sprintf("Ship %s has mismatched cargo, creating liquidation task",
+                    ship.ShipSymbol()), nil)
+                c.createLiquidationTask(ctx, ship)
+            }
+        } else {
+            // Ship has cargo but NO assigned task
+            // This is orphaned cargo from a crashed task
+            logger.Log("WARN", fmt.Sprintf("Ship %s has orphaned cargo: %v",
+                ship.ShipSymbol(), ship.CargoSummary()), nil)
+
+            // Try to find the original task this cargo was for
+            originalTask := c.findTaskForCargo(ctx, ship)
+            if originalTask != nil && originalTask.Status() != "COMPLETED" {
+                // Re-assign ship to the original task
+                originalTask.AssignShip(ship.ShipSymbol())
+                c.taskRepo.Update(ctx, originalTask)
+                c.resumeTask(ctx, ship, originalTask)
+            } else {
+                // Can't determine what this cargo was for - liquidate it
+                c.createLiquidationTask(ctx, ship)
+            }
+        }
+    }
+
+    return nil
+}
+
+// cargoMatchesTask checks if ship's cargo matches what the task expects
+func (c *ParallelManufacturingCoordinator) cargoMatchesTask(
+    ship *navigation.Ship,
+    task *manufacturing.ManufacturingTask,
+) bool {
+    // For DELIVER tasks: ship should have the good being delivered
+    if task.TaskType() == manufacturing.TaskTypeDeliver {
+        return ship.HasCargo(task.Good())
+    }
+
+    // For SELL tasks: ship should have the good being sold
+    if task.TaskType() == manufacturing.TaskTypeSell {
+        return ship.HasCargo(task.Good())
+    }
+
+    // For ACQUIRE/COLLECT: cargo might be empty (about to acquire) or full (acquired)
+    // Both are valid states
+    return true
+}
+
+// createLiquidationTask creates a special task to sell orphaned cargo
+func (c *ParallelManufacturingCoordinator) createLiquidationTask(
+    ctx context.Context,
+    ship *navigation.Ship,
+) {
+    logger := common.LoggerFromContext(ctx)
+
+    for _, item := range ship.Cargo().Items() {
+        // Find best market to sell this good
+        sellMarket, err := c.sellMarketSelector.SelectBestSellMarket(
+            ctx, item.Symbol(), c.systemSymbol, c.playerID)
+        if err != nil {
+            logger.Log("WARN", fmt.Sprintf("No sell market for %s, will try any import market",
+                item.Symbol()), nil)
+            sellMarket = c.findAnyImportMarket(ctx, item.Symbol())
+        }
+
+        if sellMarket == nil {
+            logger.Log("ERROR", fmt.Sprintf("Cannot find ANY market to sell %s",
+                item.Symbol()), nil)
+            continue
+        }
+
+        // Create liquidation task (special SELL task not tied to a pipeline)
+        liquidationTask := manufacturing.NewLiquidationTask(
+            ship.ShipSymbol(),
+            item.Symbol(),
+            item.Units(),
+            sellMarket.WaypointSymbol,
+        )
+
+        // High priority - recover investment ASAP
+        liquidationTask.SetPriority(100)
+        liquidationTask.AssignShip(ship.ShipSymbol())
+        liquidationTask.MarkReady()
+
+        c.taskRepo.Create(ctx, liquidationTask)
+        c.taskQueue.EnqueuePriority(liquidationTask)
+
+        logger.Log("INFO", fmt.Sprintf("Created liquidation task: sell %d %s at %s",
+            item.Units(), item.Symbol(), sellMarket.WaypointSymbol), nil)
+    }
+}
+```
+
+### Idempotent Task Execution
+
+Tasks must be safe to retry. Each task type handles partial completion:
+
+```go
+// ACQUIRE task - idempotent purchase
+func (h *ManufacturingTaskWorkerHandler) executeAcquire(
+    ctx context.Context,
+    cmd *ManufacturingTaskWorkerCommand,
+) error {
+    task := cmd.Task
+    ship := cmd.Ship
+
+    // Check if we already have the cargo (task was interrupted after purchase)
+    if ship.HasCargo(task.Good()) {
+        // Already have cargo - mark as complete
+        logger.Log("INFO", fmt.Sprintf("Ship %s already has %s cargo, skipping purchase",
+            ship.ShipSymbol(), task.Good()), nil)
+        task.SetActualQuantity(ship.CargoQuantity(task.Good()))
+        return nil
+    }
+
+    // Navigate to source market (idempotent - no-op if already there)
+    if ship.CurrentLocation().Symbol != task.SourceMarket() {
+        err := h.navigateAndDock(ctx, ship.ShipSymbol(), task.SourceMarket(), cmd.PlayerID)
+        if err != nil {
+            return fmt.Errorf("failed to navigate: %w", err)
+        }
+    }
+
+    // Purchase goods
+    quantity, cost, err := h.purchaseGoods(ctx, ship.ShipSymbol(), task.Good(), cmd.PlayerID)
+    if err != nil {
+        return fmt.Errorf("failed to purchase: %w", err)
+    }
+
+    task.SetActualQuantity(quantity)
+    task.SetTotalCost(cost)
+    return nil
+}
+
+// DELIVER task - idempotent delivery
+func (h *ManufacturingTaskWorkerHandler) executeDeliver(
+    ctx context.Context,
+    cmd *ManufacturingTaskWorkerCommand,
+) error {
+    task := cmd.Task
+    ship := cmd.Ship
+
+    // Check if cargo is empty (already delivered)
+    if !ship.HasCargo(task.Good()) {
+        logger.Log("INFO", fmt.Sprintf("Ship %s cargo already empty, delivery complete",
+            ship.ShipSymbol()), nil)
+        return nil
+    }
+
+    // Navigate to target (factory)
+    if ship.CurrentLocation().Symbol != task.TargetMarket() {
+        err := h.navigateAndDock(ctx, ship.ShipSymbol(), task.TargetMarket(), cmd.PlayerID)
+        if err != nil {
+            return fmt.Errorf("failed to navigate: %w", err)
+        }
+    }
+
+    // Sell to factory (delivery = selling to factory input market)
+    quantity, revenue, err := h.sellGoods(ctx, ship.ShipSymbol(), task.Good(), cmd.PlayerID)
+    if err != nil {
+        return fmt.Errorf("failed to deliver: %w", err)
+    }
+
+    task.SetActualQuantity(quantity)
+    task.SetTotalRevenue(revenue) // Factory pays for inputs
+
+    // Update factory state
+    h.factoryTracker.RecordDelivery(task.TargetMarket(), task.Good(), quantity, ship.ShipSymbol())
+
+    return nil
+}
+
+// SELL task - idempotent sale
+func (h *ManufacturingTaskWorkerHandler) executeSell(
+    ctx context.Context,
+    cmd *ManufacturingTaskWorkerCommand,
+) error {
+    task := cmd.Task
+    ship := cmd.Ship
+
+    // Check current cargo
+    cargoQty := ship.CargoQuantity(task.Good())
+    if cargoQty == 0 {
+        // Already sold - mark complete
+        logger.Log("INFO", fmt.Sprintf("Ship %s already sold cargo", ship.ShipSymbol()), nil)
+        return nil
+    }
+
+    // Navigate to sell market
+    if ship.CurrentLocation().Symbol != task.TargetMarket() {
+        err := h.navigateAndDock(ctx, ship.ShipSymbol(), task.TargetMarket(), cmd.PlayerID)
+        if err != nil {
+            return fmt.Errorf("failed to navigate: %w", err)
+        }
+    }
+
+    // Sell whatever we have (handle partial cargo)
+    quantity, revenue, err := h.sellGoods(ctx, ship.ShipSymbol(), task.Good(), cmd.PlayerID)
+    if err != nil {
+        return fmt.Errorf("failed to sell: %w", err)
+    }
+
+    task.SetActualQuantity(quantity)
+    task.SetTotalRevenue(revenue)
+    return nil
+}
+```
+
+### Task State Transitions with Persistence
+
+Every state change is persisted immediately:
+
+```go
+// Task state machine with persistence
+func (t *ManufacturingTask) MarkReady(repo TaskRepository, ctx context.Context) error {
+    if t.status != TaskStatusPending {
+        return fmt.Errorf("cannot mark %s task as ready", t.status)
+    }
+    t.status = TaskStatusReady
+    t.readyAt = time.Now()
+    return repo.Update(ctx, t) // Persist immediately
+}
+
+func (t *ManufacturingTask) AssignShip(shipSymbol string, repo TaskRepository, ctx context.Context) error {
+    if t.status != TaskStatusReady {
+        return fmt.Errorf("cannot assign ship to %s task", t.status)
+    }
+    t.status = TaskStatusAssigned
+    t.assignedShip = shipSymbol
+    return repo.Update(ctx, t) // Persist immediately
+}
+
+func (t *ManufacturingTask) StartExecution(repo TaskRepository, ctx context.Context) error {
+    if t.status != TaskStatusAssigned {
+        return fmt.Errorf("cannot start %s task", t.status)
+    }
+    t.status = TaskStatusExecuting
+    t.startedAt = time.Now()
+    return repo.Update(ctx, t) // Persist immediately
+}
+
+func (t *ManufacturingTask) Complete(repo TaskRepository, ctx context.Context) error {
+    if t.status != TaskStatusExecuting {
+        return fmt.Errorf("cannot complete %s task", t.status)
+    }
+    t.status = TaskStatusCompleted
+    t.completedAt = time.Now()
+    t.assignedShip = "" // Release ship
+    return repo.Update(ctx, t) // Persist immediately
+}
+
+func (t *ManufacturingTask) Fail(errorMsg string, repo TaskRepository, ctx context.Context) error {
+    t.status = TaskStatusFailed
+    t.errorMessage = errorMsg
+    t.completedAt = time.Now()
+    t.retryCount++
+
+    // If retries remaining, transition back to PENDING for retry
+    if t.retryCount < t.maxRetries {
+        t.status = TaskStatusPending
+        t.assignedShip = "" // Release ship for retry
+    }
+
+    return repo.Update(ctx, t) // Persist immediately
+}
+```
+
+### Ship Assignment Persistence
+
+Ship assignments are already persisted (we have this). The key addition is linking assignments to manufacturing tasks:
+
+```go
+// When assigning a ship to a task
+func (c *ParallelManufacturingCoordinator) assignTaskToShip(
+    ctx context.Context,
+    task *manufacturing.ManufacturingTask,
+    ship *navigation.Ship,
+) error {
+    // 1. Update task state (persisted)
+    err := task.AssignShip(ship.ShipSymbol(), c.taskRepo, ctx)
+    if err != nil {
+        return err
+    }
+
+    // 2. Create ship assignment (persisted)
+    assignment := container.NewShipAssignment(
+        ship.ShipSymbol(),
+        c.playerID,
+        fmt.Sprintf("manufacturing-task-%s", task.ID()), // ContainerID links to task
+        c.clock,
+    )
+    err = c.shipAssignmentRepo.Assign(ctx, assignment)
+    if err != nil {
+        // Rollback task assignment
+        task.RollbackAssignment(c.taskRepo, ctx)
+        return err
+    }
+
+    // 3. Start worker
+    // ... spawn worker goroutine/container
+
+    return nil
+}
+```
+
+### Recovery Scenarios
+
+#### Scenario 1: Daemon Crashes Mid-Navigation
+
+```
+Before Crash:
+├── Task T1: DELIVER DIAMONDS to Factory-A (status=EXECUTING)
+├── Ship AGENT-1: In transit to Factory-A with 40 DIAMONDS
+└── Ship assignment: AGENT-1 → manufacturing-task-T1
+
+After Restart:
+1. Load task T1 (status=EXECUTING, ship=AGENT-1)
+2. Load ship AGENT-1 (IN_TRANSIT to Factory-A, cargo=40 DIAMONDS)
+3. Ship cargo matches task → Resume task
+4. Wait for transit to complete
+5. Dock and deliver DIAMONDS
+6. Task completes normally
+```
+
+#### Scenario 2: Daemon Crashes After Purchase, Before Delivery
+
+```
+Before Crash:
+├── Task T1: DELIVER DIAMONDS (status=EXECUTING)
+├── Ship AGENT-1: DOCKED at X1-YZ19-B7, cargo=40 DIAMONDS
+└── Actually purchased, but delivery not started
+
+After Restart:
+1. Load task T1 (status=EXECUTING, ship=AGENT-1)
+2. Load ship AGENT-1 (cargo=40 DIAMONDS, location=X1-YZ19-B7)
+3. Ship has cargo matching task → Resume
+4. Navigate to Factory-A
+5. Deliver DIAMONDS
+6. Task completes normally
+```
+
+#### Scenario 3: Task Assignment Lost (ship has cargo, no task)
+
+```
+Before Crash:
+├── Task T1 crashed before DB update (status=READY, ship=null)
+├── Ship AGENT-1: Has 40 DIAMONDS from interrupted work
+└── No ship assignment exists
+
+After Restart:
+1. Load task T1 (status=READY, no assigned ship)
+2. Reconcile ship cargo: AGENT-1 has DIAMONDS
+3. Find task T1 needs DIAMONDS delivered → Re-assign
+4. Update T1: ship=AGENT-1, status=ASSIGNED
+5. Resume delivery
+```
+
+#### Scenario 4: Orphaned Cargo (original task completed by another ship)
+
+```
+Before Crash:
+├── Task T1 for DIAMONDS (status=COMPLETED by AGENT-2)
+├── Ship AGENT-1: Has 40 DIAMONDS (was assigned, but T1 reassigned)
+└── AGENT-1's cargo is orphaned
+
+After Restart:
+1. Load completed T1 (no recovery needed)
+2. Reconcile: AGENT-1 has DIAMONDS with no matching task
+3. Cannot match to any task → Create liquidation task
+4. Sell DIAMONDS at best available market
+5. Recover investment (maybe at loss, but no total loss)
+```
+
+### Failure Modes and Handling
+
+| Failure | Detection | Recovery |
+|---------|-----------|----------|
+| Daemon crash mid-task | Task status=EXECUTING on startup | Resume task from current ship state |
+| API error (rate limit) | Task returns error | Retry with backoff (up to 3 retries) |
+| Ship destroyed | Ship not found in API | Mark task FAILED, release investment loss |
+| Market depleted | Purchase fails (no supply) | Find alternative market or wait |
+| Price changed unfavorably | Margin check fails | Abort task, liquidate cargo |
+| Factory no longer exports | Collection fails | Abort pipeline, liquidate materials |
+
+### Implementation Checklist
+
+- [ ] Create database migration for manufacturing tables
+- [ ] Implement `ManufacturingPipelineRepository`
+- [ ] Implement `ManufacturingTaskRepository`
+- [ ] Implement `FactoryStateRepository`
+- [ ] Add `recoverState()` to coordinator startup
+- [ ] Add `reconcileShipCargo()` for orphaned cargo
+- [ ] Make all task operations persist immediately
+- [ ] Add liquidation task type
+- [ ] Add retry logic with exponential backoff
+- [ ] Add integration tests for recovery scenarios
+
+---
+
 ## Implementation Plan
 
 ### Phase 1: Domain Model (2-3 hours)
@@ -1294,9 +2145,10 @@ func (p *PipelinePlanner) createTasksFromTree(
 - [ ] Write integration tests
 
 ### Phase 8: CLI Integration (1 hour)
-- [ ] Update `manufacturing start` command
+- [ ] Replace `manufacturing start` command with parallel implementation
 - [ ] Add `manufacturing status` command (show pipeline state)
 - [ ] Add `manufacturing tasks` command (show task queue)
+- [ ] Remove old serial manufacturing code
 
 ### Phase 9: Testing & Tuning (2-3 hours)
 - [ ] End-to-end testing with real markets
@@ -1305,31 +2157,6 @@ func (p *PipelinePlanner) createTasksFromTree(
 - [ ] Documentation updates
 
 **Total Estimated Time: 16-23 hours**
-
----
-
-## Migration Strategy
-
-### Backward Compatibility
-
-1. Keep existing `manufacturing start` command working during development
-2. Add `--parallel` flag to enable new system
-3. Once stable, make parallel the default
-
-### Rollout Plan
-
-1. **Phase 1**: Deploy with `--parallel` flag (opt-in)
-2. **Phase 2**: Test with 1-2 ships in parallel mode
-3. **Phase 3**: Scale to full fleet
-4. **Phase 4**: Make parallel mode default
-5. **Phase 5**: Deprecate serial mode
-
-### Monitoring
-
-- Track pipeline completion times
-- Track ship utilization %
-- Track credits/hour from manufacturing
-- Compare with serial mode baseline
 
 ---
 
