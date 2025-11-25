@@ -10,7 +10,20 @@ type MarketRepository interface {
 	GetMarketData(ctx context.Context, waypointSymbol string, playerID int) (*Market, error)
 	FindCheapestMarketSelling(ctx context.Context, goodSymbol, systemSymbol string, playerID int) (*CheapestMarketResult, error)
 	FindBestMarketBuying(ctx context.Context, goodSymbol, systemSymbol string, playerID int) (*BestMarketBuyingResult, error)
+	FindBestMarketForBuying(ctx context.Context, goodSymbol, systemSymbol string, playerID int) (*BestBuyingMarketResult, error)
 	FindAllMarketsInSystem(ctx context.Context, systemSymbol string, playerID int) ([]string, error)
+	// FindFactoryForGood finds a market that EXPORTS a specific good (i.e., a factory that produces it)
+	// Returns nil if no factory exists for this good in the system
+	FindFactoryForGood(ctx context.Context, goodSymbol, systemSymbol string, playerID int) (*FactoryResult, error)
+}
+
+// FactoryResult represents a factory that produces (exports) a specific good
+type FactoryResult struct {
+	WaypointSymbol string
+	TradeSymbol    string
+	SellPrice      int    // Price to buy from factory
+	Supply         string
+	Activity       string
 }
 
 // MarketPriceHistoryRepository defines persistence operations for price history
@@ -62,6 +75,15 @@ type Data struct {
 	TradeGoods     []TradeGoodData
 }
 
+// TradeType indicates whether a good is exported, imported, or exchanged at a market
+type TradeType string
+
+const (
+	TradeTypeExport   TradeType = "EXPORT"   // Market produces and sells this good (factory)
+	TradeTypeImport   TradeType = "IMPORT"   // Market consumes and buys this good (consumer)
+	TradeTypeExchange TradeType = "EXCHANGE" // Market trades but doesn't produce/consume
+)
+
 // TradeGoodData represents trade good information from external sources
 type TradeGoodData struct {
 	Symbol        string
@@ -70,6 +92,7 @@ type TradeGoodData struct {
 	SellPrice     int
 	PurchasePrice int
 	TradeVolume   int
+	TradeType     TradeType // EXPORT, IMPORT, or EXCHANGE
 }
 
 // CheapestMarketResult represents the result of finding the cheapest market
@@ -86,6 +109,18 @@ type BestMarketBuyingResult struct {
 	TradeSymbol    string
 	PurchasePrice  int // What the market pays us
 	Supply         string
+}
+
+// BestBuyingMarketResult represents the result of finding the best market to buy from
+// Scored by trade type (EXPORT > EXCHANGE > IMPORT), then by supply and activity
+type BestBuyingMarketResult struct {
+	WaypointSymbol string
+	TradeSymbol    string
+	SellPrice      int       // What we pay
+	Supply         string
+	Activity       string
+	TradeType      TradeType // EXPORT, IMPORT, or EXCHANGE
+	Score          int       // Lower = better
 }
 
 // VolatilityMetrics represents price volatility statistics for a good

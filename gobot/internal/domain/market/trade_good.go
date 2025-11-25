@@ -11,11 +11,12 @@ import (
 // - SellPrice: What the market CHARGES when selling to ships (market asks)
 type TradeGood struct {
 	symbol        string
-	supply        *string // SCARCE, LIMITED, MODERATE, HIGH, ABUNDANT (or nil)
-	activity      *string // WEAK, GROWING, STRONG, RESTRICTED (or nil)
-	purchasePrice int     // What ship RECEIVES when selling to market
-	sellPrice     int     // What ship PAYS when buying from market
-	tradeVolume   int     // Trading volume
+	supply        *string   // SCARCE, LIMITED, MODERATE, HIGH, ABUNDANT (or nil)
+	activity      *string   // WEAK, GROWING, STRONG, RESTRICTED (or nil)
+	purchasePrice int       // What ship RECEIVES when selling to market
+	sellPrice     int       // What ship PAYS when buying from market
+	tradeVolume   int       // Trading volume
+	tradeType     TradeType // EXPORT, IMPORT, or EXCHANGE
 }
 
 // Valid supply values
@@ -36,7 +37,7 @@ var validActivityValues = map[string]bool{
 }
 
 // NewTradeGood creates a new TradeGood with validation
-func NewTradeGood(symbol string, supply *string, activity *string, purchasePrice, sellPrice, tradeVolume int) (*TradeGood, error) {
+func NewTradeGood(symbol string, supply *string, activity *string, purchasePrice, sellPrice, tradeVolume int, tradeType TradeType) (*TradeGood, error) {
 	// Validate symbol
 	if symbol == "" {
 		return nil, errors.New("symbol cannot be empty")
@@ -76,6 +77,7 @@ func NewTradeGood(symbol string, supply *string, activity *string, purchasePrice
 		purchasePrice: purchasePrice,
 		sellPrice:     sellPrice,
 		tradeVolume:   tradeVolume,
+		tradeType:     tradeType,
 	}, nil
 }
 
@@ -103,4 +105,8 @@ func (t *TradeGood) SellPrice() int {
 
 func (t *TradeGood) TradeVolume() int {
 	return t.tradeVolume
+}
+
+func (t *TradeGood) TradeType() TradeType {
+	return t.tradeType
 }

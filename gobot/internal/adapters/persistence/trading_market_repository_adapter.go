@@ -35,6 +35,11 @@ func (a *MarketRepositoryAdapter) FindBestMarketBuying(ctx context.Context, good
 	return a.marketRepo.FindBestMarketBuying(ctx, goodSymbol, systemSymbol, playerID)
 }
 
+// FindBestMarketForBuying passes through to the underlying repository
+func (a *MarketRepositoryAdapter) FindBestMarketForBuying(ctx context.Context, goodSymbol, systemSymbol string, playerID int) (*market.BestBuyingMarketResult, error) {
+	return a.marketRepo.FindBestMarketForBuying(ctx, goodSymbol, systemSymbol, playerID)
+}
+
 // ListMarketsInSystem passes through to the underlying repository
 func (a *MarketRepositoryAdapter) ListMarketsInSystem(ctx context.Context, playerID uint, systemSymbol string, maxAgeMinutes int) ([]market.Market, error) {
 	return a.marketRepo.ListMarketsInSystem(ctx, playerID, systemSymbol, maxAgeMinutes)
@@ -43,4 +48,9 @@ func (a *MarketRepositoryAdapter) ListMarketsInSystem(ctx context.Context, playe
 // FindAllMarketsInSystem passes through to the underlying repository
 func (a *MarketRepositoryAdapter) FindAllMarketsInSystem(ctx context.Context, systemSymbol string, playerID int) ([]string, error) {
 	return a.marketRepo.FindAllMarketsInSystem(ctx, systemSymbol, playerID)
+}
+
+// FindFactoryForGood passes through to the underlying repository
+func (a *MarketRepositoryAdapter) FindFactoryForGood(ctx context.Context, goodSymbol, systemSymbol string, playerID int) (*market.FactoryResult, error) {
+	return a.marketRepo.FindFactoryForGood(ctx, goodSymbol, systemSymbol, playerID)
 }
