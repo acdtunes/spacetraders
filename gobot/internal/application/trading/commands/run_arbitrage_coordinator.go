@@ -43,7 +43,7 @@ type RunArbitrageCoordinatorResponse struct {
 // Pattern: Fleet Coordinator with parallel execution
 //
 // Workflow:
-//  1. Scan for opportunities (every 2 minutes)
+//  1. Scan for opportunities (every 60 seconds) - increased from 2 minutes for fresher data
 //  2. Discover idle ships (every 30 seconds)
 //  3. Spawn workers for each ship/opportunity pair
 //  4. Workers execute in parallel (goroutines)
@@ -119,7 +119,11 @@ func (h *RunArbitrageCoordinatorHandler) Handle(
 	// Workers check for existing cargo and either sell (if value >= 10K) or jettison it.
 
 	// Main coordination loop (infinite)
-	opportunityScanInterval := 2 * time.Minute
+	// Increased scan frequency from 2 minutes to 60 seconds (2025-11-25):
+	// - Market prices change quickly (15-20% drift during execution)
+	// - Fresher opportunities = fewer stale margin validation failures
+	// - Balances API rate limits (2 req/sec) with opportunity freshness
+	opportunityScanInterval := 60 * time.Second
 	shipDiscoveryInterval := 30 * time.Second
 
 	opportunityTicker := time.NewTicker(opportunityScanInterval)
@@ -323,11 +327,25 @@ func (h *RunArbitrageCoordinatorHandler) spawnWorkers(
 
 	// Assign ships to opportunities using profit-first algorithm:
 	// For each opportunity (sorted by profitability), find the closest ship
+	//
+	// CRITICAL FIX (2025-11-25): Prevent market impact from multiple ships
+	// hitting same markets. Track assigned opportunities and limit to 1 ship
+	// per unique (good, buy_market, sell_market) tuple to avoid:
+	// - Buy prices spiking from multiple ships buying from same seller
+	// - Sell prices crashing from multiple ships dumping to same buyer
 	type assignment struct {
 		shipSymbol string
 		opportunity *trading.ArbitrageOpportunity
 		distance   float64
 	}
+
+	// Track assigned opportunities to prevent duplicates
+	type opportunityKey struct {
+		Good       string
+		BuyMarket  string
+		SellMarket string
+	}
+	assignedOpportunities := make(map[opportunityKey]bool)
 
 	var assignments []assignment
 	availableShips := make(map[string]*navigation.Ship)
@@ -346,9 +364,24 @@ func (h *RunArbitrageCoordinatorHandler) spawnWorkers(
 	}
 
 	// For each opportunity (in order of profitability), assign closest ship
+	// Skip opportunities that are already being traded (prevent market impact)
 	for i := 0; i < len(opportunities) && len(assignments) < maxAssignments; i++ {
 		opp := opportunities[i]
 		buyMarket := opp.BuyMarket()
+
+		// Check if this opportunity is already assigned (prevent market impact)
+		oppKey := opportunityKey{
+			Good:       opp.Good(),
+			BuyMarket:  opp.BuyMarket().Symbol,
+			SellMarket: opp.SellMarket().Symbol,
+		}
+
+		if assignedOpportunities[oppKey] {
+			// Skip this opportunity - already have a ship trading it
+			logger.Log("DEBUG", fmt.Sprintf("Skipping duplicate opportunity: %s %s→%s (already assigned)",
+				opp.Good(), opp.BuyMarket().Symbol, opp.SellMarket().Symbol), nil)
+			continue
+		}
 
 		// Find closest available ship to the buy market
 		var closestShip string
@@ -372,6 +405,9 @@ func (h *RunArbitrageCoordinatorHandler) spawnWorkers(
 			opportunity: opp,
 			distance:   closestDistance,
 		})
+
+		// Mark opportunity as assigned (prevent other ships from taking same trade)
+		assignedOpportunities[oppKey] = true
 
 		// Remove ship from available pool
 		delete(availableShips, closestShip)
@@ -455,23 +491,18 @@ func (h *RunArbitrageCoordinatorHandler) spawnWorkers(
 	return spawnedCount
 }
 
-// countActiveShipAssignments counts ships assigned to this coordinator's workers
+// countActiveShipAssignments counts ships assigned to arbitrage workers
 // Used to initialize active worker count after daemon restart
 func (h *RunArbitrageCoordinatorHandler) countActiveShipAssignments(
 	ctx context.Context,
 	coordinatorID string,
 	playerID int,
 ) int {
-	assignments, err := h.shipAssignmentRepo.FindByContainer(ctx, coordinatorID, playerID)
+	// Count all ships assigned to containers with "arbitrage-worker-" prefix
+	// This catches workers from any coordinator (global limit across all coordinators)
+	count, err := h.shipAssignmentRepo.CountByContainerPrefix(ctx, "arbitrage-worker-", playerID)
 	if err != nil {
 		return 0
-	}
-
-	count := 0
-	for _, a := range assignments {
-		if a.Status() != "idle" {
-			count++
-		}
 	}
 	return count
 }

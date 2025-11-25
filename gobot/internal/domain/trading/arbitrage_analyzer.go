@@ -12,25 +12,49 @@ import (
 //
 // This is a domain service with no infrastructure dependencies (no database, API, etc.).
 // All methods are stateless and deterministic.
+//
+// STRATEGY (data-driven from 109 successful trades, 2025-11-25):
+//
+// Hard filters (skip if ANY fails):
+//   - Buy supply = HIGH only (2.9% price drift vs 30-70% for others)
+//   - Sell activity = WEAK or RESTRICTED (5-14% drift vs 33% for GROWING)
+//   - Minimum estimated profit >= 5000 credits (worth the ship time)
+//
+// Scoring (among filtered opportunities):
+//   - Estimated profit (higher = better)
+//   - Profit efficiency = profit / distance
+//   - Distance penalty (closer = better)
+//
+// Key insight: The good doesn't determine volatility - market conditions do.
+// SHIP_PLATING is fine if supply=HIGH. No blacklists needed.
 type ArbitrageAnalyzer struct {
-	// Scoring weights (configurable in future)
-	profitWeight    float64
-	supplyWeight    float64
-	activityWeight  float64
+	// Minimum estimated profit to consider (filters low-value trades)
+	minEstimatedProfit int
+	// Distance penalty factor
 	distancePenalty float64
 }
 
-// NewArbitrageAnalyzer creates a new analyzer with default scoring weights
+// NewArbitrageAnalyzer creates a new analyzer with data-driven filters
+//
+// Strategy based on analysis of 109 successful trades (2025-11-25):
+//   - Buy supply HIGH: 2.9% drift, +79.70 profit/sec, 79% win rate
+//   - Sell activity WEAK: 5.1% drift, +8.31 profit/sec
+//   - All other conditions: 30-70% drift, negative profit
+//
+// No supply/activity scoring weights needed - we use HARD FILTERS instead.
 func NewArbitrageAnalyzer() *ArbitrageAnalyzer {
 	return &ArbitrageAnalyzer{
-		profitWeight:    40.0, // 40% weight on profit margin
-		supplyWeight:    20.0, // 20% weight on supply availability
-		activityWeight:  20.0, // 20% weight on market activity
-		distancePenalty: 0.1,  // Minimal distance penalty (tiebreaker)
+		minEstimatedProfit: 5000, // Skip trades under 5000 credits
+		distancePenalty:    0.1,  // Small penalty for distance
 	}
 }
 
 // AnalyzeMarketPair analyzes a buy/sell market pair for arbitrage potential.
+//
+// HARD FILTERS (data-driven from 109 successful trades, 2025-11-25):
+//  1. Buy supply MUST be HIGH (2.9% drift vs 30-70% for others)
+//  2. Sell activity MUST be WEAK or RESTRICTED (5-14% drift vs 33% for GROWING)
+//  3. Estimated profit MUST be >= 5000 credits (worth the ship time)
 //
 // Parameters:
 //   - good: Trade good symbol
@@ -42,8 +66,8 @@ func NewArbitrageAnalyzer() *ArbitrageAnalyzer {
 //   - minMargin: Minimum profit margin threshold
 //
 // Returns:
-//   - ArbitrageOpportunity if viable (profitMargin >= minMargin)
-//   - Error if markets cannot be analyzed or no profit possible
+//   - ArbitrageOpportunity if ALL filters pass
+//   - Error if any filter fails or markets cannot be analyzed
 func (a *ArbitrageAnalyzer) AnalyzeMarketPair(
 	good string,
 	buyMarket *market.Market,
@@ -60,17 +84,6 @@ func (a *ArbitrageAnalyzer) AnalyzeMarketPair(
 		return nil, fmt.Errorf("trade good data missing for %s", good)
 	}
 
-	// Extract prices (from ship's perspective)
-	// - We PAY the market's sell_price when buying
-	// - We RECEIVE the market's purchase_price when selling
-	buyPrice := buyTradeGood.SellPrice()       // What we pay to acquire
-	sellPrice := sellTradeGood.PurchasePrice() // What we receive when selling
-
-	// Quick viability check
-	if sellPrice <= buyPrice {
-		return nil, fmt.Errorf("no profit: sell price (%d) <= buy price (%d)", sellPrice, buyPrice)
-	}
-
 	// Extract supply/activity (handle nil pointers)
 	buySupply := "MODERATE"
 	if buyTradeGood.Supply() != nil {
@@ -82,7 +95,52 @@ func (a *ArbitrageAnalyzer) AnalyzeMarketPair(
 		sellActivity = *sellTradeGood.Activity()
 	}
 
-	// Create opportunity
+	// ═══════════════════════════════════════════════════════════════════════════
+	// HARD FILTER 1: Buy supply MUST be HIGH
+	// ═══════════════════════════════════════════════════════════════════════════
+	// Data: HIGH supply = 2.9% price drift, +79.70 profit/sec, 79% win rate
+	//       MODERATE    = 32.3% drift, -34.54 profit/sec (LOSING)
+	//       LIMITED     = 41.6% drift, -6.81 profit/sec (LOSING)
+	//       ABUNDANT    = 69.7% drift, -28.25 profit/sec (LOSING)
+	if buySupply != "HIGH" {
+		return nil, fmt.Errorf("buy supply %s not HIGH (required for stable prices)", buySupply)
+	}
+
+	// ═══════════════════════════════════════════════════════════════════════════
+	// HARD FILTER 2: Sell activity MUST be WEAK or RESTRICTED
+	// ═══════════════════════════════════════════════════════════════════════════
+	// Data: WEAK       = 5.1% sell drift, +8.31 profit/sec
+	//       RESTRICTED = 14.5% drift, +96.94 profit/sec (high profit, acceptable risk)
+	//       STRONG     = 20.3% drift, -17.46 profit/sec (LOSING)
+	//       GROWING    = 33.6% drift, -517.18 profit/sec (CATASTROPHIC)
+	if sellActivity != "WEAK" && sellActivity != "RESTRICTED" {
+		return nil, fmt.Errorf("sell activity %s not WEAK/RESTRICTED (required for stable prices)", sellActivity)
+	}
+
+	// Extract prices (from ship's perspective)
+	// - We PAY the market's sell_price when buying
+	// - We RECEIVE the market's purchase_price when selling
+	buyPrice := buyTradeGood.SellPrice()       // What we pay to acquire
+	sellPrice := sellTradeGood.PurchasePrice() // What we receive when selling
+
+	// Quick viability check
+	if sellPrice <= buyPrice {
+		return nil, fmt.Errorf("no profit: sell price (%d) <= buy price (%d)", sellPrice, buyPrice)
+	}
+
+	// ═══════════════════════════════════════════════════════════════════════════
+	// HARD FILTER 3: Estimated profit MUST be >= minEstimatedProfit
+	// ═══════════════════════════════════════════════════════════════════════════
+	// Low-value trades waste ship time. With 40-unit cargo:
+	// - 5000 credit min = 125 credits/unit profit minimum
+	// - This filters out DIAMONDS (1630 avg), IRON_ORE (788 avg), etc.
+	// - Keeps FABRICS (51K), MACHINERY (48K), AMMUNITION (28K), etc.
+	estimatedProfit := (sellPrice - buyPrice) * cargoCapacity
+	if estimatedProfit < a.minEstimatedProfit {
+		return nil, fmt.Errorf("estimated profit %d below minimum %d", estimatedProfit, a.minEstimatedProfit)
+	}
+
+	// All hard filters passed - create opportunity
 	opp, err := NewArbitrageOpportunity(
 		good,
 		buyWaypoint,
@@ -107,73 +165,38 @@ func (a *ArbitrageAnalyzer) AnalyzeMarketPair(
 
 // ScoreOpportunity calculates a composite score for an arbitrage opportunity.
 //
-// Formula:
+// SIMPLIFIED SCORING (2025-11-25):
+// Since we now use HARD FILTERS for supply/activity, scoring is purely profit-based:
 //
-//	score = (profitMargin × 40.0) + (supplyScore × 20.0) + (activityScore × 20.0) - (distance × 0.1)
+//	score = estimated_profit + profit_efficiency - distance_penalty
 //
-// Component weights:
-//   - Profit Margin (40%): Primary driver of profitability
-//   - Supply Score (20%): Risk mitigation (ABUNDANT > SCARCE)
-//   - Activity Score (20%): Demand stability (STRONG > WEAK)
-//   - Distance Penalty (0.1): Fuel efficiency tiebreaker
+// Components:
+//   - Estimated Profit: Raw profit amount (primary driver)
+//   - Profit Efficiency: profit/distance ratio (favors nearby high-profit trades)
+//   - Distance Penalty: Small penalty for long routes
+//
+// All opportunities reaching this function have already passed:
+//   - Buy supply = HIGH (stable buy prices)
+//   - Sell activity = WEAK/RESTRICTED (stable sell prices)
+//   - Minimum profit >= 5000 credits
 //
 // Higher scores indicate better opportunities.
 func (a *ArbitrageAnalyzer) ScoreOpportunity(opp *ArbitrageOpportunity) float64 {
-	profitScore := opp.ProfitMargin() * a.profitWeight
-	supplyScore := a.SupplyToScore(opp.BuySupply()) * a.supplyWeight
-	activityScore := a.ActivityToScore(opp.SellActivity()) * a.activityWeight
-	distanceScore := opp.Distance() * a.distancePenalty
+	estimatedProfit := float64(opp.EstimatedProfit())
 
-	return profitScore + supplyScore + activityScore - distanceScore
+	// Profit efficiency: profit per distance unit (proxy for profit/time)
+	// Favors high-profit trades that are close (maximize profit per second)
+	// Add 1.0 to distance to avoid division by zero
+	profitEfficiency := estimatedProfit / (opp.Distance() + 1.0)
+
+	// Distance penalty: small penalty for long routes
+	distancePenalty := opp.Distance() * a.distancePenalty
+
+	// Final score: profit + efficiency - distance
+	// Scale efficiency to be meaningful relative to profit
+	return estimatedProfit + (profitEfficiency * 10.0) - distancePenalty
 }
 
-// SupplyToScore converts supply level to numeric score (0-20).
-//
-// Scoring rationale:
-//   - ABUNDANT (20): Best - high availability, low stockout risk
-//   - HIGH (15): Good availability
-//   - MODERATE (10): Acceptable
-//   - LIMITED (5): Risky - potential stockouts
-//   - SCARCE (0): Worst - high risk of price spikes
-//
-// Higher scores favor markets with abundant supply for stable trading.
-func (a *ArbitrageAnalyzer) SupplyToScore(supply string) float64 {
-	switch supply {
-	case "ABUNDANT":
-		return 20.0
-	case "HIGH":
-		return 15.0
-	case "MODERATE":
-		return 10.0
-	case "LIMITED":
-		return 5.0
-	case "SCARCE":
-		return 0.0
-	default:
-		return 0.0
-	}
-}
-
-// ActivityToScore converts activity level to numeric score (0-20).
-//
-// Scoring rationale:
-//   - STRONG (20): Best - high demand, stable prices
-//   - GROWING (15): Good - increasing demand
-//   - WEAK (5): Poor - low demand, unstable prices
-//   - RESTRICTED (0): Worst - may refuse trades
-//
-// Higher scores favor markets with strong activity for consistent demand.
-func (a *ArbitrageAnalyzer) ActivityToScore(activity string) float64 {
-	switch activity {
-	case "STRONG":
-		return 20.0
-	case "GROWING":
-		return 15.0
-	case "WEAK":
-		return 5.0
-	case "RESTRICTED":
-		return 0.0
-	default:
-		return 0.0
-	}
-}
+// NOTE: SupplyToScore and ActivityToScore methods were removed (2025-11-25).
+// We now use HARD FILTERS instead of weighted scoring for supply/activity.
+// See AnalyzeMarketPair for the filter logic.

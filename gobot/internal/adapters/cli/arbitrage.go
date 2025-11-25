@@ -471,7 +471,7 @@ Examples:
 			}
 
 			// Display statistics
-			fmt.Println("\n=== Arbitrage Execution Log Statistics ===\n")
+			fmt.Println("\n=== Arbitrage Execution Log Statistics ===")
 			fmt.Printf("Player ID:              %d\n", resolvedPlayerID)
 			if playerIdent.AgentSymbol != "" {
 				fmt.Printf("Agent:                  %s\n", playerIdent.AgentSymbol)
