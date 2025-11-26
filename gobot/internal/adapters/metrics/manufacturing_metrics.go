@@ -611,25 +611,9 @@ func (c *ManufacturingMetricsCollector) updateShipMetrics(playerID int) {
 
 	c.shipsAssignedTotal.WithLabelValues(playerIDStr).Set(float64(assignedCount))
 
-	// Get total ship count for this player (from ships table if available)
-	var totalShips int64
-	err = c.db.Raw(`
-		SELECT COUNT(*)
-		FROM ships
-		WHERE player_id = ?
-	`, playerID).Scan(&totalShips).Error
-
-	if err != nil {
-		// Ships table might not exist or be different - just log and continue
-		log.Printf("Failed to get total ship count: %v", err)
-		totalShips = 0
-	}
-
-	if totalShips > 0 {
-		c.shipsIdleTotal.WithLabelValues(playerIDStr).Set(float64(totalShips - assignedCount))
-		utilization := float64(assignedCount) / float64(totalShips) * 100
-		c.shipUtilizationPercent.WithLabelValues(playerIDStr).Set(utilization)
-	}
+	// Note: Ships are fetched from API, not cached in database.
+	// Ship utilization metrics require API access which isn't available here.
+	// The shipsIdleTotal and shipUtilizationPercent metrics are not populated.
 }
 
 // updateEconomicMetrics updates economic metrics
