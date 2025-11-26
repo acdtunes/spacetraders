@@ -121,7 +121,7 @@ router.get('/assignments', async (req, res) => {
             } else if (assignment.container_type === 'ARBITRAGE_COORDINATOR' ||
                        assignment.container_type === 'ARBITRAGE_WORKER') {
               operation = 'arbitrage';
-            } else if (assignment.container_type === 'MANUFACTURING_TASK_WORKER') {
+            } else if (assignment.container_type === 'MANUFACTURING_WORKER') {
               operation = 'manufacturing';
             }
 
@@ -183,7 +183,7 @@ router.get('/assignments', async (req, res) => {
         } else if (row.container_type === 'ARBITRAGE_COORDINATOR' ||
                    row.container_type === 'ARBITRAGE_WORKER') {
           operation = 'arbitrage';
-        } else if (row.container_type === 'MANUFACTURING_TASK_WORKER') {
+        } else if (row.container_type === 'MANUFACTURING_WORKER') {
           operation = 'manufacturing';
         }
 
@@ -273,7 +273,7 @@ router.get('/assignments/:shipSymbol', async (req, res) => {
       } else if (assignment.container_type === 'ARBITRAGE_COORDINATOR' ||
                  assignment.container_type === 'ARBITRAGE_WORKER') {
         operation = 'arbitrage';
-      } else if (assignment.container_type === 'MANUFACTURING_TASK_WORKER') {
+      } else if (assignment.container_type === 'MANUFACTURING_WORKER') {
         operation = 'manufacturing';
       }
 
