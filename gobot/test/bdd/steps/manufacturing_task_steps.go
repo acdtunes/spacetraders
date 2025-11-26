@@ -95,40 +95,44 @@ func (mtc *manufacturingTaskContext) aManufacturingTaskContext() error {
 	return nil
 }
 
-// Task Creation
+// Task Creation - Using new atomic task types
 func (mtc *manufacturingTaskContext) iCreateAnAcquireTask(good, market string) error {
-	mtc.task = manufacturing.NewAcquireTask("pipeline-1", 1, good, market)
+	// ACQUIRE is now ACQUIRE_DELIVER (atomic: buy from source AND deliver to target)
+	mtc.task = manufacturing.NewAcquireDeliverTask("pipeline-1", 1, good, market, "X1-AU21-FACTORY", nil)
 	return nil
 }
 
 func (mtc *manufacturingTaskContext) iCreateADeliverTaskWithDependencies(good, market string) error {
-	mtc.task = manufacturing.NewDeliverTask("pipeline-1", 1, good, market, mtc.dependencies)
+	// DELIVER is now part of ACQUIRE_DELIVER - use that with dependencies
+	mtc.task = manufacturing.NewAcquireDeliverTask("pipeline-1", 1, good, "X1-AU21-SOURCE", market, mtc.dependencies)
 	return nil
 }
 
 func (mtc *manufacturingTaskContext) iCreateACollectTask(good, factory string) error {
-	mtc.task = manufacturing.NewCollectTask("pipeline-1", 1, good, factory, nil)
+	// COLLECT is now COLLECT_SELL (atomic: collect from factory AND sell to market)
+	mtc.task = manufacturing.NewCollectSellTask("pipeline-1", 1, good, factory, "X1-AU21-MARKET", nil)
 	return nil
 }
 
 func (mtc *manufacturingTaskContext) iCreateASellTask(good, market string) error {
-	mtc.task = manufacturing.NewSellTask("pipeline-1", 1, good, market, nil)
+	// SELL is now part of COLLECT_SELL
+	mtc.task = manufacturing.NewCollectSellTask("pipeline-1", 1, good, "X1-AU21-FACTORY", market, nil)
 	return nil
 }
 
 // Given states
 func (mtc *manufacturingTaskContext) aPendingTaskWithNoDependencies() error {
-	mtc.task = manufacturing.NewAcquireTask("pipeline-1", 1, "IRON_ORE", "X1-AU21-A1")
+	mtc.task = manufacturing.NewAcquireDeliverTask("pipeline-1", 1, "IRON_ORE", "X1-AU21-A1", "X1-AU21-FACTORY", nil)
 	return nil
 }
 
 func (mtc *manufacturingTaskContext) aReadyTask() error {
-	mtc.task = manufacturing.NewAcquireTask("pipeline-1", 1, "IRON_ORE", "X1-AU21-A1")
+	mtc.task = manufacturing.NewAcquireDeliverTask("pipeline-1", 1, "IRON_ORE", "X1-AU21-A1", "X1-AU21-FACTORY", nil)
 	return mtc.task.MarkReady()
 }
 
 func (mtc *manufacturingTaskContext) anAssignedTaskWithShip(shipSymbol string) error {
-	mtc.task = manufacturing.NewAcquireTask("pipeline-1", 1, "IRON_ORE", "X1-AU21-A1")
+	mtc.task = manufacturing.NewAcquireDeliverTask("pipeline-1", 1, "IRON_ORE", "X1-AU21-A1", "X1-AU21-FACTORY", nil)
 	if err := mtc.task.MarkReady(); err != nil {
 		return err
 	}
@@ -136,7 +140,7 @@ func (mtc *manufacturingTaskContext) anAssignedTaskWithShip(shipSymbol string) e
 }
 
 func (mtc *manufacturingTaskContext) anExecutingTask() error {
-	mtc.task = manufacturing.NewAcquireTask("pipeline-1", 1, "IRON_ORE", "X1-AU21-A1")
+	mtc.task = manufacturing.NewAcquireDeliverTask("pipeline-1", 1, "IRON_ORE", "X1-AU21-A1", "X1-AU21-FACTORY", nil)
 	if err := mtc.task.MarkReady(); err != nil {
 		return err
 	}
@@ -152,7 +156,7 @@ func (mtc *manufacturingTaskContext) aFailedTaskWithRetryCount(retryCount, maxRe
 		"task-1",
 		"pipeline-1",
 		1,
-		manufacturing.TaskTypeAcquire,
+		manufacturing.TaskTypeAcquireDeliver,
 		manufacturing.TaskStatusFailed,
 		"IRON_ORE",
 		0,
@@ -177,7 +181,7 @@ func (mtc *manufacturingTaskContext) aFailedTaskWithRetryCount(retryCount, maxRe
 }
 
 func (mtc *manufacturingTaskContext) aCompletedTask() error {
-	mtc.task = manufacturing.NewAcquireTask("pipeline-1", 1, "IRON_ORE", "X1-AU21-A1")
+	mtc.task = manufacturing.NewAcquireDeliverTask("pipeline-1", 1, "IRON_ORE", "X1-AU21-A1", "X1-AU21-FACTORY", nil)
 	if err := mtc.task.MarkReady(); err != nil {
 		return err
 	}
@@ -191,7 +195,7 @@ func (mtc *manufacturingTaskContext) aCompletedTask() error {
 }
 
 func (mtc *manufacturingTaskContext) aCompletedTaskWithCostAndRevenue(cost, revenue int) error {
-	mtc.task = manufacturing.NewAcquireTask("pipeline-1", 1, "IRON_ORE", "X1-AU21-A1")
+	mtc.task = manufacturing.NewAcquireDeliverTask("pipeline-1", 1, "IRON_ORE", "X1-AU21-A1", "X1-AU21-FACTORY", nil)
 	if err := mtc.task.MarkReady(); err != nil {
 		return err
 	}
@@ -207,22 +211,26 @@ func (mtc *manufacturingTaskContext) aCompletedTaskWithCostAndRevenue(cost, reve
 }
 
 func (mtc *manufacturingTaskContext) anAcquireTask(good, market string) error {
-	mtc.task = manufacturing.NewAcquireTask("pipeline-1", 1, good, market)
+	// ACQUIRE is now ACQUIRE_DELIVER
+	mtc.task = manufacturing.NewAcquireDeliverTask("pipeline-1", 1, good, market, "X1-AU21-FACTORY", nil)
 	return nil
 }
 
 func (mtc *manufacturingTaskContext) aDeliverTask(good, market string) error {
-	mtc.task = manufacturing.NewDeliverTask("pipeline-1", 1, good, market, nil)
+	// DELIVER is now part of ACQUIRE_DELIVER
+	mtc.task = manufacturing.NewAcquireDeliverTask("pipeline-1", 1, good, "X1-AU21-SOURCE", market, nil)
 	return nil
 }
 
 func (mtc *manufacturingTaskContext) aCollectTask(good, factory string) error {
-	mtc.task = manufacturing.NewCollectTask("pipeline-1", 1, good, factory, nil)
+	// COLLECT is now COLLECT_SELL
+	mtc.task = manufacturing.NewCollectSellTask("pipeline-1", 1, good, factory, "X1-AU21-MARKET", nil)
 	return nil
 }
 
 func (mtc *manufacturingTaskContext) aSellTask(good, market string) error {
-	mtc.task = manufacturing.NewSellTask("pipeline-1", 1, good, market, nil)
+	// SELL is now part of COLLECT_SELL
+	mtc.task = manufacturing.NewCollectSellTask("pipeline-1", 1, good, "X1-AU21-FACTORY", market, nil)
 	return nil
 }
 
