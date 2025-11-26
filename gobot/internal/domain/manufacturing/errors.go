@@ -111,6 +111,14 @@ func (e *ErrNoValidSellMarket) Error() string {
 	return fmt.Sprintf("no valid sell market for %s: %s", e.Good, e.Reason)
 }
 
+// NewErrNoValidSellMarket creates a new ErrNoValidSellMarket error
+func NewErrNoValidSellMarket(good string) *ErrNoValidSellMarket {
+	return &ErrNoValidSellMarket{
+		Good:   good,
+		Reason: "no markets found that import this good",
+	}
+}
+
 // ErrMaxRetriesExceeded indicates a task has exceeded its retry limit
 type ErrMaxRetriesExceeded struct {
 	TaskID     string

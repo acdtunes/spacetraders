@@ -183,17 +183,16 @@ func (f *FactoryState) UpdateSupply(supplyLevel string) {
 
 // checkReadyForCollection updates ready state based on supply
 // NOTE: This is not sticky - if supply drops below HIGH, ready state is reset
+// NOTE: Collection is allowed if supply is HIGH/ABUNDANT, regardless of whether
+// we delivered inputs. This allows opportunistic collection from factories
+// that already have high supply from other activity.
 func (f *FactoryState) checkReadyForCollection() {
-	if !f.allInputsDelivered {
-		f.readyForCollection = false // Inputs not complete
-		return
-	}
-
 	currentLevel := SupplyLevelOrder[f.currentSupply]
 	requiredLevel := SupplyLevelOrder[RequiredSupplyLevel]
 
 	if currentLevel >= requiredLevel {
 		// Supply is HIGH or ABUNDANT - ready for collection
+		// Don't require our inputs to be delivered - factory may already have supply
 		if !f.readyForCollection {
 			f.readyForCollection = true
 			now := time.Now()
@@ -378,6 +377,35 @@ func (t *FactoryStateTracker) GetFactoriesAwaitingProduction() []*FactoryState {
 		}
 	}
 	return awaiting
+}
+
+// GetFactoriesNotReady returns all factories not yet ready for collection
+// This includes factories regardless of whether inputs have been delivered
+func (t *FactoryStateTracker) GetFactoriesNotReady() []*FactoryState {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	notReady := make([]*FactoryState, 0)
+	for _, state := range t.states {
+		if !state.IsReadyForCollection() {
+			notReady = append(notReady, state)
+		}
+	}
+	return notReady
+}
+
+// GetAllFactories returns all tracked factory states
+// Used by supply monitor to poll ALL factories (including ready ones)
+// so we can detect supply drops and reset ready flags
+func (t *FactoryStateTracker) GetAllFactories() []*FactoryState {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	all := make([]*FactoryState, 0, len(t.states))
+	for _, state := range t.states {
+		all = append(all, state)
+	}
+	return all
 }
 
 // GetFactoriesByPipeline returns all factory states for a pipeline

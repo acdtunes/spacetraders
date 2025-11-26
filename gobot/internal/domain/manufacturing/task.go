@@ -308,6 +308,8 @@ func (t *ManufacturingTask) StartExecution() error {
 }
 
 // Complete marks the task as successfully completed
+// NOTE: assignedShip is preserved for ship affinity - downstream tasks (like SELL)
+// need to know which ship executed upstream tasks (like COLLECT) that have the cargo
 func (t *ManufacturingTask) Complete() error {
 	if t.status != TaskStatusExecuting {
 		return &ErrInvalidTaskTransition{
@@ -320,7 +322,8 @@ func (t *ManufacturingTask) Complete() error {
 	t.status = TaskStatusCompleted
 	now := time.Now()
 	t.completedAt = &now
-	t.assignedShip = "" // Release ship
+	// DO NOT clear assignedShip - downstream tasks need this for ship affinity
+	// Ship assignment release is handled by the container runner, not the task state
 	return nil
 }
 
