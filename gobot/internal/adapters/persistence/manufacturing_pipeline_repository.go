@@ -20,6 +20,20 @@ func NewGormManufacturingPipelineRepository(db *gorm.DB) *GormManufacturingPipel
 
 // Create persists a new pipeline
 func (r *GormManufacturingPipelineRepository) Create(ctx context.Context, pipeline *manufacturing.ManufacturingPipeline) error {
+	// Compute next sequence number for this player
+	var maxSeq int
+	err := r.db.WithContext(ctx).
+		Model(&ManufacturingPipelineModel{}).
+		Where("player_id = ?", pipeline.PlayerID()).
+		Select("COALESCE(MAX(sequence_number), 0)").
+		Scan(&maxSeq).Error
+	if err != nil {
+		return fmt.Errorf("failed to get max sequence number: %w", err)
+	}
+
+	// Set the sequence number on the pipeline
+	pipeline.SetSequenceNumber(maxSeq + 1)
+
 	model := r.pipelineToModel(pipeline)
 
 	result := r.db.WithContext(ctx).Create(model)
@@ -151,19 +165,20 @@ func (r *GormManufacturingPipelineRepository) pipelineToModel(p *manufacturing.M
 	}
 
 	return &ManufacturingPipelineModel{
-		ID:            p.ID(),
-		PlayerID:      p.PlayerID(),
-		ProductGood:   p.ProductGood(),
-		SellMarket:    p.SellMarket(),
-		ExpectedPrice: p.ExpectedPrice(),
-		Status:        string(p.Status()),
-		TotalCost:     p.TotalCost(),
-		TotalRevenue:  p.TotalRevenue(),
-		NetProfit:     p.NetProfit(),
-		ErrorMessage:  errorMsg,
-		CreatedAt:     p.CreatedAt(),
-		StartedAt:     p.StartedAt(),
-		CompletedAt:   p.CompletedAt(),
+		ID:             p.ID(),
+		SequenceNumber: p.SequenceNumber(),
+		PlayerID:       p.PlayerID(),
+		ProductGood:    p.ProductGood(),
+		SellMarket:     p.SellMarket(),
+		ExpectedPrice:  p.ExpectedPrice(),
+		Status:         string(p.Status()),
+		TotalCost:      p.TotalCost(),
+		TotalRevenue:   p.TotalRevenue(),
+		NetProfit:      p.NetProfit(),
+		ErrorMessage:   errorMsg,
+		CreatedAt:      p.CreatedAt(),
+		StartedAt:      p.StartedAt(),
+		CompletedAt:    p.CompletedAt(),
 	}
 }
 
@@ -176,6 +191,7 @@ func (r *GormManufacturingPipelineRepository) modelToPipeline(m *ManufacturingPi
 
 	return manufacturing.ReconstitutePipeline(
 		m.ID,
+		m.SequenceNumber,
 		m.ProductGood,
 		m.SellMarket,
 		m.ExpectedPrice,

@@ -295,9 +295,10 @@ func (MarketPriceHistoryModel) TableName() string {
 
 // ManufacturingPipelineModel represents the manufacturing_pipelines table
 type ManufacturingPipelineModel struct {
-	ID            string     `gorm:"column:id;primaryKey;size:64"`
-	PlayerID      int        `gorm:"column:player_id;not null;index:idx_pipelines_player"`
-	ProductGood   string     `gorm:"column:product_good;size:64;not null"`
+	ID             string     `gorm:"column:id;primaryKey;size:64"`
+	SequenceNumber int        `gorm:"column:sequence_number;not null;default:0"`
+	PlayerID       int        `gorm:"column:player_id;not null;index:idx_pipelines_player"`
+	ProductGood    string     `gorm:"column:product_good;size:64;not null"`
 	SellMarket    string     `gorm:"column:sell_market;size:64;not null"`
 	ExpectedPrice int        `gorm:"column:expected_price;not null"`
 	Status        string     `gorm:"column:status;size:32;not null;index:idx_pipelines_status"`
