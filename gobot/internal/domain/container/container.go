@@ -56,7 +56,6 @@ const (
 	ContainerTypeArbitrageCoordinator       ContainerType = "ARBITRAGE_COORDINATOR"
 	ContainerTypeArbitrageWorker            ContainerType = "ARBITRAGE_WORKER"
 	ContainerTypeManufacturingCoordinator   ContainerType = "MANUFACTURING_COORDINATOR"
-	ContainerTypeManufacturingWorker        ContainerType = "MANUFACTURING_WORKER"
 	ContainerTypeParallelManufacturing      ContainerType = "PARALLEL_MANUFACTURING"
 	ContainerTypeManufacturingTaskWorker    ContainerType = "MANUFACTURING_TASK_WORKER"
 )

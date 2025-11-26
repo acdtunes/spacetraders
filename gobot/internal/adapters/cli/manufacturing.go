@@ -55,7 +55,6 @@ Examples:
 	// Add subcommands
 	cmd.AddCommand(newManufacturingScanCommand())
 	cmd.AddCommand(newManufacturingStartCommand())
-	cmd.AddCommand(newManufacturingStartParallelCommand())
 
 	return cmd
 }
@@ -213,92 +212,8 @@ func displayManufacturingOpportunities(opps []*trading.ManufacturingOpportunity)
 	fmt.Println("\nNote: WEAK activity markets have stable prices; GROWING markets have volatile prices.")
 }
 
-// newManufacturingStartCommand creates the manufacturing start subcommand
+// newManufacturingStartCommand creates the manufacturing start subcommand (task-based pipeline)
 func newManufacturingStartCommand() *cobra.Command {
-	var systemSymbol string
-	var minPrice int
-	var maxWorkers int
-	var minBalance int
-
-	cmd := &cobra.Command{
-		Use:   "start",
-		Short: "Start automated manufacturing coordinator",
-		Long: `Start an automated manufacturing coordinator for a system.
-
-The coordinator will:
-- Continuously scan for high-demand manufacturable goods
-- Spawn worker containers to produce and sell goods
-- Auto-discover idle hauler ships from shared pool
-- Run parallel manufacturing operations (max controlled by --max-workers)
-- Automatically restart failed workers
-
-The coordinator runs indefinitely until stopped with 'container stop'.
-
-Examples:
-  spacetraders manufacturing start --system X1-AU21
-  spacetraders manufacturing start --system X1-AU21 --min-price 2000 --max-workers 3
-  spacetraders manufacturing start --system X1-AU21 --min-balance 100000`,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			// Resolve player from flags or defaults
-			playerIdent, err := resolvePlayerIdentifier()
-			if err != nil {
-				return err
-			}
-
-			// Require system symbol
-			if systemSymbol == "" {
-				return fmt.Errorf("--system flag is required")
-			}
-
-			// Connect to daemon
-			client, err := NewDaemonClient(socketPath)
-			if err != nil {
-				return fmt.Errorf("failed to connect to daemon: %w", err)
-			}
-			defer client.Close()
-
-			// Resolve player ID
-			playerID := playerIdent.PlayerID
-
-			// Start coordinator
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-
-			result, err := client.StartManufacturingCoordinator(ctx, systemSymbol, playerID, minPrice, maxWorkers, minBalance)
-			if err != nil {
-				return fmt.Errorf("failed to start manufacturing coordinator: %w", err)
-			}
-
-			// Display result
-			fmt.Println("\nManufacturing Coordinator Started")
-			fmt.Println("=================================")
-			fmt.Printf("Container ID:   %s\n", result.ContainerID)
-			fmt.Printf("System:         %s\n", result.SystemSymbol)
-			fmt.Printf("Min Price:      %d\n", result.MinPrice)
-			fmt.Printf("Max Workers:    %d\n", result.MaxWorkers)
-			if result.MinBalance > 0 {
-				fmt.Printf("Min Balance:    %d\n", result.MinBalance)
-			}
-			fmt.Printf("Status:         %s\n", result.Status)
-			fmt.Printf("\n%s\n", result.Message)
-			fmt.Println("\nUse 'spacetraders container logs " + result.ContainerID + "' to monitor progress")
-			fmt.Println("Use 'spacetraders container stop " + result.ContainerID + "' to stop")
-
-			return nil
-		},
-	}
-
-	cmd.Flags().StringVar(&systemSymbol, "system", "", "System symbol to manufacture in (required)")
-	cmd.Flags().IntVar(&minPrice, "min-price", 1000, "Minimum purchase price threshold for opportunities")
-	cmd.Flags().IntVar(&maxWorkers, "max-workers", 5, "Maximum parallel manufacturing workers")
-	cmd.Flags().IntVar(&minBalance, "min-balance", 0, "Minimum credit balance to maintain (0 = no limit)")
-	cmd.MarkFlagRequired("system")
-
-	return cmd
-}
-
-// newManufacturingStartParallelCommand creates the manufacturing start-parallel subcommand
-func newManufacturingStartParallelCommand() *cobra.Command {
 	var systemSymbol string
 	var minPrice int
 	var maxWorkers int
@@ -308,11 +223,11 @@ func newManufacturingStartParallelCommand() *cobra.Command {
 	var strategy string
 
 	cmd := &cobra.Command{
-		Use:   "start-parallel",
-		Short: "Start parallel task-based manufacturing coordinator",
-		Long: `Start a parallel task-based manufacturing coordinator for a system.
+		Use:   "start",
+		Short: "Start task-based manufacturing coordinator",
+		Long: `Start a task-based manufacturing coordinator for a system.
 
-This is an enhanced manufacturing system that uses a task-based pipeline architecture:
+This manufacturing system uses a task-based pipeline architecture:
 - Creates manufacturing pipelines with atomic tasks (ACQUIRE, DELIVER, COLLECT, SELL)
 - Manages task dependencies and executes them in parallel when possible
 - Tracks factory state for production timing
@@ -329,11 +244,11 @@ Acquisition strategies (--strategy):
   smart:            Fabricate only when supply is SCARCE/LIMITED (conservative)
 
 Examples:
-  spacetraders manufacturing start-parallel --system X1-AU21
-  spacetraders manufacturing start-parallel --system X1-AU21 --min-price 2000 --max-workers 3
-  spacetraders manufacturing start-parallel --system X1-AU21 --dry-run
-  spacetraders manufacturing start-parallel --system X1-AU21 --dry-run --strategy smart
-  spacetraders manufacturing start-parallel --system X1-AU21 --min-balance 100000`,
+  spacetraders manufacturing start --system X1-AU21
+  spacetraders manufacturing start --system X1-AU21 --min-price 2000 --max-workers 3
+  spacetraders manufacturing start --system X1-AU21 --dry-run
+  spacetraders manufacturing start --system X1-AU21 --dry-run --strategy smart
+  spacetraders manufacturing start --system X1-AU21 --min-balance 100000`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Resolve player from flags or defaults
 			playerIdent, err := resolvePlayerIdentifier()
@@ -367,12 +282,12 @@ Examples:
 
 			result, err := client.StartParallelManufacturingCoordinator(ctx, systemSymbol, playerID, minPrice, maxWorkers, minBalance)
 			if err != nil {
-				return fmt.Errorf("failed to start parallel manufacturing coordinator: %w", err)
+				return fmt.Errorf("failed to start manufacturing coordinator: %w", err)
 			}
 
 			// Display result
-			fmt.Println("\nParallel Manufacturing Coordinator Started")
-			fmt.Println("==========================================")
+			fmt.Println("\nManufacturing Coordinator Started")
+			fmt.Println("=================================")
 			fmt.Printf("Container ID:   %s\n", result.ContainerID)
 			fmt.Printf("System:         %s\n", result.SystemSymbol)
 			fmt.Printf("Min Price:      %d\n", result.MinPrice)
@@ -384,7 +299,7 @@ Examples:
 			fmt.Printf("\n%s\n", result.Message)
 			fmt.Println("\nThis coordinator uses task-based pipelines with:")
 			fmt.Println("  - Atomic tasks (ACQUIRE, DELIVER, COLLECT, SELL)")
-			fmt.Println("  - Dependency-based parallel execution")
+			fmt.Println("  - Dependency-based execution")
 			fmt.Println("  - Factory state tracking for production timing")
 			fmt.Println("  - Persistent state for crash recovery")
 			fmt.Println("\nUse 'spacetraders container logs " + result.ContainerID + "' to monitor progress")

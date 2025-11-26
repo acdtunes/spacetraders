@@ -1068,37 +1068,6 @@ func (c *DaemonClient) StartArbitrageCoordinator(
 	}, nil
 }
 
-// StartManufacturingCoordinator starts a manufacturing coordinator
-func (c *DaemonClient) StartManufacturingCoordinator(
-	ctx context.Context,
-	systemSymbol string,
-	playerID int,
-	minPrice int,
-	maxWorkers int,
-	minBalance int,
-) (*StartManufacturingCoordinatorResult, error) {
-	resp, err := c.client.StartManufacturingCoordinator(ctx, &pb.StartManufacturingCoordinatorRequest{
-		PlayerId:     int32(playerID),
-		SystemSymbol: systemSymbol,
-		MinPrice:     int32(minPrice),
-		MaxWorkers:   int32(maxWorkers),
-		MinBalance:   int32(minBalance),
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	return &StartManufacturingCoordinatorResult{
-		ContainerID:  resp.ContainerId,
-		SystemSymbol: resp.SystemSymbol,
-		MinPrice:     int(resp.MinPrice),
-		MaxWorkers:   int(resp.MaxWorkers),
-		MinBalance:   int(resp.MinBalance),
-		Status:       resp.Status,
-		Message:      resp.Message,
-	}, nil
-}
-
 // StartParallelManufacturingCoordinator starts a parallel task-based manufacturing coordinator
 func (c *DaemonClient) StartParallelManufacturingCoordinator(
 	ctx context.Context,

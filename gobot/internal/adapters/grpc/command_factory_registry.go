@@ -315,7 +315,7 @@ func (s *DaemonServer) registerCommandFactories() {
 		}, nil
 	}
 
-	// Manufacturing coordinator factory (supports both legacy and parallel modes)
+	// Manufacturing coordinator factory (task-based pipeline)
 	s.commandFactories["manufacturing_coordinator"] = func(config map[string]interface{}, playerID int) (interface{}, error) {
 		containerID, ok := config["container_id"].(string)
 		if !ok {
@@ -348,37 +348,13 @@ func (s *DaemonServer) registerCommandFactories() {
 			}
 		}
 
-		minBalance := 0
-		if val, ok := config["min_balance"]; ok {
-			switch v := val.(type) {
-			case int:
-				minBalance = v
-			case float64:
-				minBalance = int(v)
-			}
-		}
-
-		// Check mode - parallel_task_based uses the new parallel coordinator
-		mode, _ := config["mode"].(string)
-		if mode == "parallel_task_based" {
-			return &tradingCmd.RunParallelManufacturingCoordinatorCommand{
-				SystemSymbol:       systemSymbol,
-				PlayerID:           playerID,
-				ContainerID:        containerID,
-				MinPurchasePrice:   minPrice,
-				MaxConcurrentTasks: maxWorkers,
-				MaxPipelines:       3,
-			}, nil
-		}
-
-		// Legacy mode uses the original coordinator
-		return &tradingCmd.RunManufacturingCoordinatorCommand{
-			SystemSymbol:     systemSymbol,
-			PlayerID:         playerID,
-			ContainerID:      containerID,
-			MinPurchasePrice: minPrice,
-			MaxWorkers:       maxWorkers,
-			MinBalance:       minBalance,
+		return &tradingCmd.RunParallelManufacturingCoordinatorCommand{
+			SystemSymbol:       systemSymbol,
+			PlayerID:           playerID,
+			ContainerID:        containerID,
+			MinPurchasePrice:   minPrice,
+			MaxConcurrentTasks: maxWorkers,
+			MaxPipelines:       3,
 		}, nil
 	}
 }
