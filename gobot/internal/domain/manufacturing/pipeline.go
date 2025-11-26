@@ -40,11 +40,12 @@ const (
 //   - totalRevenue: Revenue from SELL task
 //   - netProfit: totalRevenue - totalCost
 type ManufacturingPipeline struct {
-	id            string
-	productGood   string // Final product (e.g., LASER_RIFLES)
-	sellMarket    string // Where to sell final product
-	expectedPrice int    // Expected sale price per unit
-	playerID      int
+	id             string
+	sequenceNumber int    // Sequential number for this pipeline (1, 2, 3...)
+	productGood    string // Final product (e.g., LASER_RIFLES)
+	sellMarket     string // Where to sell final product
+	expectedPrice  int    // Expected sale price per unit
+	playerID       int
 
 	status PipelineStatus
 
@@ -88,6 +89,7 @@ func NewPipeline(productGood string, sellMarket string, expectedPrice int, playe
 // ReconstructPipeline rebuilds a pipeline from persistence
 func ReconstructPipeline(
 	id string,
+	sequenceNumber int,
 	productGood string,
 	sellMarket string,
 	expectedPrice int,
@@ -102,27 +104,29 @@ func ReconstructPipeline(
 	errorMessage string,
 ) *ManufacturingPipeline {
 	return &ManufacturingPipeline{
-		id:            id,
-		productGood:   productGood,
-		sellMarket:    sellMarket,
-		expectedPrice: expectedPrice,
-		playerID:      playerID,
-		status:        status,
-		tasks:         make([]*ManufacturingTask, 0),
-		tasksByID:     make(map[string]*ManufacturingTask),
-		totalCost:     totalCost,
-		totalRevenue:  totalRevenue,
-		netProfit:     netProfit,
-		createdAt:     createdAt,
-		startedAt:     startedAt,
-		completedAt:   completedAt,
-		errorMessage:  errorMessage,
+		id:             id,
+		sequenceNumber: sequenceNumber,
+		productGood:    productGood,
+		sellMarket:     sellMarket,
+		expectedPrice:  expectedPrice,
+		playerID:       playerID,
+		status:         status,
+		tasks:          make([]*ManufacturingTask, 0),
+		tasksByID:      make(map[string]*ManufacturingTask),
+		totalCost:      totalCost,
+		totalRevenue:   totalRevenue,
+		netProfit:      netProfit,
+		createdAt:      createdAt,
+		startedAt:      startedAt,
+		completedAt:    completedAt,
+		errorMessage:   errorMessage,
 	}
 }
 
 // Getters
 
 func (p *ManufacturingPipeline) ID() string              { return p.id }
+func (p *ManufacturingPipeline) SequenceNumber() int     { return p.sequenceNumber }
 func (p *ManufacturingPipeline) ProductGood() string     { return p.productGood }
 func (p *ManufacturingPipeline) SellMarket() string      { return p.sellMarket }
 func (p *ManufacturingPipeline) ExpectedPrice() int      { return p.expectedPrice }
@@ -139,6 +143,9 @@ func (p *ManufacturingPipeline) TaskCount() int          { return p.taskCount }
 func (p *ManufacturingPipeline) TasksReady() int         { return p.tasksReady }
 func (p *ManufacturingPipeline) TasksDone() int          { return p.tasksDone }
 func (p *ManufacturingPipeline) TasksFailed() int        { return p.tasksFailed }
+
+// SetSequenceNumber sets the sequence number (called by repository during Add)
+func (p *ManufacturingPipeline) SetSequenceNumber(seq int) { p.sequenceNumber = seq }
 
 // Tasks returns a copy of all tasks in this pipeline
 func (p *ManufacturingPipeline) Tasks() []*ManufacturingTask {
@@ -442,6 +449,7 @@ func (p *ManufacturingPipeline) String() string {
 // ReconstitutePipeline creates a pipeline from persisted data (for repository use only)
 func ReconstitutePipeline(
 	id string,
+	sequenceNumber int,
 	productGood string,
 	sellMarket string,
 	expectedPrice int,
@@ -456,20 +464,21 @@ func ReconstitutePipeline(
 	completedAt *time.Time,
 ) *ManufacturingPipeline {
 	return &ManufacturingPipeline{
-		id:            id,
-		productGood:   productGood,
-		sellMarket:    sellMarket,
-		expectedPrice: expectedPrice,
-		playerID:      playerID,
-		status:        status,
-		totalCost:     totalCost,
-		totalRevenue:  totalRevenue,
-		netProfit:     netProfit,
-		errorMessage:  errorMessage,
-		createdAt:     createdAt,
-		startedAt:     startedAt,
-		completedAt:   completedAt,
-		tasks:         make([]*ManufacturingTask, 0),
-		tasksByID:     make(map[string]*ManufacturingTask),
+		id:             id,
+		sequenceNumber: sequenceNumber,
+		productGood:    productGood,
+		sellMarket:     sellMarket,
+		expectedPrice:  expectedPrice,
+		playerID:       playerID,
+		status:         status,
+		totalCost:      totalCost,
+		totalRevenue:   totalRevenue,
+		netProfit:      netProfit,
+		errorMessage:   errorMessage,
+		createdAt:      createdAt,
+		startedAt:      startedAt,
+		completedAt:    completedAt,
+		tasks:          make([]*ManufacturingTask, 0),
+		tasksByID:      make(map[string]*ManufacturingTask),
 	}
 }

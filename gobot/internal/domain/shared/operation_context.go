@@ -70,6 +70,7 @@ func (c *OperationContext) String() string {
 //   - contract_workflow → contract
 //   - balance_ship_position → fleet rebalancing
 //   - goods_factory_coordinator → factory
+//   - manufacturing_worker → manufacturing
 func (c *OperationContext) NormalizedOperationType() string {
 	if c == nil || c.OperationType == "" {
 		return ""
@@ -84,6 +85,8 @@ func (c *OperationContext) NormalizedOperationType() string {
 		return "fleet rebalancing"
 	case "goods_factory_coordinator":
 		return "factory"
+	case "manufacturing_worker":
+		return "manufacturing"
 	default:
 		// Return as-is for unknown types
 		return c.OperationType

@@ -11,17 +11,13 @@ import (
 type TaskType string
 
 const (
-	// TaskTypeAcquire - Buy raw material from export market
-	TaskTypeAcquire TaskType = "ACQUIRE"
+	// TaskTypeAcquireDeliver - Atomic: Buy from export market AND deliver to factory
+	// Same ship buys goods and delivers them, preventing "orphaned cargo" bugs
+	TaskTypeAcquireDeliver TaskType = "ACQUIRE_DELIVER"
 
-	// TaskTypeDeliver - Deliver material to factory
-	TaskTypeDeliver TaskType = "DELIVER"
-
-	// TaskTypeCollect - Buy produced good from factory (when supply HIGH)
-	TaskTypeCollect TaskType = "COLLECT"
-
-	// TaskTypeSell - Sell final product at demand market
-	TaskTypeSell TaskType = "SELL"
+	// TaskTypeCollectSell - Atomic: Collect from factory AND sell at demand market
+	// Same ship collects goods and sells them, preventing "orphaned cargo" bugs
+	TaskTypeCollectSell TaskType = "COLLECT_SELL"
 
 	// TaskTypeLiquidate - Sell orphaned cargo to recover investment
 	TaskTypeLiquidate TaskType = "LIQUIDATE"
@@ -58,11 +54,9 @@ const (
 // ManufacturingTask represents a single atomic task in the manufacturing pipeline.
 // Tasks are the unit of work assignment - each can be independently executed by a ship.
 //
-// Task Types:
-//   - ACQUIRE: Buy raw material from export market
-//   - DELIVER: Deliver material to factory (triggers production)
-//   - COLLECT: Buy produced good from factory (when supply HIGH)
-//   - SELL: Sell final product at demand market
+// Task Types (atomic - same ship does both phases):
+//   - ACQUIRE_DELIVER: Buy from export market AND deliver to factory
+//   - COLLECT_SELL: Collect from factory (when supply HIGH) AND sell at demand market
 //   - LIQUIDATE: Sell orphaned cargo to recover investment
 //
 // State Machine:
@@ -130,37 +124,6 @@ func NewManufacturingTask(
 	}
 }
 
-// NewAcquireTask creates a task to buy goods from an export market
-func NewAcquireTask(pipelineID string, playerID int, good string, sourceMarket string) *ManufacturingTask {
-	task := NewManufacturingTask(TaskTypeAcquire, good, pipelineID, playerID)
-	task.sourceMarket = sourceMarket
-	return task
-}
-
-// NewDeliverTask creates a task to deliver goods to a factory
-func NewDeliverTask(pipelineID string, playerID int, good string, targetMarket string, dependsOn []string) *ManufacturingTask {
-	task := NewManufacturingTask(TaskTypeDeliver, good, pipelineID, playerID)
-	task.targetMarket = targetMarket
-	task.dependsOn = dependsOn
-	return task
-}
-
-// NewCollectTask creates a task to collect produced goods from a factory
-func NewCollectTask(pipelineID string, playerID int, good string, factorySymbol string, dependsOn []string) *ManufacturingTask {
-	task := NewManufacturingTask(TaskTypeCollect, good, pipelineID, playerID)
-	task.factorySymbol = factorySymbol
-	task.dependsOn = dependsOn
-	return task
-}
-
-// NewSellTask creates a task to sell goods at a demand market
-func NewSellTask(pipelineID string, playerID int, good string, targetMarket string, dependsOn []string) *ManufacturingTask {
-	task := NewManufacturingTask(TaskTypeSell, good, pipelineID, playerID)
-	task.targetMarket = targetMarket
-	task.dependsOn = dependsOn
-	return task
-}
-
 // NewLiquidationTask creates a task to sell orphaned cargo
 func NewLiquidationTask(playerID int, shipSymbol string, good string, quantity int, targetMarket string) *ManufacturingTask {
 	task := NewManufacturingTask(TaskTypeLiquidate, good, "", playerID)
@@ -171,6 +134,26 @@ func NewLiquidationTask(playerID int, shipSymbol string, good string, quantity i
 	task.priority = 100           // High priority - recover investment ASAP
 	now := time.Now()
 	task.readyAt = &now
+	return task
+}
+
+// NewAcquireDeliverTask creates an atomic task to buy from export market AND deliver to factory.
+// This replaces the separate ACQUIRE + DELIVER pattern to ensure the same ship does both operations.
+func NewAcquireDeliverTask(pipelineID string, playerID int, good string, sourceMarket string, factorySymbol string, dependsOn []string) *ManufacturingTask {
+	task := NewManufacturingTask(TaskTypeAcquireDeliver, good, pipelineID, playerID)
+	task.sourceMarket = sourceMarket  // Where to buy from
+	task.factorySymbol = factorySymbol // Where to deliver to
+	task.dependsOn = dependsOn
+	return task
+}
+
+// NewCollectSellTask creates an atomic task to collect from factory AND sell at demand market.
+// This replaces the separate COLLECT + SELL pattern to ensure the same ship does both operations.
+func NewCollectSellTask(pipelineID string, playerID int, good string, factorySymbol string, targetMarket string, dependsOn []string) *ManufacturingTask {
+	task := NewManufacturingTask(TaskTypeCollectSell, good, pipelineID, playerID)
+	task.factorySymbol = factorySymbol // Where to collect from
+	task.targetMarket = targetMarket   // Where to sell
+	task.dependsOn = dependsOn
 	return task
 }
 
@@ -385,6 +368,28 @@ func (t *ManufacturingTask) RollbackAssignment() error {
 	return nil
 }
 
+// RollbackExecution returns task to READY state (used on execution interruption, e.g., daemon restart)
+// IMPORTANT: We preserve assignedShip because for SELL tasks, the ship still has cargo that needs to be sold.
+// The ship assignment in the database will be released separately, but we need to remember which ship
+// was executing so we can re-assign the same ship when the task is retried.
+func (t *ManufacturingTask) RollbackExecution() error {
+	if t.status != TaskStatusExecuting {
+		return &ErrInvalidTaskTransition{
+			TaskID:      t.id,
+			From:        t.status,
+			To:          TaskStatusReady,
+			Description: "can only rollback from EXECUTING state",
+		}
+	}
+	t.status = TaskStatusReady
+	// NOTE: We intentionally DO NOT clear assignedShip here.
+	// For SELL tasks, the ship has cargo from the COLLECT task and must complete the sell.
+	// The coordinator will use this to re-assign the same ship.
+	// t.assignedShip = "" // REMOVED - preserve ship for recovery
+	t.startedAt = nil
+	return nil
+}
+
 // Setters for execution results
 
 func (t *ManufacturingTask) SetActualQuantity(qty int)   { t.actualQuantity = qty }
@@ -424,15 +429,16 @@ func (t *ManufacturingTask) NetProfit() int {
 	return t.totalRevenue - t.totalCost
 }
 
-// GetDestination returns the destination waypoint for this task
+// GetDestination returns the starting destination waypoint for this task.
+// For atomic tasks, returns the first destination (source for acquire, factory for collect).
 func (t *ManufacturingTask) GetDestination() string {
 	switch t.taskType {
-	case TaskTypeAcquire:
+	case TaskTypeAcquireDeliver:
 		return t.sourceMarket
-	case TaskTypeDeliver, TaskTypeSell, TaskTypeLiquidate:
-		return t.targetMarket
-	case TaskTypeCollect:
+	case TaskTypeCollectSell:
 		return t.factorySymbol
+	case TaskTypeLiquidate:
+		return t.targetMarket
 	default:
 		return ""
 	}
