@@ -252,95 +252,170 @@ func (h *RunManufacturingTaskWorkerHandler) executeAcquire(
 		return fmt.Errorf("failed to dock: %w", err)
 	}
 
-	// Get market data for supply-aware purchase limits
-	// See docs/PARALLEL_MANUFACTURING_SYSTEM_DESIGN.md for trade size calculation
-	marketData, err := h.marketRepo.GetMarketData(ctx, task.SourceMarket(), cmd.PlayerID)
-	if err != nil {
-		return fmt.Errorf("failed to get market data for %s: %w", task.SourceMarket(), err)
-	}
+	// Purchase loop: keep buying until supply drops below HIGH or cargo is full
+	// This maximizes acquisition while supply is abundant
+	var totalUnitsAdded int
+	var totalCost int
+	purchaseCount := 0
+	const maxPurchases = 10 // Safety limit to prevent infinite loops
 
-	// Find the trade good at this market
-	var supplyLevel string
-	var tradeVolume int
-	for _, good := range marketData.TradeGoods() {
-		if good.Symbol() == task.Good() {
-			if good.Supply() != nil {
-				supplyLevel = *good.Supply()
+	for purchaseCount < maxPurchases {
+		// Get fresh market data for current supply level
+		marketData, err := h.marketRepo.GetMarketData(ctx, task.SourceMarket(), cmd.PlayerID)
+		if err != nil {
+			if purchaseCount == 0 {
+				return fmt.Errorf("failed to get market data for %s: %w", task.SourceMarket(), err)
 			}
-			tradeVolume = good.TradeVolume()
+			// If we already purchased some, just log and break
+			logger.Log("WARN", "ACQUIRE: Failed to refresh market data, stopping", map[string]interface{}{
+				"error":           err.Error(),
+				"purchases_so_far": purchaseCount,
+			})
+			break
+		}
+
+		// Find the trade good at this market
+		var supplyLevel string
+		var tradeVolume int
+		for _, good := range marketData.TradeGoods() {
+			if good.Symbol() == task.Good() {
+				if good.Supply() != nil {
+					supplyLevel = *good.Supply()
+				}
+				tradeVolume = good.TradeVolume()
+				break
+			}
+		}
+
+		// Check if supply has dropped below HIGH - stop purchasing
+		if supplyLevel != "HIGH" && supplyLevel != "ABUNDANT" {
+			logger.Log("INFO", "ACQUIRE: Supply dropped below HIGH, stopping purchases", map[string]interface{}{
+				"supply":           supplyLevel,
+				"purchases_so_far": purchaseCount,
+				"total_units":      totalUnitsAdded,
+			})
+			break
+		}
+
+		// Reload ship for available cargo
+		ship, _ = h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, playerID)
+		availableCargo := ship.AvailableCargoSpace()
+		if availableCargo <= 0 {
+			logger.Log("INFO", "ACQUIRE: Cargo full, stopping purchases", map[string]interface{}{
+				"purchases_so_far": purchaseCount,
+				"total_units":      totalUnitsAdded,
+			})
+			break
+		}
+
+		// Determine quantity to purchase this round
+		quantity := availableCargo
+		if task.Quantity() > 0 {
+			remaining := task.Quantity() - totalUnitsAdded
+			if remaining <= 0 {
+				break // Already acquired target quantity
+			}
+			if remaining < quantity {
+				quantity = remaining
+			}
+		}
+
+		// Apply supply-aware limit per purchase (to not crash supply in one buy)
+		supplyAwareLimit := calculateSupplyAwareLimit(supplyLevel, tradeVolume)
+		if supplyAwareLimit > 0 && supplyAwareLimit < quantity {
+			quantity = supplyAwareLimit
+		}
+
+		if quantity <= 0 {
+			break
+		}
+
+		logger.Log("INFO", "ACQUIRE: Purchasing goods", map[string]interface{}{
+			"good":               task.Good(),
+			"quantity":           quantity,
+			"available_cargo":    availableCargo,
+			"supply":             supplyLevel,
+			"trade_volume":       tradeVolume,
+			"supply_aware_limit": supplyAwareLimit,
+			"waypoint":           task.SourceMarket(),
+			"purchase_round":     purchaseCount + 1,
+		})
+
+		// Purchase goods
+		purchaseResp, err := h.mediator.Send(ctx, &shipCmd.PurchaseCargoCommand{
+			ShipSymbol: cmd.ShipSymbol,
+			GoodSymbol: task.Good(),
+			Units:      quantity,
+			PlayerID:   playerID,
+		})
+		if err != nil {
+			if purchaseCount == 0 {
+				return fmt.Errorf("failed to purchase %s: %w", task.Good(), err)
+			}
+			// If we already purchased some, just log and break
+			logger.Log("WARN", "ACQUIRE: Purchase failed, stopping", map[string]interface{}{
+				"error":            err.Error(),
+				"purchases_so_far": purchaseCount,
+			})
+			break
+		}
+
+		resp := purchaseResp.(*shipCmd.PurchaseCargoResponse)
+		totalUnitsAdded += resp.UnitsAdded
+		totalCost += resp.TotalCost
+		purchaseCount++
+
+		// Calculate price per unit for metadata
+		pricePerUnit := 0
+		if resp.UnitsAdded > 0 {
+			pricePerUnit = resp.TotalCost / resp.UnitsAdded
+		}
+
+		logger.Log("INFO", "ACQUIRE: Purchase round complete", map[string]interface{}{
+			"good":             task.Good(),
+			"units_added":      resp.UnitsAdded,
+			"total_cost":       resp.TotalCost,
+			"price_per_unit":   pricePerUnit,
+			"purchase_round":   purchaseCount,
+			"cumulative_units": totalUnitsAdded,
+			"cumulative_cost":  totalCost,
+		})
+
+		// Record ledger transaction for this purchase
+		_, _ = h.mediator.Send(ctx, &ledgerCmd.RecordTransactionCommand{
+			PlayerID:          cmd.PlayerID,
+			TransactionType:   string(ledger.TransactionTypePurchaseCargo),
+			Amount:            -resp.TotalCost,
+			Description:       fmt.Sprintf("Manufacturing: Buy %d %s (round %d)", resp.UnitsAdded, task.Good(), purchaseCount),
+			RelatedEntityType: "manufacturing_task",
+			RelatedEntityID:   task.ID(),
+			OperationType:     "manufacturing",
+			Metadata: map[string]interface{}{
+				"task_id":        task.ID(),
+				"good":           task.Good(),
+				"quantity":       resp.UnitsAdded,
+				"price_per_unit": pricePerUnit,
+				"waypoint":       task.SourceMarket(),
+				"purchase_round": purchaseCount,
+			},
+		})
+
+		// If we didn't get any units, break to avoid infinite loop
+		if resp.UnitsAdded == 0 {
+			logger.Log("WARN", "ACQUIRE: No units added, stopping", nil)
 			break
 		}
 	}
 
-	// Determine quantity to purchase
-	ship, _ = h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, playerID) // Reload
-	availableCargo := ship.AvailableCargoSpace()
-	quantity := availableCargo
-	if task.Quantity() > 0 && task.Quantity() < quantity {
-		quantity = task.Quantity()
-	}
+	// Update task with final totals
+	task.SetActualQuantity(totalUnitsAdded)
+	task.SetTotalCost(totalCost)
 
-	// Apply supply-aware limit to avoid crashing supply level
-	// See docs/PARALLEL_MANUFACTURING_SYSTEM_DESIGN.md - Trade Size Calculation
-	supplyAwareLimit := calculateSupplyAwareLimit(supplyLevel, tradeVolume)
-	if supplyAwareLimit > 0 && supplyAwareLimit < quantity {
-		quantity = supplyAwareLimit
-	}
-
-	logger.Log("INFO", "ACQUIRE: Purchasing goods", map[string]interface{}{
-		"good":               task.Good(),
-		"quantity":           quantity,
-		"available_cargo":    availableCargo,
-		"supply":             supplyLevel,
-		"trade_volume":       tradeVolume,
-		"supply_aware_limit": supplyAwareLimit,
-		"waypoint":           task.SourceMarket(),
-	})
-
-	// Purchase goods
-	purchaseResp, err := h.mediator.Send(ctx, &shipCmd.PurchaseCargoCommand{
-		ShipSymbol: cmd.ShipSymbol,
-		GoodSymbol: task.Good(),
-		Units:      quantity,
-		PlayerID:   playerID,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to purchase %s: %w", task.Good(), err)
-	}
-
-	resp := purchaseResp.(*shipCmd.PurchaseCargoResponse)
-	task.SetActualQuantity(resp.UnitsAdded)
-	task.SetTotalCost(resp.TotalCost)
-
-	// Calculate price per unit for metadata
-	pricePerUnit := 0
-	if resp.UnitsAdded > 0 {
-		pricePerUnit = resp.TotalCost / resp.UnitsAdded
-	}
-
-	logger.Log("INFO", "ACQUIRE: Purchase complete", map[string]interface{}{
+	logger.Log("INFO", "ACQUIRE: All purchases complete", map[string]interface{}{
 		"good":           task.Good(),
-		"units_added":    resp.UnitsAdded,
-		"total_cost":     resp.TotalCost,
-		"price_per_unit": pricePerUnit,
-	})
-
-	// Record ledger transaction
-	_, _ = h.mediator.Send(ctx, &ledgerCmd.RecordTransactionCommand{
-		PlayerID:          cmd.PlayerID,
-		TransactionType:   string(ledger.TransactionTypePurchaseCargo),
-		Amount:            -resp.TotalCost,
-		Description:       fmt.Sprintf("Manufacturing: Buy %d %s", resp.UnitsAdded, task.Good()),
-		RelatedEntityType: "manufacturing_task",
-		RelatedEntityID:   task.ID(),
-		OperationType:     "manufacturing",
-		Metadata: map[string]interface{}{
-			"task_id":        task.ID(),
-			"good":           task.Good(),
-			"quantity":       resp.UnitsAdded,
-			"price_per_unit": pricePerUnit,
-			"waypoint":       task.SourceMarket(),
-		},
+		"total_units":    totalUnitsAdded,
+		"total_cost":     totalCost,
+		"purchase_count": purchaseCount,
 	})
 
 	return nil

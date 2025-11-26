@@ -191,6 +191,7 @@ func (h *RunParallelManufacturingCoordinatorHandler) Handle(
 		supplyMonitor := services.NewSupplyMonitor(
 			h.marketRepo,
 			h.factoryTracker,
+			h.factoryStateRepo,
 			h.taskQueue,
 			h.taskRepo,
 			supplyPollInterval,
@@ -1083,17 +1084,32 @@ func (h *RunParallelManufacturingCoordinatorHandler) recoverState(ctx context.Co
 
 	logger.Log("INFO", fmt.Sprintf("Recovered %d tasks, %d ready", len(tasks), readyCount), nil)
 
-	// Step 3: Load factory states
+	// Step 3: Load factory states (both pending AND ready)
+	// We need to load ALL factory states so the supply monitor can re-check them.
+	// Ready states may need to be reset if supply dropped while we were offline.
 	if h.factoryStateRepo != nil {
-		factoryStates, err := h.factoryStateRepo.FindPending(ctx, playerID)
+		// Load pending states
+		pendingStates, err := h.factoryStateRepo.FindPending(ctx, playerID)
 		if err != nil {
-			logger.Log("WARN", fmt.Sprintf("Failed to load factory states: %v", err), nil)
+			logger.Log("WARN", fmt.Sprintf("Failed to load pending factory states: %v", err), nil)
 		} else {
-			for _, state := range factoryStates {
+			for _, state := range pendingStates {
 				h.factoryTracker.LoadState(state)
 			}
-			logger.Log("INFO", fmt.Sprintf("Recovered %d factory states", len(factoryStates)), nil)
 		}
+
+		// Also load ready states - supply monitor will re-check their supply levels
+		readyStates, err := h.factoryStateRepo.FindReadyForCollection(ctx, playerID)
+		if err != nil {
+			logger.Log("WARN", fmt.Sprintf("Failed to load ready factory states: %v", err), nil)
+		} else {
+			for _, state := range readyStates {
+				h.factoryTracker.LoadState(state)
+			}
+		}
+
+		totalStates := len(pendingStates) + len(readyStates)
+		logger.Log("INFO", fmt.Sprintf("Recovered %d factory states (%d pending, %d ready)", totalStates, len(pendingStates), len(readyStates)), nil)
 	}
 
 	logger.Log("INFO", "State recovery complete", map[string]interface{}{
