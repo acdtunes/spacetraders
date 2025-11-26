@@ -509,9 +509,11 @@ func run(cfg *config.Config) error {
 		manufacturingTaskRepo,
 		manufacturingFactoryStateRepo,
 		tradingMarketRepo, // For SupplyMonitor creation
+		containerRepo,     // For cleaning up orphaned PENDING containers
 		med,
 		daemonClientLocal, // For spawning worker containers
 		nil,               // Use default RealClock
+		graphService,      // WaypointProvider for task source location lookups
 	)
 	if err := mediator.RegisterHandler[*tradingCmd.RunParallelManufacturingCoordinatorCommand](med, parallelManufacturingCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register RunParallelManufacturingCoordinator handler: %w", err)
