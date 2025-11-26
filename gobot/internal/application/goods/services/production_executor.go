@@ -188,6 +188,48 @@ func (e *ProductionExecutor) fabricateGood(
 	logger := common.LoggerFromContext(ctx)
 	totalCost := 0
 
+	// Step 0: Check if factory already has ABUNDANT supply - skip input production if so
+	// This allows opportunistic collection when factory already has goods ready
+	factoryMarket, err := e.marketLocator.FindExportMarket(ctx, node.Good, systemSymbol, playerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find factory (export market) for %s: %w", node.Good, err)
+	}
+
+	// Check current supply at factory
+	playerIDValue := shared.MustNewPlayerID(playerID)
+	marketData, err := e.marketRepo.GetMarketData(ctx, factoryMarket.WaypointSymbol, playerID)
+	if err == nil && marketData != nil {
+		tradeGood := marketData.FindGood(node.Good)
+		if tradeGood != nil && tradeGood.Supply() != nil {
+			supply := *tradeGood.Supply()
+			if supply == "ABUNDANT" || supply == "HIGH" {
+				logger.Log("INFO", fmt.Sprintf("Factory already has %s supply of %s - skipping input production", supply, node.Good), map[string]interface{}{
+					"good":     node.Good,
+					"factory":  factoryMarket.WaypointSymbol,
+					"supply":   supply,
+				})
+
+				// Navigate directly to factory and purchase
+				updatedShip, err := e.NavigateAndDock(ctx, ship.ShipSymbol(), factoryMarket.WaypointSymbol, playerIDValue)
+				if err != nil {
+					return nil, fmt.Errorf("failed to navigate to factory: %w", err)
+				}
+
+				// Purchase the goods directly (PollForProduction will find them immediately since supply is HIGH/ABUNDANT)
+				quantity, cost, err := e.PollForProduction(ctx, node.Good, factoryMarket.WaypointSymbol, updatedShip.ShipSymbol(), playerIDValue, opContext)
+				if err != nil {
+					return nil, fmt.Errorf("failed to purchase from factory: %w", err)
+				}
+
+				return &ProductionResult{
+					QuantityAcquired: quantity,
+					TotalCost:        cost,
+					WaypointSymbol:   factoryMarket.WaypointSymbol,
+				}, nil
+			}
+		}
+	}
+
 	// Step 1: Recursively produce all required inputs
 	logger.Log("INFO", fmt.Sprintf("Starting fabrication of %s (requires %d inputs)", node.Good, len(node.Children)), map[string]interface{}{
 		"good":         node.Good,
@@ -207,14 +249,10 @@ func (e *ProductionExecutor) fabricateGood(
 		})
 	}
 
-	// Step 2: Find manufacturing waypoint that EXPORTS this good (factory)
+	// Step 2: Navigate to factory (already found above in Step 0)
 	// CRITICAL: We need an EXPORT market (factory that produces and sells cheap),
 	// NOT an import market (consumer that buys at high price).
 	// The factory EXPORTS the finished good (low sell price) and IMPORTS the inputs.
-	factoryMarket, err := e.marketLocator.FindExportMarket(ctx, node.Good, systemSymbol, playerID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to find factory (export market) for %s: %w", node.Good, err)
-	}
 
 	logger.Log("INFO", fmt.Sprintf("Found factory (export market) for %s at %s", node.Good, factoryMarket.WaypointSymbol), map[string]interface{}{
 		"good":       node.Good,
@@ -222,8 +260,7 @@ func (e *ProductionExecutor) fabricateGood(
 		"sell_price": factoryMarket.Price, // Factory's sell price (what we pay to buy)
 	})
 
-	// Step 3: Navigate to factory and dock
-	playerIDValue := shared.MustNewPlayerID(playerID)
+	// Step 3: Navigate to factory and dock (playerIDValue already created in Step 0)
 	updatedShip, err := e.NavigateAndDock(ctx, ship.ShipSymbol(), factoryMarket.WaypointSymbol, playerIDValue)
 	if err != nil {
 		return nil, fmt.Errorf("failed to navigate to factory: %w", err)

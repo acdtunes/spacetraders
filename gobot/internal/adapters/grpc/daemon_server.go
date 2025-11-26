@@ -444,10 +444,17 @@ func (s *DaemonServer) RecoverRunningContainers(ctx context.Context) error {
 			continue
 		}
 
-		// Skip worker containers (those with coordinator_id)
+		// Skip worker containers (those with parent container)
 		// Workers are managed by their parent coordinator and should not be recovered independently
+		// Check both: 1) coordinator_id in config (arbitrage workers) 2) ParentContainerID field (manufacturing workers)
 		if coordinatorID, hasCoordinator := config["coordinator_id"].(string); hasCoordinator && coordinatorID != "" {
 			fmt.Printf("Container %s: Skipping recovery (worker container managed by coordinator %s)\n", containerModel.ID, coordinatorID)
+			s.markContainerFailed(ctx, containerModel, "orphaned_worker", "Worker container should not be recovered without parent coordinator")
+			failedCount++
+			continue
+		}
+		if containerModel.ParentContainerID != nil && *containerModel.ParentContainerID != "" {
+			fmt.Printf("Container %s: Skipping recovery (worker container managed by parent %s)\n", containerModel.ID, *containerModel.ParentContainerID)
 			s.markContainerFailed(ctx, containerModel, "orphaned_worker", "Worker container should not be recovered without parent coordinator")
 			failedCount++
 			continue

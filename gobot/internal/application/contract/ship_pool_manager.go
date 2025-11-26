@@ -111,8 +111,9 @@ func FindIdleLightHaulers(
 			continue
 		}
 
-		// Include ships with no assignment or idle status
-		if assignment == nil || assignment.Status() == "idle" {
+		// Include ships with no assignment, idle status, or empty container_id
+		// Empty container_id means the assignment is stale/zombie
+		if assignment == nil || assignment.Status() == "idle" || assignment.ContainerID() == "" {
 			idleHaulers = append(idleHaulers, ship)
 			idleHaulerSymbols = append(idleHaulerSymbols, ship.ShipSymbol())
 		}
@@ -138,9 +139,9 @@ func FindIdleLightHaulers(
 				continue
 			}
 
-			// Check assignment
+			// Check assignment (also consider empty container_id as idle)
 			assignment, err := shipAssignmentRepo.FindByShip(ctx, ship.ShipSymbol(), playerID.Value())
-			if err != nil || assignment == nil || assignment.Status() == "idle" {
+			if err != nil || assignment == nil || assignment.Status() == "idle" || assignment.ContainerID() == "" {
 				idleHaulers = append(idleHaulers, ship)
 				idleHaulerSymbols = append(idleHaulerSymbols, ship.ShipSymbol())
 
