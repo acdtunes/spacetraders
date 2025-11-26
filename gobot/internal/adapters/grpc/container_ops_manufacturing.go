@@ -13,7 +13,7 @@ import (
 )
 
 // ParallelManufacturingCoordinator creates a parallel task-based manufacturing coordinator
-func (s *DaemonServer) ParallelManufacturingCoordinator(ctx context.Context, systemSymbol string, playerID int, minPrice int, maxWorkers int, minBalance int) (string, error) {
+func (s *DaemonServer) ParallelManufacturingCoordinator(ctx context.Context, systemSymbol string, playerID int, minPrice int, maxWorkers int, maxPipelines int, minBalance int) (string, error) {
 	// Create container ID
 	containerID := utils.GenerateContainerID("parallel_manufacturing", systemSymbol)
 
@@ -23,8 +23,8 @@ func (s *DaemonServer) ParallelManufacturingCoordinator(ctx context.Context, sys
 		PlayerID:           playerID,
 		ContainerID:        containerID,
 		MinPurchasePrice:   minPrice,
-		MaxConcurrentTasks: maxWorkers, // Map maxWorkers to MaxConcurrentTasks
-		MaxPipelines:       3,          // Default to 3 pipelines
+		MaxConcurrentTasks: maxWorkers,   // Map maxWorkers to MaxConcurrentTasks
+		MaxPipelines:       maxPipelines, // Use provided maxPipelines
 	}
 
 	// Create container for this operation
@@ -38,6 +38,7 @@ func (s *DaemonServer) ParallelManufacturingCoordinator(ctx context.Context, sys
 			"system_symbol": systemSymbol,
 			"min_price":     minPrice,
 			"max_workers":   maxWorkers,
+			"max_pipelines": maxPipelines,
 			"min_balance":   minBalance,
 			"container_id":  containerID,
 			"mode":          "parallel_task_based",
@@ -93,13 +94,15 @@ func (s *DaemonServer) PersistManufacturingTaskWorkerContainer(
 		1, // Single iteration for worker containers
 		parentContainerID,
 		map[string]interface{}{
-			"ship_symbol":    cmd.ShipSymbol,
-			"player_id":      cmd.PlayerID,
-			"task_id":        task.ID(),
-			"task_type":      string(task.TaskType()),
-			"good":           task.Good(),
-			"pipeline_id":    task.PipelineID(),
-			"coordinator_id": cmd.CoordinatorID,
+			"ship_symbol":     cmd.ShipSymbol,
+			"player_id":       cmd.PlayerID,
+			"task_id":         task.ID(),
+			"task_type":       string(task.TaskType()),
+			"good":            task.Good(),
+			"pipeline_id":     task.PipelineID(),
+			"coordinator_id":  cmd.CoordinatorID,
+			"pipeline_number": cmd.PipelineNumber,
+			"product_good":    cmd.ProductGood,
 		},
 		nil, // Use default RealClock
 	)

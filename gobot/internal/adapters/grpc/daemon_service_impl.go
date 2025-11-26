@@ -924,6 +924,12 @@ func (s *daemonServiceImpl) StartParallelManufacturingCoordinator(ctx context.Co
 		maxWorkers = 5
 	}
 
+	// Default max pipelines if not provided
+	maxPipelines := int(req.MaxPipelines)
+	if maxPipelines == 0 {
+		maxPipelines = 3
+	}
+
 	// Default min price if not provided
 	minPrice := int(req.MinPrice)
 	if minPrice <= 0 {
@@ -934,7 +940,7 @@ func (s *daemonServiceImpl) StartParallelManufacturingCoordinator(ctx context.Co
 	minBalance := int(req.MinBalance)
 
 	// Start parallel coordinator via DaemonServer (creates container and runs in background)
-	containerID, err := s.daemon.ParallelManufacturingCoordinator(ctx, req.SystemSymbol, playerID, minPrice, maxWorkers, minBalance)
+	containerID, err := s.daemon.ParallelManufacturingCoordinator(ctx, req.SystemSymbol, playerID, minPrice, maxWorkers, maxPipelines, minBalance)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start parallel manufacturing coordinator: %w", err)
 	}
@@ -944,6 +950,7 @@ func (s *daemonServiceImpl) StartParallelManufacturingCoordinator(ctx context.Co
 		SystemSymbol: req.SystemSymbol,
 		MinPrice:     int32(minPrice),
 		MaxWorkers:   int32(maxWorkers),
+		MaxPipelines: int32(maxPipelines),
 		MinBalance:   int32(minBalance),
 		Status:       "RUNNING",
 		Message:      "Parallel manufacturing coordinator started successfully",

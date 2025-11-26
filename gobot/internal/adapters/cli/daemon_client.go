@@ -988,6 +988,7 @@ type StartManufacturingCoordinatorResult struct {
 	SystemSymbol string
 	MinPrice     int
 	MaxWorkers   int
+	MaxPipelines int
 	MinBalance   int
 	Status       string
 	Message      string
@@ -1075,6 +1076,7 @@ func (c *DaemonClient) StartParallelManufacturingCoordinator(
 	playerID int,
 	minPrice int,
 	maxWorkers int,
+	maxPipelines int,
 	minBalance int,
 ) (*StartManufacturingCoordinatorResult, error) {
 	resp, err := c.client.StartParallelManufacturingCoordinator(ctx, &pb.StartParallelManufacturingCoordinatorRequest{
@@ -1082,6 +1084,7 @@ func (c *DaemonClient) StartParallelManufacturingCoordinator(
 		SystemSymbol: systemSymbol,
 		MinPrice:     int32(minPrice),
 		MaxWorkers:   int32(maxWorkers),
+		MaxPipelines: int32(maxPipelines),
 		MinBalance:   int32(minBalance),
 	})
 	if err != nil {
@@ -1093,6 +1096,7 @@ func (c *DaemonClient) StartParallelManufacturingCoordinator(
 		SystemSymbol: resp.SystemSymbol,
 		MinPrice:     int(resp.MinPrice),
 		MaxWorkers:   int(resp.MaxWorkers),
+		MaxPipelines: int(resp.MaxPipelines),
 		MinBalance:   int(resp.MinBalance),
 		Status:       resp.Status,
 		Message:      resp.Message,

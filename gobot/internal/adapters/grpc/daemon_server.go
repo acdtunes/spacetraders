@@ -447,15 +447,17 @@ func (s *DaemonServer) RecoverRunningContainers(ctx context.Context) error {
 		// Skip worker containers (those with parent container)
 		// Workers are managed by their parent coordinator and should not be recovered independently
 		// Check both: 1) coordinator_id in config (arbitrage workers) 2) ParentContainerID field (manufacturing workers)
+		// IMPORTANT: Mark as interrupted but DON'T release ship assignments - the coordinator will handle them
+		// Releasing assignments here breaks SELL tasks that have cargo on the ship
 		if coordinatorID, hasCoordinator := config["coordinator_id"].(string); hasCoordinator && coordinatorID != "" {
 			fmt.Printf("Container %s: Skipping recovery (worker container managed by coordinator %s)\n", containerModel.ID, coordinatorID)
-			s.markContainerFailed(ctx, containerModel, "orphaned_worker", "Worker container should not be recovered without parent coordinator")
+			s.markWorkerInterrupted(ctx, containerModel, coordinatorID)
 			failedCount++
 			continue
 		}
 		if containerModel.ParentContainerID != nil && *containerModel.ParentContainerID != "" {
 			fmt.Printf("Container %s: Skipping recovery (worker container managed by parent %s)\n", containerModel.ID, *containerModel.ParentContainerID)
-			s.markContainerFailed(ctx, containerModel, "orphaned_worker", "Worker container should not be recovered without parent coordinator")
+			s.markWorkerInterrupted(ctx, containerModel, *containerModel.ParentContainerID)
 			failedCount++
 			continue
 		}
@@ -577,6 +579,29 @@ func (s *DaemonServer) markContainerFailed(ctx context.Context, containerModel *
 	}
 }
 
+// markWorkerInterrupted marks a worker container as interrupted during daemon restart.
+// Unlike markContainerFailed, this does NOT release ship assignments.
+// The coordinator's recoverState() will handle the ship assignments when it resets tasks.
+// This is critical for SELL tasks where the ship still has cargo that needs to be sold.
+func (s *DaemonServer) markWorkerInterrupted(ctx context.Context, containerModel *persistence.ContainerModel, coordinatorID string) {
+	exitCode := 1
+	now := time.Now()
+
+	if err := s.containerRepo.UpdateStatus(
+		ctx,
+		containerModel.ID,
+		containerModel.PlayerID,
+		container.ContainerStatusFailed,
+		&now,      // stoppedAt
+		&exitCode, // exitCode
+		fmt.Sprintf("worker_interrupted: Worker interrupted by daemon restart (coordinator: %s). Ship assignments preserved for task recovery.", coordinatorID),
+	); err != nil {
+		fmt.Printf("Warning: Failed to mark worker %s as interrupted: %v\n", containerModel.ID, err)
+	}
+	// NOTE: Intentionally NOT releasing ship assignments here.
+	// The coordinator will handle this when it resets the task from EXECUTING to READY.
+}
+
 // containerModelToShipAssignment converts a ShipAssignmentModel to domain entity
 // This is a helper for the recovery process
 func containerModelToShipAssignment(model *persistence.ShipAssignmentModel) *container.ShipAssignment {
@@ -659,6 +684,22 @@ func (s *DaemonServer) StopContainer(containerID string) error {
 	}
 
 	return runner.Stop()
+}
+
+// DeleteContainer deletes a container from the database
+// This is for cleanup of PENDING containers that were never started
+func (s *DaemonServer) DeleteContainer(ctx context.Context, containerID string, playerID int) error {
+	// Remove from in-memory map if exists (shouldn't be there for PENDING containers)
+	s.containersMu.Lock()
+	delete(s.containers, containerID)
+	s.containersMu.Unlock()
+
+	// Delete from database
+	if err := s.containerRepo.Remove(ctx, containerID, playerID); err != nil {
+		return fmt.Errorf("failed to delete container from database: %w", err)
+	}
+
+	return nil
 }
 
 // Container registration

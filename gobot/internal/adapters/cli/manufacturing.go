@@ -217,6 +217,7 @@ func newManufacturingStartCommand() *cobra.Command {
 	var systemSymbol string
 	var minPrice int
 	var maxWorkers int
+	var maxPipelines int
 	var minBalance int
 	var dryRun bool
 	var limit int
@@ -280,7 +281,7 @@ Examples:
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 
-			result, err := client.StartParallelManufacturingCoordinator(ctx, systemSymbol, playerID, minPrice, maxWorkers, minBalance)
+			result, err := client.StartParallelManufacturingCoordinator(ctx, systemSymbol, playerID, minPrice, maxWorkers, maxPipelines, minBalance)
 			if err != nil {
 				return fmt.Errorf("failed to start manufacturing coordinator: %w", err)
 			}
@@ -292,6 +293,7 @@ Examples:
 			fmt.Printf("System:         %s\n", result.SystemSymbol)
 			fmt.Printf("Min Price:      %d\n", result.MinPrice)
 			fmt.Printf("Max Workers:    %d\n", result.MaxWorkers)
+			fmt.Printf("Max Pipelines:  %d\n", result.MaxPipelines)
 			if result.MinBalance > 0 {
 				fmt.Printf("Min Balance:    %d\n", result.MinBalance)
 			}
@@ -312,6 +314,7 @@ Examples:
 	cmd.Flags().StringVar(&systemSymbol, "system", "", "System symbol to manufacture in (required)")
 	cmd.Flags().IntVar(&minPrice, "min-price", 1000, "Minimum purchase price threshold for opportunities")
 	cmd.Flags().IntVar(&maxWorkers, "max-workers", 5, "Maximum parallel manufacturing workers")
+	cmd.Flags().IntVar(&maxPipelines, "max-pipelines", 3, "Maximum concurrent manufacturing pipelines/opportunities")
 	cmd.Flags().IntVar(&minBalance, "min-balance", 0, "Minimum credit balance to maintain (0 = no limit)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview planned tasks without executing")
 	cmd.Flags().IntVar(&limit, "limit", 3, "Maximum opportunities to plan in dry-run mode")
