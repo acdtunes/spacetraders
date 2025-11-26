@@ -190,7 +190,7 @@ export interface ApiResponse<T> {
 }
 
 // Bot operation types
-export type OperationType = 'scout-markets' | 'trade' | 'mine' | 'transport' | 'contract' | 'factory' | 'shipyard' | 'arbitrage' | 'manufacturing' | 'idle';
+export type OperationType = 'scout-markets' | 'trade' | 'mine' | 'transport' | 'contract' | 'factory' | 'shipyard' | 'arbitrage' | 'manufacturing' | 'manual' | 'idle';
 export type AssignmentStatus = 'active' | 'idle' | 'stale';
 
 export interface ShipAssignment {

@@ -121,7 +121,7 @@ router.get('/assignments', async (req, res) => {
             } else if (assignment.container_type === 'ARBITRAGE_COORDINATOR' ||
                        assignment.container_type === 'ARBITRAGE_WORKER') {
               operation = 'arbitrage';
-            } else if (assignment.container_type === 'MANUFACTURING_WORKER') {
+            } else if (assignment.container_type === 'MANUFACTURING_TASK_WORKER') {
               operation = 'manufacturing';
             }
 
@@ -183,7 +183,7 @@ router.get('/assignments', async (req, res) => {
         } else if (row.container_type === 'ARBITRAGE_COORDINATOR' ||
                    row.container_type === 'ARBITRAGE_WORKER') {
           operation = 'arbitrage';
-        } else if (row.container_type === 'MANUFACTURING_WORKER') {
+        } else if (row.container_type === 'MANUFACTURING_TASK_WORKER') {
           operation = 'manufacturing';
         }
 
@@ -273,7 +273,7 @@ router.get('/assignments/:shipSymbol', async (req, res) => {
       } else if (assignment.container_type === 'ARBITRAGE_COORDINATOR' ||
                  assignment.container_type === 'ARBITRAGE_WORKER') {
         operation = 'arbitrage';
-      } else if (assignment.container_type === 'MANUFACTURING_WORKER') {
+      } else if (assignment.container_type === 'MANUFACTURING_TASK_WORKER') {
         operation = 'manufacturing';
       }
 
@@ -1063,11 +1063,12 @@ router.get('/ledger/profit-loss-by-operation', async (req, res) => {
 
     // Get breakdown by operation type and category
     // Normalize operation_type (e.g., manufacturing_arbitrage -> manufacturing)
+    // Use NULLIF to convert empty strings to NULL, then COALESCE to 'unassigned'
     const operationBreakdownResult = await client.query(`
       SELECT
         CASE
           WHEN operation_type = 'manufacturing_arbitrage' THEN 'manufacturing'
-          ELSE COALESCE(operation_type, 'unassigned')
+          ELSE COALESCE(NULLIF(operation_type, ''), 'unassigned')
         END as operation_type,
         category,
         SUM(amount) as total,
@@ -1076,7 +1077,7 @@ router.get('/ledger/profit-loss-by-operation', async (req, res) => {
       WHERE ${whereClause}
       GROUP BY CASE
           WHEN operation_type = 'manufacturing_arbitrage' THEN 'manufacturing'
-          ELSE COALESCE(operation_type, 'unassigned')
+          ELSE COALESCE(NULLIF(operation_type, ''), 'unassigned')
         END, category
       ORDER BY operation_type, category
     `, params);

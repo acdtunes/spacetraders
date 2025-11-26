@@ -43,6 +43,10 @@ export function ProfitLossPanel() {
   };
 
   const formatOperationName = (operation: string) => {
+    // Handle empty or unassigned operations
+    if (!operation || operation.trim() === '' || operation === 'unassigned') {
+      return 'Unassigned';
+    }
     // Capitalize first letter of each word
     return operation
       .split('_')
