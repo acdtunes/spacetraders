@@ -17,10 +17,12 @@ type SupplyMonitor struct {
 	marketRepo       market.MarketRepository
 	factoryTracker   *manufacturing.FactoryStateTracker
 	factoryStateRepo manufacturing.FactoryStateRepository
+	pipelineRepo     manufacturing.PipelineRepository // For looking up pipeline sell_market
 	taskQueue        *TaskQueue
 	taskRepo         manufacturing.TaskRepository
 	pollInterval     time.Duration
 	playerID         int
+	taskReadyChan    chan<- struct{} // Optional: notifies coordinator when tasks become ready
 }
 
 // NewSupplyMonitor creates a new supply monitor
@@ -28,6 +30,7 @@ func NewSupplyMonitor(
 	marketRepo market.MarketRepository,
 	factoryTracker *manufacturing.FactoryStateTracker,
 	factoryStateRepo manufacturing.FactoryStateRepository,
+	pipelineRepo manufacturing.PipelineRepository,
 	taskQueue *TaskQueue,
 	taskRepo manufacturing.TaskRepository,
 	pollInterval time.Duration,
@@ -37,10 +40,29 @@ func NewSupplyMonitor(
 		marketRepo:       marketRepo,
 		factoryTracker:   factoryTracker,
 		factoryStateRepo: factoryStateRepo,
+		pipelineRepo:     pipelineRepo,
 		taskQueue:        taskQueue,
 		taskRepo:         taskRepo,
 		pollInterval:     pollInterval,
 		playerID:         playerID,
+	}
+}
+
+// SetTaskReadyChannel sets the channel for notifying when tasks become ready.
+// This enables event-driven task assignment instead of polling.
+func (m *SupplyMonitor) SetTaskReadyChannel(ch chan<- struct{}) {
+	m.taskReadyChan = ch
+}
+
+// notifyTaskReady sends a non-blocking notification that tasks are ready
+func (m *SupplyMonitor) notifyTaskReady() {
+	if m.taskReadyChan == nil {
+		return
+	}
+	// Non-blocking send - if coordinator is busy, it will pick up tasks on next event
+	select {
+	case m.taskReadyChan <- struct{}{}:
+	default:
 	}
 }
 
@@ -195,11 +217,12 @@ func (m *SupplyMonitor) markCollectTasksReady(ctx context.Context, factory *manu
 	marked := 0
 
 	for _, task := range tasks {
-		// Find COLLECT tasks for this factory output
-		if task.TaskType() == manufacturing.TaskTypeCollect &&
+		// Find COLLECT_SELL tasks for this factory output
+		isCollectTask := task.TaskType() == manufacturing.TaskTypeCollectSell &&
 			task.FactorySymbol() == factory.FactorySymbol() &&
-			task.Good() == factory.OutputGood() {
+			task.Good() == factory.OutputGood()
 
+		if isCollectTask {
 			if task.Status() == manufacturing.TaskStatusPending {
 				hasPendingCollect = true
 
@@ -248,74 +271,90 @@ func (m *SupplyMonitor) markCollectTasksReady(ctx context.Context, factory *manu
 		"output":       factory.OutputGood(),
 		"tasks_marked": marked,
 	})
+
+	// Notify coordinator that tasks are ready for assignment
+	if marked > 0 {
+		m.notifyTaskReady()
+	}
 }
 
-// createNewCollectSellTasks creates new COLLECT + SELL tasks for a factory that's ready
-// but has no pending COLLECT task (previous one completed and supply is ABUNDANT again)
+// createNewCollectSellTasks creates a new atomic COLLECT_SELL task for a factory that's ready
+// but has no pending COLLECT task (previous one completed and supply is ABUNDANT again).
+// Uses atomic task to prevent "orphaned cargo" bug where one ship collects and another sells.
 func (m *SupplyMonitor) createNewCollectSellTasks(ctx context.Context, factory *manufacturing.FactoryState) {
 	logger := common.LoggerFromContext(ctx)
 
-	// Find the best sell market (best price/activity for the good)
-	sellMarket, err := m.findBestSellMarket(ctx, factory.FactorySymbol(), factory.OutputGood())
-	if err != nil {
-		logger.Log("WARN", "Failed to find sell market for new collection", map[string]interface{}{
-			"factory": factory.FactorySymbol(),
-			"output":  factory.OutputGood(),
-			"error":   err.Error(),
-		})
-		return
+	// CRITICAL: Use the pipeline's sell_market instead of selecting a new one
+	// This ensures we use the closest market selected at pipeline creation time
+	// and avoids opportunity cost of ships travelling far
+	var sellMarket string
+	if m.pipelineRepo != nil {
+		pipeline, err := m.pipelineRepo.FindByID(ctx, factory.PipelineID())
+		if err != nil {
+			logger.Log("WARN", "Failed to load pipeline for sell market lookup", map[string]interface{}{
+				"factory":  factory.FactorySymbol(),
+				"output":   factory.OutputGood(),
+				"pipeline": factory.PipelineID(),
+				"error":    err.Error(),
+			})
+			return
+		}
+		if pipeline != nil {
+			sellMarket = pipeline.SellMarket()
+		}
 	}
 
-	// Create COLLECT task (immediately ready since supply is HIGH/ABUNDANT)
-	collectTask := manufacturing.NewCollectTask(
+	// Fallback to finding best market if pipeline lookup failed
+	if sellMarket == "" {
+		var err error
+		sellMarket, err = m.findBestSellMarket(ctx, factory.FactorySymbol(), factory.OutputGood())
+		if err != nil {
+			logger.Log("WARN", "Failed to find sell market for new collection", map[string]interface{}{
+				"factory": factory.FactorySymbol(),
+				"output":  factory.OutputGood(),
+				"error":   err.Error(),
+			})
+			return
+		}
+	}
+
+	// Create atomic COLLECT_SELL task (same ship collects AND sells)
+	// Immediately ready since supply is HIGH/ABUNDANT
+	collectSellTask := manufacturing.NewCollectSellTask(
 		factory.PipelineID(),
 		factory.PlayerID(),
 		factory.OutputGood(),
-		factory.FactorySymbol(),
-		nil, // No dependencies - this is a follow-up collection
+		factory.FactorySymbol(), // Where to collect from
+		sellMarket,              // Where to sell to
+		nil,                     // No dependencies - this is a follow-up collection
 	)
-	if err := collectTask.MarkReady(); err != nil {
-		logger.Log("WARN", "Failed to mark new COLLECT task ready", map[string]interface{}{
+	if err := collectSellTask.MarkReady(); err != nil {
+		logger.Log("WARN", "Failed to mark new COLLECT_SELL task ready", map[string]interface{}{
 			"error": err.Error(),
 		})
 		return
 	}
 
-	// Create SELL task (depends on COLLECT)
-	sellTask := manufacturing.NewSellTask(
-		factory.PipelineID(),
-		factory.PlayerID(),
-		factory.OutputGood(),
-		sellMarket,
-		[]string{collectTask.ID()},
-	)
-
-	// Persist COLLECT task
-	if err := m.taskRepo.Create(ctx, collectTask); err != nil {
-		logger.Log("WARN", "Failed to persist new COLLECT task", map[string]interface{}{
+	// Persist task
+	if err := m.taskRepo.Create(ctx, collectSellTask); err != nil {
+		logger.Log("WARN", "Failed to persist new COLLECT_SELL task", map[string]interface{}{
 			"error": err.Error(),
 		})
 		return
 	}
 
-	// Persist SELL task
-	if err := m.taskRepo.Create(ctx, sellTask); err != nil {
-		logger.Log("WARN", "Failed to persist new SELL task", map[string]interface{}{
-			"error": err.Error(),
-		})
-		return
-	}
+	// Add to queue
+	m.taskQueue.Enqueue(collectSellTask)
 
-	// Add COLLECT to queue (SELL will be added when COLLECT completes)
-	m.taskQueue.Enqueue(collectTask)
-
-	logger.Log("INFO", "Created new COLLECT + SELL tasks for repeated collection", map[string]interface{}{
-		"factory":      factory.FactorySymbol(),
-		"output":       factory.OutputGood(),
-		"sell_market":  sellMarket,
-		"collect_task": collectTask.ID(),
-		"sell_task":    sellTask.ID(),
+	logger.Log("INFO", "Created new COLLECT_SELL task for repeated collection (atomic)", map[string]interface{}{
+		"factory":     factory.FactorySymbol(),
+		"output":      factory.OutputGood(),
+		"sell_market": sellMarket,
+		"task_id":     collectSellTask.ID(),
 	})
+
+	// Notify coordinator that tasks are ready for assignment
+	m.notifyTaskReady()
 }
 
 // findBestSellMarket finds the best market to sell the collected good.

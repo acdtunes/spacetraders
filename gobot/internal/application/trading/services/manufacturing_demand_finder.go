@@ -6,6 +6,7 @@ import (
 	"sort"
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 
@@ -101,7 +102,7 @@ func (f *ManufacturingDemandFinder) FindHighDemandManufacturables(
 	}
 
 	// Step 2: Build index of high-demand goods
-	// Map: good -> best import opportunity (highest purchase price)
+	// Map: good -> ALL eligible import markets (we'll select based on distance later)
 	type demandEntry struct {
 		good           string
 		waypointSymbol string
@@ -109,7 +110,7 @@ func (f *ManufacturingDemandFinder) FindHighDemandManufacturables(
 		activity       string
 		supply         string
 	}
-	demandIndex := make(map[string]*demandEntry)
+	demandIndex := make(map[string][]*demandEntry) // Changed to slice to track ALL markets
 
 	for _, waypointSymbol := range marketWaypoints {
 		marketData, err := f.marketRepo.GetMarketData(ctx, waypointSymbol, playerID)
@@ -166,43 +167,74 @@ func (f *ManufacturingDemandFinder) FindHighDemandManufacturables(
 				continue // Skip markets that already have enough supply
 			}
 
-			// Track best price for this good
-			existing := demandIndex[goodSymbol]
-			if existing == nil || purchasePrice > existing.purchasePrice {
-				demandIndex[goodSymbol] = &demandEntry{
-					good:           goodSymbol,
-					waypointSymbol: waypointSymbol,
-					purchasePrice:  purchasePrice,
-					activity:       activity,
-					supply:         supply,
-				}
-			}
+			// Track ALL eligible markets for this good (we'll select by distance later)
+			demandIndex[goodSymbol] = append(demandIndex[goodSymbol], &demandEntry{
+				good:           goodSymbol,
+				waypointSymbol: waypointSymbol,
+				purchasePrice:  purchasePrice,
+				activity:       activity,
+				supply:         supply,
+			})
 		}
 	}
 
 	// Step 3: Build opportunities with dependency trees
+	// For each good, select the CLOSEST sell market to minimize cycle time
 	var opportunities []*trading.ManufacturingOpportunity
 
-	for _, entry := range demandIndex {
-		// Get waypoint for the sell market
-		sellMarket, err := f.waypointProvider.GetWaypoint(ctx, entry.waypointSymbol, systemSymbol, playerID)
-		if err != nil {
-			continue // Skip if waypoint lookup fails
+	for good, entries := range demandIndex {
+		if len(entries) == 0 {
+			continue
 		}
 
-		// Build dependency tree
-		tree, err := f.resolver.BuildDependencyTree(ctx, entry.good, systemSymbol, playerID)
+		// Build dependency tree first to find factory location
+		tree, err := f.resolver.BuildDependencyTree(ctx, good, systemSymbol, playerID)
 		if err != nil {
 			continue // Skip if tree building fails (circular deps, unknown goods)
 		}
 
-		// Create opportunity
+		// Find factory waypoint (export market for this good)
+		factoryWaypoint, err := f.findFactoryWaypoint(ctx, good, systemSymbol, playerID)
+		if err != nil {
+			continue // Skip if no factory found
+		}
+
+		// Select the closest sell market to minimize cycle time
+		var bestEntry *demandEntry
+		var bestDistance float64 = -1
+
+		for _, entry := range entries {
+			sellWaypoint, err := f.waypointProvider.GetWaypoint(ctx, entry.waypointSymbol, systemSymbol, playerID)
+			if err != nil {
+				continue
+			}
+
+			distance := factoryWaypoint.DistanceTo(sellWaypoint)
+
+			// Select closest market (first one, or closer than current best)
+			if bestDistance < 0 || distance < bestDistance {
+				bestDistance = distance
+				bestEntry = entry
+			}
+		}
+
+		if bestEntry == nil {
+			continue
+		}
+
+		// Get the selected sell market waypoint
+		sellMarket, err := f.waypointProvider.GetWaypoint(ctx, bestEntry.waypointSymbol, systemSymbol, playerID)
+		if err != nil {
+			continue
+		}
+
+		// Create opportunity with the closest market
 		opp, err := trading.NewManufacturingOpportunity(
-			entry.good,
+			bestEntry.good,
 			sellMarket,
-			entry.purchasePrice,
-			entry.activity,
-			entry.supply,
+			bestEntry.purchasePrice,
+			bestEntry.activity,
+			bestEntry.supply,
 			tree,
 		)
 		if err != nil {
@@ -230,6 +262,36 @@ func (f *ManufacturingDemandFinder) FindHighDemandManufacturables(
 func (f *ManufacturingDemandFinder) isManufacturable(good string) bool {
 	_, exists := f.supplyChainMap[good]
 	return exists
+}
+
+// findFactoryWaypoint finds the export market (factory) for a manufactured good
+func (f *ManufacturingDemandFinder) findFactoryWaypoint(
+	ctx context.Context,
+	good string,
+	systemSymbol string,
+	playerID int,
+) (*shared.Waypoint, error) {
+	// Get all markets to find the export market for this good
+	marketWaypoints, err := f.marketRepo.FindAllMarketsInSystem(ctx, systemSymbol, playerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get markets: %w", err)
+	}
+
+	for _, waypointSymbol := range marketWaypoints {
+		marketData, err := f.marketRepo.GetMarketData(ctx, waypointSymbol, playerID)
+		if err != nil || marketData == nil {
+			continue
+		}
+
+		for _, tradeGood := range marketData.TradeGoods() {
+			if tradeGood.Symbol() == good && tradeGood.TradeType() == market.TradeTypeExport {
+				// Found the export market (factory) for this good
+				return f.waypointProvider.GetWaypoint(ctx, waypointSymbol, systemSymbol, playerID)
+			}
+		}
+	}
+
+	return nil, fmt.Errorf("no export market found for %s", good)
 }
 
 // GetManufacturableGoods returns all goods that can be manufactured

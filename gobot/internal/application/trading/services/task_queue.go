@@ -168,7 +168,7 @@ func (q *TaskQueue) MarkCollectTasksReady(factorySymbol string, outputGood strin
 
 	marked := 0
 	for _, task := range q.taskByID {
-		if task.TaskType() == manufacturing.TaskTypeCollect &&
+		if task.TaskType() == manufacturing.TaskTypeCollectSell &&
 			task.FactorySymbol() == factorySymbol &&
 			task.Good() == outputGood &&
 			task.Status() == manufacturing.TaskStatusPending {

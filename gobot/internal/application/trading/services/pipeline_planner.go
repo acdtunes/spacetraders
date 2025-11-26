@@ -12,13 +12,14 @@ import (
 )
 
 // PipelinePlanner converts manufacturing opportunities into executable pipelines.
-// It walks the supply chain dependency tree and creates tasks with proper dependencies.
+// It walks the supply chain dependency tree and creates atomic tasks with proper dependencies.
 //
-// The planner creates the following task types:
-//   - ACQUIRE: Buy raw material from export market (leaf nodes)
-//   - DELIVER: Deliver material to factory (after ACQUIRE)
-//   - COLLECT: Buy produced good from factory (after all DELIVERs)
-//   - SELL: Sell final product at demand market (after final COLLECT)
+// The planner creates the following ATOMIC task types (same ship does full operation):
+//   - ACQUIRE_DELIVER: Buy from export market AND deliver to factory (raw materials)
+//   - COLLECT_SELL: Collect from factory AND sell/deliver to destination (produced goods)
+//
+// This atomic approach prevents the "orphaned cargo" bug where a ship buys goods
+// but a different ship gets assigned to deliver them.
 type PipelinePlanner struct {
 	marketLocator *goodsServices.MarketLocator
 }
@@ -40,8 +41,8 @@ type PlanningContext struct {
 	tasksByGood  map[string]*manufacturing.ManufacturingTask // Last task that produces each good
 }
 
-// CreatePipeline converts a ManufacturingOpportunity into a pipeline with tasks.
-// It walks the dependency tree and creates the appropriate task graph.
+// CreatePipeline converts a ManufacturingOpportunity into a pipeline with atomic tasks.
+// It walks the dependency tree and creates tasks that combine related operations.
 //
 // Returns:
 //   - pipeline: The manufacturing pipeline entity
@@ -75,21 +76,19 @@ func (p *PipelinePlanner) CreatePipeline(
 	// Factory states to create
 	factoryStates := make([]*manufacturing.FactoryState, 0)
 
-	// Walk the dependency tree and create tasks
-	finalCollectTaskID, err := p.createTasksFromTree(planCtx, opp.DependencyTree(), &factoryStates)
+	// The root node is always FABRICATE - it produces the final good
+	// Its destination is the sell market (not another factory)
+	sellMarket := opp.SellMarket().Symbol
+
+	// Walk the dependency tree and create atomic tasks
+	// Pass the sell market as the destination for the final product
+	finalTaskID, err := p.createTasksFromTreeAtomic(planCtx, opp.DependencyTree(), sellMarket, true, &factoryStates)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to create tasks from tree: %w", err)
 	}
 
-	// Create final SELL task (depends on final COLLECT)
-	sellTask := manufacturing.NewSellTask(
-		pipeline.ID(),
-		playerID,
-		opp.Good(),
-		opp.SellMarket().Symbol,
-		[]string{finalCollectTaskID},
-	)
-	planCtx.tasks = append(planCtx.tasks, sellTask)
+	// The final task is already a COLLECT_SELL that handles both collect and sell
+	_ = finalTaskID
 
 	// Add all tasks to pipeline
 	for _, task := range planCtx.tasks {
@@ -101,22 +100,29 @@ func (p *PipelinePlanner) CreatePipeline(
 	return pipeline, planCtx.tasks, factoryStates, nil
 }
 
-// createTasksFromTree recursively creates tasks from the supply chain tree.
-// Returns the ID of the task that produces this node's good.
-func (p *PipelinePlanner) createTasksFromTree(
+// createTasksFromTreeAtomic creates atomic tasks from the supply chain tree.
+// Each task combines acquisition/collection with delivery, ensuring same ship does both.
+//
+// Parameters:
+//   - destination: where to deliver/sell the produced good (factory or market waypoint)
+//   - isFinalProduct: true if this is the root (final product goes to sell market)
+//
+// Returns the ID of the final task for this subtree.
+func (p *PipelinePlanner) createTasksFromTreeAtomic(
 	planCtx *PlanningContext,
 	node *goods.SupplyChainNode,
+	destination string,
+	isFinalProduct bool,
 	factoryStates *[]*manufacturing.FactoryState,
 ) (string, error) {
 	if node.AcquisitionMethod == goods.AcquisitionBuy {
-		// Leaf node: Create ACQUIRE task (no DELIVER since we're buying directly)
-		return p.createAcquireTask(planCtx, node)
+		// Leaf node: Create ACQUIRE_DELIVER (buy from source AND deliver to destination)
+		return p.createAcquireDeliverTask(planCtx, node, destination)
 	}
 
-	// FABRICATE node: Create tasks for all children first
-	childTaskIDs := make([]string, 0, len(node.Children))
-	deliverTaskIDs := make([]string, 0, len(node.Children))
-	requiredInputs := make([]string, 0, len(node.Children))
+	// FABRICATE node: This node produces a good at a factory
+	// 1. Process all children (they deliver inputs to THIS factory)
+	// 2. Create COLLECT_SELL task (collect from this factory, deliver to destination)
 
 	// Find factory location for this good
 	factoryMarket, err := p.marketLocator.FindExportMarket(
@@ -129,40 +135,21 @@ func (p *PipelinePlanner) createTasksFromTree(
 		return "", fmt.Errorf("failed to find factory for %s: %w", node.Good, err)
 	}
 
+	// Process all children - they deliver their goods to THIS factory
+	childTaskIDs := make([]string, 0, len(node.Children))
+	requiredInputs := make([]string, 0, len(node.Children))
+
 	for _, child := range node.Children {
-		// Recursively create tasks for child
-		childTaskID, err := p.createTasksFromTree(planCtx, child, factoryStates)
+		// Child delivers to THIS factory (not the final destination)
+		childTaskID, err := p.createTasksFromTreeAtomic(planCtx, child, factoryMarket.WaypointSymbol, false, factoryStates)
 		if err != nil {
 			return "", err
 		}
 		childTaskIDs = append(childTaskIDs, childTaskID)
 		requiredInputs = append(requiredInputs, child.Good)
-
-		// Check if we need a DELIVER task
-		// If child was FABRICATE, we got a COLLECT task ID - need DELIVER after that
-		// If child was BUY (ACQUIRE), ship has goods - need DELIVER after that
-		deliverTask := manufacturing.NewDeliverTask(
-			planCtx.pipeline.ID(),
-			planCtx.playerID,
-			child.Good,
-			factoryMarket.WaypointSymbol,
-			[]string{childTaskID}, // Depends on child completion
-		)
-		planCtx.tasks = append(planCtx.tasks, deliverTask)
-		deliverTaskIDs = append(deliverTaskIDs, deliverTask.ID())
 	}
 
-	// Create COLLECT task (depends on all deliveries + supply HIGH)
-	collectTask := manufacturing.NewCollectTask(
-		planCtx.pipeline.ID(),
-		planCtx.playerID,
-		node.Good,
-		factoryMarket.WaypointSymbol,
-		deliverTaskIDs, // Depends on all deliveries
-	)
-	planCtx.tasks = append(planCtx.tasks, collectTask)
-
-	// Create factory state for tracking
+	// Create factory state for tracking production
 	factoryState := manufacturing.NewFactoryState(
 		factoryMarket.WaypointSymbol,
 		node.Good,
@@ -172,16 +159,30 @@ func (p *PipelinePlanner) createTasksFromTree(
 	)
 	*factoryStates = append(*factoryStates, factoryState)
 
-	// Track that this task produces this good
-	planCtx.tasksByGood[node.Good] = collectTask
+	// Create COLLECT_SELL task: collect from this factory, sell/deliver to destination
+	// This atomic task waits for HIGH supply, collects, then delivers
+	collectSellTask := manufacturing.NewCollectSellTask(
+		planCtx.pipeline.ID(),
+		planCtx.playerID,
+		node.Good,
+		factoryMarket.WaypointSymbol, // Where to collect from
+		destination,                   // Where to sell/deliver to
+		childTaskIDs,                  // Depends on all input deliveries
+	)
+	planCtx.tasks = append(planCtx.tasks, collectSellTask)
 
-	return collectTask.ID(), nil
+	// Track that this task produces this good
+	planCtx.tasksByGood[node.Good] = collectSellTask
+
+	return collectSellTask.ID(), nil
 }
 
-// createAcquireTask creates an ACQUIRE task for a leaf node (raw material)
-func (p *PipelinePlanner) createAcquireTask(
+// createAcquireDeliverTask creates an atomic ACQUIRE_DELIVER task
+// that buys from source market AND delivers to factory in one operation.
+func (p *PipelinePlanner) createAcquireDeliverTask(
 	planCtx *PlanningContext,
 	node *goods.SupplyChainNode,
+	factorySymbol string,
 ) (string, error) {
 	// Find market to buy from
 	var sourceMarket string
@@ -202,12 +203,14 @@ func (p *PipelinePlanner) createAcquireTask(
 		sourceMarket = market.WaypointSymbol
 	}
 
-	// Create ACQUIRE task
-	task := manufacturing.NewAcquireTask(
+	// Create ACQUIRE_DELIVER task: buy from source, deliver to factory
+	task := manufacturing.NewAcquireDeliverTask(
 		planCtx.pipeline.ID(),
 		planCtx.playerID,
 		node.Good,
-		sourceMarket,
+		sourceMarket,    // Where to buy from
+		factorySymbol,   // Where to deliver to
+		nil,             // No dependencies for raw material acquisition
 	)
 	planCtx.tasks = append(planCtx.tasks, task)
 
@@ -216,6 +219,7 @@ func (p *PipelinePlanner) createAcquireTask(
 
 	return task.ID(), nil
 }
+
 
 // CalculateTotalTasks counts total tasks that would be created for a supply chain
 func (p *PipelinePlanner) CalculateTotalTasks(tree *goods.SupplyChainNode) int {
@@ -265,15 +269,15 @@ func ValidatePipeline(pipeline *manufacturing.ManufacturingPipeline) error {
 		return fmt.Errorf("pipeline has no tasks")
 	}
 
-	// Check that there's exactly one SELL task
+	// Check that there's at least one COLLECT_SELL task (handles both collection and final sale)
 	sellCount := 0
 	for _, task := range pipeline.Tasks() {
-		if task.TaskType() == manufacturing.TaskTypeSell {
+		if task.TaskType() == manufacturing.TaskTypeCollectSell {
 			sellCount++
 		}
 	}
-	if sellCount != 1 {
-		return fmt.Errorf("pipeline should have exactly 1 SELL task, has %d", sellCount)
+	if sellCount == 0 {
+		return fmt.Errorf("pipeline should have at least 1 COLLECT_SELL task")
 	}
 
 	// Check that all tasks belong to this pipeline
