@@ -345,6 +345,9 @@ func (h *CargoTransactionHandler) recordCargoTransaction(
 		recordCmd.RelatedEntityType = "container"
 		recordCmd.RelatedEntityID = opCtx.ContainerID
 		recordCmd.OperationType = opCtx.NormalizedOperationType()
+	} else {
+		// No operation context - mark as manual transaction
+		recordCmd.OperationType = "manual"
 	}
 
 	// Record transaction via mediator

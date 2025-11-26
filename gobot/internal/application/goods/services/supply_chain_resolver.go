@@ -71,11 +71,14 @@ func (r *SupplyChainResolver) Strategy() AcquisitionStrategy {
 // each good should be purchased (BUY) or manufactured (FABRICATE).
 //
 // The algorithm:
-// 1. Check if the good is available in any market → mark as BUY
-// 2. If not available, check if it can be fabricated from the supply chain map
-// 3. Recursively build trees for all required inputs
-// 4. Detect circular dependencies
-// 5. Populate market activity and supply levels for BUY nodes
+// 1. Find the factory that produces the target good
+// 2. If factory has HIGH/ABUNDANT supply → create collect-only node (no children)
+// 3. Otherwise, build full dependency tree:
+//    a. Check if child goods are available in markets → mark as BUY
+//    b. If not available, check if can be fabricated from supply chain map
+//    c. Recursively build trees for all required inputs
+//    d. Detect circular dependencies
+//    e. Populate market activity and supply levels for BUY nodes
 //
 // Returns the root node of the dependency tree.
 func (r *SupplyChainResolver) BuildDependencyTree(
@@ -84,8 +87,27 @@ func (r *SupplyChainResolver) BuildDependencyTree(
 	systemSymbol string,
 	playerID int,
 ) (*goods.SupplyChainNode, error) {
+	// Step 1: Find the factory for the target good
+	factory, err := r.findFactory(ctx, targetGood, systemSymbol, playerID)
+	if err != nil {
+		return nil, fmt.Errorf("error finding factory for %s: %w", targetGood, err)
+	}
+	if factory == nil {
+		return nil, fmt.Errorf("no factory in system %s exports %s", systemSymbol, targetGood)
+	}
+
+	// Step 2: Check factory supply - if HIGH/ABUNDANT, skip manufacturing
+	// Factory already has supply ready to collect - creates a 2-task pipeline (COLLECT → SELL)
+	if factory.Supply == "HIGH" || factory.Supply == "ABUNDANT" {
+		node := goods.NewSupplyChainNode(targetGood, goods.AcquisitionFabricate)
+		node.WaypointSymbol = factory.WaypointSymbol
+		node.SupplyLevel = factory.Supply
+		// No children = collect-only pipeline
+		return node, nil
+	}
+
+	// Step 3: Factory supply is low - build full manufacturing tree
 	visited := make(map[string]bool)
-	// Force fabrication for the target good (root), even if available in markets
 	return r.buildTreeRecursive(ctx, targetGood, systemSymbol, playerID, visited, []string{}, true)
 }
 
