@@ -44,6 +44,24 @@ const (
 
 	// TaskStatusFailed - Failed (may retry)
 	TaskStatusFailed TaskStatus = "FAILED"
+
+	// TaskStatusCancelled - Cancelled (pipeline recycled)
+	TaskStatusCancelled TaskStatus = "CANCELLED"
+)
+
+// Task priority constants
+// Higher priority tasks are processed first, but aging prevents starvation
+const (
+	// PriorityAcquireDeliver - Higher base priority because deliveries feed factories
+	// Without deliveries, factories can't produce and COLLECT_SELL tasks will fail
+	PriorityAcquireDeliver = 10
+
+	// PriorityCollectSell - Lower base priority, but aging will boost it over time
+	// This prevents starvation while still prioritizing factory inputs
+	PriorityCollectSell = 0
+
+	// PriorityLiquidate - High priority to recover investment from orphaned cargo
+	PriorityLiquidate = 100
 )
 
 const (
@@ -141,9 +159,10 @@ func NewLiquidationTask(playerID int, shipSymbol string, good string, quantity i
 // This replaces the separate ACQUIRE + DELIVER pattern to ensure the same ship does both operations.
 func NewAcquireDeliverTask(pipelineID string, playerID int, good string, sourceMarket string, factorySymbol string, dependsOn []string) *ManufacturingTask {
 	task := NewManufacturingTask(TaskTypeAcquireDeliver, good, pipelineID, playerID)
-	task.sourceMarket = sourceMarket  // Where to buy from
+	task.sourceMarket = sourceMarket   // Where to buy from
 	task.factorySymbol = factorySymbol // Where to deliver to
 	task.dependsOn = dependsOn
+	task.priority = PriorityAcquireDeliver // Higher priority - feeds factories
 	return task
 }
 
@@ -154,6 +173,7 @@ func NewCollectSellTask(pipelineID string, playerID int, good string, factorySym
 	task.factorySymbol = factorySymbol // Where to collect from
 	task.targetMarket = targetMarket   // Where to sell
 	task.dependsOn = dependsOn
+	task.priority = PriorityCollectSell // Lower priority, aging prevents starvation
 	return task
 }
 
@@ -350,6 +370,7 @@ func (t *ManufacturingTask) ResetForRetry() error {
 	t.errorMessage = ""
 	t.startedAt = nil
 	t.completedAt = nil
+	t.readyAt = nil // Reset so MarkReady() sets fresh timestamp for fair aging
 	return nil
 }
 
@@ -365,6 +386,9 @@ func (t *ManufacturingTask) RollbackAssignment() error {
 	}
 	t.status = TaskStatusReady
 	t.assignedShip = ""
+	// Reset readyAt for fair aging - assignment failure shouldn't give priority bonus
+	now := time.Now()
+	t.readyAt = &now
 	return nil
 }
 
@@ -387,6 +411,45 @@ func (t *ManufacturingTask) RollbackExecution() error {
 	// The coordinator will use this to re-assign the same ship.
 	// t.assignedShip = "" // REMOVED - preserve ship for recovery
 	t.startedAt = nil
+	// Reset readyAt to prevent accumulating aging priority after recovery
+	// Without this, recovered tasks would have artificially high priority
+	now := time.Now()
+	t.readyAt = &now
+	return nil
+}
+
+// ResetToPending returns task from READY back to PENDING state.
+// Used when market conditions change (e.g., sell market becomes saturated) and we want
+// the SupplyMonitor to re-evaluate the task later when conditions improve.
+func (t *ManufacturingTask) ResetToPending() error {
+	if t.status != TaskStatusReady {
+		return &ErrInvalidTaskTransition{
+			TaskID:      t.id,
+			From:        t.status,
+			To:          TaskStatusPending,
+			Description: "can only reset to pending from READY state",
+		}
+	}
+	t.status = TaskStatusPending
+	t.readyAt = nil
+	return nil
+}
+
+// Cancel marks the task as cancelled (used when pipeline is recycled).
+// Can only cancel PENDING or READY tasks - tasks that are executing should complete or fail.
+func (t *ManufacturingTask) Cancel(reason string) error {
+	if t.status != TaskStatusPending && t.status != TaskStatusReady {
+		return &ErrInvalidTaskTransition{
+			TaskID:      t.id,
+			From:        t.status,
+			To:          TaskStatusCancelled,
+			Description: "can only cancel PENDING or READY tasks",
+		}
+	}
+	t.status = TaskStatusCancelled
+	t.errorMessage = reason
+	now := time.Now()
+	t.completedAt = &now
 	return nil
 }
 
@@ -413,9 +476,9 @@ func (t *ManufacturingTask) CanRetry() bool {
 	return t.status == TaskStatusFailed && t.retryCount < t.maxRetries
 }
 
-// IsTerminal returns true if the task is in a terminal state (COMPLETED or FAILED with no retries)
+// IsTerminal returns true if the task is in a terminal state (COMPLETED, CANCELLED, or FAILED with no retries)
 func (t *ManufacturingTask) IsTerminal() bool {
-	if t.status == TaskStatusCompleted {
+	if t.status == TaskStatusCompleted || t.status == TaskStatusCancelled {
 		return true
 	}
 	if t.status == TaskStatusFailed && !t.CanRetry() {

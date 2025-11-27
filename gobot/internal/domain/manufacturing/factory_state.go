@@ -233,6 +233,18 @@ func (f *FactoryState) GetDeliveryProgress() (int, int) {
 	return delivered, len(f.requiredInputs)
 }
 
+// HasReceivedAnyDelivery returns true if at least one ingredient has been delivered.
+// Used by streaming execution model to prevent premature collection before
+// any production has occurred.
+func (f *FactoryState) HasReceivedAnyDelivery() bool {
+	for _, state := range f.deliveredInputs {
+		if state.Delivered {
+			return true
+		}
+	}
+	return false
+}
+
 // String provides human-readable representation
 func (f *FactoryState) String() string {
 	delivered, total := f.GetDeliveryProgress()
