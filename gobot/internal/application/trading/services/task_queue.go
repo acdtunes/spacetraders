@@ -4,6 +4,7 @@ import (
 	"container/heap"
 	"context"
 	"sync"
+	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 )
@@ -28,6 +29,8 @@ func NewTaskQueue() *TaskQueue {
 }
 
 // Enqueue adds a task to the queue
+// If a task with the same ID already exists, it is replaced with the new task
+// to ensure the queue reflects the current task state from the database.
 func (q *TaskQueue) Enqueue(task *manufacturing.ManufacturingTask) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -37,9 +40,10 @@ func (q *TaskQueue) Enqueue(task *manufacturing.ManufacturingTask) {
 		return
 	}
 
-	// Avoid duplicates
+	// Remove existing task if present to update with new state
+	// This ensures the queue reflects the current task state from the database
 	if _, exists := q.taskByID[task.ID()]; exists {
-		return
+		q.removeByIDLocked(task.ID())
 	}
 
 	q.taskByID[task.ID()] = task
@@ -90,7 +94,8 @@ func (q *TaskQueue) Peek() *manufacturing.ManufacturingTask {
 	return q.tasks[0]
 }
 
-// GetReadyTasks returns all ready tasks sorted by priority (highest first)
+// GetReadyTasks returns all ready tasks sorted by effective priority (highest first)
+// Note: heap order != sorted order, so we must explicitly sort the results
 func (q *TaskQueue) GetReadyTasks() []*manufacturing.ManufacturingTask {
 	q.mu.RLock()
 	defer q.mu.RUnlock()
@@ -102,7 +107,46 @@ func (q *TaskQueue) GetReadyTasks() []*manufacturing.ManufacturingTask {
 		}
 	}
 
+	// Sort by effective priority (with aging) - highest first
+	// Heap order only guarantees index 0 is max, not full sort order
+	sortByEffectivePriority(result)
+
 	return result
+}
+
+// sortByEffectivePriority sorts tasks by effective priority (base + aging) in descending order
+func sortByEffectivePriority(tasks []*manufacturing.ManufacturingTask) {
+	// Use same priority calculation as heap Less() function
+	effectivePriority := func(task *manufacturing.ManufacturingTask) int {
+		basePriority := task.Priority()
+		readyAt := task.ReadyAt()
+		if readyAt == nil {
+			return basePriority
+		}
+		minutesWaiting := time.Since(*readyAt).Minutes()
+		if minutesWaiting < 0 {
+			minutesWaiting = 0
+		}
+		return basePriority + int(minutesWaiting*2)
+	}
+
+	// Sort descending by effective priority
+	for i := 0; i < len(tasks)-1; i++ {
+		for j := i + 1; j < len(tasks); j++ {
+			iPriority := effectivePriority(tasks[i])
+			jPriority := effectivePriority(tasks[j])
+			if jPriority > iPriority {
+				tasks[i], tasks[j] = tasks[j], tasks[i]
+			} else if jPriority == iPriority {
+				// Tiebreaker: earlier ready time
+				iReady := tasks[i].ReadyAt()
+				jReady := tasks[j].ReadyAt()
+				if iReady != nil && jReady != nil && jReady.Before(*iReady) {
+					tasks[i], tasks[j] = tasks[j], tasks[i]
+				}
+			}
+		}
+	}
 }
 
 // GetTask returns a task by ID
@@ -210,10 +254,17 @@ type taskHeap []*manufacturing.ManufacturingTask
 func (h taskHeap) Len() int { return len(h) }
 
 func (h taskHeap) Less(i, j int) bool {
-	// Higher priority comes first (max heap)
-	if h[i].Priority() != h[j].Priority() {
-		return h[i].Priority() > h[j].Priority()
+	// Calculate effective priority with aging to prevent starvation
+	// Formula: effective_priority = base_priority + (minutes_waiting * 2)
+	// This allows lower-priority tasks to eventually match higher-priority ones
+	iPriority := h.effectivePriority(h[i])
+	jPriority := h.effectivePriority(h[j])
+
+	// Higher effective priority comes first (max heap)
+	if iPriority != jPriority {
+		return iPriority > jPriority
 	}
+
 	// Tiebreaker: earlier ready time
 	iReady := h[i].ReadyAt()
 	jReady := h[j].ReadyAt()
@@ -222,6 +273,30 @@ func (h taskHeap) Less(i, j int) bool {
 	}
 	// Fallback: earlier created time
 	return h[i].CreatedAt().Before(h[j].CreatedAt())
+}
+
+// effectivePriority calculates priority with aging boost
+// Tasks waiting longer get priority boost to prevent starvation
+// Boost: +2 priority per minute waiting (COLLECT_SELL catches up to ACQUIRE_DELIVER after 5 min)
+func (h taskHeap) effectivePriority(task *manufacturing.ManufacturingTask) int {
+	basePriority := task.Priority()
+
+	// Calculate aging boost based on time since task became ready
+	readyAt := task.ReadyAt()
+	if readyAt == nil {
+		return basePriority
+	}
+
+	minutesWaiting := time.Since(*readyAt).Minutes()
+	if minutesWaiting < 0 {
+		minutesWaiting = 0
+	}
+
+	// +2 priority per minute waiting
+	// After 5 minutes, COLLECT_SELL (0) catches up to ACQUIRE_DELIVER (10)
+	agingBoost := int(minutesWaiting * 2)
+
+	return basePriority + agingBoost
 }
 
 func (h taskHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
