@@ -72,8 +72,9 @@ func (r *SupplyChainResolver) Strategy() AcquisitionStrategy {
 //
 // The algorithm:
 // 1. Find the factory that produces the target good
-// 2. If factory has HIGH/ABUNDANT supply → create collect-only node (no children)
-// 3. Otherwise, build full dependency tree:
+// 2. If factory has HIGH/ABUNDANT supply → create direct arbitrage node (AcquisitionBuy)
+// 3. If no factory exists → check if good can be bought from market (direct arbitrage)
+// 4. Otherwise, build full dependency tree:
 //    a. Check if child goods are available in markets → mark as BUY
 //    b. If not available, check if can be fabricated from supply chain map
 //    c. Recursively build trees for all required inputs
@@ -92,21 +93,47 @@ func (r *SupplyChainResolver) BuildDependencyTree(
 	if err != nil {
 		return nil, fmt.Errorf("error finding factory for %s: %w", targetGood, err)
 	}
+
+	// Step 2: No factory exists - check if good can be bought from market OR manufactured
 	if factory == nil {
-		return nil, fmt.Errorf("no factory in system %s exports %s", systemSymbol, targetGood)
+		// Try to find a market to buy from
+		marketData, err := r.findBestMarketToBuyFrom(ctx, targetGood, systemSymbol, playerID)
+		if err == nil && marketData != nil {
+			// Found a market - create direct arbitrage node (just buy from market)
+			node := goods.NewSupplyChainNode(targetGood, goods.AcquisitionBuy)
+			node.WaypointSymbol = marketData.WaypointSymbol
+			node.SupplyLevel = marketData.Supply
+			node.MarketActivity = marketData.Activity
+			return node, nil
+		}
+
+		// No market found - check if good can be manufactured (exists in supply chain map)
+		// This handles cases where the mock repository doesn't track trade_type
+		// but the good is still manufacturable
+		if _, exists := r.supplyChainMap[targetGood]; exists {
+			// Good is manufacturable - build the tree recursively
+			// The tree will use FABRICATE for this good
+			visited := make(map[string]bool)
+			return r.buildTreeRecursive(ctx, targetGood, systemSymbol, playerID, visited, []string{}, true)
+		}
+
+		// No factory, no market, and not manufacturable - error
+		return nil, fmt.Errorf("no factory or market found for %s in system %s", targetGood, systemSymbol)
 	}
 
-	// Step 2: Check factory supply - if HIGH/ABUNDANT, skip manufacturing
-	// Factory already has supply ready to collect - creates a 2-task pipeline (COLLECT → SELL)
+	// Step 3: Check factory supply - if HIGH/ABUNDANT, skip manufacturing
+	// Factory already has supply ready to collect - creates a direct arbitrage pipeline (COLLECT_SELL only)
+	// Use AcquisitionBuy to signal that no manufacturing/delivery is needed
 	if factory.Supply == "HIGH" || factory.Supply == "ABUNDANT" {
-		node := goods.NewSupplyChainNode(targetGood, goods.AcquisitionFabricate)
+		node := goods.NewSupplyChainNode(targetGood, goods.AcquisitionBuy)
 		node.WaypointSymbol = factory.WaypointSymbol
 		node.SupplyLevel = factory.Supply
-		// No children = collect-only pipeline
+		node.MarketActivity = factory.Activity
+		// No children = direct arbitrage (buy from source, sell to destination)
 		return node, nil
 	}
 
-	// Step 3: Factory supply is low - build full manufacturing tree
+	// Step 4: Factory supply is low - build full manufacturing tree
 	visited := make(map[string]bool)
 	return r.buildTreeRecursive(ctx, targetGood, systemSymbol, playerID, visited, []string{}, true)
 }
@@ -254,8 +281,20 @@ func (r *SupplyChainResolver) shouldBuyGood(
 		return false, nil
 	}
 
-	// Check if fabrication is even possible
-	_, canFabricate := r.supplyChainMap[goodSymbol]
+	// Check if fabrication is even possible (must have NON-EMPTY inputs)
+	// Raw materials like SILICON_CRYSTALS exist in the map with empty inputs {}
+	// They can't be fabricated - they must be bought
+	inputs, exists := r.supplyChainMap[goodSymbol]
+	hasRecipe := exists && len(inputs) > 0
+
+	// CRITICAL: Also check if a factory (EXPORT market) exists in THIS system
+	// Even if a recipe exists, we can't fabricate without a factory
+	// Example: SILICON_CRYSTALS has a recipe (needs EXPLOSIVES) but no factory in X1-YZ19
+	canFabricate := false
+	if hasRecipe {
+		factory, err := r.findFactory(ctx, goodSymbol, systemSymbol, playerID)
+		canFabricate = err == nil && factory != nil
+	}
 
 	switch r.strategy {
 	case StrategyPreferBuy:

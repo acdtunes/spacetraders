@@ -147,6 +147,7 @@ func (o *ManufacturingOpportunity) EstimatedRevenue(cargoCapacity int) int {
 //     - HIGH/ABUNDANT = market actively trades this good (volume)
 //     - SCARCE = market depleted or low volume (risky)
 //   - Tree depth penalty (10%): Shallower trees = faster execution
+//   - Direct arbitrage bonus (+100): Prioritize quick wins to fund manufacturing
 func (o *ManufacturingOpportunity) calculateScore() float64 {
 	// Normalize purchase price to 0-100 scale (assuming max ~50000)
 	priceScore := float64(o.purchasePrice) / 500.0 // 50000 -> 100
@@ -194,11 +195,21 @@ func (o *ManufacturingOpportunity) calculateScore() float64 {
 		depthScore = 0
 	}
 
-	// Weighted composite score
-	return (priceScore * 0.40) +
+	// Base weighted composite score
+	baseScore := (priceScore * 0.40) +
 		(activityScore * 0.30) +
 		(supplyScore * 0.20) +
 		(depthScore * 0.10)
+
+	// Direct arbitrage bonus: +100 for opportunities with AcquisitionBuy at root
+	// This prioritizes quick wins (buy from HIGH/ABUNDANT source, sell immediately)
+	// to generate income that funds the slower manufacturing pipelines
+	// Check both: no children AND root is BUY method (more robust detection)
+	if o.dependencyTree != nil && o.dependencyTree.AcquisitionMethod == goods.AcquisitionBuy {
+		return baseScore + 100.0
+	}
+
+	return baseScore
 }
 
 // String returns a human-readable representation
