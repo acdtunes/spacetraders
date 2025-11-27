@@ -198,6 +198,9 @@ func (r *ContainerRunner) execute() {
 			// Don't retry on context cancellation - exit immediately
 			if r.ctx.Err() != nil {
 				r.log("INFO", "Context canceled, stopping container", nil)
+				// Signal completion on context cancellation (graceful shutdown)
+				r.signalCompletion()
+				r.releaseShipAssignments("canceled")
 				return
 			}
 
@@ -219,9 +222,14 @@ func (r *ContainerRunner) execute() {
 				// Record restart metrics
 				metrics.RecordContainerRestart(r.containerEntity)
 
-				continue
+				continue // DON'T signal completion - we're restarting
 			}
 
+			// UNRECOVERABLE ERROR: Only NOW do we signal completion and release ships
+			// This is the critical fix - completion is signaled AFTER restart decision
+			r.log("INFO", "Container failed with unrecoverable error, signaling completion", nil)
+			r.signalCompletion()
+			r.releaseShipAssignments("failed")
 			return // Exit on unrecoverable error
 		}
 
@@ -333,6 +341,8 @@ func (r *ContainerRunner) executeIteration() error {
 }
 
 // handleError handles execution errors
+// NOTE: This does NOT signal completion or release ships - that's done by the caller
+// AFTER determining whether to restart. This prevents premature ship release before restart.
 func (r *ContainerRunner) handleError(err error) {
 	r.log("ERROR", err.Error(), nil)
 
@@ -364,12 +374,9 @@ func (r *ContainerRunner) handleError(err error) {
 		}
 	}
 
-	// Signal completion BEFORE releasing (even on failure)
-	r.signalCompletion()
-
-	// ALWAYS release ship assignments on failure
-	// With dynamic discovery, ships are simply released and discovered by the next iteration
-	r.releaseShipAssignments("failed")
+	// NOTE: signalCompletion and releaseShipAssignments are NOT called here.
+	// They are called by execute() ONLY when the container is truly done (not restarting).
+	// This prevents the bug where completion is signaled before restart decision.
 }
 
 // Logging
