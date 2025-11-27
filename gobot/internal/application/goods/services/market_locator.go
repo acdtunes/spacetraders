@@ -326,3 +326,89 @@ func calculateMarketScore(activity, supply string) int {
 
 	return activityScore + supplyScore
 }
+
+// FindFactoryForProduction finds a waypoint that can produce outputGood
+// AND accepts all inputGoods for delivery. This prevents the bug where
+// a factory is selected that exports the output but doesn't have a market
+// for the required inputs.
+//
+// Parameters:
+//   - outputGood: The good to be produced (factory must EXPORT/SELL this)
+//   - inputGoods: Goods that will be delivered (factory must IMPORT/BUY these)
+//
+// Returns the best factory waypoint that satisfies both conditions.
+func (l *MarketLocator) FindFactoryForProduction(
+	ctx context.Context,
+	outputGood string,
+	inputGoods []string,
+	systemSymbol string,
+	playerID int,
+) (*MarketLocatorResult, error) {
+	// Get all markets in the system
+	marketWaypoints, err := l.marketRepo.FindAllMarketsInSystem(ctx, systemSymbol, playerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find markets in system: %w", err)
+	}
+
+	var bestFactory *MarketLocatorResult
+	var bestScore int
+
+	for _, waypointSymbol := range marketWaypoints {
+		// Get market data
+		marketData, err := l.marketRepo.GetMarketData(ctx, waypointSymbol, playerID)
+		if err != nil {
+			continue // Skip markets we can't access
+		}
+
+		// Check if this market EXPORTS the output good (sells it)
+		outputTradeGood := marketData.FindGood(outputGood)
+		if outputTradeGood == nil {
+			continue // Market doesn't produce this good
+		}
+
+		// Check if this market IMPORTS all input goods (buys them)
+		// A factory that produces a good should also accept its inputs
+		allInputsAccepted := true
+		for _, inputGood := range inputGoods {
+			inputTradeGood := marketData.FindGood(inputGood)
+			if inputTradeGood == nil {
+				allInputsAccepted = false
+				break
+			}
+		}
+
+		if !allInputsAccepted {
+			continue // Factory doesn't accept all required inputs
+		}
+
+		// Calculate score based on output good activity and supply
+		activity := ""
+		if outputTradeGood.Activity() != nil {
+			activity = *outputTradeGood.Activity()
+		}
+		supply := ""
+		if outputTradeGood.Supply() != nil {
+			supply = *outputTradeGood.Supply()
+		}
+
+		score := calculateMarketScore(activity, supply)
+
+		// Update best factory if this one has a higher score
+		if bestFactory == nil || score > bestScore {
+			bestScore = score
+			bestFactory = &MarketLocatorResult{
+				WaypointSymbol: waypointSymbol,
+				Activity:       activity,
+				Supply:         supply,
+				Price:          outputTradeGood.SellPrice(),
+				TradeVolume:    outputTradeGood.TradeVolume(),
+			}
+		}
+	}
+
+	if bestFactory == nil {
+		return nil, fmt.Errorf("no factory found that produces %s AND accepts inputs %v", outputGood, inputGoods)
+	}
+
+	return bestFactory, nil
+}
