@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/application/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/application/trading/services"
@@ -155,7 +156,8 @@ func (m *TaskAssignmentManager) ClearAssignments() {
 	m.taskContainers = make(map[string]string)
 }
 
-// AssignTasks assigns ready tasks to idle ships
+// AssignTasks assigns ready tasks to idle ships using task type reservation
+// to prevent starvation. Minimum workers are reserved for each task type.
 func (m *TaskAssignmentManager) AssignTasks(ctx context.Context, params AssignParams) (int, error) {
 	logger := common.LoggerFromContext(ctx)
 
@@ -208,33 +210,48 @@ func (m *TaskAssignmentManager) AssignTasks(ctx context.Context, params AssignPa
 	// Refresh assigned count
 	assignedCount = m.GetAssignmentCount()
 
-	// Track factory+good assignment counts for balancing
-	assignedCounts := make(map[string]int)
+	// Count currently assigned tasks by type from database for reservation logic
+	assignedByType := m.countAssignedByType(ctx, params.PlayerID)
+	collectSellCount := assignedByType[manufacturing.TaskTypeCollectSell]
+	acquireDeliverCount := assignedByType[manufacturing.TaskTypeAcquireDeliver]
+
+	// Check if we have ready tasks of each type
+	hasReadyCollectSell := m.taskQueue.HasReadyTasksByType(manufacturing.TaskTypeCollectSell)
+	hasReadyAcquireDeliver := m.taskQueue.HasReadyTasksByType(manufacturing.TaskTypeAcquireDeliver)
+
+	// Track factory+good assignment counts for balancing within ACQUIRE_DELIVER
+	factoryGoodCounts := make(map[string]int)
 	if m.taskRepo != nil {
 		assignedTasksList, _ := m.taskRepo.FindByStatus(ctx, params.PlayerID, manufacturing.TaskStatusAssigned)
 		for _, t := range assignedTasksList {
 			if t.TaskType() == manufacturing.TaskTypeAcquireDeliver {
 				factoryGoodKey := t.FactorySymbol() + ":" + t.Good()
-				assignedCounts[factoryGoodKey]++
+				factoryGoodCounts[factoryGoodKey]++
 			}
 		}
 	}
 
 	tasksAssigned := 0
 
-	// Assign tasks
+	// Assign tasks with task type reservation
 	for _, task := range readyTasks {
 		if assignedCount >= params.MaxConcurrentTasks || len(idleShips) == 0 {
 			break
 		}
 
-		// Balance check for ACQUIRE_DELIVER
+		// Task Type Reservation: Prevent starvation by reserving minimum workers for each type
+		// Skip this task if it would starve the other task type
+		if !m.shouldAssignWithReservation(task.TaskType(), collectSellCount, acquireDeliverCount, hasReadyCollectSell, hasReadyAcquireDeliver) {
+			continue
+		}
+
+		// Balance check for ACQUIRE_DELIVER within factory+good combinations
 		if task.TaskType() == manufacturing.TaskTypeAcquireDeliver {
 			factoryGoodKey := task.FactorySymbol() + ":" + task.Good()
-			currentCount := assignedCounts[factoryGoodKey]
+			currentCount := factoryGoodCounts[factoryGoodKey]
 
 			minCount := currentCount
-			for _, count := range assignedCounts {
+			for _, count := range factoryGoodCounts {
 				if count < minCount {
 					minCount = count
 				}
@@ -281,10 +298,16 @@ func (m *TaskAssignmentManager) AssignTasks(ctx context.Context, params AssignPa
 			}
 		}
 
-		// Track assignment
+		// Record task assignment metrics
+		metrics.RecordManufacturingTaskAssignment(params.PlayerID, string(task.TaskType()))
+
+		// Update tracking counts
 		if task.TaskType() == manufacturing.TaskTypeAcquireDeliver {
 			factoryGoodKey := task.FactorySymbol() + ":" + task.Good()
-			assignedCounts[factoryGoodKey]++
+			factoryGoodCounts[factoryGoodKey]++
+			acquireDeliverCount++
+		} else if task.TaskType() == manufacturing.TaskTypeCollectSell {
+			collectSellCount++
 		}
 
 		delete(idleShips, selectedSymbol)
@@ -295,6 +318,86 @@ func (m *TaskAssignmentManager) AssignTasks(ctx context.Context, params AssignPa
 	}
 
 	return tasksAssigned, nil
+}
+
+// countAssignedByType returns counts of currently assigned tasks by task type
+func (m *TaskAssignmentManager) countAssignedByType(ctx context.Context, playerID int) map[manufacturing.TaskType]int {
+	counts := make(map[manufacturing.TaskType]int)
+
+	if m.taskRepo == nil {
+		return counts
+	}
+
+	// Get ASSIGNED tasks
+	assignedTasks, err := m.taskRepo.FindByStatus(ctx, playerID, manufacturing.TaskStatusAssigned)
+	if err == nil {
+		for _, task := range assignedTasks {
+			counts[task.TaskType()]++
+		}
+	}
+
+	// Get EXECUTING tasks (also count as assigned for reservation purposes)
+	executingTasks, err := m.taskRepo.FindByStatus(ctx, playerID, manufacturing.TaskStatusExecuting)
+	if err == nil {
+		for _, task := range executingTasks {
+			counts[task.TaskType()]++
+		}
+	}
+
+	return counts
+}
+
+// shouldAssignWithReservation checks if a task should be assigned based on reservation rules.
+// It ensures minimum workers are reserved for each task type to prevent starvation.
+//
+// Logic:
+//   - If BOTH types are below minimum AND BOTH have ready tasks → allow either (break deadlock)
+//   - If assigning ACQUIRE_DELIVER: Skip if COLLECT_SELL is below minimum AND has ready tasks
+//   - If assigning COLLECT_SELL: Skip if ACQUIRE_DELIVER is below minimum AND has ready tasks
+//
+// This ensures both task types always get their minimum workers when tasks are available,
+// while preventing a deadlock where both types block each other when starting from zero.
+func (m *TaskAssignmentManager) shouldAssignWithReservation(
+	taskType manufacturing.TaskType,
+	collectSellCount int,
+	acquireDeliverCount int,
+	hasReadyCollectSell bool,
+	hasReadyAcquireDeliver bool,
+) bool {
+	// Deadlock prevention: If BOTH counts are below minimum and BOTH have ready tasks,
+	// allow either type to be assigned (first come, first served based on priority queue).
+	// This breaks the chicken-and-egg problem where each type blocks the other.
+	bothBelowMinimum := collectSellCount < manufacturing.MinCollectSellWorkers &&
+		acquireDeliverCount < manufacturing.MinAcquireDeliverWorkers
+	bothHaveReady := hasReadyCollectSell && hasReadyAcquireDeliver
+
+	if bothBelowMinimum && bothHaveReady {
+		// Allow any task type to break the deadlock
+		return true
+	}
+
+	switch taskType {
+	case manufacturing.TaskTypeAcquireDeliver:
+		// Skip ACQUIRE_DELIVER if COLLECT_SELL is starved (below minimum) and has ready tasks
+		if collectSellCount < manufacturing.MinCollectSellWorkers && hasReadyCollectSell {
+			return false
+		}
+		return true
+
+	case manufacturing.TaskTypeCollectSell:
+		// Skip COLLECT_SELL if ACQUIRE_DELIVER is starved (below minimum) and has ready tasks
+		if acquireDeliverCount < manufacturing.MinAcquireDeliverWorkers && hasReadyAcquireDeliver {
+			return false
+		}
+		return true
+
+	case manufacturing.TaskTypeLiquidate:
+		// Liquidation tasks always have high priority - don't skip
+		return true
+
+	default:
+		return true
+	}
 }
 
 // GetTaskSourceLocation returns the waypoint where the task starts

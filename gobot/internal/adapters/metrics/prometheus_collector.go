@@ -244,3 +244,10 @@ func RecordManufacturingRevenue(playerID int, amount int) {
 		globalManufacturingCollector.RecordRevenue(playerID, amount)
 	}
 }
+
+// RecordManufacturingTaskAssignment records a task assignment event globally
+func RecordManufacturingTaskAssignment(playerID int, taskType string) {
+	if globalManufacturingCollector != nil {
+		globalManufacturingCollector.RecordTaskAssignment(playerID, taskType)
+	}
+}

@@ -50,6 +50,11 @@ type ManufacturingMetricsCollector struct {
 	profitRate    *prometheus.GaugeVec
 	marginPercent *prometheus.GaugeVec
 
+	// Starvation Metrics (3 metrics) - Added to detect task type starvation
+	taskStarvationMinutes        *prometheus.GaugeVec
+	taskAssignmentsTotal         *prometheus.CounterVec
+	taskTypeReservationSkipsTotal *prometheus.CounterVec
+
 	// Lifecycle
 	ctx        context.Context
 	cancelFunc context.CancelFunc
@@ -313,6 +318,37 @@ func NewManufacturingMetricsCollector(db *gorm.DB) *ManufacturingMetricsCollecto
 			[]string{"player_id", "product_good"},
 		),
 
+		// Starvation Metrics - detect and alert on task type starvation
+		taskStarvationMinutes: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: namespace,
+				Subsystem: subsystem,
+				Name:      "manufacturing_task_starvation_minutes",
+				Help:      "Minutes since last task assignment by type (alert if > 15)",
+			},
+			[]string{"player_id", "task_type"},
+		),
+
+		taskAssignmentsTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: namespace,
+				Subsystem: subsystem,
+				Name:      "manufacturing_task_assignments_total",
+				Help:      "Total task assignments by type",
+			},
+			[]string{"player_id", "task_type"},
+		),
+
+		taskTypeReservationSkipsTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: namespace,
+				Subsystem: subsystem,
+				Name:      "manufacturing_task_type_reservation_skips_total",
+				Help:      "Total tasks skipped due to task type reservation rules",
+			},
+			[]string{"player_id", "task_type", "reason"},
+		),
+
 		// Configuration
 		pollInterval: 30 * time.Second,
 	}
@@ -354,6 +390,10 @@ func (c *ManufacturingMetricsCollector) Register() error {
 		c.revenueTotal,
 		c.profitRate,
 		c.marginPercent,
+		// Starvation
+		c.taskStarvationMinutes,
+		c.taskAssignmentsTotal,
+		c.taskTypeReservationSkipsTotal,
 	}
 
 	for _, metric := range metrics {
@@ -422,6 +462,7 @@ func (c *ManufacturingMetricsCollector) updateAllMetrics() {
 	c.shipUtilizationPercent.Reset()
 	c.profitRate.Reset()
 	c.marginPercent.Reset()
+	c.taskStarvationMinutes.Reset()
 
 	// Get list of active players
 	players := c.getActivePlayers()
@@ -432,6 +473,7 @@ func (c *ManufacturingMetricsCollector) updateAllMetrics() {
 		c.updateFactoryMetrics(playerID)
 		c.updateShipMetrics(playerID)
 		c.updateEconomicMetrics(playerID)
+		c.updateStarvationMetrics(playerID)
 	}
 }
 
@@ -650,6 +692,52 @@ func (c *ManufacturingMetricsCollector) updateEconomicMetrics(playerID int) {
 	c.profitRate.WithLabelValues(playerIDStr).Set(profitRate)
 }
 
+// updateStarvationMetrics updates task starvation metrics
+// Tracks minutes since last assignment by task type to detect starvation
+func (c *ManufacturingMetricsCollector) updateStarvationMetrics(playerID int) {
+	playerIDStr := strconv.Itoa(playerID)
+
+	// Query minutes since last assignment by task type
+	// Uses completed_at from the most recently completed task of each type
+	var starvationData []struct {
+		TaskType          string
+		MinutesSinceAssign float64
+	}
+
+	err := c.db.Raw(`
+		WITH last_assignments AS (
+			SELECT task_type,
+			       MAX(started_at) as last_assigned
+			FROM manufacturing_tasks
+			WHERE player_id = ?
+			  AND started_at IS NOT NULL
+			GROUP BY task_type
+		),
+		ready_counts AS (
+			SELECT task_type, COUNT(*) as ready_count
+			FROM manufacturing_tasks
+			WHERE player_id = ?
+			  AND status = 'READY'
+			GROUP BY task_type
+		)
+		SELECT
+			r.task_type,
+			COALESCE(EXTRACT(EPOCH FROM (NOW() - la.last_assigned)) / 60, 999) as minutes_since_assign
+		FROM ready_counts r
+		LEFT JOIN last_assignments la ON r.task_type = la.task_type
+		WHERE r.ready_count > 0
+	`, playerID, playerID).Scan(&starvationData).Error
+
+	if err != nil {
+		log.Printf("Failed to get starvation metrics: %v", err)
+		return
+	}
+
+	for _, data := range starvationData {
+		c.taskStarvationMinutes.WithLabelValues(playerIDStr, data.TaskType).Set(data.MinutesSinceAssign)
+	}
+}
+
 // RecordPipelineCompletion records a pipeline completion event
 func (c *ManufacturingMetricsCollector) RecordPipelineCompletion(playerID int, productGood, status string, duration time.Duration, profit int) {
 	playerIDStr := strconv.Itoa(playerID)
@@ -696,4 +784,22 @@ func (c *ManufacturingMetricsCollector) RecordCost(playerID int, costType string
 func (c *ManufacturingMetricsCollector) RecordRevenue(playerID int, amount int) {
 	playerIDStr := strconv.Itoa(playerID)
 	c.revenueTotal.WithLabelValues(playerIDStr).Add(float64(amount))
+}
+
+// RecordTaskAssignment records a task assignment event
+func (c *ManufacturingMetricsCollector) RecordTaskAssignment(playerID int, taskType string) {
+	playerIDStr := strconv.Itoa(playerID)
+	c.taskAssignmentsTotal.WithLabelValues(playerIDStr, taskType).Inc()
+}
+
+// RecordTaskTypeReservationSkip records when a task was skipped due to reservation rules
+func (c *ManufacturingMetricsCollector) RecordTaskTypeReservationSkip(playerID int, taskType, reason string) {
+	playerIDStr := strconv.Itoa(playerID)
+	c.taskTypeReservationSkipsTotal.WithLabelValues(playerIDStr, taskType, reason).Inc()
+}
+
+// UpdateTaskStarvationMinutes updates the starvation minutes for task types
+func (c *ManufacturingMetricsCollector) UpdateTaskStarvationMinutes(playerID int, taskType string, minutes float64) {
+	playerIDStr := strconv.Itoa(playerID)
+	c.taskStarvationMinutes.WithLabelValues(playerIDStr, taskType).Set(minutes)
 }

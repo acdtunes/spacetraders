@@ -3,7 +3,9 @@ package manufacturing
 import (
 	"context"
 	"fmt"
+	"time"
 
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/application/trading/services"
 	domainContainer "github.com/andrescamacho/spacetraders-go/internal/domain/container"
@@ -263,6 +265,22 @@ func (m *WorkerLifecycleManager) HandleWorkerCompletion(ctx context.Context, shi
 		taskErr = fmt.Errorf("%s", task.ErrorMessage())
 	}
 
+	// Record task completion metrics
+	var duration time.Duration
+	if task.StartedAt() != nil {
+		duration = time.Since(*task.StartedAt())
+	}
+	status := "completed"
+	if !success {
+		status = "failed"
+	}
+	metrics.RecordManufacturingTaskCompletion(
+		task.PlayerID(),
+		string(task.TaskType()),
+		status,
+		duration,
+	)
+
 	completion := &TaskCompletion{
 		TaskID:     taskID,
 		ShipSymbol: shipSymbol,
@@ -307,6 +325,9 @@ func (m *WorkerLifecycleManager) HandleTaskFailure(ctx context.Context, completi
 
 		m.taskQueue.Enqueue(task)
 
+		// Record task retry metrics
+		metrics.RecordManufacturingTaskRetry(task.PlayerID(), string(task.TaskType()))
+
 		logger.Log("INFO", fmt.Sprintf("Task %s scheduled for retry (%d/%d)",
 			completion.TaskID[:8], retryCount, maxRetries), nil)
 	} else {
@@ -323,6 +344,7 @@ func (m *WorkerLifecycleManager) HandleTaskFailure(ctx context.Context, completi
 
 // WorkerCommand represents the command to execute a worker task
 // This mirrors RunManufacturingTaskWorkerCommand for serialization
+// (kept separate to avoid circular import with trading/commands)
 type WorkerCommand struct {
 	ShipSymbol     string
 	Task           *manufacturing.ManufacturingTask
@@ -332,3 +354,4 @@ type WorkerCommand struct {
 	PipelineNumber int
 	ProductGood    string
 }
+
