@@ -224,8 +224,14 @@ func (p *ManufacturingPipeline) Start() error {
 	p.startedAt = &now
 
 	// Mark initial tasks as ready (those with no dependencies)
+	// EXCEPTION: COLLECT_SELL tasks stay PENDING until SupplyMonitor detects
+	// factory supply is HIGH/ABUNDANT - they should NOT be marked ready at start
 	for _, task := range p.tasks {
 		if !task.HasDependencies() && task.Status() == TaskStatusPending {
+			// Skip COLLECT_SELL tasks - they're gated by factory supply, not dependencies
+			if task.TaskType() == TaskTypeCollectSell {
+				continue
+			}
 			if err := task.MarkReady(); err == nil {
 				p.tasksReady++
 			}
