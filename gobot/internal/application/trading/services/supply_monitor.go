@@ -133,6 +133,10 @@ func (m *SupplyMonitor) checkFactorySupply(ctx context.Context, factory *manufac
 		})
 		return
 	}
+	if marketData == nil {
+		// No market data available yet - scouts may not have scanned this waypoint
+		return
+	}
 
 	// Find the output good
 	tradeGood := marketData.FindGood(factory.OutputGood())

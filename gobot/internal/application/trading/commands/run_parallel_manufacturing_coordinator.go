@@ -1837,6 +1837,18 @@ func (h *RunParallelManufacturingCoordinatorHandler) recoverState(ctx context.Co
 
 		// Step 2c: Enqueue all READY tasks
 		if task.Status() == manufacturing.TaskStatusReady {
+			// COLLECT_SELL tasks need special handling - reset to PENDING
+			// so SupplyMonitor can re-verify factory supply is still ready.
+			// Factory supply may have changed while we were offline.
+			if task.TaskType() == manufacturing.TaskTypeCollectSell {
+				task.ResetToPending()
+				if h.taskRepo != nil {
+					_ = h.taskRepo.Update(ctx, task)
+				}
+				logger.Log("DEBUG", fmt.Sprintf("Reset COLLECT_SELL task %s to PENDING for supply re-check", task.ID()[:8]), nil)
+				continue // Don't enqueue - SupplyMonitor will handle it
+			}
+
 			h.taskQueue.Enqueue(task)
 			readyCount++
 		}
@@ -1859,7 +1871,18 @@ func (h *RunParallelManufacturingCoordinatorHandler) recoverState(ctx context.Co
 					continue
 				}
 
-				// Mark as ready (PENDING -> READY)
+				// COLLECT_SELL tasks stay PENDING - SupplyMonitor will mark them READY
+				// when factory supply is confirmed. Don't mark READY blindly.
+				if task.TaskType() == manufacturing.TaskTypeCollectSell {
+					if err := h.taskRepo.Update(ctx, task); err != nil {
+						logger.Log("WARN", fmt.Sprintf("Failed to persist task %s: %v", task.ID()[:8], err), nil)
+					}
+					logger.Log("INFO", fmt.Sprintf("Reset FAILED COLLECT_SELL task %s to PENDING for supply re-check (%d/%d attempts used)",
+						task.ID()[:8], retryCount, task.MaxRetries()), nil)
+					continue // Don't mark READY or enqueue - SupplyMonitor handles it
+				}
+
+				// Mark as ready (PENDING -> READY) for non-COLLECT_SELL tasks
 				if err := task.MarkReady(); err != nil {
 					logger.Log("WARN", fmt.Sprintf("Failed to mark task %s ready: %v", task.ID()[:8], err), nil)
 					continue
