@@ -36,6 +36,8 @@ services:
       - ./configs/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
       - ./configs/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
       - ./configs/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"  # Allow Grafana to access PostgreSQL on host
     depends_on:
       - prometheus
     restart: unless-stopped

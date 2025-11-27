@@ -11,3 +11,19 @@ datasources:
     jsonData:
       timeInterval: 15s
       httpMethod: POST
+
+  - name: PostgreSQL
+    type: postgres
+    access: proxy
+    uid: postgresql
+    url: host.docker.internal:5432
+    database: spacetraders
+    user: spacetraders
+    editable: false
+    secureJsonData:
+      password: dev_password
+    jsonData:
+      sslmode: disable
+      maxOpenConns: 5
+      maxIdleConns: 2
+      connMaxLifetime: 14400

@@ -620,20 +620,22 @@ func (c *ManufacturingMetricsCollector) updateShipMetrics(playerID int) {
 func (c *ManufacturingMetricsCollector) updateEconomicMetrics(playerID int) {
 	playerIDStr := strconv.Itoa(playerID)
 
-	// Get hourly profit rate from completed pipelines in last hour
+	// Get hourly profit rate from completed COLLECT_SELL tasks in last hour
+	// (pipelines stay in PLANNING status, so we calculate from task data instead)
 	var hourlyStats struct {
 		TotalCost    int64
 		TotalRevenue int64
-		PipelineCount int64
+		TaskCount    int64
 	}
 
 	err := c.db.Raw(`
 		SELECT
 			COALESCE(SUM(total_cost), 0) as total_cost,
 			COALESCE(SUM(total_revenue), 0) as total_revenue,
-			COUNT(*) as pipeline_count
-		FROM manufacturing_pipelines
+			COUNT(*) as task_count
+		FROM manufacturing_tasks
 		WHERE player_id = ?
+		  AND task_type = 'COLLECT_SELL'
 		  AND status = 'COMPLETED'
 		  AND completed_at > NOW() - INTERVAL '1 hour'
 	`, playerID).Scan(&hourlyStats).Error
@@ -643,39 +645,9 @@ func (c *ManufacturingMetricsCollector) updateEconomicMetrics(playerID int) {
 		return
 	}
 
-	// Profit rate (credits per hour) - this is already for the last hour
+	// Profit rate (credits per hour) - calculated from completed sell tasks
 	profitRate := float64(hourlyStats.TotalRevenue - hourlyStats.TotalCost)
 	c.profitRate.WithLabelValues(playerIDStr).Set(profitRate)
-
-	// Margin percentage by product
-	var productMargins []struct {
-		ProductGood   string
-		TotalCost     int64
-		TotalRevenue  int64
-	}
-
-	err = c.db.Raw(`
-		SELECT
-			product_good,
-			COALESCE(SUM(total_cost), 0) as total_cost,
-			COALESCE(SUM(total_revenue), 0) as total_revenue
-		FROM manufacturing_pipelines
-		WHERE player_id = ?
-		  AND status = 'COMPLETED'
-		GROUP BY product_good
-	`, playerID).Scan(&productMargins).Error
-
-	if err != nil {
-		log.Printf("Failed to get product margins: %v", err)
-		return
-	}
-
-	for _, margin := range productMargins {
-		if margin.TotalRevenue > 0 {
-			marginPct := float64(margin.TotalRevenue-margin.TotalCost) / float64(margin.TotalRevenue) * 100
-			c.marginPercent.WithLabelValues(playerIDStr, margin.ProductGood).Set(marginPct)
-		}
-	}
 }
 
 // RecordPipelineCompletion records a pipeline completion event
