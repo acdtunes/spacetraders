@@ -13,9 +13,36 @@ import (
 )
 
 // ParallelManufacturingCoordinator creates a parallel task-based manufacturing coordinator
+// SINGLETON: Only one coordinator per system is allowed. If one already exists, returns its ID.
 func (s *DaemonServer) ParallelManufacturingCoordinator(ctx context.Context, systemSymbol string, playerID int, minPrice int, maxWorkers int, maxPipelines int, minBalance int, strategy string) (string, error) {
+	// SINGLETON CHECK: Only one coordinator per system
+	existingCoordinator, err := s.containerRepo.FindActiveCoordinatorByTypeAndSystem(
+		ctx,
+		string(container.ContainerTypeManufacturingCoordinator),
+		systemSymbol,
+		playerID,
+	)
+	if err != nil {
+		return "", fmt.Errorf("failed to check for existing coordinator: %w", err)
+	}
+	if existingCoordinator != nil {
+		fmt.Printf("SINGLETON: Coordinator already exists for system %s: %s (status: %s)\n",
+			systemSymbol, existingCoordinator.ID, existingCoordinator.Status)
+		return existingCoordinator.ID, nil
+	}
+
 	// Create container ID
 	containerID := utils.GenerateContainerID("parallel_manufacturing", systemSymbol)
+
+	// CLEANUP: Stop any orphaned workers from previous crashed coordinators
+	// This can happen if a coordinator crashed and left workers running
+	// Find ALL manufacturing worker containers for this player and mark them as stopped
+	orphanedCount, err := s.containerRepo.StopAllOrphanedManufacturingWorkers(ctx, playerID)
+	if err != nil {
+		fmt.Printf("Warning: failed to clean orphaned workers: %v\n", err)
+	} else if orphanedCount > 0 {
+		fmt.Printf("CLEANUP: Stopped %d orphaned worker containers\n", orphanedCount)
+	}
 
 	// Create parallel manufacturing coordinator command
 	cmd := &tradingCmd.RunParallelManufacturingCoordinatorCommand{

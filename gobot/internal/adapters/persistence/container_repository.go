@@ -302,3 +302,89 @@ func (r *ContainerRepositoryGORM) FindChildContainers(
 
 	return models, nil
 }
+
+// FindActiveCoordinatorByTypeAndSystem finds an active (PENDING or RUNNING) coordinator
+// of the given type for the specified system. Returns nil if none found.
+// Used to enforce singleton coordinators per system.
+func (r *ContainerRepositoryGORM) FindActiveCoordinatorByTypeAndSystem(
+	ctx context.Context,
+	containerType string,
+	systemSymbol string,
+	playerID int,
+) (*ContainerModel, error) {
+	var model ContainerModel
+
+	// Search for active coordinators with matching system in config
+	// Config is JSON with "system_symbol" field
+	result := r.db.WithContext(ctx).
+		Where("container_type = ? AND player_id = ? AND status IN (?, ?)",
+			containerType, playerID, "PENDING", "RUNNING").
+		Where("config LIKE ?", fmt.Sprintf(`%%"system_symbol":"%s"%%`, systemSymbol)).
+		First(&model)
+
+	if result.Error != nil {
+		if result.Error == gorm.ErrRecordNotFound {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to find active coordinator: %w", result.Error)
+	}
+
+	return &model, nil
+}
+
+// StopOrphanedWorkersByParent marks all RUNNING/PENDING worker containers
+// with the given parent container ID as STOPPED. Used during coordinator
+// startup to clean up orphaned workers from crashed coordinators.
+func (r *ContainerRepositoryGORM) StopOrphanedWorkersByParent(
+	ctx context.Context,
+	parentContainerID string,
+	playerID int,
+) (int64, error) {
+	now := time.Now()
+	exitCode := 1
+
+	result := r.db.WithContext(ctx).
+		Model(&ContainerModel{}).
+		Where("parent_container_id = ? AND player_id = ? AND status IN (?, ?)",
+			parentContainerID, playerID, "PENDING", "RUNNING").
+		Updates(map[string]interface{}{
+			"status":      "STOPPED",
+			"stopped_at":  &now,
+			"exit_code":   &exitCode,
+			"exit_reason": "orphaned_by_coordinator_restart",
+		})
+
+	if result.Error != nil {
+		return 0, fmt.Errorf("failed to stop orphaned workers: %w", result.Error)
+	}
+
+	return result.RowsAffected, nil
+}
+
+// StopAllOrphanedManufacturingWorkers marks ALL RUNNING/PENDING manufacturing task worker
+// containers for a player as STOPPED. Used at coordinator startup to ensure clean state.
+// This prevents orphaned workers from crashed coordinators from holding ships.
+func (r *ContainerRepositoryGORM) StopAllOrphanedManufacturingWorkers(
+	ctx context.Context,
+	playerID int,
+) (int64, error) {
+	now := time.Now()
+	exitCode := 1
+
+	result := r.db.WithContext(ctx).
+		Model(&ContainerModel{}).
+		Where("container_type = ? AND player_id = ? AND status IN (?, ?)",
+			"MANUFACTURING_TASK_WORKER", playerID, "PENDING", "RUNNING").
+		Updates(map[string]interface{}{
+			"status":      "STOPPED",
+			"stopped_at":  &now,
+			"exit_code":   &exitCode,
+			"exit_reason": "orphaned_by_coordinator_restart",
+		})
+
+	if result.Error != nil {
+		return 0, fmt.Errorf("failed to stop orphaned workers: %w", result.Error)
+	}
+
+	return result.RowsAffected, nil
+}
