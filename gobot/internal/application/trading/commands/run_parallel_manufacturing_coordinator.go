@@ -29,6 +29,7 @@ type RunParallelManufacturingCoordinatorCommand struct {
 	MaxConcurrentTasks   int    // Maximum concurrent task executions (default 10)
 	MaxPipelines         int    // Maximum active pipelines (default 3)
 	SupplyPollInterval   time.Duration // How often to poll factory supply (default 30s)
+	Strategy             string // Acquisition strategy: prefer-buy, prefer-fabricate, smart (default: prefer-fabricate)
 }
 
 // RunParallelManufacturingCoordinatorResponse is never returned (infinite loop)
@@ -195,12 +196,21 @@ func (h *RunParallelManufacturingCoordinatorHandler) Handle(
 		supplyPollInterval = 30 * time.Second
 	}
 
+	// Configure acquisition strategy for supply chain resolver
+	// This determines whether intermediate goods are bought or fabricated
+	strategy := cmd.Strategy
+	if strategy == "" {
+		strategy = "prefer-fabricate" // Default: recursive manufacturing for better economics
+	}
+	h.demandFinder.SetStrategy(strategy)
+
 	logger.Log("INFO", "Starting parallel manufacturing coordinator", map[string]interface{}{
 		"system":               cmd.SystemSymbol,
 		"min_purchase_price":   minPurchasePrice,
 		"max_concurrent_tasks": maxConcurrentTasks,
 		"max_pipelines":        maxPipelines,
 		"supply_poll_interval": supplyPollInterval.String(),
+		"strategy":             strategy,
 	})
 
 	// Recover state from database (handles daemon restart)
@@ -218,6 +228,7 @@ func (h *RunParallelManufacturingCoordinatorHandler) Handle(
 			h.pipelineRepo, // For looking up pipeline's sell_market
 			h.taskQueue,
 			h.taskRepo,
+			h.pipelinePlanner.MarketLocator(), // For finding export markets when creating ACQUIRE_DELIVER tasks
 			supplyPollInterval,
 			cmd.PlayerID,
 		)
@@ -232,7 +243,18 @@ func (h *RunParallelManufacturingCoordinatorHandler) Handle(
 	// Set up ticker for background opportunity scanning
 	// Background opportunity scan (3 minutes) - catches external market changes
 	opportunityScanTicker := time.NewTicker(3 * time.Minute)
+
+	// Set up ticker for stuck pipeline detection (5 minutes)
+	// Detects and recycles pipelines that aren't making progress
+	stuckPipelineTicker := time.NewTicker(5 * time.Minute)
+
+	// Set up ticker for idle ship scanning (10 seconds)
+	// Catches ships that became idle between completions or missed assignments
+	// This ensures ships don't sit idle when there are ready tasks
+	idleShipTicker := time.NewTicker(10 * time.Second)
 	defer opportunityScanTicker.Stop()
+	defer stuckPipelineTicker.Stop()
+	defer idleShipTicker.Stop()
 
 
 	// Store command context for event-driven callbacks
@@ -259,6 +281,15 @@ func (h *RunParallelManufacturingCoordinatorHandler) Handle(
 		case <-opportunityScanTicker.C:
 			// Background rescan for external market changes
 			h.scanAndCreatePipelines(ctx, cmd, minPurchasePrice, maxPipelines)
+
+		case <-stuckPipelineTicker.C:
+			// Detect and recycle stuck pipelines (no progress for 30+ minutes)
+			h.detectAndRecycleStuckPipelines(ctx, cmd)
+
+		case <-idleShipTicker.C:
+			// Periodic idle ship scanning - catches missed assignments
+			// This ensures ships don't sit idle when there are ready tasks
+			h.assignTasks(ctx, cmd, maxConcurrentTasks)
 
 		case <-h.taskReadyChan:
 			// EVENT-DRIVEN: SupplyMonitor marked tasks as ready - assign ships immediately
@@ -343,6 +374,12 @@ func (h *RunParallelManufacturingCoordinatorHandler) scanAndCreatePipelines(
 			continue
 		}
 
+		// Start the pipeline (transitions PLANNING -> EXECUTING)
+		if err := pipeline.Start(); err != nil {
+			logger.Log("ERROR", fmt.Sprintf("Failed to start pipeline for %s: %v", opp.Good(), err), nil)
+			continue
+		}
+
 		// Persist pipeline and tasks
 		if h.pipelineRepo != nil {
 			if err := h.pipelineRepo.Create(ctx, pipeline); err != nil {
@@ -370,7 +407,17 @@ func (h *RunParallelManufacturingCoordinatorHandler) scanAndCreatePipelines(
 		h.mu.Unlock()
 
 		// Enqueue ready tasks (tasks with no dependencies)
+		// STREAMING MODEL: Skip COLLECT_SELL tasks here - they're gated by SupplyMonitor
+		// which checks both supply level AND delivery status
 		for _, task := range tasks {
+			// COLLECT_SELL tasks must wait for:
+			//   1. Factory supply to be HIGH/ABUNDANT
+			//   2. At least one delivery to be recorded
+			// They're handled entirely by SupplyMonitor
+			if task.TaskType() == manufacturing.TaskTypeCollectSell {
+				continue
+			}
+
 			if len(task.DependsOn()) == 0 {
 				if err := task.MarkReady(); err == nil {
 					h.taskQueue.Enqueue(task)
@@ -414,12 +461,6 @@ func (h *RunParallelManufacturingCoordinatorHandler) assignTasks(
 ) {
 	logger := common.LoggerFromContext(ctx)
 
-	// Get ready tasks (sorted by priority)
-	readyTasks := h.taskQueue.GetReadyTasks()
-	if len(readyTasks) == 0 {
-		return
-	}
-
 	// Check how many tasks are currently assigned
 	h.mu.RLock()
 	assignedCount := len(h.assignedTasks)
@@ -433,7 +474,8 @@ func (h *RunParallelManufacturingCoordinatorHandler) assignTasks(
 		return
 	}
 
-	// Get idle ships
+	// Get idle ships FIRST (before checking ready tasks)
+	// This allows us to handle ships with existing cargo before the normal assignment loop
 	playerID := shared.MustNewPlayerID(cmd.PlayerID)
 	_, idleShipSymbols, err := contract.FindIdleLightHaulers(
 		ctx,
@@ -459,6 +501,37 @@ func (h *RunParallelManufacturingCoordinatorHandler) assignTasks(
 		}
 	}
 
+	// PRIORITY: Handle ships with existing cargo from interrupted operations
+	// This marks matching PENDING COLLECT_SELL tasks as READY and assigns ships to them
+	// Ships are removed from idleShips as they get assigned
+	idleShips = h.handleShipsWithExistingCargo(ctx, cmd, idleShips, maxConcurrentTasks)
+
+	// Now get ready tasks (may include tasks marked READY by handleShipsWithExistingCargo)
+	readyTasks := h.taskQueue.GetReadyTasks()
+	if len(readyTasks) == 0 || len(idleShips) == 0 {
+		return
+	}
+
+	// Refresh assigned count after handling ships with cargo
+	h.mu.RLock()
+	assignedCount = len(h.assignedTasks)
+	h.mu.RUnlock()
+
+	// Track factory+good assignment counts to balance input deliveries
+	// This ensures all input goods for a factory get workers before any good gets excess workers
+	// Key: "factorySymbol:good" for ACQUIRE_DELIVER tasks, Value: count of assigned ships
+	// Pre-populate with currently ASSIGNED tasks to ensure global balance (not just per-round)
+	assignedCounts := make(map[string]int)
+	if h.taskRepo != nil {
+		assignedTasks, _ := h.taskRepo.FindByStatus(ctx, cmd.PlayerID, manufacturing.TaskStatusAssigned)
+		for _, t := range assignedTasks {
+			if t.TaskType() == manufacturing.TaskTypeAcquireDeliver {
+				factoryGoodKey := t.FactorySymbol() + ":" + t.Good()
+				assignedCounts[factoryGoodKey]++
+			}
+		}
+	}
+
 	// Greedy assignment: for each task, find appropriate ship
 	for _, task := range readyTasks {
 		if assignedCount >= maxConcurrentTasks {
@@ -467,6 +540,47 @@ func (h *RunParallelManufacturingCoordinatorHandler) assignTasks(
 
 		if len(idleShips) == 0 {
 			break
+		}
+
+		// BALANCE CHECK: For ACQUIRE_DELIVER, prefer tasks for factory+good with fewer assigned ships
+		// This ensures all input goods for a factory get workers before any good gets excess workers
+		// We allow up to 2 ships per factory+good to enable parallelism, but prioritize unassigned goods
+		if task.TaskType() == manufacturing.TaskTypeAcquireDeliver {
+			factoryGoodKey := task.FactorySymbol() + ":" + task.Good()
+			currentCount := assignedCounts[factoryGoodKey]
+
+			// Find minimum assignment count across all factory+good combinations we've seen
+			// This allows doubling up AFTER all inputs have at least one ship
+			minCount := currentCount
+			for _, count := range assignedCounts {
+				if count < minCount {
+					minCount = count
+				}
+			}
+
+			// Skip if this factory+good has more ships than the minimum (prefer underserved goods)
+			// Exception: allow up to 2 ships per good for parallelism even if unbalanced
+			if currentCount > minCount && currentCount >= 2 {
+				continue
+			}
+		}
+
+		// SATURATION CHECK: For COLLECT_SELL tasks, verify sell market isn't saturated
+		// This catches tasks that were READY before code restart (recovered from DB)
+		if task.TaskType() == manufacturing.TaskTypeCollectSell {
+			if h.isSellMarketSaturated(ctx, task.TargetMarket(), task.Good(), cmd.PlayerID) {
+				logger.Log("DEBUG", "Skipping COLLECT_SELL task - sell market saturated", map[string]interface{}{
+					"task_id":     task.ID()[:8],
+					"good":        task.Good(),
+					"sell_market": task.TargetMarket(),
+				})
+				// Reset task to PENDING so it can be re-evaluated by SupplyMonitor
+				task.ResetToPending()
+				if h.taskRepo != nil {
+					_ = h.taskRepo.Update(ctx, task)
+				}
+				continue
+			}
 		}
 
 		// Find closest ship to task source location
@@ -481,7 +595,15 @@ func (h *RunParallelManufacturingCoordinatorHandler) assignTasks(
 		err := h.assignTaskToShip(ctx, cmd, task, selectedShip)
 		if err != nil {
 			logger.Log("ERROR", fmt.Sprintf("Failed to assign task %s to ship %s: %v", task.ID(), selectedSymbol, err), nil)
+			// Remove ship from pool even on failure to prevent retry loop
+			delete(idleShips, selectedSymbol)
 			continue
+		}
+
+		// Track this factory+good assignment for balancing
+		if task.TaskType() == manufacturing.TaskTypeAcquireDeliver {
+			factoryGoodKey := task.FactorySymbol() + ":" + task.Good()
+			assignedCounts[factoryGoodKey]++
 		}
 
 		// Remove ship from idle pool
@@ -574,6 +696,250 @@ func (h *RunParallelManufacturingCoordinatorHandler) findClosestShip(
 	}
 
 	return closestShip, closestSymbol
+}
+
+// handleShipsWithExistingCargo handles ships that have cargo from interrupted operations.
+// For each idle ship with cargo, it finds a matching PENDING COLLECT_SELL task and marks it READY.
+// This ensures ships don't sit idle with cargo waiting for new deliveries to be recorded.
+//
+// The flow is:
+// 1. Find idle ships with cargo
+// 2. For each ship with cargo, find a PENDING COLLECT_SELL task matching the cargo type
+// 3. Mark the task READY (bypassing the normal delivery-gated check)
+// 4. Assign the ship directly to the task
+//
+// This is necessary because:
+// - COLLECT_SELL tasks are normally gated by deliveries being recorded
+// - But ships may already have cargo from previous interrupted operations
+// - These ships need to sell their cargo immediately, not wait for new deliveries
+func (h *RunParallelManufacturingCoordinatorHandler) handleShipsWithExistingCargo(
+	ctx context.Context,
+	cmd *RunParallelManufacturingCoordinatorCommand,
+	idleShips map[string]*navigation.Ship,
+	maxConcurrentTasks int,
+) map[string]*navigation.Ship {
+	logger := common.LoggerFromContext(ctx)
+
+	if h.taskRepo == nil {
+		return idleShips
+	}
+
+	// Check how many tasks are currently assigned
+	h.mu.RLock()
+	assignedCount := len(h.assignedTasks)
+	h.mu.RUnlock()
+
+	if assignedCount >= maxConcurrentTasks {
+		return idleShips
+	}
+
+	// Find ships with cargo
+	shipsWithCargo := make(map[string]*navigation.Ship)
+	for symbol, ship := range idleShips {
+		if ship.CargoUnits() > 0 {
+			shipsWithCargo[symbol] = ship
+		}
+	}
+
+	if len(shipsWithCargo) == 0 {
+		return idleShips
+	}
+
+	logger.Log("INFO", "Found idle ships with cargo - checking for matching COLLECT_SELL tasks", map[string]interface{}{
+		"ships_with_cargo": len(shipsWithCargo),
+	})
+
+	// Get all active pipelines to find PENDING COLLECT_SELL tasks
+	h.mu.RLock()
+	pipelineIDs := make([]string, 0, len(h.activePipelines))
+	for id := range h.activePipelines {
+		pipelineIDs = append(pipelineIDs, id)
+	}
+	h.mu.RUnlock()
+
+	// For each ship with cargo, try to find a matching PENDING COLLECT_SELL task
+	for shipSymbol, ship := range shipsWithCargo {
+		if assignedCount >= maxConcurrentTasks {
+			break
+		}
+
+		// Get the cargo type(s) from the ship
+		cargo := ship.Cargo()
+		if cargo == nil || len(cargo.Inventory) == 0 {
+			continue
+		}
+
+		// Use the primary cargo type (most units)
+		var primaryCargo string
+		var maxUnits int
+		for _, item := range cargo.Inventory {
+			if item.Units > maxUnits {
+				primaryCargo = item.Symbol
+				maxUnits = item.Units
+			}
+		}
+
+		// Find a PENDING COLLECT_SELL task for this cargo type
+		var matchingTask *manufacturing.ManufacturingTask
+		for _, pipelineID := range pipelineIDs {
+			tasks, err := h.taskRepo.FindByPipelineID(ctx, pipelineID)
+			if err != nil {
+				continue
+			}
+
+			for _, task := range tasks {
+				if task.TaskType() == manufacturing.TaskTypeCollectSell &&
+					task.Status() == manufacturing.TaskStatusPending &&
+					task.Good() == primaryCargo {
+					matchingTask = task
+					break
+				}
+			}
+
+			if matchingTask != nil {
+				break
+			}
+		}
+
+		if matchingTask == nil {
+			// No matching task - create an ad-hoc sell task for orphaned cargo
+			logger.Log("INFO", "No matching COLLECT_SELL task - creating ad-hoc sell task for orphaned cargo", map[string]interface{}{
+				"ship":        shipSymbol,
+				"cargo_type":  primaryCargo,
+				"cargo_units": maxUnits,
+			})
+
+			// Find best sell market for this cargo
+			sellMarket, err := h.findBestSellMarket(ctx, ship.CurrentLocation().Symbol, primaryCargo, cmd.PlayerID)
+			if err != nil {
+				logger.Log("WARN", "Failed to find sell market for orphaned cargo", map[string]interface{}{
+					"ship":       shipSymbol,
+					"cargo_type": primaryCargo,
+					"error":      err.Error(),
+				})
+				continue
+			}
+
+			// Check if sell market is saturated - skip if HIGH/ABUNDANT to avoid 1-credit sales
+			if h.isSellMarketSaturated(ctx, sellMarket, primaryCargo, cmd.PlayerID) {
+				logger.Log("INFO", "Sell market saturated - holding orphaned cargo until demand returns", map[string]interface{}{
+					"ship":        shipSymbol,
+					"cargo_type":  primaryCargo,
+					"sell_market": sellMarket,
+				})
+				continue
+			}
+
+			// Create an ad-hoc COLLECT_SELL task (it will skip collect since ship already has cargo)
+			// Use empty pipeline ID for ad-hoc tasks - the FK constraint allows NULL
+			adHocTask := manufacturing.NewCollectSellTask(
+				"", // Empty pipeline ID for ad-hoc tasks (stored as NULL in database)
+				cmd.PlayerID,
+				primaryCargo,
+				ship.CurrentLocation().Symbol, // Factory = current location (not used since we skip collect)
+				sellMarket,
+				nil, // No dependencies
+			)
+
+			// Mark immediately ready since ship already has cargo
+			if err := adHocTask.MarkReady(); err != nil {
+				logger.Log("WARN", "Failed to mark ad-hoc task ready", map[string]interface{}{
+					"error": err.Error(),
+				})
+				continue
+			}
+
+			// Persist the ad-hoc task to database for resilient recovery
+			// Note: There's no FK constraint on pipeline_id, so UUID-based ad-hoc IDs work fine
+			if err := h.taskRepo.Create(ctx, adHocTask); err != nil {
+				logger.Log("WARN", "Failed to persist ad-hoc sell task", map[string]interface{}{
+					"ship":       shipSymbol,
+					"cargo_type": primaryCargo,
+					"error":      err.Error(),
+				})
+				continue
+			}
+
+			logger.Log("INFO", "Created and persisted ad-hoc sell task for orphaned cargo", map[string]interface{}{
+				"ship":        shipSymbol,
+				"task_id":     adHocTask.ID()[:8],
+				"cargo_type":  primaryCargo,
+				"cargo_units": maxUnits,
+				"sell_market": sellMarket,
+			})
+
+			// Assign using normal task assignment flow (persists container, assigns ship, starts worker)
+			err = h.assignTaskToShip(ctx, cmd, adHocTask, ship)
+			if err != nil {
+				logger.Log("WARN", "Failed to assign ad-hoc sell task to ship", map[string]interface{}{
+					"ship":  shipSymbol,
+					"error": err.Error(),
+				})
+				// Task is persisted and READY, will be picked up in next assignment cycle
+				h.taskQueue.Enqueue(adHocTask)
+				continue
+			}
+
+			logger.Log("INFO", "Assigned ad-hoc COLLECT_SELL task to ship with orphaned cargo", map[string]interface{}{
+				"ship":        shipSymbol,
+				"task_id":     adHocTask.ID()[:8],
+				"cargo_type":  primaryCargo,
+				"cargo_units": maxUnits,
+				"sell_market": sellMarket,
+			})
+
+			// Remove ship from idle pool
+			delete(idleShips, shipSymbol)
+			assignedCount++
+			continue // Skip the normal matching task flow
+		}
+
+		// Mark the task as READY (bypassing the normal delivery gate)
+		if err := matchingTask.MarkReady(); err != nil {
+			logger.Log("WARN", "Failed to mark COLLECT_SELL task ready for ship with cargo", map[string]interface{}{
+				"task":  matchingTask.ID(),
+				"ship":  shipSymbol,
+				"error": err.Error(),
+			})
+			continue
+		}
+
+		// Persist the task state
+		if err := h.taskRepo.Update(ctx, matchingTask); err != nil {
+			logger.Log("WARN", "Failed to persist COLLECT_SELL task state", map[string]interface{}{
+				"task":  matchingTask.ID(),
+				"error": err.Error(),
+			})
+			continue
+		}
+
+		// Assign the task to this ship directly
+		err := h.assignTaskToShip(ctx, cmd, matchingTask, ship)
+		if err != nil {
+			logger.Log("WARN", "Failed to assign COLLECT_SELL task to ship with cargo", map[string]interface{}{
+				"task":  matchingTask.ID(),
+				"ship":  shipSymbol,
+				"error": err.Error(),
+			})
+			// Task is still READY status, will be picked up in next assignment cycle
+			// Enqueue it so it can be assigned to another ship
+			h.taskQueue.Enqueue(matchingTask)
+			continue
+		}
+
+		logger.Log("INFO", "Assigned COLLECT_SELL task to ship with existing cargo", map[string]interface{}{
+			"task_id":     matchingTask.ID()[:8],
+			"ship":        shipSymbol,
+			"cargo_type":  primaryCargo,
+			"cargo_units": maxUnits,
+		})
+
+		// Remove ship from idle pool
+		delete(idleShips, shipSymbol)
+		assignedCount++
+	}
+
+	return idleShips
 }
 
 // assignTaskToShip assigns a task to a ship by spawning a worker container
@@ -858,7 +1224,9 @@ func (h *RunParallelManufacturingCoordinatorHandler) handleTaskCompletion(
 			"ship":        completion.ShipSymbol,
 			"pipeline_id": completion.PipelineID,
 		})
-		// TODO: Handle task failure (retry, cancel pipeline, etc.)
+
+		// Handle task failure: retry if possible, otherwise mark pipeline as failed
+		h.handleTaskFailure(ctx, completion)
 		return
 	}
 
@@ -876,6 +1244,85 @@ func (h *RunParallelManufacturingCoordinatorHandler) handleTaskCompletion(
 
 	// Check if pipeline is complete
 	h.checkPipelineCompletion(ctx, completion.PipelineID)
+}
+
+// handleTaskFailure handles a failed task by retrying if possible
+func (h *RunParallelManufacturingCoordinatorHandler) handleTaskFailure(
+	ctx context.Context,
+	completion TaskCompletion,
+) {
+	logger := common.LoggerFromContext(ctx)
+
+	if h.taskRepo == nil {
+		return
+	}
+
+	// Fetch the task from the database
+	task, err := h.taskRepo.FindByID(ctx, completion.TaskID)
+	if err != nil || task == nil {
+		logger.Log("WARN", fmt.Sprintf("Failed to fetch task for retry: %v", err), map[string]interface{}{
+			"task_id": completion.TaskID,
+		})
+		return
+	}
+
+	// Check if the task can be retried
+	if task.CanRetry() {
+		retryCount := task.RetryCount()
+		maxRetries := task.MaxRetries()
+
+		// Reset the task for retry (FAILED -> PENDING)
+		if err := task.ResetForRetry(); err != nil {
+			logger.Log("ERROR", fmt.Sprintf("Failed to reset task for retry: %v", err), map[string]interface{}{
+				"task_id": completion.TaskID,
+			})
+			return
+		}
+
+		// Mark as ready (PENDING -> READY)
+		if err := task.MarkReady(); err != nil {
+			logger.Log("ERROR", fmt.Sprintf("Failed to mark task ready after reset: %v", err), map[string]interface{}{
+				"task_id": completion.TaskID,
+			})
+			return
+		}
+
+		// Persist the updated task state
+		if err := h.taskRepo.Update(ctx, task); err != nil {
+			logger.Log("ERROR", fmt.Sprintf("Failed to persist task retry state: %v", err), map[string]interface{}{
+				"task_id": completion.TaskID,
+			})
+			return
+		}
+
+		// Enqueue the task for re-assignment
+		h.taskQueue.Enqueue(task)
+
+		logger.Log("INFO", fmt.Sprintf("Task %s scheduled for retry (%d/%d attempts used)",
+			completion.TaskID[:8], retryCount, maxRetries), map[string]interface{}{
+			"task_id":     completion.TaskID,
+			"task_type":   string(task.TaskType()),
+			"good":        task.Good(),
+			"retry_count": retryCount,
+			"max_retries": maxRetries,
+		})
+	} else {
+		// Task has exhausted all retries - mark pipeline as failed
+		logger.Log("ERROR", fmt.Sprintf("Task %s permanently failed after %d retries",
+			completion.TaskID[:8], task.RetryCount()), map[string]interface{}{
+			"task_id":     completion.TaskID,
+			"task_type":   string(task.TaskType()),
+			"good":        task.Good(),
+			"retry_count": task.RetryCount(),
+			"max_retries": task.MaxRetries(),
+			"pipeline_id": completion.PipelineID,
+		})
+
+		// If this is a pipeline task, check if we should fail the pipeline
+		if completion.PipelineID != "" {
+			h.checkPipelineCompletion(ctx, completion.PipelineID)
+		}
+	}
 }
 
 // updateDependentTasks marks tasks as ready if their dependencies are met
@@ -900,6 +1347,15 @@ func (h *RunParallelManufacturingCoordinatorHandler) updateDependentTasks(
 	for _, task := range tasks {
 		// Skip if not pending
 		if task.Status() != manufacturing.TaskStatusPending {
+			continue
+		}
+
+		// STREAMING MODEL: COLLECT_SELL tasks have no structural dependencies
+		// They are gated by SupplyMonitor which checks:
+		//   1. Factory supply is HIGH/ABUNDANT
+		//   2. At least one delivery has been recorded
+		// Skip them here - they're handled entirely by SupplyMonitor
+		if task.TaskType() == manufacturing.TaskTypeCollectSell {
 			continue
 		}
 
@@ -928,15 +1384,6 @@ func (h *RunParallelManufacturingCoordinatorHandler) updateDependentTasks(
 
 		if !allDepsMet {
 			continue
-		}
-
-		// For COLLECT_SELL tasks, also check if supply is HIGH
-		if task.TaskType() == manufacturing.TaskTypeCollectSell {
-			factory := h.factoryTracker.GetState(task.PipelineID(), task.FactorySymbol(), task.Good())
-			if factory == nil || !factory.IsReadyForCollection() {
-				logger.Log("DEBUG", fmt.Sprintf("%s task %s waiting for supply HIGH", task.TaskType(), task.ID()), nil)
-				continue
-			}
 		}
 
 		// Mark task as ready
@@ -1114,6 +1561,13 @@ func (h *RunParallelManufacturingCoordinatorHandler) createContinuedDeliveryTask
 // checkPipelineCompletion checks if a pipeline is complete and removes it from active
 // EVENT-DRIVEN: When a pipeline completes, triggers an opportunity rescan since our
 // actions may have changed market supply levels.
+// MaxFinalCollections is the number of successful COLLECT_SELL cycles for the final product
+// before a pipeline is considered complete. This allows:
+// - Enough cycles to profit from setup cost
+// - Regular discovery of new opportunities
+// - Natural exit when market conditions change
+const MaxFinalCollections = 3
+
 func (h *RunParallelManufacturingCoordinatorHandler) checkPipelineCompletion(
 	ctx context.Context,
 	pipelineID string,
@@ -1143,18 +1597,57 @@ func (h *RunParallelManufacturingCoordinatorHandler) checkPipelineCompletion(
 			return
 		}
 
+		// Count completed COLLECT_SELL tasks for the FINAL product
+		// This tracks how many successful collection cycles we've done
+		finalCollections := 0
+		for _, task := range tasks {
+			if task.TaskType() == manufacturing.TaskTypeCollectSell &&
+				task.Good() == pipeline.ProductGood() &&
+				task.Status() == manufacturing.TaskStatusCompleted {
+				finalCollections++
+			}
+		}
+
+		// Check if sell market is saturated (supply HIGH or ABUNDANT)
+		// If saturated, complete early to avoid wasting resources
+		sellMarketSaturated := h.isSellMarketSaturated(ctx, pipeline.SellMarket(), pipeline.ProductGood(), pipeline.PlayerID())
+
+		// Determine completion conditions
 		allCompleted := true
 		anyFailed := false
 		for _, task := range tasks {
 			if task.Status() != manufacturing.TaskStatusCompleted {
 				allCompleted = false
 			}
-			if task.Status() == manufacturing.TaskStatusFailed {
+			if task.Status() == manufacturing.TaskStatusFailed && !task.CanRetry() {
 				anyFailed = true
 			}
 		}
 
-		if allCompleted {
+		// COMPLETION CONDITIONS:
+		// 1. All tasks completed (original behavior)
+		// 2. Reached max final collections (new: collection count limit)
+		// 3. Sell market saturated after at least 1 collection (new: market-aware exit)
+		shouldComplete := allCompleted ||
+			(finalCollections >= MaxFinalCollections) ||
+			(finalCollections >= 1 && sellMarketSaturated)
+
+		if shouldComplete && finalCollections > 0 {
+			completionReason := "all_tasks_done"
+			if finalCollections >= MaxFinalCollections {
+				completionReason = fmt.Sprintf("reached_%d_collections", MaxFinalCollections)
+			} else if sellMarketSaturated {
+				completionReason = "sell_market_saturated"
+			}
+
+			logger.Log("INFO", fmt.Sprintf("Pipeline ready for completion: %s", completionReason), map[string]interface{}{
+				"pipeline_id":       pipelineID,
+				"good":              pipeline.ProductGood(),
+				"final_collections": finalCollections,
+				"market_saturated":  sellMarketSaturated,
+				"reason":            completionReason,
+			})
+
 			// Mark pipeline as completed
 			if err := pipeline.Complete(); err != nil {
 				logger.Log("ERROR", fmt.Sprintf("Failed to mark pipeline completed: %v", err), nil)
@@ -1177,12 +1670,14 @@ func (h *RunParallelManufacturingCoordinatorHandler) checkPipelineCompletion(
 					netProfit,
 				)
 
-				logger.Log("INFO", fmt.Sprintf("Pipeline %s completed successfully!", pipelineID), map[string]interface{}{
-					"pipeline_id":   pipelineID,
-					"good":          pipeline.ProductGood(),
-					"total_cost":    pipeline.TotalCost(),
-					"total_revenue": pipeline.TotalRevenue(),
-					"net_profit":    netProfit,
+				logger.Log("INFO", fmt.Sprintf("Pipeline %s completed successfully after %d collections!", pipelineID[:8], finalCollections), map[string]interface{}{
+					"pipeline_id":       pipelineID,
+					"good":              pipeline.ProductGood(),
+					"final_collections": finalCollections,
+					"total_cost":        pipeline.TotalCost(),
+					"total_revenue":     pipeline.TotalRevenue(),
+					"net_profit":        netProfit,
+					"completion_reason": completionReason,
 				})
 			}
 		} else if anyFailed {
@@ -1245,6 +1740,26 @@ func (h *RunParallelManufacturingCoordinatorHandler) recoverState(ctx context.Co
 		return fmt.Errorf("failed to load pipelines: %w", err)
 	}
 
+	// Start any PLANNING pipelines (they were never started before crash)
+	startedPipelines := make([]*manufacturing.ManufacturingPipeline, 0)
+	for _, pipeline := range pipelines {
+		if pipeline.Status() == manufacturing.PipelineStatusPlanning {
+			if err := pipeline.Start(); err != nil {
+				logger.Log("WARN", fmt.Sprintf("Failed to start recovered PLANNING pipeline %s: %v", pipeline.ID()[:8], err), nil)
+			} else {
+				logger.Log("INFO", fmt.Sprintf("Started recovered PLANNING pipeline %s", pipeline.ID()[:8]), nil)
+				startedPipelines = append(startedPipelines, pipeline)
+			}
+		}
+	}
+
+	// Persist status changes for started pipelines
+	for _, pipeline := range startedPipelines {
+		if h.pipelineRepo != nil {
+			_ = h.pipelineRepo.Update(ctx, pipeline)
+		}
+	}
+
 	h.mu.Lock()
 	for _, pipeline := range pipelines {
 		h.activePipelines[pipeline.ID()] = pipeline
@@ -1294,6 +1809,15 @@ func (h *RunParallelManufacturingCoordinatorHandler) recoverState(ctx context.Co
 
 		// Step 2b: Re-evaluate PENDING tasks for readiness
 		if task.Status() == manufacturing.TaskStatusPending {
+			// STREAMING MODEL: COLLECT_SELL tasks have no structural dependencies
+			// They are gated by SupplyMonitor which checks:
+			//   1. Factory supply is HIGH/ABUNDANT
+			//   2. At least one delivery has been recorded
+			// Skip them here - they're handled entirely by SupplyMonitor
+			if task.TaskType() == manufacturing.TaskTypeCollectSell {
+				continue
+			}
+
 			// Check if dependencies are met
 			allDepsMet := true
 			for _, depID := range task.DependsOn() {
@@ -1318,7 +1842,48 @@ func (h *RunParallelManufacturingCoordinatorHandler) recoverState(ctx context.Co
 		}
 	}
 
-	logger.Log("INFO", fmt.Sprintf("Recovered %d tasks: %d ready, %d reset from interrupted state", len(tasks), readyCount, interruptedCount), nil)
+	// Step 2d: Recover FAILED tasks that can be retried
+	// FindIncomplete excludes FAILED tasks, so we need to load and retry them separately
+	retriedCount := 0
+	failedTasks, err := h.taskRepo.FindByStatus(ctx, playerID, manufacturing.TaskStatusFailed)
+	if err != nil {
+		logger.Log("WARN", fmt.Sprintf("Failed to load failed tasks for retry: %v", err), nil)
+	} else {
+		for _, task := range failedTasks {
+			if task.CanRetry() {
+				retryCount := task.RetryCount()
+
+				// Reset the task for retry (FAILED -> PENDING)
+				if err := task.ResetForRetry(); err != nil {
+					logger.Log("WARN", fmt.Sprintf("Failed to reset task %s for retry: %v", task.ID()[:8], err), nil)
+					continue
+				}
+
+				// Mark as ready (PENDING -> READY)
+				if err := task.MarkReady(); err != nil {
+					logger.Log("WARN", fmt.Sprintf("Failed to mark task %s ready: %v", task.ID()[:8], err), nil)
+					continue
+				}
+
+				// Persist the updated task state
+				if err := h.taskRepo.Update(ctx, task); err != nil {
+					logger.Log("WARN", fmt.Sprintf("Failed to persist task %s retry state: %v", task.ID()[:8], err), nil)
+					continue
+				}
+
+				// Enqueue for assignment
+				h.taskQueue.Enqueue(task)
+				retriedCount++
+				readyCount++
+
+				logger.Log("INFO", fmt.Sprintf("Recovered FAILED task %s (%s %s) for retry (%d/%d attempts used)",
+					task.ID()[:8], task.TaskType(), task.Good(), retryCount, task.MaxRetries()), nil)
+			}
+		}
+	}
+
+	logger.Log("INFO", fmt.Sprintf("Recovered %d tasks: %d ready, %d reset from interrupted state, %d retried from failed",
+		len(tasks)+retriedCount, readyCount, interruptedCount, retriedCount), nil)
 
 	// Step 3: Load factory states (both pending AND ready)
 	// We need to load ALL factory states so the supply monitor can re-check them.
@@ -1354,5 +1919,226 @@ func (h *RunParallelManufacturingCoordinatorHandler) recoverState(ctx context.Co
 	})
 
 	return nil
+}
+
+// findBestSellMarket finds the best market to sell cargo.
+// Used for creating ad-hoc sell tasks for orphaned cargo.
+func (h *RunParallelManufacturingCoordinatorHandler) findBestSellMarket(ctx context.Context, currentLocation string, good string, playerID int) (string, error) {
+	if h.marketRepo == nil {
+		return "", fmt.Errorf("no market repository configured")
+	}
+
+	// Extract system from waypoint symbol (e.g., X1-YZ19-I60 -> X1-YZ19)
+	system := extractSystemFromWaypoint(currentLocation)
+
+	// Find best market buying this good in the system
+	result, err := h.marketRepo.FindBestMarketBuying(ctx, good, system, playerID)
+	if err != nil {
+		return "", err
+	}
+	if result == nil {
+		return "", fmt.Errorf("no market found buying %s in system %s", good, system)
+	}
+
+	return result.WaypointSymbol, nil
+}
+
+// isSellMarketSaturated checks if the sell market has HIGH or ABUNDANT supply.
+// Returns true if we should NOT sell to this market (would get minimal prices).
+func (h *RunParallelManufacturingCoordinatorHandler) isSellMarketSaturated(ctx context.Context, sellMarket string, good string, playerID int) bool {
+	if h.marketRepo == nil {
+		return false // Can't check, assume not saturated
+	}
+
+	marketData, err := h.marketRepo.GetMarketData(ctx, sellMarket, playerID)
+	if err != nil || marketData == nil {
+		return false // Can't check, assume not saturated
+	}
+
+	tradeGood := marketData.FindGood(good)
+	if tradeGood == nil || tradeGood.Supply() == nil {
+		return false
+	}
+
+	supply := *tradeGood.Supply()
+	return supply == "HIGH" || supply == "ABUNDANT"
+}
+
+// StuckPipelineThreshold is how long a pipeline can run without progress before being recycled.
+const StuckPipelineThreshold = 30 * time.Minute
+
+// StuckPipelineFailedTaskThreshold is the max failed tasks before a pipeline is considered stuck.
+const StuckPipelineFailedTaskThreshold = 5
+
+// detectAndRecycleStuckPipelines finds pipelines that aren't making progress and recycles them.
+// A pipeline is considered STUCK if ALL of the following are true:
+//   - Age > 30 minutes (StuckPipelineThreshold)
+//   - Final collections == 0 (no successful product sales)
+//   - One of: failed tasks > 5, OR no active tasks (all pending/failed, none executing)
+//
+// When a pipeline is stuck:
+//  1. Mark all pending tasks as CANCELLED
+//  2. Mark the pipeline as CANCELLED
+//  3. Remove from active pipelines (frees slot for new pipeline)
+func (h *RunParallelManufacturingCoordinatorHandler) detectAndRecycleStuckPipelines(
+	ctx context.Context,
+	cmd *RunParallelManufacturingCoordinatorCommand,
+) {
+	logger := common.LoggerFromContext(ctx)
+
+	if h.taskRepo == nil || h.pipelineRepo == nil {
+		return
+	}
+
+	h.mu.RLock()
+	pipelinesCopy := make(map[string]*manufacturing.ManufacturingPipeline, len(h.activePipelines))
+	for id, p := range h.activePipelines {
+		pipelinesCopy[id] = p
+	}
+	h.mu.RUnlock()
+
+	if len(pipelinesCopy) == 0 {
+		return
+	}
+
+	now := h.clock.Now()
+	stuckPipelines := make([]string, 0)
+
+	for pipelineID, pipeline := range pipelinesCopy {
+		// Check age
+		age := now.Sub(pipeline.CreatedAt())
+		if age < StuckPipelineThreshold {
+			continue
+		}
+
+		// Load tasks for this pipeline
+		tasks, err := h.taskRepo.FindByPipelineID(ctx, pipelineID)
+		if err != nil {
+			logger.Log("WARN", fmt.Sprintf("Failed to load tasks for stuck detection: %v", err), nil)
+			continue
+		}
+
+		// Count task states
+		var finalCollections, failedTasks, activeTasks int
+		for _, task := range tasks {
+			// Count successful final product collections
+			if task.TaskType() == manufacturing.TaskTypeCollectSell &&
+				task.Good() == pipeline.ProductGood() &&
+				task.Status() == manufacturing.TaskStatusCompleted {
+				finalCollections++
+			}
+
+			// Count failed tasks
+			if task.Status() == manufacturing.TaskStatusFailed {
+				failedTasks++
+			}
+
+			// Count active tasks (assigned or executing)
+			if task.Status() == manufacturing.TaskStatusAssigned ||
+				task.Status() == manufacturing.TaskStatusExecuting {
+				activeTasks++
+			}
+		}
+
+		// Skip if we have successful collections - pipeline is working
+		if finalCollections > 0 {
+			continue
+		}
+
+		// Check stuck conditions: too many failures OR no active tasks
+		isStuck := false
+		stuckReason := ""
+
+		if failedTasks >= StuckPipelineFailedTaskThreshold {
+			isStuck = true
+			stuckReason = fmt.Sprintf("%d failed tasks", failedTasks)
+		} else if activeTasks == 0 {
+			// No tasks executing but also no collections - pipeline is stalled
+			isStuck = true
+			stuckReason = "no active tasks"
+		}
+
+		if isStuck {
+			logger.Log("WARN", "Detected stuck pipeline", map[string]interface{}{
+				"pipeline_id": pipelineID[:8],
+				"good":        pipeline.ProductGood(),
+				"age_minutes": int(age.Minutes()),
+				"reason":      stuckReason,
+				"failed":      failedTasks,
+				"active":      activeTasks,
+			})
+			stuckPipelines = append(stuckPipelines, pipelineID)
+		}
+	}
+
+	// Recycle stuck pipelines
+	for _, pipelineID := range stuckPipelines {
+		h.recyclePipeline(ctx, pipelineID, cmd.PlayerID)
+	}
+
+	// If we recycled any pipelines, trigger opportunity scan to fill the slots
+	if len(stuckPipelines) > 0 {
+		logger.Log("INFO", fmt.Sprintf("Recycled %d stuck pipelines - scanning for new opportunities", len(stuckPipelines)), nil)
+		h.scanAndCreatePipelines(ctx, cmd, h.cmdContext.minPurchasePrice, h.cmdContext.maxPipelines)
+	}
+}
+
+// recyclePipeline cancels a stuck pipeline and frees its slot.
+func (h *RunParallelManufacturingCoordinatorHandler) recyclePipeline(
+	ctx context.Context,
+	pipelineID string,
+	playerID int,
+) {
+	logger := common.LoggerFromContext(ctx)
+
+	// Load tasks and cancel pending ones
+	tasks, err := h.taskRepo.FindByPipelineID(ctx, pipelineID)
+	if err == nil {
+		for _, task := range tasks {
+			// Cancel pending/ready tasks
+			if task.Status() == manufacturing.TaskStatusPending ||
+				task.Status() == manufacturing.TaskStatusReady {
+				if err := task.Cancel("pipeline recycled"); err == nil {
+					_ = h.taskRepo.Update(ctx, task)
+				}
+			}
+
+			// Remove from queue if queued
+			h.taskQueue.Remove(task.ID())
+		}
+	}
+
+	// Remove factory states for this pipeline from the in-memory tracker
+	// The database records remain for historical tracking
+	if h.factoryTracker != nil {
+		h.factoryTracker.RemovePipeline(pipelineID)
+	}
+
+	// Mark pipeline as cancelled
+	h.mu.Lock()
+	pipeline, exists := h.activePipelines[pipelineID]
+	if exists {
+		if err := pipeline.Cancel(); err == nil {
+			if h.pipelineRepo != nil {
+				_ = h.pipelineRepo.Update(ctx, pipeline)
+			}
+
+			// Record metrics
+			metrics.RecordManufacturingPipelineCompletion(
+				pipeline.PlayerID(),
+				pipeline.ProductGood(),
+				"cancelled",
+				pipeline.RuntimeDuration(),
+				0,
+			)
+		}
+		delete(h.activePipelines, pipelineID)
+	}
+	h.mu.Unlock()
+
+	logger.Log("INFO", "Recycled stuck pipeline", map[string]interface{}{
+		"pipeline_id": pipelineID[:8],
+		"good":        pipeline.ProductGood(),
+	})
 }
 
