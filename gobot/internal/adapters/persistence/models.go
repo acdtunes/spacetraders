@@ -318,7 +318,7 @@ func (ManufacturingPipelineModel) TableName() string {
 // ManufacturingTaskModel represents the manufacturing_tasks table
 type ManufacturingTaskModel struct {
 	ID             string     `gorm:"column:id;primaryKey;size:64"`
-	PipelineID     string     `gorm:"column:pipeline_id;size:64;index:idx_tasks_pipeline"`
+	PipelineID     *string    `gorm:"column:pipeline_id;size:64;index:idx_tasks_pipeline"` // Nullable for ad-hoc tasks
 	PlayerID       int        `gorm:"column:player_id;not null;index:idx_tasks_player_status"`
 	TaskType       string     `gorm:"column:task_type;size:32;not null"`
 	Status         string     `gorm:"column:status;size:32;not null;index:idx_tasks_status,idx_tasks_player_status"`

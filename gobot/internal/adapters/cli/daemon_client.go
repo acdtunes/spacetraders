@@ -1078,6 +1078,7 @@ func (c *DaemonClient) StartParallelManufacturingCoordinator(
 	maxWorkers int,
 	maxPipelines int,
 	minBalance int,
+	strategy string,
 ) (*StartManufacturingCoordinatorResult, error) {
 	resp, err := c.client.StartParallelManufacturingCoordinator(ctx, &pb.StartParallelManufacturingCoordinatorRequest{
 		PlayerId:     int32(playerID),
@@ -1086,6 +1087,7 @@ func (c *DaemonClient) StartParallelManufacturingCoordinator(
 		MaxWorkers:   int32(maxWorkers),
 		MaxPipelines: int32(maxPipelines),
 		MinBalance:   int32(minBalance),
+		Strategy:     strategy,
 	})
 	if err != nil {
 		return nil, err

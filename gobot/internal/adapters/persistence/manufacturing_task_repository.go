@@ -270,7 +270,11 @@ func (r *GormManufacturingTaskRepository) taskToModel(t *manufacturing.Manufactu
 		errorMsg = &msg
 	}
 
-	var sourceMarket, targetMarket, factorySymbol, assignedShip *string
+	var pipelineID, sourceMarket, targetMarket, factorySymbol, assignedShip *string
+	if t.PipelineID() != "" {
+		s := t.PipelineID()
+		pipelineID = &s
+	}
 	if t.SourceMarket() != "" {
 		s := t.SourceMarket()
 		sourceMarket = &s
@@ -290,7 +294,7 @@ func (r *GormManufacturingTaskRepository) taskToModel(t *manufacturing.Manufactu
 
 	return &ManufacturingTaskModel{
 		ID:             t.ID(),
-		PipelineID:     t.PipelineID(),
+		PipelineID:     pipelineID,
 		PlayerID:       t.PlayerID(),
 		TaskType:       string(t.TaskType()),
 		Status:         string(t.Status()),
@@ -321,7 +325,10 @@ func (r *GormManufacturingTaskRepository) modelToTask(m *ManufacturingTaskModel,
 		errorMsg = *m.ErrorMessage
 	}
 
-	var sourceMarket, targetMarket, factorySymbol, assignedShip string
+	var pipelineID, sourceMarket, targetMarket, factorySymbol, assignedShip string
+	if m.PipelineID != nil {
+		pipelineID = *m.PipelineID
+	}
 	if m.SourceMarket != nil {
 		sourceMarket = *m.SourceMarket
 	}
@@ -337,7 +344,7 @@ func (r *GormManufacturingTaskRepository) modelToTask(m *ManufacturingTaskModel,
 
 	return manufacturing.ReconstituteTask(
 		m.ID,
-		m.PipelineID,
+		pipelineID,
 		m.PlayerID,
 		manufacturing.TaskType(m.TaskType),
 		manufacturing.TaskStatus(m.Status),

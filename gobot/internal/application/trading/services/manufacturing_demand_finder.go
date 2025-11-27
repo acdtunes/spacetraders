@@ -303,3 +303,14 @@ func (f *ManufacturingDemandFinder) GetManufacturableGoods() []string {
 	sort.Strings(result)
 	return result
 }
+
+// SetStrategy configures the acquisition strategy for the supply chain resolver.
+// This controls whether intermediates are bought (prefer-buy) or fabricated (prefer-fabricate).
+//
+// Strategies:
+//   - prefer-buy: Always buy from markets if available (original behavior, may buy at SCARCE prices)
+//   - prefer-fabricate: Fabricate intermediates unless supply is HIGH/ABUNDANT (recursive manufacturing)
+//   - smart: Fabricate only when supply is SCARCE/LIMITED (adaptive)
+func (f *ManufacturingDemandFinder) SetStrategy(strategy string) {
+	f.resolver.SetStrategy(goodsServices.AcquisitionStrategy(strategy))
+}

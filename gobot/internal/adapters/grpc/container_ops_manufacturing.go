@@ -13,7 +13,7 @@ import (
 )
 
 // ParallelManufacturingCoordinator creates a parallel task-based manufacturing coordinator
-func (s *DaemonServer) ParallelManufacturingCoordinator(ctx context.Context, systemSymbol string, playerID int, minPrice int, maxWorkers int, maxPipelines int, minBalance int) (string, error) {
+func (s *DaemonServer) ParallelManufacturingCoordinator(ctx context.Context, systemSymbol string, playerID int, minPrice int, maxWorkers int, maxPipelines int, minBalance int, strategy string) (string, error) {
 	// Create container ID
 	containerID := utils.GenerateContainerID("parallel_manufacturing", systemSymbol)
 
@@ -25,6 +25,7 @@ func (s *DaemonServer) ParallelManufacturingCoordinator(ctx context.Context, sys
 		MinPurchasePrice:   minPrice,
 		MaxConcurrentTasks: maxWorkers,   // Map maxWorkers to MaxConcurrentTasks
 		MaxPipelines:       maxPipelines, // Use provided maxPipelines
+		Strategy:           strategy,     // Acquisition strategy (prefer-buy, prefer-fabricate, smart)
 	}
 
 	// Create container for this operation
@@ -42,6 +43,7 @@ func (s *DaemonServer) ParallelManufacturingCoordinator(ctx context.Context, sys
 			"min_balance":   minBalance,
 			"container_id":  containerID,
 			"mode":          "parallel_task_based",
+			"strategy":      strategy,
 		},
 		nil, // Use default RealClock
 	)

@@ -939,8 +939,14 @@ func (s *daemonServiceImpl) StartParallelManufacturingCoordinator(ctx context.Co
 	// Default min balance (0 = no limit)
 	minBalance := int(req.MinBalance)
 
+	// Default strategy to prefer-fabricate (recursive supply chain manufacturing)
+	strategy := req.Strategy
+	if strategy == "" {
+		strategy = "prefer-fabricate"
+	}
+
 	// Start parallel coordinator via DaemonServer (creates container and runs in background)
-	containerID, err := s.daemon.ParallelManufacturingCoordinator(ctx, req.SystemSymbol, playerID, minPrice, maxWorkers, maxPipelines, minBalance)
+	containerID, err := s.daemon.ParallelManufacturingCoordinator(ctx, req.SystemSymbol, playerID, minPrice, maxWorkers, maxPipelines, minBalance, strategy)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start parallel manufacturing coordinator: %w", err)
 	}

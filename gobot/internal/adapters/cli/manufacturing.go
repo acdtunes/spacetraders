@@ -281,7 +281,7 @@ Examples:
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 
-			result, err := client.StartParallelManufacturingCoordinator(ctx, systemSymbol, playerID, minPrice, maxWorkers, maxPipelines, minBalance)
+			result, err := client.StartParallelManufacturingCoordinator(ctx, systemSymbol, playerID, minPrice, maxWorkers, maxPipelines, minBalance, strategy)
 			if err != nil {
 				return fmt.Errorf("failed to start manufacturing coordinator: %w", err)
 			}
@@ -291,6 +291,7 @@ Examples:
 			fmt.Println("=================================")
 			fmt.Printf("Container ID:   %s\n", result.ContainerID)
 			fmt.Printf("System:         %s\n", result.SystemSymbol)
+			fmt.Printf("Strategy:       %s\n", strategy)
 			fmt.Printf("Min Price:      %d\n", result.MinPrice)
 			fmt.Printf("Max Workers:    %d\n", result.MaxWorkers)
 			fmt.Printf("Max Pipelines:  %d\n", result.MaxPipelines)
@@ -318,7 +319,7 @@ Examples:
 	cmd.Flags().IntVar(&minBalance, "min-balance", 0, "Minimum credit balance to maintain (0 = no limit)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview planned tasks without executing")
 	cmd.Flags().IntVar(&limit, "limit", 3, "Maximum opportunities to plan in dry-run mode")
-	cmd.Flags().StringVar(&strategy, "strategy", "prefer-buy", "Acquisition strategy: prefer-buy, prefer-fabricate, smart")
+	cmd.Flags().StringVar(&strategy, "strategy", "prefer-fabricate", "Acquisition strategy: prefer-buy, prefer-fabricate, smart")
 	cmd.MarkFlagRequired("system")
 
 	return cmd

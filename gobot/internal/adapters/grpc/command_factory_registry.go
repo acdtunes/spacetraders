@@ -348,13 +348,30 @@ func (s *DaemonServer) registerCommandFactories() {
 			}
 		}
 
+		maxPipelines := 3
+		if val, ok := config["max_pipelines"]; ok {
+			switch v := val.(type) {
+			case int:
+				maxPipelines = v
+			case float64:
+				maxPipelines = int(v)
+			}
+		}
+
+		// Extract strategy (default: prefer-fabricate for recursive manufacturing)
+		strategy := "prefer-fabricate"
+		if val, ok := config["strategy"].(string); ok && val != "" {
+			strategy = val
+		}
+
 		return &tradingCmd.RunParallelManufacturingCoordinatorCommand{
 			SystemSymbol:       systemSymbol,
 			PlayerID:           playerID,
 			ContainerID:        containerID,
 			MinPurchasePrice:   minPrice,
 			MaxConcurrentTasks: maxWorkers,
-			MaxPipelines:       3,
+			MaxPipelines:       maxPipelines,
+			Strategy:           strategy,
 		}, nil
 	}
 }

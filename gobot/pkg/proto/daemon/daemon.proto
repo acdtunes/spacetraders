@@ -639,6 +639,7 @@ message StartParallelManufacturingCoordinatorRequest {
   int32 max_workers = 4; // Maximum parallel workers (default 5)
   int32 min_balance = 5; // Minimum credit balance to maintain (default 0 = no limit)
   int32 max_pipelines = 6; // Maximum concurrent pipelines/opportunities (default 3)
+  string strategy = 7; // Acquisition strategy: prefer-buy, prefer-fabricate, smart (default: prefer-fabricate)
 }
 
 // StartParallelManufacturingCoordinatorResponse returns coordinator details
