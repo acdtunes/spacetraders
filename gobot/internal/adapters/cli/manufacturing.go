@@ -126,12 +126,14 @@ Examples:
 			waypointRepo := persistence.NewGormWaypointRepository(db)
 			waypointProvider := newDBWaypointProviderAdapter(waypointRepo)
 			supplyChainResolver := goodsServices.NewSupplyChainResolver(goods.ExportToImportMap, marketRepo)
+			pipelineRepo := persistence.NewGormManufacturingPipelineRepository(db)
 
 			demandFinder := services.NewManufacturingDemandFinder(
 				marketRepo,
 				waypointProvider,
 				goods.ExportToImportMap,
 				supplyChainResolver,
+				pipelineRepo,
 			)
 
 			// Scan for opportunities
@@ -370,12 +372,14 @@ func runDryRunMode(systemSymbol string, playerIdent *PlayerIdentifier, minPrice 
 	supplyChainResolver := goodsServices.NewSupplyChainResolverWithStrategy(goods.ExportToImportMap, marketRepo, strategy)
 	// For dry-run, we only need marketRepo for market lookups - pass nil for unused deps
 	marketLocator := goodsServices.NewMarketLocator(marketRepo, nil, nil, nil)
+	pipelineRepoDryRun := persistence.NewGormManufacturingPipelineRepository(db)
 
 	demandFinder := services.NewManufacturingDemandFinder(
 		marketRepo,
 		waypointProvider,
 		goods.ExportToImportMap,
 		supplyChainResolver,
+		pipelineRepoDryRun,
 	)
 
 	pipelinePlanner := services.NewPipelinePlanner(marketLocator)

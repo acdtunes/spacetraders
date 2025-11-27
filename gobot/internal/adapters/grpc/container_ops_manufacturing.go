@@ -7,8 +7,10 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	tradingCmd "github.com/andrescamacho/spacetraders-go/internal/application/trading/commands"
+	"github.com/andrescamacho/spacetraders-go/internal/application/trading/services/manufacturing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
+	domainMfg "github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )
 
@@ -102,17 +104,36 @@ func (s *DaemonServer) PersistManufacturingTaskWorkerContainer(
 	playerID uint,
 	command interface{},
 ) error {
-	// Type assert to RunManufacturingTaskWorkerCommand
-	cmd, ok := command.(*tradingCmd.RunManufacturingTaskWorkerCommand)
-	if !ok {
+	// Extract fields from either command type (to avoid circular imports)
+	var shipSymbol string
+	var cmdPlayerID int
+	var task *domainMfg.ManufacturingTask
+	var coordinatorID string
+	var pipelineNumber int
+	var productGood string
+
+	switch cmd := command.(type) {
+	case *tradingCmd.RunManufacturingTaskWorkerCommand:
+		shipSymbol = cmd.ShipSymbol
+		cmdPlayerID = cmd.PlayerID
+		task = cmd.Task
+		coordinatorID = cmd.CoordinatorID
+		pipelineNumber = cmd.PipelineNumber
+		productGood = cmd.ProductGood
+	case *manufacturing.WorkerCommand:
+		shipSymbol = cmd.ShipSymbol
+		cmdPlayerID = cmd.PlayerID
+		task = cmd.Task
+		coordinatorID = cmd.CoordinatorID
+		pipelineNumber = cmd.PipelineNumber
+		productGood = cmd.ProductGood
+	default:
 		return daemon.ErrInvalidCommandType
 	}
 
-	// Get task details
-	task := cmd.Task
 	var parentContainerID *string
-	if cmd.CoordinatorID != "" {
-		parentContainerID = &cmd.CoordinatorID
+	if coordinatorID != "" {
+		parentContainerID = &coordinatorID
 	}
 
 	// Create container entity - store task reference (task is already persisted separately)
@@ -123,15 +144,15 @@ func (s *DaemonServer) PersistManufacturingTaskWorkerContainer(
 		1, // Single iteration for worker containers
 		parentContainerID,
 		map[string]interface{}{
-			"ship_symbol":     cmd.ShipSymbol,
-			"player_id":       cmd.PlayerID,
+			"ship_symbol":     shipSymbol,
+			"player_id":       cmdPlayerID,
 			"task_id":         task.ID(),
 			"task_type":       string(task.TaskType()),
 			"good":            task.Good(),
 			"pipeline_id":     task.PipelineID(),
-			"coordinator_id":  cmd.CoordinatorID,
-			"pipeline_number": cmd.PipelineNumber,
-			"product_good":    cmd.ProductGood,
+			"coordinator_id":  coordinatorID,
+			"pipeline_number": pipelineNumber,
+			"product_good":    productGood,
 		},
 		nil, // Use default RealClock
 	)

@@ -466,16 +466,16 @@ func run(cfg *config.Config) error {
 	}
 
 	// Manufacturing handlers (depends on daemonClientLocal)
-	// Create demand finder for manufacturing opportunities
-	manufacturingDemandFinder := tradingServices.NewManufacturingDemandFinder(
-		tradingMarketRepo, graphService, goods.ExportToImportMap, goodsResolver,
-	)
-
-	// Parallel manufacturing handlers
-	// Create manufacturing repositories
+	// Create manufacturing repositories (pipeline repo needed by demand finder)
 	manufacturingPipelineRepo := persistence.NewGormManufacturingPipelineRepository(db)
 	manufacturingTaskRepo := persistence.NewGormManufacturingTaskRepository(db)
 	manufacturingFactoryStateRepo := persistence.NewGormManufacturingFactoryStateRepository(db)
+
+	// Create demand finder for manufacturing opportunities
+	// Pipeline repo is used to filter out goods that already have active pipelines
+	manufacturingDemandFinder := tradingServices.NewManufacturingDemandFinder(
+		tradingMarketRepo, graphService, goods.ExportToImportMap, goodsResolver, manufacturingPipelineRepo,
+	)
 
 	// Create task queue (in-memory with DB backing)
 	taskQueue := tradingServices.NewTaskQueue()

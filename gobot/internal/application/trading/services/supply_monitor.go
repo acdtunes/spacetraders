@@ -190,6 +190,21 @@ func (m *SupplyMonitor) checkFactorySupply(ctx context.Context, factory *manufac
 		}
 	}
 
+	// CONTINUOUS DELIVERY: If supply is STILL below HIGH/ABUNDANT and factory is active,
+	// create more ACQUIRE_DELIVER tasks if none are pending.
+	// This fixes the bug where pipeline stalls because supply never reached HIGH to begin with.
+	supplyBelowTarget := supply != "HIGH" && supply != "ABUNDANT"
+	if supplyBelowTarget && factory.HasReceivedAnyDelivery() {
+		if !m.hasPendingAcquireDeliverTasks(ctx, factory) {
+			logger.Log("INFO", "Factory supply still below target with no pending deliveries - creating more tasks", map[string]interface{}{
+				"factory": factory.FactorySymbol(),
+				"output":  factory.OutputGood(),
+				"supply":  supply,
+			})
+			m.createAcquireDeliverTasksForFactory(ctx, factory)
+		}
+	}
+
 	// Check if now ready for collection
 	if factory.IsReadyForCollection() {
 		logger.Log("INFO", "Factory ready for collection", map[string]interface{}{
@@ -572,7 +587,8 @@ func (m *SupplyMonitor) SetPollInterval(interval time.Duration) {
 // Algorithm:
 //  1. Get market data for the factory to find IMPORT goods (factory inputs)
 //  2. Check if there are already pending ACQUIRE_DELIVER tasks for these inputs
-//  3. For each input without a pending task, find an EXPORT market and create task
+//  3. Check each input's supply level at the factory (INPUT BALANCING)
+//  4. For each input that is LOW and without a pending task, find an EXPORT market and create task
 func (m *SupplyMonitor) createAcquireDeliverTasksForFactory(ctx context.Context, factory *manufacturing.FactoryState) {
 	logger := common.LoggerFromContext(ctx)
 
@@ -593,11 +609,22 @@ func (m *SupplyMonitor) createAcquireDeliverTasksForFactory(ctx context.Context,
 		return
 	}
 
-	// Find all IMPORT goods - these are the raw materials the factory needs
-	var factoryInputs []string
+	// Find all IMPORT goods with their supply levels - these are the raw materials the factory needs
+	type inputWithSupply struct {
+		good   string
+		supply string
+	}
+	var factoryInputs []inputWithSupply
 	for _, tradeGood := range marketData.TradeGoods() {
 		if tradeGood.TradeType() == market.TradeTypeImport {
-			factoryInputs = append(factoryInputs, tradeGood.Symbol())
+			supply := "MODERATE" // Default if not available
+			if tradeGood.Supply() != nil {
+				supply = *tradeGood.Supply()
+			}
+			factoryInputs = append(factoryInputs, inputWithSupply{
+				good:   tradeGood.Symbol(),
+				supply: supply,
+			})
 		}
 	}
 
@@ -634,19 +661,33 @@ func (m *SupplyMonitor) createAcquireDeliverTasksForFactory(ctx context.Context,
 
 	systemSymbol := extractSystem(factory.FactorySymbol())
 	tasksCreated := 0
+	skippedHighSupply := 0
 
 	// Create ACQUIRE_DELIVER tasks for inputs that don't have pending tasks
-	for _, inputGood := range factoryInputs {
-		if pendingInputs[inputGood] {
+	// INPUT BALANCING: Only deliver inputs that are actually needed (not already HIGH/ABUNDANT)
+	for _, input := range factoryInputs {
+		if pendingInputs[input.good] {
 			continue // Already has a pending task
 		}
 
-		// Find export market to buy this input from
-		exportMarket, err := m.marketLocator.FindExportMarket(ctx, inputGood, systemSymbol, factory.PlayerID())
-		if err != nil {
-			logger.Log("WARN", fmt.Sprintf("No export market for %s: %v", inputGood, err), map[string]interface{}{
+		// INPUT BALANCING OPTIMIZATION: Skip inputs that already have HIGH/ABUNDANT supply at factory
+		// This prevents over-delivering one input while another starves
+		if input.supply == "HIGH" || input.supply == "ABUNDANT" {
+			logger.Log("DEBUG", "Input already abundant at factory, skipping delivery", map[string]interface{}{
 				"factory": factory.FactorySymbol(),
-				"input":   inputGood,
+				"input":   input.good,
+				"supply":  input.supply,
+			})
+			skippedHighSupply++
+			continue
+		}
+
+		// Find export market to buy this input from
+		exportMarket, err := m.marketLocator.FindExportMarket(ctx, input.good, systemSymbol, factory.PlayerID())
+		if err != nil {
+			logger.Log("WARN", fmt.Sprintf("No export market for %s: %v", input.good, err), map[string]interface{}{
+				"factory": factory.FactorySymbol(),
+				"input":   input.good,
 			})
 			continue
 		}
@@ -655,7 +696,7 @@ func (m *SupplyMonitor) createAcquireDeliverTasksForFactory(ctx context.Context,
 		task := manufacturing.NewAcquireDeliverTask(
 			factory.PipelineID(),
 			factory.PlayerID(),
-			inputGood,
+			input.good,
 			exportMarket.WaypointSymbol, // Where to buy
 			factory.FactorySymbol(),     // Where to deliver
 			nil,                         // No dependencies
@@ -684,19 +725,49 @@ func (m *SupplyMonitor) createAcquireDeliverTasksForFactory(ctx context.Context,
 		logger.Log("INFO", "Created ACQUIRE_DELIVER task for factory replenishment", map[string]interface{}{
 			"factory":      factory.FactorySymbol(),
 			"output":       factory.OutputGood(),
-			"input":        inputGood,
+			"input":        input.good,
+			"input_supply": input.supply,
 			"source":       exportMarket.WaypointSymbol,
 			"task_id":      task.ID()[:8],
 		})
 	}
 
-	if tasksCreated > 0 {
-		logger.Log("INFO", "Created ACQUIRE_DELIVER tasks for factory replenishment", map[string]interface{}{
-			"factory":       factory.FactorySymbol(),
-			"output":        factory.OutputGood(),
-			"tasks_created": tasksCreated,
-			"total_inputs":  len(factoryInputs),
+	if tasksCreated > 0 || skippedHighSupply > 0 {
+		logger.Log("INFO", "ACQUIRE_DELIVER task creation summary", map[string]interface{}{
+			"factory":             factory.FactorySymbol(),
+			"output":              factory.OutputGood(),
+			"tasks_created":       tasksCreated,
+			"skipped_high_supply": skippedHighSupply,
+			"total_inputs":        len(factoryInputs),
 		})
+	}
+	if tasksCreated > 0 {
 		m.notifyTaskReady()
 	}
+}
+
+// hasPendingAcquireDeliverTasks checks if there are any pending/ready/assigned/executing
+// ACQUIRE_DELIVER tasks for this factory. Used to avoid creating duplicate delivery tasks.
+func (m *SupplyMonitor) hasPendingAcquireDeliverTasks(ctx context.Context, factory *manufacturing.FactoryState) bool {
+	if m.taskRepo == nil {
+		return false
+	}
+
+	tasks, err := m.taskRepo.FindByPipelineID(ctx, factory.PipelineID())
+	if err != nil {
+		return false // Assume no pending if we can't check
+	}
+
+	for _, task := range tasks {
+		if task.TaskType() == manufacturing.TaskTypeAcquireDeliver &&
+			task.FactorySymbol() == factory.FactorySymbol() &&
+			(task.Status() == manufacturing.TaskStatusPending ||
+				task.Status() == manufacturing.TaskStatusReady ||
+				task.Status() == manufacturing.TaskStatusAssigned ||
+				task.Status() == manufacturing.TaskStatusExecuting) {
+			return true
+		}
+	}
+
+	return false
 }

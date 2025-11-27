@@ -82,7 +82,9 @@ func (p *PipelinePlanner) CreatePipeline(
 	// Factory states to create
 	factoryStates := make([]*manufacturing.FactoryState, 0)
 
-	// The root node is always FABRICATE - it produces the final good
+	// The root node can be:
+	// - FABRICATE: produces the final good via manufacturing (needs factory state)
+	// - BUY: direct arbitrage (HIGH/ABUNDANT source, just buy and sell)
 	// Its destination is the sell market (not another factory)
 	sellMarket := opp.SellMarket().Symbol
 
@@ -122,6 +124,12 @@ func (p *PipelinePlanner) createTasksFromTreeAtomic(
 	factoryStates *[]*manufacturing.FactoryState,
 ) (string, error) {
 	if node.AcquisitionMethod == goods.AcquisitionBuy {
+		if isFinalProduct {
+			// DIRECT ARBITRAGE: Root node with HIGH/ABUNDANT source
+			// Create COLLECT_SELL (buy from source, sell to destination)
+			// No factory state needed - just buy and sell
+			return p.createDirectArbitrageTask(planCtx, node, destination)
+		}
 		// Leaf node: Create ACQUIRE_DELIVER (buy from source AND deliver to destination)
 		return p.createAcquireDeliverTask(planCtx, node, destination)
 	}
@@ -173,27 +181,93 @@ func (p *PipelinePlanner) createTasksFromTreeAtomic(
 	)
 	*factoryStates = append(*factoryStates, factoryState)
 
-	// Create COLLECT_SELL task: collect from this factory, sell/deliver to destination
-	// STREAMING MODEL: No structural dependencies - collection is gated by:
-	//   1. Factory supply level (HIGH/ABUNDANT) checked by SupplyMonitor
-	//   2. At least one delivery recorded (prevents premature collection)
-	// This allows ACQUIRE_DELIVER and COLLECT_SELL to run in parallel within a pipeline
-	collectSellTask := manufacturing.NewCollectSellTask(
+	// Store childTaskIDs for reference (used by factory state to track expected deliveries)
+	_ = childTaskIDs
+
+	// Create task based on whether this is the final product or an intermediate
+	// - Final product: COLLECT_SELL (collect from factory → sell to market)
+	// - Intermediate: ACQUIRE_DELIVER (collect from factory → deliver to next factory)
+	var task *manufacturing.ManufacturingTask
+
+	if isFinalProduct {
+		// COLLECT_SELL for final product: collect from factory, sell to market
+		// STREAMING MODEL: No structural dependencies - collection is gated by:
+		//   1. Factory supply level (HIGH/ABUNDANT) checked by SupplyMonitor
+		//   2. At least one delivery recorded (prevents premature collection)
+		task = manufacturing.NewCollectSellTask(
+			planCtx.pipeline.ID(),
+			planCtx.playerID,
+			node.Good,
+			factoryMarket.WaypointSymbol, // Where to collect from
+			destination,                   // Where to sell to (market)
+			[]string{},                    // No structural dependencies - gated by supply monitor
+		)
+	} else {
+		// ACQUIRE_DELIVER for intermediate product: collect from factory, deliver to next factory
+		// This task type is used for both:
+		//   1. Buying raw materials from export markets (leaf nodes)
+		//   2. Collecting intermediate goods from factories (FABRICATE nodes)
+		task = manufacturing.NewAcquireDeliverTask(
+			planCtx.pipeline.ID(),
+			planCtx.playerID,
+			node.Good,
+			factoryMarket.WaypointSymbol, // Where to collect from (this factory)
+			destination,                   // Where to deliver to (next factory)
+			[]string{},                    // No structural dependencies - gated by supply monitor
+		)
+	}
+
+	planCtx.tasks = append(planCtx.tasks, task)
+
+	// Track that this task produces this good
+	planCtx.tasksByGood[node.Good] = task
+
+	return task.ID(), nil
+}
+
+// createDirectArbitrageTask creates a COLLECT_SELL task for direct arbitrage.
+// This is used when the root node has AcquisitionBuy (HIGH/ABUNDANT source).
+// The task buys from the source market and sells to the destination (no factory involved).
+func (p *PipelinePlanner) createDirectArbitrageTask(
+	planCtx *PlanningContext,
+	node *goods.SupplyChainNode,
+	destination string,
+) (string, error) {
+	// Find source market (where to buy from)
+	var sourceMarket string
+	if node.WaypointSymbol != "" {
+		// Use the market already identified by supply chain resolver
+		sourceMarket = node.WaypointSymbol
+	} else {
+		// Find export market
+		market, err := p.marketLocator.FindExportMarket(
+			planCtx.ctx,
+			node.Good,
+			planCtx.systemSymbol,
+			planCtx.playerID,
+		)
+		if err != nil {
+			return "", fmt.Errorf("failed to find market for %s: %w", node.Good, err)
+		}
+		sourceMarket = market.WaypointSymbol
+	}
+
+	// Create COLLECT_SELL task: buy from source, sell to destination
+	// This is the only task in a direct arbitrage pipeline
+	task := manufacturing.NewCollectSellTask(
 		planCtx.pipeline.ID(),
 		planCtx.playerID,
 		node.Good,
-		factoryMarket.WaypointSymbol, // Where to collect from
-		destination,                   // Where to sell/deliver to
-		[]string{},                    // No structural dependencies - gated by supply monitor
+		sourceMarket,  // Where to buy from (HIGH/ABUNDANT source)
+		destination,   // Where to sell to (market)
+		[]string{},    // No dependencies - direct arbitrage is ready immediately
 	)
-	// Store childTaskIDs for reference (used by factory state to track expected deliveries)
-	_ = childTaskIDs
-	planCtx.tasks = append(planCtx.tasks, collectSellTask)
+	planCtx.tasks = append(planCtx.tasks, task)
 
 	// Track that this task produces this good
-	planCtx.tasksByGood[node.Good] = collectSellTask
+	planCtx.tasksByGood[node.Good] = task
 
-	return collectSellTask.ID(), nil
+	return task.ID(), nil
 }
 
 // createAcquireDeliverTask creates an atomic ACQUIRE_DELIVER task

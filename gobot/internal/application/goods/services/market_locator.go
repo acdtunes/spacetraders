@@ -360,10 +360,12 @@ func (l *MarketLocator) FindFactoryForProduction(
 			continue // Skip markets we can't access
 		}
 
-		// Check if this market EXPORTS the output good (sells it)
+		// Check if this market EXPORTS the output good (actually produces it)
+		// CRITICAL: Must check trade_type = EXPORT, not just that the good exists!
+		// A market can IMPORT a good (consume it) without producing it.
 		outputTradeGood := marketData.FindGood(outputGood)
-		if outputTradeGood == nil {
-			continue // Market doesn't produce this good
+		if outputTradeGood == nil || outputTradeGood.TradeType() != market.TradeTypeExport {
+			continue // Market doesn't produce (export) this good
 		}
 
 		// Check if this market IMPORTS all input goods (buys them)
