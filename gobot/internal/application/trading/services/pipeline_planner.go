@@ -31,6 +31,12 @@ func NewPipelinePlanner(marketLocator *goodsServices.MarketLocator) *PipelinePla
 	}
 }
 
+// MarketLocator returns the market locator used by this planner.
+// This allows other services (like SupplyMonitor) to share the same locator.
+func (p *PipelinePlanner) MarketLocator() *goodsServices.MarketLocator {
+	return p.marketLocator
+}
+
 // PlanningContext holds state during pipeline planning
 type PlanningContext struct {
 	ctx          context.Context
@@ -121,23 +127,32 @@ func (p *PipelinePlanner) createTasksFromTreeAtomic(
 	}
 
 	// FABRICATE node: This node produces a good at a factory
-	// 1. Process all children (they deliver inputs to THIS factory)
-	// 2. Create COLLECT_SELL task (collect from this factory, deliver to destination)
+	// 1. Collect required input goods from children
+	// 2. Find factory that produces output AND accepts all inputs
+	// 3. Process children (they deliver inputs to THIS factory)
+	// 4. Create COLLECT_SELL task (collect from this factory, deliver to destination)
 
-	// Find factory location for this good
-	factoryMarket, err := p.marketLocator.FindExportMarket(
+	// First, collect the required input goods from children
+	requiredInputs := make([]string, 0, len(node.Children))
+	for _, child := range node.Children {
+		requiredInputs = append(requiredInputs, child.Good)
+	}
+
+	// Find factory that produces the output good AND accepts all input goods
+	// This fixes the bug where a factory was selected that doesn't trade the inputs
+	factoryMarket, err := p.marketLocator.FindFactoryForProduction(
 		planCtx.ctx,
-		node.Good,
+		node.Good,       // Output good (factory must SELL this)
+		requiredInputs,  // Input goods (factory must BUY these)
 		planCtx.systemSymbol,
 		planCtx.playerID,
 	)
 	if err != nil {
-		return "", fmt.Errorf("failed to find factory for %s: %w", node.Good, err)
+		return "", fmt.Errorf("failed to find factory for %s with inputs %v: %w", node.Good, requiredInputs, err)
 	}
 
 	// Process all children - they deliver their goods to THIS factory
 	childTaskIDs := make([]string, 0, len(node.Children))
-	requiredInputs := make([]string, 0, len(node.Children))
 
 	for _, child := range node.Children {
 		// Child delivers to THIS factory (not the final destination)
@@ -146,7 +161,6 @@ func (p *PipelinePlanner) createTasksFromTreeAtomic(
 			return "", err
 		}
 		childTaskIDs = append(childTaskIDs, childTaskID)
-		requiredInputs = append(requiredInputs, child.Good)
 	}
 
 	// Create factory state for tracking production
@@ -160,15 +174,20 @@ func (p *PipelinePlanner) createTasksFromTreeAtomic(
 	*factoryStates = append(*factoryStates, factoryState)
 
 	// Create COLLECT_SELL task: collect from this factory, sell/deliver to destination
-	// This atomic task waits for HIGH supply, collects, then delivers
+	// STREAMING MODEL: No structural dependencies - collection is gated by:
+	//   1. Factory supply level (HIGH/ABUNDANT) checked by SupplyMonitor
+	//   2. At least one delivery recorded (prevents premature collection)
+	// This allows ACQUIRE_DELIVER and COLLECT_SELL to run in parallel within a pipeline
 	collectSellTask := manufacturing.NewCollectSellTask(
 		planCtx.pipeline.ID(),
 		planCtx.playerID,
 		node.Good,
 		factoryMarket.WaypointSymbol, // Where to collect from
 		destination,                   // Where to sell/deliver to
-		childTaskIDs,                  // Depends on all input deliveries
+		[]string{},                    // No structural dependencies - gated by supply monitor
 	)
+	// Store childTaskIDs for reference (used by factory state to track expected deliveries)
+	_ = childTaskIDs
 	planCtx.tasks = append(planCtx.tasks, collectSellTask)
 
 	// Track that this task produces this good
