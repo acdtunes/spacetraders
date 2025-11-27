@@ -45,6 +45,9 @@ func (s *MarketScanner) ScanAndSaveMarket(ctx context.Context, playerID uint, wa
 
 	logger := common.LoggerFromContext(ctx)
 
+	// Get existing market data for price history comparison
+	existingMarket, _ := s.marketRepo.GetMarketData(ctx, waypointSymbol, int(playerID))
+
 	token, err := common.PlayerTokenFromContext(ctx)
 	if err != nil {
 		logger.Log("ERROR", fmt.Sprintf("[MarketScanner] Failed to get player token: %v", err), nil)
@@ -75,14 +78,6 @@ func (s *MarketScanner) ScanAndSaveMarket(ctx context.Context, playerID uint, wa
 			collector.RecordScan(int(playerID), waypointSymbol, time.Since(startTime), err)
 		}
 		return err
-	}
-
-	// Get existing market data before upserting to detect price changes
-	existingMarket, err := s.marketRepo.GetMarketData(ctx, waypointSymbol, int(playerID))
-	if err != nil {
-		logger.Log("ERROR", fmt.Sprintf("[MarketScanner] Failed to get existing market data for %s: %v", waypointSymbol, err), nil)
-		// Don't fail the scan if we can't get existing data - just skip price history recording
-		existingMarket = nil
 	}
 
 	err = s.marketRepo.UpsertMarketData(ctx, playerID, waypointSymbol, tradeGoods, time.Now())
