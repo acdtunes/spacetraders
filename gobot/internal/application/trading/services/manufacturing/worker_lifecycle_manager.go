@@ -1,0 +1,334 @@
+package manufacturing
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	"github.com/andrescamacho/spacetraders-go/internal/application/trading/services"
+	domainContainer "github.com/andrescamacho/spacetraders-go/internal/domain/container"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	"github.com/andrescamacho/spacetraders-go/pkg/utils"
+)
+
+// WorkerManager manages worker container lifecycle
+type WorkerManager interface {
+	// AssignTaskToShip creates worker container and assigns ship
+	AssignTaskToShip(ctx context.Context, params AssignTaskParams) error
+
+	// HandleWorkerCompletion processes worker container completion
+	HandleWorkerCompletion(ctx context.Context, shipSymbol string) (*TaskCompletion, error)
+
+	// HandleTaskFailure processes failed task (retry or mark failed)
+	HandleTaskFailure(ctx context.Context, completion TaskCompletion) error
+}
+
+// AssignTaskParams contains parameters for assigning a task to a ship
+type AssignTaskParams struct {
+	Task           *manufacturing.ManufacturingTask
+	Ship           *navigation.Ship
+	PlayerID       int
+	ContainerID    string // Optional - generated if empty
+	CoordinatorID  string
+	PipelineNumber int
+	ProductGood    string
+}
+
+// TaskCompletion represents a completed task notification
+type TaskCompletion struct {
+	TaskID     string
+	ShipSymbol string
+	PipelineID string
+	Success    bool
+	Error      error
+}
+
+// ContainerRemover interface for removing containers
+type ContainerRemover interface {
+	Remove(ctx context.Context, containerID string, playerID int) error
+}
+
+// WorkerLifecycleManager implements WorkerManager
+type WorkerLifecycleManager struct {
+	taskRepo           manufacturing.TaskRepository
+	shipAssignmentRepo domainContainer.ShipAssignmentRepository
+	daemonClient       daemon.DaemonClient
+	containerRemover   ContainerRemover
+	taskQueue          *services.TaskQueue
+	clock              shared.Clock
+
+	// Callback dependencies
+	taskAssigner       TaskAssigner
+	factoryManager     FactoryManager
+	pipelineManager    PipelineManager
+	workerCompletionCh chan string
+}
+
+// NewWorkerLifecycleManager creates a new worker lifecycle manager
+func NewWorkerLifecycleManager(
+	taskRepo manufacturing.TaskRepository,
+	shipAssignmentRepo domainContainer.ShipAssignmentRepository,
+	daemonClient daemon.DaemonClient,
+	containerRemover ContainerRemover,
+	taskQueue *services.TaskQueue,
+	clock shared.Clock,
+) *WorkerLifecycleManager {
+	if clock == nil {
+		clock = shared.NewRealClock()
+	}
+	return &WorkerLifecycleManager{
+		taskRepo:           taskRepo,
+		shipAssignmentRepo: shipAssignmentRepo,
+		daemonClient:       daemonClient,
+		containerRemover:   containerRemover,
+		taskQueue:          taskQueue,
+		clock:              clock,
+	}
+}
+
+// SetTaskAssigner sets the task assigner dependency
+func (m *WorkerLifecycleManager) SetTaskAssigner(ta TaskAssigner) {
+	m.taskAssigner = ta
+}
+
+// SetFactoryManager sets the factory manager dependency
+func (m *WorkerLifecycleManager) SetFactoryManager(fm FactoryManager) {
+	m.factoryManager = fm
+}
+
+// SetPipelineManager sets the pipeline manager dependency
+func (m *WorkerLifecycleManager) SetPipelineManager(pm PipelineManager) {
+	m.pipelineManager = pm
+}
+
+// SetWorkerCompletionChannel sets the channel for worker completion signals
+func (m *WorkerLifecycleManager) SetWorkerCompletionChannel(ch chan string) {
+	m.workerCompletionCh = ch
+}
+
+// AssignTaskToShip creates a worker container and assigns a ship to execute the task
+func (m *WorkerLifecycleManager) AssignTaskToShip(ctx context.Context, params AssignTaskParams) error {
+	logger := common.LoggerFromContext(ctx)
+	task := params.Task
+	shipSymbol := params.Ship.ShipSymbol()
+
+	// Generate container ID if not provided
+	containerID := params.ContainerID
+	if containerID == "" {
+		containerID = utils.GenerateContainerID("mfg-task", shipSymbol)
+	}
+
+	// Assign ship to task (domain state)
+	if err := task.AssignShip(shipSymbol); err != nil {
+		return fmt.Errorf("failed to assign ship: %w", err)
+	}
+
+	// Persist task assignment
+	if m.taskRepo != nil {
+		if err := m.taskRepo.Update(ctx, task); err != nil {
+			return fmt.Errorf("failed to persist task assignment: %w", err)
+		}
+	}
+
+	// Get pipeline info
+	var pipelineNumber int
+	var productGood string
+	if m.pipelineManager != nil {
+		pipelines := m.pipelineManager.GetActivePipelines()
+		if pipeline, ok := pipelines[task.PipelineID()]; ok {
+			pipelineNumber = pipeline.SequenceNumber()
+			productGood = pipeline.ProductGood()
+		}
+	}
+
+	// Step 1: Persist worker container to DB
+	logger.Log("INFO", fmt.Sprintf("Persisting worker container %s for %s", containerID, shipSymbol), nil)
+	if err := m.daemonClient.PersistManufacturingTaskWorkerContainer(ctx, containerID, uint(params.PlayerID), &WorkerCommand{
+		ShipSymbol:     shipSymbol,
+		Task:           task,
+		PlayerID:       params.PlayerID,
+		ContainerID:    containerID,
+		CoordinatorID:  params.CoordinatorID,
+		PipelineNumber: pipelineNumber,
+		ProductGood:    productGood,
+	}); err != nil {
+		_ = task.RollbackAssignment()
+		if m.taskRepo != nil {
+			_ = m.taskRepo.Update(ctx, task)
+		}
+		return fmt.Errorf("failed to persist worker container: %w", err)
+	}
+
+	// Step 2: Assign ship to worker container
+	logger.Log("INFO", fmt.Sprintf("Assigning %s to worker container %s", shipSymbol, containerID), nil)
+	if m.shipAssignmentRepo != nil {
+		assignment := domainContainer.NewShipAssignment(shipSymbol, params.PlayerID, containerID, m.clock)
+		if err := m.shipAssignmentRepo.Assign(ctx, assignment); err != nil {
+			if m.containerRemover != nil {
+				_ = m.containerRemover.Remove(ctx, containerID, params.PlayerID)
+			}
+			_ = task.RollbackAssignment()
+			if m.taskRepo != nil {
+				_ = m.taskRepo.Update(ctx, task)
+			}
+			return fmt.Errorf("failed to assign ship: %w", err)
+		}
+	}
+
+	// Step 3: Start the worker container
+	logger.Log("INFO", fmt.Sprintf("Starting worker container %s for task %s", containerID, task.ID()[:8]), nil)
+	if err := m.daemonClient.StartManufacturingTaskWorkerContainer(ctx, containerID, m.workerCompletionCh); err != nil {
+		if m.shipAssignmentRepo != nil {
+			_ = m.shipAssignmentRepo.Release(ctx, shipSymbol, params.PlayerID, "worker_start_failed")
+		}
+		_ = task.RollbackAssignment()
+		if m.taskRepo != nil {
+			_ = m.taskRepo.Update(ctx, task)
+		}
+		return fmt.Errorf("failed to start worker container: %w", err)
+	}
+
+	// Track assignment
+	if m.taskAssigner != nil {
+		m.taskAssigner.(*TaskAssignmentManager).TrackAssignment(task.ID(), shipSymbol, containerID)
+	}
+
+	// Remove from queue
+	m.taskQueue.Remove(task.ID())
+
+	logger.Log("INFO", "Task assigned to worker container", map[string]interface{}{
+		"task_id":      task.ID()[:8],
+		"task_type":    string(task.TaskType()),
+		"ship":         shipSymbol,
+		"container_id": containerID,
+	})
+
+	return nil
+}
+
+// HandleWorkerCompletion processes worker container completion
+func (m *WorkerLifecycleManager) HandleWorkerCompletion(ctx context.Context, shipSymbol string) (*TaskCompletion, error) {
+	logger := common.LoggerFromContext(ctx)
+	logger.Log("INFO", fmt.Sprintf("Worker container completed for ship %s", shipSymbol), nil)
+
+	// Find the task that was assigned to this ship
+	var taskID string
+	var containerID string
+
+	if m.taskAssigner != nil {
+		assignedTasks := m.taskAssigner.(*TaskAssignmentManager).GetAssignedTasks()
+		taskContainers := m.taskAssigner.(*TaskAssignmentManager).GetTaskContainers()
+
+		for tid, symbol := range assignedTasks {
+			if symbol == shipSymbol {
+				taskID = tid
+				containerID = taskContainers[tid]
+				break
+			}
+		}
+
+		if taskID != "" {
+			m.taskAssigner.(*TaskAssignmentManager).UntrackAssignment(taskID)
+		}
+	}
+
+	if taskID == "" {
+		logger.Log("WARN", fmt.Sprintf("No task found for completed ship %s", shipSymbol), nil)
+		return nil, nil
+	}
+
+	// Load the task from repository
+	var task *manufacturing.ManufacturingTask
+	if m.taskRepo != nil {
+		var err error
+		task, err = m.taskRepo.FindByID(ctx, taskID)
+		if err != nil {
+			logger.Log("ERROR", fmt.Sprintf("Failed to load task %s: %v", taskID, err), nil)
+			return nil, err
+		}
+	}
+
+	if task == nil {
+		logger.Log("WARN", fmt.Sprintf("Task %s not found in repository", taskID), nil)
+		return nil, nil
+	}
+
+	// Create completion notification
+	success := task.Status() == manufacturing.TaskStatusCompleted
+	var taskErr error
+	if !success && task.ErrorMessage() != "" {
+		taskErr = fmt.Errorf("%s", task.ErrorMessage())
+	}
+
+	completion := &TaskCompletion{
+		TaskID:     taskID,
+		ShipSymbol: shipSymbol,
+		PipelineID: task.PipelineID(),
+		Success:    success,
+		Error:      taskErr,
+	}
+
+	logger.Log("INFO", fmt.Sprintf("Processed worker completion for task %s (container: %s)", taskID[:8], containerID), nil)
+
+	return completion, nil
+}
+
+// HandleTaskFailure processes failed task (retry or mark failed)
+func (m *WorkerLifecycleManager) HandleTaskFailure(ctx context.Context, completion TaskCompletion) error {
+	logger := common.LoggerFromContext(ctx)
+
+	if m.taskRepo == nil {
+		return nil
+	}
+
+	task, err := m.taskRepo.FindByID(ctx, completion.TaskID)
+	if err != nil || task == nil {
+		return fmt.Errorf("failed to fetch task: %w", err)
+	}
+
+	if task.CanRetry() {
+		retryCount := task.RetryCount()
+		maxRetries := task.MaxRetries()
+
+		if err := task.ResetForRetry(); err != nil {
+			return fmt.Errorf("failed to reset task for retry: %w", err)
+		}
+
+		if err := task.MarkReady(); err != nil {
+			return fmt.Errorf("failed to mark task ready: %w", err)
+		}
+
+		if err := m.taskRepo.Update(ctx, task); err != nil {
+			return fmt.Errorf("failed to persist task retry state: %w", err)
+		}
+
+		m.taskQueue.Enqueue(task)
+
+		logger.Log("INFO", fmt.Sprintf("Task %s scheduled for retry (%d/%d)",
+			completion.TaskID[:8], retryCount, maxRetries), nil)
+	} else {
+		logger.Log("ERROR", fmt.Sprintf("Task %s permanently failed after %d retries",
+			completion.TaskID[:8], task.RetryCount()), nil)
+
+		if completion.PipelineID != "" && m.pipelineManager != nil {
+			_, _ = m.pipelineManager.CheckPipelineCompletion(ctx, completion.PipelineID)
+		}
+	}
+
+	return nil
+}
+
+// WorkerCommand represents the command to execute a worker task
+// This mirrors RunManufacturingTaskWorkerCommand for serialization
+type WorkerCommand struct {
+	ShipSymbol     string
+	Task           *manufacturing.ManufacturingTask
+	PlayerID       int
+	ContainerID    string
+	CoordinatorID  string
+	PipelineNumber int
+	ProductGood    string
+}

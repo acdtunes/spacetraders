@@ -35,6 +35,7 @@ import (
 	tradingCmd "github.com/andrescamacho/spacetraders-go/internal/application/trading/commands"
 	tradingQuery "github.com/andrescamacho/spacetraders-go/internal/application/trading/queries"
 	tradingServices "github.com/andrescamacho/spacetraders-go/internal/application/trading/services"
+	mfgServices "github.com/andrescamacho/spacetraders-go/internal/application/trading/services/manufacturing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
@@ -485,12 +486,22 @@ func run(cfg *config.Config) error {
 	// Create pipeline planner
 	pipelinePlanner := tradingServices.NewPipelinePlanner(goodsMarketLocator)
 
+	// Manufacturing task worker services - using strategy pattern for task execution
+	mfgNavigator := mfgServices.NewManufacturingNavigator(med, shipRepo)
+	mfgLedger := mfgServices.NewManufacturingLedgerRecorder(med)
+	mfgPurchaser := mfgServices.NewManufacturingPurchaser(med, shipRepo, tradingMarketRepo, mfgLedger)
+	mfgSeller := mfgServices.NewManufacturingSeller(med, shipRepo, mfgLedger)
+
+	// Create task executors using strategy pattern
+	taskExecutorRegistry := mfgServices.NewTaskExecutorRegistry()
+	taskExecutorRegistry.Register(mfgServices.NewAcquireDeliverExecutor(mfgNavigator, mfgPurchaser, mfgSeller))
+	taskExecutorRegistry.Register(mfgServices.NewCollectSellExecutor(mfgNavigator, mfgPurchaser, mfgSeller))
+	taskExecutorRegistry.Register(mfgServices.NewLiquidateExecutor(mfgNavigator, mfgSeller))
+
 	// Manufacturing task worker handler
 	manufacturingTaskWorkerHandler := tradingCmd.NewRunManufacturingTaskWorkerHandler(
-		shipRepo,
-		tradingMarketRepo,
+		taskExecutorRegistry,
 		manufacturingTaskRepo,
-		med,
 	)
 	if err := mediator.RegisterHandler[*tradingCmd.RunManufacturingTaskWorkerCommand](med, manufacturingTaskWorkerHandler); err != nil {
 		return fmt.Errorf("failed to register RunManufacturingTaskWorker handler: %w", err)

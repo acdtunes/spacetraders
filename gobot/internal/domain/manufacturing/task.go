@@ -50,15 +50,17 @@ const (
 )
 
 // Task priority constants
-// Higher priority tasks are processed first, but aging prevents starvation
+// Higher priority tasks are processed first
+// EQUAL priority for ACQUIRE_DELIVER and COLLECT_SELL ensures balanced throughput
+// Aging mechanism (+2/min) naturally prioritizes starved tasks over time
 const (
-	// PriorityAcquireDeliver - Higher base priority because deliveries feed factories
-	// Without deliveries, factories can't produce and COLLECT_SELL tasks will fail
+	// PriorityAcquireDeliver - Deliver inputs to factories so they can produce
 	PriorityAcquireDeliver = 10
 
-	// PriorityCollectSell - Lower base priority, but aging will boost it over time
-	// This prevents starvation while still prioritizing factory inputs
-	PriorityCollectSell = 0
+	// PriorityCollectSell - Equal to ACQUIRE_DELIVER for balanced throughput
+	// Both input deliveries and output collection are equally important
+	// Aging ensures older tasks get priority regardless of type
+	PriorityCollectSell = 10
 
 	// PriorityLiquidate - High priority to recover investment from orphaned cargo
 	PriorityLiquidate = 100

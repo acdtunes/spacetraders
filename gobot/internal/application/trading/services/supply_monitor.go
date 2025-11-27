@@ -302,7 +302,22 @@ func (m *SupplyMonitor) markCollectTasksReady(ctx context.Context, factory *manu
 					continue
 				}
 
-				// Add to queue
+				// CRITICAL: Add to in-memory queue so assignTasks can find it
+				// Without this, the task is READY in DB but invisible to the coordinator
+				m.taskQueue.Enqueue(task)
+				marked++
+			} else if task.Status() == manufacturing.TaskStatusReady {
+				// Task is already READY (e.g., from DB recovery after daemon restart)
+				// Re-check saturation and add to queue if still valid
+				if m.isSellMarketSaturated(ctx, task.TargetMarket(), task.Good()) {
+					// Reset to PENDING since market is now saturated
+					task.ResetToPending()
+					if m.taskRepo != nil {
+						_ = m.taskRepo.Update(ctx, task)
+					}
+					continue
+				}
+				// Add to in-memory queue so it can be assigned
 				m.taskQueue.Enqueue(task)
 				marked++
 			} else if task.Status() == manufacturing.TaskStatusCompleted {
