@@ -57,7 +57,8 @@ func NewStateRecoveryManager(
 	}
 }
 
-// RecoverState loads pipelines, tasks, and factory states from database
+// RecoverState loads pipelines, tasks, and factory states from database.
+// It also validates task states against actual market data to detect inconsistencies.
 func (m *StateRecoveryManager) RecoverState(ctx context.Context, playerID int) (*RecoveryResult, error) {
 	logger := common.LoggerFromContext(ctx)
 	logger.Log("INFO", "Recovering parallel manufacturing state from database...", nil)
@@ -153,14 +154,37 @@ func (m *StateRecoveryManager) RecoverState(ctx context.Context, playerID int) (
 			}
 		}
 
-		// Step 2d: Enqueue all READY tasks
+		// Step 2d: Enqueue all READY tasks with state validation
 		if task.Status() == manufacturing.TaskStatusReady {
+			// STATE SYNC: Validate COLLECT_SELL tasks against sell market supply
 			if task.TaskType() == manufacturing.TaskTypeCollectSell {
 				if m.isSellMarketSaturated(ctx, task.TargetMarket(), task.Good(), playerID) {
 					task.ResetToPending()
 					if m.taskRepo != nil {
 						_ = m.taskRepo.Update(ctx, task)
 					}
+					logger.Log("DEBUG", "Reset COLLECT_SELL to PENDING: sell market saturated", map[string]interface{}{
+						"task_id":     task.ID()[:8],
+						"good":        task.Good(),
+						"sell_market": task.TargetMarket(),
+					})
+					continue
+				}
+			}
+
+			// STATE SYNC: Validate ACQUIRE_DELIVER tasks against factory input supply
+			// If the factory already has HIGH/ABUNDANT supply of this input, reset to PENDING
+			if task.TaskType() == manufacturing.TaskTypeAcquireDeliver {
+				if m.isFactoryInputSaturated(ctx, task.FactorySymbol(), task.Good(), playerID) {
+					task.ResetToPending()
+					if m.taskRepo != nil {
+						_ = m.taskRepo.Update(ctx, task)
+					}
+					logger.Log("DEBUG", "Reset ACQUIRE_DELIVER to PENDING: factory input already saturated", map[string]interface{}{
+						"task_id": task.ID()[:8],
+						"good":    task.Good(),
+						"factory": task.FactorySymbol(),
+					})
 					continue
 				}
 			}
@@ -251,6 +275,29 @@ func (m *StateRecoveryManager) isSellMarketSaturated(ctx context.Context, sellMa
 		return false
 	}
 
+	supply := *tradeGood.Supply()
+	return supply == "HIGH" || supply == "ABUNDANT"
+}
+
+// isFactoryInputSaturated checks if factory already has HIGH or ABUNDANT supply of an input good.
+// This is used during state recovery to avoid re-queuing ACQUIRE_DELIVER tasks for inputs
+// that no longer need replenishment.
+func (m *StateRecoveryManager) isFactoryInputSaturated(ctx context.Context, factorySymbol string, inputGood string, playerID int) bool {
+	if m.marketRepo == nil {
+		return false
+	}
+
+	marketData, err := m.marketRepo.GetMarketData(ctx, factorySymbol, playerID)
+	if err != nil || marketData == nil {
+		return false // Can't check, assume not saturated
+	}
+
+	tradeGood := marketData.FindGood(inputGood)
+	if tradeGood == nil || tradeGood.Supply() == nil {
+		return false
+	}
+
+	// For factory inputs (IMPORT goods), HIGH/ABUNDANT means we don't need more deliveries
 	supply := *tradeGood.Supply()
 	return supply == "HIGH" || supply == "ABUNDANT"
 }

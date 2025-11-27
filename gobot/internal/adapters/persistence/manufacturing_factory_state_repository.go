@@ -19,14 +19,32 @@ func NewGormManufacturingFactoryStateRepository(db *gorm.DB) *GormManufacturingF
 	return &GormManufacturingFactoryStateRepository{db: db}
 }
 
-// Create persists a new factory state
+// Create persists a new factory state (or returns existing one if already exists)
 func (r *GormManufacturingFactoryStateRepository) Create(ctx context.Context, state *manufacturing.FactoryState) error {
 	model, err := r.factoryStateToModel(state)
 	if err != nil {
 		return fmt.Errorf("failed to convert factory state to model: %w", err)
 	}
 
-	result := r.db.WithContext(ctx).Create(model)
+	// Check if factory state already exists for this factory/good/pipeline combination
+	var existing ManufacturingFactoryStateModel
+	result := r.db.WithContext(ctx).
+		Where("factory_symbol = ? AND output_good = ? AND pipeline_id = ?",
+			model.FactorySymbol, model.OutputGood, model.PipelineID).
+		First(&existing)
+
+	if result.Error == nil {
+		// Already exists - update the state's ID with the existing one
+		state.SetID(existing.ID)
+		return nil
+	}
+
+	if result.Error != gorm.ErrRecordNotFound {
+		return fmt.Errorf("failed to check existing factory state: %w", result.Error)
+	}
+
+	// Doesn't exist - create new
+	result = r.db.WithContext(ctx).Create(model)
 	if result.Error != nil {
 		return fmt.Errorf("failed to create factory state: %w", result.Error)
 	}

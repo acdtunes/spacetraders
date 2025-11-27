@@ -16,10 +16,6 @@ import (
 
 // Constants for pipeline lifecycle
 const (
-	// MaxFinalCollections is the number of successful COLLECT_SELL cycles for the final product
-	// before a pipeline is considered complete.
-	MaxFinalCollections = 3
-
 	// StuckPipelineThreshold is how long a pipeline can run without progress before being recycled.
 	StuckPipelineThreshold = 30 * time.Minute
 
@@ -256,9 +252,25 @@ func (m *PipelineLifecycleManager) ScanAndCreatePipelines(ctx context.Context, p
 		m.mu.Unlock()
 
 		// Enqueue ready tasks (tasks with no dependencies)
-		// COLLECT_SELL tasks are gated by SupplyMonitor
+		// For manufacturing pipelines: COLLECT_SELL tasks are gated by SupplyMonitor
+		// For direct arbitrage: COLLECT_SELL is the only task and should be enqueued immediately
+		isDirectArbitrage := len(factoryStates) == 0
 		for _, task := range tasks {
 			if task.TaskType() == manufacturing.TaskTypeCollectSell {
+				if isDirectArbitrage {
+					// Direct arbitrage: enqueue COLLECT_SELL immediately
+					if err := task.MarkReady(); err == nil {
+						m.taskQueue.Enqueue(task)
+						if m.taskRepo != nil {
+							_ = m.taskRepo.Update(ctx, task)
+						}
+						logger.Log("DEBUG", "Enqueued direct arbitrage COLLECT_SELL task", map[string]interface{}{
+							"task_id": task.ID()[:8],
+							"good":    task.Good(),
+						})
+					}
+				}
+				// Manufacturing: COLLECT_SELL is gated by SupplyMonitor
 				continue
 			}
 
@@ -310,6 +322,7 @@ func (m *PipelineLifecycleManager) CheckPipelineCompletion(ctx context.Context, 
 	}
 
 	// Count completed COLLECT_SELL tasks for the final product
+	// Each pipeline = one trade cycle. Complete when ANY COLLECT_SELL finishes.
 	finalCollections := 0
 	for _, task := range tasks {
 		if task.TaskType() == manufacturing.TaskTypeCollectSell &&
@@ -319,35 +332,23 @@ func (m *PipelineLifecycleManager) CheckPipelineCompletion(ctx context.Context, 
 		}
 	}
 
-	// Check if sell market is saturated
-	sellMarketSaturated := m.isSellMarketSaturated(ctx, pipeline.SellMarket(), pipeline.ProductGood(), pipeline.PlayerID())
-
 	// Determine completion conditions
-	allCompleted := true
 	anyFailed := false
 	for _, task := range tasks {
-		if task.Status() != manufacturing.TaskStatusCompleted {
-			allCompleted = false
-		}
 		if task.Status() == manufacturing.TaskStatusFailed && !task.CanRetry() {
 			anyFailed = true
 		}
 	}
 
-	shouldComplete := allCompleted ||
-		(finalCollections >= MaxFinalCollections) ||
-		(finalCollections >= 1 && sellMarketSaturated)
+	// Pipeline completes when ANY COLLECT_SELL task completes (one trade cycle done)
+	// This allows the slot to be freed for new opportunities
+	shouldComplete := finalCollections >= 1
 
 	pipelineCompleted := false
 	pipelineFailed := false
 
-	if shouldComplete && finalCollections > 0 {
-		completionReason := "all_tasks_done"
-		if finalCollections >= MaxFinalCollections {
-			completionReason = fmt.Sprintf("reached_%d_collections", MaxFinalCollections)
-		} else if sellMarketSaturated {
-			completionReason = "sell_market_saturated"
-		}
+	if shouldComplete {
+		completionReason := "collect_sell_completed"
 
 		if err := pipeline.Complete(); err == nil {
 			if m.pipelineRepo != nil {
@@ -483,7 +484,10 @@ func (m *PipelineLifecycleManager) DetectAndRecycleStuckPipelines(ctx context.Co
 	return len(stuckPipelines)
 }
 
-// RescueReadyCollectSellTasks loads READY COLLECT_SELL tasks from DB and enqueues them
+// RescueReadyCollectSellTasks loads READY tasks from DB and enqueues them
+// This rescues both COLLECT_SELL and ACQUIRE_DELIVER tasks that may have been
+// left in READY status after a restart or container crash.
+// STATE SYNC: Validates task state against current market conditions before enqueuing.
 func (m *PipelineLifecycleManager) RescueReadyCollectSellTasks(ctx context.Context, playerID int) {
 	if m.taskRepo == nil {
 		return
@@ -491,30 +495,51 @@ func (m *PipelineLifecycleManager) RescueReadyCollectSellTasks(ctx context.Conte
 
 	logger := common.LoggerFromContext(ctx)
 
-	// Load READY COLLECT_SELL tasks from DB
+	// Load all READY tasks from DB
 	readyTasks, err := m.taskRepo.FindByStatus(ctx, playerID, manufacturing.TaskStatusReady)
 	if err != nil {
 		return
 	}
 
-	rescued := 0
+	rescuedCollectSell := 0
+	rescuedAcquireDeliver := 0
+	skippedSaturated := 0
 	for _, task := range readyTasks {
-		if task.TaskType() != manufacturing.TaskTypeCollectSell {
-			continue
-		}
+		switch task.TaskType() {
+		case manufacturing.TaskTypeCollectSell:
+			// STATE SYNC: Skip if sell market is saturated
+			if m.isSellMarketSaturated(ctx, task.TargetMarket(), task.Good(), playerID) {
+				// Reset to PENDING so it can be re-evaluated later
+				task.ResetToPending()
+				_ = m.taskRepo.Update(ctx, task)
+				skippedSaturated++
+				continue
+			}
+			m.taskQueue.Enqueue(task)
+			rescuedCollectSell++
 
-		// Skip if sell market is saturated
-		if m.isSellMarketSaturated(ctx, task.TargetMarket(), task.Good(), playerID) {
-			continue
+		case manufacturing.TaskTypeAcquireDeliver:
+			// STATE SYNC: Skip if factory input is already saturated
+			if m.isFactoryInputSaturated(ctx, task.FactorySymbol(), task.Good(), playerID) {
+				// Reset to PENDING so it can be re-evaluated later
+				task.ResetToPending()
+				_ = m.taskRepo.Update(ctx, task)
+				skippedSaturated++
+				continue
+			}
+			m.taskQueue.Enqueue(task)
+			rescuedAcquireDeliver++
 		}
-
-		// Enqueue (will be skipped if already in queue)
-		m.taskQueue.Enqueue(task)
-		rescued++
 	}
 
-	if rescued > 0 {
-		logger.Log("DEBUG", fmt.Sprintf("Rescued %d COLLECT_SELL tasks to queue", rescued), nil)
+	if rescuedCollectSell > 0 {
+		logger.Log("DEBUG", fmt.Sprintf("Rescued %d COLLECT_SELL tasks to queue", rescuedCollectSell), nil)
+	}
+	if rescuedAcquireDeliver > 0 {
+		logger.Log("DEBUG", fmt.Sprintf("Rescued %d ACQUIRE_DELIVER tasks to queue", rescuedAcquireDeliver), nil)
+	}
+	if skippedSaturated > 0 {
+		logger.Log("DEBUG", fmt.Sprintf("Reset %d tasks to PENDING due to supply saturation", skippedSaturated), nil)
 	}
 }
 
@@ -584,6 +609,29 @@ func (m *PipelineLifecycleManager) isSellMarketSaturated(ctx context.Context, se
 		return false
 	}
 
+	supply := *tradeGood.Supply()
+	return supply == "HIGH" || supply == "ABUNDANT"
+}
+
+// isFactoryInputSaturated checks if factory already has HIGH or ABUNDANT supply of an input good.
+// This is used during task rescue to avoid re-queuing ACQUIRE_DELIVER tasks for inputs
+// that no longer need replenishment.
+func (m *PipelineLifecycleManager) isFactoryInputSaturated(ctx context.Context, factorySymbol string, inputGood string, playerID int) bool {
+	if m.marketRepo == nil {
+		return false
+	}
+
+	marketData, err := m.marketRepo.GetMarketData(ctx, factorySymbol, playerID)
+	if err != nil || marketData == nil {
+		return false // Can't check, assume not saturated
+	}
+
+	tradeGood := marketData.FindGood(inputGood)
+	if tradeGood == nil || tradeGood.Supply() == nil {
+		return false
+	}
+
+	// For factory inputs (IMPORT goods), HIGH/ABUNDANT means we don't need more deliveries
 	supply := *tradeGood.Supply()
 	return supply == "HIGH" || supply == "ABUNDANT"
 }
