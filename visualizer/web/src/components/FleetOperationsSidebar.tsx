@@ -1,6 +1,7 @@
 import { useState, useMemo } from 'react';
 import type { ShipAssignment, OperationType, TaggedShip } from '../types/spacetraders';
 import { getOperationEmoji, getOperationName, getOperationColor } from '../utils/shipOperations';
+import { getCargoIcon } from '../utils/cargo';
 import { useStore } from '../store/useStore';
 
 interface FleetOperationsSidebarProps {
@@ -180,6 +181,25 @@ export const FleetOperationsSidebar = ({
                                 {assignment.metadata.market && (
                                   <div>
                                     Market: {String(assignment.metadata.market)}
+                                  </div>
+                                )}
+                                {assignment.metadata.good && (
+                                  <div>
+                                    {getCargoIcon(String(assignment.metadata.good))} {String(assignment.metadata.good)}
+                                  </div>
+                                )}
+                                {assignment.metadata.product_good && (
+                                  <div>
+                                    🎯 {getCargoIcon(String(assignment.metadata.product_good))} {String(assignment.metadata.product_good)}
+                                  </div>
+                                )}
+                                {assignment.metadata.task_type && (
+                                  <div>
+                                    {assignment.metadata.task_type === 'ACQUIRE' ? '🛒' :
+                                     assignment.metadata.task_type === 'DELIVER' ? '🚚' :
+                                     assignment.metadata.task_type === 'COLLECT' ? '📥' :
+                                     assignment.metadata.task_type === 'SELL' ? '💰' :
+                                     assignment.metadata.task_type === 'LIQUIDATE' ? '🔥' : '📋'} {String(assignment.metadata.task_type)}
                                   </div>
                                 )}
                                 </div>

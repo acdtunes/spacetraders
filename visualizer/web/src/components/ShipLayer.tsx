@@ -6,6 +6,7 @@ import type { ShipPositionOptions } from '../domain';
 import { ShipSprite } from './ShipSprite';
 import { ShipNameLabel } from './ShipNameLabel';
 import { ShipOperationBadge } from './ShipOperationBadge';
+import { ShipTaskBadge } from './ShipTaskBadge';
 import { calculateShipRotation, getShipLabelInfo } from '../utils/shipDisplay';
 import { getShipOperation } from '../utils/shipOperations';
 import { Waypoint } from '../domain/waypoint';
@@ -185,6 +186,15 @@ export const ShipLayer = memo(function ShipLayer({
             {showShipNames && operationType && (
               <ShipOperationBadge
                 operationType={operationType}
+                currentScale={currentScale}
+                labelInfo={labelInfo}
+              />
+            )}
+
+            {showShipNames && assignment?.metadata?.task_type && (
+              <ShipTaskBadge
+                taskType={assignment.metadata.task_type as string}
+                good={assignment.metadata.good as string | null}
                 currentScale={currentScale}
                 labelInfo={labelInfo}
               />
