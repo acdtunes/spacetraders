@@ -27,6 +27,25 @@ func NewContractMarketService(
 	}
 }
 
+// FulfillContract fulfills a completed contract to claim rewards
+func (s *ContractMarketService) FulfillContract(
+	ctx context.Context,
+	contract *domainContract.Contract,
+	playerID shared.PlayerID,
+) error {
+	fulfillCmd := &FulfillContractCommand{
+		ContractID: contract.ContractID(),
+		PlayerID:   playerID,
+	}
+
+	_, err := s.mediator.Send(ctx, fulfillCmd)
+	if err != nil {
+		return fmt.Errorf("failed to fulfill contract: %w", err)
+	}
+
+	return nil
+}
+
 // NegotiateContract negotiates a new contract or resumes an existing one
 func (s *ContractMarketService) NegotiateContract(
 	ctx context.Context,

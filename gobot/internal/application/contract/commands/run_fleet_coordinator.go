@@ -184,6 +184,30 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			continue
 		}
 
+		// Check if contract is already complete (all deliveries fulfilled)
+		allDeliveriesFulfilled := true
+		for _, delivery := range contract.Terms().Deliveries {
+			if delivery.UnitsRequired > delivery.UnitsFulfilled {
+				allDeliveriesFulfilled = false
+				break
+			}
+		}
+		if allDeliveriesFulfilled {
+			logger.Log("INFO", "Contract deliveries complete - fulfilling contract to get reward", map[string]interface{}{
+				"contract_id": contract.ContractID(),
+			})
+			// Try to fulfill the contract via API to claim rewards
+			err := h.contractMarketService.FulfillContract(ctx, contract, cmd.PlayerID)
+			if err != nil {
+				logger.Log("ERROR", fmt.Sprintf("Failed to fulfill contract: %v", err), nil)
+			} else {
+				logger.Log("INFO", "Contract fulfilled successfully - will negotiate new contract", nil)
+				result.ContractsCompleted++
+			}
+			h.clock.Sleep(5 * time.Second) // Brief pause before negotiating new contract
+			continue
+		}
+
 		// Find purchase market for contract
 		logger.Log("INFO", "Finding purchase market...", nil)
 		purchaseMarket, err := appContract.FindPurchaseMarket(ctx, contract, h.marketRepo, cmd.PlayerID.Value())
