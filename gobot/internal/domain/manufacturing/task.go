@@ -66,6 +66,27 @@ const (
 	PriorityLiquidate = 100
 )
 
+// Priority tuning constants for preventing task starvation
+// These constants control the aging algorithm and task type reservations
+const (
+	// MaxAgingBonus caps the maximum priority bonus from aging
+	// This prevents runaway priority accumulation from very old tasks
+	// After 50 minutes, both task types reach max bonus regardless of age
+	MaxAgingBonus = 100
+
+	// AgingRatePerMinute controls how fast aging priority increases
+	// +2 per minute means a 50-minute wait gives max bonus (100)
+	AgingRatePerMinute = 2
+
+	// MinCollectSellWorkers reserves minimum workers for COLLECT_SELL tasks
+	// This prevents complete starvation when ACQUIRE_DELIVER has aging advantage
+	MinCollectSellWorkers = 3
+
+	// MinAcquireDeliverWorkers reserves minimum workers for ACQUIRE_DELIVER tasks
+	// This ensures factories continue receiving inputs
+	MinAcquireDeliverWorkers = 3
+)
+
 const (
 	// DefaultMaxRetries is the default number of retry attempts for failed tasks
 	DefaultMaxRetries = 3

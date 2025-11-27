@@ -116,7 +116,7 @@ func (q *TaskQueue) GetReadyTasks() []*manufacturing.ManufacturingTask {
 
 // sortByEffectivePriority sorts tasks by effective priority (base + aging) in descending order
 func sortByEffectivePriority(tasks []*manufacturing.ManufacturingTask) {
-	// Use same priority calculation as heap Less() function
+	// Use same priority calculation as heap Less() function, with aging cap
 	effectivePriority := func(task *manufacturing.ManufacturingTask) int {
 		basePriority := task.Priority()
 		readyAt := task.ReadyAt()
@@ -127,7 +127,12 @@ func sortByEffectivePriority(tasks []*manufacturing.ManufacturingTask) {
 		if minutesWaiting < 0 {
 			minutesWaiting = 0
 		}
-		return basePriority + int(minutesWaiting*2)
+		// Apply aging with cap to prevent runaway priorities
+		agingBoost := int(minutesWaiting * float64(manufacturing.AgingRatePerMinute))
+		if agingBoost > manufacturing.MaxAgingBonus {
+			agingBoost = manufacturing.MaxAgingBonus
+		}
+		return basePriority + agingBoost
 	}
 
 	// Sort descending by effective priority
@@ -192,6 +197,51 @@ func (q *TaskQueue) Size() int {
 	defer q.mu.RUnlock()
 
 	return q.tasks.Len()
+}
+
+// CountByType returns counts of ready tasks by task type
+func (q *TaskQueue) CountByType() map[manufacturing.TaskType]int {
+	q.mu.RLock()
+	defer q.mu.RUnlock()
+
+	counts := make(map[manufacturing.TaskType]int)
+	for _, task := range q.tasks {
+		if task.Status() == manufacturing.TaskStatusReady {
+			counts[task.TaskType()]++
+		}
+	}
+	return counts
+}
+
+// HasReadyTasksByType returns true if there are ready tasks of the specified type
+func (q *TaskQueue) HasReadyTasksByType(taskType manufacturing.TaskType) bool {
+	q.mu.RLock()
+	defer q.mu.RUnlock()
+
+	for _, task := range q.tasks {
+		if task.Status() == manufacturing.TaskStatusReady && task.TaskType() == taskType {
+			return true
+		}
+	}
+	return false
+}
+
+// GetReadyTasksByType returns ready tasks filtered by type, sorted by effective priority
+func (q *TaskQueue) GetReadyTasksByType(taskType manufacturing.TaskType) []*manufacturing.ManufacturingTask {
+	q.mu.RLock()
+	defer q.mu.RUnlock()
+
+	result := make([]*manufacturing.ManufacturingTask, 0)
+	for _, task := range q.tasks {
+		if task.Status() == manufacturing.TaskStatusReady && task.TaskType() == taskType {
+			result = append(result, task)
+		}
+	}
+
+	// Sort by effective priority (with aging) - highest first
+	sortByEffectivePriority(result)
+
+	return result
 }
 
 // Clear removes all tasks from the queue
@@ -275,9 +325,10 @@ func (h taskHeap) Less(i, j int) bool {
 	return h[i].CreatedAt().Before(h[j].CreatedAt())
 }
 
-// effectivePriority calculates priority with aging boost
+// effectivePriority calculates priority with aging boost and ceiling
 // Tasks waiting longer get priority boost to prevent starvation
-// Boost: +2 priority per minute waiting (COLLECT_SELL catches up to ACQUIRE_DELIVER after 5 min)
+// The aging bonus is capped at MaxAgingBonus (100) to prevent runaway priorities
+// Boost: +2 priority per minute waiting, capped at 100
 func (h taskHeap) effectivePriority(task *manufacturing.ManufacturingTask) int {
 	basePriority := task.Priority()
 
@@ -292,9 +343,11 @@ func (h taskHeap) effectivePriority(task *manufacturing.ManufacturingTask) int {
 		minutesWaiting = 0
 	}
 
-	// +2 priority per minute waiting
-	// After 5 minutes, COLLECT_SELL (0) catches up to ACQUIRE_DELIVER (10)
-	agingBoost := int(minutesWaiting * 2)
+	// Calculate aging boost with cap to prevent runaway priorities
+	agingBoost := int(minutesWaiting * float64(manufacturing.AgingRatePerMinute))
+	if agingBoost > manufacturing.MaxAgingBonus {
+		agingBoost = manufacturing.MaxAgingBonus
+	}
 
 	return basePriority + agingBoost
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
@@ -21,6 +22,7 @@ type ManufacturingDemandFinder struct {
 	waypointProvider system.IWaypointProvider
 	supplyChainMap   map[string][]string
 	resolver         *goodsServices.SupplyChainResolver
+	pipelineRepo     manufacturing.PipelineRepository
 }
 
 // NewManufacturingDemandFinder creates a new demand finder service
@@ -29,12 +31,14 @@ func NewManufacturingDemandFinder(
 	waypointProvider system.IWaypointProvider,
 	supplyChainMap map[string][]string,
 	resolver *goodsServices.SupplyChainResolver,
+	pipelineRepo manufacturing.PipelineRepository,
 ) *ManufacturingDemandFinder {
 	return &ManufacturingDemandFinder{
 		marketRepo:       marketRepo,
 		waypointProvider: waypointProvider,
 		supplyChainMap:   supplyChainMap,
 		resolver:         resolver,
+		pipelineRepo:     pipelineRepo,
 	}
 }
 
@@ -138,10 +142,11 @@ func (f *ManufacturingDemandFinder) FindHighDemandManufacturables(
 				continue
 			}
 
-			// Skip if not manufacturable
-			if !f.isManufacturable(goodSymbol) {
-				continue
-			}
+			// NOTE: We no longer filter by isManufacturable here!
+			// Direct arbitrage doesn't require manufacturing - just HIGH/ABUNDANT source
+			// The supply chain resolver will handle both cases:
+			// - HIGH/ABUNDANT source → AcquisitionBuy (direct arbitrage)
+			// - Below HIGH → AcquisitionFabricate (needs manufacturing)
 
 			// Extract activity and supply (may be nil)
 			activity := ""
@@ -185,6 +190,15 @@ func (f *ManufacturingDemandFinder) FindHighDemandManufacturables(
 	for good, entries := range demandIndex {
 		if len(entries) == 0 {
 			continue
+		}
+
+		// CRITICAL: Skip goods that already have an active pipeline
+		// This prevents duplicate pipelines for the same product
+		if f.pipelineRepo != nil {
+			existingPipeline, err := f.pipelineRepo.FindActiveForProduct(ctx, playerID, good)
+			if err == nil && existingPipeline != nil {
+				continue // Already have an active pipeline for this good
+			}
 		}
 
 		// Build dependency tree first to find factory location
@@ -264,7 +278,7 @@ func (f *ManufacturingDemandFinder) isManufacturable(good string) bool {
 	return exists
 }
 
-// findFactoryWaypoint finds the export market (factory) for a manufactured good
+// findFactoryWaypoint finds the export market for a good (factory for manufacturing, source for arbitrage)
 func (f *ManufacturingDemandFinder) findFactoryWaypoint(
 	ctx context.Context,
 	good string,
