@@ -70,13 +70,13 @@ Feature: Supply Chain Resolver
   # Buy vs Fabricate Strategy
   # ============================================================================
 
-  Scenario: Prefer buying when available in market
+  Scenario: Direct arbitrage when source has HIGH supply
     Given a supply chain map with "MACHINERY" requiring "IRON"
-    And market "X1-E1" sells "MACHINERY" with activity "STRONG" and supply "MODERATE"
+    And market "X1-E1" sells "MACHINERY" with activity "STRONG" and supply "HIGH"
     When I build dependency tree for "MACHINERY" in system "X1"
     Then the tree should have root "MACHINERY" with acquisition method "BUY"
     And the root should have 0 children
-    # Because the good is available for purchase we skip fabrication
+    # HIGH/ABUNDANT supply at source = direct arbitrage (no manufacturing needed)
 
   Scenario: Fabricate intermediate good if not available
     Given a supply chain map with:

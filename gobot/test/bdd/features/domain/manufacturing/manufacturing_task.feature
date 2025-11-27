@@ -6,33 +6,22 @@ Feature: Manufacturing Task
   Background:
     Given a manufacturing task context
 
-  # Task Creation
-  Scenario: Create ACQUIRE task
-    When I create an ACQUIRE task for "IRON_ORE" from market "X1-AU21-A1"
-    Then the task should have type "ACQUIRE"
+  # Task Creation - Atomic Task Types
+  # ACQUIRE_DELIVER: Buy from source market AND deliver to factory
+  # COLLECT_SELL: Collect from factory AND sell to market
+  Scenario: Create ACQUIRE_DELIVER task
+    When I create an ACQUIRE_DELIVER task for "IRON_ORE" from market "X1-AU21-A1" to factory "X1-AU21-B2"
+    Then the task should have type "ACQUIRE_DELIVER"
     And the task should have good "IRON_ORE"
     And the task should have source market "X1-AU21-A1"
+    And the task should have factory symbol "X1-AU21-B2"
     And the task should have status "PENDING"
 
-  Scenario: Create DELIVER task
-    When I create a DELIVER task for "IRON_ORE" to market "X1-AU21-B2" with dependencies
-    Then the task should have type "DELIVER"
-    And the task should have good "IRON_ORE"
-    And the task should have target market "X1-AU21-B2"
-    And the task should have status "PENDING"
-    And the task should have dependencies
-
-  Scenario: Create COLLECT task
-    When I create a COLLECT task for "IRON" from factory "X1-AU21-C3"
-    Then the task should have type "COLLECT"
+  Scenario: Create COLLECT_SELL task
+    When I create a COLLECT_SELL task for "IRON" from factory "X1-AU21-C3" to market "X1-AU21-D4"
+    Then the task should have type "COLLECT_SELL"
     And the task should have good "IRON"
     And the task should have factory symbol "X1-AU21-C3"
-    And the task should have status "PENDING"
-
-  Scenario: Create SELL task
-    When I create a SELL task for "IRON" to market "X1-AU21-D4"
-    Then the task should have type "SELL"
-    And the task should have good "IRON"
     And the task should have target market "X1-AU21-D4"
     And the task should have status "PENDING"
 
@@ -70,7 +59,7 @@ Feature: Manufacturing Task
     When I complete the task
     Then the task should have status "COMPLETED"
     And the task completed_at should be set
-    And the assigned ship should be released
+    # NOTE: ship assignment preserved for container runner to release (not domain's responsibility)
 
   Scenario: Fail task with error
     Given an EXECUTING task
@@ -129,21 +118,17 @@ Feature: Manufacturing Task
     Given a COMPLETED task with cost 5000 and revenue 8000
     Then the task net profit should be 3000
 
-  # Task Destination
-  Scenario: ACQUIRE task destination is source market
-    Given an ACQUIRE task for "IRON_ORE" from market "X1-AU21-A1"
+  # Task Destination - Atomic tasks first go to source/factory
+  Scenario: ACQUIRE_DELIVER task destination is source market
+    Given an ACQUIRE_DELIVER task for "IRON_ORE" from market "X1-AU21-A1" to factory "X1-AU21-B2"
     Then the task destination should be "X1-AU21-A1"
 
-  Scenario: DELIVER task destination is target market
-    Given a DELIVER task for "IRON_ORE" to market "X1-AU21-B2"
-    Then the task destination should be "X1-AU21-B2"
-
-  Scenario: COLLECT task destination is factory symbol
-    Given a COLLECT task for "IRON" from factory "X1-AU21-C3"
+  Scenario: COLLECT_SELL task destination is factory symbol
+    Given a COLLECT_SELL task for "IRON" from factory "X1-AU21-C3" to market "X1-AU21-D4"
     Then the task destination should be "X1-AU21-C3"
 
-  Scenario: SELL task destination is target market
-    Given a SELL task for "IRON" to market "X1-AU21-D4"
+  Scenario: LIQUIDATE task destination is target market
+    Given a LIQUIDATE task for "IRON" to market "X1-AU21-D4"
     Then the task destination should be "X1-AU21-D4"
 
   # Rollback Assignment

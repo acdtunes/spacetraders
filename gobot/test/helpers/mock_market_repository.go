@@ -10,14 +10,23 @@ import (
 
 // MockMarketRepository is a test double for the market repository
 type MockMarketRepository struct {
-	markets map[string]*market.Market // Key: waypoint symbol
+	markets        map[string]*market.Market // Key: waypoint symbol
+	supplyChainMap map[string][]string       // For inferring factories
 }
 
 // NewMockMarketRepository creates a new mock market repository
 func NewMockMarketRepository() *MockMarketRepository {
 	return &MockMarketRepository{
-		markets: make(map[string]*market.Market),
+		markets:        make(map[string]*market.Market),
+		supplyChainMap: make(map[string][]string),
 	}
+}
+
+// SetSupplyChainMap sets the supply chain map used to infer factories
+// This allows the mock to return factory results for goods that are in the
+// supply chain map but don't have explicit market data set up
+func (m *MockMarketRepository) SetSupplyChainMap(scm map[string][]string) {
+	m.supplyChainMap = scm
 }
 
 // AddMarketSellingGood adds a market that sells a specific good
@@ -267,13 +276,42 @@ func getStringValue(ptr *string) string {
 }
 
 // FindFactoryForGood finds a market that EXPORTS a specific good (factory)
-// Mock implementation - returns nil since mock doesn't track trade_type
+// For tests, this returns a factory for any good that:
+// 1. Has a market set up with that good, OR
+// 2. Is in the supply chain map (manufacturable good without explicit market setup)
 func (m *MockMarketRepository) FindFactoryForGood(
 	ctx context.Context,
 	goodSymbol, systemSymbol string,
 	playerID int,
 ) (*market.FactoryResult, error) {
-	// Mock doesn't have trade_type data, so it cannot find factories
-	// Tests that need factory behavior should use a more complete mock
+	// First, search for a market that sells this good
+	for waypointSymbol, marketData := range m.markets {
+		tradeGood := marketData.FindGood(goodSymbol)
+		if tradeGood != nil {
+			return &market.FactoryResult{
+				WaypointSymbol: waypointSymbol,
+				TradeSymbol:    goodSymbol,
+				SellPrice:      tradeGood.SellPrice(),
+				Supply:         getStringValue(tradeGood.Supply()),
+				Activity:       getStringValue(tradeGood.Activity()),
+			}, nil
+		}
+	}
+
+	// No market found - check if it's a manufacturable good from supply chain map
+	// If so, return a synthetic factory result to allow tests to work
+	if _, exists := m.supplyChainMap[goodSymbol]; exists {
+		// Generate a synthetic factory waypoint based on the good symbol
+		syntheticWaypoint := systemSymbol + "-FACTORY-" + goodSymbol
+		return &market.FactoryResult{
+			WaypointSymbol: syntheticWaypoint,
+			TradeSymbol:    goodSymbol,
+			SellPrice:      100,
+			Supply:         "MODERATE", // Default supply for test factories
+			Activity:       "WEAK",     // Default activity for test factories
+		}, nil
+	}
+
+	// No market and not manufacturable
 	return nil, nil
 }

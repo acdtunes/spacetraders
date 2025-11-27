@@ -40,12 +40,14 @@ func (ctx *supplyChainResolverContext) reset() {
 func (ctx *supplyChainResolverContext) aSupplyChainMap() error {
 	// Use the default supply chain map
 	ctx.supplyChainMap = goods.ExportToImportMap
+	ctx.mockMarketRepo.SetSupplyChainMap(ctx.supplyChainMap)
 	ctx.resolver = services.NewSupplyChainResolver(ctx.supplyChainMap, ctx.mockMarketRepo)
 	return nil
 }
 
 func (ctx *supplyChainResolverContext) aSupplyChainMapWithRequiring(output, inputs string) error {
 	ctx.supplyChainMap[output] = strings.Split(inputs, ", ")
+	ctx.mockMarketRepo.SetSupplyChainMap(ctx.supplyChainMap)
 	ctx.resolver = services.NewSupplyChainResolver(ctx.supplyChainMap, ctx.mockMarketRepo)
 	return nil
 }
@@ -61,6 +63,7 @@ func (ctx *supplyChainResolverContext) aSupplyChainMapWith(table *godog.Table) e
 			ctx.supplyChainMap[output] = strings.Split(inputsStr, ", ")
 		}
 	}
+	ctx.mockMarketRepo.SetSupplyChainMap(ctx.supplyChainMap)
 	ctx.resolver = services.NewSupplyChainResolver(ctx.supplyChainMap, ctx.mockMarketRepo)
 	return nil
 }

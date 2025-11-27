@@ -26,7 +26,11 @@ func InitializeManufacturingTaskScenario(ctx *godog.ScenarioContext) {
 	// Background
 	ctx.Step(`^a manufacturing task context$`, mtc.aManufacturingTaskContext)
 
-	// Task Creation
+	// Task Creation - Atomic Tasks
+	ctx.Step(`^I create an ACQUIRE_DELIVER task for "([^"]*)" from market "([^"]*)" to factory "([^"]*)"$`, mtc.iCreateAnAcquireDeliverTask)
+	ctx.Step(`^I create a COLLECT_SELL task for "([^"]*)" from factory "([^"]*)" to market "([^"]*)"$`, mtc.iCreateACollectSellTask)
+
+	// Legacy Task Creation (kept for backwards compatibility)
 	ctx.Step(`^I create an ACQUIRE task for "([^"]*)" from market "([^"]*)"$`, mtc.iCreateAnAcquireTask)
 	ctx.Step(`^I create a DELIVER task for "([^"]*)" to market "([^"]*)" with dependencies$`, mtc.iCreateADeliverTaskWithDependencies)
 	ctx.Step(`^I create a COLLECT task for "([^"]*)" from factory "([^"]*)"$`, mtc.iCreateACollectTask)
@@ -44,6 +48,10 @@ func InitializeManufacturingTaskScenario(ctx *godog.ScenarioContext) {
 	ctx.Step(`^a DELIVER task for "([^"]*)" to market "([^"]*)"$`, mtc.aDeliverTask)
 	ctx.Step(`^a COLLECT task for "([^"]*)" from factory "([^"]*)"$`, mtc.aCollectTask)
 	ctx.Step(`^a SELL task for "([^"]*)" to market "([^"]*)"$`, mtc.aSellTask)
+	// Atomic task types for destination tests
+	ctx.Step(`^an ACQUIRE_DELIVER task for "([^"]*)" from market "([^"]*)" to factory "([^"]*)"$`, mtc.anAcquireDeliverTask)
+	ctx.Step(`^a COLLECT_SELL task for "([^"]*)" from factory "([^"]*)" to market "([^"]*)"$`, mtc.aCollectSellTask)
+	ctx.Step(`^a LIQUIDATE task for "([^"]*)" to market "([^"]*)"$`, mtc.aLiquidateTask)
 
 	// State transitions
 	ctx.Step(`^I mark the task as ready$`, mtc.iMarkTheTaskAsReady)
@@ -95,7 +103,18 @@ func (mtc *manufacturingTaskContext) aManufacturingTaskContext() error {
 	return nil
 }
 
-// Task Creation - Using new atomic task types
+// Task Creation - New atomic task types
+func (mtc *manufacturingTaskContext) iCreateAnAcquireDeliverTask(good, source, target string) error {
+	mtc.task = manufacturing.NewAcquireDeliverTask("pipeline-1", 1, good, source, target, nil)
+	return nil
+}
+
+func (mtc *manufacturingTaskContext) iCreateACollectSellTask(good, source, target string) error {
+	mtc.task = manufacturing.NewCollectSellTask("pipeline-1", 1, good, source, target, nil)
+	return nil
+}
+
+// Legacy Task Creation - Using new atomic task types under the hood
 func (mtc *manufacturingTaskContext) iCreateAnAcquireTask(good, market string) error {
 	// ACQUIRE is now ACQUIRE_DELIVER (atomic: buy from source AND deliver to target)
 	mtc.task = manufacturing.NewAcquireDeliverTask("pipeline-1", 1, good, market, "X1-AU21-FACTORY", nil)
@@ -231,6 +250,22 @@ func (mtc *manufacturingTaskContext) aCollectTask(good, factory string) error {
 func (mtc *manufacturingTaskContext) aSellTask(good, market string) error {
 	// SELL is now part of COLLECT_SELL
 	mtc.task = manufacturing.NewCollectSellTask("pipeline-1", 1, good, "X1-AU21-FACTORY", market, nil)
+	return nil
+}
+
+// Atomic task type Given steps for destination tests
+func (mtc *manufacturingTaskContext) anAcquireDeliverTask(good, sourceMarket, factorySymbol string) error {
+	mtc.task = manufacturing.NewAcquireDeliverTask("pipeline-1", 1, good, sourceMarket, factorySymbol, nil)
+	return nil
+}
+
+func (mtc *manufacturingTaskContext) aCollectSellTask(good, factorySymbol, targetMarket string) error {
+	mtc.task = manufacturing.NewCollectSellTask("pipeline-1", 1, good, factorySymbol, targetMarket, nil)
+	return nil
+}
+
+func (mtc *manufacturingTaskContext) aLiquidateTask(good, targetMarket string) error {
+	mtc.task = manufacturing.NewLiquidationTask(1, "AGENT-1", good, 100, targetMarket)
 	return nil
 }
 
