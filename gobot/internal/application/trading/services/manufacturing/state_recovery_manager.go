@@ -168,11 +168,13 @@ func (m *StateRecoveryManager) RecoverState(ctx context.Context, playerID int) (
 			pipeline := result.ActivePipelines[task.PipelineID()]
 			isCollectionPipeline := pipeline != nil && pipeline.PipelineType() == manufacturing.PipelineTypeCollection
 
-			// COLLECTION pipeline tasks: mark READY immediately
+			// COLLECTION pipeline tasks: mark READY immediately and enqueue
 			if isCollectionPipeline {
 				if err := task.MarkReady(); err == nil {
 					_ = m.taskRepo.Update(ctx, task)
-					logger.Log("INFO", fmt.Sprintf("Recovered COLLECTION pipeline task %s (%s) as READY",
+					m.taskQueue.Enqueue(task)
+					result.ReadyTaskCount++
+					logger.Log("INFO", fmt.Sprintf("Recovered COLLECTION pipeline task %s (%s) as READY and enqueued",
 						task.ID()[:8], task.Good()), nil)
 				}
 				continue

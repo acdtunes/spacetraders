@@ -156,9 +156,10 @@ func (f *CollectionOpportunityFinder) FindOpportunities(
 				activity = *tradeGood.Activity()
 			}
 
-			// Check if this is a factory (EXPORT with HIGH/ABUNDANT)
+			// Check if this is a factory (EXPORT with ABUNDANT supply only)
+			// Require ABUNDANT to create collection pipeline - gives buffer for supply drops during navigation
 			if tradeGood.TradeType() == market.TradeTypeExport {
-				if supply == "HIGH" || supply == "ABUNDANT" {
+				if supply == "ABUNDANT" {
 					factoryIndex[goodSymbol] = append(factoryIndex[goodSymbol], &factoryEntry{
 						waypointSymbol: waypointSymbol,
 						supply:         supply,
@@ -340,9 +341,9 @@ func (f *CollectionOpportunityFinder) FindOpportunitiesForGood(
 			activity = *tradeGood.Activity()
 		}
 
-		// Factory check
+		// Factory check - require ABUNDANT for collection buffer
 		if tradeGood.TradeType() == market.TradeTypeExport {
-			if supply == "HIGH" || supply == "ABUNDANT" {
+			if supply == "ABUNDANT" {
 				factories = append(factories, &struct {
 					waypointSymbol string
 					supply         string

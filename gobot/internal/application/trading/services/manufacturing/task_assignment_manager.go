@@ -262,8 +262,23 @@ func (m *TaskAssignmentManager) AssignTasks(ctx context.Context, params AssignPa
 			}
 		}
 
-		// Saturation check for COLLECT_SELL
+		// Pre-flight checks for COLLECT_SELL tasks
 		if task.TaskType() == manufacturing.TaskTypeCollectSell {
+			// Check 1: Factory must have HIGH/ABUNDANT supply to collect
+			if !m.IsFactorySupplyFavorable(ctx, task.FactorySymbol(), task.Good(), params.PlayerID) {
+				logger.Log("DEBUG", "Skipping COLLECT_SELL - factory supply not HIGH/ABUNDANT", map[string]interface{}{
+					"task_id": task.ID()[:8],
+					"factory": task.FactorySymbol(),
+					"good":    task.Good(),
+				})
+				task.ResetToPending()
+				if m.taskRepo != nil {
+					_ = m.taskRepo.Update(ctx, task)
+				}
+				continue
+			}
+
+			// Check 2: Sell market must not be saturated
 			if m.IsSellMarketSaturated(ctx, task.TargetMarket(), task.Good(), params.PlayerID) {
 				logger.Log("DEBUG", "Skipping COLLECT_SELL - sell market saturated", map[string]interface{}{
 					"task_id": task.ID()[:8],
@@ -489,6 +504,29 @@ func (m *TaskAssignmentManager) IsSellMarketSaturated(ctx context.Context, sellM
 
 	supply := *tradeGood.Supply()
 	return supply == "HIGH" || supply == "ABUNDANT"
+}
+
+// IsFactorySupplyFavorable checks if the factory has ABUNDANT supply for collection.
+// We require ABUNDANT (not just HIGH) to START a task, giving a buffer for supply drops during navigation.
+// The executor will still collect if supply is HIGH when the ship arrives.
+// This prevents assigning ships to collect when supply might drop to MODERATE during the trip.
+func (m *TaskAssignmentManager) IsFactorySupplyFavorable(ctx context.Context, factorySymbol, good string, playerID int) bool {
+	if m.marketRepo == nil {
+		return true // Assume favorable if we can't check
+	}
+
+	marketData, err := m.marketRepo.GetMarketData(ctx, factorySymbol, playerID)
+	if err != nil || marketData == nil {
+		return true // Assume favorable if we can't check
+	}
+
+	tradeGood := marketData.FindGood(good)
+	if tradeGood == nil || tradeGood.Supply() == nil {
+		return true // Assume favorable if we can't check
+	}
+
+	supply := *tradeGood.Supply()
+	return supply == "ABUNDANT" // Require ABUNDANT to start, executor allows HIGH on arrival
 }
 
 // ReconcileAssignedTasksWithDB syncs in-memory state with DB.
