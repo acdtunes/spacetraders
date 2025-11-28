@@ -23,10 +23,10 @@
   "panels": [
     {
       "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "postgresql"
+        "type": "prometheus",
+        "uid": "prometheus"
       },
-      "description": "Completed pipelines - revenue minus costs",
+      "description": "Change in net profit over the last hour",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -37,19 +37,17 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "red"
-              },
-              {
-                "color": "yellow",
-                "value": 0
+                "color": "red",
+                "value": null
               },
               {
                 "color": "green",
-                "value": 1000
+                "value": 0
               }
             ]
           },
-          "unit": "currencyUSD"
+          "unit": "locale",
+          "decimals": 0
         },
         "overrides": []
       },
@@ -62,7 +60,7 @@
       "id": 403,
       "options": {
         "colorMode": "value",
-        "graphMode": "area",
+        "graphMode": "none",
         "justifyMode": "auto",
         "orientation": "auto",
         "percentChangeColorMode": "standard",
@@ -74,24 +72,117 @@
           "values": false
         },
         "showPercentChange": false,
-        "textMode": "auto",
+        "textMode": "value",
         "wideLayout": true
       },
       "pluginVersion": "12.0.2",
       "targets": [
         {
           "datasource": {
-            "type": "grafana-postgresql-datasource",
-            "uid": "postgresql"
+            "type": "prometheus",
+            "uid": "prometheus"
           },
-          "format": "table",
-          "rawQuery": true,
-          "rawSql": "SELECT COALESCE(SUM(net_profit), 0) FROM manufacturing_pipelines WHERE status = 'COMPLETED' AND completed_at > NOW() - INTERVAL '1 hour'",
+          "expr": "spacetraders_daemon_net_profit - spacetraders_daemon_net_profit offset 1h",
+          "legendFormat": "P/L",
           "refId": "A"
         }
       ],
-      "title": "Net Profit (1h)",
+      "title": "P/L (1h)",
       "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Manufacturing profit rate smoothed over 10 minutes",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "¢/Hour",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 30,
+            "gradientMode": "none",
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "pointSize": 0,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "line+area"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "locale",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 17,
+        "x": 7,
+        "y": 0
+      },
+      "id": 406,
+      "options": {
+        "legend": {
+          "calcs": ["last", "mean"],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.0.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "avg_over_time((deriv(spacetraders_daemon_net_profit[5m]) * 3600)[10m:])",
+          "legendFormat": "P/L",
+          "refId": "A"
+        }
+      ],
+      "title": "P/L per Hour (Smoothed)",
+      "type": "timeseries"
     },
     {
       "collapsed": false,
@@ -380,7 +471,7 @@
           },
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n    p.pipeline_type,\n    p.product_good,\n    p.status,\n    p.sell_market,\n    COALESCE(completed.cnt, 0)::float / NULLIF(total.cnt, 0)::float as progress,\n    p.created_at\nFROM manufacturing_pipelines p\nLEFT JOIN LATERAL (\n    SELECT COUNT(*) as cnt FROM manufacturing_tasks t\n    WHERE t.pipeline_id = p.id AND t.status = 'COMPLETED'\n) completed ON true\nLEFT JOIN LATERAL (\n    SELECT COUNT(*) as cnt FROM manufacturing_tasks t\n    WHERE t.pipeline_id = p.id\n) total ON true\nWHERE p.status IN ('PLANNING', 'EXECUTING')\nORDER BY p.pipeline_type, p.created_at DESC",
+          "rawSql": "SELECT\n    p.pipeline_type,\n    p.product_good,\n    p.status,\n    SPLIT_PART(p.sell_market, '-', 3) as sell_market,\n    COALESCE(completed.cnt, 0)::float / NULLIF(total.cnt, 0)::float as progress,\n    p.created_at\nFROM manufacturing_pipelines p\nLEFT JOIN LATERAL (\n    SELECT COUNT(*) as cnt FROM manufacturing_tasks t\n    WHERE t.pipeline_id = p.id AND t.status = 'COMPLETED'\n) completed ON true\nLEFT JOIN LATERAL (\n    SELECT COUNT(*) as cnt FROM manufacturing_tasks t\n    WHERE t.pipeline_id = p.id\n) total ON true\nWHERE p.status IN ('PLANNING', 'EXECUTING')\nORDER BY p.pipeline_type, p.created_at DESC",
           "refId": "A"
         }
       ],
@@ -682,7 +773,7 @@
           },
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n    t.assigned_ship as ship,\n    t.task_type,\n    t.good,\n    t.status,\n    COALESCE(t.factory_symbol, t.source_market) as source,\n    t.target_market as destination,\n    COALESCE(p.product_good, 'N/A') as pipeline_target,\n    p.pipeline_type,\n    EXTRACT(EPOCH FROM (NOW() - t.started_at))::int as running_sec\nFROM manufacturing_tasks t\nLEFT JOIN manufacturing_pipelines p ON t.pipeline_id = p.id\nWHERE t.status IN ('ASSIGNED', 'EXECUTING')\n  AND t.assigned_ship IS NOT NULL\n  AND t.assigned_ship != ''\nORDER BY t.started_at DESC",
+          "rawSql": "SELECT\n    t.assigned_ship as ship,\n    t.task_type,\n    t.good,\n    t.status,\n    SPLIT_PART(COALESCE(t.factory_symbol, t.source_market), '-', 3) as source,\n    SPLIT_PART(t.target_market, '-', 3) as destination,\n    COALESCE(p.product_good, 'N/A') as pipeline_target,\n    p.pipeline_type,\n    EXTRACT(EPOCH FROM (NOW() - t.started_at))::int as running_sec\nFROM manufacturing_tasks t\nLEFT JOIN manufacturing_pipelines p ON t.pipeline_id = p.id\nWHERE t.status IN ('ASSIGNED', 'EXECUTING')\n  AND t.assigned_ship IS NOT NULL\n  AND t.assigned_ship != ''\nORDER BY t.started_at DESC",
           "refId": "A"
         }
       ],
@@ -1008,7 +1099,7 @@
           },
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n    t.good,\n    COALESCE(t.source_market, t.factory_symbol) as source,\n    CASE\n        WHEN t.task_type = 'COLLECT_SELL' THEN 'N/A (factory)'\n        WHEN t.good IN ('IRON_ORE','COPPER_ORE','ALUMINUM_ORE','PLATINUM_ORE','GOLD_ORE','SILVER_ORE','URANITE_ORE','MERITIUM_ORE','SILICON_CRYSTALS','QUARTZ_SAND','AMMONIA_ICE','LIQUID_HYDROGEN','LIQUID_NITROGEN','HYDROCARBON','DIAMONDS','PRECIOUS_STONES','ICE_WATER') THEN 'N/A (raw)'\n        ELSE COALESCE((SELECT supply FROM market_data md WHERE md.waypoint_symbol = t.source_market AND md.good_symbol = t.good ORDER BY last_updated DESC LIMIT 1), 'UNKNOWN')\n    END as source_supply,\n    EXTRACT(EPOCH FROM (NOW() - t.created_at))::int as waiting_sec,\n    t.task_type\nFROM manufacturing_tasks t\nWHERE t.status = 'PENDING'\nORDER BY t.created_at ASC\nLIMIT 15",
+          "rawSql": "SELECT\n    t.good,\n    SPLIT_PART(COALESCE(t.source_market, t.factory_symbol), '-', 3) as source,\n    CASE\n        WHEN t.task_type = 'COLLECT_SELL' THEN 'N/A (factory)'\n        WHEN t.good IN ('IRON_ORE','COPPER_ORE','ALUMINUM_ORE','PLATINUM_ORE','GOLD_ORE','SILVER_ORE','URANITE_ORE','MERITIUM_ORE','SILICON_CRYSTALS','QUARTZ_SAND','AMMONIA_ICE','LIQUID_HYDROGEN','LIQUID_NITROGEN','HYDROCARBON','DIAMONDS','PRECIOUS_STONES','ICE_WATER') THEN 'N/A (raw)'\n        ELSE COALESCE((SELECT supply FROM market_data md WHERE md.waypoint_symbol = t.source_market AND md.good_symbol = t.good ORDER BY last_updated DESC LIMIT 1), 'UNKNOWN')\n    END as source_supply,\n    EXTRACT(EPOCH FROM (NOW() - t.created_at))::int as waiting_sec,\n    t.task_type\nFROM manufacturing_tasks t\nWHERE t.status = 'PENDING'\nORDER BY t.created_at ASC\nLIMIT 15",
           "refId": "A"
         }
       ],
@@ -1361,7 +1452,7 @@
               },
               "format": "table",
               "rawQuery": true,
-              "rawSql": "SELECT\n    COALESCE(p.product_good, 'N/A') as pipeline,\n    t.good,\n    t.priority as base_priority,\n    t.priority + LEAST(EXTRACT(EPOCH FROM (NOW() - t.ready_at))/30, 100)::int as effective_priority,\n    EXTRACT(EPOCH FROM (NOW() - t.ready_at))::int as waiting,\n    t.source_market as source,\n    t.target_market as destination\nFROM manufacturing_tasks t\nLEFT JOIN manufacturing_pipelines p ON t.pipeline_id = p.id\nWHERE t.status = 'READY' AND t.task_type = 'ACQUIRE_DELIVER'\nORDER BY\n    t.priority + LEAST(EXTRACT(EPOCH FROM (NOW() - t.ready_at))/30, 100)::int DESC,\n    t.ready_at ASC\nLIMIT 15",
+              "rawSql": "SELECT\n    COALESCE(p.product_good, 'N/A') as pipeline,\n    t.good,\n    t.priority as base_priority,\n    t.priority + LEAST(EXTRACT(EPOCH FROM (NOW() - t.ready_at))/30, 100)::int as effective_priority,\n    EXTRACT(EPOCH FROM (NOW() - t.ready_at))::int as waiting,\n    SPLIT_PART(t.source_market, '-', 3) as source,\n    SPLIT_PART(t.target_market, '-', 3) as destination\nFROM manufacturing_tasks t\nLEFT JOIN manufacturing_pipelines p ON t.pipeline_id = p.id\nWHERE t.status = 'READY' AND t.task_type = 'ACQUIRE_DELIVER'\nORDER BY\n    t.priority + LEAST(EXTRACT(EPOCH FROM (NOW() - t.ready_at))/30, 100)::int DESC,\n    t.ready_at ASC\nLIMIT 15",
               "refId": "A"
             }
           ],
@@ -1556,7 +1647,7 @@
               },
               "format": "table",
               "rawQuery": true,
-              "rawSql": "SELECT\n    COALESCE(p.product_good, 'N/A') as pipeline,\n    t.good,\n    t.priority as base_priority,\n    t.priority + LEAST(EXTRACT(EPOCH FROM (NOW() - t.ready_at))/30, 100)::int as effective_priority,\n    EXTRACT(EPOCH FROM (NOW() - t.ready_at))::int as waiting_sec,\n    t.factory_symbol as factory,\n    t.target_market as destination\nFROM manufacturing_tasks t\nLEFT JOIN manufacturing_pipelines p ON t.pipeline_id = p.id\nWHERE t.status = 'READY' AND t.task_type = 'COLLECT_SELL'\nORDER BY\n    t.priority + LEAST(EXTRACT(EPOCH FROM (NOW() - t.ready_at))/30, 100)::int DESC,\n    t.ready_at ASC\nLIMIT 15",
+              "rawSql": "SELECT\n    COALESCE(p.product_good, 'N/A') as pipeline,\n    t.good,\n    t.priority as base_priority,\n    t.priority + LEAST(EXTRACT(EPOCH FROM (NOW() - t.ready_at))/30, 100)::int as effective_priority,\n    EXTRACT(EPOCH FROM (NOW() - t.ready_at))::int as waiting_sec,\n    SPLIT_PART(t.factory_symbol, '-', 3) as factory,\n    SPLIT_PART(t.target_market, '-', 3) as destination\nFROM manufacturing_tasks t\nLEFT JOIN manufacturing_pipelines p ON t.pipeline_id = p.id\nWHERE t.status = 'READY' AND t.task_type = 'COLLECT_SELL'\nORDER BY\n    t.priority + LEAST(EXTRACT(EPOCH FROM (NOW() - t.ready_at))/30, 100)::int DESC,\n    t.ready_at ASC\nLIMIT 15",
               "refId": "A"
             }
           ],
@@ -1938,7 +2029,7 @@
               },
               "format": "table",
               "rawQuery": true,
-              "rawSql": "SELECT\n    f.output_good,\n    f.factory_symbol,\n    f.current_supply,\n    f.ready_for_collection,\n    COALESCE(p.product_good, 'N/A') as pipeline_target\nFROM manufacturing_factory_states f\nLEFT JOIN manufacturing_pipelines p ON f.pipeline_id = p.id\nWHERE p.status = 'EXECUTING' OR p.status IS NULL\nORDER BY\n    CASE f.current_supply\n        WHEN 'SCARCE' THEN 1\n        WHEN 'LIMITED' THEN 2\n        WHEN 'MODERATE' THEN 3\n        WHEN 'HIGH' THEN 4\n        WHEN 'ABUNDANT' THEN 5\n    END ASC",
+              "rawSql": "SELECT\n    f.output_good,\n    SPLIT_PART(f.factory_symbol, '-', 3) as factory_symbol,\n    f.current_supply,\n    f.ready_for_collection,\n    COALESCE(p.product_good, 'N/A') as pipeline_target\nFROM manufacturing_factory_states f\nLEFT JOIN manufacturing_pipelines p ON f.pipeline_id = p.id\nWHERE p.status = 'EXECUTING' OR p.status IS NULL\nORDER BY\n    CASE f.current_supply\n        WHEN 'SCARCE' THEN 1\n        WHEN 'LIMITED' THEN 2\n        WHEN 'MODERATE' THEN 3\n        WHEN 'HIGH' THEN 4\n        WHEN 'ABUNDANT' THEN 5\n    END ASC",
               "refId": "A"
             }
           ],
