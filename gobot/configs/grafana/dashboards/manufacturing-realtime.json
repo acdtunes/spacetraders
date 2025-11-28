@@ -12,11 +12,11 @@
       "collapsed": false,
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
       "id": 100,
-      "title": "Active Pipelines",
+      "title": "Pipeline Overview (FABRICATION vs COLLECTION)",
       "type": "row"
     },
     {
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "thresholds" },
@@ -31,7 +31,7 @@
           "unit": "short"
         }
       },
-      "gridPos": { "h": 7, "w": 4, "x": 0, "y": 1 },
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 1 },
       "id": 101,
       "options": {
         "colorMode": "value",
@@ -43,12 +43,93 @@
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum(spacetraders_daemon_manufacturing_pipeline_queue_depth)",
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(*) FROM manufacturing_pipelines WHERE status IN ('PLANNING', 'EXECUTING')",
           "refId": "A"
         }
       ],
-      "title": "Active Pipelines",
+      "title": "Total Active",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
+      "description": "Counted toward max_pipelines limit",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "blue", "value": null },
+              { "color": "green", "value": 1 },
+              { "color": "yellow", "value": 3 },
+              { "color": "red", "value": 5 }
+            ]
+          },
+          "unit": "short"
+        }
+      },
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 1 },
+      "id": 102,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(*) FROM manufacturing_pipelines WHERE status IN ('PLANNING', 'EXECUTING') AND pipeline_type = 'FABRICATION'",
+          "refId": "A"
+        }
+      ],
+      "title": "⚙️ FABRICATION",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
+      "description": "Unlimited - not counted toward limit",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "purple", "value": null }
+            ]
+          },
+          "unit": "short"
+        }
+      },
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 1 },
+      "id": 103,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(*) FROM manufacturing_pipelines WHERE status IN ('PLANNING', 'EXECUTING') AND pipeline_type = 'COLLECTION'",
+          "refId": "A"
+        }
+      ],
+      "title": "📦 COLLECTION",
       "type": "stat"
     },
     {
@@ -68,6 +149,25 @@
         },
         "overrides": [
           {
+            "matcher": { "id": "byName", "options": "pipeline_type" },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background",
+                  "mode": "basic"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  { "options": { "FABRICATION": { "color": "blue", "index": 0 } }, "type": "value" },
+                  { "options": { "COLLECTION": { "color": "purple", "index": 1 } }, "type": "value" }
+                ]
+              }
+            ]
+          },
+          {
             "matcher": { "id": "byName", "options": "status" },
             "properties": [
               {
@@ -80,7 +180,7 @@
               {
                 "id": "mappings",
                 "value": [
-                  { "options": { "PLANNING": { "color": "blue", "index": 0 } }, "type": "value" },
+                  { "options": { "PLANNING": { "color": "yellow", "index": 0 } }, "type": "value" },
                   { "options": { "EXECUTING": { "color": "green", "index": 1 } }, "type": "value" }
                 ]
               }
@@ -101,8 +201,8 @@
           }
         ]
       },
-      "gridPos": { "h": 7, "w": 12, "x": 4, "y": 1 },
-      "id": 102,
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
+      "id": 105,
       "options": {
         "cellHeight": "sm",
         "footer": { "countRows": false, "fields": "", "reducer": ["sum"], "show": false },
@@ -113,7 +213,7 @@
           "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n    p.product_good,\n    p.status,\n    p.sell_market,\n    p.created_at,\n    COALESCE(completed.cnt, 0)::float / NULLIF(total.cnt, 0)::float as progress\nFROM manufacturing_pipelines p\nLEFT JOIN LATERAL (\n    SELECT COUNT(*) as cnt FROM manufacturing_tasks t\n    WHERE t.pipeline_id = p.id AND t.status = 'COMPLETED'\n) completed ON true\nLEFT JOIN LATERAL (\n    SELECT COUNT(*) as cnt FROM manufacturing_tasks t\n    WHERE t.pipeline_id = p.id\n) total ON true\nWHERE p.status IN ('PLANNING', 'EXECUTING')\nORDER BY p.created_at DESC",
+          "rawSql": "SELECT\n    p.pipeline_type,\n    p.product_good,\n    p.status,\n    p.sell_market,\n    COALESCE(completed.cnt, 0)::float / NULLIF(total.cnt, 0)::float as progress,\n    p.created_at\nFROM manufacturing_pipelines p\nLEFT JOIN LATERAL (\n    SELECT COUNT(*) as cnt FROM manufacturing_tasks t\n    WHERE t.pipeline_id = p.id AND t.status = 'COMPLETED'\n) completed ON true\nLEFT JOIN LATERAL (\n    SELECT COUNT(*) as cnt FROM manufacturing_tasks t\n    WHERE t.pipeline_id = p.id\n) total ON true\nWHERE p.status IN ('PLANNING', 'EXECUTING')\nORDER BY p.pipeline_type, p.created_at DESC",
           "refId": "A"
         }
       ],
@@ -121,103 +221,271 @@
       "type": "table"
     },
     {
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 },
+      "id": 150,
+      "title": "⚡ Supply-Gating Status",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
+      "description": "Tasks waiting for source market to reach HIGH/ABUNDANT supply",
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": { "type": "linear" },
-            "showPoints": "auto",
-            "spanNulls": false,
-            "stacking": { "group": "A", "mode": "none" },
-            "thresholdsStyle": { "mode": "off" }
-          },
+          "color": { "mode": "thresholds" },
           "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
-          "unit": "s"
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 5 },
+              { "color": "orange", "value": 10 },
+              { "color": "red", "value": 20 }
+            ]
+          },
+          "unit": "short"
         }
       },
-      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 1 },
-      "id": 103,
+      "gridPos": { "h": 5, "w": 4, "x": 0, "y": 10 },
+      "id": 151,
       "options": {
-        "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
-        "tooltip": { "mode": "single", "sort": "none" }
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "histogram_quantile(0.5, rate(spacetraders_daemon_manufacturing_pipeline_duration_seconds_bucket[5m]))",
-          "legendFormat": "p50",
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(*) FROM manufacturing_tasks WHERE status = 'PENDING' AND task_type = 'ACQUIRE_DELIVER'",
           "refId": "A"
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "histogram_quantile(0.95, rate(spacetraders_daemon_manufacturing_pipeline_duration_seconds_bucket[5m]))",
-          "legendFormat": "p95",
-          "refId": "B"
         }
       ],
-      "title": "Pipeline Duration",
-      "type": "timeseries"
+      "title": "⏳ Pending (Supply-Gated)",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
+      "description": "Tasks ready to execute (supply is HIGH/ABUNDANT)",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "blue", "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          },
+          "unit": "short"
+        }
+      },
+      "gridPos": { "h": 5, "w": 4, "x": 4, "y": 10 },
+      "id": 152,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(*) FROM manufacturing_tasks WHERE status = 'READY'",
+          "refId": "A"
+        }
+      ],
+      "title": "✅ Ready (Activated)",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
+      "description": "Tasks currently being executed by ships",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 5 },
+              { "color": "red", "value": 10 }
+            ]
+          },
+          "unit": "short"
+        }
+      },
+      "gridPos": { "h": 5, "w": 4, "x": 8, "y": 10 },
+      "id": 153,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(*) FROM manufacturing_tasks WHERE status IN ('ASSIGNED', 'EXECUTING')",
+          "refId": "A"
+        }
+      ],
+      "title": "🚀 Executing",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": { "type": "auto" },
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "source_supply" },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background",
+                  "mode": "basic"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  { "options": { "SCARCE": { "color": "red", "index": 0 } }, "type": "value" },
+                  { "options": { "LIMITED": { "color": "orange", "index": 1 } }, "type": "value" },
+                  { "options": { "MODERATE": { "color": "yellow", "index": 2 } }, "type": "value" },
+                  { "options": { "HIGH": { "color": "light-green", "index": 3 } }, "type": "value" },
+                  { "options": { "ABUNDANT": { "color": "green", "index": 4 } }, "type": "value" },
+                  { "options": { "N/A (raw)": { "color": "blue", "index": 5 } }, "type": "value" }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "waiting_min" },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": { "type": "color-text" }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    { "color": "green", "value": null },
+                    { "color": "yellow", "value": 10 },
+                    { "color": "red", "value": 30 }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": { "h": 5, "w": 12, "x": 12, "y": 10 },
+      "id": 154,
+      "options": {
+        "cellHeight": "sm",
+        "footer": { "countRows": false, "fields": "", "reducer": ["sum"], "show": false },
+        "showHeader": true,
+        "sortBy": [{ "desc": true, "displayName": "waiting_min" }]
+      },
+      "targets": [
+        {
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT\n    t.good,\n    t.source_market,\n    COALESCE(\n        (SELECT supply FROM market_data md WHERE md.waypoint_symbol = t.source_market AND md.good_symbol = t.good ORDER BY last_updated DESC LIMIT 1),\n        CASE WHEN t.good IN ('IRON_ORE','COPPER_ORE','ALUMINUM_ORE','PLATINUM_ORE','GOLD_ORE','SILVER_ORE','URANITE_ORE','MERITIUM_ORE','SILICON_CRYSTALS','QUARTZ_SAND','AMMONIA_ICE','LIQUID_HYDROGEN','LIQUID_NITROGEN','HYDROCARBON','DIAMONDS','PRECIOUS_STONES','ICE_WATER') THEN 'N/A (raw)' ELSE 'UNKNOWN' END\n    ) as source_supply,\n    ROUND(EXTRACT(EPOCH FROM (NOW() - t.created_at))/60, 1) as waiting_min,\n    t.task_type\nFROM manufacturing_tasks t\nWHERE t.status = 'PENDING'\nORDER BY t.created_at ASC\nLIMIT 15",
+          "refId": "A"
+        }
+      ],
+      "title": "Tasks Waiting for Good Supply",
+      "type": "table"
     },
     {
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 8 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 15 },
       "id": 200,
       "title": "Task Queue & Priority",
       "type": "row"
     },
     {
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "palette-classic" },
           "mappings": [],
           "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
           "unit": "short"
-        }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "ACQUIRE_DELIVER" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "blue", "mode": "fixed" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "COLLECT_SELL" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "purple", "mode": "fixed" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "LIQUIDATE" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }]
+          }
+        ]
       },
-      "gridPos": { "h": 8, "w": 4, "x": 0, "y": 9 },
+      "gridPos": { "h": 7, "w": 6, "x": 0, "y": 16 },
       "id": 201,
       "options": {
         "displayMode": "gradient",
         "maxVizHeight": 300,
         "minVizHeight": 16,
         "minVizWidth": 8,
-        "namePlacement": "auto",
+        "namePlacement": "left",
         "orientation": "horizontal",
         "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
         "showUnfilled": true,
         "sizing": "auto",
-        "valueMode": "color"
+        "valueMode": "color",
+        "text": { "titleSize": 12, "valueSize": 24 }
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum by (task_type) (spacetraders_daemon_manufacturing_tasks_ready_total)",
-          "legendFormat": "{{task_type}}",
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT task_type, COUNT(*) as count FROM manufacturing_tasks WHERE status = 'READY' GROUP BY task_type",
           "refId": "A"
         }
       ],
-      "title": "Queue by Type",
+      "title": "Ready Queue by Type",
       "type": "bargauge"
     },
     {
       "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
+      "description": "ACQUIRE_DELIVER tasks ready for execution",
       "fieldConfig": {
         "defaults": {
           "custom": {
@@ -250,9 +518,7 @@
             "properties": [
               {
                 "id": "custom.cellOptions",
-                "value": {
-                  "type": "color-text"
-                }
+                "value": { "type": "color-text" }
               },
               {
                 "id": "thresholds",
@@ -269,7 +535,7 @@
           }
         ]
       },
-      "gridPos": { "h": 8, "w": 16, "x": 4, "y": 9 },
+      "gridPos": { "h": 7, "w": 9, "x": 6, "y": 16 },
       "id": 202,
       "options": {
         "cellHeight": "sm",
@@ -282,53 +548,88 @@
           "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n    COALESCE(p.product_good, 'N/A') as pipeline,\n    t.task_type,\n    t.good,\n    t.priority as base_priority,\n    t.priority + LEAST(EXTRACT(EPOCH FROM (NOW() - t.ready_at))/30, 100)::int as effective_priority,\n    t.status,\n    ROUND(EXTRACT(EPOCH FROM (NOW() - t.ready_at))/60, 1) as waiting_min,\n    COALESCE(t.factory_symbol, t.source_market) as source,\n    t.target_market as destination\nFROM manufacturing_tasks t\nLEFT JOIN manufacturing_pipelines p ON t.pipeline_id = p.id\nWHERE t.status IN ('PENDING', 'READY')\nORDER BY\n    t.priority + LEAST(EXTRACT(EPOCH FROM (NOW() - t.ready_at))/30, 100)::int DESC,\n    t.ready_at ASC\nLIMIT 20",
+          "rawSql": "SELECT\n    COALESCE(p.product_good, 'N/A') as pipeline,\n    t.good,\n    t.priority as base_priority,\n    t.priority + LEAST(EXTRACT(EPOCH FROM (NOW() - t.ready_at))/30, 100)::int as effective_priority,\n    ROUND(EXTRACT(EPOCH FROM (NOW() - t.ready_at))/60, 1) as waiting_min,\n    t.source_market as source,\n    t.target_market as destination\nFROM manufacturing_tasks t\nLEFT JOIN manufacturing_pipelines p ON t.pipeline_id = p.id\nWHERE t.status = 'READY' AND t.task_type = 'ACQUIRE_DELIVER'\nORDER BY\n    t.priority + LEAST(EXTRACT(EPOCH FROM (NOW() - t.ready_at))/30, 100)::int DESC,\n    t.ready_at ASC\nLIMIT 15",
           "refId": "A"
         }
       ],
-      "title": "Task Queue with Priority",
+      "title": "🔵 Acquire Task Queue",
       "type": "table"
     },
     {
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
+      "description": "COLLECT_SELL tasks ready for execution",
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "thresholds" },
+          "custom": {
+            "align": "auto",
+            "cellOptions": { "type": "auto" },
+            "inspect": false
+          },
           "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "green", "value": null },
-              { "color": "yellow", "value": 5 },
-              { "color": "red", "value": 10 }
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "effective_priority" },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background",
+                  "mode": "gradient"
+                }
+              },
+              {
+                "id": "color",
+                "value": { "mode": "continuous-GrYlRd" }
+              }
             ]
           },
-          "unit": "short"
-        }
+          {
+            "matcher": { "id": "byName", "options": "waiting_min" },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": { "type": "color-text" }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    { "color": "green", "value": null },
+                    { "color": "yellow", "value": 5 },
+                    { "color": "red", "value": 15 }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
       },
-      "gridPos": { "h": 8, "w": 4, "x": 20, "y": 9 },
-      "id": 203,
+      "gridPos": { "h": 7, "w": 9, "x": 15, "y": 16 },
+      "id": 204,
       "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "textMode": "auto"
+        "cellHeight": "sm",
+        "footer": { "countRows": false, "fields": "", "reducer": ["sum"], "show": false },
+        "showHeader": true,
+        "sortBy": [{ "desc": true, "displayName": "effective_priority" }]
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum(spacetraders_daemon_manufacturing_tasks_executing_total)",
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT\n    COALESCE(p.product_good, 'N/A') as pipeline,\n    t.good,\n    t.priority as base_priority,\n    t.priority + LEAST(EXTRACT(EPOCH FROM (NOW() - t.ready_at))/30, 100)::int as effective_priority,\n    ROUND(EXTRACT(EPOCH FROM (NOW() - t.ready_at))/60, 1) as waiting_min,\n    t.factory_symbol as factory,\n    t.target_market as destination\nFROM manufacturing_tasks t\nLEFT JOIN manufacturing_pipelines p ON t.pipeline_id = p.id\nWHERE t.status = 'READY' AND t.task_type = 'COLLECT_SELL'\nORDER BY\n    t.priority + LEAST(EXTRACT(EPOCH FROM (NOW() - t.ready_at))/30, 100)::int DESC,\n    t.ready_at ASC\nLIMIT 15",
           "refId": "A"
         }
       ],
-      "title": "Tasks Executing",
-      "type": "stat"
+      "title": "🟣 Collect Task Queue",
+      "type": "table"
     },
     {
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 17 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 23 },
       "id": 250,
       "title": "Assigned Ships",
       "type": "row"
@@ -388,7 +689,7 @@
           }
         ]
       },
-      "gridPos": { "h": 7, "w": 16, "x": 0, "y": 18 },
+      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 24 },
       "id": 251,
       "options": {
         "cellHeight": "sm",
@@ -400,7 +701,7 @@
           "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n    t.assigned_ship as ship,\n    t.task_type,\n    t.good,\n    t.status,\n    COALESCE(t.factory_symbol, t.source_market) as source,\n    t.target_market as destination,\n    COALESCE(p.product_good, 'N/A') as pipeline_target,\n    ROUND(EXTRACT(EPOCH FROM (NOW() - t.started_at))/60, 1) as running_min\nFROM manufacturing_tasks t\nLEFT JOIN manufacturing_pipelines p ON t.pipeline_id = p.id\nWHERE t.status IN ('ASSIGNED', 'EXECUTING')\n  AND t.assigned_ship IS NOT NULL\n  AND t.assigned_ship != ''\nORDER BY t.started_at DESC",
+          "rawSql": "SELECT\n    t.assigned_ship as ship,\n    t.task_type,\n    t.good,\n    t.status,\n    COALESCE(t.factory_symbol, t.source_market) as source,\n    t.target_market as destination,\n    COALESCE(p.product_good, 'N/A') as pipeline_target,\n    p.pipeline_type,\n    ROUND(EXTRACT(EPOCH FROM (NOW() - t.started_at))/60, 1) as running_min\nFROM manufacturing_tasks t\nLEFT JOIN manufacturing_pipelines p ON t.pipeline_id = p.id\nWHERE t.status IN ('ASSIGNED', 'EXECUTING')\n  AND t.assigned_ship IS NOT NULL\n  AND t.assigned_ship != ''\nORDER BY t.started_at DESC",
           "refId": "A"
         }
       ],
@@ -408,37 +709,8 @@
       "type": "table"
     },
     {
-      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": { "hideFrom": { "legend": false, "tooltip": false, "viz": false } },
-          "mappings": []
-        }
-      },
-      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 18 },
-      "id": 252,
-      "options": {
-        "legend": { "displayMode": "list", "placement": "right", "showLegend": true },
-        "pieType": "pie",
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "tooltip": { "mode": "single", "sort": "none" }
-      },
-      "targets": [
-        {
-          "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
-          "format": "table",
-          "rawQuery": true,
-          "rawSql": "SELECT\n    t.task_type,\n    COUNT(DISTINCT t.assigned_ship) as ship_count\nFROM manufacturing_tasks t\nWHERE t.status IN ('ASSIGNED', 'EXECUTING')\n  AND t.assigned_ship IS NOT NULL\nGROUP BY t.task_type",
-          "refId": "A"
-        }
-      ],
-      "title": "Ship Distribution by Task Type",
-      "type": "piechart"
-    },
-    {
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 25 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 31 },
       "id": 300,
       "title": "Supply Monitoring",
       "type": "row"
@@ -496,7 +768,7 @@
           }
         ]
       },
-      "gridPos": { "h": 7, "w": 10, "x": 0, "y": 26 },
+      "gridPos": { "h": 7, "w": 10, "x": 0, "y": 32 },
       "id": 301,
       "options": {
         "cellHeight": "sm",
@@ -525,7 +797,7 @@
             "axisBorderShow": false,
             "axisCenteredZero": false,
             "axisColorMode": "text",
-            "axisLabel": "",
+            "axisLabel": "Supply Level",
             "axisPlacement": "auto",
             "barAlignment": 0,
             "drawStyle": "line",
@@ -533,8 +805,8 @@
             "gradientMode": "none",
             "hideFrom": { "legend": false, "tooltip": false, "viz": false },
             "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
             "pointSize": 5,
             "scaleDistribution": { "type": "linear" },
             "showPoints": "auto",
@@ -542,30 +814,38 @@
             "stacking": { "group": "A", "mode": "none" },
             "thresholdsStyle": { "mode": "off" }
           },
-          "mappings": [],
+          "mappings": [
+            { "type": "value", "options": { "1": { "text": "SCARCE", "color": "red" } } },
+            { "type": "value", "options": { "2": { "text": "LIMITED", "color": "orange" } } },
+            { "type": "value", "options": { "3": { "text": "MODERATE", "color": "yellow" } } },
+            { "type": "value", "options": { "4": { "text": "HIGH", "color": "light-green" } } },
+            { "type": "value", "options": { "5": { "text": "ABUNDANT", "color": "green" } } }
+          ],
           "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
+          "min": 1,
+          "max": 5,
           "unit": "short"
         }
       },
-      "gridPos": { "h": 7, "w": 10, "x": 10, "y": 26 },
+      "gridPos": { "h": 7, "w": 10, "x": 10, "y": 32 },
       "id": 302,
       "options": {
-        "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "legend": { "calcs": ["last"], "displayMode": "table", "placement": "right", "showLegend": true },
         "tooltip": { "mode": "single", "sort": "none" }
       },
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "rate(spacetraders_daemon_manufacturing_supply_transitions_total[1m])",
-          "legendFormat": "{{good}}: {{from_level}} -> {{to_level}}",
+          "expr": "spacetraders_daemon_manufacturing_factory_supply_level",
+          "legendFormat": "{{output_good}}",
           "refId": "A"
         }
       ],
-      "title": "Supply Transitions",
+      "title": "Factory Supply Levels",
       "type": "timeseries"
     },
     {
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "thresholds" },
@@ -580,7 +860,7 @@
           "unit": "short"
         }
       },
-      "gridPos": { "h": 7, "w": 4, "x": 20, "y": 26 },
+      "gridPos": { "h": 7, "w": 4, "x": 20, "y": 32 },
       "id": 303,
       "options": {
         "colorMode": "value",
@@ -592,8 +872,10 @@
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum(spacetraders_daemon_manufacturing_factory_ready_total)",
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(*) FROM manufacturing_factory_states WHERE ready_for_collection = true",
           "refId": "A"
         }
       ],
@@ -602,13 +884,13 @@
     },
     {
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 33 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 39 },
       "id": 400,
-      "title": "Performance",
+      "title": "Performance & Economics",
       "type": "row"
     },
     {
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "thresholds" },
@@ -623,7 +905,7 @@
           "unit": "short"
         }
       },
-      "gridPos": { "h": 6, "w": 4, "x": 0, "y": 34 },
+      "gridPos": { "h": 6, "w": 3, "x": 0, "y": 40 },
       "id": 401,
       "options": {
         "colorMode": "value",
@@ -635,12 +917,14 @@
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum(spacetraders_daemon_manufacturing_ships_assigned_total)",
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(DISTINCT assigned_ship) FROM manufacturing_tasks WHERE status IN ('ASSIGNED', 'EXECUTING') AND assigned_ship IS NOT NULL",
           "refId": "A"
         }
       ],
-      "title": "Ships Assigned",
+      "title": "Ships Active",
       "type": "stat"
     },
     {
@@ -674,7 +958,7 @@
           "unit": "short"
         }
       },
-      "gridPos": { "h": 6, "w": 8, "x": 4, "y": 34 },
+      "gridPos": { "h": 6, "w": 7, "x": 3, "y": 40 },
       "id": 402,
       "options": {
         "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
@@ -692,7 +976,8 @@
       "type": "timeseries"
     },
     {
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
+      "description": "Completed pipelines - revenue minus costs",
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "thresholds" },
@@ -701,14 +986,14 @@
             "mode": "absolute",
             "steps": [
               { "color": "red", "value": null },
-              { "color": "yellow", "value": 1000 },
-              { "color": "green", "value": 5000 }
+              { "color": "yellow", "value": 0 },
+              { "color": "green", "value": 1000 }
             ]
           },
           "unit": "currencyUSD"
         }
       },
-      "gridPos": { "h": 6, "w": 4, "x": 12, "y": 34 },
+      "gridPos": { "h": 6, "w": 4, "x": 10, "y": 40 },
       "id": 403,
       "options": {
         "colorMode": "value",
@@ -720,16 +1005,18 @@
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum(spacetraders_daemon_manufacturing_profit_rate)",
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COALESCE(SUM(net_profit), 0) FROM manufacturing_pipelines WHERE status = 'COMPLETED' AND completed_at > NOW() - INTERVAL '1 hour'",
           "refId": "A"
         }
       ],
-      "title": "Profit Rate (/hr)",
+      "title": "Net Profit (1h)",
       "type": "stat"
     },
     {
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "thresholds" },
@@ -745,7 +1032,7 @@
           "unit": "m"
         }
       },
-      "gridPos": { "h": 6, "w": 4, "x": 16, "y": 34 },
+      "gridPos": { "h": 6, "w": 3, "x": 14, "y": 40 },
       "id": 404,
       "options": {
         "colorMode": "value",
@@ -757,71 +1044,100 @@
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "max(spacetraders_daemon_manufacturing_task_starvation_minutes)",
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COALESCE(MAX(EXTRACT(EPOCH FROM (NOW() - ready_at))/60), 0) as max_wait FROM manufacturing_tasks WHERE status = 'READY'",
           "refId": "A"
         }
       ],
-      "title": "Max Task Starvation",
+      "title": "Max Task Wait",
       "type": "stat"
     },
     {
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
           "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": { "type": "linear" },
-            "showPoints": "auto",
-            "spanNulls": false,
-            "stacking": { "group": "A", "mode": "none" },
-            "thresholdsStyle": { "mode": "off" }
+            "align": "auto",
+            "cellOptions": { "type": "auto" },
+            "inspect": false
           },
           "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
-          "unit": "short"
-        }
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "pipeline_type" },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background",
+                  "mode": "basic"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  { "options": { "FABRICATION": { "color": "blue", "index": 0 } }, "type": "value" },
+                  { "options": { "COLLECTION": { "color": "purple", "index": 1 } }, "type": "value" }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "net_profit" },
+            "properties": [
+              { "id": "unit", "value": "currencyUSD" },
+              {
+                "id": "custom.cellOptions",
+                "value": { "type": "color-text" }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    { "color": "red", "value": null },
+                    { "color": "yellow", "value": 0 },
+                    { "color": "green", "value": 1000 }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
       },
-      "gridPos": { "h": 6, "w": 4, "x": 20, "y": 34 },
+      "gridPos": { "h": 6, "w": 7, "x": 17, "y": 40 },
       "id": 405,
       "options": {
-        "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": false },
-        "tooltip": { "mode": "single", "sort": "none" }
+        "cellHeight": "sm",
+        "footer": { "countRows": false, "fields": "", "reducer": ["sum"], "show": false },
+        "showHeader": true,
+        "sortBy": [{ "desc": true, "displayName": "completed_at" }]
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "rate(spacetraders_daemon_manufacturing_task_retries_total[5m])",
-          "legendFormat": "{{task_type}}",
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "postgresql" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT\n    pipeline_type,\n    product_good,\n    net_profit,\n    total_revenue,\n    total_cost,\n    completed_at\nFROM manufacturing_pipelines\nWHERE status = 'COMPLETED'\nORDER BY completed_at DESC\nLIMIT 10",
           "refId": "A"
         }
       ],
-      "title": "Task Retries",
-      "type": "timeseries"
+      "title": "Recent Completed Pipelines",
+      "type": "table"
     }
   ],
   "refresh": "5s",
   "schemaVersion": 38,
-  "tags": ["spacetraders", "manufacturing", "realtime"],
+  "tags": ["spacetraders", "manufacturing", "realtime", "supply-gated"],
   "templating": { "list": [] },
   "time": { "from": "now-15m", "to": "now" },
   "timepicker": {},
   "timezone": "browser",
   "title": "Manufacturing Pipeline Monitor",
   "uid": "manufacturing-realtime",
-  "version": 1
+  "version": 2
 }
