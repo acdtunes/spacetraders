@@ -117,8 +117,8 @@ func (r *SupplyChainResolver) BuildDependencyTree(
 			return r.buildTreeRecursive(ctx, targetGood, systemSymbol, playerID, visited, []string{}, true)
 		}
 
-		// No factory, no market, and not manufacturable - error
-		return nil, fmt.Errorf("no factory or market found for %s in system %s", targetGood, systemSymbol)
+		// No factory, no market, and not manufacturable - unknown good error
+		return nil, &goods.ErrUnknownGood{Good: targetGood}
 	}
 
 	// Step 3: Check factory supply - if HIGH/ABUNDANT, skip manufacturing

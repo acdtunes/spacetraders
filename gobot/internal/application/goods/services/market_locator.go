@@ -223,6 +223,113 @@ func (l *MarketLocator) FindExportMarket(
 	return result, nil
 }
 
+// FindExportMarketWithGoodSupply finds a market that exports a good with HIGH or ABUNDANT supply.
+// This is used for supply-gated acquisitions to ensure we only buy when prices are favorable.
+// Returns nil if no market with good supply is available.
+//
+// Supply levels affect prices:
+// - ABUNDANT: -20 to -10% (best prices for buying)
+// - HIGH: -10 to 0% (good prices for buying)
+// - MODERATE: 0-15% (average prices)
+// - LIMITED: +15-30% (above average prices)
+// - SCARCE: +30-70% (worst prices - NEVER BUY)
+func (l *MarketLocator) FindExportMarketWithGoodSupply(
+	ctx context.Context,
+	good string,
+	systemSymbol string,
+	playerID int,
+) (*MarketLocatorResult, error) {
+	// Check if this is an actual ship type - ships are manufactured at shipyards
+	// Shipyards don't have supply levels, so they're always available
+	if isShipType(good) {
+		return l.findShipyardSellingShip(ctx, good, systemSymbol, playerID)
+	}
+
+	// Get all markets in the system
+	marketWaypoints, err := l.marketRepo.FindAllMarketsInSystem(ctx, systemSymbol, playerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find markets in system: %w", err)
+	}
+
+	// Collect all markets with HIGH or ABUNDANT supply
+	type candidateMarket struct {
+		result *MarketLocatorResult
+		supply string
+		price  int
+	}
+	var candidates []candidateMarket
+
+	for _, waypointSymbol := range marketWaypoints {
+		// Get market data
+		marketData, err := l.marketRepo.GetMarketData(ctx, waypointSymbol, playerID)
+		if err != nil {
+			continue // Skip markets we can't access
+		}
+
+		// Check if this market exports the good
+		tradeGood := marketData.FindGood(good)
+		if tradeGood == nil {
+			continue // Market doesn't have this good
+		}
+
+		// Only consider EXPORT markets (selling to us)
+		if tradeGood.TradeType() != market.TradeTypeExport {
+			continue
+		}
+
+		// Check supply level - only HIGH or ABUNDANT
+		supply := ""
+		if tradeGood.Supply() != nil {
+			supply = *tradeGood.Supply()
+		}
+
+		if supply != "HIGH" && supply != "ABUNDANT" {
+			continue // Skip markets without good supply
+		}
+
+		// Extract activity
+		activity := ""
+		if tradeGood.Activity() != nil {
+			activity = *tradeGood.Activity()
+		}
+
+		candidates = append(candidates, candidateMarket{
+			result: &MarketLocatorResult{
+				WaypointSymbol: waypointSymbol,
+				Activity:       activity,
+				Supply:         supply,
+				Price:          tradeGood.SellPrice(),
+				TradeVolume:    tradeGood.TradeVolume(),
+			},
+			supply: supply,
+			price:  tradeGood.SellPrice(),
+		})
+	}
+
+	if len(candidates) == 0 {
+		return nil, nil // No market with good supply - not an error, just unavailable
+	}
+
+	// Sort candidates: ABUNDANT > HIGH, then by price (lower is better)
+	for i := 0; i < len(candidates)-1; i++ {
+		for j := i + 1; j < len(candidates); j++ {
+			shouldSwap := false
+			// ABUNDANT beats HIGH
+			if candidates[i].supply != candidates[j].supply {
+				shouldSwap = candidates[j].supply == "ABUNDANT"
+			} else {
+				// Same supply level - lower price wins
+				shouldSwap = candidates[j].price < candidates[i].price
+			}
+			if shouldSwap {
+				candidates[i], candidates[j] = candidates[j], candidates[i]
+			}
+		}
+	}
+
+	return candidates[0].result, nil
+}
+
 // FindBestExportMarket finds the best market for selling a good.
 // It prefers markets with high activity and abundant supply.
 // Ranking: STRONG + ABUNDANT/HIGH > GROWING + MODERATE/HIGH > Any + MODERATE > WEAK/SCARCE

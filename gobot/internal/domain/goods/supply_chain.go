@@ -204,6 +204,47 @@ func IsRawMaterial(good string) bool {
 	return !exists
 }
 
+// MineableRawMaterials defines goods that can be mined/extracted directly.
+// These bypass supply gating because:
+// 1. They can only be obtained by mining or purchasing (no alternative fabrication path)
+// 2. Their supply levels depend on mining activity, not factory production
+// 3. Waiting for HIGH/ABUNDANT might never happen for these goods
+var MineableRawMaterials = map[string]bool{
+	// Ores (mined from asteroids)
+	"IRON_ORE":     true,
+	"COPPER_ORE":   true,
+	"ALUMINUM_ORE": true,
+	"PLATINUM_ORE": true,
+	"GOLD_ORE":     true,
+	"SILVER_ORE":   true,
+	"URANITE_ORE":  true,
+	"MERITIUM_ORE": true,
+
+	// Crystals (mined from asteroids)
+	"SILICON_CRYSTALS": true,
+	"QUARTZ_SAND":      true,
+	"DIAMONDS":         true,
+	"PRECIOUS_STONES":  true,
+
+	// Ice/Gases (extracted from gas giants/ice belts)
+	"AMMONIA_ICE":      true,
+	"LIQUID_HYDROGEN":  true,
+	"LIQUID_NITROGEN":  true,
+	"HYDROCARBON":      true,
+	"ICE_WATER":        true,
+
+	// Biological (gathered from specific locations)
+	"BOTANICAL_SPECIMENS": true,
+	"EXOTIC_MATTER":       true,
+}
+
+// IsMineableRawMaterial returns true if the good is a mineable raw material.
+// These goods bypass supply gating for ACQUIRE_DELIVER tasks because they
+// cannot be fabricated from other inputs - they must be purchased or mined.
+func IsMineableRawMaterial(good string) bool {
+	return MineableRawMaterials[good]
+}
+
 // GetRequiredInputs returns the list of inputs required to produce a good.
 // Returns empty slice if the good is a raw material.
 func GetRequiredInputs(good string) []string {
