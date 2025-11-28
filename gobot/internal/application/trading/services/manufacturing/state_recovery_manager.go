@@ -8,7 +8,6 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/trading/services"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 )
 
 // StateRecoverer recovers coordinator state from database after restart
@@ -31,7 +30,6 @@ type StateRecoveryManager struct {
 	taskRepo           manufacturing.TaskRepository
 	factoryStateRepo   manufacturing.FactoryStateRepository
 	shipAssignmentRepo container.ShipAssignmentRepository
-	marketRepo         market.MarketRepository
 	factoryTracker     *manufacturing.FactoryStateTracker
 	taskQueue          *services.TaskQueue
 }
@@ -42,7 +40,6 @@ func NewStateRecoveryManager(
 	taskRepo manufacturing.TaskRepository,
 	factoryStateRepo manufacturing.FactoryStateRepository,
 	shipAssignmentRepo container.ShipAssignmentRepository,
-	marketRepo market.MarketRepository,
 	factoryTracker *manufacturing.FactoryStateTracker,
 	taskQueue *services.TaskQueue,
 ) *StateRecoveryManager {
@@ -51,7 +48,6 @@ func NewStateRecoveryManager(
 		taskRepo:           taskRepo,
 		factoryStateRepo:   factoryStateRepo,
 		shipAssignmentRepo: shipAssignmentRepo,
-		marketRepo:         marketRepo,
 		factoryTracker:     factoryTracker,
 		taskQueue:          taskQueue,
 	}
@@ -105,6 +101,40 @@ func (m *StateRecoveryManager) RecoverState(ctx context.Context, playerID int) (
 	}
 
 	for _, task := range tasks {
+		// CRITICAL: Skip orphaned tasks with no pipeline_id
+		// These are corrupted tasks that slipped through without proper pipeline association
+		if task.PipelineID() == "" {
+			shipSymbol := task.AssignedShip()
+			// Mark as failed to prevent re-processing
+			if err := task.Cancel("orphaned task - no pipeline"); err == nil {
+				_ = m.taskRepo.Update(ctx, task)
+				logger.Log("WARN", fmt.Sprintf("Cancelled orphaned task %s (%s) - no pipeline_id",
+					task.ID()[:8], task.TaskType()), nil)
+			}
+			// Release ship if assigned
+			if shipSymbol != "" && m.shipAssignmentRepo != nil {
+				_ = m.shipAssignmentRepo.Release(ctx, shipSymbol, playerID, "orphaned_task")
+			}
+			continue
+		}
+
+		// CRITICAL: Skip tasks from non-active pipelines (CANCELLED/COMPLETED)
+		// Only tasks from PLANNING/EXECUTING pipelines should be recovered
+		if _, isActive := result.ActivePipelines[task.PipelineID()]; !isActive {
+			shipSymbol := task.AssignedShip()
+			// Mark as failed to prevent re-processing
+			if err := task.Cancel("pipeline not active"); err == nil {
+				_ = m.taskRepo.Update(ctx, task)
+				logger.Log("INFO", fmt.Sprintf("Cancelled task %s (%s) - pipeline not active",
+					task.ID()[:8], task.TaskType()), nil)
+			}
+			// Release ship if assigned
+			if shipSymbol != "" && m.shipAssignmentRepo != nil {
+				_ = m.shipAssignmentRepo.Release(ctx, shipSymbol, playerID, "pipeline_not_active")
+			}
+			continue
+		}
+
 		// Step 2a: Reset interrupted ASSIGNED tasks
 		if task.Status() == manufacturing.TaskStatusAssigned {
 			shipSymbol := task.AssignedShip()
@@ -132,12 +162,29 @@ func (m *StateRecoveryManager) RecoverState(ctx context.Context, playerID int) (
 		}
 
 		// Step 2c: Re-evaluate PENDING tasks for readiness
+		// FABRICATION pipeline COLLECT_SELL and ACQUIRE_DELIVER are supply-gated by SupplyMonitor
+		// COLLECTION pipeline tasks should be marked READY (already validated when created)
 		if task.Status() == manufacturing.TaskStatusPending {
-			// COLLECT_SELL tasks are handled by SupplyMonitor
-			if task.TaskType() == manufacturing.TaskTypeCollectSell {
+			pipeline := result.ActivePipelines[task.PipelineID()]
+			isCollectionPipeline := pipeline != nil && pipeline.PipelineType() == manufacturing.PipelineTypeCollection
+
+			// COLLECTION pipeline tasks: mark READY immediately
+			if isCollectionPipeline {
+				if err := task.MarkReady(); err == nil {
+					_ = m.taskRepo.Update(ctx, task)
+					logger.Log("INFO", fmt.Sprintf("Recovered COLLECTION pipeline task %s (%s) as READY",
+						task.ID()[:8], task.Good()), nil)
+				}
 				continue
 			}
 
+			// FABRICATION pipeline supply-gated tasks: let SupplyMonitor handle
+			if task.TaskType() == manufacturing.TaskTypeCollectSell ||
+				task.TaskType() == manufacturing.TaskTypeAcquireDeliver {
+				continue
+			}
+
+			// Other PENDING tasks: check dependencies
 			allDepsMet := true
 			for _, depID := range task.DependsOn() {
 				depTask, err := m.taskRepo.FindByID(ctx, depID)
@@ -154,47 +201,35 @@ func (m *StateRecoveryManager) RecoverState(ctx context.Context, playerID int) (
 			}
 		}
 
-		// Step 2d: Enqueue all READY tasks with state validation
+		// Step 2d: Enqueue READY tasks, but reset supply-gated tasks to PENDING
+		// COLLECT_SELL and ACQUIRE_DELIVER from FABRICATION pipelines are supply-gated
+		// COLLECTION pipeline tasks should stay READY (already validated when created)
 		if task.Status() == manufacturing.TaskStatusReady {
-			// STATE SYNC: Validate COLLECT_SELL tasks against sell market supply
-			if task.TaskType() == manufacturing.TaskTypeCollectSell {
-				if m.isSellMarketSaturated(ctx, task.TargetMarket(), task.Good(), playerID) {
-					task.ResetToPending()
-					if m.taskRepo != nil {
-						_ = m.taskRepo.Update(ctx, task)
-					}
-					logger.Log("DEBUG", "Reset COLLECT_SELL to PENDING: sell market saturated", map[string]interface{}{
-						"task_id":     task.ID()[:8],
-						"good":        task.Good(),
-						"sell_market": task.TargetMarket(),
-					})
-					continue
+			pipeline := result.ActivePipelines[task.PipelineID()]
+			isCollectionPipeline := pipeline != nil && pipeline.PipelineType() == manufacturing.PipelineTypeCollection
+
+			if !isCollectionPipeline &&
+				(task.TaskType() == manufacturing.TaskTypeCollectSell ||
+					task.TaskType() == manufacturing.TaskTypeAcquireDeliver) {
+				// Reset FABRICATION pipeline supply-gated tasks to PENDING
+				// SupplyMonitor will re-evaluate supply conditions
+				task.ResetToPending()
+				if m.taskRepo != nil {
+					_ = m.taskRepo.Update(ctx, task)
 				}
+				logger.Log("DEBUG", fmt.Sprintf("Reset %s task %s to PENDING for SupplyMonitor",
+					task.TaskType(), task.ID()[:8]), nil)
+				continue
 			}
 
-			// STATE SYNC: Validate ACQUIRE_DELIVER tasks against factory input supply
-			// If the factory already has HIGH/ABUNDANT supply of this input, reset to PENDING
-			if task.TaskType() == manufacturing.TaskTypeAcquireDeliver {
-				if m.isFactoryInputSaturated(ctx, task.FactorySymbol(), task.Good(), playerID) {
-					task.ResetToPending()
-					if m.taskRepo != nil {
-						_ = m.taskRepo.Update(ctx, task)
-					}
-					logger.Log("DEBUG", "Reset ACQUIRE_DELIVER to PENDING: factory input already saturated", map[string]interface{}{
-						"task_id": task.ID()[:8],
-						"good":    task.Good(),
-						"factory": task.FactorySymbol(),
-					})
-					continue
-				}
-			}
-
+			// Enqueue READY tasks (including COLLECTION pipeline tasks)
 			m.taskQueue.Enqueue(task)
 			result.ReadyTaskCount++
 		}
 	}
 
 	// Step 2e: Recover FAILED tasks that can be retried
+	// Supply-gated tasks (COLLECT_SELL, ACQUIRE_DELIVER) stay PENDING for SupplyMonitor
 	failedTasks, err := m.taskRepo.FindByStatus(ctx, playerID, manufacturing.TaskStatusFailed)
 	if err != nil {
 		logger.Log("WARN", fmt.Sprintf("Failed to load failed tasks for retry: %v", err), nil)
@@ -207,10 +242,12 @@ func (m *StateRecoveryManager) RecoverState(ctx context.Context, playerID int) (
 					continue
 				}
 
-				// COLLECT_SELL tasks stay PENDING
-				if task.TaskType() == manufacturing.TaskTypeCollectSell {
+				// Supply-gated tasks stay PENDING - let SupplyMonitor handle them
+				if task.TaskType() == manufacturing.TaskTypeCollectSell ||
+					task.TaskType() == manufacturing.TaskTypeAcquireDeliver {
 					if err := m.taskRepo.Update(ctx, task); err == nil {
-						logger.Log("INFO", fmt.Sprintf("Reset FAILED COLLECT_SELL task %s to PENDING", task.ID()[:8]), nil)
+						logger.Log("INFO", fmt.Sprintf("Reset FAILED %s task %s to PENDING for SupplyMonitor",
+							task.TaskType(), task.ID()[:8]), nil)
 					}
 					continue
 				}
@@ -259,45 +296,3 @@ func (m *StateRecoveryManager) RecoverState(ctx context.Context, playerID int) (
 	return result, nil
 }
 
-// isSellMarketSaturated checks if sell market has HIGH or ABUNDANT supply
-func (m *StateRecoveryManager) isSellMarketSaturated(ctx context.Context, sellMarket string, good string, playerID int) bool {
-	if m.marketRepo == nil {
-		return false
-	}
-
-	marketData, err := m.marketRepo.GetMarketData(ctx, sellMarket, playerID)
-	if err != nil || marketData == nil {
-		return false
-	}
-
-	tradeGood := marketData.FindGood(good)
-	if tradeGood == nil || tradeGood.Supply() == nil {
-		return false
-	}
-
-	supply := *tradeGood.Supply()
-	return supply == "HIGH" || supply == "ABUNDANT"
-}
-
-// isFactoryInputSaturated checks if factory already has HIGH or ABUNDANT supply of an input good.
-// This is used during state recovery to avoid re-queuing ACQUIRE_DELIVER tasks for inputs
-// that no longer need replenishment.
-func (m *StateRecoveryManager) isFactoryInputSaturated(ctx context.Context, factorySymbol string, inputGood string, playerID int) bool {
-	if m.marketRepo == nil {
-		return false
-	}
-
-	marketData, err := m.marketRepo.GetMarketData(ctx, factorySymbol, playerID)
-	if err != nil || marketData == nil {
-		return false // Can't check, assume not saturated
-	}
-
-	tradeGood := marketData.FindGood(inputGood)
-	if tradeGood == nil || tradeGood.Supply() == nil {
-		return false
-	}
-
-	// For factory inputs (IMPORT goods), HIGH/ABUNDANT means we don't need more deliveries
-	supply := *tradeGood.Supply()
-	return supply == "HIGH" || supply == "ABUNDANT"
-}
