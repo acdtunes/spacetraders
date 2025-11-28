@@ -285,9 +285,44 @@ func (h *RunParallelManufacturingCoordinatorHandler) applyDefaults(cmd *RunParal
 	return config
 }
 
-// initializeServices creates and wires up all coordinator services
+// initializeServices creates and wires up all coordinator services using constructor injection
 func (h *RunParallelManufacturingCoordinatorHandler) initializeServices(cmd *RunParallelManufacturingCoordinatorCommand) {
-	// Create services
+	// 1. Create shared state (no dependencies)
+	registry := mfgServices.NewActivePipelineRegistry()
+	assignmentTracker := mfgServices.NewAssignmentTracker()
+	readinessSpec := manufacturing.NewTaskReadinessSpecification()
+	reservationPolicy := manufacturing.NewWorkerReservationPolicy()
+
+	// 2. Create focused services
+	shipSelector := mfgServices.NewShipSelector(h.waypointProvider)
+	conditionChecker := mfgServices.NewMarketConditionChecker(h.marketRepo, readinessSpec)
+	reconciler := mfgServices.NewAssignmentReconciler(h.taskRepo, assignmentTracker)
+	completionChecker := mfgServices.NewPipelineCompletionChecker(h.pipelineRepo, h.taskRepo, registry)
+	recycler := mfgServices.NewPipelineRecycler(h.pipelineRepo, h.taskRepo, h.shipAssignmentRepo, h.taskQueue, h.factoryTracker, registry)
+	taskRescuer := mfgServices.NewTaskRescuer(h.taskRepo, h.taskQueue, conditionChecker)
+
+	// 3. Create factory manager (no circular dependencies)
+	h.factoryManager = mfgServices.NewFactoryStateManager(
+		h.taskRepo,
+		h.factoryStateRepo,
+		h.factoryTracker,
+		h.taskQueue,
+	)
+
+	// 4. Create state recoverer
+	h.stateRecoverer = mfgServices.NewStateRecoveryManager(
+		h.pipelineRepo,
+		h.taskRepo,
+		h.factoryStateRepo,
+		h.shipAssignmentRepo,
+		h.factoryTracker,
+		h.taskQueue,
+	)
+
+	// 5. Create pipeline manager (callback will trigger rescan)
+	onPipelineCompleted := func(ctx context.Context) {
+		// This will be called when a pipeline completes
+	}
 	h.pipelineManager = mfgServices.NewPipelineLifecycleManager(
 		h.demandFinder,
 		h.collectionOpportunityFinder,
@@ -298,29 +333,15 @@ func (h *RunParallelManufacturingCoordinatorHandler) initializeServices(cmd *Run
 		h.taskRepo,
 		h.factoryStateRepo,
 		h.marketRepo,
-		h.shipAssignmentRepo,
+		registry,
+		completionChecker,
+		recycler,
+		taskRescuer,
 		h.clock,
+		onPipelineCompleted,
 	)
 
-	h.stateRecoverer = mfgServices.NewStateRecoveryManager(
-		h.pipelineRepo,
-		h.taskRepo,
-		h.factoryStateRepo,
-		h.shipAssignmentRepo,
-		h.factoryTracker,
-		h.taskQueue,
-	)
-
-	taskAssignmentMgr := mfgServices.NewTaskAssignmentManager(
-		h.taskRepo,
-		h.shipRepo,
-		h.shipAssignmentRepo,
-		h.marketRepo,
-		h.waypointProvider,
-		h.taskQueue,
-	)
-	h.taskAssigner = taskAssignmentMgr
-
+	// 6. Create worker lifecycle manager (uses assignmentTracker directly to avoid circular dep)
 	workerLifecycleMgr := mfgServices.NewWorkerLifecycleManager(
 		h.taskRepo,
 		h.shipAssignmentRepo,
@@ -328,37 +349,44 @@ func (h *RunParallelManufacturingCoordinatorHandler) initializeServices(cmd *Run
 		h.containerRemover,
 		h.taskQueue,
 		h.clock,
+		assignmentTracker,
+		h.factoryManager,
+		h.pipelineManager,
+		h.workerCompletionChan,
 	)
 	h.workerManager = workerLifecycleMgr
 
+	// 7. Create orphaned cargo handler
 	orphanedHandler := mfgServices.NewOrphanedCargoHandler(
 		h.taskRepo,
 		h.marketRepo,
+		h.workerManager,
+		nil, // taskAssigner - will be set after creation
+		h.mediator,
+		h.pipelineManager.GetActivePipelines,
 	)
 	h.orphanedHandler = orphanedHandler
 
-	h.factoryManager = mfgServices.NewFactoryStateManager(
+	// 8. Create task assignment manager (has all dependencies now)
+	taskAssignmentMgr := mfgServices.NewTaskAssignmentManager(
 		h.taskRepo,
-		h.factoryStateRepo,
-		h.factoryTracker,
+		h.shipRepo,
+		h.shipAssignmentRepo,
+		h.marketRepo,
 		h.taskQueue,
+		shipSelector,
+		assignmentTracker,
+		conditionChecker,
+		reconciler,
+		reservationPolicy,
+		h.pipelineManager.GetActivePipelines,
+		h.workerManager,
+		h.orphanedHandler,
 	)
+	h.taskAssigner = taskAssignmentMgr
 
-	// Wire up dependencies (circular references via setters)
-	taskAssignmentMgr.SetWorkerManager(h.workerManager)
-	taskAssignmentMgr.SetOrphanedHandler(h.orphanedHandler)
-	taskAssignmentMgr.SetPipelineManager(h.pipelineManager)
-	taskAssignmentMgr.SetActivePipelinesGetter(h.pipelineManager.GetActivePipelines)
-
-	workerLifecycleMgr.SetTaskAssigner(h.taskAssigner)
-	workerLifecycleMgr.SetFactoryManager(h.factoryManager)
-	workerLifecycleMgr.SetPipelineManager(h.pipelineManager)
-	workerLifecycleMgr.SetWorkerCompletionChannel(h.workerCompletionChan)
-
-	orphanedHandler.SetWorkerManager(h.workerManager)
+	// 9. Final wiring: orphanedHandler needs taskAssigner (use direct assignment to field)
 	orphanedHandler.SetTaskAssigner(h.taskAssigner)
-	orphanedHandler.SetActivePipelinesGetter(h.pipelineManager.GetActivePipelines)
-	orphanedHandler.SetMediator(h.mediator)
 }
 
 // recoverState recovers coordinator state from database
