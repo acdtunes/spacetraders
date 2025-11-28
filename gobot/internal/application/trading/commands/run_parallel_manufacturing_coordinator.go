@@ -363,7 +363,6 @@ func (h *RunParallelManufacturingCoordinatorHandler) initializeServices(cmd *Run
 		h.workerManager,
 		nil, // taskAssigner - will be set after creation
 		h.mediator,
-		h.pipelineManager.GetActivePipelines,
 	)
 	h.orphanedHandler = orphanedHandler
 

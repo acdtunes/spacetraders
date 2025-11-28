@@ -254,6 +254,39 @@ func (r *GormManufacturingTaskRepository) FindIncomplete(ctx context.Context, pl
 	return tasks, nil
 }
 
+// FindAvailableByGood retrieves PENDING or READY tasks for a specific good.
+// Used by orphaned cargo handler to find tasks that can use existing cargo.
+func (r *GormManufacturingTaskRepository) FindAvailableByGood(ctx context.Context, playerID int, good string) ([]*manufacturing.ManufacturingTask, error) {
+	var models []ManufacturingTaskModel
+	result := r.db.WithContext(ctx).
+		Where("player_id = ? AND good = ? AND status IN ?", playerID, good, []string{
+			string(manufacturing.TaskStatusPending),
+			string(manufacturing.TaskStatusReady),
+		}).
+		Order("priority DESC, created_at ASC").
+		Find(&models)
+
+	if result.Error != nil {
+		return nil, fmt.Errorf("failed to find available tasks by good: %w", result.Error)
+	}
+
+	tasks := make([]*manufacturing.ManufacturingTask, len(models))
+	for i, model := range models {
+		deps, err := r.FindDependencies(ctx, model.ID)
+		if err != nil {
+			return nil, err
+		}
+
+		t, err := r.modelToTask(&model, deps)
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert task model: %w", err)
+		}
+		tasks[i] = t
+	}
+
+	return tasks, nil
+}
+
 // FindDependencies retrieves the task dependencies for a task
 func (r *GormManufacturingTaskRepository) FindDependencies(ctx context.Context, taskID string) ([]string, error) {
 	var deps []ManufacturingTaskDependencyModel

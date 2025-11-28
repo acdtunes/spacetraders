@@ -49,9 +49,6 @@ type OrphanedCargoHandler struct {
 	workerManager WorkerManager
 	taskAssigner  TaskAssigner
 	mediator      common.Mediator
-
-	// Function to get active pipelines
-	getActivePipelines func() map[string]*manufacturing.ManufacturingPipeline
 }
 
 // NewOrphanedCargoHandler creates a new orphaned cargo handler with all dependencies
@@ -61,15 +58,13 @@ func NewOrphanedCargoHandler(
 	workerManager WorkerManager,
 	taskAssigner TaskAssigner,
 	mediator common.Mediator,
-	getActivePipelines func() map[string]*manufacturing.ManufacturingPipeline,
 ) *OrphanedCargoHandler {
 	return &OrphanedCargoHandler{
-		taskRepo:           taskRepo,
-		marketRepo:         marketRepo,
-		workerManager:      workerManager,
-		taskAssigner:       taskAssigner,
-		mediator:           mediator,
-		getActivePipelines: getActivePipelines,
+		taskRepo:      taskRepo,
+		marketRepo:    marketRepo,
+		workerManager: workerManager,
+		taskAssigner:  taskAssigner,
+		mediator:      mediator,
 	}
 }
 
@@ -116,16 +111,6 @@ func (h *OrphanedCargoHandler) HandleShipsWithExistingCargo(
 		"ships_with_cargo": len(shipsWithCargo),
 	})
 
-	// Get active pipeline IDs
-	var pipelineIDs []string
-	if h.getActivePipelines != nil {
-		pipelines := h.getActivePipelines()
-		pipelineIDs = make([]string, 0, len(pipelines))
-		for id := range pipelines {
-			pipelineIDs = append(pipelineIDs, id)
-		}
-	}
-
 	// Process each ship with cargo
 	for shipSymbol, ship := range shipsWithCargo {
 		if assignedCount >= params.MaxConcurrentTasks {
@@ -148,48 +133,38 @@ func (h *OrphanedCargoHandler) HandleShipsWithExistingCargo(
 		}
 
 		// Try to find matching task for the cargo this ship already has
+		// Query database directly for ALL pending/ready tasks with this good
 		// Priority: ACQUIRE_DELIVER > COLLECT_SELL (delivering to factory is more valuable)
 		var matchingTask *manufacturing.ManufacturingTask
 		var matchingCollectSell *manufacturing.ManufacturingTask
 
-		for _, pipelineID := range pipelineIDs {
-			tasks, err := h.taskRepo.FindByPipelineID(ctx, pipelineID)
-			if err != nil {
-				continue
-			}
+		availableTasks, err := h.taskRepo.FindAvailableByGood(ctx, params.PlayerID, primaryCargo)
+		if err != nil {
+			logger.Log("WARN", "Failed to find available tasks for cargo", map[string]interface{}{
+				"ship":       shipSymbol,
+				"cargo_type": primaryCargo,
+				"error":      err.Error(),
+			})
+		}
 
-			for _, task := range tasks {
-				// Only consider PENDING or READY tasks for the same good
-				if task.Good() != primaryCargo {
-					continue
-				}
-				if task.Status() != manufacturing.TaskStatusPending &&
-					task.Status() != manufacturing.TaskStatusReady {
-					continue
-				}
-
-				// ACQUIRE_DELIVER: Ship already has cargo, just needs to deliver to factory
-				// This is the best match - ship can skip the acquire step
-				if task.TaskType() == manufacturing.TaskTypeAcquireDeliver {
-					matchingTask = task
-					logger.Log("INFO", "Found ACQUIRE_DELIVER task matching ship cargo", map[string]interface{}{
-						"ship":    shipSymbol,
-						"task_id": task.ID()[:8],
-						"good":    primaryCargo,
-						"factory": task.FactorySymbol(),
-					})
-					break
-				}
-
-				// COLLECT_SELL: Ship already has cargo, just needs to sell
-				// Track as backup if we don't find ACQUIRE_DELIVER
-				if task.TaskType() == manufacturing.TaskTypeCollectSell && matchingCollectSell == nil {
-					matchingCollectSell = task
-				}
-			}
-
-			if matchingTask != nil {
+		for _, task := range availableTasks {
+			// ACQUIRE_DELIVER: Ship already has cargo, just needs to deliver to factory
+			// This is the best match - ship can skip the acquire step
+			if task.TaskType() == manufacturing.TaskTypeAcquireDeliver {
+				matchingTask = task
+				logger.Log("INFO", "Found ACQUIRE_DELIVER task matching ship cargo", map[string]interface{}{
+					"ship":    shipSymbol,
+					"task_id": task.ID()[:8],
+					"good":    primaryCargo,
+					"factory": task.FactorySymbol(),
+				})
 				break
+			}
+
+			// COLLECT_SELL: Ship already has cargo, just needs to sell
+			// Track as backup if we don't find ACQUIRE_DELIVER
+			if task.TaskType() == manufacturing.TaskTypeCollectSell && matchingCollectSell == nil {
+				matchingCollectSell = task
 			}
 		}
 

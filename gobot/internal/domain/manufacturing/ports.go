@@ -70,6 +70,10 @@ type TaskRepository interface {
 	// FindIncomplete retrieves all non-terminal tasks for a player
 	FindIncomplete(ctx context.Context, playerID int) ([]*ManufacturingTask, error)
 
+	// FindAvailableByGood retrieves PENDING or READY tasks for a specific good
+	// Used by orphaned cargo handler to find tasks that can use existing cargo
+	FindAvailableByGood(ctx context.Context, playerID int, good string) ([]*ManufacturingTask, error)
+
 	// FindDependencies retrieves the task dependencies for a task
 	FindDependencies(ctx context.Context, taskID string) ([]string, error)
 
