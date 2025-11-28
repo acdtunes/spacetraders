@@ -169,9 +169,11 @@ func (h *RunParallelManufacturingCoordinatorHandler) Handle(
 	opportunityScanTicker := time.NewTicker(3 * time.Minute)
 	stuckPipelineTicker := time.NewTicker(5 * time.Minute)
 	idleShipTicker := time.NewTicker(10 * time.Second)
+	pipelineCompletionTicker := time.NewTicker(30 * time.Second) // Safety net for lost completion signals
 	defer opportunityScanTicker.Stop()
 	defer stuckPipelineTicker.Stop()
 	defer idleShipTicker.Stop()
+	defer pipelineCompletionTicker.Stop()
 
 	// Initial scan and task assignment
 	h.pipelineManager.ScanAndCreatePipelines(ctx, mfgServices.PipelineScanParams{
@@ -213,6 +215,21 @@ func (h *RunParallelManufacturingCoordinatorHandler) Handle(
 				PlayerID:           cmd.PlayerID,
 				MaxConcurrentTasks: config.maxConcurrentTasks,
 			})
+
+		case <-pipelineCompletionTicker.C:
+			// Safety net: Check for pipelines with completed tasks that weren't properly marked complete
+			// This handles lost completion signals (non-blocking channel send when coordinator is busy)
+			completed := h.pipelineManager.CheckAllPipelinesForCompletion(ctx)
+			if completed > 0 {
+				logger.Log("INFO", fmt.Sprintf("Safety net: completed %d pipelines with lost signals", completed), nil)
+				// Rescan for new opportunities since pipelines completed
+				h.pipelineManager.ScanAndCreatePipelines(ctx, mfgServices.PipelineScanParams{
+					SystemSymbol:     cmd.SystemSymbol,
+					PlayerID:         cmd.PlayerID,
+					MinPurchasePrice: config.minPurchasePrice,
+					MaxPipelines:     config.maxPipelines,
+				})
+			}
 
 		case <-h.taskReadyChan:
 			h.taskAssigner.AssignTasks(ctx, mfgServices.AssignParams{
