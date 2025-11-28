@@ -567,6 +567,64 @@ func (t *ManufacturingTask) GetDestination() string {
 	}
 }
 
+// GetFirstDestination returns the initial destination waypoint for the task.
+// Alias for GetDestination() for clarity in domain language.
+// For ACQUIRE_DELIVER: source market, For COLLECT_SELL: factory, For LIQUIDATE: target market.
+func (t *ManufacturingTask) GetFirstDestination() string {
+	return t.GetDestination()
+}
+
+// GetFinalDestination returns where the task delivers goods.
+// For ACQUIRE_DELIVER: factory (deliver inputs), For COLLECT_SELL/LIQUIDATE: target market (sell outputs).
+func (t *ManufacturingTask) GetFinalDestination() string {
+	switch t.taskType {
+	case TaskTypeAcquireDeliver:
+		return t.factorySymbol // Deliver to factory
+	case TaskTypeCollectSell, TaskTypeLiquidate:
+		return t.targetMarket // Sell at market
+	default:
+		return t.targetMarket
+	}
+}
+
+// RequiresHighFactorySupply returns true if this task type needs high factory supply.
+// Only COLLECT_SELL tasks require the factory to have HIGH/ABUNDANT supply before collection.
+func (t *ManufacturingTask) RequiresHighFactorySupply() bool {
+	return t.taskType == TaskTypeCollectSell
+}
+
+// RequiresSellMarketCheck returns true if task needs sell market saturation check.
+// Tasks that sell goods should avoid saturated markets to maintain prices.
+func (t *ManufacturingTask) RequiresSellMarketCheck() bool {
+	return t.taskType == TaskTypeCollectSell || t.taskType == TaskTypeLiquidate
+}
+
+// IsSupplyGated returns true if task execution depends on supply levels.
+// ACQUIRE_DELIVER depends on source market supply, COLLECT_SELL depends on factory supply.
+func (t *ManufacturingTask) IsSupplyGated() bool {
+	return t.taskType == TaskTypeAcquireDeliver || t.taskType == TaskTypeCollectSell
+}
+
+// IsPurchaseTask returns true if this task involves purchasing goods.
+func (t *ManufacturingTask) IsPurchaseTask() bool {
+	return t.taskType == TaskTypeAcquireDeliver
+}
+
+// IsSellTask returns true if this task involves selling goods.
+func (t *ManufacturingTask) IsSellTask() bool {
+	return t.taskType == TaskTypeCollectSell || t.taskType == TaskTypeLiquidate
+}
+
+// IsCollectionTask returns true if this task involves collecting from a factory.
+func (t *ManufacturingTask) IsCollectionTask() bool {
+	return t.taskType == TaskTypeCollectSell
+}
+
+// IsDeliveryTask returns true if this task involves delivering to a factory.
+func (t *ManufacturingTask) IsDeliveryTask() bool {
+	return t.taskType == TaskTypeAcquireDeliver
+}
+
 // String provides human-readable representation
 func (t *ManufacturingTask) String() string {
 	return fmt.Sprintf("Task[%s, type=%s, good=%s, status=%s, priority=%d]",
