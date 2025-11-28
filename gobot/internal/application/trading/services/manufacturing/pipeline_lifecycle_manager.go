@@ -569,7 +569,10 @@ func (m *PipelineLifecycleManager) CheckPipelineCompletion(ctx context.Context, 
 	return pipelineCompleted || pipelineFailed, nil
 }
 
-// DetectAndRecycleStuckPipelines finds and recycles stuck pipelines, returns count
+// DetectAndRecycleStuckPipelines finds and recycles stuck pipelines, returns count.
+// NOTE: Time-based detection has been removed. Pipelines are only recycled when
+// they have 5+ failed tasks. This prevents false positives when tasks are waiting
+// for ships or for factory supply to become available.
 func (m *PipelineLifecycleManager) DetectAndRecycleStuckPipelines(ctx context.Context, playerID int) int {
 	logger := common.LoggerFromContext(ctx)
 
@@ -584,57 +587,28 @@ func (m *PipelineLifecycleManager) DetectAndRecycleStuckPipelines(ctx context.Co
 	}
 	m.mu.RUnlock()
 
-	now := m.clock.Now()
 	stuckPipelines := make([]string, 0)
 
 	for pipelineID, pipeline := range pipelinesCopy {
-		age := now.Sub(pipeline.CreatedAt())
-		if age < StuckPipelineThreshold {
-			continue
-		}
-
 		tasks, err := m.taskRepo.FindByPipelineID(ctx, pipelineID)
 		if err != nil {
 			continue
 		}
 
-		var finalCollections, failedTasks, activeTasks int
+		// Count failed tasks only - time-based detection removed
+		failedTasks := 0
 		for _, task := range tasks {
-			if task.TaskType() == manufacturing.TaskTypeCollectSell &&
-				task.Good() == pipeline.ProductGood() &&
-				task.Status() == manufacturing.TaskStatusCompleted {
-				finalCollections++
-			}
 			if task.Status() == manufacturing.TaskStatusFailed {
 				failedTasks++
 			}
-			if task.Status() == manufacturing.TaskStatusAssigned ||
-				task.Status() == manufacturing.TaskStatusExecuting {
-				activeTasks++
-			}
 		}
 
-		if finalCollections > 0 {
-			continue
-		}
-
-		isStuck := false
-		stuckReason := ""
-
+		// Only recycle if 5+ tasks have failed (indicates unrecoverable problem)
 		if failedTasks >= StuckPipelineFailedTaskThreshold {
-			isStuck = true
-			stuckReason = fmt.Sprintf("%d failed tasks", failedTasks)
-		} else if activeTasks == 0 {
-			isStuck = true
-			stuckReason = "no active tasks"
-		}
-
-		if isStuck {
 			logger.Log("WARN", "Detected stuck pipeline", map[string]interface{}{
-				"pipeline_id": pipelineID[:8],
-				"good":        pipeline.ProductGood(),
-				"age_minutes": int(age.Minutes()),
-				"reason":      stuckReason,
+				"pipeline_id":  pipelineID[:8],
+				"good":         pipeline.ProductGood(),
+				"failed_tasks": failedTasks,
 			})
 			stuckPipelines = append(stuckPipelines, pipelineID)
 		}

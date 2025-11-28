@@ -123,15 +123,18 @@ func (m *WorkerLifecycleManager) AssignTaskToShip(ctx context.Context, params As
 		containerID = utils.GenerateContainerID("mfg-task", shipSymbol)
 	}
 
-	// Assign ship to task (domain state)
-	if err := task.AssignShip(shipSymbol); err != nil {
-		return fmt.Errorf("failed to assign ship: %w", err)
-	}
-
-	// Persist task assignment
+	// Assign task atomically using SELECT FOR UPDATE to prevent race conditions.
+	// This prevents multiple workers from assigning the same task simultaneously.
 	if m.taskRepo != nil {
-		if err := m.taskRepo.Update(ctx, task); err != nil {
-			return fmt.Errorf("failed to persist task assignment: %w", err)
+		if err := m.taskRepo.AssignTaskAtomically(ctx, task.ID(), shipSymbol); err != nil {
+			return fmt.Errorf("failed to assign ship: %w", err)
+		}
+		// Update domain entity to match DB state (for container metadata)
+		_ = task.AssignShip(shipSymbol)
+	} else {
+		// No repo - just update domain entity (for tests)
+		if err := task.AssignShip(shipSymbol); err != nil {
+			return fmt.Errorf("failed to assign ship: %w", err)
 		}
 	}
 
@@ -216,46 +219,28 @@ func (m *WorkerLifecycleManager) HandleWorkerCompletion(ctx context.Context, shi
 	logger := common.LoggerFromContext(ctx)
 	logger.Log("INFO", fmt.Sprintf("Worker container completed for ship %s", shipSymbol), nil)
 
-	// Find the task that was assigned to this ship
-	var taskID string
-	var containerID string
-
-	if m.taskAssigner != nil {
-		assignedTasks := m.taskAssigner.(*TaskAssignmentManager).GetAssignedTasks()
-		taskContainers := m.taskAssigner.(*TaskAssignmentManager).GetTaskContainers()
-
-		for tid, symbol := range assignedTasks {
-			if symbol == shipSymbol {
-				taskID = tid
-				containerID = taskContainers[tid]
-				break
-			}
-		}
-
-		if taskID != "" {
-			m.taskAssigner.(*TaskAssignmentManager).UntrackAssignment(taskID)
-		}
-	}
-
-	if taskID == "" {
-		logger.Log("WARN", fmt.Sprintf("No task found for completed ship %s", shipSymbol), nil)
-		return nil, nil
-	}
-
-	// Load the task from repository
+	// Find the task by querying the database directly.
+	// This is more reliable than the in-memory map which can be lost on coordinator restart.
 	var task *manufacturing.ManufacturingTask
 	if m.taskRepo != nil {
 		var err error
-		task, err = m.taskRepo.FindByID(ctx, taskID)
+		task, err = m.taskRepo.FindByAssignedShip(ctx, shipSymbol)
 		if err != nil {
-			logger.Log("ERROR", fmt.Sprintf("Failed to load task %s: %v", taskID, err), nil)
+			logger.Log("ERROR", fmt.Sprintf("Failed to find task for ship %s: %v", shipSymbol, err), nil)
 			return nil, err
 		}
 	}
 
 	if task == nil {
-		logger.Log("WARN", fmt.Sprintf("Task %s not found in repository", taskID), nil)
+		logger.Log("WARN", fmt.Sprintf("No task found for completed ship %s", shipSymbol), nil)
 		return nil, nil
+	}
+
+	taskID := task.ID()
+
+	// Untrack from in-memory map for cleanup (optional, may not exist after restart)
+	if m.taskAssigner != nil {
+		m.taskAssigner.(*TaskAssignmentManager).UntrackAssignment(taskID)
 	}
 
 	// Create completion notification
@@ -289,7 +274,7 @@ func (m *WorkerLifecycleManager) HandleWorkerCompletion(ctx context.Context, shi
 		Error:      taskErr,
 	}
 
-	logger.Log("INFO", fmt.Sprintf("Processed worker completion for task %s (container: %s)", taskID[:8], containerID), nil)
+	logger.Log("INFO", fmt.Sprintf("Processed worker completion for task %s (ship: %s)", taskID[:8], shipSymbol), nil)
 
 	return completion, nil
 }
