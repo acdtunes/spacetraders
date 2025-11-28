@@ -962,3 +962,28 @@ func (s *daemonServiceImpl) StartParallelManufacturingCoordinator(ctx context.Co
 		Message:      "Parallel manufacturing coordinator started successfully",
 	}, nil
 }
+
+// JettisonCargo jettisons cargo from a ship
+func (s *daemonServiceImpl) JettisonCargo(ctx context.Context, req *pb.JettisonCargoRequest) (*pb.JettisonCargoResponse, error) {
+	// Resolve player ID from request (supports both player_id and agent_symbol)
+	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve player: %w", err)
+	}
+
+	containerID, err := s.daemon.JettisonCargo(ctx, req.ShipSymbol, playerID, req.GoodSymbol, int(req.Units))
+	if err != nil {
+		return nil, fmt.Errorf("failed to jettison cargo: %w", err)
+	}
+
+	response := &pb.JettisonCargoResponse{
+		ContainerId:    containerID,
+		ShipSymbol:     req.ShipSymbol,
+		GoodSymbol:     req.GoodSymbol,
+		UnitsJettisoned: req.Units,
+		Status:         "PENDING",
+		Message:        fmt.Sprintf("Jettisoning %d units of %s from %s", req.Units, req.GoodSymbol, req.ShipSymbol),
+	}
+
+	return response, nil
+}

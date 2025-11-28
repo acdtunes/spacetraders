@@ -176,3 +176,47 @@ func (s *DaemonServer) RefuelShip(ctx context.Context, shipSymbol string, player
 
 	return containerID, nil
 }
+
+// JettisonCargo handles ship jettison cargo requests
+func (s *DaemonServer) JettisonCargo(ctx context.Context, shipSymbol string, playerID int, goodSymbol string, units int) (string, error) {
+	containerID := utils.GenerateContainerID("jettison", shipSymbol)
+
+	cmd := &shipCmd.JettisonCargoCommand{
+		ShipSymbol: shipSymbol,
+		PlayerID:   shared.MustNewPlayerID(playerID),
+		GoodSymbol: goodSymbol,
+		Units:      units,
+	}
+
+	metadata := map[string]interface{}{
+		"ship_symbol": shipSymbol,
+		"good_symbol": goodSymbol,
+		"units":       units,
+	}
+
+	containerEntity := container.NewContainer(
+		containerID,
+		container.ContainerTypeJettison,
+		playerID,
+		1, // Single iteration for jettison
+		nil, // No parent container
+		metadata,
+		nil, // Use default RealClock for production
+	)
+
+	// Persist container to database
+	if err := s.containerRepo.Add(ctx, containerEntity, "jettison_cargo"); err != nil {
+		return "", fmt.Errorf("failed to persist container: %w", err)
+	}
+
+	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipAssignmentRepo)
+	s.registerContainer(containerID, runner)
+
+	go func() {
+		if err := runner.Start(); err != nil {
+			fmt.Printf("Container %s failed: %v\n", containerID, err)
+		}
+	}()
+
+	return containerID, nil
+}

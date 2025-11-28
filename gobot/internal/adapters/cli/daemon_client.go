@@ -58,6 +58,15 @@ type JumpResponse struct {
 	Error             string
 }
 
+type JettisonResponse struct {
+	ContainerID     string
+	ShipSymbol      string
+	GoodSymbol      string
+	UnitsJettisoned int32
+	Status          string
+	Message         string
+}
+
 type BatchContractWorkflowResponse struct {
 	ContainerID string
 	ShipSymbol  string
@@ -329,6 +338,40 @@ func (c *DaemonClient) JumpShip(
 		CooldownSeconds:   resp.CooldownSeconds,
 		Message:           resp.Message,
 		Error:             resp.Error,
+	}, nil
+}
+
+// JettisonCargo jettisons cargo from a ship
+func (c *DaemonClient) JettisonCargo(
+	ctx context.Context,
+	shipSymbol string,
+	goodSymbol string,
+	units int,
+	playerID int,
+	agentSymbol string,
+) (*JettisonResponse, error) {
+	req := &pb.JettisonCargoRequest{
+		ShipSymbol: shipSymbol,
+		GoodSymbol: goodSymbol,
+		Units:      int32(units),
+		PlayerId:   int32(playerID),
+	}
+	if agentSymbol != "" {
+		req.AgentSymbol = &agentSymbol
+	}
+
+	resp, err := c.client.JettisonCargo(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("gRPC call failed: %w", err)
+	}
+
+	return &JettisonResponse{
+		ContainerID:     resp.ContainerId,
+		ShipSymbol:      resp.ShipSymbol,
+		GoodSymbol:      resp.GoodSymbol,
+		UnitsJettisoned: resp.UnitsJettisoned,
+		Status:          resp.Status,
+		Message:         resp.Message,
 	}, nil
 }
 

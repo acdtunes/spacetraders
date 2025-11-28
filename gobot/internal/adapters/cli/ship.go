@@ -48,6 +48,7 @@ Examples:
 	cmd.AddCommand(newShipRefuelCommand())
 	cmd.AddCommand(newShipJumpCommand())
 	cmd.AddCommand(newShipSellCommand())
+	// cmd.AddCommand(newShipJettisonCommand()) // TODO: implement jettison command
 
 	return cmd
 }

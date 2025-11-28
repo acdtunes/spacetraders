@@ -90,6 +90,9 @@ service DaemonService {
 
   // StartParallelManufacturingCoordinator initiates parallel task-based manufacturing operations
   rpc StartParallelManufacturingCoordinator(StartParallelManufacturingCoordinatorRequest) returns (StartParallelManufacturingCoordinatorResponse);
+
+  // JettisonCargo jettisons cargo from a ship
+  rpc JettisonCargo(JettisonCargoRequest) returns (JettisonCargoResponse);
 }
 
 // NavigateShipRequest initiates ship navigation
@@ -652,4 +655,23 @@ message StartParallelManufacturingCoordinatorResponse {
   string status = 6;
   string message = 7;
   int32 max_pipelines = 8; // Maximum concurrent pipelines/opportunities
+}
+
+// JettisonCargoRequest jettisons cargo from a ship
+message JettisonCargoRequest {
+  string ship_symbol = 1;
+  int32 player_id = 2;
+  optional string agent_symbol = 3;
+  string good_symbol = 4;
+  int32 units = 5;
+}
+
+// JettisonCargoResponse returns result of jettison operation
+message JettisonCargoResponse {
+  string container_id = 1;
+  string ship_symbol = 2;
+  string good_symbol = 3;
+  int32 units_jettisoned = 4;
+  string status = 5;
+  string message = 6;
 }
