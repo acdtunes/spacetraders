@@ -48,10 +48,11 @@ type ContainerRemover interface {
 // - FactoryStateManager: Updates factory state and task dependencies
 type RunParallelManufacturingCoordinatorHandler struct {
 	// Planning services
-	demandFinder    *services.ManufacturingDemandFinder
-	pipelinePlanner *services.PipelinePlanner
-	taskQueue       *services.TaskQueue
-	factoryTracker  *manufacturing.FactoryStateTracker
+	demandFinder               *services.ManufacturingDemandFinder
+	collectionOpportunityFinder *services.CollectionOpportunityFinder
+	pipelinePlanner            *services.PipelinePlanner
+	taskQueue                  *services.TaskQueue
+	factoryTracker             *manufacturing.FactoryStateTracker
 
 	// Repositories
 	shipRepo           navigation.ShipRepository
@@ -84,6 +85,7 @@ type RunParallelManufacturingCoordinatorHandler struct {
 // NewRunParallelManufacturingCoordinatorHandler creates a new coordinator handler
 func NewRunParallelManufacturingCoordinatorHandler(
 	demandFinder *services.ManufacturingDemandFinder,
+	collectionOpportunityFinder *services.CollectionOpportunityFinder,
 	pipelinePlanner *services.PipelinePlanner,
 	taskQueue *services.TaskQueue,
 	factoryTracker *manufacturing.FactoryStateTracker,
@@ -104,23 +106,24 @@ func NewRunParallelManufacturingCoordinatorHandler(
 	}
 
 	return &RunParallelManufacturingCoordinatorHandler{
-		demandFinder:         demandFinder,
-		pipelinePlanner:      pipelinePlanner,
-		taskQueue:            taskQueue,
-		factoryTracker:       factoryTracker,
-		shipRepo:             shipRepo,
-		shipAssignmentRepo:   shipAssignmentRepo,
-		pipelineRepo:         pipelineRepo,
-		taskRepo:             taskRepo,
-		factoryStateRepo:     factoryStateRepo,
-		marketRepo:           marketRepo,
-		containerRemover:     containerRemover,
-		mediator:             mediator,
-		daemonClient:         daemonClient,
-		clock:                clock,
-		waypointProvider:     waypointProvider,
-		workerCompletionChan: make(chan string, 100),
-		taskReadyChan:        make(chan struct{}, 10),
+		demandFinder:               demandFinder,
+		collectionOpportunityFinder: collectionOpportunityFinder,
+		pipelinePlanner:            pipelinePlanner,
+		taskQueue:                  taskQueue,
+		factoryTracker:             factoryTracker,
+		shipRepo:                   shipRepo,
+		shipAssignmentRepo:         shipAssignmentRepo,
+		pipelineRepo:               pipelineRepo,
+		taskRepo:                   taskRepo,
+		factoryStateRepo:           factoryStateRepo,
+		marketRepo:                 marketRepo,
+		containerRemover:           containerRemover,
+		mediator:                   mediator,
+		daemonClient:               daemonClient,
+		clock:                      clock,
+		waypointProvider:           waypointProvider,
+		workerCompletionChan:       make(chan string, 100),
+		taskReadyChan:              make(chan struct{}, 10),
 	}
 }
 
@@ -270,6 +273,7 @@ func (h *RunParallelManufacturingCoordinatorHandler) initializeServices(cmd *Run
 	// Create services
 	h.pipelineManager = mfgServices.NewPipelineLifecycleManager(
 		h.demandFinder,
+		h.collectionOpportunityFinder,
 		h.pipelinePlanner,
 		h.taskQueue,
 		h.factoryTracker,
@@ -277,6 +281,7 @@ func (h *RunParallelManufacturingCoordinatorHandler) initializeServices(cmd *Run
 		h.taskRepo,
 		h.factoryStateRepo,
 		h.marketRepo,
+		h.shipAssignmentRepo,
 		h.clock,
 	)
 
@@ -285,7 +290,6 @@ func (h *RunParallelManufacturingCoordinatorHandler) initializeServices(cmd *Run
 		h.taskRepo,
 		h.factoryStateRepo,
 		h.shipAssignmentRepo,
-		h.marketRepo,
 		h.factoryTracker,
 		h.taskQueue,
 	)
@@ -337,6 +341,7 @@ func (h *RunParallelManufacturingCoordinatorHandler) initializeServices(cmd *Run
 	orphanedHandler.SetWorkerManager(h.workerManager)
 	orphanedHandler.SetTaskAssigner(h.taskAssigner)
 	orphanedHandler.SetActivePipelinesGetter(h.pipelineManager.GetActivePipelines)
+	orphanedHandler.SetMediator(h.mediator)
 }
 
 // recoverState recovers coordinator state from database
@@ -352,6 +357,9 @@ func (h *RunParallelManufacturingCoordinatorHandler) recoverState(ctx context.Co
 			pipelineMgr.AddActivePipeline(id, pipeline)
 		}
 	}
+
+	// Check if any recovered pipelines are already complete (tasks finished before restart)
+	h.pipelineManager.CheckAllPipelinesForCompletion(ctx)
 
 	return nil
 }
