@@ -15,6 +15,7 @@ type LedgerRecorder interface {
 	RecordPurchase(ctx context.Context, params PurchaseRecordParams) error
 	RecordSale(ctx context.Context, params SaleRecordParams) error
 	RecordDelivery(ctx context.Context, params DeliveryRecordParams) error
+	RecordLiquidation(ctx context.Context, params SaleRecordParams) error
 }
 
 // PurchaseRecordParams contains parameters for recording a purchase transaction.
