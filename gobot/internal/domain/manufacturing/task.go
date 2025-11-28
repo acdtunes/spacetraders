@@ -458,18 +458,19 @@ func (t *ManufacturingTask) ResetToPending() error {
 	return nil
 }
 
-// Cancel marks the task as cancelled (used when pipeline is recycled).
-// Can only cancel PENDING or READY tasks - tasks that are executing should complete or fail.
+// Cancel marks the task as failed with a cancellation reason (used when pipeline is recycled).
+// Can cancel PENDING, READY, or ASSIGNED tasks - tasks that are executing should complete or fail.
+// Uses FAILED status since the database constraint doesn't include CANCELLED.
 func (t *ManufacturingTask) Cancel(reason string) error {
-	if t.status != TaskStatusPending && t.status != TaskStatusReady {
+	if t.status != TaskStatusPending && t.status != TaskStatusReady && t.status != TaskStatusAssigned {
 		return &ErrInvalidTaskTransition{
 			TaskID:      t.id,
 			From:        t.status,
-			To:          TaskStatusCancelled,
-			Description: "can only cancel PENDING or READY tasks",
+			To:          TaskStatusFailed,
+			Description: "can only cancel PENDING, READY, or ASSIGNED tasks",
 		}
 	}
-	t.status = TaskStatusCancelled
+	t.status = TaskStatusFailed
 	t.errorMessage = reason
 	now := time.Now()
 	t.completedAt = &now

@@ -22,6 +22,14 @@ type PipelineRepository interface {
 	// FindActiveForProduct checks if there's an active pipeline for a product
 	FindActiveForProduct(ctx context.Context, playerID int, productGood string) (*ManufacturingPipeline, error)
 
+	// FindActiveCollectionForProduct checks if there's an active COLLECTION pipeline for a product
+	// Used to prevent duplicate collection pipelines for the same good
+	FindActiveCollectionForProduct(ctx context.Context, playerID int, productGood string) (*ManufacturingPipeline, error)
+
+	// CountActiveFabricationPipelines counts only FABRICATION pipelines that are active
+	// This is used for max_pipelines limiting (collection pipelines are unlimited)
+	CountActiveFabricationPipelines(ctx context.Context, playerID int) (int, error)
+
 	// Delete removes a pipeline (cascades to tasks)
 	Delete(ctx context.Context, id string) error
 }

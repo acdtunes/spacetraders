@@ -27,6 +27,19 @@ const (
 	PipelineStatusCancelled PipelineStatus = "CANCELLED"
 )
 
+// PipelineType distinguishes fabrication pipelines (limited) from collection pipelines (unlimited)
+type PipelineType string
+
+const (
+	// PipelineTypeFabrication - Acquires inputs and delivers to factory
+	// These pipelines are counted toward max_pipelines limit
+	PipelineTypeFabrication PipelineType = "FABRICATION"
+
+	// PipelineTypeCollection - Collects factory output and sells
+	// These pipelines are unlimited (not counted toward max_pipelines)
+	PipelineTypeCollection PipelineType = "COLLECTION"
+)
+
 // ManufacturingPipeline represents a complete manufacturing run for one product.
 // A pipeline contains all tasks required to manufacture and sell a product.
 //
@@ -41,10 +54,11 @@ const (
 //   - netProfit: totalRevenue - totalCost
 type ManufacturingPipeline struct {
 	id             string
-	sequenceNumber int    // Sequential number for this pipeline (1, 2, 3...)
-	productGood    string // Final product (e.g., LASER_RIFLES)
-	sellMarket     string // Where to sell final product
-	expectedPrice  int    // Expected sale price per unit
+	sequenceNumber int          // Sequential number for this pipeline (1, 2, 3...)
+	pipelineType   PipelineType // FABRICATION (limited) or COLLECTION (unlimited)
+	productGood    string       // Final product (e.g., LASER_RIFLES)
+	sellMarket     string       // Where to sell final product
+	expectedPrice  int          // Expected sale price per unit
 	playerID       int
 
 	status PipelineStatus
@@ -71,10 +85,27 @@ type ManufacturingPipeline struct {
 	errorMessage string
 }
 
-// NewPipeline creates a new manufacturing pipeline
+// NewPipeline creates a new fabrication pipeline (counted toward max_pipelines limit)
 func NewPipeline(productGood string, sellMarket string, expectedPrice int, playerID int) *ManufacturingPipeline {
 	return &ManufacturingPipeline{
 		id:            uuid.New().String(),
+		pipelineType:  PipelineTypeFabrication,
+		productGood:   productGood,
+		sellMarket:    sellMarket,
+		expectedPrice: expectedPrice,
+		playerID:      playerID,
+		status:        PipelineStatusPlanning,
+		tasks:         make([]*ManufacturingTask, 0),
+		tasksByID:     make(map[string]*ManufacturingTask),
+		createdAt:     time.Now(),
+	}
+}
+
+// NewCollectionPipeline creates a new collection pipeline (unlimited, not counted toward max_pipelines)
+func NewCollectionPipeline(productGood string, sellMarket string, expectedPrice int, playerID int) *ManufacturingPipeline {
+	return &ManufacturingPipeline{
+		id:            uuid.New().String(),
+		pipelineType:  PipelineTypeCollection,
 		productGood:   productGood,
 		sellMarket:    sellMarket,
 		expectedPrice: expectedPrice,
@@ -90,6 +121,7 @@ func NewPipeline(productGood string, sellMarket string, expectedPrice int, playe
 func ReconstructPipeline(
 	id string,
 	sequenceNumber int,
+	pipelineType PipelineType,
 	productGood string,
 	sellMarket string,
 	expectedPrice int,
@@ -103,9 +135,14 @@ func ReconstructPipeline(
 	completedAt *time.Time,
 	errorMessage string,
 ) *ManufacturingPipeline {
+	// Default to FABRICATION if not specified (for backward compatibility)
+	if pipelineType == "" {
+		pipelineType = PipelineTypeFabrication
+	}
 	return &ManufacturingPipeline{
 		id:             id,
 		sequenceNumber: sequenceNumber,
+		pipelineType:   pipelineType,
 		productGood:    productGood,
 		sellMarket:     sellMarket,
 		expectedPrice:  expectedPrice,
@@ -127,6 +164,7 @@ func ReconstructPipeline(
 
 func (p *ManufacturingPipeline) ID() string              { return p.id }
 func (p *ManufacturingPipeline) SequenceNumber() int     { return p.sequenceNumber }
+func (p *ManufacturingPipeline) PipelineType() PipelineType { return p.pipelineType }
 func (p *ManufacturingPipeline) ProductGood() string     { return p.productGood }
 func (p *ManufacturingPipeline) SellMarket() string      { return p.sellMarket }
 func (p *ManufacturingPipeline) ExpectedPrice() int      { return p.expectedPrice }
@@ -146,6 +184,12 @@ func (p *ManufacturingPipeline) TasksFailed() int        { return p.tasksFailed 
 
 // SetSequenceNumber sets the sequence number (called by repository during Add)
 func (p *ManufacturingPipeline) SetSequenceNumber(seq int) { p.sequenceNumber = seq }
+
+// IsFabrication returns true if this is a fabrication pipeline (counted toward max_pipelines)
+func (p *ManufacturingPipeline) IsFabrication() bool { return p.pipelineType == PipelineTypeFabrication }
+
+// IsCollection returns true if this is a collection pipeline (unlimited)
+func (p *ManufacturingPipeline) IsCollection() bool { return p.pipelineType == PipelineTypeCollection }
 
 // Tasks returns a copy of all tasks in this pipeline
 func (p *ManufacturingPipeline) Tasks() []*ManufacturingTask {
@@ -456,6 +500,7 @@ func (p *ManufacturingPipeline) String() string {
 func ReconstitutePipeline(
 	id string,
 	sequenceNumber int,
+	pipelineType PipelineType,
 	productGood string,
 	sellMarket string,
 	expectedPrice int,
@@ -469,9 +514,14 @@ func ReconstitutePipeline(
 	startedAt *time.Time,
 	completedAt *time.Time,
 ) *ManufacturingPipeline {
+	// Default to FABRICATION if not specified (for backward compatibility)
+	if pipelineType == "" {
+		pipelineType = PipelineTypeFabrication
+	}
 	return &ManufacturingPipeline{
 		id:             id,
 		sequenceNumber: sequenceNumber,
+		pipelineType:   pipelineType,
 		productGood:    productGood,
 		sellMarket:     sellMarket,
 		expectedPrice:  expectedPrice,
