@@ -477,6 +477,12 @@ func run(cfg *config.Config) error {
 		tradingMarketRepo, graphService, goods.ExportToImportMap, goodsResolver, manufacturingPipelineRepo,
 	)
 
+	// Create collection opportunity finder for COLLECT_SELL pipelines
+	// Finds factories with HIGH/ABUNDANT supply to collect from
+	collectionOpportunityFinder := tradingServices.NewCollectionOpportunityFinder(
+		tradingMarketRepo, manufacturingPipelineRepo,
+	)
+
 	// Create task queue (in-memory with DB backing)
 	taskQueue := tradingServices.NewTaskQueue()
 
@@ -511,6 +517,7 @@ func run(cfg *config.Config) error {
 	// Note: SupplyMonitor is created at runtime in the Handle method (needs playerID)
 	parallelManufacturingCoordinatorHandler := tradingCmd.NewRunParallelManufacturingCoordinatorHandler(
 		manufacturingDemandFinder,
+		collectionOpportunityFinder, // For COLLECT_SELL pipeline discovery
 		pipelinePlanner,
 		taskQueue,
 		factoryTracker,
