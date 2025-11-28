@@ -45,6 +45,10 @@ type TaskRepository interface {
 	// Update saves changes to an existing task
 	Update(ctx context.Context, task *ManufacturingTask) error
 
+	// AssignTaskAtomically assigns a ship to a task atomically using SELECT FOR UPDATE
+	// This prevents race conditions where multiple workers try to assign the same task
+	AssignTaskAtomically(ctx context.Context, taskID string, shipSymbol string) error
+
 	// FindByID retrieves a task by its ID
 	FindByID(ctx context.Context, id string) (*ManufacturingTask, error)
 

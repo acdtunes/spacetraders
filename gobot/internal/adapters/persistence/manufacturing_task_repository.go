@@ -6,6 +6,7 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // GormManufacturingTaskRepository implements TaskRepository using GORM
@@ -260,6 +261,52 @@ func (r *GormManufacturingTaskRepository) Delete(ctx context.Context, id string)
 	}
 
 	return nil
+}
+
+// AssignTaskAtomically assigns a ship to a task atomically using SELECT FOR UPDATE.
+// This prevents race conditions where multiple workers try to assign the same task.
+func (r *GormManufacturingTaskRepository) AssignTaskAtomically(ctx context.Context, taskID string, shipSymbol string) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var model ManufacturingTaskModel
+
+		// Lock the row with SELECT FOR UPDATE
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ?", taskID).
+			First(&model).Error; err != nil {
+			if err == gorm.ErrRecordNotFound {
+				return fmt.Errorf("task %s not found", taskID)
+			}
+			return fmt.Errorf("failed to lock task: %w", err)
+		}
+
+		// Check task is in READY status
+		if model.Status != string(manufacturing.TaskStatusReady) {
+			return &manufacturing.ErrInvalidTaskTransition{
+				TaskID:      taskID,
+				From:        manufacturing.TaskStatus(model.Status),
+				To:          manufacturing.TaskStatusAssigned,
+				Description: "can only assign ship to READY tasks",
+			}
+		}
+
+		// Check task is not already assigned
+		if model.AssignedShip != nil && *model.AssignedShip != "" && *model.AssignedShip != shipSymbol {
+			return &manufacturing.ErrTaskAlreadyAssigned{
+				TaskID:       taskID,
+				AssignedShip: *model.AssignedShip,
+			}
+		}
+
+		// Update task atomically
+		if err := tx.Model(&model).Updates(map[string]interface{}{
+			"status":        string(manufacturing.TaskStatusAssigned),
+			"assigned_ship": shipSymbol,
+		}).Error; err != nil {
+			return fmt.Errorf("failed to update task: %w", err)
+		}
+
+		return nil
+	})
 }
 
 // taskToModel converts domain entity to database model
