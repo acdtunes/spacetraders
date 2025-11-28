@@ -62,14 +62,14 @@ type WorkerLifecycleManager struct {
 	taskQueue          *services.TaskQueue
 	clock              shared.Clock
 
-	// Callback dependencies
-	taskAssigner       TaskAssigner
+	// Dependencies (injected via constructor)
+	assignmentTracker  *AssignmentTracker // Used for Track/Untrack (no circular dep)
 	factoryManager     FactoryManager
 	pipelineManager    PipelineManager
 	workerCompletionCh chan string
 }
 
-// NewWorkerLifecycleManager creates a new worker lifecycle manager
+// NewWorkerLifecycleManager creates a new worker lifecycle manager with all dependencies
 func NewWorkerLifecycleManager(
 	taskRepo manufacturing.TaskRepository,
 	shipAssignmentRepo domainContainer.ShipAssignmentRepository,
@@ -77,6 +77,10 @@ func NewWorkerLifecycleManager(
 	containerRemover ContainerRemover,
 	taskQueue *services.TaskQueue,
 	clock shared.Clock,
+	assignmentTracker *AssignmentTracker,
+	factoryManager FactoryManager,
+	pipelineManager PipelineManager,
+	workerCompletionCh chan string,
 ) *WorkerLifecycleManager {
 	if clock == nil {
 		clock = shared.NewRealClock()
@@ -88,27 +92,11 @@ func NewWorkerLifecycleManager(
 		containerRemover:   containerRemover,
 		taskQueue:          taskQueue,
 		clock:              clock,
+		assignmentTracker:  assignmentTracker,
+		factoryManager:     factoryManager,
+		pipelineManager:    pipelineManager,
+		workerCompletionCh: workerCompletionCh,
 	}
-}
-
-// SetTaskAssigner sets the task assigner dependency
-func (m *WorkerLifecycleManager) SetTaskAssigner(ta TaskAssigner) {
-	m.taskAssigner = ta
-}
-
-// SetFactoryManager sets the factory manager dependency
-func (m *WorkerLifecycleManager) SetFactoryManager(fm FactoryManager) {
-	m.factoryManager = fm
-}
-
-// SetPipelineManager sets the pipeline manager dependency
-func (m *WorkerLifecycleManager) SetPipelineManager(pm PipelineManager) {
-	m.pipelineManager = pm
-}
-
-// SetWorkerCompletionChannel sets the channel for worker completion signals
-func (m *WorkerLifecycleManager) SetWorkerCompletionChannel(ch chan string) {
-	m.workerCompletionCh = ch
 }
 
 // AssignTaskToShip creates a worker container and assigns a ship to execute the task
@@ -197,8 +185,8 @@ func (m *WorkerLifecycleManager) AssignTaskToShip(ctx context.Context, params As
 	}
 
 	// Track assignment
-	if m.taskAssigner != nil {
-		m.taskAssigner.(*TaskAssignmentManager).TrackAssignment(task.ID(), shipSymbol, containerID)
+	if m.assignmentTracker != nil {
+		m.assignmentTracker.Track(task.ID(), shipSymbol, containerID, task.TaskType())
 	}
 
 	// Remove from queue
@@ -239,8 +227,8 @@ func (m *WorkerLifecycleManager) HandleWorkerCompletion(ctx context.Context, shi
 	taskID := task.ID()
 
 	// Untrack from in-memory map for cleanup (optional, may not exist after restart)
-	if m.taskAssigner != nil {
-		m.taskAssigner.(*TaskAssignmentManager).UntrackAssignment(taskID)
+	if m.assignmentTracker != nil {
+		m.assignmentTracker.Untrack(taskID)
 	}
 
 	// Create completion notification

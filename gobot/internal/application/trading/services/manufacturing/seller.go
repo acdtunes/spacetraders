@@ -246,18 +246,15 @@ func (s *ManufacturingSeller) Liquidate(ctx context.Context, params SellParams) 
 
 	// Record ledger transaction
 	if s.ledgerRecorder != nil {
-		mlr, ok := s.ledgerRecorder.(*ManufacturingLedgerRecorder)
-		if ok {
-			_ = mlr.RecordLiquidation(ctx, SaleRecordParams{
-				PlayerID:     params.PlayerID.Value(),
-				TaskID:       params.TaskID,
-				Good:         params.Good,
-				Quantity:     result.UnitsSold,
-				PricePerUnit: result.PricePerUnit,
-				TotalRevenue: result.TotalRevenue,
-				Market:       params.Market,
-			})
-		}
+		_ = s.ledgerRecorder.RecordLiquidation(ctx, SaleRecordParams{
+			PlayerID:     params.PlayerID.Value(),
+			TaskID:       params.TaskID,
+			Good:         params.Good,
+			Quantity:     result.UnitsSold,
+			PricePerUnit: result.PricePerUnit,
+			TotalRevenue: result.TotalRevenue,
+			Market:       params.Market,
+		})
 	}
 
 	return result, nil

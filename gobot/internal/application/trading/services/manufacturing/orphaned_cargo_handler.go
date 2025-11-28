@@ -54,35 +54,29 @@ type OrphanedCargoHandler struct {
 	getActivePipelines func() map[string]*manufacturing.ManufacturingPipeline
 }
 
-// NewOrphanedCargoHandler creates a new orphaned cargo handler
+// NewOrphanedCargoHandler creates a new orphaned cargo handler with all dependencies
 func NewOrphanedCargoHandler(
 	taskRepo manufacturing.TaskRepository,
 	marketRepo market.MarketRepository,
+	workerManager WorkerManager,
+	taskAssigner TaskAssigner,
+	mediator common.Mediator,
+	getActivePipelines func() map[string]*manufacturing.ManufacturingPipeline,
 ) *OrphanedCargoHandler {
 	return &OrphanedCargoHandler{
-		taskRepo:   taskRepo,
-		marketRepo: marketRepo,
+		taskRepo:           taskRepo,
+		marketRepo:         marketRepo,
+		workerManager:      workerManager,
+		taskAssigner:       taskAssigner,
+		mediator:           mediator,
+		getActivePipelines: getActivePipelines,
 	}
 }
 
-// SetWorkerManager sets the worker manager dependency
-func (h *OrphanedCargoHandler) SetWorkerManager(wm WorkerManager) {
-	h.workerManager = wm
-}
-
-// SetTaskAssigner sets the task assigner dependency
+// SetTaskAssigner sets the task assigner for circular dependency resolution.
+// This is the only setter needed - call after TaskAssignmentManager is created.
 func (h *OrphanedCargoHandler) SetTaskAssigner(ta TaskAssigner) {
 	h.taskAssigner = ta
-}
-
-// SetActivePipelinesGetter sets the function to get active pipelines
-func (h *OrphanedCargoHandler) SetActivePipelinesGetter(getter func() map[string]*manufacturing.ManufacturingPipeline) {
-	h.getActivePipelines = getter
-}
-
-// SetMediator sets the mediator for executing commands (like jettison)
-func (h *OrphanedCargoHandler) SetMediator(m common.Mediator) {
-	h.mediator = m
 }
 
 // HandleShipsWithExistingCargo handles ships that have cargo from interrupted operations
@@ -99,7 +93,7 @@ func (h *OrphanedCargoHandler) HandleShipsWithExistingCargo(
 	// Get current assignment count
 	assignedCount := 0
 	if h.taskAssigner != nil {
-		assignedCount = h.taskAssigner.(*TaskAssignmentManager).GetAssignmentCount()
+		assignedCount = h.taskAssigner.GetAssignmentCount()
 	}
 
 	if assignedCount >= params.MaxConcurrentTasks {
@@ -338,7 +332,7 @@ func (h *OrphanedCargoHandler) FindBestSellMarket(ctx context.Context, currentLo
 		return "", fmt.Errorf("no market repository configured")
 	}
 
-	system := extractSystemFromWaypoint(currentLocation)
+	system := extractSystemFromWaypointSymbol(currentLocation)
 
 	result, err := h.marketRepo.FindBestMarketBuying(ctx, good, system, playerID)
 	if err != nil {
@@ -382,7 +376,7 @@ func (h *OrphanedCargoHandler) findBestSellMarketWithPrice(ctx context.Context, 
 		return nil, fmt.Errorf("no market repository configured")
 	}
 
-	system := extractSystemFromWaypoint(currentLocation)
+	system := extractSystemFromWaypointSymbol(currentLocation)
 
 	result, err := h.marketRepo.FindBestMarketBuying(ctx, good, system, playerID)
 	if err != nil {

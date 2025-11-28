@@ -3,7 +3,6 @@ package manufacturing
 import (
 	"context"
 	"fmt"
-	"sync"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
@@ -14,7 +13,6 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
 
 // TaskAssigner assigns ready tasks to idle ships
@@ -33,6 +31,15 @@ type TaskAssigner interface {
 
 	// ReconcileAssignedTasksWithDB syncs in-memory state with DB
 	ReconcileAssignedTasksWithDB(ctx context.Context, playerID int)
+
+	// GetAssignmentCount returns the number of assigned tasks
+	GetAssignmentCount() int
+
+	// TrackAssignment tracks a task assignment in memory
+	TrackAssignment(taskID, shipSymbol, containerID string)
+
+	// UntrackAssignment removes a task assignment from memory
+	UntrackAssignment(taskID string)
 }
 
 // AssignParams contains parameters for task assignment
@@ -41,119 +48,123 @@ type AssignParams struct {
 	MaxConcurrentTasks int
 }
 
-// TaskAssignmentManager implements TaskAssigner
+// TaskAssignmentManager implements TaskAssigner using focused services.
+// This manager coordinates task assignment by delegating to:
+// - ShipSelector for ship selection
+// - AssignmentTracker for in-memory state
+// - MarketConditionChecker for supply checks
+// - AssignmentReconciler for DB sync
+// - WorkerReservationPolicy for reservation logic
 type TaskAssignmentManager struct {
+	// Repositories
 	taskRepo           manufacturing.TaskRepository
 	shipRepo           navigation.ShipRepository
 	shipAssignmentRepo domainContainer.ShipAssignmentRepository
 	marketRepo         market.MarketRepository
-	waypointProvider   system.IWaypointProvider
-	taskQueue          *services.TaskQueue
 
-	// Runtime state
-	mu             sync.RWMutex
-	assignedTasks  map[string]string // taskID -> shipSymbol
-	taskContainers map[string]string // taskID -> containerID
+	// Task queue
+	taskQueue *services.TaskQueue
 
-	// Dependencies (will be set via callback)
-	workerManager    WorkerManager
-	orphanedHandler  OrphanedCargoManager
-	pipelineManager  PipelineManager
-	activePipelines  func() map[string]*manufacturing.ManufacturingPipeline
+	// Focused services (injected via constructor)
+	shipSelector      *ShipSelector
+	tracker           *AssignmentTracker
+	conditionChecker  *MarketConditionChecker
+	reconciler        *AssignmentReconciler
+	reservationPolicy *manufacturing.WorkerReservationPolicy
+
+	// Pipeline registry getter (read-only, no circular dependency)
+	getActivePipelines func() map[string]*manufacturing.ManufacturingPipeline
+
+	// Dependencies (injected via constructor)
+	workerManager   WorkerManager
+	orphanedHandler OrphanedCargoManager
 }
 
-// NewTaskAssignmentManager creates a new task assignment manager
+// NewTaskAssignmentManager creates a new task assignment manager with all dependencies.
 func NewTaskAssignmentManager(
 	taskRepo manufacturing.TaskRepository,
 	shipRepo navigation.ShipRepository,
 	shipAssignmentRepo domainContainer.ShipAssignmentRepository,
 	marketRepo market.MarketRepository,
-	waypointProvider system.IWaypointProvider,
 	taskQueue *services.TaskQueue,
+	shipSelector *ShipSelector,
+	tracker *AssignmentTracker,
+	conditionChecker *MarketConditionChecker,
+	reconciler *AssignmentReconciler,
+	reservationPolicy *manufacturing.WorkerReservationPolicy,
+	getActivePipelines func() map[string]*manufacturing.ManufacturingPipeline,
+	workerManager WorkerManager,
+	orphanedHandler OrphanedCargoManager,
 ) *TaskAssignmentManager {
 	return &TaskAssignmentManager{
 		taskRepo:           taskRepo,
 		shipRepo:           shipRepo,
 		shipAssignmentRepo: shipAssignmentRepo,
 		marketRepo:         marketRepo,
-		waypointProvider:   waypointProvider,
 		taskQueue:          taskQueue,
-		assignedTasks:      make(map[string]string),
-		taskContainers:     make(map[string]string),
+		shipSelector:       shipSelector,
+		tracker:            tracker,
+		conditionChecker:   conditionChecker,
+		reconciler:         reconciler,
+		reservationPolicy:  reservationPolicy,
+		getActivePipelines: getActivePipelines,
+		workerManager:      workerManager,
+		orphanedHandler:    orphanedHandler,
 	}
-}
-
-// SetWorkerManager sets the worker manager dependency
-func (m *TaskAssignmentManager) SetWorkerManager(wm WorkerManager) {
-	m.workerManager = wm
-}
-
-// SetOrphanedHandler sets the orphaned cargo handler dependency
-func (m *TaskAssignmentManager) SetOrphanedHandler(oh OrphanedCargoManager) {
-	m.orphanedHandler = oh
-}
-
-// SetPipelineManager sets the pipeline manager dependency
-func (m *TaskAssignmentManager) SetPipelineManager(pm PipelineManager) {
-	m.pipelineManager = pm
-}
-
-// SetActivePipelinesGetter sets the function to get active pipelines
-func (m *TaskAssignmentManager) SetActivePipelinesGetter(getter func() map[string]*manufacturing.ManufacturingPipeline) {
-	m.activePipelines = getter
 }
 
 // GetAssignedTasks returns the assigned tasks map
 func (m *TaskAssignmentManager) GetAssignedTasks() map[string]string {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	result := make(map[string]string, len(m.assignedTasks))
-	for k, v := range m.assignedTasks {
-		result[k] = v
+	if m.tracker != nil {
+		return m.tracker.GetAssignedTasks()
 	}
-	return result
+	return make(map[string]string)
 }
 
 // GetTaskContainers returns the task containers map
 func (m *TaskAssignmentManager) GetTaskContainers() map[string]string {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	result := make(map[string]string, len(m.taskContainers))
-	for k, v := range m.taskContainers {
-		result[k] = v
+	if m.tracker != nil {
+		return m.tracker.GetTaskContainers()
 	}
-	return result
+	return make(map[string]string)
 }
 
 // TrackAssignment tracks a task assignment in memory
 func (m *TaskAssignmentManager) TrackAssignment(taskID, shipSymbol, containerID string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.assignedTasks[taskID] = shipSymbol
-	m.taskContainers[taskID] = containerID
+	if m.tracker != nil {
+		// Get task type for proper tracking
+		taskType := manufacturing.TaskTypeAcquireDeliver // default
+		if m.taskRepo != nil {
+			ctx := context.Background()
+			task, err := m.taskRepo.FindByID(ctx, taskID)
+			if err == nil && task != nil {
+				taskType = task.TaskType()
+			}
+		}
+		m.tracker.Track(taskID, shipSymbol, containerID, taskType)
+	}
 }
 
 // UntrackAssignment removes a task assignment from memory
 func (m *TaskAssignmentManager) UntrackAssignment(taskID string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	delete(m.assignedTasks, taskID)
-	delete(m.taskContainers, taskID)
+	if m.tracker != nil {
+		m.tracker.Untrack(taskID)
+	}
 }
 
 // GetAssignmentCount returns the number of assigned tasks
 func (m *TaskAssignmentManager) GetAssignmentCount() int {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return len(m.assignedTasks)
+	if m.tracker != nil {
+		return m.tracker.GetCount()
+	}
+	return 0
 }
 
 // ClearAssignments clears all task assignments
 func (m *TaskAssignmentManager) ClearAssignments() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.assignedTasks = make(map[string]string)
-	m.taskContainers = make(map[string]string)
+	if m.tracker != nil {
+		m.tracker.Clear()
+	}
 }
 
 // AssignTasks assigns ready tasks to idle ships using task type reservation
@@ -210,14 +221,8 @@ func (m *TaskAssignmentManager) AssignTasks(ctx context.Context, params AssignPa
 	// Refresh assigned count
 	assignedCount = m.GetAssignmentCount()
 
-	// Count currently assigned tasks by type from database for reservation logic
-	assignedByType := m.countAssignedByType(ctx, params.PlayerID)
-	collectSellCount := assignedByType[manufacturing.TaskTypeCollectSell]
-	acquireDeliverCount := assignedByType[manufacturing.TaskTypeAcquireDeliver]
-
-	// Check if we have ready tasks of each type
-	hasReadyCollectSell := m.taskQueue.HasReadyTasksByType(manufacturing.TaskTypeCollectSell)
-	hasReadyAcquireDeliver := m.taskQueue.HasReadyTasksByType(manufacturing.TaskTypeAcquireDeliver)
+	// Get allocations for reservation logic
+	alloc := m.getAllocations(ctx, params.PlayerID)
 
 	// Track factory+good assignment counts for balancing within ACQUIRE_DELIVER
 	factoryGoodCounts := make(map[string]int)
@@ -239,9 +244,8 @@ func (m *TaskAssignmentManager) AssignTasks(ctx context.Context, params AssignPa
 			break
 		}
 
-		// Task Type Reservation: Prevent starvation by reserving minimum workers for each type
-		// Skip this task if it would starve the other task type
-		if !m.shouldAssignWithReservation(task.TaskType(), collectSellCount, acquireDeliverCount, hasReadyCollectSell, hasReadyAcquireDeliver) {
+		// Use reservation policy to check if assignment is allowed
+		if m.reservationPolicy != nil && !m.reservationPolicy.ShouldAssign(task.TaskType(), alloc) {
 			continue
 		}
 
@@ -320,9 +324,9 @@ func (m *TaskAssignmentManager) AssignTasks(ctx context.Context, params AssignPa
 		if task.TaskType() == manufacturing.TaskTypeAcquireDeliver {
 			factoryGoodKey := task.FactorySymbol() + ":" + task.Good()
 			factoryGoodCounts[factoryGoodKey]++
-			acquireDeliverCount++
+			alloc.AcquireDeliverCount++
 		} else if task.TaskType() == manufacturing.TaskTypeCollectSell {
-			collectSellCount++
+			alloc.CollectSellCount++
 		}
 
 		delete(idleShips, selectedSymbol)
@@ -335,282 +339,81 @@ func (m *TaskAssignmentManager) AssignTasks(ctx context.Context, params AssignPa
 	return tasksAssigned, nil
 }
 
-// countAssignedByType returns counts of currently assigned tasks by task type
-func (m *TaskAssignmentManager) countAssignedByType(ctx context.Context, playerID int) map[manufacturing.TaskType]int {
-	counts := make(map[manufacturing.TaskType]int)
-
-	if m.taskRepo == nil {
-		return counts
-	}
-
-	// Get ASSIGNED tasks
-	assignedTasks, err := m.taskRepo.FindByStatus(ctx, playerID, manufacturing.TaskStatusAssigned)
-	if err == nil {
-		for _, task := range assignedTasks {
-			counts[task.TaskType()]++
+// getAllocations builds the task type allocations for reservation logic.
+func (m *TaskAssignmentManager) getAllocations(ctx context.Context, playerID int) manufacturing.TaskTypeAllocations {
+	// First try to get from tracker
+	if m.tracker != nil {
+		alloc := m.tracker.GetAllocations()
+		// Add ready task info from queue
+		if m.taskQueue != nil {
+			alloc.HasReadyCollectSell = m.taskQueue.HasReadyTasksByType(manufacturing.TaskTypeCollectSell)
+			alloc.HasReadyAcquireDeliver = m.taskQueue.HasReadyTasksByType(manufacturing.TaskTypeAcquireDeliver)
 		}
+		return alloc
 	}
 
-	// Get EXECUTING tasks (also count as assigned for reservation purposes)
-	executingTasks, err := m.taskRepo.FindByStatus(ctx, playerID, manufacturing.TaskStatusExecuting)
-	if err == nil {
-		for _, task := range executingTasks {
-			counts[task.TaskType()]++
+	// Fallback: count from database
+	alloc := manufacturing.TaskTypeAllocations{}
+
+	if m.taskRepo != nil {
+		// Get ASSIGNED tasks
+		assignedTasks, err := m.taskRepo.FindByStatus(ctx, playerID, manufacturing.TaskStatusAssigned)
+		if err == nil {
+			for _, task := range assignedTasks {
+				if task.TaskType() == manufacturing.TaskTypeCollectSell {
+					alloc.CollectSellCount++
+				} else if task.TaskType() == manufacturing.TaskTypeAcquireDeliver {
+					alloc.AcquireDeliverCount++
+				}
+			}
 		}
-	}
 
-	return counts
-}
-
-// shouldAssignWithReservation checks if a task should be assigned based on reservation rules.
-// It ensures minimum workers are reserved for each task type to prevent starvation.
-//
-// Logic:
-//   - If BOTH types are below minimum AND BOTH have ready tasks → allow either (break deadlock)
-//   - If assigning ACQUIRE_DELIVER: Skip if COLLECT_SELL is below minimum AND has ready tasks
-//   - If assigning COLLECT_SELL: Skip if ACQUIRE_DELIVER is below minimum AND has ready tasks
-//
-// This ensures both task types always get their minimum workers when tasks are available,
-// while preventing a deadlock where both types block each other when starting from zero.
-func (m *TaskAssignmentManager) shouldAssignWithReservation(
-	taskType manufacturing.TaskType,
-	collectSellCount int,
-	acquireDeliverCount int,
-	hasReadyCollectSell bool,
-	hasReadyAcquireDeliver bool,
-) bool {
-	// Deadlock prevention: If BOTH counts are below minimum and BOTH have ready tasks,
-	// allow either type to be assigned (first come, first served based on priority queue).
-	// This breaks the chicken-and-egg problem where each type blocks the other.
-	bothBelowMinimum := collectSellCount < manufacturing.MinCollectSellWorkers &&
-		acquireDeliverCount < manufacturing.MinAcquireDeliverWorkers
-	bothHaveReady := hasReadyCollectSell && hasReadyAcquireDeliver
-
-	if bothBelowMinimum && bothHaveReady {
-		// Allow any task type to break the deadlock
-		return true
-	}
-
-	switch taskType {
-	case manufacturing.TaskTypeAcquireDeliver:
-		// Skip ACQUIRE_DELIVER if COLLECT_SELL is starved (below minimum) and has ready tasks
-		if collectSellCount < manufacturing.MinCollectSellWorkers && hasReadyCollectSell {
-			return false
-		}
-		return true
-
-	case manufacturing.TaskTypeCollectSell:
-		// Skip COLLECT_SELL if ACQUIRE_DELIVER is starved (below minimum) and has ready tasks
-		if acquireDeliverCount < manufacturing.MinAcquireDeliverWorkers && hasReadyAcquireDeliver {
-			return false
-		}
-		return true
-
-	case manufacturing.TaskTypeLiquidate:
-		// Liquidation tasks always have high priority - don't skip
-		return true
-
-	default:
-		return true
-	}
-}
-
-// GetTaskSourceLocation returns the waypoint where the task starts
-func (m *TaskAssignmentManager) GetTaskSourceLocation(ctx context.Context, task *manufacturing.ManufacturingTask, playerID int) *shared.Waypoint {
-	var symbol string
-
-	switch task.TaskType() {
-	case manufacturing.TaskTypeAcquireDeliver:
-		symbol = task.SourceMarket()
-	case manufacturing.TaskTypeCollectSell:
-		symbol = task.FactorySymbol()
-	case manufacturing.TaskTypeLiquidate:
-		symbol = task.TargetMarket()
-	}
-
-	if symbol == "" {
-		return nil
-	}
-
-	// Look up coordinates
-	if m.waypointProvider != nil {
-		systemSymbol := extractSystemFromWaypoint(symbol)
-		waypoint, err := m.waypointProvider.GetWaypoint(ctx, symbol, systemSymbol, playerID)
-		if err == nil && waypoint != nil {
-			return waypoint
-		}
-	}
-
-	return &shared.Waypoint{Symbol: symbol, X: 0, Y: 0}
-}
-
-// extractSystemFromWaypoint extracts system symbol from waypoint
-func extractSystemFromWaypoint(waypointSymbol string) string {
-	parts := 0
-	for i, c := range waypointSymbol {
-		if c == '-' {
-			parts++
-			if parts == 2 {
-				return waypointSymbol[:i]
+		// Get EXECUTING tasks (also count as assigned for reservation purposes)
+		executingTasks, err := m.taskRepo.FindByStatus(ctx, playerID, manufacturing.TaskStatusExecuting)
+		if err == nil {
+			for _, task := range executingTasks {
+				if task.TaskType() == manufacturing.TaskTypeCollectSell {
+					alloc.CollectSellCount++
+				} else if task.TaskType() == manufacturing.TaskTypeAcquireDeliver {
+					alloc.AcquireDeliverCount++
+				}
 			}
 		}
 	}
-	return waypointSymbol
+
+	// Get ready task info from queue
+	if m.taskQueue != nil {
+		alloc.HasReadyCollectSell = m.taskQueue.HasReadyTasksByType(manufacturing.TaskTypeCollectSell)
+		alloc.HasReadyAcquireDeliver = m.taskQueue.HasReadyTasksByType(manufacturing.TaskTypeAcquireDeliver)
+	}
+
+	return alloc
 }
 
-// FindClosestShip finds the closest ship to a waypoint
+// GetTaskSourceLocation returns the waypoint where the task starts.
+func (m *TaskAssignmentManager) GetTaskSourceLocation(ctx context.Context, task *manufacturing.ManufacturingTask, playerID int) *shared.Waypoint {
+	return m.shipSelector.GetTaskSourceLocation(ctx, task, playerID)
+}
+
+// FindClosestShip finds the closest ship to a waypoint.
 func (m *TaskAssignmentManager) FindClosestShip(
 	ships map[string]*navigation.Ship,
 	target *shared.Waypoint,
 ) (*navigation.Ship, string) {
-	if target == nil || len(ships) == 0 {
-		for symbol, ship := range ships {
-			return ship, symbol
-		}
-		return nil, ""
-	}
-
-	var closestShip *navigation.Ship
-	var closestSymbol string
-	var closestDistance float64 = -1
-
-	for symbol, ship := range ships {
-		distance := ship.CurrentLocation().DistanceTo(target)
-		if closestDistance < 0 || distance < closestDistance {
-			closestDistance = distance
-			closestShip = ship
-			closestSymbol = symbol
-		}
-	}
-
-	return closestShip, closestSymbol
+	return m.shipSelector.FindClosestShip(ships, target)
 }
 
-// IsSellMarketSaturated checks if the sell market has HIGH or ABUNDANT supply
+// IsSellMarketSaturated checks if the sell market has HIGH or ABUNDANT supply.
 func (m *TaskAssignmentManager) IsSellMarketSaturated(ctx context.Context, sellMarket, good string, playerID int) bool {
-	if m.marketRepo == nil {
-		return false
-	}
-
-	marketData, err := m.marketRepo.GetMarketData(ctx, sellMarket, playerID)
-	if err != nil || marketData == nil {
-		return false
-	}
-
-	tradeGood := marketData.FindGood(good)
-	if tradeGood == nil || tradeGood.Supply() == nil {
-		return false
-	}
-
-	supply := *tradeGood.Supply()
-	return supply == "HIGH" || supply == "ABUNDANT"
+	return m.conditionChecker.IsSellMarketSaturated(ctx, sellMarket, good, playerID)
 }
 
-// IsFactorySupplyFavorable checks if the factory has ABUNDANT supply for collection.
-// We require ABUNDANT (not just HIGH) to START a task, giving a buffer for supply drops during navigation.
-// The executor will still collect if supply is HIGH when the ship arrives.
-// This prevents assigning ships to collect when supply might drop to MODERATE during the trip.
+// IsFactorySupplyFavorable checks if the factory has HIGH/ABUNDANT supply for collection.
 func (m *TaskAssignmentManager) IsFactorySupplyFavorable(ctx context.Context, factorySymbol, good string, playerID int) bool {
-	if m.marketRepo == nil {
-		return true // Assume favorable if we can't check
-	}
-
-	marketData, err := m.marketRepo.GetMarketData(ctx, factorySymbol, playerID)
-	if err != nil || marketData == nil {
-		return true // Assume favorable if we can't check
-	}
-
-	tradeGood := marketData.FindGood(good)
-	if tradeGood == nil || tradeGood.Supply() == nil {
-		return true // Assume favorable if we can't check
-	}
-
-	supply := *tradeGood.Supply()
-	return supply == "ABUNDANT" // Require ABUNDANT to start, executor allows HIGH on arrival
+	return m.conditionChecker.IsFactoryOutputReady(ctx, factorySymbol, good, playerID)
 }
 
 // ReconcileAssignedTasksWithDB syncs in-memory state with DB.
-// This function ensures the in-memory tracking matches database state by:
-// 1. Loading ASSIGNED/EXECUTING tasks from DB into memory (handles coordinator restarts)
-// 2. Removing stale entries that no longer exist or have completed
 func (m *TaskAssignmentManager) ReconcileAssignedTasksWithDB(ctx context.Context, playerID int) {
-	if m.taskRepo == nil {
-		return
-	}
-
-	logger := common.LoggerFromContext(ctx)
-
-	// Step 1: Load ASSIGNED tasks from DB into memory (critical for restart recovery)
-	assignedTasks, err := m.taskRepo.FindByStatus(ctx, playerID, manufacturing.TaskStatusAssigned)
-	if err == nil {
-		m.mu.Lock()
-		added := 0
-		for _, task := range assignedTasks {
-			if task.AssignedShip() != "" {
-				if _, exists := m.assignedTasks[task.ID()]; !exists {
-					m.assignedTasks[task.ID()] = task.AssignedShip()
-					added++
-				}
-			}
-		}
-		m.mu.Unlock()
-		if added > 0 {
-			logger.Log("DEBUG", fmt.Sprintf("Reconciled: loaded %d ASSIGNED tasks from DB", added), nil)
-		}
-	}
-
-	// Step 2: Load EXECUTING tasks from DB into memory
-	executingTasks, err := m.taskRepo.FindByStatus(ctx, playerID, manufacturing.TaskStatusExecuting)
-	if err == nil {
-		m.mu.Lock()
-		added := 0
-		for _, task := range executingTasks {
-			if task.AssignedShip() != "" {
-				if _, exists := m.assignedTasks[task.ID()]; !exists {
-					m.assignedTasks[task.ID()] = task.AssignedShip()
-					added++
-				}
-			}
-		}
-		m.mu.Unlock()
-		if added > 0 {
-			logger.Log("DEBUG", fmt.Sprintf("Reconciled: loaded %d EXECUTING tasks from DB", added), nil)
-		}
-	}
-
-	// Step 3: Remove stale entries (tasks that completed or no longer exist)
-	taskIDs := make([]string, 0)
-	m.mu.RLock()
-	for taskID := range m.assignedTasks {
-		taskIDs = append(taskIDs, taskID)
-	}
-	m.mu.RUnlock()
-
-	if len(taskIDs) == 0 {
-		return
-	}
-
-	staleTaskIDs := make([]string, 0)
-	for _, taskID := range taskIDs {
-		task, err := m.taskRepo.FindByID(ctx, taskID)
-		if err != nil || task == nil {
-			staleTaskIDs = append(staleTaskIDs, taskID)
-			continue
-		}
-
-		if task.Status() != manufacturing.TaskStatusAssigned && task.Status() != manufacturing.TaskStatusExecuting {
-			staleTaskIDs = append(staleTaskIDs, taskID)
-		}
-	}
-
-	if len(staleTaskIDs) > 0 {
-		m.mu.Lock()
-		for _, taskID := range staleTaskIDs {
-			delete(m.assignedTasks, taskID)
-			delete(m.taskContainers, taskID)
-		}
-		m.mu.Unlock()
-
-		logger.Log("DEBUG", fmt.Sprintf("Reconciled: removed %d stale entries", len(staleTaskIDs)), nil)
-	}
+	m.reconciler.Reconcile(ctx, playerID)
 }
