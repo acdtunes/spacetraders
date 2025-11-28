@@ -368,7 +368,8 @@ func (t *ManufacturingTask) Fail(errorMsg string) error {
 	now := time.Now()
 	t.completedAt = &now
 	t.retryCount++
-	t.assignedShip = "" // Release ship
+	// DO NOT clear assignedShip - FindByAssignedShip needs it to find the task
+	// Ship assignment release is handled by ResetForRetry or coordinator
 	return nil
 }
 
@@ -393,7 +394,8 @@ func (t *ManufacturingTask) ResetForRetry() error {
 	t.errorMessage = ""
 	t.startedAt = nil
 	t.completedAt = nil
-	t.readyAt = nil // Reset so MarkReady() sets fresh timestamp for fair aging
+	t.readyAt = nil      // Reset so MarkReady() sets fresh timestamp for fair aging
+	t.assignedShip = "" // Release ship so it can be reassigned
 	return nil
 }
 

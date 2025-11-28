@@ -191,14 +191,20 @@ func (r *GormManufacturingTaskRepository) FindReadyTasks(ctx context.Context, pl
 	return r.FindByStatus(ctx, playerID, manufacturing.TaskStatusReady)
 }
 
-// FindByAssignedShip retrieves tasks assigned to a specific ship
+// FindByAssignedShip retrieves tasks assigned to a specific ship.
+// Includes COMPLETED and FAILED statuses because by the time the coordinator processes
+// the worker completion signal, the worker has already updated the task status in DB.
+// This is a race condition fix: the channel signal arrives after the DB update.
 func (r *GormManufacturingTaskRepository) FindByAssignedShip(ctx context.Context, shipSymbol string) (*manufacturing.ManufacturingTask, error) {
 	var model ManufacturingTaskModel
 	result := r.db.WithContext(ctx).
 		Where("assigned_ship = ? AND status IN ?", shipSymbol, []string{
 			string(manufacturing.TaskStatusAssigned),
 			string(manufacturing.TaskStatusExecuting),
+			string(manufacturing.TaskStatusCompleted),
+			string(manufacturing.TaskStatusFailed),
 		}).
+		Order("completed_at DESC NULLS LAST"). // Most recently completed first
 		First(&model)
 
 	if result.Error != nil {
