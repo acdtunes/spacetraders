@@ -9,6 +9,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/application/trading/services"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
@@ -30,6 +31,9 @@ type PipelineManager interface {
 
 	// CheckPipelineCompletion checks if pipeline is complete and updates status
 	CheckPipelineCompletion(ctx context.Context, pipelineID string) (bool, error)
+
+	// CheckAllPipelinesForCompletion checks all active pipelines and marks completed ones
+	CheckAllPipelinesForCompletion(ctx context.Context) int
 
 	// RecyclePipeline cancels a stuck pipeline and frees its slot
 	RecyclePipeline(ctx context.Context, pipelineID string, playerID int) error
@@ -67,16 +71,18 @@ type PipelineScanParams struct {
 // PipelineLifecycleManager implements PipelineManager
 type PipelineLifecycleManager struct {
 	// Services
-	demandFinder    *services.ManufacturingDemandFinder
-	pipelinePlanner *services.PipelinePlanner
-	taskQueue       *services.TaskQueue
-	factoryTracker  *manufacturing.FactoryStateTracker
+	demandFinder               *services.ManufacturingDemandFinder
+	collectionOpportunityFinder *services.CollectionOpportunityFinder
+	pipelinePlanner            *services.PipelinePlanner
+	taskQueue                  *services.TaskQueue
+	factoryTracker             *manufacturing.FactoryStateTracker
 
 	// Repositories
-	pipelineRepo     manufacturing.PipelineRepository
-	taskRepo         manufacturing.TaskRepository
-	factoryStateRepo manufacturing.FactoryStateRepository
-	marketRepo       market.MarketRepository
+	pipelineRepo       manufacturing.PipelineRepository
+	taskRepo           manufacturing.TaskRepository
+	factoryStateRepo   manufacturing.FactoryStateRepository
+	marketRepo         market.MarketRepository
+	shipAssignmentRepo container.ShipAssignmentRepository
 
 	// Runtime state
 	mu              sync.RWMutex
@@ -92,6 +98,7 @@ type PipelineLifecycleManager struct {
 // NewPipelineLifecycleManager creates a new pipeline lifecycle manager
 func NewPipelineLifecycleManager(
 	demandFinder *services.ManufacturingDemandFinder,
+	collectionOpportunityFinder *services.CollectionOpportunityFinder,
 	pipelinePlanner *services.PipelinePlanner,
 	taskQueue *services.TaskQueue,
 	factoryTracker *manufacturing.FactoryStateTracker,
@@ -99,22 +106,25 @@ func NewPipelineLifecycleManager(
 	taskRepo manufacturing.TaskRepository,
 	factoryStateRepo manufacturing.FactoryStateRepository,
 	marketRepo market.MarketRepository,
+	shipAssignmentRepo container.ShipAssignmentRepository,
 	clock shared.Clock,
 ) *PipelineLifecycleManager {
 	if clock == nil {
 		clock = shared.NewRealClock()
 	}
 	return &PipelineLifecycleManager{
-		demandFinder:     demandFinder,
-		pipelinePlanner:  pipelinePlanner,
-		taskQueue:        taskQueue,
-		factoryTracker:   factoryTracker,
-		pipelineRepo:     pipelineRepo,
-		taskRepo:         taskRepo,
-		factoryStateRepo: factoryStateRepo,
-		marketRepo:       marketRepo,
-		activePipelines:  make(map[string]*manufacturing.ManufacturingPipeline),
-		clock:            clock,
+		demandFinder:                demandFinder,
+		collectionOpportunityFinder: collectionOpportunityFinder,
+		pipelinePlanner:             pipelinePlanner,
+		taskQueue:                   taskQueue,
+		factoryTracker:              factoryTracker,
+		pipelineRepo:                pipelineRepo,
+		taskRepo:                    taskRepo,
+		factoryStateRepo:            factoryStateRepo,
+		marketRepo:                  marketRepo,
+		shipAssignmentRepo:          shipAssignmentRepo,
+		activePipelines:             make(map[string]*manufacturing.ManufacturingPipeline),
+		clock:                       clock,
 	}
 }
 
@@ -163,24 +173,59 @@ func (m *PipelineLifecycleManager) AddActivePipeline(id string, pipeline *manufa
 	m.activePipelines[id] = pipeline
 }
 
-// ScanAndCreatePipelines scans for opportunities and creates new pipelines
+// ScanAndCreatePipelines scans for opportunities and creates new pipelines.
+// FABRICATION pipelines are limited by MaxPipelines.
+// COLLECTION pipelines are unlimited and scanned separately.
 func (m *PipelineLifecycleManager) ScanAndCreatePipelines(ctx context.Context, params PipelineScanParams) (int, error) {
 	logger := common.LoggerFromContext(ctx)
 
-	// Check if we have room for more pipelines
-	m.mu.RLock()
-	activePipelineCount := len(m.activePipelines)
-	m.mu.RUnlock()
+	totalCreated := 0
 
-	if activePipelineCount >= params.MaxPipelines {
-		logger.Log("DEBUG", "Max pipelines reached, skipping opportunity scan", map[string]interface{}{
-			"active_pipelines": activePipelineCount,
-			"max_pipelines":    params.MaxPipelines,
-		})
-		return 0, nil
+	// 1. Count only FABRICATION pipelines toward the limit
+	fabricationCount, err := m.pipelineRepo.CountActiveFabricationPipelines(ctx, params.PlayerID)
+	if err != nil {
+		// Fallback to in-memory count if DB fails
+		m.mu.RLock()
+		fabricationCount = 0
+		for _, p := range m.activePipelines {
+			if p.PipelineType() == manufacturing.PipelineTypeFabrication {
+				fabricationCount++
+			}
+		}
+		m.mu.RUnlock()
 	}
 
-	// Find opportunities
+	// 2. Create FABRICATION pipelines if under limit
+	if fabricationCount < params.MaxPipelines {
+		created, err := m.scanForFabricationOpportunities(ctx, params, fabricationCount)
+		if err != nil {
+			logger.Log("WARN", "Failed to scan for fabrication opportunities", map[string]interface{}{
+				"error": err.Error(),
+			})
+		} else {
+			totalCreated += created
+		}
+	} else {
+		logger.Log("DEBUG", "Max fabrication pipelines reached", map[string]interface{}{
+			"active_fabrication": fabricationCount,
+			"max_pipelines":      params.MaxPipelines,
+		})
+	}
+
+	// 3. ALWAYS scan for collection opportunities (unlimited)
+	if m.collectionOpportunityFinder != nil {
+		collectionCreated := m.scanForCollectionOpportunities(ctx, params)
+		totalCreated += collectionCreated
+	}
+
+	return totalCreated, nil
+}
+
+// scanForFabricationOpportunities scans for manufacturing opportunities and creates pipelines.
+// These are FABRICATION pipelines that count toward max_pipelines.
+func (m *PipelineLifecycleManager) scanForFabricationOpportunities(ctx context.Context, params PipelineScanParams, currentFabricationCount int) (int, error) {
+	logger := common.LoggerFromContext(ctx)
+
 	config := services.DemandFinderConfig{
 		MinPurchasePrice: params.MinPurchasePrice,
 		MaxOpportunities: params.MaxPipelines * 2,
@@ -196,13 +241,13 @@ func (m *PipelineLifecycleManager) ScanAndCreatePipelines(ctx context.Context, p
 		return 0, fmt.Errorf("failed to scan opportunities: %w", err)
 	}
 
-	logger.Log("INFO", fmt.Sprintf("Found %d manufacturing opportunities", len(opportunities)), nil)
+	logger.Log("INFO", fmt.Sprintf("Found %d fabrication opportunities", len(opportunities)), nil)
 
 	pipelinesCreated := 0
+	fabricationCount := currentFabricationCount
 
-	// Create pipelines for top opportunities
 	for _, opp := range opportunities {
-		if activePipelineCount >= params.MaxPipelines {
+		if fabricationCount >= params.MaxPipelines {
 			break
 		}
 
@@ -210,7 +255,7 @@ func (m *PipelineLifecycleManager) ScanAndCreatePipelines(ctx context.Context, p
 			continue
 		}
 
-		// Create pipeline
+		// Create FABRICATION pipeline
 		pipeline, tasks, factoryStates, err := m.pipelinePlanner.CreatePipeline(
 			ctx, opp, params.SystemSymbol, params.PlayerID,
 		)
@@ -219,13 +264,12 @@ func (m *PipelineLifecycleManager) ScanAndCreatePipelines(ctx context.Context, p
 			continue
 		}
 
-		// Start the pipeline
 		if err := pipeline.Start(); err != nil {
 			logger.Log("ERROR", fmt.Sprintf("Failed to start pipeline for %s: %v", opp.Good(), err), nil)
 			continue
 		}
 
-		// Persist pipeline and tasks
+		// Persist
 		if m.pipelineRepo != nil {
 			if err := m.pipelineRepo.Create(ctx, pipeline); err != nil {
 				logger.Log("ERROR", fmt.Sprintf("Failed to persist pipeline: %v", err), nil)
@@ -246,31 +290,22 @@ func (m *PipelineLifecycleManager) ScanAndCreatePipelines(ctx context.Context, p
 			}
 		}
 
-		// Add to active pipelines
 		m.mu.Lock()
 		m.activePipelines[pipeline.ID()] = pipeline
 		m.mu.Unlock()
 
-		// Enqueue ready tasks (tasks with no dependencies)
-		// For manufacturing pipelines: COLLECT_SELL tasks are gated by SupplyMonitor
-		// For direct arbitrage: COLLECT_SELL is the only task and should be enqueued immediately
+		// Enqueue ready tasks
 		isDirectArbitrage := len(factoryStates) == 0
 		for _, task := range tasks {
 			if task.TaskType() == manufacturing.TaskTypeCollectSell {
 				if isDirectArbitrage {
-					// Direct arbitrage: enqueue COLLECT_SELL immediately
 					if err := task.MarkReady(); err == nil {
 						m.taskQueue.Enqueue(task)
 						if m.taskRepo != nil {
 							_ = m.taskRepo.Update(ctx, task)
 						}
-						logger.Log("DEBUG", "Enqueued direct arbitrage COLLECT_SELL task", map[string]interface{}{
-							"task_id": task.ID()[:8],
-							"good":    task.Good(),
-						})
 					}
 				}
-				// Manufacturing: COLLECT_SELL is gated by SupplyMonitor
 				continue
 			}
 
@@ -284,11 +319,12 @@ func (m *PipelineLifecycleManager) ScanAndCreatePipelines(ctx context.Context, p
 			}
 		}
 
-		activePipelineCount++
+		fabricationCount++
 		pipelinesCreated++
 
-		logger.Log("INFO", fmt.Sprintf("Created pipeline for %s with %d tasks", opp.Good(), len(tasks)), map[string]interface{}{
+		logger.Log("INFO", fmt.Sprintf("Created FABRICATION pipeline for %s", opp.Good()), map[string]interface{}{
 			"pipeline_id":   pipeline.ID(),
+			"pipeline_type": "FABRICATION",
 			"good":          opp.Good(),
 			"sell_market":   opp.SellMarket().Symbol,
 			"task_count":    len(tasks),
@@ -299,6 +335,106 @@ func (m *PipelineLifecycleManager) ScanAndCreatePipelines(ctx context.Context, p
 	return pipelinesCreated, nil
 }
 
+// scanForCollectionOpportunities scans for collection opportunities and creates pipelines.
+// These are COLLECTION pipelines that are unlimited.
+func (m *PipelineLifecycleManager) scanForCollectionOpportunities(ctx context.Context, params PipelineScanParams) int {
+	logger := common.LoggerFromContext(ctx)
+
+	config := services.DefaultCollectionFinderConfig()
+
+	opportunities, err := m.collectionOpportunityFinder.FindOpportunities(
+		ctx,
+		params.SystemSymbol,
+		params.PlayerID,
+		config,
+	)
+	if err != nil {
+		logger.Log("WARN", "Failed to scan for collection opportunities", map[string]interface{}{
+			"error": err.Error(),
+		})
+		return 0
+	}
+
+	if len(opportunities) == 0 {
+		return 0
+	}
+
+	logger.Log("INFO", fmt.Sprintf("Found %d collection opportunities", len(opportunities)), nil)
+
+	pipelinesCreated := 0
+
+	for _, opp := range opportunities {
+		// Create COLLECTION pipeline
+		pipeline := manufacturing.NewCollectionPipeline(
+			opp.Good,
+			opp.SellMarket,
+			opp.SellPrice,
+			params.PlayerID,
+		)
+
+		// Create single COLLECT_SELL task
+		task := manufacturing.NewCollectSellTask(
+			pipeline.ID(),
+			params.PlayerID,
+			opp.Good,
+			opp.FactorySymbol, // Where to collect from
+			opp.SellMarket,    // Where to sell to
+			nil,               // No dependencies
+		)
+
+		// Mark immediately ready (collection opportunities are already validated)
+		if err := task.MarkReady(); err != nil {
+			logger.Log("WARN", fmt.Sprintf("Failed to mark collection task ready: %v", err), nil)
+			continue
+		}
+
+		// Add task to pipeline BEFORE starting (AddTask only works during PLANNING)
+		if err := pipeline.AddTask(task); err != nil {
+			logger.Log("WARN", fmt.Sprintf("Failed to add task to pipeline: %v", err), nil)
+			continue
+		}
+
+		// Start pipeline (transitions from PLANNING to EXECUTING)
+		if err := pipeline.Start(); err != nil {
+			logger.Log("WARN", fmt.Sprintf("Failed to start collection pipeline for %s: %v", opp.Good, err), nil)
+			continue
+		}
+
+		// Persist
+		if m.pipelineRepo != nil {
+			if err := m.pipelineRepo.Create(ctx, pipeline); err != nil {
+				logger.Log("ERROR", fmt.Sprintf("Failed to persist collection pipeline: %v", err), nil)
+				continue
+			}
+
+			if err := m.taskRepo.Create(ctx, task); err != nil {
+				logger.Log("ERROR", fmt.Sprintf("Failed to persist collection task: %v", err), nil)
+				continue
+			}
+		}
+
+		// Add to active pipelines and queue
+		m.mu.Lock()
+		m.activePipelines[pipeline.ID()] = pipeline
+		m.mu.Unlock()
+
+		m.taskQueue.Enqueue(task)
+
+		pipelinesCreated++
+
+		logger.Log("INFO", fmt.Sprintf("Created COLLECTION pipeline for %s", opp.Good), map[string]interface{}{
+			"pipeline_id":     pipeline.ID(),
+			"pipeline_type":   "COLLECTION",
+			"good":            opp.Good,
+			"factory":         opp.FactorySymbol,
+			"sell_market":     opp.SellMarket,
+			"expected_profit": opp.ExpectedProfit,
+		})
+	}
+
+	return pipelinesCreated
+}
+
 // CheckPipelineCompletion checks if a pipeline is complete and updates status
 func (m *PipelineLifecycleManager) CheckPipelineCompletion(ctx context.Context, pipelineID string) (bool, error) {
 	logger := common.LoggerFromContext(ctx)
@@ -306,8 +442,23 @@ func (m *PipelineLifecycleManager) CheckPipelineCompletion(ctx context.Context, 
 	m.mu.Lock()
 	pipeline, exists := m.activePipelines[pipelineID]
 	if !exists {
-		m.mu.Unlock()
-		return false, nil
+		// Pipeline not in memory - try to load from database
+		// This handles cases where pipeline was created but daemon restarted
+		// or pipeline wasn't properly loaded during state recovery
+		if m.pipelineRepo != nil {
+			dbPipeline, err := m.pipelineRepo.FindByID(ctx, pipelineID)
+			if err == nil && dbPipeline != nil && dbPipeline.Status() == manufacturing.PipelineStatusExecuting {
+				pipeline = dbPipeline
+				m.activePipelines[pipelineID] = pipeline
+				logger.Log("DEBUG", fmt.Sprintf("Loaded pipeline %s from database for completion check", pipelineID[:8]), nil)
+			} else {
+				m.mu.Unlock()
+				return false, nil
+			}
+		} else {
+			m.mu.Unlock()
+			return false, nil
+		}
 	}
 
 	if m.taskRepo == nil {
@@ -324,13 +475,25 @@ func (m *PipelineLifecycleManager) CheckPipelineCompletion(ctx context.Context, 
 	// Count completed COLLECT_SELL tasks for the final product
 	// Each pipeline = one trade cycle. Complete when ANY COLLECT_SELL finishes.
 	finalCollections := 0
+	collectSellCount := 0
 	for _, task := range tasks {
-		if task.TaskType() == manufacturing.TaskTypeCollectSell &&
-			task.Good() == pipeline.ProductGood() &&
-			task.Status() == manufacturing.TaskStatusCompleted {
-			finalCollections++
+		if task.TaskType() == manufacturing.TaskTypeCollectSell {
+			collectSellCount++
+			goodMatch := task.Good() == pipeline.ProductGood()
+			isCompleted := task.Status() == manufacturing.TaskStatusCompleted
+			if goodMatch && isCompleted {
+				finalCollections++
+			} else {
+				// Log why this COLLECT_SELL task didn't count
+				logger.Log("DEBUG", fmt.Sprintf("COLLECT_SELL task %s not counted: good_match=%v (task=%s, pipeline=%s), completed=%v (status=%s)",
+					task.ID()[:8], goodMatch, task.Good(), pipeline.ProductGood(), isCompleted, task.Status()), nil)
+			}
 		}
 	}
+
+	// Debug logging for recovery diagnostics
+	logger.Log("DEBUG", fmt.Sprintf("Pipeline %s completion check: %d tasks, %d collect_sell, %d completed (good=%s)",
+		pipelineID[:8], len(tasks), collectSellCount, finalCollections, pipeline.ProductGood()), nil)
 
 	// Determine completion conditions
 	anyFailed := false
@@ -352,7 +515,9 @@ func (m *PipelineLifecycleManager) CheckPipelineCompletion(ctx context.Context, 
 
 		if err := pipeline.Complete(); err == nil {
 			if m.pipelineRepo != nil {
-				_ = m.pipelineRepo.Update(ctx, pipeline)
+				if updateErr := m.pipelineRepo.Update(ctx, pipeline); updateErr != nil {
+					logger.Log("ERROR", fmt.Sprintf("Failed to persist pipeline completion: %v", updateErr), nil)
+				}
 			}
 			delete(m.activePipelines, pipelineID)
 			pipelineCompleted = true
@@ -370,6 +535,9 @@ func (m *PipelineLifecycleManager) CheckPipelineCompletion(ctx context.Context, 
 				"final_collections": finalCollections,
 				"net_profit":        netProfit,
 			})
+		} else {
+			logger.Log("ERROR", fmt.Sprintf("Failed to mark pipeline %s as complete: %v (status=%s)",
+				pipelineID[:8], err, pipeline.Status()), nil)
 		}
 	} else if anyFailed {
 		if err := pipeline.Fail("One or more tasks failed"); err == nil {
@@ -507,6 +675,14 @@ func (m *PipelineLifecycleManager) RescueReadyCollectSellTasks(ctx context.Conte
 	for _, task := range readyTasks {
 		switch task.TaskType() {
 		case manufacturing.TaskTypeCollectSell:
+			// STATE SYNC: Skip if factory supply is not ready (need HIGH/ABUNDANT)
+			if !m.isFactoryOutputReady(ctx, task.FactorySymbol(), task.Good(), playerID) {
+				// Reset to PENDING - SupplyMonitor will mark READY when factory is ready
+				task.ResetToPending()
+				_ = m.taskRepo.Update(ctx, task)
+				skippedSaturated++
+				continue
+			}
 			// STATE SYNC: Skip if sell market is saturated
 			if m.isSellMarketSaturated(ctx, task.TargetMarket(), task.Good(), playerID) {
 				// Reset to PENDING so it can be re-evaluated later
@@ -543,16 +719,53 @@ func (m *PipelineLifecycleManager) RescueReadyCollectSellTasks(ctx context.Conte
 	}
 }
 
+// CheckAllPipelinesForCompletion checks all active pipelines and marks completed ones.
+// This should be called after state recovery to handle pipelines whose tasks completed
+// before a restart but weren't marked as COMPLETED.
+func (m *PipelineLifecycleManager) CheckAllPipelinesForCompletion(ctx context.Context) int {
+	logger := common.LoggerFromContext(ctx)
+
+	m.mu.RLock()
+	pipelineIDs := make([]string, 0, len(m.activePipelines))
+	for id := range m.activePipelines {
+		pipelineIDs = append(pipelineIDs, id)
+	}
+	m.mu.RUnlock()
+
+	completed := 0
+	for _, pipelineID := range pipelineIDs {
+		wasCompleted, err := m.CheckPipelineCompletion(ctx, pipelineID)
+		if err != nil {
+			logger.Log("WARN", fmt.Sprintf("Failed to check pipeline %s completion: %v", pipelineID[:8], err), nil)
+			continue
+		}
+		if wasCompleted {
+			completed++
+		}
+	}
+
+	if completed > 0 {
+		logger.Log("INFO", fmt.Sprintf("Completed %d pipelines during state recovery check", completed), nil)
+	}
+
+	return completed
+}
+
 // RecyclePipeline cancels a stuck pipeline and frees its slot
 func (m *PipelineLifecycleManager) RecyclePipeline(ctx context.Context, pipelineID string, playerID int) error {
 	logger := common.LoggerFromContext(ctx)
 
-	// Cancel pending tasks
+	// Cancel all incomplete tasks (PENDING, READY, ASSIGNED)
 	tasks, err := m.taskRepo.FindByPipelineID(ctx, pipelineID)
 	if err == nil {
 		for _, task := range tasks {
 			if task.Status() == manufacturing.TaskStatusPending ||
-				task.Status() == manufacturing.TaskStatusReady {
+				task.Status() == manufacturing.TaskStatusReady ||
+				task.Status() == manufacturing.TaskStatusAssigned {
+				// Release ship assignment if task was assigned
+				if task.AssignedShip() != "" && m.shipAssignmentRepo != nil {
+					_ = m.shipAssignmentRepo.Release(ctx, task.AssignedShip(), playerID, "pipeline_recycled")
+				}
 				if err := task.Cancel("pipeline recycled"); err == nil {
 					_ = m.taskRepo.Update(ctx, task)
 				}
@@ -632,6 +845,28 @@ func (m *PipelineLifecycleManager) isFactoryInputSaturated(ctx context.Context, 
 	}
 
 	// For factory inputs (IMPORT goods), HIGH/ABUNDANT means we don't need more deliveries
+	supply := *tradeGood.Supply()
+	return supply == "HIGH" || supply == "ABUNDANT"
+}
+
+// isFactoryOutputReady checks if factory has HIGH/ABUNDANT supply of output good
+// Returns true if ready for collection, false otherwise
+func (m *PipelineLifecycleManager) isFactoryOutputReady(ctx context.Context, factorySymbol string, outputGood string, playerID int) bool {
+	if m.marketRepo == nil {
+		return true // Can't check, assume ready (optimistic)
+	}
+
+	marketData, err := m.marketRepo.GetMarketData(ctx, factorySymbol, playerID)
+	if err != nil || marketData == nil {
+		return true // Can't check, assume ready
+	}
+
+	tradeGood := marketData.FindGood(outputGood)
+	if tradeGood == nil || tradeGood.Supply() == nil {
+		return true // Can't check supply level
+	}
+
+	// For factory outputs (EXPORT goods), need HIGH/ABUNDANT for collection
 	supply := *tradeGood.Supply()
 	return supply == "HIGH" || supply == "ABUNDANT"
 }
