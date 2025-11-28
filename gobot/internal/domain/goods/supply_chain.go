@@ -227,9 +227,10 @@ var MineableRawMaterials = map[string]bool{
 	"PRECIOUS_STONES":  true,
 
 	// Ice/Gases (extracted from gas giants/ice belts)
+	// Note: LIQUID_HYDROGEN and LIQUID_NITROGEN are NOT included here
+	// because they require MACHINERY to produce and should be supply-gated
+	// to avoid purchasing at high prices when supply is low.
 	"AMMONIA_ICE":      true,
-	"LIQUID_HYDROGEN":  true,
-	"LIQUID_NITROGEN":  true,
 	"HYDROCARBON":      true,
 	"ICE_WATER":        true,
 

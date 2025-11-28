@@ -87,6 +87,20 @@ const (
 	MinAcquireDeliverWorkers = 3
 )
 
+// Supply-based priority boosts for ACQUIRE_DELIVER tasks
+// Higher supply = better prices = higher priority
+// This ensures we buy from cheapest markets first
+const (
+	// SupplyPriorityAbundant - Highest priority, best prices
+	SupplyPriorityAbundant = 30
+
+	// SupplyPriorityHigh - Good prices
+	SupplyPriorityHigh = 20
+
+	// SupplyPriorityModerate - Acceptable prices, lowest priority among allowed
+	SupplyPriorityModerate = 0
+)
+
 const (
 	// DefaultMaxRetries is the default number of retry attempts for failed tasks
 	DefaultMaxRetries = 3
@@ -486,6 +500,26 @@ func (t *ManufacturingTask) SetTotalCost(cost int)       { t.totalCost = cost }
 func (t *ManufacturingTask) SetTotalRevenue(revenue int) { t.totalRevenue = revenue }
 func (t *ManufacturingTask) SetPriority(priority int)    { t.priority = priority }
 func (t *ManufacturingTask) SetQuantity(qty int)         { t.quantity = qty }
+
+// UpdateSourceMarket changes the source market for ACQUIRE_DELIVER tasks.
+// This is used by SupplyMonitor to re-source PENDING tasks when the original
+// source market's supply degrades and a better alternative is available.
+// Only allowed for PENDING tasks to prevent disrupting in-flight work.
+func (t *ManufacturingTask) UpdateSourceMarket(newSource string) error {
+	if t.status != TaskStatusPending {
+		return &ErrInvalidTaskTransition{
+			TaskID:      t.id,
+			From:        t.status,
+			To:          t.status,
+			Description: "can only update source market for PENDING tasks",
+		}
+	}
+	if t.taskType != TaskTypeAcquireDeliver {
+		return fmt.Errorf("can only update source market for ACQUIRE_DELIVER tasks, got %s", t.taskType)
+	}
+	t.sourceMarket = newSource
+	return nil
+}
 
 // AddDependency adds a task ID to this task's dependencies
 func (t *ManufacturingTask) AddDependency(taskID string) {
