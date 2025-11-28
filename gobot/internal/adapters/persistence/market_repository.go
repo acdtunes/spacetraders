@@ -230,6 +230,55 @@ func (r *MarketRepositoryGORM) FindCheapestMarketSelling(
 	}, nil
 }
 
+// FindCheapestMarketSellingWithSupply finds the cheapest market with a specific supply level.
+// This enables supply-priority selection for raw materials: ABUNDANT > HIGH > MODERATE.
+// Returns nil if no market exists with the specified supply level.
+func (r *MarketRepositoryGORM) FindCheapestMarketSellingWithSupply(
+	ctx context.Context,
+	goodSymbol string,
+	systemSymbol string,
+	playerID int,
+	supplyLevel string,
+) (*market.CheapestMarketResult, error) {
+	var result struct {
+		WaypointSymbol string
+		TradeSymbol    string
+		SellPrice      int
+		Supply         *string
+	}
+
+	err := r.db.WithContext(ctx).
+		Table("market_data").
+		Select("waypoint_symbol, good_symbol as trade_symbol, sell_price, supply").
+		Where("player_id = ?", playerID).
+		Where("waypoint_symbol LIKE ?", systemSymbol+"-%").
+		Where("good_symbol = ?", goodSymbol).
+		Where("supply = ?", supplyLevel).
+		Order("sell_price ASC").
+		Limit(1).
+		Scan(&result).Error
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to find cheapest market with supply %s: %w", supplyLevel, err)
+	}
+
+	if result.WaypointSymbol == "" {
+		return nil, nil // No market with this supply level
+	}
+
+	supply := ""
+	if result.Supply != nil {
+		supply = *result.Supply
+	}
+
+	return &market.CheapestMarketResult{
+		WaypointSymbol: result.WaypointSymbol,
+		TradeSymbol:    result.TradeSymbol,
+		SellPrice:      result.SellPrice,
+		Supply:         supply,
+	}, nil
+}
+
 // FindBestMarketBuying finds the market with the highest purchase price for a specific good in a system
 // This returns the best market to sell to (where we get paid the most)
 func (r *MarketRepositoryGORM) FindBestMarketBuying(

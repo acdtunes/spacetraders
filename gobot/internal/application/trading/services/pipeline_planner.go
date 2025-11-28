@@ -272,26 +272,28 @@ func (p *PipelinePlanner) createDirectArbitrageTask(
 
 // createAcquireDeliverTask creates an atomic ACQUIRE_DELIVER task
 // that buys from source market AND delivers to factory in one operation.
+// Uses supply-priority selection to avoid overpaying at SCARCE/LIMITED markets.
 func (p *PipelinePlanner) createAcquireDeliverTask(
 	planCtx *PlanningContext,
 	node *goods.SupplyChainNode,
 	factorySymbol string,
 ) (string, error) {
-	// Find market to buy from
+	// Find market to buy from using supply-priority selection
+	// Priority: ABUNDANT > HIGH > MODERATE (skips SCARCE/LIMITED to avoid overpaying)
 	var sourceMarket string
 	if node.WaypointSymbol != "" {
 		// Use the market already identified by supply chain resolver
 		sourceMarket = node.WaypointSymbol
 	} else {
-		// Find export market
-		market, err := p.marketLocator.FindExportMarket(
+		// Find export market with acceptable supply level
+		market, err := p.marketLocator.FindExportMarketBySupplyPriority(
 			planCtx.ctx,
 			node.Good,
 			planCtx.systemSymbol,
 			planCtx.playerID,
 		)
 		if err != nil {
-			return "", fmt.Errorf("failed to find market for %s: %w", node.Good, err)
+			return "", fmt.Errorf("no market with MODERATE+ supply for %s: %w", node.Good, err)
 		}
 		sourceMarket = market.WaypointSymbol
 	}

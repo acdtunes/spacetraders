@@ -223,6 +223,73 @@ func (l *MarketLocator) FindExportMarket(
 	return result, nil
 }
 
+// FindExportMarketBySupplyPriority finds the cheapest market with acceptable supply level.
+// Priority: ABUNDANT (best) > HIGH > MODERATE (minimum acceptable).
+// SCARCE and LIMITED supply levels are skipped to avoid overpaying.
+//
+// This is used for raw material acquisition in manufacturing pipelines.
+// Example: LIQUID_NITROGEN at ABUNDANT G52 costs 18-28 credits, but SCARCE C44 costs 650+.
+//
+// Returns error if no market with MODERATE or better supply exists.
+func (l *MarketLocator) FindExportMarketBySupplyPriority(
+	ctx context.Context,
+	good string,
+	systemSymbol string,
+	playerID int,
+) (*MarketLocatorResult, error) {
+	// Ship types are handled by shipyards (no supply levels)
+	if isShipType(good) {
+		return l.findShipyardSellingShip(ctx, good, systemSymbol, playerID)
+	}
+
+	// Priority order: ABUNDANT, HIGH, MODERATE (skip SCARCE, LIMITED)
+	acceptableSupply := []string{"ABUNDANT", "HIGH", "MODERATE"}
+
+	for _, supply := range acceptableSupply {
+		cheapestMarket, err := l.marketRepo.FindCheapestMarketSellingWithSupply(
+			ctx, good, systemSymbol, playerID, supply,
+		)
+		if err != nil {
+			// Database error - skip this supply level
+			continue
+		}
+		if cheapestMarket != nil {
+			// Found a market with this supply level
+			// Get full market data for trade volume
+			marketData, err := l.marketRepo.GetMarketData(ctx, cheapestMarket.WaypointSymbol, playerID)
+			if err != nil {
+				// Can't get full data, return basic result
+				return &MarketLocatorResult{
+					WaypointSymbol: cheapestMarket.WaypointSymbol,
+					Supply:         cheapestMarket.Supply,
+					Price:          cheapestMarket.SellPrice,
+				}, nil
+			}
+
+			tradeGood := marketData.FindGood(good)
+			tradeVolume := 0
+			activity := ""
+			if tradeGood != nil {
+				tradeVolume = tradeGood.TradeVolume()
+				if tradeGood.Activity() != nil {
+					activity = *tradeGood.Activity()
+				}
+			}
+
+			return &MarketLocatorResult{
+				WaypointSymbol: cheapestMarket.WaypointSymbol,
+				Activity:       activity,
+				Supply:         cheapestMarket.Supply,
+				Price:          cheapestMarket.SellPrice,
+				TradeVolume:    tradeVolume,
+			}, nil
+		}
+	}
+
+	// No market with acceptable supply
+	return nil, fmt.Errorf("no market with MODERATE+ supply for %s (SCARCE/LIMITED markets skipped)", good)
+}
+
 // FindExportMarketWithGoodSupply finds a market that exports a good with HIGH or ABUNDANT supply.
 // This is used for supply-gated acquisitions to ensure we only buy when prices are favorable.
 // Returns nil if no market with good supply is available.

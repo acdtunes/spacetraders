@@ -55,6 +55,9 @@ type TaskRepository interface {
 	// FindByPipelineID retrieves all tasks for a pipeline
 	FindByPipelineID(ctx context.Context, pipelineID string) ([]*ManufacturingTask, error)
 
+	// FindByPipelineAndStatus retrieves tasks for a pipeline filtered by status
+	FindByPipelineAndStatus(ctx context.Context, pipelineID string, status TaskStatus) ([]*ManufacturingTask, error)
+
 	// FindByStatus retrieves tasks by status for a player
 	FindByStatus(ctx context.Context, playerID int, status TaskStatus) ([]*ManufacturingTask, error)
 

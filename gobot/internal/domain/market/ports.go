@@ -9,6 +9,10 @@ import (
 type MarketRepository interface {
 	GetMarketData(ctx context.Context, waypointSymbol string, playerID int) (*Market, error)
 	FindCheapestMarketSelling(ctx context.Context, goodSymbol, systemSymbol string, playerID int) (*CheapestMarketResult, error)
+	// FindCheapestMarketSellingWithSupply finds the cheapest market with a specific supply level.
+	// This enables supply-priority selection for raw materials: ABUNDANT > HIGH > MODERATE.
+	// Returns nil if no market exists with the specified supply level.
+	FindCheapestMarketSellingWithSupply(ctx context.Context, goodSymbol, systemSymbol string, playerID int, supplyLevel string) (*CheapestMarketResult, error)
 	FindBestMarketBuying(ctx context.Context, goodSymbol, systemSymbol string, playerID int) (*BestMarketBuyingResult, error)
 	FindBestMarketForBuying(ctx context.Context, goodSymbol, systemSymbol string, playerID int) (*BestBuyingMarketResult, error)
 	FindAllMarketsInSystem(ctx context.Context, systemSymbol string, playerID int) ([]string, error)

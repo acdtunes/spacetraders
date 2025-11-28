@@ -30,6 +30,11 @@ func (a *MarketRepositoryAdapter) FindCheapestMarketSelling(ctx context.Context,
 	return a.marketRepo.FindCheapestMarketSelling(ctx, goodSymbol, systemSymbol, playerID)
 }
 
+// FindCheapestMarketSellingWithSupply passes through to the underlying repository
+func (a *MarketRepositoryAdapter) FindCheapestMarketSellingWithSupply(ctx context.Context, goodSymbol, systemSymbol string, playerID int, supplyLevel string) (*market.CheapestMarketResult, error) {
+	return a.marketRepo.FindCheapestMarketSellingWithSupply(ctx, goodSymbol, systemSymbol, playerID, supplyLevel)
+}
+
 // FindBestMarketBuying passes through to the underlying repository
 func (a *MarketRepositoryAdapter) FindBestMarketBuying(ctx context.Context, goodSymbol, systemSymbol string, playerID int) (*market.BestMarketBuyingResult, error) {
 	return a.marketRepo.FindBestMarketBuying(ctx, goodSymbol, systemSymbol, playerID)

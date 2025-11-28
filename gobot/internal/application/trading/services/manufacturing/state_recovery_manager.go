@@ -286,6 +286,13 @@ func (m *StateRecoveryManager) RecoverState(ctx context.Context, playerID int) (
 		}
 
 		logger.Log("INFO", fmt.Sprintf("Recovered %d factory states", len(pendingStates)+len(readyStates)), nil)
+
+		// Step 3a: Reconcile factory states with completed ACQUIRE_DELIVER tasks
+		// This fixes the bug where daemon restarts lose track of delivered inputs
+		reconciledCount := m.reconcileFactoryStatesWithCompletedTasks(ctx, playerID, result.ActivePipelines)
+		if reconciledCount > 0 {
+			logger.Log("INFO", fmt.Sprintf("Reconciled %d factory state deliveries from completed tasks", reconciledCount), nil)
+		}
 	}
 
 	logger.Log("INFO", "State recovery complete", map[string]interface{}{
@@ -294,5 +301,99 @@ func (m *StateRecoveryManager) RecoverState(ctx context.Context, playerID int) (
 	})
 
 	return result, nil
+}
+
+// reconcileFactoryStatesWithCompletedTasks fixes factory states by checking completed ACQUIRE_DELIVER tasks.
+// This prevents the bug where daemon restarts cause factories to forget about deliveries.
+//
+// The bug: When a daemon restarts, factory states are loaded from DB but the delivered_inputs
+// may not reflect completed tasks. This happens because:
+// 1. Task completes and factory_state.delivered_inputs is updated in memory
+// 2. Daemon restarts before DB persist (or DB persist fails)
+// 3. Factory state is loaded with stale delivered_inputs
+// 4. Pipeline is stuck because factory thinks inputs weren't delivered
+//
+// The fix: After loading factory states, check all COMPLETED ACQUIRE_DELIVER tasks and
+// reconcile the delivered_inputs field based on task completion.
+func (m *StateRecoveryManager) reconcileFactoryStatesWithCompletedTasks(
+	ctx context.Context,
+	playerID int,
+	activePipelines map[string]*manufacturing.ManufacturingPipeline,
+) int {
+	logger := common.LoggerFromContext(ctx)
+	reconciledCount := 0
+
+	// Get all factory states
+	allStates := m.factoryTracker.GetAllFactories()
+	if len(allStates) == 0 {
+		return 0
+	}
+
+	// For each factory state, find completed ACQUIRE_DELIVER tasks that delivered to it
+	for _, factoryState := range allStates {
+		// Skip if not in an active pipeline
+		if _, ok := activePipelines[factoryState.PipelineID()]; !ok {
+			continue
+		}
+
+		// Get completed ACQUIRE_DELIVER tasks for this pipeline
+		completedTasks, err := m.taskRepo.FindByPipelineAndStatus(
+			ctx,
+			factoryState.PipelineID(),
+			manufacturing.TaskStatusCompleted,
+		)
+		if err != nil {
+			logger.Log("WARN", fmt.Sprintf("Failed to load completed tasks for pipeline %s: %v",
+				factoryState.PipelineID()[:8], err), nil)
+			continue
+		}
+
+		// Check each completed task to see if it delivered to this factory
+		for _, task := range completedTasks {
+			// Only ACQUIRE_DELIVER tasks deliver inputs to factories
+			if task.TaskType() != manufacturing.TaskTypeAcquireDeliver {
+				continue
+			}
+
+			// Check if this task delivered to this factory
+			if task.TargetMarket() != factoryState.FactorySymbol() {
+				continue
+			}
+
+			// Check if this task's good is a required input for this factory
+			inputGood := task.Good()
+			deliveredInputs := factoryState.DeliveredInputs()
+			inputState, isRequired := deliveredInputs[inputGood]
+			if !isRequired {
+				continue
+			}
+
+			// If already marked as delivered, skip
+			if inputState.Delivered {
+				continue
+			}
+
+			// RECONCILE: Mark this input as delivered based on the completed task
+			logger.Log("INFO", fmt.Sprintf("Reconciling: marking %s as delivered to factory %s (from completed task %s)",
+				inputGood, factoryState.FactorySymbol(), task.ID()[:8]), nil)
+
+			if err := factoryState.RecordDelivery(inputGood, task.ActualQuantity(), task.AssignedShip()); err != nil {
+				logger.Log("WARN", fmt.Sprintf("Failed to reconcile delivery %s to factory %s: %v",
+					inputGood, factoryState.FactorySymbol(), err), nil)
+				continue
+			}
+
+			// Persist the updated factory state
+			if m.factoryStateRepo != nil {
+				if err := m.factoryStateRepo.Update(ctx, factoryState); err != nil {
+					logger.Log("WARN", fmt.Sprintf("Failed to persist reconciled factory state: %v", err), nil)
+				}
+			}
+
+			reconciledCount++
+		}
+	}
+
+	return reconciledCount
 }
 

@@ -128,6 +128,35 @@ func (r *GormManufacturingTaskRepository) FindByPipelineID(ctx context.Context, 
 	return tasks, nil
 }
 
+// FindByPipelineAndStatus retrieves tasks for a pipeline filtered by status
+func (r *GormManufacturingTaskRepository) FindByPipelineAndStatus(ctx context.Context, pipelineID string, status manufacturing.TaskStatus) ([]*manufacturing.ManufacturingTask, error) {
+	var models []ManufacturingTaskModel
+	result := r.db.WithContext(ctx).
+		Where("pipeline_id = ? AND status = ?", pipelineID, string(status)).
+		Order("priority DESC, created_at ASC").
+		Find(&models)
+
+	if result.Error != nil {
+		return nil, fmt.Errorf("failed to find tasks for pipeline: %w", result.Error)
+	}
+
+	tasks := make([]*manufacturing.ManufacturingTask, len(models))
+	for i, model := range models {
+		deps, err := r.FindDependencies(ctx, model.ID)
+		if err != nil {
+			return nil, err
+		}
+
+		t, err := r.modelToTask(&model, deps)
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert task model: %w", err)
+		}
+		tasks[i] = t
+	}
+
+	return tasks, nil
+}
+
 // FindByStatus retrieves tasks by status for a player
 func (r *GormManufacturingTaskRepository) FindByStatus(ctx context.Context, playerID int, status manufacturing.TaskStatus) ([]*manufacturing.ManufacturingTask, error) {
 	var models []ManufacturingTaskModel

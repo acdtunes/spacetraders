@@ -764,7 +764,10 @@ func (m *SupplyMonitor) createAcquireDeliverTasksForFactory(ctx context.Context,
 		}
 
 		// Find export market to buy this input from
-		exportMarket, err := m.marketLocator.FindExportMarket(ctx, input.good, systemSymbol, factory.PlayerID())
+		// Use supply-priority method: ABUNDANT → HIGH → MODERATE (skip SCARCE/LIMITED)
+		// This prevents buying from expensive SCARCE markets (e.g., C44 at 650 credits)
+		// when ABUNDANT markets are available (e.g., G52 at 18 credits)
+		exportMarket, err := m.marketLocator.FindExportMarketBySupplyPriority(ctx, input.good, systemSymbol, factory.PlayerID())
 		if err != nil {
 			logger.Log("WARN", fmt.Sprintf("No export market for %s: %v", input.good, err), map[string]interface{}{
 				"factory": factory.FactorySymbol(),
@@ -779,6 +782,19 @@ func (m *SupplyMonitor) createAcquireDeliverTasksForFactory(ctx context.Context,
 		isGoodSupply := sourceSupply == "HIGH" || sourceSupply == "ABUNDANT"
 		isRawMaterial := goods.IsMineableRawMaterial(input.good)
 
+		// FIX FOR SUPPLY-GATING DEADLOCK:
+		// For FABRICATION pipelines, if source market is a factory (EXPORT type),
+		// activate immediately. The factory will produce more as we deliver inputs.
+		isFabricationBypass := false
+		if !isRawMaterial && !isGoodSupply && m.pipelineRepo != nil {
+			pipeline, _ := m.pipelineRepo.FindByID(ctx, factory.PipelineID())
+			if pipeline != nil && pipeline.PipelineType() == manufacturing.PipelineTypeFabrication {
+				// Source market exports this good = it's a factory producing it
+				// Activate to bootstrap the supply chain
+				isFabricationBypass = true
+			}
+		}
+
 		// Create ACQUIRE_DELIVER task: buy from export market, deliver to factory
 		task := manufacturing.NewAcquireDeliverTask(
 			factory.PipelineID(),
@@ -792,9 +808,10 @@ func (m *SupplyMonitor) createAcquireDeliverTasksForFactory(ctx context.Context,
 		// SUPPLY GATING DECISION:
 		// - Raw materials (ores, crystals, gases): Always mark ready (can't be fabricated)
 		// - Other goods with HIGH/ABUNDANT supply: Mark ready (good prices)
+		// - FABRICATION pipeline + factory source: Mark ready (bootstrap supply chain)
 		// - Other goods with SCARCE/LIMITED/MODERATE: Stay PENDING (wait for better prices)
 		shouldEnqueue := false
-		if isRawMaterial || isGoodSupply {
+		if isRawMaterial || isGoodSupply || isFabricationBypass {
 			// Mark immediately ready
 			if err := task.MarkReady(); err != nil {
 				logger.Log("WARN", "Failed to mark ACQUIRE_DELIVER task ready", map[string]interface{}{
@@ -804,12 +821,18 @@ func (m *SupplyMonitor) createAcquireDeliverTasksForFactory(ctx context.Context,
 			}
 			shouldEnqueue = true
 
+			readyReason := "good_supply"
+			if isRawMaterial {
+				readyReason = "raw_material"
+			} else if isFabricationBypass {
+				readyReason = "fabrication_bypass"
+			}
 			logger.Log("INFO", "Created ACQUIRE_DELIVER task (READY)", map[string]interface{}{
 				"factory":       factory.FactorySymbol(),
 				"input":         input.good,
 				"source":        exportMarket.WaypointSymbol,
 				"source_supply": sourceSupply,
-				"is_raw":        isRawMaterial,
+				"reason":        readyReason,
 				"task_id":       task.ID()[:8],
 			})
 		} else {
@@ -971,6 +994,35 @@ func (m *SupplyMonitor) ActivateSupplyGatedTasks(ctx context.Context) int {
 			if sourceSupply == "HIGH" || sourceSupply == "ABUNDANT" {
 				shouldActivate = true
 				reason = "good_supply"
+			} else {
+				// FIX FOR SUPPLY-GATING DEADLOCK:
+				// For FABRICATION pipelines, don't wait forever for intermediate goods.
+				// If source market is a factory, it needs inputs to produce more.
+				// Check if this pipeline is FABRICATION type - if so, activate after reasonable wait.
+				if m.pipelineRepo != nil {
+					pipeline, _ := m.pipelineRepo.FindByID(ctx, pipelineID)
+					if pipeline != nil && pipeline.PipelineType() == manufacturing.PipelineTypeFabrication {
+						// For fabrication pipelines, check if source is an EXCHANGE (factory)
+						// If the source is a factory, activate anyway - we'll drive supply up
+						sourceMarketData, _ := m.marketRepo.GetMarketData(ctx, task.SourceMarket(), m.playerID)
+						if sourceMarketData != nil {
+							tradeGood := sourceMarketData.FindGood(task.Good())
+							// If the source market EXPORTS this good (i.e., produces it), activate
+							// This allows the supply chain to bootstrap - factory will produce as we deliver inputs
+							if tradeGood != nil && tradeGood.TradeType() == market.TradeTypeExport {
+								shouldActivate = true
+								reason = "fabrication_pipeline_factory_source"
+								logger.Log("DEBUG", "Bypassing supply-gate for fabrication pipeline", map[string]interface{}{
+									"task_id":       task.ID()[:8],
+									"good":          task.Good(),
+									"source":        task.SourceMarket(),
+									"source_supply": sourceSupply,
+									"reason":        "source market produces this good, supply will increase with deliveries",
+								})
+							}
+						}
+					}
+				}
 			}
 		}
 
