@@ -315,21 +315,25 @@ func (m *WorkerLifecycleManager) HandleTaskFailure(ctx context.Context, completi
 			return fmt.Errorf("failed to reset task for retry: %w", err)
 		}
 
-		if err := task.MarkReady(); err != nil {
-			return fmt.Errorf("failed to mark task ready: %w", err)
+		// COLLECT_SELL tasks should stay PENDING and let SupplyMonitor mark them READY
+		// when factory supply is HIGH/ABUNDANT. Only ACQUIRE_DELIVER can be immediately ready.
+		if task.TaskType() != manufacturing.TaskTypeCollectSell {
+			if err := task.MarkReady(); err != nil {
+				return fmt.Errorf("failed to mark task ready: %w", err)
+			}
+			m.taskQueue.Enqueue(task)
 		}
+		// COLLECT_SELL stays PENDING - SupplyMonitor will mark it READY when factory is ready
 
 		if err := m.taskRepo.Update(ctx, task); err != nil {
 			return fmt.Errorf("failed to persist task retry state: %w", err)
 		}
 
-		m.taskQueue.Enqueue(task)
-
 		// Record task retry metrics
 		metrics.RecordManufacturingTaskRetry(task.PlayerID(), string(task.TaskType()))
 
-		logger.Log("INFO", fmt.Sprintf("Task %s scheduled for retry (%d/%d)",
-			completion.TaskID[:8], retryCount, maxRetries), nil)
+		logger.Log("INFO", fmt.Sprintf("Task %s scheduled for retry (%d/%d, type=%s)",
+			completion.TaskID[:8], retryCount, maxRetries, task.TaskType()), nil)
 	} else {
 		logger.Log("ERROR", fmt.Sprintf("Task %s permanently failed after %d retries",
 			completion.TaskID[:8], task.RetryCount()), nil)

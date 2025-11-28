@@ -491,12 +491,56 @@ func (m *TaskAssignmentManager) IsSellMarketSaturated(ctx context.Context, sellM
 	return supply == "HIGH" || supply == "ABUNDANT"
 }
 
-// ReconcileAssignedTasksWithDB syncs in-memory state with DB
+// ReconcileAssignedTasksWithDB syncs in-memory state with DB.
+// This function ensures the in-memory tracking matches database state by:
+// 1. Loading ASSIGNED/EXECUTING tasks from DB into memory (handles coordinator restarts)
+// 2. Removing stale entries that no longer exist or have completed
 func (m *TaskAssignmentManager) ReconcileAssignedTasksWithDB(ctx context.Context, playerID int) {
 	if m.taskRepo == nil {
 		return
 	}
 
+	logger := common.LoggerFromContext(ctx)
+
+	// Step 1: Load ASSIGNED tasks from DB into memory (critical for restart recovery)
+	assignedTasks, err := m.taskRepo.FindByStatus(ctx, playerID, manufacturing.TaskStatusAssigned)
+	if err == nil {
+		m.mu.Lock()
+		added := 0
+		for _, task := range assignedTasks {
+			if task.AssignedShip() != "" {
+				if _, exists := m.assignedTasks[task.ID()]; !exists {
+					m.assignedTasks[task.ID()] = task.AssignedShip()
+					added++
+				}
+			}
+		}
+		m.mu.Unlock()
+		if added > 0 {
+			logger.Log("DEBUG", fmt.Sprintf("Reconciled: loaded %d ASSIGNED tasks from DB", added), nil)
+		}
+	}
+
+	// Step 2: Load EXECUTING tasks from DB into memory
+	executingTasks, err := m.taskRepo.FindByStatus(ctx, playerID, manufacturing.TaskStatusExecuting)
+	if err == nil {
+		m.mu.Lock()
+		added := 0
+		for _, task := range executingTasks {
+			if task.AssignedShip() != "" {
+				if _, exists := m.assignedTasks[task.ID()]; !exists {
+					m.assignedTasks[task.ID()] = task.AssignedShip()
+					added++
+				}
+			}
+		}
+		m.mu.Unlock()
+		if added > 0 {
+			logger.Log("DEBUG", fmt.Sprintf("Reconciled: loaded %d EXECUTING tasks from DB", added), nil)
+		}
+	}
+
+	// Step 3: Remove stale entries (tasks that completed or no longer exist)
 	taskIDs := make([]string, 0)
 	m.mu.RLock()
 	for taskID := range m.assignedTasks {
@@ -529,7 +573,6 @@ func (m *TaskAssignmentManager) ReconcileAssignedTasksWithDB(ctx context.Context
 		}
 		m.mu.Unlock()
 
-		logger := common.LoggerFromContext(ctx)
-		logger.Log("INFO", fmt.Sprintf("Reconciled: removed %d stale entries", len(staleTaskIDs)), nil)
+		logger.Log("DEBUG", fmt.Sprintf("Reconciled: removed %d stale entries", len(staleTaskIDs)), nil)
 	}
 }

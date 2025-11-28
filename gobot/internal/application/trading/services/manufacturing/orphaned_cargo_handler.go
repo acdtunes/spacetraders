@@ -5,10 +5,17 @@ import (
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	shipCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
+
+// MinLiquidateCargoValue is the minimum cargo value (in credits) required to create
+// a LIQUIDATE task. If the cargo value is below this threshold, the cargo will be
+// jettisoned instead to free up the ship for more valuable work.
+const MinLiquidateCargoValue = 10000
 
 // OrphanedCargoManager handles ships with cargo from interrupted operations
 type OrphanedCargoManager interface {
@@ -18,7 +25,7 @@ type OrphanedCargoManager interface {
 	// FindBestSellMarket finds best market to sell orphaned cargo
 	FindBestSellMarket(ctx context.Context, currentLocation, good string, playerID int) (string, error)
 
-	// CreateAdHocSellTask creates COLLECT_SELL task for orphaned cargo
+	// CreateAdHocSellTask creates LIQUIDATE task for orphaned cargo
 	CreateAdHocSellTask(ctx context.Context, ship *navigation.Ship, cargo CargoInfo, playerID int) (*manufacturing.ManufacturingTask, error)
 }
 
@@ -41,6 +48,7 @@ type OrphanedCargoHandler struct {
 	marketRepo    market.MarketRepository
 	workerManager WorkerManager
 	taskAssigner  TaskAssigner
+	mediator      common.Mediator
 
 	// Function to get active pipelines
 	getActivePipelines func() map[string]*manufacturing.ManufacturingPipeline
@@ -70,6 +78,11 @@ func (h *OrphanedCargoHandler) SetTaskAssigner(ta TaskAssigner) {
 // SetActivePipelinesGetter sets the function to get active pipelines
 func (h *OrphanedCargoHandler) SetActivePipelinesGetter(getter func() map[string]*manufacturing.ManufacturingPipeline) {
 	h.getActivePipelines = getter
+}
+
+// SetMediator sets the mediator for executing commands (like jettison)
+func (h *OrphanedCargoHandler) SetMediator(m common.Mediator) {
+	h.mediator = m
 }
 
 // HandleShipsWithExistingCargo handles ships that have cargo from interrupted operations
@@ -140,8 +153,11 @@ func (h *OrphanedCargoHandler) HandleShipsWithExistingCargo(
 			}
 		}
 
-		// Try to find matching PENDING COLLECT_SELL task
+		// Try to find matching task for the cargo this ship already has
+		// Priority: ACQUIRE_DELIVER > COLLECT_SELL (delivering to factory is more valuable)
 		var matchingTask *manufacturing.ManufacturingTask
+		var matchingCollectSell *manufacturing.ManufacturingTask
+
 		for _, pipelineID := range pipelineIDs {
 			tasks, err := h.taskRepo.FindByPipelineID(ctx, pipelineID)
 			if err != nil {
@@ -149,11 +165,32 @@ func (h *OrphanedCargoHandler) HandleShipsWithExistingCargo(
 			}
 
 			for _, task := range tasks {
-				if task.TaskType() == manufacturing.TaskTypeCollectSell &&
-					task.Status() == manufacturing.TaskStatusPending &&
-					task.Good() == primaryCargo {
+				// Only consider PENDING or READY tasks for the same good
+				if task.Good() != primaryCargo {
+					continue
+				}
+				if task.Status() != manufacturing.TaskStatusPending &&
+					task.Status() != manufacturing.TaskStatusReady {
+					continue
+				}
+
+				// ACQUIRE_DELIVER: Ship already has cargo, just needs to deliver to factory
+				// This is the best match - ship can skip the acquire step
+				if task.TaskType() == manufacturing.TaskTypeAcquireDeliver {
 					matchingTask = task
+					logger.Log("INFO", "Found ACQUIRE_DELIVER task matching ship cargo", map[string]interface{}{
+						"ship":    shipSymbol,
+						"task_id": task.ID()[:8],
+						"good":    primaryCargo,
+						"factory": task.FactorySymbol(),
+					})
 					break
+				}
+
+				// COLLECT_SELL: Ship already has cargo, just needs to sell
+				// Track as backup if we don't find ACQUIRE_DELIVER
+				if task.TaskType() == manufacturing.TaskTypeCollectSell && matchingCollectSell == nil {
+					matchingCollectSell = task
 				}
 			}
 
@@ -162,9 +199,20 @@ func (h *OrphanedCargoHandler) HandleShipsWithExistingCargo(
 			}
 		}
 
+		// Use COLLECT_SELL if no ACQUIRE_DELIVER found
+		if matchingTask == nil && matchingCollectSell != nil {
+			matchingTask = matchingCollectSell
+			logger.Log("INFO", "Found COLLECT_SELL task matching ship cargo", map[string]interface{}{
+				"ship":        shipSymbol,
+				"task_id":     matchingTask.ID()[:8],
+				"good":        primaryCargo,
+				"sell_market": matchingTask.TargetMarket(),
+			})
+		}
+
 		if matchingTask == nil {
-			// Create ad-hoc sell task
-			sellMarket, err := h.FindBestSellMarket(ctx, ship.CurrentLocation().Symbol, primaryCargo, params.PlayerID)
+			// Create ad-hoc sell task - but first check if cargo value is worth it
+			sellMarketResult, err := h.findBestSellMarketWithPrice(ctx, ship.CurrentLocation().Symbol, primaryCargo, params.PlayerID)
 			if err != nil {
 				logger.Log("WARN", "Failed to find sell market for orphaned cargo", map[string]interface{}{
 					"ship":       shipSymbol,
@@ -173,6 +221,41 @@ func (h *OrphanedCargoHandler) HandleShipsWithExistingCargo(
 				})
 				continue
 			}
+
+			// Calculate cargo value
+			cargoValue := sellMarketResult.PurchasePrice * maxUnits
+
+			// If cargo value is below threshold, jettison instead of creating task
+			if cargoValue < MinLiquidateCargoValue {
+				logger.Log("INFO", "Cargo value below threshold - jettisoning", map[string]interface{}{
+					"ship":         shipSymbol,
+					"cargo_type":   primaryCargo,
+					"cargo_units":  maxUnits,
+					"price":        sellMarketResult.PurchasePrice,
+					"cargo_value":  cargoValue,
+					"min_required": MinLiquidateCargoValue,
+				})
+
+				// Jettison the cargo
+				if err := h.jettisonCargo(ctx, ship, primaryCargo, maxUnits, params.PlayerID); err != nil {
+					logger.Log("WARN", "Failed to jettison low-value cargo", map[string]interface{}{
+						"ship":       shipSymbol,
+						"cargo_type": primaryCargo,
+						"error":      err.Error(),
+					})
+				} else {
+					logger.Log("INFO", "Jettisoned low-value cargo - ship released", map[string]interface{}{
+						"ship":        shipSymbol,
+						"cargo_type":  primaryCargo,
+						"cargo_units": maxUnits,
+						"cargo_value": cargoValue,
+					})
+				}
+				// Ship is now free (cargo jettisoned), keep it in idle pool
+				continue
+			}
+
+			sellMarket := sellMarketResult.WaypointSymbol
 
 			// Check saturation
 			if h.taskAssigner != nil && h.taskAssigner.IsSellMarketSaturated(ctx, sellMarket, primaryCargo, params.PlayerID) {
@@ -184,32 +267,31 @@ func (h *OrphanedCargoHandler) HandleShipsWithExistingCargo(
 				continue
 			}
 
-			// Create ad-hoc task
-			adHocTask := manufacturing.NewCollectSellTask(
-				"", // Empty pipeline ID for ad-hoc tasks
+			// Create LIQUIDATE task for orphaned cargo
+			// LIQUIDATE tasks are specifically designed for selling leftover cargo
+			// and have empty pipeline_id by design (they don't belong to a pipeline)
+			liquidateTask := manufacturing.NewLiquidationTask(
 				params.PlayerID,
+				shipSymbol,     // Ship already assigned
 				primaryCargo,
-				ship.CurrentLocation().Symbol,
+				maxUnits,
 				sellMarket,
-				nil,
 			)
 
-			if err := adHocTask.MarkReady(); err != nil {
+			if err := h.taskRepo.Create(ctx, liquidateTask); err != nil {
 				continue
 			}
 
-			if err := h.taskRepo.Create(ctx, adHocTask); err != nil {
-				continue
-			}
-
-			logger.Log("INFO", "Created ad-hoc sell task for orphaned cargo", map[string]interface{}{
+			logger.Log("INFO", "Created LIQUIDATE task for orphaned cargo", map[string]interface{}{
 				"ship":        shipSymbol,
-				"task_id":     adHocTask.ID()[:8],
+				"task_id":     liquidateTask.ID()[:8],
 				"cargo_type":  primaryCargo,
+				"cargo_units": maxUnits,
 				"sell_market": sellMarket,
+				"cargo_value": cargoValue,
 			})
 
-			matchingTask = adHocTask
+			matchingTask = liquidateTask
 		} else {
 			// Mark existing task as READY
 			if err := matchingTask.MarkReady(); err != nil {
@@ -269,25 +351,21 @@ func (h *OrphanedCargoHandler) FindBestSellMarket(ctx context.Context, currentLo
 	return result.WaypointSymbol, nil
 }
 
-// CreateAdHocSellTask creates a COLLECT_SELL task for orphaned cargo
+// CreateAdHocSellTask creates a LIQUIDATE task for orphaned cargo
 func (h *OrphanedCargoHandler) CreateAdHocSellTask(ctx context.Context, ship *navigation.Ship, cargo CargoInfo, playerID int) (*manufacturing.ManufacturingTask, error) {
 	sellMarket, err := h.FindBestSellMarket(ctx, ship.CurrentLocation().Symbol, cargo.Good, playerID)
 	if err != nil {
 		return nil, err
 	}
 
-	task := manufacturing.NewCollectSellTask(
-		"",
+	// Use LIQUIDATE task type - specifically designed for selling orphaned cargo
+	task := manufacturing.NewLiquidationTask(
 		playerID,
+		ship.ShipSymbol(),
 		cargo.Good,
-		ship.CurrentLocation().Symbol,
+		cargo.Units,
 		sellMarket,
-		nil,
 	)
-
-	if err := task.MarkReady(); err != nil {
-		return nil, err
-	}
 
 	if h.taskRepo != nil {
 		if err := h.taskRepo.Create(ctx, task); err != nil {
@@ -296,4 +374,40 @@ func (h *OrphanedCargoHandler) CreateAdHocSellTask(ctx context.Context, ship *na
 	}
 
 	return task, nil
+}
+
+// findBestSellMarketWithPrice finds the best market to sell cargo and returns the full result with price info
+func (h *OrphanedCargoHandler) findBestSellMarketWithPrice(ctx context.Context, currentLocation, good string, playerID int) (*market.BestMarketBuyingResult, error) {
+	if h.marketRepo == nil {
+		return nil, fmt.Errorf("no market repository configured")
+	}
+
+	system := extractSystemFromWaypoint(currentLocation)
+
+	result, err := h.marketRepo.FindBestMarketBuying(ctx, good, system, playerID)
+	if err != nil {
+		return nil, err
+	}
+	if result == nil {
+		return nil, fmt.Errorf("no market found buying %s in system %s", good, system)
+	}
+
+	return result, nil
+}
+
+// jettisonCargo jettisons cargo from a ship using the mediator
+func (h *OrphanedCargoHandler) jettisonCargo(ctx context.Context, ship *navigation.Ship, good string, units int, playerID int) error {
+	if h.mediator == nil {
+		return fmt.Errorf("no mediator configured for jettison")
+	}
+
+	cmd := &shipCmd.JettisonCargoCommand{
+		ShipSymbol: ship.ShipSymbol(),
+		PlayerID:   shared.MustNewPlayerID(playerID),
+		GoodSymbol: good,
+		Units:      units,
+	}
+
+	_, err := h.mediator.Send(ctx, cmd)
+	return err
 }

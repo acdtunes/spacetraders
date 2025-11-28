@@ -9,6 +9,49 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 )
 
+// ManufacturingTaskQueue defines the interface for task queue operations.
+// Both TaskQueue (single queue) and DualTaskQueue (separate queues) implement this.
+type ManufacturingTaskQueue interface {
+	// Enqueue adds a task to the queue
+	Enqueue(task *manufacturing.ManufacturingTask)
+
+	// EnqueuePriority adds a high-priority task
+	EnqueuePriority(task *manufacturing.ManufacturingTask)
+
+	// Dequeue removes and returns the highest-priority task
+	Dequeue() *manufacturing.ManufacturingTask
+
+	// GetTask returns a task by ID
+	GetTask(taskID string) *manufacturing.ManufacturingTask
+
+	// GetReadyTasks returns all ready tasks sorted by priority
+	GetReadyTasks() []*manufacturing.ManufacturingTask
+
+	// GetReadyTasksByType returns ready tasks filtered by type
+	GetReadyTasksByType(taskType manufacturing.TaskType) []*manufacturing.ManufacturingTask
+
+	// HasReadyTasksByType returns true if there are ready tasks of the specified type
+	HasReadyTasksByType(taskType manufacturing.TaskType) bool
+
+	// Remove removes a task by ID
+	Remove(taskID string) bool
+
+	// Size returns the number of tasks in queue
+	Size() int
+
+	// CountByType returns counts of ready tasks by type
+	CountByType() map[manufacturing.TaskType]int
+
+	// MarkCollectTasksReady marks COLLECT tasks as ready when factory supply reaches HIGH
+	MarkCollectTasksReady(factorySymbol string, outputGood string) int
+
+	// LoadFromRepository loads ready tasks from the repository
+	LoadFromRepository(ctx context.Context, repo manufacturing.TaskRepository, playerID int) error
+
+	// Clear removes all tasks from the queue
+	Clear()
+}
+
 // TaskQueue manages manufacturing tasks with priority ordering.
 // It provides efficient access to ready tasks sorted by priority.
 // The queue is thread-safe for concurrent access.

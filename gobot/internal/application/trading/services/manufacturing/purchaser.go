@@ -92,6 +92,24 @@ func (p *ManufacturingPurchaser) ExecutePurchaseLoop(
 	result := &PurchaseResult{}
 	playerIDInt := params.PlayerID.Value()
 
+	// PRE-CHECK: If ship already has cargo, check before starting purchase loop.
+	// This handles the case where a retry task is assigned to a ship that already
+	// has cargo from a previous attempt but supply has dropped.
+	if params.RequireHighSupply {
+		ship, err := p.shipRepo.FindBySymbol(ctx, params.ShipSymbol, params.PlayerID)
+		if err == nil && ship != nil {
+			existingCargo := ship.Cargo().GetItemUnits(params.Good)
+			if existingCargo > 0 {
+				logger.Log("INFO", "Ship already has cargo - skipping purchase loop", map[string]interface{}{
+					"good":     params.Good,
+					"quantity": existingCargo,
+				})
+				result.TotalUnitsAdded = existingCargo
+				return result, nil
+			}
+		}
+	}
+
 	for result.Rounds < MaxPurchaseRounds {
 		// Get fresh market data
 		marketData, err := p.marketRepo.GetMarketData(ctx, params.Market, playerIDInt)
