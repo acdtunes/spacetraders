@@ -41,6 +41,7 @@ const (
 	ContainerTypeDock                     ContainerType = "DOCK"
 	ContainerTypeOrbit                    ContainerType = "ORBIT"
 	ContainerTypeRefuel                   ContainerType = "REFUEL"
+	ContainerTypeJettison                 ContainerType = "JETTISON"
 	ContainerTypeScout                    ContainerType = "SCOUT"
 	ContainerTypeMining                   ContainerType = "MINING"
 	ContainerTypeMiningWorker             ContainerType = "MINING_WORKER"
