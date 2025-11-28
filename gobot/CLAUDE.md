@@ -11,7 +11,7 @@ SpaceTraders Go Bot - A production-quality Go implementation of a SpaceTraders b
 - **Daemon** (`cmd/spacetraders-daemon`) - gRPC server managing background operations
 - **Routing Service** (`cmd/routing-service`) - Python OR-Tools microservice for pathfinding/optimization
 
-## Building and Testing
+## Building
 
 ### Build Commands
 
@@ -26,29 +26,6 @@ make build-routing-service  # Routing service manager
 
 # Development setup (install tools + dependencies)
 make dev-setup
-```
-
-### Testing Commands
-
-**CRITICAL: ALL tests MUST be BDD-style in the `test/` directory. NEVER create `*_test.go` files alongside production code.**
-
-```bash
-# Run all BDD tests
-make test
-
-# BDD tests with colored output
-make test-bdd
-make test-bdd-pretty        # Colored output
-
-# Specific BDD test suites
-make test-bdd-ship          # Ship entity tests
-make test-bdd-route         # Route entity tests
-make test-bdd-container     # Container entity tests
-make test-bdd-values        # Value object tests
-make test-bdd-navigate      # Navigate ship handler tests
-
-# Coverage reports
-make test-coverage          # Generates coverage.html
 ```
 
 ### Running Services
@@ -201,7 +178,7 @@ Infrastructure implementations:
 
 #### Persistence (`adapters/persistence/`)
 
-- **GORM ORM** with PostgreSQL (production) and SQLite (tests)
+- **GORM ORM** with PostgreSQL
 - **8 database models**: Player, Ship, Waypoint, Contract, Market, ContainerLog, etc.
 - **Hybrid strategy**:
   - Ships: Fetched fresh from API (not cached)
@@ -233,7 +210,7 @@ Infrastructure implementations:
 #### Routing (`adapters/routing/`)
 
 - **gRPC client** for Python OR-Tools service
-- **Mock implementation** for tests (simple pathfinding)
+- **Mock implementation** for development without Python service
 - **Real implementation**: Dijkstra pathfinding with fuel constraints
 
 ### Routing Service (`services/routing-service/`)
@@ -278,47 +255,6 @@ pip install -r requirements.txt
 bash generate_protos.sh
 ```
 
-## Testing Strategy
-
-**CRITICAL TESTING RULE:**
-- **ALL tests MUST be BDD-style in the `test/` directory**
-- **NEVER create `*_test.go` files in `internal/`, `pkg/`, or `cmd/` directories**
-- **NEVER create traditional Go unit tests alongside production code**
-
-### BDD Tests
-
-**Location:** `test/bdd/features/`
-
-**Framework:** Godog (Cucumber for Go)
-
-**Coverage:**
-- `domain/navigation/ship_entity.feature` - 400+ lines, 50+ scenarios
-- `domain/navigation/route_entity.feature` - Route state machine
-- `domain/container/container_entity.feature` - Container lifecycle
-- `domain/shared/*.feature` - Value object behaviors
-- `application/navigate_ship_handler.feature` - End-to-end command handler
-
-**Running specific scenarios:**
-
-```bash
-# By file
-go test ./test/bdd/... -v -godog.paths=test/bdd/features/domain/navigation/ship_entity.feature
-
-# By scenario name
-go test ./test/bdd/... -v -godog.filter="Depart from docked to in orbit"
-```
-
-**Step definitions:** Located in `test/bdd/steps/*.go`
-
-### Test Helpers
-
-**Location:** `test/helpers/`
-
-Common test utilities for BDD tests:
-- Mock API client (`test/helpers/mock_api_client.go`)
-- In-memory repositories
-- Test fixtures and builders
-
 ## Adding New Features
 
 ### Adding a Command/Query
@@ -350,8 +286,6 @@ Common test utilities for BDD tests:
 
 4. **Add port interface** (if new dependencies needed) to `application/common/ports.go`
 
-5. **Write BDD tests** in `test/bdd/features/application/`
-
 ### Adding a CLI Command
 
 1. **Create command file** in `internal/adapters/cli/`:
@@ -374,7 +308,6 @@ Common test utilities for BDD tests:
 1. **Add to port interface** in `application/common/ports.go`
 2. **Implement in** `adapters/persistence/{entity}_repository.go`
 3. **Update model** in `adapters/persistence/models.go` if schema changes
-4. **Write BDD tests** in `test/bdd/features/` for the functionality that uses this repository method
 
 ## Protobuf Workflow
 
@@ -458,15 +391,13 @@ func NewMyHandler(repo ports.Repository, client ports.APIClient) *MyHandler {
 
 **Never use global state or singletons.**
 
-## Database Configuration
+## Database
+
+### Configuration
 
 **Production:** PostgreSQL (configured via `.env` file)
 
-**Tests:** SQLite in-memory (`:memory:`)
-
 **Configuration file:** `.env` (in project root - **never commit this file**)
-
-**Environment variables:** See `.env.example` or `.env` for the full list of available configuration options.
 
 **Primary connection string format:**
 ```bash
@@ -482,29 +413,121 @@ DATABASE_URL=postgresql://username:password@host:port/database
 - `ST_DATABASE_NAME` - Database name
 - `ST_DATABASE_SSLMODE` - SSL mode
 
+**Connection Pool Settings:**
+- `max_open` - Maximum open connections
+- `max_idle` - Maximum idle connections
+- `max_lifetime` - Connection max lifetime
+
 **Other important environment variables:**
 - `ST_ROUTING_ADDRESS` - Routing service address (e.g., `localhost:50051`)
 - `SPACETRADERS_SOCKET` - Daemon socket path (default: `/tmp/spacetraders-daemon.sock`)
 
-**Connecting to database:** Use credentials from your `.env` file
+### Database Tables
+
+All models are defined in `internal/adapters/persistence/models.go`:
+
+| Table | Primary Key | Description |
+|-------|-------------|-------------|
+| `players` | `id` (auto) | Player accounts with API tokens |
+| `waypoints` | `waypoint_symbol` | Cached waypoint data with coordinates and traits |
+| `containers` | `id, player_id` | Background operation containers (goroutines) |
+| `container_logs` | `id` (auto) | Container execution logs with 60s deduplication |
+| `ship_assignments` | `ship_symbol, player_id` | Ship-to-container assignments |
+| `system_graphs` | `system_symbol` | Cached navigation graphs (JSONB) |
+| `market_data` | `waypoint_symbol, good_symbol` | Current market prices per good |
+| `market_price_history` | `id` (auto) | Historical price tracking |
+| `contracts` | `id` | Active contracts with delivery requirements |
+| `mining_operations` | `id, player_id` | Mining operation configurations |
+| `goods_factories` | `id` | Goods factory workflows |
+| `transactions` | `id` | Financial ledger entries |
+| `arbitrage_execution_logs` | `id` (auto) | Arbitrage trade execution history |
+| `manufacturing_pipelines` | `id` | Manufacturing pipeline definitions |
+| `manufacturing_tasks` | `id` | Individual manufacturing tasks |
+| `manufacturing_task_dependencies` | `task_id, depends_on_id` | Task dependency graph |
+| `manufacturing_factory_states` | `id` (auto) | Factory input/output state tracking |
+
+### Key Model Details
+
+**PlayerModel:**
+- Credits are NOT persisted - always fetched fresh from API
+- `metadata` stored as JSONB
+
+**WaypointModel:**
+- `has_fuel` stored as int (0/1) for SQLite compatibility
+- `traits` and `orbitals` stored as JSON text
+- `synced_at` for cache TTL management
+
+**ContainerModel:**
+- Composite primary key: `id + player_id`
+- `parent_container_id` for hierarchical containers (coordinators)
+- `config` stored as JSON text
+
+**MarketData:**
+- Composite primary key: `waypoint_symbol + good_symbol`
+- `trade_type`: EXPORT, IMPORT, or EXCHANGE
+- `supply` and `activity` for market dynamics
+
+**TransactionModel:**
+- `amount`: Positive for income, negative for expenses
+- `balance_before` and `balance_after` for audit trail
+- `operation_type`: contract, arbitrage, rebalancing, factory
+
+### Migrations
+
+Migrations are located in `migrations/` directory with up/down pairs:
+
+```bash
+# Apply migrations manually
+psql -f migrations/001_normalize_id_columns.up.sql
+
+# Key migrations:
+# 001 - Normalize ID columns
+# 002 - Add foreign key constraints
+# 004 - Add mining tables
+# 009 - Add goods factories table
+# 011 - Add transactions table
+# 013 - Add arbitrage execution logs
+# 015 - Fix timezone timestamps (CRITICAL)
+# 016 - Add market price history
+# 018 - Add manufacturing tables
+# 019 - Add market trade type
+# 020 - Add pipeline type
+```
+
+**Migration 015 is critical:** Ensures all timestamp columns use `TIMESTAMP WITH TIME ZONE` (timestamptz) for proper timezone handling.
+
+### Data Strategies
+
+**Always Fresh (No Cache):**
+- Ships - Fetched from API on every request
+- Player credits - Always from API
+
+**Database Cached:**
+- Waypoints - Cached with TTL via `synced_at`
+- System graphs - Cached indefinitely
+- Market data - Age-filtered queries
+
+**Deduplication:**
+- Container logs - 60-second window deduplication
+
+### Foreign Key Relationships
+
+```
+players (1) ──< containers (many)
+players (1) ──< contracts (many)
+players (1) ──< mining_operations (many)
+players (1) ──< transactions (many)
+players (1) ──< market_data (many)
+containers (1) ──< container_logs (many)
+containers (1) ──< ship_assignments (many)
+manufacturing_pipelines (1) ──< manufacturing_tasks (many)
+```
+
+All foreign keys use `ON UPDATE CASCADE, ON DELETE CASCADE` or `ON DELETE SET NULL` for ship assignments
 
 ## Common Pitfalls
 
-### 1. Creating Tests Outside `test/` Directory
-
-**WRONG:** Creating `*_test.go` files alongside production code:
-```
-internal/adapters/persistence/player_repository_test.go  // NEVER DO THIS
-internal/domain/navigation/ship_test.go                   // NEVER DO THIS
-```
-
-**RIGHT:** All tests go in `test/bdd/`:
-```
-test/bdd/features/domain/navigation/ship_entity.feature
-test/bdd/steps/ship_steps.go
-```
-
-### 2. Breaking Hexagonal Architecture
+### 1. Breaking Hexagonal Architecture
 
 **Wrong:** Domain depending on infrastructure:
 ```go
@@ -514,7 +537,7 @@ import "gorm.io/gorm"  // NEVER import infrastructure in domain
 
 **Right:** Use dependency inversion via ports.
 
-### 3. Modifying State Directly
+### 2. Modifying State Directly
 
 **Wrong:**
 ```go
@@ -526,18 +549,18 @@ ship.Fuel.Current -= 50  // Fuel is immutable!
 ship.Fuel, err = ship.Fuel.Consume(50)
 ```
 
-### 4. Forgetting to Register Handlers
+### 3. Forgetting to Register Handlers
 
 If mediator can't find handler, check registration in application setup.
 
-### 5. Not Using Idempotent Operations
+### 4. Not Using Idempotent Operations
 
 For state transitions, use idempotent methods when appropriate:
 ```go
 changed, err := ship.EnsureInOrbit()  // Returns false if already in orbit
 ```
 
-### 6. Hardcoding Player/Agent Resolution
+### 5. Hardcoding Player/Agent Resolution
 
 Always use CLI's player resolution pattern (flags → config → error).
 
@@ -559,41 +582,6 @@ Always use CLI's player resolution pattern (flags → config → error).
 
 **CLI commands:** `internal/adapters/cli/{command_name}.go`
 - Example: `internal/adapters/cli/navigate.go`
-
-**BDD features:** `test/bdd/features/{layer}/{context}/{feature_name}.feature`
-- Example: `test/bdd/features/domain/navigation/ship_entity.feature`
-
-**BDD steps:** `test/bdd/steps/{entity}_steps.go`
-- Example: `test/bdd/steps/ship_steps.go`
-
-## Running Tests
-
-### BDD Tests (All Go Tests)
-
-```bash
-# Single feature file
-go test ./test/bdd/... -v -godog.paths=test/bdd/features/domain/navigation/ship_entity.feature
-
-# Single scenario by name
-go test ./test/bdd/... -v -godog.filter="Depart from docked to in orbit"
-
-# With pretty output
-go test ./test/bdd/... -v -godog.format=pretty -godog.paths=test/bdd/features/domain/navigation/ship_entity.feature
-
-# All BDD tests
-go test ./test/bdd/... -v
-
-# With race detector
-go test ./test/bdd/... -v -race
-```
-
-### Routing Service Tests (Python)
-
-```bash
-cd services/routing-service
-source venv/bin/activate
-python3 test_service.py
-```
 
 ## Metrics & Monitoring
 
@@ -890,17 +878,6 @@ type BalancingResult struct {
 }
 ```
 
-### BDD Test Coverage
-
-Location: `test/bdd/features/domain/contract/ship_balancer.feature`
-
-Key scenarios:
-- Select empty market over occupied market
-- Distance tiebreaker when all markets empty
-- Heavy penalty for second ship to same market
-- Even distribution across multiple markets
-- All markets occupied - select least crowded
-
 ## Navigation Resilience
 
 The `RouteExecutor` includes resilience mechanisms to handle timing issues in multi-segment routes.
@@ -1034,4 +1011,4 @@ psql -c "SELECT NOW();"
 3. **Include timezone in logs** - Use RFC3339 format
 4. **Query with NOW()** - PostgreSQL handles timezone-aware comparisons
 5. **Avoid string timestamps** - Use proper time.Time types
-6. **Test across timezones** - Verify behavior in different timezone settings
+6. **Verify across timezones** - Ensure behavior works in different timezone settings
