@@ -297,18 +297,19 @@ func (MarketPriceHistoryModel) TableName() string {
 type ManufacturingPipelineModel struct {
 	ID             string     `gorm:"column:id;primaryKey;size:64"`
 	SequenceNumber int        `gorm:"column:sequence_number;not null;default:0"`
+	PipelineType   string     `gorm:"column:pipeline_type;size:20;not null;default:'FABRICATION';index:idx_pipelines_type"`
 	PlayerID       int        `gorm:"column:player_id;not null;index:idx_pipelines_player"`
 	ProductGood    string     `gorm:"column:product_good;size:64;not null"`
-	SellMarket    string     `gorm:"column:sell_market;size:64;not null"`
-	ExpectedPrice int        `gorm:"column:expected_price;not null"`
-	Status        string     `gorm:"column:status;size:32;not null;index:idx_pipelines_status"`
-	TotalCost     int        `gorm:"column:total_cost;default:0"`
-	TotalRevenue  int        `gorm:"column:total_revenue;default:0"`
-	NetProfit     int        `gorm:"column:net_profit;default:0"`
-	ErrorMessage  *string    `gorm:"column:error_message;type:text"`
-	CreatedAt     time.Time  `gorm:"column:created_at;not null;default:now()"`
-	StartedAt     *time.Time `gorm:"column:started_at"`
-	CompletedAt   *time.Time `gorm:"column:completed_at"`
+	SellMarket     string     `gorm:"column:sell_market;size:64;not null"`
+	ExpectedPrice  int        `gorm:"column:expected_price;not null"`
+	Status         string     `gorm:"column:status;size:32;not null;index:idx_pipelines_status"`
+	TotalCost      int        `gorm:"column:total_cost;default:0"`
+	TotalRevenue   int        `gorm:"column:total_revenue;default:0"`
+	NetProfit      int        `gorm:"column:net_profit;default:0"`
+	ErrorMessage   *string    `gorm:"column:error_message;type:text"`
+	CreatedAt      time.Time  `gorm:"column:created_at;not null;default:now()"`
+	StartedAt      *time.Time `gorm:"column:started_at"`
+	CompletedAt    *time.Time `gorm:"column:completed_at"`
 }
 
 func (ManufacturingPipelineModel) TableName() string {

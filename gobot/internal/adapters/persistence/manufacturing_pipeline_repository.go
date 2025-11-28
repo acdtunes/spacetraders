@@ -146,6 +146,52 @@ func (r *GormManufacturingPipelineRepository) FindActiveForProduct(ctx context.C
 	return r.modelToPipeline(&model)
 }
 
+// FindActiveCollectionForProduct checks if there's an active COLLECTION pipeline for a product.
+// This is used to prevent duplicate collection pipelines for the same good.
+func (r *GormManufacturingPipelineRepository) FindActiveCollectionForProduct(ctx context.Context, playerID int, productGood string) (*manufacturing.ManufacturingPipeline, error) {
+	activeStatuses := []string{
+		string(manufacturing.PipelineStatusPlanning),
+		string(manufacturing.PipelineStatusExecuting),
+	}
+
+	var model ManufacturingPipelineModel
+	result := r.db.WithContext(ctx).
+		Where("player_id = ? AND product_good = ? AND pipeline_type = ? AND status IN ?",
+			playerID, productGood, string(manufacturing.PipelineTypeCollection), activeStatuses).
+		First(&model)
+
+	if result.Error != nil {
+		if result.Error == gorm.ErrRecordNotFound {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to find active collection pipeline: %w", result.Error)
+	}
+
+	return r.modelToPipeline(&model)
+}
+
+// CountActiveFabricationPipelines counts only FABRICATION pipelines that are active.
+// This is used for max_pipelines limiting (collection pipelines are unlimited).
+func (r *GormManufacturingPipelineRepository) CountActiveFabricationPipelines(ctx context.Context, playerID int) (int, error) {
+	activeStatuses := []string{
+		string(manufacturing.PipelineStatusPlanning),
+		string(manufacturing.PipelineStatusExecuting),
+	}
+
+	var count int64
+	result := r.db.WithContext(ctx).
+		Model(&ManufacturingPipelineModel{}).
+		Where("player_id = ? AND pipeline_type = ? AND status IN ?",
+			playerID, string(manufacturing.PipelineTypeFabrication), activeStatuses).
+		Count(&count)
+
+	if result.Error != nil {
+		return 0, fmt.Errorf("failed to count active fabrication pipelines: %w", result.Error)
+	}
+
+	return int(count), nil
+}
+
 // Delete removes a pipeline (cascades to tasks)
 func (r *GormManufacturingPipelineRepository) Delete(ctx context.Context, id string) error {
 	result := r.db.WithContext(ctx).Where("id = ?", id).Delete(&ManufacturingPipelineModel{})
@@ -167,6 +213,7 @@ func (r *GormManufacturingPipelineRepository) pipelineToModel(p *manufacturing.M
 	return &ManufacturingPipelineModel{
 		ID:             p.ID(),
 		SequenceNumber: p.SequenceNumber(),
+		PipelineType:   string(p.PipelineType()),
 		PlayerID:       p.PlayerID(),
 		ProductGood:    p.ProductGood(),
 		SellMarket:     p.SellMarket(),
@@ -192,6 +239,7 @@ func (r *GormManufacturingPipelineRepository) modelToPipeline(m *ManufacturingPi
 	return manufacturing.ReconstitutePipeline(
 		m.ID,
 		m.SequenceNumber,
+		manufacturing.PipelineType(m.PipelineType),
 		m.ProductGood,
 		m.SellMarket,
 		m.ExpectedPrice,

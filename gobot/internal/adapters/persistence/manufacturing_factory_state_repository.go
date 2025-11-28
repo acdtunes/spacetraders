@@ -62,6 +62,32 @@ func (r *GormManufacturingFactoryStateRepository) Update(ctx context.Context, st
 		return fmt.Errorf("failed to convert factory state to model: %w", err)
 	}
 
+	// If ID is 0, find by unique constraint and update
+	if model.ID == 0 {
+		var existing ManufacturingFactoryStateModel
+		result := r.db.WithContext(ctx).
+			Where("factory_symbol = ? AND output_good = ? AND pipeline_id = ?",
+				model.FactorySymbol, model.OutputGood, model.PipelineID).
+			First(&existing)
+
+		if result.Error != nil {
+			if result.Error == gorm.ErrRecordNotFound {
+				// Doesn't exist - create it
+				createResult := r.db.WithContext(ctx).Create(model)
+				if createResult.Error != nil {
+					return fmt.Errorf("failed to create factory state: %w", createResult.Error)
+				}
+				state.SetID(model.ID)
+				return nil
+			}
+			return fmt.Errorf("failed to find factory state: %w", result.Error)
+		}
+
+		// Found existing - update using its ID
+		model.ID = existing.ID
+		state.SetID(existing.ID)
+	}
+
 	result := r.db.WithContext(ctx).Save(model)
 	if result.Error != nil {
 		return fmt.Errorf("failed to update factory state: %w", result.Error)
