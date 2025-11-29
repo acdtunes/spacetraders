@@ -93,6 +93,9 @@ service DaemonService {
 
   // JettisonCargo jettisons cargo from a ship
   rpc JettisonCargo(JettisonCargoRequest) returns (JettisonCargoResponse);
+
+  // GasExtractionOperation starts a gas extraction operation with siphon and transport ships
+  rpc GasExtractionOperation(GasExtractionOperationRequest) returns (GasExtractionOperationResponse);
 }
 
 // NavigateShipRequest initiates ship navigation
@@ -674,4 +677,28 @@ message JettisonCargoResponse {
   int32 units_jettisoned = 4;
   string status = 5;
   string message = 6;
+}
+
+// GasExtractionOperationRequest starts a gas extraction operation with siphon and transport ships
+message GasExtractionOperationRequest {
+  optional string gas_giant = 1;       // Optional: specific waypoint, or auto-select
+  repeated string siphon_ships = 2;    // Ships for gas siphoning (need SIPHON mount + GAS_PROCESSOR)
+  repeated string transport_ships = 3; // Ships for transport to factories
+  int32 player_id = 4;
+  optional string agent_symbol = 5;
+  bool force = 6;                      // Override fuel validation warnings
+  bool dry_run = 7;                    // If true, only select gas giant without starting operation
+  int32 max_leg_time = 8;              // Max time per leg in minutes (0 = no limit)
+}
+
+// GasExtractionOperationResponse returns the result of starting a gas extraction operation
+message GasExtractionOperationResponse {
+  string container_id = 1;
+  string gas_giant = 2;
+  repeated string siphon_ships = 3;
+  repeated string transport_ships = 4;
+  string status = 5;
+  // Dry-run results
+  repeated ShipRoute ship_routes = 6;    // Planned routes for all ships
+  repeated string errors = 7;            // Any errors during route planning
 }

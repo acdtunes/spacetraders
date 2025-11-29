@@ -987,3 +987,73 @@ func (s *daemonServiceImpl) JettisonCargo(ctx context.Context, req *pb.JettisonC
 
 	return response, nil
 }
+
+// GasExtractionOperation starts a gas extraction operation with siphon and transport ships
+func (s *daemonServiceImpl) GasExtractionOperation(ctx context.Context, req *pb.GasExtractionOperationRequest) (*pb.GasExtractionOperationResponse, error) {
+	// Resolve player ID from request
+	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve player: %w", err)
+	}
+
+	// Extract optional gas giant field
+	gasGiant := ""
+	if req.GasGiant != nil {
+		gasGiant = *req.GasGiant
+	}
+
+	result, err := s.daemon.GasExtractionOperation(
+		ctx,
+		gasGiant,
+		req.SiphonShips,
+		req.TransportShips,
+		req.Force,
+		req.DryRun,
+		int(req.MaxLegTime),
+		playerID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to start gas extraction operation: %w", err)
+	}
+
+	status := "RUNNING"
+	if req.DryRun {
+		status = "DRY_RUN_COMPLETE"
+	}
+
+	// Build response
+	resp := &pb.GasExtractionOperationResponse{
+		ContainerId:    result.ContainerID,
+		GasGiant:       result.GasGiant,
+		SiphonShips:    req.SiphonShips,
+		TransportShips: req.TransportShips,
+		Status:         status,
+		Errors:         result.Errors,
+	}
+
+	// Convert ship routes for dry-run
+	if req.DryRun && len(result.ShipRoutes) > 0 {
+		resp.ShipRoutes = make([]*pb.ShipRoute, len(result.ShipRoutes))
+		for i, route := range result.ShipRoutes {
+			segments := make([]*pb.RouteSegment, len(route.Segments))
+			for j, seg := range route.Segments {
+				segments[j] = &pb.RouteSegment{
+					From:       seg.From,
+					To:         seg.To,
+					FlightMode: seg.FlightMode,
+					FuelCost:   int32(seg.FuelCost),
+					TravelTime: int32(seg.TravelTime),
+				}
+			}
+			resp.ShipRoutes[i] = &pb.ShipRoute{
+				ShipSymbol: route.ShipSymbol,
+				ShipType:   route.ShipType,
+				Segments:   segments,
+				TotalFuel:  int32(route.TotalFuel),
+				TotalTime:  int32(route.TotalTime),
+			}
+		}
+	}
+
+	return resp, nil
+}

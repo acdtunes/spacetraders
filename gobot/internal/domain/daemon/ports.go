@@ -97,4 +97,16 @@ type DaemonClient interface {
 	// StartManufacturingTaskWorkerContainer starts a previously persisted manufacturing task worker container
 	// completionCallback: Optional channel to signal completion to coordinator
 	StartManufacturingTaskWorkerContainer(ctx context.Context, containerID string, completionCallback chan<- string) error
+
+	// PersistGasSiphonWorkerContainer creates (but does NOT start) a gas siphon worker container in DB
+	PersistGasSiphonWorkerContainer(ctx context.Context, containerID string, playerID uint, command interface{}) error
+
+	// StartGasSiphonWorkerContainer starts a previously persisted gas siphon worker container
+	StartGasSiphonWorkerContainer(ctx context.Context, containerID string, completionCallback chan<- string) error
+
+	// PersistGasTransportWorkerContainer creates (but does NOT start) a gas transport worker container in DB
+	PersistGasTransportWorkerContainer(ctx context.Context, containerID string, playerID uint, command interface{}) error
+
+	// StartGasTransportWorkerContainer starts a previously persisted gas transport worker container
+	StartGasTransportWorkerContainer(ctx context.Context, containerID string, completionCallback chan<- string) error
 }

@@ -386,15 +386,19 @@ func (s *DaemonServer) stopMetricsServer() {
 }
 
 // handleShutdown manages graceful shutdown
+// GracefulShutdownTimeout is the maximum time to wait for containers to finish
+const GracefulShutdownTimeout = 30 * time.Second
+
 func (s *DaemonServer) handleShutdown() {
 	<-s.shutdownChan
-	fmt.Println("\nShutdown signal received, stopping daemon...")
+	fmt.Println("\nShutdown signal received, initiating graceful shutdown...")
+
+	// BUG FIX #5: Graceful shutdown with timeout
+	// Give containers time to complete their current operation before force-interrupting
+	s.gracefulShutdownWithTimeout(GracefulShutdownTimeout)
 
 	// Stop metrics server and collector
 	s.stopMetricsServer()
-
-	// Interrupt all container goroutines and mark as INTERRUPTED in DB for recovery
-	s.interruptAllContainers()
 
 	// Close listener
 	if s.listener != nil {
@@ -402,6 +406,64 @@ func (s *DaemonServer) handleShutdown() {
 	}
 
 	close(s.done)
+}
+
+// gracefulShutdownWithTimeout waits for containers to complete or times out
+// BUG FIX #5: This prevents context cancellation cascades that corrupt state
+func (s *DaemonServer) gracefulShutdownWithTimeout(timeout time.Duration) {
+	s.containersMu.RLock()
+	containerCount := len(s.containers)
+	s.containersMu.RUnlock()
+
+	if containerCount == 0 {
+		fmt.Println("No running containers to stop")
+		return
+	}
+
+	fmt.Printf("Waiting up to %s for %d container(s) to complete current operations...\n",
+		timeout, containerCount)
+
+	// Create a done channel to track when containers finish
+	allDone := make(chan struct{})
+
+	go func() {
+		// Wait for all containers to finish their done channels
+		s.containersMu.RLock()
+		runners := make([]*ContainerRunner, 0, len(s.containers))
+		for _, runner := range s.containers {
+			runners = append(runners, runner)
+		}
+		s.containersMu.RUnlock()
+
+		// Signal each container to stop (sets stopping flag, doesn't cancel context yet)
+		for _, runner := range runners {
+			// Try graceful stop first - this sets the stopping flag
+			runner.mu.Lock()
+			_ = runner.containerEntity.Stop()
+			runner.mu.Unlock()
+		}
+
+		// Wait for each container's done channel
+		for _, runner := range runners {
+			select {
+			case <-runner.done:
+				// Container finished gracefully
+			case <-time.After(timeout):
+				// This container took too long - will be force-interrupted
+			}
+		}
+		close(allDone)
+	}()
+
+	// Wait for graceful completion or timeout
+	select {
+	case <-allDone:
+		fmt.Println("All containers completed gracefully")
+	case <-time.After(timeout):
+		fmt.Printf("Graceful shutdown timeout (%s) exceeded, force-interrupting remaining containers...\n", timeout)
+		// Force-interrupt any remaining containers
+		s.interruptAllContainers()
+	}
 }
 
 // RecoverRunningContainers recovers containers that were RUNNING or INTERRUPTED when daemon stopped

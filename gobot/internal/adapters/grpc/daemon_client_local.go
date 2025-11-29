@@ -201,3 +201,41 @@ func (c *DaemonClientLocal) StartManufacturingTaskWorkerContainer(
 ) error {
 	return c.server.StartManufacturingTaskWorkerContainer(ctx, containerID, completionCallback)
 }
+
+// PersistGasSiphonWorkerContainer creates (but does NOT start) a gas siphon worker container in DB
+func (c *DaemonClientLocal) PersistGasSiphonWorkerContainer(
+	ctx context.Context,
+	containerID string,
+	playerID uint,
+	command interface{},
+) error {
+	return c.server.PersistGasSiphonWorkerContainer(ctx, containerID, playerID, command)
+}
+
+// StartGasSiphonWorkerContainer starts a previously persisted gas siphon worker container
+func (c *DaemonClientLocal) StartGasSiphonWorkerContainer(
+	ctx context.Context,
+	containerID string,
+	completionCallback chan<- string,
+) error {
+	return c.server.StartGasSiphonWorkerContainer(ctx, containerID, completionCallback)
+}
+
+// PersistGasTransportWorkerContainer creates (but does NOT start) a gas transport worker container in DB
+func (c *DaemonClientLocal) PersistGasTransportWorkerContainer(
+	ctx context.Context,
+	containerID string,
+	playerID uint,
+	command interface{},
+) error {
+	return c.server.PersistGasTransportWorkerContainer(ctx, containerID, playerID, command)
+}
+
+// StartGasTransportWorkerContainer starts a previously persisted gas transport worker container
+func (c *DaemonClientLocal) StartGasTransportWorkerContainer(
+	ctx context.Context,
+	containerID string,
+	completionCallback chan<- string,
+) error {
+	return c.server.StartGasTransportWorkerContainer(ctx, containerID, completionCallback)
+}

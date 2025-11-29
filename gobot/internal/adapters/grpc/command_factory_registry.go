@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	contractCmd "github.com/andrescamacho/spacetraders-go/internal/application/contract/commands"
+	gasCmd "github.com/andrescamacho/spacetraders-go/internal/application/gas/commands"
 	goodsCmd "github.com/andrescamacho/spacetraders-go/internal/application/goods/commands"
 	miningCmd "github.com/andrescamacho/spacetraders-go/internal/application/mining/commands"
 	scoutingCmd "github.com/andrescamacho/spacetraders-go/internal/application/scouting/commands"
@@ -372,6 +373,61 @@ func (s *DaemonServer) registerCommandFactories() {
 			MaxConcurrentTasks: maxWorkers,
 			MaxPipelines:       maxPipelines,
 			Strategy:           strategy,
+		}, nil
+	}
+
+	// Gas extraction coordinator factory
+	s.commandFactories["gas_coordinator"] = func(config map[string]interface{}, playerID int) (interface{}, error) {
+		gasOperationID, ok := config["gas_operation_id"].(string)
+		if !ok {
+			return nil, fmt.Errorf("missing or invalid gas_operation_id")
+		}
+
+		gasGiant, ok := config["gas_giant"].(string)
+		if !ok {
+			return nil, fmt.Errorf("missing or invalid gas_giant")
+		}
+
+		containerID, ok := config["container_id"].(string)
+		if !ok {
+			return nil, fmt.Errorf("missing or invalid container_id")
+		}
+
+		// Parse siphon ships
+		siphonShipsRaw, ok := config["siphon_ships"].([]interface{})
+		if !ok {
+			return nil, fmt.Errorf("missing or invalid siphon_ships")
+		}
+
+		siphonShips := make([]string, len(siphonShipsRaw))
+		for i, s := range siphonShipsRaw {
+			siphonShips[i], ok = s.(string)
+			if !ok {
+				return nil, fmt.Errorf("invalid siphon ship at index %d", i)
+			}
+		}
+
+		// Parse transport ships
+		transportShipsRaw, ok := config["transport_ships"].([]interface{})
+		if !ok {
+			return nil, fmt.Errorf("missing or invalid transport_ships")
+		}
+
+		transportShips := make([]string, len(transportShipsRaw))
+		for i, t := range transportShipsRaw {
+			transportShips[i], ok = t.(string)
+			if !ok {
+				return nil, fmt.Errorf("invalid transport ship at index %d", i)
+			}
+		}
+
+		return &gasCmd.RunGasCoordinatorCommand{
+			GasOperationID: gasOperationID,
+			PlayerID:       shared.MustNewPlayerID(playerID),
+			GasGiant:       gasGiant,
+			SiphonShips:    siphonShips,
+			TransportShips: transportShips,
+			ContainerID:    containerID,
 		}, nil
 	}
 }
