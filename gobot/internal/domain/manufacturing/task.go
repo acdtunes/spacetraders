@@ -21,6 +21,11 @@ const (
 
 	// TaskTypeLiquidate - Sell orphaned cargo to recover investment
 	TaskTypeLiquidate TaskType = "LIQUIDATE"
+
+	// TaskTypeStorageAcquireDeliver - Acquire cargo from storage ships AND deliver to destination
+	// Hauler navigates to storage operation waypoint, waits for cargo, transfers, then delivers.
+	// Used for gas extraction, mining, and other buffered resource operations.
+	TaskTypeStorageAcquireDeliver TaskType = "STORAGE_ACQUIRE_DELIVER"
 )
 
 // TaskStatus represents the current status of a task
@@ -64,6 +69,10 @@ const (
 
 	// PriorityLiquidate - High priority to recover investment from orphaned cargo
 	PriorityLiquidate = 100
+
+	// PriorityStorageAcquireDeliver - Same as ACQUIRE_DELIVER for equal treatment
+	// Storage tasks compete fairly with market acquisition tasks
+	PriorityStorageAcquireDeliver = 10
 )
 
 // Priority tuning constants for preventing task starvation
@@ -113,6 +122,7 @@ const (
 //   - ACQUIRE_DELIVER: Buy from export market AND deliver to factory
 //   - COLLECT_SELL: Collect from factory (when supply HIGH) AND sell at demand market
 //   - LIQUIDATE: Sell orphaned cargo to recover investment
+//   - STORAGE_ACQUIRE_DELIVER: Wait for cargo from storage ships AND deliver to factory
 //
 // State Machine:
 //   PENDING -> READY -> ASSIGNED -> EXECUTING -> COMPLETED
@@ -127,9 +137,11 @@ type ManufacturingTask struct {
 	quantity int // Desired quantity (0 = fill cargo)
 
 	// Where
-	sourceMarket  string // For ACQUIRE: export market to buy from
-	targetMarket  string // For DELIVER/SELL: destination market
-	factorySymbol string // For COLLECT: factory to collect from
+	sourceMarket       string // For ACQUIRE: export market to buy from
+	targetMarket       string // For DELIVER/SELL: destination market
+	factorySymbol      string // For COLLECT: factory to collect from
+	storageOperationID string // For STORAGE_ACQUIRE_DELIVER: storage operation to acquire from
+	storageWaypoint    string // For STORAGE_ACQUIRE_DELIVER: waypoint where storage ships are located
 
 	// Dependencies
 	dependsOn  []string // Task IDs that must complete first
@@ -155,6 +167,12 @@ type ManufacturingTask struct {
 	totalCost      int // Cost incurred
 	totalRevenue   int // Revenue earned (for SELL)
 	errorMessage   string
+
+	// BUG FIX #3: Phase tracking for multi-phase tasks
+	// Tracks which phase has completed so recovery can skip completed work
+	collectPhaseCompleted bool       // COLLECT_SELL: did we collect from factory?
+	acquirePhaseCompleted bool       // ACQUIRE_DELIVER: did we buy from market?
+	phaseCompletedAt      *time.Time // When phase completed
 }
 
 // NewManufacturingTask creates a new manufacturing task
@@ -214,6 +232,36 @@ func NewCollectSellTask(pipelineID string, playerID int, good string, factorySym
 	return task
 }
 
+// NewStorageAcquireDeliverTask creates a task to acquire cargo from storage ships AND deliver to destination.
+// The hauler navigates to the storage operation waypoint, waits for cargo from storage ships,
+// transfers the cargo, then navigates to and delivers to the factory/destination.
+//
+// Parameters:
+//   - pipelineID: Parent pipeline (can be empty for standalone tasks)
+//   - playerID: Player who owns this task
+//   - good: The cargo type to acquire
+//   - storageOperationID: ID of the storage operation to acquire from
+//   - storageWaypoint: Waypoint where storage ships are located
+//   - factorySymbol: Destination factory to deliver to
+//   - dependsOn: Task IDs that must complete first (usually empty)
+func NewStorageAcquireDeliverTask(
+	pipelineID string,
+	playerID int,
+	good string,
+	storageOperationID string,
+	storageWaypoint string,
+	factorySymbol string,
+	dependsOn []string,
+) *ManufacturingTask {
+	task := NewManufacturingTask(TaskTypeStorageAcquireDeliver, good, pipelineID, playerID)
+	task.storageOperationID = storageOperationID
+	task.storageWaypoint = storageWaypoint
+	task.factorySymbol = factorySymbol // Where to deliver to
+	task.dependsOn = dependsOn
+	task.priority = PriorityStorageAcquireDeliver
+	return task
+}
+
 // ReconstructTask rebuilds a task from persistence
 func ReconstructTask(
 	id string,
@@ -224,6 +272,8 @@ func ReconstructTask(
 	sourceMarket string,
 	targetMarket string,
 	factorySymbol string,
+	storageOperationID string,
+	storageWaypoint string,
 	dependsOn []string,
 	pipelineID string,
 	playerID int,
@@ -239,31 +289,41 @@ func ReconstructTask(
 	totalCost int,
 	totalRevenue int,
 	errorMessage string,
+	// BUG FIX #3: Phase tracking fields
+	collectPhaseCompleted bool,
+	acquirePhaseCompleted bool,
+	phaseCompletedAt *time.Time,
 ) *ManufacturingTask {
 	return &ManufacturingTask{
-		id:             id,
-		taskType:       taskType,
-		status:         status,
-		good:           good,
-		quantity:       quantity,
-		sourceMarket:   sourceMarket,
-		targetMarket:   targetMarket,
-		factorySymbol:  factorySymbol,
-		dependsOn:      dependsOn,
-		pipelineID:     pipelineID,
-		playerID:       playerID,
-		assignedShip:   assignedShip,
-		priority:       priority,
-		retryCount:     retryCount,
-		maxRetries:     maxRetries,
-		createdAt:      createdAt,
-		readyAt:        readyAt,
-		startedAt:      startedAt,
-		completedAt:    completedAt,
-		actualQuantity: actualQuantity,
-		totalCost:      totalCost,
-		totalRevenue:   totalRevenue,
-		errorMessage:   errorMessage,
+		id:                 id,
+		taskType:           taskType,
+		status:             status,
+		good:               good,
+		quantity:           quantity,
+		sourceMarket:       sourceMarket,
+		targetMarket:       targetMarket,
+		factorySymbol:      factorySymbol,
+		storageOperationID: storageOperationID,
+		storageWaypoint:    storageWaypoint,
+		dependsOn:          dependsOn,
+		pipelineID:         pipelineID,
+		playerID:           playerID,
+		assignedShip:       assignedShip,
+		priority:           priority,
+		retryCount:         retryCount,
+		maxRetries:         maxRetries,
+		createdAt:          createdAt,
+		readyAt:            readyAt,
+		startedAt:          startedAt,
+		completedAt:        completedAt,
+		actualQuantity:     actualQuantity,
+		totalCost:          totalCost,
+		totalRevenue:       totalRevenue,
+		errorMessage:       errorMessage,
+		// BUG FIX #3: Phase tracking fields
+		collectPhaseCompleted: collectPhaseCompleted,
+		acquirePhaseCompleted: acquirePhaseCompleted,
+		phaseCompletedAt:      phaseCompletedAt,
 	}
 }
 
@@ -276,8 +336,10 @@ func (t *ManufacturingTask) Good() string            { return t.good }
 func (t *ManufacturingTask) Quantity() int           { return t.quantity }
 func (t *ManufacturingTask) SourceMarket() string    { return t.sourceMarket }
 func (t *ManufacturingTask) TargetMarket() string    { return t.targetMarket }
-func (t *ManufacturingTask) FactorySymbol() string   { return t.factorySymbol }
-func (t *ManufacturingTask) DependsOn() []string     { return t.dependsOn }
+func (t *ManufacturingTask) FactorySymbol() string      { return t.factorySymbol }
+func (t *ManufacturingTask) StorageOperationID() string { return t.storageOperationID }
+func (t *ManufacturingTask) StorageWaypoint() string    { return t.storageWaypoint }
+func (t *ManufacturingTask) DependsOn() []string        { return t.dependsOn }
 func (t *ManufacturingTask) PipelineID() string      { return t.pipelineID }
 func (t *ManufacturingTask) PlayerID() int           { return t.playerID }
 func (t *ManufacturingTask) AssignedShip() string    { return t.assignedShip }
@@ -292,6 +354,53 @@ func (t *ManufacturingTask) ActualQuantity() int     { return t.actualQuantity }
 func (t *ManufacturingTask) TotalCost() int          { return t.totalCost }
 func (t *ManufacturingTask) TotalRevenue() int       { return t.totalRevenue }
 func (t *ManufacturingTask) ErrorMessage() string    { return t.errorMessage }
+
+// BUG FIX #3: Phase tracking getters
+func (t *ManufacturingTask) CollectPhaseCompleted() bool  { return t.collectPhaseCompleted }
+func (t *ManufacturingTask) AcquirePhaseCompleted() bool  { return t.acquirePhaseCompleted }
+func (t *ManufacturingTask) PhaseCompletedAt() *time.Time { return t.phaseCompletedAt }
+
+// BUG FIX #3: Phase completion methods
+
+// MarkCollectPhaseComplete marks the collect phase as completed for COLLECT_SELL tasks.
+// Called after successfully purchasing goods from the factory.
+// After daemon restart, ShouldSkipToSecondPhase() returns true and worker skips to sell.
+func (t *ManufacturingTask) MarkCollectPhaseComplete() {
+	t.collectPhaseCompleted = true
+	now := time.Now()
+	t.phaseCompletedAt = &now
+}
+
+// MarkAcquirePhaseComplete marks the acquire phase as completed for ACQUIRE_DELIVER tasks.
+// Called after successfully purchasing goods from the market.
+// After daemon restart, ShouldSkipToSecondPhase() returns true and worker skips to deliver.
+func (t *ManufacturingTask) MarkAcquirePhaseComplete() {
+	t.acquirePhaseCompleted = true
+	now := time.Now()
+	t.phaseCompletedAt = &now
+}
+
+// ShouldSkipToSecondPhase returns true if the first phase completed before interruption.
+// Used by workers to skip to sell/deliver phase after daemon restart.
+func (t *ManufacturingTask) ShouldSkipToSecondPhase() bool {
+	switch t.taskType {
+	case TaskTypeCollectSell:
+		return t.collectPhaseCompleted
+	case TaskTypeAcquireDeliver, TaskTypeStorageAcquireDeliver:
+		// STORAGE_ACQUIRE_DELIVER reuses acquirePhaseCompleted flag
+		return t.acquirePhaseCompleted
+	default:
+		return false
+	}
+}
+
+// ResetPhaseTracking clears phase completion flags.
+// Used when retrying a failed task to start fresh.
+func (t *ManufacturingTask) ResetPhaseTracking() {
+	t.collectPhaseCompleted = false
+	t.acquirePhaseCompleted = false
+	t.phaseCompletedAt = nil
+}
 
 // State transitions
 
@@ -410,6 +519,8 @@ func (t *ManufacturingTask) ResetForRetry() error {
 	t.completedAt = nil
 	t.readyAt = nil      // Reset so MarkReady() sets fresh timestamp for fair aging
 	t.assignedShip = "" // Release ship so it can be reassigned
+	// BUG FIX #3: Reset phase tracking for fresh retry
+	t.ResetPhaseTracking()
 	return nil
 }
 
@@ -562,6 +673,8 @@ func (t *ManufacturingTask) GetDestination() string {
 		return t.factorySymbol
 	case TaskTypeLiquidate:
 		return t.targetMarket
+	case TaskTypeStorageAcquireDeliver:
+		return t.storageWaypoint // Navigate to storage operation first
 	default:
 		return ""
 	}
@@ -576,9 +689,10 @@ func (t *ManufacturingTask) GetFirstDestination() string {
 
 // GetFinalDestination returns where the task delivers goods.
 // For ACQUIRE_DELIVER: factory (deliver inputs), For COLLECT_SELL/LIQUIDATE: target market (sell outputs).
+// For STORAGE_ACQUIRE_DELIVER: factory (deliver collected cargo).
 func (t *ManufacturingTask) GetFinalDestination() string {
 	switch t.taskType {
-	case TaskTypeAcquireDeliver:
+	case TaskTypeAcquireDeliver, TaskTypeStorageAcquireDeliver:
 		return t.factorySymbol // Deliver to factory
 	case TaskTypeCollectSell, TaskTypeLiquidate:
 		return t.targetMarket // Sell at market
@@ -622,7 +736,12 @@ func (t *ManufacturingTask) IsCollectionTask() bool {
 
 // IsDeliveryTask returns true if this task involves delivering to a factory.
 func (t *ManufacturingTask) IsDeliveryTask() bool {
-	return t.taskType == TaskTypeAcquireDeliver
+	return t.taskType == TaskTypeAcquireDeliver || t.taskType == TaskTypeStorageAcquireDeliver
+}
+
+// IsStorageTask returns true if this task acquires from storage ships.
+func (t *ManufacturingTask) IsStorageTask() bool {
+	return t.taskType == TaskTypeStorageAcquireDeliver
 }
 
 // String provides human-readable representation
@@ -644,6 +763,8 @@ func ReconstituteTask(
 	sourceMarket string,
 	targetMarket string,
 	factorySymbol string,
+	storageOperationID string,
+	storageWaypoint string,
 	dependsOn []string,
 	assignedShip string,
 	priority int,
@@ -656,30 +777,40 @@ func ReconstituteTask(
 	readyAt *time.Time,
 	startedAt *time.Time,
 	completedAt *time.Time,
+	// BUG FIX #3: Phase tracking fields
+	collectPhaseCompleted bool,
+	acquirePhaseCompleted bool,
+	phaseCompletedAt *time.Time,
 ) *ManufacturingTask {
 	return &ManufacturingTask{
-		id:             id,
-		pipelineID:     pipelineID,
-		playerID:       playerID,
-		taskType:       taskType,
-		status:         status,
-		good:           good,
-		quantity:       quantity,
-		actualQuantity: actualQuantity,
-		sourceMarket:   sourceMarket,
-		targetMarket:   targetMarket,
-		factorySymbol:  factorySymbol,
-		dependsOn:      dependsOn,
-		assignedShip:   assignedShip,
-		priority:       priority,
-		retryCount:     retryCount,
-		maxRetries:     maxRetries,
-		totalCost:      totalCost,
-		totalRevenue:   totalRevenue,
-		errorMessage:   errorMessage,
-		createdAt:      createdAt,
-		readyAt:        readyAt,
-		startedAt:      startedAt,
-		completedAt:    completedAt,
+		id:                 id,
+		pipelineID:         pipelineID,
+		playerID:           playerID,
+		taskType:           taskType,
+		status:             status,
+		good:               good,
+		quantity:           quantity,
+		actualQuantity:     actualQuantity,
+		sourceMarket:       sourceMarket,
+		targetMarket:       targetMarket,
+		factorySymbol:      factorySymbol,
+		storageOperationID: storageOperationID,
+		storageWaypoint:    storageWaypoint,
+		dependsOn:          dependsOn,
+		assignedShip:       assignedShip,
+		priority:           priority,
+		retryCount:         retryCount,
+		maxRetries:         maxRetries,
+		totalCost:          totalCost,
+		totalRevenue:       totalRevenue,
+		errorMessage:       errorMessage,
+		createdAt:          createdAt,
+		readyAt:            readyAt,
+		startedAt:          startedAt,
+		completedAt:        completedAt,
+		// BUG FIX #3: Phase tracking fields
+		collectPhaseCompleted: collectPhaseCompleted,
+		acquirePhaseCompleted: acquirePhaseCompleted,
+		phaseCompletedAt:      phaseCompletedAt,
 	}
 }

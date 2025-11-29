@@ -169,6 +169,50 @@ func (MiningOperationModel) TableName() string {
 	return "mining_operations"
 }
 
+// GasOperationModel represents the gas_operations table
+type GasOperationModel struct {
+	ID             string       `gorm:"column:id;primaryKey;not null"`
+	PlayerID       int          `gorm:"column:player_id;primaryKey;not null"`
+	Player         *PlayerModel `gorm:"foreignKey:PlayerID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
+	GasGiant       string       `gorm:"column:gas_giant;not null"`
+	Status         string       `gorm:"column:status;default:'PENDING'"`
+	SiphonShips    string       `gorm:"column:siphon_ships;type:text"`    // JSON array
+	TransportShips string       `gorm:"column:transport_ships;type:text"` // JSON array
+	MaxIterations  int          `gorm:"column:max_iterations;default:-1"`
+	LastError      string       `gorm:"column:last_error;type:text"`
+	CreatedAt      time.Time    `gorm:"column:created_at;not null;autoCreateTime"`
+	UpdatedAt      time.Time    `gorm:"column:updated_at;not null;autoUpdateTime"`
+	StartedAt      *time.Time   `gorm:"column:started_at"`
+	StoppedAt      *time.Time   `gorm:"column:stopped_at"`
+}
+
+func (GasOperationModel) TableName() string {
+	return "gas_operations"
+}
+
+// StorageOperationModel represents the storage_operations table
+// This is a generalized model for cargo storage operations (gas, mining, custom)
+type StorageOperationModel struct {
+	ID             string       `gorm:"column:id;primaryKey;not null"`
+	PlayerID       int          `gorm:"column:player_id;primaryKey;not null"`
+	Player         *PlayerModel `gorm:"foreignKey:PlayerID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
+	WaypointSymbol string       `gorm:"column:waypoint_symbol;not null"`
+	OperationType  string       `gorm:"column:operation_type;not null"`     // GAS_SIPHON, MINING, CUSTOM
+	Status         string       `gorm:"column:status;default:'PENDING'"`    // PENDING, RUNNING, COMPLETED, STOPPED, FAILED
+	ExtractorShips string       `gorm:"column:extractor_ships;type:text"`   // JSON array
+	StorageShips   string       `gorm:"column:storage_ships;type:text"`     // JSON array
+	SupportedGoods string       `gorm:"column:supported_goods;type:text"`   // JSON array
+	LastError      string       `gorm:"column:last_error;type:text"`
+	CreatedAt      time.Time    `gorm:"column:created_at;not null;autoCreateTime"`
+	UpdatedAt      time.Time    `gorm:"column:updated_at;not null;autoUpdateTime"`
+	StartedAt      *time.Time   `gorm:"column:started_at"`
+	StoppedAt      *time.Time   `gorm:"column:stopped_at"`
+}
+
+func (StorageOperationModel) TableName() string {
+	return "storage_operations"
+}
+
 // GoodsFactoryModel represents the goods_factories table
 type GoodsFactoryModel struct {
 	ID               string       `gorm:"column:id;primaryKey;not null"`
@@ -326,10 +370,12 @@ type ManufacturingTaskModel struct {
 	Good           string     `gorm:"column:good;size:64;not null"`
 	Quantity       int        `gorm:"column:quantity;default:0"`
 	ActualQuantity int        `gorm:"column:actual_quantity;default:0"`
-	SourceMarket   *string    `gorm:"column:source_market;size:64"`
-	TargetMarket   *string    `gorm:"column:target_market;size:64"`
-	FactorySymbol  *string    `gorm:"column:factory_symbol;size:64"`
-	AssignedShip   *string    `gorm:"column:assigned_ship;size:64;index:idx_tasks_ship"`
+	SourceMarket       *string `gorm:"column:source_market;size:64"`
+	TargetMarket       *string `gorm:"column:target_market;size:64"`
+	FactorySymbol      *string `gorm:"column:factory_symbol;size:64"`
+	StorageOperationID *string `gorm:"column:storage_operation_id;size:64;index:idx_tasks_storage_operation"` // For STORAGE_ACQUIRE_DELIVER tasks
+	StorageWaypoint    *string `gorm:"column:storage_waypoint;size:64"`                                       // For STORAGE_ACQUIRE_DELIVER tasks
+	AssignedShip       *string `gorm:"column:assigned_ship;size:64;index:idx_tasks_ship"`
 	Priority       int        `gorm:"column:priority;default:0"`
 	RetryCount     int        `gorm:"column:retry_count;default:0"`
 	MaxRetries     int        `gorm:"column:max_retries;default:3"`
@@ -340,6 +386,10 @@ type ManufacturingTaskModel struct {
 	ReadyAt        *time.Time `gorm:"column:ready_at"`
 	StartedAt      *time.Time `gorm:"column:started_at"`
 	CompletedAt    *time.Time `gorm:"column:completed_at"`
+	// BUG FIX #3: Phase tracking fields for daemon restart resilience
+	CollectPhaseCompleted bool       `gorm:"column:collect_phase_completed;default:false"`
+	AcquirePhaseCompleted bool       `gorm:"column:acquire_phase_completed;default:false"`
+	PhaseCompletedAt      *time.Time `gorm:"column:phase_completed_at"`
 }
 
 func (ManufacturingTaskModel) TableName() string {

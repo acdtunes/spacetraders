@@ -386,6 +386,7 @@ func (r *GormManufacturingTaskRepository) taskToModel(t *manufacturing.Manufactu
 	}
 
 	var pipelineID, sourceMarket, targetMarket, factorySymbol, assignedShip *string
+	var storageOperationID, storageWaypoint *string
 	if t.PipelineID() != "" {
 		s := t.PipelineID()
 		pipelineID = &s
@@ -402,24 +403,34 @@ func (r *GormManufacturingTaskRepository) taskToModel(t *manufacturing.Manufactu
 		s := t.FactorySymbol()
 		factorySymbol = &s
 	}
+	if t.StorageOperationID() != "" {
+		s := t.StorageOperationID()
+		storageOperationID = &s
+	}
+	if t.StorageWaypoint() != "" {
+		s := t.StorageWaypoint()
+		storageWaypoint = &s
+	}
 	if t.AssignedShip() != "" {
 		s := t.AssignedShip()
 		assignedShip = &s
 	}
 
 	return &ManufacturingTaskModel{
-		ID:             t.ID(),
-		PipelineID:     pipelineID,
-		PlayerID:       t.PlayerID(),
-		TaskType:       string(t.TaskType()),
-		Status:         string(t.Status()),
-		Good:           t.Good(),
-		Quantity:       t.Quantity(),
-		ActualQuantity: t.ActualQuantity(),
-		SourceMarket:   sourceMarket,
-		TargetMarket:   targetMarket,
-		FactorySymbol:  factorySymbol,
-		AssignedShip:   assignedShip,
+		ID:                 t.ID(),
+		PipelineID:         pipelineID,
+		PlayerID:           t.PlayerID(),
+		TaskType:           string(t.TaskType()),
+		Status:             string(t.Status()),
+		Good:               t.Good(),
+		Quantity:           t.Quantity(),
+		ActualQuantity:     t.ActualQuantity(),
+		SourceMarket:       sourceMarket,
+		TargetMarket:       targetMarket,
+		FactorySymbol:      factorySymbol,
+		StorageOperationID: storageOperationID,
+		StorageWaypoint:    storageWaypoint,
+		AssignedShip:       assignedShip,
 		Priority:       t.Priority(),
 		RetryCount:     t.RetryCount(),
 		MaxRetries:     t.MaxRetries(),
@@ -430,6 +441,10 @@ func (r *GormManufacturingTaskRepository) taskToModel(t *manufacturing.Manufactu
 		ReadyAt:        t.ReadyAt(),
 		StartedAt:      t.StartedAt(),
 		CompletedAt:    t.CompletedAt(),
+		// BUG FIX #3: Phase tracking fields
+		CollectPhaseCompleted: t.CollectPhaseCompleted(),
+		AcquirePhaseCompleted: t.AcquirePhaseCompleted(),
+		PhaseCompletedAt:      t.PhaseCompletedAt(),
 	}
 }
 
@@ -441,6 +456,7 @@ func (r *GormManufacturingTaskRepository) modelToTask(m *ManufacturingTaskModel,
 	}
 
 	var pipelineID, sourceMarket, targetMarket, factorySymbol, assignedShip string
+	var storageOperationID, storageWaypoint string
 	if m.PipelineID != nil {
 		pipelineID = *m.PipelineID
 	}
@@ -452,6 +468,12 @@ func (r *GormManufacturingTaskRepository) modelToTask(m *ManufacturingTaskModel,
 	}
 	if m.FactorySymbol != nil {
 		factorySymbol = *m.FactorySymbol
+	}
+	if m.StorageOperationID != nil {
+		storageOperationID = *m.StorageOperationID
+	}
+	if m.StorageWaypoint != nil {
+		storageWaypoint = *m.StorageWaypoint
 	}
 	if m.AssignedShip != nil {
 		assignedShip = *m.AssignedShip
@@ -469,6 +491,8 @@ func (r *GormManufacturingTaskRepository) modelToTask(m *ManufacturingTaskModel,
 		sourceMarket,
 		targetMarket,
 		factorySymbol,
+		storageOperationID,
+		storageWaypoint,
 		deps,
 		assignedShip,
 		m.Priority,
@@ -481,5 +505,9 @@ func (r *GormManufacturingTaskRepository) modelToTask(m *ManufacturingTaskModel,
 		m.ReadyAt,
 		m.StartedAt,
 		m.CompletedAt,
+		// BUG FIX #3: Phase tracking fields
+		m.CollectPhaseCompleted,
+		m.AcquirePhaseCompleted,
+		m.PhaseCompletedAt,
 	), nil
 }
