@@ -4,6 +4,7 @@ import (
 	"reflect"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	gasCommands "github.com/andrescamacho/spacetraders-go/internal/application/gas/commands"
 	ledgerCommands "github.com/andrescamacho/spacetraders-go/internal/application/ledger/commands"
 	ledgerQueries "github.com/andrescamacho/spacetraders-go/internal/application/ledger/queries"
 	"github.com/andrescamacho/spacetraders-go/internal/application/mediator"
@@ -15,7 +16,9 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/ledger"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/storage"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 )
@@ -32,6 +35,11 @@ type HandlerRegistry struct {
 	containerRepo             tradingCommands.ContainerRepository
 	daemonClient              daemon.DaemonClient
 	arbitrageExecutionLogRepo trading.ArbitrageExecutionLogRepository
+	// Storage and gas operation dependencies
+	storageOpRepo      storage.StorageOperationRepository
+	storageCoordinator storage.StorageCoordinator
+	waypointRepo       system.WaypointRepository
+	apiClient          domainPorts.APIClient
 }
 
 // NewHandlerRegistry creates a new handler registry with required dependencies
@@ -46,6 +54,10 @@ func NewHandlerRegistry(
 	containerRepo tradingCommands.ContainerRepository,
 	daemonClient daemon.DaemonClient,
 	arbitrageExecutionLogRepo trading.ArbitrageExecutionLogRepository,
+	storageOpRepo storage.StorageOperationRepository,
+	storageCoordinator storage.StorageCoordinator,
+	waypointRepo system.WaypointRepository,
+	apiClient domainPorts.APIClient,
 ) *HandlerRegistry {
 	// Default to real clock if not provided
 	if clock == nil {
@@ -63,6 +75,10 @@ func NewHandlerRegistry(
 		containerRepo:             containerRepo,
 		daemonClient:              daemonClient,
 		arbitrageExecutionLogRepo: arbitrageExecutionLogRepo,
+		storageOpRepo:             storageOpRepo,
+		storageCoordinator:        storageCoordinator,
+		waypointRepo:              waypointRepo,
+		apiClient:                 apiClient,
 	}
 }
 
@@ -171,6 +187,50 @@ func (r *HandlerRegistry) RegisterArbitrageHandlers(m common.Mediator) error {
 	return nil
 }
 
+// RegisterGasHandlers registers all gas extraction command handlers
+//
+// This method registers:
+//   - RunGasCoordinatorCommand → RunGasCoordinatorHandler
+//   - RunSiphonWorkerCommand → RunSiphonWorkerHandler
+//
+// Note: Transport is handled by manufacturing pool via STORAGE_ACQUIRE_DELIVER tasks.
+// Storage ships buffer cargo; haulers from the manufacturing pool pick it up.
+func (r *HandlerRegistry) RegisterGasHandlers(m common.Mediator) error {
+	// Register RunGasCoordinatorCommand handler
+	coordinatorHandler := gasCommands.NewRunGasCoordinatorHandler(
+		m,
+		r.shipRepo,
+		r.storageOpRepo,
+		r.shipAssignmentRepo,
+		r.daemonClient,
+		r.waypointRepo,
+		r.storageCoordinator,
+	)
+	if err := m.Register(
+		reflect.TypeOf(&gasCommands.RunGasCoordinatorCommand{}),
+		coordinatorHandler,
+	); err != nil {
+		return err
+	}
+
+	// Register RunSiphonWorkerCommand handler
+	siphonHandler := gasCommands.NewRunSiphonWorkerHandler(
+		m,
+		r.shipRepo,
+		r.shipAssignmentRepo,
+		r.storageCoordinator,
+		r.clock,
+	)
+	if err := m.Register(
+		reflect.TypeOf(&gasCommands.RunSiphonWorkerCommand{}),
+		siphonHandler,
+	); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 // CreateConfiguredMediator creates a new mediator with all ledger handlers registered
 //
 // This is a convenience method that creates a mediator and registers all ledger handlers.
@@ -185,6 +245,13 @@ func (r *HandlerRegistry) CreateConfiguredMediator() (common.Mediator, error) {
 	// Register arbitrage handlers if dependencies are available
 	if r.marketRepo != nil && r.shipRepo != nil && r.waypointProvider != nil {
 		if err := r.RegisterArbitrageHandlers(m); err != nil {
+			return nil, err
+		}
+	}
+
+	// Register gas handlers if dependencies are available
+	if r.storageOpRepo != nil && r.storageCoordinator != nil && r.waypointRepo != nil {
+		if err := r.RegisterGasHandlers(m); err != nil {
 			return nil, err
 		}
 	}
