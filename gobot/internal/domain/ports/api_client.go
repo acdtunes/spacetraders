@@ -69,6 +69,9 @@ type APIClient interface {
 	// Mining operations
 	ExtractResources(ctx context.Context, shipSymbol string, token string) (*ExtractionResult, error)
 
+	// Gas siphoning operations
+	SiphonResources(ctx context.Context, shipSymbol string, token string) (*SiphonResult, error)
+
 	// Market operations
 	GetMarket(ctx context.Context, systemSymbol, waypointSymbol, token string) (*MarketData, error)
 
@@ -125,6 +128,16 @@ type SellResult struct {
 
 // ExtractionResult contains the result of extracting resources from an asteroid
 type ExtractionResult struct {
+	ShipSymbol      string
+	YieldSymbol     string
+	YieldUnits      int
+	CooldownSeconds int
+	CooldownExpires string // ISO8601 timestamp
+	Cargo           *navigation.CargoData
+}
+
+// SiphonResult contains the result of siphoning gas from a gas giant
+type SiphonResult struct {
 	ShipSymbol      string
 	YieldSymbol     string
 	YieldUnits      int

@@ -803,6 +803,72 @@ func (c *SpaceTradersClient) ExtractResources(ctx context.Context, shipSymbol st
 	}, nil
 }
 
+// SiphonResources siphons gas from a gas giant
+func (c *SpaceTradersClient) SiphonResources(ctx context.Context, shipSymbol string, token string) (*domainPorts.SiphonResult, error) {
+	path := fmt.Sprintf("/my/ships/%s/siphon", shipSymbol)
+
+	// Send empty body as required by API
+	emptyBody := map[string]interface{}{}
+
+	var response struct {
+		Data struct {
+			Siphon struct {
+				ShipSymbol string `json:"shipSymbol"`
+				Yield      struct {
+					Symbol string `json:"symbol"`
+					Units  int    `json:"units"`
+				} `json:"yield"`
+			} `json:"siphon"`
+			Cooldown struct {
+				ShipSymbol       string `json:"shipSymbol"`
+				TotalSeconds     int    `json:"totalSeconds"`
+				RemainingSeconds int    `json:"remainingSeconds"`
+				Expiration       string `json:"expiration"`
+			} `json:"cooldown"`
+			Cargo struct {
+				Capacity  int `json:"capacity"`
+				Units     int `json:"units"`
+				Inventory []struct {
+					Symbol      string `json:"symbol"`
+					Name        string `json:"name"`
+					Description string `json:"description"`
+					Units       int    `json:"units"`
+				} `json:"inventory"`
+			} `json:"cargo"`
+		} `json:"data"`
+	}
+
+	if err := c.request(ctx, "POST", path, token, emptyBody, &response); err != nil {
+		return nil, fmt.Errorf("failed to siphon resources: %w", err)
+	}
+
+	// Convert cargo inventory
+	inventory := make([]shared.CargoItem, len(response.Data.Cargo.Inventory))
+	for i, item := range response.Data.Cargo.Inventory {
+		inventory[i] = shared.CargoItem{
+			Symbol:      item.Symbol,
+			Name:        item.Name,
+			Description: item.Description,
+			Units:       item.Units,
+		}
+	}
+
+	cargo := &navigation.CargoData{
+		Capacity:  response.Data.Cargo.Capacity,
+		Units:     response.Data.Cargo.Units,
+		Inventory: inventory,
+	}
+
+	return &domainPorts.SiphonResult{
+		ShipSymbol:      response.Data.Siphon.ShipSymbol,
+		YieldSymbol:     response.Data.Siphon.Yield.Symbol,
+		YieldUnits:      response.Data.Siphon.Yield.Units,
+		CooldownSeconds: response.Data.Cooldown.RemainingSeconds,
+		CooldownExpires: response.Data.Cooldown.Expiration,
+		Cargo:           cargo,
+	}, nil
+}
+
 // TransferCargo transfers cargo from one ship to another at the same waypoint
 func (c *SpaceTradersClient) TransferCargo(ctx context.Context, fromShipSymbol, toShipSymbol, goodSymbol string, units int, token string) (*domainPorts.TransferResult, error) {
 	path := fmt.Sprintf("/my/ships/%s/transfer", fromShipSymbol)
