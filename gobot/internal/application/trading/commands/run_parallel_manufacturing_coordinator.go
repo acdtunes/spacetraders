@@ -315,6 +315,7 @@ func (h *RunParallelManufacturingCoordinatorHandler) initializeServices(cmd *Run
 		h.taskRepo,
 		h.factoryStateRepo,
 		h.shipAssignmentRepo,
+		h.shipRepo, // BUG FIX #4: Added for cargo checks on orphaned tasks
 		h.factoryTracker,
 		h.taskQueue,
 	)
@@ -390,6 +391,8 @@ func (h *RunParallelManufacturingCoordinatorHandler) initializeServices(cmd *Run
 
 // recoverState recovers coordinator state from database
 func (h *RunParallelManufacturingCoordinatorHandler) recoverState(ctx context.Context, playerID int) error {
+	logger := common.LoggerFromContext(ctx)
+
 	result, err := h.stateRecoverer.RecoverState(ctx, playerID)
 	if err != nil {
 		return err
@@ -402,10 +405,72 @@ func (h *RunParallelManufacturingCoordinatorHandler) recoverState(ctx context.Co
 		}
 	}
 
+	// BUG FIX #1: Restart workers for READY tasks that have assigned ships
+	// This handles tasks that were EXECUTING when daemon died and have preserved ship assignments
+	if h.workerManager != nil {
+		restartedCount, err := h.restartInterruptedWorkers(ctx, playerID)
+		if err != nil {
+			logger.Log("ERROR", fmt.Sprintf("Failed to restart interrupted workers: %v", err), nil)
+		} else if restartedCount > 0 {
+			logger.Log("INFO", fmt.Sprintf("BUG FIX #1: Restarted %d interrupted worker(s)", restartedCount), nil)
+		}
+	}
+
 	// Check if any recovered pipelines are already complete (tasks finished before restart)
 	h.pipelineManager.CheckAllPipelinesForCompletion(ctx)
 
 	return nil
+}
+
+// restartInterruptedWorkers restarts worker containers for READY tasks that have assigned ships.
+// BUG FIX #1: After daemon restart, SELL tasks preserve their ship assignments but their
+// worker containers are gone. This function finds these orphaned tasks and restarts workers.
+func (h *RunParallelManufacturingCoordinatorHandler) restartInterruptedWorkers(ctx context.Context, playerID int) (int, error) {
+	logger := common.LoggerFromContext(ctx)
+
+	if h.taskRepo == nil || h.shipRepo == nil {
+		return 0, nil
+	}
+
+	// Find READY tasks that have assigned ships (indicating interrupted workers)
+	readyTasks, err := h.taskRepo.FindByStatus(ctx, playerID, manufacturing.TaskStatusReady)
+	if err != nil {
+		return 0, fmt.Errorf("failed to find ready tasks: %w", err)
+	}
+
+	restartedCount := 0
+	for _, task := range readyTasks {
+		shipSymbol := task.AssignedShip()
+		if shipSymbol == "" {
+			continue // No assigned ship - will be handled by normal assignment
+		}
+
+		// This task has an assigned ship but no worker - restart it
+		ship, err := h.shipRepo.FindBySymbol(ctx, shipSymbol, shared.MustNewPlayerID(playerID))
+		if err != nil {
+			logger.Log("WARN", fmt.Sprintf("Failed to load ship %s for task %s: %v",
+				shipSymbol, task.ID()[:8], err), nil)
+			continue
+		}
+
+		// Start worker for this task
+		err = h.workerManager.AssignTaskToShip(ctx, mfgServices.AssignTaskParams{
+			Task:     task,
+			Ship:     ship,
+			PlayerID: playerID,
+		})
+		if err != nil {
+			logger.Log("WARN", fmt.Sprintf("Failed to restart worker for task %s: %v",
+				task.ID()[:8], err), nil)
+			continue
+		}
+
+		restartedCount++
+		logger.Log("INFO", fmt.Sprintf("Restarted worker for task %s (%s) on ship %s",
+			task.ID()[:8], task.TaskType(), shipSymbol), nil)
+	}
+
+	return restartedCount, nil
 }
 
 // startSupplyMonitor starts the supply monitor in background

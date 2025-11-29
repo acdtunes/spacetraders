@@ -5,7 +5,9 @@ import (
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
+	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/storage"
 )
 
 // TaskExecutor executes a specific type of manufacturing task.
@@ -83,4 +85,17 @@ func NewDefaultTaskExecutorRegistry(
 	registry.Register(NewLiquidateExecutor(navigator, seller))
 
 	return registry
+}
+
+// RegisterStorageExecutor adds the storage acquire deliver executor to an existing registry.
+// This is separated because storage operations require additional dependencies that may not
+// always be available (e.g., when storage operations are not configured).
+func RegisterStorageExecutor(
+	registry *TaskExecutorRegistry,
+	navigator Navigator,
+	seller *ManufacturingSeller,
+	storageCoordinator storage.StorageCoordinator,
+	apiClient domainPorts.APIClient,
+) {
+	registry.Register(NewStorageAcquireDeliverExecutor(navigator, seller, storageCoordinator, apiClient))
 }
