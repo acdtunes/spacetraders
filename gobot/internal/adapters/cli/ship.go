@@ -594,6 +594,10 @@ Examples:
 				nil, // containerRepo (not needed for this CLI command)
 				nil, // daemonClient (not needed for this CLI command)
 				nil, // arbitrageExecutionLogRepo (not needed for this CLI command)
+				nil, // storageOpRepo (not needed for this CLI command)
+				nil, // storageCoordinator (not needed for this CLI command)
+				nil, // waypointRepo (not needed for this CLI command)
+				nil, // apiClient (not needed for this CLI command)
 			)
 			mediator, err := registry.CreateConfiguredMediator()
 			if err != nil {
