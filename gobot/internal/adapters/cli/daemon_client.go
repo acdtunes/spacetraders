@@ -1037,6 +1037,18 @@ type StartManufacturingCoordinatorResult struct {
 	Message      string
 }
 
+// GasExtractionOperationResponse contains the result of starting a gas extraction operation
+type GasExtractionOperationResponse struct {
+	ContainerID    string
+	GasGiant       string
+	SiphonShips    []string
+	TransportShips []string
+	Status         string
+	// Dry-run results
+	ShipRoutes []common.ShipRouteDTO
+	Errors     []string
+}
+
 // ScanArbitrageOpportunities scans for arbitrage opportunities in a system
 func (c *DaemonClient) ScanArbitrageOpportunities(
 	ctx context.Context,
@@ -1145,5 +1157,68 @@ func (c *DaemonClient) StartParallelManufacturingCoordinator(
 		MinBalance:   int(resp.MinBalance),
 		Status:       resp.Status,
 		Message:      resp.Message,
+	}, nil
+}
+
+// GasExtractionOperation starts a gas extraction operation with siphon and transport ships
+func (c *DaemonClient) GasExtractionOperation(
+	ctx context.Context,
+	gasGiant string,
+	siphonShips []string,
+	transportShips []string,
+	force bool,
+	dryRun bool,
+	maxLegTime int,
+	playerID int,
+) (*GasExtractionOperationResponse, error) {
+	req := &pb.GasExtractionOperationRequest{
+		SiphonShips:    siphonShips,
+		TransportShips: transportShips,
+		PlayerId:       int32(playerID),
+		Force:          force,
+		DryRun:         dryRun,
+		MaxLegTime:     int32(maxLegTime),
+	}
+
+	// Only set gas_giant if provided
+	if gasGiant != "" {
+		req.GasGiant = &gasGiant
+	}
+
+	resp, err := c.client.GasExtractionOperation(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert ship routes from protobuf
+	var shipRoutes []common.ShipRouteDTO
+	for _, route := range resp.ShipRoutes {
+		segments := make([]common.RouteSegmentDTO, len(route.Segments))
+		for j, seg := range route.Segments {
+			segments[j] = common.RouteSegmentDTO{
+				From:       seg.From,
+				To:         seg.To,
+				FlightMode: seg.FlightMode,
+				FuelCost:   int(seg.FuelCost),
+				TravelTime: int(seg.TravelTime),
+			}
+		}
+		shipRoutes = append(shipRoutes, common.ShipRouteDTO{
+			ShipSymbol: route.ShipSymbol,
+			ShipType:   route.ShipType,
+			Segments:   segments,
+			TotalFuel:  int(route.TotalFuel),
+			TotalTime:  int(route.TotalTime),
+		})
+	}
+
+	return &GasExtractionOperationResponse{
+		ContainerID:    resp.ContainerId,
+		GasGiant:       resp.GasGiant,
+		SiphonShips:    resp.SiphonShips,
+		TransportShips: resp.TransportShips,
+		Status:         resp.Status,
+		ShipRoutes:     shipRoutes,
+		Errors:         resp.Errors,
 	}, nil
 }

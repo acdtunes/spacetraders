@@ -31,6 +31,7 @@ Examples:
 	cmd.AddCommand(newWorkflowScoutAllMarketsCommand())
 	cmd.AddCommand(newWorkflowMiningCommand())
 	cmd.AddCommand(newWorkflowTourSellCommand())
+	cmd.AddCommand(newWorkflowGasExtractionCommand())
 
 	return cmd
 }
@@ -556,6 +557,150 @@ Examples:
 	// Command-specific flags
 	cmd.Flags().StringVar(&shipSymbol, "ship", "", "Ship symbol with cargo to sell (required)")
 	cmd.Flags().StringVar(&returnWaypoint, "return-waypoint", "", "Optional waypoint to return to after selling")
+
+	return cmd
+}
+
+// newWorkflowGasExtractionCommand creates the workflow gas-extraction subcommand
+func newWorkflowGasExtractionCommand() *cobra.Command {
+	var (
+		gasGiant      string
+		siphonsCsv    string
+		transportsCsv string
+		force         bool
+		dryRun        bool
+		maxLegTime    int
+	)
+
+	cmd := &cobra.Command{
+		Use:   "gas-extraction",
+		Short: "Start gas extraction operation from gas giants",
+		Long: `Start a coordinated gas extraction operation with siphon ships and transports.
+
+Siphon ships extract gas resources from gas giants and transfer to waiting transports.
+Transports deliver gas to factories with low supply and return for more.
+
+Gas types extracted (depends on gas giant type):
+  LIQUID_HYDROGEN - Common fuel source
+  LIQUID_NITROGEN - Used in manufacturing
+  HYDROCARBON     - Industrial applications
+
+The daemon will:
+- Deploy siphon ships to the gas giant
+- Siphon ships extract gas, fill cargo, and transfer to transports
+- Transports wait at gas giant, receive cargo, deliver to factories with LOW supply
+- Coordinate transfers between siphon ships and transports via channels
+
+Requirements:
+- Siphon ships need: GAS_SIPHON mount + GAS_PROCESSOR module
+- Transport ships: Regular cargo haulers
+
+Examples:
+  # Start gas extraction with auto-selected gas giant
+  spacetraders workflow gas-extraction --siphons SIPHON-1,SIPHON-2 --transports TRANSPORT-1 --agent ENDURANCE
+
+  # Specific gas giant
+  spacetraders workflow gas-extraction --gas-giant X1-ABC-GG1 --siphons SIPHON-1 --transports TRANSPORT-1,TRANSPORT-2 --agent ENDURANCE
+
+  # Dry run to see routes
+  spacetraders workflow gas-extraction --siphons SIPHON-1 --transports TRANSPORT-1 --dry-run --agent ENDURANCE
+
+  # Force selection even if validation fails
+  spacetraders workflow gas-extraction --siphons SIPHON-1 --transports TRANSPORT-1 --force --agent ENDURANCE`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			// Validate flags
+			if siphonsCsv == "" {
+				return fmt.Errorf("--siphons flag is required")
+			}
+			if transportsCsv == "" {
+				return fmt.Errorf("--transports flag is required (transports deliver to factories)")
+			}
+
+			// Parse CSV inputs
+			siphons := parseCsvList(siphonsCsv)
+			transports := parseCsvList(transportsCsv)
+
+			if len(siphons) == 0 {
+				return fmt.Errorf("at least one siphon ship is required")
+			}
+			if len(transports) == 0 {
+				return fmt.Errorf("at least one transport ship is required")
+			}
+
+			// Resolve player from flags or defaults
+			playerIdent, err := resolvePlayerIdentifier()
+			if err != nil {
+				return err
+			}
+
+			// Create gRPC client
+			client, err := NewDaemonClient(socketPath)
+			if err != nil {
+				return fmt.Errorf("failed to connect to daemon: %w", err)
+			}
+			defer client.Close()
+
+			// Execute gas extraction operation command
+			timeout := 30 * time.Second
+			if dryRun {
+				timeout = 300 * time.Second // 5 minutes for selection
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), timeout)
+			defer cancel()
+
+			if dryRun {
+				fmt.Printf("DRY RUN: Planning gas extraction operation...\n")
+			} else if gasGiant != "" {
+				fmt.Printf("Starting gas extraction operation at %s...\n", gasGiant)
+			} else {
+				fmt.Printf("Starting gas extraction operation (auto-selecting gas giant)...\n")
+			}
+			fmt.Printf("  Siphon Ships:    %s\n", strings.Join(siphons, ", "))
+			fmt.Printf("  Transport Ships: %s\n\n", strings.Join(transports, ", "))
+
+			result, err := client.GasExtractionOperation(ctx, gasGiant, siphons, transports, force, dryRun, maxLegTime, playerIdent.PlayerID)
+			if err != nil {
+				return fmt.Errorf("gas extraction operation failed: %w", err)
+			}
+
+			// Display result
+			if dryRun {
+				fmt.Println("Dry run started - planning routes")
+				fmt.Printf("  Container ID:    %s\n", result.ContainerID)
+				fmt.Printf("  Gas Giant:       %s\n", result.GasGiant)
+				fmt.Printf("  Siphon Ships:    %s\n", strings.Join(result.SiphonShips, ", "))
+				fmt.Printf("  Transport Ships: %s\n", strings.Join(result.TransportShips, ", "))
+				fmt.Printf("\nView results with: spacetraders container logs %s\n", result.ContainerID)
+				fmt.Println("\nRemove --dry-run to start the actual operation")
+			} else {
+				fmt.Println("Gas extraction operation started successfully")
+				fmt.Printf("  Container ID:    %s\n", result.ContainerID)
+				fmt.Printf("  Gas Giant:       %s\n", result.GasGiant)
+				fmt.Printf("  Siphon Ships:    %s\n", strings.Join(result.SiphonShips, ", "))
+				fmt.Printf("  Transport Ships: %s\n", strings.Join(result.TransportShips, ", "))
+				fmt.Printf("  Status:          %s\n", result.Status)
+				fmt.Printf("\nTrack progress with: spacetraders container logs %s\n", result.ContainerID)
+			}
+
+			// Display any errors
+			if len(result.Errors) > 0 {
+				fmt.Println("\nWarnings/Errors:")
+				for _, err := range result.Errors {
+					fmt.Printf("  - %s\n", err)
+				}
+			}
+
+			return nil
+		},
+	}
+
+	// Command-specific flags
+	cmd.Flags().StringVar(&gasGiant, "gas-giant", "", "Gas giant waypoint symbol (optional, auto-selects if not provided)")
+	cmd.Flags().StringVar(&siphonsCsv, "siphons", "", "Comma-separated list of siphon ship symbols (required)")
+	cmd.Flags().StringVar(&transportsCsv, "transports", "", "Comma-separated list of transport ship symbols (required)")
+	cmd.Flags().BoolVar(&force, "force", false, "Override fuel validation warnings")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Only plan routes, don't start operation")
+	cmd.Flags().IntVar(&maxLegTime, "max-leg-time", 0, "Max time per leg in minutes (0 = no limit)")
 
 	return cmd
 }
