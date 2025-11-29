@@ -15,6 +15,8 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	contractCmd "github.com/andrescamacho/spacetraders-go/internal/application/contract/commands"
 	contractQuery "github.com/andrescamacho/spacetraders-go/internal/application/contract/queries"
+	gasCmd "github.com/andrescamacho/spacetraders-go/internal/application/gas/commands"
+	gasQuery "github.com/andrescamacho/spacetraders-go/internal/application/gas/queries"
 	goodsCmd "github.com/andrescamacho/spacetraders-go/internal/application/goods/commands"
 	ledgerCmd "github.com/andrescamacho/spacetraders-go/internal/application/ledger/commands"
 	ledgerQuery "github.com/andrescamacho/spacetraders-go/internal/application/ledger/queries"
@@ -426,6 +428,25 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to register RunArbitrageCoordinator handler: %w", err)
 	}
 
+	// Gas extraction handlers (depend on daemonClientLocal and storageCoordinator)
+	// NOTE: Storage coordinator is created below (after manufacturing setup) and passed here.
+	// We'll register these handlers after storage coordinator is created.
+
+	siphonResourcesHandler := gasCmd.NewSiphonResourcesHandler(shipRepo, playerRepo, apiClient)
+	if err := mediator.RegisterHandler[*gasCmd.SiphonResourcesCommand](med, siphonResourcesHandler); err != nil {
+		return fmt.Errorf("failed to register SiphonResources handler: %w", err)
+	}
+
+	transferCargoHandler := gasCmd.NewTransferCargoHandler(shipRepo, apiClient)
+	if err := mediator.RegisterHandler[*gasCmd.TransferCargoCommand](med, transferCargoHandler); err != nil {
+		return fmt.Errorf("failed to register TransferCargo handler: %w", err)
+	}
+
+	findFactoryForGasHandler := gasQuery.NewFindFactoryForGasHandler(tradingMarketRepo)
+	if err := mediator.RegisterHandler[*gasQuery.FindFactoryForGasQuery](med, findFactoryForGasHandler); err != nil {
+		return fmt.Errorf("failed to register FindFactoryForGas handler: %w", err)
+	}
+
 	// Manufacturing handlers (depends on daemonClientLocal)
 	// Create manufacturing repositories (pipeline repo needed by demand finder)
 	manufacturingPipelineRepo := persistence.NewGormManufacturingPipelineRepository(db)
@@ -470,6 +491,20 @@ func run(cfg *config.Config) error {
 	// This enables manufacturing pipelines to acquire cargo from storage ships
 	storageCoordinator := storageApp.NewInMemoryStorageCoordinator()
 	mfgServices.RegisterStorageExecutor(taskExecutorRegistry, mfgNavigator, mfgSeller, storageCoordinator, apiClient)
+
+	// Gas extraction handlers (now that storage coordinator is available)
+	// Transport is handled by manufacturing pool via STORAGE_ACQUIRE_DELIVER tasks
+	gasCoordinatorHandler := gasCmd.NewRunGasCoordinatorHandler(
+		med, shipRepo, storageOperationRepo, shipAssignmentRepo, daemonClientLocal, waypointRepo, storageCoordinator,
+	)
+	if err := mediator.RegisterHandler[*gasCmd.RunGasCoordinatorCommand](med, gasCoordinatorHandler); err != nil {
+		return fmt.Errorf("failed to register RunGasCoordinator handler: %w", err)
+	}
+
+	gasSiphonWorkerHandler := gasCmd.NewRunSiphonWorkerHandler(med, shipRepo, shipAssignmentRepo, storageCoordinator, nil) // nil = use RealClock
+	if err := mediator.RegisterHandler[*gasCmd.RunSiphonWorkerCommand](med, gasSiphonWorkerHandler); err != nil {
+		return fmt.Errorf("failed to register RunSiphonWorker handler: %w", err)
+	}
 
 	// Create storage recovery service for daemon restart resilience
 	// This recovers storage ship cargo state from API when daemon restarts
