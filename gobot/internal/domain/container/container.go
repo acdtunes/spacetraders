@@ -59,6 +59,9 @@ const (
 	ContainerTypeManufacturingCoordinator   ContainerType = "MANUFACTURING_COORDINATOR"
 	ContainerTypeParallelManufacturing      ContainerType = "PARALLEL_MANUFACTURING"
 	ContainerTypeManufacturingTaskWorker    ContainerType = "MANUFACTURING_TASK_WORKER"
+	ContainerTypeGasCoordinator             ContainerType = "GAS_COORDINATOR"
+	ContainerTypeGasSiphonWorker            ContainerType = "GAS_SIPHON_WORKER"
+	ContainerTypeGasTransportWorker         ContainerType = "GAS_TRANSPORT_WORKER"
 )
 
 const (
