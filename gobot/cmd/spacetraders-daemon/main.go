@@ -21,8 +21,6 @@ import (
 	goodsServices "github.com/andrescamacho/spacetraders-go/internal/application/goods/services"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/goods"
 	"github.com/andrescamacho/spacetraders-go/internal/application/mediator"
-	miningCmd "github.com/andrescamacho/spacetraders-go/internal/application/mining/commands"
-	miningQuery "github.com/andrescamacho/spacetraders-go/internal/application/mining/queries"
 	playerQuery "github.com/andrescamacho/spacetraders-go/internal/application/player/queries"
 	scoutingCmd "github.com/andrescamacho/spacetraders-go/internal/application/scouting/commands"
 	scoutingQuery "github.com/andrescamacho/spacetraders-go/internal/application/scouting/queries"
@@ -340,32 +338,6 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to register BalanceShipPosition handler: %w", err)
 	}
 
-	// Mining handlers
-	extractResourcesHandler := miningCmd.NewExtractResourcesHandler(shipRepo, playerRepo, apiClient)
-	if err := mediator.RegisterHandler[*miningCmd.ExtractResourcesCommand](med, extractResourcesHandler); err != nil {
-		return fmt.Errorf("failed to register ExtractResources handler: %w", err)
-	}
-
-	transferCargoHandler := miningCmd.NewTransferCargoHandler(shipRepo, playerRepo, apiClient)
-	if err := mediator.RegisterHandler[*miningCmd.TransferCargoCommand](med, transferCargoHandler); err != nil {
-		return fmt.Errorf("failed to register TransferCargo handler: %w", err)
-	}
-
-	evaluateCargoValueHandler := miningQuery.NewEvaluateCargoValueHandler(tradingMarketRepo)
-	if err := mediator.RegisterHandler[*miningQuery.EvaluateCargoValueQuery](med, evaluateCargoValueHandler); err != nil {
-		return fmt.Errorf("failed to register EvaluateCargoValue handler: %w", err)
-	}
-
-	miningWorkerHandler := miningCmd.NewRunWorkerHandler(med, shipRepo, shipAssignmentRepo, nil)
-	if err := mediator.RegisterHandler[*miningCmd.RunWorkerCommand](med, miningWorkerHandler); err != nil {
-		return fmt.Errorf("failed to register MiningWorker handler: %w", err)
-	}
-
-	transportWorkerHandler := miningCmd.NewRunTransportWorkerHandler(med, shipRepo, shipAssignmentRepo, graphService)
-	if err := mediator.RegisterHandler[*miningCmd.RunTransportWorkerCommand](med, transportWorkerHandler); err != nil {
-		return fmt.Errorf("failed to register TransportWorker handler: %w", err)
-	}
-
 	// Tour selling handler
 	tourSellingHandler := tradingCmd.NewRunTourSellingHandler(med, shipRepo, tradingMarketRepo, routingClient, graphService)
 	if err := mediator.RegisterHandler[*tradingCmd.RunTourSellingCommand](med, tourSellingHandler); err != nil {
@@ -434,18 +406,6 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to register AssignScoutingFleet handler: %w", err)
 	}
 
-	// Mining operation repository
-	miningOperationRepo := persistence.NewMiningOperationRepository(db)
-
-	// Register MiningCoordinator handler (depends on daemonClientLocal)
-	miningCoordinatorHandler := miningCmd.NewRunCoordinatorHandler(
-		med, shipRepo, miningOperationRepo, shipAssignmentRepo, daemonClientLocal,
-		routingClient, routePlanner, graphService, tradingMarketRepo, waypointRepo,
-	)
-	if err := mediator.RegisterHandler[*miningCmd.RunCoordinatorCommand](med, miningCoordinatorHandler); err != nil {
-		return fmt.Errorf("failed to register MiningCoordinator handler: %w", err)
-	}
-
 	// Register GoodsFactoryCoordinator handler (depends on daemonClientLocal)
 	// Create goods factory services using the domain market repository adapter
 	goodsMarketLocator := goodsServices.NewMarketLocator(marketRepoAdapter, waypointRepo, playerRepo, apiClient)
@@ -471,6 +431,7 @@ func run(cfg *config.Config) error {
 	manufacturingPipelineRepo := persistence.NewGormManufacturingPipelineRepository(db)
 	manufacturingTaskRepo := persistence.NewGormManufacturingTaskRepository(db)
 	manufacturingFactoryStateRepo := persistence.NewGormManufacturingFactoryStateRepository(db)
+	storageOperationRepo := persistence.NewStorageOperationRepository(db, nil) // nil = use RealClock
 
 	// Create demand finder for manufacturing opportunities
 	// Pipeline repo is used to filter out goods that already have active pipelines
@@ -510,6 +471,14 @@ func run(cfg *config.Config) error {
 	storageCoordinator := storageApp.NewInMemoryStorageCoordinator()
 	mfgServices.RegisterStorageExecutor(taskExecutorRegistry, mfgNavigator, mfgSeller, storageCoordinator, apiClient)
 
+	// Create storage recovery service for daemon restart resilience
+	// This recovers storage ship cargo state from API when daemon restarts
+	storageRecoveryService := storageApp.NewStorageRecoveryService(
+		storageOperationRepo,
+		apiClient,
+		storageCoordinator,
+	)
+
 	// Manufacturing task worker handler
 	manufacturingTaskWorkerHandler := tradingCmd.NewRunManufacturingTaskWorkerHandler(
 		taskExecutorRegistry,
@@ -539,6 +508,8 @@ func run(cfg *config.Config) error {
 		nil,               // Use default RealClock
 		graphService,      // WaypointProvider for task source location lookups
 	)
+	// Enable storage ship recovery on daemon restart
+	parallelManufacturingCoordinatorHandler.SetStorageRecoveryService(storageRecoveryService)
 	if err := mediator.RegisterHandler[*tradingCmd.RunParallelManufacturingCoordinatorCommand](med, parallelManufacturingCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register RunParallelManufacturingCoordinator handler: %w", err)
 	}

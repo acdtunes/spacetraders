@@ -92,18 +92,6 @@ type MarketAssignment struct {
 	Markets []string
 }
 
-type MiningOperationResponse struct {
-	ContainerID    string
-	AsteroidField  string
-	MinerShips     []string
-	TransportShips []string
-	Status         string
-	// Dry-run results
-	MarketSymbol string
-	ShipRoutes   []common.ShipRouteDTO
-	Errors       []string
-}
-
 type TourSellResponse struct {
 	ContainerID string
 	ShipSymbol  string
@@ -769,81 +757,6 @@ func (c *DaemonClient) ContractFleetCoordinator(
 		ShipSymbols: shipSymbols,
 		Status:      resp.Status,
 	}, nil
-}
-
-// MiningOperation starts a mining operation with Transport-as-Sink pattern
-func (c *DaemonClient) MiningOperation(
-	ctx context.Context,
-	asteroidField string,
-	minerShips []string,
-	transportShips []string,
-	topNOres int,
-	miningType string,
-	force bool,
-	dryRun bool,
-	maxLegTime int,
-	playerID int,
-	agentSymbol string,
-) (*MiningOperationResponse, error) {
-	req := &pb.MiningOperationRequest{
-		MinerShips:     minerShips,
-		TransportShips: transportShips,
-		TopNOres:       int32(topNOres),
-		PlayerId:       int32(playerID),
-		Force:          force,
-		DryRun:         dryRun,
-		MaxLegTime:     int32(maxLegTime),
-	}
-	if asteroidField != "" {
-		req.AsteroidField = &asteroidField
-	}
-	if miningType != "" {
-		req.MiningType = &miningType
-	}
-	if agentSymbol != "" {
-		req.AgentSymbol = &agentSymbol
-	}
-
-	resp, err := c.client.MiningOperation(ctx, req)
-	if err != nil {
-		return nil, fmt.Errorf("gRPC call failed: %w", err)
-	}
-
-	result := &MiningOperationResponse{
-		ContainerID:    resp.ContainerId,
-		AsteroidField:  resp.AsteroidField,
-		MinerShips:     resp.MinerShips,
-		TransportShips: resp.TransportShips,
-		Status:         resp.Status,
-		MarketSymbol:   resp.MarketSymbol,
-		Errors:         resp.Errors,
-	}
-
-	// Convert ship routes for dry-run
-	if len(resp.ShipRoutes) > 0 {
-		result.ShipRoutes = make([]common.ShipRouteDTO, len(resp.ShipRoutes))
-		for i, route := range resp.ShipRoutes {
-			segments := make([]common.RouteSegmentDTO, len(route.Segments))
-			for j, seg := range route.Segments {
-				segments[j] = common.RouteSegmentDTO{
-					From:       seg.From,
-					To:         seg.To,
-					FlightMode: seg.FlightMode,
-					FuelCost:   int(seg.FuelCost),
-					TravelTime: int(seg.TravelTime),
-				}
-			}
-			result.ShipRoutes[i] = common.ShipRouteDTO{
-				ShipSymbol: route.ShipSymbol,
-				ShipType:   route.ShipType,
-				Segments:   segments,
-				TotalFuel:  int(route.TotalFuel),
-				TotalTime:  int(route.TotalTime),
-			}
-		}
-	}
-
-	return result, nil
 }
 
 // TourSell executes optimized cargo selling tour for a ship

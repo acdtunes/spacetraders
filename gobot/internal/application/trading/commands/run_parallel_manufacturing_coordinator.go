@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	storageApp "github.com/andrescamacho/spacetraders-go/internal/application/storage"
 	"github.com/andrescamacho/spacetraders-go/internal/application/trading/services"
 	mfgServices "github.com/andrescamacho/spacetraders-go/internal/application/trading/services/manufacturing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
@@ -77,6 +78,9 @@ type RunParallelManufacturingCoordinatorHandler struct {
 	orphanedHandler  mfgServices.OrphanedCargoManager
 	factoryManager   mfgServices.FactoryManager
 
+	// Storage recovery (optional - nil if no storage operations)
+	storageRecovery *storageApp.StorageRecoveryService
+
 	// Runtime state
 	workerCompletionChan chan string   // Worker container completion signals
 	taskReadyChan        chan struct{} // Notified when SupplyMonitor marks tasks ready
@@ -125,6 +129,12 @@ func NewRunParallelManufacturingCoordinatorHandler(
 		workerCompletionChan:       make(chan string, 100),
 		taskReadyChan:              make(chan struct{}, 10),
 	}
+}
+
+// SetStorageRecoveryService sets the optional storage recovery service.
+// This enables recovery of storage ship cargo state on daemon restart.
+func (h *RunParallelManufacturingCoordinatorHandler) SetStorageRecoveryService(service *storageApp.StorageRecoveryService) {
+	h.storageRecovery = service
 }
 
 // Handle executes the coordinator command
@@ -402,6 +412,22 @@ func (h *RunParallelManufacturingCoordinatorHandler) recoverState(ctx context.Co
 	if pipelineMgr, ok := h.pipelineManager.(*mfgServices.PipelineLifecycleManager); ok {
 		for id, pipeline := range result.ActivePipelines {
 			pipelineMgr.AddActivePipeline(id, pipeline)
+		}
+	}
+
+	// Recover storage ship cargo state from API (for STORAGE_ACQUIRE_DELIVER tasks)
+	if h.storageRecovery != nil {
+		token, err := common.PlayerTokenFromContext(ctx)
+		if err != nil {
+			logger.Log("WARN", fmt.Sprintf("Storage recovery skipped: %v", err), nil)
+		} else {
+			storageResult, err := h.storageRecovery.RecoverStorageOperations(ctx, playerID, token)
+			if err != nil {
+				logger.Log("WARN", fmt.Sprintf("Storage recovery failed: %v", err), nil)
+			} else if storageResult.OperationsRecovered > 0 {
+				logger.Log("INFO", fmt.Sprintf("Recovered %d storage operations with %d ships",
+					storageResult.OperationsRecovered, storageResult.ShipsRegistered), nil)
+			}
 		}
 	}
 

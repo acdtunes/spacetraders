@@ -108,62 +108,6 @@ func (c *DaemonClientLocal) StopContainer(ctx context.Context, containerID strin
 	return c.server.StopContainer(containerID)
 }
 
-// PersistMiningWorkerContainer creates (but does NOT start) a mining worker container in DB
-func (c *DaemonClientLocal) PersistMiningWorkerContainer(
-	ctx context.Context,
-	containerID string,
-	playerID uint,
-	command interface{},
-) error {
-	return c.server.PersistMiningWorkerContainer(ctx, containerID, playerID, command)
-}
-
-// StartMiningWorkerContainer starts a previously persisted mining worker container
-func (c *DaemonClientLocal) StartMiningWorkerContainer(
-	ctx context.Context,
-	containerID string,
-	completionCallback chan<- string,
-) error {
-	return c.server.StartMiningWorkerContainer(ctx, containerID, completionCallback)
-}
-
-// PersistTransportWorkerContainer creates (but does NOT start) a transport worker container in DB
-func (c *DaemonClientLocal) PersistTransportWorkerContainer(
-	ctx context.Context,
-	containerID string,
-	playerID uint,
-	command interface{},
-) error {
-	return c.server.PersistTransportWorkerContainer(ctx, containerID, playerID, command)
-}
-
-// StartTransportWorkerContainer starts a previously persisted transport worker container
-func (c *DaemonClientLocal) StartTransportWorkerContainer(
-	ctx context.Context,
-	containerID string,
-	completionCallback chan<- string,
-) error {
-	return c.server.StartTransportWorkerContainer(ctx, containerID, completionCallback)
-}
-
-// PersistMiningCoordinatorContainer creates (but does NOT start) a mining coordinator container in DB
-func (c *DaemonClientLocal) PersistMiningCoordinatorContainer(
-	ctx context.Context,
-	containerID string,
-	playerID uint,
-	command interface{},
-) error {
-	return c.server.PersistMiningCoordinatorContainer(ctx, containerID, playerID, command)
-}
-
-// StartMiningCoordinatorContainer starts a previously persisted mining coordinator container
-func (c *DaemonClientLocal) StartMiningCoordinatorContainer(
-	ctx context.Context,
-	containerID string,
-) error {
-	return c.server.StartMiningCoordinatorContainer(ctx, containerID)
-}
-
 // PersistArbitrageWorkerContainer creates (but does NOT start) an arbitrage worker container in DB
 func (c *DaemonClientLocal) PersistArbitrageWorkerContainer(
 	ctx context.Context,

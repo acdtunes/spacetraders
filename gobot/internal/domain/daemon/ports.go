@@ -64,24 +64,6 @@ type DaemonClient interface {
 	// containerID: The container to stop
 	StopContainer(ctx context.Context, containerID string) error
 
-	// PersistMiningWorkerContainer creates (but does NOT start) a mining worker container in DB
-	PersistMiningWorkerContainer(ctx context.Context, containerID string, playerID uint, command interface{}) error
-
-	// StartMiningWorkerContainer starts a previously persisted mining worker container
-	StartMiningWorkerContainer(ctx context.Context, containerID string, completionCallback chan<- string) error
-
-	// PersistTransportWorkerContainer creates (but does NOT start) a transport worker container in DB
-	PersistTransportWorkerContainer(ctx context.Context, containerID string, playerID uint, command interface{}) error
-
-	// StartTransportWorkerContainer starts a previously persisted transport worker container
-	StartTransportWorkerContainer(ctx context.Context, containerID string, completionCallback chan<- string) error
-
-	// PersistMiningCoordinatorContainer creates (but does NOT start) a mining coordinator container in DB
-	PersistMiningCoordinatorContainer(ctx context.Context, containerID string, playerID uint, command interface{}) error
-
-	// StartMiningCoordinatorContainer starts a previously persisted mining coordinator container
-	StartMiningCoordinatorContainer(ctx context.Context, containerID string) error
-
 	// PersistArbitrageWorkerContainer creates (but does NOT start) an arbitrage worker container in DB
 	// This allows assigning ships to the container before starting it
 	PersistArbitrageWorkerContainer(ctx context.Context, containerID string, playerID uint, command interface{}) error

@@ -67,9 +67,6 @@ service DaemonService {
   // GetShipyardListings retrieves available ships at a shipyard
   rpc GetShipyardListings(GetShipyardListingsRequest) returns (GetShipyardListingsResponse);
 
-  // MiningOperation starts a mining operation with Transport-as-Sink pattern
-  rpc MiningOperation(MiningOperationRequest) returns (MiningOperationResponse);
-
   // TourSell executes optimized cargo selling tour for a ship
   rpc TourSell(TourSellRequest) returns (TourSellResponse);
 
@@ -465,32 +462,6 @@ message CargoItem {
   string symbol = 1;
   string name = 2;
   int32 units = 3;
-}
-
-// MiningOperationRequest starts a mining operation with miners and transports
-message MiningOperationRequest {
-  optional string asteroid_field = 1; // Optional: specific waypoint, or auto-select based on mining_type
-  repeated string miner_ships = 2;    // Ships for mining
-  repeated string transport_ships = 3; // Ships for transport
-  int32 top_n_ores = 4;               // Number of ore types to keep (default: 3)
-  int32 player_id = 5;
-  optional string agent_symbol = 6;
-  optional string mining_type = 7;    // Type: common_metals, precious_metals, rare_metals, minerals, ice, gas
-  bool force = 8;                     // Override fuel validation warnings
-  bool dry_run = 9;                   // If true, only select asteroid without starting operation
-  int32 max_leg_time = 10;            // Max time per leg in minutes (0 = no limit)
-}
-
-message MiningOperationResponse {
-  string container_id = 1;
-  string asteroid_field = 2;
-  repeated string miner_ships = 3;
-  repeated string transport_ships = 4;
-  string status = 5;
-  // Dry-run results
-  string market_symbol = 6;              // Market for transport loop
-  repeated ShipRoute ship_routes = 7;    // Planned routes for all ships
-  repeated string errors = 8;            // Any errors during route planning
 }
 
 // RouteSegment represents a single leg of a planned route

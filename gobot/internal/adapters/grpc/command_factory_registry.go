@@ -6,7 +6,6 @@ import (
 	contractCmd "github.com/andrescamacho/spacetraders-go/internal/application/contract/commands"
 	gasCmd "github.com/andrescamacho/spacetraders-go/internal/application/gas/commands"
 	goodsCmd "github.com/andrescamacho/spacetraders-go/internal/application/goods/commands"
-	miningCmd "github.com/andrescamacho/spacetraders-go/internal/application/mining/commands"
 	scoutingCmd "github.com/andrescamacho/spacetraders-go/internal/application/scouting/commands"
 	shipyardCmd "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/commands"
 	tradingCmd "github.com/andrescamacho/spacetraders-go/internal/application/trading/commands"
@@ -161,121 +160,6 @@ func (s *DaemonServer) registerCommandFactories() {
 			MaxBudget:            int(maxBudget),
 			PlayerID:             shared.MustNewPlayerID(playerID),
 			ShipyardWaypoint:     shipyardWaypoint,
-		}, nil
-	}
-
-	// Mining worker factory
-	s.commandFactories["mining_worker"] = func(config map[string]interface{}, playerID int) (interface{}, error) {
-		shipSymbol, ok := config["ship_symbol"].(string)
-		if !ok {
-			return nil, fmt.Errorf("missing or invalid ship_symbol")
-		}
-
-		asteroidField, ok := config["asteroid_field"].(string)
-		if !ok {
-			return nil, fmt.Errorf("missing or invalid asteroid_field")
-		}
-
-		topNOres := 3 // Default
-		if val, ok := config["top_n_ores"].(float64); ok {
-			topNOres = int(val)
-		}
-
-		coordinatorID, _ := config["coordinator_id"].(string) // Optional
-
-		return &miningCmd.RunWorkerCommand{
-			ShipSymbol:    shipSymbol,
-			PlayerID:      shared.MustNewPlayerID(playerID),
-			AsteroidField: asteroidField,
-			TopNOres:      topNOres,
-			CoordinatorID: coordinatorID,
-			Coordinator:   nil, // Set at runtime by coordinator when spawning worker
-		}, nil
-	}
-
-	// Transport worker factory
-	s.commandFactories["transport_worker"] = func(config map[string]interface{}, playerID int) (interface{}, error) {
-		shipSymbol, ok := config["ship_symbol"].(string)
-		if !ok {
-			return nil, fmt.Errorf("missing or invalid ship_symbol")
-		}
-
-		asteroidField, ok := config["asteroid_field"].(string)
-		if !ok {
-			return nil, fmt.Errorf("missing or invalid asteroid_field")
-		}
-
-		coordinatorID, _ := config["coordinator_id"].(string) // Optional
-		marketSymbol, _ := config["market_symbol"].(string)   // Optional
-
-		return &miningCmd.RunTransportWorkerCommand{
-			ShipSymbol:    shipSymbol,
-			PlayerID:      shared.MustNewPlayerID(playerID),
-			AsteroidField: asteroidField,
-			MarketSymbol:  marketSymbol,
-			CoordinatorID: coordinatorID,
-			Coordinator:   nil, // Set at runtime by coordinator when spawning worker
-		}, nil
-	}
-
-	// Mining coordinator factory
-	s.commandFactories["mining_coordinator"] = func(config map[string]interface{}, playerID int) (interface{}, error) {
-		miningOperationID, ok := config["mining_operation_id"].(string)
-		if !ok {
-			return nil, fmt.Errorf("missing or invalid mining_operation_id")
-		}
-
-		asteroidField, ok := config["asteroid_field"].(string)
-		if !ok {
-			return nil, fmt.Errorf("missing or invalid asteroid_field")
-		}
-
-		containerID, ok := config["container_id"].(string)
-		if !ok {
-			return nil, fmt.Errorf("missing or invalid container_id")
-		}
-
-		// Parse miner ships
-		minerShipsRaw, ok := config["miner_ships"].([]interface{})
-		if !ok {
-			return nil, fmt.Errorf("missing or invalid miner_ships")
-		}
-
-		minerShips := make([]string, len(minerShipsRaw))
-		for i, m := range minerShipsRaw {
-			minerShips[i], ok = m.(string)
-			if !ok {
-				return nil, fmt.Errorf("invalid miner ship at index %d", i)
-			}
-		}
-
-		// Parse transport ships
-		transportShipsRaw, ok := config["transport_ships"].([]interface{})
-		if !ok {
-			return nil, fmt.Errorf("missing or invalid transport_ships")
-		}
-
-		transportShips := make([]string, len(transportShipsRaw))
-		for i, t := range transportShipsRaw {
-			transportShips[i], ok = t.(string)
-			if !ok {
-				return nil, fmt.Errorf("invalid transport ship at index %d", i)
-			}
-		}
-
-		topNOres := 3
-		if val, ok := config["top_n_ores"].(float64); ok {
-			topNOres = int(val)
-		}
-
-		return &miningCmd.RunCoordinatorCommand{
-			MiningOperationID: miningOperationID,
-			PlayerID:          shared.MustNewPlayerID(playerID),
-			AsteroidField:     asteroidField,
-			MinerShips:        minerShips,
-			TransportShips:    transportShips,
-			TopNOres:          topNOres,
-			ContainerID:       containerID,
 		}, nil
 	}
 
