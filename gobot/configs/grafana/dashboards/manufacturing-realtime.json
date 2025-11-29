@@ -23,10 +23,10 @@
   "panels": [
     {
       "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
       },
-      "description": "Change in net profit over the last hour",
+      "description": "Net profit from manufacturing operations in the last hour",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -79,23 +79,24 @@
       "targets": [
         {
           "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
           },
-          "expr": "spacetraders_daemon_net_profit - spacetraders_daemon_net_profit offset 1h",
-          "legendFormat": "P/L",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COALESCE(SUM(amount), 0) as pl FROM transactions WHERE operation_type LIKE 'manufacturing%' AND created_at >= NOW() - INTERVAL '1 hour'",
           "refId": "A"
         }
       ],
-      "title": "P/L (1h)",
+      "title": "P/L (1h) - Manufacturing",
       "type": "stat"
     },
     {
       "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgresql"
       },
-      "description": "Manufacturing profit rate smoothed over 10 minutes",
+      "description": "Manufacturing profit rate per hour (5-min buckets)",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -173,15 +174,16 @@
       "targets": [
         {
           "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgresql"
           },
-          "expr": "avg_over_time((deriv(spacetraders_daemon_net_profit[5m]) * 3600)[10m:])",
-          "legendFormat": "P/L",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT\n  date_trunc('hour', created_at) + INTERVAL '5 min' * FLOOR(EXTRACT(MINUTE FROM created_at) / 5) AS time,\n  COALESCE(SUM(amount), 0) * 12 AS \"P/L per Hour\"\nFROM transactions\nWHERE operation_type LIKE 'manufacturing%'\n  AND $__timeFilter(created_at)\nGROUP BY 1\nORDER BY 1",
           "refId": "A"
         }
       ],
-      "title": "P/L per Hour (Smoothed)",
+      "title": "P/L per Hour - Manufacturing",
       "type": "timeseries"
     },
     {
