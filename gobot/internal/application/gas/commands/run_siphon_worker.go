@@ -5,21 +5,22 @@ import (
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
-	"github.com/andrescamacho/spacetraders-go/internal/application/gas/ports"
 	appShipCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/storage"
 )
 
-// RunSiphonWorkerCommand orchestrates continuous gas siphoning with transport-as-sink pattern
-// Siphon ship siphons until cargo is full, requests transport, transfers cargo, then resumes siphoning
+// RunSiphonWorkerCommand orchestrates continuous gas siphoning with storage ship buffering.
+// Siphon ship siphons until cargo is full, transfers to storage ship, then resumes siphoning.
+// Transport/delivery is handled by manufacturing pool via STORAGE_ACQUIRE_DELIVER tasks.
 type RunSiphonWorkerCommand struct {
-	ShipSymbol    string
-	PlayerID      shared.PlayerID
-	GasGiant      string // Waypoint symbol of gas giant
-	CoordinatorID string // Parent coordinator container ID
-	Coordinator   ports.TransportCoordinator
+	ShipSymbol         string
+	PlayerID           shared.PlayerID
+	GasGiant           string // Waypoint symbol of gas giant
+	CoordinatorID      string // Parent coordinator container ID
+	StorageOperationID string // Storage operation ID for finding storage ships
 }
 
 // RunSiphonWorkerResponse contains siphoning execution results
@@ -35,6 +36,7 @@ type RunSiphonWorkerHandler struct {
 	mediator           common.Mediator
 	shipRepo           navigation.ShipRepository
 	shipAssignmentRepo container.ShipAssignmentRepository
+	storageCoordinator storage.StorageCoordinator
 	clock              shared.Clock
 }
 
@@ -43,6 +45,7 @@ func NewRunSiphonWorkerHandler(
 	mediator common.Mediator,
 	shipRepo navigation.ShipRepository,
 	shipAssignmentRepo container.ShipAssignmentRepository,
+	storageCoordinator storage.StorageCoordinator,
 	clock shared.Clock,
 ) *RunSiphonWorkerHandler {
 	if clock == nil {
@@ -52,6 +55,7 @@ func NewRunSiphonWorkerHandler(
 		mediator:           mediator,
 		shipRepo:           shipRepo,
 		shipAssignmentRepo: shipAssignmentRepo,
+		storageCoordinator: storageCoordinator,
 		clock:              clock,
 	}
 }
@@ -172,27 +176,27 @@ func (h *RunSiphonWorkerHandler) executeSiphoning(
 			return fmt.Errorf("failed to reload ship: %w", err)
 		}
 
-		// 3d. Check if cargo is full - transfer to transport (no jettison for gas)
+		// 3d. Check if cargo is full - transfer to storage ship
 		if ship.IsCargoFull() {
-			logger.Log("INFO", "Siphon ship cargo full - requesting transport", map[string]interface{}{
+			logger.Log("INFO", "Siphon ship cargo full - depositing to storage ship", map[string]interface{}{
 				"ship_symbol":    cmd.ShipSymbol,
-				"action":         "request_transport",
+				"action":         "deposit_to_storage",
 				"cargo_units":    ship.Cargo().Units,
 				"cargo_capacity": ship.Cargo().Capacity,
 			})
 
-			// Request transport and transfer ALL cargo (all gases are valuable)
-			unitsTransferred, err := h.requestAndTransferToTransport(ctx, cmd, ship)
+			// Deposit ALL cargo to storage ships
+			unitsTransferred, err := h.depositToStorageShip(ctx, cmd, ship)
 			if err != nil {
-				return fmt.Errorf("failed to transfer to transport: %w", err)
+				return fmt.Errorf("failed to deposit to storage ship: %w", err)
 			}
 
 			result.TransferCount++
 			result.TotalUnitsTransferred += unitsTransferred
 
-			logger.Log("INFO", "Cargo transferred to transport successfully", map[string]interface{}{
+			logger.Log("INFO", "Cargo deposited to storage ship successfully", map[string]interface{}{
 				"ship_symbol":       cmd.ShipSymbol,
-				"action":            "transfer_complete",
+				"action":            "deposit_complete",
 				"units_transferred": unitsTransferred,
 				"transfer_count":    result.TransferCount,
 			})
@@ -200,110 +204,101 @@ func (h *RunSiphonWorkerHandler) executeSiphoning(
 	}
 }
 
-// requestAndTransferToTransport requests a transport and transfers all cargo to it
-func (h *RunSiphonWorkerHandler) requestAndTransferToTransport(
+// depositToStorageShip finds a storage ship with space and transfers all cargo to it.
+// After the API transfer, notifies the StorageCoordinator to wake waiting haulers.
+func (h *RunSiphonWorkerHandler) depositToStorageShip(
 	ctx context.Context,
 	cmd *RunSiphonWorkerCommand,
 	ship *navigation.Ship,
 ) (int, error) {
 	logger := common.LoggerFromContext(ctx)
 
-	// Request transport via coordinator
-	logger.Log("INFO", "Siphon ship requesting transport", map[string]interface{}{
-		"ship_symbol": cmd.ShipSymbol,
-		"action":      "request_transport",
-	})
-
-	transportSymbol, err := cmd.Coordinator.RequestTransport(ctx, cmd.ShipSymbol)
-	if err != nil {
-		return 0, fmt.Errorf("failed to request transport: %w", err)
-	}
-
-	logger.Log("INFO", "Transport assigned to siphon ship", map[string]interface{}{
-		"ship_symbol": cmd.ShipSymbol,
-		"action":      "transport_assigned",
-		"transport":   transportSymbol,
-	})
-
-	// Load transport ship to check available space
-	transportShip, err := h.shipRepo.FindBySymbol(ctx, transportSymbol, cmd.PlayerID)
-	if err != nil {
-		return 0, fmt.Errorf("failed to load transport ship: %w", err)
-	}
-
-	// Transfer ALL cargo to transport (all gases are valuable for manufacturing)
 	totalTransferred := 0
+
+	// Transfer ALL cargo items to storage ships
 	for _, item := range ship.Cargo().Inventory {
-		// Check how much space is available
-		availableSpace := transportShip.AvailableCargoSpace()
-		if availableSpace == 0 {
-			logger.Log("INFO", "Transport cargo full - stopping transfer", map[string]interface{}{
-				"ship_symbol": cmd.ShipSymbol,
-				"action":      "transfer_stopped",
-				"transport":   transportSymbol,
-			})
-			break
-		}
-
-		// Transfer only what fits
-		unitsToTransfer := item.Units
-		if unitsToTransfer > availableSpace {
-			unitsToTransfer = availableSpace
-			logger.Log("INFO", "Transferring partial cargo to transport", map[string]interface{}{
-				"ship_symbol":     cmd.ShipSymbol,
-				"action":          "partial_transfer",
-				"cargo_symbol":    item.Symbol,
-				"units_partial":   unitsToTransfer,
-				"units_total":     item.Units,
-				"available_space": availableSpace,
-			})
-		}
-
-		transferCmd := &TransferCargoCommand{
-			FromShip:   cmd.ShipSymbol,
-			ToShip:     transportSymbol,
-			GoodSymbol: item.Symbol,
-			Units:      unitsToTransfer,
-			PlayerID:   cmd.PlayerID,
-		}
-
-		_, err := h.mediator.Send(ctx, transferCmd)
-		if err != nil {
-			logger.Log("WARNING", "Cargo transfer failed", map[string]interface{}{
-				"ship_symbol":  cmd.ShipSymbol,
-				"action":       "transfer",
-				"cargo_symbol": item.Symbol,
-				"transport":    transportSymbol,
-				"error":        err.Error(),
-			})
+		if item.Units <= 0 {
 			continue
 		}
 
-		totalTransferred += unitsToTransfer
-		logger.Log("INFO", "Cargo transferred to transport", map[string]interface{}{
-			"ship_symbol":  cmd.ShipSymbol,
-			"action":       "transfer",
-			"cargo_symbol": item.Symbol,
-			"units":        unitsToTransfer,
-			"transport":    transportSymbol,
-		})
+		unitsRemaining := item.Units
 
-		// Reload transport to get updated cargo space
-		transportShip, err = h.shipRepo.FindBySymbol(ctx, transportSymbol, cmd.PlayerID)
-		if err != nil {
-			logger.Log("WARNING", "Failed to reload transport ship", map[string]interface{}{
-				"ship_symbol": cmd.ShipSymbol,
-				"action":      "reload_transport",
-				"transport":   transportSymbol,
-				"error":       err.Error(),
+		// Keep finding storage ships until all cargo is deposited
+		for unitsRemaining > 0 {
+			// Find a storage ship with available space
+			storageShip, found := h.storageCoordinator.FindStorageShipWithSpace(
+				cmd.StorageOperationID,
+				1, // At least 1 unit of space
+			)
+			if !found {
+				logger.Log("WARNING", "No storage ship with space available - waiting", map[string]interface{}{
+					"ship_symbol":     cmd.ShipSymbol,
+					"action":          "no_storage_space",
+					"good":            item.Symbol,
+					"units_remaining": unitsRemaining,
+				})
+				// Wait a bit and retry
+				h.clock.Sleep(5 * 1000 * 1000 * 1000) // 5 seconds in nanoseconds
+				continue
+			}
+
+			// Calculate how much to transfer
+			availableSpace := storageShip.AvailableSpace()
+			unitsToTransfer := unitsRemaining
+			if unitsToTransfer > availableSpace {
+				unitsToTransfer = availableSpace
+			}
+
+			logger.Log("INFO", "Depositing cargo to storage ship", map[string]interface{}{
+				"ship_symbol":     cmd.ShipSymbol,
+				"action":          "deposit_cargo",
+				"storage_ship":    storageShip.ShipSymbol(),
+				"good":            item.Symbol,
+				"units":           unitsToTransfer,
+				"available_space": availableSpace,
 			})
-			break
-		}
-	}
 
-	// Signal transfer completion to coordinator
-	if err := cmd.Coordinator.NotifyTransferComplete(ctx, cmd.ShipSymbol, transportSymbol); err != nil {
-		return totalTransferred, fmt.Errorf("failed to notify transfer complete: %w", err)
+			// Transfer cargo via API
+			transferCmd := &TransferCargoCommand{
+				FromShip:   cmd.ShipSymbol,
+				ToShip:     storageShip.ShipSymbol(),
+				GoodSymbol: item.Symbol,
+				Units:      unitsToTransfer,
+				PlayerID:   cmd.PlayerID,
+			}
+
+			_, err := h.mediator.Send(ctx, transferCmd)
+			if err != nil {
+				logger.Log("ERROR", "Failed to transfer cargo to storage ship", map[string]interface{}{
+					"ship_symbol":  cmd.ShipSymbol,
+					"action":       "transfer_error",
+					"storage_ship": storageShip.ShipSymbol(),
+					"good":         item.Symbol,
+					"units":        unitsToTransfer,
+					"error":        err.Error(),
+				})
+				return totalTransferred, fmt.Errorf("failed to transfer %s to storage: %w", item.Symbol, err)
+			}
+
+			// Notify coordinator of the deposit - this updates inventory and wakes waiting haulers
+			h.storageCoordinator.NotifyCargoDeposited(
+				storageShip.ShipSymbol(),
+				item.Symbol,
+				unitsToTransfer,
+			)
+
+			totalTransferred += unitsToTransfer
+			unitsRemaining -= unitsToTransfer
+
+			logger.Log("INFO", "Cargo deposited to storage ship successfully", map[string]interface{}{
+				"ship_symbol":     cmd.ShipSymbol,
+				"action":          "deposit_success",
+				"storage_ship":    storageShip.ShipSymbol(),
+				"good":            item.Symbol,
+				"units":           unitsToTransfer,
+				"units_remaining": unitsRemaining,
+			})
+		}
 	}
 
 	return totalTransferred, nil
