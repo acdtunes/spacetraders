@@ -32,6 +32,7 @@ import (
 	shipQuery "github.com/andrescamacho/spacetraders-go/internal/application/ship/queries"
 	shipyardCmd "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/commands"
 	shipyardQuery "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/queries"
+	storageApp "github.com/andrescamacho/spacetraders-go/internal/application/storage"
 	tradingCmd "github.com/andrescamacho/spacetraders-go/internal/application/trading/commands"
 	tradingQuery "github.com/andrescamacho/spacetraders-go/internal/application/trading/queries"
 	tradingServices "github.com/andrescamacho/spacetraders-go/internal/application/trading/services"
@@ -503,6 +504,11 @@ func run(cfg *config.Config) error {
 	taskExecutorRegistry.Register(mfgServices.NewAcquireDeliverExecutor(mfgNavigator, mfgPurchaser, mfgSeller))
 	taskExecutorRegistry.Register(mfgServices.NewCollectSellExecutor(mfgNavigator, mfgPurchaser, mfgSeller))
 	taskExecutorRegistry.Register(mfgServices.NewLiquidateExecutor(mfgNavigator, mfgSeller))
+
+	// Create storage coordinator for STORAGE_ACQUIRE_DELIVER tasks
+	// This enables manufacturing pipelines to acquire cargo from storage ships
+	storageCoordinator := storageApp.NewInMemoryStorageCoordinator()
+	mfgServices.RegisterStorageExecutor(taskExecutorRegistry, mfgNavigator, mfgSeller, storageCoordinator, apiClient)
 
 	// Manufacturing task worker handler
 	manufacturingTaskWorkerHandler := tradingCmd.NewRunManufacturingTaskWorkerHandler(
