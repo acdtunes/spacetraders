@@ -249,9 +249,9 @@ func (c *InMemoryStorageCoordinator) processWaiterQueue(key waiterQueueKey) {
 	shipSymbols := c.shipsByOperation[key.operationID]
 
 	// Process waiters in FIFO order
-	remaining := make([]*storage.CargoWaiter, 0, len(queue))
+	var remaining []*storage.CargoWaiter
 
-	for _, waiter := range queue {
+	for i, waiter := range queue {
 		satisfied := false
 
 		// Try to reserve from any ship
@@ -276,8 +276,8 @@ func (c *InMemoryStorageCoordinator) processWaiterQueue(key waiterQueueKey) {
 		if !satisfied {
 			// Not enough cargo for this waiter, keep in queue
 			// Stop processing - FIFO order means we can't skip ahead
-			remaining = append(remaining, waiter)
-			remaining = append(remaining, queue[len(queue)-len(remaining):]...)
+			// Capture current waiter and all remaining waiters
+			remaining = queue[i:]
 			break
 		}
 	}
