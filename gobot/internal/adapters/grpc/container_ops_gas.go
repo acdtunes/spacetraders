@@ -21,12 +21,13 @@ type GasExtractionOperationResult struct {
 	Errors         []string
 }
 
-// GasExtractionOperation starts a gas extraction operation with siphon and transport ships
+// GasExtractionOperation starts a gas extraction operation with siphon and storage ships.
+// Storage ships stay at the gas giant and buffer cargo; delivery is handled by manufacturing pool via STORAGE_ACQUIRE_DELIVER tasks.
 func (s *DaemonServer) GasExtractionOperation(
 	ctx context.Context,
 	gasGiant string,
 	siphonShips []string,
-	transportShips []string,
+	storageShips []string,
 	force bool,
 	dryRun bool,
 	maxLegTime int,
@@ -51,7 +52,7 @@ func (s *DaemonServer) GasExtractionOperation(
 		PlayerID:       shared.MustNewPlayerID(playerID),
 		GasGiant:       gasGiant,
 		SiphonShips:    siphonShips,
-		TransportShips: transportShips,
+		StorageShips:   storageShips,
 		ContainerID:    containerID,
 		Force:          force,
 		DryRun:         dryRun,
@@ -63,9 +64,9 @@ func (s *DaemonServer) GasExtractionOperation(
 		siphonShipsInterface[i] = s
 	}
 
-	transportShipsInterface := make([]interface{}, len(transportShips))
-	for i, s := range transportShips {
-		transportShipsInterface[i] = s
+	storageShipsInterface := make([]interface{}, len(storageShips))
+	for i, s := range storageShips {
+		storageShipsInterface[i] = s
 	}
 
 	// Set iterations: 1 for dry-run (single execution), -1 for normal (infinite)
@@ -85,7 +86,7 @@ func (s *DaemonServer) GasExtractionOperation(
 			"gas_operation_id": containerID,
 			"gas_giant":        gasGiant,
 			"siphon_ships":     siphonShipsInterface,
-			"transport_ships":  transportShipsInterface,
+			"storage_ships":    storageShipsInterface,
 			"container_id":     containerID,
 			"force":            force,
 			"dry_run":          dryRun,
@@ -136,9 +137,10 @@ func (s *DaemonServer) PersistGasSiphonWorkerContainer(
 		1, // Worker containers are single iteration
 		&cmd.CoordinatorID, // Link to parent coordinator container
 		map[string]interface{}{
-			"ship_symbol":    cmd.ShipSymbol,
-			"gas_giant":      cmd.GasGiant,
-			"coordinator_id": cmd.CoordinatorID,
+			"ship_symbol":          cmd.ShipSymbol,
+			"gas_giant":            cmd.GasGiant,
+			"coordinator_id":       cmd.CoordinatorID,
+			"storage_operation_id": cmd.StorageOperationID,
 		},
 		nil, // Use default RealClock for production
 	)
@@ -179,12 +181,13 @@ func (s *DaemonServer) StartGasSiphonWorkerContainer(
 		cmd = cachedCmd.(*gasCmd.RunSiphonWorkerCommand)
 		playerID = cmd.PlayerID.Value()
 		config = map[string]interface{}{
-			"ship_symbol":    cmd.ShipSymbol,
-			"gas_giant":      cmd.GasGiant,
-			"coordinator_id": cmd.CoordinatorID,
+			"ship_symbol":          cmd.ShipSymbol,
+			"gas_giant":            cmd.GasGiant,
+			"coordinator_id":       cmd.CoordinatorID,
+			"storage_operation_id": cmd.StorageOperationID,
 		}
 	} else {
-		// Fallback: Load from database (for recovery - channels will be nil)
+		// Fallback: Load from database (for recovery)
 		allContainers, err := s.containerRepo.ListAll(ctx, nil)
 		if err != nil {
 			return fmt.Errorf("failed to list containers: %w", err)
@@ -211,14 +214,15 @@ func (s *DaemonServer) StartGasSiphonWorkerContainer(
 		shipSymbol := config["ship_symbol"].(string)
 		gasGiant := config["gas_giant"].(string)
 		coordinatorID, _ := config["coordinator_id"].(string)
+		storageOperationID, _ := config["storage_operation_id"].(string)
 
 		playerID = containerModel.PlayerID
 		cmd = &gasCmd.RunSiphonWorkerCommand{
-			ShipSymbol:    shipSymbol,
-			PlayerID:      shared.MustNewPlayerID(playerID),
-			GasGiant:      gasGiant,
-			CoordinatorID: coordinatorID,
-			Coordinator:   nil, // Not available from DB recovery - worker must reconnect
+			ShipSymbol:         shipSymbol,
+			PlayerID:           shared.MustNewPlayerID(playerID),
+			GasGiant:           gasGiant,
+			CoordinatorID:      coordinatorID,
+			StorageOperationID: storageOperationID,
 		}
 	}
 

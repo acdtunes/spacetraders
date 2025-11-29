@@ -261,6 +261,7 @@ func (s *DaemonServer) registerCommandFactories() {
 	}
 
 	// Gas extraction coordinator factory
+	// Storage ships stay at the gas giant and buffer cargo; delivery is handled by manufacturing pool via STORAGE_ACQUIRE_DELIVER tasks
 	s.commandFactories["gas_coordinator"] = func(config map[string]interface{}, playerID int) (interface{}, error) {
 		gasOperationID, ok := config["gas_operation_id"].(string)
 		if !ok {
@@ -291,17 +292,23 @@ func (s *DaemonServer) registerCommandFactories() {
 			}
 		}
 
-		// Parse transport ships
-		transportShipsRaw, ok := config["transport_ships"].([]interface{})
+		// Parse storage ships (buffer cargo at gas giant; haulers pick up via StorageCoordinator)
+		// Support both "storage_ships" (new) and "transport_ships" (legacy) for backward compatibility
+		var storageShips []string
+		storageShipsRaw, ok := config["storage_ships"].([]interface{})
 		if !ok {
-			return nil, fmt.Errorf("missing or invalid transport_ships")
+			// Fall back to legacy transport_ships config key
+			storageShipsRaw, ok = config["transport_ships"].([]interface{})
+			if !ok {
+				return nil, fmt.Errorf("missing or invalid storage_ships (or transport_ships)")
+			}
 		}
 
-		transportShips := make([]string, len(transportShipsRaw))
-		for i, t := range transportShipsRaw {
-			transportShips[i], ok = t.(string)
+		storageShips = make([]string, len(storageShipsRaw))
+		for i, t := range storageShipsRaw {
+			storageShips[i], ok = t.(string)
 			if !ok {
-				return nil, fmt.Errorf("invalid transport ship at index %d", i)
+				return nil, fmt.Errorf("invalid storage ship at index %d", i)
 			}
 		}
 
@@ -310,7 +317,7 @@ func (s *DaemonServer) registerCommandFactories() {
 			PlayerID:       shared.MustNewPlayerID(playerID),
 			GasGiant:       gasGiant,
 			SiphonShips:    siphonShips,
-			TransportShips: transportShips,
+			StorageShips:   storageShips,
 			ContainerID:    containerID,
 		}, nil
 	}
