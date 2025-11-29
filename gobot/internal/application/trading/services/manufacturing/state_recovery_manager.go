@@ -8,6 +8,8 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/trading/services"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
 // StateRecoverer recovers coordinator state from database after restart
@@ -30,6 +32,7 @@ type StateRecoveryManager struct {
 	taskRepo           manufacturing.TaskRepository
 	factoryStateRepo   manufacturing.FactoryStateRepository
 	shipAssignmentRepo container.ShipAssignmentRepository
+	shipRepo           navigation.ShipQueryRepository // BUG FIX #4: Added for cargo checks
 	factoryTracker     *manufacturing.FactoryStateTracker
 	taskQueue          *services.TaskQueue
 }
@@ -40,6 +43,7 @@ func NewStateRecoveryManager(
 	taskRepo manufacturing.TaskRepository,
 	factoryStateRepo manufacturing.FactoryStateRepository,
 	shipAssignmentRepo container.ShipAssignmentRepository,
+	shipRepo navigation.ShipQueryRepository, // BUG FIX #4: Added for cargo checks
 	factoryTracker *manufacturing.FactoryStateTracker,
 	taskQueue *services.TaskQueue,
 ) *StateRecoveryManager {
@@ -48,6 +52,7 @@ func NewStateRecoveryManager(
 		taskRepo:           taskRepo,
 		factoryStateRepo:   factoryStateRepo,
 		shipAssignmentRepo: shipAssignmentRepo,
+		shipRepo:           shipRepo,
 		factoryTracker:     factoryTracker,
 		taskQueue:          taskQueue,
 	}
@@ -105,7 +110,38 @@ func (m *StateRecoveryManager) RecoverState(ctx context.Context, playerID int) (
 		// These are corrupted tasks that slipped through without proper pipeline association
 		if task.PipelineID() == "" {
 			shipSymbol := task.AssignedShip()
-			// Mark as failed to prevent re-processing
+
+			// BUG FIX #4: Check if ship has cargo that needs recovery before cancelling
+			if shipSymbol != "" && m.shipRepo != nil {
+				ship, err := m.shipRepo.FindBySymbol(ctx, shipSymbol, shared.MustNewPlayerID(playerID))
+				if err == nil && ship != nil && ship.Cargo() != nil && !ship.Cargo().IsEmpty() {
+					// Ship has cargo - create LIQUIDATE tasks to recover investment
+					for _, item := range ship.Cargo().Inventory {
+						liquidateTask := manufacturing.NewLiquidationTask(
+							playerID,
+							shipSymbol,
+							item.Symbol,
+							item.Units,
+							"", // Let task find best sell market
+						)
+						if err := m.taskRepo.Create(ctx, liquidateTask); err == nil {
+							m.taskQueue.Enqueue(liquidateTask)
+							logger.Log("INFO", fmt.Sprintf(
+								"BUG FIX #4: Created LIQUIDATE task for stranded %d %s on ship %s",
+								item.Units, item.Symbol, shipSymbol), nil)
+						}
+					}
+					// Cancel original task but DON'T release ship - LIQUIDATE task needs it
+					if err := task.Cancel("orphaned task - cargo recovery"); err == nil {
+						_ = m.taskRepo.Update(ctx, task)
+						logger.Log("INFO", fmt.Sprintf("Cancelled orphaned task %s, cargo being recovered",
+							task.ID()[:8]), nil)
+					}
+					continue
+				}
+			}
+
+			// No cargo - safe to cancel and release
 			if err := task.Cancel("orphaned task - no pipeline"); err == nil {
 				_ = m.taskRepo.Update(ctx, task)
 				logger.Log("WARN", fmt.Sprintf("Cancelled orphaned task %s (%s) - no pipeline_id",
@@ -122,7 +158,38 @@ func (m *StateRecoveryManager) RecoverState(ctx context.Context, playerID int) (
 		// Only tasks from PLANNING/EXECUTING pipelines should be recovered
 		if _, isActive := result.ActivePipelines[task.PipelineID()]; !isActive {
 			shipSymbol := task.AssignedShip()
-			// Mark as failed to prevent re-processing
+
+			// BUG FIX #4: Check if ship has cargo that needs recovery before cancelling
+			if shipSymbol != "" && m.shipRepo != nil {
+				ship, err := m.shipRepo.FindBySymbol(ctx, shipSymbol, shared.MustNewPlayerID(playerID))
+				if err == nil && ship != nil && ship.Cargo() != nil && !ship.Cargo().IsEmpty() {
+					// Ship has cargo - create LIQUIDATE tasks to recover investment
+					for _, item := range ship.Cargo().Inventory {
+						liquidateTask := manufacturing.NewLiquidationTask(
+							playerID,
+							shipSymbol,
+							item.Symbol,
+							item.Units,
+							"", // Let task find best sell market
+						)
+						if err := m.taskRepo.Create(ctx, liquidateTask); err == nil {
+							m.taskQueue.Enqueue(liquidateTask)
+							logger.Log("INFO", fmt.Sprintf(
+								"BUG FIX #4: Created LIQUIDATE task for stranded %d %s on ship %s (pipeline inactive)",
+								item.Units, item.Symbol, shipSymbol), nil)
+						}
+					}
+					// Cancel original task but DON'T release ship - LIQUIDATE task needs it
+					if err := task.Cancel("pipeline not active - cargo recovery"); err == nil {
+						_ = m.taskRepo.Update(ctx, task)
+						logger.Log("INFO", fmt.Sprintf("Cancelled task %s (pipeline inactive), cargo being recovered",
+							task.ID()[:8]), nil)
+					}
+					continue
+				}
+			}
+
+			// No cargo - safe to cancel and release
 			if err := task.Cancel("pipeline not active"); err == nil {
 				_ = m.taskRepo.Update(ctx, task)
 				logger.Log("INFO", fmt.Sprintf("Cancelled task %s (%s) - pipeline not active",
@@ -155,8 +222,17 @@ func (m *StateRecoveryManager) RecoverState(ctx context.Context, playerID int) (
 				_ = m.taskRepo.Update(ctx, task)
 				result.InterruptedCount++
 				logger.Log("INFO", fmt.Sprintf("Reset interrupted EXECUTING task %s (%s)", task.ID()[:8], task.TaskType()), nil)
-				if shipSymbol != "" && m.shipAssignmentRepo != nil {
+
+				// BUG FIX #2: Don't release ship assignment for SELL tasks
+				// COLLECT_SELL and LIQUIDATE tasks have cargo on the ship that needs to be sold.
+				// Releasing the assignment would orphan the ship with cargo.
+				// The coordinator will re-assign the same ship to complete the task.
+				isSellTask := task.TaskType() == manufacturing.TaskTypeCollectSell ||
+					task.TaskType() == manufacturing.TaskTypeLiquidate
+				if shipSymbol != "" && m.shipAssignmentRepo != nil && !isSellTask {
 					_ = m.shipAssignmentRepo.Release(ctx, shipSymbol, playerID, "task_recovery")
+				} else if isSellTask && shipSymbol != "" {
+					logger.Log("INFO", fmt.Sprintf("Preserving ship %s assignment (SELL task has cargo)", shipSymbol), nil)
 				}
 			}
 		}
