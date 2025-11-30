@@ -60,10 +60,11 @@ type PipelineManager interface {
 
 // PipelineScanParams contains parameters for pipeline scanning
 type PipelineScanParams struct {
-	SystemSymbol     string
-	PlayerID         int
-	MinPurchasePrice int
-	MaxPipelines     int
+	SystemSymbol           string
+	PlayerID               int
+	MinPurchasePrice       int
+	MaxPipelines           int // Max fabrication pipelines
+	MaxCollectionPipelines int // Max collection pipelines (0 = unlimited)
 }
 
 // PipelineLifecycleManager implements PipelineManager by delegating to focused services.
@@ -229,10 +230,36 @@ func (m *PipelineLifecycleManager) ScanAndCreatePipelines(ctx context.Context, p
 		})
 	}
 
-	// 3. ALWAYS scan for collection opportunities (unlimited)
+	// 3. Scan for collection opportunities (limited if MaxCollectionPipelines > 0)
 	if m.collectionOpportunityFinder != nil {
-		collectionCreated := m.scanForCollectionOpportunities(ctx, params)
-		totalCreated += collectionCreated
+		// Check if we're under collection pipeline limit (0 = unlimited)
+		shouldScanCollection := true
+		if params.MaxCollectionPipelines > 0 {
+			collectionCount, err := m.pipelineRepo.CountActiveCollectionPipelines(ctx, params.PlayerID)
+			if err != nil {
+				// Fallback to in-memory count if DB fails
+				if m.registry != nil {
+					collectionCount = 0
+					for _, p := range m.registry.GetAll() {
+						if p.PipelineType() == manufacturing.PipelineTypeCollection {
+							collectionCount++
+						}
+					}
+				}
+			}
+			if collectionCount >= params.MaxCollectionPipelines {
+				shouldScanCollection = false
+				logger.Log("DEBUG", "Max collection pipelines reached", map[string]interface{}{
+					"active_collection":      collectionCount,
+					"max_collection_pipelines": params.MaxCollectionPipelines,
+				})
+			}
+		}
+
+		if shouldScanCollection {
+			collectionCreated := m.scanForCollectionOpportunities(ctx, params)
+			totalCreated += collectionCreated
+		}
 	}
 
 	return totalCreated, nil
@@ -311,11 +338,16 @@ func (m *PipelineLifecycleManager) scanForFabricationOpportunities(ctx context.C
 			m.registry.Register(pipeline)
 		}
 
-		// Enqueue ready tasks
+		// Enqueue ready tasks based on factory supply state
 		isDirectArbitrage := len(factoryStates) == 0
+		factorySupplyIsHigh := opp.Supply() == "HIGH" || opp.Supply() == "ABUNDANT"
+
 		for _, task := range tasks {
 			if task.TaskType() == manufacturing.TaskTypeCollectSell {
-				if isDirectArbitrage {
+				// Mark COLLECT_SELL ready if:
+				// 1. Direct arbitrage (no factory processing needed), OR
+				// 2. Factory supply is already HIGH/ABUNDANT (can collect immediately)
+				if isDirectArbitrage || factorySupplyIsHigh {
 					if err := task.MarkReady(); err == nil {
 						m.taskQueue.Enqueue(task)
 						if m.taskRepo != nil {
@@ -326,7 +358,10 @@ func (m *PipelineLifecycleManager) scanForFabricationOpportunities(ctx context.C
 				continue
 			}
 
-			if len(task.DependsOn()) == 0 {
+			// For ACQUIRE_DELIVER: Only mark ready if factory supply is NOT high
+			// When supply is high, we should collect first, not deliver more inputs
+			// SupplyMonitor will activate ACQUIRE_DELIVER when supply drops
+			if len(task.DependsOn()) == 0 && !factorySupplyIsHigh {
 				if err := task.MarkReady(); err == nil {
 					m.taskQueue.Enqueue(task)
 					if m.taskRepo != nil {
@@ -353,11 +388,32 @@ func (m *PipelineLifecycleManager) scanForFabricationOpportunities(ctx context.C
 }
 
 // scanForCollectionOpportunities scans for collection opportunities and creates pipelines.
-// These are COLLECTION pipelines that are unlimited.
+// These are COLLECTION pipelines that can be limited via MaxCollectionPipelines (0 = unlimited).
 // Also scans for storage-based opportunities (e.g., HYDROCARBON from gas siphoning).
 func (m *PipelineLifecycleManager) scanForCollectionOpportunities(ctx context.Context, params PipelineScanParams) int {
 	logger := common.LoggerFromContext(ctx)
 	pipelinesCreated := 0
+
+	// Calculate remaining slots (0 = unlimited)
+	remainingSlots := -1 // -1 means unlimited
+	if params.MaxCollectionPipelines > 0 {
+		collectionCount, err := m.pipelineRepo.CountActiveCollectionPipelines(ctx, params.PlayerID)
+		if err != nil {
+			// Fallback to in-memory count if DB fails
+			if m.registry != nil {
+				collectionCount = 0
+				for _, p := range m.registry.GetAll() {
+					if p.PipelineType() == manufacturing.PipelineTypeCollection {
+						collectionCount++
+					}
+				}
+			}
+		}
+		remainingSlots = params.MaxCollectionPipelines - collectionCount
+		if remainingSlots <= 0 {
+			return 0 // Already at limit
+		}
+	}
 
 	// Goods to exclude from collection pipelines - these are gas extraction byproducts
 	// that are either jettisoned or consumed by other operations
@@ -387,6 +443,11 @@ func (m *PipelineLifecycleManager) scanForCollectionOpportunities(ctx context.Co
 	}
 
 	for _, opp := range opportunities {
+		// Check if we've hit the limit (remainingSlots -1 = unlimited)
+		if remainingSlots >= 0 && pipelinesCreated >= remainingSlots {
+			break
+		}
+
 		// Skip excluded goods
 		if excludedGoods[opp.Good] {
 			continue
@@ -483,6 +544,11 @@ func (m *PipelineLifecycleManager) scanForCollectionOpportunities(ctx context.Co
 	}
 
 	for _, opp := range storageOpportunities {
+		// Check if we've hit the limit (remainingSlots -1 = unlimited)
+		if remainingSlots >= 0 && pipelinesCreated >= remainingSlots {
+			break
+		}
+
 		// Skip excluded goods
 		if excludedGoods[opp.Good] {
 			continue
