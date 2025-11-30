@@ -121,19 +121,27 @@ func (r *SupplyChainResolver) BuildDependencyTree(
 		return nil, &goods.ErrUnknownGood{Good: targetGood}
 	}
 
-	// Step 3: Check factory supply - if HIGH/ABUNDANT, skip manufacturing
-	// Factory already has supply ready to collect - creates a direct arbitrage pipeline (COLLECT_SELL only)
-	// Use AcquisitionBuy to signal that no manufacturing/delivery is needed
-	if factory.Supply == "HIGH" || factory.Supply == "ABUNDANT" {
+	// Step 3: Check if good has a recipe (requires inputs) vs source good (no inputs)
+	inputs, hasRecipe := r.supplyChainMap[targetGood]
+
+	// Step 3a: Source good with no recipe - use AcquisitionBuy (true direct arbitrage)
+	// Examples: RAW_MATERIALS sourced from extractors, not manufactured
+	if !hasRecipe || len(inputs) == 0 {
 		node := goods.NewSupplyChainNode(targetGood, goods.AcquisitionBuy)
 		node.WaypointSymbol = factory.WaypointSymbol
 		node.SupplyLevel = factory.Supply
 		node.MarketActivity = factory.Activity
-		// No children = direct arbitrage (buy from source, sell to destination)
+		// No children = true source good (buy from source, sell to destination)
 		return node, nil
 	}
 
-	// Step 4: Factory supply is low - build full manufacturing tree
+	// Step 3b: Good has a recipe - always use AcquisitionFabricate to ensure proper pipeline creation
+	// Even if factory supply is HIGH/ABUNDANT, we need the full dependency tree for:
+	// - Proper factory state tracking
+	// - Future ACQUIRE_DELIVER task creation when supply drops
+	// The pipeline_planner will check supply level and may skip initial ACQUIRE_DELIVER tasks
+
+	// Step 4: Build full manufacturing tree (includes factory supply level for optimization)
 	visited := make(map[string]bool)
 	return r.buildTreeRecursive(ctx, targetGood, systemSymbol, playerID, visited, []string{}, true)
 }
@@ -195,9 +203,11 @@ func (r *SupplyChainResolver) buildTreeRecursive(
 		return nil, fmt.Errorf("no factory in system %s exports %s - cannot manufacture (only IMPORT/EXCHANGE markets exist)", systemSymbol, goodSymbol)
 	}
 
-	// Create fabrication node with factory location
+	// Create fabrication node with factory location and supply info
 	node := goods.NewSupplyChainNode(goodSymbol, goods.AcquisitionFabricate)
 	node.WaypointSymbol = factory.WaypointSymbol
+	node.SupplyLevel = factory.Supply       // Capture supply level for pipeline optimization
+	node.MarketActivity = factory.Activity  // Capture activity for market state tracking
 
 	// Recursively build trees for all required inputs (not target goods)
 	for _, inputGood := range inputs {
