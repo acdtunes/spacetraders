@@ -58,6 +58,7 @@ const (
 	ContainerTypeGasCoordinator             ContainerType = "GAS_COORDINATOR"
 	ContainerTypeGasSiphonWorker            ContainerType = "GAS_SIPHON_WORKER"
 	ContainerTypeGasTransportWorker         ContainerType = "GAS_TRANSPORT_WORKER"
+	ContainerTypeStorageShip                ContainerType = "STORAGE_SHIP"
 )
 
 const (

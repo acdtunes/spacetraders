@@ -91,4 +91,11 @@ type DaemonClient interface {
 
 	// StartGasTransportWorkerContainer starts a previously persisted gas transport worker container
 	StartGasTransportWorkerContainer(ctx context.Context, containerID string, completionCallback chan<- string) error
+
+	// PersistStorageShipContainer creates (but does NOT start) a storage ship worker container in DB.
+	// The container will navigate the ship to the gas giant and register with storage coordinator.
+	PersistStorageShipContainer(ctx context.Context, containerID string, playerID uint, command interface{}) error
+
+	// StartStorageShipContainer starts a previously persisted storage ship worker container.
+	StartStorageShipContainer(ctx context.Context, containerID string, completionCallback chan<- string) error
 }

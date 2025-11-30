@@ -22,8 +22,30 @@ var purchaseMultipliers = map[SupplyLevel]float64{
 	SupplyLevelScarce:   0.10, // Minimal - supply nearly depleted
 }
 
+// ActivityLevel represents market activity intensity.
+type ActivityLevel string
+
+const (
+	ActivityLevelWeak       ActivityLevel = "WEAK"
+	ActivityLevelGrowing    ActivityLevel = "GROWING"
+	ActivityLevelStrong     ActivityLevel = "STRONG"
+	ActivityLevelRestricted ActivityLevel = "RESTRICTED"
+)
+
+// activityModifiers adjust position sizing based on market activity.
+// For EXPORT markets (buying): WEAK = low prices = buy more, STRONG = high prices = buy less.
+var activityModifiers = map[ActivityLevel]float64{
+	ActivityLevelWeak:       1.15, // Low activity = low prices = buy 15% more
+	ActivityLevelGrowing:    1.05, // Moderate = buy 5% more
+	ActivityLevelStrong:     0.85, // High activity = higher prices = buy 15% less
+	ActivityLevelRestricted: 0.75, // Restricted = buy 25% less (worst prices)
+}
+
 // DefaultPurchaseMultiplier is used when supply level is unknown
 const DefaultPurchaseMultiplier = 0.40
+
+// DefaultActivityModifier is used when activity level is unknown
+const DefaultActivityModifier = 1.0
 
 // PurchaseMultiplier returns the safe purchase fraction based on supply level.
 func (s SupplyLevel) PurchaseMultiplier() float64 {
@@ -110,4 +132,28 @@ func (s SupplyLevel) CalculateSupplyAwareLimit(tradeVolume int) int {
 		return 0
 	}
 	return int(float64(tradeVolume) * s.PurchaseMultiplier())
+}
+
+// CalculateActivityAwareLimit determines safe purchase quantity based on supply and activity level.
+// Activity modifies the base supply multiplier:
+// - WEAK activity = low prices = buy more aggressively
+// - STRONG activity = high prices = buy more conservatively
+func (s SupplyLevel) CalculateActivityAwareLimit(activity ActivityLevel, tradeVolume int) int {
+	if tradeVolume <= 0 {
+		return 0
+	}
+
+	baseMultiplier := s.PurchaseMultiplier()
+
+	activityMod, ok := activityModifiers[activity]
+	if !ok {
+		activityMod = DefaultActivityModifier
+	}
+
+	adjusted := baseMultiplier * activityMod
+	if adjusted > 1.0 {
+		adjusted = 1.0
+	}
+
+	return int(float64(tradeVolume) * adjusted)
 }

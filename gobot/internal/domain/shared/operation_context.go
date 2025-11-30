@@ -6,7 +6,8 @@ import "context"
 type contextKey int
 
 const (
-	operationContextKey contextKey = iota
+	operationContextKey    contextKey = iota
+	skipMarketRefreshKey              // Skip market refresh after cargo transactions (optimization)
 )
 
 // OperationContext provides traceability from high-level operations (containers)
@@ -104,4 +105,18 @@ func OperationContextFromContext(ctx context.Context) *OperationContext {
 		return opCtx
 	}
 	return nil
+}
+
+// WithSkipMarketRefresh returns a context that signals to skip market refresh after cargo transactions.
+// This optimization reduces API calls for operations that manage their own market scanning.
+func WithSkipMarketRefresh(ctx context.Context) context.Context {
+	return context.WithValue(ctx, skipMarketRefreshKey, true)
+}
+
+// SkipMarketRefreshFromContext returns true if the context has skip market refresh flag set.
+func SkipMarketRefreshFromContext(ctx context.Context) bool {
+	if skip, ok := ctx.Value(skipMarketRefreshKey).(bool); ok {
+		return skip
+	}
+	return false
 }

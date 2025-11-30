@@ -56,16 +56,16 @@ const (
 
 // Task priority constants
 // Higher priority tasks are processed first
-// EQUAL priority for ACQUIRE_DELIVER and COLLECT_SELL ensures balanced throughput
+// COLLECT_SELL has higher priority to ensure revenue generation
 // Aging mechanism (+2/min) naturally prioritizes starved tasks over time
 const (
 	// PriorityAcquireDeliver - Deliver inputs to factories so they can produce
 	PriorityAcquireDeliver = 10
 
-	// PriorityCollectSell - Equal to ACQUIRE_DELIVER for balanced throughput
-	// Both input deliveries and output collection are equally important
-	// Aging ensures older tasks get priority regardless of type
-	PriorityCollectSell = 10
+	// PriorityCollectSell - Higher priority than ACQUIRE_DELIVER
+	// Revenue generation must not be blocked by input deliveries
+	// This ensures factory outputs are collected and sold promptly
+	PriorityCollectSell = 50
 
 	// PriorityLiquidate - High priority to recover investment from orphaned cargo
 	PriorityLiquidate = 100
@@ -400,6 +400,24 @@ func (t *ManufacturingTask) ResetPhaseTracking() {
 	t.collectPhaseCompleted = false
 	t.acquirePhaseCompleted = false
 	t.phaseCompletedAt = nil
+}
+
+// SetStorageOperationID sets the storage operation ID for storage-based collection.
+// Used by COLLECT_SELL tasks that collect from storage ships instead of factories.
+func (t *ManufacturingTask) SetStorageOperationID(id string) {
+	t.storageOperationID = id
+}
+
+// SetStorageWaypoint sets the storage waypoint for storage-based collection.
+// Used by COLLECT_SELL tasks that collect from storage ships instead of factories.
+func (t *ManufacturingTask) SetStorageWaypoint(waypoint string) {
+	t.storageWaypoint = waypoint
+}
+
+// IsStorageBasedCollection returns true if this task collects from storage ships.
+// When true, the executor should use storage ship transfer instead of market purchase.
+func (t *ManufacturingTask) IsStorageBasedCollection() bool {
+	return t.storageOperationID != "" && t.storageWaypoint != ""
 }
 
 // State transitions

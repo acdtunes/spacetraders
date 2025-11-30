@@ -213,6 +213,7 @@ func (s *StorageShip) ReserveCargo(goodSymbol string, units int) error {
 // TryReserveCargo attempts to reserve cargo atomically.
 // Returns (units actually reserved, error).
 // If minUnits is not available, returns 0 with no error (caller decides what to do).
+// Reserves ALL available cargo (not just minUnits) to maximize transfer efficiency.
 // Thread-safe.
 func (s *StorageShip) TryReserveCargo(goodSymbol string, minUnits int) (int, error) {
 	if minUnits <= 0 {
@@ -227,10 +228,11 @@ func (s *StorageShip) TryReserveCargo(goodSymbol string, minUnits int) (int, err
 		return 0, nil // Not enough cargo, but not an error
 	}
 
-	// Reserve exactly what's available (up to what the hauler can carry)
-	// Caller should specify desired amount, we reserve min(available, desired)
-	s.reservedCargo[goodSymbol] += minUnits
-	return minUnits, nil
+	// Reserve ALL available cargo (not just minUnits) to maximize transfer efficiency.
+	// This is crucial for gas operations where mixed cargo means we can't wait for
+	// a full ship's worth of a single good type.
+	s.reservedCargo[goodSymbol] += available
+	return available, nil
 }
 
 // ConfirmTransfer completes a cargo transfer after successful API call.
