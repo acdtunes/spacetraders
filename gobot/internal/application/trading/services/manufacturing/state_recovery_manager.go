@@ -34,7 +34,7 @@ type StateRecoveryManager struct {
 	shipAssignmentRepo container.ShipAssignmentRepository
 	shipRepo           navigation.ShipQueryRepository // BUG FIX #4: Added for cargo checks
 	factoryTracker     *manufacturing.FactoryStateTracker
-	taskQueue          *services.TaskQueue
+	taskQueue          services.ManufacturingTaskQueue
 }
 
 // NewStateRecoveryManager creates a new state recovery manager
@@ -45,7 +45,7 @@ func NewStateRecoveryManager(
 	shipAssignmentRepo container.ShipAssignmentRepository,
 	shipRepo navigation.ShipQueryRepository, // BUG FIX #4: Added for cargo checks
 	factoryTracker *manufacturing.FactoryStateTracker,
-	taskQueue *services.TaskQueue,
+	taskQueue services.ManufacturingTaskQueue,
 ) *StateRecoveryManager {
 	return &StateRecoveryManager{
 		pipelineRepo:       pipelineRepo,
@@ -98,6 +98,32 @@ func (m *StateRecoveryManager) RecoverState(ctx context.Context, playerID int) (
 	}
 
 	logger.Log("INFO", fmt.Sprintf("Recovered %d active pipelines", len(pipelines)), nil)
+
+	// Step 1.5: Clean up orphaned COLLECTION pipelines (no tasks)
+	// These can occur if task creation fails after pipeline is persisted
+	for _, pipeline := range pipelines {
+		if pipeline.PipelineType() != manufacturing.PipelineTypeCollection {
+			continue
+		}
+
+		// Check if this COLLECTION pipeline has any tasks
+		tasks, err := m.taskRepo.FindByPipelineID(ctx, pipeline.ID())
+		if err != nil {
+			logger.Log("WARN", fmt.Sprintf("Failed to check tasks for COLLECTION pipeline %s: %v", pipeline.ID()[:8], err), nil)
+			continue
+		}
+
+		if len(tasks) == 0 {
+			// This is an orphaned COLLECTION pipeline - delete it
+			if err := m.pipelineRepo.Delete(ctx, pipeline.ID()); err != nil {
+				logger.Log("ERROR", fmt.Sprintf("Failed to delete orphaned COLLECTION pipeline %s: %v", pipeline.ID()[:8], err), nil)
+			} else {
+				logger.Log("INFO", fmt.Sprintf("Deleted orphaned COLLECTION pipeline %s (%s) - no tasks",
+					pipeline.ID()[:8], pipeline.ProductGood()), nil)
+				delete(result.ActivePipelines, pipeline.ID())
+			}
+		}
+	}
 
 	// Step 2: Load incomplete tasks and rebuild queue
 	tasks, err := m.taskRepo.FindIncomplete(ctx, playerID)

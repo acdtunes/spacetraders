@@ -4,11 +4,12 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	goodsServices "github.com/andrescamacho/spacetraders-go/internal/application/goods/services"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/goods"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/storage"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
-
-	goodsServices "github.com/andrescamacho/spacetraders-go/internal/application/goods/services"
 )
 
 // PipelinePlanner converts manufacturing opportunities into executable pipelines.
@@ -22,12 +23,18 @@ import (
 // but a different ship gets assigned to deliver them.
 type PipelinePlanner struct {
 	marketLocator *goodsServices.MarketLocator
+	storageOpRepo storage.StorageOperationRepository // Optional: enables STORAGE_ACQUIRE_DELIVER tasks
 }
 
 // NewPipelinePlanner creates a new pipeline planner
-func NewPipelinePlanner(marketLocator *goodsServices.MarketLocator) *PipelinePlanner {
+// storageOpRepo is optional - if nil, only ACQUIRE_DELIVER tasks will be created
+func NewPipelinePlanner(
+	marketLocator *goodsServices.MarketLocator,
+	storageOpRepo storage.StorageOperationRepository,
+) *PipelinePlanner {
 	return &PipelinePlanner{
 		marketLocator: marketLocator,
+		storageOpRepo: storageOpRepo,
 	}
 }
 
@@ -270,14 +277,45 @@ func (p *PipelinePlanner) createDirectArbitrageTask(
 	return task.ID(), nil
 }
 
-// createAcquireDeliverTask creates an atomic ACQUIRE_DELIVER task
-// that buys from source market AND delivers to factory in one operation.
-// Uses supply-priority selection to avoid overpaying at SCARCE/LIMITED markets.
+// createAcquireDeliverTask creates an atomic ACQUIRE_DELIVER or STORAGE_ACQUIRE_DELIVER task
+// that acquires the good AND delivers to factory in one operation.
+//
+// Priority:
+//  1. Check for running storage operation (e.g., gas siphoning) - creates STORAGE_ACQUIRE_DELIVER
+//  2. Fall back to market acquisition with supply-priority selection - creates ACQUIRE_DELIVER
 func (p *PipelinePlanner) createAcquireDeliverTask(
 	planCtx *PlanningContext,
 	node *goods.SupplyChainNode,
 	factorySymbol string,
 ) (string, error) {
+	logger := common.LoggerFromContext(planCtx.ctx)
+
+	// First, check if there's a running storage operation for this good (e.g., gas siphoning)
+	// If so, create STORAGE_ACQUIRE_DELIVER instead of ACQUIRE_DELIVER
+	if storageOp := p.findRunningStorageOperationForGood(planCtx.ctx, node.Good, planCtx.playerID); storageOp != nil {
+		logger.Log("INFO", "Using storage operation for acquisition task", map[string]interface{}{
+			"good":         node.Good,
+			"storage_op":   storageOp.ID()[:8],
+			"waypoint":     storageOp.WaypointSymbol(),
+			"factory":      factorySymbol,
+			"pipeline_id":  planCtx.pipeline.ID()[:8],
+		})
+
+		task := manufacturing.NewStorageAcquireDeliverTask(
+			planCtx.pipeline.ID(),
+			planCtx.playerID,
+			node.Good,
+			storageOp.ID(),             // Storage operation to acquire from
+			storageOp.WaypointSymbol(), // Where storage ships are located
+			factorySymbol,              // Where to deliver to
+			nil,                        // No dependencies for raw material acquisition
+		)
+		planCtx.tasks = append(planCtx.tasks, task)
+		planCtx.tasksByGood[node.Good] = task
+		return task.ID(), nil
+	}
+
+	// No storage operation found - fall back to market acquisition
 	// Find market to buy from using supply-priority selection
 	// Priority: ABUNDANT > HIGH > MODERATE (skips SCARCE/LIMITED to avoid overpaying)
 	var sourceMarket string
@@ -313,6 +351,39 @@ func (p *PipelinePlanner) createAcquireDeliverTask(
 	planCtx.tasksByGood[node.Good] = task
 
 	return task.ID(), nil
+}
+
+// findRunningStorageOperationForGood checks if there's a running storage operation
+// that produces the specified good. This is used to prefer storage acquisition
+// (from siphon ships) over market acquisition for gas goods.
+//
+// Returns the storage operation if found, nil otherwise.
+func (p *PipelinePlanner) findRunningStorageOperationForGood(ctx context.Context, good string, playerID int) *storage.StorageOperation {
+	if p.storageOpRepo == nil {
+		return nil
+	}
+
+	logger := common.LoggerFromContext(ctx)
+
+	// Find storage operations that support this good
+	operations, err := p.storageOpRepo.FindByGood(ctx, playerID, good)
+	if err != nil {
+		logger.Log("WARN", "Storage operation lookup failed in PipelinePlanner", map[string]interface{}{
+			"good":      good,
+			"player_id": playerID,
+			"error":     err.Error(),
+		})
+		return nil
+	}
+
+	// Return the first RUNNING operation that supports this good
+	for _, op := range operations {
+		if op.IsRunning() && op.SupportsGood(good) {
+			return op
+		}
+	}
+
+	return nil
 }
 
 

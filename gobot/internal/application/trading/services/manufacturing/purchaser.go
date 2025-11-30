@@ -22,9 +22,22 @@ var supplyMultipliers = map[string]float64{
 	"SCARCE":   0.10, // Minimal - supply nearly depleted
 }
 
+// Activity-based modifiers for position sizing (applied to base supply multipliers)
+// Based on data analysis: WEAK activity at EXPORT = lowest prices (buy more aggressive)
+// STRONG activity at EXPORT = highest prices (buy more conservative)
+var activityModifiers = map[string]float64{
+	"WEAK":       1.15, // Low activity = low prices = buy 15% more
+	"GROWING":    1.05, // Moderate = buy 5% more
+	"STRONG":     0.85, // High activity = higher prices = buy 15% less
+	"RESTRICTED": 0.75, // Restricted = buy 25% less (worst prices)
+}
+
 const (
 	// DefaultSupplyMultiplier is used when supply level is unknown
 	DefaultSupplyMultiplier = 0.40 // Conservative (MODERATE)
+
+	// DefaultActivityModifier is used when activity level is unknown
+	DefaultActivityModifier = 1.0 // No adjustment
 
 	// MaxPurchaseRounds limits the purchase loop iterations
 	MaxPurchaseRounds = 10
@@ -36,8 +49,11 @@ type Purchaser interface {
 	// ExecutePurchaseLoop performs iterative purchasing until cargo full or limit reached
 	ExecutePurchaseLoop(ctx context.Context, params PurchaseLoopParams) (*PurchaseResult, error)
 
-	// CalculateSupplyAwareLimit determines safe purchase quantity based on supply level
-	CalculateSupplyAwareLimit(supply string, tradeVolume int) int
+	// CalculateSupplyAwareLimit determines safe purchase quantity based on supply and activity level.
+	// Activity modifiers adjust the base supply multiplier:
+	// - WEAK activity = lower prices = buy more aggressively (+15%)
+	// - STRONG activity = higher prices = buy more conservatively (-15%)
+	CalculateSupplyAwareLimit(supply, activity string, tradeVolume int) int
 }
 
 // PurchaseLoopParams contains parameters for the purchase loop.
@@ -120,13 +136,17 @@ func (p *ManufacturingPurchaser) ExecutePurchaseLoop(
 			break // Already have some goods, continue with what we have
 		}
 
-		// Find supply level and trade volume
+		// Find supply level, activity, and trade volume
 		var supplyLevel string
+		var activityLevel string
 		var tradeVolume int
 		for _, good := range marketData.TradeGoods() {
 			if good.Symbol() == params.Good {
 				if good.Supply() != nil {
 					supplyLevel = *good.Supply()
+				}
+				if good.Activity() != nil {
+					activityLevel = *good.Activity()
 				}
 				tradeVolume = good.TradeVolume()
 				break
@@ -173,8 +193,8 @@ func (p *ManufacturingPurchaser) ExecutePurchaseLoop(
 			}
 		}
 
-		// Apply supply-aware limit
-		supplyAwareLimit := p.CalculateSupplyAwareLimit(supplyLevel, tradeVolume)
+		// Apply supply and activity-aware limit
+		supplyAwareLimit := p.CalculateSupplyAwareLimit(supplyLevel, activityLevel, tradeVolume)
 		if supplyAwareLimit > 0 && supplyAwareLimit < quantity {
 			quantity = supplyAwareLimit
 		}
@@ -183,7 +203,7 @@ func (p *ManufacturingPurchaser) ExecutePurchaseLoop(
 			break
 		}
 
-		// Purchase goods
+		// Purchase goods (keep market refresh to detect price movement from our buys)
 		purchaseResp, err := p.mediator.Send(ctx, &shipCmd.PurchaseCargoCommand{
 			ShipSymbol: params.ShipSymbol,
 			GoodSymbol: params.Good,
@@ -213,6 +233,7 @@ func (p *ManufacturingPurchaser) ExecutePurchaseLoop(
 			"cost":           resp.TotalCost,
 			"price_per_unit": pricePerUnit,
 			"supply":         supplyLevel,
+			"activity":       activityLevel,
 			"round":          result.Rounds,
 		})
 
@@ -239,17 +260,35 @@ func (p *ManufacturingPurchaser) ExecutePurchaseLoop(
 	return result, nil
 }
 
-// CalculateSupplyAwareLimit determines safe purchase quantity based on supply level.
+// CalculateSupplyAwareLimit determines safe purchase quantity based on supply and activity level.
+// Activity modifiers adjust the base supply multiplier based on data analysis showing:
+// - WEAK activity at EXPORT markets = lowest prices = buy more aggressively
+// - STRONG activity at EXPORT markets = highest prices = buy more conservatively
 // See docs/PARALLEL_MANUFACTURING_SYSTEM_DESIGN.md - Trade Size Calculation
-func (p *ManufacturingPurchaser) CalculateSupplyAwareLimit(supply string, tradeVolume int) int {
+func (p *ManufacturingPurchaser) CalculateSupplyAwareLimit(supply, activity string, tradeVolume int) int {
 	if tradeVolume <= 0 {
 		return 0 // No limit if trade volume unknown
 	}
 
+	// Base multiplier from supply level
 	multiplier, ok := supplyMultipliers[supply]
 	if !ok {
 		multiplier = DefaultSupplyMultiplier // Default to conservative (MODERATE)
 	}
 
-	return int(float64(tradeVolume) * multiplier)
+	// Activity modifier adjusts the base multiplier
+	activityMod, ok := activityModifiers[activity]
+	if !ok {
+		activityMod = DefaultActivityModifier // No adjustment if unknown
+	}
+
+	// Apply activity modifier to base multiplier
+	adjustedMultiplier := multiplier * activityMod
+
+	// Cap at 1.0 to never exceed trade volume
+	if adjustedMultiplier > 1.0 {
+		adjustedMultiplier = 1.0
+	}
+
+	return int(float64(tradeVolume) * adjustedMultiplier)
 }

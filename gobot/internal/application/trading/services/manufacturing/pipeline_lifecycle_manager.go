@@ -77,7 +77,7 @@ type PipelineLifecycleManager struct {
 	demandFinder                *services.ManufacturingDemandFinder
 	collectionOpportunityFinder *services.CollectionOpportunityFinder
 	pipelinePlanner             *services.PipelinePlanner
-	taskQueue                   *services.TaskQueue
+	taskQueue                   services.ManufacturingTaskQueue
 	factoryTracker              *manufacturing.FactoryStateTracker
 
 	// Repositories
@@ -105,7 +105,7 @@ func NewPipelineLifecycleManager(
 	demandFinder *services.ManufacturingDemandFinder,
 	collectionOpportunityFinder *services.CollectionOpportunityFinder,
 	pipelinePlanner *services.PipelinePlanner,
-	taskQueue *services.TaskQueue,
+	taskQueue services.ManufacturingTaskQueue,
 	factoryTracker *manufacturing.FactoryStateTracker,
 	pipelineRepo manufacturing.PipelineRepository,
 	taskRepo manufacturing.TaskRepository,
@@ -354,9 +354,20 @@ func (m *PipelineLifecycleManager) scanForFabricationOpportunities(ctx context.C
 
 // scanForCollectionOpportunities scans for collection opportunities and creates pipelines.
 // These are COLLECTION pipelines that are unlimited.
+// Also scans for storage-based opportunities (e.g., HYDROCARBON from gas siphoning).
 func (m *PipelineLifecycleManager) scanForCollectionOpportunities(ctx context.Context, params PipelineScanParams) int {
 	logger := common.LoggerFromContext(ctx)
+	pipelinesCreated := 0
 
+	// Goods to exclude from collection pipelines - these are gas extraction byproducts
+	// that are either jettisoned or consumed by other operations
+	excludedGoods := map[string]bool{
+		"HYDROCARBON":      true,
+		"LIQUID_HYDROGEN":  true,
+		"LIQUID_NITROGEN":  true,
+	}
+
+	// 1. Scan for factory-based collection opportunities
 	config := services.DefaultCollectionFinderConfig()
 
 	opportunities, err := m.collectionOpportunityFinder.FindOpportunities(
@@ -369,18 +380,18 @@ func (m *PipelineLifecycleManager) scanForCollectionOpportunities(ctx context.Co
 		logger.Log("WARN", "Failed to scan for collection opportunities", map[string]interface{}{
 			"error": err.Error(),
 		})
-		return 0
 	}
 
-	if len(opportunities) == 0 {
-		return 0
+	if len(opportunities) > 0 {
+		logger.Log("INFO", fmt.Sprintf("Found %d factory collection opportunities", len(opportunities)), nil)
 	}
-
-	logger.Log("INFO", fmt.Sprintf("Found %d collection opportunities", len(opportunities)), nil)
-
-	pipelinesCreated := 0
 
 	for _, opp := range opportunities {
+		// Skip excluded goods
+		if excludedGoods[opp.Good] {
+			continue
+		}
+
 		// Create COLLECTION pipeline
 		pipeline := manufacturing.NewCollectionPipeline(
 			opp.Good,
@@ -417,7 +428,7 @@ func (m *PipelineLifecycleManager) scanForCollectionOpportunities(ctx context.Co
 			continue
 		}
 
-		// Persist
+		// Persist (pipeline + task must both succeed or neither)
 		if m.pipelineRepo != nil {
 			if err := m.pipelineRepo.Create(ctx, pipeline); err != nil {
 				logger.Log("ERROR", fmt.Sprintf("Failed to persist collection pipeline: %v", err), nil)
@@ -426,6 +437,12 @@ func (m *PipelineLifecycleManager) scanForCollectionOpportunities(ctx context.Co
 
 			if err := m.taskRepo.Create(ctx, task); err != nil {
 				logger.Log("ERROR", fmt.Sprintf("Failed to persist collection task: %v", err), nil)
+				// Clean up orphaned pipeline to prevent blocking future collection pipelines for this good
+				if deleteErr := m.pipelineRepo.Delete(ctx, pipeline.ID()); deleteErr != nil {
+					logger.Log("ERROR", fmt.Sprintf("Failed to delete orphaned pipeline %s: %v", pipeline.ID()[:8], deleteErr), nil)
+				} else {
+					logger.Log("INFO", fmt.Sprintf("Deleted orphaned pipeline %s after task creation failure", pipeline.ID()[:8]), nil)
+				}
 				continue
 			}
 		}
@@ -446,6 +463,105 @@ func (m *PipelineLifecycleManager) scanForCollectionOpportunities(ctx context.Co
 			"factory":         opp.FactorySymbol,
 			"sell_market":     opp.SellMarket,
 			"expected_profit": opp.ExpectedProfit,
+		})
+	}
+
+	// 2. Scan for storage-based collection opportunities (e.g., HYDROCARBON from gas siphoning)
+	storageOpportunities, err := m.collectionOpportunityFinder.FindStorageOpportunities(
+		ctx,
+		params.SystemSymbol,
+		params.PlayerID,
+	)
+	if err != nil {
+		logger.Log("WARN", "Failed to scan for storage collection opportunities", map[string]interface{}{
+			"error": err.Error(),
+		})
+	}
+
+	if len(storageOpportunities) > 0 {
+		logger.Log("INFO", fmt.Sprintf("Found %d storage collection opportunities", len(storageOpportunities)), nil)
+	}
+
+	for _, opp := range storageOpportunities {
+		// Skip excluded goods
+		if excludedGoods[opp.Good] {
+			continue
+		}
+
+		// Create COLLECTION pipeline for storage goods
+		pipeline := manufacturing.NewCollectionPipeline(
+			opp.Good,
+			opp.SellMarket,
+			opp.SellPrice,
+			params.PlayerID,
+		)
+
+		// Create COLLECT_SELL task with storage info: collect from storage ships, sell at market
+		// The executor will detect IsStorageBasedCollection() and use storage ship transfer
+		task := manufacturing.NewCollectSellTask(
+			pipeline.ID(),
+			params.PlayerID,
+			opp.Good,
+			opp.StorageWaypoint, // Where to collect from (storage waypoint, not factory)
+			opp.SellMarket,      // Where to sell
+			nil,                 // No dependencies
+		)
+		// Set storage operation fields so executor knows to use storage ship collection
+		task.SetStorageOperationID(opp.StorageOperationID)
+		task.SetStorageWaypoint(opp.StorageWaypoint)
+
+		// Mark immediately ready (storage collection is always ready)
+		if err := task.MarkReady(); err != nil {
+			logger.Log("WARN", fmt.Sprintf("Failed to mark storage collection task ready: %v", err), nil)
+			continue
+		}
+
+		// Add task to pipeline BEFORE starting
+		if err := pipeline.AddTask(task); err != nil {
+			logger.Log("WARN", fmt.Sprintf("Failed to add storage task to pipeline: %v", err), nil)
+			continue
+		}
+
+		// Start pipeline
+		if err := pipeline.Start(); err != nil {
+			logger.Log("WARN", fmt.Sprintf("Failed to start storage collection pipeline for %s: %v", opp.Good, err), nil)
+			continue
+		}
+
+		// Persist
+		if m.pipelineRepo != nil {
+			if err := m.pipelineRepo.Create(ctx, pipeline); err != nil {
+				logger.Log("ERROR", fmt.Sprintf("Failed to persist storage collection pipeline: %v", err), nil)
+				continue
+			}
+
+			if err := m.taskRepo.Create(ctx, task); err != nil {
+				logger.Log("ERROR", fmt.Sprintf("Failed to persist storage collection task: %v", err), nil)
+				if deleteErr := m.pipelineRepo.Delete(ctx, pipeline.ID()); deleteErr != nil {
+					logger.Log("ERROR", fmt.Sprintf("Failed to delete orphaned pipeline %s: %v", pipeline.ID()[:8], deleteErr), nil)
+				}
+				continue
+			}
+		}
+
+		// Add to registry and queue
+		if m.registry != nil {
+			m.registry.Register(pipeline)
+		}
+
+		m.taskQueue.Enqueue(task)
+
+		pipelinesCreated++
+
+		logger.Log("INFO", fmt.Sprintf("Created STORAGE COLLECTION pipeline for %s (COLLECT_SELL)", opp.Good), map[string]interface{}{
+			"pipeline_id":       pipeline.ID(),
+			"pipeline_type":     "COLLECTION",
+			"task_type":         "COLLECT_SELL",
+			"good":              opp.Good,
+			"storage_operation": opp.StorageOperationID[:8],
+			"storage_waypoint":  opp.StorageWaypoint,
+			"sell_market":       opp.SellMarket,
+			"expected_profit":   opp.ExpectedProfit,
 		})
 	}
 

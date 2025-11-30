@@ -28,8 +28,8 @@ type CoordinatorDependencies struct {
 	CollectionOpportunityFinder *services.CollectionOpportunityFinder
 	PipelinePlanner             *services.PipelinePlanner
 
-	// Shared state
-	TaskQueue      *services.TaskQueue
+	// Shared state (uses DualTaskQueue for collection-first priority)
+	TaskQueue      services.ManufacturingTaskQueue
 	FactoryTracker *manufacturing.FactoryStateTracker
 
 	// Domain services
@@ -42,7 +42,7 @@ type ManufacturingCoordinator struct {
 	// Shared state (no circular deps)
 	registry           *ActivePipelineRegistry
 	assignmentTracker  *AssignmentTracker
-	taskQueue          *services.TaskQueue
+	taskQueue          services.ManufacturingTaskQueue
 
 	// Domain services
 	priorityCalculator *manufacturing.TaskPriorityCalculator
@@ -73,7 +73,8 @@ func NewManufacturingCoordinator(deps CoordinatorDependencies) *ManufacturingCoo
 	c.assignmentTracker = NewAssignmentTracker()
 	c.taskQueue = deps.TaskQueue
 	if c.taskQueue == nil {
-		c.taskQueue = services.NewTaskQueue()
+		// Use DualTaskQueue for collection-first priority (COLLECT_SELL before ACQUIRE_DELIVER)
+		c.taskQueue = services.NewDualTaskQueue()
 	}
 
 	// 2. Domain services
@@ -123,7 +124,7 @@ func (c *ManufacturingCoordinator) GetAssignmentTracker() *AssignmentTracker {
 }
 
 // GetTaskQueue returns the task queue.
-func (c *ManufacturingCoordinator) GetTaskQueue() *services.TaskQueue {
+func (c *ManufacturingCoordinator) GetTaskQueue() services.ManufacturingTaskQueue {
 	return c.taskQueue
 }
 

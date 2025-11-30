@@ -117,13 +117,21 @@ func (e *StorageAcquireDeliverExecutor) Execute(ctx context.Context, params Task
 			return fmt.Errorf("no cargo space available on ship %s", params.ShipSymbol)
 		}
 
-		// Determine how much cargo we want
-		minUnits := 1
-		if task.Quantity() > 0 {
-			minUnits = task.Quantity()
-			if minUnits > availableSpace {
-				minUnits = availableSpace
-			}
+		// Determine minimum cargo threshold to pick up
+		// Note: We use a very low minimum (1 unit) to avoid deadlocks.
+		// Gas extraction produces mixed cargo types (LIQUID_HYDROGEN, LIQUID_NITROGEN,
+		// and HYDROCARBON), so a storage ship may be full (80/80) but only have
+		// small amounts of the specific good we want (e.g., 4-9 units).
+		// Using a higher threshold causes deadlock where haulers wait forever
+		// because storage ships are full with byproducts (HYDROCARBON).
+		const minPickupThreshold = 1
+		minUnits := minPickupThreshold
+		if availableSpace < minUnits {
+			minUnits = availableSpace
+		}
+		// Allow picking up even 1 unit if that's all we can fit
+		if minUnits < 1 {
+			minUnits = 1
 		}
 
 		logger.Log("INFO", "STORAGE_ACQUIRE_DELIVER: Waiting for cargo from storage ships", map[string]interface{}{

@@ -13,14 +13,14 @@ import (
 // Handles tasks that may have been left in READY status after restart or crash.
 type TaskRescuer struct {
 	taskRepo         manufacturing.TaskRepository
-	taskQueue        *services.TaskQueue
+	taskQueue        services.ManufacturingTaskQueue
 	conditionChecker *MarketConditionChecker
 }
 
 // NewTaskRescuer creates a new task rescuer.
 func NewTaskRescuer(
 	taskRepo manufacturing.TaskRepository,
-	taskQueue *services.TaskQueue,
+	taskQueue services.ManufacturingTaskQueue,
 	conditionChecker *MarketConditionChecker,
 ) *TaskRescuer {
 	return &TaskRescuer{
@@ -63,6 +63,16 @@ func (r *TaskRescuer) RescueReadyTasks(ctx context.Context, playerID int) Rescue
 			} else {
 				result.ResetToPending++
 			}
+
+		case manufacturing.TaskTypeStorageAcquireDeliver:
+			// STORAGE_ACQUIRE_DELIVER tasks pick up from storage ships and deliver to factory
+			// Same validation as ACQUIRE_DELIVER - check factory input not saturated
+			rescued := r.rescueStorageAcquireDeliverTask(ctx, task, playerID)
+			if rescued {
+				result.StorageAcquireDeliverRescued++
+			} else {
+				result.ResetToPending++
+			}
 		}
 	}
 
@@ -72,6 +82,9 @@ func (r *TaskRescuer) RescueReadyTasks(ctx context.Context, playerID int) Rescue
 	}
 	if result.AcquireDeliverRescued > 0 {
 		logger.Log("DEBUG", fmt.Sprintf("Rescued %d ACQUIRE_DELIVER tasks to queue", result.AcquireDeliverRescued), nil)
+	}
+	if result.StorageAcquireDeliverRescued > 0 {
+		logger.Log("DEBUG", fmt.Sprintf("Rescued %d STORAGE_ACQUIRE_DELIVER tasks to queue", result.StorageAcquireDeliverRescued), nil)
 	}
 	if result.ResetToPending > 0 {
 		logger.Log("DEBUG", fmt.Sprintf("Reset %d tasks to PENDING due to supply conditions", result.ResetToPending), nil)
@@ -88,13 +101,17 @@ func (r *TaskRescuer) rescueCollectSellTask(
 	playerID int,
 ) bool {
 	if r.conditionChecker != nil {
-		// Check 1: Factory must have HIGH/ABUNDANT supply to collect
-		if !r.conditionChecker.IsFactoryOutputReady(ctx, task.FactorySymbol(), task.Good(), playerID) {
-			r.resetToPending(ctx, task)
-			return false
+		// Storage-based collection tasks don't need factory supply checks
+		// They collect from storage ships, not factory markets
+		if !task.IsStorageBasedCollection() {
+			// Check 1: Factory must have HIGH/ABUNDANT supply to collect
+			if !r.conditionChecker.IsFactoryOutputReady(ctx, task.FactorySymbol(), task.Good(), playerID) {
+				r.resetToPending(ctx, task)
+				return false
+			}
 		}
 
-		// Check 2: Sell market must not be saturated
+		// Check 2: Sell market must not be saturated (applies to all COLLECT_SELL)
 		if r.conditionChecker.IsSellMarketSaturated(ctx, task.TargetMarket(), task.Good(), playerID) {
 			r.resetToPending(ctx, task)
 			return false
@@ -130,6 +147,29 @@ func (r *TaskRescuer) rescueAcquireDeliverTask(
 	return true
 }
 
+// rescueStorageAcquireDeliverTask attempts to rescue a STORAGE_ACQUIRE_DELIVER task.
+// These tasks pick up cargo from storage ships and deliver to factories.
+// Returns true if rescued, false if reset to PENDING.
+func (r *TaskRescuer) rescueStorageAcquireDeliverTask(
+	ctx context.Context,
+	task *manufacturing.ManufacturingTask,
+	playerID int,
+) bool {
+	if r.conditionChecker != nil {
+		// Check: Factory input is not already saturated
+		if r.conditionChecker.IsFactoryInputSaturated(ctx, task.FactorySymbol(), task.Good(), playerID) {
+			r.resetToPending(ctx, task)
+			return false
+		}
+	}
+
+	// All checks passed - enqueue
+	if r.taskQueue != nil {
+		r.taskQueue.Enqueue(task)
+	}
+	return true
+}
+
 // resetToPending resets a task to PENDING status.
 func (r *TaskRescuer) resetToPending(ctx context.Context, task *manufacturing.ManufacturingTask) {
 	if err := task.ResetToPending(); err == nil {
@@ -141,14 +181,15 @@ func (r *TaskRescuer) resetToPending(ctx context.Context, task *manufacturing.Ma
 
 // RescueResult contains the results of a rescue operation.
 type RescueResult struct {
-	CollectSellRescued    int
-	AcquireDeliverRescued int
-	ResetToPending        int
+	CollectSellRescued           int
+	AcquireDeliverRescued        int
+	StorageAcquireDeliverRescued int
+	ResetToPending               int
 }
 
 // TotalRescued returns the total number of tasks rescued.
 func (r RescueResult) TotalRescued() int {
-	return r.CollectSellRescued + r.AcquireDeliverRescued
+	return r.CollectSellRescued + r.AcquireDeliverRescued + r.StorageAcquireDeliverRescued
 }
 
 // RescueFailedTasks rescues FAILED tasks that can be retried.

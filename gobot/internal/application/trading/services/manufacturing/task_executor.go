@@ -87,15 +87,24 @@ func NewDefaultTaskExecutorRegistry(
 	return registry
 }
 
-// RegisterStorageExecutor adds the storage acquire deliver executor to an existing registry.
+// RegisterStorageExecutor adds the storage acquire deliver executor to an existing registry
+// and enables storage support on the CollectSellExecutor.
 // This is separated because storage operations require additional dependencies that may not
 // always be available (e.g., when storage operations are not configured).
 func RegisterStorageExecutor(
 	registry *TaskExecutorRegistry,
 	navigator Navigator,
+	purchaser *ManufacturingPurchaser,
 	seller *ManufacturingSeller,
 	storageCoordinator storage.StorageCoordinator,
 	apiClient domainPorts.APIClient,
 ) {
+	// Register STORAGE_ACQUIRE_DELIVER executor
 	registry.Register(NewStorageAcquireDeliverExecutor(navigator, seller, storageCoordinator, apiClient))
+
+	// Re-register COLLECT_SELL executor with storage support
+	// This overwrites the basic executor with one that supports storage-based collection
+	collectSellExecutor := NewCollectSellExecutor(navigator, purchaser, seller).
+		WithStorageSupport(storageCoordinator, apiClient)
+	registry.Register(collectSellExecutor)
 }

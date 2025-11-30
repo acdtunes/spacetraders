@@ -62,8 +62,8 @@ type TaskAssignmentManager struct {
 	shipAssignmentRepo domainContainer.ShipAssignmentRepository
 	marketRepo         market.MarketRepository
 
-	// Task queue
-	taskQueue *services.TaskQueue
+	// Task queue (uses DualTaskQueue for collection-first priority)
+	taskQueue services.ManufacturingTaskQueue
 
 	// Focused services (injected via constructor)
 	shipSelector      *ShipSelector
@@ -86,7 +86,7 @@ func NewTaskAssignmentManager(
 	shipRepo navigation.ShipRepository,
 	shipAssignmentRepo domainContainer.ShipAssignmentRepository,
 	marketRepo market.MarketRepository,
-	taskQueue *services.TaskQueue,
+	taskQueue services.ManufacturingTaskQueue,
 	shipSelector *ShipSelector,
 	tracker *AssignmentTracker,
 	conditionChecker *MarketConditionChecker,

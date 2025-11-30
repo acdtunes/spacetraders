@@ -11,21 +11,25 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/goods"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/storage"
 )
 
 // SupplyMonitor polls factories and marks COLLECT tasks as ready when supply reaches HIGH.
 // It runs as a background service, periodically checking factory supply levels.
 // When a factory is ready but no COLLECT task exists, it creates new COLLECT + SELL tasks.
 // When factory supply drops below HIGH, creates ACQUIRE_DELIVER tasks to replenish.
+// When a required input is available from a running storage operation (e.g., gas siphoning),
+// it creates STORAGE_ACQUIRE_DELIVER tasks instead of regular ACQUIRE_DELIVER tasks.
 type SupplyMonitor struct {
 	marketRepo          market.MarketRepository
 	factoryTracker      *manufacturing.FactoryStateTracker
 	factoryStateRepo    manufacturing.FactoryStateRepository
 	pipelineRepo        manufacturing.PipelineRepository // For looking up pipeline sell_market
-	taskQueue           *TaskQueue
+	taskQueue           ManufacturingTaskQueue
 	taskRepo            manufacturing.TaskRepository
 	sellMarketDistrib   *SellMarketDistributor // Distributes sales across multiple markets
 	marketLocator       *goodsServices.MarketLocator // For finding export markets for inputs
+	storageOpRepo       storage.StorageOperationRepository // For finding storage operations that provide goods
 	pollInterval        time.Duration
 	playerID            int
 	taskReadyChan       chan<- struct{} // Optional: notifies coordinator when tasks become ready
@@ -37,9 +41,10 @@ func NewSupplyMonitor(
 	factoryTracker *manufacturing.FactoryStateTracker,
 	factoryStateRepo manufacturing.FactoryStateRepository,
 	pipelineRepo manufacturing.PipelineRepository,
-	taskQueue *TaskQueue,
+	taskQueue ManufacturingTaskQueue,
 	taskRepo manufacturing.TaskRepository,
 	marketLocator *goodsServices.MarketLocator,
+	storageOpRepo storage.StorageOperationRepository,
 	pollInterval time.Duration,
 	playerID int,
 ) *SupplyMonitor {
@@ -55,6 +60,7 @@ func NewSupplyMonitor(
 		taskRepo:            taskRepo,
 		sellMarketDistrib:   sellMarketDistrib,
 		marketLocator:       marketLocator,
+		storageOpRepo:       storageOpRepo,
 		pollInterval:        pollInterval,
 		playerID:            playerID,
 	}
@@ -731,10 +737,13 @@ func (m *SupplyMonitor) createAcquireDeliverTasksForFactory(ctx context.Context,
 		return
 	}
 
-	// Build set of goods with pending/ready/executing ACQUIRE_DELIVER tasks
+	// Build set of goods with pending/ready/executing ACQUIRE_DELIVER or STORAGE_ACQUIRE_DELIVER tasks
+	// CRITICAL: Must include both task types to prevent duplicate task creation
 	pendingInputs := make(map[string]bool)
 	for _, task := range existingTasks {
-		if task.TaskType() == manufacturing.TaskTypeAcquireDeliver &&
+		isDeliveryTask := task.TaskType() == manufacturing.TaskTypeAcquireDeliver ||
+			task.TaskType() == manufacturing.TaskTypeStorageAcquireDeliver
+		if isDeliveryTask &&
 			task.FactorySymbol() == factory.FactorySymbol() &&
 			(task.Status() == manufacturing.TaskStatusPending ||
 				task.Status() == manufacturing.TaskStatusReady ||
@@ -765,6 +774,49 @@ func (m *SupplyMonitor) createAcquireDeliverTasksForFactory(ctx context.Context,
 			})
 			skippedHighSupply++
 			continue
+		}
+
+		// STORAGE OPERATION INTEGRATION: Check if this input is produced by a running storage operation
+		// (e.g., gas siphoning produces LIQUID_HYDROGEN, LIQUID_NITROGEN, HYDROCARBON)
+		// If so, create STORAGE_ACQUIRE_DELIVER task instead of regular ACQUIRE_DELIVER
+		if storageOp := m.findRunningStorageOperationForGood(ctx, input.good); storageOp != nil {
+			task := manufacturing.NewStorageAcquireDeliverTask(
+				factory.PipelineID(),
+				factory.PlayerID(),
+				input.good,
+				storageOp.ID(),             // Storage operation to acquire from
+				storageOp.WaypointSymbol(), // Where storage ships are located
+				factory.FactorySymbol(),    // Where to deliver
+				nil,                        // No dependencies
+			)
+
+			// Storage tasks are always ready since they don't depend on market supply
+			if err := task.MarkReady(); err != nil {
+				logger.Log("WARN", "Failed to mark STORAGE_ACQUIRE_DELIVER task ready", map[string]interface{}{
+					"error": err.Error(),
+				})
+				continue
+			}
+
+			// Persist task
+			if err := m.taskRepo.Create(ctx, task); err != nil {
+				logger.Log("WARN", "Failed to persist STORAGE_ACQUIRE_DELIVER task", map[string]interface{}{
+					"error": err.Error(),
+				})
+				continue
+			}
+
+			m.taskQueue.Enqueue(task)
+			tasksCreated++
+
+			logger.Log("INFO", "Created STORAGE_ACQUIRE_DELIVER task (from gas operation)", map[string]interface{}{
+				"factory":       factory.FactorySymbol(),
+				"input":         input.good,
+				"storage_op":    storageOp.ID()[:8],
+				"storage_wp":    storageOp.WaypointSymbol(),
+				"task_id":       task.ID()[:8],
+			})
+			continue // Move to next input - this one is handled by storage
 		}
 
 		// Find export market to buy this input from
@@ -1218,4 +1270,55 @@ func (m *SupplyMonitor) ActivateCollectionPipelineTasks(ctx context.Context) int
 	}
 
 	return activated
+}
+
+// findRunningStorageOperationForGood checks if there's a running storage operation
+// that produces the specified good. This enables integration between gas siphoning
+// operations and the manufacturing pipeline - instead of buying gases from market,
+// haulers can pick up cargo directly from storage ships at the extraction site.
+//
+// Returns the storage operation if found, nil otherwise.
+func (m *SupplyMonitor) findRunningStorageOperationForGood(ctx context.Context, good string) *storage.StorageOperation {
+	logger := common.LoggerFromContext(ctx)
+
+	if m.storageOpRepo == nil {
+		logger.Log("DEBUG", "Storage operation lookup: storageOpRepo is nil", map[string]interface{}{
+			"good": good,
+		})
+		return nil
+	}
+
+	// Find storage operations that support this good
+	operations, err := m.storageOpRepo.FindByGood(ctx, m.playerID, good)
+	if err != nil {
+		logger.Log("WARN", "Storage operation lookup: FindByGood failed", map[string]interface{}{
+			"good":      good,
+			"player_id": m.playerID,
+			"error":     err.Error(),
+		})
+		return nil
+	}
+
+	logger.Log("DEBUG", "Storage operation lookup", map[string]interface{}{
+		"good":            good,
+		"player_id":       m.playerID,
+		"operations_found": len(operations),
+	})
+
+	// Return the first RUNNING operation that supports this good
+	for _, op := range operations {
+		isRunning := op.IsRunning()
+		supportsGood := op.SupportsGood(good)
+		logger.Log("DEBUG", "Storage operation check", map[string]interface{}{
+			"op_id":        op.ID()[:8],
+			"op_status":    op.Status(),
+			"is_running":   isRunning,
+			"supports_good": supportsGood,
+		})
+		if isRunning && supportsGood {
+			return op
+		}
+	}
+
+	return nil
 }

@@ -59,7 +59,7 @@ type WorkerLifecycleManager struct {
 	shipAssignmentRepo domainContainer.ShipAssignmentRepository
 	daemonClient       daemon.DaemonClient
 	containerRemover   ContainerRemover
-	taskQueue          *services.TaskQueue
+	taskQueue          services.ManufacturingTaskQueue
 	clock              shared.Clock
 
 	// Dependencies (injected via constructor)
@@ -75,7 +75,7 @@ func NewWorkerLifecycleManager(
 	shipAssignmentRepo domainContainer.ShipAssignmentRepository,
 	daemonClient daemon.DaemonClient,
 	containerRemover ContainerRemover,
-	taskQueue *services.TaskQueue,
+	taskQueue services.ManufacturingTaskQueue,
 	clock shared.Clock,
 	assignmentTracker *AssignmentTracker,
 	factoryManager FactoryManager,

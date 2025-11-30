@@ -6,15 +6,22 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
+	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/storage"
 )
 
 // CollectSellExecutor executes COLLECT_SELL tasks.
 // This is an atomic task that collects from factory (when supply is HIGH)
 // AND sells at demand market. Same ship does both operations.
+//
+// Also supports storage-based collection when task.IsStorageBasedCollection() is true.
+// In that case, cargo is collected from storage ships instead of purchased from factory.
 type CollectSellExecutor struct {
-	navigator Navigator
-	purchaser *ManufacturingPurchaser
-	seller    *ManufacturingSeller
+	navigator          Navigator
+	purchaser          *ManufacturingPurchaser
+	seller             *ManufacturingSeller
+	storageCoordinator storage.StorageCoordinator // Optional: for storage-based collection
+	apiClient          domainPorts.APIClient      // Optional: for storage cargo transfer
 }
 
 // NewCollectSellExecutor creates a new executor for COLLECT_SELL tasks.
@@ -30,6 +37,17 @@ func NewCollectSellExecutor(
 	}
 }
 
+// WithStorageSupport adds storage collection support to the executor.
+// Required for tasks that collect from storage ships instead of factories.
+func (e *CollectSellExecutor) WithStorageSupport(
+	storageCoordinator storage.StorageCoordinator,
+	apiClient domainPorts.APIClient,
+) *CollectSellExecutor {
+	e.storageCoordinator = storageCoordinator
+	e.apiClient = apiClient
+	return e
+}
+
 // TaskType returns the task type this executor handles.
 func (e *CollectSellExecutor) TaskType() manufacturing.TaskType {
 	return manufacturing.TaskTypeCollectSell
@@ -37,18 +55,31 @@ func (e *CollectSellExecutor) TaskType() manufacturing.TaskType {
 
 // Execute runs the COLLECT_SELL task workflow:
 // Phase 1: Idempotent check - already has cargo? Skip to sell
-// Phase 2: Navigate to factory, collect goods (requires HIGH supply)
+// Phase 2: Navigate to factory/storage, collect goods
 // Phase 3: Navigate to sell market, sell goods
 func (e *CollectSellExecutor) Execute(ctx context.Context, params TaskExecutionParams) error {
 	task := params.Task
 	logger := common.LoggerFromContext(ctx)
 
-	logger.Log("INFO", "COLLECT_SELL: Starting atomic collect-and-sell", map[string]interface{}{
-		"ship":    params.ShipSymbol,
-		"good":    task.Good(),
-		"factory": task.FactorySymbol(),
-		"market":  task.TargetMarket(),
-	})
+	// Determine if this is storage-based or factory-based collection
+	isStorageCollection := task.IsStorageBasedCollection()
+
+	if isStorageCollection {
+		logger.Log("INFO", "COLLECT_SELL: Starting storage-based collect-and-sell", map[string]interface{}{
+			"ship":             params.ShipSymbol,
+			"good":             task.Good(),
+			"storageWaypoint":  task.StorageWaypoint(),
+			"storageOperation": task.StorageOperationID(),
+			"market":           task.TargetMarket(),
+		})
+	} else {
+		logger.Log("INFO", "COLLECT_SELL: Starting factory-based collect-and-sell", map[string]interface{}{
+			"ship":    params.ShipSymbol,
+			"good":    task.Good(),
+			"factory": task.FactorySymbol(),
+			"market":  task.TargetMarket(),
+		})
+	}
 
 	// Load ship to check current state
 	ship, err := e.navigator.ReloadShip(ctx, params.ShipSymbol, params.PlayerID)
@@ -56,7 +87,7 @@ func (e *CollectSellExecutor) Execute(ctx context.Context, params TaskExecutionP
 		return err
 	}
 
-	// --- PHASE 1: COLLECT (buy from factory when supply is HIGH) ---
+	// --- PHASE 1: COLLECT ---
 
 	// Idempotent: Check if we already have the cargo (resume after crash)
 	alreadyHasCargo := ship.Cargo().HasItem(task.Good(), 1)
@@ -69,8 +100,16 @@ func (e *CollectSellExecutor) Execute(ctx context.Context, params TaskExecutionP
 			"good":     task.Good(),
 			"quantity": totalUnitsAdded,
 		})
+	} else if isStorageCollection {
+		// Storage-based collection: collect from storage ships
+		unitsCollected, err := e.collectFromStorage(ctx, params, task, ship, logger)
+		if err != nil {
+			return err
+		}
+		totalUnitsAdded = unitsCollected
+		totalCost = 0 // Storage goods are "free" (already extracted)
 	} else {
-		// Navigate to factory and dock
+		// Factory-based collection: buy from factory market
 		logger.Log("INFO", "COLLECT_SELL: Navigating to factory", map[string]interface{}{
 			"from": ship.CurrentLocation().Symbol,
 			"to":   task.FactorySymbol(),
@@ -161,4 +200,107 @@ func (e *CollectSellExecutor) Execute(ctx context.Context, params TaskExecutionP
 	})
 
 	return nil
+}
+
+// collectFromStorage collects cargo from storage ships for storage-based COLLECT_SELL tasks.
+// Returns the number of units collected.
+func (e *CollectSellExecutor) collectFromStorage(
+	ctx context.Context,
+	params TaskExecutionParams,
+	task *manufacturing.ManufacturingTask,
+	ship interface{ AvailableCargoSpace() int },
+	logger common.ContainerLogger,
+) (int, error) {
+	// Validate storage support is configured
+	if e.storageCoordinator == nil || e.apiClient == nil {
+		return 0, fmt.Errorf("storage collection requires storageCoordinator and apiClient (use WithStorageSupport)")
+	}
+
+	// Get player token for API calls
+	token, err := common.PlayerTokenFromContext(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get player token: %w", err)
+	}
+
+	// Navigate to storage waypoint (stay in orbit for cargo transfer)
+	logger.Log("INFO", "COLLECT_SELL: Navigating to storage waypoint", map[string]interface{}{
+		"to": task.StorageWaypoint(),
+	})
+
+	err = e.navigator.NavigateTo(ctx, params.ShipSymbol, task.StorageWaypoint(), params.PlayerID)
+	if err != nil {
+		return 0, fmt.Errorf("failed to navigate to storage waypoint: %w", err)
+	}
+
+	// Calculate how much cargo we can pick up
+	availableSpace := ship.AvailableCargoSpace()
+	if availableSpace <= 0 {
+		return 0, fmt.Errorf("no cargo space available on ship %s", params.ShipSymbol)
+	}
+
+	// Use low minimum threshold to avoid deadlocks (same as STORAGE_ACQUIRE_DELIVER)
+	const minPickupThreshold = 1
+	minUnits := minPickupThreshold
+	if availableSpace < minUnits {
+		minUnits = availableSpace
+	}
+
+	logger.Log("INFO", "COLLECT_SELL: Waiting for cargo from storage ships", map[string]interface{}{
+		"operationID":    task.StorageOperationID(),
+		"good":           task.Good(),
+		"minUnits":       minUnits,
+		"availableSpace": availableSpace,
+	})
+
+	// WaitForCargo blocks until cargo is available and reserved
+	storageShip, unitsReserved, err := e.storageCoordinator.WaitForCargo(
+		ctx,
+		task.StorageOperationID(),
+		task.Good(),
+		minUnits,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("failed to wait for cargo: %w", err)
+	}
+
+	logger.Log("INFO", "COLLECT_SELL: Cargo reserved, transferring", map[string]interface{}{
+		"storageShip":   storageShip.ShipSymbol(),
+		"unitsReserved": unitsReserved,
+	})
+
+	// Transfer cargo from storage ship to hauler
+	_, err = e.apiClient.TransferCargo(
+		ctx,
+		storageShip.ShipSymbol(), // from
+		params.ShipSymbol,        // to
+		task.Good(),
+		unitsReserved,
+		token,
+	)
+	if err != nil {
+		// Transfer failed - cancel reservation
+		cancelErr := storageShip.CancelReservation(task.Good(), unitsReserved)
+		if cancelErr != nil {
+			logger.Log("ERROR", "COLLECT_SELL: Failed to cancel reservation after transfer error", map[string]interface{}{
+				"error": cancelErr.Error(),
+			})
+		}
+		return 0, fmt.Errorf("failed to transfer cargo: %w", err)
+	}
+
+	// Confirm transfer - releases reservation and updates inventory
+	if err := storageShip.ConfirmTransfer(task.Good(), unitsReserved); err != nil {
+		logger.Log("ERROR", "COLLECT_SELL: Failed to confirm transfer (cargo already moved)", map[string]interface{}{
+			"error": err.Error(),
+		})
+	}
+
+	// Mark phase complete for recovery
+	task.MarkCollectPhaseComplete()
+
+	logger.Log("INFO", "COLLECT_SELL: Cargo collected from storage", map[string]interface{}{
+		"units": unitsReserved,
+	})
+
+	return unitsReserved, nil
 }

@@ -17,7 +17,7 @@ type PipelineRecycler struct {
 	pipelineRepo       manufacturing.PipelineRepository
 	taskRepo           manufacturing.TaskRepository
 	shipAssignmentRepo container.ShipAssignmentRepository
-	taskQueue          *services.TaskQueue
+	taskQueue          services.ManufacturingTaskQueue
 	factoryTracker     *manufacturing.FactoryStateTracker
 	registry           *ActivePipelineRegistry
 }
@@ -27,7 +27,7 @@ func NewPipelineRecycler(
 	pipelineRepo manufacturing.PipelineRepository,
 	taskRepo manufacturing.TaskRepository,
 	shipAssignmentRepo container.ShipAssignmentRepository,
-	taskQueue *services.TaskQueue,
+	taskQueue services.ManufacturingTaskQueue,
 	factoryTracker *manufacturing.FactoryStateTracker,
 	registry *ActivePipelineRegistry,
 ) *PipelineRecycler {

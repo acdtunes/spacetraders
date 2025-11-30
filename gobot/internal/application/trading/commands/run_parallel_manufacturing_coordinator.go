@@ -15,6 +15,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/storage"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
 
@@ -52,7 +53,7 @@ type RunParallelManufacturingCoordinatorHandler struct {
 	demandFinder               *services.ManufacturingDemandFinder
 	collectionOpportunityFinder *services.CollectionOpportunityFinder
 	pipelinePlanner            *services.PipelinePlanner
-	taskQueue                  *services.TaskQueue
+	taskQueue                  services.ManufacturingTaskQueue
 	factoryTracker             *manufacturing.FactoryStateTracker
 
 	// Repositories
@@ -62,6 +63,7 @@ type RunParallelManufacturingCoordinatorHandler struct {
 	taskRepo           manufacturing.TaskRepository
 	factoryStateRepo   manufacturing.FactoryStateRepository
 	marketRepo         market.MarketRepository
+	storageOpRepo      storage.StorageOperationRepository
 	containerRemover   ContainerRemover
 
 	// Infrastructure
@@ -91,7 +93,7 @@ func NewRunParallelManufacturingCoordinatorHandler(
 	demandFinder *services.ManufacturingDemandFinder,
 	collectionOpportunityFinder *services.CollectionOpportunityFinder,
 	pipelinePlanner *services.PipelinePlanner,
-	taskQueue *services.TaskQueue,
+	taskQueue services.ManufacturingTaskQueue,
 	factoryTracker *manufacturing.FactoryStateTracker,
 	shipRepo navigation.ShipRepository,
 	shipAssignmentRepo container.ShipAssignmentRepository,
@@ -135,6 +137,13 @@ func NewRunParallelManufacturingCoordinatorHandler(
 // This enables recovery of storage ship cargo state on daemon restart.
 func (h *RunParallelManufacturingCoordinatorHandler) SetStorageRecoveryService(service *storageApp.StorageRecoveryService) {
 	h.storageRecovery = service
+}
+
+// SetStorageOperationRepository sets the optional storage operation repository.
+// This enables the SupplyMonitor to create STORAGE_ACQUIRE_DELIVER tasks when
+// factory inputs are available from running storage operations (e.g., gas siphoning).
+func (h *RunParallelManufacturingCoordinatorHandler) SetStorageOperationRepository(repo storage.StorageOperationRepository) {
+	h.storageOpRepo = repo
 }
 
 // Handle executes the coordinator command
@@ -515,6 +524,7 @@ func (h *RunParallelManufacturingCoordinatorHandler) startSupplyMonitor(ctx cont
 		h.taskQueue,
 		h.taskRepo,
 		h.pipelinePlanner.MarketLocator(),
+		h.storageOpRepo, // For creating STORAGE_ACQUIRE_DELIVER tasks
 		pollInterval,
 		playerID,
 	)

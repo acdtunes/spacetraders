@@ -26,7 +26,7 @@ type FactoryStateManager struct {
 	taskRepo         manufacturing.TaskRepository
 	factoryStateRepo manufacturing.FactoryStateRepository
 	factoryTracker   *manufacturing.FactoryStateTracker
-	taskQueue        *services.TaskQueue
+	taskQueue        services.ManufacturingTaskQueue
 }
 
 // NewFactoryStateManager creates a new factory state manager
@@ -34,7 +34,7 @@ func NewFactoryStateManager(
 	taskRepo manufacturing.TaskRepository,
 	factoryStateRepo manufacturing.FactoryStateRepository,
 	factoryTracker *manufacturing.FactoryStateTracker,
-	taskQueue *services.TaskQueue,
+	taskQueue services.ManufacturingTaskQueue,
 ) *FactoryStateManager {
 	return &FactoryStateManager{
 		taskRepo:         taskRepo,
@@ -63,8 +63,9 @@ func (m *FactoryStateManager) UpdateFactoryStateOnDelivery(
 		return nil
 	}
 
-	// Only process ACQUIRE_DELIVER tasks
-	if task.TaskType() != manufacturing.TaskTypeAcquireDeliver {
+	// Only process ACQUIRE_DELIVER and STORAGE_ACQUIRE_DELIVER tasks
+	if task.TaskType() != manufacturing.TaskTypeAcquireDeliver &&
+		task.TaskType() != manufacturing.TaskTypeStorageAcquireDeliver {
 		return nil
 	}
 
