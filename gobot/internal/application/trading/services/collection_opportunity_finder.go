@@ -5,31 +5,66 @@ import (
 	"fmt"
 	"sort"
 
+	goodsServices "github.com/andrescamacho/spacetraders-go/internal/application/goods/services"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/storage"
 )
 
 // CollectionOpportunity represents a profitable opportunity to collect goods from
 // a factory with HIGH/ABUNDANT supply and sell to a market with SCARCE/LIMITED demand.
 type CollectionOpportunity struct {
-	Good           string // The good to collect
-	FactorySymbol  string // EXPORT market with HIGH/ABUNDANT supply
-	SellMarket     string // IMPORT market with SCARCE/LIMITED supply
-	FactorySupply  string // Current factory supply level (HIGH/ABUNDANT)
-	SellPrice      int    // Expected sell price at demand market
-	BuyPrice       int    // Expected buy price at factory
-	ExpectedProfit int    // Expected profit per unit
+	Good               string // The good to collect
+	FactorySymbol      string // EXPORT market with HIGH/ABUNDANT supply
+	SellMarket         string // IMPORT market with SCARCE/LIMITED supply
+	FactorySupply      string // Current factory supply level (HIGH/ABUNDANT)
+	FactoryActivity    string // Factory activity level (WEAK preferred for buying)
+	SellMarketSupply   string // Sell market supply level
+	SellMarketActivity string // Sell market activity level (STRONG preferred for selling)
+	SellPrice          int    // Expected sell price at demand market
+	BuyPrice           int    // Expected buy price at factory
+	ExpectedProfit     int    // Expected profit per unit
 }
 
 // Score returns a composite score for opportunity ranking.
 // Higher is better.
+//
+// Activity-based scoring (based on data analysis of 30,493 market price records):
+// - STRONG activity at IMPORT markets = highest prices (best for selling)
+// - WEAK activity at EXPORT markets = lowest prices (best for buying)
 func (o *CollectionOpportunity) Score() int {
 	// Base score is expected profit
 	score := o.ExpectedProfit
 
-	// Bonus for ABUNDANT supply (more reliable)
+	// Bonus for ABUNDANT factory supply (more reliable source)
 	if o.FactorySupply == "ABUNDANT" {
 		score += 100
+	}
+
+	// Activity-based bonus for sell market (IMPORT)
+	// STRONG activity = highest prices at IMPORT markets = best for selling
+	switch o.SellMarketActivity {
+	case "STRONG":
+		score += 500
+	case "GROWING":
+		score += 300
+	case "WEAK":
+		score += 100
+	case "RESTRICTED":
+		score += 0
+	}
+
+	// Activity-based bonus for factory (EXPORT market)
+	// WEAK activity = lowest prices at EXPORT markets = best for buying
+	switch o.FactoryActivity {
+	case "WEAK":
+		score += 200 // Best for buying
+	case "GROWING":
+		score += 100
+	case "STRONG":
+		score += 50
+	case "RESTRICTED":
+		score += 0 // Worst for buying
 	}
 
 	return score
@@ -38,9 +73,13 @@ func (o *CollectionOpportunity) Score() int {
 // CollectionOpportunityFinder discovers opportunities to collect goods from factories
 // with HIGH/ABUNDANT supply and sell to markets with SCARCE/LIMITED demand.
 // This enables collection pipelines that operate independently of fabrication pipelines.
+//
+// Also discovers storage-based opportunities: goods extracted by siphon operations
+// (e.g., HYDROCARBON) that can be sold to import markets.
 type CollectionOpportunityFinder struct {
-	marketRepo   market.MarketRepository
-	pipelineRepo manufacturing.PipelineRepository
+	marketRepo    market.MarketRepository
+	pipelineRepo  manufacturing.PipelineRepository
+	storageOpRepo storage.StorageOperationRepository // Optional: enables storage-based opportunities
 }
 
 // NewCollectionOpportunityFinder creates a new collection opportunity finder
@@ -52,6 +91,13 @@ func NewCollectionOpportunityFinder(
 		marketRepo:   marketRepo,
 		pipelineRepo: pipelineRepo,
 	}
+}
+
+// WithStorageRepo adds storage operation repository for storage-based opportunities.
+// Call this to enable finding opportunities for goods produced by siphon operations.
+func (f *CollectionOpportunityFinder) WithStorageRepo(repo storage.StorageOperationRepository) *CollectionOpportunityFinder {
+	f.storageOpRepo = repo
+	return f
 }
 
 // CollectionFinderConfig contains configuration for opportunity discovery
@@ -75,10 +121,10 @@ func DefaultCollectionFinderConfig() CollectionFinderConfig {
 // Algorithm:
 //  1. Query all markets in system from database
 //  2. Find EXPORT markets with HIGH/ABUNDANT supply (factories with goods to collect)
-//  3. Find IMPORT markets with SCARCE/LIMITED supply + WEAK/RESTRICTED activity (buyers)
-//  4. Match exports to imports, calculate expected profit
+//  3. Find ALL IMPORT markets (buyers) - scoring differentiates by activity
+//  4. Match exports to imports, calculate expected profit with activity bonuses
 //  5. Skip goods with active collection pipeline (prevent duplicates)
-//  6. Return opportunities sorted by profit
+//  6. Return opportunities sorted by score (profit + activity bonuses)
 //
 // Parameters:
 //   - ctx: Context for cancellation
@@ -124,12 +170,13 @@ func (f *CollectionOpportunityFinder) FindOpportunities(
 	type factoryEntry struct {
 		waypointSymbol string
 		supply         string
-		sellPrice      int // Price we'd pay to buy from factory
+		activity       string // Activity level (WEAK preferred for buying)
+		sellPrice      int    // Price we'd pay to buy from factory
 	}
 	factoryIndex := make(map[string][]*factoryEntry)
 
-	// Step 3: Build index of buyers (IMPORT with SCARCE/LIMITED supply and WEAK/RESTRICTED activity)
-	// Map: good -> buyers that import it with demand
+	// Step 3: Build index of buyers (ALL IMPORT markets)
+	// Map: good -> all buyers that import it (scoring differentiates by activity)
 	type buyerEntry struct {
 		waypointSymbol string
 		supply         string
@@ -156,38 +203,28 @@ func (f *CollectionOpportunityFinder) FindOpportunities(
 				activity = *tradeGood.Activity()
 			}
 
-			// Check if this is a factory (EXPORT with ABUNDANT supply only)
-			// Require ABUNDANT to create collection pipeline - gives buffer for supply drops during navigation
+			// Check if this is a factory (EXPORT with HIGH/ABUNDANT supply)
 			if tradeGood.TradeType() == market.TradeTypeExport {
-				if supply == "ABUNDANT" {
+				if supply == "ABUNDANT" || supply == "HIGH" {
 					factoryIndex[goodSymbol] = append(factoryIndex[goodSymbol], &factoryEntry{
 						waypointSymbol: waypointSymbol,
 						supply:         supply,
+						activity:       activity,
 						sellPrice:      tradeGood.SellPrice(), // Price we pay
 					})
 				}
 			}
 
-			// Check if this is a buyer (IMPORT with SCARCE/LIMITED supply)
-			// SCARCE supply always qualifies as high demand regardless of activity
-			// LIMITED supply requires WEAK/RESTRICTED activity to indicate unmet demand
+			// Check if this is a buyer (IMPORT market)
+			// Accept ALL import markets - activity-based scoring will differentiate
+			// Data analysis shows: STRONG activity markets pay the highest prices
 			if tradeGood.TradeType() == market.TradeTypeImport {
-				isBuyer := false
-				if supply == "SCARCE" {
-					// SCARCE always indicates high demand - activity doesn't matter
-					isBuyer = true
-				} else if supply == "LIMITED" && (activity == "WEAK" || activity == "RESTRICTED") {
-					// LIMITED with low activity indicates unmet demand
-					isBuyer = true
-				}
-				if isBuyer {
-					buyerIndex[goodSymbol] = append(buyerIndex[goodSymbol], &buyerEntry{
-						waypointSymbol: waypointSymbol,
-						supply:         supply,
-						activity:       activity,
-						purchasePrice:  tradeGood.PurchasePrice(), // Price we receive
-					})
-				}
+				buyerIndex[goodSymbol] = append(buyerIndex[goodSymbol], &buyerEntry{
+					waypointSymbol: waypointSymbol,
+					supply:         supply,
+					activity:       activity,
+					purchasePrice:  tradeGood.PurchasePrice(), // Price we receive
+				})
 			}
 		}
 	}
@@ -254,13 +291,16 @@ func (f *CollectionOpportunityFinder) FindOpportunities(
 				}
 
 				opp := &CollectionOpportunity{
-					Good:           good,
-					FactorySymbol:  factory.waypointSymbol,
-					SellMarket:     buyer.waypointSymbol,
-					FactorySupply:  factory.supply,
-					SellPrice:      buyer.purchasePrice,
-					BuyPrice:       factory.sellPrice,
-					ExpectedProfit: profit,
+					Good:               good,
+					FactorySymbol:      factory.waypointSymbol,
+					SellMarket:         buyer.waypointSymbol,
+					FactorySupply:      factory.supply,
+					FactoryActivity:    factory.activity,
+					SellMarketSupply:   buyer.supply,
+					SellMarketActivity: buyer.activity,
+					SellPrice:          buyer.purchasePrice,
+					BuyPrice:           factory.sellPrice,
+					ExpectedProfit:     profit,
 				}
 
 				// Track best opportunity for this good
@@ -292,113 +332,140 @@ func (f *CollectionOpportunityFinder) FindOpportunities(
 	return opportunities, nil
 }
 
-// FindOpportunitiesForGood finds collection opportunities for a specific good.
-// Useful when you know what good you want to collect but need to find markets.
-func (f *CollectionOpportunityFinder) FindOpportunitiesForGood(
+// StorageCollectionOpportunity represents an opportunity to collect goods from
+// a storage operation (e.g., gas siphoning) and sell to a market.
+type StorageCollectionOpportunity struct {
+	Good               string // The good to collect (e.g., HYDROCARBON)
+	StorageOperationID string // Storage operation to collect from
+	StorageWaypoint    string // Where storage ships are located
+	SellMarket         string // IMPORT market to sell to
+	SellPrice          int    // Expected sell price
+	ExpectedProfit     int    // Expected profit per unit (sell price, since storage goods are "free")
+}
+
+// FindStorageOpportunities discovers opportunities to sell goods from storage operations.
+// This finds byproducts like HYDROCARBON from gas siphoning that accumulate on storage ships
+// and can be sold to import markets.
+//
+// Algorithm:
+//  1. Find running storage operations for the player
+//  2. Get the goods each operation produces
+//  3. For each good, find IMPORT markets with demand
+//  4. Create opportunities to sell storage goods to those markets
+//  5. Skip goods already handled by an active collection pipeline
+func (f *CollectionOpportunityFinder) FindStorageOpportunities(
 	ctx context.Context,
-	good string,
 	systemSymbol string,
 	playerID int,
-) ([]*CollectionOpportunity, error) {
-	if good == "" || systemSymbol == "" {
-		return nil, fmt.Errorf("good and system symbol required")
+) ([]*StorageCollectionOpportunity, error) {
+	if f.storageOpRepo == nil {
+		return nil, nil // No storage repo configured
 	}
 
-	// Get all markets
+	// Find running storage operations
+	operations, err := f.storageOpRepo.FindRunning(ctx, playerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find storage operations: %w", err)
+	}
+
+	if len(operations) == 0 {
+		return nil, nil
+	}
+
+	// Get all markets in system for finding buyers
 	marketWaypoints, err := f.marketRepo.FindAllMarketsInSystem(ctx, systemSymbol, playerID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch markets: %w", err)
 	}
 
-	var factories []*struct {
-		waypointSymbol string
-		supply         string
-		sellPrice      int
-	}
-	var buyers []*struct {
+	// Build buyer index: good -> import markets (with activity for tie-breaking)
+	type buyerEntry struct {
 		waypointSymbol string
 		purchasePrice  int
+		activity       string // STRONG preferred for selling (highest prices)
 	}
+	buyerIndex := make(map[string][]*buyerEntry)
 
-	// Find factories and buyers for this good
 	for _, waypointSymbol := range marketWaypoints {
 		marketData, err := f.marketRepo.GetMarketData(ctx, waypointSymbol, playerID)
 		if err != nil || marketData == nil {
 			continue
 		}
 
-		tradeGood := marketData.FindGood(good)
-		if tradeGood == nil {
-			continue
-		}
-
-		supply := ""
-		if tradeGood.Supply() != nil {
-			supply = *tradeGood.Supply()
-		}
-		activity := ""
-		if tradeGood.Activity() != nil {
-			activity = *tradeGood.Activity()
-		}
-
-		// Factory check - require ABUNDANT for collection buffer
-		if tradeGood.TradeType() == market.TradeTypeExport {
-			if supply == "ABUNDANT" {
-				factories = append(factories, &struct {
-					waypointSymbol string
-					supply         string
-					sellPrice      int
-				}{
-					waypointSymbol: waypointSymbol,
-					supply:         supply,
-					sellPrice:      tradeGood.SellPrice(),
-				})
+		for _, tradeGood := range marketData.TradeGoods() {
+			// Only look at IMPORT markets (buyers)
+			if tradeGood.TradeType() != market.TradeTypeImport {
+				continue
 			}
-		}
 
-		// Buyer check - SCARCE always qualifies, LIMITED requires WEAK/RESTRICTED activity
-		if tradeGood.TradeType() == market.TradeTypeImport {
-			isBuyer := false
-			if supply == "SCARCE" {
-				isBuyer = true
-			} else if supply == "LIMITED" && (activity == "WEAK" || activity == "RESTRICTED") {
-				isBuyer = true
+			activity := ""
+			if tradeGood.Activity() != nil {
+				activity = *tradeGood.Activity()
 			}
-			if isBuyer {
-				buyers = append(buyers, &struct {
-					waypointSymbol string
-					purchasePrice  int
-				}{
-					waypointSymbol: waypointSymbol,
-					purchasePrice:  tradeGood.PurchasePrice(),
-				})
-			}
+
+			goodSymbol := tradeGood.Symbol()
+			buyerIndex[goodSymbol] = append(buyerIndex[goodSymbol], &buyerEntry{
+				waypointSymbol: waypointSymbol,
+				purchasePrice:  tradeGood.PurchasePrice(),
+				activity:       activity,
+			})
 		}
 	}
 
-	// Build opportunities
-	var opportunities []*CollectionOpportunity
+	var opportunities []*StorageCollectionOpportunity
 
-	for _, factory := range factories {
-		for _, buyer := range buyers {
-			if factory.waypointSymbol == buyer.waypointSymbol {
+	// Check each storage operation's goods
+	for _, op := range operations {
+		for _, good := range op.SupportedGoods() {
+			// Skip if there's already an active collection pipeline for this good
+			if f.pipelineRepo != nil {
+				existingPipeline, err := f.pipelineRepo.FindActiveCollectionForProduct(ctx, playerID, good)
+				if err == nil && existingPipeline != nil {
+					fmt.Printf("[StorageOpportunityFinder] %s: already has active collection pipeline, skipping\n", good)
+					continue
+				}
+			}
+
+			// Find buyers for this good
+			buyers, hasBuyers := buyerIndex[good]
+			if !hasBuyers || len(buyers) == 0 {
 				continue
 			}
 
-			profit := buyer.purchasePrice - factory.sellPrice
-			if profit <= 0 {
-				continue
+			// Find best buyer: highest price, with STRONG activity as tiebreaker
+			var bestBuyer *buyerEntry
+			for _, buyer := range buyers {
+				if bestBuyer == nil {
+					bestBuyer = buyer
+					continue
+				}
+
+				// Primary: Highest price
+				if buyer.purchasePrice > bestBuyer.purchasePrice {
+					bestBuyer = buyer
+					continue
+				}
+
+				// Secondary: STRONG activity preferred (prices likely to stay high)
+				if buyer.purchasePrice == bestBuyer.purchasePrice {
+					if goodsServices.ImportActivityScore(buyer.activity) > goodsServices.ImportActivityScore(bestBuyer.activity) {
+						bestBuyer = buyer
+					}
+				}
 			}
 
-			opportunities = append(opportunities, &CollectionOpportunity{
-				Good:           good,
-				FactorySymbol:  factory.waypointSymbol,
-				SellMarket:     buyer.waypointSymbol,
-				FactorySupply:  factory.supply,
-				SellPrice:      buyer.purchasePrice,
-				BuyPrice:       factory.sellPrice,
-				ExpectedProfit: profit,
-			})
+			if bestBuyer != nil && bestBuyer.purchasePrice > 0 {
+				opportunities = append(opportunities, &StorageCollectionOpportunity{
+					Good:               good,
+					StorageOperationID: op.ID(),
+					StorageWaypoint:    op.WaypointSymbol(),
+					SellMarket:         bestBuyer.waypointSymbol,
+					SellPrice:          bestBuyer.purchasePrice,
+					ExpectedProfit:     bestBuyer.purchasePrice, // Storage goods are "free" (already extracted)
+				})
+				fmt.Printf("[StorageOpportunityFinder] Found opportunity for %s: sell at %s for %d credits\n",
+					good, bestBuyer.waypointSymbol, bestBuyer.purchasePrice)
+			}
 		}
 	}
 

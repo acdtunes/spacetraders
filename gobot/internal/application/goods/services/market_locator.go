@@ -223,9 +223,12 @@ func (l *MarketLocator) FindExportMarket(
 	return result, nil
 }
 
-// FindExportMarketBySupplyPriority finds the cheapest market with acceptable supply level.
-// Priority: ABUNDANT (best) > HIGH > MODERATE (minimum acceptable).
+// FindExportMarketBySupplyPriority finds the best market with acceptable supply level.
+// Priority: Supply level (ABUNDANT > HIGH > MODERATE), then Activity (WEAK > GROWING > STRONG).
 // SCARCE and LIMITED supply levels are skipped to avoid overpaying.
+//
+// Activity-based optimization: For EXPORT markets (buying), WEAK activity = lowest prices.
+// Data analysis: WEAK + ABUNDANT = avg 43 credits, RESTRICTED + ABUNDANT = 6,863 credits.
 //
 // This is used for raw material acquisition in manufacturing pipelines.
 // Example: LIQUID_NITROGEN at ABUNDANT G52 costs 18-28 credits, but SCARCE C44 costs 650+.
@@ -242,52 +245,102 @@ func (l *MarketLocator) FindExportMarketBySupplyPriority(
 		return l.findShipyardSellingShip(ctx, good, systemSymbol, playerID)
 	}
 
-	// Priority order: ABUNDANT, HIGH, MODERATE (skip SCARCE, LIMITED)
-	acceptableSupply := []string{"ABUNDANT", "HIGH", "MODERATE"}
+	// Get all markets in the system to consider activity
+	marketWaypoints, err := l.marketRepo.FindAllMarketsInSystem(ctx, systemSymbol, playerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find markets: %w", err)
+	}
 
-	for _, supply := range acceptableSupply {
-		cheapestMarket, err := l.marketRepo.FindCheapestMarketSellingWithSupply(
-			ctx, good, systemSymbol, playerID, supply,
-		)
-		if err != nil {
-			// Database error - skip this supply level
+	// Collect all candidate markets with MODERATE+ supply
+	type candidateMarket struct {
+		waypointSymbol string
+		supply         string
+		activity       string
+		price          int
+		tradeVolume    int
+		supplyScore    int // ABUNDANT=3, HIGH=2, MODERATE=1
+		activityScore  int // WEAK=4, GROWING=3, STRONG=2, RESTRICTED=1
+	}
+	var candidates []candidateMarket
+
+	supplyPriority := map[string]int{
+		"ABUNDANT": 3,
+		"HIGH":     2,
+		"MODERATE": 1,
+	}
+
+	for _, waypointSymbol := range marketWaypoints {
+		marketData, err := l.marketRepo.GetMarketData(ctx, waypointSymbol, playerID)
+		if err != nil || marketData == nil {
 			continue
 		}
-		if cheapestMarket != nil {
-			// Found a market with this supply level
-			// Get full market data for trade volume
-			marketData, err := l.marketRepo.GetMarketData(ctx, cheapestMarket.WaypointSymbol, playerID)
-			if err != nil {
-				// Can't get full data, return basic result
-				return &MarketLocatorResult{
-					WaypointSymbol: cheapestMarket.WaypointSymbol,
-					Supply:         cheapestMarket.Supply,
-					Price:          cheapestMarket.SellPrice,
-				}, nil
-			}
 
-			tradeGood := marketData.FindGood(good)
-			tradeVolume := 0
-			activity := ""
-			if tradeGood != nil {
-				tradeVolume = tradeGood.TradeVolume()
-				if tradeGood.Activity() != nil {
-					activity = *tradeGood.Activity()
+		tradeGood := marketData.FindGood(good)
+		if tradeGood == nil || tradeGood.TradeType() != market.TradeTypeExport {
+			continue
+		}
+
+		supply := ""
+		if tradeGood.Supply() != nil {
+			supply = *tradeGood.Supply()
+		}
+
+		// Skip SCARCE and LIMITED - only accept MODERATE+
+		supplyScore, acceptable := supplyPriority[supply]
+		if !acceptable {
+			continue
+		}
+
+		activity := ""
+		if tradeGood.Activity() != nil {
+			activity = *tradeGood.Activity()
+		}
+
+		candidates = append(candidates, candidateMarket{
+			waypointSymbol: waypointSymbol,
+			supply:         supply,
+			activity:       activity,
+			price:          tradeGood.SellPrice(),
+			tradeVolume:    tradeGood.TradeVolume(),
+			supplyScore:    supplyScore,
+			activityScore:  ExportActivityScore(activity),
+		})
+	}
+
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf("no market with MODERATE+ supply for %s (SCARCE/LIMITED markets skipped)", good)
+	}
+
+	// Sort by: Supply priority DESC, then Activity score DESC, then Price ASC
+	for i := 0; i < len(candidates)-1; i++ {
+		for j := i + 1; j < len(candidates); j++ {
+			shouldSwap := false
+			// Primary: Higher supply score is better
+			if candidates[j].supplyScore > candidates[i].supplyScore {
+				shouldSwap = true
+			} else if candidates[j].supplyScore == candidates[i].supplyScore {
+				// Secondary: Higher activity score is better (WEAK = 4 is best for buying)
+				if candidates[j].activityScore > candidates[i].activityScore {
+					shouldSwap = true
+				} else if candidates[j].activityScore == candidates[i].activityScore {
+					// Tertiary: Lower price is better
+					shouldSwap = candidates[j].price < candidates[i].price
 				}
 			}
-
-			return &MarketLocatorResult{
-				WaypointSymbol: cheapestMarket.WaypointSymbol,
-				Activity:       activity,
-				Supply:         cheapestMarket.Supply,
-				Price:          cheapestMarket.SellPrice,
-				TradeVolume:    tradeVolume,
-			}, nil
+			if shouldSwap {
+				candidates[i], candidates[j] = candidates[j], candidates[i]
+			}
 		}
 	}
 
-	// No market with acceptable supply
-	return nil, fmt.Errorf("no market with MODERATE+ supply for %s (SCARCE/LIMITED markets skipped)", good)
+	best := candidates[0]
+	return &MarketLocatorResult{
+		WaypointSymbol: best.waypointSymbol,
+		Activity:       best.activity,
+		Supply:         best.supply,
+		Price:          best.price,
+		TradeVolume:    best.tradeVolume,
+	}, nil
 }
 
 // FindExportMarketWithGoodSupply finds a market that exports a good with HIGH or ABUNDANT supply.
@@ -501,6 +554,42 @@ func calculateMarketScore(activity, supply string) int {
 	return activityScore + supplyScore
 }
 
+// ExportActivityScore returns a score for activity when BUYING from export markets.
+// For EXPORT markets (buying), lower activity = lower prices = better for us.
+// Data analysis: WEAK + ABUNDANT = avg 43 credits, RESTRICTED + ABUNDANT = 6,863 credits
+func ExportActivityScore(activity string) int {
+	switch activity {
+	case "WEAK":
+		return 4 // Best for buying (lowest prices)
+	case "GROWING":
+		return 3
+	case "STRONG":
+		return 2
+	case "RESTRICTED":
+		return 1 // Worst for buying (highest prices)
+	default:
+		return 2 // Unknown - assume neutral
+	}
+}
+
+// ImportActivityScore returns a score for activity when SELLING to import markets.
+// For IMPORT markets (selling), higher activity = higher prices = better for us.
+// Data analysis: STRONG = avg 7,551 credits, RESTRICTED = 1,480 credits
+func ImportActivityScore(activity string) int {
+	switch activity {
+	case "STRONG":
+		return 4 // Best for selling (highest prices)
+	case "GROWING":
+		return 3
+	case "WEAK":
+		return 2
+	case "RESTRICTED":
+		return 1 // Worst for selling (lowest prices)
+	default:
+		return 2 // Unknown - assume neutral
+	}
+}
+
 // FindFactoryForProduction finds a waypoint that can produce outputGood
 // AND accepts all inputGoods for delivery. This prevents the bug where
 // a factory is selected that exports the output but doesn't have a market
@@ -530,7 +619,7 @@ func (l *MarketLocator) FindFactoryForProduction(
 	for _, waypointSymbol := range marketWaypoints {
 		// Get market data
 		marketData, err := l.marketRepo.GetMarketData(ctx, waypointSymbol, playerID)
-		if err != nil {
+		if err != nil || marketData == nil {
 			continue // Skip markets we can't access
 		}
 
