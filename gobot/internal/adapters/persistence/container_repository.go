@@ -388,3 +388,30 @@ func (r *ContainerRepositoryGORM) StopAllOrphanedManufacturingWorkers(
 
 	return result.RowsAffected, nil
 }
+
+// FindActiveGasCoordinator finds an active (PENDING or RUNNING) gas coordinator
+// for the specified gas giant. Returns nil if none found.
+// Used to enforce singleton gas coordinators per gas giant.
+func (r *ContainerRepositoryGORM) FindActiveGasCoordinator(
+	ctx context.Context,
+	gasGiant string,
+	playerID int,
+) (*ContainerModel, error) {
+	var model ContainerModel
+
+	// Search for active gas coordinators with matching gas_giant in config
+	result := r.db.WithContext(ctx).
+		Where("container_type = ? AND player_id = ? AND status IN (?, ?)",
+			"GAS_COORDINATOR", playerID, "PENDING", "RUNNING").
+		Where("config LIKE ?", fmt.Sprintf(`%%"gas_giant":"%s"%%`, gasGiant)).
+		First(&model)
+
+	if result.Error != nil {
+		if result.Error == gorm.ErrRecordNotFound {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to find active gas coordinator: %w", result.Error)
+	}
+
+	return &model, nil
+}

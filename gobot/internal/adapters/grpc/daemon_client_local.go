@@ -183,3 +183,22 @@ func (c *DaemonClientLocal) StartGasTransportWorkerContainer(
 ) error {
 	return c.server.StartGasTransportWorkerContainer(ctx, containerID, completionCallback)
 }
+
+// PersistStorageShipContainer creates (but does NOT start) a storage ship worker container in DB
+func (c *DaemonClientLocal) PersistStorageShipContainer(
+	ctx context.Context,
+	containerID string,
+	playerID uint,
+	command interface{},
+) error {
+	return c.server.PersistStorageShipContainer(ctx, containerID, playerID, command)
+}
+
+// StartStorageShipContainer starts a previously persisted storage ship worker container
+func (c *DaemonClientLocal) StartStorageShipContainer(
+	ctx context.Context,
+	containerID string,
+	completionCallback chan<- string,
+) error {
+	return c.server.StartStorageShipContainer(ctx, containerID, completionCallback)
+}

@@ -508,7 +508,7 @@ func (s *DaemonServer) RecoverRunningContainers(ctx context.Context) error {
 
 		// Skip worker containers (those with parent container)
 		// Workers are managed by their parent coordinator and should not be recovered independently
-		// Check both: 1) coordinator_id in config (arbitrage workers) 2) ParentContainerID field (manufacturing workers)
+		// Check: 1) coordinator_id in config 2) ParentContainerID field 3) known worker command types
 		// IMPORTANT: Mark as interrupted but DON'T release ship assignments - the coordinator will handle them
 		// Releasing assignments here breaks SELL tasks that have cargo on the ship
 		if coordinatorID, hasCoordinator := config["coordinator_id"].(string); hasCoordinator && coordinatorID != "" {
@@ -520,6 +520,20 @@ func (s *DaemonServer) RecoverRunningContainers(ctx context.Context) error {
 		if containerModel.ParentContainerID != nil && *containerModel.ParentContainerID != "" {
 			fmt.Printf("Container %s: Skipping recovery (worker container managed by parent %s)\n", containerModel.ID, *containerModel.ParentContainerID)
 			s.markWorkerInterrupted(ctx, containerModel, *containerModel.ParentContainerID)
+			failedCount++
+			continue
+		}
+		// Skip known worker container types that should be managed by their parent coordinator
+		// These containers will be re-spawned by the coordinator after it recovers
+		workerCommandTypes := map[string]bool{
+			"manufacturing_task_worker": true,
+			"siphon_worker":             true,
+			"gas_transport_worker":      true,
+			"storage_ship":              true,
+		}
+		if workerCommandTypes[containerModel.CommandType] {
+			fmt.Printf("Container %s: Skipping recovery (worker container type '%s' managed by coordinator)\n", containerModel.ID, containerModel.CommandType)
+			s.markWorkerInterrupted(ctx, containerModel, "")
 			failedCount++
 			continue
 		}
@@ -735,7 +749,7 @@ func (s *DaemonServer) GetContainer(containerID string) (*container.Container, e
 	return runner.Container(), nil
 }
 
-// StopContainer stops a running container
+// StopContainer stops a running container and all its child containers
 func (s *DaemonServer) StopContainer(containerID string) error {
 	s.containersMu.RLock()
 	runner, exists := s.containers[containerID]
@@ -745,6 +759,46 @@ func (s *DaemonServer) StopContainer(containerID string) error {
 		return fmt.Errorf("container not found: %s", containerID)
 	}
 
+	// Get playerID from the container
+	playerID := runner.containerEntity.PlayerID()
+
+	// Find and stop all child containers first (depth-first)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	childContainers, err := s.containerRepo.FindChildContainers(ctx, containerID, playerID)
+	if err != nil {
+		fmt.Printf("Warning: failed to find child containers for %s: %v\n", containerID, err)
+	} else {
+		for _, child := range childContainers {
+			// Only stop RUNNING or PENDING children
+			if child.Status != "RUNNING" && child.Status != "PENDING" {
+				continue
+			}
+
+			// Try to stop in-memory runner if exists
+			s.containersMu.RLock()
+			childRunner, childExists := s.containers[child.ID]
+			s.containersMu.RUnlock()
+
+			if childExists {
+				fmt.Printf("Stopping child container: %s\n", child.ID)
+				if err := childRunner.Stop(); err != nil {
+					fmt.Printf("Warning: failed to stop child container %s: %v\n", child.ID, err)
+				}
+			} else {
+				// Child not in memory (orphaned) - update DB directly
+				fmt.Printf("Marking orphaned child container as stopped: %s\n", child.ID)
+				now := time.Now()
+				exitCode := 0
+				if err := s.containerRepo.UpdateStatus(ctx, child.ID, playerID, container.ContainerStatusStopped, &now, &exitCode, "parent stopped"); err != nil {
+					fmt.Printf("Warning: failed to update orphaned child container %s: %v\n", child.ID, err)
+				}
+			}
+		}
+	}
+
+	// Now stop the parent container
 	return runner.Stop()
 }
 

@@ -154,6 +154,101 @@ func (c *DaemonClientGRPC) StopContainer(ctx context.Context, containerID string
 	return nil
 }
 
+// PersistArbitrageWorkerContainer creates (but does NOT start) an arbitrage worker container in DB
+func (c *DaemonClientGRPC) PersistArbitrageWorkerContainer(
+	ctx context.Context,
+	containerID string,
+	playerID uint,
+	command interface{},
+) error {
+	return fmt.Errorf("PersistArbitrageWorkerContainer not implemented for gRPC client")
+}
+
+// StartArbitrageWorkerContainer starts a previously persisted arbitrage worker container
+func (c *DaemonClientGRPC) StartArbitrageWorkerContainer(
+	ctx context.Context,
+	containerID string,
+	completionCallback chan<- string,
+) error {
+	return fmt.Errorf("StartArbitrageWorkerContainer not implemented for gRPC client")
+}
+
+// PersistManufacturingTaskWorkerContainer creates (but does NOT start) a manufacturing task worker container in DB
+func (c *DaemonClientGRPC) PersistManufacturingTaskWorkerContainer(
+	ctx context.Context,
+	containerID string,
+	playerID uint,
+	command interface{},
+) error {
+	return fmt.Errorf("PersistManufacturingTaskWorkerContainer not implemented for gRPC client")
+}
+
+// StartManufacturingTaskWorkerContainer starts a previously persisted manufacturing task worker container
+func (c *DaemonClientGRPC) StartManufacturingTaskWorkerContainer(
+	ctx context.Context,
+	containerID string,
+	completionCallback chan<- string,
+) error {
+	return fmt.Errorf("StartManufacturingTaskWorkerContainer not implemented for gRPC client")
+}
+
+// PersistGasSiphonWorkerContainer creates (but does NOT start) a gas siphon worker container in DB
+func (c *DaemonClientGRPC) PersistGasSiphonWorkerContainer(
+	ctx context.Context,
+	containerID string,
+	playerID uint,
+	command interface{},
+) error {
+	return fmt.Errorf("PersistGasSiphonWorkerContainer not implemented for gRPC client")
+}
+
+// StartGasSiphonWorkerContainer starts a previously persisted gas siphon worker container
+func (c *DaemonClientGRPC) StartGasSiphonWorkerContainer(
+	ctx context.Context,
+	containerID string,
+	completionCallback chan<- string,
+) error {
+	return fmt.Errorf("StartGasSiphonWorkerContainer not implemented for gRPC client")
+}
+
+// PersistGasTransportWorkerContainer creates (but does NOT start) a gas transport worker container in DB
+func (c *DaemonClientGRPC) PersistGasTransportWorkerContainer(
+	ctx context.Context,
+	containerID string,
+	playerID uint,
+	command interface{},
+) error {
+	return fmt.Errorf("PersistGasTransportWorkerContainer not implemented for gRPC client")
+}
+
+// StartGasTransportWorkerContainer starts a previously persisted gas transport worker container
+func (c *DaemonClientGRPC) StartGasTransportWorkerContainer(
+	ctx context.Context,
+	containerID string,
+	completionCallback chan<- string,
+) error {
+	return fmt.Errorf("StartGasTransportWorkerContainer not implemented for gRPC client")
+}
+
+// PersistStorageShipContainer creates (but does NOT start) a storage ship worker container in DB
+func (c *DaemonClientGRPC) PersistStorageShipContainer(
+	ctx context.Context,
+	containerID string,
+	playerID uint,
+	command interface{},
+) error {
+	return fmt.Errorf("PersistStorageShipContainer not implemented for gRPC client")
+}
+
+// StartStorageShipContainer starts a previously persisted storage ship worker container
+func (c *DaemonClientGRPC) StartStorageShipContainer(
+	ctx context.Context,
+	containerID string,
+	completionCallback chan<- string,
+) error {
+	return fmt.Errorf("StartStorageShipContainer not implemented for gRPC client")
+}
+
 // Helper function to create int32 pointer
 func intPtr(val int32) *int32 {
 	return &val
