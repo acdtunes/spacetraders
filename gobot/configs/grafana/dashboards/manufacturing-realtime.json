@@ -404,6 +404,14 @@
                   "mode": "basic",
                   "type": "gauge"
                 }
+              },
+              {
+                "id": "min",
+                "value": 0
+              },
+              {
+                "id": "max",
+                "value": 1
               }
             ]
           },
@@ -775,7 +783,7 @@
           },
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n    t.assigned_ship as ship,\n    t.task_type,\n    t.good,\n    t.status,\n    SPLIT_PART(COALESCE(t.factory_symbol, t.source_market), '-', 3) as source,\n    SPLIT_PART(t.target_market, '-', 3) as destination,\n    COALESCE(p.product_good, 'N/A') as pipeline_target,\n    p.pipeline_type,\n    EXTRACT(EPOCH FROM (NOW() - t.started_at))::int as running_sec\nFROM manufacturing_tasks t\nLEFT JOIN manufacturing_pipelines p ON t.pipeline_id = p.id\nWHERE t.status IN ('ASSIGNED', 'EXECUTING')\n  AND t.assigned_ship IS NOT NULL\n  AND t.assigned_ship != ''\nORDER BY t.started_at DESC",
+          "rawSql": "SELECT\n    t.assigned_ship as ship,\n    t.task_type,\n    t.good,\n    t.status,\n    CASE WHEN t.task_type = 'STORAGE_ACQUIRE_DELIVER' THEN SPLIT_PART(t.storage_waypoint, '-', 3) ELSE SPLIT_PART(COALESCE(t.factory_symbol, t.source_market), '-', 3) END as source,\n    CASE WHEN t.task_type = 'STORAGE_ACQUIRE_DELIVER' THEN SPLIT_PART(t.factory_symbol, '-', 3) ELSE SPLIT_PART(t.target_market, '-', 3) END as destination,\n    COALESCE(p.product_good, 'N/A') as pipeline_target,\n    p.pipeline_type,\n    EXTRACT(EPOCH FROM (NOW() - t.started_at))::int as running_sec\nFROM manufacturing_tasks t\nLEFT JOIN manufacturing_pipelines p ON t.pipeline_id = p.id\nWHERE t.status IN ('ASSIGNED', 'EXECUTING')\n  AND t.assigned_ship IS NOT NULL\n  AND t.assigned_ship != ''\nORDER BY t.started_at DESC",
           "refId": "A"
         }
       ],
@@ -1271,7 +1279,7 @@
             "type": "grafana-postgresql-datasource",
             "uid": "postgresql"
           },
-          "description": "ACQUIRE_DELIVER tasks ready for execution",
+          "description": "ACQUIRE_DELIVER and STORAGE_ACQUIRE_DELIVER tasks ready for execution",
           "fieldConfig": {
             "defaults": {
               "custom": {
@@ -1292,6 +1300,50 @@
               }
             },
             "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "task_type"
+                },
+                "properties": [
+                  {
+                    "id": "displayName",
+                    "value": "Type"
+                  },
+                  {
+                    "id": "custom.cellOptions",
+                    "value": {
+                      "mode": "basic",
+                      "type": "color-background"
+                    }
+                  },
+                  {
+                    "id": "mappings",
+                    "value": [
+                      {
+                        "options": {
+                          "ACQUIRE_DELIVER": {
+                            "color": "blue",
+                            "index": 0,
+                            "text": "ACQUIRE"
+                          }
+                        },
+                        "type": "value"
+                      },
+                      {
+                        "options": {
+                          "STORAGE_ACQUIRE_DELIVER": {
+                            "color": "orange",
+                            "index": 1,
+                            "text": "STORAGE"
+                          }
+                        },
+                        "type": "value"
+                      }
+                    ]
+                  }
+                ]
+              },
               {
                 "matcher": {
                   "id": "byName",
@@ -1454,7 +1506,7 @@
               },
               "format": "table",
               "rawQuery": true,
-              "rawSql": "SELECT\n    COALESCE(p.product_good, 'N/A') as pipeline,\n    t.good,\n    t.priority as base_priority,\n    t.priority + LEAST(EXTRACT(EPOCH FROM (NOW() - t.ready_at))/30, 100)::int as effective_priority,\n    EXTRACT(EPOCH FROM (NOW() - t.ready_at))::int as waiting,\n    SPLIT_PART(t.source_market, '-', 3) as source,\n    SPLIT_PART(t.target_market, '-', 3) as destination\nFROM manufacturing_tasks t\nLEFT JOIN manufacturing_pipelines p ON t.pipeline_id = p.id\nWHERE t.status = 'READY' AND t.task_type = 'ACQUIRE_DELIVER'\nORDER BY\n    t.priority + LEAST(EXTRACT(EPOCH FROM (NOW() - t.ready_at))/30, 100)::int DESC,\n    t.ready_at ASC\nLIMIT 15",
+              "rawSql": "SELECT\n    COALESCE(p.product_good, 'N/A') as pipeline,\n    t.task_type,\n    t.good,\n    t.priority as base_priority,\n    t.priority + LEAST(EXTRACT(EPOCH FROM (NOW() - t.ready_at))/30, 100)::int as effective_priority,\n    EXTRACT(EPOCH FROM (NOW() - t.ready_at))::int as waiting,\n    CASE WHEN t.task_type = 'STORAGE_ACQUIRE_DELIVER' THEN SPLIT_PART(t.storage_waypoint, '-', 3) ELSE SPLIT_PART(t.source_market, '-', 3) END as source,\n    CASE WHEN t.task_type = 'STORAGE_ACQUIRE_DELIVER' THEN SPLIT_PART(t.factory_symbol, '-', 3) ELSE SPLIT_PART(t.target_market, '-', 3) END as destination\nFROM manufacturing_tasks t\nLEFT JOIN manufacturing_pipelines p ON t.pipeline_id = p.id\nWHERE t.status = 'READY' AND t.task_type IN ('ACQUIRE_DELIVER', 'STORAGE_ACQUIRE_DELIVER')\nORDER BY\n    t.priority + LEAST(EXTRACT(EPOCH FROM (NOW() - t.ready_at))/30, 100)::int DESC,\n    t.ready_at ASC\nLIMIT 15",
               "refId": "A"
             }
           ],

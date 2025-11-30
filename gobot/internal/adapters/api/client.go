@@ -74,7 +74,7 @@ func NewSpaceTradersClientWithConfig(
 		httpClient: &http.Client{
 			Timeout: defaultTimeout,
 		},
-		rateLimiter:      rate.NewLimiter(rate.Limit(2), 2), // 2 req/sec, burst 2
+		rateLimiter:      rate.NewLimiter(rate.Limit(2), 30), // 2 req/sec, burst 30 (SpaceTraders allows 30 req/60s burst)
 		baseURL:          baseURL,
 		maxRetries:       maxRetries,
 		backoffBase:      backoffBase,

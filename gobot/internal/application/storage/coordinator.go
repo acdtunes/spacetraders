@@ -67,6 +67,15 @@ func (c *InMemoryStorageCoordinator) RegisterStorageShip(ship *storage.StorageSh
 	opID := ship.OperationID()
 	c.shipsByOperation[opID] = append(c.shipsByOperation[opID], ship.ShipSymbol())
 
+	// Wake any waiters for goods that this ship has in initial cargo.
+	// This is critical for recovery scenarios where haulers start waiting
+	// BEFORE storage ships register (race condition after daemon restart).
+	inventory := ship.GetInventory()
+	for goodSymbol := range inventory {
+		key := waiterQueueKey{operationID: opID, goodSymbol: goodSymbol}
+		c.processWaiterQueue(key)
+	}
+
 	return nil
 }
 

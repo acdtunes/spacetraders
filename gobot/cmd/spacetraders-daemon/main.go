@@ -462,9 +462,10 @@ func run(cfg *config.Config) error {
 
 	// Create collection opportunity finder for COLLECT_SELL pipelines
 	// Finds factories with HIGH/ABUNDANT supply to collect from
+	// Also finds storage-based opportunities (e.g., HYDROCARBON from gas siphoning)
 	collectionOpportunityFinder := tradingServices.NewCollectionOpportunityFinder(
 		tradingMarketRepo, manufacturingPipelineRepo,
-	)
+	).WithStorageRepo(storageOperationRepo)
 
 	// Create task queue (in-memory with DB backing)
 	taskQueue := tradingServices.NewTaskQueue()
@@ -473,7 +474,8 @@ func run(cfg *config.Config) error {
 	factoryTracker := manufacturing.NewFactoryStateTracker()
 
 	// Create pipeline planner
-	pipelinePlanner := tradingServices.NewPipelinePlanner(goodsMarketLocator)
+	// Note: storageOperationRepo enables STORAGE_ACQUIRE_DELIVER tasks for gas goods
+	pipelinePlanner := tradingServices.NewPipelinePlanner(goodsMarketLocator, storageOperationRepo)
 
 	// Manufacturing task worker services - using strategy pattern for task execution
 	mfgNavigator := mfgServices.NewManufacturingNavigator(med, shipRepo)
@@ -490,7 +492,8 @@ func run(cfg *config.Config) error {
 	// Create storage coordinator for STORAGE_ACQUIRE_DELIVER tasks
 	// This enables manufacturing pipelines to acquire cargo from storage ships
 	storageCoordinator := storageApp.NewInMemoryStorageCoordinator()
-	mfgServices.RegisterStorageExecutor(taskExecutorRegistry, mfgNavigator, mfgSeller, storageCoordinator, apiClient)
+	// Register storage executor and enable storage support on COLLECT_SELL executor
+	mfgServices.RegisterStorageExecutor(taskExecutorRegistry, mfgNavigator, mfgPurchaser, mfgSeller, storageCoordinator, apiClient)
 
 	// Gas extraction handlers (now that storage coordinator is available)
 	// Transport is handled by manufacturing pool via STORAGE_ACQUIRE_DELIVER tasks
@@ -504,6 +507,11 @@ func run(cfg *config.Config) error {
 	gasSiphonWorkerHandler := gasCmd.NewRunSiphonWorkerHandler(med, shipRepo, shipAssignmentRepo, storageCoordinator, nil) // nil = use RealClock
 	if err := mediator.RegisterHandler[*gasCmd.RunSiphonWorkerCommand](med, gasSiphonWorkerHandler); err != nil {
 		return fmt.Errorf("failed to register RunSiphonWorker handler: %w", err)
+	}
+
+	gasStorageShipWorkerHandler := gasCmd.NewRunStorageShipWorkerHandler(med, shipRepo, shipAssignmentRepo, storageCoordinator)
+	if err := mediator.RegisterHandler[*gasCmd.RunStorageShipWorkerCommand](med, gasStorageShipWorkerHandler); err != nil {
+		return fmt.Errorf("failed to register RunStorageShipWorker handler: %w", err)
 	}
 
 	// Create storage recovery service for daemon restart resilience
@@ -545,6 +553,8 @@ func run(cfg *config.Config) error {
 	)
 	// Enable storage ship recovery on daemon restart
 	parallelManufacturingCoordinatorHandler.SetStorageRecoveryService(storageRecoveryService)
+	// Enable STORAGE_ACQUIRE_DELIVER task creation for goods produced by storage operations
+	parallelManufacturingCoordinatorHandler.SetStorageOperationRepository(storageOperationRepo)
 	if err := mediator.RegisterHandler[*tradingCmd.RunParallelManufacturingCoordinatorCommand](med, parallelManufacturingCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register RunParallelManufacturingCoordinator handler: %w", err)
 	}

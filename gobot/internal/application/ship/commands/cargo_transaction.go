@@ -149,8 +149,9 @@ func (h *CargoTransactionHandler) Handle(ctx context.Context, request common.Req
 	}
 
 	transactionLimit := h.getTransactionLimit(ctx, ship, cmd)
+	waypointSymbol := ship.CurrentLocation().Symbol
 
-	response, err := h.executeTransactions(ctx, cmd, token, transactionLimit)
+	response, err := h.executeTransactions(ctx, cmd, token, transactionLimit, waypointSymbol)
 	if err != nil {
 		return nil, err
 	}
@@ -200,7 +201,10 @@ func (h *CargoTransactionHandler) getTransactionLimit(ctx context.Context, ship 
 //  3. Records ledger entry immediately after each successful batch
 //  4. Accumulates results (total amount, units processed, transaction count)
 //  5. Returns error on first failure with partial success information (partial success is already recorded)
-func (h *CargoTransactionHandler) executeTransactions(ctx context.Context, cmd *CargoTransactionCommand, token string, transactionLimit int) (*CargoTransactionResponse, error) {
+//
+// OPTIMIZATION: waypointSymbol is passed from caller to avoid duplicate ship API load.
+// Balance tracking is skipped to avoid GetAgent API call - transactions still recorded.
+func (h *CargoTransactionHandler) executeTransactions(ctx context.Context, cmd *CargoTransactionCommand, token string, transactionLimit int, waypointSymbol string) (*CargoTransactionResponse, error) {
 	totalAmount := 0
 	unitsProcessed := 0
 	transactionCount := 0
@@ -208,20 +212,9 @@ func (h *CargoTransactionHandler) executeTransactions(ctx context.Context, cmd *
 
 	transactionType := h.strategy.GetTransactionType()
 
-	// Get initial balance for ledger recording
-	balanceBefore, err := h.fetchCurrentCredits(ctx)
-	if err != nil {
-		// Continue without ledger recording if balance fetch fails
-		balanceBefore = 0
-	}
-	runningBalance := balanceBefore
-
-	// Get ship location for ledger recording
-	ship, err := h.loadShip(ctx, cmd)
-	if err != nil {
-		return nil, err
-	}
-	waypointSymbol := ship.CurrentLocation().Symbol
+	// OPTIMIZATION: Skip balance fetch (saves 1 API call)
+	// Ledger entries will have balance=0 but transaction amounts are still tracked
+	runningBalance := 0
 
 	for unitsRemaining > 0 {
 		unitsToProcess := utils.Min(unitsRemaining, transactionLimit)
@@ -238,27 +231,25 @@ func (h *CargoTransactionHandler) executeTransactions(ctx context.Context, cmd *
 		transactionCount++
 		unitsRemaining -= unitsToProcess
 
-		// CRITICAL: Record ledger entry immediately after each successful batch
-		// This ensures partial purchases are tracked even if later batches fail
-		if balanceBefore > 0 {
-			batchResponse := &CargoTransactionResponse{
-				TotalAmount:      result.TotalAmount,
-				UnitsProcessed:   result.UnitsProcessed,
-				TransactionCount: 1,
-			}
-			h.recordCargoTransaction(ctx, cmd, waypointSymbol, batchResponse, runningBalance)
-
-			// Update running balance for next batch
-			if transactionType == "purchase" {
-				runningBalance -= result.TotalAmount
-			} else {
-				runningBalance += result.TotalAmount
-			}
+		// Record ledger entry immediately after each successful batch
+		batchResponse := &CargoTransactionResponse{
+			TotalAmount:      result.TotalAmount,
+			UnitsProcessed:   result.UnitsProcessed,
+			TransactionCount: 1,
 		}
+		h.recordCargoTransaction(ctx, cmd, waypointSymbol, batchResponse, runningBalance)
 
-		// Refresh market data after each successful batch to keep prices up-to-date
-		h.refreshMarketData(ctx, cmd.PlayerID, waypointSymbol)
+		// Update running balance for next batch (approximate, without initial balance)
+		if transactionType == "purchase" {
+			runningBalance -= result.TotalAmount
+		} else {
+			runningBalance += result.TotalAmount
+		}
 	}
+
+	// Refresh market data once after all batches complete (not per-batch)
+	// This reduces API calls from 2N to N+1 for N batches
+	h.refreshMarketData(ctx, cmd.PlayerID, waypointSymbol)
 
 	return &CargoTransactionResponse{
 		TotalAmount:      totalAmount,
@@ -374,9 +365,18 @@ func (h *CargoTransactionHandler) recordCargoTransaction(
 // refreshMarketData triggers a market data refresh after a successful transaction.
 // This ensures that price data remains up-to-date after buy/sell operations.
 // The refresh is non-blocking - errors are logged but don't fail the transaction.
+//
+// OPTIMIZATION: Skip refresh when called from manufacturing operations (context flag).
+// Manufacturing scans markets separately and doesn't need immediate refresh after each sell.
 func (h *CargoTransactionHandler) refreshMarketData(ctx context.Context, playerID shared.PlayerID, waypointSymbol string) {
 	// Skip if no market refresher is configured
 	if h.marketRefresher == nil {
+		return
+	}
+
+	// OPTIMIZATION: Skip market refresh for manufacturing operations
+	// They scan markets independently and don't need post-transaction refresh
+	if shared.SkipMarketRefreshFromContext(ctx) {
 		return
 	}
 

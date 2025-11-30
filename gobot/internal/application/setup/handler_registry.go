@@ -228,6 +228,29 @@ func (r *HandlerRegistry) RegisterGasHandlers(m common.Mediator) error {
 		return err
 	}
 
+	// Register RunStorageShipWorkerCommand handler
+	storageShipHandler := gasCommands.NewRunStorageShipWorkerHandler(
+		m,
+		r.shipRepo,
+		r.shipAssignmentRepo,
+		r.storageCoordinator,
+	)
+	if err := m.Register(
+		reflect.TypeOf(&gasCommands.RunStorageShipWorkerCommand{}),
+		storageShipHandler,
+	); err != nil {
+		return err
+	}
+
+	// Register TransferCargoCommand handler (used by siphon workers to deposit to storage)
+	transferHandler := gasCommands.NewTransferCargoHandler(r.shipRepo, r.apiClient)
+	if err := m.Register(
+		reflect.TypeOf(&gasCommands.TransferCargoCommand{}),
+		transferHandler,
+	); err != nil {
+		return err
+	}
+
 	return nil
 }
 
