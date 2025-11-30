@@ -12,6 +12,16 @@ interface ShipTaskBadgeProps {
 const getTaskEmoji = (taskType: string | null): string => {
   if (!taskType) return '';
   switch (taskType.toUpperCase()) {
+    // Compound task types from manufacturing system
+    case 'ACQUIRE_DELIVER':
+      return '🛒'; // Buy from export market AND deliver to factory
+    case 'COLLECT_SELL':
+      return '📥'; // Collect from factory AND sell at demand market
+    case 'STORAGE_ACQUIRE_DELIVER':
+      return '📦'; // Acquire cargo from storage ships AND deliver to destination
+    case 'LIQUIDATE':
+      return '🔥'; // Sell orphaned cargo to recover investment
+    // Legacy simple task types (for backwards compatibility)
     case 'ACQUIRE':
       return '🛒'; // Buy raw material from export market
     case 'DELIVER':
@@ -20,8 +30,6 @@ const getTaskEmoji = (taskType: string | null): string => {
       return '📥'; // Buy produced good from factory
     case 'SELL':
       return '💰'; // Sell final product at demand market
-    case 'LIQUIDATE':
-      return '🔥'; // Sell orphaned cargo to recover investment
     default:
       return '📋';
   }
