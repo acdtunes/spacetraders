@@ -143,7 +143,38 @@ func (h *RunSiphonWorkerHandler) executeSiphoning(
 		default:
 		}
 
-		// 3a. Siphon resources
+		// 3a. Reload ship to check current cargo status BEFORE siphoning
+		ship, err = h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
+		if err != nil {
+			return fmt.Errorf("failed to reload ship before siphon: %w", err)
+		}
+
+		// 3b. If cargo is full or nearly full, deposit to storage BEFORE siphoning
+		// This handles ships that start with cargo from previous runs
+		if ship.IsCargoFull() || ship.AvailableCargoSpace() < 1 {
+			logger.Log("INFO", "Siphon ship cargo full - depositing to storage ship before siphoning", map[string]interface{}{
+				"ship_symbol":    cmd.ShipSymbol,
+				"action":         "deposit_before_siphon",
+				"cargo_units":    ship.Cargo().Units,
+				"cargo_capacity": ship.Cargo().Capacity,
+			})
+
+			unitsTransferred, err := h.depositToStorageShip(ctx, cmd, ship)
+			if err != nil {
+				return fmt.Errorf("failed to deposit to storage ship: %w", err)
+			}
+
+			result.TransferCount++
+			result.TotalUnitsTransferred += unitsTransferred
+
+			logger.Log("INFO", "Cargo deposited before siphoning", map[string]interface{}{
+				"ship_symbol":       cmd.ShipSymbol,
+				"action":            "deposit_complete",
+				"units_transferred": unitsTransferred,
+			})
+		}
+
+		// 3c. Siphon resources
 		siphonCmd := &SiphonResourcesCommand{
 			ShipSymbol: cmd.ShipSymbol,
 			PlayerID:   cmd.PlayerID,
@@ -165,47 +196,17 @@ func (h *RunSiphonWorkerHandler) executeSiphoning(
 			"siphon_count": result.SiphonCount,
 		})
 
-		// 3b. Wait for cooldown
+		// 3d. Wait for cooldown then loop back
+		// Cargo full check happens at start of next iteration (step 3b)
 		if siphon.CooldownDuration > 0 {
 			h.clock.Sleep(siphon.CooldownDuration)
-		}
-
-		// 3c. Reload ship to get updated cargo
-		ship, err = h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
-		if err != nil {
-			return fmt.Errorf("failed to reload ship: %w", err)
-		}
-
-		// 3d. Check if cargo is full - transfer to storage ship
-		if ship.IsCargoFull() {
-			logger.Log("INFO", "Siphon ship cargo full - depositing to storage ship", map[string]interface{}{
-				"ship_symbol":    cmd.ShipSymbol,
-				"action":         "deposit_to_storage",
-				"cargo_units":    ship.Cargo().Units,
-				"cargo_capacity": ship.Cargo().Capacity,
-			})
-
-			// Deposit ALL cargo to storage ships
-			unitsTransferred, err := h.depositToStorageShip(ctx, cmd, ship)
-			if err != nil {
-				return fmt.Errorf("failed to deposit to storage ship: %w", err)
-			}
-
-			result.TransferCount++
-			result.TotalUnitsTransferred += unitsTransferred
-
-			logger.Log("INFO", "Cargo deposited to storage ship successfully", map[string]interface{}{
-				"ship_symbol":       cmd.ShipSymbol,
-				"action":            "deposit_complete",
-				"units_transferred": unitsTransferred,
-				"transfer_count":    result.TransferCount,
-			})
 		}
 	}
 }
 
 // depositToStorageShip finds a storage ship with space and transfers all cargo to it.
 // After the API transfer, notifies the StorageCoordinator to wake waiting haulers.
+// HYDROCARBON is transferred but NOT tracked (storage ship worker handles cleanup).
 func (h *RunSiphonWorkerHandler) depositToStorageShip(
 	ctx context.Context,
 	cmd *RunSiphonWorkerCommand,
@@ -280,12 +281,16 @@ func (h *RunSiphonWorkerHandler) depositToStorageShip(
 				return totalTransferred, fmt.Errorf("failed to transfer %s to storage: %w", item.Symbol, err)
 			}
 
-			// Notify coordinator of the deposit - this updates inventory and wakes waiting haulers
-			h.storageCoordinator.NotifyCargoDeposited(
-				storageShip.ShipSymbol(),
-				item.Symbol,
-				unitsToTransfer,
-			)
+			// HYDROCARBON is a byproduct - transfer it but don't notify coordinator
+			// Storage ship worker will periodically jettison HYDROCARBON
+			if item.Symbol != "HYDROCARBON" {
+				// Notify coordinator of the deposit - this updates inventory and wakes waiting haulers
+				h.storageCoordinator.NotifyCargoDeposited(
+					storageShip.ShipSymbol(),
+					item.Symbol,
+					unitsToTransfer,
+				)
+			}
 
 			totalTransferred += unitsToTransfer
 			unitsRemaining -= unitsToTransfer

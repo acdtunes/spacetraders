@@ -23,6 +23,7 @@ type GasExtractionOperationResult struct {
 
 // GasExtractionOperation starts a gas extraction operation with siphon and storage ships.
 // Storage ships stay at the gas giant and buffer cargo; delivery is handled by manufacturing pool via STORAGE_ACQUIRE_DELIVER tasks.
+// SINGLETON: Only one coordinator per gas giant is allowed. If one already exists, returns its ID.
 func (s *DaemonServer) GasExtractionOperation(
 	ctx context.Context,
 	gasGiant string,
@@ -36,6 +37,22 @@ func (s *DaemonServer) GasExtractionOperation(
 	// Validate we have at least one siphon ship
 	if len(siphonShips) == 0 {
 		return nil, fmt.Errorf("at least one siphon ship is required")
+	}
+
+	// SINGLETON CHECK: Only one coordinator per gas giant (skip for dry runs)
+	if !dryRun {
+		existingCoordinator, err := s.containerRepo.FindActiveGasCoordinator(ctx, gasGiant, playerID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to check for existing gas coordinator: %w", err)
+		}
+		if existingCoordinator != nil {
+			fmt.Printf("SINGLETON: Gas coordinator already exists for %s: %s (status: %s)\n",
+				gasGiant, existingCoordinator.ID, existingCoordinator.Status)
+			return &GasExtractionOperationResult{
+				ContainerID: existingCoordinator.ID,
+				GasGiant:    gasGiant,
+			}, nil
+		}
 	}
 
 	// Create container ID
@@ -367,6 +384,144 @@ func (s *DaemonServer) StartGasTransportWorkerContainer(
 		playerID,
 		1, // Worker containers are single iteration
 		nil, // No parent container
+		config,
+		nil,
+	)
+
+	// Create and start container runner
+	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipAssignmentRepo)
+	if completionCallback != nil {
+		runner.SetCompletionCallback(completionCallback)
+	}
+	s.registerContainer(containerID, runner)
+
+	// Start container in background
+	go func() {
+		if err := runner.Start(); err != nil {
+			fmt.Printf("Container %s failed: %v\n", containerID, err)
+		}
+	}()
+
+	return nil
+}
+
+// PersistStorageShipContainer creates (but does NOT start) a storage ship worker container in DB.
+// The container will navigate the ship to the gas giant and register with storage coordinator.
+func (s *DaemonServer) PersistStorageShipContainer(
+	ctx context.Context,
+	containerID string,
+	playerID uint,
+	command interface{},
+) error {
+	cmd, ok := command.(*gasCmd.RunStorageShipWorkerCommand)
+	if !ok {
+		return fmt.Errorf("invalid command type for storage ship worker")
+	}
+
+	// Create container entity
+	containerEntity := container.NewContainer(
+		containerID,
+		container.ContainerTypeStorageShip,
+		int(playerID),
+		-1, // Infinite - stays running until stopped
+		&cmd.CoordinatorID, // Link to parent coordinator container
+		map[string]interface{}{
+			"ship_symbol":          cmd.ShipSymbol,
+			"gas_giant":            cmd.GasGiant,
+			"coordinator_id":       cmd.CoordinatorID,
+			"storage_operation_id": cmd.StorageOperationID,
+		},
+		nil, // Use default RealClock for production
+	)
+
+	// Persist container to database
+	if err := s.containerRepo.Add(ctx, containerEntity, "storage_ship"); err != nil {
+		return fmt.Errorf("failed to persist container: %w", err)
+	}
+
+	// Cache the command for StartStorageShipContainer
+	s.pendingWorkerCommandsMu.Lock()
+	s.pendingWorkerCommands[containerID] = cmd
+	s.pendingWorkerCommandsMu.Unlock()
+
+	return nil
+}
+
+// StartStorageShipContainer starts a previously persisted storage ship worker container.
+func (s *DaemonServer) StartStorageShipContainer(
+	ctx context.Context,
+	containerID string,
+	completionCallback chan<- string,
+) error {
+	// Try to get cached command first
+	s.pendingWorkerCommandsMu.Lock()
+	cachedCmd, hasCached := s.pendingWorkerCommands[containerID]
+	if hasCached {
+		delete(s.pendingWorkerCommands, containerID)
+	}
+	s.pendingWorkerCommandsMu.Unlock()
+
+	var cmd *gasCmd.RunStorageShipWorkerCommand
+	var config map[string]interface{}
+	var playerID int
+
+	if hasCached {
+		// Use cached command
+		cmd = cachedCmd.(*gasCmd.RunStorageShipWorkerCommand)
+		playerID = cmd.PlayerID.Value()
+		config = map[string]interface{}{
+			"ship_symbol":          cmd.ShipSymbol,
+			"gas_giant":            cmd.GasGiant,
+			"coordinator_id":       cmd.CoordinatorID,
+			"storage_operation_id": cmd.StorageOperationID,
+		}
+	} else {
+		// Fallback: Load from database (for recovery)
+		allContainers, err := s.containerRepo.ListAll(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("failed to list containers: %w", err)
+		}
+
+		var containerModel *persistence.ContainerModel
+		for _, c := range allContainers {
+			if c.ID == containerID {
+				containerModel = c
+				break
+			}
+		}
+
+		if containerModel == nil {
+			return fmt.Errorf("container %s not found", containerID)
+		}
+
+		// Parse config
+		if err := json.Unmarshal([]byte(containerModel.Config), &config); err != nil {
+			return fmt.Errorf("failed to parse config: %w", err)
+		}
+
+		// Extract fields
+		shipSymbol := config["ship_symbol"].(string)
+		gasGiant := config["gas_giant"].(string)
+		coordinatorID, _ := config["coordinator_id"].(string)
+		storageOperationID, _ := config["storage_operation_id"].(string)
+
+		playerID = containerModel.PlayerID
+		cmd = &gasCmd.RunStorageShipWorkerCommand{
+			ShipSymbol:         shipSymbol,
+			PlayerID:           shared.MustNewPlayerID(playerID),
+			GasGiant:           gasGiant,
+			CoordinatorID:      coordinatorID,
+			StorageOperationID: storageOperationID,
+		}
+	}
+
+	// Create container entity
+	containerEntity := container.NewContainer(
+		containerID,
+		container.ContainerTypeStorageShip,
+		playerID,
+		-1, // Infinite - stays running until stopped
+		nil,
 		config,
 		nil,
 	)

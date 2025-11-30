@@ -114,18 +114,7 @@ func (h *RunGasCoordinatorHandler) Handle(ctx context.Context, request common.Re
 		return nil, fmt.Errorf("failed to get/create storage operation: %w", err)
 	}
 
-	// Step 2: Register storage ships with coordinator
-	logger.Log("INFO", "Registering storage ships with coordinator", map[string]interface{}{
-		"action":        "register_storage_ships",
-		"storage_count": len(cmd.StorageShips),
-		"operation_id":  cmd.GasOperationID,
-	})
-
-	if err := h.registerStorageShips(ctx, cmd, logger); err != nil {
-		return nil, fmt.Errorf("failed to register storage ships: %w", err)
-	}
-
-	// Step 3: Create ship pool assignments (only siphon ships now)
+	// Step 2: Create ship pool assignments for siphon ships
 	logger.Log("INFO", "Ship pool creation initiated", map[string]interface{}{
 		"action":        "create_ship_pool",
 		"siphon_count":  len(cmd.SiphonShips),
@@ -133,16 +122,37 @@ func (h *RunGasCoordinatorHandler) Handle(ctx context.Context, request common.Re
 		"container_id":  cmd.ContainerID,
 	})
 
-	// Assign both siphon and storage ships to this container
-	allShips := append(cmd.SiphonShips, cmd.StorageShips...)
-	if err := h.createPoolAssignments(ctx, allShips, cmd.ContainerID, cmd.PlayerID.Value()); err != nil {
+	if err := h.createPoolAssignments(ctx, cmd.SiphonShips, cmd.ContainerID, cmd.PlayerID.Value()); err != nil {
 		return nil, fmt.Errorf("failed to create pool assignments: %w", err)
 	}
 
 	// Track all spawned worker container IDs for cleanup on shutdown
 	var workerContainerIDs []string
+	var storageContainerIDs []string
 
-	// Step 4: Spawn siphon workers (they deposit to storage ships)
+	// Step 3: Spawn storage ship workers (they navigate themselves and register with coordinator)
+	// This is non-blocking - storage ships navigate in parallel via their own containers
+	logger.Log("INFO", "Storage ship workers spawning", map[string]interface{}{
+		"action":        "spawn_storage_ships",
+		"storage_count": len(cmd.StorageShips),
+	})
+	for _, storageShip := range cmd.StorageShips {
+		containerID, err := h.spawnStorageShipWorker(ctx, cmd, storageShip)
+		if err != nil {
+			errMsg := fmt.Sprintf("Failed to spawn storage ship worker for %s: %v", storageShip, err)
+			logger.Log("ERROR", "Storage ship worker spawn failed", map[string]interface{}{
+				"action":      "spawn_storage_ship",
+				"ship_symbol": storageShip,
+				"error":       err.Error(),
+			})
+			result.Errors = append(result.Errors, errMsg)
+		} else {
+			storageContainerIDs = append(storageContainerIDs, containerID)
+		}
+	}
+
+	// Step 4: Spawn siphon workers immediately (they deposit to storage ships when available)
+	// Siphon workers wait if no storage ship is available - no need to wait for storage ships
 	logger.Log("INFO", "Siphon workers spawning", map[string]interface{}{
 		"action":       "spawn_siphons",
 		"siphon_count": len(cmd.SiphonShips),
@@ -177,26 +187,31 @@ func (h *RunGasCoordinatorHandler) Handle(ctx context.Context, request common.Re
 
 	// Context cancelled, cleanup
 	logger.Log("INFO", "Gas coordinator shutdown requested", map[string]interface{}{
-		"action":       "shutdown_coordinator",
-		"container_id": cmd.ContainerID,
-		"worker_count": len(workerContainerIDs),
+		"action":         "shutdown_coordinator",
+		"container_id":   cmd.ContainerID,
+		"siphon_count":   len(workerContainerIDs),
+		"storage_count":  len(storageContainerIDs),
 	})
 
-	// Stop all worker containers
+	// Stop all siphon worker containers
 	for _, containerID := range workerContainerIDs {
-		logger.Log("INFO", "Worker container stopping", map[string]interface{}{
-			"action":              "stop_worker",
+		logger.Log("INFO", "Siphon worker container stopping", map[string]interface{}{
+			"action":              "stop_siphon_worker",
 			"worker_container_id": containerID,
 		})
 		_ = h.daemonClient.StopContainer(ctx, containerID)
 	}
 
-	// Unregister storage ships from coordinator
-	for _, shipSymbol := range cmd.StorageShips {
-		h.storageCoordinator.UnregisterStorageShip(shipSymbol)
+	// Stop all storage ship containers (they handle their own unregistration)
+	for _, containerID := range storageContainerIDs {
+		logger.Log("INFO", "Storage ship container stopping", map[string]interface{}{
+			"action":       "stop_storage_ship",
+			"container_id": containerID,
+		})
+		_ = h.daemonClient.StopContainer(ctx, containerID)
 	}
 
-	// Release pool assignments
+	// Release pool assignments for siphon ships
 	h.releasePoolAssignments(ctx, cmd.ContainerID, cmd.PlayerID.Value())
 
 	// Update storage operation status
@@ -263,59 +278,8 @@ func (h *RunGasCoordinatorHandler) getOrCreateStorageOperation(
 	return operation, nil
 }
 
-// registerStorageShips creates StorageShip entities and registers them with the coordinator
-func (h *RunGasCoordinatorHandler) registerStorageShips(
-	ctx context.Context,
-	cmd *RunGasCoordinatorCommand,
-	logger common.ContainerLogger,
-) error {
-	for _, shipSymbol := range cmd.StorageShips {
-		// Load ship from API to get current cargo state
-		ship, err := h.shipRepo.FindBySymbol(ctx, shipSymbol, cmd.PlayerID)
-		if err != nil {
-			return fmt.Errorf("failed to load storage ship %s: %w", shipSymbol, err)
-		}
-
-		// Convert current cargo to initial cargo map
-		initialCargo := make(map[string]int)
-		for _, item := range ship.Cargo().Inventory {
-			initialCargo[item.Symbol] = item.Units
-		}
-
-		// Create storage ship entity
-		storageShip, err := storage.NewStorageShip(
-			shipSymbol,
-			cmd.GasGiant, // Will be positioned at gas giant
-			cmd.GasOperationID,
-			ship.Cargo().Capacity,
-			initialCargo,
-		)
-		if err != nil {
-			return fmt.Errorf("failed to create storage ship entity %s: %w", shipSymbol, err)
-		}
-
-		// Register with coordinator
-		if err := h.storageCoordinator.RegisterStorageShip(storageShip); err != nil {
-			logger.Log("WARNING", "Storage ship may already be registered", map[string]interface{}{
-				"action":      "register_storage_ship",
-				"ship_symbol": shipSymbol,
-				"error":       err.Error(),
-			})
-			// Continue - ship might already be registered from recovery
-		}
-
-		logger.Log("INFO", "Storage ship registered", map[string]interface{}{
-			"action":         "register_storage_ship",
-			"ship_symbol":    shipSymbol,
-			"cargo_capacity": ship.Cargo().Capacity,
-			"current_cargo":  ship.Cargo().Units,
-		})
-	}
-
-	return nil
-}
-
 // createPoolAssignments creates ship assignments for all ships
+// It first releases any existing assignments from previous runs
 func (h *RunGasCoordinatorHandler) createPoolAssignments(
 	ctx context.Context,
 	ships []string,
@@ -323,6 +287,11 @@ func (h *RunGasCoordinatorHandler) createPoolAssignments(
 	playerID int,
 ) error {
 	for _, ship := range ships {
+		// Release any existing assignment from previous runs
+		// This handles recovery scenarios where ships are still assigned to old containers
+		_ = h.shipAssignmentRepo.Release(ctx, ship, playerID, "reassigning to new coordinator")
+
+		// Create new assignment
 		assignment := container.NewShipAssignment(ship, playerID, containerID, nil)
 		if err := h.shipAssignmentRepo.Assign(ctx, assignment); err != nil {
 			return fmt.Errorf("failed to assign %s: %w", ship, err)
@@ -392,6 +361,60 @@ func (h *RunGasCoordinatorHandler) spawnSiphonWorker(
 
 	logger.Log("INFO", "Siphon worker started successfully", map[string]interface{}{
 		"action":              "start_siphon_worker",
+		"ship_symbol":         shipSymbol,
+		"worker_container_id": workerContainerID,
+	})
+	return workerContainerID, nil
+}
+
+// spawnStorageShipWorker creates and starts a storage ship worker for a ship.
+// The storage ship worker navigates to the gas giant and registers with the storage coordinator.
+func (h *RunGasCoordinatorHandler) spawnStorageShipWorker(
+	ctx context.Context,
+	cmd *RunGasCoordinatorCommand,
+	shipSymbol string,
+) (string, error) {
+	logger := common.LoggerFromContext(ctx)
+
+	workerContainerID := utils.GenerateContainerID("storage-ship", shipSymbol)
+
+	workerCmd := &RunStorageShipWorkerCommand{
+		ShipSymbol:         shipSymbol,
+		PlayerID:           cmd.PlayerID,
+		GasGiant:           cmd.GasGiant,
+		CoordinatorID:      cmd.ContainerID,
+		StorageOperationID: cmd.GasOperationID,
+	}
+
+	// Step 1: Release any previous assignment
+	_ = h.shipAssignmentRepo.Release(ctx, shipSymbol, cmd.PlayerID.Value(), "reassigning to storage ship container")
+
+	// Step 2: Persist worker container FIRST (container must exist for ship assignment FK)
+	logger.Log("INFO", "Storage ship worker container persisting", map[string]interface{}{
+		"action":              "persist_storage_ship_worker",
+		"ship_symbol":         shipSymbol,
+		"worker_container_id": workerContainerID,
+	})
+	if err := h.daemonClient.PersistStorageShipContainer(ctx, workerContainerID, uint(cmd.PlayerID.Value()), workerCmd); err != nil {
+		return "", fmt.Errorf("failed to persist worker: %w", err)
+	}
+
+	// Step 3: Assign ship to container (now that container exists)
+	assignment := container.NewShipAssignment(shipSymbol, cmd.PlayerID.Value(), workerContainerID, nil)
+	if err := h.shipAssignmentRepo.Assign(ctx, assignment); err != nil {
+		// Clean up container if assignment fails
+		_ = h.daemonClient.StopContainer(ctx, workerContainerID)
+		return "", fmt.Errorf("failed to assign storage ship: %w", err)
+	}
+
+	// Step 4: Start worker (no completion callback needed - workers run continuously)
+	if err := h.daemonClient.StartStorageShipContainer(ctx, workerContainerID, nil); err != nil {
+		_ = h.shipAssignmentRepo.Release(ctx, shipSymbol, cmd.PlayerID.Value(), "failed to start container")
+		return "", fmt.Errorf("failed to start worker: %w", err)
+	}
+
+	logger.Log("INFO", "Storage ship worker started successfully", map[string]interface{}{
+		"action":              "start_storage_ship_worker",
 		"ship_symbol":         shipSymbol,
 		"worker_container_id": workerContainerID,
 	})
