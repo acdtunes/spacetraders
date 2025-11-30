@@ -295,10 +295,10 @@ func (p *PipelinePlanner) createAcquireDeliverTask(
 	if storageOp := p.findRunningStorageOperationForGood(planCtx.ctx, node.Good, planCtx.playerID); storageOp != nil {
 		logger.Log("INFO", "Using storage operation for acquisition task", map[string]interface{}{
 			"good":         node.Good,
-			"storage_op":   storageOp.ID()[:8],
+			"storage_op":   storageOp.ID(),
 			"waypoint":     storageOp.WaypointSymbol(),
 			"factory":      factorySymbol,
-			"pipeline_id":  planCtx.pipeline.ID()[:8],
+			"pipeline_id":  planCtx.pipeline.ID(),
 		})
 
 		task := manufacturing.NewStorageAcquireDeliverTask(
