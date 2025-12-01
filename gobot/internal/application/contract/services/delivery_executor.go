@@ -348,8 +348,8 @@ func (e *DeliveryExecutor) dockShip(
 	playerID shared.PlayerID,
 ) error {
 	dockCmd := &shipTypes.DockShipCommand{
-		ShipSymbol: ship.ShipSymbol(),
-		PlayerID:   playerID,
+		Ship:     ship,
+		PlayerID: playerID,
 	}
 
 	dockResp, err := e.mediator.Send(ctx, dockCmd)

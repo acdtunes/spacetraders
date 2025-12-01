@@ -249,8 +249,8 @@ func (h *PurchaseShipHandler) dockShipIfNeeded(
 	}
 
 	dockCmd := &shipTypes.DockShipCommand{
-		ShipSymbol: cmd.PurchasingShipSymbol,
-		PlayerID:   cmd.PlayerID,
+		Ship:     purchasingShip,
+		PlayerID: cmd.PlayerID,
 	}
 	_, err := h.mediator.Send(ctx, dockCmd)
 	if err != nil {

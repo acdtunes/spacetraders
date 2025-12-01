@@ -483,8 +483,8 @@ func (e *ProductionExecutor) NavigateAndDock(
 
 	// Persist dock state to API
 	dockCmd := &shipTypes.DockShipCommand{
-		ShipSymbol: shipSymbol,
-		PlayerID:   playerID,
+		Ship:     ship,
+		PlayerID: playerID,
 	}
 
 	_, err = e.mediator.Send(ctx, dockCmd)

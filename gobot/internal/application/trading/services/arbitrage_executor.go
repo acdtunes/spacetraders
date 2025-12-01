@@ -146,8 +146,8 @@ func (e *ArbitrageExecutor) Execute(
 	})
 
 	_, err = e.mediator.Send(ctx, &shipTypes.DockShipCommand{
-		ShipSymbol: ship.ShipSymbol(),
-		PlayerID:   playerIDValue,
+		Ship:     ship,
+		PlayerID: playerIDValue,
 	})
 	if err != nil {
 		executionErr = fmt.Errorf("docking at buy market failed: %w", err)
@@ -513,8 +513,8 @@ func (e *ArbitrageExecutor) Execute(
 	})
 
 	_, err = e.mediator.Send(ctx, &shipTypes.DockShipCommand{
-		ShipSymbol: ship.ShipSymbol(),
-		PlayerID:   playerIDValue,
+		Ship:     ship,
+		PlayerID: playerIDValue,
 	})
 	if err != nil {
 		executionErr = fmt.Errorf("docking at sell market failed: %w", err)

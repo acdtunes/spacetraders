@@ -300,8 +300,8 @@ func (h *RunGasTransportWorkerHandler) executeFactoryDelivery(
 
 		// Dock at factory
 		dockCmd := &shipTypes.DockShipCommand{
-			ShipSymbol: cmd.ShipSymbol,
-			PlayerID:   cmd.PlayerID,
+			Ship:     ship,
+			PlayerID: cmd.PlayerID,
 		}
 		_, err = h.mediator.Send(ctx, dockCmd)
 		if err != nil {
@@ -342,9 +342,9 @@ func (h *RunGasTransportWorkerHandler) executeFactoryDelivery(
 
 		// Refuel if possible (factory may have fuel)
 		refuelCmd := &shipTypes.RefuelShipCommand{
-			ShipSymbol: cmd.ShipSymbol,
-			PlayerID:   cmd.PlayerID,
-			Units:      nil, // Full refuel
+			Ship:     ship,
+			PlayerID: cmd.PlayerID,
+			Units:    nil, // Full refuel
 		}
 		_, _ = h.mediator.Send(ctx, refuelCmd) // Ignore refuel errors - factory may not have fuel
 
