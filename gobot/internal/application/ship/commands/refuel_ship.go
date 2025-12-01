@@ -58,17 +58,6 @@ func (h *RefuelShipHandler) Handle(ctx context.Context, request common.Request) 
 		return nil, err
 	}
 
-	// Fetch current credits (balance before)
-	balanceBefore, err := h.fetchCurrentCredits(ctx)
-	if err != nil {
-		// Log warning but don't fail the operation
-		logger := logging.LoggerFromContext(ctx)
-		logger.Log("WARN", "Failed to fetch credits before refuel, ledger entry will not be recorded", map[string]interface{}{
-			"error": err.Error(),
-			"ship":  cmd.ShipSymbol,
-		})
-	}
-
 	fuelBefore := ship.Fuel().Current
 
 	refuelResult, err := h.refuelShipViaAPI(ctx, ship, cmd)
@@ -85,10 +74,9 @@ func (h *RefuelShipHandler) Handle(ctx context.Context, request common.Request) 
 		response.FuelAdded,
 	)
 
-	// Record transaction asynchronously (non-blocking)
-	if balanceBefore > 0 { // Only record if we successfully fetched balance
-		go h.recordRefuelTransaction(ctx, cmd, response, balanceBefore)
-	}
+	// OPTIMIZATION: Skip balance fetch (saves 1 API call per refuel)
+	// Ledger entries will have balance=0 but transaction amounts are still tracked
+	go h.recordRefuelTransaction(ctx, cmd, response, 0)
 
 	return response, nil
 }
@@ -142,20 +130,6 @@ func (h *RefuelShipHandler) buildRefuelResponse(ship *navigation.Ship, fuelBefor
 	}
 }
 
-// fetchCurrentCredits fetches the player's current credits from the API
-func (h *RefuelShipHandler) fetchCurrentCredits(ctx context.Context) (int, error) {
-	token, err := common.PlayerTokenFromContext(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("player token not found in context: %w", err)
-	}
-
-	agent, err := h.apiClient.GetAgent(ctx, token)
-	if err != nil {
-		return 0, fmt.Errorf("failed to fetch agent credits: %w", err)
-	}
-
-	return agent.Credits, nil
-}
 
 // recordRefuelTransaction records the refuel transaction in the ledger
 func (h *RefuelShipHandler) recordRefuelTransaction(
