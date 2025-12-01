@@ -587,13 +587,9 @@ Examples:
 				transactionRepo,
 				playerResolver,
 				nil, // clock (defaults to real clock)
-				nil, // marketRepo (not needed for this CLI command)
 				nil, // shipRepo (not needed for this CLI command)
-				nil, // waypointProvider (not needed for this CLI command)
 				nil, // shipAssignmentRepo (not needed for this CLI command)
-				nil, // containerRepo (not needed for this CLI command)
 				nil, // daemonClient (not needed for this CLI command)
-				nil, // arbitrageExecutionLogRepo (not needed for this CLI command)
 				nil, // storageOpRepo (not needed for this CLI command)
 				nil, // storageCoordinator (not needed for this CLI command)
 				nil, // waypointRepo (not needed for this CLI command)

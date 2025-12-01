@@ -154,25 +154,6 @@ func (c *DaemonClientGRPC) StopContainer(ctx context.Context, containerID string
 	return nil
 }
 
-// PersistArbitrageWorkerContainer creates (but does NOT start) an arbitrage worker container in DB
-func (c *DaemonClientGRPC) PersistArbitrageWorkerContainer(
-	ctx context.Context,
-	containerID string,
-	playerID uint,
-	command interface{},
-) error {
-	return fmt.Errorf("PersistArbitrageWorkerContainer not implemented for gRPC client")
-}
-
-// StartArbitrageWorkerContainer starts a previously persisted arbitrage worker container
-func (c *DaemonClientGRPC) StartArbitrageWorkerContainer(
-	ctx context.Context,
-	containerID string,
-	completionCallback chan<- string,
-) error {
-	return fmt.Errorf("StartArbitrageWorkerContainer not implemented for gRPC client")
-}
-
 // PersistManufacturingTaskWorkerContainer creates (but does NOT start) a manufacturing task worker container in DB
 func (c *DaemonClientGRPC) PersistManufacturingTaskWorkerContainer(
 	ctx context.Context,

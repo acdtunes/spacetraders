@@ -34,12 +34,10 @@ import (
 	shipyardQuery "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/queries"
 	storageApp "github.com/andrescamacho/spacetraders-go/internal/application/storage"
 	tradingCmd "github.com/andrescamacho/spacetraders-go/internal/application/trading/commands"
-	tradingQuery "github.com/andrescamacho/spacetraders-go/internal/application/trading/queries"
 	tradingServices "github.com/andrescamacho/spacetraders-go/internal/application/trading/services"
 	mfgServices "github.com/andrescamacho/spacetraders-go/internal/application/trading/services/manufacturing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 	domainRouting "github.com/andrescamacho/spacetraders-go/internal/domain/routing"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
@@ -351,22 +349,6 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to register SellCargo handler: %w", err)
 	}
 
-	// Arbitrage trading handlers
-	analyzer := trading.NewArbitrageAnalyzer()
-	opportunityFinder := tradingServices.NewArbitrageOpportunityFinder(tradingMarketRepo, graphService, analyzer)
-	arbitrageExecutionLogRepo := persistence.NewGormArbitrageExecutionLogRepository(db)
-	arbitrageExecutor := tradingServices.NewArbitrageExecutor(med, shipRepo, arbitrageExecutionLogRepo)
-
-	findArbitrageOpportunitiesHandler := tradingQuery.NewFindArbitrageOpportunitiesHandler(opportunityFinder)
-	if err := mediator.RegisterHandler[*tradingQuery.FindArbitrageOpportunitiesQuery](med, findArbitrageOpportunitiesHandler); err != nil {
-		return fmt.Errorf("failed to register FindArbitrageOpportunities handler: %w", err)
-	}
-
-	runArbitrageWorkerHandler := tradingCmd.NewRunArbitrageWorkerHandler(arbitrageExecutor, shipRepo, tradingMarketRepo, med)
-	if err := mediator.RegisterHandler[*tradingCmd.RunArbitrageWorkerCommand](med, runArbitrageWorkerHandler); err != nil {
-		return fmt.Errorf("failed to register RunArbitrageWorker handler: %w", err)
-	}
-
 	// 7. Initialize daemon server
 	socketPath := cfg.Daemon.SocketPath
 	fmt.Printf("Starting daemon server on: %s\n", socketPath)
@@ -418,14 +400,6 @@ func run(cfg *config.Config) error {
 	)
 	if err := mediator.RegisterHandler[*goodsCmd.RunFactoryCoordinatorCommand](med, factoryCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register GoodsFactoryCoordinator handler: %w", err)
-	}
-
-	// Arbitrage coordinator handler (depends on daemonClientLocal)
-	arbitrageCoordinatorHandler := tradingCmd.NewRunArbitrageCoordinatorHandler(
-		opportunityFinder, shipRepo, shipAssignmentRepo, containerRepo, daemonClientLocal, med, nil, // nil = use RealClock
-	)
-	if err := mediator.RegisterHandler[*tradingCmd.RunArbitrageCoordinatorCommand](med, arbitrageCoordinatorHandler); err != nil {
-		return fmt.Errorf("failed to register RunArbitrageCoordinator handler: %w", err)
 	}
 
 	// Gas extraction handlers (depend on daemonClientLocal and storageCoordinator)

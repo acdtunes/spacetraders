@@ -7,7 +7,6 @@ import (
 
 	playerQuery "github.com/andrescamacho/spacetraders-go/internal/application/player/queries"
 	shipCommands "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands"
-	tradingQueries "github.com/andrescamacho/spacetraders-go/internal/application/trading/queries"
 	pb "github.com/andrescamacho/spacetraders-go/pkg/proto/daemon"
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )
@@ -741,92 +740,6 @@ func (s *daemonServiceImpl) GetFactoryStatus(ctx context.Context, req *pb.GetFac
 		MarketQueries:    int32(status.MarketQueries),
 		ParallelLevels:   int32(status.ParallelLevels),
 		EstimatedSpeedup: float32(status.EstimatedSpeedup),
-	}, nil
-}
-
-// ScanArbitrageOpportunities scans markets for profitable arbitrage opportunities
-func (s *daemonServiceImpl) ScanArbitrageOpportunities(ctx context.Context, req *pb.ScanArbitrageOpportunitiesRequest) (*pb.ScanArbitrageOpportunitiesResponse, error) {
-	// Resolve player ID
-	playerID := int(req.PlayerId)
-
-	// Query for arbitrage opportunities via mediator
-	// CargoCapacity defaults to 40 in the handler if not provided
-	query := &tradingQueries.FindArbitrageOpportunitiesQuery{
-		SystemSymbol:  req.SystemSymbol,
-		PlayerID:      playerID,
-		CargoCapacity: 0, // Use default (40 units)
-		MinMargin:     req.MinMargin,
-		Limit:         int(req.Limit),
-	}
-
-	result, err := s.daemon.mediator.Send(ctx, query)
-	if err != nil {
-		return nil, fmt.Errorf("failed to scan for arbitrage opportunities: %w", err)
-	}
-
-	response, ok := result.(*tradingQueries.FindArbitrageOpportunitiesResponse)
-	if !ok {
-		return nil, fmt.Errorf("unexpected response type from FindArbitrageOpportunitiesQuery")
-	}
-
-	// Convert opportunities to protobuf format
-	pbOpportunities := make([]*pb.ArbitrageOpportunity, len(response.Opportunities))
-	for i, opp := range response.Opportunities {
-		pbOpportunities[i] = &pb.ArbitrageOpportunity{
-			Good:            opp.Good,
-			BuyMarket:       opp.BuyMarket,
-			SellMarket:      opp.SellMarket,
-			BuyPrice:        int32(opp.BuyPrice),
-			SellPrice:       int32(opp.SellPrice),
-			ProfitPerUnit:   int32(opp.ProfitPerUnit),
-			ProfitMargin:    opp.ProfitMargin,
-			EstimatedProfit: int32(opp.EstimatedProfit),
-			Distance:        opp.Distance,
-			BuySupply:       opp.BuySupply,
-			SellActivity:    opp.SellActivity,
-			Score:           opp.Score,
-		}
-	}
-
-	return &pb.ScanArbitrageOpportunitiesResponse{
-		Opportunities: pbOpportunities,
-	}, nil
-}
-
-// StartArbitrageCoordinator initiates automated arbitrage trading operations
-func (s *daemonServiceImpl) StartArbitrageCoordinator(ctx context.Context, req *pb.StartArbitrageCoordinatorRequest) (*pb.StartArbitrageCoordinatorResponse, error) {
-	// Resolve player ID
-	playerID := int(req.PlayerId)
-
-	// Default max workers if not provided
-	maxWorkers := int(req.MaxWorkers)
-	if maxWorkers == 0 {
-		maxWorkers = 10
-	}
-
-	// Default min margin if not provided
-	minMargin := req.MinMargin
-	if minMargin <= 0 {
-		minMargin = 10.0
-	}
-
-	// Default min balance (0 = no limit)
-	minBalance := int(req.MinBalance)
-
-	// Start coordinator via DaemonServer (creates container and runs in background)
-	containerID, err := s.daemon.ArbitrageCoordinator(ctx, req.SystemSymbol, playerID, minMargin, maxWorkers, minBalance)
-	if err != nil {
-		return nil, fmt.Errorf("failed to start arbitrage coordinator: %w", err)
-	}
-
-	return &pb.StartArbitrageCoordinatorResponse{
-		ContainerId:  containerID,
-		SystemSymbol: req.SystemSymbol,
-		MinMargin:    minMargin,
-		MaxWorkers:   int32(maxWorkers),
-		MinBalance:   int32(minBalance),
-		Status:       "RUNNING",
-		Message:      "Arbitrage coordinator started successfully",
 	}, nil
 }
 

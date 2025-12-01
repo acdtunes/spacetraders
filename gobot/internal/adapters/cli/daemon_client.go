@@ -904,40 +904,6 @@ type GoodsFactoryStatusResult struct {
 	EstimatedSpeedup float64
 }
 
-// ArbitrageOpportunityResult represents a single arbitrage opportunity
-type ArbitrageOpportunityResult struct {
-	Good            string
-	BuyMarket       string
-	SellMarket      string
-	BuyPrice        int
-	SellPrice       int
-	ProfitPerUnit   int
-	ProfitMargin    float64
-	EstimatedProfit int
-	Distance        float64
-	BuySupply       string
-	SellActivity    string
-	Score           float64
-}
-
-// ScanArbitrageOpportunitiesResult contains scan results
-type ScanArbitrageOpportunitiesResult struct {
-	Opportunities []ArbitrageOpportunityResult
-	TotalScanned  int
-	SystemSymbol  string
-}
-
-// StartArbitrageCoordinatorResult contains the result of starting arbitrage coordinator
-type StartArbitrageCoordinatorResult struct {
-	ContainerID  string
-	SystemSymbol string
-	MinMargin    float64
-	MaxWorkers   int
-	MinBalance   int
-	Status       string
-	Message      string
-}
-
 // StartManufacturingCoordinatorResult contains the result of starting a manufacturing coordinator
 type StartManufacturingCoordinatorResult struct {
 	ContainerID  string
@@ -960,81 +926,6 @@ type GasExtractionOperationResponse struct {
 	// Dry-run results
 	ShipRoutes []common.ShipRouteDTO
 	Errors     []string
-}
-
-// ScanArbitrageOpportunities scans for arbitrage opportunities in a system
-func (c *DaemonClient) ScanArbitrageOpportunities(
-	ctx context.Context,
-	systemSymbol string,
-	playerID int,
-	minMargin float64,
-	limit int,
-) (*ScanArbitrageOpportunitiesResult, error) {
-	resp, err := c.client.ScanArbitrageOpportunities(ctx, &pb.ScanArbitrageOpportunitiesRequest{
-		PlayerId:     int32(playerID),
-		SystemSymbol: systemSymbol,
-		MinMargin:    minMargin,
-		Limit:        int32(limit),
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	// Convert protobuf opportunities to result format
-	opportunities := make([]ArbitrageOpportunityResult, len(resp.Opportunities))
-	for i, opp := range resp.Opportunities {
-		opportunities[i] = ArbitrageOpportunityResult{
-			Good:            opp.Good,
-			BuyMarket:       opp.BuyMarket,
-			SellMarket:      opp.SellMarket,
-			BuyPrice:        int(opp.BuyPrice),
-			SellPrice:       int(opp.SellPrice),
-			ProfitPerUnit:   int(opp.ProfitPerUnit),
-			ProfitMargin:    opp.ProfitMargin,
-			EstimatedProfit: int(opp.EstimatedProfit),
-			Distance:        opp.Distance,
-			BuySupply:       opp.BuySupply,
-			SellActivity:    opp.SellActivity,
-			Score:           opp.Score,
-		}
-	}
-
-	return &ScanArbitrageOpportunitiesResult{
-		Opportunities: opportunities,
-		TotalScanned:  len(opportunities),
-		SystemSymbol:  systemSymbol,
-	}, nil
-}
-
-// StartArbitrageCoordinator starts an arbitrage coordinator
-func (c *DaemonClient) StartArbitrageCoordinator(
-	ctx context.Context,
-	systemSymbol string,
-	playerID int,
-	minMargin float64,
-	maxWorkers int,
-	minBalance int,
-) (*StartArbitrageCoordinatorResult, error) {
-	resp, err := c.client.StartArbitrageCoordinator(ctx, &pb.StartArbitrageCoordinatorRequest{
-		PlayerId:     int32(playerID),
-		SystemSymbol: systemSymbol,
-		MinMargin:    minMargin,
-		MaxWorkers:   int32(maxWorkers),
-		MinBalance:   int32(minBalance),
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	return &StartArbitrageCoordinatorResult{
-		ContainerID:  resp.ContainerId,
-		SystemSymbol: resp.SystemSymbol,
-		MinMargin:    resp.MinMargin,
-		MaxWorkers:   int(resp.MaxWorkers),
-		MinBalance:   int(resp.MinBalance),
-		Status:       resp.Status,
-		Message:      resp.Message,
-	}, nil
 }
 
 // StartParallelManufacturingCoordinator starts a parallel task-based manufacturing coordinator

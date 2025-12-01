@@ -10,20 +10,6 @@ var (
 	ErrInvalidCommandType = errors.New("invalid command type")
 )
 
-// PersistArbitrageWorkerCall captures parameters for PersistArbitrageWorkerContainer calls
-type PersistArbitrageWorkerCall struct {
-	ContainerID string
-	PlayerID    uint
-	ShipSymbol  string
-	Good        string
-}
-
-// StartArbitrageWorkerCall captures parameters for StartArbitrageWorkerContainer calls
-type StartArbitrageWorkerCall struct {
-	ContainerID    string
-	CompletionChan chan string
-}
-
 // ContainerInfo represents container metadata for daemon client communication.
 // This is a lightweight DTO used at the gRPC boundary.
 // PlayerID uses the domain standard int type.
@@ -63,14 +49,6 @@ type DaemonClient interface {
 	// StopContainer stops a running container
 	// containerID: The container to stop
 	StopContainer(ctx context.Context, containerID string) error
-
-	// PersistArbitrageWorkerContainer creates (but does NOT start) an arbitrage worker container in DB
-	// This allows assigning ships to the container before starting it
-	PersistArbitrageWorkerContainer(ctx context.Context, containerID string, playerID uint, command interface{}) error
-
-	// StartArbitrageWorkerContainer starts a previously persisted arbitrage worker container
-	// completionCallback: Optional channel to signal completion to coordinator
-	StartArbitrageWorkerContainer(ctx context.Context, containerID string, completionCallback chan<- string) error
 
 	// PersistManufacturingTaskWorkerContainer creates (but does NOT start) a manufacturing task worker container in DB
 	// This is for task-based parallel manufacturing (uses task ID reference, not embedded opportunity)

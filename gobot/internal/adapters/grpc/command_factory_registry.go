@@ -81,32 +81,6 @@ func (s *DaemonServer) registerCommandFactories() {
 		}, nil
 	}
 
-	// Arbitrage coordinator factory (multi-ship trading coordination)
-	s.commandFactories["arbitrage_coordinator"] = func(config map[string]interface{}, playerID int) (interface{}, error) {
-		containerID, ok := config["container_id"].(string)
-		if !ok {
-			return nil, fmt.Errorf("missing or invalid container_id")
-		}
-
-		systemSymbol, ok := config["system_symbol"].(string)
-		if !ok {
-			return nil, fmt.Errorf("missing or invalid system_symbol")
-		}
-
-		minMargin, _ := config["min_margin"].(float64) // Optional, defaults in handler
-		maxWorkers, _ := config["max_workers"].(int)   // Optional, defaults in handler
-		minBalance, _ := config["min_balance"].(int)   // Optional, defaults to 0 (no limit)
-
-		return &tradingCmd.RunArbitrageCoordinatorCommand{
-			SystemSymbol: systemSymbol,
-			PlayerID:     playerID,
-			ContainerID:  containerID,
-			MinMargin:    minMargin,
-			MaxWorkers:   maxWorkers,
-			MinBalance:   minBalance,
-		}, nil
-	}
-
 	// Purchase ship factory
 	s.commandFactories["purchase_ship"] = func(config map[string]interface{}, playerID int) (interface{}, error) {
 		shipSymbol, ok := config["ship_symbol"].(string)

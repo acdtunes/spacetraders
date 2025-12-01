@@ -108,25 +108,6 @@ func (c *DaemonClientLocal) StopContainer(ctx context.Context, containerID strin
 	return c.server.StopContainer(containerID)
 }
 
-// PersistArbitrageWorkerContainer creates (but does NOT start) an arbitrage worker container in DB
-func (c *DaemonClientLocal) PersistArbitrageWorkerContainer(
-	ctx context.Context,
-	containerID string,
-	playerID uint,
-	command interface{},
-) error {
-	return c.server.PersistArbitrageWorkerContainer(ctx, containerID, playerID, command)
-}
-
-// StartArbitrageWorkerContainer starts a previously persisted arbitrage worker container
-func (c *DaemonClientLocal) StartArbitrageWorkerContainer(
-	ctx context.Context,
-	containerID string,
-	completionCallback chan<- string,
-) error {
-	return c.server.StartArbitrageWorkerContainer(ctx, containerID, completionCallback)
-}
-
 // PersistManufacturingTaskWorkerContainer creates (but does NOT start) a manufacturing task worker container in DB
 func (c *DaemonClientLocal) PersistManufacturingTaskWorkerContainer(
 	ctx context.Context,

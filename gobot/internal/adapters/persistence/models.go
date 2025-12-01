@@ -238,62 +238,6 @@ func (TransactionModel) TableName() string {
 	return "transactions"
 }
 
-// ArbitrageExecutionLogModel represents the arbitrage_execution_logs table
-type ArbitrageExecutionLogModel struct {
-	ID          int          `gorm:"column:id;primaryKey;autoIncrement"`
-	ContainerID string       `gorm:"column:container_id;index:idx_arbitrage_logs_container_id;size:255;not null"`
-	ShipSymbol  string       `gorm:"column:ship_symbol;index:idx_arbitrage_logs_ship_symbol;size:50;not null"`
-	PlayerID    int          `gorm:"column:player_id;index:idx_arbitrage_logs_player_id;not null"`
-	Player      *PlayerModel `gorm:"foreignKey:PlayerID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
-	ExecutedAt  time.Time    `gorm:"column:executed_at;index:idx_arbitrage_logs_executed_at;not null"`
-	Success     bool         `gorm:"column:success;index:idx_arbitrage_logs_success;not null"`
-	ErrorMessage *string     `gorm:"column:error_message;type:text"` // Pointer for NULL support
-
-	// Opportunity features
-	GoodSymbol      string   `gorm:"column:good_symbol;index:idx_arbitrage_logs_good_symbol;size:50;not null"`
-	BuyMarket       string   `gorm:"column:buy_market;size:50;not null"`
-	SellMarket      string   `gorm:"column:sell_market;size:50;not null"`
-	BuyPrice        int      `gorm:"column:buy_price;not null"`
-	SellPrice       int      `gorm:"column:sell_price;not null"`
-	ProfitMargin    float64  `gorm:"column:profit_margin;type:decimal(10,2);not null"`
-	Distance        float64  `gorm:"column:distance;type:decimal(10,2);not null"`
-	EstimatedProfit int      `gorm:"column:estimated_profit;not null"`
-	BuySupply       *string  `gorm:"column:buy_supply;size:20"` // Pointer for NULL support
-	SellActivity    *string  `gorm:"column:sell_activity;size:20"` // Pointer for NULL support
-	CurrentScore    *float64 `gorm:"column:current_score;type:decimal(10,2)"` // Pointer for NULL support
-
-	// Ship state
-	CargoCapacity   int     `gorm:"column:cargo_capacity;not null"`
-	CargoUsed       int     `gorm:"column:cargo_used;not null"`
-	FuelCurrent     int     `gorm:"column:fuel_current;not null"`
-	FuelCapacity    int     `gorm:"column:fuel_capacity;not null"`
-	CurrentLocation *string `gorm:"column:current_location;size:50"` // Pointer for NULL support
-
-	// Execution results
-	ActualNetProfit       *int `gorm:"column:actual_net_profit"`
-	ActualDurationSeconds *int `gorm:"column:actual_duration_seconds"`
-	FuelConsumed          *int `gorm:"column:fuel_consumed"`
-	UnitsPurchased        *int `gorm:"column:units_purchased"`
-	UnitsSold             *int `gorm:"column:units_sold"`
-	PurchaseCost          *int `gorm:"column:purchase_cost"`
-	SaleRevenue           *int `gorm:"column:sale_revenue"`
-
-	// Price drift tracking
-	BuyPriceAtValidation  *int `gorm:"column:buy_price_at_validation"`
-	SellPriceAtValidation *int `gorm:"column:sell_price_at_validation"`
-	BuyPriceActual        *int `gorm:"column:buy_price_actual"`
-	SellPriceActual       *int `gorm:"column:sell_price_actual"`
-
-	// Derived metrics
-	ProfitPerSecond *float64 `gorm:"column:profit_per_second;type:decimal(10,4)"` // Pointer for NULL support
-	ProfitPerUnit   *float64 `gorm:"column:profit_per_unit;type:decimal(10,2)"`   // Pointer for NULL support
-	MarginAccuracy  *float64 `gorm:"column:margin_accuracy;type:decimal(10,2)"`   // Pointer for NULL support
-}
-
-func (ArbitrageExecutionLogModel) TableName() string {
-	return "arbitrage_execution_logs"
-}
-
 // MarketPriceHistoryModel represents the market_price_history table
 type MarketPriceHistoryModel struct {
 	ID             int          `gorm:"column:id;primaryKey;autoIncrement"`
