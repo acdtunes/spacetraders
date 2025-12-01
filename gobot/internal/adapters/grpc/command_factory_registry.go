@@ -243,6 +243,17 @@ func (s *DaemonServer) registerCommandFactories() {
 			}
 		}
 
+		// Extract max collection pipelines (0 = unlimited, which is the default)
+		maxCollectionPipelines := 0
+		if val, ok := config["max_collection_pipelines"]; ok {
+			switch v := val.(type) {
+			case int:
+				maxCollectionPipelines = v
+			case float64:
+				maxCollectionPipelines = int(v)
+			}
+		}
+
 		// Extract strategy (default: prefer-fabricate for recursive manufacturing)
 		strategy := "prefer-fabricate"
 		if val, ok := config["strategy"].(string); ok && val != "" {
@@ -250,13 +261,14 @@ func (s *DaemonServer) registerCommandFactories() {
 		}
 
 		return &tradingCmd.RunParallelManufacturingCoordinatorCommand{
-			SystemSymbol:       systemSymbol,
-			PlayerID:           playerID,
-			ContainerID:        containerID,
-			MinPurchasePrice:   minPrice,
-			MaxConcurrentTasks: maxWorkers,
-			MaxPipelines:       maxPipelines,
-			Strategy:           strategy,
+			SystemSymbol:           systemSymbol,
+			PlayerID:               playerID,
+			ContainerID:            containerID,
+			MinPurchasePrice:       minPrice,
+			MaxConcurrentTasks:     maxWorkers,
+			MaxPipelines:           maxPipelines,
+			MaxCollectionPipelines: maxCollectionPipelines,
+			Strategy:               strategy,
 		}, nil
 	}
 
@@ -269,8 +281,8 @@ func (s *DaemonServer) registerCommandFactories() {
 		}
 
 		gasGiant, ok := config["gas_giant"].(string)
-		if !ok {
-			return nil, fmt.Errorf("missing or invalid gas_giant")
+		if !ok || gasGiant == "" {
+			return nil, fmt.Errorf("missing or invalid gas_giant (was empty or not set)")
 		}
 
 		containerID, ok := config["container_id"].(string)

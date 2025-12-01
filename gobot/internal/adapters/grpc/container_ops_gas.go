@@ -39,6 +39,16 @@ func (s *DaemonServer) GasExtractionOperation(
 		return nil, fmt.Errorf("at least one siphon ship is required")
 	}
 
+	// Auto-select gas giant if not specified
+	if gasGiant == "" {
+		selectedGasGiant, err := s.selectGasGiantForShip(ctx, siphonShips[0], playerID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to auto-select gas giant: %w", err)
+		}
+		gasGiant = selectedGasGiant
+		fmt.Printf("Auto-selected gas giant: %s\n", gasGiant)
+	}
+
 	// SINGLETON CHECK: Only one coordinator per gas giant (skip for dry runs)
 	if !dryRun {
 		existingCoordinator, err := s.containerRepo.FindActiveGasCoordinator(ctx, gasGiant, playerID)
@@ -545,3 +555,54 @@ func (s *DaemonServer) StartStorageShipContainer(
 
 // Note: DaemonServer implements daemon.DaemonClient interface including gas methods
 // The full interface check is done elsewhere to avoid circular dependencies
+
+// selectGasGiantForShip auto-selects a gas giant based on ship location.
+// Uses the ship's current system and finds the closest gas giant waypoint.
+func (s *DaemonServer) selectGasGiantForShip(ctx context.Context, shipSymbol string, playerID int) (string, error) {
+	// Get ship to determine system
+	ship, err := s.shipRepo.FindBySymbol(ctx, shipSymbol, shared.MustNewPlayerID(playerID))
+	if err != nil {
+		return "", fmt.Errorf("failed to get ship %s: %w", shipSymbol, err)
+	}
+
+	// Extract system from ship's current location
+	systemSymbol := ship.CurrentLocation().SystemSymbol
+
+	// List all waypoints in the system
+	waypoints, err := s.waypointRepo.ListBySystem(ctx, systemSymbol)
+	if err != nil {
+		return "", fmt.Errorf("failed to list waypoints in system %s: %w", systemSymbol, err)
+	}
+
+	// Find gas giants
+	var gasGiants []*shared.Waypoint
+	for _, wp := range waypoints {
+		if wp.Type == "GAS_GIANT" {
+			gasGiants = append(gasGiants, wp)
+		}
+	}
+
+	if len(gasGiants) == 0 {
+		return "", fmt.Errorf("no gas giant found in system %s", systemSymbol)
+	}
+
+	// If there's only one, use it
+	if len(gasGiants) == 1 {
+		return gasGiants[0].Symbol, nil
+	}
+
+	// If multiple gas giants, select the closest one to the ship
+	closestGasGiant := gasGiants[0]
+	shipWaypoint := ship.CurrentLocation()
+	minDistance := shipWaypoint.DistanceTo(closestGasGiant)
+
+	for _, gg := range gasGiants[1:] {
+		distance := shipWaypoint.DistanceTo(gg)
+		if distance < minDistance {
+			minDistance = distance
+			closestGasGiant = gg
+		}
+	}
+
+	return closestGasGiant.Symbol, nil
+}
