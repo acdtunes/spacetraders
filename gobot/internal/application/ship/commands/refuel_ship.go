@@ -140,6 +140,16 @@ func (h *RefuelShipHandler) recordRefuelTransaction(
 ) {
 	logger := logging.LoggerFromContext(ctx)
 
+	// Skip recording if cost is zero (free refuel or already full)
+	// Transaction validation requires amount != 0
+	if response.CreditsCost == 0 {
+		logger.Log("DEBUG", "Skipping ledger entry for zero-cost refuel", map[string]interface{}{
+			"ship":       cmd.ShipSymbol,
+			"fuel_added": response.FuelAdded,
+		})
+		return
+	}
+
 	// Calculate balance after
 	balanceAfter := balanceBefore - response.CreditsCost
 

@@ -283,6 +283,16 @@ func (h *CargoTransactionHandler) recordCargoTransaction(
 ) {
 	logger := logging.LoggerFromContext(ctx)
 
+	// Skip recording if amount is zero (transaction validation requires amount != 0)
+	if response.TotalAmount == 0 {
+		logger.Log("DEBUG", "Skipping ledger entry for zero-amount transaction", map[string]interface{}{
+			"ship":  cmd.ShipSymbol,
+			"good":  cmd.GoodSymbol,
+			"units": response.UnitsProcessed,
+		})
+		return
+	}
+
 	// Determine transaction type and amount sign
 	transactionTypeStr := strings.ToUpper(h.strategy.GetTransactionType())
 	var ledgerTxType string
