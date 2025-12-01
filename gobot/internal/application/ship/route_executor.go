@@ -209,39 +209,12 @@ func (e *RouteExecutor) executeSegment(
 	ship *domainNavigation.Ship,
 	playerID shared.PlayerID,
 ) error {
-	// Reload ship to get latest state before segment execution
-	// This prevents stale state issues from rapid navigation
-	if e.shipRepo != nil {
-		freshShip, err := e.shipRepo.FindBySymbol(ctx, ship.ShipSymbol(), playerID)
-		if err != nil {
-			return fmt.Errorf("failed to reload ship before segment: %w", err)
-		}
-		*ship = *freshShip
-	}
-
-	// Check if ship is in transit and wait for arrival before proceeding
+	// OPTIMIZATION: Only reload ship if it might be in transit
+	// The previous segment's waitForArrival already updated ship state
+	// We only need to check/wait if the ship is IN_TRANSIT
 	if ship.NavStatus() == domainNavigation.NavStatusInTransit {
 		if err := e.waitForCurrentTransit(ctx, ship, playerID); err != nil {
 			return fmt.Errorf("failed to wait for transit before segment: %w", err)
-		}
-	}
-
-	// Reload ship one more time immediately before orbit check to ensure
-	// we have the absolute latest state and prevent race conditions
-	// where ship enters transit between reload and orbit attempt
-	if e.shipRepo != nil {
-		freshShip, err := e.shipRepo.FindBySymbol(ctx, ship.ShipSymbol(), playerID)
-		if err != nil {
-			return fmt.Errorf("failed to reload ship before orbit: %w", err)
-		}
-		*ship = *freshShip
-	}
-
-	// Final check: if ship is STILL in transit after all our waiting and reloading,
-	// wait one more time to ensure we don't hit "cannot orbit while in transit"
-	if ship.NavStatus() == domainNavigation.NavStatusInTransit {
-		if err := e.waitForCurrentTransit(ctx, ship, playerID); err != nil {
-			return fmt.Errorf("failed to wait for transit before orbit: %w", err)
 		}
 	}
 
@@ -490,7 +463,9 @@ func (e *RouteExecutor) waitForCurrentTransit(
 		}
 	}
 
-	// Re-sync ship state after waiting
+	// OPTIMIZATION: We've already waited for the arrival time + buffer.
+	// Instead of polling API 5 times, do a single check and trust the arrival time.
+	// If ship is still IN_TRANSIT, it's likely API lag - force arrival.
 	if e.shipRepo != nil {
 		freshShip, err := e.shipRepo.FindBySymbol(ctx, ship.ShipSymbol(), playerID)
 		if err != nil {
@@ -499,8 +474,9 @@ func (e *RouteExecutor) waitForCurrentTransit(
 		*ship = *freshShip
 	}
 
-	// Poll API until ship is no longer IN_TRANSIT (handles API lag)
-	maxRetries := 5
+	// OPTIMIZATION: Reduced from 5 retries to 2 - we already waited for arrival time
+	// The API is authoritative, but excessive polling wastes rate limit tokens
+	maxRetries := 2
 	retryDelay := 2 * time.Second
 	for i := 0; i < maxRetries && ship.NavStatus() == domainNavigation.NavStatusInTransit; i++ {
 		logger.Log("INFO", "Ship still in transit - polling API", map[string]interface{}{
@@ -521,7 +497,7 @@ func (e *RouteExecutor) waitForCurrentTransit(
 		}
 	}
 
-	// If still IN_TRANSIT after retries, call arrive() as last resort
+	// If still IN_TRANSIT after retries, force arrival - we trust the arrival time
 	if ship.NavStatus() == domainNavigation.NavStatusInTransit {
 		logger.Log("INFO", "Ship still in transit after retries - forcing arrival", map[string]interface{}{
 			"ship_symbol": ship.ShipSymbol(),
@@ -658,7 +634,9 @@ func (e *RouteExecutor) waitForArrival(
 		e.clock.Sleep(time.Duration(waitTime+3) * time.Second) // +3 second buffer
 	}
 
-	// Re-sync ship state (if using real repository)
+	// OPTIMIZATION: We've already waited for arrival time + 3s buffer.
+	// Trust the arrival time instead of polling multiple times.
+	// Single API call to confirm arrival, then trust it.
 	if e.shipRepo != nil {
 		freshShip, err := e.shipRepo.FindBySymbol(ctx, ship.ShipSymbol(), playerID)
 		if err != nil {
@@ -667,9 +645,9 @@ func (e *RouteExecutor) waitForArrival(
 		*ship = *freshShip
 	}
 
-	// Poll API until ship is no longer IN_TRANSIT (handles API lag)
-	// The SpaceTraders API is the source of truth, not our domain model
-	maxRetries := 5
+	// OPTIMIZATION: Reduced from 5 retries to 2 - we already waited for arrival time + buffer
+	// The API should have the ship arrived by now; excessive polling wastes rate limit tokens
+	maxRetries := 2
 	retryDelay := 2 * time.Second
 	for i := 0; i < maxRetries && ship.NavStatus() == domainNavigation.NavStatusInTransit; i++ {
 		logger.Log("INFO", "Ship still in transit after wait - polling API", map[string]interface{}{
@@ -690,8 +668,7 @@ func (e *RouteExecutor) waitForArrival(
 		}
 	}
 
-	// If still IN_TRANSIT after retries, call arrive() as last resort
-	// This updates our domain model even if API is lagging
+	// If still IN_TRANSIT after retries, force arrival - we trust the arrival time
 	if ship.NavStatus() == domainNavigation.NavStatusInTransit {
 		logger.Log("INFO", "Ship still in transit after retries - forcing arrival", map[string]interface{}{
 			"ship_symbol": ship.ShipSymbol(),
