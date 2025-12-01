@@ -247,8 +247,8 @@ func (e *RouteExecutor) executeSegment(
 
 func (e *RouteExecutor) ensureShipInOrbit(ctx context.Context, ship *domainNavigation.Ship, playerID shared.PlayerID) error {
 	orbitCmd := &types.OrbitShipCommand{
-		ShipSymbol: ship.ShipSymbol(),
-		PlayerID:   playerID,
+		Ship:     ship,
+		PlayerID: playerID,
 	}
 	if _, err := e.mediator.Send(ctx, orbitCmd); err != nil {
 		return fmt.Errorf("failed to orbit: %w", err)
@@ -297,9 +297,9 @@ func (e *RouteExecutor) selectOptimalFlightMode(ctx context.Context, segment *do
 
 func (e *RouteExecutor) setShipFlightMode(ctx context.Context, ship *domainNavigation.Ship, playerID shared.PlayerID, flightMode shared.FlightMode) error {
 	setModeCmd := &types.SetFlightModeCommand{
-		ShipSymbol: ship.ShipSymbol(),
-		PlayerID:   playerID,
-		Mode:       flightMode,
+		Ship:     ship,
+		PlayerID: playerID,
+		Mode:     flightMode,
 	}
 	if _, err := e.mediator.Send(ctx, setModeCmd); err != nil {
 		return fmt.Errorf("failed to set flight mode: %w", err)
@@ -311,7 +311,7 @@ func (e *RouteExecutor) navigateToSegmentDestination(ctx context.Context, segmen
 	logger := common.LoggerFromContext(ctx)
 
 	navCmd := &types.NavigateDirectCommand{
-		ShipSymbol:  ship.ShipSymbol(),
+		Ship:        ship,
 		Destination: segment.ToWaypoint.Symbol,
 		PlayerID:    playerID,
 		FlightMode:  flightMode.Name(),
@@ -502,8 +502,8 @@ func (e *RouteExecutor) refuelBeforeDeparture(
 	// Dock for refuel (via DockShipCommand)
 	// Command handler updates ship state in memory
 	dockCmd := &types.DockShipCommand{
-		ShipSymbol: ship.ShipSymbol(),
-		PlayerID:   playerID,
+		Ship:     ship,
+		PlayerID: playerID,
 	}
 	if _, err := e.mediator.Send(ctx, dockCmd); err != nil {
 		return fmt.Errorf("failed to dock for refuel: %w", err)
@@ -512,9 +512,9 @@ func (e *RouteExecutor) refuelBeforeDeparture(
 	// Refuel (via RefuelShipCommand)
 	// Command handler updates ship state in memory
 	refuelCmd := &types.RefuelShipCommand{
-		ShipSymbol: ship.ShipSymbol(),
-		PlayerID:   playerID,
-		Units:      nil, // Full refuel
+		Ship:     ship,
+		PlayerID: playerID,
+		Units:    nil, // Full refuel
 	}
 	if _, err := e.mediator.Send(ctx, refuelCmd); err != nil {
 		return fmt.Errorf("failed to refuel: %w", err)
@@ -523,8 +523,8 @@ func (e *RouteExecutor) refuelBeforeDeparture(
 	// Return to orbit (via OrbitShipCommand)
 	// Command handler updates ship state in memory
 	orbitCmd := &types.OrbitShipCommand{
-		ShipSymbol: ship.ShipSymbol(),
-		PlayerID:   playerID,
+		Ship:     ship,
+		PlayerID: playerID,
 	}
 	if _, err := e.mediator.Send(ctx, orbitCmd); err != nil {
 		return fmt.Errorf("failed to orbit after refuel: %w", err)
@@ -542,8 +542,8 @@ func (e *RouteExecutor) refuelShip(
 	// Dock for refuel (via DockShipCommand)
 	// Command handler updates ship state in memory
 	dockCmd := &types.DockShipCommand{
-		ShipSymbol: ship.ShipSymbol(),
-		PlayerID:   playerID,
+		Ship:     ship,
+		PlayerID: playerID,
 	}
 	if _, err := e.mediator.Send(ctx, dockCmd); err != nil {
 		return fmt.Errorf("failed to dock for refuel: %w", err)
@@ -552,9 +552,9 @@ func (e *RouteExecutor) refuelShip(
 	// Refuel (via RefuelShipCommand)
 	// Command handler updates ship state in memory
 	refuelCmd := &types.RefuelShipCommand{
-		ShipSymbol: ship.ShipSymbol(),
-		PlayerID:   playerID,
-		Units:      nil, // Full refuel
+		Ship:     ship,
+		PlayerID: playerID,
+		Units:    nil, // Full refuel
 	}
 	if _, err := e.mediator.Send(ctx, refuelCmd); err != nil {
 		return fmt.Errorf("failed to refuel: %w", err)
@@ -563,8 +563,8 @@ func (e *RouteExecutor) refuelShip(
 	// Return to orbit (via OrbitShipCommand)
 	// Command handler updates ship state in memory
 	orbitCmd := &types.OrbitShipCommand{
-		ShipSymbol: ship.ShipSymbol(),
-		PlayerID:   playerID,
+		Ship:     ship,
+		PlayerID: playerID,
 	}
 	if _, err := e.mediator.Send(ctx, orbitCmd); err != nil {
 		return fmt.Errorf("failed to orbit after refuel: %w", err)
