@@ -129,6 +129,11 @@ func (h *RunSiphonWorkerHandler) executeSiphoning(
 		"gas_giant":   cmd.GasGiant,
 	})
 
+	// Track cargo state locally to avoid API polling
+	// Ship state is updated by siphon response and transfer operations
+	cargoUnits := ship.Cargo().Units
+	cargoCapacity := ship.Cargo().Capacity
+
 	// 3. Main siphoning loop - runs indefinitely until context cancelled
 	for {
 		// Check for context cancellation
@@ -143,20 +148,18 @@ func (h *RunSiphonWorkerHandler) executeSiphoning(
 		default:
 		}
 
-		// 3a. Reload ship to check current cargo status BEFORE siphoning
-		ship, err = h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
-		if err != nil {
-			return fmt.Errorf("failed to reload ship before siphon: %w", err)
-		}
+		// OPTIMIZATION: Use local cargo tracking instead of API call every loop
+		// The siphon response updates our yield, and we track deposits locally
+		// This saves 1 GetShip API call per siphon cycle (every ~60s)
 
 		// 3b. If cargo is full or nearly full, deposit to storage BEFORE siphoning
 		// This handles ships that start with cargo from previous runs
-		if ship.IsCargoFull() || ship.AvailableCargoSpace() < 1 {
+		if cargoUnits >= cargoCapacity || cargoCapacity-cargoUnits < 1 {
 			logger.Log("INFO", "Siphon ship cargo full - depositing to storage ship before siphoning", map[string]interface{}{
 				"ship_symbol":    cmd.ShipSymbol,
 				"action":         "deposit_before_siphon",
-				"cargo_units":    ship.Cargo().Units,
-				"cargo_capacity": ship.Cargo().Capacity,
+				"cargo_units":    cargoUnits,
+				"cargo_capacity": cargoCapacity,
 			})
 
 			unitsTransferred, err := h.depositToStorageShip(ctx, cmd, ship)
@@ -166,6 +169,9 @@ func (h *RunSiphonWorkerHandler) executeSiphoning(
 
 			result.TransferCount++
 			result.TotalUnitsTransferred += unitsTransferred
+
+			// OPTIMIZATION: Update local cargo tracking after deposit
+			cargoUnits = 0 // All cargo was transferred
 
 			logger.Log("INFO", "Cargo deposited before siphoning", map[string]interface{}{
 				"ship_symbol":       cmd.ShipSymbol,
@@ -188,12 +194,16 @@ func (h *RunSiphonWorkerHandler) executeSiphoning(
 		siphon := siphonResp.(*SiphonResourcesResponse)
 		result.SiphonCount++
 
+		// OPTIMIZATION: Update local cargo tracking with siphon yield
+		cargoUnits += siphon.YieldUnits
+
 		logger.Log("INFO", "Gas siphoned successfully", map[string]interface{}{
 			"ship_symbol":  cmd.ShipSymbol,
 			"action":       "siphon_resources",
 			"yield_units":  siphon.YieldUnits,
 			"yield_symbol": siphon.YieldSymbol,
 			"siphon_count": result.SiphonCount,
+			"cargo_units":  cargoUnits,
 		})
 
 		// 3d. Wait for cooldown then loop back
