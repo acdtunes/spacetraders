@@ -1,12 +1,16 @@
 package types
 
-import "github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+import (
+	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+)
 
 // Ship command types - shared between handlers and RouteExecutor to avoid circular imports
 
 // OrbitShipCommand - Command to put a ship into orbit at its current waypoint
 type OrbitShipCommand struct {
-	ShipSymbol string
+	Ship       *navigation.Ship // Primary: use when ship is already loaded (avoids API call)
+	ShipSymbol string           // Fallback: used only if Ship is nil
 	PlayerID   shared.PlayerID
 }
 
@@ -17,7 +21,8 @@ type OrbitShipResponse struct {
 
 // DockShipCommand - Command to dock a ship at its current waypoint
 type DockShipCommand struct {
-	ShipSymbol string
+	Ship       *navigation.Ship // Primary: use when ship is already loaded (avoids API call)
+	ShipSymbol string           // Fallback: used only if Ship is nil
 	PlayerID   shared.PlayerID
 }
 
@@ -30,7 +35,8 @@ type DockShipResponse struct {
 // To link transactions to a parent operation, add OperationContext to the context using
 // shared.WithOperationContext() before sending this command.
 type RefuelShipCommand struct {
-	ShipSymbol string
+	Ship       *navigation.Ship // Primary: use when ship is already loaded (avoids API call)
+	ShipSymbol string           // Fallback: used only if Ship is nil
 	PlayerID   shared.PlayerID
 	Units      *int // nil = refuel to full
 }
@@ -46,7 +52,8 @@ type RefuelShipResponse struct {
 
 // SetFlightModeCommand - Command to set a ship's flight mode
 type SetFlightModeCommand struct {
-	ShipSymbol string
+	Ship       *navigation.Ship // Primary: use when ship is already loaded (avoids API call)
+	ShipSymbol string           // Fallback: used only if Ship is nil
 	Mode       shared.FlightMode
 	PlayerID   shared.PlayerID
 }
@@ -60,7 +67,8 @@ type SetFlightModeResponse struct {
 // NavigateDirectCommand - Low-level command for single-hop navigation
 // This is used internally by RouteExecutor - applications should use NavigateRouteCommand
 type NavigateDirectCommand struct {
-	ShipSymbol  string
+	Ship        *navigation.Ship // Primary: use when ship is already loaded (avoids API call)
+	ShipSymbol  string           // Fallback: used only if Ship is nil
 	Destination string
 	FlightMode  string
 	PlayerID    shared.PlayerID

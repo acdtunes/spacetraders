@@ -51,6 +51,11 @@ func (h *DockShipHandler) Handle(ctx context.Context, request common.Request) (c
 }
 
 func (h *DockShipHandler) loadShip(ctx context.Context, cmd *types.DockShipCommand) (*navigation.Ship, error) {
+	// OPTIMIZATION: Use ship if provided (avoids API call)
+	if cmd.Ship != nil {
+		return cmd.Ship, nil
+	}
+	// Fall back to API fetch (backward compatibility)
 	ship, err := h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
 	if err != nil {
 		return nil, fmt.Errorf("ship not found: %w", err)
