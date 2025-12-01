@@ -424,12 +424,12 @@ func (e *RouteExecutor) scanMarketIfPresent(ctx context.Context, segment *domain
 }
 
 // waitForCurrentTransit waits for ship to complete its current transit
+// OPTIMIZATION: Trust arrival time completely - no API polling after sleep
 func (e *RouteExecutor) waitForCurrentTransit(
 	ctx context.Context,
 	ship *domainNavigation.Ship,
 	playerID shared.PlayerID,
 ) error {
-	// Extract logger from context
 	logger := common.LoggerFromContext(ctx)
 
 	logger.Log("INFO", "Ship in transit from previous command", map[string]interface{}{
@@ -438,14 +438,14 @@ func (e *RouteExecutor) waitForCurrentTransit(
 		"status":      "IN_TRANSIT",
 	})
 
-	// Fetch ship data from API to get arrival time (matches Python implementation)
+	// OPTIMIZATION: Single API call to get arrival time, then trust it completely
+	// No post-sleep polling - we save 1-3 API calls per transit wait
 	if e.shipRepo != nil {
 		shipData, err := e.shipRepo.GetShipData(ctx, ship.ShipSymbol(), playerID)
 		if err != nil {
 			return fmt.Errorf("failed to fetch ship data from API: %w", err)
 		}
 
-		// If ship is still IN_TRANSIT and has arrival time, wait for it
 		if shipData.NavStatus == "IN_TRANSIT" && shipData.ArrivalTime != "" {
 			arrivalTime, err := shared.NewArrivalTime(shipData.ArrivalTime)
 			if err != nil {
@@ -458,52 +458,18 @@ func (e *RouteExecutor) waitForCurrentTransit(
 					"action":       "wait_transit",
 					"wait_seconds": waitTime + 3,
 				})
-				e.clock.Sleep(time.Duration(waitTime+3) * time.Second) // +3 second buffer
+				e.clock.Sleep(time.Duration(waitTime+3) * time.Second)
 			}
 		}
 	}
 
-	// OPTIMIZATION: We've already waited for the arrival time + buffer.
-	// Instead of polling API 5 times, do a single check and trust the arrival time.
-	// If ship is still IN_TRANSIT, it's likely API lag - force arrival.
-	if e.shipRepo != nil {
-		freshShip, err := e.shipRepo.FindBySymbol(ctx, ship.ShipSymbol(), playerID)
-		if err != nil {
-			return fmt.Errorf("failed to sync ship state after waiting: %w", err)
-		}
-		*ship = *freshShip
-	}
-
-	// OPTIMIZATION: Reduced from 5 retries to 2 - we already waited for arrival time
-	// The API is authoritative, but excessive polling wastes rate limit tokens
-	maxRetries := 2
-	retryDelay := 2 * time.Second
-	for i := 0; i < maxRetries && ship.NavStatus() == domainNavigation.NavStatusInTransit; i++ {
-		logger.Log("INFO", "Ship still in transit - polling API", map[string]interface{}{
-			"ship_symbol": ship.ShipSymbol(),
-			"action":      "poll_transit_status",
-			"attempt":     i + 1,
-			"max_retries": maxRetries,
-			"retry_delay": retryDelay.String(),
-		})
-		e.clock.Sleep(retryDelay)
-
-		if e.shipRepo != nil {
-			freshShip, err := e.shipRepo.FindBySymbol(ctx, ship.ShipSymbol(), playerID)
-			if err != nil {
-				return fmt.Errorf("failed to sync ship after transit retry: %w", err)
-			}
-			*ship = *freshShip
-		}
-	}
-
-	// If still IN_TRANSIT after retries, force arrival - we trust the arrival time
+	// OPTIMIZATION: After sleeping for arrival + buffer, trust that ship has arrived
+	// Force domain state to DOCKED/IN_ORBIT without API polling
+	// The next command (orbit/dock/navigate) will fail if somehow wrong
 	if ship.NavStatus() == domainNavigation.NavStatusInTransit {
-		logger.Log("INFO", "Ship still in transit after retries - forcing arrival", map[string]interface{}{
+		logger.Log("INFO", "Trusting arrival time - marking ship as arrived", map[string]interface{}{
 			"ship_symbol": ship.ShipSymbol(),
-			"action":      "force_arrival",
-			"retries":     maxRetries,
-			"warning":     "api_lag_detected",
+			"action":      "trust_arrival",
 		})
 		if err := ship.Arrive(); err != nil {
 			return fmt.Errorf("failed to mark ship as arrived: %w", err)
@@ -608,16 +574,15 @@ func (e *RouteExecutor) refuelShip(
 }
 
 // waitForArrival waits for ship to arrive at destination
+// OPTIMIZATION: Trust arrival time completely - no API polling after sleep
 func (e *RouteExecutor) waitForArrival(
 	ctx context.Context,
 	ship *domainNavigation.Ship,
 	arrivalTimeStr string,
 	playerID shared.PlayerID,
 ) error {
-	// Extract logger from context
 	logger := common.LoggerFromContext(ctx)
 
-	// Calculate wait time from API arrival time using ArrivalTime value object
 	arrivalTime, err := shared.NewArrivalTime(arrivalTimeStr)
 	if err != nil {
 		return fmt.Errorf("failed to parse arrival time: %w", err)
@@ -630,51 +595,16 @@ func (e *RouteExecutor) waitForArrival(
 			"action":       "wait_arrival",
 			"wait_seconds": waitTime + 3,
 		})
-		// Uses clock for testability (instant in tests, real sleep in production)
-		e.clock.Sleep(time.Duration(waitTime+3) * time.Second) // +3 second buffer
+		e.clock.Sleep(time.Duration(waitTime+3) * time.Second)
 	}
 
-	// OPTIMIZATION: We've already waited for arrival time + 3s buffer.
-	// Trust the arrival time instead of polling multiple times.
-	// Single API call to confirm arrival, then trust it.
-	if e.shipRepo != nil {
-		freshShip, err := e.shipRepo.FindBySymbol(ctx, ship.ShipSymbol(), playerID)
-		if err != nil {
-			return fmt.Errorf("failed to sync ship after arrival: %w", err)
-		}
-		*ship = *freshShip
-	}
-
-	// OPTIMIZATION: Reduced from 5 retries to 2 - we already waited for arrival time + buffer
-	// The API should have the ship arrived by now; excessive polling wastes rate limit tokens
-	maxRetries := 2
-	retryDelay := 2 * time.Second
-	for i := 0; i < maxRetries && ship.NavStatus() == domainNavigation.NavStatusInTransit; i++ {
-		logger.Log("INFO", "Ship still in transit after wait - polling API", map[string]interface{}{
-			"ship_symbol": ship.ShipSymbol(),
-			"action":      "poll_arrival_status",
-			"attempt":     i + 1,
-			"max_retries": maxRetries,
-			"retry_delay": retryDelay.String(),
-		})
-		e.clock.Sleep(retryDelay)
-
-		if e.shipRepo != nil {
-			freshShip, err := e.shipRepo.FindBySymbol(ctx, ship.ShipSymbol(), playerID)
-			if err != nil {
-				return fmt.Errorf("failed to sync ship after arrival retry: %w", err)
-			}
-			*ship = *freshShip
-		}
-	}
-
-	// If still IN_TRANSIT after retries, force arrival - we trust the arrival time
+	// OPTIMIZATION: After sleeping for arrival + buffer, trust that ship has arrived
+	// No API polling - we save 1-3 API calls per navigation segment
+	// The next command (orbit/dock/navigate) will fail if somehow wrong
 	if ship.NavStatus() == domainNavigation.NavStatusInTransit {
-		logger.Log("INFO", "Ship still in transit after retries - forcing arrival", map[string]interface{}{
+		logger.Log("INFO", "Trusting arrival time - marking ship as arrived", map[string]interface{}{
 			"ship_symbol": ship.ShipSymbol(),
-			"action":      "force_arrival",
-			"retries":     maxRetries,
-			"warning":     "api_lag_detected",
+			"action":      "trust_arrival",
 		})
 		if err := ship.Arrive(); err != nil {
 			return fmt.Errorf("failed to mark ship as arrived: %w", err)
