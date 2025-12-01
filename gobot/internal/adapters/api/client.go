@@ -23,8 +23,9 @@ import (
 const (
 	baseURL            = "https://api.spacetraders.io/v2"
 	defaultTimeout     = 30 * time.Second
-	defaultMaxRetries  = 5
-	defaultBackoffBase = time.Second
+	defaultMaxRetries  = 10                    // Increased from 5 to handle persistent 429s
+	defaultBackoffBase = 2 * time.Second       // Increased from 1s for more aggressive backoff
+	maxBackoffDuration = 30 * time.Second      // Cap exponential backoff to prevent extreme waits
 )
 
 // APIMetricsRecorder defines the interface for recording API metrics
@@ -46,8 +47,8 @@ type SpaceTradersClient struct {
 }
 
 // NewSpaceTradersClient creates a new SpaceTraders API client with default settings
-// Rate limit: 2 requests per second with burst of 2
-// Retry: max 5 attempts with 1s exponential backoff + jitter
+// Rate limit: 2 requests per second with burst of 30
+// Retry: max 10 attempts with 2s exponential backoff + jitter (capped at 30s)
 func NewSpaceTradersClient() *SpaceTradersClient {
 	return NewSpaceTradersClientWithConfig(
 		baseURL,
@@ -305,6 +306,8 @@ func (c *SpaceTradersClient) NavigateShip(ctx context.Context, symbol, destinati
 	var response struct {
 		Data struct {
 			Fuel struct {
+				Current  int `json:"current"`
+				Capacity int `json:"capacity"`
 				Consumed struct {
 					Amount int `json:"amount"`
 				} `json:"consumed"`
@@ -333,6 +336,8 @@ func (c *SpaceTradersClient) NavigateShip(ctx context.Context, symbol, destinati
 		ArrivalTime:    arrivalTime,
 		ArrivalTimeStr: arrivalTimeStr, // ISO8601 string from API
 		FuelConsumed:   response.Data.Fuel.Consumed.Amount,
+		FuelCurrent:    response.Data.Fuel.Current,
+		FuelCapacity:   response.Data.Fuel.Capacity,
 	}, nil
 }
 
@@ -374,6 +379,10 @@ func (c *SpaceTradersClient) RefuelShip(ctx context.Context, symbol, token strin
 
 	var response struct {
 		Data struct {
+			Fuel struct {
+				Current  int `json:"current"`
+				Capacity int `json:"capacity"`
+			} `json:"fuel"`
 			Transaction struct {
 				Units      int `json:"units"`
 				TotalPrice int `json:"totalPrice"`
@@ -386,8 +395,10 @@ func (c *SpaceTradersClient) RefuelShip(ctx context.Context, symbol, token strin
 	}
 
 	return &navigation.RefuelResult{
-		FuelAdded:   response.Data.Transaction.Units,
-		CreditsCost: response.Data.Transaction.TotalPrice,
+		FuelAdded:    response.Data.Transaction.Units,
+		CreditsCost:  response.Data.Transaction.TotalPrice,
+		FuelCurrent:  response.Data.Fuel.Current,
+		FuelCapacity: response.Data.Fuel.Capacity,
 	}, nil
 }
 
@@ -1317,6 +1328,10 @@ func (c *SpaceTradersClient) parseContractData(data map[string]interface{}) (*do
 // addJitter adds random jitter to a duration to avoid thundering herd
 // Returns a duration between 50% and 150% of the original value
 func addJitter(d time.Duration) time.Duration {
+	// Cap the backoff at maxBackoffDuration before applying jitter
+	if d > maxBackoffDuration {
+		d = maxBackoffDuration
+	}
 	jitter := 0.5 + rand.Float64() // 0.5 to 1.5
 	return time.Duration(float64(d) * jitter)
 }

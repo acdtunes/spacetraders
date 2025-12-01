@@ -3,6 +3,7 @@ package grpc
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"sync"
 	"time"
 
@@ -179,6 +180,20 @@ func (r *ContainerRunner) Stop() error {
 // execute runs the container operation loop
 func (r *ContainerRunner) execute() {
 	defer close(r.done)
+
+	// Add startup jitter to spread out API calls and prevent thundering herd
+	// when multiple containers start simultaneously (0-5 seconds)
+	jitter := time.Duration(rand.Intn(5000)) * time.Millisecond
+	r.log("INFO", fmt.Sprintf("Startup jitter: waiting %v before first API call", jitter), nil)
+
+	select {
+	case <-time.After(jitter):
+		// Jitter complete, continue to execution
+	case <-r.ctx.Done():
+		// Context canceled during jitter, exit immediately
+		r.log("INFO", "Context canceled during startup jitter", nil)
+		return
+	}
 
 	// Iteration loop (supports multi-iteration operations like scout tours)
 	for {
