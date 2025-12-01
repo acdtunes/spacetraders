@@ -9,10 +9,11 @@ import (
 // APIMetricsCollector handles all API request metrics
 type APIMetricsCollector struct {
 	// Request metrics
-	apiRequestsTotal   *prometheus.CounterVec
-	apiRequestDuration *prometheus.HistogramVec
-	apiRetries         *prometheus.CounterVec
-	apiRateLimitWait   *prometheus.HistogramVec
+	apiRequestsTotal     *prometheus.CounterVec
+	apiRequestDuration   *prometheus.HistogramVec
+	apiRetries           *prometheus.CounterVec
+	apiRateLimitWait     *prometheus.HistogramVec
+	apiRateLimiterTokens prometheus.Gauge
 }
 
 // NewAPIMetricsCollector creates a new API metrics collector
@@ -36,7 +37,7 @@ func NewAPIMetricsCollector() *APIMetricsCollector {
 				Subsystem: subsystem,
 				Name:      "api_request_duration_seconds",
 				Help:      "API request duration distribution",
-				Buckets:   []float64{0.01, 0.05, 0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0},
+				Buckets:   []float64{0.05, 0.1, 0.2, 0.3, 0.5, 1.0, 2.0, 5.0, 10.0},
 			},
 			[]string{"method", "endpoint"},
 		),
@@ -59,9 +60,19 @@ func NewAPIMetricsCollector() *APIMetricsCollector {
 				Subsystem: subsystem,
 				Name:      "api_rate_limit_wait_seconds",
 				Help:      "Time spent waiting for rate limiter",
-				Buckets:   []float64{0.001, 0.01, 0.1, 0.5, 1.0, 2.0, 5.0},
+				Buckets:   []float64{0.1, 0.25, 0.5, 0.75, 1.0, 2.0, 5.0},
 			},
 			[]string{"method", "endpoint"},
+		),
+
+		// Rate limiter tokens available gauge
+		apiRateLimiterTokens: prometheus.NewGauge(
+			prometheus.GaugeOpts{
+				Namespace: namespace,
+				Subsystem: subsystem,
+				Name:      "api_rate_limiter_tokens_available",
+				Help:      "Current available tokens in rate limiter (max 30)",
+			},
 		),
 	}
 }
@@ -77,6 +88,7 @@ func (c *APIMetricsCollector) Register() error {
 		c.apiRequestDuration,
 		c.apiRetries,
 		c.apiRateLimitWait,
+		c.apiRateLimiterTokens,
 	}
 
 	for _, metric := range metrics {
@@ -120,4 +132,9 @@ func (c *APIMetricsCollector) RecordRateLimitWait(
 	duration float64,
 ) {
 	c.apiRateLimitWait.WithLabelValues(method, endpoint).Observe(duration)
+}
+
+// SetRateLimiterTokens updates the rate limiter tokens available gauge
+func (c *APIMetricsCollector) SetRateLimiterTokens(tokens float64) {
+	c.apiRateLimiterTokens.Set(tokens)
 }
