@@ -131,6 +131,10 @@ func (m *SupplyMonitor) pollFactories(ctx context.Context) {
 	// This activates tasks that were waiting for HIGH/ABUNDANT supply at source market
 	m.ActivateSupplyGatedTasks(ctx)
 
+	// Deactivate READY ACQUIRE_DELIVER tasks whose factory input became saturated
+	// This prevents wasted trips when factory already has enough supply
+	m.DeactivateSaturatedAcquireDeliverTasks(ctx)
+
 	// Enqueue READY COLLECTION pipeline tasks that aren't in the queue
 	// COLLECTION pipelines have no factory states, so we must poll them separately
 	m.ActivateCollectionPipelineTasks(ctx)
@@ -1027,6 +1031,19 @@ func (m *SupplyMonitor) ActivateSupplyGatedTasks(ctx context.Context) int {
 			continue
 		}
 
+		// FACTORY INPUT SATURATION CHECK: Skip activation if factory already has HIGH/ABUNDANT supply
+		// This prevents acquiring more goods for markets that don't need them
+		factoryInputSupply := m.getSourceMarketSupply(ctx, task.FactorySymbol(), task.Good())
+		if factoryInputSupply == "HIGH" || factoryInputSupply == "ABUNDANT" {
+			logger.Log("DEBUG", "Skipping task - factory input already saturated", map[string]interface{}{
+				"task_id":       task.ID()[:8],
+				"good":          task.Good(),
+				"factory":       task.FactorySymbol(),
+				"factory_supply": factoryInputSupply,
+			})
+			continue
+		}
+
 		// Determine if this task should be activated
 		var shouldActivate bool
 		var reason string
@@ -1321,4 +1338,64 @@ func (m *SupplyMonitor) findRunningStorageOperationForGood(ctx context.Context, 
 	}
 
 	return nil
+}
+
+// DeactivateSaturatedAcquireDeliverTasks resets READY ACQUIRE_DELIVER tasks to PENDING
+// when the factory's input supply has become HIGH/ABUNDANT since the task was marked ready.
+// This prevents wasted trips when factory already has enough supply.
+func (m *SupplyMonitor) DeactivateSaturatedAcquireDeliverTasks(ctx context.Context) int {
+	logger := common.LoggerFromContext(ctx)
+
+	if m.taskRepo == nil {
+		return 0
+	}
+
+	// Find all READY ACQUIRE_DELIVER tasks for this player
+	readyTasks, err := m.taskRepo.FindByStatus(ctx, m.playerID, manufacturing.TaskStatusReady)
+	if err != nil {
+		logger.Log("WARN", "Failed to find ready tasks for saturation check", map[string]interface{}{
+			"error": err.Error(),
+		})
+		return 0
+	}
+
+	deactivated := 0
+	for _, task := range readyTasks {
+		// Only process ACQUIRE_DELIVER tasks
+		if task.TaskType() != manufacturing.TaskTypeAcquireDeliver {
+			continue
+		}
+
+		// Check factory input supply level
+		factoryInputSupply := m.getSourceMarketSupply(ctx, task.FactorySymbol(), task.Good())
+		if factoryInputSupply != "HIGH" && factoryInputSupply != "ABUNDANT" {
+			continue // Factory still needs this input
+		}
+
+		// Factory input is saturated - reset task to PENDING
+		task.ResetToPending()
+		if err := m.taskRepo.Update(ctx, task); err != nil {
+			logger.Log("WARN", "Failed to deactivate saturated task", map[string]interface{}{
+				"task_id": task.ID()[:8],
+				"error":   err.Error(),
+			})
+			continue
+		}
+
+		deactivated++
+		logger.Log("INFO", "Deactivated READY task - factory input saturated", map[string]interface{}{
+			"task_id":        task.ID()[:8],
+			"good":           task.Good(),
+			"factory":        task.FactorySymbol(),
+			"factory_supply": factoryInputSupply,
+		})
+	}
+
+	if deactivated > 0 {
+		logger.Log("INFO", "Deactivated saturated ACQUIRE_DELIVER tasks", map[string]interface{}{
+			"deactivated": deactivated,
+		})
+	}
+
+	return deactivated
 }
