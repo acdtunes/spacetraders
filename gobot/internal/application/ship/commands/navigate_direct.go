@@ -70,6 +70,8 @@ func (h *NavigateDirectHandler) Handle(ctx context.Context, request common.Reque
 		ArrivalTimeStr: navResult.ArrivalTimeStr,
 		FuelConsumed:   navResult.FuelConsumed,
 		TravelDuration: navResult.ArrivalTime, // Using arrival time as duration
+		FuelCurrent:    navResult.FuelCurrent,
+		FuelCapacity:   navResult.FuelCapacity,
 	}, nil
 }
 

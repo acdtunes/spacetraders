@@ -103,9 +103,15 @@ type Result struct {
 	ArrivalTime    int    // Calculated seconds
 	ArrivalTimeStr string // ISO8601 timestamp from API (e.g., "2024-01-01T12:00:00Z")
 	FuelConsumed   int
+	// Fuel state from API response (avoids separate GetShip call)
+	FuelCurrent  int
+	FuelCapacity int
 }
 
 type RefuelResult struct {
 	FuelAdded   int
 	CreditsCost int
+	// Fuel state from API response (avoids separate GetShip call)
+	FuelCurrent  int
+	FuelCapacity int
 }

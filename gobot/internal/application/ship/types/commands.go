@@ -73,4 +73,7 @@ type NavigateDirectResponse struct {
 	ArrivalTimeStr string // ISO8601 from API
 	FuelConsumed   int
 	TravelDuration int
+	// Fuel state from API response (avoids separate GetShip call)
+	FuelCurrent  int
+	FuelCapacity int
 }

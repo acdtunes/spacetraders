@@ -390,12 +390,10 @@ func (e *RouteExecutor) navigateToSegmentDestination(ctx context.Context, segmen
 		segment.FuelRequired,
 	)
 
-	if e.shipRepo != nil {
-		freshShip, err := e.shipRepo.FindBySymbol(ctx, ship.ShipSymbol(), playerID)
-		if err != nil {
-			return fmt.Errorf("failed to sync ship: %w", err)
-		}
-		*ship = *freshShip
+	// OPTIMIZATION: Use fuel state from navigate response instead of reloading ship
+	// This saves 1 API call per navigation segment
+	if navResponse.FuelCurrent > 0 || navResponse.FuelCapacity > 0 {
+		ship.UpdateFuelFromAPI(navResponse.FuelCurrent, navResponse.FuelCapacity)
 	}
 
 	return nil
