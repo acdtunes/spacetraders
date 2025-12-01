@@ -78,6 +78,15 @@ type StorageOperationRepository interface {
 	// FindRunning retrieves all running storage operations for a player
 	FindRunning(ctx context.Context, playerID int) ([]*StorageOperation, error)
 
+	// FindRunningByWaypoint retrieves the first running storage operation for a specific waypoint (e.g., gas giant)
+	// Returns nil if no operation exists for that waypoint
+	// NOTE: Use FindAllRunningByWaypoint to get ALL running operations (to stop duplicates)
+	FindRunningByWaypoint(ctx context.Context, playerID int, waypointSymbol string) (*StorageOperation, error)
+
+	// FindAllRunningByWaypoint retrieves ALL running storage operations for a specific waypoint
+	// Used to stop all old operations when starting a new one (prevents duplicate operations)
+	FindAllRunningByWaypoint(ctx context.Context, playerID int, waypointSymbol string) ([]*StorageOperation, error)
+
 	// Delete removes a storage operation
 	Delete(ctx context.Context, id string) error
 }

@@ -131,6 +131,36 @@ func (r *StorageOperationRepository) FindRunning(ctx context.Context, playerID i
 	return r.FindByStatus(ctx, playerID, []storage.OperationStatus{storage.OperationStatusRunning})
 }
 
+// FindRunningByWaypoint retrieves a running storage operation for a specific waypoint (gas giant)
+// Returns nil if no running operation exists for that waypoint
+// NOTE: Only returns the FIRST matching operation. Use FindAllRunningByWaypoint to get all.
+func (r *StorageOperationRepository) FindRunningByWaypoint(ctx context.Context, playerID int, waypointSymbol string) (*storage.StorageOperation, error) {
+	var model StorageOperationModel
+	if err := r.db.WithContext(ctx).
+		Where("player_id = ? AND waypoint_symbol = ? AND status = ?", playerID, waypointSymbol, string(storage.OperationStatusRunning)).
+		First(&model).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to find running storage operation by waypoint: %w", err)
+	}
+
+	return r.toEntity(&model)
+}
+
+// FindAllRunningByWaypoint retrieves ALL running storage operations for a specific waypoint
+// Used to stop all old operations when starting a new one (prevents duplicate operations)
+func (r *StorageOperationRepository) FindAllRunningByWaypoint(ctx context.Context, playerID int, waypointSymbol string) ([]*storage.StorageOperation, error) {
+	var models []StorageOperationModel
+	if err := r.db.WithContext(ctx).
+		Where("player_id = ? AND waypoint_symbol = ? AND status = ?", playerID, waypointSymbol, string(storage.OperationStatusRunning)).
+		Find(&models).Error; err != nil {
+		return nil, fmt.Errorf("failed to find all running storage operations by waypoint: %w", err)
+	}
+
+	return r.toEntities(models)
+}
+
 // Delete removes a storage operation
 func (r *StorageOperationRepository) Delete(ctx context.Context, id string) error {
 	if err := r.db.WithContext(ctx).

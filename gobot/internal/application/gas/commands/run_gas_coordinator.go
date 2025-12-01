@@ -227,7 +227,7 @@ func (h *RunGasCoordinatorHandler) getOrCreateStorageOperation(
 	cmd *RunGasCoordinatorCommand,
 	logger common.ContainerLogger,
 ) (*storage.StorageOperation, error) {
-	// Try to load existing operation
+	// Try to load existing operation by ID
 	operation, err := h.storageOpRepo.FindByID(ctx, cmd.GasOperationID)
 	if err == nil && operation != nil {
 		// Resume existing operation
@@ -241,6 +241,38 @@ func (h *RunGasCoordinatorHandler) getOrCreateStorageOperation(
 			h.storageOpRepo.Update(ctx, operation)
 		}
 		return operation, nil
+	}
+
+	// Check for ALL existing RUNNING operations on the same gas giant
+	// This prevents multiple concurrent operations for the same waypoint
+	// CRITICAL: Must use FindAllRunningByWaypoint to stop ALL duplicates, not just the first one
+	existingOps, err := h.storageOpRepo.FindAllRunningByWaypoint(ctx, cmd.PlayerID.Value(), cmd.GasGiant)
+	if err != nil {
+		logger.Log("WARN", "Failed to check for existing operations on gas giant", map[string]interface{}{
+			"gas_giant": cmd.GasGiant,
+			"error":     err.Error(),
+		})
+		// Continue anyway - better to create duplicate than fail completely
+	} else if len(existingOps) > 0 {
+		// Stop ALL old operations before creating a new one
+		logger.Log("WARN", "Stopping existing storage operations for gas giant (replaced by new operation)", map[string]interface{}{
+			"old_operation_count": len(existingOps),
+			"new_operation_id":    cmd.GasOperationID,
+			"gas_giant":           cmd.GasGiant,
+		})
+		for _, existingOp := range existingOps {
+			existingOp.Stop()
+			if err := h.storageOpRepo.Update(ctx, existingOp); err != nil {
+				logger.Log("ERROR", "Failed to stop old storage operation", map[string]interface{}{
+					"operation_id": existingOp.ID(),
+					"error":        err.Error(),
+				})
+			} else {
+				logger.Log("INFO", "Stopped old storage operation", map[string]interface{}{
+					"operation_id": existingOp.ID(),
+				})
+			}
+		}
 	}
 
 	// Determine supported goods for gas extraction

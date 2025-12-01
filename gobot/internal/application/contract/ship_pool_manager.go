@@ -3,6 +3,7 @@ package contract
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
@@ -102,7 +103,14 @@ func FindIdleLightHaulers(
 			continue
 		}
 
-		// Filter 4: Only idle ships (no active assignment)
+		// Filter 4: Exclude command ship (ship #1 - the first ship, used for purchasing)
+		// Command ships end in "-1" (e.g., "TORWIND-1", "AGENT-1")
+		// These should remain available for manual operations
+		if isCommandShip(ship.ShipSymbol()) {
+			continue
+		}
+
+		// Filter 5: Only idle ships (no active assignment)
 		assignment, err := shipAssignmentRepo.FindByShip(ctx, ship.ShipSymbol(), playerID.Value())
 		if err != nil {
 			// If error fetching assignment, assume ship is not assigned
@@ -139,6 +147,11 @@ func FindIdleLightHaulers(
 				continue
 			}
 
+			// Skip command ship (even in fallback mode)
+			if isCommandShip(ship.ShipSymbol()) {
+				continue
+			}
+
 			// Check assignment (also consider empty container_id as idle)
 			assignment, err := shipAssignmentRepo.FindByShip(ctx, ship.ShipSymbol(), playerID.Value())
 			if err != nil || assignment == nil || assignment.Status() == "idle" || assignment.ContainerID() == "" {
@@ -157,4 +170,13 @@ func FindIdleLightHaulers(
 	}
 
 	return idleHaulers, idleHaulerSymbols, nil
+}
+
+// isCommandShip checks if a ship symbol represents the command ship (ship #1).
+// Command ships are reserved for manual operations like purchasing and should not
+// be automatically assigned to manufacturing or other automated tasks.
+//
+// Ship symbols ending in "-1" are considered command ships (e.g., "TORWIND-1", "AGENT-1").
+func isCommandShip(shipSymbol string) bool {
+	return strings.HasSuffix(shipSymbol, "-1")
 }
