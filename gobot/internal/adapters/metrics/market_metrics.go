@@ -75,7 +75,7 @@ func NewMarketMetricsCollector(db *gorm.DB) *MarketMetricsCollector {
 				Subsystem: subsystem,
 				Name:      "market_scan_duration_seconds",
 				Help:      "Duration of market scan operations",
-				Buckets:   []float64{0.5, 1, 2, 5, 10},
+				Buckets:   []float64{0.5, 1.0, 1.5, 2.0, 3.0, 5.0, 10.0},
 			},
 			[]string{"player_id", "waypoint_symbol"},
 		),
