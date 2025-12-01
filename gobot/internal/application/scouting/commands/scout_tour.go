@@ -198,11 +198,11 @@ func (h *ScoutTourHandler) continuousMarketScanning(
 		logger.Log("INFO", "Waiting before next market scan", map[string]interface{}{
 			"ship_symbol": cmd.ShipSymbol,
 			"action":      "wait_scan",
-			"duration":    "60s",
+			"duration":    "5m",
 		})
 
 		select {
-		case <-time.After(60 * time.Second):
+		case <-time.After(5 * time.Minute):
 			// Continue to next scan
 		case <-ctx.Done():
 			logger.Log("INFO", "Scout tour cancelled by context", map[string]interface{}{
