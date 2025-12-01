@@ -27,8 +27,12 @@ type PipelineRepository interface {
 	FindActiveCollectionForProduct(ctx context.Context, playerID int, productGood string) (*ManufacturingPipeline, error)
 
 	// CountActiveFabricationPipelines counts only FABRICATION pipelines that are active
-	// This is used for max_pipelines limiting (collection pipelines are unlimited)
+	// This is used for max_pipelines limiting
 	CountActiveFabricationPipelines(ctx context.Context, playerID int) (int, error)
+
+	// CountActiveCollectionPipelines counts only COLLECTION pipelines that are active
+	// This is used for max_collection_pipelines limiting (0 = unlimited)
+	CountActiveCollectionPipelines(ctx context.Context, playerID int) (int, error)
 
 	// Delete removes a pipeline (cascades to tasks)
 	Delete(ctx context.Context, id string) error

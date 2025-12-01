@@ -1045,17 +1045,19 @@ func (c *DaemonClient) StartParallelManufacturingCoordinator(
 	minPrice int,
 	maxWorkers int,
 	maxPipelines int,
+	maxCollectionPipelines int,
 	minBalance int,
 	strategy string,
 ) (*StartManufacturingCoordinatorResult, error) {
 	resp, err := c.client.StartParallelManufacturingCoordinator(ctx, &pb.StartParallelManufacturingCoordinatorRequest{
-		PlayerId:     int32(playerID),
-		SystemSymbol: systemSymbol,
-		MinPrice:     int32(minPrice),
-		MaxWorkers:   int32(maxWorkers),
-		MaxPipelines: int32(maxPipelines),
-		MinBalance:   int32(minBalance),
-		Strategy:     strategy,
+		PlayerId:               int32(playerID),
+		SystemSymbol:           systemSymbol,
+		MinPrice:               int32(minPrice),
+		MaxWorkers:             int32(maxWorkers),
+		MaxPipelines:           int32(maxPipelines),
+		MaxCollectionPipelines: int32(maxCollectionPipelines),
+		MinBalance:             int32(minBalance),
+		Strategy:               strategy,
 	})
 	if err != nil {
 		return nil, err

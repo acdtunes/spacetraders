@@ -157,22 +157,23 @@ func (m *FactoryStateManager) CreateContinuedDeliveryTasks(
 		nil,
 	)
 
-	// Mark as READY
-	if err := acquireDeliverTask.MarkReady(); err != nil {
-		logger.Log("ERROR", fmt.Sprintf("Failed to mark task ready: %v", err), nil)
-		return err
-	}
+	// SUPPLY GATING: Create task in PENDING state, NOT READY
+	// SupplyMonitor.ActivateSupplyGatedTasks will check supply levels and:
+	// - Activate immediately if supply is MODERATE/HIGH/ABUNDANT
+	// - Keep PENDING if supply is LIMITED/SCARCE (wait for better prices)
+	// - Re-source to a better market if available
+	// This prevents buying from depleted markets at inflated prices.
 
-	// Persist task
+	// Persist task in PENDING state
 	if err := m.taskRepo.Create(ctx, acquireDeliverTask); err != nil {
 		logger.Log("ERROR", fmt.Sprintf("Failed to persist task: %v", err), nil)
 		return err
 	}
 
-	// Enqueue task
-	m.taskQueue.Enqueue(acquireDeliverTask)
+	// DO NOT mark READY or enqueue - let SupplyMonitor handle activation
+	// based on current market supply levels
 
-	logger.Log("INFO", "Created continued delivery task", map[string]interface{}{
+	logger.Log("INFO", "Created continued delivery task (PENDING - supply gated)", map[string]interface{}{
 		"good":    completedDeliverTask.Good(),
 		"source":  sourceMarket,
 		"factory": factorySymbol,

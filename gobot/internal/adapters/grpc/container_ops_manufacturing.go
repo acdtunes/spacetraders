@@ -16,7 +16,7 @@ import (
 
 // ParallelManufacturingCoordinator creates a parallel task-based manufacturing coordinator
 // SINGLETON: Only one coordinator per system is allowed. If one already exists, returns its ID.
-func (s *DaemonServer) ParallelManufacturingCoordinator(ctx context.Context, systemSymbol string, playerID int, minPrice int, maxWorkers int, maxPipelines int, minBalance int, strategy string) (string, error) {
+func (s *DaemonServer) ParallelManufacturingCoordinator(ctx context.Context, systemSymbol string, playerID int, minPrice int, maxWorkers int, maxPipelines int, maxCollectionPipelines int, minBalance int, strategy string) (string, error) {
 	// SINGLETON CHECK: Only one coordinator per system
 	existingCoordinator, err := s.containerRepo.FindActiveCoordinatorByTypeAndSystem(
 		ctx,
@@ -48,13 +48,14 @@ func (s *DaemonServer) ParallelManufacturingCoordinator(ctx context.Context, sys
 
 	// Create parallel manufacturing coordinator command
 	cmd := &tradingCmd.RunParallelManufacturingCoordinatorCommand{
-		SystemSymbol:       systemSymbol,
-		PlayerID:           playerID,
-		ContainerID:        containerID,
-		MinPurchasePrice:   minPrice,
-		MaxConcurrentTasks: maxWorkers,   // Map maxWorkers to MaxConcurrentTasks
-		MaxPipelines:       maxPipelines, // Use provided maxPipelines
-		Strategy:           strategy,     // Acquisition strategy (prefer-buy, prefer-fabricate, smart)
+		SystemSymbol:           systemSymbol,
+		PlayerID:               playerID,
+		ContainerID:            containerID,
+		MinPurchasePrice:       minPrice,
+		MaxConcurrentTasks:     maxWorkers,             // Map maxWorkers to MaxConcurrentTasks
+		MaxPipelines:           maxPipelines,           // Max fabrication pipelines
+		MaxCollectionPipelines: maxCollectionPipelines, // Max collection pipelines (0 = unlimited)
+		Strategy:               strategy,               // Acquisition strategy (prefer-buy, prefer-fabricate, smart)
 	}
 
 	// Create container for this operation
@@ -65,14 +66,15 @@ func (s *DaemonServer) ParallelManufacturingCoordinator(ctx context.Context, sys
 		-1, // Infinite iterations
 		nil, // No parent container
 		map[string]interface{}{
-			"system_symbol": systemSymbol,
-			"min_price":     minPrice,
-			"max_workers":   maxWorkers,
-			"max_pipelines": maxPipelines,
-			"min_balance":   minBalance,
-			"container_id":  containerID,
-			"mode":          "parallel_task_based",
-			"strategy":      strategy,
+			"system_symbol":            systemSymbol,
+			"min_price":                minPrice,
+			"max_workers":              maxWorkers,
+			"max_pipelines":            maxPipelines,
+			"max_collection_pipelines": maxCollectionPipelines,
+			"min_balance":              minBalance,
+			"container_id":             containerID,
+			"mode":                     "parallel_task_based",
+			"strategy":                 strategy,
 		},
 		nil, // Use default RealClock
 	)

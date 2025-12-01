@@ -841,11 +841,9 @@ func (s *daemonServiceImpl) StartParallelManufacturingCoordinator(ctx context.Co
 		maxWorkers = 5
 	}
 
-	// Default max pipelines if not provided
+	// Max pipelines: 0 means DISABLED (no fabrication pipelines)
+	// CLI defaults to 3 when flag not specified, so 0 must be explicit
 	maxPipelines := int(req.MaxPipelines)
-	if maxPipelines == 0 {
-		maxPipelines = 3
-	}
 
 	// Default min price if not provided
 	minPrice := int(req.MinPrice)
@@ -856,6 +854,9 @@ func (s *daemonServiceImpl) StartParallelManufacturingCoordinator(ctx context.Co
 	// Default min balance (0 = no limit)
 	minBalance := int(req.MinBalance)
 
+	// Max collection pipelines (0 = unlimited, no default applied)
+	maxCollectionPipelines := int(req.MaxCollectionPipelines)
+
 	// Default strategy to prefer-fabricate (recursive supply chain manufacturing)
 	strategy := req.Strategy
 	if strategy == "" {
@@ -863,7 +864,7 @@ func (s *daemonServiceImpl) StartParallelManufacturingCoordinator(ctx context.Co
 	}
 
 	// Start parallel coordinator via DaemonServer (creates container and runs in background)
-	containerID, err := s.daemon.ParallelManufacturingCoordinator(ctx, req.SystemSymbol, playerID, minPrice, maxWorkers, maxPipelines, minBalance, strategy)
+	containerID, err := s.daemon.ParallelManufacturingCoordinator(ctx, req.SystemSymbol, playerID, minPrice, maxWorkers, maxPipelines, maxCollectionPipelines, minBalance, strategy)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start parallel manufacturing coordinator: %w", err)
 	}

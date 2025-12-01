@@ -21,14 +21,15 @@ import (
 
 // RunParallelManufacturingCoordinatorCommand orchestrates parallel task-based manufacturing
 type RunParallelManufacturingCoordinatorCommand struct {
-	SystemSymbol       string        // System to scan for opportunities
-	PlayerID           int           // Player identifier
-	ContainerID        string        // Container ID for this coordinator
-	MinPurchasePrice   int           // Minimum purchase price threshold (default 1000)
-	MaxConcurrentTasks int           // Maximum concurrent task executions (default 10)
-	MaxPipelines       int           // Maximum active pipelines (default 3)
-	SupplyPollInterval time.Duration // How often to poll factory supply (default 30s)
-	Strategy           string        // Acquisition strategy: prefer-buy, prefer-fabricate, smart (default: prefer-fabricate)
+	SystemSymbol           string        // System to scan for opportunities
+	PlayerID               int           // Player identifier
+	ContainerID            string        // Container ID for this coordinator
+	MinPurchasePrice       int           // Minimum purchase price threshold (default 1000)
+	MaxConcurrentTasks     int           // Maximum concurrent task executions (default 10)
+	MaxPipelines           int           // Maximum active fabrication pipelines (default 3)
+	MaxCollectionPipelines int           // Maximum active collection pipelines (0 = unlimited)
+	SupplyPollInterval     time.Duration // How often to poll factory supply (default 30s)
+	Strategy               string        // Acquisition strategy: prefer-buy, prefer-fabricate, smart (default: prefer-fabricate)
 }
 
 // RunParallelManufacturingCoordinatorResponse is never returned (infinite loop)
@@ -196,10 +197,11 @@ func (h *RunParallelManufacturingCoordinatorHandler) Handle(
 
 	// Initial scan and task assignment
 	h.pipelineManager.ScanAndCreatePipelines(ctx, mfgServices.PipelineScanParams{
-		SystemSymbol:     cmd.SystemSymbol,
-		PlayerID:         cmd.PlayerID,
-		MinPurchasePrice: config.minPurchasePrice,
-		MaxPipelines:     config.maxPipelines,
+		SystemSymbol:           cmd.SystemSymbol,
+		PlayerID:               cmd.PlayerID,
+		MinPurchasePrice:       config.minPurchasePrice,
+		MaxPipelines:           config.maxPipelines,
+		MaxCollectionPipelines: config.maxCollectionPipelines,
 	})
 	h.taskAssigner.AssignTasks(ctx, mfgServices.AssignParams{
 		PlayerID:           cmd.PlayerID,
@@ -211,20 +213,22 @@ func (h *RunParallelManufacturingCoordinatorHandler) Handle(
 		select {
 		case <-opportunityScanTicker.C:
 			h.pipelineManager.ScanAndCreatePipelines(ctx, mfgServices.PipelineScanParams{
-				SystemSymbol:     cmd.SystemSymbol,
-				PlayerID:         cmd.PlayerID,
-				MinPurchasePrice: config.minPurchasePrice,
-				MaxPipelines:     config.maxPipelines,
+				SystemSymbol:           cmd.SystemSymbol,
+				PlayerID:               cmd.PlayerID,
+				MinPurchasePrice:       config.minPurchasePrice,
+				MaxPipelines:           config.maxPipelines,
+				MaxCollectionPipelines: config.maxCollectionPipelines,
 			})
 
 		case <-stuckPipelineTicker.C:
 			recycled := h.pipelineManager.DetectAndRecycleStuckPipelines(ctx, cmd.PlayerID)
 			if recycled > 0 {
 				h.pipelineManager.ScanAndCreatePipelines(ctx, mfgServices.PipelineScanParams{
-					SystemSymbol:     cmd.SystemSymbol,
-					PlayerID:         cmd.PlayerID,
-					MinPurchasePrice: config.minPurchasePrice,
-					MaxPipelines:     config.maxPipelines,
+					SystemSymbol:           cmd.SystemSymbol,
+					PlayerID:               cmd.PlayerID,
+					MinPurchasePrice:       config.minPurchasePrice,
+					MaxPipelines:           config.maxPipelines,
+					MaxCollectionPipelines: config.maxCollectionPipelines,
 				})
 			}
 
@@ -243,10 +247,11 @@ func (h *RunParallelManufacturingCoordinatorHandler) Handle(
 				logger.Log("INFO", fmt.Sprintf("Safety net: completed %d pipelines with lost signals", completed), nil)
 				// Rescan for new opportunities since pipelines completed
 				h.pipelineManager.ScanAndCreatePipelines(ctx, mfgServices.PipelineScanParams{
-					SystemSymbol:     cmd.SystemSymbol,
-					PlayerID:         cmd.PlayerID,
-					MinPurchasePrice: config.minPurchasePrice,
-					MaxPipelines:     config.maxPipelines,
+					SystemSymbol:           cmd.SystemSymbol,
+					PlayerID:               cmd.PlayerID,
+					MinPurchasePrice:       config.minPurchasePrice,
+					MaxPipelines:           config.maxPipelines,
+					MaxCollectionPipelines: config.maxCollectionPipelines,
 				})
 			}
 
@@ -257,7 +262,7 @@ func (h *RunParallelManufacturingCoordinatorHandler) Handle(
 			})
 
 		case shipSymbol := <-h.workerCompletionChan:
-			h.handleWorkerCompletion(ctx, cmd, shipSymbol, config.maxConcurrentTasks)
+			h.handleWorkerCompletion(ctx, cmd, shipSymbol, config)
 
 		case <-ctx.Done():
 			logger.Log("INFO", "Parallel manufacturing coordinator shutting down", nil)
@@ -268,21 +273,23 @@ func (h *RunParallelManufacturingCoordinatorHandler) Handle(
 
 // coordinatorConfig holds applied configuration
 type coordinatorConfig struct {
-	minPurchasePrice   int
-	maxConcurrentTasks int
-	maxPipelines       int
-	supplyPollInterval time.Duration
-	strategy           string
+	minPurchasePrice       int
+	maxConcurrentTasks     int
+	maxPipelines           int
+	maxCollectionPipelines int // 0 = unlimited
+	supplyPollInterval     time.Duration
+	strategy               string
 }
 
 // applyDefaults applies default values to command parameters
 func (h *RunParallelManufacturingCoordinatorHandler) applyDefaults(cmd *RunParallelManufacturingCoordinatorCommand) coordinatorConfig {
 	config := coordinatorConfig{
-		minPurchasePrice:   cmd.MinPurchasePrice,
-		maxConcurrentTasks: cmd.MaxConcurrentTasks,
-		maxPipelines:       cmd.MaxPipelines,
-		supplyPollInterval: cmd.SupplyPollInterval,
-		strategy:           cmd.Strategy,
+		minPurchasePrice:       cmd.MinPurchasePrice,
+		maxConcurrentTasks:     cmd.MaxConcurrentTasks,
+		maxPipelines:           cmd.MaxPipelines,
+		maxCollectionPipelines: cmd.MaxCollectionPipelines, // 0 = unlimited (no default applied)
+		supplyPollInterval:     cmd.SupplyPollInterval,
+		strategy:               cmd.Strategy,
 	}
 
 	if config.minPurchasePrice <= 0 {
@@ -291,9 +298,11 @@ func (h *RunParallelManufacturingCoordinatorHandler) applyDefaults(cmd *RunParal
 	if config.maxConcurrentTasks <= 0 {
 		config.maxConcurrentTasks = 10
 	}
-	if config.maxPipelines <= 0 {
-		config.maxPipelines = 3
+	if config.maxPipelines < 0 {
+		config.maxPipelines = 3 // default when unset (-1)
 	}
+	// Note: maxPipelines = 0 means DISABLED (no fabrication pipelines)
+	// Note: maxCollectionPipelines defaults to 0 (unlimited) - no default applied
 	if config.supplyPollInterval <= 0 {
 		config.supplyPollInterval = 30 * time.Second
 	}
@@ -541,7 +550,7 @@ func (h *RunParallelManufacturingCoordinatorHandler) handleWorkerCompletion(
 	ctx context.Context,
 	cmd *RunParallelManufacturingCoordinatorCommand,
 	shipSymbol string,
-	maxConcurrentTasks int,
+	config coordinatorConfig,
 ) {
 	logger := common.LoggerFromContext(ctx)
 
@@ -576,10 +585,11 @@ func (h *RunParallelManufacturingCoordinatorHandler) handleWorkerCompletion(
 			if completed {
 				// Pipeline completed - rescan for new opportunities
 				h.pipelineManager.ScanAndCreatePipelines(ctx, mfgServices.PipelineScanParams{
-					SystemSymbol:     cmd.SystemSymbol,
-					PlayerID:         cmd.PlayerID,
-					MinPurchasePrice: 1000, // Use default
-					MaxPipelines:     3,    // Use default
+					SystemSymbol:           cmd.SystemSymbol,
+					PlayerID:               cmd.PlayerID,
+					MinPurchasePrice:       config.minPurchasePrice,
+					MaxPipelines:           config.maxPipelines,
+					MaxCollectionPipelines: config.maxCollectionPipelines,
 				})
 			}
 		}
@@ -593,6 +603,6 @@ func (h *RunParallelManufacturingCoordinatorHandler) handleWorkerCompletion(
 	// Assign idle ships to ready tasks
 	h.taskAssigner.AssignTasks(ctx, mfgServices.AssignParams{
 		PlayerID:           cmd.PlayerID,
-		MaxConcurrentTasks: maxConcurrentTasks,
+		MaxConcurrentTasks: config.maxConcurrentTasks,
 	})
 }

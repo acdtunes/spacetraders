@@ -63,11 +63,12 @@ func newOperationsStartCommand() *cobra.Command {
 		maxLegTime  int
 
 		// Manufacturing-specific flags
-		minPrice     int
-		maxWorkers   int
-		maxPipelines int
-		minBalance   int
-		strategy     string
+		minPrice               int
+		maxWorkers             int
+		maxPipelines           int
+		maxCollectionPipelines int
+		minBalance             int
+		strategy               string
 	)
 
 	cmd := &cobra.Command{
@@ -156,7 +157,7 @@ Examples:
 
 			// Start manufacturing if enabled
 			if enableManufacturing {
-				result := startManufacturingOperation(client, playerID, systemSymbol, minPrice, maxWorkers, maxPipelines, minBalance, strategy, dryRun)
+				result := startManufacturingOperation(client, playerID, systemSymbol, minPrice, maxWorkers, maxPipelines, maxCollectionPipelines, minBalance, strategy, dryRun)
 				results = append(results, result)
 			}
 
@@ -206,7 +207,8 @@ Examples:
 	// Manufacturing-specific flags
 	cmd.Flags().IntVar(&minPrice, "min-price", 1000, "Minimum purchase price threshold (manufacturing)")
 	cmd.Flags().IntVar(&maxWorkers, "max-workers", 5, "Maximum parallel workers (manufacturing)")
-	cmd.Flags().IntVar(&maxPipelines, "max-pipelines", 3, "Maximum concurrent pipelines (manufacturing)")
+	cmd.Flags().IntVar(&maxPipelines, "max-pipelines", 3, "Maximum concurrent fabrication pipelines (manufacturing)")
+	cmd.Flags().IntVar(&maxCollectionPipelines, "max-collection-pipelines", 0, "Maximum concurrent collection pipelines (0 = unlimited)")
 	cmd.Flags().IntVar(&minBalance, "min-balance", 0, "Minimum credit balance to maintain (manufacturing)")
 	cmd.Flags().StringVar(&strategy, "strategy", "prefer-fabricate", "Acquisition strategy: prefer-buy, prefer-fabricate, smart")
 
@@ -260,14 +262,19 @@ func startGasOperation(client *DaemonClient, playerID int, gasGiant, siphonsCsv,
 }
 
 // startManufacturingOperation starts a manufacturing operation
-func startManufacturingOperation(client *DaemonClient, playerID int, systemSymbol string, minPrice, maxWorkers, maxPipelines, minBalance int, strategy string, dryRun bool) operationResult {
+func startManufacturingOperation(client *DaemonClient, playerID int, systemSymbol string, minPrice, maxWorkers, maxPipelines, maxCollectionPipelines, minBalance int, strategy string, dryRun bool) operationResult {
 	fmt.Printf("Manufacturing:\n")
-	fmt.Printf("  Min Price:    %d\n", minPrice)
-	fmt.Printf("  Max Workers:  %d\n", maxWorkers)
-	fmt.Printf("  Max Pipelines: %d\n", maxPipelines)
-	fmt.Printf("  Strategy:     %s\n", strategy)
+	fmt.Printf("  Min Price:               %d\n", minPrice)
+	fmt.Printf("  Max Workers:             %d\n", maxWorkers)
+	fmt.Printf("  Max Fabrication Pipelines: %d\n", maxPipelines)
+	if maxCollectionPipelines > 0 {
+		fmt.Printf("  Max Collection Pipelines: %d\n", maxCollectionPipelines)
+	} else {
+		fmt.Printf("  Max Collection Pipelines: unlimited\n")
+	}
+	fmt.Printf("  Strategy:                %s\n", strategy)
 	if minBalance > 0 {
-		fmt.Printf("  Min Balance:  %d\n", minBalance)
+		fmt.Printf("  Min Balance:             %d\n", minBalance)
 	}
 	fmt.Println()
 
@@ -283,7 +290,7 @@ func startManufacturingOperation(client *DaemonClient, playerID int, systemSymbo
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	result, err := client.StartParallelManufacturingCoordinator(ctx, systemSymbol, playerID, minPrice, maxWorkers, maxPipelines, minBalance, strategy)
+	result, err := client.StartParallelManufacturingCoordinator(ctx, systemSymbol, playerID, minPrice, maxWorkers, maxPipelines, maxCollectionPipelines, minBalance, strategy)
 	if err != nil {
 		return operationResult{operationType: "Manufacturing", err: err}
 	}

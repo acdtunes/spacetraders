@@ -171,7 +171,7 @@ func (r *GormManufacturingPipelineRepository) FindActiveCollectionForProduct(ctx
 }
 
 // CountActiveFabricationPipelines counts only FABRICATION pipelines that are active.
-// This is used for max_pipelines limiting (collection pipelines are unlimited).
+// This is used for max_pipelines limiting.
 func (r *GormManufacturingPipelineRepository) CountActiveFabricationPipelines(ctx context.Context, playerID int) (int, error) {
 	activeStatuses := []string{
 		string(manufacturing.PipelineStatusPlanning),
@@ -187,6 +187,28 @@ func (r *GormManufacturingPipelineRepository) CountActiveFabricationPipelines(ct
 
 	if result.Error != nil {
 		return 0, fmt.Errorf("failed to count active fabrication pipelines: %w", result.Error)
+	}
+
+	return int(count), nil
+}
+
+// CountActiveCollectionPipelines counts only COLLECTION pipelines that are active.
+// This is used for max_collection_pipelines limiting (0 = unlimited).
+func (r *GormManufacturingPipelineRepository) CountActiveCollectionPipelines(ctx context.Context, playerID int) (int, error) {
+	activeStatuses := []string{
+		string(manufacturing.PipelineStatusPlanning),
+		string(manufacturing.PipelineStatusExecuting),
+	}
+
+	var count int64
+	result := r.db.WithContext(ctx).
+		Model(&ManufacturingPipelineModel{}).
+		Where("player_id = ? AND pipeline_type = ? AND status IN ?",
+			playerID, string(manufacturing.PipelineTypeCollection), activeStatuses).
+		Count(&count)
+
+	if result.Error != nil {
+		return 0, fmt.Errorf("failed to count active collection pipelines: %w", result.Error)
 	}
 
 	return int(count), nil

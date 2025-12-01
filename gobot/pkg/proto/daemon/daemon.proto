@@ -615,8 +615,9 @@ message StartParallelManufacturingCoordinatorRequest {
   int32 min_price = 3; // Minimum purchase price threshold (default 1000)
   int32 max_workers = 4; // Maximum parallel workers (default 5)
   int32 min_balance = 5; // Minimum credit balance to maintain (default 0 = no limit)
-  int32 max_pipelines = 6; // Maximum concurrent pipelines/opportunities (default 3)
+  int32 max_pipelines = 6; // Maximum concurrent fabrication pipelines (default 3)
   string strategy = 7; // Acquisition strategy: prefer-buy, prefer-fabricate, smart (default: prefer-fabricate)
+  int32 max_collection_pipelines = 8; // Maximum concurrent collection pipelines (0 = unlimited)
 }
 
 // StartParallelManufacturingCoordinatorResponse returns coordinator details
@@ -628,7 +629,8 @@ message StartParallelManufacturingCoordinatorResponse {
   int32 min_balance = 5;
   string status = 6;
   string message = 7;
-  int32 max_pipelines = 8; // Maximum concurrent pipelines/opportunities
+  int32 max_pipelines = 8; // Maximum concurrent fabrication pipelines
+  int32 max_collection_pipelines = 9; // Maximum concurrent collection pipelines (0 = unlimited)
 }
 
 // JettisonCargoRequest jettisons cargo from a ship
