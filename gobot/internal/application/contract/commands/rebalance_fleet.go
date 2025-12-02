@@ -149,14 +149,28 @@ func (h *RebalanceContractFleetHandler) getCoordinatorShips(
 		return nil, true
 	}
 
+	// OPTIMIZATION: Fetch all ships from cached list (1 API call instead of N)
+	// The ship list is cached for 15 seconds in ShipRepository.FindAllByPlayer
+	allShips, err := h.shipRepo.FindAllByPlayer(ctx, cmd.PlayerID)
+	if err != nil {
+		logger.Log("WARNING", fmt.Sprintf("Failed to load ships: %v", err), nil)
+		result.RebalancingSkipped = true
+		result.SkipReason = "Failed to load ship data"
+		return nil, true
+	}
+
+	// Build lookup set for efficient filtering
+	symbolSet := make(map[string]bool, len(shipSymbols))
+	for _, s := range shipSymbols {
+		symbolSet[s] = true
+	}
+
+	// Filter to only requested ships
 	ships := make([]*navigation.Ship, 0, len(shipSymbols))
-	for _, shipSymbol := range shipSymbols {
-		ship, err := h.shipRepo.FindBySymbol(ctx, shipSymbol, cmd.PlayerID)
-		if err != nil {
-			logger.Log("WARNING", fmt.Sprintf("Failed to load ship %s: %v", shipSymbol, err), nil)
-			continue
+	for _, ship := range allShips {
+		if symbolSet[ship.ShipSymbol()] {
+			ships = append(ships, ship)
 		}
-		ships = append(ships, ship)
 	}
 
 	if len(ships) == 0 {

@@ -40,10 +40,10 @@ func NewMarketScanner(
 // ScanAndSaveMarket scans a market at the given waypoint and saves the data to the database.
 // This is a non-fatal operation - errors are logged but do not fail the caller's operation.
 func (s *MarketScanner) ScanAndSaveMarket(ctx context.Context, playerID uint, waypointSymbol string) error {
+	logger := common.LoggerFromContext(ctx)
+
 	// Start timing for metrics
 	startTime := time.Now()
-
-	logger := common.LoggerFromContext(ctx)
 
 	// Get existing market data for price history comparison
 	existingMarket, _ := s.marketRepo.GetMarketData(ctx, waypointSymbol, int(playerID))

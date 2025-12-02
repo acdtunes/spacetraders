@@ -222,18 +222,37 @@ func (h *ScoutMarketsHandler) loadShipConfigurations(
 	shipSymbols []string,
 	playerID shared.PlayerID,
 ) (map[string]*routing.ShipConfigData, error) {
+	// OPTIMIZATION: Fetch all ships from cached list (1 API call instead of N)
+	// The ship list is cached for 15 seconds in ShipRepository.FindAllByPlayer
+	allShips, err := h.shipRepo.FindAllByPlayer(ctx, playerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load ships: %w", err)
+	}
+
+	// Build lookup set for efficient filtering
+	symbolSet := make(map[string]bool, len(shipSymbols))
+	for _, s := range shipSymbols {
+		symbolSet[s] = true
+	}
+
+	// Filter to only requested ships and build config map
 	shipConfigs := make(map[string]*routing.ShipConfigData)
-
-	for _, shipSymbol := range shipSymbols {
-		shipData, err := h.shipRepo.FindBySymbol(ctx, shipSymbol, playerID)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load ship %s: %w", shipSymbol, err)
+	for _, ship := range allShips {
+		if symbolSet[ship.ShipSymbol()] {
+			shipConfigs[ship.ShipSymbol()] = &routing.ShipConfigData{
+				CurrentLocation: ship.CurrentLocation().Symbol,
+				FuelCapacity:    ship.FuelCapacity(),
+				EngineSpeed:     ship.EngineSpeed(),
+			}
 		}
+	}
 
-		shipConfigs[shipSymbol] = &routing.ShipConfigData{
-			CurrentLocation: shipData.CurrentLocation().Symbol,
-			FuelCapacity:    shipData.FuelCapacity(),
-			EngineSpeed:     shipData.EngineSpeed(),
+	// Verify we found all requested ships
+	if len(shipConfigs) != len(shipSymbols) {
+		for _, symbol := range shipSymbols {
+			if _, found := shipConfigs[symbol]; !found {
+				return nil, fmt.Errorf("ship %s not found in fleet", symbol)
+			}
 		}
 	}
 

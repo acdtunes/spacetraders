@@ -53,14 +53,29 @@ func SelectClosestShip(
 		"required_cargo":  requiredCargoSymbol,
 	})
 
-	// 1. Fetch all ships from repository
+	// 1. OPTIMIZATION: Fetch all ships from cached list (1 API call instead of N)
+	// The ship list is cached for 15 seconds in ShipRepository.FindAllByPlayer
+	allShips, err := shipRepo.FindAllByPlayer(ctx, shared.MustNewPlayerID(playerID))
+	if err != nil {
+		return "", 0, fmt.Errorf("failed to load ships: %w", err)
+	}
+
+	// Build lookup set for efficient filtering
+	symbolSet := make(map[string]bool, len(shipSymbols))
+	for _, s := range shipSymbols {
+		symbolSet[s] = true
+	}
+
+	// Filter to only requested ships
 	var ships []*navigation.Ship
-	for _, shipSymbol := range shipSymbols {
-		ship, err := shipRepo.FindBySymbol(ctx, shipSymbol, shared.MustNewPlayerID(playerID))
-		if err != nil {
-			return "", 0, fmt.Errorf("failed to load ship %s: %w", shipSymbol, err)
+	for _, ship := range allShips {
+		if symbolSet[ship.ShipSymbol()] {
+			ships = append(ships, ship)
 		}
-		ships = append(ships, ship)
+	}
+
+	if len(ships) == 0 {
+		return "", 0, fmt.Errorf("none of the requested ships found in fleet")
 	}
 
 	// 2. Fetch target waypoint coordinates from graph

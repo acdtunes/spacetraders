@@ -145,6 +145,78 @@ func (r *ShipRepository) FindAllByPlayer(ctx context.Context, playerID shared.Pl
 	return ships, nil
 }
 
+// FindBySymbolCached retrieves a ship from the cached ship list if available,
+// otherwise falls back to a direct API call.
+//
+// OPTIMIZATION: When selecting ships from a known list (e.g., idle haulers),
+// use this method to avoid N individual API calls. The cached list is refreshed
+// every 15 seconds via FindAllByPlayer.
+//
+// Use cases:
+//   - Ship selection loops (SelectClosestShip, RebalanceFleet)
+//   - Any code that iterates through ship symbols to load ship data
+//
+// Falls back to FindBySymbol (direct API) if:
+//   - Ship not found in cache
+//   - Cache is stale or empty
+func (r *ShipRepository) FindBySymbolCached(ctx context.Context, symbol string, playerID shared.PlayerID) (*navigation.Ship, error) {
+	// First try to find in cached ship list
+	allShips, err := r.FindAllByPlayer(ctx, playerID)
+	if err != nil {
+		// Cache miss/error - fall back to direct API call
+		return r.FindBySymbol(ctx, symbol, playerID)
+	}
+
+	// Search for ship in cached list
+	for _, ship := range allShips {
+		if ship.ShipSymbol() == symbol {
+			return ship, nil
+		}
+	}
+
+	// Not found in cache - this could mean:
+	// 1. Ship was just purchased and cache is stale
+	// 2. Ship symbol is wrong
+	// Fall back to direct API call for definitive answer
+	return r.FindBySymbol(ctx, symbol, playerID)
+}
+
+// FindManyBySymbolsCached retrieves multiple ships from the cached ship list.
+//
+// OPTIMIZATION: Replaces loops that call FindBySymbol for each ship.
+// Instead of N API calls, this uses a single cached FindAllByPlayer call
+// and filters in memory.
+//
+// Returns ships in the same order as requested symbols.
+// Missing ships are omitted from the result (no error).
+func (r *ShipRepository) FindManyBySymbolsCached(ctx context.Context, symbols []string, playerID shared.PlayerID) ([]*navigation.Ship, error) {
+	if len(symbols) == 0 {
+		return nil, nil
+	}
+
+	// Get all ships from cache
+	allShips, err := r.FindAllByPlayer(ctx, playerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch ships: %w", err)
+	}
+
+	// Build lookup map for efficient searching
+	shipMap := make(map[string]*navigation.Ship, len(allShips))
+	for _, ship := range allShips {
+		shipMap[ship.ShipSymbol()] = ship
+	}
+
+	// Collect ships in requested order
+	result := make([]*navigation.Ship, 0, len(symbols))
+	for _, symbol := range symbols {
+		if ship, found := shipMap[symbol]; found {
+			result = append(result, ship)
+		}
+	}
+
+	return result, nil
+}
+
 // Navigate executes ship navigation via API
 // Returns navigation result with arrival time from API (following Python implementation pattern)
 func (r *ShipRepository) Navigate(ctx context.Context, ship *navigation.Ship, destination *shared.Waypoint, playerID shared.PlayerID) (*navigation.Result, error) {
