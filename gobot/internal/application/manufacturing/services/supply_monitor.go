@@ -1091,7 +1091,7 @@ func (m *SupplyMonitor) ActivateSupplyGatedTasks(ctx context.Context) int {
 			} else {
 				betterSource, err = m.marketLocator.FindExportMarketBySupplyPriority(ctx, task.Good(), systemSymbol, m.playerID)
 			}
-			if err != nil {
+			if err != nil || betterSource == nil {
 				// No better source available - keep waiting
 				continue
 			}
