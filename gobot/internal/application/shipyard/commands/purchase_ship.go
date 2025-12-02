@@ -10,12 +10,11 @@ import (
 	shipNav "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
 	shipTypes "github.com/andrescamacho/spacetraders-go/internal/application/ship/types"
 	"github.com/andrescamacho/spacetraders-go/internal/application/shipyard/queries"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
+	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
-	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 )
 
 // PurchaseShipCommand is a command to purchase a ship from a shipyard
@@ -49,13 +48,12 @@ type shipyardCandidate struct {
 
 // PurchaseShipHandler handles the PurchaseShip command
 type PurchaseShipHandler struct {
-	shipRepo             navigation.ShipRepository
-	playerRepo           player.PlayerRepository
-	waypointRepo         system.WaypointRepository
-	waypointProvider     system.IWaypointProvider
-	apiClient            domainPorts.APIClient
-	mediator             common.Mediator
-	shipAssignmentRepo   container.ShipAssignmentRepository
+	shipRepo         navigation.ShipRepository
+	playerRepo       player.PlayerRepository
+	waypointRepo     system.WaypointRepository
+	waypointProvider system.IWaypointProvider
+	apiClient        domainPorts.APIClient
+	mediator         common.Mediator
 }
 
 // NewPurchaseShipHandler creates a new PurchaseShipHandler
@@ -66,16 +64,14 @@ func NewPurchaseShipHandler(
 	waypointProvider system.IWaypointProvider,
 	apiClient domainPorts.APIClient,
 	mediator common.Mediator,
-	shipAssignmentRepo container.ShipAssignmentRepository,
 ) *PurchaseShipHandler {
 	return &PurchaseShipHandler{
-		shipRepo:           shipRepo,
-		playerRepo:         playerRepo,
-		waypointRepo:       waypointRepo,
-		waypointProvider:   waypointProvider,
-		apiClient:          apiClient,
-		mediator:           mediator,
-		shipAssignmentRepo: shipAssignmentRepo,
+		shipRepo:         shipRepo,
+		playerRepo:       playerRepo,
+		waypointRepo:     waypointRepo,
+		waypointProvider: waypointProvider,
+		apiClient:        apiClient,
+		mediator:         mediator,
 	}
 }
 
@@ -137,7 +133,7 @@ func (h *PurchaseShipHandler) Handle(ctx context.Context, request common.Request
 	}
 
 	// Create idle ship assignment for newly purchased ship
-	if err := h.createIdleAssignment(ctx, newShip.ShipSymbol(), cmd.PlayerID); err != nil {
+	if err := h.createIdleAssignment(ctx, newShip); err != nil {
 		return nil, fmt.Errorf("failed to create ship assignment: %w", err)
 	}
 
@@ -628,27 +624,17 @@ func (h *PurchaseShipHandler) createShipValueObjects(
 }
 
 // createIdleAssignment creates an idle ship assignment for a newly purchased ship
+// Uses the Ship aggregate's assignment management via ShipRepository
 func (h *PurchaseShipHandler) createIdleAssignment(
 	ctx context.Context,
-	shipSymbol string,
-	playerID shared.PlayerID,
+	ship *navigation.Ship,
 ) error {
-	// Create an idle assignment with empty container ID
-	assignment := container.NewShipAssignment(
-		shipSymbol,
-		playerID.Value(),
-		"", // Empty container ID for idle ships
-		nil, // Use default clock
-	)
+	// Set ship as idle (new ships start without an assignment)
+	ship.SetAssignment(navigation.NewIdleAssignment())
 
-	// Release it immediately to set it to idle status
-	if err := assignment.Release("newly_purchased"); err != nil {
-		return fmt.Errorf("failed to mark assignment as idle: %w", err)
-	}
-
-	// Persist to database
-	if err := h.shipAssignmentRepo.Assign(ctx, assignment); err != nil {
-		return fmt.Errorf("failed to persist assignment: %w", err)
+	// Persist to database via ShipRepository
+	if err := h.shipRepo.Save(ctx, ship); err != nil {
+		return fmt.Errorf("failed to persist ship assignment: %w", err)
 	}
 
 	return nil

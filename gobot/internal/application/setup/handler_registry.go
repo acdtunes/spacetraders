@@ -8,7 +8,6 @@ import (
 	ledgerQueries "github.com/andrescamacho/spacetraders-go/internal/application/ledger/queries"
 	"github.com/andrescamacho/spacetraders-go/internal/application/mediator"
 	"github.com/andrescamacho/spacetraders-go/internal/application/player"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/ledger"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
@@ -20,12 +19,11 @@ import (
 
 // HandlerRegistry holds all application dependencies for handler creation
 type HandlerRegistry struct {
-	transactionRepo    ledger.TransactionRepository
-	playerResolver     *player.PlayerResolver
-	clock              shared.Clock
-	shipRepo           navigation.ShipRepository
-	shipAssignmentRepo container.ShipAssignmentRepository
-	daemonClient       daemon.DaemonClient
+	transactionRepo ledger.TransactionRepository
+	playerResolver  *player.PlayerResolver
+	clock           shared.Clock
+	shipRepo        navigation.ShipRepository
+	daemonClient    daemon.DaemonClient
 	// Storage and gas operation dependencies
 	storageOpRepo      storage.StorageOperationRepository
 	storageCoordinator storage.StorageCoordinator
@@ -39,7 +37,6 @@ func NewHandlerRegistry(
 	playerResolver *player.PlayerResolver,
 	clock shared.Clock,
 	shipRepo navigation.ShipRepository,
-	shipAssignmentRepo container.ShipAssignmentRepository,
 	daemonClient daemon.DaemonClient,
 	storageOpRepo storage.StorageOperationRepository,
 	storageCoordinator storage.StorageCoordinator,
@@ -56,7 +53,6 @@ func NewHandlerRegistry(
 		playerResolver:     playerResolver,
 		clock:              clock,
 		shipRepo:           shipRepo,
-		shipAssignmentRepo: shipAssignmentRepo,
 		daemonClient:       daemonClient,
 		storageOpRepo:      storageOpRepo,
 		storageCoordinator: storageCoordinator,
@@ -130,10 +126,10 @@ func (r *HandlerRegistry) RegisterGasHandlers(m mediator.Mediator) error {
 		m,
 		r.shipRepo,
 		r.storageOpRepo,
-		r.shipAssignmentRepo,
 		r.daemonClient,
 		r.waypointRepo,
 		r.storageCoordinator,
+		r.clock,
 	)
 	if err := m.Register(
 		reflect.TypeOf(&gasCommands.RunGasCoordinatorCommand{}),
@@ -146,7 +142,6 @@ func (r *HandlerRegistry) RegisterGasHandlers(m mediator.Mediator) error {
 	siphonHandler := gasCommands.NewRunSiphonWorkerHandler(
 		m,
 		r.shipRepo,
-		r.shipAssignmentRepo,
 		r.storageCoordinator,
 		r.clock,
 	)
@@ -161,7 +156,6 @@ func (r *HandlerRegistry) RegisterGasHandlers(m mediator.Mediator) error {
 	storageShipHandler := gasCommands.NewRunStorageShipWorkerHandler(
 		m,
 		r.shipRepo,
-		r.shipAssignmentRepo,
 		r.storageCoordinator,
 	)
 	if err := m.Register(

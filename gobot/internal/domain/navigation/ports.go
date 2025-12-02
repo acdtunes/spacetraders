@@ -62,10 +62,23 @@ type ShipCargoRepository interface {
 // ShipCommandRepository, ShipCargoRepository) when you only need specific operations.
 //
 // Following hexagonal architecture: repositories abstract both database and API operations.
+// Ships are fetched from API (source of truth for ship state) and enriched with
+// assignment data from the database.
 type ShipRepository interface {
 	ShipQueryRepository
 	ShipCommandRepository
 	ShipCargoRepository
+
+	// Assignment query methods (ships enriched with DB assignment state)
+	FindByContainer(ctx context.Context, containerID string, playerID shared.PlayerID) ([]*Ship, error)
+	FindIdleByPlayer(ctx context.Context, playerID shared.PlayerID) ([]*Ship, error)
+	FindActiveByPlayer(ctx context.Context, playerID shared.PlayerID) ([]*Ship, error)
+	CountByContainerPrefix(ctx context.Context, prefix string, playerID shared.PlayerID) (int, error)
+
+	// Persistence methods (save ship aggregate including assignment state)
+	Save(ctx context.Context, ship *Ship) error
+	SaveAll(ctx context.Context, ships []*Ship) error
+	ReleaseAllActive(ctx context.Context, reason string) (int, error)
 }
 
 // DTOs for ship operations

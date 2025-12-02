@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
@@ -16,8 +15,8 @@ import (
 //
 // Parameters:
 //   - coordinatorID: The container ID of the coordinator
-//   - playerID: Player ID for ship assignment lookups
-//   - shipAssignmentRepo: Repository to query ship assignments
+//   - playerID: Player ID for ship lookups
+//   - shipRepo: Repository to query ships with assignments
 //
 // Returns:
 //   - shipSymbols: List of ship symbols owned by the coordinator
@@ -26,18 +25,18 @@ func FindCoordinatorShips(
 	ctx context.Context,
 	coordinatorID string,
 	playerID int,
-	shipAssignmentRepo container.ShipAssignmentRepository,
+	shipRepo navigation.ShipRepository,
 ) ([]string, error) {
-	// Find all ship assignments for this coordinator
-	assignments, err := shipAssignmentRepo.FindByContainer(ctx, coordinatorID, playerID)
+	// Find all ships assigned to this coordinator
+	ships, err := shipRepo.FindByContainer(ctx, coordinatorID, shared.MustNewPlayerID(playerID))
 	if err != nil {
 		return nil, fmt.Errorf("failed to find coordinator ships: %w", err)
 	}
 
 	// Extract ship symbols
-	shipSymbols := make([]string, 0, len(assignments))
-	for _, assignment := range assignments {
-		shipSymbols = append(shipSymbols, assignment.ShipSymbol())
+	shipSymbols := make([]string, 0, len(ships))
+	for _, ship := range ships {
+		shipSymbols = append(shipSymbols, ship.ShipSymbol())
 	}
 
 	logger := common.LoggerFromContext(ctx)
@@ -55,15 +54,15 @@ func FindCoordinatorShips(
 //
 // A ship is considered an "idle light hauler" if:
 //   1. Ship role is "HAULER"
-//   2. Ship has no active assignment (no ShipAssignment record, or status is "idle")
+//   2. Ship has no active assignment (Ship.IsIdle() returns true)
 //
 // This provides a dynamic pool of available haulers without requiring pre-assignment.
+// Ship assignment status is now embedded in the Ship aggregate and enriched by the repository.
 //
 // Parameters:
 //   - ctx: Context for cancellation and logging
 //   - playerID: Player ID to find ships for
-//   - shipRepo: Repository to query ships
-//   - shipAssignmentRepo: Repository to check assignment status
+//   - shipRepo: Repository to query ships (enriches assignment data automatically)
 //
 // Returns:
 //   - ships: List of idle hauler ship entities
@@ -73,11 +72,10 @@ func FindIdleLightHaulers(
 	ctx context.Context,
 	playerID shared.PlayerID,
 	shipRepo navigation.ShipRepository,
-	shipAssignmentRepo container.ShipAssignmentRepository,
 ) ([]*navigation.Ship, []string, error) {
 	logger := common.LoggerFromContext(ctx)
 
-	// Fetch all ships for player
+	// Fetch all ships for player (includes assignment data via hybrid repo)
 	allShips, err := shipRepo.FindAllByPlayer(ctx, playerID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to fetch ships: %w", err)
@@ -111,27 +109,18 @@ func FindIdleLightHaulers(
 		}
 
 		// Filter 5: Only idle ships (no active assignment)
-		assignment, err := shipAssignmentRepo.FindByShip(ctx, ship.ShipSymbol(), playerID.Value())
-		if err != nil {
-			// If error fetching assignment, assume ship is not assigned
-			idleHaulers = append(idleHaulers, ship)
-			idleHaulerSymbols = append(idleHaulerSymbols, ship.ShipSymbol())
-			continue
-		}
-
-		// Include ships with no assignment, idle status, or empty container_id
-		// Empty container_id means the assignment is stale/zombie
-		if assignment == nil || assignment.Status() == "idle" || assignment.ContainerID() == "" {
+		// Ship.IsIdle() checks the embedded assignment state
+		if ship.IsIdle() {
 			idleHaulers = append(idleHaulers, ship)
 			idleHaulerSymbols = append(idleHaulerSymbols, ship.ShipSymbol())
 		}
 	}
 
 	logger.Log("INFO", "Idle light haulers discovered", map[string]interface{}{
-		"action":           "find_idle_haulers",
-		"total_ships":      len(allShips),
-		"idle_haulers":     len(idleHaulers),
-		"hauler_symbols":   idleHaulerSymbols,
+		"action":         "find_idle_haulers",
+		"total_ships":    len(allShips),
+		"idle_haulers":   len(idleHaulers),
+		"hauler_symbols": idleHaulerSymbols,
 	})
 
 	// Fallback: If no haulers found, use the first available idle ship with cargo capacity
@@ -152,9 +141,8 @@ func FindIdleLightHaulers(
 				continue
 			}
 
-			// Check assignment (also consider empty container_id as idle)
-			assignment, err := shipAssignmentRepo.FindByShip(ctx, ship.ShipSymbol(), playerID.Value())
-			if err != nil || assignment == nil || assignment.Status() == "idle" || assignment.ContainerID() == "" {
+			// Check if ship is idle
+			if ship.IsIdle() {
 				idleHaulers = append(idleHaulers, ship)
 				idleHaulerSymbols = append(idleHaulerSymbols, ship.ShipSymbol())
 

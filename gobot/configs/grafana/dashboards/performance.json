@@ -107,12 +107,12 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(spacetraders_daemon_command_duration_seconds_sum[5m])) / sum(rate(spacetraders_daemon_command_duration_seconds_count[5m]))",
+          "expr": "sum(rate(spacetraders_daemon_command_duration_seconds_sum{command!~\"NavigateRouteCommand|Run.*Command|BalanceShipPositionCommand\"}[5m])) / sum(rate(spacetraders_daemon_command_duration_seconds_count{command!~\"NavigateRouteCommand|Run.*Command|BalanceShipPositionCommand\"}[5m]))",
           "legendFormat": "Average",
           "refId": "A"
         }
       ],
-      "title": "All Commands - Avg Duration",
+      "title": "Commands - Avg Duration",
       "type": "timeseries"
     },
     {

@@ -85,7 +85,7 @@ func (s *DaemonServer) ParallelManufacturingCoordinator(ctx context.Context, sys
 	}
 
 	// Create and start container runner
-	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipAssignmentRepo)
+	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipRepo, s.clock)
 	s.registerContainer(containerID, runner)
 
 	// Start container in background
@@ -237,7 +237,7 @@ func (s *DaemonServer) StartManufacturingTaskWorkerContainer(
 	)
 
 	// Create and start container runner
-	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipAssignmentRepo)
+	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipRepo, s.clock)
 	if completionCallback != nil {
 		runner.SetCompletionCallback(completionCallback)
 	}

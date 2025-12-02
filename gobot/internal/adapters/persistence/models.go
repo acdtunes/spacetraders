@@ -74,21 +74,22 @@ func (ContainerLogModel) TableName() string {
 	return "container_logs"
 }
 
-// ShipAssignmentModel represents the ship_assignments table
-type ShipAssignmentModel struct {
-	ShipSymbol    string          `gorm:"column:ship_symbol;primaryKey;not null"`
-	PlayerID      int             `gorm:"column:player_id;primaryKey;not null"`
-	Player        *PlayerModel    `gorm:"foreignKey:PlayerID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
-	ContainerID   *string         `gorm:"column:container_id"` // Pointer to support NULL for idle ships
-	Container     *ContainerModel `gorm:"foreignKey:ContainerID,PlayerID;references:ID,PlayerID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL;"`
-	Status        string          `gorm:"column:status;default:'idle'"`
-	AssignedAt    *time.Time      `gorm:"column:assigned_at"`
-	ReleasedAt    *time.Time      `gorm:"column:released_at"`
-	ReleaseReason string          `gorm:"column:release_reason"`
+// ShipModel represents the ships table (renamed from ship_assignments)
+// This stores ship assignment state that is merged with API ship data
+type ShipModel struct {
+	ShipSymbol       string          `gorm:"column:ship_symbol;primaryKey;not null"`
+	PlayerID         int             `gorm:"column:player_id;primaryKey;not null"`
+	Player           *PlayerModel    `gorm:"foreignKey:PlayerID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
+	ContainerID      *string         `gorm:"column:container_id"` // Pointer to support NULL for idle ships
+	Container        *ContainerModel `gorm:"foreignKey:ContainerID,PlayerID;references:ID,PlayerID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL;"`
+	AssignmentStatus string          `gorm:"column:assignment_status;default:'idle'"` // Renamed from status
+	AssignedAt       *time.Time      `gorm:"column:assigned_at"`
+	ReleasedAt       *time.Time      `gorm:"column:released_at"`
+	ReleaseReason    string          `gorm:"column:release_reason"`
 }
 
-func (ShipAssignmentModel) TableName() string {
-	return "ship_assignments"
+func (ShipModel) TableName() string {
+	return "ships"
 }
 
 // SystemGraphModel represents the system_graphs table

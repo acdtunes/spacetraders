@@ -7,7 +7,6 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	shipCargo "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/cargo"
 	shipNav "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/storage"
@@ -35,7 +34,6 @@ type RunStorageShipWorkerResponse struct {
 type RunStorageShipWorkerHandler struct {
 	mediator           common.Mediator
 	shipRepo           navigation.ShipRepository
-	shipAssignmentRepo container.ShipAssignmentRepository
 	storageCoordinator storage.StorageCoordinator
 }
 
@@ -43,13 +41,11 @@ type RunStorageShipWorkerHandler struct {
 func NewRunStorageShipWorkerHandler(
 	mediator common.Mediator,
 	shipRepo navigation.ShipRepository,
-	shipAssignmentRepo container.ShipAssignmentRepository,
 	storageCoordinator storage.StorageCoordinator,
 ) *RunStorageShipWorkerHandler {
 	return &RunStorageShipWorkerHandler{
 		mediator:           mediator,
 		shipRepo:           shipRepo,
-		shipAssignmentRepo: shipAssignmentRepo,
 		storageCoordinator: storageCoordinator,
 	}
 }

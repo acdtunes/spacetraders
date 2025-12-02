@@ -8,7 +8,6 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/services"
-	domainContainer "github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
@@ -55,12 +54,12 @@ type ContainerRemover interface {
 
 // WorkerLifecycleManager implements WorkerManager
 type WorkerLifecycleManager struct {
-	taskRepo           manufacturing.TaskRepository
-	shipAssignmentRepo domainContainer.ShipAssignmentRepository
-	daemonClient       daemon.DaemonClient
-	containerRemover   ContainerRemover
-	taskQueue          services.ManufacturingTaskQueue
-	clock              shared.Clock
+	taskRepo         manufacturing.TaskRepository
+	shipRepo         navigation.ShipRepository
+	daemonClient     daemon.DaemonClient
+	containerRemover ContainerRemover
+	taskQueue        services.ManufacturingTaskQueue
+	clock            shared.Clock
 
 	// Dependencies (injected via constructor)
 	assignmentTracker  *AssignmentTracker // Used for Track/Untrack (no circular dep)
@@ -72,7 +71,7 @@ type WorkerLifecycleManager struct {
 // NewWorkerLifecycleManager creates a new worker lifecycle manager with all dependencies
 func NewWorkerLifecycleManager(
 	taskRepo manufacturing.TaskRepository,
-	shipAssignmentRepo domainContainer.ShipAssignmentRepository,
+	shipRepo navigation.ShipRepository,
 	daemonClient daemon.DaemonClient,
 	containerRemover ContainerRemover,
 	taskQueue services.ManufacturingTaskQueue,
@@ -87,7 +86,7 @@ func NewWorkerLifecycleManager(
 	}
 	return &WorkerLifecycleManager{
 		taskRepo:           taskRepo,
-		shipAssignmentRepo: shipAssignmentRepo,
+		shipRepo:           shipRepo,
 		daemonClient:       daemonClient,
 		containerRemover:   containerRemover,
 		taskQueue:          taskQueue,
@@ -155,11 +154,10 @@ func (m *WorkerLifecycleManager) AssignTaskToShip(ctx context.Context, params As
 		return fmt.Errorf("failed to persist worker container: %w", err)
 	}
 
-	// Step 2: Assign ship to worker container
+	// Step 2: Assign ship to worker container using Ship aggregate
 	logger.Log("INFO", fmt.Sprintf("Assigning %s to worker container %s", shipSymbol, containerID), nil)
-	if m.shipAssignmentRepo != nil {
-		assignment := domainContainer.NewShipAssignment(shipSymbol, params.PlayerID, containerID, m.clock)
-		if err := m.shipAssignmentRepo.Assign(ctx, assignment); err != nil {
+	if m.shipRepo != nil {
+		if err := params.Ship.AssignToContainer(containerID, m.clock); err != nil {
 			if m.containerRemover != nil {
 				_ = m.containerRemover.Remove(ctx, containerID, params.PlayerID)
 			}
@@ -169,13 +167,25 @@ func (m *WorkerLifecycleManager) AssignTaskToShip(ctx context.Context, params As
 			}
 			return fmt.Errorf("failed to assign ship: %w", err)
 		}
+		if err := m.shipRepo.Save(ctx, params.Ship); err != nil {
+			if m.containerRemover != nil {
+				_ = m.containerRemover.Remove(ctx, containerID, params.PlayerID)
+			}
+			_ = task.RollbackAssignment()
+			if m.taskRepo != nil {
+				_ = m.taskRepo.Update(ctx, task)
+			}
+			return fmt.Errorf("failed to persist ship assignment: %w", err)
+		}
 	}
 
 	// Step 3: Start the worker container
 	logger.Log("INFO", fmt.Sprintf("Starting worker container %s for task %s", containerID, task.ID()[:8]), nil)
 	if err := m.daemonClient.StartManufacturingTaskWorkerContainer(ctx, containerID, m.workerCompletionCh); err != nil {
-		if m.shipAssignmentRepo != nil {
-			_ = m.shipAssignmentRepo.Release(ctx, shipSymbol, params.PlayerID, "worker_start_failed")
+		// Release ship assignment on failure
+		if m.shipRepo != nil {
+			params.Ship.ForceRelease("worker_start_failed", m.clock)
+			_ = m.shipRepo.Save(ctx, params.Ship)
 		}
 		_ = task.RollbackAssignment()
 		if m.taskRepo != nil {

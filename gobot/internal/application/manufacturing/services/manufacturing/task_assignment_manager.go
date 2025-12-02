@@ -8,7 +8,6 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/application/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/services"
-	domainContainer "github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
@@ -58,10 +57,9 @@ type AssignParams struct {
 // - WorkerReservationPolicy for reservation logic
 type TaskAssignmentManager struct {
 	// Repositories
-	taskRepo           manufacturing.TaskRepository
-	shipRepo           navigation.ShipRepository
-	shipAssignmentRepo domainContainer.ShipAssignmentRepository
-	marketRepo         market.MarketRepository
+	taskRepo   manufacturing.TaskRepository
+	shipRepo   navigation.ShipRepository
+	marketRepo market.MarketRepository
 
 	// Task queue (uses DualTaskQueue for collection-first priority)
 	taskQueue services.ManufacturingTaskQueue
@@ -85,7 +83,6 @@ type TaskAssignmentManager struct {
 func NewTaskAssignmentManager(
 	taskRepo manufacturing.TaskRepository,
 	shipRepo navigation.ShipRepository,
-	shipAssignmentRepo domainContainer.ShipAssignmentRepository,
 	marketRepo market.MarketRepository,
 	taskQueue services.ManufacturingTaskQueue,
 	shipSelector *ShipSelector,
@@ -100,7 +97,6 @@ func NewTaskAssignmentManager(
 	return &TaskAssignmentManager{
 		taskRepo:           taskRepo,
 		shipRepo:           shipRepo,
-		shipAssignmentRepo: shipAssignmentRepo,
 		marketRepo:         marketRepo,
 		taskQueue:          taskQueue,
 		shipSelector:       shipSelector,
@@ -185,7 +181,7 @@ func (m *TaskAssignmentManager) AssignTasks(ctx context.Context, params AssignPa
 	// Get idle ships (FindIdleLightHaulers already calls FindAllByPlayer internally)
 	playerID := shared.MustNewPlayerID(params.PlayerID)
 	idleShipsList, _, err := contract.FindIdleLightHaulers(
-		ctx, playerID, m.shipRepo, m.shipAssignmentRepo,
+		ctx, playerID, m.shipRepo,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("failed to find idle ships: %w", err)

@@ -2,7 +2,6 @@ package manufacturing
 
 import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/services"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
@@ -13,12 +12,11 @@ import (
 // CoordinatorDependencies groups all external dependencies for manufacturing.
 type CoordinatorDependencies struct {
 	// Repositories
-	PipelineRepo       manufacturing.PipelineRepository
-	TaskRepo           manufacturing.TaskRepository
-	FactoryStateRepo   manufacturing.FactoryStateRepository
-	ShipRepo           navigation.ShipRepository
-	MarketRepo         market.MarketRepository
-	ShipAssignmentRepo container.ShipAssignmentRepository
+	PipelineRepo     manufacturing.PipelineRepository
+	TaskRepo         manufacturing.TaskRepository
+	FactoryStateRepo manufacturing.FactoryStateRepository
+	ShipRepo         navigation.ShipRepository
+	MarketRepo       market.MarketRepository
 
 	// External services
 	WaypointProvider system.IWaypointProvider
@@ -99,10 +97,11 @@ func NewManufacturingCoordinator(deps CoordinatorDependencies) *ManufacturingCoo
 	c.pipelineRecycler = NewPipelineRecycler(
 		deps.PipelineRepo,
 		deps.TaskRepo,
-		deps.ShipAssignmentRepo,
+		deps.ShipRepo,
 		c.taskQueue,
 		deps.FactoryTracker,
 		c.registry,
+		clock,
 	)
 	c.taskRescuer = NewTaskRescuer(
 		deps.TaskRepo,

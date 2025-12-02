@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/routing"
@@ -34,11 +33,11 @@ type ScoutMarketsResponse struct {
 
 // ScoutMarketsHandler handles the scout markets command
 type ScoutMarketsHandler struct {
-	shipRepo           navigation.ShipRepository
-	graphProvider      system.ISystemGraphProvider
-	routingClient      routing.RoutingClient
-	daemonClient       daemon.DaemonClient
-	shipAssignmentRepo container.ShipAssignmentRepository
+	shipRepo      navigation.ShipRepository
+	graphProvider system.ISystemGraphProvider
+	routingClient routing.RoutingClient
+	daemonClient  daemon.DaemonClient
+	clock         shared.Clock
 }
 
 // NewScoutMarketsHandler creates a new scout markets handler
@@ -47,14 +46,17 @@ func NewScoutMarketsHandler(
 	graphProvider system.ISystemGraphProvider,
 	routingClient routing.RoutingClient,
 	daemonClient daemon.DaemonClient,
-	shipAssignmentRepo container.ShipAssignmentRepository,
+	clock shared.Clock,
 ) *ScoutMarketsHandler {
+	if clock == nil {
+		clock = shared.NewRealClock()
+	}
 	return &ScoutMarketsHandler{
-		shipRepo:           shipRepo,
-		graphProvider:      graphProvider,
-		routingClient:      routingClient,
-		daemonClient:       daemonClient,
-		shipAssignmentRepo: shipAssignmentRepo,
+		shipRepo:      shipRepo,
+		graphProvider: graphProvider,
+		routingClient: routingClient,
+		daemonClient:  daemonClient,
+		clock:         clock,
 	}
 }
 
@@ -121,13 +123,13 @@ func (h *ScoutMarketsHandler) stopExistingContainers(ctx context.Context, cmd *S
 	logger := common.LoggerFromContext(ctx)
 
 	for _, shipSymbol := range cmd.ShipSymbols {
-		assignment, err := h.queryShipAssignment(ctx, shipSymbol, cmd.PlayerID)
+		ship, err := h.shipRepo.FindBySymbol(ctx, shipSymbol, cmd.PlayerID)
 		if err != nil {
-			return fmt.Errorf("failed to query ship assignment for %s: %w", shipSymbol, err)
+			return fmt.Errorf("failed to load ship %s: %w", shipSymbol, err)
 		}
 
-		if assignment != nil && assignment.Status() == "active" {
-			containerID := assignment.ContainerID()
+		if ship.IsAssigned() {
+			containerID := ship.ContainerID()
 			logger.Log("INFO", "Stopping existing scout container for reset", map[string]interface{}{
 				"ship_symbol":  shipSymbol,
 				"action":       "stop_existing_container",
@@ -144,7 +146,9 @@ func (h *ScoutMarketsHandler) stopExistingContainers(ctx context.Context, cmd *S
 				})
 			}
 
-			if err := h.shipAssignmentRepo.Release(ctx, shipSymbol, int(cmd.PlayerID.Value()), "scout_all_markets_reset"); err != nil {
+			// Release ship assignment using Ship aggregate
+			ship.ForceRelease("scout_all_markets_reset", h.clock)
+			if err := h.shipRepo.Save(ctx, ship); err != nil {
 				logger.Log("WARNING", "Ship assignment release failed", map[string]interface{}{
 					"ship_symbol": shipSymbol,
 					"action":      "release_ship",
@@ -157,11 +161,6 @@ func (h *ScoutMarketsHandler) stopExistingContainers(ctx context.Context, cmd *S
 	return nil
 }
 
-// queryShipAssignment queries the database for a ship's current container assignment
-func (h *ScoutMarketsHandler) queryShipAssignment(ctx context.Context, shipSymbol string, playerID shared.PlayerID) (*container.ShipAssignment, error) {
-	return h.shipAssignmentRepo.FindByShip(ctx, shipSymbol, int(playerID.Value()))
-}
-
 // identifyContainerReuse determines which ships can reuse existing containers vs need new ones
 func (h *ScoutMarketsHandler) identifyContainerReuse(
 	ctx context.Context,
@@ -172,21 +171,21 @@ func (h *ScoutMarketsHandler) identifyContainerReuse(
 	reusedContainers := []string{}
 
 	for _, shipSymbol := range shipSymbols {
-		assignment, err := h.queryShipAssignment(ctx, shipSymbol, playerID)
+		ship, err := h.shipRepo.FindBySymbol(ctx, shipSymbol, playerID)
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("failed to query ship assignment for %s: %w", shipSymbol, err)
+			return nil, nil, nil, fmt.Errorf("failed to load ship %s: %w", shipSymbol, err)
 		}
 
-		if assignment != nil && assignment.Status() == "active" {
-			shipsWithContainers[shipSymbol] = assignment.ContainerID()
-			reusedContainers = append(reusedContainers, assignment.ContainerID())
+		if ship.IsAssigned() {
+			shipsWithContainers[shipSymbol] = ship.ContainerID()
+			reusedContainers = append(reusedContainers, ship.ContainerID())
 		}
 	}
 
 	shipsNeedingContainers := []string{}
-	for _, ship := range shipSymbols {
-		if _, exists := shipsWithContainers[ship]; !exists {
-			shipsNeedingContainers = append(shipsNeedingContainers, ship)
+	for _, shipSymbol := range shipSymbols {
+		if _, exists := shipsWithContainers[shipSymbol]; !exists {
+			shipsNeedingContainers = append(shipsNeedingContainers, shipSymbol)
 		}
 	}
 

@@ -7,7 +7,6 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/services"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
@@ -82,11 +81,10 @@ type PipelineLifecycleManager struct {
 	factoryTracker              *manufacturing.FactoryStateTracker
 
 	// Repositories
-	pipelineRepo       manufacturing.PipelineRepository
-	taskRepo           manufacturing.TaskRepository
-	factoryStateRepo   manufacturing.FactoryStateRepository
-	marketRepo         market.MarketRepository
-	shipAssignmentRepo container.ShipAssignmentRepository
+	pipelineRepo     manufacturing.PipelineRepository
+	taskRepo         manufacturing.TaskRepository
+	factoryStateRepo manufacturing.FactoryStateRepository
+	marketRepo       market.MarketRepository
 
 	// Focused services (from coordinator)
 	registry          *ActivePipelineRegistry

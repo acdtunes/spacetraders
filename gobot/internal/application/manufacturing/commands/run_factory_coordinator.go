@@ -11,7 +11,6 @@ import (
 	mfgServices "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/services"
 	mfgTypes "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/types"
 	shipCargo "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/cargo"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/goods"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
@@ -44,7 +43,6 @@ type RunFactoryCoordinatorHandler struct {
 	mediator           common.Mediator
 	shipRepo           navigation.ShipRepository
 	marketRepo         market.MarketRepository
-	shipAssignmentRepo container.ShipAssignmentRepository
 	resolver           *mfgServices.SupplyChainResolver
 	marketLocator      *mfgServices.MarketLocator
 	productionExecutor *mfgServices.ProductionExecutor
@@ -57,7 +55,6 @@ func NewRunFactoryCoordinatorHandler(
 	mediator common.Mediator,
 	shipRepo navigation.ShipRepository,
 	marketRepo market.MarketRepository,
-	shipAssignmentRepo container.ShipAssignmentRepository,
 	resolver *mfgServices.SupplyChainResolver,
 	marketLocator *mfgServices.MarketLocator,
 	clock shared.Clock,
@@ -76,7 +73,6 @@ func NewRunFactoryCoordinatorHandler(
 		mediator:           mediator,
 		shipRepo:           shipRepo,
 		marketRepo:         marketRepo,
-		shipAssignmentRepo: shipAssignmentRepo,
 		resolver:           resolver,
 		marketLocator:      marketLocator,
 		productionExecutor: productionExecutor,
@@ -90,7 +86,6 @@ func NewRunFactoryCoordinatorHandlerWithConfig(
 	mediator common.Mediator,
 	shipRepo navigation.ShipRepository,
 	marketRepo market.MarketRepository,
-	shipAssignmentRepo container.ShipAssignmentRepository,
 	resolver *mfgServices.SupplyChainResolver,
 	marketLocator *mfgServices.MarketLocator,
 	dependencyAnalyzer *mfgServices.DependencyAnalyzer,
@@ -102,7 +97,6 @@ func NewRunFactoryCoordinatorHandlerWithConfig(
 		mediator:           mediator,
 		shipRepo:           shipRepo,
 		marketRepo:         marketRepo,
-		shipAssignmentRepo: shipAssignmentRepo,
 		resolver:           resolver,
 		marketLocator:      marketLocator,
 		productionExecutor: productionExecutor,
@@ -185,7 +179,6 @@ func (h *RunFactoryCoordinatorHandler) executeCoordination(
 		ctx,
 		playerID,
 		h.shipRepo,
-		h.shipAssignmentRepo,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to discover idle ships: %w", err)
@@ -402,7 +395,6 @@ func (h *RunFactoryCoordinatorHandler) shipPoolRefresher(
 				ctx,
 				playerIDValue,
 				h.shipRepo,
-				h.shipAssignmentRepo,
 			)
 			if err != nil {
 				logger.Log("WARNING", "Failed to refresh ship pool", map[string]interface{}{
@@ -516,7 +508,7 @@ func (h *RunFactoryCoordinatorHandler) executeLevelParallel(
 				})
 			}
 
-			// Track ship usage and persist assignment
+			// Track ship usage and persist assignment via Ship aggregate
 			shipsUsedMutex.Lock()
 			alreadyAssigned := shipsUsed[ship.ShipSymbol()]
 			if !alreadyAssigned {
@@ -526,13 +518,12 @@ func (h *RunFactoryCoordinatorHandler) executeLevelParallel(
 
 			// Persist ship assignment if this is the first time using this ship
 			if !alreadyAssigned {
-				assignment := container.NewShipAssignment(
-					ship.ShipSymbol(),
-					cmd.PlayerID,
-					cmd.ContainerID,
-					h.clock,
-				)
-				if err := h.shipAssignmentRepo.Assign(ctx, assignment); err != nil {
+				if err := ship.AssignToContainer(cmd.ContainerID, h.clock); err != nil {
+					logger.Log("WARNING", "Failed to assign ship to container", map[string]interface{}{
+						"ship_symbol": ship.ShipSymbol(),
+						"error":       err.Error(),
+					})
+				} else if err := h.shipRepo.Save(ctx, ship); err != nil {
 					logger.Log("WARNING", "Failed to persist ship assignment", map[string]interface{}{
 						"ship_symbol": ship.ShipSymbol(),
 						"error":       err.Error(),
@@ -898,16 +889,32 @@ func (h *RunFactoryCoordinatorHandler) releaseAllShipAssignments(
 ) error {
 	logger := common.LoggerFromContext(ctx)
 
-	if err := h.shipAssignmentRepo.ReleaseByContainer(ctx, containerID, playerID, reason); err != nil {
-		logger.Log("ERROR", "Failed to release ship assignments", map[string]interface{}{
+	// Find all ships assigned to this container
+	playerIDValue := shared.MustNewPlayerID(playerID)
+	assignedShips, err := h.shipRepo.FindByContainer(ctx, containerID, playerIDValue)
+	if err != nil {
+		logger.Log("ERROR", "Failed to find ship assignments", map[string]interface{}{
 			"container_id": containerID,
 			"error":        err.Error(),
 		})
 		return err
 	}
 
+	// Release each ship using Ship aggregate pattern
+	for _, ship := range assignedShips {
+		ship.ForceRelease(reason, h.clock)
+		if err := h.shipRepo.Save(ctx, ship); err != nil {
+			logger.Log("WARNING", "Failed to release ship assignment", map[string]interface{}{
+				"ship_symbol":  ship.ShipSymbol(),
+				"container_id": containerID,
+				"error":        err.Error(),
+			})
+		}
+	}
+
 	logger.Log("INFO", "Released all ship assignments", map[string]interface{}{
 		"container_id": containerID,
+		"ships_count":  len(assignedShips),
 		"reason":       reason,
 	})
 

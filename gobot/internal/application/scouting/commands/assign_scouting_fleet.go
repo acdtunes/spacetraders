@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/routing"
@@ -30,12 +29,12 @@ type AssignScoutingFleetResponse struct {
 
 // AssignScoutingFleetHandler handles the assign scouting fleet command
 type AssignScoutingFleetHandler struct {
-	shipRepo           navigation.ShipRepository
-	waypointRepo       system.WaypointRepository
-	graphProvider      system.ISystemGraphProvider
-	routingClient      routing.RoutingClient
-	daemonClient       daemon.DaemonClient
-	shipAssignmentRepo container.ShipAssignmentRepository
+	shipRepo      navigation.ShipRepository
+	waypointRepo  system.WaypointRepository
+	graphProvider system.ISystemGraphProvider
+	routingClient routing.RoutingClient
+	daemonClient  daemon.DaemonClient
+	clock         shared.Clock
 }
 
 // NewAssignScoutingFleetHandler creates a new assign scouting fleet handler
@@ -45,15 +44,18 @@ func NewAssignScoutingFleetHandler(
 	graphProvider system.ISystemGraphProvider,
 	routingClient routing.RoutingClient,
 	daemonClient daemon.DaemonClient,
-	shipAssignmentRepo container.ShipAssignmentRepository,
+	clock shared.Clock,
 ) *AssignScoutingFleetHandler {
+	if clock == nil {
+		clock = shared.NewRealClock()
+	}
 	return &AssignScoutingFleetHandler{
-		shipRepo:           shipRepo,
-		waypointRepo:       waypointRepo,
-		graphProvider:      graphProvider,
-		routingClient:      routingClient,
-		daemonClient:       daemonClient,
-		shipAssignmentRepo: shipAssignmentRepo,
+		shipRepo:      shipRepo,
+		waypointRepo:  waypointRepo,
+		graphProvider: graphProvider,
+		routingClient: routingClient,
+		daemonClient:  daemonClient,
+		clock:         clock,
 	}
 }
 
@@ -150,7 +152,7 @@ func (h *AssignScoutingFleetHandler) executeScoutMarkets(
 		h.graphProvider,
 		h.routingClient,
 		h.daemonClient,
-		h.shipAssignmentRepo,
+		h.clock,
 	)
 
 	scoutResponse, err := scoutMarketsHandler.Handle(ctx, scoutCmd)

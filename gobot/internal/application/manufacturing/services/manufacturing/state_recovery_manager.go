@@ -6,7 +6,6 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/services"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
@@ -28,13 +27,13 @@ type RecoveryResult struct {
 
 // StateRecoveryManager implements StateRecoverer
 type StateRecoveryManager struct {
-	pipelineRepo       manufacturing.PipelineRepository
-	taskRepo           manufacturing.TaskRepository
-	factoryStateRepo   manufacturing.FactoryStateRepository
-	shipAssignmentRepo container.ShipAssignmentRepository
-	shipRepo           navigation.ShipQueryRepository // BUG FIX #4: Added for cargo checks
-	factoryTracker     *manufacturing.FactoryStateTracker
-	taskQueue          services.ManufacturingTaskQueue
+	pipelineRepo     manufacturing.PipelineRepository
+	taskRepo         manufacturing.TaskRepository
+	factoryStateRepo manufacturing.FactoryStateRepository
+	shipRepo         navigation.ShipRepository // Uses ShipRepository for both query and save
+	factoryTracker   *manufacturing.FactoryStateTracker
+	taskQueue        services.ManufacturingTaskQueue
+	clock            shared.Clock
 }
 
 // NewStateRecoveryManager creates a new state recovery manager
@@ -42,19 +41,22 @@ func NewStateRecoveryManager(
 	pipelineRepo manufacturing.PipelineRepository,
 	taskRepo manufacturing.TaskRepository,
 	factoryStateRepo manufacturing.FactoryStateRepository,
-	shipAssignmentRepo container.ShipAssignmentRepository,
-	shipRepo navigation.ShipQueryRepository, // BUG FIX #4: Added for cargo checks
+	shipRepo navigation.ShipRepository,
 	factoryTracker *manufacturing.FactoryStateTracker,
 	taskQueue services.ManufacturingTaskQueue,
+	clock shared.Clock,
 ) *StateRecoveryManager {
+	if clock == nil {
+		clock = shared.NewRealClock()
+	}
 	return &StateRecoveryManager{
-		pipelineRepo:       pipelineRepo,
-		taskRepo:           taskRepo,
-		factoryStateRepo:   factoryStateRepo,
-		shipAssignmentRepo: shipAssignmentRepo,
-		shipRepo:           shipRepo,
-		factoryTracker:     factoryTracker,
-		taskQueue:          taskQueue,
+		pipelineRepo:     pipelineRepo,
+		taskRepo:         taskRepo,
+		factoryStateRepo: factoryStateRepo,
+		shipRepo:         shipRepo,
+		factoryTracker:   factoryTracker,
+		taskQueue:        taskQueue,
+		clock:            clock,
 	}
 }
 
@@ -173,9 +175,9 @@ func (m *StateRecoveryManager) RecoverState(ctx context.Context, playerID int) (
 				logger.Log("WARN", fmt.Sprintf("Cancelled orphaned task %s (%s) - no pipeline_id",
 					task.ID()[:8], task.TaskType()), nil)
 			}
-			// Release ship if assigned
-			if shipSymbol != "" && m.shipAssignmentRepo != nil {
-				_ = m.shipAssignmentRepo.Release(ctx, shipSymbol, playerID, "orphaned_task")
+			// Release ship if assigned (using Ship aggregate)
+			if shipSymbol != "" {
+				m.releaseShip(ctx, shipSymbol, playerID, "orphaned_task")
 			}
 			continue
 		}
@@ -221,9 +223,9 @@ func (m *StateRecoveryManager) RecoverState(ctx context.Context, playerID int) (
 				logger.Log("INFO", fmt.Sprintf("Cancelled task %s (%s) - pipeline not active",
 					task.ID()[:8], task.TaskType()), nil)
 			}
-			// Release ship if assigned
-			if shipSymbol != "" && m.shipAssignmentRepo != nil {
-				_ = m.shipAssignmentRepo.Release(ctx, shipSymbol, playerID, "pipeline_not_active")
+			// Release ship if assigned (using Ship aggregate)
+			if shipSymbol != "" {
+				m.releaseShip(ctx, shipSymbol, playerID, "pipeline_not_active")
 			}
 			continue
 		}
@@ -235,8 +237,8 @@ func (m *StateRecoveryManager) RecoverState(ctx context.Context, playerID int) (
 				_ = m.taskRepo.Update(ctx, task)
 				result.InterruptedCount++
 				logger.Log("INFO", fmt.Sprintf("Reset interrupted ASSIGNED task %s (%s)", task.ID()[:8], task.TaskType()), nil)
-				if shipSymbol != "" && m.shipAssignmentRepo != nil {
-					_ = m.shipAssignmentRepo.Release(ctx, shipSymbol, playerID, "task_recovery")
+				if shipSymbol != "" {
+					m.releaseShip(ctx, shipSymbol, playerID, "task_recovery")
 				}
 			}
 		}
@@ -255,8 +257,8 @@ func (m *StateRecoveryManager) RecoverState(ctx context.Context, playerID int) (
 				// The coordinator will re-assign the same ship to complete the task.
 				isSellTask := task.TaskType() == manufacturing.TaskTypeCollectSell ||
 					task.TaskType() == manufacturing.TaskTypeLiquidate
-				if shipSymbol != "" && m.shipAssignmentRepo != nil && !isSellTask {
-					_ = m.shipAssignmentRepo.Release(ctx, shipSymbol, playerID, "task_recovery")
+				if shipSymbol != "" && !isSellTask {
+					m.releaseShip(ctx, shipSymbol, playerID, "task_recovery")
 				} else if isSellTask && shipSymbol != "" {
 					logger.Log("INFO", fmt.Sprintf("Preserving ship %s assignment (SELL task has cargo)", shipSymbol), nil)
 				}
@@ -499,5 +501,22 @@ func (m *StateRecoveryManager) reconcileFactoryStatesWithCompletedTasks(
 	}
 
 	return reconciledCount
+}
+
+// releaseShip releases a ship using the Ship aggregate pattern
+func (m *StateRecoveryManager) releaseShip(ctx context.Context, shipSymbol string, playerID int, reason string) {
+	logger := common.LoggerFromContext(ctx)
+	if m.shipRepo == nil {
+		return
+	}
+	ship, err := m.shipRepo.FindBySymbol(ctx, shipSymbol, shared.MustNewPlayerID(playerID))
+	if err != nil {
+		logger.Log("WARN", fmt.Sprintf("Failed to load ship %s for release: %v", shipSymbol, err), nil)
+		return
+	}
+	ship.ForceRelease(reason, m.clock)
+	if err := m.shipRepo.Save(ctx, ship); err != nil {
+		logger.Log("WARN", fmt.Sprintf("Failed to save ship %s release: %v", shipSymbol, err), nil)
+	}
 }
 

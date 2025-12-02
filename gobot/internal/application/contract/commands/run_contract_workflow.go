@@ -5,11 +5,11 @@ import (
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
-	contractTypes "github.com/andrescamacho/spacetraders-go/internal/application/contract/types"
 	contractServices "github.com/andrescamacho/spacetraders-go/internal/application/contract/services"
-	domainContainer "github.com/andrescamacho/spacetraders-go/internal/domain/container"
+	contractTypes "github.com/andrescamacho/spacetraders-go/internal/application/contract/types"
 	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
 // Type aliases for convenience
@@ -41,9 +41,10 @@ type RunWorkflowResponse = contractTypes.RunWorkflowResponse
 // 8. Transfer ship back to coordinator (if applicable)
 // 9. Signal completion via channel (if applicable)
 type RunWorkflowHandler struct {
-	lifecycleService   *contractServices.ContractLifecycleService
-	deliveryExecutor   *contractServices.DeliveryExecutor
-	shipAssignmentRepo domainContainer.ShipAssignmentRepository
+	lifecycleService *contractServices.ContractLifecycleService
+	deliveryExecutor *contractServices.DeliveryExecutor
+	shipRepo         navigation.ShipRepository
+	clock            shared.Clock
 }
 
 // NewRunWorkflowHandler creates a new contract workflow handler
@@ -51,16 +52,20 @@ func NewRunWorkflowHandler(
 	mediator common.Mediator,
 	shipRepo navigation.ShipRepository,
 	contractRepo domainContract.ContractRepository,
-	shipAssignmentRepo domainContainer.ShipAssignmentRepository,
+	clock shared.Clock,
 ) *RunWorkflowHandler {
+	if clock == nil {
+		clock = shared.NewRealClock()
+	}
 	cargoManager := contractServices.NewCargoManager(mediator, shipRepo)
 	lifecycleService := contractServices.NewContractLifecycleService(mediator, contractRepo)
 	deliveryExecutor := contractServices.NewDeliveryExecutor(mediator, shipRepo, cargoManager)
 
 	return &RunWorkflowHandler{
-		lifecycleService:   lifecycleService,
-		deliveryExecutor:   deliveryExecutor,
-		shipAssignmentRepo: shipAssignmentRepo,
+		lifecycleService: lifecycleService,
+		deliveryExecutor: deliveryExecutor,
+		shipRepo:         shipRepo,
+		clock:            clock,
 	}
 }
 
@@ -176,17 +181,36 @@ func (h *RunWorkflowHandler) transferShipBackToCoordinator(
 		return nil
 	}
 
-	if err := h.shipAssignmentRepo.Transfer(ctx, cmd.ShipSymbol, cmd.ContainerID, cmd.CoordinatorID); err != nil {
-		logger.Log("WARNING", "Failed to transfer ship back to coordinator", map[string]interface{}{
+	// Transfer ship from worker container to coordinator using Ship aggregate
+	ship, err := h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
+	if err != nil {
+		logger.Log("WARNING", "Failed to load ship for transfer", map[string]interface{}{
 			"ship_symbol":    cmd.ShipSymbol,
 			"action":         "transfer_to_coordinator",
 			"coordinator_id": cmd.CoordinatorID,
-			"worker_id":      cmd.ContainerID,
 			"error":          err.Error(),
 		})
-		// Fallback: try inserting new assignment if transfer fails
-		assignment := domainContainer.NewShipAssignment(cmd.ShipSymbol, cmd.PlayerID.Value(), cmd.CoordinatorID, nil)
-		_ = h.shipAssignmentRepo.Assign(ctx, assignment)
+		return err
+	}
+
+	// Assign to coordinator container (this is effectively a transfer)
+	if err := ship.AssignToContainer(cmd.CoordinatorID, h.clock); err != nil {
+		logger.Log("WARNING", "Failed to transfer ship to coordinator", map[string]interface{}{
+			"ship_symbol":    cmd.ShipSymbol,
+			"action":         "transfer_to_coordinator",
+			"coordinator_id": cmd.CoordinatorID,
+			"error":          err.Error(),
+		})
+		return err
+	}
+
+	if err := h.shipRepo.Save(ctx, ship); err != nil {
+		logger.Log("WARNING", "Failed to persist ship transfer", map[string]interface{}{
+			"ship_symbol":    cmd.ShipSymbol,
+			"action":         "transfer_to_coordinator",
+			"coordinator_id": cmd.CoordinatorID,
+			"error":          err.Error(),
+		})
 		return err
 	}
 

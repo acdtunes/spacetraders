@@ -8,7 +8,6 @@ import (
 	appContract "github.com/andrescamacho/spacetraders-go/internal/application/contract"
 	contractTypes "github.com/andrescamacho/spacetraders-go/internal/application/contract/types"
 	shipNav "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	domainContainer "github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
@@ -31,32 +30,35 @@ type ContainerRepository interface {
 // This handler repositions a ship to optimize the overall fleet distribution
 // across markets using a Distance + Coverage Score algorithm.
 type BalanceShipPositionHandler struct {
-	mediator              common.Mediator
-	shipRepo              navigation.ShipRepository
-	shipAssignmentRepo    container.ShipAssignmentRepository
-	containerRepo         ContainerRepository
-	graphProvider         system.ISystemGraphProvider
-	marketRepo            MarketRepository
-	balancer              *domainContract.ShipBalancer
+	mediator      common.Mediator
+	shipRepo      navigation.ShipRepository
+	containerRepo ContainerRepository
+	graphProvider system.ISystemGraphProvider
+	marketRepo    MarketRepository
+	balancer      *domainContract.ShipBalancer
+	clock         shared.Clock
 }
 
 // NewBalanceShipPositionHandler creates a new balance ship position handler
 func NewBalanceShipPositionHandler(
 	mediator common.Mediator,
 	shipRepo navigation.ShipRepository,
-	shipAssignmentRepo container.ShipAssignmentRepository,
 	containerRepo ContainerRepository,
 	graphProvider system.ISystemGraphProvider,
 	marketRepo MarketRepository,
+	clock shared.Clock,
 ) *BalanceShipPositionHandler {
+	if clock == nil {
+		clock = shared.NewRealClock()
+	}
 	return &BalanceShipPositionHandler{
-		mediator:           mediator,
-		shipRepo:           shipRepo,
-		shipAssignmentRepo: shipAssignmentRepo,
-		containerRepo:      containerRepo,
-		graphProvider:      graphProvider,
-		marketRepo:         marketRepo,
-		balancer:           domainContract.NewShipBalancer(),
+		mediator:      mediator,
+		shipRepo:      shipRepo,
+		containerRepo: containerRepo,
+		graphProvider: graphProvider,
+		marketRepo:    marketRepo,
+		balancer:      domainContract.NewShipBalancer(),
+		clock:         clock,
 	}
 }
 
@@ -112,24 +114,28 @@ func (h *BalanceShipPositionHandler) Handle(ctx context.Context, request common.
 		_ = h.containerRepo.Remove(ctx, balancingContainerID, cmd.PlayerID.Value())
 	}()
 
-	// 2. Create temporary assignment to prevent this ship from being selected elsewhere
-	assignment := container.NewShipAssignment(cmd.ShipSymbol, cmd.PlayerID.Value(), balancingContainerID, shared.NewRealClock())
-	if err := h.shipAssignmentRepo.Assign(ctx, assignment); err != nil {
-		logger.Log("WARNING", fmt.Sprintf("Failed to create balancing assignment: %v", err), nil)
-		// Continue anyway - balancing is best-effort
-	}
-	// Ensure assignment is released on exit (success or failure)
-	defer func() {
-		_ = h.shipAssignmentRepo.Release(ctx, cmd.ShipSymbol, cmd.PlayerID.Value(), "balancing_complete")
-	}()
-
-	// 2. Fetch ship
+	// 2. Fetch ship (includes assignment state via hybrid repo)
 	ship, err := h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load ship %s: %w", cmd.ShipSymbol, err)
 	}
 
-	// 2. Discover all markets in ship's system
+	// 3. Create temporary assignment to prevent this ship from being selected elsewhere
+	if err := ship.AssignToContainer(balancingContainerID, h.clock); err != nil {
+		logger.Log("WARNING", fmt.Sprintf("Failed to create balancing assignment: %v", err), nil)
+		// Continue anyway - balancing is best-effort
+	} else {
+		if err := h.shipRepo.Save(ctx, ship); err != nil {
+			logger.Log("WARNING", fmt.Sprintf("Failed to save balancing assignment: %v", err), nil)
+		}
+	}
+	// Ensure assignment is released on exit (success or failure)
+	defer func() {
+		ship.ForceRelease("balancing_complete", h.clock)
+		_ = h.shipRepo.Save(ctx, ship)
+	}()
+
+	// 4. Discover all markets in ship's system
 	systemSymbol := ship.CurrentLocation().SystemSymbol
 	marketSymbols, err := h.marketRepo.FindAllMarketsInSystem(ctx, systemSymbol, cmd.PlayerID.Value())
 	if err != nil {
@@ -147,9 +153,9 @@ func (h *BalanceShipPositionHandler) Handle(ctx context.Context, request common.
 		return nil, fmt.Errorf("failed to fetch market waypoints: %w", err)
 	}
 
-	// 4. Fetch all idle light hauler ships
+	// 6. Fetch all idle light hauler ships
 	// Ships with active assignments (including other ships being balanced) are automatically excluded
-	idleHaulers, _, err := appContract.FindIdleLightHaulers(ctx, cmd.PlayerID, h.shipRepo, h.shipAssignmentRepo)
+	idleHaulers, _, err := appContract.FindIdleLightHaulers(ctx, cmd.PlayerID, h.shipRepo)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find idle haulers: %w", err)
 	}

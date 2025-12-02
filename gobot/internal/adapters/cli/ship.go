@@ -578,7 +578,7 @@ Examples:
 			systemGraphRepo := persistence.NewGormSystemGraphRepository(db)
 			graphBuilder := api.NewGraphBuilder(apiClient, playerRepo, waypointRepo)
 			graphService := graph.NewGraphService(systemGraphRepo, waypointRepo, graphBuilder)
-			shipRepo := api.NewShipRepository(apiClient, playerRepo, waypointRepo, graphService)
+			shipRepo := api.NewShipRepository(apiClient, playerRepo, waypointRepo, graphService, db)
 			marketRepo := persistence.NewMarketRepository(db)
 
 			// Create mediator with ledger handlers registered
@@ -589,7 +589,6 @@ Examples:
 				playerResolver,
 				nil, // clock (defaults to real clock)
 				nil, // shipRepo (not needed for this CLI command)
-				nil, // shipAssignmentRepo (not needed for this CLI command)
 				nil, // daemonClient (not needed for this CLI command)
 				nil, // storageOpRepo (not needed for this CLI command)
 				nil, // storageCoordinator (not needed for this CLI command)

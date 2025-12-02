@@ -11,17 +11,20 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
 // ContainerRunner executes a container operation in a background goroutine
 // Manages the lifecycle of a single container including error handling and restarts
 type ContainerRunner struct {
-	containerEntity    *container.Container
-	mediator           common.Mediator
-	command            interface{} // The command to execute (must implement mediator request)
-	logRepo            persistence.ContainerLogRepository
-	containerRepo      *persistence.ContainerRepositoryGORM
-	shipAssignmentRepo *persistence.ShipAssignmentRepositoryGORM
+	containerEntity *container.Container
+	mediator        common.Mediator
+	command         interface{} // The command to execute (must implement mediator request)
+	logRepo         persistence.ContainerLogRepository
+	containerRepo   *persistence.ContainerRepositoryGORM
+	shipRepo        navigation.ShipRepository
+	clock           shared.Clock
 
 	// Execution control
 	ctx        context.Context
@@ -52,20 +55,25 @@ func NewContainerRunner(
 	command interface{},
 	logRepo persistence.ContainerLogRepository,
 	containerRepo *persistence.ContainerRepositoryGORM,
-	shipAssignmentRepo *persistence.ShipAssignmentRepositoryGORM,
+	shipRepo navigation.ShipRepository,
+	clock shared.Clock,
 ) *ContainerRunner {
 	ctx, cancel := context.WithCancel(context.Background())
+	if clock == nil {
+		clock = shared.NewRealClock()
+	}
 
 	return &ContainerRunner{
-		containerEntity:    containerEntity,
-		mediator:           mediator,
-		command:            command,
-		logRepo:            logRepo,
-		containerRepo:      containerRepo,
-		shipAssignmentRepo: shipAssignmentRepo,
-		ctx:                ctx,
-		cancelFunc:         cancel,
-		done:               make(chan struct{}),
+		containerEntity: containerEntity,
+		mediator:        mediator,
+		command:         command,
+		logRepo:         logRepo,
+		containerRepo:   containerRepo,
+		shipRepo:        shipRepo,
+		clock:           clock,
+		ctx:             ctx,
+		cancelFunc:      cancel,
+		done:            make(chan struct{}),
 		completionCallback: nil, // Can be set later via SetCompletionCallback
 		logs:               make([]LogEntry, 0),
 	}
@@ -467,7 +475,7 @@ func (r *ContainerRunner) GetLogs(limit *int, level *string) []LogEntry {
 // Checks for "ship_symbol" (single ship) in the metadata map
 // This prevents concurrent containers from operating on the same ship
 func (r *ContainerRunner) createShipAssignments() error {
-	if r.shipAssignmentRepo == nil {
+	if r.shipRepo == nil {
 		return nil
 	}
 
@@ -478,28 +486,25 @@ func (r *ContainerRunner) createShipAssignments() error {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
-		// Check if assignment already exists (for recovered containers)
-		existingAssignment, err := r.shipAssignmentRepo.FindByShip(ctx, shipSymbol, r.containerEntity.PlayerID())
+		playerID := shared.MustNewPlayerID(r.containerEntity.PlayerID())
+		ship, err := r.shipRepo.FindBySymbol(ctx, shipSymbol, playerID)
 		if err != nil {
-			return fmt.Errorf("failed to check existing assignment: %w", err)
+			return fmt.Errorf("failed to load ship %s: %w", shipSymbol, err)
 		}
 
-		// If assignment exists for THIS container, skip creation (recovered container)
-		if existingAssignment != nil && existingAssignment.ContainerID() == r.containerEntity.ID() {
+		// Check if ship is already assigned to THIS container (recovered container)
+		if ship.IsAssigned() && ship.ContainerID() == r.containerEntity.ID() {
 			r.log("INFO", fmt.Sprintf("Ship %s already assigned to this container (recovered)", shipSymbol), nil)
 			return nil
 		}
 
-		// Create ship assignment
-		assignment := container.NewShipAssignment(
-			shipSymbol,
-			r.containerEntity.PlayerID(),
-			r.containerEntity.ID(),
-			nil,
-		)
-
-		if err := r.shipAssignmentRepo.Assign(ctx, assignment); err != nil {
+		// Assign ship to container using Ship aggregate
+		if err := ship.AssignToContainer(r.containerEntity.ID(), r.clock); err != nil {
 			return fmt.Errorf("failed to assign ship %s: %w", shipSymbol, err)
+		}
+
+		if err := r.shipRepo.Save(ctx, ship); err != nil {
+			return fmt.Errorf("failed to persist ship %s assignment: %w", shipSymbol, err)
 		}
 
 		r.log("INFO", fmt.Sprintf("Assigned ship %s to container", shipSymbol), nil)
@@ -511,23 +516,28 @@ func (r *ContainerRunner) createShipAssignments() error {
 
 // releaseShipAssignments releases all ship assignments for this container
 func (r *ContainerRunner) releaseShipAssignments(reason string) {
-	if r.shipAssignmentRepo == nil {
+	if r.shipRepo == nil {
 		return
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	err := r.shipAssignmentRepo.ReleaseByContainer(
-		ctx,
-		r.containerEntity.ID(),
-		r.containerEntity.PlayerID(),
-		reason,
-	)
-
+	playerID := shared.MustNewPlayerID(r.containerEntity.PlayerID())
+	assignedShips, err := r.shipRepo.FindByContainer(ctx, r.containerEntity.ID(), playerID)
 	if err != nil {
-		r.log("ERROR", fmt.Sprintf("Failed to release ship assignments: %v", err), nil)
-	} else {
-		r.log("INFO", fmt.Sprintf("Released ship assignments (reason: %s)", reason), nil)
+		r.log("ERROR", fmt.Sprintf("Failed to find ships for container: %v", err), nil)
+		return
+	}
+
+	for _, ship := range assignedShips {
+		ship.ForceRelease(reason, r.clock)
+		if err := r.shipRepo.Save(ctx, ship); err != nil {
+			r.log("ERROR", fmt.Sprintf("Failed to release ship %s: %v", ship.ShipSymbol(), err), nil)
+		}
+	}
+
+	if len(assignedShips) > 0 {
+		r.log("INFO", fmt.Sprintf("Released %d ship assignments (reason: %s)", len(assignedShips), reason), nil)
 	}
 }

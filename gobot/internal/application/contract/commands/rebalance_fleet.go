@@ -5,10 +5,9 @@ import (
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
-	contractTypes "github.com/andrescamacho/spacetraders-go/internal/application/contract/types"
 	appContract "github.com/andrescamacho/spacetraders-go/internal/application/contract"
+	contractTypes "github.com/andrescamacho/spacetraders-go/internal/application/contract/types"
 	shipNav "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
@@ -21,7 +20,6 @@ type RebalanceContractFleetResponse = contractTypes.RebalanceContractFleetRespon
 type RebalanceContractFleetHandler struct {
 	mediator            common.Mediator
 	shipRepo            navigation.ShipRepository
-	shipAssignmentRepo  container.ShipAssignmentRepository
 	graphProvider       system.ISystemGraphProvider
 	marketRepo          MarketRepository
 	converter           system.IWaypointConverter
@@ -37,7 +35,6 @@ type MarketRepository interface {
 func NewRebalanceContractFleetHandler(
 	mediator common.Mediator,
 	shipRepo navigation.ShipRepository,
-	shipAssignmentRepo container.ShipAssignmentRepository,
 	graphProvider system.ISystemGraphProvider,
 	marketRepo MarketRepository,
 	converter system.IWaypointConverter,
@@ -45,7 +42,6 @@ func NewRebalanceContractFleetHandler(
 	return &RebalanceContractFleetHandler{
 		mediator:            mediator,
 		shipRepo:            shipRepo,
-		shipAssignmentRepo:  shipAssignmentRepo,
 		graphProvider:       graphProvider,
 		marketRepo:          marketRepo,
 		converter:           converter,
@@ -134,7 +130,7 @@ func (h *RebalanceContractFleetHandler) getCoordinatorShips(
 ) ([]*navigation.Ship, bool) {
 	logger := common.LoggerFromContext(ctx)
 
-	shipSymbols, err := appContract.FindCoordinatorShips(ctx, cmd.CoordinatorID, cmd.PlayerID.Value(), h.shipAssignmentRepo)
+	shipSymbols, err := appContract.FindCoordinatorShips(ctx, cmd.CoordinatorID, cmd.PlayerID.Value(), h.shipRepo)
 	if err != nil {
 		logger.Log("ERROR", fmt.Sprintf("Failed to find coordinator ships: %v", err), nil)
 		return nil, true

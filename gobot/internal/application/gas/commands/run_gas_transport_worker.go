@@ -9,7 +9,6 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/gas/queries"
 	shipNav "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
 	shipTypes "github.com/andrescamacho/spacetraders-go/internal/application/ship/types"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
@@ -35,24 +34,21 @@ type RunGasTransportWorkerResponse struct {
 
 // RunGasTransportWorkerHandler implements the gas transport worker workflow
 type RunGasTransportWorkerHandler struct {
-	mediator           common.Mediator
-	shipRepo           navigation.ShipRepository
-	shipAssignmentRepo container.ShipAssignmentRepository
-	apiClient          domainPorts.APIClient
+	mediator  common.Mediator
+	shipRepo  navigation.ShipRepository
+	apiClient domainPorts.APIClient
 }
 
 // NewRunGasTransportWorkerHandler creates a new gas transport worker handler
 func NewRunGasTransportWorkerHandler(
 	mediator common.Mediator,
 	shipRepo navigation.ShipRepository,
-	shipAssignmentRepo container.ShipAssignmentRepository,
 	apiClient domainPorts.APIClient,
 ) *RunGasTransportWorkerHandler {
 	return &RunGasTransportWorkerHandler{
-		mediator:           mediator,
-		shipRepo:           shipRepo,
-		shipAssignmentRepo: shipAssignmentRepo,
-		apiClient:          apiClient,
+		mediator:  mediator,
+		shipRepo:  shipRepo,
+		apiClient: apiClient,
 	}
 }
 

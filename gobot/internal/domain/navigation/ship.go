@@ -43,6 +43,11 @@ const (
 // - IN_ORBIT -> Navigate() -> IN_TRANSIT
 // - IN_TRANSIT -> Arrive() -> IN_ORBIT
 // - IN_ORBIT -> Dock() -> DOCKED
+//
+// Assignment state:
+// - Ships can be assigned to containers (operations)
+// - Assignment is managed through aggregate methods
+// - Repository persists assignment state to database
 type Ship struct {
 	shipSymbol         string
 	playerID           shared.PlayerID
@@ -52,10 +57,11 @@ type Ship struct {
 	cargoCapacity      int
 	cargo              *shared.Cargo
 	engineSpeed        int
-	frameSymbol        string // Frame type (e.g., "FRAME_PROBE", "FRAME_DRONE", "FRAME_MINER")
-	role               string // Ship role from registration (e.g., "EXCAVATOR", "COMMAND", "SATELLITE")
+	frameSymbol        string        // Frame type (e.g., "FRAME_PROBE", "FRAME_DRONE", "FRAME_MINER")
+	role               string        // Ship role from registration (e.g., "EXCAVATOR", "COMMAND", "SATELLITE")
 	modules            []*ShipModule // Installed ship modules (jump drives, mining equipment, etc.)
 	navStatus          NavStatus
+	assignment         *ShipAssignment // Container assignment state (persisted to DB)
 	fuelService        *ShipFuelService
 	navigationCalc     *ShipNavigationCalculator
 }
@@ -484,3 +490,85 @@ func (s *Ship) String() string {
 // NOTE: Refueling decision methods have been moved to ShipFuelService to improve
 // separation of concerns and enforce Tell-Don't-Ask principle. Callers should use
 // ShipFuelService methods directly for refueling decisions.
+
+// Assignment Management
+//
+// These methods manage the ship's container assignment state.
+// Assignments are persisted to database via ShipRepository.Save().
+
+// Assignment returns the ship's current assignment (may be nil if never assigned)
+func (s *Ship) Assignment() *ShipAssignment {
+	return s.assignment
+}
+
+// IsIdle returns true if the ship is available for assignment
+// A ship is idle if it has no assignment or its assignment is in idle state
+func (s *Ship) IsIdle() bool {
+	return s.assignment == nil || s.assignment.IsIdle()
+}
+
+// IsAssigned returns true if the ship is currently assigned to a container
+func (s *Ship) IsAssigned() bool {
+	return s.assignment != nil && s.assignment.IsActive()
+}
+
+// ContainerID returns the ID of the container this ship is assigned to
+// Returns empty string if ship is not assigned
+func (s *Ship) ContainerID() string {
+	if s.assignment == nil {
+		return ""
+	}
+	return s.assignment.ContainerID()
+}
+
+// AssignToContainer assigns the ship to a container operation.
+// Returns error if ship is already assigned to another container.
+func (s *Ship) AssignToContainer(containerID string, clock shared.Clock) error {
+	if s.IsAssigned() {
+		return fmt.Errorf("ship %s is already assigned to container %s",
+			s.shipSymbol, s.assignment.ContainerID())
+	}
+
+	s.assignment = NewActiveAssignment(containerID, clock.Now())
+	return nil
+}
+
+// Release releases the ship from its current assignment.
+// Returns error if ship is not currently assigned.
+func (s *Ship) Release(reason string, clock shared.Clock) error {
+	if !s.IsAssigned() {
+		return fmt.Errorf("ship %s is not assigned to any container", s.shipSymbol)
+	}
+
+	s.assignment = s.assignment.Released(reason, clock.Now())
+	return nil
+}
+
+// ForceRelease forcefully releases the ship regardless of current state.
+// Used for cleanup operations (e.g., daemon restart).
+func (s *Ship) ForceRelease(reason string, clock shared.Clock) {
+	if s.assignment == nil {
+		s.assignment = NewIdleAssignment()
+		return
+	}
+
+	s.assignment = s.assignment.Released(reason, clock.Now())
+}
+
+// TransferToContainer transfers the ship to a different container.
+// Returns error if ship is not currently assigned.
+func (s *Ship) TransferToContainer(newContainerID string, clock shared.Clock) error {
+	if !s.IsAssigned() {
+		return fmt.Errorf("ship %s is not assigned to any container", s.shipSymbol)
+	}
+
+	s.assignment = s.assignment.TransferredTo(newContainerID, clock.Now())
+	return nil
+}
+
+// SetAssignment sets the ship's assignment state directly.
+// Used by repositories when loading from database.
+// NOTE: Prefer using AssignToContainer/Release for domain operations.
+func (s *Ship) SetAssignment(assignment *ShipAssignment) {
+	s.assignment = assignment
+}

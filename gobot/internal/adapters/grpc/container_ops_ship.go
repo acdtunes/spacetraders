@@ -45,7 +45,7 @@ func (s *DaemonServer) NavigateShip(ctx context.Context, shipSymbol, destination
 	}
 
 	// Create and start container runner
-	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipAssignmentRepo)
+	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipRepo, s.clock)
 	s.registerContainer(containerID, runner)
 
 	// Start container in background
@@ -84,7 +84,7 @@ func (s *DaemonServer) DockShip(ctx context.Context, shipSymbol string, playerID
 		return "", fmt.Errorf("failed to persist container: %w", err)
 	}
 
-	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipAssignmentRepo)
+	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipRepo, s.clock)
 	s.registerContainer(containerID, runner)
 
 	go func() {
@@ -122,7 +122,7 @@ func (s *DaemonServer) OrbitShip(ctx context.Context, shipSymbol string, playerI
 		return "", fmt.Errorf("failed to persist container: %w", err)
 	}
 
-	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipAssignmentRepo)
+	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipRepo, s.clock)
 	s.registerContainer(containerID, runner)
 
 	go func() {
@@ -166,7 +166,7 @@ func (s *DaemonServer) RefuelShip(ctx context.Context, shipSymbol string, player
 		return "", fmt.Errorf("failed to persist container: %w", err)
 	}
 
-	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipAssignmentRepo)
+	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipRepo, s.clock)
 	s.registerContainer(containerID, runner)
 
 	go func() {
@@ -210,7 +210,7 @@ func (s *DaemonServer) JettisonCargo(ctx context.Context, shipSymbol string, pla
 		return "", fmt.Errorf("failed to persist container: %w", err)
 	}
 
-	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipAssignmentRepo)
+	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipRepo, s.clock)
 	s.registerContainer(containerID, runner)
 
 	go func() {

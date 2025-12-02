@@ -47,7 +47,7 @@ func (s *DaemonServer) PurchaseShip(ctx context.Context, purchasingShipSymbol, s
 	}
 
 	// Create and start container runner
-	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipAssignmentRepo)
+	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipRepo, s.clock)
 
 	// Store container
 	s.containersMu.Lock()
@@ -107,7 +107,7 @@ func (s *DaemonServer) BatchPurchaseShips(ctx context.Context, purchasingShipSym
 	}
 
 	// Create and start container runner
-	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipAssignmentRepo)
+	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipRepo, s.clock)
 
 	// Store container
 	s.containersMu.Lock()

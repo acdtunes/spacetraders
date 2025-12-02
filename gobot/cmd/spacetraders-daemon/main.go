@@ -118,7 +118,6 @@ func run(cfg *config.Config) error {
 	containerRepo := persistence.NewContainerRepository(db)
 	marketRepo := persistence.NewMarketRepository(db)
 	marketRepoAdapter := persistence.NewMarketRepositoryAdapter(marketRepo) // Adapter for domain market.MarketRepository interface
-	shipAssignmentRepo := persistence.NewShipAssignmentRepository(db)
 	goodsFactoryRepo := persistence.NewGormGoodsFactoryRepository(db)
 	contractRepo := persistence.NewGormContractRepository(db)
 	tradingMarketRepo := persistence.NewMarketRepositoryAdapter(marketRepo)
@@ -160,7 +159,8 @@ func run(cfg *config.Config) error {
 	fmt.Println("Graph service initialized (unified graph and waypoint access)")
 
 	// Now initialize ship repository with graph service (implements IWaypointProvider)
-	shipRepo = api.NewShipRepository(apiClient, playerRepo, waypointRepo, graphService)
+	// Pass db connection for hybrid API+DB operation (ship data from API, assignment from DB)
+	shipRepo = api.NewShipRepository(apiClient, playerRepo, waypointRepo, graphService, db)
 	fmt.Println("Ship repository initialized")
 
 	// 7. Initialize mediator (CQRS dispatcher)
@@ -256,7 +256,7 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to register GetShipyardListings handler: %w", err)
 	}
 
-	purchaseShipHandler := shipyardCmd.NewPurchaseShipHandler(shipRepo, playerRepo, waypointRepo, graphService, apiClient, med, shipAssignmentRepo)
+	purchaseShipHandler := shipyardCmd.NewPurchaseShipHandler(shipRepo, playerRepo, waypointRepo, graphService, apiClient, med)
 	if err := mediator.RegisterHandler[*shipyardCmd.PurchaseShipCommand](med, purchaseShipHandler); err != nil {
 		return fmt.Errorf("failed to register PurchaseShip handler: %w", err)
 	}
@@ -325,17 +325,17 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to register EvaluateContractProfitability handler: %w", err)
 	}
 
-	contractWorkflowHandler := contractCmd.NewRunWorkflowHandler(med, shipRepo, contractRepo, shipAssignmentRepo)
+	contractWorkflowHandler := contractCmd.NewRunWorkflowHandler(med, shipRepo, contractRepo, nil)
 	if err := mediator.RegisterHandler[*contractCmd.RunWorkflowCommand](med, contractWorkflowHandler); err != nil {
 		return fmt.Errorf("failed to register ContractWorkflow handler: %w", err)
 	}
 
-	rebalanceFleetHandler := contractCmd.NewRebalanceContractFleetHandler(med, shipRepo, shipAssignmentRepo, graphService, marketRepo, waypointConverter)
+	rebalanceFleetHandler := contractCmd.NewRebalanceContractFleetHandler(med, shipRepo, graphService, marketRepo, waypointConverter)
 	if err := mediator.RegisterHandler[*contractCmd.RebalanceContractFleetCommand](med, rebalanceFleetHandler); err != nil {
 		return fmt.Errorf("failed to register RebalanceContractFleet handler: %w", err)
 	}
 
-	balanceShipHandler := contractCmd.NewBalanceShipPositionHandler(med, shipRepo, shipAssignmentRepo, containerRepo, graphService, marketRepo)
+	balanceShipHandler := contractCmd.NewBalanceShipPositionHandler(med, shipRepo, containerRepo, graphService, marketRepo, nil) // nil = use RealClock
 	if err := mediator.RegisterHandler[*contractCmd.BalanceShipPositionCommand](med, balanceShipHandler); err != nil {
 		return fmt.Errorf("failed to register BalanceShipPosition handler: %w", err)
 	}
@@ -354,7 +354,7 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to create socket directory: %w", err)
 	}
 
-	daemonServer, err := grpc.NewDaemonServer(med, db, containerLogRepo, containerRepo, shipAssignmentRepo, waypointRepo, shipRepo, playerRepo, routingClient, goodsFactoryRepo, socketPath, &cfg.Metrics)
+	daemonServer, err := grpc.NewDaemonServer(med, db, containerLogRepo, containerRepo, waypointRepo, shipRepo, playerRepo, routingClient, goodsFactoryRepo, socketPath, &cfg.Metrics)
 	if err != nil {
 		return fmt.Errorf("failed to create daemon server: %w", err)
 	}
@@ -363,12 +363,12 @@ func run(cfg *config.Config) error {
 	// This avoids circular dependency (handler can call daemon server methods directly)
 	daemonClientLocal := grpc.NewDaemonClientLocal(daemonServer)
 
-	scoutMarketsHandler := scoutingCmd.NewScoutMarketsHandler(shipRepo, graphService, routingClient, daemonClientLocal, shipAssignmentRepo)
+	scoutMarketsHandler := scoutingCmd.NewScoutMarketsHandler(shipRepo, graphService, routingClient, daemonClientLocal, nil) // nil = use RealClock
 	if err := mediator.RegisterHandler[*scoutingCmd.ScoutMarketsCommand](med, scoutMarketsHandler); err != nil {
 		return fmt.Errorf("failed to register ScoutMarkets handler: %w", err)
 	}
 
-	contractFleetCoordinatorHandler := contractCmd.NewRunFleetCoordinatorHandler(med, shipRepo, contractRepo, tradingMarketRepo, shipAssignmentRepo, daemonClientLocal, graphService, waypointConverter, containerRepo, nil)
+	contractFleetCoordinatorHandler := contractCmd.NewRunFleetCoordinatorHandler(med, shipRepo, contractRepo, tradingMarketRepo, daemonClientLocal, graphService, waypointConverter, containerRepo, nil)
 	if err := mediator.RegisterHandler[*contractCmd.RunFleetCoordinatorCommand](med, contractFleetCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register ContractFleetCoordinator handler: %w", err)
 	}
@@ -380,7 +380,7 @@ func run(cfg *config.Config) error {
 		graphService,
 		routingClient,
 		daemonClientLocal,
-		shipAssignmentRepo,
+		nil, // nil = use RealClock
 	)
 	if err := mediator.RegisterHandler[*scoutingCmd.AssignScoutingFleetCommand](med, assignScoutingFleetHandler); err != nil {
 		return fmt.Errorf("failed to register AssignScoutingFleet handler: %w", err)
@@ -392,7 +392,7 @@ func run(cfg *config.Config) error {
 	goodsResolver := goodsServices.NewSupplyChainResolver(goods.ExportToImportMap, marketRepoAdapter)
 
 	factoryCoordinatorHandler := goodsCmd.NewRunFactoryCoordinatorHandler(
-		med, shipRepo, marketRepoAdapter, shipAssignmentRepo, goodsResolver, goodsMarketLocator, nil, // nil = use RealClock
+		med, shipRepo, marketRepoAdapter, goodsResolver, goodsMarketLocator, nil, // nil = use RealClock
 	)
 	if err := mediator.RegisterHandler[*goodsCmd.RunFactoryCoordinatorCommand](med, factoryCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register GoodsFactoryCoordinator handler: %w", err)
@@ -468,18 +468,18 @@ func run(cfg *config.Config) error {
 	// Gas extraction handlers (now that storage coordinator is available)
 	// Transport is handled by manufacturing pool via STORAGE_ACQUIRE_DELIVER tasks
 	gasCoordinatorHandler := gasCmd.NewRunGasCoordinatorHandler(
-		med, shipRepo, storageOperationRepo, shipAssignmentRepo, daemonClientLocal, waypointRepo, storageCoordinator,
+		med, shipRepo, storageOperationRepo, daemonClientLocal, waypointRepo, storageCoordinator, nil, // nil = use RealClock
 	)
 	if err := mediator.RegisterHandler[*gasCmd.RunGasCoordinatorCommand](med, gasCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register RunGasCoordinator handler: %w", err)
 	}
 
-	gasSiphonWorkerHandler := gasCmd.NewRunSiphonWorkerHandler(med, shipRepo, shipAssignmentRepo, storageCoordinator, nil) // nil = use RealClock
+	gasSiphonWorkerHandler := gasCmd.NewRunSiphonWorkerHandler(med, shipRepo, storageCoordinator, nil) // nil = use RealClock
 	if err := mediator.RegisterHandler[*gasCmd.RunSiphonWorkerCommand](med, gasSiphonWorkerHandler); err != nil {
 		return fmt.Errorf("failed to register RunSiphonWorker handler: %w", err)
 	}
 
-	gasStorageShipWorkerHandler := gasCmd.NewRunStorageShipWorkerHandler(med, shipRepo, shipAssignmentRepo, storageCoordinator)
+	gasStorageShipWorkerHandler := gasCmd.NewRunStorageShipWorkerHandler(med, shipRepo, storageCoordinator)
 	if err := mediator.RegisterHandler[*gasCmd.RunStorageShipWorkerCommand](med, gasStorageShipWorkerHandler); err != nil {
 		return fmt.Errorf("failed to register RunStorageShipWorker handler: %w", err)
 	}
@@ -510,7 +510,6 @@ func run(cfg *config.Config) error {
 		taskQueue,
 		factoryTracker,
 		shipRepo,
-		shipAssignmentRepo,
 		manufacturingPipelineRepo,
 		manufacturingTaskRepo,
 		manufacturingFactoryStateRepo,

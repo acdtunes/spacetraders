@@ -7,9 +7,8 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	appContract "github.com/andrescamacho/spacetraders-go/internal/application/contract"
-	contractTypes "github.com/andrescamacho/spacetraders-go/internal/application/contract/types"
 	contractServices "github.com/andrescamacho/spacetraders-go/internal/application/contract/services"
-	domainContainer "github.com/andrescamacho/spacetraders-go/internal/domain/container"
+	contractTypes "github.com/andrescamacho/spacetraders-go/internal/application/contract/types"
 	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
@@ -30,7 +29,6 @@ type RunFleetCoordinatorHandler struct {
 	contractMarketService  *contractServices.ContractMarketService
 	marketRepo             market.MarketRepository
 	shipRepo               navigation.ShipRepository
-	shipAssignmentRepo     domainContainer.ShipAssignmentRepository
 	daemonClient           daemon.DaemonClient
 	graphProvider          system.ISystemGraphProvider
 	converter              system.IWaypointConverter
@@ -44,7 +42,6 @@ func NewRunFleetCoordinatorHandler(
 	shipRepo navigation.ShipRepository,
 	contractRepo domainContract.ContractRepository,
 	marketRepo market.MarketRepository,
-	shipAssignmentRepo domainContainer.ShipAssignmentRepository,
 	daemonClient daemon.DaemonClient,
 	graphProvider system.ISystemGraphProvider,
 	converter system.IWaypointConverter,
@@ -56,8 +53,8 @@ func NewRunFleetCoordinatorHandler(
 		clock = shared.NewRealClock()
 	}
 
-	fleetPoolManager := contractServices.NewFleetPoolManager(mediator, shipRepo, shipAssignmentRepo)
-	workerLifecycleManager := contractServices.NewWorkerLifecycleManager(daemonClient, containerRepo, shipRepo, shipAssignmentRepo)
+	fleetPoolManager := contractServices.NewFleetPoolManager(mediator, shipRepo)
+	workerLifecycleManager := contractServices.NewWorkerLifecycleManager(daemonClient, containerRepo, shipRepo)
 	contractMarketService := contractServices.NewContractMarketService(mediator, contractRepo)
 
 	return &RunFleetCoordinatorHandler{
@@ -66,7 +63,6 @@ func NewRunFleetCoordinatorHandler(
 		contractMarketService:  contractMarketService,
 		marketRepo:             marketRepo,
 		shipRepo:               shipRepo,
-		shipAssignmentRepo:     shipAssignmentRepo,
 		daemonClient:           daemonClient,
 		graphProvider:          graphProvider,
 		converter:              converter,
@@ -120,7 +116,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 		}
 
 		// Dynamically discover all idle light hauler ships
-		_, availableShips, err := appContract.FindIdleLightHaulers(ctx, cmd.PlayerID, h.shipRepo, h.shipAssignmentRepo)
+		_, availableShips, err := appContract.FindIdleLightHaulers(ctx, cmd.PlayerID, h.shipRepo)
 		if err != nil {
 			errMsg := fmt.Sprintf("Failed to find idle haulers: %v", err)
 			logger.Log("ERROR", errMsg, nil)
@@ -338,12 +334,28 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 
 		// Step 2: Assign ship to worker (dynamic discovery - no pre-assignment needed)
 		logger.Log("INFO", fmt.Sprintf("Assigning %s to worker container", selectedShip), nil)
-		assignment := domainContainer.NewShipAssignment(selectedShip, cmd.PlayerID.Value(), workerContainerID, h.clock)
-		if err := h.shipAssignmentRepo.Assign(ctx, assignment); err != nil {
+		ship, err := h.shipRepo.FindBySymbol(ctx, selectedShip, cmd.PlayerID)
+		if err != nil {
+			errMsg := fmt.Sprintf("Failed to load ship %s: %v", selectedShip, err)
+			logger.Log("ERROR", errMsg, nil)
+			result.Errors = append(result.Errors, errMsg)
+			_ = h.workerLifecycleManager.StopWorkerContainer(ctx, workerContainerID)
+			h.clock.Sleep(10 * time.Second)
+			continue
+		}
+		if err := ship.AssignToContainer(workerContainerID, h.clock); err != nil {
 			errMsg := fmt.Sprintf("Failed to assign ship %s: %v", selectedShip, err)
 			logger.Log("ERROR", errMsg, nil)
 			result.Errors = append(result.Errors, errMsg)
 			// Clean up: stop worker container on assignment failure
+			_ = h.workerLifecycleManager.StopWorkerContainer(ctx, workerContainerID)
+			h.clock.Sleep(10 * time.Second)
+			continue
+		}
+		if err := h.shipRepo.Save(ctx, ship); err != nil {
+			errMsg := fmt.Sprintf("Failed to save ship assignment %s: %v", selectedShip, err)
+			logger.Log("ERROR", errMsg, nil)
+			result.Errors = append(result.Errors, errMsg)
 			_ = h.workerLifecycleManager.StopWorkerContainer(ctx, workerContainerID)
 			h.clock.Sleep(10 * time.Second)
 			continue
@@ -356,7 +368,8 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			logger.Log("ERROR", errMsg, nil)
 			result.Errors = append(result.Errors, errMsg)
 			// Clean up: release assignment on failure (ship returns to idle pool)
-			_ = h.shipAssignmentRepo.Release(ctx, selectedShip, cmd.PlayerID.Value(), "worker_start_failed")
+			ship.ForceRelease("worker_start_failed", h.clock)
+			_ = h.shipRepo.Save(ctx, ship)
 			h.clock.Sleep(10 * time.Second)
 			continue
 		}
@@ -425,25 +438,19 @@ func (h *RunFleetCoordinatorHandler) calculateInFlightCargo(
 
 	// For each active worker, find its assigned ships and check their cargo
 	for _, worker := range activeWorkers {
-		assignments, err := h.shipAssignmentRepo.FindByContainer(ctx, worker.ID, playerID)
+		ships, err := h.shipRepo.FindByContainer(ctx, worker.ID, shared.MustNewPlayerID(playerID))
 		if err != nil {
-			logger.Log("WARNING", fmt.Sprintf("Failed to get assignments for container %s: %v", worker.ID, err), nil)
+			logger.Log("WARNING", fmt.Sprintf("Failed to get ships for container %s: %v", worker.ID, err), nil)
 			continue
 		}
 
-		for _, assignment := range assignments {
-			ship, err := h.shipRepo.FindBySymbol(ctx, assignment.ShipSymbol(), shared.MustNewPlayerID(playerID))
-			if err != nil {
-				logger.Log("WARNING", fmt.Sprintf("Failed to load ship %s cargo: %v", assignment.ShipSymbol(), err), nil)
-				continue
-			}
-
+		for _, ship := range ships {
 			// Count cargo of the required trade symbol
 			for _, item := range ship.Cargo().Inventory {
 				if item.Symbol == tradeSymbol {
 					totalInFlight += item.Units
 					logger.Log("INFO", fmt.Sprintf("Found %d units of %s in ship %s cargo (worker %s)",
-						item.Units, tradeSymbol, assignment.ShipSymbol(), worker.ID), nil)
+						item.Units, tradeSymbol, ship.ShipSymbol(), worker.ID), nil)
 				}
 			}
 		}

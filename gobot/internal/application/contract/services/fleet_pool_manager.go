@@ -2,27 +2,23 @@ package services
 
 import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
-	domainContainer "github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 )
 
 // FleetPoolManager handles mediator access for the coordinator
 type FleetPoolManager struct {
-	mediator           common.Mediator
-	shipRepo           navigation.ShipRepository
-	shipAssignmentRepo domainContainer.ShipAssignmentRepository
+	mediator common.Mediator
+	shipRepo navigation.ShipRepository
 }
 
 // NewFleetPoolManager creates a new fleet pool manager service
 func NewFleetPoolManager(
 	mediator common.Mediator,
 	shipRepo navigation.ShipRepository,
-	shipAssignmentRepo domainContainer.ShipAssignmentRepository,
 ) *FleetPoolManager {
 	return &FleetPoolManager{
-		mediator:           mediator,
-		shipRepo:           shipRepo,
-		shipAssignmentRepo: shipAssignmentRepo,
+		mediator: mediator,
+		shipRepo: shipRepo,
 	}
 }
 

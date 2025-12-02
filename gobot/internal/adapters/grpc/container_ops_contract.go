@@ -141,7 +141,7 @@ func (s *DaemonServer) StartContractWorkflow(
 	)
 
 	// Create and start container runner
-	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipAssignmentRepo)
+	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipRepo, s.clock)
 	if completionCallback != nil {
 		runner.SetCompletionCallback(completionCallback)
 	}
@@ -193,7 +193,7 @@ func (s *DaemonServer) ContractFleetCoordinator(ctx context.Context, shipSymbols
 	}
 
 	// Create and start container runner
-	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipAssignmentRepo)
+	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipRepo, s.clock)
 	s.registerContainer(containerID, runner)
 
 	// Start container in background

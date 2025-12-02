@@ -43,7 +43,7 @@ func (s *DaemonServer) ScoutTour(ctx context.Context, containerID string, shipSy
 	}
 
 	// Create and start container runner
-	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipAssignmentRepo)
+	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipRepo, s.clock)
 	s.registerContainer(containerID, runner)
 
 	// Start container in background
@@ -124,7 +124,7 @@ func (s *DaemonServer) AssignScoutingFleet(
 	}
 
 	// Create container runner
-	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipAssignmentRepo)
+	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipRepo, s.clock)
 	s.registerContainer(containerID, runner)
 
 	// Start container in background

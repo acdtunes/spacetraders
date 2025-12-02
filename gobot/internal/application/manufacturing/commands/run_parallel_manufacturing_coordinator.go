@@ -6,10 +6,9 @@ import (
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
-	storageApp "github.com/andrescamacho/spacetraders-go/internal/application/storage"
 	"github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/services"
 	mfgServices "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/services/manufacturing"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
+	storageApp "github.com/andrescamacho/spacetraders-go/internal/application/storage"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
@@ -58,14 +57,13 @@ type RunParallelManufacturingCoordinatorHandler struct {
 	factoryTracker             *manufacturing.FactoryStateTracker
 
 	// Repositories
-	shipRepo           navigation.ShipRepository
-	shipAssignmentRepo container.ShipAssignmentRepository
-	pipelineRepo       manufacturing.PipelineRepository
-	taskRepo           manufacturing.TaskRepository
-	factoryStateRepo   manufacturing.FactoryStateRepository
-	marketRepo         market.MarketRepository
-	storageOpRepo      storage.StorageOperationRepository
-	containerRemover   ContainerRemover
+	shipRepo         navigation.ShipRepository
+	pipelineRepo     manufacturing.PipelineRepository
+	taskRepo         manufacturing.TaskRepository
+	factoryStateRepo manufacturing.FactoryStateRepository
+	marketRepo       market.MarketRepository
+	storageOpRepo    storage.StorageOperationRepository
+	containerRemover ContainerRemover
 
 	// Infrastructure
 	mediator         common.Mediator
@@ -97,7 +95,6 @@ func NewRunParallelManufacturingCoordinatorHandler(
 	taskQueue services.ManufacturingTaskQueue,
 	factoryTracker *manufacturing.FactoryStateTracker,
 	shipRepo navigation.ShipRepository,
-	shipAssignmentRepo container.ShipAssignmentRepository,
 	pipelineRepo manufacturing.PipelineRepository,
 	taskRepo manufacturing.TaskRepository,
 	factoryStateRepo manufacturing.FactoryStateRepository,
@@ -113,24 +110,23 @@ func NewRunParallelManufacturingCoordinatorHandler(
 	}
 
 	return &RunParallelManufacturingCoordinatorHandler{
-		demandFinder:               demandFinder,
+		demandFinder:                demandFinder,
 		collectionOpportunityFinder: collectionOpportunityFinder,
-		pipelinePlanner:            pipelinePlanner,
-		taskQueue:                  taskQueue,
-		factoryTracker:             factoryTracker,
-		shipRepo:                   shipRepo,
-		shipAssignmentRepo:         shipAssignmentRepo,
-		pipelineRepo:               pipelineRepo,
-		taskRepo:                   taskRepo,
-		factoryStateRepo:           factoryStateRepo,
-		marketRepo:                 marketRepo,
-		containerRemover:           containerRemover,
-		mediator:                   mediator,
-		daemonClient:               daemonClient,
-		clock:                      clock,
-		waypointProvider:           waypointProvider,
-		workerCompletionChan:       make(chan string, 100),
-		taskReadyChan:              make(chan struct{}, 10),
+		pipelinePlanner:             pipelinePlanner,
+		taskQueue:                   taskQueue,
+		factoryTracker:              factoryTracker,
+		shipRepo:                    shipRepo,
+		pipelineRepo:                pipelineRepo,
+		taskRepo:                    taskRepo,
+		factoryStateRepo:            factoryStateRepo,
+		marketRepo:                  marketRepo,
+		containerRemover:            containerRemover,
+		mediator:                    mediator,
+		daemonClient:                daemonClient,
+		clock:                       clock,
+		waypointProvider:            waypointProvider,
+		workerCompletionChan:        make(chan string, 100),
+		taskReadyChan:               make(chan struct{}, 10),
 	}
 }
 
@@ -334,7 +330,7 @@ func (h *RunParallelManufacturingCoordinatorHandler) initializeServices(cmd *Run
 	conditionChecker := mfgServices.NewMarketConditionChecker(h.marketRepo, readinessSpec)
 	reconciler := mfgServices.NewAssignmentReconciler(h.taskRepo, assignmentTracker)
 	completionChecker := mfgServices.NewPipelineCompletionChecker(h.pipelineRepo, h.taskRepo, registry)
-	recycler := mfgServices.NewPipelineRecycler(h.pipelineRepo, h.taskRepo, h.shipAssignmentRepo, h.taskQueue, h.factoryTracker, registry)
+	recycler := mfgServices.NewPipelineRecycler(h.pipelineRepo, h.taskRepo, h.shipRepo, h.taskQueue, h.factoryTracker, registry, nil)
 	taskRescuer := mfgServices.NewTaskRescuer(h.taskRepo, h.taskQueue, conditionChecker)
 
 	// 3. Create factory manager (no circular dependencies)
@@ -350,10 +346,10 @@ func (h *RunParallelManufacturingCoordinatorHandler) initializeServices(cmd *Run
 		h.pipelineRepo,
 		h.taskRepo,
 		h.factoryStateRepo,
-		h.shipAssignmentRepo,
-		h.shipRepo, // BUG FIX #4: Added for cargo checks on orphaned tasks
+		h.shipRepo,
 		h.factoryTracker,
 		h.taskQueue,
+		nil, // nil = use RealClock
 	)
 
 	// 5. Create pipeline manager (callback will trigger rescan)
@@ -381,7 +377,7 @@ func (h *RunParallelManufacturingCoordinatorHandler) initializeServices(cmd *Run
 	// 6. Create worker lifecycle manager (uses assignmentTracker directly to avoid circular dep)
 	workerLifecycleMgr := mfgServices.NewWorkerLifecycleManager(
 		h.taskRepo,
-		h.shipAssignmentRepo,
+		h.shipRepo,
 		h.daemonClient,
 		h.containerRemover,
 		h.taskQueue,
@@ -407,7 +403,6 @@ func (h *RunParallelManufacturingCoordinatorHandler) initializeServices(cmd *Run
 	taskAssignmentMgr := mfgServices.NewTaskAssignmentManager(
 		h.taskRepo,
 		h.shipRepo,
-		h.shipAssignmentRepo,
 		h.marketRepo,
 		h.taskQueue,
 		shipSelector,

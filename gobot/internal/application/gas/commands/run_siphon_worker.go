@@ -9,7 +9,6 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	shipNav "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/storage"
@@ -38,7 +37,6 @@ type RunSiphonWorkerResponse struct {
 type RunSiphonWorkerHandler struct {
 	mediator           common.Mediator
 	shipRepo           navigation.ShipRepository
-	shipAssignmentRepo container.ShipAssignmentRepository
 	storageCoordinator storage.StorageCoordinator
 	clock              shared.Clock
 }
@@ -47,7 +45,6 @@ type RunSiphonWorkerHandler struct {
 func NewRunSiphonWorkerHandler(
 	mediator common.Mediator,
 	shipRepo navigation.ShipRepository,
-	shipAssignmentRepo container.ShipAssignmentRepository,
 	storageCoordinator storage.StorageCoordinator,
 	clock shared.Clock,
 ) *RunSiphonWorkerHandler {
@@ -57,7 +54,6 @@ func NewRunSiphonWorkerHandler(
 	return &RunSiphonWorkerHandler{
 		mediator:           mediator,
 		shipRepo:           shipRepo,
-		shipAssignmentRepo: shipAssignmentRepo,
 		storageCoordinator: storageCoordinator,
 		clock:              clock,
 	}

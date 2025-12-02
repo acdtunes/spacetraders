@@ -23,6 +23,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/routing"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
 	pb "github.com/andrescamacho/spacetraders-go/pkg/proto/daemon"
 	"google.golang.org/grpc"
@@ -43,16 +44,16 @@ type MetricsCollector interface {
 // DaemonServer implements the gRPC daemon service
 // Handles CLI requests and orchestrates background container operations
 type DaemonServer struct {
-	mediator           common.Mediator
-	listener           net.Listener
-	db                 *gorm.DB // Database for creating repositories on demand
-	logRepo            persistence.ContainerLogRepository
-	containerRepo      *persistence.ContainerRepositoryGORM
-	shipAssignmentRepo *persistence.ShipAssignmentRepositoryGORM
-	waypointRepo       *persistence.GormWaypointRepository
-	shipRepo           navigation.ShipRepository
-	routingClient      routing.RoutingClient
-	goodsFactoryRepo   *persistence.GormGoodsFactoryRepository
+	mediator         common.Mediator
+	listener         net.Listener
+	db               *gorm.DB // Database for creating repositories on demand
+	logRepo          persistence.ContainerLogRepository
+	containerRepo    *persistence.ContainerRepositoryGORM
+	waypointRepo     *persistence.GormWaypointRepository
+	shipRepo         navigation.ShipRepository
+	routingClient    routing.RoutingClient
+	goodsFactoryRepo *persistence.GormGoodsFactoryRepository
+	clock            shared.Clock
 
 	// Container orchestration
 	containers   map[string]*ContainerRunner
@@ -85,7 +86,6 @@ func NewDaemonServer(
 	db *gorm.DB,
 	logRepo persistence.ContainerLogRepository,
 	containerRepo *persistence.ContainerRepositoryGORM,
-	shipAssignmentRepo *persistence.ShipAssignmentRepositoryGORM,
 	waypointRepo *persistence.GormWaypointRepository,
 	shipRepo navigation.ShipRepository,
 	playerRepo player.PlayerRepository,
@@ -116,11 +116,11 @@ func NewDaemonServer(
 		db:                    db,
 		logRepo:               logRepo,
 		containerRepo:         containerRepo,
-		shipAssignmentRepo:    shipAssignmentRepo,
 		waypointRepo:          waypointRepo,
 		shipRepo:              shipRepo,
 		routingClient:         routingClient,
 		goodsFactoryRepo:      goodsFactoryRepo,
+		clock:                 shared.NewRealClock(),
 		listener:              listener,
 		containers:            make(map[string]*ContainerRunner),
 		commandFactories:      make(map[string]CommandFactory),
@@ -247,8 +247,8 @@ func (s *DaemonServer) Start() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	if s.shipAssignmentRepo != nil {
-		count, err := s.shipAssignmentRepo.ReleaseAllActive(ctx, "daemon_restart")
+	if s.shipRepo != nil {
+		count, err := s.shipRepo.ReleaseAllActive(ctx, "daemon_restart")
 		if err != nil {
 			fmt.Printf("Warning: Failed to release zombie assignments: %v\n", err)
 		} else if count > 0 {
@@ -571,17 +571,17 @@ func (s *DaemonServer) recoverContainer(ctx context.Context, containerModel *per
 	// Extract ship symbol for assignment (if present)
 	shipSymbol, hasShip := config["ship_symbol"].(string)
 	if hasShip {
-		// Re-assign ship using UPSERT (will update old released assignment)
-		assignmentEntity := &persistence.ShipAssignmentModel{
-			ShipSymbol:  shipSymbol,
-			PlayerID:    containerModel.PlayerID,
-			ContainerID: &containerModel.ID, // Convert string to *string
-			Status:      "active",
-			AssignedAt:  containerModel.StartedAt,
+		// Re-assign ship using Ship aggregate pattern
+		playerID := shared.MustNewPlayerID(containerModel.PlayerID)
+		ship, err := s.shipRepo.FindBySymbol(ctx, shipSymbol, playerID)
+		if err != nil {
+			return fmt.Errorf("failed to load ship %s: %w", shipSymbol, err)
 		}
-
-		if err := s.shipAssignmentRepo.Assign(ctx, containerModelToShipAssignment(assignmentEntity)); err != nil {
+		if err := ship.AssignToContainer(containerModel.ID, s.clock); err != nil {
 			return fmt.Errorf("failed to reassign ship %s: %w", shipSymbol, err)
+		}
+		if err := s.shipRepo.Save(ctx, ship); err != nil {
+			return fmt.Errorf("failed to persist ship %s reassignment: %w", shipSymbol, err)
 		}
 	}
 
@@ -608,7 +608,7 @@ func (s *DaemonServer) recoverContainer(ctx context.Context, containerModel *per
 	}
 
 	// Create and start container runner
-	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipAssignmentRepo)
+	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipRepo, s.clock)
 	s.registerContainer(containerModel.ID, runner)
 
 	// Start container in background
@@ -645,13 +645,17 @@ func (s *DaemonServer) markContainerFailed(ctx context.Context, containerModel *
 
 	// Release ship assignments for this failed container
 	// This prevents orphaned assignments when containers fail during recovery
-	if err := s.shipAssignmentRepo.ReleaseByContainer(
-		ctx,
-		containerModel.ID,
-		containerModel.PlayerID,
-		reason,
-	); err != nil {
-		fmt.Printf("Warning: Failed to release ship assignments for container %s: %v\n", containerModel.ID, err)
+	playerID := shared.MustNewPlayerID(containerModel.PlayerID)
+	assignedShips, err := s.shipRepo.FindByContainer(ctx, containerModel.ID, playerID)
+	if err != nil {
+		fmt.Printf("Warning: Failed to find ships for container %s: %v\n", containerModel.ID, err)
+	} else {
+		for _, ship := range assignedShips {
+			ship.ForceRelease(reason, s.clock)
+			if err := s.shipRepo.Save(ctx, ship); err != nil {
+				fmt.Printf("Warning: Failed to release ship %s for container %s: %v\n", ship.ShipSymbol(), containerModel.ID, err)
+			}
+		}
 	}
 }
 
@@ -678,9 +682,9 @@ func (s *DaemonServer) markWorkerInterrupted(ctx context.Context, containerModel
 	// The coordinator will handle this when it resets the task from EXECUTING to READY.
 }
 
-// containerModelToShipAssignment converts a ShipAssignmentModel to domain entity
+// containerModelToShipAssignment converts a ShipModel to domain entity
 // This is a helper for the recovery process
-func containerModelToShipAssignment(model *persistence.ShipAssignmentModel) *container.ShipAssignment {
+func containerModelToShipAssignment(model *persistence.ShipModel) *container.ShipAssignment {
 	// Handle NULL container_id
 	containerID := ""
 	if model.ContainerID != nil {

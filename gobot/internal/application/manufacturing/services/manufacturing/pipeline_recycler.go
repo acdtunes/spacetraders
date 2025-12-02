@@ -7,37 +7,44 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/services"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
 // PipelineRecycler handles stuck pipeline detection and recovery.
 // Uses StuckPipelineFailedTaskThreshold from pipeline_lifecycle_manager.go
 type PipelineRecycler struct {
-	pipelineRepo       manufacturing.PipelineRepository
-	taskRepo           manufacturing.TaskRepository
-	shipAssignmentRepo container.ShipAssignmentRepository
-	taskQueue          services.ManufacturingTaskQueue
-	factoryTracker     *manufacturing.FactoryStateTracker
-	registry           *ActivePipelineRegistry
+	pipelineRepo   manufacturing.PipelineRepository
+	taskRepo       manufacturing.TaskRepository
+	shipRepo       navigation.ShipRepository
+	taskQueue      services.ManufacturingTaskQueue
+	factoryTracker *manufacturing.FactoryStateTracker
+	registry       *ActivePipelineRegistry
+	clock          shared.Clock
 }
 
 // NewPipelineRecycler creates a new pipeline recycler.
 func NewPipelineRecycler(
 	pipelineRepo manufacturing.PipelineRepository,
 	taskRepo manufacturing.TaskRepository,
-	shipAssignmentRepo container.ShipAssignmentRepository,
+	shipRepo navigation.ShipRepository,
 	taskQueue services.ManufacturingTaskQueue,
 	factoryTracker *manufacturing.FactoryStateTracker,
 	registry *ActivePipelineRegistry,
+	clock shared.Clock,
 ) *PipelineRecycler {
+	if clock == nil {
+		clock = shared.NewRealClock()
+	}
 	return &PipelineRecycler{
-		pipelineRepo:       pipelineRepo,
-		taskRepo:           taskRepo,
-		shipAssignmentRepo: shipAssignmentRepo,
-		taskQueue:          taskQueue,
-		factoryTracker:     factoryTracker,
-		registry:           registry,
+		pipelineRepo:   pipelineRepo,
+		taskRepo:       taskRepo,
+		shipRepo:       shipRepo,
+		taskQueue:      taskQueue,
+		factoryTracker: factoryTracker,
+		registry:       registry,
+		clock:          clock,
 	}
 }
 
@@ -109,9 +116,9 @@ func (r *PipelineRecycler) RecyclePipeline(ctx context.Context, pipelineID strin
 		if err == nil {
 			for _, task := range tasks {
 				if r.shouldCancelTask(task) {
-					// Release ship assignment
-					if task.AssignedShip() != "" && r.shipAssignmentRepo != nil {
-						_ = r.shipAssignmentRepo.Release(ctx, task.AssignedShip(), playerID, "pipeline_recycled")
+					// Release ship assignment using Ship aggregate
+					if task.AssignedShip() != "" {
+						r.releaseShip(ctx, task.AssignedShip(), playerID, "pipeline_recycled")
 					}
 					if err := task.Cancel("pipeline recycled"); err == nil {
 						_ = r.taskRepo.Update(ctx, task)
@@ -170,4 +177,21 @@ func (r *PipelineRecycler) shouldCancelTask(task *manufacturing.ManufacturingTas
 // GetStuckPipelineThreshold returns the threshold for stuck pipeline detection.
 func (r *PipelineRecycler) GetStuckPipelineThreshold() int {
 	return StuckPipelineFailedTaskThreshold
+}
+
+// releaseShip releases a ship using the Ship aggregate pattern
+func (r *PipelineRecycler) releaseShip(ctx context.Context, shipSymbol string, playerID int, reason string) {
+	logger := common.LoggerFromContext(ctx)
+	if r.shipRepo == nil {
+		return
+	}
+	ship, err := r.shipRepo.FindBySymbol(ctx, shipSymbol, shared.MustNewPlayerID(playerID))
+	if err != nil {
+		logger.Log("WARN", fmt.Sprintf("Failed to load ship %s for release: %v", shipSymbol, err), nil)
+		return
+	}
+	ship.ForceRelease(reason, r.clock)
+	if err := r.shipRepo.Save(ctx, ship); err != nil {
+		logger.Log("WARN", fmt.Sprintf("Failed to save ship %s release: %v", shipSymbol, err), nil)
+	}
 }

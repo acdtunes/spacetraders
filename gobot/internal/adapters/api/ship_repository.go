@@ -2,15 +2,21 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
+	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
-	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 )
 
 // shipListCacheTTL defines how long ship list cache is valid
@@ -24,8 +30,11 @@ type cachedShipList struct {
 	fetchedAt time.Time
 }
 
-// ShipRepository implements ShipRepository using the SpaceTraders API
-// This repository adapts API responses to domain entities
+// ShipRepository implements ShipRepository using the SpaceTraders API + Database
+// This is a hybrid repository that:
+// - Fetches ship data from API (source of truth for ship state)
+// - Enriches with assignment data from database
+// - Persists assignment changes to database
 //
 // Caching Strategy:
 // - Ship list cache (15s TTL): Prevents redundant ListShips API calls
@@ -35,26 +44,30 @@ type ShipRepository struct {
 	playerRepo       player.PlayerRepository
 	waypointRepo     system.WaypointRepository
 	waypointProvider system.IWaypointProvider
+	db               *gorm.DB // Database connection for assignment persistence
 	shipListCache    sync.Map // key: playerID (int) -> *cachedShipList
 }
 
-// NewShipRepository creates a new API ship repository
+// NewShipRepository creates a new hybrid API+DB ship repository
 func NewShipRepository(
 	apiClient domainPorts.APIClient,
 	playerRepo player.PlayerRepository,
 	waypointRepo system.WaypointRepository,
 	waypointProvider system.IWaypointProvider,
+	db *gorm.DB,
 ) *ShipRepository {
 	return &ShipRepository{
 		apiClient:        apiClient,
 		playerRepo:       playerRepo,
 		waypointRepo:     waypointRepo,
 		waypointProvider: waypointProvider,
+		db:               db,
 	}
 }
 
 // FindBySymbol retrieves a ship by symbol and player ID from API
 // Converts API DTO to domain entity with full waypoint reconstruction
+// Enriches with assignment data from database
 func (r *ShipRepository) FindBySymbol(ctx context.Context, symbol string, playerID shared.PlayerID) (*navigation.Ship, error) {
 	// Get player token
 	player, err := r.playerRepo.FindByID(ctx, playerID)
@@ -72,6 +85,11 @@ func (r *ShipRepository) FindBySymbol(ctx context.Context, symbol string, player
 	ship, err := r.shipDataToDomain(ctx, shipData, playerID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert ship data: %w", err)
+	}
+
+	// Enrich with assignment from DB
+	if err := r.enrichWithAssignment(ctx, ship, playerID); err != nil {
+		log.Printf("Warning: failed to load assignment for %s: %v", symbol, err)
 	}
 
 	return ship, nil
@@ -96,6 +114,7 @@ func (r *ShipRepository) GetShipData(ctx context.Context, symbol string, playerI
 
 // FindAllByPlayer retrieves all ships for a player from API with short-lived caching
 // Converts API DTOs to domain entities with full waypoint reconstruction
+// Batch enriches with assignment data from database
 //
 // Caching: Returns cached ship list if within 15 seconds of last fetch.
 // This prevents redundant API calls when multiple coordinators (manufacturing,
@@ -134,6 +153,11 @@ func (r *ShipRepository) FindAllByPlayer(ctx context.Context, playerID shared.Pl
 			return nil, fmt.Errorf("failed to convert ship %s: %w", shipData.Symbol, err)
 		}
 		ships[i] = ship
+	}
+
+	// Batch enrich with assignments from DB
+	if err := r.batchEnrichWithAssignments(ctx, ships, playerID); err != nil {
+		log.Printf("Warning: failed to batch load assignments: %v", err)
 	}
 
 	// Cache the result
@@ -462,4 +486,261 @@ func indexSubstring(s, substr string) int {
 		}
 	}
 	return -1
+}
+
+// =============================================================================
+// Assignment Query & Persistence Methods (DB operations)
+// =============================================================================
+
+// enrichWithAssignment loads assignment data for a single ship from DB
+func (r *ShipRepository) enrichWithAssignment(ctx context.Context, ship *navigation.Ship, playerID shared.PlayerID) error {
+	if r.db == nil {
+		return nil // DB not configured, skip enrichment
+	}
+
+	var model persistence.ShipModel
+	err := r.db.WithContext(ctx).
+		Where("ship_symbol = ? AND player_id = ?", ship.ShipSymbol(), playerID.Value()).
+		First(&model).Error
+
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil // No assignment exists
+	}
+	if err != nil {
+		return err
+	}
+
+	assignment := r.modelToAssignment(&model)
+	ship.SetAssignment(assignment)
+	return nil
+}
+
+// batchEnrichWithAssignments loads assignments for multiple ships in one query
+func (r *ShipRepository) batchEnrichWithAssignments(ctx context.Context, ships []*navigation.Ship, playerID shared.PlayerID) error {
+	if r.db == nil || len(ships) == 0 {
+		return nil
+	}
+
+	symbols := make([]string, len(ships))
+	for i, s := range ships {
+		symbols[i] = s.ShipSymbol()
+	}
+
+	var models []persistence.ShipModel
+	err := r.db.WithContext(ctx).
+		Where("ship_symbol IN ? AND player_id = ?", symbols, playerID.Value()).
+		Find(&models).Error
+	if err != nil {
+		return err
+	}
+
+	// Build lookup map
+	assignmentMap := make(map[string]*navigation.ShipAssignment)
+	for i := range models {
+		assignmentMap[models[i].ShipSymbol] = r.modelToAssignment(&models[i])
+	}
+
+	// Enrich ships
+	for _, ship := range ships {
+		if assignment, ok := assignmentMap[ship.ShipSymbol()]; ok {
+			ship.SetAssignment(assignment)
+		}
+	}
+
+	return nil
+}
+
+// modelToAssignment converts DB model to domain value object
+func (r *ShipRepository) modelToAssignment(model *persistence.ShipModel) *navigation.ShipAssignment {
+	containerID := ""
+	if model.ContainerID != nil {
+		containerID = *model.ContainerID
+	}
+
+	var assignedAt time.Time
+	if model.AssignedAt != nil {
+		assignedAt = *model.AssignedAt
+	}
+
+	return navigation.ReconstructAssignment(
+		containerID,
+		navigation.AssignmentStatus(model.AssignmentStatus),
+		assignedAt,
+		model.ReleasedAt,
+		&model.ReleaseReason,
+	)
+}
+
+// shipToModel converts ship aggregate to DB model for persistence
+func (r *ShipRepository) shipToModel(ship *navigation.Ship) persistence.ShipModel {
+	model := persistence.ShipModel{
+		ShipSymbol:       ship.ShipSymbol(),
+		PlayerID:         ship.PlayerID().Value(),
+		AssignmentStatus: "idle",
+	}
+
+	if ship.Assignment() != nil {
+		assignment := ship.Assignment()
+		model.AssignmentStatus = string(assignment.Status())
+
+		if assignment.ContainerID() != "" {
+			containerID := assignment.ContainerID()
+			model.ContainerID = &containerID
+		}
+
+		assignedAt := assignment.AssignedAt()
+		if !assignedAt.IsZero() {
+			model.AssignedAt = &assignedAt
+		}
+
+		if assignment.ReleasedAt() != nil {
+			model.ReleasedAt = assignment.ReleasedAt()
+		}
+
+		if assignment.ReleaseReason() != nil {
+			model.ReleaseReason = *assignment.ReleaseReason()
+		}
+	}
+
+	return model
+}
+
+// Save persists ship aggregate state (including assignment) to DB
+func (r *ShipRepository) Save(ctx context.Context, ship *navigation.Ship) error {
+	if r.db == nil {
+		return fmt.Errorf("database not configured")
+	}
+
+	model := r.shipToModel(ship)
+	return r.db.WithContext(ctx).
+		Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "ship_symbol"}, {Name: "player_id"}},
+			DoUpdates: clause.AssignmentColumns([]string{"container_id", "assignment_status", "assigned_at", "released_at", "release_reason"}),
+		}).
+		Create(&model).Error
+}
+
+// SaveAll batch persists multiple ship aggregates
+func (r *ShipRepository) SaveAll(ctx context.Context, ships []*navigation.Ship) error {
+	if r.db == nil {
+		return fmt.Errorf("database not configured")
+	}
+	if len(ships) == 0 {
+		return nil
+	}
+
+	models := make([]persistence.ShipModel, len(ships))
+	for i, ship := range ships {
+		models[i] = r.shipToModel(ship)
+	}
+
+	return r.db.WithContext(ctx).
+		Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "ship_symbol"}, {Name: "player_id"}},
+			DoUpdates: clause.AssignmentColumns([]string{"container_id", "assignment_status", "assigned_at", "released_at", "release_reason"}),
+		}).
+		Create(&models).Error
+}
+
+// FindByContainer retrieves all ships assigned to a specific container
+func (r *ShipRepository) FindByContainer(ctx context.Context, containerID string, playerID shared.PlayerID) ([]*navigation.Ship, error) {
+	// Get all ships for player
+	allShips, err := r.FindAllByPlayer(ctx, playerID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Filter by container
+	var result []*navigation.Ship
+	for _, ship := range allShips {
+		if ship.ContainerID() == containerID {
+			result = append(result, ship)
+		}
+	}
+
+	return result, nil
+}
+
+// FindIdleByPlayer retrieves all idle (unassigned) ships for a player
+func (r *ShipRepository) FindIdleByPlayer(ctx context.Context, playerID shared.PlayerID) ([]*navigation.Ship, error) {
+	// Get all ships for player
+	allShips, err := r.FindAllByPlayer(ctx, playerID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Filter idle ships
+	var result []*navigation.Ship
+	for _, ship := range allShips {
+		if ship.IsIdle() {
+			result = append(result, ship)
+		}
+	}
+
+	return result, nil
+}
+
+// FindActiveByPlayer retrieves all actively assigned ships for a player
+func (r *ShipRepository) FindActiveByPlayer(ctx context.Context, playerID shared.PlayerID) ([]*navigation.Ship, error) {
+	// Get all ships for player
+	allShips, err := r.FindAllByPlayer(ctx, playerID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Filter assigned ships
+	var result []*navigation.Ship
+	for _, ship := range allShips {
+		if ship.IsAssigned() {
+			result = append(result, ship)
+		}
+	}
+
+	return result, nil
+}
+
+// CountByContainerPrefix counts active assignments where container ID starts with prefix
+func (r *ShipRepository) CountByContainerPrefix(ctx context.Context, prefix string, playerID shared.PlayerID) (int, error) {
+	if r.db == nil {
+		return 0, fmt.Errorf("database not configured")
+	}
+
+	var count int64
+	err := r.db.WithContext(ctx).
+		Model(&persistence.ShipModel{}).
+		Where("container_id LIKE ?", prefix+"%").
+		Where("player_id = ?", playerID.Value()).
+		Where("assignment_status = ?", "active").
+		Count(&count).Error
+
+	if err != nil {
+		return 0, fmt.Errorf("failed to count assignments by prefix: %w", err)
+	}
+
+	return int(count), nil
+}
+
+// ReleaseAllActive releases all active ship assignments (bulk operation)
+// Used during daemon startup to clean up zombie assignments from previous runs
+func (r *ShipRepository) ReleaseAllActive(ctx context.Context, reason string) (int, error) {
+	if r.db == nil {
+		return 0, fmt.Errorf("database not configured")
+	}
+
+	now := time.Now()
+	result := r.db.WithContext(ctx).
+		Model(&persistence.ShipModel{}).
+		Where("assignment_status = ?", "active").
+		Updates(map[string]interface{}{
+			"assignment_status": "idle",
+			"container_id":      nil,
+			"released_at":       now,
+			"release_reason":    reason,
+		})
+
+	if result.Error != nil {
+		return 0, fmt.Errorf("failed to release all active assignments: %w", result.Error)
+	}
+
+	return int(result.RowsAffected), nil
 }

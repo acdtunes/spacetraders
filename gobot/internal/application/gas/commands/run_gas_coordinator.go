@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	domainShared "github.com/andrescamacho/spacetraders-go/internal/domain/shared"
@@ -41,13 +40,13 @@ type RunGasCoordinatorResponse struct {
 
 // RunGasCoordinatorHandler implements the gas fleet coordinator logic
 type RunGasCoordinatorHandler struct {
-	mediator            common.Mediator
-	shipRepo            navigation.ShipRepository
-	storageOpRepo       storage.StorageOperationRepository
-	shipAssignmentRepo  container.ShipAssignmentRepository
-	daemonClient        daemon.DaemonClient
-	waypointRepo        system.WaypointRepository
-	storageCoordinator  storage.StorageCoordinator
+	mediator           common.Mediator
+	shipRepo           navigation.ShipRepository
+	storageOpRepo      storage.StorageOperationRepository
+	daemonClient       daemon.DaemonClient
+	waypointRepo       system.WaypointRepository
+	storageCoordinator storage.StorageCoordinator
+	clock              domainShared.Clock
 }
 
 // NewRunGasCoordinatorHandler creates a new gas coordinator handler
@@ -55,19 +54,22 @@ func NewRunGasCoordinatorHandler(
 	mediator common.Mediator,
 	shipRepo navigation.ShipRepository,
 	storageOpRepo storage.StorageOperationRepository,
-	shipAssignmentRepo container.ShipAssignmentRepository,
 	daemonClient daemon.DaemonClient,
 	waypointRepo system.WaypointRepository,
 	storageCoordinator storage.StorageCoordinator,
+	clock domainShared.Clock,
 ) *RunGasCoordinatorHandler {
+	if clock == nil {
+		clock = domainShared.NewRealClock()
+	}
 	return &RunGasCoordinatorHandler{
-		mediator:            mediator,
-		shipRepo:            shipRepo,
-		storageOpRepo:       storageOpRepo,
-		shipAssignmentRepo:  shipAssignmentRepo,
-		daemonClient:        daemonClient,
-		waypointRepo:        waypointRepo,
-		storageCoordinator:  storageCoordinator,
+		mediator:           mediator,
+		shipRepo:           shipRepo,
+		storageOpRepo:      storageOpRepo,
+		daemonClient:       daemonClient,
+		waypointRepo:       waypointRepo,
+		storageCoordinator: storageCoordinator,
+		clock:              clock,
 	}
 }
 
@@ -123,7 +125,7 @@ func (h *RunGasCoordinatorHandler) Handle(ctx context.Context, request common.Re
 		"container_id":  cmd.ContainerID,
 	})
 
-	if err := h.createPoolAssignments(ctx, cmd.SiphonShips, cmd.ContainerID, cmd.PlayerID.Value()); err != nil {
+	if err := h.createPoolAssignments(ctx, cmd.SiphonShips, cmd.ContainerID, cmd.PlayerID); err != nil {
 		return nil, fmt.Errorf("failed to create pool assignments: %w", err)
 	}
 
@@ -228,7 +230,7 @@ func (h *RunGasCoordinatorHandler) Handle(ctx context.Context, request common.Re
 	}
 
 	// Release pool assignments for siphon ships
-	h.releasePoolAssignments(ctx, cmd.ContainerID, cmd.PlayerID.Value())
+	h.releasePoolAssignments(ctx, cmd.ContainerID, cmd.PlayerID)
 
 	// Update storage operation status
 	storageOp.Stop()
@@ -332,17 +334,27 @@ func (h *RunGasCoordinatorHandler) createPoolAssignments(
 	ctx context.Context,
 	ships []string,
 	containerID string,
-	playerID int,
+	playerID domainShared.PlayerID,
 ) error {
-	for _, ship := range ships {
+	for _, shipSymbol := range ships {
+		// Load ship from repository
+		ship, err := h.shipRepo.FindBySymbol(ctx, shipSymbol, playerID)
+		if err != nil {
+			return fmt.Errorf("failed to load ship %s: %w", shipSymbol, err)
+		}
+
 		// Release any existing assignment from previous runs
 		// This handles recovery scenarios where ships are still assigned to old containers
-		_ = h.shipAssignmentRepo.Release(ctx, ship, playerID, "reassigning to new coordinator")
+		ship.ForceRelease("reassigning to new coordinator", h.clock)
 
 		// Create new assignment
-		assignment := container.NewShipAssignment(ship, playerID, containerID, nil)
-		if err := h.shipAssignmentRepo.Assign(ctx, assignment); err != nil {
-			return fmt.Errorf("failed to assign %s: %w", ship, err)
+		if err := ship.AssignToContainer(containerID, h.clock); err != nil {
+			return fmt.Errorf("failed to assign %s: %w", shipSymbol, err)
+		}
+
+		// Persist the assignment
+		if err := h.shipRepo.Save(ctx, ship); err != nil {
+			return fmt.Errorf("failed to save assignment for %s: %w", shipSymbol, err)
 		}
 	}
 	return nil
@@ -352,15 +364,21 @@ func (h *RunGasCoordinatorHandler) createPoolAssignments(
 func (h *RunGasCoordinatorHandler) releasePoolAssignments(
 	ctx context.Context,
 	containerID string,
-	playerID int,
+	playerID domainShared.PlayerID,
 ) error {
-	assignments, err := h.shipAssignmentRepo.FindByContainer(ctx, containerID, playerID)
+	// Find all ships assigned to this container
+	ships, err := h.shipRepo.FindByContainer(ctx, containerID, playerID)
 	if err != nil {
 		return err
 	}
 
-	for _, assignment := range assignments {
-		h.shipAssignmentRepo.Release(ctx, assignment.ShipSymbol(), playerID, "coordinator shutdown")
+	// Release each ship and save
+	for _, ship := range ships {
+		ship.ForceRelease("coordinator shutdown", h.clock)
+		if err := h.shipRepo.Save(ctx, ship); err != nil {
+			// Log but continue with other ships
+			continue
+		}
 	}
 
 	return nil
@@ -396,14 +414,25 @@ func (h *RunGasCoordinatorHandler) spawnSiphonWorker(
 	}
 
 	// Step 2: Transfer ship to worker
-	if err := h.shipAssignmentRepo.Transfer(ctx, shipSymbol, cmd.ContainerID, workerContainerID); err != nil {
+	ship, err := h.shipRepo.FindBySymbol(ctx, shipSymbol, cmd.PlayerID)
+	if err != nil {
+		_ = h.daemonClient.StopContainer(ctx, workerContainerID)
+		return "", fmt.Errorf("failed to load ship: %w", err)
+	}
+	if err := ship.TransferToContainer(workerContainerID, h.clock); err != nil {
 		_ = h.daemonClient.StopContainer(ctx, workerContainerID)
 		return "", fmt.Errorf("failed to transfer ship: %w", err)
+	}
+	if err := h.shipRepo.Save(ctx, ship); err != nil {
+		_ = h.daemonClient.StopContainer(ctx, workerContainerID)
+		return "", fmt.Errorf("failed to save ship transfer: %w", err)
 	}
 
 	// Step 3: Start worker (no completion callback needed - workers run continuously)
 	if err := h.daemonClient.StartGasSiphonWorkerContainer(ctx, workerContainerID, nil); err != nil {
-		_ = h.shipAssignmentRepo.Transfer(ctx, shipSymbol, workerContainerID, cmd.ContainerID)
+		// Rollback: transfer ship back to coordinator
+		_ = ship.TransferToContainer(cmd.ContainerID, h.clock)
+		_ = h.shipRepo.Save(ctx, ship)
 		return "", fmt.Errorf("failed to start worker: %w", err)
 	}
 
@@ -434,8 +463,12 @@ func (h *RunGasCoordinatorHandler) spawnStorageShipWorker(
 		StorageOperationID: cmd.GasOperationID,
 	}
 
-	// Step 1: Release any previous assignment
-	_ = h.shipAssignmentRepo.Release(ctx, shipSymbol, cmd.PlayerID.Value(), "reassigning to storage ship container")
+	// Step 1: Load ship and release any previous assignment
+	ship, err := h.shipRepo.FindBySymbol(ctx, shipSymbol, cmd.PlayerID)
+	if err != nil {
+		return "", fmt.Errorf("failed to load ship: %w", err)
+	}
+	ship.ForceRelease("reassigning to storage ship container", h.clock)
 
 	// Step 2: Persist worker container FIRST (container must exist for ship assignment FK)
 	logger.Log("INFO", "Storage ship worker container persisting", map[string]interface{}{
@@ -448,16 +481,20 @@ func (h *RunGasCoordinatorHandler) spawnStorageShipWorker(
 	}
 
 	// Step 3: Assign ship to container (now that container exists)
-	assignment := container.NewShipAssignment(shipSymbol, cmd.PlayerID.Value(), workerContainerID, nil)
-	if err := h.shipAssignmentRepo.Assign(ctx, assignment); err != nil {
+	if err := ship.AssignToContainer(workerContainerID, h.clock); err != nil {
 		// Clean up container if assignment fails
 		_ = h.daemonClient.StopContainer(ctx, workerContainerID)
 		return "", fmt.Errorf("failed to assign storage ship: %w", err)
 	}
+	if err := h.shipRepo.Save(ctx, ship); err != nil {
+		_ = h.daemonClient.StopContainer(ctx, workerContainerID)
+		return "", fmt.Errorf("failed to save ship assignment: %w", err)
+	}
 
 	// Step 4: Start worker (no completion callback needed - workers run continuously)
 	if err := h.daemonClient.StartStorageShipContainer(ctx, workerContainerID, nil); err != nil {
-		_ = h.shipAssignmentRepo.Release(ctx, shipSymbol, cmd.PlayerID.Value(), "failed to start container")
+		ship.ForceRelease("failed to start container", h.clock)
+		_ = h.shipRepo.Save(ctx, ship)
 		return "", fmt.Errorf("failed to start worker: %w", err)
 	}
 
