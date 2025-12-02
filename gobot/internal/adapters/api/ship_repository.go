@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"fmt"
+	"sync"
+	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
@@ -11,13 +13,29 @@ import (
 	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 )
 
+// shipListCacheTTL defines how long ship list cache is valid
+// 15 seconds is enough to prevent redundant calls across coordinators
+// while still allowing fresh data for navigation decisions
+const shipListCacheTTL = 15 * time.Second
+
+// cachedShipList stores ship list with timestamp for TTL expiration
+type cachedShipList struct {
+	ships     []*navigation.Ship
+	fetchedAt time.Time
+}
+
 // ShipRepository implements ShipRepository using the SpaceTraders API
 // This repository adapts API responses to domain entities
+//
+// Caching Strategy:
+// - Ship list cache (15s TTL): Prevents redundant ListShips API calls
+//   when multiple coordinators call FindAllByPlayer in quick succession
 type ShipRepository struct {
 	apiClient        domainPorts.APIClient
 	playerRepo       player.PlayerRepository
 	waypointRepo     system.WaypointRepository
 	waypointProvider system.IWaypointProvider
+	shipListCache    sync.Map // key: playerID (int) -> *cachedShipList
 }
 
 // NewShipRepository creates a new API ship repository
@@ -76,9 +94,26 @@ func (r *ShipRepository) GetShipData(ctx context.Context, symbol string, playerI
 	return shipData, nil
 }
 
-// FindAllByPlayer retrieves all ships for a player from API
+// FindAllByPlayer retrieves all ships for a player from API with short-lived caching
 // Converts API DTOs to domain entities with full waypoint reconstruction
+//
+// Caching: Returns cached ship list if within 15 seconds of last fetch.
+// This prevents redundant API calls when multiple coordinators (manufacturing,
+// gas, contract fleet) call FindIdleLightHaulers in quick succession.
 func (r *ShipRepository) FindAllByPlayer(ctx context.Context, playerID shared.PlayerID) ([]*navigation.Ship, error) {
+	cacheKey := playerID.Value()
+
+	// Check cache first
+	if cached, ok := r.shipListCache.Load(cacheKey); ok {
+		cachedList := cached.(*cachedShipList)
+		if time.Since(cachedList.fetchedAt) < shipListCacheTTL {
+			// Return a copy to prevent mutation of cached data
+			shipsCopy := make([]*navigation.Ship, len(cachedList.ships))
+			copy(shipsCopy, cachedList.ships)
+			return shipsCopy, nil
+		}
+	}
+
 	// Get player token
 	player, err := r.playerRepo.FindByID(ctx, playerID)
 	if err != nil {
@@ -100,6 +135,12 @@ func (r *ShipRepository) FindAllByPlayer(ctx context.Context, playerID shared.Pl
 		}
 		ships[i] = ship
 	}
+
+	// Cache the result
+	r.shipListCache.Store(cacheKey, &cachedShipList{
+		ships:     ships,
+		fetchedAt: time.Now(),
+	})
 
 	return ships, nil
 }
