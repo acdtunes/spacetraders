@@ -322,25 +322,20 @@ func (p *PipelinePlanner) createAcquireDeliverTask(
 	}
 
 	// No storage operation found - fall back to market acquisition
-	// Find market to buy from using supply-priority selection
-	// Priority: ABUNDANT > HIGH > MODERATE (skips SCARCE/LIMITED to avoid overpaying)
-	var sourceMarket string
-	if node.WaypointSymbol != "" {
-		// Use the market already identified by supply chain resolver
-		sourceMarket = node.WaypointSymbol
-	} else {
-		// Find export market with acceptable supply level
-		market, err := p.marketLocator.FindExportMarketBySupplyPriority(
-			planCtx.ctx,
-			node.Good,
-			planCtx.systemSymbol,
-			planCtx.playerID,
-		)
-		if err != nil {
-			return "", fmt.Errorf("no market with MODERATE+ supply for %s: %w", node.Good, err)
-		}
-		sourceMarket = market.WaypointSymbol
+	// ALWAYS use supply-filtered selection to avoid buying from SCARCE/LIMITED markets
+	// This overrides any WaypointSymbol pre-set by the supply chain resolver,
+	// which may have selected a market without considering supply levels.
+	// Priority: HIGH > ABUNDANT only (strict filtering to maximize profit margins)
+	market, err := p.marketLocator.FindExportMarketWithGoodSupply(
+		planCtx.ctx,
+		node.Good,
+		planCtx.systemSymbol,
+		planCtx.playerID,
+	)
+	if err != nil {
+		return "", fmt.Errorf("no market with HIGH/ABUNDANT supply for %s: %w", node.Good, err)
 	}
+	sourceMarket := market.WaypointSymbol
 
 	// Create ACQUIRE_DELIVER task: buy from source, deliver to factory
 	task := manufacturing.NewAcquireDeliverTask(

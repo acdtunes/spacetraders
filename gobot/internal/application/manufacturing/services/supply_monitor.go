@@ -822,24 +822,37 @@ func (m *SupplyMonitor) createAcquireDeliverTasksForFactory(ctx context.Context,
 			continue // Move to next input - this one is handled by storage
 		}
 
+		// Check if this is a raw material (ores, crystals, gases) - these need strict supply filtering
+		isRawMaterial := goods.IsMineableRawMaterial(input.good)
+
 		// Find export market to buy this input from
-		// Use supply-priority method: ABUNDANT → HIGH → MODERATE (skip SCARCE/LIMITED)
-		// This prevents buying from expensive SCARCE markets (e.g., C44 at 650 credits)
-		// when ABUNDANT markets are available (e.g., G52 at 18 credits)
-		exportMarket, err := m.marketLocator.FindExportMarketBySupplyPriority(ctx, input.good, systemSymbol, factory.PlayerID())
+		// RAW MATERIALS: Strict filter - HIGH/ABUNDANT only (SCARCE markets have 2x+ markup)
+		// INTERMEDIATE GOODS: Allow MODERATE+ to bootstrap supply chains
+		var exportMarket *MarketLocatorResult
+		var err error
+		if isRawMaterial {
+			exportMarket, err = m.marketLocator.FindExportMarketWithGoodSupply(ctx, input.good, systemSymbol, factory.PlayerID())
+		} else {
+			exportMarket, err = m.marketLocator.FindExportMarketBySupplyPriority(ctx, input.good, systemSymbol, factory.PlayerID())
+		}
 		if err != nil {
 			logger.Log("WARN", fmt.Sprintf("No export market for %s: %v", input.good, err), map[string]interface{}{
-				"factory": factory.FactorySymbol(),
-				"input":   input.good,
+				"factory":    factory.FactorySymbol(),
+				"input":      input.good,
+				"is_raw":     isRawMaterial,
+				"min_supply": map[bool]string{true: "HIGH/ABUNDANT", false: "MODERATE+"}[isRawMaterial],
 			})
 			continue
 		}
 
 		// SUPPLY-GATED TASK CREATION: Check source market supply before marking task ready
-		// This prevents buying from SCARCE/LIMITED markets (highest prices) and losing 50%+ on spread
 		sourceSupply := m.getSourceMarketSupply(ctx, exportMarket.WaypointSymbol, input.good)
-		isAcceptableSupply := sourceSupply == "HIGH" || sourceSupply == "ABUNDANT" || sourceSupply == "MODERATE"
-		isRawMaterial := goods.IsMineableRawMaterial(input.good)
+		// Raw materials: Only HIGH/ABUNDANT (these have competitive prices)
+		// Intermediate goods: Allow MODERATE+ (needed to bootstrap supply chains)
+		isAcceptableSupply := sourceSupply == "HIGH" || sourceSupply == "ABUNDANT"
+		if !isRawMaterial {
+			isAcceptableSupply = isAcceptableSupply || sourceSupply == "MODERATE"
+		}
 
 		// Create ACQUIRE_DELIVER task: buy from export market, deliver to factory
 		task := manufacturing.NewAcquireDeliverTask(
@@ -864,13 +877,11 @@ func (m *SupplyMonitor) createAcquireDeliverTasksForFactory(ctx context.Context,
 		}
 
 		// SUPPLY GATING DECISION:
-		// - Raw materials (ores, crystals, gases): Always mark ready (can't be fabricated)
-		// - Goods with MODERATE/HIGH/ABUNDANT supply: Mark ready (acceptable prices)
-		// - Goods with SCARCE/LIMITED supply: Stay PENDING (too expensive, wait for better prices)
-		// MODERATE is allowed to bootstrap supply chains - without acquiring intermediate goods,
-		// factories can't produce and supply will never improve.
+		// Raw materials already went through strict supply filtering (HIGH/ABUNDANT only)
+		// Intermediate goods allow MODERATE+ (needed to bootstrap supply chains)
+		// Tasks are only created if supply was acceptable, so just check the flag
 		shouldEnqueue := false
-		if isRawMaterial || isAcceptableSupply {
+		if isAcceptableSupply {
 			// Mark immediately ready
 			if err := task.MarkReady(); err != nil {
 				logger.Log("WARN", "Failed to mark ACQUIRE_DELIVER task ready", map[string]interface{}{
@@ -1048,18 +1059,19 @@ func (m *SupplyMonitor) ActivateSupplyGatedTasks(ctx context.Context) int {
 		var reason string
 		var sourceSupply string
 
-		if goods.IsMineableRawMaterial(task.Good()) {
-			// Raw materials bypass supply-gating - they can only be mined/purchased
-			// Activate immediately since waiting for HIGH supply may never happen
-			shouldActivate = true
-			reason = "raw_material"
-			sourceSupply = "N/A"
+		isRawMaterial := goods.IsMineableRawMaterial(task.Good())
+		sourceSupply = m.getSourceMarketSupply(ctx, task.SourceMarket(), task.Good())
+
+		if isRawMaterial {
+			// Raw materials: Only HIGH/ABUNDANT supply is acceptable
+			// SCARCE/LIMITED/MODERATE markets have inflated prices and lose money on spread
+			if sourceSupply == "HIGH" || sourceSupply == "ABUNDANT" {
+				shouldActivate = true
+				reason = "raw_material_good_supply"
+			}
 		} else {
-			// Check source market supply for fabricated goods
-			// MODERATE is allowed to bootstrap supply chains - without acquiring intermediate goods,
-			// factories can't produce and supply will never improve.
-			// Only SCARCE/LIMITED are blocked (too expensive, 50%+ loss on spread).
-			sourceSupply = m.getSourceMarketSupply(ctx, task.SourceMarket(), task.Good())
+			// Intermediate goods: Allow MODERATE+ to bootstrap supply chains
+			// Without acquiring intermediate goods, factories can't produce
 			if sourceSupply == "HIGH" || sourceSupply == "ABUNDANT" || sourceSupply == "MODERATE" {
 				shouldActivate = true
 				reason = "acceptable_supply"
@@ -1070,7 +1082,15 @@ func (m *SupplyMonitor) ActivateSupplyGatedTasks(ctx context.Context) int {
 			// RE-SOURCING: Current source has bad supply, try to find a better market
 			// This prevents tasks from being stuck forever when their original source degrades
 			systemSymbol := extractSystem(task.FactorySymbol())
-			betterSource, err := m.marketLocator.FindExportMarketBySupplyPriority(ctx, task.Good(), systemSymbol, m.playerID)
+
+			// Use appropriate filtering: strict for raw materials, lenient for intermediate goods
+			var betterSource *MarketLocatorResult
+			var err error
+			if isRawMaterial {
+				betterSource, err = m.marketLocator.FindExportMarketWithGoodSupply(ctx, task.Good(), systemSymbol, m.playerID)
+			} else {
+				betterSource, err = m.marketLocator.FindExportMarketBySupplyPriority(ctx, task.Good(), systemSymbol, m.playerID)
+			}
 			if err != nil {
 				// No better source available - keep waiting
 				continue
@@ -1078,7 +1098,11 @@ func (m *SupplyMonitor) ActivateSupplyGatedTasks(ctx context.Context) int {
 
 			// Check if the better source actually has acceptable supply
 			betterSupply := m.getSourceMarketSupply(ctx, betterSource.WaypointSymbol, task.Good())
-			if betterSupply != "HIGH" && betterSupply != "ABUNDANT" && betterSupply != "MODERATE" {
+			acceptableForResource := betterSupply == "HIGH" || betterSupply == "ABUNDANT"
+			if !isRawMaterial {
+				acceptableForResource = acceptableForResource || betterSupply == "MODERATE"
+			}
+			if !acceptableForResource {
 				// Better source also has bad supply - keep waiting
 				continue
 			}
