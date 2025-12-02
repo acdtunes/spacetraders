@@ -41,6 +41,7 @@ func NewNegotiateContractHandler(
 }
 
 // Handle executes the negotiate contract command
+// OPTIMIZED: Skip GetShip call - try negotiate first, handle dock error reactively
 func (h *NegotiateContractHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {
 	cmd, ok := request.(*NegotiateContractCommand)
 	if !ok {
@@ -52,16 +53,23 @@ func (h *NegotiateContractHandler) Handle(ctx context.Context, request common.Re
 		return nil, err
 	}
 
-	ship, err := h.loadShip(ctx, cmd.ShipSymbol, cmd.PlayerID)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := h.ensureShipDocked(ctx, ship, cmd.PlayerID); err != nil {
-		return nil, err
-	}
-
+	// OPTIMIZATION: Try negotiate directly without loading ship first
+	// If ship isn't docked, we'll handle the error and dock reactively
 	result, err := h.callNegotiateContractAPI(ctx, cmd.ShipSymbol, token)
+
+	// Handle "ship must be docked" error (4214 or 4244) reactively
+	if result != nil && (result.ErrorCode == 4214 || result.ErrorCode == 4244) {
+		// Ship not docked - load ship, dock it, and retry
+		ship, loadErr := h.loadShip(ctx, cmd.ShipSymbol, cmd.PlayerID)
+		if loadErr != nil {
+			return nil, loadErr
+		}
+		if dockErr := h.ensureShipDocked(ctx, ship, cmd.PlayerID); dockErr != nil {
+			return nil, dockErr
+		}
+		// Retry negotiate after docking
+		result, err = h.callNegotiateContractAPI(ctx, cmd.ShipSymbol, token)
+	}
 
 	// Check for error 4511 (existing contract) and handle it
 	existingContractResp, handleErr := h.handleExistingContractError(ctx, result, err, token, cmd.PlayerID)

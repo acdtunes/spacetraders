@@ -116,18 +116,15 @@ func (h *NavigateRouteHandler) Handle(ctx context.Context, request common.Reques
 		return nil, err
 	}
 
-	finalShip, err := h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to reload ship after navigation: %w", err)
-	}
-
+	// OPTIMIZATION: Ship is updated in place by RouteExecutor (no reload needed)
+	// RouteExecutor calls ship.UpdateFuelFromAPI() and ship.Arrive() during execution
 	return &NavigateRouteResponse{
 		Status:          "completed",
 		ArrivalTime:     route.TotalTravelTime(),
 		CurrentLocation: cmd.Destination,
-		FuelRemaining:   finalShip.Fuel().Current,
+		FuelRemaining:   ship.Fuel().Current,
 		Route:           route,
-		Ship:            finalShip,
+		Ship:            ship,
 	}, nil
 }
 
@@ -175,10 +172,8 @@ func (h *NavigateRouteHandler) waitForInTransitCompletion(ctx context.Context, c
 		return nil, fmt.Errorf("failed to wait for current transit: %w", err)
 	}
 
-	ship, err = h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to reload ship after transit: %w", err)
-	}
+	// OPTIMIZATION: Ship is updated in place by RouteExecutor during waitForCurrentTransit
+	// No need to reload - ship.Arrive() was already called
 
 	logger.Log("INFO", "Ship arrived at destination", map[string]interface{}{
 		"ship_symbol": ship.ShipSymbol(),

@@ -170,18 +170,18 @@ func (h *RunTourSellingHandler) executeSellRoute(
 		if leg.RefuelBefore && leg.RefuelAmount > 0 {
 			logger.Log("INFO", fmt.Sprintf("Refueling %d units before leg to %s", leg.RefuelAmount, leg.ToWaypoint), nil)
 
-			// Make sure we're docked to refuel
+			// Make sure we're docked to refuel - pass ship so it's updated in place
 			dockCmd := &shipTypes.DockShipCommand{
-				ShipSymbol: cmd.ShipSymbol,
-				PlayerID:   cmd.PlayerID,
+				Ship:     transportShip,
+				PlayerID: cmd.PlayerID,
 			}
 			h.mediator.Send(ctx, dockCmd)
 
 			refuelAmount := leg.RefuelAmount
 			refuelCmd := &shipTypes.RefuelShipCommand{
-				ShipSymbol: cmd.ShipSymbol,
-				PlayerID:   cmd.PlayerID,
-				Units:      &refuelAmount,
+				Ship:     transportShip,
+				PlayerID: cmd.PlayerID,
+				Units:    &refuelAmount,
 			}
 			_, err := h.mediator.Send(ctx, refuelCmd)
 			if err != nil {
@@ -193,16 +193,16 @@ func (h *RunTourSellingHandler) executeSellRoute(
 		logger.Log("INFO", fmt.Sprintf("Navigating %s -> %s (%s mode, %d fuel)",
 			leg.FromWaypoint, leg.ToWaypoint, leg.FlightMode, leg.FuelCost), nil)
 
-		// Orbit before navigating
+		// Orbit before navigating - pass ship so it's updated in place
 		orbitCmd := &shipTypes.OrbitShipCommand{
-			ShipSymbol: cmd.ShipSymbol,
-			PlayerID:   cmd.PlayerID,
+			Ship:     transportShip,
+			PlayerID: cmd.PlayerID,
 		}
 		h.mediator.Send(ctx, orbitCmd)
 
-		// Use the flight mode that was calculated by routing service
+		// Use the flight mode that was calculated by routing service - pass ship
 		navCmd := &shipTypes.NavigateDirectCommand{
-			ShipSymbol:  cmd.ShipSymbol,
+			Ship:        transportShip,
 			Destination: leg.ToWaypoint,
 			PlayerID:    cmd.PlayerID,
 			FlightMode:  leg.FlightMode,
@@ -230,10 +230,10 @@ func (h *RunTourSellingHandler) executeSellRoute(
 		// Check if this is a market we need to sell at (not the return leg)
 		goodsToSell := marketGoods[leg.ToWaypoint]
 		if len(goodsToSell) > 0 {
-			// Dock at market before selling
+			// Dock at market before selling - pass ship so it's updated in place
 			dockCmd := &shipTypes.DockShipCommand{
-				ShipSymbol: cmd.ShipSymbol,
-				PlayerID:   cmd.PlayerID,
+				Ship:     transportShip,
+				PlayerID: cmd.PlayerID,
 			}
 			_, err = h.mediator.Send(ctx, dockCmd)
 			if err != nil {
@@ -241,11 +241,7 @@ func (h *RunTourSellingHandler) executeSellRoute(
 				continue
 			}
 
-			// Reload ship
-			transportShip, err = h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
-			if err != nil {
-				return marketsVisited, totalRevenue, itemsSold, fmt.Errorf("failed to reload ship: %w", err)
-			}
+			// OPTIMIZATION: Ship is updated in place by DockShipHandler (no reload needed)
 
 			// Create set of goods to sell at this market
 			goodsSet := make(map[string]bool)
