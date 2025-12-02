@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
@@ -151,8 +152,23 @@ func (h *RunGasCoordinatorHandler) Handle(ctx context.Context, request common.Re
 		}
 	}
 
-	// Step 4: Spawn siphon workers immediately (they deposit to storage ships when available)
-	// Siphon workers wait if no storage ship is available - no need to wait for storage ships
+	// Step 4: Wait for at least one storage ship to be registered before spawning siphon workers
+	// This prevents race conditions where siphons try to deposit before storage is ready
+	logger.Log("INFO", "Waiting for storage ship registration", map[string]interface{}{
+		"action":         "wait_storage_registration",
+		"storage_count":  len(cmd.StorageShips),
+		"operation_id":   cmd.GasOperationID,
+	})
+
+	if err := h.waitForStorageShipRegistration(ctx, cmd.GasOperationID, len(cmd.StorageShips), logger); err != nil {
+		// If we timeout waiting for storage ships, still spawn siphons - they have their own retry logic
+		logger.Log("WARNING", "Storage ship registration wait timeout, spawning siphons anyway", map[string]interface{}{
+			"action": "storage_wait_timeout",
+			"error":  err.Error(),
+		})
+	}
+
+	// Step 5: Spawn siphon workers now that storage ships are registered
 	logger.Log("INFO", "Siphon workers spawning", map[string]interface{}{
 		"action":       "spawn_siphons",
 		"siphon_count": len(cmd.SiphonShips),
@@ -614,4 +630,58 @@ func (h *RunGasCoordinatorHandler) autoSelectGasGiant(
 	})
 
 	return closestGasGiant.Symbol, nil
+}
+
+// waitForStorageShipRegistration polls the coordinator until at least one storage ship is registered.
+// This ensures siphon workers don't start before storage ships are ready to receive cargo.
+// Returns nil when at least one storage ship is registered, or error after timeout.
+func (h *RunGasCoordinatorHandler) waitForStorageShipRegistration(
+	ctx context.Context,
+	operationID string,
+	expectedCount int,
+	logger common.ContainerLogger,
+) error {
+	const (
+		pollInterval = 2  // seconds
+		maxWaitTime  = 60 // seconds
+	)
+
+	ticker := time.NewTicker(pollInterval * time.Second)
+	defer ticker.Stop()
+
+	waited := 0
+	for waited < maxWaitTime {
+		// Check how many storage ships are registered
+		ships := h.storageCoordinator.GetStorageShipsForOperation(operationID)
+		registeredCount := len(ships)
+
+		if registeredCount > 0 {
+			logger.Log("INFO", "Storage ship(s) registered, proceeding with siphon workers", map[string]interface{}{
+				"action":           "storage_registered",
+				"registered_count": registeredCount,
+				"expected_count":   expectedCount,
+				"operation_id":     operationID,
+			})
+			return nil
+		}
+
+		// Log progress every 10 seconds
+		if waited%10 == 0 {
+			logger.Log("INFO", "Waiting for storage ship registration", map[string]interface{}{
+				"action":         "waiting_storage",
+				"waited_seconds": waited,
+				"operation_id":   operationID,
+			})
+		}
+
+		// Wait for next poll or context cancellation
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			waited += pollInterval
+		}
+	}
+
+	return fmt.Errorf("timeout waiting for storage ship registration after %d seconds", maxWaitTime)
 }
