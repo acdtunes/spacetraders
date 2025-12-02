@@ -145,6 +145,9 @@ func (c *SpaceTradersClient) GetShip(ctx context.Context, symbol, token string) 
 					Units       int    `json:"units"`
 				} `json:"inventory"`
 			} `json:"cargo"`
+			Cooldown *struct {
+				Expiration string `json:"expiration"`
+			} `json:"cooldown,omitempty"` // Present when ship has active cooldown
 			Engine struct {
 				Speed int `json:"speed"`
 			} `json:"engine"`
@@ -196,20 +199,27 @@ func (c *SpaceTradersClient) GetShip(ctx context.Context, symbol, token string) 
 		arrivalTime = response.Data.Nav.Route.Arrival
 	}
 
+	// Extract cooldown expiration if ship has active cooldown
+	cooldownExpiration := ""
+	if response.Data.Cooldown != nil {
+		cooldownExpiration = response.Data.Cooldown.Expiration
+	}
+
 	return &navigation.ShipData{
-		Symbol:        response.Data.Symbol,
-		Location:      response.Data.Nav.WaypointSymbol,
-		NavStatus:     response.Data.Nav.Status,
-		ArrivalTime:   arrivalTime, // ISO8601 timestamp when IN_TRANSIT
-		FuelCurrent:   response.Data.Fuel.Current,
-		FuelCapacity:  response.Data.Fuel.Capacity,
-		CargoCapacity: response.Data.Cargo.Capacity,
-		CargoUnits:    response.Data.Cargo.Units,
-		EngineSpeed:   response.Data.Engine.Speed,
-		FrameSymbol:   response.Data.Frame.Symbol,
-		Role:          response.Data.Registration.Role,
-		Modules:       modules,
-		Cargo:         cargo,
+		Symbol:             response.Data.Symbol,
+		Location:           response.Data.Nav.WaypointSymbol,
+		NavStatus:          response.Data.Nav.Status,
+		ArrivalTime:        arrivalTime,        // ISO8601 timestamp when IN_TRANSIT
+		CooldownExpiration: cooldownExpiration, // ISO8601 timestamp when cooldown expires
+		FuelCurrent:        response.Data.Fuel.Current,
+		FuelCapacity:       response.Data.Fuel.Capacity,
+		CargoCapacity:      response.Data.Cargo.Capacity,
+		CargoUnits:         response.Data.Cargo.Units,
+		EngineSpeed:        response.Data.Engine.Speed,
+		FrameSymbol:        response.Data.Frame.Symbol,
+		Role:               response.Data.Registration.Role,
+		Modules:            modules,
+		Cargo:              cargo,
 	}, nil
 }
 
@@ -590,12 +600,19 @@ func (c *SpaceTradersClient) NegotiateContract(ctx context.Context, shipSymbol, 
 	emptyBody := map[string]interface{}{}
 	err := c.requestWithErrorParsing(ctx, "POST", path, token, emptyBody, &response)
 
-	// Check for error 4511 - agent already has contract
-	if response.Error != nil && response.Error.Code == 4511 {
-		return &domainPorts.ContractNegotiationResult{
-			ErrorCode:          4511,
-			ExistingContractID: response.Error.Data.ContractID,
-		}, nil
+	// Check for known error codes that caller can handle reactively
+	if response.Error != nil {
+		switch response.Error.Code {
+		case 4511: // Agent already has contract
+			return &domainPorts.ContractNegotiationResult{
+				ErrorCode:          4511,
+				ExistingContractID: response.Error.Data.ContractID,
+			}, nil
+		case 4214, 4244: // Ship must be docked (4214) or Ship not currently docked (4244)
+			return &domainPorts.ContractNegotiationResult{
+				ErrorCode: response.Error.Code, // Return actual error code for debugging
+			}, nil
+		}
 	}
 
 	if err != nil {
