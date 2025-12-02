@@ -24,7 +24,7 @@ const pool = new Pool({
   connectionString: process.env.DATABASE_URL || 'postgresql://spacetraders:dev_password@localhost:5432/spacetraders'
 });
 
-// Get all ship assignments (Go bot - uses ship_assignments table as source of truth)
+// Get all ship assignments (Go bot - uses ships table as source of truth)
 router.get('/assignments', async (req, res) => {
   const client = await pool.connect();
   try {
@@ -34,16 +34,16 @@ router.get('/assignments', async (req, res) => {
     // Get ship assignments with container details
     const assignmentsResult = await client.query(`
       SELECT
-        sa.ship_symbol,
-        sa.player_id,
-        sa.container_id,
-        sa.status,
-        sa.assigned_at,
-        sa.released_at,
+        s.ship_symbol,
+        s.player_id,
+        s.container_id,
+        s.assignment_status as status,
+        s.assigned_at,
+        s.released_at,
         c.config,
         c.container_type
-      FROM ship_assignments sa
-      LEFT JOIN containers c ON sa.container_id = c.id AND sa.player_id = c.player_id
+      FROM ships s
+      LEFT JOIN containers c ON s.container_id = c.id AND s.player_id = c.player_id
     `);
 
     // Create a map of ship symbols to assignments
@@ -137,7 +137,7 @@ router.get('/assignments', async (req, res) => {
               operation,
             });
           } else {
-            // Ship is idle (not in ship_assignments or no container)
+            // Ship is idle (not in ships table or no container)
             assignments.push({
               ship_symbol: ship.symbol,
               player_id: playerId,
@@ -210,28 +210,28 @@ router.get('/assignments', async (req, res) => {
   }
 });
 
-// Get assignment for specific ship (Go bot - queries ship_assignments)
+// Get assignment for specific ship (Go bot - queries ships table)
 router.get('/assignments/:shipSymbol', async (req, res) => {
   const client = await pool.connect();
   try {
     const result = await client.query(`
       SELECT
-        sa.ship_symbol,
-        sa.player_id,
-        sa.container_id as assigned_to,
-        sa.container_id as daemon_id,
-        sa.status,
-        sa.assigned_at,
-        sa.released_at,
+        s.ship_symbol,
+        s.player_id,
+        s.container_id as assigned_to,
+        s.container_id as daemon_id,
+        s.assignment_status as status,
+        s.assigned_at,
+        s.released_at,
         c.config as metadata,
         c.container_type
-      FROM ship_assignments sa
-      LEFT JOIN containers c ON sa.container_id = c.id AND sa.player_id = c.player_id
-      WHERE sa.ship_symbol = $1
+      FROM ships s
+      LEFT JOIN containers c ON s.container_id = c.id AND s.player_id = c.player_id
+      WHERE s.ship_symbol = $1
     `, [req.params.shipSymbol]);
 
     if (result.rows.length === 0) {
-      // Ship not in ship_assignments table - it's idle
+      // Ship not in ships table - it's idle
       return res.json({
         assignment: {
           ship_symbol: req.params.shipSymbol,
@@ -683,11 +683,12 @@ router.get('/operations/summary', async (req, res) => {
   try {
     const result = await client.query(`
       SELECT
-        operation,
+        c.container_type as operation,
         COUNT(*) as count,
-        status
-      FROM ship_assignments
-      GROUP BY operation, status
+        s.assignment_status as status
+      FROM ships s
+      LEFT JOIN containers c ON s.container_id = c.id AND s.player_id = c.player_id
+      GROUP BY c.container_type, s.assignment_status
     `);
 
     res.json({ summary: result.rows });
