@@ -182,29 +182,23 @@ func (m *TaskAssignmentManager) AssignTasks(ctx context.Context, params AssignPa
 		return 0, nil
 	}
 
-	// Get idle ships
+	// Get idle ships (FindIdleLightHaulers already calls FindAllByPlayer internally)
 	playerID := shared.MustNewPlayerID(params.PlayerID)
-	_, idleShipSymbols, err := contract.FindIdleLightHaulers(
+	idleShipsList, _, err := contract.FindIdleLightHaulers(
 		ctx, playerID, m.shipRepo, m.shipAssignmentRepo,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("failed to find idle ships: %w", err)
 	}
 
-	if len(idleShipSymbols) == 0 {
+	if len(idleShipsList) == 0 {
 		return 0, nil
 	}
 
-	// Load ship entities
-	// NOTE: This loads each ship individually, making N API calls for N idle ships.
-	// A batch loading method (FindBySymbols) could reduce this to 1 ListShips call + local filter.
-	// For now, acceptable as idle ship count is typically small (1-5).
-	idleShips := make(map[string]*navigation.Ship)
-	for _, symbol := range idleShipSymbols {
-		ship, err := m.shipRepo.FindBySymbol(ctx, symbol, playerID)
-		if err == nil {
-			idleShips[symbol] = ship
-		}
+	// Convert to map for efficient lookup and removal
+	idleShips := make(map[string]*navigation.Ship, len(idleShipsList))
+	for _, ship := range idleShipsList {
+		idleShips[ship.ShipSymbol()] = ship
 	}
 
 	// Handle ships with existing cargo first
