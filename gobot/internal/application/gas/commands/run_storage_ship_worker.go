@@ -3,7 +3,6 @@ package commands
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	appShipCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands"
@@ -140,12 +139,17 @@ func (h *RunStorageShipWorkerHandler) Handle(ctx context.Context, request common
 		"current_cargo":  ship.Cargo().Units,
 	})
 
-	// Step 4: Maintenance loop - periodically check for and jettison HYDROCARBON
-	// This runs in the background while storage ship is registered
-	maintenanceInterval := 30 * time.Second
-	ticker := time.NewTicker(maintenanceInterval)
-	defer ticker.Stop()
+	// Step 4: Subscribe to cargo deposit notifications
+	// This eliminates the need for periodic API polling to check for HYDROCARBON
+	depositNotifications, unsubscribe := h.storageCoordinator.SubscribeToDeposits(cmd.ShipSymbol)
+	defer unsubscribe()
 
+	// Check if we already have HYDROCARBON from initial cargo (recovery scenario)
+	if initialCargo["HYDROCARBON"] > 0 {
+		h.jettisonHydrocarbonUnits(ctx, cmd, logger, initialCargo["HYDROCARBON"])
+	}
+
+	// Step 5: Wait for shutdown or HYDROCARBON deposits
 	for {
 		select {
 		case <-ctx.Done():
@@ -159,68 +163,50 @@ func (h *RunStorageShipWorkerHandler) Handle(ctx context.Context, request common
 
 			return result, ctx.Err()
 
-		case <-ticker.C:
-			// Periodic maintenance: jettison HYDROCARBON byproduct
-			h.jettisonHydrocarbon(ctx, cmd, logger)
+		case notification := <-depositNotifications:
+			// Only jettison HYDROCARBON - it's a worthless byproduct that wastes cargo space
+			if notification.GoodSymbol == "HYDROCARBON" && notification.Units > 0 {
+				h.jettisonHydrocarbonUnits(ctx, cmd, logger, notification.Units)
+			}
 		}
 	}
 }
 
-// jettisonHydrocarbon checks for and jettisons any HYDROCARBON from the storage ship.
+// jettisonHydrocarbonUnits jettisons a known amount of HYDROCARBON from the storage ship.
 // HYDROCARBON is a worthless byproduct from gas siphoning that wastes cargo space.
-//
-// OPTIMIZATION OPPORTUNITY: This reloads ship every 30 seconds just to check cargo.
-// Could track cargo locally via storage coordinator transfer notifications instead.
-// Current impact: 2 API calls/minute continuously while storage ship is active.
-func (h *RunStorageShipWorkerHandler) jettisonHydrocarbon(
+// This is called reactively when HYDROCARBON is deposited (no polling/API call needed).
+func (h *RunStorageShipWorkerHandler) jettisonHydrocarbonUnits(
 	ctx context.Context,
 	cmd *RunStorageShipWorkerCommand,
 	logger common.ContainerLogger,
+	units int,
 ) {
-	// Reload ship to get current cargo
-	// NOTE: This is an optimization opportunity - see function comment
-	ship, err := h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
-	if err != nil {
-		logger.Log("WARNING", "Failed to load ship for HYDROCARBON cleanup", map[string]interface{}{
-			"action":      "hydrocarbon_cleanup_error",
-			"ship_symbol": cmd.ShipSymbol,
-			"error":       err.Error(),
-		})
-		return
+	logger.Log("INFO", "Jettisoning HYDROCARBON byproduct from storage ship", map[string]interface{}{
+		"action":      "jettison_hydrocarbon",
+		"ship_symbol": cmd.ShipSymbol,
+		"units":       units,
+	})
+
+	jettisonCmd := &appShipCmd.JettisonCargoCommand{
+		ShipSymbol: cmd.ShipSymbol,
+		GoodSymbol: "HYDROCARBON",
+		Units:      units,
+		PlayerID:   cmd.PlayerID,
 	}
 
-	// Check for HYDROCARBON in cargo
-	for _, item := range ship.Cargo().Inventory {
-		if item.Symbol == "HYDROCARBON" && item.Units > 0 {
-			logger.Log("INFO", "Jettisoning HYDROCARBON byproduct from storage ship", map[string]interface{}{
-				"action":      "jettison_hydrocarbon",
-				"ship_symbol": cmd.ShipSymbol,
-				"units":       item.Units,
-			})
-
-			jettisonCmd := &appShipCmd.JettisonCargoCommand{
-				ShipSymbol: cmd.ShipSymbol,
-				GoodSymbol: "HYDROCARBON",
-				Units:      item.Units,
-				PlayerID:   cmd.PlayerID,
-			}
-
-			_, err := h.mediator.Send(ctx, jettisonCmd)
-			if err != nil {
-				logger.Log("WARNING", "Failed to jettison HYDROCARBON from storage ship", map[string]interface{}{
-					"action":      "jettison_error",
-					"ship_symbol": cmd.ShipSymbol,
-					"units":       item.Units,
-					"error":       err.Error(),
-				})
-			} else {
-				logger.Log("INFO", "Jettisoned HYDROCARBON from storage ship", map[string]interface{}{
-					"action":      "jettison_success",
-					"ship_symbol": cmd.ShipSymbol,
-					"units":       item.Units,
-				})
-			}
-			break // Only one HYDROCARBON entry per cargo
-		}
+	_, err := h.mediator.Send(ctx, jettisonCmd)
+	if err != nil {
+		logger.Log("WARNING", "Failed to jettison HYDROCARBON from storage ship", map[string]interface{}{
+			"action":      "jettison_error",
+			"ship_symbol": cmd.ShipSymbol,
+			"units":       units,
+			"error":       err.Error(),
+		})
+	} else {
+		logger.Log("INFO", "Jettisoned HYDROCARBON from storage ship", map[string]interface{}{
+			"action":      "jettison_success",
+			"ship_symbol": cmd.ShipSymbol,
+			"units":       units,
+		})
 	}
 }

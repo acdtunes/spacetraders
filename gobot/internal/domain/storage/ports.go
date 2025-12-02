@@ -53,6 +53,18 @@ type StorageCoordinator interface {
 
 	// GetStorageShipsForOperation returns all storage ships for an operation
 	GetStorageShipsForOperation(operationID string) []*StorageShip
+
+	// SubscribeToDeposits returns a channel that receives notifications when
+	// cargo is deposited to a specific storage ship. Used by storage ship workers
+	// to react to deposits (e.g., jettison HYDROCARBON) without polling.
+	// The returned unsubscribe function MUST be called to clean up.
+	SubscribeToDeposits(shipSymbol string) (notifications <-chan CargoDepositNotification, unsubscribe func())
+}
+
+// CargoDepositNotification contains details about a cargo deposit event
+type CargoDepositNotification struct {
+	GoodSymbol string
+	Units      int
 }
 
 // StorageOperationRepository handles persistence of storage operations

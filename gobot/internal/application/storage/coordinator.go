@@ -37,14 +37,19 @@ type InMemoryStorageCoordinator struct {
 
 	// waiters maps (operationID, goodSymbol) -> FIFO queue of waiters
 	waiters map[waiterQueueKey][]*storage.CargoWaiter
+
+	// depositSubscribers maps shipSymbol -> list of subscriber channels
+	// Used to notify storage ship workers when cargo is deposited
+	depositSubscribers map[string][]chan storage.CargoDepositNotification
 }
 
 // NewInMemoryStorageCoordinator creates a new storage coordinator
 func NewInMemoryStorageCoordinator() *InMemoryStorageCoordinator {
 	return &InMemoryStorageCoordinator{
-		storageShips:     make(map[string]*storage.StorageShip),
-		shipsByOperation: make(map[string][]string),
-		waiters:          make(map[waiterQueueKey][]*storage.CargoWaiter),
+		storageShips:       make(map[string]*storage.StorageShip),
+		shipsByOperation:   make(map[string][]string),
+		waiters:            make(map[waiterQueueKey][]*storage.CargoWaiter),
+		depositSubscribers: make(map[string][]chan storage.CargoDepositNotification),
 	}
 }
 
@@ -240,6 +245,19 @@ func (c *InMemoryStorageCoordinator) NotifyCargoDeposited(storageShipSymbol, goo
 		return
 	}
 
+	// Notify deposit subscribers for this ship (e.g., storage ship worker for HYDROCARBON jettison)
+	notification := storage.CargoDepositNotification{
+		GoodSymbol: goodSymbol,
+		Units:      units,
+	}
+	for _, ch := range c.depositSubscribers[storageShipSymbol] {
+		// Non-blocking send - if subscriber's buffer is full, skip
+		select {
+		case ch <- notification:
+		default:
+		}
+	}
+
 	// Wake waiters for this operation+good
 	operationID := ship.OperationID()
 	key := waiterQueueKey{operationID: operationID, goodSymbol: goodSymbol}
@@ -351,6 +369,38 @@ func (c *InMemoryStorageCoordinator) GetStorageShipsForOperation(operationID str
 	}
 
 	return ships
+}
+
+// SubscribeToDeposits returns a channel that receives notifications when
+// cargo is deposited to a specific storage ship.
+func (c *InMemoryStorageCoordinator) SubscribeToDeposits(shipSymbol string) (<-chan storage.CargoDepositNotification, func()) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Create buffered channel to avoid blocking the coordinator
+	ch := make(chan storage.CargoDepositNotification, 10)
+	c.depositSubscribers[shipSymbol] = append(c.depositSubscribers[shipSymbol], ch)
+
+	// Return unsubscribe function
+	unsubscribe := func() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+
+		subs := c.depositSubscribers[shipSymbol]
+		for i, sub := range subs {
+			if sub == ch {
+				c.depositSubscribers[shipSymbol] = append(subs[:i], subs[i+1:]...)
+				break
+			}
+		}
+		// Clean up empty slices
+		if len(c.depositSubscribers[shipSymbol]) == 0 {
+			delete(c.depositSubscribers, shipSymbol)
+		}
+		close(ch)
+	}
+
+	return ch, unsubscribe
 }
 
 // Verify interface implementation
