@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
-	shipCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands"
+	shipCargo "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/cargo"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
@@ -370,7 +370,7 @@ func (h *OrphanedCargoHandler) jettisonCargo(ctx context.Context, ship *navigati
 		return fmt.Errorf("no mediator configured for jettison")
 	}
 
-	cmd := &shipCmd.JettisonCargoCommand{
+	cmd := &shipCargo.JettisonCargoCommand{
 		ShipSymbol: ship.ShipSymbol(),
 		PlayerID:   shared.MustNewPlayerID(playerID),
 		GoodSymbol: good,

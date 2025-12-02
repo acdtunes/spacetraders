@@ -7,7 +7,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	contractTypes "github.com/andrescamacho/spacetraders-go/internal/application/contract/types"
 	appContract "github.com/andrescamacho/spacetraders-go/internal/application/contract"
-	appShipCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands"
+	shipNav "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
@@ -274,7 +274,7 @@ func (h *RebalanceContractFleetHandler) executeParallelRepositioning(
 		go func(shipSymbol, destination string) {
 			logger.Log("INFO", fmt.Sprintf("Repositioning %s to %s", shipSymbol, destination), nil)
 
-			navigateCmd := &appShipCmd.NavigateRouteCommand{
+			navigateCmd := &shipNav.NavigateRouteCommand{
 				ShipSymbol:  shipSymbol,
 				Destination: destination,
 				PlayerID:    cmd.PlayerID,

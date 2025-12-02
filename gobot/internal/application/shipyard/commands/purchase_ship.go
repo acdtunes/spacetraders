@@ -7,7 +7,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	ledgerCommands "github.com/andrescamacho/spacetraders-go/internal/application/ledger/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/application/logging"
-	"github.com/andrescamacho/spacetraders-go/internal/application/ship/commands"
+	shipNav "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
 	shipTypes "github.com/andrescamacho/spacetraders-go/internal/application/ship/types"
 	"github.com/andrescamacho/spacetraders-go/internal/application/shipyard/queries"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
@@ -219,7 +219,7 @@ func (h *PurchaseShipHandler) navigateToShipyard(
 		return purchasingShip, nil
 	}
 
-	navCmd := &commands.NavigateRouteCommand{
+	navCmd := &shipNav.NavigateRouteCommand{
 		ShipSymbol:  cmd.PurchasingShipSymbol,
 		Destination: shipyardWaypoint,
 		PlayerID:    cmd.PlayerID,

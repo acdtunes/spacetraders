@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
-	appShipCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands"
+	shipCargo "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/cargo"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
@@ -146,7 +146,7 @@ func (m *CargoManager) jettisonWrongCargo(
 	wrongItems := ship.Cargo().GetOtherItems(keepSymbol)
 
 	for _, item := range wrongItems {
-		jettisonCmd := &appShipCmd.JettisonCargoCommand{
+		jettisonCmd := &shipCargo.JettisonCargoCommand{
 			ShipSymbol: ship.ShipSymbol(),
 			PlayerID:   shared.MustNewPlayerID(playerID),
 			GoodSymbol: item.Symbol,

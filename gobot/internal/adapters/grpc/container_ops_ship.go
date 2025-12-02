@@ -4,7 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	shipCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands"
+	shipCargo "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/cargo"
+	shipNav "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
 	shipTypes "github.com/andrescamacho/spacetraders-go/internal/application/ship/types"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
@@ -18,7 +19,7 @@ func (s *DaemonServer) NavigateShip(ctx context.Context, shipSymbol, destination
 	containerID := utils.GenerateContainerID("navigate", shipSymbol)
 
 	// Create navigation command
-	cmd := &shipCmd.NavigateRouteCommand{
+	cmd := &shipNav.NavigateRouteCommand{
 		ShipSymbol:  shipSymbol,
 		Destination: destination,
 		PlayerID:    shared.MustNewPlayerID(playerID),
@@ -181,7 +182,7 @@ func (s *DaemonServer) RefuelShip(ctx context.Context, shipSymbol string, player
 func (s *DaemonServer) JettisonCargo(ctx context.Context, shipSymbol string, playerID int, goodSymbol string, units int) (string, error) {
 	containerID := utils.GenerateContainerID("jettison", shipSymbol)
 
-	cmd := &shipCmd.JettisonCargoCommand{
+	cmd := &shipCargo.JettisonCargoCommand{
 		ShipSymbol: shipSymbol,
 		PlayerID:   shared.MustNewPlayerID(playerID),
 		GoodSymbol: goodSymbol,

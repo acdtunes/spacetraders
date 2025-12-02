@@ -7,7 +7,7 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/application/ship"
-	shipCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands"
+	shipNav "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
@@ -134,7 +134,7 @@ func (h *ScoutTourHandler) navigateToMarketIfNeeded(
 		"tour_type":   "stationary_scout",
 	})
 
-	navCmd := &shipCmd.NavigateRouteCommand{
+	navCmd := &shipNav.NavigateRouteCommand{
 		ShipSymbol:  shipSymbol,
 		Destination: marketWaypoint,
 		PlayerID:    playerID,
@@ -145,7 +145,7 @@ func (h *ScoutTourHandler) navigateToMarketIfNeeded(
 		return fmt.Errorf("failed to navigate to %s: %w", marketWaypoint, err)
 	}
 
-	navResult := navResp.(*shipCmd.NavigateRouteResponse)
+	navResult := navResp.(*shipNav.NavigateRouteResponse)
 	logger.Log("INFO", "Ship navigation complete - market scanned", map[string]interface{}{
 		"ship_symbol":    shipSymbol,
 		"action":         "navigation_complete",
@@ -277,7 +277,7 @@ func (h *ScoutTourHandler) navigateToMarket(
 	cmd *ScoutTourCommand,
 	marketWaypoint string,
 	iteration int,
-) (*shipCmd.NavigateRouteResponse, error) {
+) (*shipNav.NavigateRouteResponse, error) {
 	logger := common.LoggerFromContext(ctx)
 	logger.Log("INFO", "Ship navigating to market on tour", map[string]interface{}{
 		"ship_symbol": cmd.ShipSymbol,
@@ -287,7 +287,7 @@ func (h *ScoutTourHandler) navigateToMarket(
 		"iteration":   iteration + 1,
 	})
 
-	navCmd := &shipCmd.NavigateRouteCommand{
+	navCmd := &shipNav.NavigateRouteCommand{
 		ShipSymbol:  cmd.ShipSymbol,
 		Destination: marketWaypoint,
 		PlayerID:    cmd.PlayerID,
@@ -298,7 +298,7 @@ func (h *ScoutTourHandler) navigateToMarket(
 		return nil, fmt.Errorf("failed to navigate to %s: %w", marketWaypoint, err)
 	}
 
-	return navResp.(*shipCmd.NavigateRouteResponse), nil
+	return navResp.(*shipNav.NavigateRouteResponse), nil
 }
 
 // rotateTourToStart rotates the tour slice so it starts from the ship's current position

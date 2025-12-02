@@ -6,7 +6,7 @@ import (
 	"fmt"
 
 	playerQuery "github.com/andrescamacho/spacetraders-go/internal/application/player/queries"
-	shipCommands "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands"
+	shipNav "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
 	pb "github.com/andrescamacho/spacetraders-go/pkg/proto/daemon"
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )
@@ -175,7 +175,7 @@ func (s *daemonServiceImpl) JumpShip(ctx context.Context, req *pb.JumpShipReques
 
 	// Call the JumpShip command handler through mediator
 	// We'll need to import the commands package
-	cmd := &shipCommands.JumpShipCommand{
+	cmd := &shipNav.JumpShipCommand{
 		ShipSymbol:        req.ShipSymbol,
 		DestinationSystem: req.DestinationSystem,
 		PlayerID:          &playerID,
@@ -189,7 +189,7 @@ func (s *daemonServiceImpl) JumpShip(ctx context.Context, req *pb.JumpShipReques
 		}, nil
 	}
 
-	resp, ok := result.(*shipCommands.JumpShipResponse)
+	resp, ok := result.(*shipNav.JumpShipResponse)
 	if !ok {
 		return &pb.JumpShipResponse{
 			Success: false,

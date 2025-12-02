@@ -8,7 +8,8 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	contractTypes "github.com/andrescamacho/spacetraders-go/internal/application/contract/types"
 	contractQueries "github.com/andrescamacho/spacetraders-go/internal/application/contract/queries"
-	appShipCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands"
+	shipCargo "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/cargo"
+	shipNav "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
 	shipTypes "github.com/andrescamacho/spacetraders-go/internal/application/ship/types"
 	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
@@ -218,7 +219,7 @@ func (e *DeliveryExecutor) executeSinglePurchaseTrip(
 		return nil, 0, false, fmt.Errorf("failed to navigate to market: %w", err)
 	}
 
-	purchaseCmd := &appShipCmd.PurchaseCargoCommand{
+	purchaseCmd := &shipCargo.PurchaseCargoCommand{
 		ShipSymbol: ship.ShipSymbol(),
 		GoodSymbol: tradeSymbol,
 		Units:      unitsThisTrip,
@@ -326,7 +327,7 @@ func (e *DeliveryExecutor) navigateToWaypoint(
 	playerID shared.PlayerID,
 ) (*navigation.Ship, error) {
 	// Use HIGH-LEVEL NavigateRouteCommand (handles route planning, refueling, multi-hop, idempotency)
-	navigateCmd := &appShipCmd.NavigateRouteCommand{
+	navigateCmd := &shipNav.NavigateRouteCommand{
 		ShipSymbol:  shipSymbol,
 		Destination: destination,
 		PlayerID:    playerID,
@@ -337,7 +338,7 @@ func (e *DeliveryExecutor) navigateToWaypoint(
 		return nil, fmt.Errorf("failed to navigate: %w", err)
 	}
 
-	navResp := resp.(*appShipCmd.NavigateRouteResponse)
+	navResp := resp.(*shipNav.NavigateRouteResponse)
 	return navResp.Ship, nil
 }
 

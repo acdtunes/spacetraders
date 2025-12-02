@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
-	shipCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands"
+	shipCargo "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/cargo"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
@@ -206,7 +206,7 @@ func (p *ManufacturingPurchaser) ExecutePurchaseLoop(
 
 		// Keep market refresh to detect price/supply movement from our buys
 		// The next loop iteration's GetMarketData() reads from DB cache, so we need the refresh
-		purchaseResp, err := p.mediator.Send(ctx, &shipCmd.PurchaseCargoCommand{
+		purchaseResp, err := p.mediator.Send(ctx, &shipCargo.PurchaseCargoCommand{
 			ShipSymbol: params.ShipSymbol,
 			GoodSymbol: params.Good,
 			Units:      quantity,
@@ -219,7 +219,7 @@ func (p *ManufacturingPurchaser) ExecutePurchaseLoop(
 			break
 		}
 
-		resp := purchaseResp.(*shipCmd.PurchaseCargoResponse)
+		resp := purchaseResp.(*shipCargo.PurchaseCargoResponse)
 		result.TotalUnitsAdded += resp.UnitsAdded
 		result.TotalCost += resp.TotalCost
 		result.Rounds++

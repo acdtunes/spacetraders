@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
-	shipCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands"
+	shipCargo "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/cargo"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
@@ -86,7 +86,7 @@ func (s *ManufacturingSeller) SellCargo(ctx context.Context, params SellParams) 
 
 	// Execute sell with skip market refresh optimization
 	// Manufacturing scans markets independently and doesn't need post-transaction refresh
-	sellResp, err := s.mediator.Send(shared.WithSkipMarketRefresh(ctx), &shipCmd.SellCargoCommand{
+	sellResp, err := s.mediator.Send(shared.WithSkipMarketRefresh(ctx), &shipCargo.SellCargoCommand{
 		ShipSymbol: params.ShipSymbol,
 		GoodSymbol: params.Good,
 		Units:      quantity,
@@ -96,7 +96,7 @@ func (s *ManufacturingSeller) SellCargo(ctx context.Context, params SellParams) 
 		return nil, fmt.Errorf("failed to sell %s: %w", params.Good, err)
 	}
 
-	resp := sellResp.(*shipCmd.SellCargoResponse)
+	resp := sellResp.(*shipCargo.SellCargoResponse)
 
 	result := &SellResult{
 		UnitsSold:    resp.UnitsSold,
@@ -161,7 +161,7 @@ func (s *ManufacturingSeller) DeliverToFactory(ctx context.Context, params SellP
 
 	// Execute sell (to factory) with skip market refresh optimization
 	// Manufacturing scans markets independently and doesn't need post-transaction refresh
-	sellResp, err := s.mediator.Send(shared.WithSkipMarketRefresh(ctx), &shipCmd.SellCargoCommand{
+	sellResp, err := s.mediator.Send(shared.WithSkipMarketRefresh(ctx), &shipCargo.SellCargoCommand{
 		ShipSymbol: params.ShipSymbol,
 		GoodSymbol: params.Good,
 		Units:      quantity,
@@ -171,7 +171,7 @@ func (s *ManufacturingSeller) DeliverToFactory(ctx context.Context, params SellP
 		return nil, fmt.Errorf("failed to deliver %s to factory: %w", params.Good, err)
 	}
 
-	resp := sellResp.(*shipCmd.SellCargoResponse)
+	resp := sellResp.(*shipCargo.SellCargoResponse)
 
 	result := &SellResult{
 		UnitsSold:    resp.UnitsSold,
@@ -230,7 +230,7 @@ func (s *ManufacturingSeller) Liquidate(ctx context.Context, params SellParams) 
 
 	// Execute sell with skip market refresh optimization
 	// Manufacturing scans markets independently and doesn't need post-transaction refresh
-	sellResp, err := s.mediator.Send(shared.WithSkipMarketRefresh(ctx), &shipCmd.SellCargoCommand{
+	sellResp, err := s.mediator.Send(shared.WithSkipMarketRefresh(ctx), &shipCargo.SellCargoCommand{
 		ShipSymbol: params.ShipSymbol,
 		GoodSymbol: params.Good,
 		Units:      quantity,
@@ -240,7 +240,7 @@ func (s *ManufacturingSeller) Liquidate(ctx context.Context, params SellParams) 
 		return nil, fmt.Errorf("failed to sell %s: %w", params.Good, err)
 	}
 
-	resp := sellResp.(*shipCmd.SellCargoResponse)
+	resp := sellResp.(*shipCargo.SellCargoResponse)
 
 	result := &SellResult{
 		UnitsSold:    resp.UnitsSold,

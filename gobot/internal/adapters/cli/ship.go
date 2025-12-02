@@ -14,7 +14,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/auth"
 	"github.com/andrescamacho/spacetraders-go/internal/application/player"
-	shipCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands"
+	shipCargo "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/cargo"
 	"github.com/andrescamacho/spacetraders-go/internal/application/setup"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
@@ -602,7 +602,7 @@ Examples:
 			}
 
 			// Create handler (nil marketRefresher - CLI doesn't refresh market data after transactions)
-			handler := shipCmd.NewSellCargoHandler(shipRepo, playerRepo, apiClient, marketRepo, mediator, nil)
+			handler := shipCargo.NewSellCargoHandler(shipRepo, playerRepo, apiClient, marketRepo, mediator, nil)
 
 			// Resolve player ID and load player token
 			ctx := context.Background()
@@ -631,7 +631,7 @@ Examples:
 			ctx = auth.WithPlayerToken(ctx, playerToken)
 
 			// Execute command
-			response, err := handler.Handle(ctx, &shipCmd.SellCargoCommand{
+			response, err := handler.Handle(ctx, &shipCargo.SellCargoCommand{
 				ShipSymbol: shipSymbol,
 				GoodSymbol: goodSymbol,
 				Units:      units,
@@ -641,7 +641,7 @@ Examples:
 				return fmt.Errorf("sell cargo command failed: %w", err)
 			}
 
-			result, ok := response.(*shipCmd.SellCargoResponse)
+			result, ok := response.(*shipCargo.SellCargoResponse)
 			if !ok {
 				return fmt.Errorf("unexpected response type")
 			}

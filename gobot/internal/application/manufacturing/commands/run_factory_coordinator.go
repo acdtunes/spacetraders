@@ -10,7 +10,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/contract"
 	mfgServices "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/services"
 	mfgTypes "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/types"
-	appShipCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands"
+	shipCargo "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/cargo"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/goods"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
@@ -794,7 +794,7 @@ func (h *RunFactoryCoordinatorHandler) deliverCargo(
 	destination string,
 	playerID int,
 	opContext *shared.OperationContext, // Operation context for transaction linking
-) (*appShipCmd.SellCargoResponse, error) {
+) (*shipCargo.SellCargoResponse, error) {
 	playerIDValue := shared.MustNewPlayerID(playerID)
 
 	// Navigate and dock at destination
@@ -817,7 +817,7 @@ func (h *RunFactoryCoordinatorHandler) deliverCargo(
 	}
 
 	// Sell the cargo
-	sellCmd := &appShipCmd.SellCargoCommand{
+	sellCmd := &shipCargo.SellCargoCommand{
 		ShipSymbol: shipSymbol,
 		GoodSymbol: good,
 		Units:      unitsToSell,
@@ -829,7 +829,7 @@ func (h *RunFactoryCoordinatorHandler) deliverCargo(
 		return nil, fmt.Errorf("failed to sell cargo: %w", err)
 	}
 
-	response, ok := sellResp.(*appShipCmd.SellCargoResponse)
+	response, ok := sellResp.(*shipCargo.SellCargoResponse)
 	if !ok {
 		return nil, fmt.Errorf("unexpected response type from sell command")
 	}

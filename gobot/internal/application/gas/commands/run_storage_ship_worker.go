@@ -5,7 +5,8 @@ import (
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
-	appShipCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands"
+	shipCargo "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/cargo"
+	shipNav "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
@@ -82,7 +83,7 @@ func (h *RunStorageShipWorkerHandler) Handle(ctx context.Context, request common
 			"to":          cmd.GasGiant,
 		})
 
-		navCmd := &appShipCmd.NavigateRouteCommand{
+		navCmd := &shipNav.NavigateRouteCommand{
 			ShipSymbol:  cmd.ShipSymbol,
 			Destination: cmd.GasGiant,
 			PlayerID:    cmd.PlayerID,
@@ -98,7 +99,7 @@ func (h *RunStorageShipWorkerHandler) Handle(ctx context.Context, request common
 			// Don't return error - we'll retry on next iteration or register where we are
 		} else {
 			// Use ship from navigation response (already up-to-date)
-			ship = navResp.(*appShipCmd.NavigateRouteResponse).Ship
+			ship = navResp.(*shipNav.NavigateRouteResponse).Ship
 		}
 	}
 
@@ -187,7 +188,7 @@ func (h *RunStorageShipWorkerHandler) jettisonHydrocarbonUnits(
 		"units":       units,
 	})
 
-	jettisonCmd := &appShipCmd.JettisonCargoCommand{
+	jettisonCmd := &shipCargo.JettisonCargoCommand{
 		ShipSymbol: cmd.ShipSymbol,
 		GoodSymbol: "HYDROCARBON",
 		Units:      units,

@@ -6,7 +6,8 @@ import (
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
-	appShipCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands"
+	shipCargo "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/cargo"
+	shipNav "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
 	shipTypes "github.com/andrescamacho/spacetraders-go/internal/application/ship/types"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/goods"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
@@ -144,7 +145,7 @@ func (e *ProductionExecutor) buyGood(
 	logger.Log("INFO", fmt.Sprintf("Purchasing %d units of %s (cargo: %d, trade_volume: %d)", purchaseQty, node.Good, availableSpace, marketResult.TradeVolume), nil)
 
 	// Purchase cargo (capped by trade volume)
-	purchaseCmd := &appShipCmd.PurchaseCargoCommand{
+	purchaseCmd := &shipCargo.PurchaseCargoCommand{
 		ShipSymbol: updatedShip.ShipSymbol(),
 		GoodSymbol: node.Good,
 		Units:      purchaseQty,
@@ -157,7 +158,7 @@ func (e *ProductionExecutor) buyGood(
 	}
 
 	// Extract purchase results
-	response, ok := purchaseResp.(*appShipCmd.PurchaseCargoResponse)
+	response, ok := purchaseResp.(*shipCargo.PurchaseCargoResponse)
 	if !ok {
 		return nil, fmt.Errorf("unexpected response type from purchase command")
 	}
@@ -363,7 +364,7 @@ func (e *ProductionExecutor) PollForProduction(
 
 			logger.Log("INFO", fmt.Sprintf("Purchasing %d units of fabricated %s (cargo: %d, trade_volume: %d)", purchaseQty, good, availableSpace, tradeGood.TradeVolume()), nil)
 
-			purchaseCmd := &appShipCmd.PurchaseCargoCommand{
+			purchaseCmd := &shipCargo.PurchaseCargoCommand{
 				ShipSymbol: shipSymbol,
 				GoodSymbol: good,
 				Units:      purchaseQty,
@@ -375,7 +376,7 @@ func (e *ProductionExecutor) PollForProduction(
 				return 0, 0, fmt.Errorf("failed to purchase fabricated output: %w", err)
 			}
 
-			response, ok := purchaseResp.(*appShipCmd.PurchaseCargoResponse)
+			response, ok := purchaseResp.(*shipCargo.PurchaseCargoResponse)
 			if !ok {
 				return 0, 0, fmt.Errorf("unexpected response type from purchase command")
 			}
@@ -430,7 +431,7 @@ func (e *ProductionExecutor) NavigateAndDock(
 	playerID shared.PlayerID,
 ) (*navigation.Ship, error) {
 	// Navigate to destination using high-level command
-	navigateCmd := &appShipCmd.NavigateRouteCommand{
+	navigateCmd := &shipNav.NavigateRouteCommand{
 		ShipSymbol:  shipSymbol,
 		Destination: destination,
 		PlayerID:    playerID,
@@ -513,7 +514,7 @@ func (e *ProductionExecutor) deliverInputs(
 
 	// Sell each cargo item
 	for _, item := range ship.Cargo().Inventory {
-		sellCmd := &appShipCmd.SellCargoCommand{
+		sellCmd := &shipCargo.SellCargoCommand{
 			ShipSymbol: ship.ShipSymbol(),
 			GoodSymbol: item.Symbol,
 			Units:      item.Units,
@@ -525,7 +526,7 @@ func (e *ProductionExecutor) deliverInputs(
 			return 0, fmt.Errorf("failed to sell %s: %w", item.Symbol, err)
 		}
 
-		response, ok := sellResp.(*appShipCmd.SellCargoResponse)
+		response, ok := sellResp.(*shipCargo.SellCargoResponse)
 		if !ok {
 			return 0, fmt.Errorf("unexpected response type from sell command")
 		}

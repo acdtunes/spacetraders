@@ -7,7 +7,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/application/gas/ports"
 	"github.com/andrescamacho/spacetraders-go/internal/application/gas/queries"
-	appShipCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands"
+	shipNav "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
 	shipTypes "github.com/andrescamacho/spacetraders-go/internal/application/ship/types"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
@@ -101,7 +101,7 @@ func (h *RunGasTransportWorkerHandler) executeGasTransport(
 			"gas_giant":   cmd.GasGiant,
 		})
 
-		navCmd := &appShipCmd.NavigateRouteCommand{
+		navCmd := &shipNav.NavigateRouteCommand{
 			ShipSymbol:  cmd.ShipSymbol,
 			Destination: cmd.GasGiant,
 			PlayerID:    cmd.PlayerID,
@@ -112,7 +112,7 @@ func (h *RunGasTransportWorkerHandler) executeGasTransport(
 		}
 
 		// Use ship from navigation response (already up-to-date)
-		transportShip = navResp.(*appShipCmd.NavigateRouteResponse).Ship
+		transportShip = navResp.(*shipNav.NavigateRouteResponse).Ship
 	}
 
 	logger.Log("INFO", "Gas transport positioned and ready for cargo receiving", map[string]interface{}{
@@ -273,7 +273,7 @@ func (h *RunGasTransportWorkerHandler) executeFactoryDelivery(
 
 		// Navigate to factory
 		if ship.CurrentLocation().Symbol != factory.FactoryWaypoint {
-			navCmd := &appShipCmd.NavigateRouteCommand{
+			navCmd := &shipNav.NavigateRouteCommand{
 				ShipSymbol:  cmd.ShipSymbol,
 				Destination: factory.FactoryWaypoint,
 				PlayerID:    cmd.PlayerID,
@@ -289,7 +289,7 @@ func (h *RunGasTransportWorkerHandler) executeFactoryDelivery(
 				continue
 			}
 			// Use ship from navigation response
-			ship = navResp.(*appShipCmd.NavigateRouteResponse).Ship
+			ship = navResp.(*shipNav.NavigateRouteResponse).Ship
 		}
 
 		// Dock at factory
@@ -363,7 +363,7 @@ func (h *RunGasTransportWorkerHandler) returnToGasGiant(
 		"destination": cmd.GasGiant,
 	})
 
-	navCmd := &appShipCmd.NavigateRouteCommand{
+	navCmd := &shipNav.NavigateRouteCommand{
 		ShipSymbol:  cmd.ShipSymbol,
 		Destination: cmd.GasGiant,
 		PlayerID:    cmd.PlayerID,
@@ -375,5 +375,5 @@ func (h *RunGasTransportWorkerHandler) returnToGasGiant(
 	}
 
 	// Return ship from navigation response (handles "already at destination" case)
-	return navResp.(*appShipCmd.NavigateRouteResponse).Ship, nil
+	return navResp.(*shipNav.NavigateRouteResponse).Ship, nil
 }

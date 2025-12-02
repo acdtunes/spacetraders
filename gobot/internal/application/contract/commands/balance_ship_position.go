@@ -7,7 +7,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	appContract "github.com/andrescamacho/spacetraders-go/internal/application/contract"
 	contractTypes "github.com/andrescamacho/spacetraders-go/internal/application/contract/types"
-	appShipCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands"
+	shipNav "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	domainContainer "github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
@@ -227,7 +227,7 @@ func (h *BalanceShipPositionHandler) navigateToMarket(
 	targetWaypoint string,
 	playerID shared.PlayerID,
 ) (bool, error) {
-	navigateCmd := &appShipCmd.NavigateRouteCommand{
+	navigateCmd := &shipNav.NavigateRouteCommand{
 		ShipSymbol:  shipSymbol,
 		Destination: targetWaypoint,
 		PlayerID:    playerID,

@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
-	appShipCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands"
+	shipNav "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
@@ -118,7 +118,7 @@ func (h *RunSiphonWorkerHandler) executeSiphoning(
 			return fmt.Errorf("failed to load ship: %w", err)
 		}
 
-		navCmd := &appShipCmd.NavigateRouteCommand{
+		navCmd := &shipNav.NavigateRouteCommand{
 			ShipSymbol:  cmd.ShipSymbol,
 			Destination: cmd.GasGiant,
 			PlayerID:    cmd.PlayerID,
@@ -130,7 +130,7 @@ func (h *RunSiphonWorkerHandler) executeSiphoning(
 		}
 
 		// Use ship from navigation response for updated cargo state
-		ship = navResp.(*appShipCmd.NavigateRouteResponse).Ship
+		ship = navResp.(*shipNav.NavigateRouteResponse).Ship
 		cargoUnits = ship.Cargo().Units
 		cargoCapacity = ship.Cargo().Capacity
 

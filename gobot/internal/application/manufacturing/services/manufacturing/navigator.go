@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
-	shipCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands"
+	shipNav "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
 	shipTypes "github.com/andrescamacho/spacetraders-go/internal/application/ship/types"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
@@ -70,7 +70,7 @@ func (n *ManufacturingNavigator) NavigateAndDock(
 			"to":   destination,
 		})
 
-		navResp, err := n.mediator.Send(ctx, &shipCmd.NavigateRouteCommand{
+		navResp, err := n.mediator.Send(ctx, &shipNav.NavigateRouteCommand{
 			ShipSymbol:   shipSymbol,
 			Destination:  destination,
 			PlayerID:     playerID,
@@ -81,7 +81,7 @@ func (n *ManufacturingNavigator) NavigateAndDock(
 		}
 
 		// Use ship from navigation response (already up-to-date)
-		ship = navResp.(*shipCmd.NavigateRouteResponse).Ship
+		ship = navResp.(*shipNav.NavigateRouteResponse).Ship
 	}
 
 	// Dock at destination - pass ship directly so it's updated in place
@@ -115,7 +115,7 @@ func (n *ManufacturingNavigator) NavigateTo(
 		return nil
 	}
 
-	_, err = n.mediator.Send(ctx, &shipCmd.NavigateRouteCommand{
+	_, err = n.mediator.Send(ctx, &shipNav.NavigateRouteCommand{
 		ShipSymbol:   shipSymbol,
 		Destination:  destination,
 		PlayerID:     playerID,

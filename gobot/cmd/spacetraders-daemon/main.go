@@ -27,7 +27,9 @@ import (
 	scoutingCmd "github.com/andrescamacho/spacetraders-go/internal/application/scouting/commands"
 	scoutingQuery "github.com/andrescamacho/spacetraders-go/internal/application/scouting/queries"
 	ship "github.com/andrescamacho/spacetraders-go/internal/application/ship"
-	shipCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands"
+	shipCargo "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/cargo"
+	shipNav "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
+	shipTactics "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/tactics"
 	shipTypes "github.com/andrescamacho/spacetraders-go/internal/application/ship/types"
 	shipQuery "github.com/andrescamacho/spacetraders-go/internal/application/ship/queries"
 	shipyardCmd "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/commands"
@@ -169,27 +171,27 @@ func run(cfg *config.Config) error {
 
 	// 8. Register command handlers
 	// Register atomic command handlers (used by RouteExecutor)
-	orbitHandler := shipCmd.NewOrbitShipHandler(shipRepo)
+	orbitHandler := shipTactics.NewOrbitShipHandler(shipRepo)
 	if err := mediator.RegisterHandler[*shipTypes.OrbitShipCommand](med, orbitHandler); err != nil {
 		return fmt.Errorf("failed to register OrbitShip handler: %w", err)
 	}
 
-	dockHandler := shipCmd.NewDockShipHandler(shipRepo)
+	dockHandler := shipTactics.NewDockShipHandler(shipRepo)
 	if err := mediator.RegisterHandler[*shipTypes.DockShipCommand](med, dockHandler); err != nil {
 		return fmt.Errorf("failed to register DockShip handler: %w", err)
 	}
 
-	refuelHandler := shipCmd.NewRefuelShipHandler(shipRepo, playerRepo, apiClient, med)
+	refuelHandler := shipTactics.NewRefuelShipHandler(shipRepo, playerRepo, apiClient, med)
 	if err := mediator.RegisterHandler[*shipTypes.RefuelShipCommand](med, refuelHandler); err != nil {
 		return fmt.Errorf("failed to register RefuelShip handler: %w", err)
 	}
 
-	setFlightModeHandler := shipCmd.NewSetFlightModeHandler(shipRepo)
+	setFlightModeHandler := shipNav.NewSetFlightModeHandler(shipRepo)
 	if err := mediator.RegisterHandler[*shipTypes.SetFlightModeCommand](med, setFlightModeHandler); err != nil {
 		return fmt.Errorf("failed to register SetFlightMode handler: %w", err)
 	}
 
-	navigateDirectHandler := shipCmd.NewNavigateDirectHandler(shipRepo, waypointRepo)
+	navigateDirectHandler := shipNav.NewNavigateDirectHandler(shipRepo, waypointRepo)
 	if err := mediator.RegisterHandler[*shipTypes.NavigateDirectCommand](med, navigateDirectHandler); err != nil {
 		return fmt.Errorf("failed to register NavigateDirect handler: %w", err)
 	}
@@ -204,14 +206,14 @@ func run(cfg *config.Config) error {
 	routeExecutor := ship.NewRouteExecutor(shipRepo, med, nil, marketScanner, nil) // nil = use RealClock and default refuel strategy
 
 	// NavigateRoute handler (now uses extracted services)
-	navigateRouteHandler := shipCmd.NewNavigateRouteHandler(
+	navigateRouteHandler := shipNav.NewNavigateRouteHandler(
 		shipRepo,
 		graphService,
 		waypointEnricher,
 		routePlanner,
 		routeExecutor,
 	)
-	if err := mediator.RegisterHandler[*shipCmd.NavigateRouteCommand](med, navigateRouteHandler); err != nil {
+	if err := mediator.RegisterHandler[*shipNav.NavigateRouteCommand](med, navigateRouteHandler); err != nil {
 		return fmt.Errorf("failed to register NavigateRoute handler: %w", err)
 	}
 
@@ -265,13 +267,13 @@ func run(cfg *config.Config) error {
 	}
 
 	// Cargo handlers (pass marketScanner to refresh market data after transactions)
-	purchaseCargoHandler := shipCmd.NewPurchaseCargoHandler(shipRepo, playerRepo, apiClient, marketRepo, med, marketScanner)
-	if err := mediator.RegisterHandler[*shipCmd.PurchaseCargoCommand](med, purchaseCargoHandler); err != nil {
+	purchaseCargoHandler := shipCargo.NewPurchaseCargoHandler(shipRepo, playerRepo, apiClient, marketRepo, med, marketScanner)
+	if err := mediator.RegisterHandler[*shipCargo.PurchaseCargoCommand](med, purchaseCargoHandler); err != nil {
 		return fmt.Errorf("failed to register PurchaseCargo handler: %w", err)
 	}
 
-	jettisonCargoHandler := shipCmd.NewJettisonCargoHandler(shipRepo, playerRepo, apiClient)
-	if err := mediator.RegisterHandler[*shipCmd.JettisonCargoCommand](med, jettisonCargoHandler); err != nil {
+	jettisonCargoHandler := shipCargo.NewJettisonCargoHandler(shipRepo, playerRepo, apiClient)
+	if err := mediator.RegisterHandler[*shipCargo.JettisonCargoCommand](med, jettisonCargoHandler); err != nil {
 		return fmt.Errorf("failed to register JettisonCargo handler: %w", err)
 	}
 
@@ -338,8 +340,8 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to register BalanceShipPosition handler: %w", err)
 	}
 
-	sellCargoHandler := shipCmd.NewSellCargoHandler(shipRepo, playerRepo, apiClient, marketRepo, med, marketScanner)
-	if err := mediator.RegisterHandler[*shipCmd.SellCargoCommand](med, sellCargoHandler); err != nil {
+	sellCargoHandler := shipCargo.NewSellCargoHandler(shipRepo, playerRepo, apiClient, marketRepo, med, marketScanner)
+	if err := mediator.RegisterHandler[*shipCargo.SellCargoCommand](med, sellCargoHandler); err != nil {
 		return fmt.Errorf("failed to register SellCargo handler: %w", err)
 	}
 
