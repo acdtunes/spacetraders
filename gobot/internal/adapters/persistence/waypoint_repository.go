@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"gorm.io/gorm"
 
@@ -20,7 +21,7 @@ func NewGormWaypointRepository(db *gorm.DB) *GormWaypointRepository {
 	return &GormWaypointRepository{db: db}
 }
 
-// FindBySymbol retrieves a waypoint by symbol
+// FindBySymbol retrieves a waypoint by symbol with 1-day TTL validation
 func (r *GormWaypointRepository) FindBySymbol(ctx context.Context, symbol, systemSymbol string) (*shared.Waypoint, error) {
 	var model WaypointModel
 	result := r.db.WithContext(ctx).Where("waypoint_symbol = ? AND system_symbol = ?", symbol, systemSymbol).First(&model)
@@ -31,7 +32,15 @@ func (r *GormWaypointRepository) FindBySymbol(ctx context.Context, symbol, syste
 		return nil, fmt.Errorf("failed to find waypoint: %w", result.Error)
 	}
 
-	return r.modelToWaypoint(&model)
+	// Check TTL (1 day) - if expired or no timestamp, treat as cache miss
+	if model.SyncedAt != "" {
+		syncedAt, err := time.Parse(time.RFC3339, model.SyncedAt)
+		if err == nil && time.Since(syncedAt) < 24*time.Hour {
+			return r.modelToWaypoint(&model)
+		}
+	}
+
+	return nil, fmt.Errorf("waypoint cache expired: %s", symbol)
 }
 
 // ListBySystem retrieves all waypoints in a system
@@ -163,5 +172,6 @@ func (r *GormWaypointRepository) waypointToModel(waypoint *shared.Waypoint) (*Wa
 		Traits:         traitsJSON,
 		HasFuel:        hasFuel,
 		Orbitals:       orbitalsJSON,
+		SyncedAt:       time.Now().Format(time.RFC3339),
 	}, nil
 }
