@@ -5,17 +5,17 @@ import (
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
-	goodsServices "github.com/andrescamacho/spacetraders-go/internal/application/goods/services"
-	goodsTypes "github.com/andrescamacho/spacetraders-go/internal/application/goods/types"
+	mfgServices "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/services"
+	mfgTypes "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/types"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
 // Type aliases for convenience
-type RunFactoryWorkerCommand = goodsTypes.RunFactoryWorkerCommand
-type RunFactoryWorkerResponse = goodsTypes.RunFactoryWorkerResponse
-type WorkerResult = goodsTypes.WorkerResult
+type RunFactoryWorkerCommand = mfgTypes.RunFactoryWorkerCommand
+type RunFactoryWorkerResponse = mfgTypes.RunFactoryWorkerResponse
+type WorkerResult = mfgTypes.WorkerResult
 
 // RunFactoryWorkerHandler executes the goods production workflow for a single node.
 // Pattern: Single Workflow (like ContractWorkflow)
@@ -38,7 +38,7 @@ type WorkerResult = goodsTypes.WorkerResult
 type RunFactoryWorkerHandler struct {
 	shipRepo          navigation.ShipRepository
 	marketRepo        market.MarketRepository
-	productionExecutor *goodsServices.ProductionExecutor
+	productionExecutor *mfgServices.ProductionExecutor
 	clock             shared.Clock
 }
 
@@ -47,10 +47,10 @@ func NewRunFactoryWorkerHandler(
 	mediator common.Mediator,
 	shipRepo navigation.ShipRepository,
 	marketRepo market.MarketRepository,
-	marketLocator *goodsServices.MarketLocator,
+	marketLocator *mfgServices.MarketLocator,
 	clock shared.Clock,
 ) *RunFactoryWorkerHandler {
-	productionExecutor := goodsServices.NewProductionExecutor(
+	productionExecutor := mfgServices.NewProductionExecutor(
 		mediator,
 		shipRepo,
 		marketRepo,

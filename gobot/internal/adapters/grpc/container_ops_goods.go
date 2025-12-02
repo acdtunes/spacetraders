@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	goodsCmd "github.com/andrescamacho/spacetraders-go/internal/application/goods/commands"
+	goodsCmd "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )

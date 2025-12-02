@@ -11,7 +11,6 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 
-	goodsServices "github.com/andrescamacho/spacetraders-go/internal/application/goods/services"
 )
 
 // ManufacturingDemandFinder discovers high-demand goods that can be manufactured.
@@ -21,7 +20,7 @@ type ManufacturingDemandFinder struct {
 	marketRepo       market.MarketRepository
 	waypointProvider system.IWaypointProvider
 	supplyChainMap   map[string][]string
-	resolver         *goodsServices.SupplyChainResolver
+	resolver         *SupplyChainResolver
 	pipelineRepo     manufacturing.PipelineRepository
 }
 
@@ -30,7 +29,7 @@ func NewManufacturingDemandFinder(
 	marketRepo market.MarketRepository,
 	waypointProvider system.IWaypointProvider,
 	supplyChainMap map[string][]string,
-	resolver *goodsServices.SupplyChainResolver,
+	resolver *SupplyChainResolver,
 	pipelineRepo manufacturing.PipelineRepository,
 ) *ManufacturingDemandFinder {
 	return &ManufacturingDemandFinder{
@@ -326,5 +325,5 @@ func (f *ManufacturingDemandFinder) GetManufacturableGoods() []string {
 //   - prefer-fabricate: Fabricate intermediates unless supply is HIGH/ABUNDANT (recursive manufacturing)
 //   - smart: Fabricate only when supply is SCARCE/LIMITED (adaptive)
 func (f *ManufacturingDemandFinder) SetStrategy(strategy string) {
-	f.resolver.SetStrategy(goodsServices.AcquisitionStrategy(strategy))
+	f.resolver.SetStrategy(AcquisitionStrategy(strategy))
 }

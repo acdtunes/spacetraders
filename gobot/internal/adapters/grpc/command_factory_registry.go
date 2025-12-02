@@ -5,10 +5,10 @@ import (
 
 	contractCmd "github.com/andrescamacho/spacetraders-go/internal/application/contract/commands"
 	gasCmd "github.com/andrescamacho/spacetraders-go/internal/application/gas/commands"
-	goodsCmd "github.com/andrescamacho/spacetraders-go/internal/application/goods/commands"
+	goodsCmd "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/commands"
 	scoutingCmd "github.com/andrescamacho/spacetraders-go/internal/application/scouting/commands"
 	shipyardCmd "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/commands"
-	tradingCmd "github.com/andrescamacho/spacetraders-go/internal/application/trading/commands"
+	tradingCmd "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 

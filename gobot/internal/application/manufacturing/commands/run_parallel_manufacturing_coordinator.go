@@ -7,8 +7,8 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	storageApp "github.com/andrescamacho/spacetraders-go/internal/application/storage"
-	"github.com/andrescamacho/spacetraders-go/internal/application/trading/services"
-	mfgServices "github.com/andrescamacho/spacetraders-go/internal/application/trading/services/manufacturing"
+	"github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/services"
+	mfgServices "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/services/manufacturing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"

@@ -3,11 +3,11 @@ package setup
 import (
 	"reflect"
 
-	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	gasCommands "github.com/andrescamacho/spacetraders-go/internal/application/gas/commands"
 	ledgerCommands "github.com/andrescamacho/spacetraders-go/internal/application/ledger/commands"
 	ledgerQueries "github.com/andrescamacho/spacetraders-go/internal/application/ledger/queries"
 	"github.com/andrescamacho/spacetraders-go/internal/application/mediator"
+	"github.com/andrescamacho/spacetraders-go/internal/application/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/ledger"
@@ -21,7 +21,7 @@ import (
 // HandlerRegistry holds all application dependencies for handler creation
 type HandlerRegistry struct {
 	transactionRepo    ledger.TransactionRepository
-	playerResolver     *common.PlayerResolver
+	playerResolver     *player.PlayerResolver
 	clock              shared.Clock
 	shipRepo           navigation.ShipRepository
 	shipAssignmentRepo container.ShipAssignmentRepository
@@ -36,7 +36,7 @@ type HandlerRegistry struct {
 // NewHandlerRegistry creates a new handler registry with required dependencies
 func NewHandlerRegistry(
 	transactionRepo ledger.TransactionRepository,
-	playerResolver *common.PlayerResolver,
+	playerResolver *player.PlayerResolver,
 	clock shared.Clock,
 	shipRepo navigation.ShipRepository,
 	shipAssignmentRepo container.ShipAssignmentRepository,
@@ -76,7 +76,7 @@ func NewHandlerRegistry(
 // These handlers enable:
 //  1. Other command handlers to record financial transactions via mediator
 //  2. Query operations for viewing and analyzing transaction history
-func (r *HandlerRegistry) RegisterLedgerHandlers(m common.Mediator) error {
+func (r *HandlerRegistry) RegisterLedgerHandlers(m mediator.Mediator) error {
 	// Register RecordTransactionCommand handler
 	recordHandler := ledgerCommands.NewRecordTransactionHandler(r.transactionRepo, r.clock)
 	if err := m.Register(
@@ -124,7 +124,7 @@ func (r *HandlerRegistry) RegisterLedgerHandlers(m common.Mediator) error {
 //
 // Note: Transport is handled by manufacturing pool via STORAGE_ACQUIRE_DELIVER tasks.
 // Storage ships buffer cargo; haulers from the manufacturing pool pick it up.
-func (r *HandlerRegistry) RegisterGasHandlers(m common.Mediator) error {
+func (r *HandlerRegistry) RegisterGasHandlers(m mediator.Mediator) error {
 	// Register RunGasCoordinatorCommand handler
 	coordinatorHandler := gasCommands.NewRunGasCoordinatorHandler(
 		m,
@@ -187,7 +187,7 @@ func (r *HandlerRegistry) RegisterGasHandlers(m common.Mediator) error {
 //
 // This is a convenience method that creates a mediator and registers all ledger handlers.
 // Use this when you need a fully configured mediator for application use.
-func (r *HandlerRegistry) CreateConfiguredMediator() (common.Mediator, error) {
+func (r *HandlerRegistry) CreateConfiguredMediator() (mediator.Mediator, error) {
 	m := mediator.NewMediator()
 
 	if err := r.RegisterLedgerHandlers(m); err != nil {

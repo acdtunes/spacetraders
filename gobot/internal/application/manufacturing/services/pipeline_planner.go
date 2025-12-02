@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
-	goodsServices "github.com/andrescamacho/spacetraders-go/internal/application/goods/services"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/goods"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/storage"
@@ -22,14 +21,14 @@ import (
 // This atomic approach prevents the "orphaned cargo" bug where a ship buys goods
 // but a different ship gets assigned to deliver them.
 type PipelinePlanner struct {
-	marketLocator *goodsServices.MarketLocator
+	marketLocator *MarketLocator
 	storageOpRepo storage.StorageOperationRepository // Optional: enables STORAGE_ACQUIRE_DELIVER tasks
 }
 
 // NewPipelinePlanner creates a new pipeline planner
 // storageOpRepo is optional - if nil, only ACQUIRE_DELIVER tasks will be created
 func NewPipelinePlanner(
-	marketLocator *goodsServices.MarketLocator,
+	marketLocator *MarketLocator,
 	storageOpRepo storage.StorageOperationRepository,
 ) *PipelinePlanner {
 	return &PipelinePlanner{
@@ -40,7 +39,7 @@ func NewPipelinePlanner(
 
 // MarketLocator returns the market locator used by this planner.
 // This allows other services (like SupplyMonitor) to share the same locator.
-func (p *PipelinePlanner) MarketLocator() *goodsServices.MarketLocator {
+func (p *PipelinePlanner) MarketLocator() *MarketLocator {
 	return p.marketLocator
 }
 

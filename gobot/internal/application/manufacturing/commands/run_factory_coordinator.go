@@ -8,8 +8,8 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/application/contract"
-	goodsServices "github.com/andrescamacho/spacetraders-go/internal/application/goods/services"
-	goodsTypes "github.com/andrescamacho/spacetraders-go/internal/application/goods/types"
+	mfgServices "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/services"
+	mfgTypes "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/types"
 	appShipCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/goods"
@@ -20,8 +20,8 @@ import (
 )
 
 // Type aliases for convenience
-type RunFactoryCoordinatorCommand = goodsTypes.RunFactoryCoordinatorCommand
-type RunFactoryCoordinatorResponse = goodsTypes.RunFactoryCoordinatorResponse
+type RunFactoryCoordinatorCommand = mfgTypes.RunFactoryCoordinatorCommand
+type RunFactoryCoordinatorResponse = mfgTypes.RunFactoryCoordinatorResponse
 
 // RunFactoryCoordinatorHandler orchestrates fleet-based goods production.
 // Pattern: Fleet Coordinator (like ContractFleetCoordinator)
@@ -45,10 +45,10 @@ type RunFactoryCoordinatorHandler struct {
 	shipRepo           navigation.ShipRepository
 	marketRepo         market.MarketRepository
 	shipAssignmentRepo container.ShipAssignmentRepository
-	resolver           *goodsServices.SupplyChainResolver
-	marketLocator      *goodsServices.MarketLocator
-	productionExecutor *goodsServices.ProductionExecutor
-	dependencyAnalyzer *goodsServices.DependencyAnalyzer
+	resolver           *mfgServices.SupplyChainResolver
+	marketLocator      *mfgServices.MarketLocator
+	productionExecutor *mfgServices.ProductionExecutor
+	dependencyAnalyzer *mfgServices.DependencyAnalyzer
 	clock              shared.Clock
 }
 
@@ -58,11 +58,11 @@ func NewRunFactoryCoordinatorHandler(
 	shipRepo navigation.ShipRepository,
 	marketRepo market.MarketRepository,
 	shipAssignmentRepo container.ShipAssignmentRepository,
-	resolver *goodsServices.SupplyChainResolver,
-	marketLocator *goodsServices.MarketLocator,
+	resolver *mfgServices.SupplyChainResolver,
+	marketLocator *mfgServices.MarketLocator,
 	clock shared.Clock,
 ) *RunFactoryCoordinatorHandler {
-	productionExecutor := goodsServices.NewProductionExecutor(
+	productionExecutor := mfgServices.NewProductionExecutor(
 		mediator,
 		shipRepo,
 		marketRepo,
@@ -70,7 +70,7 @@ func NewRunFactoryCoordinatorHandler(
 		clock,
 	)
 
-	dependencyAnalyzer := goodsServices.NewDependencyAnalyzer()
+	dependencyAnalyzer := mfgServices.NewDependencyAnalyzer()
 
 	return &RunFactoryCoordinatorHandler{
 		mediator:           mediator,
@@ -91,10 +91,10 @@ func NewRunFactoryCoordinatorHandlerWithConfig(
 	shipRepo navigation.ShipRepository,
 	marketRepo market.MarketRepository,
 	shipAssignmentRepo container.ShipAssignmentRepository,
-	resolver *goodsServices.SupplyChainResolver,
-	marketLocator *goodsServices.MarketLocator,
-	dependencyAnalyzer *goodsServices.DependencyAnalyzer,
-	productionExecutor *goodsServices.ProductionExecutor,
+	resolver *mfgServices.SupplyChainResolver,
+	marketLocator *mfgServices.MarketLocator,
+	dependencyAnalyzer *mfgServices.DependencyAnalyzer,
+	productionExecutor *mfgServices.ProductionExecutor,
 	clock shared.Clock,
 	cfg interface{}, // Interface to avoid circular import with config package
 ) *RunFactoryCoordinatorHandler {
@@ -241,7 +241,7 @@ func (h *RunFactoryCoordinatorHandler) executeCoordination(
 func (h *RunFactoryCoordinatorHandler) executeParallelProduction(
 	ctx context.Context,
 	cmd *RunFactoryCoordinatorCommand,
-	levels []goodsServices.ParallelLevel,
+	levels []mfgServices.ParallelLevel,
 	idleShips []*navigation.Ship,
 	response *RunFactoryCoordinatorResponse,
 ) error {
@@ -462,12 +462,12 @@ func (h *RunFactoryCoordinatorHandler) executeLevelParallel(
 	shipsUsedMutex *sync.Mutex,
 	deliveryDestinations map[string]string,
 	opContext *shared.OperationContext, // Operation context for transaction linking
-) ([]*goodsServices.ProductionResult, error) {
+) ([]*mfgServices.ProductionResult, error) {
 	logger := common.LoggerFromContext(ctx)
 
 	// Result channel for workers
 	type workerResult struct {
-		result *goodsServices.ProductionResult
+		result *mfgServices.ProductionResult
 		err    error
 		node   *goods.SupplyChainNode
 	}
@@ -549,7 +549,7 @@ func (h *RunFactoryCoordinatorHandler) executeLevelParallel(
 			deliveryDest := deliveryDestinations[n.Good]
 
 			// Execute production for this node only (non-recursive)
-			var result *goodsServices.ProductionResult
+			var result *mfgServices.ProductionResult
 			var err error
 
 			if hasNeededCargo && deliveryDest != "" {
@@ -589,7 +589,7 @@ func (h *RunFactoryCoordinatorHandler) executeLevelParallel(
 	}()
 
 	// Collect results
-	results := make([]*goodsServices.ProductionResult, 0, len(nodes))
+	results := make([]*mfgServices.ProductionResult, 0, len(nodes))
 	var firstError error
 
 	for wr := range resultChan {
@@ -620,7 +620,7 @@ func (h *RunFactoryCoordinatorHandler) produceNodeOnly(
 	playerID int,
 	deliveryDest string,
 	opContext *shared.OperationContext, // Operation context for transaction linking
-) (*goodsServices.ProductionResult, error) {
+) (*mfgServices.ProductionResult, error) {
 	logger := common.LoggerFromContext(ctx)
 
 	// For leaf nodes (BUY), purchase and optionally deliver
@@ -710,7 +710,7 @@ func (h *RunFactoryCoordinatorHandler) produceNodeOnly(
 
 	totalCost += cost
 
-	return &goodsServices.ProductionResult{
+	return &mfgServices.ProductionResult{
 		QuantityAcquired: quantity,
 		TotalCost:        totalCost,
 		WaypointSymbol:   exportMarket.WaypointSymbol,
@@ -740,7 +740,7 @@ func (h *RunFactoryCoordinatorHandler) pollForProduction(
 }
 
 // sumCosts sums the total cost from a list of production results
-func sumCosts(results []*goodsServices.ProductionResult) int {
+func sumCosts(results []*mfgServices.ProductionResult) int {
 	total := 0
 	for _, r := range results {
 		total += r.TotalCost
@@ -845,7 +845,7 @@ func (h *RunFactoryCoordinatorHandler) deliverExistingCargo(
 	destination string,
 	playerID int,
 	opContext *shared.OperationContext, // Operation context for transaction linking
-) (*goodsServices.ProductionResult, error) {
+) (*mfgServices.ProductionResult, error) {
 	logger := common.LoggerFromContext(ctx)
 
 	// Find quantity in cargo
@@ -882,7 +882,7 @@ func (h *RunFactoryCoordinatorHandler) deliverExistingCargo(
 	})
 
 	// Return result with negative cost (revenue from selling)
-	return &goodsServices.ProductionResult{
+	return &mfgServices.ProductionResult{
 		QuantityAcquired: deliveryResult.UnitsSold,
 		TotalCost:        -deliveryResult.TotalRevenue, // Negative because we earned money
 		WaypointSymbol:   destination,

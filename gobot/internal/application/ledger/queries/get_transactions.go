@@ -5,7 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	"github.com/andrescamacho/spacetraders-go/internal/application/mediator"
+	"github.com/andrescamacho/spacetraders-go/internal/application/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/ledger"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
@@ -49,13 +50,13 @@ type TransactionDTO struct {
 // GetTransactionsHandler handles the GetTransactions query
 type GetTransactionsHandler struct {
 	transactionRepo ledger.TransactionRepository
-	playerResolver  *common.PlayerResolver
+	playerResolver  *player.PlayerResolver
 }
 
 // NewGetTransactionsHandler creates a new GetTransactionsHandler
 func NewGetTransactionsHandler(
 	transactionRepo ledger.TransactionRepository,
-	playerResolver *common.PlayerResolver,
+	playerResolver *player.PlayerResolver,
 ) *GetTransactionsHandler {
 	return &GetTransactionsHandler{
 		transactionRepo: transactionRepo,
@@ -64,7 +65,7 @@ func NewGetTransactionsHandler(
 }
 
 // Handle executes the GetTransactions query
-func (h *GetTransactionsHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {
+func (h *GetTransactionsHandler) Handle(ctx context.Context, request mediator.Request) (mediator.Response, error) {
 	query, ok := request.(*GetTransactionsQuery)
 	if !ok {
 		return nil, fmt.Errorf("invalid request type: expected *GetTransactionsQuery")

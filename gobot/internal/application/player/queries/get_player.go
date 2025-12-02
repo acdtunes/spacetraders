@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	"github.com/andrescamacho/spacetraders-go/internal/application/auth"
+	"github.com/andrescamacho/spacetraders-go/internal/application/mediator"
+	appPlayer "github.com/andrescamacho/spacetraders-go/internal/application/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 )
@@ -24,7 +26,7 @@ type GetPlayerResponse struct {
 type GetPlayerHandler struct {
 	playerRepo     player.PlayerRepository
 	apiClient      domainPorts.APIClient
-	playerResolver *common.PlayerResolver
+	playerResolver *appPlayer.PlayerResolver
 }
 
 // NewGetPlayerHandler creates a new GetPlayerHandler
@@ -32,12 +34,12 @@ func NewGetPlayerHandler(playerRepo player.PlayerRepository, apiClient domainPor
 	return &GetPlayerHandler{
 		playerRepo:     playerRepo,
 		apiClient:      apiClient,
-		playerResolver: common.NewPlayerResolver(playerRepo),
+		playerResolver: appPlayer.NewPlayerResolver(playerRepo),
 	}
 }
 
 // Handle executes the GetPlayer query
-func (h *GetPlayerHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {
+func (h *GetPlayerHandler) Handle(ctx context.Context, request mediator.Request) (mediator.Response, error) {
 	query, ok := request.(*GetPlayerQuery)
 	if !ok {
 		return nil, fmt.Errorf("invalid request type: expected *GetPlayerQuery")
@@ -56,7 +58,7 @@ func (h *GetPlayerHandler) Handle(ctx context.Context, request common.Request) (
 	}
 
 	// Get token from context (injected by middleware)
-	token, err := common.PlayerTokenFromContext(ctx)
+	token, err := auth.PlayerTokenFromContext(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("player token not found in context: %w", err)
 	}

@@ -7,7 +7,6 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
-	goodsServices "github.com/andrescamacho/spacetraders-go/internal/application/goods/services"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/goods"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
@@ -28,7 +27,7 @@ type SupplyMonitor struct {
 	taskQueue           ManufacturingTaskQueue
 	taskRepo            manufacturing.TaskRepository
 	sellMarketDistrib   *SellMarketDistributor // Distributes sales across multiple markets
-	marketLocator       *goodsServices.MarketLocator // For finding export markets for inputs
+	marketLocator       *MarketLocator // For finding export markets for inputs
 	storageOpRepo       storage.StorageOperationRepository // For finding storage operations that provide goods
 	pollInterval        time.Duration
 	playerID            int
@@ -43,7 +42,7 @@ func NewSupplyMonitor(
 	pipelineRepo manufacturing.PipelineRepository,
 	taskQueue ManufacturingTaskQueue,
 	taskRepo manufacturing.TaskRepository,
-	marketLocator *goodsServices.MarketLocator,
+	marketLocator *MarketLocator,
 	storageOpRepo storage.StorageOperationRepository,
 	pollInterval time.Duration,
 	playerID int,

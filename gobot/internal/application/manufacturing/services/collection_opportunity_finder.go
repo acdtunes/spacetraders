@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"sort"
 
-	goodsServices "github.com/andrescamacho/spacetraders-go/internal/application/goods/services"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/storage"
@@ -448,7 +447,7 @@ func (f *CollectionOpportunityFinder) FindStorageOpportunities(
 
 				// Secondary: STRONG activity preferred (prices likely to stay high)
 				if buyer.purchasePrice == bestBuyer.purchasePrice {
-					if goodsServices.ImportActivityScore(buyer.activity) > goodsServices.ImportActivityScore(bestBuyer.activity) {
+					if ImportActivityScore(buyer.activity) > ImportActivityScore(bestBuyer.activity) {
 						bestBuyer = buyer
 					}
 				}

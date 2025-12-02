@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"fmt"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"os"
 	"text/tabwriter"
 	"time"
@@ -13,9 +12,11 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/api"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/graph"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
-	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	"github.com/andrescamacho/spacetraders-go/internal/application/auth"
+	"github.com/andrescamacho/spacetraders-go/internal/application/player"
 	shipCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/application/setup"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 )
@@ -582,7 +583,7 @@ Examples:
 
 			// Create mediator with ledger handlers registered
 			transactionRepo := persistence.NewGormTransactionRepository(db)
-			playerResolver := common.NewPlayerResolver(playerRepo)
+			playerResolver := player.NewPlayerResolver(playerRepo)
 			registry := setup.NewHandlerRegistry(
 				transactionRepo,
 				playerResolver,
@@ -627,7 +628,7 @@ Examples:
 			}
 
 			// Add player token to context for ledger recording
-			ctx = common.WithPlayerToken(ctx, playerToken)
+			ctx = auth.WithPlayerToken(ctx, playerToken)
 
 			// Execute command
 			response, err := handler.Handle(ctx, &shipCmd.SellCargoCommand{

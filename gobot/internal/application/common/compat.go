@@ -12,6 +12,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/auth"
 	"github.com/andrescamacho/spacetraders-go/internal/application/logging"
 	"github.com/andrescamacho/spacetraders-go/internal/application/mediator"
+	"github.com/andrescamacho/spacetraders-go/internal/application/player"
 	"github.com/andrescamacho/spacetraders-go/internal/application/ship/dtos"
 )
 
@@ -60,3 +61,10 @@ var (
 var (
 	RouteSegmentToDTO = dtos.RouteSegmentToDTO
 )
+
+// Player resolution types - re-exported for backward compatibility
+// DEPRECATED: Import directly from github.com/andrescamacho/spacetraders-go/internal/application/player
+type PlayerResolver = player.PlayerResolver
+
+// Player resolution functions - re-exported for backward compatibility
+var NewPlayerResolver = player.NewPlayerResolver

@@ -6,8 +6,8 @@ import (
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
-	tradingCmd "github.com/andrescamacho/spacetraders-go/internal/application/trading/commands"
-	"github.com/andrescamacho/spacetraders-go/internal/application/trading/services/manufacturing"
+	tradingCmd "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/commands"
+	"github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/services/manufacturing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
 	domainMfg "github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"

@@ -10,8 +10,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
-	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/application/ledger/queries"
+	"github.com/andrescamacho/spacetraders-go/internal/application/player"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 )
@@ -206,7 +206,7 @@ func runLedgerList(playerID int, startDate, endDate, category, txType string, li
 	// Create repository and handler
 	transactionRepo := persistence.NewGormTransactionRepository(db)
 	playerRepo := persistence.NewGormPlayerRepository(db)
-	playerResolver := common.NewPlayerResolver(playerRepo)
+	playerResolver := player.NewPlayerResolver(playerRepo)
 	handler := queries.NewGetTransactionsHandler(transactionRepo, playerResolver)
 
 	// Parse dates
