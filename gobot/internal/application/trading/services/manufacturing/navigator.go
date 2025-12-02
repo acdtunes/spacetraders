@@ -70,7 +70,7 @@ func (n *ManufacturingNavigator) NavigateAndDock(
 			"to":   destination,
 		})
 
-		_, err = n.mediator.Send(ctx, &shipCmd.NavigateRouteCommand{
+		navResp, err := n.mediator.Send(ctx, &shipCmd.NavigateRouteCommand{
 			ShipSymbol:   shipSymbol,
 			Destination:  destination,
 			PlayerID:     playerID,
@@ -80,24 +80,21 @@ func (n *ManufacturingNavigator) NavigateAndDock(
 			return nil, fmt.Errorf("failed to navigate to %s: %w", destination, err)
 		}
 
-		// Reload ship after navigation
-		ship, err = n.shipRepo.FindBySymbol(ctx, shipSymbol, playerID)
-		if err != nil {
-			return nil, fmt.Errorf("failed to reload ship after navigation: %w", err)
-		}
+		// Use ship from navigation response (already up-to-date)
+		ship = navResp.(*shipCmd.NavigateRouteResponse).Ship
 	}
 
-	// Dock at destination
-	if err := n.Dock(ctx, shipSymbol, playerID); err != nil {
-		return nil, err
-	}
-
-	// Reload ship after docking for fresh state
-	ship, err = n.shipRepo.FindBySymbol(ctx, shipSymbol, playerID)
+	// Dock at destination - pass ship directly so it's updated in place
+	_, err = n.mediator.Send(ctx, &shipTypes.DockShipCommand{
+		Ship:     ship,
+		PlayerID: playerID,
+	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to reload ship after docking: %w", err)
+		return nil, fmt.Errorf("failed to dock: %w", err)
 	}
 
+	// OPTIMIZATION: Ship is updated in place by DockShipHandler (no reload needed)
+	// The shipRepo.Dock() call updates the ship pointer with API response
 	return ship, nil
 }
 

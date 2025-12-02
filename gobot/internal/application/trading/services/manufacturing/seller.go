@@ -22,6 +22,7 @@ type Seller interface {
 
 // SellParams contains parameters for a sell operation.
 type SellParams struct {
+	Ship       *navigation.Ship // Optional: use for cargo check (avoids API call when Quantity=0)
 	ShipSymbol string
 	PlayerID   shared.PlayerID
 	Good       string
@@ -67,9 +68,14 @@ func (s *ManufacturingSeller) SellCargo(ctx context.Context, params SellParams) 
 	quantity := params.Quantity
 	if quantity == 0 {
 		// Sell all of this good in cargo
-		ship, err := s.shipRepo.FindBySymbol(ctx, params.ShipSymbol, params.PlayerID)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load ship: %w", err)
+		// OPTIMIZATION: Use provided ship if available to avoid API call
+		ship := params.Ship
+		if ship == nil {
+			var err error
+			ship, err = s.shipRepo.FindBySymbol(ctx, params.ShipSymbol, params.PlayerID)
+			if err != nil {
+				return nil, fmt.Errorf("failed to load ship: %w", err)
+			}
 		}
 		quantity = ship.Cargo().GetItemUnits(params.Good)
 	}
@@ -137,9 +143,14 @@ func (s *ManufacturingSeller) DeliverToFactory(ctx context.Context, params SellP
 	quantity := params.Quantity
 	if quantity == 0 {
 		// Deliver all of this good in cargo
-		ship, err := s.shipRepo.FindBySymbol(ctx, params.ShipSymbol, params.PlayerID)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load ship: %w", err)
+		// OPTIMIZATION: Use provided ship if available to avoid API call
+		ship := params.Ship
+		if ship == nil {
+			var err error
+			ship, err = s.shipRepo.FindBySymbol(ctx, params.ShipSymbol, params.PlayerID)
+			if err != nil {
+				return nil, fmt.Errorf("failed to load ship: %w", err)
+			}
 		}
 		quantity = ship.Cargo().GetItemUnits(params.Good)
 	}

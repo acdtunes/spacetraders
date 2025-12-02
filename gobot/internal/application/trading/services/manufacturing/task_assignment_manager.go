@@ -46,6 +46,7 @@ type TaskAssigner interface {
 type AssignParams struct {
 	PlayerID           int
 	MaxConcurrentTasks int
+	CoordinatorID      string // Parent container ID for cascade stop support
 }
 
 // TaskAssignmentManager implements TaskAssigner using focused services.
@@ -195,6 +196,9 @@ func (m *TaskAssignmentManager) AssignTasks(ctx context.Context, params AssignPa
 	}
 
 	// Load ship entities
+	// NOTE: This loads each ship individually, making N API calls for N idle ships.
+	// A batch loading method (FindBySymbols) could reduce this to 1 ListShips call + local filter.
+	// For now, acceptable as idle ship count is typically small (1-5).
 	idleShips := make(map[string]*navigation.Ship)
 	for _, symbol := range idleShipSymbols {
 		ship, err := m.shipRepo.FindBySymbol(ctx, symbol, playerID)
@@ -306,9 +310,10 @@ func (m *TaskAssignmentManager) AssignTasks(ctx context.Context, params AssignPa
 		// Assign via worker manager
 		if m.workerManager != nil {
 			err := m.workerManager.AssignTaskToShip(ctx, AssignTaskParams{
-				Task:     task,
-				Ship:     selectedShip,
-				PlayerID: params.PlayerID,
+				Task:          task,
+				Ship:          selectedShip,
+				PlayerID:      params.PlayerID,
+				CoordinatorID: params.CoordinatorID,
 			})
 			if err != nil {
 				logger.Log("ERROR", fmt.Sprintf("Failed to assign task: %v", err), nil)

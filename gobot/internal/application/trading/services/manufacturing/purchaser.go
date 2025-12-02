@@ -99,6 +99,7 @@ func NewManufacturingPurchaser(
 }
 
 // ExecutePurchaseLoop performs iterative purchasing until cargo full or limit reached.
+// OPTIMIZED: Loads ship once at the start and tracks cargo locally to avoid repeated GetShip API calls.
 func (p *ManufacturingPurchaser) ExecutePurchaseLoop(
 	ctx context.Context,
 	params PurchaseLoopParams,
@@ -108,26 +109,37 @@ func (p *ManufacturingPurchaser) ExecutePurchaseLoop(
 	result := &PurchaseResult{}
 	playerIDInt := params.PlayerID.Value()
 
-	// PRE-CHECK: If ship already has cargo, check before starting purchase loop.
-	// This handles the case where a retry task is assigned to a ship that already
-	// has cargo from a previous attempt but supply has dropped.
+	// OPTIMIZATION: Load ship ONCE at the start instead of every loop iteration
+	// This saves N-1 GetShip API calls where N is the number of purchase rounds
+	ship, err := p.shipRepo.FindBySymbol(ctx, params.ShipSymbol, params.PlayerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load ship: %w", err)
+	}
+
+	// PRE-CHECK: If ship already has cargo of the target good, return early for RequireHighSupply tasks
 	if params.RequireHighSupply {
-		ship, err := p.shipRepo.FindBySymbol(ctx, params.ShipSymbol, params.PlayerID)
-		if err == nil && ship != nil {
-			existingCargo := ship.Cargo().GetItemUnits(params.Good)
-			if existingCargo > 0 {
-				logger.Log("INFO", "Ship already has cargo - skipping purchase loop", map[string]interface{}{
-					"good":     params.Good,
-					"quantity": existingCargo,
-				})
-				result.TotalUnitsAdded = existingCargo
-				return result, nil
-			}
+		existingCargo := ship.Cargo().GetItemUnits(params.Good)
+		if existingCargo > 0 {
+			logger.Log("INFO", "Ship already has cargo - skipping purchase loop", map[string]interface{}{
+				"good":     params.Good,
+				"quantity": existingCargo,
+			})
+			result.TotalUnitsAdded = existingCargo
+			return result, nil
 		}
 	}
 
+	// OPTIMIZATION: Track available cargo locally instead of reloading ship each iteration
+	// After each purchase, we subtract the units added from our local tracking
+	availableCargo := ship.AvailableCargoSpace()
+
 	for result.Rounds < MaxPurchaseRounds {
-		// Get fresh market data
+		// Check cargo space using local tracking (no API call)
+		if availableCargo <= 0 {
+			break
+		}
+
+		// Get fresh market data (from DB cache, updated by market refresh after purchase)
 		marketData, err := p.marketRepo.GetMarketData(ctx, params.Market, playerIDInt)
 		if err != nil {
 			if result.Rounds == 0 {
@@ -170,18 +182,7 @@ func (p *ManufacturingPurchaser) ExecutePurchaseLoop(
 			}
 		}
 
-		// Reload ship for available cargo
-		ship, err := p.shipRepo.FindBySymbol(ctx, params.ShipSymbol, params.PlayerID)
-		if err != nil {
-			return nil, fmt.Errorf("failed to reload ship: %w", err)
-		}
-
-		availableCargo := ship.AvailableCargoSpace()
-		if availableCargo <= 0 {
-			break
-		}
-
-		// Determine quantity
+		// Determine quantity using local cargo tracking
 		quantity := availableCargo
 		if params.DesiredQty > 0 {
 			remaining := params.DesiredQty - result.TotalUnitsAdded
@@ -203,7 +204,8 @@ func (p *ManufacturingPurchaser) ExecutePurchaseLoop(
 			break
 		}
 
-		// Purchase goods (keep market refresh to detect price movement from our buys)
+		// Keep market refresh to detect price/supply movement from our buys
+		// The next loop iteration's GetMarketData() reads from DB cache, so we need the refresh
 		purchaseResp, err := p.mediator.Send(ctx, &shipCmd.PurchaseCargoCommand{
 			ShipSymbol: params.ShipSymbol,
 			GoodSymbol: params.Good,
@@ -222,6 +224,9 @@ func (p *ManufacturingPurchaser) ExecutePurchaseLoop(
 		result.TotalCost += resp.TotalCost
 		result.Rounds++
 
+		// OPTIMIZATION: Update local cargo tracking instead of reloading ship
+		availableCargo -= resp.UnitsAdded
+
 		pricePerUnit := 0
 		if resp.UnitsAdded > 0 {
 			pricePerUnit = resp.TotalCost / resp.UnitsAdded
@@ -235,6 +240,7 @@ func (p *ManufacturingPurchaser) ExecutePurchaseLoop(
 			"supply":         supplyLevel,
 			"activity":       activityLevel,
 			"round":          result.Rounds,
+			"cargo_remaining": availableCargo,
 		})
 
 		// Record ledger transaction

@@ -206,6 +206,7 @@ func (h *RunParallelManufacturingCoordinatorHandler) Handle(
 	h.taskAssigner.AssignTasks(ctx, mfgServices.AssignParams{
 		PlayerID:           cmd.PlayerID,
 		MaxConcurrentTasks: config.maxConcurrentTasks,
+		CoordinatorID:      cmd.ContainerID,
 	})
 
 	// Main coordination loop
@@ -237,6 +238,7 @@ func (h *RunParallelManufacturingCoordinatorHandler) Handle(
 			h.taskAssigner.AssignTasks(ctx, mfgServices.AssignParams{
 				PlayerID:           cmd.PlayerID,
 				MaxConcurrentTasks: config.maxConcurrentTasks,
+				CoordinatorID:      cmd.ContainerID,
 			})
 
 		case <-pipelineCompletionTicker.C:
@@ -259,6 +261,7 @@ func (h *RunParallelManufacturingCoordinatorHandler) Handle(
 			h.taskAssigner.AssignTasks(ctx, mfgServices.AssignParams{
 				PlayerID:           cmd.PlayerID,
 				MaxConcurrentTasks: config.maxConcurrentTasks,
+				CoordinatorID:      cmd.ContainerID,
 			})
 
 		case shipSymbol := <-h.workerCompletionChan:
