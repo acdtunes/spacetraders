@@ -44,6 +44,13 @@ func (p *PipelinePlanner) MarketLocator() *goodsServices.MarketLocator {
 	return p.marketLocator
 }
 
+// SetStorageOperationRepository sets the storage operation repository.
+// This enables STORAGE_ACQUIRE_DELIVER tasks for goods available from
+// running storage operations (e.g., gas siphoning for LIQUID_HYDROGEN).
+func (p *PipelinePlanner) SetStorageOperationRepository(repo storage.StorageOperationRepository) {
+	p.storageOpRepo = repo
+}
+
 // PlanningContext holds state during pipeline planning
 type PlanningContext struct {
 	ctx          context.Context

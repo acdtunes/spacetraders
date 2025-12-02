@@ -141,10 +141,15 @@ func (h *RunParallelManufacturingCoordinatorHandler) SetStorageRecoveryService(s
 }
 
 // SetStorageOperationRepository sets the optional storage operation repository.
-// This enables the SupplyMonitor to create STORAGE_ACQUIRE_DELIVER tasks when
+// This enables the PipelinePlanner to create STORAGE_ACQUIRE_DELIVER tasks when
 // factory inputs are available from running storage operations (e.g., gas siphoning).
 func (h *RunParallelManufacturingCoordinatorHandler) SetStorageOperationRepository(repo storage.StorageOperationRepository) {
 	h.storageOpRepo = repo
+	// Propagate to the PipelinePlanner so it can look up storage operations
+	// when deciding between ACQUIRE_DELIVER and STORAGE_ACQUIRE_DELIVER tasks
+	if h.pipelinePlanner != nil {
+		h.pipelinePlanner.SetStorageOperationRepository(repo)
+	}
 }
 
 // Handle executes the coordinator command
