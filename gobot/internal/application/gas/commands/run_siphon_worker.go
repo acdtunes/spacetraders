@@ -134,12 +134,11 @@ func (h *RunSiphonWorkerHandler) executeSiphoning(
 		cargoUnits = ship.Cargo().Units
 		cargoCapacity = ship.Cargo().Capacity
 
-		// After navigation, re-check cooldown since we made additional API calls
-		// Navigation takes time, but ship may still have a cooldown
-		shipData, err = h.shipRepo.GetShipData(ctx, cmd.ShipSymbol, cmd.PlayerID)
-		if err != nil {
-			return fmt.Errorf("failed to reload ship data after navigation: %w", err)
-		}
+		// Skip cooldown re-check after navigation:
+		// 1. Navigation time is typically longer than siphon cooldowns
+		// 2. Siphon command already handles cooldown errors with retry logic (lines 218-235)
+		// This saves 1 API call per worker startup
+		shipData.CooldownExpiration = "" // Clear cooldown - navigation time covered it
 	}
 
 	logger.Log("INFO", "Siphon ship continuous siphoning started", map[string]interface{}{
@@ -334,16 +333,13 @@ func (h *RunSiphonWorkerHandler) depositToStorageShip(
 				return totalTransferred, fmt.Errorf("failed to transfer %s to storage: %w", item.Symbol, err)
 			}
 
-			// HYDROCARBON is a byproduct - transfer it but don't notify coordinator
-			// Storage ship worker will periodically jettison HYDROCARBON
-			if item.Symbol != "HYDROCARBON" {
-				// Notify coordinator of the deposit - this updates inventory and wakes waiting haulers
-				h.storageCoordinator.NotifyCargoDeposited(
-					storageShip.ShipSymbol(),
-					item.Symbol,
-					unitsToTransfer,
-				)
-			}
+			// Notify coordinator of the deposit - this updates inventory and wakes waiting haulers
+			// For HYDROCARBON, this triggers the storage ship worker to jettison it
+			h.storageCoordinator.NotifyCargoDeposited(
+				storageShip.ShipSymbol(),
+				item.Symbol,
+				unitsToTransfer,
+			)
 
 			totalTransferred += unitsToTransfer
 			unitsRemaining -= unitsToTransfer
