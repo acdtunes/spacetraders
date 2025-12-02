@@ -623,36 +623,6 @@ func (s *daemonServiceImpl) BatchPurchaseShips(ctx context.Context, req *pb.Batc
 	}, nil
 }
 
-// TourSell executes optimized cargo selling tour for a ship (container-based)
-func (s *daemonServiceImpl) TourSell(ctx context.Context, req *pb.TourSellRequest) (*pb.TourSellResponse, error) {
-	// Resolve player ID from request
-	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)
-	if err != nil {
-		return nil, fmt.Errorf("failed to resolve player: %w", err)
-	}
-
-	// Generate container ID for this tour sell operation
-	containerID := utils.GenerateContainerID("tour_sell", req.ShipSymbol)
-
-	// Get optional return waypoint
-	returnWaypoint := ""
-	if req.ReturnWaypoint != nil {
-		returnWaypoint = *req.ReturnWaypoint
-	}
-
-	// Start tour sell in container
-	_, err = s.daemon.TourSell(ctx, containerID, req.ShipSymbol, returnWaypoint, playerID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to start tour sell: %w", err)
-	}
-
-	return &pb.TourSellResponse{
-		ContainerId: containerID,
-		ShipSymbol:  req.ShipSymbol,
-		Status:      "RUNNING",
-	}, nil
-}
-
 // StartGoodsFactory implements the StartGoodsFactory RPC
 func (s *daemonServiceImpl) StartGoodsFactory(ctx context.Context, req *pb.StartGoodsFactoryRequest) (*pb.StartGoodsFactoryResponse, error) {
 	// Resolve player ID

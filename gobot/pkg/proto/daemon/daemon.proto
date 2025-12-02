@@ -67,9 +67,6 @@ service DaemonService {
   // GetShipyardListings retrieves available ships at a shipyard
   rpc GetShipyardListings(GetShipyardListingsRequest) returns (GetShipyardListingsResponse);
 
-  // TourSell executes optimized cargo selling tour for a ship
-  rpc TourSell(TourSellRequest) returns (TourSellResponse);
-
   // StartGoodsFactory initiates automated goods production using supply chain fabrication
   rpc StartGoodsFactory(StartGoodsFactoryRequest) returns (StartGoodsFactoryResponse);
 
@@ -480,27 +477,6 @@ message ShipRoute {
   repeated RouteSegment segments = 3;
   int32 total_fuel = 4;
   int32 total_time = 5;    // seconds
-}
-
-// TourSellRequest executes optimized cargo selling tour
-message TourSellRequest {
-  string ship_symbol = 1;
-  int32 player_id = 2;
-  optional string agent_symbol = 3;
-  optional string return_waypoint = 4; // Optional waypoint to return to after selling
-}
-
-message TourSellResponse {
-  string container_id = 1;
-  string ship_symbol = 2;
-  string status = 3;
-}
-
-message SoldItem {
-  string symbol = 1;
-  int32 units = 2;
-  int32 revenue = 3;
-  string market = 4;
 }
 
 // StartGoodsFactoryRequest initiates automated goods production

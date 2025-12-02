@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	scoutingCmd "github.com/andrescamacho/spacetraders-go/internal/application/scouting/commands"
-	tradingCmd "github.com/andrescamacho/spacetraders-go/internal/application/trading/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
@@ -40,48 +39,6 @@ func (s *DaemonServer) ScoutTour(ctx context.Context, containerID string, shipSy
 
 	// Persist container to database
 	if err := s.containerRepo.Add(ctx, containerEntity, "scout_tour"); err != nil {
-		return "", fmt.Errorf("failed to persist container: %w", err)
-	}
-
-	// Create and start container runner
-	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipAssignmentRepo)
-	s.registerContainer(containerID, runner)
-
-	// Start container in background
-	go func() {
-		if err := runner.Start(); err != nil {
-			fmt.Printf("Container %s failed: %v\n", containerID, err)
-		}
-	}()
-
-	return containerID, nil
-}
-
-// TourSell handles cargo selling tour requests (single ship)
-func (s *DaemonServer) TourSell(ctx context.Context, containerID string, shipSymbol string, returnWaypoint string, playerID int) (string, error) {
-	// Create tour sell command
-	cmd := &tradingCmd.RunTourSellingCommand{
-		ShipSymbol:     shipSymbol,
-		PlayerID:       shared.MustNewPlayerID(playerID),
-		ReturnWaypoint: returnWaypoint,
-	}
-
-	// Create container for this operation (single iteration)
-	containerEntity := container.NewContainer(
-		containerID,
-		container.ContainerTypeTrading,
-		playerID,
-		1, // Single iteration for tour sell
-		nil, // No parent container
-		map[string]interface{}{
-			"ship_symbol":     shipSymbol,
-			"return_waypoint": returnWaypoint,
-		},
-		nil, // Use default RealClock for production
-	)
-
-	// Persist container to database
-	if err := s.containerRepo.Add(ctx, containerEntity, "tour_sell"); err != nil {
 		return "", fmt.Errorf("failed to persist container: %w", err)
 	}
 

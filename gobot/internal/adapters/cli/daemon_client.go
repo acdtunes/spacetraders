@@ -92,12 +92,6 @@ type MarketAssignment struct {
 	Markets []string
 }
 
-type TourSellResponse struct {
-	ContainerID string
-	ShipSymbol  string
-	Status      string
-}
-
 type ContractFleetCoordinatorResponse struct {
 	ContainerID string
 	ShipSymbols []string
@@ -755,37 +749,6 @@ func (c *DaemonClient) ContractFleetCoordinator(
 	return &ContractFleetCoordinatorResponse{
 		ContainerID: resp.ContainerId,
 		ShipSymbols: shipSymbols,
-		Status:      resp.Status,
-	}, nil
-}
-
-// TourSell executes optimized cargo selling tour for a ship
-func (c *DaemonClient) TourSell(
-	ctx context.Context,
-	shipSymbol string,
-	returnWaypoint string,
-	playerID int,
-	agentSymbol string,
-) (*TourSellResponse, error) {
-	req := &pb.TourSellRequest{
-		ShipSymbol: shipSymbol,
-		PlayerId:   int32(playerID),
-	}
-	if agentSymbol != "" {
-		req.AgentSymbol = &agentSymbol
-	}
-	if returnWaypoint != "" {
-		req.ReturnWaypoint = &returnWaypoint
-	}
-
-	resp, err := c.client.TourSell(ctx, req)
-	if err != nil {
-		return nil, fmt.Errorf("gRPC call failed: %w", err)
-	}
-
-	return &TourSellResponse{
-		ContainerID: resp.ContainerId,
-		ShipSymbol:  resp.ShipSymbol,
 		Status:      resp.Status,
 	}, nil
 }

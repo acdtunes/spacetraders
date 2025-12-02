@@ -338,12 +338,6 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to register BalanceShipPosition handler: %w", err)
 	}
 
-	// Tour selling handler
-	tourSellingHandler := tradingCmd.NewRunTourSellingHandler(med, shipRepo, tradingMarketRepo, routingClient, graphService)
-	if err := mediator.RegisterHandler[*tradingCmd.RunTourSellingCommand](med, tourSellingHandler); err != nil {
-		return fmt.Errorf("failed to register TourSelling handler: %w", err)
-	}
-
 	sellCargoHandler := shipCmd.NewSellCargoHandler(shipRepo, playerRepo, apiClient, marketRepo, med, marketScanner)
 	if err := mediator.RegisterHandler[*shipCmd.SellCargoCommand](med, sellCargoHandler); err != nil {
 		return fmt.Errorf("failed to register SellCargo handler: %w", err)

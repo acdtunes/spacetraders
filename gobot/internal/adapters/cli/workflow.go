@@ -29,7 +29,6 @@ Examples:
 	cmd.AddCommand(newWorkflowBatchContractCommand())
 	cmd.AddCommand(newWorkflowScoutMarketsCommand())
 	cmd.AddCommand(newWorkflowScoutAllMarketsCommand())
-	cmd.AddCommand(newWorkflowTourSellCommand())
 
 	return cmd
 }
@@ -337,80 +336,4 @@ func parseCsvList(csv string) []string {
 		}
 	}
 	return result
-}
-
-// newWorkflowTourSellCommand creates the workflow tour-sell subcommand
-func newWorkflowTourSellCommand() *cobra.Command {
-	var (
-		shipSymbol     string
-		returnWaypoint string
-	)
-
-	cmd := &cobra.Command{
-		Use:   "tour-sell",
-		Short: "Execute optimized cargo selling tour",
-		Long: `Execute an optimized cargo selling tour for a ship with cargo.
-
-The daemon will:
-- Find best markets for each cargo type in ship's system
-- Optimize route using TSP with fuel constraints
-- Visit each market and sell designated goods
-- Return to starting waypoint or specified return point
-
-Examples:
-  # Sell all cargo on ship
-  spacetraders workflow tour-sell --ship HAULER-1 --agent ENDURANCE
-
-  # Sell cargo and return to specific waypoint
-  spacetraders workflow tour-sell --ship HAULER-1 --return-waypoint X1-GZ7-A1 --agent ENDURANCE`,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			// Validate flags
-			if shipSymbol == "" {
-				return fmt.Errorf("--ship flag is required")
-			}
-
-			// Resolve player from flags or defaults
-			playerIdent, err := resolvePlayerIdentifier()
-			if err != nil {
-				return err
-			}
-
-			// Create gRPC client
-			client, err := NewDaemonClient(socketPath)
-			if err != nil {
-				return fmt.Errorf("failed to connect to daemon: %w", err)
-			}
-			defer client.Close()
-
-			// Execute tour sell command (container-based, returns immediately)
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-
-			fmt.Printf("Starting tour selling for ship %s...\n", shipSymbol)
-			if returnWaypoint != "" {
-				fmt.Printf("  Return waypoint: %s\n", returnWaypoint)
-			}
-			fmt.Println()
-
-			result, err := client.TourSell(ctx, shipSymbol, returnWaypoint, playerIdent.PlayerID, playerIdent.AgentSymbol)
-			if err != nil {
-				return fmt.Errorf("tour sell failed: %w", err)
-			}
-
-			// Display container info
-			fmt.Println("Tour sell container started")
-			fmt.Printf("  Container ID: %s\n", result.ContainerID)
-			fmt.Printf("  Ship:         %s\n", result.ShipSymbol)
-			fmt.Printf("  Status:       %s\n", result.Status)
-			fmt.Println("\nUse 'spacetraders container logs --container-id " + result.ContainerID + "' to view progress")
-
-			return nil
-		},
-	}
-
-	// Command-specific flags
-	cmd.Flags().StringVar(&shipSymbol, "ship", "", "Ship symbol with cargo to sell (required)")
-	cmd.Flags().StringVar(&returnWaypoint, "return-waypoint", "", "Optional waypoint to return to after selling")
-
-	return cmd
 }
