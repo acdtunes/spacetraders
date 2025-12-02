@@ -89,20 +89,17 @@ func (h *RunStorageShipWorkerHandler) Handle(ctx context.Context, request common
 			PlayerID:    cmd.PlayerID,
 		}
 
-		if _, err := h.mediator.Send(ctx, navCmd); err != nil {
+		navResp, err := h.mediator.Send(ctx, navCmd)
+		if err != nil {
 			logger.Log("WARNING", "Failed to navigate storage ship", map[string]interface{}{
 				"action":      "navigate_failed",
 				"ship_symbol": cmd.ShipSymbol,
 				"error":       err.Error(),
 			})
 			// Don't return error - we'll retry on next iteration or register where we are
-		}
-
-		// Reload ship after navigation
-		ship, err = h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
-		if err != nil {
-			result.Error = fmt.Sprintf("failed to reload ship: %v", err)
-			return result, fmt.Errorf("failed to reload ship: %w", err)
+		} else {
+			// Use ship from navigation response (already up-to-date)
+			ship = navResp.(*appShipCmd.NavigateRouteResponse).Ship
 		}
 	}
 
@@ -171,12 +168,17 @@ func (h *RunStorageShipWorkerHandler) Handle(ctx context.Context, request common
 
 // jettisonHydrocarbon checks for and jettisons any HYDROCARBON from the storage ship.
 // HYDROCARBON is a worthless byproduct from gas siphoning that wastes cargo space.
+//
+// OPTIMIZATION OPPORTUNITY: This reloads ship every 30 seconds just to check cargo.
+// Could track cargo locally via storage coordinator transfer notifications instead.
+// Current impact: 2 API calls/minute continuously while storage ship is active.
 func (h *RunStorageShipWorkerHandler) jettisonHydrocarbon(
 	ctx context.Context,
 	cmd *RunStorageShipWorkerCommand,
 	logger common.ContainerLogger,
 ) {
 	// Reload ship to get current cargo
+	// NOTE: This is an optimization opportunity - see function comment
 	ship, err := h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
 	if err != nil {
 		logger.Log("WARNING", "Failed to load ship for HYDROCARBON cleanup", map[string]interface{}{

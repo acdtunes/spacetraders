@@ -106,16 +106,13 @@ func (h *RunGasTransportWorkerHandler) executeGasTransport(
 			Destination: cmd.GasGiant,
 			PlayerID:    cmd.PlayerID,
 		}
-		_, err := h.mediator.Send(ctx, navCmd)
+		navResp, err := h.mediator.Send(ctx, navCmd)
 		if err != nil {
 			return fmt.Errorf("failed to navigate to gas giant: %w", err)
 		}
 
-		// Reload ship after navigation
-		transportShip, err = h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
-		if err != nil {
-			return fmt.Errorf("failed to reload transport ship: %w", err)
-		}
+		// Use ship from navigation response (already up-to-date)
+		transportShip = navResp.(*appShipCmd.NavigateRouteResponse).Ship
 	}
 
 	logger.Log("INFO", "Gas transport positioned and ready for cargo receiving", map[string]interface{}{
@@ -198,14 +195,9 @@ func (h *RunGasTransportWorkerHandler) executeGasTransport(
 			})
 
 			// 3f. Return to gas giant
-			if err := h.returnToGasGiant(ctx, cmd); err != nil {
-				return fmt.Errorf("failed to return to gas giant: %w", err)
-			}
-
-			// Reload ship after returning
-			transportShip, err = h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
+			transportShip, err = h.returnToGasGiant(ctx, cmd)
 			if err != nil {
-				return fmt.Errorf("failed to reload transport ship: %w", err)
+				return fmt.Errorf("failed to return to gas giant: %w", err)
 			}
 
 			logger.Log("INFO", "Gas transport returned to gas giant", map[string]interface{}{
@@ -286,7 +278,7 @@ func (h *RunGasTransportWorkerHandler) executeFactoryDelivery(
 				Destination: factory.FactoryWaypoint,
 				PlayerID:    cmd.PlayerID,
 			}
-			_, err := h.mediator.Send(ctx, navCmd)
+			navResp, err := h.mediator.Send(ctx, navCmd)
 			if err != nil {
 				logger.Log("WARNING", "Failed to navigate to factory", map[string]interface{}{
 					"ship_symbol": cmd.ShipSymbol,
@@ -296,6 +288,8 @@ func (h *RunGasTransportWorkerHandler) executeFactoryDelivery(
 				})
 				continue
 			}
+			// Use ship from navigation response
+			ship = navResp.(*appShipCmd.NavigateRouteResponse).Ship
 		}
 
 		// Dock at factory
@@ -348,32 +342,20 @@ func (h *RunGasTransportWorkerHandler) executeFactoryDelivery(
 		}
 		_, _ = h.mediator.Send(ctx, refuelCmd) // Ignore refuel errors - factory may not have fuel
 
-		// Reload ship to get updated cargo
-		ship, err = h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
-		if err != nil {
-			return totalUnitsDelivered, factoriesVisited, fmt.Errorf("failed to reload ship: %w", err)
-		}
+		// OPTIMIZATION: Ship is already updated by navigation (line 292) and refuel (above)
+		// Cargo iteration is over a snapshot from line 231, so cargo changes don't affect the loop
+		// No need to reload - ship.CurrentLocation() and ship.Fuel() are already current
 	}
 
 	return totalUnitsDelivered, factoriesVisited, nil
 }
 
-// returnToGasGiant navigates the transport back to the gas giant
+// returnToGasGiant navigates the transport back to the gas giant and returns updated ship
 func (h *RunGasTransportWorkerHandler) returnToGasGiant(
 	ctx context.Context,
 	cmd *RunGasTransportWorkerCommand,
-) error {
+) (*navigation.Ship, error) {
 	logger := common.LoggerFromContext(ctx)
-
-	// Load current ship state
-	ship, err := h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
-	if err != nil {
-		return fmt.Errorf("failed to load ship: %w", err)
-	}
-
-	if ship.CurrentLocation().Symbol == cmd.GasGiant {
-		return nil
-	}
 
 	logger.Log("INFO", "Gas transport returning to gas giant", map[string]interface{}{
 		"ship_symbol": cmd.ShipSymbol,
@@ -387,10 +369,11 @@ func (h *RunGasTransportWorkerHandler) returnToGasGiant(
 		PlayerID:    cmd.PlayerID,
 	}
 
-	_, err = h.mediator.Send(ctx, navCmd)
+	navResp, err := h.mediator.Send(ctx, navCmd)
 	if err != nil {
-		return fmt.Errorf("failed to return to gas giant: %w", err)
+		return nil, fmt.Errorf("failed to return to gas giant: %w", err)
 	}
 
-	return nil
+	// Return ship from navigation response (handles "already at destination" case)
+	return navResp.(*appShipCmd.NavigateRouteResponse).Ship, nil
 }
