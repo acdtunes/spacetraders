@@ -188,6 +188,35 @@ func (s *StorageShip) DepositCargo(goodSymbol string, units int) error {
 	return nil
 }
 
+// JettisonCargo removes cargo from inventory without reservation.
+// Used for jettisoning worthless cargo like HYDROCARBON.
+// Thread-safe.
+func (s *StorageShip) JettisonCargo(goodSymbol string, units int) error {
+	if units <= 0 {
+		return fmt.Errorf("jettison units must be positive")
+	}
+	if goodSymbol == "" {
+		return fmt.Errorf("good symbol cannot be empty")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	inventory := s.cargoInventory[goodSymbol]
+	if inventory < units {
+		return fmt.Errorf("insufficient cargo: want to remove %d %s, have %d", units, goodSymbol, inventory)
+	}
+
+	s.cargoInventory[goodSymbol] -= units
+
+	// Clean up zero entry
+	if s.cargoInventory[goodSymbol] == 0 {
+		delete(s.cargoInventory, goodSymbol)
+	}
+
+	return nil
+}
+
 // ReserveCargo reserves cargo for a hauler.
 // The reservation is held until ConfirmTransfer or CancelReservation.
 // Thread-safe.

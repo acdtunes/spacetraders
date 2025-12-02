@@ -40,6 +40,11 @@ type StorageCoordinator interface {
 	// This wakes any waiting haulers if they can now be satisfied.
 	NotifyCargoDeposited(storageShipSymbol, goodSymbol string, units int)
 
+	// NotifyCargoJettisoned is called after cargo is jettisoned from a storage ship.
+	// This updates the coordinator's internal cargo tracking so AvailableSpace() is accurate.
+	// Used for jettisoning worthless byproducts like HYDROCARBON.
+	NotifyCargoJettisoned(storageShipSymbol, goodSymbol string, units int)
+
 	// GetTotalCargoAvailable returns total unreserved cargo for a good across all
 	// storage ships in the specified operation.
 	GetTotalCargoAvailable(operationID, goodSymbol string) int

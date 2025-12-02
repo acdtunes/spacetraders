@@ -265,6 +265,24 @@ func (c *InMemoryStorageCoordinator) NotifyCargoDeposited(storageShipSymbol, goo
 	c.processWaiterQueue(key)
 }
 
+// NotifyCargoJettisoned is called after cargo is jettisoned from a storage ship.
+// This updates the coordinator's internal cargo tracking so AvailableSpace() is accurate.
+func (c *InMemoryStorageCoordinator) NotifyCargoJettisoned(storageShipSymbol, goodSymbol string, units int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	ship, exists := c.storageShips[storageShipSymbol]
+	if !exists {
+		return
+	}
+
+	// Remove the cargo from the ship's inventory
+	if err := ship.JettisonCargo(goodSymbol, units); err != nil {
+		// Log error but continue - cargo was already jettisoned via API
+		return
+	}
+}
+
 // processWaiterQueue attempts to satisfy waiters in FIFO order
 func (c *InMemoryStorageCoordinator) processWaiterQueue(key waiterQueueKey) {
 	queue := c.waiters[key]

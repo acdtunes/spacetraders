@@ -203,6 +203,9 @@ func (h *RunStorageShipWorkerHandler) jettisonHydrocarbonUnits(
 			"error":       err.Error(),
 		})
 	} else {
+		// Notify the coordinator that cargo was jettisoned so it updates AvailableSpace()
+		h.storageCoordinator.NotifyCargoJettisoned(cmd.ShipSymbol, "HYDROCARBON", units)
+
 		logger.Log("INFO", "Jettisoned HYDROCARBON from storage ship", map[string]interface{}{
 			"action":      "jettison_success",
 			"ship_symbol": cmd.ShipSymbol,
