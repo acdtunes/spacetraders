@@ -30,8 +30,10 @@ func NewTaskRescuer(
 	}
 }
 
-// RescueReadyTasks loads READY tasks from DB and enqueues them.
+// RescueReadyTasks loads READY tasks from EXECUTING pipelines and enqueues them.
 // Validates task state against current market conditions before enqueuing.
+// Only rescues tasks from active (PLANNING/EXECUTING) pipelines - tasks from
+// FAILED/CANCELLED/COMPLETED pipelines are skipped to prevent endless rescue loops.
 func (r *TaskRescuer) RescueReadyTasks(ctx context.Context, playerID int) RescueResult {
 	if r.taskRepo == nil {
 		return RescueResult{}
@@ -40,9 +42,10 @@ func (r *TaskRescuer) RescueReadyTasks(ctx context.Context, playerID int) Rescue
 	logger := common.LoggerFromContext(ctx)
 	result := RescueResult{}
 
-	// Load all READY tasks from DB
-	readyTasks, err := r.taskRepo.FindByStatus(ctx, playerID, manufacturing.TaskStatusReady)
+	// Load READY tasks from active pipelines only (excludes FAILED/CANCELLED/COMPLETED)
+	readyTasks, err := r.taskRepo.FindReadyWithActivePipeline(ctx, playerID)
 	if err != nil {
+		logger.Log("WARN", fmt.Sprintf("Failed to find ready tasks: %v", err), nil)
 		return result
 	}
 
@@ -170,11 +173,17 @@ func (r *TaskRescuer) rescueStorageAcquireDeliverTask(
 	return true
 }
 
-// resetToPending resets a task to PENDING status.
+// resetToPending resets a task to PENDING status and removes it from the queue.
+// This prevents stale queue entries from being assigned when conditions change.
 func (r *TaskRescuer) resetToPending(ctx context.Context, task *manufacturing.ManufacturingTask) {
 	if err := task.ResetToPending(); err == nil {
 		if r.taskRepo != nil {
 			_ = r.taskRepo.Update(ctx, task)
+		}
+		// Remove from queue to prevent stale task from being assigned
+		// The queue may have an old copy from a previous rescue cycle
+		if r.taskQueue != nil {
+			r.taskQueue.Remove(task.ID())
 		}
 	}
 }
@@ -207,6 +216,13 @@ func (r *TaskRescuer) RescueFailedTasks(ctx context.Context, playerID int) int {
 
 	rescued := 0
 	for _, task := range failedTasks {
+		// LIQUIDATE tasks should NOT be rescued - if they failed with "no cargo",
+		// the cargo is gone and there's nothing to liquidate. Rescuing them creates
+		// an infinite loop of failed LIQUIDATE tasks.
+		if task.TaskType() == manufacturing.TaskTypeLiquidate {
+			continue
+		}
+
 		if !task.CanRetry() {
 			continue
 		}

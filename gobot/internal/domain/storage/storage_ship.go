@@ -28,6 +28,7 @@ type StorageShip struct {
 	cargoCapacity     int
 	cargoInventory    map[string]int // goodSymbol -> units held
 	reservedCargo     map[string]int // goodSymbol -> units reserved for haulers
+	reservedSpace     int            // space reserved for incoming deposits (not yet transferred)
 }
 
 // NewStorageShip creates a new storage ship entity.
@@ -110,7 +111,8 @@ func (s *StorageShip) availableSpaceUnsafe() int {
 	for _, units := range s.cargoInventory {
 		total += units
 	}
-	return s.cargoCapacity - total
+	// Subtract both actual cargo AND reserved space (pending deposits)
+	return s.cargoCapacity - total - s.reservedSpace
 }
 
 // GetInventory returns a copy of the current cargo inventory.
@@ -214,6 +216,66 @@ func (s *StorageShip) JettisonCargo(goodSymbol string, units int) error {
 		delete(s.cargoInventory, goodSymbol)
 	}
 
+	return nil
+}
+
+// ReserveSpace reserves space for an incoming deposit.
+// Must be called BEFORE the API transfer to prevent race conditions.
+// Thread-safe.
+func (s *StorageShip) ReserveSpace(units int) error {
+	if units <= 0 {
+		return fmt.Errorf("reserve units must be positive")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.availableSpaceUnsafe() < units {
+		return fmt.Errorf("insufficient space: need %d, have %d", units, s.availableSpaceUnsafe())
+	}
+
+	s.reservedSpace += units
+	return nil
+}
+
+// ReleaseReservedSpace releases a space reservation when a transfer fails.
+// Thread-safe.
+func (s *StorageShip) ReleaseReservedSpace(units int) {
+	if units <= 0 {
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.reservedSpace -= units
+	if s.reservedSpace < 0 {
+		s.reservedSpace = 0
+	}
+}
+
+// ConfirmDeposit converts a space reservation into actual cargo after successful API transfer.
+// This atomically releases the reservation and adds the cargo.
+// Thread-safe.
+func (s *StorageShip) ConfirmDeposit(goodSymbol string, units int) error {
+	if units <= 0 {
+		return fmt.Errorf("deposit units must be positive")
+	}
+	if goodSymbol == "" {
+		return fmt.Errorf("good symbol cannot be empty")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Release the reservation
+	s.reservedSpace -= units
+	if s.reservedSpace < 0 {
+		s.reservedSpace = 0
+	}
+
+	// Add to inventory
+	s.cargoInventory[goodSymbol] += units
 	return nil
 }
 

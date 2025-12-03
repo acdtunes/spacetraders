@@ -76,7 +76,12 @@ type TaskRepository interface {
 
 	// FindAvailableByGood retrieves PENDING or READY tasks for a specific good
 	// Used by orphaned cargo handler to find tasks that can use existing cargo
+	// Only returns tasks from EXECUTING pipelines (excludes FAILED/CANCELLED/COMPLETED)
 	FindAvailableByGood(ctx context.Context, playerID int, good string) ([]*ManufacturingTask, error)
+
+	// FindReadyWithActivePipeline retrieves READY tasks from EXECUTING pipelines only
+	// Used by TaskRescuer to avoid rescuing tasks from FAILED pipelines
+	FindReadyWithActivePipeline(ctx context.Context, playerID int) ([]*ManufacturingTask, error)
 
 	// FindDependencies retrieves the task dependencies for a task
 	FindDependencies(ctx context.Context, taskID string) ([]string, error)

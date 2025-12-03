@@ -256,18 +256,62 @@ func (r *GormManufacturingTaskRepository) FindIncomplete(ctx context.Context, pl
 
 // FindAvailableByGood retrieves PENDING or READY tasks for a specific good.
 // Used by orphaned cargo handler to find tasks that can use existing cargo.
+// Only returns tasks from EXECUTING pipelines (excludes FAILED/CANCELLED/COMPLETED).
 func (r *GormManufacturingTaskRepository) FindAvailableByGood(ctx context.Context, playerID int, good string) ([]*manufacturing.ManufacturingTask, error) {
 	var models []ManufacturingTaskModel
+
+	// Join with pipelines table to filter by pipeline status
+	// Only include tasks from EXECUTING pipelines
 	result := r.db.WithContext(ctx).
-		Where("player_id = ? AND good = ? AND status IN ?", playerID, good, []string{
+		Joins("JOIN manufacturing_pipelines p ON manufacturing_tasks.pipeline_id = p.id").
+		Where("manufacturing_tasks.player_id = ? AND manufacturing_tasks.good = ? AND manufacturing_tasks.status IN ?", playerID, good, []string{
 			string(manufacturing.TaskStatusPending),
 			string(manufacturing.TaskStatusReady),
 		}).
-		Order("priority DESC, created_at ASC").
+		Where("p.status = ?", string(manufacturing.PipelineStatusExecuting)).
+		Order("manufacturing_tasks.priority DESC, manufacturing_tasks.created_at ASC").
 		Find(&models)
 
 	if result.Error != nil {
 		return nil, fmt.Errorf("failed to find available tasks by good: %w", result.Error)
+	}
+
+	tasks := make([]*manufacturing.ManufacturingTask, len(models))
+	for i, model := range models {
+		deps, err := r.FindDependencies(ctx, model.ID)
+		if err != nil {
+			return nil, err
+		}
+
+		t, err := r.modelToTask(&model, deps)
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert task model: %w", err)
+		}
+		tasks[i] = t
+	}
+
+	return tasks, nil
+}
+
+// FindReadyWithActivePipeline retrieves READY tasks from EXECUTING pipelines only.
+// Used by TaskRescuer to avoid rescuing tasks from FAILED/CANCELLED/COMPLETED pipelines.
+func (r *GormManufacturingTaskRepository) FindReadyWithActivePipeline(ctx context.Context, playerID int) ([]*manufacturing.ManufacturingTask, error) {
+	var models []ManufacturingTaskModel
+
+	// Join with pipelines table to filter by pipeline status
+	// Only include tasks from PLANNING or EXECUTING pipelines
+	result := r.db.WithContext(ctx).
+		Joins("JOIN manufacturing_pipelines p ON manufacturing_tasks.pipeline_id = p.id").
+		Where("manufacturing_tasks.player_id = ? AND manufacturing_tasks.status = ?", playerID, string(manufacturing.TaskStatusReady)).
+		Where("p.status IN ?", []string{
+			string(manufacturing.PipelineStatusPlanning),
+			string(manufacturing.PipelineStatusExecuting),
+		}).
+		Order("manufacturing_tasks.priority DESC, manufacturing_tasks.created_at ASC").
+		Find(&models)
+
+	if result.Error != nil {
+		return nil, fmt.Errorf("failed to find ready tasks with active pipeline: %w", result.Error)
 	}
 
 	tasks := make([]*manufacturing.ManufacturingTask, len(models))

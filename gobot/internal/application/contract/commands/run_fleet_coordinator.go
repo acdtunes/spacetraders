@@ -116,7 +116,8 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 		}
 
 		// Dynamically discover all idle light hauler ships
-		_, availableShips, err := appContract.FindIdleLightHaulers(ctx, cmd.PlayerID, h.shipRepo)
+		// Use CommandShipFallback for contracts - allow command ship if no haulers available
+		_, availableShips, err := appContract.FindIdleLightHaulers(ctx, cmd.PlayerID, h.shipRepo, appContract.CommandShipFallback)
 		if err != nil {
 			errMsg := fmt.Sprintf("Failed to find idle haulers: %v", err)
 			logger.Log("ERROR", errMsg, nil)

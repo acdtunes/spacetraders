@@ -363,6 +363,84 @@ func (c *InMemoryStorageCoordinator) FindStorageShipWithSpace(operationID string
 	return nil, false
 }
 
+// ReserveSpaceForDeposit atomically finds a storage ship with space AND reserves it.
+// This prevents race conditions where multiple extractors try to deposit to the same ship.
+func (c *InMemoryStorageCoordinator) ReserveSpaceForDeposit(operationID string, units int) (*storage.StorageShip, int, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for _, symbol := range c.shipsByOperation[operationID] {
+		ship := c.storageShips[symbol]
+		if ship == nil {
+			continue
+		}
+
+		available := ship.AvailableSpace()
+		if available <= 0 {
+			continue
+		}
+
+		// Reserve up to what's available (may be less than requested)
+		toReserve := units
+		if toReserve > available {
+			toReserve = available
+		}
+
+		// Reserve the space atomically
+		if err := ship.ReserveSpace(toReserve); err == nil {
+			return ship, toReserve, true
+		}
+	}
+
+	return nil, 0, false
+}
+
+// ConfirmDeposit converts a space reservation into actual cargo after successful API transfer.
+func (c *InMemoryStorageCoordinator) ConfirmDeposit(shipSymbol, goodSymbol string, units int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	ship, exists := c.storageShips[shipSymbol]
+	if !exists {
+		return
+	}
+
+	// Convert reservation to actual cargo
+	if err := ship.ConfirmDeposit(goodSymbol, units); err != nil {
+		return
+	}
+
+	// Notify deposit subscribers for this ship (e.g., storage ship worker for HYDROCARBON jettison)
+	notification := storage.CargoDepositNotification{
+		GoodSymbol: goodSymbol,
+		Units:      units,
+	}
+	for _, ch := range c.depositSubscribers[shipSymbol] {
+		select {
+		case ch <- notification:
+		default:
+		}
+	}
+
+	// Wake waiters for this operation+good
+	operationID := ship.OperationID()
+	key := waiterQueueKey{operationID: operationID, goodSymbol: goodSymbol}
+	c.processWaiterQueue(key)
+}
+
+// ReleaseReservedSpace releases a space reservation when a transfer fails.
+func (c *InMemoryStorageCoordinator) ReleaseReservedSpace(shipSymbol string, units int) {
+	c.mu.RLock()
+	ship, exists := c.storageShips[shipSymbol]
+	c.mu.RUnlock()
+
+	if !exists {
+		return
+	}
+
+	ship.ReleaseReservedSpace(units)
+}
+
 // GetStorageShipBySymbol retrieves a storage ship by its symbol
 func (c *InMemoryStorageCoordinator) GetStorageShipBySymbol(shipSymbol string) (*storage.StorageShip, bool) {
 	c.mu.RLock()

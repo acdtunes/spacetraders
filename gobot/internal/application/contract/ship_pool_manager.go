@@ -50,6 +50,16 @@ func FindCoordinatorShips(
 	return shipSymbols, nil
 }
 
+// ShipFallbackOption controls fallback behavior when no haulers are found
+type ShipFallbackOption int
+
+const (
+	// NoFallback - Return empty list if no haulers found (default for manufacturing)
+	NoFallback ShipFallbackOption = iota
+	// CommandShipFallback - Use command ship (-1) as fallback if no haulers found (for contracts)
+	CommandShipFallback
+)
+
 // FindIdleLightHaulers finds all idle light hauler ships for a player.
 //
 // A ship is considered an "idle light hauler" if:
@@ -63,6 +73,7 @@ func FindCoordinatorShips(
 //   - ctx: Context for cancellation and logging
 //   - playerID: Player ID to find ships for
 //   - shipRepo: Repository to query ships (enriches assignment data automatically)
+//   - fallbackOption: Optional fallback behavior when no haulers found (default: NoFallback)
 //
 // Returns:
 //   - ships: List of idle hauler ship entities
@@ -72,7 +83,13 @@ func FindIdleLightHaulers(
 	ctx context.Context,
 	playerID shared.PlayerID,
 	shipRepo navigation.ShipRepository,
+	fallbackOptions ...ShipFallbackOption,
 ) ([]*navigation.Ship, []string, error) {
+	// Default to no fallback
+	fallbackOption := NoFallback
+	if len(fallbackOptions) > 0 {
+		fallbackOption = fallbackOptions[0]
+	}
 	logger := common.LoggerFromContext(ctx)
 
 	// Fetch all ships for player (includes assignment data via hybrid repo)
@@ -123,21 +140,22 @@ func FindIdleLightHaulers(
 		"hauler_symbols": idleHaulerSymbols,
 	})
 
-	// Fallback: If no haulers found, use the first available idle ship with cargo capacity
-	if len(idleHaulers) == 0 && len(allShips) > 0 {
+	// Fallback: If no haulers found and CommandShipFallback is enabled, use command ship
+	// This is only for contract tasks - manufacturing tasks should NOT use fallback
+	if len(idleHaulers) == 0 && fallbackOption == CommandShipFallback {
 		for _, ship := range allShips {
+			// Only consider command ship as fallback
+			if !isCommandShip(ship.ShipSymbol()) {
+				continue
+			}
+
 			// Skip ships in transit
 			if ship.NavStatus() == navigation.NavStatusInTransit {
 				continue
 			}
 
-			// Skip ships with no cargo capacity (probes/satellites)
+			// Skip ships with no cargo capacity
 			if ship.CargoCapacity() == 0 {
-				continue
-			}
-
-			// Skip command ship (even in fallback mode)
-			if isCommandShip(ship.ShipSymbol()) {
 				continue
 			}
 
@@ -146,13 +164,13 @@ func FindIdleLightHaulers(
 				idleHaulers = append(idleHaulers, ship)
 				idleHaulerSymbols = append(idleHaulerSymbols, ship.ShipSymbol())
 
-				logger.Log("INFO", "Using fallback ship (no haulers available)", map[string]interface{}{
-					"action":         "fallback_ship",
+				logger.Log("INFO", "Using command ship as fallback (no haulers available)", map[string]interface{}{
+					"action":         "command_ship_fallback",
 					"ship_symbol":    ship.ShipSymbol(),
 					"ship_role":      ship.Role(),
 					"cargo_capacity": ship.CargoCapacity(),
 				})
-				break // Only use first available ship as fallback
+				break // Only use command ship
 			}
 		}
 	}

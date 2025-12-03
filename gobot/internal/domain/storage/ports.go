@@ -51,7 +51,22 @@ type StorageCoordinator interface {
 
 	// FindStorageShipWithSpace finds a storage ship in the operation with available space.
 	// Used by extractors to find where to deposit cargo.
+	// NOTE: Prefer ReserveSpaceForDeposit to atomically find AND reserve space.
 	FindStorageShipWithSpace(operationID string, minSpace int) (*StorageShip, bool)
+
+	// ReserveSpaceForDeposit atomically finds a storage ship with space AND reserves it.
+	// This prevents race conditions where multiple extractors try to deposit to the same ship.
+	// Returns the storage ship and the actual units reserved (may be less than requested if limited space).
+	// Caller MUST call ConfirmDeposit after successful API transfer, or ReleaseReservedSpace on failure.
+	ReserveSpaceForDeposit(operationID string, units int) (*StorageShip, int, bool)
+
+	// ConfirmDeposit converts a space reservation into actual cargo after successful API transfer.
+	// Called after ReserveSpaceForDeposit + successful cargo transfer.
+	ConfirmDeposit(shipSymbol, goodSymbol string, units int)
+
+	// ReleaseReservedSpace releases a space reservation when a transfer fails.
+	// Called after ReserveSpaceForDeposit if the API transfer fails.
+	ReleaseReservedSpace(shipSymbol string, units int)
 
 	// GetStorageShipBySymbol retrieves a storage ship by its symbol
 	GetStorageShipBySymbol(shipSymbol string) (*StorageShip, bool)

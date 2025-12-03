@@ -249,7 +249,8 @@ func (h *RunSiphonWorkerHandler) executeSiphoning(
 }
 
 // depositToStorageShip finds a storage ship with space and transfers all cargo to it.
-// After the API transfer, notifies the StorageCoordinator to wake waiting haulers.
+// Uses atomic space reservation to prevent race conditions between multiple siphon workers.
+// Pattern: ReserveSpace -> API transfer -> ConfirmDeposit (or ReleaseReservedSpace on failure)
 // HYDROCARBON is transferred but NOT tracked (storage ship worker handles cleanup).
 func (h *RunSiphonWorkerHandler) depositToStorageShip(
 	ctx context.Context,
@@ -270,10 +271,18 @@ func (h *RunSiphonWorkerHandler) depositToStorageShip(
 
 		// Keep finding storage ships until all cargo is deposited
 		for unitsRemaining > 0 {
-			// Find a storage ship with available space
-			storageShip, found := h.storageCoordinator.FindStorageShipWithSpace(
+			// Check for context cancellation while waiting
+			select {
+			case <-ctx.Done():
+				return totalTransferred, ctx.Err()
+			default:
+			}
+
+			// Atomically find a storage ship AND reserve space
+			// This prevents race conditions where multiple siphon workers try to deposit to the same ship
+			storageShip, unitsToTransfer, found := h.storageCoordinator.ReserveSpaceForDeposit(
 				cmd.StorageOperationID,
-				1, // At least 1 unit of space
+				unitsRemaining,
 			)
 			if !found {
 				logger.Log("WARNING", "No storage ship with space available - waiting", map[string]interface{}{
@@ -283,24 +292,16 @@ func (h *RunSiphonWorkerHandler) depositToStorageShip(
 					"units_remaining": unitsRemaining,
 				})
 				// Wait a bit and retry
-				h.clock.Sleep(5 * 1000 * 1000 * 1000) // 5 seconds in nanoseconds
+				h.clock.Sleep(5 * time.Second)
 				continue
 			}
 
-			// Calculate how much to transfer
-			availableSpace := storageShip.AvailableSpace()
-			unitsToTransfer := unitsRemaining
-			if unitsToTransfer > availableSpace {
-				unitsToTransfer = availableSpace
-			}
-
-			logger.Log("INFO", "Depositing cargo to storage ship", map[string]interface{}{
-				"ship_symbol":     cmd.ShipSymbol,
-				"action":          "deposit_cargo",
-				"storage_ship":    storageShip.ShipSymbol(),
-				"good":            item.Symbol,
-				"units":           unitsToTransfer,
-				"available_space": availableSpace,
+			logger.Log("INFO", "Reserved space and depositing cargo to storage ship", map[string]interface{}{
+				"ship_symbol":  cmd.ShipSymbol,
+				"action":       "deposit_cargo",
+				"storage_ship": storageShip.ShipSymbol(),
+				"good":         item.Symbol,
+				"units":        unitsToTransfer,
 			})
 
 			// Transfer cargo via API
@@ -314,7 +315,10 @@ func (h *RunSiphonWorkerHandler) depositToStorageShip(
 
 			_, err := h.mediator.Send(ctx, transferCmd)
 			if err != nil {
-				logger.Log("ERROR", "Failed to transfer cargo to storage ship", map[string]interface{}{
+				// Release the reserved space since transfer failed
+				h.storageCoordinator.ReleaseReservedSpace(storageShip.ShipSymbol(), unitsToTransfer)
+
+				logger.Log("ERROR", "Failed to transfer cargo to storage ship - released reservation", map[string]interface{}{
 					"ship_symbol":  cmd.ShipSymbol,
 					"action":       "transfer_error",
 					"storage_ship": storageShip.ShipSymbol(),
@@ -325,9 +329,9 @@ func (h *RunSiphonWorkerHandler) depositToStorageShip(
 				return totalTransferred, fmt.Errorf("failed to transfer %s to storage: %w", item.Symbol, err)
 			}
 
-			// Notify coordinator of the deposit - this updates inventory and wakes waiting haulers
+			// Confirm the deposit - converts reservation to actual cargo and wakes waiting haulers
 			// For HYDROCARBON, this triggers the storage ship worker to jettison it
-			h.storageCoordinator.NotifyCargoDeposited(
+			h.storageCoordinator.ConfirmDeposit(
 				storageShip.ShipSymbol(),
 				item.Symbol,
 				unitsToTransfer,

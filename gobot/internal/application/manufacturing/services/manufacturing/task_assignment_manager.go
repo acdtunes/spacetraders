@@ -273,6 +273,7 @@ func (m *TaskAssignmentManager) AssignTasks(ctx context.Context, params AssignPa
 				if m.taskRepo != nil {
 					_ = m.taskRepo.Update(ctx, task)
 				}
+				m.taskQueue.Remove(task.ID())
 				continue
 			}
 
@@ -285,6 +286,7 @@ func (m *TaskAssignmentManager) AssignTasks(ctx context.Context, params AssignPa
 				if m.taskRepo != nil {
 					_ = m.taskRepo.Update(ctx, task)
 				}
+				m.taskQueue.Remove(task.ID())
 				continue
 			}
 		}
