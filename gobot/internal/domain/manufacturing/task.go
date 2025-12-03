@@ -26,6 +26,10 @@ const (
 	// Hauler navigates to storage operation waypoint, waits for cargo, transfers, then delivers.
 	// Used for gas extraction, mining, and other buffered resource operations.
 	TaskTypeStorageAcquireDeliver TaskType = "STORAGE_ACQUIRE_DELIVER"
+
+	// TaskTypeDeliverToConstruction - Atomic: Acquire goods AND deliver to construction site
+	// Same ship buys/collects goods and supplies them to construction. Uses SupplyConstruction API.
+	TaskTypeDeliverToConstruction TaskType = "DELIVER_TO_CONSTRUCTION"
 )
 
 // TaskStatus represents the current status of a task
@@ -73,6 +77,10 @@ const (
 	// PriorityStorageAcquireDeliver - Same as ACQUIRE_DELIVER for equal treatment
 	// Storage tasks compete fairly with market acquisition tasks
 	PriorityStorageAcquireDeliver = 10
+
+	// PriorityDeliverToConstruction - Higher priority for construction deliveries
+	// Construction projects have deadlines and compete with other players
+	PriorityDeliverToConstruction = 75
 )
 
 // Priority tuning constants for preventing task starvation
@@ -142,6 +150,7 @@ type ManufacturingTask struct {
 	factorySymbol      string // For COLLECT: factory to collect from
 	storageOperationID string // For STORAGE_ACQUIRE_DELIVER: storage operation to acquire from
 	storageWaypoint    string // For STORAGE_ACQUIRE_DELIVER: waypoint where storage ships are located
+	constructionSite   string // For DELIVER_TO_CONSTRUCTION: construction site waypoint symbol
 
 	// Dependencies
 	dependsOn  []string // Task IDs that must complete first
@@ -262,6 +271,35 @@ func NewStorageAcquireDeliverTask(
 	return task
 }
 
+// NewDeliverToConstructionTask creates a task to acquire goods AND deliver to a construction site.
+// This is similar to ACQUIRE_DELIVER but uses SupplyConstruction API instead of selling to market.
+//
+// Parameters:
+//   - pipelineID: Parent pipeline (CONSTRUCTION type)
+//   - playerID: Player who owns this task
+//   - good: The cargo type to acquire and deliver
+//   - sourceMarket: Market to purchase goods from (empty if collecting from factory)
+//   - factorySymbol: Factory to collect from (empty if purchasing from market)
+//   - constructionSite: Waypoint of construction site to deliver to
+//   - dependsOn: Task IDs that must complete first
+func NewDeliverToConstructionTask(
+	pipelineID string,
+	playerID int,
+	good string,
+	sourceMarket string,
+	factorySymbol string,
+	constructionSite string,
+	dependsOn []string,
+) *ManufacturingTask {
+	task := NewManufacturingTask(TaskTypeDeliverToConstruction, good, pipelineID, playerID)
+	task.sourceMarket = sourceMarket         // Where to buy from (if market-based)
+	task.factorySymbol = factorySymbol       // Where to collect from (if factory-based)
+	task.constructionSite = constructionSite // Where to deliver to
+	task.dependsOn = dependsOn
+	task.priority = PriorityDeliverToConstruction
+	return task
+}
+
 // ReconstructTask rebuilds a task from persistence
 func ReconstructTask(
 	id string,
@@ -274,6 +312,7 @@ func ReconstructTask(
 	factorySymbol string,
 	storageOperationID string,
 	storageWaypoint string,
+	constructionSite string,
 	dependsOn []string,
 	pipelineID string,
 	playerID int,
@@ -305,6 +344,7 @@ func ReconstructTask(
 		factorySymbol:      factorySymbol,
 		storageOperationID: storageOperationID,
 		storageWaypoint:    storageWaypoint,
+		constructionSite:   constructionSite,
 		dependsOn:          dependsOn,
 		pipelineID:         pipelineID,
 		playerID:           playerID,
@@ -339,6 +379,7 @@ func (t *ManufacturingTask) TargetMarket() string    { return t.targetMarket }
 func (t *ManufacturingTask) FactorySymbol() string      { return t.factorySymbol }
 func (t *ManufacturingTask) StorageOperationID() string { return t.storageOperationID }
 func (t *ManufacturingTask) StorageWaypoint() string    { return t.storageWaypoint }
+func (t *ManufacturingTask) ConstructionSite() string   { return t.constructionSite }
 func (t *ManufacturingTask) DependsOn() []string        { return t.dependsOn }
 func (t *ManufacturingTask) PipelineID() string      { return t.pipelineID }
 func (t *ManufacturingTask) PlayerID() int           { return t.playerID }
@@ -386,8 +427,8 @@ func (t *ManufacturingTask) ShouldSkipToSecondPhase() bool {
 	switch t.taskType {
 	case TaskTypeCollectSell:
 		return t.collectPhaseCompleted
-	case TaskTypeAcquireDeliver, TaskTypeStorageAcquireDeliver:
-		// STORAGE_ACQUIRE_DELIVER reuses acquirePhaseCompleted flag
+	case TaskTypeAcquireDeliver, TaskTypeStorageAcquireDeliver, TaskTypeDeliverToConstruction:
+		// STORAGE_ACQUIRE_DELIVER and DELIVER_TO_CONSTRUCTION reuse acquirePhaseCompleted flag
 		return t.acquirePhaseCompleted
 	default:
 		return false
@@ -693,6 +734,12 @@ func (t *ManufacturingTask) GetDestination() string {
 		return t.targetMarket
 	case TaskTypeStorageAcquireDeliver:
 		return t.storageWaypoint // Navigate to storage operation first
+	case TaskTypeDeliverToConstruction:
+		// First go to source market to buy, or factory to collect
+		if t.sourceMarket != "" {
+			return t.sourceMarket
+		}
+		return t.factorySymbol
 	default:
 		return ""
 	}
@@ -708,12 +755,15 @@ func (t *ManufacturingTask) GetFirstDestination() string {
 // GetFinalDestination returns where the task delivers goods.
 // For ACQUIRE_DELIVER: factory (deliver inputs), For COLLECT_SELL/LIQUIDATE: target market (sell outputs).
 // For STORAGE_ACQUIRE_DELIVER: factory (deliver collected cargo).
+// For DELIVER_TO_CONSTRUCTION: construction site (supply materials).
 func (t *ManufacturingTask) GetFinalDestination() string {
 	switch t.taskType {
 	case TaskTypeAcquireDeliver, TaskTypeStorageAcquireDeliver:
 		return t.factorySymbol // Deliver to factory
 	case TaskTypeCollectSell, TaskTypeLiquidate:
 		return t.targetMarket // Sell at market
+	case TaskTypeDeliverToConstruction:
+		return t.constructionSite // Deliver to construction site
 	default:
 		return t.targetMarket
 	}
@@ -762,6 +812,11 @@ func (t *ManufacturingTask) IsStorageTask() bool {
 	return t.taskType == TaskTypeStorageAcquireDeliver
 }
 
+// IsConstructionTask returns true if this task delivers to a construction site.
+func (t *ManufacturingTask) IsConstructionTask() bool {
+	return t.taskType == TaskTypeDeliverToConstruction
+}
+
 // String provides human-readable representation
 func (t *ManufacturingTask) String() string {
 	return fmt.Sprintf("Task[%s, type=%s, good=%s, status=%s, priority=%d]",
@@ -783,6 +838,7 @@ func ReconstituteTask(
 	factorySymbol string,
 	storageOperationID string,
 	storageWaypoint string,
+	constructionSite string,
 	dependsOn []string,
 	assignedShip string,
 	priority int,
@@ -814,6 +870,7 @@ func ReconstituteTask(
 		factorySymbol:      factorySymbol,
 		storageOperationID: storageOperationID,
 		storageWaypoint:    storageWaypoint,
+		constructionSite:   constructionSite,
 		dependsOn:          dependsOn,
 		assignedShip:       assignedShip,
 		priority:           priority,

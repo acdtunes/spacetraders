@@ -26,6 +26,11 @@ type PipelineRepository interface {
 	// Used to prevent duplicate collection pipelines for the same good
 	FindActiveCollectionForProduct(ctx context.Context, playerID int, productGood string) (*ManufacturingPipeline, error)
 
+	// FindByConstructionSite retrieves the pipeline for a specific construction site (for idempotency).
+	// Returns nil, nil if no active pipeline exists for this site.
+	// Only returns non-terminal pipelines (excludes COMPLETED, FAILED).
+	FindByConstructionSite(ctx context.Context, constructionSiteSymbol string, playerID int) (*ManufacturingPipeline, error)
+
 	// CountActiveFabricationPipelines counts only FABRICATION pipelines that are active
 	// This is used for max_pipelines limiting
 	CountActiveFabricationPipelines(ctx context.Context, playerID int) (int, error)
@@ -125,4 +130,28 @@ type FactoryStateRepository interface {
 
 	// DeleteByPipelineID removes all factory states for a pipeline
 	DeleteByPipelineID(ctx context.Context, pipelineID string) error
+}
+
+// ConstructionSiteRepository provides access to construction site data.
+// Construction sites are fetched from the SpaceTraders API.
+type ConstructionSiteRepository interface {
+	// FindByWaypoint retrieves construction site information from API.
+	// Returns the current state of the construction site including material requirements.
+	FindByWaypoint(ctx context.Context, waypointSymbol string, playerID int) (*ConstructionSite, error)
+
+	// SupplyMaterial delivers materials to construction site.
+	// Uses POST /my/ships/{shipSymbol}/construction/supply API endpoint.
+	SupplyMaterial(ctx context.Context, shipSymbol, waypointSymbol, tradeSymbol string, units int, playerID int) (*ConstructionSupplyResult, error)
+}
+
+// ConstructionSupplyResult contains the result of a construction supply operation.
+type ConstructionSupplyResult struct {
+	// Construction is the updated construction site state after supply
+	Construction *ConstructionSite
+	// UnitsDelivered is the number of units delivered
+	UnitsDelivered int
+	// CargoCapacity is the ship's cargo capacity after supply
+	CargoCapacity int
+	// CargoUnits is the ship's cargo units after supply
+	CargoUnits int
 }

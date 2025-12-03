@@ -38,7 +38,65 @@ const (
 	// PipelineTypeCollection - Collects factory output and sells
 	// These pipelines are unlimited (not counted toward max_pipelines)
 	PipelineTypeCollection PipelineType = "COLLECTION"
+
+	// PipelineTypeConstruction - Produces and delivers goods to construction sites
+	// Used for supplying materials to jump gates and other construction projects
+	PipelineTypeConstruction PipelineType = "CONSTRUCTION"
 )
+
+// ConstructionMaterialTarget tracks delivery progress for a single construction material.
+// A construction pipeline may have multiple materials (e.g., FAB_MATS and ADVANCED_CIRCUITRY).
+type ConstructionMaterialTarget struct {
+	tradeSymbol       string // e.g., "FAB_MATS"
+	targetQuantity    int    // e.g., 1600 (remaining units needed)
+	deliveredQuantity int    // e.g., 500 (delivered so far by this pipeline)
+}
+
+// NewConstructionMaterialTarget creates a new material target
+func NewConstructionMaterialTarget(tradeSymbol string, targetQuantity int) *ConstructionMaterialTarget {
+	return &ConstructionMaterialTarget{
+		tradeSymbol:       tradeSymbol,
+		targetQuantity:    targetQuantity,
+		deliveredQuantity: 0,
+	}
+}
+
+// ReconstructConstructionMaterialTarget rebuilds from persistence
+func ReconstructConstructionMaterialTarget(tradeSymbol string, targetQuantity, deliveredQuantity int) *ConstructionMaterialTarget {
+	return &ConstructionMaterialTarget{
+		tradeSymbol:       tradeSymbol,
+		targetQuantity:    targetQuantity,
+		deliveredQuantity: deliveredQuantity,
+	}
+}
+
+// Getters
+func (m *ConstructionMaterialTarget) TradeSymbol() string    { return m.tradeSymbol }
+func (m *ConstructionMaterialTarget) TargetQuantity() int    { return m.targetQuantity }
+func (m *ConstructionMaterialTarget) DeliveredQuantity() int { return m.deliveredQuantity }
+
+// RemainingQuantity returns how many units still need to be delivered
+func (m *ConstructionMaterialTarget) RemainingQuantity() int {
+	return m.targetQuantity - m.deliveredQuantity
+}
+
+// IsComplete returns true if all required units have been delivered
+func (m *ConstructionMaterialTarget) IsComplete() bool {
+	return m.deliveredQuantity >= m.targetQuantity
+}
+
+// Progress returns completion percentage (0-100)
+func (m *ConstructionMaterialTarget) Progress() float64 {
+	if m.targetQuantity == 0 {
+		return 100.0
+	}
+	return float64(m.deliveredQuantity) / float64(m.targetQuantity) * 100
+}
+
+// RecordDelivery adds delivered units to the count
+func (m *ConstructionMaterialTarget) RecordDelivery(units int) {
+	m.deliveredQuantity += units
+}
 
 // ManufacturingPipeline represents a complete manufacturing run for one product.
 // A pipeline contains all tasks required to manufacture and sell a product.
@@ -55,7 +113,7 @@ const (
 type ManufacturingPipeline struct {
 	id             string
 	sequenceNumber int          // Sequential number for this pipeline (1, 2, 3...)
-	pipelineType   PipelineType // FABRICATION (limited) or COLLECTION (unlimited)
+	pipelineType   PipelineType // FABRICATION (limited) or COLLECTION (unlimited) or CONSTRUCTION
 	productGood    string       // Final product (e.g., LASER_RIFLES)
 	sellMarket     string       // Where to sell final product
 	expectedPrice  int          // Expected sale price per unit
@@ -83,6 +141,12 @@ type ManufacturingPipeline struct {
 
 	// Error tracking
 	errorMessage string
+
+	// Construction-specific fields (only used when pipelineType == CONSTRUCTION)
+	constructionSite string                        // Waypoint symbol of construction site (e.g., "X1-FB5-I61")
+	materials        []*ConstructionMaterialTarget // Materials to deliver with their quantities
+	supplyChainDepth int                           // How deep to go in supply chain (0=full, 1=raw, 2=intermediate)
+	maxWorkers       int                           // Maximum parallel workers (0=unlimited, default 5)
 }
 
 // NewPipeline creates a new fabrication pipeline (counted toward max_pipelines limit)
@@ -114,6 +178,30 @@ func NewCollectionPipeline(productGood string, sellMarket string, expectedPrice 
 		tasks:         make([]*ManufacturingTask, 0),
 		tasksByID:     make(map[string]*ManufacturingTask),
 		createdAt:     time.Now(),
+	}
+}
+
+// NewConstructionPipeline creates a new construction pipeline for delivering materials to a construction site.
+// Construction pipelines track multiple materials with their individual delivery progress.
+func NewConstructionPipeline(constructionSite string, playerID int, supplyChainDepth int, maxWorkers int) *ManufacturingPipeline {
+	if maxWorkers <= 0 {
+		maxWorkers = 5 // Default to 5 workers
+	}
+	return &ManufacturingPipeline{
+		id:               uuid.New().String(),
+		pipelineType:     PipelineTypeConstruction,
+		productGood:      "", // Set by first material added
+		sellMarket:       constructionSite,
+		expectedPrice:    0, // Construction doesn't have sale prices
+		playerID:         playerID,
+		status:           PipelineStatusPlanning,
+		tasks:            make([]*ManufacturingTask, 0),
+		tasksByID:        make(map[string]*ManufacturingTask),
+		createdAt:        time.Now(),
+		constructionSite: constructionSite,
+		materials:        make([]*ConstructionMaterialTarget, 0),
+		supplyChainDepth: supplyChainDepth,
+		maxWorkers:       maxWorkers,
 	}
 }
 
@@ -190,6 +278,101 @@ func (p *ManufacturingPipeline) IsFabrication() bool { return p.pipelineType == 
 
 // IsCollection returns true if this is a collection pipeline (unlimited)
 func (p *ManufacturingPipeline) IsCollection() bool { return p.pipelineType == PipelineTypeCollection }
+
+// IsConstruction returns true if this is a construction pipeline
+func (p *ManufacturingPipeline) IsConstruction() bool { return p.pipelineType == PipelineTypeConstruction }
+
+// Construction-specific getters
+
+// ConstructionSite returns the waypoint symbol of the construction site (CONSTRUCTION pipelines only)
+func (p *ManufacturingPipeline) ConstructionSite() string { return p.constructionSite }
+
+// Materials returns the material targets for this construction pipeline
+func (p *ManufacturingPipeline) Materials() []*ConstructionMaterialTarget {
+	result := make([]*ConstructionMaterialTarget, len(p.materials))
+	copy(result, p.materials)
+	return result
+}
+
+// SupplyChainDepth returns how deep to go in the supply chain (CONSTRUCTION pipelines only)
+// 0 = full chain (produce everything), 1 = raw materials only, 2 = intermediate goods
+func (p *ManufacturingPipeline) SupplyChainDepth() int { return p.supplyChainDepth }
+
+// MaxWorkers returns the maximum parallel workers for this pipeline (CONSTRUCTION pipelines only)
+// 0 = unlimited, default is 5
+func (p *ManufacturingPipeline) MaxWorkers() int { return p.maxWorkers }
+
+// AddMaterial adds a material target to the construction pipeline
+func (p *ManufacturingPipeline) AddMaterial(material *ConstructionMaterialTarget) error {
+	if p.pipelineType != PipelineTypeConstruction {
+		return fmt.Errorf("can only add materials to CONSTRUCTION pipelines")
+	}
+	if p.status != PipelineStatusPlanning {
+		return &ErrInvalidPipelineTransition{
+			PipelineID:  p.id,
+			From:        p.status,
+			To:          p.status,
+			Description: "can only add materials during PLANNING",
+		}
+	}
+	p.materials = append(p.materials, material)
+	// Set productGood to first material for display purposes
+	if p.productGood == "" {
+		p.productGood = material.TradeSymbol()
+	}
+	return nil
+}
+
+// SetMaterials sets all materials for the pipeline (used during reconstruction)
+func (p *ManufacturingPipeline) SetMaterials(materials []*ConstructionMaterialTarget) {
+	p.materials = materials
+}
+
+// GetMaterial returns the material target for a specific trade symbol
+func (p *ManufacturingPipeline) GetMaterial(tradeSymbol string) *ConstructionMaterialTarget {
+	for _, m := range p.materials {
+		if m.TradeSymbol() == tradeSymbol {
+			return m
+		}
+	}
+	return nil
+}
+
+// RecordMaterialDelivery updates the delivered quantity for a specific material
+func (p *ManufacturingPipeline) RecordMaterialDelivery(tradeSymbol string, units int) error {
+	material := p.GetMaterial(tradeSymbol)
+	if material == nil {
+		return fmt.Errorf("material %s not found in pipeline", tradeSymbol)
+	}
+	material.RecordDelivery(units)
+	return nil
+}
+
+// ConstructionProgress returns overall completion percentage across all materials
+func (p *ManufacturingPipeline) ConstructionProgress() float64 {
+	if len(p.materials) == 0 {
+		return 0
+	}
+	var totalTarget, totalDelivered int
+	for _, m := range p.materials {
+		totalTarget += m.TargetQuantity()
+		totalDelivered += m.DeliveredQuantity()
+	}
+	if totalTarget == 0 {
+		return 100.0
+	}
+	return float64(totalDelivered) / float64(totalTarget) * 100
+}
+
+// AllMaterialsComplete returns true if all materials have been fully delivered
+func (p *ManufacturingPipeline) AllMaterialsComplete() bool {
+	for _, m := range p.materials {
+		if !m.IsComplete() {
+			return false
+		}
+	}
+	return len(p.materials) > 0
+}
 
 // Tasks returns a copy of all tasks in this pipeline
 func (p *ManufacturingPipeline) Tasks() []*ManufacturingTask {
@@ -513,28 +696,36 @@ func ReconstitutePipeline(
 	createdAt time.Time,
 	startedAt *time.Time,
 	completedAt *time.Time,
+	// Construction-specific fields
+	constructionSite string,
+	supplyChainDepth int,
+	maxWorkers int,
 ) *ManufacturingPipeline {
 	// Default to FABRICATION if not specified (for backward compatibility)
 	if pipelineType == "" {
 		pipelineType = PipelineTypeFabrication
 	}
 	return &ManufacturingPipeline{
-		id:             id,
-		sequenceNumber: sequenceNumber,
-		pipelineType:   pipelineType,
-		productGood:    productGood,
-		sellMarket:     sellMarket,
-		expectedPrice:  expectedPrice,
-		playerID:       playerID,
-		status:         status,
-		totalCost:      totalCost,
-		totalRevenue:   totalRevenue,
-		netProfit:      netProfit,
-		errorMessage:   errorMessage,
-		createdAt:      createdAt,
-		startedAt:      startedAt,
-		completedAt:    completedAt,
-		tasks:          make([]*ManufacturingTask, 0),
-		tasksByID:      make(map[string]*ManufacturingTask),
+		id:               id,
+		sequenceNumber:   sequenceNumber,
+		pipelineType:     pipelineType,
+		productGood:      productGood,
+		sellMarket:       sellMarket,
+		expectedPrice:    expectedPrice,
+		playerID:         playerID,
+		status:           status,
+		totalCost:        totalCost,
+		totalRevenue:     totalRevenue,
+		netProfit:        netProfit,
+		errorMessage:     errorMessage,
+		createdAt:        createdAt,
+		startedAt:        startedAt,
+		completedAt:      completedAt,
+		tasks:            make([]*ManufacturingTask, 0),
+		tasksByID:        make(map[string]*ManufacturingTask),
+		constructionSite: constructionSite,
+		materials:        make([]*ConstructionMaterialTarget, 0), // Set via SetMaterials after reconstruction
+		supplyChainDepth: supplyChainDepth,
+		maxWorkers:       maxWorkers,
 	}
 }
