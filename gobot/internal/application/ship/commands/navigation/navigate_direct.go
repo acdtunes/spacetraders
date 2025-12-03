@@ -44,7 +44,7 @@ func (h *NavigateDirectHandler) Handle(ctx context.Context, request common.Reque
 		return nil, err
 	}
 
-	destination, err := h.loadDestinationWaypoint(ctx, cmd.Destination)
+	destination, err := h.loadDestinationWaypoint(ctx, cmd)
 	if err != nil {
 		return nil, err
 	}
@@ -88,10 +88,19 @@ func (h *NavigateDirectHandler) loadShip(ctx context.Context, cmd *types.Navigat
 	return ship, nil
 }
 
-func (h *NavigateDirectHandler) loadDestinationWaypoint(ctx context.Context, destinationSymbol string) (*shared.Waypoint, error) {
+func (h *NavigateDirectHandler) loadDestinationWaypoint(ctx context.Context, cmd *types.NavigateDirectCommand) (*shared.Waypoint, error) {
+	// Primary: use provided waypoint (avoids DB lookup, has correct HasFuel)
+	if cmd.DestinationWaypoint != nil {
+		return cmd.DestinationWaypoint, nil
+	}
+
+	// Fallback: lookup from database
+	destinationSymbol := cmd.Destination
 	systemSymbol := shared.ExtractSystemSymbol(destinationSymbol)
 	destination, err := h.waypointRepo.FindBySymbol(ctx, destinationSymbol, systemSymbol)
 	if err != nil {
+		// Last resort fallback: create minimal waypoint
+		// WARNING: This waypoint won't have HasFuel set correctly
 		destination, err = shared.NewWaypoint(destinationSymbol, 0, 0)
 		if err != nil {
 			return nil, fmt.Errorf("invalid destination: %w", err)

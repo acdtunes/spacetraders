@@ -325,10 +325,11 @@ func (e *RouteExecutor) navigateToSegmentDestination(ctx context.Context, segmen
 	logger := common.LoggerFromContext(ctx)
 
 	navCmd := &types.NavigateDirectCommand{
-		Ship:        ship,
-		Destination: segment.ToWaypoint.Symbol,
-		PlayerID:    playerID,
-		FlightMode:  flightMode.Name(),
+		Ship:                ship,
+		Destination:         segment.ToWaypoint.Symbol,
+		DestinationWaypoint: segment.ToWaypoint, // Pass enriched waypoint with HasFuel
+		PlayerID:            playerID,
+		FlightMode:          flightMode.Name(),
 	}
 	navResp, err := e.mediator.Send(ctx, navCmd)
 	if err != nil {
