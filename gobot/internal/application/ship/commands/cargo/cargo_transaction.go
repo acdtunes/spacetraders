@@ -159,6 +159,16 @@ func (h *CargoTransactionHandler) Handle(ctx context.Context, request common.Req
 	// Note: Ledger recording now happens inside executeTransactions after each batch
 	// This ensures partial purchases are recorded even if later batches fail
 
+	// Sync ship state from API to persist cargo changes to database
+	_, syncErr := h.shipRepo.SyncShipFromAPI(ctx, cmd.ShipSymbol, cmd.PlayerID)
+	if syncErr != nil {
+		// Log warning but don't fail the operation - cargo was successfully traded
+		logging.LoggerFromContext(ctx).Log("WARN", "Failed to sync ship state after cargo transaction", map[string]interface{}{
+			"ship":  cmd.ShipSymbol,
+			"error": syncErr.Error(),
+		})
+	}
+
 	return response, nil
 }
 

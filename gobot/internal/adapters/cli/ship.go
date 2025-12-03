@@ -578,7 +578,7 @@ Examples:
 			systemGraphRepo := persistence.NewGormSystemGraphRepository(db)
 			graphBuilder := api.NewGraphBuilder(apiClient, playerRepo, waypointRepo)
 			graphService := graph.NewGraphService(systemGraphRepo, waypointRepo, graphBuilder)
-			shipRepo := api.NewShipRepository(apiClient, playerRepo, waypointRepo, graphService, db)
+			shipRepo := api.NewShipRepository(apiClient, playerRepo, waypointRepo, graphService, db, nil) // nil = use RealClock
 			marketRepo := persistence.NewMarketRepository(db)
 
 			// Create mediator with ledger handlers registered

@@ -48,6 +48,26 @@ func (r *GormPlayerRepository) FindByAgentSymbol(ctx context.Context, agentSymbo
 	return r.modelToPlayer(&model)
 }
 
+// ListAll retrieves all players from the database
+func (r *GormPlayerRepository) ListAll(ctx context.Context) ([]*player.Player, error) {
+	var models []PlayerModel
+	result := r.db.WithContext(ctx).Find(&models)
+	if result.Error != nil {
+		return nil, fmt.Errorf("failed to list players: %w", result.Error)
+	}
+
+	players := make([]*player.Player, 0, len(models))
+	for _, model := range models {
+		p, err := r.modelToPlayer(&model)
+		if err != nil {
+			continue // Skip invalid players
+		}
+		players = append(players, p)
+	}
+
+	return players, nil
+}
+
 // Add persists a player
 func (r *GormPlayerRepository) Add(ctx context.Context, player *player.Player) error {
 	model, err := r.playerToModel(player)

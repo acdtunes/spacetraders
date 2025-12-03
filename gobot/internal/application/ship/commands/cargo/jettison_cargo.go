@@ -73,6 +73,12 @@ func (h *JettisonCargoHandler) Handle(ctx context.Context, request common.Reques
 		return nil, err
 	}
 
+	// Sync ship state from API to persist cargo changes to database
+	if _, syncErr := h.shipRepo.SyncShipFromAPI(ctx, cmd.ShipSymbol, cmd.PlayerID); syncErr != nil {
+		// Log warning but don't fail - jettison was successful
+		fmt.Printf("Warning: Failed to sync ship %s after jettison: %v\n", cmd.ShipSymbol, syncErr)
+	}
+
 	return &JettisonCargoResponse{
 		UnitsJettisoned: cmd.Units,
 	}, nil

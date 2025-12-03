@@ -311,13 +311,14 @@ func (r *ContainerRunner) execute() {
 		}
 	}
 
-	// Signal completion to coordinator (if callback set)
-	r.signalCompletion()
-
-	// ALWAYS release ship assignments on completion
-	// With dynamic discovery, ships are not transferred - they're simply released
-	// and discovered by the next coordinator iteration
+	// CRITICAL: Release ship assignments BEFORE signaling completion
+	// This prevents race condition where coordinator discovers ship before it's released
+	// causing "ship already assigned to container" errors
 	r.releaseShipAssignments("completed")
+
+	// Signal completion to coordinator (if callback set)
+	// Now safe to signal - ship is fully released
+	r.signalCompletion()
 }
 
 // signalCompletion signals container completion via callback channel

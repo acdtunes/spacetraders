@@ -10,6 +10,7 @@ import (
 type PlayerRepository interface {
 	FindByID(ctx context.Context, playerID shared.PlayerID) (*Player, error)
 	FindByAgentSymbol(ctx context.Context, agentSymbol string) (*Player, error)
+	ListAll(ctx context.Context) ([]*Player, error)
 	Add(ctx context.Context, player *Player) error
 }
 
