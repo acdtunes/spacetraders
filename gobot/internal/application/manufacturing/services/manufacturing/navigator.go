@@ -23,6 +23,9 @@ type Navigator interface {
 	// Dock docks the ship at current location
 	Dock(ctx context.Context, shipSymbol string, playerID shared.PlayerID) error
 
+	// Orbit puts the ship into orbit at current location
+	Orbit(ctx context.Context, shipSymbol string, playerID shared.PlayerID) error
+
 	// ReloadShip fetches fresh ship state from repository
 	ReloadShip(ctx context.Context, shipSymbol string, playerID shared.PlayerID) (*navigation.Ship, error)
 }
@@ -140,6 +143,22 @@ func (n *ManufacturingNavigator) Dock(
 	})
 	if err != nil {
 		return fmt.Errorf("failed to dock: %w", err)
+	}
+	return nil
+}
+
+// Orbit puts the ship into orbit at its current location.
+func (n *ManufacturingNavigator) Orbit(
+	ctx context.Context,
+	shipSymbol string,
+	playerID shared.PlayerID,
+) error {
+	_, err := n.mediator.Send(ctx, &shipTypes.OrbitShipCommand{
+		ShipSymbol: shipSymbol,
+		PlayerID:   playerID,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to orbit: %w", err)
 	}
 	return nil
 }

@@ -110,9 +110,15 @@ func (e *StorageAcquireDeliverExecutor) Execute(ctx context.Context, params Task
 
 		// Ensure ship is in orbit for cargo transfer
 		if ship.IsDocked() {
-			logger.Log("DEBUG", "STORAGE_ACQUIRE_DELIVER: Need to orbit for cargo transfer", nil)
-			// Note: We may need to add an Orbit method to Navigator
-			// For now, cargo transfer should work if both ships are in orbit
+			logger.Log("DEBUG", "STORAGE_ACQUIRE_DELIVER: Orbiting for cargo transfer", nil)
+			if err := e.navigator.Orbit(ctx, params.ShipSymbol, params.PlayerID); err != nil {
+				return fmt.Errorf("failed to orbit for cargo transfer: %w", err)
+			}
+			// Reload ship after orbit
+			ship, err = e.navigator.ReloadShip(ctx, params.ShipSymbol, params.PlayerID)
+			if err != nil {
+				return fmt.Errorf("failed to reload ship after orbit: %w", err)
+			}
 		}
 
 		// Wait for cargo from storage ships

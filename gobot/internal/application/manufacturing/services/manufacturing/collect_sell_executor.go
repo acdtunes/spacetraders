@@ -236,8 +236,22 @@ func (e *CollectSellExecutor) collectFromStorage(
 		return 0, fmt.Errorf("failed to navigate to storage waypoint: %w", err)
 	}
 
+	// Reload ship to get current state and ensure it's in orbit for transfer
+	reloadedShip, err := e.navigator.ReloadShip(ctx, params.ShipSymbol, params.PlayerID)
+	if err != nil {
+		return 0, fmt.Errorf("failed to reload ship after navigation: %w", err)
+	}
+
+	// Ensure ship is in orbit for cargo transfer
+	if reloadedShip.IsDocked() {
+		logger.Log("DEBUG", "COLLECT_SELL: Orbiting for cargo transfer", nil)
+		if err := e.navigator.Orbit(ctx, params.ShipSymbol, params.PlayerID); err != nil {
+			return 0, fmt.Errorf("failed to orbit for cargo transfer: %w", err)
+		}
+	}
+
 	// Calculate how much cargo we can pick up
-	availableSpace := ship.AvailableCargoSpace()
+	availableSpace := reloadedShip.AvailableCargoSpace()
 	if availableSpace <= 0 {
 		return 0, fmt.Errorf("no cargo space available on ship %s", params.ShipSymbol)
 	}
