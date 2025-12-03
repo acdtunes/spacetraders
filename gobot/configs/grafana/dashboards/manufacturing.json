@@ -357,7 +357,7 @@
         "editorMode": "code",
         "format": "table",
         "rawQuery": true,
-        "rawSql": "SELECT\n  p.product_good as \"Product\",\n  COUNT(*) FILTER (WHERE t.status = 'COMPLETED') as \"Completed\",\n  COUNT(*) FILTER (WHERE t.status IN ('READY', 'ASSIGNED', 'EXECUTING')) as \"Active\",\n  COUNT(*) FILTER (WHERE t.status = 'PENDING') as \"Pending\",\n  COUNT(*) FILTER (WHERE t.task_type = 'COLLECT_SELL' AND t.good = p.product_good AND t.status = 'COMPLETED') as \"Final Collections\"\nFROM manufacturing_pipelines p\nLEFT JOIN manufacturing_tasks t ON p.id = t.pipeline_id\nWHERE p.status NOT IN ('COMPLETED', 'FAILED', 'CANCELLED')\nGROUP BY p.id, p.product_good\nORDER BY COUNT(*) FILTER (WHERE t.status IN ('READY', 'ASSIGNED', 'EXECUTING')) DESC",
+        "rawSql": "SELECT\n  p.product_good as \"Product\",\n  COUNT(*) FILTER (WHERE t.status = 'COMPLETED') as \"Completed\",\n  COUNT(*) FILTER (WHERE t.status IN ('READY', 'ASSIGNED', 'EXECUTING')) as \"Active\",\n  COUNT(*) FILTER (WHERE t.status = 'PENDING') as \"Pending\",\n  COUNT(*) FILTER (WHERE t.task_type = 'COLLECT_SELL' AND t.good = p.product_good AND t.status = 'COMPLETED') as \"Final Collections\"\nFROM manufacturing_pipelines p\nLEFT JOIN manufacturing_tasks t ON p.id = t.pipeline_id\nWHERE p.status NOT IN ('COMPLETED', 'FAILED', 'CANCELLED')\n  AND (p.sell_market LIKE '${system}%' OR p.construction_site LIKE '${system}%')\nGROUP BY p.id, p.product_good\nORDER BY COUNT(*) FILTER (WHERE t.status IN ('READY', 'ASSIGNED', 'EXECUTING')) DESC",
         "refId": "A"
       }],
       "title": "Pipeline Status Summary (Final Collections: 3 = Complete)",
@@ -425,7 +425,7 @@
         {
           "datasource": {"type": "postgres", "uid": "postgresql"},
           "format": "table",
-          "rawSql": "SELECT p.product_good as \"Product\", p.status as \"Status\", p.sell_market as \"Sell Market\", (SELECT COUNT(*) FROM manufacturing_tasks t WHERE t.pipeline_id = p.id) as \"Tasks\", (SELECT COUNT(*) FROM manufacturing_tasks t WHERE t.pipeline_id = p.id AND t.status = 'COMPLETED') as \"Done\", ROUND((SELECT COUNT(*) FROM manufacturing_tasks t WHERE t.pipeline_id = p.id AND t.status = 'COMPLETED')::numeric / NULLIF((SELECT COUNT(*) FROM manufacturing_tasks t WHERE t.pipeline_id = p.id), 0) * 100) as \"Progress\", (SELECT string_agg(DISTINCT t.assigned_ship, ', ') FROM manufacturing_tasks t WHERE t.pipeline_id = p.id AND t.assigned_ship IS NOT NULL) as \"Ships\" FROM manufacturing_pipelines p WHERE p.player_id = 12 AND p.status NOT IN ('COMPLETED', 'FAILED', 'CANCELLED') ORDER BY p.product_good",
+          "rawSql": "SELECT p.product_good as \"Product\", p.status as \"Status\", p.sell_market as \"Sell Market\", (SELECT COUNT(*) FROM manufacturing_tasks t WHERE t.pipeline_id = p.id) as \"Tasks\", (SELECT COUNT(*) FROM manufacturing_tasks t WHERE t.pipeline_id = p.id AND t.status = 'COMPLETED') as \"Done\", ROUND((SELECT COUNT(*) FROM manufacturing_tasks t WHERE t.pipeline_id = p.id AND t.status = 'COMPLETED')::numeric / NULLIF((SELECT COUNT(*) FROM manufacturing_tasks t WHERE t.pipeline_id = p.id), 0) * 100) as \"Progress\", (SELECT string_agg(DISTINCT t.assigned_ship, ', ') FROM manufacturing_tasks t WHERE t.pipeline_id = p.id AND t.assigned_ship IS NOT NULL) as \"Ships\" FROM manufacturing_pipelines p WHERE p.player_id = 12 AND p.status NOT IN ('COMPLETED', 'FAILED', 'CANCELLED') AND (p.sell_market LIKE '${system}%' OR p.construction_site LIKE '${system}%') ORDER BY p.product_good",
           "refId": "A"
         }
       ],
@@ -476,7 +476,7 @@
         {
           "datasource": {"type": "postgres", "uid": "postgresql"},
           "format": "table",
-          "rawSql": "SELECT p.product_good as \"Pipeline\", t.task_type as \"Task\", t.good as \"Good\", t.status as \"Status\", COALESCE(t.assigned_ship, '-') as \"Ship\", t.source_market as \"Source\", COALESCE(t.target_market, t.factory_symbol) as \"Target\", CASE WHEN t.started_at IS NOT NULL THEN EXTRACT(EPOCH FROM (COALESCE(t.completed_at, NOW()) - t.started_at))::int || 's' ELSE '-' END as \"Duration\" FROM manufacturing_tasks t JOIN manufacturing_pipelines p ON t.pipeline_id = p.id WHERE t.player_id = 12 AND t.status NOT IN ('COMPLETED', 'FAILED') ORDER BY p.product_good, CASE t.task_type WHEN 'ACQUIRE_DELIVER' THEN 1 WHEN 'COLLECT_SELL' THEN 2 ELSE 3 END, t.good",
+          "rawSql": "SELECT p.product_good as \"Pipeline\", t.task_type as \"Task\", t.good as \"Good\", t.status as \"Status\", COALESCE(t.assigned_ship, '-') as \"Ship\", t.source_market as \"Source\", COALESCE(t.target_market, t.factory_symbol) as \"Target\", CASE WHEN t.started_at IS NOT NULL THEN EXTRACT(EPOCH FROM (COALESCE(t.completed_at, NOW()) - t.started_at))::int || 's' ELSE '-' END as \"Duration\" FROM manufacturing_tasks t JOIN manufacturing_pipelines p ON t.pipeline_id = p.id WHERE t.player_id = 12 AND t.status NOT IN ('COMPLETED', 'FAILED') AND (p.sell_market LIKE '${system}%' OR p.construction_site LIKE '${system}%') ORDER BY p.product_good, CASE t.task_type WHEN 'ACQUIRE_DELIVER' THEN 1 WHEN 'COLLECT_SELL' THEN 2 ELSE 3 END, t.good",
           "refId": "A"
         }
       ],
@@ -1362,7 +1362,7 @@
         "editorMode": "code",
         "format": "table",
         "rawQuery": true,
-        "rawSql": "SELECT\n  SUBSTRING(p.id, 1, 8) as \"Pipeline ID\",\n  p.product_good as \"Product\",\n  p.status as \"Status\",\n  p.sell_market as \"Sell Market\",\n  p.expected_price as \"Expected Price\",\n  p.total_cost as \"Cost\",\n  p.total_revenue as \"Revenue\",\n  p.net_profit as \"Profit\",\n  (SELECT COUNT(*) FROM manufacturing_tasks t WHERE t.pipeline_id = p.id) as \"Total Tasks\",\n  (SELECT COUNT(*) FROM manufacturing_tasks t WHERE t.pipeline_id = p.id AND t.status = 'COMPLETED') as \"Completed\",\n  (SELECT COUNT(*) FROM manufacturing_tasks t WHERE t.pipeline_id = p.id AND t.status IN ('ASSIGNED', 'EXECUTING')) as \"Running\",\n  ROUND(\n    (SELECT COUNT(*) FROM manufacturing_tasks t WHERE t.pipeline_id = p.id AND t.status = 'COMPLETED')::numeric /\n    NULLIF((SELECT COUNT(*) FROM manufacturing_tasks t WHERE t.pipeline_id = p.id), 0) * 100\n  ) as \"Progress %\"\nFROM manufacturing_pipelines p\nWHERE p.status NOT IN ('COMPLETED', 'CANCELLED')\nORDER BY p.created_at DESC",
+        "rawSql": "SELECT\n  SUBSTRING(p.id, 1, 8) as \"Pipeline ID\",\n  p.product_good as \"Product\",\n  p.status as \"Status\",\n  p.sell_market as \"Sell Market\",\n  p.expected_price as \"Expected Price\",\n  p.total_cost as \"Cost\",\n  p.total_revenue as \"Revenue\",\n  p.net_profit as \"Profit\",\n  (SELECT COUNT(*) FROM manufacturing_tasks t WHERE t.pipeline_id = p.id) as \"Total Tasks\",\n  (SELECT COUNT(*) FROM manufacturing_tasks t WHERE t.pipeline_id = p.id AND t.status = 'COMPLETED') as \"Completed\",\n  (SELECT COUNT(*) FROM manufacturing_tasks t WHERE t.pipeline_id = p.id AND t.status IN ('ASSIGNED', 'EXECUTING')) as \"Running\",\n  ROUND(\n    (SELECT COUNT(*) FROM manufacturing_tasks t WHERE t.pipeline_id = p.id AND t.status = 'COMPLETED')::numeric /\n    NULLIF((SELECT COUNT(*) FROM manufacturing_tasks t WHERE t.pipeline_id = p.id), 0) * 100\n  ) as \"Progress %\"\nFROM manufacturing_pipelines p\nWHERE p.status NOT IN ('COMPLETED', 'CANCELLED')\n  AND (p.sell_market LIKE '${system}%' OR p.construction_site LIKE '${system}%')\nORDER BY p.created_at DESC",
         "refId": "A"
       }],
       "title": "Active Pipelines Detail",
@@ -1411,7 +1411,7 @@
         "editorMode": "code",
         "format": "table",
         "rawQuery": true,
-        "rawSql": "SELECT\n  SUBSTRING(t.pipeline_id, 1, 8) as \"Pipeline\",\n  p.product_good as \"Product\",\n  t.task_type as \"Task Type\",\n  t.status as \"Status\",\n  t.good as \"Good\",\n  t.assigned_ship as \"Ship\",\n  t.source_market as \"Source\",\n  COALESCE(t.target_market, t.factory_symbol) as \"Destination\",\n  t.actual_quantity as \"Qty\",\n  t.retry_count as \"Retries\",\n  CASE\n    WHEN t.started_at IS NOT NULL THEN\n      EXTRACT(EPOCH FROM (COALESCE(t.completed_at, NOW()) - t.started_at))::int\n    ELSE NULL\n  END as \"Duration (s)\"\nFROM manufacturing_tasks t\nLEFT JOIN manufacturing_pipelines p ON t.pipeline_id = p.id\nWHERE t.status NOT IN ('COMPLETED')\n  AND t.pipeline_id IS NOT NULL\nORDER BY p.product_good, t.task_type, t.created_at",
+        "rawSql": "SELECT\n  SUBSTRING(t.pipeline_id, 1, 8) as \"Pipeline\",\n  p.product_good as \"Product\",\n  t.task_type as \"Task Type\",\n  t.status as \"Status\",\n  t.good as \"Good\",\n  t.assigned_ship as \"Ship\",\n  t.source_market as \"Source\",\n  COALESCE(t.target_market, t.factory_symbol) as \"Destination\",\n  t.actual_quantity as \"Qty\",\n  t.retry_count as \"Retries\",\n  CASE\n    WHEN t.started_at IS NOT NULL THEN\n      EXTRACT(EPOCH FROM (COALESCE(t.completed_at, NOW()) - t.started_at))::int\n    ELSE NULL\n  END as \"Duration (s)\"\nFROM manufacturing_tasks t\nLEFT JOIN manufacturing_pipelines p ON t.pipeline_id = p.id\nWHERE t.status NOT IN ('COMPLETED')\n  AND t.pipeline_id IS NOT NULL\n  AND (p.sell_market LIKE '${system}%' OR p.construction_site LIKE '${system}%')\nORDER BY p.product_good, t.task_type, t.created_at",
         "refId": "A"
       }],
       "title": "Pipeline Tasks Breakdown",
@@ -1465,7 +1465,7 @@
         "editorMode": "code",
         "format": "table",
         "rawQuery": true,
-        "rawSql": "SELECT\n  t.assigned_ship as \"Ship\",\n  t.task_type as \"Task Type\",\n  t.status as \"Status\",\n  t.good as \"Good\",\n  t.source_market as \"Source\",\n  COALESCE(t.target_market, t.factory_symbol) as \"Destination\",\n  t.actual_quantity as \"Quantity\",\n  p.product_good as \"Pipeline Product\",\n  EXTRACT(EPOCH FROM (NOW() - t.started_at))::int as \"Duration (s)\"\nFROM manufacturing_tasks t\nLEFT JOIN manufacturing_pipelines p ON t.pipeline_id = p.id\nWHERE t.assigned_ship IS NOT NULL\n  AND t.status IN ('ASSIGNED', 'EXECUTING')\nORDER BY t.started_at DESC",
+        "rawSql": "SELECT\n  t.assigned_ship as \"Ship\",\n  t.task_type as \"Task Type\",\n  t.status as \"Status\",\n  t.good as \"Good\",\n  t.source_market as \"Source\",\n  COALESCE(t.target_market, t.factory_symbol) as \"Destination\",\n  t.actual_quantity as \"Quantity\",\n  p.product_good as \"Pipeline Product\",\n  EXTRACT(EPOCH FROM (NOW() - t.started_at))::int as \"Duration (s)\"\nFROM manufacturing_tasks t\nLEFT JOIN manufacturing_pipelines p ON t.pipeline_id = p.id\nWHERE t.assigned_ship IS NOT NULL\n  AND t.status IN ('ASSIGNED', 'EXECUTING')\n  AND (p.sell_market LIKE '${system}%' OR p.construction_site LIKE '${system}%')\nORDER BY t.started_at DESC",
         "refId": "A"
       }],
       "title": "Currently Assigned Ships",
@@ -1548,7 +1548,7 @@
         "editorMode": "code",
         "format": "table",
         "rawQuery": true,
-        "rawSql": "SELECT\n  t.task_type as \"Task Type\",\n  t.good as \"Good\",\n  t.status as \"Status\",\n  p.product_good as \"Pipeline Product\",\n  EXTRACT(EPOCH FROM (NOW() - t.created_at))::int as \"Age (s)\",\n  t.retry_count as \"Retries\",\n  t.error_message as \"Last Error\"\nFROM manufacturing_tasks t\nLEFT JOIN manufacturing_pipelines p ON t.pipeline_id = p.id\nWHERE t.status IN ('PENDING', 'READY')\n  AND t.pipeline_id IS NOT NULL\nORDER BY t.created_at ASC\nLIMIT 20",
+        "rawSql": "SELECT\n  t.task_type as \"Task Type\",\n  t.good as \"Good\",\n  t.status as \"Status\",\n  p.product_good as \"Pipeline Product\",\n  EXTRACT(EPOCH FROM (NOW() - t.created_at))::int as \"Age (s)\",\n  t.retry_count as \"Retries\",\n  t.error_message as \"Last Error\"\nFROM manufacturing_tasks t\nLEFT JOIN manufacturing_pipelines p ON t.pipeline_id = p.id\nWHERE t.status IN ('PENDING', 'READY')\n  AND t.pipeline_id IS NOT NULL\n  AND (p.sell_market LIKE '${system}%' OR p.construction_site LIKE '${system}%')\nORDER BY t.created_at ASC\nLIMIT 20",
         "refId": "A"
       }],
       "title": "Blocked Tasks (Waiting Longest)",
@@ -1584,7 +1584,7 @@
         "editorMode": "code",
         "format": "table",
         "rawQuery": true,
-        "rawSql": "SELECT\n  t.task_type as \"Task Type\",\n  t.good as \"Good\",\n  t.retry_count as \"Retries\",\n  t.max_retries as \"Max\",\n  p.product_good as \"Pipeline Product\",\n  LEFT(t.error_message, 60) as \"Error\",\n  t.completed_at as \"Failed At\"\nFROM manufacturing_tasks t\nLEFT JOIN manufacturing_pipelines p ON t.pipeline_id = p.id\nWHERE t.status = 'FAILED'\nORDER BY t.completed_at DESC\nLIMIT 15",
+        "rawSql": "SELECT\n  t.task_type as \"Task Type\",\n  t.good as \"Good\",\n  t.retry_count as \"Retries\",\n  t.max_retries as \"Max\",\n  p.product_good as \"Pipeline Product\",\n  LEFT(t.error_message, 60) as \"Error\",\n  t.completed_at as \"Failed At\"\nFROM manufacturing_tasks t\nLEFT JOIN manufacturing_pipelines p ON t.pipeline_id = p.id\nWHERE t.status = 'FAILED'\n  AND (p.sell_market LIKE '${system}%' OR p.construction_site LIKE '${system}%')\nORDER BY t.completed_at DESC\nLIMIT 15",
         "refId": "A"
       }],
       "title": "Failed Tasks Requiring Attention",
@@ -1727,7 +1727,7 @@
         "editorMode": "code",
         "format": "table",
         "rawQuery": true,
-        "rawSql": "SELECT\n  p.product_good as \"Product\",\n  p.status as \"Status\",\n  p.total_cost as \"Total Cost\",\n  p.total_revenue as \"Revenue\",\n  p.net_profit as \"Net Profit\",\n  CASE\n    WHEN p.total_cost > 0 THEN ROUND((p.net_profit::numeric / p.total_cost) * 100, 1)\n    ELSE 0\n  END as \"ROI %\"\nFROM manufacturing_pipelines p\nORDER BY p.net_profit DESC\nLIMIT 20",
+        "rawSql": "SELECT\n  p.product_good as \"Product\",\n  p.status as \"Status\",\n  p.total_cost as \"Total Cost\",\n  p.total_revenue as \"Revenue\",\n  p.net_profit as \"Net Profit\",\n  CASE\n    WHEN p.total_cost > 0 THEN ROUND((p.net_profit::numeric / p.total_cost) * 100, 1)\n    ELSE 0\n  END as \"ROI %\"\nFROM manufacturing_pipelines p\nWHERE (p.sell_market LIKE '${system}%' OR p.construction_site LIKE '${system}%')\nORDER BY p.net_profit DESC\nLIMIT 20",
         "refId": "A"
       }],
       "title": "Cost Breakdown by Pipeline",
@@ -1756,7 +1756,7 @@
         "editorMode": "code",
         "format": "table",
         "rawQuery": true,
-        "rawSql": "SELECT\n  task_type as \"Task Type\",\n  SUM(total_cost) as \"Total Cost\"\nFROM manufacturing_tasks\nWHERE total_cost > 0\nGROUP BY task_type",
+        "rawSql": "SELECT\n  t.task_type as \"Task Type\",\n  SUM(t.total_cost) as \"Total Cost\"\nFROM manufacturing_tasks t\nJOIN manufacturing_pipelines p ON t.pipeline_id = p.id\nWHERE t.total_cost > 0\n  AND (p.sell_market LIKE '${system}%' OR p.construction_site LIKE '${system}%')\nGROUP BY t.task_type",
         "refId": "A"
       }],
       "title": "Cost by Task Type",
@@ -1785,18 +1785,156 @@
         "editorMode": "code",
         "format": "table",
         "rawQuery": true,
-        "rawSql": "SELECT\n  product_good as \"Product\",\n  SUM(net_profit) as \"Net Profit\"\nFROM manufacturing_pipelines\nWHERE net_profit != 0\nGROUP BY product_good\nORDER BY SUM(net_profit) DESC",
+        "rawSql": "SELECT\n  product_good as \"Product\",\n  SUM(net_profit) as \"Net Profit\"\nFROM manufacturing_pipelines\nWHERE net_profit != 0\n  AND (sell_market LIKE '${system}%' OR construction_site LIKE '${system}%')\nGROUP BY product_good\nORDER BY SUM(net_profit) DESC",
         "refId": "A"
       }],
       "title": "Profit by Product",
       "type": "piechart"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 105 },
+      "id": 400,
+      "title": "Construction Operations",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "postgresql" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "blue", "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          },
+          "unit": "short"
+        }
+      },
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 106 },
+      "id": 401,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "targets": [{
+        "datasource": { "type": "postgres", "uid": "postgresql" },
+        "editorMode": "code",
+        "format": "table",
+        "rawQuery": true,
+        "rawSql": "SELECT COUNT(*) FROM manufacturing_pipelines\nWHERE pipeline_type = 'CONSTRUCTION'\n  AND status NOT IN ('COMPLETED', 'FAILED', 'CANCELLED')\n  AND construction_site LIKE '${system}%'",
+        "refId": "A"
+      }],
+      "title": "Active Construction Pipelines",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "postgresql" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "max": 100,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 25 },
+              { "color": "green", "value": 75 }
+            ]
+          },
+          "unit": "percent"
+        }
+      },
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 106 },
+      "id": 402,
+      "options": {
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true
+      },
+      "targets": [{
+        "datasource": { "type": "postgres", "uid": "postgresql" },
+        "editorMode": "code",
+        "format": "table",
+        "rawQuery": true,
+        "rawSql": "SELECT\n  COALESCE(ROUND(\n    (SUM((m->>'deliveredQuantity')::int)::float /\n     NULLIF(SUM((m->>'targetQuantity')::int), 0) * 100)\n  ), 0) as progress\nFROM manufacturing_pipelines p,\n     jsonb_array_elements(p.materials) m\nWHERE p.pipeline_type = 'CONSTRUCTION'\n  AND p.status NOT IN ('COMPLETED', 'FAILED', 'CANCELLED')\n  AND p.construction_site LIKE '${system}%'",
+        "refId": "A"
+      }],
+      "title": "Construction Progress",
+      "type": "gauge"
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "postgresql" },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "align": "auto", "cellOptions": { "type": "auto" }, "inspect": false },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Progress %" },
+            "properties": [
+              { "id": "custom.cellOptions", "value": { "type": "gauge", "mode": "gradient" } },
+              { "id": "min", "value": 0 },
+              { "id": "max", "value": 100 },
+              { "id": "thresholds", "value": { "mode": "absolute", "steps": [
+                { "color": "red", "value": null },
+                { "color": "yellow", "value": 25 },
+                { "color": "green", "value": 75 }
+              ]}}
+            ]
+          }
+        ]
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 106 },
+      "id": 403,
+      "options": { "cellHeight": "sm", "footer": { "countRows": false, "fields": "", "reducer": ["sum"], "show": false }, "showHeader": true },
+      "targets": [{
+        "datasource": { "type": "postgres", "uid": "postgresql" },
+        "editorMode": "code",
+        "format": "table",
+        "rawQuery": true,
+        "rawSql": "SELECT\n  p.construction_site as \"Site\",\n  m->>'tradeSymbol' as \"Material\",\n  (m->>'targetQuantity')::int as \"Required\",\n  (m->>'deliveredQuantity')::int as \"Delivered\",\n  ROUND(((m->>'deliveredQuantity')::float /\n         NULLIF((m->>'targetQuantity')::int, 0)) * 100) as \"Progress %\"\nFROM manufacturing_pipelines p,\n     jsonb_array_elements(p.materials) m\nWHERE p.pipeline_type = 'CONSTRUCTION'\n  AND p.status NOT IN ('COMPLETED', 'FAILED', 'CANCELLED')\n  AND p.construction_site LIKE '${system}%'\nORDER BY p.construction_site, m->>'tradeSymbol'",
+        "refId": "A"
+      }],
+      "title": "Materials Delivery Progress",
+      "type": "table"
     }
   ],
   "schemaVersion": 38,
   "style": "dark",
   "tags": ["spacetraders", "manufacturing", "production"],
   "templating": {
-    "list": []
+    "list": [
+      {
+        "allValue": "%",
+        "current": { "selected": true, "text": "All", "value": "$__all" },
+        "datasource": { "type": "postgres", "uid": "postgresql" },
+        "definition": "SELECT DISTINCT SUBSTRING(sell_market, 1, POSITION('-' IN SUBSTRING(sell_market, 4)) + 2) as system FROM manufacturing_pipelines WHERE sell_market IS NOT NULL UNION SELECT DISTINCT SUBSTRING(construction_site, 1, POSITION('-' IN SUBSTRING(construction_site, 4)) + 2) FROM manufacturing_pipelines WHERE construction_site IS NOT NULL ORDER BY system",
+        "includeAll": true,
+        "label": "System",
+        "multi": false,
+        "name": "system",
+        "options": [],
+        "query": "SELECT DISTINCT SUBSTRING(sell_market, 1, POSITION('-' IN SUBSTRING(sell_market, 4)) + 2) as system FROM manufacturing_pipelines WHERE sell_market IS NOT NULL UNION SELECT DISTINCT SUBSTRING(construction_site, 1, POSITION('-' IN SUBSTRING(construction_site, 4)) + 2) FROM manufacturing_pipelines WHERE construction_site IS NOT NULL ORDER BY system",
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      }
+    ]
   },
   "time": {
     "from": "now-6h",
