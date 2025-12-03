@@ -439,6 +439,7 @@ func (e *RouteExecutor) scanMarketIfPresent(ctx context.Context, segment *domain
 
 // waitForCurrentTransit waits for ship to complete its current transit
 // OPTIMIZATION: Trust arrival time completely - no API polling after sleep
+// CRITICAL: After waiting, persists ship state to DB to prevent stale state loops
 func (e *RouteExecutor) waitForCurrentTransit(
 	ctx context.Context,
 	ship *domainNavigation.Ship,
@@ -454,8 +455,10 @@ func (e *RouteExecutor) waitForCurrentTransit(
 
 	// OPTIMIZATION: Single API call to get arrival time, then trust it completely
 	// No post-sleep polling - we save 1-3 API calls per transit wait
+	var shipData *domainNavigation.ShipData
 	if e.shipRepo != nil {
-		shipData, err := e.shipRepo.GetShipData(ctx, ship.ShipSymbol(), playerID)
+		var err error
+		shipData, err = e.shipRepo.GetShipData(ctx, ship.ShipSymbol(), playerID)
 		if err != nil {
 			return fmt.Errorf("failed to fetch ship data from API: %w", err)
 		}
@@ -487,6 +490,38 @@ func (e *RouteExecutor) waitForCurrentTransit(
 		})
 		if err := ship.Arrive(); err != nil {
 			return fmt.Errorf("failed to mark ship as arrived: %w", err)
+		}
+
+		// FIX: Persist ship state to DB after arrival to prevent stale state loops
+		// Without this, subsequent FindBySymbol calls would load IN_TRANSIT from DB,
+		// causing repeated unnecessary waits and potential race conditions
+		if e.shipRepo != nil {
+			// Update ship location from API data (for IN_TRANSIT, API returns destination)
+			if shipData != nil && shipData.Location != "" {
+				// Update the ship's location to where it actually arrived
+				systemSymbol := shared.ExtractSystemSymbol(shipData.Location)
+				ship.SetLocation(&shared.Waypoint{
+					Symbol:       shipData.Location,
+					SystemSymbol: systemSymbol,
+				})
+			}
+
+			// Clear arrival time since ship has arrived
+			ship.ClearArrivalTime()
+
+			if err := e.shipRepo.Save(ctx, ship); err != nil {
+				// Log warning but don't fail - the important thing is we waited
+				logger.Log("WARNING", "Failed to persist ship state after transit wait", map[string]interface{}{
+					"ship_symbol": ship.ShipSymbol(),
+					"error":       err.Error(),
+				})
+			} else {
+				logger.Log("DEBUG", "Persisted ship state after transit wait", map[string]interface{}{
+					"ship_symbol": ship.ShipSymbol(),
+					"location":    ship.CurrentLocation().Symbol,
+					"nav_status":  string(ship.NavStatus()),
+				})
+			}
 		}
 	}
 
