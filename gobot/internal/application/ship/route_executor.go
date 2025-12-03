@@ -438,7 +438,7 @@ func (e *RouteExecutor) scanMarketIfPresent(ctx context.Context, segment *domain
 }
 
 // waitForCurrentTransit waits for ship to complete its current transit
-// OPTIMIZATION: Trust arrival time completely - no API polling after sleep
+// Uses arrival time from DB if valid, falls back to API if DB is stale
 // CRITICAL: After waiting, persists ship state to DB to prevent stale state loops
 func (e *RouteExecutor) waitForCurrentTransit(
 	ctx context.Context,
@@ -453,36 +453,47 @@ func (e *RouteExecutor) waitForCurrentTransit(
 		"status":      "IN_TRANSIT",
 	})
 
-	// OPTIMIZATION: Single API call to get arrival time, then trust it completely
-	// No post-sleep polling - we save 1-3 API calls per transit wait
+	// Try DB arrival time first (avoids API call in normal operation)
+	// But if DB arrival time is nil/past and ship is still IN_TRANSIT, fall back to API
+	var waitTime time.Duration
 	var shipData *domainNavigation.ShipData
-	if e.shipRepo != nil {
+
+	if ship.ArrivalTime() != nil {
+		waitTime = time.Until(*ship.ArrivalTime())
+	}
+
+	// If DB arrival time is invalid (nil or past) but ship is IN_TRANSIT, call API
+	// This handles daemon restart where ships started NEW navigation after sync
+	if waitTime <= 0 && ship.NavStatus() == domainNavigation.NavStatusInTransit && e.shipRepo != nil {
 		var err error
 		shipData, err = e.shipRepo.GetShipData(ctx, ship.ShipSymbol(), playerID)
 		if err != nil {
-			return fmt.Errorf("failed to fetch ship data from API: %w", err)
-		}
-
-		if shipData.NavStatus == "IN_TRANSIT" && shipData.ArrivalTime != "" {
+			logger.Log("WARNING", "Failed to get ship data from API, proceeding without wait", map[string]interface{}{
+				"ship_symbol": ship.ShipSymbol(),
+				"error":       err.Error(),
+			})
+		} else if shipData.NavStatus == "IN_TRANSIT" && shipData.ArrivalTime != "" {
 			arrivalTime, err := shared.NewArrivalTime(shipData.ArrivalTime)
-			if err != nil {
-				return fmt.Errorf("failed to parse arrival time: %w", err)
-			}
-			waitTime := arrivalTime.CalculateWaitTime()
-			if waitTime > 0 {
-				logger.Log("INFO", "Waiting for ship to complete previous transit", map[string]interface{}{
-					"ship_symbol":  ship.ShipSymbol(),
-					"action":       "wait_transit",
-					"wait_seconds": waitTime + 3,
-				})
-				e.clock.Sleep(time.Duration(waitTime+3) * time.Second)
+			if err == nil {
+				waitTime = time.Duration(arrivalTime.CalculateWaitTime()) * time.Second
 			}
 		}
 	}
 
-	// OPTIMIZATION: After sleeping for arrival + buffer, trust that ship has arrived
-	// Force domain state to DOCKED/IN_ORBIT without API polling
-	// The next command (orbit/dock/navigate) will fail if somehow wrong
+	// Wait if we have positive wait time
+	if waitTime > 0 {
+		// Add 3 second buffer for API lag
+		totalWait := waitTime + 3*time.Second
+		logger.Log("INFO", "Waiting for ship to complete previous transit", map[string]interface{}{
+			"ship_symbol":  ship.ShipSymbol(),
+			"action":       "wait_transit",
+			"wait_seconds": int(totalWait.Seconds()),
+		})
+		e.clock.Sleep(totalWait)
+	}
+
+	// After sleeping for arrival + buffer, trust that ship has arrived
+	// Force domain state to IN_ORBIT without API polling
 	if ship.NavStatus() == domainNavigation.NavStatusInTransit {
 		logger.Log("INFO", "Trusting arrival time - marking ship as arrived", map[string]interface{}{
 			"ship_symbol": ship.ShipSymbol(),
@@ -492,13 +503,10 @@ func (e *RouteExecutor) waitForCurrentTransit(
 			return fmt.Errorf("failed to mark ship as arrived: %w", err)
 		}
 
-		// FIX: Persist ship state to DB after arrival to prevent stale state loops
-		// Without this, subsequent FindBySymbol calls would load IN_TRANSIT from DB,
-		// causing repeated unnecessary waits and potential race conditions
+		// Persist ship state to DB after arrival to prevent stale state loops
 		if e.shipRepo != nil {
-			// Update ship location from API data (for IN_TRANSIT, API returns destination)
+			// Update location from API data if we fetched it
 			if shipData != nil && shipData.Location != "" {
-				// Update the ship's location to where it actually arrived
 				systemSymbol := shared.ExtractSystemSymbol(shipData.Location)
 				ship.SetLocation(&shared.Waypoint{
 					Symbol:       shipData.Location,
@@ -510,7 +518,6 @@ func (e *RouteExecutor) waitForCurrentTransit(
 			ship.ClearArrivalTime()
 
 			if err := e.shipRepo.Save(ctx, ship); err != nil {
-				// Log warning but don't fail - the important thing is we waited
 				logger.Log("WARNING", "Failed to persist ship state after transit wait", map[string]interface{}{
 					"ship_symbol": ship.ShipSymbol(),
 					"error":       err.Error(),
