@@ -386,6 +386,11 @@ func (r *ShipRepository) Refuel(ctx context.Context, ship *navigation.Ship, play
 
 // SetFlightMode sets the ship's flight mode via API and persists state to database.
 func (r *ShipRepository) SetFlightMode(ctx context.Context, ship *navigation.Ship, playerID shared.PlayerID, mode string) error {
+	// Skip if already set
+	if ship.FlightMode() == mode {
+		return nil
+	}
+
 	// Get player token
 	player, err := r.playerRepo.FindByID(ctx, playerID)
 	if err != nil {
