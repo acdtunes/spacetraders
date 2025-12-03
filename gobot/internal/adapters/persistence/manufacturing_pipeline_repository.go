@@ -2,6 +2,7 @@ package persistence
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
@@ -214,6 +215,31 @@ func (r *GormManufacturingPipelineRepository) CountActiveCollectionPipelines(ctx
 	return int(count), nil
 }
 
+// FindByConstructionSite retrieves the pipeline for a specific construction site (for idempotency).
+// Returns nil, nil if no active pipeline exists for this site.
+// Only returns non-terminal pipelines (excludes COMPLETED, FAILED, CANCELLED).
+func (r *GormManufacturingPipelineRepository) FindByConstructionSite(ctx context.Context, constructionSiteSymbol string, playerID int) (*manufacturing.ManufacturingPipeline, error) {
+	activeStatuses := []string{
+		string(manufacturing.PipelineStatusPlanning),
+		string(manufacturing.PipelineStatusExecuting),
+	}
+
+	var model ManufacturingPipelineModel
+	result := r.db.WithContext(ctx).
+		Where("player_id = ? AND construction_site = ? AND pipeline_type = ? AND status IN ?",
+			playerID, constructionSiteSymbol, string(manufacturing.PipelineTypeConstruction), activeStatuses).
+		First(&model)
+
+	if result.Error != nil {
+		if result.Error == gorm.ErrRecordNotFound {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to find pipeline by construction site: %w", result.Error)
+	}
+
+	return r.modelToPipeline(&model)
+}
+
 // Delete removes a pipeline (cascades to tasks)
 func (r *GormManufacturingPipelineRepository) Delete(ctx context.Context, id string) error {
 	result := r.db.WithContext(ctx).Where("id = ?", id).Delete(&ManufacturingPipelineModel{})
@@ -232,22 +258,49 @@ func (r *GormManufacturingPipelineRepository) pipelineToModel(p *manufacturing.M
 		errorMsg = &msg
 	}
 
+	// Handle construction site
+	var constructionSite *string
+	if p.ConstructionSite() != "" {
+		site := p.ConstructionSite()
+		constructionSite = &site
+	}
+
+	// Serialize materials to JSON
+	materialsJSON := "[]"
+	if len(p.Materials()) > 0 {
+		materials := make([]map[string]interface{}, len(p.Materials()))
+		for i, m := range p.Materials() {
+			materials[i] = map[string]interface{}{
+				"tradeSymbol":       m.TradeSymbol(),
+				"targetQuantity":    m.TargetQuantity(),
+				"deliveredQuantity": m.DeliveredQuantity(),
+			}
+		}
+		if data, err := json.Marshal(materials); err == nil {
+			materialsJSON = string(data)
+		}
+	}
+
 	return &ManufacturingPipelineModel{
-		ID:             p.ID(),
-		SequenceNumber: p.SequenceNumber(),
-		PipelineType:   string(p.PipelineType()),
-		PlayerID:       p.PlayerID(),
-		ProductGood:    p.ProductGood(),
-		SellMarket:     p.SellMarket(),
-		ExpectedPrice:  p.ExpectedPrice(),
-		Status:         string(p.Status()),
-		TotalCost:      p.TotalCost(),
-		TotalRevenue:   p.TotalRevenue(),
-		NetProfit:      p.NetProfit(),
-		ErrorMessage:   errorMsg,
-		CreatedAt:      p.CreatedAt(),
-		StartedAt:      p.StartedAt(),
-		CompletedAt:    p.CompletedAt(),
+		ID:               p.ID(),
+		SequenceNumber:   p.SequenceNumber(),
+		PipelineType:     string(p.PipelineType()),
+		PlayerID:         p.PlayerID(),
+		ProductGood:      p.ProductGood(),
+		SellMarket:       p.SellMarket(),
+		ExpectedPrice:    p.ExpectedPrice(),
+		Status:           string(p.Status()),
+		TotalCost:        p.TotalCost(),
+		TotalRevenue:     p.TotalRevenue(),
+		NetProfit:        p.NetProfit(),
+		ErrorMessage:     errorMsg,
+		CreatedAt:        p.CreatedAt(),
+		StartedAt:        p.StartedAt(),
+		CompletedAt:      p.CompletedAt(),
+		ConstructionSite: constructionSite,
+		Materials:        materialsJSON,
+		SupplyChainDepth: p.SupplyChainDepth(),
+		MaxWorkers:       p.MaxWorkers(),
 	}
 }
 
@@ -258,7 +311,13 @@ func (r *GormManufacturingPipelineRepository) modelToPipeline(m *ManufacturingPi
 		errorMsg = *m.ErrorMessage
 	}
 
-	return manufacturing.ReconstitutePipeline(
+	// Handle construction site
+	var constructionSite string
+	if m.ConstructionSite != nil {
+		constructionSite = *m.ConstructionSite
+	}
+
+	pipeline := manufacturing.ReconstitutePipeline(
 		m.ID,
 		m.SequenceNumber,
 		manufacturing.PipelineType(m.PipelineType),
@@ -274,5 +333,30 @@ func (r *GormManufacturingPipelineRepository) modelToPipeline(m *ManufacturingPi
 		m.CreatedAt,
 		m.StartedAt,
 		m.CompletedAt,
-	), nil
+		constructionSite,
+		m.SupplyChainDepth,
+		m.MaxWorkers,
+	)
+
+	// Parse and set materials for construction pipelines
+	if m.Materials != "" && m.Materials != "[]" {
+		var materialsData []struct {
+			TradeSymbol       string `json:"tradeSymbol"`
+			TargetQuantity    int    `json:"targetQuantity"`
+			DeliveredQuantity int    `json:"deliveredQuantity"`
+		}
+		if err := json.Unmarshal([]byte(m.Materials), &materialsData); err == nil {
+			materials := make([]*manufacturing.ConstructionMaterialTarget, len(materialsData))
+			for i, md := range materialsData {
+				materials[i] = manufacturing.ReconstructConstructionMaterialTarget(
+					md.TradeSymbol,
+					md.TargetQuantity,
+					md.DeliveredQuantity,
+				)
+			}
+			pipeline.SetMaterials(materials)
+		}
+	}
+
+	return pipeline, nil
 }

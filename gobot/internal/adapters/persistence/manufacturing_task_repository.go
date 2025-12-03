@@ -430,7 +430,7 @@ func (r *GormManufacturingTaskRepository) taskToModel(t *manufacturing.Manufactu
 	}
 
 	var pipelineID, sourceMarket, targetMarket, factorySymbol, assignedShip *string
-	var storageOperationID, storageWaypoint *string
+	var storageOperationID, storageWaypoint, constructionSite *string
 	if t.PipelineID() != "" {
 		s := t.PipelineID()
 		pipelineID = &s
@@ -455,6 +455,10 @@ func (r *GormManufacturingTaskRepository) taskToModel(t *manufacturing.Manufactu
 		s := t.StorageWaypoint()
 		storageWaypoint = &s
 	}
+	if t.ConstructionSite() != "" {
+		s := t.ConstructionSite()
+		constructionSite = &s
+	}
 	if t.AssignedShip() != "" {
 		s := t.AssignedShip()
 		assignedShip = &s
@@ -474,17 +478,18 @@ func (r *GormManufacturingTaskRepository) taskToModel(t *manufacturing.Manufactu
 		FactorySymbol:      factorySymbol,
 		StorageOperationID: storageOperationID,
 		StorageWaypoint:    storageWaypoint,
+		ConstructionSite:   constructionSite,
 		AssignedShip:       assignedShip,
-		Priority:       t.Priority(),
-		RetryCount:     t.RetryCount(),
-		MaxRetries:     t.MaxRetries(),
-		TotalCost:      t.TotalCost(),
-		TotalRevenue:   t.TotalRevenue(),
-		ErrorMessage:   errorMsg,
-		CreatedAt:      t.CreatedAt(),
-		ReadyAt:        t.ReadyAt(),
-		StartedAt:      t.StartedAt(),
-		CompletedAt:    t.CompletedAt(),
+		Priority:           t.Priority(),
+		RetryCount:         t.RetryCount(),
+		MaxRetries:         t.MaxRetries(),
+		TotalCost:          t.TotalCost(),
+		TotalRevenue:       t.TotalRevenue(),
+		ErrorMessage:       errorMsg,
+		CreatedAt:          t.CreatedAt(),
+		ReadyAt:            t.ReadyAt(),
+		StartedAt:          t.StartedAt(),
+		CompletedAt:        t.CompletedAt(),
 		// BUG FIX #3: Phase tracking fields
 		CollectPhaseCompleted: t.CollectPhaseCompleted(),
 		AcquirePhaseCompleted: t.AcquirePhaseCompleted(),
@@ -500,7 +505,7 @@ func (r *GormManufacturingTaskRepository) modelToTask(m *ManufacturingTaskModel,
 	}
 
 	var pipelineID, sourceMarket, targetMarket, factorySymbol, assignedShip string
-	var storageOperationID, storageWaypoint string
+	var storageOperationID, storageWaypoint, constructionSite string
 	if m.PipelineID != nil {
 		pipelineID = *m.PipelineID
 	}
@@ -518,6 +523,9 @@ func (r *GormManufacturingTaskRepository) modelToTask(m *ManufacturingTaskModel,
 	}
 	if m.StorageWaypoint != nil {
 		storageWaypoint = *m.StorageWaypoint
+	}
+	if m.ConstructionSite != nil {
+		constructionSite = *m.ConstructionSite
 	}
 	if m.AssignedShip != nil {
 		assignedShip = *m.AssignedShip
@@ -537,6 +545,7 @@ func (r *GormManufacturingTaskRepository) modelToTask(m *ManufacturingTaskModel,
 		factorySymbol,
 		storageOperationID,
 		storageWaypoint,
+		constructionSite,
 		deps,
 		assignedShip,
 		m.Priority,

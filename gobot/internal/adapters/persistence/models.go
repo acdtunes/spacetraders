@@ -326,6 +326,12 @@ type ManufacturingPipelineModel struct {
 	CreatedAt      time.Time  `gorm:"column:created_at;not null;default:now()"`
 	StartedAt      *time.Time `gorm:"column:started_at"`
 	CompletedAt    *time.Time `gorm:"column:completed_at"`
+
+	// Construction-specific fields (only used when PipelineType == CONSTRUCTION)
+	ConstructionSite *string `gorm:"column:construction_site;size:64;index:idx_pipelines_construction_site"`
+	Materials        string  `gorm:"column:materials;type:jsonb;default:'[]'"`
+	SupplyChainDepth int     `gorm:"column:supply_chain_depth;default:0"`
+	MaxWorkers       int     `gorm:"column:max_workers;default:5"`
 }
 
 func (ManufacturingPipelineModel) TableName() string {
@@ -347,6 +353,7 @@ type ManufacturingTaskModel struct {
 	FactorySymbol      *string `gorm:"column:factory_symbol;size:64"`
 	StorageOperationID *string `gorm:"column:storage_operation_id;size:64;index:idx_tasks_storage_operation"` // For STORAGE_ACQUIRE_DELIVER tasks
 	StorageWaypoint    *string `gorm:"column:storage_waypoint;size:64"`                                       // For STORAGE_ACQUIRE_DELIVER tasks
+	ConstructionSite   *string `gorm:"column:construction_site;size:64"`                                      // For DELIVER_TO_CONSTRUCTION tasks
 	AssignedShip       *string `gorm:"column:assigned_ship;size:64;index:idx_tasks_ship"`
 	Priority       int        `gorm:"column:priority;default:0"`
 	RetryCount     int        `gorm:"column:retry_count;default:0"`
