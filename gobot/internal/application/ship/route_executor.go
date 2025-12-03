@@ -275,6 +275,20 @@ func (e *RouteExecutor) handlePreDepartureRefuel(ctx context.Context, segment *d
 
 func (e *RouteExecutor) selectOptimalFlightMode(ctx context.Context, segment *domainNavigation.RouteSegment, ship *domainNavigation.Ship) shared.FlightMode {
 	logger := common.LoggerFromContext(ctx)
+
+	// Special case: Ships with 0 fuel capacity (e.g., probes) don't consume fuel
+	// They should ALWAYS use BURN mode for fastest travel
+	if ship.Fuel().Capacity == 0 {
+		if segment.FlightMode != shared.FlightModeBurn {
+			logger.Log("INFO", "Zero-fuel ship using BURN mode", map[string]interface{}{
+				"ship_symbol": ship.ShipSymbol(),
+				"action":      "zero_fuel_burn",
+				"reason":      "probes_always_burn",
+			})
+		}
+		return shared.FlightModeBurn
+	}
+
 	distance := segment.FromWaypoint.DistanceTo(segment.ToWaypoint)
 	fuelService := domainNavigation.NewShipFuelService()
 	optimalMode := fuelService.SelectOptimalFlightMode(ship.Fuel().Current, distance, domainNavigation.DefaultFuelSafetyMargin)
@@ -493,6 +507,18 @@ func (e *RouteExecutor) refuelBeforeDeparture(
 	// Extract logger from context
 	logger := common.LoggerFromContext(ctx)
 
+	// GRACEFUL DEGRADATION: Skip refuel if current location has no fuel station
+	// This handles stale waypoint cache data or routing service errors
+	if !ship.CurrentLocation().HasFuel {
+		logger.Log("WARNING", "Ship cannot refuel before departure - no fuel station at current location", map[string]interface{}{
+			"ship_symbol": ship.ShipSymbol(),
+			"action":      "refuel_before_departure_skipped",
+			"waypoint":    ship.CurrentLocation().Symbol,
+			"reason":      "no_fuel_station",
+		})
+		return nil // Skip refuel gracefully
+	}
+
 	logger.Log("INFO", "Ship refueling before departure", map[string]interface{}{
 		"ship_symbol": ship.ShipSymbol(),
 		"action":      "refuel_before_departure",
@@ -539,6 +565,20 @@ func (e *RouteExecutor) refuelShip(
 	ship *domainNavigation.Ship,
 	playerID shared.PlayerID,
 ) error {
+	logger := common.LoggerFromContext(ctx)
+
+	// GRACEFUL DEGRADATION: Skip refuel if current location has no fuel station
+	// This handles stale waypoint cache data or routing service errors
+	if !ship.CurrentLocation().HasFuel {
+		logger.Log("WARNING", "Ship cannot refuel - no fuel station at current location", map[string]interface{}{
+			"ship_symbol": ship.ShipSymbol(),
+			"action":      "refuel_skipped",
+			"waypoint":    ship.CurrentLocation().Symbol,
+			"reason":      "no_fuel_station",
+		})
+		return nil // Skip refuel gracefully
+	}
+
 	// Dock for refuel (via DockShipCommand)
 	// Command handler updates ship state in memory
 	dockCmd := &types.DockShipCommand{
