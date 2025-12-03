@@ -16,6 +16,8 @@ export function getOperationEmoji(operationType: OperationType | null | undefine
     'shipyard': '🏭',
     'arbitrage': '💹',
     'manufacturing': '🔧',
+    'gas': '💨',
+    'gas-storage': '🛢️',
     'manual': '✋',
     'idle': '💤',
   };
@@ -39,6 +41,8 @@ export function getOperationName(operationType: OperationType | null | undefined
     'shipyard': 'Shipyard',
     'arbitrage': 'Arbitrage',
     'manufacturing': 'Manufacturing',
+    'gas': 'Gas Siphoning',
+    'gas-storage': 'Gas Storage',
     'manual': 'Manual',
     'idle': 'Idle',
   };
@@ -62,6 +66,8 @@ export function getOperationColor(operationType: OperationType | null | undefine
     'shipyard': '#EC4899', // pink-500
     'arbitrage': '#06B6D4', // cyan-500
     'manufacturing': '#F97316', // orange-500
+    'gas': '#A78BFA', // violet-400 (gas/nebula color)
+    'gas-storage': '#7C3AED', // violet-600 (darker for storage)
     'manual': '#A855F7', // violet-500
     'idle': '#6B7280', // gray-500
   };

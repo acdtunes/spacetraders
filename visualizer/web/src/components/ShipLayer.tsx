@@ -7,6 +7,8 @@ import { ShipSprite } from './ShipSprite';
 import { ShipNameLabel } from './ShipNameLabel';
 import { ShipOperationBadge } from './ShipOperationBadge';
 import { ShipTaskBadge } from './ShipTaskBadge';
+import { SiphonActivityIndicator } from './SiphonActivityIndicator';
+import { StorageShipIndicator } from './StorageShipIndicator';
 import { calculateShipRotation, getShipLabelInfo } from '../utils/shipDisplay';
 import { getShipOperation } from '../utils/shipOperations';
 import { Waypoint } from '../domain/waypoint';
@@ -147,8 +149,31 @@ export const ShipLayer = memo(function ShipLayer({
         const assignment = getShipOperation(ship.symbol, assignments);
         const operationType = assignment?.operation || null;
 
+        // Check if ship is actively siphoning (gas operation + has active cooldown)
+        // Cooldown indicates ship just performed a siphon action
+        const hasActiveCooldown = ship.cooldown && ship.cooldown.remainingSeconds > 0;
+        const isGasSiphoning = operationType === 'gas' && hasActiveCooldown;
+
+        // Check if ship is a storage ship actively buffering
+        const isStorageActive = operationType === 'gas-storage' &&
+          (ship.nav.status === 'DOCKED' || ship.nav.status === 'IN_ORBIT');
+
         return (
           <Group key={ship.symbol} x={position.x} y={position.y}>
+            {/* Siphon activity indicator (behind ship) */}
+            <SiphonActivityIndicator
+              frameTimestamp={frameTimestamp}
+              currentScale={currentScale}
+              isActive={isGasSiphoning}
+            />
+
+            {/* Storage ship indicator (behind ship) */}
+            <StorageShipIndicator
+              frameTimestamp={frameTimestamp}
+              currentScale={currentScale}
+              isActive={isStorageActive}
+            />
+
             <Group rotation={rotation}>
               <Circle
                 radius={4}

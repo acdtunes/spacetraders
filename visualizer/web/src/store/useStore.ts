@@ -392,27 +392,8 @@ const storeInitializer: StateCreator<AppState, [], []> = (set) => ({
   scoutTours: [],
   setScoutTours: (tours) =>
     set((state) => {
-      // Check if this is the initial load (no existing tours)
-      if (state.scoutTours.length === 0 && tours.length > 0) {
-        // Initial load: auto-select all tours
-        const allTourIds = new Set(tours.map((tour) => getTourId(tour)));
-        return { scoutTours: tours, visibleTours: allTourIds };
-      }
-
-      // For subsequent updates: add new tours to visible set while preserving user selections
-      const currentTourIds = new Set(state.scoutTours.map((t) => getTourId(t)));
-      const newTourIds = tours
-        .map((t) => getTourId(t))
-        .filter((id) => !currentTourIds.has(id));
-
-      if (newTourIds.length > 0) {
-        // New tours detected - add them to visible set
-        const updatedVisibleTours = new Set(state.visibleTours);
-        newTourIds.forEach((id) => updatedVisibleTours.add(id));
-        return { scoutTours: tours, visibleTours: updatedVisibleTours };
-      }
-
-      // No new tours - just update the tour list
+      // Just update the tour list - don't auto-select any tours
+      // User must manually enable tours they want to see
       return { scoutTours: tours };
     }),
   tradeOpportunities: [],
@@ -427,7 +408,7 @@ const storeInitializer: StateCreator<AppState, [], []> = (set) => ({
   toggleMiningRoutes: () => set((state) => ({ showMiningRoutes: !state.showMiningRoutes })),
   showOperationBadges: true,
   toggleOperationBadges: () => set((state) => ({ showOperationBadges: !state.showOperationBadges })),
-  showMarketFreshness: true,
+  showMarketFreshness: false,
   toggleMarketFreshness: () => set((state) => ({ showMarketFreshness: !state.showMarketFreshness })),
 
   // Tour filtering

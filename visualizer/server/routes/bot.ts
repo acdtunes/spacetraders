@@ -123,6 +123,12 @@ router.get('/assignments', async (req, res) => {
               operation = 'arbitrage';
             } else if (assignment.container_type === 'MANUFACTURING_TASK_WORKER') {
               operation = 'manufacturing';
+            } else if (assignment.container_type === 'GAS_COORDINATOR' ||
+                       assignment.container_type === 'GAS_SIPHON_WORKER' ||
+                       assignment.container_type === 'GAS_TRANSPORT_WORKER') {
+              operation = 'gas';
+            } else if (assignment.container_type === 'STORAGE_SHIP') {
+              operation = 'gas-storage';
             }
 
             assignments.push({
@@ -185,6 +191,12 @@ router.get('/assignments', async (req, res) => {
           operation = 'arbitrage';
         } else if (row.container_type === 'MANUFACTURING_TASK_WORKER') {
           operation = 'manufacturing';
+        } else if (row.container_type === 'GAS_COORDINATOR' ||
+                   row.container_type === 'GAS_SIPHON_WORKER' ||
+                   row.container_type === 'GAS_TRANSPORT_WORKER') {
+          operation = 'gas';
+        } else if (row.container_type === 'STORAGE_SHIP') {
+          operation = 'gas-storage';
         }
 
         assignments.push({
