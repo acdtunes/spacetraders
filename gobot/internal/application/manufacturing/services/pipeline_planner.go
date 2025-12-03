@@ -335,6 +335,9 @@ func (p *PipelinePlanner) createAcquireDeliverTask(
 	if err != nil {
 		return "", fmt.Errorf("no market with HIGH/ABUNDANT supply for %s: %w", node.Good, err)
 	}
+	if market == nil {
+		return "", fmt.Errorf("no market with HIGH/ABUNDANT supply for %s (supply too low)", node.Good)
+	}
 	sourceMarket := market.WaypointSymbol
 
 	// Create ACQUIRE_DELIVER task: buy from source, deliver to factory

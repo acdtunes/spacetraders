@@ -69,6 +69,9 @@ func (l *MarketLocator) FindImportMarket(
 	if err != nil {
 		return nil, fmt.Errorf("failed to get market data: %w", err)
 	}
+	if marketData == nil {
+		return nil, fmt.Errorf("no market data found for %s (market may not have been scanned)", bestMarket.WaypointSymbol)
+	}
 
 	// Extract trade good details
 	tradeGood := marketData.FindGood(good)
@@ -199,6 +202,9 @@ func (l *MarketLocator) FindExportMarket(
 	marketData, err := l.marketRepo.GetMarketData(ctx, cheapestMarket.WaypointSymbol, playerID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get market data: %w", err)
+	}
+	if marketData == nil {
+		return nil, fmt.Errorf("no market data found for %s (market may not have been scanned)", cheapestMarket.WaypointSymbol)
 	}
 
 	// Extract trade good details
@@ -382,7 +388,7 @@ func (l *MarketLocator) FindExportMarketWithGoodSupply(
 	for _, waypointSymbol := range marketWaypoints {
 		// Get market data
 		marketData, err := l.marketRepo.GetMarketData(ctx, waypointSymbol, playerID)
-		if err != nil {
+		if err != nil || marketData == nil {
 			continue // Skip markets we can't access
 		}
 

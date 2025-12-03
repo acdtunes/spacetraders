@@ -740,19 +740,25 @@ func (m *SupplyMonitor) createAcquireDeliverTasksForFactory(ctx context.Context,
 		return
 	}
 
-	// Build set of goods with pending/ready/executing ACQUIRE_DELIVER or STORAGE_ACQUIRE_DELIVER tasks
-	// CRITICAL: Must include both task types to prevent duplicate task creation
-	pendingInputs := make(map[string]bool)
+	// Build maps of goods with pending tasks, tracking task type separately.
+	// This allows us to detect and replace ACQUIRE_DELIVER tasks with STORAGE_ACQUIRE_DELIVER
+	// when a storage operation becomes available for a good.
+	pendingStorageTasks := make(map[string]bool)                      // goods with STORAGE_ACQUIRE_DELIVER tasks
+	pendingAcquireTasks := make(map[string]*manufacturing.ManufacturingTask) // goods with ACQUIRE_DELIVER tasks (need ref to cancel)
 	for _, task := range existingTasks {
-		isDeliveryTask := task.TaskType() == manufacturing.TaskTypeAcquireDeliver ||
-			task.TaskType() == manufacturing.TaskTypeStorageAcquireDeliver
-		if isDeliveryTask &&
-			task.FactorySymbol() == factory.FactorySymbol() &&
-			(task.Status() == manufacturing.TaskStatusPending ||
-				task.Status() == manufacturing.TaskStatusReady ||
-				task.Status() == manufacturing.TaskStatusAssigned ||
-				task.Status() == manufacturing.TaskStatusExecuting) {
-			pendingInputs[task.Good()] = true
+		if task.FactorySymbol() != factory.FactorySymbol() {
+			continue
+		}
+		if task.Status() != manufacturing.TaskStatusPending &&
+			task.Status() != manufacturing.TaskStatusReady &&
+			task.Status() != manufacturing.TaskStatusAssigned &&
+			task.Status() != manufacturing.TaskStatusExecuting {
+			continue
+		}
+		if task.TaskType() == manufacturing.TaskTypeStorageAcquireDeliver {
+			pendingStorageTasks[task.Good()] = true
+		} else if task.TaskType() == manufacturing.TaskTypeAcquireDeliver {
+			pendingAcquireTasks[task.Good()] = task
 		}
 	}
 
@@ -760,13 +766,9 @@ func (m *SupplyMonitor) createAcquireDeliverTasksForFactory(ctx context.Context,
 	tasksCreated := 0
 	skippedHighSupply := 0
 
-	// Create ACQUIRE_DELIVER tasks for inputs that don't have pending tasks
+	// Create ACQUIRE_DELIVER or STORAGE_ACQUIRE_DELIVER tasks for inputs that need them.
 	// INPUT BALANCING: Only deliver inputs that are actually needed (not already HIGH/ABUNDANT)
 	for _, input := range factoryInputs {
-		if pendingInputs[input.good] {
-			continue // Already has a pending task
-		}
-
 		// INPUT BALANCING OPTIMIZATION: Skip inputs that already have HIGH/ABUNDANT supply at factory
 		// This prevents over-delivering one input while another starves
 		if input.supply == "HIGH" || input.supply == "ABUNDANT" {
@@ -781,8 +783,48 @@ func (m *SupplyMonitor) createAcquireDeliverTasksForFactory(ctx context.Context,
 
 		// STORAGE OPERATION INTEGRATION: Check if this input is produced by a running storage operation
 		// (e.g., gas siphoning produces LIQUID_HYDROGEN, LIQUID_NITROGEN, HYDROCARBON)
-		// If so, create STORAGE_ACQUIRE_DELIVER task instead of regular ACQUIRE_DELIVER
-		if storageOp := m.findRunningStorageOperationForGood(ctx, input.good); storageOp != nil {
+		storageOp := m.findRunningStorageOperationForGood(ctx, input.good)
+
+		// If there's already a correct STORAGE_ACQUIRE_DELIVER task, skip
+		if storageOp != nil && pendingStorageTasks[input.good] {
+			continue // Already has correct task type
+		}
+
+		// TASK TYPE MIGRATION: If there's a running storage operation but we have an ACQUIRE_DELIVER task,
+		// cancel the wrong task and create the correct STORAGE_ACQUIRE_DELIVER task.
+		// This fixes legacy tasks created before the storage operation was started.
+		if storageOp != nil {
+			if wrongTask, exists := pendingAcquireTasks[input.good]; exists {
+				// Only cancel if task hasn't started executing (to avoid interrupting work in progress)
+				if wrongTask.Status() != manufacturing.TaskStatusExecuting {
+					if err := wrongTask.Cancel("Replaced by STORAGE_ACQUIRE_DELIVER - storage operation now available"); err != nil {
+						logger.Log("WARN", "Failed to cancel wrong task type", map[string]interface{}{
+							"task_id": wrongTask.ID()[:8],
+							"error":   err.Error(),
+						})
+					} else {
+						// Persist the cancellation
+						if err := m.taskRepo.Update(ctx, wrongTask); err != nil {
+							logger.Log("WARN", "Failed to persist task cancellation", map[string]interface{}{
+								"task_id": wrongTask.ID()[:8],
+								"error":   err.Error(),
+							})
+						} else {
+							logger.Log("INFO", "Cancelled ACQUIRE_DELIVER task - replacing with STORAGE_ACQUIRE_DELIVER", map[string]interface{}{
+								"factory":    factory.FactorySymbol(),
+								"input":      input.good,
+								"old_task":   wrongTask.ID()[:8],
+								"storage_op": storageOp.ID()[:8],
+							})
+						}
+					}
+				} else {
+					// Task is executing - let it complete, will create correct type on next cycle
+					continue
+				}
+			}
+
+			// Create STORAGE_ACQUIRE_DELIVER task
 			task := manufacturing.NewStorageAcquireDeliverTask(
 				factory.PipelineID(),
 				factory.PlayerID(),
@@ -820,6 +862,11 @@ func (m *SupplyMonitor) createAcquireDeliverTasksForFactory(ctx context.Context,
 				"task_id":       task.ID()[:8],
 			})
 			continue // Move to next input - this one is handled by storage
+		}
+
+		// No storage operation - check if we already have an ACQUIRE_DELIVER task
+		if pendingAcquireTasks[input.good] != nil {
+			continue // Already has a pending ACQUIRE_DELIVER task
 		}
 
 		// Check if this is a raw material (ores, crystals, gases) - these need strict supply filtering
