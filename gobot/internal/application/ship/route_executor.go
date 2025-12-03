@@ -453,31 +453,11 @@ func (e *RouteExecutor) waitForCurrentTransit(
 		"status":      "IN_TRANSIT",
 	})
 
-	// Try DB arrival time first (avoids API call in normal operation)
-	// But if DB arrival time is nil/past and ship is still IN_TRANSIT, fall back to API
+	// Use DB arrival time (DB is source of truth after daemon startup)
 	var waitTime time.Duration
-	var shipData *domainNavigation.ShipData
 
 	if ship.ArrivalTime() != nil {
 		waitTime = time.Until(*ship.ArrivalTime())
-	}
-
-	// If DB arrival time is invalid (nil or past) but ship is IN_TRANSIT, call API
-	// This handles daemon restart where ships started NEW navigation after sync
-	if waitTime <= 0 && ship.NavStatus() == domainNavigation.NavStatusInTransit && e.shipRepo != nil {
-		var err error
-		shipData, err = e.shipRepo.GetShipData(ctx, ship.ShipSymbol(), playerID)
-		if err != nil {
-			logger.Log("WARNING", "Failed to get ship data from API, proceeding without wait", map[string]interface{}{
-				"ship_symbol": ship.ShipSymbol(),
-				"error":       err.Error(),
-			})
-		} else if shipData.NavStatus == "IN_TRANSIT" && shipData.ArrivalTime != "" {
-			arrivalTime, err := shared.NewArrivalTime(shipData.ArrivalTime)
-			if err == nil {
-				waitTime = time.Duration(arrivalTime.CalculateWaitTime()) * time.Second
-			}
-		}
 	}
 
 	// Wait if we have positive wait time
@@ -505,15 +485,6 @@ func (e *RouteExecutor) waitForCurrentTransit(
 
 		// Persist ship state to DB after arrival to prevent stale state loops
 		if e.shipRepo != nil {
-			// Update location from API data if we fetched it
-			if shipData != nil && shipData.Location != "" {
-				systemSymbol := shared.ExtractSystemSymbol(shipData.Location)
-				ship.SetLocation(&shared.Waypoint{
-					Symbol:       shipData.Location,
-					SystemSymbol: systemSymbol,
-				})
-			}
-
 			// Clear arrival time since ship has arrived
 			ship.ClearArrivalTime()
 
