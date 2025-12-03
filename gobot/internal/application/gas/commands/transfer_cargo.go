@@ -80,16 +80,12 @@ func (h *TransferCargoHandler) Handle(ctx context.Context, request common.Reques
 		return nil, fmt.Errorf("failed to transfer cargo: %w", err)
 	}
 
-	// 6. Sync both ships' state from API to persist cargo changes to database
-	// Both ships are affected: source loses cargo, destination gains cargo
-	if _, syncErr := h.shipRepo.SyncShipFromAPI(ctx, cmd.FromShip, cmd.PlayerID); syncErr != nil {
-		// Log warning but don't fail - transfer was successful
-		fmt.Printf("Warning: Failed to sync source ship %s after transfer: %v\n", cmd.FromShip, syncErr)
-	}
-	if _, syncErr := h.shipRepo.SyncShipFromAPI(ctx, cmd.ToShip, cmd.PlayerID); syncErr != nil {
-		// Log warning but don't fail - transfer was successful
-		fmt.Printf("Warning: Failed to sync destination ship %s after transfer: %v\n", cmd.ToShip, syncErr)
-	}
+	// 6. Update ships' cargo state using domain methods
+	_ = fromShip.RemoveCargo(cmd.GoodSymbol, result.UnitsTransferred)
+	_ = h.shipRepo.Save(ctx, fromShip)
+
+	_ = toShip.ReceiveCargo(&shared.CargoItem{Symbol: cmd.GoodSymbol, Units: result.UnitsTransferred})
+	_ = h.shipRepo.Save(ctx, toShip)
 
 	return &TransferCargoResponse{
 		UnitsTransferred: result.UnitsTransferred,

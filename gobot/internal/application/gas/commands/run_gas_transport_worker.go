@@ -327,6 +327,14 @@ func (h *RunGasTransportWorkerHandler) executeFactoryDelivery(
 			"units":       cargoItem.Units,
 		})
 
+		// Sync ship state to persist cargo changes
+		if _, syncErr := h.shipRepo.SyncShipFromAPI(ctx, cmd.ShipSymbol, cmd.PlayerID); syncErr != nil {
+			logger.Log("WARN", "Failed to sync ship after cargo sale", map[string]interface{}{
+				"ship":  cmd.ShipSymbol,
+				"error": syncErr.Error(),
+			})
+		}
+
 		totalUnitsDelivered += cargoItem.Units
 		factoriesVisited++
 

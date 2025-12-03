@@ -84,6 +84,23 @@ func (h *SiphonResourcesHandler) Handle(ctx context.Context, request common.Requ
 		return nil, fmt.Errorf("failed to siphon resources: %w", err)
 	}
 
+	// 6. Persist updated cargo to database
+	if result.Cargo != nil {
+		// Convert CargoData to domain Cargo
+		inventory := make([]*shared.CargoItem, len(result.Cargo.Inventory))
+		for i := range result.Cargo.Inventory {
+			inventory[i] = &result.Cargo.Inventory[i]
+		}
+		newCargo, err := shared.NewCargo(result.Cargo.Capacity, result.Cargo.Units, inventory)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create cargo from API response: %w", err)
+		}
+		ship.SetCargo(newCargo)
+		if err := h.shipRepo.Save(ctx, ship); err != nil {
+			return nil, fmt.Errorf("failed to persist cargo after siphon: %w", err)
+		}
+	}
+
 	return &SiphonResourcesResponse{
 		YieldSymbol:      result.YieldSymbol,
 		YieldUnits:       result.YieldUnits,

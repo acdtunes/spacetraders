@@ -6,6 +6,7 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/storage"
 )
@@ -20,8 +21,9 @@ type CollectSellExecutor struct {
 	navigator          Navigator
 	purchaser          *ManufacturingPurchaser
 	seller             *ManufacturingSeller
-	storageCoordinator storage.StorageCoordinator // Optional: for storage-based collection
-	apiClient          domainPorts.APIClient      // Optional: for storage cargo transfer
+	storageCoordinator storage.StorageCoordinator  // Optional: for storage-based collection
+	apiClient          domainPorts.APIClient       // Optional: for storage cargo transfer
+	shipRepo           navigation.ShipRepository   // Optional: for syncing cargo state
 }
 
 // NewCollectSellExecutor creates a new executor for COLLECT_SELL tasks.
@@ -42,9 +44,11 @@ func NewCollectSellExecutor(
 func (e *CollectSellExecutor) WithStorageSupport(
 	storageCoordinator storage.StorageCoordinator,
 	apiClient domainPorts.APIClient,
+	shipRepo navigation.ShipRepository,
 ) *CollectSellExecutor {
 	e.storageCoordinator = storageCoordinator
 	e.apiClient = apiClient
+	e.shipRepo = shipRepo
 	return e
 }
 
@@ -293,6 +297,22 @@ func (e *CollectSellExecutor) collectFromStorage(
 		logger.Log("ERROR", "COLLECT_SELL: Failed to confirm transfer (cargo already moved)", map[string]interface{}{
 			"error": err.Error(),
 		})
+	}
+
+	// Sync both ships' cargo state to database
+	if e.shipRepo != nil {
+		if _, syncErr := e.shipRepo.SyncShipFromAPI(ctx, storageShip.ShipSymbol(), params.PlayerID); syncErr != nil {
+			logger.Log("WARN", "Failed to sync storage ship after transfer", map[string]interface{}{
+				"ship":  storageShip.ShipSymbol(),
+				"error": syncErr.Error(),
+			})
+		}
+		if _, syncErr := e.shipRepo.SyncShipFromAPI(ctx, params.ShipSymbol, params.PlayerID); syncErr != nil {
+			logger.Log("WARN", "Failed to sync hauler ship after transfer", map[string]interface{}{
+				"ship":  params.ShipSymbol,
+				"error": syncErr.Error(),
+			})
+		}
 	}
 
 	// Mark phase complete for recovery

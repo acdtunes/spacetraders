@@ -626,9 +626,84 @@ func (s *Ship) ClearCooldown() {
 	s.cooldownExpiration = nil
 }
 
-// SetCargo updates the ship's cargo
+// SetCargo updates the ship's cargo (used by repository for reconstruction)
 func (s *Ship) SetCargo(c *shared.Cargo) {
 	s.cargo = c
+}
+
+// ReceiveCargo adds cargo to the ship's hold
+// Returns error if insufficient space
+func (s *Ship) ReceiveCargo(item *shared.CargoItem) error {
+	if item == nil || item.Units <= 0 {
+		return nil
+	}
+	if !s.HasCargoSpace(item.Units) {
+		return fmt.Errorf("insufficient cargo space: need %d, have %d available",
+			item.Units, s.AvailableCargoSpace())
+	}
+
+	// Build new inventory
+	newInventory := make([]*shared.CargoItem, 0, len(s.cargo.Inventory)+1)
+	found := false
+	for _, existing := range s.cargo.Inventory {
+		if existing.Symbol == item.Symbol {
+			// Merge with existing item
+			newInventory = append(newInventory, &shared.CargoItem{
+				Symbol:      existing.Symbol,
+				Name:        existing.Name,
+				Description: existing.Description,
+				Units:       existing.Units + item.Units,
+			})
+			found = true
+		} else {
+			newInventory = append(newInventory, existing)
+		}
+	}
+	if !found {
+		newInventory = append(newInventory, item)
+	}
+
+	// Create new cargo (immutable)
+	newCargo, _ := shared.NewCargo(s.cargo.Capacity, s.cargo.Units+item.Units, newInventory)
+	s.cargo = newCargo
+	return nil
+}
+
+// RemoveCargo removes cargo from the ship's hold
+// Returns error if insufficient cargo
+func (s *Ship) RemoveCargo(symbol string, units int) error {
+	if units <= 0 {
+		return nil
+	}
+
+	currentUnits := s.cargo.GetItemUnits(symbol)
+	if currentUnits < units {
+		return fmt.Errorf("insufficient cargo: have %d units of %s, need %d",
+			currentUnits, symbol, units)
+	}
+
+	// Build new inventory
+	newInventory := make([]*shared.CargoItem, 0, len(s.cargo.Inventory))
+	for _, item := range s.cargo.Inventory {
+		if item.Symbol == symbol {
+			remaining := item.Units - units
+			if remaining > 0 {
+				newInventory = append(newInventory, &shared.CargoItem{
+					Symbol:      item.Symbol,
+					Name:        item.Name,
+					Description: item.Description,
+					Units:       remaining,
+				})
+			}
+		} else {
+			newInventory = append(newInventory, item)
+		}
+	}
+
+	// Create new cargo (immutable)
+	newCargo, _ := shared.NewCargo(s.cargo.Capacity, s.cargo.Units-units, newInventory)
+	s.cargo = newCargo
+	return nil
 }
 
 // SetLocation updates the ship's current location

@@ -6,6 +6,7 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/storage"
 )
@@ -26,6 +27,7 @@ type StorageAcquireDeliverExecutor struct {
 	seller             *ManufacturingSeller
 	storageCoordinator storage.StorageCoordinator
 	apiClient          domainPorts.APIClient
+	shipRepo           navigation.ShipRepository
 }
 
 // NewStorageAcquireDeliverExecutor creates a new executor for STORAGE_ACQUIRE_DELIVER tasks.
@@ -34,12 +36,14 @@ func NewStorageAcquireDeliverExecutor(
 	seller *ManufacturingSeller,
 	storageCoordinator storage.StorageCoordinator,
 	apiClient domainPorts.APIClient,
+	shipRepo navigation.ShipRepository,
 ) *StorageAcquireDeliverExecutor {
 	return &StorageAcquireDeliverExecutor{
 		navigator:          navigator,
 		seller:             seller,
 		storageCoordinator: storageCoordinator,
 		apiClient:          apiClient,
+		shipRepo:           shipRepo,
 	}
 }
 
@@ -182,6 +186,20 @@ func (e *StorageAcquireDeliverExecutor) Execute(ctx context.Context, params Task
 			// This shouldn't happen but log it
 			logger.Log("ERROR", "STORAGE_ACQUIRE_DELIVER: Failed to confirm transfer (cargo already moved)", map[string]interface{}{
 				"error": err.Error(),
+			})
+		}
+
+		// Sync both ships' cargo state to database
+		if _, syncErr := e.shipRepo.SyncShipFromAPI(ctx, storageShip.ShipSymbol(), params.PlayerID); syncErr != nil {
+			logger.Log("WARN", "Failed to sync storage ship after transfer", map[string]interface{}{
+				"ship":  storageShip.ShipSymbol(),
+				"error": syncErr.Error(),
+			})
+		}
+		if _, syncErr := e.shipRepo.SyncShipFromAPI(ctx, params.ShipSymbol, params.PlayerID); syncErr != nil {
+			logger.Log("WARN", "Failed to sync hauler ship after transfer", map[string]interface{}{
+				"ship":  params.ShipSymbol,
+				"error": syncErr.Error(),
 			})
 		}
 

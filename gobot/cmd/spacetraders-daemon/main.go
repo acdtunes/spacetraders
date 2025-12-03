@@ -463,7 +463,7 @@ func run(cfg *config.Config) error {
 	// This enables manufacturing pipelines to acquire cargo from storage ships
 	storageCoordinator := storageApp.NewInMemoryStorageCoordinator()
 	// Register storage executor and enable storage support on COLLECT_SELL executor
-	mfgServices.RegisterStorageExecutor(taskExecutorRegistry, mfgNavigator, mfgPurchaser, mfgSeller, storageCoordinator, apiClient)
+	mfgServices.RegisterStorageExecutor(taskExecutorRegistry, mfgNavigator, mfgPurchaser, mfgSeller, storageCoordinator, apiClient, shipRepo)
 
 	// Gas extraction handlers (now that storage coordinator is available)
 	// Transport is handled by manufacturing pool via STORAGE_ACQUIRE_DELIVER tasks

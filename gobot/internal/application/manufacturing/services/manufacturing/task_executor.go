@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/storage"
@@ -98,13 +99,14 @@ func RegisterStorageExecutor(
 	seller *ManufacturingSeller,
 	storageCoordinator storage.StorageCoordinator,
 	apiClient domainPorts.APIClient,
+	shipRepo navigation.ShipRepository,
 ) {
 	// Register STORAGE_ACQUIRE_DELIVER executor
-	registry.Register(NewStorageAcquireDeliverExecutor(navigator, seller, storageCoordinator, apiClient))
+	registry.Register(NewStorageAcquireDeliverExecutor(navigator, seller, storageCoordinator, apiClient, shipRepo))
 
 	// Re-register COLLECT_SELL executor with storage support
 	// This overwrites the basic executor with one that supports storage-based collection
 	collectSellExecutor := NewCollectSellExecutor(navigator, purchaser, seller).
-		WithStorageSupport(storageCoordinator, apiClient)
+		WithStorageSupport(storageCoordinator, apiClient, shipRepo)
 	registry.Register(collectSellExecutor)
 }

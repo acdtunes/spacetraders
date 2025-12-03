@@ -151,23 +151,13 @@ func (h *CargoTransactionHandler) Handle(ctx context.Context, request common.Req
 	transactionLimit := h.getTransactionLimit(ctx, ship, cmd)
 	waypointSymbol := ship.CurrentLocation().Symbol
 
-	response, err := h.executeTransactions(ctx, cmd, token, transactionLimit, waypointSymbol)
+	response, err := h.executeTransactions(ctx, cmd, ship, token, transactionLimit, waypointSymbol)
 	if err != nil {
 		return nil, err
 	}
 
 	// Note: Ledger recording now happens inside executeTransactions after each batch
 	// This ensures partial purchases are recorded even if later batches fail
-
-	// Sync ship state from API to persist cargo changes to database
-	_, syncErr := h.shipRepo.SyncShipFromAPI(ctx, cmd.ShipSymbol, cmd.PlayerID)
-	if syncErr != nil {
-		// Log warning but don't fail the operation - cargo was successfully traded
-		logging.LoggerFromContext(ctx).Log("WARN", "Failed to sync ship state after cargo transaction", map[string]interface{}{
-			"ship":  cmd.ShipSymbol,
-			"error": syncErr.Error(),
-		})
-	}
 
 	return response, nil
 }
@@ -208,13 +198,14 @@ func (h *CargoTransactionHandler) getTransactionLimit(ctx context.Context, ship 
 // The method:
 //  1. Splits the total units into batches based on transaction limit
 //  2. Executes each batch via the strategy
-//  3. Records ledger entry immediately after each successful batch
-//  4. Accumulates results (total amount, units processed, transaction count)
-//  5. Returns error on first failure with partial success information (partial success is already recorded)
+//  3. Updates ship cargo and persists to DB
+//  4. Records ledger entry immediately after each successful batch
+//  5. Accumulates results (total amount, units processed, transaction count)
+//  6. Returns error on first failure with partial success information (partial success is already recorded)
 //
 // OPTIMIZATION: waypointSymbol is passed from caller to avoid duplicate ship API load.
 // Balance tracking is skipped to avoid GetAgent API call - transactions still recorded.
-func (h *CargoTransactionHandler) executeTransactions(ctx context.Context, cmd *CargoTransactionCommand, token string, transactionLimit int, waypointSymbol string) (*CargoTransactionResponse, error) {
+func (h *CargoTransactionHandler) executeTransactions(ctx context.Context, cmd *CargoTransactionCommand, ship *navigation.Ship, token string, transactionLimit int, waypointSymbol string) (*CargoTransactionResponse, error) {
 	totalAmount := 0
 	unitsProcessed := 0
 	transactionCount := 0
@@ -241,6 +232,13 @@ func (h *CargoTransactionHandler) executeTransactions(ctx context.Context, cmd *
 		transactionCount++
 		unitsRemaining -= unitsToProcess
 
+		// Update ship cargo using domain methods
+		if transactionType == "purchase" {
+			_ = ship.ReceiveCargo(&shared.CargoItem{Symbol: cmd.GoodSymbol, Units: result.UnitsProcessed})
+		} else {
+			_ = ship.RemoveCargo(cmd.GoodSymbol, result.UnitsProcessed)
+		}
+
 		// Record ledger entry immediately after each successful batch
 		batchResponse := &CargoTransactionResponse{
 			TotalAmount:      result.TotalAmount,
@@ -256,6 +254,9 @@ func (h *CargoTransactionHandler) executeTransactions(ctx context.Context, cmd *
 			runningBalance += result.TotalAmount
 		}
 	}
+
+	// Persist ship cargo changes to DB once after all batches
+	_ = h.shipRepo.Save(ctx, ship)
 
 	// Refresh market data once after all batches complete (not per-batch)
 	// This reduces API calls from 2N to N+1 for N batches
