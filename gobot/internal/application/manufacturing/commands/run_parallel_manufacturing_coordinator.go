@@ -393,6 +393,7 @@ func (h *RunParallelManufacturingCoordinatorHandler) initializeServices(cmd *Run
 	orphanedHandler := mfgServices.NewOrphanedCargoHandler(
 		h.taskRepo,
 		h.marketRepo,
+		h.shipRepo, // For API sync to verify cargo before LIQUIDATE tasks
 		h.workerManager,
 		nil, // taskAssigner - will be set after creation
 		h.mediator,

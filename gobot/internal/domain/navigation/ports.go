@@ -80,6 +80,12 @@ type ShipRepository interface {
 	SaveAll(ctx context.Context, ships []*Ship) error
 	ReleaseAllActive(ctx context.Context, reason string) (int, error)
 
+	// ClaimShip exclusively assigns an idle ship to a container.
+	// Returns ErrShipAlreadyAssigned if ship is already assigned to another container.
+	// This method handles concurrency internally - multiple callers competing for the same
+	// ship will not cause race conditions.
+	ClaimShip(ctx context.Context, shipSymbol string, containerID string, playerID shared.PlayerID) error
+
 	// Sync methods (API -> Database)
 	SyncAllFromAPI(ctx context.Context, playerID shared.PlayerID) (int, error)
 	SyncShipFromAPI(ctx context.Context, symbol string, playerID shared.PlayerID) (*Ship, error)
@@ -89,6 +95,15 @@ type ShipRepository interface {
 	FindInTransitWithFutureArrival(ctx context.Context) ([]*Ship, error)
 	FindWithExpiredCooldown(ctx context.Context) ([]*Ship, error)
 	FindWithFutureCooldown(ctx context.Context) ([]*Ship, error)
+}
+
+// ArrivalScheduler schedules ship arrival transitions.
+// When a ship starts navigation, this scheduler is notified to set up
+// a timer that will transition the ship from IN_TRANSIT to IN_ORBIT
+// at the API-provided arrival time.
+type ArrivalScheduler interface {
+	// ScheduleArrival schedules a timer to transition ship from IN_TRANSIT to IN_ORBIT
+	ScheduleArrival(ship *Ship)
 }
 
 // DTOs for ship operations

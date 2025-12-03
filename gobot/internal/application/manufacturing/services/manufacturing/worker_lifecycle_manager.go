@@ -147,35 +147,44 @@ func (m *WorkerLifecycleManager) AssignTaskToShip(ctx context.Context, params As
 		PipelineNumber: pipelineNumber,
 		ProductGood:    productGood,
 	}); err != nil {
-		_ = task.RollbackAssignment()
+		if rollbackErr := task.RollbackAssignment(); rollbackErr != nil {
+			logger.Log("ERROR", fmt.Sprintf("Failed to rollback task assignment: %v", rollbackErr), nil)
+		}
 		if m.taskRepo != nil {
-			_ = m.taskRepo.Update(ctx, task)
+			if updateErr := m.taskRepo.Update(ctx, task); updateErr != nil {
+				logger.Log("ERROR", fmt.Sprintf("Failed to persist task rollback: %v (task %s may be stuck as ASSIGNED)", updateErr, task.ID()[:8]), nil)
+			}
 		}
 		return fmt.Errorf("failed to persist worker container: %w", err)
 	}
 
-	// Step 2: Assign ship to worker container using Ship aggregate
-	logger.Log("INFO", fmt.Sprintf("Assigning %s to worker container %s", shipSymbol, containerID), nil)
+	// Step 2: Claim ship exclusively using DB-level locking to prevent race conditions
+	// This ensures only one coordinator can assign the same ship
+	logger.Log("INFO", fmt.Sprintf("Claiming %s for worker container %s", shipSymbol, containerID), nil)
 	if m.shipRepo != nil {
-		if err := params.Ship.AssignToContainer(containerID, m.clock); err != nil {
+		playerID, _ := shared.NewPlayerID(params.PlayerID)
+		if err := m.shipRepo.ClaimShip(ctx, shipSymbol, containerID, playerID); err != nil {
+			// Rollback: remove worker container
 			if m.containerRemover != nil {
-				_ = m.containerRemover.Remove(ctx, containerID, params.PlayerID)
+				if removeErr := m.containerRemover.Remove(ctx, containerID, params.PlayerID); removeErr != nil {
+					logger.Log("ERROR", fmt.Sprintf("Failed to remove container %s during rollback: %v", containerID, removeErr), nil)
+				}
 			}
-			_ = task.RollbackAssignment()
+			// Rollback: reset task assignment
+			if rollbackErr := task.RollbackAssignment(); rollbackErr != nil {
+				logger.Log("ERROR", fmt.Sprintf("Failed to rollback task assignment: %v", rollbackErr), nil)
+			}
 			if m.taskRepo != nil {
-				_ = m.taskRepo.Update(ctx, task)
+				if updateErr := m.taskRepo.Update(ctx, task); updateErr != nil {
+					logger.Log("ERROR", fmt.Sprintf("Failed to persist task rollback: %v (task %s may be stuck as ASSIGNED)", updateErr, task.ID()[:8]), nil)
+				}
 			}
-			return fmt.Errorf("failed to assign ship: %w", err)
+			return fmt.Errorf("failed to claim ship: %w", err)
 		}
-		if err := m.shipRepo.Save(ctx, params.Ship); err != nil {
-			if m.containerRemover != nil {
-				_ = m.containerRemover.Remove(ctx, containerID, params.PlayerID)
-			}
-			_ = task.RollbackAssignment()
-			if m.taskRepo != nil {
-				_ = m.taskRepo.Update(ctx, task)
-			}
-			return fmt.Errorf("failed to persist ship assignment: %w", err)
+
+		// Update Ship domain entity for in-memory consistency
+		if err := params.Ship.AssignToContainer(containerID, m.clock); err != nil {
+			logger.Log("WARN", fmt.Sprintf("Failed to update ship domain entity: %v (DB already updated)", err), nil)
 		}
 	}
 
@@ -185,11 +194,17 @@ func (m *WorkerLifecycleManager) AssignTaskToShip(ctx context.Context, params As
 		// Release ship assignment on failure
 		if m.shipRepo != nil {
 			params.Ship.ForceRelease("worker_start_failed", m.clock)
-			_ = m.shipRepo.Save(ctx, params.Ship)
+			if saveErr := m.shipRepo.Save(ctx, params.Ship); saveErr != nil {
+				logger.Log("ERROR", fmt.Sprintf("Failed to save ship release during rollback: %v", saveErr), nil)
+			}
 		}
-		_ = task.RollbackAssignment()
+		if rollbackErr := task.RollbackAssignment(); rollbackErr != nil {
+			logger.Log("ERROR", fmt.Sprintf("Failed to rollback task assignment: %v", rollbackErr), nil)
+		}
 		if m.taskRepo != nil {
-			_ = m.taskRepo.Update(ctx, task)
+			if updateErr := m.taskRepo.Update(ctx, task); updateErr != nil {
+				logger.Log("ERROR", fmt.Sprintf("Failed to persist task rollback: %v (task %s may be stuck as ASSIGNED)", updateErr, task.ID()[:8]), nil)
+			}
 		}
 		return fmt.Errorf("failed to start worker container: %w", err)
 	}

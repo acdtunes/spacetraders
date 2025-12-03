@@ -46,6 +46,7 @@ type CargoInfo struct {
 type OrphanedCargoHandler struct {
 	taskRepo      manufacturing.TaskRepository
 	marketRepo    market.MarketRepository
+	shipRepo      navigation.ShipRepository
 	workerManager WorkerManager
 	taskAssigner  TaskAssigner
 	mediator      common.Mediator
@@ -55,6 +56,7 @@ type OrphanedCargoHandler struct {
 func NewOrphanedCargoHandler(
 	taskRepo manufacturing.TaskRepository,
 	marketRepo market.MarketRepository,
+	shipRepo navigation.ShipRepository,
 	workerManager WorkerManager,
 	taskAssigner TaskAssigner,
 	mediator common.Mediator,
@@ -62,6 +64,7 @@ func NewOrphanedCargoHandler(
 	return &OrphanedCargoHandler{
 		taskRepo:      taskRepo,
 		marketRepo:    marketRepo,
+		shipRepo:      shipRepo,
 		workerManager: workerManager,
 		taskAssigner:  taskAssigner,
 		mediator:      mediator,
@@ -252,6 +255,44 @@ func (h *OrphanedCargoHandler) HandleShipsWithExistingCargo(
 					"cargo_type": primaryCargo,
 				})
 				continue
+			}
+
+			// CRITICAL: Sync fresh ship state from API to prevent stale cargo bugs.
+			// The DB cargo state can become stale if a previous operation crashed or
+			// failed to persist. This API call verifies cargo actually exists before
+			// committing to a LIQUIDATE task.
+			playerIDVal := shared.MustNewPlayerID(params.PlayerID)
+			if h.shipRepo != nil {
+				freshShip, syncErr := h.shipRepo.SyncShipFromAPI(ctx, shipSymbol, playerIDVal)
+				if syncErr != nil {
+					logger.Log("WARN", "Failed to sync ship from API for cargo verification", map[string]interface{}{
+						"ship":  shipSymbol,
+						"error": syncErr.Error(),
+					})
+					// Continue anyway - better to try than skip entirely
+				} else {
+					// Verify cargo still exists after API sync
+					freshCargoQty := freshShip.Cargo().GetItemUnits(primaryCargo)
+					if freshCargoQty == 0 {
+						logger.Log("INFO", "Stale cargo detected - API shows no cargo, skipping LIQUIDATE", map[string]interface{}{
+							"ship":           shipSymbol,
+							"cargo_type":     primaryCargo,
+							"db_units":       maxUnits,
+							"api_units":      0,
+						})
+						continue
+					}
+					// Update maxUnits to match actual API cargo (may have changed)
+					if freshCargoQty != maxUnits {
+						logger.Log("DEBUG", "Cargo quantity updated from API", map[string]interface{}{
+							"ship":       shipSymbol,
+							"cargo_type": primaryCargo,
+							"db_units":   maxUnits,
+							"api_units":  freshCargoQty,
+						})
+						maxUnits = freshCargoQty
+					}
+				}
 			}
 
 			// Create LIQUIDATE task for orphaned cargo

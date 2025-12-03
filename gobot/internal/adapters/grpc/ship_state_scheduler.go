@@ -14,14 +14,20 @@ import (
 // Ensures we never act before the API considers the ship arrived.
 const ClockDriftBuffer = 1 * time.Second
 
+// SweeperInterval is how often the background sweeper checks for stuck ships.
+// This catches ships that slip through due to failed saves, timeouts, or clock drift.
+const SweeperInterval = 30 * time.Second
+
 // ShipStateScheduler manages timers for ship state transitions.
 // Uses time.AfterFunc to schedule precise transitions at exact API-provided timestamps.
 // Zero CPU usage between events (no polling).
+// Also runs a background sweeper to catch any ships that slip through due to failures.
 type ShipStateScheduler struct {
 	shipRepo navigation.ShipRepository
 	clock    shared.Clock
 	timers   map[string]*time.Timer // key: shipSymbol or shipSymbol:cooldown
 	mu       sync.Mutex
+	stopCh   chan struct{} // signals sweeper goroutine to stop
 }
 
 // NewShipStateScheduler creates a new scheduler for ship state transitions
@@ -33,6 +39,7 @@ func NewShipStateScheduler(shipRepo navigation.ShipRepository, clock shared.Cloc
 		shipRepo: shipRepo,
 		clock:    clock,
 		timers:   make(map[string]*time.Timer),
+		stopCh:   make(chan struct{}),
 	}
 }
 
@@ -227,4 +234,80 @@ func (s *ShipStateScheduler) PendingCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.timers)
+}
+
+// StartBackgroundSweeper starts a goroutine that periodically checks for stuck ships.
+// This provides resilience against failed timer callbacks (DB timeouts, save failures, etc.)
+func (s *ShipStateScheduler) StartBackgroundSweeper() {
+	go func() {
+		ticker := time.NewTicker(SweeperInterval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-s.stopCh:
+				return
+			case <-ticker.C:
+				s.sweepStuckShips()
+			}
+		}
+	}()
+	fmt.Printf("Background sweeper started (interval: %v)\n", SweeperInterval)
+}
+
+// sweepStuckShips finds and transitions ships that are stuck in IN_TRANSIT with past arrival times.
+// This catches ships that slipped through due to failed saves, timeouts, or other errors.
+func (s *ShipStateScheduler) sweepStuckShips() {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Find ships that should have arrived but are still IN_TRANSIT
+	stuckShips, err := s.shipRepo.FindInTransitWithPastArrival(ctx)
+	if err != nil {
+		fmt.Printf("Sweeper: Failed to find stuck ships: %v\n", err)
+		return
+	}
+
+	if len(stuckShips) == 0 {
+		return
+	}
+
+	fmt.Printf("Sweeper: Found %d stuck ship(s), transitioning...\n", len(stuckShips))
+
+	for _, ship := range stuckShips {
+		if err := ship.Arrive(); err != nil {
+			fmt.Printf("Sweeper: Failed to transition %s: %v\n", ship.ShipSymbol(), err)
+			continue
+		}
+
+		ship.ClearArrivalTime()
+
+		if err := s.shipRepo.Save(ctx, ship); err != nil {
+			fmt.Printf("Sweeper: Failed to save %s: %v\n", ship.ShipSymbol(), err)
+		} else {
+			fmt.Printf("Sweeper: Unstuck %s → IN_ORBIT at %s\n", ship.ShipSymbol(), ship.CurrentLocation().Symbol)
+		}
+	}
+
+	// Also sweep stuck cooldowns
+	stuckCooldowns, err := s.shipRepo.FindWithExpiredCooldown(ctx)
+	if err != nil {
+		fmt.Printf("Sweeper: Failed to find stuck cooldowns: %v\n", err)
+		return
+	}
+
+	for _, ship := range stuckCooldowns {
+		ship.ClearCooldown()
+		if err := s.shipRepo.Save(ctx, ship); err != nil {
+			fmt.Printf("Sweeper: Failed to clear cooldown for %s: %v\n", ship.ShipSymbol(), err)
+		} else {
+			fmt.Printf("Sweeper: Cleared stuck cooldown for %s\n", ship.ShipSymbol())
+		}
+	}
+}
+
+// Stop stops the background sweeper and cancels all timers
+func (s *ShipStateScheduler) Stop() {
+	close(s.stopCh)
+	s.CancelAll()
 }

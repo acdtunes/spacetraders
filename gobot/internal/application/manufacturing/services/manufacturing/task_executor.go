@@ -110,3 +110,14 @@ func RegisterStorageExecutor(
 		WithStorageSupport(storageCoordinator, apiClient, shipRepo)
 	registry.Register(collectSellExecutor)
 }
+
+// RegisterConstructionExecutor adds the DELIVER_TO_CONSTRUCTION executor to an existing registry.
+// This is separated because construction operations require access to the construction site repository.
+func RegisterConstructionExecutor(
+	registry *TaskExecutorRegistry,
+	navigator Navigator,
+	constructionRepo manufacturing.ConstructionSiteRepository,
+	pipelineRepo manufacturing.PipelineRepository,
+) {
+	registry.Register(NewDeliverToConstructionExecutor(navigator, constructionRepo, pipelineRepo))
+}
