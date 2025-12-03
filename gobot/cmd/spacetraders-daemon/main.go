@@ -160,7 +160,7 @@ func run(cfg *config.Config) error {
 
 	// Now initialize ship repository with graph service (implements IWaypointProvider)
 	// Pass db connection for hybrid API+DB operation (ship data from API, assignment from DB)
-	shipRepo = api.NewShipRepository(apiClient, playerRepo, waypointRepo, graphService, db)
+	shipRepo = api.NewShipRepository(apiClient, playerRepo, waypointRepo, graphService, db, nil) // nil = use RealClock
 	fmt.Println("Ship repository initialized")
 
 	// 7. Initialize mediator (CQRS dispatcher)

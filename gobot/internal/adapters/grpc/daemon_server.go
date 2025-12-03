@@ -51,9 +51,13 @@ type DaemonServer struct {
 	containerRepo    *persistence.ContainerRepositoryGORM
 	waypointRepo     *persistence.GormWaypointRepository
 	shipRepo         navigation.ShipRepository
+	playerRepo       player.PlayerRepository
 	routingClient    routing.RoutingClient
 	goodsFactoryRepo *persistence.GormGoodsFactoryRepository
 	clock            shared.Clock
+
+	// Ship state scheduler (timer-based state transitions)
+	shipStateScheduler *ShipStateScheduler
 
 	// Container orchestration
 	containers   map[string]*ContainerRunner
@@ -111,6 +115,7 @@ func NewDaemonServer(
 		return nil, fmt.Errorf("failed to set socket permissions: %w", err)
 	}
 
+	clock := shared.NewRealClock()
 	server := &DaemonServer{
 		mediator:              mediator,
 		db:                    db,
@@ -118,9 +123,11 @@ func NewDaemonServer(
 		containerRepo:         containerRepo,
 		waypointRepo:          waypointRepo,
 		shipRepo:              shipRepo,
+		playerRepo:            playerRepo,
 		routingClient:         routingClient,
 		goodsFactoryRepo:      goodsFactoryRepo,
-		clock:                 shared.NewRealClock(),
+		clock:                 clock,
+		shipStateScheduler:    NewShipStateScheduler(shipRepo, clock),
 		listener:              listener,
 		containers:            make(map[string]*ContainerRunner),
 		commandFactories:      make(map[string]CommandFactory),
@@ -253,6 +260,21 @@ func (s *DaemonServer) Start() error {
 			fmt.Printf("Warning: Failed to release zombie assignments: %v\n", err)
 		} else if count > 0 {
 			fmt.Printf("Released %d zombie ship assignment(s) on daemon startup\n", count)
+		}
+	}
+
+	// Sync all ships from API to database (database becomes source of truth after this)
+	if err := s.syncAllShipsOnStartup(); err != nil {
+		fmt.Printf("Warning: Ship startup sync failed: %v\n", err)
+		// Continue - we can still operate with stale data
+	}
+
+	// Schedule timers for pending arrivals and cooldowns
+	if s.shipStateScheduler != nil {
+		scheduleCtx, scheduleCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer scheduleCancel()
+		if err := s.shipStateScheduler.ScheduleAllPending(scheduleCtx); err != nil {
+			fmt.Printf("Warning: Failed to schedule pending state transitions: %v\n", err)
 		}
 	}
 
@@ -393,6 +415,11 @@ func (s *DaemonServer) handleShutdown() {
 	<-s.shutdownChan
 	fmt.Println("\nShutdown signal received, initiating graceful shutdown...")
 
+	// Cancel ship state scheduler timers
+	if s.shipStateScheduler != nil {
+		s.shipStateScheduler.CancelAll()
+	}
+
 	// BUG FIX #5: Graceful shutdown with timeout
 	// Give containers time to complete their current operation before force-interrupting
 	s.gracefulShutdownWithTimeout(GracefulShutdownTimeout)
@@ -406,6 +433,41 @@ func (s *DaemonServer) handleShutdown() {
 	}
 
 	close(s.done)
+}
+
+// syncAllShipsOnStartup syncs all ships from API to database for all players.
+// After this sync, the database becomes the source of truth for ship state.
+func (s *DaemonServer) syncAllShipsOnStartup() error {
+	if s.shipRepo == nil || s.playerRepo == nil {
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	players, err := s.playerRepo.ListAll(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to list players: %w", err)
+	}
+
+	if len(players) == 0 {
+		fmt.Println("No players found - skipping ship sync")
+		return nil
+	}
+
+	totalSynced := 0
+	for _, p := range players {
+		count, err := s.shipRepo.SyncAllFromAPI(ctx, p.ID)
+		if err != nil {
+			fmt.Printf("Warning: Failed to sync ships for player %s: %v\n", p.AgentSymbol, err)
+			continue
+		}
+		totalSynced += count
+		fmt.Printf("Synced %d ship(s) for player %s\n", count, p.AgentSymbol)
+	}
+
+	fmt.Printf("Ship startup sync complete: %d total ship(s) synced across %d player(s)\n", totalSynced, len(players))
+	return nil
 }
 
 // gracefulShutdownWithTimeout waits for containers to complete or times out

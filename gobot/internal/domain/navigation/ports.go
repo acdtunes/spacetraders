@@ -61,9 +61,9 @@ type ShipCargoRepository interface {
 // capabilities, or use the focused interfaces (ShipQueryRepository,
 // ShipCommandRepository, ShipCargoRepository) when you only need specific operations.
 //
-// Following hexagonal architecture: repositories abstract both database and API operations.
-// Ships are fetched from API (source of truth for ship state) and enriched with
-// assignment data from the database.
+// Following hexagonal architecture: After daemon startup, the database is the source
+// of truth for ship state. Ships are synced from API on startup, and all queries
+// read from the database. API calls are only made for state-changing operations.
 type ShipRepository interface {
 	ShipQueryRepository
 	ShipCommandRepository
@@ -75,10 +75,20 @@ type ShipRepository interface {
 	FindActiveByPlayer(ctx context.Context, playerID shared.PlayerID) ([]*Ship, error)
 	CountByContainerPrefix(ctx context.Context, prefix string, playerID shared.PlayerID) (int, error)
 
-	// Persistence methods (save ship aggregate including assignment state)
+	// Persistence methods (save ship aggregate including full state)
 	Save(ctx context.Context, ship *Ship) error
 	SaveAll(ctx context.Context, ships []*Ship) error
 	ReleaseAllActive(ctx context.Context, reason string) (int, error)
+
+	// Sync methods (API -> Database)
+	SyncAllFromAPI(ctx context.Context, playerID shared.PlayerID) (int, error)
+	SyncShipFromAPI(ctx context.Context, symbol string, playerID shared.PlayerID) (*Ship, error)
+
+	// Background updater queries
+	FindInTransitWithPastArrival(ctx context.Context) ([]*Ship, error)
+	FindInTransitWithFutureArrival(ctx context.Context) ([]*Ship, error)
+	FindWithExpiredCooldown(ctx context.Context) ([]*Ship, error)
+	FindWithFutureCooldown(ctx context.Context) ([]*Ship, error)
 }
 
 // DTOs for ship operations
@@ -117,6 +127,7 @@ type Result struct {
 	ArrivalTime    int    // Calculated seconds
 	ArrivalTimeStr string // ISO8601 timestamp from API (e.g., "2024-01-01T12:00:00Z")
 	FuelConsumed   int
+	FlightMode     string // Flight mode used for this navigation
 	// Fuel state from API response (avoids separate GetShip call)
 	FuelCurrent  int
 	FuelCapacity int

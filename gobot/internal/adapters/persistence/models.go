@@ -74,22 +74,73 @@ func (ContainerLogModel) TableName() string {
 	return "container_logs"
 }
 
-// ShipModel represents the ships table (renamed from ship_assignments)
-// This stores ship assignment state that is merged with API ship data
+// ShipModel represents the ships table
+// This stores complete ship state that is the source of truth after daemon startup
 type ShipModel struct {
-	ShipSymbol       string          `gorm:"column:ship_symbol;primaryKey;not null"`
-	PlayerID         int             `gorm:"column:player_id;primaryKey;not null"`
-	Player           *PlayerModel    `gorm:"foreignKey:PlayerID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
+	// Primary key fields
+	ShipSymbol string       `gorm:"column:ship_symbol;primaryKey;not null"`
+	PlayerID   int          `gorm:"column:player_id;primaryKey;not null"`
+	Player     *PlayerModel `gorm:"foreignKey:PlayerID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
+
+	// Navigation state
+	NavStatus   string     `gorm:"column:nav_status;default:'DOCKED'"`
+	FlightMode  string     `gorm:"column:flight_mode;default:'CRUISE'"`
+	ArrivalTime *time.Time `gorm:"column:arrival_time"`
+
+	// Location (denormalized for quick reconstruction)
+	LocationSymbol string  `gorm:"column:location_symbol"`
+	LocationX      float64 `gorm:"column:location_x;default:0"`
+	LocationY      float64 `gorm:"column:location_y;default:0"`
+	SystemSymbol   string  `gorm:"column:system_symbol"`
+
+	// Fuel
+	FuelCurrent  int `gorm:"column:fuel_current;default:0"`
+	FuelCapacity int `gorm:"column:fuel_capacity;default:0"`
+
+	// Cargo (JSONB for full item details)
+	CargoCapacity  int    `gorm:"column:cargo_capacity;default:0"`
+	CargoUnits     int    `gorm:"column:cargo_units;default:0"`
+	CargoInventory string `gorm:"column:cargo_inventory;type:jsonb;default:'[]'"`
+
+	// Ship specifications
+	EngineSpeed int    `gorm:"column:engine_speed;default:0"`
+	FrameSymbol string `gorm:"column:frame_symbol"`
+	Role        string `gorm:"column:role"`
+	Modules     string `gorm:"column:modules;type:jsonb;default:'[]'"`
+
+	// Cooldown
+	CooldownExpiration *time.Time `gorm:"column:cooldown_expiration"`
+
+	// Assignment (existing)
 	ContainerID      *string         `gorm:"column:container_id"` // Pointer to support NULL for idle ships
 	Container        *ContainerModel `gorm:"foreignKey:ContainerID,PlayerID;references:ID,PlayerID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL;"`
-	AssignmentStatus string          `gorm:"column:assignment_status;default:'idle'"` // Renamed from status
+	AssignmentStatus string          `gorm:"column:assignment_status;default:'idle'"`
 	AssignedAt       *time.Time      `gorm:"column:assigned_at"`
 	ReleasedAt       *time.Time      `gorm:"column:released_at"`
 	ReleaseReason    string          `gorm:"column:release_reason"`
+
+	// Sync metadata
+	SyncedAt time.Time `gorm:"column:synced_at;default:now()"`
+	Version  int       `gorm:"column:version;default:1"`
 }
 
 func (ShipModel) TableName() string {
 	return "ships"
+}
+
+// CargoItemJSON is a JSON helper type for cargo inventory items
+type CargoItemJSON struct {
+	Symbol      string `json:"symbol"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Units       int    `json:"units"`
+}
+
+// ModuleJSON is a JSON helper type for ship modules
+type ModuleJSON struct {
+	Symbol   string `json:"symbol"`
+	Capacity int    `json:"capacity"`
+	Range    int    `json:"range"`
 }
 
 // SystemGraphModel represents the system_graphs table

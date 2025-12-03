@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -31,21 +32,21 @@ type cachedShipList struct {
 }
 
 // ShipRepository implements ShipRepository using the SpaceTraders API + Database
-// This is a hybrid repository that:
-// - Fetches ship data from API (source of truth for ship state)
-// - Enriches with assignment data from database
-// - Persists assignment changes to database
+// After daemon startup, the database is the source of truth for ship state.
+// Ships are synced from API on startup, and all queries read from the database.
+// API calls are only made for state-changing operations (navigate, dock, orbit, refuel, cargo).
 //
 // Caching Strategy:
-// - Ship list cache (15s TTL): Prevents redundant ListShips API calls
+// - In-memory cache (15s TTL): Prevents redundant DB reads
 //   when multiple coordinators call FindAllByPlayer in quick succession
 type ShipRepository struct {
 	apiClient        domainPorts.APIClient
 	playerRepo       player.PlayerRepository
 	waypointRepo     system.WaypointRepository
 	waypointProvider system.IWaypointProvider
-	db               *gorm.DB // Database connection for assignment persistence
-	shipListCache    sync.Map // key: playerID (int) -> *cachedShipList
+	db               *gorm.DB     // Database connection for ship state persistence
+	clock            shared.Clock // Clock for timestamps
+	shipListCache    sync.Map     // key: playerID (int) -> *cachedShipList
 }
 
 // NewShipRepository creates a new hybrid API+DB ship repository
@@ -55,44 +56,39 @@ func NewShipRepository(
 	waypointRepo system.WaypointRepository,
 	waypointProvider system.IWaypointProvider,
 	db *gorm.DB,
+	clock shared.Clock,
 ) *ShipRepository {
+	if clock == nil {
+		clock = shared.NewRealClock()
+	}
 	return &ShipRepository{
 		apiClient:        apiClient,
 		playerRepo:       playerRepo,
 		waypointRepo:     waypointRepo,
 		waypointProvider: waypointProvider,
 		db:               db,
+		clock:            clock,
 	}
 }
 
-// FindBySymbol retrieves a ship by symbol and player ID from API
-// Converts API DTO to domain entity with full waypoint reconstruction
-// Enriches with assignment data from database
+// FindBySymbol retrieves a ship by symbol and player ID from database.
+// If not found in DB, syncs from API first.
+// Database is the source of truth after daemon startup.
 func (r *ShipRepository) FindBySymbol(ctx context.Context, symbol string, playerID shared.PlayerID) (*navigation.Ship, error) {
-	// Get player token
-	player, err := r.playerRepo.FindByID(ctx, playerID)
+	var model persistence.ShipModel
+	err := r.db.WithContext(ctx).
+		Where("ship_symbol = ? AND player_id = ?", symbol, playerID.Value()).
+		First(&model).Error
+
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		// Ship not in DB - might be newly purchased, sync from API
+		return r.SyncShipFromAPI(ctx, symbol, playerID)
+	}
 	if err != nil {
-		return nil, fmt.Errorf("failed to find player: %w", err)
+		return nil, fmt.Errorf("failed to query ship: %w", err)
 	}
 
-	// Fetch ship from API
-	shipData, err := r.apiClient.GetShip(ctx, symbol, player.Token)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get ship from API: %w", err)
-	}
-
-	// Convert API DTO to domain entity
-	ship, err := r.shipDataToDomain(ctx, shipData, playerID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to convert ship data: %w", err)
-	}
-
-	// Enrich with assignment from DB
-	if err := r.enrichWithAssignment(ctx, ship, playerID); err != nil {
-		log.Printf("Warning: failed to load assignment for %s: %v", symbol, err)
-	}
-
-	return ship, nil
+	return r.modelToDomain(ctx, &model, playerID)
 }
 
 // GetShipData retrieves raw ship data from API (includes arrival time for IN_TRANSIT ships)
@@ -112,13 +108,11 @@ func (r *ShipRepository) GetShipData(ctx context.Context, symbol string, playerI
 	return shipData, nil
 }
 
-// FindAllByPlayer retrieves all ships for a player from API with short-lived caching
-// Converts API DTOs to domain entities with full waypoint reconstruction
-// Batch enriches with assignment data from database
+// FindAllByPlayer retrieves all ships for a player from database with short-lived caching.
+// Database is the source of truth after daemon startup.
 //
 // Caching: Returns cached ship list if within 15 seconds of last fetch.
-// This prevents redundant API calls when multiple coordinators (manufacturing,
-// gas, contract fleet) call FindIdleLightHaulers in quick succession.
+// This prevents redundant DB reads when multiple coordinators call this method.
 func (r *ShipRepository) FindAllByPlayer(ctx context.Context, playerID shared.PlayerID) ([]*navigation.Ship, error) {
 	cacheKey := playerID.Value()
 
@@ -133,54 +127,47 @@ func (r *ShipRepository) FindAllByPlayer(ctx context.Context, playerID shared.Pl
 		}
 	}
 
-	// Get player token
-	player, err := r.playerRepo.FindByID(ctx, playerID)
+	// Fetch all ships from database
+	var models []persistence.ShipModel
+	err := r.db.WithContext(ctx).
+		Where("player_id = ?", playerID.Value()).
+		Find(&models).Error
 	if err != nil {
-		return nil, fmt.Errorf("failed to find player: %w", err)
+		return nil, fmt.Errorf("failed to query ships: %w", err)
 	}
 
-	// Fetch all ships from API
-	shipsData, err := r.apiClient.ListShips(ctx, player.Token)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list ships from API: %w", err)
-	}
-
-	// Convert API DTOs to domain entities
-	ships := make([]*navigation.Ship, len(shipsData))
-	for i, shipData := range shipsData {
-		ship, err := r.shipDataToDomain(ctx, shipData, playerID)
+	// Convert DB models to domain entities
+	ships := make([]*navigation.Ship, 0, len(models))
+	for _, model := range models {
+		ship, err := r.modelToDomain(ctx, &model, playerID)
 		if err != nil {
-			return nil, fmt.Errorf("failed to convert ship %s: %w", shipData.Symbol, err)
+			log.Printf("Warning: failed to convert ship %s: %v", model.ShipSymbol, err)
+			continue
 		}
-		ships[i] = ship
-	}
-
-	// Batch enrich with assignments from DB
-	if err := r.batchEnrichWithAssignments(ctx, ships, playerID); err != nil {
-		log.Printf("Warning: failed to batch load assignments: %v", err)
+		ships = append(ships, ship)
 	}
 
 	// Cache the result
 	r.shipListCache.Store(cacheKey, &cachedShipList{
 		ships:     ships,
-		fetchedAt: time.Now(),
+		fetchedAt: r.clock.Now(),
 	})
 
 	return ships, nil
 }
 
 // FindBySymbolCached retrieves a ship from the cached ship list if available,
-// otherwise falls back to a direct API call.
+// otherwise falls back to a direct DB query.
 //
 // OPTIMIZATION: When selecting ships from a known list (e.g., idle haulers),
-// use this method to avoid N individual API calls. The cached list is refreshed
+// use this method to avoid N individual DB queries. The cached list is refreshed
 // every 15 seconds via FindAllByPlayer.
 //
 // Use cases:
 //   - Ship selection loops (SelectClosestShip, RebalanceFleet)
 //   - Any code that iterates through ship symbols to load ship data
 //
-// Falls back to FindBySymbol (direct API) if:
+// Falls back to FindBySymbol (direct DB query) if:
 //   - Ship not found in cache
 //   - Cache is stale or empty
 func (r *ShipRepository) FindBySymbolCached(ctx context.Context, symbol string, playerID shared.PlayerID) (*navigation.Ship, error) {
@@ -241,8 +228,8 @@ func (r *ShipRepository) FindManyBySymbolsCached(ctx context.Context, symbols []
 	return result, nil
 }
 
-// Navigate executes ship navigation via API
-// Returns navigation result with arrival time from API (following Python implementation pattern)
+// Navigate executes ship navigation via API and persists state to database.
+// Returns navigation result with arrival time from API.
 func (r *ShipRepository) Navigate(ctx context.Context, ship *navigation.Ship, destination *shared.Waypoint, playerID shared.PlayerID) (*navigation.Result, error) {
 	// Get player token
 	player, err := r.playerRepo.FindByID(ctx, playerID)
@@ -266,10 +253,30 @@ func (r *ShipRepository) Navigate(ctx context.Context, ship *navigation.Ship, de
 		return nil, fmt.Errorf("failed to consume fuel: %w", err)
 	}
 
+	// Set flight mode from result
+	if navResult.FlightMode != "" {
+		ship.SetFlightMode(navResult.FlightMode)
+	}
+
+	// Set arrival time from API response
+	if navResult.ArrivalTimeStr != "" {
+		if arrivalTime, err := time.Parse(time.RFC3339, navResult.ArrivalTimeStr); err == nil {
+			ship.SetArrivalTime(arrivalTime)
+		}
+	}
+
+	// Persist state to database
+	if err := r.Save(ctx, ship); err != nil {
+		log.Printf("Warning: failed to persist ship %s after navigate: %v", ship.ShipSymbol(), err)
+	}
+
+	// Invalidate cache for this player
+	r.shipListCache.Delete(playerID.Value())
+
 	return navResult, nil
 }
 
-// Dock docks the ship via API (idempotent)
+// Dock docks the ship via API (idempotent) and persists state to database.
 func (r *ShipRepository) Dock(ctx context.Context, ship *navigation.Ship, playerID shared.PlayerID) error {
 	// Get player token
 	player, err := r.playerRepo.FindByID(ctx, playerID)
@@ -291,10 +298,18 @@ func (r *ShipRepository) Dock(ctx context.Context, ship *navigation.Ship, player
 		return fmt.Errorf("failed to update ship state: %w", err)
 	}
 
+	// Persist state to database
+	if err := r.Save(ctx, ship); err != nil {
+		log.Printf("Warning: failed to persist ship %s after dock: %v", ship.ShipSymbol(), err)
+	}
+
+	// Invalidate cache for this player
+	r.shipListCache.Delete(playerID.Value())
+
 	return nil
 }
 
-// Orbit puts ship in orbit via API (idempotent)
+// Orbit puts ship in orbit via API (idempotent) and persists state to database.
 func (r *ShipRepository) Orbit(ctx context.Context, ship *navigation.Ship, playerID shared.PlayerID) error {
 	// Get player token
 	player, err := r.playerRepo.FindByID(ctx, playerID)
@@ -316,10 +331,21 @@ func (r *ShipRepository) Orbit(ctx context.Context, ship *navigation.Ship, playe
 		return fmt.Errorf("failed to update ship state: %w", err)
 	}
 
+	// Clear arrival time when ship arrives in orbit
+	ship.ClearArrivalTime()
+
+	// Persist state to database
+	if err := r.Save(ctx, ship); err != nil {
+		log.Printf("Warning: failed to persist ship %s after orbit: %v", ship.ShipSymbol(), err)
+	}
+
+	// Invalidate cache for this player
+	r.shipListCache.Delete(playerID.Value())
+
 	return nil
 }
 
-// Refuel refuels the ship via API
+// Refuel refuels the ship via API and persists state to database.
 func (r *ShipRepository) Refuel(ctx context.Context, ship *navigation.Ship, playerID shared.PlayerID, units *int) (*navigation.RefuelResult, error) {
 	// Get player token
 	player, err := r.playerRepo.FindByID(ctx, playerID)
@@ -347,10 +373,18 @@ func (r *ShipRepository) Refuel(ctx context.Context, ship *navigation.Ship, play
 		}
 	}
 
+	// Persist state to database
+	if err := r.Save(ctx, ship); err != nil {
+		log.Printf("Warning: failed to persist ship %s after refuel: %v", ship.ShipSymbol(), err)
+	}
+
+	// Invalidate cache for this player
+	r.shipListCache.Delete(playerID.Value())
+
 	return refuelResult, nil
 }
 
-// SetFlightMode sets the ship's flight mode via API
+// SetFlightMode sets the ship's flight mode via API and persists state to database.
 func (r *ShipRepository) SetFlightMode(ctx context.Context, ship *navigation.Ship, playerID shared.PlayerID, mode string) error {
 	// Get player token
 	player, err := r.playerRepo.FindByID(ctx, playerID)
@@ -363,9 +397,16 @@ func (r *ShipRepository) SetFlightMode(ctx context.Context, ship *navigation.Shi
 		return fmt.Errorf("failed to set flight mode: %w", err)
 	}
 
-	// Note: The API response updates the ship's flight mode,
-	// but we don't need to update the domain entity here
-	// as the ship's flight mode is not part of its core state
+	// Update domain entity
+	ship.SetFlightMode(mode)
+
+	// Persist state to database
+	if err := r.Save(ctx, ship); err != nil {
+		log.Printf("Warning: failed to persist ship %s after set flight mode: %v", ship.ShipSymbol(), err)
+	}
+
+	// Invalidate cache for this player
+	r.shipListCache.Delete(playerID.Value())
 
 	return nil
 }
@@ -571,14 +612,75 @@ func (r *ShipRepository) modelToAssignment(model *persistence.ShipModel) *naviga
 	)
 }
 
-// shipToModel converts ship aggregate to DB model for persistence
+// shipToModel converts ship aggregate to DB model for persistence (full state)
 func (r *ShipRepository) shipToModel(ship *navigation.Ship) persistence.ShipModel {
 	model := persistence.ShipModel{
 		ShipSymbol:       ship.ShipSymbol(),
 		PlayerID:         ship.PlayerID().Value(),
 		AssignmentStatus: "idle",
+		SyncedAt:         r.clock.Now(),
+		Version:          1,
 	}
 
+	// Navigation state
+	model.NavStatus = string(ship.NavStatus())
+	model.FlightMode = ship.FlightMode()
+	model.ArrivalTime = ship.ArrivalTime()
+
+	// Location
+	if ship.CurrentLocation() != nil {
+		model.LocationSymbol = ship.CurrentLocation().Symbol
+		model.LocationX = ship.CurrentLocation().X
+		model.LocationY = ship.CurrentLocation().Y
+		model.SystemSymbol = shared.ExtractSystemSymbol(ship.CurrentLocation().Symbol)
+	}
+
+	// Fuel
+	if ship.Fuel() != nil {
+		model.FuelCurrent = ship.Fuel().Current
+		model.FuelCapacity = ship.Fuel().Capacity
+	}
+
+	// Cargo
+	model.CargoCapacity = ship.CargoCapacity()
+	if ship.Cargo() != nil {
+		model.CargoUnits = ship.Cargo().Units
+		cargoItems := make([]persistence.CargoItemJSON, 0)
+		for _, item := range ship.Cargo().Inventory {
+			cargoItems = append(cargoItems, persistence.CargoItemJSON{
+				Symbol:      item.Symbol,
+				Name:        item.Name,
+				Description: item.Description,
+				Units:       item.Units,
+			})
+		}
+		if cargoJSON, err := json.Marshal(cargoItems); err == nil {
+			model.CargoInventory = string(cargoJSON)
+		}
+	}
+
+	// Ship specifications
+	model.EngineSpeed = ship.EngineSpeed()
+	model.FrameSymbol = ship.FrameSymbol()
+	model.Role = ship.Role()
+
+	// Modules
+	moduleItems := make([]persistence.ModuleJSON, 0)
+	for _, mod := range ship.Modules() {
+		moduleItems = append(moduleItems, persistence.ModuleJSON{
+			Symbol:   mod.Symbol(),
+			Capacity: mod.Capacity(),
+			Range:    mod.Range(),
+		})
+	}
+	if modulesJSON, err := json.Marshal(moduleItems); err == nil {
+		model.Modules = string(modulesJSON)
+	}
+
+	// Cooldown
+	model.CooldownExpiration = ship.CooldownExpiration()
+
+	// Assignment
 	if ship.Assignment() != nil {
 		assignment := ship.Assignment()
 		model.AssignmentStatus = string(assignment.Status())
@@ -605,7 +707,7 @@ func (r *ShipRepository) shipToModel(ship *navigation.Ship) persistence.ShipMode
 	return model
 }
 
-// Save persists ship aggregate state (including assignment) to DB
+// Save persists ship aggregate state (including full state) to DB
 func (r *ShipRepository) Save(ctx context.Context, ship *navigation.Ship) error {
 	if r.db == nil {
 		return fmt.Errorf("database not configured")
@@ -615,7 +717,7 @@ func (r *ShipRepository) Save(ctx context.Context, ship *navigation.Ship) error 
 	return r.db.WithContext(ctx).
 		Clauses(clause.OnConflict{
 			Columns:   []clause.Column{{Name: "ship_symbol"}, {Name: "player_id"}},
-			DoUpdates: clause.AssignmentColumns([]string{"container_id", "assignment_status", "assigned_at", "released_at", "release_reason"}),
+			UpdateAll: true,
 		}).
 		Create(&model).Error
 }
@@ -637,7 +739,7 @@ func (r *ShipRepository) SaveAll(ctx context.Context, ships []*navigation.Ship) 
 	return r.db.WithContext(ctx).
 		Clauses(clause.OnConflict{
 			Columns:   []clause.Column{{Name: "ship_symbol"}, {Name: "player_id"}},
-			DoUpdates: clause.AssignmentColumns([]string{"container_id", "assignment_status", "assigned_at", "released_at", "release_reason"}),
+			UpdateAll: true,
 		}).
 		Create(&models).Error
 }
@@ -743,4 +845,361 @@ func (r *ShipRepository) ReleaseAllActive(ctx context.Context, reason string) (i
 	}
 
 	return int(result.RowsAffected), nil
+}
+
+// =============================================================================
+// DB-as-Source-of-Truth Methods
+// =============================================================================
+
+// modelToDomain converts DB model to domain entity
+func (r *ShipRepository) modelToDomain(ctx context.Context, model *persistence.ShipModel, playerID shared.PlayerID) (*navigation.Ship, error) {
+	// Build location waypoint from denormalized data
+	location := &shared.Waypoint{
+		Symbol:       model.LocationSymbol,
+		X:            model.LocationX,
+		Y:            model.LocationY,
+		SystemSymbol: model.SystemSymbol,
+	}
+
+	// Create fuel value object
+	fuel, err := shared.NewFuel(model.FuelCurrent, model.FuelCapacity)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create fuel: %w", err)
+	}
+
+	// Parse cargo inventory from JSON
+	var cargoItems []*shared.CargoItem
+	if model.CargoInventory != "" && model.CargoInventory != "[]" {
+		var cargoJSON []persistence.CargoItemJSON
+		if err := json.Unmarshal([]byte(model.CargoInventory), &cargoJSON); err == nil {
+			for _, item := range cargoJSON {
+				cargoItem, err := shared.NewCargoItem(item.Symbol, item.Name, item.Description, item.Units)
+				if err == nil {
+					cargoItems = append(cargoItems, cargoItem)
+				}
+			}
+		}
+	}
+
+	// Create cargo value object
+	cargo, err := shared.NewCargo(model.CargoCapacity, model.CargoUnits, cargoItems)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create cargo: %w", err)
+	}
+
+	// Parse modules from JSON
+	var modules []*navigation.ShipModule
+	if model.Modules != "" && model.Modules != "[]" {
+		var modulesJSON []persistence.ModuleJSON
+		if err := json.Unmarshal([]byte(model.Modules), &modulesJSON); err == nil {
+			for _, mod := range modulesJSON {
+				module := navigation.NewShipModule(mod.Symbol, mod.Capacity, mod.Range)
+				modules = append(modules, module)
+			}
+		}
+	}
+
+	// Build assignment from model
+	assignment := r.modelToAssignment(model)
+
+	// Create ship using reconstruction constructor
+	return navigation.ReconstructShip(
+		model.ShipSymbol,
+		playerID,
+		location,
+		fuel,
+		model.FuelCapacity,
+		model.CargoCapacity,
+		cargo,
+		model.EngineSpeed,
+		model.FrameSymbol,
+		model.Role,
+		modules,
+		navigation.NavStatus(model.NavStatus),
+		model.FlightMode,
+		model.ArrivalTime,
+		model.CooldownExpiration,
+		assignment,
+	)
+}
+
+// shipDataToModel converts API ship data to DB model for sync
+func (r *ShipRepository) shipDataToModel(ctx context.Context, data *navigation.ShipData, playerID shared.PlayerID, now time.Time) (*persistence.ShipModel, error) {
+	model := &persistence.ShipModel{
+		ShipSymbol:       data.Symbol,
+		PlayerID:         playerID.Value(),
+		SyncedAt:         now,
+		Version:          1,
+		AssignmentStatus: "idle",
+	}
+
+	// Navigation state
+	model.NavStatus = data.NavStatus
+	model.FlightMode = "CRUISE" // Default
+
+	// Parse arrival time if present
+	if data.ArrivalTime != "" {
+		if arrivalTime, err := time.Parse(time.RFC3339, data.ArrivalTime); err == nil {
+			model.ArrivalTime = &arrivalTime
+		}
+	}
+
+	// Parse cooldown expiration if present
+	if data.CooldownExpiration != "" {
+		if cooldownExp, err := time.Parse(time.RFC3339, data.CooldownExpiration); err == nil {
+			model.CooldownExpiration = &cooldownExp
+		}
+	}
+
+	// Location
+	model.LocationSymbol = data.Location
+	model.SystemSymbol = shared.ExtractSystemSymbol(data.Location)
+	// We need to get coordinates from waypoint provider
+	if waypoint, err := r.waypointProvider.GetWaypoint(ctx, data.Location, model.SystemSymbol, playerID.Value()); err == nil {
+		model.LocationX = waypoint.X
+		model.LocationY = waypoint.Y
+	}
+
+	// Fuel
+	model.FuelCurrent = data.FuelCurrent
+	model.FuelCapacity = data.FuelCapacity
+
+	// Cargo
+	model.CargoCapacity = data.CargoCapacity
+	model.CargoUnits = data.CargoUnits
+	if data.Cargo != nil {
+		cargoItems := make([]persistence.CargoItemJSON, 0)
+		for _, item := range data.Cargo.Inventory {
+			cargoItems = append(cargoItems, persistence.CargoItemJSON{
+				Symbol:      item.Symbol,
+				Name:        item.Name,
+				Description: item.Description,
+				Units:       item.Units,
+			})
+		}
+		if cargoJSON, err := json.Marshal(cargoItems); err == nil {
+			model.CargoInventory = string(cargoJSON)
+		}
+	}
+
+	// Ship specifications
+	model.EngineSpeed = data.EngineSpeed
+	model.FrameSymbol = data.FrameSymbol
+	model.Role = data.Role
+
+	// Modules
+	moduleItems := make([]persistence.ModuleJSON, 0)
+	for _, mod := range data.Modules {
+		moduleItems = append(moduleItems, persistence.ModuleJSON{
+			Symbol:   mod.Symbol,
+			Capacity: mod.Capacity,
+			Range:    mod.Range,
+		})
+	}
+	if modulesJSON, err := json.Marshal(moduleItems); err == nil {
+		model.Modules = string(modulesJSON)
+	}
+
+	return model, nil
+}
+
+// SyncAllFromAPI fetches all ships from API and upserts to database
+func (r *ShipRepository) SyncAllFromAPI(ctx context.Context, playerID shared.PlayerID) (int, error) {
+	player, err := r.playerRepo.FindByID(ctx, playerID)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get player: %w", err)
+	}
+
+	// Fetch all ships from API
+	shipsData, err := r.apiClient.ListShips(ctx, player.Token)
+	if err != nil {
+		return 0, fmt.Errorf("failed to list ships from API: %w", err)
+	}
+
+	now := r.clock.Now()
+	models := make([]persistence.ShipModel, 0, len(shipsData))
+
+	for _, data := range shipsData {
+		model, err := r.shipDataToModel(ctx, data, playerID, now)
+		if err != nil {
+			log.Printf("Warning: failed to convert ship %s: %v", data.Symbol, err)
+			continue
+		}
+
+		// Preserve existing assignment data
+		var existingModel persistence.ShipModel
+		if err := r.db.WithContext(ctx).
+			Where("ship_symbol = ? AND player_id = ?", model.ShipSymbol, model.PlayerID).
+			First(&existingModel).Error; err == nil {
+			// Preserve assignment data
+			model.ContainerID = existingModel.ContainerID
+			model.AssignmentStatus = existingModel.AssignmentStatus
+			model.AssignedAt = existingModel.AssignedAt
+			model.ReleasedAt = existingModel.ReleasedAt
+			model.ReleaseReason = existingModel.ReleaseReason
+		}
+
+		models = append(models, *model)
+	}
+
+	// Batch upsert all ships
+	if len(models) > 0 {
+		err = r.db.WithContext(ctx).
+			Clauses(clause.OnConflict{
+				Columns:   []clause.Column{{Name: "ship_symbol"}, {Name: "player_id"}},
+				UpdateAll: true,
+			}).
+			Create(&models).Error
+		if err != nil {
+			return 0, fmt.Errorf("failed to upsert ships: %w", err)
+		}
+	}
+
+	// Invalidate cache
+	r.shipListCache.Delete(playerID.Value())
+
+	return len(models), nil
+}
+
+// SyncShipFromAPI fetches a single ship from API and persists to database
+func (r *ShipRepository) SyncShipFromAPI(ctx context.Context, symbol string, playerID shared.PlayerID) (*navigation.Ship, error) {
+	player, err := r.playerRepo.FindByID(ctx, playerID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Fetch from API
+	shipData, err := r.apiClient.GetShip(ctx, symbol, player.Token)
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert to model and persist
+	now := r.clock.Now()
+	model, err := r.shipDataToModel(ctx, shipData, playerID, now)
+	if err != nil {
+		return nil, err
+	}
+
+	// Preserve existing assignment data
+	var existingModel persistence.ShipModel
+	if err := r.db.WithContext(ctx).
+		Where("ship_symbol = ? AND player_id = ?", model.ShipSymbol, model.PlayerID).
+		First(&existingModel).Error; err == nil {
+		// Preserve assignment data
+		model.ContainerID = existingModel.ContainerID
+		model.AssignmentStatus = existingModel.AssignmentStatus
+		model.AssignedAt = existingModel.AssignedAt
+		model.ReleasedAt = existingModel.ReleasedAt
+		model.ReleaseReason = existingModel.ReleaseReason
+	}
+
+	err = r.db.WithContext(ctx).
+		Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "ship_symbol"}, {Name: "player_id"}},
+			UpdateAll: true,
+		}).
+		Create(model).Error
+	if err != nil {
+		return nil, fmt.Errorf("failed to persist ship: %w", err)
+	}
+
+	// Invalidate cache
+	r.shipListCache.Delete(playerID.Value())
+
+	return r.modelToDomain(ctx, model, playerID)
+}
+
+// FindInTransitWithPastArrival finds ships that should have arrived (IN_TRANSIT with arrival_time in the past)
+func (r *ShipRepository) FindInTransitWithPastArrival(ctx context.Context) ([]*navigation.Ship, error) {
+	var models []persistence.ShipModel
+	err := r.db.WithContext(ctx).
+		Where("nav_status = ?", "IN_TRANSIT").
+		Where("arrival_time IS NOT NULL").
+		Where("arrival_time <= ?", r.clock.Now()).
+		Find(&models).Error
+	if err != nil {
+		return nil, err
+	}
+
+	ships := make([]*navigation.Ship, 0, len(models))
+	for _, model := range models {
+		playerID, _ := shared.NewPlayerID(model.PlayerID)
+		ship, err := r.modelToDomain(ctx, &model, playerID)
+		if err != nil {
+			continue
+		}
+		ships = append(ships, ship)
+	}
+	return ships, nil
+}
+
+// FindInTransitWithFutureArrival finds ships that will arrive in the future (for scheduling)
+func (r *ShipRepository) FindInTransitWithFutureArrival(ctx context.Context) ([]*navigation.Ship, error) {
+	var models []persistence.ShipModel
+	err := r.db.WithContext(ctx).
+		Where("nav_status = ?", "IN_TRANSIT").
+		Where("arrival_time IS NOT NULL").
+		Where("arrival_time > ?", r.clock.Now()).
+		Find(&models).Error
+	if err != nil {
+		return nil, err
+	}
+
+	ships := make([]*navigation.Ship, 0, len(models))
+	for _, model := range models {
+		playerID, _ := shared.NewPlayerID(model.PlayerID)
+		ship, err := r.modelToDomain(ctx, &model, playerID)
+		if err != nil {
+			continue
+		}
+		ships = append(ships, ship)
+	}
+	return ships, nil
+}
+
+// FindWithExpiredCooldown finds ships with past cooldowns
+func (r *ShipRepository) FindWithExpiredCooldown(ctx context.Context) ([]*navigation.Ship, error) {
+	var models []persistence.ShipModel
+	err := r.db.WithContext(ctx).
+		Where("cooldown_expiration IS NOT NULL").
+		Where("cooldown_expiration <= ?", r.clock.Now()).
+		Find(&models).Error
+	if err != nil {
+		return nil, err
+	}
+
+	ships := make([]*navigation.Ship, 0, len(models))
+	for _, model := range models {
+		playerID, _ := shared.NewPlayerID(model.PlayerID)
+		ship, err := r.modelToDomain(ctx, &model, playerID)
+		if err != nil {
+			continue
+		}
+		ships = append(ships, ship)
+	}
+	return ships, nil
+}
+
+// FindWithFutureCooldown finds ships with cooldowns expiring in the future (for scheduling)
+func (r *ShipRepository) FindWithFutureCooldown(ctx context.Context) ([]*navigation.Ship, error) {
+	var models []persistence.ShipModel
+	err := r.db.WithContext(ctx).
+		Where("cooldown_expiration IS NOT NULL").
+		Where("cooldown_expiration > ?", r.clock.Now()).
+		Find(&models).Error
+	if err != nil {
+		return nil, err
+	}
+
+	ships := make([]*navigation.Ship, 0, len(models))
+	for _, model := range models {
+		playerID, _ := shared.NewPlayerID(model.PlayerID)
+		ship, err := r.modelToDomain(ctx, &model, playerID)
+		if err != nil {
+			continue
+		}
+		ships = append(ships, ship)
+	}
+	return ships, nil
 }

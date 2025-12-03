@@ -2,6 +2,7 @@ package navigation
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
@@ -64,6 +65,11 @@ type Ship struct {
 	assignment         *ShipAssignment // Container assignment state (persisted to DB)
 	fuelService        *ShipFuelService
 	navigationCalc     *ShipNavigationCalculator
+
+	// DB-as-source-of-truth fields
+	flightMode         string     // Current flight mode (CRUISE, DRIFT, BURN, STEALTH)
+	arrivalTime        *time.Time // When IN_TRANSIT ship will arrive
+	cooldownExpiration *time.Time // When cooldown expires (mining, surveying, etc.)
 }
 
 // NewShip creates a new Ship entity with validation
@@ -571,4 +577,144 @@ func (s *Ship) TransferToContainer(newContainerID string, clock shared.Clock) er
 // NOTE: Prefer using AssignToContainer/Release for domain operations.
 func (s *Ship) SetAssignment(assignment *ShipAssignment) {
 	s.assignment = assignment
+}
+
+// =============================================================================
+// DB-as-Source-of-Truth Methods
+// =============================================================================
+
+// FlightMode returns the ship's current flight mode
+func (s *Ship) FlightMode() string {
+	if s.flightMode == "" {
+		return "CRUISE" // Default flight mode
+	}
+	return s.flightMode
+}
+
+// ArrivalTime returns when the ship will arrive (for IN_TRANSIT ships)
+func (s *Ship) ArrivalTime() *time.Time {
+	return s.arrivalTime
+}
+
+// CooldownExpiration returns when the ship's cooldown expires
+func (s *Ship) CooldownExpiration() *time.Time {
+	return s.cooldownExpiration
+}
+
+// SetFlightMode sets the ship's flight mode
+func (s *Ship) SetFlightMode(mode string) {
+	s.flightMode = mode
+}
+
+// SetArrivalTime sets when the ship will arrive
+func (s *Ship) SetArrivalTime(t time.Time) {
+	s.arrivalTime = &t
+}
+
+// ClearArrivalTime clears the arrival time (ship has arrived)
+func (s *Ship) ClearArrivalTime() {
+	s.arrivalTime = nil
+}
+
+// SetCooldown sets the cooldown expiration time
+func (s *Ship) SetCooldown(t time.Time) {
+	s.cooldownExpiration = &t
+}
+
+// ClearCooldown clears the cooldown (cooldown has expired)
+func (s *Ship) ClearCooldown() {
+	s.cooldownExpiration = nil
+}
+
+// SetCargo updates the ship's cargo
+func (s *Ship) SetCargo(c *shared.Cargo) {
+	s.cargo = c
+}
+
+// SetLocation updates the ship's current location
+func (s *Ship) SetLocation(w *shared.Waypoint) {
+	s.currentLocation = w
+}
+
+// SetNavStatus sets the navigation status directly
+// Used by repositories when loading from database
+func (s *Ship) SetNavStatus(status NavStatus) {
+	s.navStatus = status
+}
+
+// HasCooldown checks if the ship has an active cooldown
+func (s *Ship) HasCooldown() bool {
+	return s.cooldownExpiration != nil && time.Now().Before(*s.cooldownExpiration)
+}
+
+// CooldownRemaining returns the remaining cooldown duration
+func (s *Ship) CooldownRemaining() time.Duration {
+	if s.cooldownExpiration == nil {
+		return 0
+	}
+	remaining := time.Until(*s.cooldownExpiration)
+	if remaining < 0 {
+		return 0
+	}
+	return remaining
+}
+
+// TimeUntilArrival returns the remaining time until arrival
+func (s *Ship) TimeUntilArrival() time.Duration {
+	if s.arrivalTime == nil {
+		return 0
+	}
+	remaining := time.Until(*s.arrivalTime)
+	if remaining < 0 {
+		return 0
+	}
+	return remaining
+}
+
+// ReconstructShip creates a Ship from persisted state (used by repository)
+// This is used when loading a ship from the database.
+func ReconstructShip(
+	shipSymbol string,
+	playerID shared.PlayerID,
+	currentLocation *shared.Waypoint,
+	fuel *shared.Fuel,
+	fuelCapacity int,
+	cargoCapacity int,
+	cargo *shared.Cargo,
+	engineSpeed int,
+	frameSymbol string,
+	role string,
+	modules []*ShipModule,
+	navStatus NavStatus,
+	flightMode string,
+	arrivalTime *time.Time,
+	cooldownExpiration *time.Time,
+	assignment *ShipAssignment,
+) (*Ship, error) {
+	s := &Ship{
+		shipSymbol:         shipSymbol,
+		playerID:           playerID,
+		currentLocation:    currentLocation,
+		fuel:               fuel,
+		fuelCapacity:       fuelCapacity,
+		cargoCapacity:      cargoCapacity,
+		cargo:              cargo,
+		engineSpeed:        engineSpeed,
+		frameSymbol:        frameSymbol,
+		role:               role,
+		modules:            modules,
+		navStatus:          navStatus,
+		flightMode:         flightMode,
+		arrivalTime:        arrivalTime,
+		cooldownExpiration: cooldownExpiration,
+		assignment:         assignment,
+		fuelService:        NewShipFuelService(),
+		navigationCalc:     NewShipNavigationCalculator(),
+	}
+
+	if err := s.validate(); err != nil {
+		return nil, err
+	}
+
+	return s, nil
 }
