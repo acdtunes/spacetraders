@@ -101,6 +101,10 @@ func FindIdleLightHaulers(
 	var idleHaulers []*navigation.Ship
 	var idleHaulerSymbols []string
 
+	// Track if ANY hauler ships exist (regardless of availability)
+	// Used to determine if fallback should trigger
+	haulerShipsExist := false
+
 	for _, ship := range allShips {
 		// Filter 1: Only haulers
 		if ship.Role() != "HAULER" {
@@ -112,16 +116,20 @@ func FindIdleLightHaulers(
 			continue
 		}
 
-		// Filter 3: Exclude ships in transit (even without assignment)
-		// Ships being balanced or navigating are not available for new contracts
-		if ship.NavStatus() == navigation.NavStatusInTransit {
-			continue
-		}
-
-		// Filter 4: Exclude command ship (ship #1 - the first ship, used for purchasing)
+		// Filter 3: Exclude command ship (ship #1 - the first ship, used for purchasing)
 		// Command ships end in "-1" (e.g., "TORWIND-1", "AGENT-1")
 		// These should remain available for manual operations
 		if isCommandShip(ship.ShipSymbol()) {
+			continue
+		}
+
+		// At this point we know at least one hauler exists
+		// This is used to prevent fallback when haulers exist but are busy
+		haulerShipsExist = true
+
+		// Filter 4: Exclude ships in transit (even without assignment)
+		// Ships being balanced or navigating are not available for new contracts
+		if ship.NavStatus() == navigation.NavStatusInTransit {
 			continue
 		}
 
@@ -134,15 +142,18 @@ func FindIdleLightHaulers(
 	}
 
 	logger.Log("INFO", "Idle light haulers discovered", map[string]interface{}{
-		"action":         "find_idle_haulers",
-		"total_ships":    len(allShips),
-		"idle_haulers":   len(idleHaulers),
-		"hauler_symbols": idleHaulerSymbols,
+		"action":              "find_idle_haulers",
+		"total_ships":         len(allShips),
+		"hauler_ships_exist":  haulerShipsExist,
+		"idle_haulers":        len(idleHaulers),
+		"hauler_symbols":      idleHaulerSymbols,
 	})
 
-	// Fallback: If no haulers found and CommandShipFallback is enabled, use command ship
-	// This is only for contract tasks - manufacturing tasks should NOT use fallback
-	if len(idleHaulers) == 0 && fallbackOption == CommandShipFallback {
+	// Fallback: ONLY use command ship if NO HAULER SHIPS EXIST AT ALL
+	// This is for early game when player has no haulers yet.
+	// If haulers exist but are busy (in transit/assigned), we should wait for them
+	// rather than using the command ship.
+	if len(idleHaulers) == 0 && !haulerShipsExist && fallbackOption == CommandShipFallback {
 		for _, ship := range allShips {
 			// Only consider command ship as fallback
 			if !isCommandShip(ship.ShipSymbol()) {
@@ -164,7 +175,7 @@ func FindIdleLightHaulers(
 				idleHaulers = append(idleHaulers, ship)
 				idleHaulerSymbols = append(idleHaulerSymbols, ship.ShipSymbol())
 
-				logger.Log("INFO", "Using command ship as fallback (no haulers available)", map[string]interface{}{
+				logger.Log("INFO", "Using command ship as fallback (no hauler ships exist)", map[string]interface{}{
 					"action":         "command_ship_fallback",
 					"ship_symbol":    ship.ShipSymbol(),
 					"ship_role":      ship.Role(),
