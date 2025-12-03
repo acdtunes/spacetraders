@@ -858,3 +858,82 @@ func (s *daemonServiceImpl) GasExtractionOperation(ctx context.Context, req *pb.
 
 	return resp, nil
 }
+
+// StartConstructionPipeline starts or resumes a construction pipeline for a construction site
+func (s *daemonServiceImpl) StartConstructionPipeline(ctx context.Context, req *pb.StartConstructionPipelineRequest) (*pb.StartConstructionPipelineResponse, error) {
+	// Resolve player ID from request
+	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve player: %w", err)
+	}
+
+	// Get system symbol (nil pointer means derive from construction site)
+	var systemSymbol string
+	if req.SystemSymbol != nil {
+		systemSymbol = *req.SystemSymbol
+	}
+
+	// Call daemon's StartConstructionPipeline method
+	result, err := s.daemon.StartConstructionPipeline(ctx, req.ConstructionSite, playerID, int(req.SupplyChainDepth), int(req.MaxWorkers), systemSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to start construction pipeline: %w", err)
+	}
+
+	// Convert materials to protobuf format
+	pbMaterials := make([]*pb.ConstructionMaterial, len(result.Materials))
+	for i, mat := range result.Materials {
+		pbMaterials[i] = &pb.ConstructionMaterial{
+			TradeSymbol: mat.TradeSymbol,
+			Required:    mat.Required,
+			Fulfilled:   mat.Fulfilled,
+			Progress:    mat.Progress,
+		}
+	}
+
+	return &pb.StartConstructionPipelineResponse{
+		PipelineId:       result.PipelineID,
+		ConstructionSite: result.ConstructionSite,
+		IsResumed:        result.IsResumed,
+		Materials:        pbMaterials,
+		TaskCount:        result.TaskCount,
+		Status:           result.Status,
+		Message:          result.Message,
+	}, nil
+}
+
+// GetConstructionStatus retrieves the status of a construction site and any active pipeline
+func (s *daemonServiceImpl) GetConstructionStatus(ctx context.Context, req *pb.GetConstructionStatusRequest) (*pb.GetConstructionStatusResponse, error) {
+	// Resolve player ID from request
+	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve player: %w", err)
+	}
+
+	// Call daemon's GetConstructionStatus method
+	result, err := s.daemon.GetConstructionStatus(ctx, req.ConstructionSite, playerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get construction status: %w", err)
+	}
+
+	// Convert materials to protobuf format
+	pbMaterials := make([]*pb.ConstructionMaterial, len(result.Materials))
+	for i, mat := range result.Materials {
+		pbMaterials[i] = &pb.ConstructionMaterial{
+			TradeSymbol: mat.TradeSymbol,
+			Required:    mat.Required,
+			Fulfilled:   mat.Fulfilled,
+			Remaining:   mat.Remaining,
+			Progress:    mat.Progress,
+		}
+	}
+
+	return &pb.GetConstructionStatusResponse{
+		ConstructionSite: result.ConstructionSite,
+		IsComplete:       result.IsComplete,
+		Progress:         result.Progress,
+		Materials:        pbMaterials,
+		PipelineId:       result.PipelineID,
+		PipelineStatus:   result.PipelineStatus,
+		PipelineProgress: result.PipelineProgress,
+	}, nil
+}

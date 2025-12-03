@@ -90,6 +90,12 @@ service DaemonService {
 
   // GasExtractionOperation starts a gas extraction operation with siphon and transport ships
   rpc GasExtractionOperation(GasExtractionOperationRequest) returns (GasExtractionOperationResponse);
+
+  // StartConstructionPipeline starts a pipeline to supply materials to a construction site
+  rpc StartConstructionPipeline(StartConstructionPipelineRequest) returns (StartConstructionPipelineResponse);
+
+  // GetConstructionStatus retrieves the status of a construction site
+  rpc GetConstructionStatus(GetConstructionStatusRequest) returns (GetConstructionStatusResponse);
 }
 
 // NavigateShipRequest initiates ship navigation
@@ -650,4 +656,59 @@ message GasExtractionOperationResponse {
   // Dry-run results
   repeated ShipRoute ship_routes = 6;    // Planned routes for all ships
   repeated string errors = 7;            // Any errors during route planning
+}
+
+// StartConstructionPipelineRequest starts a pipeline to supply materials to a construction site
+message StartConstructionPipelineRequest {
+  // Waypoint symbol of the construction site (e.g., "X1-FB5-I61")
+  string construction_site = 1;
+  // Player ID for the operation
+  int32 player_id = 2;
+  // Optional agent symbol (alternative to player_id)
+  optional string agent_symbol = 3;
+  // Supply chain depth: 0=full chain, 1=raw only, 2=intermediates, 3=buy final
+  int32 supply_chain_depth = 4;
+  // Maximum parallel workers (default 5)
+  int32 max_workers = 5;
+  // Optional system symbol (defaults to deriving from construction_site)
+  optional string system_symbol = 6;
+}
+
+// StartConstructionPipelineResponse returns the result of starting a construction pipeline
+message StartConstructionPipelineResponse {
+  string pipeline_id = 1;
+  string construction_site = 2;
+  bool is_resumed = 3;  // true if resuming existing pipeline
+  repeated ConstructionMaterial materials = 4;
+  int32 task_count = 5;
+  string status = 6;
+  string message = 7;
+}
+
+// ConstructionMaterial represents a material required for construction
+message ConstructionMaterial {
+  string trade_symbol = 1;
+  int32 required = 2;
+  int32 fulfilled = 3;
+  int32 remaining = 4;
+  double progress = 5;
+}
+
+// GetConstructionStatusRequest retrieves the status of a construction site
+message GetConstructionStatusRequest {
+  string construction_site = 1;
+  int32 player_id = 2;
+  optional string agent_symbol = 3;
+}
+
+// GetConstructionStatusResponse returns the status of a construction site
+message GetConstructionStatusResponse {
+  string construction_site = 1;
+  bool is_complete = 2;
+  double progress = 3;
+  repeated ConstructionMaterial materials = 4;
+  // Pipeline info (if any)
+  optional string pipeline_id = 5;
+  optional string pipeline_status = 6;
+  optional double pipeline_progress = 7;
 }

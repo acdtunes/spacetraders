@@ -116,6 +116,13 @@ func NewDaemonServer(
 	}
 
 	clock := shared.NewRealClock()
+	shipStateScheduler := NewShipStateScheduler(shipRepo, clock)
+
+	// Wire arrival scheduler to ship repository so navigation triggers arrival timers
+	if concreteRepo, ok := shipRepo.(interface{ SetArrivalScheduler(navigation.ArrivalScheduler) }); ok {
+		concreteRepo.SetArrivalScheduler(shipStateScheduler)
+	}
+
 	server := &DaemonServer{
 		mediator:              mediator,
 		db:                    db,
@@ -127,7 +134,7 @@ func NewDaemonServer(
 		routingClient:         routingClient,
 		goodsFactoryRepo:      goodsFactoryRepo,
 		clock:                 clock,
-		shipStateScheduler:    NewShipStateScheduler(shipRepo, clock),
+		shipStateScheduler:    shipStateScheduler,
 		listener:              listener,
 		containers:            make(map[string]*ContainerRunner),
 		commandFactories:      make(map[string]CommandFactory),
@@ -263,6 +270,12 @@ func (s *DaemonServer) Start() error {
 		}
 	}
 
+	// Reset orphaned ASSIGNED manufacturing tasks to READY
+	// This fixes tasks stuck in ASSIGNED state from failed worker container creation
+	if err := s.resetOrphanedManufacturingTasks(); err != nil {
+		fmt.Printf("Warning: Failed to reset orphaned manufacturing tasks: %v\n", err)
+	}
+
 	// Sync all ships from API to database (database becomes source of truth after this)
 	if err := s.syncAllShipsOnStartup(); err != nil {
 		fmt.Printf("Warning: Ship startup sync failed: %v\n", err)
@@ -276,6 +289,8 @@ func (s *DaemonServer) Start() error {
 		if err := s.shipStateScheduler.ScheduleAllPending(scheduleCtx); err != nil {
 			fmt.Printf("Warning: Failed to schedule pending state transitions: %v\n", err)
 		}
+		// Start background sweeper to catch ships that slip through due to failures
+		s.shipStateScheduler.StartBackgroundSweeper()
 	}
 
 	// Start metrics server if enabled
@@ -420,9 +435,9 @@ func (s *DaemonServer) handleShutdown() {
 	<-s.shutdownChan
 	fmt.Println("\nShutdown signal received, initiating graceful shutdown...")
 
-	// Cancel ship state scheduler timers
+	// Stop ship state scheduler (cancels timers and stops background sweeper)
 	if s.shipStateScheduler != nil {
-		s.shipStateScheduler.CancelAll()
+		s.shipStateScheduler.Stop()
 	}
 
 	// BUG FIX #5: Graceful shutdown with timeout
@@ -472,6 +487,42 @@ func (s *DaemonServer) syncAllShipsOnStartup() error {
 	}
 
 	fmt.Printf("Ship startup sync complete: %d total ship(s) synced across %d player(s)\n", totalSynced, len(players))
+	return nil
+}
+
+// resetOrphanedManufacturingTasks resets ASSIGNED manufacturing tasks on daemon startup.
+// This fixes the bug where tasks get stuck in ASSIGNED status because:
+// 1. AssignTaskAtomically succeeds (task.assigned_ship is set)
+// 2. But PersistManufacturingTaskWorkerContainer or shipRepo.Save fails
+// 3. Rollback errors are ignored, leaving task ASSIGNED with no worker container
+//
+// This cleanup runs on daemon startup to reset any such orphaned tasks.
+func (s *DaemonServer) resetOrphanedManufacturingTasks() error {
+	if s.db == nil {
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Reset all ASSIGNED tasks to READY and clear their assigned_ship
+	// This allows them to be picked up by a manufacturing coordinator when it starts
+	result := s.db.WithContext(ctx).
+		Table("manufacturing_tasks").
+		Where("status = ?", "ASSIGNED").
+		Updates(map[string]interface{}{
+			"status":        "READY",
+			"assigned_ship": nil,
+		})
+
+	if result.Error != nil {
+		return fmt.Errorf("failed to reset orphaned manufacturing tasks: %w", result.Error)
+	}
+
+	if result.RowsAffected > 0 {
+		fmt.Printf("Reset %d orphaned ASSIGNED manufacturing task(s) to READY on daemon startup\n", result.RowsAffected)
+	}
+
 	return nil
 }
 

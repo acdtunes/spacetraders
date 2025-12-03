@@ -991,3 +991,122 @@ func (c *DaemonClient) GasExtractionOperation(
 		Errors:         resp.Errors,
 	}, nil
 }
+
+// StartConstructionPipelineResponse contains the result of starting a construction pipeline
+type StartConstructionPipelineResponse struct {
+	PipelineID       string
+	ConstructionSite string
+	IsResumed        bool
+	Materials        []*ConstructionMaterialResponse
+	TaskCount        int32
+	Status           string
+	Message          string
+}
+
+// ConstructionMaterialResponse represents a construction material status
+type ConstructionMaterialResponse struct {
+	TradeSymbol string
+	Required    int32
+	Fulfilled   int32
+	Remaining   int32
+	Progress    float64
+}
+
+// GetConstructionStatusResponse contains the status of a construction site
+type GetConstructionStatusResponse struct {
+	ConstructionSite string
+	IsComplete       bool
+	Progress         float64
+	Materials        []*ConstructionMaterialResponse
+	PipelineID       *string
+	PipelineStatus   *string
+	PipelineProgress *float64
+}
+
+// StartConstructionPipeline starts a pipeline to supply materials to a construction site
+func (c *DaemonClient) StartConstructionPipeline(
+	ctx context.Context,
+	constructionSite string,
+	playerID int32,
+	agentSymbol *string,
+	supplyChainDepth int32,
+	maxWorkers int32,
+	systemSymbol *string,
+) (*StartConstructionPipelineResponse, error) {
+	req := &pb.StartConstructionPipelineRequest{
+		ConstructionSite: constructionSite,
+		PlayerId:         playerID,
+		AgentSymbol:      agentSymbol,
+		SupplyChainDepth: supplyChainDepth,
+		MaxWorkers:       maxWorkers,
+		SystemSymbol:     systemSymbol,
+	}
+
+	resp, err := c.client.StartConstructionPipeline(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("gRPC call failed: %w", err)
+	}
+
+	// Convert materials
+	materials := make([]*ConstructionMaterialResponse, len(resp.Materials))
+	for i, mat := range resp.Materials {
+		materials[i] = &ConstructionMaterialResponse{
+			TradeSymbol: mat.TradeSymbol,
+			Required:    mat.Required,
+			Fulfilled:   mat.Fulfilled,
+			Remaining:   mat.Remaining,
+			Progress:    mat.Progress,
+		}
+	}
+
+	return &StartConstructionPipelineResponse{
+		PipelineID:       resp.PipelineId,
+		ConstructionSite: resp.ConstructionSite,
+		IsResumed:        resp.IsResumed,
+		Materials:        materials,
+		TaskCount:        resp.TaskCount,
+		Status:           resp.Status,
+		Message:          resp.Message,
+	}, nil
+}
+
+// GetConstructionStatus retrieves the status of a construction site
+func (c *DaemonClient) GetConstructionStatus(
+	ctx context.Context,
+	constructionSite string,
+	playerID int32,
+	agentSymbol *string,
+) (*GetConstructionStatusResponse, error) {
+	req := &pb.GetConstructionStatusRequest{
+		ConstructionSite: constructionSite,
+		PlayerId:         playerID,
+		AgentSymbol:      agentSymbol,
+	}
+
+	resp, err := c.client.GetConstructionStatus(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("gRPC call failed: %w", err)
+	}
+
+	// Convert materials
+	materials := make([]*ConstructionMaterialResponse, len(resp.Materials))
+	for i, mat := range resp.Materials {
+		materials[i] = &ConstructionMaterialResponse{
+			TradeSymbol: mat.TradeSymbol,
+			Required:    mat.Required,
+			Fulfilled:   mat.Fulfilled,
+			Remaining:   mat.Remaining,
+			Progress:    mat.Progress,
+		}
+	}
+
+	return &GetConstructionStatusResponse{
+		ConstructionSite: resp.ConstructionSite,
+		IsComplete:       resp.IsComplete,
+		Progress:         resp.Progress,
+		Materials:        materials,
+		PipelineID:       resp.PipelineId,
+		PipelineStatus:   resp.PipelineStatus,
+		PipelineProgress: resp.PipelineProgress,
+	}, nil
+}

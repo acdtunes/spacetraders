@@ -63,6 +63,7 @@ Examples:
 	rootCmd.AddCommand(NewContainerCommand())
 	rootCmd.AddCommand(NewHealthCommand())
 	rootCmd.AddCommand(NewOperationsCommand())
+	rootCmd.AddCommand(NewConstructionCommand())
 
 	return rootCmd
 }
