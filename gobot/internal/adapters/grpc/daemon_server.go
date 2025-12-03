@@ -364,16 +364,21 @@ func (s *DaemonServer) startMetricsServer() error {
 		},
 	))
 
-	// Create HTTP server
+	// Create listener FIRST to verify port is available before returning success
 	addr := fmt.Sprintf("%s:%d", s.metricsConfig.Host, s.metricsConfig.Port)
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("failed to bind metrics server to %s: %w", addr, err)
+	}
+
+	// Create HTTP server
 	s.metricsServer = &http.Server{
-		Addr:    addr,
 		Handler: mux,
 	}
 
-	// Start server in goroutine
+	// Start server in goroutine using the already-bound listener
 	go func() {
-		if err := s.metricsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := s.metricsServer.Serve(listener); err != nil && err != http.ErrServerClosed {
 			fmt.Printf("Metrics server error: %v\n", err)
 		}
 	}()
