@@ -719,12 +719,21 @@ func (r *ShipRepository) Save(ctx context.Context, ship *navigation.Ship) error 
 	}
 
 	model := r.shipToModel(ship)
-	return r.db.WithContext(ctx).
+	err := r.db.WithContext(ctx).
 		Clauses(clause.OnConflict{
 			Columns:   []clause.Column{{Name: "ship_symbol"}, {Name: "player_id"}},
 			UpdateAll: true,
 		}).
 		Create(&model).Error
+
+	if err == nil {
+		// Invalidate cache to ensure assignment changes are immediately visible
+		// This prevents stale assignment data from causing ships to be incorrectly
+		// seen as idle when they've been assigned to containers (e.g., storage ships)
+		r.shipListCache.Delete(ship.PlayerID().Value())
+	}
+
+	return err
 }
 
 // SaveAll batch persists multiple ship aggregates
@@ -737,16 +746,27 @@ func (r *ShipRepository) SaveAll(ctx context.Context, ships []*navigation.Ship) 
 	}
 
 	models := make([]persistence.ShipModel, len(ships))
+	playerIDs := make(map[int]bool)
 	for i, ship := range ships {
 		models[i] = r.shipToModel(ship)
+		playerIDs[ship.PlayerID().Value()] = true
 	}
 
-	return r.db.WithContext(ctx).
+	err := r.db.WithContext(ctx).
 		Clauses(clause.OnConflict{
 			Columns:   []clause.Column{{Name: "ship_symbol"}, {Name: "player_id"}},
 			UpdateAll: true,
 		}).
 		Create(&models).Error
+
+	if err == nil {
+		// Invalidate cache for all affected players
+		for playerID := range playerIDs {
+			r.shipListCache.Delete(playerID)
+		}
+	}
+
+	return err
 }
 
 // FindByContainer retrieves all ships assigned to a specific container
