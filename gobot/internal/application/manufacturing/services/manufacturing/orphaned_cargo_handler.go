@@ -236,6 +236,24 @@ func (h *OrphanedCargoHandler) HandleShipsWithExistingCargo(
 				continue
 			}
 
+			// DEDUPLICATION: Check if LIQUIDATE task already exists for this ship+good
+			exists, err := h.taskRepo.ExistsLiquidateForShipAndGood(ctx, shipSymbol, primaryCargo, params.PlayerID)
+			if err != nil {
+				logger.Log("WARN", "Failed to check existing LIQUIDATE task", map[string]interface{}{
+					"ship":       shipSymbol,
+					"cargo_type": primaryCargo,
+					"error":      err.Error(),
+				})
+				continue
+			}
+			if exists {
+				logger.Log("DEBUG", "LIQUIDATE task already exists for ship+good - skipping", map[string]interface{}{
+					"ship":       shipSymbol,
+					"cargo_type": primaryCargo,
+				})
+				continue
+			}
+
 			// Create LIQUIDATE task for orphaned cargo
 			// LIQUIDATE tasks are specifically designed for selling leftover cargo
 			// and have empty pipeline_id by design (they don't belong to a pipeline)

@@ -86,6 +86,10 @@ type TaskRepository interface {
 
 	// Delete removes a task
 	Delete(ctx context.Context, id string) error
+
+	// ExistsLiquidateForShipAndGood checks if a LIQUIDATE task already exists for a ship+good
+	// Returns true if there's an incomplete LIQUIDATE task for this ship/good combination
+	ExistsLiquidateForShipAndGood(ctx context.Context, shipSymbol string, good string, playerID int) (bool, error)
 }
 
 // FactoryStateRepository handles persistence of factory states

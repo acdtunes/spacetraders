@@ -511,3 +511,30 @@ func (r *GormManufacturingTaskRepository) modelToTask(m *ManufacturingTaskModel,
 		m.PhaseCompletedAt,
 	), nil
 }
+
+// ExistsLiquidateForShipAndGood checks if an incomplete LIQUIDATE task already exists for ship+good
+func (r *GormManufacturingTaskRepository) ExistsLiquidateForShipAndGood(ctx context.Context, shipSymbol string, good string, playerID int) (bool, error) {
+	// Check for existing incomplete LIQUIDATE task
+	// An "incomplete" task is one that is not COMPLETED, CANCELLED, or FAILED
+	terminalStatuses := []string{
+		string(manufacturing.TaskStatusCompleted),
+		string(manufacturing.TaskStatusCancelled),
+		string(manufacturing.TaskStatusFailed),
+	}
+
+	var count int64
+	err := r.db.WithContext(ctx).
+		Model(&ManufacturingTaskModel{}).
+		Where("task_type = ?", string(manufacturing.TaskTypeLiquidate)).
+		Where("good = ?", good).
+		Where("player_id = ?", playerID).
+		Where("assigned_ship = ? OR assigned_ship IS NULL", shipSymbol). // Match assigned OR unassigned (could be assigned later)
+		Where("status NOT IN ?", terminalStatuses).
+		Count(&count).Error
+
+	if err != nil {
+		return false, err
+	}
+
+	return count > 0, nil
+}

@@ -145,6 +145,19 @@ func (m *StateRecoveryManager) RecoverState(ctx context.Context, playerID int) (
 				if err == nil && ship != nil && ship.Cargo() != nil && !ship.Cargo().IsEmpty() {
 					// Ship has cargo - create LIQUIDATE tasks to recover investment
 					for _, item := range ship.Cargo().Inventory {
+						// DEDUPLICATION: Skip if LIQUIDATE task already exists for this ship+good
+						exists, err := m.taskRepo.ExistsLiquidateForShipAndGood(ctx, shipSymbol, item.Symbol, playerID)
+						if err != nil {
+							logger.Log("WARN", fmt.Sprintf("Failed to check existing LIQUIDATE task for %s/%s: %v",
+								shipSymbol, item.Symbol, err), nil)
+							continue
+						}
+						if exists {
+							logger.Log("DEBUG", fmt.Sprintf("LIQUIDATE task already exists for ship %s good %s - skipping",
+								shipSymbol, item.Symbol), nil)
+							continue
+						}
+
 						liquidateTask := manufacturing.NewLiquidationTask(
 							playerID,
 							shipSymbol,
@@ -193,6 +206,19 @@ func (m *StateRecoveryManager) RecoverState(ctx context.Context, playerID int) (
 				if err == nil && ship != nil && ship.Cargo() != nil && !ship.Cargo().IsEmpty() {
 					// Ship has cargo - create LIQUIDATE tasks to recover investment
 					for _, item := range ship.Cargo().Inventory {
+						// DEDUPLICATION: Skip if LIQUIDATE task already exists for this ship+good
+						exists, err := m.taskRepo.ExistsLiquidateForShipAndGood(ctx, shipSymbol, item.Symbol, playerID)
+						if err != nil {
+							logger.Log("WARN", fmt.Sprintf("Failed to check existing LIQUIDATE task for %s/%s: %v",
+								shipSymbol, item.Symbol, err), nil)
+							continue
+						}
+						if exists {
+							logger.Log("DEBUG", fmt.Sprintf("LIQUIDATE task already exists for ship %s good %s - skipping",
+								shipSymbol, item.Symbol), nil)
+							continue
+						}
+
 						liquidateTask := manufacturing.NewLiquidationTask(
 							playerID,
 							shipSymbol,
