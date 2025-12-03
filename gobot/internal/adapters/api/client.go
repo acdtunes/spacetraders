@@ -1840,6 +1840,129 @@ func (c *SpaceTradersClient) requestWithErrorParsing(ctx context.Context, method
 	return fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(respBody))
 }
 
+// GetConstruction retrieves construction site information for a waypoint
+func (c *SpaceTradersClient) GetConstruction(ctx context.Context, systemSymbol, waypointSymbol, token string) (*domainPorts.ConstructionData, error) {
+	path := fmt.Sprintf("/systems/%s/waypoints/%s/construction", systemSymbol, waypointSymbol)
+
+	var response struct {
+		Data struct {
+			Symbol    string `json:"symbol"`
+			Materials []struct {
+				TradeSymbol string `json:"tradeSymbol"`
+				Required    int    `json:"required"`
+				Fulfilled   int    `json:"fulfilled"`
+			} `json:"materials"`
+			IsComplete bool `json:"isComplete"`
+		} `json:"data"`
+	}
+
+	if err := c.request(ctx, "GET", path, token, nil, &response); err != nil {
+		return nil, fmt.Errorf("failed to get construction: %w", err)
+	}
+
+	// Convert materials
+	materials := make([]domainPorts.ConstructionMaterialData, len(response.Data.Materials))
+	for i, mat := range response.Data.Materials {
+		materials[i] = domainPorts.ConstructionMaterialData{
+			TradeSymbol: mat.TradeSymbol,
+			Required:    mat.Required,
+			Fulfilled:   mat.Fulfilled,
+		}
+	}
+
+	return &domainPorts.ConstructionData{
+		Symbol:     response.Data.Symbol,
+		Materials:  materials,
+		IsComplete: response.Data.IsComplete,
+	}, nil
+}
+
+// SupplyConstruction delivers materials to a construction site
+func (c *SpaceTradersClient) SupplyConstruction(ctx context.Context, shipSymbol, waypointSymbol, tradeSymbol string, units int, token string) (*domainPorts.ConstructionSupplyResponse, error) {
+	// Extract system symbol from waypoint (e.g., "X1-FB5-I61" -> "X1-FB5")
+	systemSymbol := extractSystemSymbol(waypointSymbol)
+	path := fmt.Sprintf("/my/ships/%s/construction/supply", shipSymbol)
+
+	body := map[string]interface{}{
+		"shipSymbol":     shipSymbol,
+		"waypointSymbol": waypointSymbol,
+		"tradeSymbol":    tradeSymbol,
+		"units":          units,
+	}
+
+	var response struct {
+		Data struct {
+			Construction struct {
+				Symbol    string `json:"symbol"`
+				Materials []struct {
+					TradeSymbol string `json:"tradeSymbol"`
+					Required    int    `json:"required"`
+					Fulfilled   int    `json:"fulfilled"`
+				} `json:"materials"`
+				IsComplete bool `json:"isComplete"`
+			} `json:"construction"`
+			Cargo struct {
+				Capacity  int `json:"capacity"`
+				Units     int `json:"units"`
+				Inventory []struct {
+					Symbol      string `json:"symbol"`
+					Name        string `json:"name"`
+					Description string `json:"description"`
+					Units       int    `json:"units"`
+				} `json:"inventory"`
+			} `json:"cargo"`
+		} `json:"data"`
+	}
+
+	if err := c.request(ctx, "POST", path, token, body, &response); err != nil {
+		return nil, fmt.Errorf("failed to supply construction (system=%s): %w", systemSymbol, err)
+	}
+
+	// Convert materials
+	materials := make([]domainPorts.ConstructionMaterialData, len(response.Data.Construction.Materials))
+	for i, mat := range response.Data.Construction.Materials {
+		materials[i] = domainPorts.ConstructionMaterialData{
+			TradeSymbol: mat.TradeSymbol,
+			Required:    mat.Required,
+			Fulfilled:   mat.Fulfilled,
+		}
+	}
+
+	// Convert cargo inventory
+	inventory := make([]shared.CargoItem, len(response.Data.Cargo.Inventory))
+	for i, item := range response.Data.Cargo.Inventory {
+		inventory[i] = shared.CargoItem{
+			Symbol:      item.Symbol,
+			Name:        item.Name,
+			Description: item.Description,
+			Units:       item.Units,
+		}
+	}
+
+	return &domainPorts.ConstructionSupplyResponse{
+		Construction: &domainPorts.ConstructionData{
+			Symbol:     response.Data.Construction.Symbol,
+			Materials:  materials,
+			IsComplete: response.Data.Construction.IsComplete,
+		},
+		Cargo: &navigation.CargoData{
+			Capacity:  response.Data.Cargo.Capacity,
+			Units:     response.Data.Cargo.Units,
+			Inventory: inventory,
+		},
+	}, nil
+}
+
+// extractSystemSymbol extracts the system symbol from a waypoint symbol
+// e.g., "X1-FB5-I61" -> "X1-FB5"
+func extractSystemSymbol(waypointSymbol string) string {
+	parts := strings.Split(waypointSymbol, "-")
+	if len(parts) >= 2 {
+		return parts[0] + "-" + parts[1]
+	}
+	return waypointSymbol
+}
+
 // retryableError represents an error that should trigger a retry
 type retryableError struct {
 	message    string

@@ -78,6 +78,10 @@ type APIClient interface {
 	// Shipyard operations
 	GetShipyard(ctx context.Context, systemSymbol, waypointSymbol, token string) (*ShipyardData, error)
 	PurchaseShip(ctx context.Context, shipType, waypointSymbol, token string) (*ShipPurchaseResult, error)
+
+	// Construction operations
+	GetConstruction(ctx context.Context, systemSymbol, waypointSymbol, token string) (*ConstructionData, error)
+	SupplyConstruction(ctx context.Context, shipSymbol, waypointSymbol, tradeSymbol string, units int, token string) (*ConstructionSupplyResponse, error)
 }
 
 // Contract DTOs
@@ -222,4 +226,22 @@ type ShipPurchaseTransaction struct {
 	Price          int
 	AgentSymbol    string
 	Timestamp      string
+}
+
+// Construction DTOs
+type ConstructionData struct {
+	Symbol     string
+	Materials  []ConstructionMaterialData
+	IsComplete bool
+}
+
+type ConstructionMaterialData struct {
+	TradeSymbol string
+	Required    int
+	Fulfilled   int
+}
+
+type ConstructionSupplyResponse struct {
+	Construction *ConstructionData
+	Cargo        *navigation.CargoData
 }

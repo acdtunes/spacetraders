@@ -47,6 +47,9 @@ type ShipRepository struct {
 	db               *gorm.DB     // Database connection for ship state persistence
 	clock            shared.Clock // Clock for timestamps
 	shipListCache    sync.Map     // key: playerID (int) -> *cachedShipList
+
+	// Optional arrival scheduler - notified after navigation to schedule state transition
+	arrivalScheduler navigation.ArrivalScheduler
 }
 
 // NewShipRepository creates a new hybrid API+DB ship repository
@@ -69,6 +72,13 @@ func NewShipRepository(
 		db:               db,
 		clock:            clock,
 	}
+}
+
+// SetArrivalScheduler sets the scheduler that will be notified after navigation
+// to schedule arrival state transitions. This uses setter injection to avoid
+// circular dependencies during construction.
+func (r *ShipRepository) SetArrivalScheduler(scheduler navigation.ArrivalScheduler) {
+	r.arrivalScheduler = scheduler
 }
 
 // FindBySymbol retrieves a ship by symbol and player ID from database.
@@ -272,6 +282,11 @@ func (r *ShipRepository) Navigate(ctx context.Context, ship *navigation.Ship, de
 
 	// Invalidate cache for this player
 	r.shipListCache.Delete(playerID.Value())
+
+	// Notify arrival scheduler to set up transition timer
+	if r.arrivalScheduler != nil {
+		r.arrivalScheduler.ScheduleArrival(ship)
+	}
 
 	return navResult, nil
 }
@@ -870,6 +885,59 @@ func (r *ShipRepository) ReleaseAllActive(ctx context.Context, reason string) (i
 	}
 
 	return int(result.RowsAffected), nil
+}
+
+// ClaimShip exclusively assigns an idle ship to a container using row-level locking.
+// Returns ShipAlreadyAssignedError if ship is already assigned to another container.
+func (r *ShipRepository) ClaimShip(ctx context.Context, shipSymbol string, containerID string, playerID shared.PlayerID) error {
+	if r.db == nil {
+		return fmt.Errorf("database not configured")
+	}
+
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var model persistence.ShipModel
+
+		// Lock the row with SELECT FOR UPDATE to prevent race conditions
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("ship_symbol = ? AND player_id = ?", shipSymbol, playerID.Value()).
+			First(&model).Error
+
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("ship %s not found for player %d", shipSymbol, playerID.Value())
+		}
+		if err != nil {
+			return fmt.Errorf("failed to lock ship: %w", err)
+		}
+
+		// Check if already assigned to another container
+		if model.AssignmentStatus == "active" && model.ContainerID != nil && *model.ContainerID != containerID {
+			return shared.NewShipAlreadyAssignedError(shipSymbol, *model.ContainerID)
+		}
+
+		// Already assigned to this container - idempotent success
+		if model.AssignmentStatus == "active" && model.ContainerID != nil && *model.ContainerID == containerID {
+			return nil
+		}
+
+		// Assign ship to container
+		now := r.clock.Now()
+		err = tx.Model(&model).Updates(map[string]interface{}{
+			"container_id":      containerID,
+			"assignment_status": "active",
+			"assigned_at":       now,
+			"released_at":       nil,
+			"release_reason":    "",
+		}).Error
+
+		if err != nil {
+			return fmt.Errorf("failed to assign ship: %w", err)
+		}
+
+		// Invalidate cache since assignment changed
+		r.shipListCache.Delete(playerID.Value())
+
+		return nil
+	})
 }
 
 // =============================================================================
