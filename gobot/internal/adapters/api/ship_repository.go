@@ -858,12 +858,17 @@ func (r *ShipRepository) ReleaseAllActive(ctx context.Context, reason string) (i
 
 // modelToDomain converts DB model to domain entity
 func (r *ShipRepository) modelToDomain(ctx context.Context, model *persistence.ShipModel, playerID shared.PlayerID) (*navigation.Ship, error) {
-	// Build location waypoint from denormalized data
-	location := &shared.Waypoint{
-		Symbol:       model.LocationSymbol,
-		X:            model.LocationX,
-		Y:            model.LocationY,
-		SystemSymbol: model.SystemSymbol,
+	// Get full waypoint data including HasFuel from waypoint provider
+	// This ensures ships can refuel at locations with fuel stations
+	location, err := r.waypointProvider.GetWaypoint(ctx, model.LocationSymbol, model.SystemSymbol, playerID.Value())
+	if err != nil {
+		// Fallback to denormalized data if waypoint lookup fails
+		location = &shared.Waypoint{
+			Symbol:       model.LocationSymbol,
+			X:            model.LocationX,
+			Y:            model.LocationY,
+			SystemSymbol: model.SystemSymbol,
+		}
 	}
 
 	// Create fuel value object
