@@ -247,6 +247,9 @@ func (c *SpaceTradersClient) ListShips(ctx context.Context, token string) ([]*na
 					WaypointSymbol string `json:"waypointSymbol"`
 					Status         string `json:"status"`
 					FlightMode     string `json:"flightMode"`
+					Route          struct {
+						Arrival string `json:"arrival"`
+					} `json:"route"`
 				} `json:"nav"`
 				Fuel struct {
 					Current  int `json:"current"`
@@ -309,6 +312,7 @@ func (c *SpaceTradersClient) ListShips(ctx context.Context, token string) ([]*na
 				Location:      ship.Nav.WaypointSymbol,
 				NavStatus:     ship.Nav.Status,
 				FlightMode:    ship.Nav.FlightMode,
+				ArrivalTime:   ship.Nav.Route.Arrival,
 				FuelCurrent:   ship.Fuel.Current,
 				FuelCapacity:  ship.Fuel.Capacity,
 				CargoCapacity: ship.Cargo.Capacity,
