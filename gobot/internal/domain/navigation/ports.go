@@ -97,6 +97,7 @@ type ShipData struct {
 	Symbol             string
 	Location           string
 	NavStatus          string
+	FlightMode         string // CRUISE, DRIFT, BURN, or STEALTH
 	ArrivalTime        string // ISO8601 timestamp when IN_TRANSIT (e.g., "2024-01-01T12:00:00Z"), empty otherwise
 	CooldownExpiration string // ISO8601 timestamp when cooldown expires (e.g., "2024-01-01T12:00:00Z"), empty if no cooldown
 	FuelCurrent        int

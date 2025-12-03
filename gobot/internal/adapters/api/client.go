@@ -9,6 +9,7 @@ import (
 	"math/rand"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"golang.org/x/time/rate"
@@ -127,6 +128,7 @@ func (c *SpaceTradersClient) GetShip(ctx context.Context, symbol, token string) 
 				SystemSymbol   string `json:"systemSymbol"`
 				WaypointSymbol string `json:"waypointSymbol"`
 				Status         string `json:"status"`
+				FlightMode     string `json:"flightMode"`
 				Route          *struct {
 					Arrival string `json:"arrival"`
 				} `json:"route,omitempty"` // Only present when IN_TRANSIT
@@ -209,6 +211,7 @@ func (c *SpaceTradersClient) GetShip(ctx context.Context, symbol, token string) 
 		Symbol:             response.Data.Symbol,
 		Location:           response.Data.Nav.WaypointSymbol,
 		NavStatus:          response.Data.Nav.Status,
+		FlightMode:         response.Data.Nav.FlightMode,
 		ArrivalTime:        arrivalTime,        // ISO8601 timestamp when IN_TRANSIT
 		CooldownExpiration: cooldownExpiration, // ISO8601 timestamp when cooldown expires
 		FuelCurrent:        response.Data.Fuel.Current,
@@ -243,6 +246,7 @@ func (c *SpaceTradersClient) ListShips(ctx context.Context, token string) ([]*na
 					SystemSymbol   string `json:"systemSymbol"`
 					WaypointSymbol string `json:"waypointSymbol"`
 					Status         string `json:"status"`
+					FlightMode     string `json:"flightMode"`
 				} `json:"nav"`
 				Fuel struct {
 					Current  int `json:"current"`
@@ -304,6 +308,7 @@ func (c *SpaceTradersClient) ListShips(ctx context.Context, token string) ([]*na
 				Symbol:        ship.Symbol,
 				Location:      ship.Nav.WaypointSymbol,
 				NavStatus:     ship.Nav.Status,
+				FlightMode:    ship.Nav.FlightMode,
 				FuelCurrent:   ship.Fuel.Current,
 				FuelCapacity:  ship.Fuel.Capacity,
 				CargoCapacity: ship.Cargo.Capacity,
@@ -1370,16 +1375,169 @@ func addJitter(d time.Duration) time.Duration {
 	return time.Duration(float64(d) * jitter)
 }
 
-// extractEndpoint extracts the endpoint path without query parameters for metrics
-// Example: "/my/ships?page=1&limit=20" -> "/my/ships"
+// extractEndpoint extracts the endpoint path and returns a human-readable name for metrics.
+// Examples:
+//   - "/my/ships/TORWIND-10/navigate" -> "Navigate Ship"
+//   - "/my/ships" -> "List Ships"
+//   - "/systems/X1-ABC/waypoints/X1-ABC-XYZ/market" -> "Get Market"
 func extractEndpoint(path string) string {
-	// Find the position of '?' which marks the start of query parameters
+	// First, strip query parameters
+	cleanPath := path
 	for i, ch := range path {
 		if ch == '?' {
-			return path[:i]
+			cleanPath = path[:i]
+			break
 		}
 	}
-	return path
+
+	// Convert to human-readable name
+	return endpointToHumanName(cleanPath)
+}
+
+// endpointToHumanName converts API paths to human-readable names
+func endpointToHumanName(path string) string {
+	parts := strings.Split(path, "/")
+
+	// Build a normalized path pattern first (replace dynamic segments)
+	pattern := normalizePath(parts)
+
+	// Map patterns to human-readable names
+	nameMap := map[string]string{
+		// Agent
+		"/my/agent": "Get Agent",
+
+		// Ships
+		"/my/ships":                  "List Ships",
+		"/my/ships/*":                "Get Ship",
+		"/my/ships/*/cargo":          "Get Cargo",
+		"/my/ships/*/nav":            "Set Flight Mode",
+		"/my/ships/*/navigate":       "Navigate",
+		"/my/ships/*/dock":           "Dock",
+		"/my/ships/*/orbit":          "Orbit",
+		"/my/ships/*/refuel":         "Refuel",
+		"/my/ships/*/purchase":       "Buy Cargo",
+		"/my/ships/*/sell":           "Sell Cargo",
+		"/my/ships/*/transfer":       "Transfer Cargo",
+		"/my/ships/*/jettison":       "Jettison Cargo",
+		"/my/ships/*/extract":        "Extract Resources",
+		"/my/ships/*/siphon":         "Siphon Gas",
+		"/my/ships/*/survey":         "Survey",
+		"/my/ships/*/scan/ships":     "Scan Ships",
+		"/my/ships/*/scan/waypoints": "Scan Waypoints",
+		"/my/ships/*/scan/systems":   "Scan Systems",
+		"/my/ships/*/negotiate":      "Negotiate Contract",
+		"/my/ships/*/warp":           "Warp",
+		"/my/ships/*/jump":           "Jump",
+		"/my/ships/*/chart":          "Chart Waypoint",
+		"/my/ships/*/cooldown":       "Get Cooldown",
+		"/my/ships/*/mounts":         "Get Mounts",
+		"/my/ships/*/mounts/install": "Install Mount",
+		"/my/ships/*/mounts/remove":  "Remove Mount",
+
+		// Contracts
+		"/my/contracts":           "List Contracts",
+		"/my/contracts/*":         "Get Contract",
+		"/my/contracts/*/accept":  "Accept Contract",
+		"/my/contracts/*/deliver": "Deliver Contract",
+		"/my/contracts/*/fulfill": "Fulfill Contract",
+
+		// Systems & Waypoints
+		"/systems":              "List Systems",
+		"/systems/*":            "Get System",
+		"/systems/*/waypoints":  "List Waypoints",
+		"/systems/*/waypoints/*":        "Get Waypoint",
+		"/systems/*/waypoints/*/market": "Get Market",
+		"/systems/*/waypoints/*/shipyard":        "Get Shipyard",
+		"/systems/*/waypoints/*/jump-gate":       "Get Jump Gate",
+		"/systems/*/waypoints/*/construction":    "Get Construction",
+
+		// Factions
+		"/factions":   "List Factions",
+		"/factions/*": "Get Faction",
+
+		// Register
+		"/register": "Register Agent",
+	}
+
+	if name, ok := nameMap[pattern]; ok {
+		return name
+	}
+
+	// Fallback: return the normalized pattern
+	return pattern
+}
+
+// normalizePath replaces dynamic segments with * for pattern matching
+func normalizePath(parts []string) string {
+	normalized := make([]string, 0, len(parts))
+
+	for i, part := range parts {
+		if part == "" {
+			continue
+		}
+
+		// Check if this segment is dynamic based on context
+		var prevPart string
+		if len(normalized) > 0 {
+			prevPart = normalized[len(normalized)-1]
+		}
+
+		if isDynamicSegment(part, prevPart, parts, i) {
+			normalized = append(normalized, "*")
+		} else {
+			normalized = append(normalized, part)
+		}
+	}
+
+	return "/" + strings.Join(normalized, "/")
+}
+
+// isDynamicSegment determines if a path segment is a dynamic value (ID, symbol)
+func isDynamicSegment(segment, prevSegment string, parts []string, index int) bool {
+	switch prevSegment {
+	case "ships":
+		return looksLikeShipSymbol(segment)
+	case "systems":
+		return looksLikeSystemSymbol(segment)
+	case "waypoints":
+		return looksLikeWaypointSymbol(segment)
+	case "contracts":
+		return looksLikeContractID(segment)
+	case "factions":
+		return looksLikeFactionSymbol(segment)
+	}
+	return false
+}
+
+// looksLikeShipSymbol checks if segment matches ship symbol pattern (e.g., TORWIND-10)
+func looksLikeShipSymbol(s string) bool {
+	return strings.Contains(s, "-") && !strings.HasPrefix(s, "X")
+}
+
+// looksLikeSystemSymbol checks if segment matches system symbol pattern (e.g., X1-ABC)
+func looksLikeSystemSymbol(s string) bool {
+	return len(s) > 3 && s[0] == 'X' && s[2] == '-'
+}
+
+// looksLikeWaypointSymbol checks if segment matches waypoint symbol pattern (e.g., X1-ABC-XYZ)
+func looksLikeWaypointSymbol(s string) bool {
+	dashCount := strings.Count(s, "-")
+	return dashCount >= 2 && strings.HasPrefix(s, "X")
+}
+
+// looksLikeContractID checks if segment matches contract ID pattern
+func looksLikeContractID(s string) bool {
+	return len(s) > 20
+}
+
+// looksLikeFactionSymbol checks if segment matches faction symbol pattern
+func looksLikeFactionSymbol(s string) bool {
+	for _, ch := range s {
+		if ch < 'A' || ch > 'Z' {
+			return false
+		}
+	}
+	return len(s) > 0
 }
 
 // request makes an HTTP request with rate limiting and exponential backoff retries

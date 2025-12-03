@@ -940,7 +940,10 @@ func (r *ShipRepository) shipDataToModel(ctx context.Context, data *navigation.S
 
 	// Navigation state
 	model.NavStatus = data.NavStatus
-	model.FlightMode = "CRUISE" // Default
+	model.FlightMode = data.FlightMode
+	if model.FlightMode == "" {
+		model.FlightMode = "CRUISE" // Default fallback
+	}
 
 	// Parse arrival time if present
 	if data.ArrivalTime != "" {
