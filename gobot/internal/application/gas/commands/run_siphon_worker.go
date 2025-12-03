@@ -90,29 +90,26 @@ func (h *RunSiphonWorkerHandler) executeSiphoning(
 ) error {
 	logger := common.LoggerFromContext(ctx)
 
-	// 1. Load ship data ONCE - use for location check AND cooldown check (1 API call)
-	shipData, err := h.shipRepo.GetShipData(ctx, cmd.ShipSymbol, cmd.PlayerID)
+	// 1. Load ship from DB - DB is source of truth after daemon startup (no API call)
+	ship, err := h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
 	if err != nil {
-		return fmt.Errorf("failed to load ship data: %w", err)
+		return fmt.Errorf("failed to load ship: %w", err)
 	}
 
 	// Track cargo state from initial load
-	cargoUnits := shipData.CargoUnits
-	cargoCapacity := shipData.CargoCapacity
+	cargoUnits := ship.Cargo().Units
+	cargoCapacity := ship.Cargo().Capacity
+
+	// Track cooldown for later - will be cleared if we navigate
+	cooldownExpiration := ship.CooldownExpiration()
 
 	// 2. Navigate to gas giant if not there
-	if shipData.Location != cmd.GasGiant {
+	if ship.CurrentLocation().Symbol != cmd.GasGiant {
 		logger.Log("INFO", "Siphon ship navigating to gas giant", map[string]interface{}{
 			"ship_symbol": cmd.ShipSymbol,
 			"action":      "navigate_to_gas_giant",
 			"destination": cmd.GasGiant,
 		})
-
-		// Need full Ship entity for navigation
-		ship, err := h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
-		if err != nil {
-			return fmt.Errorf("failed to load ship: %w", err)
-		}
 
 		navCmd := &shipNav.NavigateRouteCommand{
 			ShipSymbol:  cmd.ShipSymbol,
@@ -133,8 +130,7 @@ func (h *RunSiphonWorkerHandler) executeSiphoning(
 		// Skip cooldown re-check after navigation:
 		// 1. Navigation time is typically longer than siphon cooldowns
 		// 2. Siphon command already handles cooldown errors with retry logic (lines 218-235)
-		// This saves 1 API call per worker startup
-		shipData.CooldownExpiration = "" // Clear cooldown - navigation time covered it
+		cooldownExpiration = nil // Clear cooldown - navigation time covered it
 	}
 
 	logger.Log("INFO", "Siphon ship continuous siphoning started", map[string]interface{}{
@@ -144,8 +140,8 @@ func (h *RunSiphonWorkerHandler) executeSiphoning(
 	})
 
 	// 2b. Check and wait for any existing cooldown from previous session
-	// Uses shipData we already have (no extra API call if ship was already at gas giant)
-	if err := h.waitForShipCooldownFromData(ctx, cmd, shipData); err != nil {
+	// Uses cooldown from DB (no API call needed)
+	if err := h.waitForShipCooldown(ctx, cmd, cooldownExpiration); err != nil {
 		return fmt.Errorf("failed to wait for ship cooldown: %w", err)
 	}
 
@@ -354,36 +350,23 @@ func (h *RunSiphonWorkerHandler) depositToStorageShip(
 	return totalTransferred, nil
 }
 
-// waitForShipCooldownFromData checks if the ship has an active cooldown and waits for it to expire.
-// This is called at the start of siphoning to handle cooldowns from previous sessions.
-// Takes pre-fetched ShipData to avoid an extra API call.
-func (h *RunSiphonWorkerHandler) waitForShipCooldownFromData(
+// waitForShipCooldown waits for any existing cooldown from a previous session.
+// Takes cooldown expiration from Ship entity (DB source of truth).
+func (h *RunSiphonWorkerHandler) waitForShipCooldown(
 	ctx context.Context,
 	cmd *RunSiphonWorkerCommand,
-	shipData *navigation.ShipData,
+	cooldownExpiration *time.Time,
 ) error {
 	logger := common.LoggerFromContext(ctx)
 
 	// If no cooldown, nothing to wait for
-	if shipData.CooldownExpiration == "" {
-		return nil
-	}
-
-	// Parse the cooldown expiration time
-	cooldownExpires, err := time.Parse(time.RFC3339, shipData.CooldownExpiration)
-	if err != nil {
-		// If we can't parse, log and continue (don't fail)
-		logger.Log("WARNING", "Could not parse cooldown expiration, proceeding anyway", map[string]interface{}{
-			"ship_symbol": cmd.ShipSymbol,
-			"action":      "cooldown_parse_failed",
-			"expiration":  shipData.CooldownExpiration,
-		})
+	if cooldownExpiration == nil {
 		return nil
 	}
 
 	// Calculate remaining time
 	now := h.clock.Now()
-	remaining := cooldownExpires.Sub(now)
+	remaining := cooldownExpiration.Sub(now)
 
 	// If cooldown has expired, nothing to wait for
 	if remaining <= 0 {
@@ -397,7 +380,7 @@ func (h *RunSiphonWorkerHandler) waitForShipCooldownFromData(
 		"ship_symbol":      cmd.ShipSymbol,
 		"action":           "proactive_cooldown_wait",
 		"cooldown_seconds": int(waitDuration.Seconds()),
-		"expires_at":       cooldownExpires.Format(time.RFC3339),
+		"expires_at":       cooldownExpiration.Format(time.RFC3339),
 	})
 
 	h.clock.Sleep(waitDuration)
