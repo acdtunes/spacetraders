@@ -181,7 +181,7 @@ Infrastructure implementations:
 - **GORM ORM** with PostgreSQL
 - **8 database models**: Player, Ship, Waypoint, Contract, Market, ContainerLog, etc.
 - **Hybrid strategy**:
-  - Ships: Fetched fresh from API (not cached)
+  - Ships: Database is source of truth (full state in `ships` table after initial API sync)
   - Waypoints: Cached in database with TTL
   - Container logs: 60-second deduplication
 - **Model-to-DTO conversion** at all boundaries
@@ -432,7 +432,7 @@ All models are defined in `internal/adapters/persistence/models.go`:
 | `waypoints` | `waypoint_symbol` | Cached waypoint data with coordinates and traits |
 | `containers` | `id, player_id` | Background operation containers (goroutines) |
 | `container_logs` | `id` (auto) | Container execution logs with 60s deduplication |
-| `ship_assignments` | `ship_symbol, player_id` | Ship-to-container assignments |
+| `ships` | `ship_symbol, player_id` | Full ship state (nav, fuel, cargo, location) - DB is source of truth |
 | `system_graphs` | `system_symbol` | Cached navigation graphs (JSONB) |
 | `market_data` | `waypoint_symbol, good_symbol` | Current market prices per good |
 | `market_price_history` | `id` (auto) | Historical price tracking |
@@ -474,38 +474,18 @@ All models are defined in `internal/adapters/persistence/models.go`:
 
 ### Migrations
 
-Migrations are located in `migrations/` directory with up/down pairs:
-
-```bash
-# Apply migrations manually
-psql -f migrations/001_normalize_id_columns.up.sql
-
-# Key migrations:
-# 001 - Normalize ID columns
-# 002 - Add foreign key constraints
-# 004 - Add mining tables
-# 009 - Add goods factories table
-# 011 - Add transactions table
-# 013 - Add arbitrage execution logs
-# 015 - Fix timezone timestamps (CRITICAL)
-# 016 - Add market price history
-# 018 - Add manufacturing tables
-# 019 - Add market trade type
-# 020 - Add pipeline type
-```
-
-**Migration 015 is critical:** Ensures all timestamp columns use `TIMESTAMP WITH TIME ZONE` (timestamptz) for proper timezone handling.
+Located in `migrations/` directory with up/down pairs. Apply manually with `psql -f migrations/XXX.up.sql`.
 
 ### Data Strategies
 
-**Always Fresh (No Cache):**
-- Ships - Fetched from API on every request
-- Player credits - Always from API
-
-**Database Cached:**
+**Database as Source of Truth:**
+- Ships - Full state persisted in `ships` table after initial sync from API. DB is authoritative after sync.
 - Waypoints - Cached with TTL via `synced_at`
 - System graphs - Cached indefinitely
 - Market data - Age-filtered queries
+
+**Always Fresh (No Cache):**
+- Player credits - Always from API
 
 **Deduplication:**
 - Container logs - 60-second window deduplication
@@ -518,12 +498,13 @@ players (1) ──< contracts (many)
 players (1) ──< mining_operations (many)
 players (1) ──< transactions (many)
 players (1) ──< market_data (many)
+players (1) ──< ships (many)
 containers (1) ──< container_logs (many)
-containers (1) ──< ship_assignments (many)
+containers (1) ──< ships (many) [via container_id]
 manufacturing_pipelines (1) ──< manufacturing_tasks (many)
 ```
 
-All foreign keys use `ON UPDATE CASCADE, ON DELETE CASCADE` or `ON DELETE SET NULL` for ship assignments
+All foreign keys use `ON UPDATE CASCADE, ON DELETE CASCADE` or `ON DELETE SET NULL` for ships
 
 ## Common Pitfalls
 
@@ -878,15 +859,73 @@ type BalancingResult struct {
 }
 ```
 
+## Ship Event Bus
+
+The daemon uses an event-driven pub/sub system (`ShipEventBus`) for coordinating ship state transitions between the `ShipStateScheduler` and containers waiting for ship arrivals.
+
+### Architecture
+
+```
+ShipStateScheduler (publisher)
+    │
+    │ PublishArrived(shipSymbol, location, status)
+    ▼
+ShipEventBus (in-memory pub/sub)
+    │
+    │ <-chan ShipArrivedEvent
+    ▼
+RouteExecutor / SiphonResourcesHandler (subscribers)
+```
+
+### Key Components
+
+**Domain Ports** (`internal/domain/navigation/ports.go`):
+- `ShipEventPublisher` - Interface for publishing arrival events
+- `ShipEventSubscriber` - Interface for subscribing to arrival events
+- `ShipArrivedEvent` - Event payload with ship symbol, location, and status
+
+**Implementation** (`internal/application/ship/ship_event_bus.go`):
+- Thread-safe with `sync.RWMutex`
+- Buffered channels (size 1) prevent blocking publishers
+- Topic-based subscriptions per ship symbol
+- Non-blocking publish (skips slow subscribers)
+
+### Usage Pattern
+
+```go
+// Subscribe to arrival events
+arrivedCh := eventSubscriber.SubscribeArrived(ship.ShipSymbol())
+defer eventSubscriber.UnsubscribeArrived(ship.ShipSymbol(), arrivedCh)
+
+select {
+case event := <-arrivedCh:
+    // Ship arrived - update domain state
+    if ship.NavStatus() == NavStatusInTransit {
+        ship.Arrive()
+    }
+case <-ctx.Done():
+    return ctx.Err()
+}
+```
+
+### Design
+
+`ShipStateScheduler` is the single source of truth for ship state transitions. When a timer fires, it transitions the ship state AND publishes an event. Containers subscribe and wait for events instead of polling.
+
+### Integration Points
+
+- **ShipStateScheduler** (`adapters/grpc/ship_state_scheduler.go`) - Publishes `ARRIVED` events when timer fires
+- **RouteExecutor** (`application/ship/route_executor.go`) - Subscribes to wait for navigation completion
+- **SiphonResourcesHandler** (`application/gas/commands/siphon_resources.go`) - Subscribes when ship is in transit on startup
+- **main.go** - Creates `ShipEventBus` and wires to both scheduler and handlers
+
 ## Navigation Resilience
 
 The `RouteExecutor` includes resilience mechanisms to handle timing issues in multi-segment routes.
 
 ### In-Transit State Handling
 
-**Problem:** Scout tours were failing with "cannot orbit while in transit" errors when navigating rapidly between waypoints.
-
-**Solution:** The executor now checks ship state before each segment:
+The executor checks ship state before each segment:
 
 ```go
 // In RouteExecutor.executeSegment()
@@ -909,19 +948,11 @@ err := e.ensureShipInOrbit(ctx, ship, playerID)
 - Prevents stale state issues
 - Handles rapid navigation cycles
 - Waits for arrivals before new commands
-- Eliminates race conditions
 
 This pattern is critical for:
 - Scout tours visiting multiple markets
 - Contract delivery routes
 - Mining operations with frequent trips
-
-### Error Prevention
-
-The resilience improvements prevent:
-1. **"cannot orbit while in transit"** - Ship state machine violations
-2. **API 4214 errors** - Duplicate navigation commands
-3. **Race conditions** - Stale ship state between segments
 
 ## Timezone Awareness
 
