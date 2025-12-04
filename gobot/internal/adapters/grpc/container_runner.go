@@ -32,9 +32,14 @@ type ContainerRunner struct {
 	done       chan struct{}
 	mu         sync.RWMutex
 
-	// Completion callback (optional)
-	// Called when container completes or fails, passing ship symbol if available
-	completionCallback chan<- string
+	// Heartbeat control
+	heartbeatStop chan struct{}  // Signal to stop heartbeat goroutine
+	heartbeatDone chan struct{}  // Signal that heartbeat goroutine has stopped
+	heartbeatOnce sync.Once      // Ensures heartbeat is only stopped once
+
+	// Event publisher for completion notifications
+	// Publishes WorkerCompletedEvent when container completes or fails
+	eventPublisher navigation.ShipEventPublisher
 
 	// In-memory log cache for quick access (logs also persisted to DB)
 	logs []LogEntry
@@ -64,25 +69,26 @@ func NewContainerRunner(
 	}
 
 	return &ContainerRunner{
-		containerEntity: containerEntity,
-		mediator:        mediator,
-		command:         command,
-		logRepo:         logRepo,
-		containerRepo:   containerRepo,
-		shipRepo:        shipRepo,
-		clock:           clock,
-		ctx:             ctx,
-		cancelFunc:      cancel,
-		done:            make(chan struct{}),
-		completionCallback: nil, // Can be set later via SetCompletionCallback
-		logs:               make([]LogEntry, 0),
+		containerEntity:    containerEntity,
+		mediator:           mediator,
+		command:            command,
+		logRepo:            logRepo,
+		containerRepo:      containerRepo,
+		shipRepo:           shipRepo,
+		clock:              clock,
+		ctx:                ctx,
+		cancelFunc:         cancel,
+		done:          make(chan struct{}),
+		heartbeatStop: make(chan struct{}),
+		heartbeatDone: make(chan struct{}),
+		logs:          make([]LogEntry, 0),
 	}
 }
 
-// SetCompletionCallback sets the completion callback channel
-// This should be called before Start() if a callback is needed
-func (r *ContainerRunner) SetCompletionCallback(callback chan<- string) {
-	r.completionCallback = callback
+// SetEventPublisher sets the event publisher for completion notifications.
+// This should be called before Start().
+func (r *ContainerRunner) SetEventPublisher(publisher navigation.ShipEventPublisher) {
+	r.eventPublisher = publisher
 }
 
 // Container returns the underlying container entity
@@ -128,6 +134,10 @@ func (r *ContainerRunner) Start() error {
 		return fmt.Errorf("failed to create ship assignments: %w", err)
 	}
 
+	// Start heartbeat goroutine to update heartbeat_at periodically
+	// This allows detection of crashed containers that don't update their heartbeat
+	go r.runHeartbeat()
+
 	// Execute the container operation
 	go r.execute()
 
@@ -144,6 +154,9 @@ func (r *ContainerRunner) Stop() error {
 	r.mu.Unlock()
 
 	r.log("INFO", "Container stopping...", nil)
+
+	// Stop the heartbeat goroutine
+	r.stopHeartbeat()
 
 	// Cancel context to signal stop
 	r.cancelFunc()
@@ -183,6 +196,49 @@ func (r *ContainerRunner) Stop() error {
 	r.releaseShipAssignments("stopped")
 
 	return nil
+}
+
+// runHeartbeat periodically updates the container's heartbeat timestamp
+// This allows detection of crashed containers that stop updating their heartbeat
+func (r *ContainerRunner) runHeartbeat() {
+	defer close(r.heartbeatDone)
+
+	// Update heartbeat every 30 seconds
+	// Stale timeout is 2 minutes, so 30s gives us 4 heartbeats before considered stale
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-r.heartbeatStop:
+			return
+		case <-r.ctx.Done():
+			return
+		case <-ticker.C:
+			if r.containerRepo != nil {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				if err := r.containerRepo.UpdateContainerHeartbeat(ctx, r.containerEntity.ID()); err != nil {
+					// Log but don't fail - heartbeat is best-effort
+					r.log("WARN", fmt.Sprintf("Failed to update heartbeat: %v", err), nil)
+				}
+				cancel()
+			}
+		}
+	}
+}
+
+// stopHeartbeat stops the heartbeat goroutine (safe to call multiple times)
+func (r *ContainerRunner) stopHeartbeat() {
+	r.heartbeatOnce.Do(func() {
+		close(r.heartbeatStop)
+		// Wait for heartbeat goroutine to finish (with timeout)
+		select {
+		case <-r.heartbeatDone:
+			// Heartbeat goroutine stopped
+		case <-time.After(2 * time.Second):
+			// Timeout waiting for heartbeat to stop
+		}
+	})
 }
 
 // execute runs the container operation loop
@@ -251,7 +307,7 @@ func (r *ContainerRunner) execute() {
 			// UNRECOVERABLE ERROR: Only NOW do we signal completion and release ships
 			// This is the critical fix - completion is signaled AFTER restart decision
 			r.log("INFO", "Container failed with unrecoverable error, signaling completion", nil)
-			r.signalCompletion()
+			r.signalCompletionWithStatus(false, err.Error())
 			r.releaseShipAssignments("failed")
 			return // Exit on unrecoverable error
 		}
@@ -276,6 +332,9 @@ func (r *ContainerRunner) execute() {
 			// Continue to next iteration
 		}
 	}
+
+	// Stop heartbeat before marking as completed
+	r.stopHeartbeat()
 
 	// Mark as completed
 	r.mu.Lock()
@@ -321,26 +380,39 @@ func (r *ContainerRunner) execute() {
 	r.signalCompletion()
 }
 
-// signalCompletion signals container completion via callback channel
+// signalCompletion signals container completion via event bus.
 func (r *ContainerRunner) signalCompletion() {
-	if r.completionCallback == nil {
-		return // No callback configured
+	r.signalCompletionWithStatus(true, "")
+}
+
+// signalCompletionWithStatus signals container completion with success status and error message via event bus.
+func (r *ContainerRunner) signalCompletionWithStatus(success bool, errMsg string) {
+	if r.eventPublisher == nil {
+		return
 	}
 
+	metadata := r.containerEntity.Metadata()
+
 	// Extract ship symbol from container metadata
-	shipSymbol, ok := r.containerEntity.Metadata()["ship_symbol"].(string)
+	shipSymbol, ok := metadata["ship_symbol"].(string)
 	if !ok {
 		r.log("WARNING", "No ship_symbol in metadata, cannot signal completion", nil)
 		return
 	}
 
-	// Send signal (non-blocking)
-	select {
-	case r.completionCallback <- shipSymbol:
-		r.log("INFO", fmt.Sprintf("Signaled completion for ship %s", shipSymbol), nil)
-	default:
-		r.log("WARNING", fmt.Sprintf("Completion callback channel full/closed for ship %s", shipSymbol), nil)
+	coordinatorID, _ := metadata["coordinator_id"].(string)
+
+	event := navigation.WorkerCompletedEvent{
+		ContainerID:   r.containerEntity.ID(),
+		PlayerID:      r.containerEntity.PlayerID(),
+		ShipSymbol:    shipSymbol,
+		CoordinatorID: coordinatorID,
+		Success:       success,
+		Error:         errMsg,
 	}
+
+	r.eventPublisher.PublishWorkerCompleted(event)
+	r.log("INFO", fmt.Sprintf("Published completion event for ship %s (success=%t)", shipSymbol, success), nil)
 }
 
 // executeIteration executes a single iteration of the container operation

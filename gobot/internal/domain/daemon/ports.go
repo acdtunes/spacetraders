@@ -36,15 +36,14 @@ type DaemonClient interface {
 	// containerID: Unique container identifier (e.g., "contract-work-SHIP-1-123456")
 	// playerID: Player who owns this operation
 	// command: The contract workflow command to execute in the container
-	// completionCallback: Optional channel to signal completion to coordinator
-	CreateContractWorkflowContainer(ctx context.Context, containerID string, playerID uint, command interface{}, completionCallback chan<- string) error
+	CreateContractWorkflowContainer(ctx context.Context, containerID string, playerID uint, command interface{}) error
 
 	// PersistContractWorkflowContainer creates (but does NOT start) a worker container in DB
 	// This allows transferring ships to the container before starting it
 	PersistContractWorkflowContainer(ctx context.Context, containerID string, playerID uint, command interface{}) error
 
 	// StartContractWorkflowContainer starts a previously persisted worker container
-	StartContractWorkflowContainer(ctx context.Context, containerID string, completionCallback chan<- string) error
+	StartContractWorkflowContainer(ctx context.Context, containerID string) error
 
 	// StopContainer stops a running container
 	// containerID: The container to stop
@@ -55,25 +54,24 @@ type DaemonClient interface {
 	PersistManufacturingTaskWorkerContainer(ctx context.Context, containerID string, playerID uint, command interface{}) error
 
 	// StartManufacturingTaskWorkerContainer starts a previously persisted manufacturing task worker container
-	// completionCallback: Optional channel to signal completion to coordinator
-	StartManufacturingTaskWorkerContainer(ctx context.Context, containerID string, completionCallback chan<- string) error
+	StartManufacturingTaskWorkerContainer(ctx context.Context, containerID string) error
 
 	// PersistGasSiphonWorkerContainer creates (but does NOT start) a gas siphon worker container in DB
 	PersistGasSiphonWorkerContainer(ctx context.Context, containerID string, playerID uint, command interface{}) error
 
 	// StartGasSiphonWorkerContainer starts a previously persisted gas siphon worker container
-	StartGasSiphonWorkerContainer(ctx context.Context, containerID string, completionCallback chan<- string) error
-
-	// PersistGasTransportWorkerContainer creates (but does NOT start) a gas transport worker container in DB
-	PersistGasTransportWorkerContainer(ctx context.Context, containerID string, playerID uint, command interface{}) error
-
-	// StartGasTransportWorkerContainer starts a previously persisted gas transport worker container
-	StartGasTransportWorkerContainer(ctx context.Context, containerID string, completionCallback chan<- string) error
+	StartGasSiphonWorkerContainer(ctx context.Context, containerID string) error
 
 	// PersistStorageShipContainer creates (but does NOT start) a storage ship worker container in DB.
 	// The container will navigate the ship to the gas giant and register with storage coordinator.
 	PersistStorageShipContainer(ctx context.Context, containerID string, playerID uint, command interface{}) error
 
 	// StartStorageShipContainer starts a previously persisted storage ship worker container.
-	StartStorageShipContainer(ctx context.Context, containerID string, completionCallback chan<- string) error
+	StartStorageShipContainer(ctx context.Context, containerID string) error
+
+	// CleanupStaleManufacturingWorkers detects and stops manufacturing task workers that
+	// are RUNNING but have no recent log activity (likely crashed without cleanup).
+	// staleTimeoutMinutes: How long (in minutes) a worker can go without activity before being stale.
+	// Returns the number of workers cleaned up.
+	CleanupStaleManufacturingWorkers(ctx context.Context, playerID int, staleTimeoutMinutes int) (int64, error)
 }

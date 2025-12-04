@@ -192,25 +192,6 @@ func (c *DaemonClientGRPC) StartGasSiphonWorkerContainer(
 	return fmt.Errorf("StartGasSiphonWorkerContainer not implemented for gRPC client")
 }
 
-// PersistGasTransportWorkerContainer creates (but does NOT start) a gas transport worker container in DB
-func (c *DaemonClientGRPC) PersistGasTransportWorkerContainer(
-	ctx context.Context,
-	containerID string,
-	playerID uint,
-	command interface{},
-) error {
-	return fmt.Errorf("PersistGasTransportWorkerContainer not implemented for gRPC client")
-}
-
-// StartGasTransportWorkerContainer starts a previously persisted gas transport worker container
-func (c *DaemonClientGRPC) StartGasTransportWorkerContainer(
-	ctx context.Context,
-	containerID string,
-	completionCallback chan<- string,
-) error {
-	return fmt.Errorf("StartGasTransportWorkerContainer not implemented for gRPC client")
-}
-
 // PersistStorageShipContainer creates (but does NOT start) a storage ship worker container in DB
 func (c *DaemonClientGRPC) PersistStorageShipContainer(
 	ctx context.Context,

@@ -63,7 +63,6 @@ func (c *DaemonClientLocal) CreateContractWorkflowContainer(
 	containerID string,
 	playerID uint,
 	command interface{},
-	completionCallback chan<- string,
 ) error {
 	// Type assert to ContractWorkflowCommand
 	cmd, ok := command.(*contractCmd.RunWorkflowCommand)
@@ -72,7 +71,7 @@ func (c *DaemonClientLocal) CreateContractWorkflowContainer(
 	}
 
 	// Call server's ContractWorkflow method directly
-	_, err := c.server.ContractWorkflow(ctx, containerID, cmd.ShipSymbol, int(playerID), cmd.CoordinatorID, completionCallback)
+	_, err := c.server.ContractWorkflow(ctx, containerID, cmd.ShipSymbol, int(playerID), cmd.CoordinatorID)
 	return err
 }
 
@@ -97,9 +96,8 @@ func (c *DaemonClientLocal) PersistContractWorkflowContainer(
 func (c *DaemonClientLocal) StartContractWorkflowContainer(
 	ctx context.Context,
 	containerID string,
-	completionCallback chan<- string,
 ) error {
-	return c.server.StartContractWorkflow(ctx, containerID, completionCallback)
+	return c.server.StartContractWorkflow(ctx, containerID)
 }
 
 // StopContainer stops a running container
@@ -122,9 +120,8 @@ func (c *DaemonClientLocal) PersistManufacturingTaskWorkerContainer(
 func (c *DaemonClientLocal) StartManufacturingTaskWorkerContainer(
 	ctx context.Context,
 	containerID string,
-	completionCallback chan<- string,
 ) error {
-	return c.server.StartManufacturingTaskWorkerContainer(ctx, containerID, completionCallback)
+	return c.server.StartManufacturingTaskWorkerContainer(ctx, containerID)
 }
 
 // PersistGasSiphonWorkerContainer creates (but does NOT start) a gas siphon worker container in DB
@@ -141,28 +138,8 @@ func (c *DaemonClientLocal) PersistGasSiphonWorkerContainer(
 func (c *DaemonClientLocal) StartGasSiphonWorkerContainer(
 	ctx context.Context,
 	containerID string,
-	completionCallback chan<- string,
 ) error {
-	return c.server.StartGasSiphonWorkerContainer(ctx, containerID, completionCallback)
-}
-
-// PersistGasTransportWorkerContainer creates (but does NOT start) a gas transport worker container in DB
-func (c *DaemonClientLocal) PersistGasTransportWorkerContainer(
-	ctx context.Context,
-	containerID string,
-	playerID uint,
-	command interface{},
-) error {
-	return c.server.PersistGasTransportWorkerContainer(ctx, containerID, playerID, command)
-}
-
-// StartGasTransportWorkerContainer starts a previously persisted gas transport worker container
-func (c *DaemonClientLocal) StartGasTransportWorkerContainer(
-	ctx context.Context,
-	containerID string,
-	completionCallback chan<- string,
-) error {
-	return c.server.StartGasTransportWorkerContainer(ctx, containerID, completionCallback)
+	return c.server.StartGasSiphonWorkerContainer(ctx, containerID)
 }
 
 // PersistStorageShipContainer creates (but does NOT start) a storage ship worker container in DB
@@ -179,7 +156,16 @@ func (c *DaemonClientLocal) PersistStorageShipContainer(
 func (c *DaemonClientLocal) StartStorageShipContainer(
 	ctx context.Context,
 	containerID string,
-	completionCallback chan<- string,
 ) error {
-	return c.server.StartStorageShipContainer(ctx, containerID, completionCallback)
+	return c.server.StartStorageShipContainer(ctx, containerID)
+}
+
+// CleanupStaleManufacturingWorkers detects and stops manufacturing task workers that
+// are RUNNING but have no recent log activity (likely crashed without cleanup).
+func (c *DaemonClientLocal) CleanupStaleManufacturingWorkers(
+	ctx context.Context,
+	playerID int,
+	staleTimeoutMinutes int,
+) (int64, error) {
+	return c.server.CleanupStaleManufacturingWorkers(ctx, playerID, staleTimeoutMinutes)
 }
