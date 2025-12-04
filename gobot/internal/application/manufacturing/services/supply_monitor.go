@@ -10,6 +10,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/goods"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/storage"
 )
 
@@ -31,7 +32,7 @@ type SupplyMonitor struct {
 	storageOpRepo       storage.StorageOperationRepository // For finding storage operations that provide goods
 	pollInterval        time.Duration
 	playerID            int
-	taskReadyChan       chan<- struct{} // Optional: notifies coordinator when tasks become ready
+	eventPublisher      navigation.ShipEventPublisher // Event bus for task ready notifications
 }
 
 // NewSupplyMonitor creates a new supply monitor
@@ -65,22 +66,21 @@ func NewSupplyMonitor(
 	}
 }
 
-// SetTaskReadyChannel sets the channel for notifying when tasks become ready.
-// This enables event-driven task assignment instead of polling.
-func (m *SupplyMonitor) SetTaskReadyChannel(ch chan<- struct{}) {
-	m.taskReadyChan = ch
+// SetEventPublisher sets the event publisher for task ready notifications.
+// This enables event-driven coordination between supply monitor and coordinators.
+func (m *SupplyMonitor) SetEventPublisher(publisher navigation.ShipEventPublisher) {
+	m.eventPublisher = publisher
 }
 
-// notifyTaskReady sends a non-blocking notification that tasks are ready
-func (m *SupplyMonitor) notifyTaskReady() {
-	if m.taskReadyChan == nil {
+// notifyTaskReady publishes a task ready event via the event bus
+func (m *SupplyMonitor) notifyTaskReady(pipelineID string) {
+	if m.eventPublisher == nil {
 		return
 	}
-	// Non-blocking send - if coordinator is busy, it will pick up tasks on next event
-	select {
-	case m.taskReadyChan <- struct{}{}:
-	default:
-	}
+	m.eventPublisher.PublishTasksBecameReady(navigation.TasksBecameReadyEvent{
+		PlayerID:   m.playerID,
+		PipelineID: pipelineID,
+	})
 }
 
 // Run starts the supply monitor background loop
@@ -403,7 +403,7 @@ func (m *SupplyMonitor) markCollectTasksReady(ctx context.Context, factory *manu
 
 	// Notify coordinator that tasks are ready for assignment
 	if marked > 0 {
-		m.notifyTaskReady()
+		m.notifyTaskReady(factory.PipelineID())
 	}
 }
 
@@ -570,7 +570,7 @@ func (m *SupplyMonitor) createNewCollectSellTasks(ctx context.Context, factory *
 	})
 
 	// Notify coordinator that tasks are ready for assignment
-	m.notifyTaskReady()
+	m.notifyTaskReady(factory.PipelineID())
 }
 
 // findBestSellMarket finds the best market to sell the collected good.
@@ -984,7 +984,7 @@ func (m *SupplyMonitor) createAcquireDeliverTasksForFactory(ctx context.Context,
 		})
 	}
 	if tasksCreated > 0 {
-		m.notifyTaskReady()
+		m.notifyTaskReady(factory.PipelineID())
 	}
 }
 
@@ -1053,6 +1053,7 @@ func (m *SupplyMonitor) ActivateSupplyGatedTasks(ctx context.Context) int {
 	pipelineStatusCache := make(map[string]manufacturing.PipelineStatus)
 
 	activated := 0
+	lastActivatedPipelineID := ""
 	for _, task := range pendingTasks {
 		// Only process ACQUIRE_DELIVER tasks
 		if task.TaskType() != manufacturing.TaskTypeAcquireDeliver {
@@ -1210,6 +1211,7 @@ func (m *SupplyMonitor) ActivateSupplyGatedTasks(ctx context.Context) int {
 		// Add to queue
 		m.taskQueue.Enqueue(task)
 		activated++
+		lastActivatedPipelineID = pipelineID
 
 		logger.Log("INFO", "Activated supply-gated ACQUIRE_DELIVER task", map[string]interface{}{
 			"task_id":       task.ID()[:8],
@@ -1225,7 +1227,7 @@ func (m *SupplyMonitor) ActivateSupplyGatedTasks(ctx context.Context) int {
 		logger.Log("INFO", "Supply-gated task activation summary", map[string]interface{}{
 			"activated": activated,
 		})
-		m.notifyTaskReady()
+		m.notifyTaskReady(lastActivatedPipelineID)
 	}
 
 	return activated
@@ -1244,6 +1246,7 @@ func (m *SupplyMonitor) ActivateCollectionPipelineTasks(ctx context.Context) int
 	// Cache pipeline lookups
 	pipelineCache := make(map[string]*manufacturing.ManufacturingPipeline)
 	activated := 0
+	lastActivatedPipelineID := ""
 
 	// Step 1: Activate PENDING COLLECTION pipeline tasks if conditions are favorable
 	pendingTasks, err := m.taskRepo.FindByStatus(ctx, m.playerID, manufacturing.TaskStatusPending)
@@ -1288,6 +1291,7 @@ func (m *SupplyMonitor) ActivateCollectionPipelineTasks(ctx context.Context) int
 			}
 			m.taskQueue.Enqueue(task)
 			activated++
+			lastActivatedPipelineID = pipelineID
 
 			logger.Log("INFO", "Activated PENDING COLLECTION task", map[string]interface{}{
 				"task":          task.ID()[:8],
@@ -1341,6 +1345,7 @@ func (m *SupplyMonitor) ActivateCollectionPipelineTasks(ctx context.Context) int
 		// Enqueue the task
 		m.taskQueue.Enqueue(task)
 		activated++
+		lastActivatedPipelineID = pipelineID
 
 		logger.Log("INFO", "Enqueued READY COLLECTION task", map[string]interface{}{
 			"task":        task.ID()[:8],
@@ -1353,7 +1358,7 @@ func (m *SupplyMonitor) ActivateCollectionPipelineTasks(ctx context.Context) int
 		logger.Log("INFO", "COLLECTION pipeline task activation summary", map[string]interface{}{
 			"activated": activated,
 		})
-		m.notifyTaskReady()
+		m.notifyTaskReady(lastActivatedPipelineID)
 	}
 
 	return activated

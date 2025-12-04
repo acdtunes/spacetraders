@@ -3,6 +3,7 @@ package manufacturing
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
@@ -302,7 +303,14 @@ func (m *PipelineLifecycleManager) scanForFabricationOpportunities(ctx context.C
 			ctx, opp, params.SystemSymbol, params.PlayerID,
 		)
 		if err != nil {
-			logger.Log("ERROR", fmt.Sprintf("Failed to create pipeline for %s: %v", opp.Good(), err), nil)
+			// Supply-gated failures are expected conditions, not errors
+			// These goods don't have HIGH/ABUNDANT supply yet - log at DEBUG
+			if strings.Contains(err.Error(), "supply too low") ||
+				strings.Contains(err.Error(), "no market with HIGH/ABUNDANT supply") {
+				logger.Log("DEBUG", fmt.Sprintf("Skipping %s: %v", opp.Good(), err), nil)
+			} else {
+				logger.Log("ERROR", fmt.Sprintf("Failed to create pipeline for %s: %v", opp.Good(), err), nil)
+			}
 			continue
 		}
 

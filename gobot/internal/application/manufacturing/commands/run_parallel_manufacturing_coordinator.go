@@ -71,6 +71,10 @@ type RunParallelManufacturingCoordinatorHandler struct {
 	clock            shared.Clock
 	waypointProvider system.IWaypointProvider
 
+	// Event bus for inter-container communication
+	eventSubscriber navigation.ShipEventSubscriber
+	eventPublisher  navigation.ShipEventPublisher
+
 	// Coordinator services (created per Handle call)
 	pipelineManager  mfgServices.PipelineManager
 	stateRecoverer   mfgServices.StateRecoverer
@@ -81,10 +85,6 @@ type RunParallelManufacturingCoordinatorHandler struct {
 
 	// Storage recovery (optional - nil if no storage operations)
 	storageRecovery *storageApp.StorageRecoveryService
-
-	// Runtime state
-	workerCompletionChan chan string   // Worker container completion signals
-	taskReadyChan        chan struct{} // Notified when SupplyMonitor marks tasks ready
 }
 
 // NewRunParallelManufacturingCoordinatorHandler creates a new coordinator handler
@@ -125,8 +125,6 @@ func NewRunParallelManufacturingCoordinatorHandler(
 		daemonClient:                daemonClient,
 		clock:                       clock,
 		waypointProvider:            waypointProvider,
-		workerCompletionChan:        make(chan string, 100),
-		taskReadyChan:               make(chan struct{}, 10),
 	}
 }
 
@@ -134,6 +132,18 @@ func NewRunParallelManufacturingCoordinatorHandler(
 // This enables recovery of storage ship cargo state on daemon restart.
 func (h *RunParallelManufacturingCoordinatorHandler) SetStorageRecoveryService(service *storageApp.StorageRecoveryService) {
 	h.storageRecovery = service
+}
+
+// SetEventSubscriber sets the event subscriber for inter-container communication.
+// This replaces the legacy channel-based approach for worker completion and task ready notifications.
+func (h *RunParallelManufacturingCoordinatorHandler) SetEventSubscriber(subscriber navigation.ShipEventSubscriber) {
+	h.eventSubscriber = subscriber
+}
+
+// SetEventPublisher sets the event publisher for supply monitor notifications.
+// The SupplyMonitor uses this to publish TasksBecameReady events.
+func (h *RunParallelManufacturingCoordinatorHandler) SetEventPublisher(publisher navigation.ShipEventPublisher) {
+	h.eventPublisher = publisher
 }
 
 // SetStorageOperationRepository sets the optional storage operation repository.
@@ -186,15 +196,23 @@ func (h *RunParallelManufacturingCoordinatorHandler) Handle(
 	// Start supply monitor
 	h.startSupplyMonitor(ctx, cmd.PlayerID, config.supplyPollInterval)
 
+	// Set up event bus subscriptions
+	workerCompletedCh := h.eventSubscriber.SubscribeWorkerCompleted(cmd.ContainerID)
+	taskReadyCh := h.eventSubscriber.SubscribeTasksBecameReady(cmd.PlayerID)
+	defer h.eventSubscriber.UnsubscribeWorkerCompleted(cmd.ContainerID, workerCompletedCh)
+	defer h.eventSubscriber.UnsubscribeTasksBecameReady(cmd.PlayerID, taskReadyCh)
+
 	// Set up tickers
 	opportunityScanTicker := time.NewTicker(3 * time.Minute)
 	stuckPipelineTicker := time.NewTicker(5 * time.Minute)
 	idleShipTicker := time.NewTicker(10 * time.Second)
 	pipelineCompletionTicker := time.NewTicker(30 * time.Second) // Safety net for lost completion signals
+	staleWorkerTicker := time.NewTicker(2 * time.Minute)         // Detect crashed workers
 	defer opportunityScanTicker.Stop()
 	defer stuckPipelineTicker.Stop()
 	defer idleShipTicker.Stop()
 	defer pipelineCompletionTicker.Stop()
+	defer staleWorkerTicker.Stop()
 
 	// Initial scan and task assignment
 	h.pipelineManager.ScanAndCreatePipelines(ctx, mfgServices.PipelineScanParams{
@@ -258,15 +276,33 @@ func (h *RunParallelManufacturingCoordinatorHandler) Handle(
 				})
 			}
 
-		case <-h.taskReadyChan:
+		case <-taskReadyCh:
+			// Tasks became ready
 			h.taskAssigner.AssignTasks(ctx, mfgServices.AssignParams{
 				PlayerID:           cmd.PlayerID,
 				MaxConcurrentTasks: config.maxConcurrentTasks,
 				CoordinatorID:      cmd.ContainerID,
 			})
 
-		case shipSymbol := <-h.workerCompletionChan:
-			h.handleWorkerCompletion(ctx, cmd, shipSymbol, config)
+		case <-staleWorkerTicker.C:
+			// Detect and cleanup crashed worker containers that are stuck in RUNNING state
+			// Workers are considered stale if their heartbeat hasn't been updated for 2 minutes
+			cleaned, err := h.daemonClient.CleanupStaleManufacturingWorkers(ctx, cmd.PlayerID, 2)
+			if err != nil {
+				logger.Log("WARN", fmt.Sprintf("Failed to cleanup stale workers: %v", err), nil)
+			} else if cleaned > 0 {
+				logger.Log("INFO", fmt.Sprintf("Cleaned up %d stale worker containers", cleaned), nil)
+				// Trigger task reassignment since ships were freed
+				h.taskAssigner.AssignTasks(ctx, mfgServices.AssignParams{
+					PlayerID:           cmd.PlayerID,
+					MaxConcurrentTasks: config.maxConcurrentTasks,
+					CoordinatorID:      cmd.ContainerID,
+				})
+			}
+
+		case event := <-workerCompletedCh:
+			// Worker completed
+			h.handleWorkerCompletion(ctx, cmd, event.ShipSymbol, config)
 
 		case <-ctx.Done():
 			logger.Log("INFO", "Parallel manufacturing coordinator shutting down", nil)
@@ -385,7 +421,6 @@ func (h *RunParallelManufacturingCoordinatorHandler) initializeServices(cmd *Run
 		assignmentTracker,
 		h.factoryManager,
 		h.pipelineManager,
-		h.workerCompletionChan,
 	)
 	h.workerManager = workerLifecycleMgr
 
@@ -541,7 +576,7 @@ func (h *RunParallelManufacturingCoordinatorHandler) startSupplyMonitor(ctx cont
 		pollInterval,
 		playerID,
 	)
-	supplyMonitor.SetTaskReadyChannel(h.taskReadyChan)
+	supplyMonitor.SetEventPublisher(h.eventPublisher)
 	go supplyMonitor.Run(ctx)
 
 	logger.Log("INFO", "Supply monitor started", map[string]interface{}{

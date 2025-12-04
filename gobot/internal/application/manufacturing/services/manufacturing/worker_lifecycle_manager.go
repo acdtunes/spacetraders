@@ -62,10 +62,9 @@ type WorkerLifecycleManager struct {
 	clock            shared.Clock
 
 	// Dependencies (injected via constructor)
-	assignmentTracker  *AssignmentTracker // Used for Track/Untrack (no circular dep)
-	factoryManager     FactoryManager
-	pipelineManager    PipelineManager
-	workerCompletionCh chan string
+	assignmentTracker *AssignmentTracker // Used for Track/Untrack (no circular dep)
+	factoryManager    FactoryManager
+	pipelineManager   PipelineManager
 }
 
 // NewWorkerLifecycleManager creates a new worker lifecycle manager with all dependencies
@@ -79,22 +78,20 @@ func NewWorkerLifecycleManager(
 	assignmentTracker *AssignmentTracker,
 	factoryManager FactoryManager,
 	pipelineManager PipelineManager,
-	workerCompletionCh chan string,
 ) *WorkerLifecycleManager {
 	if clock == nil {
 		clock = shared.NewRealClock()
 	}
 	return &WorkerLifecycleManager{
-		taskRepo:           taskRepo,
-		shipRepo:           shipRepo,
-		daemonClient:       daemonClient,
-		containerRemover:   containerRemover,
-		taskQueue:          taskQueue,
-		clock:              clock,
-		assignmentTracker:  assignmentTracker,
-		factoryManager:     factoryManager,
-		pipelineManager:    pipelineManager,
-		workerCompletionCh: workerCompletionCh,
+		taskRepo:          taskRepo,
+		shipRepo:          shipRepo,
+		daemonClient:      daemonClient,
+		containerRemover:  containerRemover,
+		taskQueue:         taskQueue,
+		clock:             clock,
+		assignmentTracker: assignmentTracker,
+		factoryManager:    factoryManager,
+		pipelineManager:   pipelineManager,
 	}
 }
 
@@ -190,7 +187,7 @@ func (m *WorkerLifecycleManager) AssignTaskToShip(ctx context.Context, params As
 
 	// Step 3: Start the worker container
 	logger.Log("INFO", fmt.Sprintf("Starting worker container %s for task %s", containerID, task.ID()[:8]), nil)
-	if err := m.daemonClient.StartManufacturingTaskWorkerContainer(ctx, containerID, m.workerCompletionCh); err != nil {
+	if err := m.daemonClient.StartManufacturingTaskWorkerContainer(ctx, containerID); err != nil {
 		// Release ship assignment on failure
 		if m.shipRepo != nil {
 			params.Ship.ForceRelease("worker_start_failed", m.clock)
