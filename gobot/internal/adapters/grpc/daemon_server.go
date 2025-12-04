@@ -85,6 +85,8 @@ type DaemonServer struct {
 }
 
 // NewDaemonServer creates a new daemon server instance
+// shipEventPublisher is the event bus for ship state change notifications.
+// Pass the ShipEventBus created in main.go - it implements both publisher and subscriber interfaces.
 func NewDaemonServer(
 	mediator common.Mediator,
 	db *gorm.DB,
@@ -97,6 +99,7 @@ func NewDaemonServer(
 	goodsFactoryRepo *persistence.GormGoodsFactoryRepository,
 	socketPath string,
 	metricsConfig *config.MetricsConfig,
+	shipEventPublisher navigation.ShipEventPublisher,
 ) (*DaemonServer, error) {
 	// Remove existing socket file if present
 	if err := os.RemoveAll(socketPath); err != nil {
@@ -116,7 +119,7 @@ func NewDaemonServer(
 	}
 
 	clock := shared.NewRealClock()
-	shipStateScheduler := NewShipStateScheduler(shipRepo, clock)
+	shipStateScheduler := NewShipStateScheduler(shipRepo, clock, shipEventPublisher)
 
 	// Wire arrival scheduler to ship repository so navigation triggers arrival timers
 	if concreteRepo, ok := shipRepo.(interface{ SetArrivalScheduler(navigation.ArrivalScheduler) }); ok {

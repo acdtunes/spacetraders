@@ -28,9 +28,10 @@ type SiphonResourcesResponse struct {
 
 // SiphonResourcesHandler - Handles siphon resources commands
 type SiphonResourcesHandler struct {
-	shipRepo   navigation.ShipRepository
-	playerRepo player.PlayerRepository
-	apiClient  domainPorts.APIClient
+	shipRepo            navigation.ShipRepository
+	playerRepo          player.PlayerRepository
+	apiClient           domainPorts.APIClient
+	shipEventSubscriber navigation.ShipEventSubscriber
 }
 
 // NewSiphonResourcesHandler creates a new siphon resources handler
@@ -38,11 +39,16 @@ func NewSiphonResourcesHandler(
 	shipRepo navigation.ShipRepository,
 	playerRepo player.PlayerRepository,
 	apiClient domainPorts.APIClient,
+	shipEventSubscriber navigation.ShipEventSubscriber,
 ) *SiphonResourcesHandler {
+	if shipEventSubscriber == nil {
+		panic("shipEventSubscriber is required for SiphonResourcesHandler")
+	}
 	return &SiphonResourcesHandler{
-		shipRepo:   shipRepo,
-		playerRepo: playerRepo,
-		apiClient:  apiClient,
+		shipRepo:            shipRepo,
+		playerRepo:          playerRepo,
+		apiClient:           apiClient,
+		shipEventSubscriber: shipEventSubscriber,
 	}
 }
 
@@ -118,6 +124,7 @@ func (h *SiphonResourcesHandler) Handle(ctx context.Context, request common.Requ
 }
 
 // waitForShipArrival waits for a ship in transit to complete its journey.
+// Uses event-based waiting via ShipEventSubscriber for efficient arrival detection.
 // This handles ships that were mid-navigation when daemon restarted.
 func (h *SiphonResourcesHandler) waitForShipArrival(
 	ctx context.Context,
@@ -126,49 +133,30 @@ func (h *SiphonResourcesHandler) waitForShipArrival(
 ) error {
 	logger := common.LoggerFromContext(ctx)
 
-	logger.Log("INFO", "Siphon ship in transit - waiting for arrival", map[string]interface{}{
+	logger.Log("INFO", "Siphon ship in transit - waiting for arrival event", map[string]interface{}{
 		"ship_symbol": ship.ShipSymbol(),
 		"action":      "wait_transit_arrival",
 	})
 
-	// Use DB arrival time (DB is source of truth after daemon startup)
-	var waitTime time.Duration
-	if ship.ArrivalTime() != nil {
-		waitTime = time.Until(*ship.ArrivalTime())
-	}
+	// Subscribe to arrival events for this ship
+	arrivedCh := h.shipEventSubscriber.SubscribeArrived(ship.ShipSymbol())
+	defer h.shipEventSubscriber.UnsubscribeArrived(ship.ShipSymbol(), arrivedCh)
 
-	// Wait if we have positive wait time
-	if waitTime > 0 {
-		// Add 3 second buffer for API lag
-		totalWait := waitTime + 3*time.Second
-		logger.Log("INFO", "Waiting for siphon ship to complete transit", map[string]interface{}{
-			"ship_symbol":  ship.ShipSymbol(),
-			"action":       "wait_transit",
-			"wait_seconds": int(totalWait.Seconds()),
-		})
-		time.Sleep(totalWait)
-	}
-
-	// After sleeping for arrival + buffer, trust that ship has arrived
-	// Force domain state to IN_ORBIT
-	if ship.NavStatus() == navigation.NavStatusInTransit {
-		logger.Log("INFO", "Trusting arrival time - marking siphon ship as arrived", map[string]interface{}{
+	select {
+	case <-arrivedCh:
+		// Ship arrived - update domain state
+		logger.Log("INFO", "Received arrival event for siphon ship", map[string]interface{}{
 			"ship_symbol": ship.ShipSymbol(),
-			"action":      "trust_arrival",
+			"action":      "arrival_event_received",
 		})
-		if err := ship.Arrive(); err != nil {
-			return fmt.Errorf("failed to mark ship as arrived: %w", err)
+		if ship.NavStatus() == navigation.NavStatusInTransit {
+			if err := ship.Arrive(); err != nil {
+				return fmt.Errorf("failed to update ship domain state: %w", err)
+			}
 		}
+		return nil
 
-		// Clear arrival time and persist ship state
-		ship.ClearArrivalTime()
-		if err := h.shipRepo.Save(ctx, ship); err != nil {
-			logger.Log("WARNING", "Failed to persist ship state after transit wait", map[string]interface{}{
-				"ship_symbol": ship.ShipSymbol(),
-				"error":       err.Error(),
-			})
-		}
+	case <-ctx.Done():
+		return ctx.Err()
 	}
-
-	return nil
 }

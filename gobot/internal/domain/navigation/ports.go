@@ -106,6 +106,73 @@ type ArrivalScheduler interface {
 	ScheduleArrival(ship *Ship)
 }
 
+// ShipEventPublisher publishes ship state change events.
+// Implemented by the scheduler to notify waiting containers when ship state changes.
+type ShipEventPublisher interface {
+	// PublishArrived publishes an ARRIVED event when a ship transitions out of IN_TRANSIT
+	PublishArrived(shipSymbol string, playerID shared.PlayerID, location string, status NavStatus)
+
+	// PublishWorkerCompleted publishes a worker completion event.
+	// Used by ContainerRunner to notify coordinators when a worker finishes.
+	PublishWorkerCompleted(event WorkerCompletedEvent)
+
+	// PublishTasksBecameReady publishes a tasks ready event.
+	// Used by SupplyMonitor to notify coordinators when tasks are ready for assignment.
+	PublishTasksBecameReady(event TasksBecameReadyEvent)
+
+	// PublishTransportRequested publishes a transport request event.
+	// Used by siphon workers to request transport assignment.
+	PublishTransportRequested(event TransportRequestedEvent)
+
+	// PublishTransferCompleted publishes a transfer completion event.
+	// Used by transport workers to notify when cargo transfer is done.
+	PublishTransferCompleted(event TransferCompletedEvent)
+}
+
+// ShipEventSubscriber subscribes to ship state change events.
+// Used by containers to wait for ship arrivals without polling.
+type ShipEventSubscriber interface {
+	// SubscribeArrived subscribes to ARRIVED events for a specific ship.
+	// Returns a channel that receives events. Caller must Unsubscribe when done.
+	SubscribeArrived(shipSymbol string) <-chan ShipArrivedEvent
+
+	// UnsubscribeArrived removes a subscription. Closes the channel.
+	UnsubscribeArrived(shipSymbol string, ch <-chan ShipArrivedEvent)
+
+	// SubscribeWorkerCompleted subscribes to worker completion events for a coordinator.
+	// coordinatorID is the container ID of the coordinator waiting for worker completions.
+	SubscribeWorkerCompleted(coordinatorID string) <-chan WorkerCompletedEvent
+
+	// UnsubscribeWorkerCompleted removes a worker completion subscription.
+	UnsubscribeWorkerCompleted(coordinatorID string, ch <-chan WorkerCompletedEvent)
+
+	// SubscribeTasksBecameReady subscribes to task ready events for a player.
+	SubscribeTasksBecameReady(playerID int) <-chan TasksBecameReadyEvent
+
+	// UnsubscribeTasksBecameReady removes a task ready subscription.
+	UnsubscribeTasksBecameReady(playerID int, ch <-chan TasksBecameReadyEvent)
+
+	// SubscribeTransportRequested subscribes to transport request events for a player.
+	SubscribeTransportRequested(playerID int) <-chan TransportRequestedEvent
+
+	// UnsubscribeTransportRequested removes a transport request subscription.
+	UnsubscribeTransportRequested(playerID int, ch <-chan TransportRequestedEvent)
+
+	// SubscribeTransferCompleted subscribes to transfer completion events for a player.
+	SubscribeTransferCompleted(playerID int) <-chan TransferCompletedEvent
+
+	// UnsubscribeTransferCompleted removes a transfer completion subscription.
+	UnsubscribeTransferCompleted(playerID int, ch <-chan TransferCompletedEvent)
+}
+
+// ShipArrivedEvent is published when a ship transitions from IN_TRANSIT to IN_ORBIT
+type ShipArrivedEvent struct {
+	ShipSymbol string
+	PlayerID   shared.PlayerID
+	Location   string
+	Status     NavStatus
+}
+
 // DTOs for ship operations
 
 type ShipData struct {

@@ -203,7 +203,12 @@ func run(cfg *config.Config) error {
 	// Market scanner for automatic market data collection during navigation
 	marketScanner := ship.NewMarketScanner(apiClient, marketRepo, playerRepo, priceHistoryRepo)
 
-	routeExecutor := ship.NewRouteExecutor(shipRepo, med, nil, marketScanner, nil) // nil = use RealClock and default refuel strategy
+	// Ship event bus for pub/sub of ship state changes (arrival, cooldown, etc.)
+	// Used by ShipStateScheduler (publisher) and RouteExecutor (subscriber)
+	shipEventBus := ship.NewShipEventBus()
+	fmt.Println("Ship event bus initialized")
+
+	routeExecutor := ship.NewRouteExecutor(shipRepo, med, nil, marketScanner, nil, shipEventBus) // nil = use RealClock and default refuel strategy
 
 	// NavigateRoute handler (now uses extracted services)
 	navigateRouteHandler := shipNav.NewNavigateRouteHandler(
@@ -354,7 +359,7 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to create socket directory: %w", err)
 	}
 
-	daemonServer, err := grpc.NewDaemonServer(med, db, containerLogRepo, containerRepo, waypointRepo, shipRepo, playerRepo, routingClient, goodsFactoryRepo, socketPath, &cfg.Metrics)
+	daemonServer, err := grpc.NewDaemonServer(med, db, containerLogRepo, containerRepo, waypointRepo, shipRepo, playerRepo, routingClient, goodsFactoryRepo, socketPath, &cfg.Metrics, shipEventBus)
 	if err != nil {
 		return fmt.Errorf("failed to create daemon server: %w", err)
 	}
@@ -402,7 +407,7 @@ func run(cfg *config.Config) error {
 	// NOTE: Storage coordinator is created below (after manufacturing setup) and passed here.
 	// We'll register these handlers after storage coordinator is created.
 
-	siphonResourcesHandler := gasCmd.NewSiphonResourcesHandler(shipRepo, playerRepo, apiClient)
+	siphonResourcesHandler := gasCmd.NewSiphonResourcesHandler(shipRepo, playerRepo, apiClient, shipEventBus)
 	if err := mediator.RegisterHandler[*gasCmd.SiphonResourcesCommand](med, siphonResourcesHandler); err != nil {
 		return fmt.Errorf("failed to register SiphonResources handler: %w", err)
 	}

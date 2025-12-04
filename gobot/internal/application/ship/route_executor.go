@@ -36,24 +36,31 @@ import (
 //   - ConservativeRefuelStrategy: Maintains high fuel levels (default)
 //   - MinimalRefuelStrategy: Only refuels when necessary
 //   - AlwaysTopOffStrategy: Refuels at every opportunity
+//
+// Event-driven arrival waiting:
+// Uses ShipEventSubscriber to wait for ship arrivals via events from ShipStateScheduler.
+// This eliminates race conditions between timer-based state transitions and polling.
 type RouteExecutor struct {
-	shipRepo      domainNavigation.ShipRepository
-	mediator      common.Mediator
-	clock         shared.Clock
-	marketScanner *MarketScanner
-	refuelStrategy strategies.RefuelStrategy
+	shipRepo           domainNavigation.ShipRepository
+	mediator           common.Mediator
+	clock              shared.Clock
+	marketScanner      *MarketScanner
+	refuelStrategy     strategies.RefuelStrategy
+	shipEventSubscriber domainNavigation.ShipEventSubscriber
 }
 
 // NewRouteExecutor creates a new route executor
 // If clock is nil, uses RealClock (production behavior)
 // If marketScanner is nil, disables automatic market scanning
 // If refuelStrategy is nil, uses default ConservativeRefuelStrategy (90% threshold)
+// shipEventSubscriber is required for event-based arrival waiting
 func NewRouteExecutor(
 	shipRepo domainNavigation.ShipRepository,
 	mediator common.Mediator,
 	clock shared.Clock,
 	marketScanner *MarketScanner,
 	refuelStrategy strategies.RefuelStrategy,
+	shipEventSubscriber domainNavigation.ShipEventSubscriber,
 ) *RouteExecutor {
 	if clock == nil {
 		clock = shared.NewRealClock()
@@ -61,12 +68,16 @@ func NewRouteExecutor(
 	if refuelStrategy == nil {
 		refuelStrategy = strategies.NewDefaultRefuelStrategy()
 	}
+	if shipEventSubscriber == nil {
+		panic("shipEventSubscriber is required for RouteExecutor")
+	}
 	return &RouteExecutor{
-		shipRepo:       shipRepo,
-		mediator:       mediator,
-		clock:          clock,
-		marketScanner:  marketScanner,
-		refuelStrategy: refuelStrategy,
+		shipRepo:            shipRepo,
+		mediator:            mediator,
+		clock:               clock,
+		marketScanner:       marketScanner,
+		refuelStrategy:      refuelStrategy,
+		shipEventSubscriber: shipEventSubscriber,
 	}
 }
 
@@ -438,9 +449,8 @@ func (e *RouteExecutor) scanMarketIfPresent(ctx context.Context, segment *domain
 	}
 }
 
-// waitForCurrentTransit waits for ship to complete its current transit
-// Uses arrival time from DB if valid, falls back to API if DB is stale
-// CRITICAL: After waiting, persists ship state to DB to prevent stale state loops
+// waitForCurrentTransit waits for ship to complete its current transit using event-based notification.
+// CRITICAL: After waiting, persists ship state to DB to prevent stale state loops.
 func (e *RouteExecutor) waitForCurrentTransit(
 	ctx context.Context,
 	ship *domainNavigation.Ship,
@@ -448,59 +458,47 @@ func (e *RouteExecutor) waitForCurrentTransit(
 ) error {
 	logger := common.LoggerFromContext(ctx)
 
+	// If ship is not in transit, nothing to wait for
+	if ship.NavStatus() != domainNavigation.NavStatusInTransit {
+		return nil
+	}
+
 	logger.Log("INFO", "Ship in transit from previous command", map[string]interface{}{
 		"ship_symbol": ship.ShipSymbol(),
 		"action":      "wait_previous_transit",
 		"status":      "IN_TRANSIT",
 	})
 
-	// Use DB arrival time (DB is source of truth after daemon startup)
-	var waitTime time.Duration
-
+	// Calculate wait time from DB arrival time
+	var waitTimeSeconds int
 	if ship.ArrivalTime() != nil {
-		waitTime = time.Until(*ship.ArrivalTime())
-	}
-
-	// Wait if we have positive wait time
-	if waitTime > 0 {
-		// Add 3 second buffer for API lag
-		totalWait := waitTime + 3*time.Second
-		logger.Log("INFO", "Waiting for ship to complete previous transit", map[string]interface{}{
-			"ship_symbol":  ship.ShipSymbol(),
-			"action":       "wait_transit",
-			"wait_seconds": int(totalWait.Seconds()),
-		})
-		e.clock.Sleep(totalWait)
-	}
-
-	// After sleeping for arrival + buffer, trust that ship has arrived
-	// Force domain state to IN_ORBIT without API polling
-	if ship.NavStatus() == domainNavigation.NavStatusInTransit {
-		logger.Log("INFO", "Trusting arrival time - marking ship as arrived", map[string]interface{}{
-			"ship_symbol": ship.ShipSymbol(),
-			"action":      "trust_arrival",
-		})
-		if err := ship.Arrive(); err != nil {
-			return fmt.Errorf("failed to mark ship as arrived: %w", err)
+		waitTime := time.Until(*ship.ArrivalTime())
+		if waitTime > 0 {
+			waitTimeSeconds = int(waitTime.Seconds())
 		}
+	}
 
-		// Persist ship state to DB after arrival to prevent stale state loops
-		if e.shipRepo != nil {
-			// Clear arrival time since ship has arrived
-			ship.ClearArrivalTime()
+	// Event-based waiting
+	if err := e.waitForArrivalEvent(ctx, ship, waitTimeSeconds, logger); err != nil {
+		return err
+	}
 
-			if err := e.shipRepo.Save(ctx, ship); err != nil {
-				logger.Log("WARNING", "Failed to persist ship state after transit wait", map[string]interface{}{
-					"ship_symbol": ship.ShipSymbol(),
-					"error":       err.Error(),
-				})
-			} else {
-				logger.Log("DEBUG", "Persisted ship state after transit wait", map[string]interface{}{
-					"ship_symbol": ship.ShipSymbol(),
-					"location":    ship.CurrentLocation().Symbol,
-					"nav_status":  string(ship.NavStatus()),
-				})
-			}
+	// Persist ship state to DB after arrival to prevent stale state loops
+	if e.shipRepo != nil && ship.NavStatus() != domainNavigation.NavStatusInTransit {
+		// Clear arrival time since ship has arrived
+		ship.ClearArrivalTime()
+
+		if err := e.shipRepo.Save(ctx, ship); err != nil {
+			logger.Log("WARNING", "Failed to persist ship state after transit wait", map[string]interface{}{
+				"ship_symbol": ship.ShipSymbol(),
+				"error":       err.Error(),
+			})
+		} else {
+			logger.Log("DEBUG", "Persisted ship state after transit wait", map[string]interface{}{
+				"ship_symbol": ship.ShipSymbol(),
+				"location":    ship.CurrentLocation().Symbol,
+				"nav_status":  string(ship.NavStatus()),
+			})
 		}
 	}
 
@@ -627,8 +625,8 @@ func (e *RouteExecutor) refuelShip(
 	return nil
 }
 
-// waitForArrival waits for ship to arrive at destination
-// OPTIMIZATION: Trust arrival time completely - no API polling after sleep
+// waitForArrival waits for ship to arrive at destination using event-based notification.
+// Uses ShipEventSubscriber to receive ARRIVED event from ShipStateScheduler.
 func (e *RouteExecutor) waitForArrival(
 	ctx context.Context,
 	ship *domainNavigation.Ship,
@@ -643,27 +641,50 @@ func (e *RouteExecutor) waitForArrival(
 	}
 	waitTime := arrivalTime.CalculateWaitTime()
 
-	if waitTime > 0 {
-		logger.Log("INFO", "Waiting for ship to arrive at destination", map[string]interface{}{
-			"ship_symbol":  ship.ShipSymbol(),
-			"action":       "wait_arrival",
-			"wait_seconds": waitTime + 3,
-		})
-		e.clock.Sleep(time.Duration(waitTime+3) * time.Second)
+	// If ship is not in transit, no need to wait
+	if ship.NavStatus() != domainNavigation.NavStatusInTransit {
+		return nil
 	}
 
-	// OPTIMIZATION: After sleeping for arrival + buffer, trust that ship has arrived
-	// No API polling - we save 1-3 API calls per navigation segment
-	// The next command (orbit/dock/navigate) will fail if somehow wrong
-	if ship.NavStatus() == domainNavigation.NavStatusInTransit {
-		logger.Log("INFO", "Trusting arrival time - marking ship as arrived", map[string]interface{}{
+	return e.waitForArrivalEvent(ctx, ship, waitTime, logger)
+}
+
+// waitForArrivalEvent waits for the ARRIVED event from ShipStateScheduler
+func (e *RouteExecutor) waitForArrivalEvent(
+	ctx context.Context,
+	ship *domainNavigation.Ship,
+	waitTime int,
+	logger common.ContainerLogger,
+) error {
+	// Subscribe to ARRIVED event for this ship
+	arrivedCh := e.shipEventSubscriber.SubscribeArrived(ship.ShipSymbol())
+	defer e.shipEventSubscriber.UnsubscribeArrived(ship.ShipSymbol(), arrivedCh)
+
+	logger.Log("INFO", "Waiting for ship arrival event", map[string]interface{}{
+		"ship_symbol":      ship.ShipSymbol(),
+		"action":           "wait_arrival_event",
+		"expected_seconds": waitTime,
+	})
+
+	select {
+	case event := <-arrivedCh:
+		// Ship arrived - update domain state to match
+		logger.Log("INFO", "Ship arrival event received", map[string]interface{}{
 			"ship_symbol": ship.ShipSymbol(),
-			"action":      "trust_arrival",
+			"action":      "arrival_event_received",
+			"location":    event.Location,
+			"status":      string(event.Status),
 		})
-		if err := ship.Arrive(); err != nil {
-			return fmt.Errorf("failed to mark ship as arrived: %w", err)
+		// Domain state is already updated by ShipStateScheduler
+		// Just update our local copy to reflect the new state
+		if ship.NavStatus() == domainNavigation.NavStatusInTransit {
+			if err := ship.Arrive(); err != nil {
+				return fmt.Errorf("failed to update ship domain state: %w", err)
+			}
 		}
-	}
+		return nil
 
-	return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }

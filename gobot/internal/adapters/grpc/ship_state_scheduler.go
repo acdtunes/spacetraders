@@ -16,30 +16,35 @@ const ClockDriftBuffer = 1 * time.Second
 
 // SweeperInterval is how often the background sweeper checks for stuck ships.
 // This catches ships that slip through due to failed saves, timeouts, or clock drift.
-const SweeperInterval = 30 * time.Second
+// With event-based arrival handling, the sweeper is a safety net, not the primary mechanism.
+const SweeperInterval = 60 * time.Second
 
 // ShipStateScheduler manages timers for ship state transitions.
 // Uses time.AfterFunc to schedule precise transitions at exact API-provided timestamps.
 // Zero CPU usage between events (no polling).
 // Also runs a background sweeper to catch any ships that slip through due to failures.
+// Publishes events via ShipEventPublisher when state transitions occur.
 type ShipStateScheduler struct {
-	shipRepo navigation.ShipRepository
-	clock    shared.Clock
-	timers   map[string]*time.Timer // key: shipSymbol or shipSymbol:cooldown
-	mu       sync.Mutex
-	stopCh   chan struct{} // signals sweeper goroutine to stop
+	shipRepo       navigation.ShipRepository
+	clock          shared.Clock
+	eventPublisher navigation.ShipEventPublisher
+	timers         map[string]*time.Timer // key: shipSymbol or shipSymbol:cooldown
+	mu             sync.Mutex
+	stopCh         chan struct{} // signals sweeper goroutine to stop
 }
 
-// NewShipStateScheduler creates a new scheduler for ship state transitions
-func NewShipStateScheduler(shipRepo navigation.ShipRepository, clock shared.Clock) *ShipStateScheduler {
+// NewShipStateScheduler creates a new scheduler for ship state transitions.
+// eventPublisher is optional - if nil, no events will be published.
+func NewShipStateScheduler(shipRepo navigation.ShipRepository, clock shared.Clock, eventPublisher navigation.ShipEventPublisher) *ShipStateScheduler {
 	if clock == nil {
 		clock = shared.NewRealClock()
 	}
 	return &ShipStateScheduler{
-		shipRepo: shipRepo,
-		clock:    clock,
-		timers:   make(map[string]*time.Timer),
-		stopCh:   make(chan struct{}),
+		shipRepo:       shipRepo,
+		clock:          clock,
+		eventPublisher: eventPublisher,
+		timers:         make(map[string]*time.Timer),
+		stopCh:         make(chan struct{}),
 	}
 }
 
@@ -102,6 +107,16 @@ func (s *ShipStateScheduler) handleArrival(symbol string, playerID shared.Player
 		fmt.Printf("Warning: Failed to save ship %s after arrival: %v\n", symbol, err)
 	} else {
 		fmt.Printf("Ship %s arrived at %s\n", symbol, freshShip.CurrentLocation().Symbol)
+
+		// Publish ARRIVED event to notify waiting containers
+		if s.eventPublisher != nil {
+			s.eventPublisher.PublishArrived(
+				symbol,
+				playerID,
+				freshShip.CurrentLocation().Symbol,
+				freshShip.NavStatus(),
+			)
+		}
 	}
 
 	// Cleanup timer reference
@@ -286,6 +301,16 @@ func (s *ShipStateScheduler) sweepStuckShips() {
 			fmt.Printf("Sweeper: Failed to save %s: %v\n", ship.ShipSymbol(), err)
 		} else {
 			fmt.Printf("Sweeper: Unstuck %s → IN_ORBIT at %s\n", ship.ShipSymbol(), ship.CurrentLocation().Symbol)
+
+			// Publish ARRIVED event for unstuck ships too
+			if s.eventPublisher != nil {
+				s.eventPublisher.PublishArrived(
+					ship.ShipSymbol(),
+					ship.PlayerID(),
+					ship.CurrentLocation().Symbol,
+					ship.NavStatus(),
+				)
+			}
 		}
 	}
 
