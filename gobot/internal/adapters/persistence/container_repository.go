@@ -53,6 +53,7 @@ func (r *ContainerRepositoryGORM) Add(
 		RestartCount:      containerEntity.RestartCount(),
 		Config:            string(configJSON),
 		StartedAt:         &now,
+		HeartbeatAt:       &now, // Initialize heartbeat at start
 		StoppedAt:         nil,
 		ExitCode:          nil,
 		ExitReason:        "",
@@ -387,6 +388,79 @@ func (r *ContainerRepositoryGORM) StopAllOrphanedManufacturingWorkers(
 	}
 
 	return result.RowsAffected, nil
+}
+
+// FindStaleManufacturingWorkers returns RUNNING manufacturing task workers whose
+// heartbeat is stale. Used for logging before stopping.
+func (r *ContainerRepositoryGORM) FindStaleManufacturingWorkers(
+	ctx context.Context,
+	playerID int,
+	staleTimeout time.Duration,
+) ([]*ContainerModel, error) {
+	cutoffTime := time.Now().Add(-staleTimeout)
+
+	var models []*ContainerModel
+	err := r.db.WithContext(ctx).
+		Where("container_type = ? AND player_id = ? AND status = ?",
+			"MANUFACTURING_TASK_WORKER", playerID, "RUNNING").
+		Where("heartbeat_at IS NOT NULL AND heartbeat_at < ?", cutoffTime).
+		Find(&models).Error
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to find stale workers: %w", err)
+	}
+
+	return models, nil
+}
+
+// StopStaleManufacturingWorkers marks RUNNING manufacturing task workers as STOPPED if their
+// heartbeat is stale. This detects workers that crashed without proper cleanup.
+// staleTimeout defines how long a worker can go without heartbeat before being considered stale.
+func (r *ContainerRepositoryGORM) StopStaleManufacturingWorkers(
+	ctx context.Context,
+	playerID int,
+	staleTimeout time.Duration,
+) (int64, error) {
+	now := time.Now()
+	cutoffTime := now.Add(-staleTimeout)
+	exitCode := 1
+
+	// Find RUNNING workers with stale heartbeat
+	// heartbeat_at < cutoffTime means no heartbeat for staleTimeout duration
+	result := r.db.WithContext(ctx).
+		Model(&ContainerModel{}).
+		Where("container_type = ? AND player_id = ? AND status = ?",
+			"MANUFACTURING_TASK_WORKER", playerID, "RUNNING").
+		Where("heartbeat_at IS NOT NULL AND heartbeat_at < ?", cutoffTime).
+		Updates(map[string]interface{}{
+			"status":      "STOPPED",
+			"stopped_at":  &now,
+			"exit_code":   &exitCode,
+			"exit_reason": "stale_heartbeat_timeout",
+		})
+
+	if result.Error != nil {
+		return 0, fmt.Errorf("failed to stop stale workers: %w", result.Error)
+	}
+
+	return result.RowsAffected, nil
+}
+
+// UpdateContainerHeartbeat updates the heartbeat timestamp for a container
+func (r *ContainerRepositoryGORM) UpdateContainerHeartbeat(
+	ctx context.Context,
+	containerID string,
+) error {
+	now := time.Now()
+	result := r.db.WithContext(ctx).
+		Model(&ContainerModel{}).
+		Where("id = ?", containerID).
+		Update("heartbeat_at", now)
+
+	if result.Error != nil {
+		return fmt.Errorf("failed to update heartbeat: %w", result.Error)
+	}
+	return nil
 }
 
 // FindActiveGasCoordinator finds an active (PENDING or RUNNING) gas coordinator

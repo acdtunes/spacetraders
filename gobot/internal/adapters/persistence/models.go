@@ -50,6 +50,7 @@ type ContainerModel struct {
 	Config            string       `gorm:"column:config;type:text"` // JSON as text
 	StartedAt         *time.Time   `gorm:"column:started_at"`
 	StoppedAt         *time.Time   `gorm:"column:stopped_at"`
+	HeartbeatAt       *time.Time   `gorm:"column:heartbeat_at"` // Workers update this to prove they're alive
 	ExitCode          *int         `gorm:"column:exit_code"`
 	ExitReason        string       `gorm:"column:exit_reason"`
 }
