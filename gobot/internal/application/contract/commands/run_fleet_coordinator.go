@@ -33,6 +33,9 @@ type RunFleetCoordinatorHandler struct {
 	graphProvider          system.ISystemGraphProvider
 	converter              system.IWaypointConverter
 	clock                  shared.Clock
+
+	// Event bus for inter-container communication
+	eventSubscriber navigation.ShipEventSubscriber
 }
 
 // NewRunFleetCoordinatorHandler creates a new fleet coordinator handler
@@ -70,6 +73,12 @@ func NewRunFleetCoordinatorHandler(
 	}
 }
 
+// SetEventSubscriber sets the event subscriber for inter-container communication.
+// This enables event-driven notifications when workers complete.
+func (h *RunFleetCoordinatorHandler) SetEventSubscriber(subscriber navigation.ShipEventSubscriber) {
+	h.eventSubscriber = subscriber
+}
+
 // Handle executes the fleet coordinator command
 func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {
 	logger := common.LoggerFromContext(ctx)
@@ -86,9 +95,10 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 
 	// No pool initialization - ships are discovered dynamically
 
-	// Create unbuffered completion channel for worker notifications
-	// IMPORTANT: Unbuffered so signals are only received when actively waiting
-	completionChan := make(chan string)
+	// Subscribe to WorkerCompletedEvent for this coordinator
+	// Events are published by ContainerRunner when worker containers complete
+	workerCompletedCh := h.eventSubscriber.SubscribeWorkerCompleted(cmd.ContainerID)
+	defer h.eventSubscriber.UnsubscribeWorkerCompleted(cmd.ContainerID, workerCompletedCh)
 
 	if err := h.workerLifecycleManager.StopExistingWorkers(ctx, cmd.PlayerID.Value()); err != nil {
 		logger.Log("WARNING", fmt.Sprintf("Failed during existing worker cleanup: %v", err), nil)
@@ -131,8 +141,8 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 		if len(availableShips) == 0 {
 			logger.Log("INFO", "No ships available, waiting for completion...", nil)
 			select {
-			case shipSymbol := <-completionChan:
-				logger.Log("INFO", fmt.Sprintf("Ship %s completed, back in pool", shipSymbol), nil)
+			case event := <-workerCompletedCh:
+				logger.Log("INFO", fmt.Sprintf("Ship %s completed, back in pool", event.ShipSymbol), nil)
 				activeWorkerContainerID = "" // Worker completed
 				// Loop immediately to assign next contract
 			case <-time.After(30 * time.Second):
@@ -155,8 +165,8 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 		} else if len(existingActiveWorkers) > 0 {
 			logger.Log("WARNING", fmt.Sprintf("Found %d active CONTRACT_WORKFLOW workers - waiting instead of creating new worker", len(existingActiveWorkers)), nil)
 			select {
-			case shipSymbol := <-completionChan:
-				logger.Log("INFO", fmt.Sprintf("Active worker completed for ship %s", shipSymbol), nil)
+			case event := <-workerCompletedCh:
+				logger.Log("INFO", fmt.Sprintf("Active worker completed for ship %s", event.ShipSymbol), nil)
 				activeWorkerContainerID = "" // Worker completed
 				// Loop back to create new worker
 			case <-time.After(1 * time.Minute):
@@ -246,8 +256,8 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 				inFlightCargo, requiredCargo, unitsNeeded), nil)
 			// Wait for worker completion
 			select {
-			case shipSymbol := <-completionChan:
-				logger.Log("INFO", fmt.Sprintf("Active worker completed for ship %s", shipSymbol), nil)
+			case event := <-workerCompletedCh:
+				logger.Log("INFO", fmt.Sprintf("Active worker completed for ship %s", event.ShipSymbol), nil)
 				activeWorkerContainerID = "" // Worker completed
 				// Loop back to check contract status
 			case <-time.After(1 * time.Minute):
@@ -317,11 +327,10 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 
 		// Create worker command
 		workerCmd := &RunWorkflowCommand{
-			ShipSymbol:         selectedShip,
-			PlayerID:           cmd.PlayerID,
-			ContainerID:        workerContainerID,
-			CoordinatorID:      cmd.ContainerID,
-			CompletionCallback: completionChan,
+			ShipSymbol:    selectedShip,
+			PlayerID:      cmd.PlayerID,
+			ContainerID:   workerContainerID,
+			CoordinatorID: cmd.ContainerID,
 		}
 
 		// Step 1: Persist worker container to DB (synchronous, no start)
@@ -365,7 +374,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 
 		// Step 3: Start the worker container (ship is safely assigned)
 		logger.Log("INFO", fmt.Sprintf("Starting worker container for %s", selectedShip), nil)
-		if err := h.daemonClient.StartContractWorkflowContainer(ctx, workerContainerID, completionChan); err != nil {
+		if err := h.daemonClient.StartContractWorkflowContainer(ctx, workerContainerID); err != nil {
 			errMsg := fmt.Sprintf("Failed to start worker container: %v", err)
 			logger.Log("ERROR", errMsg, nil)
 			result.Errors = append(result.Errors, errMsg)
@@ -381,8 +390,8 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 		// Block waiting for worker completion
 		logger.Log("INFO", fmt.Sprintf("Waiting for %s to complete contract...", selectedShip), nil)
 		select {
-		case completedShip := <-completionChan:
-			logger.Log("INFO", fmt.Sprintf("Contract completed by %s", completedShip), nil)
+		case event := <-workerCompletedCh:
+			logger.Log("INFO", fmt.Sprintf("Contract completed by %s", event.ShipSymbol), nil)
 			result.ContractsCompleted++
 			activeWorkerContainerID = ""
 
@@ -390,7 +399,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			// since we're using dynamic discovery instead of pool assignments
 
 			// Store completed ship as previous ship for potential balancing in next iteration
-			previousShipSymbol = completedShip
+			previousShipSymbol = event.ShipSymbol
 
 			continue
 

@@ -87,11 +87,10 @@ type FulfillContractResponse struct {
 
 // RunWorkflowCommand orchestrates complete contract workflow execution.
 type RunWorkflowCommand struct {
-	ShipSymbol         string
-	PlayerID           shared.PlayerID
-	ContainerID        string        // This worker's container ID (optional)
-	CoordinatorID      string        // Parent coordinator container ID (optional)
-	CompletionCallback chan<- string // Signal completion to coordinator (optional)
+	ShipSymbol    string
+	PlayerID      shared.PlayerID
+	ContainerID   string // This worker's container ID (optional)
+	CoordinatorID string // Parent coordinator container ID (optional)
 }
 
 // RunWorkflowResponse contains workflow execution results.

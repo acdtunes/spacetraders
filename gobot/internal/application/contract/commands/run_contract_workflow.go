@@ -91,29 +91,10 @@ func (h *RunWorkflowHandler) Handle(ctx context.Context, request common.Request)
 		return result, err
 	}
 
-	logger := common.LoggerFromContext(ctx)
-
 	// NOTE: With dynamic discovery, ships are NOT transferred back to coordinator
 	// They are released by ContainerRunner and discovered dynamically in the next iteration
 	// The ContainerRunner releases ship assignments on completion/failure
-
-	// Signal completion if callback provided
-	if cmd.CompletionCallback != nil {
-		select {
-		case cmd.CompletionCallback <- cmd.ShipSymbol:
-			logger.Log("INFO", "Contract workflow completion signaled", map[string]interface{}{
-				"ship_symbol": cmd.ShipSymbol,
-				"action":      "signal_completion",
-			})
-		default:
-			// Channel full or closed, log but don't error
-			logger.Log("WARNING", "Contract workflow completion signal failed", map[string]interface{}{
-				"ship_symbol": cmd.ShipSymbol,
-				"action":      "signal_completion",
-				"reason":      "channel_full_or_closed",
-			})
-		}
-	}
+	// Completion is signaled via event bus (WorkerCompletedEvent published by ContainerRunner)
 
 	return result, nil
 }
