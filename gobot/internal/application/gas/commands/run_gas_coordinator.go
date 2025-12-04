@@ -428,8 +428,8 @@ func (h *RunGasCoordinatorHandler) spawnSiphonWorker(
 		return "", fmt.Errorf("failed to save ship transfer: %w", err)
 	}
 
-	// Step 3: Start worker (no completion callback needed - workers run continuously)
-	if err := h.daemonClient.StartGasSiphonWorkerContainer(ctx, workerContainerID, nil); err != nil {
+	// Step 3: Start worker
+	if err := h.daemonClient.StartGasSiphonWorkerContainer(ctx, workerContainerID); err != nil {
 		// Rollback: transfer ship back to coordinator
 		_ = ship.TransferToContainer(cmd.ContainerID, h.clock)
 		_ = h.shipRepo.Save(ctx, ship)
@@ -491,8 +491,8 @@ func (h *RunGasCoordinatorHandler) spawnStorageShipWorker(
 		return "", fmt.Errorf("failed to save ship assignment: %w", err)
 	}
 
-	// Step 4: Start worker (no completion callback needed - workers run continuously)
-	if err := h.daemonClient.StartStorageShipContainer(ctx, workerContainerID, nil); err != nil {
+	// Step 4: Start worker
+	if err := h.daemonClient.StartStorageShipContainer(ctx, workerContainerID); err != nil {
 		ship.ForceRelease("failed to start container", h.clock)
 		_ = h.shipRepo.Save(ctx, ship)
 		return "", fmt.Errorf("failed to start worker: %w", err)
