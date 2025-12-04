@@ -58,10 +58,9 @@ func (s *DaemonServer) registerCommandFactories() {
 		coordinatorID, _ := config["coordinator_id"].(string) // Optional
 
 		return &contractCmd.RunWorkflowCommand{
-			ShipSymbol:         shipSymbol,
-			PlayerID:           shared.MustNewPlayerID(playerID),
-			CoordinatorID:      coordinatorID,
-			CompletionCallback: nil, // Will be set by container runner if needed
+			ShipSymbol:    shipSymbol,
+			PlayerID:      shared.MustNewPlayerID(playerID),
+			CoordinatorID: coordinatorID,
 		}, nil
 	}
 

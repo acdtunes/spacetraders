@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	tradingCmd "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/commands"
@@ -171,7 +172,6 @@ func (s *DaemonServer) PersistManufacturingTaskWorkerContainer(
 func (s *DaemonServer) StartManufacturingTaskWorkerContainer(
 	ctx context.Context,
 	containerID string,
-	completionCallback chan<- string,
 ) error {
 	// Load container from database
 	allContainers, err := s.containerRepo.ListAll(ctx, nil)
@@ -238,9 +238,6 @@ func (s *DaemonServer) StartManufacturingTaskWorkerContainer(
 
 	// Create and start container runner
 	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipRepo, s.clock)
-	if completionCallback != nil {
-		runner.SetCompletionCallback(completionCallback)
-	}
 	s.registerContainer(containerID, runner)
 
 	// Start container in background
@@ -251,4 +248,59 @@ func (s *DaemonServer) StartManufacturingTaskWorkerContainer(
 	}()
 
 	return nil
+}
+
+// CleanupStaleManufacturingWorkers detects and stops manufacturing task workers that
+// are RUNNING in DB but have no recent heartbeat (likely crashed without proper cleanup).
+// This releases the ships so they can be reassigned to new tasks.
+func (s *DaemonServer) CleanupStaleManufacturingWorkers(
+	ctx context.Context,
+	playerID int,
+	staleTimeoutMinutes int,
+) (int64, error) {
+	if staleTimeoutMinutes <= 0 {
+		staleTimeoutMinutes = 10 // Default: 10 minutes
+	}
+
+	staleTimeout := time.Duration(staleTimeoutMinutes) * time.Minute
+
+	// First, find stale workers for logging
+	staleWorkers, err := s.containerRepo.FindStaleManufacturingWorkers(ctx, playerID, staleTimeout)
+	if err != nil {
+		return 0, fmt.Errorf("failed to find stale workers: %w", err)
+	}
+
+	// Log each orphaned ship with details
+	for _, worker := range staleWorkers {
+		// Parse config to get ship info
+		var config map[string]interface{}
+		if err := json.Unmarshal([]byte(worker.Config), &config); err == nil {
+			shipSymbol, _ := config["ship_symbol"].(string)
+			taskID, _ := config["task_id"].(string)
+			taskType, _ := config["task_type"].(string)
+			good, _ := config["good"].(string)
+
+			// Calculate how long ago the heartbeat was
+			staleDuration := "unknown"
+			if worker.HeartbeatAt != nil {
+				staleDuration = time.Since(*worker.HeartbeatAt).Round(time.Second).String()
+			}
+
+			fmt.Printf("ORPHANED_SHIP: ship=%s container=%s task=%s type=%s good=%s stale_for=%s\n",
+				shipSymbol, worker.ID[:12], taskID[:8], taskType, good, staleDuration)
+		}
+	}
+
+	// Stop stale containers and release their ships
+	count, err := s.containerRepo.StopStaleManufacturingWorkers(ctx, playerID, staleTimeout)
+	if err != nil {
+		return 0, fmt.Errorf("failed to stop stale workers: %w", err)
+	}
+
+	if count > 0 {
+		fmt.Printf("STALE_WORKER_CLEANUP: Stopped %d stale manufacturing workers for player %d (timeout: %d minutes)\n",
+			count, playerID, staleTimeoutMinutes)
+	}
+
+	return count, nil
 }

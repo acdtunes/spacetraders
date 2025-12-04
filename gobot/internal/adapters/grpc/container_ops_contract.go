@@ -17,20 +17,19 @@ func (s *DaemonServer) BatchContractWorkflow(ctx context.Context, shipSymbol str
 	// Create container ID
 	containerID := utils.GenerateContainerID("batch_contract_workflow", shipSymbol)
 
-	// Delegate to ContractWorkflow (with no completion callback)
+	// Delegate to ContractWorkflow
 	// Note: iterations parameter is ignored for now - ContractWorkflow always does 1 iteration
 	// TODO: Support multiple iterations by updating container metadata
-	return s.ContractWorkflow(ctx, containerID, shipSymbol, playerID, "", nil)
+	return s.ContractWorkflow(ctx, containerID, shipSymbol, playerID, "")
 }
 
-// ContractWorkflow creates and starts a contract workflow container with optional completion callback
+// ContractWorkflow creates and starts a contract workflow container
 func (s *DaemonServer) ContractWorkflow(
 	ctx context.Context,
 	containerID string,
 	shipSymbol string,
 	playerID int,
 	coordinatorID string,
-	completionCallback chan<- string,
 ) (string, error) {
 	// Persist container to DB
 	if err := s.PersistContractWorkflow(ctx, containerID, shipSymbol, playerID, coordinatorID); err != nil {
@@ -38,7 +37,7 @@ func (s *DaemonServer) ContractWorkflow(
 	}
 
 	// Start the container
-	if err := s.StartContractWorkflow(ctx, containerID, completionCallback); err != nil {
+	if err := s.StartContractWorkflow(ctx, containerID); err != nil {
 		return "", err
 	}
 
@@ -86,7 +85,6 @@ func (s *DaemonServer) PersistContractWorkflow(
 func (s *DaemonServer) StartContractWorkflow(
 	ctx context.Context,
 	containerID string,
-	completionCallback chan<- string,
 ) error {
 	// We need playerID to load the container, but we don't have it here
 	// Solution: Load from all players or add playerID parameter
@@ -121,11 +119,10 @@ func (s *DaemonServer) StartContractWorkflow(
 
 	// Create command
 	cmd := &contractCmd.RunWorkflowCommand{
-		ShipSymbol:         shipSymbol,
-		PlayerID:           shared.MustNewPlayerID(containerModel.PlayerID),
-		ContainerID:        containerModel.ID,
-		CoordinatorID:      coordinatorID,
-		CompletionCallback: completionCallback,
+		ShipSymbol:    shipSymbol,
+		PlayerID:      shared.MustNewPlayerID(containerModel.PlayerID),
+		ContainerID:   containerModel.ID,
+		CoordinatorID: coordinatorID,
 	}
 
 	// Create container entity from model
@@ -142,9 +139,6 @@ func (s *DaemonServer) StartContractWorkflow(
 
 	// Create and start container runner
 	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipRepo, s.clock)
-	if completionCallback != nil {
-		runner.SetCompletionCallback(completionCallback)
-	}
 	s.registerContainer(containerID, runner)
 
 	// Start container in background
