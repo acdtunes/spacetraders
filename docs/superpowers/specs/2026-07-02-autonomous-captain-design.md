@@ -20,6 +20,7 @@ Decisions made during brainstorming:
 | Code-change guardrails | Branch + build/tests gate + auto-merge + daemon restart |
 | Foundation | Fresh `captain/` project targeting gobot; old `claude-captain/` kept as prompt raw material only |
 | Event delivery | Postgres outbox table + polling supervisor (durable, auditable) |
+| LLM runtime | `claude -p --model opus` via the local Claude Code CLI, authenticated to the user's Max subscription (no API key) |
 
 ## Architecture
 
@@ -65,6 +66,20 @@ A small Go binary containing **zero strategy** — pure plumbing:
   timeout (10 min strategy / 30 min fix); kill switch files `captain/DISABLED`
   (everything) and `captain/DISABLED_FIXES` (fix pipeline only).
 - Watches for `fix_requested` markers and drives the self-improvement pipeline.
+
+### LLM runtime: claude -p on a Max subscription (Opus)
+
+- Sessions are invoked as `claude -p --model opus` using the locally installed
+  Claude Code CLI, authenticated to the user's **Max subscription** — the supervisor
+  must run as that user and must **not** set `ANTHROPIC_API_KEY` (an API key would
+  silently switch billing away from the subscription).
+- Max plans have rolling usage windows, so the effective budget is quota, not
+  dollars. The session caps above double as quota protection, and the supervisor
+  must recognize usage-limit responses from the CLI (non-zero exit / limit message):
+  back off, leave events unprocessed, and resume when the window resets — a
+  limit-hit is a normal state, not an error.
+- Strategy and fix sessions both use Opus by default; model is a config value so
+  it can be changed without code.
 
 ### Component 3: Captain session (captain/ workspace)
 
