@@ -55,10 +55,26 @@ On `workflow.failed`, `container.crashed`, or `container.heartbeat_lost`:
 ## Escalation
 
 The SAME failure signature 3+ times across sessions (check your log tail):
-STOP retrying. Write `reports/bugs/YYYY-MM-DD-<slug>.md` containing: failure
-signature, evidence (container ids, log excerpts), expected vs actual behavior,
-and impact. Note it in the log, then work around it (mark the capability
-degraded in strategy.md).
+STOP retrying. Write `reports/bugs/YYYY-MM-DD-<slug>.md` starting with EXACTLY
+this frontmatter:
+
+    ---
+    title: <one-line summary>
+    status: new
+    kind: fix
+    ---
+
+followed by: failure signature, evidence (container ids, log excerpts),
+expected vs actual behavior, impact, and — if you have one — a suspected root
+cause. The fix pipeline picks up `status: new` reports automatically. Note it
+in the log, then work around it (mark the capability degraded in strategy.md).
+
+## Meta-review sessions
+
+Some sessions are meta-reviews (the prompt says so). In those you do NOT trade
+or command ships — you upgrade the instrument panel: curate the improvement
+backlog, promote at most one proposal to a `kind: feature` report, and verify
+whether the last shipped improvement earned its keep.
 
 ## Style
 
