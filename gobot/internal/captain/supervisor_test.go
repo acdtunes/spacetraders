@@ -47,6 +47,7 @@ func TestTickNoTriggerNoSession(t *testing.T) {
 	runner := &stubRunner{}
 	sup, _ := newTestSupervisor(t, runner)
 	sup.lastSession = time.Now() // heartbeat not due
+	require.NoError(t, MarkMetaReviewDone(sup.ws, time.Now()))
 
 	ran, err := sup.Tick(context.Background(), time.Now())
 	require.NoError(t, err)
@@ -117,10 +118,43 @@ func TestTickRespectsHourlyCap(t *testing.T) {
 	for i := 0; i < 6; i++ {
 		sup.sessionStarts = append(sup.sessionStarts, now.Add(-time.Duration(i)*time.Minute))
 	}
+	require.NoError(t, MarkMetaReviewDone(sup.ws, now))
 	require.NoError(t, s.store.Record(context.Background(),
 		&captain.Event{Type: captain.EventShipIdle, Ship: "S", PlayerID: s.playerID}))
 
 	ran, err := sup.Tick(context.Background(), now)
 	require.NoError(t, err)
 	require.False(t, ran, "cap reached: events queue, no session")
+}
+
+func TestTickRunsMetaReviewWhenDueAndIdle(t *testing.T) {
+	runner := &stubRunner{}
+	sup, _ := newTestSupervisor(t, runner)
+	sup.lastSession = time.Now() // no strategy trigger
+
+	ran, err := sup.Tick(context.Background(), time.Now())
+	require.NoError(t, err)
+	require.True(t, ran)
+	require.Len(t, runner.prompts, 1)
+	require.Contains(t, runner.prompts[0], "Meta-review")
+
+	// Immediately after, meta-review is no longer due.
+	ran, err = sup.Tick(context.Background(), time.Now())
+	require.NoError(t, err)
+	require.False(t, ran)
+	require.Len(t, runner.prompts, 1)
+}
+
+func TestTickPrefersStrategyOverMetaReview(t *testing.T) {
+	runner := &stubRunner{}
+	sup, s := newTestSupervisor(t, runner)
+	sup.lastSession = time.Now()
+	require.NoError(t, s.store.Record(context.Background(),
+		&captain.Event{Type: captain.EventWorkflowFailed, Ship: "S", PlayerID: s.playerID}))
+
+	ran, err := sup.Tick(context.Background(), time.Now())
+	require.NoError(t, err)
+	require.True(t, ran)
+	require.Contains(t, runner.prompts[0], "Fleet situation report",
+		"events outrank the meta-review")
 }

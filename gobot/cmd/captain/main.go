@@ -45,6 +45,14 @@ func main() {
 	)
 	sup := captainsup.NewSupervisor(db, store, runner, ws, cfg.Captain)
 
+	fixerFactory := func(workDir string) captainsup.SessionRunner {
+		return captainsup.NewClaudeRunner(
+			cfg.Captain.ClaudeBin, cfg.Captain.Model, workDir,
+			time.Duration(cfg.Captain.FixSessionTimeoutMinutes)*time.Minute,
+		)
+	}
+	sup.SetFixer(captainsup.NewFixer(ws, fixerFactory, cfg.Captain))
+
 	// Regenerate the CLI reference so sessions never see a stale command surface
 	// (spec: Tool discovery §1). Best-effort: a missing binary must not stop the
 	// supervisor, it only degrades tool discovery to --help fallback.

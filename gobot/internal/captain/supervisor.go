@@ -25,7 +25,12 @@ type Supervisor struct {
 	lastSession   time.Time
 	lastCredits   int
 	sessionStarts []time.Time
+
+	fixer *Fixer // optional; nil in phase 1-2 deployments
 }
+
+// SetFixer enables the self-improvement pipeline (plan 2 of 2).
+func (s *Supervisor) SetFixer(f *Fixer) { s.fixer = f }
 
 func NewSupervisor(db *gorm.DB, store captain.EventStore, runner SessionRunner, ws Workspace, cfg config.CaptainConfig) *Supervisor {
 	return &Supervisor{db: db, store: store, runner: runner, ws: ws, cfg: cfg}
@@ -59,7 +64,7 @@ func (s *Supervisor) Tick(ctx context.Context, now time.Time) (bool, error) {
 	}
 	heartbeatDue := now.Sub(s.lastSession) >= time.Duration(s.cfg.HeartbeatMinutes)*time.Minute
 	if len(events) == 0 && !heartbeatDue {
-		return false, nil
+		return s.tickSecondary(ctx, now)
 	}
 	if s.sessionsInLastHour(now) >= s.cfg.MaxSessionsPerHour {
 		fmt.Printf("captain: session cap reached (%d/h), %d events queued\n",
@@ -88,7 +93,42 @@ func (s *Supervisor) Tick(ctx context.Context, now time.Time) (bool, error) {
 		return true, fmt.Errorf("mark processed: %w", err)
 	}
 	fmt.Printf("captain: session complete, %d events processed\n", len(ids))
+
+	if s.fixer != nil {
+		if _, err := s.fixer.ProcessOne(ctx, now); err != nil {
+			fmt.Printf("captain fixer: %v\n", err)
+		}
+	}
 	return true, nil
+}
+
+// tickSecondary runs when no strategy session is needed: meta-review first,
+// then one fixer step. Meta-review respects the same hourly session cap.
+func (s *Supervisor) tickSecondary(ctx context.Context, now time.Time) (bool, error) {
+	ran := false
+	if MetaReviewDue(s.ws, now) && s.sessionsInLastHour(now) < s.cfg.MaxSessionsPerHour {
+		prompt, err := ComposeMetaReview(ctx, s.db, s.ws, s.cfg.PlayerID, now)
+		if err != nil {
+			return false, err
+		}
+		s.sessionStarts = append(s.sessionStarts, now)
+		fmt.Println("captain: starting meta-review session")
+		if err := s.runner.Run(ctx, prompt); err != nil {
+			return true, err // marker not written -> retried next day-window tick
+		}
+		if err := MarkMetaReviewDone(s.ws, now); err != nil {
+			return true, err
+		}
+		ran = true
+	}
+	if s.fixer != nil {
+		acted, err := s.fixer.ProcessOne(ctx, now)
+		if err != nil {
+			fmt.Printf("captain fixer: %v\n", err)
+		}
+		ran = ran || acted
+	}
+	return ran, nil
 }
 
 // Run loops Tick on the poll interval until ctx is cancelled.
