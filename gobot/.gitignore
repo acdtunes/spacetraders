@@ -27,8 +27,8 @@ go.work
 # Build artifacts
 /bin/
 /dist/
-spacetraders
-spacetraders-daemon
+/bin/spacetraders
+/bin/spacetraders-daemon
 
 # IDE
 .vscode/
