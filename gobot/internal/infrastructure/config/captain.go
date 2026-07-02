@@ -14,4 +14,13 @@ type CaptainConfig struct {
 	ShipIdleMinutes       int    `mapstructure:"ship_idle_minutes" validate:"omitempty,min=1"`
 	StaleHeartbeatMinutes int    `mapstructure:"stale_heartbeat_minutes" validate:"omitempty,min=1"`
 	CreditsThresholds     []int  `mapstructure:"credits_thresholds"`
+
+	// Self-improvement pipeline (plan 2 of 2)
+	AutoMerge                bool   `mapstructure:"auto_merge"`
+	MaxFixesPerDay           int    `mapstructure:"max_fixes_per_day" validate:"omitempty,min=1"`
+	MaxFeaturesPerDay        int    `mapstructure:"max_features_per_day" validate:"omitempty,min=1"`
+	FixSessionTimeoutMinutes int    `mapstructure:"fix_session_timeout_minutes" validate:"omitempty,min=1"`
+	MaxFeatureDiffLines      int    `mapstructure:"max_feature_diff_lines" validate:"omitempty,min=10"`
+	RepoDir                  string `mapstructure:"repo_dir"`
+	RestartCmd               string `mapstructure:"restart_cmd"`
 }

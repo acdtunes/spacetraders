@@ -162,4 +162,22 @@ func SetDefaults(cfg *Config) {
 	if len(cfg.Captain.CreditsThresholds) == 0 {
 		cfg.Captain.CreditsThresholds = []int{100000, 250000, 500000, 1000000}
 	}
+	if cfg.Captain.MaxFixesPerDay == 0 {
+		cfg.Captain.MaxFixesPerDay = 3
+	}
+	if cfg.Captain.MaxFeaturesPerDay == 0 {
+		cfg.Captain.MaxFeaturesPerDay = 1
+	}
+	if cfg.Captain.FixSessionTimeoutMinutes == 0 {
+		cfg.Captain.FixSessionTimeoutMinutes = 30
+	}
+	if cfg.Captain.MaxFeatureDiffLines == 0 {
+		cfg.Captain.MaxFeatureDiffLines = 400
+	}
+	if cfg.Captain.RepoDir == "" {
+		cfg.Captain.RepoDir = "."
+	}
+	if cfg.Captain.RestartCmd == "" {
+		cfg.Captain.RestartCmd = "make restart-daemon"
+	}
 }

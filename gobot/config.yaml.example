@@ -108,3 +108,11 @@ captain:
   ship_idle_minutes: 30
   stale_heartbeat_minutes: 5
   credits_thresholds: [100000, 250000, 500000, 1000000]
+  # Self-improvement pipeline (phases 3-4; see DISABLED_FIXES kill switch)
+  auto_merge: false            # true = merge+restart after gate passes; false = leave branch for human
+  max_fixes_per_day: 3
+  max_features_per_day: 1
+  fix_session_timeout_minutes: 30
+  max_feature_diff_lines: 400
+  repo_dir: .                  # gobot repo root (worktrees are created under it)
+  restart_cmd: make restart-daemon
