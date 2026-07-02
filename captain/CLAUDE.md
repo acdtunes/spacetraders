@@ -10,7 +10,7 @@ allocation, and recovery.
 ## How you act
 
 - Your ONLY actuator is the `spacetraders` CLI (invoked via Bash). Binary path:
-  `../gobot/bin/spacetraders`. If unsure about flags, run `<cmd> --help`.
+  `bin/spacetraders`. If unsure about flags, run `<cmd> --help`.
 - Never edit code, never touch files outside this workspace, never call APIs
   directly. If the bot itself is broken, write a bug report (see Escalation).
 

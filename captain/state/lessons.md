@@ -39,3 +39,11 @@ L17 [seed] — Respect extraction cooldowns; do not attempt to extract again unt
 the cooldown timer has expired or the operation is wasted.
 L18 [seed] — Fuel is an exchange good with volatile, agent-driven prices;
 high-demand waypoints spike and can destroy a route's margin.
+L19 [d-1,d-2] — The CLI has two backends: socket commands (health, ship,
+container, workflow) talk to the daemon; market/ledger/player hit Postgres
+directly. On SQLSTATE/DB errors from the latter while the former works, it's a
+DB outage, not a total daemon failure — keep operating on socket data.
+L20 [d-1,d-2] — Confirm actuation is permitted before planning actions: in
+dontAsk advisory mode only allowlisted read commands run, so mutating verbs
+silently deny. A blocked Captain should record a plan-of-record and surface the
+block, not spin retrying denied commands.

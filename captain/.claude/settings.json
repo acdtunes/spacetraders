@@ -1,21 +1,28 @@
 {
   "permissions": {
+    "defaultMode": "dontAsk",
     "allow": [
       "Read",
-      "Edit(state/**)",
-      "Write(state/**)",
-      "Write(reports/**)",
-      "Bash(../gobot/bin/spacetraders health)",
-      "Bash(../gobot/bin/spacetraders ship list*)",
-      "Bash(../gobot/bin/spacetraders ship info*)",
-      "Bash(../gobot/bin/spacetraders market list*)",
-      "Bash(../gobot/bin/spacetraders market get*)",
-      "Bash(../gobot/bin/spacetraders ledger*)",
-      "Bash(../gobot/bin/spacetraders container list*)",
-      "Bash(../gobot/bin/spacetraders container get*)",
-      "Bash(../gobot/bin/spacetraders container logs*)",
-      "Bash(../gobot/bin/spacetraders * --help)"
+      "Write",
+      "Edit",
+      "Bash(bin/spacetraders health)",
+      "Bash(bin/spacetraders ship list:*)",
+      "Bash(bin/spacetraders ship info:*)",
+      "Bash(bin/spacetraders market:*)",
+      "Bash(bin/spacetraders ledger:*)",
+      "Bash(bin/spacetraders container list:*)",
+      "Bash(bin/spacetraders container get:*)",
+      "Bash(bin/spacetraders container logs:*)",
+      "Bash(bin/spacetraders workflow list:*)",
+      "Bash(bin/spacetraders player list:*)",
+      "Bash(bin/spacetraders:* --help)"
     ],
-    "deny": []
+    "deny": [
+      "Read(//Users/andres.dandrea/projects/spacetraders/gobot/**)",
+      "Write(//Users/andres.dandrea/projects/spacetraders/gobot/**)",
+      "Edit(//Users/andres.dandrea/projects/spacetraders/gobot/**)",
+      "Write(//Users/andres.dandrea/projects/spacetraders/docs/**)",
+      "Edit(//Users/andres.dandrea/projects/spacetraders/docs/**)"
+    ]
   }
 }
