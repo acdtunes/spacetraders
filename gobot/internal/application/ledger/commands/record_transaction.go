@@ -79,14 +79,29 @@ func (h *RecordTransactionHandler) Handle(ctx context.Context, request common.Re
 		timestamp = *cmd.Timestamp
 	}
 
+	// Some callers skip the balance fetch and pass before=0, after=amount
+	// (an old API-call-saving optimization). That corrupts the running
+	// balance every consumer of balance_after relies on, so rebase such
+	// records onto the last transaction's balance. A genuine first
+	// transaction (no prior ledger rows) keeps its zero baseline.
+	balanceBefore, balanceAfter := cmd.BalanceBefore, cmd.BalanceAfter
+	if balanceBefore == 0 && balanceAfter == cmd.Amount && cmd.Amount != 0 {
+		if last, err := h.transactionRepo.FindByPlayer(ctx, playerID, ledger.QueryOptions{
+			Limit: 1, OrderBy: "timestamp DESC",
+		}); err == nil && len(last) == 1 {
+			balanceBefore = last[0].BalanceAfter()
+			balanceAfter = balanceBefore + cmd.Amount
+		}
+	}
+
 	// Create transaction entity
 	transaction, err := ledger.NewTransaction(
 		playerID,
 		timestamp,
 		transactionType,
 		cmd.Amount,
-		cmd.BalanceBefore,
-		cmd.BalanceAfter,
+		balanceBefore,
+		balanceAfter,
 		cmd.Description,
 		cmd.Metadata,
 		cmd.RelatedEntityType,
