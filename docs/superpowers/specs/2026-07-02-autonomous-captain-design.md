@@ -21,6 +21,7 @@ Decisions made during brainstorming:
 | Foundation | Fresh `captain/` project targeting gobot; old `claude-captain/` kept as prompt raw material only |
 | Event delivery | Postgres outbox table + polling supervisor (durable, auditable) |
 | LLM runtime | `claude -p --model opus` via the local Claude Code CLI, authenticated to the user's Max subscription (no API key) |
+| Actuation | gobot `spacetraders` CLI via Bash (not MCP) — richer surface, self-documenting, permission-gated |
 
 ## Architecture
 
@@ -36,7 +37,7 @@ gobot daemon
         │
         ▼  claude -p session (workspace: captain/ at repo root)
   prompt = composed fleet snapshot + pending events + memory tail
-  acts via gobot MCP tools · updates captain-log.md / strategy.md
+  acts via the gobot CLI (Bash) · updates captain-log.md / strategy.md
 ```
 
 ### Component 1: CaptainEventPublisher (gobot)
@@ -88,8 +89,8 @@ New top-level `captain/` directory:
 ```
 captain/
 ├── CLAUDE.md            # persona, decision rules, playbooks, escalation rules
-├── .mcp.json            # gobot MCP server config
-├── .claude/settings.json# pre-approved MCP tool permissions
+├── CLI_REFERENCE.md     # generated gobot CLI command reference (see Tool discovery)
+├── .claude/settings.json# pre-approved Bash permissions for the spacetraders CLI
 ├── state/
 │   ├── captain-log.md   # append-only decision journal (supervisor trims to ~100 entries)
 │   └── strategy.md      # standing strategy, maintained by the captain itself
@@ -109,13 +110,32 @@ against those targets and revise the strategy when reality disagrees. This is th
 in-game-performance feedback loop (ports TARS's fleet-manager/feature-proposer ideas
 into one KPI-grounded loop).
 
+### Tool discovery: how the captain knows what it can do
+
+The captain acts by running the `spacetraders` CLI through Bash (the CLI talks to
+the daemon over its socket). It learns the available commands three ways:
+
+1. **`captain/CLI_REFERENCE.md`** — a command reference generated from the binary's
+   own `--help` tree (`spacetraders --help` recursively, via a make target the
+   supervisor runs at startup). `captain/CLAUDE.md` imports it, so every session
+   starts with the full, current command surface in context. Because it is
+   generated from the binary, it cannot drift from what is actually installed.
+2. **Self-documenting fallback** — for flags or subcommands not memorized, the
+   captain runs `spacetraders <cmd> --help` in-session; cobra help output is
+   designed for exactly this.
+3. **The Bash permission allowlist** (`captain/.claude/settings.json`) is the
+   enforcement boundary: it defines which commands the captain *may* run
+   (read-only commands in rollout phase 1; mutating commands added in phase 2).
+   CLAUDE.md playbooks say *when* to use a command; the allowlist decides
+   *whether* it runs at all.
+
 ## Health & recovery
 
 Crash / heartbeat-loss / stuck-workflow events reach the captain within ~30s.
 Playbook (encoded in captain CLAUDE.md):
 
-1. Inspect via MCP (`daemon_inspect`, `daemon_logs`).
-2. Corrective action via MCP (restart workflow, reassign ship, refuel, stop zombie
+1. Inspect via the CLI (`spacetraders container list/inspect/logs`, `spacetraders health`).
+2. Corrective action via the CLI (restart workflow, reassign ship, refuel, stop zombie
    container).
 3. Record the incident in the captain's log.
 4. **Escalation:** same failure signature 3+ times → stop retrying, write a
@@ -174,7 +194,8 @@ Follow gobot conventions (testify unit tests + godog BDD):
 ## Rollout
 
 1. Ship publisher + outbox + supervisor with sessions in **advisory mode** (captain
-   writes decisions to the log but MCP mutations disabled) — validate prompt quality.
-2. Enable MCP actions (strategy + recovery).
+   writes decisions to the log but mutating CLI commands are not in the Bash
+   allowlist — read-only commands only) — validate prompt quality.
+2. Allow mutating CLI commands (strategy + recovery go live).
 3. Enable fix pipeline with auto-merge off (propose-only), then flip auto-merge on
    after a few good fixes.
