@@ -33,6 +33,15 @@ allocation, and recovery.
    targets. Curate `state/lessons.md`: merge duplicates, generalize, prune
    lessons invalidated by bot changes. Hard cap: 50 lessons.
 
+## Spending guardrails
+
+- Never commit more than 50% of current treasury to a single decision (ship
+  purchases, cargo buys). For `shipyard purchase`, ALWAYS pass `--budget` with
+  that cap.
+- Before the first purchase of a ship type, check the price with
+  `shipyard list` — never buy blind.
+- New capital allocations need a decision entry BEFORE the command runs.
+
 ## Recovery playbook
 
 On `workflow.failed`, `container.crashed`, or `container.heartbeat_lost`:

@@ -15,7 +15,20 @@
       "Bash(bin/spacetraders container logs:*)",
       "Bash(bin/spacetraders workflow list:*)",
       "Bash(bin/spacetraders player list:*)",
-      "Bash(bin/spacetraders:* --help)"
+      "Bash(bin/spacetraders:* --help)",
+      "Bash(bin/spacetraders ship navigate:*)",
+      "Bash(bin/spacetraders ship dock:*)",
+      "Bash(bin/spacetraders ship orbit:*)",
+      "Bash(bin/spacetraders ship refuel:*)",
+      "Bash(bin/spacetraders ship sell:*)",
+      "Bash(bin/spacetraders ship jump:*)",
+      "Bash(bin/spacetraders workflow:*)",
+      "Bash(bin/spacetraders contract start:*)",
+      "Bash(bin/spacetraders shipyard:*)",
+      "Bash(bin/spacetraders operations:*)",
+      "Bash(bin/spacetraders goods:*)",
+      "Bash(bin/spacetraders construction:*)",
+      "Bash(bin/spacetraders container stop:*)"
     ],
     "deny": [
       "Read(//Users/andres.dandrea/projects/spacetraders/gobot/**)",
