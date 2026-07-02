@@ -1,4 +1,4 @@
-.PHONY: build test clean proto lint install-tools routing-service build-captain run-captain cli-reference
+.PHONY: build test clean proto lint install-tools routing-service build-captain run-captain cli-reference restart-daemon
 
 # Build all binaries
 build: build-cli build-daemon build-routing-service build-captain
@@ -26,6 +26,15 @@ build-captain:
 # Run captain supervisor locally
 run-captain: build-captain
 	@./bin/captain
+
+# Restart the daemon (used by the captain fix pipeline's default restart_cmd)
+restart-daemon: build-daemon
+	@if [ -f /tmp/spacetraders-daemon.pid ]; then \
+		kill $$(cat /tmp/spacetraders-daemon.pid) 2>/dev/null || true; \
+		sleep 2; \
+	fi
+	nohup ./bin/spacetraders-daemon >> daemon.log 2>&1 &
+	@echo "daemon restarted (log: daemon.log)"
 
 # Regenerate the captain CLI reference from the spacetraders binary help tree
 cli-reference: build-cli
