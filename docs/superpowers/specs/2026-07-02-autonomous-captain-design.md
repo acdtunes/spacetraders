@@ -22,6 +22,7 @@ Decisions made during brainstorming:
 | Event delivery | Postgres outbox table + polling supervisor (durable, auditable) |
 | LLM runtime | `claude -p --model opus` via the local Claude Code CLI, authenticated to the user's Max subscription (no API key) |
 | Actuation | gobot `spacetraders` CLI via Bash (not MCP) — richer surface, self-documenting, permission-gated |
+| Meta-game loop | Daily meta-review turns friction + KPI plateaus into a ranked tool-improvement backlog, executed via the gated pipeline (phase 4) |
 
 ## Architecture
 
@@ -67,6 +68,8 @@ A small Go binary containing **zero strategy** — pure plumbing:
   timeout (10 min strategy / 30 min fix); kill switch files `captain/DISABLED`
   (everything) and `captain/DISABLED_FIXES` (fix pipeline only).
 - Watches for `fix_requested` markers and drives the self-improvement pipeline.
+- Schedules the daily meta-review session and dispatches `ready` improvement
+  proposals (see Meta-game improvement loop).
 
 ### LLM runtime: claude -p on a Max subscription (Opus)
 
@@ -98,7 +101,8 @@ captain/
     └── bugs/            # structured bug reports that feed the fix pipeline
 ```
 
-(`state/` additionally holds `decisions.jsonl` and `lessons.md` — see Learning loop.)
+(`state/` additionally holds `decisions.jsonl`, `lessons.md` and
+`improvement-backlog.md` — see Learning loop and Meta-game improvement loop.)
 
 **Composed prompt** (built by the supervisor, so the captain decides instead of
 fetching): credits + delta since last session; ships with status/assignment/idle time;
@@ -181,6 +185,45 @@ step: the log and decision ledger get trimmed, lessons do not. Every session loa
 The fix pipeline is the deepest form of learning: the mistake becomes a regression
 test, and the corresponding lesson can then be pruned.
 
+## Meta-game improvement loop: building better tools
+
+Beyond fixing bugs, the captain proactively identifies which tools should exist or
+be improved — the meta-game of upgrading its own instrument panel.
+
+### Friction capture (continuous)
+
+Sessions are prompted to record **friction** as it happens, in the decision journal
+with a `friction:` tag: command sequences repeated by hand every session ("I chain
+`market list` + `ship list` + mental math every arbitrage check — want a
+`spacetraders arbitrage scan`"), data missing from snapshots, capabilities that
+don't exist, workflows that consistently underperform their KPI targets.
+
+### Meta-review session (daily)
+
+A dedicated session type on its own cadence (default: 1/day, distinct from
+heartbeats). Input: accumulated friction entries, `lessons.md`, KPI trends, and the
+current improvement backlog. Output: `state/improvement-backlog.md` — ranked
+proposals, each with the problem, evidence (decision/friction IDs), a sketch of the
+change (new CLI command, snapshot field, workflow tweak), and an expected ROI in
+credits/hour or captain-effectiveness terms. The meta-review re-scores old
+proposals, prunes obsolete ones, and promotes at most one to **ready**.
+
+### Execution (same gated pipeline)
+
+A `ready` proposal is dispatched through the same worktree → `claude -p` build
+session → build+tests gate → squash-merge → restart pipeline as bug fixes, with
+tighter budgets (default 1 feature/day, and a diff-size cap — oversized changes are
+left as branches for human review). New capabilities land in the regenerated
+`CLI_REFERENCE.md`, so the very next session sees the tool it asked for; the
+meta-review then verifies the improvement actually moved the KPI it promised, and
+records the verdict as a lesson.
+
+### Guardrails
+
+Feature-building is riskier than bug-fixing: it ships in rollout phase 4 (after the
+fix pipeline has proven itself), starts propose-only, is capped independently, and
+is disabled by the same `captain/DISABLED_FIXES` kill switch.
+
 ## Health & recovery
 
 Crash / heartbeat-loss / stuck-workflow events reach the captain within ~30s.
@@ -251,3 +294,5 @@ Follow gobot conventions (testify unit tests + godog BDD):
 2. Allow mutating CLI commands (strategy + recovery go live).
 3. Enable fix pipeline with auto-merge off (propose-only), then flip auto-merge on
    after a few good fixes.
+4. Enable the meta-game improvement loop (daily meta-review + feature building),
+   propose-only first, then auto-merge with the tighter feature budgets.
