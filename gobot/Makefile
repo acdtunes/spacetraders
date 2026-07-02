@@ -1,7 +1,7 @@
-.PHONY: build test clean proto lint install-tools routing-service
+.PHONY: build test clean proto lint install-tools routing-service build-captain run-captain cli-reference
 
 # Build all binaries
-build: build-cli build-daemon build-routing-service
+build: build-cli build-daemon build-routing-service build-captain
 
 # Build CLI binary
 build-cli:
@@ -17,6 +17,19 @@ build-daemon:
 build-routing-service:
 	@echo "Building routing service manager..."
 	@go build -o bin/routing-service ./cmd/routing-service
+
+# Build captain supervisor binary
+build-captain:
+	@echo "Building captain..."
+	@go build -o bin/captain ./cmd/captain
+
+# Run captain supervisor locally
+run-captain: build-captain
+	@./bin/captain
+
+# Regenerate the captain CLI reference from the spacetraders binary help tree
+cli-reference: build-cli
+	@./scripts/gen-cli-reference.sh ./bin/spacetraders ../captain/CLI_REFERENCE.md
 
 # Run all tests
 # Note: LC_DYSYMTAB warning is a known macOS/Go 1.24 issue and is harmless
