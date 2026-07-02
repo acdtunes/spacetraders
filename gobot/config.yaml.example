@@ -93,3 +93,18 @@ logging:
   # Additional options
   include_caller: false      # Include file:line in logs
   include_stacktrace: false  # Include stack traces for errors
+
+# Autonomous captain supervisor (cmd/captain)
+captain:
+  enabled: false           # master switch; also see captain/DISABLED kill-switch file
+  player_id: 1             # which player the captain commands
+  workspace_dir: ../captain
+  claude_bin: claude       # local Claude Code CLI (Max subscription; never set ANTHROPIC_API_KEY)
+  model: opus
+  poll_interval_seconds: 30
+  heartbeat_minutes: 45
+  max_sessions_per_hour: 6
+  session_timeout_minutes: 10
+  ship_idle_minutes: 30
+  stale_heartbeat_minutes: 5
+  credits_thresholds: [100000, 250000, 500000, 1000000]

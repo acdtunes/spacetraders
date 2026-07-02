@@ -130,4 +130,36 @@ func SetDefaults(cfg *Config) {
 	if cfg.Metrics.Path == "" {
 		cfg.Metrics.Path = "/metrics"
 	}
+
+	// Captain defaults
+	if cfg.Captain.PollIntervalSeconds == 0 {
+		cfg.Captain.PollIntervalSeconds = 30
+	}
+	if cfg.Captain.HeartbeatMinutes == 0 {
+		cfg.Captain.HeartbeatMinutes = 45
+	}
+	if cfg.Captain.MaxSessionsPerHour == 0 {
+		cfg.Captain.MaxSessionsPerHour = 6
+	}
+	if cfg.Captain.SessionTimeoutMinutes == 0 {
+		cfg.Captain.SessionTimeoutMinutes = 10
+	}
+	if cfg.Captain.ShipIdleMinutes == 0 {
+		cfg.Captain.ShipIdleMinutes = 30
+	}
+	if cfg.Captain.StaleHeartbeatMinutes == 0 {
+		cfg.Captain.StaleHeartbeatMinutes = 5
+	}
+	if cfg.Captain.ClaudeBin == "" {
+		cfg.Captain.ClaudeBin = "claude"
+	}
+	if cfg.Captain.Model == "" {
+		cfg.Captain.Model = "opus"
+	}
+	if cfg.Captain.WorkspaceDir == "" {
+		cfg.Captain.WorkspaceDir = "../captain"
+	}
+	if len(cfg.Captain.CreditsThresholds) == 0 {
+		cfg.Captain.CreditsThresholds = []int{100000, 250000, 500000, 1000000}
+	}
 }

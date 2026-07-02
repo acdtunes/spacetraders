@@ -17,6 +17,7 @@ type Config struct {
 	Daemon   DaemonConfig   `mapstructure:"daemon"`
 	Logging  LoggingConfig  `mapstructure:"logging"`
 	Metrics  MetricsConfig  `mapstructure:"metrics"`
+	Captain  CaptainConfig  `mapstructure:"captain"`
 }
 
 // LoadConfig loads configuration from multiple sources with priority:
