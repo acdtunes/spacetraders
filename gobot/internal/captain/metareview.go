@@ -1,0 +1,85 @@
+package captainsup
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"strings"
+	"time"
+
+	"gorm.io/gorm"
+)
+
+const metaReviewMarker = "last-meta-review"
+
+func MetaReviewDue(ws Workspace, now time.Time) bool {
+	data, err := os.ReadFile(ws.StatePath(metaReviewMarker))
+	if err != nil {
+		return true
+	}
+	last, err := time.Parse(time.RFC3339, strings.TrimSpace(string(data)))
+	if err != nil {
+		return true
+	}
+	return now.Sub(last) >= 24*time.Hour
+}
+
+func MarkMetaReviewDone(ws Workspace, now time.Time) error {
+	return os.WriteFile(ws.StatePath(metaReviewMarker), []byte(now.UTC().Format(time.RFC3339)), 0o644)
+}
+
+// frictionLines extracts `friction:` observations from the captain's log.
+func frictionLines(log string) []string {
+	var out []string
+	for _, line := range strings.Split(log, "\n") {
+		if idx := strings.Index(strings.ToLower(line), "friction:"); idx >= 0 {
+			out = append(out, strings.TrimSpace(line))
+		}
+	}
+	return out
+}
+
+// ComposeMetaReview builds the daily meta-game session prompt
+// (spec: Meta-game improvement loop §2).
+func ComposeMetaReview(ctx context.Context, db *gorm.DB, ws Workspace, playerID int, now time.Time) (string, error) {
+	var b strings.Builder
+	b.WriteString("# Meta-review: upgrade your own instrument panel\n")
+	b.WriteString("Generated: " + now.UTC().Format(time.RFC3339) + "\n\n")
+
+	credits, err := CurrentCredits(ctx, db, playerID)
+	if err != nil {
+		return "", err
+	}
+	b.WriteString(fmt.Sprintf("## KPI check\n- Current credits: %d\n", credits))
+
+	b.WriteString("\n## Friction observed (from your log)\n")
+	fl := frictionLines(ws.ReadFull("captain-log.md"))
+	if len(fl) == 0 {
+		b.WriteString("(none recorded — if that is untrue, your sessions are not logging friction; fix that habit)\n")
+	}
+	for _, l := range fl {
+		b.WriteString("- " + l + "\n")
+	}
+
+	b.WriteString("\n## Lessons (state/lessons.md)\n")
+	b.WriteString(ws.ReadFull("lessons.md") + "\n")
+
+	b.WriteString("\n## Current improvement backlog (state/improvement-backlog.md)\n")
+	b.WriteString(ws.ReadFull("improvement-backlog.md") + "\n")
+
+	b.WriteString(`
+## Your obligations this meta-review
+1. Rewrite state/improvement-backlog.md: re-score existing proposals against
+   the evidence above, prune obsolete ones, add new ones from friction. Each
+   proposal needs: problem, evidence (decision/friction refs), sketch of the
+   change, expected ROI (credits/hour or captain effectiveness).
+2. Promote at most ONE proposal to ready by writing a feature report to
+   reports/bugs/YYYY-MM-DD-<slug>.md with frontmatter kind: feature,
+   status: new. Only promote when the top proposal's evidence is strong; an
+   empty promotion round is a fine outcome.
+3. Verify the last merged improvement (if any) actually moved the KPI it
+   promised; record the verdict as a lesson in state/lessons.md.
+4. Append a meta-review entry to state/captain-log.md.
+`)
+	return b.String(), nil
+}
