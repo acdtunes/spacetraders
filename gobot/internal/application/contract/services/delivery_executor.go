@@ -128,7 +128,10 @@ func (e *DeliveryExecutor) ProcessSingleDelivery(
 	unitsToPurchase := e.cargoManager.CalculatePurchaseNeeds(ctx, shipSymbol, delivery.TradeSymbol, unitsRemaining, currentUnits)
 
 	if unitsToPurchase > 0 {
-		profitResult := profitabilityResp.(*contractQueries.ProfitabilityResult)
+		profitResult, err := profitabilityResultOrErr(profitabilityResp, delivery.TradeSymbol)
+		if err != nil {
+			return nil, err
+		}
 		ship, err = e.ExecutePurchaseLoop(ctx, shipSymbol, playerID, ship, delivery.TradeSymbol, unitsToPurchase, profitResult.CheapestMarketWaypoint, result, opContext)
 		if err != nil {
 			return nil, err
@@ -361,4 +364,18 @@ func (e *DeliveryExecutor) dockShip(
 	_ = dockResp // Response unused after error check removed
 
 	return nil
+}
+
+// profitabilityResultOrErr validates the profitability response before use.
+// The workflow handler treats profitability-evaluation failures as non-fatal,
+// so a nil response reaches purchasing when no market data exists yet; the
+// old unchecked assertion panicked the whole daemon (see captain incident
+// 2026-07-02). A purchase without market data must fail the container, not
+// the process.
+func profitabilityResultOrErr(resp common.Response, good string) (*contractQueries.ProfitabilityResult, error) {
+	result, ok := resp.(*contractQueries.ProfitabilityResult)
+	if !ok || result == nil {
+		return nil, fmt.Errorf("cannot plan purchase of %s: no profitability/market data available (scout markets first)", good)
+	}
+	return result, nil
 }
