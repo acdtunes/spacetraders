@@ -10,6 +10,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
@@ -387,14 +388,31 @@ func (r *ContainerRunner) signalCompletion() {
 
 // signalCompletionWithStatus signals container completion with success status and error message via event bus.
 func (r *ContainerRunner) signalCompletionWithStatus(success bool, errMsg string) {
+	metadata := r.containerEntity.Metadata()
+
+	// Extract ship symbol from container metadata (shared by the captain outbox
+	// and the coordinator completion event below).
+	shipSymbol, ok := metadata["ship_symbol"].(string)
+	containerID := r.containerEntity.ID()
+	playerID := r.containerEntity.PlayerID()
+
+	// Record a strategic event for the captain supervisor BEFORE the
+	// nil-publisher early return so it fires even when no coordinator is wired.
+	eventType := captain.EventWorkflowFinished
+	if !success {
+		eventType = captain.EventWorkflowFailed
+	}
+	recordCaptainEvent(eventType, shipSymbol, playerID, map[string]any{
+		"container_id": containerID,
+		"command_type": string(r.containerEntity.Type()),
+		"success":      success,
+		"error":        errMsg,
+	})
+
 	if r.eventPublisher == nil {
 		return
 	}
 
-	metadata := r.containerEntity.Metadata()
-
-	// Extract ship symbol from container metadata
-	shipSymbol, ok := metadata["ship_symbol"].(string)
 	if !ok {
 		r.log("WARNING", "No ship_symbol in metadata, cannot signal completion", nil)
 		return
@@ -469,6 +487,13 @@ func (r *ContainerRunner) handleError(err error) {
 			r.log("ERROR", fmt.Sprintf("Failed to persist FAILED status: %v", dbErr), nil)
 		}
 	}
+
+	// Record a strategic crash event for the captain supervisor. Ship symbol is
+	// not reliably available here, so pass empty string.
+	recordCaptainEvent(captain.EventContainerCrashed, "", r.containerEntity.PlayerID(), map[string]any{
+		"container_id": r.containerEntity.ID(),
+		"error":        err.Error(),
+	})
 
 	// NOTE: signalCompletion and releaseShipAssignments are NOT called here.
 	// They are called by execute() ONLY when the container is truly done (not restarting).

@@ -208,6 +208,10 @@ func run(cfg *config.Config) error {
 	shipEventBus := ship.NewShipEventBus()
 	fmt.Println("Ship event bus initialized")
 
+	captainEventRepo := persistence.NewGormCaptainEventRepository(db)
+	grpc.SetCaptainEventRecorder(captainEventRepo)
+	fmt.Println("Captain event outbox initialized")
+
 	routeExecutor := ship.NewRouteExecutor(shipRepo, med, nil, marketScanner, nil, shipEventBus) // nil = use RealClock and default refuel strategy
 
 	// NavigateRoute handler (now uses extracted services)
