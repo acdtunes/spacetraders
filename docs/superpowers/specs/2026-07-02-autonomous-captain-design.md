@@ -98,6 +98,8 @@ captain/
     └── bugs/            # structured bug reports that feed the fix pipeline
 ```
 
+(`state/` additionally holds `decisions.jsonl` and `lessons.md` — see Learning loop.)
+
 **Composed prompt** (built by the supervisor, so the captain decides instead of
 fetching): credits + delta since last session; ships with status/assignment/idle time;
 active containers + health; KPIs from the ledger (credits/hour overall and per
@@ -108,7 +110,8 @@ decisions + rationale to `captain-log.md`. `strategy.md` holds the current strat
 and KPI targets; heartbeat sessions are explicitly prompted to compare actual KPIs
 against those targets and revise the strategy when reality disagrees. This is the
 in-game-performance feedback loop (ports TARS's fleet-manager/feature-proposer ideas
-into one KPI-grounded loop).
+into one KPI-grounded loop). How decisions get graded against outcomes — and how
+mistakes become durable knowledge — is specified in the Learning loop section.
 
 ### Tool discovery: how the captain knows what it can do
 
@@ -128,6 +131,55 @@ the daemon over its socket). It learns the available commands three ways:
    (read-only commands in rollout phase 1; mutating commands added in phase 2).
    CLAUDE.md playbooks say *when* to use a command; the allowlist decides
    *whether* it runs at all.
+
+## Learning loop: how the captain improves from its own actions
+
+Memory alone is not learning — a decision only becomes a lesson once it is
+confronted with its outcome. The captain closes that loop with four layers:
+
+### 1. Decisions carry testable expectations (`state/decisions.jsonl`)
+
+Every non-trivial action is recorded as a structured entry:
+
+```json
+{"id": "d-0142", "ts": "...", "action": "reassign 2 haulers to FAB_MATS arbitrage",
+ "rationale": "margin 42%, contract queue empty",
+ "expectation": "net +40k credits within 3h", "review_after": "...", "outcome": null}
+```
+
+The session prompt template requires an expectation and a `review_after` time for
+every decision. Machine-readable JSONL (not markdown prose) so the supervisor can
+query it.
+
+### 2. Forced outcome review
+
+When composing a prompt, the supervisor injects all decisions whose
+`review_after` has passed and whose `outcome` is null, alongside current KPI/ledger
+data. The session **must** close them out: actual vs expected, verdict
+(`worked | failed | inconclusive`), and — for failures and surprises — a lesson.
+The captain cannot skip grading its own homework; unreviewed decisions keep
+reappearing in every prompt until closed.
+
+### 3. Distilled lessons survive forever (`state/lessons.md`)
+
+Durable heuristics extracted from reviewed outcomes, e.g.
+"Don't start arbitrage runs with < 400 fuel in-system — two runs died to refuel
+detours (d-0089, d-0114)." Each lesson cites the decision IDs that earned it.
+`lessons.md` is capped (~50 entries); the captain curates it — merging duplicates,
+generalizing, pruning lessons invalidated by bot fixes. This is the compaction
+step: the log and decision ledger get trimmed, lessons do not. Every session loads
+`lessons.md` in full. Cold-start: seeded from the old `claude-captain/strategies.md`.
+
+### 4. Where each kind of mistake lands
+
+| Mistake type | Learning destination |
+|---|---|
+| Bad strategic judgment (wrong trade, bad allocation) | `lessons.md` heuristic |
+| Strategy drifting from reality (KPIs miss targets) | `strategy.md` revision at heartbeat |
+| Repeated operational failure caused by the bot itself | bug report → fix pipeline → encoded in code + tests |
+
+The fix pipeline is the deepest form of learning: the mistake becomes a regression
+test, and the corresponding lesson can then be pruned.
 
 ## Health & recovery
 
