@@ -105,7 +105,13 @@ func (c *SpaceTradersClient) getMetricsCollector() APIMetricsRecorder {
 	if c.metricsCollector != nil {
 		return c.metricsCollector
 	}
-	return metrics.GetGlobalAPICollector()
+	// Check the concrete pointer before boxing it into the interface: a
+	// typed-nil *APIMetricsCollector passes callers' nil checks and then
+	// crashes on first use (metrics disabled = nil global collector).
+	if collector := metrics.GetGlobalAPICollector(); collector != nil {
+		return collector
+	}
+	return nil
 }
 
 // GetRateLimiterTokens returns the current number of available tokens in the rate limiter
