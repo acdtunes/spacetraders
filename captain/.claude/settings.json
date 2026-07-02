@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Read",
+      "Edit(state/**)",
+      "Write(state/**)",
+      "Write(reports/**)",
+      "Bash(../gobot/bin/spacetraders health)",
+      "Bash(../gobot/bin/spacetraders ship list*)",
+      "Bash(../gobot/bin/spacetraders ship info*)",
+      "Bash(../gobot/bin/spacetraders market list*)",
+      "Bash(../gobot/bin/spacetraders market get*)",
+      "Bash(../gobot/bin/spacetraders ledger*)",
+      "Bash(../gobot/bin/spacetraders container list*)",
+      "Bash(../gobot/bin/spacetraders container get*)",
+      "Bash(../gobot/bin/spacetraders container logs*)",
+      "Bash(../gobot/bin/spacetraders * --help)"
+    ],
+    "deny": []
+  }
+}
