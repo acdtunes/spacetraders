@@ -18,6 +18,9 @@ test_output.txt
 test_results*.txt
 /tmp/test_*.txt
 
+# Captain self-improvement worktrees
+.captain-worktrees/
+
 # Dependency directories
 vendor/
 
