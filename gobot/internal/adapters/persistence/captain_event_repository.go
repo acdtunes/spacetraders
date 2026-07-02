@@ -84,3 +84,11 @@ func modelToCaptainEvent(m *CaptainEventModel) *captain.Event {
 		ProcessedAt: m.ProcessedAt,
 	}
 }
+
+func (r *GormCaptainEventRepository) HasSince(ctx context.Context, playerID int, t captain.EventType, ship string, since time.Time) (bool, error) {
+	var count int64
+	err := r.db.WithContext(ctx).Model(&CaptainEventModel{}).
+		Where("player_id = ? AND type = ? AND ship = ? AND created_at > ?", playerID, string(t), ship, since).
+		Count(&count).Error
+	return count > 0, err
+}

@@ -76,8 +76,11 @@ func detectIdleShips(ctx context.Context, db *gorm.DB, store captain.EventStore,
 		if busy > 0 {
 			continue
 		}
-		dup, err := store.HasUnprocessed(ctx, cfg.PlayerID, captain.EventShipIdle, s.ShipSymbol)
-		if err != nil || dup {
+		// Idle is a persistent state, not an edge: cooldown on ANY recent
+		// idle event (processed or not) prevents a session-burn loop where
+		// each processed event is re-emitted on the next poll.
+		recent, err := store.HasSince(ctx, cfg.PlayerID, captain.EventShipIdle, s.ShipSymbol, now.Add(-cfg.ShipIdle))
+		if err != nil || recent {
 			continue
 		}
 		_ = store.Record(ctx, &captain.Event{

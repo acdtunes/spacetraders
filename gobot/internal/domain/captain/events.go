@@ -44,4 +44,9 @@ type EventStore interface {
 	// HasUnprocessed reports whether an unprocessed event of the given type
 	// exists for the ship (used to avoid duplicate synthetic events).
 	HasUnprocessed(ctx context.Context, playerID int, t EventType, ship string) (bool, error)
+	// HasSince reports whether any event of the given type exists for the
+	// ship created after `since`, processed or not. Detectors use this as a
+	// cooldown so persistent states (an idle ship) do not re-trigger a
+	// session on every poll after each event is processed.
+	HasSince(ctx context.Context, playerID int, t EventType, ship string, since time.Time) (bool, error)
 }

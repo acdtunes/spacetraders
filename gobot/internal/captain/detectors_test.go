@@ -74,3 +74,31 @@ func TestDetectCreditsThresholdCrossing(t *testing.T) {
 	require.Equal(t, captain.EventCreditsThreshold, events[0].Type)
 	require.Contains(t, events[0].Payload, "100000")
 }
+
+func TestIdleShipCooldownPreventsSessionBurnLoop(t *testing.T) {
+	db, playerID, store := setupDB(t)
+	now := time.Now()
+	require.NoError(t, db.Create(&persistence.ShipModel{
+		ShipSymbol: "IDLE-1", PlayerID: playerID, NavStatus: "DOCKED",
+	}).Error)
+	cfg := DetectorConfig{PlayerID: playerID, StaleHeartbeat: time.Hour, ShipIdle: 30 * time.Minute}
+
+	require.NoError(t, RunDetectors(context.Background(), db, store, cfg, now))
+	events, err := store.FindUnprocessed(context.Background(), playerID, 10)
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+
+	// Processing the event must NOT allow an immediate re-emit.
+	require.NoError(t, store.MarkProcessed(context.Background(), []int64{events[0].ID}, now))
+	require.NoError(t, RunDetectors(context.Background(), db, store, cfg, now.Add(time.Minute)))
+	events, err = store.FindUnprocessed(context.Background(), playerID, 10)
+	require.NoError(t, err)
+	require.Empty(t, events, "idle event re-emitted within cooldown: session-burn loop")
+
+	// After the cooldown window the reminder is legitimate again.
+	require.NoError(t, db.Exec("UPDATE captain_events SET created_at = ?", now.Add(-2*time.Hour)).Error)
+	require.NoError(t, RunDetectors(context.Background(), db, store, cfg, now.Add(time.Minute)))
+	events, err = store.FindUnprocessed(context.Background(), playerID, 10)
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+}
