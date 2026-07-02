@@ -121,7 +121,7 @@ type ShipModel struct {
 	ReleaseReason    string          `gorm:"column:release_reason"`
 
 	// Sync metadata
-	SyncedAt time.Time `gorm:"column:synced_at;default:now()"`
+	SyncedAt time.Time `gorm:"column:synced_at;autoCreateTime"`
 	Version  int       `gorm:"column:version;default:1"`
 }
 
@@ -406,4 +406,20 @@ type ManufacturingFactoryStateModel struct {
 
 func (ManufacturingFactoryStateModel) TableName() string {
 	return "manufacturing_factory_states"
+}
+
+// CaptainEventModel represents the captain_events strategic-event outbox
+type CaptainEventModel struct {
+	ID          int64        `gorm:"column:id;primaryKey;autoIncrement"`
+	PlayerID    int          `gorm:"column:player_id;index:idx_captain_events_player;not null"`
+	Player      *PlayerModel `gorm:"foreignKey:PlayerID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
+	Type        string       `gorm:"column:type;size:50;not null"`
+	Ship        string       `gorm:"column:ship;size:100;not null;default:''"`
+	Payload     string       `gorm:"column:payload;type:jsonb"`
+	CreatedAt   time.Time    `gorm:"column:created_at;not null;autoCreateTime"`
+	ProcessedAt *time.Time   `gorm:"column:processed_at"`
+}
+
+func (CaptainEventModel) TableName() string {
+	return "captain_events"
 }
