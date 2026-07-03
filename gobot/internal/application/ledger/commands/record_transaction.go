@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"sync"
 	"context"
 	"fmt"
 	"time"
@@ -36,6 +37,14 @@ type RecordTransactionResponse struct {
 type RecordTransactionHandler struct {
 	transactionRepo ledger.TransactionRepository
 	clock           shared.Clock
+
+	// Balance derivation reads the last row then writes the next; concurrent
+	// recordings for one player (refuel hops + cargo buys land in the same
+	// second mid-contract) raced that read-then-write and forked the running
+	// balance. All recording flows through this single handler in the daemon
+	// process, so a per-player mutex is sufficient serialization.
+	balanceMu sync.Mutex
+	playerMu  map[int]*sync.Mutex
 }
 
 // NewRecordTransactionHandler creates a new RecordTransactionHandler
@@ -51,6 +60,7 @@ func NewRecordTransactionHandler(
 	return &RecordTransactionHandler{
 		transactionRepo: transactionRepo,
 		clock:           clock,
+		playerMu:        make(map[int]*sync.Mutex),
 	}
 }
 
@@ -78,6 +88,10 @@ func (h *RecordTransactionHandler) Handle(ctx context.Context, request common.Re
 	if cmd.Timestamp != nil {
 		timestamp = *cmd.Timestamp
 	}
+
+	mu := h.playerLock(cmd.PlayerID)
+	mu.Lock()
+	defer mu.Unlock()
 
 	// Some callers skip the balance fetch and pass before=0, after=amount
 	// (an old API-call-saving optimization). That corrupts the running
@@ -150,4 +164,13 @@ func (h *RecordTransactionHandler) Handle(ctx context.Context, request common.Re
 		TransactionID: transaction.ID().String(),
 		Timestamp:     transaction.Timestamp(),
 	}, nil
+}
+
+func (h *RecordTransactionHandler) playerLock(playerID int) *sync.Mutex {
+	h.balanceMu.Lock()
+	defer h.balanceMu.Unlock()
+	if h.playerMu[playerID] == nil {
+		h.playerMu[playerID] = &sync.Mutex{}
+	}
+	return h.playerMu[playerID]
 }

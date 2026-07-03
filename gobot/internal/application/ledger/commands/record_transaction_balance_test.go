@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"sync"
 	"context"
 	"testing"
 	"time"
@@ -68,4 +69,50 @@ func TestExplicitBalancesAreNotOverridden(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 9500, txs[0].BalanceBefore())
 	require.Equal(t, 10000, txs[0].BalanceAfter())
+}
+
+// Concurrent recordings with the balance-skip hack must not fork the chain:
+// two writers reading the same "last balance" produced the L28 garbage rows
+// (s39/s51/s55/s63). The handler must serialize per player.
+func TestConcurrentZeroBalanceRecordingsDoNotForkTheChain(t *testing.T) {
+	db, err := database.NewTestConnection()
+	require.NoError(t, err)
+	p := persistence.PlayerModel{AgentSymbol: "AGT3", Token: "tok", CreatedAt: time.Now()}
+	require.NoError(t, db.Create(&p).Error)
+	repo := persistence.NewGormTransactionRepository(db)
+	h := NewRecordTransactionHandler(repo, nil)
+	ctx := context.Background()
+
+	_, err = h.Handle(ctx, &RecordTransactionCommand{
+		PlayerID: p.ID, TransactionType: "CONTRACT_ACCEPTED", Amount: 100000,
+		BalanceBefore: 0, BalanceAfter: 100000, Description: "anchor",
+	})
+	require.NoError(t, err)
+
+	const n = 20
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, herr := h.Handle(ctx, &RecordTransactionCommand{
+				PlayerID: p.ID, TransactionType: "REFUEL", Amount: -100,
+				BalanceBefore: 0, BalanceAfter: -100, Description: "hop",
+			})
+			errs <- herr
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for e := range errs {
+		require.NoError(t, e)
+	}
+
+	pid, _ := shared.NewPlayerID(p.ID)
+	txs, err := repo.FindByPlayer(ctx, pid, ledger.QueryOptions{
+		Limit: 1, OrderBy: "timestamp DESC, created_at DESC, id DESC"})
+	require.NoError(t, err)
+	require.Equal(t, 100000-n*100, txs[0].BalanceAfter(),
+		"chain must sum exactly; forks mean racing writers")
 }
