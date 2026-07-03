@@ -28,6 +28,15 @@ func ComposeSnapshot(ctx context.Context, db *gorm.DB, ws Workspace, playerID in
 	b.WriteString("# Fleet situation report\n")
 	b.WriteString("Generated: " + now.UTC().Format(time.RFC3339) + "\n\n")
 
+	// Admiral messages lead the prompt: buried directives got dropped by
+	// busy sessions (s70 consumed one without responding).
+	if msg, err := os.ReadFile(ws.InboxPath()); err == nil && len(strings.TrimSpace(string(msg))) > 0 {
+		b.WriteString("## MESSAGE FROM THE ADMIRAL — RESPOND THIS SESSION\n")
+		b.Write(msg)
+		b.WriteString("\nAddressing this in your log, with evidence, is obligation ZERO —\n")
+		b.WriteString("it outranks event triage. The message clears automatically.\n\n")
+	}
+
 	// Pending events
 	b.WriteString("## Pending events\n")
 	if len(events) == 0 {
@@ -119,15 +128,6 @@ func ComposeSnapshot(ctx context.Context, db *gorm.DB, ws Workspace, playerID in
 		b.WriteString(strings.Join(verbs, ", ") + "\n")
 		b.WriteString("These are fleet capabilities you have never once invoked. An\n")
 		b.WriteString("unexplored capability is a standing liability (see obligations).\n")
-	}
-
-	// Admiral inbox: challenges from the human, cleared after the session.
-	if msg, err := os.ReadFile(ws.InboxPath()); err == nil && len(strings.TrimSpace(string(msg))) > 0 {
-		b.WriteString("\n## Message from the Admiral\n")
-		b.Write(msg)
-		b.WriteString("\nYou MUST address it with evidence in your log this session — agree,")
-		b.WriteString("\nrebut, or design the cheap experiment that would settle it. The message")
-		b.WriteString("\nclears automatically; record what matters in your own memory files.\n")
 	}
 
 	// Session contract (details live in the workspace CLAUDE.md; this is the reminder)

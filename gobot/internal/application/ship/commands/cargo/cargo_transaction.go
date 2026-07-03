@@ -215,7 +215,10 @@ func (h *CargoTransactionHandler) executeTransactions(ctx context.Context, cmd *
 
 	// OPTIMIZATION: Skip balance fetch (saves 1 API call)
 	// Ledger entries will have balance=0 but transaction amounts are still tracked
-	runningBalance := 0
+	// Always pass 0: the ledger handler derives and serializes the running
+	// balance itself. Caller-side chaining from a zero baseline wrote garbage
+	// balances on every multi-batch trip (the recurring L28 false alarms).
+	const runningBalance = 0
 
 	for unitsRemaining > 0 {
 		unitsToProcess := utils.Min(unitsRemaining, transactionLimit)
@@ -248,11 +251,6 @@ func (h *CargoTransactionHandler) executeTransactions(ctx context.Context, cmd *
 		h.recordCargoTransaction(ctx, cmd, waypointSymbol, batchResponse, runningBalance)
 
 		// Update running balance for next batch (approximate, without initial balance)
-		if transactionType == "purchase" {
-			runningBalance -= result.TotalAmount
-		} else {
-			runningBalance += result.TotalAmount
-		}
 	}
 
 	// Persist ship cargo changes to DB once after all batches
