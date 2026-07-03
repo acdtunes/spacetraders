@@ -2,67 +2,6 @@
 
 <!-- Newest entries at the bottom. Supervisor may trim the oldest entries. -->
 
-## 2026-07-03 (session 52) — a NEW crash signature (404 page-not-found) that self-healed; treasury NEW HIGH ~1.72M
-
-**A genuine failure burst, not a telemetry mirage this time — but self-recovered.** The fleet report carried a wall of
-`container.crashed` + `workflow.failed` events for TORWIND-3 ([130]–[134], [136]–[140]) with a signature never seen before:
-`API error (status 404): 404 page not found` on `failed to dock ship` and `failed to reload ship: failed to get ship`.
-Two consecutive contract workers died — `contract-work-TORWIND-3-b9ce3620` (17:41:46–48) then `-4d2aa5f2` (17:42:19–20).
-
-**Inspected per the recovery playbook.** Health OK. b9ce3620's logs show it ran cleanly (navigate/opportunistic-refuel/
-market-scan) right up to a 404 burst at 17:41:46; it exhausted all 3 retries within ~1s — every one hitting the same 404 —
-then released the ship. 4d2aa5f2 spawned into the tail of the same burst and died the same way. Then the coordinator
-re-spawned `-70030710` at **17:42:50, after the burst window closed**, and it is executing **cleanly**: successful
-dock/refuel/GET-ship/market-scan through 17:47:19 (restart_count 0). TORWIND-3 never stranded — IN_TRANSIT at I68, cargo
-**64/80 PRECIOUS_STONES**, delivering the same contract cmr57lli0.
-
-**Diagnosis: a transient ~30-second SpaceTraders API 404 burst (17:41:47–17:42:20), NOT a ship-identity or routing defect.**
-The ship demonstrably exists (GET succeeds seconds later on the third worker); every dock/GET/reload the re-spawned worker
-makes *after* the window succeeds. Two workers died only because both fell inside the same burst and burned their fast
-retries. This is **L40-class self-healing** — the coordinator's re-spawn IS the recovery, exactly as designed. Per the
-playbook the evidence supports **NO Captain correction** (stopping/reassigning the running worker would sabotage the
-in-flight 64/80 delivery).
-
-**Treasury: NEW HIGH ~1.72M.** Ledger anchor CONTRACT_ACCEPTED +2,635 @14:30:30 → 1,726,838; netting the subsequent real
-refuel/cargo amounts gives ~**1,721,194**. This cycle's credits.threshold events [126]–[129] are all **UP** (1,726,838) —
-real, not L28 garbage. A +19,958 contract fulfilled cleanly at 17:30 ([125]). Socket HEALTHY (**31st consecutive clean**:
-s22 hung, s23–s52 clean).
-
-**Escalation stance.** Per CLAUDE.md (SAME signature 3+ times ACROSS sessions → file a bug), this is the FIRST session of
-the 404-on-dock/get-ship signature and it self-healed → do NOT file yet. Recorded the signature so next session can count
-it. Escalate only if it recurs across 2 more sessions, OR a worker crash-loops with no clean re-spawn and TORWIND-3 sits
-idle >60min holding cargo (a real strand). d-59 records the triage + HELD.
-
-**Binding constraint (d-59):** unchanged — cycle time / travel-positioning (L48), under active attack by the LIVE 2-ship
-pool. The 404 burst added no new constraint; it's an upstream API-flakiness event the coordinator already absorbs.
-Attacking cycle time further (3rd/faster hauler) stays premature until the d-37 24h verdict (~14:00Z tomorrow, ~20h out),
-trending strongly toward VALIDATED. The correct move remains: finish measuring.
-
-**Decisions:** d-59 (incident triage + heartbeat hold). No decisions were due.
-
-**Strategy/lessons:** bumped socket clean-count to 31st; extended L40 with a 404-on-dock/get-ship addendum (same self-heal
-principle as the 4203 case — a transient API-error burst that kills a worker or two but the coordinator re-spawns a clean
-successor; don't intervene on the first occurrence). Lessons remain at the 50 cap (extended L40 in place, no new slot).
-
-**friction:** (1) **The transient 404 burst produced 9 alarm events** (7 container.crashed + 2 workflow.failed across 2
-workers) for what is ONE upstream API hiccup that self-healed — the L23 "group by container_id+ts" collapse helps, but a
-naive reading of the feed screams "fleet down" when the earner never missed a beat. (2) Standing gaps — no completion EVENT
-surfaced (picks/distance reconstructed from coordinator logs; cycle NET hand-paired from ledger rows; no `contract list`/
-P&L verb). (3) `ledger list` STILL rejects bare/`--agent` — demands `--player-id`. (4) Heredoc/compound appends denied in
-dontAsk mode — decision + log appended via the Edit tool. (5) No Captain-invokable daemon restart. GOOD: socket clean 31
-sessions; the 2-ship pool compounding autonomously past 1.72M and absorbing a real API-error burst with zero intervention.
-
-**note for the user:** this report looked genuinely alarming — a burst of "container crashed / workflow failed" alarms on
-the earning ship, with a brand-new error I hadn't seen before (`404 page not found` while docking/reloading). I inspected it
-before touching anything: it was a ~30-second hiccup on SpaceTraders' own API that killed two workers, but the system
-automatically launched a replacement the moment the hiccup passed, and that one is running perfectly — the ship never
-stopped, still carrying its cargo and delivering. Treasury is a new high ~**1.72M** and still climbing (~63k/hr, ~2.9×
-target). I changed nothing (intervening would have interrupted the live delivery). I noted the new error so I can spot it if
-it becomes a pattern. Fleet healthy, earning autonomously. Tomorrow's 24-hour verdict on the second ship (~14:00Z) is still
-on track and trending positive.
-
-
-
 ## 2026-07-03 (session 53) — Horizon plan for the Admiral; the binding constraint on the mission is TOOLING, not capital
 
 **Clean heartbeat, then the real work: the Admiral's goals-level challenge.** No pending events. Health OK, socket
@@ -1100,4 +1039,74 @@ ship: the mission work (jump-gate build + manufacturing) still needs a *dedicate
 and the feature that would let me reserve one isn't built yet (the request is filed, waiting on the pipeline). Buying now
 would just feed the contract loop, not the mission. The 24-hour experiment verdict lands tomorrow ~14:00Z; nothing needs
 your attention.
+
+
+## 2026-07-03 (session 73) — P0 OUTAGE: the reservation feature shipped without a DB migration and took the earner DOWN
+
+**Event triage found a real, active outage — not the usual benign heartbeat.** The pending feed looked like clean
+workflow.finished successes ([191]-[195]) plus two ship.idle events, and the fleet report claimed TORWIND-4 was an active
+earner at ~112k/hr. But the coordinator log (container 35df0a9f) is spamming, every ~10 seconds since **21:27:39**:
+
+```
+[ERROR] Failed to save ship assignment TORWIND-3: ERROR: column "reserved" of relation "ships" does not exist (SQLSTATE 42703)
+```
+
+And the ledger confirms the damage: the last `CONTRACT_*` row is **18:27:20** — **zero contract activity for ~3.3h**.
+The ~112k/hr in the report is a 24h aggregate carrying the earlier productive window; real-time earning is **0/hr**.
+
+**Root cause (traced via an Explore agent over ../gobot, file:line evidence in the bug report).** The d-79
+ship-reservation feature merged as commit `985701a` and its report is now `status:merged`. It added `Reserved` and
+`ReservationReason` as GORM struct tags on `ShipModel` (`internal/adapters/persistence/models.go:116-117`) but shipped
+**no production migration**. Production `NewConnection` and the daemon `main.go` run **no** AutoMigrate — that only
+happens in `NewTestConnection` (test-only, `connection.go:78-100`), which is exactly why the test suite was green while
+production Postgres lacks the column. Every full-model `Save` upsert (`clause.OnConflict{UpdateAll:true}`,
+`ship_repository.go:731-742`) now emits the two missing columns → SQLSTATE 42703. The error began at 21:27:39 — the
+instant the coordinator restarted onto the post-feature binary.
+
+**No CLI workaround exists.** The agent confirmed the failing `Save` is hit by BOTH assignment paths: the coordinator
+(`run_fleet_coordinator.go:370`) AND the older standalone `batch-contract` path (`container_runner.go:605`), so
+`batch-contract --ship X` fails identically. The only column-avoiding method (`ClaimShip` partial `Updates`,
+`ship_repository.go:892-941`) is called by neither path. My actuator is CLI-only — I have no `psql` — so I cannot apply
+the fix myself. This needs an out-of-band `ALTER TABLE` on the live DB.
+
+**Actions.** (1) Filed `reports/bugs/2026-07-03-ships-reserved-column-missing-migration.md` (kind:fix, status:new) with
+the full trace and the exact `ALTER TABLE ships ADD COLUMN reserved BOOLEAN NOT NULL DEFAULT false; ADD COLUMN
+reservation_reason TEXT NOT NULL DEFAULT ''`, plus an operator note that — because the daemon does not auto-run
+migrations — the code fix alone will NOT restore earning; the ALTER must be applied to the live Postgres, after which
+the running coordinator self-heals. (2) DELIBERATELY left the coordinator RUNNING: its failed Saves are idempotent
+no-ops, and leaving it up means it resumes the instant the column exists (stopping it would force a manual relaunch).
+(3) Did NOT restart the daemon — socket is HEALTHY (not SOCKET-DEAD, so the CLAUDE.md restart guardrail is not met), and
+a restart can't add a missing column anyway (the daemon already restarted at 21:27 onto this binary). Recorded d-81.
+
+**Filed on sight, not after 3 sessions.** The 3-session escalation floor is for flaky/transient signatures; a clear,
+reproducible, code-caused TOTAL income outage warrants a report immediately — sitting at 0/hr for two more sessions to
+satisfy a counter would be negligent.
+
+**Strategy note (obligations #6/#7).** Re-read the gate bill: `construction status X1-PZ28-I67` = 0.0%, FAB_MATS 0/1600 +
+ADVANCED_CIRCUITRY 0/400, QUANTUM_STABILIZERS 1/1 — UNCHANGED. The binding constraint this session is no longer "fleet
+capacity, waiting on the reservation feature" — it FLIPPED: the reservation feature I was waiting on to unblock the
+mission is the exact thing that took the earner down. Until the migration lands, the binding constraint is simply
+"restore the earner." Once the column exists, the reservation flag it introduced should finally let me hold a dedicated
+hauler out of the coordinator (the long-sought mission enabler) — so the fix both restores income AND unblocks the
+mission. `contract start --help` shows no reservation flag yet; the reservation interface (a `ship` verb or coordinator
+flag) is moot to explore until the DB is fixed.
+
+**friction:** a merged feature with green tests broke production because the test DB AutoMigrates GORM tags while
+production requires a hand-written SQL migration that was never authored — the fix pipeline's gate (build + tests) cannot
+catch a missing-migration regression. Candidate meta-review item: the gate should exercise the production migration path
+(or a schema-drift check between GORM models and applied migrations) before a schema-touching feature auto-merges.
+Standing gaps unchanged: no `contract list`/P&L verb; no completion event for fast workers.
+
+**note for the user — ACTION NEEDED.** The ship-reservation feature that merged took the contract earner OFFLINE. It
+added two columns (`reserved`, `reservation_reason`) to the `ships` table in code but shipped no database migration, and
+the daemon doesn't auto-run migrations — so the live database is missing the columns and **every** contract assignment
+now fails. Contract income has been **zero since ~21:27** (3+ hours). The fleet is safe and the daemon is healthy; it's
+purely a schema gap. I filed a fix report with the exact SQL. **To restore earning right now, someone needs to apply
+this to the live Postgres** (I have no DB access):
+```
+ALTER TABLE ships ADD COLUMN reserved BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE ships ADD COLUMN reservation_reason TEXT NOT NULL DEFAULT '';
+```
+The coordinator is still running and will resume automatically the moment those columns exist — no restart needed. A
+code-only pipeline fix will NOT be enough on its own; the migration has to hit the live DB.
 

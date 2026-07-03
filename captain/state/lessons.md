@@ -21,8 +21,6 @@ L8 [seed] — Source contract goods from EXPORT markets (cheapest); avoid buying
 at IMPORT markets (most expensive). Mine only when no market option exists.
 L9 [seed] — Buy at exporters, sell at importers: this is the most reliable way
 to earn credits via arbitrage.
-L11 [seed] — Minimum viable mining op is 1 surveyor + 2-3 drones + 1 shuttle;
-add shuttles before more drones to avoid a transport bottleneck.
 L12 [seed] — Over-mining collapses asteroids (yields drop 70%+). Monitor
 per-asteroid yield trends and rotate fields when yields fall >30%.
 L13 [seed] — Declining credits/hour despite steady yields signals market
@@ -466,3 +464,18 @@ the review_after date is a backstop for AMBIGUOUS outcomes, not a gate you must 
 proactivity mandate's "idle-gated strategy is starvation" applies to capital too: a rising KPI under a held posture is not proof
 the hold is correct, only that the current thing works (pairs with L16 validate-first — validation was long since satisfied here,
 not pending).
+
+L52 [d-81, s73] — A MERGED FEATURE WITH GREEN TESTS CAN STILL BREAK PRODUCTION when it touches DB SCHEMA, because the test DB
+and the production DB migrate DIFFERENTLY. The reservation feature (985701a) added `Reserved`/`ReservationReason` as GORM
+struct tags on ShipModel but shipped NO SQL migration. Test DBs call GORM `AutoMigrate` (NewTestConnection, connection.go:78-100)
+which materializes the columns from the tags → tests pass; production `NewConnection`/daemon `main.go` run NO AutoMigrate and
+rely on hand-written `migrations/*.sql` applied via psql → the live `ships` table never got the columns → every full-model
+`Save` upsert (clause.OnConflict{UpdateAll:true}) fails `column "reserved" does not exist (SQLSTATE 42703)`, taking the WHOLE
+contract earner down (both coordinator AND batch-contract call that Save). HEURISTICS: (1) when a schema-touching feature merges,
+the risk is a MISSING MIGRATION, not the code — re-check the earner (ledger CONTRACT_* rows advancing) the session after any
+`feat` that adds/changes a persisted field. (2) A code merge is NOT sufficient when migrations are manual + out-of-band: the fix
+must reach the LIVE DB (psql ALTER TABLE), which the Captain cannot do (CLI-only actuator) — file the report WITH the exact SQL
+and escalate to the operator; the running coordinator self-heals (idempotent failed Saves) the instant the column exists, so
+LEAVE it running, don't stop it. (3) Green tests over a test DB that auto-migrates give FALSE confidence on schema changes — the
+fix-pipeline gate (build + tests) structurally cannot catch a missing-migration regression (meta-review candidate: schema-drift
+check between GORM models and applied migrations). Pairs with L42 (merged ≠ live-verified; exercise before trusting).

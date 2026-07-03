@@ -113,6 +113,26 @@ Capital thresholds are therefore the WRONG trigger for the near term; **tooling-
    the gate thread: validate net $/h on a bounded run, then buy a dedicated hauler if it clears the scale trigger.
 
 ## Current posture
+- **s73 (d-81): P0 OUTAGE — the d-79 reservation feature shipped WITHOUT a DB migration and took the contract earner DOWN. Contract income ZERO since 18:27 (~3.3h). Filed a fix report; escalated to the user; held the coordinator running to self-heal.**
+  Commit 985701a (reservation feature, report now `status:merged`) added `Reserved`/`ReservationReason` GORM tags on
+  ShipModel (../gobot models.go:116-117) but no production migration. Production runs NO AutoMigrate (test-only,
+  connection.go:78-100), so the live `ships` table lacks the columns and every full-model `Save` upsert
+  (ship_repository.go:731-742) fails: `column "reserved" ... does not exist (SQLSTATE 42703)`, firing every ~10s in
+  coordinator 35df0a9f since 21:27:39 (binary-swap restart). NO worker spawns → total earner outage (ledger last
+  CONTRACT_* = 18:27:20). Explore-agent trace: the failing `Save` is hit by BOTH the coordinator (run_fleet_coordinator.go:370)
+  AND `batch-contract` (container_runner.go:605) → NO CLI workaround; only the unused ClaimShip partial-update path avoids it.
+  I have no psql → cannot ALTER TABLE myself. Filed reports/bugs/2026-07-03-ships-reserved-column-missing-migration.md
+  (kind:fix, status:new) with the exact `ALTER TABLE ships ADD COLUMN reserved BOOLEAN NOT NULL DEFAULT false; ADD COLUMN
+  reservation_reason TEXT NOT NULL DEFAULT ''` + operator note (code merge alone is INSUFFICIENT — the migration must hit
+  the LIVE DB out-of-band; daemon self-heals after, no restart needed). Left the coordinator RUNNING (failed Saves are
+  idempotent no-ops; it resumes the instant the column exists). Did NOT restart the daemon (socket HEALTHY, restart
+  guardrail unmet, and a restart won't add a missing column). Gate bill re-read: construction status X1-PZ28-I67 = 0.0%,
+  FAB_MATS 0/1600 + ADVANCED_CIRCUITRY 0/400, QUANTUM_STABILIZERS 1/1 — UNCHANGED. **BINDING CONSTRAINT FLIPPED: from
+  "fleet capacity, waiting on the reservation feature" to "RESTORE THE EARNER" — the reservation feature I was waiting on
+  IS the outage. Once the column lands, the flag it added should finally let a dedicated hauler be held out of the
+  coordinator (the mission enabler) — so the same fix restores income AND unblocks the mission.** NEXT SESSION MUST:
+  re-check `ledger list` for CONTRACT_* rows after the migration lands (earner restored) + coordinator log clear of 42703;
+  re-check the bug report status AND whether the LIVE DB got the column (merge ≠ restored earning). Still erroring = signature-hit #2.
 - **s72 (d-80): MILESTONE VERIFIED — the d-78 2-hauler select-closest is LIVE; held capital, mission still gated on the reservation feature. Treasury 2,421,275 (ledger-clean, top PURCHASE_CARGO -46,155 @18:01:29), 24h delta ≈ +93,594/hr (new high, ~4.3× KPI).**
   The s71 "NEXT SESSION MUST" is CLEARED: coordinator log (35df0a9f) shows genuine 2-light-hauler select-closest with position-balancing —
   TORWIND-3 done EXPLOSIVES @0.00 → **"Selected TORWIND-4 (distance 100.62) ... Selected ship changed from TORWIND-3 to TORWIND-4 -

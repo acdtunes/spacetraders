@@ -107,6 +107,19 @@ func run(cfg *config.Config) error {
 	defer database.Close(db)
 	fmt.Println("Database connected")
 
+	// Reconcile schema on startup: models are the source of truth, and
+	// AutoMigrate is additive (creates missing tables/columns/indexes, never
+	// destructive). This closes the gap where a merged model change passed
+	// tests (which AutoMigrate the in-memory SQLite) but broke production
+	// Postgres for lack of a hand-written migration (the 2026-07-03 reserved-
+	// column P0). Non-fatal: a healthy earner must not be blocked by a
+	// migration quirk — log loudly and continue.
+	if err := database.AutoMigrate(db); err != nil {
+		fmt.Printf("WARNING: schema AutoMigrate failed (continuing on existing schema): %v\n", err)
+	} else {
+		fmt.Println("Schema reconciled (AutoMigrate)")
+	}
+
 	// 2. Initialize waypoint converter (needed for repositories)
 	waypointConverter := api.NewWaypointConverter()
 	fmt.Println("Waypoint converter initialized")

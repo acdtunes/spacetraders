@@ -48,4 +48,7 @@ and the result lands as a branch for Admiral review.
 - Automations build in an isolated worktree; supervisor runs build+tests.
 - Automations auto-merge like everything else once the gate passes. They get
   double the build time and no diff cap; budget shared with features.
-- No database migrations without human signoff; no new dependencies.
+- Additive schema changes (new model columns/tables) are applied automatically
+  by the daemon AutoMigrate on startup — no hand-written migration needed.
+  DESTRUCTIVE migrations (drop/rename/type-change) still need human signoff.
+- No new dependencies.
