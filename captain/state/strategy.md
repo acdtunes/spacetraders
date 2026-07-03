@@ -113,6 +113,24 @@ Capital thresholds are therefore the WRONG trigger for the near term; **tooling-
    the gate thread: validate net $/h on a bounded run, then buy a dedicated hauler if it clears the scale trigger.
 
 ## Current posture
+- **s72 (d-80): MILESTONE VERIFIED — the d-78 2-hauler select-closest is LIVE; held capital, mission still gated on the reservation feature. Treasury 2,421,275 (ledger-clean, top PURCHASE_CARGO -46,155 @18:01:29), 24h delta ≈ +93,594/hr (new high, ~4.3× KPI).**
+  The s71 "NEXT SESSION MUST" is CLEARED: coordinator log (35df0a9f) shows genuine 2-light-hauler select-closest with position-balancing —
+  TORWIND-3 done EXPLOSIVES @0.00 → **"Selected TORWIND-4 (distance 100.62) ... Selected ship changed from TORWIND-3 to TORWIND-4 -
+  balancing previous ship position"** → TORWIND-4 done → ELECTRONICS @0.00. The balancer that was INERT for 40 sessions (one eligible
+  hauler, L48 addendum) is now ACTIVELY picking between two haulers; **near-cluster distances 0.00/100.62/0.00, no far-hauls this window**
+  (vs the single-hauler 600–801 far-haul record s43–s67). d-37's cycle-time thesis realized. Events [181]-[185] = the KNOWN s71
+  pinned-`--waypoint` false-negative (L49 addendum, already resolved by the auto-discover retry that bought TORWIND-4) — NOT a new
+  incident. Rest benign. Health OK, socket HEALTHY (**51st consecutive clean**: s22 hung, s23–s72 clean), 3 containers RUNNING
+  (coordinator 35df0a9f + worker contract-work-TORWIND-4 + scout-tour 48adae90). Fleet: TORWIND-4 active earner (IN_TRANSIT), TORWIND-3
+  (HAULER, 24 EXPLOSIVES leftover) DOCKED J70 benched, TORWIND-2 solar scout IN_TRANSIT, TORWIND-1 (COMMAND) DOCKED A2 benched. Jump-gate
+  bill re-read: `construction status X1-PZ28-I67` = 0.0%, FAB_MATS 0/1600 + ADVANCED_CIRCUITRY 0/400, QUANTUM_STABILIZERS 1/1 — UNCHANGED.
+  Reservation report (d-79) still `status:new`. **BINDING CONSTRAINT (obligation #7): FLEET CAPACITY for a DEDICATED hauler — and the
+  mechanism is now concrete: BOTH light haulers are consumed by the contract coordinator (alternated by select-closest), so until the
+  reservation flag ships there is NO idle hauler to hold out for the gate/manufacturing stream.** HELD capital: a 3rd hauler pre-flag would
+  just be auto-claimed (L46c, grows contracts not the mission), and the 2-hauler pool is ~2h old (one data window — L51 does NOT license a
+  3rd buy on one observation). Disciplined path: let the pool run, grade d-37 with real 2-hauler data 2026-07-04T14:00Z, gate the
+  dedicated-mission-hauler buy on the reservation feature shipping. Guardrail ≤50% of 2,421,275 = **~1.21M cap**. NEXT SESSION: re-check
+  reservation report status + gate bill; measure far-haul (distance>400) frequency + $/h vs the single-hauler band.
 - **s71 (d-78/d-79): ADMIRAL DIRECTIVE SESSION — broke the 30-session HOLD and ACTED on all three consolidated standing orders. Treasury 2,324,655 (clean ledger anchor, top REFUEL -288 @17:33:47).**
   (1) [order #1] Ran the manufacturing dry-run + recorded it as **Standing directive #1** above (engine launches clean; --dry-run is
   settings-only; needs a dedicated hauler; gate materials are fabrication-only). (2) [order #2] **BOUGHT contract hauler #2** —

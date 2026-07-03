@@ -2,67 +2,6 @@
 
 <!-- Newest entries at the bottom. Supervisor may trim the oldest entries. -->
 
-## 2026-07-03 (session 51) — a treasury ALARM that was pure L28 garbage; real treasury NEW HIGH ~1.70M, rate ~63.7k/hr
-
-**A scary-looking heartbeat that was a telemetry mirage.** The fleet report opened with Credits **-8,955**, FOUR
-`credits.threshold` DOWN events firing at once ([121]/[122]/[123]/[124]: 100k/250k/500k/1M all crossed DOWN), and a 24h
-delta of **-183,955 (-7,664/hr)** — after 30 sessions holding ~1.64M and climbing. Per L28 I did NOT act on the alarm;
-I pulled the ledger first.
-
-**The ledger exonerates it completely.** Reading newest-first:
-- `14:28:17 CONTRACT_FULFILLED +105,963 → 1,708,183`
-- `14:28:23 CONTRACT_ACCEPTED +5,305 → 1,713,488`
-- `14:29:24 REFUEL -144 → 1,713,344`
-- `14:29:25 PURCHASE_CARGO -8,520 → 1,704,824`
-- `14:29:26 PURCHASE_CARGO -435 → **-8,955**` ← desynced Balance column
-
-A −435 cargo buy cannot take 1,704,824 to −8,955; the last row's Balance is corrupt (textbook L28). **TRUE treasury ≈
-1,704,389** (last sane 1,704,824 net of the real −435) — a NEW HIGH, up from s50's 1,639,884. The four DOWN thresholds are
-all spurious reads off that one −8,955 row; real treasury never dropped, it ROSE. TORWIND-2 fuel 0/0 is the normal
-solar-scout state (no fuel system), not a strand.
-
-**The read — clean cycling, another far-haul.** Pending [120] workflow.finished (TORWIND-3, container b6940c9e) is the s50
-JEWELRY far-haul cmr5720iu @761.64 fulfilling CLEANLY for **+105,963**, NOT a failure. On fulfillment the coordinator
-re-cycled twice: ACCEPTED +5,305 (worker fe58f258), then negotiated PRECIOUS_STONES cmr57lli0 → **Selected TORWIND-3
-@distance 713.79** (worker b9ce3620), now in flight (63/80 cargo, IN_TRANSIT at A4). Another sole-eligible-hauler far-haul
-(L48 addendum s37/s44): selection among LIGHT HAULERS only, TORWIND-1 (COMMAND) excluded, speed-blind selection INERT, no
-escalation. Socket HEALTHY (**30th consecutive clean**: s22 hung, s23–s51 clean); health OK, 3 containers RUNNING. **Real
-24h delta ≈ 1,704,389 − 175,000 baseline = ~1,529,389 ≈ +63,725/hr** — UP from s50's +61,036/hr, now **~2.91× the ~21,900
-KPI**, the highest rate yet.
-
-**Held — no actuation (d-58).** Nothing broke; the pool is compounding past 1.70M and beating target ~2.9×. A 3rd/faster
-hauler stays wrong pre-verdict (coordinator one-at-a-time L45; diminishing positioning; L16 validate-first). The d-37 24h
-verdict lands tomorrow ~14:00Z (~20.5h out), trending strongly toward VALIDATED. The correct move is to finish measuring.
-
-**Binding constraint (d-58 heartbeat):** unchanged — cycle time / travel-positioning (L48), under active attack by the LIVE
-2-ship pool. This session added no new constraint evidence beyond confirming the far/near mix keeps the aggregate rate
-climbing. The constraint is real but sub-dominant to throughput; attacking it further is premature until the d-37 verdict.
-
-**Decisions:** d-58 (heartbeat hold, alarm-triaged). No decisions were due (d-31/d-33 overdue-but-unlisted;
-d-32/d-34/d-37/d-41–d-57 due 2026-07-04; d-35/d-36 due 2026-07-05).
-
-**Strategy/lessons:** bumped socket clean-count to 30th; recorded the s51 L28-garbage alarm episode. No new lesson slot spent
-— L28 already covers the desynced-Balance credits.threshold-garbage signature exactly (this session is a textbook instance:
-four simultaneous DOWN thresholds off ONE corrupt PURCHASE_CARGO row). Lessons remain at the 50 cap.
-
-**friction:** (1) **The L28 telemetry-garbage alarm is a recurring false-positive tax** — a single desynced PURCHASE_CARGO
-Balance row fired FOUR credits.threshold DOWN events and a −7,664/hr delta, which would panic a naive operator into
-liquidating; every heartbeat pays a ledger-reconciliation cost to disprove it. A fix (reconcile the Balance column, or
-compute credits.threshold off the CONTRACT_* anchor not the raw row) would remove real observability noise — candidate for
-a meta-review feature. (2) Standing gaps — no completion EVENT surfaced (I reconstruct picks/distance from coordinator logs,
-cycle NET by hand-pairing ledger rows; no `contract list`/P&L verb). (3) `ledger list` STILL rejects bare/`--agent` — demands
-`--player-id`. (4) Heredoc/compound appends denied in dontAsk mode — decision + log appended via the Edit tool. (5) No
-Captain-invokable daemon restart. GOOD: socket clean 30 sessions; the 2-ship pool compounding autonomously past 1.70M.
-
-**note for the user:** the fleet report looked alarming at first glance — it showed the balance at **−8,955** and fired
-four "credits dropping" alarms. It was a false alarm: a known display glitch (L28) where one ledger row's running-total
-column gets corrupted. I checked the actual transaction ledger before touching anything — the real treasury is a NEW HIGH
-of ~**1.70M** (up from ~1.64M), and the earning rate is ~**63.7k/hr**, the best yet (~2.9× target). The fleet fulfilled a
-big +105,963 contract and is already working the next one. I changed nothing. Fleet healthy, earning autonomously.
-Tomorrow's 24-hour rate check (~14:00Z) is the formal verdict on the second ship; the trend is strongly positive.
-
-
-
 ## 2026-07-03 (session 52) — a NEW crash signature (404 page-not-found) that self-healed; treasury NEW HIGH ~1.72M
 
 **A genuine failure burst, not a telemetry mirage this time — but self-recovered.** The fleet report carried a wall of
@@ -1100,4 +1039,65 @@ earner. The purchase completed cleanly and the new hauler is registered with the
 using it as its second hauler within the next cycle, which should cut the long "far-haul" trips that have been the main drag.
 (One snag handled: my first purchase attempt pinned to a specific shipyard and false-failed on a stale cache; retrying with
 auto-discovery bought it fine.) Fleet healthy, earning ~92.5k/hr; treasury ~2.25M after the buy.
+
+
+## 2026-07-03 (session 72) — MILESTONE VERIFIED: the 2-hauler select-closest is LIVE; held capital, mission still gated on the reservation feature
+
+**Event triage.** The pending feed looked busy but resolved cleanly. [181]-[185] (four container.crashed + one
+workflow.failed, all `ship type SHIP_LIGHT_HAULER not available at shipyard X1-PZ28-A2`) are the KNOWN s71
+pinned-`--waypoint` FALSE NEGATIVE (L49 addendum) — the empty-shipyard-cache rejection that I already worked around
+last session by re-running WITHOUT `--waypoint`, which auto-discovered A2 and bought TORWIND-4 (container f9d307ff,
+event [186]). One upstream hiccup, already resolved; the 3+-session escalation counter does NOT advance. The rest is
+benign: [180]/[187]/[188] TORWIND-3 + [186] TORWIND-1 `workflow.finished success=true` (clean fulfillments/purchase);
+[189]/[190] ship.idle = the expected one-at-a-time bench.
+
+**Milestone VERIFIED (s71's "NEXT SESSION MUST").** The whole point of the d-78 hauler buy was to give the coordinator
+a real 2-light-hauler pool so its select-closest position-balancer — INERT for 40 sessions with one eligible hauler
+(L48 addendum) — starts working. The coordinator log (container 35df0a9f) proves it did:
+- TORWIND-3 completed EXPLOSIVES @distance **0.00**
+- → negotiated MEDICINE → **"Selected TORWIND-4 (distance 100.62) ... Selected ship changed from TORWIND-3 to
+  TORWIND-4 - balancing previous ship position"**
+- TORWIND-4 completed → negotiated ELECTRONICS → **"Selected TORWIND-4 (distance 0.00)"**
+
+That is genuine two-ship select-closest WITH position-balancing — the d-37/d-35 cycle-time thesis realized in the logs.
+Notably, near-cluster distances (0.00 / 100.62 / 0.00) with **no far-hauls** this window, vs the single-hauler record
+of isolated 600–801-unit far-hauls (s43–s67). Early but exactly the predicted shape.
+
+**Treasury.** 2,421,275, ledger-CLEAN (top row PURCHASE_CARGO -46,155 @18:01:29 → 2,421,275 matches the fleet report
+EXACTLY; no L28 desync this window). 24h delta +2,246,275 ≈ **+93,594/hr — a new high, ~4.3× the ~21,900 KPI.** The
+earner is compounding autonomously.
+
+**State.** Health OK, socket HEALTHY (**51st consecutive clean**: s22 hung, s23–s72 clean), 3 containers RUNNING
+(coordinator 35df0a9f + worker contract-work-TORWIND-4 + scout-tour 48adae90). Fleet: TORWIND-4 active earner
+(IN_TRANSIT), TORWIND-3 (HAULER, 24 EXPLOSIVES leftover) DOCKED J70 benched (one-at-a-time), TORWIND-2 solar scout
+IN_TRANSIT, TORWIND-1 (COMMAND) DOCKED A2 benched. No 404 burst.
+
+**Strategy step (obligation #6) + binding constraint (#7).** Re-read the jump-gate bill: `construction status
+X1-PZ28-I67` = 0.0%, FAB_MATS 0/1600 + ADVANCED_CIRCUITRY 0/400, QUANTUM_STABILIZERS 1/1 — UNCHANGED (no external
+supply). Reservation feature report (d-79) still `status: new` (pipeline hasn't picked it up). The binding constraint on
+10× MISSION growth is confirmed FLEET CAPACITY for a **dedicated** hauler — and this session makes the mechanism
+concrete: **both light haulers are now consumed by the contract coordinator** (it alternates them by select-closest), so
+until the reservation flag ships there is literally no idle hauler to hold out for the gate-fabrication or manufacturing
+stream. Attacking the constraint now is wrong twice over: (a) a 3rd/dedicated hauler bought pre-reservation-flag would
+just be auto-claimed into the contract pool (L46c) — it would grow contracts, not create a mission hauler; (b) the
+2-hauler pool is ~2h old, so there's exactly ONE window of data — buying a 3rd now is NOT licensed by L51 (which needs a
+monotonic trend across MANY observations, not one) and would be over-correction into recklessness. So HELD capital +
+ships: let the 2-hauler pool run, grade d-37 with real 2-hauler data at 2026-07-04T14:00Z, and gate the
+dedicated-mission-hauler buy on the reservation feature shipping. Recorded d-80.
+
+**Decisions:** recorded d-80 (verify milestone + reasoned hold). None due for review this session (d-37 review is
+2026-07-04T14:00Z; d-78/d-79 reviews later).
+
+**friction:** none new. Standing gaps unchanged: reservation flag (filed d-79, not yet shipped — the pivotal mission
+enabler); no completion EVENT surfaced for fast workers beyond the coordinator log; no `contract list`/P&L verb; the L28
+desynced-Balance observability tax (clean this window, but recurring).
+
+**note for the user:** The second cargo ship (TORWIND-4) I bought last session is now live and working exactly as
+intended — the contract system is picking between the two haulers by distance and even repositioning them, which is the
+cycle-time improvement the whole experiment was for. This window it chose short, near-cluster trips (no long "far-haul"
+drags), which is the good sign. Treasury ~2.42M, earning ~93.6k/hr (~4× target). I deliberately did NOT buy a third
+ship: the mission work (jump-gate build + manufacturing) still needs a *dedicated* ship held out of the contract loop,
+and the feature that would let me reserve one isn't built yet (the request is filed, waiting on the pipeline). Buying now
+would just feed the contract loop, not the mission. The 24-hour experiment verdict lands tomorrow ~14:00Z; nothing needs
+your attention.
 

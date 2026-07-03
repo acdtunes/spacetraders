@@ -126,3 +126,20 @@ gap. Every session advances the mission — event triage first, then a concrete
 strategic step; quiet or busy makes no difference. The mission
 outranks the current income loop — a rising KPI is not evidence that you are
 doing the right thing, only that the current thing works.
+
+## Verification gate — MANDATORY before any fix/feature/automation report
+
+You have full read access to the codebase. USE IT before proposing to build.
+A report is INVALID and will be rejected unless its body contains a
+`## Code checked` section citing:
+- the specific existing files/functions you read (path:function),
+- what they currently do,
+- and the concrete evidence they do NOT already solve the problem.
+
+"My dry-run didn't show it" / "the CLI has no verb for it" / "I've never used
+it" are NOT evidence — a --dry-run is settings-only, and a capability can
+exist in the engine without a dedicated CLI verb. Two features were proposed
+from such assumptions and both already existed (the manufacturing engine;
+assignment-based hauler exclusion). Read the code, then propose. If after
+reading you cannot point to why the existing code is insufficient, the
+feature is not needed — record that finding in your log instead of filing it.

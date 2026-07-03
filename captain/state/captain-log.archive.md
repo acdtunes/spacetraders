@@ -2793,3 +2793,64 @@ the daily rate down. Tomorrow's 24-hour rate check (~14:00Z, ~20.5h out) is the 
 pays for itself; the trend is strongly positive. I changed nothing. Fleet healthy, earning autonomously.
 
 
+
+## 2026-07-03 (session 51) — a treasury ALARM that was pure L28 garbage; real treasury NEW HIGH ~1.70M, rate ~63.7k/hr
+
+**A scary-looking heartbeat that was a telemetry mirage.** The fleet report opened with Credits **-8,955**, FOUR
+`credits.threshold` DOWN events firing at once ([121]/[122]/[123]/[124]: 100k/250k/500k/1M all crossed DOWN), and a 24h
+delta of **-183,955 (-7,664/hr)** — after 30 sessions holding ~1.64M and climbing. Per L28 I did NOT act on the alarm;
+I pulled the ledger first.
+
+**The ledger exonerates it completely.** Reading newest-first:
+- `14:28:17 CONTRACT_FULFILLED +105,963 → 1,708,183`
+- `14:28:23 CONTRACT_ACCEPTED +5,305 → 1,713,488`
+- `14:29:24 REFUEL -144 → 1,713,344`
+- `14:29:25 PURCHASE_CARGO -8,520 → 1,704,824`
+- `14:29:26 PURCHASE_CARGO -435 → **-8,955**` ← desynced Balance column
+
+A −435 cargo buy cannot take 1,704,824 to −8,955; the last row's Balance is corrupt (textbook L28). **TRUE treasury ≈
+1,704,389** (last sane 1,704,824 net of the real −435) — a NEW HIGH, up from s50's 1,639,884. The four DOWN thresholds are
+all spurious reads off that one −8,955 row; real treasury never dropped, it ROSE. TORWIND-2 fuel 0/0 is the normal
+solar-scout state (no fuel system), not a strand.
+
+**The read — clean cycling, another far-haul.** Pending [120] workflow.finished (TORWIND-3, container b6940c9e) is the s50
+JEWELRY far-haul cmr5720iu @761.64 fulfilling CLEANLY for **+105,963**, NOT a failure. On fulfillment the coordinator
+re-cycled twice: ACCEPTED +5,305 (worker fe58f258), then negotiated PRECIOUS_STONES cmr57lli0 → **Selected TORWIND-3
+@distance 713.79** (worker b9ce3620), now in flight (63/80 cargo, IN_TRANSIT at A4). Another sole-eligible-hauler far-haul
+(L48 addendum s37/s44): selection among LIGHT HAULERS only, TORWIND-1 (COMMAND) excluded, speed-blind selection INERT, no
+escalation. Socket HEALTHY (**30th consecutive clean**: s22 hung, s23–s51 clean); health OK, 3 containers RUNNING. **Real
+24h delta ≈ 1,704,389 − 175,000 baseline = ~1,529,389 ≈ +63,725/hr** — UP from s50's +61,036/hr, now **~2.91× the ~21,900
+KPI**, the highest rate yet.
+
+**Held — no actuation (d-58).** Nothing broke; the pool is compounding past 1.70M and beating target ~2.9×. A 3rd/faster
+hauler stays wrong pre-verdict (coordinator one-at-a-time L45; diminishing positioning; L16 validate-first). The d-37 24h
+verdict lands tomorrow ~14:00Z (~20.5h out), trending strongly toward VALIDATED. The correct move is to finish measuring.
+
+**Binding constraint (d-58 heartbeat):** unchanged — cycle time / travel-positioning (L48), under active attack by the LIVE
+2-ship pool. This session added no new constraint evidence beyond confirming the far/near mix keeps the aggregate rate
+climbing. The constraint is real but sub-dominant to throughput; attacking it further is premature until the d-37 verdict.
+
+**Decisions:** d-58 (heartbeat hold, alarm-triaged). No decisions were due (d-31/d-33 overdue-but-unlisted;
+d-32/d-34/d-37/d-41–d-57 due 2026-07-04; d-35/d-36 due 2026-07-05).
+
+**Strategy/lessons:** bumped socket clean-count to 30th; recorded the s51 L28-garbage alarm episode. No new lesson slot spent
+— L28 already covers the desynced-Balance credits.threshold-garbage signature exactly (this session is a textbook instance:
+four simultaneous DOWN thresholds off ONE corrupt PURCHASE_CARGO row). Lessons remain at the 50 cap.
+
+**friction:** (1) **The L28 telemetry-garbage alarm is a recurring false-positive tax** — a single desynced PURCHASE_CARGO
+Balance row fired FOUR credits.threshold DOWN events and a −7,664/hr delta, which would panic a naive operator into
+liquidating; every heartbeat pays a ledger-reconciliation cost to disprove it. A fix (reconcile the Balance column, or
+compute credits.threshold off the CONTRACT_* anchor not the raw row) would remove real observability noise — candidate for
+a meta-review feature. (2) Standing gaps — no completion EVENT surfaced (I reconstruct picks/distance from coordinator logs,
+cycle NET by hand-pairing ledger rows; no `contract list`/P&L verb). (3) `ledger list` STILL rejects bare/`--agent` — demands
+`--player-id`. (4) Heredoc/compound appends denied in dontAsk mode — decision + log appended via the Edit tool. (5) No
+Captain-invokable daemon restart. GOOD: socket clean 30 sessions; the 2-ship pool compounding autonomously past 1.70M.
+
+**note for the user:** the fleet report looked alarming at first glance — it showed the balance at **−8,955** and fired
+four "credits dropping" alarms. It was a false alarm: a known display glitch (L28) where one ledger row's running-total
+column gets corrupted. I checked the actual transaction ledger before touching anything — the real treasury is a NEW HIGH
+of ~**1.70M** (up from ~1.64M), and the earning rate is ~**63.7k/hr**, the best yet (~2.9× target). The fleet fulfilled a
+big +105,963 contract and is already working the next one. I changed nothing. Fleet healthy, earning autonomously.
+Tomorrow's 24-hour rate check (~14:00Z) is the formal verdict on the second ship; the trend is strongly positive.
+
+

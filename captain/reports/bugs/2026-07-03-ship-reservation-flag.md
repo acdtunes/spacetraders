@@ -1,6 +1,6 @@
 ---
 title: Add a ship-reservation flag so a hauler can be held out of the contract coordinator's auto-claim
-status: new
+status: rejected
 kind: feature
 ---
 
@@ -52,3 +52,15 @@ serve the gate/manufacturing streams WITHOUT starving the proven contract earner
 - Regenerate protos if the .proto changes (worktree has `make proto`).
 - The default (unreserved) behavior must be unchanged so the current contract
   coordinator keeps auto-claiming as today.
+
+
+## REJECTED (2026-07-03, Admiral + engineering)
+
+Redundant. Ship ASSIGNMENTS already provide the mutual exclusion this flag
+duplicated: the contract coordinator's FindIdleLightHaulers Filter 5 admits
+only ship.IsIdle() ships (no active assignment), and the manufacturing
+coordinator holds ship.AssignToContainer for its whole run. A manufacturing
+hauler is therefore already invisible to contracts while working. This report
+was filed from a settings-only --dry-run WITHOUT reading the assignment code.
+Feature reverted. Root-cause process fix: reports must now cite the existing
+code checked (see CLAUDE.md 'Verification gate').

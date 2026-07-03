@@ -37,7 +37,6 @@ const (
 	DaemonService_ListShips_FullMethodName                             = "/daemon.DaemonService/ListShips"
 	DaemonService_GetShip_FullMethodName                               = "/daemon.DaemonService/GetShip"
 	DaemonService_RefreshShip_FullMethodName                           = "/daemon.DaemonService/RefreshShip"
-	DaemonService_SetShipReservation_FullMethodName                    = "/daemon.DaemonService/SetShipReservation"
 	DaemonService_ListWaypoints_FullMethodName                         = "/daemon.DaemonService/ListWaypoints"
 	DaemonService_GetWaypoint_FullMethodName                           = "/daemon.DaemonService/GetWaypoint"
 	DaemonService_PurchaseShip_FullMethodName                          = "/daemon.DaemonService/PurchaseShip"
@@ -98,9 +97,6 @@ type DaemonServiceClient interface {
 	GetShip(ctx context.Context, in *GetShipRequest, opts ...grpc.CallOption) (*GetShipResponse, error)
 	// RefreshShip forces a resync of a ship from the API, overwriting the cache
 	RefreshShip(ctx context.Context, in *RefreshShipRequest, opts ...grpc.CallOption) (*RefreshShipResponse, error)
-	// SetShipReservation reserves (or clears the reservation on) a ship so that
-	// coordinators exclude it from their auto-claimed idle-hauler pools
-	SetShipReservation(ctx context.Context, in *SetShipReservationRequest, opts ...grpc.CallOption) (*SetShipReservationResponse, error)
 	// ListWaypoints lists the waypoints of a system from the daemon's waypoint cache
 	ListWaypoints(ctx context.Context, in *ListWaypointsRequest, opts ...grpc.CallOption) (*ListWaypointsResponse, error)
 	// GetWaypoint returns the detail of a single waypoint
@@ -321,16 +317,6 @@ func (c *daemonServiceClient) RefreshShip(ctx context.Context, in *RefreshShipRe
 	return out, nil
 }
 
-func (c *daemonServiceClient) SetShipReservation(ctx context.Context, in *SetShipReservationRequest, opts ...grpc.CallOption) (*SetShipReservationResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(SetShipReservationResponse)
-	err := c.cc.Invoke(ctx, DaemonService_SetShipReservation_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
 func (c *daemonServiceClient) ListWaypoints(ctx context.Context, in *ListWaypointsRequest, opts ...grpc.CallOption) (*ListWaypointsResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListWaypointsResponse)
@@ -524,9 +510,6 @@ type DaemonServiceServer interface {
 	GetShip(context.Context, *GetShipRequest) (*GetShipResponse, error)
 	// RefreshShip forces a resync of a ship from the API, overwriting the cache
 	RefreshShip(context.Context, *RefreshShipRequest) (*RefreshShipResponse, error)
-	// SetShipReservation reserves (or clears the reservation on) a ship so that
-	// coordinators exclude it from their auto-claimed idle-hauler pools
-	SetShipReservation(context.Context, *SetShipReservationRequest) (*SetShipReservationResponse, error)
 	// ListWaypoints lists the waypoints of a system from the daemon's waypoint cache
 	ListWaypoints(context.Context, *ListWaypointsRequest) (*ListWaypointsResponse, error)
 	// GetWaypoint returns the detail of a single waypoint
@@ -620,9 +603,6 @@ func (UnimplementedDaemonServiceServer) GetShip(context.Context, *GetShipRequest
 }
 func (UnimplementedDaemonServiceServer) RefreshShip(context.Context, *RefreshShipRequest) (*RefreshShipResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RefreshShip not implemented")
-}
-func (UnimplementedDaemonServiceServer) SetShipReservation(context.Context, *SetShipReservationRequest) (*SetShipReservationResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method SetShipReservation not implemented")
 }
 func (UnimplementedDaemonServiceServer) ListWaypoints(context.Context, *ListWaypointsRequest) (*ListWaypointsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListWaypoints not implemented")
@@ -1014,24 +994,6 @@ func _DaemonService_RefreshShip_Handler(srv interface{}, ctx context.Context, de
 	return interceptor(ctx, in, info, handler)
 }
 
-func _DaemonService_SetShipReservation_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(SetShipReservationRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(DaemonServiceServer).SetShipReservation(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: DaemonService_SetShipReservation_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(DaemonServiceServer).SetShipReservation(ctx, req.(*SetShipReservationRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
 func _DaemonService_ListWaypoints_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ListWaypointsRequest)
 	if err := dec(in); err != nil {
@@ -1380,10 +1342,6 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RefreshShip",
 			Handler:    _DaemonService_RefreshShip_Handler,
-		},
-		{
-			MethodName: "SetShipReservation",
-			Handler:    _DaemonService_SetShipReservation_Handler,
 		},
 		{
 			MethodName: "ListWaypoints",

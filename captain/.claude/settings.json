@@ -37,9 +37,7 @@
       "Bash(bin/spacetraders ship buy:*)",
       "Bash(bin/spacetraders system:*)",
       "Grep",
-      "Glob",
-      "Bash(bin/spacetraders ship reserve:*)",
-      "Bash(bin/spacetraders ship unreserve:*)"
+      "Glob"
     ],
     "deny": []
   }

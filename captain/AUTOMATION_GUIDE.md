@@ -33,6 +33,8 @@ and the result lands as a branch for Admiral review.
 
 1. **Problem + evidence**: what recurring work/opportunity, with decision ids
    and ledger/log data. ROI estimate in $/h or risk retired.
+2. **Code checked (MANDATORY)**: the existing files/functions you read and
+   the evidence they do not already solve this. No section = auto-rejected.
 2. **Design sketch**: coordinator or worker? What does it discover, what does
    it spawn, what events does it react to, when does it stop? Which existing
    exemplar is it closest to? What CLI surface (`<verb> start/status/stop`)?
