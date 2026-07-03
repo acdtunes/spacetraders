@@ -28,7 +28,8 @@
       "Bash(bin/spacetraders operations:*)",
       "Bash(bin/spacetraders goods:*)",
       "Bash(bin/spacetraders construction:*)",
-      "Bash(bin/spacetraders container stop:*)"
+      "Bash(bin/spacetraders container stop:*)",
+      "Bash(bin/spacetraders player info:*)"
     ],
     "deny": [
       "Read(//Users/andres.dandrea/projects/spacetraders/gobot/**)",

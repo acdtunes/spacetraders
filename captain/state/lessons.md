@@ -43,7 +43,168 @@ L19 [d-1,d-2] — The CLI has two backends: socket commands (health, ship,
 container, workflow) talk to the daemon; market/ledger/player hit Postgres
 directly. On SQLSTATE/DB errors from the latter while the former works, it's a
 DB outage, not a total daemon failure — keep operating on socket data.
-L20 [d-1,d-2] — Confirm actuation is permitted before planning actions: in
-dontAsk advisory mode only allowlisted read commands run, so mutating verbs
-silently deny. A blocked Captain should record a plan-of-record and surface the
-block, not spin retrying denied commands.
+L20 [d-1,d-2,d-3] — Re-verify capability state every session; it flips between
+sessions. Actuation (allowlist) and the market/ledger DB both went from
+blocked/down to working between s1 and s2. Test permitted commands live —
+don't trust stale "degraded" notes or a report's stale numbers (treasury read 0
+while the real balance was 176,547).
+L21 [d-3] — batch-contract (and any purchase-planning workflow) FAILS FAST
+without cached market data: `cannot plan purchase of <good>: no
+profitability/market data available (scout markets first)`. Sequence is
+scout-all-markets → let it gather data → THEN batch-contract. Re-running before
+data exists just churns and fails again.
+L22 [d-3,d-4] — Launch heavy workflows ONE AT A TIME. Firing scout-fleet-
+assignment (VRP) and batch-contract (negotiation) together transiently hung the
+daemon socket (~2min, context deadline exceeded) and killed the scout
+coordinator mid-spawn. Launch one, confirm `health` ok + container RUNNING, then
+launch the next. The daemon self-recovers; there is no Captain-side restart.
+L23 [d-6] — The pending-event feed emits MULTIPLE rows for a single failure
+(e.g. 4x container.crashed + 1x workflow.failed, same container_id + timestamp,
+from one retry burst). Before treating repeated crash events as a new incident,
+group by container_id+ts — a wall of identical crashes is usually one workflow
+retrying (often already-diagnosed), not N fresh failures. Don't re-fire the
+failed workflow just because the feed looks alarming; fix the root cause once.
+L24 [d-7] — A single solar scout (speed ~9) is too slow to cover a large
+(26-market) system: ~5/26 cached after 3 sessions. When a faster ship is idle,
+SPLIT the route — give each ship a disjoint `scout-markets --markets <subset>`
+so they converge from opposite ends and ~halve time-to-coverage. Idle-hauler
+fuel burn on intra-system hops (~68/unit, refuelable anywhere) is trivial vs a
+six-figure treasury and the cost of a stalled contract.
+L25 [d-3,d-7] — Refines L22: the daemon hang was from CONCURRENT launches (two
+heavy workflows in the same instant), NOT from launching while another runs.
+A 2nd workflow on a healthy 1-container daemon launched fine. Rule stays: launch
+→ confirm health + RUNNING → launch next; never fire two at once.
+L26 [d-7] — No `waypoint list` or `market find --good X` exists. To route a ship
+to as-yet-unscanned markets, scrape waypoint symbols from a scout container's
+metadata JSON (`container get <scout>` → metadata.markets); it's the only way to
+get a system's full market route without physically visiting each waypoint.
+L27 [d-7,d-8] — container-RUNNING != data-populated. batch-contract failed at
+22:18 because the scout that feeds it didn't COMPLETE until 22:29. When
+sequencing scout->contract in one session, gate the contract on the scout's
+`workflow.finished` event (or a COMPLETED container / confirmed cache), NOT on
+the scout merely being RUNNING. Refines L21/L22. Once data was truly present,
+the SAME batch-contract went `profitability confirmed -> purchase initiated`.
+L28 [d-8] — Treasury/credits telemetry is unreliable and reads LOW/garbage.
+Report treasury, credits.threshold events, and the ledger "Balance" column all
+misreport (REFUEL rows show the txn amount as balance, not a running total;
+`player list` omits credits; `player info` is denied). Reconstruct real balance
+by hand: take the last CONTRACT_* running balance as an anchor and sum
+subsequent transaction AMOUNTS. Never act on a treasury alarm without this
+check — extends L20 (saw 0 vs 176,547; now -216 vs ~175,251). UPDATE s6: the
+Balance column and credits.threshold event now BOTH read the true balance
+(175,251) — the bug appears FIXED. Trust it, but sanity-check against the ledger
+anchor once more before fully relying on it.
+L29 [d-8] — A `heartbeat_lost` event on a slow solar scout (speed 9, long
+transit legs) is usually transient, not a zombie. Verify with two `ship info`
+reads: if position advanced and container restart_count is 0 / status RUNNING,
+it's just a transit leg exceeding the heartbeat window — leave it (its infinite
+tour doubles as market-data refresh). Only stop it if position is frozen.
+L30 [d-9] — A daemon socket hang (`context deadline exceeded` on health/ship/
+container/workflow) can happen SPONTANEOUSLY, not just from concurrent launches
+(L22/L25), and may NOT self-recover within a session (s6: >5min, 16 probes, no
+recovery vs s2's ~2min). Diagnose scope fast with ONE `ledger list` (DB/Postgres
+path, L19): if it answers, the socket subsystem is hung but the daemon isn't
+dead. There is no Captain-side restart and loops/sleep/Monitor are all denied in
+dontAsk mode, so hand-probing health is unbounded token burn — after ~3-4 probes
+confirm the hang, record the incident (d-9), mark socket actuation degraded, and
+end the session; the daemon recovers between sessions. Escalate to reports/bugs/
+if the socket is still hung at the next session's start (3rd signature hit).
+UPDATE s7: it WAS still hung at s7 start (3rd hit) — ESCALATED to
+`reports/bugs/2026-07-02-daemon-socket-hang.md` (d-10). It is now a filed,
+recurring bug, not a fluke; treat future hangs as known until the fix lands.
+UPDATE s8: STILL hung (4th hit); the bug report is STILL status:new — a filed
+`kind: fix` report does NOT self-resolve on the Captain's timescale. Once a hang
+is filed, do NOT re-diagnose or re-probe beyond the ONE socket + ONE DB probe
+needed to confirm scope; append the occurrence, defer, end. Burning probes on a
+known-open blocker is pure token waste. CORRECTION s9 (operator addendum): the
+s6/s7/s8 "hangs" were NOT a daemon code bug — a manual daemon restart raced the
+old process's graceful-drain PID lock, so NO daemon ran ~22:55–23:16Z. Only s2
+(concurrent-launch) is real socket-hang evidence. Takeaway: a total, multi-session
+actuation blackout can be an out-of-band ops event (no daemon running), not the
+filed bug — don't over-escalate a recurring blackout as a code defect.
+L32 [d-12,d-13] — The daemon's `ship info` cargo can be a PHANTOM: it showed
+TORWIND-1 holding 40/40 IRON_ORE while the game server's contract-deliver
+endpoint authoritatively reported 0 units (API 4219). The local `PURCHASE_CARGO`
+ledgered without the server actually adding cargo. RULE: on any cargo dispute,
+the SERVER (delivery/sell API error) is ground truth, not `ship info`. A workflow
+that fails on server-reported cargo=0 is DETERMINISTIC, not transient — do NOT
+retry it (I reproduced 4219 verbatim on re-launch). A committed `PURCHASE_CARGO`
+row also does NOT guarantee the goods exist server-side; it can desync local
+credits too. Extends L31 (ledger/success flags are not proof of real state).
+L33 [d-13] — `ship sell` can HARD-CRASH the CLI: nil-pointer SIGSEGV in
+`APIMetricsCollector.RecordRateLimitWait` (api_metrics.go:134) on the
+rate-limit-wait branch. It is unusable as a recovery path until fixed. General
+rule: manual cargo-offload verbs are not guaranteed crash-safe; when a workflow
+strands cargo, a manual sell may segfault rather than rescue it — verify the verb
+works before relying on it mid-recovery.
+L31 [d-8,d-10] — A `workflow.finished` event with `success:true` is NOT proof
+the work completed. batch-contract e1871c14 emitted success:true yet the ledger
+showed no PURCHASE_CARGO / CONTRACT_FULFILLED (bought and delivered nothing) —
+the container was torn down by the socket hang mid-nav. ALWAYS cross-check a
+workflow outcome against the expected ledger rows before believing it. Pairs
+with L28 (ledger is the ground truth for financial state).
+L34 [d-14] — A PHANTOM cargo (L32) cannot be cleared by ANY Captain verb: the
+SpaceTraders API returns cargo ONLY on GET /my/ships (which the daemon serves
+from a stale cache); navigate/orbit/dock/refuel return nav+fuel only, so none of
+them overwrites the cargo cache. The phantom survived socket recovery, a workflow
+relaunch that saw server cargo=0, and a full session boundary. Only a daemon
+RESTART re-fetches true ship state. So on a confirmed phantom, do NOT run
+navigate/orbit/dock "to force a refresh" — it just moves the ship pointlessly.
+Defer the ship, keep the free assets running, and wait for the restart/fix.
+L35 [d-14] — Bug-report frontmatter status DOES advance — the fix pipeline reads
+`status:new` reports and writes back. Observed `2026-07-02-daemon-socket-hang.md`
+go new -> `gate_failed` (fix attempted, gate blocked) while newer reports stayed
+`new`. Read pipeline progress off the status: new = queued/unpicked, gate_failed =
+attempted-but-blocked, merged/fixed = landed. This resolves the s8 "can't tell if
+the pipeline moved" friction — check the report status each session instead of
+guessing. Note: pipeline ordering is NOT priority-aware (a lower-value report was
+worked while the critical phantom-cargo blocker sat `new`). UPDATE s11:
+`gate_failed` is NOT terminal — the socket-hang report reverted `gate_failed` ->
+`new` (re-queued), so a status is a snapshot, not a ratchet. Meanwhile the
+phantom-cargo blocker stayed `new` for a 3rd straight session while the pipeline
+re-touched the lower-value report — the not-priority-aware failure mode is real and
+persistent, not a one-off. Don't infer "no progress ever" from a report sitting at
+`new`; infer only "not landed yet." UPDATE s14: the phantom-cargo report finally
+went `new` -> **`awaiting_human`** — a NEW status meaning the pipeline PROPOSED a
+fix branch that is now gated behind the user's manual merge (propose-only mode,
+`captain.auto_merge:false`). Full status ladder observed: new (queued/unpicked) ->
+gate_failed (attempted, gate blocked, re-queuable) -> **awaiting_human (fix
+proposed, pending user merge)** -> merged/fixed (landed). `awaiting_human` is the
+Captain's cue that the blocker's fix EXISTS and the ball is in the user's court —
+surface it to the user (which fix, what it unblocks) rather than continuing to treat
+the blocker as unactioned.
+
+L36 [d-16] — A multi-session HOLD needs a falsifiable off-ramp. Without an
+observable answering "has any fix landed since I last looked," waiting is
+faith-based and can run unbounded. Use the bug-report status (L35) as that
+observable AND attach an explicit exit condition to every HOLD (e.g. "if the
+blocker is still `status:new` at the next meta-review, promote fix-pipeline
+priority-ordering to the top of the backlog"). A bounded HOLD beats an
+open-ended one.
+
+L37 [d-16,d-17] — The daemon ship-state cache desync (L32/L34) is NOT
+cargo-specific — it also corrupts POSITION: `ship info` read the scout at H64
+while the server said H65, crash-looping scout-tour with API 4204 "Ship is
+currently located at the destination." It is a whole-cache-consistency defect,
+not one phantom field. KEY DIFFERENCE: a POSITION desync IS Captain-recoverable
+(cargo is not, L34) — manually `ship navigate` to a THIRD waypoint (neither the
+stale-cached one nor the phantom "already-at" one); the API executes from the
+ship's TRUE position and the daemon re-reads/reconciles on arrival, then
+relaunch the tour. Navigating to the phantom destination re-triggers 4204;
+navigating to the stale position is a no-op — pick a third waypoint.
+
+L38 [meta-s15, backlog-P1] — VERIFIED the fix-pipeline gate fix (commit b4a465f
+"fix pipeline works in the monorepo and untrusted worktrees") earned its keep.
+Backlog P1 diagnosed the gate running `go build ./...` in the captain workspace
+(empty Go module) so every daemon fix `gate_failed` forever — the daemon source
+lives in the sibling `../gobot` repo. After b4a465f landed, the pipeline began
+PROPOSING fixes: phantom-cargo AND ship-sell-nil-panic both advanced
+new -> awaiting_human (gate passed, branch proposed, pending user merge), where
+pre-fix BOTH picked-up reports were stuck gate_failed. The KPI it promised
+("unblock the entire fix pipeline") moved: 0 -> 2 fixes reaching the human-merge
+gate. Caveat: the report file the s11 backlog claimed it promoted
+(2026-07-03-fix-pipeline-gate-empty-packages.md) was NEVER created — the fix
+shipped as a commit anyway, so a missing promotion file != un-shipped fix; verify
+shipped improvements against the git log, not the presence of a promotion report.
+The bottleneck has now moved DOWNSTREAM: fixes land in awaiting_human and wait on
+the user's manual merge (propose-only, captain.auto_merge:false).
