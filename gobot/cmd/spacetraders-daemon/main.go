@@ -35,6 +35,7 @@ import (
 	shipyardCmd "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/commands"
 	shipyardQuery "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/queries"
 	storageApp "github.com/andrescamacho/spacetraders-go/internal/application/storage"
+	systemQuery "github.com/andrescamacho/spacetraders-go/internal/application/system/queries"
 	tradingCmd "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/commands"
 	tradingServices "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/services"
 	mfgServices "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/services/manufacturing"
@@ -263,6 +264,18 @@ func run(cfg *config.Config) error {
 	refreshShipHandler := shipQuery.NewRefreshShipHandler(shipRepo, playerRepo)
 	if err := mediator.RegisterHandler[*shipQuery.RefreshShipQuery](med, refreshShipHandler); err != nil {
 		return fmt.Errorf("failed to register RefreshShip handler: %w", err)
+	}
+
+	// Waypoint discovery query handlers (graphService implements both the
+	// system-graph and single-waypoint provider interfaces).
+	listWaypointsHandler := systemQuery.NewListWaypointsHandler(graphService, playerRepo)
+	if err := mediator.RegisterHandler[*systemQuery.ListWaypointsQuery](med, listWaypointsHandler); err != nil {
+		return fmt.Errorf("failed to register ListWaypoints handler: %w", err)
+	}
+
+	getWaypointHandler := systemQuery.NewGetWaypointHandler(graphService, playerRepo)
+	if err := mediator.RegisterHandler[*systemQuery.GetWaypointQuery](med, getWaypointHandler); err != nil {
+		return fmt.Errorf("failed to register GetWaypoint handler: %w", err)
 	}
 
 	// Shipyard handlers

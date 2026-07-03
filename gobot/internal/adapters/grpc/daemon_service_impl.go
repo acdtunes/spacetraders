@@ -541,6 +541,60 @@ func (s *daemonServiceImpl) RefreshShip(ctx context.Context, req *pb.RefreshShip
 	}, nil
 }
 
+func (s *daemonServiceImpl) ListWaypoints(ctx context.Context, req *pb.ListWaypointsRequest) (*pb.ListWaypointsResponse, error) {
+	var playerID *int
+	if req.PlayerId != nil {
+		pid := FromProtobufPlayerID(*req.PlayerId)
+		playerID = &pid
+	}
+
+	agentSymbol := ""
+	if req.AgentSymbol != nil {
+		agentSymbol = *req.AgentSymbol
+	}
+
+	trait := ""
+	if req.Trait != nil {
+		trait = *req.Trait
+	}
+
+	waypointType := ""
+	if req.Type != nil {
+		waypointType = *req.Type
+	}
+
+	waypoints, err := s.daemon.ListWaypoints(ctx, req.SystemSymbol, trait, waypointType, playerID, agentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list waypoints: %w", err)
+	}
+
+	return &pb.ListWaypointsResponse{
+		Waypoints: waypoints,
+	}, nil
+}
+
+func (s *daemonServiceImpl) GetWaypoint(ctx context.Context, req *pb.GetWaypointRequest) (*pb.GetWaypointResponse, error) {
+	var playerID *int
+	if req.PlayerId != nil {
+		pid := FromProtobufPlayerID(*req.PlayerId)
+		playerID = &pid
+	}
+
+	agentSymbol := ""
+	if req.AgentSymbol != nil {
+		agentSymbol = *req.AgentSymbol
+	}
+
+	waypoint, err := s.daemon.GetWaypoint(ctx, req.WaypointSymbol, playerID, agentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get waypoint: %w", err)
+	}
+
+	return &pb.GetWaypointResponse{
+		Waypoint: waypoint,
+	}, nil
+}
+
 // GetShipyardListings retrieves available ships at a shipyard
 func (s *daemonServiceImpl) GetShipyardListings(ctx context.Context, req *pb.GetShipyardListingsRequest) (*pb.GetShipyardListingsResponse, error) {
 	// Resolve player ID from request

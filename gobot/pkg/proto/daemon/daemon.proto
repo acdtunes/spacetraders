@@ -61,6 +61,12 @@ service DaemonService {
   // RefreshShip forces a resync of a ship from the API, overwriting the cache
   rpc RefreshShip(RefreshShipRequest) returns (RefreshShipResponse);
 
+  // ListWaypoints lists the waypoints of a system from the daemon's waypoint cache
+  rpc ListWaypoints(ListWaypointsRequest) returns (ListWaypointsResponse);
+
+  // GetWaypoint returns the detail of a single waypoint
+  rpc GetWaypoint(GetWaypointRequest) returns (GetWaypointResponse);
+
   // PurchaseShip purchases a single ship from a shipyard
   rpc PurchaseShip(PurchaseShipRequest) returns (PurchaseShipResponse);
 
@@ -402,6 +408,41 @@ message RefreshShipRequest {
 
 message RefreshShipResponse {
   ShipDetail ship = 1;
+}
+
+// ListWaypointsRequest lists the waypoints of a system from the waypoint cache
+message ListWaypointsRequest {
+  string system_symbol = 1;
+  optional string trait = 2;         // Optional filter: only waypoints with this trait
+  optional string type = 3;          // Optional filter: only waypoints of this type
+  optional int32 player_id = 4;
+  optional string agent_symbol = 5;
+}
+
+message ListWaypointsResponse {
+  repeated WaypointDetail waypoints = 1;
+}
+
+// GetWaypointRequest retrieves a single waypoint's detail
+message GetWaypointRequest {
+  string waypoint_symbol = 1;
+  optional int32 player_id = 2;
+  optional string agent_symbol = 3;
+}
+
+message GetWaypointResponse {
+  WaypointDetail waypoint = 1;
+}
+
+message WaypointDetail {
+  string symbol = 1;
+  string system_symbol = 2;
+  string type = 3;
+  double x = 4;
+  double y = 5;
+  repeated string traits = 6;
+  repeated string orbitals = 7;
+  bool has_fuel = 8;
 }
 
 message ShipDetail {

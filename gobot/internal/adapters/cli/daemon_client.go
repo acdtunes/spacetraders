@@ -680,6 +680,40 @@ func (c *DaemonClient) RefreshShip(ctx context.Context, shipSymbol string, playe
 	return resp, nil
 }
 
+// ListWaypoints lists the waypoints of a system from the daemon's waypoint cache
+func (c *DaemonClient) ListWaypoints(ctx context.Context, systemSymbol string, trait, waypointType *string, playerID *int32, agentSymbol *string) (*pb.ListWaypointsResponse, error) {
+	req := &pb.ListWaypointsRequest{
+		SystemSymbol: systemSymbol,
+		Trait:        trait,
+		Type:         waypointType,
+		PlayerId:     playerID,
+		AgentSymbol:  agentSymbol,
+	}
+
+	resp, err := c.client.ListWaypoints(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("gRPC call failed: %w", err)
+	}
+
+	return resp, nil
+}
+
+// GetWaypoint gets the detail of a single waypoint
+func (c *DaemonClient) GetWaypoint(ctx context.Context, waypointSymbol string, playerID *int32, agentSymbol *string) (*pb.GetWaypointResponse, error) {
+	req := &pb.GetWaypointRequest{
+		WaypointSymbol: waypointSymbol,
+		PlayerId:       playerID,
+		AgentSymbol:    agentSymbol,
+	}
+
+	resp, err := c.client.GetWaypoint(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("gRPC call failed: %w", err)
+	}
+
+	return resp, nil
+}
+
 // GetShipyardListings gets shipyard listings at a waypoint
 func (c *DaemonClient) GetShipyardListings(ctx context.Context, systemSymbol, waypointSymbol string, playerID int) (*pb.GetShipyardListingsResponse, error) {
 	req := &pb.GetShipyardListingsRequest{

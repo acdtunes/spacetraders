@@ -6,6 +6,7 @@ import (
 
 	shipQuery "github.com/andrescamacho/spacetraders-go/internal/application/ship/queries"
 	shipyardQuery "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/queries"
+	systemQuery "github.com/andrescamacho/spacetraders-go/internal/application/system/queries"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	pb "github.com/andrescamacho/spacetraders-go/pkg/proto/daemon"
 )
@@ -147,6 +148,71 @@ func (s *DaemonServer) RefreshShip(ctx context.Context, shipSymbol string, playe
 	}
 
 	return shipDetail, nil
+}
+
+// waypointToDetail converts a domain waypoint into its proto representation.
+func waypointToDetail(wp *shared.Waypoint) *pb.WaypointDetail {
+	return &pb.WaypointDetail{
+		Symbol:       wp.Symbol,
+		SystemSymbol: wp.SystemSymbol,
+		Type:         wp.Type,
+		X:            wp.X,
+		Y:            wp.Y,
+		Traits:       wp.Traits,
+		Orbitals:     wp.Orbitals,
+		HasFuel:      wp.HasFuel,
+	}
+}
+
+// ListWaypoints returns the waypoints of a system from the daemon's waypoint
+// cache, syncing from the API when the cache is empty or stale.
+func (s *DaemonServer) ListWaypoints(ctx context.Context, systemSymbol, trait, waypointType string, playerID *int, agentSymbol string) ([]*pb.WaypointDetail, error) {
+	query := &systemQuery.ListWaypointsQuery{
+		SystemSymbol: systemSymbol,
+		Trait:        trait,
+		Type:         waypointType,
+		PlayerID:     playerID,
+		AgentSymbol:  agentSymbol,
+	}
+
+	response, err := s.mediator.Send(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list waypoints: %w", err)
+	}
+
+	listResp, ok := response.(*systemQuery.ListWaypointsResponse)
+	if !ok {
+		return nil, fmt.Errorf("unexpected response type")
+	}
+
+	waypoints := make([]*pb.WaypointDetail, 0, len(listResp.Waypoints))
+	for _, wp := range listResp.Waypoints {
+		waypoints = append(waypoints, waypointToDetail(wp))
+	}
+
+	return waypoints, nil
+}
+
+// GetWaypoint returns the detail of a single waypoint, auto-fetching from the
+// API when it is not cached.
+func (s *DaemonServer) GetWaypoint(ctx context.Context, waypointSymbol string, playerID *int, agentSymbol string) (*pb.WaypointDetail, error) {
+	query := &systemQuery.GetWaypointQuery{
+		WaypointSymbol: waypointSymbol,
+		PlayerID:       playerID,
+		AgentSymbol:    agentSymbol,
+	}
+
+	response, err := s.mediator.Send(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get waypoint: %w", err)
+	}
+
+	getResp, ok := response.(*systemQuery.GetWaypointResponse)
+	if !ok {
+		return nil, fmt.Errorf("unexpected response type")
+	}
+
+	return waypointToDetail(getResp.Waypoint), nil
 }
 
 // GetShipyardListings retrieves available ships at a shipyard
