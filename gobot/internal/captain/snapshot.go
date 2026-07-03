@@ -113,6 +113,14 @@ func ComposeSnapshot(ctx context.Context, db *gorm.DB, ws Workspace, playerID in
 	b.WriteString("\n## Recent log tail (state/captain-log.md)\n")
 	b.WriteString(ws.Tail("captain-log.md", logTailBytes) + "\n")
 
+	// Capability coverage: verbs the fleet owns but the captain has never run.
+	if verbs := UnexercisedVerbs(ws); len(verbs) > 0 {
+		b.WriteString("\n## Capability coverage — NEVER-EXERCISED verbs\n")
+		b.WriteString(strings.Join(verbs, ", ") + "\n")
+		b.WriteString("These are fleet capabilities you have never once invoked. An\n")
+		b.WriteString("unexplored capability is a standing liability (see obligations).\n")
+	}
+
 	// Admiral inbox: challenges from the human, cleared after the session.
 	if msg, err := os.ReadFile(ws.InboxPath()); err == nil && len(strings.TrimSpace(string(msg))) > 0 {
 		b.WriteString("\n## Message from the Admiral\n")
@@ -133,7 +141,13 @@ func ComposeSnapshot(ctx context.Context, db *gorm.DB, ws Workspace, playerID in
    expectation and review_after time.
 4. Append a dated entry to state/captain-log.md (decisions + rationale + friction: tags).
 5. Revise state/strategy.md if KPIs disagree with its targets; curate state/lessons.md.
-6. At heartbeat reviews (no pending events): identify the single BINDING
+6. FRONTIER DUTY: if the event queue is empty and no decisions are due,
+   spend this session on ONE never-exercised verb from the capability
+   coverage list: read its --help end to end, run its read-only or
+   --dry-run form, and record in the log what it could contribute to the
+   mission — with a decision (and expectation) if it warrants activation.
+   Knowing your ship is part of the job, not a leftover.
+7. At heartbeat reviews (no pending events): identify the single BINDING
    CONSTRAINT on credits/hour growth — capital, fleet capacity, market
    intelligence, tooling, or something else. State the evidence, then either
    record a decision that attacks the constraint or record why attacking it
