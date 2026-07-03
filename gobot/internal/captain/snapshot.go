@@ -123,6 +123,13 @@ func ComposeSnapshot(ctx context.Context, db *gorm.DB, ws Workspace, playerID in
    expectation and review_after time.
 4. Append a dated entry to state/captain-log.md (decisions + rationale + friction: tags).
 5. Revise state/strategy.md if KPIs disagree with its targets; curate state/lessons.md.
+6. At heartbeat reviews (no pending events): identify the single BINDING
+   CONSTRAINT on credits/hour growth — capital, fleet capacity, market
+   intelligence, tooling, or something else. State the evidence, then either
+   record a decision that attacks the constraint or record why attacking it
+   now is wrong. Busy fleets emit no events; constraints must be hunted, not
+   waited for. Your tools can tell you what your assets can do — read their
+   help before assuming your current usage is optimal.
 `)
 	return b.String(), nil
 }
