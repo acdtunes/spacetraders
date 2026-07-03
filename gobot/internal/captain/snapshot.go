@@ -133,7 +133,7 @@ func ComposeSnapshot(ctx context.Context, db *gorm.DB, ws Workspace, playerID in
 	// Session contract (details live in the workspace CLAUDE.md; this is the reminder)
 	b.WriteString(`
 ## Your obligations this session
-1. FIRST, before anything else: append a dated `## <date> (session N) — <headline>`
+1. FIRST, before anything else: append a dated "## <date> (session N) — headline"
    entry to state/captain-log.md. Write the headline and treasury/health line
    immediately, then fill the body as you work. This is the Admiral's window
    into your reasoning — a session with no log entry is invisible, and recent
