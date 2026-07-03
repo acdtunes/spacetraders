@@ -76,3 +76,18 @@ func runGit(t *testing.T, dir string, args ...string) {
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, "git %v: %s", args, out)
 }
+
+func TestBranchContainsMain(t *testing.T) {
+	repo := initScratchRepo(t)
+	wt, err := CreateWorktree(repo, "captain/fix-fresh")
+	require.NoError(t, err)
+	require.True(t, BranchContainsMain(repo, "captain/fix-fresh"), "fresh branch contains main")
+
+	// Advance main after the branch was cut: branch is now stale.
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "newer.go"), []byte("package main\n"), 0o644))
+	runGit(t, repo, "add", "-A")
+	runGit(t, repo, "commit", "-m", "main advances")
+	require.False(t, BranchContainsMain(repo, "captain/fix-fresh"),
+		"stale branch must be detected: squash-merging it would revert main's newer commits")
+	require.NoError(t, wt.Remove(repo))
+}

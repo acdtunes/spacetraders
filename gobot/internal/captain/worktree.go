@@ -102,3 +102,12 @@ func SquashMerge(repoDir, branch, message string) error {
 	_, err := gitRun(repoDir, "commit", "-m", message)
 	return err
 }
+
+// BranchContainsMain reports whether the branch is based on the current main
+// HEAD. A stale branch (main advanced after the worktree was cut) must never
+// be squash-merged: its diff vs main REVERTS every commit main gained since,
+// silently undoing shipped fixes (observed 2026-07-03).
+func BranchContainsMain(repoDir, branch string) bool {
+	_, err := gitRun(repoDir, "merge-base", "--is-ancestor", "main", branch)
+	return err == nil
+}

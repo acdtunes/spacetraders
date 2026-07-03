@@ -88,6 +88,14 @@ func (f *Fixer) ProcessOne(ctx context.Context, now time.Time) (bool, error) {
 		return true, err
 	}
 
+	// Provision gitignored build artifacts the gate needs (generated protos).
+	for _, sub := range []string{"gobot/pkg/proto/daemon", "gobot/pkg/proto/routing"} {
+		src := filepath.Join(f.cfg.RepoDir, sub)
+		if _, err := os.Stat(src); err == nil {
+			_ = exec.Command("cp", "-r", src, filepath.Join(wt.Dir, filepath.Dir(sub))+"/").Run()
+		}
+	}
+
 	body, _ := os.ReadFile(target.Path)
 	moduleDir := gateDir(wt.Dir)
 	runner := f.factory(moduleDir)
@@ -118,6 +126,14 @@ func (f *Fixer) ProcessOne(ctx context.Context, now time.Time) (bool, error) {
 				target.Slug, lines, f.cfg.MaxFeatureDiffLines)
 			return true, nil
 		}
+	}
+
+	if !BranchContainsMain(f.cfg.RepoDir, branch) {
+		_ = SetReportStatus(target.Path, "awaiting_human")
+		_ = gitCleanWorktreeOnly(f.cfg.RepoDir, wt)
+		fmt.Printf("captain fixer: %s passed gate but base is STALE (main advanced); branch %s needs rebase + human review\n",
+			target.Slug, branch)
+		return true, nil
 	}
 
 	if !f.cfg.AutoMerge {

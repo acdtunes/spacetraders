@@ -68,7 +68,12 @@ func (r *ClaudeRunner) Run(ctx context.Context, prompt string) error {
 		if strings.Contains(combined, "usage limit") || strings.Contains(combined, "rate limit") {
 			return fmt.Errorf("%w: %s", ErrUsageLimit, strings.TrimSpace(errBuf.String()))
 		}
-		return fmt.Errorf("claude session failed: %w (stderr: %s)", err, strings.TrimSpace(errBuf.String()))
+		stdoutTail := out.String()
+		if len(stdoutTail) > 800 {
+			stdoutTail = stdoutTail[len(stdoutTail)-800:]
+		}
+		return fmt.Errorf("claude session failed: %w (stderr: %s) (stdout tail: %s)",
+			err, strings.TrimSpace(errBuf.String()), strings.TrimSpace(stdoutTail))
 	}
 	return nil
 }
