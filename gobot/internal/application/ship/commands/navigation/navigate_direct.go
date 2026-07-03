@@ -3,6 +3,7 @@ package navigation
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/application/ship/types"
@@ -61,6 +62,15 @@ func (h *NavigateDirectHandler) Handle(ctx context.Context, request common.Reque
 
 	navResult, err := h.shipRepo.Navigate(ctx, ship, destination, cmd.PlayerID)
 	if err != nil {
+		// The server reports error 4204 ("ship is currently located at the
+		// destination") when the daemon's cached position lags the game server
+		// by one waypoint. The navigate is effectively a no-op - the ship IS
+		// already at the destination - so treat it as success, reconcile the
+		// stale cache from authoritative server state, and let the tour continue
+		// instead of crash-looping on the phantom hop.
+		if isAlreadyAtDestinationError(err) {
+			return h.reconcileAtDestination(ctx, cmd, ship), nil
+		}
 		return nil, fmt.Errorf("failed to navigate: %w", err)
 	}
 
@@ -86,6 +96,32 @@ func (h *NavigateDirectHandler) loadShip(ctx context.Context, cmd *types.Navigat
 		return nil, fmt.Errorf("ship not found: %w", err)
 	}
 	return ship, nil
+}
+
+// reconcileAtDestination handles a server-reported "already at destination"
+// (API 4204). It refreshes ship state from GET /my/ships so the position cache
+// stops lagging the server, then reports the navigate as a no-op success.
+func (h *NavigateDirectHandler) reconcileAtDestination(ctx context.Context, cmd *types.NavigateDirectCommand, ship *navigation.Ship) *types.NavigateDirectResponse {
+	// Best-effort reconcile: if the refresh fails, still report success so the
+	// tour continues; the next arrival will re-sync the cache anyway.
+	if fresh, err := h.shipRepo.SyncShipFromAPI(ctx, ship.ShipSymbol(), cmd.PlayerID); err == nil && fresh != nil {
+		*ship = *fresh
+	}
+	return &types.NavigateDirectResponse{
+		Status:       "already_at_destination",
+		FuelCurrent:  ship.Fuel().Current,
+		FuelCapacity: ship.Fuel().Capacity,
+	}
+}
+
+// isAlreadyAtDestinationError reports whether the API rejected a navigate
+// because the ship is already located at the requested waypoint (error 4204).
+func isAlreadyAtDestinationError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "4204") || strings.Contains(msg, "located at the destination")
 }
 
 func (h *NavigateDirectHandler) loadDestinationWaypoint(ctx context.Context, cmd *types.NavigateDirectCommand) (*shared.Waypoint, error) {
