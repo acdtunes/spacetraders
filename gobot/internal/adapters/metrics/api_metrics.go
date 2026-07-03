@@ -107,6 +107,10 @@ func (c *APIMetricsCollector) RecordAPIRequest(
 	statusCode int,
 	duration float64,
 ) {
+	if c == nil || c.apiRequestsTotal == nil || c.apiRequestDuration == nil {
+		return // Recording is best-effort; never panic the request path.
+	}
+
 	statusCodeStr := strconv.Itoa(statusCode)
 
 	// Increment request counter
@@ -122,6 +126,10 @@ func (c *APIMetricsCollector) RecordAPIRetry(
 	endpoint string,
 	reason string,
 ) {
+	if c == nil || c.apiRetries == nil {
+		return // Recording is best-effort; never panic the request path.
+	}
+
 	c.apiRetries.WithLabelValues(method, endpoint, reason).Inc()
 }
 
@@ -131,10 +139,18 @@ func (c *APIMetricsCollector) RecordRateLimitWait(
 	endpoint string,
 	duration float64,
 ) {
+	if c == nil || c.apiRateLimitWait == nil {
+		return // Recording is best-effort; never panic the request path.
+	}
+
 	c.apiRateLimitWait.WithLabelValues(method, endpoint).Observe(duration)
 }
 
 // SetRateLimiterTokens updates the rate limiter tokens available gauge
 func (c *APIMetricsCollector) SetRateLimiterTokens(tokens float64) {
+	if c == nil || c.apiRateLimiterTokens == nil {
+		return // Recording is best-effort; never panic the request path.
+	}
+
 	c.apiRateLimiterTokens.Set(tokens)
 }
