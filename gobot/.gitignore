@@ -58,8 +58,9 @@ Thumbs.db
 /logs/
 
 # Generated protobuf files
-*.pb.go
-*_grpc.pb.go
+# *.pb.go — generated protobuf stubs ARE tracked: gitignoring them let
+# auto-merged .proto changes pass the gate (regenerated in-worktree) then
+# break main (stale stubs). Committing them keeps gate == main.
 
 # Unix socket
 *.sock
