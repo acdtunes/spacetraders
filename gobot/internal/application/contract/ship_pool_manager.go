@@ -123,6 +123,14 @@ func FindIdleLightHaulers(
 			continue
 		}
 
+		// Filter 3.5: Exclude reserved ships. A reserved hauler is held out of the
+		// auto-claim pool by an operator (e.g. dedicated to the jump-gate or
+		// manufacturing stream), so no coordinator should discover it — not even
+		// to count it as an existing hauler for fallback purposes.
+		if ship.IsReserved() {
+			continue
+		}
+
 		// At this point we know at least one hauler exists
 		// This is used to prevent fallback when haulers exist but are busy
 		haulerShipsExist = true
@@ -157,6 +165,11 @@ func FindIdleLightHaulers(
 		for _, ship := range allShips {
 			// Only consider command ship as fallback
 			if !isCommandShip(ship.ShipSymbol()) {
+				continue
+			}
+
+			// Skip reserved ships even in fallback
+			if ship.IsReserved() {
 				continue
 			}
 

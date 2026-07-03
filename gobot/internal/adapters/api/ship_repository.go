@@ -647,6 +647,10 @@ func (r *ShipRepository) shipToModel(ship *navigation.Ship) persistence.ShipMode
 	model.FlightMode = ship.FlightMode()
 	model.ArrivalTime = ship.ArrivalTime()
 
+	// Reservation state (held out of coordinator auto-claim pools)
+	model.Reserved = ship.IsReserved()
+	model.ReservationReason = ship.ReservationReason()
+
 	// Location
 	if ship.CurrentLocation() != nil {
 		model.LocationSymbol = ship.CurrentLocation().Symbol
@@ -1017,6 +1021,8 @@ func (r *ShipRepository) modelToDomain(ctx context.Context, model *persistence.S
 		model.FlightMode,
 		model.ArrivalTime,
 		model.CooldownExpiration,
+		model.Reserved,
+		model.ReservationReason,
 		assignment,
 	)
 }

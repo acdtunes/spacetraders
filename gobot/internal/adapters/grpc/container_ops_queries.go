@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	shipReservation "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/reservation"
 	shipQuery "github.com/andrescamacho/spacetraders-go/internal/application/ship/queries"
 	shipyardQuery "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/queries"
 	systemQuery "github.com/andrescamacho/spacetraders-go/internal/application/system/queries"
@@ -148,6 +149,30 @@ func (s *DaemonServer) RefreshShip(ctx context.Context, shipSymbol string, playe
 	}
 
 	return shipDetail, nil
+}
+
+// SetShipReservation reserves (or clears the reservation on) a ship so that
+// coordinators exclude it from their auto-claimed idle-hauler pools.
+func (s *DaemonServer) SetShipReservation(ctx context.Context, shipSymbol string, reserved bool, reason string, playerID *int, agentSymbol string) (string, bool, string, error) {
+	cmd := &shipReservation.SetShipReservationCommand{
+		ShipSymbol:  shipSymbol,
+		Reserved:    reserved,
+		Reason:      reason,
+		PlayerID:    playerID,
+		AgentSymbol: agentSymbol,
+	}
+
+	response, err := s.mediator.Send(ctx, cmd)
+	if err != nil {
+		return "", false, "", fmt.Errorf("failed to set ship reservation: %w", err)
+	}
+
+	resp, ok := response.(*shipReservation.SetShipReservationResponse)
+	if !ok {
+		return "", false, "", fmt.Errorf("unexpected response type")
+	}
+
+	return resp.ShipSymbol, resp.Reserved, resp.Reason, nil
 }
 
 // waypointToDetail converts a domain waypoint into its proto representation.

@@ -112,6 +112,10 @@ type ShipModel struct {
 	// Cooldown
 	CooldownExpiration *time.Time `gorm:"column:cooldown_expiration"`
 
+	// Reservation (held out of coordinator auto-claim idle-hauler pools)
+	Reserved          bool   `gorm:"column:reserved;default:false"`
+	ReservationReason string `gorm:"column:reservation_reason"`
+
 	// Assignment (existing)
 	ContainerID      *string         `gorm:"column:container_id"` // Pointer to support NULL for idle ships
 	Container        *ContainerModel `gorm:"foreignKey:ContainerID,PlayerID;references:ID,PlayerID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL;"`

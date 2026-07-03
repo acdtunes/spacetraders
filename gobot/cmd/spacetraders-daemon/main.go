@@ -29,6 +29,7 @@ import (
 	ship "github.com/andrescamacho/spacetraders-go/internal/application/ship"
 	shipCargo "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/cargo"
 	shipNav "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
+	shipReservation "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/reservation"
 	shipTactics "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/tactics"
 	shipTypes "github.com/andrescamacho/spacetraders-go/internal/application/ship/types"
 	shipQuery "github.com/andrescamacho/spacetraders-go/internal/application/ship/queries"
@@ -264,6 +265,11 @@ func run(cfg *config.Config) error {
 	refreshShipHandler := shipQuery.NewRefreshShipHandler(shipRepo, playerRepo)
 	if err := mediator.RegisterHandler[*shipQuery.RefreshShipQuery](med, refreshShipHandler); err != nil {
 		return fmt.Errorf("failed to register RefreshShip handler: %w", err)
+	}
+
+	setShipReservationHandler := shipReservation.NewSetShipReservationHandler(shipRepo, playerRepo)
+	if err := mediator.RegisterHandler[*shipReservation.SetShipReservationCommand](med, setShipReservationHandler); err != nil {
+		return fmt.Errorf("failed to register SetShipReservation handler: %w", err)
 	}
 
 	// Waypoint discovery query handlers (graphService implements both the
