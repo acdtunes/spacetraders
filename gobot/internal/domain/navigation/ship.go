@@ -70,12 +70,6 @@ type Ship struct {
 	flightMode         string     // Current flight mode (CRUISE, DRIFT, BURN, STEALTH)
 	arrivalTime        *time.Time // When IN_TRANSIT ship will arrive
 	cooldownExpiration *time.Time // When cooldown expires (mining, surveying, etc.)
-
-	// Reservation state: when reserved, coordinators must not auto-claim this
-	// ship for their dynamically-discovered idle-hauler pool. This lets an
-	// operator hold a hauler out for a dedicated stream (gate/manufacturing).
-	reserved          bool
-	reservationReason string // Optional human-readable reason for the reservation
 }
 
 // NewShip creates a new Ship entity with validation
@@ -632,30 +626,6 @@ func (s *Ship) ClearCooldown() {
 	s.cooldownExpiration = nil
 }
 
-// IsReserved reports whether the ship is held out of coordinators' auto-claim
-// idle-hauler pools.
-func (s *Ship) IsReserved() bool {
-	return s.reserved
-}
-
-// ReservationReason returns the optional reason recorded when the ship was reserved.
-func (s *Ship) ReservationReason() string {
-	return s.reservationReason
-}
-
-// Reserve marks the ship as reserved so coordinators skip it during idle-hauler
-// discovery. The reason is optional and purely informational.
-func (s *Ship) Reserve(reason string) {
-	s.reserved = true
-	s.reservationReason = reason
-}
-
-// ClearReservation clears the reservation, returning the ship to the auto-claim pool.
-func (s *Ship) ClearReservation() {
-	s.reserved = false
-	s.reservationReason = ""
-}
-
 // SetCargo updates the ship's cargo (used by repository for reconstruction)
 func (s *Ship) SetCargo(c *shared.Cargo) {
 	s.cargo = c
@@ -794,8 +764,6 @@ func ReconstructShip(
 	flightMode string,
 	arrivalTime *time.Time,
 	cooldownExpiration *time.Time,
-	reserved bool,
-	reservationReason string,
 	assignment *ShipAssignment,
 ) (*Ship, error) {
 	s := &Ship{
@@ -814,8 +782,6 @@ func ReconstructShip(
 		flightMode:         flightMode,
 		arrivalTime:        arrivalTime,
 		cooldownExpiration: cooldownExpiration,
-		reserved:           reserved,
-		reservationReason:  reservationReason,
 		assignment:         assignment,
 		fuelService:        NewShipFuelService(),
 		navigationCalc:     NewShipNavigationCalculator(),

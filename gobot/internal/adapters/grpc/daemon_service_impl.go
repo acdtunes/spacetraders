@@ -541,36 +541,6 @@ func (s *daemonServiceImpl) RefreshShip(ctx context.Context, req *pb.RefreshShip
 	}, nil
 }
 
-func (s *daemonServiceImpl) SetShipReservation(ctx context.Context, req *pb.SetShipReservationRequest) (*pb.SetShipReservationResponse, error) {
-	// Convert player ID from proto
-	var playerID *int
-	if req.PlayerId != nil {
-		pid := FromProtobufPlayerID(*req.PlayerId)
-		playerID = &pid
-	}
-
-	agentSymbol := ""
-	if req.AgentSymbol != nil {
-		agentSymbol = *req.AgentSymbol
-	}
-
-	reason := ""
-	if req.Reason != nil {
-		reason = *req.Reason
-	}
-
-	shipSymbol, reserved, appliedReason, err := s.daemon.SetShipReservation(ctx, req.ShipSymbol, req.Reserved, reason, playerID, agentSymbol)
-	if err != nil {
-		return nil, fmt.Errorf("failed to set ship reservation: %w", err)
-	}
-
-	return &pb.SetShipReservationResponse{
-		ShipSymbol: shipSymbol,
-		Reserved:   reserved,
-		Reason:     appliedReason,
-	}, nil
-}
-
 func (s *daemonServiceImpl) ListWaypoints(ctx context.Context, req *pb.ListWaypointsRequest) (*pb.ListWaypointsResponse, error) {
 	var playerID *int
 	if req.PlayerId != nil {

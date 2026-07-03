@@ -680,25 +680,6 @@ func (c *DaemonClient) RefreshShip(ctx context.Context, shipSymbol string, playe
 	return resp, nil
 }
 
-// SetShipReservation reserves (or clears the reservation on) a ship so coordinators
-// exclude it from their auto-claimed idle-hauler pools
-func (c *DaemonClient) SetShipReservation(ctx context.Context, shipSymbol string, reserved bool, reason *string, playerID *int32, agentSymbol *string) (*pb.SetShipReservationResponse, error) {
-	req := &pb.SetShipReservationRequest{
-		ShipSymbol:  shipSymbol,
-		Reserved:    reserved,
-		Reason:      reason,
-		PlayerId:    playerID,
-		AgentSymbol: agentSymbol,
-	}
-
-	resp, err := c.client.SetShipReservation(ctx, req)
-	if err != nil {
-		return nil, fmt.Errorf("gRPC call failed: %w", err)
-	}
-
-	return resp, nil
-}
-
 // ListWaypoints lists the waypoints of a system from the daemon's waypoint cache
 func (c *DaemonClient) ListWaypoints(ctx context.Context, systemSymbol string, trait, waypointType *string, playerID *int32, agentSymbol *string) (*pb.ListWaypointsResponse, error) {
 	req := &pb.ListWaypointsRequest{

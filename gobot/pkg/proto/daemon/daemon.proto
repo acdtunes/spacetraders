@@ -61,10 +61,6 @@ service DaemonService {
   // RefreshShip forces a resync of a ship from the API, overwriting the cache
   rpc RefreshShip(RefreshShipRequest) returns (RefreshShipResponse);
 
-  // SetShipReservation reserves (or clears the reservation on) a ship so that
-  // coordinators exclude it from their auto-claimed idle-hauler pools
-  rpc SetShipReservation(SetShipReservationRequest) returns (SetShipReservationResponse);
-
   // ListWaypoints lists the waypoints of a system from the daemon's waypoint cache
   rpc ListWaypoints(ListWaypointsRequest) returns (ListWaypointsResponse);
 
@@ -412,21 +408,6 @@ message RefreshShipRequest {
 
 message RefreshShipResponse {
   ShipDetail ship = 1;
-}
-
-// SetShipReservationRequest reserves or clears the reservation on a ship
-message SetShipReservationRequest {
-  string ship_symbol = 1;
-  bool reserved = 2;                 // true to reserve, false to clear
-  optional string reason = 3;        // optional informational reason
-  optional int32 player_id = 4;
-  optional string agent_symbol = 5;
-}
-
-message SetShipReservationResponse {
-  string ship_symbol = 1;
-  bool reserved = 2;
-  string reason = 3;
 }
 
 // ListWaypointsRequest lists the waypoints of a system from the waypoint cache
