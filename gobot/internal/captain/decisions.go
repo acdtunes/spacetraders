@@ -47,8 +47,20 @@ func ReadDecisions(path string) ([]Decision, error) {
 
 // DueForReview: review_after has passed and no outcome recorded yet.
 func DueForReview(ds []Decision, now time.Time) []Decision {
-	var due []Decision
+	// Closures are APPENDED lines reusing the id (the ledger is append-only),
+	// so the last line per id is the decision's current state — earlier
+	// null-outcome lines must not resurrect closed decisions in every prompt.
+	latest := make(map[string]Decision, len(ds))
+	order := make([]string, 0, len(ds))
 	for _, d := range ds {
+		if _, seen := latest[d.ID]; !seen {
+			order = append(order, d.ID)
+		}
+		latest[d.ID] = d
+	}
+	var due []Decision
+	for _, id := range order {
+		d := latest[id]
 		if d.Outcome == nil && !d.ReviewAfter.IsZero() && d.ReviewAfter.Before(now) {
 			due = append(due, d)
 		}

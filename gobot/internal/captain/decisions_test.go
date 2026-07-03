@@ -34,3 +34,21 @@ func TestReadDecisionsMissingFileIsEmpty(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, ds)
 }
+
+func TestDueForReviewHonorsAppendedClosures(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "decisions.jsonl")
+	// Contract: closures are APPENDED lines reusing the id. The original
+	// null-outcome line must not keep the decision due forever.
+	lines := `{"id":"d-1","action":"open then closed","expectation":"x","review_after":"2020-01-01T00:00:00Z"}
+{"id":"d-1","action":"close d-1","expectation":"x","review_after":"2020-01-01T00:00:00Z","outcome":"worked"}
+{"id":"d-2","action":"still open","expectation":"x","review_after":"2020-01-01T00:00:00Z"}
+`
+	require.NoError(t, os.WriteFile(path, []byte(lines), 0o644))
+	ds, err := ReadDecisions(path)
+	require.NoError(t, err)
+
+	due := DueForReview(ds, time.Date(2026, 7, 3, 0, 0, 0, 0, time.UTC))
+	require.Len(t, due, 1, "closed d-1 re-listed: only d-2 is genuinely due")
+	require.Equal(t, "d-2", due[0].ID)
+}
