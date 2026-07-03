@@ -158,3 +158,27 @@ func TestTickPrefersStrategyOverMetaReview(t *testing.T) {
 	require.Contains(t, runner.prompts[0], "Fleet situation report",
 		"events outrank the meta-review")
 }
+
+func TestTickBacksOffAfterUsageLimit(t *testing.T) {
+	runner := &stubRunner{err: ErrUsageLimit}
+	sup, s := newTestSupervisor(t, runner)
+	require.NoError(t, MarkMetaReviewDone(sup.ws, time.Now()))
+	require.NoError(t, s.store.Record(context.Background(),
+		&captain.Event{Type: captain.EventShipIdle, Ship: "S", PlayerID: s.playerID}))
+
+	now := time.Now()
+	ran, err := sup.Tick(context.Background(), now)
+	require.True(t, ran)
+	require.ErrorIs(t, err, ErrUsageLimit)
+
+	// Within the backoff window: no session attempts at all.
+	runner.err = nil
+	ran, err = sup.Tick(context.Background(), now.Add(5*time.Minute))
+	require.NoError(t, err)
+	require.False(t, ran, "must not hammer a closed quota window")
+
+	// After the window: normal operation resumes.
+	ran, err = sup.Tick(context.Background(), now.Add(21*time.Minute))
+	require.NoError(t, err)
+	require.True(t, ran)
+}

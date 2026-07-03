@@ -65,7 +65,8 @@ func (r *ClaudeRunner) Run(ctx context.Context, prompt string) error {
 	err := cmd.Run()
 	if err != nil {
 		combined := strings.ToLower(out.String() + " " + errBuf.String())
-		if strings.Contains(combined, "usage limit") || strings.Contains(combined, "rate limit") {
+		if strings.Contains(combined, "usage limit") || strings.Contains(combined, "rate limit") ||
+			strings.Contains(combined, "session limit") || strings.Contains(combined, "hit your") {
 			return fmt.Errorf("%w: %s", ErrUsageLimit, strings.TrimSpace(errBuf.String()))
 		}
 		stdoutTail := out.String()

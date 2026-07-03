@@ -1,6 +1,7 @@
 package captainsup
 
 import (
+	"errors"
 	"os"
 	"context"
 	"fmt"
@@ -23,9 +24,10 @@ type Supervisor struct {
 	ws     Workspace
 	cfg    config.CaptainConfig
 
-	lastSession   time.Time
-	lastCredits   int
-	sessionStarts []time.Time
+	lastSession      time.Time
+	lastCredits      int
+	sessionStarts    []time.Time
+	limitBackoffTill time.Time
 
 	fixer *Fixer // optional; nil in phase 1-2 deployments
 }
@@ -42,6 +44,9 @@ func NewSupervisor(db *gorm.DB, store captain.EventStore, runner SessionRunner, 
 func (s *Supervisor) Tick(ctx context.Context, now time.Time) (bool, error) {
 	if s.ws.Disabled() {
 		return false, nil
+	}
+	if now.Before(s.limitBackoffTill) {
+		return false, nil // quota window exhausted; events queue durably
 	}
 
 	// Synthetic events (state-derived): stale heartbeats, idle ships, credit crossings.
@@ -82,7 +87,13 @@ func (s *Supervisor) Tick(ctx context.Context, now time.Time) (bool, error) {
 	s.lastSession = now
 	fmt.Printf("captain: starting session (%d events, heartbeatDue=%v)\n", len(events), heartbeatDue)
 	if err := s.runner.Run(ctx, prompt); err != nil {
-		// Events stay unprocessed → retried next tick. Usage limit is normal.
+		// Events stay unprocessed → retried later. Usage limit is a normal
+		// state: back off instead of hammering a closed window every tick.
+		if errors.Is(err, ErrUsageLimit) {
+			s.limitBackoffTill = now.Add(20 * time.Minute)
+			fmt.Printf("captain: usage limit hit, backing off until %s\n",
+				s.limitBackoffTill.Format("15:04:05"))
+		}
 		return true, err
 	}
 
