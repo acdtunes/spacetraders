@@ -141,12 +141,14 @@ func ComposeSnapshot(ctx context.Context, db *gorm.DB, ws Workspace, playerID in
    expectation and review_after time.
 4. Append a dated entry to state/captain-log.md (decisions + rationale + friction: tags).
 5. Revise state/strategy.md if KPIs disagree with its targets; curate state/lessons.md.
-6. FRONTIER DUTY: if the event queue is empty and no decisions are due,
-   spend this session on ONE never-exercised verb from the capability
-   coverage list: read its --help end to end, run its read-only or
-   --dry-run form, and record in the log what it could contribute to the
-   mission — with a decision (and expectation) if it warrants activation.
-   Knowing your ship is part of the job, not a leftover.
+6. STRATEGY DUTY — EVERY SESSION, NOT JUST QUIET ONES: events are triage,
+   the mission is the job. After handling events, you MUST advance the top
+   strategic priority with a CONCRETE step this session: standing Admiral
+   directives first, then your Horizon plan, then never-exercised
+   capability study (--help end to end + a read-only/--dry-run execution).
+   "Deferred until idle" is forbidden — a healthy fleet is never idle, so
+   idle-gated strategy is starvation. If you truly cannot act, record
+   exactly what blocks you as a decision with a review time.
 7. At heartbeat reviews (no pending events): identify the single BINDING
    CONSTRAINT on credits/hour growth — capital, fleet capacity, market
    intelligence, tooling, or something else. State the evidence, then either
