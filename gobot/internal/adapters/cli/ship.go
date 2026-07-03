@@ -43,6 +43,7 @@ Examples:
 	// Add subcommands
 	cmd.AddCommand(newShipListCommand())
 	cmd.AddCommand(newShipInfoCommand())
+	cmd.AddCommand(newShipRefreshCommand())
 	cmd.AddCommand(newShipNavigateCommand())
 	cmd.AddCommand(newShipDockCommand())
 	cmd.AddCommand(newShipOrbitCommand())
@@ -195,6 +196,88 @@ Examples:
 			fmt.Printf("Engine Speed:   %d\n", s.EngineSpeed)
 
 			// Show cargo contents if any
+			if s.CargoUnits > 0 {
+				fmt.Printf("\nCargo Contents:\n")
+				for _, item := range s.CargoInventory {
+					fmt.Printf("  - %s: %d units (%s)\n", item.Name, item.Units, item.Symbol)
+				}
+			}
+
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&shipSymbol, "ship", "", "Ship symbol (required)")
+
+	return cmd
+}
+
+// newShipRefreshCommand creates the ship refresh subcommand
+func newShipRefreshCommand() *cobra.Command {
+	var shipSymbol string
+
+	cmd := &cobra.Command{
+		Use:   "refresh",
+		Short: "Force-resync a ship's cached state from the server",
+		Long: `Force a fresh GET /my/ships/<symbol> against the SpaceTraders API and
+overwrite the daemon's local cargo + nav cache with the server response.
+
+Use this to reconcile a desynced ship cache (e.g. phantom cargo or a stale
+position) without restarting the daemon and without moving the ship. The
+reconciled state is printed on success.
+
+Examples:
+  spacetraders ship refresh --ship ENDURANCE-1 --player-id 1
+  spacetraders ship refresh --ship ENDURANCE-1 --agent ENDURANCE`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if shipSymbol == "" {
+				return fmt.Errorf("--ship flag is required")
+			}
+
+			// Get daemon client
+			client, err := NewDaemonClient(socketPath)
+			if err != nil {
+				return fmt.Errorf("failed to connect to daemon: %w", err)
+			}
+			defer client.Close()
+
+			// Resolve player from flags or defaults
+			playerIdent, err := resolvePlayerIdentifier()
+			if err != nil {
+				return err
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			var playerID *int32
+			if playerIdent.PlayerID > 0 {
+				pid := int32(playerIdent.PlayerID)
+				playerID = &pid
+			}
+
+			var agentSymbol *string
+			if playerIdent.AgentSymbol != "" {
+				agentSymbol = &playerIdent.AgentSymbol
+			}
+
+			response, err := client.RefreshShip(ctx, shipSymbol, playerID, agentSymbol)
+			if err != nil {
+				return fmt.Errorf("failed to refresh ship: %w", err)
+			}
+
+			s := response.Ship
+
+			fmt.Printf("✓ Ship state reconciled from server\n")
+			fmt.Printf("================================\n\n")
+			fmt.Printf("Ship Symbol:    %s\n", s.Symbol)
+			fmt.Printf("Role:           %s\n", s.Role)
+			fmt.Printf("Location:       %s\n", s.Location)
+			fmt.Printf("Nav Status:     %s\n", s.NavStatus)
+			fmt.Printf("Fuel:           %d / %d\n", s.FuelCurrent, s.FuelCapacity)
+			fmt.Printf("Cargo:          %d / %d units\n", s.CargoUnits, s.CargoCapacity)
+			fmt.Printf("Engine Speed:   %d\n", s.EngineSpeed)
+
 			if s.CargoUnits > 0 {
 				fmt.Printf("\nCargo Contents:\n")
 				for _, item := range s.CargoInventory {

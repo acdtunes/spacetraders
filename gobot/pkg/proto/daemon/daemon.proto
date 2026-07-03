@@ -58,6 +58,9 @@ service DaemonService {
   // GetShip returns detailed information about a specific ship
   rpc GetShip(GetShipRequest) returns (GetShipResponse);
 
+  // RefreshShip forces a resync of a ship from the API, overwriting the cache
+  rpc RefreshShip(RefreshShipRequest) returns (RefreshShipResponse);
+
   // PurchaseShip purchases a single ship from a shipyard
   rpc PurchaseShip(PurchaseShipRequest) returns (PurchaseShipResponse);
 
@@ -387,6 +390,17 @@ message GetShipRequest {
 }
 
 message GetShipResponse {
+  ShipDetail ship = 1;
+}
+
+// RefreshShipRequest forces a resync of a ship from the API
+message RefreshShipRequest {
+  string ship_symbol = 1;
+  optional int32 player_id = 2;
+  optional string agent_symbol = 3;
+}
+
+message RefreshShipResponse {
   ShipDetail ship = 1;
 }
 

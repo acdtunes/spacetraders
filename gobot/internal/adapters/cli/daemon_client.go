@@ -664,6 +664,22 @@ func (c *DaemonClient) GetShip(ctx context.Context, shipSymbol string, playerID 
 	return resp, nil
 }
 
+// RefreshShip forces a resync of a ship from the API, overwriting the daemon cache
+func (c *DaemonClient) RefreshShip(ctx context.Context, shipSymbol string, playerID *int32, agentSymbol *string) (*pb.RefreshShipResponse, error) {
+	req := &pb.RefreshShipRequest{
+		ShipSymbol:  shipSymbol,
+		PlayerId:    playerID,
+		AgentSymbol: agentSymbol,
+	}
+
+	resp, err := c.client.RefreshShip(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("gRPC call failed: %w", err)
+	}
+
+	return resp, nil
+}
+
 // GetShipyardListings gets shipyard listings at a waypoint
 func (c *DaemonClient) GetShipyardListings(ctx context.Context, systemSymbol, waypointSymbol string, playerID int) (*pb.GetShipyardListingsResponse, error) {
 	req := &pb.GetShipyardListingsRequest{

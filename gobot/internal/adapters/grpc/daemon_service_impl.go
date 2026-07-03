@@ -517,6 +517,30 @@ func (s *daemonServiceImpl) GetShip(ctx context.Context, req *pb.GetShipRequest)
 	}, nil
 }
 
+func (s *daemonServiceImpl) RefreshShip(ctx context.Context, req *pb.RefreshShipRequest) (*pb.RefreshShipResponse, error) {
+	// Convert player ID from proto
+	var playerID *int
+	if req.PlayerId != nil {
+		pid := FromProtobufPlayerID(*req.PlayerId)
+		playerID = &pid
+	}
+
+	agentSymbol := ""
+	if req.AgentSymbol != nil {
+		agentSymbol = *req.AgentSymbol
+	}
+
+	// Call daemon's RefreshShip method
+	shipDetail, err := s.daemon.RefreshShip(ctx, req.ShipSymbol, playerID, agentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to refresh ship: %w", err)
+	}
+
+	return &pb.RefreshShipResponse{
+		Ship: shipDetail,
+	}, nil
+}
+
 // GetShipyardListings retrieves available ships at a shipyard
 func (s *daemonServiceImpl) GetShipyardListings(ctx context.Context, req *pb.GetShipyardListingsRequest) (*pb.GetShipyardListingsResponse, error) {
 	// Resolve player ID from request

@@ -259,6 +259,11 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to register GetShip handler: %w", err)
 	}
 
+	refreshShipHandler := shipQuery.NewRefreshShipHandler(shipRepo, playerRepo)
+	if err := mediator.RegisterHandler[*shipQuery.RefreshShipQuery](med, refreshShipHandler); err != nil {
+		return fmt.Errorf("failed to register RefreshShip handler: %w", err)
+	}
+
 	// Shipyard handlers
 	getShipyardListingsHandler := shipyardQuery.NewGetShipyardListingsHandler(apiClient, playerRepo)
 	if err := mediator.RegisterHandler[*shipyardQuery.GetShipyardListingsQuery](med, getShipyardListingsHandler); err != nil {

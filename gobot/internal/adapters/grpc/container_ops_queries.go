@@ -98,6 +98,57 @@ func (s *DaemonServer) GetShip(ctx context.Context, shipSymbol string, playerID 
 	return shipDetail, nil
 }
 
+// RefreshShip forces a resync of a ship from the API, overwriting the local
+// cache, and returns the reconciled ship detail.
+func (s *DaemonServer) RefreshShip(ctx context.Context, shipSymbol string, playerID *int, agentSymbol string) (*pb.ShipDetail, error) {
+	// Create query
+	query := &shipQuery.RefreshShipQuery{
+		ShipSymbol:  shipSymbol,
+		PlayerID:    playerID,
+		AgentSymbol: agentSymbol,
+	}
+
+	// Execute via mediator
+	response, err := s.mediator.Send(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to refresh ship: %w", err)
+	}
+
+	// Convert response
+	refreshResp, ok := response.(*shipQuery.RefreshShipResponse)
+	if !ok {
+		return nil, fmt.Errorf("unexpected response type")
+	}
+
+	domainShip := refreshResp.Ship
+
+	// Convert cargo items
+	var cargoItems []*pb.CargoItem
+	for _, item := range domainShip.Cargo().Inventory {
+		cargoItems = append(cargoItems, &pb.CargoItem{
+			Symbol: item.Symbol,
+			Name:   item.Name,
+			Units:  int32(item.Units),
+		})
+	}
+
+	// Build ship detail
+	shipDetail := &pb.ShipDetail{
+		Symbol:         domainShip.ShipSymbol(),
+		Location:       domainShip.CurrentLocation().Symbol,
+		NavStatus:      string(domainShip.NavStatus()),
+		FuelCurrent:    int32(domainShip.Fuel().Current),
+		FuelCapacity:   int32(domainShip.Fuel().Capacity),
+		CargoUnits:     int32(domainShip.CargoUnits()),
+		CargoCapacity:  int32(domainShip.CargoCapacity()),
+		CargoInventory: cargoItems,
+		EngineSpeed:    int32(domainShip.EngineSpeed()),
+		Role:           domainShip.Role(),
+	}
+
+	return shipDetail, nil
+}
+
 // GetShipyardListings retrieves available ships at a shipyard
 func (s *DaemonServer) GetShipyardListings(ctx context.Context, systemSymbol, waypointSymbol string, playerID *int, agentSymbol string) ([]*pb.ShipListing, string, int32, error) {
 	// Require player ID for now (agent symbol resolution can be added later)
