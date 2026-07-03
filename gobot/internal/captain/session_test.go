@@ -48,3 +48,13 @@ func TestClaudeRunnerTimesOut(t *testing.T) {
 	require.Error(t, err)
 	require.NotErrorIs(t, err, ErrUsageLimit)
 }
+
+func TestClaudeRunnerPassesExtraArgs(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "capture")
+	stub := writeStub(t, `echo "args: $@" > `+out+`.args`)
+	r := NewClaudeRunner(stub, "opus", t.TempDir(), time.Minute)
+	r.ExtraArgs = []string{"--dangerously-skip-permissions"}
+	require.NoError(t, r.Run(context.Background(), "x"))
+	args, _ := os.ReadFile(out + ".args")
+	require.Contains(t, string(args), "--dangerously-skip-permissions")
+}

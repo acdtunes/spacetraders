@@ -46,10 +46,15 @@ func main() {
 	sup := captainsup.NewSupervisor(db, store, runner, ws, cfg.Captain)
 
 	fixerFactory := func(workDir string) captainsup.SessionRunner {
-		return captainsup.NewClaudeRunner(
+		r := captainsup.NewClaudeRunner(
 			cfg.Captain.ClaudeBin, cfg.Captain.Model, workDir,
 			time.Duration(cfg.Captain.FixSessionTimeoutMinutes)*time.Minute,
 		)
+		// Worktree paths are untrusted workspaces (allowlists ignored), so
+		// headless fix sessions could not even edit files. The supervisor-run
+		// gate is the safety boundary for these throwaway trees.
+		r.ExtraArgs = []string{"--dangerously-skip-permissions"}
+		return r
 	}
 	sup.SetFixer(captainsup.NewFixer(ws, fixerFactory, cfg.Captain))
 

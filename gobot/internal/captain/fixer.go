@@ -89,7 +89,8 @@ func (f *Fixer) ProcessOne(ctx context.Context, now time.Time) (bool, error) {
 	}
 
 	body, _ := os.ReadFile(target.Path)
-	runner := f.factory(wt.Dir)
+	moduleDir := gateDir(wt.Dir)
+	runner := f.factory(moduleDir)
 	timeout := time.Duration(f.cfg.FixSessionTimeoutMinutes) * time.Minute
 	sctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -99,7 +100,7 @@ func (f *Fixer) ProcessOne(ctx context.Context, now time.Time) (bool, error) {
 		return true, nil
 	}
 
-	pass, gateOut := RunGate(wt.Dir, timeout)
+	pass, gateOut := RunGate(moduleDir, timeout)
 	if !pass {
 		_ = SetReportStatus(target.Path, "gate_failed")
 		_ = os.WriteFile(target.Path+".gate.log", []byte(gateOut), 0o644)
@@ -143,6 +144,16 @@ func (f *Fixer) ProcessOne(ctx context.Context, now time.Time) (bool, error) {
 		return true, fmt.Errorf("restart failed: %w: %s", err, out)
 	}
 	return true, nil
+}
+
+// gateDir returns the Go module directory inside a worktree. In the
+// spacetraders monorepo the git root holds gobot/ (where go.mod lives);
+// running the gate at the worktree root matches no packages.
+func gateDir(worktreeRoot string) string {
+	if _, err := os.Stat(filepath.Join(worktreeRoot, "gobot", "go.mod")); err == nil {
+		return filepath.Join(worktreeRoot, "gobot")
+	}
+	return worktreeRoot
 }
 
 // gitCleanWorktreeOnly removes the worktree directory but preserves the branch

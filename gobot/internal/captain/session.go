@@ -24,6 +24,11 @@ type ClaudeRunner struct {
 	Model   string
 	WorkDir string
 	Timeout time.Duration
+	// ExtraArgs are appended to the claude invocation. Fix sessions in
+	// throwaway worktrees pass --dangerously-skip-permissions: the paths are
+	// untrusted workspaces (allowlists are ignored there) and the supervisor
+	// gate, not session permissions, is the safety boundary.
+	ExtraArgs []string
 }
 
 var _ SessionRunner = (*ClaudeRunner)(nil)
@@ -36,7 +41,8 @@ func (r *ClaudeRunner) Run(ctx context.Context, prompt string) error {
 	ctx, cancel := context.WithTimeout(ctx, r.Timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, r.Bin, "-p", "--model", r.Model)
+	args := append([]string{"-p", "--model", r.Model}, r.ExtraArgs...)
+	cmd := exec.CommandContext(ctx, r.Bin, args...)
 	cmd.Dir = r.WorkDir
 	cmd.Stdin = strings.NewReader(prompt)
 
