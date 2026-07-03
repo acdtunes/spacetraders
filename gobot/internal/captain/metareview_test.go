@@ -27,9 +27,11 @@ func TestComposeMetaReviewGathersFrictionAndBacklog(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "state"), 0o755))
 	ws := NewWorkspace(dir)
-	require.NoError(t, os.WriteFile(ws.StatePath("captain-log.md"), []byte(
-		"## 2026-07-01\ndecided things\nfriction: no arbitrage scan command, chained 3 CLIs by hand\n"+
-			"## 2026-07-02\nfriction: snapshot lacks cargo value estimates\nother line\n"), 0o644))
+	require.NoError(t, os.WriteFile(ws.StatePath("friction.md"), []byte(
+		"- friction: no arbitrage scan command, chained 3 CLIs by hand\n"+
+			"- friction: snapshot lacks cargo value estimates\n"), 0o644))
+	require.NoError(t, os.WriteFile(ws.StatePath("captain-log.md"),
+		[]byte("## 2026-07-02\nother line\n"), 0o644))
 	require.NoError(t, os.WriteFile(ws.StatePath("improvement-backlog.md"),
 		[]byte("# Backlog\n- P1: arbitrage scan command"), 0o644))
 	require.NoError(t, os.WriteFile(ws.StatePath("lessons.md"), []byte("L1 — probes are cheap"), 0o644))

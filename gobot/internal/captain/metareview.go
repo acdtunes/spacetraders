@@ -52,13 +52,19 @@ func ComposeMetaReview(ctx context.Context, db *gorm.DB, ws Workspace, playerID 
 	}
 	b.WriteString(fmt.Sprintf("## KPI check\n- Current credits: %d\n", credits))
 
-	b.WriteString("\n## Friction observed (from your log)\n")
-	fl := frictionLines(ws.ReadFull("captain-log.md"))
-	if len(fl) == 0 {
-		b.WriteString("(none recorded — if that is untrue, your sessions are not logging friction; fix that habit)\n")
-	}
-	for _, l := range fl {
-		b.WriteString("- " + l + "\n")
+	b.WriteString("\n## Friction queue (state/friction.md — cleared after this review)\n")
+	if fq := strings.TrimSpace(ws.ReadFull("friction.md")); fq != "" {
+		b.WriteString(fq + "\n")
+	} else {
+		// Fallback for the transition + safety net: recent log tail only,
+		// so resolved ancient friction cannot resurface forever.
+		fl := frictionLines(ws.Tail("captain-log.md", 24*1024))
+		if len(fl) == 0 {
+			b.WriteString("(queue empty — if sessions hit friction, they are not recording it; fix that habit)\n")
+		}
+		for _, l := range fl {
+			b.WriteString("- " + l + "\n")
+		}
 	}
 
 	b.WriteString("\n## Lessons (state/lessons.md)\n")

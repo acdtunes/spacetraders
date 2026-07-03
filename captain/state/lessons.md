@@ -236,7 +236,19 @@ for +8,806 against ~2,950 total cost, net strongly positive. Judge a route by
 NET P&L from the ledger, not by raw fuel-line alarm. Also: the fleet-report `Credits`
 field can lag the ledger by a full CONTRACT_FULFILLED (read 170,085 while the ledger
 Balance was 178,459) — anchor treasury to the last CONTRACT_* ledger row (L28), never
-the report field alone.
+the report field alone. CONFIRMED s23 [d-28]: a fresh 4203 (242 vs 280 fuel required) on the
+contract-work container auto-restarted (restart_count 1) and resumed with cargo 40/40 intact
+(ship advanced B33->I68) — left it alone, no strand, no loop.
+ADDENDUM s52 [d-59] — the self-heal generalizes BEYOND 4203 to a TRANSIENT API-ERROR BURST class. A ~30s
+SpaceTraders `API error (status 404): 404 page not found` burst on `dock ship` / `get ship` (reload) killed TWO
+consecutive contract workers (b9ce3620, 4d2aa5f2) — each exhausted its 3 fast retries INSIDE the burst window —
+but the coordinator re-spawned a THIRD worker AFTER the window closed and it ran clean (dock/GET/refuel all
+succeed seconds later; ship never stranded, cargo intact, same contract resumed). So a wall of container.crashed +
+workflow.failed on the earner is often ONE upstream API hiccup, not a defect: the ship EXISTING + later calls
+succeeding proves the 404 is transient (not a ship-identity/routing bug). Recovery = the coordinator's re-spawn;
+do NOT stop/reassign the running successor (that sabotages the in-flight delivery). Escalate only if the signature
+recurs 3+ SESSIONS (CLAUDE.md) or a worker crash-LOOPS with no clean re-spawn and the ship sits idle >60min with
+cargo (a real strand).
 
 L41 [d-22,d-23] — Contract payouts are LUMPY and occasionally ENORMOUS: one negotiated
 contract netted ~+155k (CONTRACT_ACCEPTED +61,803 / CONTRACT_FULFILLED +167,097), ~24x a
@@ -259,6 +271,12 @@ rebuilt/redeployed. Re-verify fixes by ACTUALLY EXERCISING the command (L39), an
 the report (merged -> new) on a confirmed recurrence so the pipeline/operator sees the
 false-green. Tell client-side (in-process CLI panic) from daemon-side by the stack: if the
 whole trace is main.main -> cli.Execute -> ... with no socket hop, it's the CLI binary.
+UPDATE s28 [d-34] — NOW VERIFIED CRASH-SAFE. Exercised `ship sell` on an idle non-contract
+cargo-bearing ship: it returned a graceful API 4219 instead of the SIGSEGV, so the deployed
+binary IS rebuilt (the nil-panic is gone). Confirms the L42 method worked (a `merged` report
+was false-green until the binary was exercised; today it's genuinely fixed). Caveat: crash-safety
+!= a proven sale — the test hit phantom cargo (server=0), so 0 units actually sold; the full
+sell path realizing credits is still unproven (needs a real cargo-bearing sale).
 
 L43 [d-23,d-25] — `workflow batch-contract --iterations N` does NOT loop N contracts: the
 container self-completes after ONE contract regardless of N (observed identically for N=5
@@ -270,4 +288,148 @@ coordinator, "runs until stopped", dynamically discovers idle haulers) instead. 
 verify: `contract start` selects "idle LIGHT HAULER ships" — a COMMAND-role ship may not
 qualify; if the coordinator finds 0 eligible ships it idles/exits, and the fallback is
 per-contract batch-contract relaunches. Also: launching `contract start` (a heavy discovery
-iteration) can trigger an L30-class socket hang even as a SINGLE launch.
+iteration) can trigger an L30-class socket hang even as a SINGLE launch. RESOLVED (s21): the
+CAVEAT is answered — a COMMAND-role ship DOES qualify; the coordinator negotiated+executed 3
+contracts through TORWIND-1 (COMMAND). `contract start` is the proven continuous primitive.
+
+L44 [d-25,d-26] — A daemon SOCKET hang costs OBSERVABILITY, not money: the coordinator's
+contract work (negotiate/accept/purchase/deliver/fulfill) commits to the DB/server even while
+the socket subsystem is wedged (`context deadline exceeded` on health/ship/container). Proof:
+treasury climbed 503,700 -> 525,695 across a hang window in which I could issue ZERO socket
+commands — three contracts landed in the ledger regardless. So a recurring L30/L43 hang from
+`contract start` is NOT a reason to stop or abandon the coordinator; the fleet keeps earning
+and the daemon self-recovers between sessions. Scope a hang with ONE socket + ONE ledger probe
+(L30), confirm treasury via ledger (the earner is unaffected), record + defer. The hang only
+becomes a MONEY problem if a session shows the socket hung AND no new CONTRACT_* ledger rows
+since the last known contract — only then does it block progress rather than just visibility.
+
+L45 [d-29] — The `contract start` coordinator runs ONE contract at a time ("Execute contracts in
+sequence (one contract at a time)" in its help text) regardless of how many idle haulers it
+discovers — extra ships only add position flexibility, NOT parallel contract throughput. So more
+haulers do NOT scale contract income; the binding constraint on credits/hour is CONTRACT SUPPLY
+(negotiation cadence, lumpy L41), not ship count or execution. Verified per-contract NET economics
+from the ledger by pairing each ACCEPTED->cargo/fuel costs->FULFILLED cycle: 3 mega-contracts
+netted +155,443/+169,942/+197,680 (avg ~174k) at ~67-73% margin — execution is robustly
+net-positive. Also: compute a
+contract's true NET by hand-pairing ledger rows (no `contract list`/P&L verb exists) — gross
+payout alone overstates it by ~30%.
+CORRECTED s29 [d-35/L48]: the "supply is the limiter, extra ships buy nothing" conclusion was WRONG.
+One-at-a-time bounds PARALLELISM, not throughput. Decomposing real timestamps (L48) showed cycle time is
+67% travel; a 2nd hauler cuts mean buy-leg distance via the coordinator's "select closest ship" balancer →
+more cycles/hour → higher $/h even one-at-a-time. RULE flips: to grow credits/hour, cut CYCLE TIME (hauler
+capacity/positioning, now the top experiment d-35) OR add a validated parallel route (L46) — NOT "wait for
+more contract supply" (cadence is endogenous, 67% of it is compressible travel).
+
+L46 [d-32] — The parallel trade-route lever (the only diversification beyond supply-gated
+contracts, L45) is blocked at THREE layers, NONE of them capital — so ~700k idle treasury is
+NOT the constraint, tooling is: (a) ACTUATOR — a manual arbitrage must offload via `ship sell`,
+which is DEGRADED (L42 nil-panic; report `merged` but binary unverified), so no manual sale
+completes; (b) INTELLIGENCE — the solar scout yields ONE price snapshot per market per tour
+(`market history` returns a single record/good), so a route spread can't be validated as stable
+vs transient/mirage (e.g. J70->A1 shows huge paper spreads — MEDICINE +5,779/u, CLOTHING
++6,422/u — but J70 source supply is LIMITED); (c) COORDINATION — `contract start` auto-claims
+any idle light hauler, so a 2nd hauler bought for a route gets grabbed for contracts instead.
+RULE: do NOT buy a 2nd hauler to "diversify" until `ship sell` is confirmed rebuilt AND a route
+is live-validated by one round-trip. The route candidate is quantified and execution-ready;
+the gate is the ship-sell actuator fix, not treasury.
+UPDATE s28 [d-34] — layer (a) ACTUATOR is now LIFTED: `ship sell` verified crash-safe. The route
+is now blocked at TWO layers, not three — (b) INTELLIGENCE (single-snapshot scout, unvalidated
+spread) and (c) COORDINATION (coordinator auto-claims idle haulers, so no route ship can be
+reserved). Progress is a gate-clear, not a green light: still need a stable-spread read AND a way
+to hold a hauler out of the coordinator before a live J70->A1 round-trip.
+UPDATE s53 [d-60] — layer (d) BUY ACTUATOR, the most fundamental, was MISSED all along: there is NO
+`ship buy` verb (ship subcommands are only dock/info/jump/list/navigate/orbit/refresh/refuel/sell).
+Cargo acquisition is workflow-INTERNAL (contract/goods/operations pipelines) — so a MANUAL arbitrage
+round-trip is UNEXECUTABLE regardless of ship-sell (d-34), spread stability (b), or reservation (c).
+The trade route is tooling-blocked at the actuator, NOT capital-blocked (1.72M idle). Companion gap
+(discovery): the market cache holds only physically-VISITED marketplaces, and there is NO waypoint/
+system-discovery verb — so the jump gate (not a marketplace) is unaddressable and neighboring systems
+are unnameable, blocking the JUMP-GATE and EXPLORATION horizons too. RULE: the binding constraint on
+EVERY non-contract horizon is missing SENSORS/ACTUATORS (a `ship buy` verb + a waypoint/system-discovery
+verb), not treasury — promote both at meta-review before treating any horizon as capital-gated.
+
+L47 [d-34] — Phantom cargo (L32/L34) RECURS after every contract fulfillment: TORWIND-1 finished
+the AMMONIA_ICE contract and its `ship info` showed 9/40 leftover AMMONIA_ICE while the server
+authoritatively held 0 (API 4219 on sell). So the L32 whole-cache desync is not a one-off — it
+regenerates each contract cycle. NEW: a dedicated reconcile verb `ship refresh` (force GET
+/my/ships -> overwrite cargo/nav cache) now EXISTS in the CLI — exactly the in-band phantom fix
+L34 said was impossible — BUT it is NOT allowlisted (PERMISSION DENIED in dontAsk mode). So the
+phantom is still not Captain-clearable in-band: the fix EXISTS as a verb but is out of reach.
+Allowlisting `ship refresh` would close the L34 gap entirely (Captain could reconcile phantom
+cargo without a daemon restart). Until then: defer the phantom (low-impact; the coordinator's next
+contract re-fetches ship state, L39), don't restart a healthy daemon just to clear it.
+CONFIRMED AGAIN s30 [d-36]: idle-post-contract TORWIND-1 showed 21/40 CLOTHING while the server held 0
+(graceful 4219). STRUCTURAL CONSEQUENCE: because post-contract leftover is ALWAYS phantom, a REAL end-to-end
+sale can NEVER be validated on the idle command ship — it requires a deliberate buy-at-export -> sell-at-import
+round-trip on a hauler reserved OUT of the coordinator. The sell actuator (crash-safe, d-34) is NOT the gate
+on the parallel route (L46); the reservation problem (L46 layer c) is.
+UPDATE s32 [d-39] — `ship refresh` IS NOW ALLOWLISTED and WORKS (the user granted my s30 ask). The L34 gap is
+CLOSED: the Captain can reconcile a desynced ship cache in-band WITHOUT a daemon restart. Exercised it on
+TORWIND-3 — it reconciled from GET /my/ships successfully. And it fixes MORE than cargo: it also corrects a
+desynced ROLE field (see L50). So on any confirmed phantom (cargo, position, or role), the first move is now
+`ship refresh --ship <sym>`, not "defer and wait for a restart."
+
+L48 [d-35] — Contract cycle time is TRAVEL-DOMINATED, and cadence is ENDOGENOUS — decompose it before
+declaring credits/hour "supply-gated." Pairing ledger CONTRACT_ACCEPTED/FULFILLED rows with the REFUEL/
+PURCHASE_CARGO between them, and cross-reading the coordinator's ship-selection log, over a 6-contract span:
+accept->fulfill EXECUTION (travel+buy+deliver) = 67% of wall-clock vs fulfill->next-accept negotiation gaps
+= 33%. Bimodal: mega contracts fulfil in ~90s at coordinator-logged "distance 0.00" (ship already at the
+provider market); small contracts drag 21-28 min at "distance 630-714 units" (86% of execution time for 1.5%
+of revenue). The coordinator log "Using command ship as fallback (no hauler ships exist)" reveals the root
+cause: with a 1-ship pool its "select closest ship" position-balancer is INERT. HEURISTIC: to find the
+binding constraint on a sequential-contract earner, decompose real timestamps into travel vs negotiation —
+if travel dominates, capacity/positioning (not contract supply) is binding, and a 2nd ship compresses cycle
+time = more cycles/hour even one-at-a-time. Also: the coordinator surfaces per-contract provider DISTANCE and
+cargo type in its logs (`container logs <coordinator>`) — the closest thing to a `contract list` verb for
+reconstructing cycle economics. Corrects L45.
+ADDENDUM s36 [d-43] — the distance-only "select closest" is NOT a uniform speed-blind leak: a slow hauler that
+finishes a long haul INSIDE a market cluster then gets re-selected for successive near-zero-distance contracts
+(observed PRECIOUS_STONES@714 -> ALUMINUM@0.00 -> AMMONIA_ICE@52.01), so the speed-blind penalty is BOUNDED to
+ISOLATED far contracts, not every cycle. A faster ship sitting idle while the slower ship runs distance~0
+contracts is DESIGNED-OPTIMAL (routing those to the farther ship would ADD travel), not a leak. So escalate a
+"selection should weight ETA not distance" bug ONLY when a distance->400 contract is routed onto the slow ship
+while the faster ship is genuinely closer/idle — do NOT mis-fire on benign closest-ship idling.
+ADDENDUM s37 [d-44] — CRITICAL QUALIFIER: the speed-blind selection is currently INERT, because the faster ship
+(TORWIND-1) is a COMMAND ship, and the coordinator selects among LIGHT HAULERS only ("Idle light haulers
+discovered"), using the command ship ONLY as a fallback "when no hauler ships exist" (L43). Once a real hauler
+exists, the command ship is EXCLUDED from the candidate pool — so a far contract routed to the sole slow hauler
+(observed CLOTHING@714.27 to TORWIND-3 while TORWIND-1 idled) is UNAVOIDABLE fleet-composition cost, NOT the
+coordinator ignoring a faster ELIGIBLE ship. The escalation trigger can therefore only fire with a 2+-LIGHT-HAULER
+fleet; do NOT file a speed-blind bug while there is one eligible hauler (no faster candidate existed to choose).
+The far-haul cost on a single slow hauler is a CAPACITY/SPEED question (the d-37 experiment), not a routing bug.
+
+L49 [d-37] — To PRICE a shipyard you must physically send a ship there: market scout tours populate market
+GOODS, not shipyard SHIP-LISTINGS, so "wait for the free scout to price A2" was a dead end — `shipyard list`
+stayed empty ("No ships available") across sessions until TORWIND-1 deliberately visited+docked at A2, which
+populated it instantly (SHIP_LIGHT_HAULER 308,497). Corollary lever: the contract coordinator detects worker
+completion via a ~53min TIMEOUT (not a completion event), so after each fulfillment the command ship sits IDLE
+until the timeout fires — that gap is both a real throughput leak (~1/3 of the fulfill->next-accept negotiation
+time, L48) AND a SAFE window to borrow the command ship for a side-errand (pricing, a probe) without racing the
+coordinator. Used exactly that window to price A2 and buy the first hauler. Also: a SHIP_LIGHT_HAULER here is
+2x cargo (80 vs 40) but ~0.4x speed (15 vs 36) of the command ship — bigger holds cut multi-trip buy legs but
+slower travel lengthens each leg, so the net cycle-time effect of a hauler is NOT obvious a priori; measure
+$/h over 24h (d-37) rather than assuming.
+REFINED s34 [d-40] — the "~53min timeout, not a completion event" claim is a CEILING, not the whole story: the
+coordinator ALSO detects a FAST worker via a "Contract completed by <ship>" EVENT and re-selects in ~3 min (a
+FOOD mega ran select@14:30:24 -> "Contract completed"@14:33:31). So completion is event-detected when a worker
+exits cleanly; the 30-53min timeout is the FALLBACK for slow/stuck workers. A ship that completes fast does NOT
+sit idle-until-timeout — the borrow-window (above) only opens on slow contracts.
+
+L50 [d-39] — A freshly PURCHASED ship can land in the daemon cache with an EMPTY Role, making it INVISIBLE to
+role-based coordinators. TORWIND-3 (bought as SHIP_LIGHT_HAULER) showed `Role: (empty)` in `ship info` while
+the server held `Role: HAULER`; the contract coordinator's "discover idle light haulers" step reads that cache,
+found no role, logged "no hauler ships exist," and kept falling back to the command ship — so the whole reason
+for buying the hauler was silently defeated. This is the L32/L37 whole-cache-desync class on a NEW field
+(Role). FIX (in-band, cheap): `ship refresh --ship <sym>` re-fetches GET /my/ships and populates the true role
+(now allowlisted, L47). HEURISTIC: after ANY ship purchase, `ship refresh` the new ship before expecting a
+role-based coordinator/workflow to pick it up — don't spend sessions waiting for a coordinator to "discover" a
+ship whose cached role is blank. If refresh sets the role but the coordinator STILL misses it, the filter keys
+on a different field (frame symbol) → then it's a real discovery bug worth a report.
+CONFIRMED WORKING s34 [d-39/d-40] — the refresh fix took: the coordinator selected TORWIND-3 (haul) and it
+fulfilled a +265,866 FOOD mega in ~3 min. BUT the activation had a SECOND gate: a role refresh is NOT seen by
+an ALREADY-RUNNING coordinator (it caches its eligible-hauler list per-iteration in memory) — the still-running
+process's 14:22 selection STILL logged "no hauler ships exist"; the refreshed Role was picked up only after the
+coordinator's OWN container RESTARTED (14:30:19) and re-read the cache. HEURISTIC ADDENDUM: after `ship refresh`
+on a new hauler, the role-based coordinator activates on its next CONTAINER RESTART, not merely its next
+in-loop selection — if you need it sooner, restart the coordinator container (weigh L30 hang risk); otherwise
+wait for the natural restart. The frame-symbol-filter branch is now DISPROVEN — the filter keys on cached Role.

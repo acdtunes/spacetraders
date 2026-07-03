@@ -93,3 +93,19 @@ Guardrails: restart at most ONCE per session, and only after wait-daemon
 reports SOCKET-DEAD. Record every restart in the log with the trigger
 signature. If a restart doesn't restore health, stop and escalate via a bug
 report — do not restart-loop.
+
+## Memory discipline
+
+- **strategy.md is standing state, not history.** Keep it under ~150 lines:
+  KPI targets, current posture (REPLACE it, don't append per-session entries),
+  the Horizon plan, and active watch items. Session narratives belong in the
+  log; superseded analyses belong in the log entry that superseded them.
+- **friction goes to state/friction.md** (append one `- friction: ...` line
+  per item, tagged with your session number). The meta-review consumes and
+  clears that file — friction recorded only in the log will not reach the
+  backlog. Mention it in the log for narrative, but the queue is the channel.
+- **Pruned lessons go to state/lessons-archive.md**, never into the void. When
+  the 50-lesson cap forces curation, move the pruned line there with a one-word
+  reason. The archive is grep-able history; it is not loaded into sessions.
+- The supervisor auto-archives old log entries to captain-log.archive.md;
+  check the archive before declaring "no precedent in my log."

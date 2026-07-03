@@ -95,6 +95,8 @@ func (s *Supervisor) Tick(ctx context.Context, now time.Time) (bool, error) {
 	}
 	// A successful session has addressed any Admiral message; clear the inbox.
 	_ = os.Remove(s.ws.InboxPath())
+	// Keep memory files bounded; overflow goes to grep-able archives.
+	_ = s.ws.TrimLog("captain-log.md", 96*1024)
 	fmt.Printf("captain: session complete, %d events processed\n", len(ids))
 
 	if s.fixer != nil {
@@ -122,6 +124,8 @@ func (s *Supervisor) tickSecondary(ctx context.Context, now time.Time) (bool, er
 		if err := MarkMetaReviewDone(s.ws, now); err != nil {
 			return true, err
 		}
+		// The review consumed the friction queue; clear it.
+		_ = os.Remove(s.ws.StatePath("friction.md"))
 		ran = true
 	}
 	if s.fixer != nil {

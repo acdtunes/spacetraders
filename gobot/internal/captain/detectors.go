@@ -127,7 +127,7 @@ func CurrentCredits(ctx context.Context, db *gorm.DB, playerID int) (int, error)
 	var tx persistence.TransactionModel
 	err := db.WithContext(ctx).
 		Where("player_id = ?", playerID).
-		Order("timestamp DESC").
+		Order("timestamp DESC, created_at DESC, id DESC").
 		Limit(1).
 		Find(&tx).Error
 	if err != nil {

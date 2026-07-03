@@ -1,6 +1,6 @@
 ---
 title: Daemon socket subsystem hangs with "context deadline exceeded" and does not self-recover
-status: gate_failed
+status: resolved
 kind: fix
 ---
 
@@ -92,3 +92,52 @@ the daemon socket unresponsive (~2 min of context-deadline-exceeded health
 checks) while the process stayed alive. Suspect: gRPC accept loop or container
 startup path contention. Repro: fire both workflows within one second on a
 fresh daemon.
+
+## Occurrence s21 (2026-07-03 ~12:20Z) — SINGLE-LAUNCH spontaneous hang, coordinator activity
+
+At s21 start `health`, `ship list`, and `container list` all returned
+`context deadline exceeded` (3 probes) while `ledger list` answered instantly —
+daemon alive, socket subsystem hung (L19/L30). This is NOT the debunked PID-lock
+class and NOT a concurrent-launch (s2) violation: the ONLY heavy thing running is
+the `contract_fleet_coordinator` (a single `contract start`). The ledger shows the
+socket had RECOVERED after s20 (coordinator negotiated a fresh contract ACCEPTED
++72,803 and bought cargo -50,520 at ~12:17Z), then hung AGAIN within ~2 min.
+
+Signature: `contract start` fleet-coordinator's heavy discovery/negotiation
+iteration correlates with the hang (s20 launch hung immediately; s21 hung again
+during ongoing coordinator activity). This matches the s2 mechanism (heavy
+workflow iteration wedging the accept/serve loop) but from ONE workflow, not two.
+
+Impact so far: OBSERVABILITY only, not money — the coordinator's contract work
+commits to the DB regardless (treasury climbed 503,700 -> 525,695 across the hang
+window). But it blocks all in-session actuation and self-recovery is slow.
+
+Repro candidate: run `contract start` on a fresh daemon and poll `health` during
+its discovery/negotiation iteration. Priority is now higher: this is a RECURRING
+single-launch hang on the fleet's primary earner path, and the pipeline's prior
+fix attempt reached `gate_failed` (did not land).
+
+## Occurrence s22 (2026-07-03 ~12:26Z) — recurs across the session boundary; observability-only again
+
+At s22 start `health`, `ship list`, and `container list` all returned
+`context deadline exceeded` (single probe each) while `ledger list` answered
+instantly — same signature, `contract_fleet_coordinator` still the only heavy
+workload. The DB confirms the coordinator kept earning straight through: the
+in-flight contract that was mid-purchase during the s21 hang FULFILLED for
+`CONTRACT_FULFILLED +196,837` at 12:21:14Z, lifting treasury 525,695 -> 701,380.
+So this is the 3rd genuine single-launch recurrence (s20 launch, s21 activity,
+s22 boundary) and again cost OBSERVABILITY only, not money (L44).
+
+The remaining Captain-side gap is unchanged and is the real ask of candidate fix
+(c): a `daemon status` / socket-health verb + a Captain-invokable restart would
+convert each of these lost sessions into a 2-command recovery instead of a
+full defer. Report stays `gate_failed`; no fix has landed.
+
+
+## Resolution (2026-07-03, engineering)
+
+Closed as resolved-by-side-effect: zero recurrences in 31 consecutive
+sessions since the WorkerCompletedEvent wiring fix (workers now publish
+completion; coordinators no longer block in 53-minute timeout waits).
+The strongest hypothesis is that timeout-era coordinator behavior was
+the hang correlate. Reopen with a fresh report if the signature recurs.

@@ -31,7 +31,8 @@
       "Bash(bin/spacetraders container stop:*)",
       "Bash(bin/spacetraders player info:*)",
       "Bash(tools/restart-daemon.sh)",
-      "Bash(tools/wait-daemon.sh:*)"
+      "Bash(tools/wait-daemon.sh:*)",
+      "Bash(bin/spacetraders ship refresh:*)"
     ],
     "deny": [
       "Read(//Users/andres.dandrea/projects/spacetraders/gobot/**)",

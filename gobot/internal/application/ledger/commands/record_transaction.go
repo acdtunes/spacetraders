@@ -87,7 +87,7 @@ func (h *RecordTransactionHandler) Handle(ctx context.Context, request common.Re
 	balanceBefore, balanceAfter := cmd.BalanceBefore, cmd.BalanceAfter
 	if balanceBefore == 0 && balanceAfter == cmd.Amount && cmd.Amount != 0 {
 		if last, err := h.transactionRepo.FindByPlayer(ctx, playerID, ledger.QueryOptions{
-			Limit: 1, OrderBy: "timestamp DESC",
+			Limit: 1, OrderBy: "timestamp DESC, created_at DESC, id DESC",
 		}); err == nil && len(last) == 1 {
 			balanceBefore = last[0].BalanceAfter()
 			balanceAfter = balanceBefore + cmd.Amount
@@ -143,7 +143,7 @@ func (h *RecordTransactionHandler) Handle(ctx context.Context, request common.Re
 		cmd.TransactionType,
 		category,
 		cmd.Amount,
-		cmd.BalanceAfter,
+		balanceAfter,
 	)
 
 	return &RecordTransactionResponse{
