@@ -94,6 +94,35 @@ Capital thresholds are therefore the WRONG trigger for the near term; **tooling-
    the gate thread: validate net $/h on a bounded run, then buy a dedicated hauler if it clears the scale trigger.
 
 ## Current posture
+- **s60 (d-67): CLEAN HEARTBEAT + FRONTIER — exercised `construction`, first-hand-confirmed the jump-gate tool is INERT without the discovery verb; ~2.14M @ ~81.8k/hr.**
+  No pending events, no decisions due. Treasury **2,138,900** ledger-confirmed (top REFUEL -360 @16:00:02 lands EXACTLY at
+  the fleet report; SAME cycle as s59 — worker 049236ea still 0/1, so treasury only ticked down from the s59 high 2,139,764
+  on normal refuel hops, rebounds on fulfillment). Health OK, socket HEALTHY (**39th consecutive clean**: s22 hung, s23–s60
+  clean), 3 containers RUNNING (coordinator 35df0a9f + worker 049236ea + scout-tour 48adae90). TORWIND-1 DOCKED D45 (benched
+  command ship); TORWIND-2 solar scout IN_TRANSIT K90 fuel 0/0 (normal); TORWIND-3 IN_TRANSIT E47 (buy leg). No 404 burst.
+  **24h delta +1,963,900 ≈ +81,829/hr — flat with s59 (same cycle), ~3.74× the ~21,900 KPI.** **FRONTIER:** ran the
+  never-once-invoked `construction` verb (Horizon plan #1's jump-gate completion tool). `--help` read end to end (start/status
+  both REQUIRE a construction-site waypoint symbol; depth 0–3 buy-vs-produce). Attempted `construction status` → provably
+  UNRUNNABLE: no site symbol obtainable — `market list X1-PZ28` returns 29 waypoints, ALL marketplaces; a JUMP_GATE-type
+  waypoint never appears in market data. **Converts Horizon plan #1's premise from assumption to TESTED FACT: the gate's
+  completion tool is inert without the waypoint/system-discovery verb** (re-queued s59, status:new) — first-hand evidence for
+  the #1 feature ask. HELD capital + ships. Guardrail ≤50% of ~2.14M = **~1.07M cap**. WATCH: if the discovery report
+  gate_fails a 2nd time under the new auto-merge regime → code-substantive, needs concrete diagnosis/meta-review not another
+  blind re-queue.
+- **s59 (d-66): CLEAN HEARTBEAT — NEW HIGH ~2.14M @ ~81.9k/hr (highest yet); re-queued the #1 mission feature (waypoint-discovery verb).**
+  Pending [157] = TORWIND-3 workflow.finished success=true = a CLEAN fulfillment (ledger CONTRACT_FULFILLED +4,463 @15:52:07 →
+  re-negotiated ACCEPTED +34,368 @15:52:13 → **2,139,764**, matching the fleet report EXACTLY; REFUEL -216 → 2,139,548 is a
+  normal post-accept hop). Coordinator spawned fresh worker contract-work-TORWIND-3-049236ea @18:52:07 — textbook clean cycle.
+  No decisions due. Health OK, socket HEALTHY (**38th consecutive clean**: s22 hung, s23–s59 clean), 3 containers RUNNING
+  (coordinator 35df0a9f + worker 049236ea + scout-tour 48adae90). TORWIND-1 DOCKED D45 (benched command ship, expected);
+  TORWIND-2 solar scout IN_TRANSIT K90 fuel 0/0 (normal); TORWIND-3 IN_TRANSIT J69 empty, starting its buy leg. No 404 burst.
+  **24h delta +1,964,764 ≈ +81,865/hr — the HIGHEST rate yet, ~3.74× the ~21,900 KPI**, up from s57's ~78.5k/hr. **ONE ACTION:**
+  found an uncommitted working-tree edit flipping `reports/bugs/2026-07-03-waypoint-discovery-verb.md` (Horizon plan #1) from
+  `status:gate_failed` → `status:new`; ENDORSED and kept it — commit c37568b just changed the pipeline regime to auto-merge +
+  code read + no deny rules, so an earlier access/permission gate failure has a real chance of passing on re-queue (L35). It is
+  MAINTENANCE of an existing report (not filing a new feature, which is meta-review-only), so in-bounds for a heartbeat. HELD
+  capital + ships. Guardrail ≤50% of ~2.14M = **~1.07M cap**. WATCH: if the report gate_fails a 2nd time under the new regime,
+  the failure is code-substantive (not access) → needs a concrete diagnosis or meta-review, not another blind re-queue.
 - **s58 (d-65): FRONTIER — exercised the manufacturing engine (`operations`/`goods`); answered the Admiral with evidence; NO actuation.**
   Pending events all clean ([154]/[156] TORWIND-3 workflow.finished success=true = clean fulfillments; [155] TORWIND-1
   ship.idle DOCKED D45 = expected benched-command-ship state). No decisions due. Per the Admiral directive + frontier duty,

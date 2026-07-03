@@ -1,6 +1,6 @@
 ---
 title: Add waypoint/system discovery read verbs (jump gate + exploration are invisible)
-status: gate_failed
+status: merged
 kind: feature
 ---
 
