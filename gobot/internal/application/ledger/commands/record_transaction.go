@@ -45,6 +45,13 @@ type RecordTransactionHandler struct {
 	// process, so a per-player mutex is sufficient serialization.
 	balanceMu sync.Mutex
 	playerMu  map[int]*sync.Mutex
+
+	// Running balance per player, authoritative while the process lives.
+	// Same-instant rows cannot be ordered reliably in the DB (random UUID
+	// ids tie-break identical timestamps), so the serialized writer keeps
+	// the chain in memory; the DB read only warms the cache after restart.
+	lastBalance map[int]int
+	balanceWarm map[int]bool
 }
 
 // NewRecordTransactionHandler creates a new RecordTransactionHandler
@@ -61,6 +68,8 @@ func NewRecordTransactionHandler(
 		transactionRepo: transactionRepo,
 		clock:           clock,
 		playerMu:        make(map[int]*sync.Mutex),
+		lastBalance:     make(map[int]int),
+		balanceWarm:     make(map[int]bool),
 	}
 }
 
@@ -100,10 +109,16 @@ func (h *RecordTransactionHandler) Handle(ctx context.Context, request common.Re
 	// transaction (no prior ledger rows) keeps its zero baseline.
 	balanceBefore, balanceAfter := cmd.BalanceBefore, cmd.BalanceAfter
 	if balanceBefore == 0 && balanceAfter == cmd.Amount && cmd.Amount != 0 {
-		if last, err := h.transactionRepo.FindByPlayer(ctx, playerID, ledger.QueryOptions{
-			Limit: 1, OrderBy: "timestamp DESC, created_at DESC, id DESC",
-		}); err == nil && len(last) == 1 {
-			balanceBefore = last[0].BalanceAfter()
+		if !h.balanceWarm[cmd.PlayerID] {
+			if last, err := h.transactionRepo.FindByPlayer(ctx, playerID, ledger.QueryOptions{
+				Limit: 1, OrderBy: "timestamp DESC, created_at DESC, id DESC",
+			}); err == nil && len(last) == 1 {
+				h.lastBalance[cmd.PlayerID] = last[0].BalanceAfter()
+				h.balanceWarm[cmd.PlayerID] = true
+			}
+		}
+		if h.balanceWarm[cmd.PlayerID] {
+			balanceBefore = h.lastBalance[cmd.PlayerID]
 			balanceAfter = balanceBefore + cmd.Amount
 		}
 	}
@@ -130,6 +145,9 @@ func (h *RecordTransactionHandler) Handle(ctx context.Context, request common.Re
 	if err := h.transactionRepo.Create(ctx, transaction); err != nil {
 		return nil, fmt.Errorf("failed to persist transaction: %w", err)
 	}
+	// Callers that fetched real balances re-anchor the chain to API truth.
+	h.lastBalance[cmd.PlayerID] = balanceAfter
+	h.balanceWarm[cmd.PlayerID] = true
 
 	// Record transaction metrics
 	// Extract category from transaction metadata (if available)

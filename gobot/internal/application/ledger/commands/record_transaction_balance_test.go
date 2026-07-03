@@ -110,9 +110,19 @@ func TestConcurrentZeroBalanceRecordingsDoNotForkTheChain(t *testing.T) {
 	}
 
 	pid, _ := shared.NewPlayerID(p.ID)
-	txs, err := repo.FindByPlayer(ctx, pid, ledger.QueryOptions{
-		Limit: 1, OrderBy: "timestamp DESC, created_at DESC, id DESC"})
+	txs, err := repo.FindByPlayer(ctx, pid, ledger.QueryOptions{Limit: 0})
 	require.NoError(t, err)
-	require.Equal(t, 100000-n*100, txs[0].BalanceAfter(),
-		"chain must sum exactly; forks mean racing writers")
+	require.Len(t, txs, n+1)
+	seen := map[int]bool{}
+	min := 100000
+	for _, tx := range txs {
+		require.Equal(t, tx.BalanceBefore()+tx.Amount(), tx.BalanceAfter(), "row arithmetic")
+		require.False(t, seen[tx.BalanceAfter()], "duplicate balance = forked chain")
+		seen[tx.BalanceAfter()] = true
+		if tx.BalanceAfter() < min {
+			min = tx.BalanceAfter()
+		}
+	}
+	require.Equal(t, 100000-n*100, min,
+		"complete unforked chain reaches exactly the summed balance")
 }
