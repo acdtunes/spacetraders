@@ -27,7 +27,15 @@ func NewCargoManager(
 	}
 }
 
-// ReloadShipState reloads ship state from repository and returns current units of target cargo
+// ReloadShipState reconciles ship state against the authoritative server record
+// and returns current units of target cargo.
+//
+// This MUST sync from the API rather than reading the local DB cache: after a
+// purchase whose server-side cargo write did not actually land (see the
+// 2026-07-02 phantom-cargo incident), the cache can report cargo the ship does
+// not hold, so a contract delivery computed from the cache fails server-side
+// with a 4219 "Ship has 0 unit(s)" error. Reconciling here heals the cache and
+// lets the delivery flow re-purchase the missing units from the true count.
 func (m *CargoManager) ReloadShipState(
 	ctx context.Context,
 	shipSymbol string,
@@ -41,7 +49,7 @@ func (m *CargoManager) ReloadShipState(
 		"action":      "reload_ship_state",
 	})
 
-	ship, err := m.shipRepo.FindBySymbol(ctx, shipSymbol, playerID)
+	ship, err := m.shipRepo.SyncShipFromAPI(ctx, shipSymbol, playerID)
 	if err != nil {
 		logger.Log("ERROR", "Ship state reload failed", map[string]interface{}{
 			"ship_symbol": shipSymbol,
