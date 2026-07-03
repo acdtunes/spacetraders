@@ -79,7 +79,15 @@ func ComposeMetaReview(ctx context.Context, db *gorm.DB, ws Workspace, playerID 
    empty promotion round is a fine outcome.
 3. Verify the last merged improvement (if any) actually moved the KPI it
    promised; record the verdict as a lesson in state/lessons.md.
-4. Append a meta-review entry to state/captain-log.md.
+4. STRATEGIC HORIZON: your KPI measures the current income loop, but a
+   fleet that only exploits its known loop plateaus. Review the frontier:
+   CLI capabilities you have NEVER exercised, systems never visited,
+   long-horizon structures the game rewards, and income streams that would
+   run IN PARALLEL to the current one. Maintain a "Horizon" section in
+   state/strategy.md ranking such objectives by step-change potential vs
+   incremental gain, and either start a cheap probe toward the top one or
+   record why not yet. Optimizing a local maximum forever is a failure mode.
+5. Append a meta-review entry to state/captain-log.md.
 `)
 	return b.String(), nil
 }
