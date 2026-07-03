@@ -97,6 +97,10 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 
 	// Subscribe to WorkerCompletedEvent for this coordinator
 	// Events are published by ContainerRunner when worker containers complete
+	if h.eventSubscriber == nil {
+		// Wiring gap must fail the container, not panic the daemon.
+		return nil, fmt.Errorf("fleet coordinator: no event subscriber wired (call SetEventSubscriber at startup)")
+	}
 	workerCompletedCh := h.eventSubscriber.SubscribeWorkerCompleted(cmd.ContainerID)
 	defer h.eventSubscriber.UnsubscribeWorkerCompleted(cmd.ContainerID, workerCompletedCh)
 

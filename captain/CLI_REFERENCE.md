@@ -1088,6 +1088,7 @@ Available Commands:
   list        List all ships for a player
   navigate    Navigate a ship to a destination waypoint
   orbit       Put a ship into orbit from docked position
+  refresh     Force-resync a ship's cached state from the server
   refuel      Refuel a ship at its current location
   sell        Sell cargo from a ship
 
@@ -1246,6 +1247,33 @@ Usage:
 Flags:
   -h, --help          help for orbit
       --ship string   Ship symbol to orbit (required)
+
+Global Flags:
+      --agent string    Agent symbol (alternative to player-id)
+      --player-id int   Player ID (required if agent not specified)
+      --socket string   Path to daemon Unix socket (default "/tmp/spacetraders-daemon.sock")
+  -v, --verbose         Enable verbose output
+```
+
+### spacetraders ship refresh
+```
+Force a fresh GET /my/ships/<symbol> against the SpaceTraders API and
+overwrite the daemon's local cargo + nav cache with the server response.
+
+Use this to reconcile a desynced ship cache (e.g. phantom cargo or a stale
+position) without restarting the daemon and without moving the ship. The
+reconciled state is printed on success.
+
+Examples:
+  spacetraders ship refresh --ship ENDURANCE-1 --player-id 1
+  spacetraders ship refresh --ship ENDURANCE-1 --agent ENDURANCE
+
+Usage:
+  spacetraders ship refresh [flags]
+
+Flags:
+  -h, --help          help for refresh
+      --ship string   Ship symbol (required)
 
 Global Flags:
       --agent string    Agent symbol (alternative to player-id)

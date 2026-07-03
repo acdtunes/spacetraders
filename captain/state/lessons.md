@@ -208,3 +208,66 @@ shipped as a commit anyway, so a missing promotion file != un-shipped fix; verif
 shipped improvements against the git log, not the presence of a promotion report.
 The bottleneck has now moved DOWNSTREAM: fixes land in awaiting_human and wait on
 the user's manual merge (propose-only, captain.auto_merge:false).
+
+L39 [d-19,d-20] — A merged daemon fix only takes effect after the daemon
+RESTARTS, and a merged whole-cache desync (L32/L34/L37) clears itself on that
+restart by re-fetching `GET /my/ships`. VERIFIED: the phantom-cargo fix went
+awaiting_human -> merged (s16); the very next session TORWIND-1's `ship info`
+flipped from a 6-session phantom 40/40 to true 0/40, and a clean batch-contract
+then ran the purchase-then-deliver path with no 4219. Two operational takeaways:
+(1) a total socket blackout IMMEDIATELY after fixes merge is the expected
+restart-to-apply window (L30 operator-addendum class) — DEFER one session, don't
+escalate; the daemon returns with true server state. (2) Confirm a fix actually
+LANDED by observed behavior (ship info now matches server, workflow runs clean),
+not by the report status alone — status `merged` says the code is in, the restart
++ a clean run is what proves it works. Full bug-report status ladder now seen
+end-to-end: new -> gate_failed -> awaiting_human -> merged -> (restart) -> effect.
+
+L40 [d-20,d-21] — batch-contract's route planner can UNDER-FUEL before a long leg
+(left B7 with 242 fuel for a leg needing 280 -> API 4203 fuel-exhaustion crash), but
+a single 4203 is SELF-HEALING, not a strand: the container auto-restarts
+(restart_count 1), refuels the ship to full, and resumes to the delivery waypoint.
+Do NOT intervene on the first 4203 — treat it like a transient crash (L23) and let
+the container recover. Escalate to a route-planner bug only on a CRASH-LOOP (restart
+count climbing with no progress + refuel bleed). Companion insight: a fuel "refuel
+storm" (10 REFUELs / ~2,600cr in 13min on one contract trip) looks alarming but is
+NOT a money pit if the contract payout dwarfs it — the IRON_ORE contract fulfilled
+for +8,806 against ~2,950 total cost, net strongly positive. Judge a route by
+NET P&L from the ledger, not by raw fuel-line alarm. Also: the fleet-report `Credits`
+field can lag the ledger by a full CONTRACT_FULFILLED (read 170,085 while the ledger
+Balance was 178,459) — anchor treasury to the last CONTRACT_* ledger row (L28), never
+the report field alone.
+
+L41 [d-22,d-23] — Contract payouts are LUMPY and occasionally ENORMOUS: one negotiated
+contract netted ~+155k (CONTRACT_ACCEPTED +61,803 / CONTRACT_FULFILLED +167,097), ~24x a
+typical IRON_ORE contract's +8,806, on a single ~10-min run. Consequences: (1) a
+credits/hour figure computed over a window that one big contract dominates is a WEAK
+throughput baseline — derive the real rate from several contracts of a steady run, not
+one lucky draw. (2) Contracts are the highest-ROI bootstrap activity by a wide margin;
+committing an idle hauler to a continuous `batch-contract --iterations -1` loop compounds
+income with near-zero downside (guaranteed payouts, workflow pre-checks profitability,
+stoppable via `container stop`). (3) A single contract's upfront cargo buy can be large
+(~73k here) — size the 50%-treasury guardrail against the biggest plausible contract, not
+the average one.
+
+L42 [d-24] — A bug report marked `merged` is NOT proof the bug is gone in the RUNNING
+tool: at s20 `ship sell` still segfaulted at the exact source line (api_metrics.go:134)
+whose fix `cfad670` was already in `git log`. When a client-side CLI crash persists after
+its fix merges, suspect a STALE BINARY (the deployed `bin/spacetraders` built before the
+fix) before assuming a code regression — a merged commit only helps once the binary is
+rebuilt/redeployed. Re-verify fixes by ACTUALLY EXERCISING the command (L39), and reopen
+the report (merged -> new) on a confirmed recurrence so the pipeline/operator sees the
+false-green. Tell client-side (in-process CLI panic) from daemon-side by the stack: if the
+whole trace is main.main -> cli.Execute -> ... with no socket hop, it's the CLI binary.
+
+L43 [d-23,d-25] — `workflow batch-contract --iterations N` does NOT loop N contracts: the
+container self-completes after ONE contract regardless of N (observed identically for N=5
+and N=-1: "Iteration 1 completed -> Container completed successfully -> Released ship"),
+despite the help text claiming "-1 for infinite." So batch-contract is a SINGLE-contract
+primitive; relaunching it per heartbeat is the only way to chain contracts with it — not
+truly autonomous-continuous. For continuous operation use `contract start` (the fleet
+coordinator, "runs until stopped", dynamically discovers idle haulers) instead. CAVEAT to
+verify: `contract start` selects "idle LIGHT HAULER ships" — a COMMAND-role ship may not
+qualify; if the coordinator finds 0 eligible ships it idles/exits, and the fallback is
+per-contract batch-contract relaunches. Also: launching `contract start` (a heavy discovery
+iteration) can trigger an L30-class socket hang even as a SINGLE launch.

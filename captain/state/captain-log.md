@@ -723,3 +723,289 @@ loop cannot cross — the propose-only rollout mode is working as designed, but 
 means the Captain's effectiveness is capped by user merge latency, not by its own
 diagnosis or the pipeline's throughput.
 
+## 2026-07-03 (session 16) — the blocker MERGED (phantom-cargo + ship-sell both landed); socket hung on the expected restart-to-apply; defer verification one session
+
+**Assessment.** Socket path HUNG — `context deadline exceeded` on health, ship info,
+and container list across 4 probes. DB path (ledger) answered instantly: **11 txns,
+treasury 172,451, phantom `PURCHASE_CARGO -2,080` still present, no CONTRACT_FULFILLED**
+(unchanged since 20:16Z). So the daemon is not dead (DB alive), the socket subsystem
+is unavailable (L19/L30).
+
+**The material change — two critical fixes MERGED.** Bug-report status board:
+**phantom-cargo `awaiting_human` → `merged`** and **ship-sell-nil-panic
+`awaiting_human` → `merged`**. The 6-session whole-fleet blocker (d-14..d-18 HOLD
+chain) is FIXED, and the `ship sell` segfault recovery path is FIXED too. Also:
+scout-position-cache-desync = `awaiting_human` (fix proposed), daemon-socket-hang =
+`gate_failed`, my promoted ship-refresh-force-resync feature = `new`.
+
+**Interpretation of the hang.** A socket blackout landing immediately after two daemon
+fixes merge is the **expected restart-to-apply blackout** — the exact off-ramp
+strategy.md pre-staged ("user merges the fix branch → daemon restart → verify ship info
+reads 0/40"). Per the L30 operator addendum, a total actuation blackout can be an
+out-of-band ops event (daemon rebuilding/restarting), NOT the filed code defect. So this
+is NOT a new incident and NOT an escalation: the socket-hang report is already filed
+(`gate_failed`), and hand-probing a restart-in-progress is unbounded token burn (L30). I
+confirmed scope with ONE DB probe + 4 socket probes, then stopped.
+
+**Action (d-19): HOLD/DEFER one session — but the reason has flipped.** For the first
+time since s9 the HOLD is NOT "the bug is unfixed"; the bug IS fixed, I simply can't
+verify through a hung socket this session. No actuation taken. Next session: probe
+health; once the socket is back, read TORWIND-1 `ship info` (expect **0/40** — phantom
+cleared by the restart re-fetching `GET /my/ships`), then run ONE clean batch-contract
+to finish the IRON_ORE contract (expect a `CONTRACT_FULFILLED` row, treasury > 172,451).
+Closed no prior decisions (d-1..d-16 already carry verdicts; harness re-lists by
+review_after). No new bug filed (the hang's root cause is a known-filed report + an
+expected restart).
+
+**friction: the Captain cannot distinguish "daemon restarting to apply a merge" from
+"daemon socket hung/dead" — both present identically as `context deadline exceeded`.**
+Right after a merge this ambiguity is benign (restart is the likely cause), but it means
+every post-merge session pays a blind wait. A daemon `status`/uptime readout on the DB
+path (which stays alive during a socket restart) — or a restart-in-progress marker —
+would let the Captain confirm "restart underway, come back soon" instead of guessing.
+
+**note for the user:** the phantom-cargo AND ship-sell fixes are MERGED. If the daemon
+finished restarting, TORWIND-1's stranded IRON_ORE contract should be finishable next
+session with no further action from you. If the socket is still hung next session, the
+daemon may need a manual (re)start (`--force` / `make restart-daemon`).
+
+## 2026-07-03 (session 17) — OFF-RAMP REACHED: phantom cargo cleared, clean batch-contract launched to finish the 6-session IRON_ORE contract
+
+**The blocker is gone.** Socket healthy (daemon 0.1.0, 1 container). `ship info` for
+TORWIND-1 reads **0/40** — the phantom 40/40 IRON_ORE that survived six sessions
+CLEARED when the merged phantom-cargo fix + daemon restart re-fetched true state from
+`GET /my/ships`. This is precisely the off-ramp d-19/strategy.md pre-staged. Treasury
+172,451 (11 txns), IRON_ORE contract still ACCEPTED (+1,547, 2026-07-02) and unfulfilled;
+the phantom `PURCHASE_CARGO -2,080` remains a sunk local-ledger desync but no longer
+distorts the ship.
+
+**Action (d-20): launched ONE clean batch-contract on TORWIND-1** (`--iterations 1`,
+container `batch_contract_workflow-TORWIND-1-d42b3c4f`). Pre-checks: IRON_ORE cached
+buy@48 at X1-PZ28-B7 (fresh 08:13Z, MODERATE); ship DOCKED at delivery waypoint H63,
+full fuel; ~1,920cr re-buy is trivial (<<86k guardrail). Logs confirm the HEALTHY path
+past every historical failure point: *Resuming existing active contract → Contract
+profitability confirmed → Current cargo units checked → Purchase needs calculated →
+Multi-trip purchase initiated → navigating to B7*. It correctly read **0 cargo** and
+planned a real purchase — no phantom, no fast-fail, no 4219. The whole-cache desync fix
+(L32/L34/L37) is verified landed by observed behavior.
+
+**Decisions closed:** d-19 → worked (off-ramp materialized as predicted). The d-1..d-16
+review-list decisions already carry verdicts from prior sessions (jsonl tail confirms
+d-14/d-15/d-16 closed); harness re-lists them by review_after — no re-close needed.
+
+**Pending events:** [58] TORWIND-1 idle → resolved (now running the contract). [56]
+scout workflow.finished = the PRIOR tour; a new `scout-tour-...-48adae90` is RUNNING.
+[57] TORWIND-2 heartbeat_lost = transient solar-scout transit leg (L29): ship IN_TRANSIT
+at D44, container RUNNING — left alone.
+
+**friction: no in-band way to confirm contract FULFILLMENT.** There is still no
+`contract list`/status verb (Degraded: Contract visibility NONE). To verify the payoff I
+have to watch for a `CONTRACT_FULFILLED` ledger row or scrape container logs — the
+contract's own state (and its deadline) is unobservable directly. A `contract status`
+verb would let the Captain confirm the win instead of inferring it from the ledger.
+
+**note for the user:** the 6-session blocker is resolved with no further action needed —
+the merged phantom-cargo fix worked, TORWIND-1 now reads true cargo, and a clean
+batch-contract is running to finish the stranded IRON_ORE contract (expect a
+`CONTRACT_FULFILLED` payment landing treasury above 172,451).
+
+## 2026-07-03 (session 18) — WIN CONFIRMED: IRON_ORE contract FULFILLED (+8,806); TORWIND-1 self-healed a new 4203 fuel crash; hold posture retired
+
+**The payoff landed.** Daemon healthy (2 containers). The ledger shows
+**`CONTRACT_FULFILLED +8,806` -> balance 178,459** — the 7-session stranded IRON_ORE
+contract is PAID. The fleet report's `Credits 170,085 / 24h -4,915` was a **stale
+pre-fulfillment snapshot** (captured ~one big transaction before the +8,806 posted);
+the real balance is ~**178,459** and the true 24h delta is net POSITIVE once the
+fulfillment is counted. The purchase-then-deliver path works end-to-end post-fix — no
+4219 anywhere. **d-20 -> worked** (expectation met: CONTRACT_FULFILLED row + treasury
+> 172,451). **d-18 -> worked** (the 6-session HOLD is fully vindicated — not buying a
+replacement hauler saved ~50k on what would have been an unreliable path).
+
+**New signature, self-healed: API 4203 fuel-exhaustion.** Pending event [59]:
+`batch_contract_workflow-TORWIND-1-d42b3c4f` crashed at 11:40 with API 4203 — the
+route planner left B7 with only 242 fuel for a leg needing 280 (needed 38 more). The
+container **auto-restarted (restart_count 1) and SELF-RECOVERED**: TORWIND-1 is now
+DOCKED at delivery waypoint H63, refueled to **400/400**, holding 10 IRON_ORE,
+container RUNNING. A single 4203 is self-healing, not a strand (new **L40**). The
+ledger did show a ~2,600cr refuel storm (10 REFUELs, 08:31–08:45) for the trip, but
+the +8,806 payout dwarfs it — the route is net-profitable despite the fuel burn, so my
+earlier "money pit" worry was overblown.
+
+**Action (d-21): let it run, don't touch it.** Both ships are actively working (scout
+RUNNING, contract RUNNING) — no idle assets. I took NO manual action: manual delivery
+isn't a CLI verb, and launching a 2nd workflow on TORWIND-1 would conflict. Per L16
+(validate before scaling) I'll confirm THIS iteration completes clean before scaling to
+continuous contracts next session. Guardrail baked into d-21: if the container instead
+crash-loops on 4203 (restart_count climbing, refuel bleed, no fulfillment), STOP it and
+file a route-planner under-fueling bug (2nd 4203 hit = escalation-worthy).
+
+**TORWIND-2 scout:** RUNNING (`scout-tour-...-48adae90`), solar, IN_TRANSIT at F55.
+Pending [57] heartbeat_lost = transient transit leg (L29) — left alone.
+
+**Decisions closed:** d-18, d-20 -> worked. d-17 (scout recovery) not yet due
+(review_after 18:00) and tracking fine (scout healthy, no 4204). New: d-21.
+
+**friction: treasury telemetry still lags a live fulfillment.** The report's `Credits`
+field trailed the ledger by a full CONTRACT_FULFILLED (+8,806) — reading the report
+alone would have understated the win by ~8k and shown a false negative 24h delta. The
+ledger `Balance` column anchored to the last `CONTRACT_*` row (L28) is still the only
+trustworthy treasury source; a report/ledger reconciliation lag persists.
+
+**friction: no contract visibility means I confirm wins by inference.** Still no
+`contract status`/`list` verb (Degraded: Contract visibility NONE) — I can only tell the
+contract fulfilled by spotting a `CONTRACT_FULFILLED` ledger row, and can't see the
+current container's contract terms, quantity, or deadline. A `contract status` verb
+would turn inference into direct observation.
+
+**note for the user:** the multi-session blocker is fully resolved and PAID — the
+IRON_ORE contract fulfilled for +8,806 (treasury ~178,459). No action needed. One new
+watch-item: a transient fuel-planning crash (API 4203) that the daemon self-recovered
+from; if it starts crash-looping next session I'll file a bug for the route planner
+under-fueling before long legs.
+
+## 2026-07-03 (session 19) — SCALED: bounded 5-contract batch launched on TORWIND-1; both ships working, no idle assets
+
+**The clean iteration is confirmed done.** Daemon healthy (0.1.0). The s18 batch-contract
+container `batch_contract_workflow-TORWIND-1-d42b3c4f` reached **COMPLETED** — logs show
+`Iteration 1 completed / Container completed successfully / Contract fulfillment recorded`,
+matching pending event [60] (workflow.finished, success=true, 11:45:02Z). The ledger is
+unchanged since s18 (23 txns, last `CONTRACT_FULFILLED +8,806 -> 178,459`): the single 4203
+fuel crash self-healed with no crash-loop, exactly per L40 — no route-planner bug warranted.
+TORWIND-1 sits DOCKED at H63, full fuel, holding **10 leftover IRON_ORE** (real, post-fix
+trustworthy cargo — surplus over the contract quantity; a minor residual, not a phantom).
+
+**Action (d-22): scale contract throughput — bounded.** With the purchase-then-deliver route
+proven net-profitable (+8,806 vs ~2,950 cost), and TORWIND-1 idle after the clean run, I
+launched `workflow batch-contract --ship TORWIND-1 --iterations 5` (container
+`batch_contract_workflow-TORWIND-1-9e21d9cf`, RUNNING). Chose **5, not -1**: one clean
+iteration is a single data point, so a bounded batch validates the negotiator keeps finding
+profitable contracts AND yields the credits/hour baseline the KPI still lacks, while staying
+easy to reverse (L16, easier-to-reverse tiebreaker). Early logs confirm the healthy path:
+*Cheapest market identified -> Multi-trip purchase initiated -> Route planning completed ->
+navigating*. Capital per trip (~1,920 for IRON_ORE) is trivial vs the ~89k guardrail. Single
+launch on a healthy 1-container daemon (L25); TORWIND-2 scout left running.
+
+**Fleet fully utilized:** TORWIND-1 = contracts (RUNNING), TORWIND-2 = solar scout
+(`scout-tour-...-48adae90`, RUNNING, IN_TRANSIT). No idle ships, no reason-gap.
+
+**Decisions closed:** d-11, d-13 (were still unclosed in the due-review list) -> worked;
+d-21 -> worked (clean completion confirmed). New: d-22. d-1..d-10, d-12, d-14..d-16 already
+carried verdicts from prior sessions (harness re-lists by review_after).
+
+**friction: still no credits/hour baseline after 18 sessions, because contract wall-clock
+was dominated by the multi-session phantom-cargo blocker, not real throughput.** Only now
+(blocker cleared) can a clean multi-contract run produce a real rate. The 5-iteration batch
+is the first honest measurement window; I'll set the baseline next session from its ledger
+deltas. A `ledger report cash-flow` over the batch window would make this a one-command
+derivation instead of hand-summing CONTRACT_FULFILLED rows.
+
+**note for the user:** everything nominal — the IRON_ORE route is proven and I've scaled it
+to a 5-contract batch to compound income and finally measure credits/hour. No action needed.
+
+## 2026-07-03 (session 20) — JACKPOT: batch landed a ~+155k net contract (treasury 333,758); committed to CONTINUOUS contracts; ship-sell fix REGRESSED
+
+**The scale-up paid off spectacularly.** Daemon healthy (0.1.0). The s19 bounded batch
+completed (workflow.finished success, event 61) and the negotiator found a HUGE fresh
+contract: ledger shows `CONTRACT_ACCEPTED +61,803` → `CONTRACT_FULFILLED +167,097`
+(~+229k gross, ~73k cargo+fuel cost, **net ~+155k**). Treasury vaulted **178,459 →
+333,758** (last `CONTRACT_FULFILLED` anchor, L28 — the Balance column glitches negative
+mid-batch as usual, ignore it). The `credits.threshold up 250000` event (333,758) and the
+report's `+158,758 / +6,614/hr` all corroborate. **d-22 → worked** decisively: the
+negotiator keeps finding profitable contracts (2nd fresh profitable one after IRON_ORE).
+
+**Action (d-23): committed to CONTINUOUS contracts.** With the purchase-then-deliver path
+proven net-profitable across 3 fulfillments and TORWIND-1 idle after the clean batch, I
+launched `workflow batch-contract --ship TORWIND-1 --iterations -1` (container
+`batch_contract_workflow-TORWIND-1-b105e337`, RUNNING; negotiation initiated, daemon
+healthy at 2 containers). This is the strategy's stated next step; it's trivially reversible
+(`container stop`) and maximizes compounding. The 25 leftover CLOTHING (real surplus, not a
+phantom) doesn't block it — the workflow reads cargo and multi-trips. Per-contract cargo
+cost (~73k max observed) sits under the 50%/~166k guardrail at 333k treasury.
+
+**Regression found (d-24): `ship sell` STILL segfaults.** A1 imports CLOTHING at a premium
+(sell 11,192), so I tried to sell the 25 leftover units — both to recover capital/free cargo
+AND to re-verify the ship-sell nil-panic fix strategy.md called "merged (s16)." It crashed
+with the **identical** SIGSEGV at `api_metrics.go:134` (`RecordRateLimitWait`). The source
+fix `cfad670 fix(metrics): make APIMetricsCollector recording nil-safe` IS in the git log,
+and the whole panic stack is in-process/client-side (not via the daemon socket) — so the
+likely gap is a **stale `bin/spacetraders` CLI binary** built before cfad670, a
+rebuild/redeploy issue rather than a code regression. Per L39 (observed behavior > report
+status) I REOPENED `2026-07-02-ship-sell-nil-panic.md` (merged → new) with a recurrence
+section, and re-marked ship sell DEGRADED. Low urgency: contracts (the earner) are
+unaffected; only manual cargo offload is blocked, which the continuous loop doesn't need.
+
+**KPI — provisional credits/hour baseline set (with a big caveat).** The 24h delta is
++158,758 ≈ **~6,614 credits/hour**, but that window is BOTH understated (most of it was dead
+time under the phantom-cargo blocker) AND overstated (one lucky +155k contract dominates).
+So I'm recording ~6,600/hr as a *provisional* baseline only, and will re-derive a firm
+steady-state rate from ≥3 contracts of the continuous loop next session (new **L41**:
+contract payouts are lumpy — a single-contract-dominated window is a weak baseline). Target
+stays "20% above the firm baseline" once it exists.
+
+**Decisions closed:** d-22 → worked (new L41). d-1..d-16 (the due-review list) already carry
+verdicts from prior sessions and are re-listed mechanically by `review_after` — no re-close
+needed. New: d-23 (continuous contracts), d-24 (ship-sell reopen).
+
+**Pending events:** [61] batch workflow.finished → resolved (jackpot contract fulfilled).
+[62] TORWIND-1 idle → resolved (now running the continuous loop). [63] credits.threshold up
+250000 → informational, corroborates treasury 333,758.
+
+**friction: batch iteration accounting is opaque.** Container 9e21d9cf logged only
+"Iteration 1 completed" before "Container completed successfully" despite `--iterations 5`,
+so I can't tell from logs how many contracts a batch actually completed or why it stopped.
+Combined with the standing "no `contract status`/`list` verb" gap, I confirm contract
+throughput purely by counting `CONTRACT_FULFILLED` ledger rows. A `contract status` verb (or
+a per-container contract-count summary) would turn inference into direct observation — the
+top recurring instrument-panel gap to promote at the next meta-review.
+
+**note for the user:** big win — the fleet banked a ~+155k contract and treasury is now
+**333,758**. I've switched TORWIND-1 to a continuous contract loop to keep compounding. One
+regression to flag: `ship sell` still crashes despite its fix being marked merged (commit
+cfad670 is in git, but the deployed `bin/spacetraders` binary looks stale — it may just need
+a rebuild). Low-impact (contracts don't use it); I've reopened the bug report.
+
+### s20 ADDENDUM — batch-contract doesn't loop; pivoted to `contract start`; treasury 503,700; socket hung
+
+Two findings after the initial writes, same session:
+
+**(1) `batch-contract --iterations N` SELF-COMPLETES after ONE contract** — observed twice:
+the `--iterations 5` container (9e21d9cf) AND the `--iterations -1` container (b105e337) both
+logged "Iteration 1 completed → Container completed successfully → Released ship" and exited.
+So the iterations flag does NOT produce a persistent loop — batch-contract is effectively a
+single-contract tool, and relaunching it per heartbeat isn't autonomous-continuous. Notably
+the `-1` run still banked a SECOND jackpot before exiting: ledger `CONTRACT_FULFILLED
++184,744 → balance 503,700` (12:03:08). **Treasury is now 503,700** (two mega-contracts in
+one session; the negotiator is finding unusually rich contracts in X1-PZ28 right now).
+
+**(2) Pivoted to `contract start` (d-25)** — the purpose-built coordinator that
+"continuously negotiate[s] and execute[s] contracts" until stopped, dynamically discovering
+idle haulers (container `contract_fleet_coordinator-player-1-35df0a9f`). It reached
+"Executing iteration," then the daemon **socket HUNG** (`health` and `container list` both
+`context deadline exceeded`) while the DB path stayed alive (ledger answered instantly —
+L19/L30: socket subsystem hung, daemon/DB not dead). This is an L30-class spontaneous hang,
+likely triggered by the coordinator's heavy discovery iteration (single launch, NOT a
+concurrent-launch violation). Per L30 I scoped it with the minimal socket+DB probes and
+did NOT keep probing — there's no Captain-side restart, treasury is safe (503,700,
+DB-confirmed), and no capital is at risk.
+
+**Deferred to next session:** verify the socket recovered and `contract_fleet_coordinator-…
+-35df0a9f` is RUNNING and assigned TORWIND-1 — **crucially, confirm the COMMAND-role ship
+qualifies as a "light hauler"** for the coordinator; if it finds 0 eligible ships it'll
+idle/exit and I fall back to per-contract `batch-contract` relaunches. If the socket is
+still hung at next session start, that's a genuine spontaneous-hang recurrence (s2-class,
+distinct from the debunked PID-lock class) → append to the socket-hang report.
+
+**friction: `--iterations` on batch-contract is misleading** — the help text says
+"-1 for infinite" but the container completes after one contract. Either the flag is broken
+or "iteration" means something narrower than "one contract." Combined with the opaque
+iteration accounting, this made me mis-plan the continuous posture (I launched batch-contract
+`-1` expecting a loop; it wasn't). A reliable continuous-contract primitive (or fixing
+`--iterations`) would remove the need for the `contract start` pivot.
+
+**note for the user (updated):** even bigger win — a SECOND mega-contract landed (+184,744),
+treasury is now **503,700**. Two behavior notes: (a) `batch-contract --iterations -1` doesn't
+actually loop (exits after one contract), so I switched to the `contract start` coordinator
+for continuous operation; (b) launching it tripped a daemon socket hang (the DB is fine and
+treasury is safe) — I've deferred verifying the coordinator to next session once the socket
+recovers, per the standing playbook. No action needed from you.
+

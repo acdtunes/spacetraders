@@ -1,6 +1,6 @@
 ---
 title: Add `ship refresh` — a force-resync verb that reconciles the daemon ship cache from the server
-status: new
+status: merged
 kind: feature
 ---
 

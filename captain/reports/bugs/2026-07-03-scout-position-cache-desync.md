@@ -1,6 +1,6 @@
 ---
 title: Daemon ship position cache lags server by one waypoint, crash-looping scout-tour with API 4204 "already at destination"
-status: awaiting_human
+status: merged
 kind: fix
 ---
 

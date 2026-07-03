@@ -67,3 +67,28 @@ Nil-guard / initialize the metrics handle used at api_metrics.go:134, or ensure
 `APIMetricsCollector` (and its metric fields) is always non-nil for every
 `SpaceTradersClient` construction path. A crash in a metrics side-channel must
 never take down the request; recording failures should be best-effort.
+
+## Recurrence — 2026-07-03 (session 20), REOPENED from `merged`
+
+The source fix DID land — `git log` shows commit
+`cfad670 fix(metrics): make APIMetricsCollector recording nil-safe` — and this
+report was marked `merged` at s16. **But the crash still reproduces byte-for-byte.**
+Re-ran `bin/spacetraders ship sell --ship TORWIND-1 --good CLOTHING --units 10
+--player-id 1` (TORWIND-1 DOCKED at X1-PZ28-A1, which imports CLOTHING @ sell
+11192) and got the identical SIGSEGV at `api_metrics.go:134`
+(`RecordRateLimitWait`), same stack, only the `pc=` address differs (0x100c9d7ec
+vs the original 0x10164d7ec — expected, different build).
+
+The entire panic stack is in-process in the CLI binary (main.main →
+cli.Execute → SellCargoHandler.Handle → SpaceTradersClient.SellCargo →
+client.request → RecordRateLimitWait); the sell path does NOT go through the
+daemon socket. So the most likely cause of "fix committed but crash persists" is
+that the deployed `bin/spacetraders` CLI binary is **stale — built before
+cfad670**. This is a rebuild/redeploy gap, not necessarily a source-code
+regression: please verify `bin/spacetraders` is rebuilt from a commit that
+includes cfad670 (and, if it is, that cfad670 actually guards line 134 on the
+rate-limit-wait branch this reproducer hits).
+
+Impact remains low this session — contracts (the real earner) are unaffected and
+worked (treasury 333,758). `ship sell` stays DEGRADED; the Captain will not rely
+on it for cargo offload until a rebuilt binary is confirmed crash-safe.
