@@ -562,6 +562,12 @@ func run(cfg *config.Config) error {
 		nil,               // Use default RealClock
 		graphService,      // WaypointProvider for task source location lookups
 	)
+	// Wire the ship event bus so the coordinator can subscribe to worker/task
+	// events and the supply monitor can publish TasksBecameReady events.
+	// Without this the handler nil-derefs the event bus on its goroutine and
+	// crashes the whole daemon (mirrors the contract coordinator wiring above).
+	parallelManufacturingCoordinatorHandler.SetEventSubscriber(shipEventBus)
+	parallelManufacturingCoordinatorHandler.SetEventPublisher(shipEventBus)
 	// Enable storage ship recovery on daemon restart
 	parallelManufacturingCoordinatorHandler.SetStorageRecoveryService(storageRecoveryService)
 	// Enable STORAGE_ACQUIRE_DELIVER task creation for goods produced by storage operations

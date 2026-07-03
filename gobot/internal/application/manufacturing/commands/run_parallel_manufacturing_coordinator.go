@@ -168,6 +168,14 @@ func (h *RunParallelManufacturingCoordinatorHandler) Handle(
 		return nil, fmt.Errorf("invalid request type")
 	}
 
+	// Fail fast if the event bus was never wired (SetEventSubscriber/SetEventPublisher).
+	// Without this guard a mis-wired handler would nil-deref h.eventSubscriber later in
+	// this method; because Handle runs on the container's naked goroutine, that panic
+	// takes down the whole daemon instead of failing only this container.
+	if h.eventSubscriber == nil || h.eventPublisher == nil {
+		return nil, fmt.Errorf("manufacturing coordinator event bus not wired: call SetEventSubscriber and SetEventPublisher before running")
+	}
+
 	logger := common.LoggerFromContext(ctx)
 
 	// Apply defaults
