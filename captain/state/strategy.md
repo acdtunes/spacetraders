@@ -46,11 +46,31 @@ Capital thresholds are therefore the WRONG trigger for the near term; **tooling-
   Path (i) via the completed gate (free), or (ii) a warp/jump-drive ship. BLOCKER: neighboring-system
   symbols unknown (discovery-verb gap #1) + no jump drive. Recon-first with a cheap probe, never a
   capital ship blind.
-- **#3 TRADING — a cash hedge, tooling-blocked.** Spread is REAL and still live s53 (CLOTHING J70 buy
-  4781 → A1 sell 11142 = +6,361/u; MEDICINE +5,571/u) and a per-ship arbitrage rate would rival the
-  contract rate — BUT no buy verb (unexecutable), SCARCE supply + volume-20 (thin/self-collapsing),
-  single-snapshot intel (stability unproven). LOWEST near-term priority: side-quest, not progression,
-  most tooling-blocked.
+- **#3 MANUFACTURING / TRADING — EXECUTABLE (s58 d-65, Admiral correction), fleet-capacity-gated.** The
+  `operations start --manufacturing` engine + `goods produce <GOOD>` are already-built, already-allowlisted
+  parallel income: discover high-demand goods → supply-chain resolver (buy-vs-fabricate) → sell. Verified s58
+  dry-run launches; X1-PZ28 has a real prefer-fabricate thesis (abundant cheap ores at J70/B7 → SCARCE
+  high-value finished goods at A1, QUANTUM_DRIVES sell 141,736). The old "no `ship buy` verb → unexecutable"
+  framing is WITHDRAWN (L46). REAL gates now: (a) FLEET CAPACITY — manufacturing auto-claims idle haulers with
+  NO ship-exclusion flag, so it races the contract coordinator (L46c) for the sole hauler; needs a DEDICATED
+  hauler; (b) SELL-SIDE VOLUME 6–20 SCARCE/WEAK (L13 thin/self-collapsing) caps standalone $/h; (c) VALIDATION
+  (L16) before the capital buy. **See the MANUFACTURING EXPERIMENT block below.**
+
+  #### MANUFACTURING EXPERIMENT (d-65) — bounded, triggered, deferred past d-37
+  - **Trigger to launch:** after the d-37 24h verdict settles (≥2026-07-04T14:00Z) so the contract baseline is
+    LOCKED and not corrupted by the perturbation.
+  - **Run:** `operations start --system X1-PZ28 --manufacturing --max-pipelines 1`, then IMMEDIATELY
+    `container logs` to see which ship it discovers.
+  - **GUARD:** if it grabs TORWIND-3 (the contract hauler) → `operations stop --manufacturing` within the
+    session (interference confirmed; a dedicated hauler is required first). If it grabs only TORWIND-1 (COMMAND
+    spare) or finds no idle hauler → let it run a measured window.
+  - **Measure:** standalone NET $/h = ledger TRADING_REVENUE − TRADING_COSTS − FUEL over the window; contract
+    $/h before vs during (interference).
+  - **SCALE TRIGGER:** net manufacturing $/h materially positive AND contract $/h does not sag → buy 1 dedicated
+    LIGHT_HAULER for manufacturing (guardrail ≤50% treasury, ~1.03M cap, trivially met) → run both streams in
+    parallel. This is the Admiral's 10× path: parallel dedicated haulers, not one hauler split two ways.
+  - **FALSIFY:** if the engine only ever competes for the sole hauler with no net gain → manufacturing is not the
+    10× lever on this fleet; the lever is more haulers on contracts (or a new system).
 - **#4 FLEET — derived, demand-pulled.** #1 construction needs 1–2 haulers to ferry materials (collides
   with the coordinator's auto-claim, L46c — reservation needed). #2 needs 1 cheap probe (or warp scout).
   #3 needs 1 hauler held out of the coordinator. RULE (L16): buy only against a validated, unblocked
@@ -58,9 +78,11 @@ Capital thresholds are therefore the WRONG trigger for the near term; **tooling-
 
 ### Sequencing (dependency-ordered) + triggers
 0. **NOW → next meta-review:** promote **(a) a waypoint/system-discovery verb** (expose the daemon's
-   jump-gate + connections + waypoint-type data) as the #1 feature ask, **(b) a `ship buy` verb** as #2.
-   These unlock #1/#2 and #3 respectively. No treasury gate — they ARE the gate. (Cannot file features in
-   a heartbeat per CLAUDE.md; queued here for the next meta-review.)
+   jump-gate + connections + waypoint-type data) as the #1 feature ask (unlocks #1/#2). The `ship buy` ask is
+   WITHDRAWN (s58 d-65) — the manufacturing engine already covers diversification. NEW #2 ask: a manufacturing
+   **ship-exclusion/reservation flag** (`--ships`/`--exclude-ships`) so a stream can be pinned to a dedicated
+   hauler without racing the contract earner (the gate on a clean parallel run). (Cannot file features in a
+   heartbeat per CLAUDE.md; queued here for the next meta-review.)
 1. Discovery verb lands → survey the jump gate (idle command ship, ~free) → `construction status <gate>`
    to read material requirements.
 2. START `construction start --depth 3` the gate WHEN: (a) requirements read; (b) est. material cost
@@ -68,10 +90,81 @@ Capital thresholds are therefore the WRONG trigger for the near term; **tooling-
    treasury clears most single-gate bills within hours.
 3. Gate operational → cheap probe recon of the nearest connected system (markets/shipyards).
 4. Recon reveals a concrete opportunity → size a fleet expansion to it.
-5. Trading revisited ONLY if a `ship buy`/trade-route verb appears → then a single ≤20u round trip on the
-   reservable command ship to validate realized-vs-paper net before scaling.
+5. Manufacturing/trading — run the MANUFACTURING EXPERIMENT block above (deferred past d-37), independent of
+   the gate thread: validate net $/h on a bounded run, then buy a dedicated hauler if it clears the scale trigger.
 
 ## Current posture
+- **s58 (d-65): FRONTIER — exercised the manufacturing engine (`operations`/`goods`); answered the Admiral with evidence; NO actuation.**
+  Pending events all clean ([154]/[156] TORWIND-3 workflow.finished success=true = clean fulfillments; [155] TORWIND-1
+  ship.idle DOCKED D45 = expected benched-command-ship state). No decisions due. Per the Admiral directive + frontier duty,
+  spent the session on the never-invoked `operations`/`goods` verbs: read all four help pages, ran `operations start
+  --manufacturing --dry-run` (launches clean: prefer-fabricate/min-price 1000/5 workers/3 pipelines), `operations status`
+  (no active gas/mfg ops), and sampled the fresh market cache. **Finding:** a real prefer-fabricate thesis EXISTS (J70/B7
+  abundant cheap ores IRON_ORE 16 / ALUMINUM_ORE 19 / COPPER_ORE 22 → A1 SCARCE high-value finished goods, QUANTUM_DRIVES
+  sell 141,736), BUT the engine auto-claims idle haulers with NO exclusion flag and my only productive hauler (TORWIND-3)
+  is the record contract earner (TORWIND-2 = 0/0 probe, TORWIND-1 = benched COMMAND). A live run now would race the
+  coordinator (L46c) and CORRUPT the d-37 verdict ~19h out; A1 sell volumes 6–20 SCARCE/WEAK cap standalone $/h (L13).
+  **AGREE the engine is the executable parallel stream (corrected L46 — diversification was never ship-buy-blocked);
+  REBUT the timing; DESIGNED a bounded, triggered experiment (d-65) deferred past d-37** (see Horizon plan ##
+  MANUFACTURING EXPERIMENT). **Binding constraint on the Admiral's 10× MISSION growth reframed: FLEET CAPACITY** (both
+  streams need haulers; I have one productive one) — NOT tooling (engine exists, allowlisted) and NOT capital (2.10M idle);
+  attacking it now is wrong only because validation must precede the capital buy (L16) and d-37 must lock first. Health OK,
+  socket HEALTHY (**37th consecutive clean**: s22 hung, s23–s58 clean), 3 containers RUNNING (coordinator 35df0a9f + worker
+  contract-work-TORWIND-3-824d2adf + scout-tour 48adae90). Treasury ~2.10M, 24h delta +1,927,013 ≈ **+80,292/hr — a new
+  high, ~3.67× the ~21,900 KPI**. HELD capital. Guardrail ≤50% of ~2.10M = **~1.05M cap**.
+- **s57 (d-64): CLEAN HEARTBEAT — MILESTONE: treasury crossed 2M for the first time (2,059,501); rate the HIGHEST YET ~78.5k/hr.**
+  Pending [153] = TORWIND-3 workflow.finished success=true (container c7cfd4e6) = a clean fulfillment, NOT a failure —
+  ledger-confirmed `CONTRACT_FULFILLED +157,853 @15:19:46 → 2,032,306` then re-negotiated `CONTRACT_ACCEPTED +27,195
+  @15:19:52 → 2,059,501`, matching the fleet-report Treasury field EXACTLY (REAL, no L28 garbage this window). Coordinator
+  spawned a fresh worker contract-work-TORWIND-3-613cf4a1 @18:19:46 on the re-negotiation — textbook clean cycle. Socket
+  HEALTHY (**36th consecutive clean**: s22 hung, s23–s57 clean); health OK, 3 containers RUNNING (coordinator 35df0a9f +
+  fresh worker 613cf4a1 + scout-tour 48adae90). TORWIND-1 DOCKED D45 = benched command ship (expected); TORWIND-2 solar
+  scout IN_TRANSIT fuel 0/0 = normal; TORWIND-3 IN_TRANSIT J69 fuel 362/600 cargo 0/80 = empty, starting its next buy leg.
+  NO 404 crash burst (s52 signature dormant). **24h delta +1,884,501 ≈ +78,520/hr — the highest yet, ~3.58× the ~21,900
+  KPI**, up from s56's ~70.9k/hr. Binding constraint unchanged: EARNER = cycle time (d-37 verdict due 2026-07-04T14:00Z,
+  ~19.6h out, trending strongly VALIDATED); MISSION = tooling (the two verb-asks, queued for meta-review). HELD, no
+  actuation. Guardrail <=50% of 2,059,501 = **~1.03M cap**.
+- **s56 (d-63): CLEAN HEARTBEAT — treasury NEW HIGH ~1.95M peak, rate the HIGHEST YET ~70.9k/hr; this window's thresholds were REAL, not L28.**
+  Unlike s55, the alarms were genuine good news. Pending [149]-[152] = credits.threshold UP (100k/250k/500k/1M) reading
+  **1,952,033** — ledger-CONFIRMED REAL (CONTRACT_ACCEPTED +61,387 @15:06:10 lands Balance at exactly 1,952,033, a new
+  all-time peak). [148] = TORWIND-3 workflow.finished success=true = clean fulfillment, not a failure. Fleet-report Treasury
+  **1,875,533** also ledger-confirmed (latest REFUEL -360 @15:09:34 → 1,875,533) — a normal mid-contract dip from the 1.95M
+  peak as TORWIND-3 buys cargo (PURCHASE_CARGO -76,140 @15:09:32) for its next delivery; rebounds on fulfillment. Two clean
+  cycles in-window: CONTRACT_FULFILLED +77,349 @15:00:48 then +77,045 @15:06:05, each re-negotiated (+31,469, +61,387).
+  Socket HEALTHY (**35th consecutive clean**: s22 hung, s23–s56 clean); health OK, 3 containers RUNNING (coordinator 35df0a9f
+  + fresh worker contract-work-TORWIND-3-c7cfd4e6 + scout-tour 48adae90). TORWIND-1 DOCKED D45 = benched command ship
+  (expected); TORWIND-2 solar scout IN_TRANSIT fuel 0/0 = normal. NO 404 crash burst (s52 signature dormant). **24h delta
+  +1,700,533 ≈ +70,855/hr — the highest yet, ~3.24× the ~21,900 KPI**, up from s54's ~69k/hr. Binding constraint unchanged:
+  EARNER = cycle time (d-37 verdict due 2026-07-04T14:00Z, ~20h out, trending strongly VALIDATED — rate rose the whole span
+  s30→s56); MISSION = tooling (the two verb-asks, queued for meta-review). HELD, no actuation. Guardrail <=50% of 1,875,533
+  = **~938k cap**.
+- **s55 (d-62): CLEAN HEARTBEAT — treasury ALARM was PURE L28 GARBAGE; real treasury ~1.81M, posture unchanged.**
+  Fleet report opened Credits **-18,197** with FOUR credits.threshold DOWN events ([144]/[145]/[146]/[147]: 100k/250k/500k/1M)
+  + garbage 24h delta -193,197. **Per L28 checked the ledger BEFORE acting:** the -18,197 is a DESYNCED Balance on ONE
+  `PURCHASE_CARGO -2,615` row @15:03:27 — the row directly above (`PURCHASE_CARGO -15,582`) reads Balance 1,816,504 and
+  -2,615 cannot take it to -18,197. **TRUE treasury ~= 1,813,889** (anchor CONTRACT_ACCEPTED +31,469 @15:00:49 → 1,832,374 →
+  REFUEL -288 → 1,832,086 → PURCHASE_CARGO -15,582 → 1,816,504 → -2,615 → ~1,813,889), a NORMAL mid-contract dip from the
+  s54 high (1,832,374) as TORWIND-3 buys cargo for its next delivery (7/80, IN_TRANSIT C42) — rebounds on fulfillment. Real
+  treasury never dropped; all four DOWN thresholds spurious. Socket HEALTHY (**34th consecutive clean**: s22 hung, s23–s55
+  clean); health OK, 3 containers RUNNING (coordinator 35df0a9f + worker contract-work-TORWIND-3-a8d43379 + scout-tour
+  48adae90). TORWIND-1 DOCKED D45 = expected benched-command-ship state; TORWIND-2 solar scout IN_TRANSIT fuel 0/0 = normal.
+  NO 404 crash burst (s52 signature dormant, escalation counter does not advance). Binding constraint unchanged: EARNER =
+  cycle time (d-37 verdict due 2026-07-04T14:00Z, ~20h out, trending strongly VALIDATED); MISSION = tooling (the two verb-asks,
+  queued for meta-review). HELD, no actuation. Guardrail <=50% of ~1,813,889 = **~907k cap**. The L28 desynced-Balance false
+  alarm recurred a 3rd time (s39/s51/s55) — the observability-tax friction is re-flagged for meta-review.
+- **s54 (d-61): CLEAN HEARTBEAT — NEW HIGH 1.83M @ ~69k/hr (highest yet); five old holds closed WORKED; Horizon plan reaffirmed.**
+  Treasury **1,832,374**, ledger-CONFIRMED REAL (latest CONTRACT_ACCEPTED +31,469 @15:00:49 lands Balance exactly at
+  1,832,374 = fleet report). **24h delta +1,657,374 ≈ +69,057/hr — ~3.15× the ~21,900 KPI**, up from s53's ~63k/hr, on two
+  clean cycles inside ~6min (+8,821 then +77,349 fulfilled, each re-negotiated). Socket HEALTHY (**33rd consecutive clean**:
+  s22 hung, s23–s54 clean); health OK, 3 containers RUNNING (coordinator 35df0a9f + worker
+  contract-work-TORWIND-3-a8d43379 + scout-tour 48adae90). Pending [141]/[142] = clean fulfillments (not failures);
+  [143] = TORWIND-1 ship.idle DOCKED D45 = expected benched-command-ship state. The s52 **404-on-dock/get-ship signature did
+  NOT recur** (worker 70030710 + a8d43379 both clean) → 3-session escalation counter does NOT advance. Closed d-17/d-27/d-29/
+  d-31/d-33 all WORKED (scout recovery durable; s22 hang cost observability not money; multi-trip crash + 4203 self-heal
+  validated 3rd+ time). Admiral message re-appeared but was fully answered s53 (d-60 Horizon plan in ## Horizon plan above) —
+  REAFFIRMED, not rewritten. Binding constraint: EARNER = cycle time (d-37 verdict due 2026-07-04T14:00Z, ~20h out, trending
+  strongly VALIDATED); MISSION = tooling (the two verb-asks, queued for meta-review). HELD, no actuation. Guardrail <=50% of
+  1,832,374 = **~916k cap**.
 - **s53 (d-60): CLEAN HEARTBEAT + HORIZON PLAN delivered (Admiral challenge). No 404 recurrence.** Treasury
   ~1,721,194 (unchanged from s52; ledger anchor CONTRACT_ACCEPTED +2,635 @14:30:30 → 1,726,838 net real
   refuel/cargo; the -4,996 Balance field is L28 garbage on REFUEL/PURCHASE_CARGO rows). Socket HEALTHY

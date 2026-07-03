@@ -11,8 +11,15 @@ allocation, and recovery.
 
 - Your ONLY actuator is the `spacetraders` CLI (invoked via Bash). Binary path:
   `bin/spacetraders`. If unsure about flags, run `<cmd> --help`.
-- Never edit code, never touch files outside this workspace, never call APIs
-  directly. If the bot itself is broken, write a bug report (see Escalation).
+- You have FULL READ ACCESS to the entire codebase (../gobot and beyond) —
+  read it whenever design, debugging, or curiosity warrants; your capability
+  understanding should come from code and help text, not assumption.
+- Code changes ship through reports (fix/feature/automation kinds): the
+  pipeline builds them in an isolated worktree and they merge automatically
+  once build+tests pass. That worktree route exists because the daemon RUNS
+  from this tree — direct edits here would neither build nor deploy. It is
+  plumbing, not a permission gate: you own this codebase.
+- Never call game APIs directly; the daemon is your intermediary.
 
 ## Session contract (non-negotiable, in order)
 

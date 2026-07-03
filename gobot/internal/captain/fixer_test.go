@@ -57,7 +57,7 @@ func newFixerFixture(t *testing.T, stub *fixStubRunner, autoMerge bool) (*Fixer,
 
 	cfg := config.CaptainConfig{
 		PlayerID: 1, WorkspaceDir: wsDir, RepoDir: repo, AutoMerge: autoMerge,
-		MaxFixesPerDay: 3, FixSessionTimeoutMinutes: 1, MaxFeatureDiffLines: 400,
+		MaxFixesPerDay: 3, MaxFeaturesPerDay: 2, FixSessionTimeoutMinutes: 1, MaxFeatureDiffLines: 400,
 		RestartCmd: "true", // no-op shell command for tests
 	}
 	factory := func(workDir string) SessionRunner { stub.workDir = workDir; return stub }
@@ -135,4 +135,29 @@ func TestGateDirResolvesMonorepoModule(t *testing.T) {
 	flat := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(flat, "go.mod"), []byte("module y\n"), 0o644))
 	require.Equal(t, flat, gateDir(flat), "flat repo: gate runs at the root")
+}
+
+const sampleAutomation = `---
+title: Arbitrage route coordinator
+status: new
+kind: automation
+---
+
+## Design
+Coordinator that discovers idle haulers and runs buy-low/sell-high routes.
+`
+
+func TestAutomationKindAutoMerges(t *testing.T) {
+	stub := &fixStubRunner{write: "package main\n\n// Auto.\nfunc Auto() bool { return true }\n"}
+	fixer, reportPath, repo := newFixerFixture(t, stub, true) // auto_merge ON
+	require.NoError(t, os.WriteFile(reportPath, []byte(sampleAutomation), 0o644))
+
+	acted, err := fixer.ProcessOne(context.Background(), time.Now())
+	require.NoError(t, err)
+	require.True(t, acted)
+
+	reports, _ := ScanReports(filepath.Dir(reportPath))
+	require.Equal(t, "merged", reports[0].Status,
+		"automations are full citizens: gate-passed means merged")
+	require.FileExists(t, filepath.Join(repo, "fix.go"))
 }

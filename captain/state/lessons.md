@@ -337,16 +337,24 @@ is now blocked at TWO layers, not three — (b) INTELLIGENCE (single-snapshot sc
 spread) and (c) COORDINATION (coordinator auto-claims idle haulers, so no route ship can be
 reserved). Progress is a gate-clear, not a green light: still need a stable-spread read AND a way
 to hold a hauler out of the coordinator before a live J70->A1 round-trip.
-UPDATE s53 [d-60] — layer (d) BUY ACTUATOR, the most fundamental, was MISSED all along: there is NO
-`ship buy` verb (ship subcommands are only dock/info/jump/list/navigate/orbit/refresh/refuel/sell).
-Cargo acquisition is workflow-INTERNAL (contract/goods/operations pipelines) — so a MANUAL arbitrage
-round-trip is UNEXECUTABLE regardless of ship-sell (d-34), spread stability (b), or reservation (c).
-The trade route is tooling-blocked at the actuator, NOT capital-blocked (1.72M idle). Companion gap
-(discovery): the market cache holds only physically-VISITED marketplaces, and there is NO waypoint/
-system-discovery verb — so the jump gate (not a marketplace) is unaddressable and neighboring systems
-are unnameable, blocking the JUMP-GATE and EXPLORATION horizons too. RULE: the binding constraint on
-EVERY non-contract horizon is missing SENSORS/ACTUATORS (a `ship buy` verb + a waypoint/system-discovery
-verb), not treasury — promote both at meta-review before treating any horizon as capital-gated.
+UPDATE s53 [d-60] — layer (d) BUY ACTUATOR was thought MISSED: no `ship buy` verb (ship subcommands are only
+dock/info/jump/list/navigate/orbit/refresh/refuel/sell). Concluded manual arbitrage was UNEXECUTABLE and the
+trade horizon tooling-blocked at the actuator.
+WITHDRAWN s58 [d-65] (Admiral correction) — that "unexecutable / ship-buy-blocked" framing was WRONG. Cargo
+acquisition being workflow-INTERNAL is not a blocker; it is the SOLUTION: the `operations start --manufacturing`
+engine (and `goods produce <GOOD>`) is an already-built, already-allowlisted PARALLEL income stream that discovers
+high-demand goods, sources them via a supply-chain resolver (buy-vs-fabricate, `--strategy prefer-buy|
+prefer-fabricate|smart`), and sells for profit. Verified s58: dry-run launches cleanly; X1-PZ28 has a real
+prefer-fabricate thesis (abundant cheap ores at J70/B7 → SCARCE high-value finished goods at A1, QUANTUM_DRIVES
+sell 141,736). So diversification is NOT actuator-blocked. The REAL constraints are: (1) FLEET CAPACITY —
+manufacturing auto-claims idle haulers with NO ship-exclusion flag, so it races the contract coordinator (layer c)
+for the sole productive hauler; a clean parallel run needs a DEDICATED hauler. (2) SELL-SIDE VOLUME — A1
+finished-goods volumes are 6–20, SCARCE/WEAK (L13 thin/self-collapsing), capping standalone $/h. (3) VALIDATION —
+L16: measure net manufacturing $/h before buying a dedicated hauler. RULE (revised): the binding constraint on the
+trade/manufacturing horizon is FLEET CAPACITY + validation, NOT tooling and NOT capital (2.06M idle). The
+waypoint/system-discovery gap still stands for the JUMP-GATE/EXPLORATION horizons, but the `ship buy` ask is
+WITHDRAWN — the engine already exists. Experiment designed in d-65, deferred past the d-37 verdict to avoid
+corrupting it.
 
 L47 [d-34] — Phantom cargo (L32/L34) RECURS after every contract fulfillment: TORWIND-1 finished
 the AMMONIA_ICE contract and its `ship info` showed 9/40 leftover AMMONIA_ICE while the server

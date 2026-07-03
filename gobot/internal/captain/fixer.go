@@ -64,7 +64,7 @@ func (f *Fixer) ProcessOne(ctx context.Context, now time.Time) (bool, error) {
 	}
 
 	budget := f.cfg.MaxFixesPerDay
-	if target.Kind == "feature" {
+	if target.Kind == "feature" || target.Kind == "automation" {
 		budget = f.cfg.MaxFeaturesPerDay
 	}
 	if f.startsInLastDay(now) >= budget {
@@ -78,8 +78,11 @@ func (f *Fixer) ProcessOne(ctx context.Context, now time.Time) (bool, error) {
 	}
 
 	prefix := "fix"
-	if target.Kind == "feature" {
+	switch target.Kind {
+	case "feature":
 		prefix = "feat"
+	case "automation":
+		prefix = "auto"
 	}
 	branch := fmt.Sprintf("captain/%s-%s", prefix, target.Slug)
 	wt, err := CreateWorktree(f.cfg.RepoDir, branch)
@@ -100,6 +103,9 @@ func (f *Fixer) ProcessOne(ctx context.Context, now time.Time) (bool, error) {
 	moduleDir := gateDir(wt.Dir)
 	runner := f.factory(moduleDir)
 	timeout := time.Duration(f.cfg.FixSessionTimeoutMinutes) * time.Minute
+	if target.Kind == "automation" {
+		timeout *= 2 // a coordinator+workers slice is a bigger build
+	}
 	sctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	if err := runner.Run(sctx, FixPrompt(*target, string(body))); err != nil {
@@ -117,7 +123,7 @@ func (f *Fixer) ProcessOne(ctx context.Context, now time.Time) (bool, error) {
 		return true, nil
 	}
 
-	if target.Kind == "feature" {
+	if target.Kind == "feature" { // automations are uncapped by design
 		lines, err := DiffLines(f.cfg.RepoDir, branch)
 		if err == nil && lines > f.cfg.MaxFeatureDiffLines {
 			_ = SetReportStatus(target.Path, "awaiting_human")

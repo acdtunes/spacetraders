@@ -32,14 +32,13 @@
       "Bash(bin/spacetraders player info:*)",
       "Bash(tools/restart-daemon.sh)",
       "Bash(tools/wait-daemon.sh:*)",
-      "Bash(bin/spacetraders ship refresh:*)"
+      "Bash(bin/spacetraders ship refresh:*)",
+      "Bash(bin/spacetraders waypoint:*)",
+      "Bash(bin/spacetraders ship buy:*)",
+      "Bash(bin/spacetraders system:*)",
+      "Grep",
+      "Glob"
     ],
-    "deny": [
-      "Read(//Users/andres.dandrea/projects/spacetraders/gobot/**)",
-      "Write(//Users/andres.dandrea/projects/spacetraders/gobot/**)",
-      "Edit(//Users/andres.dandrea/projects/spacetraders/gobot/**)",
-      "Write(//Users/andres.dandrea/projects/spacetraders/docs/**)",
-      "Edit(//Users/andres.dandrea/projects/spacetraders/docs/**)"
-    ]
+    "deny": []
   }
 }
