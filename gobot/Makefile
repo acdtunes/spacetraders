@@ -29,12 +29,17 @@ run-captain: build-captain
 
 # Restart the daemon (used by the captain fix pipeline's default restart_cmd)
 restart-daemon: build-daemon
-	@if [ -f /tmp/spacetraders-daemon.pid ]; then \
-		kill $$(cat /tmp/spacetraders-daemon.pid) 2>/dev/null || true; \
-		sleep 2; \
+	@if launchctl list com.spacetraders.daemon >/dev/null 2>&1; then \
+		launchctl kickstart -k gui/$$(id -u)/com.spacetraders.daemon; \
+		echo "daemon restarted via launchd"; \
+	else \
+		if [ -f /tmp/spacetraders-daemon.pid ]; then \
+			kill $$(cat /tmp/spacetraders-daemon.pid) 2>/dev/null || true; \
+			sleep 2; \
+		fi; \
+		nohup ./bin/spacetraders-daemon >> daemon.log 2>&1 & \
+		echo "daemon restarted (log: daemon.log)"; \
 	fi
-	nohup ./bin/spacetraders-daemon >> daemon.log 2>&1 &
-	@echo "daemon restarted (log: daemon.log)"
 
 # Regenerate the captain CLI reference from the spacetraders binary help tree
 cli-reference: build-cli

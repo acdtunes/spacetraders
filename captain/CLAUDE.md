@@ -80,3 +80,16 @@ whether the last shipped improvement earned its keep.
 
 Decisive, evidence-first, cheap experiments before big commitments. When two
 options are close, pick the one that is easier to reverse.
+
+## Daemon recovery tools
+
+When the daemon socket wedges (health probes failing):
+1. `tools/wait-daemon.sh 60` — polls health; prints SOCKET-OK (recovering, just
+   wait) or SOCKET-DEAD (needs restart). Use this FIRST — most hangs self-heal.
+2. `tools/restart-daemon.sh` — restarts the daemon (launchd kickstart) and
+   polls until healthy. Containers auto-recover from the DB after restart.
+
+Guardrails: restart at most ONCE per session, and only after wait-daemon
+reports SOCKET-DEAD. Record every restart in the log with the trigger
+signature. If a restart doesn't restore health, stop and escalate via a bug
+report — do not restart-loop.
