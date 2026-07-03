@@ -114,11 +114,23 @@ func ComposeSnapshot(ctx context.Context, db *gorm.DB, ws Workspace, playerID in
 		b.WriteString("- " + string(raw) + "\n")
 	}
 
-	// Memory
+	// Memory — budgeted: oversized files are truncated and flagged instead of
+	// billing every session for unbounded context (strategy.md hit 103KB).
+	strategy, stratOver := ws.ReadBudgeted("strategy.md", 16*1024)
 	b.WriteString("\n## Standing strategy (state/strategy.md)\n")
-	b.WriteString(ws.ReadFull("strategy.md") + "\n")
+	b.WriteString(strategy + "\n")
+	if stratOver {
+		b.WriteString("\n[TRUNCATED: strategy.md exceeds its ~12KB contract (memory discipline).\n")
+		b.WriteString("COMPACT IT THIS SESSION: posture is REPLACED not appended; session\n")
+		b.WriteString("narratives belong in the log; superseded analyses get one line + a log ref.]\n")
+	}
+	lessons, lessOver := ws.ReadBudgeted("lessons.md", 24*1024)
 	b.WriteString("\n## Lessons (state/lessons.md)\n")
-	b.WriteString(ws.ReadFull("lessons.md") + "\n")
+	b.WriteString(lessons + "\n")
+	if lessOver {
+		b.WriteString("\n[TRUNCATED: lessons.md is over budget — compress lessons to <=2 lines\n")
+		b.WriteString("each and move prunes to lessons-archive.md.]\n")
+	}
 	b.WriteString("\n## Recent log tail (state/captain-log.md)\n")
 	b.WriteString(ws.Tail("captain-log.md", logTailBytes) + "\n")
 
@@ -143,7 +155,9 @@ func ComposeSnapshot(ctx context.Context, db *gorm.DB, ws Workspace, playerID in
    verdict notes, and a lesson for failures/surprises.
 3. Assess the pending events and fleet state; act via the spacetraders CLI.
 4. Record every non-trivial action as a new decision line with a measurable
-   expectation and review_after time.
+   expectation and review_after time. Decisions are for CAPITAL, STRATEGY,
+   and EXPERIMENTS — not routine verifications; never open more decisions
+   than you close in steady state (49 open is debt, not diligence).
 5. Revise state/strategy.md if KPIs disagree with its targets; curate state/lessons.md.
 6. STRATEGY DUTY — EVERY SESSION, NOT JUST QUIET ONES: events are triage,
    the mission is the job. After handling events, you MUST advance the top

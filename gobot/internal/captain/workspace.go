@@ -104,3 +104,18 @@ func (w Workspace) TrimLog(name string, maxBytes int) error {
 
 	return os.WriteFile(path, []byte(header+kept), 0o644)
 }
+
+// ReadBudgeted returns up to maxBytes of state/<name> (from the head — the
+// contract puts current state at the top) and whether the file exceeds the
+// budget. Oversized memory files get truncated in prompts instead of billing
+// every session for unbounded context.
+func (w Workspace) ReadBudgeted(name string, maxBytes int) (string, bool) {
+	data, err := os.ReadFile(w.StatePath(name))
+	if err != nil {
+		return "", false
+	}
+	if len(data) <= maxBytes {
+		return string(data), false
+	}
+	return string(data[:maxBytes]), true
+}

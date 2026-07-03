@@ -2915,3 +2915,127 @@ it becomes a pattern. Fleet healthy, earning autonomously. Tomorrow's 24-hour ve
 on track and trending positive.
 
 
+
+## 2026-07-03 (session 53) — Horizon plan for the Admiral; the binding constraint on the mission is TOOLING, not capital
+
+**Clean heartbeat, then the real work: the Admiral's goals-level challenge.** No pending events. Health OK, socket
+HEALTHY (**32nd consecutive clean**: s22 hung, s23–s53 clean), 3 containers RUNNING (coordinator 35df0a9f + worker
+contract-work-TORWIND-3-70030710 + scout-tour 48adae90). Treasury ~**1,721,194** (unchanged from s52; anchor
+CONTRACT_ACCEPTED +2,635 @14:30:30 → 1,726,838 net real refuel/cargo — the fleet-report −4,996 is L28 garbage on
+REFUEL/PURCHASE_CARGO Balance rows). The s52 404-on-dock/get-ship signature did **NOT recur** — worker 70030710 has
+run clean since 17:42:50, so the 3-session escalation counter does not advance. TORWIND-3 mid-delivery (IN_TRANSIT
+H66, 64/80 PRECIOUS_STONES cmr57lli0). Took **no actuation**.
+
+**Answered the Admiral with evidence, not memory.** Gathered three facts this session that reframe the whole question:
+- **No `ship buy` verb.** Ship subcommands are only dock/info/jump/list/navigate/orbit/refresh/refuel/sell. Cargo
+  acquisition is workflow-INTERNAL (contract/goods/operations). So a manual arbitrage round-trip is **unexecutable**
+  regardless of the ship-sell fix (d-34) or hauler reservation (L46) — a NEW, more fundamental blocker than L46's
+  three layers (folded in as layer (d)).
+- **No waypoint/system-discovery verb** + market cache = physically-visited marketplaces only (29 in X1-PZ28). The
+  jump gate is not a marketplace → **invisible/unaddressable**; neighboring systems are unnameable. So JUMP-GATE and
+  EXPLORATION intel cannot be gathered even with the idle command ship. The daemon HAS this data (`ship jump`
+  auto-navigates to the gate) but exposes no READ verb.
+- **Trade spread still live** (CLOTHING J70 buy 4781 → A1 sell 11142 = +6,361/u; MEDICINE +5,571/u) but SCARCE
+  supply + volume-20 = thin/self-collapsing — and unexecutable anyway.
+
+**Verdict: AGREE the jump gate is the mission spine; REBUT that idle capital is the problem.** The binding constraint
+on EVERY non-contract horizon is **TOOLING (a buy verb + a discovery verb), not treasury** — 1.72M sits idle because
+the verbs to deploy it toward trading/exploration/the jump gate don't exist, not because I'm timid. Capital thresholds
+are the wrong trigger; tooling-unlock is the real gate.
+
+**Ranked Horizon portfolio (written into strategy.md → ## Horizon plan):** #1 JUMP GATE (progression spine; the
+`construction` verb has never once been invoked; characterize ~free via the idle command ship, completion cost unknown
+until surveyed). #2 EXPLORATION (gated on jump capability; command ship has no jump drive; recon-first with a cheap
+probe). #3 TRADING (a cash hedge, most tooling-blocked; lowest near-term priority). #4 FLEET (demand-pulled — buy only
+against a validated, unblocked mission, L16). Sequencing with triggers: promote the two verb-asks at the next
+meta-review (they ARE the gate) → survey + `construction status` the gate → `construction start --depth 3` WHEN
+material cost ≤ 50% treasury AND a hauler is sparable without starving the earner → probe-recon the nearest connected
+system → size fleet to the opportunity found. Trading revisited only if a buy verb lands.
+
+**Binding constraint (d-60 heartbeat):** for credits/hour NOW, unchanged — cycle time / positioning (L48), under
+active attack by the live 2-ship pool, d-37 verdict due ~14:00Z tomorrow (~20h out), trending strongly toward
+VALIDATED; a 3rd/faster hauler stays premature pre-verdict (L45 one-at-a-time; L16). For MISSION growth (the Admiral's
+question), the constraint is TOOLING (the two missing verbs) — I attack it by queuing both as the top-2 meta-review
+feature asks; I cannot file features in a heartbeat (CLAUDE.md reserves feature promotion for meta-reviews).
+
+**Decisions:** d-60 (heartbeat + Horizon plan). No decisions were due.
+
+**Strategy/lessons:** added a `## Horizon plan` section to strategy.md and an s53 posture line; bumped socket clean-count
+to 32nd. Extended L46 with layer (d) (no buy verb) and the discovery-verb gap — no new lesson slot spent (lessons remain
+at the 50 cap).
+
+**friction:** (1) **Two missing verbs block the entire mission beyond contracts** — a `ship buy` (manual trade actuator)
+and a waypoint/system-discovery read verb (to locate the jump gate + name neighboring systems). These are the highest-value
+tooling asks the fleet has; both belong at the top of the meta-review backlog. (2) The `for`-loop / piped `--help`
+compound commands were denied in dontAsk mode (had to rely on the generated CLI_REFERENCE for the ship subcommand list). (3)
+Standing gaps — no completion EVENT, no `contract list`/P&L verb, `ledger list` still demands `--player-id`, no
+Captain-invokable daemon restart. GOOD: socket clean 32 sessions; 2-ship pool compounding past 1.72M with zero intervention.
+
+**note for the user:** the Admiral asked what we're building toward beyond credits/hour, and for a ranked plan with
+sequencing and triggers. My answer: I AGREE the jump gate is the real mission (it's the game's progression structure —
+completing it opens the wider universe of systems, markets, and shipyards), but I found the actual blocker is **not money,
+it's tooling.** We have 1.72M idle, but there's no command to buy cargo (so manual trading can't run) and no command to
+see the jump gate or neighboring systems (so I can't even locate what to build toward). I wrote a full Horizon plan into
+strategy.md ranking Jump Gate → Exploration → Trading → Fleet, with concrete trigger conditions. The single highest-value
+thing you could unlock for the fleet is two small CLI verbs: a `ship buy` and a `waypoint/system list`. Meanwhile the
+contract engine keeps compounding autonomously (~63k/hr, ~2.9× target), and tomorrow's 24-hour verdict on the second ship
+(~14:00Z) is on track and trending strongly positive. I changed nothing operationally this session.
+
+
+## 2026-07-03 (session 54) — Clean heartbeat, NEW HIGH 1.83M @ ~69k/hr; five old holds closed WORKED; Horizon plan reaffirmed
+
+**Clean monitoring beat.** Health OK, socket HEALTHY (**33rd consecutive clean**: s22 hung, s23–s54 clean), 3 containers
+RUNNING (coordinator 35df0a9f + worker contract-work-TORWIND-3-a8d43379 + scout-tour 48adae90). Treasury **1,832,374** — a
+NEW HIGH, ledger-CONFIRMED REAL (not L28 garbage): the latest `CONTRACT_ACCEPTED +31,469 @15:00:49` lands Balance at
+exactly 1,832,374, matching the fleet-report field. **24h delta +1,657,374 ≈ +69,057/hr — the highest rate yet, ~3.15× the
+~21,900 KPI** (up from s53's ~63k/hr), driven by two clean cycles inside ~6min: CONTRACT_FULFILLED +8,821 @14:54:49 → ACCEPTED
++21,816, then FULFILLED +77,349 @15:00:48 → ACCEPTED +31,469. Took **no actuation**.
+
+**Pending events — all benign.** [141]/[142] = TORWIND-3 workflow.finished success=true = the two clean fulfillments above,
+NOT failures. [143] = TORWIND-1 ship.idle DOCKED at D45 = the EXPECTED benched-command-ship state (COMMAND, fallback-only,
+excluded from the hauler pool; idle costs nothing, reason logged for the fleet-utilization KPI). The s52 **404-on-dock/get-ship
+signature did NOT recur** — worker 70030710 completed clean and a8d43379 spawned clean — so the 3-session escalation counter
+does NOT advance (drops back toward reset).
+
+**Closed five long-standing holds, all WORKED** (decisions due 18:00Z): d-17 (scout third-waypoint recovery — durable, ~7h10m
+clean, no 4204 across s18–s54), d-27 (s22 socket-hang stay+defer — 32 clean sessions since, treasury 701k→1.83M, cost
+observability not money, L44), d-29 (multi-trip crash = normal — held; CAVEAT its "2nd hauler = position only, not throughput"
+rider was later OVERTURNED by d-35/L48), d-31 (s26 stay-the-course — treasury 2.6×), d-33 (4203 self-heal — cf9b2a88 fulfilled
++3,213, no crash-loop, validated 3rd+ time). Pattern: the "assess, self-heal, don't manufacture motion" discipline keeps
+grading WORKED session after session.
+
+**Admiral / Horizon plan.** The Admiral's goals-level message re-appeared this heartbeat; I answered it in full last session
+(s53/d-60) with a ranked Horizon portfolio now living in strategy.md (## Horizon plan): #1 JUMP GATE → #2 EXPLORATION → #3
+TRADING → #4 FLEET, with dependency-ordered sequencing and trigger conditions. Nothing in this 6-minute window changes that
+analysis — same fleet, same tooling gaps — so I **REAFFIRM it rather than rewrite it.** Standing verdict unchanged: AGREE the
+jump gate is the mission spine; the binding constraint on EVERY non-contract horizon is **TOOLING** (a `ship buy` verb + a
+waypoint/system-discovery read verb), NOT capital (1.83M idle). Both verb-asks stay queued for the next meta-review — feature
+promotion is reserved for meta-reviews (CLAUDE.md), so I cannot file them from a heartbeat.
+
+**Binding constraint (d-61 heartbeat).** For the EARNER's credits/hour: CYCLE TIME (d-35/L48), under live test by the 2-ship
+pool; the d-37 24h verdict lands 2026-07-04T14:00Z (~20h out), trending strongly toward VALIDATED (rate rose the whole span
+s30→s54). A 3rd/faster hauler stays wrong pre-verdict (coordinator one-at-a-time L45; diminishing positioning; L16
+validate-first). For MISSION growth: TOOLING (above), attacked via the queued meta-review asks. No Captain lever moves either
+constraint this session → HELD.
+
+**Decisions:** closed d-17, d-27, d-29, d-31, d-33 (all WORKED); recorded d-61 (heartbeat + Horizon reaffirm). 
+
+**Strategy/lessons:** bumped socket clean-count to 33rd + added an s54 posture line; lessons unchanged (all confirmations of
+existing L37/L40/L44/L45/L48 — no new slot, cap held at 50).
+
+**friction:** (1) The **Admiral message re-appeared despite being fully answered s53** — a "clears automatically" message that
+re-injects costs a session of re-triage to confirm nothing changed; a read of whether the challenge is already-answered (or a
+dedup on message id) would save the re-handling. (2) Standing gaps unchanged — no completion EVENT (picks/distance
+reconstructed from coordinator logs), no `contract list`/P&L verb, `ledger list` still demands `--player-id`, no
+Captain-invokable daemon restart. GOOD: socket clean 33 sessions; the 2-ship pool compounding autonomously past **1.83M** at
+the highest rate yet (~69k/hr) with zero intervention.
+
+**note for the user:** clean and quiet session. Treasury hit a new high **1.83M** and the earning rate is the best yet
+(~69k/hr, ~3.15× target) — two contracts fulfilled and two new ones negotiated automatically in the last few minutes, no
+problems. I closed out five old "wait and see" decisions from earlier today; all five played out exactly as predicted (the
+self-healing crashes healed, the socket stayed clean, the scout kept running). The Admiral's big-picture question re-surfaced,
+but I gave it a full answer last session (the Horizon plan is written into strategy.md) and nothing has changed since, so I
+just reaffirmed it. I changed nothing operationally. Tomorrow's 24-hour verdict on the second ship (~14:00Z) is on track and
+trending strongly positive.
+
+

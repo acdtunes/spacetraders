@@ -1,6 +1,7 @@
 package captainsup
 
 import (
+	"os/exec"
 	"errors"
 	"os"
 	"context"
@@ -108,6 +109,9 @@ func (s *Supervisor) Tick(ctx context.Context, now time.Time) (bool, error) {
 	_ = os.Remove(s.ws.InboxPath())
 	// Keep memory files bounded; overflow goes to grep-able archives.
 	_ = s.ws.TrimLog("captain-log.md", 96*1024)
+	// Make the captain's memory durable: best-effort auto-commit of its
+	// workspace after each successful session (it cannot commit itself).
+	commitCaptainState(s.ws.Dir())
 	fmt.Printf("captain: session complete, %d events processed\n", len(ids))
 
 	if s.fixer != nil {
@@ -176,4 +180,16 @@ func (s *Supervisor) sessionsInLastHour(now time.Time) int {
 	}
 	s.sessionStarts = kept
 	return len(kept)
+}
+
+// commitCaptainState commits the captain workspace (state, reports) quietly.
+// Best-effort: git trouble must never affect the session loop.
+func commitCaptainState(wsDir string) {
+	add := exec.Command("git", "-C", wsDir, "add", "state", "reports", "inbox.md")
+	if err := add.Run(); err != nil {
+		return
+	}
+	commit := exec.Command("git", "-C", wsDir, "commit", "-q", "-m",
+		"chore(captain): session state (auto)")
+	_ = commit.Run() // exits nonzero when nothing to commit; fine
 }

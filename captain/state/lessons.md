@@ -15,8 +15,6 @@ L5 [seed] — Always calculate round-trip fuel (outbound + return + 10% safety
 margin). A stranded ship earns zero until rescued.
 L6 [seed] — Contracts pay twice (acceptance + delivery) and are guaranteed
 income; prefer them over speculative mining/trading in bootstrap.
-L7 [seed] — Accept a marginal or slightly-negative contract when capital allows:
-it builds reputation and unlocks the next, potentially lucrative, contract.
 L8 [seed] — Source contract goods from EXPORT markets (cheapest); avoid buying
 at IMPORT markets (most expensive). Mine only when no market option exists.
 L9 [seed] — Buy at exporters, sell at importers: this is the most reliable way
@@ -479,3 +477,20 @@ and escalate to the operator; the running coordinator self-heals (idempotent fai
 LEAVE it running, don't stop it. (3) Green tests over a test DB that auto-migrates give FALSE confidence on schema changes — the
 fix-pipeline gate (build + tests) structurally cannot catch a missing-migration regression (meta-review candidate: schema-drift
 check between GORM models and applied migrations). Pairs with L42 (merged ≠ live-verified; exercise before trusting).
+
+L53 [d-82,d-83] — A heavy coordinator launch can restart-LOOP the WHOLE daemon (not just fail its own container).
+`operations start --manufacturing` panicked the daemon every ~40-50s while the manufacturing container's OWN
+RestartCount stayed 0 — the DAEMON process was dying, not the container. ROOT CAUSE (code-verified s75, read-only
+Explore over ../gobot): the parallel manufacturing handler dereferences a nil `eventSubscriber`
+(run_parallel_manufacturing_coordinator.go:200) because `cmd/spacetraders-daemon/main.go:548-571` never calls
+`SetEventSubscriber` on it — the contract coordinator IS wired (main.go:413), which is why ONLY manufacturing
+crashes — and the command runs on a NAKED goroutine with no `recover()` (container_runner.go:143 `go r.execute()`,
+:246), so the panic kills the whole process; on restart the daemon re-recovers the still-RUNNING container
+(daemon_server.go:329-338) → panics again → loop. HEURISTICS: (1) diagnose "daemon restarting" vs "container
+retrying" by whether the CONTAINER's RestartCount climbs — 0 while things restart = the DAEMON is dying. (2) A
+restart-looping heavy container is stoppable via `container stop <id>` (persists STATUS=STOPPED so recovery stops
+re-spawning it), NOT necessarily via `operations stop` (loses tracking across restarts). (3) Verifying a MECHANISM
+works (assignment-exclusion, d-82) does NOT prove the STREAM RUNS — a separate daemon-stability defect can gate it;
+root-cause in code rather than re-triggering against the live earner's daemon. (4) The contract earner survives the
+loop because its work is DB-committed (L44). Filed reports/bugs/2026-07-03-manufacturing-coordinator-daemon-restart-loop.md
+(kind:fix). This defect gates BOTH mission threads (#1 gate fabrication + #3 manufacturing income share the engine).

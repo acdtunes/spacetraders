@@ -56,3 +56,21 @@ func TestTrimLogArchivesOldEntriesAtBoundary(t *testing.T) {
 
 	require.NoError(t, ws.TrimLog("captain-log.md", 1<<20))
 }
+
+func TestReadBudgetedTruncatesOversizedFiles(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "state"), 0o755))
+	ws := NewWorkspace(dir)
+
+	small := "compact strategy"
+	require.NoError(t, os.WriteFile(ws.StatePath("strategy.md"), []byte(small), 0o644))
+	content, over := ws.ReadBudgeted("strategy.md", 1024)
+	require.Equal(t, small, content)
+	require.False(t, over)
+
+	big := strings.Repeat("x", 3000)
+	require.NoError(t, os.WriteFile(ws.StatePath("strategy.md"), []byte(big), 0o644))
+	content, over = ws.ReadBudgeted("strategy.md", 1024)
+	require.Len(t, content, 1024)
+	require.True(t, over, "oversized file must be flagged")
+}

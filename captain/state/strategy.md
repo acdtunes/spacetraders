@@ -9,12 +9,19 @@ min-price 1000 / 5 workers / 3 fabrication pipelines.** ENGINE PROPOSAL is setti
 enumerate ship claims or per-good economics; a LIVE run + `container logs` is the only way to see which ship it
 grabs and the acquisition plan (that is the d-65 MANUFACTURING EXPERIMENT, run post-d-37). SHIP NEEDS: auto-claims
 idle light haulers with NO exclusion flag → races the contract coordinator for the earner → REQUIRES a dedicated
-reserved hauler (feature filed d-79). ECONOMICS: FAB_MATS + ADVANCED_CIRCUITRY are NOT sold in-system (checked
-I67/A1/A2) → depth-3 buy-final UNAVAILABLE → the gate needs FABRICATION (depth 0–2), a multi-hour hauler-hungry
-campaign; X1-PZ28 has a real prefer-fabricate thesis (cheap ores J70/B7 → SCARCE high-value finished goods A1) but
-sell volumes 6–20 SCARCE/WEAK cap standalone $/h (L13). GATE: fleet capacity + the reservation flag (d-79), THEN run
-the experiment (d-65) and start `construction start X1-PZ28-I67` at depth 0–2. (`goods produce` has NO --dry-run —
-friction.)
+reserved hauler. **CORRECTED s74/s75:** the reservation flag (d-79) was REJECTED as a PHANTOM blocker — ship
+ASSIGNMENTS already provide mutual exclusion (every coordinator discovers via `contract.FindIdleLightHaulers`,
+predicate `ship.IsIdle()`; a claim writes `assignment_status='active'` → hidden from all other coordinators), so a
+manufacturing/construction hauler is auto-excluded from contracts with NO flag needed (feature reverted 6fee4f1).
+ECONOMICS: FAB_MATS + ADVANCED_CIRCUITRY are NOT sold in-system (checked I67/A1/A2) → depth-3 buy-final UNAVAILABLE
+→ the gate needs FABRICATION (depth 0–2), a multi-hour hauler-hungry campaign; X1-PZ28 has a real prefer-fabricate
+thesis (cheap ores J70/B7 → SCARCE high-value finished goods A1) but sell volumes 6–20 SCARCE/WEAK cap standalone
+$/h (L13). **REAL GATE now (s74/s75, L53): a DAEMON-INSTABILITY DEFECT** — `operations start --manufacturing`
+restart-loops the whole daemon (nil `eventSubscriber` panic on a naked goroutine; report d-83 filed, kind:fix). This
+same engine underlies `construction start`, so it likely gates the gate campaign too. SEQUENCE: (1) the d-83 fix
+must land, (2) THEN re-run the d-65 experiment / `construction start X1-PZ28-I67` at depth 0–2. Do NOT re-launch
+manufacturing against the live daemon before the fix (it restart-loops the earner's daemon; earner self-heals per
+L44 but it's a needless hazard). (`goods produce` has NO --dry-run — friction.)
 
 ## KPI targets
 - Credits/hour: **~21,900/hr (24h aggregate). FRAMING REVISED s29 (d-35, Admiral challenge): the binding
@@ -72,9 +79,14 @@ Capital thresholds are therefore the WRONG trigger for the near term; **tooling-
   hauler; (b) SELL-SIDE VOLUME 6–20 SCARCE/WEAK (L13 thin/self-collapsing) caps standalone $/h; (c) VALIDATION
   (L16) before the capital buy. **See the MANUFACTURING EXPERIMENT block below.**
 
-  #### MANUFACTURING EXPERIMENT (d-65) — bounded, triggered, deferred past d-37
-  - **Trigger to launch:** after the d-37 24h verdict settles (≥2026-07-04T14:00Z) so the contract baseline is
-    LOCKED and not corrupted by the perturbation.
+  #### MANUFACTURING EXPERIMENT (d-65) — bounded, triggered; NOW GATED ON THE d-83 DAEMON FIX
+  - **BLOCKED (s74/s75, L53):** `operations start --manufacturing` restart-loops the daemon (nil eventSubscriber
+    panic; report d-83 filed). The experiment CANNOT run until that fix merges + the daemon restarts. The old d-37
+    gate is moot — d-37 is empirically validated (record ~123k/hr) and assignment-exclusion (not a reservation
+    flag) already isolates the hauler, so the ONLY remaining trigger is the d-83 fix landing.
+  - **Trigger to launch (revised):** d-83 report `status:merged` + daemon restarted (verify `operations start
+    --manufacturing` no longer restart-loops via `operations status` + coordinator progressing past "State
+    recovery complete").
   - **Run:** `operations start --system X1-PZ28 --manufacturing --max-pipelines 1`, then IMMEDIATELY
     `container logs` to see which ship it discovers.
   - **GUARD:** if it grabs TORWIND-3 (the contract hauler) → `operations stop --manufacturing` within the
@@ -113,6 +125,10 @@ Capital thresholds are therefore the WRONG trigger for the near term; **tooling-
    the gate thread: validate net $/h on a bounded run, then buy a dedicated hauler if it clears the scale trigger.
 
 ## Current posture
+- **s76 (d-84): HEARTBEAT — d-83 fix root cause INDEPENDENTLY VERIFIED against live code; report is untracked in git (flagged, cannot self-commit). Earner NEW-HIGH ~123,465/hr. No trading/command/capital actions.**
+  Treasury **3,138,429** (ledger-exact top row PURCHASE_CARGO -1,533), 24h delta +2,963,178 ≈ **+123,465/hr (~5.6× KPI)**; health OK, socket HEALTHY, 3 containers RUNNING (coordinator 35df0a9f + worker contract-work-TORWIND-3-2d104a22 + scout-tour). All pending events benign (TORWIND-4 clean fulfillments [202]-[205] + between-cycle ship.idles). Confirmed the d-83 report's crux with my OWN reads of ../gobot main.go: contract coordinator wired `SetEventSubscriber(shipEventBus)` at :413; parallel manufacturing handler at :548-571 wires ONLY SetStorageRecoveryService/SetStorageOperationRepository (no event subscriber/publisher) → exactly why only manufacturing nil-derefs and restart-loops the daemon. Report status still `new`; `git status` shows it `??` (untracked) — but so is ALL of s75's `M` state output, so it awaits the normal state-commit cadence, not uniquely stranded (every prior report IS tracked). Could NOT self-commit (git not in the CLI-only allowlist). Gate bill UNCHANGED (0.0%, FAB_MATS 0/1600 + ADVANCED_CIRCUITRY 0/400, QUANTUM_STABILIZERS 1/1). Guardrail ≤50% of 3,138,429 = **~1.57M cap**. **NEXT SESSION MUST:** re-check d-83 status AND whether it is now git-tracked — if STILL untracked, the committer skips reports/ → real stranding bug, escalate to the user; if merged + daemon restarts, re-run d-65 / `construction start X1-PZ28-I67`. Do NOT re-launch manufacturing before the fix lands.
+- **s75 (d-83): MISSION BLOCKER ROOT-CAUSED — the binding constraint is a DAEMON-INSTABILITY DEFECT, not capital/fleet/tooling. Earner RESTORED at a NEW-HIGH ~123k/hr; filed the fix report. NO trading/command actions (heartbeat + investigation).**
+  s74 (uncommitted, log backfilled this session) resolved the s73 P0 outage (d-81 worked: reservation feature REVERTED 6fee4f1 + daemon gained startup AutoMigrate ce10b92; migration report → obsolete) and ran the d-65 manufacturing experiment (d-82 FAILED: `operations start --manufacturing` restart-loops the daemon; stopped cleanly, earner unharmed). **s75 root-caused it** via a read-only Explore over ../gobot: nil `eventSubscriber` deref (run_parallel_manufacturing_coordinator.go:200) because main.go never wires `SetEventSubscriber` on the manufacturing handler (contract coordinator IS wired, main.go:413) → panic on a NAKED goroutine (container_runner.go:143/:246, no recover) → whole daemon dies → re-recovers the RUNNING container → ~40-50s loop. Filed **reports/bugs/2026-07-03-manufacturing-coordinator-daemon-restart-loop.md** (kind:fix, status:new) with a `## Code checked` section + 3-tier fix. **The reservation flag (d-79) is now confirmed a PHANTOM blocker (rejected/reverted): assignment-based exclusion already holds a hauler out of contracts — so the mission was NEVER fleet/flag-gated; it's this daemon defect (both mission threads share the engine).** Treasury **3,133,917**, 24h delta +2,958,666 ≈ **+123,277/hr (NEW HIGH, ~5.6× KPI)**; health OK, socket HEALTHY, 3 containers RUNNING (coordinator 35df0a9f + worker contract-work-TORWIND-4-619aec79 + scout-tour). Fleet: TORWIND-4 active earner (IN_TRANSIT), TORWIND-3 (HAULER, 65 PRECIOUS_STONES, IN_ORBIT I68) spare between select-closest cycles, TORWIND-2 solar scout, TORWIND-1 (COMMAND) DOCKED A2 benched. Gate bill UNCHANGED (0.0%, FAB_MATS 0/1600 + ADVANCED_CIRCUITRY 0/400, QUANTUM_STABILIZERS 1/1). d-37 is EMPIRICALLY VALIDATED (record rate) — treat the 14:00Z review as a formality (L51). Guardrail ≤50% of 3,133,917 = **~1.57M cap**. **NEXT SESSION MUST:** check the d-83 report status; when it merges + daemon restarts, re-run the d-65 experiment / start `construction start X1-PZ28-I67`. Do NOT re-launch manufacturing against the live daemon before the fix lands (restart-loops the earner's daemon).
 - **s73 (d-81): P0 OUTAGE — the d-79 reservation feature shipped WITHOUT a DB migration and took the contract earner DOWN. Contract income ZERO since 18:27 (~3.3h). Filed a fix report; escalated to the user; held the coordinator running to self-heal.**
   Commit 985701a (reservation feature, report now `status:merged`) added `Reserved`/`ReservationReason` GORM tags on
   ShipModel (../gobot models.go:116-117) but no production migration. Production runs NO AutoMigrate (test-only,

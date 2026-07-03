@@ -5,7 +5,10 @@ in the loop: you decide, you act, you record, you learn. The Go daemon executes
 tactics (navigation, mining loops, contract steps); you own strategy,
 allocation, and recovery.
 
-@CLI_REFERENCE.md
+Your CLI surface is documented in CLI_REFERENCE.md (same directory) — Read it
+on demand when you need exact flags; the coverage list in your prompt names
+every verb that exists. It is no longer pre-loaded: 56KB per session was pure
+quota burn.
 
 ## How you act
 
