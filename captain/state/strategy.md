@@ -1,5 +1,21 @@
 # Standing strategy
 
+## Standing Admiral directives
+**#1 FABRICATION PATH (s71, Admiral order #1 study).** The gate bill (FAB_MATS 1600 + ADVANCED_CIRCUITRY 400 at
+X1-PZ28-I67) and the manufacturing income stream run on the SAME engine: `operations start --system X1-PZ28
+--manufacturing` (discovers high-demand goods, prefer-fabricate resolver) + the targeted `goods produce <GOOD>
+--system X1-PZ28`. **Dry-run (s71) confirms the manufacturing coordinator launches clean: prefer-fabricate /
+min-price 1000 / 5 workers / 3 fabrication pipelines.** ENGINE PROPOSAL is settings-only in --dry-run — it does NOT
+enumerate ship claims or per-good economics; a LIVE run + `container logs` is the only way to see which ship it
+grabs and the acquisition plan (that is the d-65 MANUFACTURING EXPERIMENT, run post-d-37). SHIP NEEDS: auto-claims
+idle light haulers with NO exclusion flag → races the contract coordinator for the earner → REQUIRES a dedicated
+reserved hauler (feature filed d-79). ECONOMICS: FAB_MATS + ADVANCED_CIRCUITRY are NOT sold in-system (checked
+I67/A1/A2) → depth-3 buy-final UNAVAILABLE → the gate needs FABRICATION (depth 0–2), a multi-hour hauler-hungry
+campaign; X1-PZ28 has a real prefer-fabricate thesis (cheap ores J70/B7 → SCARCE high-value finished goods A1) but
+sell volumes 6–20 SCARCE/WEAK cap standalone $/h (L13). GATE: fleet capacity + the reservation flag (d-79), THEN run
+the experiment (d-65) and start `construction start X1-PZ28-I67` at depth 0–2. (`goods produce` has NO --dry-run —
+friction.)
+
 ## KPI targets
 - Credits/hour: **~21,900/hr (24h aggregate). FRAMING REVISED s29 (d-35, Admiral challenge): the binding
   constraint is CYCLE TIME, not contract supply.** Decomposing real ledger+coordinator-log timestamps:
@@ -77,23 +93,189 @@ Capital thresholds are therefore the WRONG trigger for the near term; **tooling-
   mission — NOT because treasury is big.
 
 ### Sequencing (dependency-ordered) + triggers
-0. **NOW → next meta-review:** promote **(a) a waypoint/system-discovery verb** (expose the daemon's
-   jump-gate + connections + waypoint-type data) as the #1 feature ask (unlocks #1/#2). The `ship buy` ask is
-   WITHDRAWN (s58 d-65) — the manufacturing engine already covers diversification. NEW #2 ask: a manufacturing
-   **ship-exclusion/reservation flag** (`--ships`/`--exclude-ships`) so a stream can be pinned to a dedicated
-   hauler without racing the contract earner (the gate on a clean parallel run). (Cannot file features in a
-   heartbeat per CLAUDE.md; queued here for the next meta-review.)
-1. Discovery verb lands → survey the jump gate (idle command ship, ~free) → `construction status <gate>`
-   to read material requirements.
-2. START `construction start --depth 3` the gate WHEN: (a) requirements read; (b) est. material cost
-   ≤ 50% treasury at that time; (c) a hauler is sparable without starving the contract earner. At +63k/hr
-   treasury clears most single-gate bills within hours.
+0. **DONE (s67 d-74):** the waypoint/system-discovery verb SHIPPED (report `status:merged`, `waypoint list/get`
+   deployed). The #1 feature ask is CLEARED. REMAINING top ask for the next meta-review: a manufacturing/construction
+   **ship-exclusion/reservation flag** (`--ships`/`--exclude-ships`) so a stream (manufacturing OR construction) can be
+   pinned to a dedicated hauler without racing the contract earner — now DOUBLY relevant since BOTH mission threads
+   (gate-build + manufacturing) need a reserved hauler. The `ship buy` ask stays WITHDRAWN (s58 d-65).
+1. **DONE (s67 d-74):** surveyed the jump gate. It is **X1-PZ28-I67** (`waypoint list --type JUMP_GATE`); `construction
+   status X1-PZ28-I67` reads **0.0% built, FAB_MATS 0/1600 + ADVANCED_CIRCUITRY 0/400** (QUANTUM_STABILIZERS 1/1 COMPLETE).
+   Both materials are deep-supply-chain manufactured goods NOT sold in-system (checked I67/A1/A2) → depth-3 buy-final is
+   UNAVAILABLE; the gate needs FABRICATION (depth 0–2), a heavyweight hauler-hungry campaign. Re-read the bill each session
+   (external agents may also supply it; QUANTUM_STABILIZERS already went 1/1).
+2. START `construction start` on X1-PZ28-I67 WHEN: (a) d-37 verdict LOCKED (≥2026-07-04T14:00Z, so the campaign doesn't
+   corrupt the 2-ship experiment); (b) a DEDICATED hauler exists, held out of the contract coordinator's auto-claim (L46c) —
+   the same hauler the manufacturing experiment needs; (c) est. material/fabrication cost ≤ 50% treasury. Pick depth by
+   what's buyable: depth 0–2 (fabricate) since FAB_MATS/ADVANCED_CIRCUITRY aren't sold in-system.
 3. Gate operational → cheap probe recon of the nearest connected system (markets/shipyards).
 4. Recon reveals a concrete opportunity → size a fleet expansion to it.
 5. Manufacturing/trading — run the MANUFACTURING EXPERIMENT block above (deferred past d-37), independent of
    the gate thread: validate net $/h on a bounded run, then buy a dedicated hauler if it clears the scale trigger.
 
 ## Current posture
+- **s71 (d-78/d-79): ADMIRAL DIRECTIVE SESSION — broke the 30-session HOLD and ACTED on all three consolidated standing orders. Treasury 2,324,655 (clean ledger anchor, top REFUEL -288 @17:33:47).**
+  (1) [order #1] Ran the manufacturing dry-run + recorded it as **Standing directive #1** above (engine launches clean; --dry-run is
+  settings-only; needs a dedicated hauler; gate materials are fabrication-only). (2) [order #2] **BOUGHT contract hauler #2** —
+  `shipyard purchase --ship TORWIND-1 --type SHIP_LIGHT_HAULER --waypoint X1-PZ28-A2 --budget 400000 --quantity 1` (the A2-pinned attempt
+  false-failed on an EMPTY shipyard cache (not a real stock-out), so re-ran WITHOUT --waypoint → container f9d307ff auto-discovered,
+  navigated TORWIND-1 to A2 anyway, and COMPLETED: bought **TORWIND-4** (light hauler #2, cargo 0/80, speed 15) for **314,345 →
+  treasury 2,250,231**; ran `ship refresh --ship TORWIND-4` → **Role=HAULER populated this session** (L50 done). **The 2-light-hauler
+  pool (TORWIND-3 + TORWIND-4) is now LIVE** — the coordinator picks up TORWIND-4 on its next container restart). Rationale: d-37 trending
+  strongly VALIDATED across 40 sessions (rate rose monotonically ~26k→~92.5k/hr, ~4.2× KPI); the Admiral's consistency challenge is
+  correct — I graded d-39/d-40 early on unambiguous evidence but held d-37 to a stricter bar ONLY because acting costs money (motivated
+  reasoning, **L51**). A 2nd light hauler gives the coordinator a real 2-hauler pool → cuts far-haul frequency (L48 addendum: selection was
+  INERT with one eligible hauler). (3) [order #3] **FILED reports/bugs/2026-07-03-ship-reservation-flag.md (kind:feature, status:new)** — the
+  ship-exclusion flag both mission threads need (L46c). Health OK, socket HEALTHY (50th consecutive clean: s22 hung, s23–s71 clean), fleet:
+  TORWIND-3 active earner (IN_TRANSIT), TORWIND-2 solar scout, TORWIND-1 (COMMAND) + TORWIND-4 (new hauler, Role=HAULER) both DOCKED idle at A2.
+  **BINDING CONSTRAINT (obligation #7): FLEET CAPACITY — now ATTACKED, not merely named (2nd hauler LIVE + reservation feature filed).**
+  NEXT SESSION MUST: verify the coordinator logs 2-light-hauler select-closest (TORWIND-3 + TORWIND-4) on its next restart, and watch mean
+  provider selection distance / far-haul frequency vs the recent 600–801 band (d-78 measurement). Guardrail ≤50% of ~2,250,231 = **~1.13M cap**.
+- **s70 (d-77): L28 FALSE ALARM handled — the -69,489/four-DOWN-thresholds report was PURE GARBAGE; real treasury ~2.33M mid-contract dip, posture unchanged.**
+  Report opened scary: Credits **-69,489**, FOUR credits.threshold DOWN events ([176]/[177]/[178]/[179]: 100k/250k/500k/1M), garbage
+  24h delta -244,489. **Per L28 checked the ledger BEFORE acting:** the -69,489 is a DESYNCED Balance on ONE `PURCHASE_CARGO -9,309`
+  row @17:25:28 — the row above (`PURCHASE_CARGO -60,180`) reads 2,334,828 and -9,309 cannot take it to -69,489. **TRUE treasury ≈
+  2,325,519** (anchor CONTRACT_ACCEPTED +57,780 @17:22:30 → 2,395,296 = s69 high, then REFUEL -288 → 2,395,008, PURCHASE_CARGO
+  -60,180 → 2,334,828, -9,309 → ~2,325,519), a NORMAL mid-contract dip as TORWIND-3 buys cargo (23/80, IN_TRANSIT I68) for its next
+  delivery; rebounds on fulfillment. Real treasury never dropped; all four DOWN thresholds spurious (**5th recurrence**:
+  s39/s51/s55/s63/s70). Health OK, socket HEALTHY (**49th consecutive clean**: s22 hung, s23–s70 clean), 3 containers RUNNING
+  (coordinator 35df0a9f restarted @19:51:25 + worker dacc70c0 @20:22:27 + scout-tour 48adae90). TORWIND-1 DOCKED D45 (benched);
+  TORWIND-2 solar scout IN_TRANSIT D44 fuel 0/0 (normal); TORWIND-3 IN_TRANSIT I68 cargo 23/80 (buy leg). No 404 burst. Re-read the
+  jump-gate bill (obligation #6): `construction status X1-PZ28-I67` = 0.0% built, FAB_MATS 0/1600 + ADVANCED_CIRCUITRY 0/400,
+  QUANTUM_STABILIZERS 1/1 COMPLETE — UNCHANGED from s67/s68/s69 (no external supply). Binding constraint (obligation #7) unchanged:
+  EARNER = cycle time (d-37 verdict due 2026-07-04T14:00Z, ~17.5h out, trending strongly VALIDATED at ~92.5k/hr); MISSION = FLEET
+  CAPACITY (both threads converge on a dedicated hauler held out of the coordinator, L46c) — NOT tooling (cleared s67) and NOT
+  capital (~2.33M idle). HELD capital + ships, no actuation. Guardrail ≤50% of ~2.33M = **~1.16M cap**. The L28 observability-tax
+  friction re-flagged for meta-review (5th occurrence).
+- **s69 (d-76): CLEAN HEARTBEAT — treasury NEW HIGH 2,395,296 @ ~92.5k/hr (highest yet), on a fat +93,897 fulfillment.**
+  Ledger-confirmed EXACTLY: top row `CONTRACT_ACCEPTED +57,780 @17:22:30 → 2,395,296` = fleet report Credits. Pending [175] =
+  TORWIND-3 workflow.finished success=true (container fd2184a5) = a CLEAN fulfillment (`CONTRACT_FULFILLED +93,897 @17:22:27 →
+  2,337,516` then re-negotiated `+57,780 → 2,395,296`); the -43,581/-43,365/-5,648/-9,632/-9,488 rows are the usual L28
+  desynced-Balance on intermediate PURCHASE_CARGO/REFUEL rows (NO false thresholds). Coordinator (restarted @19:51:25) spawned
+  fresh worker contract-work-TORWIND-3-dacc70c0 @20:22:27. Health OK, socket HEALTHY (**48th consecutive clean**: s22 hung,
+  s23–s69 clean), 3 containers RUNNING (coordinator 35df0a9f + worker dacc70c0 + scout-tour 48adae90). TORWIND-3 IN_TRANSIT
+  (buy leg); TORWIND-2 solar scout IN_TRANSIT D44 fuel 0/0 (normal); TORWIND-1 DOCKED D45 (benched). No 404 burst. **24h delta
+  +2,220,296 ≈ +92,512/hr — the HIGHEST rate yet, ~4.22× the ~21,900 KPI**, up from s68's ~88,017/hr. Re-read the jump-gate bill
+  (obligation #6): `construction status X1-PZ28-I67` = 0.0% built, FAB_MATS 0/1600 + ADVANCED_CIRCUITRY 0/400,
+  QUANTUM_STABILIZERS 1/1 COMPLETE — UNCHANGED from s67/s68 (no external supply). Binding constraint (obligation #7) unchanged:
+  EARNER = cycle time (d-37 verdict due 2026-07-04T14:00Z, ~17.6h out, trending strongly VALIDATED); MISSION = FLEET CAPACITY
+  (both threads converge on a dedicated hauler held out of the coordinator, L46c) — NOT tooling (cleared s67) and NOT capital
+  (2.40M idle); the post-d-37 dedicated-hauler buy is the pivotal move. HELD capital + ships, no actuation. Guardrail ≤50% of
+  2,395,296 = **~1.20M cap**.
+- **s68 (d-75): CLEAN HEARTBEAT — treasury NEW HIGH 2,287,416 @ ~88.0k/hr (highest yet), on a clean near-cluster double-fulfillment.**
+  Ledger-confirmed EXACTLY: latest `CONTRACT_ACCEPTED +38,353 @17:18:26 → 2,287,416` = fleet report Credits. Two clean
+  fulfillments this window (pending [172]/[173] = TORWIND-3 workflow.finished success=true, containers d764e044 + fb3e3204):
+  CONTRACT_FULFILLED +21,549 @17:17:55 then +13,037 @17:18:22, each re-negotiated (+5,587, +38,353) — textbook clean DOUBLE
+  cycle; the -5,648/-9,632/-9,488 rows are the usual L28 desynced-Balance on intermediate rows (NO false thresholds). [174] =
+  TORWIND-1 ship.idle DOCKED D45 = expected benched command ship. Coordinator (restarted @19:51:25) selected TORWIND-3 @distance
+  **0.00** (IRON) then re-negotiated MACHINERY @distance **106.90** → fresh worker contract-work-TORWIND-3-fd2184a5 @20:18:22 —
+  both NEAR-cluster, no far-hauls (favorable L48 end). Health OK, socket HEALTHY (**47th consecutive clean**: s22 hung, s23–s68
+  clean), 3 containers RUNNING (coordinator 35df0a9f + worker fd2184a5 + scout-tour 48adae90). TORWIND-3 IN_TRANSIT (buy leg);
+  TORWIND-2 solar scout IN_TRANSIT D44 fuel 0/0 (normal); TORWIND-1 DOCKED D45 (benched). No 404 burst. **24h delta +2,112,416 ≈
+  +88,017/hr — the HIGHEST rate yet, ~4.02× the ~21,900 KPI**, up from s67's ~85,415/hr. Re-read the jump-gate bill (obligation
+  #6): `construction status X1-PZ28-I67` = 0.0% built, FAB_MATS 0/1600 + ADVANCED_CIRCUITRY 0/400, QUANTUM_STABILIZERS 1/1
+  COMPLETE — UNCHANGED from s67 (no external supply this session). Binding constraint (obligation #7) unchanged: EARNER = cycle
+  time (d-37 verdict due 2026-07-04T14:00Z, ~17.6h out, trending strongly VALIDATED); MISSION = FLEET CAPACITY (both threads
+  converge on a dedicated hauler held out of the coordinator, L46c) — NOT tooling (cleared s67) and NOT capital (2.29M idle);
+  the post-d-37 dedicated-hauler buy is the pivotal move. HELD capital + ships, no actuation. Guardrail ≤50% of 2,287,416 =
+  **~1.14M cap**.
+- **s67 (d-74): MISSION MILESTONE — the #1 tooling gate CLEARED; jump gate surveyed for the first time. Clean beat, treasury/rate NEW HIGHS (2,224,962 @ ~85.4k/hr).**
+  The waypoint/system-discovery verb SHIPPED (report `status:merged`; `waypoint list/get` deployed, git feat commits landed) — the
+  blocker on Horizon plan #1/#2 since s53 is GONE. Exercised it end-to-end: `waypoint list --type JUMP_GATE` → gate **X1-PZ28-I67**
+  (previously INVISIBLE); `construction status X1-PZ28-I67` → **0.0% built, FAB_MATS 0/1600 + ADVANCED_CIRCUITRY 0/400**
+  (QUANTUM_STABILIZERS 1/1 COMPLETE). Neither material is sold in-system (checked I67/A1/A2) → depth-3 buy-final UNAVAILABLE; the
+  gate needs FABRICATION (depth 0–2), a heavyweight hauler-hungry campaign. **DID NOT start construction** — three converging
+  reasons: (a) d-37 verdict must lock first (2026-07-04T14:00Z, ~17.8h out) or `construction start`'s hauler auto-claim corrupts
+  the 2-ship experiment; (b) fabrication is multi-hour/multi-ship, not a cheap delivery; (c) FLEET CAPACITY — one productive hauler
+  (TORWIND-3, the earner), TORWIND-1 is a benched COMMAND ship. **KEY (obligation #7 binding constraint): the jump-gate thread and
+  the manufacturing thread (d-65) now CONVERGE on the SAME need — a DEDICATED hauler held out of the coordinator (L46c). Fleet
+  capacity — NOT tooling (now cleared) and NOT capital (2.22M idle, guardrail ~1.11M) — is the single binding constraint on BOTH
+  mission horizons; the post-d-37 dedicated-hauler buy is the pivotal move.** Clean beat: pending [171] = TORWIND-3
+  workflow.finished success=true = clean +2,780 fulfillment → re-negotiated +7,571 → top REFUEL -288 @17:08:54 → **2,224,962**
+  (ledger-exact, no L28 desync); fresh worker contract-work-TORWIND-3-d764e044 @20:04:25 selected @distance 761.64 (ALUMINUM,
+  sole-eligible-hauler far-haul L48, INERT). Health OK, socket HEALTHY (**46th consecutive clean**: s22 hung, s23–s67 clean), 3
+  containers RUNNING. TORWIND-2 solar scout IN_TRANSIT D44 (normal); TORWIND-1 DOCKED D45 (benched). No 404 burst. 24h delta
+  +2,049,962 ≈ **+85,415/hr** (NEW HIGH), ~3.90× the ~21,900 KPI. EARNER binding constraint = cycle time (d-37 verdict
+  ~17.8h out, trending strongly VALIDATED). Guardrail ≤50% of 2,224,962 = **~1.11M cap**.
+- **s66 (d-73): CLEAN HEARTBEAT — treasury NEW HIGH 2,216,411; the s65 record far-haul fulfilled SMALL (+6,895) yet the 24h rate ROSE to a new high ~85.1k/hr.**
+  Single pending event [170] = TORWIND-3 workflow.finished success=true (container 4c3b9cee) = a CLEAN fulfillment: the s65
+  distance-**801.20** ALUMINUM_ORE far-haul (new-max distance, L48 sole-eligible-hauler case) fulfilled for only **+6,895**
+  @16:52:02 — textbook L48 far-drag (worst-case: max distance × low-value good). Coordinator re-negotiated (ACCEPTED +1,136 →
+  2,218,763), then normal refuel/cargo hops (-432/-1,848/-72) → **2,216,411** (ledger top row REFUEL -72 @16:52:27 matches the
+  fleet report EXACTLY; clean/monotonic, no L28 desync this window), and spawned fresh worker contract-work-TORWIND-3-31d9c3e0
+  @19:52:02. **KEY L41+L48 validation:** worst plausible single contract (max distance, tiny payout) YET the 24h aggregate rate
+  ROSE to a new high — the pool absorbs both lumpy per-contract size AND single worst-case far-hauls without the daily rate
+  sagging. Health OK, socket HEALTHY (**45th consecutive clean**: s22 hung, s23–s66 clean), 3 containers RUNNING (coordinator
+  35df0a9f restarted @19:51:25 + worker 31d9c3e0 + scout-tour 48adae90). TORWIND-3 IN_TRANSIT fuel 56/600 cargo 44/80 (new
+  buy leg); TORWIND-2 solar scout IN_TRANSIT B7 fuel 0/0 (normal); TORWIND-1 DOCKED D45 (benched command ship). No 404 burst.
+  Real 24h delta +2,041,411 ≈ **+85,058/hr**, ~3.88× the ~21,900 KPI, up from s65's ~84,822/hr. Binding constraint unchanged:
+  EARNER = cycle time (d-37 verdict due 2026-07-04T14:00Z, ~18.1h out, trending strongly VALIDATED); MISSION = FLEET CAPACITY
+  (manufacturing, deferred past d-37) + TOOLING (discovery verb, re-queued s59). HELD capital + ships, no actuation. Guardrail
+  ≤50% of 2,216,411 = **~1.11M cap**.
+- **s65 (d-72): CLEAN HEARTBEAT — ledger SELF-RECONCILED + thresholds flipped back UP; real treasury 2,210,732, posture unchanged.**
+  Mirror-image of s63/s64: report opened Credits **2,210,732** with FOUR credits.threshold **UP** events ([166]/[167]/[168]/[169]:
+  100k/250k/500k/1M) — benign milestone re-emissions at the real 2.21M. Per L28 the ledger is CLEAN this window: top REFUEL -360
+  @16:47:21 → 2,210,732 matches EXACTLY, and the s63/s64 desynced PURCHASE_CARGO -320 @16:39:35 row now reads a correct
+  **2,211,596** (the L28 desync self-reconciled as later rows re-anchored — transient, not permanent). Only 2 containers show
+  (coordinator 35df0a9f + scout-tour 48adae90) — NOT a lost worker: contract-work-TORWIND-3-4c3b9cee is executing its in-flight
+  contract, so the coordinator restarted @19:49:37 and correctly logs "Idle light haulers discovered → No ships available,
+  waiting for completion" (TORWIND-3 busy). Health OK, socket HEALTHY (**44th consecutive clean**: s22 hung, s23–s65 clean).
+  TORWIND-3 IN_TRANSIT H63 cargo 68/80 ALUMINUM_ORE delivering (worker assigned @19:26:43 at **distance 801.20 — a NEW running-max
+  far-haul**, prior 761.64; sole-eligible-hauler case L48, INERT speed-blind selection, NO escalation); TORWIND-2 solar scout
+  IN_TRANSIT A1 fuel 0/0 (normal); TORWIND-1 DOCKED D45 (benched command ship). No 404 burst. Real 24h delta ≈ **+84,822/hr**,
+  ~3.87× the ~21,900 KPI. Binding constraint unchanged: EARNER = cycle time (d-37 verdict due 2026-07-04T14:00Z, ~18.1h out,
+  trending strongly VALIDATED); MISSION = FLEET CAPACITY (manufacturing, deferred past d-37) + TOOLING (discovery verb, re-queued
+  s59). HELD capital + ships, no actuation. Guardrail ≤50% of ~2.21M = **~1.11M cap**.
+- **s64 (d-71): CLEAN HEARTBEAT — the s63 L28 desync PERSISTS (Credits -3,164), real treasury ~2.21M, posture unchanged.**
+  Same desynced row as s63 (PURCHASE_CARGO -320 @16:39:35, reads -2,660; row above = 2,211,916) propagated two REFUEL hops
+  further to -3,164 — NOT a new incident, the same desync one session later. TRUE treasury ≈ **2,211,092** (2,211,916 − 320 −
+  216 − 288), a normal mid-contract dip as TORWIND-3 (68/80) delivers its buy leg. One benign pending event: [165] TORWIND-1
+  ship.idle DOCKED D45 = expected benched command ship. Health OK, socket HEALTHY (**43rd consecutive clean**: s22 hung,
+  s23–s64 clean), 3 containers RUNNING (coordinator 35df0a9f + worker 4c3b9cee @19:26:43 + scout-tour 48adae90). TORWIND-3
+  IN_TRANSIT I68 cargo 68/80 (delivering, validates d-70); TORWIND-2 solar scout IN_TRANSIT H65 fuel 0/0 (normal). No 404
+  burst. Real 24h delta ≈ **+84,837/hr**, ~3.87× the ~21,900 KPI. Binding constraint unchanged: EARNER = cycle time (d-37
+  verdict due 2026-07-04T14:00Z, ~18.2h out, trending strongly VALIDATED); MISSION = FLEET CAPACITY (manufacturing, deferred
+  past d-37) + TOOLING (discovery verb, re-queued s59). HELD capital + ships, no actuation. Guardrail ≤50% of ~2.21M =
+  **~1.11M cap**.
+- **s63 (d-70): L28 FALSE ALARM — the -2,660/four-DOWN-thresholds report was PURE GARBAGE; real treasury ~2.21M, posture unchanged.**
+  Fleet report opened scary: Credits **-2,660**, FOUR credits.threshold DOWN events ([161]/[162]/[163]/[164]: 100k/250k/500k/1M),
+  garbage 24h delta -177,660. **Per L28 checked the ledger BEFORE acting:** the -2,660 is a DESYNCED Balance column on ONE
+  `PURCHASE_CARGO -320` row @16:39:35 — the row above reads 2,211,916 and -320 cannot take it to -2,660. **TRUE treasury ≈
+  2,211,596** (anchor CONTRACT_ACCEPTED +1,945 @16:26:44 → 2,215,696 = s62 high, then refuel hops -144/-432/-360/-288/-216 +
+  cargo buys -2,340/-320 → 2,211,596), a NORMAL mid-contract dip as TORWIND-3 (cargo 68/80) buys for its next delivery; rebounds
+  on fulfillment. Real treasury never dropped; all four DOWN thresholds spurious (the -52,098/-51,xxx-class rows @16:05–16:13 are
+  the same desync — the CONTRACT_FULFILLED +115,056 @16:13:35 anchor reads the true 2,201,570). Health OK, socket HEALTHY (**42nd
+  consecutive clean**: s22 hung, s23–s63 clean), 3 containers RUNNING (coordinator 35df0a9f + worker 4c3b9cee @19:26:43 +
+  scout-tour 48adae90). TORWIND-1 DOCKED D45 (benched command ship); TORWIND-2 solar scout IN_TRANSIT F56 fuel 0/0 (normal);
+  TORWIND-3 IN_TRANSIT J69 cargo 68/80 (buy leg complete, delivering — validates d-69's forecast). No 404 burst. **Real 24h delta
+  ≈ +84,858/hr**, consistent with s62's ~85,029/hr, ~3.87× the ~21,900 KPI. Binding constraint unchanged: EARNER = cycle time
+  (d-37 verdict due 2026-07-04T14:00Z, ~18.3h out, trending strongly VALIDATED — rate rose s30→s63); MISSION = FLEET CAPACITY
+  (manufacturing, deferred past d-37) + TOOLING (discovery verb, re-queued s59). HELD capital + ships, no actuation. Guardrail
+  ≤50% of ~2.21M = **~1.11M cap**. The L28 desynced-Balance false alarm recurred a **4th time (s39/s51/s55/s63)** — the
+  observability-tax friction re-flagged for meta-review.
+- **s62 (d-69): CLEAN HEARTBEAT — treasury NEW HIGH 2,215,696 @ ~85.0k/hr (highest yet), on a SMALL +16,619 fulfillment.**
+  Single pending event benign: [160] TORWIND-3 workflow.finished success=true (container 32e8a873, the s61 worker) = a CLEAN
+  fulfillment (ledger-anchored CONTRACT_FULFILLED +16,619 @16:26:43 → 2,213,751 → ACCEPTED +1,945 → 2,215,696 = fleet report
+  EXACTLY; the -52,098-class Balance rows @16:13 are the usual L28 desync on intermediate REFUEL rows, triggered no thresholds).
+  Coordinator spawned fresh worker contract-work-TORWIND-3-4c3b9cee @19:26:43. Health OK, socket HEALTHY (**41st consecutive
+  clean**: s22 hung, s23–s62 clean), 3 containers RUNNING (coordinator 35df0a9f + worker 4c3b9cee + scout-tour 48adae90).
+  TORWIND-1 DOCKED D45 (benched command ship); TORWIND-2 solar scout IN_TRANSIT (normal); TORWIND-3 IN_TRANSIT (buy leg). No
+  404 burst. **24h delta +2,040,696 ≈ +85,029/hr — the HIGHEST rate yet, ~3.88× the ~21,900 KPI**, up from s61's ~84,626/hr.
+  KEY: this window's fulfillment was SMALL (+16,619) vs s61's fat +115,056, yet the daily aggregate still rose — the pool
+  absorbs lumpy per-contract size (L41) without the rate sagging. Binding constraint unchanged: EARNER = cycle time (d-37
+  verdict due 2026-07-04T14:00Z, ~18.5h out, trending strongly VALIDATED — rate rose s30→s62); MISSION = FLEET CAPACITY
+  (manufacturing, deferred past d-37) + TOOLING (discovery verb, re-queued s59). HELD capital + ships, no actuation. Guardrail
+  ≤50% of 2,215,696 = **~1.11M cap**.
+- **s61 (d-68): CLEAN HEARTBEAT — treasury NEW HIGH 2,206,041 @ ~84.6k/hr (highest yet), on a fat +115,056 fulfillment.**
+  Both pending events benign: [158] TORWIND-3 workflow.finished success=true = the +115,056 CLEAN fulfillment (ledger-anchored
+  CONTRACT_FULFILLED +115,056 @16:13:35 → 2,201,570 → ACCEPTED +4,687 → 2,206,257 → REFUEL -216 → 2,206,041 = fleet report
+  EXACTLY, no L28 alarm this window); the coordinator re-negotiated and spawned fresh worker contract-work-TORWIND-3-32e8a873
+  @19:18:06. [159] TORWIND-1 ship.idle DOCKED D45 = expected benched-command-ship state. Health OK, socket HEALTHY (**40th
+  consecutive clean**: s22 hung, s23–s61 clean), 3 containers RUNNING (coordinator 35df0a9f + worker 32e8a873 + scout-tour
+  48adae90). TORWIND-2 solar scout IN_TRANSIT (normal); TORWIND-3 IN_TRANSIT (buy leg). No 404 burst. **24h delta +2,031,041
+  ≈ +84,626/hr — the HIGHEST rate yet, ~3.86× the ~21,900 KPI**, up from s60's ~81,829/hr. Binding constraint unchanged:
+  EARNER = cycle time (d-37 verdict due 2026-07-04T14:00Z, ~18.7h out, trending strongly VALIDATED — rate rose s30→s61);
+  MISSION = FLEET CAPACITY (manufacturing, deferred past d-37) + TOOLING (discovery verb, re-queued s59). HELD capital + ships,
+  no actuation. Guardrail ≤50% of 2,206,041 = **~1.10M cap**.
 - **s60 (d-67): CLEAN HEARTBEAT + FRONTIER — exercised `construction`, first-hand-confirmed the jump-gate tool is INERT without the discovery verb; ~2.14M @ ~81.8k/hr.**
   No pending events, no decisions due. Treasury **2,138,900** ledger-confirmed (top REFUEL -360 @16:00:02 lands EXACTLY at
   the fleet report; SAME cycle as s59 — worker 049236ea still 0/1, so treasury only ticked down from the s59 high 2,139,764
@@ -328,18 +510,6 @@ Capital thresholds are therefore the WRONG trigger for the near term; **tooling-
   THIRD-consecutive far-haul (630 s43 → 761 s44 → 594 now), all the sole-eligible-hauler case (L48 addendum s37/s44),
   speed-blind selection INERT, NO escalation. HELD, no actuation; d-37 24h verdict still the decider (due
   2026-07-04T14:00Z, ~21.5h out), trending strongly toward VALIDATED. Guardrail <=50% of 1,309,909 = **~655k cap**.
-- **s44 (d-51): CLEAN HEARTBEAT — same AMMONIA_ICE far-haul mid-flight; rate holds ~47k/hr, verdict ~21.6h out.**
-  Treasury **1,302,988** (ledger-confirmed: top REFUEL @13:23:52 lands exactly there; a small mid-contract dip from the
-  s43 peak 1,307,320 on PURCHASE_CARGO -3,108 + refuel hops — normal L28/L40, rebounds on fulfillment). Socket HEALTHY
-  (**23rd consecutive clean**: s22 hung, s23–s44 clean). Health OK, 3 containers RUNNING (coordinator 35df0a9f + worker
-  contract-work-TORWIND-3-6bfc923f + scout-tour 48adae90). Pending [108] = TORWIND-1 ship.idle DOCKED at D45 = the
-  EXPECTED benched-command-ship state (COMMAND, fallback-only, excluded from the hauler pool; idle costs nothing, reason
-  logged). The SAME AMMONIA_ICE contract cmr54j10h (TORWIND-3 @distance **761.64**, the running-max far-haul, selected
-  16:04:30) is still mid-execution: TORWIND-3 IN_TRANSIT at J69 with 74/80 cargo delivering — sole-eligible-hauler case
-  (L48 addendum s37/s44), speed-blind selection INERT, NO escalation. **24h delta +1,127,988 ≈ +46,999/hr** —
-  essentially flat with s43's +47,180, still **~2.15× the ~21,900 KPI**. The 2-ship pool holds ~47k/hr through its
-  worst-case far-haul without sagging. HELD, no actuation; d-37 24h verdict still the decider (due 2026-07-04T14:00Z,
-  ~21.6h out), trending strongly toward VALIDATED. Guardrail <=50% of 1,302,988 = **~651k cap**.
 - **s43 (d-50): CLEAN HEARTBEAT — CLOTHING fulfilled; a TWO-CONSECUTIVE-FAR-HAUL window that STILL beats target 2×.**
   Treasury **1,307,320** (ledger-confirmed: top REFUEL @13:12:20 lands exactly there; the s41/s42 mid-CLOTHING dip
   rebounded as predicted — CONTRACT_FULFILLED **+83,320** @13:04:29 then CONTRACT_ACCEPTED +2,065). Socket HEALTHY

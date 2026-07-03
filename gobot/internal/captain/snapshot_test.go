@@ -1,6 +1,7 @@
 package captainsup
 
 import (
+	"strings"
 	"context"
 	"os"
 	"path/filepath"
@@ -69,12 +70,14 @@ func TestComposeSnapshotIncludesAdmiralInbox(t *testing.T) {
 
 	prompt, err := ComposeSnapshot(context.Background(), db, ws, playerID, nil, time.Now())
 	require.NoError(t, err)
-	require.Contains(t, prompt, "## Message from the Admiral")
+	require.Contains(t, prompt, "## MESSAGE FROM THE ADMIRAL")
 	require.Contains(t, prompt, "I disagree about haulers.")
-	require.Contains(t, prompt, "address it with evidence")
+	require.Contains(t, prompt, "obligation ZERO")
+	require.Less(t, strings.Index(prompt, "MESSAGE FROM THE ADMIRAL"),
+		strings.Index(prompt, "## Pending events"), "Admiral message leads the prompt")
 
 	require.NoError(t, os.Remove(ws.InboxPath()))
 	prompt, err = ComposeSnapshot(context.Background(), db, ws, playerID, nil, time.Now())
 	require.NoError(t, err)
-	require.NotContains(t, prompt, "Message from the Admiral")
+	require.NotContains(t, prompt, "MESSAGE FROM THE ADMIRAL")
 }

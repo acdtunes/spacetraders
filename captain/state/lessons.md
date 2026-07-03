@@ -21,8 +21,6 @@ L8 [seed] — Source contract goods from EXPORT markets (cheapest); avoid buying
 at IMPORT markets (most expensive). Mine only when no market option exists.
 L9 [seed] — Buy at exporters, sell at importers: this is the most reliable way
 to earn credits via arbitrage.
-L10 [seed] — Survey asteroid fields before mining: surveyed high-yield deposits
-give ~30-50% better yields than blind extraction.
 L11 [seed] — Minimum viable mining op is 1 surveyor + 2-3 drones + 1 shuttle;
 add shuttles before more drones to avoid a transport bottleneck.
 L12 [seed] — Over-mining collapses asteroids (yields drop 70%+). Monitor
@@ -173,6 +171,14 @@ proposed, pending user merge)** -> merged/fixed (landed). `awaiting_human` is th
 Captain's cue that the blocker's fix EXISTS and the ball is in the user's court —
 surface it to the user (which fix, what it unblocks) rather than continuing to treat
 the blocker as unactioned.
+UPDATE s67 [d-74] — a long-blocked FEATURE report DOES eventually land; do not treat a
+multi-session blocker as permanent. The waypoint/system-discovery verb (Horizon plan #1's
+gate) sat blocked s53→s66 (gate_failed → re-queued new, s59) then shipped `status:merged`
+by s67 under the auto-merge regime — `waypoint list/get` deployed. HEURISTIC: re-check a
+re-queued report's status each session, and the SESSION a gated verb ships, exercise it
+end-to-end immediately (here: `waypoint list --type JUMP_GATE` → located the gate, then
+`construction status` → read the material bill) to convert a blocked ASSUMPTION into
+actionable intel in one beat. Pairs with L39 (confirm a fix by exercising, not status alone).
 
 L36 [d-16] — A multi-session HOLD needs a falsifiable off-ramp. Without an
 observable answering "has any fix landed since I last looked," waiting is
@@ -422,7 +428,14 @@ coordinator ALSO detects a FAST worker via a "Contract completed by <ship>" EVEN
 FOOD mega ran select@14:30:24 -> "Contract completed"@14:33:31). So completion is event-detected when a worker
 exits cleanly; the 30-53min timeout is the FALLBACK for slow/stuck workers. A ship that completes fast does NOT
 sit idle-until-timeout — the borrow-window (above) only opens on slow contracts.
-
+ADDENDUM s71 [d-78] — a `shipyard purchase --waypoint <X>` PINNED to a shipyard whose cache is EMPTY fails with a FALSE
+NEGATIVE: pinning A2 failed fast ("ship type SHIP_LIGHT_HAULER not available at shipyard X1-PZ28-A2") because A2's shipyard
+cache was empty (`shipyard list A2` = "No ships available"), NOT because A2 stopped stocking it. Proof: the SAME purchase
+re-run WITHOUT `--waypoint` auto-discovered, navigated TORWIND-1 to A2 anyway, docked, read fresh inventory, and BOUGHT the
+hauler there (TORWIND-4, 314,345). LESSON: the pinned `--waypoint` path validates against the (possibly empty) cache and
+rejects; the AUTO-DISCOVER path physically visits + reads fresh, so it succeeds where the pin false-fails. Default to
+`shipyard purchase` WITHOUT `--waypoint` for a re-buy (budget-capped) — only pin a waypoint whose stock you confirmed THIS
+session. The pinned failure is cheap (rejects before the ship moves — no strand, no spend).
 L50 [d-39] — A freshly PURCHASED ship can land in the daemon cache with an EMPTY Role, making it INVISIBLE to
 role-based coordinators. TORWIND-3 (bought as SHIP_LIGHT_HAULER) showed `Role: (empty)` in `ship info` while
 the server held `Role: HAULER`; the contract coordinator's "discover idle light haulers" step reads that cache,
@@ -441,3 +454,15 @@ coordinator's OWN container RESTARTED (14:30:19) and re-read the cache. HEURISTI
 on a new hauler, the role-based coordinator activates on its next CONTAINER RESTART, not merely its next
 in-loop selection — if you need it sooner, restart the coordinator container (weigh L30 hang risk); otherwise
 wait for the natural restart. The frame-symbol-filter branch is now DISPROVEN — the filter keys on cached Role.
+
+L51 [d-78, Admiral s71] — GRADE A DECISION ON THE EVIDENCE TREND, NOT ITS FORMAL review_after TIMESTAMP — and watch for a
+STRICTER evidentiary bar on decisions that COST MONEY. d-37 (buy a hauler to compress cycle time) trended strongly VALIDATED
+for ~40 sessions (24h rate rose MONOTONICALLY s30→s70, ~26k→~92.5k/hr, ~4.2× KPI), yet I re-deferred the follow-on capital buy
+every heartbeat "until the d-37 review_after locks" — while I had graded the CHEAP decisions d-39/d-40 early on far thinner
+evidence. The asymmetry was motivated reasoning: waiting felt safe because acting spent credits, so I unconsciously demanded
+more proof for the expensive move. It took an Admiral consistency challenge to break a 30-session HOLD. HEURISTIC: when an
+outcome variable moves monotonically in the predicted direction across many observations, the decision is ANSWERED — act on it;
+the review_after date is a backstop for AMBIGUOUS outcomes, not a gate you must wait out when the signal is unambiguous. And the
+proactivity mandate's "idle-gated strategy is starvation" applies to capital too: a rising KPI under a held posture is not proof
+the hold is correct, only that the current thing works (pairs with L16 validate-first — validation was long since satisfied here,
+not pending).

@@ -33,6 +33,7 @@ Available Commands:
   player       Manage players and agents
   ship         Manage ships
   shipyard     Manage shipyard operations
+  waypoint     Discover waypoints in a system
   workflow     Execute complex multi-step workflows
 
 Flags:
@@ -1419,6 +1420,93 @@ Flags:
       --ship string       Ship symbol to use for navigation (required)
       --type string       Ship type to purchase (e.g., SHIP_PROBE, SHIP_MINING_DRONE) (required)
       --waypoint string   Shipyard waypoint (optional - will auto-discover if not provided)
+
+Global Flags:
+      --agent string    Agent symbol (alternative to player-id)
+      --player-id int   Player ID (required if agent not specified)
+      --socket string   Path to daemon Unix socket (default "/tmp/spacetraders-daemon.sock")
+  -v, --verbose         Enable verbose output
+```
+
+## spacetraders waypoint
+```
+List and inspect waypoints from the daemon's waypoint cache.
+
+Unlike the market cache (which only holds physically-visited MARKETPLACE
+waypoints), these commands surface every waypoint in a system - including the
+JUMP_GATE - syncing from the SpaceTraders API when the cache is empty or stale.
+
+Examples:
+  spacetraders waypoint list --system X1-PZ28 --agent ENDURANCE
+  spacetraders waypoint list --system X1-PZ28 --type JUMP_GATE
+  spacetraders waypoint list --system X1-PZ28 --trait SHIPYARD
+  spacetraders waypoint get --waypoint X1-PZ28-I55 --agent ENDURANCE
+
+Usage:
+  spacetraders waypoint [command]
+
+Available Commands:
+  get         Show detailed information about a waypoint
+  list        List the waypoints of a system
+
+Flags:
+  -h, --help   help for waypoint
+
+Global Flags:
+      --agent string    Agent symbol (alternative to player-id)
+      --player-id int   Player ID (required if agent not specified)
+      --socket string   Path to daemon Unix socket (default "/tmp/spacetraders-daemon.sock")
+  -v, --verbose         Enable verbose output
+
+Use "spacetraders waypoint [command] --help" for more information about a command.
+```
+
+### spacetraders waypoint get
+```
+Show detailed information about a single waypoint.
+
+Displays the waypoint's system, type, coordinates, traits, and orbitals. The
+waypoint is auto-fetched from the API when it is not cached.
+
+Examples:
+  spacetraders waypoint get --waypoint X1-PZ28-I55 --agent ENDURANCE
+  spacetraders waypoint get --waypoint X1-PZ28-I55 --player-id 1
+
+Usage:
+  spacetraders waypoint get [flags]
+
+Flags:
+  -h, --help              help for get
+      --waypoint string   Waypoint symbol (required)
+
+Global Flags:
+      --agent string    Agent symbol (alternative to player-id)
+      --player-id int   Player ID (required if agent not specified)
+      --socket string   Path to daemon Unix socket (default "/tmp/spacetraders-daemon.sock")
+  -v, --verbose         Enable verbose output
+```
+
+### spacetraders waypoint list
+```
+List the waypoints of a system from the daemon's waypoint cache.
+
+Shows each waypoint's symbol, type, coordinates, and traits. Optionally filter
+by trait (e.g. SHIPYARD, MARKETPLACE) or type (e.g. JUMP_GATE). The system is
+synced from the API when the cache is empty or stale.
+
+Examples:
+  spacetraders waypoint list --system X1-PZ28 --agent ENDURANCE
+  spacetraders waypoint list --system X1-PZ28 --type JUMP_GATE
+  spacetraders waypoint list --system X1-PZ28 --trait SHIPYARD --player-id 1
+
+Usage:
+  spacetraders waypoint list [flags]
+
+Flags:
+  -h, --help            help for list
+      --system string   System symbol (required)
+      --trait string    Filter by trait (e.g. SHIPYARD, MARKETPLACE)
+      --type string     Filter by type (e.g. JUMP_GATE)
 
 Global Flags:
       --agent string    Agent symbol (alternative to player-id)
