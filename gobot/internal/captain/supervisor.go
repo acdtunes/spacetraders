@@ -1,6 +1,7 @@
 package captainsup
 
 import (
+	"os"
 	"context"
 	"fmt"
 	"time"
@@ -92,6 +93,8 @@ func (s *Supervisor) Tick(ctx context.Context, now time.Time) (bool, error) {
 	if err := s.store.MarkProcessed(ctx, ids, now); err != nil {
 		return true, fmt.Errorf("mark processed: %w", err)
 	}
+	// A successful session has addressed any Admiral message; clear the inbox.
+	_ = os.Remove(s.ws.InboxPath())
 	fmt.Printf("captain: session complete, %d events processed\n", len(ids))
 
 	if s.fixer != nil {

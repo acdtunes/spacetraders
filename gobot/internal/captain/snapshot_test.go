@@ -59,3 +59,22 @@ func TestComposeSnapshotContainsAllSections(t *testing.T) {
 		require.Contains(t, prompt, want, "missing section content: %s", want)
 	}
 }
+
+func TestComposeSnapshotIncludesAdmiralInbox(t *testing.T) {
+	db, playerID, _ := setupDB(t)
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "state"), 0o755))
+	ws := NewWorkspace(dir)
+	require.NoError(t, os.WriteFile(ws.InboxPath(), []byte("I disagree about haulers."), 0o644))
+
+	prompt, err := ComposeSnapshot(context.Background(), db, ws, playerID, nil, time.Now())
+	require.NoError(t, err)
+	require.Contains(t, prompt, "## Message from the Admiral")
+	require.Contains(t, prompt, "I disagree about haulers.")
+	require.Contains(t, prompt, "address it with evidence")
+
+	require.NoError(t, os.Remove(ws.InboxPath()))
+	prompt, err = ComposeSnapshot(context.Background(), db, ws, playerID, nil, time.Now())
+	require.NoError(t, err)
+	require.NotContains(t, prompt, "Message from the Admiral")
+}

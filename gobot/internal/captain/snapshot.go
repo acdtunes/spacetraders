@@ -1,6 +1,7 @@
 package captainsup
 
 import (
+	"os"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -111,6 +112,15 @@ func ComposeSnapshot(ctx context.Context, db *gorm.DB, ws Workspace, playerID in
 	b.WriteString(ws.ReadFull("lessons.md") + "\n")
 	b.WriteString("\n## Recent log tail (state/captain-log.md)\n")
 	b.WriteString(ws.Tail("captain-log.md", logTailBytes) + "\n")
+
+	// Admiral inbox: challenges from the human, cleared after the session.
+	if msg, err := os.ReadFile(ws.InboxPath()); err == nil && len(strings.TrimSpace(string(msg))) > 0 {
+		b.WriteString("\n## Message from the Admiral\n")
+		b.Write(msg)
+		b.WriteString("\nYou MUST address it with evidence in your log this session — agree,")
+		b.WriteString("\nrebut, or design the cheap experiment that would settle it. The message")
+		b.WriteString("\nclears automatically; record what matters in your own memory files.\n")
+	}
 
 	// Session contract (details live in the workspace CLAUDE.md; this is the reminder)
 	b.WriteString(`

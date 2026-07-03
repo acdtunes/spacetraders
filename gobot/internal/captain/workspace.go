@@ -45,3 +45,11 @@ func (w Workspace) ReadFull(name string) string {
 	}
 	return string(data)
 }
+
+// InboxPath is the Admiral->Captain message channel (workspace root, not
+// state/: the captain owns state/, the Admiral owns the inbox). The
+// supervisor injects its content into the next session and clears it after
+// the session succeeds.
+func (w Workspace) InboxPath() string {
+	return filepath.Join(w.dir, "inbox.md")
+}
