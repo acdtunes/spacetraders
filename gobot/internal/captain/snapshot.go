@@ -133,13 +133,17 @@ func ComposeSnapshot(ctx context.Context, db *gorm.DB, ws Workspace, playerID in
 	// Session contract (details live in the workspace CLAUDE.md; this is the reminder)
 	b.WriteString(`
 ## Your obligations this session
-1. Close every decision listed under "Decisions due for review": append an
+1. FIRST, before anything else: append a dated `## <date> (session N) — <headline>`
+   entry to state/captain-log.md. Write the headline and treasury/health line
+   immediately, then fill the body as you work. This is the Admiral's window
+   into your reasoning — a session with no log entry is invisible, and recent
+   sessions have skipped it. It is obligation ONE, not a closing chore.
+2. Close every decision listed under "Decisions due for review": append an
    updated JSONL line to state/decisions.jsonl with outcome (worked|failed|inconclusive),
    verdict notes, and a lesson for failures/surprises.
-2. Assess the pending events and fleet state; act via the spacetraders CLI.
-3. Record every non-trivial action as a new decision line with a measurable
+3. Assess the pending events and fleet state; act via the spacetraders CLI.
+4. Record every non-trivial action as a new decision line with a measurable
    expectation and review_after time.
-4. Append a dated entry to state/captain-log.md (decisions + rationale + friction: tags).
 5. Revise state/strategy.md if KPIs disagree with its targets; curate state/lessons.md.
 6. STRATEGY DUTY — EVERY SESSION, NOT JUST QUIET ONES: events are triage,
    the mission is the job. After handling events, you MUST advance the top
