@@ -1,6 +1,6 @@
 ---
 title: Reservation feature shipped without a DB migration — ships.reserved missing, all contract assignment fails (SQLSTATE 42703)
-status: in_progress
+status: obsolete
 kind: fix
 ---
 
@@ -94,3 +94,15 @@ NOTE FOR OPERATOR: because the daemon does not auto-run migrations
 after which the already-running coordinator self-heals on its next assignment
 (no daemon restart strictly required, though a restart is harmless). Until the
 column exists on the live DB, contract income stays at zero.
+
+
+## OBSOLETE (2026-07-03) — superseded by a different resolution
+
+Correct diagnosis, but the P0 was resolved two other ways before this fix
+could land: (1) the ship-reservation feature that added the reserved column
+was REVERTED (the flag was redundant — assignment already excludes haulers),
+so the column no longer exists in the models; (2) the daemon now runs
+additive AutoMigrate on startup, so any future model column is applied to
+Postgres automatically. A migration adding reserved/reservation_reason would
+now create orphaned schema. Branch discarded by the stale-base guard (main
+advanced past it) — exactly its intended behavior.
