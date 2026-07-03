@@ -409,7 +409,8 @@ func (r *ContainerRunner) signalCompletionWithStatus(success bool, errMsg string
 		"error":        errMsg,
 	})
 
-	if r.eventPublisher == nil {
+	publisher := resolveWorkerPublisher(r.eventPublisher)
+	if publisher == nil {
 		return
 	}
 
@@ -429,7 +430,7 @@ func (r *ContainerRunner) signalCompletionWithStatus(success bool, errMsg string
 		Error:         errMsg,
 	}
 
-	r.eventPublisher.PublishWorkerCompleted(event)
+	publisher.PublishWorkerCompleted(event)
 	r.log("INFO", fmt.Sprintf("Published completion event for ship %s (success=%t)", shipSymbol, success), nil)
 }
 

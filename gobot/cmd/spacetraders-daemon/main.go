@@ -210,6 +210,7 @@ func run(cfg *config.Config) error {
 
 	captainEventRepo := persistence.NewGormCaptainEventRepository(db)
 	grpc.SetCaptainEventRecorder(captainEventRepo)
+	grpc.SetDefaultWorkerEventPublisher(shipEventBus)
 	fmt.Println("Captain event outbox initialized")
 
 	routeExecutor := ship.NewRouteExecutor(shipRepo, med, nil, marketScanner, nil, shipEventBus) // nil = use RealClock and default refuel strategy
