@@ -85,7 +85,12 @@ func ComposeMetaReview(ctx context.Context, db *gorm.DB, ws Workspace, playerID 
    empty promotion round is a fine outcome.
 3. Verify the last merged improvement (if any) actually moved the KPI it
    promised; record the verdict as a lesson in state/lessons.md.
-4. STRATEGIC HORIZON: your KPI measures the current income loop, but a
+4. BOLDNESS AUDIT: list the moves you did NOT take since the last review
+   and why. Sort the reasons: EVIDENCE (genuinely insufficient data) vs
+   PROCESS (review windows, formality, "validate first" on a foregone
+   conclusion). Every PROCESS-reason hold is a failure pattern — record it
+   as a lesson with the opportunity cost in credits/hours.
+5. STRATEGIC HORIZON: your KPI measures the current income loop, but a
    fleet that only exploits its known loop plateaus. Review the frontier:
    CLI capabilities you have NEVER exercised, systems never visited,
    long-horizon structures the game rewards, and income streams that would
@@ -93,7 +98,7 @@ func ComposeMetaReview(ctx context.Context, db *gorm.DB, ws Workspace, playerID 
    state/strategy.md ranking such objectives by step-change potential vs
    incremental gain, and either start a cheap probe toward the top one or
    record why not yet. Optimizing a local maximum forever is a failure mode.
-5. Append a meta-review entry to state/captain-log.md.
+6. Append a meta-review entry to state/captain-log.md.
 `)
 	return b.String(), nil
 }
