@@ -113,8 +113,10 @@ func (m *SupplyMonitor) pollFactories(ctx context.Context) {
 	// This allows us to reset ready flags when supply drops below HIGH
 	allFactories := m.factoryTracker.GetAllFactories()
 	if len(allFactories) == 0 {
-		// Even without factories, check supply-gated tasks
+		// Even without factories, check supply-gated and construction tasks
+		// (CONSTRUCTION pipelines at depth 3 have no factory states at all)
 		m.ActivateSupplyGatedTasks(ctx)
+		m.ActivateConstructionTasks(ctx)
 		return
 	}
 
@@ -137,6 +139,10 @@ func (m *SupplyMonitor) pollFactories(ctx context.Context) {
 	// Enqueue READY COLLECTION pipeline tasks that aren't in the queue
 	// COLLECTION pipelines have no factory states, so we must poll them separately
 	m.ActivateCollectionPipelineTasks(ctx)
+
+	// Activate PENDING DELIVER_TO_CONSTRUCTION tasks whose dependencies completed
+	// CONSTRUCTION pipelines are not covered by the acquire/collect activators above
+	m.ActivateConstructionTasks(ctx)
 }
 
 // checkFactorySupply checks a single factory's supply level
@@ -1356,6 +1362,97 @@ func (m *SupplyMonitor) ActivateCollectionPipelineTasks(ctx context.Context) int
 
 	if activated > 0 {
 		logger.Log("INFO", "COLLECTION pipeline task activation summary", map[string]interface{}{
+			"activated": activated,
+		})
+		m.notifyTaskReady(lastActivatedPipelineID)
+	}
+
+	return activated
+}
+
+// ActivateConstructionTasks checks all PENDING DELIVER_TO_CONSTRUCTION tasks and
+// activates those whose dependencies are complete. Construction deliveries have a
+// fixed bill at the construction site, so no supply gating is applied beyond
+// requiring the pipeline to be EXECUTING and dependencies to be COMPLETED.
+func (m *SupplyMonitor) ActivateConstructionTasks(ctx context.Context) int {
+	logger := common.LoggerFromContext(ctx)
+
+	if m.taskRepo == nil {
+		return 0
+	}
+
+	pendingTasks, err := m.taskRepo.FindByStatus(ctx, m.playerID, manufacturing.TaskStatusPending)
+	if err != nil {
+		logger.Log("WARN", "Failed to find pending tasks for construction activation", map[string]interface{}{
+			"error": err.Error(),
+		})
+		return 0
+	}
+
+	// Cache pipeline status lookups to avoid repeated DB queries
+	pipelineStatusCache := make(map[string]manufacturing.PipelineStatus)
+
+	activated := 0
+	lastActivatedPipelineID := ""
+	for _, task := range pendingTasks {
+		if task.TaskType() != manufacturing.TaskTypeDeliverToConstruction {
+			continue
+		}
+
+		// Verify pipeline is still EXECUTING before activating task
+		pipelineID := task.PipelineID()
+		pipelineStatus, cached := pipelineStatusCache[pipelineID]
+		if !cached {
+			if m.pipelineRepo != nil {
+				pipeline, err := m.pipelineRepo.FindByID(ctx, pipelineID)
+				if err != nil || pipeline == nil {
+					continue
+				}
+				pipelineStatus = pipeline.Status()
+				pipelineStatusCache[pipelineID] = pipelineStatus
+			}
+		}
+
+		if pipelineStatus != manufacturing.PipelineStatusExecuting {
+			continue
+		}
+
+		// Wait for input deliveries (e.g., factory inputs) to complete first
+		if !m.checkDependenciesComplete(ctx, task) {
+			continue
+		}
+
+		if err := task.MarkReady(); err != nil {
+			logger.Log("WARN", "Failed to mark construction task ready", map[string]interface{}{
+				"task_id": task.ID()[:8],
+				"error":   err.Error(),
+			})
+			continue
+		}
+
+		if err := m.taskRepo.Update(ctx, task); err != nil {
+			logger.Log("WARN", "Failed to persist activated construction task", map[string]interface{}{
+				"task_id": task.ID()[:8],
+				"error":   err.Error(),
+			})
+			continue
+		}
+
+		m.taskQueue.Enqueue(task)
+		activated++
+		lastActivatedPipelineID = pipelineID
+
+		logger.Log("INFO", "Activated DELIVER_TO_CONSTRUCTION task", map[string]interface{}{
+			"task_id":           task.ID()[:8],
+			"good":              task.Good(),
+			"source":            task.SourceMarket(),
+			"factory":           task.FactorySymbol(),
+			"construction_site": task.ConstructionSite(),
+		})
+	}
+
+	if activated > 0 {
+		logger.Log("INFO", "Construction task activation summary", map[string]interface{}{
 			"activated": activated,
 		})
 		m.notifyTaskReady(lastActivatedPipelineID)

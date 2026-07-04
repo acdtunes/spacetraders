@@ -8,17 +8,26 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 )
 
+// ConstructionPurchaser executes the market purchase loop for the acquire phase.
+// Satisfied by *ManufacturingPurchaser; narrowed to an interface for testability.
+type ConstructionPurchaser interface {
+	ExecutePurchaseLoop(ctx context.Context, params PurchaseLoopParams) (*PurchaseResult, error)
+}
+
 // DeliverToConstructionExecutor executes DELIVER_TO_CONSTRUCTION tasks.
-// This task collects goods from the ship's cargo and delivers them
-// to a construction site using the construction supply API.
+// This task acquires goods (from the ship's cargo, or by purchasing at the
+// task's source market / factory) and delivers them to a construction site
+// using the construction supply API.
 //
 // Workflow:
-//  1. Navigate to construction site
-//  2. Dock at construction site
-//  3. Call construction supply API to deliver goods
-//  4. Update pipeline with delivered quantity
+//  1. Acquire goods if cargo is empty (purchase at source market or factory)
+//  2. Navigate to construction site
+//  3. Dock at construction site
+//  4. Call construction supply API to deliver goods
+//  5. Update pipeline with delivered quantity
 type DeliverToConstructionExecutor struct {
 	navigator        Navigator
+	purchaser        ConstructionPurchaser
 	constructionRepo manufacturing.ConstructionSiteRepository
 	pipelineRepo     manufacturing.PipelineRepository
 }
@@ -26,11 +35,13 @@ type DeliverToConstructionExecutor struct {
 // NewDeliverToConstructionExecutor creates a new executor for DELIVER_TO_CONSTRUCTION tasks.
 func NewDeliverToConstructionExecutor(
 	navigator Navigator,
+	purchaser ConstructionPurchaser,
 	constructionRepo manufacturing.ConstructionSiteRepository,
 	pipelineRepo manufacturing.PipelineRepository,
 ) *DeliverToConstructionExecutor {
 	return &DeliverToConstructionExecutor{
 		navigator:        navigator,
+		purchaser:        purchaser,
 		constructionRepo: constructionRepo,
 		pipelineRepo:     pipelineRepo,
 	}
@@ -66,10 +77,49 @@ func (e *DeliverToConstructionExecutor) Execute(ctx context.Context, params Task
 		return err
 	}
 
-	// Check if we have cargo to deliver
+	// Check if we already have cargo to deliver (idempotent resume after crash)
 	cargoUnits := ship.Cargo().GetItemUnits(task.Good())
 	if cargoUnits == 0 {
-		return fmt.Errorf("DELIVER_TO_CONSTRUCTION: no %s in cargo to deliver", task.Good())
+		// --- PHASE 0: ACQUIRE (purchase at source market or factory) ---
+		source := task.SourceMarket()
+		if source == "" {
+			source = task.FactorySymbol()
+		}
+		if source == "" {
+			return fmt.Errorf("DELIVER_TO_CONSTRUCTION: no %s in cargo and no source to acquire from", task.Good())
+		}
+		if e.purchaser == nil {
+			return fmt.Errorf("DELIVER_TO_CONSTRUCTION: no %s in cargo and no purchaser configured", task.Good())
+		}
+
+		logger.Log("INFO", "DELIVER_TO_CONSTRUCTION: Acquiring goods", map[string]interface{}{
+			"ship":   params.ShipSymbol,
+			"good":   task.Good(),
+			"source": source,
+		})
+
+		if _, err := e.navigator.NavigateAndDock(ctx, params.ShipSymbol, source, params.PlayerID); err != nil {
+			return fmt.Errorf("failed to navigate to acquisition source: %w", err)
+		}
+
+		purchaseResult, err := e.purchaser.ExecutePurchaseLoop(ctx, PurchaseLoopParams{
+			ShipSymbol:        params.ShipSymbol,
+			PlayerID:          params.PlayerID,
+			Good:              task.Good(),
+			TaskID:            task.ID(),
+			DesiredQty:        task.Quantity(),
+			Market:            source,
+			Factory:           constructionSite,
+			RequireHighSupply: false,
+		})
+		if err != nil {
+			return err
+		}
+		if purchaseResult.TotalUnitsAdded == 0 {
+			return fmt.Errorf("DELIVER_TO_CONSTRUCTION: no goods acquired at %s - will retry", source)
+		}
+
+		cargoUnits = purchaseResult.TotalUnitsAdded
 	}
 
 	logger.Log("INFO", "DELIVER_TO_CONSTRUCTION: Cargo to deliver", map[string]interface{}{

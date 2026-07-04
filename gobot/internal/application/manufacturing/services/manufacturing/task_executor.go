@@ -116,8 +116,9 @@ func RegisterStorageExecutor(
 func RegisterConstructionExecutor(
 	registry *TaskExecutorRegistry,
 	navigator Navigator,
+	purchaser *ManufacturingPurchaser,
 	constructionRepo manufacturing.ConstructionSiteRepository,
 	pipelineRepo manufacturing.PipelineRepository,
 ) {
-	registry.Register(NewDeliverToConstructionExecutor(navigator, constructionRepo, pipelineRepo))
+	registry.Register(NewDeliverToConstructionExecutor(navigator, purchaser, constructionRepo, pipelineRepo))
 }

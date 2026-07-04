@@ -76,6 +76,14 @@ func (r *TaskRescuer) RescueReadyTasks(ctx context.Context, playerID int) Rescue
 			} else {
 				result.ResetToPending++
 			}
+
+		case manufacturing.TaskTypeDeliverToConstruction:
+			// Construction deliveries have a fixed bill at the site - no market
+			// condition gating, always re-enqueue
+			if r.taskQueue != nil {
+				r.taskQueue.Enqueue(task)
+			}
+			result.DeliverToConstructionRescued++
 		}
 	}
 
@@ -88,6 +96,9 @@ func (r *TaskRescuer) RescueReadyTasks(ctx context.Context, playerID int) Rescue
 	}
 	if result.StorageAcquireDeliverRescued > 0 {
 		logger.Log("DEBUG", fmt.Sprintf("Rescued %d STORAGE_ACQUIRE_DELIVER tasks to queue", result.StorageAcquireDeliverRescued), nil)
+	}
+	if result.DeliverToConstructionRescued > 0 {
+		logger.Log("DEBUG", fmt.Sprintf("Rescued %d DELIVER_TO_CONSTRUCTION tasks to queue", result.DeliverToConstructionRescued), nil)
 	}
 	if result.ResetToPending > 0 {
 		logger.Log("DEBUG", fmt.Sprintf("Reset %d tasks to PENDING due to supply conditions", result.ResetToPending), nil)
@@ -193,12 +204,13 @@ type RescueResult struct {
 	CollectSellRescued           int
 	AcquireDeliverRescued        int
 	StorageAcquireDeliverRescued int
+	DeliverToConstructionRescued int
 	ResetToPending               int
 }
 
 // TotalRescued returns the total number of tasks rescued.
 func (r RescueResult) TotalRescued() int {
-	return r.CollectSellRescued + r.AcquireDeliverRescued + r.StorageAcquireDeliverRescued
+	return r.CollectSellRescued + r.AcquireDeliverRescued + r.StorageAcquireDeliverRescued + r.DeliverToConstructionRescued
 }
 
 // RescueFailedTasks rescues FAILED tasks that can be retried.

@@ -507,6 +507,10 @@ func run(cfg *config.Config) error {
 	// Register storage executor and enable storage support on COLLECT_SELL executor
 	mfgServices.RegisterStorageExecutor(taskExecutorRegistry, mfgNavigator, mfgPurchaser, mfgSeller, storageCoordinator, apiClient, shipRepo)
 
+	// Register DELIVER_TO_CONSTRUCTION executor so construction pipeline tasks can execute
+	constructionSiteRepo := api.NewConstructionSiteRepository(apiClient, playerRepo)
+	mfgServices.RegisterConstructionExecutor(taskExecutorRegistry, mfgNavigator, mfgPurchaser, constructionSiteRepo, manufacturingPipelineRepo)
+
 	// Gas extraction handlers (now that storage coordinator is available)
 	// Transport is handled by manufacturing pool via STORAGE_ACQUIRE_DELIVER tasks
 	gasCoordinatorHandler := gasCmd.NewRunGasCoordinatorHandler(
