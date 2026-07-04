@@ -324,7 +324,7 @@ type ManufacturingPipelineModel struct {
 	TotalRevenue   int        `gorm:"column:total_revenue;default:0"`
 	NetProfit      int        `gorm:"column:net_profit;default:0"`
 	ErrorMessage   *string    `gorm:"column:error_message;type:text"`
-	CreatedAt      time.Time  `gorm:"column:created_at;not null;default:now()"`
+	CreatedAt      time.Time  `gorm:"column:created_at;not null;autoCreateTime"`
 	StartedAt      *time.Time `gorm:"column:started_at"`
 	CompletedAt    *time.Time `gorm:"column:completed_at"`
 
@@ -362,7 +362,7 @@ type ManufacturingTaskModel struct {
 	TotalCost      int        `gorm:"column:total_cost;default:0"`
 	TotalRevenue   int        `gorm:"column:total_revenue;default:0"`
 	ErrorMessage   *string    `gorm:"column:error_message;type:text"`
-	CreatedAt      time.Time  `gorm:"column:created_at;not null;default:now()"`
+	CreatedAt      time.Time  `gorm:"column:created_at;not null;autoCreateTime"`
 	ReadyAt        *time.Time `gorm:"column:ready_at"`
 	StartedAt      *time.Time `gorm:"column:started_at"`
 	CompletedAt    *time.Time `gorm:"column:completed_at"`
@@ -399,7 +399,7 @@ type ManufacturingFactoryStateModel struct {
 	CurrentSupply       *string    `gorm:"column:current_supply;size:32"`
 	PreviousSupply      *string    `gorm:"column:previous_supply;size:32"`
 	ReadyForCollection  bool       `gorm:"column:ready_for_collection;default:false"`
-	CreatedAt           time.Time  `gorm:"column:created_at;not null;default:now()"`
+	CreatedAt           time.Time  `gorm:"column:created_at;not null;autoCreateTime"`
 	InputsCompletedAt   *time.Time `gorm:"column:inputs_completed_at"`
 	ReadyAt             *time.Time `gorm:"column:ready_at"`
 }

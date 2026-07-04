@@ -96,6 +96,10 @@ func AutoMigrate(db *gorm.DB) error {
 		&persistence.GoodsFactoryModel{},
 		&persistence.TransactionModel{},
 		&persistence.CaptainEventModel{},
+		&persistence.ManufacturingPipelineModel{},
+		&persistence.ManufacturingTaskModel{},
+		&persistence.ManufacturingTaskDependencyModel{},
+		&persistence.ManufacturingFactoryStateModel{},
 	)
 }
 
