@@ -57,12 +57,17 @@ def collect():
         except Exception: pass
     reports = []
     bugdir = os.path.join(CAPTAIN, "reports", "bugs")
-    if os.path.isdir(bugdir):
-        for f in sorted(os.listdir(bugdir), reverse=True):
+    for d, closed in ((bugdir, False), (os.path.join(bugdir, "closed"), True)):
+        if not os.path.isdir(d):
+            continue
+        for f in sorted(os.listdir(d), reverse=True):
             if f.endswith(".md"):
-                h = read(os.path.join(bugdir, f))[:400]
+                h = read(os.path.join(d, f))[:400]
                 st = re.search(r"^status: (\S+)", h, re.M); kd = re.search(r"^kind: (\S+)", h, re.M)
-                reports.append({"name": f[:-3], "status": st.group(1) if st else "?", "kind": kd.group(1) if kd else "fix"})
+                reports.append({"name": f[:-3], "status": st.group(1) if st else "?",
+                                "kind": kd.group(1) if kd else "fix", "closed": closed})
+    reports.sort(key=lambda r: (r["closed"], r["name"]), reverse=False)
+    reports = [r for r in reports if not r["closed"]] + [r for r in reports if r["closed"]][::-1]
     t = int(t_row[0][0]) if t_row else 0
     b = int(base[0][0]) if base else t
     return {"ts": time.strftime("%H:%M:%S"), "treasury": t, "delta24": t - b, "rate": round((t - b) / 24),
@@ -220,6 +225,20 @@ background:#1B2437;border:1px solid var(--edge);border-radius:6px;padding:3px 7p
 .flash{animation:fl .8s}
 @keyframes fl{0%{color:var(--good)}100%{color:inherit}}
 .sup .err{color:var(--bad)}.sup .ok{color:var(--good)}
+#modal{position:fixed;inset:0;background:rgba(5,8,15,.75);backdrop-filter:blur(4px);display:none;
+align-items:flex-start;justify-content:center;padding:6vh 16px;z-index:50}
+#modal.open{display:flex}
+#mbox{background:#131A2B;border:1px solid var(--edge);border-radius:14px;max-width:860px;width:100%;
+max-height:84vh;display:flex;flex-direction:column;box-shadow:0 24px 80px rgba(0,0,0,.5)}
+#mhead{display:flex;align-items:center;gap:10px;padding:14px 18px;border-bottom:1px solid var(--edge)}
+#mtitle{font:600 13px var(--mono);color:var(--ink);flex:1;word-break:break-all}
+#mclose{background:none;border:1px solid var(--edge);border-radius:8px;color:var(--mut);
+font:14px var(--mono);padding:2px 10px;cursor:pointer}
+#mclose:hover{color:var(--ink);border-color:var(--acc)}
+#mbody{padding:16px 18px;overflow:auto;font:12px/1.65 var(--mono);color:#C4CBDA;white-space:pre-wrap}
+#mbody .hd{color:var(--ink);font-weight:700}#mbody .em{color:var(--acc)}
+tr.clickable{cursor:pointer}tr.clickable:hover td{background:rgba(125,177,255,.05)}
+.closedrow td{opacity:.55}
 @media(max-width:1100px){.hero,.kpis{grid-column:span 12}.span4,.span6,.span8{grid-column:span 12}}
 @media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
 </style></head><body>
@@ -254,6 +273,7 @@ background:#1B2437;border:1px solid var(--edge);border-radius:6px;padding:3px 7p
  <div class="card span12"><h2 id="sesshead">Latest log entry</h2><pre class="entry" id="entry"></pre></div>
  <div class="card span12"><h2>Supervisor</h2><pre class="sup" id="sup"></pre></div>
 </div>
+<div id="modal"><div id="mbox"><div id="mhead"><span id="mtitle"></span><button id="mclose">esc</button></div><pre id="mbody"></pre></div></div>
 <script>
 const $=id=>document.getElementById(id),fmt=n=>n.toLocaleString();
 const TYPETAG=t=>/MANUF|mfg/i.test(t)?'mfg':/SCOUT/i.test(t)?'scout':/CONSTR/i.test(t)?'constr':'';
@@ -328,13 +348,23 @@ async function tick(){
    d.events.map(e=>`<tr><td>${e.id}</td><td>${e.type}</td><td>${e.ship}</td><td>${e.at}</td>
     <td class="st">${e.done?'<span style="color:var(--dim)">processed</span>':'<span class="st-new">queued</span>'}</td></tr>`).join('');
   $('reports').innerHTML='<tr><th>report</th><th>kind</th><th>status</th></tr>'+
-   d.reports.map(r=>`<tr><td>${r.name.slice(0,46)}</td><td>${r.kind}</td><td class="st st-${r.status}">${r.status.replace('_',' ')}</td></tr>`).join('');
+   d.reports.map(r=>`<tr class="clickable ${r.closed?'closedrow':''}" data-name="${r.name}">
+    <td>${r.name.slice(0,46)}</td><td>${r.kind}</td><td class="st st-${r.status}">${r.status.replace('_',' ')}</td></tr>`).join('');
+  document.querySelectorAll('#reports tr.clickable').forEach(tr=>tr.onclick=()=>showReport(tr.dataset.name));
   $('sesshead').textContent='Latest log entry — '+d.session;
   $('entry').innerHTML=mdlite(d.last_entry);
   $('sup').innerHTML=d.supervisor.replace(/&/g,'&amp;').replace(/</g,'&lt;').split('\n')
    .map(l=>/error|failed/i.test(l)?`<span class="err">${l}</span>`:/complete|merged/i.test(l)?`<span class="ok">${l}</span>`:l).join('\n');
  }catch(e){$('alive').className='pill down';$('alive').textContent='● FETCH FAILED';}
 }
+async function showReport(name){
+ $('mtitle').textContent=name;$('mbody').textContent='loading…';
+ $('modal').classList.add('open');
+ try{const r=await(await fetch('/report?name='+encodeURIComponent(name))).json();
+  $('mbody').innerHTML=mdlite(r.body);}catch(e){$('mbody').textContent='failed to load';}}
+$('mclose').onclick=()=>$('modal').classList.remove('open');
+$('modal').onclick=e=>{if(e.target.id==='modal')$('modal').classList.remove('open');};
+document.addEventListener('keydown',e=>{if(e.key==='Escape')$('modal').classList.remove('open');});
 tick();setInterval(tick,5000);
 </script></body></html>"""
 
@@ -343,6 +373,22 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/data.json":
             body, ctype = json.dumps(collect()).encode(), "application/json"
+        elif self.path.startswith("/report?name="):
+            name = self.path.split("=", 1)[1]
+            if not re.fullmatch(r"[A-Za-z0-9._-]+", name):
+                body, ctype = b"bad name", "text/plain"
+            else:
+                bugdir = os.path.join(CAPTAIN, "reports", "bugs")
+                content = ""
+                for d in (bugdir, os.path.join(bugdir, "closed")):
+                    fp = os.path.join(d, name + ".md")
+                    if os.path.isfile(fp):
+                        content = read(fp)
+                        gl = fp + ".gate.log"
+                        if os.path.isfile(gl):
+                            content += "\n\n--- GATE LOG (tail) ---\n" + read(gl, 2000)
+                        break
+                body, ctype = json.dumps({"name": name, "body": content or "(not found)"}).encode(), "application/json"
         else:
             body, ctype = PAGE.encode(), "text/html; charset=utf-8"
         self.send_response(200)
