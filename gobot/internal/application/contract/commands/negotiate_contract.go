@@ -59,10 +59,12 @@ func (h *NegotiateContractHandler) Handle(ctx context.Context, request common.Re
 
 	// Handle "ship must be docked" error (4214 or 4244) reactively
 	if result != nil && (result.ErrorCode == 4214 || result.ErrorCode == 4244) {
-		// Ship not docked - load ship, dock it, and retry
-		ship, loadErr := h.loadShip(ctx, cmd.ShipSymbol, cmd.PlayerID)
+		// The server says the ship is not docked, so the local cache cannot be
+		// trusted here (a stale DOCKED entry would make EnsureDocked a no-op and
+		// the retry byte-identical). Reconcile from the API, then dock for real.
+		ship, loadErr := h.shipRepo.SyncShipFromAPI(ctx, cmd.ShipSymbol, cmd.PlayerID)
 		if loadErr != nil {
-			return nil, loadErr
+			return nil, fmt.Errorf("failed to refresh ship from API: %w", loadErr)
 		}
 		if dockErr := h.ensureShipDocked(ctx, ship, cmd.PlayerID); dockErr != nil {
 			return nil, dockErr
@@ -98,14 +100,6 @@ func (h *NegotiateContractHandler) Handle(ctx context.Context, request common.Re
 		Contract:      newContract,
 		WasNegotiated: true,
 	}, nil
-}
-
-func (h *NegotiateContractHandler) loadShip(ctx context.Context, shipSymbol string, playerID shared.PlayerID) (*navigation.Ship, error) {
-	ship, err := h.shipRepo.FindBySymbol(ctx, shipSymbol, playerID)
-	if err != nil {
-		return nil, fmt.Errorf("ship not found: %w", err)
-	}
-	return ship, nil
 }
 
 func (h *NegotiateContractHandler) ensureShipDocked(ctx context.Context, ship *navigation.Ship, playerID shared.PlayerID) error {
