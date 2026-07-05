@@ -6,6 +6,9 @@
     <string>/usr/bin/python3</string>
     <string>/Users/andres.dandrea/projects/spacetraders/dashboard/captain_dashboard.py</string>
   </array>
+  <key>EnvironmentVariables</key><dict>
+    <key>PATH</key><string>/usr/local/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+  </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>StandardOutPath</key><string>/tmp/dashboard.log</string>
