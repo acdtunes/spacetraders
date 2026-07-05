@@ -77,7 +77,7 @@ def collect():
             "reports": reports[:8], "gate": gate(), "last_entry": last,
             "supervisor": read(os.path.join(GOBOT, "captain-supervisor.log"), 1600),
             "alive": subprocess.run(["pgrep", "-f", "bin/captain"], capture_output=True).returncode == 0,
-            "session_state": session_state()}
+            "session_state": session_state(), "tokens": token_stats()}
 
 def session_state():
     """Is a captain session running now? Else, ETA to the next one."""
@@ -95,6 +95,55 @@ def session_state():
     except Exception:
         last = time.time()
     return {"active": False, "eta": max(0, int(last + 45 * 60 - time.time()))}
+
+_tok_files = {}
+
+def token_stats(ttl=30):
+    """Sum token usage across captain session transcripts (strategy sessions in
+    the captain workspace + fix sessions in worktrees). Incremental: files are
+    re-parsed only when (mtime,size) changes — i.e. the live session's file."""
+    hit = _cache.get("tok")
+    if hit and time.time() - hit[0] < ttl:
+        return hit[1]
+    import glob
+    home = os.path.expanduser("~/.claude/projects")
+    paths = glob.glob(os.path.join(home, "*spacetraders-captain*", "*.jsonl")) +             glob.glob(os.path.join(home, "*captain-worktrees*", "*.jsonl"))
+    total = {"in": 0, "out": 0, "cache": 0}
+    newest, newest_mtime = None, 0
+    for f in paths:
+        try:
+            st = os.stat(f)
+        except OSError:
+            continue
+        key = (st.st_mtime, st.st_size)
+        cached = _tok_files.get(f)
+        if not cached or cached[0] != key:
+            sums = {"in": 0, "out": 0, "cache": 0}
+            try:
+                with open(f, encoding="utf-8", errors="replace") as fh:
+                    for line in fh:
+                        if '"usage"' not in line:
+                            continue
+                        try:
+                            u = json.loads(line).get("message", {}).get("usage")
+                        except Exception:
+                            continue
+                        if u:
+                            sums["in"] += u.get("input_tokens", 0) + u.get("cache_creation_input_tokens", 0)
+                            sums["out"] += u.get("output_tokens", 0)
+                            sums["cache"] += u.get("cache_read_input_tokens", 0)
+            except OSError:
+                continue
+            _tok_files[f] = (key, sums)
+        sums = _tok_files[f][1]
+        for k in total:
+            total[k] += sums[k]
+        if st.st_mtime > newest_mtime:
+            newest, newest_mtime = f, st.st_mtime
+    cur = _tok_files.get(newest, (None, {"in": 0, "out": 0, "cache": 0}))[1] if newest else {"in": 0, "out": 0, "cache": 0}
+    r = {"session": cur, "total": total, "files": len(paths)}
+    _cache["tok"] = (time.time(), r)
+    return r
 
 PAGE = r"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>TORWIND // Captain Loop</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -193,6 +242,7 @@ background:#1B2437;border:1px solid var(--edge);border-radius:6px;padding:3px 7p
   <div class="kpi"><div class="l">Sessions</div><div class="v" id="sessions">–</div><div class="h">log entries</div></div>
   <div class="kpi"><div class="l">Event queue</div><div class="v" id="queue">–</div><div class="h" id="queueh"></div></div>
   <div class="kpi"><div class="l">Open decisions</div><div class="v" id="odec">–</div><div class="h">awaiting review</div></div>
+  <div class="kpi"><div class="l">Tokens · session</div><div class="v" id="tokv">–</div><div class="h" id="tokh"></div></div>
   <div class="kpi gate"><div class="l">Jump gate · X1-PZ28-I67</div><div class="v" id="gatep">–</div><div id="gatemats"></div></div>
  </div>
  <div class="card span6"><h2>Net flow / hour · 24h</h2><div id="bars"></div></div>
@@ -256,6 +306,9 @@ async function tick(){
   setNum($('queue'),d.queue,d.queue);
   $('queueh').innerHTML=d.queue>10?'<span class="qd">backlog building</span>':'nominal';
   $('odec').textContent=d.open_decisions;
+  const K=n=>n>=1e6?(n/1e6).toFixed(1)+'M':n>=1e3?(n/1e3).toFixed(0)+'k':n;
+  $('tokv').textContent=K(d.tokens.session.in+d.tokens.session.out);
+  $('tokh').textContent='all-time '+K(d.tokens.total.in+d.tokens.total.out)+' ('+d.tokens.files+' sessions) · +'+K(d.tokens.total.cache)+' cached';
   if(d.gate&&d.gate.progress!=null){$('gatep').textContent=d.gate.progress.toFixed(1)+'%';
    $('gatemats').innerHTML=d.gate.materials.map(m=>{const pc=100*m.have/m.need;
     return `<div class="matrow"><span class="name">${m.name}</span><div class="bar"><i style="width:${Math.max(pc,.6)}%"></i></div><span>${m.have}/${m.need}</span></div>`}).join('');}
