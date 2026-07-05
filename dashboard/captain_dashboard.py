@@ -60,14 +60,16 @@ def collect():
     for d, closed in ((bugdir, False), (os.path.join(bugdir, "closed"), True)):
         if not os.path.isdir(d):
             continue
-        for f in sorted(os.listdir(d), reverse=True):
+        for f in os.listdir(d):
             if f.endswith(".md"):
-                h = read(os.path.join(d, f))[:400]
+                fp = os.path.join(d, f)
+                h = read(fp)[:400]
                 st = re.search(r"^status: (\S+)", h, re.M); kd = re.search(r"^kind: (\S+)", h, re.M)
                 reports.append({"name": f[:-3], "status": st.group(1) if st else "?",
-                                "kind": kd.group(1) if kd else "fix", "closed": closed})
-    reports.sort(key=lambda r: (r["closed"], r["name"]), reverse=False)
-    reports = [r for r in reports if not r["closed"]] + [r for r in reports if r["closed"]][::-1]
+                                "kind": kd.group(1) if kd else "fix", "closed": closed,
+                                "mtime": os.path.getmtime(fp)})
+    # Active first, then closed; within each group most recent activity first.
+    reports.sort(key=lambda r: (r["closed"], -r["mtime"]))
     t = int(t_row[0][0]) if t_row else 0
     b = int(base[0][0]) if base else t
     return {"ts": time.strftime("%H:%M:%S"), "treasury": t, "delta24": t - b, "rate": round((t - b) / 24),
