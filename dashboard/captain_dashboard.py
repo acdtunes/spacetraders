@@ -76,7 +76,9 @@ def collect():
             "spark": [[float(r[0]), int(r[1])] for r in spark if len(r) == 2],
             "hourly": [[r[0], int(r[1])] for r in hourly if len(r) == 2],
             "queue": int(events[0][0]) if events else 0,
-            "session": heads[-1] if heads else "", "heads": heads[-6:][::-1], "sessions_total": len(heads),
+            "session": heads[-1] if heads else "",
+            "heads": [{"i": i, "t": h} for i, h in enumerate(heads)][-6:][::-1],
+            "sessions_total": len(heads),
             "open_decisions": sum(1 for d in open_d.values() if not d.get("outcome")),
             "containers": [{"id": c[0], "type": c[1], "status": c[2], "since": c[3], "up": int(float(c[4]))} for c in containers if len(c) >= 5],
             "events": [{"id": e[0], "type": e[1], "ship": e[2], "at": e[3], "done": e[4] == "t"} for e in recent if len(e) >= 5],
@@ -240,6 +242,7 @@ font:14px var(--mono);padding:2px 10px;cursor:pointer}
 #mbody{padding:16px 18px;overflow:auto;font:12px/1.65 var(--mono);color:#C4CBDA;white-space:pre-wrap}
 #mbody .hd{color:var(--ink);font-weight:700}#mbody .em{color:var(--acc)}
 tr.clickable{cursor:pointer}tr.clickable:hover td{background:rgba(125,177,255,.05)}
+.heads li.clickable{cursor:pointer}.heads li.clickable:hover{color:var(--acc)}
 .closedrow td{opacity:.55}
 @media(max-width:1100px){.hero,.kpis{grid-column:span 12}.span4,.span6,.span8{grid-column:span 12}}
 @media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
@@ -337,7 +340,8 @@ async function tick(){
   drawSpark(d.spark);
   const mx=Math.max(...d.hourly.map(h=>Math.abs(h[1])),1);
   $('bars').innerHTML=d.hourly.map(h=>`<div class="b ${h[1]<0?'neg':''}" style="height:${Math.max(4,58*Math.abs(h[1])/mx)}px" data-t="${h[0]} · ${h[1]>=0?'+':''}${fmt(h[1])}"></div>`).join('');
-  $('heads').innerHTML=d.heads.map(h=>`<li>${h.replace(/</g,'&lt;')}</li>`).join('');
+  $('heads').innerHTML=d.heads.map(h=>`<li class="clickable" data-i="${h.i}">${h.t.replace(/</g,'&lt;')}</li>`).join('');
+  document.querySelectorAll('#heads li.clickable').forEach(li=>li.onclick=()=>showLog(li.dataset.i));
   $('containers').innerHTML='<tr><th>container</th><th>stream</th><th>state</th><th>uptime</th></tr>'+
    d.containers.map(c=>`<tr><td>${c.id.slice(0,40)}</td><td><span class="tag ${TYPETAG(c.type)}">${c.type.replace(/_/g,' ').slice(0,22)}</span></td>
     <td><span class="dot d-${c.status}"></span>${c.status}</td><td>${up(c.up)}</td></tr>`).join('');
@@ -359,11 +363,13 @@ async function tick(){
    .map(l=>/error|failed/i.test(l)?`<span class="err">${l}</span>`:/complete|merged/i.test(l)?`<span class="ok">${l}</span>`:l).join('\n');
  }catch(e){$('alive').className='pill down';$('alive').textContent='● FETCH FAILED';}
 }
-async function showReport(name){
- $('mtitle').textContent=name;$('mbody').textContent='loading…';
- $('modal').classList.add('open');
- try{const r=await(await fetch('/report?name='+encodeURIComponent(name))).json();
-  $('mbody').innerHTML=mdlite(r.body);}catch(e){$('mbody').textContent='failed to load';}}
+async function openModal(url){
+ $('mbody').textContent='loading…';$('modal').classList.add('open');
+ try{const r=await(await fetch(url)).json();
+  $('mtitle').textContent=r.name;$('mbody').innerHTML=mdlite(r.body);}
+ catch(e){$('mbody').textContent='failed to load';}}
+const showReport=name=>openModal('/report?name='+encodeURIComponent(name));
+const showLog=i=>openModal('/logentry?i='+encodeURIComponent(i));
 $('mclose').onclick=()=>$('modal').classList.remove('open');
 $('modal').onclick=e=>{if(e.target.id==='modal')$('modal').classList.remove('open');};
 document.addEventListener('keydown',e=>{if(e.key==='Escape')$('modal').classList.remove('open');});
@@ -375,6 +381,19 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/data.json":
             body, ctype = json.dumps(collect()).encode(), "application/json"
+        elif self.path.startswith("/logentry?i="):
+            raw = self.path.split("=", 1)[1]
+            log = read(os.path.join(CAPTAIN, "state", "captain-log.md"))
+            # Split into entries at "## " headers, matching the heads index order.
+            parts = re.split(r"(?m)^(?=## )", log)
+            entries = [p for p in parts if p.startswith("## ")]
+            try:
+                i = int(raw)
+                entry = entries[i] if 0 <= i < len(entries) else "(entry not found)"
+            except ValueError:
+                entry = "(bad index)"
+            head = entry.split("\n", 1)[0].lstrip("# ").strip()
+            body, ctype = json.dumps({"name": head, "body": entry}).encode(), "application/json"
         elif self.path.startswith("/report?name="):
             name = self.path.split("=", 1)[1]
             if not re.fullmatch(r"[A-Za-z0-9._-]+", name):
