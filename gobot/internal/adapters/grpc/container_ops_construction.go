@@ -45,6 +45,7 @@ type GetConstructionStatusResult struct {
 func (s *DaemonServer) StartConstructionPipeline(ctx context.Context, constructionSite string, playerID int, supplyChainDepth int, maxWorkers int, systemSymbol string) (*StartConstructionPipelineResult, error) {
 	// Create dependencies for ConstructionPipelinePlanner
 	pipelineRepo := persistence.NewGormManufacturingPipelineRepository(s.db)
+	taskRepo := persistence.NewGormManufacturingTaskRepository(s.db)
 	constructionRepo := api.NewConstructionSiteRepository(
 		s.getAPIClient(),
 		s.playerRepo,
@@ -60,6 +61,7 @@ func (s *DaemonServer) StartConstructionPipeline(ctx context.Context, constructi
 	// Create planner
 	planner := services.NewConstructionPipelinePlanner(
 		pipelineRepo,
+		taskRepo,
 		constructionRepo,
 		marketLocator,
 	)

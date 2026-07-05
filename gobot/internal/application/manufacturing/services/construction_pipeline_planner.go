@@ -18,6 +18,7 @@ import (
 //   - DELIVER_TO_CONSTRUCTION tasks for final delivery
 type ConstructionPipelinePlanner struct {
 	pipelineRepo     manufacturing.PipelineRepository
+	taskRepo         manufacturing.TaskRepository
 	constructionRepo manufacturing.ConstructionSiteRepository
 	marketLocator    *MarketLocator
 }
@@ -25,11 +26,13 @@ type ConstructionPipelinePlanner struct {
 // NewConstructionPipelinePlanner creates a new construction pipeline planner.
 func NewConstructionPipelinePlanner(
 	pipelineRepo manufacturing.PipelineRepository,
+	taskRepo manufacturing.TaskRepository,
 	constructionRepo manufacturing.ConstructionSiteRepository,
 	marketLocator *MarketLocator,
 ) *ConstructionPipelinePlanner {
 	return &ConstructionPipelinePlanner{
 		pipelineRepo:     pipelineRepo,
+		taskRepo:         taskRepo,
 		constructionRepo: constructionRepo,
 		marketLocator:    marketLocator,
 	}
@@ -67,16 +70,50 @@ func (p *ConstructionPipelinePlanner) StartOrResume(
 	}
 
 	if existingPipeline != nil {
-		logger.Log("INFO", "Resuming existing construction pipeline", map[string]interface{}{
+		// A pipeline row alone doesn't mean the pipeline is healthy: its tasks
+		// may have been reaped (e.g. by daemon-restart recovery), leaving an
+		// EXECUTING pipeline that can never deliver, complete, or fail. Only
+		// resume if there is still at least one incomplete task to execute.
+		persistedTasks, err := p.taskRepo.FindByPipelineID(ctx, existingPipeline.ID())
+		if err != nil {
+			return nil, fmt.Errorf("failed to load tasks for existing pipeline %s: %w", existingPipeline.ID(), err)
+		}
+
+		hasIncompleteTasks := false
+		for _, task := range persistedTasks {
+			if !task.IsTerminal() {
+				hasIncompleteTasks = true
+				break
+			}
+		}
+
+		if hasIncompleteTasks {
+			existingPipeline.SetTasks(persistedTasks)
+			logger.Log("INFO", "Resuming existing construction pipeline", map[string]interface{}{
+				"pipeline_id":       existingPipeline.ID(),
+				"construction_site": constructionSite,
+				"status":            existingPipeline.Status(),
+				"task_count":        existingPipeline.TaskCount(),
+				"progress":          fmt.Sprintf("%.1f%%", existingPipeline.ConstructionProgress()),
+			})
+			return &StartOrResumeResult{
+				Pipeline:  existingPipeline,
+				IsResumed: true,
+			}, nil
+		}
+
+		// Stale empty pipeline: terminalize it so FindByConstructionSite stops
+		// returning it, then fall through to plan a fresh pipeline.
+		if err := existingPipeline.Fail("re-planned: pipeline had no incomplete tasks"); err != nil {
+			return nil, fmt.Errorf("failed to terminalize stale construction pipeline %s: %w", existingPipeline.ID(), err)
+		}
+		if err := p.pipelineRepo.Update(ctx, existingPipeline); err != nil {
+			return nil, fmt.Errorf("failed to persist terminalized construction pipeline %s: %w", existingPipeline.ID(), err)
+		}
+		logger.Log("WARN", "Existing construction pipeline had no incomplete tasks - marked FAILED, re-planning", map[string]interface{}{
 			"pipeline_id":       existingPipeline.ID(),
 			"construction_site": constructionSite,
-			"status":            existingPipeline.Status(),
-			"progress":          fmt.Sprintf("%.1f%%", existingPipeline.ConstructionProgress()),
 		})
-		return &StartOrResumeResult{
-			Pipeline:  existingPipeline,
-			IsResumed: true,
-		}, nil
 	}
 
 	// 2. AUTO-DISCOVERY: Fetch construction requirements from API
@@ -134,9 +171,21 @@ func (p *ConstructionPipelinePlanner) StartOrResume(
 		}
 	}
 
-	// 8. Persist pipeline
+	// 8. Start pipeline so dependency-free tasks become READY and the running
+	// coordinator can pick them up without waiting for a daemon restart.
+	if err := pipeline.Start(); err != nil {
+		return nil, fmt.Errorf("failed to start pipeline: %w", err)
+	}
+
+	// 9. Persist pipeline and its tasks (the coordinator reads tasks from the
+	// database, so unpersisted tasks would leave the pipeline permanently idle)
 	if err := p.pipelineRepo.Create(ctx, pipeline); err != nil {
 		return nil, fmt.Errorf("failed to save pipeline: %w", err)
+	}
+	if tasks := pipeline.Tasks(); len(tasks) > 0 {
+		if err := p.taskRepo.CreateBatch(ctx, tasks); err != nil {
+			return nil, fmt.Errorf("failed to save pipeline tasks: %w", err)
+		}
 	}
 
 	logger.Log("INFO", "Created new construction pipeline", map[string]interface{}{
