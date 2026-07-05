@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
@@ -43,6 +44,54 @@ func (f *Fixer) startsInLastDay(now time.Time) int {
 	return len(kept)
 }
 
+// branchPrefix maps a report kind to its git branch prefix.
+func branchPrefix(kind string) string {
+	switch kind {
+	case "feature":
+		return "feat"
+	case "automation":
+		return "auto"
+	default:
+		return "fix"
+	}
+}
+
+// RecoverOrphanedFixes resets reports stranded at `in_progress` back to `new`
+// so the pipeline retries them. A fix session is a child process of this
+// supervisor; when the supervisor dies mid-build (crash, restart, deploy) the
+// session dies with it, but the report keeps its `in_progress` status forever —
+// and ProcessOne only ever picks up `new`, so the fix silently never lands.
+// A freshly starting supervisor therefore KNOWS no fix is running: any
+// `in_progress` is definitionally an orphan. Call this ONCE at startup, before
+// the tick loop. It also removes the orphan's leftover worktree and branch so
+// the retry's `git worktree add -b` starts clean instead of failing on a
+// pre-existing branch. Returns the number of reports recovered.
+func (f *Fixer) RecoverOrphanedFixes() int {
+	reports, err := ScanReports(filepath.Join(f.ws.Dir(), "reports", "bugs"))
+	if err != nil {
+		return 0
+	}
+	recovered := 0
+	for i := range reports {
+		r := reports[i]
+		if r.Status != "in_progress" {
+			continue
+		}
+		branch := fmt.Sprintf("captain/%s-%s", branchPrefix(r.Kind), r.Slug)
+		// Best-effort: the worktree/branch may or may not exist depending on how
+		// far the orphaned run got. Errors are expected and ignored.
+		wtDir := filepath.Join(f.cfg.RepoDir, worktreeRoot, strings.ReplaceAll(branch, "/", "-"))
+		_, _ = gitRun(f.cfg.RepoDir, "worktree", "remove", "--force", wtDir)
+		_, _ = gitRun(f.cfg.RepoDir, "branch", "-D", branch)
+		if err := SetReportStatus(r.Path, "new"); err != nil {
+			continue
+		}
+		recovered++
+		fmt.Printf("captain fixer: recovered orphaned report %s (in_progress -> new); cleared branch %s\n", r.Slug, branch)
+	}
+	return recovered
+}
+
 // ProcessOne handles at most one `status: new` report per call.
 func (f *Fixer) ProcessOne(ctx context.Context, now time.Time) (bool, error) {
 	if f.ws.Disabled() || f.fixesDisabled() {
@@ -77,13 +126,7 @@ func (f *Fixer) ProcessOne(ctx context.Context, now time.Time) (bool, error) {
 		return true, err
 	}
 
-	prefix := "fix"
-	switch target.Kind {
-	case "feature":
-		prefix = "feat"
-	case "automation":
-		prefix = "auto"
-	}
+	prefix := branchPrefix(target.Kind)
 	branch := fmt.Sprintf("captain/%s-%s", prefix, target.Slug)
 	wt, err := CreateWorktree(f.cfg.RepoDir, branch)
 	if err != nil {

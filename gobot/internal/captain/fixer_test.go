@@ -161,3 +161,29 @@ func TestAutomationKindAutoMerges(t *testing.T) {
 		"automations are full citizens: gate-passed means merged")
 	require.FileExists(t, filepath.Join(repo, "fix.go"))
 }
+
+func TestRecoverOrphanedFixesResetsInProgress(t *testing.T) {
+	stub := &fixStubRunner{}
+	fixer, reportPath, _ := newFixerFixture(t, stub, true)
+
+	// Simulate a supervisor that died mid-build: report stranded at in_progress.
+	require.NoError(t, SetReportStatus(reportPath, "in_progress"))
+
+	recovered := fixer.RecoverOrphanedFixes()
+	require.Equal(t, 1, recovered)
+
+	reports, _ := ScanReports(filepath.Dir(reportPath))
+	require.Equal(t, "new", reports[0].Status, "orphan reset to new so the pipeline retries it")
+}
+
+func TestRecoverOrphanedFixesLeavesTerminalStatuses(t *testing.T) {
+	stub := &fixStubRunner{}
+	fixer, reportPath, _ := newFixerFixture(t, stub, true)
+
+	for _, st := range []string{"merged", "gate_failed", "awaiting_human", "new"} {
+		require.NoError(t, SetReportStatus(reportPath, st))
+		require.Equal(t, 0, fixer.RecoverOrphanedFixes(), "must not touch %s", st)
+		reports, _ := ScanReports(filepath.Dir(reportPath))
+		require.Equal(t, st, reports[0].Status)
+	}
+}

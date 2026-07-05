@@ -56,7 +56,13 @@ func main() {
 		r.ExtraArgs = []string{"--dangerously-skip-permissions"}
 		return r
 	}
-	sup.SetFixer(captainsup.NewFixer(ws, fixerFactory, cfg.Captain))
+	fixer := captainsup.NewFixer(ws, fixerFactory, cfg.Captain)
+	// A prior supervisor may have died mid-build, stranding a report at
+	// in_progress that the pipeline would otherwise never retry. Reclaim them.
+	if n := fixer.RecoverOrphanedFixes(); n > 0 {
+		fmt.Printf("Captain: recovered %d orphaned fix report(s) at startup\n", n)
+	}
+	sup.SetFixer(fixer)
 
 	// Regenerate the CLI reference so sessions never see a stale command surface
 	// (spec: Tool discovery §1). Best-effort: a missing binary must not stop the
