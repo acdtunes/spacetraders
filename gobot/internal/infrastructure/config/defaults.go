@@ -156,6 +156,9 @@ func SetDefaults(cfg *Config) {
 	if cfg.Captain.Model == "" {
 		cfg.Captain.Model = "opus"
 	}
+	if cfg.Captain.FixModel == "" {
+		cfg.Captain.FixModel = cfg.Captain.Model
+	}
 	if cfg.Captain.WorkspaceDir == "" {
 		cfg.Captain.WorkspaceDir = "../captain"
 	}

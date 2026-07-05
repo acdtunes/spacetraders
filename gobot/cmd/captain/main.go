@@ -47,7 +47,7 @@ func main() {
 
 	fixerFactory := func(workDir string) captainsup.SessionRunner {
 		r := captainsup.NewClaudeRunner(
-			cfg.Captain.ClaudeBin, cfg.Captain.Model, workDir,
+			cfg.Captain.ClaudeBin, cfg.Captain.FixModel, workDir,
 			time.Duration(cfg.Captain.FixSessionTimeoutMinutes)*time.Minute,
 		)
 		// Worktree paths are untrusted workspaces (allowlists ignored), so

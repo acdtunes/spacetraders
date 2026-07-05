@@ -7,6 +7,7 @@ type CaptainConfig struct {
 	WorkspaceDir          string `mapstructure:"workspace_dir"`
 	ClaudeBin             string `mapstructure:"claude_bin"`
 	Model                 string `mapstructure:"model"`
+	FixModel              string `mapstructure:"fix_model"` // model for fix/feature/automation builds; defaults to Model
 	PollIntervalSeconds   int    `mapstructure:"poll_interval_seconds" validate:"omitempty,min=5"`
 	HeartbeatMinutes      int    `mapstructure:"heartbeat_minutes" validate:"omitempty,min=1"`
 	MaxSessionsPerHour    int    `mapstructure:"max_sessions_per_hour" validate:"omitempty,min=1"`
