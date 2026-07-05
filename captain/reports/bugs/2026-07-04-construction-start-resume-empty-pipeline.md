@@ -1,6 +1,6 @@
 ---
 title: construction start forever resumes an EMPTY pipeline — a 0-task CONSTRUCTION pipeline permanently blocks its site (no re-plan, no terminalization, no stop verb)
-status: in_progress
+status: merged
 kind: fix
 ---
 
