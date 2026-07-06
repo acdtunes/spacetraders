@@ -4,7 +4,7 @@ import json, os, re, subprocess, time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CAPTAIN, GOBOT = os.path.join(ROOT, "captain"), os.path.join(ROOT, "gobot")
+CAPTAIN, GOBOT, CITY = os.path.join(ROOT, "captain"), os.path.join(ROOT, "gobot"), os.path.join(ROOT, "city")
 PSQL = ["docker", "exec", "spacetraders-postgres", "psql", "-U", "spacetraders",
         "-d", "spacetraders", "-t", "-A", "-F", "\t", "-c"]
 _cache = {}
@@ -23,6 +23,22 @@ def read(path, tail=None):
         with open(path, encoding="utf-8", errors="replace") as f: d = f.read()
         return d[-tail:] if tail else d
     except Exception: return ""
+
+def cmd(args, cwd=None, ttl=4, timeout=8):
+    """Run a gc/bd CLI capturing stdout; graceful-empty on any failure — same
+    philosophy as sql(): fleet/city down means the panel just goes quiet."""
+    key = ("cmd", tuple(args), cwd)
+    hit = _cache.get(key)
+    if hit and time.time() - hit[0] < ttl: return hit[1]
+    try:
+        out = subprocess.run(args, capture_output=True, text=True, timeout=timeout, cwd=cwd).stdout
+    except Exception: out = ""
+    _cache[key] = (time.time(), out); return out
+
+def bd_json(args, ttl=4):
+    try:
+        return json.loads(cmd(["bd", "list"] + args + ["--json", "--no-pager", "-n", "0"], cwd=ROOT, ttl=ttl))
+    except Exception: return []
 
 def gate(ttl=60):
     hit = _cache.get("gate")
@@ -47,43 +63,28 @@ def collect():
     events = sql("SELECT count(*) FROM captain_events WHERE processed_at IS NULL")
     recent = sql("SELECT id, type, ship, to_char(created_at,'HH24:MI:SS'), processed_at IS NOT NULL FROM captain_events ORDER BY id DESC LIMIT 10")
     ships = sql("SELECT ship_symbol, nav_status, location_symbol, fuel_current, fuel_capacity, cargo_units, cargo_capacity FROM ships ORDER BY ship_symbol")
-    log = read(os.path.join(CAPTAIN, "state", "captain-log.md"))
-    heads = re.findall(r"^## (.+)$", log, re.M)
-    last = log[log.rfind("\n## "):][:5000] if "## " in log else ""
-    open_d = {}
-    for line in read(os.path.join(CAPTAIN, "state", "decisions.jsonl")).splitlines():
-        try:
-            d = json.loads(line); open_d[d.get("id")] = d
-        except Exception: pass
-    reports = []
-    bugdir = os.path.join(CAPTAIN, "reports", "bugs")
-    for d, closed in ((bugdir, False), (os.path.join(bugdir, "closed"), True)):
-        if not os.path.isdir(d):
-            continue
-        for f in os.listdir(d):
-            if f.endswith(".md"):
-                fp = os.path.join(d, f)
-                h = read(fp)[:400]
-                st = re.search(r"^status: (\S+)", h, re.M); kd = re.search(r"^kind: (\S+)", h, re.M)
-                reports.append({"name": f[:-3], "status": st.group(1) if st else "?",
-                                "kind": kd.group(1) if kd else "fix", "closed": closed,
-                                "mtime": os.path.getmtime(fp)})
-    # Active first, then closed; within each group most recent activity first.
-    reports.sort(key=lambda r: (r["closed"], -r["mtime"]))
+    sess_log = cmd(["gc", "session", "logs", "captain", "--tail", "60"], cwd=CITY)
+    open_decisions = len(bd_json(["-t", "decision", "--status", "open"]))
+    beads = bd_json(["-l", "shipwright", "--all"])
+    reports = [{"name": b.get("id", "?"), "status": b.get("status", "?"),
+                "kind": b.get("issue_type", "bug"), "closed": b.get("status") == "closed"}
+               for b in beads]
+    # Open beads first, then closed; bd already orders by priority within each group.
+    reports.sort(key=lambda r: r["closed"])
     t = int(t_row[0][0]) if t_row else 0
     b = int(base[0][0]) if base else t
     return {"ts": time.strftime("%H:%M:%S"), "treasury": t, "delta24": t - b, "rate": round((t - b) / 24),
             "spark": [[float(r[0]), int(r[1])] for r in spark if len(r) == 2],
             "hourly": [[r[0], int(r[1])] for r in hourly if len(r) == 2],
             "queue": int(events[0][0]) if events else 0,
-            "session": heads[-1] if heads else "",
-            "heads": [{"i": i, "t": h} for i, h in enumerate(heads)][-6:][::-1],
-            "sessions_total": len(heads),
-            "open_decisions": sum(1 for d in open_d.values() if not d.get("outcome")),
+            "session": "",
+            "heads": [],
+            "sessions_total": 0,
+            "open_decisions": open_decisions,
             "containers": [{"id": c[0], "type": c[1], "status": c[2], "since": c[3], "up": int(float(c[4]))} for c in containers if len(c) >= 5],
             "events": [{"id": e[0], "type": e[1], "ship": e[2], "at": e[3], "done": e[4] == "t"} for e in recent if len(e) >= 5],
             "ships": [{"sym": s[0], "nav": s[1], "loc": s[2], "f": int(s[3]), "fc": int(s[4]), "c": int(s[5]), "cc": int(s[6])} for s in ships if len(s) >= 7],
-            "reports": reports[:8], "gate": gate(), "last_entry": last,
+            "reports": reports[:8], "gate": gate(), "last_entry": sess_log,
             "supervisor": read(os.path.join(GOBOT, "captain-supervisor.log"), 1600),
             "alive": subprocess.run(["pgrep", "-f", "bin/captain"], capture_output=True).returncode == 0,
             "session_state": session_state(), "tokens": token_stats()}
@@ -275,7 +276,7 @@ tr.clickable{cursor:pointer}tr.clickable:hover td{background:rgba(125,177,255,.0
  <div class="card span6"><h2>Fleet</h2><table id="ships"></table></div>
  <div class="card span6"><h2>Event stream</h2><table id="events"></table></div>
  <div class="card span6"><h2>Fix pipeline</h2><table id="reports"></table></div>
- <div class="card span12"><h2 id="sesshead">Latest log entry</h2><pre class="entry" id="entry"></pre></div>
+ <div class="card span12"><h2 id="sesshead">Captain session (live)</h2><pre class="entry" id="entry"></pre></div>
  <div class="card span12"><h2>Supervisor</h2><pre class="sup" id="sup"></pre></div>
 </div>
 <div id="modal"><div id="mbox"><div id="mhead"><span id="mtitle"></span><button id="mclose">esc</button></div><pre id="mbody"></pre></div></div>
@@ -357,7 +358,7 @@ async function tick(){
    d.reports.map(r=>`<tr class="clickable ${r.closed?'closedrow':''}" data-name="${r.name}">
     <td>${r.name.slice(0,46)}</td><td>${r.kind}</td><td class="st st-${r.status}">${r.status.replace('_',' ')}</td></tr>`).join('');
   document.querySelectorAll('#reports tr.clickable').forEach(tr=>tr.onclick=()=>showReport(tr.dataset.name));
-  $('sesshead').textContent='Latest log entry — '+d.session;
+  $('sesshead').textContent='Captain session (live)';
   $('entry').innerHTML=mdlite(d.last_entry);
   $('sup').innerHTML=d.supervisor.replace(/&/g,'&amp;').replace(/</g,'&lt;').split('\n')
    .map(l=>/error|failed/i.test(l)?`<span class="err">${l}</span>`:/complete|merged/i.test(l)?`<span class="ok">${l}</span>`:l).join('\n');
@@ -399,17 +400,8 @@ class H(BaseHTTPRequestHandler):
             if not re.fullmatch(r"[A-Za-z0-9._-]+", name):
                 body, ctype = b"bad name", "text/plain"
             else:
-                bugdir = os.path.join(CAPTAIN, "reports", "bugs")
-                content = ""
-                for d in (bugdir, os.path.join(bugdir, "closed")):
-                    fp = os.path.join(d, name + ".md")
-                    if os.path.isfile(fp):
-                        content = read(fp)
-                        gl = fp + ".gate.log"
-                        if os.path.isfile(gl):
-                            content += "\n\n--- GATE LOG (tail) ---\n" + read(gl, 2000)
-                        break
-                body, ctype = json.dumps({"name": name, "body": content or "(not found)"}).encode(), "application/json"
+                content = cmd(["bd", "show", name], cwd=ROOT, ttl=0) or "(not found)"
+                body, ctype = json.dumps({"name": name, "body": content}).encode(), "application/json"
         else:
             body, ctype = PAGE.encode(), "text/html; charset=utf-8"
         self.send_response(200)

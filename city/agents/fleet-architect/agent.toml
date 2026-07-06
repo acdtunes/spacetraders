@@ -1,0 +1,5 @@
+# Fleet-architect agent — model follows the city provider default (city.toml: provider = "claude").
+# Opus is NOT yet enforceable at the agent level: gc drops any `model`/`provider_args`
+# key during config resolution (verified: `gc config show --city .` surfaces only
+# provider + prompt_template), and the supervisor spawns city agents as `claude --effort max`
+# with no --model flag. Leave empty until gc grows a real per-agent model override.

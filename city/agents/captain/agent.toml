@@ -1,0 +1,4 @@
+# Captain agent — model follows the city provider default (city.toml: provider = "claude").
+# The workspace pins no model override, so the captain runs on the provider's session
+# default (same as harbormaster, which carries no agent.toml). Leave empty unless the
+# Admiral pins a model here via provider args.

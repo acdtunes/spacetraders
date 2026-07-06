@@ -1,3 +1,5 @@
+> ENGINE MOVED: this workspace is legacy. The captain is a city agent (acd run captain); state lives in beads (sp- db). See docs/superpowers/specs/2026-07-06-ai-engine-city-bridge-design.md.
+
 # Automation Guide — the container engine and how to propose new automations
 
 You have full read access to the bot's code — this guide orients you, the
