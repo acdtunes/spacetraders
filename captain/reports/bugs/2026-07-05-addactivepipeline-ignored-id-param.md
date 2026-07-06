@@ -1,6 +1,6 @@
 ---
 title: "AddActivePipeline ignores its id parameter (misleading signature)"
-status: new
+status: merged
 kind: fix
 ---
 
@@ -63,3 +63,5 @@ file/package scope for this fix task (scope was limited to
 (do not force a fix whose signature ripples beyond the assigned packages), the change is
 deferred here with the fix fully specified above. It is a low-risk, mechanical change once
 the commands package is in scope.
+
+Merged by harbormaster cleanup batch 2026-07-05 — param removed, caller updated.

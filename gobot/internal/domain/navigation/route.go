@@ -228,9 +228,8 @@ func (r *Route) CompleteSegment() error {
 
 // FailRoute marks route as failed
 // Delegates to lifecycle state machine with error tracking
-func (r *Route) FailRoute(reason string) {
-	err := fmt.Errorf("route failed: %s", reason)
-	_ = r.lifecycle.Fail(err) // Ignore error, failure always succeeds
+func (r *Route) FailRoute(reason string) error {
+	return r.lifecycle.Fail(fmt.Errorf("route failed: %s", reason))
 }
 
 // Route queries

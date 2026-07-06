@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
-	"github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/services"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 )
 
@@ -13,14 +12,14 @@ import (
 // Handles tasks that may have been left in READY status after restart or crash.
 type TaskRescuer struct {
 	taskRepo         manufacturing.TaskRepository
-	taskQueue        services.ManufacturingTaskQueue
+	taskQueue        TaskEnqueueRemover
 	conditionChecker *MarketConditionChecker
 }
 
 // NewTaskRescuer creates a new task rescuer.
 func NewTaskRescuer(
 	taskRepo manufacturing.TaskRepository,
-	taskQueue services.ManufacturingTaskQueue,
+	taskQueue TaskEnqueueRemover,
 	conditionChecker *MarketConditionChecker,
 ) *TaskRescuer {
 	return &TaskRescuer{

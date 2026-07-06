@@ -40,7 +40,7 @@ func (h *NavigateDirectHandler) Handle(ctx context.Context, request common.Reque
 		return nil, fmt.Errorf("invalid destination waypoint")
 	}
 
-	ship, err := h.loadShip(ctx, cmd)
+	ship, err := types.LoadShip(ctx, h.shipRepo, cmd)
 	if err != nil {
 		return nil, err
 	}
@@ -83,19 +83,6 @@ func (h *NavigateDirectHandler) Handle(ctx context.Context, request common.Reque
 		FuelCurrent:    navResult.FuelCurrent,
 		FuelCapacity:   navResult.FuelCapacity,
 	}, nil
-}
-
-func (h *NavigateDirectHandler) loadShip(ctx context.Context, cmd *types.NavigateDirectCommand) (*navigation.Ship, error) {
-	// OPTIMIZATION: Use ship if provided (avoids API call)
-	if cmd.Ship != nil {
-		return cmd.Ship, nil
-	}
-	// Fall back to API fetch (backward compatibility)
-	ship, err := h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
-	if err != nil {
-		return nil, fmt.Errorf("ship not found: %w", err)
-	}
-	return ship, nil
 }
 
 // reconcileAtDestination handles a server-reported "already at destination"

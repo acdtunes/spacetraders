@@ -75,7 +75,7 @@ func (h *BalanceShipPositionHandler) Handle(ctx context.Context, request common.
 		"ship_symbol": cmd.ShipSymbol,
 	})
 
-	// 1. Create temporary container record to satisfy foreign key constraint
+	// Create temporary container record to satisfy foreign key constraint
 	balancingContainerID := fmt.Sprintf("ship-balancing-%s", cmd.ShipSymbol)
 	metadata := map[string]interface{}{
 		"ship_symbol":    cmd.ShipSymbol,
@@ -114,13 +114,12 @@ func (h *BalanceShipPositionHandler) Handle(ctx context.Context, request common.
 		_ = h.containerRepo.Remove(ctx, balancingContainerID, cmd.PlayerID.Value())
 	}()
 
-	// 2. Fetch ship (includes assignment state via hybrid repo)
 	ship, err := h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load ship %s: %w", cmd.ShipSymbol, err)
 	}
 
-	// 3. Create temporary assignment to prevent this ship from being selected elsewhere
+	// Create temporary assignment to prevent this ship from being selected elsewhere
 	if err := ship.AssignToContainer(balancingContainerID, h.clock); err != nil {
 		logger.Log("WARNING", fmt.Sprintf("Failed to create balancing assignment: %v", err), nil)
 		// Continue anyway - balancing is best-effort
@@ -135,7 +134,6 @@ func (h *BalanceShipPositionHandler) Handle(ctx context.Context, request common.
 		_ = h.shipRepo.Save(ctx, ship)
 	}()
 
-	// 4. Discover all markets in ship's system
 	systemSymbol := ship.CurrentLocation().SystemSymbol
 	marketSymbols, err := h.marketRepo.FindAllMarketsInSystem(ctx, systemSymbol, cmd.PlayerID.Value())
 	if err != nil {
@@ -147,13 +145,11 @@ func (h *BalanceShipPositionHandler) Handle(ctx context.Context, request common.
 		return &BalanceShipPositionResponse{Navigated: false}, nil
 	}
 
-	// 3. Fetch market waypoint objects from graph
 	marketWaypoints, err := h.fetchMarketWaypoints(ctx, marketSymbols, systemSymbol, cmd.PlayerID.Value())
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch market waypoints: %w", err)
 	}
 
-	// 6. Fetch all idle light hauler ships
 	// Ships with active assignments (including other ships being balanced) are automatically excluded
 	idleHaulers, _, err := appContract.FindIdleLightHaulers(ctx, cmd.PlayerID, h.shipRepo)
 	if err != nil {
@@ -165,7 +161,6 @@ func (h *BalanceShipPositionHandler) Handle(ctx context.Context, request common.
 		"idle_haulers": len(idleHaulers),
 	})
 
-	// 5. Use domain service to select optimal market
 	result, err := h.balancer.SelectOptimalBalancingPosition(ship, marketWaypoints, idleHaulers)
 	if err != nil {
 		return nil, fmt.Errorf("failed to calculate balancing position: %w", err)
@@ -178,7 +173,6 @@ func (h *BalanceShipPositionHandler) Handle(ctx context.Context, request common.
 		"score":          result.Score,
 	})
 
-	// 6. Navigate ship to target market
 	navigated, err := h.navigateToMarket(ctx, cmd.ShipSymbol, result.TargetMarket.Symbol, cmd.PlayerID)
 	if err != nil {
 		logger.Log("ERROR", fmt.Sprintf("Navigation failed: %v", err), nil)

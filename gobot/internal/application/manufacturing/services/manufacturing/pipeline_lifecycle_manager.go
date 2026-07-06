@@ -45,7 +45,7 @@ type PipelineManager interface {
 	GetActivePipelines() map[string]*manufacturing.ManufacturingPipeline
 
 	// AddActivePipeline adds a pipeline to active pipelines (for state recovery)
-	AddActivePipeline(id string, pipeline *manufacturing.ManufacturingPipeline)
+	AddActivePipeline(pipeline *manufacturing.ManufacturingPipeline)
 
 	// SetActivePipelines sets the active pipelines map (for initialization)
 	SetActivePipelines(pipelines map[string]*manufacturing.ManufacturingPipeline)
@@ -74,7 +74,7 @@ type PipelineLifecycleManager struct {
 	demandFinder                *services.ManufacturingDemandFinder
 	collectionOpportunityFinder *services.CollectionOpportunityFinder
 	pipelinePlanner             *services.PipelinePlanner
-	taskQueue                   services.ManufacturingTaskQueue
+	taskQueue                   TaskEnqueuer
 	factoryTracker              *manufacturing.FactoryStateTracker
 
 	// Repositories
@@ -101,7 +101,7 @@ func NewPipelineLifecycleManager(
 	demandFinder *services.ManufacturingDemandFinder,
 	collectionOpportunityFinder *services.CollectionOpportunityFinder,
 	pipelinePlanner *services.PipelinePlanner,
-	taskQueue services.ManufacturingTaskQueue,
+	taskQueue TaskEnqueuer,
 	factoryTracker *manufacturing.FactoryStateTracker,
 	pipelineRepo manufacturing.PipelineRepository,
 	taskRepo manufacturing.TaskRepository,
@@ -180,7 +180,7 @@ func (m *PipelineLifecycleManager) HasPipelineForGood(good string) bool {
 
 // AddActivePipeline adds a pipeline to active pipelines (for state recovery).
 // Delegates to registry if available.
-func (m *PipelineLifecycleManager) AddActivePipeline(id string, pipeline *manufacturing.ManufacturingPipeline) {
+func (m *PipelineLifecycleManager) AddActivePipeline(pipeline *manufacturing.ManufacturingPipeline) {
 	if m.registry != nil {
 		m.registry.Register(pipeline)
 	}

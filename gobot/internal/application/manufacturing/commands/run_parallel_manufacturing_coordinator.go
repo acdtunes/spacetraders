@@ -439,14 +439,12 @@ func (h *RunParallelManufacturingCoordinatorHandler) initializeServices(cmd *Run
 	taskAssignmentMgr := mfgServices.NewTaskAssignmentManager(
 		h.taskRepo,
 		h.shipRepo,
-		h.marketRepo,
 		h.taskQueue,
 		shipSelector,
 		assignmentTracker,
 		conditionChecker,
 		reconciler,
 		reservationPolicy,
-		h.pipelineManager.GetActivePipelines,
 		h.workerManager,
 		h.orphanedHandler,
 	)
@@ -467,8 +465,8 @@ func (h *RunParallelManufacturingCoordinatorHandler) recoverState(ctx context.Co
 
 	// Load recovered pipelines into pipeline manager
 	if pipelineMgr, ok := h.pipelineManager.(*mfgServices.PipelineLifecycleManager); ok {
-		for id, pipeline := range result.ActivePipelines {
-			pipelineMgr.AddActivePipeline(id, pipeline)
+		for _, pipeline := range result.ActivePipelines {
+			pipelineMgr.AddActivePipeline(pipeline)
 		}
 	}
 
@@ -634,8 +632,5 @@ func (h *RunParallelManufacturingCoordinatorHandler) handleWorkerCompletion(
 	}
 
 	// Assign idle ships to ready tasks
-	h.taskAssigner.AssignTasks(ctx, mfgServices.AssignParams{
-		PlayerID:           cmd.PlayerID,
-		MaxConcurrentTasks: config.maxConcurrentTasks,
-	})
+	h.taskAssigner.AssignTasks(ctx, assignParams(cmd, config))
 }

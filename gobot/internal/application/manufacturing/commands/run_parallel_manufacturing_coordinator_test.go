@@ -3,7 +3,84 @@ package commands
 import (
 	"context"
 	"testing"
+
+	mfgServices "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/services/manufacturing"
 )
+
+// fakeWorkerManager is a test double for mfgServices.WorkerManager that returns a
+// preconfigured completion and records failure handling.
+type fakeWorkerManager struct {
+	completion *mfgServices.TaskCompletion
+}
+
+func (f *fakeWorkerManager) AssignTaskToShip(ctx context.Context, params mfgServices.AssignTaskParams) error {
+	return nil
+}
+
+func (f *fakeWorkerManager) HandleWorkerCompletion(ctx context.Context, shipSymbol string) (*mfgServices.TaskCompletion, error) {
+	return f.completion, nil
+}
+
+func (f *fakeWorkerManager) HandleTaskFailure(ctx context.Context, completion mfgServices.TaskCompletion) error {
+	return nil
+}
+
+// recordingTaskAssigner is a test double for mfgServices.TaskAssigner that captures
+// the AssignParams passed to AssignTasks.
+type recordingTaskAssigner struct {
+	lastParams mfgServices.AssignParams
+	called     bool
+}
+
+func (r *recordingTaskAssigner) AssignTasks(ctx context.Context, params mfgServices.AssignParams) (int, error) {
+	r.lastParams = params
+	r.called = true
+	return 0, nil
+}
+
+func (r *recordingTaskAssigner) IsSellMarketSaturated(ctx context.Context, sellMarket, good string, playerID int) bool {
+	return false
+}
+
+func (r *recordingTaskAssigner) GetAssignmentCount() int {
+	return 0
+}
+
+// TestHandleWorkerCompletion_PassesCoordinatorIDToAssignTasks pins that the task
+// reassignment triggered after a worker completes carries the coordinator's container
+// ID (CoordinatorID). Every other AssignTasks call in the coordinator sets this so
+// worker containers can be cascade-stopped with their parent; this path must too.
+func TestHandleWorkerCompletion_PassesCoordinatorIDToAssignTasks(t *testing.T) {
+	handler := NewRunParallelManufacturingCoordinatorHandler(
+		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+	)
+
+	worker := &fakeWorkerManager{
+		completion: &mfgServices.TaskCompletion{
+			TaskID:     "task-abcdef123456",
+			ShipSymbol: "SHIP-1",
+			Success:    false,
+		},
+	}
+	assigner := &recordingTaskAssigner{}
+	handler.workerManager = worker
+	handler.taskAssigner = assigner
+
+	cmd := &RunParallelManufacturingCoordinatorCommand{
+		PlayerID:    7,
+		ContainerID: "coordinator-container-42",
+	}
+	config := coordinatorConfig{maxConcurrentTasks: 5}
+
+	handler.handleWorkerCompletion(context.Background(), cmd, "SHIP-1", config)
+
+	if !assigner.called {
+		t.Fatal("expected handleWorkerCompletion to call AssignTasks")
+	}
+	if assigner.lastParams.CoordinatorID != cmd.ContainerID {
+		t.Fatalf("expected AssignTasks CoordinatorID %q, got %q", cmd.ContainerID, assigner.lastParams.CoordinatorID)
+	}
+}
 
 // TestHandle_UnwiredEventBus_ReturnsErrorInsteadOfPanicking reproduces the daemon
 // restart-loop bug: the parallel manufacturing coordinator was constructed in main.go

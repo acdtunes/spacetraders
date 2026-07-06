@@ -6,7 +6,6 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
-	"github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/services"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
@@ -20,7 +19,7 @@ type PipelineRecycler struct {
 	pipelineRepo   manufacturing.PipelineRepository
 	taskRepo       manufacturing.TaskRepository
 	shipRepo       navigation.ShipRepository
-	taskQueue      services.ManufacturingTaskQueue
+	taskQueue      TaskRemover
 	factoryTracker *manufacturing.FactoryStateTracker
 	registry       *ActivePipelineRegistry
 	clock          shared.Clock
@@ -31,7 +30,7 @@ func NewPipelineRecycler(
 	pipelineRepo manufacturing.PipelineRepository,
 	taskRepo manufacturing.TaskRepository,
 	shipRepo navigation.ShipRepository,
-	taskQueue services.ManufacturingTaskQueue,
+	taskQueue TaskRemover,
 	factoryTracker *manufacturing.FactoryStateTracker,
 	registry *ActivePipelineRegistry,
 	clock shared.Clock,

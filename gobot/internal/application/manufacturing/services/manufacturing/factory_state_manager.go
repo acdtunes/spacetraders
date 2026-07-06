@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
-	"github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/services"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 )
 
@@ -26,7 +25,7 @@ type FactoryStateManager struct {
 	taskRepo         manufacturing.TaskRepository
 	factoryStateRepo manufacturing.FactoryStateRepository
 	factoryTracker   *manufacturing.FactoryStateTracker
-	taskQueue        services.ManufacturingTaskQueue
+	taskQueue        TaskEnqueuer
 }
 
 // NewFactoryStateManager creates a new factory state manager
@@ -34,7 +33,7 @@ func NewFactoryStateManager(
 	taskRepo manufacturing.TaskRepository,
 	factoryStateRepo manufacturing.FactoryStateRepository,
 	factoryTracker *manufacturing.FactoryStateTracker,
-	taskQueue services.ManufacturingTaskQueue,
+	taskQueue TaskEnqueuer,
 ) *FactoryStateManager {
 	return &FactoryStateManager{
 		taskRepo:         taskRepo,

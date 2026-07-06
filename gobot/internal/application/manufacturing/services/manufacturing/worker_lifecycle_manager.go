@@ -7,7 +7,6 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
-	"github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/services"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
@@ -58,7 +57,7 @@ type WorkerLifecycleManager struct {
 	shipRepo         navigation.ShipRepository
 	daemonClient     daemon.DaemonClient
 	containerRemover ContainerRemover
-	taskQueue        services.ManufacturingTaskQueue
+	taskQueue        TaskEnqueueRemover
 	clock            shared.Clock
 
 	// Dependencies (injected via constructor)
@@ -73,7 +72,7 @@ func NewWorkerLifecycleManager(
 	shipRepo navigation.ShipRepository,
 	daemonClient daemon.DaemonClient,
 	containerRemover ContainerRemover,
-	taskQueue services.ManufacturingTaskQueue,
+	taskQueue TaskEnqueueRemover,
 	clock shared.Clock,
 	assignmentTracker *AssignmentTracker,
 	factoryManager FactoryManager,

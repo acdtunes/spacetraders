@@ -31,45 +31,22 @@ func (h *DockShipHandler) Handle(ctx context.Context, request common.Request) (c
 		return nil, fmt.Errorf("invalid request type")
 	}
 
-	ship, err := h.loadShip(ctx, cmd)
+	status, err := runStateTransition(ctx, h.shipRepo, cmd, stateTransition{
+		ensure: func(ship *navigation.Ship) (bool, error) {
+			return ship.EnsureDocked()
+		},
+		callAPI: func(ctx context.Context, ship *navigation.Ship, playerID shared.PlayerID) error {
+			if err := h.shipRepo.Dock(ctx, ship, playerID); err != nil {
+				return fmt.Errorf("failed to dock ship: %w", err)
+			}
+			return nil
+		},
+		doneStatus:    "docked",
+		alreadyStatus: "already_docked",
+	})
 	if err != nil {
 		return nil, err
 	}
 
-	stateChanged, err := h.ensureShipDocked(ship)
-	if err != nil {
-		return nil, err
-	}
-
-	if stateChanged {
-		return h.dockShipViaAPI(ctx, ship, cmd.PlayerID)
-	}
-
-	return &types.DockShipResponse{
-		Status: "already_docked",
-	}, nil
-}
-
-func (h *DockShipHandler) loadShip(ctx context.Context, cmd *types.DockShipCommand) (*navigation.Ship, error) {
-	// OPTIMIZATION: Use ship if provided (avoids API call)
-	if cmd.Ship != nil {
-		return cmd.Ship, nil
-	}
-	// Fall back to API fetch (backward compatibility)
-	ship, err := h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
-	if err != nil {
-		return nil, fmt.Errorf("ship not found: %w", err)
-	}
-	return ship, nil
-}
-
-func (h *DockShipHandler) ensureShipDocked(ship *navigation.Ship) (bool, error) {
-	return ship.EnsureDocked()
-}
-
-func (h *DockShipHandler) dockShipViaAPI(ctx context.Context, ship *navigation.Ship, playerID shared.PlayerID) (*types.DockShipResponse, error) {
-	if err := h.shipRepo.Dock(ctx, ship, playerID); err != nil {
-		return nil, fmt.Errorf("failed to dock ship: %w", err)
-	}
-	return &types.DockShipResponse{Status: "docked"}, nil
+	return &types.DockShipResponse{Status: status}, nil
 }

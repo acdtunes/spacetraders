@@ -1,11 +1,31 @@
 package types
 
 import (
+	"context"
+	"fmt"
+
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
 // Ship command types - shared between handlers and RouteExecutor to avoid circular imports
+
+type ShipCommand interface {
+	GetShip() *navigation.Ship
+	GetShipSymbol() string
+	GetPlayerID() shared.PlayerID
+}
+
+func LoadShip(ctx context.Context, shipRepo navigation.ShipRepository, cmd ShipCommand) (*navigation.Ship, error) {
+	if cmd.GetShip() != nil {
+		return cmd.GetShip(), nil
+	}
+	ship, err := shipRepo.FindBySymbol(ctx, cmd.GetShipSymbol(), cmd.GetPlayerID())
+	if err != nil {
+		return nil, fmt.Errorf("ship not found: %w", err)
+	}
+	return ship, nil
+}
 
 // OrbitShipCommand - Command to put a ship into orbit at its current waypoint
 type OrbitShipCommand struct {
@@ -13,6 +33,10 @@ type OrbitShipCommand struct {
 	ShipSymbol string           // Fallback: used only if Ship is nil
 	PlayerID   shared.PlayerID
 }
+
+func (c *OrbitShipCommand) GetShip() *navigation.Ship    { return c.Ship }
+func (c *OrbitShipCommand) GetShipSymbol() string        { return c.ShipSymbol }
+func (c *OrbitShipCommand) GetPlayerID() shared.PlayerID { return c.PlayerID }
 
 // OrbitShipResponse - Response from orbit ship command
 type OrbitShipResponse struct {
@@ -25,6 +49,10 @@ type DockShipCommand struct {
 	ShipSymbol string           // Fallback: used only if Ship is nil
 	PlayerID   shared.PlayerID
 }
+
+func (c *DockShipCommand) GetShip() *navigation.Ship    { return c.Ship }
+func (c *DockShipCommand) GetShipSymbol() string        { return c.ShipSymbol }
+func (c *DockShipCommand) GetPlayerID() shared.PlayerID { return c.PlayerID }
 
 // DockShipResponse - Response from dock ship command
 type DockShipResponse struct {
@@ -40,6 +68,10 @@ type RefuelShipCommand struct {
 	PlayerID   shared.PlayerID
 	Units      *int // nil = refuel to full
 }
+
+func (c *RefuelShipCommand) GetShip() *navigation.Ship    { return c.Ship }
+func (c *RefuelShipCommand) GetShipSymbol() string        { return c.ShipSymbol }
+func (c *RefuelShipCommand) GetPlayerID() shared.PlayerID { return c.PlayerID }
 
 // RefuelShipResponse - Response from refuel ship command
 type RefuelShipResponse struct {
@@ -58,6 +90,10 @@ type SetFlightModeCommand struct {
 	PlayerID   shared.PlayerID
 }
 
+func (c *SetFlightModeCommand) GetShip() *navigation.Ship    { return c.Ship }
+func (c *SetFlightModeCommand) GetShipSymbol() string        { return c.ShipSymbol }
+func (c *SetFlightModeCommand) GetPlayerID() shared.PlayerID { return c.PlayerID }
+
 // SetFlightModeResponse - Response from set flight mode command
 type SetFlightModeResponse struct {
 	Status string
@@ -74,6 +110,10 @@ type NavigateDirectCommand struct {
 	FlightMode          string
 	PlayerID            shared.PlayerID
 }
+
+func (c *NavigateDirectCommand) GetShip() *navigation.Ship    { return c.Ship }
+func (c *NavigateDirectCommand) GetShipSymbol() string        { return c.ShipSymbol }
+func (c *NavigateDirectCommand) GetPlayerID() shared.PlayerID { return c.PlayerID }
 
 // NavigateDirectResponse - Response from navigate direct command
 type NavigateDirectResponse struct {

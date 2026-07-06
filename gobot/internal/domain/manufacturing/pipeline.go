@@ -71,12 +71,8 @@ type ManufacturingPipeline struct {
 	status PipelineStatus
 
 	// Task tracking
-	tasks       []*ManufacturingTask
-	tasksByID   map[string]*ManufacturingTask
-	taskCount   int
-	tasksReady  int
-	tasksDone   int
-	tasksFailed int
+	tasks     []*ManufacturingTask
+	tasksByID map[string]*ManufacturingTask
 
 	// Financial tracking
 	totalCost    int
@@ -164,10 +160,35 @@ func (p *ManufacturingPipeline) CreatedAt() time.Time       { return p.createdAt
 func (p *ManufacturingPipeline) StartedAt() *time.Time      { return p.startedAt }
 func (p *ManufacturingPipeline) CompletedAt() *time.Time    { return p.completedAt }
 func (p *ManufacturingPipeline) ErrorMessage() string       { return p.errorMessage }
-func (p *ManufacturingPipeline) TaskCount() int             { return p.taskCount }
-func (p *ManufacturingPipeline) TasksReady() int            { return p.tasksReady }
-func (p *ManufacturingPipeline) TasksDone() int             { return p.tasksDone }
-func (p *ManufacturingPipeline) TasksFailed() int           { return p.tasksFailed }
+func (p *ManufacturingPipeline) TaskCount() int             { return len(p.tasks) }
+
+func (p *ManufacturingPipeline) TasksReady() int {
+	return p.countTasks(func(task *ManufacturingTask) bool {
+		return task.Status() == TaskStatusReady
+	})
+}
+
+func (p *ManufacturingPipeline) TasksDone() int {
+	return p.countTasks(func(task *ManufacturingTask) bool {
+		return task.Status() == TaskStatusCompleted
+	})
+}
+
+func (p *ManufacturingPipeline) TasksFailed() int {
+	return p.countTasks(func(task *ManufacturingTask) bool {
+		return task.Status() == TaskStatusFailed && !task.CanRetry()
+	})
+}
+
+func (p *ManufacturingPipeline) countTasks(predicate func(*ManufacturingTask) bool) int {
+	count := 0
+	for _, task := range p.tasks {
+		if predicate(task) {
+			count++
+		}
+	}
+	return count
+}
 
 // SetSequenceNumber sets the sequence number (called by repository during Add)
 func (p *ManufacturingPipeline) SetSequenceNumber(seq int) { p.sequenceNumber = seq }
@@ -280,7 +301,6 @@ func (p *ManufacturingPipeline) AddTask(task *ManufacturingTask) error {
 	}
 	p.tasks = append(p.tasks, task)
 	p.tasksByID[task.ID()] = task
-	p.taskCount++
 	return nil
 }
 
@@ -290,28 +310,6 @@ func (p *ManufacturingPipeline) SetTasks(tasks []*ManufacturingTask) {
 	p.tasksByID = make(map[string]*ManufacturingTask)
 	for _, task := range tasks {
 		p.tasksByID[task.ID()] = task
-	}
-	p.taskCount = len(tasks)
-	p.recalculateTaskStats()
-}
-
-// recalculateTaskStats updates task counters from current task states
-func (p *ManufacturingPipeline) recalculateTaskStats() {
-	p.tasksReady = 0
-	p.tasksDone = 0
-	p.tasksFailed = 0
-
-	for _, task := range p.tasks {
-		switch task.Status() {
-		case TaskStatusReady:
-			p.tasksReady++
-		case TaskStatusCompleted:
-			p.tasksDone++
-		case TaskStatusFailed:
-			if !task.CanRetry() {
-				p.tasksFailed++
-			}
-		}
 	}
 }
 
@@ -338,9 +336,7 @@ func (p *ManufacturingPipeline) Start() error {
 			if task.TaskType() == TaskTypeCollectSell {
 				continue
 			}
-			if err := task.MarkReady(); err == nil {
-				p.tasksReady++
-			}
+			_ = task.MarkReady()
 		}
 	}
 
@@ -421,10 +417,10 @@ func (p *ManufacturingPipeline) GetReadyTasks() []*ManufacturingTask {
 
 // Progress returns completion percentage (0-100)
 func (p *ManufacturingPipeline) Progress() float64 {
-	if p.taskCount == 0 {
+	if len(p.tasks) == 0 {
 		return 0
 	}
-	return float64(p.tasksDone) / float64(p.taskCount) * 100
+	return float64(p.TasksDone()) / float64(len(p.tasks)) * 100
 }
 
 // IsTerminal returns true if pipeline is in a terminal state

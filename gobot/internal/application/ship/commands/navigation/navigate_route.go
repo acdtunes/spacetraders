@@ -226,12 +226,24 @@ func (h *NavigateRouteHandler) planAndExecuteRoute(ctx context.Context, cmd *Nav
 
 	defer func() {
 		if r := recover(); r != nil {
-			route.FailRoute(fmt.Sprintf("panic during execution: %v", r))
+			if failErr := route.FailRoute(fmt.Sprintf("panic during execution: %v", r)); failErr != nil {
+				logger.Log("ERROR", "Failed to mark route as failed after panic", map[string]interface{}{
+					"ship_symbol": ship.ShipSymbol(),
+					"action":      "fail_route",
+					"error":       failErr.Error(),
+				})
+			}
 		}
 	}()
 
 	if err := h.routeExecutor.ExecuteRoute(ctx, route, ship, cmd.PlayerID); err != nil {
-		route.FailRoute(err.Error())
+		if failErr := route.FailRoute(err.Error()); failErr != nil {
+			logger.Log("ERROR", "Failed to mark route as failed", map[string]interface{}{
+				"ship_symbol": ship.ShipSymbol(),
+				"action":      "fail_route",
+				"error":       failErr.Error(),
+			})
+		}
 		return nil, fmt.Errorf("failed to execute route: %w", err)
 	}
 

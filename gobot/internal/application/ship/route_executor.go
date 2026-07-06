@@ -151,7 +151,13 @@ func (e *RouteExecutor) ExecuteRoute(
 				"to":            segment.ToWaypoint.Symbol,
 				"error":         err.Error(),
 			})
-			route.FailRoute(err.Error())
+			if failErr := route.FailRoute(err.Error()); failErr != nil {
+				logger.Log("ERROR", "Failed to mark route as failed", map[string]interface{}{
+					"ship_symbol": ship.ShipSymbol(),
+					"action":      "fail_route",
+					"error":       failErr.Error(),
+				})
+			}
 
 			// Record route failure metrics
 			duration := time.Since(route.CreatedAt()).Seconds()

@@ -39,12 +39,11 @@ func (f *Fuel) Consume(amount int) (*Fuel, error) {
 	if amount < 0 {
 		return nil, fmt.Errorf("fuel amount cannot be negative")
 	}
-	newCurrent := f.Current - amount
-	if newCurrent < 0 {
-		newCurrent = 0
+	if amount > f.Current {
+		return nil, NewInsufficientFuelError(amount, f.Current)
 	}
 	return &Fuel{
-		Current:  newCurrent,
+		Current:  f.Current - amount,
 		Capacity: f.Capacity,
 	}, nil
 }

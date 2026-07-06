@@ -59,19 +59,16 @@ func (h *SiphonResourcesHandler) Handle(ctx context.Context, request common.Requ
 		return nil, fmt.Errorf("invalid request type")
 	}
 
-	// 1. Get player token from context
 	token, err := common.PlayerTokenFromContext(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	// 2. Load ship from repository
 	ship, err := h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
 	if err != nil {
 		return nil, fmt.Errorf("ship not found: %w", err)
 	}
 
-	// 3. If ship is IN_TRANSIT, wait for it to arrive first
 	// This handles ships that were mid-navigation when daemon restarted
 	if ship.NavStatus() == navigation.NavStatusInTransit {
 		if err := h.waitForShipArrival(ctx, ship, cmd.PlayerID); err != nil {
@@ -79,26 +76,23 @@ func (h *SiphonResourcesHandler) Handle(ctx context.Context, request common.Requ
 		}
 	}
 
-	// 4. Ensure ship is in orbit (required for siphoning)
+	// Ensure ship is in orbit (required for siphoning)
 	stateChanged, err := ship.EnsureInOrbit()
 	if err != nil {
 		return nil, err
 	}
 
-	// 5. If state was changed, call repository to orbit via API
 	if stateChanged {
 		if err := h.shipRepo.Orbit(ctx, ship, cmd.PlayerID); err != nil {
 			return nil, fmt.Errorf("failed to orbit ship: %w", err)
 		}
 	}
 
-	// 6. Call API to siphon resources
 	result, err := h.apiClient.SiphonResources(ctx, cmd.ShipSymbol, token)
 	if err != nil {
 		return nil, fmt.Errorf("failed to siphon resources: %w", err)
 	}
 
-	// 6. Persist updated cargo to database
 	if result.Cargo != nil {
 		// Convert CargoData to domain Cargo
 		inventory := make([]*shared.CargoItem, len(result.Cargo.Inventory))

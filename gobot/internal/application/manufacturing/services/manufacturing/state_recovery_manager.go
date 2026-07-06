@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
-	"github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/services"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
@@ -32,7 +31,7 @@ type StateRecoveryManager struct {
 	factoryStateRepo manufacturing.FactoryStateRepository
 	shipRepo         navigation.ShipRepository // Uses ShipRepository for both query and save
 	factoryTracker   *manufacturing.FactoryStateTracker
-	taskQueue        services.ManufacturingTaskQueue
+	taskQueue        RecoveryTaskQueue
 	clock            shared.Clock
 }
 
@@ -43,7 +42,7 @@ func NewStateRecoveryManager(
 	factoryStateRepo manufacturing.FactoryStateRepository,
 	shipRepo navigation.ShipRepository,
 	factoryTracker *manufacturing.FactoryStateTracker,
-	taskQueue services.ManufacturingTaskQueue,
+	taskQueue RecoveryTaskQueue,
 	clock shared.Clock,
 ) *StateRecoveryManager {
 	if clock == nil {

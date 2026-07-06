@@ -185,7 +185,7 @@ func (h *ScoutTourHandler) performInitialScan(
 	return nil
 }
 
-// continuousMarketScanning runs a loop that scans the market every 60 seconds
+// continuousMarketScanning runs a loop that scans the market every 5 minutes
 func (h *ScoutTourHandler) continuousMarketScanning(
 	ctx context.Context,
 	cmd *ScoutTourCommand,

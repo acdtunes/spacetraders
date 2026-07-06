@@ -45,7 +45,7 @@ func (h *RefuelShipHandler) Handle(ctx context.Context, request common.Request) 
 		return nil, fmt.Errorf("invalid request type")
 	}
 
-	ship, err := h.loadShip(ctx, cmd)
+	ship, err := types.LoadShip(ctx, h.shipRepo, cmd)
 	if err != nil {
 		return nil, err
 	}
@@ -79,19 +79,6 @@ func (h *RefuelShipHandler) Handle(ctx context.Context, request common.Request) 
 	go h.recordRefuelTransaction(ctx, cmd, response, 0)
 
 	return response, nil
-}
-
-func (h *RefuelShipHandler) loadShip(ctx context.Context, cmd *types.RefuelShipCommand) (*navigation.Ship, error) {
-	// OPTIMIZATION: Use ship if provided (avoids API call)
-	if cmd.Ship != nil {
-		return cmd.Ship, nil
-	}
-	// Fall back to API fetch (backward compatibility)
-	ship, err := h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
-	if err != nil {
-		return nil, fmt.Errorf("ship not found: %w", err)
-	}
-	return ship, nil
 }
 
 func (h *RefuelShipHandler) validateAtFuelStation(ship *navigation.Ship) error {

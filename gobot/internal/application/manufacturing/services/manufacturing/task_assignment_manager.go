@@ -7,9 +7,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/application/contract"
-	"github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/services"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
@@ -42,12 +40,11 @@ type AssignParams struct {
 // - WorkerReservationPolicy for reservation logic
 type TaskAssignmentManager struct {
 	// Repositories
-	taskRepo   manufacturing.TaskRepository
-	shipRepo   navigation.ShipRepository
-	marketRepo market.MarketRepository
+	taskRepo manufacturing.TaskRepository
+	shipRepo navigation.ShipRepository
 
 	// Task queue (uses DualTaskQueue for collection-first priority)
-	taskQueue services.ManufacturingTaskQueue
+	taskQueue ReadyTaskAssignmentQueue
 
 	// Focused services (injected via constructor)
 	shipSelector      *ShipSelector
@@ -55,9 +52,6 @@ type TaskAssignmentManager struct {
 	conditionChecker  *MarketConditionChecker
 	reconciler        *AssignmentReconciler
 	reservationPolicy *manufacturing.WorkerReservationPolicy
-
-	// Pipeline registry getter (read-only, no circular dependency)
-	getActivePipelines func() map[string]*manufacturing.ManufacturingPipeline
 
 	// Dependencies (injected via constructor)
 	workerManager   WorkerManager
@@ -68,30 +62,26 @@ type TaskAssignmentManager struct {
 func NewTaskAssignmentManager(
 	taskRepo manufacturing.TaskRepository,
 	shipRepo navigation.ShipRepository,
-	marketRepo market.MarketRepository,
-	taskQueue services.ManufacturingTaskQueue,
+	taskQueue ReadyTaskAssignmentQueue,
 	shipSelector *ShipSelector,
 	tracker *AssignmentTracker,
 	conditionChecker *MarketConditionChecker,
 	reconciler *AssignmentReconciler,
 	reservationPolicy *manufacturing.WorkerReservationPolicy,
-	getActivePipelines func() map[string]*manufacturing.ManufacturingPipeline,
 	workerManager WorkerManager,
 	orphanedHandler OrphanedCargoManager,
 ) *TaskAssignmentManager {
 	return &TaskAssignmentManager{
-		taskRepo:           taskRepo,
-		shipRepo:           shipRepo,
-		marketRepo:         marketRepo,
-		taskQueue:          taskQueue,
-		shipSelector:       shipSelector,
-		tracker:            tracker,
-		conditionChecker:   conditionChecker,
-		reconciler:         reconciler,
-		reservationPolicy:  reservationPolicy,
-		getActivePipelines: getActivePipelines,
-		workerManager:      workerManager,
-		orphanedHandler:    orphanedHandler,
+		taskRepo:          taskRepo,
+		shipRepo:          shipRepo,
+		taskQueue:         taskQueue,
+		shipSelector:      shipSelector,
+		tracker:           tracker,
+		conditionChecker:  conditionChecker,
+		reconciler:        reconciler,
+		reservationPolicy: reservationPolicy,
+		workerManager:     workerManager,
+		orphanedHandler:   orphanedHandler,
 	}
 }
 
