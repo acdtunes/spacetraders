@@ -19,14 +19,16 @@ func eraCloseFixtureExec(t *testing.T, calls *[][]string) Execer {
 		{"id":"sp-5","issue_type":"feature","labels":["shipwright"],"status":"open","created_at":"2026-06-10T00:00:00Z"},
 		{"id":"sp-s2q","issue_type":"design","labels":["strategy"],"status":"open","created_at":"2026-06-01T00:00:00Z"}
 	]`
-	memoriesJSON := `[
-		{"key":"L1","value":"L1 [seed] — Probes are cheap: keep one probe per market."},
-		{"key":"L47","value":"L47 [d-9] — phantom cache recurs after each contract; ship refresh is the first move. TORWIND-3 cached 44/80 IRON_ORE."},
-		{"key":"L60","value":"D45 is the only ADVANCED_CIRCUITRY exporter."}
-	]`
+	memoriesJSON := `{
+		"L1": "L1 [seed] — Probes are cheap: keep one probe per market.",
+		"L47": "L47 [d-9] — phantom cache recurs after each contract; ship refresh is the first move. TORWIND-3 cached 44/80 IRON_ORE.",
+		"L60": "D45 is the only ADVANCED_CIRCUITRY exporter."
+	}`
 	return func(_ context.Context, name string, args ...string) (string, error) {
 		*calls = append(*calls, append([]string{name}, args...))
 		if len(args) > 0 && args[0] == "list" {
+			require.Contains(t, args, "--all", "sweep must read the full corpus, closed beads included")
+			require.Contains(t, args, "0", "sweep must lift bd's default 50-row limit")
 			return beadsJSON, nil
 		}
 		if len(args) > 0 && args[0] == "memories" {
@@ -133,6 +135,32 @@ func TestEraCloseMemoryProposalsClassifyPerHeuristic(t *testing.T) {
 	require.Equal(t, "KEEP", byKey["L1"].Action)
 	require.Equal(t, "REWRITE", byKey["L47"].Action)
 	require.Equal(t, "RETIRE", byKey["L60"].Action)
+}
+
+func TestEraCloseWindowEndIncludesEntireEndDate(t *testing.T) {
+	var calls [][]string
+	beadsJSON := `[
+		{"id":"sp-9","issue_type":"decision","labels":[],"status":"open","created_at":"2026-06-30T15:00:00Z"}
+	]`
+	exec := func(_ context.Context, name string, args ...string) (string, error) {
+		calls = append(calls, append([]string{name}, args...))
+		if len(args) > 0 && args[0] == "list" {
+			return beadsJSON, nil
+		}
+		if len(args) > 0 && args[0] == "memories" {
+			return `{}`, nil
+		}
+		return "", nil
+	}
+	b := &BeadsClient{BDBin: "bd", RigDir: "/rig", Exec: exec}
+	start, _ := time.Parse("2006-01-02", "2026-06-01")
+	end, _ := time.Parse("2006-01-02", "2026-06-30")
+
+	rep, err := EraClose(context.Background(), b, "torwind", "2026-07-05", start, end, "TORWIND", false)
+	require.NoError(t, err)
+
+	require.Equal(t, []string{"sp-9"}, rep.Labeled,
+		"--window-end is documented as inclusive (YYYY-MM-DD); a bead created during the daytime of the end date must still be in-window, not just one created at its midnight instant")
 }
 
 func TestClassifyMemoryTableDriven(t *testing.T) {

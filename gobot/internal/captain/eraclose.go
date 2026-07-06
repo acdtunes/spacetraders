@@ -142,7 +142,9 @@ func EraClose(ctx context.Context, b *BeadsClient, eraName, resetDate string, wi
 }
 
 func listBeads(ctx context.Context, b *BeadsClient) ([]beadRecord, error) {
-	out, err := b.Exec(ctx, b.BDBin, "list", "--json")
+	// --all + -n 0: the sweep must see the full corpus — closed beads still
+	// need era labels, and bd's default limit (50) silently truncates.
+	out, err := b.Exec(ctx, b.BDBin, "list", "--json", "--all", "-n", "0")
 	if err != nil {
 		return nil, err
 	}
@@ -158,11 +160,21 @@ func listMemories(ctx context.Context, b *BeadsClient) ([]memoryRecord, error) {
 	if err != nil {
 		return nil, err
 	}
-	var raw []memoryRecord
+	// bd memories --json emits a flat {key: text} map.
+	var raw map[string]string
 	if err := json.Unmarshal([]byte(out), &raw); err != nil {
 		return nil, fmt.Errorf("parse bd memories: %w", err)
 	}
-	return raw, nil
+	keys := make([]string, 0, len(raw))
+	for k := range raw {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	records := make([]memoryRecord, 0, len(keys))
+	for _, k := range keys {
+		records = append(records, memoryRecord{Key: k, Text: raw[k]})
+	}
+	return records, nil
 }
 
 func hasLabel(labels []string, target string) bool {
@@ -174,8 +186,12 @@ func hasLabel(labels []string, target string) bool {
 	return false
 }
 
+// withinWindow reports whether t falls within [start, end], where end is the
+// date-window end (inclusive per the --window-end flag contract): callers
+// pass end as midnight of the end date, so the whole calendar day it names
+// must be covered, not just its first instant.
 func withinWindow(t, start, end time.Time) bool {
-	return !t.Before(start) && !t.After(end)
+	return !t.Before(start) && t.Before(end.AddDate(0, 0, 1))
 }
 
 // classifyMemory applies the spec §4.2 heuristic: a memory with no
