@@ -47,16 +47,22 @@ func (s *DaemonServer) ParallelManufacturingCoordinator(ctx context.Context, sys
 		fmt.Printf("CLEANUP: Stopped %d orphaned worker containers\n", orphanedCount)
 	}
 
-	// Create parallel manufacturing coordinator command
-	cmd := &tradingCmd.RunParallelManufacturingCoordinatorCommand{
-		SystemSymbol:           systemSymbol,
-		PlayerID:               playerID,
-		ContainerID:            containerID,
-		MinPurchasePrice:       minPrice,
-		MaxConcurrentTasks:     maxWorkers,             // Map maxWorkers to MaxConcurrentTasks
-		MaxPipelines:           maxPipelines,           // Max fabrication pipelines
-		MaxCollectionPipelines: maxCollectionPipelines, // Max collection pipelines (0 = unlimited)
-		Strategy:               strategy,               // Acquisition strategy (prefer-buy, prefer-fabricate, smart)
+	config := map[string]interface{}{
+		"system_symbol":            systemSymbol,
+		"min_price":                minPrice,
+		"max_workers":              maxWorkers,
+		"max_pipelines":            maxPipelines,
+		"max_collection_pipelines": maxCollectionPipelines,
+		"min_balance":              minBalance,
+		"container_id":             containerID,
+		"mode":                     "parallel_task_based",
+		"strategy":                 strategy,
+	}
+
+	// Create parallel manufacturing coordinator command from the launch config
+	cmd, err := s.buildCommandForType("manufacturing_coordinator", config, playerID, containerID)
+	if err != nil {
+		return "", fmt.Errorf("failed to create command: %w", err)
 	}
 
 	// Create container for this operation
@@ -66,17 +72,7 @@ func (s *DaemonServer) ParallelManufacturingCoordinator(ctx context.Context, sys
 		playerID,
 		-1,  // Infinite iterations
 		nil, // No parent container
-		map[string]interface{}{
-			"system_symbol":            systemSymbol,
-			"min_price":                minPrice,
-			"max_workers":              maxWorkers,
-			"max_pipelines":            maxPipelines,
-			"max_collection_pipelines": maxCollectionPipelines,
-			"min_balance":              minBalance,
-			"container_id":             containerID,
-			"mode":                     "parallel_task_based",
-			"strategy":                 strategy,
-		},
+		config,
 		nil, // Use default RealClock
 	)
 

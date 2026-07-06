@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	contractCmd "github.com/andrescamacho/spacetraders-go/internal/application/contract/commands"
 	scoutingCmd "github.com/andrescamacho/spacetraders-go/internal/application/scouting/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
 	pb "github.com/andrescamacho/spacetraders-go/pkg/proto/daemon"
@@ -101,43 +100,22 @@ func (c *DaemonClientGRPC) CreateScoutTourContainer(
 	return nil
 }
 
-// CreateContractWorkflowContainer creates AND STARTS a background container for contract workflow operations
-func (c *DaemonClientGRPC) CreateContractWorkflowContainer(
+func (c *DaemonClientGRPC) PersistContainer(
 	ctx context.Context,
-	containerID string,
-	playerID uint,
-	command interface{},
-	completionCallback chan<- string,
-) error {
-	// Type assert to ContractWorkflowCommand
-	_, ok := command.(*contractCmd.RunWorkflowCommand)
-	if !ok {
-		return fmt.Errorf("invalid command type: expected *contractCmd.RunWorkflowCommand, got %T", command)
-	}
-
-	// This method is a placeholder - gRPC implementation would send the command to the daemon
-	// For now, we don't support creating contract workflow containers via gRPC
-	// (This would require adding protobuf message and RPC method)
-	return fmt.Errorf("CreateContractWorkflowContainer not implemented for gRPC client")
-}
-
-// PersistContractWorkflowContainer creates (but does NOT start) a worker container in DB
-func (c *DaemonClientGRPC) PersistContractWorkflowContainer(
-	ctx context.Context,
+	kind daemon.ContainerKind,
 	containerID string,
 	playerID uint,
 	command interface{},
 ) error {
-	return fmt.Errorf("PersistContractWorkflowContainer not implemented for gRPC client")
+	return fmt.Errorf("PersistContainer not implemented for gRPC client")
 }
 
-// StartContractWorkflowContainer starts a previously persisted worker container
-func (c *DaemonClientGRPC) StartContractWorkflowContainer(
+func (c *DaemonClientGRPC) StartContainer(
 	ctx context.Context,
+	kind daemon.ContainerKind,
 	containerID string,
-	completionCallback chan<- string,
 ) error {
-	return fmt.Errorf("StartContractWorkflowContainer not implemented for gRPC client")
+	return fmt.Errorf("StartContainer not implemented for gRPC client")
 }
 
 // StopContainer stops a running container
@@ -152,63 +130,6 @@ func (c *DaemonClientGRPC) StopContainer(ctx context.Context, containerID string
 	}
 
 	return nil
-}
-
-// PersistManufacturingTaskWorkerContainer creates (but does NOT start) a manufacturing task worker container in DB
-func (c *DaemonClientGRPC) PersistManufacturingTaskWorkerContainer(
-	ctx context.Context,
-	containerID string,
-	playerID uint,
-	command interface{},
-) error {
-	return fmt.Errorf("PersistManufacturingTaskWorkerContainer not implemented for gRPC client")
-}
-
-// StartManufacturingTaskWorkerContainer starts a previously persisted manufacturing task worker container
-func (c *DaemonClientGRPC) StartManufacturingTaskWorkerContainer(
-	ctx context.Context,
-	containerID string,
-	completionCallback chan<- string,
-) error {
-	return fmt.Errorf("StartManufacturingTaskWorkerContainer not implemented for gRPC client")
-}
-
-// PersistGasSiphonWorkerContainer creates (but does NOT start) a gas siphon worker container in DB
-func (c *DaemonClientGRPC) PersistGasSiphonWorkerContainer(
-	ctx context.Context,
-	containerID string,
-	playerID uint,
-	command interface{},
-) error {
-	return fmt.Errorf("PersistGasSiphonWorkerContainer not implemented for gRPC client")
-}
-
-// StartGasSiphonWorkerContainer starts a previously persisted gas siphon worker container
-func (c *DaemonClientGRPC) StartGasSiphonWorkerContainer(
-	ctx context.Context,
-	containerID string,
-	completionCallback chan<- string,
-) error {
-	return fmt.Errorf("StartGasSiphonWorkerContainer not implemented for gRPC client")
-}
-
-// PersistStorageShipContainer creates (but does NOT start) a storage ship worker container in DB
-func (c *DaemonClientGRPC) PersistStorageShipContainer(
-	ctx context.Context,
-	containerID string,
-	playerID uint,
-	command interface{},
-) error {
-	return fmt.Errorf("PersistStorageShipContainer not implemented for gRPC client")
-}
-
-// StartStorageShipContainer starts a previously persisted storage ship worker container
-func (c *DaemonClientGRPC) StartStorageShipContainer(
-	ctx context.Context,
-	containerID string,
-	completionCallback chan<- string,
-) error {
-	return fmt.Errorf("StartStorageShipContainer not implemented for gRPC client")
 }
 
 // Helper function to create int32 pointer

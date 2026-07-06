@@ -2,279 +2,262 @@ package grpc
 
 import (
 	"fmt"
+	"strings"
 
 	contractCmd "github.com/andrescamacho/spacetraders-go/internal/application/contract/commands"
 	gasCmd "github.com/andrescamacho/spacetraders-go/internal/application/gas/commands"
 	goodsCmd "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/commands"
-	tradingCmd "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/commands"
 	scoutingCmd "github.com/andrescamacho/spacetraders-go/internal/application/scouting/commands"
 	shipyardCmd "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-func intFromConfig(config map[string]interface{}, key string, defaultValue int) int {
-	val, ok := config[key]
-	if !ok {
-		return defaultValue
-	}
-	switch v := val.(type) {
-	case int:
-		return v
-	case float64:
-		return int(v)
-	}
-	return defaultValue
+type configFieldError struct {
+	Fields []string
 }
 
-// registerCommandFactories registers command factories for container recovery
-// Adding a new container type only requires adding a factory here - no changes to recovery logic
-func (s *DaemonServer) registerCommandFactories() {
-	// Scout tour factory
-	s.commandFactories["scout_tour"] = func(config map[string]interface{}, playerID int) (interface{}, error) {
-		shipSymbol, ok := config["ship_symbol"].(string)
-		if !ok {
-			return nil, fmt.Errorf("missing or invalid ship_symbol")
-		}
+func (e *configFieldError) Error() string {
+	return "missing or invalid " + strings.Join(e.Fields, ", ")
+}
 
-		marketsRaw, ok := config["markets"].([]interface{})
-		if !ok {
-			return nil, fmt.Errorf("missing or invalid markets")
-		}
+type configReader struct {
+	values  map[string]interface{}
+	invalid []string
+}
 
-		markets := make([]string, len(marketsRaw))
-		for i, m := range marketsRaw {
-			markets[i], ok = m.(string)
+func newConfigReader(values map[string]interface{}) *configReader {
+	return &configReader{values: values}
+}
+
+func (r *configReader) fail(key string) {
+	r.invalid = append(r.invalid, key)
+}
+
+func (r *configReader) Err() error {
+	if len(r.invalid) == 0 {
+		return nil
+	}
+	return &configFieldError{Fields: r.invalid}
+}
+
+func (r *configReader) RequiredString(key string) string {
+	value, ok := r.values[key].(string)
+	if !ok {
+		r.fail(key)
+	}
+	return value
+}
+
+func (r *configReader) RequiredNonEmptyString(key string) string {
+	value, ok := r.values[key].(string)
+	if !ok || value == "" {
+		r.fail(key)
+		return ""
+	}
+	return value
+}
+
+func (r *configReader) OptionalString(key string) string {
+	value, _ := r.values[key].(string)
+	return value
+}
+
+func (r *configReader) OptionalStringDefault(key, fallback string) string {
+	if value, ok := r.values[key].(string); ok && value != "" {
+		return value
+	}
+	return fallback
+}
+
+func (r *configReader) RequiredInt(key string) int {
+	value, ok := intValue(r.values[key])
+	if !ok {
+		r.fail(key)
+	}
+	return value
+}
+
+func (r *configReader) OptionalInt(key string, fallback int) int {
+	value, ok := intValue(r.values[key])
+	if !ok {
+		return fallback
+	}
+	return value
+}
+
+func (r *configReader) OptionalBool(key string) bool {
+	value, _ := r.values[key].(bool)
+	return value
+}
+
+func (r *configReader) RequiredStringSlice(key string, aliases ...string) []string {
+	if value, ok := stringSliceValue(r.values[key]); ok {
+		return value
+	}
+	for _, alias := range aliases {
+		if value, ok := stringSliceValue(r.values[alias]); ok {
+			return value
+		}
+	}
+	r.fail(key)
+	return nil
+}
+
+func intValue(raw interface{}) (int, bool) {
+	switch v := raw.(type) {
+	case int:
+		return v, true
+	case float64:
+		return int(v), true
+	}
+	return 0, false
+}
+
+func stringSliceValue(raw interface{}) ([]string, bool) {
+	switch v := raw.(type) {
+	case []string:
+		return v, true
+	case []interface{}:
+		out := make([]string, len(v))
+		for i, item := range v {
+			s, ok := item.(string)
 			if !ok {
-				return nil, fmt.Errorf("invalid market entry at index %d", i)
+				return nil, false
 			}
+			out[i] = s
 		}
-
-		iterations, ok := config["iterations"].(float64)
-		if !ok {
-			return nil, fmt.Errorf("missing or invalid iterations")
-		}
-
-		return &scoutingCmd.ScoutTourCommand{
-			PlayerID:   shared.MustNewPlayerID(int(playerID)),
-			ShipSymbol: shipSymbol,
-			Markets:    markets,
-			Iterations: int(iterations),
-		}, nil
+		return out, true
 	}
+	return nil, false
+}
 
-	// Contract workflow factory (single contract execution)
-	s.commandFactories["contract_workflow"] = func(config map[string]interface{}, playerID int) (interface{}, error) {
-		shipSymbol, ok := config["ship_symbol"].(string)
-		if !ok {
-			return nil, fmt.Errorf("missing or invalid ship_symbol")
-		}
+type ContainerSpec struct {
+	CommandType string
+	IsWorker    bool
+	build       func(cfg *configReader, playerID int, containerID string) interface{}
+}
 
-		coordinatorID, _ := config["coordinator_id"].(string) // Optional
-
-		return &contractCmd.RunWorkflowCommand{
-			ShipSymbol:    shipSymbol,
-			PlayerID:      shared.MustNewPlayerID(playerID),
-			CoordinatorID: coordinatorID,
-		}, nil
+func (spec ContainerSpec) BuildCommand(config map[string]interface{}, playerID int, containerID string) (interface{}, error) {
+	if spec.build == nil {
+		return nil, fmt.Errorf("no command builder for command type '%s'", spec.CommandType)
 	}
-
-	// Contract fleet coordinator factory (multi-ship coordination)
-	s.commandFactories["contract_fleet_coordinator"] = func(config map[string]interface{}, playerID int) (interface{}, error) {
-		containerID, ok := config["container_id"].(string)
-		if !ok {
-			return nil, fmt.Errorf("missing or invalid container_id")
-		}
-
-		// ship_symbols is deprecated and no longer required (dynamic discovery is used)
-		// Pass empty array for backward compatibility
-		return &contractCmd.RunFleetCoordinatorCommand{
-			PlayerID:    shared.MustNewPlayerID(playerID),
-			ShipSymbols: []string{}, // Deprecated field, no longer used
-			ContainerID: containerID,
-		}, nil
+	cfg := newConfigReader(config)
+	cmd := spec.build(cfg, playerID, containerID)
+	if err := cfg.Err(); err != nil {
+		return nil, err
 	}
+	return cmd, nil
+}
 
-	// Purchase ship factory
-	s.commandFactories["purchase_ship"] = func(config map[string]interface{}, playerID int) (interface{}, error) {
-		shipSymbol, ok := config["ship_symbol"].(string)
-		if !ok {
-			return nil, fmt.Errorf("missing or invalid ship_symbol")
-		}
-
-		shipType, ok := config["ship_type"].(string)
-		if !ok {
-			return nil, fmt.Errorf("missing or invalid ship_type")
-		}
-
-		shipyardWaypoint, _ := config["shipyard"].(string) // Optional
-
-		return &shipyardCmd.PurchaseShipCommand{
-			PurchasingShipSymbol: shipSymbol,
-			ShipType:             shipType,
-			PlayerID:             shared.MustNewPlayerID(playerID),
-			ShipyardWaypoint:     shipyardWaypoint,
-		}, nil
+func containerSpecList() []ContainerSpec {
+	return []ContainerSpec{
+		{CommandType: "scout_tour", build: buildScoutTourCommand},
+		{CommandType: "contract_workflow", build: buildContractWorkflowCommand},
+		{CommandType: "contract_fleet_coordinator", build: buildContractFleetCoordinatorCommand},
+		{CommandType: "purchase_ship", build: buildPurchaseShipCommand},
+		{CommandType: "batch_purchase_ships", build: buildBatchPurchaseShipsCommand},
+		{CommandType: "goods_factory_coordinator", build: buildGoodsFactoryCoordinatorCommand},
+		{CommandType: "manufacturing_coordinator", build: buildManufacturingCoordinatorCommand},
+		{CommandType: "gas_coordinator", build: buildGasCoordinatorCommand},
+		{CommandType: "manufacturing_task_worker", IsWorker: true},
+		{CommandType: "siphon_worker", IsWorker: true},
+		{CommandType: "gas_transport_worker", IsWorker: true},
+		{CommandType: "storage_ship", IsWorker: true},
 	}
+}
 
-	// Batch purchase ships factory
-	s.commandFactories["batch_purchase_ships"] = func(config map[string]interface{}, playerID int) (interface{}, error) {
-		shipSymbol, ok := config["ship_symbol"].(string)
-		if !ok {
-			return nil, fmt.Errorf("missing or invalid ship_symbol")
-		}
-
-		shipType, ok := config["ship_type"].(string)
-		if !ok {
-			return nil, fmt.Errorf("missing or invalid ship_type")
-		}
-
-		quantity, ok := config["quantity"].(float64)
-		if !ok {
-			return nil, fmt.Errorf("missing or invalid quantity")
-		}
-
-		maxBudget, ok := config["max_budget"].(float64)
-		if !ok {
-			return nil, fmt.Errorf("missing or invalid max_budget")
-		}
-
-		shipyardWaypoint, _ := config["shipyard"].(string) // Optional
-
-		return &shipyardCmd.BatchPurchaseShipsCommand{
-			PurchasingShipSymbol: shipSymbol,
-			ShipType:             shipType,
-			Quantity:             int(quantity),
-			MaxBudget:            int(maxBudget),
-			PlayerID:             shared.MustNewPlayerID(playerID),
-			ShipyardWaypoint:     shipyardWaypoint,
-		}, nil
+func (s *DaemonServer) registerContainerSpecs() {
+	for _, spec := range containerSpecList() {
+		s.containerSpecs[spec.CommandType] = spec
 	}
+}
 
-	// Goods factory coordinator factory
-	s.commandFactories["goods_factory_coordinator"] = func(config map[string]interface{}, playerID int) (interface{}, error) {
-		containerID, ok := config["container_id"].(string)
-		if !ok {
-			return nil, fmt.Errorf("missing or invalid container_id")
-		}
-
-		targetGood, ok := config["target_good"].(string)
-		if !ok {
-			return nil, fmt.Errorf("missing or invalid target_good")
-		}
-
-		systemSymbol, ok := config["system_symbol"].(string)
-		if !ok {
-			return nil, fmt.Errorf("missing or invalid system_symbol")
-		}
-
-		// Extract max_iterations from config (default to 1 if not present for backward compatibility)
-		maxIterations := intFromConfig(config, "max_iterations", 1)
-
-		return &goodsCmd.RunFactoryCoordinatorCommand{
-			PlayerID:      playerID,
-			TargetGood:    targetGood,
-			SystemSymbol:  systemSymbol,
-			ContainerID:   containerID,
-			MaxIterations: maxIterations,
-		}, nil
+func (s *DaemonServer) buildCommandForType(commandType string, config map[string]interface{}, playerID int, containerID string) (interface{}, error) {
+	spec, exists := s.containerSpecs[commandType]
+	if !exists {
+		return nil, fmt.Errorf("unknown command type '%s'", commandType)
 	}
+	return spec.BuildCommand(config, playerID, containerID)
+}
 
-	// Manufacturing coordinator factory (task-based pipeline)
-	s.commandFactories["manufacturing_coordinator"] = func(config map[string]interface{}, playerID int) (interface{}, error) {
-		containerID, ok := config["container_id"].(string)
-		if !ok {
-			return nil, fmt.Errorf("missing or invalid container_id")
-		}
-
-		systemSymbol, ok := config["system_symbol"].(string)
-		if !ok {
-			return nil, fmt.Errorf("missing or invalid system_symbol")
-		}
-
-		// Extract numeric config with defaults
-		minPrice := intFromConfig(config, "min_price", 1000)
-		maxWorkers := intFromConfig(config, "max_workers", 3)
-		maxPipelines := intFromConfig(config, "max_pipelines", 3)
-		// Extract max collection pipelines (0 = unlimited, which is the default)
-		maxCollectionPipelines := intFromConfig(config, "max_collection_pipelines", 0)
-
-		// Extract strategy (default: prefer-fabricate for recursive manufacturing)
-		strategy := "prefer-fabricate"
-		if val, ok := config["strategy"].(string); ok && val != "" {
-			strategy = val
-		}
-
-		return &tradingCmd.RunParallelManufacturingCoordinatorCommand{
-			SystemSymbol:           systemSymbol,
-			PlayerID:               playerID,
-			ContainerID:            containerID,
-			MinPurchasePrice:       minPrice,
-			MaxConcurrentTasks:     maxWorkers,
-			MaxPipelines:           maxPipelines,
-			MaxCollectionPipelines: maxCollectionPipelines,
-			Strategy:               strategy,
-		}, nil
+func buildScoutTourCommand(cfg *configReader, playerID int, containerID string) interface{} {
+	return &scoutingCmd.ScoutTourCommand{
+		PlayerID:   shared.MustNewPlayerID(playerID),
+		ShipSymbol: cfg.RequiredString("ship_symbol"),
+		Markets:    cfg.RequiredStringSlice("markets"),
+		Iterations: cfg.RequiredInt("iterations"),
 	}
+}
 
-	// Gas extraction coordinator factory
-	// Storage ships stay at the gas giant and buffer cargo; delivery is handled by manufacturing pool via STORAGE_ACQUIRE_DELIVER tasks
-	s.commandFactories["gas_coordinator"] = func(config map[string]interface{}, playerID int) (interface{}, error) {
-		gasOperationID, ok := config["gas_operation_id"].(string)
-		if !ok {
-			return nil, fmt.Errorf("missing or invalid gas_operation_id")
-		}
+func buildContractWorkflowCommand(cfg *configReader, playerID int, containerID string) interface{} {
+	return &contractCmd.RunWorkflowCommand{
+		ShipSymbol:    cfg.RequiredString("ship_symbol"),
+		PlayerID:      shared.MustNewPlayerID(playerID),
+		ContainerID:   containerID,
+		CoordinatorID: cfg.OptionalString("coordinator_id"),
+	}
+}
 
-		gasGiant, ok := config["gas_giant"].(string)
-		if !ok || gasGiant == "" {
-			return nil, fmt.Errorf("missing or invalid gas_giant (was empty or not set)")
-		}
+func buildContractFleetCoordinatorCommand(cfg *configReader, playerID int, containerID string) interface{} {
+	return &contractCmd.RunFleetCoordinatorCommand{
+		PlayerID:    shared.MustNewPlayerID(playerID),
+		ShipSymbols: []string{},
+		ContainerID: cfg.RequiredString("container_id"),
+	}
+}
 
-		containerID, ok := config["container_id"].(string)
-		if !ok {
-			return nil, fmt.Errorf("missing or invalid container_id")
-		}
+func buildPurchaseShipCommand(cfg *configReader, playerID int, containerID string) interface{} {
+	return &shipyardCmd.PurchaseShipCommand{
+		PurchasingShipSymbol: cfg.RequiredString("ship_symbol"),
+		ShipType:             cfg.RequiredString("ship_type"),
+		PlayerID:             shared.MustNewPlayerID(playerID),
+		ShipyardWaypoint:     cfg.OptionalString("shipyard"),
+	}
+}
 
-		// Parse siphon ships
-		siphonShipsRaw, ok := config["siphon_ships"].([]interface{})
-		if !ok {
-			return nil, fmt.Errorf("missing or invalid siphon_ships")
-		}
+func buildBatchPurchaseShipsCommand(cfg *configReader, playerID int, containerID string) interface{} {
+	return &shipyardCmd.BatchPurchaseShipsCommand{
+		PurchasingShipSymbol: cfg.RequiredString("ship_symbol"),
+		ShipType:             cfg.RequiredString("ship_type"),
+		Quantity:             cfg.RequiredInt("quantity"),
+		MaxBudget:            cfg.RequiredInt("max_budget"),
+		PlayerID:             shared.MustNewPlayerID(playerID),
+		ShipyardWaypoint:     cfg.OptionalString("shipyard"),
+	}
+}
 
-		siphonShips := make([]string, len(siphonShipsRaw))
-		for i, s := range siphonShipsRaw {
-			siphonShips[i], ok = s.(string)
-			if !ok {
-				return nil, fmt.Errorf("invalid siphon ship at index %d", i)
-			}
-		}
+func buildGoodsFactoryCoordinatorCommand(cfg *configReader, playerID int, containerID string) interface{} {
+	return &goodsCmd.RunFactoryCoordinatorCommand{
+		PlayerID:      playerID,
+		TargetGood:    cfg.RequiredString("target_good"),
+		SystemSymbol:  cfg.RequiredString("system_symbol"),
+		ContainerID:   cfg.RequiredString("container_id"),
+		MaxIterations: cfg.OptionalInt("max_iterations", 1),
+	}
+}
 
-		// Parse storage ships (buffer cargo at gas giant; haulers pick up via StorageCoordinator)
-		// Support both "storage_ships" (new) and "transport_ships" (legacy) for backward compatibility
-		var storageShips []string
-		storageShipsRaw, ok := config["storage_ships"].([]interface{})
-		if !ok {
-			// Fall back to legacy transport_ships config key
-			storageShipsRaw, ok = config["transport_ships"].([]interface{})
-			if !ok {
-				return nil, fmt.Errorf("missing or invalid storage_ships (or transport_ships)")
-			}
-		}
+func buildManufacturingCoordinatorCommand(cfg *configReader, playerID int, containerID string) interface{} {
+	return &goodsCmd.RunParallelManufacturingCoordinatorCommand{
+		SystemSymbol:           cfg.RequiredString("system_symbol"),
+		PlayerID:               playerID,
+		ContainerID:            cfg.RequiredString("container_id"),
+		MinPurchasePrice:       cfg.OptionalInt("min_price", 1000),
+		MaxConcurrentTasks:     cfg.OptionalInt("max_workers", 3),
+		MaxPipelines:           cfg.OptionalInt("max_pipelines", 3),
+		MaxCollectionPipelines: cfg.OptionalInt("max_collection_pipelines", 0),
+		Strategy:               cfg.OptionalStringDefault("strategy", "prefer-fabricate"),
+	}
+}
 
-		storageShips = make([]string, len(storageShipsRaw))
-		for i, t := range storageShipsRaw {
-			storageShips[i], ok = t.(string)
-			if !ok {
-				return nil, fmt.Errorf("invalid storage ship at index %d", i)
-			}
-		}
-
-		return &gasCmd.RunGasCoordinatorCommand{
-			GasOperationID: gasOperationID,
-			PlayerID:       shared.MustNewPlayerID(playerID),
-			GasGiant:       gasGiant,
-			SiphonShips:    siphonShips,
-			StorageShips:   storageShips,
-			ContainerID:    containerID,
-		}, nil
+func buildGasCoordinatorCommand(cfg *configReader, playerID int, containerID string) interface{} {
+	return &gasCmd.RunGasCoordinatorCommand{
+		GasOperationID: cfg.RequiredString("gas_operation_id"),
+		PlayerID:       shared.MustNewPlayerID(playerID),
+		GasGiant:       cfg.RequiredNonEmptyString("gas_giant"),
+		SiphonShips:    cfg.RequiredStringSlice("siphon_ships"),
+		StorageShips:   cfg.RequiredStringSlice("storage_ships", "transport_ships"),
+		ContainerID:    cfg.RequiredString("container_id"),
+		Force:          cfg.OptionalBool("force"),
+		DryRun:         cfg.OptionalBool("dry_run"),
 	}
 }

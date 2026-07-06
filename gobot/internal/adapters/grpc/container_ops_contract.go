@@ -6,9 +6,7 @@ import (
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
-	contractCmd "github.com/andrescamacho/spacetraders-go/internal/application/contract/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )
 
@@ -113,16 +111,10 @@ func (s *DaemonServer) StartContractWorkflow(
 		return fmt.Errorf("failed to parse config: %w", err)
 	}
 
-	// Extract fields
-	shipSymbol := config["ship_symbol"].(string)
-	coordinatorID, _ := config["coordinator_id"].(string)
-
 	// Create command
-	cmd := &contractCmd.RunWorkflowCommand{
-		ShipSymbol:    shipSymbol,
-		PlayerID:      shared.MustNewPlayerID(containerModel.PlayerID),
-		ContainerID:   containerModel.ID,
-		CoordinatorID: coordinatorID,
+	cmd, err := s.buildCommandForType("contract_workflow", config, containerModel.PlayerID, containerModel.ID)
+	if err != nil {
+		return fmt.Errorf("failed to create command: %w", err)
 	}
 
 	// Create container entity from model
@@ -157,15 +149,18 @@ func (s *DaemonServer) ContractFleetCoordinator(ctx context.Context, shipSymbols
 	// Create container ID using player ID instead of ship symbol (no ships pre-assigned)
 	containerID := utils.GenerateContainerID("contract_fleet_coordinator", fmt.Sprintf("player-%d", playerID))
 
-	// Create contract fleet coordinator command (no ship symbols - uses dynamic discovery)
-	cmd := &contractCmd.RunFleetCoordinatorCommand{
-		PlayerID:    shared.MustNewPlayerID(playerID),
-		ShipSymbols: nil, // Dynamic discovery - no pre-assignment
-		ContainerID: containerID,
+	// No ship symbols metadata needed (dynamic discovery - no pre-assignment)
+	var shipSymbolsInterface []interface{}
+	config := map[string]interface{}{
+		"ship_symbols": shipSymbolsInterface,
+		"container_id": containerID,
 	}
 
-	// No ship symbols metadata needed
-	var shipSymbolsInterface []interface{}
+	// Create contract fleet coordinator command from the launch config
+	cmd, err := s.buildCommandForType("contract_fleet_coordinator", config, playerID, containerID)
+	if err != nil {
+		return "", fmt.Errorf("failed to create command: %w", err)
+	}
 
 	// Create container for this operation
 	containerEntity := container.NewContainer(
@@ -174,10 +169,7 @@ func (s *DaemonServer) ContractFleetCoordinator(ctx context.Context, shipSymbols
 		playerID,
 		-1,  // Infinite iterations
 		nil, // No parent container
-		map[string]interface{}{
-			"ship_symbols": shipSymbolsInterface,
-			"container_id": containerID,
-		},
+		config,
 		nil, // Use default RealClock for production
 	)
 

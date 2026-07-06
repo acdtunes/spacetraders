@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 
-	goodsCmd "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )
@@ -50,21 +49,18 @@ func (s *DaemonServer) StartGoodsFactory(
 	// Generate container ID
 	containerID := utils.GenerateContainerID("goods_factory", targetGood)
 
-	// Create factory coordinator command
-	cmd := &goodsCmd.RunFactoryCoordinatorCommand{
-		PlayerID:      playerID,
-		TargetGood:    targetGood,
-		SystemSymbol:  systemSymbol,
-		ContainerID:   containerID,
-		MaxIterations: maxIterations,
-	}
-
 	// Create container metadata
 	metadata := map[string]interface{}{
 		"target_good":    targetGood,
 		"system_symbol":  systemSymbol,
 		"container_id":   containerID,
 		"max_iterations": maxIterations,
+	}
+
+	// Create factory coordinator command from the launch config
+	cmd, err := s.buildCommandForType("goods_factory_coordinator", metadata, playerID, containerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create command: %w", err)
 	}
 
 	// Create container entity with specified iterations

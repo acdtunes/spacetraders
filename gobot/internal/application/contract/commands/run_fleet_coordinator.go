@@ -314,65 +314,10 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			}(previousShipSymbol, cmd.PlayerID, cmd.ContainerID)
 		}
 
-		// Create worker container ID
-		workerContainerID := utils.GenerateContainerID("contract-work", selectedShip)
-
-		// Create worker command
-		workerCmd := &RunWorkflowCommand{
-			ShipSymbol:    selectedShip,
-			PlayerID:      cmd.PlayerID,
-			ContainerID:   workerContainerID,
-			CoordinatorID: cmd.ContainerID,
-		}
-
-		// Step 1: Persist worker container to DB (synchronous, no start)
-		logger.Log("INFO", fmt.Sprintf("Persisting worker container %s for %s", workerContainerID, selectedShip), nil)
-		if err := h.daemonClient.PersistContractWorkflowContainer(ctx, workerContainerID, uint(cmd.PlayerID.Value()), workerCmd); err != nil {
-			errMsg := fmt.Sprintf("Failed to persist worker container: %v", err)
-			logger.Log("ERROR", errMsg, nil)
-			result.Errors = append(result.Errors, errMsg)
-			h.clock.Sleep(10 * time.Second)
-			continue
-		}
-
-		// Step 2: Assign ship to worker (dynamic discovery - no pre-assignment needed)
-		logger.Log("INFO", fmt.Sprintf("Assigning %s to worker container", selectedShip), nil)
-		ship, err := h.shipRepo.FindBySymbol(ctx, selectedShip, cmd.PlayerID)
+		workerContainerID, err := h.spawnContractWorker(ctx, cmd, selectedShip)
 		if err != nil {
-			errMsg := fmt.Sprintf("Failed to load ship %s: %v", selectedShip, err)
-			logger.Log("ERROR", errMsg, nil)
-			result.Errors = append(result.Errors, errMsg)
-			_ = h.workerLifecycleManager.StopWorkerContainer(ctx, workerContainerID)
-			h.clock.Sleep(10 * time.Second)
-			continue
-		}
-		if err := ship.AssignToContainer(workerContainerID, h.clock); err != nil {
-			errMsg := fmt.Sprintf("Failed to assign ship %s: %v", selectedShip, err)
-			logger.Log("ERROR", errMsg, nil)
-			result.Errors = append(result.Errors, errMsg)
-			// Clean up: stop worker container on assignment failure
-			_ = h.workerLifecycleManager.StopWorkerContainer(ctx, workerContainerID)
-			h.clock.Sleep(10 * time.Second)
-			continue
-		}
-		if err := h.shipRepo.Save(ctx, ship); err != nil {
-			errMsg := fmt.Sprintf("Failed to save ship assignment %s: %v", selectedShip, err)
-			logger.Log("ERROR", errMsg, nil)
-			result.Errors = append(result.Errors, errMsg)
-			_ = h.workerLifecycleManager.StopWorkerContainer(ctx, workerContainerID)
-			h.clock.Sleep(10 * time.Second)
-			continue
-		}
-
-		// Step 3: Start the worker container (ship is safely assigned)
-		logger.Log("INFO", fmt.Sprintf("Starting worker container for %s", selectedShip), nil)
-		if err := h.daemonClient.StartContractWorkflowContainer(ctx, workerContainerID); err != nil {
-			errMsg := fmt.Sprintf("Failed to start worker container: %v", err)
-			logger.Log("ERROR", errMsg, nil)
-			result.Errors = append(result.Errors, errMsg)
-			// Clean up: release assignment on failure (ship returns to idle pool)
-			ship.ForceRelease("worker_start_failed", h.clock)
-			_ = h.shipRepo.Save(ctx, ship)
+			logger.Log("ERROR", err.Error(), nil)
+			result.Errors = append(result.Errors, err.Error())
 			h.clock.Sleep(10 * time.Second)
 			continue
 		}
@@ -409,6 +354,52 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			return result, ctx.Err()
 		}
 	}
+}
+
+func (h *RunFleetCoordinatorHandler) spawnContractWorker(
+	ctx context.Context,
+	cmd *RunFleetCoordinatorCommand,
+	selectedShip string,
+) (string, error) {
+	logger := common.LoggerFromContext(ctx)
+
+	workerContainerID := utils.GenerateContainerID("contract-work", selectedShip)
+
+	workerCmd := &RunWorkflowCommand{
+		ShipSymbol:    selectedShip,
+		PlayerID:      cmd.PlayerID,
+		ContainerID:   workerContainerID,
+		CoordinatorID: cmd.ContainerID,
+	}
+
+	logger.Log("INFO", fmt.Sprintf("Persisting worker container %s for %s", workerContainerID, selectedShip), nil)
+	if err := h.daemonClient.PersistContainer(ctx, daemon.ContainerKindContractWorkflow, workerContainerID, uint(cmd.PlayerID.Value()), workerCmd); err != nil {
+		return "", fmt.Errorf("Failed to persist worker container: %v", err)
+	}
+
+	logger.Log("INFO", fmt.Sprintf("Assigning %s to worker container", selectedShip), nil)
+	ship, err := h.shipRepo.FindBySymbol(ctx, selectedShip, cmd.PlayerID)
+	if err != nil {
+		_ = h.workerLifecycleManager.StopWorkerContainer(ctx, workerContainerID)
+		return "", fmt.Errorf("Failed to load ship %s: %v", selectedShip, err)
+	}
+	if err := ship.AssignToContainer(workerContainerID, h.clock); err != nil {
+		_ = h.workerLifecycleManager.StopWorkerContainer(ctx, workerContainerID)
+		return "", fmt.Errorf("Failed to assign ship %s: %v", selectedShip, err)
+	}
+	if err := h.shipRepo.Save(ctx, ship); err != nil {
+		_ = h.workerLifecycleManager.StopWorkerContainer(ctx, workerContainerID)
+		return "", fmt.Errorf("Failed to save ship assignment %s: %v", selectedShip, err)
+	}
+
+	logger.Log("INFO", fmt.Sprintf("Starting worker container for %s", selectedShip), nil)
+	if err := h.daemonClient.StartContainer(ctx, daemon.ContainerKindContractWorkflow, workerContainerID); err != nil {
+		ship.ForceRelease("worker_start_failed", h.clock)
+		_ = h.shipRepo.Save(ctx, ship)
+		return "", fmt.Errorf("Failed to start worker container: %v", err)
+	}
+
+	return workerContainerID, nil
 }
 
 // calculateInFlightCargo calculates the total cargo of a specific trade symbol

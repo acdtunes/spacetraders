@@ -13,13 +13,16 @@ import (
 // ScoutTour handles market scouting tour requests (single ship)
 func (s *DaemonServer) ScoutTour(ctx context.Context, containerID string, shipSymbol string, markets []string, iterations, playerID int) (string, error) {
 	// Use provided container ID from caller
+	config := map[string]interface{}{
+		"ship_symbol": shipSymbol,
+		"markets":     markets,
+		"iterations":  iterations,
+	}
 
-	// Create scout tour command
-	cmd := &scoutingCmd.ScoutTourCommand{
-		PlayerID:   shared.MustNewPlayerID(int(playerID)),
-		ShipSymbol: shipSymbol,
-		Markets:    markets,
-		Iterations: iterations,
+	// Create scout tour command from the launch config
+	cmd, err := s.buildCommandForType("scout_tour", config, playerID, containerID)
+	if err != nil {
+		return "", fmt.Errorf("failed to create command: %w", err)
 	}
 
 	// Create container for this operation
@@ -29,11 +32,7 @@ func (s *DaemonServer) ScoutTour(ctx context.Context, containerID string, shipSy
 		playerID,
 		iterations,
 		nil, // No parent container
-		map[string]interface{}{
-			"ship_symbol": shipSymbol,
-			"markets":     markets,
-			"iterations":  iterations,
-		},
+		config,
 		nil, // Use default RealClock for production
 	)
 

@@ -386,6 +386,82 @@ func (h *RunGasCoordinatorHandler) releasePoolAssignments(
 	return nil
 }
 
+type gasWorkerSpawnSpec struct {
+	idPrefix         string
+	releaseFirst     bool
+	preReleaseReason string
+	persistLogMsg    string
+	persistLogAction string
+	successLogMsg    string
+	successLogAction string
+	saveErrContext   string
+	persist          func(ctx context.Context, containerID string) error
+	start            func(ctx context.Context, containerID string) error
+	attach           func(ship *navigation.Ship, containerID string) error
+	rollback         func(ship *navigation.Ship)
+}
+
+func (h *RunGasCoordinatorHandler) spawnWorker(
+	ctx context.Context,
+	playerID domainShared.PlayerID,
+	shipSymbol string,
+	spec gasWorkerSpawnSpec,
+) (string, error) {
+	logger := common.LoggerFromContext(ctx)
+
+	workerContainerID := utils.GenerateContainerID(spec.idPrefix, shipSymbol)
+
+	var ship *navigation.Ship
+	if spec.releaseFirst {
+		loaded, err := h.shipRepo.FindBySymbol(ctx, shipSymbol, playerID)
+		if err != nil {
+			return "", fmt.Errorf("failed to load ship: %w", err)
+		}
+		loaded.ForceRelease(spec.preReleaseReason, h.clock)
+		ship = loaded
+	}
+
+	logger.Log("INFO", spec.persistLogMsg, map[string]interface{}{
+		"action":              spec.persistLogAction,
+		"ship_symbol":         shipSymbol,
+		"worker_container_id": workerContainerID,
+	})
+	if err := spec.persist(ctx, workerContainerID); err != nil {
+		return "", fmt.Errorf("failed to persist worker: %w", err)
+	}
+
+	if !spec.releaseFirst {
+		loaded, err := h.shipRepo.FindBySymbol(ctx, shipSymbol, playerID)
+		if err != nil {
+			_ = h.daemonClient.StopContainer(ctx, workerContainerID)
+			return "", fmt.Errorf("failed to load ship: %w", err)
+		}
+		ship = loaded
+	}
+
+	if err := spec.attach(ship, workerContainerID); err != nil {
+		_ = h.daemonClient.StopContainer(ctx, workerContainerID)
+		return "", err
+	}
+	if err := h.shipRepo.Save(ctx, ship); err != nil {
+		_ = h.daemonClient.StopContainer(ctx, workerContainerID)
+		return "", fmt.Errorf("%s: %w", spec.saveErrContext, err)
+	}
+
+	if err := spec.start(ctx, workerContainerID); err != nil {
+		spec.rollback(ship)
+		_ = h.shipRepo.Save(ctx, ship)
+		return "", fmt.Errorf("failed to start worker: %w", err)
+	}
+
+	logger.Log("INFO", spec.successLogMsg, map[string]interface{}{
+		"action":              spec.successLogAction,
+		"ship_symbol":         shipSymbol,
+		"worker_container_id": workerContainerID,
+	})
+	return workerContainerID, nil
+}
+
 // spawnSiphonWorker creates and starts a siphon worker for a ship
 // The siphon worker will deposit cargo to storage ships via the StorageCoordinator
 func (h *RunGasCoordinatorHandler) spawnSiphonWorker(
@@ -393,10 +469,6 @@ func (h *RunGasCoordinatorHandler) spawnSiphonWorker(
 	cmd *RunGasCoordinatorCommand,
 	shipSymbol string,
 ) (string, error) {
-	logger := common.LoggerFromContext(ctx)
-
-	workerContainerID := utils.GenerateContainerID("siphon-worker", shipSymbol)
-
 	workerCmd := &RunSiphonWorkerCommand{
 		ShipSymbol:         shipSymbol,
 		PlayerID:           cmd.PlayerID,
@@ -405,45 +477,32 @@ func (h *RunGasCoordinatorHandler) spawnSiphonWorker(
 		StorageOperationID: cmd.GasOperationID,
 	}
 
-	// Step 1: Persist worker container
-	logger.Log("INFO", "Siphon worker container persisting", map[string]interface{}{
-		"action":              "persist_siphon_worker",
-		"ship_symbol":         shipSymbol,
-		"worker_container_id": workerContainerID,
-	})
-	if err := h.daemonClient.PersistGasSiphonWorkerContainer(ctx, workerContainerID, uint(cmd.PlayerID.Value()), workerCmd); err != nil {
-		return "", fmt.Errorf("failed to persist worker: %w", err)
+	spec := gasWorkerSpawnSpec{
+		idPrefix:         "siphon-worker",
+		releaseFirst:     false,
+		persistLogMsg:    "Siphon worker container persisting",
+		persistLogAction: "persist_siphon_worker",
+		successLogMsg:    "Siphon worker started successfully",
+		successLogAction: "start_siphon_worker",
+		saveErrContext:   "failed to save ship transfer",
+		persist: func(ctx context.Context, containerID string) error {
+			return h.daemonClient.PersistContainer(ctx, daemon.ContainerKindGasSiphonWorker, containerID, uint(cmd.PlayerID.Value()), workerCmd)
+		},
+		start: func(ctx context.Context, containerID string) error {
+			return h.daemonClient.StartContainer(ctx, daemon.ContainerKindGasSiphonWorker, containerID)
+		},
+		attach: func(ship *navigation.Ship, containerID string) error {
+			if err := ship.TransferToContainer(containerID, h.clock); err != nil {
+				return fmt.Errorf("failed to transfer ship: %w", err)
+			}
+			return nil
+		},
+		rollback: func(ship *navigation.Ship) {
+			_ = ship.TransferToContainer(cmd.ContainerID, h.clock)
+		},
 	}
 
-	// Step 2: Transfer ship to worker
-	ship, err := h.shipRepo.FindBySymbol(ctx, shipSymbol, cmd.PlayerID)
-	if err != nil {
-		_ = h.daemonClient.StopContainer(ctx, workerContainerID)
-		return "", fmt.Errorf("failed to load ship: %w", err)
-	}
-	if err := ship.TransferToContainer(workerContainerID, h.clock); err != nil {
-		_ = h.daemonClient.StopContainer(ctx, workerContainerID)
-		return "", fmt.Errorf("failed to transfer ship: %w", err)
-	}
-	if err := h.shipRepo.Save(ctx, ship); err != nil {
-		_ = h.daemonClient.StopContainer(ctx, workerContainerID)
-		return "", fmt.Errorf("failed to save ship transfer: %w", err)
-	}
-
-	// Step 3: Start worker
-	if err := h.daemonClient.StartGasSiphonWorkerContainer(ctx, workerContainerID); err != nil {
-		// Rollback: transfer ship back to coordinator
-		_ = ship.TransferToContainer(cmd.ContainerID, h.clock)
-		_ = h.shipRepo.Save(ctx, ship)
-		return "", fmt.Errorf("failed to start worker: %w", err)
-	}
-
-	logger.Log("INFO", "Siphon worker started successfully", map[string]interface{}{
-		"action":              "start_siphon_worker",
-		"ship_symbol":         shipSymbol,
-		"worker_container_id": workerContainerID,
-	})
-	return workerContainerID, nil
+	return h.spawnWorker(ctx, cmd.PlayerID, shipSymbol, spec)
 }
 
 // spawnStorageShipWorker creates and starts a storage ship worker for a ship.
@@ -453,10 +512,6 @@ func (h *RunGasCoordinatorHandler) spawnStorageShipWorker(
 	cmd *RunGasCoordinatorCommand,
 	shipSymbol string,
 ) (string, error) {
-	logger := common.LoggerFromContext(ctx)
-
-	workerContainerID := utils.GenerateContainerID("storage-ship", shipSymbol)
-
 	workerCmd := &RunStorageShipWorkerCommand{
 		ShipSymbol:         shipSymbol,
 		PlayerID:           cmd.PlayerID,
@@ -465,47 +520,33 @@ func (h *RunGasCoordinatorHandler) spawnStorageShipWorker(
 		StorageOperationID: cmd.GasOperationID,
 	}
 
-	// Step 1: Load ship and release any previous assignment
-	ship, err := h.shipRepo.FindBySymbol(ctx, shipSymbol, cmd.PlayerID)
-	if err != nil {
-		return "", fmt.Errorf("failed to load ship: %w", err)
-	}
-	ship.ForceRelease("reassigning to storage ship container", h.clock)
-
-	// Step 2: Persist worker container FIRST (container must exist for ship assignment FK)
-	logger.Log("INFO", "Storage ship worker container persisting", map[string]interface{}{
-		"action":              "persist_storage_ship_worker",
-		"ship_symbol":         shipSymbol,
-		"worker_container_id": workerContainerID,
-	})
-	if err := h.daemonClient.PersistStorageShipContainer(ctx, workerContainerID, uint(cmd.PlayerID.Value()), workerCmd); err != nil {
-		return "", fmt.Errorf("failed to persist worker: %w", err)
-	}
-
-	// Step 3: Assign ship to container (now that container exists)
-	if err := ship.AssignToContainer(workerContainerID, h.clock); err != nil {
-		// Clean up container if assignment fails
-		_ = h.daemonClient.StopContainer(ctx, workerContainerID)
-		return "", fmt.Errorf("failed to assign storage ship: %w", err)
-	}
-	if err := h.shipRepo.Save(ctx, ship); err != nil {
-		_ = h.daemonClient.StopContainer(ctx, workerContainerID)
-		return "", fmt.Errorf("failed to save ship assignment: %w", err)
+	spec := gasWorkerSpawnSpec{
+		idPrefix:         "storage-ship",
+		releaseFirst:     true,
+		preReleaseReason: "reassigning to storage ship container",
+		persistLogMsg:    "Storage ship worker container persisting",
+		persistLogAction: "persist_storage_ship_worker",
+		successLogMsg:    "Storage ship worker started successfully",
+		successLogAction: "start_storage_ship_worker",
+		saveErrContext:   "failed to save ship assignment",
+		persist: func(ctx context.Context, containerID string) error {
+			return h.daemonClient.PersistContainer(ctx, daemon.ContainerKindStorageShip, containerID, uint(cmd.PlayerID.Value()), workerCmd)
+		},
+		start: func(ctx context.Context, containerID string) error {
+			return h.daemonClient.StartContainer(ctx, daemon.ContainerKindStorageShip, containerID)
+		},
+		attach: func(ship *navigation.Ship, containerID string) error {
+			if err := ship.AssignToContainer(containerID, h.clock); err != nil {
+				return fmt.Errorf("failed to assign storage ship: %w", err)
+			}
+			return nil
+		},
+		rollback: func(ship *navigation.Ship) {
+			ship.ForceRelease("failed to start container", h.clock)
+		},
 	}
 
-	// Step 4: Start worker
-	if err := h.daemonClient.StartStorageShipContainer(ctx, workerContainerID); err != nil {
-		ship.ForceRelease("failed to start container", h.clock)
-		_ = h.shipRepo.Save(ctx, ship)
-		return "", fmt.Errorf("failed to start worker: %w", err)
-	}
-
-	logger.Log("INFO", "Storage ship worker started successfully", map[string]interface{}{
-		"action":              "start_storage_ship_worker",
-		"ship_symbol":         shipSymbol,
-		"worker_container_id": workerContainerID,
-	})
-	return workerContainerID, nil
+	return h.spawnWorker(ctx, cmd.PlayerID, shipSymbol, spec)
 }
 
 // planDryRunRoutes plans routes for all ships without starting workers

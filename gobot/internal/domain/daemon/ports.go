@@ -8,6 +8,17 @@ import (
 var (
 	// ErrInvalidCommandType is returned when a command has an unexpected type
 	ErrInvalidCommandType = errors.New("invalid command type")
+
+	ErrUnknownContainerKind = errors.New("unknown container kind")
+)
+
+type ContainerKind string
+
+const (
+	ContainerKindContractWorkflow        ContainerKind = "contract_workflow"
+	ContainerKindManufacturingTaskWorker ContainerKind = "manufacturing_task_worker"
+	ContainerKindGasSiphonWorker         ContainerKind = "gas_siphon_worker"
+	ContainerKindStorageShip             ContainerKind = "storage_ship"
 )
 
 // ContainerInfo represents container metadata for daemon client communication.
@@ -32,42 +43,13 @@ type DaemonClient interface {
 	// command: The scout tour command to execute in the container
 	CreateScoutTourContainer(ctx context.Context, containerID string, playerID uint, command interface{}) error
 
-	// CreateContractWorkflowContainer creates AND STARTS a background container for contract workflow operations
-	// containerID: Unique container identifier (e.g., "contract-work-SHIP-1-123456")
-	// playerID: Player who owns this operation
-	// command: The contract workflow command to execute in the container
-	CreateContractWorkflowContainer(ctx context.Context, containerID string, playerID uint, command interface{}) error
+	PersistContainer(ctx context.Context, kind ContainerKind, containerID string, playerID uint, command interface{}) error
 
-	// PersistContractWorkflowContainer creates (but does NOT start) a worker container in DB
-	// This allows transferring ships to the container before starting it
-	PersistContractWorkflowContainer(ctx context.Context, containerID string, playerID uint, command interface{}) error
-
-	// StartContractWorkflowContainer starts a previously persisted worker container
-	StartContractWorkflowContainer(ctx context.Context, containerID string) error
+	StartContainer(ctx context.Context, kind ContainerKind, containerID string) error
 
 	// StopContainer stops a running container
 	// containerID: The container to stop
 	StopContainer(ctx context.Context, containerID string) error
-
-	// PersistManufacturingTaskWorkerContainer creates (but does NOT start) a manufacturing task worker container in DB
-	// This is for task-based parallel manufacturing (uses task ID reference, not embedded opportunity)
-	PersistManufacturingTaskWorkerContainer(ctx context.Context, containerID string, playerID uint, command interface{}) error
-
-	// StartManufacturingTaskWorkerContainer starts a previously persisted manufacturing task worker container
-	StartManufacturingTaskWorkerContainer(ctx context.Context, containerID string) error
-
-	// PersistGasSiphonWorkerContainer creates (but does NOT start) a gas siphon worker container in DB
-	PersistGasSiphonWorkerContainer(ctx context.Context, containerID string, playerID uint, command interface{}) error
-
-	// StartGasSiphonWorkerContainer starts a previously persisted gas siphon worker container
-	StartGasSiphonWorkerContainer(ctx context.Context, containerID string) error
-
-	// PersistStorageShipContainer creates (but does NOT start) a storage ship worker container in DB.
-	// The container will navigate the ship to the gas giant and register with storage coordinator.
-	PersistStorageShipContainer(ctx context.Context, containerID string, playerID uint, command interface{}) error
-
-	// StartStorageShipContainer starts a previously persisted storage ship worker container.
-	StartStorageShipContainer(ctx context.Context, containerID string) error
 
 	// CleanupStaleManufacturingWorkers detects and stops manufacturing task workers that
 	// are RUNNING but have no recent log activity (likely crashed without cleanup).

@@ -73,18 +73,6 @@ func (s *DaemonServer) GasExtractionOperation(
 		containerID = utils.GenerateContainerID("gas_coordinator", siphonShips[0])
 	}
 
-	// Create gas coordinator command
-	cmd := &gasCmd.RunGasCoordinatorCommand{
-		GasOperationID: containerID,
-		PlayerID:       shared.MustNewPlayerID(playerID),
-		GasGiant:       gasGiant,
-		SiphonShips:    siphonShips,
-		StorageShips:   storageShips,
-		ContainerID:    containerID,
-		Force:          force,
-		DryRun:         dryRun,
-	}
-
 	// Convert ship arrays to interface{} for metadata
 	siphonShipsInterface := make([]interface{}, len(siphonShips))
 	for i, s := range siphonShips {
@@ -94,6 +82,23 @@ func (s *DaemonServer) GasExtractionOperation(
 	storageShipsInterface := make([]interface{}, len(storageShips))
 	for i, s := range storageShips {
 		storageShipsInterface[i] = s
+	}
+
+	config := map[string]interface{}{
+		"gas_operation_id": containerID,
+		"gas_giant":        gasGiant,
+		"siphon_ships":     siphonShipsInterface,
+		"storage_ships":    storageShipsInterface,
+		"container_id":     containerID,
+		"force":            force,
+		"dry_run":          dryRun,
+		"max_leg_time":     maxLegTime,
+	}
+
+	// Create gas coordinator command from the launch config
+	cmd, err := s.buildCommandForType("gas_coordinator", config, playerID, containerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create command: %w", err)
 	}
 
 	// Set iterations: 1 for dry-run (single execution), -1 for normal (infinite)
@@ -109,16 +114,7 @@ func (s *DaemonServer) GasExtractionOperation(
 		playerID,
 		iterations,
 		nil, // No parent container
-		map[string]interface{}{
-			"gas_operation_id": containerID,
-			"gas_giant":        gasGiant,
-			"siphon_ships":     siphonShipsInterface,
-			"storage_ships":    storageShipsInterface,
-			"container_id":     containerID,
-			"force":            force,
-			"dry_run":          dryRun,
-			"max_leg_time":     maxLegTime,
-		},
+		config,
 		nil, // Use default RealClock for production
 	)
 

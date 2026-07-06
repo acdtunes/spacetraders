@@ -4,27 +4,31 @@ import (
 	"context"
 	"fmt"
 
-	shipyardCmd "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )
 
 // PurchaseShip purchases a single ship from a shipyard
 func (s *DaemonServer) PurchaseShip(ctx context.Context, purchasingShipSymbol, shipType string, playerID int, shipyardWaypoint *string) (string, string, int32, int32, string, error) {
-	// Create purchase command
-	cmd := &shipyardCmd.PurchaseShipCommand{
-		PurchasingShipSymbol: purchasingShipSymbol,
-		ShipType:             shipType,
-		PlayerID:             shared.MustNewPlayerID(playerID),
-		ShipyardWaypoint:     "",
-	}
+	shipyard := ""
 	if shipyardWaypoint != nil {
-		cmd.ShipyardWaypoint = *shipyardWaypoint
+		shipyard = *shipyardWaypoint
 	}
 
 	// Create container ID
 	containerID := utils.GenerateContainerID("purchase_ship", purchasingShipSymbol)
+
+	config := map[string]interface{}{
+		"ship_symbol": purchasingShipSymbol,
+		"ship_type":   shipType,
+		"shipyard":    shipyard,
+	}
+
+	// Create purchase command from the launch config
+	cmd, err := s.buildCommandForType("purchase_ship", config, playerID, containerID)
+	if err != nil {
+		return "", "", 0, 0, "", fmt.Errorf("failed to create command: %w", err)
+	}
 
 	// Create container for this operation
 	containerEntity := container.NewContainer(
@@ -33,11 +37,7 @@ func (s *DaemonServer) PurchaseShip(ctx context.Context, purchasingShipSymbol, s
 		playerID,
 		1,   // Single iteration
 		nil, // No parent container
-		map[string]interface{}{
-			"ship_symbol": purchasingShipSymbol,
-			"ship_type":   shipType,
-			"shipyard":    cmd.ShipyardWaypoint,
-		},
+		config,
 		nil, // Use real clock
 	)
 
@@ -62,17 +62,9 @@ func (s *DaemonServer) PurchaseShip(ctx context.Context, purchasingShipSymbol, s
 
 // BatchPurchaseShips purchases multiple ships from a shipyard as a background operation
 func (s *DaemonServer) BatchPurchaseShips(ctx context.Context, purchasingShipSymbol, shipType string, quantity, maxBudget, playerID int, shipyardWaypoint *string, iterations *int) (string, int32, int32, string, string, error) {
-	// Create batch purchase command
-	cmd := &shipyardCmd.BatchPurchaseShipsCommand{
-		PurchasingShipSymbol: purchasingShipSymbol,
-		ShipType:             shipType,
-		Quantity:             quantity,
-		MaxBudget:            maxBudget,
-		PlayerID:             shared.MustNewPlayerID(playerID),
-		ShipyardWaypoint:     "",
-	}
+	shipyard := ""
 	if shipyardWaypoint != nil {
-		cmd.ShipyardWaypoint = *shipyardWaypoint
+		shipyard = *shipyardWaypoint
 	}
 
 	// Resolve iterations (default to 1)
@@ -84,6 +76,20 @@ func (s *DaemonServer) BatchPurchaseShips(ctx context.Context, purchasingShipSym
 	// Create container ID
 	containerID := utils.GenerateContainerID("batch_purchase_ships", purchasingShipSymbol)
 
+	config := map[string]interface{}{
+		"ship_symbol": purchasingShipSymbol,
+		"ship_type":   shipType,
+		"quantity":    quantity,
+		"max_budget":  maxBudget,
+		"shipyard":    shipyard,
+	}
+
+	// Create batch purchase command from the launch config
+	cmd, err := s.buildCommandForType("batch_purchase_ships", config, playerID, containerID)
+	if err != nil {
+		return "", 0, 0, "", "", fmt.Errorf("failed to create command: %w", err)
+	}
+
 	// Create container for this operation
 	containerEntity := container.NewContainer(
 		containerID,
@@ -91,13 +97,7 @@ func (s *DaemonServer) BatchPurchaseShips(ctx context.Context, purchasingShipSym
 		playerID,
 		iterCount,
 		nil, // No parent container
-		map[string]interface{}{
-			"ship_symbol": purchasingShipSymbol,
-			"ship_type":   shipType,
-			"quantity":    quantity,
-			"max_budget":  maxBudget,
-			"shipyard":    cmd.ShipyardWaypoint,
-		},
+		config,
 		nil, // Use real clock
 	)
 
@@ -117,5 +117,5 @@ func (s *DaemonServer) BatchPurchaseShips(ctx context.Context, purchasingShipSym
 	// Start execution in background
 	runner.Start()
 
-	return containerID, int32(quantity), int32(maxBudget), cmd.ShipyardWaypoint, "starting", nil
+	return containerID, int32(quantity), int32(maxBudget), shipyard, "starting", nil
 }

@@ -30,9 +30,6 @@ import (
 	"google.golang.org/grpc"
 )
 
-// CommandFactory creates a command instance from configuration
-type CommandFactory func(config map[string]interface{}, playerID int) (interface{}, error)
-
 // MetricsCollector defines the interface for metrics collection
 type MetricsCollector interface {
 	Start(ctx context.Context)
@@ -65,8 +62,8 @@ type DaemonServer struct {
 	containers   map[string]*ContainerRunner
 	containersMu sync.RWMutex
 
-	// Command factory registry - maps command types to their factory functions
-	commandFactories map[string]CommandFactory
+	// Container spec registry - single source of truth for command construction
+	containerSpecs map[string]ContainerSpec
 
 	// Pending worker commands cache - stores commands with channels before start
 	pendingWorkerCommands   map[string]interface{}
@@ -146,7 +143,7 @@ func NewDaemonServer(
 		shipStateScheduler:    shipStateScheduler,
 		listener:              listener,
 		containers:            make(map[string]*ContainerRunner),
-		commandFactories:      make(map[string]CommandFactory),
+		containerSpecs:        make(map[string]ContainerSpec),
 		pendingWorkerCommands: make(map[string]interface{}),
 		metricsConfig:         metricsConfig,
 		shutdownChan:          make(chan os.Signal, 1),
@@ -253,8 +250,8 @@ func NewDaemonServer(
 		server.manufacturingMetricsCollector = mfgCollector
 	}
 
-	// Register command factories for recovery
-	server.registerCommandFactories()
+	// Register container specs for launch and recovery
+	server.registerContainerSpecs()
 
 	// Setup signal handling
 	signal.Notify(server.shutdownChan, os.Interrupt, syscall.SIGTERM)
@@ -652,13 +649,7 @@ func (s *DaemonServer) RecoverRunningContainers(ctx context.Context) error {
 		}
 		// Skip known worker container types that should be managed by their parent coordinator
 		// These containers will be re-spawned by the coordinator after it recovers
-		workerCommandTypes := map[string]bool{
-			"manufacturing_task_worker": true,
-			"siphon_worker":             true,
-			"gas_transport_worker":      true,
-			"storage_ship":              true,
-		}
-		if workerCommandTypes[containerModel.CommandType] {
+		if spec, hasSpec := s.containerSpecs[containerModel.CommandType]; hasSpec && spec.IsWorker {
 			fmt.Printf("Container %s: Skipping recovery (worker container type '%s' managed by coordinator)\n", containerModel.ID, containerModel.CommandType)
 			s.markWorkerInterrupted(ctx, containerModel, "")
 			failedCount++
@@ -683,14 +674,8 @@ func (s *DaemonServer) RecoverRunningContainers(ctx context.Context) error {
 // Uses the command factory registry to recreate any container type
 // Adding new container types only requires registering a new factory - NO changes needed here!
 func (s *DaemonServer) recoverContainer(ctx context.Context, containerModel *persistence.ContainerModel, config map[string]interface{}) error {
-	// Look up command factory
-	factory, exists := s.commandFactories[containerModel.CommandType]
-	if !exists {
-		return fmt.Errorf("unknown command type '%s'", containerModel.CommandType)
-	}
-
-	// Use factory to create command from config
-	cmd, err := factory(config, containerModel.PlayerID)
+	// Build command from config via the container spec registry
+	cmd, err := s.buildCommandForType(containerModel.CommandType, config, containerModel.PlayerID, containerModel.ID)
 	if err != nil {
 		return fmt.Errorf("failed to create command: %w", err)
 	}

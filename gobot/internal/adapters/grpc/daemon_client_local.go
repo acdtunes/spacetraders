@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"context"
+	"fmt"
 
 	contractCmd "github.com/andrescamacho/spacetraders-go/internal/application/contract/commands"
 	scoutingCmd "github.com/andrescamacho/spacetraders-go/internal/application/scouting/commands"
@@ -57,107 +58,52 @@ func (c *DaemonClientLocal) CreateScoutTourContainer(
 	return err
 }
 
-// CreateContractWorkflowContainer creates AND STARTS a background container for contract workflow operations
-func (c *DaemonClientLocal) CreateContractWorkflowContainer(
+func (c *DaemonClientLocal) PersistContainer(
 	ctx context.Context,
+	kind daemon.ContainerKind,
 	containerID string,
 	playerID uint,
 	command interface{},
 ) error {
-	// Type assert to ContractWorkflowCommand
-	cmd, ok := command.(*contractCmd.RunWorkflowCommand)
-	if !ok {
-		return daemon.ErrInvalidCommandType
+	switch kind {
+	case daemon.ContainerKindContractWorkflow:
+		cmd, ok := command.(*contractCmd.RunWorkflowCommand)
+		if !ok {
+			return daemon.ErrInvalidCommandType
+		}
+		return c.server.PersistContractWorkflow(ctx, containerID, cmd.ShipSymbol, int(playerID), cmd.CoordinatorID)
+	case daemon.ContainerKindManufacturingTaskWorker:
+		return c.server.PersistManufacturingTaskWorkerContainer(ctx, containerID, playerID, command)
+	case daemon.ContainerKindGasSiphonWorker:
+		return c.server.PersistGasSiphonWorkerContainer(ctx, containerID, playerID, command)
+	case daemon.ContainerKindStorageShip:
+		return c.server.PersistStorageShipContainer(ctx, containerID, playerID, command)
 	}
-
-	// Call server's ContractWorkflow method directly
-	_, err := c.server.ContractWorkflow(ctx, containerID, cmd.ShipSymbol, int(playerID), cmd.CoordinatorID)
-	return err
+	return fmt.Errorf("%w: %q", daemon.ErrUnknownContainerKind, kind)
 }
 
-// PersistContractWorkflowContainer creates (but does NOT start) a worker container in DB
-func (c *DaemonClientLocal) PersistContractWorkflowContainer(
+func (c *DaemonClientLocal) StartContainer(
 	ctx context.Context,
+	kind daemon.ContainerKind,
 	containerID string,
-	playerID uint,
-	command interface{},
 ) error {
-	// Type assert to ContractWorkflowCommand
-	cmd, ok := command.(*contractCmd.RunWorkflowCommand)
-	if !ok {
-		return daemon.ErrInvalidCommandType
+	switch kind {
+	case daemon.ContainerKindContractWorkflow:
+		return c.server.StartContractWorkflow(ctx, containerID)
+	case daemon.ContainerKindManufacturingTaskWorker:
+		return c.server.StartManufacturingTaskWorkerContainer(ctx, containerID)
+	case daemon.ContainerKindGasSiphonWorker:
+		return c.server.StartGasSiphonWorkerContainer(ctx, containerID)
+	case daemon.ContainerKindStorageShip:
+		return c.server.StartStorageShipContainer(ctx, containerID)
 	}
-
-	// Persist only, don't start
-	return c.server.PersistContractWorkflow(ctx, containerID, cmd.ShipSymbol, int(playerID), cmd.CoordinatorID)
-}
-
-// StartContractWorkflowContainer starts a previously persisted worker container
-func (c *DaemonClientLocal) StartContractWorkflowContainer(
-	ctx context.Context,
-	containerID string,
-) error {
-	return c.server.StartContractWorkflow(ctx, containerID)
+	return fmt.Errorf("%w: %q", daemon.ErrUnknownContainerKind, kind)
 }
 
 // StopContainer stops a running container
 func (c *DaemonClientLocal) StopContainer(ctx context.Context, containerID string) error {
 	// Call server's StopContainer method directly (bypasses gRPC layer)
 	return c.server.StopContainer(containerID)
-}
-
-// PersistManufacturingTaskWorkerContainer creates (but does NOT start) a manufacturing task worker container in DB
-func (c *DaemonClientLocal) PersistManufacturingTaskWorkerContainer(
-	ctx context.Context,
-	containerID string,
-	playerID uint,
-	command interface{},
-) error {
-	return c.server.PersistManufacturingTaskWorkerContainer(ctx, containerID, playerID, command)
-}
-
-// StartManufacturingTaskWorkerContainer starts a previously persisted manufacturing task worker container
-func (c *DaemonClientLocal) StartManufacturingTaskWorkerContainer(
-	ctx context.Context,
-	containerID string,
-) error {
-	return c.server.StartManufacturingTaskWorkerContainer(ctx, containerID)
-}
-
-// PersistGasSiphonWorkerContainer creates (but does NOT start) a gas siphon worker container in DB
-func (c *DaemonClientLocal) PersistGasSiphonWorkerContainer(
-	ctx context.Context,
-	containerID string,
-	playerID uint,
-	command interface{},
-) error {
-	return c.server.PersistGasSiphonWorkerContainer(ctx, containerID, playerID, command)
-}
-
-// StartGasSiphonWorkerContainer starts a previously persisted gas siphon worker container
-func (c *DaemonClientLocal) StartGasSiphonWorkerContainer(
-	ctx context.Context,
-	containerID string,
-) error {
-	return c.server.StartGasSiphonWorkerContainer(ctx, containerID)
-}
-
-// PersistStorageShipContainer creates (but does NOT start) a storage ship worker container in DB
-func (c *DaemonClientLocal) PersistStorageShipContainer(
-	ctx context.Context,
-	containerID string,
-	playerID uint,
-	command interface{},
-) error {
-	return c.server.PersistStorageShipContainer(ctx, containerID, playerID, command)
-}
-
-// StartStorageShipContainer starts a previously persisted storage ship worker container
-func (c *DaemonClientLocal) StartStorageShipContainer(
-	ctx context.Context,
-	containerID string,
-) error {
-	return c.server.StartStorageShipContainer(ctx, containerID)
 }
 
 // CleanupStaleManufacturingWorkers detects and stops manufacturing task workers that
