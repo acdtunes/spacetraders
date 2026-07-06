@@ -3,3 +3,10 @@
 .dolt/
 *.db
 .beads-credential-key
+
+# acd-city-v2j: packs/core symlink is per-machine, not committed
+packs/core
+
+# acd/gc runtime state - machine-local, never committed
+.acd/
+.gc/

@@ -1,0 +1,6 @@
+[workspace]
+name = "spacetraders"
+provider = "claude"
+
+# Lightweight mode. No [daemon] block. No auto-spawn.
+# Agents are invoked manually via `acd run <agent>` or `acd prime <agent>`.

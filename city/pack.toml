@@ -1,0 +1,4 @@
+[pack]
+name = "spacetraders"
+schema = 2
+includes = ["packs/core"]
