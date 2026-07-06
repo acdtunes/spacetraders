@@ -61,9 +61,9 @@ Examples:
 				return fmt.Errorf("--system flag is required")
 			}
 
-			client, err := NewDaemonClient(socketPath)
+			client, err := connectDaemon()
 			if err != nil {
-				return fmt.Errorf("failed to connect to daemon: %w", err)
+				return err
 			}
 			defer client.Close()
 
@@ -143,9 +143,9 @@ Examples:
 				return fmt.Errorf("--waypoint flag is required")
 			}
 
-			client, err := NewDaemonClient(socketPath)
+			client, err := connectDaemon()
 			if err != nil {
-				return fmt.Errorf("failed to connect to daemon: %w", err)
+				return err
 			}
 			defer client.Close()
 
@@ -185,21 +185,4 @@ Examples:
 	cmd.Flags().StringVar(&waypointSymbol, "waypoint", "", "Waypoint symbol (required)")
 
 	return cmd
-}
-
-// playerPointers converts a resolved identifier into the optional pointer
-// arguments the daemon client expects.
-func playerPointers(playerIdent *PlayerIdentifier) (*int32, *string) {
-	var playerID *int32
-	if playerIdent.PlayerID > 0 {
-		pid := int32(playerIdent.PlayerID)
-		playerID = &pid
-	}
-
-	var agentSymbol *string
-	if playerIdent.AgentSymbol != "" {
-		agentSymbol = &playerIdent.AgentSymbol
-	}
-
-	return playerID, agentSymbol
 }

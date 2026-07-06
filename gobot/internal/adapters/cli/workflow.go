@@ -75,9 +75,9 @@ Examples:
 			}
 
 			// Create gRPC client
-			client, err := NewDaemonClient(socketPath)
+			client, err := connectDaemon()
 			if err != nil {
-				return fmt.Errorf("failed to connect to daemon: %w", err)
+				return err
 			}
 			defer client.Close()
 
@@ -176,9 +176,9 @@ Examples:
 			}
 
 			// Create gRPC client
-			client, err := NewDaemonClient(socketPath)
+			client, err := connectDaemon()
 			if err != nil {
-				return fmt.Errorf("failed to connect to daemon: %w", err)
+				return err
 			}
 			defer client.Close()
 
@@ -283,9 +283,9 @@ Examples:
 			}
 
 			// Create gRPC client
-			client, err := NewDaemonClient(socketPath)
+			client, err := connectDaemon()
 			if err != nil {
-				return fmt.Errorf("failed to connect to daemon: %w", err)
+				return err
 			}
 			defer client.Close()
 

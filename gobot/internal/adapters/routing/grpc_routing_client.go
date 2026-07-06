@@ -13,6 +13,11 @@ import (
 	pb "github.com/andrescamacho/spacetraders-go/pkg/proto/routing"
 )
 
+const (
+	unknownRoutingError = "unknown error"
+	defaultFlightMode   = "CRUISE"
+)
+
 // GRPCRoutingClient implements RoutingClient using gRPC to communicate with Python OR-Tools service
 type GRPCRoutingClient struct {
 	conn   *grpc.ClientConn
@@ -71,11 +76,7 @@ func (c *GRPCRoutingClient) PlanRoute(ctx context.Context, req *domainRouting.Ro
 	}
 
 	if !pbResp.Success {
-		errorMsg := "unknown error"
-		if pbResp.ErrorMessage != nil {
-			errorMsg = *pbResp.ErrorMessage
-		}
-		return nil, fmt.Errorf("routing failed: %s", errorMsg)
+		return nil, fmt.Errorf("routing failed: %s", responseErrorMessage(pbResp.ErrorMessage))
 	}
 
 	// Convert response
@@ -107,11 +108,7 @@ func (c *GRPCRoutingClient) OptimizeTour(ctx context.Context, req *domainRouting
 	}
 
 	if !pbResp.Success {
-		errorMsg := "unknown error"
-		if pbResp.ErrorMessage != nil {
-			errorMsg = *pbResp.ErrorMessage
-		}
-		return nil, fmt.Errorf("tour optimization failed: %s", errorMsg)
+		return nil, fmt.Errorf("tour optimization failed: %s", responseErrorMessage(pbResp.ErrorMessage))
 	}
 
 	// Convert response
@@ -148,11 +145,7 @@ func (c *GRPCRoutingClient) OptimizeFueledTour(ctx context.Context, req *domainR
 	}
 
 	if !pbResp.Success {
-		errorMsg := "unknown error"
-		if pbResp.ErrorMessage != nil {
-			errorMsg = *pbResp.ErrorMessage
-		}
-		return nil, fmt.Errorf("fueled tour optimization failed: %s", errorMsg)
+		return nil, fmt.Errorf("fueled tour optimization failed: %s", responseErrorMessage(pbResp.ErrorMessage))
 	}
 
 	// Convert legs from protobuf
@@ -228,11 +221,7 @@ func (c *GRPCRoutingClient) PartitionFleet(ctx context.Context, req *domainRouti
 	}
 
 	if !pbResp.Success {
-		errorMsg := "unknown error"
-		if pbResp.ErrorMessage != nil {
-			errorMsg = *pbResp.ErrorMessage
-		}
-		return nil, fmt.Errorf("fleet partitioning failed: %s", errorMsg)
+		return nil, fmt.Errorf("fleet partitioning failed: %s", responseErrorMessage(pbResp.ErrorMessage))
 	}
 
 	// Convert assignments
@@ -250,6 +239,13 @@ func (c *GRPCRoutingClient) PartitionFleet(ctx context.Context, req *domainRouti
 }
 
 // Helper functions for conversion
+
+func responseErrorMessage(errorMessage *string) string {
+	if errorMessage == nil {
+		return unknownRoutingError
+	}
+	return *errorMessage
+}
 
 func convertWaypointsToPb(waypoints []*system.WaypointData) []*pb.Waypoint {
 	pbWaypoints := make([]*pb.Waypoint, len(waypoints))
@@ -273,7 +269,7 @@ func convertRouteStepsFromPb(pbSteps []*pb.RouteStep) []*domainRouting.RouteStep
 		}
 
 		// Extract flight mode from protobuf (BURN-first logic is in routing engine)
-		mode := "CRUISE" // Default fallback
+		mode := defaultFlightMode
 		if pbStep.Mode != nil && *pbStep.Mode != "" {
 			mode = *pbStep.Mode
 		}

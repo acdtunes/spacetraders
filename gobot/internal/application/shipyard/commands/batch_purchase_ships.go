@@ -8,8 +8,8 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/shipyard/queries"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )
 
@@ -26,7 +26,7 @@ type BatchPurchaseShipsCommand struct {
 	PurchasingShipSymbol string
 	ShipType             string
 	Quantity             int
-	MaxBudget            int    // 0 = unlimited budget
+	MaxBudget            int // 0 = unlimited budget
 	PlayerID             shared.PlayerID
 	ShipyardWaypoint     string // Optional - will auto-discover if empty
 }

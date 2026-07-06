@@ -20,9 +20,6 @@ type Navigator interface {
 	// NavigateTo navigates without docking
 	NavigateTo(ctx context.Context, shipSymbol, destination string, playerID shared.PlayerID) error
 
-	// Dock docks the ship at current location
-	Dock(ctx context.Context, shipSymbol string, playerID shared.PlayerID) error
-
 	// Orbit puts the ship into orbit at current location
 	Orbit(ctx context.Context, shipSymbol string, playerID shared.PlayerID) error
 
@@ -128,22 +125,6 @@ func (n *ManufacturingNavigator) NavigateTo(
 		return fmt.Errorf("failed to navigate to %s: %w", destination, err)
 	}
 
-	return nil
-}
-
-// Dock docks the ship at its current location.
-func (n *ManufacturingNavigator) Dock(
-	ctx context.Context,
-	shipSymbol string,
-	playerID shared.PlayerID,
-) error {
-	_, err := n.mediator.Send(ctx, &shipTypes.DockShipCommand{
-		ShipSymbol: shipSymbol,
-		PlayerID:   playerID,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to dock: %w", err)
-	}
 	return nil
 }
 

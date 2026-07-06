@@ -15,10 +15,10 @@ import (
 
 // GasExtractionOperationResult contains the result of a gas extraction operation
 type GasExtractionOperationResult struct {
-	ContainerID    string
-	GasGiant       string
-	ShipRoutes     []common.ShipRouteDTO
-	Errors         []string
+	ContainerID string
+	GasGiant    string
+	ShipRoutes  []common.ShipRouteDTO
+	Errors      []string
 }
 
 // GasExtractionOperation starts a gas extraction operation with siphon and storage ships.
@@ -161,7 +161,7 @@ func (s *DaemonServer) PersistGasSiphonWorkerContainer(
 		containerID,
 		container.ContainerTypeGasSiphonWorker,
 		int(playerID),
-		1, // Worker containers are single iteration
+		1,                  // Worker containers are single iteration
 		&cmd.CoordinatorID, // Link to parent coordinator container
 		map[string]interface{}{
 			"ship_symbol":          cmd.ShipSymbol,
@@ -257,7 +257,7 @@ func (s *DaemonServer) StartGasSiphonWorkerContainer(
 		containerID,
 		container.ContainerTypeGasSiphonWorker,
 		playerID,
-		1, // Worker containers are single iteration
+		1,   // Worker containers are single iteration
 		nil, // No parent container
 		config,
 		nil,
@@ -295,7 +295,7 @@ func (s *DaemonServer) PersistStorageShipContainer(
 		containerID,
 		container.ContainerTypeStorageShip,
 		int(playerID),
-		-1, // Infinite - stays running until stopped
+		-1,                 // Infinite - stays running until stopped
 		&cmd.CoordinatorID, // Link to parent coordinator container
 		map[string]interface{}{
 			"ship_symbol":          cmd.ShipSymbol,

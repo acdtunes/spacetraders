@@ -41,11 +41,11 @@ import (
 // Uses ShipEventSubscriber to wait for ship arrivals via events from ShipStateScheduler.
 // This eliminates race conditions between timer-based state transitions and polling.
 type RouteExecutor struct {
-	shipRepo           domainNavigation.ShipRepository
-	mediator           common.Mediator
-	clock              shared.Clock
-	marketScanner      *MarketScanner
-	refuelStrategy     strategies.RefuelStrategy
+	shipRepo            domainNavigation.ShipRepository
+	mediator            common.Mediator
+	clock               shared.Clock
+	marketScanner       *MarketScanner
+	refuelStrategy      strategies.RefuelStrategy
 	shipEventSubscriber domainNavigation.ShipEventSubscriber
 }
 

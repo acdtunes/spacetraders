@@ -4,13 +4,13 @@ import "github.com/andrescamacho/spacetraders-go/internal/domain/goods"
 
 // RunFactoryWorkerCommand initiates a factory worker to produce a good
 type RunFactoryWorkerCommand struct {
-	PlayerID         int
-	ShipSymbol       string
-	ProductionNode   *goods.SupplyChainNode
-	FactoryID        string
-	SystemSymbol     string
-	CoordinatorID    string // Optional: for signaling completion back to coordinator
-	CompletionChan   chan<- WorkerResult // Optional: channel for async completion signaling
+	PlayerID       int
+	ShipSymbol     string
+	ProductionNode *goods.SupplyChainNode
+	FactoryID      string
+	SystemSymbol   string
+	CoordinatorID  string              // Optional: for signaling completion back to coordinator
+	CompletionChan chan<- WorkerResult // Optional: channel for async completion signaling
 }
 
 // RunFactoryWorkerResponse contains the result of the worker operation

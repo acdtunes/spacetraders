@@ -64,35 +64,18 @@ func (l *MarketLocator) FindImportMarket(
 		return nil, fmt.Errorf("no market found importing %s", good)
 	}
 
-	// Get full market data to extract activity
-	marketData, err := l.marketRepo.GetMarketData(ctx, bestMarket.WaypointSymbol, playerID)
+	tradeGood, err := l.scannedTradeGood(ctx, bestMarket.WaypointSymbol, good, playerID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get market data: %w", err)
-	}
-	if marketData == nil {
-		return nil, fmt.Errorf("no market data found for %s (market may not have been scanned)", bestMarket.WaypointSymbol)
+		return nil, err
 	}
 
-	// Extract trade good details
-	tradeGood := marketData.FindGood(good)
-	if tradeGood == nil {
-		return nil, fmt.Errorf("good %s not found in market %s", good, bestMarket.WaypointSymbol)
-	}
-
-	result := &MarketLocatorResult{
+	return &MarketLocatorResult{
 		WaypointSymbol: bestMarket.WaypointSymbol,
-		Activity:       "",
+		Activity:       activityOrEmpty(tradeGood),
 		Supply:         bestMarket.Supply,
 		Price:          bestMarket.PurchasePrice,
 		TradeVolume:    tradeGood.TradeVolume(),
-	}
-
-	// Extract activity if available
-	if tradeGood.Activity() != nil {
-		result.Activity = *tradeGood.Activity()
-	}
-
-	return result, nil
+	}, nil
 }
 
 // findShipyardSellingShip finds a shipyard that sells a specific ship type.
@@ -157,20 +140,32 @@ func (l *MarketLocator) findShipyardSellingShip(
 
 // isShipType returns true if the good is an actual ship type (not ship components like SHIP_PARTS).
 // Ship types are manufactured at shipyards, while ship components are sold at regular markets.
-func isShipType(good string) bool {
-	// Ship components (sold at markets, not shipyards)
-	shipComponents := map[string]bool{
-		"SHIP_PARTS":   true,
-		"SHIP_PLATING": true,
-	}
+var shipComponents = map[string]bool{
+	"SHIP_PARTS":   true,
+	"SHIP_PLATING": true,
+}
 
-	// If it's a ship component, it's not a ship type
+func isShipType(good string) bool {
 	if shipComponents[good] {
 		return false
 	}
-
-	// Otherwise, if it starts with "SHIP_", it's a ship type
 	return strings.HasPrefix(good, "SHIP_")
+}
+
+func (l *MarketLocator) scannedTradeGood(ctx context.Context, waypointSymbol string, good string, playerID int) (*market.TradeGood, error) {
+	marketData, err := l.marketRepo.GetMarketData(ctx, waypointSymbol, playerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get market data: %w", err)
+	}
+	if marketData == nil {
+		return nil, fmt.Errorf("no market data found for %s (market may not have been scanned)", waypointSymbol)
+	}
+
+	tradeGood := marketData.FindGood(good)
+	if tradeGood == nil {
+		return nil, fmt.Errorf("good %s not found in market %s", good, waypointSymbol)
+	}
+	return tradeGood, nil
 }
 
 // FindExportMarket finds a market that sells a good (exports it).
@@ -198,35 +193,18 @@ func (l *MarketLocator) FindExportMarket(
 		return nil, fmt.Errorf("no market found exporting %s", good)
 	}
 
-	// Get full market data to extract activity
-	marketData, err := l.marketRepo.GetMarketData(ctx, cheapestMarket.WaypointSymbol, playerID)
+	tradeGood, err := l.scannedTradeGood(ctx, cheapestMarket.WaypointSymbol, good, playerID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get market data: %w", err)
-	}
-	if marketData == nil {
-		return nil, fmt.Errorf("no market data found for %s (market may not have been scanned)", cheapestMarket.WaypointSymbol)
+		return nil, err
 	}
 
-	// Extract trade good details
-	tradeGood := marketData.FindGood(good)
-	if tradeGood == nil {
-		return nil, fmt.Errorf("good %s not found in market %s", good, cheapestMarket.WaypointSymbol)
-	}
-
-	result := &MarketLocatorResult{
+	return &MarketLocatorResult{
 		WaypointSymbol: cheapestMarket.WaypointSymbol,
-		Activity:       "",
+		Activity:       activityOrEmpty(tradeGood),
 		Supply:         cheapestMarket.Supply,
 		Price:          cheapestMarket.SellPrice,
 		TradeVolume:    tradeGood.TradeVolume(),
-	}
-
-	// Extract activity if available
-	if tradeGood.Activity() != nil {
-		result.Activity = *tradeGood.Activity()
-	}
-
-	return result, nil
+	}, nil
 }
 
 // FindExportMarketBySupplyPriority finds the best market with acceptable supply level.
@@ -270,9 +248,9 @@ func (l *MarketLocator) FindExportMarketBySupplyPriority(
 	var candidates []candidateMarket
 
 	supplyPriority := map[string]int{
-		"ABUNDANT": 3,
-		"HIGH":     2,
-		"MODERATE": 1,
+		supplyAbundant: 3,
+		supplyHigh:     2,
+		supplyModerate: 1,
 	}
 
 	for _, waypointSymbol := range marketWaypoints {
@@ -286,10 +264,7 @@ func (l *MarketLocator) FindExportMarketBySupplyPriority(
 			continue
 		}
 
-		supply := ""
-		if tradeGood.Supply() != nil {
-			supply = *tradeGood.Supply()
-		}
+		supply := supplyOrEmpty(tradeGood)
 
 		// Skip SCARCE and LIMITED - only accept MODERATE+
 		supplyScore, acceptable := supplyPriority[supply]
@@ -297,10 +272,7 @@ func (l *MarketLocator) FindExportMarketBySupplyPriority(
 			continue
 		}
 
-		activity := ""
-		if tradeGood.Activity() != nil {
-			activity = *tradeGood.Activity()
-		}
+		activity := activityOrEmpty(tradeGood)
 
 		candidates = append(candidates, candidateMarket{
 			waypointSymbol: waypointSymbol,
@@ -404,20 +376,12 @@ func (l *MarketLocator) FindExportMarketWithGoodSupply(
 		}
 
 		// Check supply level - only HIGH or ABUNDANT
-		supply := ""
-		if tradeGood.Supply() != nil {
-			supply = *tradeGood.Supply()
+		supply := supplyOrEmpty(tradeGood)
+		if !isHighOrAbundant(supply) {
+			continue
 		}
 
-		if supply != "HIGH" && supply != "ABUNDANT" {
-			continue // Skip markets without good supply
-		}
-
-		// Extract activity
-		activity := ""
-		if tradeGood.Activity() != nil {
-			activity = *tradeGood.Activity()
-		}
+		activity := activityOrEmpty(tradeGood)
 
 		candidates = append(candidates, candidateMarket{
 			result: &MarketLocatorResult{
@@ -442,7 +406,7 @@ func (l *MarketLocator) FindExportMarketWithGoodSupply(
 			shouldSwap := false
 			// ABUNDANT beats HIGH
 			if candidates[i].supply != candidates[j].supply {
-				shouldSwap = candidates[j].supply == "ABUNDANT"
+				shouldSwap = candidates[j].supply == supplyAbundant
 			} else {
 				// Same supply level - lower price wins
 				shouldSwap = candidates[j].price < candidates[i].price
@@ -488,14 +452,8 @@ func (l *MarketLocator) FindBestExportMarket(
 		}
 
 		// Calculate market score based on activity and supply
-		activity := ""
-		if tradeGood.Activity() != nil {
-			activity = *tradeGood.Activity()
-		}
-		supply := ""
-		if tradeGood.Supply() != nil {
-			supply = *tradeGood.Supply()
-		}
+		activity := activityOrEmpty(tradeGood)
+		supply := supplyOrEmpty(tradeGood)
 
 		score := calculateMarketScore(activity, supply)
 
@@ -529,13 +487,13 @@ func (l *MarketLocator) FindBestExportMarket(
 func calculateMarketScore(activity, supply string) int {
 	activityScore := 0
 	switch activity {
-	case "STRONG":
+	case activityStrong:
 		activityScore = 50
-	case "GROWING":
+	case activityGrowing:
 		activityScore = 30
-	case "WEAK":
+	case activityWeak:
 		activityScore = 10
-	case "RESTRICTED":
+	case activityRestricted:
 		activityScore = 5
 	default:
 		activityScore = 20 // Unknown/missing activity
@@ -543,15 +501,15 @@ func calculateMarketScore(activity, supply string) int {
 
 	supplyScore := 0
 	switch supply {
-	case "ABUNDANT":
+	case supplyAbundant:
 		supplyScore = 50
-	case "HIGH":
+	case supplyHigh:
 		supplyScore = 40
-	case "MODERATE":
+	case supplyModerate:
 		supplyScore = 30
-	case "LIMITED":
+	case supplyLimited:
 		supplyScore = 20
-	case "SCARCE":
+	case supplyScarce:
 		supplyScore = 10
 	default:
 		supplyScore = 15 // Unknown/missing supply
@@ -565,13 +523,13 @@ func calculateMarketScore(activity, supply string) int {
 // Data analysis: WEAK + ABUNDANT = avg 43 credits, RESTRICTED + ABUNDANT = 6,863 credits
 func ExportActivityScore(activity string) int {
 	switch activity {
-	case "WEAK":
+	case activityWeak:
 		return 4 // Best for buying (lowest prices)
-	case "GROWING":
+	case activityGrowing:
 		return 3
-	case "STRONG":
+	case activityStrong:
 		return 2
-	case "RESTRICTED":
+	case activityRestricted:
 		return 1 // Worst for buying (highest prices)
 	default:
 		return 2 // Unknown - assume neutral
@@ -583,13 +541,13 @@ func ExportActivityScore(activity string) int {
 // Data analysis: STRONG = avg 7,551 credits, RESTRICTED = 1,480 credits
 func ImportActivityScore(activity string) int {
 	switch activity {
-	case "STRONG":
+	case activityStrong:
 		return 4 // Best for selling (highest prices)
-	case "GROWING":
+	case activityGrowing:
 		return 3
-	case "WEAK":
+	case activityWeak:
 		return 2
-	case "RESTRICTED":
+	case activityRestricted:
 		return 1 // Worst for selling (lowest prices)
 	default:
 		return 2 // Unknown - assume neutral
@@ -653,14 +611,8 @@ func (l *MarketLocator) FindFactoryForProduction(
 		}
 
 		// Calculate score based on output good activity and supply
-		activity := ""
-		if outputTradeGood.Activity() != nil {
-			activity = *outputTradeGood.Activity()
-		}
-		supply := ""
-		if outputTradeGood.Supply() != nil {
-			supply = *outputTradeGood.Supply()
-		}
+		activity := activityOrEmpty(outputTradeGood)
+		supply := supplyOrEmpty(outputTradeGood)
 
 		score := calculateMarketScore(activity, supply)
 

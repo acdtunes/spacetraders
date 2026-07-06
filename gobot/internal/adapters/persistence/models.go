@@ -226,11 +226,11 @@ type StorageOperationModel struct {
 	PlayerID       int          `gorm:"column:player_id;primaryKey;not null"`
 	Player         *PlayerModel `gorm:"foreignKey:PlayerID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
 	WaypointSymbol string       `gorm:"column:waypoint_symbol;not null"`
-	OperationType  string       `gorm:"column:operation_type;not null"`     // GAS_SIPHON, MINING, CUSTOM
-	Status         string       `gorm:"column:status;default:'PENDING'"`    // PENDING, RUNNING, COMPLETED, STOPPED, FAILED
-	ExtractorShips string       `gorm:"column:extractor_ships;type:text"`   // JSON array
-	StorageShips   string       `gorm:"column:storage_ships;type:text"`     // JSON array
-	SupportedGoods string       `gorm:"column:supported_goods;type:text"`   // JSON array
+	OperationType  string       `gorm:"column:operation_type;not null"`   // GAS_SIPHON, MINING, CUSTOM
+	Status         string       `gorm:"column:status;default:'PENDING'"`  // PENDING, RUNNING, COMPLETED, STOPPED, FAILED
+	ExtractorShips string       `gorm:"column:extractor_ships;type:text"` // JSON array
+	StorageShips   string       `gorm:"column:storage_ships;type:text"`   // JSON array
+	SupportedGoods string       `gorm:"column:supported_goods;type:text"` // JSON array
 	LastError      string       `gorm:"column:last_error;type:text"`
 	CreatedAt      time.Time    `gorm:"column:created_at;not null;autoCreateTime"`
 	UpdatedAt      time.Time    `gorm:"column:updated_at;not null;autoUpdateTime"`
@@ -251,13 +251,13 @@ type GoodsFactoryModel struct {
 	SystemSymbol     string       `gorm:"column:system_symbol;not null"`
 	DependencyTree   string       `gorm:"column:dependency_tree;type:text;not null"` // JSON-serialized SupplyChainNode
 	Status           string       `gorm:"column:status;index;not null"`
-	Metadata         string       `gorm:"column:metadata;type:jsonb"`           // JSON metadata
-	QuantityAcquired int          `gorm:"column:quantity_acquired;default:0"`   // Set on completion
-	TotalCost        int          `gorm:"column:total_cost;default:0"`          // Set on completion
-	ShipsUsed        int          `gorm:"column:ships_used;default:0"`          // Number of ships utilized
-	MarketQueries    int          `gorm:"column:market_queries;default:0"`      // Number of market queries
-	ParallelLevels   int          `gorm:"column:parallel_levels;default:0"`     // Number of parallel levels
-	EstimatedSpeedup float64      `gorm:"column:estimated_speedup;default:0"`   // Estimated speedup factor
+	Metadata         string       `gorm:"column:metadata;type:jsonb"`         // JSON metadata
+	QuantityAcquired int          `gorm:"column:quantity_acquired;default:0"` // Set on completion
+	TotalCost        int          `gorm:"column:total_cost;default:0"`        // Set on completion
+	ShipsUsed        int          `gorm:"column:ships_used;default:0"`        // Number of ships utilized
+	MarketQueries    int          `gorm:"column:market_queries;default:0"`    // Number of market queries
+	ParallelLevels   int          `gorm:"column:parallel_levels;default:0"`   // Number of parallel levels
+	EstimatedSpeedup float64      `gorm:"column:estimated_speedup;default:0"` // Estimated speedup factor
 	CreatedAt        time.Time    `gorm:"column:created_at;not null;autoCreateTime"`
 	UpdatedAt        time.Time    `gorm:"column:updated_at;not null;autoUpdateTime"`
 	StartedAt        *time.Time   `gorm:"column:started_at"`
@@ -280,10 +280,10 @@ type TransactionModel struct {
 	BalanceBefore     int          `gorm:"column:balance_before;not null"`
 	BalanceAfter      int          `gorm:"column:balance_after;not null"`
 	Description       string       `gorm:"column:description;type:text"`
-	Metadata          string       `gorm:"column:metadata;type:jsonb"`                               // JSON metadata
-	RelatedEntityType string       `gorm:"column:related_entity_type;index:idx_related;size:50"`    // e.g., "contract", "factory"
-	RelatedEntityID   string       `gorm:"column:related_entity_id;index:idx_related;size:100"`     // ID of related entity
-	OperationType     string       `gorm:"column:operation_type;size:50"`                            // e.g., "contract", "arbitrage", "rebalancing", "factory"
+	Metadata          string       `gorm:"column:metadata;type:jsonb"`                           // JSON metadata
+	RelatedEntityType string       `gorm:"column:related_entity_type;index:idx_related;size:50"` // e.g., "contract", "factory"
+	RelatedEntityID   string       `gorm:"column:related_entity_id;index:idx_related;size:100"`  // ID of related entity
+	OperationType     string       `gorm:"column:operation_type;size:50"`                        // e.g., "contract", "arbitrage", "rebalancing", "factory"
 	CreatedAt         time.Time    `gorm:"column:created_at;not null;autoCreateTime"`
 }
 
@@ -341,31 +341,31 @@ func (ManufacturingPipelineModel) TableName() string {
 
 // ManufacturingTaskModel represents the manufacturing_tasks table
 type ManufacturingTaskModel struct {
-	ID             string     `gorm:"column:id;primaryKey;size:64"`
-	PipelineID     *string    `gorm:"column:pipeline_id;size:64;index:idx_tasks_pipeline"` // Nullable for ad-hoc tasks
-	PlayerID       int        `gorm:"column:player_id;not null;index:idx_tasks_player_status"`
-	TaskType       string     `gorm:"column:task_type;size:32;not null"`
-	Status         string     `gorm:"column:status;size:32;not null;index:idx_tasks_status,idx_tasks_player_status"`
-	Good           string     `gorm:"column:good;size:64;not null"`
-	Quantity       int        `gorm:"column:quantity;default:0"`
-	ActualQuantity int        `gorm:"column:actual_quantity;default:0"`
-	SourceMarket       *string `gorm:"column:source_market;size:64"`
-	TargetMarket       *string `gorm:"column:target_market;size:64"`
-	FactorySymbol      *string `gorm:"column:factory_symbol;size:64"`
-	StorageOperationID *string `gorm:"column:storage_operation_id;size:64;index:idx_tasks_storage_operation"` // For STORAGE_ACQUIRE_DELIVER tasks
-	StorageWaypoint    *string `gorm:"column:storage_waypoint;size:64"`                                       // For STORAGE_ACQUIRE_DELIVER tasks
-	ConstructionSite   *string `gorm:"column:construction_site;size:64"`                                      // For DELIVER_TO_CONSTRUCTION tasks
-	AssignedShip       *string `gorm:"column:assigned_ship;size:64;index:idx_tasks_ship"`
-	Priority       int        `gorm:"column:priority;default:0"`
-	RetryCount     int        `gorm:"column:retry_count;default:0"`
-	MaxRetries     int        `gorm:"column:max_retries;default:3"`
-	TotalCost      int        `gorm:"column:total_cost;default:0"`
-	TotalRevenue   int        `gorm:"column:total_revenue;default:0"`
-	ErrorMessage   *string    `gorm:"column:error_message;type:text"`
-	CreatedAt      time.Time  `gorm:"column:created_at;not null;autoCreateTime"`
-	ReadyAt        *time.Time `gorm:"column:ready_at"`
-	StartedAt      *time.Time `gorm:"column:started_at"`
-	CompletedAt    *time.Time `gorm:"column:completed_at"`
+	ID                 string     `gorm:"column:id;primaryKey;size:64"`
+	PipelineID         *string    `gorm:"column:pipeline_id;size:64;index:idx_tasks_pipeline"` // Nullable for ad-hoc tasks
+	PlayerID           int        `gorm:"column:player_id;not null;index:idx_tasks_player_status"`
+	TaskType           string     `gorm:"column:task_type;size:32;not null"`
+	Status             string     `gorm:"column:status;size:32;not null;index:idx_tasks_status,idx_tasks_player_status"`
+	Good               string     `gorm:"column:good;size:64;not null"`
+	Quantity           int        `gorm:"column:quantity;default:0"`
+	ActualQuantity     int        `gorm:"column:actual_quantity;default:0"`
+	SourceMarket       *string    `gorm:"column:source_market;size:64"`
+	TargetMarket       *string    `gorm:"column:target_market;size:64"`
+	FactorySymbol      *string    `gorm:"column:factory_symbol;size:64"`
+	StorageOperationID *string    `gorm:"column:storage_operation_id;size:64;index:idx_tasks_storage_operation"` // For STORAGE_ACQUIRE_DELIVER tasks
+	StorageWaypoint    *string    `gorm:"column:storage_waypoint;size:64"`                                       // For STORAGE_ACQUIRE_DELIVER tasks
+	ConstructionSite   *string    `gorm:"column:construction_site;size:64"`                                      // For DELIVER_TO_CONSTRUCTION tasks
+	AssignedShip       *string    `gorm:"column:assigned_ship;size:64;index:idx_tasks_ship"`
+	Priority           int        `gorm:"column:priority;default:0"`
+	RetryCount         int        `gorm:"column:retry_count;default:0"`
+	MaxRetries         int        `gorm:"column:max_retries;default:3"`
+	TotalCost          int        `gorm:"column:total_cost;default:0"`
+	TotalRevenue       int        `gorm:"column:total_revenue;default:0"`
+	ErrorMessage       *string    `gorm:"column:error_message;type:text"`
+	CreatedAt          time.Time  `gorm:"column:created_at;not null;autoCreateTime"`
+	ReadyAt            *time.Time `gorm:"column:ready_at"`
+	StartedAt          *time.Time `gorm:"column:started_at"`
+	CompletedAt        *time.Time `gorm:"column:completed_at"`
 	// BUG FIX #3: Phase tracking fields for daemon restart resilience
 	CollectPhaseCompleted bool       `gorm:"column:collect_phase_completed;default:false"`
 	AcquirePhaseCompleted bool       `gorm:"column:acquire_phase_completed;default:false"`
@@ -388,20 +388,20 @@ func (ManufacturingTaskDependencyModel) TableName() string {
 
 // ManufacturingFactoryStateModel represents the manufacturing_factory_states table
 type ManufacturingFactoryStateModel struct {
-	ID                  int        `gorm:"column:id;primaryKey;autoIncrement"`
-	FactorySymbol       string     `gorm:"column:factory_symbol;size:64;not null;uniqueIndex:idx_factory_unique,priority:1"`
-	OutputGood          string     `gorm:"column:output_good;size:64;not null;uniqueIndex:idx_factory_unique,priority:2"`
-	PlayerID            int        `gorm:"column:player_id;not null;index:idx_factory_player"`
-	PipelineID          string     `gorm:"column:pipeline_id;size:64;index:idx_factory_pipeline;uniqueIndex:idx_factory_unique,priority:3"`
-	RequiredInputs      string     `gorm:"column:required_inputs;type:jsonb;not null"`
-	DeliveredInputs     string     `gorm:"column:delivered_inputs;type:jsonb;default:'{}'"`
-	AllInputsDelivered  bool       `gorm:"column:all_inputs_delivered;default:false"`
-	CurrentSupply       *string    `gorm:"column:current_supply;size:32"`
-	PreviousSupply      *string    `gorm:"column:previous_supply;size:32"`
-	ReadyForCollection  bool       `gorm:"column:ready_for_collection;default:false"`
-	CreatedAt           time.Time  `gorm:"column:created_at;not null;autoCreateTime"`
-	InputsCompletedAt   *time.Time `gorm:"column:inputs_completed_at"`
-	ReadyAt             *time.Time `gorm:"column:ready_at"`
+	ID                 int        `gorm:"column:id;primaryKey;autoIncrement"`
+	FactorySymbol      string     `gorm:"column:factory_symbol;size:64;not null;uniqueIndex:idx_factory_unique,priority:1"`
+	OutputGood         string     `gorm:"column:output_good;size:64;not null;uniqueIndex:idx_factory_unique,priority:2"`
+	PlayerID           int        `gorm:"column:player_id;not null;index:idx_factory_player"`
+	PipelineID         string     `gorm:"column:pipeline_id;size:64;index:idx_factory_pipeline;uniqueIndex:idx_factory_unique,priority:3"`
+	RequiredInputs     string     `gorm:"column:required_inputs;type:jsonb;not null"`
+	DeliveredInputs    string     `gorm:"column:delivered_inputs;type:jsonb;default:'{}'"`
+	AllInputsDelivered bool       `gorm:"column:all_inputs_delivered;default:false"`
+	CurrentSupply      *string    `gorm:"column:current_supply;size:32"`
+	PreviousSupply     *string    `gorm:"column:previous_supply;size:32"`
+	ReadyForCollection bool       `gorm:"column:ready_for_collection;default:false"`
+	CreatedAt          time.Time  `gorm:"column:created_at;not null;autoCreateTime"`
+	InputsCompletedAt  *time.Time `gorm:"column:inputs_completed_at"`
+	ReadyAt            *time.Time `gorm:"column:ready_at"`
 }
 
 func (ManufacturingFactoryStateModel) TableName() string {

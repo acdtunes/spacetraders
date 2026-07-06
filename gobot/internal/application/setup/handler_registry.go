@@ -1,8 +1,6 @@
 package setup
 
 import (
-	"reflect"
-
 	gasCommands "github.com/andrescamacho/spacetraders-go/internal/application/gas/commands"
 	ledgerCommands "github.com/andrescamacho/spacetraders-go/internal/application/ledger/commands"
 	ledgerQueries "github.com/andrescamacho/spacetraders-go/internal/application/ledger/queries"
@@ -73,39 +71,23 @@ func NewHandlerRegistry(
 //  1. Other command handlers to record financial transactions via mediator
 //  2. Query operations for viewing and analyzing transaction history
 func (r *HandlerRegistry) RegisterLedgerHandlers(m mediator.Mediator) error {
-	// Register RecordTransactionCommand handler
 	recordHandler := ledgerCommands.NewRecordTransactionHandler(r.transactionRepo, r.clock)
-	if err := m.Register(
-		reflect.TypeOf(&ledgerCommands.RecordTransactionCommand{}),
-		recordHandler,
-	); err != nil {
+	if err := mediator.RegisterHandler[*ledgerCommands.RecordTransactionCommand](m, recordHandler); err != nil {
 		return err
 	}
 
-	// Register GetTransactionsQuery handler
 	getTransactionsHandler := ledgerQueries.NewGetTransactionsHandler(r.transactionRepo, r.playerResolver)
-	if err := m.Register(
-		reflect.TypeOf(&ledgerQueries.GetTransactionsQuery{}),
-		getTransactionsHandler,
-	); err != nil {
+	if err := mediator.RegisterHandler[*ledgerQueries.GetTransactionsQuery](m, getTransactionsHandler); err != nil {
 		return err
 	}
 
-	// Register GetProfitLossQuery handler
 	getProfitLossHandler := ledgerQueries.NewGetProfitLossHandler(r.transactionRepo)
-	if err := m.Register(
-		reflect.TypeOf(&ledgerQueries.GetProfitLossQuery{}),
-		getProfitLossHandler,
-	); err != nil {
+	if err := mediator.RegisterHandler[*ledgerQueries.GetProfitLossQuery](m, getProfitLossHandler); err != nil {
 		return err
 	}
 
-	// Register GetCashFlowQuery handler
 	getCashFlowHandler := ledgerQueries.NewGetCashFlowHandler(r.transactionRepo)
-	if err := m.Register(
-		reflect.TypeOf(&ledgerQueries.GetCashFlowQuery{}),
-		getCashFlowHandler,
-	); err != nil {
+	if err := mediator.RegisterHandler[*ledgerQueries.GetCashFlowQuery](m, getCashFlowHandler); err != nil {
 		return err
 	}
 
@@ -121,7 +103,6 @@ func (r *HandlerRegistry) RegisterLedgerHandlers(m mediator.Mediator) error {
 // Note: Transport is handled by manufacturing pool via STORAGE_ACQUIRE_DELIVER tasks.
 // Storage ships buffer cargo; haulers from the manufacturing pool pick it up.
 func (r *HandlerRegistry) RegisterGasHandlers(m mediator.Mediator) error {
-	// Register RunGasCoordinatorCommand handler
 	coordinatorHandler := gasCommands.NewRunGasCoordinatorHandler(
 		m,
 		r.shipRepo,
@@ -131,46 +112,31 @@ func (r *HandlerRegistry) RegisterGasHandlers(m mediator.Mediator) error {
 		r.storageCoordinator,
 		r.clock,
 	)
-	if err := m.Register(
-		reflect.TypeOf(&gasCommands.RunGasCoordinatorCommand{}),
-		coordinatorHandler,
-	); err != nil {
+	if err := mediator.RegisterHandler[*gasCommands.RunGasCoordinatorCommand](m, coordinatorHandler); err != nil {
 		return err
 	}
 
-	// Register RunSiphonWorkerCommand handler
 	siphonHandler := gasCommands.NewRunSiphonWorkerHandler(
 		m,
 		r.shipRepo,
 		r.storageCoordinator,
 		r.clock,
 	)
-	if err := m.Register(
-		reflect.TypeOf(&gasCommands.RunSiphonWorkerCommand{}),
-		siphonHandler,
-	); err != nil {
+	if err := mediator.RegisterHandler[*gasCommands.RunSiphonWorkerCommand](m, siphonHandler); err != nil {
 		return err
 	}
 
-	// Register RunStorageShipWorkerCommand handler
 	storageShipHandler := gasCommands.NewRunStorageShipWorkerHandler(
 		m,
 		r.shipRepo,
 		r.storageCoordinator,
 	)
-	if err := m.Register(
-		reflect.TypeOf(&gasCommands.RunStorageShipWorkerCommand{}),
-		storageShipHandler,
-	); err != nil {
+	if err := mediator.RegisterHandler[*gasCommands.RunStorageShipWorkerCommand](m, storageShipHandler); err != nil {
 		return err
 	}
 
-	// Register TransferCargoCommand handler (used by siphon workers to deposit to storage)
 	transferHandler := gasCommands.NewTransferCargoHandler(r.shipRepo, r.apiClient)
-	if err := m.Register(
-		reflect.TypeOf(&gasCommands.TransferCargoCommand{}),
-		transferHandler,
-	); err != nil {
+	if err := mediator.RegisterHandler[*gasCommands.TransferCargoCommand](m, transferHandler); err != nil {
 		return err
 	}
 

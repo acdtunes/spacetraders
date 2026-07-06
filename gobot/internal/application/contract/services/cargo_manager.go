@@ -161,12 +161,9 @@ func (m *CargoManager) jettisonWrongCargo(
 			Units:      item.Units,
 		}
 
-		jettisonResp, err := m.mediator.Send(ctx, jettisonCmd)
-		if err != nil {
+		if _, err := m.mediator.Send(ctx, jettisonCmd); err != nil {
 			return fmt.Errorf("failed to jettison %s: %w", item.Symbol, err)
 		}
-
-		_ = jettisonResp // Response unused after error check removed
 	}
 
 	return nil

@@ -21,12 +21,12 @@ type JumpShipCommand struct {
 
 // JumpShipResponse represents the result of a jump operation
 type JumpShipResponse struct {
-	Success            bool
-	NavigatedToGate    bool
-	JumpGateSymbol     string
-	DestinationSystem  string
-	CooldownSeconds    int
-	Message            string
+	Success           bool
+	NavigatedToGate   bool
+	JumpGateSymbol    string
+	DestinationSystem string
+	CooldownSeconds   int
+	Message           string
 }
 
 // JumpShipHandler handles the JumpShip command with auto-navigation

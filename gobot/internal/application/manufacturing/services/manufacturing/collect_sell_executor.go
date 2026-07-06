@@ -21,9 +21,9 @@ type CollectSellExecutor struct {
 	navigator          Navigator
 	purchaser          *ManufacturingPurchaser
 	seller             *ManufacturingSeller
-	storageCoordinator storage.StorageCoordinator  // Optional: for storage-based collection
-	apiClient          domainPorts.APIClient       // Optional: for storage cargo transfer
-	shipRepo           navigation.ShipRepository   // Optional: for syncing cargo state
+	storageCoordinator storage.StorageCoordinator // Optional: for storage-based collection
+	apiClient          domainPorts.APIClient      // Optional: for storage cargo transfer
+	shipRepo           navigation.ShipRepository  // Optional: for syncing cargo state
 }
 
 // NewCollectSellExecutor creates a new executor for COLLECT_SELL tasks.
@@ -256,9 +256,7 @@ func (e *CollectSellExecutor) collectFromStorage(
 		return 0, fmt.Errorf("no cargo space available on ship %s", params.ShipSymbol)
 	}
 
-	// Use low minimum threshold to avoid deadlocks (same as STORAGE_ACQUIRE_DELIVER)
-	const minPickupThreshold = 1
-	minUnits := minPickupThreshold
+	minUnits := minStoragePickupUnits
 	if availableSpace < minUnits {
 		minUnits = availableSpace
 	}

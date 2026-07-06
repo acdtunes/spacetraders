@@ -71,13 +71,13 @@ type DaemonServer struct {
 	pendingWorkerCommandsMu sync.RWMutex
 
 	// Metrics
-	metricsServer                  *http.Server
-	metricsConfig                  *config.MetricsConfig
-	containerMetricsCollector      MetricsCollector
-	financialMetricsCollector      *metrics.FinancialMetricsCollector
-	commandMetricsCollector        *metrics.CommandMetricsCollector
-	marketMetricsCollector         *metrics.MarketMetricsCollector
-	manufacturingMetricsCollector  *metrics.ManufacturingMetricsCollector
+	metricsServer                 *http.Server
+	metricsConfig                 *config.MetricsConfig
+	containerMetricsCollector     MetricsCollector
+	financialMetricsCollector     *metrics.FinancialMetricsCollector
+	commandMetricsCollector       *metrics.CommandMetricsCollector
+	marketMetricsCollector        *metrics.MarketMetricsCollector
+	manufacturingMetricsCollector *metrics.ManufacturingMetricsCollector
 
 	// Shutdown coordination
 	shutdownChan chan os.Signal
@@ -122,7 +122,9 @@ func NewDaemonServer(
 	shipStateScheduler := NewShipStateScheduler(shipRepo, clock, shipEventPublisher)
 
 	// Wire arrival scheduler to ship repository so navigation triggers arrival timers
-	if concreteRepo, ok := shipRepo.(interface{ SetArrivalScheduler(navigation.ArrivalScheduler) }); ok {
+	if concreteRepo, ok := shipRepo.(interface {
+		SetArrivalScheduler(navigation.ArrivalScheduler)
+	}); ok {
 		concreteRepo.SetArrivalScheduler(shipStateScheduler)
 	}
 
@@ -803,23 +805,6 @@ func (s *DaemonServer) markWorkerInterrupted(ctx context.Context, containerModel
 	// The coordinator will handle this when it resets the task from EXECUTING to READY.
 }
 
-// containerModelToShipAssignment converts a ShipModel to domain entity
-// This is a helper for the recovery process
-func containerModelToShipAssignment(model *persistence.ShipModel) *container.ShipAssignment {
-	// Handle NULL container_id
-	containerID := ""
-	if model.ContainerID != nil {
-		containerID = *model.ContainerID
-	}
-
-	return container.NewShipAssignment(
-		model.ShipSymbol,
-		model.PlayerID,
-		containerID,
-		nil, // Clock not needed
-	)
-}
-
 // ListContainers returns all registered containers
 func (s *DaemonServer) ListContainers(playerID *int, status *string) []*container.Container {
 	s.containersMu.RLock()
@@ -999,37 +984,4 @@ func (s *DaemonServer) interruptAllContainers() {
 	}
 
 	fmt.Println("All containers interrupted and marked as INTERRUPTED in database")
-}
-
-func (s *DaemonServer) stopAllContainers() {
-	s.containersMu.Lock()
-	runners := make([]*ContainerRunner, 0, len(s.containers))
-	for _, runner := range s.containers {
-		runners = append(runners, runner)
-	}
-	s.containersMu.Unlock()
-
-	// Stop all containers concurrently
-	var wg sync.WaitGroup
-	for _, runner := range runners {
-		wg.Add(1)
-		go func(r *ContainerRunner) {
-			defer wg.Done()
-			r.Stop()
-		}(runner)
-	}
-
-	// Wait up to 30 seconds for graceful shutdown
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		fmt.Println("All containers stopped gracefully")
-	case <-time.After(30 * time.Second):
-		fmt.Println("Warning: Some containers did not stop within timeout")
-	}
 }

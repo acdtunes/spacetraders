@@ -5,8 +5,8 @@ import (
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
-	contractTypes "github.com/andrescamacho/spacetraders-go/internal/application/contract/types"
 	contractQueries "github.com/andrescamacho/spacetraders-go/internal/application/contract/queries"
+	contractTypes "github.com/andrescamacho/spacetraders-go/internal/application/contract/types"
 	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )

@@ -88,11 +88,14 @@ func (s *GraphService) GetGraph(ctx context.Context, systemSymbol string, forceR
 	}, nil
 }
 
+func waypointCacheKey(systemSymbol, waypointSymbol string) string {
+	return systemSymbol + ":" + waypointSymbol
+}
+
 // populateWaypointCache stores all waypoints from a graph into the in-memory cache
 func (s *GraphService) populateWaypointCache(systemSymbol string, graph *system.NavigationGraph) {
 	for symbol, wp := range graph.Waypoints {
-		key := systemSymbol + ":" + symbol
-		s.waypointCache.Store(key, wp)
+		s.waypointCache.Store(waypointCacheKey(systemSymbol, symbol), wp)
 	}
 }
 
@@ -107,7 +110,7 @@ func (s *GraphService) populateWaypointCache(systemSymbol string, graph *system.
 // - Per-system mutex prevents duplicate graph builds
 // - Double-check pattern after acquiring lock
 func (s *GraphService) GetWaypoint(ctx context.Context, waypointSymbol, systemSymbol string, playerID int) (*shared.Waypoint, error) {
-	cacheKey := systemSymbol + ":" + waypointSymbol
+	cacheKey := waypointCacheKey(systemSymbol, waypointSymbol)
 
 	// TIER 1: Check in-memory cache first (infinite TTL, zero latency)
 	if cached, ok := s.waypointCache.Load(cacheKey); ok {

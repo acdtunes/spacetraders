@@ -24,6 +24,15 @@ func (e *ErrCircularDependency) Error() string {
 	return fmt.Sprintf("circular dependency detected for %s: %v", e.Good, e.Chain)
 }
 
+// UnknownGoodError indicates a good is not in the supply chain map
+type UnknownGoodError struct {
+	Good string
+}
+
+func (e *UnknownGoodError) Error() string {
+	return "unknown good: " + e.Good
+}
+
 // ErrUnknownGood indicates a good is not found in the supply chain map
 type ErrUnknownGood struct {
 	Good string
@@ -59,9 +68,9 @@ func (e *ErrProductionTimeout) Error() string {
 
 // ErrInsufficientCargo indicates ship cannot hold required goods
 type ErrInsufficientCargo struct {
-	ShipSymbol      string
-	RequiredSpace   int
-	AvailableSpace  int
+	ShipSymbol     string
+	RequiredSpace  int
+	AvailableSpace int
 }
 
 func (e *ErrInsufficientCargo) Error() string {

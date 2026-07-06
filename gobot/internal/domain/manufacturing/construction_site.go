@@ -47,29 +47,9 @@ func ReconstructConstructionSite(waypointSymbol, waypointType string, materials 
 
 // Getters for ConstructionSite
 
-func (cs *ConstructionSite) WaypointSymbol() string              { return cs.waypointSymbol }
-func (cs *ConstructionSite) WaypointType() string                { return cs.waypointType }
-func (cs *ConstructionSite) Materials() []ConstructionMaterial   { return cs.materials }
-func (cs *ConstructionSite) IsComplete() bool                    { return cs.isComplete }
-
-// GetMaterial returns the material for a given trade symbol, or nil if not found.
-func (cs *ConstructionSite) GetMaterial(tradeSymbol string) *ConstructionMaterial {
-	for i := range cs.materials {
-		if cs.materials[i].tradeSymbol == tradeSymbol {
-			return &cs.materials[i]
-		}
-	}
-	return nil
-}
-
-// RemainingForMaterial returns the remaining quantity needed for a specific material.
-func (cs *ConstructionSite) RemainingForMaterial(tradeSymbol string) int {
-	mat := cs.GetMaterial(tradeSymbol)
-	if mat == nil {
-		return 0
-	}
-	return mat.Remaining()
-}
+func (cs *ConstructionSite) WaypointSymbol() string            { return cs.waypointSymbol }
+func (cs *ConstructionSite) Materials() []ConstructionMaterial { return cs.materials }
+func (cs *ConstructionSite) IsComplete() bool                  { return cs.isComplete }
 
 // Progress returns the overall construction progress as a percentage (0-100).
 func (cs *ConstructionSite) Progress() float64 {

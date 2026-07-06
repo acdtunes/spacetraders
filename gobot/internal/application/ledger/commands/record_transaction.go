@@ -1,9 +1,9 @@
 package commands
 
 import (
-	"sync"
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
@@ -16,7 +16,7 @@ import (
 type RecordTransactionCommand struct {
 	PlayerID          int
 	TransactionType   string
-	Amount            int                    // Positive for income, negative for expenses
+	Amount            int // Positive for income, negative for expenses
 	BalanceBefore     int
 	BalanceAfter      int
 	Description       string

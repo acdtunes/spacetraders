@@ -1,9 +1,5 @@
 package goods
 
-import (
-	"time"
-)
-
 // AcquisitionMethod indicates how a good should be acquired
 type AcquisitionMethod string
 
@@ -115,54 +111,6 @@ func (n *SupplyChainNode) FlattenToList() []*SupplyChainNode {
 	return result
 }
 
-// RequiredRawMaterials returns the unique list of leaf node goods (raw materials)
-func (n *SupplyChainNode) RequiredRawMaterials() []string {
-	materials := make(map[string]bool)
-	n.collectRawMaterials(materials)
-
-	result := make([]string, 0, len(materials))
-	for material := range materials {
-		result = append(result, material)
-	}
-
-	return result
-}
-
-// collectRawMaterials is a helper for RequiredRawMaterials
-func (n *SupplyChainNode) collectRawMaterials(materials map[string]bool) {
-	if n.IsLeaf() {
-		materials[n.Good] = true
-		return
-	}
-
-	for _, child := range n.Children {
-		child.collectRawMaterials(materials)
-	}
-}
-
-// EstimateProductionTime provides a rough estimate based on tree depth and market activity
-// This is used for informational purposes only, not for timeout calculations
-func (n *SupplyChainNode) EstimateProductionTime() time.Duration {
-	depth := n.TotalDepth()
-	baseTime := 2 * time.Minute // Base time per level
-
-	// Adjust based on market activity
-	activityMultiplier := 1.0
-	switch n.MarketActivity {
-	case "WEAK":
-		activityMultiplier = 3.0 // Slow production
-	case "GROWING":
-		activityMultiplier = 1.5
-	case "STRONG":
-		activityMultiplier = 1.0 // Fast production
-	default:
-		activityMultiplier = 2.0 // Unknown, assume moderate
-	}
-
-	estimated := time.Duration(float64(depth) * float64(baseTime) * activityMultiplier)
-	return estimated
-}
-
 // CountNodes returns the total number of nodes in the tree
 func (n *SupplyChainNode) CountNodes() int {
 	return len(n.FlattenToList())
@@ -185,14 +133,4 @@ func (n *SupplyChainNode) CountByAcquisitionMethod() (buyCount, fabricateCount i
 func (n *SupplyChainNode) MarkCompleted(quantity int) {
 	n.Completed = true
 	n.QuantityAcquired = quantity
-}
-
-// AllChildrenCompleted returns true if all child nodes are completed
-func (n *SupplyChainNode) AllChildrenCompleted() bool {
-	for _, child := range n.Children {
-		if !child.Completed {
-			return false
-		}
-	}
-	return true
 }

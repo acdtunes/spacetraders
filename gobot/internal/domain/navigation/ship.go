@@ -27,6 +27,9 @@ const (
 	// for safety during navigation. Prevents running out of fuel due to
 	// miscalculations or unexpected detours.
 	DefaultFuelSafetyMargin = 4
+
+	roleSatellite         = "SATELLITE"
+	defaultFlightModeName = "CRUISE"
 )
 
 // Ship entity - represents a player's spacecraft with navigation capabilities
@@ -50,21 +53,20 @@ const (
 // - Assignment is managed through aggregate methods
 // - Repository persists assignment state to database
 type Ship struct {
-	shipSymbol         string
-	playerID           shared.PlayerID
-	currentLocation    *shared.Waypoint
-	fuel               *shared.Fuel
-	fuelCapacity       int
-	cargoCapacity      int
-	cargo              *shared.Cargo
-	engineSpeed        int
-	frameSymbol        string        // Frame type (e.g., "FRAME_PROBE", "FRAME_DRONE", "FRAME_MINER")
-	role               string        // Ship role from registration (e.g., "EXCAVATOR", "COMMAND", "SATELLITE")
-	modules            []*ShipModule // Installed ship modules (jump drives, mining equipment, etc.)
-	navStatus          NavStatus
-	assignment         *ShipAssignment // Container assignment state (persisted to DB)
-	fuelService        *ShipFuelService
-	navigationCalc     *ShipNavigationCalculator
+	shipSymbol      string
+	playerID        shared.PlayerID
+	currentLocation *shared.Waypoint
+	fuel            *shared.Fuel
+	fuelCapacity    int
+	cargoCapacity   int
+	cargo           *shared.Cargo
+	engineSpeed     int
+	frameSymbol     string        // Frame type (e.g., "FRAME_PROBE", "FRAME_DRONE", "FRAME_MINER")
+	role            string        // Ship role from registration (e.g., "EXCAVATOR", "COMMAND", "SATELLITE")
+	modules         []*ShipModule // Installed ship modules (jump drives, mining equipment, etc.)
+	navStatus       NavStatus
+	assignment      *ShipAssignment // Container assignment state (persisted to DB)
+	fuelService     *ShipFuelService
 
 	// DB-as-source-of-truth fields
 	flightMode         string     // Current flight mode (CRUISE, DRIFT, BURN, STEALTH)
@@ -101,7 +103,6 @@ func NewShip(
 		modules:         modules,
 		navStatus:       navStatus,
 		fuelService:     NewShipFuelService(),
-		navigationCalc:  NewShipNavigationCalculator(),
 	}
 
 	if err := s.validate(); err != nil {
@@ -195,21 +196,6 @@ func (s *Ship) UpdateFuelFromAPI(current, capacity int) {
 	}
 }
 
-func (s *Ship) CargoCapacity() int {
-	return s.cargoCapacity
-}
-
-func (s *Ship) Cargo() *shared.Cargo {
-	return s.cargo
-}
-
-func (s *Ship) CargoUnits() int {
-	if s.cargo == nil {
-		return 0
-	}
-	return s.cargo.Units
-}
-
 func (s *Ship) EngineSpeed() int {
 	return s.engineSpeed
 }
@@ -252,46 +238,10 @@ func (s *Ship) GetJumpDriveRange() int {
 	return 0
 }
 
-// CloneAtLocation creates a copy of the ship at a different location with specified fuel
-// This is used for route planning to simulate ship state at intermediate waypoints
-func (s *Ship) CloneAtLocation(location *shared.Waypoint, currentFuel int) *Ship {
-	return &Ship{
-		shipSymbol:      s.shipSymbol,
-		playerID:        s.playerID,
-		currentLocation: location,
-		fuel: &shared.Fuel{
-			Current:  currentFuel,
-			Capacity: s.fuelCapacity,
-		},
-		fuelCapacity:   s.fuelCapacity,
-		cargoCapacity:  s.cargoCapacity,
-		cargo:          s.cargo, // Share cargo (immutable for planning)
-		engineSpeed:    s.engineSpeed,
-		frameSymbol:    s.frameSymbol,
-		role:           s.role,
-		modules:        s.modules, // Share modules (immutable)
-		navStatus:      NavStatusInOrbit, // Assume in orbit for routing
-		fuelService:    s.fuelService,
-		navigationCalc: s.navigationCalc,
-	}
-}
-
-// Frame Type Queries
-
-// IsProbe checks if ship is a probe type (FRAME_PROBE)
-func (s *Ship) IsProbe() bool {
-	return s.frameSymbol == "FRAME_PROBE"
-}
-
-// IsDrone checks if ship is a drone type (FRAME_DRONE)
-func (s *Ship) IsDrone() bool {
-	return s.frameSymbol == "FRAME_DRONE"
-}
-
 // IsScoutType checks if ship is suitable for scouting (SATELLITE role)
 // Excludes EXCAVATOR and other mining/hauling roles
 func (s *Ship) IsScoutType() bool {
-	return s.role == "SATELLITE"
+	return s.role == roleSatellite
 }
 
 // Navigation Status Management
@@ -429,46 +379,6 @@ func (s *Ship) RefuelToFull() (int, error) {
 	return fuelNeeded, nil
 }
 
-// Navigation Calculations
-//
-// NOTE: Navigation calculation methods have been moved to ShipFuelService and
-// ShipNavigationCalculator to improve separation of concerns. Callers should use
-// these services directly for navigation and fuel calculations.
-
-// Cargo Management
-
-// HasCargoSpace checks if ship has available cargo space
-func (s *Ship) HasCargoSpace(units int) bool {
-	if s.cargo == nil {
-		return units <= s.cargoCapacity
-	}
-	return (s.cargo.Units + units) <= s.cargoCapacity
-}
-
-// AvailableCargoSpace returns available cargo space
-func (s *Ship) AvailableCargoSpace() int {
-	if s.cargo == nil {
-		return s.cargoCapacity
-	}
-	return s.cargo.AvailableCapacity()
-}
-
-// IsCargoEmpty checks if cargo hold is empty
-func (s *Ship) IsCargoEmpty() bool {
-	if s.cargo == nil {
-		return true
-	}
-	return s.cargo.IsEmpty()
-}
-
-// IsCargoFull checks if cargo hold is full
-func (s *Ship) IsCargoFull() bool {
-	if s.cargo == nil {
-		return false
-	}
-	return s.cargo.Units >= s.cargoCapacity
-}
-
 // State Queries
 
 // IsDocked checks if ship is docked
@@ -490,12 +400,6 @@ func (s *Ship) String() string {
 	return fmt.Sprintf("Ship(symbol=%s, location=%s, status=%s, fuel=%s)",
 		s.shipSymbol, s.currentLocation.Symbol, s.navStatus, s.fuel)
 }
-
-// Route Execution Decision Methods
-//
-// NOTE: Refueling decision methods have been moved to ShipFuelService to improve
-// separation of concerns and enforce Tell-Don't-Ask principle. Callers should use
-// ShipFuelService methods directly for refueling decisions.
 
 // Assignment Management
 //
@@ -586,7 +490,7 @@ func (s *Ship) SetAssignment(assignment *ShipAssignment) {
 // FlightMode returns the ship's current flight mode
 func (s *Ship) FlightMode() string {
 	if s.flightMode == "" {
-		return "CRUISE" // Default flight mode
+		return defaultFlightModeName
 	}
 	return s.flightMode
 }
@@ -626,86 +530,6 @@ func (s *Ship) ClearCooldown() {
 	s.cooldownExpiration = nil
 }
 
-// SetCargo updates the ship's cargo (used by repository for reconstruction)
-func (s *Ship) SetCargo(c *shared.Cargo) {
-	s.cargo = c
-}
-
-// ReceiveCargo adds cargo to the ship's hold
-// Returns error if insufficient space
-func (s *Ship) ReceiveCargo(item *shared.CargoItem) error {
-	if item == nil || item.Units <= 0 {
-		return nil
-	}
-	if !s.HasCargoSpace(item.Units) {
-		return fmt.Errorf("insufficient cargo space: need %d, have %d available",
-			item.Units, s.AvailableCargoSpace())
-	}
-
-	// Build new inventory
-	newInventory := make([]*shared.CargoItem, 0, len(s.cargo.Inventory)+1)
-	found := false
-	for _, existing := range s.cargo.Inventory {
-		if existing.Symbol == item.Symbol {
-			// Merge with existing item
-			newInventory = append(newInventory, &shared.CargoItem{
-				Symbol:      existing.Symbol,
-				Name:        existing.Name,
-				Description: existing.Description,
-				Units:       existing.Units + item.Units,
-			})
-			found = true
-		} else {
-			newInventory = append(newInventory, existing)
-		}
-	}
-	if !found {
-		newInventory = append(newInventory, item)
-	}
-
-	// Create new cargo (immutable)
-	newCargo, _ := shared.NewCargo(s.cargo.Capacity, s.cargo.Units+item.Units, newInventory)
-	s.cargo = newCargo
-	return nil
-}
-
-// RemoveCargo removes cargo from the ship's hold
-// Returns error if insufficient cargo
-func (s *Ship) RemoveCargo(symbol string, units int) error {
-	if units <= 0 {
-		return nil
-	}
-
-	currentUnits := s.cargo.GetItemUnits(symbol)
-	if currentUnits < units {
-		return fmt.Errorf("insufficient cargo: have %d units of %s, need %d",
-			currentUnits, symbol, units)
-	}
-
-	// Build new inventory
-	newInventory := make([]*shared.CargoItem, 0, len(s.cargo.Inventory))
-	for _, item := range s.cargo.Inventory {
-		if item.Symbol == symbol {
-			remaining := item.Units - units
-			if remaining > 0 {
-				newInventory = append(newInventory, &shared.CargoItem{
-					Symbol:      item.Symbol,
-					Name:        item.Name,
-					Description: item.Description,
-					Units:       remaining,
-				})
-			}
-		} else {
-			newInventory = append(newInventory, item)
-		}
-	}
-
-	// Create new cargo (immutable)
-	newCargo, _ := shared.NewCargo(s.cargo.Capacity, s.cargo.Units-units, newInventory)
-	s.cargo = newCargo
-	return nil
-}
-
 // SetLocation updates the ship's current location
 func (s *Ship) SetLocation(w *shared.Waypoint) {
 	s.currentLocation = w
@@ -715,35 +539,6 @@ func (s *Ship) SetLocation(w *shared.Waypoint) {
 // Used by repositories when loading from database
 func (s *Ship) SetNavStatus(status NavStatus) {
 	s.navStatus = status
-}
-
-// HasCooldown checks if the ship has an active cooldown
-func (s *Ship) HasCooldown() bool {
-	return s.cooldownExpiration != nil && time.Now().Before(*s.cooldownExpiration)
-}
-
-// CooldownRemaining returns the remaining cooldown duration
-func (s *Ship) CooldownRemaining() time.Duration {
-	if s.cooldownExpiration == nil {
-		return 0
-	}
-	remaining := time.Until(*s.cooldownExpiration)
-	if remaining < 0 {
-		return 0
-	}
-	return remaining
-}
-
-// TimeUntilArrival returns the remaining time until arrival
-func (s *Ship) TimeUntilArrival() time.Duration {
-	if s.arrivalTime == nil {
-		return 0
-	}
-	remaining := time.Until(*s.arrivalTime)
-	if remaining < 0 {
-		return 0
-	}
-	return remaining
 }
 
 // ReconstructShip creates a Ship from persisted state (used by repository)
@@ -784,7 +579,6 @@ func ReconstructShip(
 		cooldownExpiration: cooldownExpiration,
 		assignment:         assignment,
 		fuelService:        NewShipFuelService(),
-		navigationCalc:     NewShipNavigationCalculator(),
 	}
 
 	if err := s.validate(); err != nil {

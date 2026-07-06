@@ -51,11 +51,11 @@ const (
 	ContainerTypeScoutFleetAssignment     ContainerType = "SCOUT_FLEET_ASSIGNMENT"
 	ContainerTypePurchase                 ContainerType = "PURCHASE"
 	ContainerTypeManufacturingCoordinator ContainerType = "MANUFACTURING_COORDINATOR"
-	ContainerTypeParallelManufacturing      ContainerType = "PARALLEL_MANUFACTURING"
-	ContainerTypeManufacturingTaskWorker    ContainerType = "MANUFACTURING_TASK_WORKER"
-	ContainerTypeGasCoordinator  ContainerType = "GAS_COORDINATOR"
-	ContainerTypeGasSiphonWorker ContainerType = "GAS_SIPHON_WORKER"
-	ContainerTypeStorageShip     ContainerType = "STORAGE_SHIP"
+	ContainerTypeParallelManufacturing    ContainerType = "PARALLEL_MANUFACTURING"
+	ContainerTypeManufacturingTaskWorker  ContainerType = "MANUFACTURING_TASK_WORKER"
+	ContainerTypeGasCoordinator           ContainerType = "GAS_COORDINATOR"
+	ContainerTypeGasSiphonWorker          ContainerType = "GAS_SIPHON_WORKER"
+	ContainerTypeStorageShip              ContainerType = "STORAGE_SHIP"
 )
 
 const (

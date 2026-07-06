@@ -17,17 +17,21 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
+	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
-	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 )
 
 const (
 	baseURL            = "https://api.spacetraders.io/v2"
 	defaultTimeout     = 30 * time.Second
-	defaultMaxRetries  = 10                    // Increased from 5 to handle persistent 429s
-	defaultBackoffBase = 2 * time.Second       // Increased from 1s for more aggressive backoff
-	maxBackoffDuration = 30 * time.Second      // Cap exponential backoff to prevent extreme waits
+	defaultMaxRetries  = 10               // Increased from 5 to handle persistent 429s
+	defaultBackoffBase = 2 * time.Second  // Increased from 1s for more aggressive backoff
+	maxBackoffDuration = 30 * time.Second // Cap exponential backoff to prevent extreme waits
+
+	errCodeAgentHasContract = 4511
+	errCodeShipMustBeDocked = 4214
+	errCodeShipNotDocked    = 4244
 )
 
 // APIMetricsRecorder defines the interface for recording API metrics
@@ -493,10 +497,10 @@ func (c *SpaceTradersClient) JumpShip(ctx context.Context, shipSymbol, systemSym
 	}
 
 	return &domainPorts.JumpResult{
-		DestinationSystem:  response.Data.Nav.SystemSymbol,
+		DestinationSystem:   response.Data.Nav.SystemSymbol,
 		DestinationWaypoint: response.Data.Nav.WaypointSymbol,
-		CooldownSeconds:    response.Data.Cooldown.RemainingSeconds,
-		TotalPrice:         response.Data.Transaction.TotalPrice,
+		CooldownSeconds:     response.Data.Cooldown.RemainingSeconds,
+		TotalPrice:          response.Data.Transaction.TotalPrice,
 	}, nil
 }
 
@@ -618,14 +622,14 @@ func (c *SpaceTradersClient) NegotiateContract(ctx context.Context, shipSymbol, 
 	// Check for known error codes that caller can handle reactively
 	if response.Error != nil {
 		switch response.Error.Code {
-		case 4511: // Agent already has contract
+		case errCodeAgentHasContract:
 			return &domainPorts.ContractNegotiationResult{
-				ErrorCode:          4511,
+				ErrorCode:          errCodeAgentHasContract,
 				ExistingContractID: response.Error.Data.ContractID,
 			}, nil
-		case 4214, 4244: // Ship must be docked (4214) or Ship not currently docked (4244)
+		case errCodeShipMustBeDocked, errCodeShipNotDocked:
 			return &domainPorts.ContractNegotiationResult{
-				ErrorCode: response.Error.Code, // Return actual error code for debugging
+				ErrorCode: response.Error.Code,
 			}, nil
 		}
 	}
@@ -1452,14 +1456,14 @@ func endpointToHumanName(path string) string {
 		"/my/contracts/*/fulfill": "Fulfill Contract",
 
 		// Systems & Waypoints
-		"/systems":              "List Systems",
-		"/systems/*":            "Get System",
-		"/systems/*/waypoints":  "List Waypoints",
-		"/systems/*/waypoints/*":        "Get Waypoint",
-		"/systems/*/waypoints/*/market": "Get Market",
-		"/systems/*/waypoints/*/shipyard":        "Get Shipyard",
-		"/systems/*/waypoints/*/jump-gate":       "Get Jump Gate",
-		"/systems/*/waypoints/*/construction":    "Get Construction",
+		"/systems":                            "List Systems",
+		"/systems/*":                          "Get System",
+		"/systems/*/waypoints":                "List Waypoints",
+		"/systems/*/waypoints/*":              "Get Waypoint",
+		"/systems/*/waypoints/*/market":       "Get Market",
+		"/systems/*/waypoints/*/shipyard":     "Get Shipyard",
+		"/systems/*/waypoints/*/jump-gate":    "Get Jump Gate",
+		"/systems/*/waypoints/*/construction": "Get Construction",
 
 		// Factions
 		"/factions":   "List Factions",

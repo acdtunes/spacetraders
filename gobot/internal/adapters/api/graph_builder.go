@@ -7,9 +7,9 @@ import (
 	"math"
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
+	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
-	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 )
 
 // GraphBuilder builds system navigation graphs from API data

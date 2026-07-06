@@ -196,14 +196,6 @@ func (r *Route) LastError() error {
 	return r.lifecycle.LastError()
 }
 
-func (r *Route) CurrentSegmentIndex() int {
-	return r.currentSegmentIndex
-}
-
-func (r *Route) RefuelBeforeDeparture() bool {
-	return r.refuelBeforeDeparture
-}
-
 // Route execution
 
 // StartExecution begins route execution
@@ -241,12 +233,6 @@ func (r *Route) FailRoute(reason string) {
 	_ = r.lifecycle.Fail(err) // Ignore error, failure always succeeds
 }
 
-// AbortRoute aborts route execution
-// Delegates to lifecycle state machine
-func (r *Route) AbortRoute(reason string) {
-	_ = r.lifecycle.Stop() // Ignore error, stop always succeeds
-}
-
 // Route queries
 
 // TotalDistance calculates total distance of route
@@ -276,24 +262,6 @@ func (r *Route) TotalTravelTime() int {
 	return total
 }
 
-// CurrentSegment gets current segment being executed
-func (r *Route) CurrentSegment() *RouteSegment {
-	if r.currentSegmentIndex < len(r.segments) {
-		return r.segments[r.currentSegmentIndex]
-	}
-	return nil
-}
-
-// RemainingSegments gets remaining segments to execute
-func (r *Route) RemainingSegments() []*RouteSegment {
-	if r.currentSegmentIndex >= len(r.segments) {
-		return []*RouteSegment{}
-	}
-	remaining := make([]*RouteSegment, len(r.segments)-r.currentSegmentIndex)
-	copy(remaining, r.segments[r.currentSegmentIndex:])
-	return remaining
-}
-
 func (r *Route) String() string {
 	return fmt.Sprintf("Route(id=%s, ship=%s, segments=%d, status=%s)",
 		r.routeID, r.shipSymbol, len(r.segments), r.Status())
@@ -302,7 +270,10 @@ func (r *Route) String() string {
 // NextSegment returns the next segment to execute (current segment)
 // Returns nil if route is complete
 func (r *Route) NextSegment() *RouteSegment {
-	return r.CurrentSegment()
+	if r.currentSegmentIndex < len(r.segments) {
+		return r.segments[r.currentSegmentIndex]
+	}
+	return nil
 }
 
 // HasRefuelAtStart checks if route requires refuel before departure
@@ -313,9 +284,4 @@ func (r *Route) HasRefuelAtStart() bool {
 // IsComplete checks if route execution is complete
 func (r *Route) IsComplete() bool {
 	return r.Status() == RouteStatusCompleted
-}
-
-// IsFailed checks if route execution has failed
-func (r *Route) IsFailed() bool {
-	return r.Status() == RouteStatusFailed
 }

@@ -111,21 +111,7 @@ func (r *GormManufacturingTaskRepository) FindByPipelineID(ctx context.Context, 
 		return nil, fmt.Errorf("failed to find tasks for pipeline: %w", result.Error)
 	}
 
-	tasks := make([]*manufacturing.ManufacturingTask, len(models))
-	for i, model := range models {
-		deps, err := r.FindDependencies(ctx, model.ID)
-		if err != nil {
-			return nil, err
-		}
-
-		t, err := r.modelToTask(&model, deps)
-		if err != nil {
-			return nil, fmt.Errorf("failed to convert task model: %w", err)
-		}
-		tasks[i] = t
-	}
-
-	return tasks, nil
+	return r.modelsToTasks(ctx, models)
 }
 
 // FindByPipelineAndStatus retrieves tasks for a pipeline filtered by status
@@ -140,21 +126,7 @@ func (r *GormManufacturingTaskRepository) FindByPipelineAndStatus(ctx context.Co
 		return nil, fmt.Errorf("failed to find tasks for pipeline: %w", result.Error)
 	}
 
-	tasks := make([]*manufacturing.ManufacturingTask, len(models))
-	for i, model := range models {
-		deps, err := r.FindDependencies(ctx, model.ID)
-		if err != nil {
-			return nil, err
-		}
-
-		t, err := r.modelToTask(&model, deps)
-		if err != nil {
-			return nil, fmt.Errorf("failed to convert task model: %w", err)
-		}
-		tasks[i] = t
-	}
-
-	return tasks, nil
+	return r.modelsToTasks(ctx, models)
 }
 
 // FindByStatus retrieves tasks by status for a player
@@ -169,21 +141,7 @@ func (r *GormManufacturingTaskRepository) FindByStatus(ctx context.Context, play
 		return nil, fmt.Errorf("failed to find tasks by status: %w", result.Error)
 	}
 
-	tasks := make([]*manufacturing.ManufacturingTask, len(models))
-	for i, model := range models {
-		deps, err := r.FindDependencies(ctx, model.ID)
-		if err != nil {
-			return nil, err
-		}
-
-		t, err := r.modelToTask(&model, deps)
-		if err != nil {
-			return nil, fmt.Errorf("failed to convert task model: %w", err)
-		}
-		tasks[i] = t
-	}
-
-	return tasks, nil
+	return r.modelsToTasks(ctx, models)
 }
 
 // FindReadyTasks retrieves all READY tasks for a player, sorted by priority
@@ -237,21 +195,7 @@ func (r *GormManufacturingTaskRepository) FindIncomplete(ctx context.Context, pl
 		return nil, fmt.Errorf("failed to find incomplete tasks: %w", result.Error)
 	}
 
-	tasks := make([]*manufacturing.ManufacturingTask, len(models))
-	for i, model := range models {
-		deps, err := r.FindDependencies(ctx, model.ID)
-		if err != nil {
-			return nil, err
-		}
-
-		t, err := r.modelToTask(&model, deps)
-		if err != nil {
-			return nil, fmt.Errorf("failed to convert task model: %w", err)
-		}
-		tasks[i] = t
-	}
-
-	return tasks, nil
+	return r.modelsToTasks(ctx, models)
 }
 
 // FindAvailableByGood retrieves PENDING or READY tasks for a specific good.
@@ -276,21 +220,7 @@ func (r *GormManufacturingTaskRepository) FindAvailableByGood(ctx context.Contex
 		return nil, fmt.Errorf("failed to find available tasks by good: %w", result.Error)
 	}
 
-	tasks := make([]*manufacturing.ManufacturingTask, len(models))
-	for i, model := range models {
-		deps, err := r.FindDependencies(ctx, model.ID)
-		if err != nil {
-			return nil, err
-		}
-
-		t, err := r.modelToTask(&model, deps)
-		if err != nil {
-			return nil, fmt.Errorf("failed to convert task model: %w", err)
-		}
-		tasks[i] = t
-	}
-
-	return tasks, nil
+	return r.modelsToTasks(ctx, models)
 }
 
 // FindReadyWithActivePipeline retrieves READY tasks from EXECUTING pipelines only.
@@ -314,21 +244,7 @@ func (r *GormManufacturingTaskRepository) FindReadyWithActivePipeline(ctx contex
 		return nil, fmt.Errorf("failed to find ready tasks with active pipeline: %w", result.Error)
 	}
 
-	tasks := make([]*manufacturing.ManufacturingTask, len(models))
-	for i, model := range models {
-		deps, err := r.FindDependencies(ctx, model.ID)
-		if err != nil {
-			return nil, err
-		}
-
-		t, err := r.modelToTask(&model, deps)
-		if err != nil {
-			return nil, fmt.Errorf("failed to convert task model: %w", err)
-		}
-		tasks[i] = t
-	}
-
-	return tasks, nil
+	return r.modelsToTasks(ctx, models)
 }
 
 // FindDependencies retrieves the task dependencies for a task
@@ -421,71 +337,48 @@ func (r *GormManufacturingTaskRepository) AssignTaskAtomically(ctx context.Conte
 	})
 }
 
+func (r *GormManufacturingTaskRepository) modelsToTasks(ctx context.Context, models []ManufacturingTaskModel) ([]*manufacturing.ManufacturingTask, error) {
+	tasks := make([]*manufacturing.ManufacturingTask, len(models))
+	for i := range models {
+		deps, err := r.FindDependencies(ctx, models[i].ID)
+		if err != nil {
+			return nil, err
+		}
+
+		t, err := r.modelToTask(&models[i], deps)
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert task model: %w", err)
+		}
+		tasks[i] = t
+	}
+
+	return tasks, nil
+}
+
 // taskToModel converts domain entity to database model
 func (r *GormManufacturingTaskRepository) taskToModel(t *manufacturing.ManufacturingTask) *ManufacturingTaskModel {
-	var errorMsg *string
-	if t.ErrorMessage() != "" {
-		msg := t.ErrorMessage()
-		errorMsg = &msg
-	}
-
-	var pipelineID, sourceMarket, targetMarket, factorySymbol, assignedShip *string
-	var storageOperationID, storageWaypoint, constructionSite *string
-	if t.PipelineID() != "" {
-		s := t.PipelineID()
-		pipelineID = &s
-	}
-	if t.SourceMarket() != "" {
-		s := t.SourceMarket()
-		sourceMarket = &s
-	}
-	if t.TargetMarket() != "" {
-		s := t.TargetMarket()
-		targetMarket = &s
-	}
-	if t.FactorySymbol() != "" {
-		s := t.FactorySymbol()
-		factorySymbol = &s
-	}
-	if t.StorageOperationID() != "" {
-		s := t.StorageOperationID()
-		storageOperationID = &s
-	}
-	if t.StorageWaypoint() != "" {
-		s := t.StorageWaypoint()
-		storageWaypoint = &s
-	}
-	if t.ConstructionSite() != "" {
-		s := t.ConstructionSite()
-		constructionSite = &s
-	}
-	if t.AssignedShip() != "" {
-		s := t.AssignedShip()
-		assignedShip = &s
-	}
-
 	return &ManufacturingTaskModel{
 		ID:                 t.ID(),
-		PipelineID:         pipelineID,
+		PipelineID:         stringToPtr(t.PipelineID()),
 		PlayerID:           t.PlayerID(),
 		TaskType:           string(t.TaskType()),
 		Status:             string(t.Status()),
 		Good:               t.Good(),
 		Quantity:           t.Quantity(),
 		ActualQuantity:     t.ActualQuantity(),
-		SourceMarket:       sourceMarket,
-		TargetMarket:       targetMarket,
-		FactorySymbol:      factorySymbol,
-		StorageOperationID: storageOperationID,
-		StorageWaypoint:    storageWaypoint,
-		ConstructionSite:   constructionSite,
-		AssignedShip:       assignedShip,
+		SourceMarket:       stringToPtr(t.SourceMarket()),
+		TargetMarket:       stringToPtr(t.TargetMarket()),
+		FactorySymbol:      stringToPtr(t.FactorySymbol()),
+		StorageOperationID: stringToPtr(t.StorageOperationID()),
+		StorageWaypoint:    stringToPtr(t.StorageWaypoint()),
+		ConstructionSite:   stringToPtr(t.ConstructionSite()),
+		AssignedShip:       stringToPtr(t.AssignedShip()),
 		Priority:           t.Priority(),
 		RetryCount:         t.RetryCount(),
 		MaxRetries:         t.MaxRetries(),
 		TotalCost:          t.TotalCost(),
 		TotalRevenue:       t.TotalRevenue(),
-		ErrorMessage:       errorMsg,
+		ErrorMessage:       stringToPtr(t.ErrorMessage()),
 		CreatedAt:          t.CreatedAt(),
 		ReadyAt:            t.ReadyAt(),
 		StartedAt:          t.StartedAt(),
@@ -499,61 +392,29 @@ func (r *GormManufacturingTaskRepository) taskToModel(t *manufacturing.Manufactu
 
 // modelToTask converts database model to domain entity
 func (r *GormManufacturingTaskRepository) modelToTask(m *ManufacturingTaskModel, deps []string) (*manufacturing.ManufacturingTask, error) {
-	var errorMsg string
-	if m.ErrorMessage != nil {
-		errorMsg = *m.ErrorMessage
-	}
-
-	var pipelineID, sourceMarket, targetMarket, factorySymbol, assignedShip string
-	var storageOperationID, storageWaypoint, constructionSite string
-	if m.PipelineID != nil {
-		pipelineID = *m.PipelineID
-	}
-	if m.SourceMarket != nil {
-		sourceMarket = *m.SourceMarket
-	}
-	if m.TargetMarket != nil {
-		targetMarket = *m.TargetMarket
-	}
-	if m.FactorySymbol != nil {
-		factorySymbol = *m.FactorySymbol
-	}
-	if m.StorageOperationID != nil {
-		storageOperationID = *m.StorageOperationID
-	}
-	if m.StorageWaypoint != nil {
-		storageWaypoint = *m.StorageWaypoint
-	}
-	if m.ConstructionSite != nil {
-		constructionSite = *m.ConstructionSite
-	}
-	if m.AssignedShip != nil {
-		assignedShip = *m.AssignedShip
-	}
-
 	return manufacturing.ReconstituteTask(
 		m.ID,
-		pipelineID,
+		derefString(m.PipelineID),
 		m.PlayerID,
 		manufacturing.TaskType(m.TaskType),
 		manufacturing.TaskStatus(m.Status),
 		m.Good,
 		m.Quantity,
 		m.ActualQuantity,
-		sourceMarket,
-		targetMarket,
-		factorySymbol,
-		storageOperationID,
-		storageWaypoint,
-		constructionSite,
+		derefString(m.SourceMarket),
+		derefString(m.TargetMarket),
+		derefString(m.FactorySymbol),
+		derefString(m.StorageOperationID),
+		derefString(m.StorageWaypoint),
+		derefString(m.ConstructionSite),
 		deps,
-		assignedShip,
+		derefString(m.AssignedShip),
 		m.Priority,
 		m.RetryCount,
 		m.MaxRetries,
 		m.TotalCost,
 		m.TotalRevenue,
-		errorMsg,
+		derefString(m.ErrorMessage),
 		m.CreatedAt,
 		m.ReadyAt,
 		m.StartedAt,

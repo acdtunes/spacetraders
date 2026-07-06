@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"time"
 )
 
 // FactoryConfig holds configuration for the goods factory system
@@ -70,18 +69,12 @@ func LoadConfig() (*FactoryConfig, error) {
 	}
 
 	// Override polling intervals from environment
-	if initialStr := os.Getenv("GOODS_POLL_INTERVAL_INITIAL"); initialStr != "" {
-		var initial int
-		if _, err := fmt.Sscanf(initialStr, "%d", &initial); err == nil && initial > 0 {
-			cfg.PollingIntervals.InitialSeconds = initial
-		}
+	if initial, ok := envInt("GOODS_POLL_INTERVAL_INITIAL"); ok && initial > 0 {
+		cfg.PollingIntervals.InitialSeconds = initial
 	}
 
-	if settledStr := os.Getenv("GOODS_POLL_INTERVAL_SETTLED"); settledStr != "" {
-		var settled int
-		if _, err := fmt.Sscanf(settledStr, "%d", &settled); err == nil && settled > 0 {
-			cfg.PollingIntervals.SettledSeconds = settled
-		}
+	if settled, ok := envInt("GOODS_POLL_INTERVAL_SETTLED"); ok && settled > 0 {
+		cfg.PollingIntervals.SettledSeconds = settled
 	}
 
 	// Override parallel execution settings
@@ -89,14 +82,23 @@ func LoadConfig() (*FactoryConfig, error) {
 		cfg.ParallelExecution.Enabled = enabledStr == "true" || enabledStr == "1"
 	}
 
-	if maxWorkersStr := os.Getenv("GOODS_MAX_WORKERS_PER_LEVEL"); maxWorkersStr != "" {
-		var maxWorkers int
-		if _, err := fmt.Sscanf(maxWorkersStr, "%d", &maxWorkers); err == nil && maxWorkers >= 0 {
-			cfg.ParallelExecution.MaxWorkersPerLevel = maxWorkers
-		}
+	if maxWorkers, ok := envInt("GOODS_MAX_WORKERS_PER_LEVEL"); ok && maxWorkers >= 0 {
+		cfg.ParallelExecution.MaxWorkersPerLevel = maxWorkers
 	}
 
 	return cfg, nil
+}
+
+func envInt(name string) (int, bool) {
+	raw := os.Getenv(name)
+	if raw == "" {
+		return 0, false
+	}
+	var value int
+	if _, err := fmt.Sscanf(raw, "%d", &value); err != nil {
+		return 0, false
+	}
+	return value, true
 }
 
 // loadSupplyChainFromFile loads the supply chain map from a JSON file
@@ -122,28 +124,6 @@ func loadSupplyChainFromFile(path string, cfg *FactoryConfig) error {
 	return nil
 }
 
-// GetPollingIntervals returns the configured polling intervals as durations
-func (c *FactoryConfig) GetPollingIntervals() []time.Duration {
-	return []time.Duration{
-		time.Duration(c.PollingIntervals.InitialSeconds) * time.Second,
-		time.Duration(c.PollingIntervals.SettledSeconds) * time.Second,
-	}
-}
-
-// SaveToFile saves the configuration to a JSON file
-func (c *FactoryConfig) SaveToFile(path string) error {
-	data, err := json.MarshalIndent(c, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal config: %w", err)
-	}
-
-	if err := os.WriteFile(path, data, 0644); err != nil {
-		return fmt.Errorf("failed to write file: %w", err)
-	}
-
-	return nil
-}
-
 // DefaultSupplyChainMap returns the embedded default supply chain mapping
 // This is the same data as in supply_chain_data.go but structured for config
 func DefaultSupplyChainMap() map[string][]string {
@@ -152,46 +132,46 @@ func DefaultSupplyChainMap() map[string][]string {
 		"ADVANCED_CIRCUITRY": {"ELECTRONICS", "MICROPROCESSORS"},
 
 		// Tier 2 - Intermediate Components
-		"ELECTRONICS":      {"SILICON_CRYSTALS", "COPPER"},
-		"MICROPROCESSORS":  {"SILICON_CRYSTALS"},
-		"FERTILIZERS":      {"AMMONIA_ICE"},
-		"FABRICS":          {"EXOTIC_MATTER"},
-		"FOOD":             {"BOTANICAL_SPECIMENS"},
-		"JEWELRY":          {"PRECIOUS_STONES"},
-		"MACHINERY":        {"IRON"},
-		"MOOD_REGULATORS":  {"HYDROCARBON"},
-		"PLASTICS":         {"HYDROCARBON"},
-		"POLYNUCLEOTIDES":  {"LIQUID_NITROGEN"},
-		"BIOCOMPOSITES":    {"BOTANICAL_SPECIMENS"},
-		"QUANTUM_DRIVES":   {"QUARTZ_SAND"},
-		"VIRAL_AGENTS":     {"BOTANICAL_SPECIMENS"},
-		"MEDICINE":         {"BOTANICAL_SPECIMENS"},
-		"DRUGS":            {"BOTANICAL_SPECIMENS"},
-		"NANOBOTS":         {"SILICON_CRYSTALS"},
-		"AI_MAINFRAMES":    {"MICROPROCESSORS"},
+		"ELECTRONICS":         {"SILICON_CRYSTALS", "COPPER"},
+		"MICROPROCESSORS":     {"SILICON_CRYSTALS"},
+		"FERTILIZERS":         {"AMMONIA_ICE"},
+		"FABRICS":             {"EXOTIC_MATTER"},
+		"FOOD":                {"BOTANICAL_SPECIMENS"},
+		"JEWELRY":             {"PRECIOUS_STONES"},
+		"MACHINERY":           {"IRON"},
+		"MOOD_REGULATORS":     {"HYDROCARBON"},
+		"PLASTICS":            {"HYDROCARBON"},
+		"POLYNUCLEOTIDES":     {"LIQUID_NITROGEN"},
+		"BIOCOMPOSITES":       {"BOTANICAL_SPECIMENS"},
+		"QUANTUM_DRIVES":      {"QUARTZ_SAND"},
+		"VIRAL_AGENTS":        {"BOTANICAL_SPECIMENS"},
+		"MEDICINE":            {"BOTANICAL_SPECIMENS"},
+		"DRUGS":               {"BOTANICAL_SPECIMENS"},
+		"NANOBOTS":            {"SILICON_CRYSTALS"},
+		"AI_MAINFRAMES":       {"MICROPROCESSORS"},
 		"QUANTUM_STABILIZERS": {"EXOTIC_MATTER"},
-		"ROBOTIC_DRONES":   {"MACHINERY"},
+		"ROBOTIC_DRONES":      {"MACHINERY"},
 
 		// Tier 1 - Basic Components (some require inputs)
-		"COPPER":  {},
-		"IRON":    {},
+		"COPPER":   {},
+		"IRON":     {},
 		"ALUMINUM": {},
 
 		// Tier 0 - Raw Materials (no inputs)
-		"SILICON_CRYSTALS":     {},
-		"QUARTZ_SAND":          {},
-		"AMMONIA_ICE":          {},
-		"LIQUID_NITROGEN":      {},
-		"LIQUID_HYDROGEN":      {},
-		"HYDROCARBON":          {},
-		"EXOTIC_MATTER":        {},
-		"PRECIOUS_STONES":      {},
-		"BOTANICAL_SPECIMENS":  {},
-		"URANITE_ORE":          {},
-		"MERITIUM_ORE":         {},
-		"GOLD_ORE":             {},
-		"PLATINUM_ORE":         {},
-		"DIAMONDS":             {},
-		"SILVER_ORE":           {},
+		"SILICON_CRYSTALS":    {},
+		"QUARTZ_SAND":         {},
+		"AMMONIA_ICE":         {},
+		"LIQUID_NITROGEN":     {},
+		"LIQUID_HYDROGEN":     {},
+		"HYDROCARBON":         {},
+		"EXOTIC_MATTER":       {},
+		"PRECIOUS_STONES":     {},
+		"BOTANICAL_SPECIMENS": {},
+		"URANITE_ORE":         {},
+		"MERITIUM_ORE":        {},
+		"GOLD_ORE":            {},
+		"PLATINUM_ORE":        {},
+		"DIAMONDS":            {},
+		"SILVER_ORE":          {},
 	}
 }

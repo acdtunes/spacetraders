@@ -89,10 +89,7 @@ func (h *DeliverContractHandler) loadContract(ctx context.Context, contractID st
 }
 
 func (h *DeliverContractHandler) validateDeliveryInDomain(contract *contract.Contract, tradeSymbol string, units int) error {
-	if err := contract.DeliverCargo(tradeSymbol, units); err != nil {
-		return err
-	}
-	return nil
+	return contract.DeliverCargo(tradeSymbol, units)
 }
 
 func (h *DeliverContractHandler) callDeliverCargoAPI(ctx context.Context, cmd *DeliverContractCommand, token string) (*domainPorts.ContractData, error) {

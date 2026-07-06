@@ -6,6 +6,7 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	shipCargo "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/cargo"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
@@ -174,7 +175,7 @@ func (p *ManufacturingPurchaser) ExecutePurchaseLoop(
 				break
 			}
 
-			if supplyLevel != "HIGH" && supplyLevel != "ABUNDANT" {
+			if !manufacturing.ParseSupplyLevel(supplyLevel).IsFavorableForCollection() {
 				if result.Rounds == 0 {
 					return nil, fmt.Errorf("factory %s supply is %s, need HIGH or ABUNDANT - will retry", params.Market, supplyLevel)
 				}
@@ -233,13 +234,13 @@ func (p *ManufacturingPurchaser) ExecutePurchaseLoop(
 		}
 
 		logger.Log("INFO", "Purchased goods", map[string]interface{}{
-			"good":           params.Good,
-			"units":          resp.UnitsAdded,
-			"cost":           resp.TotalCost,
-			"price_per_unit": pricePerUnit,
-			"supply":         supplyLevel,
-			"activity":       activityLevel,
-			"round":          result.Rounds,
+			"good":            params.Good,
+			"units":           resp.UnitsAdded,
+			"cost":            resp.TotalCost,
+			"price_per_unit":  pricePerUnit,
+			"supply":          supplyLevel,
+			"activity":        activityLevel,
+			"round":           result.Rounds,
 			"cargo_remaining": availableCargo,
 		})
 

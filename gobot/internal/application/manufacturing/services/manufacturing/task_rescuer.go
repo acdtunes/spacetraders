@@ -60,7 +60,7 @@ func (r *TaskRescuer) RescueReadyTasks(ctx context.Context, playerID int) Rescue
 			}
 
 		case manufacturing.TaskTypeAcquireDeliver:
-			rescued := r.rescueAcquireDeliverTask(ctx, task, playerID)
+			rescued := r.rescueFactoryDeliveryTask(ctx, task, playerID)
 			if rescued {
 				result.AcquireDeliverRescued++
 			} else {
@@ -68,9 +68,7 @@ func (r *TaskRescuer) RescueReadyTasks(ctx context.Context, playerID int) Rescue
 			}
 
 		case manufacturing.TaskTypeStorageAcquireDeliver:
-			// STORAGE_ACQUIRE_DELIVER tasks pick up from storage ships and deliver to factory
-			// Same validation as ACQUIRE_DELIVER - check factory input not saturated
-			rescued := r.rescueStorageAcquireDeliverTask(ctx, task, playerID)
+			rescued := r.rescueFactoryDeliveryTask(ctx, task, playerID)
 			if rescued {
 				result.StorageAcquireDeliverRescued++
 			} else {
@@ -139,45 +137,19 @@ func (r *TaskRescuer) rescueCollectSellTask(
 	return true
 }
 
-// rescueAcquireDeliverTask attempts to rescue an ACQUIRE_DELIVER task.
 // Returns true if rescued, false if reset to PENDING.
-func (r *TaskRescuer) rescueAcquireDeliverTask(
+func (r *TaskRescuer) rescueFactoryDeliveryTask(
 	ctx context.Context,
 	task *manufacturing.ManufacturingTask,
 	playerID int,
 ) bool {
 	if r.conditionChecker != nil {
-		// Check: Factory input is not already saturated
 		if r.conditionChecker.IsFactoryInputSaturated(ctx, task.FactorySymbol(), task.Good(), playerID) {
 			r.resetToPending(ctx, task)
 			return false
 		}
 	}
 
-	// All checks passed - enqueue
-	if r.taskQueue != nil {
-		r.taskQueue.Enqueue(task)
-	}
-	return true
-}
-
-// rescueStorageAcquireDeliverTask attempts to rescue a STORAGE_ACQUIRE_DELIVER task.
-// These tasks pick up cargo from storage ships and deliver to factories.
-// Returns true if rescued, false if reset to PENDING.
-func (r *TaskRescuer) rescueStorageAcquireDeliverTask(
-	ctx context.Context,
-	task *manufacturing.ManufacturingTask,
-	playerID int,
-) bool {
-	if r.conditionChecker != nil {
-		// Check: Factory input is not already saturated
-		if r.conditionChecker.IsFactoryInputSaturated(ctx, task.FactorySymbol(), task.Good(), playerID) {
-			r.resetToPending(ctx, task)
-			return false
-		}
-	}
-
-	// All checks passed - enqueue
 	if r.taskQueue != nil {
 		r.taskQueue.Enqueue(task)
 	}
@@ -211,58 +183,4 @@ type RescueResult struct {
 // TotalRescued returns the total number of tasks rescued.
 func (r RescueResult) TotalRescued() int {
 	return r.CollectSellRescued + r.AcquireDeliverRescued + r.StorageAcquireDeliverRescued + r.DeliverToConstructionRescued
-}
-
-// RescueFailedTasks rescues FAILED tasks that can be retried.
-func (r *TaskRescuer) RescueFailedTasks(ctx context.Context, playerID int) int {
-	if r.taskRepo == nil {
-		return 0
-	}
-
-	logger := common.LoggerFromContext(ctx)
-
-	failedTasks, err := r.taskRepo.FindByStatus(ctx, playerID, manufacturing.TaskStatusFailed)
-	if err != nil {
-		return 0
-	}
-
-	rescued := 0
-	for _, task := range failedTasks {
-		// LIQUIDATE tasks should NOT be rescued - if they failed with "no cargo",
-		// the cargo is gone and there's nothing to liquidate. Rescuing them creates
-		// an infinite loop of failed LIQUIDATE tasks.
-		if task.TaskType() == manufacturing.TaskTypeLiquidate {
-			continue
-		}
-
-		if !task.CanRetry() {
-			continue
-		}
-
-		// Reset for retry
-		if err := task.ResetForRetry(); err != nil {
-			continue
-		}
-
-		// Mark ready
-		if err := task.MarkReady(); err != nil {
-			continue
-		}
-
-		if r.taskRepo != nil {
-			_ = r.taskRepo.Update(ctx, task)
-		}
-
-		if r.taskQueue != nil {
-			r.taskQueue.Enqueue(task)
-		}
-
-		rescued++
-	}
-
-	if rescued > 0 {
-		logger.Log("DEBUG", fmt.Sprintf("Rescued %d failed tasks for retry", rescued), nil)
-	}
-
-	return rescued
 }

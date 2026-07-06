@@ -9,11 +9,19 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/storage"
 )
 
+const recoveryLogPrefix = "[storage-recovery]"
+
 // RecoveryResult contains the outcome of storage recovery
 type RecoveryResult struct {
 	OperationsRecovered int
 	ShipsRegistered     int
 	Errors              []string
+}
+
+func (r *RecoveryResult) recordError(format string, args ...interface{}) {
+	errMsg := fmt.Sprintf(format, args...)
+	log.Printf(recoveryLogPrefix+" ERROR: %s", errMsg)
+	r.Errors = append(r.Errors, errMsg)
 }
 
 // StorageRecoveryService handles recovery of storage ship state on daemon restart.
@@ -67,11 +75,11 @@ func (s *StorageRecoveryService) RecoverStorageOperations(
 	}
 
 	if len(operations) == 0 {
-		log.Printf("[storage-recovery] No running storage operations found for player %d", playerID)
+		log.Printf(recoveryLogPrefix+" No running storage operations found for player %d", playerID)
 		return result, nil
 	}
 
-	log.Printf("[storage-recovery] Found %d running storage operations for player %d", len(operations), playerID)
+	log.Printf(recoveryLogPrefix+" Found %d running storage operations for player %d", len(operations), playerID)
 
 	// Process each operation
 	for _, op := range operations {
@@ -81,7 +89,7 @@ func (s *StorageRecoveryService) RecoverStorageOperations(
 		}
 	}
 
-	log.Printf("[storage-recovery] Recovery complete: %d operations, %d ships registered, %d errors",
+	log.Printf(recoveryLogPrefix+" Recovery complete: %d operations, %d ships registered, %d errors",
 		result.OperationsRecovered, result.ShipsRegistered, len(result.Errors))
 
 	return result, nil
@@ -99,7 +107,7 @@ func (s *StorageRecoveryService) recoverOperationShips(
 	for _, shipSymbol := range op.StorageShips() {
 		// Check if already registered (idempotent)
 		if _, exists := s.coordinator.GetStorageShipBySymbol(shipSymbol); exists {
-			log.Printf("[storage-recovery] Ship %s already registered, skipping", shipSymbol)
+			log.Printf(recoveryLogPrefix+" Ship %s already registered, skipping", shipSymbol)
 			shipsRecovered++
 			continue
 		}
@@ -107,9 +115,7 @@ func (s *StorageRecoveryService) recoverOperationShips(
 		// Fetch current ship state from API
 		shipData, err := s.apiClient.GetShip(ctx, shipSymbol, token)
 		if err != nil {
-			errMsg := fmt.Sprintf("failed to fetch ship %s: %v", shipSymbol, err)
-			log.Printf("[storage-recovery] ERROR: %s", errMsg)
-			result.Errors = append(result.Errors, errMsg)
+			result.recordError("failed to fetch ship %s: %v", shipSymbol, err)
 			continue
 		}
 
@@ -128,21 +134,17 @@ func (s *StorageRecoveryService) recoverOperationShips(
 			initialCargo,
 		)
 		if err != nil {
-			errMsg := fmt.Sprintf("failed to create storage ship %s: %v", shipSymbol, err)
-			log.Printf("[storage-recovery] ERROR: %s", errMsg)
-			result.Errors = append(result.Errors, errMsg)
+			result.recordError("failed to create storage ship %s: %v", shipSymbol, err)
 			continue
 		}
 
 		// Register with coordinator
 		if err := s.coordinator.RegisterStorageShip(storageShip); err != nil {
-			errMsg := fmt.Sprintf("failed to register storage ship %s: %v", shipSymbol, err)
-			log.Printf("[storage-recovery] ERROR: %s", errMsg)
-			result.Errors = append(result.Errors, errMsg)
+			result.recordError("failed to register storage ship %s: %v", shipSymbol, err)
 			continue
 		}
 
-		log.Printf("[storage-recovery] Registered ship %s (op=%s, cargo=%d/%d)",
+		log.Printf(recoveryLogPrefix+" Registered ship %s (op=%s, cargo=%d/%d)",
 			shipSymbol, op.ID(), shipData.Cargo.Units, shipData.Cargo.Capacity)
 
 		result.ShipsRegistered++
@@ -172,7 +174,7 @@ func (s *StorageRecoveryService) RecoverSingleOperation(
 		return nil, fmt.Errorf("storage operation %s not found", operationID)
 	}
 
-	log.Printf("[storage-recovery] Recovering operation %s", operationID)
+	log.Printf(recoveryLogPrefix+" Recovering operation %s", operationID)
 
 	shipsRecovered := s.recoverOperationShips(ctx, op, token, result)
 	if shipsRecovered > 0 {

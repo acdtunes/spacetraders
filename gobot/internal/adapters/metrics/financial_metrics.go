@@ -19,15 +19,15 @@ import (
 type FinancialMetricsCollector struct {
 	// Dependencies
 	mediator      common.Mediator
-	playerRepo    player.PlayerRepository           // For fetching player data
-	getContainers func() map[string]ContainerInfo   // Function to get current containers
+	playerRepo    player.PlayerRepository         // For fetching player data
+	getContainers func() map[string]ContainerInfo // Function to get current containers
 
 	// Balance metrics
 	creditsBalance *prometheus.GaugeVec
 
 	// Transaction metrics
-	transactionsTotal  *prometheus.CounterVec
-	transactionAmount  *prometheus.HistogramVec
+	transactionsTotal *prometheus.CounterVec
+	transactionAmount *prometheus.HistogramVec
 
 	// P&L metrics
 	totalRevenue  *prometheus.GaugeVec

@@ -1,11 +1,11 @@
 package captainsup
 
 import (
-	"os/exec"
-	"errors"
-	"os"
 	"context"
+	"errors"
 	"fmt"
+	"os"
+	"os/exec"
 	"time"
 
 	"gorm.io/gorm"
@@ -14,7 +14,11 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
 )
 
-const eventBatchLimit = 50
+const (
+	eventBatchLimit    = 50
+	usageLimitBackoff  = 20 * time.Minute
+	captainLogMaxBytes = 96 * 1024
+)
 
 // Supervisor is pure plumbing: it decides WHEN a session runs, never WHAT
 // the captain does (spec: Component 2).
@@ -91,7 +95,7 @@ func (s *Supervisor) Tick(ctx context.Context, now time.Time) (bool, error) {
 		// Events stay unprocessed → retried later. Usage limit is a normal
 		// state: back off instead of hammering a closed window every tick.
 		if errors.Is(err, ErrUsageLimit) {
-			s.limitBackoffTill = now.Add(20 * time.Minute)
+			s.limitBackoffTill = now.Add(usageLimitBackoff)
 			fmt.Printf("captain: usage limit hit, backing off until %s\n",
 				s.limitBackoffTill.Format("15:04:05"))
 		}
@@ -108,7 +112,7 @@ func (s *Supervisor) Tick(ctx context.Context, now time.Time) (bool, error) {
 	// A successful session has addressed any Admiral message; clear the inbox.
 	_ = os.Remove(s.ws.InboxPath())
 	// Keep memory files bounded; overflow goes to grep-able archives.
-	_ = s.ws.TrimLog("captain-log.md", 96*1024)
+	_ = s.ws.TrimLog("captain-log.md", captainLogMaxBytes)
 	// Make the captain's memory durable: best-effort auto-commit of its
 	// workspace after each successful session (it cannot commit itself).
 	commitCaptainState(s.ws.Dir())

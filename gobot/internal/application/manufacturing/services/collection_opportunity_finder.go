@@ -36,33 +36,33 @@ func (o *CollectionOpportunity) Score() int {
 	score := o.ExpectedProfit
 
 	// Bonus for ABUNDANT factory supply (more reliable source)
-	if o.FactorySupply == "ABUNDANT" {
+	if o.FactorySupply == supplyAbundant {
 		score += 100
 	}
 
 	// Activity-based bonus for sell market (IMPORT)
 	// STRONG activity = highest prices at IMPORT markets = best for selling
 	switch o.SellMarketActivity {
-	case "STRONG":
+	case activityStrong:
 		score += 500
-	case "GROWING":
+	case activityGrowing:
 		score += 300
-	case "WEAK":
+	case activityWeak:
 		score += 100
-	case "RESTRICTED":
+	case activityRestricted:
 		score += 0
 	}
 
 	// Activity-based bonus for factory (EXPORT market)
 	// WEAK activity = lowest prices at EXPORT markets = best for buying
 	switch o.FactoryActivity {
-	case "WEAK":
+	case activityWeak:
 		score += 200 // Best for buying
-	case "GROWING":
+	case activityGrowing:
 		score += 100
-	case "STRONG":
+	case activityStrong:
 		score += 50
-	case "RESTRICTED":
+	case activityRestricted:
 		score += 0 // Worst for buying
 	}
 
@@ -164,69 +164,7 @@ func (f *CollectionOpportunityFinder) FindOpportunities(
 		return nil, nil
 	}
 
-	// Step 2: Build index of factories (EXPORT with HIGH/ABUNDANT supply)
-	// Map: good -> factories that export it with good supply
-	type factoryEntry struct {
-		waypointSymbol string
-		supply         string
-		activity       string // Activity level (WEAK preferred for buying)
-		sellPrice      int    // Price we'd pay to buy from factory
-	}
-	factoryIndex := make(map[string][]*factoryEntry)
-
-	// Step 3: Build index of buyers (ALL IMPORT markets)
-	// Map: good -> all buyers that import it (scoring differentiates by activity)
-	type buyerEntry struct {
-		waypointSymbol string
-		supply         string
-		activity       string
-		purchasePrice  int // Price buyer pays us
-	}
-	buyerIndex := make(map[string][]*buyerEntry)
-
-	// Scan all markets
-	for _, waypointSymbol := range marketWaypoints {
-		marketData, err := f.marketRepo.GetMarketData(ctx, waypointSymbol, playerID)
-		if err != nil || marketData == nil {
-			continue
-		}
-
-		for _, tradeGood := range marketData.TradeGoods() {
-			goodSymbol := tradeGood.Symbol()
-			supply := ""
-			if tradeGood.Supply() != nil {
-				supply = *tradeGood.Supply()
-			}
-			activity := ""
-			if tradeGood.Activity() != nil {
-				activity = *tradeGood.Activity()
-			}
-
-			// Check if this is a factory (EXPORT with HIGH/ABUNDANT supply)
-			if tradeGood.TradeType() == market.TradeTypeExport {
-				if supply == "ABUNDANT" || supply == "HIGH" {
-					factoryIndex[goodSymbol] = append(factoryIndex[goodSymbol], &factoryEntry{
-						waypointSymbol: waypointSymbol,
-						supply:         supply,
-						activity:       activity,
-						sellPrice:      tradeGood.SellPrice(), // Price we pay
-					})
-				}
-			}
-
-			// Check if this is a buyer (IMPORT market)
-			// Accept ALL import markets - activity-based scoring will differentiate
-			// Data analysis shows: STRONG activity markets pay the highest prices
-			if tradeGood.TradeType() == market.TradeTypeImport {
-				buyerIndex[goodSymbol] = append(buyerIndex[goodSymbol], &buyerEntry{
-					waypointSymbol: waypointSymbol,
-					supply:         supply,
-					activity:       activity,
-					purchasePrice:  tradeGood.PurchasePrice(), // Price we receive
-				})
-			}
-		}
-	}
+	factoryIndex, buyerIndex := f.buildFactoryAndBuyerIndices(ctx, marketWaypoints, playerID)
 
 	// Debug: Print indices
 	fmt.Printf("[CollectionFinder] Factory index has %d goods, Buyer index has %d goods\n", len(factoryIndex), len(buyerIndex))
@@ -259,55 +197,7 @@ func (f *CollectionOpportunityFinder) FindOpportunities(
 		}
 
 		// Find best factory-buyer pair for this good
-		var bestOpp *CollectionOpportunity
-
-		for _, factory := range factories {
-			for _, buyer := range buyers {
-				// Skip if same waypoint (can't buy and sell at same place)
-				if factory.waypointSymbol == buyer.waypointSymbol {
-					fmt.Printf("[CollectionFinder] %s: skipping same waypoint %s\n", good, factory.waypointSymbol)
-					continue
-				}
-
-				// Calculate profit
-				profit := buyer.purchasePrice - factory.sellPrice
-
-				// Check minimum margin
-				if factory.sellPrice > 0 {
-					margin := float64(profit) / float64(factory.sellPrice)
-					if margin < config.MinProfitMargin {
-						fmt.Printf("[CollectionFinder] %s: margin %.2f%% < min %.2f%% (buy=%d, sell=%d), skipping\n",
-							good, margin*100, config.MinProfitMargin*100, factory.sellPrice, buyer.purchasePrice)
-						continue
-					}
-				}
-
-				// Check minimum absolute profit
-				if profit < config.MinExpectedProfit {
-					fmt.Printf("[CollectionFinder] %s: profit %d < min %d, skipping\n",
-						good, profit, config.MinExpectedProfit)
-					continue
-				}
-
-				opp := &CollectionOpportunity{
-					Good:               good,
-					FactorySymbol:      factory.waypointSymbol,
-					SellMarket:         buyer.waypointSymbol,
-					FactorySupply:      factory.supply,
-					FactoryActivity:    factory.activity,
-					SellMarketSupply:   buyer.supply,
-					SellMarketActivity: buyer.activity,
-					SellPrice:          buyer.purchasePrice,
-					BuyPrice:           factory.sellPrice,
-					ExpectedProfit:     profit,
-				}
-
-				// Track best opportunity for this good
-				if bestOpp == nil || opp.Score() > bestOpp.Score() {
-					bestOpp = opp
-				}
-			}
-		}
+		bestOpp := bestOpportunityForGood(good, factories, buyers, config)
 
 		if bestOpp != nil {
 			fmt.Printf("[CollectionFinder] %s: found opportunity, profit=%d, factory=%s, buyer=%s\n",
@@ -329,6 +219,126 @@ func (f *CollectionOpportunityFinder) FindOpportunities(
 	}
 
 	return opportunities, nil
+}
+
+type factoryEntry struct {
+	waypointSymbol string
+	supply         string
+	activity       string // Activity level (WEAK preferred for buying)
+	sellPrice      int    // Price we'd pay to buy from factory
+}
+
+type buyerEntry struct {
+	waypointSymbol string
+	supply         string
+	activity       string
+	purchasePrice  int // Price buyer pays us
+}
+
+func (f *CollectionOpportunityFinder) buildFactoryAndBuyerIndices(
+	ctx context.Context,
+	marketWaypoints []string,
+	playerID int,
+) (map[string][]*factoryEntry, map[string][]*buyerEntry) {
+	// Step 2: Build index of factories (EXPORT with HIGH/ABUNDANT supply)
+	// Map: good -> factories that export it with good supply
+	factoryIndex := make(map[string][]*factoryEntry)
+
+	// Step 3: Build index of buyers (ALL IMPORT markets)
+	// Map: good -> all buyers that import it (scoring differentiates by activity)
+	buyerIndex := make(map[string][]*buyerEntry)
+
+	// Scan all markets
+	for _, waypointSymbol := range marketWaypoints {
+		marketData, err := f.marketRepo.GetMarketData(ctx, waypointSymbol, playerID)
+		if err != nil || marketData == nil {
+			continue
+		}
+
+		for _, tradeGood := range marketData.TradeGoods() {
+			goodSymbol := tradeGood.Symbol()
+			supply := supplyOrEmpty(&tradeGood)
+			activity := activityOrEmpty(&tradeGood)
+
+			// Check if this is a factory (EXPORT with HIGH/ABUNDANT supply)
+			if tradeGood.TradeType() == market.TradeTypeExport && isHighOrAbundant(supply) {
+				factoryIndex[goodSymbol] = append(factoryIndex[goodSymbol], &factoryEntry{
+					waypointSymbol: waypointSymbol,
+					supply:         supply,
+					activity:       activity,
+					sellPrice:      tradeGood.SellPrice(), // Price we pay
+				})
+			}
+
+			// Check if this is a buyer (IMPORT market)
+			// Accept ALL import markets - activity-based scoring will differentiate
+			// Data analysis shows: STRONG activity markets pay the highest prices
+			if tradeGood.TradeType() == market.TradeTypeImport {
+				buyerIndex[goodSymbol] = append(buyerIndex[goodSymbol], &buyerEntry{
+					waypointSymbol: waypointSymbol,
+					supply:         supply,
+					activity:       activity,
+					purchasePrice:  tradeGood.PurchasePrice(), // Price we receive
+				})
+			}
+		}
+	}
+
+	return factoryIndex, buyerIndex
+}
+
+func bestOpportunityForGood(
+	good string,
+	factories []*factoryEntry,
+	buyers []*buyerEntry,
+	config CollectionFinderConfig,
+) *CollectionOpportunity {
+	var bestOpp *CollectionOpportunity
+
+	for _, factory := range factories {
+		for _, buyer := range buyers {
+			if factory.waypointSymbol == buyer.waypointSymbol {
+				fmt.Printf("[CollectionFinder] %s: skipping same waypoint %s\n", good, factory.waypointSymbol)
+				continue
+			}
+
+			profit := buyer.purchasePrice - factory.sellPrice
+
+			if factory.sellPrice > 0 {
+				margin := float64(profit) / float64(factory.sellPrice)
+				if margin < config.MinProfitMargin {
+					fmt.Printf("[CollectionFinder] %s: margin %.2f%% < min %.2f%% (buy=%d, sell=%d), skipping\n",
+						good, margin*100, config.MinProfitMargin*100, factory.sellPrice, buyer.purchasePrice)
+					continue
+				}
+			}
+
+			if profit < config.MinExpectedProfit {
+				fmt.Printf("[CollectionFinder] %s: profit %d < min %d, skipping\n",
+					good, profit, config.MinExpectedProfit)
+				continue
+			}
+
+			opp := &CollectionOpportunity{
+				Good:               good,
+				FactorySymbol:      factory.waypointSymbol,
+				SellMarket:         buyer.waypointSymbol,
+				FactorySupply:      factory.supply,
+				FactoryActivity:    factory.activity,
+				SellMarketSupply:   buyer.supply,
+				SellMarketActivity: buyer.activity,
+				SellPrice:          buyer.purchasePrice,
+				BuyPrice:           factory.sellPrice,
+				ExpectedProfit:     profit,
+			}
+
+			if bestOpp == nil || opp.Score() > bestOpp.Score() {
+				bestOpp = opp
+			}
+		}
+	}
+
+	return bestOpp
 }
 
 // StorageCollectionOpportunity represents an opportunity to collect goods from
@@ -378,11 +388,6 @@ func (f *CollectionOpportunityFinder) FindStorageOpportunities(
 	}
 
 	// Build buyer index: good -> import markets (with activity for tie-breaking)
-	type buyerEntry struct {
-		waypointSymbol string
-		purchasePrice  int
-		activity       string // STRONG preferred for selling (highest prices)
-	}
 	buyerIndex := make(map[string][]*buyerEntry)
 
 	for _, waypointSymbol := range marketWaypoints {
@@ -392,21 +397,15 @@ func (f *CollectionOpportunityFinder) FindStorageOpportunities(
 		}
 
 		for _, tradeGood := range marketData.TradeGoods() {
-			// Only look at IMPORT markets (buyers)
 			if tradeGood.TradeType() != market.TradeTypeImport {
 				continue
-			}
-
-			activity := ""
-			if tradeGood.Activity() != nil {
-				activity = *tradeGood.Activity()
 			}
 
 			goodSymbol := tradeGood.Symbol()
 			buyerIndex[goodSymbol] = append(buyerIndex[goodSymbol], &buyerEntry{
 				waypointSymbol: waypointSymbol,
 				purchasePrice:  tradeGood.PurchasePrice(),
-				activity:       activity,
+				activity:       activityOrEmpty(&tradeGood),
 			})
 		}
 	}
@@ -432,26 +431,7 @@ func (f *CollectionOpportunityFinder) FindStorageOpportunities(
 			}
 
 			// Find best buyer: highest price, with STRONG activity as tiebreaker
-			var bestBuyer *buyerEntry
-			for _, buyer := range buyers {
-				if bestBuyer == nil {
-					bestBuyer = buyer
-					continue
-				}
-
-				// Primary: Highest price
-				if buyer.purchasePrice > bestBuyer.purchasePrice {
-					bestBuyer = buyer
-					continue
-				}
-
-				// Secondary: STRONG activity preferred (prices likely to stay high)
-				if buyer.purchasePrice == bestBuyer.purchasePrice {
-					if ImportActivityScore(buyer.activity) > ImportActivityScore(bestBuyer.activity) {
-						bestBuyer = buyer
-					}
-				}
-			}
+			bestBuyer := highestPayingBuyer(buyers)
 
 			if bestBuyer != nil && bestBuyer.purchasePrice > 0 {
 				opportunities = append(opportunities, &StorageCollectionOpportunity{
@@ -474,4 +454,23 @@ func (f *CollectionOpportunityFinder) FindStorageOpportunities(
 	})
 
 	return opportunities, nil
+}
+
+func highestPayingBuyer(buyers []*buyerEntry) *buyerEntry {
+	var bestBuyer *buyerEntry
+	for _, buyer := range buyers {
+		if bestBuyer == nil {
+			bestBuyer = buyer
+			continue
+		}
+		if buyer.purchasePrice > bestBuyer.purchasePrice {
+			bestBuyer = buyer
+			continue
+		}
+		if buyer.purchasePrice == bestBuyer.purchasePrice &&
+			ImportActivityScore(buyer.activity) > ImportActivityScore(bestBuyer.activity) {
+			bestBuyer = buyer
+		}
+	}
+	return bestBuyer
 }

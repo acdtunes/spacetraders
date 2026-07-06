@@ -185,14 +185,6 @@ func (sm *LifecycleStateMachine) RuntimeDuration() time.Duration {
 	return endTime.Sub(*sm.startedAt)
 }
 
-// Internal state management for advanced use cases
-
-// SetStatusForRecovery allows setting status during entity reconstruction (e.g., from database)
-// This should only be used by entity constructors, not during normal operation
-func (sm *LifecycleStateMachine) SetStatusForRecovery(status LifecycleStatus) {
-	sm.status = status
-}
-
 // UpdateTimestamp updates the updatedAt timestamp
 // Useful when entity performs operations that don't change lifecycle state
 func (sm *LifecycleStateMachine) UpdateTimestamp() {

@@ -53,45 +53,9 @@ func (s *TaskReadinessSpecification) canExecuteCollectSell(cond ReadinessConditi
 	return !cond.SellMarketSupply.IsSaturated()
 }
 
-// ShouldSkipSellMarket returns true if sell market is too saturated.
-func (s *TaskReadinessSpecification) ShouldSkipSellMarket(supply SupplyLevel) bool {
-	return supply.IsSaturated()
-}
-
-// IsFactoryReadyForCollection returns true if factory supply is favorable for collection.
-// This requires HIGH or ABUNDANT supply, indicating the factory has produced output.
-func (s *TaskReadinessSpecification) IsFactoryReadyForCollection(factorySupply SupplyLevel) bool {
-	return factorySupply.IsFavorableForCollection()
-}
-
 // CanSourceFromMarket returns true if the source market has purchasable supply.
 func (s *TaskReadinessSpecification) CanSourceFromMarket(sourceSupply SupplyLevel) bool {
 	return sourceSupply.AllowsPurchase()
-}
-
-// RequiresAbundantSupplyToStart returns true if the task requires ABUNDANT supply
-// at assignment time (to provide buffer for supply drops during navigation).
-// We require ABUNDANT to START a task, giving a buffer for supply drops.
-// The executor will still collect if supply is HIGH when the ship arrives.
-func (s *TaskReadinessSpecification) RequiresAbundantSupplyToStart(taskType TaskType) bool {
-	return taskType == TaskTypeCollectSell
-}
-
-// GetMinimumStartSupply returns the minimum supply level required to start a task.
-func (s *TaskReadinessSpecification) GetMinimumStartSupply(taskType TaskType) SupplyLevel {
-	if taskType == TaskTypeCollectSell {
-		return SupplyLevelAbundant // Require ABUNDANT to start, executor allows HIGH on arrival
-	}
-	return SupplyLevelModerate // Default for other task types
-}
-
-// GetMinimumExecuteSupply returns the minimum supply level required to execute a task.
-// This is checked when the ship arrives and is about to perform the operation.
-func (s *TaskReadinessSpecification) GetMinimumExecuteSupply(taskType TaskType) SupplyLevel {
-	if taskType == TaskTypeCollectSell {
-		return SupplyLevelHigh // Can execute at HIGH (more lenient than start)
-	}
-	return SupplyLevelLimited // Can execute at LIMITED for purchases
 }
 
 // EvaluateReadiness returns a detailed assessment of task readiness.

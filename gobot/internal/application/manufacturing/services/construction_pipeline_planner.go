@@ -189,10 +189,10 @@ func (p *ConstructionPipelinePlanner) StartOrResume(
 	}
 
 	logger.Log("INFO", "Created new construction pipeline", map[string]interface{}{
-		"pipeline_id":       pipeline.ID(),
-		"construction_site": constructionSite,
-		"materials_count":   len(unfulfilledMaterials),
-		"task_count":        pipeline.TaskCount(),
+		"pipeline_id":        pipeline.ID(),
+		"construction_site":  constructionSite,
+		"materials_count":    len(unfulfilledMaterials),
+		"task_count":         pipeline.TaskCount(),
 		"supply_chain_depth": supplyChainDepth,
 	})
 
@@ -420,15 +420,8 @@ func (p *ConstructionPipelinePlanner) createProductionTasksForInput(
 	// Create tasks for each input
 	inputTaskIDs := make([]string, 0, len(inputs))
 	for _, input := range inputs {
-		if goods.IsRawMaterial(input) || (supplyChainDepth >= 1 && goods.IsRawMaterial(input)) {
-			// Buy raw material
-			taskID, err := p.createAcquireDeliverTask(ctx, pipeline, input, systemSymbol, factory.WaypointSymbol, playerID)
-			if err != nil {
-				return err
-			}
-			inputTaskIDs = append(inputTaskIDs, taskID)
-		} else if supplyChainDepth >= 2 {
-			// Buy intermediate
+		if goods.IsRawMaterial(input) || supplyChainDepth >= 2 {
+			// Buy raw material or intermediate
 			taskID, err := p.createAcquireDeliverTask(ctx, pipeline, input, systemSymbol, factory.WaypointSymbol, playerID)
 			if err != nil {
 				return err

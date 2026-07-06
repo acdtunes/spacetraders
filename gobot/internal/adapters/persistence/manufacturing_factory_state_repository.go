@@ -139,16 +139,7 @@ func (r *GormManufacturingFactoryStateRepository) FindByPipelineID(ctx context.C
 		return nil, fmt.Errorf("failed to find factory states: %w", result.Error)
 	}
 
-	states := make([]*manufacturing.FactoryState, len(models))
-	for i, model := range models {
-		s, err := r.modelToFactoryState(&model)
-		if err != nil {
-			return nil, fmt.Errorf("failed to convert factory state model: %w", err)
-		}
-		states[i] = s
-	}
-
-	return states, nil
+	return r.modelsToFactoryStates(models)
 }
 
 // FindPending retrieves factory states awaiting production for a player
@@ -162,16 +153,7 @@ func (r *GormManufacturingFactoryStateRepository) FindPending(ctx context.Contex
 		return nil, fmt.Errorf("failed to find pending factory states: %w", result.Error)
 	}
 
-	states := make([]*manufacturing.FactoryState, len(models))
-	for i, model := range models {
-		s, err := r.modelToFactoryState(&model)
-		if err != nil {
-			return nil, fmt.Errorf("failed to convert factory state model: %w", err)
-		}
-		states[i] = s
-	}
-
-	return states, nil
+	return r.modelsToFactoryStates(models)
 }
 
 // FindReadyForCollection retrieves factory states ready for collection
@@ -185,16 +167,7 @@ func (r *GormManufacturingFactoryStateRepository) FindReadyForCollection(ctx con
 		return nil, fmt.Errorf("failed to find ready factory states: %w", result.Error)
 	}
 
-	states := make([]*manufacturing.FactoryState, len(models))
-	for i, model := range models {
-		s, err := r.modelToFactoryState(&model)
-		if err != nil {
-			return nil, fmt.Errorf("failed to convert factory state model: %w", err)
-		}
-		states[i] = s
-	}
-
-	return states, nil
+	return r.modelsToFactoryStates(models)
 }
 
 // Delete removes a factory state
@@ -215,6 +188,19 @@ func (r *GormManufacturingFactoryStateRepository) DeleteByPipelineID(ctx context
 	}
 
 	return nil
+}
+
+func (r *GormManufacturingFactoryStateRepository) modelsToFactoryStates(models []ManufacturingFactoryStateModel) ([]*manufacturing.FactoryState, error) {
+	states := make([]*manufacturing.FactoryState, len(models))
+	for i := range models {
+		s, err := r.modelToFactoryState(&models[i])
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert factory state model: %w", err)
+		}
+		states[i] = s
+	}
+
+	return states, nil
 }
 
 // factoryStateToModel converts domain entity to database model
@@ -239,16 +225,6 @@ func (r *GormManufacturingFactoryStateRepository) factoryStateToModel(s *manufac
 		return nil, fmt.Errorf("failed to marshal delivered inputs: %w", err)
 	}
 
-	var currentSupply, previousSupply *string
-	if s.CurrentSupply() != "" {
-		cs := s.CurrentSupply()
-		currentSupply = &cs
-	}
-	if s.PreviousSupply() != "" {
-		ps := s.PreviousSupply()
-		previousSupply = &ps
-	}
-
 	return &ManufacturingFactoryStateModel{
 		ID:                 s.ID(),
 		FactorySymbol:      s.FactorySymbol(),
@@ -258,8 +234,8 @@ func (r *GormManufacturingFactoryStateRepository) factoryStateToModel(s *manufac
 		RequiredInputs:     string(requiredInputsJSON),
 		DeliveredInputs:    string(deliveredInputsJSON),
 		AllInputsDelivered: s.AllInputsDelivered(),
-		CurrentSupply:      currentSupply,
-		PreviousSupply:     previousSupply,
+		CurrentSupply:      stringToPtr(s.CurrentSupply()),
+		PreviousSupply:     stringToPtr(s.PreviousSupply()),
 		ReadyForCollection: s.ReadyForCollection(),
 		CreatedAt:          s.CreatedAt(),
 		InputsCompletedAt:  s.InputsCompletedAt(),
@@ -296,14 +272,6 @@ func (r *GormManufacturingFactoryStateRepository) modelToFactoryState(m *Manufac
 		}
 	}
 
-	var currentSupply, previousSupply string
-	if m.CurrentSupply != nil {
-		currentSupply = *m.CurrentSupply
-	}
-	if m.PreviousSupply != nil {
-		previousSupply = *m.PreviousSupply
-	}
-
 	return manufacturing.ReconstituteFactoryState(
 		m.ID,
 		m.FactorySymbol,
@@ -313,8 +281,8 @@ func (r *GormManufacturingFactoryStateRepository) modelToFactoryState(m *Manufac
 		requiredInputs,
 		deliveredInputs,
 		m.AllInputsDelivered,
-		currentSupply,
-		previousSupply,
+		derefString(m.CurrentSupply),
+		derefString(m.PreviousSupply),
 		m.ReadyForCollection,
 		m.CreatedAt,
 		m.InputsCompletedAt,

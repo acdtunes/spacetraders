@@ -12,6 +12,8 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/storage"
 )
 
+const goodHydrocarbon = "HYDROCARBON"
+
 // RunStorageShipWorkerCommand manages a storage ship's lifecycle at a gas giant.
 // It navigates the ship to the gas giant, registers with the storage coordinator,
 // and keeps running until shutdown.
@@ -142,8 +144,8 @@ func (h *RunStorageShipWorkerHandler) Handle(ctx context.Context, request common
 	defer unsubscribe()
 
 	// Check if we already have HYDROCARBON from initial cargo (recovery scenario)
-	if initialCargo["HYDROCARBON"] > 0 {
-		h.jettisonHydrocarbonUnits(ctx, cmd, logger, initialCargo["HYDROCARBON"])
+	if initialCargo[goodHydrocarbon] > 0 {
+		h.jettisonHydrocarbonUnits(ctx, cmd, logger, initialCargo[goodHydrocarbon])
 	}
 
 	// Step 5: Wait for shutdown or HYDROCARBON deposits
@@ -162,7 +164,7 @@ func (h *RunStorageShipWorkerHandler) Handle(ctx context.Context, request common
 
 		case notification := <-depositNotifications:
 			// Only jettison HYDROCARBON - it's a worthless byproduct that wastes cargo space
-			if notification.GoodSymbol == "HYDROCARBON" && notification.Units > 0 {
+			if notification.GoodSymbol == goodHydrocarbon && notification.Units > 0 {
 				h.jettisonHydrocarbonUnits(ctx, cmd, logger, notification.Units)
 			}
 		}
@@ -186,7 +188,7 @@ func (h *RunStorageShipWorkerHandler) jettisonHydrocarbonUnits(
 
 	jettisonCmd := &shipCargo.JettisonCargoCommand{
 		ShipSymbol: cmd.ShipSymbol,
-		GoodSymbol: "HYDROCARBON",
+		GoodSymbol: goodHydrocarbon,
 		Units:      units,
 		PlayerID:   cmd.PlayerID,
 	}
@@ -201,7 +203,7 @@ func (h *RunStorageShipWorkerHandler) jettisonHydrocarbonUnits(
 		})
 	} else {
 		// Notify the coordinator that cargo was jettisoned so it updates AvailableSpace()
-		h.storageCoordinator.NotifyCargoJettisoned(cmd.ShipSymbol, "HYDROCARBON", units)
+		h.storageCoordinator.NotifyCargoJettisoned(cmd.ShipSymbol, goodHydrocarbon, units)
 
 		logger.Log("INFO", "Jettisoned HYDROCARBON from storage ship", map[string]interface{}{
 			"action":      "jettison_success",

@@ -135,7 +135,6 @@ func (h *RefuelShipHandler) buildRefuelResponse(ship *navigation.Ship, fuelBefor
 	}
 }
 
-
 // recordRefuelTransaction records the refuel transaction in the ledger
 func (h *RefuelShipHandler) recordRefuelTransaction(
 	ctx context.Context,

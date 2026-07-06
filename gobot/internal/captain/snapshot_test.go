@@ -1,10 +1,10 @@
 package captainsup
 
 import (
-	"strings"
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 

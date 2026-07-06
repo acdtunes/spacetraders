@@ -11,6 +11,8 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
+const grpcCallFailed = "gRPC call failed: %w"
+
 // DaemonClient provides a client interface to communicate with the daemon via gRPC
 type DaemonClient struct {
 	conn       *grpc.ClientConn
@@ -189,7 +191,7 @@ func (c *DaemonClient) NavigateShip(
 	// Call gRPC service
 	resp, err := c.client.NavigateShip(ctx, req)
 	if err != nil {
-		return nil, fmt.Errorf("gRPC call failed: %w", err)
+		return nil, fmt.Errorf(grpcCallFailed, err)
 	}
 
 	// Convert to client response type
@@ -219,7 +221,7 @@ func (c *DaemonClient) DockShip(
 
 	resp, err := c.client.DockShip(ctx, req)
 	if err != nil {
-		return nil, fmt.Errorf("gRPC call failed: %w", err)
+		return nil, fmt.Errorf(grpcCallFailed, err)
 	}
 
 	return &DockResponse{
@@ -246,7 +248,7 @@ func (c *DaemonClient) OrbitShip(
 
 	resp, err := c.client.OrbitShip(ctx, req)
 	if err != nil {
-		return nil, fmt.Errorf("gRPC call failed: %w", err)
+		return nil, fmt.Errorf(grpcCallFailed, err)
 	}
 
 	return &OrbitResponse{
@@ -278,7 +280,7 @@ func (c *DaemonClient) RefuelShip(
 
 	resp, err := c.client.RefuelShip(ctx, req)
 	if err != nil {
-		return nil, fmt.Errorf("gRPC call failed: %w", err)
+		return nil, fmt.Errorf(grpcCallFailed, err)
 	}
 
 	return &RefuelResponse{
@@ -309,7 +311,7 @@ func (c *DaemonClient) JumpShip(
 
 	resp, err := c.client.JumpShip(ctx, req)
 	if err != nil {
-		return nil, fmt.Errorf("gRPC call failed: %w", err)
+		return nil, fmt.Errorf(grpcCallFailed, err)
 	}
 
 	return &JumpResponse{
@@ -344,7 +346,7 @@ func (c *DaemonClient) JettisonCargo(
 
 	resp, err := c.client.JettisonCargo(ctx, req)
 	if err != nil {
-		return nil, fmt.Errorf("gRPC call failed: %w", err)
+		return nil, fmt.Errorf(grpcCallFailed, err)
 	}
 
 	return &JettisonResponse{
@@ -376,7 +378,7 @@ func (c *DaemonClient) BatchContractWorkflow(
 
 	resp, err := c.client.BatchContractWorkflow(ctx, req)
 	if err != nil {
-		return nil, fmt.Errorf("gRPC call failed: %w", err)
+		return nil, fmt.Errorf(grpcCallFailed, err)
 	}
 
 	return &BatchContractWorkflowResponse{
@@ -408,7 +410,7 @@ func (c *DaemonClient) ScoutTour(
 
 	resp, err := c.client.ScoutTour(ctx, req)
 	if err != nil {
-		return nil, fmt.Errorf("gRPC call failed: %w", err)
+		return nil, fmt.Errorf(grpcCallFailed, err)
 	}
 
 	return &ScoutTourResponse{
@@ -443,7 +445,7 @@ func (c *DaemonClient) ScoutMarkets(
 
 	resp, err := c.client.ScoutMarkets(ctx, req)
 	if err != nil {
-		return nil, fmt.Errorf("gRPC call failed: %w", err)
+		return nil, fmt.Errorf(grpcCallFailed, err)
 	}
 
 	// Convert protobuf response to client response type
@@ -483,7 +485,7 @@ func (c *DaemonClient) AssignScoutingFleet(
 
 	resp, err := c.client.AssignScoutingFleet(ctx, req)
 	if err != nil {
-		return nil, fmt.Errorf("gRPC call failed: %w", err)
+		return nil, fmt.Errorf(grpcCallFailed, err)
 	}
 
 	return &AssignScoutingFleetResponse{
@@ -508,7 +510,7 @@ func (c *DaemonClient) ListContainers(
 
 	resp, err := c.client.ListContainers(ctx, req)
 	if err != nil {
-		return nil, fmt.Errorf("gRPC call failed: %w", err)
+		return nil, fmt.Errorf(grpcCallFailed, err)
 	}
 
 	// Convert to client response type
@@ -541,7 +543,7 @@ func (c *DaemonClient) GetContainer(
 
 	resp, err := c.client.GetContainer(ctx, req)
 	if err != nil {
-		return nil, fmt.Errorf("gRPC call failed: %w", err)
+		return nil, fmt.Errorf(grpcCallFailed, err)
 	}
 
 	pbCont := resp.Container
@@ -570,7 +572,7 @@ func (c *DaemonClient) StopContainer(
 
 	resp, err := c.client.StopContainer(ctx, req)
 	if err != nil {
-		return nil, fmt.Errorf("gRPC call failed: %w", err)
+		return nil, fmt.Errorf(grpcCallFailed, err)
 	}
 
 	return &StopContainerResponse{
@@ -600,7 +602,7 @@ func (c *DaemonClient) GetContainerLogs(
 
 	resp, err := c.client.GetContainerLogs(ctx, req)
 	if err != nil {
-		return nil, fmt.Errorf("gRPC call failed: %w", err)
+		return nil, fmt.Errorf(grpcCallFailed, err)
 	}
 
 	// Convert to client response type
@@ -623,7 +625,7 @@ func (c *DaemonClient) HealthCheck(ctx context.Context) (*HealthResponse, error)
 
 	resp, err := c.client.HealthCheck(ctx, req)
 	if err != nil {
-		return nil, fmt.Errorf("gRPC call failed: %w", err)
+		return nil, fmt.Errorf(grpcCallFailed, err)
 	}
 
 	return &HealthResponse{
@@ -642,7 +644,7 @@ func (c *DaemonClient) ListShips(ctx context.Context, playerID *int32, agentSymb
 
 	resp, err := c.client.ListShips(ctx, req)
 	if err != nil {
-		return nil, fmt.Errorf("gRPC call failed: %w", err)
+		return nil, fmt.Errorf(grpcCallFailed, err)
 	}
 
 	return resp, nil
@@ -658,7 +660,7 @@ func (c *DaemonClient) GetShip(ctx context.Context, shipSymbol string, playerID 
 
 	resp, err := c.client.GetShip(ctx, req)
 	if err != nil {
-		return nil, fmt.Errorf("gRPC call failed: %w", err)
+		return nil, fmt.Errorf(grpcCallFailed, err)
 	}
 
 	return resp, nil
@@ -674,7 +676,7 @@ func (c *DaemonClient) RefreshShip(ctx context.Context, shipSymbol string, playe
 
 	resp, err := c.client.RefreshShip(ctx, req)
 	if err != nil {
-		return nil, fmt.Errorf("gRPC call failed: %w", err)
+		return nil, fmt.Errorf(grpcCallFailed, err)
 	}
 
 	return resp, nil
@@ -692,7 +694,7 @@ func (c *DaemonClient) ListWaypoints(ctx context.Context, systemSymbol string, t
 
 	resp, err := c.client.ListWaypoints(ctx, req)
 	if err != nil {
-		return nil, fmt.Errorf("gRPC call failed: %w", err)
+		return nil, fmt.Errorf(grpcCallFailed, err)
 	}
 
 	return resp, nil
@@ -708,7 +710,7 @@ func (c *DaemonClient) GetWaypoint(ctx context.Context, waypointSymbol string, p
 
 	resp, err := c.client.GetWaypoint(ctx, req)
 	if err != nil {
-		return nil, fmt.Errorf("gRPC call failed: %w", err)
+		return nil, fmt.Errorf(grpcCallFailed, err)
 	}
 
 	return resp, nil
@@ -724,7 +726,7 @@ func (c *DaemonClient) GetShipyardListings(ctx context.Context, systemSymbol, wa
 
 	resp, err := c.client.GetShipyardListings(ctx, req)
 	if err != nil {
-		return nil, fmt.Errorf("gRPC call failed: %w", err)
+		return nil, fmt.Errorf(grpcCallFailed, err)
 	}
 
 	return resp, nil
@@ -746,7 +748,7 @@ func (c *DaemonClient) PurchaseShip(ctx context.Context, purchasingShipSymbol, s
 
 	resp, err := c.client.PurchaseShip(ctx, req)
 	if err != nil {
-		return nil, fmt.Errorf("gRPC call failed: %w", err)
+		return nil, fmt.Errorf(grpcCallFailed, err)
 	}
 
 	return resp, nil
@@ -770,7 +772,7 @@ func (c *DaemonClient) BatchPurchaseShips(ctx context.Context, purchasingShipSym
 
 	resp, err := c.client.BatchPurchaseShips(ctx, req)
 	if err != nil {
-		return nil, fmt.Errorf("gRPC call failed: %w", err)
+		return nil, fmt.Errorf(grpcCallFailed, err)
 	}
 
 	return resp, nil
@@ -793,7 +795,7 @@ func (c *DaemonClient) ContractFleetCoordinator(
 
 	resp, err := c.client.ContractFleetCoordinator(ctx, req)
 	if err != nil {
-		return nil, fmt.Errorf("gRPC call failed: %w", err)
+		return nil, fmt.Errorf(grpcCallFailed, err)
 	}
 
 	return &ContractFleetCoordinatorResponse{
@@ -1094,7 +1096,7 @@ func (c *DaemonClient) StartConstructionPipeline(
 
 	resp, err := c.client.StartConstructionPipeline(ctx, req)
 	if err != nil {
-		return nil, fmt.Errorf("gRPC call failed: %w", err)
+		return nil, fmt.Errorf(grpcCallFailed, err)
 	}
 
 	// Convert materials
@@ -1135,7 +1137,7 @@ func (c *DaemonClient) GetConstructionStatus(
 
 	resp, err := c.client.GetConstructionStatus(ctx, req)
 	if err != nil {
-		return nil, fmt.Errorf("gRPC call failed: %w", err)
+		return nil, fmt.Errorf(grpcCallFailed, err)
 	}
 
 	// Convert materials

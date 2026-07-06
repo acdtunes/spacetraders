@@ -113,38 +113,3 @@ func (r *AssignmentReconciler) removeStaleEntries(ctx context.Context) int {
 
 	return len(staleTaskIDs)
 }
-
-// CountAssignedByType returns counts of currently assigned/executing tasks by type.
-func (r *AssignmentReconciler) CountAssignedByType(
-	ctx context.Context,
-	playerID int,
-) map[manufacturing.TaskType]int {
-	counts := make(map[manufacturing.TaskType]int)
-
-	if r.taskRepo == nil {
-		return counts
-	}
-
-	// Count ASSIGNED tasks
-	assignedTasks, err := r.taskRepo.FindByStatus(ctx, playerID, manufacturing.TaskStatusAssigned)
-	if err == nil {
-		for _, task := range assignedTasks {
-			counts[task.TaskType()]++
-		}
-	}
-
-	// Count EXECUTING tasks (also count as assigned for reservation purposes)
-	executingTasks, err := r.taskRepo.FindByStatus(ctx, playerID, manufacturing.TaskStatusExecuting)
-	if err == nil {
-		for _, task := range executingTasks {
-			counts[task.TaskType()]++
-		}
-	}
-
-	return counts
-}
-
-// GetTracker returns the underlying assignment tracker.
-func (r *AssignmentReconciler) GetTracker() *AssignmentTracker {
-	return r.tracker
-}

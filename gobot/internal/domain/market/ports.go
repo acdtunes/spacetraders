@@ -25,7 +25,7 @@ type MarketRepository interface {
 type FactoryResult struct {
 	WaypointSymbol string
 	TradeSymbol    string
-	SellPrice      int    // Price to buy from factory
+	SellPrice      int // Price to buy from factory
 	Supply         string
 	Activity       string
 }
@@ -120,7 +120,7 @@ type BestMarketBuyingResult struct {
 type BestBuyingMarketResult struct {
 	WaypointSymbol string
 	TradeSymbol    string
-	SellPrice      int       // What we pay
+	SellPrice      int // What we pay
 	Supply         string
 	Activity       string
 	TradeType      TradeType // EXPORT, IMPORT, or EXCHANGE

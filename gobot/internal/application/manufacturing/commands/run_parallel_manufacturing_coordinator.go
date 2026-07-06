@@ -18,6 +18,21 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
 
+const (
+	defaultMinPurchasePrice    = 1000
+	defaultMaxConcurrentTasks  = 10
+	defaultMaxPipelines        = 3
+	defaultSupplyPollInterval  = 30 * time.Second
+	defaultAcquisitionStrategy = "prefer-fabricate"
+
+	opportunityScanInterval         = 3 * time.Minute
+	stuckPipelineCheckInterval      = 5 * time.Minute
+	idleShipCheckInterval           = 10 * time.Second
+	pipelineCompletionCheckInterval = 30 * time.Second
+	staleWorkerCheckInterval        = 2 * time.Minute
+	staleWorkerThresholdMinutes     = 2
+)
+
 // RunParallelManufacturingCoordinatorCommand orchestrates parallel task-based manufacturing
 type RunParallelManufacturingCoordinatorCommand struct {
 	SystemSymbol           string        // System to scan for opportunities
@@ -50,11 +65,11 @@ type ContainerRemover interface {
 // - FactoryStateManager: Updates factory state and task dependencies
 type RunParallelManufacturingCoordinatorHandler struct {
 	// Planning services
-	demandFinder               *services.ManufacturingDemandFinder
+	demandFinder                *services.ManufacturingDemandFinder
 	collectionOpportunityFinder *services.CollectionOpportunityFinder
-	pipelinePlanner            *services.PipelinePlanner
-	taskQueue                  services.ManufacturingTaskQueue
-	factoryTracker             *manufacturing.FactoryStateTracker
+	pipelinePlanner             *services.PipelinePlanner
+	taskQueue                   services.ManufacturingTaskQueue
+	factoryTracker              *manufacturing.FactoryStateTracker
 
 	// Repositories
 	shipRepo         navigation.ShipRepository
@@ -76,12 +91,12 @@ type RunParallelManufacturingCoordinatorHandler struct {
 	eventPublisher  navigation.ShipEventPublisher
 
 	// Coordinator services (created per Handle call)
-	pipelineManager  mfgServices.PipelineManager
-	stateRecoverer   mfgServices.StateRecoverer
-	taskAssigner     mfgServices.TaskAssigner
-	workerManager    mfgServices.WorkerManager
-	orphanedHandler  mfgServices.OrphanedCargoManager
-	factoryManager   mfgServices.FactoryManager
+	pipelineManager mfgServices.PipelineManager
+	stateRecoverer  mfgServices.StateRecoverer
+	taskAssigner    mfgServices.TaskAssigner
+	workerManager   mfgServices.WorkerManager
+	orphanedHandler mfgServices.OrphanedCargoManager
+	factoryManager  mfgServices.FactoryManager
 
 	// Storage recovery (optional - nil if no storage operations)
 	storageRecovery *storageApp.StorageRecoveryService
@@ -210,12 +225,11 @@ func (h *RunParallelManufacturingCoordinatorHandler) Handle(
 	defer h.eventSubscriber.UnsubscribeWorkerCompleted(cmd.ContainerID, workerCompletedCh)
 	defer h.eventSubscriber.UnsubscribeTasksBecameReady(cmd.PlayerID, taskReadyCh)
 
-	// Set up tickers
-	opportunityScanTicker := time.NewTicker(3 * time.Minute)
-	stuckPipelineTicker := time.NewTicker(5 * time.Minute)
-	idleShipTicker := time.NewTicker(10 * time.Second)
-	pipelineCompletionTicker := time.NewTicker(30 * time.Second) // Safety net for lost completion signals
-	staleWorkerTicker := time.NewTicker(2 * time.Minute)         // Detect crashed workers
+	opportunityScanTicker := time.NewTicker(opportunityScanInterval)
+	stuckPipelineTicker := time.NewTicker(stuckPipelineCheckInterval)
+	idleShipTicker := time.NewTicker(idleShipCheckInterval)
+	pipelineCompletionTicker := time.NewTicker(pipelineCompletionCheckInterval) // Safety net for lost completion signals
+	staleWorkerTicker := time.NewTicker(staleWorkerCheckInterval)               // Detect crashed workers
 	defer opportunityScanTicker.Stop()
 	defer stuckPipelineTicker.Stop()
 	defer idleShipTicker.Stop()
@@ -223,50 +237,24 @@ func (h *RunParallelManufacturingCoordinatorHandler) Handle(
 	defer staleWorkerTicker.Stop()
 
 	// Initial scan and task assignment
-	h.pipelineManager.ScanAndCreatePipelines(ctx, mfgServices.PipelineScanParams{
-		SystemSymbol:           cmd.SystemSymbol,
-		PlayerID:               cmd.PlayerID,
-		MinPurchasePrice:       config.minPurchasePrice,
-		MaxPipelines:           config.maxPipelines,
-		MaxCollectionPipelines: config.maxCollectionPipelines,
-	})
-	h.taskAssigner.AssignTasks(ctx, mfgServices.AssignParams{
-		PlayerID:           cmd.PlayerID,
-		MaxConcurrentTasks: config.maxConcurrentTasks,
-		CoordinatorID:      cmd.ContainerID,
-	})
+	h.pipelineManager.ScanAndCreatePipelines(ctx, scanParams(cmd, config))
+	h.taskAssigner.AssignTasks(ctx, assignParams(cmd, config))
 
 	// Main coordination loop
 	for {
 		select {
 		case <-opportunityScanTicker.C:
-			h.pipelineManager.ScanAndCreatePipelines(ctx, mfgServices.PipelineScanParams{
-				SystemSymbol:           cmd.SystemSymbol,
-				PlayerID:               cmd.PlayerID,
-				MinPurchasePrice:       config.minPurchasePrice,
-				MaxPipelines:           config.maxPipelines,
-				MaxCollectionPipelines: config.maxCollectionPipelines,
-			})
+			h.pipelineManager.ScanAndCreatePipelines(ctx, scanParams(cmd, config))
 
 		case <-stuckPipelineTicker.C:
 			recycled := h.pipelineManager.DetectAndRecycleStuckPipelines(ctx, cmd.PlayerID)
 			if recycled > 0 {
-				h.pipelineManager.ScanAndCreatePipelines(ctx, mfgServices.PipelineScanParams{
-					SystemSymbol:           cmd.SystemSymbol,
-					PlayerID:               cmd.PlayerID,
-					MinPurchasePrice:       config.minPurchasePrice,
-					MaxPipelines:           config.maxPipelines,
-					MaxCollectionPipelines: config.maxCollectionPipelines,
-				})
+				h.pipelineManager.ScanAndCreatePipelines(ctx, scanParams(cmd, config))
 			}
 
 		case <-idleShipTicker.C:
 			h.pipelineManager.RescueReadyCollectSellTasks(ctx, cmd.PlayerID)
-			h.taskAssigner.AssignTasks(ctx, mfgServices.AssignParams{
-				PlayerID:           cmd.PlayerID,
-				MaxConcurrentTasks: config.maxConcurrentTasks,
-				CoordinatorID:      cmd.ContainerID,
-			})
+			h.taskAssigner.AssignTasks(ctx, assignParams(cmd, config))
 
 		case <-pipelineCompletionTicker.C:
 			// Safety net: Check for pipelines with completed tasks that weren't properly marked complete
@@ -275,37 +263,23 @@ func (h *RunParallelManufacturingCoordinatorHandler) Handle(
 			if completed > 0 {
 				logger.Log("INFO", fmt.Sprintf("Safety net: completed %d pipelines with lost signals", completed), nil)
 				// Rescan for new opportunities since pipelines completed
-				h.pipelineManager.ScanAndCreatePipelines(ctx, mfgServices.PipelineScanParams{
-					SystemSymbol:           cmd.SystemSymbol,
-					PlayerID:               cmd.PlayerID,
-					MinPurchasePrice:       config.minPurchasePrice,
-					MaxPipelines:           config.maxPipelines,
-					MaxCollectionPipelines: config.maxCollectionPipelines,
-				})
+				h.pipelineManager.ScanAndCreatePipelines(ctx, scanParams(cmd, config))
 			}
 
 		case <-taskReadyCh:
 			// Tasks became ready
-			h.taskAssigner.AssignTasks(ctx, mfgServices.AssignParams{
-				PlayerID:           cmd.PlayerID,
-				MaxConcurrentTasks: config.maxConcurrentTasks,
-				CoordinatorID:      cmd.ContainerID,
-			})
+			h.taskAssigner.AssignTasks(ctx, assignParams(cmd, config))
 
 		case <-staleWorkerTicker.C:
 			// Detect and cleanup crashed worker containers that are stuck in RUNNING state
 			// Workers are considered stale if their heartbeat hasn't been updated for 2 minutes
-			cleaned, err := h.daemonClient.CleanupStaleManufacturingWorkers(ctx, cmd.PlayerID, 2)
+			cleaned, err := h.daemonClient.CleanupStaleManufacturingWorkers(ctx, cmd.PlayerID, staleWorkerThresholdMinutes)
 			if err != nil {
 				logger.Log("WARN", fmt.Sprintf("Failed to cleanup stale workers: %v", err), nil)
 			} else if cleaned > 0 {
 				logger.Log("INFO", fmt.Sprintf("Cleaned up %d stale worker containers", cleaned), nil)
 				// Trigger task reassignment since ships were freed
-				h.taskAssigner.AssignTasks(ctx, mfgServices.AssignParams{
-					PlayerID:           cmd.PlayerID,
-					MaxConcurrentTasks: config.maxConcurrentTasks,
-					CoordinatorID:      cmd.ContainerID,
-				})
+				h.taskAssigner.AssignTasks(ctx, assignParams(cmd, config))
 			}
 
 		case event := <-workerCompletedCh:
@@ -329,6 +303,24 @@ type coordinatorConfig struct {
 	strategy               string
 }
 
+func scanParams(cmd *RunParallelManufacturingCoordinatorCommand, config coordinatorConfig) mfgServices.PipelineScanParams {
+	return mfgServices.PipelineScanParams{
+		SystemSymbol:           cmd.SystemSymbol,
+		PlayerID:               cmd.PlayerID,
+		MinPurchasePrice:       config.minPurchasePrice,
+		MaxPipelines:           config.maxPipelines,
+		MaxCollectionPipelines: config.maxCollectionPipelines,
+	}
+}
+
+func assignParams(cmd *RunParallelManufacturingCoordinatorCommand, config coordinatorConfig) mfgServices.AssignParams {
+	return mfgServices.AssignParams{
+		PlayerID:           cmd.PlayerID,
+		MaxConcurrentTasks: config.maxConcurrentTasks,
+		CoordinatorID:      cmd.ContainerID,
+	}
+}
+
 // applyDefaults applies default values to command parameters
 func (h *RunParallelManufacturingCoordinatorHandler) applyDefaults(cmd *RunParallelManufacturingCoordinatorCommand) coordinatorConfig {
 	config := coordinatorConfig{
@@ -341,21 +333,21 @@ func (h *RunParallelManufacturingCoordinatorHandler) applyDefaults(cmd *RunParal
 	}
 
 	if config.minPurchasePrice <= 0 {
-		config.minPurchasePrice = 1000
+		config.minPurchasePrice = defaultMinPurchasePrice
 	}
 	if config.maxConcurrentTasks <= 0 {
-		config.maxConcurrentTasks = 10
+		config.maxConcurrentTasks = defaultMaxConcurrentTasks
 	}
 	if config.maxPipelines < 0 {
-		config.maxPipelines = 3 // default when unset (-1)
+		config.maxPipelines = defaultMaxPipelines // default when unset (-1)
 	}
 	// Note: maxPipelines = 0 means DISABLED (no fabrication pipelines)
 	// Note: maxCollectionPipelines defaults to 0 (unlimited) - no default applied
 	if config.supplyPollInterval <= 0 {
-		config.supplyPollInterval = 30 * time.Second
+		config.supplyPollInterval = defaultSupplyPollInterval
 	}
 	if config.strategy == "" {
-		config.strategy = "prefer-fabricate"
+		config.strategy = defaultAcquisitionStrategy
 	}
 
 	return config
@@ -631,13 +623,7 @@ func (h *RunParallelManufacturingCoordinatorHandler) handleWorkerCompletion(
 			completed, _ := h.pipelineManager.CheckPipelineCompletion(ctx, completion.PipelineID)
 			if completed {
 				// Pipeline completed - rescan for new opportunities
-				h.pipelineManager.ScanAndCreatePipelines(ctx, mfgServices.PipelineScanParams{
-					SystemSymbol:           cmd.SystemSymbol,
-					PlayerID:               cmd.PlayerID,
-					MinPurchasePrice:       config.minPurchasePrice,
-					MaxPipelines:           config.maxPipelines,
-					MaxCollectionPipelines: config.maxCollectionPipelines,
-				})
+				h.pipelineManager.ScanAndCreatePipelines(ctx, scanParams(cmd, config))
 			}
 		}
 	} else {

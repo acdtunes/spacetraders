@@ -147,37 +147,6 @@ func (c *Contract) IsExpired() bool {
 	return c.clock.Now().UTC().After(deadline)
 }
 
-// ProfitabilityContext contains market and ship data needed for profitability calculation
-type ProfitabilityContext struct {
-	// MarketPrices maps trade_symbol to sell_price at the cheapest market
-	MarketPrices map[string]int
-	// CargoCapacity is the ship's cargo hold capacity
-	CargoCapacity int
-	// FuelCostPerTrip is the fuel cost for a round trip (delivery + return)
-	FuelCostPerTrip int
-	// CheapestMarketWaypoint is the primary market waypoint for purchasing
-	CheapestMarketWaypoint string
-}
-
-// ProfitabilityEvaluation contains the results of profitability calculation
-type ProfitabilityEvaluation struct {
-	IsProfitable           bool
-	NetProfit              int
-	TotalPayment           int
-	PurchaseCost           int
-	FuelCost               int
-	TripsRequired          int
-	CheapestMarketWaypoint string
-	Reason                 string
-}
-
-const (
-	// MinProfitThreshold defines the minimum acceptable net profit.
-	// Contracts with profits >= -5000 are considered profitable (accepts losses up to 5000 credits).
-	// This allows taking small losses to avoid opportunity cost of idle ships.
-	MinProfitThreshold = -5000
-)
-
 // EvaluateProfitability delegates profitability calculation to ContractProfitabilityService.
 //
 // This method provides a convenient API for contract profitability evaluation while

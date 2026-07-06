@@ -44,37 +44,6 @@ func (q *DualTaskQueue) Enqueue(task *manufacturing.ManufacturingTask) {
 	}
 }
 
-// EnqueuePriority adds a high-priority task to the appropriate queue
-func (q *DualTaskQueue) EnqueuePriority(task *manufacturing.ManufacturingTask) {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-
-	switch task.TaskType() {
-	case manufacturing.TaskTypeAcquireDeliver:
-		q.fabricationQueue.EnqueuePriority(task)
-	case manufacturing.TaskTypeCollectSell:
-		q.collectionQueue.EnqueuePriority(task)
-	default:
-		q.fabricationQueue.EnqueuePriority(task)
-	}
-}
-
-// GetReadyFabricationTasks returns all ready ACQUIRE_DELIVER tasks sorted by priority
-func (q *DualTaskQueue) GetReadyFabricationTasks() []*manufacturing.ManufacturingTask {
-	q.mu.RLock()
-	defer q.mu.RUnlock()
-
-	return q.fabricationQueue.GetReadyTasks()
-}
-
-// GetReadyCollectionTasks returns all ready COLLECT_SELL tasks sorted by priority
-func (q *DualTaskQueue) GetReadyCollectionTasks() []*manufacturing.ManufacturingTask {
-	q.mu.RLock()
-	defer q.mu.RUnlock()
-
-	return q.collectionQueue.GetReadyTasks()
-}
-
 // GetReadyTasks returns all ready tasks from both queues combined, sorted by priority.
 // This provides backward compatibility with code expecting a single queue.
 // Collection tasks have higher priority to generate revenue first.
@@ -92,22 +61,6 @@ func (q *DualTaskQueue) GetReadyTasks() []*manufacturing.ManufacturingTask {
 	result = append(result, fabricationTasks...)
 
 	return result
-}
-
-// DequeueFabrication removes and returns the highest-priority fabrication task
-func (q *DualTaskQueue) DequeueFabrication() *manufacturing.ManufacturingTask {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-
-	return q.fabricationQueue.Dequeue()
-}
-
-// DequeueCollection removes and returns the highest-priority collection task
-func (q *DualTaskQueue) DequeueCollection() *manufacturing.ManufacturingTask {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-
-	return q.collectionQueue.Dequeue()
 }
 
 // Dequeue removes and returns the highest-priority task from either queue.
@@ -155,22 +108,6 @@ func (q *DualTaskQueue) Size() int {
 	return q.fabricationQueue.Size() + q.collectionQueue.Size()
 }
 
-// FabricationSize returns the number of fabrication tasks in queue
-func (q *DualTaskQueue) FabricationSize() int {
-	q.mu.RLock()
-	defer q.mu.RUnlock()
-
-	return q.fabricationQueue.Size()
-}
-
-// CollectionSize returns the number of collection tasks in queue
-func (q *DualTaskQueue) CollectionSize() int {
-	q.mu.RLock()
-	defer q.mu.RUnlock()
-
-	return q.collectionQueue.Size()
-}
-
 // CountByType returns counts of ready tasks by task type across both queues
 func (q *DualTaskQueue) CountByType() map[manufacturing.TaskType]int {
 	q.mu.RLock()
@@ -189,30 +126,6 @@ func (q *DualTaskQueue) CountByType() map[manufacturing.TaskType]int {
 	}
 
 	return counts
-}
-
-// HasReadyFabricationTasks returns true if there are ready fabrication tasks
-func (q *DualTaskQueue) HasReadyFabricationTasks() bool {
-	q.mu.RLock()
-	defer q.mu.RUnlock()
-
-	return q.fabricationQueue.Size() > 0
-}
-
-// HasReadyCollectionTasks returns true if there are ready collection tasks
-func (q *DualTaskQueue) HasReadyCollectionTasks() bool {
-	q.mu.RLock()
-	defer q.mu.RUnlock()
-
-	return q.collectionQueue.Size() > 0
-}
-
-// HasReadyTasks returns true if there are ready tasks in either queue
-func (q *DualTaskQueue) HasReadyTasks() bool {
-	q.mu.RLock()
-	defer q.mu.RUnlock()
-
-	return q.fabricationQueue.Size() > 0 || q.collectionQueue.Size() > 0
 }
 
 // HasReadyTasksByType returns true if there are ready tasks of the specified type
@@ -294,14 +207,4 @@ func (q *DualTaskQueue) LoadFromRepository(ctx context.Context, repo manufacturi
 	}
 
 	return nil
-}
-
-// FabricationQueue returns the underlying fabrication queue (for backward compatibility)
-func (q *DualTaskQueue) FabricationQueue() *TaskQueue {
-	return q.fabricationQueue
-}
-
-// CollectionQueue returns the underlying collection queue (for backward compatibility)
-func (q *DualTaskQueue) CollectionQueue() *TaskQueue {
-	return q.collectionQueue
 }

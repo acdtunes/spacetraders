@@ -30,7 +30,7 @@ func (s *DaemonServer) NavigateShip(ctx context.Context, shipSymbol, destination
 		containerID,
 		container.ContainerTypeNavigate,
 		playerID,
-		1, // Single iteration for navigate
+		1,   // Single iteration for navigate
 		nil, // No parent container
 		map[string]interface{}{
 			"ship_symbol": shipSymbol,
@@ -71,7 +71,7 @@ func (s *DaemonServer) DockShip(ctx context.Context, shipSymbol string, playerID
 		containerID,
 		container.ContainerTypeDock,
 		playerID,
-		1, // Single iteration for dock
+		1,   // Single iteration for dock
 		nil, // No parent container
 		map[string]interface{}{
 			"ship_symbol": shipSymbol,
@@ -109,7 +109,7 @@ func (s *DaemonServer) OrbitShip(ctx context.Context, shipSymbol string, playerI
 		containerID,
 		container.ContainerTypeOrbit,
 		playerID,
-		1, // Single iteration for orbit
+		1,   // Single iteration for orbit
 		nil, // No parent container
 		map[string]interface{}{
 			"ship_symbol": shipSymbol,
@@ -155,7 +155,7 @@ func (s *DaemonServer) RefuelShip(ctx context.Context, shipSymbol string, player
 		containerID,
 		container.ContainerTypeRefuel,
 		playerID,
-		1, // Single iteration for refuel
+		1,   // Single iteration for refuel
 		nil, // No parent container
 		metadata,
 		nil, // Use default RealClock for production
@@ -199,7 +199,7 @@ func (s *DaemonServer) JettisonCargo(ctx context.Context, shipSymbol string, pla
 		containerID,
 		container.ContainerTypeJettison,
 		playerID,
-		1, // Single iteration for jettison
+		1,   // Single iteration for jettison
 		nil, // No parent container
 		metadata,
 		nil, // Use default RealClock for production

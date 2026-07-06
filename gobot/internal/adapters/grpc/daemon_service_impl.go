@@ -11,6 +11,8 @@ import (
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )
 
+const containerTimestampFormat = "2006-01-02T15:04:05Z"
+
 // daemonServiceImpl implements the DaemonServiceServer interface
 // It bridges gRPC requests to the DaemonServer business logic
 type daemonServiceImpl struct {
@@ -198,13 +200,13 @@ func (s *daemonServiceImpl) JumpShip(ctx context.Context, req *pb.JumpShipReques
 	}
 
 	return &pb.JumpShipResponse{
-		Success:          resp.Success,
-		NavigatedToGate:  resp.NavigatedToGate,
-		JumpGateSymbol:   resp.JumpGateSymbol,
+		Success:           resp.Success,
+		NavigatedToGate:   resp.NavigatedToGate,
+		JumpGateSymbol:    resp.JumpGateSymbol,
 		DestinationSystem: resp.DestinationSystem,
-		CooldownSeconds:  int32(resp.CooldownSeconds),
-		Message:          resp.Message,
-		Error:            "",
+		CooldownSeconds:   int32(resp.CooldownSeconds),
+		Message:           resp.Message,
+		Error:             "",
 	}, nil
 }
 
@@ -382,8 +384,8 @@ func (s *daemonServiceImpl) ListContainers(ctx context.Context, req *pb.ListCont
 			Status:            string(cont.Status()),
 			PlayerId:          ToProtobufPlayerID(cont.PlayerID()),
 			ParentContainerId: parentID,
-			CreatedAt:         cont.CreatedAt().Format("2006-01-02T15:04:05Z"),
-			UpdatedAt:         cont.UpdatedAt().Format("2006-01-02T15:04:05Z"),
+			CreatedAt:         cont.CreatedAt().Format(containerTimestampFormat),
+			UpdatedAt:         cont.UpdatedAt().Format(containerTimestampFormat),
 			CurrentIteration:  int32(cont.CurrentIteration()),
 			MaxIterations:     int32(cont.MaxIterations()),
 			RestartCount:      int32(cont.RestartCount()),
@@ -413,8 +415,8 @@ func (s *daemonServiceImpl) GetContainer(ctx context.Context, req *pb.GetContain
 		ContainerType:    string(container.Type()),
 		Status:           string(container.Status()),
 		PlayerId:         ToProtobufPlayerID(container.PlayerID()),
-		CreatedAt:        container.CreatedAt().Format("2006-01-02T15:04:05Z"),
-		UpdatedAt:        container.UpdatedAt().Format("2006-01-02T15:04:05Z"),
+		CreatedAt:        container.CreatedAt().Format(containerTimestampFormat),
+		UpdatedAt:        container.UpdatedAt().Format(containerTimestampFormat),
 		CurrentIteration: int32(container.CurrentIteration()),
 		MaxIterations:    int32(container.MaxIterations()),
 		RestartCount:     int32(container.RestartCount()),
@@ -476,10 +478,7 @@ func (s *daemonServiceImpl) ListShips(ctx context.Context, req *pb.ListShipsRequ
 		playerID = &pid
 	}
 
-	agentSymbol := ""
-	if req.AgentSymbol != nil {
-		agentSymbol = *req.AgentSymbol
-	}
+	agentSymbol := stringValue(req.AgentSymbol)
 
 	// Call daemon's ListShips method
 	ships, err := s.daemon.ListShips(ctx, playerID, agentSymbol)
@@ -501,10 +500,7 @@ func (s *daemonServiceImpl) GetShip(ctx context.Context, req *pb.GetShipRequest)
 		playerID = &pid
 	}
 
-	agentSymbol := ""
-	if req.AgentSymbol != nil {
-		agentSymbol = *req.AgentSymbol
-	}
+	agentSymbol := stringValue(req.AgentSymbol)
 
 	// Call daemon's GetShip method
 	shipDetail, err := s.daemon.GetShip(ctx, req.ShipSymbol, playerID, agentSymbol)
@@ -525,10 +521,7 @@ func (s *daemonServiceImpl) RefreshShip(ctx context.Context, req *pb.RefreshShip
 		playerID = &pid
 	}
 
-	agentSymbol := ""
-	if req.AgentSymbol != nil {
-		agentSymbol = *req.AgentSymbol
-	}
+	agentSymbol := stringValue(req.AgentSymbol)
 
 	// Call daemon's RefreshShip method
 	shipDetail, err := s.daemon.RefreshShip(ctx, req.ShipSymbol, playerID, agentSymbol)
@@ -548,20 +541,10 @@ func (s *daemonServiceImpl) ListWaypoints(ctx context.Context, req *pb.ListWaypo
 		playerID = &pid
 	}
 
-	agentSymbol := ""
-	if req.AgentSymbol != nil {
-		agentSymbol = *req.AgentSymbol
-	}
+	agentSymbol := stringValue(req.AgentSymbol)
 
-	trait := ""
-	if req.Trait != nil {
-		trait = *req.Trait
-	}
-
-	waypointType := ""
-	if req.Type != nil {
-		waypointType = *req.Type
-	}
+	trait := stringValue(req.Trait)
+	waypointType := stringValue(req.Type)
 
 	waypoints, err := s.daemon.ListWaypoints(ctx, req.SystemSymbol, trait, waypointType, playerID, agentSymbol)
 	if err != nil {
@@ -580,10 +563,7 @@ func (s *daemonServiceImpl) GetWaypoint(ctx context.Context, req *pb.GetWaypoint
 		playerID = &pid
 	}
 
-	agentSymbol := ""
-	if req.AgentSymbol != nil {
-		agentSymbol = *req.AgentSymbol
-	}
+	agentSymbol := stringValue(req.AgentSymbol)
 
 	waypoint, err := s.daemon.GetWaypoint(ctx, req.WaypointSymbol, playerID, agentSymbol)
 	if err != nil {
@@ -604,10 +584,7 @@ func (s *daemonServiceImpl) GetShipyardListings(ctx context.Context, req *pb.Get
 		playerID = &pid
 	}
 
-	agentSymbol := ""
-	if req.AgentSymbol != nil {
-		agentSymbol = *req.AgentSymbol
-	}
+	agentSymbol := stringValue(req.AgentSymbol)
 
 	// Call daemon's GetShipyardListings method
 	listings, shipyardSymbol, modificationFee, err := s.daemon.GetShipyardListings(ctx, req.SystemSymbol, req.WaypointSymbol, playerID, agentSymbol)
@@ -856,12 +833,12 @@ func (s *daemonServiceImpl) JettisonCargo(ctx context.Context, req *pb.JettisonC
 	}
 
 	response := &pb.JettisonCargoResponse{
-		ContainerId:    containerID,
-		ShipSymbol:     req.ShipSymbol,
-		GoodSymbol:     req.GoodSymbol,
+		ContainerId:     containerID,
+		ShipSymbol:      req.ShipSymbol,
+		GoodSymbol:      req.GoodSymbol,
 		UnitsJettisoned: req.Units,
-		Status:         "PENDING",
-		Message:        fmt.Sprintf("Jettisoning %d units of %s from %s", req.Units, req.GoodSymbol, req.ShipSymbol),
+		Status:          "PENDING",
+		Message:         fmt.Sprintf("Jettisoning %d units of %s from %s", req.Units, req.GoodSymbol, req.ShipSymbol),
 	}
 
 	return response, nil

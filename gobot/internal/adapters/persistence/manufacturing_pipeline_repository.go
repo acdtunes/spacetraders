@@ -84,16 +84,7 @@ func (r *GormManufacturingPipelineRepository) FindByPlayerID(ctx context.Context
 		return nil, fmt.Errorf("failed to find pipelines: %w", result.Error)
 	}
 
-	pipelines := make([]*manufacturing.ManufacturingPipeline, len(models))
-	for i, model := range models {
-		p, err := r.modelToPipeline(&model)
-		if err != nil {
-			return nil, fmt.Errorf("failed to convert pipeline model: %w", err)
-		}
-		pipelines[i] = p
-	}
-
-	return pipelines, nil
+	return r.modelsToPipelines(models)
 }
 
 // FindByStatus retrieves pipelines by status for a player
@@ -113,24 +104,12 @@ func (r *GormManufacturingPipelineRepository) FindByStatus(ctx context.Context, 
 		return nil, fmt.Errorf("failed to find pipelines by status: %w", result.Error)
 	}
 
-	pipelines := make([]*manufacturing.ManufacturingPipeline, len(models))
-	for i, model := range models {
-		p, err := r.modelToPipeline(&model)
-		if err != nil {
-			return nil, fmt.Errorf("failed to convert pipeline model: %w", err)
-		}
-		pipelines[i] = p
-	}
-
-	return pipelines, nil
+	return r.modelsToPipelines(models)
 }
 
 // FindActiveForProduct checks if there's an active pipeline for a product
 func (r *GormManufacturingPipelineRepository) FindActiveForProduct(ctx context.Context, playerID int, productGood string) (*manufacturing.ManufacturingPipeline, error) {
-	activeStatuses := []string{
-		string(manufacturing.PipelineStatusPlanning),
-		string(manufacturing.PipelineStatusExecuting),
-	}
+	activeStatuses := activePipelineStatuses()
 
 	var model ManufacturingPipelineModel
 	result := r.db.WithContext(ctx).
@@ -150,10 +129,7 @@ func (r *GormManufacturingPipelineRepository) FindActiveForProduct(ctx context.C
 // FindActiveCollectionForProduct checks if there's an active COLLECTION pipeline for a product.
 // This is used to prevent duplicate collection pipelines for the same good.
 func (r *GormManufacturingPipelineRepository) FindActiveCollectionForProduct(ctx context.Context, playerID int, productGood string) (*manufacturing.ManufacturingPipeline, error) {
-	activeStatuses := []string{
-		string(manufacturing.PipelineStatusPlanning),
-		string(manufacturing.PipelineStatusExecuting),
-	}
+	activeStatuses := activePipelineStatuses()
 
 	var model ManufacturingPipelineModel
 	result := r.db.WithContext(ctx).
@@ -174,10 +150,7 @@ func (r *GormManufacturingPipelineRepository) FindActiveCollectionForProduct(ctx
 // CountActiveFabricationPipelines counts only FABRICATION pipelines that are active.
 // This is used for max_pipelines limiting.
 func (r *GormManufacturingPipelineRepository) CountActiveFabricationPipelines(ctx context.Context, playerID int) (int, error) {
-	activeStatuses := []string{
-		string(manufacturing.PipelineStatusPlanning),
-		string(manufacturing.PipelineStatusExecuting),
-	}
+	activeStatuses := activePipelineStatuses()
 
 	var count int64
 	result := r.db.WithContext(ctx).
@@ -196,10 +169,7 @@ func (r *GormManufacturingPipelineRepository) CountActiveFabricationPipelines(ct
 // CountActiveCollectionPipelines counts only COLLECTION pipelines that are active.
 // This is used for max_collection_pipelines limiting (0 = unlimited).
 func (r *GormManufacturingPipelineRepository) CountActiveCollectionPipelines(ctx context.Context, playerID int) (int, error) {
-	activeStatuses := []string{
-		string(manufacturing.PipelineStatusPlanning),
-		string(manufacturing.PipelineStatusExecuting),
-	}
+	activeStatuses := activePipelineStatuses()
 
 	var count int64
 	result := r.db.WithContext(ctx).
@@ -219,10 +189,7 @@ func (r *GormManufacturingPipelineRepository) CountActiveCollectionPipelines(ctx
 // Returns nil, nil if no active pipeline exists for this site.
 // Only returns non-terminal pipelines (excludes COMPLETED, FAILED, CANCELLED).
 func (r *GormManufacturingPipelineRepository) FindByConstructionSite(ctx context.Context, constructionSiteSymbol string, playerID int) (*manufacturing.ManufacturingPipeline, error) {
-	activeStatuses := []string{
-		string(manufacturing.PipelineStatusPlanning),
-		string(manufacturing.PipelineStatusExecuting),
-	}
+	activeStatuses := activePipelineStatuses()
 
 	var model ManufacturingPipelineModel
 	result := r.db.WithContext(ctx).
@@ -250,21 +217,28 @@ func (r *GormManufacturingPipelineRepository) Delete(ctx context.Context, id str
 	return nil
 }
 
+func activePipelineStatuses() []string {
+	return []string{
+		string(manufacturing.PipelineStatusPlanning),
+		string(manufacturing.PipelineStatusExecuting),
+	}
+}
+
+func (r *GormManufacturingPipelineRepository) modelsToPipelines(models []ManufacturingPipelineModel) ([]*manufacturing.ManufacturingPipeline, error) {
+	pipelines := make([]*manufacturing.ManufacturingPipeline, len(models))
+	for i := range models {
+		p, err := r.modelToPipeline(&models[i])
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert pipeline model: %w", err)
+		}
+		pipelines[i] = p
+	}
+
+	return pipelines, nil
+}
+
 // pipelineToModel converts domain entity to database model
 func (r *GormManufacturingPipelineRepository) pipelineToModel(p *manufacturing.ManufacturingPipeline) *ManufacturingPipelineModel {
-	var errorMsg *string
-	if p.ErrorMessage() != "" {
-		msg := p.ErrorMessage()
-		errorMsg = &msg
-	}
-
-	// Handle construction site
-	var constructionSite *string
-	if p.ConstructionSite() != "" {
-		site := p.ConstructionSite()
-		constructionSite = &site
-	}
-
 	// Serialize materials to JSON
 	materialsJSON := "[]"
 	if len(p.Materials()) > 0 {
@@ -293,11 +267,11 @@ func (r *GormManufacturingPipelineRepository) pipelineToModel(p *manufacturing.M
 		TotalCost:        p.TotalCost(),
 		TotalRevenue:     p.TotalRevenue(),
 		NetProfit:        p.NetProfit(),
-		ErrorMessage:     errorMsg,
+		ErrorMessage:     stringToPtr(p.ErrorMessage()),
 		CreatedAt:        p.CreatedAt(),
 		StartedAt:        p.StartedAt(),
 		CompletedAt:      p.CompletedAt(),
-		ConstructionSite: constructionSite,
+		ConstructionSite: stringToPtr(p.ConstructionSite()),
 		Materials:        materialsJSON,
 		SupplyChainDepth: p.SupplyChainDepth(),
 		MaxWorkers:       p.MaxWorkers(),
@@ -306,17 +280,6 @@ func (r *GormManufacturingPipelineRepository) pipelineToModel(p *manufacturing.M
 
 // modelToPipeline converts database model to domain entity
 func (r *GormManufacturingPipelineRepository) modelToPipeline(m *ManufacturingPipelineModel) (*manufacturing.ManufacturingPipeline, error) {
-	var errorMsg string
-	if m.ErrorMessage != nil {
-		errorMsg = *m.ErrorMessage
-	}
-
-	// Handle construction site
-	var constructionSite string
-	if m.ConstructionSite != nil {
-		constructionSite = *m.ConstructionSite
-	}
-
 	pipeline := manufacturing.ReconstitutePipeline(
 		m.ID,
 		m.SequenceNumber,
@@ -329,11 +292,11 @@ func (r *GormManufacturingPipelineRepository) modelToPipeline(m *ManufacturingPi
 		m.TotalCost,
 		m.TotalRevenue,
 		m.NetProfit,
-		errorMsg,
+		derefString(m.ErrorMessage),
 		m.CreatedAt,
 		m.StartedAt,
 		m.CompletedAt,
-		constructionSite,
+		derefString(m.ConstructionSite),
 		m.SupplyChainDepth,
 		m.MaxWorkers,
 	)

@@ -41,9 +41,9 @@ func newContainerListCommand() *cobra.Command {
 By default, only active containers (RUNNING, INTERRUPTED) are shown.
 Use --show-all to see containers in all states including completed and failed.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			client, err := NewDaemonClient(socketPath)
+			client, err := connectDaemon()
 			if err != nil {
-				return fmt.Errorf("failed to connect to daemon: %w", err)
+				return err
 			}
 			defer client.Close()
 
@@ -119,9 +119,9 @@ func newContainerGetCommand() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			containerID := args[0]
 
-			client, err := NewDaemonClient(socketPath)
+			client, err := connectDaemon()
 			if err != nil {
-				return fmt.Errorf("failed to connect to daemon: %w", err)
+				return err
 			}
 			defer client.Close()
 
@@ -165,9 +165,9 @@ func newContainerStopCommand() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			containerID := args[0]
 
-			client, err := NewDaemonClient(socketPath)
+			client, err := connectDaemon()
 			if err != nil {
-				return fmt.Errorf("failed to connect to daemon: %w", err)
+				return err
 			}
 			defer client.Close()
 

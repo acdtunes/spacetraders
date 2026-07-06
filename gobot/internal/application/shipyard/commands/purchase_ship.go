@@ -370,11 +370,11 @@ func (h *PurchaseShipHandler) recordShipPurchaseTransaction(
 
 	// Build metadata
 	metadata := map[string]interface{}{
-		"agent":           agentSymbol,
-		"ship_type":       cmd.ShipType,
-		"ship_symbol":     purchaseResult.Transaction.ShipSymbol,
-		"waypoint":        shipyardWaypoint,
-		"transaction_id":  purchaseResult.Transaction.ShipSymbol, // Use ship symbol as transaction reference
+		"agent":          agentSymbol,
+		"ship_type":      cmd.ShipType,
+		"ship_symbol":    purchaseResult.Transaction.ShipSymbol,
+		"waypoint":       shipyardWaypoint,
+		"transaction_id": purchaseResult.Transaction.ShipSymbol, // Use ship symbol as transaction reference
 	}
 
 	// Create record transaction command
@@ -394,10 +394,10 @@ func (h *PurchaseShipHandler) recordShipPurchaseTransaction(
 	if err != nil {
 		// Log error but don't fail the operation
 		logger.Log("ERROR", "Failed to record ship purchase transaction in ledger", map[string]interface{}{
-			"error":      err.Error(),
-			"ship_type":  cmd.ShipType,
-			"price":      purchaseResult.Transaction.Price,
-			"player_id":  cmd.PlayerID.Value(),
+			"error":     err.Error(),
+			"ship_type": cmd.ShipType,
+			"price":     purchaseResult.Transaction.Price,
+			"player_id": cmd.PlayerID.Value(),
 		})
 	} else {
 		logger.Log("DEBUG", "Ship purchase transaction recorded in ledger", map[string]interface{}{

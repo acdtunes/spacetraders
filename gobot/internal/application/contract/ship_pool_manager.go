@@ -63,8 +63,8 @@ const (
 // FindIdleLightHaulers finds all idle light hauler ships for a player.
 //
 // A ship is considered an "idle light hauler" if:
-//   1. Ship role is "HAULER"
-//   2. Ship has no active assignment (Ship.IsIdle() returns true)
+//  1. Ship role is "HAULER"
+//  2. Ship has no active assignment (Ship.IsIdle() returns true)
 //
 // This provides a dynamic pool of available haulers without requiring pre-assignment.
 // Ship assignment status is now embedded in the Ship aggregate and enriched by the repository.
@@ -142,11 +142,11 @@ func FindIdleLightHaulers(
 	}
 
 	logger.Log("INFO", "Idle light haulers discovered", map[string]interface{}{
-		"action":              "find_idle_haulers",
-		"total_ships":         len(allShips),
-		"hauler_ships_exist":  haulerShipsExist,
-		"idle_haulers":        len(idleHaulers),
-		"hauler_symbols":      idleHaulerSymbols,
+		"action":             "find_idle_haulers",
+		"total_ships":        len(allShips),
+		"hauler_ships_exist": haulerShipsExist,
+		"idle_haulers":       len(idleHaulers),
+		"hauler_symbols":     idleHaulerSymbols,
 	})
 
 	// Fallback: ONLY use command ship if NO HAULER SHIPS EXIST AT ALL

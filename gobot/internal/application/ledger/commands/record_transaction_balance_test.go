@@ -1,8 +1,8 @@
 package commands
 
 import (
-	"sync"
 	"context"
+	"sync"
 	"testing"
 	"time"
 

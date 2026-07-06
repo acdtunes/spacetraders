@@ -6,8 +6,8 @@ import "context"
 type contextKey int
 
 const (
-	operationContextKey    contextKey = iota
-	skipMarketRefreshKey              // Skip market refresh after cargo transactions (optimization)
+	operationContextKey  contextKey = iota
+	skipMarketRefreshKey            // Skip market refresh after cargo transactions (optimization)
 )
 
 // OperationContext provides traceability from high-level operations (containers)

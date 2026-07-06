@@ -123,6 +123,11 @@ const (
 	DefaultMaxRetries = 3
 )
 
+func nowPtr() *time.Time {
+	now := time.Now()
+	return &now
+}
+
 // ManufacturingTask represents a single atomic task in the manufacturing pipeline.
 // Tasks are the unit of work assignment - each can be independently executed by a ship.
 //
@@ -133,8 +138,9 @@ const (
 //   - STORAGE_ACQUIRE_DELIVER: Wait for cargo from storage ships AND deliver to factory
 //
 // State Machine:
-//   PENDING -> READY -> ASSIGNED -> EXECUTING -> COMPLETED
-//                                           \-> FAILED -> PENDING (retry)
+//
+//	PENDING -> READY -> ASSIGNED -> EXECUTING -> COMPLETED
+//	                                        \-> FAILED -> PENDING (retry)
 type ManufacturingTask struct {
 	id       string
 	taskType TaskType
@@ -213,9 +219,8 @@ func NewLiquidationTask(playerID int, shipSymbol string, good string, quantity i
 	task.quantity = quantity
 	task.assignedShip = shipSymbol
 	task.status = TaskStatusReady // Liquidation tasks are immediately ready
-	task.priority = 100           // High priority - recover investment ASAP
-	now := time.Now()
-	task.readyAt = &now
+	task.priority = PriorityLiquidate
+	task.readyAt = nowPtr()
 	return task
 }
 
@@ -300,101 +305,34 @@ func NewDeliverToConstructionTask(
 	return task
 }
 
-// ReconstructTask rebuilds a task from persistence
-func ReconstructTask(
-	id string,
-	taskType TaskType,
-	status TaskStatus,
-	good string,
-	quantity int,
-	sourceMarket string,
-	targetMarket string,
-	factorySymbol string,
-	storageOperationID string,
-	storageWaypoint string,
-	constructionSite string,
-	dependsOn []string,
-	pipelineID string,
-	playerID int,
-	assignedShip string,
-	priority int,
-	retryCount int,
-	maxRetries int,
-	createdAt time.Time,
-	readyAt *time.Time,
-	startedAt *time.Time,
-	completedAt *time.Time,
-	actualQuantity int,
-	totalCost int,
-	totalRevenue int,
-	errorMessage string,
-	// BUG FIX #3: Phase tracking fields
-	collectPhaseCompleted bool,
-	acquirePhaseCompleted bool,
-	phaseCompletedAt *time.Time,
-) *ManufacturingTask {
-	return &ManufacturingTask{
-		id:                 id,
-		taskType:           taskType,
-		status:             status,
-		good:               good,
-		quantity:           quantity,
-		sourceMarket:       sourceMarket,
-		targetMarket:       targetMarket,
-		factorySymbol:      factorySymbol,
-		storageOperationID: storageOperationID,
-		storageWaypoint:    storageWaypoint,
-		constructionSite:   constructionSite,
-		dependsOn:          dependsOn,
-		pipelineID:         pipelineID,
-		playerID:           playerID,
-		assignedShip:       assignedShip,
-		priority:           priority,
-		retryCount:         retryCount,
-		maxRetries:         maxRetries,
-		createdAt:          createdAt,
-		readyAt:            readyAt,
-		startedAt:          startedAt,
-		completedAt:        completedAt,
-		actualQuantity:     actualQuantity,
-		totalCost:          totalCost,
-		totalRevenue:       totalRevenue,
-		errorMessage:       errorMessage,
-		// BUG FIX #3: Phase tracking fields
-		collectPhaseCompleted: collectPhaseCompleted,
-		acquirePhaseCompleted: acquirePhaseCompleted,
-		phaseCompletedAt:      phaseCompletedAt,
-	}
-}
-
 // Getters
 
-func (t *ManufacturingTask) ID() string              { return t.id }
-func (t *ManufacturingTask) TaskType() TaskType      { return t.taskType }
-func (t *ManufacturingTask) Status() TaskStatus      { return t.status }
-func (t *ManufacturingTask) Good() string            { return t.good }
-func (t *ManufacturingTask) Quantity() int           { return t.quantity }
-func (t *ManufacturingTask) SourceMarket() string    { return t.sourceMarket }
-func (t *ManufacturingTask) TargetMarket() string    { return t.targetMarket }
+func (t *ManufacturingTask) ID() string                 { return t.id }
+func (t *ManufacturingTask) TaskType() TaskType         { return t.taskType }
+func (t *ManufacturingTask) Status() TaskStatus         { return t.status }
+func (t *ManufacturingTask) Good() string               { return t.good }
+func (t *ManufacturingTask) Quantity() int              { return t.quantity }
+func (t *ManufacturingTask) SourceMarket() string       { return t.sourceMarket }
+func (t *ManufacturingTask) TargetMarket() string       { return t.targetMarket }
 func (t *ManufacturingTask) FactorySymbol() string      { return t.factorySymbol }
 func (t *ManufacturingTask) StorageOperationID() string { return t.storageOperationID }
 func (t *ManufacturingTask) StorageWaypoint() string    { return t.storageWaypoint }
 func (t *ManufacturingTask) ConstructionSite() string   { return t.constructionSite }
 func (t *ManufacturingTask) DependsOn() []string        { return t.dependsOn }
-func (t *ManufacturingTask) PipelineID() string      { return t.pipelineID }
-func (t *ManufacturingTask) PlayerID() int           { return t.playerID }
-func (t *ManufacturingTask) AssignedShip() string    { return t.assignedShip }
-func (t *ManufacturingTask) Priority() int           { return t.priority }
-func (t *ManufacturingTask) RetryCount() int         { return t.retryCount }
-func (t *ManufacturingTask) MaxRetries() int         { return t.maxRetries }
-func (t *ManufacturingTask) CreatedAt() time.Time    { return t.createdAt }
-func (t *ManufacturingTask) ReadyAt() *time.Time     { return t.readyAt }
-func (t *ManufacturingTask) StartedAt() *time.Time   { return t.startedAt }
-func (t *ManufacturingTask) CompletedAt() *time.Time { return t.completedAt }
-func (t *ManufacturingTask) ActualQuantity() int     { return t.actualQuantity }
-func (t *ManufacturingTask) TotalCost() int          { return t.totalCost }
-func (t *ManufacturingTask) TotalRevenue() int       { return t.totalRevenue }
-func (t *ManufacturingTask) ErrorMessage() string    { return t.errorMessage }
+func (t *ManufacturingTask) PipelineID() string         { return t.pipelineID }
+func (t *ManufacturingTask) PlayerID() int              { return t.playerID }
+func (t *ManufacturingTask) AssignedShip() string       { return t.assignedShip }
+func (t *ManufacturingTask) Priority() int              { return t.priority }
+func (t *ManufacturingTask) RetryCount() int            { return t.retryCount }
+func (t *ManufacturingTask) MaxRetries() int            { return t.maxRetries }
+func (t *ManufacturingTask) CreatedAt() time.Time       { return t.createdAt }
+func (t *ManufacturingTask) ReadyAt() *time.Time        { return t.readyAt }
+func (t *ManufacturingTask) StartedAt() *time.Time      { return t.startedAt }
+func (t *ManufacturingTask) CompletedAt() *time.Time    { return t.completedAt }
+func (t *ManufacturingTask) ActualQuantity() int        { return t.actualQuantity }
+func (t *ManufacturingTask) TotalCost() int             { return t.totalCost }
+func (t *ManufacturingTask) TotalRevenue() int          { return t.totalRevenue }
+func (t *ManufacturingTask) ErrorMessage() string       { return t.errorMessage }
 
 // BUG FIX #3: Phase tracking getters
 func (t *ManufacturingTask) CollectPhaseCompleted() bool  { return t.collectPhaseCompleted }
@@ -405,34 +343,16 @@ func (t *ManufacturingTask) PhaseCompletedAt() *time.Time { return t.phaseComple
 
 // MarkCollectPhaseComplete marks the collect phase as completed for COLLECT_SELL tasks.
 // Called after successfully purchasing goods from the factory.
-// After daemon restart, ShouldSkipToSecondPhase() returns true and worker skips to sell.
 func (t *ManufacturingTask) MarkCollectPhaseComplete() {
 	t.collectPhaseCompleted = true
-	now := time.Now()
-	t.phaseCompletedAt = &now
+	t.phaseCompletedAt = nowPtr()
 }
 
 // MarkAcquirePhaseComplete marks the acquire phase as completed for ACQUIRE_DELIVER tasks.
 // Called after successfully purchasing goods from the market.
-// After daemon restart, ShouldSkipToSecondPhase() returns true and worker skips to deliver.
 func (t *ManufacturingTask) MarkAcquirePhaseComplete() {
 	t.acquirePhaseCompleted = true
-	now := time.Now()
-	t.phaseCompletedAt = &now
-}
-
-// ShouldSkipToSecondPhase returns true if the first phase completed before interruption.
-// Used by workers to skip to sell/deliver phase after daemon restart.
-func (t *ManufacturingTask) ShouldSkipToSecondPhase() bool {
-	switch t.taskType {
-	case TaskTypeCollectSell:
-		return t.collectPhaseCompleted
-	case TaskTypeAcquireDeliver, TaskTypeStorageAcquireDeliver, TaskTypeDeliverToConstruction:
-		// STORAGE_ACQUIRE_DELIVER and DELIVER_TO_CONSTRUCTION reuse acquirePhaseCompleted flag
-		return t.acquirePhaseCompleted
-	default:
-		return false
-	}
+	t.phaseCompletedAt = nowPtr()
 }
 
 // ResetPhaseTracking clears phase completion flags.
@@ -473,8 +393,7 @@ func (t *ManufacturingTask) MarkReady() error {
 		}
 	}
 	t.status = TaskStatusReady
-	now := time.Now()
-	t.readyAt = &now
+	t.readyAt = nowPtr()
 	return nil
 }
 
@@ -510,8 +429,7 @@ func (t *ManufacturingTask) StartExecution() error {
 		}
 	}
 	t.status = TaskStatusExecuting
-	now := time.Now()
-	t.startedAt = &now
+	t.startedAt = nowPtr()
 	return nil
 }
 
@@ -528,8 +446,7 @@ func (t *ManufacturingTask) Complete() error {
 		}
 	}
 	t.status = TaskStatusCompleted
-	now := time.Now()
-	t.completedAt = &now
+	t.completedAt = nowPtr()
 	// DO NOT clear assignedShip - downstream tasks need this for ship affinity
 	// Ship assignment release is handled by the container runner, not the task state
 	return nil
@@ -547,8 +464,7 @@ func (t *ManufacturingTask) Fail(errorMsg string) error {
 	}
 	t.status = TaskStatusFailed
 	t.errorMessage = errorMsg
-	now := time.Now()
-	t.completedAt = &now
+	t.completedAt = nowPtr()
 	t.retryCount++
 	// DO NOT clear assignedShip - FindByAssignedShip needs it to find the task
 	// Ship assignment release is handled by ResetForRetry or coordinator
@@ -576,7 +492,7 @@ func (t *ManufacturingTask) ResetForRetry() error {
 	t.errorMessage = ""
 	t.startedAt = nil
 	t.completedAt = nil
-	t.readyAt = nil      // Reset so MarkReady() sets fresh timestamp for fair aging
+	t.readyAt = nil     // Reset so MarkReady() sets fresh timestamp for fair aging
 	t.assignedShip = "" // Release ship so it can be reassigned
 	// BUG FIX #3: Reset phase tracking for fresh retry
 	t.ResetPhaseTracking()
@@ -596,8 +512,7 @@ func (t *ManufacturingTask) RollbackAssignment() error {
 	t.status = TaskStatusReady
 	t.assignedShip = ""
 	// Reset readyAt for fair aging - assignment failure shouldn't give priority bonus
-	now := time.Now()
-	t.readyAt = &now
+	t.readyAt = nowPtr()
 	return nil
 }
 
@@ -622,8 +537,7 @@ func (t *ManufacturingTask) RollbackExecution() error {
 	t.startedAt = nil
 	// Reset readyAt to prevent accumulating aging priority after recovery
 	// Without this, recovered tasks would have artificially high priority
-	now := time.Now()
-	t.readyAt = &now
+	t.readyAt = nowPtr()
 	return nil
 }
 
@@ -658,8 +572,7 @@ func (t *ManufacturingTask) Cancel(reason string) error {
 	}
 	t.status = TaskStatusFailed
 	t.errorMessage = reason
-	now := time.Now()
-	t.completedAt = &now
+	t.completedAt = nowPtr()
 	return nil
 }
 
@@ -722,9 +635,9 @@ func (t *ManufacturingTask) NetProfit() int {
 	return t.totalRevenue - t.totalCost
 }
 
-// GetDestination returns the starting destination waypoint for this task.
-// For atomic tasks, returns the first destination (source for acquire, factory for collect).
-func (t *ManufacturingTask) GetDestination() string {
+// GetFirstDestination returns the initial destination waypoint for the task.
+// For ACQUIRE_DELIVER: source market, For COLLECT_SELL: factory, For LIQUIDATE: target market.
+func (t *ManufacturingTask) GetFirstDestination() string {
 	switch t.taskType {
 	case TaskTypeAcquireDeliver:
 		return t.sourceMarket
@@ -733,9 +646,8 @@ func (t *ManufacturingTask) GetDestination() string {
 	case TaskTypeLiquidate:
 		return t.targetMarket
 	case TaskTypeStorageAcquireDeliver:
-		return t.storageWaypoint // Navigate to storage operation first
+		return t.storageWaypoint
 	case TaskTypeDeliverToConstruction:
-		// First go to source market to buy, or factory to collect
 		if t.sourceMarket != "" {
 			return t.sourceMarket
 		}
@@ -743,13 +655,6 @@ func (t *ManufacturingTask) GetDestination() string {
 	default:
 		return ""
 	}
-}
-
-// GetFirstDestination returns the initial destination waypoint for the task.
-// Alias for GetDestination() for clarity in domain language.
-// For ACQUIRE_DELIVER: source market, For COLLECT_SELL: factory, For LIQUIDATE: target market.
-func (t *ManufacturingTask) GetFirstDestination() string {
-	return t.GetDestination()
 }
 
 // GetFinalDestination returns where the task delivers goods.
@@ -767,54 +672,6 @@ func (t *ManufacturingTask) GetFinalDestination() string {
 	default:
 		return t.targetMarket
 	}
-}
-
-// RequiresHighFactorySupply returns true if this task type needs high factory supply.
-// Only COLLECT_SELL tasks require the factory to have HIGH/ABUNDANT supply before collection.
-func (t *ManufacturingTask) RequiresHighFactorySupply() bool {
-	return t.taskType == TaskTypeCollectSell
-}
-
-// RequiresSellMarketCheck returns true if task needs sell market saturation check.
-// Tasks that sell goods should avoid saturated markets to maintain prices.
-func (t *ManufacturingTask) RequiresSellMarketCheck() bool {
-	return t.taskType == TaskTypeCollectSell || t.taskType == TaskTypeLiquidate
-}
-
-// IsSupplyGated returns true if task execution depends on supply levels.
-// ACQUIRE_DELIVER depends on source market supply, COLLECT_SELL depends on factory supply.
-func (t *ManufacturingTask) IsSupplyGated() bool {
-	return t.taskType == TaskTypeAcquireDeliver || t.taskType == TaskTypeCollectSell
-}
-
-// IsPurchaseTask returns true if this task involves purchasing goods.
-func (t *ManufacturingTask) IsPurchaseTask() bool {
-	return t.taskType == TaskTypeAcquireDeliver
-}
-
-// IsSellTask returns true if this task involves selling goods.
-func (t *ManufacturingTask) IsSellTask() bool {
-	return t.taskType == TaskTypeCollectSell || t.taskType == TaskTypeLiquidate
-}
-
-// IsCollectionTask returns true if this task involves collecting from a factory.
-func (t *ManufacturingTask) IsCollectionTask() bool {
-	return t.taskType == TaskTypeCollectSell
-}
-
-// IsDeliveryTask returns true if this task involves delivering to a factory.
-func (t *ManufacturingTask) IsDeliveryTask() bool {
-	return t.taskType == TaskTypeAcquireDeliver || t.taskType == TaskTypeStorageAcquireDeliver
-}
-
-// IsStorageTask returns true if this task acquires from storage ships.
-func (t *ManufacturingTask) IsStorageTask() bool {
-	return t.taskType == TaskTypeStorageAcquireDeliver
-}
-
-// IsConstructionTask returns true if this task delivers to a construction site.
-func (t *ManufacturingTask) IsConstructionTask() bool {
-	return t.taskType == TaskTypeDeliverToConstruction
 }
 
 // String provides human-readable representation

@@ -172,10 +172,10 @@ func (h *BalanceShipPositionHandler) Handle(ctx context.Context, request common.
 	}
 
 	logger.Log("INFO", "Optimal market selected", map[string]interface{}{
-		"target_market":   result.TargetMarket.Symbol,
-		"assigned_ships":  result.AssignedShips,
-		"distance":        result.Distance,
-		"score":           result.Score,
+		"target_market":  result.TargetMarket.Symbol,
+		"assigned_ships": result.AssignedShips,
+		"distance":       result.Distance,
+		"score":          result.Score,
 	})
 
 	// 6. Navigate ship to target market

@@ -9,7 +9,9 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-type fakePublisher struct{ events []navigation.WorkerCompletedEvent }
+type fakePublisher struct {
+	events []navigation.WorkerCompletedEvent
+}
 
 func (f *fakePublisher) PublishArrived(string, shared.PlayerID, string, navigation.NavStatus) {}
 func (f *fakePublisher) PublishWorkerCompleted(e navigation.WorkerCompletedEvent) {

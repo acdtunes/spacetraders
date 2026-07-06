@@ -51,16 +51,7 @@ func (r *GormWaypointRepository) ListBySystem(ctx context.Context, systemSymbol 
 		return nil, fmt.Errorf("failed to list waypoints: %w", result.Error)
 	}
 
-	waypoints := make([]*shared.Waypoint, 0, len(models))
-	for _, model := range models {
-		waypoint, err := r.modelToWaypoint(&model)
-		if err != nil {
-			return nil, fmt.Errorf("failed to convert waypoint %s: %w", model.WaypointSymbol, err)
-		}
-		waypoints = append(waypoints, waypoint)
-	}
-
-	return waypoints, nil
+	return r.modelsToWaypoints(models)
 }
 
 // ListBySystemWithTrait retrieves waypoints in a system filtered by a specific trait
@@ -76,16 +67,7 @@ func (r *GormWaypointRepository) ListBySystemWithTrait(ctx context.Context, syst
 		return nil, fmt.Errorf("failed to list waypoints by trait: %w", result.Error)
 	}
 
-	waypoints := make([]*shared.Waypoint, 0, len(models))
-	for _, model := range models {
-		waypoint, err := r.modelToWaypoint(&model)
-		if err != nil {
-			return nil, fmt.Errorf("failed to convert waypoint %s: %w", model.WaypointSymbol, err)
-		}
-		waypoints = append(waypoints, waypoint)
-	}
-
-	return waypoints, nil
+	return r.modelsToWaypoints(models)
 }
 
 // Add persists a waypoint
@@ -102,6 +84,19 @@ func (r *GormWaypointRepository) Add(ctx context.Context, waypoint *shared.Waypo
 	}
 
 	return nil
+}
+
+func (r *GormWaypointRepository) modelsToWaypoints(models []WaypointModel) ([]*shared.Waypoint, error) {
+	waypoints := make([]*shared.Waypoint, 0, len(models))
+	for i := range models {
+		waypoint, err := r.modelToWaypoint(&models[i])
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert waypoint %s: %w", models[i].WaypointSymbol, err)
+		}
+		waypoints = append(waypoints, waypoint)
+	}
+
+	return waypoints, nil
 }
 
 // modelToWaypoint converts database model to domain entity

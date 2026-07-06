@@ -32,11 +32,11 @@ type ManufacturingMetricsCollector struct {
 	taskRetryTotal      *prometheus.CounterVec
 
 	// Factory Supply Metrics (5 metrics)
-	factorySupplyLevel       *prometheus.GaugeVec
-	factoryInputsDelivered   *prometheus.GaugeVec
-	factoryReadyTotal        *prometheus.GaugeVec
-	factoryCyclesTotal       *prometheus.CounterVec
-	supplyTransitionsTotal   *prometheus.CounterVec
+	factorySupplyLevel     *prometheus.GaugeVec
+	factoryInputsDelivered *prometheus.GaugeVec
+	factoryReadyTotal      *prometheus.GaugeVec
+	factoryCyclesTotal     *prometheus.CounterVec
+	supplyTransitionsTotal *prometheus.CounterVec
 
 	// Ship Utilization Metrics (4 metrics)
 	shipsAssignedTotal      *prometheus.GaugeVec
@@ -51,8 +51,8 @@ type ManufacturingMetricsCollector struct {
 	marginPercent *prometheus.GaugeVec
 
 	// Starvation Metrics (3 metrics) - Added to detect task type starvation
-	taskStarvationMinutes        *prometheus.GaugeVec
-	taskAssignmentsTotal         *prometheus.CounterVec
+	taskStarvationMinutes         *prometheus.GaugeVec
+	taskAssignmentsTotal          *prometheus.CounterVec
 	taskTypeReservationSkipsTotal *prometheus.CounterVec
 
 	// Lifecycle
@@ -700,7 +700,7 @@ func (c *ManufacturingMetricsCollector) updateStarvationMetrics(playerID int) {
 	// Query minutes since last assignment by task type
 	// Uses completed_at from the most recently completed task of each type
 	var starvationData []struct {
-		TaskType          string
+		TaskType           string
 		MinutesSinceAssign float64
 	}
 

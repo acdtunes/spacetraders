@@ -14,8 +14,8 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/auth"
 	"github.com/andrescamacho/spacetraders-go/internal/application/player"
-	shipCargo "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/cargo"
 	"github.com/andrescamacho/spacetraders-go/internal/application/setup"
+	shipCargo "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/cargo"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
@@ -69,9 +69,9 @@ Examples:
   spacetraders ship list --agent ENDURANCE`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Get daemon client
-			client, err := NewDaemonClient(socketPath)
+			client, err := connectDaemon()
 			if err != nil {
-				return fmt.Errorf("failed to connect to daemon: %w", err)
+				return err
 			}
 			defer client.Close()
 
@@ -83,16 +83,7 @@ Examples:
 
 			// Call daemon via gRPC
 			ctx := context.Background()
-			var playerID *int32
-			if playerIdent.PlayerID > 0 {
-				pid := int32(playerIdent.PlayerID)
-				playerID = &pid
-			}
-
-			var agentSymbol *string
-			if playerIdent.AgentSymbol != "" {
-				agentSymbol = &playerIdent.AgentSymbol
-			}
+			playerID, agentSymbol := playerPointers(playerIdent)
 
 			response, err := client.ListShips(ctx, playerID, agentSymbol)
 			if err != nil {
@@ -152,9 +143,9 @@ Examples:
 			}
 
 			// Get daemon client
-			client, err := NewDaemonClient(socketPath)
+			client, err := connectDaemon()
 			if err != nil {
-				return fmt.Errorf("failed to connect to daemon: %w", err)
+				return err
 			}
 			defer client.Close()
 
@@ -166,16 +157,7 @@ Examples:
 
 			// Call daemon via gRPC
 			ctx := context.Background()
-			var playerID *int32
-			if playerIdent.PlayerID > 0 {
-				pid := int32(playerIdent.PlayerID)
-				playerID = &pid
-			}
-
-			var agentSymbol *string
-			if playerIdent.AgentSymbol != "" {
-				agentSymbol = &playerIdent.AgentSymbol
-			}
+			playerID, agentSymbol := playerPointers(playerIdent)
 
 			response, err := client.GetShip(ctx, shipSymbol, playerID, agentSymbol)
 			if err != nil {
@@ -235,9 +217,9 @@ Examples:
 			}
 
 			// Get daemon client
-			client, err := NewDaemonClient(socketPath)
+			client, err := connectDaemon()
 			if err != nil {
-				return fmt.Errorf("failed to connect to daemon: %w", err)
+				return err
 			}
 			defer client.Close()
 
@@ -250,16 +232,7 @@ Examples:
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 
-			var playerID *int32
-			if playerIdent.PlayerID > 0 {
-				pid := int32(playerIdent.PlayerID)
-				playerID = &pid
-			}
-
-			var agentSymbol *string
-			if playerIdent.AgentSymbol != "" {
-				agentSymbol = &playerIdent.AgentSymbol
-			}
+			playerID, agentSymbol := playerPointers(playerIdent)
 
 			response, err := client.RefreshShip(ctx, shipSymbol, playerID, agentSymbol)
 			if err != nil {
@@ -331,9 +304,9 @@ Examples:
 			}
 
 			// Create gRPC client
-			client, err := NewDaemonClient(socketPath)
+			client, err := connectDaemon()
 			if err != nil {
-				return fmt.Errorf("failed to connect to daemon: %w", err)
+				return err
 			}
 			defer client.Close()
 
@@ -390,9 +363,9 @@ Examples:
 				return err
 			}
 
-			client, err := NewDaemonClient(socketPath)
+			client, err := connectDaemon()
 			if err != nil {
-				return fmt.Errorf("failed to connect to daemon: %w", err)
+				return err
 			}
 			defer client.Close()
 
@@ -442,9 +415,9 @@ Examples:
 				return err
 			}
 
-			client, err := NewDaemonClient(socketPath)
+			client, err := connectDaemon()
 			if err != nil {
-				return fmt.Errorf("failed to connect to daemon: %w", err)
+				return err
 			}
 			defer client.Close()
 
@@ -498,9 +471,9 @@ Examples:
 				return err
 			}
 
-			client, err := NewDaemonClient(socketPath)
+			client, err := connectDaemon()
 			if err != nil {
-				return fmt.Errorf("failed to connect to daemon: %w", err)
+				return err
 			}
 			defer client.Close()
 
@@ -568,9 +541,9 @@ Examples:
 				return err
 			}
 
-			client, err := NewDaemonClient(socketPath)
+			client, err := connectDaemon()
 			if err != nil {
-				return fmt.Errorf("failed to connect to daemon: %w", err)
+				return err
 			}
 			defer client.Close()
 

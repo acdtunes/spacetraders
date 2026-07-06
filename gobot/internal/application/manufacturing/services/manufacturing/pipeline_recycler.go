@@ -12,8 +12,10 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
+// StuckPipelineFailedTaskThreshold is the max failed tasks before a pipeline is considered stuck.
+const StuckPipelineFailedTaskThreshold = 5
+
 // PipelineRecycler handles stuck pipeline detection and recovery.
-// Uses StuckPipelineFailedTaskThreshold from pipeline_lifecycle_manager.go
 type PipelineRecycler struct {
 	pipelineRepo   manufacturing.PipelineRepository
 	taskRepo       manufacturing.TaskRepository
@@ -172,11 +174,6 @@ func (r *PipelineRecycler) shouldCancelTask(task *manufacturing.ManufacturingTas
 	default:
 		return false
 	}
-}
-
-// GetStuckPipelineThreshold returns the threshold for stuck pipeline detection.
-func (r *PipelineRecycler) GetStuckPipelineThreshold() int {
-	return StuckPipelineFailedTaskThreshold
 }
 
 // releaseShip releases a ship using the Ship aggregate pattern

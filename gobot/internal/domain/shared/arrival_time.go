@@ -28,18 +28,19 @@ func NewArrivalTime(timestamp string) (*ArrivalTime, error) {
 		return nil, fmt.Errorf("arrival time timestamp cannot be empty")
 	}
 
-	// Normalize timestamp (handle both Z suffix and +00:00 suffix)
-	normalizedTimestamp := strings.Replace(timestamp, "Z", "+00:00", 1)
-
-	// Validate timestamp format
-	_, err := time.Parse(time.RFC3339, normalizedTimestamp)
-	if err != nil {
+	if _, err := parseArrivalTimestamp(timestamp); err != nil {
 		return nil, fmt.Errorf("invalid arrival time format: %w", err)
 	}
 
 	return &ArrivalTime{
 		timestamp: timestamp,
 	}, nil
+}
+
+func parseArrivalTimestamp(timestamp string) (time.Time, error) {
+	// Normalize timestamp (handle both Z suffix and +00:00 suffix)
+	normalizedTimestamp := strings.Replace(timestamp, "Z", "+00:00", 1)
+	return time.Parse(time.RFC3339, normalizedTimestamp)
 }
 
 // CalculateWaitTime calculates the number of seconds to wait until arrival
@@ -49,10 +50,7 @@ func NewArrivalTime(timestamp string) (*ArrivalTime, error) {
 //
 //	Seconds to wait (minimum 0)
 func (a *ArrivalTime) CalculateWaitTime() int {
-	// Normalize timestamp (handle both Z suffix and +00:00 suffix)
-	normalizedTimestamp := strings.Replace(a.timestamp, "Z", "+00:00", 1)
-
-	arrivalTime, err := time.Parse(time.RFC3339, normalizedTimestamp)
+	arrivalTime, err := parseArrivalTimestamp(a.timestamp)
 	if err != nil {
 		return 0
 	}
@@ -70,11 +68,6 @@ func (a *ArrivalTime) CalculateWaitTime() int {
 // Timestamp returns the raw ISO8601 timestamp string
 func (a *ArrivalTime) Timestamp() string {
 	return a.timestamp
-}
-
-// HasArrived checks if the arrival time is in the past
-func (a *ArrivalTime) HasArrived() bool {
-	return a.CalculateWaitTime() == 0
 }
 
 func (a *ArrivalTime) String() string {

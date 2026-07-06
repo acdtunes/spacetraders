@@ -15,6 +15,8 @@ import (
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )
 
+const flightModeCruise = "CRUISE"
+
 // RunGasCoordinatorCommand manages a fleet of siphon ships with storage ship buffering.
 // Transport/delivery is handled by the manufacturing pool via STORAGE_ACQUIRE_DELIVER tasks.
 type RunGasCoordinatorCommand struct {
@@ -157,9 +159,9 @@ func (h *RunGasCoordinatorHandler) Handle(ctx context.Context, request common.Re
 	// Step 4: Wait for at least one storage ship to be registered before spawning siphon workers
 	// This prevents race conditions where siphons try to deposit before storage is ready
 	logger.Log("INFO", "Waiting for storage ship registration", map[string]interface{}{
-		"action":         "wait_storage_registration",
-		"storage_count":  len(cmd.StorageShips),
-		"operation_id":   cmd.GasOperationID,
+		"action":        "wait_storage_registration",
+		"storage_count": len(cmd.StorageShips),
+		"operation_id":  cmd.GasOperationID,
 	})
 
 	if err := h.waitForStorageShipRegistration(ctx, cmd.GasOperationID, len(cmd.StorageShips), logger); err != nil {
@@ -205,10 +207,10 @@ func (h *RunGasCoordinatorHandler) Handle(ctx context.Context, request common.Re
 
 	// Context cancelled, cleanup
 	logger.Log("INFO", "Gas coordinator shutdown requested", map[string]interface{}{
-		"action":         "shutdown_coordinator",
-		"container_id":   cmd.ContainerID,
-		"siphon_count":   len(workerContainerIDs),
-		"storage_count":  len(storageContainerIDs),
+		"action":        "shutdown_coordinator",
+		"container_id":  cmd.ContainerID,
+		"siphon_count":  len(workerContainerIDs),
+		"storage_count": len(storageContainerIDs),
 	})
 
 	// Stop all siphon worker containers
@@ -295,7 +297,7 @@ func (h *RunGasCoordinatorHandler) getOrCreateStorageOperation(
 
 	// Determine supported goods for gas extraction
 	// For gas giants, common gases are HYDROCARBON, LIQUID_NITROGEN, LIQUID_HYDROGEN
-	supportedGoods := []string{"HYDROCARBON", "LIQUID_NITROGEN", "LIQUID_HYDROGEN"}
+	supportedGoods := []string{goodHydrocarbon, "LIQUID_NITROGEN", "LIQUID_HYDROGEN"}
 
 	// Create new storage operation
 	operation, err = storage.NewStorageOperation(
@@ -506,9 +508,6 @@ func (h *RunGasCoordinatorHandler) spawnStorageShipWorker(
 	return workerContainerID, nil
 }
 
-// NOTE: spawnGasTransportWorker removed - transport is now handled by
-// manufacturing pool via STORAGE_ACQUIRE_DELIVER tasks
-
 // planDryRunRoutes plans routes for all ships without starting workers
 func (h *RunGasCoordinatorHandler) planDryRunRoutes(
 	ctx context.Context,
@@ -551,7 +550,7 @@ func (h *RunGasCoordinatorHandler) planDryRunRoutes(
 				{
 					From:       ship.CurrentLocation().Symbol,
 					To:         cmd.GasGiant,
-					FlightMode: "CRUISE",
+					FlightMode: flightModeCruise,
 				},
 			},
 		}
@@ -574,7 +573,7 @@ func (h *RunGasCoordinatorHandler) planDryRunRoutes(
 				{
 					From:       ship.CurrentLocation().Symbol,
 					To:         cmd.GasGiant,
-					FlightMode: "CRUISE",
+					FlightMode: flightModeCruise,
 				},
 			},
 		}

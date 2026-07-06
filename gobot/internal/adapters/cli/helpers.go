@@ -6,10 +6,35 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
 )
 
+func connectDaemon() (*DaemonClient, error) {
+	client, err := NewDaemonClient(socketPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to daemon: %w", err)
+	}
+	return client, nil
+}
+
 // PlayerIdentifier holds player identification (either ID or agent symbol)
 type PlayerIdentifier struct {
 	PlayerID    int
 	AgentSymbol string
+}
+
+// playerPointers converts a resolved identifier into the optional pointer
+// arguments the daemon client expects.
+func playerPointers(playerIdent *PlayerIdentifier) (*int32, *string) {
+	var playerID *int32
+	if playerIdent.PlayerID > 0 {
+		pid := int32(playerIdent.PlayerID)
+		playerID = &pid
+	}
+
+	var agentSymbol *string
+	if playerIdent.AgentSymbol != "" {
+		agentSymbol = &playerIdent.AgentSymbol
+	}
+
+	return playerID, agentSymbol
 }
 
 // resolvePlayerIdentifier resolves player identification from flags or defaults

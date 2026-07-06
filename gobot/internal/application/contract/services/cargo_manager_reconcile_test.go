@@ -13,10 +13,10 @@ import (
 // keeps the fake honest about what the code under test actually uses.
 type reconcileFakeShipRepo struct {
 	navigation.ShipRepository
-	cached      *navigation.Ship // what the (phantom) DB cache holds
-	server      *navigation.Ship // authoritative server truth
-	syncCalled  bool
-	findCalled  bool
+	cached     *navigation.Ship // what the (phantom) DB cache holds
+	server     *navigation.Ship // authoritative server truth
+	syncCalled bool
+	findCalled bool
 }
 
 func (f *reconcileFakeShipRepo) FindBySymbol(ctx context.Context, symbol string, playerID shared.PlayerID) (*navigation.Ship, error) {

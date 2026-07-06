@@ -44,13 +44,13 @@ Examples:
 // newLedgerListCommand creates the ledger list subcommand
 func newLedgerListCommand() *cobra.Command {
 	var (
-		startDate   string
-		endDate     string
-		category    string
-		txType      string
-		limit       int
-		offset      int
-		orderBy     string
+		startDate string
+		endDate   string
+		category  string
+		txType    string
+		limit     int
+		offset    int
+		orderBy   string
 	)
 
 	cmd := &cobra.Command{

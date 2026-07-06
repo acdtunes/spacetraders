@@ -67,10 +67,10 @@ type SetFlightModeResponse struct {
 // NavigateDirectCommand - Low-level command for single-hop navigation
 // This is used internally by RouteExecutor - applications should use NavigateRouteCommand
 type NavigateDirectCommand struct {
-	Ship                *navigation.Ship  // Primary: use when ship is already loaded (avoids API call)
-	ShipSymbol          string            // Fallback: used only if Ship is nil
-	Destination         string            // Destination waypoint symbol
-	DestinationWaypoint *shared.Waypoint  // Primary: enriched waypoint with HasFuel (avoids DB lookup)
+	Ship                *navigation.Ship // Primary: use when ship is already loaded (avoids API call)
+	ShipSymbol          string           // Fallback: used only if Ship is nil
+	Destination         string           // Destination waypoint symbol
+	DestinationWaypoint *shared.Waypoint // Primary: enriched waypoint with HasFuel (avoids DB lookup)
 	FlightMode          string
 	PlayerID            shared.PlayerID
 }

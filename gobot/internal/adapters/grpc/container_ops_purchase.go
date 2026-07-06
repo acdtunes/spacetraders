@@ -31,7 +31,7 @@ func (s *DaemonServer) PurchaseShip(ctx context.Context, purchasingShipSymbol, s
 		containerID,
 		container.ContainerTypePurchase,
 		playerID,
-		1, // Single iteration
+		1,   // Single iteration
 		nil, // No parent container
 		map[string]interface{}{
 			"ship_symbol": purchasingShipSymbol,

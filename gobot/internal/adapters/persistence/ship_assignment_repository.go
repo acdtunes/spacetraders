@@ -41,11 +41,7 @@ func (r *ShipAssignmentRepositoryGORM) Assign(
 	}
 
 	// Convert empty container ID to NULL for database (FK constraint compatibility)
-	containerID := assignment.ContainerID()
-	var containerIDPtr *string
-	if containerID != "" {
-		containerIDPtr = &containerID
-	}
+	containerIDPtr := stringToPtr(assignment.ContainerID())
 
 	model := &ShipModel{
 		ShipSymbol:       assignment.ShipSymbol(),
@@ -88,11 +84,7 @@ func (r *ShipAssignmentRepositoryGORM) FindByShip(
 		return nil, fmt.Errorf("failed to find ship assignment: %w", err)
 	}
 
-	// Convert model to domain entity (handle NULL container_id)
-	containerID := ""
-	if model.ContainerID != nil {
-		containerID = *model.ContainerID
-	}
+	containerID := derefString(model.ContainerID)
 
 	assignment := container.NewShipAssignment(
 		model.ShipSymbol,
@@ -132,11 +124,7 @@ func (r *ShipAssignmentRepositoryGORM) FindByContainer(
 
 	assignments := make([]*container.ShipAssignment, 0, len(models))
 	for _, model := range models {
-		// Handle NULL container_id
-		containerID := ""
-		if model.ContainerID != nil {
-			containerID = *model.ContainerID
-		}
+		containerID := derefString(model.ContainerID)
 
 		assignment := container.NewShipAssignment(
 			model.ShipSymbol,

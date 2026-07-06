@@ -6,6 +6,18 @@ import (
 	"strings"
 )
 
+const (
+	statusNew           = "new"
+	statusInProgress    = "in_progress"
+	statusGateFailed    = "gate_failed"
+	statusAwaitingHuman = "awaiting_human"
+	statusMerged        = "merged"
+
+	kindFix        = "fix"
+	kindFeature    = "feature"
+	kindAutomation = "automation"
+)
+
 type BugReport struct {
 	Path   string
 	Slug   string
@@ -38,8 +50,8 @@ func ScanReports(dir string) ([]BugReport, error) {
 		r := BugReport{
 			Path:   path,
 			Slug:   strings.TrimSuffix(e.Name(), ".md"),
-			Status: "new",
-			Kind:   "fix",
+			Status: statusNew,
+			Kind:   kindFix,
 		}
 		parseFrontmatter(string(data), &r)
 		out = append(out, r)

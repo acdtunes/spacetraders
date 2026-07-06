@@ -131,7 +131,7 @@ func (s *DaemonServer) StartContractWorkflow(
 		containerModel.ID,
 		container.ContainerType(containerModel.ContainerType),
 		containerModel.PlayerID,
-		1, // Worker containers are single iteration
+		1,   // Worker containers are single iteration
 		nil, // No parent container
 		config,
 		nil,
@@ -172,7 +172,7 @@ func (s *DaemonServer) ContractFleetCoordinator(ctx context.Context, shipSymbols
 		containerID,
 		container.ContainerTypeContractFleetCoordinator,
 		playerID,
-		-1, // Infinite iterations
+		-1,  // Infinite iterations
 		nil, // No parent container
 		map[string]interface{}{
 			"ship_symbols": shipSymbolsInterface,

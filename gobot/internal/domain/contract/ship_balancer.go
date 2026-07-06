@@ -21,10 +21,10 @@ const (
 
 // BalancingResult contains the result of balancing calculation
 type BalancingResult struct {
-	TargetMarket    *shared.Waypoint
-	Score           float64
-	AssignedShips   int     // Number of ships assigned to this market during balancing
-	Distance        float64 // Distance from ship to market
+	TargetMarket  *shared.Waypoint
+	Score         float64
+	AssignedShips int     // Number of ships assigned to this market during balancing
+	Distance      float64 // Distance from ship to market
 }
 
 // ShipBalancer implements ship balancing logic to optimize fleet distribution
@@ -41,11 +41,12 @@ func NewShipBalancer() *ShipBalancer {
 // in order to optimize the overall fleet distribution.
 //
 // Algorithm:
-//   For each market:
-//     1. Count ships already assigned to this market during this balancing session
-//     2. Calculate distance from ship to market
-//     3. Calculate score = (assigned_ships × 100) + (distance × 0.1)
-//   Return market with lowest score
+//
+//	For each market:
+//	  1. Count ships already assigned to this market during this balancing session
+//	  2. Calculate distance from ship to market
+//	  3. Calculate score = (assigned_ships × 100) + (distance × 0.1)
+//	Return market with lowest score
 //
 // Business Rules:
 //   - Prioritizes even distribution (1 ship per market ideal, then 2 per market, etc.)

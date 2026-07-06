@@ -52,12 +52,12 @@ func (p *PipelinePlanner) SetStorageOperationRepository(repo storage.StorageOper
 
 // PlanningContext holds state during pipeline planning
 type PlanningContext struct {
-	ctx          context.Context
-	systemSymbol string
-	playerID     int
-	pipeline     *manufacturing.ManufacturingPipeline
-	tasks        []*manufacturing.ManufacturingTask
-	tasksByGood  map[string]*manufacturing.ManufacturingTask // Last task that produces each good
+	ctx           context.Context
+	systemSymbol  string
+	playerID      int
+	pipeline      *manufacturing.ManufacturingPipeline
+	tasks         []*manufacturing.ManufacturingTask
+	factoryStates []*manufacturing.FactoryState
 }
 
 // CreatePipeline converts a ManufacturingOpportunity into a pipeline with atomic tasks.
@@ -82,18 +82,14 @@ func (p *PipelinePlanner) CreatePipeline(
 		playerID,
 	)
 
-	// Planning context
 	planCtx := &PlanningContext{
-		ctx:          ctx,
-		systemSymbol: systemSymbol,
-		playerID:     playerID,
-		pipeline:     pipeline,
-		tasks:        make([]*manufacturing.ManufacturingTask, 0),
-		tasksByGood:  make(map[string]*manufacturing.ManufacturingTask),
+		ctx:           ctx,
+		systemSymbol:  systemSymbol,
+		playerID:      playerID,
+		pipeline:      pipeline,
+		tasks:         make([]*manufacturing.ManufacturingTask, 0),
+		factoryStates: make([]*manufacturing.FactoryState, 0),
 	}
-
-	// Factory states to create
-	factoryStates := make([]*manufacturing.FactoryState, 0)
 
 	// The root node can be:
 	// - FABRICATE: produces the final good via manufacturing (needs factory state)
@@ -103,13 +99,9 @@ func (p *PipelinePlanner) CreatePipeline(
 
 	// Walk the dependency tree and create atomic tasks
 	// Pass the sell market as the destination for the final product
-	finalTaskID, err := p.createTasksFromTreeAtomic(planCtx, opp.DependencyTree(), sellMarket, true, &factoryStates)
-	if err != nil {
+	if _, err := p.createTasksFromTreeAtomic(planCtx, opp.DependencyTree(), sellMarket, true); err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to create tasks from tree: %w", err)
 	}
-
-	// The final task is already a COLLECT_SELL that handles both collect and sell
-	_ = finalTaskID
 
 	// Add all tasks to pipeline
 	for _, task := range planCtx.tasks {
@@ -118,7 +110,7 @@ func (p *PipelinePlanner) CreatePipeline(
 		}
 	}
 
-	return pipeline, planCtx.tasks, factoryStates, nil
+	return pipeline, planCtx.tasks, planCtx.factoryStates, nil
 }
 
 // createTasksFromTreeAtomic creates atomic tasks from the supply chain tree.
@@ -134,7 +126,6 @@ func (p *PipelinePlanner) createTasksFromTreeAtomic(
 	node *goods.SupplyChainNode,
 	destination string,
 	isFinalProduct bool,
-	factoryStates *[]*manufacturing.FactoryState,
 ) (string, error) {
 	if node.AcquisitionMethod == goods.AcquisitionBuy {
 		if isFinalProduct {
@@ -163,8 +154,8 @@ func (p *PipelinePlanner) createTasksFromTreeAtomic(
 	// This fixes the bug where a factory was selected that doesn't trade the inputs
 	factoryMarket, err := p.marketLocator.FindFactoryForProduction(
 		planCtx.ctx,
-		node.Good,       // Output good (factory must SELL this)
-		requiredInputs,  // Input goods (factory must BUY these)
+		node.Good,      // Output good (factory must SELL this)
+		requiredInputs, // Input goods (factory must BUY these)
 		planCtx.systemSymbol,
 		planCtx.playerID,
 	)
@@ -173,15 +164,11 @@ func (p *PipelinePlanner) createTasksFromTreeAtomic(
 	}
 
 	// Process all children - they deliver their goods to THIS factory
-	childTaskIDs := make([]string, 0, len(node.Children))
-
 	for _, child := range node.Children {
 		// Child delivers to THIS factory (not the final destination)
-		childTaskID, err := p.createTasksFromTreeAtomic(planCtx, child, factoryMarket.WaypointSymbol, false, factoryStates)
-		if err != nil {
+		if _, err := p.createTasksFromTreeAtomic(planCtx, child, factoryMarket.WaypointSymbol, false); err != nil {
 			return "", err
 		}
-		childTaskIDs = append(childTaskIDs, childTaskID)
 	}
 
 	// Create factory state for tracking production
@@ -192,10 +179,7 @@ func (p *PipelinePlanner) createTasksFromTreeAtomic(
 		planCtx.playerID,
 		requiredInputs,
 	)
-	*factoryStates = append(*factoryStates, factoryState)
-
-	// Store childTaskIDs for reference (used by factory state to track expected deliveries)
-	_ = childTaskIDs
+	planCtx.factoryStates = append(planCtx.factoryStates, factoryState)
 
 	// Create task based on whether this is the final product or an intermediate
 	// - Final product: COLLECT_SELL (collect from factory → sell to market)
@@ -212,8 +196,8 @@ func (p *PipelinePlanner) createTasksFromTreeAtomic(
 			planCtx.playerID,
 			node.Good,
 			factoryMarket.WaypointSymbol, // Where to collect from
-			destination,                   // Where to sell to (market)
-			[]string{},                    // No structural dependencies - gated by supply monitor
+			destination,                  // Where to sell to (market)
+			[]string{},                   // No structural dependencies - gated by supply monitor
 		)
 	} else {
 		// ACQUIRE_DELIVER for intermediate product: collect from factory, deliver to next factory
@@ -225,15 +209,12 @@ func (p *PipelinePlanner) createTasksFromTreeAtomic(
 			planCtx.playerID,
 			node.Good,
 			factoryMarket.WaypointSymbol, // Where to collect from (this factory)
-			destination,                   // Where to deliver to (next factory)
-			[]string{},                    // No structural dependencies - gated by supply monitor
+			destination,                  // Where to deliver to (next factory)
+			[]string{},                   // No structural dependencies - gated by supply monitor
 		)
 	}
 
 	planCtx.tasks = append(planCtx.tasks, task)
-
-	// Track that this task produces this good
-	planCtx.tasksByGood[node.Good] = task
 
 	return task.ID(), nil
 }
@@ -271,14 +252,11 @@ func (p *PipelinePlanner) createDirectArbitrageTask(
 		planCtx.pipeline.ID(),
 		planCtx.playerID,
 		node.Good,
-		sourceMarket,  // Where to buy from (HIGH/ABUNDANT source)
-		destination,   // Where to sell to (market)
-		[]string{},    // No dependencies - direct arbitrage is ready immediately
+		sourceMarket, // Where to buy from (HIGH/ABUNDANT source)
+		destination,  // Where to sell to (market)
+		[]string{},   // No dependencies - direct arbitrage is ready immediately
 	)
 	planCtx.tasks = append(planCtx.tasks, task)
-
-	// Track that this task produces this good
-	planCtx.tasksByGood[node.Good] = task
 
 	return task.ID(), nil
 }
@@ -300,11 +278,11 @@ func (p *PipelinePlanner) createAcquireDeliverTask(
 	// If so, create STORAGE_ACQUIRE_DELIVER instead of ACQUIRE_DELIVER
 	if storageOp := p.findRunningStorageOperationForGood(planCtx.ctx, node.Good, planCtx.playerID); storageOp != nil {
 		logger.Log("INFO", "Using storage operation for acquisition task", map[string]interface{}{
-			"good":         node.Good,
-			"storage_op":   storageOp.ID(),
-			"waypoint":     storageOp.WaypointSymbol(),
-			"factory":      factorySymbol,
-			"pipeline_id":  planCtx.pipeline.ID(),
+			"good":        node.Good,
+			"storage_op":  storageOp.ID(),
+			"waypoint":    storageOp.WaypointSymbol(),
+			"factory":     factorySymbol,
+			"pipeline_id": planCtx.pipeline.ID(),
 		})
 
 		task := manufacturing.NewStorageAcquireDeliverTask(
@@ -317,7 +295,6 @@ func (p *PipelinePlanner) createAcquireDeliverTask(
 			nil,                        // No dependencies for raw material acquisition
 		)
 		planCtx.tasks = append(planCtx.tasks, task)
-		planCtx.tasksByGood[node.Good] = task
 		return task.ID(), nil
 	}
 
@@ -345,14 +322,11 @@ func (p *PipelinePlanner) createAcquireDeliverTask(
 		planCtx.pipeline.ID(),
 		planCtx.playerID,
 		node.Good,
-		sourceMarket,    // Where to buy from
-		factorySymbol,   // Where to deliver to
-		nil,             // No dependencies for raw material acquisition
+		sourceMarket,  // Where to buy from
+		factorySymbol, // Where to deliver to
+		nil,           // No dependencies for raw material acquisition
 	)
 	planCtx.tasks = append(planCtx.tasks, task)
-
-	// Track that this task produces this good
-	planCtx.tasksByGood[node.Good] = task
 
 	return task.ID(), nil
 }
@@ -384,76 +358,6 @@ func (p *PipelinePlanner) findRunningStorageOperationForGood(ctx context.Context
 	for _, op := range operations {
 		if op.IsRunning() && op.SupportsGood(good) {
 			return op
-		}
-	}
-
-	return nil
-}
-
-
-// CalculateTotalTasks counts total tasks that would be created for a supply chain
-func (p *PipelinePlanner) CalculateTotalTasks(tree *goods.SupplyChainNode) int {
-	if tree == nil {
-		return 0
-	}
-
-	count := 0
-
-	if tree.AcquisitionMethod == goods.AcquisitionBuy {
-		// Leaf: 1 ACQUIRE
-		return 1
-	}
-
-	// FABRICATE: DELIVER per child + COLLECT + recurse
-	for _, child := range tree.Children {
-		count += p.CalculateTotalTasks(child)
-		count++ // DELIVER task
-	}
-	count++ // COLLECT task
-
-	// Add SELL task for root (will be added by CreatePipeline)
-	return count
-}
-
-// EstimateTaskCount provides a quick estimate without walking the tree
-func EstimateTaskCount(tree *goods.SupplyChainNode) int {
-	if tree == nil {
-		return 0
-	}
-
-	// Count FABRICATE nodes (each produces a COLLECT task)
-	buyCount, fabricateCount := tree.CountByAcquisitionMethod()
-
-	// Tasks = ACQUIRE (buy nodes) + DELIVER (one per edge) + COLLECT (fabricate nodes) + SELL (1)
-	// Simplified: each fabricate node has avg 2 children, so roughly 2 DELIVER per fabricate
-	return buyCount + fabricateCount*2 + 1 // +1 for SELL
-}
-
-// ValidatePipeline checks if a pipeline is valid and ready to execute
-func ValidatePipeline(pipeline *manufacturing.ManufacturingPipeline) error {
-	if pipeline == nil {
-		return fmt.Errorf("pipeline is nil")
-	}
-
-	if pipeline.TaskCount() == 0 {
-		return fmt.Errorf("pipeline has no tasks")
-	}
-
-	// Check that there's at least one COLLECT_SELL task (handles both collection and final sale)
-	sellCount := 0
-	for _, task := range pipeline.Tasks() {
-		if task.TaskType() == manufacturing.TaskTypeCollectSell {
-			sellCount++
-		}
-	}
-	if sellCount == 0 {
-		return fmt.Errorf("pipeline should have at least 1 COLLECT_SELL task")
-	}
-
-	// Check that all tasks belong to this pipeline
-	for _, task := range pipeline.Tasks() {
-		if task.PipelineID() != pipeline.ID() {
-			return fmt.Errorf("task %s belongs to different pipeline", task.ID())
 		}
 	}
 

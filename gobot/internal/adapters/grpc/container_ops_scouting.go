@@ -110,7 +110,7 @@ func (s *DaemonServer) AssignScoutingFleet(
 		containerID,
 		container.ContainerTypeScoutFleetAssignment,
 		playerID,
-		1, // One-time execution
+		1,   // One-time execution
 		nil, // No parent container
 		map[string]interface{}{
 			"system_symbol": systemSymbol,

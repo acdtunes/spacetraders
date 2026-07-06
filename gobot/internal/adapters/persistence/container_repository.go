@@ -11,6 +11,20 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 )
 
+const (
+	containerStatusPending = "PENDING"
+	containerStatusRunning = "RUNNING"
+	containerStatusStopped = "STOPPED"
+
+	workerTypeManufacturingTask = "MANUFACTURING_TASK_WORKER"
+
+	exitReasonOrphanedByRestart = "orphaned_by_coordinator_restart"
+	exitReasonStaleHeartbeat    = "stale_heartbeat_timeout"
+
+	restartPolicyNone      = "no"
+	restartPolicyOnFailure = "on-failure"
+)
+
 // ContainerRepositoryGORM implements container persistence using GORM
 type ContainerRepositoryGORM struct {
 	db *gorm.DB
@@ -37,9 +51,9 @@ func (r *ContainerRepositoryGORM) Add(
 
 	// Map restart count to restart policy for database storage
 	// Go implementation uses maxRestarts count, not policy string
-	restartPolicy := "no"
+	restartPolicy := restartPolicyNone
 	if containerEntity.MaxRestarts() > 0 {
-		restartPolicy = "on-failure"
+		restartPolicy = restartPolicyOnFailure
 	}
 
 	model := &ContainerModel{
@@ -233,7 +247,7 @@ func (r *ContainerRepositoryGORM) CreateIfNoActiveWorker(
 		var count int64
 		if err := tx.Model(&ContainerModel{}).
 			Where("container_type = ? AND status = ? AND player_id = ?",
-				"CONTRACT_WORKFLOW", "RUNNING", containerEntity.PlayerID()).
+				"CONTRACT_WORKFLOW", containerStatusRunning, containerEntity.PlayerID()).
 			Count(&count).Error; err != nil {
 			return fmt.Errorf("failed to count active workers: %w", err)
 		}
@@ -251,9 +265,9 @@ func (r *ContainerRepositoryGORM) CreateIfNoActiveWorker(
 		}
 
 		now := time.Now()
-		restartPolicy := "no"
+		restartPolicy := restartPolicyNone
 		if containerEntity.MaxRestarts() > 0 {
-			restartPolicy = "on-failure"
+			restartPolicy = restartPolicyOnFailure
 		}
 
 		model := &ContainerModel{
@@ -319,7 +333,7 @@ func (r *ContainerRepositoryGORM) FindActiveCoordinatorByTypeAndSystem(
 	// Config is JSON with "system_symbol" field
 	result := r.db.WithContext(ctx).
 		Where("container_type = ? AND player_id = ? AND status IN (?, ?)",
-			containerType, playerID, "PENDING", "RUNNING").
+			containerType, playerID, containerStatusPending, containerStatusRunning).
 		Where("config LIKE ?", fmt.Sprintf(`%%"system_symbol":"%s"%%`, systemSymbol)).
 		First(&model)
 
@@ -347,12 +361,12 @@ func (r *ContainerRepositoryGORM) StopOrphanedWorkersByParent(
 	result := r.db.WithContext(ctx).
 		Model(&ContainerModel{}).
 		Where("parent_container_id = ? AND player_id = ? AND status IN (?, ?)",
-			parentContainerID, playerID, "PENDING", "RUNNING").
+			parentContainerID, playerID, containerStatusPending, containerStatusRunning).
 		Updates(map[string]interface{}{
-			"status":      "STOPPED",
+			"status":      containerStatusStopped,
 			"stopped_at":  &now,
 			"exit_code":   &exitCode,
-			"exit_reason": "orphaned_by_coordinator_restart",
+			"exit_reason": exitReasonOrphanedByRestart,
 		})
 
 	if result.Error != nil {
@@ -375,12 +389,12 @@ func (r *ContainerRepositoryGORM) StopAllOrphanedManufacturingWorkers(
 	result := r.db.WithContext(ctx).
 		Model(&ContainerModel{}).
 		Where("container_type = ? AND player_id = ? AND status IN (?, ?)",
-			"MANUFACTURING_TASK_WORKER", playerID, "PENDING", "RUNNING").
+			workerTypeManufacturingTask, playerID, containerStatusPending, containerStatusRunning).
 		Updates(map[string]interface{}{
-			"status":      "STOPPED",
+			"status":      containerStatusStopped,
 			"stopped_at":  &now,
 			"exit_code":   &exitCode,
-			"exit_reason": "orphaned_by_coordinator_restart",
+			"exit_reason": exitReasonOrphanedByRestart,
 		})
 
 	if result.Error != nil {
@@ -402,7 +416,7 @@ func (r *ContainerRepositoryGORM) FindStaleManufacturingWorkers(
 	var models []*ContainerModel
 	err := r.db.WithContext(ctx).
 		Where("container_type = ? AND player_id = ? AND status = ?",
-			"MANUFACTURING_TASK_WORKER", playerID, "RUNNING").
+			workerTypeManufacturingTask, playerID, containerStatusRunning).
 		Where("heartbeat_at IS NOT NULL AND heartbeat_at < ?", cutoffTime).
 		Find(&models).Error
 
@@ -430,13 +444,13 @@ func (r *ContainerRepositoryGORM) StopStaleManufacturingWorkers(
 	result := r.db.WithContext(ctx).
 		Model(&ContainerModel{}).
 		Where("container_type = ? AND player_id = ? AND status = ?",
-			"MANUFACTURING_TASK_WORKER", playerID, "RUNNING").
+			workerTypeManufacturingTask, playerID, containerStatusRunning).
 		Where("heartbeat_at IS NOT NULL AND heartbeat_at < ?", cutoffTime).
 		Updates(map[string]interface{}{
-			"status":      "STOPPED",
+			"status":      containerStatusStopped,
 			"stopped_at":  &now,
 			"exit_code":   &exitCode,
-			"exit_reason": "stale_heartbeat_timeout",
+			"exit_reason": exitReasonStaleHeartbeat,
 		})
 
 	if result.Error != nil {
@@ -476,7 +490,7 @@ func (r *ContainerRepositoryGORM) FindActiveGasCoordinator(
 	// Search for active gas coordinators with matching gas_giant in config
 	result := r.db.WithContext(ctx).
 		Where("container_type = ? AND player_id = ? AND status IN (?, ?)",
-			"GAS_COORDINATOR", playerID, "PENDING", "RUNNING").
+			"GAS_COORDINATOR", playerID, containerStatusPending, containerStatusRunning).
 		Where("config LIKE ?", fmt.Sprintf(`%%"gas_giant":"%s"%%`, gasGiant)).
 		First(&model)
 

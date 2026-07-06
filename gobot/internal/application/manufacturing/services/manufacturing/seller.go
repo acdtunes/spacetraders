@@ -60,32 +60,22 @@ func NewManufacturingSeller(
 	}
 }
 
-// SellCargo sells cargo at current market.
-func (s *ManufacturingSeller) SellCargo(ctx context.Context, params SellParams) (*SellResult, error) {
-	logger := common.LoggerFromContext(ctx)
-
-	// Determine quantity to sell
-	quantity := params.Quantity
-	if quantity == 0 {
-		// Sell all of this good in cargo
-		// OPTIMIZATION: Use provided ship if available to avoid API call
-		ship := params.Ship
-		if ship == nil {
-			var err error
-			ship, err = s.shipRepo.FindBySymbol(ctx, params.ShipSymbol, params.PlayerID)
-			if err != nil {
-				return nil, fmt.Errorf("failed to load ship: %w", err)
-			}
+func (s *ManufacturingSeller) resolveQuantity(ctx context.Context, params SellParams) (int, error) {
+	if params.Quantity != 0 {
+		return params.Quantity, nil
+	}
+	ship := params.Ship
+	if ship == nil {
+		var err error
+		ship, err = s.shipRepo.FindBySymbol(ctx, params.ShipSymbol, params.PlayerID)
+		if err != nil {
+			return 0, fmt.Errorf("failed to load ship: %w", err)
 		}
-		quantity = ship.Cargo().GetItemUnits(params.Good)
 	}
+	return ship.Cargo().GetItemUnits(params.Good), nil
+}
 
-	if quantity <= 0 {
-		return &SellResult{}, nil // Nothing to sell
-	}
-
-	// Execute sell with skip market refresh optimization
-	// Manufacturing scans markets independently and doesn't need post-transaction refresh
+func (s *ManufacturingSeller) sellViaMediator(ctx context.Context, params SellParams, quantity int) (*shipCargo.SellCargoResponse, error) {
 	sellResp, err := s.mediator.Send(shared.WithSkipMarketRefresh(ctx), &shipCargo.SellCargoCommand{
 		ShipSymbol: params.ShipSymbol,
 		GoodSymbol: params.Good,
@@ -93,20 +83,41 @@ func (s *ManufacturingSeller) SellCargo(ctx context.Context, params SellParams) 
 		PlayerID:   params.PlayerID,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to sell %s: %w", params.Good, err)
+		return nil, err
 	}
+	return sellResp.(*shipCargo.SellCargoResponse), nil
+}
 
-	resp := sellResp.(*shipCargo.SellCargoResponse)
-
+func newSellResult(resp *shipCargo.SellCargoResponse) *SellResult {
 	result := &SellResult{
 		UnitsSold:    resp.UnitsSold,
 		TotalRevenue: resp.TotalRevenue,
 	}
-
 	if resp.UnitsSold > 0 {
 		result.PricePerUnit = resp.TotalRevenue / resp.UnitsSold
 	}
+	return result
+}
 
+// SellCargo sells cargo at current market.
+func (s *ManufacturingSeller) SellCargo(ctx context.Context, params SellParams) (*SellResult, error) {
+	logger := common.LoggerFromContext(ctx)
+
+	quantity, err := s.resolveQuantity(ctx, params)
+	if err != nil {
+		return nil, err
+	}
+
+	if quantity <= 0 {
+		return &SellResult{}, nil // Nothing to sell
+	}
+
+	resp, err := s.sellViaMediator(ctx, params, quantity)
+	if err != nil {
+		return nil, fmt.Errorf("failed to sell %s: %w", params.Good, err)
+	}
+
+	result := newSellResult(resp)
 	result.NetProfit = resp.TotalRevenue - params.TotalCost
 
 	logger.Log("INFO", "Sold goods", map[string]interface{}{
@@ -139,49 +150,21 @@ func (s *ManufacturingSeller) SellCargo(ctx context.Context, params SellParams) 
 func (s *ManufacturingSeller) DeliverToFactory(ctx context.Context, params SellParams) (*SellResult, error) {
 	logger := common.LoggerFromContext(ctx)
 
-	// Determine quantity to deliver
-	quantity := params.Quantity
-	if quantity == 0 {
-		// Deliver all of this good in cargo
-		// OPTIMIZATION: Use provided ship if available to avoid API call
-		ship := params.Ship
-		if ship == nil {
-			var err error
-			ship, err = s.shipRepo.FindBySymbol(ctx, params.ShipSymbol, params.PlayerID)
-			if err != nil {
-				return nil, fmt.Errorf("failed to load ship: %w", err)
-			}
-		}
-		quantity = ship.Cargo().GetItemUnits(params.Good)
+	quantity, err := s.resolveQuantity(ctx, params)
+	if err != nil {
+		return nil, err
 	}
 
 	if quantity <= 0 {
 		return &SellResult{}, nil // Nothing to deliver
 	}
 
-	// Execute sell (to factory) with skip market refresh optimization
-	// Manufacturing scans markets independently and doesn't need post-transaction refresh
-	sellResp, err := s.mediator.Send(shared.WithSkipMarketRefresh(ctx), &shipCargo.SellCargoCommand{
-		ShipSymbol: params.ShipSymbol,
-		GoodSymbol: params.Good,
-		Units:      quantity,
-		PlayerID:   params.PlayerID,
-	})
+	resp, err := s.sellViaMediator(ctx, params, quantity)
 	if err != nil {
 		return nil, fmt.Errorf("failed to deliver %s to factory: %w", params.Good, err)
 	}
 
-	resp := sellResp.(*shipCargo.SellCargoResponse)
-
-	result := &SellResult{
-		UnitsSold:    resp.UnitsSold,
-		TotalRevenue: resp.TotalRevenue,
-	}
-
-	if resp.UnitsSold > 0 {
-		result.PricePerUnit = resp.TotalRevenue / resp.UnitsSold
-	}
-
+	result := newSellResult(resp)
 	result.NetProfit = resp.TotalRevenue - params.TotalCost
 
 	logger.Log("INFO", "Delivered to factory", map[string]interface{}{
@@ -213,43 +196,21 @@ func (s *ManufacturingSeller) DeliverToFactory(ctx context.Context, params SellP
 func (s *ManufacturingSeller) Liquidate(ctx context.Context, params SellParams) (*SellResult, error) {
 	logger := common.LoggerFromContext(ctx)
 
-	// Determine quantity to sell
-	quantity := params.Quantity
-	if quantity == 0 {
-		// Sell all of this good in cargo
-		ship, err := s.shipRepo.FindBySymbol(ctx, params.ShipSymbol, params.PlayerID)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load ship: %w", err)
-		}
-		quantity = ship.Cargo().GetItemUnits(params.Good)
+	quantity, err := s.resolveQuantity(ctx, params)
+	if err != nil {
+		return nil, err
 	}
 
 	if quantity <= 0 {
 		return &SellResult{}, nil // Nothing to liquidate
 	}
 
-	// Execute sell with skip market refresh optimization
-	// Manufacturing scans markets independently and doesn't need post-transaction refresh
-	sellResp, err := s.mediator.Send(shared.WithSkipMarketRefresh(ctx), &shipCargo.SellCargoCommand{
-		ShipSymbol: params.ShipSymbol,
-		GoodSymbol: params.Good,
-		Units:      quantity,
-		PlayerID:   params.PlayerID,
-	})
+	resp, err := s.sellViaMediator(ctx, params, quantity)
 	if err != nil {
 		return nil, fmt.Errorf("failed to sell %s: %w", params.Good, err)
 	}
 
-	resp := sellResp.(*shipCargo.SellCargoResponse)
-
-	result := &SellResult{
-		UnitsSold:    resp.UnitsSold,
-		TotalRevenue: resp.TotalRevenue,
-	}
-
-	if resp.UnitsSold > 0 {
-		result.PricePerUnit = resp.TotalRevenue / resp.UnitsSold
-	}
+	result := newSellResult(resp)
 
 	logger.Log("INFO", "Liquidated goods (recovery)", map[string]interface{}{
 		"good":           params.Good,

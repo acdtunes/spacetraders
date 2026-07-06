@@ -14,8 +14,8 @@ type MarketPriceHistory struct {
 	waypointSymbol string
 	goodSymbol     string
 	playerID       shared.PlayerID
-	purchasePrice  int    // What market pays us to sell
-	sellPrice      int    // What market charges us to buy
+	purchasePrice  int     // What market pays us to sell
+	sellPrice      int     // What market charges us to buy
 	supply         *string // SCARCE, LIMITED, MODERATE, HIGH, ABUNDANT (or nil)
 	activity       *string // WEAK, GROWING, STRONG, RESTRICTED (or nil)
 	tradeVolume    int

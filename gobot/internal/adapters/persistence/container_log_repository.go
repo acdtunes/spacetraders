@@ -149,7 +149,10 @@ func (r *GormContainerLogRepository) GetLogs(ctx context.Context, containerID st
 		return nil, err
 	}
 
-	// Convert models to entries
+	return containerLogModelsToEntries(models), nil
+}
+
+func containerLogModelsToEntries(models []ContainerLogModel) []ContainerLogEntry {
 	entries := make([]ContainerLogEntry, len(models))
 	for i, model := range models {
 		// Unmarshal metadata if present
@@ -172,7 +175,7 @@ func (r *GormContainerLogRepository) GetLogs(ctx context.Context, containerID st
 		}
 	}
 
-	return entries, nil
+	return entries
 }
 
 // GetLogsWithOffset retrieves logs for a container with pagination support
@@ -196,28 +199,5 @@ func (r *GormContainerLogRepository) GetLogsWithOffset(ctx context.Context, cont
 		return nil, err
 	}
 
-	// Convert models to entries
-	entries := make([]ContainerLogEntry, len(models))
-	for i, model := range models {
-		// Unmarshal metadata if present
-		var metadata map[string]interface{}
-		if model.Metadata != nil && *model.Metadata != "" {
-			if err := json.Unmarshal([]byte(*model.Metadata), &metadata); err != nil {
-				// If unmarshal fails, leave metadata as nil
-				metadata = nil
-			}
-		}
-
-		entries[i] = ContainerLogEntry{
-			ID:          model.ID,
-			ContainerID: model.ContainerID,
-			PlayerID:    model.PlayerID,
-			Timestamp:   model.Timestamp,
-			Level:       model.Level,
-			Message:     model.Message,
-			Metadata:    metadata,
-		}
-	}
-
-	return entries, nil
+	return containerLogModelsToEntries(models), nil
 }

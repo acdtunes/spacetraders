@@ -108,13 +108,13 @@ func NewStorageOperation(
 
 // Getters
 
-func (op *StorageOperation) ID() string                { return op.id }
-func (op *StorageOperation) PlayerID() int             { return op.playerID }
-func (op *StorageOperation) WaypointSymbol() string    { return op.waypointSymbol }
+func (op *StorageOperation) ID() string                   { return op.id }
+func (op *StorageOperation) PlayerID() int                { return op.playerID }
+func (op *StorageOperation) WaypointSymbol() string       { return op.waypointSymbol }
 func (op *StorageOperation) OperationType() OperationType { return op.operationType }
-func (op *StorageOperation) ExtractorShips() []string  { return op.extractorShips }
-func (op *StorageOperation) StorageShips() []string    { return op.storageShips }
-func (op *StorageOperation) SupportedGoods() []string  { return op.supportedGoods }
+func (op *StorageOperation) ExtractorShips() []string     { return op.extractorShips }
+func (op *StorageOperation) StorageShips() []string       { return op.storageShips }
+func (op *StorageOperation) SupportedGoods() []string     { return op.supportedGoods }
 
 // Lifecycle getters delegated to state machine
 func (op *StorageOperation) LastError() error      { return op.lifecycle.LastError() }

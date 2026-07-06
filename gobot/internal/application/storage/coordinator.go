@@ -8,6 +8,8 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/storage"
 )
 
+const depositSubscriberBufferSize = 10
+
 // waiterQueueKey creates a unique key for operation+good combinations
 type waiterQueueKey struct {
 	operationID string
@@ -245,24 +247,26 @@ func (c *InMemoryStorageCoordinator) NotifyCargoDeposited(storageShipSymbol, goo
 		return
 	}
 
-	// Notify deposit subscribers for this ship (e.g., storage ship worker for HYDROCARBON jettison)
-	notification := storage.CargoDepositNotification{
-		GoodSymbol: goodSymbol,
-		Units:      units,
-	}
-	for _, ch := range c.depositSubscribers[storageShipSymbol] {
-		// Non-blocking send - if subscriber's buffer is full, skip
-		select {
-		case ch <- notification:
-		default:
-		}
-	}
+	c.notifyDepositSubscribers(storageShipSymbol, goodSymbol, units)
 
 	// Wake waiters for this operation+good
 	operationID := ship.OperationID()
 	key := waiterQueueKey{operationID: operationID, goodSymbol: goodSymbol}
 
 	c.processWaiterQueue(key)
+}
+
+func (c *InMemoryStorageCoordinator) notifyDepositSubscribers(shipSymbol, goodSymbol string, units int) {
+	notification := storage.CargoDepositNotification{
+		GoodSymbol: goodSymbol,
+		Units:      units,
+	}
+	for _, ch := range c.depositSubscribers[shipSymbol] {
+		select {
+		case ch <- notification:
+		default:
+		}
+	}
 }
 
 // NotifyCargoJettisoned is called after cargo is jettisoned from a storage ship.
@@ -410,17 +414,7 @@ func (c *InMemoryStorageCoordinator) ConfirmDeposit(shipSymbol, goodSymbol strin
 		return
 	}
 
-	// Notify deposit subscribers for this ship (e.g., storage ship worker for HYDROCARBON jettison)
-	notification := storage.CargoDepositNotification{
-		GoodSymbol: goodSymbol,
-		Units:      units,
-	}
-	for _, ch := range c.depositSubscribers[shipSymbol] {
-		select {
-		case ch <- notification:
-		default:
-		}
-	}
+	c.notifyDepositSubscribers(shipSymbol, goodSymbol, units)
 
 	// Wake waiters for this operation+good
 	operationID := ship.OperationID()
@@ -474,7 +468,7 @@ func (c *InMemoryStorageCoordinator) SubscribeToDeposits(shipSymbol string) (<-c
 	defer c.mu.Unlock()
 
 	// Create buffered channel to avoid blocking the coordinator
-	ch := make(chan storage.CargoDepositNotification, 10)
+	ch := make(chan storage.CargoDepositNotification, depositSubscriberBufferSize)
 	c.depositSubscribers[shipSymbol] = append(c.depositSubscribers[shipSymbol], ch)
 
 	// Return unsubscribe function

@@ -6,8 +6,8 @@ import (
 	"math"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
-	contractTypes "github.com/andrescamacho/spacetraders-go/internal/application/contract/types"
 	contractQueries "github.com/andrescamacho/spacetraders-go/internal/application/contract/queries"
+	contractTypes "github.com/andrescamacho/spacetraders-go/internal/application/contract/types"
 	shipCargo "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/cargo"
 	shipNav "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
 	shipTypes "github.com/andrescamacho/spacetraders-go/internal/application/ship/types"
@@ -269,11 +269,11 @@ func (e *DeliveryExecutor) DeliverContractCargo(
 	}
 
 	logger.Log("INFO", "Contract cargo delivery initiated", map[string]interface{}{
-		"ship_symbol":     shipSymbol,
-		"action":          "deliver_cargo",
-		"trade_symbol":    delivery.TradeSymbol,
-		"units_in_cargo":  unitsInCargo,
-		"units_remaining": unitsRemaining,
+		"ship_symbol":      shipSymbol,
+		"action":           "deliver_cargo",
+		"trade_symbol":     delivery.TradeSymbol,
+		"units_in_cargo":   unitsInCargo,
+		"units_remaining":  unitsRemaining,
 		"units_to_deliver": unitsToDeliver,
 	})
 
@@ -356,12 +356,9 @@ func (e *DeliveryExecutor) dockShip(
 		PlayerID: playerID,
 	}
 
-	dockResp, err := e.mediator.Send(ctx, dockCmd)
-	if err != nil {
+	if _, err := e.mediator.Send(ctx, dockCmd); err != nil {
 		return fmt.Errorf("failed to dock: %w", err)
 	}
-
-	_ = dockResp // Response unused after error check removed
 
 	return nil
 }

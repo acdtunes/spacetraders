@@ -20,9 +20,9 @@ type FindNearestJumpGateQuery struct {
 
 // FindNearestJumpGateResponse represents the result of finding the nearest jump gate
 type FindNearestJumpGateResponse struct {
-	JumpGate      *shared.Waypoint
-	Distance      float64
-	SystemSymbol  string
+	JumpGate     *shared.Waypoint
+	Distance     float64
+	SystemSymbol string
 }
 
 // FindNearestJumpGateHandler handles the FindNearestJumpGate query

@@ -36,24 +36,6 @@ func (e *ErrInvalidPipelineTransition) Error() string {
 		e.PipelineID, e.From, e.To)
 }
 
-// ErrTaskNotFound indicates a task could not be found
-type ErrTaskNotFound struct {
-	TaskID string
-}
-
-func (e *ErrTaskNotFound) Error() string {
-	return fmt.Sprintf("task not found: %s", e.TaskID)
-}
-
-// ErrPipelineNotFound indicates a pipeline could not be found
-type ErrPipelineNotFound struct {
-	PipelineID string
-}
-
-func (e *ErrPipelineNotFound) Error() string {
-	return fmt.Sprintf("pipeline not found: %s", e.PipelineID)
-}
-
 // ErrTaskAlreadyAssigned indicates a task is already assigned to a ship
 type ErrTaskAlreadyAssigned struct {
 	TaskID       string
@@ -62,43 +44,6 @@ type ErrTaskAlreadyAssigned struct {
 
 func (e *ErrTaskAlreadyAssigned) Error() string {
 	return fmt.Sprintf("task %s already assigned to ship %s", e.TaskID, e.AssignedShip)
-}
-
-// ErrDependencyNotMet indicates a task dependency has not been satisfied
-type ErrDependencyNotMet struct {
-	TaskID          string
-	DependencyID    string
-	DependencyState TaskStatus
-}
-
-func (e *ErrDependencyNotMet) Error() string {
-	return fmt.Sprintf("task %s depends on %s which is in state %s",
-		e.TaskID, e.DependencyID, e.DependencyState)
-}
-
-// ErrFactoryNotReady indicates a factory is not ready for collection
-type ErrFactoryNotReady struct {
-	FactorySymbol string
-	OutputGood    string
-	CurrentSupply string
-	RequiredSupply string
-}
-
-func (e *ErrFactoryNotReady) Error() string {
-	return fmt.Sprintf("factory %s not ready for %s collection: supply is %s (need %s)",
-		e.FactorySymbol, e.OutputGood, e.CurrentSupply, e.RequiredSupply)
-}
-
-// ErrInsufficientInputs indicates not all inputs have been delivered to a factory
-type ErrInsufficientInputs struct {
-	FactorySymbol  string
-	OutputGood     string
-	MissingInputs  []string
-}
-
-func (e *ErrInsufficientInputs) Error() string {
-	return fmt.Sprintf("factory %s missing inputs for %s: %v",
-		e.FactorySymbol, e.OutputGood, e.MissingInputs)
 }
 
 // ErrNoValidSellMarket indicates no valid sell market could be found

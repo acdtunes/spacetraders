@@ -43,8 +43,6 @@ type RunWorkflowResponse = contractTypes.RunWorkflowResponse
 type RunWorkflowHandler struct {
 	lifecycleService *contractServices.ContractLifecycleService
 	deliveryExecutor *contractServices.DeliveryExecutor
-	shipRepo         navigation.ShipRepository
-	clock            shared.Clock
 }
 
 // NewRunWorkflowHandler creates a new contract workflow handler
@@ -54,9 +52,6 @@ func NewRunWorkflowHandler(
 	contractRepo domainContract.ContractRepository,
 	clock shared.Clock,
 ) *RunWorkflowHandler {
-	if clock == nil {
-		clock = shared.NewRealClock()
-	}
 	cargoManager := contractServices.NewCargoManager(mediator, shipRepo)
 	lifecycleService := contractServices.NewContractLifecycleService(mediator, contractRepo)
 	deliveryExecutor := contractServices.NewDeliveryExecutor(mediator, shipRepo, cargoManager)
@@ -64,8 +59,6 @@ func NewRunWorkflowHandler(
 	return &RunWorkflowHandler{
 		lifecycleService: lifecycleService,
 		deliveryExecutor: deliveryExecutor,
-		shipRepo:         shipRepo,
-		clock:            clock,
 	}
 }
 
@@ -141,66 +134,6 @@ func (h *RunWorkflowHandler) executeWorkflow(
 	result.Fulfilled = true
 
 	result.TotalProfit += h.lifecycleService.CalculateTotalProfit(contract)
-
-	return nil
-}
-
-// transferShipBackToCoordinator transfers ship assignment from worker back to coordinator
-func (h *RunWorkflowHandler) transferShipBackToCoordinator(
-	ctx context.Context,
-	cmd *RunWorkflowCommand,
-) error {
-	logger := common.LoggerFromContext(ctx)
-
-	// If no container ID provided, cannot transfer
-	if cmd.ContainerID == "" {
-		logger.Log("WARNING", "Cannot transfer ship: worker container ID not provided", map[string]interface{}{
-			"ship_symbol":    cmd.ShipSymbol,
-			"action":         "transfer_to_coordinator",
-			"coordinator_id": cmd.CoordinatorID,
-		})
-		return nil
-	}
-
-	// Transfer ship from worker container to coordinator using Ship aggregate
-	ship, err := h.shipRepo.FindBySymbol(ctx, cmd.ShipSymbol, cmd.PlayerID)
-	if err != nil {
-		logger.Log("WARNING", "Failed to load ship for transfer", map[string]interface{}{
-			"ship_symbol":    cmd.ShipSymbol,
-			"action":         "transfer_to_coordinator",
-			"coordinator_id": cmd.CoordinatorID,
-			"error":          err.Error(),
-		})
-		return err
-	}
-
-	// Assign to coordinator container (this is effectively a transfer)
-	if err := ship.AssignToContainer(cmd.CoordinatorID, h.clock); err != nil {
-		logger.Log("WARNING", "Failed to transfer ship to coordinator", map[string]interface{}{
-			"ship_symbol":    cmd.ShipSymbol,
-			"action":         "transfer_to_coordinator",
-			"coordinator_id": cmd.CoordinatorID,
-			"error":          err.Error(),
-		})
-		return err
-	}
-
-	if err := h.shipRepo.Save(ctx, ship); err != nil {
-		logger.Log("WARNING", "Failed to persist ship transfer", map[string]interface{}{
-			"ship_symbol":    cmd.ShipSymbol,
-			"action":         "transfer_to_coordinator",
-			"coordinator_id": cmd.CoordinatorID,
-			"error":          err.Error(),
-		})
-		return err
-	}
-
-	logger.Log("INFO", "Ship successfully transferred back to coordinator", map[string]interface{}{
-		"ship_symbol":    cmd.ShipSymbol,
-		"action":         "transfer_to_coordinator",
-		"coordinator_id": cmd.CoordinatorID,
-		"worker_id":      cmd.ContainerID,
-	})
 
 	return nil
 }

@@ -66,13 +66,6 @@ func (r *ActivePipelineRegistry) HasPipelineForGood(good string) bool {
 	return false
 }
 
-// Count returns the number of active pipelines.
-func (r *ActivePipelineRegistry) Count() int {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return len(r.pipelines)
-}
-
 // CountByType returns the count of pipelines by type.
 func (r *ActivePipelineRegistry) CountByType(pipelineType manufacturing.PipelineType) int {
 	r.mu.RLock()
@@ -99,44 +92,9 @@ func (r *ActivePipelineRegistry) GetPipelineIDs() []string {
 	return result
 }
 
-// GetPipelinesByType returns pipelines of a specific type.
-func (r *ActivePipelineRegistry) GetPipelinesByType(pipelineType manufacturing.PipelineType) []*manufacturing.ManufacturingPipeline {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	result := make([]*manufacturing.ManufacturingPipeline, 0)
-	for _, pipeline := range r.pipelines {
-		if pipeline.PipelineType() == pipelineType {
-			result = append(result, pipeline)
-		}
-	}
-	return result
-}
-
-// Clear removes all pipelines from the registry.
-func (r *ActivePipelineRegistry) Clear() {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.pipelines = make(map[string]*manufacturing.ManufacturingPipeline)
-}
-
 // SetAll replaces all pipelines in the registry (for state recovery).
 func (r *ActivePipelineRegistry) SetAll(pipelines map[string]*manufacturing.ManufacturingPipeline) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.pipelines = pipelines
-}
-
-// Exists checks if a pipeline is registered.
-func (r *ActivePipelineRegistry) Exists(pipelineID string) bool {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	_, exists := r.pipelines[pipelineID]
-	return exists
-}
-
-// GetGetter returns a read-only getter function for the pipelines.
-// This is useful for injecting pipeline access without exposing the full registry.
-func (r *ActivePipelineRegistry) GetGetter() func() map[string]*manufacturing.ManufacturingPipeline {
-	return r.GetAll
 }

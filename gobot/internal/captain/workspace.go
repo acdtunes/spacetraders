@@ -3,9 +3,9 @@
 package captainsup
 
 import (
-	"strings"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 type Workspace struct {

@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 
@@ -38,7 +37,7 @@ func (r *ConstructionSiteAPIRepository) FindByWaypoint(ctx context.Context, wayp
 	}
 
 	// Extract system symbol from waypoint (e.g., "X1-FB5-I61" -> "X1-FB5")
-	systemSymbol := extractSystemFromWaypoint(waypointSymbol)
+	systemSymbol := extractSystemSymbol(waypointSymbol)
 
 	// Call API
 	data, err := r.apiClient.GetConstruction(ctx, systemSymbol, waypointSymbol, p.Token)
@@ -103,14 +102,4 @@ func (r *ConstructionSiteAPIRepository) SupplyMaterial(ctx context.Context, ship
 		CargoCapacity:  cargoCapacity,
 		CargoUnits:     cargoUnits,
 	}, nil
-}
-
-// extractSystemFromWaypoint extracts system symbol from waypoint symbol.
-// e.g., "X1-FB5-I61" -> "X1-FB5"
-func extractSystemFromWaypoint(waypointSymbol string) string {
-	parts := strings.Split(waypointSymbol, "-")
-	if len(parts) >= 2 {
-		return parts[0] + "-" + parts[1]
-	}
-	return waypointSymbol
 }

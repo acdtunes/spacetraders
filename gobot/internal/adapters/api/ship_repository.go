@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -37,8 +38,8 @@ type cachedShipList struct {
 // API calls are only made for state-changing operations (navigate, dock, orbit, refuel, cargo).
 //
 // Caching Strategy:
-// - In-memory cache (15s TTL): Prevents redundant DB reads
-//   when multiple coordinators call FindAllByPlayer in quick succession
+//   - In-memory cache (15s TTL): Prevents redundant DB reads
+//     when multiple coordinators call FindAllByPlayer in quick succession
 type ShipRepository struct {
 	apiClient        domainPorts.APIClient
 	playerRepo       player.PlayerRepository
@@ -519,7 +520,7 @@ func isAlreadyDockedError(err error) bool {
 	}
 	// Check if error message contains indication that ship is already docked
 	errMsg := err.Error()
-	return contains(errMsg, "already docked") || contains(errMsg, "4237")
+	return strings.Contains(errMsg, "already docked") || strings.Contains(errMsg, "4237")
 }
 
 // isAlreadyInOrbitError checks if the error is due to ship already being in orbit
@@ -530,23 +531,7 @@ func isAlreadyInOrbitError(err error) bool {
 	}
 	// Check if error message contains indication that ship is already in orbit
 	errMsg := err.Error()
-	return contains(errMsg, "already in orbit") || contains(errMsg, "in orbit")
-}
-
-// contains checks if a string contains a substring (case-insensitive helper)
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
-		(len(s) > 0 && len(substr) > 0 && indexSubstring(s, substr) >= 0))
-}
-
-// indexSubstring finds the index of substr in s (simple implementation)
-func indexSubstring(s, substr string) int {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return i
-		}
-	}
-	return -1
+	return strings.Contains(errMsg, "already in orbit") || strings.Contains(errMsg, "in orbit")
 }
 
 // =============================================================================
@@ -1021,6 +1006,19 @@ func (r *ShipRepository) modelToDomain(ctx context.Context, model *persistence.S
 	)
 }
 
+func (r *ShipRepository) modelsToShips(ctx context.Context, models []persistence.ShipModel) []*navigation.Ship {
+	ships := make([]*navigation.Ship, 0, len(models))
+	for _, model := range models {
+		playerID, _ := shared.NewPlayerID(model.PlayerID)
+		ship, err := r.modelToDomain(ctx, &model, playerID)
+		if err != nil {
+			continue
+		}
+		ships = append(ships, ship)
+	}
+	return ships
+}
+
 // shipDataToModel converts API ship data to DB model for sync
 func (r *ShipRepository) shipDataToModel(ctx context.Context, data *navigation.ShipData, playerID shared.PlayerID, now time.Time) (*persistence.ShipModel, error) {
 	model := &persistence.ShipModel{
@@ -1223,16 +1221,7 @@ func (r *ShipRepository) FindInTransitWithPastArrival(ctx context.Context) ([]*n
 		return nil, err
 	}
 
-	ships := make([]*navigation.Ship, 0, len(models))
-	for _, model := range models {
-		playerID, _ := shared.NewPlayerID(model.PlayerID)
-		ship, err := r.modelToDomain(ctx, &model, playerID)
-		if err != nil {
-			continue
-		}
-		ships = append(ships, ship)
-	}
-	return ships, nil
+	return r.modelsToShips(ctx, models), nil
 }
 
 // FindInTransitWithFutureArrival finds ships that will arrive in the future (for scheduling)
@@ -1247,16 +1236,7 @@ func (r *ShipRepository) FindInTransitWithFutureArrival(ctx context.Context) ([]
 		return nil, err
 	}
 
-	ships := make([]*navigation.Ship, 0, len(models))
-	for _, model := range models {
-		playerID, _ := shared.NewPlayerID(model.PlayerID)
-		ship, err := r.modelToDomain(ctx, &model, playerID)
-		if err != nil {
-			continue
-		}
-		ships = append(ships, ship)
-	}
-	return ships, nil
+	return r.modelsToShips(ctx, models), nil
 }
 
 // FindWithExpiredCooldown finds ships with past cooldowns
@@ -1270,16 +1250,7 @@ func (r *ShipRepository) FindWithExpiredCooldown(ctx context.Context) ([]*naviga
 		return nil, err
 	}
 
-	ships := make([]*navigation.Ship, 0, len(models))
-	for _, model := range models {
-		playerID, _ := shared.NewPlayerID(model.PlayerID)
-		ship, err := r.modelToDomain(ctx, &model, playerID)
-		if err != nil {
-			continue
-		}
-		ships = append(ships, ship)
-	}
-	return ships, nil
+	return r.modelsToShips(ctx, models), nil
 }
 
 // FindWithFutureCooldown finds ships with cooldowns expiring in the future (for scheduling)
@@ -1293,14 +1264,5 @@ func (r *ShipRepository) FindWithFutureCooldown(ctx context.Context) ([]*navigat
 		return nil, err
 	}
 
-	ships := make([]*navigation.Ship, 0, len(models))
-	for _, model := range models {
-		playerID, _ := shared.NewPlayerID(model.PlayerID)
-		ship, err := r.modelToDomain(ctx, &model, playerID)
-		if err != nil {
-			continue
-		}
-		ships = append(ships, ship)
-	}
-	return ships, nil
+	return r.modelsToShips(ctx, models), nil
 }

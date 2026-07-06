@@ -41,20 +41,6 @@ func (m *MockClock) Advance(d time.Duration) {
 	m.CurrentTime = m.CurrentTime.Add(d)
 }
 
-// SetTime sets the mock clock to a specific time
-func (m *MockClock) SetTime(t time.Time) {
-	m.CurrentTime = t
-}
-
-// NewMockClock creates a MockClock starting at the given time
-// If zero time is provided, starts at current time
-func NewMockClock(startTime time.Time) *MockClock {
-	if startTime.IsZero() {
-		startTime = time.Now()
-	}
-	return &MockClock{CurrentTime: startTime}
-}
-
 // NewRealClock creates a RealClock instance
 func NewRealClock() Clock {
 	return &RealClock{}

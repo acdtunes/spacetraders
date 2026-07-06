@@ -21,25 +21,25 @@ type WorkerResult = mfgTypes.WorkerResult
 // Pattern: Single Workflow (like ContractWorkflow)
 //
 // Workflow:
-// 1. Receive assigned production node from command
-// 2. Check acquisition method (BUY or FABRICATE)
-// 3. For BUY:
-//    a. Find best market selling the good
-//    b. Navigate to market and dock
-//    c. Purchase whatever quantity is available
-// 4. For FABRICATE:
-//    a. Recursively produce all required inputs
-//    b. Find manufacturing waypoint (imports this good)
-//    c. Deliver all inputs to waypoint
-//    d. Poll database until output good appears in exports
-//    e. Purchase output good
-// 5. Signal completion to coordinator (if channel provided)
-// 6. Return with cargo containing produced good
+//  1. Receive assigned production node from command
+//  2. Check acquisition method (BUY or FABRICATE)
+//  3. For BUY:
+//     a. Find best market selling the good
+//     b. Navigate to market and dock
+//     c. Purchase whatever quantity is available
+//  4. For FABRICATE:
+//     a. Recursively produce all required inputs
+//     b. Find manufacturing waypoint (imports this good)
+//     c. Deliver all inputs to waypoint
+//     d. Poll database until output good appears in exports
+//     e. Purchase output good
+//  5. Signal completion to coordinator (if channel provided)
+//  6. Return with cargo containing produced good
 type RunFactoryWorkerHandler struct {
-	shipRepo          navigation.ShipRepository
-	marketRepo        market.MarketRepository
+	shipRepo           navigation.ShipRepository
+	marketRepo         market.MarketRepository
 	productionExecutor *mfgServices.ProductionExecutor
-	clock             shared.Clock
+	clock              shared.Clock
 }
 
 // NewRunFactoryWorkerHandler creates a new factory worker handler
@@ -59,10 +59,10 @@ func NewRunFactoryWorkerHandler(
 	)
 
 	return &RunFactoryWorkerHandler{
-		shipRepo:          shipRepo,
-		marketRepo:        marketRepo,
+		shipRepo:           shipRepo,
+		marketRepo:         marketRepo,
 		productionExecutor: productionExecutor,
-		clock:             clock,
+		clock:              clock,
 	}
 }
 
@@ -150,11 +150,11 @@ func (h *RunFactoryWorkerHandler) executeProduction(
 	response.TotalCost = result.TotalCost
 
 	logger.Log("INFO", "Factory worker completed", map[string]interface{}{
-		"factory_id":       cmd.FactoryID,
-		"good":             cmd.ProductionNode.Good,
+		"factory_id":        cmd.FactoryID,
+		"good":              cmd.ProductionNode.Good,
 		"quantity_acquired": result.QuantityAcquired,
-		"total_cost":       result.TotalCost,
-		"waypoint":         result.WaypointSymbol,
+		"total_cost":        result.TotalCost,
+		"waypoint":          result.WaypointSymbol,
 	})
 
 	return nil

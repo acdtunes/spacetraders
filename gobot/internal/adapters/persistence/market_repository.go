@@ -10,6 +10,8 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 )
 
+const marketDataTable = "market_data"
+
 // MarketRepositoryGORM implements market persistence using GORM
 type MarketRepositoryGORM struct {
 	db *gorm.DB
@@ -93,10 +95,18 @@ func (r *MarketRepositoryGORM) GetMarketData(
 		return nil, nil
 	}
 
-	// Convert to domain objects
-	goods := make([]market.TradeGood, len(marketDataRecords))
+	goods, timestamp, err := recordsToGoods(marketDataRecords)
+	if err != nil {
+		return nil, err
+	}
+
+	return market.NewMarket(waypointSymbol, goods, timestamp)
+}
+
+func recordsToGoods(records []MarketData) ([]market.TradeGood, time.Time, error) {
+	goods := make([]market.TradeGood, len(records))
 	var timestamp time.Time
-	for i, record := range marketDataRecords {
+	for i, record := range records {
 		var tradeType market.TradeType
 		if record.TradeType != nil {
 			tradeType = market.TradeType(*record.TradeType)
@@ -111,13 +121,13 @@ func (r *MarketRepositoryGORM) GetMarketData(
 			tradeType,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("invalid trade good in database: %w", err)
+			return nil, timestamp, fmt.Errorf("invalid trade good in database: %w", err)
 		}
 		goods[i] = *good
 		timestamp = record.LastUpdated
 	}
 
-	return market.NewMarket(waypointSymbol, goods, timestamp)
+	return goods, timestamp, nil
 }
 
 // ListMarketsInSystem retrieves all markets in a system, optionally filtered by age
@@ -150,27 +160,9 @@ func (r *MarketRepositoryGORM) ListMarketsInSystem(
 	// Convert each waypoint's goods to a Market
 	markets := make([]market.Market, 0, len(waypointGoods))
 	for waypointSymbol, records := range waypointGoods {
-		goods := make([]market.TradeGood, len(records))
-		var timestamp time.Time
-		for i, record := range records {
-			var tradeType market.TradeType
-			if record.TradeType != nil {
-				tradeType = market.TradeType(*record.TradeType)
-			}
-			good, err := market.NewTradeGood(
-				record.GoodSymbol,
-				record.Supply,
-				record.Activity,
-				record.PurchasePrice,
-				record.SellPrice,
-				record.TradeVolume,
-				tradeType,
-			)
-			if err != nil {
-				return nil, fmt.Errorf("invalid trade good in database: %w", err)
-			}
-			goods[i] = *good
-			timestamp = record.LastUpdated
+		goods, timestamp, err := recordsToGoods(records)
+		if err != nil {
+			return nil, err
 		}
 
 		m, err := market.NewMarket(waypointSymbol, goods, timestamp)
@@ -200,7 +192,7 @@ func (r *MarketRepositoryGORM) FindCheapestMarketSelling(
 	}
 
 	err := r.db.WithContext(ctx).
-		Table("market_data").
+		Table(marketDataTable).
 		Select("waypoint_symbol, good_symbol as trade_symbol, sell_price, supply").
 		Where("player_id = ?", playerID).
 		Where("waypoint_symbol LIKE ?", systemSymbol+"-%").
@@ -217,10 +209,7 @@ func (r *MarketRepositoryGORM) FindCheapestMarketSelling(
 		return nil, nil
 	}
 
-	supply := ""
-	if result.Supply != nil {
-		supply = *result.Supply
-	}
+	supply := derefString(result.Supply)
 
 	return &market.CheapestMarketResult{
 		WaypointSymbol: result.WaypointSymbol,
@@ -248,7 +237,7 @@ func (r *MarketRepositoryGORM) FindCheapestMarketSellingWithSupply(
 	}
 
 	err := r.db.WithContext(ctx).
-		Table("market_data").
+		Table(marketDataTable).
 		Select("waypoint_symbol, good_symbol as trade_symbol, sell_price, supply").
 		Where("player_id = ?", playerID).
 		Where("waypoint_symbol LIKE ?", systemSymbol+"-%").
@@ -266,10 +255,7 @@ func (r *MarketRepositoryGORM) FindCheapestMarketSellingWithSupply(
 		return nil, nil // No market with this supply level
 	}
 
-	supply := ""
-	if result.Supply != nil {
-		supply = *result.Supply
-	}
+	supply := derefString(result.Supply)
 
 	return &market.CheapestMarketResult{
 		WaypointSymbol: result.WaypointSymbol,
@@ -295,7 +281,7 @@ func (r *MarketRepositoryGORM) FindBestMarketBuying(
 	}
 
 	err := r.db.WithContext(ctx).
-		Table("market_data").
+		Table(marketDataTable).
 		Select("waypoint_symbol, good_symbol as trade_symbol, purchase_price, supply").
 		Where("player_id = ?", playerID).
 		Where("waypoint_symbol LIKE ?", systemSymbol+"-%").
@@ -313,10 +299,7 @@ func (r *MarketRepositoryGORM) FindBestMarketBuying(
 		return nil, nil
 	}
 
-	supply := ""
-	if result.Supply != nil {
-		supply = *result.Supply
-	}
+	supply := derefString(result.Supply)
 
 	return &market.BestMarketBuyingResult{
 		WaypointSymbol: result.WaypointSymbol,
@@ -375,7 +358,7 @@ func (r *MarketRepositoryGORM) FindBestMarketForBuying(
 	}
 
 	err := r.db.WithContext(ctx).
-		Table("market_data").
+		Table(marketDataTable).
 		Select("waypoint_symbol, good_symbol, sell_price, supply, activity, trade_type").
 		Where("player_id = ?", playerID).
 		Where("waypoint_symbol LIKE ?", systemSymbol+"-%").
@@ -395,18 +378,9 @@ func (r *MarketRepositoryGORM) FindBestMarketForBuying(
 	bestScore := 100000 // Start with a high score
 
 	for _, r := range results {
-		supply := ""
-		if r.Supply != nil {
-			supply = *r.Supply
-		}
-		activity := ""
-		if r.Activity != nil {
-			activity = *r.Activity
-		}
-		tradeType := ""
-		if r.TradeType != nil {
-			tradeType = *r.TradeType
-		}
+		supply := derefString(r.Supply)
+		activity := derefString(r.Activity)
+		tradeType := derefString(r.TradeType)
 
 		// Calculate score (lower is better)
 		score := scoreMarketForBuying(tradeType, supply, activity)
@@ -500,7 +474,7 @@ func (r *MarketRepositoryGORM) FindFactoryForGood(
 
 	// Only select markets where trade_type = 'EXPORT' (factories that produce this good)
 	err := r.db.WithContext(ctx).
-		Table("market_data").
+		Table(marketDataTable).
 		Select("waypoint_symbol, good_symbol, sell_price, supply, activity").
 		Where("player_id = ?", playerID).
 		Where("waypoint_symbol LIKE ?", systemSymbol+"-%").
@@ -519,14 +493,8 @@ func (r *MarketRepositoryGORM) FindFactoryForGood(
 		return nil, nil
 	}
 
-	supply := ""
-	if result.Supply != nil {
-		supply = *result.Supply
-	}
-	activity := ""
-	if result.Activity != nil {
-		activity = *result.Activity
-	}
+	supply := derefString(result.Supply)
+	activity := derefString(result.Activity)
 
 	return &market.FactoryResult{
 		WaypointSymbol: result.WaypointSymbol,

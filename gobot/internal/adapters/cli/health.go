@@ -15,9 +15,9 @@ func NewHealthCommand() *cobra.Command {
 		Short: "Check daemon health status",
 		Long:  `Verify that the daemon is running and responsive.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			client, err := NewDaemonClient(socketPath)
+			client, err := connectDaemon()
 			if err != nil {
-				return fmt.Errorf("failed to connect to daemon: %w", err)
+				return err
 			}
 			defer client.Close()
 

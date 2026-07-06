@@ -56,7 +56,7 @@ func NewRunFleetCoordinatorHandler(
 		clock = shared.NewRealClock()
 	}
 
-	fleetPoolManager := contractServices.NewFleetPoolManager(mediator, shipRepo)
+	fleetPoolManager := contractServices.NewFleetPoolManager(mediator)
 	workerLifecycleManager := contractServices.NewWorkerLifecycleManager(daemonClient, containerRepo, shipRepo)
 	contractMarketService := contractServices.NewContractMarketService(mediator, contractRepo)
 
@@ -120,10 +120,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 		select {
 		case <-ctx.Done():
 			// Context cancelled, exit
-			if activeWorkerContainerID != "" {
-				logger.Log("INFO", fmt.Sprintf("Stopping active worker container: %s", activeWorkerContainerID), nil)
-				_ = h.workerLifecycleManager.StopWorkerContainer(ctx, activeWorkerContainerID)
-			}
+			h.stopActiveWorker(ctx, activeWorkerContainerID)
 			return result, ctx.Err()
 		default:
 			// Continue with contract assignment
@@ -152,10 +149,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			case <-time.After(30 * time.Second):
 				// Timeout, check again
 			case <-ctx.Done():
-				if activeWorkerContainerID != "" {
-					logger.Log("INFO", fmt.Sprintf("Stopping active worker container: %s", activeWorkerContainerID), nil)
-					_ = h.workerLifecycleManager.StopWorkerContainer(ctx, activeWorkerContainerID)
-				}
+				h.stopActiveWorker(ctx, activeWorkerContainerID)
 				return result, ctx.Err()
 			}
 			continue // Loop back to check for available ships
@@ -176,10 +170,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			case <-time.After(1 * time.Minute):
 				logger.Log("WARNING", "Timeout waiting for active worker, will check again", nil)
 			case <-ctx.Done():
-				if activeWorkerContainerID != "" {
-					logger.Log("INFO", fmt.Sprintf("Stopping active worker container: %s", activeWorkerContainerID), nil)
-					_ = h.workerLifecycleManager.StopWorkerContainer(ctx, activeWorkerContainerID)
-				}
+				h.stopActiveWorker(ctx, activeWorkerContainerID)
 				return result, ctx.Err()
 			}
 			continue
@@ -267,10 +258,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			case <-time.After(1 * time.Minute):
 				logger.Log("INFO", "Timeout waiting for delivery, will re-check", nil)
 			case <-ctx.Done():
-				if activeWorkerContainerID != "" {
-					logger.Log("INFO", fmt.Sprintf("Stopping active worker container: %s", activeWorkerContainerID), nil)
-					_ = h.workerLifecycleManager.StopWorkerContainer(ctx, activeWorkerContainerID)
-				}
+				h.stopActiveWorker(ctx, activeWorkerContainerID)
 				return result, ctx.Err()
 			}
 			continue
@@ -417,15 +405,9 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 
 		case <-ctx.Done():
 			logger.Log("INFO", "Context cancelled, exiting coordinator", nil)
-			if activeWorkerContainerID != "" {
-				logger.Log("INFO", fmt.Sprintf("Stopping active worker container: %s", activeWorkerContainerID), nil)
-				_ = h.workerLifecycleManager.StopWorkerContainer(ctx, activeWorkerContainerID)
-			}
+			h.stopActiveWorker(ctx, activeWorkerContainerID)
 			return result, ctx.Err()
 		}
-
-		// This line should NEVER be reached (all cases have continue/return)
-		logger.Log("ERROR", "CRITICAL: Code execution fell through select statement!", nil)
 	}
 }
 
@@ -478,3 +460,11 @@ func (h *RunFleetCoordinatorHandler) calculateInFlightCargo(
 	return totalInFlight, nil
 }
 
+func (h *RunFleetCoordinatorHandler) stopActiveWorker(ctx context.Context, activeWorkerContainerID string) {
+	if activeWorkerContainerID == "" {
+		return
+	}
+	logger := common.LoggerFromContext(ctx)
+	logger.Log("INFO", fmt.Sprintf("Stopping active worker container: %s", activeWorkerContainerID), nil)
+	_ = h.workerLifecycleManager.StopWorkerContainer(ctx, activeWorkerContainerID)
+}

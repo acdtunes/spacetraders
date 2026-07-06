@@ -64,7 +64,7 @@ func (s *DaemonServer) ParallelManufacturingCoordinator(ctx context.Context, sys
 		containerID,
 		container.ContainerTypeManufacturingCoordinator, // Use standard coordinator type
 		playerID,
-		-1, // Infinite iterations
+		-1,  // Infinite iterations
 		nil, // No parent container
 		map[string]interface{}{
 			"system_symbol":            systemSymbol,

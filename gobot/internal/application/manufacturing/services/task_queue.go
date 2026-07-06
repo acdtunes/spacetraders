@@ -15,9 +15,6 @@ type ManufacturingTaskQueue interface {
 	// Enqueue adds a task to the queue
 	Enqueue(task *manufacturing.ManufacturingTask)
 
-	// EnqueuePriority adds a high-priority task
-	EnqueuePriority(task *manufacturing.ManufacturingTask)
-
 	// Dequeue removes and returns the highest-priority task
 	Dequeue() *manufacturing.ManufacturingTask
 
@@ -93,20 +90,6 @@ func (q *TaskQueue) Enqueue(task *manufacturing.ManufacturingTask) {
 	heap.Push(&q.tasks, task)
 }
 
-// EnqueuePriority adds a high-priority task to the queue
-func (q *TaskQueue) EnqueuePriority(task *manufacturing.ManufacturingTask) {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-
-	// Remove existing if present
-	if _, exists := q.taskByID[task.ID()]; exists {
-		q.removeByIDLocked(task.ID())
-	}
-
-	q.taskByID[task.ID()] = task
-	heap.Push(&q.tasks, task)
-}
-
 // Dequeue removes and returns the highest-priority ready task
 func (q *TaskQueue) Dequeue() *manufacturing.ManufacturingTask {
 	q.mu.Lock()
@@ -123,18 +106,6 @@ func (q *TaskQueue) Dequeue() *manufacturing.ManufacturingTask {
 	}
 
 	return nil
-}
-
-// Peek returns the highest-priority task without removing it
-func (q *TaskQueue) Peek() *manufacturing.ManufacturingTask {
-	q.mu.RLock()
-	defer q.mu.RUnlock()
-
-	if q.tasks.Len() == 0 {
-		return nil
-	}
-
-	return q.tasks[0]
 }
 
 // GetReadyTasks returns all ready tasks sorted by effective priority (highest first)
@@ -159,25 +130,6 @@ func (q *TaskQueue) GetReadyTasks() []*manufacturing.ManufacturingTask {
 
 // sortByEffectivePriority sorts tasks by effective priority (base + aging) in descending order
 func sortByEffectivePriority(tasks []*manufacturing.ManufacturingTask) {
-	// Use same priority calculation as heap Less() function, with aging cap
-	effectivePriority := func(task *manufacturing.ManufacturingTask) int {
-		basePriority := task.Priority()
-		readyAt := task.ReadyAt()
-		if readyAt == nil {
-			return basePriority
-		}
-		minutesWaiting := time.Since(*readyAt).Minutes()
-		if minutesWaiting < 0 {
-			minutesWaiting = 0
-		}
-		// Apply aging with cap to prevent runaway priorities
-		agingBoost := int(minutesWaiting * float64(manufacturing.AgingRatePerMinute))
-		if agingBoost > manufacturing.MaxAgingBonus {
-			agingBoost = manufacturing.MaxAgingBonus
-		}
-		return basePriority + agingBoost
-	}
-
 	// Sort descending by effective priority
 	for i := 0; i < len(tasks)-1; i++ {
 		for j := i + 1; j < len(tasks); j++ {
@@ -215,14 +167,12 @@ func (q *TaskQueue) Remove(taskID string) bool {
 
 // removeByIDLocked removes a task by ID (must hold lock)
 func (q *TaskQueue) removeByIDLocked(taskID string) bool {
-	task, exists := q.taskByID[taskID]
-	if !exists {
+	if _, exists := q.taskByID[taskID]; !exists {
 		return false
 	}
 
 	delete(q.taskByID, taskID)
 
-	// Find and remove from heap
 	for i, t := range q.tasks {
 		if t.ID() == taskID {
 			heap.Remove(&q.tasks, i)
@@ -230,7 +180,6 @@ func (q *TaskQueue) removeByIDLocked(taskID string) bool {
 		}
 	}
 
-	_ = task // Suppress unused variable warning
 	return true
 }
 
@@ -350,8 +299,8 @@ func (h taskHeap) Less(i, j int) bool {
 	// Calculate effective priority with aging to prevent starvation
 	// Formula: effective_priority = base_priority + (minutes_waiting * 2)
 	// This allows lower-priority tasks to eventually match higher-priority ones
-	iPriority := h.effectivePriority(h[i])
-	jPriority := h.effectivePriority(h[j])
+	iPriority := effectivePriority(h[i])
+	jPriority := effectivePriority(h[j])
 
 	// Higher effective priority comes first (max heap)
 	if iPriority != jPriority {
@@ -372,10 +321,9 @@ func (h taskHeap) Less(i, j int) bool {
 // Tasks waiting longer get priority boost to prevent starvation
 // The aging bonus is capped at MaxAgingBonus (100) to prevent runaway priorities
 // Boost: +2 priority per minute waiting, capped at 100
-func (h taskHeap) effectivePriority(task *manufacturing.ManufacturingTask) int {
+func effectivePriority(task *manufacturing.ManufacturingTask) int {
 	basePriority := task.Priority()
 
-	// Calculate aging boost based on time since task became ready
 	readyAt := task.ReadyAt()
 	if readyAt == nil {
 		return basePriority
@@ -386,7 +334,6 @@ func (h taskHeap) effectivePriority(task *manufacturing.ManufacturingTask) int {
 		minutesWaiting = 0
 	}
 
-	// Calculate aging boost with cap to prevent runaway priorities
 	agingBoost := int(minutesWaiting * float64(manufacturing.AgingRatePerMinute))
 	if agingBoost > manufacturing.MaxAgingBonus {
 		agingBoost = manufacturing.MaxAgingBonus

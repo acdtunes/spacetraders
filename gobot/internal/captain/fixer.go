@@ -47,9 +47,9 @@ func (f *Fixer) startsInLastDay(now time.Time) int {
 // branchPrefix maps a report kind to its git branch prefix.
 func branchPrefix(kind string) string {
 	switch kind {
-	case "feature":
+	case kindFeature:
 		return "feat"
-	case "automation":
+	case kindAutomation:
 		return "auto"
 	default:
 		return "fix"
@@ -74,7 +74,7 @@ func (f *Fixer) RecoverOrphanedFixes() int {
 	recovered := 0
 	for i := range reports {
 		r := reports[i]
-		if r.Status != "in_progress" {
+		if r.Status != statusInProgress {
 			continue
 		}
 		branch := fmt.Sprintf("captain/%s-%s", branchPrefix(r.Kind), r.Slug)
@@ -83,7 +83,7 @@ func (f *Fixer) RecoverOrphanedFixes() int {
 		wtDir := filepath.Join(f.cfg.RepoDir, worktreeRoot, strings.ReplaceAll(branch, "/", "-"))
 		_, _ = gitRun(f.cfg.RepoDir, "worktree", "remove", "--force", wtDir)
 		_, _ = gitRun(f.cfg.RepoDir, "branch", "-D", branch)
-		if err := SetReportStatus(r.Path, "new"); err != nil {
+		if err := SetReportStatus(r.Path, statusNew); err != nil {
 			continue
 		}
 		recovered++
@@ -103,7 +103,7 @@ func (f *Fixer) ProcessOne(ctx context.Context, now time.Time) (bool, error) {
 	}
 	var target *BugReport
 	for i := range reports {
-		if reports[i].Status == "new" {
+		if reports[i].Status == statusNew {
 			target = &reports[i]
 			break
 		}
@@ -113,7 +113,7 @@ func (f *Fixer) ProcessOne(ctx context.Context, now time.Time) (bool, error) {
 	}
 
 	budget := f.cfg.MaxFixesPerDay
-	if target.Kind == "feature" || target.Kind == "automation" {
+	if target.Kind == kindFeature || target.Kind == kindAutomation {
 		budget = f.cfg.MaxFeaturesPerDay
 	}
 	if f.startsInLastDay(now) >= budget {
@@ -122,7 +122,7 @@ func (f *Fixer) ProcessOne(ctx context.Context, now time.Time) (bool, error) {
 	}
 
 	f.fixStarts = append(f.fixStarts, now)
-	if err := SetReportStatus(target.Path, "in_progress"); err != nil {
+	if err := SetReportStatus(target.Path, statusInProgress); err != nil {
 		return true, err
 	}
 
@@ -130,7 +130,7 @@ func (f *Fixer) ProcessOne(ctx context.Context, now time.Time) (bool, error) {
 	branch := fmt.Sprintf("captain/%s-%s", prefix, target.Slug)
 	wt, err := CreateWorktree(f.cfg.RepoDir, branch)
 	if err != nil {
-		_ = SetReportStatus(target.Path, "new") // retryable
+		_ = SetReportStatus(target.Path, statusNew) // retryable
 		return true, err
 	}
 
@@ -152,24 +152,24 @@ func (f *Fixer) ProcessOne(ctx context.Context, now time.Time) (bool, error) {
 	sctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	if err := runner.Run(sctx, FixPrompt(*target, string(body))); err != nil {
-		_ = SetReportStatus(target.Path, "gate_failed")
+		_ = SetReportStatus(target.Path, statusGateFailed)
 		fmt.Printf("captain fixer: session failed for %s: %v (branch %s kept)\n", target.Slug, err, branch)
 		return true, nil
 	}
 
 	pass, gateOut := RunGate(moduleDir, timeout)
 	if !pass {
-		_ = SetReportStatus(target.Path, "gate_failed")
+		_ = SetReportStatus(target.Path, statusGateFailed)
 		_ = os.WriteFile(target.Path+".gate.log", []byte(gateOut), 0o644)
 		_ = gitCleanWorktreeOnly(f.cfg.RepoDir, wt) // remove worktree dir, KEEP branch
 		fmt.Printf("captain fixer: gate FAILED for %s, branch %s left for human\n", target.Slug, branch)
 		return true, nil
 	}
 
-	if target.Kind == "feature" { // automations are uncapped by design
+	if target.Kind == kindFeature { // automations are uncapped by design
 		lines, err := DiffLines(f.cfg.RepoDir, branch)
 		if err == nil && lines > f.cfg.MaxFeatureDiffLines {
-			_ = SetReportStatus(target.Path, "awaiting_human")
+			_ = SetReportStatus(target.Path, statusAwaitingHuman)
 			_ = gitCleanWorktreeOnly(f.cfg.RepoDir, wt)
 			fmt.Printf("captain fixer: %s diff too large (%d > %d lines), left for human\n",
 				target.Slug, lines, f.cfg.MaxFeatureDiffLines)
@@ -178,7 +178,7 @@ func (f *Fixer) ProcessOne(ctx context.Context, now time.Time) (bool, error) {
 	}
 
 	if !BranchContainsMain(f.cfg.RepoDir, branch) {
-		_ = SetReportStatus(target.Path, "awaiting_human")
+		_ = SetReportStatus(target.Path, statusAwaitingHuman)
 		_ = gitCleanWorktreeOnly(f.cfg.RepoDir, wt)
 		fmt.Printf("captain fixer: %s passed gate but base is STALE (main advanced); branch %s needs rebase + human review\n",
 			target.Slug, branch)
@@ -186,7 +186,7 @@ func (f *Fixer) ProcessOne(ctx context.Context, now time.Time) (bool, error) {
 	}
 
 	if !f.cfg.AutoMerge {
-		_ = SetReportStatus(target.Path, "awaiting_human")
+		_ = SetReportStatus(target.Path, statusAwaitingHuman)
 		_ = gitCleanWorktreeOnly(f.cfg.RepoDir, wt)
 		fmt.Printf("captain fixer: gate PASSED for %s; propose-only mode, branch %s awaits review\n",
 			target.Slug, branch)
@@ -196,11 +196,11 @@ func (f *Fixer) ProcessOne(ctx context.Context, now time.Time) (bool, error) {
 	msg := fmt.Sprintf("%s(captain): %s\n\nAutomated by the captain fix pipeline. Report: %s",
 		prefix, target.Title, filepath.Base(target.Path))
 	if err := SquashMerge(f.cfg.RepoDir, branch, msg); err != nil {
-		_ = SetReportStatus(target.Path, "awaiting_human")
+		_ = SetReportStatus(target.Path, statusAwaitingHuman)
 		return true, fmt.Errorf("squash-merge %s: %w", branch, err)
 	}
 	_ = wt.Remove(f.cfg.RepoDir)
-	_ = SetReportStatus(target.Path, "merged")
+	_ = SetReportStatus(target.Path, statusMerged)
 
 	fmt.Printf("captain fixer: %s merged; restarting daemon (%s)\n", target.Slug, f.cfg.RestartCmd)
 	restart := exec.CommandContext(ctx, "sh", "-c", f.cfg.RestartCmd)

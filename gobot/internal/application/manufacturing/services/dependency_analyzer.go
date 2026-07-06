@@ -107,43 +107,6 @@ func (a *DependencyAnalyzer) computeDepths(node *goods.SupplyChainNode, depthMap
 	return depth
 }
 
-// CanParallelize returns true if the given nodes have no interdependencies
-// and can be safely executed in parallel
-func (a *DependencyAnalyzer) CanParallelize(nodes []*goods.SupplyChainNode) bool {
-	if len(nodes) <= 1 {
-		return true
-	}
-
-	// Check if any node depends on another in the group
-	goods := make(map[string]bool)
-	for _, node := range nodes {
-		goods[node.Good] = true
-	}
-
-	// For each node, check if its dependencies include any other node in the group
-	for _, node := range nodes {
-		if a.hasInternalDependency(node, goods) {
-			return false
-		}
-	}
-
-	return true
-}
-
-// hasInternalDependency checks if a node depends on any good in the provided set
-func (a *DependencyAnalyzer) hasInternalDependency(node *goods.SupplyChainNode, goodsSet map[string]bool) bool {
-	for _, child := range node.Children {
-		if goodsSet[child.Good] {
-			return true
-		}
-		// Recursively check child dependencies
-		if a.hasInternalDependency(child, goodsSet) {
-			return true
-		}
-	}
-	return false
-}
-
 // EstimateParallelSpeedup estimates the speedup factor from parallel execution
 // Returns: (sequential_time / parallel_time)
 func (a *DependencyAnalyzer) EstimateParallelSpeedup(levels []ParallelLevel) float64 {
@@ -157,11 +120,5 @@ func (a *DependencyAnalyzer) EstimateParallelSpeedup(levels []ParallelLevel) flo
 	}
 
 	// Parallel time = number of levels (assuming unlimited ships)
-	parallelLevels := len(levels)
-
-	if parallelLevels == 0 {
-		return 1.0
-	}
-
-	return float64(sequentialNodes) / float64(parallelLevels)
+	return float64(sequentialNodes) / float64(len(levels))
 }

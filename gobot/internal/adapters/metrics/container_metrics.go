@@ -21,11 +21,11 @@ type ContainerMetricsCollector struct {
 	shipRepo      navigation.ShipRepository       // For ship metrics
 
 	// Container metrics
-	containerRunningTotal   *prometheus.GaugeVec
-	containerTotal          *prometheus.CounterVec
-	containerDuration       *prometheus.HistogramVec
-	containerRestarts       *prometheus.CounterVec
-	containerIterations     *prometheus.CounterVec
+	containerRunningTotal *prometheus.GaugeVec
+	containerTotal        *prometheus.CounterVec
+	containerDuration     *prometheus.HistogramVec
+	containerRestarts     *prometheus.CounterVec
+	containerIterations   *prometheus.CounterVec
 
 	// Ship metrics
 	shipsTotal      *prometheus.GaugeVec
@@ -278,8 +278,8 @@ func (c *ContainerMetricsCollector) updateShipMetrics() {
 		}
 
 		// Count ships by role, location, and status
-		shipsByRole := make(map[string]map[string]int)     // role -> location -> count
-		shipsByStatus := make(map[string]int)              // status -> count
+		shipsByRole := make(map[string]map[string]int) // role -> location -> count
+		shipsByStatus := make(map[string]int)          // status -> count
 
 		for _, ship := range ships {
 			role := ship.Role()

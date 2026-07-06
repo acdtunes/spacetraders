@@ -95,13 +95,8 @@ func (h *GetProfitLossHandler) calculateProfitLoss(
 	// Calculate net profit (revenue - expenses)
 	netProfit := totalRevenue - totalExpenses
 
-	// Format period string
-	period := fmt.Sprintf("%s to %s",
-		query.StartDate.Format("2006-01-02"),
-		query.EndDate.Format("2006-01-02"))
-
 	return &GetProfitLossResponse{
-		Period:           period,
+		Period:           formatPeriod(query.StartDate, query.EndDate),
 		TotalRevenue:     totalRevenue,
 		TotalExpenses:    totalExpenses,
 		NetProfit:        netProfit,

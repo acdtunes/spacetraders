@@ -145,23 +145,16 @@ func (d *SellMarketDistributor) findEligibleSellMarkets(
 			continue
 		}
 
-		// Extract supply and activity
-		supply := ""
-		if tradeGood.Supply() != nil {
-			supply = *tradeGood.Supply()
-		}
-		activity := ""
-		if tradeGood.Activity() != nil {
-			activity = *tradeGood.Activity()
-		}
+		supply := supplyOrEmpty(tradeGood)
+		activity := activityOrEmpty(tradeGood)
 
 		// Filter: Only SCARCE or LIMITED supply (markets that need goods)
-		if supply != "SCARCE" && supply != "LIMITED" {
+		if supply != supplyScarce && supply != supplyLimited {
 			continue
 		}
 
 		// Filter: Only WEAK or RESTRICTED activity (stable prices)
-		if activity != "WEAK" && activity != "RESTRICTED" {
+		if activity != activityWeak && activity != activityRestricted {
 			continue
 		}
 
@@ -237,11 +230,11 @@ func (d *SellMarketDistributor) selectBestMarket(markets []*EligibleMarket) *Eli
 		}
 
 		// Secondary: SCARCE > LIMITED (SCARCE markets pay more)
-		if m.Supply == "SCARCE" && best.Supply == "LIMITED" {
+		if m.Supply == supplyScarce && best.Supply == supplyLimited {
 			best = m
 			continue
 		}
-		if m.Supply == "LIMITED" && best.Supply == "SCARCE" {
+		if m.Supply == supplyLimited && best.Supply == supplyScarce {
 			continue
 		}
 

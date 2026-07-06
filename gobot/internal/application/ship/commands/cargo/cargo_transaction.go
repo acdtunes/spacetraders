@@ -267,21 +267,6 @@ func (h *CargoTransactionHandler) executeTransactions(ctx context.Context, cmd *
 	}, nil
 }
 
-// fetchCurrentCredits fetches the player's current credits from the API
-func (h *CargoTransactionHandler) fetchCurrentCredits(ctx context.Context) (int, error) {
-	token, err := common.PlayerTokenFromContext(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("player token not found in context: %w", err)
-	}
-
-	agent, err := h.apiClient.GetAgent(ctx, token)
-	if err != nil {
-		return 0, fmt.Errorf("failed to fetch agent credits: %w", err)
-	}
-
-	return agent.Credits, nil
-}
-
 // recordCargoTransaction records the cargo transaction in the ledger
 func (h *CargoTransactionHandler) recordCargoTransaction(
 	ctx context.Context,

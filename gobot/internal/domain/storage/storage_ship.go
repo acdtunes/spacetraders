@@ -22,13 +22,13 @@ import (
 type StorageShip struct {
 	mu sync.RWMutex
 
-	shipSymbol        string
-	waypointSymbol    string
-	operationID       string
-	cargoCapacity     int
-	cargoInventory    map[string]int // goodSymbol -> units held
-	reservedCargo     map[string]int // goodSymbol -> units reserved for haulers
-	reservedSpace     int            // space reserved for incoming deposits (not yet transferred)
+	shipSymbol     string
+	waypointSymbol string
+	operationID    string
+	cargoCapacity  int
+	cargoInventory map[string]int // goodSymbol -> units held
+	reservedCargo  map[string]int // goodSymbol -> units reserved for haulers
+	reservedSpace  int            // space reserved for incoming deposits (not yet transferred)
 }
 
 // NewStorageShip creates a new storage ship entity.
@@ -84,19 +84,6 @@ func (s *StorageShip) WaypointSymbol() string { return s.waypointSymbol }
 func (s *StorageShip) OperationID() string    { return s.operationID }
 func (s *StorageShip) CargoCapacity() int     { return s.cargoCapacity }
 
-// TotalCargoUnits returns total cargo units held (including reserved).
-// Thread-safe.
-func (s *StorageShip) TotalCargoUnits() int {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	total := 0
-	for _, units := range s.cargoInventory {
-		total += units
-	}
-	return total
-}
-
 // AvailableSpace returns cargo space available for new deposits.
 // Thread-safe.
 func (s *StorageShip) AvailableSpace() int {
@@ -107,12 +94,16 @@ func (s *StorageShip) AvailableSpace() int {
 }
 
 func (s *StorageShip) availableSpaceUnsafe() int {
+	// Subtract both actual cargo AND reserved space (pending deposits)
+	return s.cargoCapacity - s.totalUnitsUnsafe() - s.reservedSpace
+}
+
+func (s *StorageShip) totalUnitsUnsafe() int {
 	total := 0
 	for _, units := range s.cargoInventory {
 		total += units
 	}
-	// Subtract both actual cargo AND reserved space (pending deposits)
-	return s.cargoCapacity - total - s.reservedSpace
+	return total
 }
 
 // GetInventory returns a copy of the current cargo inventory.
@@ -126,15 +117,6 @@ func (s *StorageShip) GetInventory() map[string]int {
 		result[good] = units
 	}
 	return result
-}
-
-// GetCargoUnits returns total units of a specific good.
-// Thread-safe.
-func (s *StorageShip) GetCargoUnits(goodSymbol string) int {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	return s.cargoInventory[goodSymbol]
 }
 
 // GetAvailableCargo returns unreserved cargo for a specific good.
@@ -155,15 +137,6 @@ func (s *StorageShip) getAvailableCargoUnsafe(goodSymbol string) int {
 		return 0
 	}
 	return available
-}
-
-// GetReservedCargo returns reserved cargo for a specific good.
-// Thread-safe.
-func (s *StorageShip) GetReservedCargo(goodSymbol string) int {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	return s.reservedCargo[goodSymbol]
 }
 
 // Cargo Operations
@@ -210,11 +183,7 @@ func (s *StorageShip) JettisonCargo(goodSymbol string, units int) error {
 	}
 
 	s.cargoInventory[goodSymbol] -= units
-
-	// Clean up zero entry
-	if s.cargoInventory[goodSymbol] == 0 {
-		delete(s.cargoInventory, goodSymbol)
-	}
+	deleteIfZero(s.cargoInventory, goodSymbol)
 
 	return nil
 }
@@ -279,28 +248,6 @@ func (s *StorageShip) ConfirmDeposit(goodSymbol string, units int) error {
 	return nil
 }
 
-// ReserveCargo reserves cargo for a hauler.
-// The reservation is held until ConfirmTransfer or CancelReservation.
-// Thread-safe.
-//
-// Invariant: reserved[good] <= inventory[good]
-func (s *StorageShip) ReserveCargo(goodSymbol string, units int) error {
-	if units <= 0 {
-		return fmt.Errorf("reserve units must be positive")
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	available := s.getAvailableCargoUnsafe(goodSymbol)
-	if available < units {
-		return fmt.Errorf("insufficient cargo: need %d %s, have %d available", units, goodSymbol, available)
-	}
-
-	s.reservedCargo[goodSymbol] += units
-	return nil
-}
-
 // TryReserveCargo attempts to reserve cargo atomically.
 // Returns (units actually reserved, error).
 // If minUnits is not available, returns 0 with no error (caller decides what to do).
@@ -350,14 +297,8 @@ func (s *StorageShip) ConfirmTransfer(goodSymbol string, units int) error {
 
 	s.reservedCargo[goodSymbol] -= units
 	s.cargoInventory[goodSymbol] -= units
-
-	// Clean up zero entries
-	if s.reservedCargo[goodSymbol] == 0 {
-		delete(s.reservedCargo, goodSymbol)
-	}
-	if s.cargoInventory[goodSymbol] == 0 {
-		delete(s.cargoInventory, goodSymbol)
-	}
+	deleteIfZero(s.reservedCargo, goodSymbol)
+	deleteIfZero(s.cargoInventory, goodSymbol)
 
 	return nil
 }
@@ -378,34 +319,15 @@ func (s *StorageShip) CancelReservation(goodSymbol string, units int) error {
 	}
 
 	s.reservedCargo[goodSymbol] -= units
-
-	if s.reservedCargo[goodSymbol] == 0 {
-		delete(s.reservedCargo, goodSymbol)
-	}
+	deleteIfZero(s.reservedCargo, goodSymbol)
 
 	return nil
 }
 
-// HasAvailableCargo checks if there's unreserved cargo of the specified good.
-// Thread-safe.
-func (s *StorageShip) HasAvailableCargo(goodSymbol string, minUnits int) bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	return s.getAvailableCargoUnsafe(goodSymbol) >= minUnits
-}
-
-// GetSupportedGoods returns all goods currently in inventory.
-// Thread-safe.
-func (s *StorageShip) GetSupportedGoods() []string {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	goods := make([]string, 0, len(s.cargoInventory))
-	for good := range s.cargoInventory {
-		goods = append(goods, good)
+func deleteIfZero(counts map[string]int, key string) {
+	if counts[key] == 0 {
+		delete(counts, key)
 	}
-	return goods
 }
 
 // String provides human-readable representation
@@ -413,15 +335,11 @@ func (s *StorageShip) String() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	total := 0
-	for _, units := range s.cargoInventory {
-		total += units
-	}
 	totalReserved := 0
 	for _, units := range s.reservedCargo {
 		totalReserved += units
 	}
 
 	return fmt.Sprintf("StorageShip[%s, op=%s, cargo=%d/%d, reserved=%d]",
-		s.shipSymbol, s.operationID, total, s.cargoCapacity, totalReserved)
+		s.shipSymbol, s.operationID, s.totalUnitsUnsafe(), s.cargoCapacity, totalReserved)
 }

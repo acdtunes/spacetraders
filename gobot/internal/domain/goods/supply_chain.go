@@ -34,15 +34,15 @@ var ExportToImportMap = map[string][]string{
 	"DIAMONDS":         {"EXPLOSIVES"},
 
 	// Salvage and Artifacts
-	"SHIP_SALVAGE":        {"MACHINERY"},
-	"CULTURAL_ARTIFACTS":  {"LAB_INSTRUMENTS"},
+	"SHIP_SALVAGE":       {"MACHINERY"},
+	"CULTURAL_ARTIFACTS": {"LAB_INSTRUMENTS"},
 
 	// Basic Manufactured Goods
-	"PLASTICS":         {"LIQUID_HYDROGEN"},
-	"FERTILIZERS":      {"LIQUID_NITROGEN"},
-	"FUEL":             {"HYDROCARBON"},
-	"POLYNUCLEOTIDES":  {"LIQUID_HYDROGEN", "LIQUID_NITROGEN"},
-	"EXPLOSIVES":       {"LIQUID_HYDROGEN", "LIQUID_NITROGEN"},
+	"PLASTICS":        {"LIQUID_HYDROGEN"},
+	"FERTILIZERS":     {"LIQUID_NITROGEN"},
+	"FUEL":            {"HYDROCARBON"},
+	"POLYNUCLEOTIDES": {"LIQUID_HYDROGEN", "LIQUID_NITROGEN"},
+	"EXPLOSIVES":      {"LIQUID_HYDROGEN", "LIQUID_NITROGEN"},
 
 	// Refined Metals
 	"IRON":     {"IRON_ORE"},
@@ -55,17 +55,17 @@ var ExportToImportMap = map[string][]string{
 	"MERITIUM": {"MERITIUM_ORE"},
 
 	// Intermediate Goods
-	"AMMUNITION":     {"IRON", "LIQUID_NITROGEN"},
-	"FAB_MATS":       {"IRON", "QUARTZ_SAND"},
-	"FOOD":           {"FERTILIZERS"},
-	"FABRICS":        {"FERTILIZERS"},
-	"ELECTRONICS":    {"SILICON_CRYSTALS", "COPPER"},
-	"MACHINERY":      {"IRON"},
-	"EQUIPMENT":      {"ALUMINUM", "PLASTICS"},
+	"AMMUNITION":      {"IRON", "LIQUID_NITROGEN"},
+	"FAB_MATS":        {"IRON", "QUARTZ_SAND"},
+	"FOOD":            {"FERTILIZERS"},
+	"FABRICS":         {"FERTILIZERS"},
+	"ELECTRONICS":     {"SILICON_CRYSTALS", "COPPER"},
+	"MACHINERY":       {"IRON"},
+	"EQUIPMENT":       {"ALUMINUM", "PLASTICS"},
 	"MICROPROCESSORS": {"SILICON_CRYSTALS", "COPPER"},
 
 	// Luxury Goods
-	"JEWELRY": {"GOLD", "SILVER", "PRECIOUS_STONES", "DIAMONDS"},
+	"JEWELRY":  {"GOLD", "SILVER", "PRECIOUS_STONES", "DIAMONDS"},
 	"CLOTHING": {"FABRICS"},
 
 	// Weapons
@@ -87,10 +87,10 @@ var ExportToImportMap = map[string][]string{
 	"ADVANCED_CIRCUITRY": {"ELECTRONICS", "MICROPROCESSORS"},
 
 	// Reactors
-	"REACTOR_SOLAR_I":     {"IRON", "MACHINERY"},
-	"REACTOR_FUSION_I":    {"IRON", "MACHINERY"},
-	"REACTOR_FISSION_I":   {"IRON", "MACHINERY"},
-	"REACTOR_CHEMICAL_I":  {"IRON", "MACHINERY"},
+	"REACTOR_SOLAR_I":      {"IRON", "MACHINERY"},
+	"REACTOR_FUSION_I":     {"IRON", "MACHINERY"},
+	"REACTOR_FISSION_I":    {"IRON", "MACHINERY"},
+	"REACTOR_CHEMICAL_I":   {"IRON", "MACHINERY"},
 	"REACTOR_ANTIMATTER_I": {"IRON", "MACHINERY"},
 
 	// Engines
@@ -100,8 +100,8 @@ var ExportToImportMap = map[string][]string{
 	"ENGINE_HYPER_DRIVE_I":   {"PLATINUM", "ADVANCED_CIRCUITRY"},
 
 	// Modules - Cargo
-	"MODULE_CARGO_HOLD_I":  {"IRON", "MACHINERY"},
-	"MODULE_CARGO_HOLD_II": {"ALUMINUM", "MACHINERY"},
+	"MODULE_CARGO_HOLD_I":   {"IRON", "MACHINERY"},
+	"MODULE_CARGO_HOLD_II":  {"ALUMINUM", "MACHINERY"},
 	"MODULE_CARGO_HOLD_III": {"PLATINUM", "MACHINERY", "ADVANCED_CIRCUITRY"},
 
 	// Modules - Processing
@@ -109,14 +109,14 @@ var ExportToImportMap = map[string][]string{
 	"MODULE_GAS_PROCESSOR_I":     {"IRON", "MACHINERY"},
 
 	// Modules - Crew
-	"MODULE_CREW_QUARTERS_I":    {"IRON", "MACHINERY", "FABRICS"},
-	"MODULE_ENVOY_QUARTERS_I":   {"IRON", "MACHINERY", "FABRICS"},
-	"MODULE_PASSENGER_CABIN_I":  {"IRON", "MACHINERY", "FABRICS"},
+	"MODULE_CREW_QUARTERS_I":   {"IRON", "MACHINERY", "FABRICS"},
+	"MODULE_ENVOY_QUARTERS_I":  {"IRON", "MACHINERY", "FABRICS"},
+	"MODULE_PASSENGER_CABIN_I": {"IRON", "MACHINERY", "FABRICS"},
 
 	// Modules - Science and Refining
-	"MODULE_SCIENCE_LAB_I":   {"PLATINUM", "MACHINERY", "ADVANCED_CIRCUITRY"},
-	"MODULE_ORE_REFINERY_I":  {"PLATINUM", "MACHINERY"},
-	"MODULE_FUEL_REFINERY_I": {"PLATINUM", "MACHINERY"},
+	"MODULE_SCIENCE_LAB_I":    {"PLATINUM", "MACHINERY", "ADVANCED_CIRCUITRY"},
+	"MODULE_ORE_REFINERY_I":   {"PLATINUM", "MACHINERY"},
+	"MODULE_FUEL_REFINERY_I":  {"PLATINUM", "MACHINERY"},
 	"MODULE_MICRO_REFINERY_I": {"PLATINUM", "MACHINERY"},
 
 	// Modules - Jump and Warp Drives
@@ -128,53 +128,53 @@ var ExportToImportMap = map[string][]string{
 	"MODULE_WARP_DRIVE_III": {"PLATINUM", "ADVANCED_CIRCUITRY", "MERITIUM"},
 
 	// Modules - Shields
-	"MODULE_SHIELD_GENERATOR_I": {"IRON", "MACHINERY", "URANITE"},
+	"MODULE_SHIELD_GENERATOR_I":  {"IRON", "MACHINERY", "URANITE"},
 	"MODULE_SHIELD_GENERATOR_II": {"ALUMINUM", "MACHINERY", "URANITE"},
 
 	// Mounts - Gas Siphon
-	"MOUNT_GAS_SIPHON_I":  {"IRON", "MACHINERY"},
-	"MOUNT_GAS_SIPHON_II": {"ALUMINUM", "MACHINERY"},
+	"MOUNT_GAS_SIPHON_I":   {"IRON", "MACHINERY"},
+	"MOUNT_GAS_SIPHON_II":  {"ALUMINUM", "MACHINERY"},
 	"MOUNT_GAS_SIPHON_III": {"PLATINUM", "MACHINERY", "ADVANCED_CIRCUITRY"},
 
 	// Mounts - Surveyor
-	"MOUNT_SURVEYOR_I":  {"IRON", "MACHINERY", "ELECTRONICS"},
-	"MOUNT_SURVEYOR_II": {"ALUMINUM", "MACHINERY", "ELECTRONICS"},
+	"MOUNT_SURVEYOR_I":   {"IRON", "MACHINERY", "ELECTRONICS"},
+	"MOUNT_SURVEYOR_II":  {"ALUMINUM", "MACHINERY", "ELECTRONICS"},
 	"MOUNT_SURVEYOR_III": {"PLATINUM", "MACHINERY", "ADVANCED_CIRCUITRY"},
 
 	// Mounts - Sensor Array
-	"MOUNT_SENSOR_ARRAY_I":  {"IRON", "MACHINERY", "ELECTRONICS"},
-	"MOUNT_SENSOR_ARRAY_II": {"ALUMINUM", "MACHINERY", "ELECTRONICS"},
+	"MOUNT_SENSOR_ARRAY_I":   {"IRON", "MACHINERY", "ELECTRONICS"},
+	"MOUNT_SENSOR_ARRAY_II":  {"ALUMINUM", "MACHINERY", "ELECTRONICS"},
 	"MOUNT_SENSOR_ARRAY_III": {"PLATINUM", "MACHINERY", "ADVANCED_CIRCUITRY", "URANITE"},
 
 	// Mounts - Mining Laser
-	"MOUNT_MINING_LASER_I":  {"IRON", "MACHINERY", "DIAMONDS"},
-	"MOUNT_MINING_LASER_II": {"ALUMINUM", "MACHINERY", "DIAMONDS"},
+	"MOUNT_MINING_LASER_I":   {"IRON", "MACHINERY", "DIAMONDS"},
+	"MOUNT_MINING_LASER_II":  {"ALUMINUM", "MACHINERY", "DIAMONDS"},
 	"MOUNT_MINING_LASER_III": {"PLATINUM", "MACHINERY", "ADVANCED_CIRCUITRY", "URANITE"},
 
 	// Mounts - Weapons
-	"MOUNT_TURRET_I":            {"IRON", "MACHINERY"},
-	"MOUNT_LASER_CANNON_I":      {"IRON", "MACHINERY", "DIAMONDS"},
-	"MOUNT_MISSILE_LAUNCHER_I":  {"IRON", "MACHINERY"},
+	"MOUNT_TURRET_I":           {"IRON", "MACHINERY"},
+	"MOUNT_LASER_CANNON_I":     {"IRON", "MACHINERY", "DIAMONDS"},
+	"MOUNT_MISSILE_LAUNCHER_I": {"IRON", "MACHINERY"},
 
 	// Advanced Technology
-	"QUANTUM_STABILIZERS":       {"PLATINUM", "ADVANCED_CIRCUITRY"},
-	"ANTIMATTER":                {"LAB_INSTRUMENTS", "ADVANCED_CIRCUITRY"},
-	"EXOTIC_MATTER":             {"LAB_INSTRUMENTS", "ADVANCED_CIRCUITRY"},
-	"RELIC_TECH":                {"LAB_INSTRUMENTS", "EQUIPMENT"},
-	"NOVEL_LIFEFORMS":           {"LAB_INSTRUMENTS", "EQUIPMENT"},
-	"BOTANICAL_SPECIMENS":       {"LAB_INSTRUMENTS", "EQUIPMENT"},
-	"AI_MAINFRAMES":             {"ADVANCED_CIRCUITRY", "MICROPROCESSORS"},
-	"QUANTUM_DRIVES":            {"ADVANCED_CIRCUITRY", "DIAMONDS"},
-	"GRAVITON_EMITTERS":         {"ADVANCED_CIRCUITRY", "GOLD"},
-	"ROBOTIC_DRONES":            {"ADVANCED_CIRCUITRY", "ALUMINUM"},
-	"CYBER_IMPLANTS":            {"ADVANCED_CIRCUITRY", "BIOCOMPOSITES"},
+	"QUANTUM_STABILIZERS": {"PLATINUM", "ADVANCED_CIRCUITRY"},
+	"ANTIMATTER":          {"LAB_INSTRUMENTS", "ADVANCED_CIRCUITRY"},
+	"EXOTIC_MATTER":       {"LAB_INSTRUMENTS", "ADVANCED_CIRCUITRY"},
+	"RELIC_TECH":          {"LAB_INSTRUMENTS", "EQUIPMENT"},
+	"NOVEL_LIFEFORMS":     {"LAB_INSTRUMENTS", "EQUIPMENT"},
+	"BOTANICAL_SPECIMENS": {"LAB_INSTRUMENTS", "EQUIPMENT"},
+	"AI_MAINFRAMES":       {"ADVANCED_CIRCUITRY", "MICROPROCESSORS"},
+	"QUANTUM_DRIVES":      {"ADVANCED_CIRCUITRY", "DIAMONDS"},
+	"GRAVITON_EMITTERS":   {"ADVANCED_CIRCUITRY", "GOLD"},
+	"ROBOTIC_DRONES":      {"ADVANCED_CIRCUITRY", "ALUMINUM"},
+	"CYBER_IMPLANTS":      {"ADVANCED_CIRCUITRY", "BIOCOMPOSITES"},
 
 	// Biotech
-	"NANOBOTS":           {"POLYNUCLEOTIDES", "LAB_INSTRUMENTS"},
-	"GENE_THERAPEUTICS":  {"POLYNUCLEOTIDES", "LAB_INSTRUMENTS"},
-	"NEURAL_CHIPS":       {"POLYNUCLEOTIDES", "ADVANCED_CIRCUITRY"},
-	"MOOD_REGULATORS":    {"POLYNUCLEOTIDES", "LAB_INSTRUMENTS"},
-	"VIRAL_AGENTS":       {"POLYNUCLEOTIDES", "LAB_INSTRUMENTS"},
+	"NANOBOTS":          {"POLYNUCLEOTIDES", "LAB_INSTRUMENTS"},
+	"GENE_THERAPEUTICS": {"POLYNUCLEOTIDES", "LAB_INSTRUMENTS"},
+	"NEURAL_CHIPS":      {"POLYNUCLEOTIDES", "ADVANCED_CIRCUITRY"},
+	"MOOD_REGULATORS":   {"POLYNUCLEOTIDES", "LAB_INSTRUMENTS"},
+	"VIRAL_AGENTS":      {"POLYNUCLEOTIDES", "LAB_INSTRUMENTS"},
 
 	// Advanced Components
 	"MICRO_FUSION_GENERATORS": {"ADVANCED_CIRCUITRY", "PLATINUM", "DIAMONDS"},
@@ -204,12 +204,12 @@ func IsRawMaterial(good string) bool {
 	return !exists
 }
 
-// MineableRawMaterials defines goods that can be mined/extracted directly.
+// mineableRawMaterials defines goods that can be mined/extracted directly.
 // These bypass supply gating because:
 // 1. They can only be obtained by mining or purchasing (no alternative fabrication path)
 // 2. Their supply levels depend on mining activity, not factory production
 // 3. Waiting for HIGH/ABUNDANT might never happen for these goods
-var MineableRawMaterials = map[string]bool{
+var mineableRawMaterials = map[string]bool{
 	// Ores (mined from asteroids)
 	"IRON_ORE":     true,
 	"COPPER_ORE":   true,
@@ -230,9 +230,9 @@ var MineableRawMaterials = map[string]bool{
 	// Note: LIQUID_HYDROGEN and LIQUID_NITROGEN are NOT included here
 	// because they require MACHINERY to produce and should be supply-gated
 	// to avoid purchasing at high prices when supply is low.
-	"AMMONIA_ICE":      true,
-	"HYDROCARBON":      true,
-	"ICE_WATER":        true,
+	"AMMONIA_ICE": true,
+	"HYDROCARBON": true,
+	"ICE_WATER":   true,
 
 	// Biological (gathered from specific locations)
 	"BOTANICAL_SPECIMENS": true,
@@ -243,7 +243,7 @@ var MineableRawMaterials = map[string]bool{
 // These goods bypass supply gating for ACQUIRE_DELIVER tasks because they
 // cannot be fabricated from other inputs - they must be purchased or mined.
 func IsMineableRawMaterial(good string) bool {
-	return MineableRawMaterials[good]
+	return mineableRawMaterials[good]
 }
 
 // GetRequiredInputs returns the list of inputs required to produce a good.
@@ -271,13 +271,4 @@ func ValidateSupplyChain(good string) error {
 	}
 
 	return nil
-}
-
-// UnknownGoodError indicates a good is not in the supply chain map
-type UnknownGoodError struct {
-	Good string
-}
-
-func (e *UnknownGoodError) Error() string {
-	return "unknown good: " + e.Good
 }

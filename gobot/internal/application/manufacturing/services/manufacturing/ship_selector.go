@@ -80,30 +80,6 @@ func (s *ShipSelector) GetTaskSourceLocation(
 	return &shared.Waypoint{Symbol: symbol, X: 0, Y: 0}
 }
 
-// GetTaskDestinationLocation returns the waypoint where the task ends.
-// For ACQUIRE_DELIVER: factory, For COLLECT_SELL/LIQUIDATE: target market.
-func (s *ShipSelector) GetTaskDestinationLocation(
-	ctx context.Context,
-	task *manufacturing.ManufacturingTask,
-	playerID int,
-) *shared.Waypoint {
-	symbol := task.GetFinalDestination()
-	if symbol == "" {
-		return nil
-	}
-
-	// Look up coordinates from waypoint provider
-	if s.waypointProvider != nil {
-		systemSymbol := extractSystemFromWaypointSymbol(symbol)
-		waypoint, err := s.waypointProvider.GetWaypoint(ctx, symbol, systemSymbol, playerID)
-		if err == nil && waypoint != nil {
-			return waypoint
-		}
-	}
-
-	return &shared.Waypoint{Symbol: symbol, X: 0, Y: 0}
-}
-
 // extractSystemFromWaypointSymbol extracts system symbol from waypoint symbol.
 // Format: SECTOR-SYSTEM-WAYPOINT (e.g., X1-YZ19-A1)
 func extractSystemFromWaypointSymbol(waypointSymbol string) string {

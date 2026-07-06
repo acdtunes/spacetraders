@@ -76,56 +76,13 @@ func (m *StateRecoveryManager) RecoverState(ctx context.Context, playerID int) (
 	}
 
 	// Step 1: Load incomplete pipelines
-	pipelines, err := m.pipelineRepo.FindByStatus(ctx, playerID, []manufacturing.PipelineStatus{
-		manufacturing.PipelineStatusPlanning,
-		manufacturing.PipelineStatusExecuting,
-	})
+	pipelines, err := m.recoverActivePipelines(ctx, playerID, result)
 	if err != nil {
-		return nil, fmt.Errorf("failed to load pipelines: %w", err)
+		return nil, err
 	}
-
-	// Start any PLANNING pipelines
-	for _, pipeline := range pipelines {
-		if pipeline.Status() == manufacturing.PipelineStatusPlanning {
-			if err := pipeline.Start(); err != nil {
-				logger.Log("WARN", fmt.Sprintf("Failed to start recovered PLANNING pipeline %s: %v", pipeline.ID()[:8], err), nil)
-			} else {
-				logger.Log("INFO", fmt.Sprintf("Started recovered PLANNING pipeline %s", pipeline.ID()[:8]), nil)
-				if m.pipelineRepo != nil {
-					_ = m.pipelineRepo.Update(ctx, pipeline)
-				}
-			}
-		}
-		result.ActivePipelines[pipeline.ID()] = pipeline
-	}
-
-	logger.Log("INFO", fmt.Sprintf("Recovered %d active pipelines", len(pipelines)), nil)
 
 	// Step 1.5: Clean up orphaned COLLECTION pipelines (no tasks)
-	// These can occur if task creation fails after pipeline is persisted
-	for _, pipeline := range pipelines {
-		if pipeline.PipelineType() != manufacturing.PipelineTypeCollection {
-			continue
-		}
-
-		// Check if this COLLECTION pipeline has any tasks
-		tasks, err := m.taskRepo.FindByPipelineID(ctx, pipeline.ID())
-		if err != nil {
-			logger.Log("WARN", fmt.Sprintf("Failed to check tasks for COLLECTION pipeline %s: %v", pipeline.ID()[:8], err), nil)
-			continue
-		}
-
-		if len(tasks) == 0 {
-			// This is an orphaned COLLECTION pipeline - delete it
-			if err := m.pipelineRepo.Delete(ctx, pipeline.ID()); err != nil {
-				logger.Log("ERROR", fmt.Sprintf("Failed to delete orphaned COLLECTION pipeline %s: %v", pipeline.ID()[:8], err), nil)
-			} else {
-				logger.Log("INFO", fmt.Sprintf("Deleted orphaned COLLECTION pipeline %s (%s) - no tasks",
-					pipeline.ID()[:8], pipeline.ProductGood()), nil)
-				delete(result.ActivePipelines, pipeline.ID())
-			}
-		}
-	}
+	m.deleteOrphanedCollectionPipelines(ctx, pipelines, result)
 
 	// Step 2: Load incomplete tasks and rebuild queue
 	tasks, err := m.taskRepo.FindIncomplete(ctx, playerID)
@@ -140,46 +97,14 @@ func (m *StateRecoveryManager) RecoverState(ctx context.Context, playerID int) (
 			shipSymbol := task.AssignedShip()
 
 			// BUG FIX #4: Check if ship has cargo that needs recovery before cancelling
-			if shipSymbol != "" && m.shipRepo != nil {
-				ship, err := m.shipRepo.FindBySymbol(ctx, shipSymbol, shared.MustNewPlayerID(playerID))
-				if err == nil && ship != nil && ship.Cargo() != nil && !ship.Cargo().IsEmpty() {
-					// Ship has cargo - create LIQUIDATE tasks to recover investment
-					for _, item := range ship.Cargo().Inventory {
-						// DEDUPLICATION: Skip if LIQUIDATE task already exists for this ship+good
-						exists, err := m.taskRepo.ExistsLiquidateForShipAndGood(ctx, shipSymbol, item.Symbol, playerID)
-						if err != nil {
-							logger.Log("WARN", fmt.Sprintf("Failed to check existing LIQUIDATE task for %s/%s: %v",
-								shipSymbol, item.Symbol, err), nil)
-							continue
-						}
-						if exists {
-							logger.Log("DEBUG", fmt.Sprintf("LIQUIDATE task already exists for ship %s good %s - skipping",
-								shipSymbol, item.Symbol), nil)
-							continue
-						}
-
-						liquidateTask := manufacturing.NewLiquidationTask(
-							playerID,
-							shipSymbol,
-							item.Symbol,
-							item.Units,
-							"", // Let task find best sell market
-						)
-						if err := m.taskRepo.Create(ctx, liquidateTask); err == nil {
-							m.taskQueue.Enqueue(liquidateTask)
-							logger.Log("INFO", fmt.Sprintf(
-								"BUG FIX #4: Created LIQUIDATE task for stranded %d %s on ship %s",
-								item.Units, item.Symbol, shipSymbol), nil)
-						}
-					}
-					// Cancel original task but DON'T release ship - LIQUIDATE task needs it
-					if err := task.Cancel("orphaned task - cargo recovery"); err == nil {
-						_ = m.taskRepo.Update(ctx, task)
-						logger.Log("INFO", fmt.Sprintf("Cancelled orphaned task %s, cargo being recovered",
-							task.ID()[:8]), nil)
-					}
-					continue
+			if m.recoverStrandedCargo(ctx, shipSymbol, playerID, "") {
+				// Cancel original task but DON'T release ship - LIQUIDATE task needs it
+				if err := task.Cancel("orphaned task - cargo recovery"); err == nil {
+					_ = m.taskRepo.Update(ctx, task)
+					logger.Log("INFO", fmt.Sprintf("Cancelled orphaned task %s, cargo being recovered",
+						task.ID()[:8]), nil)
 				}
+				continue
 			}
 
 			// No cargo - safe to cancel and release
@@ -201,46 +126,14 @@ func (m *StateRecoveryManager) RecoverState(ctx context.Context, playerID int) (
 			shipSymbol := task.AssignedShip()
 
 			// BUG FIX #4: Check if ship has cargo that needs recovery before cancelling
-			if shipSymbol != "" && m.shipRepo != nil {
-				ship, err := m.shipRepo.FindBySymbol(ctx, shipSymbol, shared.MustNewPlayerID(playerID))
-				if err == nil && ship != nil && ship.Cargo() != nil && !ship.Cargo().IsEmpty() {
-					// Ship has cargo - create LIQUIDATE tasks to recover investment
-					for _, item := range ship.Cargo().Inventory {
-						// DEDUPLICATION: Skip if LIQUIDATE task already exists for this ship+good
-						exists, err := m.taskRepo.ExistsLiquidateForShipAndGood(ctx, shipSymbol, item.Symbol, playerID)
-						if err != nil {
-							logger.Log("WARN", fmt.Sprintf("Failed to check existing LIQUIDATE task for %s/%s: %v",
-								shipSymbol, item.Symbol, err), nil)
-							continue
-						}
-						if exists {
-							logger.Log("DEBUG", fmt.Sprintf("LIQUIDATE task already exists for ship %s good %s - skipping",
-								shipSymbol, item.Symbol), nil)
-							continue
-						}
-
-						liquidateTask := manufacturing.NewLiquidationTask(
-							playerID,
-							shipSymbol,
-							item.Symbol,
-							item.Units,
-							"", // Let task find best sell market
-						)
-						if err := m.taskRepo.Create(ctx, liquidateTask); err == nil {
-							m.taskQueue.Enqueue(liquidateTask)
-							logger.Log("INFO", fmt.Sprintf(
-								"BUG FIX #4: Created LIQUIDATE task for stranded %d %s on ship %s (pipeline inactive)",
-								item.Units, item.Symbol, shipSymbol), nil)
-						}
-					}
-					// Cancel original task but DON'T release ship - LIQUIDATE task needs it
-					if err := task.Cancel("pipeline not active - cargo recovery"); err == nil {
-						_ = m.taskRepo.Update(ctx, task)
-						logger.Log("INFO", fmt.Sprintf("Cancelled task %s (pipeline inactive), cargo being recovered",
-							task.ID()[:8]), nil)
-					}
-					continue
+			if m.recoverStrandedCargo(ctx, shipSymbol, playerID, " (pipeline inactive)") {
+				// Cancel original task but DON'T release ship - LIQUIDATE task needs it
+				if err := task.Cancel("pipeline not active - cargo recovery"); err == nil {
+					_ = m.taskRepo.Update(ctx, task)
+					logger.Log("INFO", fmt.Sprintf("Cancelled task %s (pipeline inactive), cargo being recovered",
+						task.ID()[:8]), nil)
 				}
+				continue
 			}
 
 			// No cargo - safe to cancel and release
@@ -311,8 +204,7 @@ func (m *StateRecoveryManager) RecoverState(ctx context.Context, playerID int) (
 			}
 
 			// FABRICATION pipeline supply-gated tasks: let SupplyMonitor handle
-			if task.TaskType() == manufacturing.TaskTypeCollectSell ||
-				task.TaskType() == manufacturing.TaskTypeAcquireDeliver {
+			if isSupplyGatedTaskType(task.TaskType()) {
 				continue
 			}
 
@@ -340,9 +232,7 @@ func (m *StateRecoveryManager) RecoverState(ctx context.Context, playerID int) (
 			pipeline := result.ActivePipelines[task.PipelineID()]
 			isCollectionPipeline := pipeline != nil && pipeline.PipelineType() == manufacturing.PipelineTypeCollection
 
-			if !isCollectionPipeline &&
-				(task.TaskType() == manufacturing.TaskTypeCollectSell ||
-					task.TaskType() == manufacturing.TaskTypeAcquireDeliver) {
+			if !isCollectionPipeline && isSupplyGatedTaskType(task.TaskType()) {
 				// Reset FABRICATION pipeline supply-gated tasks to PENDING
 				// SupplyMonitor will re-evaluate supply conditions
 				task.ResetToPending()
@@ -362,70 +252,13 @@ func (m *StateRecoveryManager) RecoverState(ctx context.Context, playerID int) (
 
 	// Step 2e: Recover FAILED tasks that can be retried
 	// Supply-gated tasks (COLLECT_SELL, ACQUIRE_DELIVER) stay PENDING for SupplyMonitor
-	failedTasks, err := m.taskRepo.FindByStatus(ctx, playerID, manufacturing.TaskStatusFailed)
-	if err != nil {
-		logger.Log("WARN", fmt.Sprintf("Failed to load failed tasks for retry: %v", err), nil)
-	} else {
-		for _, task := range failedTasks {
-			if task.CanRetry() {
-				retryCount := task.RetryCount()
-
-				if err := task.ResetForRetry(); err != nil {
-					continue
-				}
-
-				// Supply-gated tasks stay PENDING - let SupplyMonitor handle them
-				if task.TaskType() == manufacturing.TaskTypeCollectSell ||
-					task.TaskType() == manufacturing.TaskTypeAcquireDeliver {
-					if err := m.taskRepo.Update(ctx, task); err == nil {
-						logger.Log("INFO", fmt.Sprintf("Reset FAILED %s task %s to PENDING for SupplyMonitor",
-							task.TaskType(), task.ID()[:8]), nil)
-					}
-					continue
-				}
-
-				if err := task.MarkReady(); err != nil {
-					continue
-				}
-
-				if err := m.taskRepo.Update(ctx, task); err != nil {
-					continue
-				}
-
-				m.taskQueue.Enqueue(task)
-				result.RetriedCount++
-				result.ReadyTaskCount++
-
-				logger.Log("INFO", fmt.Sprintf("Recovered FAILED task %s for retry (%d/%d)",
-					task.ID()[:8], retryCount, task.MaxRetries()), nil)
-			}
-		}
-	}
+	m.retryFailedTasks(ctx, playerID, result)
 
 	logger.Log("INFO", fmt.Sprintf("Recovered %d tasks: %d ready, %d interrupted, %d retried",
 		len(tasks)+result.RetriedCount, result.ReadyTaskCount, result.InterruptedCount, result.RetriedCount), nil)
 
 	// Step 3: Load factory states
-	if m.factoryStateRepo != nil {
-		pendingStates, _ := m.factoryStateRepo.FindPending(ctx, playerID)
-		for _, state := range pendingStates {
-			m.factoryTracker.LoadState(state)
-		}
-
-		readyStates, _ := m.factoryStateRepo.FindReadyForCollection(ctx, playerID)
-		for _, state := range readyStates {
-			m.factoryTracker.LoadState(state)
-		}
-
-		logger.Log("INFO", fmt.Sprintf("Recovered %d factory states", len(pendingStates)+len(readyStates)), nil)
-
-		// Step 3a: Reconcile factory states with completed ACQUIRE_DELIVER tasks
-		// This fixes the bug where daemon restarts lose track of delivered inputs
-		reconciledCount := m.reconcileFactoryStatesWithCompletedTasks(ctx, playerID, result.ActivePipelines)
-		if reconciledCount > 0 {
-			logger.Log("INFO", fmt.Sprintf("Reconciled %d factory state deliveries from completed tasks", reconciledCount), nil)
-		}
-	}
+	m.loadFactoryStates(ctx, playerID, result)
 
 	logger.Log("INFO", "State recovery complete", map[string]interface{}{
 		"pipelines":      len(result.ActivePipelines),
@@ -433,6 +266,187 @@ func (m *StateRecoveryManager) RecoverState(ctx context.Context, playerID int) (
 	})
 
 	return result, nil
+}
+
+func (m *StateRecoveryManager) retryFailedTasks(ctx context.Context, playerID int, result *RecoveryResult) {
+	logger := common.LoggerFromContext(ctx)
+
+	failedTasks, err := m.taskRepo.FindByStatus(ctx, playerID, manufacturing.TaskStatusFailed)
+	if err != nil {
+		logger.Log("WARN", fmt.Sprintf("Failed to load failed tasks for retry: %v", err), nil)
+		return
+	}
+
+	for _, task := range failedTasks {
+		if !task.CanRetry() {
+			continue
+		}
+		retryCount := task.RetryCount()
+
+		if err := task.ResetForRetry(); err != nil {
+			continue
+		}
+
+		if isSupplyGatedTaskType(task.TaskType()) {
+			if err := m.taskRepo.Update(ctx, task); err == nil {
+				logger.Log("INFO", fmt.Sprintf("Reset FAILED %s task %s to PENDING for SupplyMonitor",
+					task.TaskType(), task.ID()[:8]), nil)
+			}
+			continue
+		}
+
+		if err := task.MarkReady(); err != nil {
+			continue
+		}
+
+		if err := m.taskRepo.Update(ctx, task); err != nil {
+			continue
+		}
+
+		m.taskQueue.Enqueue(task)
+		result.RetriedCount++
+		result.ReadyTaskCount++
+
+		logger.Log("INFO", fmt.Sprintf("Recovered FAILED task %s for retry (%d/%d)",
+			task.ID()[:8], retryCount, task.MaxRetries()), nil)
+	}
+}
+
+func (m *StateRecoveryManager) loadFactoryStates(ctx context.Context, playerID int, result *RecoveryResult) {
+	logger := common.LoggerFromContext(ctx)
+
+	if m.factoryStateRepo == nil {
+		return
+	}
+
+	pendingStates, _ := m.factoryStateRepo.FindPending(ctx, playerID)
+	for _, state := range pendingStates {
+		m.factoryTracker.LoadState(state)
+	}
+
+	readyStates, _ := m.factoryStateRepo.FindReadyForCollection(ctx, playerID)
+	for _, state := range readyStates {
+		m.factoryTracker.LoadState(state)
+	}
+
+	logger.Log("INFO", fmt.Sprintf("Recovered %d factory states", len(pendingStates)+len(readyStates)), nil)
+
+	reconciledCount := m.reconcileFactoryStatesWithCompletedTasks(ctx, playerID, result.ActivePipelines)
+	if reconciledCount > 0 {
+		logger.Log("INFO", fmt.Sprintf("Reconciled %d factory state deliveries from completed tasks", reconciledCount), nil)
+	}
+}
+
+func (m *StateRecoveryManager) recoverActivePipelines(
+	ctx context.Context,
+	playerID int,
+	result *RecoveryResult,
+) ([]*manufacturing.ManufacturingPipeline, error) {
+	logger := common.LoggerFromContext(ctx)
+
+	pipelines, err := m.pipelineRepo.FindByStatus(ctx, playerID, []manufacturing.PipelineStatus{
+		manufacturing.PipelineStatusPlanning,
+		manufacturing.PipelineStatusExecuting,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to load pipelines: %w", err)
+	}
+
+	for _, pipeline := range pipelines {
+		if pipeline.Status() == manufacturing.PipelineStatusPlanning {
+			if err := pipeline.Start(); err != nil {
+				logger.Log("WARN", fmt.Sprintf("Failed to start recovered PLANNING pipeline %s: %v", pipeline.ID()[:8], err), nil)
+			} else {
+				logger.Log("INFO", fmt.Sprintf("Started recovered PLANNING pipeline %s", pipeline.ID()[:8]), nil)
+				if m.pipelineRepo != nil {
+					_ = m.pipelineRepo.Update(ctx, pipeline)
+				}
+			}
+		}
+		result.ActivePipelines[pipeline.ID()] = pipeline
+	}
+
+	logger.Log("INFO", fmt.Sprintf("Recovered %d active pipelines", len(pipelines)), nil)
+	return pipelines, nil
+}
+
+func (m *StateRecoveryManager) deleteOrphanedCollectionPipelines(
+	ctx context.Context,
+	pipelines []*manufacturing.ManufacturingPipeline,
+	result *RecoveryResult,
+) {
+	logger := common.LoggerFromContext(ctx)
+
+	for _, pipeline := range pipelines {
+		if pipeline.PipelineType() != manufacturing.PipelineTypeCollection {
+			continue
+		}
+
+		tasks, err := m.taskRepo.FindByPipelineID(ctx, pipeline.ID())
+		if err != nil {
+			logger.Log("WARN", fmt.Sprintf("Failed to check tasks for COLLECTION pipeline %s: %v", pipeline.ID()[:8], err), nil)
+			continue
+		}
+
+		if len(tasks) == 0 {
+			if err := m.pipelineRepo.Delete(ctx, pipeline.ID()); err != nil {
+				logger.Log("ERROR", fmt.Sprintf("Failed to delete orphaned COLLECTION pipeline %s: %v", pipeline.ID()[:8], err), nil)
+			} else {
+				logger.Log("INFO", fmt.Sprintf("Deleted orphaned COLLECTION pipeline %s (%s) - no tasks",
+					pipeline.ID()[:8], pipeline.ProductGood()), nil)
+				delete(result.ActivePipelines, pipeline.ID())
+			}
+		}
+	}
+}
+
+func isSupplyGatedTaskType(taskType manufacturing.TaskType) bool {
+	return taskType == manufacturing.TaskTypeCollectSell ||
+		taskType == manufacturing.TaskTypeAcquireDeliver
+}
+
+func (m *StateRecoveryManager) recoverStrandedCargo(ctx context.Context, shipSymbol string, playerID int, logSuffix string) bool {
+	logger := common.LoggerFromContext(ctx)
+
+	if shipSymbol == "" || m.shipRepo == nil {
+		return false
+	}
+
+	ship, err := m.shipRepo.FindBySymbol(ctx, shipSymbol, shared.MustNewPlayerID(playerID))
+	if err != nil || ship == nil || ship.Cargo() == nil || ship.Cargo().IsEmpty() {
+		return false
+	}
+
+	for _, item := range ship.Cargo().Inventory {
+		// DEDUPLICATION: Skip if LIQUIDATE task already exists for this ship+good
+		exists, err := m.taskRepo.ExistsLiquidateForShipAndGood(ctx, shipSymbol, item.Symbol, playerID)
+		if err != nil {
+			logger.Log("WARN", fmt.Sprintf("Failed to check existing LIQUIDATE task for %s/%s: %v",
+				shipSymbol, item.Symbol, err), nil)
+			continue
+		}
+		if exists {
+			logger.Log("DEBUG", fmt.Sprintf("LIQUIDATE task already exists for ship %s good %s - skipping",
+				shipSymbol, item.Symbol), nil)
+			continue
+		}
+
+		liquidateTask := manufacturing.NewLiquidationTask(
+			playerID,
+			shipSymbol,
+			item.Symbol,
+			item.Units,
+			"", // Let task find best sell market
+		)
+		if err := m.taskRepo.Create(ctx, liquidateTask); err == nil {
+			m.taskQueue.Enqueue(liquidateTask)
+			logger.Log("INFO", fmt.Sprintf(
+				"BUG FIX #4: Created LIQUIDATE task for stranded %d %s on ship %s%s",
+				item.Units, item.Symbol, shipSymbol, logSuffix), nil)
+		}
+	}
+
+	return true
 }
 
 // reconcileFactoryStatesWithCompletedTasks fixes factory states by checking completed ACQUIRE_DELIVER tasks.
@@ -545,4 +559,3 @@ func (m *StateRecoveryManager) releaseShip(ctx context.Context, shipSymbol strin
 		logger.Log("WARN", fmt.Sprintf("Failed to save ship %s release: %v", shipSymbol, err), nil)
 	}
 }
-

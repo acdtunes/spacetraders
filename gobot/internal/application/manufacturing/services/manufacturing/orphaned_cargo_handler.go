@@ -21,12 +21,6 @@ const MinLiquidateCargoValue = 10000
 type OrphanedCargoManager interface {
 	// HandleShipsWithExistingCargo processes idle ships that have cargo
 	HandleShipsWithExistingCargo(ctx context.Context, params OrphanedCargoParams) (map[string]*navigation.Ship, error)
-
-	// FindBestSellMarket finds best market to sell orphaned cargo
-	FindBestSellMarket(ctx context.Context, currentLocation, good string, playerID int) (string, error)
-
-	// CreateAdHocSellTask creates LIQUIDATE task for orphaned cargo
-	CreateAdHocSellTask(ctx context.Context, ship *navigation.Ship, cargo CargoInfo, playerID int) (*manufacturing.ManufacturingTask, error)
 }
 
 // OrphanedCargoParams contains parameters for handling orphaned cargo
@@ -34,12 +28,6 @@ type OrphanedCargoParams struct {
 	IdleShips          map[string]*navigation.Ship
 	PlayerID           int
 	MaxConcurrentTasks int
-}
-
-// CargoInfo contains information about cargo on a ship
-type CargoInfo struct {
-	Good  string
-	Units int
 }
 
 // OrphanedCargoHandler implements OrphanedCargoManager
@@ -125,200 +113,16 @@ func (h *OrphanedCargoHandler) HandleShipsWithExistingCargo(
 			continue
 		}
 
-		// Get primary cargo type
-		var primaryCargo string
-		var maxUnits int
-		for _, item := range cargo.Inventory {
-			if item.Units > maxUnits {
-				primaryCargo = item.Symbol
-				maxUnits = item.Units
-			}
-		}
+		primaryCargo, maxUnits := largestCargoItem(cargo)
 
-		// Try to find matching task for the cargo this ship already has
-		// Query database directly for ALL pending/ready tasks with this good
-		// Priority: ACQUIRE_DELIVER > COLLECT_SELL (delivering to factory is more valuable)
-		var matchingTask *manufacturing.ManufacturingTask
-		var matchingCollectSell *manufacturing.ManufacturingTask
-
-		availableTasks, err := h.taskRepo.FindAvailableByGood(ctx, params.PlayerID, primaryCargo)
-		if err != nil {
-			logger.Log("WARN", "Failed to find available tasks for cargo", map[string]interface{}{
-				"ship":       shipSymbol,
-				"cargo_type": primaryCargo,
-				"error":      err.Error(),
-			})
-		}
-
-		for _, task := range availableTasks {
-			// ACQUIRE_DELIVER: Ship already has cargo, just needs to deliver to factory
-			// This is the best match - ship can skip the acquire step
-			if task.TaskType() == manufacturing.TaskTypeAcquireDeliver {
-				matchingTask = task
-				logger.Log("INFO", "Found ACQUIRE_DELIVER task matching ship cargo", map[string]interface{}{
-					"ship":    shipSymbol,
-					"task_id": task.ID()[:8],
-					"good":    primaryCargo,
-					"factory": task.FactorySymbol(),
-				})
-				break
-			}
-
-			// COLLECT_SELL: Ship already has cargo, just needs to sell
-			// Track as backup if we don't find ACQUIRE_DELIVER
-			if task.TaskType() == manufacturing.TaskTypeCollectSell && matchingCollectSell == nil {
-				matchingCollectSell = task
-			}
-		}
-
-		// Use COLLECT_SELL if no ACQUIRE_DELIVER found
-		if matchingTask == nil && matchingCollectSell != nil {
-			matchingTask = matchingCollectSell
-			logger.Log("INFO", "Found COLLECT_SELL task matching ship cargo", map[string]interface{}{
-				"ship":        shipSymbol,
-				"task_id":     matchingTask.ID()[:8],
-				"good":        primaryCargo,
-				"sell_market": matchingTask.TargetMarket(),
-			})
-		}
+		matchingTask := h.findMatchingTaskForCargo(ctx, shipSymbol, primaryCargo, params.PlayerID)
 
 		if matchingTask == nil {
-			// Create ad-hoc sell task - but first check if cargo value is worth it
-			sellMarketResult, err := h.findBestSellMarketWithPrice(ctx, ship.CurrentLocation().Symbol, primaryCargo, params.PlayerID)
-			if err != nil {
-				logger.Log("WARN", "Failed to find sell market for orphaned cargo", map[string]interface{}{
-					"ship":       shipSymbol,
-					"cargo_type": primaryCargo,
-					"error":      err.Error(),
-				})
+			liquidateTask, verifiedUnits, ok := h.createLiquidateTaskForOrphanedCargo(ctx, ship, shipSymbol, primaryCargo, maxUnits, params.PlayerID)
+			if !ok {
 				continue
 			}
-
-			// Calculate cargo value
-			cargoValue := sellMarketResult.PurchasePrice * maxUnits
-
-			// If cargo value is below threshold, jettison instead of creating task
-			if cargoValue < MinLiquidateCargoValue {
-				logger.Log("INFO", "Cargo value below threshold - jettisoning", map[string]interface{}{
-					"ship":         shipSymbol,
-					"cargo_type":   primaryCargo,
-					"cargo_units":  maxUnits,
-					"price":        sellMarketResult.PurchasePrice,
-					"cargo_value":  cargoValue,
-					"min_required": MinLiquidateCargoValue,
-				})
-
-				// Jettison the cargo
-				if err := h.jettisonCargo(ctx, ship, primaryCargo, maxUnits, params.PlayerID); err != nil {
-					logger.Log("WARN", "Failed to jettison low-value cargo", map[string]interface{}{
-						"ship":       shipSymbol,
-						"cargo_type": primaryCargo,
-						"error":      err.Error(),
-					})
-				} else {
-					logger.Log("INFO", "Jettisoned low-value cargo - ship released", map[string]interface{}{
-						"ship":        shipSymbol,
-						"cargo_type":  primaryCargo,
-						"cargo_units": maxUnits,
-						"cargo_value": cargoValue,
-					})
-				}
-				// Ship is now free (cargo jettisoned), keep it in idle pool
-				continue
-			}
-
-			sellMarket := sellMarketResult.WaypointSymbol
-
-			// Check saturation
-			if h.taskAssigner != nil && h.taskAssigner.IsSellMarketSaturated(ctx, sellMarket, primaryCargo, params.PlayerID) {
-				logger.Log("INFO", "Sell market saturated - holding orphaned cargo", map[string]interface{}{
-					"ship":        shipSymbol,
-					"cargo_type":  primaryCargo,
-					"sell_market": sellMarket,
-				})
-				continue
-			}
-
-			// DEDUPLICATION: Check if LIQUIDATE task already exists for this ship+good
-			exists, err := h.taskRepo.ExistsLiquidateForShipAndGood(ctx, shipSymbol, primaryCargo, params.PlayerID)
-			if err != nil {
-				logger.Log("WARN", "Failed to check existing LIQUIDATE task", map[string]interface{}{
-					"ship":       shipSymbol,
-					"cargo_type": primaryCargo,
-					"error":      err.Error(),
-				})
-				continue
-			}
-			if exists {
-				logger.Log("DEBUG", "LIQUIDATE task already exists for ship+good - skipping", map[string]interface{}{
-					"ship":       shipSymbol,
-					"cargo_type": primaryCargo,
-				})
-				continue
-			}
-
-			// CRITICAL: Sync fresh ship state from API to prevent stale cargo bugs.
-			// The DB cargo state can become stale if a previous operation crashed or
-			// failed to persist. This API call verifies cargo actually exists before
-			// committing to a LIQUIDATE task.
-			playerIDVal := shared.MustNewPlayerID(params.PlayerID)
-			if h.shipRepo != nil {
-				freshShip, syncErr := h.shipRepo.SyncShipFromAPI(ctx, shipSymbol, playerIDVal)
-				if syncErr != nil {
-					logger.Log("WARN", "Failed to sync ship from API for cargo verification", map[string]interface{}{
-						"ship":  shipSymbol,
-						"error": syncErr.Error(),
-					})
-					// Continue anyway - better to try than skip entirely
-				} else {
-					// Verify cargo still exists after API sync
-					freshCargoQty := freshShip.Cargo().GetItemUnits(primaryCargo)
-					if freshCargoQty == 0 {
-						logger.Log("INFO", "Stale cargo detected - API shows no cargo, skipping LIQUIDATE", map[string]interface{}{
-							"ship":           shipSymbol,
-							"cargo_type":     primaryCargo,
-							"db_units":       maxUnits,
-							"api_units":      0,
-						})
-						continue
-					}
-					// Update maxUnits to match actual API cargo (may have changed)
-					if freshCargoQty != maxUnits {
-						logger.Log("DEBUG", "Cargo quantity updated from API", map[string]interface{}{
-							"ship":       shipSymbol,
-							"cargo_type": primaryCargo,
-							"db_units":   maxUnits,
-							"api_units":  freshCargoQty,
-						})
-						maxUnits = freshCargoQty
-					}
-				}
-			}
-
-			// Create LIQUIDATE task for orphaned cargo
-			// LIQUIDATE tasks are specifically designed for selling leftover cargo
-			// and have empty pipeline_id by design (they don't belong to a pipeline)
-			liquidateTask := manufacturing.NewLiquidationTask(
-				params.PlayerID,
-				shipSymbol,     // Ship already assigned
-				primaryCargo,
-				maxUnits,
-				sellMarket,
-			)
-
-			if err := h.taskRepo.Create(ctx, liquidateTask); err != nil {
-				continue
-			}
-
-			logger.Log("INFO", "Created LIQUIDATE task for orphaned cargo", map[string]interface{}{
-				"ship":        shipSymbol,
-				"task_id":     liquidateTask.ID()[:8],
-				"cargo_type":  primaryCargo,
-				"cargo_units": maxUnits,
-				"sell_market": sellMarket,
-				"cargo_value": cargoValue,
-			})
-
+			maxUnits = verifiedUnits
 			matchingTask = liquidateTask
 		} else {
 			// Mark existing task as READY
@@ -360,48 +164,221 @@ func (h *OrphanedCargoHandler) HandleShipsWithExistingCargo(
 	return params.IdleShips, nil
 }
 
-// FindBestSellMarket finds the best market to sell cargo
-func (h *OrphanedCargoHandler) FindBestSellMarket(ctx context.Context, currentLocation, good string, playerID int) (string, error) {
-	if h.marketRepo == nil {
-		return "", fmt.Errorf("no market repository configured")
+func largestCargoItem(cargo *shared.Cargo) (string, int) {
+	var primaryCargo string
+	var maxUnits int
+	for _, item := range cargo.Inventory {
+		if item.Units > maxUnits {
+			primaryCargo = item.Symbol
+			maxUnits = item.Units
+		}
 	}
-
-	system := extractSystemFromWaypointSymbol(currentLocation)
-
-	result, err := h.marketRepo.FindBestMarketBuying(ctx, good, system, playerID)
-	if err != nil {
-		return "", err
-	}
-	if result == nil {
-		return "", fmt.Errorf("no market found buying %s in system %s", good, system)
-	}
-
-	return result.WaypointSymbol, nil
+	return primaryCargo, maxUnits
 }
 
-// CreateAdHocSellTask creates a LIQUIDATE task for orphaned cargo
-func (h *OrphanedCargoHandler) CreateAdHocSellTask(ctx context.Context, ship *navigation.Ship, cargo CargoInfo, playerID int) (*manufacturing.ManufacturingTask, error) {
-	sellMarket, err := h.FindBestSellMarket(ctx, ship.CurrentLocation().Symbol, cargo.Good, playerID)
+func (h *OrphanedCargoHandler) findMatchingTaskForCargo(ctx context.Context, shipSymbol, good string, playerID int) *manufacturing.ManufacturingTask {
+	logger := common.LoggerFromContext(ctx)
+
+	availableTasks, err := h.taskRepo.FindAvailableByGood(ctx, playerID, good)
 	if err != nil {
-		return nil, err
+		logger.Log("WARN", "Failed to find available tasks for cargo", map[string]interface{}{
+			"ship":       shipSymbol,
+			"cargo_type": good,
+			"error":      err.Error(),
+		})
 	}
 
-	// Use LIQUIDATE task type - specifically designed for selling orphaned cargo
-	task := manufacturing.NewLiquidationTask(
-		playerID,
-		ship.ShipSymbol(),
-		cargo.Good,
-		cargo.Units,
-		sellMarket,
-	)
+	var matchingCollectSell *manufacturing.ManufacturingTask
 
-	if h.taskRepo != nil {
-		if err := h.taskRepo.Create(ctx, task); err != nil {
-			return nil, err
+	for _, task := range availableTasks {
+		// ACQUIRE_DELIVER: Ship already has cargo, just needs to deliver to factory
+		// This is the best match - ship can skip the acquire step
+		if task.TaskType() == manufacturing.TaskTypeAcquireDeliver {
+			logger.Log("INFO", "Found ACQUIRE_DELIVER task matching ship cargo", map[string]interface{}{
+				"ship":    shipSymbol,
+				"task_id": task.ID()[:8],
+				"good":    good,
+				"factory": task.FactorySymbol(),
+			})
+			return task
+		}
+
+		// COLLECT_SELL: Ship already has cargo, just needs to sell
+		// Track as backup if we don't find ACQUIRE_DELIVER
+		if task.TaskType() == manufacturing.TaskTypeCollectSell && matchingCollectSell == nil {
+			matchingCollectSell = task
 		}
 	}
 
-	return task, nil
+	if matchingCollectSell != nil {
+		logger.Log("INFO", "Found COLLECT_SELL task matching ship cargo", map[string]interface{}{
+			"ship":        shipSymbol,
+			"task_id":     matchingCollectSell.ID()[:8],
+			"good":        good,
+			"sell_market": matchingCollectSell.TargetMarket(),
+		})
+	}
+
+	return matchingCollectSell
+}
+
+func (h *OrphanedCargoHandler) createLiquidateTaskForOrphanedCargo(
+	ctx context.Context,
+	ship *navigation.Ship,
+	shipSymbol, good string,
+	units, playerID int,
+) (*manufacturing.ManufacturingTask, int, bool) {
+	logger := common.LoggerFromContext(ctx)
+
+	sellMarketResult, err := h.findBestSellMarketWithPrice(ctx, ship.CurrentLocation().Symbol, good, playerID)
+	if err != nil {
+		logger.Log("WARN", "Failed to find sell market for orphaned cargo", map[string]interface{}{
+			"ship":       shipSymbol,
+			"cargo_type": good,
+			"error":      err.Error(),
+		})
+		return nil, units, false
+	}
+
+	cargoValue := sellMarketResult.PurchasePrice * units
+
+	// If cargo value is below threshold, jettison instead of creating task
+	if cargoValue < MinLiquidateCargoValue {
+		h.jettisonLowValueCargo(ctx, ship, shipSymbol, good, units, cargoValue, sellMarketResult.PurchasePrice, playerID)
+		// Ship is now free (cargo jettisoned), keep it in idle pool
+		return nil, units, false
+	}
+
+	sellMarket := sellMarketResult.WaypointSymbol
+
+	if h.taskAssigner != nil && h.taskAssigner.IsSellMarketSaturated(ctx, sellMarket, good, playerID) {
+		logger.Log("INFO", "Sell market saturated - holding orphaned cargo", map[string]interface{}{
+			"ship":        shipSymbol,
+			"cargo_type":  good,
+			"sell_market": sellMarket,
+		})
+		return nil, units, false
+	}
+
+	// DEDUPLICATION: Check if LIQUIDATE task already exists for this ship+good
+	exists, err := h.taskRepo.ExistsLiquidateForShipAndGood(ctx, shipSymbol, good, playerID)
+	if err != nil {
+		logger.Log("WARN", "Failed to check existing LIQUIDATE task", map[string]interface{}{
+			"ship":       shipSymbol,
+			"cargo_type": good,
+			"error":      err.Error(),
+		})
+		return nil, units, false
+	}
+	if exists {
+		logger.Log("DEBUG", "LIQUIDATE task already exists for ship+good - skipping", map[string]interface{}{
+			"ship":       shipSymbol,
+			"cargo_type": good,
+		})
+		return nil, units, false
+	}
+
+	units, ok := h.verifyCargoAgainstAPI(ctx, shipSymbol, good, units, playerID)
+	if !ok {
+		return nil, units, false
+	}
+
+	// LIQUIDATE tasks are specifically designed for selling leftover cargo
+	// and have empty pipeline_id by design (they don't belong to a pipeline)
+	liquidateTask := manufacturing.NewLiquidationTask(
+		playerID,
+		shipSymbol, // Ship already assigned
+		good,
+		units,
+		sellMarket,
+	)
+
+	if err := h.taskRepo.Create(ctx, liquidateTask); err != nil {
+		return nil, units, false
+	}
+
+	logger.Log("INFO", "Created LIQUIDATE task for orphaned cargo", map[string]interface{}{
+		"ship":        shipSymbol,
+		"task_id":     liquidateTask.ID()[:8],
+		"cargo_type":  good,
+		"cargo_units": units,
+		"sell_market": sellMarket,
+		"cargo_value": cargoValue,
+	})
+
+	return liquidateTask, units, true
+}
+
+func (h *OrphanedCargoHandler) jettisonLowValueCargo(
+	ctx context.Context,
+	ship *navigation.Ship,
+	shipSymbol, good string,
+	units, cargoValue, pricePerUnit, playerID int,
+) {
+	logger := common.LoggerFromContext(ctx)
+
+	logger.Log("INFO", "Cargo value below threshold - jettisoning", map[string]interface{}{
+		"ship":         shipSymbol,
+		"cargo_type":   good,
+		"cargo_units":  units,
+		"price":        pricePerUnit,
+		"cargo_value":  cargoValue,
+		"min_required": MinLiquidateCargoValue,
+	})
+
+	if err := h.jettisonCargo(ctx, ship, good, units, playerID); err != nil {
+		logger.Log("WARN", "Failed to jettison low-value cargo", map[string]interface{}{
+			"ship":       shipSymbol,
+			"cargo_type": good,
+			"error":      err.Error(),
+		})
+	} else {
+		logger.Log("INFO", "Jettisoned low-value cargo - ship released", map[string]interface{}{
+			"ship":        shipSymbol,
+			"cargo_type":  good,
+			"cargo_units": units,
+			"cargo_value": cargoValue,
+		})
+	}
+}
+
+func (h *OrphanedCargoHandler) verifyCargoAgainstAPI(ctx context.Context, shipSymbol, good string, units, playerID int) (int, bool) {
+	logger := common.LoggerFromContext(ctx)
+
+	if h.shipRepo == nil {
+		return units, true
+	}
+
+	freshShip, syncErr := h.shipRepo.SyncShipFromAPI(ctx, shipSymbol, shared.MustNewPlayerID(playerID))
+	if syncErr != nil {
+		logger.Log("WARN", "Failed to sync ship from API for cargo verification", map[string]interface{}{
+			"ship":  shipSymbol,
+			"error": syncErr.Error(),
+		})
+		// Continue anyway - better to try than skip entirely
+		return units, true
+	}
+
+	freshCargoQty := freshShip.Cargo().GetItemUnits(good)
+	if freshCargoQty == 0 {
+		logger.Log("INFO", "Stale cargo detected - API shows no cargo, skipping LIQUIDATE", map[string]interface{}{
+			"ship":       shipSymbol,
+			"cargo_type": good,
+			"db_units":   units,
+			"api_units":  0,
+		})
+		return units, false
+	}
+
+	if freshCargoQty != units {
+		logger.Log("DEBUG", "Cargo quantity updated from API", map[string]interface{}{
+			"ship":       shipSymbol,
+			"cargo_type": good,
+			"db_units":   units,
+			"api_units":  freshCargoQty,
+		})
+	}
+	return freshCargoQty, true
 }
 
 // findBestSellMarketWithPrice finds the best market to sell cargo and returns the full result with price info

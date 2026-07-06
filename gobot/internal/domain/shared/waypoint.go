@@ -3,6 +3,7 @@ package shared
 import (
 	"fmt"
 	"math"
+	"strings"
 )
 
 // Waypoint represents an immutable location in space
@@ -61,21 +62,6 @@ func FindNearestWaypoint(from *Waypoint, targets []*Waypoint) (*Waypoint, float6
 	return nearest, minDistance
 }
 
-// IsOrbitalOf checks if this waypoint orbits another
-func (w *Waypoint) IsOrbitalOf(other *Waypoint) bool {
-	for _, orbital := range w.Orbitals {
-		if orbital == other.Symbol {
-			return true
-		}
-	}
-	for _, orbital := range other.Orbitals {
-		if orbital == w.Symbol {
-			return true
-		}
-	}
-	return false
-}
-
 func (w *Waypoint) String() string {
 	return fmt.Sprintf("Waypoint(%s)", w.Symbol)
 }
@@ -107,22 +93,6 @@ func (w *Waypoint) IsMarketplace() bool {
 	return w.HasTrait("MARKETPLACE")
 }
 
-// IsShipyard checks if this waypoint has a shipyard.
-//
-// This is a convenience method for the common trait check.
-// Shipyards allow agents to purchase new ships.
-func (w *Waypoint) IsShipyard() bool {
-	return w.HasTrait("SHIPYARD")
-}
-
-// IsUncharted checks if this waypoint is uncharted.
-//
-// This is a convenience method for the common trait check.
-// Uncharted waypoints need to be surveyed before accessing their features.
-func (w *Waypoint) IsUncharted() bool {
-	return w.HasTrait("UNCHARTED")
-}
-
 // IsJumpGate checks if this waypoint is a jump gate.
 //
 // Jump gates allow ships to travel between star systems.
@@ -135,12 +105,9 @@ func (w *Waypoint) IsJumpGate() bool {
 // by finding the last hyphen and returning everything before it.
 // Example: "X1-AB12-C3D4" -> "X1-AB12"
 func ExtractSystemSymbol(waypointSymbol string) string {
-	systemSymbol := waypointSymbol
-	for i := len(waypointSymbol) - 1; i >= 0; i-- {
-		if waypointSymbol[i] == '-' {
-			systemSymbol = waypointSymbol[:i]
-			break
-		}
+	lastHyphen := strings.LastIndexByte(waypointSymbol, '-')
+	if lastHyphen < 0 {
+		return waypointSymbol
 	}
-	return systemSymbol
+	return waypointSymbol[:lastHyphen]
 }

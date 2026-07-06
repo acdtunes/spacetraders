@@ -10,6 +10,17 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
+const (
+	periodDateLayout        = "2006-01-02"
+	cashFlowGroupByCategory = "category"
+)
+
+func formatPeriod(startDate, endDate time.Time) string {
+	return fmt.Sprintf("%s to %s",
+		startDate.Format(periodDateLayout),
+		endDate.Format(periodDateLayout))
+}
+
 // GetCashFlowQuery represents a query to generate a cash flow statement
 type GetCashFlowQuery struct {
 	PlayerID  int
@@ -54,9 +65,9 @@ func (h *GetCashFlowHandler) Handle(ctx context.Context, request common.Request)
 
 	// Validate group by
 	if query.GroupBy == "" {
-		query.GroupBy = "category"
+		query.GroupBy = cashFlowGroupByCategory
 	}
-	if query.GroupBy != "category" {
+	if query.GroupBy != cashFlowGroupByCategory {
 		return nil, fmt.Errorf("only 'category' grouping is currently supported")
 	}
 
@@ -125,13 +136,8 @@ func (h *GetCashFlowHandler) calculateCashFlow(
 		}
 	}
 
-	// Format period string
-	period := fmt.Sprintf("%s to %s",
-		query.StartDate.Format("2006-01-02"),
-		query.EndDate.Format("2006-01-02"))
-
 	return &GetCashFlowResponse{
-		Period:     period,
+		Period:     formatPeriod(query.StartDate, query.EndDate),
 		Categories: categories,
 	}
 }

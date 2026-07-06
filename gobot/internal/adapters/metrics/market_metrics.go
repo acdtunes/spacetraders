@@ -18,10 +18,10 @@ type MarketMetricsCollector struct {
 	db *gorm.DB
 
 	// Scanner Performance Metrics (4 metrics)
-	marketScansTotal           *prometheus.CounterVec
-	marketScanDurationSeconds  *prometheus.HistogramVec
-	marketScanRate             *prometheus.GaugeVec
-	marketScannerErrorsTotal   *prometheus.CounterVec
+	marketScansTotal          *prometheus.CounterVec
+	marketScanDurationSeconds *prometheus.HistogramVec
+	marketScanRate            *prometheus.GaugeVec
+	marketScannerErrorsTotal  *prometheus.CounterVec
 
 	// Coverage Metrics (3 metrics)
 	marketCoverageTotal *prometheus.GaugeVec
@@ -551,11 +551,11 @@ func (c *MarketMetricsCollector) updateTradingOpportunities(playerID int, system
 
 	// Get best buy and sell prices for each good
 	var priceData []struct {
-		GoodSymbol      string
-		MinSellPrice    int
+		GoodSymbol       string
+		MinSellPrice     int
 		MaxPurchasePrice int
-		MinWaypoint     string
-		MaxWaypoint     string
+		MinWaypoint      string
+		MaxWaypoint      string
 	}
 
 	// PostgreSQL-compatible: Include player_id in GROUP BY to avoid ungrouped column error

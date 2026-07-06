@@ -56,11 +56,11 @@ func newOperationsStartCommand() *cobra.Command {
 		enableManufacturing bool
 
 		// Gas-specific flags
-		siphonsCsv  string
-		storageCsv  string
-		gasGiant    string
-		force       bool
-		maxLegTime  int
+		siphonsCsv string
+		storageCsv string
+		gasGiant   string
+		force      bool
+		maxLegTime int
 
 		// Manufacturing-specific flags
 		minPrice               int
@@ -130,9 +130,9 @@ Examples:
 			}
 
 			// Connect to daemon
-			client, err := NewDaemonClient(socketPath)
+			client, err := connectDaemon()
 			if err != nil {
-				return fmt.Errorf("failed to connect to daemon: %w", err)
+				return err
 			}
 			defer client.Close()
 
@@ -318,9 +318,9 @@ Examples:
   spacetraders operations status
   spacetraders operations status --player-id 1`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			client, err := NewDaemonClient(socketPath)
+			client, err := connectDaemon()
 			if err != nil {
-				return fmt.Errorf("failed to connect to daemon: %w", err)
+				return err
 			}
 			defer client.Close()
 
@@ -449,9 +449,9 @@ Examples:
   # Stop operations in a specific system
   spacetraders operations stop --system X1-AU21`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			client, err := NewDaemonClient(socketPath)
+			client, err := connectDaemon()
 			if err != nil {
-				return fmt.Errorf("failed to connect to daemon: %w", err)
+				return err
 			}
 			defer client.Close()
 

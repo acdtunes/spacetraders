@@ -56,38 +56,6 @@ func (r *TaskExecutorRegistry) GetExecutor(taskType manufacturing.TaskType) (Tas
 	return executor, nil
 }
 
-// HasExecutor checks if an executor is registered for the given task type.
-func (r *TaskExecutorRegistry) HasExecutor(taskType manufacturing.TaskType) bool {
-	_, ok := r.executors[taskType]
-	return ok
-}
-
-// RegisteredTypes returns all task types that have registered executors.
-func (r *TaskExecutorRegistry) RegisteredTypes() []manufacturing.TaskType {
-	types := make([]manufacturing.TaskType, 0, len(r.executors))
-	for taskType := range r.executors {
-		types = append(types, taskType)
-	}
-	return types
-}
-
-// NewDefaultTaskExecutorRegistry creates a registry with all standard executors registered.
-// This is a convenience function for production use.
-func NewDefaultTaskExecutorRegistry(
-	navigator Navigator,
-	purchaser *ManufacturingPurchaser,
-	seller *ManufacturingSeller,
-) *TaskExecutorRegistry {
-	registry := NewTaskExecutorRegistry()
-
-	// Register all standard executors
-	registry.Register(NewAcquireDeliverExecutor(navigator, purchaser, seller))
-	registry.Register(NewCollectSellExecutor(navigator, purchaser, seller))
-	registry.Register(NewLiquidateExecutor(navigator, seller))
-
-	return registry
-}
-
 // RegisterStorageExecutor adds the storage acquire deliver executor to an existing registry
 // and enables storage support on the CollectSellExecutor.
 // This is separated because storage operations require additional dependencies that may not

@@ -1,7 +1,6 @@
 package contract
 
 import (
-	"fmt"
 	"math"
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
@@ -181,31 +180,4 @@ func (fa *FleetAssigner) AssignShipsToTargets(
 	}
 
 	return assignments, nil
-}
-
-// CalculateDistributionQuality evaluates how well a fleet is distributed
-// relative to target waypoints. Lower scores indicate better distribution.
-//
-// Parameters:
-//   - ships: Current fleet
-//   - targetWaypoints: Target locations
-//
-// Returns:
-//   - quality score: Average distance to nearest target (lower is better)
-func (fa *FleetAssigner) CalculateDistributionQuality(
-	ships []*navigation.Ship,
-	targetWaypoints []*shared.Waypoint,
-) (float64, error) {
-	if len(ships) == 0 || len(targetWaypoints) == 0 {
-		return 0, fmt.Errorf("ships and targets cannot be empty")
-	}
-
-	totalDistance := 0.0
-	for _, ship := range ships {
-		currentLocation := ship.CurrentLocation()
-		_, minDistance := shared.FindNearestWaypoint(currentLocation, targetWaypoints)
-		totalDistance += minDistance
-	}
-
-	return totalDistance / float64(len(ships)), nil
 }

@@ -105,10 +105,7 @@ func (h *FulfillContractHandler) loadContract(ctx context.Context, contractID st
 }
 
 func (h *FulfillContractHandler) fulfillContractInDomain(contract *contract.Contract) error {
-	if err := contract.Fulfill(); err != nil {
-		return err
-	}
-	return nil
+	return contract.Fulfill()
 }
 
 func (h *FulfillContractHandler) callFulfillContractAPI(ctx context.Context, contractID string, token string) error {

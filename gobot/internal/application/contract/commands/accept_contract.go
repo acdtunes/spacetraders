@@ -99,10 +99,7 @@ func (h *AcceptContractHandler) loadContract(ctx context.Context, contractID str
 }
 
 func (h *AcceptContractHandler) acceptContractInDomain(contract *contract.Contract) error {
-	if err := contract.Accept(); err != nil {
-		return err
-	}
-	return nil
+	return contract.Accept()
 }
 
 func (h *AcceptContractHandler) callAcceptContractAPI(ctx context.Context, contractID string, token string) error {
@@ -149,10 +146,10 @@ func (h *AcceptContractHandler) recordContractAcceptance(
 
 	// Build metadata
 	metadata := map[string]interface{}{
-		"agent":          agentSymbol,
-		"contract_id":    contract.ContractID(),
-		"faction":        contract.FactionSymbol(),
-		"contract_type":  contract.Type(),
+		"agent":         agentSymbol,
+		"contract_id":   contract.ContractID(),
+		"faction":       contract.FactionSymbol(),
+		"contract_type": contract.Type(),
 	}
 
 	// Create record transaction command

@@ -9,6 +9,11 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
+const (
+	defaultMaxRecoveryAttempts = 5
+	minAvgIterationSeconds     = 5.0
+)
+
 // RecoveryMetrics tracks health monitor recovery statistics
 type RecoveryMetrics struct {
 	SuccessfulRecoveries int
@@ -42,7 +47,7 @@ func NewHealthMonitor(
 	return &HealthMonitor{
 		checkInterval:       checkInterval,
 		recoveryTimeout:     recoveryTimeout,
-		maxRecoveryAttempts: 5, // Default: 5 attempts before abandoning
+		maxRecoveryAttempts: defaultMaxRecoveryAttempts,
 		watchList:           make(map[string]time.Time),
 		recoveryAttempts:    make(map[string]int),
 		metrics: &RecoveryMetrics{
@@ -227,8 +232,7 @@ func (hm *HealthMonitor) DetectInfiniteLoops(
 
 			avgDuration := float64(runtimeSeconds) / float64(iterations)
 
-			// Flag if iterations complete suspiciously fast (< 5 seconds avg)
-			if avgDuration < 5.0 {
+			if avgDuration < minAvgIterationSeconds {
 				suspicious = append(suspicious, containerID)
 			}
 		}

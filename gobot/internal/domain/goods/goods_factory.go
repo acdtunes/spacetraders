@@ -50,10 +50,10 @@ type GoodsFactory struct {
 
 	// Tracking metrics (set during execution)
 	quantityAcquired int
-	totalCost        int // Credits spent on purchases
-	shipsUsed        int // Number of ships utilized
-	marketQueries    int // Number of market queries performed
-	parallelLevels   int // Number of parallel execution levels
+	totalCost        int     // Credits spent on purchases
+	shipsUsed        int     // Number of ships utilized
+	marketQueries    int     // Number of market queries performed
+	parallelLevels   int     // Number of parallel execution levels
 	estimatedSpeedup float64 // Estimated speedup from parallelization
 }
 
@@ -186,28 +186,6 @@ func (f *GoodsFactory) Stop() error {
 	return nil
 }
 
-// Validation guards
-
-// CanStart returns true if factory can be started
-func (f *GoodsFactory) CanStart() bool {
-	return f.status == FactoryStatusPending || f.status == FactoryStatusStopped
-}
-
-// CanComplete returns true if factory can be completed
-func (f *GoodsFactory) CanComplete() bool {
-	return f.status == FactoryStatusActive
-}
-
-// CanFail returns true if factory can be failed
-func (f *GoodsFactory) CanFail() bool {
-	return f.status != FactoryStatusCompleted && f.status != FactoryStatusStopped
-}
-
-// CanStop returns true if factory can be stopped
-func (f *GoodsFactory) CanStop() bool {
-	return f.status != FactoryStatusCompleted && f.status != FactoryStatusStopped
-}
-
 // State queries
 
 // IsActive returns true if factory is currently producing
@@ -253,62 +231,6 @@ func (f *GoodsFactory) SetParallelMetrics(levels int, speedup float64) {
 	f.parallelLevels = levels
 	f.estimatedSpeedup = speedup
 	f.lifecycle.UpdateTimestamp()
-}
-
-// AverageProductionTimePerNode calculates average time per node
-func (f *GoodsFactory) AverageProductionTimePerNode() time.Duration {
-	total := f.TotalNodes()
-	if total == 0 {
-		return 0
-	}
-
-	runtime := f.RuntimeDuration()
-	return runtime / time.Duration(total)
-}
-
-// EfficiencyMetrics returns various efficiency metrics
-func (f *GoodsFactory) EfficiencyMetrics() map[string]interface{} {
-	metrics := make(map[string]interface{})
-
-	// Cost per unit
-	if f.quantityAcquired > 0 {
-		metrics["cost_per_unit"] = float64(f.totalCost) / float64(f.quantityAcquired)
-	} else {
-		metrics["cost_per_unit"] = 0.0
-	}
-
-	// Nodes per minute
-	runtime := f.RuntimeDuration()
-	if runtime > 0 {
-		nodesPerMinute := float64(f.CompletedNodes()) / runtime.Minutes()
-		metrics["nodes_per_minute"] = nodesPerMinute
-	} else {
-		metrics["nodes_per_minute"] = 0.0
-	}
-
-	// Parallel efficiency
-	if f.parallelLevels > 0 {
-		metrics["parallel_levels"] = f.parallelLevels
-		metrics["estimated_speedup"] = f.estimatedSpeedup
-	}
-
-	// Ship utilization
-	if f.shipsUsed > 0 {
-		metrics["ships_used"] = f.shipsUsed
-		if f.parallelLevels > 0 {
-			metrics["avg_ships_per_level"] = float64(f.shipsUsed) / float64(f.parallelLevels)
-		}
-	}
-
-	// Market queries
-	if f.marketQueries > 0 {
-		metrics["market_queries"] = f.marketQueries
-		if f.TotalNodes() > 0 {
-			metrics["queries_per_node"] = float64(f.marketQueries) / float64(f.TotalNodes())
-		}
-	}
-
-	return metrics
 }
 
 // Metadata management

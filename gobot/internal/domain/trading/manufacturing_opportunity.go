@@ -23,12 +23,12 @@ import (
 type ManufacturingOpportunity struct {
 	good           string
 	sellMarket     *shared.Waypoint
-	purchasePrice  int // What market pays per unit (import price)
+	purchasePrice  int    // What market pays per unit (import price)
 	activity       string // WEAK, GROWING, STRONG, RESTRICTED
 	supply         string // SCARCE, LIMITED, MODERATE, HIGH, ABUNDANT
 	dependencyTree *goods.SupplyChainNode
 	treeDepth      int
-	inputCount     int // Number of direct inputs needed
+	inputCount     int     // Number of direct inputs needed
 	score          float64 // Composite score for ranking
 	discoveredAt   time.Time
 }
@@ -141,11 +141,11 @@ func (o *ManufacturingOpportunity) EstimatedRevenue(cargoCapacity int) int {
 // Scoring factors (data-driven from arbitrage analysis of 163 trades):
 //   - Purchase price (40%): Higher price = more potential revenue
 //   - Activity (30%): WEAK > RESTRICTED > STRONG > GROWING (REVERSED!)
-//     - WEAK markets have stable prices (+28.94 profit/sec)
-//     - GROWING markets have volatile prices (-524.70 profit/sec due to competition)
+//   - WEAK markets have stable prices (+28.94 profit/sec)
+//   - GROWING markets have volatile prices (-524.70 profit/sec due to competition)
 //   - Supply (20%): For SELL markets, indicates market depth
-//     - HIGH/ABUNDANT = market actively trades this good (volume)
-//     - SCARCE = market depleted or low volume (risky)
+//   - HIGH/ABUNDANT = market actively trades this good (volume)
+//   - SCARCE = market depleted or low volume (risky)
 //   - Tree depth penalty (10%): Shallower trees = faster execution
 //   - Direct arbitrage bonus (+100): Prioritize quick wins to fund manufacturing
 func (o *ManufacturingOpportunity) calculateScore() float64 {

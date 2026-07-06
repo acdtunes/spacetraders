@@ -11,3 +11,10 @@ func ToProtobufPlayerID(domainID int) int32 {
 func FromProtobufPlayerID(protoID int32) int {
 	return int(protoID)
 }
+
+func stringValue(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}

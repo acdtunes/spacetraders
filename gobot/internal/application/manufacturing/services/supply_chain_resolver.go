@@ -43,27 +43,9 @@ func NewSupplyChainResolver(
 	}
 }
 
-// NewSupplyChainResolverWithStrategy creates a resolver with a specific acquisition strategy
-func NewSupplyChainResolverWithStrategy(
-	supplyChainMap map[string][]string,
-	marketRepo market.MarketRepository,
-	strategy AcquisitionStrategy,
-) *SupplyChainResolver {
-	return &SupplyChainResolver{
-		supplyChainMap: supplyChainMap,
-		marketRepo:     marketRepo,
-		strategy:       strategy,
-	}
-}
-
 // SetStrategy changes the acquisition strategy
 func (r *SupplyChainResolver) SetStrategy(strategy AcquisitionStrategy) {
 	r.strategy = strategy
-}
-
-// Strategy returns the current acquisition strategy
-func (r *SupplyChainResolver) Strategy() AcquisitionStrategy {
-	return r.strategy
 }
 
 // BuildDependencyTree constructs a complete dependency tree for producing a target good.
@@ -71,15 +53,15 @@ func (r *SupplyChainResolver) Strategy() AcquisitionStrategy {
 // each good should be purchased (BUY) or manufactured (FABRICATE).
 //
 // The algorithm:
-// 1. Find the factory that produces the target good
-// 2. If factory has HIGH/ABUNDANT supply → create direct arbitrage node (AcquisitionBuy)
-// 3. If no factory exists → check if good can be bought from market (direct arbitrage)
-// 4. Otherwise, build full dependency tree:
-//    a. Check if child goods are available in markets → mark as BUY
-//    b. If not available, check if can be fabricated from supply chain map
-//    c. Recursively build trees for all required inputs
-//    d. Detect circular dependencies
-//    e. Populate market activity and supply levels for BUY nodes
+//  1. Find the factory that produces the target good
+//  2. If factory has HIGH/ABUNDANT supply → create direct arbitrage node (AcquisitionBuy)
+//  3. If no factory exists → check if good can be bought from market (direct arbitrage)
+//  4. Otherwise, build full dependency tree:
+//     a. Check if child goods are available in markets → mark as BUY
+//     b. If not available, check if can be fabricated from supply chain map
+//     c. Recursively build trees for all required inputs
+//     d. Detect circular dependencies
+//     e. Populate market activity and supply levels for BUY nodes
 //
 // Returns the root node of the dependency tree.
 func (r *SupplyChainResolver) BuildDependencyTree(
@@ -206,8 +188,8 @@ func (r *SupplyChainResolver) buildTreeRecursive(
 	// Create fabrication node with factory location and supply info
 	node := goods.NewSupplyChainNode(goodSymbol, goods.AcquisitionFabricate)
 	node.WaypointSymbol = factory.WaypointSymbol
-	node.SupplyLevel = factory.Supply       // Capture supply level for pipeline optimization
-	node.MarketActivity = factory.Activity  // Capture activity for market state tracking
+	node.SupplyLevel = factory.Supply      // Capture supply level for pipeline optimization
+	node.MarketActivity = factory.Activity // Capture activity for market state tracking
 
 	// Recursively build trees for all required inputs (not target goods)
 	for _, inputGood := range inputs {
@@ -321,7 +303,7 @@ func (r *SupplyChainResolver) shouldBuyGood(
 
 		// Only buy if supply is excellent
 		switch marketData.Supply {
-		case "HIGH", "ABUNDANT":
+		case supplyHigh, supplyAbundant:
 			// Good supply - buy directly
 			return true, marketData
 		default:
@@ -338,10 +320,10 @@ func (r *SupplyChainResolver) shouldBuyGood(
 
 		// Check supply level - fabricate if SCARCE or LIMITED
 		switch marketData.Supply {
-		case "SCARCE", "LIMITED":
+		case supplyScarce, supplyLimited:
 			// Poor supply - prefer fabrication to increase supply
 			return false, marketData
-		case "MODERATE", "HIGH", "ABUNDANT":
+		case supplyModerate, supplyHigh, supplyAbundant:
 			// Good supply - buy directly
 			return true, marketData
 		default:
@@ -353,53 +335,6 @@ func (r *SupplyChainResolver) shouldBuyGood(
 		// Unknown strategy - default to buying
 		return true, marketData
 	}
-}
-
-// ValidateChain checks if a good can be produced with the current supply chain map
-func (r *SupplyChainResolver) ValidateChain(targetGood string) error {
-	return goods.ValidateSupplyChain(targetGood)
-}
-
-// DetectCycles checks if there are any circular dependencies in the supply chain map
-func (r *SupplyChainResolver) DetectCycles(targetGood string) error {
-	visited := make(map[string]bool)
-	return r.detectCyclesRecursive(targetGood, visited, []string{})
-}
-
-// detectCyclesRecursive is the internal recursive function for cycle detection
-func (r *SupplyChainResolver) detectCyclesRecursive(
-	goodSymbol string,
-	visited map[string]bool,
-	path []string,
-) error {
-	if visited[goodSymbol] {
-		return &goods.ErrCircularDependency{
-			Good:  goodSymbol,
-			Chain: append(path, goodSymbol),
-		}
-	}
-
-	// Check if it's a raw material (end of chain)
-	inputs, exists := r.supplyChainMap[goodSymbol]
-	if !exists {
-		return nil // Raw material, no further dependencies
-	}
-
-	// Mark as visiting
-	visited[goodSymbol] = true
-	defer func() { visited[goodSymbol] = false }()
-
-	// Add to path
-	currentPath := append(path, goodSymbol)
-
-	// Check all inputs recursively
-	for _, inputGood := range inputs {
-		if err := r.detectCyclesRecursive(inputGood, visited, currentPath); err != nil {
-			return err
-		}
-	}
-
-	return nil
 }
 
 // MarketResult contains market information for a good

@@ -34,13 +34,7 @@ func (s *BurnModeStrategy) CanUse(currentFuel, fuelCost, safetyMargin int) bool 
 	cruiseConfig := flightModeConfigs[FlightModeCruise]
 	burnCost := int(float64(fuelCost) * burnConfig.FuelRate / cruiseConfig.FuelRate)
 
-	// Special case: exact match to burn threshold → use BURN (unless safety margin is very high)
-	if currentFuel == burnCost+safetyMargin && safetyMargin < burnCost {
-		return true
-	}
-
-	// Check BURN with safety margin (need MORE than minimum + margin for safety)
-	return currentFuel > burnCost+safetyMargin
+	return fuelPermitsMode(currentFuel, burnCost, safetyMargin)
 }
 
 func (s *BurnModeStrategy) Priority() int {
@@ -62,13 +56,12 @@ func NewCruiseModeStrategy() *CruiseModeStrategy {
 }
 
 func (s *CruiseModeStrategy) CanUse(currentFuel, fuelCost, safetyMargin int) bool {
-	// Special case: exact match to cruise threshold → use CRUISE (unless safety margin is very high)
-	if currentFuel == fuelCost+safetyMargin && safetyMargin < fuelCost {
-		return true
-	}
+	return fuelPermitsMode(currentFuel, fuelCost, safetyMargin)
+}
 
-	// Try CRUISE (standard: 1x fuel cost - need MORE than minimum + margin)
-	return currentFuel > fuelCost+safetyMargin
+func fuelPermitsMode(currentFuel, modeCost, safetyMargin int) bool {
+	exactThresholdMatch := currentFuel == modeCost+safetyMargin && safetyMargin < modeCost
+	return exactThresholdMatch || currentFuel > modeCost+safetyMargin
 }
 
 func (s *CruiseModeStrategy) Priority() int {

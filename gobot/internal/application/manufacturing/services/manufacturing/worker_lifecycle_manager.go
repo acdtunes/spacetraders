@@ -144,14 +144,7 @@ func (m *WorkerLifecycleManager) AssignTaskToShip(ctx context.Context, params As
 		PipelineNumber: pipelineNumber,
 		ProductGood:    productGood,
 	}); err != nil {
-		if rollbackErr := task.RollbackAssignment(); rollbackErr != nil {
-			logger.Log("ERROR", fmt.Sprintf("Failed to rollback task assignment: %v", rollbackErr), nil)
-		}
-		if m.taskRepo != nil {
-			if updateErr := m.taskRepo.Update(ctx, task); updateErr != nil {
-				logger.Log("ERROR", fmt.Sprintf("Failed to persist task rollback: %v (task %s may be stuck as ASSIGNED)", updateErr, task.ID()[:8]), nil)
-			}
-		}
+		m.rollbackTaskAssignment(ctx, task)
 		return fmt.Errorf("failed to persist worker container: %w", err)
 	}
 
@@ -167,15 +160,7 @@ func (m *WorkerLifecycleManager) AssignTaskToShip(ctx context.Context, params As
 					logger.Log("ERROR", fmt.Sprintf("Failed to remove container %s during rollback: %v", containerID, removeErr), nil)
 				}
 			}
-			// Rollback: reset task assignment
-			if rollbackErr := task.RollbackAssignment(); rollbackErr != nil {
-				logger.Log("ERROR", fmt.Sprintf("Failed to rollback task assignment: %v", rollbackErr), nil)
-			}
-			if m.taskRepo != nil {
-				if updateErr := m.taskRepo.Update(ctx, task); updateErr != nil {
-					logger.Log("ERROR", fmt.Sprintf("Failed to persist task rollback: %v (task %s may be stuck as ASSIGNED)", updateErr, task.ID()[:8]), nil)
-				}
-			}
+			m.rollbackTaskAssignment(ctx, task)
 			return fmt.Errorf("failed to claim ship: %w", err)
 		}
 
@@ -195,14 +180,7 @@ func (m *WorkerLifecycleManager) AssignTaskToShip(ctx context.Context, params As
 				logger.Log("ERROR", fmt.Sprintf("Failed to save ship release during rollback: %v", saveErr), nil)
 			}
 		}
-		if rollbackErr := task.RollbackAssignment(); rollbackErr != nil {
-			logger.Log("ERROR", fmt.Sprintf("Failed to rollback task assignment: %v", rollbackErr), nil)
-		}
-		if m.taskRepo != nil {
-			if updateErr := m.taskRepo.Update(ctx, task); updateErr != nil {
-				logger.Log("ERROR", fmt.Sprintf("Failed to persist task rollback: %v (task %s may be stuck as ASSIGNED)", updateErr, task.ID()[:8]), nil)
-			}
-		}
+		m.rollbackTaskAssignment(ctx, task)
 		return fmt.Errorf("failed to start worker container: %w", err)
 	}
 
@@ -222,6 +200,18 @@ func (m *WorkerLifecycleManager) AssignTaskToShip(ctx context.Context, params As
 	})
 
 	return nil
+}
+
+func (m *WorkerLifecycleManager) rollbackTaskAssignment(ctx context.Context, task *manufacturing.ManufacturingTask) {
+	logger := common.LoggerFromContext(ctx)
+	if rollbackErr := task.RollbackAssignment(); rollbackErr != nil {
+		logger.Log("ERROR", fmt.Sprintf("Failed to rollback task assignment: %v", rollbackErr), nil)
+	}
+	if m.taskRepo != nil {
+		if updateErr := m.taskRepo.Update(ctx, task); updateErr != nil {
+			logger.Log("ERROR", fmt.Sprintf("Failed to persist task rollback: %v (task %s may be stuck as ASSIGNED)", updateErr, task.ID()[:8]), nil)
+		}
+	}
 }
 
 // HandleWorkerCompletion processes worker container completion
@@ -353,4 +343,3 @@ type WorkerCommand struct {
 	PipelineNumber int
 	ProductGood    string
 }
-

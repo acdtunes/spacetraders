@@ -11,10 +11,6 @@ func (e *DomainError) Error() string {
 	return e.Message
 }
 
-func NewDomainError(message string) *DomainError {
-	return &DomainError{Message: message}
-}
-
 // Ship-related errors
 
 type ShipError struct {
@@ -97,37 +93,5 @@ func NewShipAlreadyAssignedError(shipSymbol, currentContainerID string) *ShipAlr
 			shipSymbol,
 			currentContainerID,
 		),
-	}
-}
-
-type ShipLockedError struct {
-	*ShipAssignmentError
-}
-
-func NewShipLockedError(shipSymbol, containerID string) *ShipLockedError {
-	return &ShipLockedError{
-		ShipAssignmentError: NewShipAssignmentError(
-			fmt.Sprintf("ship %s is locked by container %s", shipSymbol, containerID),
-			shipSymbol,
-			containerID,
-		),
-	}
-}
-
-type ShipPlayerMismatchError struct {
-	*ShipAssignmentError
-	ExpectedPlayerID int
-	ActualPlayerID   int
-}
-
-func NewShipPlayerMismatchError(shipSymbol string, expectedPlayerID, actualPlayerID int) *ShipPlayerMismatchError {
-	return &ShipPlayerMismatchError{
-		ShipAssignmentError: NewShipAssignmentError(
-			fmt.Sprintf("ship %s player_id mismatch: expected %d, got %d", shipSymbol, expectedPlayerID, actualPlayerID),
-			shipSymbol,
-			"",
-		),
-		ExpectedPlayerID: expectedPlayerID,
-		ActualPlayerID:   actualPlayerID,
 	}
 }

@@ -10,7 +10,6 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/system"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
-
 )
 
 // ManufacturingDemandFinder discovers high-demand goods that can be manufactured.
@@ -45,14 +44,6 @@ func NewManufacturingDemandFinder(
 type DemandFinderConfig struct {
 	MinPurchasePrice int // Minimum price to consider (default: 1000)
 	MaxOpportunities int // Max opportunities to return (default: 10)
-}
-
-// DefaultDemandFinderConfig returns sensible defaults
-func DefaultDemandFinderConfig() DemandFinderConfig {
-	return DemandFinderConfig{
-		MinPurchasePrice: 1000,
-		MaxOpportunities: 10,
-	}
 }
 
 // FindHighDemandManufacturables scans all markets for high-demand goods that can be manufactured.
@@ -106,81 +97,7 @@ func (f *ManufacturingDemandFinder) FindHighDemandManufacturables(
 
 	// Step 2: Build index of high-demand goods
 	// Map: good -> ALL eligible import markets (we'll select based on distance later)
-	type demandEntry struct {
-		good           string
-		waypointSymbol string
-		purchasePrice  int
-		activity       string
-		supply         string
-	}
-	demandIndex := make(map[string][]*demandEntry) // Changed to slice to track ALL markets
-
-	for _, waypointSymbol := range marketWaypoints {
-		marketData, err := f.marketRepo.GetMarketData(ctx, waypointSymbol, playerID)
-		if err != nil {
-			continue // Skip markets we can't access
-		}
-		if marketData == nil {
-			continue // No market data for this waypoint
-		}
-
-		// Check each trade good
-		for _, tradeGood := range marketData.TradeGoods() {
-			goodSymbol := tradeGood.Symbol()
-			purchasePrice := tradeGood.PurchasePrice()
-
-			// CRITICAL: Only consider IMPORT goods - these are markets that BUY/CONSUME
-			// EXPORT markets sell goods (factories), EXCHANGE markets trade both ways
-			// We want to sell to markets that NEED the goods (IMPORT type)
-			if tradeGood.TradeType() != market.TradeTypeImport {
-				continue // Skip export and exchange markets
-			}
-
-			// Skip if price below threshold
-			if purchasePrice < config.MinPurchasePrice {
-				continue
-			}
-
-			// NOTE: We no longer filter by isManufacturable here!
-			// Direct arbitrage doesn't require manufacturing - just HIGH/ABUNDANT source
-			// The supply chain resolver will handle both cases:
-			// - HIGH/ABUNDANT source → AcquisitionBuy (direct arbitrage)
-			// - Below HIGH → AcquisitionFabricate (needs manufacturing)
-
-			// Extract activity and supply (may be nil)
-			activity := ""
-			if tradeGood.Activity() != nil {
-				activity = *tradeGood.Activity()
-			}
-			supply := ""
-			if tradeGood.Supply() != nil {
-				supply = *tradeGood.Supply()
-			}
-
-			// CRITICAL: Only consider markets with WEAK or RESTRICTED activity
-			// See docs/PARALLEL_MANUFACTURING_SYSTEM_DESIGN.md - Sell Market Selection
-			// STRONG (20.3% drift) and GROWING (33.6% drift) are too volatile
-			if activity != "WEAK" && activity != "RESTRICTED" {
-				continue // Skip volatile markets
-			}
-
-			// CRITICAL: Only sell to markets with SCARCE or LIMITED supply
-			// Symmetry with BUY logic (HIGH/ABUNDANT for buying)
-			// Markets that need goods (low supply) pay higher prices
-			if supply != "SCARCE" && supply != "LIMITED" {
-				continue // Skip markets that already have enough supply
-			}
-
-			// Track ALL eligible markets for this good (we'll select by distance later)
-			demandIndex[goodSymbol] = append(demandIndex[goodSymbol], &demandEntry{
-				good:           goodSymbol,
-				waypointSymbol: waypointSymbol,
-				purchasePrice:  purchasePrice,
-				activity:       activity,
-				supply:         supply,
-			})
-		}
-	}
+	demandIndex := f.buildDemandIndex(ctx, marketWaypoints, playerID, config)
 
 	// Step 3: Build opportunities with dependency trees
 	// For each good, select the CLOSEST sell market to minimize cycle time
@@ -213,24 +130,7 @@ func (f *ManufacturingDemandFinder) FindHighDemandManufacturables(
 		}
 
 		// Select the closest sell market to minimize cycle time
-		var bestEntry *demandEntry
-		var bestDistance float64 = -1
-
-		for _, entry := range entries {
-			sellWaypoint, err := f.waypointProvider.GetWaypoint(ctx, entry.waypointSymbol, systemSymbol, playerID)
-			if err != nil {
-				continue
-			}
-
-			distance := factoryWaypoint.DistanceTo(sellWaypoint)
-
-			// Select closest market (first one, or closer than current best)
-			if bestDistance < 0 || distance < bestDistance {
-				bestDistance = distance
-				bestEntry = entry
-			}
-		}
-
+		bestEntry := f.closestDemandEntry(ctx, entries, factoryWaypoint, systemSymbol, playerID)
 		if bestEntry == nil {
 			continue
 		}
@@ -271,10 +171,102 @@ func (f *ManufacturingDemandFinder) FindHighDemandManufacturables(
 	return opportunities, nil
 }
 
-// isManufacturable checks if a good can be fabricated via the supply chain
-func (f *ManufacturingDemandFinder) isManufacturable(good string) bool {
-	_, exists := f.supplyChainMap[good]
-	return exists
+type demandEntry struct {
+	good           string
+	waypointSymbol string
+	purchasePrice  int
+	activity       string
+	supply         string
+}
+
+func (f *ManufacturingDemandFinder) buildDemandIndex(
+	ctx context.Context,
+	marketWaypoints []string,
+	playerID int,
+	config DemandFinderConfig,
+) map[string][]*demandEntry {
+	demandIndex := make(map[string][]*demandEntry)
+
+	for _, waypointSymbol := range marketWaypoints {
+		marketData, err := f.marketRepo.GetMarketData(ctx, waypointSymbol, playerID)
+		if err != nil || marketData == nil {
+			continue
+		}
+
+		for _, tradeGood := range marketData.TradeGoods() {
+			goodSymbol := tradeGood.Symbol()
+			purchasePrice := tradeGood.PurchasePrice()
+
+			// CRITICAL: Only consider IMPORT goods - these are markets that BUY/CONSUME
+			// EXPORT markets sell goods (factories), EXCHANGE markets trade both ways
+			// We want to sell to markets that NEED the goods (IMPORT type)
+			if tradeGood.TradeType() != market.TradeTypeImport {
+				continue
+			}
+
+			if purchasePrice < config.MinPurchasePrice {
+				continue
+			}
+
+			// Direct arbitrage doesn't require manufacturing - just HIGH/ABUNDANT source
+			// The supply chain resolver will handle both cases:
+			// - HIGH/ABUNDANT source → AcquisitionBuy (direct arbitrage)
+			// - Below HIGH → AcquisitionFabricate (needs manufacturing)
+
+			activity := activityOrEmpty(&tradeGood)
+			supply := supplyOrEmpty(&tradeGood)
+
+			// CRITICAL: Only consider markets with WEAK or RESTRICTED activity
+			// See docs/PARALLEL_MANUFACTURING_SYSTEM_DESIGN.md - Sell Market Selection
+			// STRONG (20.3% drift) and GROWING (33.6% drift) are too volatile
+			if activity != activityWeak && activity != activityRestricted {
+				continue
+			}
+
+			// CRITICAL: Only sell to markets with SCARCE or LIMITED supply
+			// Symmetry with BUY logic (HIGH/ABUNDANT for buying)
+			// Markets that need goods (low supply) pay higher prices
+			if supply != supplyScarce && supply != supplyLimited {
+				continue
+			}
+
+			demandIndex[goodSymbol] = append(demandIndex[goodSymbol], &demandEntry{
+				good:           goodSymbol,
+				waypointSymbol: waypointSymbol,
+				purchasePrice:  purchasePrice,
+				activity:       activity,
+				supply:         supply,
+			})
+		}
+	}
+
+	return demandIndex
+}
+
+func (f *ManufacturingDemandFinder) closestDemandEntry(
+	ctx context.Context,
+	entries []*demandEntry,
+	factoryWaypoint *shared.Waypoint,
+	systemSymbol string,
+	playerID int,
+) *demandEntry {
+	var bestEntry *demandEntry
+	var bestDistance float64 = -1
+
+	for _, entry := range entries {
+		sellWaypoint, err := f.waypointProvider.GetWaypoint(ctx, entry.waypointSymbol, systemSymbol, playerID)
+		if err != nil {
+			continue
+		}
+
+		distance := factoryWaypoint.DistanceTo(sellWaypoint)
+		if bestDistance < 0 || distance < bestDistance {
+			bestDistance = distance
+			bestEntry = entry
+		}
+	}
+
+	return bestEntry
 }
 
 // findFactoryWaypoint finds the export market for a good (factory for manufacturing, source for arbitrage)

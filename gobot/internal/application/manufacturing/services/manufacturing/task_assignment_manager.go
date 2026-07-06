@@ -19,26 +19,11 @@ type TaskAssigner interface {
 	// AssignTasks assigns ready tasks to idle ships
 	AssignTasks(ctx context.Context, params AssignParams) (int, error)
 
-	// GetTaskSourceLocation returns the waypoint where task starts
-	GetTaskSourceLocation(ctx context.Context, task *manufacturing.ManufacturingTask, playerID int) *shared.Waypoint
-
-	// FindClosestShip finds the ship closest to target waypoint
-	FindClosestShip(ships map[string]*navigation.Ship, target *shared.Waypoint) (*navigation.Ship, string)
-
 	// IsSellMarketSaturated checks if market has HIGH/ABUNDANT supply
 	IsSellMarketSaturated(ctx context.Context, sellMarket, good string, playerID int) bool
 
-	// ReconcileAssignedTasksWithDB syncs in-memory state with DB
-	ReconcileAssignedTasksWithDB(ctx context.Context, playerID int)
-
 	// GetAssignmentCount returns the number of assigned tasks
 	GetAssignmentCount() int
-
-	// TrackAssignment tracks a task assignment in memory
-	TrackAssignment(taskID, shipSymbol, containerID string)
-
-	// UntrackAssignment removes a task assignment from memory
-	UntrackAssignment(taskID string)
 }
 
 // AssignParams contains parameters for task assignment
@@ -110,58 +95,12 @@ func NewTaskAssignmentManager(
 	}
 }
 
-// GetAssignedTasks returns the assigned tasks map
-func (m *TaskAssignmentManager) GetAssignedTasks() map[string]string {
-	if m.tracker != nil {
-		return m.tracker.GetAssignedTasks()
-	}
-	return make(map[string]string)
-}
-
-// GetTaskContainers returns the task containers map
-func (m *TaskAssignmentManager) GetTaskContainers() map[string]string {
-	if m.tracker != nil {
-		return m.tracker.GetTaskContainers()
-	}
-	return make(map[string]string)
-}
-
-// TrackAssignment tracks a task assignment in memory
-func (m *TaskAssignmentManager) TrackAssignment(taskID, shipSymbol, containerID string) {
-	if m.tracker != nil {
-		// Get task type for proper tracking
-		taskType := manufacturing.TaskTypeAcquireDeliver // default
-		if m.taskRepo != nil {
-			ctx := context.Background()
-			task, err := m.taskRepo.FindByID(ctx, taskID)
-			if err == nil && task != nil {
-				taskType = task.TaskType()
-			}
-		}
-		m.tracker.Track(taskID, shipSymbol, containerID, taskType)
-	}
-}
-
-// UntrackAssignment removes a task assignment from memory
-func (m *TaskAssignmentManager) UntrackAssignment(taskID string) {
-	if m.tracker != nil {
-		m.tracker.Untrack(taskID)
-	}
-}
-
 // GetAssignmentCount returns the number of assigned tasks
 func (m *TaskAssignmentManager) GetAssignmentCount() int {
 	if m.tracker != nil {
-		return m.tracker.GetCount()
+		return m.tracker.GetAssignmentCount()
 	}
 	return 0
-}
-
-// ClearAssignments clears all task assignments
-func (m *TaskAssignmentManager) ClearAssignments() {
-	if m.tracker != nil {
-		m.tracker.Clear()
-	}
 }
 
 // AssignTasks assigns ready tasks to idle ships using task type reservation
@@ -170,7 +109,7 @@ func (m *TaskAssignmentManager) AssignTasks(ctx context.Context, params AssignPa
 	logger := common.LoggerFromContext(ctx)
 
 	// Reconcile with DB first
-	m.ReconcileAssignedTasksWithDB(ctx, params.PlayerID)
+	m.reconciler.Reconcile(ctx, params.PlayerID)
 
 	// Check assignment count
 	assignedCount := m.GetAssignmentCount()
@@ -219,16 +158,7 @@ func (m *TaskAssignmentManager) AssignTasks(ctx context.Context, params AssignPa
 	alloc := m.getAllocations(ctx, params.PlayerID)
 
 	// Track factory+good assignment counts for balancing within ACQUIRE_DELIVER
-	factoryGoodCounts := make(map[string]int)
-	if m.taskRepo != nil {
-		assignedTasksList, _ := m.taskRepo.FindByStatus(ctx, params.PlayerID, manufacturing.TaskStatusAssigned)
-		for _, t := range assignedTasksList {
-			if t.TaskType() == manufacturing.TaskTypeAcquireDeliver {
-				factoryGoodKey := t.FactorySymbol() + ":" + t.Good()
-				factoryGoodCounts[factoryGoodKey]++
-			}
-		}
-	}
+	factoryGoodCounts := m.countAssignedAcquireDeliverByFactoryGood(ctx, params.PlayerID)
 
 	tasksAssigned := 0
 
@@ -244,56 +174,17 @@ func (m *TaskAssignmentManager) AssignTasks(ctx context.Context, params AssignPa
 		}
 
 		// Balance check for ACQUIRE_DELIVER within factory+good combinations
-		if task.TaskType() == manufacturing.TaskTypeAcquireDeliver {
-			factoryGoodKey := task.FactorySymbol() + ":" + task.Good()
-			currentCount := factoryGoodCounts[factoryGoodKey]
-
-			minCount := currentCount
-			for _, count := range factoryGoodCounts {
-				if count < minCount {
-					minCount = count
-				}
-			}
-
-			if currentCount > minCount && currentCount >= 2 {
-				continue
-			}
+		if task.TaskType() == manufacturing.TaskTypeAcquireDeliver && exceedsFactoryGoodBalance(task, factoryGoodCounts) {
+			continue
 		}
 
-		// Pre-flight checks for COLLECT_SELL tasks
-		if task.TaskType() == manufacturing.TaskTypeCollectSell {
-			// Check 1: Factory must have HIGH/ABUNDANT supply to collect
-			if !m.IsFactorySupplyFavorable(ctx, task.FactorySymbol(), task.Good(), params.PlayerID) {
-				logger.Log("DEBUG", "Skipping COLLECT_SELL - factory supply not HIGH/ABUNDANT", map[string]interface{}{
-					"task_id": task.ID()[:8],
-					"factory": task.FactorySymbol(),
-					"good":    task.Good(),
-				})
-				task.ResetToPending()
-				if m.taskRepo != nil {
-					_ = m.taskRepo.Update(ctx, task)
-				}
-				m.taskQueue.Remove(task.ID())
-				continue
-			}
-
-			// Check 2: Sell market must not be saturated
-			if m.IsSellMarketSaturated(ctx, task.TargetMarket(), task.Good(), params.PlayerID) {
-				logger.Log("DEBUG", "Skipping COLLECT_SELL - sell market saturated", map[string]interface{}{
-					"task_id": task.ID()[:8],
-				})
-				task.ResetToPending()
-				if m.taskRepo != nil {
-					_ = m.taskRepo.Update(ctx, task)
-				}
-				m.taskQueue.Remove(task.ID())
-				continue
-			}
+		if task.TaskType() == manufacturing.TaskTypeCollectSell && !m.passesCollectSellPreflight(ctx, task, params.PlayerID) {
+			continue
 		}
 
 		// Find closest ship
-		sourceLocation := m.GetTaskSourceLocation(ctx, task, params.PlayerID)
-		selectedShip, selectedSymbol := m.FindClosestShip(idleShips, sourceLocation)
+		sourceLocation := m.shipSelector.GetTaskSourceLocation(ctx, task, params.PlayerID)
+		selectedShip, selectedSymbol := m.shipSelector.FindClosestShip(idleShips, sourceLocation)
 
 		if selectedShip == nil {
 			continue
@@ -319,8 +210,7 @@ func (m *TaskAssignmentManager) AssignTasks(ctx context.Context, params AssignPa
 
 		// Update tracking counts
 		if task.TaskType() == manufacturing.TaskTypeAcquireDeliver {
-			factoryGoodKey := task.FactorySymbol() + ":" + task.Good()
-			factoryGoodCounts[factoryGoodKey]++
+			factoryGoodCounts[factoryGoodKey(task)]++
 			alloc.AcquireDeliverCount++
 		} else if task.TaskType() == manufacturing.TaskTypeCollectSell {
 			alloc.CollectSellCount++
@@ -334,6 +224,69 @@ func (m *TaskAssignmentManager) AssignTasks(ctx context.Context, params AssignPa
 	}
 
 	return tasksAssigned, nil
+}
+
+func factoryGoodKey(task *manufacturing.ManufacturingTask) string {
+	return task.FactorySymbol() + ":" + task.Good()
+}
+
+func (m *TaskAssignmentManager) countAssignedAcquireDeliverByFactoryGood(ctx context.Context, playerID int) map[string]int {
+	counts := make(map[string]int)
+	if m.taskRepo == nil {
+		return counts
+	}
+	assignedTasksList, _ := m.taskRepo.FindByStatus(ctx, playerID, manufacturing.TaskStatusAssigned)
+	for _, t := range assignedTasksList {
+		if t.TaskType() == manufacturing.TaskTypeAcquireDeliver {
+			counts[factoryGoodKey(t)]++
+		}
+	}
+	return counts
+}
+
+func exceedsFactoryGoodBalance(task *manufacturing.ManufacturingTask, factoryGoodCounts map[string]int) bool {
+	currentCount := factoryGoodCounts[factoryGoodKey(task)]
+
+	minCount := currentCount
+	for _, count := range factoryGoodCounts {
+		if count < minCount {
+			minCount = count
+		}
+	}
+
+	return currentCount > minCount && currentCount >= 2
+}
+
+func (m *TaskAssignmentManager) passesCollectSellPreflight(ctx context.Context, task *manufacturing.ManufacturingTask, playerID int) bool {
+	logger := common.LoggerFromContext(ctx)
+
+	if !m.conditionChecker.IsFactoryOutputReady(ctx, task.FactorySymbol(), task.Good(), playerID) {
+		logger.Log("DEBUG", "Skipping COLLECT_SELL - factory supply not HIGH/ABUNDANT", map[string]interface{}{
+			"task_id": task.ID()[:8],
+			"factory": task.FactorySymbol(),
+			"good":    task.Good(),
+		})
+		m.resetToPendingAndDequeue(ctx, task)
+		return false
+	}
+
+	if m.IsSellMarketSaturated(ctx, task.TargetMarket(), task.Good(), playerID) {
+		logger.Log("DEBUG", "Skipping COLLECT_SELL - sell market saturated", map[string]interface{}{
+			"task_id": task.ID()[:8],
+		})
+		m.resetToPendingAndDequeue(ctx, task)
+		return false
+	}
+
+	return true
+}
+
+func (m *TaskAssignmentManager) resetToPendingAndDequeue(ctx context.Context, task *manufacturing.ManufacturingTask) {
+	task.ResetToPending()
+	if m.taskRepo != nil {
+		_ = m.taskRepo.Update(ctx, task)
+	}
+	m.taskQueue.Remove(task.ID())
 }
 
 // getAllocations builds the task type allocations for reservation logic.
@@ -387,30 +340,7 @@ func (m *TaskAssignmentManager) getAllocations(ctx context.Context, playerID int
 	return alloc
 }
 
-// GetTaskSourceLocation returns the waypoint where the task starts.
-func (m *TaskAssignmentManager) GetTaskSourceLocation(ctx context.Context, task *manufacturing.ManufacturingTask, playerID int) *shared.Waypoint {
-	return m.shipSelector.GetTaskSourceLocation(ctx, task, playerID)
-}
-
-// FindClosestShip finds the closest ship to a waypoint.
-func (m *TaskAssignmentManager) FindClosestShip(
-	ships map[string]*navigation.Ship,
-	target *shared.Waypoint,
-) (*navigation.Ship, string) {
-	return m.shipSelector.FindClosestShip(ships, target)
-}
-
 // IsSellMarketSaturated checks if the sell market has HIGH or ABUNDANT supply.
 func (m *TaskAssignmentManager) IsSellMarketSaturated(ctx context.Context, sellMarket, good string, playerID int) bool {
 	return m.conditionChecker.IsSellMarketSaturated(ctx, sellMarket, good, playerID)
-}
-
-// IsFactorySupplyFavorable checks if the factory has HIGH/ABUNDANT supply for collection.
-func (m *TaskAssignmentManager) IsFactorySupplyFavorable(ctx context.Context, factorySymbol, good string, playerID int) bool {
-	return m.conditionChecker.IsFactoryOutputReady(ctx, factorySymbol, good, playerID)
-}
-
-// ReconcileAssignedTasksWithDB syncs in-memory state with DB.
-func (m *TaskAssignmentManager) ReconcileAssignedTasksWithDB(ctx context.Context, playerID int) {
-	m.reconciler.Reconcile(ctx, playerID)
 }

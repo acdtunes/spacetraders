@@ -6,11 +6,25 @@ import (
 	contractCmd "github.com/andrescamacho/spacetraders-go/internal/application/contract/commands"
 	gasCmd "github.com/andrescamacho/spacetraders-go/internal/application/gas/commands"
 	goodsCmd "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/commands"
+	tradingCmd "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/commands"
 	scoutingCmd "github.com/andrescamacho/spacetraders-go/internal/application/scouting/commands"
 	shipyardCmd "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/commands"
-	tradingCmd "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
+
+func intFromConfig(config map[string]interface{}, key string, defaultValue int) int {
+	val, ok := config[key]
+	if !ok {
+		return defaultValue
+	}
+	switch v := val.(type) {
+	case int:
+		return v
+	case float64:
+		return int(v)
+	}
+	return defaultValue
+}
 
 // registerCommandFactories registers command factories for container recovery
 // Adding a new container type only requires adding a factory here - no changes to recovery logic
@@ -154,15 +168,7 @@ func (s *DaemonServer) registerCommandFactories() {
 		}
 
 		// Extract max_iterations from config (default to 1 if not present for backward compatibility)
-		maxIterations := 1
-		if val, ok := config["max_iterations"]; ok {
-			switch v := val.(type) {
-			case int:
-				maxIterations = v
-			case float64:
-				maxIterations = int(v)
-			}
-		}
+		maxIterations := intFromConfig(config, "max_iterations", 1)
 
 		return &goodsCmd.RunFactoryCoordinatorCommand{
 			PlayerID:      playerID,
@@ -186,46 +192,11 @@ func (s *DaemonServer) registerCommandFactories() {
 		}
 
 		// Extract numeric config with defaults
-		minPrice := 1000
-		if val, ok := config["min_price"]; ok {
-			switch v := val.(type) {
-			case int:
-				minPrice = v
-			case float64:
-				minPrice = int(v)
-			}
-		}
-
-		maxWorkers := 3
-		if val, ok := config["max_workers"]; ok {
-			switch v := val.(type) {
-			case int:
-				maxWorkers = v
-			case float64:
-				maxWorkers = int(v)
-			}
-		}
-
-		maxPipelines := 3
-		if val, ok := config["max_pipelines"]; ok {
-			switch v := val.(type) {
-			case int:
-				maxPipelines = v
-			case float64:
-				maxPipelines = int(v)
-			}
-		}
-
+		minPrice := intFromConfig(config, "min_price", 1000)
+		maxWorkers := intFromConfig(config, "max_workers", 3)
+		maxPipelines := intFromConfig(config, "max_pipelines", 3)
 		// Extract max collection pipelines (0 = unlimited, which is the default)
-		maxCollectionPipelines := 0
-		if val, ok := config["max_collection_pipelines"]; ok {
-			switch v := val.(type) {
-			case int:
-				maxCollectionPipelines = v
-			case float64:
-				maxCollectionPipelines = int(v)
-			}
-		}
+		maxCollectionPipelines := intFromConfig(config, "max_collection_pipelines", 0)
 
 		// Extract strategy (default: prefer-fabricate for recursive manufacturing)
 		strategy := "prefer-fabricate"

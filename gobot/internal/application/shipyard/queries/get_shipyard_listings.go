@@ -6,9 +6,9 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
+	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shipyard"
-	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 )
 
 // GetShipyardListingsQuery is a query to get available ships at a shipyard
@@ -27,7 +27,6 @@ type GetShipyardListingsResponse struct {
 type GetShipyardListingsHandler struct {
 	apiClient  domainPorts.APIClient
 	playerRepo player.PlayerRepository
-	// graphBuilder is unused for now but kept for consistency
 }
 
 // NewGetShipyardListingsHandler creates a new GetShipyardListingsHandler

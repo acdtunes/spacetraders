@@ -1,7 +1,6 @@
 package shared
 
 import (
-	"fmt"
 	"math"
 )
 
@@ -102,14 +101,4 @@ func IsValidFlightModeName(modeName string) bool {
 		}
 	}
 	return false
-}
-
-// ParseFlightMode parses a flight mode name string into a FlightMode
-func ParseFlightMode(modeName string) (FlightMode, error) {
-	for mode, config := range flightModeConfigs {
-		if config.Name == modeName {
-			return mode, nil
-		}
-	}
-	return FlightModeCruise, fmt.Errorf("invalid flight mode: %s", modeName)
 }

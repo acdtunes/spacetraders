@@ -16,6 +16,8 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
+const dbOperationTimeout = 5 * time.Second
+
 // ContainerRunner executes a container operation in a background goroutine
 // Manages the lifecycle of a single container including error handling and restarts
 type ContainerRunner struct {
@@ -34,9 +36,9 @@ type ContainerRunner struct {
 	mu         sync.RWMutex
 
 	// Heartbeat control
-	heartbeatStop chan struct{}  // Signal to stop heartbeat goroutine
-	heartbeatDone chan struct{}  // Signal that heartbeat goroutine has stopped
-	heartbeatOnce sync.Once      // Ensures heartbeat is only stopped once
+	heartbeatStop chan struct{} // Signal to stop heartbeat goroutine
+	heartbeatDone chan struct{} // Signal that heartbeat goroutine has stopped
+	heartbeatOnce sync.Once     // Ensures heartbeat is only stopped once
 
 	// Event publisher for completion notifications
 	// Publishes WorkerCompletedEvent when container completes or fails
@@ -70,19 +72,19 @@ func NewContainerRunner(
 	}
 
 	return &ContainerRunner{
-		containerEntity:    containerEntity,
-		mediator:           mediator,
-		command:            command,
-		logRepo:            logRepo,
-		containerRepo:      containerRepo,
-		shipRepo:           shipRepo,
-		clock:              clock,
-		ctx:                ctx,
-		cancelFunc:         cancel,
-		done:          make(chan struct{}),
-		heartbeatStop: make(chan struct{}),
-		heartbeatDone: make(chan struct{}),
-		logs:          make([]LogEntry, 0),
+		containerEntity: containerEntity,
+		mediator:        mediator,
+		command:         command,
+		logRepo:         logRepo,
+		containerRepo:   containerRepo,
+		shipRepo:        shipRepo,
+		clock:           clock,
+		ctx:             ctx,
+		cancelFunc:      cancel,
+		done:            make(chan struct{}),
+		heartbeatStop:   make(chan struct{}),
+		heartbeatDone:   make(chan struct{}),
+		logs:            make([]LogEntry, 0),
 	}
 }
 
@@ -112,7 +114,7 @@ func (r *ContainerRunner) Start() error {
 
 	// Persist status update to database (RUNNING)
 	if r.containerRepo != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), dbOperationTimeout)
 		defer cancel()
 
 		if err := r.containerRepo.UpdateStatus(
@@ -176,7 +178,7 @@ func (r *ContainerRunner) Stop() error {
 
 	// Persist STOPPED status to database
 	if r.containerRepo != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), dbOperationTimeout)
 		defer cancel()
 
 		now := time.Now()
@@ -217,7 +219,7 @@ func (r *ContainerRunner) runHeartbeat() {
 			return
 		case <-ticker.C:
 			if r.containerRepo != nil {
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				ctx, cancel := context.WithTimeout(context.Background(), dbOperationTimeout)
 				if err := r.containerRepo.UpdateContainerHeartbeat(ctx, r.containerEntity.ID()); err != nil {
 					// Log but don't fail - heartbeat is best-effort
 					r.log("WARN", fmt.Sprintf("Failed to update heartbeat: %v", err), nil)
@@ -352,7 +354,7 @@ func (r *ContainerRunner) execute() {
 
 	// Persist completion to database
 	if r.containerRepo != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), dbOperationTimeout)
 		defer cancel()
 
 		now := time.Now()
@@ -470,7 +472,7 @@ func (r *ContainerRunner) handleError(err error) {
 
 	// Persist failure to database
 	if r.containerRepo != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), dbOperationTimeout)
 		defer cancel()
 
 		now := time.Now()
@@ -527,7 +529,7 @@ func (r *ContainerRunner) Log(level, message string, metadata map[string]interfa
 
 	// Persist to database (async to avoid blocking)
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), dbOperationTimeout)
 		defer cancel()
 
 		if err := r.logRepo.Log(ctx, r.containerEntity.ID(), r.containerEntity.PlayerID(), message, level, metadata); err != nil {
@@ -582,7 +584,7 @@ func (r *ContainerRunner) createShipAssignments() error {
 
 	// Check for single ship
 	if shipSymbol, ok := metadata["ship_symbol"].(string); ok {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), dbOperationTimeout)
 		defer cancel()
 
 		playerID := shared.MustNewPlayerID(r.containerEntity.PlayerID())
@@ -619,7 +621,7 @@ func (r *ContainerRunner) releaseShipAssignments(reason string) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), dbOperationTimeout)
 	defer cancel()
 
 	playerID := shared.MustNewPlayerID(r.containerEntity.PlayerID())
