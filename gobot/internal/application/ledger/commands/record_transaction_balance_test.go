@@ -50,6 +50,28 @@ func TestZeroBalancesAreDerivedFromLedgerChain(t *testing.T) {
 	require.Equal(t, 176331, txs[0].BalanceAfter())
 }
 
+func TestFirstEverTransactionWithNoPriorChainKeepsZeroBasedBalances(t *testing.T) {
+	db, err := database.NewTestConnection()
+	require.NoError(t, err)
+	p := persistence.PlayerModel{AgentSymbol: "AGT4", Token: "tok", CreatedAt: time.Now()}
+	require.NoError(t, db.Create(&p).Error)
+	repo := persistence.NewGormTransactionRepository(db)
+	h := NewRecordTransactionHandler(repo, nil)
+
+	_, err = h.Handle(context.Background(), &RecordTransactionCommand{
+		PlayerID: p.ID, TransactionType: "CONTRACT_ACCEPTED", Amount: 5000,
+		BalanceBefore: 0, BalanceAfter: 5000, Description: "first ever",
+	})
+	require.NoError(t, err)
+
+	pid, _ := shared.NewPlayerID(p.ID)
+	txs, err := repo.FindByPlayer(context.Background(), pid, ledger.QueryOptions{Limit: 1})
+	require.NoError(t, err)
+	require.Len(t, txs, 1)
+	require.Equal(t, 0, txs[0].BalanceBefore())
+	require.Equal(t, 5000, txs[0].BalanceAfter())
+}
+
 func TestExplicitBalancesAreNotOverridden(t *testing.T) {
 	db, err := database.NewTestConnection()
 	require.NoError(t, err)

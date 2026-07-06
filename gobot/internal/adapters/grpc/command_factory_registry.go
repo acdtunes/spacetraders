@@ -160,7 +160,7 @@ func containerSpecList() []ContainerSpec {
 		{CommandType: "manufacturing_coordinator", build: buildManufacturingCoordinatorCommand},
 		{CommandType: "gas_coordinator", build: buildGasCoordinatorCommand},
 		{CommandType: "manufacturing_task_worker", IsWorker: true},
-		{CommandType: "siphon_worker", IsWorker: true},
+		{CommandType: "gas_siphon_worker", IsWorker: true},
 		{CommandType: "gas_transport_worker", IsWorker: true},
 		{CommandType: "storage_ship", IsWorker: true},
 	}

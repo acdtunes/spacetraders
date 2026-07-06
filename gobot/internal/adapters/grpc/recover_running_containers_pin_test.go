@@ -121,7 +121,7 @@ func TestRecoverySkipsWorkerIdentifiedByParentContainerID(t *testing.T) {
 }
 
 func TestRecoveryMarksKnownWorkerCommandTypesInterrupted(t *testing.T) {
-	workerTypes := []string{"manufacturing_task_worker", "siphon_worker", "gas_transport_worker", "storage_ship"}
+	workerTypes := []string{"manufacturing_task_worker", "gas_siphon_worker", "gas_transport_worker", "storage_ship"}
 	for _, workerType := range workerTypes {
 		t.Run(workerType, func(t *testing.T) {
 			s, db, playerID := newRecoveryTestServer(t)
@@ -134,6 +134,17 @@ func TestRecoveryMarksKnownWorkerCommandTypesInterrupted(t *testing.T) {
 			require.Nil(t, s.registeredRunner(id))
 		})
 	}
+}
+
+func TestRecoveryMarksOrphanedGasSiphonWorkerInterruptedViaSpec(t *testing.T) {
+	s, db, playerID := newRecoveryTestServer(t)
+	insertRunningContainer(t, db, "orphan-siphon-1", "gas_siphon_worker", "GAS_SIPHON_WORKER",
+		`{"ship_symbol":"SHIP-G","gas_giant":"X1-GG1","storage_operation_id":"op-1"}`, playerID, nil)
+
+	require.NoError(t, s.RecoverRunningContainers(context.Background()))
+
+	requireContainerState(t, db, "orphan-siphon-1", "FAILED", "worker_interrupted")
+	require.Nil(t, s.registeredRunner("orphan-siphon-1"))
 }
 
 func TestRecoveryAttemptsStandaloneContractWorkflowWithEmptyCoordinator(t *testing.T) {

@@ -406,7 +406,7 @@ func (r *MarketRepositoryGORM) FindBestMarketForBuying(
 // scoreMarketForBuying calculates a score for a market when buying (lower = better)
 // Trade Type: EXPORT(0) > EXCHANGE(1) > IMPORT(2) > NULL(3) (weight: 1000)
 // Supply: ABUNDANT(0) > HIGH(1) > MODERATE(2) > LIMITED(3) > SCARCE(4) (weight: 10)
-// Activity: RESTRICTED(0) > WEAK(1) > GROWING(2) > STRONG(3) (weight: 1)
+// Activity: WEAK(0) > GROWING(1) > STRONG(2) > RESTRICTED(3) (weight: 1, follows BuyerActivityScore)
 //
 // EXPORT markets are factories that PRODUCE the good - best prices!
 // EXCHANGE markets trade goods - moderate prices
@@ -427,17 +427,7 @@ func scoreMarketForBuying(tradeType, supply, activity string) int {
 
 	supplyScore := 5 - manufacturing.SupplyLevel(supply).Order()
 
-	activityScore := 4 // Unknown = worst
-	switch activity {
-	case "RESTRICTED":
-		activityScore = 0 // Best - stable prices
-	case "WEAK":
-		activityScore = 1
-	case "GROWING":
-		activityScore = 2
-	case "STRONG":
-		activityScore = 3
-	}
+	activityScore := 4 - market.ActivityLevel(activity).BuyerActivityScore()
 
 	// Trade type weighted 1000x, supply weighted 10x, activity weighted 1x
 	// This ensures EXPORT markets ALWAYS preferred over EXCHANGE over IMPORT

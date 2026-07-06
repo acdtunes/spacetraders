@@ -451,6 +451,7 @@ func (h *RunGasCoordinatorHandler) spawnWorker(
 	if err := spec.start(ctx, workerContainerID); err != nil {
 		spec.rollback(ship)
 		_ = h.shipRepo.Save(ctx, ship)
+		_ = h.daemonClient.StopContainer(ctx, workerContainerID)
 		return "", fmt.Errorf("failed to start worker: %w", err)
 	}
 

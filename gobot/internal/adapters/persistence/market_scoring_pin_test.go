@@ -4,7 +4,7 @@ import "testing"
 
 func TestScoreMarketForBuying_ScarcerSupplyScoresWorse(t *testing.T) {
 	cases := map[string]int{
-		"ABUNDANT": 0, "HIGH": 10, "MODERATE": 20, "LIMITED": 30, "SCARCE": 40, "": 50,
+		"ABUNDANT": 3, "HIGH": 13, "MODERATE": 23, "LIMITED": 33, "SCARCE": 43, "": 53,
 	}
 	for supply, expected := range cases {
 		if got := scoreMarketForBuying("EXPORT", supply, "RESTRICTED"); got != expected {
@@ -13,9 +13,9 @@ func TestScoreMarketForBuying_ScarcerSupplyScoresWorse(t *testing.T) {
 	}
 }
 
-func TestScoreMarketForBuying_WeakerActivityScoresWorse(t *testing.T) {
+func TestScoreMarketForBuying_WeakerActivityScoresBetter(t *testing.T) {
 	cases := map[string]int{
-		"RESTRICTED": 0, "WEAK": 1, "GROWING": 2, "STRONG": 3, "": 4,
+		"WEAK": 0, "GROWING": 1, "STRONG": 2, "RESTRICTED": 3, "": 2,
 	}
 	for activity, expected := range cases {
 		if got := scoreMarketForBuying("EXPORT", "ABUNDANT", activity); got != expected {
@@ -31,12 +31,12 @@ func TestScoreMarketForBuying_CompositeIsTradeWeightPlusSupplyPlusActivity(t *te
 		activity  string
 		expected  int
 	}{
-		{"EXPORT", "ABUNDANT", "RESTRICTED", 0},
-		{"EXCHANGE", "ABUNDANT", "RESTRICTED", 1000},
-		{"IMPORT", "ABUNDANT", "RESTRICTED", 2000},
-		{"", "ABUNDANT", "RESTRICTED", 3000},
-		{"IMPORT", "SCARCE", "STRONG", 2043},
-		{"", "", "", 3054},
+		{"EXPORT", "ABUNDANT", "WEAK", 0},
+		{"EXCHANGE", "ABUNDANT", "WEAK", 1000},
+		{"IMPORT", "ABUNDANT", "WEAK", 2000},
+		{"", "ABUNDANT", "WEAK", 3000},
+		{"IMPORT", "SCARCE", "STRONG", 2042},
+		{"", "", "", 3052},
 	}
 	for _, tc := range cases {
 		if got := scoreMarketForBuying(tc.tradeType, tc.supply, tc.activity); got != tc.expected {

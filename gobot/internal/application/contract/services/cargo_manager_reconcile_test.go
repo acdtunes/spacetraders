@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
@@ -13,19 +14,19 @@ import (
 // keeps the fake honest about what the code under test actually uses.
 type reconcileFakeShipRepo struct {
 	navigation.ShipRepository
-	cached     *navigation.Ship // what the (phantom) DB cache holds
-	server     *navigation.Ship // authoritative server truth
-	syncCalled bool
-	findCalled bool
+	cached  *navigation.Ship // what the (phantom) DB cache holds
+	server  *navigation.Ship // authoritative server truth
+	syncErr error
 }
 
 func (f *reconcileFakeShipRepo) FindBySymbol(ctx context.Context, symbol string, playerID shared.PlayerID) (*navigation.Ship, error) {
-	f.findCalled = true
 	return f.cached, nil
 }
 
 func (f *reconcileFakeShipRepo) SyncShipFromAPI(ctx context.Context, symbol string, playerID shared.PlayerID) (*navigation.Ship, error) {
-	f.syncCalled = true
+	if f.syncErr != nil {
+		return nil, f.syncErr
+	}
 	return f.server, nil
 }
 
@@ -92,10 +93,44 @@ func TestReloadShipStateReconcilesAgainstServer(t *testing.T) {
 		t.Fatalf("ReloadShipState: %v", err)
 	}
 
-	if !repo.syncCalled {
-		t.Error("expected ReloadShipState to reconcile against the server via SyncShipFromAPI")
-	}
 	if currentUnits != 0 {
 		t.Errorf("expected reconciled cargo of 0 units from the server, got %d (phantom cache)", currentUnits)
+	}
+}
+
+func TestReloadShipStatePropagatesSyncError(t *testing.T) {
+	syncErr := errors.New("api unreachable")
+	repo := &reconcileFakeShipRepo{syncErr: syncErr}
+
+	mgr := NewCargoManager(nil, repo)
+
+	ship, currentUnits, err := mgr.ReloadShipState(context.Background(), "TORWIND-1", shared.MustNewPlayerID(1), "IRON_ORE")
+
+	if !errors.Is(err, syncErr) {
+		t.Errorf("expected SyncShipFromAPI error to propagate, got %v", err)
+	}
+	if ship != nil {
+		t.Errorf("expected nil ship on sync failure, got %v", ship)
+	}
+	if currentUnits != 0 {
+		t.Errorf("expected 0 units on sync failure, got %d", currentUnits)
+	}
+}
+
+func TestReloadShipStateReconcilesWhenServerHoldsMoreCargo(t *testing.T) {
+	repo := &reconcileFakeShipRepo{
+		cached: buildShipWithIronOre(t, 0),
+		server: buildShipWithIronOre(t, 40),
+	}
+
+	mgr := NewCargoManager(nil, repo)
+
+	_, currentUnits, err := mgr.ReloadShipState(context.Background(), "TORWIND-1", shared.MustNewPlayerID(1), "IRON_ORE")
+	if err != nil {
+		t.Fatalf("ReloadShipState: %v", err)
+	}
+
+	if currentUnits != 40 {
+		t.Errorf("expected reconciled cargo of 40 units from the server, got %d", currentUnits)
 	}
 }

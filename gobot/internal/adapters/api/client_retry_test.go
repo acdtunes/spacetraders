@@ -110,6 +110,26 @@ func TestRequestHonorsRetryAfterHeaderWithoutJitter(t *testing.T) {
 	}
 }
 
+func TestRequestFallsBackToJitteredBackoffOnMalformedRetryAfter(t *testing.T) {
+	server, attempts := flakyServer(t, 429, 1, "not-a-number")
+	client, clock := newRetryTestClient(server.URL, 3)
+	start := clock.CurrentTime
+
+	var result namedPayload
+	err := client.request(context.Background(), "GET", "/test", "token", nil, &result)
+
+	if err != nil {
+		t.Fatalf("expected success, got: %v", err)
+	}
+	if *attempts != 2 {
+		t.Fatalf("expected 2 attempts, got %d", *attempts)
+	}
+	elapsed := clock.CurrentTime.Sub(start)
+	if elapsed < 5*time.Millisecond || elapsed > 15*time.Millisecond {
+		t.Fatalf("expected jittered backoff between 5ms and 15ms, slept %v", elapsed)
+	}
+}
+
 func TestRequestFailsAfterMaxRetriesExhausted(t *testing.T) {
 	server, attempts := flakyServer(t, 503, 1000, "")
 	client, _ := newRetryTestClient(server.URL, 2)
@@ -164,8 +184,8 @@ func TestRequestEmitsRateLimiterMetricsOn429(t *testing.T) {
 	if recorder.rateLimitWaits != 3 {
 		t.Fatalf("expected 3 rate limit wait metrics, got %d", recorder.rateLimitWaits)
 	}
-	if len(recorder.retryReasons) != 1 || recorder.retryReasons[0] != "rate_limited_429" {
-		t.Fatalf("expected single rate_limited_429 retry metric, got %v", recorder.retryReasons)
+	if len(recorder.retryReasons) != 2 || recorder.retryReasons[0] != "rate_limited_429" || recorder.retryReasons[1] != "rate_limited_429" {
+		t.Fatalf("expected two rate_limited_429 retry metrics, got %v", recorder.retryReasons)
 	}
 	if len(recorder.requestStatuses) != 1 || recorder.requestStatuses[0] != 200 {
 		t.Fatalf("expected final 200 request metric, got %v", recorder.requestStatuses)
@@ -263,8 +283,8 @@ func TestRequestWithErrorParsingRetriesAndEmitsRateLimitMetrics(t *testing.T) {
 			if recorder.rateLimitWaits != 3 {
 				t.Fatalf("expected 3 rate limit wait metrics, got %d", recorder.rateLimitWaits)
 			}
-			if len(recorder.retryReasons) != 1 || recorder.retryReasons[0] != tc.expectedReason {
-				t.Fatalf("expected single %s retry metric, got %v", tc.expectedReason, recorder.retryReasons)
+			if len(recorder.retryReasons) != 2 || recorder.retryReasons[0] != tc.expectedReason || recorder.retryReasons[1] != tc.expectedReason {
+				t.Fatalf("expected two %s retry metrics, got %v", tc.expectedReason, recorder.retryReasons)
 			}
 		})
 	}

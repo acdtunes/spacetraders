@@ -223,9 +223,8 @@ func TestSpawnSiphonWorker_StartFails_ShipTransferredBackToCoordinator(t *testin
 	if snap := repo.lastSave(t); snap.containerID != "gas-coordinator-1" || !snap.assigned {
 		t.Fatalf("expected ship transferred back to coordinator, got %+v", snap)
 	}
-	// Current behavior: the persisted container is NOT stopped on start failure.
-	if len(daemon.stopped) != 0 {
-		t.Fatalf("pinned behavior: container not stopped on start failure, got %v", daemon.stopped)
+	if len(daemon.stopped) != 1 {
+		t.Fatalf("expected persisted container stopped exactly once on start failure, got %v", daemon.stopped)
 	}
 }
 
@@ -315,7 +314,7 @@ func TestSpawnStorageShipWorker_StartFails_ShipReleased(t *testing.T) {
 	if snap := repo.lastSave(t); snap.assigned {
 		t.Fatalf("expected ship released on start failure, got %+v", snap)
 	}
-	if len(daemon.stopped) != 0 {
-		t.Fatalf("pinned behavior: container not stopped on start failure, got %v", daemon.stopped)
+	if len(daemon.stopped) != 1 {
+		t.Fatalf("expected persisted container stopped exactly once on start failure, got %v", daemon.stopped)
 	}
 }

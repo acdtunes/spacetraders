@@ -404,6 +404,7 @@ func (h *RunFleetCoordinatorHandler) spawnContractWorker(
 	if err := h.daemonClient.StartContainer(ctx, daemon.ContainerKindContractWorkflow, workerContainerID); err != nil {
 		ship.ForceRelease("worker_start_failed", h.clock)
 		_ = h.shipRepo.Save(ctx, ship)
+		_ = h.workerLifecycleManager.StopWorkerContainer(ctx, workerContainerID)
 		return "", fmt.Errorf("Failed to start worker container: %v", err)
 	}
 

@@ -150,7 +150,7 @@ func (c *SpaceTradersClient) doWithRetry(ctx context.Context, method, path, toke
 		}
 
 		lastErr = decision.failure
-		if collector := c.getMetricsCollector(); collector != nil && attempt > 0 {
+		if collector := c.getMetricsCollector(); collector != nil {
 			collector.RecordAPIRetry(method, endpoint, decision.metricReason)
 		}
 		if attempt >= c.maxRetries {

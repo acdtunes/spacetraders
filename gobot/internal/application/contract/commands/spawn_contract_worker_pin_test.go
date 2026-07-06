@@ -178,8 +178,7 @@ func TestSpawnContractWorker_StartFails_ShipReleased(t *testing.T) {
 	if snap := repo.lastSave(t); snap.assigned {
 		t.Fatalf("expected ship released on start failure, got %+v", snap)
 	}
-	// Current behavior: the persisted container is NOT stopped on start failure.
-	if len(daemonClient.stopped) != 0 {
-		t.Fatalf("pinned behavior: container not stopped on start failure, got %v", daemonClient.stopped)
+	if len(daemonClient.stopped) != 1 {
+		t.Fatalf("expected persisted container stopped exactly once on start failure, got %v", daemonClient.stopped)
 	}
 }
