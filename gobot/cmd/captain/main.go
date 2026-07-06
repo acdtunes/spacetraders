@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/api"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	captainsup "github.com/andrescamacho/spacetraders-go/internal/captain"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
@@ -45,6 +46,8 @@ func main() {
 	gw := captainsup.NewCityGateway(cfg.Captain.GCBin, cfg.Captain.CityDir)
 	bc := captainsup.NewBeadsClient(cfg.Captain.BDBin, cfg.Captain.RepoDir)
 	sup.SetCity(gw, bc)
+
+	sup.SetUniverseWatch(api.NewSpaceTradersClient(), persistence.NewEraRepository(db))
 
 	// Regenerate the CLI reference so sessions never see a stale command surface
 	// (spec: Tool discovery §1). Best-effort: a missing binary must not stop the

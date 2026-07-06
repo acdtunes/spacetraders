@@ -24,7 +24,11 @@ func NewGormWaypointRepository(db *gorm.DB) *GormWaypointRepository {
 // FindBySymbol retrieves a waypoint by symbol with 1-day TTL validation
 func (r *GormWaypointRepository) FindBySymbol(ctx context.Context, symbol, systemSymbol string) (*shared.Waypoint, error) {
 	var model WaypointModel
-	result := r.db.WithContext(ctx).Where("waypoint_symbol = ? AND system_symbol = ?", symbol, systemSymbol).First(&model)
+	predicate, args := eraScopePredicate(r.openEraID(ctx))
+	result := r.db.WithContext(ctx).
+		Where("waypoint_symbol = ? AND system_symbol = ?", symbol, systemSymbol).
+		Where(predicate, args...).
+		First(&model)
 	if result.Error != nil {
 		if result.Error == gorm.ErrRecordNotFound {
 			return nil, fmt.Errorf("waypoint not found: %s", symbol)
@@ -43,15 +47,52 @@ func (r *GormWaypointRepository) FindBySymbol(ctx context.Context, symbol, syste
 	return nil, fmt.Errorf("waypoint cache expired: %s", symbol)
 }
 
-// ListBySystem retrieves all waypoints in a system
+// ListBySystem retrieves all waypoints in a system scoped to the open era.
+// Rows carrying the open era's era_id and rows with a NULL era_id (pre-close
+// transition, not yet backfilled) are considered live; closed-era rows are inert.
 func (r *GormWaypointRepository) ListBySystem(ctx context.Context, systemSymbol string) ([]*shared.Waypoint, error) {
 	var models []WaypointModel
-	result := r.db.WithContext(ctx).Where("system_symbol = ?", systemSymbol).Find(&models)
+	predicate, args := eraScopePredicate(r.openEraID(ctx))
+	result := r.db.WithContext(ctx).
+		Where("system_symbol = ?", systemSymbol).
+		Where(predicate, args...).
+		Find(&models)
 	if result.Error != nil {
 		return nil, fmt.Errorf("failed to list waypoints: %w", result.Error)
 	}
 
 	return r.modelsToWaypoints(models)
+}
+
+// ListBySystemForEra retrieves waypoints in a system for one explicit era,
+// keeping closed-era history reachable after live reads have scoped it away.
+func (r *GormWaypointRepository) ListBySystemForEra(ctx context.Context, systemSymbol string, eraID int) ([]*shared.Waypoint, error) {
+	var models []WaypointModel
+	result := r.db.WithContext(ctx).
+		Where("system_symbol = ? AND era_id = ?", systemSymbol, eraID).
+		Find(&models)
+	if result.Error != nil {
+		return nil, fmt.Errorf("failed to list waypoints for era: %w", result.Error)
+	}
+
+	return r.modelsToWaypoints(models)
+}
+
+func (r *GormWaypointRepository) openEraID(ctx context.Context) *int {
+	var era EraModel
+	err := r.db.WithContext(ctx).Where("closed_at IS NULL").Order("era_id DESC").First(&era).Error
+	if err != nil {
+		return nil
+	}
+	id := era.EraID
+	return &id
+}
+
+func eraScopePredicate(openEraID *int) (string, []any) {
+	if openEraID == nil {
+		return "era_id IS NULL", nil
+	}
+	return "(era_id = ? OR era_id IS NULL)", []any{*openEraID}
 }
 
 // ListBySystemWithTrait retrieves waypoints in a system filtered by a specific trait
@@ -60,8 +101,10 @@ func (r *GormWaypointRepository) ListBySystemWithTrait(ctx context.Context, syst
 	// Use LIKE with JSON array pattern to find trait in JSON array string
 	// Handles both ["TRAIT"] and ["OTHER","TRAIT"] patterns
 	pattern := fmt.Sprintf("%%\"%s\"%%", trait)
+	predicate, args := eraScopePredicate(r.openEraID(ctx))
 	result := r.db.WithContext(ctx).
 		Where("system_symbol = ? AND traits LIKE ?", systemSymbol, pattern).
+		Where(predicate, args...).
 		Find(&models)
 	if result.Error != nil {
 		return nil, fmt.Errorf("failed to list waypoints by trait: %w", result.Error)
@@ -76,6 +119,8 @@ func (r *GormWaypointRepository) Add(ctx context.Context, waypoint *shared.Waypo
 	if err != nil {
 		return fmt.Errorf("failed to convert waypoint to model: %w", err)
 	}
+
+	model.EraID = r.openEraID(ctx)
 
 	// Upsert: create or update
 	result := r.db.WithContext(ctx).Save(model)

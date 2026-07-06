@@ -30,6 +30,7 @@ type WaypointModel struct {
 	HasFuel        int     `gorm:"column:has_fuel;not null;default:0"` // 0 or 1 (SQLite compatible)
 	Orbitals       string  `gorm:"column:orbitals;type:text"`          // JSON array as text
 	SyncedAt       string  `gorm:"column:synced_at"`                   // ISO timestamp string
+	EraID          *int    `gorm:"column:era_id"`
 }
 
 func (WaypointModel) TableName() string {
@@ -424,6 +425,23 @@ func (CaptainEventModel) TableName() string {
 	return "captain_events"
 }
 
+type EraModel struct {
+	EraID             int        `gorm:"column:era_id;primaryKey;autoIncrement"`
+	Name              string     `gorm:"column:name;unique;not null"`
+	AgentSymbol       string     `gorm:"column:agent_symbol;not null"`
+	Faction           *string    `gorm:"column:faction"`
+	PlayerID          int        `gorm:"column:player_id;not null"`
+	UniverseResetDate *time.Time `gorm:"column:universe_reset_date;type:date"`
+	RegisteredAt      *time.Time `gorm:"column:registered_at"`
+	ClosedAt          *time.Time `gorm:"column:closed_at"`
+	FinalCredits      *int64     `gorm:"column:final_credits"`
+	Notes             *string    `gorm:"column:notes"`
+}
+
+func (EraModel) TableName() string {
+	return "eras"
+}
+
 // AllModels is the single canonical registry of every persisted model struct.
 // AutoMigrate and any test/tooling that needs the full model set must consume
 // this slice instead of maintaining a parallel hand-written list, so newly
@@ -448,5 +466,6 @@ func AllModels() []any {
 		&ManufacturingTaskModel{},
 		&ManufacturingTaskDependencyModel{},
 		&ManufacturingFactoryStateModel{},
+		&EraModel{},
 	}
 }

@@ -38,4 +38,6 @@ type CaptainConfig struct {
 	GCBin                 string `mapstructure:"gc_bin"`        // default "gc"
 	BDBin                 string `mapstructure:"bd_bin"`        // default "bd"
 	CityDir               string `mapstructure:"city_dir"`      // default "../city"
+
+	UniverseCheckHours int `mapstructure:"universe_check_hours" validate:"omitempty,min=1"`
 }

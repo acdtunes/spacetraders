@@ -30,6 +30,11 @@ type Supervisor struct {
 	bc        beadsClient
 	renudges  map[int64]int  // event id → re-nudge count
 	escalated map[int64]bool // event id → Admiral already alerted
+
+	// Watchkeeper universe-reset detector (Tier-3 kill-switch rail).
+	status            serverStatusSource
+	eras              openEraSource
+	lastUniverseCheck time.Time
 }
 
 func NewSupervisor(db *gorm.DB, store captain.EventStore, ws Workspace, cfg config.CaptainConfig) (*Supervisor, error) {
@@ -44,6 +49,12 @@ func NewSupervisor(db *gorm.DB, store captain.EventStore, ws Workspace, cfg conf
 func (s *Supervisor) Tick(ctx context.Context, now time.Time) (bool, error) {
 	if s.ws.Disabled() {
 		return false, nil
+	}
+	if s.status != nil {
+		s.checkUniverseReset(ctx, now)
+		if s.ws.Disabled() {
+			return false, nil
+		}
 	}
 	if s.gw != nil {
 		s.ensureCaptainAlive(ctx)

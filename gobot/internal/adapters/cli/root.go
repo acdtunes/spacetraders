@@ -66,6 +66,8 @@ Examples:
 	rootCmd.AddCommand(NewHealthCommand())
 	rootCmd.AddCommand(NewOperationsCommand())
 	rootCmd.AddCommand(NewConstructionCommand())
+	rootCmd.AddCommand(NewUniverseCommand())
+	rootCmd.AddCommand(NewHistoryCommand())
 
 	return rootCmd
 }

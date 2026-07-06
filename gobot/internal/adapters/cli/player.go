@@ -48,6 +48,7 @@ func newPlayerRegisterCommand() *cobra.Command {
 		agentSymbol string
 		token       string
 		faction     string
+		newAgent    bool
 	)
 
 	cmd := &cobra.Command{
@@ -64,6 +65,10 @@ API requests on behalf of this agent.
 Example:
   spacetraders player register --agent ENDURANCE --token eyJ... --faction COSMIC`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if newAgent {
+				return runPlayerRegisterNewCommand(agentSymbol, faction)
+			}
+
 			if agentSymbol == "" {
 				return fmt.Errorf("--agent flag is required")
 			}
@@ -118,8 +123,9 @@ Example:
 	}
 
 	cmd.Flags().StringVar(&agentSymbol, "agent", "", "Agent symbol (required)")
-	cmd.Flags().StringVar(&token, "token", "", "SpaceTraders API JWT token (required)")
+	cmd.Flags().StringVar(&token, "token", "", "SpaceTraders API JWT token (required unless --new)")
 	cmd.Flags().StringVar(&faction, "faction", "", "Starting faction (optional)")
+	cmd.Flags().BoolVar(&newAgent, "new", false, "Register a new agent via the API using ST_ACCOUNT_TOKEN and create its era row")
 
 	return cmd
 }

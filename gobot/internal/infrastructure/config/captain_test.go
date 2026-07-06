@@ -42,6 +42,7 @@ func TestCaptainBridgeDefaults(t *testing.T) {
 	require.Equal(t, "gc", cfg.Captain.GCBin)
 	require.Equal(t, "bd", cfg.Captain.BDBin)
 	require.Equal(t, "../city", cfg.Captain.CityDir)
+	require.Equal(t, 24, cfg.Captain.UniverseCheckHours)
 }
 
 func TestCaptainDetectorDefaults(t *testing.T) {

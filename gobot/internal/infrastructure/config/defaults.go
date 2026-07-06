@@ -213,4 +213,7 @@ func SetDefaults(cfg *Config) {
 	if cfg.Captain.CityDir == "" {
 		cfg.Captain.CityDir = "../city"
 	}
+	if cfg.Captain.UniverseCheckHours == 0 {
+		cfg.Captain.UniverseCheckHours = 24
+	}
 }
