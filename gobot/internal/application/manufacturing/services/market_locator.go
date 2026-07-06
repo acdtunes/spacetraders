@@ -441,7 +441,7 @@ func (l *MarketLocator) FindBestExportMarket(
 	for _, waypointSymbol := range marketWaypoints {
 		// Get market data
 		marketData, err := l.marketRepo.GetMarketData(ctx, waypointSymbol, playerID)
-		if err != nil {
+		if err != nil || marketData == nil {
 			continue // Skip markets we can't access
 		}
 

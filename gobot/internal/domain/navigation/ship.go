@@ -188,12 +188,14 @@ func (s *Ship) FuelCapacity() int {
 
 // UpdateFuelFromAPI updates the ship's fuel state from API response data.
 // This allows avoiding a separate GetShip API call after navigation/refuel.
-func (s *Ship) UpdateFuelFromAPI(current, capacity int) {
+func (s *Ship) UpdateFuelFromAPI(current, capacity int) error {
 	fuel, err := shared.NewFuel(current, capacity)
-	if err == nil {
-		s.fuel = fuel
-		s.fuelCapacity = capacity
+	if err != nil {
+		return err
 	}
+	s.fuel = fuel
+	s.fuelCapacity = capacity
+	return nil
 }
 
 func (s *Ship) EngineSpeed() int {

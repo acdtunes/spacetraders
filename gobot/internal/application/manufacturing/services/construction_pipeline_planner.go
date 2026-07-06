@@ -222,7 +222,7 @@ func (p *ConstructionPipelinePlanner) createTasksForMaterial(
 	// For depth 3 (buy final product), just create DELIVER_TO_CONSTRUCTION directly
 	if supplyChainDepth >= 3 || goods.IsRawMaterial(targetGood) {
 		// Find market to buy from
-		market, err := p.marketLocator.FindExportMarketWithGoodSupply(ctx, targetGood, systemSymbol, playerID)
+		market, err := p.marketLocator.FindExportMarketBySupplyPriority(ctx, targetGood, systemSymbol, playerID)
 		if err != nil {
 			return fmt.Errorf("failed to find market for %s: %w", targetGood, err)
 		}
@@ -336,7 +336,7 @@ func (p *ConstructionPipelinePlanner) createBuyAndDeliverTask(
 	constructionSite string,
 	playerID int,
 ) error {
-	market, err := p.marketLocator.FindExportMarketWithGoodSupply(ctx, good, systemSymbol, playerID)
+	market, err := p.marketLocator.FindExportMarketBySupplyPriority(ctx, good, systemSymbol, playerID)
 	if err != nil {
 		return fmt.Errorf("failed to find market for %s: %w", good, err)
 	}
@@ -365,7 +365,7 @@ func (p *ConstructionPipelinePlanner) createAcquireDeliverTask(
 	factorySymbol string,
 	playerID int,
 ) (string, error) {
-	market, err := p.marketLocator.FindExportMarketWithGoodSupply(ctx, good, systemSymbol, playerID)
+	market, err := p.marketLocator.FindExportMarketBySupplyPriority(ctx, good, systemSymbol, playerID)
 	if err != nil {
 		return "", fmt.Errorf("failed to find market for %s: %w", good, err)
 	}

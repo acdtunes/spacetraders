@@ -1,3 +1,5 @@
+> STALE: the config package this described was removed 2026-07-05.
+
 # Manufacturing Runtime Configuration Design
 
 ## Overview

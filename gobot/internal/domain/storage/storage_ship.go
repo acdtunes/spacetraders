@@ -237,6 +237,14 @@ func (s *StorageShip) ConfirmDeposit(goodSymbol string, units int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Enforce the capacity invariant: total cargo must never exceed capacity.
+	// A ConfirmDeposit without a matching ReserveSpace (or exceeding it) would
+	// otherwise silently breach capacity.
+	if s.totalUnitsUnsafe()+units > s.cargoCapacity {
+		return fmt.Errorf("cannot confirm deposit of %d %s: total (%d) would exceed capacity (%d)",
+			units, goodSymbol, s.totalUnitsUnsafe()+units, s.cargoCapacity)
+	}
+
 	// Release the reservation
 	s.reservedSpace -= units
 	if s.reservedSpace < 0 {

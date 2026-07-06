@@ -688,26 +688,13 @@ func (h *RunFactoryCoordinatorHandler) produceNodeOnly(
 		return nil, fmt.Errorf("failed to navigate to manufacturing waypoint: %w", err)
 	}
 
-	// Check if we have inputs in cargo (from children that already completed)
-	// In parallel mode, we need to gather inputs first
+	// Inputs were already bought and delivered to the factory by the child
+	// workers of the previous parallel level - only verify completion here.
 	totalCost := 0
 	for _, child := range node.Children {
 		if !child.Completed {
 			return nil, fmt.Errorf("child %s not completed before fabrication", child.Good)
 		}
-		// In a real implementation, we'd transfer cargo from child workers
-		// For now, we'll produce inputs inline
-		result, err := h.productionExecutor.ProduceGood(ctx, updatedShip, child, systemSymbol, playerID, opContext)
-		if err != nil {
-			return nil, fmt.Errorf("failed to produce input %s: %w", child.Good, err)
-		}
-		totalCost += result.TotalCost
-	}
-
-	// Reload ship after producing inputs
-	updatedShip, err = h.shipRepo.FindBySymbol(ctx, updatedShip.ShipSymbol(), playerIDValue)
-	if err != nil {
-		return nil, fmt.Errorf("failed to reload ship: %w", err)
 	}
 
 	// Poll for production and purchase output

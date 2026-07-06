@@ -392,7 +392,9 @@ func (e *RouteExecutor) navigateToSegmentDestination(ctx context.Context, segmen
 	// OPTIMIZATION: Use fuel state from navigate response instead of reloading ship
 	// This saves 1 API call per navigation segment
 	if navResponse.FuelCurrent > 0 || navResponse.FuelCapacity > 0 {
-		ship.UpdateFuelFromAPI(navResponse.FuelCurrent, navResponse.FuelCapacity)
+		if err := ship.UpdateFuelFromAPI(navResponse.FuelCurrent, navResponse.FuelCapacity); err != nil {
+			return fmt.Errorf("failed to update fuel from navigation response: %w", err)
+		}
 	}
 
 	return nil

@@ -157,8 +157,7 @@ func (s *DaemonServer) GetConstructionStatus(ctx context.Context, constructionSi
 	return result, nil
 }
 
-// getAPIClient returns an API client for construction operations.
-// SpaceTradersClient is stateless, so creating a new instance is safe.
+// getAPIClient returns the shared API client for construction operations.
 func (s *DaemonServer) getAPIClient() domainPorts.APIClient {
-	return api.NewSpaceTradersClient()
+	return s.apiClient
 }

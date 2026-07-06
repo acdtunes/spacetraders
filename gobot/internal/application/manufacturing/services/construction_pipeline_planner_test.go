@@ -187,6 +187,69 @@ func TestStartOrResume_EmptyExistingPipeline_TerminalizesAndRePlans(t *testing.T
 	}
 }
 
+// Reproduces the jump-gate blocker: the only exporter of ADVANCED_CIRCUITRY has
+// MODERATE supply (X1-PZ28-D45 scenario). Planning must create the buy-and-deliver
+// task from that market instead of aborting with "no market with good supply".
+func TestStartOrResume_ModerateSupplyOnlyExporter_CreatesDeliverTask(t *testing.T) {
+	const moderateMarket = "X1-PZ28-D45"
+
+	abundant := "ABUNDANT"
+	moderate := "MODERATE"
+	strong := "STRONG"
+	restricted := "RESTRICTED"
+
+	fabMats, err := market.NewTradeGood("FAB_MATS", &abundant, &strong, 520, 500, 40, market.TradeTypeExport)
+	if err != nil {
+		t.Fatalf("NewTradeGood(FAB_MATS): %v", err)
+	}
+	fabMatsMarket, err := market.NewMarket(plannerTestMarket, []market.TradeGood{*fabMats}, time.Now())
+	if err != nil {
+		t.Fatalf("NewMarket(%s): %v", plannerTestMarket, err)
+	}
+
+	circuitry, err := market.NewTradeGood("ADVANCED_CIRCUITRY", &moderate, &restricted, 1893, 1800, 20, market.TradeTypeExport)
+	if err != nil {
+		t.Fatalf("NewTradeGood(ADVANCED_CIRCUITRY): %v", err)
+	}
+	circuitryMarket, err := market.NewMarket(moderateMarket, []market.TradeGood{*circuitry}, time.Now())
+	if err != nil {
+		t.Fatalf("NewMarket(%s): %v", moderateMarket, err)
+	}
+
+	marketRepo := &plannerStubMarketRepo{
+		marketWaypoints: []string{plannerTestMarket, moderateMarket},
+		markets: map[string]*market.Market{
+			plannerTestMarket: fabMatsMarket,
+			moderateMarket:    circuitryMarket,
+		},
+	}
+
+	pipelineRepo := &plannerStubPipelineRepo{}
+	taskRepo := &plannerStubTaskRepo{tasksByPipeline: map[string][]*manufacturing.ManufacturingTask{}}
+	planner := newPlannerUnderTest(pipelineRepo, taskRepo, marketRepo, newPlannerTestConstructionSite(t))
+
+	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 3, 5, "")
+	if err != nil {
+		t.Fatalf("StartOrResume must tolerate MODERATE supply for construction buys: %v", err)
+	}
+
+	if got := result.Pipeline.TaskCount(); got != 2 {
+		t.Fatalf("expected 2 DELIVER_TO_CONSTRUCTION tasks (one per material), got %d", got)
+	}
+	circuitrySourced := false
+	for _, task := range result.Pipeline.Tasks() {
+		if task.Good() == "ADVANCED_CIRCUITRY" {
+			circuitrySourced = true
+			if task.SourceMarket() != moderateMarket {
+				t.Errorf("expected ADVANCED_CIRCUITRY sourced from %s, got %s", moderateMarket, task.SourceMarket())
+			}
+		}
+	}
+	if !circuitrySourced {
+		t.Error("expected a DELIVER_TO_CONSTRUCTION task for ADVANCED_CIRCUITRY")
+	}
+}
+
 func TestStartOrResume_ExistingPipelineWithIncompleteTasks_Resumes(t *testing.T) {
 	existing := manufacturing.NewConstructionPipeline(plannerTestSite, 1, 3, 5)
 	if err := existing.Start(); err != nil {

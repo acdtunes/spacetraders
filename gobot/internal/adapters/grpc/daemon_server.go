@@ -22,6 +22,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
+	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/routing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
@@ -54,6 +55,7 @@ type DaemonServer struct {
 	playerRepo       player.PlayerRepository
 	routingClient    routing.RoutingClient
 	goodsFactoryRepo *persistence.GormGoodsFactoryRepository
+	apiClient        domainPorts.APIClient
 	clock            shared.Clock
 
 	// Ship state scheduler (timer-based state transitions)
@@ -97,6 +99,7 @@ func NewDaemonServer(
 	playerRepo player.PlayerRepository,
 	routingClient routing.RoutingClient,
 	goodsFactoryRepo *persistence.GormGoodsFactoryRepository,
+	apiClient domainPorts.APIClient,
 	socketPath string,
 	metricsConfig *config.MetricsConfig,
 	shipEventPublisher navigation.ShipEventPublisher,
@@ -138,6 +141,7 @@ func NewDaemonServer(
 		playerRepo:            playerRepo,
 		routingClient:         routingClient,
 		goodsFactoryRepo:      goodsFactoryRepo,
+		apiClient:             apiClient,
 		clock:                 clock,
 		shipStateScheduler:    shipStateScheduler,
 		listener:              listener,

@@ -10,10 +10,11 @@ import (
 // This provides fast access to assignment state without database queries.
 type AssignmentTracker struct {
 	mu             sync.RWMutex
-	assignedTasks  map[string]string              // taskID -> shipSymbol
-	taskContainers map[string]string              // taskID -> containerID
-	tasksByShip    map[string]string              // shipSymbol -> taskID
-	tasksByType    map[manufacturing.TaskType]int // taskType -> count
+	assignedTasks  map[string]string                 // taskID -> shipSymbol
+	taskContainers map[string]string                 // taskID -> containerID
+	tasksByShip    map[string]string                 // shipSymbol -> taskID
+	taskTypes      map[string]manufacturing.TaskType // taskID -> taskType
+	tasksByType    map[manufacturing.TaskType]int    // taskType -> count
 }
 
 // NewAssignmentTracker creates a new assignment tracker.
@@ -22,6 +23,7 @@ func NewAssignmentTracker() *AssignmentTracker {
 		assignedTasks:  make(map[string]string),
 		taskContainers: make(map[string]string),
 		tasksByShip:    make(map[string]string),
+		taskTypes:      make(map[string]manufacturing.TaskType),
 		tasksByType:    make(map[manufacturing.TaskType]int),
 	}
 }
@@ -34,6 +36,7 @@ func (t *AssignmentTracker) Track(taskID, shipSymbol, containerID string, taskTy
 	t.assignedTasks[taskID] = shipSymbol
 	t.taskContainers[taskID] = containerID
 	t.tasksByShip[shipSymbol] = taskID
+	t.taskTypes[taskID] = taskType
 	t.tasksByType[taskType]++
 }
 
@@ -46,6 +49,14 @@ func (t *AssignmentTracker) Untrack(taskID string) {
 	shipSymbol := t.assignedTasks[taskID]
 	delete(t.assignedTasks, taskID)
 	delete(t.taskContainers, taskID)
+
+	if taskType, ok := t.taskTypes[taskID]; ok {
+		t.tasksByType[taskType]--
+		if t.tasksByType[taskType] <= 0 {
+			delete(t.tasksByType, taskType)
+		}
+		delete(t.taskTypes, taskID)
+	}
 
 	if shipSymbol != "" {
 		// Check if this was the current task for this ship

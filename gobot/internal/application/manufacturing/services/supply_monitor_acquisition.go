@@ -295,7 +295,7 @@ func (m *SupplyMonitor) createMarketAcquireDeliverTask(ctx context.Context, fact
 	} else {
 		exportMarket, err = m.marketLocator.FindExportMarketBySupplyPriority(ctx, good, systemSymbol, factory.PlayerID())
 	}
-	if err != nil {
+	if err != nil || exportMarket == nil {
 		logger.Log("WARN", fmt.Sprintf("No export market for %s: %v", good, err), map[string]interface{}{
 			"factory":    factory.FactorySymbol(),
 			"input":      good,
