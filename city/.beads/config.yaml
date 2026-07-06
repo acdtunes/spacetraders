@@ -1,10 +1,8 @@
-issue_prefix: city
-issue-prefix: city
+issue_prefix: st
+issue-prefix: st
 dolt.auto-start: false
 gc.endpoint_origin: city_canonical
 gc.endpoint_status: verified
 dolt.host: 127.0.0.1
-dolt.port: 59432
+dolt.port: 59888
 dolt.user: root
-
-sync.remote: "git+https://github.com/acdtunes/spacetraders.git"

@@ -3,8 +3,8 @@
   "backend": "dolt",
   "dolt_mode": "server",
   "dolt_server_host": "127.0.0.1",
-  "dolt_server_port": 59432,
+  "dolt_server_port": 59888,
   "dolt_server_user": "root",
-  "dolt_database": "city",
-  "project_id": "0e7dae0f-ea1f-428d-b8aa-28544b8c968a"
+  "dolt_database": "st",
+  "project_id": "cf647b43-bcbd-4ff7-bae5-b79667b02129"
 }
