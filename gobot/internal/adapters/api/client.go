@@ -1,14 +1,11 @@
 package api
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"math/rand"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -129,111 +126,14 @@ func (c *SpaceTradersClient) GetShip(ctx context.Context, symbol, token string) 
 	path := fmt.Sprintf("/my/ships/%s", symbol)
 
 	var response struct {
-		Data struct {
-			Symbol       string `json:"symbol"`
-			Registration struct {
-				Role string `json:"role"`
-			} `json:"registration"`
-			Nav struct {
-				SystemSymbol   string `json:"systemSymbol"`
-				WaypointSymbol string `json:"waypointSymbol"`
-				Status         string `json:"status"`
-				FlightMode     string `json:"flightMode"`
-				Route          *struct {
-					Arrival string `json:"arrival"`
-				} `json:"route,omitempty"` // Only present when IN_TRANSIT
-			} `json:"nav"`
-			Fuel struct {
-				Current  int `json:"current"`
-				Capacity int `json:"capacity"`
-			} `json:"fuel"`
-			Cargo struct {
-				Capacity  int `json:"capacity"`
-				Units     int `json:"units"`
-				Inventory []struct {
-					Symbol      string `json:"symbol"`
-					Name        string `json:"name"`
-					Description string `json:"description"`
-					Units       int    `json:"units"`
-				} `json:"inventory"`
-			} `json:"cargo"`
-			Cooldown *struct {
-				Expiration string `json:"expiration"`
-			} `json:"cooldown,omitempty"` // Present when ship has active cooldown
-			Engine struct {
-				Speed int `json:"speed"`
-			} `json:"engine"`
-			Frame struct {
-				Symbol string `json:"symbol"`
-			} `json:"frame"`
-			Modules []struct {
-				Symbol   string `json:"symbol"`
-				Capacity int    `json:"capacity"`
-				Range    int    `json:"range"`
-			} `json:"modules"`
-		} `json:"data"`
+		Data shipDTO `json:"data"`
 	}
 
 	if err := c.request(ctx, "GET", path, token, nil, &response); err != nil {
 		return nil, fmt.Errorf("failed to get ship: %w", err)
 	}
 
-	// Convert cargo inventory
-	inventory := make([]shared.CargoItem, len(response.Data.Cargo.Inventory))
-	for i, item := range response.Data.Cargo.Inventory {
-		inventory[i] = shared.CargoItem{
-			Symbol:      item.Symbol,
-			Name:        item.Name,
-			Description: item.Description,
-			Units:       item.Units,
-		}
-	}
-
-	cargo := &navigation.CargoData{
-		Capacity:  response.Data.Cargo.Capacity,
-		Units:     response.Data.Cargo.Units,
-		Inventory: inventory,
-	}
-
-	// Convert modules
-	modules := make([]navigation.ModuleData, len(response.Data.Modules))
-	for i, mod := range response.Data.Modules {
-		modules[i] = navigation.ModuleData{
-			Symbol:   mod.Symbol,
-			Capacity: mod.Capacity,
-			Range:    mod.Range,
-		}
-	}
-
-	// Extract arrival time if ship is IN_TRANSIT
-	arrivalTime := ""
-	if response.Data.Nav.Route != nil {
-		arrivalTime = response.Data.Nav.Route.Arrival
-	}
-
-	// Extract cooldown expiration if ship has active cooldown
-	cooldownExpiration := ""
-	if response.Data.Cooldown != nil {
-		cooldownExpiration = response.Data.Cooldown.Expiration
-	}
-
-	return &navigation.ShipData{
-		Symbol:             response.Data.Symbol,
-		Location:           response.Data.Nav.WaypointSymbol,
-		NavStatus:          response.Data.Nav.Status,
-		FlightMode:         response.Data.Nav.FlightMode,
-		ArrivalTime:        arrivalTime,        // ISO8601 timestamp when IN_TRANSIT
-		CooldownExpiration: cooldownExpiration, // ISO8601 timestamp when cooldown expires
-		FuelCurrent:        response.Data.Fuel.Current,
-		FuelCapacity:       response.Data.Fuel.Capacity,
-		CargoCapacity:      response.Data.Cargo.Capacity,
-		CargoUnits:         response.Data.Cargo.Units,
-		EngineSpeed:        response.Data.Engine.Speed,
-		FrameSymbol:        response.Data.Frame.Symbol,
-		Role:               response.Data.Registration.Role,
-		Modules:            modules,
-		Cargo:              cargo,
-	}, nil
+	return response.Data.toShipData(), nil
 }
 
 // ListShips retrieves all ships for the authenticated agent
@@ -247,41 +147,7 @@ func (c *SpaceTradersClient) ListShips(ctx context.Context, token string) ([]*na
 		path := fmt.Sprintf("/my/ships?page=%d&limit=%d", page, limit)
 
 		var response struct {
-			Data []struct {
-				Symbol       string `json:"symbol"`
-				Registration struct {
-					Role string `json:"role"`
-				} `json:"registration"`
-				Nav struct {
-					SystemSymbol   string `json:"systemSymbol"`
-					WaypointSymbol string `json:"waypointSymbol"`
-					Status         string `json:"status"`
-					FlightMode     string `json:"flightMode"`
-					Route          struct {
-						Arrival string `json:"arrival"`
-					} `json:"route"`
-				} `json:"nav"`
-				Fuel struct {
-					Current  int `json:"current"`
-					Capacity int `json:"capacity"`
-				} `json:"fuel"`
-				Cargo struct {
-					Capacity  int `json:"capacity"`
-					Units     int `json:"units"`
-					Inventory []struct {
-						Symbol      string `json:"symbol"`
-						Name        string `json:"name"`
-						Description string `json:"description"`
-						Units       int    `json:"units"`
-					} `json:"inventory"`
-				} `json:"cargo"`
-				Engine struct {
-					Speed int `json:"speed"`
-				} `json:"engine"`
-				Frame struct {
-					Symbol string `json:"symbol"`
-				} `json:"frame"`
-			} `json:"data"`
+			Data []shipDTO `json:"data"`
 			Meta struct {
 				Total int `json:"total"`
 				Page  int `json:"page"`
@@ -299,39 +165,8 @@ func (c *SpaceTradersClient) ListShips(ctx context.Context, token string) ([]*na
 		}
 
 		// Convert this page's ships
-		for _, ship := range response.Data {
-			// Convert cargo inventory
-			inventory := make([]shared.CargoItem, len(ship.Cargo.Inventory))
-			for j, item := range ship.Cargo.Inventory {
-				inventory[j] = shared.CargoItem{
-					Symbol:      item.Symbol,
-					Name:        item.Name,
-					Description: item.Description,
-					Units:       item.Units,
-				}
-			}
-
-			cargo := &navigation.CargoData{
-				Capacity:  ship.Cargo.Capacity,
-				Units:     ship.Cargo.Units,
-				Inventory: inventory,
-			}
-
-			allShips = append(allShips, &navigation.ShipData{
-				Symbol:        ship.Symbol,
-				Location:      ship.Nav.WaypointSymbol,
-				NavStatus:     ship.Nav.Status,
-				FlightMode:    ship.Nav.FlightMode,
-				ArrivalTime:   ship.Nav.Route.Arrival,
-				FuelCurrent:   ship.Fuel.Current,
-				FuelCapacity:  ship.Fuel.Capacity,
-				CargoCapacity: ship.Cargo.Capacity,
-				CargoUnits:    ship.Cargo.Units,
-				EngineSpeed:   ship.Engine.Speed,
-				FrameSymbol:   ship.Frame.Symbol,
-				Role:          ship.Registration.Role,
-				Cargo:         cargo,
-			})
+		for i := range response.Data {
+			allShips = append(allShips, response.Data[i].toShipData())
 		}
 
 		// Move to next page
@@ -1194,93 +1029,34 @@ func (c *SpaceTradersClient) PurchaseShip(ctx context.Context, shipType, waypoin
 
 // convertShipData converts ship data from API response map to ShipData struct
 func (c *SpaceTradersClient) convertShipData(data map[string]interface{}) (*navigation.ShipData, error) {
-	// Extract symbol
-	symbol, ok := data["symbol"].(string)
-	if !ok {
+	raw, err := json.Marshal(data)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal ship data: %w", err)
+	}
+
+	var dto shipDTO
+	if err := json.Unmarshal(raw, &dto); err != nil {
+		return nil, fmt.Errorf("failed to parse ship data: %w", err)
+	}
+
+	if dto.Symbol == "" {
 		return nil, fmt.Errorf("missing or invalid ship symbol")
 	}
 
-	// Extract nav data
-	navData, ok := data["nav"].(map[string]interface{})
-	if !ok {
+	if _, ok := data["nav"].(map[string]interface{}); !ok {
 		return nil, fmt.Errorf("missing or invalid nav data")
 	}
-
-	waypointSymbol, _ := navData["waypointSymbol"].(string)
-	navStatus, _ := navData["status"].(string)
-
-	// Extract arrival time if present (for IN_TRANSIT status)
-	arrivalTime := ""
-	if route, ok := navData["route"].(map[string]interface{}); ok {
-		if arrival, ok := route["arrival"].(string); ok {
-			arrivalTime = arrival
-		}
-	}
-
-	// Extract fuel data
-	fuelData, ok := data["fuel"].(map[string]interface{})
-	if !ok {
+	if _, ok := data["fuel"].(map[string]interface{}); !ok {
 		return nil, fmt.Errorf("missing or invalid fuel data")
 	}
-	fuelCurrent := int(fuelData["current"].(float64))
-	fuelCapacity := int(fuelData["capacity"].(float64))
-
-	// Extract cargo data
-	cargoData, ok := data["cargo"].(map[string]interface{})
-	if !ok {
+	if _, ok := data["cargo"].(map[string]interface{}); !ok {
 		return nil, fmt.Errorf("missing or invalid cargo data")
 	}
-	cargoCapacity := int(cargoData["capacity"].(float64))
-	cargoUnits := int(cargoData["units"].(float64))
-
-	// Extract cargo inventory
-	var inventory []shared.CargoItem
-	if inventoryRaw, ok := cargoData["inventory"].([]interface{}); ok {
-		for _, item := range inventoryRaw {
-			itemMap := item.(map[string]interface{})
-			inventory = append(inventory, shared.CargoItem{
-				Symbol:      itemMap["symbol"].(string),
-				Name:        itemMap["name"].(string),
-				Description: itemMap["description"].(string),
-				Units:       int(itemMap["units"].(float64)),
-			})
-		}
-	}
-
-	cargo := &navigation.CargoData{
-		Capacity:  cargoCapacity,
-		Units:     cargoUnits,
-		Inventory: inventory,
-	}
-
-	// Extract engine data
-	engineData, ok := data["engine"].(map[string]interface{})
-	if !ok {
+	if _, ok := data["engine"].(map[string]interface{}); !ok {
 		return nil, fmt.Errorf("missing or invalid engine data")
 	}
-	engineSpeed := int(engineData["speed"].(float64))
 
-	// Extract frame data
-	frameSymbol := ""
-	if frameData, ok := data["frame"].(map[string]interface{}); ok {
-		if symbol, ok := frameData["symbol"].(string); ok {
-			frameSymbol = symbol
-		}
-	}
-
-	return &navigation.ShipData{
-		Symbol:        symbol,
-		Location:      waypointSymbol,
-		NavStatus:     navStatus,
-		ArrivalTime:   arrivalTime,
-		FuelCurrent:   fuelCurrent,
-		FuelCapacity:  fuelCapacity,
-		CargoCapacity: cargoCapacity,
-		CargoUnits:    cargoUnits,
-		EngineSpeed:   engineSpeed,
-		FrameSymbol:   frameSymbol,
-		Cargo:         cargo,
-	}, nil
+	return dto.toShipData(), nil
 }
 
 // parseContractData parses contract data from API response
@@ -1407,298 +1183,34 @@ func addJitter(d time.Duration) time.Duration {
 
 // request makes an HTTP request with rate limiting and exponential backoff retries
 func (c *SpaceTradersClient) request(ctx context.Context, method, path, token string, body interface{}, result interface{}) error {
-	url := c.baseURL + path
-
-	var lastErr error
-	var finalStatusCode int
-
-	// Start overall timer for metrics
-	overallStart := time.Now()
-
-	// Extract clean endpoint path (before query params) for metrics
-	endpoint := apiEndpointClassifier.classify(path)
-
-	// Attempt the request with exponential backoff + jitter retries
-	for attempt := 0; attempt <= c.maxRetries; attempt++ {
-		// Track rate limiter wait time
-		rateLimitStart := time.Now()
-		if err := c.rateLimiter.Wait(ctx); err != nil {
-			return fmt.Errorf("rate limiter error: %w", err)
+	return c.doWithRetry(ctx, method, path, token, body, func(statusCode int, respBody []byte) error {
+		if statusCode < 200 || statusCode >= 300 {
+			return fmt.Errorf("API error (status %d): %s", statusCode, string(respBody))
 		}
-		if collector := c.getMetricsCollector(); collector != nil {
-			rateLimitDuration := time.Since(rateLimitStart).Seconds()
-			collector.RecordRateLimitWait(method, endpoint, rateLimitDuration)
-			// Record current token availability for rate limiter saturation monitoring
-			collector.SetRateLimiterTokens(c.rateLimiter.Tokens())
+		if result == nil {
+			return nil
 		}
-
-		// Prepare request body
-		var reqBody io.Reader
-		if body != nil {
-			jsonData, err := json.Marshal(body)
-			if err != nil {
-				return fmt.Errorf("failed to marshal request body: %w", err)
-			}
-			reqBody = bytes.NewBuffer(jsonData)
-		}
-
-		// Create HTTP request
-		req, err := http.NewRequestWithContext(ctx, method, url, reqBody)
-		if err != nil {
-			return fmt.Errorf("failed to create request: %w", err)
-		}
-
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+token)
-
-		// Execute HTTP request
-		resp, err := c.httpClient.Do(req)
-		if err != nil {
-			// Network error - retryable
-			lastErr = &retryableError{
-				message: fmt.Errorf("network error: %w", err).Error(),
-			}
-
-			// Record retry attempt for metrics
-			if collector := c.getMetricsCollector(); collector != nil && attempt > 0 {
-				collector.RecordAPIRetry(method, endpoint, "network_error")
-			}
-
-			// Last attempt - don't sleep, just record error
-			if attempt >= c.maxRetries {
-				break
-			}
-
-			// Check for context cancellation before sleeping
-			if ctx.Err() != nil {
-				return fmt.Errorf("context cancelled: %w", ctx.Err())
-			}
-
-			// Calculate backoff with jitter and sleep using clock (instant in tests with MockClock)
-			backoffDelay := addJitter(c.backoffBase * time.Duration(1<<attempt))
-			c.clock.Sleep(backoffDelay)
-			continue
-		}
-
-		// Only close response body if we have a valid response
-		if resp != nil && resp.Body != nil {
-			defer resp.Body.Close()
-		}
-
-		// Read response body
-		respBody, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return fmt.Errorf("failed to read response: %w", err)
-		}
-
-		// Handle 429 Too Many Requests - retryable
-		if resp.StatusCode == http.StatusTooManyRequests {
-			fmt.Printf("[DEBUG] Got 429, attempt=%d\n", attempt)
-			var retryAfterDuration time.Duration
-
-			// Check for Retry-After header
-			if retryAfter := resp.Header.Get("Retry-After"); retryAfter != "" {
-				if seconds, err := strconv.Atoi(retryAfter); err == nil {
-					retryAfterDuration = time.Duration(seconds) * time.Second
-				}
-			}
-
-			lastErr = &retryableError{
-				message:    "rate limited (429)",
-				retryAfter: retryAfterDuration,
-			}
-
-			// Record retry attempt for metrics
-			if collector := c.getMetricsCollector(); collector != nil && attempt > 0 {
-				collector.RecordAPIRetry(method, endpoint, "rate_limited_429")
-			}
-
-			// Last attempt - don't sleep
-			if attempt >= c.maxRetries {
-				fmt.Printf("[DEBUG] Last attempt reached, breaking\n")
-				finalStatusCode = resp.StatusCode
-				break
-			}
-
-			// Check for context cancellation before sleeping
-			if ctx.Err() != nil {
-				return fmt.Errorf("context cancelled: %w", ctx.Err())
-			}
-
-			// Calculate backoff delay with jitter (unless server provided Retry-After)
-			backoffDelay := addJitter(c.backoffBase * time.Duration(1<<attempt))
-			if retryAfterDuration > 0 {
-				// Use server-provided Retry-After value without jitter
-				backoffDelay = retryAfterDuration
-			}
-
-			fmt.Printf("[DEBUG] Sleeping for %v before retry\n", backoffDelay)
-			// Sleep using clock (instant in tests with MockClock)
-			c.clock.Sleep(backoffDelay)
-			fmt.Printf("[DEBUG] Sleep done, continuing to next attempt\n")
-			continue
-		}
-
-		// Handle 503 Service Unavailable - retryable
-		if resp.StatusCode == http.StatusServiceUnavailable {
-			lastErr = &retryableError{
-				message: "service unavailable (503)",
-			}
-
-			// Record retry attempt for metrics
-			if collector := c.getMetricsCollector(); collector != nil && attempt > 0 {
-				collector.RecordAPIRetry(method, endpoint, "service_unavailable_503")
-			}
-
-			// Last attempt - don't sleep
-			if attempt >= c.maxRetries {
-				finalStatusCode = resp.StatusCode
-				break
-			}
-
-			// Check for context cancellation before sleeping
-			if ctx.Err() != nil {
-				return fmt.Errorf("context cancelled: %w", ctx.Err())
-			}
-
-			// Calculate backoff with jitter and sleep using clock (instant in tests with MockClock)
-			backoffDelay := addJitter(c.backoffBase * time.Duration(1<<attempt))
-			c.clock.Sleep(backoffDelay)
-			continue
-		}
-
-		// Handle 5xx server errors - retryable
-		if resp.StatusCode >= 500 {
-			lastErr = &retryableError{
-				message: fmt.Sprintf("server error (%d)", resp.StatusCode),
-			}
-
-			// Record retry attempt for metrics
-			if collector := c.getMetricsCollector(); collector != nil && attempt > 0 {
-				collector.RecordAPIRetry(method, endpoint, "server_error_5xx")
-			}
-
-			// Last attempt - don't sleep
-			if attempt >= c.maxRetries {
-				finalStatusCode = resp.StatusCode
-				break
-			}
-
-			// Check for context cancellation before sleeping
-			if ctx.Err() != nil {
-				return fmt.Errorf("context cancelled: %w", ctx.Err())
-			}
-
-			// Calculate backoff with jitter and sleep using clock (instant in tests with MockClock)
-			backoffDelay := addJitter(c.backoffBase * time.Duration(1<<attempt))
-			c.clock.Sleep(backoffDelay)
-			continue
-		}
-
-		// Handle 4xx client errors (except 429) - NOT retryable
-		if resp.StatusCode >= 400 && resp.StatusCode < 500 {
-			// Record final metrics for 4xx error
-			if collector := c.getMetricsCollector(); collector != nil {
-				duration := time.Since(overallStart).Seconds()
-				collector.RecordAPIRequest(method, endpoint, resp.StatusCode, duration)
-			}
-			return fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(respBody))
-		}
-
-		// Handle non-2xx status codes - NOT retryable
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			// Record final metrics for unexpected status code
-			if collector := c.getMetricsCollector(); collector != nil {
-				duration := time.Since(overallStart).Seconds()
-				collector.RecordAPIRequest(method, endpoint, resp.StatusCode, duration)
-			}
-			return fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(respBody))
-		}
-
-		// Parse response if result is provided
-		if result != nil {
-			if err := json.Unmarshal(respBody, result); err != nil {
-				return fmt.Errorf("failed to unmarshal response: %w", err)
-			}
-		}
-
-		// Success! Record final metrics
-		if collector := c.getMetricsCollector(); collector != nil {
-			duration := time.Since(overallStart).Seconds()
-			collector.RecordAPIRequest(method, endpoint, resp.StatusCode, duration)
+		if err := json.Unmarshal(respBody, result); err != nil {
+			return fmt.Errorf("failed to unmarshal response: %w", err)
 		}
 		return nil
-	}
-
-	// All retries exhausted - record final metrics if we have a status code
-	if collector := c.getMetricsCollector(); collector != nil && finalStatusCode > 0 {
-		duration := time.Since(overallStart).Seconds()
-		collector.RecordAPIRequest(method, endpoint, finalStatusCode, duration)
-	}
-
-	// Return error
-	if lastErr != nil {
-		return fmt.Errorf("max retries exceeded: %w", lastErr)
-	}
-	return fmt.Errorf("max retries exceeded")
+	})
 }
 
 // requestWithErrorParsing is like request() but unmarshals JSON BEFORE checking status codes
 // This allows callers to inspect error details (like error code 4511) even when status is 4xx
 func (c *SpaceTradersClient) requestWithErrorParsing(ctx context.Context, method, path, token string, body interface{}, result interface{}) error {
-	url := c.baseURL + path
-
-	// Wait for rate limiter
-	if err := c.rateLimiter.Wait(ctx); err != nil {
-		return fmt.Errorf("rate limiter error: %w", err)
-	}
-
-	// Prepare request body
-	var reqBody io.Reader
-	if body != nil {
-		jsonData, err := json.Marshal(body)
-		if err != nil {
-			return fmt.Errorf("failed to marshal request body: %w", err)
+	return c.doWithRetry(ctx, method, path, token, body, func(statusCode int, respBody []byte) error {
+		if result != nil {
+			if err := json.Unmarshal(respBody, result); err != nil {
+				return fmt.Errorf("failed to unmarshal response: %w", err)
+			}
 		}
-		reqBody = bytes.NewBuffer(jsonData)
-	}
-
-	// Create HTTP request
-	req, err := http.NewRequestWithContext(ctx, method, url, reqBody)
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+token)
-
-	// Execute HTTP request
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("network error: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// Read response body
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("failed to read response: %w", err)
-	}
-
-	// Parse JSON FIRST, even for error responses
-	if result != nil {
-		if err := json.Unmarshal(respBody, result); err != nil {
-			return fmt.Errorf("failed to unmarshal response: %w", err)
+		if statusCode >= 200 && statusCode < 300 {
+			return nil
 		}
-	}
-
-	// NOW check status code (JSON is already parsed into result)
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		return nil // Success
-	}
-
-	// Return error for non-2xx (but JSON is already in result for caller to inspect)
-	return fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(respBody))
+		return fmt.Errorf("API error (status %d): %s", statusCode, string(respBody))
+	})
 }
 
 // GetConstruction retrieves construction site information for a waypoint
