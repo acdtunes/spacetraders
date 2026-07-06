@@ -18,6 +18,8 @@ const (
 	EventCreditsThreshold  EventType = "credits.threshold"
 	EventContractCompleted EventType = "contract.completed"
 	EventContractFailed    EventType = "contract.failed"
+	EventIncomeStalled     EventType = "income.stalled"
+	EventStreamDown        EventType = "stream.down"
 )
 
 type Event struct {

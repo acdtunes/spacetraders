@@ -43,3 +43,12 @@ func TestCaptainBridgeDefaults(t *testing.T) {
 	require.Equal(t, "bd", cfg.Captain.BDBin)
 	require.Equal(t, "../city", cfg.Captain.CityDir)
 }
+
+func TestCaptainDetectorDefaults(t *testing.T) {
+	cfg := &Config{}
+	SetDefaults(cfg)
+
+	require.Equal(t, 2, cfg.Captain.IncomeStallHours)
+	require.Equal(t, 30, cfg.Captain.StreamDownMinutes)
+	require.Empty(t, cfg.Captain.ExpectedStreams)
+}

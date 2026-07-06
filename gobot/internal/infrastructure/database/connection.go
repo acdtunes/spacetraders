@@ -84,23 +84,7 @@ func NewTestConnection() (*gorm.DB, error) {
 
 // AutoMigrate runs auto-migration for all models (for tests)
 func AutoMigrate(db *gorm.DB) error {
-	return db.AutoMigrate(
-		&persistence.PlayerModel{},
-		&persistence.WaypointModel{},
-		&persistence.ContainerModel{},
-		&persistence.ContainerLogModel{},
-		&persistence.ShipModel{},
-		&persistence.SystemGraphModel{},
-		&persistence.MarketData{},
-		&persistence.ContractModel{},
-		&persistence.GoodsFactoryModel{},
-		&persistence.TransactionModel{},
-		&persistence.CaptainEventModel{},
-		&persistence.ManufacturingPipelineModel{},
-		&persistence.ManufacturingTaskModel{},
-		&persistence.ManufacturingTaskDependencyModel{},
-		&persistence.ManufacturingFactoryStateModel{},
-	)
+	return db.AutoMigrate(persistence.AllModels()...)
 }
 
 // Close closes the database connection

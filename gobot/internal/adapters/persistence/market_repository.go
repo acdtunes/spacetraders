@@ -434,6 +434,71 @@ func scoreMarketForBuying(tradeType, supply, activity string) int {
 	return tradeTypeScore*1000 + supplyScore*10 + activityScore
 }
 
+// MarketGoodListing represents one cached market's trade data for a single good,
+// including data age so callers can judge staleness before acting on it (L58:
+// a stale-availability premise flipped an entire plan).
+type MarketGoodListing struct {
+	WaypointSymbol string
+	TradeType      string
+	PurchasePrice  int
+	SellPrice      int
+	Supply         string
+	Activity       string
+	TradeVolume    int
+	LastUpdated    time.Time
+}
+
+// FindMarketsTradingGood returns every cached market known to trade goodSymbol,
+// optionally scoped to systemSymbol. Read-only over MarketData; callers sort by
+// side (buy/sell) themselves, this finder never hides staleness.
+func (r *MarketRepositoryGORM) FindMarketsTradingGood(
+	ctx context.Context,
+	goodSymbol string,
+	systemSymbol string,
+	playerID int,
+) ([]MarketGoodListing, error) {
+	query := r.db.WithContext(ctx).
+		Table(marketDataTable).
+		Select("waypoint_symbol, trade_type, purchase_price, sell_price, supply, activity, trade_volume, last_updated").
+		Where("player_id = ?", playerID).
+		Where("good_symbol = ?", goodSymbol)
+
+	if systemSymbol != "" {
+		query = query.Where("waypoint_symbol LIKE ?", systemSymbol+"-%")
+	}
+
+	var rows []struct {
+		WaypointSymbol string
+		TradeType      *string
+		PurchasePrice  int
+		SellPrice      int
+		Supply         *string
+		Activity       *string
+		TradeVolume    int
+		LastUpdated    time.Time
+	}
+
+	if err := query.Scan(&rows).Error; err != nil {
+		return nil, fmt.Errorf("failed to find markets trading %s: %w", goodSymbol, err)
+	}
+
+	listings := make([]MarketGoodListing, len(rows))
+	for i, row := range rows {
+		listings[i] = MarketGoodListing{
+			WaypointSymbol: row.WaypointSymbol,
+			TradeType:      derefString(row.TradeType),
+			PurchasePrice:  row.PurchasePrice,
+			SellPrice:      row.SellPrice,
+			Supply:         derefString(row.Supply),
+			Activity:       derefString(row.Activity),
+			TradeVolume:    row.TradeVolume,
+			LastUpdated:    row.LastUpdated,
+		}
+	}
+
+	return listings, nil
+}
+
 // FindFactoryForGood finds a market that EXPORTS a specific good (i.e., a factory that produces it).
 // Only returns markets where trade_type = 'EXPORT', meaning the market produces this good.
 // Returns nil if no factory exists for this good in the system.

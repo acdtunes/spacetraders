@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"text/tabwriter"
@@ -19,6 +20,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
+	pb "github.com/andrescamacho/spacetraders-go/pkg/proto/daemon"
 )
 
 // NewShipCommand creates the ship command with subcommands
@@ -55,18 +57,191 @@ Examples:
 	return cmd
 }
 
+// shipAssignmentLister is the subset of the ship assignment repository the
+// `ship list` CLI needs: a bulk read of role/assignment/cache-age info for
+// every ship owned by a player.
+type shipAssignmentLister interface {
+	ListActive(ctx context.Context, playerID int) ([]persistence.ShipAssignmentInfo, error)
+}
+
+// shipListRow is a single rendered row of `ship list`, merging live daemon
+// data with the persisted role/assignment/cache-age columns.
+type shipListRow struct {
+	Symbol        string `json:"symbol"`
+	Location      string `json:"location"`
+	NavStatus     string `json:"navStatus"`
+	FuelCurrent   int32  `json:"fuelCurrent"`
+	FuelCapacity  int32  `json:"fuelCapacity"`
+	CargoUnits    int32  `json:"cargoUnits"`
+	CargoCapacity int32  `json:"cargoCapacity"`
+	EngineSpeed   int32  `json:"engineSpeed"`
+	Role          string `json:"role"`
+	Assignment    string `json:"assignment"`
+	CacheAge      string `json:"cacheAge"`
+}
+
+// humanizeDuration renders a duration the way `ship list` shows cache age:
+// seconds below a minute, minutes below an hour, hours+minutes beyond that.
+func humanizeDuration(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	default:
+		hours := int(d.Hours())
+		mins := int(d.Minutes()) % 60
+		if mins == 0 {
+			return fmt.Sprintf("%dh", hours)
+		}
+		return fmt.Sprintf("%dh%dm", hours, mins)
+	}
+}
+
+// buildShipRows merges live ship data from the daemon with the persisted
+// per-ship assignment info, defaulting role/assignment/cache age to "-" for
+// ships that have no assignment row.
+func buildShipRows(ships []*pb.ShipInfo, infos map[string]persistence.ShipAssignmentInfo, now time.Time) []shipListRow {
+	rows := make([]shipListRow, 0, len(ships))
+
+	for _, s := range ships {
+		row := shipListRow{
+			Symbol:        s.Symbol,
+			Location:      s.Location,
+			NavStatus:     s.NavStatus,
+			FuelCurrent:   s.FuelCurrent,
+			FuelCapacity:  s.FuelCapacity,
+			CargoUnits:    s.CargoUnits,
+			CargoCapacity: s.CargoCapacity,
+			EngineSpeed:   s.EngineSpeed,
+			Role:          "-",
+			Assignment:    "-",
+			CacheAge:      "-",
+		}
+
+		if info, ok := infos[s.Symbol]; ok {
+			if info.Role != "" {
+				row.Role = info.Role
+			}
+			if info.ContainerID != "" {
+				row.Assignment = info.ContainerID
+			}
+			if !info.SyncedAt.IsZero() {
+				row.CacheAge = humanizeDuration(now.Sub(info.SyncedAt))
+			}
+		}
+
+		rows = append(rows, row)
+	}
+
+	return rows
+}
+
+// renderShipList prints the merged ship rows as a table or as JSON.
+func renderShipList(rows []shipListRow, jsonOut bool) error {
+	if jsonOut {
+		encoder := json.NewEncoder(os.Stdout)
+		encoder.SetIndent("", "  ")
+		return encoder.Encode(rows)
+	}
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "SHIP SYMBOL\tLOCATION\tSTATUS\tFUEL\tCARGO\tSPEED\tROLE\tASSIGNMENT\tCACHE AGE")
+	fmt.Fprintln(w, "-----------\t--------\t------\t----\t-----\t-----\t----\t----------\t---------")
+
+	for _, r := range rows {
+		fmt.Fprintf(w, "%s\t%s\t%s\t%d/%d\t%d/%d\t%d\t%s\t%s\t%s\n",
+			r.Symbol,
+			r.Location,
+			r.NavStatus,
+			r.FuelCurrent,
+			r.FuelCapacity,
+			r.CargoUnits,
+			r.CargoCapacity,
+			r.EngineSpeed,
+			r.Role,
+			r.Assignment,
+			r.CacheAge,
+		)
+	}
+
+	return w.Flush()
+}
+
+// runShipList merges live daemon ship data with the persisted per-ship
+// assignment info and renders the result. The assignment repository is only
+// queried when there is at least one ship to enrich.
+func runShipList(ctx context.Context, ships []*pb.ShipInfo, lister shipAssignmentLister, playerID int, now time.Time, jsonOut bool) error {
+	if len(ships) == 0 {
+		fmt.Println("No ships found.")
+		return nil
+	}
+
+	infos, err := lister.ListActive(ctx, playerID)
+	if err != nil {
+		return fmt.Errorf("failed to list ship assignments: %w", err)
+	}
+
+	infoMap := make(map[string]persistence.ShipAssignmentInfo, len(infos))
+	for _, info := range infos {
+		infoMap[info.ShipSymbol] = info
+	}
+
+	rows := buildShipRows(ships, infoMap, now)
+
+	return renderShipList(rows, jsonOut)
+}
+
+// newShipAssignmentStore bootstraps a DB-backed assignment lister and player
+// repository for resolving a numeric player ID from CLI flags.
+func newShipAssignmentStore() (shipAssignmentLister, *persistence.GormPlayerRepository, error) {
+	cfg, err := config.LoadConfig("")
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to load config: %w", err)
+	}
+
+	db, err := database.NewConnection(&cfg.Database)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to connect to database: %w", err)
+	}
+
+	return persistence.NewShipAssignmentRepository(db), persistence.NewGormPlayerRepository(db), nil
+}
+
+// resolveShipListPlayerID resolves a numeric player ID from the CLI's
+// identifier, looking it up by agent symbol when only that was supplied.
+func resolveShipListPlayerID(ctx context.Context, playerRepo *persistence.GormPlayerRepository, playerIdent *PlayerIdentifier) (int, error) {
+	if playerIdent.PlayerID > 0 {
+		return playerIdent.PlayerID, nil
+	}
+
+	p, err := playerRepo.FindByAgentSymbol(ctx, playerIdent.AgentSymbol)
+	if err != nil {
+		return 0, fmt.Errorf("failed to resolve player from agent symbol: %w", err)
+	}
+
+	return p.ID.Value(), nil
+}
+
 // newShipListCommand creates the ship list subcommand
 func newShipListCommand() *cobra.Command {
+	var jsonOut bool
+
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List all ships for a player",
 		Long: `List all ships owned by a player/agent.
 
-Shows ship symbol, location, navigation status, fuel, and cargo levels.
+Shows ship symbol, location, navigation status, fuel, cargo levels, role,
+owning assignment (container id or "-"), and cache age.
 
 Examples:
   spacetraders ship list --player-id 1
-  spacetraders ship list --agent ENDURANCE`,
+  spacetraders ship list --agent ENDURANCE
+  spacetraders ship list --player-id 1 --json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Get daemon client
 			client, err := connectDaemon()
@@ -83,9 +258,9 @@ Examples:
 
 			// Call daemon via gRPC
 			ctx := context.Background()
-			playerID, agentSymbol := playerPointers(playerIdent)
+			playerIDPtr, agentSymbol := playerPointers(playerIdent)
 
-			response, err := client.ListShips(ctx, playerID, agentSymbol)
+			response, err := client.ListShips(ctx, playerIDPtr, agentSymbol)
 			if err != nil {
 				return fmt.Errorf("failed to list ships: %w", err)
 			}
@@ -95,29 +270,21 @@ Examples:
 				return nil
 			}
 
-			// Display table
-			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "SHIP SYMBOL\tLOCATION\tSTATUS\tFUEL\tCARGO\tSPEED")
-			fmt.Fprintln(w, "-----------\t--------\t------\t----\t-----\t-----")
-
-			for _, s := range response.Ships {
-				fmt.Fprintf(w, "%s\t%s\t%s\t%d/%d\t%d/%d\t%d\n",
-					s.Symbol,
-					s.Location,
-					s.NavStatus,
-					s.FuelCurrent,
-					s.FuelCapacity,
-					s.CargoUnits,
-					s.CargoCapacity,
-					s.EngineSpeed,
-				)
+			lister, playerRepo, err := newShipAssignmentStore()
+			if err != nil {
+				return err
 			}
 
-			w.Flush()
+			resolvedPlayerID, err := resolveShipListPlayerID(ctx, playerRepo, playerIdent)
+			if err != nil {
+				return err
+			}
 
-			return nil
+			return runShipList(ctx, response.Ships, lister, resolvedPlayerID, time.Now(), jsonOut)
 		},
 	}
+
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "Output as JSON")
 
 	return cmd
 }

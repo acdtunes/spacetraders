@@ -150,6 +150,12 @@ func SetDefaults(cfg *Config) {
 	if cfg.Captain.StaleHeartbeatMinutes == 0 {
 		cfg.Captain.StaleHeartbeatMinutes = 5
 	}
+	if cfg.Captain.IncomeStallHours == 0 {
+		cfg.Captain.IncomeStallHours = 2
+	}
+	if cfg.Captain.StreamDownMinutes == 0 {
+		cfg.Captain.StreamDownMinutes = 30
+	}
 	if cfg.Captain.ClaudeBin == "" {
 		cfg.Captain.ClaudeBin = "claude"
 	}

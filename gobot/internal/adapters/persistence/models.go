@@ -303,7 +303,7 @@ type MarketPriceHistoryModel struct {
 	Supply         *string      `gorm:"column:supply;size:20"`
 	Activity       *string      `gorm:"column:activity;size:20"`
 	TradeVolume    int          `gorm:"column:trade_volume;not null"`
-	RecordedAt     time.Time    `gorm:"column:recorded_at;not null;default:now();index:idx_market_history_waypoint_good_time,idx_market_history_good_time,idx_market_history_recorded_at"`
+	RecordedAt     time.Time    `gorm:"column:recorded_at;not null;default:CURRENT_TIMESTAMP;index:idx_market_history_waypoint_good_time,idx_market_history_good_time,idx_market_history_recorded_at"`
 }
 
 func (MarketPriceHistoryModel) TableName() string {
@@ -422,4 +422,31 @@ type CaptainEventModel struct {
 
 func (CaptainEventModel) TableName() string {
 	return "captain_events"
+}
+
+// AllModels is the single canonical registry of every persisted model struct.
+// AutoMigrate and any test/tooling that needs the full model set must consume
+// this slice instead of maintaining a parallel hand-written list, so newly
+// added *Model structs cannot silently skip migration.
+func AllModels() []any {
+	return []any{
+		&PlayerModel{},
+		&WaypointModel{},
+		&ContainerModel{},
+		&ContainerLogModel{},
+		&ShipModel{},
+		&SystemGraphModel{},
+		&MarketData{},
+		&ContractModel{},
+		&GasOperationModel{},
+		&StorageOperationModel{},
+		&GoodsFactoryModel{},
+		&TransactionModel{},
+		&MarketPriceHistoryModel{},
+		&CaptainEventModel{},
+		&ManufacturingPipelineModel{},
+		&ManufacturingTaskModel{},
+		&ManufacturingTaskDependencyModel{},
+		&ManufacturingFactoryStateModel{},
+	}
 }

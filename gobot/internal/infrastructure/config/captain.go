@@ -16,6 +16,10 @@ type CaptainConfig struct {
 	StaleHeartbeatMinutes int    `mapstructure:"stale_heartbeat_minutes" validate:"omitempty,min=1"`
 	CreditsThresholds     []int  `mapstructure:"credits_thresholds"`
 
+	IncomeStallHours  int      `mapstructure:"income_stall_hours" validate:"omitempty,min=1"`
+	StreamDownMinutes int      `mapstructure:"stream_down_minutes" validate:"omitempty,min=1"`
+	ExpectedStreams   []string `mapstructure:"expected_streams"`
+
 	// Self-improvement pipeline (plan 2 of 2)
 	AutoMerge                bool   `mapstructure:"auto_merge"`
 	MaxFixesPerDay           int    `mapstructure:"max_fixes_per_day" validate:"omitempty,min=1"`

@@ -246,6 +246,44 @@ func (r *ShipAssignmentRepositoryGORM) ReleaseAllActive(
 	return int(result.RowsAffected), nil
 }
 
+// ShipAssignmentInfo is a bulk-read projection combining a ship's role, owning
+// container (if any), and cache timestamp, used by observability CLI verbs
+// (e.g. `ship list`) that need this data for every ship, idle or assigned.
+type ShipAssignmentInfo struct {
+	ShipSymbol  string
+	Role        string
+	ContainerID string // empty when the ship is idle
+	SyncedAt    time.Time
+}
+
+// ListActive returns role/assignment/cache-age info for every ship owned by a
+// player, so callers can render an owning container id (or blank for idle)
+// alongside each ship without per-ship lookups.
+func (r *ShipAssignmentRepositoryGORM) ListActive(
+	ctx context.Context,
+	playerID int,
+) ([]ShipAssignmentInfo, error) {
+	var models []ShipModel
+
+	if err := r.db.WithContext(ctx).
+		Where("player_id = ?", playerID).
+		Find(&models).Error; err != nil {
+		return nil, fmt.Errorf("failed to list ship assignments: %w", err)
+	}
+
+	infos := make([]ShipAssignmentInfo, 0, len(models))
+	for _, model := range models {
+		infos = append(infos, ShipAssignmentInfo{
+			ShipSymbol:  model.ShipSymbol,
+			Role:        model.Role,
+			ContainerID: derefString(model.ContainerID),
+			SyncedAt:    model.SyncedAt,
+		})
+	}
+
+	return infos, nil
+}
+
 // CountByContainerPrefix counts active assignments where container ID starts with prefix
 func (r *ShipAssignmentRepositoryGORM) CountByContainerPrefix(
 	ctx context.Context,

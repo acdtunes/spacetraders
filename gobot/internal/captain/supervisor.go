@@ -57,6 +57,9 @@ func (s *Supervisor) Tick(ctx context.Context, now time.Time) (bool, error) {
 		StaleHeartbeat:    time.Duration(s.cfg.StaleHeartbeatMinutes) * time.Minute,
 		CreditsThresholds: s.cfg.CreditsThresholds,
 		LastCredits:       s.lastCredits,
+		IncomeStall:       time.Duration(s.cfg.IncomeStallHours) * time.Hour,
+		StreamDown:        time.Duration(s.cfg.StreamDownMinutes) * time.Minute,
+		ExpectedStreams:   s.cfg.ExpectedStreams,
 	}
 	if err := RunDetectors(ctx, s.db, s.store, dcfg, now); err != nil {
 		return false, fmt.Errorf("detectors: %w", err)
