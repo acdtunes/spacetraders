@@ -46,6 +46,17 @@ func runPlayerRegisterNew(ctx context.Context, client registrationAPI, store reg
 		return fmt.Errorf("failed to get server status: %w", err)
 	}
 
+	// Parse (and validate) the server reset date before minting an agent
+	// token: era names are keyed by "<symbol>-<resetDate>" so the same agent
+	// symbol can be reused across universe resets without colliding with the
+	// unique eras.name constraint. If we can't derive that name, refuse
+	// before calling Register rather than minting a token for an era we
+	// can't name.
+	resetDate, err := time.Parse(eraDateLayout, status.ResetDate)
+	if err != nil {
+		return fmt.Errorf("failed to parse server reset date %q: %w", status.ResetDate, err)
+	}
+
 	result, err := client.Register(ctx, accountToken, agentSymbol, faction)
 	if err != nil {
 		return fmt.Errorf("failed to register agent: %w", err)
@@ -70,18 +81,20 @@ func runPlayerRegisterNew(ctx context.Context, client registrationAPI, store reg
 	}
 
 	era := &persistence.EraModel{
-		Name:         strings.ToLower(result.AgentSymbol),
-		AgentSymbol:  result.AgentSymbol,
-		RegisteredAt: &now,
+		Name:              strings.ToLower(result.AgentSymbol) + "-" + resetDate.Format(eraDateLayout),
+		AgentSymbol:       result.AgentSymbol,
+		RegisteredAt:      &now,
+		UniverseResetDate: &resetDate,
 	}
 	if faction != "" {
 		era.Faction = &faction
 	}
-	if resetDate, err := time.Parse(eraDateLayout, status.ResetDate); err == nil {
-		era.UniverseResetDate = &resetDate
-	}
 
 	if err := store.CreatePlayerWithEra(ctx, player, era); err != nil {
+		fmt.Fprintln(out, "⚠ WARNING: agent registered with the API but FAILED TO PERSIST locally.")
+		fmt.Fprintln(out, "  This token will not be shown again — SAVE IT NOW:")
+		fmt.Fprintf(out, "  Agent Symbol: %s\n", player.AgentSymbol)
+		fmt.Fprintf(out, "  Token:        %s\n", player.Token)
 		return fmt.Errorf("failed to persist player and era: %w", err)
 	}
 

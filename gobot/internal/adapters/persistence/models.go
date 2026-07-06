@@ -8,7 +8,10 @@ import (
 // NOTE: Credits are NOT persisted in database - they're always fetched fresh from API
 type PlayerModel struct {
 	ID          int        `gorm:"column:id;primaryKey;autoIncrement"`
-	AgentSymbol string     `gorm:"column:agent_symbol;unique;not null"`
+	// AgentSymbol is intentionally NOT unique: the same agent symbol may be
+	// re-registered in a later universe era after a reset, producing
+	// multiple player rows that share a symbol (see migration 032).
+	AgentSymbol string     `gorm:"column:agent_symbol;index:idx_players_agent_symbol;not null"`
 	Token       string     `gorm:"column:token;not null"`
 	CreatedAt   time.Time  `gorm:"column:created_at;not null"`
 	LastActive  *time.Time `gorm:"column:last_active"`

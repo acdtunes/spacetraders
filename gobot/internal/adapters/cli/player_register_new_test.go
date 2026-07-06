@@ -33,6 +33,7 @@ func (f *fakeRegistrationAPI) Register(ctx context.Context, accountToken, agentS
 type fakeRegistrationStore struct {
 	openEra      *persistence.EraModel
 	findErr      error
+	createErr    error
 	createCalled bool
 }
 
@@ -42,7 +43,7 @@ func (f *fakeRegistrationStore) FindOpenEra(ctx context.Context) (*persistence.E
 
 func (f *fakeRegistrationStore) CreatePlayerWithEra(ctx context.Context, player *persistence.PlayerModel, era *persistence.EraModel) error {
 	f.createCalled = true
-	return nil
+	return f.createErr
 }
 
 func TestPlayerRegisterNewRefusesWhenOpenEraExists(t *testing.T) {
@@ -85,7 +86,7 @@ func TestPlayerRegisterNewPersistsNothingWhenApiRegisterFails(t *testing.T) {
 	require.False(t, store.createCalled)
 }
 
-func TestPlayerRegisterNewCreatesPlayerAndEraWithResetDateAndLowercaseName(t *testing.T) {
+func TestPlayerRegisterNewNamesEraWithSymbolAndServerResetDate(t *testing.T) {
 	db, err := database.NewTestConnection()
 	require.NoError(t, err)
 	store := persistence.NewEraRepository(db)
@@ -108,7 +109,11 @@ func TestPlayerRegisterNewCreatesPlayerAndEraWithResetDateAndLowercaseName(t *te
 	var eras []persistence.EraModel
 	require.NoError(t, db.Find(&eras).Error)
 	require.Len(t, eras, 1)
-	require.Equal(t, "orion", eras[0].Name)
+	// Era names are keyed by symbol + server reset date so the same agent
+	// symbol can be re-registered in a later universe without colliding
+	// with the unique eras.name constraint (era 1's bare "torwind" name is
+	// grandfathered in and untouched by this rule).
+	require.Equal(t, "orion-2026-07-06", eras[0].Name)
 	require.Equal(t, "ORION", eras[0].AgentSymbol)
 	require.Equal(t, players[0].ID, eras[0].PlayerID)
 	require.NotNil(t, eras[0].UniverseResetDate)
@@ -118,4 +123,35 @@ func TestPlayerRegisterNewCreatesPlayerAndEraWithResetDateAndLowercaseName(t *te
 	require.Equal(t, "COSMIC", *eras[0].Faction)
 
 	require.NotContains(t, out.String(), "agent-jwt-token")
+}
+
+func TestPlayerRegisterNewFailsWhenServerResetDateUnparseable(t *testing.T) {
+	client := &fakeRegistrationAPI{status: statusOn("not-a-date")}
+	store := &fakeRegistrationStore{}
+	var out bytes.Buffer
+
+	err := runPlayerRegisterNew(context.Background(), client, store, "account-token", "ORION", "COSMIC", &out)
+
+	require.Error(t, err)
+	require.False(t, client.registerCalled, "must not mint an agent token when the era name cannot be derived")
+	require.False(t, store.createCalled)
+}
+
+func TestPlayerRegisterNewPrintsTokenLoudlyWhenPersistFails(t *testing.T) {
+	client := &fakeRegistrationAPI{
+		status: statusOn("2026-07-06"),
+		result: &api.RegisterResult{Token: "agent-jwt-token", AgentSymbol: "ORION", Faction: "COSMIC"},
+	}
+	store := &fakeRegistrationStore{createErr: errors.New("unique constraint violation")}
+	var out bytes.Buffer
+
+	err := runPlayerRegisterNew(context.Background(), client, store, "account-token", "ORION", "COSMIC", &out)
+
+	require.Error(t, err)
+	require.True(t, client.registerCalled)
+	require.True(t, store.createCalled)
+	// The API already minted the one-and-only token before the local persist
+	// failed; it must still reach the operator or it is lost forever.
+	require.Contains(t, out.String(), "agent-jwt-token")
+	require.Contains(t, out.String(), "ORION")
 }

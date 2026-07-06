@@ -34,10 +34,28 @@ func (r *GormPlayerRepository) FindByID(ctx context.Context, playerID shared.Pla
 	return r.modelToPlayer(&model)
 }
 
-// FindByAgentSymbol retrieves a player by agent symbol
+// FindByAgentSymbol retrieves a player by agent symbol.
+//
+// The same agent symbol may be re-registered across universe eras, so more
+// than one player row can share a symbol. Resolution prefers the player
+// belonging to the currently OPEN era; when no era is open, it falls back to
+// the most recently created player with that symbol.
 func (r *GormPlayerRepository) FindByAgentSymbol(ctx context.Context, agentSymbol string) (*player.Player, error) {
 	var model PlayerModel
-	result := r.db.WithContext(ctx).Where("agent_symbol = ?", agentSymbol).First(&model)
+
+	result := r.db.WithContext(ctx).
+		Select("players.*").
+		Joins("JOIN eras ON eras.player_id = players.id AND eras.closed_at IS NULL").
+		Where("players.agent_symbol = ?", agentSymbol).
+		First(&model)
+
+	if result.Error == gorm.ErrRecordNotFound {
+		result = r.db.WithContext(ctx).
+			Where("agent_symbol = ?", agentSymbol).
+			Order("created_at DESC, id DESC").
+			First(&model)
+	}
+
 	if result.Error != nil {
 		if result.Error == gorm.ErrRecordNotFound {
 			return nil, fmt.Errorf("player not found: %s", agentSymbol)
