@@ -125,8 +125,8 @@ func TestGetShipMapsFullFieldSet(t *testing.T) {
 	assertFullModules(t, ship)
 }
 
-// ListShips pins the CURRENT divergence: it keeps FlightMode/Role but DROPS
-// Modules and CooldownExpiration.
+// ListShips maps the full ShipData field set at parity with GetShip,
+// including FlightMode, Role, Modules and CooldownExpiration.
 func TestListShipsMapsShipFields(t *testing.T) {
 	client, closeFn := newTestClient(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -161,8 +161,8 @@ func TestListShipsMapsShipFields(t *testing.T) {
 	assertFullModules(t, ship)
 }
 
-// PurchaseShip routes ship JSON through convertShipData. This pins the CURRENT
-// divergence: FlightMode, Role, CooldownExpiration and Modules are all dropped.
+// PurchaseShip routes ship JSON through convertShipData, mapping the full
+// ShipData field set including FlightMode, Role, CooldownExpiration and Modules.
 func TestPurchaseShipMapsShipFields(t *testing.T) {
 	client, closeFn := newTestClient(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

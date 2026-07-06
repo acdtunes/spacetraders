@@ -30,7 +30,7 @@ func TestCalculateSupplyAwareLimit_PinsSupplyActivityMatrix(t *testing.T) {
 	}
 }
 
-func TestCalculateSupplyAwareLimit_PinsZeroAndNegativeTradeVolume(t *testing.T) {
+func TestCalculateSupplyAwareLimit_NonPositiveTradeVolume_YieldsZero(t *testing.T) {
 	p := &ManufacturingPurchaser{}
 	if got := p.CalculateSupplyAwareLimit("ABUNDANT", "WEAK", 0); got != 0 {
 		t.Errorf("tradeVolume=0: got %d, want 0", got)

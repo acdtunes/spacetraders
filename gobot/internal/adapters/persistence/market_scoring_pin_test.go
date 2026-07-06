@@ -2,7 +2,7 @@ package persistence
 
 import "testing"
 
-func TestScoreMarketForBuying_PinsSupplyOrdinal(t *testing.T) {
+func TestScoreMarketForBuying_ScarcerSupplyScoresWorse(t *testing.T) {
 	cases := map[string]int{
 		"ABUNDANT": 0, "HIGH": 10, "MODERATE": 20, "LIMITED": 30, "SCARCE": 40, "": 50,
 	}
@@ -13,7 +13,7 @@ func TestScoreMarketForBuying_PinsSupplyOrdinal(t *testing.T) {
 	}
 }
 
-func TestScoreMarketForBuying_PinsActivityOrdinal(t *testing.T) {
+func TestScoreMarketForBuying_WeakerActivityScoresWorse(t *testing.T) {
 	cases := map[string]int{
 		"RESTRICTED": 0, "WEAK": 1, "GROWING": 2, "STRONG": 3, "": 4,
 	}
@@ -24,7 +24,7 @@ func TestScoreMarketForBuying_PinsActivityOrdinal(t *testing.T) {
 	}
 }
 
-func TestScoreMarketForBuying_PinsTradeTypeWeightAndComposite(t *testing.T) {
+func TestScoreMarketForBuying_CompositeIsTradeWeightPlusSupplyPlusActivity(t *testing.T) {
 	cases := []struct {
 		tradeType string
 		supply    string

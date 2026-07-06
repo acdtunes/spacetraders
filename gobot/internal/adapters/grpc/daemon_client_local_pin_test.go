@@ -57,7 +57,7 @@ func storageShipCommand(playerID int) *gasCmd.RunStorageShipWorkerCommand {
 	}
 }
 
-func TestLocalClientPersistContractWorkflow_PinsPersistedRow(t *testing.T) {
+func TestPersistContractWorkflow_StoresConfigAndLinksParent(t *testing.T) {
 	client, _, db, playerID := newLocalClientHarness(t)
 	cmd := &contractCmd.RunWorkflowCommand{
 		ShipSymbol:    "SHIP-CW",
@@ -88,7 +88,7 @@ func TestLocalClientPersistContractWorkflow_RejectsWrongCommandType(t *testing.T
 	require.ErrorIs(t, err, daemon.ErrInvalidCommandType)
 }
 
-func TestLocalClientPersistGasSiphonWorker_PinsPersistedRow(t *testing.T) {
+func TestPersistGasSiphonWorker_PersistsAsGasSiphonWorkerType(t *testing.T) {
 	client, _, db, playerID := newLocalClientHarness(t)
 
 	require.NoError(t, client.PersistContainer(context.Background(), daemon.ContainerKindGasSiphonWorker, "siphon-1", uint(playerID), siphonWorkerCommand(playerID)))
@@ -115,7 +115,7 @@ func TestLocalClientPersistGasSiphonWorker_RejectsWrongCommandType(t *testing.T)
 	require.Error(t, err)
 }
 
-func TestLocalClientPersistStorageShip_PinsPersistedRow(t *testing.T) {
+func TestPersistStorageShip_StoresTypeStatusParentAndConfig(t *testing.T) {
 	client, _, db, playerID := newLocalClientHarness(t)
 
 	require.NoError(t, client.PersistContainer(context.Background(), daemon.ContainerKindStorageShip, "storage-1", uint(playerID), storageShipCommand(playerID)))
@@ -134,7 +134,7 @@ func TestLocalClientPersistStorageShip_PinsPersistedRow(t *testing.T) {
 	}, containerConfig(t, model))
 }
 
-func TestLocalClientPersistManufacturingTaskWorker_PinsPersistedRow(t *testing.T) {
+func TestPersistManufacturingTaskWorker_StoresTaskConfigAndLinksParent(t *testing.T) {
 	client, _, db, playerID := newLocalClientHarness(t)
 	task := domainMfg.NewLiquidationTask(playerID, "SHIP-MFG", "FUEL", 10, "X1-M-M1")
 	cmd := &mfgServices.WorkerCommand{

@@ -21,19 +21,19 @@ func newPinOpportunity(t *testing.T, purchasePrice int, activity, supply string,
 	return opp
 }
 
-func TestManufacturingOpportunityScore_PinsActivityAndSupplyWeights(t *testing.T) {
+func TestScoreWeightsActivityAndSupply(t *testing.T) {
 	cases := []struct {
 		name     string
 		activity string
 		supply   string
 		expected float64
 	}{
-		{"weak abundant", "WEAK", "ABUNDANT", 58.4},
-		{"weak high", "WEAK", "HIGH", 54.4},
-		{"growing scarce", "GROWING", "SCARCE", 12.4},
-		{"strong moderate", "STRONG", "MODERATE", 27.9},
-		{"restricted limited", "RESTRICTED", "LIMITED", 31.4},
-		{"unknown unknown", "", "", 33.4},
+		{"weak_activity_abundant_supply", "WEAK", "ABUNDANT", 58.4},
+		{"weak_activity_high_supply", "WEAK", "HIGH", 54.4},
+		{"growing_activity_scarce_supply", "GROWING", "SCARCE", 12.4},
+		{"strong_activity_moderate_supply", "STRONG", "MODERATE", 27.9},
+		{"restricted_activity_limited_supply", "RESTRICTED", "LIMITED", 31.4},
+		{"unknown_activity_unknown_supply", "", "", 33.4},
 	}
 	for _, tc := range cases {
 		opp := newPinOpportunity(t, 500, tc.activity, tc.supply, goods.AcquisitionFabricate)
@@ -43,7 +43,7 @@ func TestManufacturingOpportunityScore_PinsActivityAndSupplyWeights(t *testing.T
 	}
 }
 
-func TestManufacturingOpportunityScore_PinsDirectArbitrageBonusAndPriceCap(t *testing.T) {
+func TestScoreAddsBuyArbitrageBonusAndCapsPrice(t *testing.T) {
 	buyRoot := newPinOpportunity(t, 500, "WEAK", "ABUNDANT", goods.AcquisitionBuy)
 	if got := buyRoot.Score(); math.Abs(got-158.4) > 1e-9 {
 		t.Errorf("BUY root bonus: Score() = %v, want 158.4", got)

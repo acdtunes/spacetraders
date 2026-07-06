@@ -46,11 +46,11 @@ func (r *recordingTaskAssigner) GetAssignmentCount() int {
 	return 0
 }
 
-// TestHandleWorkerCompletion_PassesCoordinatorIDToAssignTasks pins that the task
+// TestWorkerCompletion_ReassignsTasksUnderCoordinatorContainer verifies that the task
 // reassignment triggered after a worker completes carries the coordinator's container
 // ID (CoordinatorID). Every other AssignTasks call in the coordinator sets this so
 // worker containers can be cascade-stopped with their parent; this path must too.
-func TestHandleWorkerCompletion_PassesCoordinatorIDToAssignTasks(t *testing.T) {
+func TestWorkerCompletion_ReassignsTasksUnderCoordinatorContainer(t *testing.T) {
 	handler := NewRunParallelManufacturingCoordinatorHandler(
 		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 	)

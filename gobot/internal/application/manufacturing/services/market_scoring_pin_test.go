@@ -9,7 +9,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 )
 
-func TestCalculateMarketScore_PinsActivityAndSupplyTables(t *testing.T) {
+func TestCalculateMarketScore_SupplyAndActivityCombineWithBonus(t *testing.T) {
 	cases := []struct {
 		activity string
 		supply   string
@@ -44,7 +44,7 @@ func TestImportActivityScore_PinsSellerSideOrdering(t *testing.T) {
 	}
 }
 
-func TestCollectionOpportunityScore_PinsBonusTables(t *testing.T) {
+func TestCollectionOpportunityScore_AbundantStrongRanksHighest(t *testing.T) {
 	cases := []struct {
 		name            string
 		factorySupply   string
@@ -71,7 +71,7 @@ func TestCollectionOpportunityScore_PinsBonusTables(t *testing.T) {
 	}
 }
 
-func TestApplySourceSupplyPriority_PinsPriorityMapping(t *testing.T) {
+func TestApplySourceSupplyPriority_AbundantHighThenFloorOfTen(t *testing.T) {
 	cases := map[string]int{
 		"ABUNDANT": 40, "HIGH": 30, "MODERATE": 10, "LIMITED": 10, "SCARCE": 10, "": 10,
 	}
@@ -104,7 +104,7 @@ func newExportMarket(t *testing.T, waypointSymbol, good, supply, activity string
 	return m
 }
 
-func TestFindExportMarketBySupplyPriority_PinsTieKeepsFirstListedMarket(t *testing.T) {
+func TestFindExportMarketBySupplyPriority_TieKeepsFirstListedMarket(t *testing.T) {
 	repo := &plannerStubMarketRepo{
 		marketWaypoints: []string{"X1-T-A1", "X1-T-B2"},
 		markets: map[string]*market.Market{
@@ -123,7 +123,7 @@ func TestFindExportMarketBySupplyPriority_PinsTieKeepsFirstListedMarket(t *testi
 	}
 }
 
-func TestFindExportMarketBySupplyPriority_PinsTieAfterWorseCandidate(t *testing.T) {
+func TestFindExportMarketBySupplyPriority_ReturnsFirstOfTiedBestMarkets(t *testing.T) {
 	repo := &plannerStubMarketRepo{
 		marketWaypoints: []string{"X1-T-A1", "X1-T-B2", "X1-T-C3"},
 		markets: map[string]*market.Market{
@@ -143,7 +143,7 @@ func TestFindExportMarketBySupplyPriority_PinsTieAfterWorseCandidate(t *testing.
 	}
 }
 
-func TestFindExportMarketBySupplyPriority_PinsSupplyThenActivityThenPrice(t *testing.T) {
+func TestFindExportMarketBySupplyPriority_RanksBySupplyThenActivityThenPrice(t *testing.T) {
 	repo := &plannerStubMarketRepo{
 		marketWaypoints: []string{"X1-T-A1", "X1-T-B2", "X1-T-C3", "X1-T-D4"},
 		markets: map[string]*market.Market{
@@ -164,7 +164,7 @@ func TestFindExportMarketBySupplyPriority_PinsSupplyThenActivityThenPrice(t *tes
 	}
 }
 
-func TestFindExportMarketBySupplyPriority_PinsLimitedAndScarceSkipped(t *testing.T) {
+func TestFindExportMarketBySupplyPriority_ExcludesLimitedAndScarceSupply(t *testing.T) {
 	repo := &plannerStubMarketRepo{
 		marketWaypoints: []string{"X1-T-A1", "X1-T-B2"},
 		markets: map[string]*market.Market{
@@ -179,7 +179,7 @@ func TestFindExportMarketBySupplyPriority_PinsLimitedAndScarceSkipped(t *testing
 	}
 }
 
-func TestFindExportMarketWithGoodSupply_PinsTieKeepsFirstListedMarket(t *testing.T) {
+func TestFindExportMarketWithGoodSupply_TieKeepsFirstListedMarket(t *testing.T) {
 	repo := &plannerStubMarketRepo{
 		marketWaypoints: []string{"X1-T-A1", "X1-T-B2"},
 		markets: map[string]*market.Market{
@@ -198,7 +198,7 @@ func TestFindExportMarketWithGoodSupply_PinsTieKeepsFirstListedMarket(t *testing
 	}
 }
 
-func TestFindExportMarketWithGoodSupply_PinsAbundantBeatsHighThenPrice(t *testing.T) {
+func TestFindExportMarketWithGoodSupply_PrefersAbundantThenCheapest(t *testing.T) {
 	repo := &plannerStubMarketRepo{
 		marketWaypoints: []string{"X1-T-A1", "X1-T-B2", "X1-T-C3"},
 		markets: map[string]*market.Market{
@@ -218,7 +218,7 @@ func TestFindExportMarketWithGoodSupply_PinsAbundantBeatsHighThenPrice(t *testin
 	}
 }
 
-func TestFindExportMarketWithGoodSupply_PinsModerateReturnsNil(t *testing.T) {
+func TestFindExportMarketWithGoodSupply_ReturnsNilWhenBestSupplyIsModerate(t *testing.T) {
 	repo := &plannerStubMarketRepo{
 		marketWaypoints: []string{"X1-T-A1"},
 		markets: map[string]*market.Market{
