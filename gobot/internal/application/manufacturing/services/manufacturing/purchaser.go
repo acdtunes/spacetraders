@@ -12,17 +12,6 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// Supply-aware multipliers from design doc
-// See docs/PARALLEL_MANUFACTURING_SYSTEM_DESIGN.md - Trade Size Calculation
-// This prevents crashing supply by limiting purchase based on supply scarcity
-var supplyMultipliers = map[string]float64{
-	"ABUNDANT": 0.80, // Plenty of buffer
-	"HIGH":     0.60, // Sweet spot - maintain stability
-	"MODERATE": 0.40, // Careful - could drop to LIMITED
-	"LIMITED":  0.20, // Very careful - critical supply
-	"SCARCE":   0.10, // Minimal - supply nearly depleted
-}
-
 // Activity-based modifiers for position sizing (applied to base supply multipliers)
 // Based on data analysis: WEAK activity at EXPORT = lowest prices (buy more aggressive)
 // STRONG activity at EXPORT = highest prices (buy more conservative)
@@ -34,9 +23,6 @@ var activityModifiers = map[string]float64{
 }
 
 const (
-	// DefaultSupplyMultiplier is used when supply level is unknown
-	DefaultSupplyMultiplier = 0.40 // Conservative (MODERATE)
-
 	// DefaultActivityModifier is used when activity level is unknown
 	DefaultActivityModifier = 1.0 // No adjustment
 
@@ -278,10 +264,7 @@ func (p *ManufacturingPurchaser) CalculateSupplyAwareLimit(supply, activity stri
 	}
 
 	// Base multiplier from supply level
-	multiplier, ok := supplyMultipliers[supply]
-	if !ok {
-		multiplier = DefaultSupplyMultiplier // Default to conservative (MODERATE)
-	}
+	multiplier := manufacturing.SupplyLevel(supply).PurchaseMultiplier()
 
 	// Activity modifier adjusts the base multiplier
 	activityMod, ok := activityModifiers[activity]

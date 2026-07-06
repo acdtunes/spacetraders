@@ -9,6 +9,8 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"gorm.io/gorm"
+
+	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 )
 
 // ManufacturingMetricsCollector handles all manufacturing pipeline metrics
@@ -615,20 +617,7 @@ func (c *ManufacturingMetricsCollector) updateFactoryMetrics(playerID int) {
 
 // supplyLevelToValue converts supply level string to numeric value
 func (c *ManufacturingMetricsCollector) supplyLevelToValue(level string) float64 {
-	switch level {
-	case "SCARCE":
-		return 1
-	case "LIMITED":
-		return 2
-	case "MODERATE":
-		return 3
-	case "HIGH":
-		return 4
-	case "ABUNDANT":
-		return 5
-	default:
-		return 0
-	}
+	return float64(manufacturing.SupplyLevel(level).Order())
 }
 
 // updateShipMetrics updates ship utilization metrics

@@ -63,8 +63,10 @@ func newConstructionMonitor(taskRepo *constructionStubTaskRepo, pipelineRepo *co
 		pipelineRepo,
 		queue,
 		taskRepo,
+		NewSellMarketDistributor(nil, taskRepo),
 		nil, // marketLocator
 		nil, // storageOpRepo
+		nil, // eventPublisher
 		time.Minute,
 		1,
 	)

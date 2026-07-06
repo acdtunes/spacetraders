@@ -569,12 +569,13 @@ func (h *RunParallelManufacturingCoordinatorHandler) startSupplyMonitor(ctx cont
 		h.pipelineRepo,
 		h.taskQueue,
 		h.taskRepo,
+		services.NewSellMarketDistributor(h.marketRepo, h.taskRepo),
 		h.pipelinePlanner.MarketLocator(),
 		h.storageOpRepo, // For creating STORAGE_ACQUIRE_DELIVER tasks
+		h.eventPublisher,
 		pollInterval,
 		playerID,
 	)
-	supplyMonitor.SetEventPublisher(h.eventPublisher)
 	go supplyMonitor.Run(ctx)
 
 	logger.Log("INFO", "Supply monitor started", map[string]interface{}{

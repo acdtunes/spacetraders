@@ -134,7 +134,7 @@ func (m *WorkerLifecycleManager) AssignTaskToShip(ctx context.Context, params As
 
 	// Step 1: Persist worker container to DB
 	logger.Log("INFO", fmt.Sprintf("Persisting worker container %s for %s", containerID, shipSymbol), nil)
-	if err := m.daemonClient.PersistManufacturingTaskWorkerContainer(ctx, containerID, uint(params.PlayerID), &WorkerCommand{
+	if err := m.daemonClient.PersistContainer(ctx, daemon.ContainerKindManufacturingTaskWorker, containerID, uint(params.PlayerID), &WorkerCommand{
 		ShipSymbol:     shipSymbol,
 		Task:           task,
 		PlayerID:       params.PlayerID,
@@ -171,7 +171,7 @@ func (m *WorkerLifecycleManager) AssignTaskToShip(ctx context.Context, params As
 
 	// Step 3: Start the worker container
 	logger.Log("INFO", fmt.Sprintf("Starting worker container %s for task %s", containerID, task.ID()[:8]), nil)
-	if err := m.daemonClient.StartManufacturingTaskWorkerContainer(ctx, containerID); err != nil {
+	if err := m.daemonClient.StartContainer(ctx, daemon.ContainerKindManufacturingTaskWorker, containerID); err != nil {
 		// Release ship assignment on failure
 		if m.shipRepo != nil {
 			params.Ship.ForceRelease("worker_start_failed", m.clock)

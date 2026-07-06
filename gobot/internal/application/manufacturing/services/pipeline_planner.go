@@ -21,8 +21,8 @@ import (
 // This atomic approach prevents the "orphaned cargo" bug where a ship buys goods
 // but a different ship gets assigned to deliver them.
 type PipelinePlanner struct {
-	marketLocator *MarketLocator
-	storageOpRepo storage.StorageOperationRepository // Optional: enables STORAGE_ACQUIRE_DELIVER tasks
+	marketLocator  *MarketLocator
+	storageSources *StorageSourceFinder // Optional: enables STORAGE_ACQUIRE_DELIVER tasks
 }
 
 // NewPipelinePlanner creates a new pipeline planner
@@ -32,8 +32,8 @@ func NewPipelinePlanner(
 	storageOpRepo storage.StorageOperationRepository,
 ) *PipelinePlanner {
 	return &PipelinePlanner{
-		marketLocator: marketLocator,
-		storageOpRepo: storageOpRepo,
+		marketLocator:  marketLocator,
+		storageSources: NewStorageSourceFinder(storageOpRepo),
 	}
 }
 
@@ -47,7 +47,7 @@ func (p *PipelinePlanner) MarketLocator() *MarketLocator {
 // This enables STORAGE_ACQUIRE_DELIVER tasks for goods available from
 // running storage operations (e.g., gas siphoning for LIQUID_HYDROGEN).
 func (p *PipelinePlanner) SetStorageOperationRepository(repo storage.StorageOperationRepository) {
-	p.storageOpRepo = repo
+	p.storageSources = NewStorageSourceFinder(repo)
 }
 
 // PlanningContext holds state during pipeline planning
@@ -276,7 +276,7 @@ func (p *PipelinePlanner) createAcquireDeliverTask(
 
 	// First, check if there's a running storage operation for this good (e.g., gas siphoning)
 	// If so, create STORAGE_ACQUIRE_DELIVER instead of ACQUIRE_DELIVER
-	if storageOp := p.findRunningStorageOperationForGood(planCtx.ctx, node.Good, planCtx.playerID); storageOp != nil {
+	if storageOp := p.storageSources.FindRunningOperationForGood(planCtx.ctx, planCtx.playerID, node.Good); storageOp != nil {
 		logger.Log("INFO", "Using storage operation for acquisition task", map[string]interface{}{
 			"good":        node.Good,
 			"storage_op":  storageOp.ID(),
@@ -329,37 +329,4 @@ func (p *PipelinePlanner) createAcquireDeliverTask(
 	planCtx.tasks = append(planCtx.tasks, task)
 
 	return task.ID(), nil
-}
-
-// findRunningStorageOperationForGood checks if there's a running storage operation
-// that produces the specified good. This is used to prefer storage acquisition
-// (from siphon ships) over market acquisition for gas goods.
-//
-// Returns the storage operation if found, nil otherwise.
-func (p *PipelinePlanner) findRunningStorageOperationForGood(ctx context.Context, good string, playerID int) *storage.StorageOperation {
-	if p.storageOpRepo == nil {
-		return nil
-	}
-
-	logger := common.LoggerFromContext(ctx)
-
-	// Find storage operations that support this good
-	operations, err := p.storageOpRepo.FindByGood(ctx, playerID, good)
-	if err != nil {
-		logger.Log("WARN", "Storage operation lookup failed in PipelinePlanner", map[string]interface{}{
-			"good":      good,
-			"player_id": playerID,
-			"error":     err.Error(),
-		})
-		return nil
-	}
-
-	// Return the first RUNNING operation that supports this good
-	for _, op := range operations {
-		if op.IsRunning() && op.SupportsGood(good) {
-			return op
-		}
-	}
-
-	return nil
 }

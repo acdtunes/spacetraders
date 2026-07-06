@@ -37,34 +37,16 @@ func (o *CollectionOpportunity) Score() int {
 
 	// Bonus for ABUNDANT factory supply (more reliable source)
 	if o.FactorySupply == supplyAbundant {
-		score += 100
+		score += collectionAbundantFactoryBonus
 	}
 
 	// Activity-based bonus for sell market (IMPORT)
 	// STRONG activity = highest prices at IMPORT markets = best for selling
-	switch o.SellMarketActivity {
-	case activityStrong:
-		score += 500
-	case activityGrowing:
-		score += 300
-	case activityWeak:
-		score += 100
-	case activityRestricted:
-		score += 0
-	}
+	score += collectionSellMarketActivityBonus.weightFor(o.SellMarketActivity)
 
 	// Activity-based bonus for factory (EXPORT market)
 	// WEAK activity = lowest prices at EXPORT markets = best for buying
-	switch o.FactoryActivity {
-	case activityWeak:
-		score += 200 // Best for buying
-	case activityGrowing:
-		score += 100
-	case activityStrong:
-		score += 50
-	case activityRestricted:
-		score += 0 // Worst for buying
-	}
+	score += collectionFactoryActivityBonus.weightFor(o.FactoryActivity)
 
 	return score
 }

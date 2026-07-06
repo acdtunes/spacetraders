@@ -6,16 +6,83 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/goods"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 )
 
+// taskReadyNotifier publishes task ready notifications via the event bus.
+type taskReadyNotifier struct {
+	publisher navigation.ShipEventPublisher
+	playerID  int
+}
+
+func (n *taskReadyNotifier) notifyTasksReady(pipelineID string) {
+	if n.publisher == nil {
+		return
+	}
+	n.publisher.PublishTasksBecameReady(navigation.TasksBecameReadyEvent{
+		PlayerID:   n.playerID,
+		PipelineID: pipelineID,
+	})
+}
+
+// marketSupplyReader answers supply-level questions against market data.
+type marketSupplyReader struct {
+	marketRepo market.MarketRepository
+	playerID   int
+}
+
+// sourceMarketSupply returns the supply level of a good at a specific market
+func (r marketSupplyReader) sourceMarketSupply(ctx context.Context, waypointSymbol string, good string) string {
+	marketData, err := r.marketRepo.GetMarketData(ctx, waypointSymbol, r.playerID)
+	if err != nil || marketData == nil {
+		return supplyModerate // Default if we can't check
+	}
+
+	tradeGood := marketData.FindGood(good)
+	if tradeGood == nil {
+		return supplyModerate
+	}
+	return supplyOrModerate(tradeGood)
+}
+
+// sellMarketSaturated checks if the sell market has HIGH or ABUNDANT supply
+// Returns true if we should NOT sell to this market (would crash prices)
+func (r marketSupplyReader) sellMarketSaturated(ctx context.Context, sellMarket string, good string) bool {
+	marketData, err := r.marketRepo.GetMarketData(ctx, sellMarket, r.playerID)
+	if err != nil || marketData == nil {
+		return false // Can't check, assume not saturated
+	}
+
+	tradeGood := marketData.FindGood(good)
+	if tradeGood == nil || tradeGood.Supply() == nil {
+		return false
+	}
+
+	supply := *tradeGood.Supply()
+	return isHighOrAbundant(supply)
+}
+
+// TaskActivator flips gated manufacturing tasks between PENDING and READY as
+// market conditions and dependencies evolve.
+type TaskActivator struct {
+	taskRepo      manufacturing.TaskRepository
+	pipelineRepo  manufacturing.PipelineRepository
+	taskQueue     ManufacturingTaskQueue
+	marketLocator *MarketLocator
+	supply        marketSupplyReader
+	playerID      int
+	notifier      *taskReadyNotifier
+}
+
 // checkDependenciesComplete checks if all task dependencies are complete
-func (m *SupplyMonitor) checkDependenciesComplete(ctx context.Context, task *manufacturing.ManufacturingTask) bool {
-	if m.taskRepo == nil {
+func (a *TaskActivator) checkDependenciesComplete(ctx context.Context, task *manufacturing.ManufacturingTask) bool {
+	if a.taskRepo == nil {
 		return true // Assume complete if no repo
 	}
 
 	for _, depID := range task.DependsOn() {
-		depTask, err := m.taskRepo.FindByID(ctx, depID)
+		depTask, err := a.taskRepo.FindByID(ctx, depID)
 		if err != nil {
 			return false
 		}
@@ -31,15 +98,15 @@ func (m *SupplyMonitor) checkDependenciesComplete(ctx context.Context, task *man
 // those whose source market now has HIGH/ABUNDANT supply.
 // Raw materials (ores, crystals, gases) are activated immediately since they bypass supply-gating.
 // This is called during each poll cycle to process supply-gated tasks.
-func (m *SupplyMonitor) ActivateSupplyGatedTasks(ctx context.Context) int {
+func (a *TaskActivator) ActivateSupplyGatedTasks(ctx context.Context) int {
 	logger := common.LoggerFromContext(ctx)
 
-	if m.taskRepo == nil {
+	if a.taskRepo == nil {
 		return 0
 	}
 
 	// Find all PENDING ACQUIRE_DELIVER tasks for this player
-	pendingTasks, err := m.taskRepo.FindByStatus(ctx, m.playerID, manufacturing.TaskStatusPending)
+	pendingTasks, err := a.taskRepo.FindByStatus(ctx, a.playerID, manufacturing.TaskStatusPending)
 	if err != nil {
 		logger.Log("WARN", "Failed to find pending tasks for supply-gate check", map[string]interface{}{
 			"error": err.Error(),
@@ -61,7 +128,7 @@ func (m *SupplyMonitor) ActivateSupplyGatedTasks(ctx context.Context) int {
 		// CRITICAL: Verify pipeline is still EXECUTING before activating task
 		// Tasks from CANCELLED/FAILED/COMPLETED pipelines should not be activated
 		pipelineID := task.PipelineID()
-		pipelineStatus, found := m.cachedPipelineStatus(ctx, pipelineStatusCache, pipelineID)
+		pipelineStatus, found := a.cachedPipelineStatus(ctx, pipelineStatusCache, pipelineID)
 		if !found {
 			logger.Log("DEBUG", "Skipping task - pipeline not found", map[string]interface{}{
 				"task_id":     shortID(task.ID()),
@@ -81,7 +148,7 @@ func (m *SupplyMonitor) ActivateSupplyGatedTasks(ctx context.Context) int {
 
 		// FACTORY INPUT SATURATION CHECK: Skip activation if factory already has HIGH/ABUNDANT supply
 		// This prevents acquiring more goods for markets that don't need them
-		factoryInputSupply := m.getSourceMarketSupply(ctx, task.FactorySymbol(), task.Good())
+		factoryInputSupply := a.supply.sourceMarketSupply(ctx, task.FactorySymbol(), task.Good())
 		if isHighOrAbundant(factoryInputSupply) {
 			logger.Log("DEBUG", "Skipping task - factory input already saturated", map[string]interface{}{
 				"task_id":        shortID(task.ID()),
@@ -93,7 +160,7 @@ func (m *SupplyMonitor) ActivateSupplyGatedTasks(ctx context.Context) int {
 		}
 
 		isRawMaterial := goods.IsMineableRawMaterial(task.Good())
-		sourceSupply := m.getSourceMarketSupply(ctx, task.SourceMarket(), task.Good())
+		sourceSupply := a.supply.sourceMarketSupply(ctx, task.SourceMarket(), task.Good())
 
 		var reason string
 		if acceptableSourceSupply(sourceSupply, isRawMaterial) {
@@ -105,7 +172,7 @@ func (m *SupplyMonitor) ActivateSupplyGatedTasks(ctx context.Context) int {
 		} else {
 			// RE-SOURCING: Current source has bad supply, try to find a better market
 			// This prevents tasks from being stuck forever when their original source degrades
-			betterSupply, resourced := m.resourcePendingTask(ctx, task, isRawMaterial)
+			betterSupply, resourced := a.resourcePendingTask(ctx, task, isRawMaterial)
 			if !resourced {
 				continue
 			}
@@ -125,7 +192,7 @@ func (m *SupplyMonitor) ActivateSupplyGatedTasks(ctx context.Context) int {
 		}
 
 		// Persist the change
-		if err := m.taskRepo.Update(ctx, task); err != nil {
+		if err := a.taskRepo.Update(ctx, task); err != nil {
 			logger.Log("WARN", "Failed to persist activated task", map[string]interface{}{
 				"task_id": shortID(task.ID()),
 				"error":   err.Error(),
@@ -134,7 +201,7 @@ func (m *SupplyMonitor) ActivateSupplyGatedTasks(ctx context.Context) int {
 		}
 
 		// Add to queue
-		m.taskQueue.Enqueue(task)
+		a.taskQueue.Enqueue(task)
 		activated++
 		lastActivatedPipelineID = pipelineID
 
@@ -152,20 +219,20 @@ func (m *SupplyMonitor) ActivateSupplyGatedTasks(ctx context.Context) int {
 		logger.Log("INFO", "Supply-gated task activation summary", map[string]interface{}{
 			"activated": activated,
 		})
-		m.notifyTaskReady(lastActivatedPipelineID)
+		a.notifier.notifyTasksReady(lastActivatedPipelineID)
 	}
 
 	return activated
 }
 
-func (m *SupplyMonitor) cachedPipelineStatus(ctx context.Context, cache map[string]manufacturing.PipelineStatus, pipelineID string) (manufacturing.PipelineStatus, bool) {
+func (a *TaskActivator) cachedPipelineStatus(ctx context.Context, cache map[string]manufacturing.PipelineStatus, pipelineID string) (manufacturing.PipelineStatus, bool) {
 	if status, cached := cache[pipelineID]; cached {
 		return status, true
 	}
-	if m.pipelineRepo == nil {
+	if a.pipelineRepo == nil {
 		return "", true
 	}
-	pipeline, err := m.pipelineRepo.FindByID(ctx, pipelineID)
+	pipeline, err := a.pipelineRepo.FindByID(ctx, pipelineID)
 	if err != nil || pipeline == nil {
 		return "", false
 	}
@@ -173,7 +240,7 @@ func (m *SupplyMonitor) cachedPipelineStatus(ctx context.Context, cache map[stri
 	return pipeline.Status(), true
 }
 
-func (m *SupplyMonitor) resourcePendingTask(ctx context.Context, task *manufacturing.ManufacturingTask, isRawMaterial bool) (string, bool) {
+func (a *TaskActivator) resourcePendingTask(ctx context.Context, task *manufacturing.ManufacturingTask, isRawMaterial bool) (string, bool) {
 	logger := common.LoggerFromContext(ctx)
 
 	systemSymbol := extractSystem(task.FactorySymbol())
@@ -181,15 +248,15 @@ func (m *SupplyMonitor) resourcePendingTask(ctx context.Context, task *manufactu
 	var betterSource *MarketLocatorResult
 	var err error
 	if isRawMaterial {
-		betterSource, err = m.marketLocator.FindExportMarketWithGoodSupply(ctx, task.Good(), systemSymbol, m.playerID)
+		betterSource, err = a.marketLocator.FindExportMarketWithGoodSupply(ctx, task.Good(), systemSymbol, a.playerID)
 	} else {
-		betterSource, err = m.marketLocator.FindExportMarketBySupplyPriority(ctx, task.Good(), systemSymbol, m.playerID)
+		betterSource, err = a.marketLocator.FindExportMarketBySupplyPriority(ctx, task.Good(), systemSymbol, a.playerID)
 	}
 	if err != nil || betterSource == nil {
 		return "", false
 	}
 
-	betterSupply := m.getSourceMarketSupply(ctx, betterSource.WaypointSymbol, task.Good())
+	betterSupply := a.supply.sourceMarketSupply(ctx, betterSource.WaypointSymbol, task.Good())
 	if !acceptableSourceSupply(betterSupply, isRawMaterial) {
 		return "", false
 	}
@@ -217,10 +284,10 @@ func (m *SupplyMonitor) resourcePendingTask(ctx context.Context, task *manufactu
 // ActivateCollectionPipelineTasks activates PENDING and enqueues READY COLLECT_SELL tasks from COLLECTION pipelines.
 // COLLECTION pipelines have no factory states, so they're not handled by the normal factory polling.
 // This method ensures tasks (from recovery, retry, or un-saturated markets) get activated and enqueued.
-func (m *SupplyMonitor) ActivateCollectionPipelineTasks(ctx context.Context) int {
+func (a *TaskActivator) ActivateCollectionPipelineTasks(ctx context.Context) int {
 	logger := common.LoggerFromContext(ctx)
 
-	if m.taskRepo == nil || m.pipelineRepo == nil {
+	if a.taskRepo == nil || a.pipelineRepo == nil {
 		return 0
 	}
 
@@ -230,7 +297,7 @@ func (m *SupplyMonitor) ActivateCollectionPipelineTasks(ctx context.Context) int
 	lastActivatedPipelineID := ""
 
 	// Step 1: Activate PENDING COLLECTION pipeline tasks if conditions are favorable
-	pendingTasks, err := m.taskRepo.FindByStatus(ctx, m.playerID, manufacturing.TaskStatusPending)
+	pendingTasks, err := a.taskRepo.FindByStatus(ctx, a.playerID, manufacturing.TaskStatusPending)
 	if err == nil {
 		for _, task := range pendingTasks {
 			if task.TaskType() != manufacturing.TaskTypeCollectSell {
@@ -238,19 +305,19 @@ func (m *SupplyMonitor) ActivateCollectionPipelineTasks(ctx context.Context) int
 			}
 
 			pipelineID := task.PipelineID()
-			if m.executingCollectionPipeline(ctx, pipelineCache, pipelineID) == nil {
+			if a.executingCollectionPipeline(ctx, pipelineCache, pipelineID) == nil {
 				continue
 			}
 
 			// Check factory supply - need ABUNDANT to START (buffer for supply drops during navigation)
 			// Executor will still collect if supply is HIGH when ship arrives
-			factorySupply := m.getSourceMarketSupply(ctx, task.FactorySymbol(), task.Good())
+			factorySupply := a.supply.sourceMarketSupply(ctx, task.FactorySymbol(), task.Good())
 			if factorySupply != supplyAbundant {
 				continue
 			}
 
 			// Check sell market - should not be saturated
-			if m.isSellMarketSaturated(ctx, task.TargetMarket(), task.Good()) {
+			if a.supply.sellMarketSaturated(ctx, task.TargetMarket(), task.Good()) {
 				continue
 			}
 
@@ -258,10 +325,10 @@ func (m *SupplyMonitor) ActivateCollectionPipelineTasks(ctx context.Context) int
 			if err := task.MarkReady(); err != nil {
 				continue
 			}
-			if err := m.taskRepo.Update(ctx, task); err != nil {
+			if err := a.taskRepo.Update(ctx, task); err != nil {
 				continue
 			}
-			m.taskQueue.Enqueue(task)
+			a.taskQueue.Enqueue(task)
 			activated++
 			lastActivatedPipelineID = pipelineID
 
@@ -275,7 +342,7 @@ func (m *SupplyMonitor) ActivateCollectionPipelineTasks(ctx context.Context) int
 	}
 
 	// Step 2: Enqueue READY COLLECTION pipeline tasks that aren't in queue
-	readyTasks, err := m.taskRepo.FindByStatus(ctx, m.playerID, manufacturing.TaskStatusReady)
+	readyTasks, err := a.taskRepo.FindByStatus(ctx, a.playerID, manufacturing.TaskStatusReady)
 	if err != nil {
 		logger.Log("WARN", "Failed to find ready tasks for COLLECTION pipeline check", map[string]interface{}{
 			"error": err.Error(),
@@ -289,14 +356,14 @@ func (m *SupplyMonitor) ActivateCollectionPipelineTasks(ctx context.Context) int
 		}
 
 		pipelineID := task.PipelineID()
-		if m.executingCollectionPipeline(ctx, pipelineCache, pipelineID) == nil {
+		if a.executingCollectionPipeline(ctx, pipelineCache, pipelineID) == nil {
 			continue
 		}
 
 		// Check sell market saturation before enqueueing
-		if m.isSellMarketSaturated(ctx, task.TargetMarket(), task.Good()) {
+		if a.supply.sellMarketSaturated(ctx, task.TargetMarket(), task.Good()) {
 			task.ResetToPending()
-			_ = m.taskRepo.Update(ctx, task)
+			_ = a.taskRepo.Update(ctx, task)
 			logger.Log("DEBUG", "COLLECTION task sell market saturated - reset to PENDING", map[string]interface{}{
 				"task":        shortID(task.ID()),
 				"good":        task.Good(),
@@ -306,7 +373,7 @@ func (m *SupplyMonitor) ActivateCollectionPipelineTasks(ctx context.Context) int
 		}
 
 		// Enqueue the task
-		m.taskQueue.Enqueue(task)
+		a.taskQueue.Enqueue(task)
 		activated++
 		lastActivatedPipelineID = pipelineID
 
@@ -321,16 +388,16 @@ func (m *SupplyMonitor) ActivateCollectionPipelineTasks(ctx context.Context) int
 		logger.Log("INFO", "COLLECTION pipeline task activation summary", map[string]interface{}{
 			"activated": activated,
 		})
-		m.notifyTaskReady(lastActivatedPipelineID)
+		a.notifier.notifyTasksReady(lastActivatedPipelineID)
 	}
 
 	return activated
 }
 
-func (m *SupplyMonitor) executingCollectionPipeline(ctx context.Context, cache map[string]*manufacturing.ManufacturingPipeline, pipelineID string) *manufacturing.ManufacturingPipeline {
+func (a *TaskActivator) executingCollectionPipeline(ctx context.Context, cache map[string]*manufacturing.ManufacturingPipeline, pipelineID string) *manufacturing.ManufacturingPipeline {
 	pipeline, cached := cache[pipelineID]
 	if !cached {
-		pipeline, _ = m.pipelineRepo.FindByID(ctx, pipelineID)
+		pipeline, _ = a.pipelineRepo.FindByID(ctx, pipelineID)
 		cache[pipelineID] = pipeline
 	}
 	if pipeline == nil || pipeline.PipelineType() != manufacturing.PipelineTypeCollection {
@@ -346,14 +413,14 @@ func (m *SupplyMonitor) executingCollectionPipeline(ctx context.Context, cache m
 // activates those whose dependencies are complete. Construction deliveries have a
 // fixed bill at the construction site, so no supply gating is applied beyond
 // requiring the pipeline to be EXECUTING and dependencies to be COMPLETED.
-func (m *SupplyMonitor) ActivateConstructionTasks(ctx context.Context) int {
+func (a *TaskActivator) ActivateConstructionTasks(ctx context.Context) int {
 	logger := common.LoggerFromContext(ctx)
 
-	if m.taskRepo == nil {
+	if a.taskRepo == nil {
 		return 0
 	}
 
-	pendingTasks, err := m.taskRepo.FindByStatus(ctx, m.playerID, manufacturing.TaskStatusPending)
+	pendingTasks, err := a.taskRepo.FindByStatus(ctx, a.playerID, manufacturing.TaskStatusPending)
 	if err != nil {
 		logger.Log("WARN", "Failed to find pending tasks for construction activation", map[string]interface{}{
 			"error": err.Error(),
@@ -373,13 +440,13 @@ func (m *SupplyMonitor) ActivateConstructionTasks(ctx context.Context) int {
 
 		// Verify pipeline is still EXECUTING before activating task
 		pipelineID := task.PipelineID()
-		pipelineStatus, found := m.cachedPipelineStatus(ctx, pipelineStatusCache, pipelineID)
+		pipelineStatus, found := a.cachedPipelineStatus(ctx, pipelineStatusCache, pipelineID)
 		if !found || pipelineStatus != manufacturing.PipelineStatusExecuting {
 			continue
 		}
 
 		// Wait for input deliveries (e.g., factory inputs) to complete first
-		if !m.checkDependenciesComplete(ctx, task) {
+		if !a.checkDependenciesComplete(ctx, task) {
 			continue
 		}
 
@@ -391,7 +458,7 @@ func (m *SupplyMonitor) ActivateConstructionTasks(ctx context.Context) int {
 			continue
 		}
 
-		if err := m.taskRepo.Update(ctx, task); err != nil {
+		if err := a.taskRepo.Update(ctx, task); err != nil {
 			logger.Log("WARN", "Failed to persist activated construction task", map[string]interface{}{
 				"task_id": shortID(task.ID()),
 				"error":   err.Error(),
@@ -399,7 +466,7 @@ func (m *SupplyMonitor) ActivateConstructionTasks(ctx context.Context) int {
 			continue
 		}
 
-		m.taskQueue.Enqueue(task)
+		a.taskQueue.Enqueue(task)
 		activated++
 		lastActivatedPipelineID = pipelineID
 
@@ -416,8 +483,68 @@ func (m *SupplyMonitor) ActivateConstructionTasks(ctx context.Context) int {
 		logger.Log("INFO", "Construction task activation summary", map[string]interface{}{
 			"activated": activated,
 		})
-		m.notifyTaskReady(lastActivatedPipelineID)
+		a.notifier.notifyTasksReady(lastActivatedPipelineID)
 	}
 
 	return activated
+}
+
+// DeactivateSaturatedAcquireDeliverTasks resets READY ACQUIRE_DELIVER tasks to PENDING
+// when the factory's input supply has become HIGH/ABUNDANT since the task was marked ready.
+// This prevents wasted trips when factory already has enough supply.
+func (a *TaskActivator) DeactivateSaturatedAcquireDeliverTasks(ctx context.Context) int {
+	logger := common.LoggerFromContext(ctx)
+
+	if a.taskRepo == nil {
+		return 0
+	}
+
+	// Find all READY ACQUIRE_DELIVER tasks for this player
+	readyTasks, err := a.taskRepo.FindByStatus(ctx, a.playerID, manufacturing.TaskStatusReady)
+	if err != nil {
+		logger.Log("WARN", "Failed to find ready tasks for saturation check", map[string]interface{}{
+			"error": err.Error(),
+		})
+		return 0
+	}
+
+	deactivated := 0
+	for _, task := range readyTasks {
+		// Only process ACQUIRE_DELIVER tasks
+		if task.TaskType() != manufacturing.TaskTypeAcquireDeliver {
+			continue
+		}
+
+		// Check factory input supply level
+		factoryInputSupply := a.supply.sourceMarketSupply(ctx, task.FactorySymbol(), task.Good())
+		if !isHighOrAbundant(factoryInputSupply) {
+			continue // Factory still needs this input
+		}
+
+		// Factory input is saturated - reset task to PENDING
+		task.ResetToPending()
+		if err := a.taskRepo.Update(ctx, task); err != nil {
+			logger.Log("WARN", "Failed to deactivate saturated task", map[string]interface{}{
+				"task_id": shortID(task.ID()),
+				"error":   err.Error(),
+			})
+			continue
+		}
+
+		deactivated++
+		logger.Log("INFO", "Deactivated READY task - factory input saturated", map[string]interface{}{
+			"task_id":        shortID(task.ID()),
+			"good":           task.Good(),
+			"factory":        task.FactorySymbol(),
+			"factory_supply": factoryInputSupply,
+		})
+	}
+
+	if deactivated > 0 {
+		logger.Log("INFO", "Deactivated saturated ACQUIRE_DELIVER tasks", map[string]interface{}{
+			"deactivated": deactivated,
+		})
+	}
+
+	return deactivated
 }

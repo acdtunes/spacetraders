@@ -7,6 +7,7 @@ import (
 
 	"gorm.io/gorm"
 
+	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 )
 
@@ -424,19 +425,7 @@ func scoreMarketForBuying(tradeType, supply, activity string) int {
 		tradeTypeScore = 2 // Worst - consumer market (expensive)
 	}
 
-	supplyScore := 5 // Unknown = worst
-	switch supply {
-	case "ABUNDANT":
-		supplyScore = 0
-	case "HIGH":
-		supplyScore = 1
-	case "MODERATE":
-		supplyScore = 2
-	case "LIMITED":
-		supplyScore = 3
-	case "SCARCE":
-		supplyScore = 4
-	}
+	supplyScore := 5 - manufacturing.SupplyLevel(supply).Order()
 
 	activityScore := 4 // Unknown = worst
 	switch activity {

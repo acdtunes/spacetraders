@@ -3,8 +3,10 @@ package services
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
+	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/ports"
@@ -247,12 +249,6 @@ func (l *MarketLocator) FindExportMarketBySupplyPriority(
 	}
 	var candidates []candidateMarket
 
-	supplyPriority := map[string]int{
-		supplyAbundant: 3,
-		supplyHigh:     2,
-		supplyModerate: 1,
-	}
-
 	for _, waypointSymbol := range marketWaypoints {
 		marketData, err := l.marketRepo.GetMarketData(ctx, waypointSymbol, playerID)
 		if err != nil || marketData == nil {
@@ -267,8 +263,8 @@ func (l *MarketLocator) FindExportMarketBySupplyPriority(
 		supply := supplyOrEmpty(tradeGood)
 
 		// Skip SCARCE and LIMITED - only accept MODERATE+
-		supplyScore, acceptable := supplyPriority[supply]
-		if !acceptable {
+		supplyScore := manufacturing.SupplyLevel(supply).Order() - manufacturing.SupplyLevelLimited.Order()
+		if supplyScore < 1 {
 			continue
 		}
 
@@ -290,26 +286,15 @@ func (l *MarketLocator) FindExportMarketBySupplyPriority(
 	}
 
 	// Sort by: Supply priority DESC, then Activity score DESC, then Price ASC
-	for i := 0; i < len(candidates)-1; i++ {
-		for j := i + 1; j < len(candidates); j++ {
-			shouldSwap := false
-			// Primary: Higher supply score is better
-			if candidates[j].supplyScore > candidates[i].supplyScore {
-				shouldSwap = true
-			} else if candidates[j].supplyScore == candidates[i].supplyScore {
-				// Secondary: Higher activity score is better (WEAK = 4 is best for buying)
-				if candidates[j].activityScore > candidates[i].activityScore {
-					shouldSwap = true
-				} else if candidates[j].activityScore == candidates[i].activityScore {
-					// Tertiary: Lower price is better
-					shouldSwap = candidates[j].price < candidates[i].price
-				}
-			}
-			if shouldSwap {
-				candidates[i], candidates[j] = candidates[j], candidates[i]
-			}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].supplyScore != candidates[j].supplyScore {
+			return candidates[i].supplyScore > candidates[j].supplyScore
 		}
-	}
+		if candidates[i].activityScore != candidates[j].activityScore {
+			return candidates[i].activityScore > candidates[j].activityScore
+		}
+		return candidates[i].price < candidates[j].price
+	})
 
 	best := candidates[0]
 	return &MarketLocatorResult{
@@ -401,21 +386,12 @@ func (l *MarketLocator) FindExportMarketWithGoodSupply(
 	}
 
 	// Sort candidates: ABUNDANT > HIGH, then by price (lower is better)
-	for i := 0; i < len(candidates)-1; i++ {
-		for j := i + 1; j < len(candidates); j++ {
-			shouldSwap := false
-			// ABUNDANT beats HIGH
-			if candidates[i].supply != candidates[j].supply {
-				shouldSwap = candidates[j].supply == supplyAbundant
-			} else {
-				// Same supply level - lower price wins
-				shouldSwap = candidates[j].price < candidates[i].price
-			}
-			if shouldSwap {
-				candidates[i], candidates[j] = candidates[j], candidates[i]
-			}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].supply != candidates[j].supply {
+			return candidates[i].supply == supplyAbundant
 		}
-	}
+		return candidates[i].price < candidates[j].price
+	})
 
 	return candidates[0].result, nil
 }
@@ -485,73 +461,21 @@ func (l *MarketLocator) FindBestExportMarket(
 // 3. Any activity + MODERATE supply (40-60)
 // 4. WEAK activity or SCARCE/LIMITED supply (10-30)
 func calculateMarketScore(activity, supply string) int {
-	activityScore := 0
-	switch activity {
-	case activityStrong:
-		activityScore = 50
-	case activityGrowing:
-		activityScore = 30
-	case activityWeak:
-		activityScore = 10
-	case activityRestricted:
-		activityScore = 5
-	default:
-		activityScore = 20 // Unknown/missing activity
-	}
-
-	supplyScore := 0
-	switch supply {
-	case supplyAbundant:
-		supplyScore = 50
-	case supplyHigh:
-		supplyScore = 40
-	case supplyModerate:
-		supplyScore = 30
-	case supplyLimited:
-		supplyScore = 20
-	case supplyScarce:
-		supplyScore = 10
-	default:
-		supplyScore = 15 // Unknown/missing supply
-	}
-
-	return activityScore + supplyScore
+	return sellMarketScoringPolicy.Score(activity, supply)
 }
 
 // ExportActivityScore returns a score for activity when BUYING from export markets.
 // For EXPORT markets (buying), lower activity = lower prices = better for us.
 // Data analysis: WEAK + ABUNDANT = avg 43 credits, RESTRICTED + ABUNDANT = 6,863 credits
 func ExportActivityScore(activity string) int {
-	switch activity {
-	case activityWeak:
-		return 4 // Best for buying (lowest prices)
-	case activityGrowing:
-		return 3
-	case activityStrong:
-		return 2
-	case activityRestricted:
-		return 1 // Worst for buying (highest prices)
-	default:
-		return 2 // Unknown - assume neutral
-	}
+	return market.ActivityLevel(activity).BuyerActivityScore()
 }
 
 // ImportActivityScore returns a score for activity when SELLING to import markets.
 // For IMPORT markets (selling), higher activity = higher prices = better for us.
 // Data analysis: STRONG = avg 7,551 credits, RESTRICTED = 1,480 credits
 func ImportActivityScore(activity string) int {
-	switch activity {
-	case activityStrong:
-		return 4 // Best for selling (highest prices)
-	case activityGrowing:
-		return 3
-	case activityWeak:
-		return 2
-	case activityRestricted:
-		return 1 // Worst for selling (lowest prices)
-	default:
-		return 2 // Unknown - assume neutral
-	}
+	return market.ActivityLevel(activity).SellerActivityScore()
 }
 
 // FindFactoryForProduction finds a waypoint that can produce outputGood

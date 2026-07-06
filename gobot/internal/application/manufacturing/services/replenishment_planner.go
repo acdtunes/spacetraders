@@ -11,18 +11,33 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/storage"
 )
 
-// createAcquireDeliverTasksForFactory creates ACQUIRE_DELIVER tasks when factory supply drops.
+// ReplenishmentPlanner creates ACQUIRE_DELIVER tasks when factory supply drops.
 // This is the DEMAND-DRIVEN supply chain model: only acquire raw materials when needed.
+// When a required input is available from a running storage operation (e.g., gas siphoning),
+// it creates STORAGE_ACQUIRE_DELIVER tasks instead of regular ACQUIRE_DELIVER tasks.
+type ReplenishmentPlanner struct {
+	marketRepo     market.MarketRepository
+	taskRepo       manufacturing.TaskRepository
+	taskQueue      ManufacturingTaskQueue
+	pipelineRepo   manufacturing.PipelineRepository
+	marketLocator  *MarketLocator
+	storageSources *StorageSourceFinder
+	supply         marketSupplyReader
+	playerID       int
+	notifier       *taskReadyNotifier
+}
+
+// createTasksForFactory creates ACQUIRE_DELIVER tasks when factory supply drops.
 //
 // Algorithm:
 //  1. Get market data for the factory to find IMPORT goods (factory inputs)
 //  2. Check if there are already pending ACQUIRE_DELIVER tasks for these inputs
 //  3. Check each input's supply level at the factory (INPUT BALANCING)
 //  4. For each input that is LOW and without a pending task, find an EXPORT market and create task
-func (m *SupplyMonitor) createAcquireDeliverTasksForFactory(ctx context.Context, factory *manufacturing.FactoryState) {
+func (rp *ReplenishmentPlanner) createTasksForFactory(ctx context.Context, factory *manufacturing.FactoryState) {
 	logger := common.LoggerFromContext(ctx)
 
-	if m.marketLocator == nil {
+	if rp.marketLocator == nil {
 		logger.Log("WARN", "MarketLocator not available - cannot create ACQUIRE_DELIVER tasks", map[string]interface{}{
 			"factory": factory.FactorySymbol(),
 		})
@@ -30,12 +45,12 @@ func (m *SupplyMonitor) createAcquireDeliverTasksForFactory(ctx context.Context,
 	}
 
 	// CRITICAL: Verify pipeline is still EXECUTING before creating new tasks
-	if !m.factoryPipelineExecuting(ctx, factory, "Skipping ACQUIRE_DELIVER task creation") {
+	if !pipelineExecutingForFactory(ctx, rp.pipelineRepo, factory, "Skipping ACQUIRE_DELIVER task creation") {
 		return
 	}
 
 	// Get factory market data to find required inputs (IMPORT goods)
-	marketData, err := m.marketRepo.GetMarketData(ctx, factory.FactorySymbol(), factory.PlayerID())
+	marketData, err := rp.marketRepo.GetMarketData(ctx, factory.FactorySymbol(), factory.PlayerID())
 	if err != nil {
 		logger.Log("WARN", "Failed to get market data for factory", map[string]interface{}{
 			"factory": factory.FactorySymbol(),
@@ -63,7 +78,7 @@ func (m *SupplyMonitor) createAcquireDeliverTasksForFactory(ctx context.Context,
 	}
 
 	// Get existing tasks for this pipeline to check what's already pending
-	existingTasks, err := m.taskRepo.FindByPipelineID(ctx, factory.PipelineID())
+	existingTasks, err := rp.taskRepo.FindByPipelineID(ctx, factory.PipelineID())
 	if err != nil {
 		logger.Log("WARN", "Failed to find existing tasks", map[string]interface{}{
 			"pipeline": factory.PipelineID(),
@@ -98,7 +113,7 @@ func (m *SupplyMonitor) createAcquireDeliverTasksForFactory(ctx context.Context,
 
 		// STORAGE OPERATION INTEGRATION: Check if this input is produced by a running storage operation
 		// (e.g., gas siphoning produces LIQUID_HYDROGEN, LIQUID_NITROGEN, HYDROCARBON)
-		storageOp := m.findRunningStorageOperationForGood(ctx, input.good)
+		storageOp := rp.storageSources.FindRunningOperationForGood(ctx, rp.playerID, input.good)
 
 		// If there's already a correct STORAGE_ACQUIRE_DELIVER task, skip
 		if storageOp != nil && pendingStorageTasks[input.good] {
@@ -114,10 +129,10 @@ func (m *SupplyMonitor) createAcquireDeliverTasksForFactory(ctx context.Context,
 					// Task is executing - let it complete, will create correct type on next cycle
 					continue
 				}
-				m.cancelAcquireTaskReplacedByStorage(ctx, factory, input.good, wrongTask, storageOp)
+				rp.cancelAcquireTaskReplacedByStorage(ctx, factory, input.good, wrongTask, storageOp)
 			}
 
-			if m.createStorageAcquireDeliverTask(ctx, factory, input.good, storageOp) {
+			if rp.createStorageAcquireDeliverTask(ctx, factory, input.good, storageOp) {
 				tasksCreated++
 			}
 			continue
@@ -128,7 +143,7 @@ func (m *SupplyMonitor) createAcquireDeliverTasksForFactory(ctx context.Context,
 			continue
 		}
 
-		if m.createMarketAcquireDeliverTask(ctx, factory, input.good, systemSymbol) {
+		if rp.createMarketAcquireDeliverTask(ctx, factory, input.good, systemSymbol) {
 			tasksCreated++
 		}
 	}
@@ -143,8 +158,32 @@ func (m *SupplyMonitor) createAcquireDeliverTasksForFactory(ctx context.Context,
 		})
 	}
 	if tasksCreated > 0 {
-		m.notifyTaskReady(factory.PipelineID())
+		rp.notifier.notifyTasksReady(factory.PipelineID())
 	}
+}
+
+func pipelineExecutingForFactory(ctx context.Context, pipelineRepo manufacturing.PipelineRepository, factory *manufacturing.FactoryState, skipAction string) bool {
+	if pipelineRepo == nil {
+		return true
+	}
+	logger := common.LoggerFromContext(ctx)
+	pipeline, err := pipelineRepo.FindByID(ctx, factory.PipelineID())
+	if err != nil || pipeline == nil {
+		logger.Log("DEBUG", skipAction+" - pipeline not found", map[string]interface{}{
+			"factory":     factory.FactorySymbol(),
+			"pipeline_id": shortID(factory.PipelineID()),
+		})
+		return false
+	}
+	if pipeline.Status() != manufacturing.PipelineStatusExecuting {
+		logger.Log("DEBUG", skipAction+" - pipeline not executing", map[string]interface{}{
+			"factory":         factory.FactorySymbol(),
+			"pipeline_id":     shortID(factory.PipelineID()),
+			"pipeline_status": pipeline.Status(),
+		})
+		return false
+	}
+	return true
 }
 
 type factoryInput struct {
@@ -206,17 +245,17 @@ func acceptableSourceSupply(supply string, isRawMaterial bool) bool {
 }
 
 func applySourceSupplyPriority(task *manufacturing.ManufacturingTask, sourceSupply string) {
-	switch sourceSupply {
-	case supplyAbundant:
+	switch manufacturing.SupplyLevel(sourceSupply) {
+	case manufacturing.SupplyLevelAbundant:
 		task.SetPriority(manufacturing.PriorityAcquireDeliver + manufacturing.SupplyPriorityAbundant)
-	case supplyHigh:
+	case manufacturing.SupplyLevelHigh:
 		task.SetPriority(manufacturing.PriorityAcquireDeliver + manufacturing.SupplyPriorityHigh)
-	case supplyModerate:
+	case manufacturing.SupplyLevelModerate:
 		task.SetPriority(manufacturing.PriorityAcquireDeliver + manufacturing.SupplyPriorityModerate)
 	}
 }
 
-func (m *SupplyMonitor) cancelAcquireTaskReplacedByStorage(ctx context.Context, factory *manufacturing.FactoryState, good string, wrongTask *manufacturing.ManufacturingTask, storageOp *storage.StorageOperation) {
+func (rp *ReplenishmentPlanner) cancelAcquireTaskReplacedByStorage(ctx context.Context, factory *manufacturing.FactoryState, good string, wrongTask *manufacturing.ManufacturingTask, storageOp *storage.StorageOperation) {
 	logger := common.LoggerFromContext(ctx)
 
 	if err := wrongTask.Cancel("Replaced by STORAGE_ACQUIRE_DELIVER - storage operation now available"); err != nil {
@@ -226,7 +265,7 @@ func (m *SupplyMonitor) cancelAcquireTaskReplacedByStorage(ctx context.Context, 
 		})
 		return
 	}
-	if err := m.taskRepo.Update(ctx, wrongTask); err != nil {
+	if err := rp.taskRepo.Update(ctx, wrongTask); err != nil {
 		logger.Log("WARN", "Failed to persist task cancellation", map[string]interface{}{
 			"task_id": shortID(wrongTask.ID()),
 			"error":   err.Error(),
@@ -241,7 +280,7 @@ func (m *SupplyMonitor) cancelAcquireTaskReplacedByStorage(ctx context.Context, 
 	})
 }
 
-func (m *SupplyMonitor) createStorageAcquireDeliverTask(ctx context.Context, factory *manufacturing.FactoryState, good string, storageOp *storage.StorageOperation) bool {
+func (rp *ReplenishmentPlanner) createStorageAcquireDeliverTask(ctx context.Context, factory *manufacturing.FactoryState, good string, storageOp *storage.StorageOperation) bool {
 	logger := common.LoggerFromContext(ctx)
 
 	task := manufacturing.NewStorageAcquireDeliverTask(
@@ -262,14 +301,14 @@ func (m *SupplyMonitor) createStorageAcquireDeliverTask(ctx context.Context, fac
 		return false
 	}
 
-	if err := m.taskRepo.Create(ctx, task); err != nil {
+	if err := rp.taskRepo.Create(ctx, task); err != nil {
 		logger.Log("WARN", "Failed to persist STORAGE_ACQUIRE_DELIVER task", map[string]interface{}{
 			"error": err.Error(),
 		})
 		return false
 	}
 
-	m.taskQueue.Enqueue(task)
+	rp.taskQueue.Enqueue(task)
 
 	logger.Log("INFO", "Created STORAGE_ACQUIRE_DELIVER task (from gas operation)", map[string]interface{}{
 		"factory":    factory.FactorySymbol(),
@@ -281,7 +320,7 @@ func (m *SupplyMonitor) createStorageAcquireDeliverTask(ctx context.Context, fac
 	return true
 }
 
-func (m *SupplyMonitor) createMarketAcquireDeliverTask(ctx context.Context, factory *manufacturing.FactoryState, good string, systemSymbol string) bool {
+func (rp *ReplenishmentPlanner) createMarketAcquireDeliverTask(ctx context.Context, factory *manufacturing.FactoryState, good string, systemSymbol string) bool {
 	logger := common.LoggerFromContext(ctx)
 
 	isRawMaterial := goods.IsMineableRawMaterial(good)
@@ -291,9 +330,9 @@ func (m *SupplyMonitor) createMarketAcquireDeliverTask(ctx context.Context, fact
 	var exportMarket *MarketLocatorResult
 	var err error
 	if isRawMaterial {
-		exportMarket, err = m.marketLocator.FindExportMarketWithGoodSupply(ctx, good, systemSymbol, factory.PlayerID())
+		exportMarket, err = rp.marketLocator.FindExportMarketWithGoodSupply(ctx, good, systemSymbol, factory.PlayerID())
 	} else {
-		exportMarket, err = m.marketLocator.FindExportMarketBySupplyPriority(ctx, good, systemSymbol, factory.PlayerID())
+		exportMarket, err = rp.marketLocator.FindExportMarketBySupplyPriority(ctx, good, systemSymbol, factory.PlayerID())
 	}
 	if err != nil || exportMarket == nil {
 		logger.Log("WARN", fmt.Sprintf("No export market for %s: %v", good, err), map[string]interface{}{
@@ -306,7 +345,7 @@ func (m *SupplyMonitor) createMarketAcquireDeliverTask(ctx context.Context, fact
 	}
 
 	// SUPPLY-GATED TASK CREATION: Check source market supply before marking task ready
-	sourceSupply := m.getSourceMarketSupply(ctx, exportMarket.WaypointSymbol, good)
+	sourceSupply := rp.supply.sourceMarketSupply(ctx, exportMarket.WaypointSymbol, good)
 	isAcceptableSupply := acceptableSourceSupply(sourceSupply, isRawMaterial)
 
 	task := manufacturing.NewAcquireDeliverTask(
@@ -350,7 +389,7 @@ func (m *SupplyMonitor) createMarketAcquireDeliverTask(ctx context.Context, fact
 	}
 
 	// Persist task BEFORE enqueueing to prevent orphaned queue entries
-	if err := m.taskRepo.Create(ctx, task); err != nil {
+	if err := rp.taskRepo.Create(ctx, task); err != nil {
 		logger.Log("WARN", "Failed to persist ACQUIRE_DELIVER task", map[string]interface{}{
 			"error": err.Error(),
 		})
@@ -358,19 +397,19 @@ func (m *SupplyMonitor) createMarketAcquireDeliverTask(ctx context.Context, fact
 	}
 
 	if shouldEnqueue {
-		m.taskQueue.Enqueue(task)
+		rp.taskQueue.Enqueue(task)
 	}
 	return true
 }
 
 // hasPendingAcquireDeliverTasks checks if there are any pending/ready/assigned/executing
 // ACQUIRE_DELIVER tasks for this factory. Used to avoid creating duplicate delivery tasks.
-func (m *SupplyMonitor) hasPendingAcquireDeliverTasks(ctx context.Context, factory *manufacturing.FactoryState) bool {
-	if m.taskRepo == nil {
+func (rp *ReplenishmentPlanner) hasPendingAcquireDeliverTasks(ctx context.Context, factory *manufacturing.FactoryState) bool {
+	if rp.taskRepo == nil {
 		return false
 	}
 
-	tasks, err := m.taskRepo.FindByPipelineID(ctx, factory.PipelineID())
+	tasks, err := rp.taskRepo.FindByPipelineID(ctx, factory.PipelineID())
 	if err != nil {
 		return false // Assume no pending if we can't check
 	}
@@ -384,115 +423,4 @@ func (m *SupplyMonitor) hasPendingAcquireDeliverTasks(ctx context.Context, facto
 	}
 
 	return false
-}
-
-// findRunningStorageOperationForGood checks if there's a running storage operation
-// that produces the specified good. This enables integration between gas siphoning
-// operations and the manufacturing pipeline - instead of buying gases from market,
-// haulers can pick up cargo directly from storage ships at the extraction site.
-//
-// Returns the storage operation if found, nil otherwise.
-func (m *SupplyMonitor) findRunningStorageOperationForGood(ctx context.Context, good string) *storage.StorageOperation {
-	logger := common.LoggerFromContext(ctx)
-
-	if m.storageOpRepo == nil {
-		logger.Log("DEBUG", "Storage operation lookup: storageOpRepo is nil", map[string]interface{}{
-			"good": good,
-		})
-		return nil
-	}
-
-	// Find storage operations that support this good
-	operations, err := m.storageOpRepo.FindByGood(ctx, m.playerID, good)
-	if err != nil {
-		logger.Log("WARN", "Storage operation lookup: FindByGood failed", map[string]interface{}{
-			"good":      good,
-			"player_id": m.playerID,
-			"error":     err.Error(),
-		})
-		return nil
-	}
-
-	logger.Log("DEBUG", "Storage operation lookup", map[string]interface{}{
-		"good":             good,
-		"player_id":        m.playerID,
-		"operations_found": len(operations),
-	})
-
-	// Return the first RUNNING operation that supports this good
-	for _, op := range operations {
-		isRunning := op.IsRunning()
-		supportsGood := op.SupportsGood(good)
-		logger.Log("DEBUG", "Storage operation check", map[string]interface{}{
-			"op_id":         shortID(op.ID()),
-			"op_status":     op.Status(),
-			"is_running":    isRunning,
-			"supports_good": supportsGood,
-		})
-		if isRunning && supportsGood {
-			return op
-		}
-	}
-
-	return nil
-}
-
-// DeactivateSaturatedAcquireDeliverTasks resets READY ACQUIRE_DELIVER tasks to PENDING
-// when the factory's input supply has become HIGH/ABUNDANT since the task was marked ready.
-// This prevents wasted trips when factory already has enough supply.
-func (m *SupplyMonitor) DeactivateSaturatedAcquireDeliverTasks(ctx context.Context) int {
-	logger := common.LoggerFromContext(ctx)
-
-	if m.taskRepo == nil {
-		return 0
-	}
-
-	// Find all READY ACQUIRE_DELIVER tasks for this player
-	readyTasks, err := m.taskRepo.FindByStatus(ctx, m.playerID, manufacturing.TaskStatusReady)
-	if err != nil {
-		logger.Log("WARN", "Failed to find ready tasks for saturation check", map[string]interface{}{
-			"error": err.Error(),
-		})
-		return 0
-	}
-
-	deactivated := 0
-	for _, task := range readyTasks {
-		// Only process ACQUIRE_DELIVER tasks
-		if task.TaskType() != manufacturing.TaskTypeAcquireDeliver {
-			continue
-		}
-
-		// Check factory input supply level
-		factoryInputSupply := m.getSourceMarketSupply(ctx, task.FactorySymbol(), task.Good())
-		if !isHighOrAbundant(factoryInputSupply) {
-			continue // Factory still needs this input
-		}
-
-		// Factory input is saturated - reset task to PENDING
-		task.ResetToPending()
-		if err := m.taskRepo.Update(ctx, task); err != nil {
-			logger.Log("WARN", "Failed to deactivate saturated task", map[string]interface{}{
-				"task_id": shortID(task.ID()),
-				"error":   err.Error(),
-			})
-			continue
-		}
-
-		deactivated++
-		logger.Log("INFO", "Deactivated READY task - factory input saturated", map[string]interface{}{
-			"task_id":        shortID(task.ID()),
-			"good":           task.Good(),
-			"factory":        task.FactorySymbol(),
-			"factory_supply": factoryInputSupply,
-		})
-	}
-
-	if deactivated > 0 {
-		logger.Log("INFO", "Deactivated saturated ACQUIRE_DELIVER tasks", map[string]interface{}{
-			"deactivated": deactivated,
-		})
-	}
-
-	return deactivated
 }

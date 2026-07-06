@@ -96,8 +96,10 @@ func TestPollOnce_RawInputWithoutGoodSupplyMarket_CreatesNoTaskWithoutPanic(t *t
 		pipelineRepo,
 		NewTaskQueue(),
 		taskRepo,
+		NewSellMarketDistributor(marketRepo, taskRepo),
 		NewMarketLocator(marketRepo, nil, nil, nil),
 		nil, // storageOpRepo
+		nil, // eventPublisher
 		time.Minute,
 		1,
 	)
