@@ -140,6 +140,14 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 
 		// If no ships available, wait for completion signal
 		if len(availableShips) == 0 {
+			reclaimed, reclaimErr := h.workerLifecycleManager.ReclaimShipsFromInterruptedWorkers(ctx, cmd.PlayerID.Value(), h.clock)
+			if reclaimErr != nil {
+				logger.Log("WARNING", fmt.Sprintf("Failed to reclaim ships from interrupted workers: %v", reclaimErr), nil)
+			}
+			if reclaimed > 0 {
+				logger.Log("INFO", fmt.Sprintf("Reclaimed %d ship(s) from interrupted workers", reclaimed), nil)
+				continue
+			}
 			logger.Log("INFO", "No ships available, waiting for completion...", nil)
 			select {
 			case event := <-workerCompletedCh:

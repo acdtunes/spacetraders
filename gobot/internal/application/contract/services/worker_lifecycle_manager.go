@@ -132,6 +132,45 @@ func (m *WorkerLifecycleManager) StopExistingWorkers(ctx context.Context, player
 	return nil
 }
 
+func (m *WorkerLifecycleManager) ReclaimShipsFromInterruptedWorkers(
+	ctx context.Context,
+	playerID int,
+	clock shared.Clock,
+) (int, error) {
+	logger := common.LoggerFromContext(ctx)
+
+	failedContainers, err := m.containerRepo.ListByStatusSimple(ctx, "FAILED", &playerID)
+	if err != nil {
+		return 0, fmt.Errorf("failed to query failed workers: %w", err)
+	}
+
+	reclaimed := 0
+	for _, worker := range failedContainers {
+		if worker.ContainerType != "CONTRACT_WORKFLOW" {
+			continue
+		}
+		ships, err := m.shipRepo.FindByContainer(ctx, worker.ID, shared.MustNewPlayerID(playerID))
+		if err != nil {
+			logger.Log("WARNING", fmt.Sprintf("Failed to get ships for failed container %s: %v", worker.ID, err), nil)
+			continue
+		}
+		for _, ship := range ships {
+			if !ship.IsAssigned() {
+				continue
+			}
+			ship.ForceRelease("worker_interrupted", clock)
+			if err := m.shipRepo.Save(ctx, ship); err != nil {
+				logger.Log("WARNING", fmt.Sprintf("Failed to save reclaimed ship %s from container %s: %v", ship.ShipSymbol(), worker.ID, err), nil)
+				continue
+			}
+			logger.Log("INFO", fmt.Sprintf("Reclaimed ship %s from interrupted worker %s", ship.ShipSymbol(), worker.ID), nil)
+			reclaimed++
+		}
+	}
+
+	return reclaimed, nil
+}
+
 // StopWorkerContainer stops a specific worker container
 func (m *WorkerLifecycleManager) StopWorkerContainer(ctx context.Context, containerID string) error {
 	return m.daemonClient.StopContainer(ctx, containerID)
