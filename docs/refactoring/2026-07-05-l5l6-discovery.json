@@ -1,0 +1,393 @@
+{
+  "kept": [
+    {
+      "title": "DaemonServer.getAPIClient() news up a fresh client, bypassing the shared rate limiter and metrics",
+      "level": "L6",
+      "files": [
+        "internal/adapters/grpc/container_ops_construction.go",
+        "internal/adapters/grpc/daemon_server.go",
+        "cmd/spacetraders-daemon/main.go"
+      ],
+      "problem": "getAPIClient() (container_ops_construction.go:162-164) returns api.NewSpaceTradersClient() — a brand-new client with its OWN token-bucket rate limiter and NO metrics collector — called 3x within a single construction flow. These ad-hoc clients do not share the global SpaceTraders request budget, so construction traffic (the jump-gate delivery path) can push the account past the 429 threshold the rest of the daemon carefully throttles against, and their calls are invisible to Prometheus.",
+      "proposal": "Inject a single api.APIClient (with rate limiter + metrics) into DaemonServer once (it already receives collaborators in NewDaemonServer, daemon_server.go:90) and have getAPIClient() return that shared instance. First step: add an apiClient field to DaemonServer, wire it from main.go's existing api.NewSpaceTradersClient() (main.go:142), and return s.apiClient.",
+      "pattern": "Dependency Inversion / shared singleton collaborator",
+      "value": 5,
+      "risk": 2,
+      "effort": "S",
+      "needs_mikado": false,
+      "test_prereq": "Assert construction ops route through the injected client (a test double), verifying a single shared rate limiter — cheap once the field exists.",
+      "kept": true,
+      "real_votes": 2,
+      "avg_adjusted_value": 3.5,
+      "judge_reasons": [
+        "Rate-limiter half of the problem is real and verified: getAPIClient() (container_ops_construction.go:162-164) news up api.NewSpaceTradersClient(), each of which builds its own rate.NewLimiter(2,30) (client.go:85), while main.go threads a single shared apiClient (main.go:142) as the daemon's throttled budget. Construction thus opens independent token buckets outside that budget — genuine bypass on the priority gate path, and the fix (inject shared client, return s.apiClient) eliminates rather than relocates it. However the metrics half is FALSE: getMetricsCollector() (client.go:106-118) falls back to metrics.GetGlobalAPICollector(), set at daemon_server.go:223, so these clients already report to Prometheus. behavior_safe: rate.Limiter is goroutine-safe; adding one field + one NewDaemonServer param (single call site main.go:398) and returning it is a reversible injection whose only runtime change is the intended throttling — the test-double prereq is cheap. Value trimmed to 3: the concern is real and mission-relevant but overstated (false metrics claim) and bounded in impact — construction clients are minted per-RPC, not high-frequency pollers, so excess request pressure is intermittent. Low effort, low risk, worthwhile hardening.",
+        "Rate-limiter claim CONFIRMED: client.go:85 gives every NewSpaceTradersClient() its own rate.NewLimiter(2, 30); container_ops_construction.go:162-164 news up fresh clients at 3 call sites while main.go:142 builds the single shared client injected everywhere else in the daemon — construction bursts (up to 30 instant requests per fresh bucket) bypass the account-level 2/s budget and drive 429s on the gate-priority path. The line-161 comment 'stateless, so creating a new instance is safe' is wrong. Metrics claim REFUTED: client.go:108-119 falls back to metrics.GetGlobalAPICollector(), which daemon_server.go:223 sets when metrics are enabled, so fresh clients ARE visible to Prometheus (only the rate-limiter-tokens gauge gets muddied). Fix is genuine elimination, not relocation: inject the existing main.go apiClient into DaemonServer and return it from getAPIClient(); matches the DI pattern of ~20 other collaborators, *SpaceTradersClient satisfies domainPorts.APIClient, and rate.Limiter/http.Client are concurrency-safe under existing shared use. Behavior-safe with the stated test double prereq; the only observable change (construction throttled by the shared bucket) is the intended correction. Value trimmed 5→4: half the stated problem (metrics blindness) does not exist and construction starts are episodic, but it is on the jump-gate path with S effort and low risk."
+      ],
+      "behavior_safe_votes": 2
+    },
+    {
+      "title": "Delete dead config package (duplicate supply-chain table, zero importers)",
+      "level": "L6",
+      "files": [
+        "internal/application/manufacturing/config/factory_config.go"
+      ],
+      "problem": "The entire package is imported by NOTHING (verified by grep). Its 177 lines include DefaultSupplyChainMap(), a hand-maintained copy of a subset of internal/domain/goods/supply_chain.go. Two supply-chain truth tables can silently diverge, and env-var config documented here (GOODS_POLL_INTERVAL_*, GOODS_PARALLEL_ENABLED) is never read, misleading operators.",
+      "proposal": "Delete internal/application/manufacturing/config entirely. If any env-var knobs are wanted, they belong on the live RunParallelManufacturingCoordinatorCommand defaults. First step: git rm the package, run go build ./....",
+      "pattern": "Dead code elimination (YAGNI)",
+      "value": 3,
+      "risk": 1,
+      "effort": "S",
+      "needs_mikado": false,
+      "test_prereq": "",
+      "kept": true,
+      "real_votes": 2,
+      "avg_adjusted_value": 3,
+      "judge_reasons": [
+        "Verified against current code. (1) real: The package internal/application/manufacturing/config is imported by NOTHING — `grep -rn \"application/manufacturing/config\"` returns zero hits (the LoadConfig/FactoryConfig grep noise is a distinct package, internal/infrastructure/config). The file (177 lines, confirmed) contains DefaultSupplyChainMap(), a hand-maintained subset-copy of the supply-chain table, and documents GOODS_POLL_INTERVAL_*/GOODS_PARALLEL_ENABLED which are read nowhere else in the codebase. Deletion eliminates the divergence trap and misleading docs outright — it does not relocate them (no env-var knobs are being moved anywhere; the proposal's \"if wanted, put on live command\" is a future non-commitment). (2) behavior_safe: with the file moved out, `go build ./...` returns RC=0. Since nothing imports it, no runtime behavior changes and thin tests are irrelevant; empty test_prereq is acceptable. (3) adjusted_value 3: a clean, genuinely-dead-code L6 delete with near-zero risk; value is real but modest for a 150k/hr gate-priority operation since it touches nothing on the hot path — its worth is preventing a second supply-chain truth table from silently diverging and removing operator-misleading env docs.",
+        "Verified: package has zero Go importers (only a stale docs reference); go build ./... passes with the package removed (tested empirically). Duplicate supply-chain table confirmed and ALREADY diverged from domain truth (MICROPROCESSORS: config omits COPPER vs supply_chain.go:65). GOODS_* env vars read nowhere else — documented knobs that do nothing. Deletion eliminates, not relocates. Safe with no test prereq since the compiler proves no dependents. Add-on: also remove/mark stale docs/MANUFACTURING_RUNTIME_CONFIG_DESIGN.md."
+      ],
+      "behavior_safe_votes": 2
+    },
+    {
+      "title": "Remove speculative dead domain services: TaskPriorityCalculator, LiquidationPolicy, unused TaskReadinessSpecification methods, unregistered RunFactoryWorker",
+      "level": "L6",
+      "files": [
+        "internal/domain/manufacturing/priority_calculator.go",
+        "internal/domain/manufacturing/liquidation_policy.go",
+        "internal/domain/manufacturing/task_readiness_spec.go",
+        "internal/application/manufacturing/commands/run_factory_worker.go",
+        "internal/application/manufacturing/services/manufacturing/market_condition_checker.go"
+      ],
+      "problem": "Four pieces of speculative scaffolding: TaskPriorityCalculator has a constructor and clock field but ZERO methods (real priority logic lives in effectivePriority() in task_queue.go); LiquidationPolicy is an empty struct never instantiated; TaskReadinessSpecification.CanExecute/EvaluateReadiness/CanSourceFromMarket have zero production callers and CanExecute silently returns false for STORAGE_ACQUIRE_DELIVER and DELIVER_TO_CONSTRUCTION — a latent trap; RunFactoryWorkerHandler (161 lines) is registered with no mediator and referenced by no factory registry.",
+      "proposal": "Delete priority_calculator.go, liquidation_policy.go, run_factory_worker.go (and WorkerResult plumbing), drop the readinessSpec field from MarketConditionChecker, and trim TaskReadinessSpecification to what has callers. First step: delete the two empty domain shells — pure win, zero behavior change.",
+      "pattern": "Dead code elimination / SRP",
+      "value": 3,
+      "risk": 1,
+      "effort": "S",
+      "needs_mikado": false,
+      "test_prereq": "",
+      "kept": true,
+      "real_votes": 2,
+      "avg_adjusted_value": 3,
+      "judge_reasons": [
+        "Verified against current code. All four items are genuinely dead: (1) TaskPriorityCalculator is a struct+constructor with zero methods and zero external callers; real priority logic is effectivePriority() in task_queue.go:324. (2) LiquidationPolicy is an empty struct with zero references. (3) RunFactoryWorkerHandler (161 lines) has zero callers, no mediator/registry registration, no test refs; its command/WorkerResult types are used only within the file. (4) TaskReadinessSpecification's methods CanExecute/EvaluateReadiness/CanSourceFromMarket have zero callers (grep empty); the struct is instantiated and threaded into MarketConditionChecker.readinessSpec but that field is stored and never read, so 'trim to what has callers' resolves to full deletion plus dropping the unused field/arg at the single caller (coordinator:366). The latent trap is real (CanExecute default-returns false for the actual task types STORAGE_ACQUIRE_DELIVER and DELIVER_TO_CONSTRUCTION) but currently inert. Behavior-safe: all deletions have zero live callers, no tests reference any of it, and the only wiring edits are compiler-checked — thin tests are irrelevant since there is no behavior to preserve. Value capped at 3: safe, real cleanup that removes a future footgun but advances no gate and adds no throughput to the 150k/hr operation.",
+        "Verified by reading all cited files and repo-wide grep. TaskPriorityCalculator and LiquidationPolicy are constructor-only shells with zero references and zero tests. TaskReadinessSpecification is constructed once (run_parallel_manufacturing_coordinator.go:361) and stored in MarketConditionChecker.readinessSpec, but no method on it is ever invoked — the checker's three methods use getSupplyLevel directly — so the entire spec (including the CanExecute default-false trap for STORAGE_ACQUIRE_DELIVER/DELIVER_TO_CONSTRUCTION, both confirmed real task types in task.go) is deletable, not just trimmable. RunFactoryWorkerHandler is never registered and RunFactoryWorkerCommand is never constructed; its types in factory_types.go have no other consumers. No test file references any of these, and go build ./internal/... passes today, so pure deletion plus the mechanical constructor-signature fix is compile-verified and behavior-preserving with empty test_prereq. Value held at 3: no direct credits/hr impact, but it removes a latent silent-false trap and ~350 lines of misleading scaffolding in the actively-modified manufacturing package at trivial risk."
+      ],
+      "behavior_safe_votes": 2
+    },
+    {
+      "title": "ISP: split the 12-method ManufacturingTaskQueue interface consumed 1-3 methods at a time",
+      "level": "L6",
+      "files": [
+        "internal/application/manufacturing/services/task_queue.go",
+        "internal/application/manufacturing/services/manufacturing/pipeline_recycler.go",
+        "internal/application/manufacturing/services/manufacturing/task_rescuer.go",
+        "internal/application/manufacturing/services/manufacturing/factory_state_manager.go",
+        "internal/application/manufacturing/services/manufacturing/worker_lifecycle_manager.go",
+        "internal/application/manufacturing/services/manufacturing/task_assignment_manager.go",
+        "internal/application/manufacturing/services/manufacturing/state_recovery_manager.go",
+        "internal/application/manufacturing/services/manufacturing/pipeline_lifecycle_manager.go"
+      ],
+      "problem": "ManufacturingTaskQueue (task_queue.go:14-50) exposes 12 methods but measured per-consumer usage is 1-3 methods (pipeline_recycler uses only Remove; factory_state_manager and pipeline_lifecycle_manager only Enqueue; etc.). Every test fake must stub 12 methods, and the fat interface is the main reason 7 files in the nested services/manufacturing package import the parent services package — the coupling that blocks the package-cohesion dissolve.",
+      "proposal": "Define consumer-side narrow interfaces: TaskEnqueuer {Enqueue}, TaskRemover {Remove}, ReadyTaskReader {GetReadyTasks, HasReadyTasksByType}; take those in each constructor; keep the full interface only for coordinator wiring. First step: change pipeline_recycler and factory_state_manager (single-method consumers) — purely mechanical, compiler-verified. Unlocks the package dissolve item.",
+      "pattern": "Interface Segregation Principle",
+      "value": 3,
+      "risk": 1,
+      "effort": "S",
+      "needs_mikado": false,
+      "test_prereq": "",
+      "kept": true,
+      "real_votes": 2,
+      "avg_adjusted_value": 2,
+      "judge_reasons": [
+        "Verified in code. The ISP violation is real: ManufacturingTaskQueue exposes 12 methods (task_queue.go:14-50) while each consumer uses 1-3 (pipeline_recycler=Remove only; factory_state_manager/state_recovery_manager/pipeline_lifecycle_manager=Enqueue only; task_rescuer/worker_lifecycle_manager=2; task_assignment_manager=3). Consumer-side narrow interfaces are the standard Go idiom and genuinely eliminate (not relocate) the coupling: for 6 of the 7 files, services.ManufacturingTaskQueue is the ONLY reference to the parent services package, so narrowing lets them drop the import. The first step (pipeline_recycler + factory_state_manager, single-method, sole-coupling) is purely mechanical, compiler-verified, and behavior-preserving since the concrete *TaskQueue already satisfies any narrow interface; empty test_prereq is adequate. HOWEVER two justifications are inflated: (1) 'Every test fake must stub 12 methods' is FALSE — no fake of this interface exists anywhere in internal/; the only consumer test uses the real services.NewTaskQueue(). (2) 'Unlocks the package dissolve' is overstated — pipeline_lifecycle_manager also imports ManufacturingDemandFinder, CollectionOpportunityFinder, PipelinePlanner, DemandFinderConfig, and DefaultCollectionFinderConfig from the parent package, so narrowing the queue interface does not free that file, and the dissolve remains blocked. Given a 150k/hr throughput mission with thin tests, this is a low-risk cosmetic structural cleanup with zero runtime benefit and only partial architectural payoff, so value adjusted from 3 to 2.",
+        "Verified: interface has 12 methods (task_queue.go:14-50) and all 7 consumers use 1-3 methods exactly as claimed; for 6/7 files ManufacturingTaskQueue is the sole services-package reference, so consumer-side narrow interfaces (implicitly satisfied by concrete TaskQueue/DualTaskQueue) genuinely eliminate the coupling rather than relocate it. Behavior-safe: mechanical constructor-parameter narrowing, compiler-verified, no test prereq needed. Value downgraded 3->2 because (a) the \"every test fake must stub 12 methods\" motivation is false — no such fakes exist, tests use the real NewTaskQueue; (b) pipeline_lifecycle_manager also imports CollectionOpportunityFinder/ManufacturingDemandFinder/PipelinePlanner from services, so the dissolve is only partially unlocked; (c) zero runtime benefit to the live 150k/hr operation — purely an enabler refactor."
+      ],
+      "behavior_safe_votes": 2
+    },
+    {
+      "title": "Move endpoint-name classification out of the API transport layer",
+      "level": "L6",
+      "files": [
+        "internal/adapters/api/client.go"
+      ],
+      "problem": "client.go carries ~160 lines of pure metrics-labeling concern: extractEndpoint, endpointToHumanName (rebuilds a 40-entry pattern->name map on EVERY request — per-request allocation on the hot path of every API call), normalizePath, isDynamicSegment, and the looksLikeShipSymbol/System/Waypoint/ContractID/FactionSymbol heuristics. Path taxonomy, not HTTP transport.",
+      "proposal": "Extract an endpointClassifier type with the nameMap hoisted to a package-level var built once; request() calls classifier.HumanName(path)/Endpoint(path). First step: hoist nameMap to a package var and move the five looksLike* + normalizePath funcs into endpoint_classifier.go.",
+      "pattern": "Single Responsibility split (transport vs. metric labeling)",
+      "value": 3,
+      "risk": 1,
+      "effort": "S",
+      "needs_mikado": false,
+      "test_prereq": "",
+      "kept": true,
+      "real_votes": 2,
+      "avg_adjusted_value": 2,
+      "judge_reasons": [
+        "Verified in client.go: the five looksLike* heuristics, normalizePath, isDynamicSegment, extractEndpoint, and endpointToHumanName (lines 1392-1555, ~163 lines) are pure path-classification functions with no HTTP/client-state dependency. The per-request allocation is real: endpointToHumanName rebuilds the 40-entry nameMap literal (line 1419) on every call, and request() invokes extractEndpoint once per API call (line 1568). Hoisting the read-only map to a package var genuinely eliminates the alloc, not relocates it. Behavior-safe: pure funcs moved intra-package + a read-only literal promoted to package var is mechanical and preserves behavior; no test prereq required. However the value is low: the 'hot path per-request allocation' framing is overstated (a 40-entry map build is microseconds, and the real path at ~42 req/sec is gated by the rate limiter/network at line 1574, not this alloc). It is an intra-package file split with no actual dependency decoupling; the one concrete win is a 2-line map hoist wrapped in a larger cosmetic move. Against a gate-priority mission with thin tests, this is marginal — adjusted down from 3 to 2.",
+        "Verified: client.go lines 1392-1555 (~164 of 1984 lines) are pure path-classification free functions, and the 43-entry nameMap literal is rebuilt inside endpointToHumanName on every request() call (invoked at line 1568). Map is read-only, so hoisting to a package var plus moving the pure funcs to endpoint_classifier.go is mechanical and behavior-preserving with no external callers (grep-confirmed) and no test dependency. However the 'hot path' perf claim is overstated: the client is rate-limited (rateLimiter.Wait in the same loop) and each call includes a network round trip, so the per-request map allocation is noise. Value is genuine but purely organizational; downgraded from 3 to 2. Minor spec inaccuracy: there is no separate Endpoint vs HumanName output in current code. Accept as low-priority S-effort cleanup; do not let it displace gate work."
+      ],
+      "behavior_safe_votes": 2
+    },
+    {
+      "title": "Replace drift-prone pipeline task counters with computed queries",
+      "level": "L5",
+      "files": [
+        "internal/domain/manufacturing/pipeline.go"
+      ],
+      "problem": "ManufacturingPipeline caches taskCount/tasksReady/tasksDone/tasksFailed (pipeline.go:76-79) that drift by design: Start() increments tasksReady inline; recalculateTaskStats() is only invoked from SetTasks(); nothing updates tasksDone/tasksFailed at runtime, so Progress() reports stale 0% on any live pipeline. TasksReady()/TasksDone()/TasksFailed() have zero production consumers outside the domain — the counters are pure liability.",
+      "proposal": "Delete the four counter fields; make TaskCount()=len(p.tasks) and TasksReady/TasksDone/TasksFailed/Progress iterate p.tasks on demand. Delete recalculateTaskStats and the inline tasksReady++ in Start(). First step: characterization test that Progress() after Start()+task.Complete() currently returns 0, then flip to computed and assert correct value.",
+      "pattern": "Replace derived state with query (eliminates Observer-less cache invalidation)",
+      "value": 3,
+      "risk": 2,
+      "effort": "S",
+      "needs_mikado": false,
+      "test_prereq": "Characterization test of Progress()/GetReadyTasks() across Start -> assign -> complete lifecycle, and of the ReconstitutePipeline+SetTasks path used by the repository.",
+      "kept": true,
+      "real_votes": 2,
+      "avg_adjusted_value": 2.5,
+      "judge_reasons": [
+        "Verified in pipeline.go: tasksDone/tasksFailed are written only by recalculateTaskStats(), called only from SetTasks() (line 295); nothing updates them when a task completes at runtime, and Start() does inline tasksReady++ (line 343). So Progress() (tasksDone/taskCount, line 427) returns a stale 0 on any pipeline built via NewPipeline->AddTask->Start. Drift is real and by design. grep confirms TasksReady/Done/Failed have zero production consumers, and pipeline Progress() is consumed only by String() (line 451) (the container_ops Progress calls are mat/site types, not pipeline). Replacing the cached fields with on-demand iteration eliminates the invalidation obligation rather than relocating it. Behavior-safe given the stated characterization tests: the only observable change is the unused getters + Progress() returning correct instead of stale values, invisible to production. Two constraints the executor must honor: keep TaskCount() = len(p.tasks) since it HAS production consumers (container_ops_construction.go, construction_pipeline_planner.go), and preserve the !task.CanRetry() guard in the computed TasksFailed. adjusted_value is modest (2): clean low-risk self-contained cleanup that fixes a latent bug and removes drift-prone dead fields, but the bug surfaces only in a debug String() and the fields are unused, so it is hygiene, not mission-advancing throughput/gate work.",
+        "Verified in pipeline.go: counters (lines 76-79) drift exactly as claimed — recalculateTaskStats() only called from SetTasks() (line 295), Start() does inline tasksReady++ (line 343), tasksDone/tasksFailed never updated at runtime, so Progress() is stale on live pipelines. Repo-wide grep confirms TasksReady()/TasksDone()/TasksFailed() have zero consumers outside the domain file, pipeline.Progress() is only called from its own String(), counters are not persisted (ReconstitutePipeline omits them, no DB columns), and taskCount is provably always len(p.tasks) so TaskCount()'s external consumers (construction planner, grpc adapter, tests) are unaffected. Behavior-safe given the stated characterization test, with two conditions: computed TasksFailed must keep the !task.CanRetry() filter (line 311), and the test must pin the intended log-visible change from stale 0% to true progress. Value capped at 3: the eliminated bug only manifests in String() log output, not in any gate, scheduling, or credit-flow decision, so mission impact is hygiene rather than throughput."
+      ],
+      "behavior_safe_votes": 2
+    },
+    {
+      "title": "Orbit/Dock/tactics handlers duplicate the same load-ship + ensure-state + call-API skeleton",
+      "level": "L5",
+      "files": [
+        "internal/application/ship/commands/tactics/orbit_ship.go",
+        "internal/application/ship/commands/tactics/dock_ship.go",
+        "internal/application/ship/commands/tactics/refuel_ship.go",
+        "internal/application/ship/commands/navigation/set_flight_mode.go",
+        "internal/application/ship/commands/navigation/navigate_direct.go",
+        "internal/application/ship/types/commands.go"
+      ],
+      "problem": "orbit_ship.go and dock_ship.go are structurally identical, differing only in EnsureInOrbit vs EnsureDocked, shipRepo.Orbit vs Dock, and status strings. The loadShip helper (cmd.Ship!=nil then FindBySymbol fallback) is copy-pasted verbatim across orbit, dock, refuel, set_flight_mode, and navigate_direct — 5+ identical copies. The cargo package already solved its equivalent duplication via CargoTransactionStrategy; tactics never got the treatment.",
+      "proposal": "Add a ShipCommand accessor interface (GetShip/GetShipSymbol/GetPlayerID) plus one shared loadShip(ctx, repo, cmd). For orbit/dock, a tiny StateTransition strategy (ensureFn, apiFn, doneStatus, alreadyStatus) driving one shared handler, mirroring CargoTransactionStrategy. First step: extract shared loadShip and delete the 5 copies.",
+      "pattern": "Template Method + Strategy (consistent with existing CargoTransactionStrategy)",
+      "value": 3,
+      "risk": 2,
+      "effort": "S",
+      "needs_mikado": false,
+      "test_prereq": "Characterization test for the already-in-orbit/already-docked (stateChanged==false) branch so the no-op-API path is preserved.",
+      "kept": true,
+      "real_votes": 2,
+      "avg_adjusted_value": 2,
+      "judge_reasons": [
+        "Verified: orbit_ship.go/dock_ship.go are structurally identical and loadShip is copied verbatim 5x (7 loadShip funcs total); CargoTransactionStrategy precedent exists. So the problem is real and the extraction is mechanically behavior-safe with the stated characterization test. But value is low for this mission: (1) the loadShip accessor-interface approach partly relocates rather than eliminates — adding 3 accessor methods to 5-7 command structs (~15-21 methods) to delete ~50 lines of a benign, non-diverging 10-line helper is a near line-count wash, only centralizing change points; an embedded base struct would eliminate more cleanly but wasn't chosen. (2) The orbit/dock strategy adds indirection to dead-simple hot-path handlers with distinctly-typed responses needing a response factory. (3) Coverage is nearly absent — the tactics package has zero test files — so the single prereq test is a thin net for restructuring 5 handlers; refuel (ledger/metrics) and navigate_direct (4204 reconcile) carry more logic and should be excluded. In a live 150k/hr, gate-priority operation with thin tests, adding abstraction to constantly-exercised ship-movement handlers raises incident-time tracing cost for maintainability-only, cosmetic gains.",
+        "Verified: loadShip is copy-pasted verbatim in exactly the 5 cited files (grep-confirmed), orbit_ship.go and dock_ship.go are line-for-line identical except EnsureInOrbit/EnsureDocked, Orbit/Dock, and status strings, and CargoTransactionStrategy precedent exists in cargo/cargo_transaction.go. The shared loadShip genuinely deletes the copies (all command structs already carry Ship/ShipSymbol/PlayerID). Behavior-safe given the stated characterization test for the stateChanged==false no-API branch (tactics currently has ZERO tests, so that prereq is mandatory) and provided the strategy preserves concrete response types (*OrbitShipResponse/*DockShipResponse) that CLI/gRPC converters may assert on. Value downgraded 3->2: ~100-130 lines of hygiene in stable low-churn handlers on a live operation; does not advance the gate priority. Recommend accepting the first step (shared loadShip extraction) unconditionally; the orbit/dock StateTransition strategy is optional marginal follow-up."
+      ],
+      "behavior_safe_votes": 2
+    }
+  ],
+  "rejected": [
+    {
+      "title": "Collapse the FindExportMarket* variant family into one query + explicit MarketSelectionPolicy (root cause of the live jump-gate blocker)",
+      "real_votes": 1,
+      "reasons": [
+        "The proposal's premise is materially inaccurate on the code I read.\n\n(1) \"Five near-duplicate variants, each with its own inline candidate loop, inline supplyPriority map, and a hand-rolled bubble sort\" is false. Only TWO of the five share the candidate-loop-plus-bubble-sort shape: FindExportMarketBySupplyPriority (market_locator.go:221-322) and FindExportMarketWithGoodSupply (334-421). Only ONE (BySupplyPriority) has the supplyPriority map; WithGoodSupply uses isHighOrAbundant, not a map. FindImportMarket (51-79) and FindExportMarket (174-208) delegate to repo methods (FindBestMarketBuying / FindCheapestMarketSelling) — no loop, no sort, no map. FindBestExportMarket (426-478) is a single-pass score scan via calculateMarketScore — no candidate collection, no bubble sort. So the \"family of five near-duplicates\" collapsible under one policy does not exist as described; realistically there are two similar export scanners.\n\n(2) Two of the five are DEAD CODE. grep for callers (excluding definitions/tests) returns nothing for FindImportMarket and FindBestExportMarket. They have no production callers. Writing characterization tests to \"pin their chosen waypoint\" (per test_prereq) before folding them into policy constants is wasted effort; they should simply be deleted.\n\n(3) The error-string coupling is misattributed. Line 308 matches \"no market with HIGH/ABUNDANT supply\", but that string is produced by pipeline_planner.go:313/316, NOT by any MarketLocator variant. FindExportMarketWithGoodSupply returns (nil, nil) on no market — not an error — and the construction planner emits a different string (\"no market with good supply for %s\", construction_pipeline_planner.go:230). So the claim \"retry behavior is coupled to a variant's error-message text\" points at the wrong producer. A typed sentinel error has merit, but between pipeline_planner and pipeline_lifecycle_manager, not \"a locator variant.\"\n\n(4) The proposal does NOT eliminate the st-nvl blocker via refactoring; it relocates a one-line wiring fix into a large refactor. The blocker is the construction planner calling FindExportMarketWithGoodSupply (HIGH/ABUNDANT-only) at three sites (construction_pipeline_planner.go:225, 339, 368). The fix is swapping to the MODERATE-tolerant call — a caller change entirely independent of the policy-object refactor. Notably supply_monitor already implements the intended try-WithGoodSupply-then-fallback-to-BySupplyPriority pattern (acquisition.go:294-296, activation.go:184-186), which the construction planner could adopt directly.\n\nbehavior_safe = false for the package as proposed: it explicitly bundles a deliberate behavior change (rewiring a live 150k/hr gate pipeline from HIGH/ABUNDANT to MODERATE acquisition) into a \"refactoring,\" and market_locator.go has zero existing tests, so the characterization safety net does not yet exist.\n\nadjusted_value = 2: the real, high-value action is small — fix the caller wiring / adopt the existing fallback (unblocks the gate), and delete the two dead methods. The introduce-a-MarketSelectionPolicy-value-object L5 refactor is over-scoped, rests on an inflated duplication count, touches the live money pipeline, and would burn effort pinning dead code. A typed sentinel error for the pipeline_planner to lifecycle_manager string match is a modest, separable win.",
+        "Verified in code: five variants exist in market_locator.go (zero tests) with duplicated candidate loops, inline supply maps, and hand-rolled bubble sorts; construction_pipeline_planner.go:225/339/368 is wired to the HIGH/ABUNDANT-only FindExportMarketWithGoodSupply while the MODERATE-tolerant FindExportMarketBySupplyPriority exists — exactly the open P1 bead st-nvl (ADVANCED_CIRCUITRY MODERATE at D45 aborts whole bill). Error-string coupling confirmed at pipeline_lifecycle_manager.go:308 (strings.Contains on text produced in pipeline_planner.go:313/316); %w chain intact so errors.As works. supply_monitor_activation/acquisition already switch variants by flag — natural policy-parameter fit, and delegation-first staging plus existing fake-MarketRepository test infra (construction_pipeline_planner_test.go:124) makes it behavior-preserving. Two corrections: (1) only three variants share the scan shape — FindExportMarket/FindImportMarket delegate to repo queries, so scope should shrink to the export-scan trio, not all five; (2) the cited error string originates in pipeline_planner, not the variant, and the nil,nil-vs-error contract mismatch between WithGoodSupply and BySupplyPriority must be pinned or unification silently changes the three nil-check call sites. Value 4 not 5: the blocker itself is a one-line rewire without the L5; the refactor's marginal value is preventing recurrence and killing the string coupling."
+      ]
+    },
+    {
+      "title": "Unify the cache<->server / restart desync family behind a Reconciler abstraction; write the missing ContractWorkerReconciler (closes st-anu)",
+      "real_votes": 0,
+      "reasons": [
+        "The unifying premise is largely fabricated. Only 2 of the 5 cited implementations (AssignmentReconciler.Reconcile, StateRecoveryManager.RecoverState) actually share the proposed Reconcile(ctx, playerID) startup-convergence shape. Verified: StorageRecoveryService needs an extra token param and runs per-player at coordinator runtime (called from run_parallel_manufacturing_coordinator.go), not a startup sweep; Fixer.RecoverOrphanedFixes lives in a SEPARATE BINARY (cmd/captain, package captainsup), has no ctx/playerID, and operates on git worktrees + filesystem reports — it cannot implement a daemon ports.Reconciler or run in daemon main.go without invalid cross-process coupling; RefreshShipHandler is an on-demand gRPC CQRS query for a single ship (container_ops_queries.go), explicitly NOT a startup reconciler. The five bodies share nothing but a verb, so there is no extractable common implementation — the interface is nominal DRY that relocates/adds complexity (leaky lowest-common-denominator port + shims + captain->daemon coupling) rather than eliminating the described duplication. The abstraction is also not a prerequisite for the one valuable, mission-relevant piece: closing st-anu only requires writing a single ContractWorkerReconciler wired ad-hoc like its siblings, plus the proposed red test. behavior_safe=false because the characterization tests cover only the 2 genuine members; forcing RefreshShip (on-demand query) and Fixer (separate binary) under a startup sweep changes behavior and cannot be guarded by daemon repo fakes. Recommendation: REJECT the L6 unification; extract the standalone st-anu fix (ContractWorkerReconciler + red test) as a small independent bug fix, and if desired add characterization tests to the 2 genuinely-untested manufacturing reconcilers on their own merits.",
+        "The desync family exists and st-anu is a real open bug, but the proposal does not eliminate the problem — it relocates it. The unifying signature Reconcile(ctx, playerID) fits only 1 of 5 cited implementations: Fixer.RecoverOrphanedFixes lives in a different binary (cmd/captain/main.go:62, no ctx/playerID), RefreshShipHandler is an on-demand per-ship query, and both StorageRecoveryService (needs per-player token) and StateRecoveryManager run at manufacturing-coordinator start, not daemon startup — so the proposed pre-serve sweep in spacetraders-daemon/main.go either changes recovery timing/semantics (not behavior-preserving despite the test_prereq) or degenerates into a registry holding one adapted member plus the new reconciler (indirection tax, a sixth naming scheme). The valuable kernel — fixing st-anu with a red test, and characterization tests for the untested 561-line RecoverState — requires no abstraction; the coordinator already has StopExistingWorkers/FindExistingWorkers hooks. Accept those as a targeted L2 bug fix + test-debt work; reject the Reconciler port/registry/sweep. Adjusted value 2 reflects the salvageable kernel only."
+      ]
+    },
+    {
+      "title": "Strategy for supply-chain-depth planning in ConstructionPipelinePlanner (jump-gate path)",
+      "real_votes": 0,
+      "reasons": [
+        "The described defect does not exist in the current code. I traced every depth branch in both functions: createTasksForMaterial (223, 279-296) and createProductionTasksForInput (423) produce equivalent task DAGs for every (depth, good) pair — depth>=2 buys intermediates in both; depth 1 buys raws and recurses non-raws in both; depth 0 recurses but buys at the raw leaf (404-411), identical to depth-1's direct buy. The only structural difference is the root emitting DELIVER_TO_CONSTRUCTION vs the recursion's ACQUIRE_DELIVER, which is deliberate task-type selection, not drift. There is no branch where one path buys while the other fabricates for the same input, so the claimed 'silent buy-instead-of-fabricate' credit-burn bug is not substantiated. depths 0 and 1 do collapse to identical behavior, but consistently across both functions (raw materials can't be fabricated), so it's redundant, not asymmetric. What remains is stylistic duplication plus an out-parameter — a maintainability smell, not the mission-risk correctness bug asserted. behavior_safe is true: the extraction is internal and preserves the frozen exported API, and with the stated characterization tests it can be done behavior-preservingly. adjusted_value is low (2): the justification rests on a non-existent bug, the file is explicitly frozen-API pending the captain fix and feeds mission #1 at 150k/hr, making an M-effort refactor net-risky; the only real value (DAG characterization tests) lives in the test_prereq, not the Strategy extraction, which largely relocates equivalent logic. Reject.",
+        "The motivating drift does not exist: IsRawMaterial and GetRequiredInputs both derive from the same ExportToImportMap (supply_chain.go:202-205,251-257), so line 423's condition is provably equivalent to the depth-1 branch at lines 282-291, and depth-0 raw inputs reach the identical buy via the len(inputs)==0 base case. No input can make the two sites produce different DAGs, so the claimed 'buys instead of fabricates' failure is impossible. The *[]string out-param appends exactly one ID per call (trivial L2 return-value fix, no Strategy needed). The real anomaly — depth 0 and depth 1 yield identical DAGs because raws are always bought, never mined — would be preserved, not fixed, by the proposed depthPolicy. Refactor is behavior-safe if executed behind the stated characterization tests, but it adds an interface + 4 implementations to a frozen-API, gate-priority file with only 3 existing tests to fix a nonexistent bug. Reject; salvage only the depth-0..3 characterization tests as a standalone test task."
+      ]
+    },
+    {
+      "title": "OCP: DualTaskQueue routes task types through four divergent switch statements",
+      "real_votes": 1,
+      "reasons": [
+        "Problem is real: four routing sites exist, and HasReadyTasksByType(CollectSell) returns collectionQueue.Size()>0 (TaskQueue.Size()=tasks.Len(), all statuses) which diverges from TaskQueue's READY-only per-type scan and from DualTaskQueue's own GetReadyTasksByType. It is load-bearing — feeds alloc.HasReadyCollectSell/HasReadyAcquireDeliver in task_assignment_manager.go:299/336, the revenue-path worker gate. A queueFor() helper genuinely centralizes routing (not relocates). BUT the proposal bundles a mechanical dedup with a semantic behavior change: 'fix HasReadyTasksByType to delegate to per-type check' flips the allocation gate from 'any CollectSell task exists' to 'a READY one exists', altering worker allocation in a 150k/hr op. That is not behavior-preserving, and the stated test_prereq ('matches current behavior') would pin the bug and forbid the repair — the two goals contradict. The pure centralization is safe but tiny (S, 4 small switches); the valuable part is the Size-vs-ready defect, which should be a separate bugfix with caller-impact analysis and a test asserting the corrected gate, not an OCP refactor frozen against current behavior. Default-reject as a bundled L5 refactor.",
+        "The cited switches and LSP divergence exist textually exactly as described, but DualTaskQueue is dead code: NewDualTaskQueue has zero callers anywhere (production or tests). The daemon wires the single TaskQueue (cmd/spacetraders-daemon/main.go:483) into the coordinator, so the divergent routing never executes and no task ever misroutes at runtime. The proposal would spend effort polishing (and adding a test file for) an unreachable class, with an internal contradiction: the test_prereq pins current behavior while the plan simultaneously changes HasReadyTasksByType semantics. Behavior-safe only trivially — no production path exercises the class. Right action for the 150k/hr mission: delete dual_task_queue.go and the two stale comments referencing it (task_queue.go:13, task_assignment_manager.go:49), which is an L1/L2 cleanup, not this L5."
+      ]
+    },
+    {
+      "title": "Stop swallowing NewCargo/NewFuel constructor errors — adopt a fail-fast reconstitution idiom",
+      "real_votes": 1,
+      "reasons": [
+        "The cargo half of the problem is misdiagnosed. At ship_cargo.go:74 and :118, NewCargo() is provably unable to fail: ReceiveCargo is pre-guarded by HasCargoSpace (units<=capacity) and inventoryWithItemMerged adds exactly item.Units to the inventory sum, preserving sum==units; RemoveCargo is guarded by currentUnits<units and removes exactly units. Every NewCargo invariant is satisfied by construction, so the described nil-cargo panic is unreachable from any valid Ship — it is defensive dead-error handling, not a live bug, and 'dead container / lost income' has no trigger. The fuel half (ship.go:190-196) is real but weaker: swallowing NewFuel errors yields STALE (last-valid) fuel, not nil/corrupt state, and returning the error relocates the decision to the repository caller rather than eliminating staleness. Executable behavior-preserving given the test_prereq (cargo change is no-op on reachable paths; fuel change is a mechanical signature ripple to the repo caller). Low value against a 150k/hr, gate-priority, thin-test mission: adds error plumbing to a provably-safe path plus a minor staleness surfacing, with a scope-creep grep rider. Reject.",
+        "Verified: ship_cargo.go:75/:118 swallow NewCargo errors and nil out s.cargo (next call panics at line 72/109), and ship.go:191-197 drops NewFuel errors. Reachable because Ship.validate() never enforces cargo.Capacity == cargoCapacity (unlike fuel) and SetCargo bypasses validation. Fix is behavior-preserving (signatures already return error; sole UpdateFuelFromAPI caller is route_executor.go:395). Value downgraded 3->2: all three production callers (transfer_cargo.go:84/87, jettison_cargo.go:77, cargo_transaction.go:240/242) already discard the error via `_ =`, so fail-fast dies one layer up and those files are outside the proposal's scope; trigger probability is low and the fuel leg near-unreachable from real API data. Accept as cheap insurance only if the `_ =` call sites and the missing cargoCapacity validation are added to scope."
+      ]
+    }
+  ],
+  "below_the_line_unjudged": [
+    {
+      "title": "Dissolve pkg/utils and normalize duplicate getters",
+      "level": "L6",
+      "value": 2,
+      "effort": "S"
+    },
+    {
+      "title": "SupplyLevel/ActivityLevel domain value objects + MarketScoringPolicy: retire 10+ contradictory supply/activity tables across all four layers",
+      "level": "L5",
+      "value": 4,
+      "effort": "L"
+    },
+    {
+      "title": "Consolidate three divergent ship-JSON mappers in the API client",
+      "level": "L5",
+      "value": 4,
+      "effort": "M"
+    },
+    {
+      "title": "Extract triplicated persist->transfer-ship->start-with-rollback worker-spawn orchestration",
+      "level": "L5",
+      "value": 4,
+      "effort": "M"
+    },
+    {
+      "title": "Single command-factory source of truth for container launch AND recovery, with typed config accessors (kills the restart-orphan bug class)",
+      "level": "L5",
+      "value": 4,
+      "effort": "L"
+    },
+    {
+      "title": "Extract a retry/backoff policy from the request() mega-method",
+      "level": "L5",
+      "value": 4,
+      "effort": "M"
+    },
+    {
+      "title": "Delete-or-implement the stub HealthMonitor (fake recovery metrics, zero consumers)",
+      "level": "L6",
+      "value": 3,
+      "effort": "M"
+    },
+    {
+      "title": "Split fat PipelineManager interface and remove the coordinator's downcast to the concrete manager",
+      "level": "L6",
+      "value": 3,
+      "effort": "M"
+    },
+    {
+      "title": "Two divergent composition roots register the same mediator handlers inconsistently",
+      "level": "L6",
+      "value": 3,
+      "effort": "M"
+    },
+    {
+      "title": "Consolidate scattered switch-on-TaskType chains into a TaskType descriptor",
+      "level": "L5",
+      "value": 3,
+      "effort": "M"
+    },
+    {
+      "title": "Collapse four duplicate lifecycle status enums and fix GoodsFactory dual state machine",
+      "level": "L5",
+      "value": 3,
+      "effort": "M"
+    },
+    {
+      "title": "Evict manufacturing/gas coordination events from navigation's ShipEventPublisher/Subscriber",
+      "level": "L6",
+      "value": 3,
+      "effort": "M"
+    },
+    {
+      "title": "ISP sweep: split the 27-method ports.APIClient god interface into per-domain role interfaces",
+      "level": "L6",
+      "value": 3,
+      "effort": "M"
+    },
+    {
+      "title": "Extract shared cargo-acquisition phase from the four task executors",
+      "level": "L5",
+      "value": 3,
+      "effort": "M"
+    },
+    {
+      "title": "Untyped mediator RequestHandler forces 52 copies of type-assert boilerplate",
+      "level": "L5",
+      "value": 3,
+      "effort": "M"
+    },
+    {
+      "title": "Move coordinator service graph construction out of the handler into the composition root",
+      "level": "L6",
+      "value": 3,
+      "effort": "M"
+    },
+    {
+      "title": "Enforce StorageShip capacity invariant with a Reservation ticket value object",
+      "level": "L5",
+      "value": 3,
+      "effort": "M"
+    },
+    {
+      "title": "DIP: application layer calls adapters/metrics package-level globals directly",
+      "level": "L6",
+      "value": 2,
+      "effort": "M"
+    },
+    {
+      "title": "Logging-discipline sweep: 108 fmt.Printf calls in daemon/adapter/application production paths bypass the structured logger",
+      "level": "L6",
+      "value": 2,
+      "effort": "M"
+    },
+    {
+      "title": "SRP split of the SupplyMonitor god type (28 methods, ~1570 lines, 10-param ctor)",
+      "level": "L6",
+      "value": 4,
+      "effort": "L"
+    },
+    {
+      "title": "Collapse fat DaemonClient interface: per-worker-type Persist/Start method pairs violate ISP+OCP",
+      "level": "L6",
+      "value": 4,
+      "effort": "L"
+    },
+    {
+      "title": "Dissolve the stuttering services/manufacturing sub-package into execution + orchestration packages",
+      "level": "L6",
+      "value": 3,
+      "effort": "L"
+    },
+    {
+      "title": "Split the 20-method ShipRepository god interface into role interfaces (ISP)",
+      "level": "L6",
+      "value": 3,
+      "effort": "L"
+    },
+    {
+      "title": "Split the ShipRepository god type; extract a dedicated ship mapper",
+      "level": "L6",
+      "value": 3,
+      "effort": "L"
+    },
+    {
+      "title": "Split construction-variant fields out of the ManufacturingPipeline god aggregate",
+      "level": "L6",
+      "value": 3,
+      "effort": "L"
+    },
+    {
+      "title": "Coordinator commands thread PlayerID+ContainerID+CoordinatorID as loose params (deprecated fields linger)",
+      "level": "L5",
+      "value": 2,
+      "effort": "M"
+    },
+    {
+      "title": "application/common is a deprecated re-export hub coupling 93 files to 5 packages",
+      "level": "L6",
+      "value": 2,
+      "effort": "M"
+    }
+  ],
+  "duplicates_merged": [
+    "Rename stuttering services/manufacturing package that collides with the domain package",
+    "Split the 27-method domain ports.APIClient into per-domain API ports"
+  ]
+}
