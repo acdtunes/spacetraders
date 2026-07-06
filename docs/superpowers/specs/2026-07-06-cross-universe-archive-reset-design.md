@@ -1,7 +1,17 @@
 # Cross-Universe Archive & Reset — Design
 
-**Date:** 2026-07-06
-**Status:** Draft — requires Admiral sign-off (Tier 3: schema changes + a destructive reset path)
+**Date:** 2026-07-06 (rev 2, same day)
+**Status:** Draft — requires Admiral sign-off (Tier 3: schema change + a destructive reset path)
+
+> **Rev 2 (Admiral challenge):** the original draft copied history into a dedicated
+> `archive` schema. The Admiral observed that 13 of 17 tables already carry
+> `player_id`, and a new universe means a new player — so player data is naturally
+> partitioned in place, and copying it is over-engineering. Rev 2 adopts the
+> **in-place, player-partitioned** model: history stays where it is, keyed by the old
+> era's `player_id`; only the unscoped world tables need treatment (one `era_id`
+> column on `waypoints`; truncate the two rebuildable caches). What this gives up —
+> hard immutability of history against buggy unscoped writes, bounded live tables —
+> is theoretical at fleet scale and covered by the pre-reset `pg_dump`.
 **Beads:** requirements seed `sp-4uyh` (rig db); hard prerequisite to `st-wm7` (new-universe bring-up, city db)
 **Related:** `docs/superpowers/specs/2026-07-06-ai-engine-city-bridge-design.md` (the engine this feeds),
 `docs/refactoring/2026-07-06-gobot-ai-enablement-features.md` (scout feature #8, reframed here from
@@ -18,8 +28,9 @@ exists).
 The Admiral's requirement: do **not** just wipe. Each universe's history is a learnable
 corpus. The loop is:
 
-1. **Archive** — on reset, copy the cross-universe-valuable tables into an era-stamped
-   archive before any truncation; era-close the universe-scoped beads.
+1. **Archive** — on reset, close the era so its history stays intact in place (keyed
+   by the dead player's `player_id`); era-close the universe-scoped beads. Nothing
+   valuable is copied or moved — only the unscoped world caches are cleared.
 2. **Analyze** — the Admiral (design-time) and the crew (play-time) query the corpus
    across eras: which goods ran thin, which contract types paid, how the ramp curve bent.
 3. **Prime** — the new era's captain and specialists cold-start with priors, not amnesia:
@@ -27,7 +38,8 @@ corpus. The loop is:
 
 Two state stores are affected, each with its own half of the design:
 
-- **Postgres** (`spacetraders` db) — quantitative history. Archive schema + `history` verbs.
+- **Postgres** (`spacetraders` db) — quantitative history. In-place player-partitioned
+  history + a tiny `eras` registry + `history` verbs.
 - **Beads** (`sp-` rig ledger, dolt-backed) — qualitative memory. Era labels + close ritual
   + the memory-review gate.
 
@@ -51,24 +63,27 @@ each era's data naturally hangs off its player row.
 
 ### The era registry
 
-A small table anchors everything (lives in the `archive` schema, §2):
+A small table anchors everything (plain `public.eras` — rev 2 has no archive schema).
+It is metadata about players, one row per era, `player_id` is the join key to all
+history:
 
 ```sql
-CREATE TABLE archive.eras (
+CREATE TABLE eras (
     era_id              SERIAL PRIMARY KEY,
     name                TEXT UNIQUE NOT NULL,     -- lowercase agent symbol: 'torwind'
     agent_symbol        TEXT NOT NULL,            -- 'TORWIND'
     faction             TEXT,                     -- from players.metadata starting_faction
-    player_id           INT NOT NULL,             -- players.id (no FK: archive is self-contained)
+    player_id           INT NOT NULL,             -- players.id — THE era partition key
     universe_reset_date DATE,                     -- server resetDate while this era lived
     registered_at       TIMESTAMPTZ,              -- players.created_at
-    archived_at         TIMESTAMPTZ,              -- when universe archive ran
-    verified_at         TIMESTAMPTZ,              -- when universe verify passed (truncate gate)
     closed_at           TIMESTAMPTZ,              -- when the era-close ritual finished
     final_credits       BIGINT,                   -- last known treasury (L28 anchor method)
     notes               TEXT
 );
 ```
+
+(`archived_at`/`verified_at` from rev 1 are gone — nothing is copied, so there is
+nothing to verify beyond the pre-reset `pg_dump`.)
 
 - **Era name**: lowercase agent symbol (`torwind`, then whatever universe-2's agent is).
   `era_id` gives ordering; `universe_reset_date` gives absolute anchoring.
@@ -102,8 +117,17 @@ Every production table, including the two that exist only as hand migrations (no
 model). Source of truth for models: `gobot/internal/adapters/persistence/models.go`;
 for model-less tables: `gobot/migrations/013/014_*.sql`.
 
-**Classes**: **ARCHIVE** = copy into the archive schema, then truncate live.
-**WIPE** = truncate live, no copy. **KEEP** = never touched by reset.
+**Classes (rev 2 semantics)**: **ARCHIVE** = history of cross-universe value —
+**retained in place**, partitioned by the dead era's `player_id`; never truncated.
+**WIPE** = no learning value. For the two **unscoped caches** (`market_data`,
+`system_graphs`): truncate at reset — they rebuild by scouting. For **player-scoped
+operational junk** (containers, container_logs, ships, factory states, gas/storage
+ops): retained by default (inert — invisible to the new player), deletable later via
+an optional `universe scrub --era` hygiene verb (`DELETE ... WHERE player_id = <dead>`),
+never a reset gate. **KEEP** = `players`, the partition anchor itself.
+Verified 2026-07-06: 13/17 models carry `player_id`; the exceptions are `players`
+itself, `waypoints`, `system_graphs`, and `manufacturing_task_dependencies` (scoped
+transitively via its parent task).
 
 | Table | Class | Reasoning |
 |---|---|---|
@@ -114,10 +138,10 @@ for model-less tables: `gobot/migrations/013/014_*.sql`.
 | `captain_events` | ARCHIVE | Incident/event frequency corpus: how often crash bursts, credit thresholds, workflow failures fired per era — grounds detector tuning and the retrospective. |
 | `manufacturing_pipelines` | ARCHIVE | Chain outcomes: product good, total cost/revenue/net profit, status, pipeline_type (includes the CONSTRUCTION gate campaign — the whole s83-s91 saga is legible here). |
 | `manufacturing_tasks` | ARCHIVE | Per-task economics: task type, good, quantity, cost/revenue, retry counts. Which links of a chain failed and what acquisition actually cost. |
-| `manufacturing_task_dependencies` | ARCHIVE | Tiny; needed to reconstruct archived task graphs. |
+| `manufacturing_task_dependencies` | ARCHIVE | Tiny; needed to reconstruct historical task graphs (no player_id of its own — scoped transitively via its parent task). |
 | `goods_factories` | ARCHIVE | Legacy engine but carries real outcomes (target good, TotalCost, QuantityAcquired, speedup). Cheap to keep. |
-| `arbitrage_execution_logs` | ARCHIVE | Built explicitly "for ML training" (migration 013): opportunity features at decision time + actual outcome + price drift (migration 014). Model-less in Go — archived via raw SQL copy (§2.3). |
-| `waypoints` | ARCHIVE (as dimension), then wipe | Map data is per-universe, but archived market/contract rows reference waypoint symbols; a skeletal copy (symbol, system, type, traits, x, y) makes the corpus interpretable ("the thin exporter was an ORBITAL_STATION"). Few hundred rows. Live table wiped: no player scoping, symbol collisions across universes are possible in principle, and stale map rows are exactly the poison class. |
+| `arbitrage_execution_logs` | ARCHIVE | Built explicitly "for ML training" (migration 013): opportunity features at decision time + actual outcome + price drift (migration 014). Model-less in Go; player context in its columns — retained in place like everything else (§2.3). |
+| `waypoints` | RETAIN + **new `era_id` column** | The one genuinely unscoped table with history value: market/contract history references waypoint symbols, so the dimension must survive ("the thin exporter was an ORBITAL_STATION"). Rev 2: add `era_id INT` (stamped from the open era at upsert; backfilled `torwind` once), and every live read scopes to the current era — old-map rows become inert history exactly like player rows, and cross-universe symbol collisions are disambiguated. One column, one migration, a handful of read-path touches (waypoint repo). |
 | `market_data` | WIPE | Current-price snapshot only; the time series lives in `market_price_history`. Nothing here that the history table doesn't hold better. |
 | `ships` | WIPE | Ship instances die with the universe. Cross-universe ship knowledge ("LIGHT_HAULER = 2× cargo, 0.4× speed", L49) is beads material; purchase economics are already in `transactions` (PURCHASE_SHIP rows). |
 | `system_graphs` | WIPE | Pathfinding caches for a dead map. |
@@ -128,62 +152,50 @@ for model-less tables: `gobot/migrations/013/014_*.sql`.
 | `storage_operations` | WIPE | Same class as gas_operations. |
 
 **What the fresh universe starts with**: a new `players` row + `config set-player`,
-an open `archive.eras` row, and otherwise empty live tables. Waypoints, markets,
-graphs repopulate through normal scouting; the daemon's additive startup AutoMigrate
-(`cmd/spacetraders-daemon/main.go:111-120`) plus hand migrations guarantee schema.
-All priors come through the `history` verbs and beads — never through leftover live rows.
+an open `eras` row, empty caches (`market_data`, `system_graphs` truncated), and a
+waypoints table whose old rows carry the dead `era_id`. Old player data sits inert —
+every live query is player-scoped by construction (each entrypoint takes/resolves
+`--player-id`), so the new player cannot see it. All priors come through the `history`
+verbs and beads — never through another era's rows read as current.
 
-### 2.2 Archive mechanism — recommendation
+### 2.2 Archive mechanism — recommendation (rev 2)
 
-**Recommended: a dedicated `archive` Postgres schema in the same database, with
-era-stamped copies of the ARCHIVE-class tables.**
-
-Shape: each archive table mirrors its live column set plus `era_id INT NOT NULL`
-(join key to `archive.eras`) and `archived_at TIMESTAMPTZ NOT NULL`. Primary keys
-become composite `(era_id, <original pk>)` — serial ids restart per era after
-`TRUNCATE ... RESTART IDENTITY`, so original ids alone would collide across eras.
-**No foreign keys** out of the archive schema: the archive must stay self-contained
-and immune to live-table surgery; `agent_symbol` is denormalized onto `archive.eras`.
-
-Why this beats the alternatives:
+**Recommended: in-place, player-partitioned history.** `player_id` already partitions
+13/17 tables; a new universe registers a new player, so era membership is a fact the
+rows were born with. History = the dead players' rows, left exactly where they are.
+The only DDL: the tiny `eras` table (§1) and the `era_id` column on `waypoints` (§2.1).
 
 | Option | Verdict | Why |
 |---|---|---|
-| **`archive` schema, era-stamped tables** | **RECOMMENDED** | Queryable live for priming (same connection, same config, one `database.NewConnection`); cross-era queries are plain SQL (`GROUP BY era_id`); invisible to live code paths (nothing in gobot queries `archive.*` unless it means to); GORM handles schema-qualified names (`TableName() "archive.transactions"`), and under SQLite tests that string is just a quoted table name — the existing `NewTestConnection` TDD flow keeps working. |
-| Era-stamped archive tables in `public` (e.g. `hist_transactions`) | Workable, weaker | Same properties, but clutters the working namespace and loses the one-line "everything under `archive.` is immutable history" invariant (and the matching one-line pg_dump of just the corpus). |
-| `universe_id` column on live tables, never delete | REJECTED (per `sp-4uyh`) | Unbounded live tables, and one forgotten filter anywhere (repo, verb, coordinator) silently feeds dead-universe rows into live decisions — the exact poison this design exists to prevent. |
-| Separate archive database | REJECTED | Second connection/config; Postgres cannot join across databases, so "compare current market vs archived priors" queries die; more ops surface for zero isolation benefit over a schema. |
-| pg_dump per era | REJECTED **for priming**, KEPT as safety layer | A dump is a backup, not a queryable corpus — the captain cannot prime from it. But phase 1 of the runbook (§6) always takes a full pg_dump before anything destructive: it is the rollback for truncation. |
+| **In-place, player-partitioned (rev 2)** | **RECOMMENDED** | Zero copying, zero verify machinery, zero new schema; the partition key already exists and every live entrypoint already filters by it — the "forgotten filter" poison argument mostly dissolves because the filters are structural, not newly-added. Cross-era queries are plain SQL (`JOIN eras ... GROUP BY era_id`). History and live data share tables, so "compare current market vs last era's" is one query. |
+| `archive` schema, era-stamped copies (rev 1) | REJECTED as over-engineering (Admiral challenge) | Buys hard immutability (live code physically cannot touch `archive.*`) and bounded live tables — both theoretical at fleet scale (a few hundred K rows/era), and the disaster case is covered by the pre-reset `pg_dump`. Costs a parallel table set, copy+checksum machinery, and a second source of truth. |
+| `universe_id` column on ALL live tables | SUPERSEDED | Rev 2 is this idea minus the redundancy: the column already exists (`player_id`) everywhere it matters; only `waypoints` genuinely needs a new era column. |
+| Separate archive database | REJECTED | Second connection/config; Postgres cannot join across databases, so compare-vs-priors queries die. |
+| pg_dump per era | KEPT as safety layer only | A dump is a backup, not a queryable corpus. Phase 1 of the runbook (§6) always takes one before anything destructive: it is the rollback for the cache truncation and the token blanking — and the full recovery path if an unscoped-write bug ever mangles history in place. |
 
 DDL lands twice, per the s73/L52/L54 lesson (test DBs AutoMigrate from tags; production
-needs hand migrations): a hand-written `migrations/031_add_archive_schema.up.sql`
-(`CREATE SCHEMA IF NOT EXISTS archive` + tables + indexes) **and** the archive models
-registered in AutoMigrate (§7 makes the registration structural).
+needs hand migrations): a hand-written `migrations/031_add_eras_and_waypoint_era.up.sql`
+(CREATE TABLE eras + ALTER TABLE waypoints ADD COLUMN era_id + backfill) **and** the
+`ErasModel` + waypoint column registered via the shipped `AllModels()` registry.
 
-Useful indexes (query-driven, from the §3 verb list):
-`archive.transactions (era_id, category, timestamp)`,
-`archive.market_price_history (good_symbol, era_id, recorded_at)`,
-`archive.contracts (era_id, type)`,
-`archive.manufacturing_pipelines (era_id, product_good)`.
+Useful indexes (query-driven, from the §3 verb list — on the LIVE tables):
+`transactions (player_id, category, timestamp)`,
+`market_price_history (good_symbol, player_id, recorded_at)`,
+`contracts (player_id, type)`, `waypoints (era_id, symbol)`.
 
-### 2.3 Archive-then-truncate ordering
+**Residual risk owned explicitly**: an unscoped WRITE (update/delete without
+player_id) could corrupt history in place — rev 1's schema made that impossible; rev 2
+accepts it. Mitigations: §7 adds a cheap CI guard over repository write paths, and the
+phase-1 dump bounds the blast radius to one era.
 
-The copy is `INSERT INTO archive.<t> (era_id, archived_at, <cols>) SELECT :era, now(),
-<cols> FROM public.<t>`, one transaction per table, `ON CONFLICT DO NOTHING` on the
-composite PK so re-runs are idempotent. `arbitrage_execution_logs` (no GORM model) is
-copied by the same raw-SQL path — the archive command works at SQL level throughout,
-so a model gap can never silently exclude a table.
+### 2.3 Reset ordering (rev 2 — no copy phase)
 
-**Hard ordering invariant: nothing truncates until verification passes.** The
-`universe truncate` verb refuses to run unless `archive.eras.verified_at` is set for
-the era, and verification (`universe verify`) recomputes, per table: live row count vs
-archived-for-this-era row count, plus domain checksums (e.g. `SUM(amount)` and
-min/max timestamp on transactions; `SUM(net_profit)` on pipelines). Counts live in the
-verification report printed and stored in `archive.eras.notes`.
-
-Truncation is `TRUNCATE ... RESTART IDENTITY CASCADE` over every table in §2.1 except
-`players` and the `archive` schema. CASCADE resolves the container/ship/log FK web in
-one statement.
+There is no archive copy. The destructive surface shrinks to: truncating the two
+unscoped caches (`market_data`, `system_graphs` — `TRUNCATE ... RESTART IDENTITY`),
+blanking the dead player's token, and (optional, later, never a gate) scrubbing
+player-scoped junk rows. **Hard ordering invariant: the phase-1 `pg_dump` exists
+before anything destructive runs.** `arbitrage_execution_logs` needs no handling at
+all — model-less, player-context in its columns, retained in place.
 
 ### 2.4 Command surface (Postgres phases)
 
@@ -197,19 +209,19 @@ spacetraders universe status
     Server resetDate + next reset vs the open era's recorded reset date.
     Exit code signals MISMATCH (scriptable by the Watchkeeper detector).
 
-spacetraders universe archive --era torwind [--player-id 1]
-    Creates/finds the era row (backfill path), runs the INSERT...SELECT copies,
-    stamps archived_at, prints per-table copied counts. Idempotent.
+spacetraders universe close --era torwind --confirm torwind
+    Stamps eras.closed_at + final_credits (L28 anchor), blanks the dead
+    player token, truncates market_data + system_graphs, backfills
+    waypoints.era_id where NULL. Refuses without --confirm echoing the era
+    name; refuses if the era row is already closed (idempotent re-run prints
+    what is already done). Admiral-run by policy (never on the captain's
+    allowlist). This one verb replaces rev 1's archive/verify/truncate trio.
 
-spacetraders universe verify --era torwind
-    Read-only count+checksum comparison; on success stamps verified_at and
-    prints the report. Idempotent.
-
-spacetraders universe truncate --era torwind --confirm torwind
-    Refuses without verified_at; refuses unless --confirm repeats the era name;
-    refuses if any archive table is empty while its live source is non-empty.
-    Truncates per §2.3, blanks the dead player token, prints what it did.
-    Admiral-run by policy (and the captain's allowlist never includes it).
+spacetraders universe scrub --era torwind --confirm torwind
+    OPTIONAL hygiene, any time after close: DELETE player-scoped WIPE-class
+    rows (containers, container_logs, ships, factory states, gas/storage ops)
+    for the dead era's player. Never deletes ARCHIVE-class history. Not a
+    reset gate — run it months later or never.
 ```
 
 ---
@@ -217,10 +229,12 @@ spacetraders universe truncate --era torwind --confirm torwind
 ## 3. `history` query verbs — the priming surface
 
 New cobra group `spacetraders history` (same `universe.go`/`ledger.go` construction
-pattern; reads **only** `archive.*`). Distinct from the existing live-universe verbs —
-`market history` and `market volatility` (`market.go:287,384`) keep their current
-semantics over live `market_price_history`; the `history` group is the cross-era lens.
-Default era scope: `--era all` for pattern queries, latest closed era for `summary`.
+pattern). Rev 2: reads the LIVE tables filtered through the `eras` registry —
+`WHERE player_id IN (SELECT player_id FROM eras WHERE ...)` (+ `era_id` on waypoints)
+— history and live data share tables, so these are ordinary scoped queries. Distinct
+from the existing live-universe verbs — `market history` / `market volatility` keep
+their current-player semantics; the `history` group is the cross-era lens. Default
+era scope: `--era all` for pattern queries, latest closed era for `summary`.
 
 Grounded in what era 1 actually needed (lessons/friction as evidence):
 
@@ -244,7 +258,7 @@ spacetraders history contracts [--era N] [--good G]
     LUMPY — never annualize one draw).
 
 spacetraders history pnl [--era N] [--by-category | --by-operation]
-    Era P&L rollup from archive.transactions: net by category (CONTRACT vs
+    Era P&L rollup from era-scoped transactions: net by category (CONTRACT vs
     TRADING vs SHIP_INVESTMENTS...), by operation_type (contract/arbitrage/
     factory), and a daily net curve — the ramp shape. Answers "what income mix
     won, and how fast did treasury compound?" — the cross-era ramp comparison
@@ -273,7 +287,8 @@ spacetraders history summary [--era N]
 
 Consumers: **play-time** — the captain's first-wake ritual and Trade Analyst /
 Fleet Architect consults run these via CLI (they are read-only, allowlist-safe);
-**design-time** — the Admiral uses the same verbs or raw SQL over `archive.*`.
+**design-time** — the Admiral uses the same verbs or raw SQL over the live tables
+joined through `eras`.
 
 All output is prior, not fact — the captain template's cold-start clause (§4.5) says
 so explicitly, because a new universe can genuinely differ.
@@ -412,8 +427,8 @@ half-built gate at X1-PZ28-I67 exist. This cleanup is the era-close ritual (§6 
    mechanics lessons mostly KEEP; the handful naming TORWIND ships/waypoints/markets
    REWRITE; pure map facts RETIRE onto the retro bead.
 6. **Write the era-1 retrospective + seed the era-2 strategy bead** — blocked only on
-   the Postgres archive existing first (the retro wants `history summary`), which is
-   why the runbook (§6) orders Postgres phases before beads phases.
+   the `eras` row + `history` verbs existing first (the retro wants `history summary`),
+   which is why the runbook (§6) orders `universe close` before the beads phases.
 
 Everything here is reversible: beads are dolt-versioned, and `bd forget` casualties
 are pre-copied onto the retro bead.
@@ -432,21 +447,22 @@ runbook is Admiral-triggered; nothing in it ever runs autonomously.
 | # | Phase | Actor / tool | Idempotency & reversal |
 |---|---|---|---|
 | 0 | **Freeze**: confirm reset (`universe status` MISMATCH), `captain/DISABLED` set (Watchkeeper auto-set on detection, §1), fleet services down | Watchkeeper auto + Admiral confirm | Read-only + a flag file |
-| 1 | **Safety snapshot**: full `pg_dump` of the live db → `archives/pg/<era>-final-<ts>.dump`; sanity via `pg_restore --list` | Admiral (documented command) | Re-runnable; this dump is the master rollback for phase 4 |
-| 2 | **Archive**: `universe archive --era <name>` — era row + INSERT...SELECT copies | Admiral or harbormaster | Idempotent (ON CONFLICT DO NOTHING); reversal = drop era's archive rows |
-| 3 | **Verify**: `universe verify --era <name>` — counts + checksums, stamps `verified_at` | Same | Read-only; HARD GATE for phase 4 |
-| 4 | **Truncate live**: `universe truncate --era <name> --confirm <name>`; blanks dead token | **Admiral only** | Guarded triple (verified_at + name echo + non-empty-archive check); reversal = pg_restore of phase-1 dump |
-| 5 | **Beads era-close**: date-window label sweep + `bd label add ... era:<name>` + bulk `bd close --reason` on open scoped beads + strategy demotion | Harbormaster (dry-run first) | Dolt-versioned; label/close are non-destructive |
-| 6 | **Memory-review gate**: sweep → classification note → **Admiral approves** → apply (rewrite/forget after retro-copy) | Harbormaster proposes, Admiral approves | RETIRE text pre-copied to retro bead; dolt history |
-| 7 | **Retrospective**: write `retro: era <name>` bead from `history summary` + closed strategy + decision highlights | Admiral + harbormaster (later: outgoing captain drafts) | Additive |
-| 8 | **Register new agent**: `player register --new --agent <SYM> --faction <F>` (scout #8: calls the API itself using the account token; stores agent token, creates players row + OPEN era row with server resetDate); `config set-player` | **Admiral only** (st-wm7: "registration is the Admiral's call") | API-side one-shot; local rows re-creatable |
-| 9 | **Seed fresh strategy**: new strategy bead `-l strategy,era:<new>` from retro + priors (§4.4) | Harbormaster drafts, Admiral blesses | Additive |
-| 10 | **Bring-up** per st-wm7: dashboards repointed, smoke checks, **Admiral clears `captain/DISABLED`** | **Admiral only** | The kill switch is never cleared by any automation, ever |
+| 1 | **Safety snapshot**: full `pg_dump` of the live db → `archives/pg/<era>-final-<ts>.dump`; sanity via `pg_restore --list` | Admiral (documented command) | Re-runnable; the master rollback for phase 2 and the unscoped-write disaster case |
+| 2 | **Era close**: `universe close --era <name> --confirm <name>` — stamps closed_at + final_credits, blanks dead token, truncates the two caches, backfills waypoints.era_id | **Admiral only** | Guarded (name echo + already-closed check); reversal = pg_restore of phase-1 dump |
+| 3 | **Beads era-close**: date-window label sweep + `bd label add ... era:<name>` + bulk `bd close --reason` on open scoped beads + strategy demotion | Harbormaster (dry-run first) | Dolt-versioned; label/close are non-destructive |
+| 4 | **Memory-review gate**: sweep → classification note → **Admiral approves** → apply (rewrite/forget after retro-copy) | Harbormaster proposes, Admiral approves | RETIRE text pre-copied to retro bead; dolt history |
+| 5 | **Retrospective**: write `retro: era <name>` bead from `history summary` + closed strategy + decision highlights | Admiral + harbormaster (later: outgoing captain drafts) | Additive |
+| 6 | **Register new agent**: `player register --new --agent <SYM> --faction <F>` (scout #8: calls the API itself using the account token; stores agent token, creates players row + OPEN era row with server resetDate); `config set-player` | **Admiral only** (st-wm7: "registration is the Admiral's call") | API-side one-shot; local rows re-creatable |
+| 7 | **Seed fresh strategy**: new strategy bead `-l strategy,era:<new>` from retro + priors (§4.4) | Harbormaster drafts, Admiral blesses | Additive |
+| 8 | **Bring-up** per st-wm7: dashboards repointed, smoke checks, **Admiral clears `captain/DISABLED`** | **Admiral only** | The kill switch is never cleared by any automation, ever |
 
-Ordering rationale: Postgres before beads because the retrospective (phase 7)
-consumes `history summary`, which needs the archive (phase 2); truncate before
-registration so the new agent never coexists with poisoned live rows; memory gate
-before any new captain session so false priors never prime even once.
+(Optional, anytime after phase 2, never gating: `universe scrub --era <name>` for
+player-scoped junk-row hygiene.)
+
+Ordering rationale: `universe close` before beads because the retrospective (phase 5)
+consumes `history summary`, which needs the closed era row; close before registration
+so the new agent never coexists with unscoped stale caches; memory gate before any
+new captain session so false priors never prime even once.
 
 ---
 
@@ -466,26 +482,32 @@ envs the same silent way.
 **Structural fix, not another list-edit**: introduce `persistence.AllModels() []any`
 as the single canonical model registry; `AutoMigrate` consumes it; a unit test walks
 the `persistence` package (or the registry vs a literal count) so a model added
-without registration fails CI. Archive models join the same registry. Note
-`arbitrage_execution_logs` stays model-less deliberately — the archive copies it at
-SQL level (§2.3), so it needs no model; the test that pins archive completeness
-enumerates TABLES (information_schema against a migrated test db), not models.
+without registration fails CI. **Shipped 2026-07-06** (dry-dock batch), including the
+three missing models and the drift test. Rev 2 additions to the same registry:
+`ErasModel`. `arbitrage_execution_logs` stays model-less deliberately — rev 2 retains
+it in place untouched, so it needs neither a model nor any reset handling.
 
 ### TDD per piece (patterns already in the repo: fake repos as in
 `captain_ops_test.go`, sqlite via `NewTestConnection`)
 
 - **Era registry / status**: fake API client returns a scripted `resetDate`; test
   MISMATCH detection against a seeded era row; exit-code contract.
-- **Archive copy**: seed live fixtures (2 players/eras worth) → archive era 1 →
-  assert per-table counts, era stamping, and that era 2's rows were NOT copied;
-  re-run archive → counts unchanged (idempotence).
-- **Verify**: tamper one archived row → verify fails; untampered → `verified_at` set.
-- **Truncate guards**: without `verified_at` → refused; wrong `--confirm` → refused;
-  after truncate → live tables empty, `players` intact, `archive.*` intact, dead
-  token blanked.
-- **History verbs**: fixture archive rows with known aggregates → each verb's numbers
-  asserted (thin-good detection, contract payout variance, P&L mix). Pure
-  read-path tests, sqlite-friendly.
+- **Era close guards**: wrong `--confirm` → refused; already-closed → no-op report;
+  after close → closed_at + final_credits stamped, dead token blanked, caches empty,
+  ALL player-scoped history intact (assert transaction/contract counts unchanged),
+  waypoints.era_id backfilled.
+- **Waypoint era scoping**: two eras of waypoints seeded → live reads return only the
+  open era's rows; history joins still reach the old era's.
+- **Scrub guards**: deletes only WIPE-class rows of the named dead era; ARCHIVE-class
+  and other players' rows untouched; refuses on an open era.
+- **History verbs**: fixture rows across 2 players/eras with known aggregates → each
+  verb's numbers asserted (thin-good detection, contract payout variance, P&L mix)
+  AND era isolation (era-2 fixtures never leak into era-1 results). Pure read-path
+  tests, sqlite-friendly.
+- **Unscoped-write CI guard** (rev 2 residual-risk mitigation): a lint-style test
+  over repository write paths asserting UPDATE/DELETE builders on player-scoped
+  tables carry a player predicate — heuristic (AST/grep), cheap, catches the lazy
+  case; the phase-1 dump covers the clever one.
 - **Watchkeeper reset detector**: existing detector test pattern
   (`internal/captain`): scripted status mismatch → DISABLED touched + one Admiral
   mail, and never a clear.
@@ -504,17 +526,18 @@ verb, Watchkeeper touch, captain-template edits): this document is the spec that
 on the feature bead; the Admiral approves it BEFORE any code (bridge-spec
 self-modification rule). Suggested build order, each its own gated merge:
 
-1. `AllModels()` registry + missing-model registration + migration check test
-   (unblocks everything; fixes the live latent bug).
-2. `GetServerStatus()` API call + `universe status` + era registry migration 031.
-3. `universe archive` / `verify` / `truncate` (+ archive models/indexes).
-4. `history` verb family.
+1. ~~`AllModels()` registry + missing-model registration + drift test~~ — **SHIPPED
+   2026-07-06** (dry-dock feature batch), ahead of this spec's build.
+2. `GetServerStatus()` API call + `universe status` + migration 031 (eras table +
+   waypoints.era_id + backfill) + ErasModel in AllModels().
+3. `universe close` (+ guards) and `universe scrub`; waypoint-repo era scoping.
+4. `history` verb family (live-table, era-scoped reads) + the unscoped-write CI guard.
 5. Watchkeeper reset detector (Tier 3 rail, same sign-off).
 6. `player register --new` era-aware registration (scout #8's other half).
 7. Runbook doc + dry-run helper for beads phases.
 
 Relationship to `st-wm7`: items (1) and (3) of that bead's checklist ARE this design;
 `st-wm7` remains the bring-up gate and stays blocked until the one-time cleanup (§5)
-and phases 1-4 have run for `torwind`. The kill-switch clause is restated here
+and runbook phases 1-4 have run for `torwind`. The kill-switch clause is restated here
 deliberately: **clearing `captain/DISABLED` is the Admiral's act alone** — no verb,
 agent, or runbook phase in this design clears it.
