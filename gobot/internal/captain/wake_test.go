@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
@@ -58,6 +59,26 @@ func newBridgeSupervisor(t *testing.T) (*Supervisor, *captainStores, *fakeGatewa
 	require.NoError(t, err)
 	sup.gw = gw
 	return sup, &captainStores{store: store, playerID: playerID, dir: dir}, gw
+}
+
+// reopenBridgeSupervisor simulates a process restart: it constructs a brand
+// new Supervisor against the same db/store/workspace dir a prior one used,
+// so any durable state that prior Supervisor persisted is picked back up
+// exactly as a real restart would (NewSupervisor loads it from disk).
+func reopenBridgeSupervisor(t *testing.T, db *gorm.DB, playerID int, store captain.EventStore, dir string) (*Supervisor, *fakeGateway) {
+	t.Helper()
+	cfg := config.CaptainConfig{
+		Enabled: true, PlayerID: playerID, WorkspaceDir: dir,
+		PollIntervalSeconds: 30, HeartbeatMinutes: 45, MaxSessionsPerHour: 6,
+		SessionTimeoutMinutes: 10, ShipIdleMinutes: 30, StaleHeartbeatMinutes: 5,
+		EngineMode: "bridge", CaptainAgent: "captain", AdmiralAlias: "human",
+		AckTimeoutMinutes: 10, EscalateAfterRenudges: 3,
+	}
+	gw := &fakeGateway{}
+	sup, err := NewSupervisor(db, store, NewWorkspace(dir), cfg)
+	require.NoError(t, err)
+	sup.gw = gw
+	return sup, gw
 }
 
 func recordEvent(t *testing.T, s *captainStores, typ captain.EventType) {
@@ -171,4 +192,94 @@ func TestBridgeWakeRespectsKillSwitch(t *testing.T) {
 	require.False(t, ran)
 	require.Empty(t, gw.mails)
 	require.Empty(t, gw.nudges)
+}
+
+// --- Durable scheduling state across process restarts ---
+//
+// Bug: a fresh Supervisor left lastSession/lastSurveyorNudge at time.Time's
+// zero value, so now.Sub(zeroValue) is enormous and every "due" check
+// evaluated true immediately after construction. Every process start (three
+// manual `captain --once` runs plus one launchd service start) fired an
+// immediate heartbeat wake and survey nudge. The fix persists scheduling
+// state to <workspace_dir>/state/supervisor-state.json and arms fresh
+// cadences one full interval out from now instead of due-at-zero.
+
+func TestFreshSupervisorSchedulesHeartbeatOneIntervalOutNotImmediately(t *testing.T) {
+	sup, _, gw := newBridgeSupervisor(t)
+
+	ran, err := sup.Tick(context.Background(), time.Now())
+	require.NoError(t, err)
+	require.False(t, ran, "a brand-new process must not treat the heartbeat as immediately due")
+	require.Empty(t, gw.mails)
+	require.Empty(t, gw.nudges)
+}
+
+func TestSupervisorFiresHeartbeatWhenPersistedTimestampIsPastDue(t *testing.T) {
+	db, playerID, store := setupDB(t)
+	dir := t.TempDir()
+	require.NoError(t, saveSupervisorState(NewWorkspace(dir).StatePath(), supervisorState{
+		LastSession: time.Now().Add(-2 * time.Hour),
+	}))
+
+	sup, gw := reopenBridgeSupervisor(t, db, playerID, store, dir)
+	ran, err := sup.Tick(context.Background(), time.Now())
+	require.NoError(t, err)
+	require.True(t, ran, "a persisted timestamp from 2h ago (> 45m heartbeat_minutes) must be due right after restart")
+	require.Len(t, gw.nudges, 1)
+	require.Contains(t, gw.nudges[0][1], "heartbeat")
+}
+
+func TestSupervisorRestartRoundTripsHeartbeatStateAndDoesNotRefire(t *testing.T) {
+	db, playerID, store := setupDB(t)
+	dir := t.TempDir()
+
+	sup1, gw1 := reopenBridgeSupervisor(t, db, playerID, store, dir)
+	sup1.lastSession = time.Now().Add(-2 * time.Hour)
+	ran, err := sup1.Tick(context.Background(), time.Now())
+	require.NoError(t, err)
+	require.True(t, ran, "heartbeat due before restart")
+	require.Len(t, gw1.nudges, 1)
+
+	sup2, gw2 := reopenBridgeSupervisor(t, db, playerID, store, dir)
+	ran, err = sup2.Tick(context.Background(), time.Now())
+	require.NoError(t, err)
+	require.False(t, ran, "restart must not re-fire a heartbeat that was just sent moments before")
+	require.Empty(t, gw2.nudges)
+	require.Empty(t, gw2.mails)
+}
+
+func TestRenudgeStateSurvivesRestartAndDoesNotResendInitialMail(t *testing.T) {
+	db, playerID, store := setupDB(t)
+	dir := t.TempDir()
+
+	sup1, gw1 := reopenBridgeSupervisor(t, db, playerID, store, dir)
+	require.NoError(t, store.Record(context.Background(),
+		&captain.Event{Type: captain.EventWorkflowFailed, Ship: "S", PlayerID: playerID}))
+
+	t0 := time.Now()
+	sup1.lastSession = t0
+	ran, err := sup1.Tick(context.Background(), t0)
+	require.NoError(t, err)
+	require.True(t, ran)
+	require.Len(t, gw1.mails, 1, "first wake sends exactly one mail")
+
+	// Restart shortly after: still within the ack timeout, and the event was
+	// already mailed pre-restart, so this must be a no-op — not a duplicate
+	// full wake mail (which is what an unpersisted, reset-to-nil renudges
+	// map would cause via hasUnmailedEvents).
+	sup2, gw2 := reopenBridgeSupervisor(t, db, playerID, store, dir)
+	ran, err = sup2.Tick(context.Background(), t0.Add(2*time.Minute))
+	require.NoError(t, err)
+	require.False(t, ran, "event already wake-mailed pre-restart and still within ack timeout")
+	require.Empty(t, gw2.mails, "restart must not re-send the initial wake mail")
+	require.Empty(t, gw2.nudges)
+
+	// Past the ack timeout post-restart: a re-nudge, not a fresh full wake.
+	sup3, gw3 := reopenBridgeSupervisor(t, db, playerID, store, dir)
+	ran, err = sup3.Tick(context.Background(), t0.Add(11*time.Minute))
+	require.NoError(t, err)
+	require.True(t, ran)
+	require.Empty(t, gw3.mails, "still a re-nudge, not a duplicate wake mail, after restart")
+	require.Len(t, gw3.nudges, 1)
+	require.Contains(t, gw3.nudges[0][1], "unacked")
 }

@@ -2,6 +2,7 @@ package captainsup
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -12,6 +13,29 @@ func recordingExec(calls *[][]string, out string) Execer {
 		*calls = append(*calls, append([]string{name}, args...))
 		return out, nil
 	}
+}
+
+// TestScrubbedExecDropsAnthropicKeyAndGCPrefixedEnvVars guards against the
+// child process resolving a different city than the one pinned by cwd: if a
+// caller (human or agent) has GC_* env vars set for another city, those must
+// never leak into the child even though we don't enumerate every GC_ var by
+// name.
+func TestScrubbedExecDropsAnthropicKeyAndGCPrefixedEnvVars(t *testing.T) {
+	t.Setenv("GC_DIR", "/tmp/other-city")
+	t.Setenv("GC_SESSION_ID", "xx")
+	t.Setenv("GC_SOME_FUTURE_VAR_NOT_YET_INVENTED", "future")
+	t.Setenv("ANTHROPIC_API_KEY", "k")
+	t.Setenv("KEEP_ME", "1")
+
+	run := scrubbedExec(t.TempDir())
+	out, err := run(context.Background(), "env")
+	require.NoError(t, err)
+
+	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+		require.Falsef(t, strings.HasPrefix(line, "GC_"), "GC_ env var leaked to child: %q", line)
+	}
+	require.NotContains(t, out, "ANTHROPIC_API_KEY=k")
+	require.Contains(t, out, "KEEP_ME=1")
 }
 
 func TestNudgeInvokesGCSessionNudge(t *testing.T) {

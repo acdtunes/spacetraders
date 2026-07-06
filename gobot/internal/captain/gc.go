@@ -12,9 +12,17 @@ import (
 
 type Execer func(ctx context.Context, name string, args ...string) (stdout string, err error)
 
-// scrubbedExec runs binaries with cwd set to dir and ANTHROPIC_API_KEY removed
-// from the child env: with it set, claude bills the API instead of the Max
-// subscription.
+// scrubbedExec runs binaries with cwd set to dir and ANTHROPIC_API_KEY plus
+// every GC_*-prefixed env var removed from the child env. ANTHROPIC_API_KEY
+// must go: with it set, claude bills the API instead of the Max subscription.
+// GC_* vars must go too: the gateway must behave identically whether it's
+// launched by launchd (a clean env) or from a manual shell that carries
+// another city's GC_DIR/GC_SESSION_ID/etc. cwd (dir) is the only city pin we
+// want the child to see — an inherited GC_DIR would make the child `gc`
+// resolve a different city than the one this gateway was constructed for,
+// and inherited GC_SESSION_ID/GC_ALIAS would misattribute mail sender
+// identity to the caller instead of this gateway. The match is a prefix, not
+// an enumerated list, so future GC_ vars are covered automatically.
 func scrubbedExec(dir string) Execer {
 	return func(ctx context.Context, name string, args ...string) (string, error) {
 		cmd := exec.CommandContext(ctx, name, args...)
@@ -23,7 +31,7 @@ func scrubbedExec(dir string) Execer {
 		env := os.Environ()
 		scrubbed := env[:0]
 		for _, kv := range env {
-			if strings.HasPrefix(kv, "ANTHROPIC_API_KEY=") {
+			if strings.HasPrefix(kv, "ANTHROPIC_API_KEY=") || strings.HasPrefix(kv, "GC_") {
 				continue
 			}
 			scrubbed = append(scrubbed, kv)

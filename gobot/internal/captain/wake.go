@@ -139,10 +139,13 @@ func (s *Supervisor) hasUnmailedEvents(events []*captain.Event) bool {
 }
 
 // recordWake counts the wake against the hourly cap and resets the heartbeat
-// clock, exactly as a legacy session start did.
+// clock, exactly as a legacy session start did. It also persists scheduling
+// state so a process restart picks up where this one left off instead of
+// treating the heartbeat/renudge/escalation clocks as freshly zeroed.
 func (s *Supervisor) recordWake(now time.Time) {
 	s.sessionStarts = append(s.sessionStarts, now)
 	s.lastSession = now
+	s.saveState()
 }
 
 func composeWakeMail(playerID int, events []*captain.Event, now time.Time) (subject, body string) {

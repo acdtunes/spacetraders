@@ -21,6 +21,11 @@ type Supervisor struct {
 	ws    Workspace
 	cfg   config.CaptainConfig
 
+	// statePath is where scheduling state (lastSession, lastSurveyorNudge,
+	// renudges, escalated) is durably persisted so a process restart never
+	// re-treats an already-armed cadence as immediately due.
+	statePath string
+
 	lastSession   time.Time
 	lastCredits   int
 	sessionStarts []time.Time
@@ -43,7 +48,46 @@ func NewSupervisor(db *gorm.DB, store captain.EventStore, ws Workspace, cfg conf
 	if cfg.EngineMode != "bridge" {
 		return nil, fmt.Errorf("captain: unsupported engine_mode %q (only \"bridge\" is supported)", cfg.EngineMode)
 	}
-	return &Supervisor{db: db, store: store, ws: ws, cfg: cfg}, nil
+	s := &Supervisor{db: db, store: store, ws: ws, cfg: cfg, statePath: ws.StatePath()}
+	s.restoreState(time.Now())
+	return s, nil
+}
+
+// restoreState loads durable scheduling state from disk. A missing or
+// unreadable file degrades to a fresh start rather than blocking supervisor
+// construction: any cadence still at its zero value is armed one full
+// interval out from now, so a restart (or a first-ever run) never fires an
+// immediate wake or survey nudge.
+func (s *Supervisor) restoreState(now time.Time) {
+	st, err := loadSupervisorState(s.statePath)
+	if err != nil {
+		fmt.Printf("captain: supervisor state unreadable, starting fresh: %v\n", err)
+		st = supervisorState{}
+	}
+	if st.LastSession.IsZero() {
+		st.LastSession = now
+	}
+	if st.LastSurveyorNudge.IsZero() {
+		st.LastSurveyorNudge = now
+	}
+	s.lastSession = st.LastSession
+	s.lastSurveyorNudge = st.LastSurveyorNudge
+	s.renudges = st.Renudges
+	s.escalated = st.Escalated
+}
+
+// saveState persists current scheduling state. Best-effort: a persistence
+// failure must not stop the supervisor from doing its actual job.
+func (s *Supervisor) saveState() {
+	st := supervisorState{
+		LastSession:       s.lastSession,
+		LastSurveyorNudge: s.lastSurveyorNudge,
+		Renudges:          s.renudges,
+		Escalated:         s.escalated,
+	}
+	if err := saveSupervisorState(s.statePath, st); err != nil {
+		fmt.Printf("captain: supervisor state persist failed: %v\n", err)
+	}
 }
 
 // Tick performs one supervisor iteration. Returns ran=true when a session was

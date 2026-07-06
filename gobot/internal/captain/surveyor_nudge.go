@@ -31,6 +31,7 @@ func (s *Supervisor) nudgeSurveyorOnCadence(ctx context.Context, now time.Time) 
 	}
 	body := composeSurveyorMail(s.metaReviewDays(), s.lastSurveyorNudge, now)
 	s.lastSurveyorNudge = now
+	s.saveState()
 	if mailErr := s.gw.SendMail(ctx, surveyorAgent, "survey due", body); mailErr != nil {
 		return
 	}
