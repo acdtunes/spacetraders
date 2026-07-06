@@ -40,4 +40,6 @@ type CaptainConfig struct {
 	CityDir               string `mapstructure:"city_dir"`      // default "../city"
 
 	UniverseCheckHours int `mapstructure:"universe_check_hours" validate:"omitempty,min=1"`
+
+	MetaReviewDays *int `mapstructure:"meta_review_days" validate:"omitempty,min=0"`
 }

@@ -35,6 +35,8 @@ type Supervisor struct {
 	status            serverStatusSource
 	eras              openEraSource
 	lastUniverseCheck time.Time
+
+	lastSurveyorNudge time.Time
 }
 
 func NewSupervisor(db *gorm.DB, store captain.EventStore, ws Workspace, cfg config.CaptainConfig) (*Supervisor, error) {
@@ -58,6 +60,7 @@ func (s *Supervisor) Tick(ctx context.Context, now time.Time) (bool, error) {
 	}
 	if s.gw != nil {
 		s.ensureCaptainAlive(ctx)
+		s.nudgeSurveyorOnCadence(ctx, now)
 		s.requeueOrphanedPipelineBeads(ctx)
 	}
 

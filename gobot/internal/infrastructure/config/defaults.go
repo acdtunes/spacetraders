@@ -216,4 +216,8 @@ func SetDefaults(cfg *Config) {
 	if cfg.Captain.UniverseCheckHours == 0 {
 		cfg.Captain.UniverseCheckHours = 24
 	}
+	if cfg.Captain.MetaReviewDays == nil {
+		metaReviewDaysDefault := 7
+		cfg.Captain.MetaReviewDays = &metaReviewDaysDefault
+	}
 }

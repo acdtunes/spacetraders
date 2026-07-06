@@ -1,10 +1,34 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
+
+func TestCaptainMetaReviewDaysZeroDisablesViaConfigFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("captain:\n  meta_review_days: 0\n"), 0o644))
+
+	cfg, err := LoadConfig(path)
+	require.NoError(t, err)
+	require.NotNil(t, cfg.Captain.MetaReviewDays)
+	require.Equal(t, 0, *cfg.Captain.MetaReviewDays)
+}
+
+func TestCaptainMetaReviewDaysDefaultsWhenUnset(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("captain:\n  enabled: false\n"), 0o644))
+
+	cfg, err := LoadConfig(path)
+	require.NoError(t, err)
+	require.NotNil(t, cfg.Captain.MetaReviewDays)
+	require.Equal(t, 7, *cfg.Captain.MetaReviewDays)
+}
 
 func TestCaptainDefaults(t *testing.T) {
 	cfg := &Config{}
@@ -43,6 +67,8 @@ func TestCaptainBridgeDefaults(t *testing.T) {
 	require.Equal(t, "bd", cfg.Captain.BDBin)
 	require.Equal(t, "../city", cfg.Captain.CityDir)
 	require.Equal(t, 24, cfg.Captain.UniverseCheckHours)
+	require.NotNil(t, cfg.Captain.MetaReviewDays)
+	require.Equal(t, 7, *cfg.Captain.MetaReviewDays)
 }
 
 func TestCaptainDetectorDefaults(t *testing.T) {
