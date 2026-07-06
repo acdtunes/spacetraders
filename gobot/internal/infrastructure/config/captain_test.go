@@ -29,3 +29,17 @@ func TestCaptainDefaults(t *testing.T) {
 	require.Equal(t, ".", cfg.Captain.RepoDir)
 	require.Equal(t, "make restart-daemon", cfg.Captain.RestartCmd)
 }
+
+func TestCaptainBridgeDefaults(t *testing.T) {
+	cfg := &Config{}
+	SetDefaults(cfg)
+
+	require.Equal(t, "legacy", cfg.Captain.EngineMode)
+	require.Equal(t, "captain", cfg.Captain.CaptainAgent)
+	require.Equal(t, 10, cfg.Captain.AckTimeoutMinutes)
+	require.Equal(t, 3, cfg.Captain.EscalateAfterRenudges)
+	require.Equal(t, "human", cfg.Captain.AdmiralAlias)
+	require.Equal(t, "gc", cfg.Captain.GCBin)
+	require.Equal(t, "bd", cfg.Captain.BDBin)
+	require.Equal(t, "../city", cfg.Captain.CityDir)
+}

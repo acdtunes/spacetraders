@@ -183,4 +183,28 @@ func SetDefaults(cfg *Config) {
 	if cfg.Captain.RestartCmd == "" {
 		cfg.Captain.RestartCmd = "make restart-daemon"
 	}
+	if cfg.Captain.EngineMode == "" {
+		cfg.Captain.EngineMode = "legacy"
+	}
+	if cfg.Captain.CaptainAgent == "" {
+		cfg.Captain.CaptainAgent = "captain"
+	}
+	if cfg.Captain.AckTimeoutMinutes == 0 {
+		cfg.Captain.AckTimeoutMinutes = 10
+	}
+	if cfg.Captain.EscalateAfterRenudges == 0 {
+		cfg.Captain.EscalateAfterRenudges = 3
+	}
+	if cfg.Captain.AdmiralAlias == "" {
+		cfg.Captain.AdmiralAlias = "human"
+	}
+	if cfg.Captain.GCBin == "" {
+		cfg.Captain.GCBin = "gc"
+	}
+	if cfg.Captain.BDBin == "" {
+		cfg.Captain.BDBin = "bd"
+	}
+	if cfg.Captain.CityDir == "" {
+		cfg.Captain.CityDir = "../city"
+	}
 }

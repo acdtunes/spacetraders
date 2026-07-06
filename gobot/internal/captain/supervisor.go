@@ -35,6 +35,12 @@ type Supervisor struct {
 	limitBackoffTill time.Time
 
 	fixer *Fixer // optional; nil in phase 1-2 deployments
+
+	// Bridge engine (engine_mode: bridge): city adapters + wake bookkeeping.
+	gw        cityGateway
+	bc        beadsClient
+	renudges  map[int64]int  // event id → re-nudge count
+	escalated map[int64]bool // event id → Admiral already alerted
 }
 
 // SetFixer enables the self-improvement pipeline (plan 2 of 2).
@@ -49,6 +55,10 @@ func NewSupervisor(db *gorm.DB, store captain.EventStore, runner SessionRunner, 
 func (s *Supervisor) Tick(ctx context.Context, now time.Time) (bool, error) {
 	if s.ws.Disabled() {
 		return false, nil
+	}
+	if s.cfg.EngineMode == "bridge" && s.gw != nil {
+		s.ensureCaptainAlive(ctx)
+		s.requeueOrphanedPipelineBeads(ctx)
 	}
 	if now.Before(s.limitBackoffTill) {
 		return false, nil // quota window exhausted; events queue durably
@@ -81,6 +91,10 @@ func (s *Supervisor) Tick(ctx context.Context, now time.Time) (bool, error) {
 		fmt.Printf("captain: session cap reached (%d/h), %d events queued\n",
 			s.cfg.MaxSessionsPerHour, len(events))
 		return false, nil
+	}
+
+	if s.cfg.EngineMode == "bridge" {
+		return s.bridgeWake(ctx, now, events)
 	}
 
 	prompt, err := ComposeSnapshot(ctx, s.db, s.ws, s.cfg.PlayerID, events, now)

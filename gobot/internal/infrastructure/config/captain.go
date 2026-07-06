@@ -24,4 +24,14 @@ type CaptainConfig struct {
 	MaxFeatureDiffLines      int    `mapstructure:"max_feature_diff_lines" validate:"omitempty,min=10"`
 	RepoDir                  string `mapstructure:"repo_dir"`
 	RestartCmd               string `mapstructure:"restart_cmd"`
+
+	// City-bridge engine (plan 2026-07-06-ai-engine-city-bridge)
+	EngineMode            string `mapstructure:"engine_mode"`   // "legacy" | "bridge"; default "legacy"
+	CaptainAgent          string `mapstructure:"captain_agent"` // default "captain"
+	AckTimeoutMinutes     int    `mapstructure:"ack_timeout_minutes" validate:"omitempty,min=1"`
+	EscalateAfterRenudges int    `mapstructure:"escalate_after_renudges" validate:"omitempty,min=1"`
+	AdmiralAlias          string `mapstructure:"admiral_alias"` // default "human"
+	GCBin                 string `mapstructure:"gc_bin"`        // default "gc"
+	BDBin                 string `mapstructure:"bd_bin"`        // default "bd"
+	CityDir               string `mapstructure:"city_dir"`      // default "../city"
 }

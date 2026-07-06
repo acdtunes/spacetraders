@@ -92,6 +92,63 @@ func (f *Fixer) RecoverOrphanedFixes() int {
 	return recovered
 }
 
+// GateResult is the outcome of gating and (optionally) merging a worktree.
+type GateResult struct {
+	GatePassed bool
+	Stale      bool
+	Merged     bool
+	Log        string
+}
+
+// GateAndMerge runs the gate in worktreeDir, refuses to merge a failing or
+// stale-based branch, and squash-merges into repoDir only when merge is
+// requested and the branch is clean. It wraps the existing gate exactly.
+func GateAndMerge(repoDir, worktreeDir, branch, commitMsg string, timeout time.Duration, merge bool) (GateResult, error) {
+	var mergeErr error
+	result := gateAndMergeWith(
+		RunGate,
+		func(b string) (bool, error) { return !BranchContainsMain(repoDir, b), nil },
+		func(rd, b, m string) error {
+			if err := SquashMerge(rd, b, m); err != nil {
+				mergeErr = err
+				return err
+			}
+			return nil
+		},
+		repoDir, worktreeDir, branch, commitMsg, timeout, merge)
+	return result, mergeErr
+}
+
+// gateAndMergeWith holds the gate -> stale -> merge decision chain over
+// injected functions so the sequence is testable without shelling out.
+func gateAndMergeWith(
+	runGate func(string, time.Duration) (bool, string),
+	isStale func(string) (bool, error),
+	squashMerge func(string, string, string) error,
+	repoDir, worktreeDir, branch, commitMsg string,
+	timeout time.Duration, merge bool,
+) GateResult {
+	moduleDir := gateDir(worktreeDir)
+	pass, log := runGate(moduleDir, timeout)
+	result := GateResult{GatePassed: pass, Log: log}
+	if !pass {
+		return result
+	}
+	stale, err := isStale(branch)
+	if err != nil || stale {
+		result.Stale = true
+		return result
+	}
+	if !merge {
+		return result
+	}
+	if err := squashMerge(repoDir, branch, commitMsg); err != nil {
+		return result
+	}
+	result.Merged = true
+	return result
+}
+
 // ProcessOne handles at most one `status: new` report per call.
 func (f *Fixer) ProcessOne(ctx context.Context, now time.Time) (bool, error) {
 	if f.ws.Disabled() || f.fixesDisabled() {
@@ -157,27 +214,29 @@ func (f *Fixer) ProcessOne(ctx context.Context, now time.Time) (bool, error) {
 		return true, nil
 	}
 
-	pass, gateOut := RunGate(moduleDir, timeout)
-	if !pass {
+	merge := f.cfg.AutoMerge
+	if merge && target.Kind == kindFeature { // automations are uncapped by design
+		lines, err := DiffLines(f.cfg.RepoDir, branch)
+		if err == nil && lines > f.cfg.MaxFeatureDiffLines {
+			merge = false
+			fmt.Printf("captain fixer: %s diff too large (%d > %d lines), left for human\n",
+				target.Slug, lines, f.cfg.MaxFeatureDiffLines)
+		}
+	}
+
+	msg := fmt.Sprintf("%s(captain): %s\n\nAutomated by the captain fix pipeline. Report: %s",
+		prefix, target.Title, filepath.Base(target.Path))
+	result, mergeErr := GateAndMerge(f.cfg.RepoDir, wt.Dir, branch, msg, timeout, merge)
+
+	if !result.GatePassed {
 		_ = SetReportStatus(target.Path, statusGateFailed)
-		_ = os.WriteFile(target.Path+".gate.log", []byte(gateOut), 0o644)
+		_ = os.WriteFile(target.Path+".gate.log", []byte(result.Log), 0o644)
 		_ = gitCleanWorktreeOnly(f.cfg.RepoDir, wt) // remove worktree dir, KEEP branch
 		fmt.Printf("captain fixer: gate FAILED for %s, branch %s left for human\n", target.Slug, branch)
 		return true, nil
 	}
 
-	if target.Kind == kindFeature { // automations are uncapped by design
-		lines, err := DiffLines(f.cfg.RepoDir, branch)
-		if err == nil && lines > f.cfg.MaxFeatureDiffLines {
-			_ = SetReportStatus(target.Path, statusAwaitingHuman)
-			_ = gitCleanWorktreeOnly(f.cfg.RepoDir, wt)
-			fmt.Printf("captain fixer: %s diff too large (%d > %d lines), left for human\n",
-				target.Slug, lines, f.cfg.MaxFeatureDiffLines)
-			return true, nil
-		}
-	}
-
-	if !BranchContainsMain(f.cfg.RepoDir, branch) {
+	if result.Stale {
 		_ = SetReportStatus(target.Path, statusAwaitingHuman)
 		_ = gitCleanWorktreeOnly(f.cfg.RepoDir, wt)
 		fmt.Printf("captain fixer: %s passed gate but base is STALE (main advanced); branch %s needs rebase + human review\n",
@@ -185,20 +244,18 @@ func (f *Fixer) ProcessOne(ctx context.Context, now time.Time) (bool, error) {
 		return true, nil
 	}
 
-	if !f.cfg.AutoMerge {
+	if mergeErr != nil {
+		_ = SetReportStatus(target.Path, statusAwaitingHuman)
+		return true, fmt.Errorf("squash-merge %s: %w", branch, mergeErr)
+	}
+
+	if !result.Merged {
 		_ = SetReportStatus(target.Path, statusAwaitingHuman)
 		_ = gitCleanWorktreeOnly(f.cfg.RepoDir, wt)
-		fmt.Printf("captain fixer: gate PASSED for %s; propose-only mode, branch %s awaits review\n",
-			target.Slug, branch)
+		fmt.Printf("captain fixer: gate PASSED for %s; branch %s awaits human review\n", target.Slug, branch)
 		return true, nil
 	}
 
-	msg := fmt.Sprintf("%s(captain): %s\n\nAutomated by the captain fix pipeline. Report: %s",
-		prefix, target.Title, filepath.Base(target.Path))
-	if err := SquashMerge(f.cfg.RepoDir, branch, msg); err != nil {
-		_ = SetReportStatus(target.Path, statusAwaitingHuman)
-		return true, fmt.Errorf("squash-merge %s: %w", branch, err)
-	}
 	_ = wt.Remove(f.cfg.RepoDir)
 	_ = SetReportStatus(target.Path, statusMerged)
 
