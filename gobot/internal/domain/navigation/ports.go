@@ -78,7 +78,12 @@ type ShipRepository interface {
 	// Persistence methods (save ship aggregate including full state)
 	Save(ctx context.Context, ship *Ship) error
 	SaveAll(ctx context.Context, ships []*Ship) error
-	ReleaseAllActive(ctx context.Context, reason string) (int, error)
+
+	// ReleaseAllActive releases all active ship assignments for the given player
+	// (used for daemon startup cleanup). Scoped to playerID so that multiple
+	// players' rows (e.g. a dead closed-era player and the live open-era player)
+	// never cross-contaminate each other's assignment state.
+	ReleaseAllActive(ctx context.Context, playerID shared.PlayerID, reason string) (int, error)
 
 	// ClaimShip exclusively assigns an idle ship to a container.
 	// Returns ErrShipAlreadyAssigned if ship is already assigned to another container.

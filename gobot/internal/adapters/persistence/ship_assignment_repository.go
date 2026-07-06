@@ -220,18 +220,19 @@ func (r *ShipAssignmentRepositoryGORM) ReleaseByContainer(
 	return nil
 }
 
-// ReleaseAllActive releases all active ship assignments
+// ReleaseAllActive releases all active ship assignments for the given player
 // Used during daemon startup to clean up zombie assignments from previous runs
 // Returns the number of assignments released
 func (r *ShipAssignmentRepositoryGORM) ReleaseAllActive(
 	ctx context.Context,
+	playerID int,
 	reason string,
 ) (int, error) {
 	now := time.Now()
 
 	result := r.db.WithContext(ctx).
 		Model(&ShipModel{}).
-		Where("assignment_status = ?", "active").
+		Where("player_id = ? AND assignment_status = ?", playerID, "active").
 		Updates(map[string]interface{}{
 			"assignment_status": "idle",
 			"container_id":      nil,

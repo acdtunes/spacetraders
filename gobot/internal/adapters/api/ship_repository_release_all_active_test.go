@@ -1,0 +1,59 @@
+package api
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
+
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
+)
+
+// TestReleaseAllActiveScopesToPlayer proves that ReleaseAllActive only releases
+// active ship assignments belonging to the given player. Regression test for
+// sp-s7b7: at daemon startup, ReleaseAllActive previously ran an UPDATE with no
+// player_id predicate, releasing every player's active ship assignments. After
+// a universe reset there can be multiple player rows (a dead closed-era player
+// and the live open-era player); an unscoped release corrupts the other
+// player's assignment state.
+func TestReleaseAllActiveScopesToPlayer(t *testing.T) {
+	db, err := database.NewTestConnection()
+	require.NoError(t, err)
+
+	playerA := persistence.PlayerModel{AgentSymbol: "PLAYER-A", Token: "tok-a", CreatedAt: time.Now()}
+	require.NoError(t, db.Create(&playerA).Error)
+	playerB := persistence.PlayerModel{AgentSymbol: "PLAYER-B", Token: "tok-b", CreatedAt: time.Now()}
+	require.NoError(t, db.Create(&playerB).Error)
+
+	containerID := "CTR-1"
+	require.NoError(t, db.Create(&persistence.ShipModel{
+		ShipSymbol:       "SHIP-A",
+		PlayerID:         playerA.ID,
+		ContainerID:      &containerID,
+		AssignmentStatus: "active",
+	}).Error)
+	require.NoError(t, db.Create(&persistence.ShipModel{
+		ShipSymbol:       "SHIP-B",
+		PlayerID:         playerB.ID,
+		AssignmentStatus: "active",
+	}).Error)
+
+	// ReleaseAllActive only touches r.db, so nil apiClient/waypoint/player deps are safe here.
+	repo := NewShipRepository(nil, nil, nil, nil, db, nil)
+
+	count, err := repo.ReleaseAllActive(context.Background(), shared.MustNewPlayerID(playerA.ID), "daemon_restart")
+	require.NoError(t, err)
+	require.Equal(t, 1, count, "should only release player A's active assignment")
+
+	var shipA persistence.ShipModel
+	require.NoError(t, db.Where("ship_symbol = ? AND player_id = ?", "SHIP-A", playerA.ID).First(&shipA).Error)
+	require.Equal(t, "idle", shipA.AssignmentStatus, "player A's ship should be released to idle")
+	require.Nil(t, shipA.ContainerID, "player A's ship container should be cleared")
+
+	var shipB persistence.ShipModel
+	require.NoError(t, db.Where("ship_symbol = ? AND player_id = ?", "SHIP-B", playerB.ID).First(&shipB).Error)
+	require.Equal(t, "active", shipB.AssignmentStatus, "player B's assignment must NOT be touched by player A's release")
+}

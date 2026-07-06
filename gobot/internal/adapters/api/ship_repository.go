@@ -847,9 +847,9 @@ func (r *ShipRepository) CountByContainerPrefix(ctx context.Context, prefix stri
 	return int(count), nil
 }
 
-// ReleaseAllActive releases all active ship assignments (bulk operation)
+// ReleaseAllActive releases all active ship assignments for the given player (bulk operation)
 // Used during daemon startup to clean up zombie assignments from previous runs
-func (r *ShipRepository) ReleaseAllActive(ctx context.Context, reason string) (int, error) {
+func (r *ShipRepository) ReleaseAllActive(ctx context.Context, playerID shared.PlayerID, reason string) (int, error) {
 	if r.db == nil {
 		return 0, fmt.Errorf("database not configured")
 	}
@@ -857,6 +857,7 @@ func (r *ShipRepository) ReleaseAllActive(ctx context.Context, reason string) (i
 	now := time.Now()
 	result := r.db.WithContext(ctx).
 		Model(&persistence.ShipModel{}).
+		Where("player_id = ?", playerID.Value()).
 		Where("assignment_status = ?", "active").
 		Updates(map[string]interface{}{
 			"assignment_status": "idle",

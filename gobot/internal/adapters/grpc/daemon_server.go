@@ -268,11 +268,19 @@ func (s *DaemonServer) Start() error {
 	defer cancel()
 
 	if s.shipRepo != nil {
-		count, err := s.shipRepo.ReleaseAllActive(ctx, "daemon_restart")
+		eraRepo := persistence.NewEraRepository(s.db)
+		openEra, err := eraRepo.FindOpenEra(ctx)
 		if err != nil {
-			fmt.Printf("Warning: Failed to release zombie assignments: %v\n", err)
-		} else if count > 0 {
-			fmt.Printf("Released %d zombie ship assignment(s) on daemon startup\n", count)
+			fmt.Printf("Warning: Failed to resolve open era for zombie assignment release: %v\n", err)
+		} else if openEra == nil {
+			fmt.Println("No open era - skipping zombie assignment release")
+		} else {
+			count, err := s.shipRepo.ReleaseAllActive(ctx, shared.MustNewPlayerID(openEra.PlayerID), "daemon_restart")
+			if err != nil {
+				fmt.Printf("Warning: Failed to release zombie assignments: %v\n", err)
+			} else if count > 0 {
+				fmt.Printf("Released %d zombie ship assignment(s) on daemon startup\n", count)
+			}
 		}
 	}
 
