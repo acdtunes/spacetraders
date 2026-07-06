@@ -54,7 +54,8 @@ func newBridgeSupervisor(t *testing.T) (*Supervisor, *captainStores, *fakeGatewa
 		AckTimeoutMinutes: 10, EscalateAfterRenudges: 3,
 	}
 	gw := &fakeGateway{}
-	sup := NewSupervisor(db, store, nil, NewWorkspace(dir), cfg)
+	sup, err := NewSupervisor(db, store, NewWorkspace(dir), cfg)
+	require.NoError(t, err)
 	sup.gw = gw
 	return sup, &captainStores{store: store, playerID: playerID, dir: dir}, gw
 }

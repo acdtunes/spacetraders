@@ -16,12 +16,20 @@ func main() {
 	branch := flag.String("branch", "", "branch to gate and merge")
 	message := flag.String("message", "", "squash-merge commit message")
 	merge := flag.Bool("merge", false, "squash-merge into repo when the gate passes and the base is fresh")
+	provision := flag.Bool("provision", false, "copy gitignored build artifacts into the worktree before gating")
 	timeout := flag.Duration("timeout", 20*time.Minute, "gate timeout")
 	flag.Parse()
 
 	if *repo == "" || *worktree == "" || *branch == "" {
 		fmt.Fprintln(os.Stderr, "captain-gate: --repo, --worktree and --branch are required")
 		os.Exit(2)
+	}
+
+	if *provision {
+		if err := captainsup.ProvisionWorktree(*worktree); err != nil {
+			fmt.Fprintf(os.Stderr, "captain-gate: provision: %v\n", err)
+			os.Exit(2)
+		}
 	}
 
 	result, err := captainsup.GateAndMerge(*repo, *worktree, *branch, *message, *timeout, *merge)

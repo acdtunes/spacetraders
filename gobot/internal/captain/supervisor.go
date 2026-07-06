@@ -2,10 +2,7 @@ package captainsup
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"os"
-	"os/exec"
 	"time"
 
 	"gorm.io/gorm"
@@ -14,27 +11,19 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
 )
 
-const (
-	eventBatchLimit    = 50
-	usageLimitBackoff  = 20 * time.Minute
-	captainLogMaxBytes = 96 * 1024
-)
+const eventBatchLimit = 50
 
 // Supervisor is pure plumbing: it decides WHEN a session runs, never WHAT
 // the captain does (spec: Component 2).
 type Supervisor struct {
-	db     *gorm.DB
-	store  captain.EventStore
-	runner SessionRunner
-	ws     Workspace
-	cfg    config.CaptainConfig
+	db    *gorm.DB
+	store captain.EventStore
+	ws    Workspace
+	cfg   config.CaptainConfig
 
-	lastSession      time.Time
-	lastCredits      int
-	sessionStarts    []time.Time
-	limitBackoffTill time.Time
-
-	fixer *Fixer // optional; nil in phase 1-2 deployments
+	lastSession   time.Time
+	lastCredits   int
+	sessionStarts []time.Time
 
 	// Bridge engine (engine_mode: bridge): city adapters + wake bookkeeping.
 	gw        cityGateway
@@ -43,11 +32,11 @@ type Supervisor struct {
 	escalated map[int64]bool // event id → Admiral already alerted
 }
 
-// SetFixer enables the self-improvement pipeline (plan 2 of 2).
-func (s *Supervisor) SetFixer(f *Fixer) { s.fixer = f }
-
-func NewSupervisor(db *gorm.DB, store captain.EventStore, runner SessionRunner, ws Workspace, cfg config.CaptainConfig) *Supervisor {
-	return &Supervisor{db: db, store: store, runner: runner, ws: ws, cfg: cfg}
+func NewSupervisor(db *gorm.DB, store captain.EventStore, ws Workspace, cfg config.CaptainConfig) (*Supervisor, error) {
+	if cfg.EngineMode != "bridge" {
+		return nil, fmt.Errorf("captain: unsupported engine_mode %q (only \"bridge\" is supported)", cfg.EngineMode)
+	}
+	return &Supervisor{db: db, store: store, ws: ws, cfg: cfg}, nil
 }
 
 // Tick performs one supervisor iteration. Returns ran=true when a session was
@@ -56,12 +45,9 @@ func (s *Supervisor) Tick(ctx context.Context, now time.Time) (bool, error) {
 	if s.ws.Disabled() {
 		return false, nil
 	}
-	if s.cfg.EngineMode == "bridge" && s.gw != nil {
+	if s.gw != nil {
 		s.ensureCaptainAlive(ctx)
 		s.requeueOrphanedPipelineBeads(ctx)
-	}
-	if now.Before(s.limitBackoffTill) {
-		return false, nil // quota window exhausted; events queue durably
 	}
 
 	// Synthetic events (state-derived): stale heartbeats, idle ships, credit crossings.
@@ -85,90 +71,14 @@ func (s *Supervisor) Tick(ctx context.Context, now time.Time) (bool, error) {
 	}
 	heartbeatDue := now.Sub(s.lastSession) >= time.Duration(s.cfg.HeartbeatMinutes)*time.Minute
 	if len(events) == 0 && !heartbeatDue {
-		return s.tickSecondary(ctx, now)
+		return false, nil
 	}
 	if s.sessionsInLastHour(now) >= s.cfg.MaxSessionsPerHour {
 		fmt.Printf("captain: session cap reached (%d/h), %d events queued\n",
 			s.cfg.MaxSessionsPerHour, len(events))
 		return false, nil
 	}
-
-	if s.cfg.EngineMode == "bridge" {
-		return s.bridgeWake(ctx, now, events)
-	}
-
-	prompt, err := ComposeSnapshot(ctx, s.db, s.ws, s.cfg.PlayerID, events, now)
-	if err != nil {
-		return false, err
-	}
-
-	s.sessionStarts = append(s.sessionStarts, now)
-	s.lastSession = now
-	fmt.Printf("captain: starting session (%d events, heartbeatDue=%v)\n", len(events), heartbeatDue)
-	if err := s.runner.Run(ctx, prompt); err != nil {
-		// Events stay unprocessed → retried later. Usage limit is a normal
-		// state: back off instead of hammering a closed window every tick.
-		if errors.Is(err, ErrUsageLimit) {
-			s.limitBackoffTill = now.Add(usageLimitBackoff)
-			fmt.Printf("captain: usage limit hit, backing off until %s\n",
-				s.limitBackoffTill.Format("15:04:05"))
-		}
-		return true, err
-	}
-
-	ids := make([]int64, 0, len(events))
-	for _, e := range events {
-		ids = append(ids, e.ID)
-	}
-	if err := s.store.MarkProcessed(ctx, ids, now); err != nil {
-		return true, fmt.Errorf("mark processed: %w", err)
-	}
-	// A successful session has addressed any Admiral message; clear the inbox.
-	_ = os.Remove(s.ws.InboxPath())
-	// Keep memory files bounded; overflow goes to grep-able archives.
-	_ = s.ws.TrimLog("captain-log.md", captainLogMaxBytes)
-	// Make the captain's memory durable: best-effort auto-commit of its
-	// workspace after each successful session (it cannot commit itself).
-	commitCaptainState(s.ws.Dir())
-	fmt.Printf("captain: session complete, %d events processed\n", len(ids))
-
-	if s.fixer != nil {
-		if _, err := s.fixer.ProcessOne(ctx, now); err != nil {
-			fmt.Printf("captain fixer: %v\n", err)
-		}
-	}
-	return true, nil
-}
-
-// tickSecondary runs when no strategy session is needed: meta-review first,
-// then one fixer step. Meta-review respects the same hourly session cap.
-func (s *Supervisor) tickSecondary(ctx context.Context, now time.Time) (bool, error) {
-	ran := false
-	if MetaReviewDue(s.ws, now) && s.sessionsInLastHour(now) < s.cfg.MaxSessionsPerHour {
-		prompt, err := ComposeMetaReview(ctx, s.db, s.ws, s.cfg.PlayerID, now)
-		if err != nil {
-			return false, err
-		}
-		s.sessionStarts = append(s.sessionStarts, now)
-		fmt.Println("captain: starting meta-review session")
-		if err := s.runner.Run(ctx, prompt); err != nil {
-			return true, err // marker not written -> retried next day-window tick
-		}
-		if err := MarkMetaReviewDone(s.ws, now); err != nil {
-			return true, err
-		}
-		// The review consumed the friction queue; clear it.
-		_ = os.Remove(s.ws.StatePath("friction.md"))
-		ran = true
-	}
-	if s.fixer != nil {
-		acted, err := s.fixer.ProcessOne(ctx, now)
-		if err != nil {
-			fmt.Printf("captain fixer: %v\n", err)
-		}
-		ran = ran || acted
-	}
-	return ran, nil
+	return s.bridgeWake(ctx, now, events)
 }
 
 // Run loops Tick on the poll interval until ctx is cancelled.
@@ -198,16 +108,4 @@ func (s *Supervisor) sessionsInLastHour(now time.Time) int {
 	}
 	s.sessionStarts = kept
 	return len(kept)
-}
-
-// commitCaptainState commits the captain workspace (state, reports) quietly.
-// Best-effort: git trouble must never affect the session loop.
-func commitCaptainState(wsDir string) {
-	add := exec.Command("git", "-C", wsDir, "add", "state", "reports", "inbox.md")
-	if err := add.Run(); err != nil {
-		return
-	}
-	commit := exec.Command("git", "-C", wsDir, "commit", "-q", "-m",
-		"chore(captain): session state (auto)")
-	_ = commit.Run() // exits nonzero when nothing to commit; fine
 }

@@ -14,7 +14,7 @@ type Execer func(ctx context.Context, name string, args ...string) (stdout strin
 
 // scrubbedExec runs binaries with cwd set to dir and ANTHROPIC_API_KEY removed
 // from the child env: with it set, claude bills the API instead of the Max
-// subscription (same rule as ClaudeRunner.Run).
+// subscription.
 func scrubbedExec(dir string) Execer {
 	return func(ctx context.Context, name string, args ...string) (string, error) {
 		cmd := exec.CommandContext(ctx, name, args...)

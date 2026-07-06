@@ -37,38 +37,14 @@ func main() {
 
 	store := persistence.NewGormCaptainEventRepository(db)
 	ws := captainsup.NewWorkspace(cfg.Captain.WorkspaceDir)
-	runner := captainsup.NewClaudeRunner(
-		cfg.Captain.ClaudeBin,
-		cfg.Captain.Model,
-		cfg.Captain.WorkspaceDir,
-		time.Duration(cfg.Captain.SessionTimeoutMinutes)*time.Minute,
-	)
-	sup := captainsup.NewSupervisor(db, store, runner, ws, cfg.Captain)
+	sup, err := captainsup.NewSupervisor(db, store, ws, cfg.Captain)
+	if err != nil {
+		log.Fatalf("captain: %v", err)
+	}
 
-	fixerFactory := func(workDir string) captainsup.SessionRunner {
-		r := captainsup.NewClaudeRunner(
-			cfg.Captain.ClaudeBin, cfg.Captain.FixModel, workDir,
-			time.Duration(cfg.Captain.FixSessionTimeoutMinutes)*time.Minute,
-		)
-		// Worktree paths are untrusted workspaces (allowlists ignored), so
-		// headless fix sessions could not even edit files. The supervisor-run
-		// gate is the safety boundary for these throwaway trees.
-		r.ExtraArgs = []string{"--dangerously-skip-permissions"}
-		return r
-	}
-	fixer := captainsup.NewFixer(ws, fixerFactory, cfg.Captain)
-	// A prior supervisor may have died mid-build, stranding a report at
-	// in_progress that the pipeline would otherwise never retry. Reclaim them.
-	if n := fixer.RecoverOrphanedFixes(); n > 0 {
-		fmt.Printf("Captain: recovered %d orphaned fix report(s) at startup\n", n)
-	}
-	sup.SetFixer(fixer)
-
-	if cfg.Captain.EngineMode == "bridge" {
-		gw := captainsup.NewCityGateway(cfg.Captain.GCBin, cfg.Captain.CityDir)
-		bc := captainsup.NewBeadsClient(cfg.Captain.BDBin, cfg.Captain.RepoDir)
-		sup.SetCity(gw, bc)
-	}
+	gw := captainsup.NewCityGateway(cfg.Captain.GCBin, cfg.Captain.CityDir)
+	bc := captainsup.NewBeadsClient(cfg.Captain.BDBin, cfg.Captain.RepoDir)
+	sup.SetCity(gw, bc)
 
 	// Regenerate the CLI reference so sessions never see a stale command surface
 	// (spec: Tool discovery §1). Best-effort: a missing binary must not stop the

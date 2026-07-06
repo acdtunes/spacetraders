@@ -174,7 +174,11 @@ func migrateBullets(path, pattern, label string, run bdRun, rep *MigrationReport
 		if title == "" {
 			continue
 		}
-		if _, err := run("create", title, "-t", "feature", "-l", label, "-p", "3"); err != nil {
+		args := []string{"create", truncateRunes(title, 120), "-t", "feature", "-l", label, "-p", "3"}
+		if len([]rune(title)) > 120 {
+			args = append(args, "-d", title)
+		}
+		if _, err := run(args...); err != nil {
 			return err
 		}
 		rep.Backlog++
@@ -212,7 +216,7 @@ func migrateBugReports(dir string, run bdRun, rep *MigrationReport) error {
 		if title == "" {
 			title = strings.TrimSuffix(name, ".md")
 		}
-		if _, err := run("create", title, "-t", "bug", "-l", "shipwright", "--body-file", path); err != nil {
+		if _, err := run("create", truncateRunes(title, 400), "-t", "bug", "-l", "shipwright", "--body-file", path); err != nil {
 			return err
 		}
 		rep.Bugs++

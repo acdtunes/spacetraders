@@ -1,0 +1,7 @@
+# Shipwright agent — the pipeline builder; intended to run on opus (heavier coding
+# than the captain's fable). Model is NOT yet enforceable at the agent level: gc drops
+# any `model`/`provider_args` key during config resolution (verified with the crew
+# agents: `gc config show --city .` surfaces only provider + prompt_template), and the
+# supervisor spawns city agents as `claude --effort max` with no --model flag. Model
+# follows the city provider default (city.toml: provider = "claude"). Leave empty until
+# gc grows a real per-agent model override.
