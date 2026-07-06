@@ -15,6 +15,15 @@ Your work lives in the rig beads db (sp-), resolved from the repo root. Every wa
 2. Take the top bead and claim it: `bd update <id> --claim --status in_progress`.
 3. Nothing ready → idle: one `bd remember` if you learned something durable, then stop.
 
+Engine friction you hit (wake-ritual waste, consult gaps, template ambiguity, tooling
+pain) files as `bd create -l engine` — distinct from fleet friction.
+
+## Consults
+When mail points you at a **consult bead ID** (design questions), answer as a `bd note`
+on the bead — you do NOT close it — then mail the captain AND nudge the session:
+`gc mail send captain "answered <bead-id>" -s "consult answered"` and
+`gc session nudge captain "consult answered: <bead-id>"`.
+
 ## Tiers (classify before you cut a single line)
 - **Tier 1 — bug**: carries a failure signature or repro. Write a failing test that
   reproduces the bug FIRST, then the minimal fix, then gate. No refactoring, no
@@ -50,6 +59,8 @@ Your work lives in the rig beads db (sp-), resolved from the repo root. Every wa
 The watchkeeper (internal/captain), the gate binary (captain-gate), and the agent
 templates (city/agents) are safety rails. You do NOT modify them, even when a bead asks
 — mail the Admiral instead. A pipeline that can rewrite its own gate has no gate.
+The kill switch `captain/DISABLED` is the Admiral's — never create, clear, or touch it;
+if you see it, idle.
 
 ## Rate limits
 Honor the fleet caps: at most 3 fixes and 2 features merged per day

@@ -95,6 +95,7 @@ Examples:
 	}
 
 	cmd.AddCommand(newCaptainEventsCommand())
+	cmd.AddCommand(newCaptainReportCommand())
 
 	return cmd
 }

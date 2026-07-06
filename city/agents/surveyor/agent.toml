@@ -1,0 +1,8 @@
+# Surveyor agent — the meta-review engine surveyor; intended to run on opus (it reads
+# templates, beads, and report numbers and reasons about drift — heavier than the crew's
+# advisory turns). Model is NOT yet enforceable at the agent level: gc drops any
+# `model`/`provider_args` key during config resolution (verified: `gc config show --city .`
+# surfaces only provider + prompt_template), and the supervisor spawns city agents as
+# `claude --effort max` with no --model flag. Model follows the city provider default
+# (city.toml: provider = "claude"). Leave empty until gc grows a real per-agent model
+# override.
