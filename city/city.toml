@@ -4,3 +4,23 @@ provider = "claude"
 
 # Lightweight mode. No [daemon] block. No auto-spawn.
 # Agents are invoked manually via `acd run <agent>` or `acd prime <agent>`.
+
+# ADMIRAL POLICY (2026-07-06): pin session models per-agent without touching
+# the shared "claude" provider (which harbormaster and any other untagged
+# agent still resolve to, unmodified). Each provider below inherits
+# everything from the builtin "claude" preset (permission_mode, effort,
+# ReadyDelayMs, resume flags, etc.) via `base = "builtin:claude"`, and only
+# appends an explicit --model flag via `args_append`. This bypasses the
+# builtin provider's `model` option, whose only three named choices (opus,
+# sonnet, haiku) are hardcoded to a stale model generation
+# (claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5-20251001) and would
+# reject an unrecognized value like "claude-sonnet-5" outright if set via
+# option_defaults. args_append is unvalidated and simply appends onto the
+# resolved Args list, so it takes the exact model id verbatim.
+[providers.claude-fable]
+base = "builtin:claude"
+args_append = ["--model", "claude-fable-5"]
+
+[providers.claude-sonnet5]
+base = "builtin:claude"
+args_append = ["--model", "claude-sonnet-5"]

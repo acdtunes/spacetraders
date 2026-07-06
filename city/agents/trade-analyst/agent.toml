@@ -1,5 +1,7 @@
-# Trade-analyst agent — model follows the city provider default (city.toml: provider = "claude").
-# Opus is NOT yet enforceable at the agent level: gc drops any `model`/`provider_args`
-# key during config resolution (verified: `gc config show --city .` surfaces only
-# provider + prompt_template), and the supervisor spawns city agents as `claude --effort max`
-# with no --model flag. Leave empty until gc grows a real per-agent model override.
+# Trade-analyst agent — pinned to claude-sonnet-5 per ADMIRAL POLICY (2026-07-06).
+# Supersedes the earlier note here: per-agent model pinning IS enforceable.
+# The earlier finding ("gc drops any model/provider_args key") was based on
+# testing a bare top-level `model` key, which isn't a real Agent field; the
+# correct mechanism is a provider's args_append (see city.toml's
+# [providers.claude-sonnet5]), wired through this agent's `provider` key.
+provider = "claude-sonnet5"

@@ -1,4 +1,6 @@
-# Captain agent — model follows the city provider default (city.toml: provider = "claude").
-# The workspace pins no model override, so the captain runs on the provider's session
-# default (same as harbormaster, which carries no agent.toml). Leave empty unless the
-# Admiral pins a model here via provider args.
+# Captain agent — pinned to claude-fable-5 per ADMIRAL POLICY (2026-07-06).
+# The "claude-fable" provider (defined in city.toml) inherits the builtin
+# "claude" preset (permission_mode, effort, resume, etc. all unchanged) and
+# appends --model claude-fable-5 via args_append. See city.toml for the
+# provider definition and why args_append (not option_defaults) is used.
+provider = "claude-fable"

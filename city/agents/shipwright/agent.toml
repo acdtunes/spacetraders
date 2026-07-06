@@ -1,7 +1,8 @@
-# Shipwright agent — the pipeline builder; intended to run on opus (heavier coding
-# than the captain's fable). Model is NOT yet enforceable at the agent level: gc drops
-# any `model`/`provider_args` key during config resolution (verified with the crew
-# agents: `gc config show --city .` surfaces only provider + prompt_template), and the
-# supervisor spawns city agents as `claude --effort max` with no --model flag. Model
-# follows the city provider default (city.toml: provider = "claude"). Leave empty until
-# gc grows a real per-agent model override.
+# Shipwright agent — pinned to claude-sonnet-5 per ADMIRAL POLICY (2026-07-06),
+# which supersedes this agent's earlier "intended to run on opus" aspiration.
+# Supersedes the earlier note here: per-agent model pinning IS enforceable.
+# The earlier finding ("gc drops any model/provider_args key") was based on
+# testing a bare top-level `model` key, which isn't a real Agent field; the
+# correct mechanism is a provider's args_append (see city.toml's
+# [providers.claude-sonnet5]), wired through this agent's `provider` key.
+provider = "claude-sonnet5"
