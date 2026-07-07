@@ -503,9 +503,8 @@ func run(cfg *config.Config) error {
 
 	// Manufacturing task worker services - using strategy pattern for task execution
 	mfgNavigator := mfgServices.NewManufacturingNavigator(med, shipRepo)
-	mfgLedger := mfgServices.NewManufacturingLedgerRecorder(med)
-	mfgPurchaser := mfgServices.NewManufacturingPurchaser(med, shipRepo, tradingMarketRepo, mfgLedger)
-	mfgSeller := mfgServices.NewManufacturingSeller(med, shipRepo, mfgLedger)
+	mfgPurchaser := mfgServices.NewManufacturingPurchaser(med, shipRepo, tradingMarketRepo)
+	mfgSeller := mfgServices.NewManufacturingSeller(med, shipRepo)
 
 	// Create task executors using strategy pattern
 	taskExecutorRegistry := mfgServices.NewTaskExecutorRegistry()

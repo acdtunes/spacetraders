@@ -64,24 +64,26 @@ type PurchaseResult struct {
 
 // ManufacturingPurchaser implements Purchaser for manufacturing operations.
 type ManufacturingPurchaser struct {
-	mediator       common.Mediator
-	shipRepo       navigation.ShipRepository
-	marketRepo     market.MarketRepository
-	ledgerRecorder LedgerRecorder
+	mediator   common.Mediator
+	shipRepo   navigation.ShipRepository
+	marketRepo market.MarketRepository
 }
 
 // NewManufacturingPurchaser creates a new purchaser service.
+//
+// Ledger recording is NOT a responsibility of the purchaser: the
+// PurchaseCargoCommand it dispatches is the single authoritative recorder
+// (CargoTransactionHandler self-records each batch with the in-band
+// agent.credits, sp-sc6u). Recording again here double-counted every buy (sp-uytq).
 func NewManufacturingPurchaser(
 	mediator common.Mediator,
 	shipRepo navigation.ShipRepository,
 	marketRepo market.MarketRepository,
-	ledgerRecorder LedgerRecorder,
 ) *ManufacturingPurchaser {
 	return &ManufacturingPurchaser{
-		mediator:       mediator,
-		shipRepo:       shipRepo,
-		marketRepo:     marketRepo,
-		ledgerRecorder: ledgerRecorder,
+		mediator:   mediator,
+		shipRepo:   shipRepo,
+		marketRepo: marketRepo,
 	}
 }
 
@@ -230,20 +232,8 @@ func (p *ManufacturingPurchaser) ExecutePurchaseLoop(
 			"cargo_remaining": availableCargo,
 		})
 
-		// Record ledger transaction
-		if p.ledgerRecorder != nil {
-			_ = p.ledgerRecorder.RecordPurchase(ctx, PurchaseRecordParams{
-				PlayerID:     playerIDInt,
-				TaskID:       params.TaskID,
-				Good:         params.Good,
-				Quantity:     resp.UnitsAdded,
-				PricePerUnit: pricePerUnit,
-				TotalCost:    resp.TotalCost,
-				SourceMarket: params.Market,
-				Factory:      params.Factory,
-				SupplyLevel:  supplyLevel,
-			})
-		}
+		// The dispatched PurchaseCargoCommand already recorded this buy in the
+		// ledger (the authoritative single-writer path). Do not record it again.
 
 		if resp.UnitsAdded == 0 {
 			break

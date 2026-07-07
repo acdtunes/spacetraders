@@ -42,21 +42,23 @@ type SellResult struct {
 
 // ManufacturingSeller implements Seller for manufacturing operations.
 type ManufacturingSeller struct {
-	mediator       common.Mediator
-	shipRepo       navigation.ShipRepository
-	ledgerRecorder LedgerRecorder
+	mediator common.Mediator
+	shipRepo navigation.ShipRepository
 }
 
 // NewManufacturingSeller creates a new seller service.
+//
+// Ledger recording is NOT a responsibility of the seller: the SellCargoCommand it
+// dispatches is the single authoritative recorder (CargoTransactionHandler
+// self-records each batch with the in-band agent.credits, sp-sc6u). Recording
+// again here double-counted every sell/delivery/liquidation (sp-uytq).
 func NewManufacturingSeller(
 	mediator common.Mediator,
 	shipRepo navigation.ShipRepository,
-	ledgerRecorder LedgerRecorder,
 ) *ManufacturingSeller {
 	return &ManufacturingSeller{
-		mediator:       mediator,
-		shipRepo:       shipRepo,
-		ledgerRecorder: ledgerRecorder,
+		mediator: mediator,
+		shipRepo: shipRepo,
 	}
 }
 
@@ -128,19 +130,8 @@ func (s *ManufacturingSeller) SellCargo(ctx context.Context, params SellParams) 
 		"net_profit":     result.NetProfit,
 	})
 
-	// Record ledger transaction
-	if s.ledgerRecorder != nil {
-		_ = s.ledgerRecorder.RecordSale(ctx, SaleRecordParams{
-			PlayerID:     params.PlayerID.Value(),
-			TaskID:       params.TaskID,
-			Good:         params.Good,
-			Quantity:     result.UnitsSold,
-			PricePerUnit: result.PricePerUnit,
-			TotalRevenue: result.TotalRevenue,
-			Market:       params.Market,
-			NetProfit:    result.NetProfit,
-		})
-	}
+	// The dispatched SellCargoCommand already recorded this sale in the ledger
+	// (the authoritative single-writer path). Do not record it again.
 
 	return result, nil
 }
@@ -176,18 +167,8 @@ func (s *ManufacturingSeller) DeliverToFactory(ctx context.Context, params SellP
 		"price_per_unit": result.PricePerUnit,
 	})
 
-	// Record ledger transaction
-	if s.ledgerRecorder != nil {
-		_ = s.ledgerRecorder.RecordDelivery(ctx, DeliveryRecordParams{
-			PlayerID:     params.PlayerID.Value(),
-			TaskID:       params.TaskID,
-			Good:         params.Good,
-			Quantity:     result.UnitsSold,
-			PricePerUnit: result.PricePerUnit,
-			TotalRevenue: result.TotalRevenue,
-			Factory:      params.Market, // Market param holds factory symbol for deliveries
-		})
-	}
+	// The dispatched SellCargoCommand already recorded this delivery in the
+	// ledger (the authoritative single-writer path). Do not record it again.
 
 	return result, nil
 }
@@ -219,18 +200,8 @@ func (s *ManufacturingSeller) Liquidate(ctx context.Context, params SellParams) 
 		"price_per_unit": result.PricePerUnit,
 	})
 
-	// Record ledger transaction
-	if s.ledgerRecorder != nil {
-		_ = s.ledgerRecorder.RecordLiquidation(ctx, SaleRecordParams{
-			PlayerID:     params.PlayerID.Value(),
-			TaskID:       params.TaskID,
-			Good:         params.Good,
-			Quantity:     result.UnitsSold,
-			PricePerUnit: result.PricePerUnit,
-			TotalRevenue: result.TotalRevenue,
-			Market:       params.Market,
-		})
-	}
+	// The dispatched SellCargoCommand already recorded this liquidation in the
+	// ledger (the authoritative single-writer path). Do not record it again.
 
 	return result, nil
 }
