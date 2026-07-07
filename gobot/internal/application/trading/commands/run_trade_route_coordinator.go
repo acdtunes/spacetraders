@@ -8,6 +8,7 @@ import (
 	shipCargo "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/cargo"
 	navCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
 	shipTypes "github.com/andrescamacho/spacetraders-go/internal/application/ship/types"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
@@ -19,6 +20,24 @@ import (
 // mispriced fake) can never spin forever. The bid-floor discipline is the real
 // stop; this is only a safety rail.
 const defaultMaxVisits = 50
+
+// tradeRouteCommandType is the command_type recorded on the trade-route container
+// row. It is deliberately NOT registered in the daemon's command factory, so even
+// if a row were ever left RUNNING it could not be rebuilt by restart recovery —
+// but the row is created PENDING (see claimShip), which recovery skips outright.
+const tradeRouteCommandType = "trade_route"
+
+// ContainerRepository is the minimal container-persistence port the trade-route
+// coordinator needs. This coordinator is CLI-driven (sp-s7c2), not launched by the
+// daemon's container runner, so nothing else creates its container row — it must
+// insert its own FK anchor before claiming a ship (satisfying the composite
+// ships.(container_id, player_id) -> containers.(id, player_id) constraint
+// fk_ships_container) and drop that row on release. Mirrors the same port the
+// balancing coordinator owns for the identical reason.
+type ContainerRepository interface {
+	Add(ctx context.Context, containerEntity *container.Container, commandType string) error
+	Remove(ctx context.Context, containerID string, playerID int) error
+}
 
 // RunTradeRouteCoordinatorCommand asks the coordinator to fly one idle hull
 // through the top-ranked arbitrage circuit in a system until the margin dies.
@@ -56,10 +75,11 @@ type RunTradeRouteCoordinatorResponse struct {
 // navigate/dock/purchase/sell, ship + market repositories, clock), so ship
 // movement and trades go through the exact command handlers the daemon uses.
 type RunTradeRouteCoordinatorHandler struct {
-	mediator   common.Mediator
-	shipRepo   navigation.ShipRepository
-	marketRepo market.MarketRepository
-	clock      shared.Clock
+	mediator      common.Mediator
+	shipRepo      navigation.ShipRepository
+	marketRepo    market.MarketRepository
+	containerRepo ContainerRepository
+	clock         shared.Clock
 }
 
 // NewRunTradeRouteCoordinatorHandler wires the coordinator. Following the sibling
@@ -69,16 +89,18 @@ func NewRunTradeRouteCoordinatorHandler(
 	mediator common.Mediator,
 	shipRepo navigation.ShipRepository,
 	marketRepo market.MarketRepository,
+	containerRepo ContainerRepository,
 	clock shared.Clock,
 ) *RunTradeRouteCoordinatorHandler {
 	if clock == nil {
 		clock = shared.NewRealClock()
 	}
 	return &RunTradeRouteCoordinatorHandler{
-		mediator:   mediator,
-		shipRepo:   shipRepo,
-		marketRepo: marketRepo,
-		clock:      clock,
+		mediator:      mediator,
+		shipRepo:      shipRepo,
+		marketRepo:    marketRepo,
+		containerRepo: containerRepo,
+		clock:         clock,
 	}
 }
 
@@ -123,7 +145,7 @@ func (h *RunTradeRouteCoordinatorHandler) execute(
 	if err != nil {
 		return err
 	}
-	defer h.releaseShip(ctx, ship)
+	defer h.releaseShip(ctx, ship, containerID, playerID)
 
 	// Step 2: rank lanes from cache and pick the deepest.
 	lanes, err := h.scanLanes(ctx, cmd.SystemSymbol, playerID)
@@ -273,6 +295,17 @@ func (h *RunTradeRouteCoordinatorHandler) runCircuit(
 // claimShip loads the named hull and, only if it is genuinely idle, assigns it to
 // this trade-route container. A non-idle ship is refused rather than stolen from
 // whatever coordinator currently owns it.
+//
+// Because this coordinator is CLI-driven, nothing else creates its container row,
+// so claimShip must insert that row BEFORE it assigns the ship to it: the composite
+// FK ships.(container_id, player_id) -> containers.(id, player_id) rejects a claim
+// that references a container that does not yet exist (the 23503 that killed the
+// first live run). The daemon coordinators avoid this only because their container
+// runner persists the row before assigning ships; here we mirror that ordering.
+//
+// The row is created PENDING and never RUNNING, so era-scoped restart recovery
+// (which resurrects only RUNNING/INTERRUPTED containers) can never adopt a leftover
+// as a zombie; releaseShip removes it outright on every exit path.
 func (h *RunTradeRouteCoordinatorHandler) claimShip(
 	ctx context.Context,
 	shipSymbol string,
@@ -289,24 +322,51 @@ func (h *RunTradeRouteCoordinatorHandler) claimShip(
 	if !ship.IsIdle() {
 		return nil, fmt.Errorf("ship %s is not idle (assigned to %q) - trade-route only takes idle-gap hulls", shipSymbol, ship.ContainerID())
 	}
+
+	// Persist the container row first so the ship claim below satisfies the FK. Only
+	// reached once the ship is confirmed idle, so a refused claim never creates a row.
+	tradeContainer := container.NewContainer(
+		containerID,
+		container.ContainerTypeTrading,
+		playerID,
+		1, // one trade-route operation; never a restartable daemon loop
+		nil,
+		map[string]interface{}{"ship_symbol": shipSymbol},
+		h.clock,
+	)
+	if err := h.containerRepo.Add(ctx, tradeContainer, tradeRouteCommandType); err != nil {
+		return nil, fmt.Errorf("failed to persist trade-route container for ship %s: %w", shipSymbol, err)
+	}
+
 	if err := ship.AssignToContainer(containerID, h.clock); err != nil {
+		_ = h.containerRepo.Remove(ctx, containerID, playerID) // don't leak the anchor row
 		return nil, fmt.Errorf("failed to claim ship %s: %w", shipSymbol, err)
 	}
 	if err := h.shipRepo.Save(ctx, ship); err != nil {
+		_ = h.containerRepo.Remove(ctx, containerID, playerID) // claim save failed → drop the row
 		return nil, fmt.Errorf("failed to persist claim of ship %s: %w", shipSymbol, err)
 	}
 	return ship, nil
 }
 
 // releaseShip returns the hull to the idle pool so the next coordinator (or
-// another trade-route) can pick it up. Best-effort: a failed save is logged, not
-// fatal, since the run is already over.
-func (h *RunTradeRouteCoordinatorHandler) releaseShip(ctx context.Context, ship *navigation.Ship) {
+// another trade-route) can pick it up, then removes this run's container row. Order
+// matters for the FK: the ship's container_id is cleared (ForceRelease + Save)
+// before the container row is deleted. Both steps are best-effort — a failed save
+// is logged, not fatal, since the run is already over — but removing the PENDING
+// row here is what keeps restart recovery from ever seeing it. Even if the process
+// dies before this runs, the row is only PENDING, which recovery skips.
+func (h *RunTradeRouteCoordinatorHandler) releaseShip(ctx context.Context, ship *navigation.Ship, containerID string, playerID int) {
 	logger := common.LoggerFromContext(ctx)
 	ship.ForceRelease("trade_route_complete", h.clock)
 	if err := h.shipRepo.Save(ctx, ship); err != nil {
 		logger.Log("WARNING", "Failed to release trade-route ship", map[string]interface{}{
 			"ship_symbol": ship.ShipSymbol(), "error": err.Error(),
+		})
+	}
+	if err := h.containerRepo.Remove(ctx, containerID, playerID); err != nil {
+		logger.Log("WARNING", "Failed to remove trade-route container", map[string]interface{}{
+			"container_id": containerID, "error": err.Error(),
 		})
 	}
 }

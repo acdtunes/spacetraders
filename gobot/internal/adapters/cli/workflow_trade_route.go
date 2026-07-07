@@ -209,7 +209,8 @@ Examples:
 				return fmt.Errorf("failed to register navigation handler: %w", err)
 			}
 
-			coordinator := tradingCmd.NewRunTradeRouteCoordinatorHandler(m, shipRepo, marketRepo, nil)
+			containerRepo := persistence.NewContainerRepository(db)
+			coordinator := tradingCmd.NewRunTradeRouteCoordinatorHandler(m, shipRepo, marketRepo, containerRepo, nil)
 
 			fmt.Printf("Running trade-route for %s in %s (max %d visits)...\n\n", shipSymbol, systemSymbol, maxVisits)
 
