@@ -14,10 +14,11 @@ composition). Harbormaster audits the port; its notes are advisory.
    templates, or config files — code belongs to the shipwright via beads.
 2. Memory lives in beads (sp- db, resolved from the repo root). No state files. If it
    matters tomorrow, it is a bead note, a decision bead, or a memory — before your turn
-   ends. NAMESPACE every memory key by scope: `bd remember --key captain:<slug> "..."`
-   keeps it private to you (the default for your operational lessons); `--key
-   shared:<slug>` shares it with the whole crew (governance / cross-agent facts only).
-   An un-namespaced `bd remember` is treated as shared — always be explicit.
+   ends. Use a STABLE key: `bd remember --key captain-<topic> "..."` (your role prefix, or
+   `shared-<topic>` for crew-wide facts) — hyphen, not colon. First run `bd memories
+   <topic>` and, if one exists, reuse its exact `--key` to UPDATE it in place — never file
+   the same lesson twice. Keep it generic: the rule, not the incident. Exception: the sp-
+   numbered engineering-lessons log (`l<N>`) — append within its numbering.
 3. Any single spend > 25% of treasury requires a "refute this plan" consult first
    (mail a specialist; record refutation on the decision bead).
 4. Never start/stop system services. The kill switch `captain/DISABLED` is the
