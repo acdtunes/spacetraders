@@ -52,6 +52,7 @@ Examples:
 	cmd.AddCommand(newShipRefuelCommand())
 	cmd.AddCommand(newShipJumpCommand())
 	cmd.AddCommand(newShipSellCommand())
+	cmd.AddCommand(newShipBuyCommand())
 	// cmd.AddCommand(newShipJettisonCommand()) // TODO: implement jettison command
 
 	return cmd
@@ -882,6 +883,149 @@ Examples:
 	cmd.Flags().StringVar(&shipSymbol, "ship", "", "Ship symbol to sell from (required)")
 	cmd.Flags().StringVar(&goodSymbol, "good", "", "Trade good symbol to sell (required)")
 	cmd.Flags().IntVar(&units, "units", 0, "Number of units to sell (required)")
+
+	return cmd
+}
+
+// newShipBuyCommand creates the ship buy subcommand.
+//
+// This is a faithful mirror of newShipSellCommand: it purchases cargo from the
+// market at the ship's current docked waypoint, delegating to the shared
+// PurchaseCargoHandler (the buy side of the same CargoTransactionHandler that
+// powers sell). Cargo-capacity and market-availability validation, transaction
+// splitting, and PURCHASE_CARGO ledger recording all live in that handler.
+func newShipBuyCommand() *cobra.Command {
+	var (
+		shipSymbol string
+		goodSymbol string
+		units      int
+	)
+
+	cmd := &cobra.Command{
+		Use:   "buy",
+		Short: "Buy cargo for a ship",
+		Long: `Buy cargo for a ship from the market at its current location.
+Ship must be docked at a marketplace.
+
+Examples:
+  spacetraders ship buy --ship AGENT-1 --good IRON_ORE --units 50 --player-id 1
+  spacetraders ship buy --ship ENDURANCE-1 --good IRON_ORE --units 100 --agent ENDURANCE`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if shipSymbol == "" {
+				return fmt.Errorf("--ship flag is required")
+			}
+			if goodSymbol == "" {
+				return fmt.Errorf("--good flag is required")
+			}
+			if units <= 0 {
+				return fmt.Errorf("--units must be greater than 0")
+			}
+
+			// Resolve player from flags or defaults
+			playerIdent, err := resolvePlayerIdentifier()
+			if err != nil {
+				return err
+			}
+
+			// Load config and connect to database
+			cfg, err := config.LoadConfig("")
+			if err != nil {
+				return fmt.Errorf("failed to load config: %w", err)
+			}
+
+			db, err := database.NewConnection(&cfg.Database)
+			if err != nil {
+				return fmt.Errorf("failed to connect to database: %w", err)
+			}
+
+			// Create dependencies
+			playerRepo := persistence.NewGormPlayerRepository(db)
+			apiClient := api.NewSpaceTradersClient()
+			waypointRepo := persistence.NewGormWaypointRepository(db)
+			systemGraphRepo := persistence.NewGormSystemGraphRepository(db)
+			graphBuilder := api.NewGraphBuilder(apiClient, playerRepo, waypointRepo)
+			graphService := graph.NewGraphService(systemGraphRepo, waypointRepo, graphBuilder)
+			shipRepo := api.NewShipRepository(apiClient, playerRepo, waypointRepo, graphService, db, nil) // nil = use RealClock
+			marketRepo := persistence.NewMarketRepository(db)
+
+			// Create mediator with ledger handlers registered
+			transactionRepo := persistence.NewGormTransactionRepository(db)
+			playerResolver := player.NewPlayerResolver(playerRepo)
+			registry := setup.NewHandlerRegistry(
+				transactionRepo,
+				playerResolver,
+				nil, // clock (defaults to real clock)
+				nil, // shipRepo (not needed for this CLI command)
+				nil, // daemonClient (not needed for this CLI command)
+				nil, // storageOpRepo (not needed for this CLI command)
+				nil, // storageCoordinator (not needed for this CLI command)
+				nil, // waypointRepo (not needed for this CLI command)
+				nil, // apiClient (not needed for this CLI command)
+			)
+			mediator, err := registry.CreateConfiguredMediator()
+			if err != nil {
+				return fmt.Errorf("failed to create mediator: %w", err)
+			}
+
+			// Create handler (nil marketRefresher - CLI doesn't refresh market data after transactions)
+			handler := shipCargo.NewPurchaseCargoHandler(shipRepo, playerRepo, apiClient, marketRepo, mediator, nil)
+
+			// Resolve player ID and load player token
+			ctx := context.Background()
+			var resolvedPlayerID int
+			var playerToken string
+
+			if playerIdent.PlayerID > 0 {
+				resolvedPlayerID = playerIdent.PlayerID
+				// Load player to get token
+				player, err := playerRepo.FindByID(ctx, shared.MustNewPlayerID(resolvedPlayerID))
+				if err != nil {
+					return fmt.Errorf("failed to load player: %w", err)
+				}
+				playerToken = player.Token
+			} else {
+				// Look up player by agent symbol
+				player, err := playerRepo.FindByAgentSymbol(ctx, playerIdent.AgentSymbol)
+				if err != nil {
+					return fmt.Errorf("failed to resolve player from agent symbol: %w", err)
+				}
+				resolvedPlayerID = player.ID.Value()
+				playerToken = player.Token
+			}
+
+			// Add player token to context for ledger recording
+			ctx = auth.WithPlayerToken(ctx, playerToken)
+
+			// Execute command
+			response, err := handler.Handle(ctx, &shipCargo.PurchaseCargoCommand{
+				ShipSymbol: shipSymbol,
+				GoodSymbol: goodSymbol,
+				Units:      units,
+				PlayerID:   shared.MustNewPlayerID(resolvedPlayerID),
+			})
+			if err != nil {
+				return fmt.Errorf("buy cargo command failed: %w", err)
+			}
+
+			result, ok := response.(*shipCargo.PurchaseCargoResponse)
+			if !ok {
+				return fmt.Errorf("unexpected response type")
+			}
+
+			// Display success
+			fmt.Println("✓ Cargo purchased successfully")
+			fmt.Printf("  Ship:           %s\n", shipSymbol)
+			fmt.Printf("  Good:           %s\n", goodSymbol)
+			fmt.Printf("  Units Purchased: %d\n", result.UnitsAdded)
+			fmt.Printf("  Total Cost:     %d credits\n", result.TotalCost)
+
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&shipSymbol, "ship", "", "Ship symbol to buy for (required)")
+	cmd.Flags().StringVar(&goodSymbol, "good", "", "Trade good symbol to buy (required)")
+	cmd.Flags().IntVar(&units, "units", 0, "Number of units to buy (required)")
 
 	return cmd
 }
