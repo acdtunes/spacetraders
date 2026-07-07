@@ -1,4 +1,4 @@
-.PHONY: build test clean proto lint install-tools routing-service build-captain run-captain cli-reference restart-daemon
+.PHONY: build test clean proto lint install-tools routing-service build-captain run-captain cli-reference restart-daemon install-cli
 
 # Build all binaries
 build: build-cli build-daemon build-routing-service build-captain
@@ -7,6 +7,14 @@ build: build-cli build-daemon build-routing-service build-captain
 build-cli:
 	@echo "Building CLI..."
 	@go build -o bin/spacetraders ./cmd/spacetraders
+
+# Install the CLI on PATH: symlink bin/spacetraders into ~/.local/bin (idempotent).
+# Config resolution finds config.yaml next to the real binary, so the shim works
+# from any cwd.
+install-cli: build-cli
+	@mkdir -p $(HOME)/.local/bin
+	@ln -sf $(abspath bin/spacetraders) $(HOME)/.local/bin/spacetraders
+	@echo "Linked $(HOME)/.local/bin/spacetraders -> $(abspath bin/spacetraders)"
 
 # Build daemon binary
 build-daemon:
@@ -196,6 +204,7 @@ help:
 	@echo "Available targets:"
 	@echo "  build                - Build all binaries (CLI, daemon, routing service)"
 	@echo "  build-cli            - Build CLI binary only"
+	@echo "  install-cli          - Build CLI and symlink it into ~/.local/bin (on PATH)"
 	@echo "  build-daemon         - Build daemon binary only"
 	@echo "  build-routing-service - Build routing service manager binary"
 	@echo "  test                 - Run all tests (with race + cover)"

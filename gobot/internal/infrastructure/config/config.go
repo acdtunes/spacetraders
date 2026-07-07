@@ -3,11 +3,18 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/joho/godotenv"
 	"github.com/spf13/viper"
 )
+
+// configPathEnvVar, when set, points config discovery at an explicit config
+// file or directory before falling back to the working directory or the
+// executable's own directory. Used only when LoadConfig is called with an
+// empty configPath.
+const configPathEnvVar = "SPACETRADERS_CONFIG"
 
 // Config is the main configuration struct combining all sub-configs
 type Config struct {
@@ -33,12 +40,14 @@ func LoadConfig(configPath string) (*Config, error) {
 	// Set config file details
 	if configPath != "" {
 		v.SetConfigFile(configPath)
+	} else if search := resolveConfigSearch(os.Getenv(configPathEnvVar), executableDir()); search.file != "" {
+		v.SetConfigFile(search.file)
 	} else {
 		v.SetConfigName("config")
 		v.SetConfigType("yaml")
-		v.AddConfigPath(".")
-		v.AddConfigPath("./configs")
-		v.AddConfigPath("/etc/spacetraders")
+		for _, path := range search.paths {
+			v.AddConfigPath(path)
+		}
 	}
 
 	// Enable environment variable reading
@@ -103,4 +112,71 @@ func MustLoadConfig(configPath string) *Config {
 		panic(fmt.Sprintf("failed to load configuration: %v", err))
 	}
 	return cfg
+}
+
+// configSearch describes where viper should look for a config file. When file
+// is non-empty it names an explicit config file (SetConfigFile) that wins
+// outright; otherwise paths is an ordered list of directories to search
+// (AddConfigPath), first match wins.
+type configSearch struct {
+	file  string
+	paths []string
+}
+
+// resolveConfigSearch computes the config discovery strategy for callers that
+// pass an empty configPath. The resolution order (highest priority first) is:
+//
+//  1. envOverride (the SPACETRADERS_CONFIG value): a file is used directly; a
+//     directory is searched before all others.
+//  2. Current working directory: ".", "./configs", "/etc/spacetraders". This is
+//     the pre-existing behavior, kept exactly so callers running with cwd=gobot
+//     (daemon, captain supervisor) resolve config.yaml identically to before.
+//  3. execDir and its parent, so a `spacetraders` symlink on PATH still finds
+//     the config.yaml shipped next to the real binary (bin/spacetraders ->
+//     ../config.yaml). Omitted when execDir is empty.
+//
+// It is pure with respect to its inputs (the only filesystem access is a stat
+// of envOverride to distinguish a file from a directory), so the ordering can
+// be exercised without real binaries.
+func resolveConfigSearch(envOverride, execDir string) configSearch {
+	var s configSearch
+
+	if envOverride != "" {
+		if info, err := os.Stat(envOverride); err == nil && !info.IsDir() {
+			// An explicit file override is decisive.
+			s.file = envOverride
+			return s
+		}
+		// A directory (or a not-yet-existing path) is searched ahead of the cwd.
+		s.paths = append(s.paths, envOverride)
+	}
+
+	// Legacy working-directory search paths — must stay first and unchanged.
+	s.paths = append(s.paths, ".", "./configs", "/etc/spacetraders")
+
+	// Fall back to the executable's own directory and its parent.
+	if execDir != "" {
+		s.paths = append(s.paths, execDir, filepath.Dir(execDir))
+	}
+
+	return s
+}
+
+// osExecutable is indirected so tests can simulate the running binary's
+// location without building a real executable.
+var osExecutable = os.Executable
+
+// executableDir returns the directory containing the running executable with
+// symlinks resolved, or "" if it cannot be determined. Resolving symlinks means
+// a PATH shim (e.g. ~/.local/bin/spacetraders -> .../gobot/bin/spacetraders)
+// points at the real binary's directory, whose parent holds config.yaml.
+func executableDir() string {
+	exe, err := osExecutable()
+	if err != nil {
+		return ""
+	}
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = resolved
+	}
+	return filepath.Dir(exe)
 }

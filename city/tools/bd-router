@@ -1,0 +1,157 @@
+#!/bin/sh
+# bd-router — resolve the correct beads database by issue-prefix, independent of
+# the caller's working directory.
+#
+# This repo hosts TWO beads databases. bd normally selects one by walking up
+# from $PWD to the nearest .beads/, which traps agents: a fleet agent whose cwd
+# is city/ resolves the city (st-) database and gets "no issue found" for sp-
+# beads (and vice-versa from the repo root). This wrapper inspects the bd
+# invocation, pins BEADS_DIR to the database that OWNS the addressed prefix,
+# then execs the real bd. Anything it does not recognise is passed through
+# unchanged, so behaviour for other prefixes / prefix-less commands is identical
+# to plain bd.
+#
+#   sp-*                         -> <repo-root>/.beads       (fleet/rig queue, embedded Dolt)
+#   st-*                         -> <repo-root>/city/.beads  (city queue, Dolt server)
+#   ready/list ... -l <crew>     -> sp   (crew-role labels exist only in the sp db)
+#
+# Repo locations are found by walking up from this script to the directory that
+# contains both .beads/ and city/.beads/, so a checkout at any path works with
+# no edits. If the chosen .beads/ carries a bd `redirect` file (e.g. a git
+# worktree wired by captain.ProvisionWorktree), it is followed — this COMPOSES
+# with the worktree-redirect fix instead of overriding it.
+#
+# Activation is machine-local: ~/.local/bin/bd (first on PATH) is a symlink to
+# this file (see install-bd-router.sh). The real bd is located at runtime by
+# scanning PATH for a bd that is not this wrapper; override with BD_REAL if it
+# ever cannot be found on a stripped-down PATH.
+
+set -u
+
+# --- resolve a path through symlinks (portable; macOS readlink lacks -f) ------
+_resolve() {
+	_p=$1
+	# if bare name (no slash), locate on PATH
+	case $_p in
+	*/*) : ;;
+	*) _p=$(command -v -- "$_p" 2>/dev/null || printf '%s' "$_p") ;;
+	esac
+	_n=0
+	while [ -L "$_p" ] && [ "$_n" -lt 40 ]; do
+		_t=$(readlink "$_p")
+		case $_t in
+		/*) _p=$_t ;;
+		*) _p=$(dirname -- "$_p")/$_t ;;
+		esac
+		_n=$((_n + 1))
+	done
+	_d=$(CDPATH= cd -- "$(dirname -- "$_p")" 2>/dev/null && pwd -P) || return 1
+	printf '%s/%s' "$_d" "$(basename -- "$_p")"
+}
+
+SELF=$(_resolve "$0") || SELF=$0
+
+# --- locate the real bd (never this wrapper) ---------------------------------
+_real_bd() {
+	if [ -n "${BD_REAL:-}" ] && [ -x "$BD_REAL" ]; then
+		printf '%s' "$BD_REAL"
+		return 0
+	fi
+	_oifs=$IFS
+	IFS=:
+	set -f
+	for _d in $PATH; do
+		_c="$_d/bd"
+		[ -x "$_c" ] || continue
+		_rc=$(_resolve "$_c" 2>/dev/null) || _rc=$_c
+		[ "$_rc" = "$SELF" ] && continue
+		set +f
+		IFS=$_oifs
+		printf '%s' "$_c"
+		return 0
+	done
+	set +f
+	IFS=$_oifs
+	return 1
+}
+
+REAL=$(_real_bd) || {
+	printf 'bd-router: cannot find the real bd binary on PATH (set BD_REAL)\n' >&2
+	exit 127
+}
+
+# --- find the spacetraders repo root by structure ----------------------------
+# (dir containing both .beads and city/.beads). Falls through to plain bd if the
+# wrapper is run from outside such a tree.
+REPO=""
+_d=$(dirname -- "$SELF")
+while [ "$_d" != "/" ] && [ -n "$_d" ]; do
+	if [ -d "$_d/.beads" ] && [ -d "$_d/city/.beads" ]; then
+		REPO=$_d
+		break
+	fi
+	_d=$(dirname -- "$_d")
+done
+
+if [ -z "$REPO" ]; then
+	exec "$REAL" "$@"
+fi
+
+ROOT_BEADS="$REPO/.beads"
+CITY_BEADS="$REPO/city/.beads"
+AGENTS_DIR="$REPO/city/agents"
+
+# --- decide the target .beads by prefix / crew-label -------------------------
+TARGET=""
+
+# 1) explicit bead-id token in any argument: sp-xxxx / st-xxxx
+for _a in "$@"; do
+	case $_a in
+	sp-[0-9A-Za-z]*) TARGET=$ROOT_BEADS ;;
+	st-[0-9A-Za-z]*) TARGET=$CITY_BEADS ;;
+	*) continue ;;
+	esac
+	break
+done
+
+# 2) no bead-id token: a crew-role label routes to the fleet (sp) db.
+#    Crew roles are exactly the directories under city/agents/. The st db has
+#    zero beads carrying these labels, so this never shadows city work. Skipped
+#    when the caller already pinned BEADS_DIR explicitly.
+if [ -z "$TARGET" ] && [ -z "${BEADS_DIR:-}" ] && [ -d "$AGENTS_DIR" ]; then
+	_prev=""
+	for _a in "$@"; do
+		_lbl=""
+		case $_a in
+		-l=* | --label=* | --labels=*) _lbl=${_a#*=} ;;
+		*)
+			case $_prev in
+			-l | --label | --labels) _lbl=$_a ;;
+			esac
+			;;
+		esac
+		if [ -n "$_lbl" ]; then
+			_oifs=$IFS
+			IFS=,
+			set -f
+			for _one in $_lbl; do
+				[ -n "$_one" ] && [ -d "$AGENTS_DIR/$_one" ] && TARGET=$ROOT_BEADS
+			done
+			set +f
+			IFS=$_oifs
+			[ -n "$TARGET" ] && break
+		fi
+		_prev=$_a
+	done
+fi
+
+# --- apply routing, composing with any bd redirect file ----------------------
+if [ -n "$TARGET" ]; then
+	if [ -f "$TARGET/redirect" ]; then
+		_rt=$(sed -n '1p' "$TARGET/redirect" 2>/dev/null | tr -d ' \t\r\n')
+		[ -n "$_rt" ] && TARGET=$_rt
+	fi
+	[ -d "$TARGET" ] && export BEADS_DIR="$TARGET"
+fi
+
+exec "$REAL" "$@"

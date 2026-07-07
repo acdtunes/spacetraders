@@ -1,0 +1,4 @@
+# Machine-local artifacts written by install-bd-router.sh (absolute paths /
+# per-machine state — never commit these).
+.bd-router.backup
+.bd-real
