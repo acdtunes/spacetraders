@@ -2,6 +2,7 @@ export const NOIR = {
   bg0: '#04060D',
   bg1: '#0A0F1E',
   nebula: '#16223F',
+  nebulaCore: '#2B4470',
   panel: '#0D1220',
   ink: '#EAEEF6',
   muted: '#8B95AB',
