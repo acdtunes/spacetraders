@@ -188,10 +188,6 @@ Example:
 
 // runLedgerList executes the ledger list command
 func runLedgerList(playerID int, startDate, endDate, category, txType string, limit, offset int, orderBy string) error {
-	if playerID == 0 {
-		return fmt.Errorf("--player-id flag is required")
-	}
-
 	// Load config and connect to database
 	cfg, err := config.LoadConfig("")
 	if err != nil {
@@ -208,6 +204,15 @@ func runLedgerList(playerID int, startDate, endDate, category, txType string, li
 	playerRepo := persistence.NewGormPlayerRepository(db)
 	playerResolver := player.NewPlayerResolver(playerRepo)
 	handler := queries.NewGetTransactionsHandler(transactionRepo, playerResolver)
+
+	// Resolve the effective player (flags > persisted default) into a concrete ID,
+	// so `ledger list` honors the default set via `config set-player`.
+	ctx := context.Background()
+	resolvedPlayer, err := resolveDefaultPlayer(ctx, playerRepo)
+	if err != nil {
+		return err
+	}
+	playerID = resolvedPlayer.ID.Value()
 
 	// Parse dates
 	var start, end *time.Time
@@ -246,7 +251,6 @@ func runLedgerList(playerID int, startDate, endDate, category, txType string, li
 	}
 
 	// Execute query
-	ctx := context.Background()
 	result, err := handler.Handle(ctx, query)
 	if err != nil {
 		return fmt.Errorf("failed to query transactions: %w", err)

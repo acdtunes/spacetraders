@@ -13,6 +13,7 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/contract"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 )
@@ -31,17 +32,25 @@ type gormContractStore struct {
 }
 
 func newContractStore() (contractStore, error) {
+	store, _, err := newContractStoreAndPlayerRepo()
+	return store, err
+}
+
+// newContractStoreAndPlayerRepo builds the contract store together with a player
+// repository backed by the same database connection, so `contract list` can resolve
+// the default player without opening a second connection.
+func newContractStoreAndPlayerRepo() (contractStore, player.PlayerRepository, error) {
 	cfg, err := config.LoadConfig("")
 	if err != nil {
-		return nil, fmt.Errorf("failed to load config: %w", err)
+		return nil, nil, fmt.Errorf("failed to load config: %w", err)
 	}
 
 	db, err := database.NewConnection(&cfg.Database)
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to database: %w", err)
+		return nil, nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
 
-	return &gormContractStore{db: db}, nil
+	return &gormContractStore{db: db}, persistence.NewGormPlayerRepository(db), nil
 }
 
 func (s *gormContractStore) ListContracts(ctx context.Context, playerID int) ([]persistence.ContractModel, error) {
@@ -327,16 +336,20 @@ Examples:
   spacetraders contract list --player-id 1
   spacetraders contract list --player-id 1 --json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if playerID <= 0 {
-				return fmt.Errorf("--player-id flag is required")
-			}
-
-			store, err := newContractStore()
+			store, playerRepo, err := newContractStoreAndPlayerRepo()
 			if err != nil {
 				return err
 			}
 
-			return runContractList(context.Background(), store, playerID, jsonOut)
+			// Resolve the effective player (flags > persisted default) so `contract list`
+			// honors the default set via `config set-player`.
+			ctx := context.Background()
+			resolved, err := resolveDefaultPlayer(ctx, playerRepo)
+			if err != nil {
+				return err
+			}
+
+			return runContractList(ctx, store, resolved.ID.Value(), jsonOut)
 		},
 	}
 

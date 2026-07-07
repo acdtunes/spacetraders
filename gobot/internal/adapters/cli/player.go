@@ -11,6 +11,7 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/api"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
+	"github.com/andrescamacho/spacetraders-go/internal/application/auth"
 	playerCmd "github.com/andrescamacho/spacetraders-go/internal/application/player/commands"
 	playerQuery "github.com/andrescamacho/spacetraders-go/internal/application/player/queries"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
@@ -203,12 +204,6 @@ Examples:
   spacetraders player info --player-id 1
   spacetraders player info --agent ENDURANCE`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Resolve player from flags or defaults
-			playerIdent, err := resolvePlayerIdentifier()
-			if err != nil {
-				return err
-			}
-
 			// Load config and connect to database
 			cfg, err := config.LoadConfig("")
 			if err != nil {
@@ -225,16 +220,20 @@ Examples:
 			apiClient := api.NewSpaceTradersClient()
 			handler := playerQuery.NewGetPlayerHandler(playerRepo, apiClient)
 
-			// Execute command
+			// Resolve the effective player (flags > persisted default) and inject its
+			// token so the handler can fetch live credits from the agent API. Without
+			// this injection GetPlayerHandler's PlayerTokenFromContext lookup fails with
+			// "player token not found in context".
 			ctx := context.Background()
-			var playerIDPtr *int
-			if playerIdent.PlayerID > 0 {
-				playerIDPtr = &playerIdent.PlayerID
+			resolved, err := resolveDefaultPlayer(ctx, playerRepo)
+			if err != nil {
+				return err
 			}
+			ctx = auth.WithPlayerToken(ctx, resolved.Token)
 
+			resolvedID := resolved.ID.Value()
 			response, err := handler.Handle(ctx, &playerQuery.GetPlayerQuery{
-				PlayerID:    playerIDPtr,
-				AgentSymbol: playerIdent.AgentSymbol,
+				PlayerID: &resolvedID,
 			})
 			if err != nil {
 				return fmt.Errorf("failed to get player: %w", err)
