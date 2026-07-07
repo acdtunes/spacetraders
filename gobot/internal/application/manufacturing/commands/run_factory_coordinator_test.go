@@ -2,7 +2,9 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -80,21 +82,44 @@ func (m *factoryFakeMediator) purchasedUnitsOf(good string) int {
 
 // factoryFakeShipRepo embeds the interface so unimplemented methods panic,
 // keeping the fake honest about what the coordinator actually uses.
+//
+// The gate fields model a fleet whose haulers are momentarily all busy: while
+// gated, FindAllByPlayer reports an empty fleet, so FindIdleLightHaulers finds
+// zero idle haulers. This drives the wait-for-idle-gap path (sp-vmrj) without
+// constructing assigned ships.
 type factoryFakeShipRepo struct {
 	navigation.ShipRepository
 	mu    sync.Mutex
 	ships map[string]*navigation.Ship
 	order []string
+
+	findAllCalls   int              // number of FindAllByPlayer calls so far
+	emptyUntilCall int              // report an empty fleet while findAllCalls <= this
+	alwaysEmpty    bool             // report an empty fleet on every call
+	onFindAll      func(callNum int) // hook fired on each call (e.g. to cancel ctx)
 }
 
 func (r *factoryFakeShipRepo) FindAllByPlayer(ctx context.Context, playerID shared.PlayerID) ([]*navigation.Ship, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.findAllCalls++
+	if r.onFindAll != nil {
+		r.onFindAll(r.findAllCalls)
+	}
+	if r.alwaysEmpty || r.findAllCalls <= r.emptyUntilCall {
+		return []*navigation.Ship{}, nil
+	}
 	ships := make([]*navigation.Ship, 0, len(r.order))
 	for _, symbol := range r.order {
 		ships = append(ships, r.ships[symbol])
 	}
 	return ships, nil
+}
+
+func (r *factoryFakeShipRepo) findAllCallCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.findAllCalls
 }
 
 func (r *factoryFakeShipRepo) FindBySymbol(ctx context.Context, symbol string, playerID shared.PlayerID) (*navigation.Ship, error) {
@@ -228,11 +253,20 @@ func newTestHauler(t *testing.T, symbol string, inventory []*shared.CargoItem) *
 	return ship
 }
 
-// runFactoryCoordinator drives the coordinator through its driving port with a
-// FAB_PLATE <- IRON supply chain. The first hauler already carries IRON, so the
-// level-0 worker delivers (sells) it to the factory; the level-1 worker then
-// fabricates FAB_PLATE at the factory.
-func runFactoryCoordinator(t *testing.T) (*factoryFakeMediator, *RunFactoryCoordinatorResponse, error) {
+// factoryFixture wires the coordinator to its driven ports for a
+// FAB_PLATE <- IRON supply chain, exposing the fakes so tests can gate ship
+// discovery or drive the run with a cancellable context.
+type factoryFixture struct {
+	handler  *RunFactoryCoordinatorHandler
+	shipRepo *factoryFakeShipRepo
+	mediator *factoryFakeMediator
+	cmd      *RunFactoryCoordinatorCommand
+}
+
+// newFactoryFixture builds a coordinator with two idle haulers: the first
+// already carries IRON (its level-0 worker delivers it to the factory) and the
+// second is empty; the level-1 worker fabricates FAB_PLATE at the factory.
+func newFactoryFixture(t *testing.T) *factoryFixture {
 	t.Helper()
 
 	ironItem, err := shared.NewCargoItem(testInputGood, testInputGood, "", 10)
@@ -275,9 +309,22 @@ func runFactoryCoordinator(t *testing.T) (*factoryFakeMediator, *RunFactoryCoord
 		ContainerID:  testContainerID,
 	}
 
-	resp, err := handler.Handle(context.Background(), cmd)
+	return &factoryFixture{
+		handler:  handler,
+		shipRepo: shipRepo,
+		mediator: fakeMediator,
+		cmd:      cmd,
+	}
+}
+
+// runFactoryCoordinator drives the coordinator through its driving port with a
+// FAB_PLATE <- IRON supply chain and both haulers immediately idle.
+func runFactoryCoordinator(t *testing.T) (*factoryFakeMediator, *RunFactoryCoordinatorResponse, error) {
+	t.Helper()
+	f := newFactoryFixture(t)
+	resp, err := f.handler.Handle(context.Background(), f.cmd)
 	coordResp, _ := resp.(*RunFactoryCoordinatorResponse)
-	return fakeMediator, coordResp, err
+	return f.mediator, coordResp, err
 }
 
 // Ledger linkage (#24): every factory delivery sale must be dispatched with the
@@ -320,5 +367,55 @@ func TestFactoryCoordinator_ParallelFabrication_DoesNotRepurchaseDeliveredInputs
 	}
 	if units := fakeMediator.purchasedUnitsOf(testOutputGood); units == 0 {
 		t.Fatalf("expected the fabrication worker to purchase the fabricated %s output, got no purchase", testOutputGood)
+	}
+}
+
+// Impatience crash (sp-vmrj): the goods factory used to crash unrecoverably
+// ("no idle hauler ships available for production") the instant it found every
+// hauler momentarily busy at launch. A factory that holds a market at MODERATE+
+// is long-lived, so it must instead poll for the next idle gap — like the fleet
+// coordinator does — and acquire the first hauler that frees.
+func TestFactoryCoordinator_ZeroIdleHaulersAtLaunch_WaitsAndAcquires(t *testing.T) {
+	f := newFactoryFixture(t)
+	// The first two discovery polls see an empty fleet (every hauler
+	// coordinator-assigned); the third reveals the now-idle haulers.
+	f.shipRepo.emptyUntilCall = 2
+
+	resp, err := f.handler.Handle(context.Background(), f.cmd)
+	if err != nil {
+		t.Fatalf("factory crashed on a transient zero-idle moment at launch instead of waiting: %v", err)
+	}
+	coordResp, _ := resp.(*RunFactoryCoordinatorResponse)
+	if coordResp == nil || !coordResp.Completed {
+		t.Fatalf("expected the factory to wait, acquire an idle hauler, and complete; got %+v", coordResp)
+	}
+	if calls := f.shipRepo.findAllCallCount(); calls < 3 {
+		t.Fatalf("expected the factory to poll for idle haulers at least 3 times before acquiring, got %d", calls)
+	}
+}
+
+// The wait-for-idle loop is bounded only by container shutdown (context
+// cancellation), never a timeout. When the container is cancelled while it is
+// still waiting for a hauler, it must exit cleanly with the context error and
+// must never emit the old fatal "no idle hauler" crash.
+func TestFactoryCoordinator_ContextCancelledWhileWaiting_ExitsWithoutFatalCrash(t *testing.T) {
+	f := newFactoryFixture(t)
+	f.shipRepo.alwaysEmpty = true // the fleet never frees a hauler
+
+	ctx, cancel := context.WithCancel(context.Background())
+	f.shipRepo.onFindAll = func(callNum int) {
+		if callNum >= 3 {
+			cancel() // container shuts down after a few fruitless polls
+		}
+	}
+
+	resp, err := f.handler.Handle(ctx, f.cmd)
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled when the container is cancelled while waiting for a hauler, got %v", err)
+	}
+	if coordResp, _ := resp.(*RunFactoryCoordinatorResponse); coordResp != nil &&
+		strings.Contains(coordResp.Error, "no idle hauler") {
+		t.Fatalf("factory emitted the impatience-crash error while merely waiting for a hauler: %q", coordResp.Error)
 	}
 }

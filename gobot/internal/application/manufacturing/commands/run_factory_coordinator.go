@@ -154,19 +154,19 @@ func (h *RunFactoryCoordinatorHandler) executeCoordination(
 		"fabricate_nodes": countNodesByMethod(nodes, goods.AcquisitionFabricate),
 	})
 
-	// Step 3: Discover idle ships
+	// Step 3: Wait for an idle hauler.
+	//
+	// At launch the factory may momentarily find every hauler
+	// coordinator-assigned. Rather than crashing on that transient gap (sp-vmrj —
+	// the "impatience crash"), we poll for the next idle hauler the same way the
+	// long-lived fleet coordinator waits for ships (run_fleet_coordinator.go):
+	// keep re-discovering until a hauler frees or the container's context is
+	// cancelled. A factory that holds a market at MODERATE+ is long-lived, so an
+	// indefinite wait for the next idle gap is the correct bound.
 	playerID := shared.MustNewPlayerID(cmd.PlayerID)
-	idleShips, idleShipSymbols, err := contract.FindIdleLightHaulers(
-		ctx,
-		playerID,
-		h.shipRepo,
-	)
+	idleShips, idleShipSymbols, err := h.waitForIdleHaulers(ctx, playerID, response.FactoryID)
 	if err != nil {
-		return fmt.Errorf("failed to discover idle ships: %w", err)
-	}
-
-	if len(idleShips) == 0 {
-		return fmt.Errorf("no idle hauler ships available for production")
+		return err
 	}
 
 	logger.Log("INFO", "Discovered idle ships for production", map[string]interface{}{
@@ -208,6 +208,58 @@ func (h *RunFactoryCoordinatorHandler) executeCoordination(
 	})
 
 	return nil
+}
+
+// waitForIdleHaulers polls for idle light haulers, blocking until at least one
+// is available or the context is cancelled.
+//
+// This is the fix for the "impatience crash" (sp-vmrj): the factory used to
+// return a fatal "no idle hauler ships available for production" the instant it
+// found every hauler busy at launch, killing an acceleration play on the pad. A
+// factory meant to hold a market at MODERATE+ is long-lived, so waiting for the
+// next idle gap — exactly what the fleet coordinator does when its pool is
+// momentarily empty (run_fleet_coordinator.go) — is the correct behaviour. The
+// wait is bounded only by context cancellation (container shutdown), never by a
+// timeout, so a slow-to-free fleet can never re-introduce the crash.
+func (h *RunFactoryCoordinatorHandler) waitForIdleHaulers(
+	ctx context.Context,
+	playerID shared.PlayerID,
+	factoryID string,
+) ([]*navigation.Ship, []string, error) {
+	logger := common.LoggerFromContext(ctx)
+	waited := false
+
+	for {
+		// Honour container shutdown between polls (mirrors the fleet
+		// coordinator's top-of-loop cancellation check).
+		select {
+		case <-ctx.Done():
+			return nil, nil, ctx.Err()
+		default:
+		}
+
+		idleShips, idleShipSymbols, err := contract.FindIdleLightHaulers(ctx, playerID, h.shipRepo)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to discover idle ships: %w", err)
+		}
+		if len(idleShips) > 0 {
+			if waited {
+				logger.Log("INFO", "Idle hauler became available - resuming production", map[string]interface{}{
+					"factory_id":   factoryID,
+					"ship_count":   len(idleShips),
+					"ship_symbols": idleShipSymbols,
+				})
+			}
+			return idleShips, idleShipSymbols, nil
+		}
+
+		waited = true
+		logger.Log("INFO", "No idle haulers available yet - waiting for an idle gap before production", map[string]interface{}{
+			"factory_id":    factoryID,
+			"poll_interval": shipDiscoveryInterval.String(),
+		})
+		h.clock.Sleep(shipDiscoveryInterval)
+	}
 }
 
 // executeParallelProduction executes production levels in parallel
