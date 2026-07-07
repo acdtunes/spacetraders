@@ -121,7 +121,15 @@ func (h *RunManufacturingTaskWorkerHandler) Handle(
 			return h.parkForResupply(ctx, cmd, task, startTime, err), nil
 		}
 
-		logger.Log("ERROR", "Manufacturing task failed", map[string]interface{}{
+		// Surface the underlying cause VERBATIM in the MESSAGE. The container-log
+		// renderer prints only level+message and DROPS the metadata map, so a bare
+		// "Manufacturing task failed" with the error hidden in metadata leaves a blind
+		// failure that never names its cause. This one wrap at the executor dispatch
+		// level covers EVERY task type - construction AND acquire/collect/storage/etc.
+		// (sp-iqyq generalizes the construction-only sp-fi7q fix; the executors already
+		// return the cause verbatim or %w-wrapped, so it is the message that must carry it).
+		logger.Log("ERROR", fmt.Sprintf("Manufacturing task failed [type=%s ship=%s]: %v",
+			task.TaskType(), cmd.ShipSymbol, err), map[string]interface{}{
 			"task_id": task.ID()[:8],
 			"type":    task.TaskType(),
 			"error":   err.Error(),
