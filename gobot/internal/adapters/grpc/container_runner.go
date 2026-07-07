@@ -307,9 +307,12 @@ func (r *ContainerRunner) execute() {
 				continue // DON'T signal completion - we're restarting
 			}
 
-			// UNRECOVERABLE ERROR: Only NOW do we signal completion and release ships
-			// This is the critical fix - completion is signaled AFTER restart decision
-			r.log("INFO", "Container failed with unrecoverable error, signaling completion", nil)
+			// UNRECOVERABLE ERROR: the container has truly crashed. Surface the crash
+			// signature at ERROR and record the strategic crash event here (not in
+			// handleError) so container.crashed counts true crashes, not every retry.
+			// Only NOW do we signal completion and release ships - completion is
+			// signaled AFTER the restart decision.
+			r.recordCrash(err)
 			r.signalCompletionWithStatus(false, err.Error())
 			r.releaseShipAssignments("failed")
 			return // Exit on unrecoverable error
@@ -491,16 +494,33 @@ func (r *ContainerRunner) handleError(err error) {
 		}
 	}
 
-	// Record a strategic crash event for the captain supervisor. Ship symbol is
-	// not reliably available here, so pass empty string.
-	recordCaptainEvent(captain.EventContainerCrashed, "", r.containerEntity.PlayerID(), map[string]any{
-		"container_id": r.containerEntity.ID(),
-		"error":        err.Error(),
-	})
+	// NOTE: container.crashed is intentionally NOT recorded here. handleError runs
+	// on every failed iteration, including transient errors that are retried and
+	// recover, so emitting the strategic crash event here over-counts crashes. It
+	// is recorded by recordCrash on the true (unrecoverable) exit path instead.
 
 	// NOTE: signalCompletion and releaseShipAssignments are NOT called here.
 	// They are called by execute() ONLY when the container is truly done (not restarting).
 	// This prevents the bug where completion is signaled before restart decision.
+}
+
+// recordCrash surfaces a true, unrecoverable container crash. It logs a single
+// ERROR line carrying the container id and the underlying error — the actionable
+// signature fleet operators need above the INFO respawn chatter — and records the
+// strategic container.crashed event for the captain supervisor. Called only from
+// execute() when the container exits with an unrecoverable error, so
+// container.crashed counts true crashes rather than every retried iteration.
+func (r *ContainerRunner) recordCrash(err error) {
+	r.log("ERROR", fmt.Sprintf("Container %s crashed (unrecoverable): %v", r.containerEntity.ID(), err), map[string]interface{}{
+		"container_id": r.containerEntity.ID(),
+		"error":        err.Error(),
+	})
+
+	// Ship symbol is not reliably available here, so pass empty string.
+	recordCaptainEvent(captain.EventContainerCrashed, "", r.containerEntity.PlayerID(), map[string]any{
+		"container_id": r.containerEntity.ID(),
+		"error":        err.Error(),
+	})
 }
 
 // Logging
