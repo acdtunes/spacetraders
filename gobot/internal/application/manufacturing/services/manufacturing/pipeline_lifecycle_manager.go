@@ -47,6 +47,12 @@ type PipelineManager interface {
 	// AddActivePipeline adds a pipeline to active pipelines (for state recovery)
 	AddActivePipeline(pipeline *manufacturing.ManufacturingPipeline)
 
+	// AdoptUnregisteredConstructionPipelines re-polls the database for active
+	// CONSTRUCTION pipelines not yet in the in-memory registry and adopts them,
+	// so a pipeline created while the coordinator runs (e.g. by `construction
+	// start`) is picked up without a daemon restart. Returns the number adopted.
+	AdoptUnregisteredConstructionPipelines(ctx context.Context, playerID int) int
+
 	// SetActivePipelines sets the active pipelines map (for initialization)
 	SetActivePipelines(pipelines map[string]*manufacturing.ManufacturingPipeline)
 
@@ -184,6 +190,75 @@ func (m *PipelineLifecycleManager) AddActivePipeline(pipeline *manufacturing.Man
 	if m.registry != nil {
 		m.registry.Register(pipeline)
 	}
+}
+
+// AdoptUnregisteredConstructionPipelines re-polls the database for active
+// (PLANNING/EXECUTING) CONSTRUCTION pipelines that are not yet in the in-memory
+// registry and adopts them. This closes the gap where `construction start`
+// creates a pipeline while the coordinator is already running: previously the
+// registry was populated only at startup recovery, so such a pipeline stayed
+// invisible to the completion safety net until a manual coordinator bounce.
+//
+// Scope is deliberately CONSTRUCTION-only: FABRICATION and COLLECTION pipelines
+// are always self-registered inline by the (singleton-per-system) coordinator
+// that creates them, so an unregistered one belongs to another system's
+// coordinator and must not be adopted here. A PLANNING pipeline is Started so its
+// dependency-free tasks become dispatchable in the same cycle. Returns the count
+// adopted.
+func (m *PipelineLifecycleManager) AdoptUnregisteredConstructionPipelines(ctx context.Context, playerID int) int {
+	if m.pipelineRepo == nil || m.registry == nil {
+		return 0
+	}
+
+	logger := common.LoggerFromContext(ctx)
+
+	pipelines, err := m.pipelineRepo.FindByStatus(ctx, playerID, []manufacturing.PipelineStatus{
+		manufacturing.PipelineStatusPlanning,
+		manufacturing.PipelineStatusExecuting,
+	})
+	if err != nil {
+		logger.Log("WARN", fmt.Sprintf("Failed to poll for unadopted construction pipelines: %v", err), nil)
+		return 0
+	}
+
+	adopted := 0
+	for _, pipeline := range pipelines {
+		if pipeline.PipelineType() != manufacturing.PipelineTypeConstruction {
+			continue // fab/collection are owned+registered by their own coordinator
+		}
+		if m.registry.Get(pipeline.ID()) != nil {
+			continue // already adopted (startup recovery or a previous poll)
+		}
+
+		// A PLANNING pipeline must be Started so its dependency-free delivery
+		// tasks become READY and dispatchable without waiting for a restart.
+		if pipeline.Status() == manufacturing.PipelineStatusPlanning {
+			if err := pipeline.Start(); err != nil {
+				logger.Log("WARN", fmt.Sprintf("Failed to start adopted PLANNING construction pipeline %s: %v",
+					pipeline.ID()[:8], err), nil)
+				continue
+			}
+			if err := m.pipelineRepo.Update(ctx, pipeline); err != nil {
+				logger.Log("WARN", fmt.Sprintf("Failed to persist Start of adopted construction pipeline %s: %v",
+					pipeline.ID()[:8], err), nil)
+			}
+		}
+
+		m.registry.Register(pipeline)
+		adopted++
+		logger.Log("INFO", fmt.Sprintf("Adopted construction pipeline %s created while coordinator running",
+			pipeline.ID()[:8]), map[string]interface{}{
+			"pipeline_id":       pipeline.ID(),
+			"construction_site": pipeline.ConstructionSite(),
+			"status":            string(pipeline.Status()),
+		})
+	}
+
+	if adopted > 0 {
+		logger.Log("INFO", fmt.Sprintf("Adopted %d construction pipeline(s) without a restart", adopted), nil)
+	}
+
+	return adopted
 }
 
 // ScanAndCreatePipelines scans for opportunities and creates new pipelines.

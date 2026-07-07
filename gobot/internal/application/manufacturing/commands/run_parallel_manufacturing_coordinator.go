@@ -253,6 +253,13 @@ func (h *RunParallelManufacturingCoordinatorHandler) Handle(
 			}
 
 		case <-idleShipTicker.C:
+			// Adopt construction pipelines created while this coordinator was
+			// already running (e.g. by `construction start`). Without this the
+			// registry was only populated at startup recovery, so a runtime-created
+			// pipeline stayed outside the completion safety net until a manual
+			// coordinator bounce. Adopting before rescue lets a just-Started
+			// pipeline's delivery tasks dispatch in the same cycle (sp-hkfb).
+			h.pipelineManager.AdoptUnregisteredConstructionPipelines(ctx, cmd.PlayerID)
 			h.pipelineManager.RescueReadyCollectSellTasks(ctx, cmd.PlayerID)
 			h.taskAssigner.AssignTasks(ctx, assignParams(cmd, config))
 
