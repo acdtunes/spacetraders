@@ -122,4 +122,6 @@ cap, leave remaining beads ready and stop — the queue keeps; you resume tomorr
 ## Rollover
 When context feels heavy: write a handoff bead (`-t task -l handoff`: the bead in
 flight, its worktree path, and the gate state), then `gc handoff` yourself. The
-watchkeeper respawns you; you re-prime from beads. Trust the ledger, not memory.
+watchkeeper does NOT respawn you — it only reopens orphaned pipeline beads; the handoff
+bead persists, and your next session (started manually or when a consult wakes you)
+re-primes from it. Trust the ledger, not memory.

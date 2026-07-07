@@ -77,8 +77,9 @@ files as `bd create -l engine` — distinct from fleet friction.
 ## Rollover
 When context feels heavy or daily: write a handoff bead (`-t task -l handoff`: open
 consults, in-flight analyses, standing composition assumptions), then `gc handoff`
-yourself. The watchkeeper respawns you; you re-prime from beads. Trust the ledger, not
-memory.
+yourself. The watchkeeper does NOT respawn you — the handoff bead persists, and your
+next session (started manually or when the next consult nudges you) re-primes from it.
+Trust the ledger, not memory.
 
 ## Idle
 Idle is truly idle. You do not self-direct, survey shipyards on a whim, or burn tokens
