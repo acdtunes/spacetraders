@@ -394,6 +394,114 @@ func TestFactoryCoordinator_ZeroIdleHaulersAtLaunch_WaitsAndAcquires(t *testing.
 	}
 }
 
+// newFactoryHandlerWithClock builds a coordinator wired to the standard fakes
+// but with the caller's choice of clock. Passing nil mirrors the daemon's
+// production wiring (main.go: "nil = use RealClock"), which every sibling
+// coordinator honours by substituting a RealClock in its constructor.
+func newFactoryHandlerWithClock(t *testing.T, clock shared.Clock) *RunFactoryCoordinatorHandler {
+	t.Helper()
+	marketRepo := &factoryFakeMarketRepo{}
+	shipRepo := &factoryFakeShipRepo{ships: map[string]*navigation.Ship{}}
+	resolver := mfgServices.NewSupplyChainResolver(
+		map[string][]string{testOutputGood: {testInputGood}},
+		marketRepo,
+	)
+	marketLocator := mfgServices.NewMarketLocator(marketRepo, nil, nil, nil)
+	return NewRunFactoryCoordinatorHandler(
+		&factoryFakeMediator{},
+		shipRepo,
+		marketRepo,
+		resolver,
+		marketLocator,
+		clock,
+	)
+}
+
+// P0 regression (sp-bt6o): the daemon wires the factory coordinator with a nil
+// clock ("nil = use RealClock", main.go), exactly like every sibling
+// coordinator. The factory constructor forgot to substitute a RealClock, so
+// h.clock stayed nil and the parallel claim path dereferenced it —
+// ship.AssignToContainer -> clock.Now() (ship.go:444) — SIGSEGV'ing the whole
+// daemon (fleet-wide outage, three panics in the log). Claiming a genuinely
+// idle hauler must assign it to the factory container without panicking.
+func TestClaimShipForFactory_NilClockFromDaemonWiring_DoesNotPanic(t *testing.T) {
+	handler := newFactoryHandlerWithClock(t, nil) // mirror main.go's nil clock
+	ship := newTestHauler(t, "CRAFTY-9", nil)     // a genuinely idle hauler
+	shipsUsed := map[string]bool{}
+	var mu sync.Mutex
+
+	// Before the fix this SIGSEGVs at clock.Now() on the nil clock.
+	handler.claimShipForFactory(context.Background(), testContainerID, ship, shipsUsed, &mu)
+
+	if !ship.IsAssigned() {
+		t.Fatal("expected the idle hauler to be claimed and assigned to the factory container")
+	}
+	if ship.ContainerID() != testContainerID {
+		t.Fatalf("expected the hauler assigned to %q, got %q", testContainerID, ship.ContainerID())
+	}
+}
+
+// Defense-in-depth (sp-bt6o): a nil ship must degrade to a skipped claim, never
+// a SIGSEGV. The claim path is reported unclaimable so the worker skips the node.
+func TestClaimShipForFactory_NilShip_SkippedNotPanicked(t *testing.T) {
+	handler := newFactoryHandlerWithClock(t, &factoryFakeClock{})
+	shipsUsed := map[string]bool{}
+	var mu sync.Mutex
+
+	claimed := handler.claimShipForFactory(context.Background(), testContainerID, nil, shipsUsed, &mu)
+
+	if claimed {
+		t.Fatal("a nil ship must never be reported as claimed")
+	}
+}
+
+// Root correctness (sp-bt6o): claimability is re-validated at claim time. A ship
+// another coordinator grabbed since discovery (a stale-snapshot TOCTOU) must be
+// skipped, not clobbered — the factory must not steal a hull mid-task, and must
+// not panic doing so.
+func TestClaimShipForFactory_ShipOwnedByAnotherContainer_SkippedNotClobbered(t *testing.T) {
+	handler := newFactoryHandlerWithClock(t, &factoryFakeClock{})
+	ship := newTestHauler(t, "CRAFTY-7", nil)
+
+	const otherContainer = "contract-work-CRAFTY-7-other"
+	if err := ship.AssignToContainer(otherContainer, shared.NewRealClock()); err != nil {
+		t.Fatalf("failed to pre-assign ship to another container: %v", err)
+	}
+
+	shipsUsed := map[string]bool{}
+	var mu sync.Mutex
+
+	claimed := handler.claimShipForFactory(context.Background(), testContainerID, ship, shipsUsed, &mu)
+
+	if claimed {
+		t.Fatal("a ship owned by another container must not be claimed by the factory")
+	}
+	if ship.ContainerID() != otherContainer {
+		t.Fatalf("factory clobbered another coordinator's assignment: ship now on %q, want %q", ship.ContainerID(), otherContainer)
+	}
+}
+
+// Happy path preserved (vmrj): a genuinely idle hauler is still claimed and
+// assigned, and is reported usable.
+func TestClaimShipForFactory_IdleShip_Claimed(t *testing.T) {
+	handler := newFactoryHandlerWithClock(t, &factoryFakeClock{})
+	ship := newTestHauler(t, "CRAFTY-5", nil)
+	shipsUsed := map[string]bool{}
+	var mu sync.Mutex
+
+	claimed := handler.claimShipForFactory(context.Background(), testContainerID, ship, shipsUsed, &mu)
+
+	if !claimed {
+		t.Fatal("expected a genuinely idle hauler to be claimed")
+	}
+	if !ship.IsAssigned() || ship.ContainerID() != testContainerID {
+		t.Fatalf("expected the hauler assigned to %q, got assigned=%v container=%q", testContainerID, ship.IsAssigned(), ship.ContainerID())
+	}
+	if !shipsUsed[ship.ShipSymbol()] {
+		t.Fatal("expected the claimed hauler to be recorded in shipsUsed")
+	}
+}
+
 // The wait-for-idle loop is bounded only by container shutdown (context
 // cancellation), never a timeout. When the container is cancelled while it is
 // still waiting for a hauler, it must exit cleanly with the context error and

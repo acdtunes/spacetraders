@@ -64,6 +64,15 @@ func NewRunFactoryCoordinatorHandler(
 	marketLocator *mfgServices.MarketLocator,
 	clock shared.Clock,
 ) *RunFactoryCoordinatorHandler {
+	// Honour the "nil = use RealClock" wiring convention (main.go) that every
+	// sibling coordinator follows (run_parallel_manufacturing_coordinator.go,
+	// assign_scouting_fleet.go, ...). Omitting this left h.clock nil and
+	// SIGSEGV'd the daemon when the parallel claim path called clock.Now()
+	// (sp-bt6o).
+	if clock == nil {
+		clock = shared.NewRealClock()
+	}
+
 	productionExecutor := mfgServices.NewProductionExecutor(
 		mediator,
 		shipRepo,
@@ -588,6 +597,18 @@ func (h *RunFactoryCoordinatorHandler) runNodeWorker(
 ) (*mfgServices.ProductionResult, error) {
 	logger := common.LoggerFromContext(ctx)
 
+	// A worker goroutine must never SIGSEGV the daemon. Guard a nil hull before
+	// any deref (detectOnboardCargo/logging touch ship immediately) so a
+	// degenerate pool entry fails this node cleanly instead of panicking the
+	// whole fleet (sp-bt6o).
+	if ship == nil {
+		logger.Log("WARNING", fmt.Sprintf("Skipping %s %s - nil ship from pool", n.AcquisitionMethod, n.Good), map[string]interface{}{
+			"good":   n.Good,
+			"method": n.AcquisitionMethod,
+		})
+		return nil, fmt.Errorf("nil ship for %s %s", n.AcquisitionMethod, n.Good)
+	}
+
 	hasNeededCargo := h.detectOnboardCargo(ctx, n, ship)
 
 	if !hasNeededCargo {
@@ -604,7 +625,13 @@ func (h *RunFactoryCoordinatorHandler) runNodeWorker(
 		})
 	}
 
-	h.claimShipForFactory(ctx, exec.cmd.ContainerID, ship, exec.shipsUsed, exec.shipsUsedMutex)
+	if !h.claimShipForFactory(ctx, exec.cmd.ContainerID, ship, exec.shipsUsed, exec.shipsUsedMutex) {
+		// The pulled hull was nil or no longer claimable (grabbed by another
+		// coordinator since discovery). Fail this node cleanly rather than
+		// operating an unclaimed ship; the factory degrades to a relaunchable
+		// failure, never a daemon panic (sp-bt6o).
+		return nil, fmt.Errorf("no claimable ship for %s %s", n.AcquisitionMethod, n.Good)
+	}
 
 	deliveryDest := exec.deliveryDestinations[n.Good]
 
@@ -632,24 +659,47 @@ func (h *RunFactoryCoordinatorHandler) detectOnboardCargo(ctx context.Context, n
 	return false
 }
 
+// claimShipForFactory attempts to claim a ship for the factory container and
+// reports whether the ship is usable by the caller.
+//
+// It must NEVER panic the daemon. A nil ship, or one that is no longer idle at
+// claim time (another coordinator grabbed it since discovery — a stale-snapshot
+// TOCTOU), is skipped with a WARNING and reported unclaimable, so a bad claim
+// degrades to a skipped node instead of SIGSEGV'ing the whole fleet (sp-bt6o).
 func (h *RunFactoryCoordinatorHandler) claimShipForFactory(
 	ctx context.Context,
 	containerID string,
 	ship *navigation.Ship,
 	shipsUsed map[string]bool,
 	shipsUsedMutex *sync.Mutex,
-) {
+) bool {
 	logger := common.LoggerFromContext(ctx)
 
-	shipsUsedMutex.Lock()
-	alreadyAssigned := shipsUsed[ship.ShipSymbol()]
-	if !alreadyAssigned {
-		shipsUsed[ship.ShipSymbol()] = true
+	// Defense-in-depth: a nil ship must never reach AssignToContainer.
+	if ship == nil {
+		logger.Log("WARNING", "Skipping nil ship in factory claim path", nil)
+		return false
 	}
+
+	shipsUsedMutex.Lock()
+	alreadyClaimed := shipsUsed[ship.ShipSymbol()]
 	shipsUsedMutex.Unlock()
 
-	if alreadyAssigned {
-		return
+	// Idempotent across parallel levels: a ship this factory already claimed is
+	// still ours to use.
+	if alreadyClaimed {
+		return true
+	}
+
+	// Re-validate claimability at claim time rather than trusting the discovery
+	// snapshot. A ship now owned by another container must be skipped, not
+	// clobbered (mirrors how the fleet/mfg coordinators reject a non-idle ship).
+	if !ship.IsIdle() {
+		logger.Log("WARNING", "Skipping ship no longer idle at claim time", map[string]interface{}{
+			"ship_symbol":  ship.ShipSymbol(),
+			"container_id": ship.ContainerID(),
+		})
+		return false
 	}
 
 	if err := ship.AssignToContainer(containerID, h.clock); err != nil {
@@ -657,17 +707,25 @@ func (h *RunFactoryCoordinatorHandler) claimShipForFactory(
 			"ship_symbol": ship.ShipSymbol(),
 			"error":       err.Error(),
 		})
-	} else if err := h.shipRepo.Save(ctx, ship); err != nil {
+		return false
+	}
+	if err := h.shipRepo.Save(ctx, ship); err != nil {
 		logger.Log("WARNING", "Failed to persist ship assignment", map[string]interface{}{
 			"ship_symbol": ship.ShipSymbol(),
 			"error":       err.Error(),
 		})
-	} else {
-		logger.Log("INFO", "Ship assigned to factory", map[string]interface{}{
-			"ship_symbol":  ship.ShipSymbol(),
-			"container_id": containerID,
-		})
+		return false
 	}
+
+	shipsUsedMutex.Lock()
+	shipsUsed[ship.ShipSymbol()] = true
+	shipsUsedMutex.Unlock()
+
+	logger.Log("INFO", "Ship assigned to factory", map[string]interface{}{
+		"ship_symbol":  ship.ShipSymbol(),
+		"container_id": containerID,
+	})
+	return true
 }
 
 // produceNodeOnly produces a single node without recursing into children
