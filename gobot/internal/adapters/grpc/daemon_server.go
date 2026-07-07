@@ -625,10 +625,31 @@ func (s *DaemonServer) RecoverRunningContainers(ctx context.Context) error {
 	fmt.Printf("Recovering %d container(s) from previous daemon instance (%d INTERRUPTED, %d RUNNING)...\n",
 		len(allContainers), len(interruptedContainers), len(runningContainers))
 
+	// sp-njpu: scope recovery to the current open era's player. After a universe
+	// reset / era close, containers belonging to a prior era's player must NOT be
+	// re-instantiated against the reset universe (cross-era zombies). Mirrors the
+	// open-era scoping of ReleaseAllActive on daemon startup (sp-s7b7). A nil openEra
+	// means every era is closed, so nothing is live. A resolution error aborts
+	// recovery without touching any container so the next restart can retry.
+	openEra, err := persistence.NewEraRepository(s.db).FindOpenEra(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to resolve open era for container recovery: %w", err)
+	}
+
 	recoveredCount := 0
 	failedCount := 0
+	deadEraCount := 0
 
 	for _, containerModel := range allContainers {
+		// sp-njpu: skip any container whose player is not the open-era player. This
+		// runs before the worker-adoption checks so an entire dead-era subtree
+		// (coordinators AND their workers) stays down instead of being resurrected.
+		if openEra == nil || containerModel.PlayerID != openEra.PlayerID {
+			s.markContainerDeadEra(ctx, containerModel, openEra)
+			deadEraCount++
+			continue
+		}
+
 		// Parse container config from JSON
 		var config map[string]interface{}
 		if err := json.Unmarshal([]byte(containerModel.Config), &config); err != nil {
@@ -674,8 +695,37 @@ func (s *DaemonServer) RecoverRunningContainers(ctx context.Context) error {
 		}
 	}
 
-	fmt.Printf("Container recovery complete: %d recovered, %d failed\n", recoveredCount, failedCount)
+	fmt.Printf("Container recovery complete: %d recovered, %d failed, %d dead-era skipped\n", recoveredCount, failedCount, deadEraCount)
 	return nil
+}
+
+// markContainerDeadEra marks a container FAILED because it belongs to a player whose
+// era is closed / the universe was reset (sp-njpu). It is NOT re-instantiated: reviving
+// it would burn API calls against a dead token on a reset map. Ship assignments are
+// left untouched — they belong to the reset universe, and the startup zombie-release
+// path (ReleaseAllActive) deliberately scopes only to the open-era player.
+func (s *DaemonServer) markContainerDeadEra(ctx context.Context, containerModel *persistence.ContainerModel, openEra *persistence.EraModel) {
+	livePlayer := "none (no open era)"
+	if openEra != nil {
+		livePlayer = fmt.Sprintf("player %d, era %q", openEra.PlayerID, openEra.Name)
+	}
+	detail := fmt.Sprintf("dead_era: container player %d is not the open-era player (%s); universe reset — not recovered",
+		containerModel.PlayerID, livePlayer)
+	fmt.Printf("Container %s: Skipping recovery (%s)\n", containerModel.ID, detail)
+
+	exitCode := 1
+	now := time.Now()
+	if err := s.containerRepo.UpdateStatus(
+		ctx,
+		containerModel.ID,
+		containerModel.PlayerID,
+		container.ContainerStatusFailed,
+		&now,      // stoppedAt
+		&exitCode, // exitCode
+		detail,
+	); err != nil {
+		fmt.Printf("Warning: Failed to mark container %s as dead-era: %v\n", containerModel.ID, err)
+	}
 }
 
 // recoverContainer is the generic container recovery function

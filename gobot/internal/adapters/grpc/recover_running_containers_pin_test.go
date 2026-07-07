@@ -49,6 +49,11 @@ func newRecoveryTestServer(t *testing.T) (*DaemonServer, *gorm.DB, int) {
 	require.NoError(t, err)
 	player := persistence.PlayerModel{AgentSymbol: "REC-AGENT", Token: "tok", CreatedAt: time.Now()}
 	require.NoError(t, db.Create(&player).Error)
+	// sp-njpu: recovery is scoped to the open era's player, so the harness needs an
+	// open era owned by this player. Containers inserted with this player's ID are
+	// therefore "live" and recover as before; foreign-player containers are dead-era.
+	era := persistence.EraModel{Name: "REC-ERA", AgentSymbol: "REC-AGENT", PlayerID: player.ID}
+	require.NoError(t, db.Create(&era).Error)
 	s := &DaemonServer{
 		db:                    db,
 		logRepo:               persistence.NewGormContainerLogRepository(db, nil),
@@ -193,4 +198,59 @@ func TestRecoveryFailsInvalidConfigJSON(t *testing.T) {
 
 	requireContainerState(t, db, "broken-1", "FAILED", "invalid_config")
 	require.Nil(t, s.registeredRunner("broken-1"))
+}
+
+// TestRecoverySkipsDeadEraCoordinator is the sp-njpu regression: a top-level
+// coordinator belonging to a player whose era is closed / universe was reset must
+// NOT be re-instantiated on daemon restart (cross-era zombie). The open era is
+// owned by the harness player; this container belongs to a different, dead-era
+// player, so recovery must skip it and mark it terminally as dead_era.
+func TestRecoverySkipsDeadEraCoordinator(t *testing.T) {
+	s, db, _ := newRecoveryTestServer(t)
+	// A player from a prior, now-closed era (universe reset 2026-07-05 in the bug).
+	deadPlayer := persistence.PlayerModel{AgentSymbol: "DEAD-ERA-AGENT", Token: "dead-tok", CreatedAt: time.Now()}
+	require.NoError(t, db.Create(&deadPlayer).Error)
+	insertRunningContainer(t, db, "zombie-fleet-1", "contract_fleet_coordinator", "CONTRACT_FLEET_COORDINATOR",
+		`{"ship_symbols":[],"container_id":"zombie-fleet-1"}`, deadPlayer.ID, nil)
+
+	require.NoError(t, s.RecoverRunningContainers(context.Background()))
+
+	// Must NOT be re-instantiated (no live runner) and must be marked terminal.
+	require.Nil(t, s.registeredRunner("zombie-fleet-1"))
+	requireContainerState(t, db, "zombie-fleet-1", "FAILED", "dead_era")
+}
+
+// TestRecoverySkipsDeadEraWorkerBeforeCoordinatorCheck proves the era guard fires
+// ahead of the worker-adoption path: an era-1 worker (parent coordinator) from a
+// dead-era player is marked dead_era, not worker_interrupted, so the whole dead-era
+// subtree stays down (era-1 workers were resurrecting in the bug report).
+func TestRecoverySkipsDeadEraWorkerBeforeCoordinatorCheck(t *testing.T) {
+	s, db, _ := newRecoveryTestServer(t)
+	deadPlayer := persistence.PlayerModel{AgentSymbol: "DEAD-ERA-WORKER-AGENT", Token: "dead-tok-2", CreatedAt: time.Now()}
+	require.NoError(t, db.Create(&deadPlayer).Error)
+	parent := "dead-coord-1"
+	insertRunningContainer(t, db, "zombie-worker-1", "manufacturing_task_worker", "WORKER",
+		`{"ship_symbol":"SHIP-Z","coordinator_id":"dead-coord-1"}`, deadPlayer.ID, &parent)
+
+	require.NoError(t, s.RecoverRunningContainers(context.Background()))
+
+	require.Nil(t, s.registeredRunner("zombie-worker-1"))
+	requireContainerState(t, db, "zombie-worker-1", "FAILED", "dead_era")
+}
+
+// TestRecoverySkipsAllWhenNoOpenEra proves that with every era closed (between eras
+// after a universe reset), even a container owned by the most recent player is not
+// recovered: no open era means no live player.
+func TestRecoverySkipsAllWhenNoOpenEra(t *testing.T) {
+	s, db, playerID := newRecoveryTestServer(t)
+	require.NoError(t, db.Model(&persistence.EraModel{}).
+		Where("player_id = ?", playerID).
+		Update("closed_at", time.Now()).Error)
+	insertRunningContainer(t, db, "post-reset-1", "contract_fleet_coordinator", "CONTRACT_FLEET_COORDINATOR",
+		`{"ship_symbols":[],"container_id":"post-reset-1"}`, playerID, nil)
+
+	require.NoError(t, s.RecoverRunningContainers(context.Background()))
+
+	require.Nil(t, s.registeredRunner("post-reset-1"))
+	requireContainerState(t, db, "post-reset-1", "FAILED", "dead_era")
 }
