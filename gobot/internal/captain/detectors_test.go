@@ -325,3 +325,35 @@ func TestIdleShipCooldownPreventsSessionBurnLoop(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, events, 1)
 }
+
+func TestStaleHeartbeatCooldownPreventsSessionBurnLoop(t *testing.T) {
+	db, playerID, store := setupDB(t)
+	now := time.Now()
+	stale := now.Add(-10 * time.Minute)
+	started := now.Add(-1 * time.Hour)
+	require.NoError(t, db.Create(&persistence.ContainerModel{
+		ID: "c-dead", PlayerID: playerID, Status: "RUNNING", HeartbeatAt: &stale, StartedAt: &started,
+	}).Error)
+	cfg := DetectorConfig{PlayerID: playerID, StaleHeartbeat: 5 * time.Minute, ShipIdle: time.Hour}
+
+	require.NoError(t, RunDetectors(context.Background(), db, store, cfg, now))
+	events, err := store.FindUnprocessed(context.Background(), playerID, 10)
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+
+	// Captain acks the event; the container is still dead on the next poll.
+	// The detector must NOT re-emit within the StaleHeartbeat window —
+	// heartbeat_lost is interrupt-class, so each re-emit burns a session.
+	require.NoError(t, store.MarkProcessed(context.Background(), []int64{events[0].ID}, now))
+	require.NoError(t, RunDetectors(context.Background(), db, store, cfg, now.Add(30*time.Second)))
+	events, err = store.FindUnprocessed(context.Background(), playerID, 10)
+	require.NoError(t, err)
+	require.Empty(t, events, "heartbeat_lost re-emitted within cooldown: session-burn loop")
+
+	// Past the window it may fire again (still dead = still noteworthy).
+	require.NoError(t, db.Exec("UPDATE captain_events SET created_at = ?", now.Add(-6*time.Minute)).Error)
+	require.NoError(t, RunDetectors(context.Background(), db, store, cfg, now.Add(time.Minute)))
+	events, err = store.FindUnprocessed(context.Background(), playerID, 10)
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+}

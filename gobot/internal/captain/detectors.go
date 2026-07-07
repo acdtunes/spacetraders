@@ -56,8 +56,12 @@ func detectStaleHeartbeats(ctx context.Context, db *gorm.DB, store captain.Event
 		return err
 	}
 	for _, c := range stale {
-		dup, err := store.HasUnprocessed(ctx, cfg.PlayerID, captain.EventHeartbeatLost, c.ID)
-		if err != nil || dup {
+		// Staleness is a persistent state, not an edge: cooldown on ANY recent
+		// heartbeat_lost event (processed or not) prevents a session-burn loop
+		// where each acked event is re-emitted — and, being interrupt-class,
+		// re-wakes the captain — on the next poll (mirrors detectIdleShips).
+		recent, err := store.HasSince(ctx, cfg.PlayerID, captain.EventHeartbeatLost, c.ID, now.Add(-cfg.StaleHeartbeat))
+		if err != nil || recent {
 			continue
 		}
 		_ = store.Record(ctx, &captain.Event{
