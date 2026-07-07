@@ -33,11 +33,12 @@ describe('RouteVectors#getRouteEndpoint', () => {
       },
     } as unknown as TaggedShip;
 
-    const result = getRouteEndpoint(ship, { x: 0, y: 0 }, new Map());
+    const getWaypointPosition = (wp: WaypointType) => ({ x: wp.x, y: wp.y });
+    const result = getRouteEndpoint(ship, { x: 0, y: 0 }, new Map(), getWaypointPosition);
     expect(result).toBeNull();
   });
 
-  it('stops endpoint before orbit radius when approaching waypoint', () => {
+  it('resolves the endpoint to the waypoint display position', () => {
     const now = Date.now();
     const ship = {
       symbol: 'TEST-2',
@@ -59,10 +60,10 @@ describe('RouteVectors#getRouteEndpoint', () => {
       ['DEST', createWaypoint({ symbol: 'DEST', x: 100, y: 0 })],
     ]);
 
-    const endpoint = getRouteEndpoint(ship, { x: 0, y: 0 }, waypoints);
-    expect(endpoint).not.toBeNull();
-    const totalDistance = Math.hypot((endpoint!.x - 0), (endpoint!.y - 0));
-    expect(totalDistance).toBeLessThan(100);
-    expect(endpoint?.x).toBeGreaterThan(0);
+    const getWaypointPosition = (wp: WaypointType) => ({ x: wp.x + 5, y: wp.y - 3 });
+    const endpoint = getRouteEndpoint(ship, { x: 0, y: 0 }, waypoints, getWaypointPosition);
+    // The endpoint is the destination waypoint's resolved display position
+    // (DEST at 100,0 shifted to 105,-3 by getWaypointPosition), not a pulled-back point.
+    expect(endpoint).toEqual({ x: 105, y: -3 });
   });
 });

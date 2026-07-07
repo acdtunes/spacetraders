@@ -8,7 +8,6 @@ import { Ship, Waypoint, ShipQueries, WaypointQueries, ViewportBounds } from '..
 import type { ShipPositionOptions } from '../domain';
 import { VIEWPORT_CONSTANTS } from '../constants/viewport';
 import { hashString } from '../utils/hash';
-import { getTourId } from '../utils/tourHelpers';
 import { WaypointSprite } from './WaypointSprite';
 import { ShipLayer } from './ShipLayer';
 import { MiningLaserLayer } from './MiningLaserLayer';
@@ -27,6 +26,8 @@ import Minimap from './Minimap';
 import type { Waypoint as WaypointType, TaggedShip, ShipNavStatus } from '../types/spacetraders';
 import type { RouteVectorsProps } from './RouteVectors';
 import LoaderScreen from './LoaderScreen';
+import { AmbientBackdrop } from './AmbientBackdrop';
+import { NOIR } from '../theme/noir';
 
 type RouteVectorsComponentType = (props: RouteVectorsProps) => JSX.Element | null;
 
@@ -148,26 +149,21 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
     assignments,
     marketFreshness,
     showMarketFreshness,
-    toggleMarketFreshness,
     scoutTours,
     showScoutTours,
     tradeOpportunities,
     showTradeRoutes,
     showMiningRoutes,
     visibleTours,
-    toggleTourVisibility,
-    showAllTours,
-    hideAllTours,
     shipFocusRequest,
     clearShipFocusRequest,
   } = useStore();
 
   const [hoveredShip, setHoveredShip] = useState<string | null>(null);
   const [selectedObject, setSelectedObject] = useState<SelectedMapObject | null>(null);
-  const [viewportBounds, setViewportBounds] = useState({ x: 0, y: 0, width: 0, height: 0, scale: 1 });
+  const [viewportBounds, setViewportBounds] = useState({ x: 0, y: 0, width: 0, height: 0, scale: 1, originX: 0, originY: 0 });
   const [animationFrame, setAnimationFrame] = useState(0);
   const [RouteVectorsComponent, setRouteVectorsComponent] = useState<RouteVectorsComponentType | null>(null);
-  const [backgroundPosition, setBackgroundPosition] = useState({ x: 0, y: 0 });
   const [isLoadingWaypoints, setIsLoadingWaypoints] = useState(false);
 
   const currentScale = viewportBounds.scale || 1;
@@ -274,20 +270,20 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
     const worldX = (screenCenterX - layer.x()) / layer.scaleX();
     const worldY = (screenCenterY - layer.y()) / layer.scaleY();
 
+    // On-screen position of the world origin. Unlike the world-space center
+    // above, this includes the Stage's drag offset and shifts as the scale
+    // changes, so the ambient backdrop parallaxes on drag, keyboard/programmatic
+    // pan, and zoom alike.
+    const origin = layer.getAbsoluteTransform().point({ x: 0, y: 0 });
+
     setViewportBounds({
       x: worldX,
       y: worldY,
       width: stage.width(),
       height: stage.height(),
       scale: layer.scaleX(),
-    });
-
-    // Update background position to pan with the map
-    // Divide by a factor to slow down the parallax effect
-    const parallaxFactor = 0.5;
-    setBackgroundPosition({
-      x: layer.x() * parallaxFactor,
-      y: layer.y() * parallaxFactor,
+      originX: origin.x,
+      originY: origin.y,
     });
   }, []);
 
@@ -928,18 +924,6 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
     return offsets;
   }, [orbitalClusters, waypoints]);
 
-  // Get set of all market waypoints in visible tours
-  const visibleTourMarkets = useMemo(() => {
-    const markets = new Set<string>();
-    scoutTours.forEach((tour) => {
-      const tourId = getTourId(tour);
-      if (visibleTours.has(tourId)) {
-        tour.markets.forEach((market) => markets.add(market));
-      }
-    });
-    return markets;
-  }, [scoutTours, visibleTours]);
-
   const getWaypointDisplayPosition = useCallback(
     (waypoint: WaypointType): { x: number; y: number } => {
       const offset = orbitalDisplayOffsets.get(waypoint.symbol);
@@ -1175,13 +1159,9 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
     <div
       ref={containerRef}
       className="relative w-full h-full cursor-grab active:cursor-grabbing"
-      style={{
-        backgroundImage: 'url(/assets/space.png)',
-        backgroundSize: '1024px 1024px',
-        backgroundPosition: `${backgroundPosition.x}px ${backgroundPosition.y}px`,
-        backgroundRepeat: 'repeat',
-      }}
+      style={{ isolation: 'isolate', background: NOIR.bg0 }}
     >
+      <AmbientBackdrop pan={{ x: viewportBounds.originX, y: viewportBounds.originY }} />
       {stageSize.width > 0 && stageSize.height > 0 && (
         <Stage
           ref={stageRef}

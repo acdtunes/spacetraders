@@ -1,11 +1,9 @@
 import type { TaggedShip, Waypoint as WaypointType } from '../types/spacetraders';
-import { Waypoint } from '../domain';
-import { CANVAS_CONSTANTS } from '../constants/canvas';
 import type { Position } from '../domain/ship';
 
 export const getRouteEndpoint = (
   ship: TaggedShip,
-  currentPosition: Position,
+  _currentPosition: Position,
   waypoints: Map<string, WaypointType>,
   getWaypointPosition: (waypoint: WaypointType) => { x: number; y: number }
 ): Position | null => {

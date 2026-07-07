@@ -10,7 +10,6 @@ export function DateRangePicker() {
   const [customFrom, setCustomFrom] = useState('now-24h');
   const [customTo, setCustomTo] = useState('now');
 
-  const mainPresets: PresetType[] = ['24h', '7d', '30d', 'all'];
   const allPresets: { value: PresetType; label: string }[] = [
     { value: '5m', label: 'Last 5 minutes' },
     { value: '15m', label: 'Last 15 minutes' },
@@ -97,11 +96,6 @@ export function DateRangePicker() {
     const end = parseRelativeTime(customTo);
     setFinancialDateRange({ start, end, preset: 'custom' });
     setShowCustom(false);
-  };
-
-  const getPresetLabel = (preset: PresetType) => {
-    const found = allPresets.find(p => p.value === preset);
-    return found ? found.label : preset.toUpperCase();
   };
 
   const getCurrentLabel = () => {

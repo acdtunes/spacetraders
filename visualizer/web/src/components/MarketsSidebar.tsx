@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import type { ScoutTour, TaggedShip } from '../types/spacetraders';
-import { getTourId, getTourLabel } from '../utils/tourHelpers';
+import { getTourId } from '../utils/tourHelpers';
 import { useStore } from '../store/useStore';
 
 interface MarketsSidebarProps {
@@ -164,7 +164,6 @@ export const MarketsSidebar = ({
                 const tourId = getTourId(tour);
                 const isChecked = visibleTours.has(tourId);
                 const color = getTourColor(tour.system, index);
-                const label = getTourLabel(tour);
                 const ship = shipsBySymbol.get(tour.ship_symbol);
                 const shipRole = ship?.registration.role;
 

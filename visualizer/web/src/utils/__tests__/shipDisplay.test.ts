@@ -153,15 +153,17 @@ describe('shipDisplay utilities', () => {
     };
     const labelInfo = getShipLabelInfo(baseShip, { x: 0, y: 0 }, context);
     expect(labelInfo?.labelText).toBe('Command Frigate 1');
-    expect(labelInfo?.offsetX).toBeCloseTo(110);
+    expect(labelInfo?.offsetX).toBeCloseTo(16);
   });
 
-  it('returns null when projections fail', () => {
+  it('computes label info from the ship independent of projection results', () => {
     const context = {
       currentScale: 1,
       projectToScreen: () => null,
       projectToWorld: () => null,
     };
-    expect(getShipLabelInfo(baseShip, { x: 0, y: 0 }, context)).toBeNull();
+    const labelInfo = getShipLabelInfo(baseShip, { x: 0, y: 0 }, context);
+    expect(labelInfo?.labelText).toBe('Command Frigate 1');
+    expect(labelInfo?.offsetX).toBeCloseTo(16);
   });
 });

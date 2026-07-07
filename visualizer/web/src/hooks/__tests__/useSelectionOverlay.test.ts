@@ -63,45 +63,45 @@ const projectToScreen = (point: { x: number; y: number }) => ({ x: point.x + 100
 const getWaypointPosition = () => ({ x: waypoint.x, y: waypoint.y });
 const getShipPosition = () => ({ x: waypoint.x, y: waypoint.y });
 
-const render = (selectedObject: Parameters<typeof useSelectionOverlay>[0]['selectedObject']) =>
+const ships = [ship];
+const waypoints = new Map([[waypoint.symbol, waypoint]]);
+
+const render = (selection: {
+  selectedShip?: TaggedShip | null;
+  selectedWaypoint?: WaypointType | null;
+  getShipPosition?: () => { x: number; y: number } | null;
+}) =>
   renderHook(() =>
     useSelectionOverlay({
-      selectedObject,
-      ships: [ship],
-      waypoints: new Map([[waypoint.symbol, waypoint]]),
+      selectedShip: selection.selectedShip ?? null,
+      selectedWaypoint: selection.selectedWaypoint ?? null,
+      ships,
+      waypoints,
       projectToScreen,
       getWaypointPosition,
-      getShipPosition,
+      getShipPosition: selection.getShipPosition ?? getShipPosition,
+      frameTimestamp: 0,
     })
   );
 
 describe('useSelectionOverlay', () => {
-  it('returns null when no selection provided', () => {
-    const { result } = render(null);
-    expect(result.current).toBeNull();
+  it('returns an empty overlay list when nothing is selected', () => {
+    const { result } = render({});
+    expect(result.current).toEqual([]);
   });
 
   it('projects waypoint selection into screen coordinates', () => {
-    const { result } = render({ type: 'waypoint', symbol: waypoint.symbol, x: 0, y: 0 });
-    expect(result.current).toEqual({ left: 125, top: 190, size: 18, type: 'waypoint' });
+    const { result } = render({ selectedWaypoint: waypoint });
+    expect(result.current).toEqual([{ left: 125, top: 190, size: 18, type: 'waypoint' }]);
   });
 
   it('projects ship selection using supplied ship position', () => {
-    const { result } = render({ type: 'ship', symbol: ship.symbol, x: 0, y: 0 });
-    expect(result.current).toEqual({ left: 125, top: 190, size: 14, type: 'ship' });
+    const { result } = render({ selectedShip: ship });
+    expect(result.current).toEqual([{ left: 125, top: 190, size: 14, type: 'ship' }]);
   });
 
-  it('returns null when ship position cannot be resolved', () => {
-    const { result } = renderHook(() =>
-      useSelectionOverlay({
-        selectedObject: { type: 'ship', symbol: ship.symbol, x: 0, y: 0 },
-        ships: [ship],
-        waypoints: new Map([[waypoint.symbol, waypoint]]),
-        projectToScreen,
-        getWaypointPosition,
-        getShipPosition: () => null,
-      })
-    );
-    expect(result.current).toBeNull();
+  it('omits the ship overlay when ship position cannot be resolved', () => {
+    const { result } = render({ selectedShip: ship, getShipPosition: () => null });
+    expect(result.current).toEqual([]);
   });
 });

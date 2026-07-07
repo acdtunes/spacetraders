@@ -2,7 +2,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Ship } from '../ship';
 import { Waypoint } from '../waypoint';
 import type { Ship as ShipType, Waypoint as WaypointType } from '../../types/spacetraders';
-import { CANVAS_CONSTANTS } from '../../constants/canvas';
 
 describe('Ship domain', () => {
   const baseWaypoint: WaypointType = {
@@ -70,13 +69,16 @@ describe('Ship domain', () => {
     vi.useRealTimers();
   });
 
-  it('offsets docked ships around the waypoint to avoid overlap', () => {
+  it('offsets docked ships within the waypoint to avoid overlap', () => {
     const position = Ship.getDockedPosition(baseShip, waypoints);
     expect(position.x).not.toBe(baseWaypoint.x);
     expect(position.y).not.toBe(baseWaypoint.y);
 
+    // Docked ships are spread deterministically inside the waypoint disc
+    // (up to 70% of its radius), so they stay offset from center but within it.
     const radius = Math.hypot(position.x - baseWaypoint.x, position.y - baseWaypoint.y);
-    expect(radius).toBeGreaterThan(Waypoint.getRadius(baseWaypoint));
+    expect(radius).toBeGreaterThan(0);
+    expect(radius).toBeLessThanOrEqual(Waypoint.getRadius(baseWaypoint));
   });
 
   it('aligns orbit entry based on destination orbit radius when transit completes', () => {

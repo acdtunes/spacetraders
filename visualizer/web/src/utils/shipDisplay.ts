@@ -131,7 +131,7 @@ export const formatShipType = (role: string | null | undefined) => {
 
 export const getShipLabelInfo = (
   ship: TaggedShip,
-  position: Point,
+  _position: Point,
   context: ShipLabelContext
 ): ShipLabelInfo | null => {
   const shipNumber = ship.symbol.split('-').pop() ?? ship.symbol;

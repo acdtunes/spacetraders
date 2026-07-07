@@ -391,7 +391,7 @@ const storeInitializer: StateCreator<AppState, [], []> = (set) => ({
     }),
   scoutTours: [],
   setScoutTours: (tours) =>
-    set((state) => {
+    set(() => {
       // Just update the tour list - don't auto-select any tours
       // User must manually enable tours they want to see
       return { scoutTours: tours };

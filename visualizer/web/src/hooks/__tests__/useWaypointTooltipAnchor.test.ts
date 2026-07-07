@@ -16,12 +16,16 @@ const waypoint: WaypointType = {
 };
 
 const getWaypointPosition = () => ({ x: waypoint.x, y: waypoint.y });
+// Stable references: the hook's effect depends on `waypoints`/`getWaypointPosition`,
+// so a fresh Map per render would retrigger it every commit and spin forever.
+const waypoints = new Map([[waypoint.symbol, waypoint]]);
 
 const render = (selectedObject: Parameters<typeof useWaypointTooltipAnchor>[0]['selectedObject']) =>
   renderHook(() =>
     useWaypointTooltipAnchor({
       selectedObject,
-      waypoints: new Map([[waypoint.symbol, waypoint]]),
+      selectedWaypoint: null,
+      waypoints,
       getWaypointPosition,
     })
   );

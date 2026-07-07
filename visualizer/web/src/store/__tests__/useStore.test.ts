@@ -115,7 +115,8 @@ describe('useStore', () => {
     expect(store.getState().ships).toEqual([ship]);
 
     act(() => setWaypoints([waypoint]));
-    expect(store.getState().waypoints.get(waypoint.symbol)).toEqual(waypoint);
+    // setWaypoints enriches each waypoint with a derived hasMarketplace flag.
+    expect(store.getState().waypoints.get(waypoint.symbol)).toEqual({ ...waypoint, hasMarketplace: false });
   });
 
   it('toggles visualization flags and filters', () => {

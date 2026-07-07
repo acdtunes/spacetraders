@@ -330,7 +330,6 @@ export const Ship = {
         const waypointRadius = Waypoint.getRadius(destinationWaypoint);
         const orbitDistance = Waypoint.getOrbitDistance(destinationWaypoint);
         const orbitRadius = Math.max(0, waypointRadius + orbitDistance);
-        const orbitPeriod = CANVAS_CONSTANTS.ORBIT_PERIOD;
 
         const normalizeAngle = (value: number) => {
           let angleValue = value;

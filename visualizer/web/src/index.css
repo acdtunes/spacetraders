@@ -25,3 +25,7 @@ code {
   width: 100vw;
   height: 100vh;
 }
+
+@keyframes viz-twinkle { 0%, 100% { opacity: 1; } 50% { opacity: 0.82; } }
+.viz-twinkle { animation: viz-twinkle 6s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .viz-twinkle { animation: none; } }

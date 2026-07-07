@@ -152,7 +152,7 @@ export const ShipLayer = memo(function ShipLayer({
         // Check if ship is actively siphoning (gas operation + has active cooldown)
         // Cooldown indicates ship just performed a siphon action
         const hasActiveCooldown = ship.cooldown && ship.cooldown.remainingSeconds > 0;
-        const isGasSiphoning = operationType === 'gas' && hasActiveCooldown;
+        const isGasSiphoning = operationType === 'gas' && !!hasActiveCooldown;
 
         // Check if ship is a storage ship actively buffering
         const isStorageActive = operationType === 'gas-storage' &&

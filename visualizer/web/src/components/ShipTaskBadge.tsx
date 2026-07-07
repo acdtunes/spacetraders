@@ -37,7 +37,6 @@ const getTaskEmoji = (taskType: string | null): string => {
 
 export const ShipTaskBadge = memo(function ShipTaskBadge({
   taskType,
-  good,
   currentScale,
   labelInfo,
 }: ShipTaskBadgeProps) {

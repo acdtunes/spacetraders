@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { useSpaceMapOverlays } from '../useSpaceMapOverlays';
-import type { TaggedShip, Waypoint as WaypointType, Market, WaypointRef } from '../../types/spacetraders';
+import type { TaggedShip, Waypoint as WaypointType, Market, WaypointRef, MarketData } from '../../types/spacetraders';
 import { renderHook } from '@testing-library/react';
 
 const buildWaypoint = (overrides: Partial<WaypointType> = {}): WaypointType => ({
@@ -134,7 +134,7 @@ describe('useSpaceMapOverlays', () => {
       ],
     ]);
 
-    const intel = new Map([
+    const intel = new Map<string, MarketData>([
       [
         'X1-TEST-A1',
         {
