@@ -30,20 +30,25 @@ type DeliverToConstructionExecutor struct {
 	purchaser        ConstructionPurchaser
 	constructionRepo manufacturing.ConstructionSiteRepository
 	pipelineRepo     manufacturing.PipelineRepository
+	taskRepo         manufacturing.TaskRepository
 }
 
 // NewDeliverToConstructionExecutor creates a new executor for DELIVER_TO_CONSTRUCTION tasks.
+// taskRepo is used to enqueue the next delivery task when a supply leaves the site's
+// bill for the delivered material unfinished (construction task replenishment).
 func NewDeliverToConstructionExecutor(
 	navigator Navigator,
 	purchaser ConstructionPurchaser,
 	constructionRepo manufacturing.ConstructionSiteRepository,
 	pipelineRepo manufacturing.PipelineRepository,
+	taskRepo manufacturing.TaskRepository,
 ) *DeliverToConstructionExecutor {
 	return &DeliverToConstructionExecutor{
 		navigator:        navigator,
 		purchaser:        purchaser,
 		constructionRepo: constructionRepo,
 		pipelineRepo:     pipelineRepo,
+		taskRepo:         taskRepo,
 	}
 }
 
@@ -204,5 +209,80 @@ func (e *DeliverToConstructionExecutor) Execute(ctx context.Context, params Task
 		}
 	}
 
+	// --- PHASE 5: Replenish ---
+	// One supply delivers a single cargo load. If the site's bill for this good is
+	// not yet met, enqueue the next delivery so the pipeline keeps filling without a
+	// manual re-plan (sp-b1np). Uses the in-band updated construction state.
+	e.enqueueReplenishmentIfNeeded(ctx, task, supplyResult)
+
 	return nil
+}
+
+// enqueueReplenishmentIfNeeded creates the next DELIVER_TO_CONSTRUCTION task for the
+// delivered good when the construction site still needs more of it. Remaining is read
+// from the in-band supply response (the authoritative, just-updated site bill), so no
+// extra API call is required. The follow-on task reuses this task's already-resolved
+// delivery spec, matching how the planner sizes construction deliveries; it is left
+// READY so the coordinator's rescue/assign loop picks it up from the database.
+// When the material is complete (remaining <= 0) nothing is queued, so the pipeline
+// settles once every material's bill is met.
+func (e *DeliverToConstructionExecutor) enqueueReplenishmentIfNeeded(
+	ctx context.Context,
+	task *manufacturing.ManufacturingTask,
+	supplyResult *manufacturing.ConstructionSupplyResult,
+) {
+	logger := common.LoggerFromContext(ctx)
+
+	if e.taskRepo == nil || supplyResult == nil || supplyResult.Construction == nil {
+		return
+	}
+
+	remaining := remainingForGood(supplyResult.Construction, task.Good())
+	if remaining <= 0 {
+		return // material complete - stop cleanly
+	}
+
+	next := nextConstructionDeliveryTask(task)
+	if err := next.MarkReady(); err != nil {
+		logger.Log("WARN", fmt.Sprintf("DELIVER_TO_CONSTRUCTION: failed to ready replenishment task: %v", err), nil)
+		return
+	}
+	if err := e.taskRepo.Create(ctx, next); err != nil {
+		logger.Log("WARN", fmt.Sprintf("DELIVER_TO_CONSTRUCTION: failed to enqueue replenishment task: %v", err), nil)
+		return
+	}
+
+	logger.Log("INFO", "DELIVER_TO_CONSTRUCTION: Replenishment task queued", map[string]interface{}{
+		"good":              task.Good(),
+		"construction_site": task.ConstructionSite(),
+		"remaining":         remaining,
+		"next_task":         next.ID(),
+	})
+}
+
+// remainingForGood returns how many units of good the construction site still needs,
+// according to the updated construction state returned in-band by the supply call.
+func remainingForGood(site *manufacturing.ConstructionSite, good string) int {
+	for _, mat := range site.Materials() {
+		if mat.TradeSymbol() == good {
+			return mat.Remaining()
+		}
+	}
+	return 0
+}
+
+// nextConstructionDeliveryTask builds the follow-on delivery task for a just-completed
+// DELIVER_TO_CONSTRUCTION task, reusing its resolved delivery spec (good, source market
+// or factory, construction site, pipeline, player) with no dependencies. It funnels
+// through the same domain factory the planner uses, so the two paths cannot drift.
+func nextConstructionDeliveryTask(completed *manufacturing.ManufacturingTask) *manufacturing.ManufacturingTask {
+	return manufacturing.NewDeliverToConstructionTask(
+		completed.PipelineID(),
+		completed.PlayerID(),
+		completed.Good(),
+		completed.SourceMarket(),
+		completed.FactorySymbol(),
+		completed.ConstructionSite(),
+		nil,
+	)
 }

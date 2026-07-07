@@ -42,6 +42,12 @@ type constructionFakeSiteRepo struct {
 	suppliedUnits int
 	suppliedGood  string
 	supplyErr     error
+
+	// constructionResult, when set, is returned as supplyResult.Construction so
+	// tests can control the site's remaining bill after the supply (which drives
+	// the replenishment decision). Defaults to a site with no materials, which
+	// reports nothing remaining and therefore triggers no replenishment.
+	constructionResult *manufacturing.ConstructionSite
 }
 
 func (r *constructionFakeSiteRepo) FindByWaypoint(_ context.Context, waypointSymbol string, _ int) (*manufacturing.ConstructionSite, error) {
@@ -54,10 +60,25 @@ func (r *constructionFakeSiteRepo) SupplyMaterial(_ context.Context, _, waypoint
 	}
 	r.suppliedUnits = units
 	r.suppliedGood = tradeSymbol
+	construction := r.constructionResult
+	if construction == nil {
+		construction = manufacturing.NewConstructionSite(waypointSymbol, "JUMP_GATE", nil, false)
+	}
 	return &manufacturing.ConstructionSupplyResult{
-		Construction:   manufacturing.NewConstructionSite(waypointSymbol, "JUMP_GATE", nil, false),
+		Construction:   construction,
 		UnitsDelivered: units,
 	}, nil
+}
+
+// recordingTaskRepo captures tasks created by the executor's replenishment loop.
+type recordingTaskRepo struct {
+	manufacturing.TaskRepository
+	created []*manufacturing.ManufacturingTask
+}
+
+func (r *recordingTaskRepo) Create(_ context.Context, task *manufacturing.ManufacturingTask) error {
+	r.created = append(r.created, task)
+	return nil
 }
 
 // captureLogEntry records a single logged line for assertions.
@@ -121,7 +142,7 @@ func TestDeliverToConstruction_AcquiresFromMarketWhenCargoEmpty(t *testing.T) {
 	purchaser := &constructionFakePurchaser{unitsAdded: 40}
 	siteRepo := &constructionFakeSiteRepo{}
 
-	executor := NewDeliverToConstructionExecutor(navigator, purchaser, siteRepo, &constructionFakePipelineRepo{})
+	executor := NewDeliverToConstructionExecutor(navigator, purchaser, siteRepo, &constructionFakePipelineRepo{}, &recordingTaskRepo{})
 
 	err := executor.Execute(context.Background(), TaskExecutionParams{
 		Task:       task,
@@ -198,7 +219,7 @@ func TestDeliverToConstruction_SurfacesSupplyErrorVerbatim(t *testing.T) {
 	siteRepo := &constructionFakeSiteRepo{supplyErr: supplyErr}
 	logger := &capturingLogger{}
 
-	executor := NewDeliverToConstructionExecutor(navigator, nil, siteRepo, &constructionFakePipelineRepo{})
+	executor := NewDeliverToConstructionExecutor(navigator, nil, siteRepo, &constructionFakePipelineRepo{}, &recordingTaskRepo{})
 
 	ctx := common.WithLogger(context.Background(), logger)
 	err := executor.Execute(ctx, TaskExecutionParams{
@@ -219,5 +240,94 @@ func TestDeliverToConstruction_SurfacesSupplyErrorVerbatim(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected an ERROR log whose message contains the verbatim supply error %q; got entries=%+v", supplyErr.Error(), logger.entries)
+	}
+}
+
+// After a successful supply that leaves the site's bill for the delivered good
+// unfinished (remaining > 0), the executor must enqueue the NEXT delivery task for
+// that material so the pipeline keeps filling the bill without a manual re-plan.
+// Regression for sp-b1np: the construction pipeline had no task replenishment and
+// idled EXECUTING at partial fill after delivering one cargo load per material.
+// The replenishment task must reuse the completed task's delivery spec (same good,
+// source, and construction site) so it matches how the planner sizes deliveries.
+func TestDeliverToConstruction_ReplenishesNextTaskWhenRemaining(t *testing.T) {
+	task := manufacturing.NewDeliverToConstructionTask(
+		"pipeline-1", 1, "FAB_MATS", "X1-TEST-F56", "", "X1-TEST-I67", []string{},
+	)
+
+	navigator := &constructionFakeNavigator{ship: newConstructionTestShipWithCargo(t, "FAB_MATS", 40)}
+	// After delivering 40, the site still needs 60 more FAB_MATS (100 required, 40 fulfilled).
+	siteRepo := &constructionFakeSiteRepo{
+		constructionResult: manufacturing.NewConstructionSite("X1-TEST-I67", "JUMP_GATE",
+			[]manufacturing.ConstructionMaterial{
+				manufacturing.NewConstructionMaterial("FAB_MATS", 100, 40),
+			}, false),
+	}
+	taskRepo := &recordingTaskRepo{}
+
+	executor := NewDeliverToConstructionExecutor(navigator, nil, siteRepo, &constructionFakePipelineRepo{}, taskRepo)
+
+	if err := executor.Execute(context.Background(), TaskExecutionParams{
+		Task:       task,
+		ShipSymbol: "TORWIND-7",
+		PlayerID:   shared.MustNewPlayerID(1),
+	}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	if len(taskRepo.created) != 1 {
+		t.Fatalf("expected exactly 1 replenishment task created, got %d", len(taskRepo.created))
+	}
+	next := taskRepo.created[0]
+	if next.TaskType() != manufacturing.TaskTypeDeliverToConstruction {
+		t.Fatalf("expected DELIVER_TO_CONSTRUCTION, got %s", next.TaskType())
+	}
+	if next.Good() != "FAB_MATS" {
+		t.Fatalf("expected replenishment good FAB_MATS, got %s", next.Good())
+	}
+	if next.SourceMarket() != "X1-TEST-F56" {
+		t.Fatalf("expected replenishment source market X1-TEST-F56 (reused from completed task), got %s", next.SourceMarket())
+	}
+	if next.ConstructionSite() != "X1-TEST-I67" {
+		t.Fatalf("expected replenishment construction site X1-TEST-I67, got %s", next.ConstructionSite())
+	}
+	if next.PipelineID() != "pipeline-1" {
+		t.Fatalf("expected replenishment task on pipeline-1, got %s", next.PipelineID())
+	}
+	if next.Status() != manufacturing.TaskStatusReady {
+		t.Fatalf("expected replenishment task READY so the coordinator can assign it, got %s", next.Status())
+	}
+}
+
+// When a successful supply completes the delivered material's bill (remaining == 0),
+// the executor must NOT enqueue another task for it - otherwise the pipeline would
+// keep buying loads it can no longer deliver and never settle. Regression for sp-b1np.
+func TestDeliverToConstruction_NoReplenishWhenMaterialComplete(t *testing.T) {
+	task := manufacturing.NewDeliverToConstructionTask(
+		"pipeline-1", 1, "FAB_MATS", "X1-TEST-F56", "", "X1-TEST-I67", []string{},
+	)
+
+	navigator := &constructionFakeNavigator{ship: newConstructionTestShipWithCargo(t, "FAB_MATS", 40)}
+	// After delivering 40, the site's FAB_MATS bill is fully met (40 required, 40 fulfilled).
+	siteRepo := &constructionFakeSiteRepo{
+		constructionResult: manufacturing.NewConstructionSite("X1-TEST-I67", "JUMP_GATE",
+			[]manufacturing.ConstructionMaterial{
+				manufacturing.NewConstructionMaterial("FAB_MATS", 40, 40),
+			}, true),
+	}
+	taskRepo := &recordingTaskRepo{}
+
+	executor := NewDeliverToConstructionExecutor(navigator, nil, siteRepo, &constructionFakePipelineRepo{}, taskRepo)
+
+	if err := executor.Execute(context.Background(), TaskExecutionParams{
+		Task:       task,
+		ShipSymbol: "TORWIND-7",
+		PlayerID:   shared.MustNewPlayerID(1),
+	}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	if len(taskRepo.created) != 0 {
+		t.Fatalf("expected no replenishment task when the material is complete, got %d", len(taskRepo.created))
 	}
 }

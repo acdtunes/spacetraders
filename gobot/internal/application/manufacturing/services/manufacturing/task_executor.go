@@ -87,6 +87,7 @@ func RegisterConstructionExecutor(
 	purchaser *ManufacturingPurchaser,
 	constructionRepo manufacturing.ConstructionSiteRepository,
 	pipelineRepo manufacturing.PipelineRepository,
+	taskRepo manufacturing.TaskRepository,
 ) {
-	registry.Register(NewDeliverToConstructionExecutor(navigator, purchaser, constructionRepo, pipelineRepo))
+	registry.Register(NewDeliverToConstructionExecutor(navigator, purchaser, constructionRepo, pipelineRepo, taskRepo))
 }

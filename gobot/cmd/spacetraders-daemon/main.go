@@ -509,7 +509,7 @@ func run(cfg *config.Config) error {
 
 	// Register DELIVER_TO_CONSTRUCTION executor so construction pipeline tasks can execute
 	constructionSiteRepo := api.NewConstructionSiteRepository(apiClient, playerRepo)
-	mfgServices.RegisterConstructionExecutor(taskExecutorRegistry, mfgNavigator, mfgPurchaser, constructionSiteRepo, manufacturingPipelineRepo)
+	mfgServices.RegisterConstructionExecutor(taskExecutorRegistry, mfgNavigator, mfgPurchaser, constructionSiteRepo, manufacturingPipelineRepo, manufacturingTaskRepo)
 
 	// Gas extraction handlers (now that storage coordinator is available)
 	// Transport is handled by manufacturing pool via STORAGE_ACQUIRE_DELIVER tasks

@@ -122,6 +122,13 @@ func (c *PipelineCompletionChecker) evaluateCompletion(
 	pipeline *manufacturing.ManufacturingPipeline,
 	tasks []*manufacturing.ManufacturingTask,
 ) completionResult {
+	// CONSTRUCTION pipelines deliver materials to a site rather than collect-and-sell
+	// a product, so they have no COLLECT_SELL task and the sales-pipeline rule below
+	// never fires for them. Evaluate them on delivery-task state instead (sp-b1np).
+	if pipeline.PipelineType() == manufacturing.PipelineTypeConstruction {
+		return evaluateConstructionCompletion(tasks)
+	}
+
 	result := completionResult{}
 
 	// Count completed COLLECT_SELL tasks for the final product
@@ -155,6 +162,49 @@ func (c *PipelineCompletionChecker) evaluateCompletion(
 		result.Reason = "one_or_more_tasks_failed"
 	}
 
+	return result
+}
+
+// evaluateConstructionCompletion decides completion for CONSTRUCTION pipelines.
+// The construction bill is complete exactly when no delivery task is still in flight:
+// the executor's replenishment loop keeps a delivery queued while the site still needs
+// the good (sp-b1np), so "nothing in flight" means every material's bill is delivered.
+// A delivery whose retries are exhausted fails the pipeline instead of completing it.
+func evaluateConstructionCompletion(tasks []*manufacturing.ManufacturingTask) completionResult {
+	result := completionResult{}
+
+	completedDeliveries := 0
+	inFlight := 0
+	permanentFailure := false
+
+	for _, task := range tasks {
+		switch {
+		case task.Status() == manufacturing.TaskStatusCompleted:
+			if task.TaskType() == manufacturing.TaskTypeDeliverToConstruction {
+				completedDeliveries++
+			}
+		case task.Status() == manufacturing.TaskStatusFailed && !task.CanRetry():
+			permanentFailure = true
+		default:
+			// PENDING / READY / ASSIGNED / EXECUTING, or a retryable FAILED task
+			// awaiting its next attempt - all still in flight.
+			inFlight++
+		}
+	}
+
+	// While any delivery is still in flight the bill is not yet fully delivered.
+	if inFlight > 0 {
+		return result
+	}
+	if permanentFailure {
+		result.ShouldFail = true
+		result.Reason = "construction_delivery_failed"
+		return result
+	}
+	if completedDeliveries > 0 {
+		result.ShouldComplete = true
+		result.Reason = "construction_materials_delivered"
+	}
 	return result
 }
 
