@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { enginePulse, hasRimGlow, ENGINE_GLOW_STEADY } from '../spriteGlow';
+import { enginePulse, hasRimGlow, showsEngineGlow, ENGINE_GLOW_STEADY } from '../spriteGlow';
 
 describe('enginePulse', () => {
   it('stays within [0.55, 0.9] for any timestamp', () => {
@@ -42,5 +42,20 @@ describe('hasRimGlow', () => {
     for (const t of ['ORBITAL_STATION', 'MOON', 'ASTEROID', 'ASTEROID_FIELD', 'FUEL_STATION', 'JUMP_GATE']) {
       expect(hasRimGlow(t)).toBe(false);
     }
+  });
+});
+
+describe('showsEngineGlow', () => {
+  it('glows only for in-transit ships that actually burn fuel', () => {
+    expect(showsEngineGlow('IN_TRANSIT', 400)).toBe(true);
+  });
+
+  it('never glows for fuel-less probes (satellites fly BURN at zero cost)', () => {
+    expect(showsEngineGlow('IN_TRANSIT', 0)).toBe(false);
+  });
+
+  it('never glows when not in transit', () => {
+    expect(showsEngineGlow('DOCKED', 400)).toBe(false);
+    expect(showsEngineGlow('IN_ORBIT', 400)).toBe(false);
   });
 });

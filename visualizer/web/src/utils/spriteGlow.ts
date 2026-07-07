@@ -31,3 +31,12 @@ export function enginePulse(frameTimestamp: number, reducedMotion = false): numb
 export function hasRimGlow(type: string): boolean {
   return type.includes('PLANET') || type.includes('GAS_GIANT');
 }
+
+/**
+ * Whether a ship shows the stern engine glow: it must be underway AND able to
+ * burn fuel. Fuel-less probes (satellites, fuel.capacity === 0) fly BURN mode
+ * at zero cost, so gating on nav status alone painted engine flames on them.
+ */
+export function showsEngineGlow(navStatus: string, fuelCapacity: number): boolean {
+  return navStatus === 'IN_TRANSIT' && fuelCapacity > 0;
+}

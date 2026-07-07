@@ -7,17 +7,17 @@ import { enginePulse } from '../utils/spriteGlow';
 interface ShipSpriteProps {
   assetPath: string | null;
   size: number;
-  inTransit: boolean;
+  showEngineGlow: boolean;
   frameTimestamp: number;
 }
 
-export const ShipSprite = ({ assetPath, size, inTransit, frameTimestamp }: ShipSpriteProps) => {
+export const ShipSprite = ({ assetPath, size, showEngineGlow, frameTimestamp }: ShipSpriteProps) => {
   const image = useCachedImage(assetPath);
   const reducedMotion = usePrefersReducedMotion();
 
   // Sprite art points "up" (nose at local -y, stern at local +y) — the rotation
   // group adds +90deg (see calculateShipRotation), so the engine sits astern at +y.
-  const engineGlow = inTransit ? (
+  const engineGlow = showEngineGlow ? (
     <Circle
       x={0}
       y={size * 0.5}

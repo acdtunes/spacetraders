@@ -4,6 +4,7 @@ import type { ShipTrailPoint, TaggedShip, Waypoint as WaypointType, ShipAssignme
 import { Ship } from '../domain/ship';
 import type { ShipPositionOptions } from '../domain';
 import { ShipSprite } from './ShipSprite';
+import { showsEngineGlow } from '../utils/spriteGlow';
 import { ShipNameLabel } from './ShipNameLabel';
 import { ShipOperationBadge } from './ShipOperationBadge';
 import { ShipTaskBadge } from './ShipTaskBadge';
@@ -197,7 +198,7 @@ export const ShipLayer = memo(function ShipLayer({
               <ShipSprite
                 assetPath={shipAssetPath}
                 size={getShipSize(ship.registration.role)}
-                inTransit={ship.nav.status === 'IN_TRANSIT'}
+                showEngineGlow={showsEngineGlow(ship.nav.status, ship.fuel.capacity)}
                 frameTimestamp={frameTimestamp}
               />
             </Group>
