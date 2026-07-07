@@ -3,6 +3,7 @@ package contract
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
@@ -98,14 +99,34 @@ func SelectClosestShip(
 		return "", 0, err
 	}
 
-	// 4. Log selection decision
+	// 4. Log selection decision, enumerating every candidate with its distance
+	// to the target (command ships marked) so the pick is auditable - not just
+	// the winning symbol (sp-4a4e).
 	logger.Log("INFO", "Ship selection completed", map[string]interface{}{
 		"action":          "ship_selected",
 		"selected_ship":   result.Ship.ShipSymbol(),
 		"distance":        result.Distance,
 		"reason":          result.Reason,
 		"target_waypoint": targetWaypointSymbol,
+		"candidates":      summarizeCandidates(ships, targetWaypoint),
 	})
 
 	return result.Ship.ShipSymbol(), result.Distance, nil
+}
+
+// summarizeCandidates renders every candidate ship with its distance to the
+// selection target, marking command ships, so the selection log shows the full
+// set behind a decision - not just the winner (sp-4a4e). Example:
+// "TORWIND-3@0.00, TORWIND-1@52.10(command)".
+func summarizeCandidates(ships []*navigation.Ship, target *shared.Waypoint) string {
+	entries := make([]string, 0, len(ships))
+	for _, ship := range ships {
+		distance := ship.CurrentLocation().DistanceTo(target)
+		entry := fmt.Sprintf("%s@%.2f", ship.ShipSymbol(), distance)
+		if isCommandHull(ship) {
+			entry += "(command)"
+		}
+		entries = append(entries, entry)
+	}
+	return strings.Join(entries, ", ")
 }

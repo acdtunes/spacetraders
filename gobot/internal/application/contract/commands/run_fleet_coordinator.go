@@ -126,10 +126,12 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			// Continue with contract assignment
 		}
 
-		// Dynamically discover all idle light hauler ships
-		// Use CommandShipFallback for early game when no hauler ships exist yet
-		// Fallback will NOT trigger if haulers exist but are busy - we wait for them
-		_, availableShips, err := appContract.FindIdleLightHaulers(ctx, cmd.PlayerID, h.shipRepo, appContract.CommandShipFallback)
+		// Dynamically discover idle haul candidates. Contracts include the
+		// command ship as a first-class candidate (sp-4a4e): it hauls contract
+		// legs fine and is often the fastest, largest hull owned, so it competes
+		// on distance like any hauler instead of sitting benched until zero
+		// haulers remain.
+		_, availableShips, err := appContract.FindIdleLightHaulers(ctx, cmd.PlayerID, h.shipRepo, appContract.IncludeCommandShip)
 		if err != nil {
 			errMsg := fmt.Sprintf("Failed to find idle haulers: %v", err)
 			logger.Log("ERROR", errMsg, nil)
