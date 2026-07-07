@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+
+	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 )
 
 // NewOperationsCommand creates the operations command with subcommands
@@ -339,25 +341,13 @@ Examples:
 				return fmt.Errorf("failed to list containers: %w", err)
 			}
 
-			// Filter and group by operation type
-			var gasCoordinators, gasWorkers []*ContainerInfo
-			var mfgCoordinators, mfgWorkers []*ContainerInfo
-			var other []*ContainerInfo
-
-			for _, c := range containers {
-				switch {
-				case strings.Contains(c.ContainerType, "gas_coordinator"):
-					gasCoordinators = append(gasCoordinators, c)
-				case strings.Contains(c.ContainerType, "gas_siphon"):
-					gasWorkers = append(gasWorkers, c)
-				case strings.Contains(c.ContainerType, "manufacturing_coordinator"):
-					mfgCoordinators = append(mfgCoordinators, c)
-				case strings.Contains(c.ContainerType, "manufacturing_task"):
-					mfgWorkers = append(mfgWorkers, c)
-				default:
-					other = append(other, c)
-				}
-			}
+			// Partition running containers into operation categories.
+			groups := classifyOperationContainers(containers)
+			gasCoordinators := groups.gasCoordinators
+			gasWorkers := groups.gasWorkers
+			mfgCoordinators := groups.mfgCoordinators
+			mfgWorkers := groups.mfgWorkers
+			other := groups.other
 
 			// Display results
 			fmt.Println("\nResource Operations Status")
@@ -420,6 +410,89 @@ func truncateStr(s string, maxLen int) string {
 	return s[:maxLen-3] + "..."
 }
 
+// operationGroups partitions running containers into the categories that
+// `operations status` renders. Construction supply work runs through the
+// manufacturing coordinator and its task workers, so it surfaces under the
+// manufacturing groups rather than as a category of its own.
+type operationGroups struct {
+	gasCoordinators []*ContainerInfo
+	gasWorkers      []*ContainerInfo
+	mfgCoordinators []*ContainerInfo
+	mfgWorkers      []*ContainerInfo
+	other           []*ContainerInfo
+}
+
+// classifyOperationContainers partitions containers by their registered
+// container type. Types that belong to no known operation land in `other`.
+func classifyOperationContainers(containers []*ContainerInfo) operationGroups {
+	var g operationGroups
+	for _, c := range containers {
+		switch {
+		case isGasCoordinatorType(c.ContainerType):
+			g.gasCoordinators = append(g.gasCoordinators, c)
+		case isGasWorkerType(c.ContainerType):
+			g.gasWorkers = append(g.gasWorkers, c)
+		case isManufacturingCoordinatorType(c.ContainerType):
+			g.mfgCoordinators = append(g.mfgCoordinators, c)
+		case isManufacturingWorkerType(c.ContainerType):
+			g.mfgWorkers = append(g.mfgWorkers, c)
+		default:
+			g.other = append(g.other, c)
+		}
+	}
+	return g
+}
+
+// selectCoordinatorsToStop picks the coordinator containers an `operations stop`
+// invocation should halt; workers are omitted because their coordinator stops
+// them. A non-empty systemSymbol restricts to containers whose metadata
+// references that system. Status and stop share the same type predicates so the
+// two verbs can never disagree about what is a coordinator.
+func selectCoordinatorsToStop(containers []*ContainerInfo, stopGas, stopManufacturing bool, systemSymbol string) []*ContainerInfo {
+	var toStop []*ContainerInfo
+	for _, c := range containers {
+		isGas := isGasCoordinatorType(c.ContainerType)
+		isMfg := isManufacturingCoordinatorType(c.ContainerType)
+		if (stopGas && isGas) || (stopManufacturing && isMfg) {
+			if systemSymbol != "" && !strings.Contains(c.Metadata, systemSymbol) {
+				continue
+			}
+			toStop = append(toStop, c)
+		}
+	}
+	return toStop
+}
+
+// The type predicates below compare against the canonical domain container
+// types (the single source of truth the daemon persists) using a
+// case-insensitive match. The daemon stores UPPERCASE type strings
+// (e.g. "MANUFACTURING_COORDINATOR"); matching those exact registered types is
+// what keeps `operations status`/`stop` in sync with what is actually running.
+
+func isGasCoordinatorType(containerType string) bool {
+	return strings.EqualFold(containerType, string(container.ContainerTypeGasCoordinator))
+}
+
+func isGasWorkerType(containerType string) bool {
+	return strings.EqualFold(containerType, string(container.ContainerTypeGasSiphonWorker))
+}
+
+// isManufacturingCoordinatorType matches both the standard and the parallel
+// task-based manufacturing coordinator. The parallel coordinator (container IDs
+// prefixed "parallel_manufacturing-") registers as ContainerTypeManufacturingCoordinator
+// today; ContainerTypeParallelManufacturing is matched too so the verb stays
+// correct if a coordinator is ever registered under that sibling type.
+// Construction supply pipelines run through this same coordinator, so matching
+// it is what makes the operations verbs see construction activity as well.
+func isManufacturingCoordinatorType(containerType string) bool {
+	return strings.EqualFold(containerType, string(container.ContainerTypeManufacturingCoordinator)) ||
+		strings.EqualFold(containerType, string(container.ContainerTypeParallelManufacturing))
+}
+
+func isManufacturingWorkerType(containerType string) bool {
+	return strings.EqualFold(containerType, string(container.ContainerTypeManufacturingTaskWorker))
+}
+
 // newOperationsStopCommand creates the operations stop subcommand
 func newOperationsStopCommand() *cobra.Command {
 	var (
@@ -476,24 +549,8 @@ Examples:
 				return fmt.Errorf("failed to list containers: %w", err)
 			}
 
-			// Filter to coordinators only (workers will be stopped by their coordinators)
-			var toStop []*ContainerInfo
-			for _, c := range containers {
-				// Only stop coordinators, not workers
-				isGasCoordinator := c.ContainerType == "gas_coordinator"
-				isMfgCoordinator := c.ContainerType == "manufacturing_coordinator"
-
-				if (stopGas && isGasCoordinator) || (stopManufacturing && isMfgCoordinator) {
-					// Optional system filter
-					if systemSymbol != "" {
-						// Check if container is for the specified system (from metadata)
-						if !strings.Contains(c.Metadata, systemSymbol) {
-							continue
-						}
-					}
-					toStop = append(toStop, c)
-				}
-			}
+			// Select coordinator containers to stop (workers stop with their coordinator).
+			toStop := selectCoordinatorsToStop(containers, stopGas, stopManufacturing, systemSymbol)
 
 			if len(toStop) == 0 {
 				fmt.Println("No matching operations to stop")
