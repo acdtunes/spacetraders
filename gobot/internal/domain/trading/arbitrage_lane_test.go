@@ -80,6 +80,69 @@ func TestRankSpreads_MatchesHandComputedRankingAndVolumeCap(t *testing.T) {
 	}
 }
 
+// A lane's per-unit spread clears the bid-floor discipline exactly when it is at
+// or above MinBidMargin — the same inclusive boundary MarginAlive enforces per
+// visit (basis+MinBidMargin is alive, one credit below is dead). Selection and
+// execution must agree on this one predicate.
+func TestArbitrageLane_ClearsFloor(t *testing.T) {
+	atFloor := ArbitrageLane{SourceAsk: 500, DestBid: 500 + MinBidMargin, SpreadPerUnit: MinBidMargin}
+	if !atFloor.ClearsFloor() {
+		t.Fatalf("spread/u == MinBidMargin (%d) must clear the floor", MinBidMargin)
+	}
+
+	below := ArbitrageLane{SourceAsk: 500, DestBid: 500 + MinBidMargin - 1, SpreadPerUnit: MinBidMargin - 1}
+	if below.ClearsFloor() {
+		t.Fatalf("spread/u one credit below MinBidMargin (%d) must not clear the floor", MinBidMargin-1)
+	}
+
+	// ClearsFloor must agree with the executor's own gate for the same numbers.
+	if atFloor.ClearsFloor() != MarginAlive(atFloor.DestBid, atFloor.SourceAsk) {
+		t.Fatal("ClearsFloor must equal MarginAlive(DestBid, SourceAsk) — selection and execution share one predicate")
+	}
+}
+
+// FirstDisciplinedLane must walk RankSpreads-ordered lanes and return the DEEPEST
+// volume-capped lane that clears the floor — skipping a top-ranked lane whose
+// per-unit spread is sub-floor. This is the exact sp-sh6w scenario: the scan ranks
+// FIREARMS #1 by capped spread (600/u × 20 = 12000) but its per-unit spread (600)
+// is below the 1000 floor, while the lower-ranked GADGETS (1000/u × 2 = 2000)
+// clears it. The executor must select GADGETS, not the sub-floor FIREARMS.
+func TestFirstDisciplinedLane_SkipsTopCappedSubFloorLane(t *testing.T) {
+	lanes := RankSpreads(spreadFixture())
+	if len(lanes) < 2 || lanes[0].Good != "FIREARMS" || lanes[1].Good != "GADGETS" {
+		t.Fatalf("fixture precondition: expected ranked [FIREARMS, GADGETS], got %+v", lanes)
+	}
+	if lanes[0].ClearsFloor() {
+		t.Fatalf("precondition: top lane FIREARMS (spread/u %d) must be sub-floor", lanes[0].SpreadPerUnit)
+	}
+
+	lane, ok := FirstDisciplinedLane(lanes)
+	if !ok {
+		t.Fatal("expected a disciplined lane (GADGETS clears the 1000 floor)")
+	}
+	if lane.Good != "GADGETS" {
+		t.Fatalf("expected GADGETS (spread/u 1000 >= floor); executor must skip the deeper sub-floor FIREARMS, got %q", lane.Good)
+	}
+}
+
+// When no ranked lane clears the floor, FirstDisciplinedLane must report ok=false
+// so the caller can exit with a 'no disciplined lane' message rather than pick a
+// lane the executor would refuse (a silent zero-visit run).
+func TestFirstDisciplinedLane_NoneClearFloor(t *testing.T) {
+	// One profitable-but-sub-floor lane (780/u < 1000).
+	lanes := []ArbitrageLane{
+		{Good: "FOOD", SourceWaypoint: "X1-SYS-A", DestWaypoint: "X1-SYS-B", SourceAsk: 220, DestBid: 1000, SpreadPerUnit: 780, VolumeCap: 60, CappedSpread: 46800},
+	}
+	if _, ok := FirstDisciplinedLane(lanes); ok {
+		t.Fatal("no lane clears the floor; FirstDisciplinedLane must report ok=false")
+	}
+
+	// Empty input is also 'none'.
+	if _, ok := FirstDisciplinedLane(nil); ok {
+		t.Fatal("no lanes at all must report ok=false")
+	}
+}
+
 // TestRankSpreads_InvertedColumnGuard is the inverted-margin-trap sentinel. With
 // the CORRECT column semantics, FIREARMS' spread/unit is destBid(900) −
 // sourceAsk(300) = 600. An implementation that reads the columns backwards —

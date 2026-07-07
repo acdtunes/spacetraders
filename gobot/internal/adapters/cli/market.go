@@ -757,10 +757,17 @@ func runMarketSpreads(
 	fmt.Println()
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "RANK\tGOOD\tBUY AT (SRC)\tSRC ASK\tSELL AT (DEST)\tDEST BID\tSPREAD/U\tVOL CAP\tCAPPED SPREAD")
-	fmt.Fprintln(w, "----\t----\t-----------\t-------\t--------------\t--------\t--------\t-------\t-------------")
+	fmt.Fprintln(w, "RANK\tGOOD\tBUY AT (SRC)\tSRC ASK\tSELL AT (DEST)\tDEST BID\tSPREAD/U\tVOL CAP\tCAPPED SPREAD\tCLEARS FLOOR")
+	fmt.Fprintln(w, "----\t----\t-----------\t-------\t--------------\t--------\t--------\t-------\t-------------\t------------")
 	for i, lane := range lanes {
-		fmt.Fprintf(w, "%d\t%s\t%s\t%d\t%s\t%d\t%d\t%d\t%d\n",
+		// The scan still ranks by CAPPED spread, but flags which lanes actually clear
+		// the executor's bid-floor discipline: trade-route flies the highest-ranked
+		// lane whose CLEARS FLOOR = yes, skipping a deeper-but-sub-floor lane (sp-sh6w).
+		clearsFloor := "no"
+		if lane.ClearsFloor() {
+			clearsFloor = "yes"
+		}
+		fmt.Fprintf(w, "%d\t%s\t%s\t%d\t%s\t%d\t%d\t%d\t%d\t%s\n",
 			i+1,
 			lane.Good,
 			lane.SourceWaypoint,
@@ -770,10 +777,12 @@ func runMarketSpreads(
 			lane.SpreadPerUnit,
 			lane.VolumeCap,
 			lane.CappedSpread,
+			clearsFloor,
 		)
 	}
 	w.Flush()
-	fmt.Printf("\nTotal lanes: %d\n\n", len(lanes))
+	fmt.Printf("\nTotal lanes: %d\n", len(lanes))
+	fmt.Printf("(CLEARS FLOOR = yes when spread/u >= %d, the bid-floor discipline; trade-route flies the highest-ranked lane that clears it.)\n\n", trading.MinBidMargin)
 
 	return nil
 }
@@ -797,6 +806,12 @@ price / ask) and destination (where you SELL, receiving the market's BUY price /
 bid), then ranks lanes by volume-capped spread: (dest bid - source ask) x the
 minimum tradable volume. Volume-capping matters because a fat per-unit spread on
 a thin market is worth less than a modest spread on a deep one.
+
+The CLEARS FLOOR column flags whether each lane's per-unit spread clears the
+bid-floor discipline the trade-route executor enforces. The scan still ranks by
+capped spread (so you see every standing spread), but trade-route flies the
+highest-ranked lane whose CLEARS FLOOR = yes - a deeper capped lane that is
+sub-floor is refused, not flown.
 
 Examples:
   spacetraders market spreads --system X1-GZ7 --agent ENDURANCE

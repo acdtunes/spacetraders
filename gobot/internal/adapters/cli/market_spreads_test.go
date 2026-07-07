@@ -75,6 +75,35 @@ func TestRunMarketSpreads_RanksLanesFromCache(t *testing.T) {
 	require.Contains(t, out, "12000", "FIREARMS capped spread 600*20=12000 must be shown")
 }
 
+// The scan must flag which ranked lanes clear the executor's bid-floor discipline,
+// so the captain can see WHY trade-route flies a lower-ranked lane. In the fixture
+// FIREARMS ranks #1 by capped spread (12000) but its per-unit spread (600) is
+// sub-floor, while the lower-ranked GADGETS (spread/u 1000) clears the floor — the
+// exact sp-sh6w confusion the column resolves.
+func TestRunMarketSpreads_FlagsClearsFloorColumn(t *testing.T) {
+	finder := &fakeSystemListingsFinder{listings: spreadsFixtureListings()}
+
+	out := captureStdout(t, func() {
+		require.NoError(t, runMarketSpreads(context.Background(), finder, "X1-SYS", 1, 0, false))
+	})
+
+	require.Contains(t, out, "CLEARS FLOOR", "the scan must show a CLEARS FLOOR column")
+
+	var firearmsLine, gadgetsLine string
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "FIREARMS") {
+			firearmsLine = line
+		}
+		if strings.Contains(line, "GADGETS") {
+			gadgetsLine = line
+		}
+	}
+	require.NotEmpty(t, firearmsLine, "FIREARMS lane row must be printed")
+	require.NotEmpty(t, gadgetsLine, "GADGETS lane row must be printed")
+	require.Contains(t, firearmsLine, "no", "FIREARMS (spread/u 600 < 1000) must be flagged as NOT clearing the floor")
+	require.Contains(t, gadgetsLine, "yes", "GADGETS (spread/u 1000 >= 1000) must be flagged as clearing the floor")
+}
+
 func TestRunMarketSpreads_TopNTruncates(t *testing.T) {
 	finder := &fakeSystemListingsFinder{listings: spreadsFixtureListings()}
 

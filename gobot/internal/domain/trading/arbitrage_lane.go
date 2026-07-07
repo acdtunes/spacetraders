@@ -40,6 +40,37 @@ type ArbitrageLane struct {
 	CappedSpread   int // SpreadPerUnit × VolumeCap — the ranking key
 }
 
+// ClearsFloor reports whether the lane's per-unit spread clears the bid-floor
+// discipline (MinBidMargin) that the circuit executor enforces per visit via
+// MarginAlive. It is the single tradeability predicate shared by lane SELECTION
+// (which must never pick a lane the executor would immediately refuse) and the
+// `market spreads` scan display (which flags which ranked lanes are actually
+// flyable). Equivalent to MarginAlive(l.DestBid, l.SourceAsk) because
+// SpreadPerUnit == DestBid − SourceAsk for every ranked lane.
+func (l ArbitrageLane) ClearsFloor() bool {
+	return l.SpreadPerUnit >= MinBidMargin
+}
+
+// FirstDisciplinedLane returns the highest-ranked lane whose per-unit spread clears
+// the bid-floor discipline (ClearsFloor), or ok=false when no lane does. The input
+// must be RankSpreads-ordered, so the walk yields the DEEPEST volume-capped lane the
+// executor will actually fly — MarginAlive holds on its first observation.
+//
+// This reconciles scan ranking with execution discipline (sp-sh6w): the scan ranks
+// by volume-capped spread and deliberately keeps sub-floor lanes visible (it is an
+// observation tool), but the top capped-spread lane can have a per-unit spread below
+// the floor. Selecting that lane makes the executor refuse it on the first visit and
+// fly zero. Selecting the first lane that clears the floor guarantees a selected lane
+// flies ≥1 visit instead of a silent zero-visit run.
+func FirstDisciplinedLane(lanes []ArbitrageLane) (ArbitrageLane, bool) {
+	for _, l := range lanes {
+		if l.ClearsFloor() {
+			return l, true
+		}
+	}
+	return ArbitrageLane{}, false
+}
+
 // RankSpreads ranks the single best arbitrage lane per good across a system's
 // cached market listings, using CORRECTED market-perspective column semantics:
 // profit/unit = destination Bid (BUY column) − source Ask (SELL column).

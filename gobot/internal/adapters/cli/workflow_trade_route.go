@@ -22,6 +22,7 @@ import (
 	tradingCmd "github.com/andrescamacho/spacetraders-go/internal/application/trading/commands"
 	domainNav "github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 )
@@ -242,6 +243,11 @@ Examples:
 }
 
 func printTradeRouteResult(result *tradingCmd.RunTradeRouteCoordinatorResponse) {
+	if result.NoDisciplinedLane {
+		fmt.Printf("No lane clears the discipline floor (best standing spread %d/u < floor %d/u) - %s released, nothing traded.\n",
+			result.BestSubFloorSpread, trading.MinBidMargin, result.ShipSymbol)
+		return
+	}
 	if result.Good == "" {
 		fmt.Printf("No profitable arbitrage lane in cached markets - %s released, nothing traded.\n", result.ShipSymbol)
 		return

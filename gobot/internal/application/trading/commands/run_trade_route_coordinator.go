@@ -63,11 +63,22 @@ type RunTradeRouteCoordinatorResponse struct {
 	NetProfit      int
 	Completed      bool
 	Error          string
+	// NoDisciplinedLane is set when profitable lanes were ranked but NONE cleared the
+	// bid-floor discipline (trading.MinBidMargin), so the circuit flew nothing by
+	// design. It distinguishes a disciplined "nothing worth flying" from "no lane at
+	// all" — both leave Good=="" and Visits==0 — so the caller reports the reason
+	// instead of a silent zero-visit success (sp-sh6w).
+	NoDisciplinedLane bool
+	// BestSubFloorSpread is the highest per-unit spread among the ranked lanes when
+	// NoDisciplinedLane is set: how close the best standing lane came to the floor.
+	BestSubFloorSpread int
 }
 
 // RunTradeRouteCoordinatorHandler runs a pure-arbitrage circuit on a single idle
 // hull: it claims the named ship, ranks lanes from cache (trading.RankSpreads),
-// then flies the top lane in disciplined tranches — ≤18u/visit, and only while
+// selects the deepest lane that clears the bid-floor discipline
+// (trading.FirstDisciplinedLane — so it never picks a top-capped lane the executor
+// would refuse), then flies it in disciplined tranches — ≤18u/visit, and only while
 // the destination bid clears basis+1000 (trading.MarginAlive) — looping until the
 // margin dies, then releases the ship.
 //
@@ -147,7 +158,7 @@ func (h *RunTradeRouteCoordinatorHandler) execute(
 	}
 	defer h.releaseShip(ctx, ship, containerID, playerID)
 
-	// Step 2: rank lanes from cache and pick the deepest.
+	// Step 2: rank lanes from cache and pick the deepest that clears the floor.
 	lanes, err := h.scanLanes(ctx, cmd.SystemSymbol, playerID)
 	if err != nil {
 		return fmt.Errorf("failed to scan arbitrage lanes: %w", err)
@@ -159,19 +170,38 @@ func (h *RunTradeRouteCoordinatorHandler) execute(
 		})
 		return nil
 	}
-	lane := lanes[0]
+
+	// The scan ranks lanes by volume-capped spread and deliberately keeps sub-floor
+	// lanes visible (it is an observation tool). The executor, however, refuses any
+	// lane whose per-unit spread is below MinBidMargin (runCircuit's MarginAlive gate)
+	// — so the top capped-spread lane can be one that flies ZERO visits. Select the
+	// DEEPEST lane that actually clears the discipline floor, so a selected lane always
+	// flies >=1 visit instead of a silent zero-visit run (sp-sh6w).
+	lane, ok := trading.FirstDisciplinedLane(lanes)
+	if !ok {
+		response.NoDisciplinedLane = true
+		response.BestSubFloorSpread = bestSpreadPerUnit(lanes)
+		logger.Log("INFO", "No lane clears the discipline floor - releasing ship without trading", map[string]interface{}{
+			"ship_symbol":           cmd.ShipSymbol,
+			"system":                cmd.SystemSymbol,
+			"floor":                 trading.MinBidMargin,
+			"best_sub_floor_spread": response.BestSubFloorSpread,
+			"ranked_lane_count":     len(lanes),
+		})
+		return nil
+	}
 	response.Good = lane.Good
 	response.SourceWaypoint = lane.SourceWaypoint
 	response.DestWaypoint = lane.DestWaypoint
 
-	logger.Log("INFO", "Selected top arbitrage lane", map[string]interface{}{
-		"ship_symbol":    cmd.ShipSymbol,
-		"good":           lane.Good,
-		"source":         lane.SourceWaypoint,
-		"dest":           lane.DestWaypoint,
-		"spread_per_u":   lane.SpreadPerUnit,
-		"volume_cap":     lane.VolumeCap,
-		"capped_spread":  lane.CappedSpread,
+	logger.Log("INFO", "Selected top disciplined arbitrage lane", map[string]interface{}{
+		"ship_symbol":   cmd.ShipSymbol,
+		"good":          lane.Good,
+		"source":        lane.SourceWaypoint,
+		"dest":          lane.DestWaypoint,
+		"spread_per_u":  lane.SpreadPerUnit,
+		"volume_cap":    lane.VolumeCap,
+		"capped_spread": lane.CappedSpread,
 	})
 
 	// Step 3: run the circuit until the margin dies.
@@ -225,7 +255,7 @@ func (h *RunTradeRouteCoordinatorHandler) runCircuit(
 			return
 		}
 
-		basis := srcGood.SellPrice()      // ask: what we PAY buying from the source
+		basis := srcGood.SellPrice()       // ask: what we PAY buying from the source
 		destBid := dstGood.PurchasePrice() // bid: what we RECEIVE selling to the dest
 
 		// Bid-floor discipline: the edge is gone once the dest bid stops clearing
@@ -476,6 +506,20 @@ func (h *RunTradeRouteCoordinatorHandler) sell(ctx context.Context, shipSymbol, 
 		return nil, fmt.Errorf("unexpected sell response type %T", resp)
 	}
 	return sr, nil
+}
+
+// bestSpreadPerUnit returns the highest per-unit spread among ranked lanes, used to
+// report how far the best standing lane fell short of the discipline floor when none
+// cleared it — so a no-trade run always reports WHY, never a silent zero. Lanes are
+// ranked by CAPPED spread, so the deepest per-unit spread is not necessarily lanes[0].
+func bestSpreadPerUnit(lanes []trading.ArbitrageLane) int {
+	best := 0
+	for _, l := range lanes {
+		if l.SpreadPerUnit > best {
+			best = l.SpreadPerUnit
+		}
+	}
+	return best
 }
 
 // derefString flattens an optional supply/activity pointer to its value or "".
