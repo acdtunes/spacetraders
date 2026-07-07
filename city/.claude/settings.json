@@ -1,4 +1,85 @@
 {
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://127.0.0.1:51547/spacetraders"
+  },
+  "hooks": {
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "command": "acd hook",
+            "type": "command"
+          }
+        ],
+        "matcher": "permission_prompt|elicitation_dialog"
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "command": "acd hook",
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "command": "acd hook",
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "command": "/Users/andres.dandrea/IdeaProjects/cities/spacetraders/agent-memory/scoped-prime.sh",
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "command": "acd hook",
+            "type": "command"
+          },
+          {
+            "command": "/Users/andres.dandrea/IdeaProjects/cities/spacetraders/agent-memory/scoped-prime.sh",
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "command": "acd hook",
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "command": "acd hook",
+            "type": "command"
+          }
+        ]
+      }
+    ]
+  },
   "statusLine": {
     "command": "/Users/andres.dandrea/Library/pnpm/ccstatusline",
     "padding": 0,

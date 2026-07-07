@@ -1,0 +1,26 @@
+{
+  "hooks": {
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "command": "/Users/andres.dandrea/IdeaProjects/cities/spacetraders/agent-memory/scoped-prime.sh",
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "command": "/Users/andres.dandrea/IdeaProjects/cities/spacetraders/agent-memory/scoped-prime.sh",
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      }
+    ]
+  }
+}

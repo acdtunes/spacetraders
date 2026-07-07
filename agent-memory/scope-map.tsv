@@ -1,0 +1,38 @@
+# Memory scope policy for scoped-prime.sh (the per-agent memory filter).
+#
+# Whitespace-separated. Blank lines and lines starting with '#' are ignored.
+#
+#   default <db-prefix> <owner>    Default owner for LEGACY (un-namespaced)
+#                                  memories in the db with that issue_prefix.
+#   key     <memory-key> <owner>   Override for one specific legacy memory.
+#
+# Resolution order for a memory's owner (first match wins):
+#   1. A namespaced key "<owner>:<slug>" (e.g. captain:foo, shared:bar) — the
+#      prefix before ':' IS the owner. NEW memories should be written this way
+#      (see the agent templates) and need no entry in this file.
+#   2. A 'key' override row below.
+#   3. The 'default' owner for the memory's db.
+#
+# An agent primes only the memories whose owner is itself OR 'shared'.
+# owners: captain | shipwright | trade-analyst | fleet-architect | surveyor |
+#         harbormaster | shared
+#
+# --- per-db defaults ------------------------------------------------------
+# sp = rig db (repo-root .beads): the captain's operational memory store, so
+#      legacy lessons there default to the captain.
+# st = city db (city/.beads): city/crew governance, defaults to shared.
+default  sp  captain
+default  st  shared
+
+# --- legacy overrides (memories that differ from their db default) --------
+# Cross-cutting directives in the sp (captain) db that ALL crew should honor:
+key  admiral-afk-never-a-dependency                   shared
+key  bd-quirk-bd-init-prefix-x-sets-only              shared
+key  spacetraders-cli-ops-era-2-verified-always-run   shared
+
+# Agent-private memories in the st (shared-default) db (scoped by the agent
+# named in the key; the admiral-*/crew-*/bd-* governance memories stay shared
+# via the default). New memories should namespace their own keys instead.
+key  shipwright-session-beads-not-tasks               shipwright
+key  i-am-shipwright-mail-addressed-to-shipwright-is  shipwright
+key  harbormaster-session-has-two-mail-aliases-harbormaster-and  harbormaster

@@ -29,6 +29,11 @@ never wake yourself "just to check." No nudge, no turn. When the nudge comes, yo
 full survey and stop.
 
 ## Survey ritual (every nudge)
+**Read your memories first.** Your prime injected a `## Your memories — honor these`
+section — your own scoped survey lessons plus shared fleet directives; read and apply it
+before you survey. (If you record a durable lesson, namespace it by scope: `bd remember
+--key surveyor:<slug> "..."` private to you, or `--key shared:<slug>` crew-wide; an
+un-namespaced `bd remember` is treated as shared.) Then:
 1. `gc mail check` — read the wake nudge and any Admiral note.
 2. `spacetraders captain report` — event-queue telemetry (v1): events/day, ack latency
    p50/max, backlog + oldest age, per-type counts (incl. `income.stalled`,
