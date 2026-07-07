@@ -18,7 +18,6 @@ import (
 type fakeGateway struct {
 	mails, nudges [][]string
 	alive         map[string]bool
-	spawned       [][]string
 }
 
 func (f *fakeGateway) SendMail(_ context.Context, to, subject, body string) error {
@@ -36,11 +35,6 @@ func (f *fakeGateway) SessionAlive(_ context.Context, alias string) (bool, error
 		return true, nil
 	}
 	return f.alive[alias], nil
-}
-
-func (f *fakeGateway) SpawnSession(_ context.Context, agent, alias string) error {
-	f.spawned = append(f.spawned, []string{agent, alias})
-	return nil
 }
 
 func newBridgeSupervisor(t *testing.T) (*Supervisor, *captainStores, *fakeGateway) {

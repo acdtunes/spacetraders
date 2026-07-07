@@ -86,16 +86,6 @@ func TestSessionAliveParsesListOutput(t *testing.T) {
 	}
 }
 
-func TestSpawnSessionCreatesAndPrimes(t *testing.T) {
-	var calls [][]string
-	g := &CityGateway{GCBin: "gc", CityDir: "/city", Exec: recordingExec(&calls, "primed prompt")}
-	require.NoError(t, g.SpawnSession(context.Background(), "captain", "captain"))
-	require.Equal(t, "gc", calls[0][0])
-	require.Contains(t, calls[0], "new")
-	require.Contains(t, calls[0], "captain")
-	require.Contains(t, calls[0], "--no-attach")
-}
-
 func TestListInProgressPipelineParsesBeads(t *testing.T) {
 	var calls [][]string
 	out := `[{"id":"sp-1","issue_type":"bug","owner":"shipwright"},{"id":"sp-2","issue_type":"feature","owner":"shipwright"},{"id":"sp-3","issue_type":"task","owner":"shipwright"}]`

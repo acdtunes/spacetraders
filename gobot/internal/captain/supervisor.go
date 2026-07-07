@@ -19,6 +19,14 @@ const eventBatchLimit = 50
 // this window keeps a sustained cap visible without drowning the log.
 const capLogInterval = 10 * time.Minute
 
+// sessionDownAlertInterval throttles the per-agent "standing session down"
+// Admiral alert (sp-qv71). City policy is no auto-spawn: a captain/surveyor
+// found dead stays dead until a human relaunches it, and the watchkeeper probes
+// every 30s poll, so without a per-agent cooldown the Admiral's mailbox would
+// get one alert every poll (~2880/day). One alert per this window keeps a
+// persistent outage loud without spamming.
+const sessionDownAlertInterval = 30 * time.Minute
+
 // Supervisor is pure plumbing: it decides WHEN a session runs, never WHAT
 // the captain does (spec: Component 2).
 type Supervisor struct {
@@ -81,6 +89,14 @@ type Supervisor struct {
 	lastUniverseCheck time.Time
 
 	lastSurveyorNudge time.Time
+
+	// sessionDownAlerted throttles the Admiral alert for a standing session
+	// found dead (captain, surveyor), keyed by agent alias → last-alerted time
+	// (sp-qv71). In-memory and never persisted, mirroring the sp-sk68 D1
+	// delivery-backoff fields: a process restart re-announcing an ongoing outage
+	// once is harmless and, in fact, desirable — a fresh process SHOULD re-state
+	// what is down.
+	sessionDownAlerted map[string]time.Time
 }
 
 func NewSupervisor(db *gorm.DB, store captain.EventStore, ws Workspace, cfg config.CaptainConfig) (*Supervisor, error) {
@@ -148,7 +164,7 @@ func (s *Supervisor) Tick(ctx context.Context, now time.Time) (bool, error) {
 		}
 	}
 	if s.gw != nil {
-		s.ensureCaptainAlive(ctx)
+		s.ensureCaptainAlive(ctx, now)
 		s.nudgeSurveyorOnCadence(ctx, now)
 		s.requeueOrphanedPipelineBeads(ctx)
 	}

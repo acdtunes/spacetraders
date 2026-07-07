@@ -88,18 +88,6 @@ func (g *CityGateway) SessionAlive(ctx context.Context, alias string) (bool, err
 	return false, nil
 }
 
-func (g *CityGateway) SpawnSession(ctx context.Context, agent, alias string) error {
-	if _, err := g.Exec(ctx, g.GCBin, "session", "new", agent, "--alias", alias, "--no-attach"); err != nil {
-		return err
-	}
-	prime, err := g.Exec(ctx, "acd", "prime", agent)
-	if err != nil {
-		return err
-	}
-	_, err = g.Exec(ctx, g.GCBin, "session", "submit", alias, prime)
-	return err
-}
-
 type BeadsClient struct {
 	BDBin  string
 	RigDir string

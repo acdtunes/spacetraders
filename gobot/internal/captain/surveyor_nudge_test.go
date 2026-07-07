@@ -22,32 +22,60 @@ func nudgesTo(gw *fakeGateway, alias string) int {
 	return n
 }
 
-func spawnedAgent(gw *fakeGateway, agent string) bool {
-	for _, sp := range gw.spawned {
-		if sp[0] == agent {
-			return true
-		}
-	}
-	return false
-}
-
-func TestSurveyorNudgeDueSpawnsWhenDeadAndSignalsOnce(t *testing.T) {
+// TestSurveyorNudgeDueAlertsAdmiralWhenSurveyorDead is the surveyor half of the
+// sp-qv71 ruling: a survey is due but the standing surveyor session is dead, so
+// the watchkeeper ALERTS the Admiral (mail + grep-able log) for a manual
+// relaunch and NEVER spawns. It must not mail/nudge the dead surveyor, and a
+// second poll within the throttle window must not re-alert.
+func TestSurveyorNudgeDueAlertsAdmiralWhenSurveyorDead(t *testing.T) {
 	sup, _, gw := newBridgeSupervisor(t)
 	sup.cfg.MetaReviewDays = metaReviewDaysPtr(7)
-	sup.lastSession = time.Now().Add(-2 * time.Hour)           // heartbeat due, so Tick reports ran=true
+	sup.lastSession = time.Now()                               // heartbeat not due — isolate the surveyor path
+	sup.lastSurveyorNudge = time.Now().Add(-8 * 24 * time.Hour) // survey cadence elapsed
+	gw.alive = map[string]bool{"captain": true, surveyorAgent: false}
+
+	t0 := time.Now()
+	out := captureOutput(t, func() {
+		_, err := sup.Tick(context.Background(), t0)
+		require.NoError(t, err)
+		_, err = sup.Tick(context.Background(), t0.Add(time.Minute)) // next poll, still dead
+		require.NoError(t, err)
+	})
+
+	require.Equal(t, 1, mailsTo(gw, "human"),
+		"a dead surveyor at cadence alerts the Admiral once, not every poll")
+	require.Equal(t, 0, mailsTo(gw, surveyorAgent), "no survey-due mail to a dead surveyor")
+	require.Equal(t, 0, nudgesTo(gw, surveyorAgent), "no nudge to a dead surveyor")
+	require.Contains(t, out, "STANDING SESSION DOWN", "a dead surveyor emits a grep-able local log line")
+}
+
+// TestSurveyorNudgeReachesSurveyorOnceRelaunched proves the dead branch does
+// NOT advance the cadence: it stays due through the outage, so the very first
+// tick after a human relaunches the surveyor delivers the survey-due mail+nudge
+// to the now-live session.
+func TestSurveyorNudgeReachesSurveyorOnceRelaunched(t *testing.T) {
+	sup, _, gw := newBridgeSupervisor(t)
+	sup.cfg.MetaReviewDays = metaReviewDaysPtr(7)
+	sup.lastSession = time.Now()
 	sup.lastSurveyorNudge = time.Now().Add(-8 * 24 * time.Hour) // cadence elapsed
-	gw.alive = map[string]bool{"captain": true}
+	gw.alive = map[string]bool{"captain": true, surveyorAgent: false}
 
-	ran, err := sup.Tick(context.Background(), time.Now())
+	t0 := time.Now()
+	_ = captureOutput(t, func() {
+		_, err := sup.Tick(context.Background(), t0) // dead → alert, cadence NOT advanced
+		require.NoError(t, err)
+	})
+	require.Equal(t, 0, mailsTo(gw, surveyorAgent))
+
+	gw.alive[surveyorAgent] = true // human relaunches the surveyor
+	_, err := sup.Tick(context.Background(), t0.Add(time.Minute))
 	require.NoError(t, err)
-	require.True(t, ran)
-
-	require.True(t, spawnedAgent(gw, surveyorAgent))
-	require.Equal(t, 1, mailsTo(gw, surveyorAgent))
+	require.Equal(t, 1, mailsTo(gw, surveyorAgent),
+		"cadence stays due through the outage so the relaunched surveyor still gets its survey-due mail")
 	require.Equal(t, 1, nudgesTo(gw, surveyorAgent))
 }
 
-func TestSurveyorNudgeDoesNotSpawnWhenAlive(t *testing.T) {
+func TestSurveyorNudgeMailsLiveSurveyorWithoutAlert(t *testing.T) {
 	sup, _, gw := newBridgeSupervisor(t)
 	sup.cfg.MetaReviewDays = metaReviewDaysPtr(7)
 	sup.lastSurveyorNudge = time.Now().Add(-8 * 24 * time.Hour) // cadence elapsed
@@ -56,9 +84,9 @@ func TestSurveyorNudgeDoesNotSpawnWhenAlive(t *testing.T) {
 	_, err := sup.Tick(context.Background(), time.Now())
 	require.NoError(t, err)
 
-	require.False(t, spawnedAgent(gw, surveyorAgent))
 	require.Equal(t, 1, mailsTo(gw, surveyorAgent))
 	require.Equal(t, 1, nudgesTo(gw, surveyorAgent))
+	require.Equal(t, 0, mailsTo(gw, "human"), "a live surveyor needs no Admiral alert")
 }
 
 func TestSurveyorNudgeNotDueDoesNothing(t *testing.T) {
@@ -98,7 +126,6 @@ func TestSurveyorNudgeDisabledWhenMetaReviewDaysZero(t *testing.T) {
 
 	require.Equal(t, 0, mailsTo(gw, surveyorAgent))
 	require.Equal(t, 0, nudgesTo(gw, surveyorAgent))
-	require.False(t, spawnedAgent(gw, surveyorAgent))
 }
 
 func TestSurveyorNudgeSilentWhenDisabledSwitchSet(t *testing.T) {
@@ -127,7 +154,6 @@ func TestFreshSupervisorDoesNotNudgeSurveyorImmediately(t *testing.T) {
 
 	require.Equal(t, 0, mailsTo(gw, surveyorAgent), "fresh process start must not treat survey cadence as immediately due")
 	require.Equal(t, 0, nudgesTo(gw, surveyorAgent))
-	require.False(t, spawnedAgent(gw, surveyorAgent))
 }
 
 // TestSurveyorNudgeStateSurvivesRestart mirrors

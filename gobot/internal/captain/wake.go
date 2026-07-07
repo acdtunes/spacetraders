@@ -16,7 +16,6 @@ type cityGateway interface {
 	SendMail(ctx context.Context, to, subject, body string) error
 	Nudge(ctx context.Context, alias, text string) error
 	SessionAlive(ctx context.Context, alias string) (bool, error)
-	SpawnSession(ctx context.Context, agent, alias string) error
 }
 
 // SetCity wires the city adapters for bridge mode without changing the

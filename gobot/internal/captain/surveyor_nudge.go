@@ -24,10 +24,16 @@ func (s *Supervisor) nudgeSurveyorOnCadence(ctx context.Context, now time.Time) 
 	}
 	alive, err := s.gw.SessionAlive(ctx, surveyorAgent)
 	if err == nil && !alive {
-		if spawnErr := s.gw.SpawnSession(ctx, surveyorAgent, surveyorAgent); spawnErr != nil {
-			_ = s.gw.SendMail(ctx, s.cfg.AdmiralAlias, "surveyor respawn failed", spawnErr.Error())
-			return
-		}
+		// City policy: no auto-spawn. A dead surveyor is alerted to the Admiral
+		// for manual relaunch, never respawned. Deliberately do NOT advance
+		// lastSurveyorNudge here: the cadence stays due so the survey-due mail +
+		// nudge below reach the surveyor on the first tick after a human brings
+		// it back. alertSessionDown throttles the alert so a surveyor that stays
+		// dead across polls does not spam the Admiral.
+		s.alertSessionDown(ctx, now, surveyorAgent, "surveyor session down",
+			"A survey is due but the standing surveyor session is not alive. City policy "+
+				"is no auto-spawn: relaunch it manually (acd run / acd prime "+surveyorAgent+").")
+		return
 	}
 	body := composeSurveyorMail(s.metaReviewDays(), s.lastSurveyorNudge, now)
 	s.lastSurveyorNudge = now

@@ -42,7 +42,6 @@ func (g *flakyGateway) Nudge(_ context.Context, alias, text string) error {
 }
 
 func (g *flakyGateway) SessionAlive(_ context.Context, _ string) (bool, error) { return true, nil }
-func (g *flakyGateway) SpawnSession(_ context.Context, _, _ string) error      { return nil }
 
 // attempts counts total gateway delivery calls. While failing, each bridgeWake
 // attempt makes exactly one call (the first Send errors and returns), so this
