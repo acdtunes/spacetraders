@@ -122,33 +122,51 @@ func (h *BatchPurchaseShipsHandler) calculatePurchasableCount(
 ) (shipPrice int, purchasableCount int, shipyardWaypoint string, err error) {
 	shipyardWaypoint = cmd.ShipyardWaypoint
 
-	if shipyardWaypoint != "" {
-		shipPrice, err = h.getShipPriceFromShipyard(ctx, shipyardWaypoint, cmd.ShipType, cmd.PlayerID)
-		if err != nil {
-			return 0, 0, "", err
-		}
-
-		agentData, err := h.apiClient.GetAgent(ctx, token)
-		if err != nil {
-			return 0, 0, "", fmt.Errorf("failed to get agent data: %w", err)
-		}
-
-		purchasableCount = h.calculateMaxPurchasableShips(cmd.Quantity, cmd.MaxBudget, agentData.Credits, shipPrice)
-	} else {
-		purchasableCount = cmd.Quantity
+	// Auto-discovery defers price and navigation to the per-ship purchase loop.
+	if shipyardWaypoint == "" {
+		return 0, cmd.Quantity, "", nil
 	}
 
+	// Pinned waypoint: read the live shipyard for precise budget math.
+	shipPrice, listingReady, err := h.getShipPriceFromShipyard(ctx, shipyardWaypoint, cmd.ShipType, cmd.PlayerID)
+	if err != nil {
+		return 0, 0, "", err
+	}
+
+	// Empty listing for a pinned waypoint the shipyard DOES sell from: no ship is
+	// present yet, so the live /shipyard read returns shipTypes without priced
+	// ships (the "empty cache" of sp-vz9u). An explicit waypoint must be at least
+	// as reliable as auto-discovery, so defer to the purchase loop — it navigates
+	// the ship to the pinned waypoint (visit) and reads fresh listings before
+	// buying — instead of false-failing. Budget is then bounded by quantity and
+	// the per-purchase credit guard, exactly as the auto-discover path is.
+	if !listingReady {
+		return 0, cmd.Quantity, shipyardWaypoint, nil
+	}
+
+	agentData, err := h.apiClient.GetAgent(ctx, token)
+	if err != nil {
+		return 0, 0, "", fmt.Errorf("failed to get agent data: %w", err)
+	}
+
+	purchasableCount = h.calculateMaxPurchasableShips(cmd.Quantity, cmd.MaxBudget, agentData.Credits, shipPrice)
 	return shipPrice, purchasableCount, shipyardWaypoint, nil
 }
 
-// getShipPriceFromShipyard fetches shipyard data and gets price for ship type
-// Returns: ship purchase price, error
+// getShipPriceFromShipyard reads the live shipyard listing for a ship type.
+//
+// Returns (price, true, nil) when the shipyard has a priced listing for the
+// type. Returns (0, false, nil) when the shipyard SELLS the type but the live
+// listing is empty because no ship is present at the waypoint yet — the
+// SpaceTraders /shipyard endpoint omits priced `ships` until a ship visits, so
+// the caller must refresh by visiting/reading fresh rather than fail (sp-vz9u).
+// Returns an error only when the shipyard genuinely does not sell the type.
 func (h *BatchPurchaseShipsHandler) getShipPriceFromShipyard(
 	ctx context.Context,
 	shipyardWaypoint string,
 	shipType string,
 	playerID shared.PlayerID,
-) (int, error) {
+) (int, bool, error) {
 	systemSymbol := shared.ExtractSystemSymbol(shipyardWaypoint)
 
 	query := &queries.GetShipyardListingsQuery{
@@ -158,20 +176,26 @@ func (h *BatchPurchaseShipsHandler) getShipPriceFromShipyard(
 	}
 	shipyardResp, err := h.mediator.Send(ctx, query)
 	if err != nil {
-		return 0, fmt.Errorf("failed to get shipyard listings: %w", err)
+		return 0, false, fmt.Errorf("failed to get shipyard listings: %w", err)
 	}
 
 	shipyardListings, ok := shipyardResp.(*queries.GetShipyardListingsResponse)
 	if !ok {
-		return 0, fmt.Errorf("invalid response type from GetShipyardListings")
+		return 0, false, fmt.Errorf("invalid response type from GetShipyardListings")
 	}
 
-	listing, found := shipyardListings.Shipyard.FindListingByType(shipType)
-	if !found {
-		return 0, fmt.Errorf("ship type %s not available at shipyard %s", shipType, shipyardWaypoint)
+	if listing, found := shipyardListings.Shipyard.FindListingByType(shipType); found {
+		return listing.PurchasePrice, true, nil
 	}
 
-	return listing.PurchasePrice, nil
+	// No priced listing. shipTypes is always returned (ship present or not), so
+	// if the shipyard still advertises the type the listing is merely empty
+	// because no ship has visited — signal the caller to refresh, not fail.
+	if shipyardListings.Shipyard.HasShipType(shipType) {
+		return 0, false, nil
+	}
+
+	return 0, false, fmt.Errorf("ship type %s not available at shipyard %s", shipType, shipyardWaypoint)
 }
 
 // calculateMaxPurchasableShips applies all constraints to determine max purchasable count
