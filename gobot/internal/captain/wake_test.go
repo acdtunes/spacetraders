@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 
+	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
 )
@@ -282,4 +283,79 @@ func TestRenudgeStateSurvivesRestartAndDoesNotResendInitialMail(t *testing.T) {
 	require.Empty(t, gw3.mails, "still a re-nudge, not a duplicate wake mail, after restart")
 	require.Len(t, gw3.nudges, 1)
 	require.Contains(t, gw3.nudges[0][1], "unacked")
+}
+
+// --- sp-sk68 wake model: captain-declared wake policy, Tick-level ---
+//
+// The wake GATE (evaluateWakeGate) is unit-tested exhaustively as a pure
+// function in wakegate_test.go. These tests prove it is actually wired into
+// Tick: interrupt events still force an immediate wake under the default
+// policy (no regression), a declared CreditsAbove/CreditsBelow threshold can
+// force a wake with zero events queued, and — critically — a policy change
+// takes effect on the very next Tick without restarting the process, because
+// Tick re-reads the policy from disk every time rather than caching it at
+// construction.
+
+func TestBridgeWakesImmediatelyForInterruptEventEvenWhenCadenceNotDue(t *testing.T) {
+	sup, s, gw := newBridgeSupervisor(t)
+	sup.lastSession = time.Now() // heartbeat cadence nowhere near due
+	recordEvent(t, s, captain.EventContainerCrashed)
+
+	ran, err := sup.Tick(context.Background(), time.Now())
+	require.NoError(t, err)
+	require.True(t, ran, "an interrupt-type event must force a wake regardless of cadence")
+	require.Len(t, gw.mails, 1)
+	require.Len(t, gw.nudges, 1)
+}
+
+func TestBridgeWakesWhenDeclaredCreditsAboveThresholdIsCrossed(t *testing.T) {
+	sup, s, gw := newBridgeSupervisor(t)
+	sup.lastSession = time.Now() // heartbeat cadence nowhere near due
+
+	require.NoError(t, sup.db.Create(&persistence.TransactionModel{
+		ID: "t-1", PlayerID: s.playerID, Timestamp: time.Now(), TransactionType: "SELL_CARGO",
+		Category: "TRADING_REVENUE", Amount: 5000, BalanceBefore: 400000, BalanceAfter: 500000,
+	}).Error)
+
+	above := 500000
+	require.NoError(t, SaveWakePolicy(NewWorkspace(s.dir).StatePath(), WakePolicy{CreditsAbove: &above}))
+
+	ran, err := sup.Tick(context.Background(), time.Now())
+	require.NoError(t, err)
+	require.True(t, ran, "credits at/above the declared CreditsAbove threshold must force a wake")
+	require.Empty(t, gw.mails, "zero events queued: a credits-triggered wake is a heartbeat-style nudge, not a mail")
+	require.Len(t, gw.nudges, 1)
+}
+
+func TestBridgeWakePolicyTakesEffectNextTickWithoutRestart(t *testing.T) {
+	sup, _, gw := newBridgeSupervisor(t)
+	sup.lastSession = time.Now() // heartbeat cadence nowhere near due
+
+	// No policy declared yet, no events, cadence not due: no wake.
+	ran, err := sup.Tick(context.Background(), time.Now())
+	require.NoError(t, err)
+	require.False(t, ran)
+
+	// The captain (in reality, a separate `spacetraders captain wake set`
+	// CLI invocation) declares a NextWakeAt policy directly on disk against
+	// the SAME running Supervisor — no restart, no reconstruction.
+	declared := time.Now()
+	require.NoError(t, SaveWakePolicy(sup.statePath, WakePolicy{NextWakeAt: &declared}))
+
+	ran, err = sup.Tick(context.Background(), declared)
+	require.NoError(t, err)
+	require.True(t, ran, "the supervisor must re-read the wake policy from disk on every Tick, not just at construction")
+	require.Len(t, gw.nudges, 1)
+}
+
+func TestLastCreditsSurvivesRestart(t *testing.T) {
+	db, playerID, store := setupDB(t)
+	dir := t.TempDir()
+
+	sup1, _ := reopenBridgeSupervisor(t, db, playerID, store, dir)
+	sup1.lastCredits = 777000
+	sup1.saveState()
+
+	sup2, _ := reopenBridgeSupervisor(t, db, playerID, store, dir)
+	require.Equal(t, 777000, sup2.lastCredits, "LastCredits must survive a process restart")
 }

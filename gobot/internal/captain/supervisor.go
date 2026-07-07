@@ -74,18 +74,24 @@ func (s *Supervisor) restoreState(now time.Time) {
 	s.lastSurveyorNudge = st.LastSurveyorNudge
 	s.renudges = st.Renudges
 	s.escalated = st.Escalated
+	s.lastCredits = st.LastCredits
 }
 
-// saveState persists current scheduling state. Best-effort: a persistence
-// failure must not stop the supervisor from doing its actual job.
+// saveState persists current scheduling (cadence) state. Best-effort: a
+// persistence failure must not stop the supervisor from doing its actual
+// job. This writes only the supervisor-owned cadence fields (via
+// saveCadenceState's read-merge-write), preserving whatever wake policy the
+// captain has separately declared via `spacetraders captain wake set` — a
+// full overwrite here would clobber that policy every time a session runs.
 func (s *Supervisor) saveState() {
 	st := supervisorState{
 		LastSession:       s.lastSession,
 		LastSurveyorNudge: s.lastSurveyorNudge,
 		Renudges:          s.renudges,
 		Escalated:         s.escalated,
+		LastCredits:       s.lastCredits,
 	}
-	if err := saveSupervisorState(s.statePath, st); err != nil {
+	if err := saveCadenceState(s.statePath, st); err != nil {
 		fmt.Printf("captain: supervisor state persist failed: %v\n", err)
 	}
 }
@@ -130,8 +136,25 @@ func (s *Supervisor) Tick(ctx context.Context, now time.Time) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	heartbeatDue := now.Sub(s.lastSession) >= time.Duration(s.cfg.HeartbeatMinutes)*time.Minute
-	if len(events) == 0 && !heartbeatDue {
+
+	// Re-read the captain-declared wake policy fresh every tick (not cached
+	// at construction) so `spacetraders captain wake set` takes effect on
+	// the very next poll without a restart.
+	policy, err := LoadWakePolicy(s.statePath)
+	if err != nil {
+		fmt.Printf("captain: wake policy unreadable, using defaults: %v\n", err)
+		policy = WakePolicy{}
+	}
+	decision := evaluateWakeGate(wakeGateInput{
+		Now:                    now,
+		Events:                 events,
+		Policy:                 policy,
+		Credits:                s.lastCredits,
+		LastSession:            s.lastSession,
+		HeartbeatMinutes:       s.cfg.HeartbeatMinutes,
+		MaxWakeIntervalMinutes: s.cfg.MaxWakeIntervalMinutes,
+	})
+	if !decision.ShouldWake {
 		return false, nil
 	}
 	if s.sessionsInLastHour(now) >= s.cfg.MaxSessionsPerHour {

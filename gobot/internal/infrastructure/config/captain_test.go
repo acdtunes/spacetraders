@@ -69,6 +69,7 @@ func TestCaptainBridgeDefaults(t *testing.T) {
 	require.Equal(t, 24, cfg.Captain.UniverseCheckHours)
 	require.NotNil(t, cfg.Captain.MetaReviewDays)
 	require.Equal(t, 7, *cfg.Captain.MetaReviewDays)
+	require.Equal(t, 180, cfg.Captain.MaxWakeIntervalMinutes, "sp-sk68 never-wake safety ceiling")
 }
 
 func TestCaptainDetectorDefaults(t *testing.T) {

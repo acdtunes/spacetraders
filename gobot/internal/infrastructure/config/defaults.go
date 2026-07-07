@@ -220,4 +220,7 @@ func SetDefaults(cfg *Config) {
 		metaReviewDaysDefault := 7
 		cfg.Captain.MetaReviewDays = &metaReviewDaysDefault
 	}
+	if cfg.Captain.MaxWakeIntervalMinutes == 0 {
+		cfg.Captain.MaxWakeIntervalMinutes = 180
+	}
 }

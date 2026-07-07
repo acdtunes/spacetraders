@@ -42,4 +42,11 @@ type CaptainConfig struct {
 	UniverseCheckHours int `mapstructure:"universe_check_hours" validate:"omitempty,min=1"`
 
 	MetaReviewDays *int `mapstructure:"meta_review_days" validate:"omitempty,min=0"`
+
+	// MaxWakeIntervalMinutes is the never-wake safety ceiling (spec: sp-sk68
+	// wake model): a captain-declared NextWakeAt can delay a wake past the
+	// default heartbeat cadence, but it is always capped at
+	// LastSession+MaxWakeIntervalMinutes so a wake policy can never suppress
+	// a session indefinitely.
+	MaxWakeIntervalMinutes int `mapstructure:"max_wake_interval_minutes" validate:"omitempty,min=1"`
 }

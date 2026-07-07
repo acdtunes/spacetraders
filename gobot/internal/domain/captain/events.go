@@ -22,6 +22,40 @@ const (
 	EventStreamDown        EventType = "stream.down"
 )
 
+// DefaultInterruptTypes returns the built-in set of event types that force
+// an immediate captain wake regardless of cadence (spec: sp-sk68 wake
+// model). Every other known event type is deferred: it does not wake the
+// supervisor on its own, it simply rides whichever wake fires next (cadence,
+// credits, or another interrupt) since bridgeWake always delivers the full
+// unprocessed batch.
+func DefaultInterruptTypes() []EventType {
+	return []EventType{
+		EventWorkflowFailed,
+		EventContainerCrashed,
+		EventHeartbeatLost,
+		EventContractFailed,
+		EventIncomeStalled,
+		EventStreamDown,
+	}
+}
+
+// IsInterrupt reports whether t should force an immediate wake. A nil or
+// empty override falls back to DefaultInterruptTypes(); a non-empty override
+// (a captain-declared wake policy) REPLACES the default set entirely rather
+// than extending it.
+func IsInterrupt(t EventType, override []EventType) bool {
+	set := override
+	if len(set) == 0 {
+		set = DefaultInterruptTypes()
+	}
+	for _, candidate := range set {
+		if candidate == t {
+			return true
+		}
+	}
+	return false
+}
+
 type Event struct {
 	ID          int64
 	Type        EventType
