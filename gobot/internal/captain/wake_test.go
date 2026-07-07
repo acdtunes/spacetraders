@@ -293,7 +293,7 @@ func TestRenudgeStateSurvivesRestartAndDoesNotResendInitialMail(t *testing.T) {
 func TestBridgeWakesImmediatelyForInterruptEventEvenWhenCadenceNotDue(t *testing.T) {
 	sup, s, gw := newBridgeSupervisor(t)
 	sup.lastSession = time.Now() // heartbeat cadence nowhere near due
-	recordEvent(t, s, captain.EventContainerCrashed)
+	recordEvent(t, s, captain.EventContainerCrashLoop)
 
 	ran, err := sup.Tick(context.Background(), time.Now())
 	require.NoError(t, err)

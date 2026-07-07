@@ -4,16 +4,18 @@ import "testing"
 
 // TestDefaultInterruptTypesIsExactlyTheApprovedSet locks the default
 // interrupt set to the six event types the design approved: everything else
-// (workflow.finished, contract.completed, credits.threshold, ship.idle) is
-// deferred and rides the next wake's batch instead of forcing one.
+// (workflow.finished, contract.completed, credits.threshold, ship.idle, and —
+// per sp-no9i — the self-healing single container.crashed) is deferred and
+// rides the next wake's batch instead of forcing one. The actionable crash
+// signal is the crash LOOP (container.crashloop), not the single death.
 func TestDefaultInterruptTypesIsExactlyTheApprovedSet(t *testing.T) {
 	want := map[EventType]bool{
-		EventWorkflowFailed:   true,
-		EventContainerCrashed: true,
-		EventHeartbeatLost:    true,
-		EventContractFailed:   true,
-		EventIncomeStalled:    true,
-		EventStreamDown:       true,
+		EventWorkflowFailed:     true,
+		EventContainerCrashLoop: true,
+		EventHeartbeatLost:      true,
+		EventContractFailed:     true,
+		EventIncomeStalled:      true,
+		EventStreamDown:         true,
 	}
 
 	got := DefaultInterruptTypes()
@@ -38,11 +40,12 @@ func TestIsInterruptUnderDefaultSet(t *testing.T) {
 		want bool
 	}{
 		{"workflow.failed interrupts", EventWorkflowFailed, true},
-		{"container.crashed interrupts", EventContainerCrashed, true},
+		{"container.crashloop interrupts", EventContainerCrashLoop, true},
 		{"container.heartbeat_lost interrupts", EventHeartbeatLost, true},
 		{"contract.failed interrupts", EventContractFailed, true},
 		{"income.stalled interrupts", EventIncomeStalled, true},
 		{"stream.down interrupts", EventStreamDown, true},
+		{"container.crashed defers (self-healing single, sp-no9i)", EventContainerCrashed, false},
 		{"workflow.finished defers", EventWorkflowFinished, false},
 		{"contract.completed defers", EventContractCompleted, false},
 		{"credits.threshold defers", EventCreditsThreshold, false},

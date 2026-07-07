@@ -169,7 +169,7 @@ func TestEvaluateWakeGate(t *testing.T) {
 			name: "undeclared policy: default-set interrupt event still wakes",
 			in: wakeGateInput{
 				Now:              base,
-				Events:           []*captain.Event{evt(captain.EventContainerCrashed)},
+				Events:           []*captain.Event{evt(captain.EventContainerCrashLoop)},
 				LastSession:      base.Add(-time.Minute),
 				HeartbeatMinutes: 45,
 			},

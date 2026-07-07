@@ -2,7 +2,9 @@ package watchkeeper
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -25,7 +27,22 @@ type DetectorConfig struct {
 	IncomeStall     time.Duration // 0 disables income-stall detection
 	StreamDown      time.Duration // 0 disables stream-down detection
 	ExpectedStreams []string      // container-type prefixes expected to be RUNNING; empty disables
+
+	// Crash-loop detection (sp-no9i): a single container.crashed is self-healing
+	// (auto-restart+resume) and deferred; a container that dies CrashLoopThreshold
+	// times within CrashLoopWindow is a genuine loop worth an interrupt. Either
+	// field <= 0 disables the detector.
+	CrashLoopWindow    time.Duration
+	CrashLoopThreshold int
 }
+
+// Crash-loop defaults wired by the supervisor until CaptainConfig grows tunable
+// fields (follow-up bead). Conservative: three unrecoverable deaths of one
+// container inside 30 minutes is a genuine loop, not restart noise (sp-no9i).
+const (
+	defaultCrashLoopWindow    = 30 * time.Minute
+	defaultCrashLoopThreshold = 3
+)
 
 // RunDetectors writes synthetic strategic events for conditions that are
 // state (not daemon events): stale heartbeats, idle ships, credit crossings.
@@ -43,6 +60,9 @@ func RunDetectors(ctx context.Context, db *gorm.DB, store captain.EventStore, cf
 	if err := detectStreamDown(ctx, db, store, cfg, now); err != nil {
 		return err
 	}
+	if err := detectCrashLoops(ctx, db, store, cfg, now); err != nil {
+		return err
+	}
 	return detectCreditsCrossing(ctx, store, cfg)
 }
 
@@ -55,7 +75,23 @@ func detectStaleHeartbeats(ctx context.Context, db *gorm.DB, store captain.Event
 		Find(&stale).Error; err != nil {
 		return err
 	}
+	if len(stale) == 0 {
+		return nil
+	}
+	// A slow scout mid-transit legitimately stops heart-beating while the leg
+	// runs; its ADVANCING position (nav_status IN_TRANSIT) is proof it is alive.
+	// Exempt any stale container whose ship is in transit — a FROZEN position
+	// (not in transit) plus a stale heartbeat is the real death signal (sp-no9i).
+	// Load the in-transit ship symbols once and match them against each
+	// container's config (same quoted-symbol convention as detectIdleShips).
+	inTransit, err := inTransitShipSymbols(ctx, db, cfg.PlayerID)
+	if err != nil {
+		return err
+	}
 	for _, c := range stale {
+		if configReferencesAny(c.Config, inTransit) {
+			continue
+		}
 		// Staleness is a persistent state, not an edge: cooldown on ANY recent
 		// heartbeat_lost event (processed or not) prevents a session-burn loop
 		// where each acked event is re-emitted — and, being interrupt-class,
@@ -71,6 +107,36 @@ func detectStaleHeartbeats(ctx context.Context, db *gorm.DB, store captain.Event
 		})
 	}
 	return nil
+}
+
+// inTransitShipSymbols returns the symbols of the player's ships whose position
+// is advancing (nav_status IN_TRANSIT). Used to exempt their worker containers
+// from stale-heartbeat detection (sp-no9i).
+func inTransitShipSymbols(ctx context.Context, db *gorm.DB, playerID int) ([]string, error) {
+	var ships []persistence.ShipModel
+	if err := db.WithContext(ctx).
+		Select("ship_symbol").
+		Where("player_id = ? AND nav_status = ?", playerID, "IN_TRANSIT").
+		Find(&ships).Error; err != nil {
+		return nil, err
+	}
+	symbols := make([]string, 0, len(ships))
+	for _, s := range ships {
+		symbols = append(symbols, s.ShipSymbol)
+	}
+	return symbols, nil
+}
+
+// configReferencesAny reports whether a container's config JSON references any
+// of the given ship symbols, matching the quoted symbol the same way
+// detectIdleShips joins containers to ships (config stores "...":"SYMBOL").
+func configReferencesAny(config string, shipSymbols []string) bool {
+	for _, sym := range shipSymbols {
+		if sym != "" && strings.Contains(config, `"`+sym+`"`) {
+			return true
+		}
+	}
+	return false
 }
 
 func detectIdleShips(ctx context.Context, db *gorm.DB, store captain.EventStore, cfg DetectorConfig, now time.Time) error {
@@ -196,6 +262,61 @@ func detectStreamDown(ctx context.Context, db *gorm.DB, store captain.EventStore
 		})
 	}
 	return nil
+}
+
+// detectCrashLoops turns a burst of true container deaths into a single
+// interrupt. sp-okwk made container.crashed count true (unrecoverable) deaths;
+// a lone death is self-healing (auto-restart+resume) and stays deferred. When
+// the SAME container dies CrashLoopThreshold times within CrashLoopWindow it is
+// a genuine loop, so emit one interrupt-class container.crashloop for it — one
+// per loop, not per death (sp-no9i).
+func detectCrashLoops(ctx context.Context, db *gorm.DB, store captain.EventStore, cfg DetectorConfig, now time.Time) error {
+	if cfg.CrashLoopWindow <= 0 || cfg.CrashLoopThreshold <= 0 {
+		return nil
+	}
+	windowStart := now.Add(-cfg.CrashLoopWindow)
+	var crashes []persistence.CaptainEventModel
+	if err := db.WithContext(ctx).
+		Where("player_id = ? AND type = ? AND created_at > ?",
+			cfg.PlayerID, string(captain.EventContainerCrashed), windowStart).
+		Find(&crashes).Error; err != nil {
+		return err
+	}
+	deaths := make(map[string]int)
+	for i := range crashes {
+		if id := crashContainerID(crashes[i].Payload); id != "" {
+			deaths[id]++
+		}
+	}
+	for id, n := range deaths {
+		if n < cfg.CrashLoopThreshold {
+			continue
+		}
+		// One interrupt per loop, not per death: cooldown on any recent
+		// crashloop for this container (mirrors the other detectors' idiom).
+		recent, err := store.HasSince(ctx, cfg.PlayerID, captain.EventContainerCrashLoop, id, windowStart)
+		if err != nil || recent {
+			continue
+		}
+		_ = store.Record(ctx, &captain.Event{
+			Type: captain.EventContainerCrashLoop, Ship: id, PlayerID: cfg.PlayerID,
+			Payload: fmt.Sprintf(`{"container_id":%q,"deaths":%d,"window_minutes":%d}`,
+				id, n, int(cfg.CrashLoopWindow.Minutes())),
+		})
+	}
+	return nil
+}
+
+// crashContainerID extracts the container_id recorded in a container.crashed
+// event payload (see recordCrash); returns "" when absent or unparseable.
+func crashContainerID(payload string) string {
+	var p struct {
+		ContainerID string `json:"container_id"`
+	}
+	if err := json.Unmarshal([]byte(payload), &p); err != nil {
+		return ""
+	}
+	return p.ContainerID
 }
 
 func detectCreditsCrossing(ctx context.Context, store captain.EventStore, cfg DetectorConfig) error {

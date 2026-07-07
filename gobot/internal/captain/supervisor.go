@@ -186,6 +186,8 @@ func (s *Supervisor) Tick(ctx context.Context, now time.Time) (bool, error) {
 		IncomeStall:         time.Duration(s.cfg.IncomeStallHours) * time.Hour,
 		StreamDown:          time.Duration(s.cfg.StreamDownMinutes) * time.Minute,
 		ExpectedStreams:     s.cfg.ExpectedStreams,
+		CrashLoopWindow:     defaultCrashLoopWindow,
+		CrashLoopThreshold:  defaultCrashLoopThreshold,
 	}
 	// Synthetic events are best-effort enrichment: a detector/DB error must not
 	// abort the tick and skip cadence/interrupt/credits wake evaluation

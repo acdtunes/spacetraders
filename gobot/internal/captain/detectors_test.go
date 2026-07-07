@@ -52,6 +52,92 @@ func TestDetectStaleHeartbeat(t *testing.T) {
 	require.Len(t, events, 1)
 }
 
+func TestStaleHeartbeatExemptsInTransitShipButFiresForFrozen(t *testing.T) {
+	db, playerID, store := setupDB(t)
+	now := time.Now()
+	stale := now.Add(-10 * time.Minute)
+	started := now.Add(-1 * time.Hour)
+
+	// A slow solar scout: its worker container's heartbeat is stale because the
+	// transit leg exceeds the window, but the ship is IN_TRANSIT (position
+	// advancing) — proof the workflow is alive, not a real failure. Exempt.
+	require.NoError(t, db.Create(&persistence.ContainerModel{
+		ID: "c-scout", PlayerID: playerID, Status: "RUNNING",
+		Config: `{"ship_symbol":"SCOUT-1"}`, HeartbeatAt: &stale, StartedAt: &started,
+	}).Error)
+	require.NoError(t, db.Create(&persistence.ShipModel{
+		ShipSymbol: "SCOUT-1", PlayerID: playerID, NavStatus: "IN_TRANSIT",
+	}).Error)
+
+	// A genuinely dead worker: stale heartbeat AND its ship is frozen (DOCKED).
+	// A frozen position is the real death signal — must still fire.
+	require.NoError(t, db.Create(&persistence.ContainerModel{
+		ID: "c-frozen", PlayerID: playerID, Status: "RUNNING",
+		Config: `{"ship_symbol":"FROZEN-1"}`, HeartbeatAt: &stale, StartedAt: &started,
+	}).Error)
+	require.NoError(t, db.Create(&persistence.ShipModel{
+		ShipSymbol: "FROZEN-1", PlayerID: playerID, NavStatus: "DOCKED",
+	}).Error)
+
+	cfg := DetectorConfig{PlayerID: playerID, StaleHeartbeat: 5 * time.Minute, ShipIdle: time.Hour}
+	require.NoError(t, RunDetectors(context.Background(), db, store, cfg, now))
+
+	events, err := store.FindUnprocessed(context.Background(), playerID, 10)
+	require.NoError(t, err)
+	require.Len(t, events, 1, "in-transit scout must be exempt; only the frozen worker fires heartbeat_lost")
+	require.Equal(t, captain.EventHeartbeatLost, events[0].Type)
+	require.Contains(t, events[0].Payload, "c-frozen")
+}
+
+// crashLoopEvents returns only the container.crashloop events for a player,
+// filtering out the underlying container.crashed rows used to seed the loop.
+func crashLoopEvents(t *testing.T, store *persistence.GormCaptainEventRepository, playerID int) []*captain.Event {
+	t.Helper()
+	all, err := store.FindUnprocessed(context.Background(), playerID, 100)
+	require.NoError(t, err)
+	var loops []*captain.Event
+	for _, e := range all {
+		if e.Type == captain.EventContainerCrashLoop {
+			loops = append(loops, e)
+		}
+	}
+	return loops
+}
+
+func TestCrashLoopEmitsOneInterruptForRapidDeathsNotForSingle(t *testing.T) {
+	db, playerID, store := setupDB(t)
+	now := time.Now()
+	ctx := context.Background()
+
+	// Three true deaths of the SAME container inside the window = a crash loop.
+	for i := 0; i < 3; i++ {
+		require.NoError(t, store.Record(ctx, &captain.Event{
+			Type: captain.EventContainerCrashed, PlayerID: playerID,
+			Payload: `{"container_id":"c-loop","error":"boom"}`,
+		}))
+	}
+	// A single death of a different container is self-healing — not a loop.
+	require.NoError(t, store.Record(ctx, &captain.Event{
+		Type: captain.EventContainerCrashed, PlayerID: playerID,
+		Payload: `{"container_id":"c-single","error":"blip"}`,
+	}))
+
+	cfg := DetectorConfig{PlayerID: playerID, StaleHeartbeat: time.Hour, ShipIdle: time.Hour,
+		CrashLoopWindow: 30 * time.Minute, CrashLoopThreshold: 3}
+	require.NoError(t, RunDetectors(ctx, db, store, cfg, now))
+
+	loops := crashLoopEvents(t, store, playerID)
+	require.Len(t, loops, 1, "exactly one crashloop for the looping container; none for the single death")
+	require.Equal(t, "c-loop", loops[0].Ship)
+	require.Contains(t, loops[0].Payload, "c-loop")
+
+	// Re-running while the deaths are still inside the window must NOT emit a
+	// second crashloop — one interrupt per loop, not per death (cooldown).
+	require.NoError(t, RunDetectors(ctx, db, store, cfg, now.Add(time.Minute)))
+	loops = crashLoopEvents(t, store, playerID)
+	require.Len(t, loops, 1, "crashloop re-emitted within cooldown: session-burn loop")
+}
+
 func TestDetectCreditsThresholdCrossing(t *testing.T) {
 	db, playerID, store := setupDB(t)
 	now := time.Now()

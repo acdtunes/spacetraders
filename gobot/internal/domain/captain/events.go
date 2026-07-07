@@ -10,16 +10,17 @@ import (
 type EventType string
 
 const (
-	EventWorkflowFinished  EventType = "workflow.finished"
-	EventWorkflowFailed    EventType = "workflow.failed"
-	EventContainerCrashed  EventType = "container.crashed"
-	EventHeartbeatLost     EventType = "container.heartbeat_lost"
-	EventShipIdle          EventType = "ship.idle"
-	EventCreditsThreshold  EventType = "credits.threshold"
-	EventContractCompleted EventType = "contract.completed"
-	EventContractFailed    EventType = "contract.failed"
-	EventIncomeStalled     EventType = "income.stalled"
-	EventStreamDown        EventType = "stream.down"
+	EventWorkflowFinished   EventType = "workflow.finished"
+	EventWorkflowFailed     EventType = "workflow.failed"
+	EventContainerCrashed   EventType = "container.crashed"
+	EventContainerCrashLoop EventType = "container.crashloop"
+	EventHeartbeatLost      EventType = "container.heartbeat_lost"
+	EventShipIdle           EventType = "ship.idle"
+	EventCreditsThreshold   EventType = "credits.threshold"
+	EventContractCompleted  EventType = "contract.completed"
+	EventContractFailed     EventType = "contract.failed"
+	EventIncomeStalled      EventType = "income.stalled"
+	EventStreamDown         EventType = "stream.down"
 )
 
 // DefaultInterruptTypes returns the built-in set of event types that force
@@ -31,7 +32,10 @@ const (
 func DefaultInterruptTypes() []EventType {
 	return []EventType{
 		EventWorkflowFailed,
-		EventContainerCrashed,
+		// A single container.crashed is self-healing (auto-restart+resume), so it
+		// is deferred; the interrupt-class crash signal is the crash LOOP below
+		// (N true deaths of one container in a window — see detectCrashLoops).
+		EventContainerCrashLoop,
 		EventHeartbeatLost,
 		EventContractFailed,
 		EventIncomeStalled,
