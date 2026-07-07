@@ -28,6 +28,7 @@ import type { RouteVectorsProps } from './RouteVectors';
 import LoaderScreen from './LoaderScreen';
 import { AmbientBackdrop } from './AmbientBackdrop';
 import { NOIR } from '../theme/noir';
+import { useCinematicCamera } from '../hooks/useCinematicCamera';
 
 type RouteVectorsComponentType = (props: RouteVectorsProps) => JSX.Element | null;
 
@@ -101,6 +102,11 @@ const SHIP_POSITION_SMOOTHING_MS = 900;
 const SHIP_POSITION_DISTANCE_THRESHOLD = 2;
 const TARGET_FRAME_RATE = 60;
 const FRAMES_PER_MS = TARGET_FRAME_RATE / 1000;
+// The cinematic camera writes the Layer transform every frame, but the minimap +
+// ambient backdrop read a React snapshot (viewportBounds). Resync that snapshot at
+// most this often while the camera is moving — often enough to track drift/glide,
+// rarely enough to avoid a per-frame re-render of those consumers.
+const VIEWPORT_SYNC_INTERVAL_MS = 200;
 const getHighResTimestamp = (): number => {
   if (typeof performance !== 'undefined' && typeof performance.now === 'function') {
     return performance.now();
@@ -123,6 +129,11 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
   const waypointsSizeRef = useRef<number>(0);
   const shipPositionCacheRef = useRef<Map<string, { x: number; y: number; status: ShipNavStatus; timestamp: number }>>(new Map());
   const animationStartRef = useRef<number>(getHighResTimestamp());
+  // Throttle state for the camera-driven viewport resync (see handleAnimationTick).
+  // updateViewportBounds is defined below handleAnimationTick, so reach it through a
+  // ref kept current each render rather than a forward reference in the tick closure.
+  const lastViewportSyncRef = useRef<number>(0);
+  const updateViewportBoundsRef = useRef<() => void>(() => {});
 
   const {
     currentSystem,
@@ -169,12 +180,39 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
   const currentScale = viewportBounds.scale || 1;
   const frameTimestamp = useMemo(() => Date.now(), [animationFrame]);
 
+  // Cinematic camera drives the content Layer (the same transform every manual
+  // pan/zoom already owns), so manual gestures stay pixel-identical and resume
+  // from wherever drift left the view. Its methods are stable across renders.
+  const camera = useCinematicCamera();
+  const {
+    applyFrame: applyCameraFrame,
+    notifyManual: notifyManualCamera,
+    easeTo: easeCameraTo,
+    follow: followCamera,
+    stopFollow: stopFollowCamera,
+    setManualHeld: setCameraManualHeld,
+  } = camera;
+
   const handleAnimationTick = useCallback(() => {
     const timestamp = getHighResTimestamp();
     const elapsed = timestamp - animationStartRef.current;
     const nextFrame = Math.max(0, Math.round(elapsed * FRAMES_PER_MS));
     setAnimationFrame((prev) => (nextFrame <= prev ? prev : nextFrame));
-  }, []);
+    // The single per-tick camera write. Removing this one line fully disables the
+    // camera — the scene reverts to a static, hand-controlled view (backout path).
+    if (layerRef.current) {
+      const wrote = applyCameraFrame(timestamp, layerRef.current);
+      // The camera moved the Layer directly, so the viewportBounds snapshot the
+      // minimap + backdrop read is now stale. Resync it (throttled) whenever the
+      // camera actually wrote — drift, selection glide, or follow — so those track
+      // the motion instead of freezing and snapping on the next manual gesture.
+      // Manual mode writes nothing (wrote === false); its own handlers sync then.
+      if (wrote && timestamp - lastViewportSyncRef.current >= VIEWPORT_SYNC_INTERVAL_MS) {
+        lastViewportSyncRef.current = timestamp;
+        updateViewportBoundsRef.current();
+      }
+    }
+  }, [applyCameraFrame]);
 
   const stageSize = useKonvaStage({
     containerRef,
@@ -286,9 +324,14 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
       originY: origin.y,
     });
   }, []);
+  // Keep the tick-loop's ref pointing at the latest (stable) updateViewportBounds.
+  updateViewportBoundsRef.current = updateViewportBounds;
 
   // Handle drag end with viewport clamping
   const handleDragEnd = () => {
+    // A held drag has ended: release the manual-hold gate so the grace window can
+    // count down and idle drift eventually resume.
+    setCameraManualHeld(false);
     if (!layerRef.current || !stageRef.current || waypoints.size === 0) {
       updateViewportBounds();
       return;
@@ -329,6 +372,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
   // Handle minimap navigation
   const handleMinimapNavigate = (worldX: number, worldY: number) => {
     if (!layerRef.current || !stageRef.current) return;
+    notifyManualCamera();
     const layer = layerRef.current;
     const stage = stageRef.current;
 
@@ -369,6 +413,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
   // Zoom control functions with animation
   const handleZoomIn = () => {
     if (!layerRef.current || !stageRef.current) return;
+    notifyManualCamera();
     const layer = layerRef.current;
     const stage = stageRef.current;
 
@@ -403,6 +448,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
 
   const handleZoomOut = () => {
     if (!layerRef.current || !stageRef.current) return;
+    notifyManualCamera();
     const layer = layerRef.current;
     const stage = stageRef.current;
 
@@ -437,6 +483,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
 
   const handleResetView = () => {
     if (!layerRef.current || !stageRef.current) return;
+    notifyManualCamera();
     const layer = layerRef.current;
     const stage = stageRef.current;
 
@@ -454,6 +501,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
 
   const handleFitView = () => {
     if (!layerRef.current || !stageRef.current || waypoints.size === 0) return;
+    notifyManualCamera();
     const layer = layerRef.current;
     const stage = stageRef.current;
 
@@ -488,6 +536,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
 
   const handleFocusOn = useCallback((x: number, y: number, scale?: number) => {
     if (!layerRef.current || !stageRef.current) return;
+    notifyManualCamera();
     const layer = layerRef.current;
     const stage = stageRef.current;
 
@@ -501,7 +550,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
       easing: Konva.Easings.EaseInOut,
       onFinish: updateViewportBounds,
     });
-  }, [updateViewportBounds]);
+  }, [updateViewportBounds, notifyManualCamera]);
 
   // Expose zoom functions via ref
   useImperativeHandle(ref, () => ({
@@ -517,6 +566,8 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
     const handleKeyDown = (e: KeyboardEvent) => {
       // Deselection
       if (e.key === 'Escape' && (selectedObject || selectedShip || selectedWaypoint)) {
+        // Stop chasing a ship we're about to deselect (no-op unless following).
+        stopFollowCamera();
         setSelectedObject(null);
         setSelectedShip(null);
         setSelectedWaypoint(null);
@@ -546,6 +597,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
       else if (e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
         e.preventDefault();
         if (!layerRef.current || !stageRef.current) return;
+        notifyManualCamera();
 
         const layer = layerRef.current;
         const panDistance = 50; // pixels
@@ -570,7 +622,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedObject, selectedShip, selectedWaypoint, setSelectedShip, setSelectedWaypoint]);
+  }, [selectedObject, selectedShip, selectedWaypoint, setSelectedShip, setSelectedWaypoint, notifyManualCamera, stopFollowCamera]);
 
   // Load waypoints when system changes
   useEffect(() => {
@@ -615,13 +667,17 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
       layer.x(stage.width() / 2 - clusterCenter.x);
       layer.y(stage.height() / 2 - clusterCenter.y);
       layer.scale({ x: 1, y: 1 });
+      // Let the camera yield to this programmatic recentre; after the grace it
+      // re-anchors idle drift around the freshly centred pose.
+      notifyManualCamera();
 
       waypointsSizeRef.current = waypoints.size;
     }
-  }, [waypoints]);
+  }, [waypoints, notifyManualCamera]);
 
   const applyZoomAtWorldPoint = (worldX: number, worldY: number, zoomFactor: number) => {
     if (!layerRef.current || !stageRef.current) return;
+    notifyManualCamera();
 
     const layer = layerRef.current;
     const stage = stageRef.current;
@@ -687,6 +743,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
   // Handle double-click zoom
   const handleDoubleClick = () => {
     if (!layerRef.current || !stageRef.current) return;
+    notifyManualCamera();
 
     const layer = layerRef.current;
     const stage = stageRef.current;
@@ -1175,7 +1232,11 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
               clearAnchor();
             }
           }}
-          onDragMove={updateViewportBounds}
+          onDragStart={() => setCameraManualHeld(true)}
+          onDragMove={() => {
+            notifyManualCamera();
+            updateViewportBounds();
+          }}
           onDragEnd={handleDragEnd}
           onDblClick={handleDoubleClick}
         >
@@ -1240,6 +1301,8 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
                     if (container) container.style.cursor = 'grab';
                   }}
                   onClick={() => {
+                    // Focus moved to a waypoint: stop chasing any followed ship.
+                    stopFollowCamera();
                     setSelectedObject({ type: 'waypoint', symbol: waypoint.symbol, x: waypoint.x, y: waypoint.y });
                     setSelectedWaypoint(waypoint);
                     showForWaypoint(waypoint);
@@ -1361,6 +1424,39 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
             onSelectShip={(ship, position) => {
               setSelectedObject({ type: 'ship', symbol: ship.symbol, x: position.x, y: position.y });
               setSelectedShip(ship);
+              // Cinematically centre the selected ship at the current zoom (same
+              // centring math as handleFocusOn, minus the zoom jump). Manual input
+              // interrupts instantly.
+              const stage = stageRef.current;
+              const layer = layerRef.current;
+              if (stage && layer) {
+                const scale = layer.scaleX();
+                if (ship.nav.status === 'IN_TRANSIT') {
+                  // A mover out-runs a one-shot glide and would land where it *was*.
+                  // Follow its live position (Ship.getPosition is time-based) each
+                  // frame so it stays centred through the approach, until it arrives
+                  // or the user takes over. Snapshot inputs are fine: the transit's
+                  // nav times are fixed, so the closure keeps interpolating correctly.
+                  followCamera(() => {
+                    const s = stageRef.current;
+                    if (!s) return null;
+                    const world = Ship.getPosition(ship, waypoints, shipPositionOptions);
+                    if (world.x === 0 && world.y === 0) return null;
+                    return {
+                      x: s.width() / 2 - world.x * scale,
+                      y: s.height() / 2 - world.y * scale,
+                      scale,
+                    };
+                  });
+                } else {
+                  // Stationary target: a one-shot ease is exact and hands back to idle.
+                  easeCameraTo({
+                    x: stage.width() / 2 - position.x * scale,
+                    y: stage.height() / 2 - position.y * scale,
+                    scale,
+                  });
+                }
+              }
             }}
             onHoverShip={setHoveredShip}
             assignments={assignments}
