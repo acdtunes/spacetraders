@@ -150,6 +150,17 @@ func (e *DeliverToConstructionExecutor) Execute(ctx context.Context, params Task
 		params.PlayerID.Value(),
 	)
 	if err != nil {
+		// Surface the underlying supply error VERBATIM in the message so it
+		// reaches the container log stream (structured map fields are dropped
+		// by the renderer). Without this the real cause of a failed delivery
+		// (e.g. a 404 route error) never surfaces above "task failed".
+		logger.Log("ERROR", fmt.Sprintf("DELIVER_TO_CONSTRUCTION: supply failed: %v", err), map[string]interface{}{
+			"task_id":           task.ID(),
+			"ship":              params.ShipSymbol,
+			"construction_site": constructionSite,
+			"good":              task.Good(),
+			"units":             cargoUnits,
+		})
 		return fmt.Errorf("failed to supply construction: %w", err)
 	}
 

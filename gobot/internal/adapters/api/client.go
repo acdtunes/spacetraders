@@ -1252,15 +1252,17 @@ func (c *SpaceTradersClient) GetConstruction(ctx context.Context, systemSymbol, 
 
 // SupplyConstruction delivers materials to a construction site
 func (c *SpaceTradersClient) SupplyConstruction(ctx context.Context, shipSymbol, waypointSymbol, tradeSymbol string, units int, token string) (*domainPorts.ConstructionSupplyResponse, error) {
-	// Extract system symbol from waypoint (e.g., "X1-FB5-I61" -> "X1-FB5")
+	// Construction supply is a waypoint-scoped endpoint; the ship is identified
+	// via the request body, not the path. The previous ship-scoped path
+	// (/my/ships/{shipSymbol}/construction/supply) does not exist and returned
+	// 404 "Route not found", killing every construction delivery (sp-fi7q).
 	systemSymbol := extractSystemSymbol(waypointSymbol)
-	path := fmt.Sprintf("/my/ships/%s/construction/supply", shipSymbol)
+	path := fmt.Sprintf("/systems/%s/waypoints/%s/construction/supply", systemSymbol, waypointSymbol)
 
 	body := map[string]interface{}{
-		"shipSymbol":     shipSymbol,
-		"waypointSymbol": waypointSymbol,
-		"tradeSymbol":    tradeSymbol,
-		"units":          units,
+		"shipSymbol":  shipSymbol,
+		"tradeSymbol": tradeSymbol,
+		"units":       units,
 	}
 
 	var response struct {
