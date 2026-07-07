@@ -15,6 +15,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	watchkeeper "github.com/andrescamacho/spacetraders-go/internal/captain"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/buildinfo"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 )
@@ -22,6 +23,11 @@ import (
 func main() {
 	once := flag.Bool("once", false, "run a single supervisor tick and exit")
 	flag.Parse()
+
+	// Build stamp first, before any config/DB work: captain-supervisor.log then
+	// always names the live binary's commit even if startup later fails, and a
+	// deploy can grep it to assert the fresh build is running (sp-898q, retires L42).
+	fmt.Println(buildinfo.Get().Banner("watchkeeper"))
 
 	cfg := config.MustLoadConfig("")
 	if !cfg.Captain.Enabled && !*once {

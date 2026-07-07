@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  TEMPLATE - do not hand-edit the installed copy. Rendered by
+  scripts/render-launchd.sh (make launchd / make install-launchd); paths are
+  substituted from the checkout you deploy from. See deploy/launchd/README.md.
+  (sp-898q)
+-->
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.spacetraders.captain</string>
+  <key>ProgramArguments</key><array><string>@@GOBOT_DIR@@/bin/watchkeeper</string></array>
+  <key>WorkingDirectory</key><string>@@GOBOT_DIR@@</string>
+  <key>EnvironmentVariables</key><dict>
+    <key>PATH</key><string>@@HOME@@/.local/bin:/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>
+    <!-- The bd-router shim in .local/bin needs the real bd; without BD_REAL every
+         watchkeeper gc/bd call exits 127 and all wakes fail (sp-sk68, the historical
+         whole-fleet outage). Templated so a regen can never drop it (sp-898q). -->
+    <key>BD_REAL</key><string>@@BD_REAL@@</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>30</integer>
+  <!-- ExitTimeOut >= 35 so launchd does not SIGKILL watchkeeper mid-shutdown
+       while the daemon it supervises drains (sp-898q). -->
+  <key>ExitTimeOut</key><integer>45</integer>
+  <key>StandardOutPath</key><string>@@GOBOT_DIR@@/captain-supervisor.log</string>
+  <key>StandardErrorPath</key><string>@@GOBOT_DIR@@/captain-supervisor.log</string>
+</dict></plist>

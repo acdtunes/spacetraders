@@ -1,4 +1,18 @@
-.PHONY: build test clean proto lint install-tools routing-service build-watchkeeper run-watchkeeper build-captain run-captain cli-reference restart-daemon install-cli
+.PHONY: build test clean proto lint install-tools routing-service build-watchkeeper run-watchkeeper build-captain run-captain cli-reference restart-daemon install-cli launchd install-launchd deploy assert-live-stamp
+
+# ---- Build stamp (sp-898q) --------------------------------------------------
+# Injected into internal/infrastructure/buildinfo at LINK time so every binary's
+# startup banner names its own commit + build time. This retires the stale-binary
+# hazard (L42): a merged fix is invisible if the live binary predates it.
+#
+# BUILD_TIME is captured here, at build — never time.Now() at runtime. The stamp
+# must freeze the moment the binary is linked, not report when it started. All
+# three are overridable (e.g. COMMIT=deadbeef make build) for reproducible builds.
+BUILDINFO_PKG := github.com/andrescamacho/spacetraders-go/internal/infrastructure/buildinfo
+COMMIT        ?= $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
+BUILD_TIME    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+VERSION       ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+LDFLAGS       := -X '$(BUILDINFO_PKG).Commit=$(COMMIT)' -X '$(BUILDINFO_PKG).BuildTime=$(BUILD_TIME)' -X '$(BUILDINFO_PKG).Version=$(VERSION)'
 
 # Build all binaries
 build: build-cli build-daemon build-routing-service build-watchkeeper
@@ -6,7 +20,7 @@ build: build-cli build-daemon build-routing-service build-watchkeeper
 # Build CLI binary
 build-cli:
 	@echo "Building CLI..."
-	@go build -o bin/spacetraders ./cmd/spacetraders
+	@go build -ldflags "$(LDFLAGS)" -o bin/spacetraders ./cmd/spacetraders
 
 # Install the CLI on PATH: symlink bin/spacetraders into ~/.local/bin (idempotent).
 # Config resolution finds config.yaml next to the real binary, so the shim works
@@ -19,7 +33,7 @@ install-cli: build-cli
 # Build daemon binary
 build-daemon:
 	@echo "Building daemon..."
-	@go build -o bin/spacetraders-daemon ./cmd/spacetraders-daemon
+	@go build -ldflags "$(LDFLAGS)" -o bin/spacetraders-daemon ./cmd/spacetraders-daemon
 
 # Build routing service manager binary
 build-routing-service:
@@ -29,7 +43,7 @@ build-routing-service:
 # Build watchkeeper supervisor binary
 build-watchkeeper:
 	@echo "Building watchkeeper..."
-	@go build -o bin/watchkeeper ./cmd/watchkeeper
+	@go build -ldflags "$(LDFLAGS)" -o bin/watchkeeper ./cmd/watchkeeper
 
 # build-captain: back-compat alias for build-watchkeeper (muscle memory / scripts)
 build-captain: build-watchkeeper
@@ -54,6 +68,71 @@ restart-daemon: build-daemon
 		nohup ./bin/spacetraders-daemon >> daemon.log 2>&1 & \
 		echo "daemon restarted (log: daemon.log)"; \
 	fi
+
+# ---- launchd deploy (sp-898q) -----------------------------------------------
+# The live ~/Library/LaunchAgents plists are RENDERED from committed templates
+# in ../deploy/launchd/*.plist.template. Load-bearing keys (BD_REAL, ExitTimeOut,
+# the gobot path) live in the repo instead of being hand-maintained in a file
+# that a regen clobbers — the historical whole-fleet outage when BD_REAL was
+# dropped (sp-sk68) can no longer recur (retires captain-supervisor-plist-*).
+#
+# Paths are derived from where this Makefile actually runs ($(CURDIR)), so the
+# rendered plist always points at the checkout you deploy FROM — deploy from the
+# production checkout, never a worktree. All vars are overridable.
+LAUNCHD_HOME ?= $(HOME)
+GOBOT_DIR    ?= $(CURDIR)
+REPO_ROOT    ?= $(patsubst %/,%,$(dir $(GOBOT_DIR)))
+BD_REAL      ?= $(LAUNCHD_HOME)/IdeaProjects/bin/bd
+AGENTS_DIR   ?= $(LAUNCHD_HOME)/Library/LaunchAgents
+LAUNCHD_TPL  := $(abspath $(CURDIR)/../deploy/launchd)
+LAUNCHD_OUT  := $(LAUNCHD_TPL)/build
+
+# Render templates -> $(LAUNCHD_OUT) (gitignored). SAFE: writes only into the
+# repo build dir, never touches the live launchd agents.
+launchd:
+	@LAUNCHD_HOME='$(LAUNCHD_HOME)' GOBOT_DIR='$(GOBOT_DIR)' REPO_ROOT='$(REPO_ROOT)' BD_REAL='$(BD_REAL)' \
+		./scripts/render-launchd.sh '$(LAUNCHD_TPL)' '$(LAUNCHD_OUT)'
+
+# Install rendered plists into ~/Library/LaunchAgents and reload each unit.
+# ORCHESTRATOR-RUN at deploy: this MUTATES the live launchd configuration.
+install-launchd: launchd
+	@uid=$$(id -u); \
+	for f in $(LAUNCHD_OUT)/*.plist; do \
+		label=$$(basename "$$f" .plist); \
+		cp "$$f" "$(AGENTS_DIR)/$$label.plist"; \
+		launchctl bootout gui/$$uid/$$label 2>/dev/null || true; \
+		launchctl bootstrap gui/$$uid "$(AGENTS_DIR)/$$label.plist"; \
+		echo "installed + reloaded $$label"; \
+	done
+
+# Assert the freshly-built commit is the one actually running: grep the live
+# service logs for the current short commit, fail loudly if a stale binary is
+# still up (sp-898q, retires L42's stale-binary clause). ORCHESTRATOR-RUN.
+STAMP_COMMIT := $(shell git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
+assert-live-stamp:
+	@echo "Asserting live binaries are at commit $(STAMP_COMMIT)..."
+	@ok=0; \
+	for i in $$(seq 1 30); do \
+		if grep -q "$(STAMP_COMMIT)" "$(GOBOT_DIR)/captain-supervisor.log" 2>/dev/null \
+			&& grep -q "$(STAMP_COMMIT)" "$(GOBOT_DIR)/daemon.log" 2>/dev/null; then \
+			ok=1; break; \
+		fi; \
+		sleep 1; \
+	done; \
+	if [ $$ok -ne 1 ]; then \
+		echo "DEPLOY ASSERT FAILED: captain-supervisor.log / daemon.log do not show commit $(STAMP_COMMIT)." >&2; \
+		echo "A stale binary is likely still running. Inspect: launchctl list | grep spacetraders" >&2; \
+		exit 1; \
+	fi; \
+	echo "OK: live binaries report commit $(STAMP_COMMIT)"
+
+# Full deploy: build stamped binaries, install/reload launchd, restart, then
+# assert the live stamp. ORCHESTRATOR-RUN from the PRODUCTION checkout.
+deploy: build install-launchd
+	@uid=$$(id -u); \
+	launchctl kickstart -k gui/$$uid/com.spacetraders.daemon 2>/dev/null || true; \
+	launchctl kickstart -k gui/$$uid/com.spacetraders.captain 2>/dev/null || true
+	@$(MAKE) assert-live-stamp
 
 # Regenerate the captain CLI reference from the spacetraders binary help tree
 cli-reference: build-cli
@@ -239,4 +318,8 @@ help:
 	@echo "  run-cli              - Run CLI (use CMD='...' to pass commands)"
 	@echo "  dev-setup            - Set up development environment"
 	@echo "  docker-build         - Build Docker images"
+	@echo "  launchd              - Render launchd plists from templates into deploy/launchd/build (safe)"
+	@echo "  install-launchd      - Render + install plists into ~/Library/LaunchAgents and reload (deploy)"
+	@echo "  deploy               - Build stamped binaries, install launchd, restart, assert live stamp (deploy)"
+	@echo "  assert-live-stamp    - Fail if the live service logs do not show the current commit"
 	@echo "  help                 - Show this help message"

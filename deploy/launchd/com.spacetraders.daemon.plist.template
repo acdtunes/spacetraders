@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  TEMPLATE - do not hand-edit the installed copy. Rendered by
+  scripts/render-launchd.sh (make launchd / make install-launchd); paths are
+  substituted from the checkout you deploy from. See deploy/launchd/README.md.
+  (sp-898q)
+-->
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.spacetraders.daemon</string>
+  <key>ProgramArguments</key><array>
+    <string>@@GOBOT_DIR@@/bin/spacetraders-daemon</string><string>--force</string>
+  </array>
+  <key>WorkingDirectory</key><string>@@GOBOT_DIR@@</string>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <!-- ExitTimeOut >= daemon GracefulShutdownTimeout (30s) so launchd does not
+       SIGKILL a drain in progress. -->
+  <key>ExitTimeOut</key><integer>45</integer>
+  <key>StandardOutPath</key><string>@@GOBOT_DIR@@/daemon.log</string>
+  <key>StandardErrorPath</key><string>@@GOBOT_DIR@@/daemon.log</string>
+</dict></plist>

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/buildinfo"
 	"github.com/spf13/cobra"
 )
 
@@ -18,8 +19,9 @@ var (
 // NewRootCommand creates the root command for the CLI
 func NewRootCommand() *cobra.Command {
 	rootCmd := &cobra.Command{
-		Use:   "spacetraders",
-		Short: "SpaceTraders CLI - Interact with the SpaceTraders daemon",
+		Use:     "spacetraders",
+		Short:   "SpaceTraders CLI - Interact with the SpaceTraders daemon",
+		Version: buildinfo.Get().Short(),
 		Long: `SpaceTraders CLI provides commands to interact with your SpaceTraders fleet.
 The CLI communicates with the daemon via Unix socket for efficient operation.
 
@@ -68,6 +70,7 @@ Examples:
 	rootCmd.AddCommand(NewConstructionCommand())
 	rootCmd.AddCommand(NewUniverseCommand())
 	rootCmd.AddCommand(NewHistoryCommand())
+	rootCmd.AddCommand(NewVersionCommand())
 
 	return rootCmd
 }

@@ -1,10 +1,16 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  TEMPLATE - do not hand-edit the installed copy. Rendered by
+  scripts/render-launchd.sh (make launchd / make install-launchd); paths are
+  substituted from the checkout you deploy from. See deploy/launchd/README.md.
+  (sp-898q)
+-->
 <plist version="1.0"><dict>
   <key>Label</key><string>com.spacetraders.dashboard</string>
   <key>ProgramArguments</key><array>
     <string>/usr/bin/python3</string>
-    <string>/Users/andres.dandrea/projects/spacetraders/dashboard/captain_dashboard.py</string>
+    <string>@@REPO_ROOT@@/dashboard/captain_dashboard.py</string>
   </array>
   <key>EnvironmentVariables</key><dict>
     <key>PATH</key><string>/usr/local/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>

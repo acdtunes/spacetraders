@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  TEMPLATE - do not hand-edit the installed copy. Rendered by
+  scripts/render-launchd.sh (make launchd / make install-launchd); paths are
+  substituted from the checkout you deploy from. See deploy/launchd/README.md.
+  (sp-898q)
+-->
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.spacetraders.routing</string>
+  <key>ProgramArguments</key><array>
+    <string>/bin/bash</string><string>@@GOBOT_DIR@@/services/routing-service/run.sh</string>
+  </array>
+  <key>WorkingDirectory</key><string>@@GOBOT_DIR@@</string>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>@@GOBOT_DIR@@/routing.log</string>
+  <key>StandardErrorPath</key><string>@@GOBOT_DIR@@/routing.log</string>
+</dict></plist>

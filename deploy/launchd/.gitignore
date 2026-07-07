@@ -1,0 +1,3 @@
+# Rendered plists (make launchd / install-launchd). The *.plist.template files
+# are the source of truth; the concrete plists are machine-specific build output.
+build/

@@ -44,6 +44,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	domainRouting "github.com/andrescamacho/spacetraders-go/internal/domain/routing"
+	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/buildinfo"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/pidfile"
@@ -56,6 +57,9 @@ func main() {
 
 	fmt.Println("SpaceTraders Daemon v0.1.0")
 	fmt.Println("==========================")
+	// Build stamp: makes the live binary's commit greppable in daemon.log so a
+	// deploy can assert the fresh build is actually running (sp-898q, retires L42).
+	fmt.Println(buildinfo.Get().Banner("spacetraders-daemon"))
 
 	// Load configuration
 	fmt.Println("Loading configuration...")
