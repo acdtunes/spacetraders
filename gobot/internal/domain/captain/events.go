@@ -1,5 +1,5 @@
 // Package captain defines the strategic-event outbox consumed by the
-// autonomous captain supervisor (see docs/superpowers/specs/2026-07-02-autonomous-captain-design.md).
+// autonomous watchkeeper (see docs/superpowers/specs/2026-07-02-autonomous-captain-design.md).
 package captain
 
 import (
@@ -71,7 +71,7 @@ type EventRecorder interface {
 	Record(ctx context.Context, e *Event) error
 }
 
-// EventStore is the full port the captain supervisor uses.
+// EventStore is the full port the watchkeeper uses.
 type EventStore interface {
 	EventRecorder
 	// FindUnprocessed returns events with ProcessedAt IS NULL, oldest first.

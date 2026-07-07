@@ -86,7 +86,7 @@ def collect():
             "ships": [{"sym": s[0], "nav": s[1], "loc": s[2], "f": int(s[3]), "fc": int(s[4]), "c": int(s[5]), "cc": int(s[6])} for s in ships if len(s) >= 7],
             "reports": reports[:8], "gate": gate(), "last_entry": sess_log,
             "supervisor": read(os.path.join(GOBOT, "captain-supervisor.log"), 1600),
-            "alive": subprocess.run(["pgrep", "-f", "bin/captain"], capture_output=True).returncode == 0,
+            "alive": subprocess.run(["pgrep", "-f", "bin/watchkeeper"], capture_output=True).returncode == 0,
             "session_state": session_state(), "tokens": token_stats()}
 
 def session_state():

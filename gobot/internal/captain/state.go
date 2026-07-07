@@ -1,4 +1,4 @@
-package captainsup
+package watchkeeper
 
 import (
 	"encoding/json"

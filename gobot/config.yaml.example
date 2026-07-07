@@ -94,7 +94,7 @@ logging:
   include_caller: false      # Include file:line in logs
   include_stacktrace: false  # Include stack traces for errors
 
-# Autonomous captain supervisor (cmd/captain)
+# Autonomous watchkeeper supervisor (cmd/watchkeeper)
 captain:
   enabled: false           # master switch; also see captain/DISABLED kill-switch file
   player_id: 1             # which player the captain commands

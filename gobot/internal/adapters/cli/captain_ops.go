@@ -14,7 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
-	captainsup "github.com/andrescamacho/spacetraders-go/internal/captain"
+	watchkeeper "github.com/andrescamacho/spacetraders-go/internal/captain"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
@@ -72,8 +72,8 @@ func runEventsList(ctx context.Context, store eventStore, playerID int, jsonOut 
 // needs (spec: sp-sk68 wake model). It exists so runWakeSet/runWakeShow can
 // be tested with a fake, without touching the filesystem.
 type wakePolicyStore interface {
-	Load() (captainsup.WakePolicy, error)
-	Save(policy captainsup.WakePolicy) error
+	Load() (watchkeeper.WakePolicy, error)
+	Save(policy watchkeeper.WakePolicy) error
 }
 
 // fileWakePolicyStore is the production wakePolicyStore, backed by the
@@ -83,12 +83,12 @@ type fileWakePolicyStore struct {
 	path string
 }
 
-func (f fileWakePolicyStore) Load() (captainsup.WakePolicy, error) {
-	return captainsup.LoadWakePolicy(f.path)
+func (f fileWakePolicyStore) Load() (watchkeeper.WakePolicy, error) {
+	return watchkeeper.LoadWakePolicy(f.path)
 }
 
-func (f fileWakePolicyStore) Save(policy captainsup.WakePolicy) error {
-	return captainsup.SaveWakePolicy(f.path, policy)
+func (f fileWakePolicyStore) Save(policy watchkeeper.WakePolicy) error {
+	return watchkeeper.SaveWakePolicy(f.path, policy)
 }
 
 // parseNextWakeAt parses the --next-wake-at flag value, accepting either a
@@ -135,7 +135,7 @@ func parseInterruptTypes(csv string) []string {
 // whatever wake policy was previously declared (full-replace semantics): the
 // caller is responsible for populating only the fields this invocation's
 // flags provided, leaving the rest nil/empty.
-func runWakeSet(store wakePolicyStore, now time.Time, policy captainsup.WakePolicy) error {
+func runWakeSet(store wakePolicyStore, now time.Time, policy watchkeeper.WakePolicy) error {
 	policy.DeclaredAt = now
 	return store.Save(policy)
 }
@@ -188,7 +188,7 @@ func captainWakeStatePath() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to load config: %w", err)
 	}
-	return captainsup.NewWorkspace(cfg.Captain.WorkspaceDir).StatePath(), nil
+	return watchkeeper.NewWorkspace(cfg.Captain.WorkspaceDir).StatePath(), nil
 }
 
 func newCaptainWakePolicyStore() (wakePolicyStore, error) {
@@ -282,7 +282,7 @@ Examples:
   spacetraders captain wake set --interrupt-types workflow.failed,container.crashed`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			now := time.Now()
-			var policy captainsup.WakePolicy
+			var policy watchkeeper.WakePolicy
 
 			if cmd.Flags().Changed("next-wake-at") {
 				t, err := parseNextWakeAt(nextWakeAt, now)

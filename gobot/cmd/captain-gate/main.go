@@ -7,7 +7,7 @@ import (
 	"os"
 	"time"
 
-	captainsup "github.com/andrescamacho/spacetraders-go/internal/captain"
+	watchkeeper "github.com/andrescamacho/spacetraders-go/internal/captain"
 )
 
 func main() {
@@ -26,13 +26,13 @@ func main() {
 	}
 
 	if *provision {
-		if err := captainsup.ProvisionWorktree(*worktree); err != nil {
+		if err := watchkeeper.ProvisionWorktree(*worktree); err != nil {
 			fmt.Fprintf(os.Stderr, "captain-gate: provision: %v\n", err)
 			os.Exit(2)
 		}
 	}
 
-	result, err := captainsup.GateAndMerge(*repo, *worktree, *branch, *message, *timeout, *merge)
+	result, err := watchkeeper.GateAndMerge(*repo, *worktree, *branch, *message, *timeout, *merge)
 
 	if result.Log != "" {
 		fmt.Fprintln(os.Stderr, result.Log)

@@ -1,6 +1,6 @@
 package config
 
-// CaptainConfig configures the autonomous captain supervisor (cmd/captain).
+// CaptainConfig configures the autonomous watchkeeper supervisor (cmd/watchkeeper).
 type CaptainConfig struct {
 	Enabled               bool   `mapstructure:"enabled"`
 	PlayerID              int    `mapstructure:"player_id" validate:"omitempty,min=1"`

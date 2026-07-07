@@ -1,4 +1,4 @@
-package captainsup
+package watchkeeper
 
 import (
 	"context"
@@ -101,7 +101,7 @@ type Supervisor struct {
 
 func NewSupervisor(db *gorm.DB, store captain.EventStore, ws Workspace, cfg config.CaptainConfig) (*Supervisor, error) {
 	if cfg.EngineMode != "bridge" {
-		return nil, fmt.Errorf("captain: unsupported engine_mode %q (only \"bridge\" is supported)", cfg.EngineMode)
+		return nil, fmt.Errorf("watchkeeper: unsupported engine_mode %q (only \"bridge\" is supported)", cfg.EngineMode)
 	}
 	s := &Supervisor{db: db, store: store, ws: ws, cfg: cfg, statePath: ws.StatePath()}
 	s.restoreState(time.Now())
@@ -116,7 +116,7 @@ func NewSupervisor(db *gorm.DB, store captain.EventStore, ws Workspace, cfg conf
 func (s *Supervisor) restoreState(now time.Time) {
 	st, err := loadSupervisorState(s.statePath)
 	if err != nil {
-		fmt.Printf("captain: supervisor state unreadable, starting fresh: %v\n", err)
+		fmt.Printf("watchkeeper: supervisor state unreadable, starting fresh: %v\n", err)
 		st = supervisorState{}
 	}
 	if st.LastSession.IsZero() {
@@ -147,7 +147,7 @@ func (s *Supervisor) saveState() {
 		LastCredits:       s.lastCredits,
 	}
 	if err := saveCadenceState(s.statePath, st); err != nil {
-		fmt.Printf("captain: supervisor state persist failed: %v\n", err)
+		fmt.Printf("watchkeeper: supervisor state persist failed: %v\n", err)
 	}
 }
 
@@ -191,7 +191,7 @@ func (s *Supervisor) Tick(ctx context.Context, now time.Time) (bool, error) {
 	// abort the tick and skip cadence/interrupt/credits wake evaluation
 	// (sp-sk68 D4). Log and continue.
 	if err := RunDetectors(ctx, s.db, s.store, dcfg, now); err != nil {
-		fmt.Printf("captain: detectors error (continuing to wake evaluation): %v\n", err)
+		fmt.Printf("watchkeeper: detectors error (continuing to wake evaluation): %v\n", err)
 	}
 
 	events, err := s.store.FindUnprocessed(ctx, s.cfg.PlayerID, eventBatchLimit)
@@ -204,7 +204,7 @@ func (s *Supervisor) Tick(ctx context.Context, now time.Time) (bool, error) {
 	// the very next poll without a restart.
 	policy, err := LoadWakePolicy(s.statePath)
 	if err != nil {
-		fmt.Printf("captain: wake policy unreadable, using defaults: %v\n", err)
+		fmt.Printf("watchkeeper: wake policy unreadable, using defaults: %v\n", err)
 		policy = WakePolicy{}
 	}
 	decision := evaluateWakeGate(wakeGateInput{
@@ -228,7 +228,7 @@ func (s *Supervisor) Tick(ctx context.Context, now time.Time) (bool, error) {
 	}
 	if s.sessionsInLastHour(now) >= s.cfg.MaxSessionsPerHour {
 		if now.Sub(s.lastCapLog) >= capLogInterval {
-			fmt.Printf("captain: session cap reached (%d/h), %d events queued\n",
+			fmt.Printf("watchkeeper: session cap reached (%d/h), %d events queued\n",
 				s.cfg.MaxSessionsPerHour, len(events))
 			s.lastCapLog = now
 		}
@@ -253,7 +253,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 			return ctx.Err()
 		case <-ticker.C:
 			if _, err := s.Tick(ctx, time.Now()); err != nil {
-				fmt.Printf("captain: tick error: %v\n", err)
+				fmt.Printf("watchkeeper: tick error: %v\n", err)
 			}
 		}
 	}

@@ -1,4 +1,4 @@
-package captainsup
+package watchkeeper
 
 import (
 	"context"
@@ -36,13 +36,13 @@ func (s *Supervisor) checkUniverseReset(ctx context.Context, now time.Time) {
 	}
 	status, err := s.status.GetServerStatus(ctx)
 	if err != nil {
-		fmt.Printf("captain: universe check: server status error: %v\n", err)
+		fmt.Printf("watchkeeper: universe check: server status error: %v\n", err)
 		return
 	}
 	s.lastUniverseCheck = now
 	era, err := s.eras.FindOpenEra(ctx)
 	if err != nil {
-		fmt.Printf("captain: universe check: open era lookup error: %v\n", err)
+		fmt.Printf("watchkeeper: universe check: open era lookup error: %v\n", err)
 		return
 	}
 	if era == nil {
@@ -70,7 +70,7 @@ func (s *Supervisor) haltForUniverseReset(ctx context.Context, now time.Time, se
 		now.Format(eraDateLayout), serverDate, eraName, eraDate)
 	created, err := s.ws.TouchDisabled(reason)
 	if err != nil {
-		fmt.Printf("captain: universe check: touch DISABLED failed: %v\n", err)
+		fmt.Printf("watchkeeper: universe check: touch DISABLED failed: %v\n", err)
 		return
 	}
 	if !created {
@@ -80,6 +80,6 @@ func (s *Supervisor) haltForUniverseReset(ctx context.Context, now time.Time, se
 		return
 	}
 	if err := s.gw.SendMail(ctx, s.cfg.AdmiralAlias, "universe reset detected", reason); err != nil {
-		fmt.Printf("captain: universe check: Admiral mail failed: %v\n", err)
+		fmt.Printf("watchkeeper: universe check: Admiral mail failed: %v\n", err)
 	}
 }

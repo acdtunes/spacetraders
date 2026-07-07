@@ -13,7 +13,7 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/api"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
-	captainsup "github.com/andrescamacho/spacetraders-go/internal/captain"
+	watchkeeper "github.com/andrescamacho/spacetraders-go/internal/captain"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
@@ -38,14 +38,14 @@ func main() {
 	defer database.Close(db)
 
 	store := persistence.NewGormCaptainEventRepository(db)
-	ws := captainsup.NewWorkspace(cfg.Captain.WorkspaceDir)
-	sup, err := captainsup.NewSupervisor(db, store, ws, cfg.Captain)
+	ws := watchkeeper.NewWorkspace(cfg.Captain.WorkspaceDir)
+	sup, err := watchkeeper.NewSupervisor(db, store, ws, cfg.Captain)
 	if err != nil {
-		log.Fatalf("captain: %v", err)
+		log.Fatalf("watchkeeper: %v", err)
 	}
 
-	gw := captainsup.NewCityGateway(cfg.Captain.GCBin, cfg.Captain.CityDir)
-	bc := captainsup.NewBeadsClient(cfg.Captain.BDBin, cfg.Captain.RepoDir)
+	gw := watchkeeper.NewCityGateway(cfg.Captain.GCBin, cfg.Captain.CityDir)
+	bc := watchkeeper.NewBeadsClient(cfg.Captain.BDBin, cfg.Captain.RepoDir)
 	sup.SetCity(gw, bc)
 
 	apiClient := api.NewSpaceTradersClient()
@@ -63,10 +63,10 @@ func main() {
 	// on era close to pick up the new token (see SetAgentAPI). The universe-reset
 	// kill-switch wired just above halts the fleet on the reset it detects.
 	if playerID, perr := shared.NewPlayerID(cfg.Captain.PlayerID); perr != nil {
-		fmt.Printf("captain: WARNING invalid captain player_id %d, live credits disabled: %v\n",
+		fmt.Printf("watchkeeper: WARNING invalid captain player_id %d, live credits disabled: %v\n",
 			cfg.Captain.PlayerID, perr)
 	} else if p, perr := persistence.NewGormPlayerRepository(db).FindByID(context.Background(), playerID); perr != nil {
-		fmt.Printf("captain: WARNING could not resolve captain player token, live credits disabled: %v\n", perr)
+		fmt.Printf("watchkeeper: WARNING could not resolve captain player token, live credits disabled: %v\n", perr)
 	} else {
 		sup.SetAgentAPI(apiClient, p.Token)
 	}

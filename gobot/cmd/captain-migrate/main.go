@@ -8,7 +8,7 @@ import (
 	"os"
 	"strings"
 
-	captainsup "github.com/andrescamacho/spacetraders-go/internal/captain"
+	watchkeeper "github.com/andrescamacho/spacetraders-go/internal/captain"
 )
 
 func main() {
@@ -19,8 +19,8 @@ func main() {
 	rig := flag.String("rig", ".", "rig repo root (resolves the sp- db)")
 	flag.Parse()
 
-	client := captainsup.NewBeadsClient(*bdBin, *rig)
-	report, err := captainsup.Migrate(context.Background(), client, *state, *reports, *apply)
+	client := watchkeeper.NewBeadsClient(*bdBin, *rig)
+	report, err := watchkeeper.Migrate(context.Background(), client, *state, *reports, *apply)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "captain-migrate: %v\n", err)
 		os.Exit(1)

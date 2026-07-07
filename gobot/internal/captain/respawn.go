@@ -1,4 +1,4 @@
-package captainsup
+package watchkeeper
 
 import (
 	"context"
@@ -25,7 +25,7 @@ func (s *Supervisor) Preflight(ctx context.Context) {
 		return
 	}
 	if _, err := s.gw.SessionAlive(ctx, s.cfg.CaptainAgent); err != nil {
-		fmt.Printf("captain: WARNING wake-delivery channel unusable at startup (gc/bd): %v"+
+		fmt.Printf("watchkeeper: WARNING wake-delivery channel unusable at startup (gc/bd): %v"+
 			" — wakes and Admiral escalations will fail\n", err)
 	}
 }
@@ -41,7 +41,7 @@ func (s *Supervisor) Preflight(ctx context.Context) {
 func (s *Supervisor) ensureCaptainAlive(ctx context.Context, now time.Time) {
 	alive, err := s.gw.SessionAlive(ctx, s.cfg.CaptainAgent)
 	if err != nil {
-		fmt.Printf("captain: session-alive probe failed (skipping liveness check): %v\n", err)
+		fmt.Printf("watchkeeper: session-alive probe failed (skipping liveness check): %v\n", err)
 		return
 	}
 	if alive {
@@ -72,10 +72,10 @@ func (s *Supervisor) alertSessionDown(ctx context.Context, now time.Time, agent,
 		return
 	}
 	s.sessionDownAlerted[agent] = now
-	fmt.Printf("captain: STANDING SESSION DOWN %q — %s (city policy: no auto-spawn; relaunch manually)\n",
+	fmt.Printf("watchkeeper: STANDING SESSION DOWN %q — %s (city policy: no auto-spawn; relaunch manually)\n",
 		agent, subject)
 	if err := s.gw.SendMail(ctx, s.cfg.AdmiralAlias, subject, body); err != nil {
-		fmt.Printf("captain: Admiral down-alert mail FAILED for %q: %v\n", agent, err)
+		fmt.Printf("watchkeeper: Admiral down-alert mail FAILED for %q: %v\n", agent, err)
 	}
 }
 

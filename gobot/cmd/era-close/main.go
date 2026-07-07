@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	captainsup "github.com/andrescamacho/spacetraders-go/internal/captain"
+	watchkeeper "github.com/andrescamacho/spacetraders-go/internal/captain"
 )
 
 func main() {
@@ -39,8 +39,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	client := captainsup.NewBeadsClient(*bdBin, *rig)
-	rep, err := captainsup.EraClose(context.Background(), client, *era, *resetDate, start, end, *agent, *apply)
+	client := watchkeeper.NewBeadsClient(*bdBin, *rig)
+	rep, err := watchkeeper.EraClose(context.Background(), client, *era, *resetDate, start, end, *agent, *apply)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "era-close: %v\n", err)
 		os.Exit(1)

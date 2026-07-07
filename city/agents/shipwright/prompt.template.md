@@ -83,7 +83,7 @@ on the bead — you do NOT close it — then mail the captain AND nudge the sess
   Leave the branch for a human; never force it through.
 
 ## Deploy — merged is not live (rebuild + restart)
-A merged commit is source, not a running binary. The daemon and captain supervisor are
+A merged commit is source, not a running binary. The daemon and watchkeeper are
 long-lived launchd services (`com.spacetraders.daemon`, `com.spacetraders.captain`,
 `KeepAlive=true`); a fix does nothing until their binaries are rebuilt and the process
 restarts. After the gate merges, DEPLOY — validated-resilient, not disruptive:
@@ -97,7 +97,7 @@ restarts. After the gate merges, DEPLOY — validated-resilient, not disruptive:
      resetOrphanedManufacturingTasks, syncAllShipsOnStartup); launchd KeepAlive relaunches.
      PRECONDITION: the daemon plist must carry `ExitTimeOut >= 35`, else launchd SIGKILLs
      the 30s drain at its 20s default — verify before the first restart.
-   - Supervisor (ONLY when your change links into `bin/captain`): `make build-captain`,
+   - Supervisor (ONLY when your change links into `bin/watchkeeper`): `make build-watchkeeper`,
      then restart via launchd. It may be UNLOADED (kill switch) — never assume it runs:
      `launchctl print gui/$(id -u)/com.spacetraders.captain` first; `kickstart -k` if
      loaded, else leave it for launchd/the Admiral. On restart the Run loop exits cleanly

@@ -401,7 +401,7 @@ func (r *ContainerRunner) signalCompletionWithStatus(success bool, errMsg string
 	containerID := r.containerEntity.ID()
 	playerID := r.containerEntity.PlayerID()
 
-	// Record a strategic event for the captain supervisor BEFORE the
+	// Record a strategic event for the watchkeeper BEFORE the
 	// nil-publisher early return so it fires even when no coordinator is wired.
 	eventType := captain.EventWorkflowFinished
 	if !success {
@@ -507,7 +507,7 @@ func (r *ContainerRunner) handleError(err error) {
 // recordCrash surfaces a true, unrecoverable container crash. It logs a single
 // ERROR line carrying the container id and the underlying error — the actionable
 // signature fleet operators need above the INFO respawn chatter — and records the
-// strategic container.crashed event for the captain supervisor. Called only from
+// strategic container.crashed event for the watchkeeper. Called only from
 // execute() when the container exits with an unrecoverable error, so
 // container.crashed counts true crashes rather than every retried iteration.
 func (r *ContainerRunner) recordCrash(err error) {

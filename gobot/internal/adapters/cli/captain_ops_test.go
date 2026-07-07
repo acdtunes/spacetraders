@@ -8,7 +8,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	captainsup "github.com/andrescamacho/spacetraders-go/internal/captain"
+	watchkeeper "github.com/andrescamacho/spacetraders-go/internal/captain"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
 )
 
@@ -43,17 +43,17 @@ func TestCaptainEventsAckRejectsGarbage(t *testing.T) {
 // --- sp-sk68 wake model: `captain wake set` / `captain wake show` ---
 
 type fakeWakePolicyStore struct {
-	loaded  captainsup.WakePolicy
+	loaded  watchkeeper.WakePolicy
 	loadErr error
-	saved   *captainsup.WakePolicy
+	saved   *watchkeeper.WakePolicy
 	saveErr error
 }
 
-func (f *fakeWakePolicyStore) Load() (captainsup.WakePolicy, error) {
+func (f *fakeWakePolicyStore) Load() (watchkeeper.WakePolicy, error) {
 	return f.loaded, f.loadErr
 }
 
-func (f *fakeWakePolicyStore) Save(policy captainsup.WakePolicy) error {
+func (f *fakeWakePolicyStore) Save(policy watchkeeper.WakePolicy) error {
 	f.saved = &policy
 	return f.saveErr
 }
@@ -96,7 +96,7 @@ func TestRunWakeSetStampsDeclaredAtAndPersistsPolicy(t *testing.T) {
 	store := &fakeWakePolicyStore{}
 	now := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
 	above := 500000
-	err := runWakeSet(store, now, captainsup.WakePolicy{CreditsAbove: &above})
+	err := runWakeSet(store, now, watchkeeper.WakePolicy{CreditsAbove: &above})
 	require.NoError(t, err)
 	require.NotNil(t, store.saved)
 	require.Equal(t, &above, store.saved.CreditsAbove)
@@ -120,7 +120,7 @@ func TestRunWakeShowPrintsDeclaredPolicyValues(t *testing.T) {
 	below := 1000
 	declaredAt := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
 	nextWake := time.Date(2026, 7, 6, 15, 0, 0, 0, time.UTC)
-	store := &fakeWakePolicyStore{loaded: captainsup.WakePolicy{
+	store := &fakeWakePolicyStore{loaded: watchkeeper.WakePolicy{
 		NextWakeAt:     &nextWake,
 		CreditsAbove:   &above,
 		CreditsBelow:   &below,

@@ -130,7 +130,7 @@ type configSearch struct {
 //     directory is searched before all others.
 //  2. Current working directory: ".", "./configs", "/etc/spacetraders". This is
 //     the pre-existing behavior, kept exactly so callers running with cwd=gobot
-//     (daemon, captain supervisor) resolve config.yaml identically to before.
+//     (daemon, watchkeeper) resolve config.yaml identically to before.
 //  3. execDir and its parent, so a `spacetraders` symlink on PATH still finds
 //     the config.yaml shipped next to the real binary (bin/spacetraders ->
 //     ../config.yaml). Omitted when execDir is empty.

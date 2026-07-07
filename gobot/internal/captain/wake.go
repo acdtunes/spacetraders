@@ -1,4 +1,4 @@
-package captainsup
+package watchkeeper
 
 import (
 	"context"
@@ -259,7 +259,7 @@ func (s *Supervisor) noteDeliveryFailure(now time.Time, err error) {
 	}
 	s.deliveryFailures++
 	s.lastDeliveryAttempt = now
-	fmt.Printf("captain: WAKE DELIVERY FAILING (%d consecutive since %s): %v\n",
+	fmt.Printf("watchkeeper: WAKE DELIVERY FAILING (%d consecutive since %s): %v\n",
 		s.deliveryFailures, s.firstDeliveryFailure.Format(time.RFC3339), err)
 }
 

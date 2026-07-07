@@ -1,7 +1,7 @@
-.PHONY: build test clean proto lint install-tools routing-service build-captain run-captain cli-reference restart-daemon install-cli
+.PHONY: build test clean proto lint install-tools routing-service build-watchkeeper run-watchkeeper build-captain run-captain cli-reference restart-daemon install-cli
 
 # Build all binaries
-build: build-cli build-daemon build-routing-service build-captain
+build: build-cli build-daemon build-routing-service build-watchkeeper
 
 # Build CLI binary
 build-cli:
@@ -26,16 +26,22 @@ build-routing-service:
 	@echo "Building routing service manager..."
 	@go build -o bin/routing-service ./cmd/routing-service
 
-# Build captain supervisor binary
-build-captain:
-	@echo "Building captain..."
-	@go build -o bin/captain ./cmd/captain
+# Build watchkeeper supervisor binary
+build-watchkeeper:
+	@echo "Building watchkeeper..."
+	@go build -o bin/watchkeeper ./cmd/watchkeeper
 
-# Run captain supervisor locally
-run-captain: build-captain
-	@./bin/captain
+# build-captain: back-compat alias for build-watchkeeper (muscle memory / scripts)
+build-captain: build-watchkeeper
 
-# Restart the daemon (used by the captain fix pipeline's default restart_cmd)
+# Run watchkeeper supervisor locally
+run-watchkeeper: build-watchkeeper
+	@./bin/watchkeeper
+
+# run-captain: back-compat alias for run-watchkeeper
+run-captain: run-watchkeeper
+
+# Restart the daemon (used by the watchkeeper fix pipeline's default restart_cmd)
 restart-daemon: build-daemon
 	@if launchctl list com.spacetraders.daemon >/dev/null 2>&1; then \
 		launchctl kickstart -k gui/$$(id -u)/com.spacetraders.daemon; \

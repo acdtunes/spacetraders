@@ -1,6 +1,6 @@
-// Package captainsup implements the captain supervisor: the deterministic
+// Package watchkeeper implements the watchkeeper supervisor: the deterministic
 // plumbing that turns outbox events + heartbeats into captain wake signals.
-package captainsup
+package watchkeeper
 
 import (
 	"os"

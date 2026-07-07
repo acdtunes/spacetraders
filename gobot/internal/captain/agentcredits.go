@@ -1,4 +1,4 @@
-package captainsup
+package watchkeeper
 
 import (
 	"context"
@@ -37,7 +37,7 @@ const creditsProbeTimeout = 5 * time.Second
 // GetAgent then fails every tick and refreshCredits keeps the last live value
 // (or, if live was never observed, the ledger reconstruction). The
 // universe-reset kill-switch (SetUniverseWatch / checkUniverseReset) halts the
-// fleet on the reset it detects, and the captain daemon MUST be restarted on
+// fleet on the reset it detects, and the watchkeeper MUST be restarted on
 // era close to re-resolve the new token — live credits are not re-authenticated
 // in place.
 func (s *Supervisor) SetAgentAPI(client agentCreditsAPI, token string) {
@@ -72,15 +72,15 @@ func (s *Supervisor) refreshCredits(ctx context.Context) {
 			return
 		}
 		if s.liveCreditsObserved {
-			fmt.Printf("captain: live credits fetch failed, retaining last live value (%d): %v\n",
+			fmt.Printf("watchkeeper: live credits fetch failed, retaining last live value (%d): %v\n",
 				s.lastCredits, err)
 			return
 		}
-		fmt.Printf("captain: live credits fetch failed, falling back to reconstruction: %v\n", err)
+		fmt.Printf("watchkeeper: live credits fetch failed, falling back to reconstruction: %v\n", err)
 	}
 	credits, err := CurrentCredits(ctx, s.db, s.cfg.PlayerID)
 	if err != nil {
-		fmt.Printf("captain: credits reconstruction also failed, retaining last known (%d): %v\n",
+		fmt.Printf("watchkeeper: credits reconstruction also failed, retaining last known (%d): %v\n",
 			s.lastCredits, err)
 		return
 	}
