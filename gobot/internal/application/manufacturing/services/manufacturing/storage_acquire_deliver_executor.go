@@ -73,6 +73,11 @@ func (e *StorageAcquireDeliverExecutor) Execute(ctx context.Context, params Task
 		return err
 	}
 
+	// Reconcile a cached hold against the server before trusting it to resume at
+	// the delivery phase: a phantom cache (L47) would otherwise fly the ship empty
+	// to the factory and fail delivery on a server 4219 (sp-bjto).
+	ship = reconcileResumeCargo(ctx, e.navigator, ship, task.Good(), params.ShipSymbol, params.PlayerID)
+
 	// Get player token for API calls
 	token, err := common.PlayerTokenFromContext(ctx)
 	if err != nil {

@@ -56,6 +56,11 @@ func (e *AcquireDeliverExecutor) Execute(ctx context.Context, params TaskExecuti
 		return err
 	}
 
+	// Reconcile a cached hold against the server before trusting it to resume at
+	// the delivery phase: a phantom cache (L47) would otherwise fly the ship empty
+	// to the factory and fail delivery on a server 4219 (sp-bjto).
+	ship = reconcileResumeCargo(ctx, e.navigator, ship, task.Good(), params.ShipSymbol, params.PlayerID)
+
 	// --- PHASE 1: ACQUIRE (buy from source market) ---
 
 	// Idempotent: Check if we already have the cargo (resume after crash)

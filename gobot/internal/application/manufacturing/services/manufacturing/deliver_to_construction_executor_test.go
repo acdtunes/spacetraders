@@ -16,10 +16,18 @@ type constructionFakeNavigator struct {
 	Navigator
 
 	ship         *navigation.Ship
+	apiShip      *navigation.Ship // server-truth ship; when set, returned by ReloadShipFromAPI (else falls back to ship)
 	destinations []string
 }
 
 func (n *constructionFakeNavigator) ReloadShip(_ context.Context, _ string, _ shared.PlayerID) (*navigation.Ship, error) {
+	return n.ship, nil
+}
+
+func (n *constructionFakeNavigator) ReloadShipFromAPI(_ context.Context, _ string, _ shared.PlayerID) (*navigation.Ship, error) {
+	if n.apiShip != nil {
+		return n.apiShip, nil
+	}
 	return n.ship, nil
 }
 
@@ -241,6 +249,53 @@ func TestDeliverToConstruction_DryMarket_DefersAndClearsSource(t *testing.T) {
 	if !task.IsDeferredConstruction() {
 		t.Fatalf("a dry-source construction task must be cleared to IsDeferredConstruction() so the SupplyMonitor re-sources it; source=%q factory=%q",
 			task.SourceMarket(), task.FactorySymbol())
+	}
+}
+
+// A DELIVER_TO_CONSTRUCTION task can be assigned to a ship whose CACHED hold shows
+// the good present while the SERVER hold is actually empty - a cache/server desync
+// (cluster lesson L47): a prior supply/contract/delivery path removed the cargo
+// without decrementing the local cache. The idempotent resume branch must NOT trust
+// the phantom cache. It reconciles against the server (GET /my/ships) before choosing
+// its phase, so a phantom-loaded ship re-acquires the good instead of flying empty to
+// the site and dying on a server 4219 "cargo does not contain N units". Regression for
+// sp-bjto (the fourth instance's verbatim signature was API 4219 on TORWIND-3).
+func TestDeliverToConstruction_PhantomCachedCargo_RefreshesAndReacquires(t *testing.T) {
+	task := manufacturing.NewDeliverToConstructionTask(
+		"pipeline-1", 1, "FAB_MATS", "X1-TEST-F56", "", "X1-TEST-I67", []string{},
+	)
+
+	navigator := &constructionFakeNavigator{
+		ship:    newConstructionTestShipWithCargo(t, "FAB_MATS", 40), // CACHE: phantom 40 units
+		apiShip: newConstructionTestShip(t),                          // SERVER: hold actually empty
+	}
+	purchaser := &constructionFakePurchaser{unitsAdded: 40}
+	siteRepo := &constructionFakeSiteRepo{}
+
+	executor := NewDeliverToConstructionExecutor(navigator, purchaser, siteRepo, &constructionFakePipelineRepo{}, &recordingTaskRepo{})
+
+	if err := executor.Execute(context.Background(), TaskExecutionParams{
+		Task:       task,
+		ShipSymbol: "TORWIND-3",
+		PlayerID:   shared.MustNewPlayerID(1),
+	}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	// The phantom hold must be reconciled away: the executor re-acquires the good at
+	// the source market before delivering, instead of supplying phantom cargo it lacks.
+	if purchaser.params == nil {
+		t.Fatalf("expected acquire phase to run after the phantom cache was refreshed to the empty server hold")
+	}
+	if purchaser.params.Market != "X1-TEST-F56" {
+		t.Fatalf("expected re-acquire at source market X1-TEST-F56, got %s", purchaser.params.Market)
+	}
+	if siteRepo.suppliedUnits != 40 {
+		t.Fatalf("expected 40 real units supplied after re-acquire, got %d", siteRepo.suppliedUnits)
+	}
+	want := []string{"X1-TEST-F56", "X1-TEST-I67"}
+	if len(navigator.destinations) != 2 || navigator.destinations[0] != want[0] || navigator.destinations[1] != want[1] {
+		t.Fatalf("expected navigation source->site %v, got %v", want, navigator.destinations)
 	}
 }
 

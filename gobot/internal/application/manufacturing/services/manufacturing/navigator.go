@@ -25,6 +25,12 @@ type Navigator interface {
 
 	// ReloadShip fetches fresh ship state from repository
 	ReloadShip(ctx context.Context, shipSymbol string, playerID shared.PlayerID) (*navigation.Ship, error)
+
+	// ReloadShipFromAPI forces an authoritative GET /my/ships to reconcile the
+	// repository cache against the server, unlike ReloadShip which reads the
+	// cache. Used at resume-decision points where trusting a stale cached hold
+	// risks a phantom-cargo failure (cluster lesson L47).
+	ReloadShipFromAPI(ctx context.Context, shipSymbol string, playerID shared.PlayerID) (*navigation.Ship, error)
 }
 
 // ManufacturingNavigator implements Navigator for manufacturing operations.
@@ -153,6 +159,22 @@ func (n *ManufacturingNavigator) ReloadShip(
 	ship, err := n.shipRepo.FindBySymbol(ctx, shipSymbol, playerID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to reload ship: %w", err)
+	}
+	return ship, nil
+}
+
+// ReloadShipFromAPI forces an authoritative GET /my/ships (via SyncShipFromAPI)
+// to reconcile the repository cache against the server, unlike ReloadShip which
+// reads the cache. Used at resume-decision points where a stale cached hold can
+// route a task into a resume branch it can never complete (cluster lesson L47).
+func (n *ManufacturingNavigator) ReloadShipFromAPI(
+	ctx context.Context,
+	shipSymbol string,
+	playerID shared.PlayerID,
+) (*navigation.Ship, error) {
+	ship, err := n.shipRepo.SyncShipFromAPI(ctx, shipSymbol, playerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to refresh ship from API: %w", err)
 	}
 	return ship, nil
 }

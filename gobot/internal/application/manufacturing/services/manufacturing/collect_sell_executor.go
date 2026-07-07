@@ -91,6 +91,11 @@ func (e *CollectSellExecutor) Execute(ctx context.Context, params TaskExecutionP
 		return err
 	}
 
+	// Reconcile a cached hold against the server before trusting it to resume at
+	// the sell phase: a phantom cache (L47) would otherwise fly the ship empty to
+	// the sell market and fail the sale on a server 4219 (sp-bjto).
+	ship = reconcileResumeCargo(ctx, e.navigator, ship, task.Good(), params.ShipSymbol, params.PlayerID)
+
 	// --- PHASE 1: COLLECT ---
 
 	// Idempotent: Check if we already have the cargo (resume after crash)

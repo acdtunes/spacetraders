@@ -91,6 +91,11 @@ func (e *DeliverToConstructionExecutor) Execute(ctx context.Context, params Task
 		return err
 	}
 
+	// Reconcile a cached hold against the server before trusting it to resume:
+	// a phantom cache (L47) would otherwise fly the ship empty to the site and
+	// die on a server 4219 "cargo does not contain N units" (sp-bjto).
+	ship = reconcileResumeCargo(ctx, e.navigator, ship, task.Good(), params.ShipSymbol, params.PlayerID)
+
 	// Check if we already have cargo to deliver (idempotent resume after crash)
 	cargoUnits := ship.Cargo().GetItemUnits(task.Good())
 	if cargoUnits == 0 {
