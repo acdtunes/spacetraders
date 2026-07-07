@@ -158,3 +158,106 @@ func TestEvaluateCompletion_ConstructionFailsOnPermanentDeliveryFailure(t *testi
 		t.Fatalf("did not expect completion when a delivery permanently failed")
 	}
 }
+
+// permanentlyFailedConstructionTask builds a DELIVER_TO_CONSTRUCTION task whose
+// retries are exhausted (retryCount == maxRetries -> CanRetry() is false): a
+// genuinely dead leg, distinct from a supply-parked (PENDING) leg.
+func permanentlyFailedConstructionTask(pipelineID, good string) *domain.ManufacturingTask {
+	return domain.ReconstituteTask(
+		"task-dead-"+good, pipelineID, 1,
+		domain.TaskTypeDeliverToConstruction, domain.TaskStatusFailed,
+		good, 0, 0,
+		"X1-TEST-F56", "", "", "", "", "X1-TEST-I67",
+		nil, "SHIP-X", domain.PriorityDeliverToConstruction,
+		3, 3,
+		0, 0, "boom",
+		time.Now(), nil, nil, nil,
+		false, false, nil,
+	)
+}
+
+// Leg isolation (sp-hs2j): when one construction leg permanently fails but a sibling
+// leg delivered its material and nothing is left in flight, the pipeline must COMPLETE
+// on the delivered work rather than being failed by the dead leg. Previously a single
+// permanent failure terminalized the whole pipeline, killing the healthy leg with it
+// (the 11:10:48 incident: FAB_MATS died on a supply dip and took the circuitry leg down).
+func TestEvaluateCompletion_ConstructionCompletesDespiteOneDeadLegWhenSiblingDelivered(t *testing.T) {
+	pipeline := domain.NewConstructionPipeline("X1-TEST-I67", 1, 3, 5)
+	if err := pipeline.AddMaterial(domain.NewConstructionMaterialTarget("FAB_MATS", 40)); err != nil {
+		t.Fatalf("AddMaterial: %v", err)
+	}
+	if err := pipeline.AddMaterial(domain.NewConstructionMaterialTarget("ADVANCED_CIRCUITRY", 40)); err != nil {
+		t.Fatalf("AddMaterial: %v", err)
+	}
+	if err := pipeline.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	delivered := completedConstructionTask(t, pipeline.ID(), "FAB_MATS")
+	deadLeg := permanentlyFailedConstructionTask(pipeline.ID(), "ADVANCED_CIRCUITRY")
+
+	checker := &PipelineCompletionChecker{}
+	result := checker.evaluateCompletion(pipeline, []*domain.ManufacturingTask{delivered, deadLeg})
+
+	if result.ShouldFail {
+		t.Fatalf("one dead leg must not fail a pipeline whose sibling leg delivered")
+	}
+	if !result.ShouldComplete {
+		t.Fatalf("expected the pipeline to complete on the delivered leg once nothing is in flight")
+	}
+}
+
+// Leg isolation (sp-hs2j): while a sibling leg is still in flight, a permanently
+// failed leg must NOT terminalize the pipeline - it stays active so the live leg
+// (and any re-sourced parked leg) keeps flowing.
+func TestEvaluateCompletion_ConstructionStaysActiveWhenDeadLegHasInFlightSibling(t *testing.T) {
+	pipeline := domain.NewConstructionPipeline("X1-TEST-I67", 1, 3, 5)
+	if err := pipeline.AddMaterial(domain.NewConstructionMaterialTarget("FAB_MATS", 80)); err != nil {
+		t.Fatalf("AddMaterial: %v", err)
+	}
+	if err := pipeline.AddMaterial(domain.NewConstructionMaterialTarget("ADVANCED_CIRCUITRY", 40)); err != nil {
+		t.Fatalf("AddMaterial: %v", err)
+	}
+	if err := pipeline.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	inFlight := executingConstructionTask(t, pipeline.ID(), "FAB_MATS")
+	deadLeg := permanentlyFailedConstructionTask(pipeline.ID(), "ADVANCED_CIRCUITRY")
+
+	checker := &PipelineCompletionChecker{}
+	result := checker.evaluateCompletion(pipeline, []*domain.ManufacturingTask{inFlight, deadLeg})
+
+	if result.ShouldFail {
+		t.Fatalf("pipeline must not fail while a sibling leg is still in flight")
+	}
+	if result.ShouldComplete {
+		t.Fatalf("pipeline must not complete while a sibling leg is still in flight")
+	}
+}
+
+// When EVERY leg is permanently dead and nothing was delivered, the construction
+// genuinely failed and the pipeline must fail (all-legs-dead terminal case). This
+// preserves the sp-b1np fail-on-permanent-failure contract for the total-loss case.
+func TestEvaluateCompletion_ConstructionFailsWhenAllLegsDead(t *testing.T) {
+	pipeline := domain.NewConstructionPipeline("X1-TEST-I67", 1, 3, 5)
+	if err := pipeline.AddMaterial(domain.NewConstructionMaterialTarget("FAB_MATS", 40)); err != nil {
+		t.Fatalf("AddMaterial: %v", err)
+	}
+	if err := pipeline.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	deadA := permanentlyFailedConstructionTask(pipeline.ID(), "FAB_MATS")
+	deadB := permanentlyFailedConstructionTask(pipeline.ID(), "ADVANCED_CIRCUITRY")
+
+	checker := &PipelineCompletionChecker{}
+	result := checker.evaluateCompletion(pipeline, []*domain.ManufacturingTask{deadA, deadB})
+
+	if !result.ShouldFail {
+		t.Fatalf("expected pipeline to fail when every leg is permanently dead")
+	}
+	if result.ShouldComplete {
+		t.Fatalf("did not expect completion when every leg is dead")
+	}
+}

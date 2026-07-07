@@ -82,6 +82,65 @@ func newExecutingConstructionPipeline(t *testing.T) *manufacturing.Manufacturing
 	return pipeline
 }
 
+// End-to-end for the execution-layer park (sp-hs2j): a delivery that reached
+// execution with no buy source is PARKED back to a deferred PENDING state (via
+// ParkForResupply) instead of failing. That parked task must plug straight into
+// r900's recovery machinery - the supply monitor re-sources it and marks it READY
+// once an EXPORT market clears the supply floor again. This is what turns a supply
+// dip into a pause-and-recover instead of a permanent leg death.
+func TestPollOnce_ReSourcesParkedConstructionTaskWhenSupplyRegenerates(t *testing.T) {
+	pipeline := newExecutingConstructionPipeline(t) // site X1-TEST-I67
+	const recoveredMarket = "X1-TEST-D45"
+
+	// A delivery that reached execution with no buy source (the 'no source to
+	// acquire from' path during a supply dip) and was parked back to a deferred
+	// PENDING state by the executor/worker (EXECUTING -> PENDING, source stays empty).
+	parked := manufacturing.NewDeliverToConstructionTask(
+		pipeline.ID(), 1, "ADVANCED_CIRCUITRY", "", "", "X1-TEST-I67", []string{},
+	)
+	if err := parked.MarkReady(); err != nil {
+		t.Fatalf("MarkReady: %v", err)
+	}
+	if err := parked.AssignShip("SHIP-9"); err != nil {
+		t.Fatalf("AssignShip: %v", err)
+	}
+	if err := parked.StartExecution(); err != nil {
+		t.Fatalf("StartExecution: %v", err)
+	}
+	if err := parked.ParkForResupply(); err != nil {
+		t.Fatalf("ParkForResupply: %v", err)
+	}
+	if !parked.IsDeferredConstruction() {
+		t.Fatal("precondition: parked task must be deferred (no source, no factory)")
+	}
+
+	marketRepo := &plannerStubMarketRepo{
+		marketWaypoints: []string{recoveredMarket},
+		markets: map[string]*market.Market{
+			recoveredMarket: newTradeTypeMarket(t, recoveredMarket, "ADVANCED_CIRCUITRY", "MODERATE", "RESTRICTED", market.TradeTypeExport, 5757),
+		},
+	}
+
+	taskRepo := &constructionStubTaskRepo{tasks: []*manufacturing.ManufacturingTask{parked}}
+	pipelineRepo := &constructionStubPipelineRepo{
+		pipelines: map[string]*manufacturing.ManufacturingPipeline{pipeline.ID(): pipeline},
+	}
+	queue := NewTaskQueue()
+
+	monitor := newConstructionMonitorWithMarket(taskRepo, pipelineRepo, queue, marketRepo)
+	monitor.PollOnce(context.Background())
+
+	if parked.SourceMarket() != recoveredMarket {
+		t.Errorf("expected parked task re-sourced to %s, got %q", recoveredMarket, parked.SourceMarket())
+	}
+	if parked.Status() != manufacturing.TaskStatusReady {
+		t.Fatalf("expected re-sourced task READY, got %s", parked.Status())
+	}
+	if queue.GetTask(parked.ID()) == nil {
+		t.Fatal("expected re-sourced task to be enqueued for dispatch")
+	}
+}
+
 // A PENDING DELIVER_TO_CONSTRUCTION task with no dependencies in an EXECUTING
 // pipeline must be activated (READY + enqueued) by the supply monitor poll.
 // This is the bug: construction tasks had no activation path and sat PENDING forever.

@@ -171,6 +171,40 @@ func TestDeliverToConstruction_AcquiresFromMarketWhenCargoEmpty(t *testing.T) {
 	}
 }
 
+// During a supply dip a construction delivery can reach execution with no buy
+// source (its source was never assigned, or was cleared when the market dried up).
+// This must NOT be a hard failure that burns the retry budget and terminalizes the
+// pipeline. The executor signals a supply deferral (ErrDeferToSupply) so the worker
+// parks the task to be re-sourced by the SupplyMonitor when supply recovers - the
+// execution-layer twin of the planner's per-material deferral (sp-hs2j / sp-r900).
+func TestDeliverToConstruction_NoSource_SignalsSupplyDeferral(t *testing.T) {
+	// No source market AND no factory - the deferred/unsourceable signature.
+	task := manufacturing.NewDeliverToConstructionTask(
+		"pipeline-1", 1, "FAB_MATS", "", "", "X1-TEST-I67", []string{},
+	)
+
+	navigator := &constructionFakeNavigator{ship: newConstructionTestShip(t)} // empty cargo
+	purchaser := &constructionFakePurchaser{unitsAdded: 40}
+	siteRepo := &constructionFakeSiteRepo{}
+
+	executor := NewDeliverToConstructionExecutor(navigator, purchaser, siteRepo, &constructionFakePipelineRepo{}, &recordingTaskRepo{})
+
+	err := executor.Execute(context.Background(), TaskExecutionParams{
+		Task:       task,
+		ShipSymbol: "TEST-1",
+		PlayerID:   shared.MustNewPlayerID(1),
+	})
+	if err == nil {
+		t.Fatalf("expected a supply-deferral signal when no source is available")
+	}
+	if !errors.Is(err, ErrDeferToSupply) {
+		t.Fatalf("expected error to wrap ErrDeferToSupply, got %v", err)
+	}
+	if purchaser.params != nil {
+		t.Fatalf("must not attempt a purchase when there is no source to buy from")
+	}
+}
+
 // newConstructionTestShipWithCargo builds an in-orbit ship already holding
 // `units` of `good`, so the executor skips the acquire phase and proceeds
 // straight to the construction supply step.

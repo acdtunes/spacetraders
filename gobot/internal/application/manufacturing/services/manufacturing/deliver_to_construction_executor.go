@@ -2,11 +2,20 @@ package manufacturing
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 )
+
+// ErrDeferToSupply signals that a task cannot proceed because the good it must
+// acquire has no buy source available right now - a transient supply gap, not a
+// failure. The worker parks such a task as a pending-supply deferral to be
+// re-sourced when supply recovers, instead of failing it and burning the retry
+// budget (which, once exhausted, terminalized the whole pipeline). This is the
+// execution-layer twin of the planner's per-material deferral (sp-hs2j / sp-r900).
+var ErrDeferToSupply = errors.New("deferred: no buy source available, awaiting supply recovery")
 
 // ConstructionPurchaser executes the market purchase loop for the acquire phase.
 // Satisfied by *ManufacturingPurchaser; narrowed to an interface for testability.
@@ -91,7 +100,10 @@ func (e *DeliverToConstructionExecutor) Execute(ctx context.Context, params Task
 			source = task.FactorySymbol()
 		}
 		if source == "" {
-			return fmt.Errorf("DELIVER_TO_CONSTRUCTION: no %s in cargo and no source to acquire from", task.Good())
+			// No buy source (never assigned, or the market dried up in a supply dip).
+			// Signal a supply deferral so the worker parks this task for re-sourcing
+			// rather than failing it toward permanent death (sp-hs2j).
+			return fmt.Errorf("%w: DELIVER_TO_CONSTRUCTION %s has no source market or factory", ErrDeferToSupply, task.Good())
 		}
 		if e.purchaser == nil {
 			return fmt.Errorf("DELIVER_TO_CONSTRUCTION: no %s in cargo and no purchaser configured", task.Good())

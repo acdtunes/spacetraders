@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -112,6 +113,14 @@ func (h *RunManufacturingTaskWorkerHandler) Handle(
 	})
 
 	if err != nil {
+		// A supply deferral is NOT a failure: the good has no buy source right now.
+		// Park the task back to a pending-supply state so the SupplyMonitor re-sources
+		// it when supply recovers, instead of burning a retry toward permanent death
+		// (which terminalized the whole construction pipeline) - sp-hs2j.
+		if errors.Is(err, mfgServices.ErrDeferToSupply) {
+			return h.parkForResupply(ctx, cmd, task, startTime, err), nil
+		}
+
 		logger.Log("ERROR", "Manufacturing task failed", map[string]interface{}{
 			"task_id": task.ID()[:8],
 			"type":    task.TaskType(),
@@ -168,6 +177,50 @@ func (h *RunManufacturingTaskWorkerHandler) Handle(
 		NetProfit:      task.NetProfit(),
 		DurationMs:     duration.Milliseconds(),
 	}, nil
+}
+
+// parkForResupply transitions a task that found no buy source at execution time
+// back to a PENDING supply-deferral instead of failing it. The SupplyMonitor
+// re-sources deferred construction tasks when market supply recovers (sp-r900),
+// so the leg resumes without consuming its retry budget or terminalizing the
+// pipeline (sp-hs2j). The ship is released by ParkForResupply so any ship can pick
+// the task up once it is re-sourced; ship-claim cleanup happens on container exit.
+func (h *RunManufacturingTaskWorkerHandler) parkForResupply(
+	ctx context.Context,
+	cmd *RunManufacturingTaskWorkerCommand,
+	task *manufacturing.ManufacturingTask,
+	startTime time.Time,
+	cause error,
+) *RunManufacturingTaskWorkerResponse {
+	logger := common.LoggerFromContext(ctx)
+
+	if parkErr := task.ParkForResupply(); parkErr != nil {
+		// Unexpected state - fall back to a normal failure so the task is not lost.
+		logger.Log("WARN", fmt.Sprintf("Could not park task %s for resupply (%v); failing instead", task.ID()[:8], parkErr), nil)
+		task.Fail(cause.Error())
+		h.persistTask(ctx, task)
+		metrics.RecordManufacturingTaskCompletion(cmd.PlayerID, string(task.TaskType()), "failed", time.Since(startTime))
+		metrics.RecordManufacturingTaskRetry(cmd.PlayerID, string(task.TaskType()))
+		return h.failResponse(task, startTime, cause.Error())
+	}
+
+	h.persistTask(ctx, task)
+	metrics.RecordManufacturingTaskCompletion(cmd.PlayerID, string(task.TaskType()), "deferred", time.Since(startTime))
+
+	logger.Log("INFO", fmt.Sprintf("DELIVER_TO_CONSTRUCTION: parked task %s for resupply - no buy source for %s, awaiting supply recovery",
+		task.ID()[:8], task.Good()), map[string]interface{}{
+		"task_id": task.ID()[:8],
+		"good":    task.Good(),
+	})
+
+	return &RunManufacturingTaskWorkerResponse{
+		Success:    false,
+		TaskID:     task.ID(),
+		TaskType:   string(task.TaskType()),
+		Good:       task.Good(),
+		DurationMs: time.Since(startTime).Milliseconds(),
+		Error:      cause.Error(),
+	}
 }
 
 // failResponse creates a failure response

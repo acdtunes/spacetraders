@@ -169,7 +169,14 @@ func (c *PipelineCompletionChecker) evaluateCompletion(
 // The construction bill is complete exactly when no delivery task is still in flight:
 // the executor's replenishment loop keeps a delivery queued while the site still needs
 // the good (sp-b1np), so "nothing in flight" means every material's bill is delivered.
-// A delivery whose retries are exhausted fails the pipeline instead of completing it.
+//
+// Leg isolation (sp-hs2j): each material is an independent leg. A permanently-failed
+// leg must NOT terminalize the whole pipeline while a sibling leg is still deliverable,
+// nor discard a sibling leg that already delivered. A supply-parked leg stays PENDING
+// (deferred, re-sourced by the SupplyMonitor), so it counts as in flight and keeps the
+// pipeline alive. The pipeline only settles once EVERY leg is terminal: it COMPLETES on
+// any delivered material, and FAILS only when every leg is dead and nothing was
+// delivered (a genuine total loss).
 func evaluateConstructionCompletion(tasks []*manufacturing.ManufacturingTask) completionResult {
 	result := completionResult{}
 
@@ -186,24 +193,32 @@ func evaluateConstructionCompletion(tasks []*manufacturing.ManufacturingTask) co
 		case task.Status() == manufacturing.TaskStatusFailed && !task.CanRetry():
 			permanentFailure = true
 		default:
-			// PENDING / READY / ASSIGNED / EXECUTING, or a retryable FAILED task
-			// awaiting its next attempt - all still in flight.
+			// PENDING (including a supply-parked deferral) / READY / ASSIGNED /
+			// EXECUTING, or a retryable FAILED task awaiting its next attempt -
+			// all still in flight, so the pipeline stays alive.
 			inFlight++
 		}
 	}
 
-	// While any delivery is still in flight the bill is not yet fully delivered.
+	// Any leg still in flight - in progress OR parked awaiting supply - keeps the
+	// pipeline active. One dead sibling leg does not terminalize it here (sp-hs2j).
 	if inFlight > 0 {
 		return result
 	}
-	if permanentFailure {
-		result.ShouldFail = true
-		result.Reason = "construction_delivery_failed"
-		return result
-	}
+
+	// Every leg is now terminal (delivered or permanently dead).
 	if completedDeliveries > 0 {
+		// At least one material was delivered and no leg can progress further. A
+		// sibling leg's permanent failure does not fail a pipeline that delivered
+		// elsewhere - the healthy leg's work is preserved (sp-hs2j leg isolation).
 		result.ShouldComplete = true
 		result.Reason = "construction_materials_delivered"
+		return result
+	}
+	if permanentFailure {
+		// Nothing delivered and every leg is dead - the construction genuinely failed.
+		result.ShouldFail = true
+		result.Reason = "construction_delivery_failed"
 	}
 	return result
 }

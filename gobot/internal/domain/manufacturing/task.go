@@ -558,6 +558,34 @@ func (t *ManufacturingTask) ResetToPending() error {
 	return nil
 }
 
+// ParkForResupply returns an in-flight (EXECUTING or ASSIGNED) task to PENDING
+// without counting a retry, so it can be re-sourced and re-dispatched once supply
+// recovers. Used when a construction/acquire task reaches execution with no buy
+// source - a transient supply gap that must be treated as a pending-supply state
+// rather than a permanent failure (sp-hs2j). The ship is released so any ship can
+// take the task after it is re-sourced, and the retry budget is left untouched
+// because no delivery was attempted. For a construction delivery whose source and
+// factory are both empty this leaves it IsDeferredConstruction(), so the existing
+// SupplyMonitor re-sourcing path (sp-r900) picks it up when supply regenerates.
+func (t *ManufacturingTask) ParkForResupply() error {
+	if t.status != TaskStatusExecuting && t.status != TaskStatusAssigned {
+		return &ErrInvalidTaskTransition{
+			TaskID:      t.id,
+			From:        t.status,
+			To:          TaskStatusPending,
+			Description: "can only park EXECUTING or ASSIGNED tasks for resupply",
+		}
+	}
+	t.status = TaskStatusPending
+	t.errorMessage = ""
+	t.startedAt = nil
+	t.completedAt = nil
+	t.readyAt = nil     // reset so MarkReady() sets a fresh timestamp for fair aging
+	t.assignedShip = "" // release ship so any ship can take the task once re-sourced
+	t.ResetPhaseTracking()
+	return nil
+}
+
 // Cancel marks the task as failed with a cancellation reason (used when pipeline is recycled).
 // Can cancel PENDING, READY, or ASSIGNED tasks - tasks that are executing should complete or fail.
 // Uses FAILED status since the database constraint doesn't include CANCELLED.
