@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { appendTrailPoint, trailOpacity, TRAIL_MAX_POINTS, TRAIL_FADE_MS } from '../trails';
+import { appendTrailPoint, trailOpacity, TRAIL_MAX_POINTS, TRAIL_FADE_MS, leavesWake } from '../trails';
 import type { ShipTrailPoint } from '../../types/spacetraders';
 
 const pt = (overrides: Partial<ShipTrailPoint>): ShipTrailPoint => ({
@@ -31,5 +31,14 @@ describe('trail buffer', () => {
     expect(trailOpacity(pt({ timestamp: now }), now)).toBeCloseTo(1, 5);
     expect(trailOpacity(pt({ timestamp: now - TRAIL_FADE_MS }), now)).toBe(0);
     expect(trailOpacity(pt({ timestamp: now - TRAIL_FADE_MS / 2 }), now)).toBeCloseTo(0.5, 2);
+  });
+});
+
+describe('leavesWake', () => {
+  it('fuel-burning ships leave a wake', () => {
+    expect(leavesWake(400)).toBe(true);
+  });
+  it('fuel-less probes leave none — the heading arrow is their tracker', () => {
+    expect(leavesWake(0)).toBe(false);
   });
 });

@@ -20,3 +20,12 @@ export function appendTrailPoint(
 export function trailOpacity(point: { timestamp: number }, nowMs: number): number {
   return Math.max(0, Math.min(1, 1 - (nowMs - point.timestamp) / TRAIL_FADE_MS));
 }
+
+/**
+ * Whether a ship leaves a visible wake: only fuel burners do. Fuel-less probes
+ * (satellites, fuel.capacity === 0) are tracked by their heading arrow instead
+ * — a wake on an engine-less hull reads as a burn plume it cannot produce.
+ */
+export function leavesWake(fuelCapacity: number): boolean {
+  return fuelCapacity > 0;
+}

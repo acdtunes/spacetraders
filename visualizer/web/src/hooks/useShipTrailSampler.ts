@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import type { TaggedShip, Waypoint as WaypointType, ShipTrailPoint, FlightMode } from '../types/spacetraders';
 import { Ship } from '../domain/ship';
+import { leavesWake } from '../store/trails';
 
 export interface ShipTrailSamplerOptions {
   animationFrame: number;
@@ -40,7 +41,7 @@ export const useShipTrailSampler = ({
         }
       }
 
-      if (ship.nav.status !== 'IN_TRANSIT') {
+      if (ship.nav.status !== 'IN_TRANSIT' || !leavesWake(ship.fuel.capacity)) {
         clearTrail(ship.symbol);
         return;
       }
