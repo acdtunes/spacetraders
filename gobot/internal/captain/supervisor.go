@@ -36,6 +36,36 @@ type Supervisor struct {
 	renudges  map[int64]int  // event id → re-nudge count
 	escalated map[int64]bool // event id → Admiral already alerted
 
+	// Wake-delivery backoff (sp-sk68 D1). recordWake is the ONLY writer of
+	// last_session, so when gw.SendMail/Nudge fails persistently the cadence
+	// stays "due" forever and the old code retried on every 30s tick with no
+	// throttle, no progress, and no distinct signal. These in-memory (never
+	// persisted) fields throttle repeated failed deliveries on an exponential
+	// backoff and make the outage grep-able. A brand-new interrupt-class event
+	// always bypasses the backoff so interrupt delivery is never regressed.
+	lastDeliveryAttempt   time.Time
+	deliveryFailures      int
+	firstDeliveryFailure  time.Time
+	lastAttemptInterrupts map[int64]bool // interrupt event ids present at the last attempt
+	// Credit-gate satisfaction snapshot at the last delivery attempt (sp-sk68
+	// D4). A CreditsAbove/Below bound newly satisfied since the last attempt is
+	// a genuine edge that bypasses the delivery backoff; a still-satisfied
+	// (level) bound must not, or a standing threshold would defeat the backoff
+	// every tick against a dead channel.
+	lastAttemptCreditsAbove bool
+	lastAttemptCreditsBelow bool
+
+	// Live agent-credit source (sp-sk68 D3). When wired, the wake gate and the
+	// credits-crossing detector evaluate the SAME live agent-API credits the
+	// captain sees via `player info`, not a divergent ledger reconstruction.
+	agentCredits agentCreditsAPI
+	playerToken  string
+	// liveCreditsObserved records whether a live agent-API read has ever
+	// succeeded. Once it has, a transient API error retains the last live value
+	// instead of flipping the gate back to the divergent ledger reconstruction
+	// (sp-sk68 D3).
+	liveCreditsObserved bool
+
 	// Watchkeeper universe-reset detector (Tier-3 kill-switch rail).
 	status            serverStatusSource
 	eras              openEraSource
@@ -114,22 +144,29 @@ func (s *Supervisor) Tick(ctx context.Context, now time.Time) (bool, error) {
 		s.requeueOrphanedPipelineBeads(ctx)
 	}
 
+	// Refresh live credits BEFORE the detectors and the wake gate (sp-sk68 D3,
+	// D4) so both evaluate the SAME number the captain sees via `player info`.
+	// The previous value is kept as the crossing baseline for the detector.
+	prevCredits := s.lastCredits
+	s.refreshCredits(ctx)
+
 	// Synthetic events (state-derived): stale heartbeats, idle ships, credit crossings.
 	dcfg := DetectorConfig{
-		PlayerID:          s.cfg.PlayerID,
-		ShipIdle:          time.Duration(s.cfg.ShipIdleMinutes) * time.Minute,
-		StaleHeartbeat:    time.Duration(s.cfg.StaleHeartbeatMinutes) * time.Minute,
-		CreditsThresholds: s.cfg.CreditsThresholds,
-		LastCredits:       s.lastCredits,
-		IncomeStall:       time.Duration(s.cfg.IncomeStallHours) * time.Hour,
-		StreamDown:        time.Duration(s.cfg.StreamDownMinutes) * time.Minute,
-		ExpectedStreams:   s.cfg.ExpectedStreams,
+		PlayerID:            s.cfg.PlayerID,
+		ShipIdle:            time.Duration(s.cfg.ShipIdleMinutes) * time.Minute,
+		StaleHeartbeat:      time.Duration(s.cfg.StaleHeartbeatMinutes) * time.Minute,
+		CreditsThresholds:   s.cfg.CreditsThresholds,
+		LastCredits:         prevCredits,
+		CurrentCreditsValue: s.lastCredits,
+		IncomeStall:         time.Duration(s.cfg.IncomeStallHours) * time.Hour,
+		StreamDown:          time.Duration(s.cfg.StreamDownMinutes) * time.Minute,
+		ExpectedStreams:     s.cfg.ExpectedStreams,
 	}
+	// Synthetic events are best-effort enrichment: a detector/DB error must not
+	// abort the tick and skip cadence/interrupt/credits wake evaluation
+	// (sp-sk68 D4). Log and continue.
 	if err := RunDetectors(ctx, s.db, s.store, dcfg, now); err != nil {
-		return false, fmt.Errorf("detectors: %w", err)
-	}
-	if credits, err := CurrentCredits(ctx, s.db, s.cfg.PlayerID); err == nil {
-		s.lastCredits = credits
+		fmt.Printf("captain: detectors error (continuing to wake evaluation): %v\n", err)
 	}
 
 	events, err := s.store.FindUnprocessed(ctx, s.cfg.PlayerID, eventBatchLimit)
@@ -157,12 +194,24 @@ func (s *Supervisor) Tick(ctx context.Context, now time.Time) (bool, error) {
 	if !decision.ShouldWake {
 		return false, nil
 	}
+	// Throttle repeated FAILED deliveries (sp-sk68 D1): once a wake delivery
+	// has failed, back off exponentially instead of hammering the dead channel
+	// every tick. A brand-new interrupt-class event bypasses the backoff so
+	// interrupt delivery is never regressed.
+	if s.deliveryThrottled(now, events, policy) {
+		return false, nil
+	}
 	if s.sessionsInLastHour(now) >= s.cfg.MaxSessionsPerHour {
 		fmt.Printf("captain: session cap reached (%d/h), %d events queued\n",
 			s.cfg.MaxSessionsPerHour, len(events))
 		return false, nil
 	}
-	return s.bridgeWake(ctx, now, events)
+	s.rememberAttempt(events, policy)
+	ran, err := s.bridgeWake(ctx, now, events)
+	if err != nil {
+		s.noteDeliveryFailure(now, err)
+	}
+	return ran, err
 }
 
 // Run loops Tick on the poll interval until ctx is cancelled.

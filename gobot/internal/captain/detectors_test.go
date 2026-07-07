@@ -60,12 +60,16 @@ func TestDetectCreditsThresholdCrossing(t *testing.T) {
 		Category: "TRADING_REVENUE", Amount: 5000, BalanceBefore: 98000, BalanceAfter: 103000,
 	}).Error)
 
+	// CurrentCredits reconstructs 103000 from the ledger; post sp-sk68 D4 the
+	// supervisor supplies that value to the detector via CurrentCreditsValue
+	// instead of the detector re-deriving it, so both it and the wake gate
+	// evaluate the same number.
 	credits, err := CurrentCredits(context.Background(), db, playerID)
 	require.NoError(t, err)
 	require.Equal(t, 103000, credits)
 
 	cfg := DetectorConfig{PlayerID: playerID, StaleHeartbeat: time.Hour, ShipIdle: time.Hour,
-		CreditsThresholds: []int{100000, 250000}, LastCredits: 98000}
+		CreditsThresholds: []int{100000, 250000}, LastCredits: 98000, CurrentCreditsValue: credits}
 	require.NoError(t, RunDetectors(context.Background(), db, store, cfg, now))
 
 	events, err := store.FindUnprocessed(context.Background(), playerID, 10)

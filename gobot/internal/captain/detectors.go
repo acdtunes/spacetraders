@@ -17,6 +17,10 @@ type DetectorConfig struct {
 	StaleHeartbeat    time.Duration
 	CreditsThresholds []int
 	LastCredits       int // credits at the previous poll; 0 disables crossing detection
+	// CurrentCreditsValue is this poll's credits, supplied by the supervisor
+	// (sp-sk68 D4) so the crossing detector and the wake gate evaluate the
+	// SAME number and the detector has no independent DB failure mode.
+	CurrentCreditsValue int
 
 	IncomeStall     time.Duration // 0 disables income-stall detection
 	StreamDown      time.Duration // 0 disables stream-down detection
@@ -39,7 +43,7 @@ func RunDetectors(ctx context.Context, db *gorm.DB, store captain.EventStore, cf
 	if err := detectStreamDown(ctx, db, store, cfg, now); err != nil {
 		return err
 	}
-	return detectCreditsCrossing(ctx, db, store, cfg)
+	return detectCreditsCrossing(ctx, store, cfg)
 }
 
 func detectStaleHeartbeats(ctx context.Context, db *gorm.DB, store captain.EventStore, cfg DetectorConfig, now time.Time) error {
@@ -190,14 +194,14 @@ func detectStreamDown(ctx context.Context, db *gorm.DB, store captain.EventStore
 	return nil
 }
 
-func detectCreditsCrossing(ctx context.Context, db *gorm.DB, store captain.EventStore, cfg DetectorConfig) error {
+func detectCreditsCrossing(ctx context.Context, store captain.EventStore, cfg DetectorConfig) error {
 	if cfg.LastCredits == 0 || len(cfg.CreditsThresholds) == 0 {
 		return nil
 	}
-	current, err := CurrentCredits(ctx, db, cfg.PlayerID)
-	if err != nil {
-		return err
-	}
+	// Use the supervisor-supplied current credits (sp-sk68 D4): the detector no
+	// longer re-derives its own value via CurrentCredits, so it evaluates the
+	// SAME number as the wake gate and cannot fail independently on a DB error.
+	current := cfg.CurrentCreditsValue
 	for _, th := range cfg.CreditsThresholds {
 		crossedUp := cfg.LastCredits < th && current >= th
 		crossedDown := cfg.LastCredits >= th && current < th

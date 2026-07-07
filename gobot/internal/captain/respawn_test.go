@@ -18,6 +18,7 @@ type respawnGateway struct {
 	spawned  [][]string
 	mails    [][]string
 	spawnErr error
+	aliveErr error
 }
 
 func (g *respawnGateway) SendMail(_ context.Context, to, subject, body string) error {
@@ -28,6 +29,9 @@ func (g *respawnGateway) SendMail(_ context.Context, to, subject, body string) e
 func (g *respawnGateway) Nudge(_ context.Context, alias, text string) error { return nil }
 
 func (g *respawnGateway) SessionAlive(_ context.Context, alias string) (bool, error) {
+	if g.aliveErr != nil {
+		return false, g.aliveErr
+	}
 	return g.alive[alias], nil
 }
 
@@ -58,6 +62,26 @@ func TestEnsureCaptainAliveRespawnsDeadSession(t *testing.T) {
 
 	require.Equal(t, [][]string{{"captain", "captain"}}, gw.spawned)
 	require.Empty(t, gw.mails, "no Admiral mail when respawn succeeds")
+}
+
+// TestEnsureCaptainAliveLogsAndSkipsRespawnOnProbeError covers sp-sk68 D5:
+// during the gc/bd outage every SessionAlive probe errored, and the old
+// `if err != nil || alive { return }` treated that exactly like "alive" —
+// a genuinely dead captain would never be respawned, silently. The
+// conservative no-respawn-on-error stays (respawning on a probe error could
+// double-spawn), but it must now be visible in the log.
+func TestEnsureCaptainAliveLogsAndSkipsRespawnOnProbeError(t *testing.T) {
+	gw := &respawnGateway{aliveErr: errors.New("gc failed: bd-router: cannot find the real bd binary")}
+	sup := &Supervisor{cfg: config.CaptainConfig{CaptainAgent: "captain", AdmiralAlias: "human"}, gw: gw}
+
+	out := captureOutput(t, func() {
+		sup.ensureCaptainAlive(context.Background())
+	})
+
+	require.Empty(t, gw.spawned, "must not respawn on a probe error (avoids double-spawn)")
+	require.Empty(t, gw.mails, "no Admiral mail on a probe error")
+	require.Contains(t, out, "session-alive probe failed",
+		"a swallowed probe error must be logged, not invisible")
 }
 
 func TestEnsureCaptainAliveNoopWhenAlive(t *testing.T) {
