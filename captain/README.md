@@ -3,7 +3,7 @@
 # Captain workspace
 
 Working directory for autonomous `claude -p` strategy sessions, driven by
-`gobot/cmd/captain`. See docs/superpowers/specs/2026-07-02-autonomous-captain-design.md.
+`gobot/cmd/watchkeeper`. See docs/superpowers/specs/2026-07-02-autonomous-captain-design.md.
 
 - `CLAUDE.md` — persona + session contract loaded into every session
 - `CLI_REFERENCE.md` — generated; run `make cli-reference` in gobot/ (do not edit)
@@ -11,4 +11,4 @@ Working directory for autonomous `claude -p` strategy sessions, driven by
 - `reports/bugs/` — escalated failures awaiting the fix pipeline (plan 2 of 2)
 - `DISABLED` — create this file to stop all sessions (kill switch)
 
-Run one supervised tick manually: `cd ../gobot && make build && ./bin/captain --once`
+Run one supervised tick manually: `cd ../gobot && make build && ./bin/watchkeeper --once`

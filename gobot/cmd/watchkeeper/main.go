@@ -79,7 +79,7 @@ func main() {
 		fmt.Printf("warning: CLI reference regeneration failed: %v: %s\n", err, out)
 	}
 
-	fmt.Printf("Captain supervisor starting (player=%d workspace=%s model=%s)\n",
+	fmt.Printf("Watchkeeper starting (player=%d workspace=%s model=%s)\n",
 		cfg.Captain.PlayerID, cfg.Captain.WorkspaceDir, cfg.Captain.Model)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
