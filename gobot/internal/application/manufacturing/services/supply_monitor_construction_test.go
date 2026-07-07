@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 )
 
 // constructionStubTaskRepo embeds the domain interface so only the methods the
@@ -137,6 +138,109 @@ func TestPollOnce_DoesNotActivateConstructionTaskWithIncompleteDependencies(t *t
 	}
 	if queue.GetTask(task.ID()) != nil {
 		t.Fatalf("task with incomplete dependencies must not be enqueued")
+	}
+}
+
+func newConstructionMonitorWithMarket(taskRepo *constructionStubTaskRepo, pipelineRepo *constructionStubPipelineRepo, queue *TaskQueue, marketRepo market.MarketRepository) *SupplyMonitor {
+	return NewSupplyMonitor(
+		marketRepo,
+		manufacturing.NewFactoryStateTracker(),
+		nil, // factoryStateRepo
+		pipelineRepo,
+		queue,
+		taskRepo,
+		NewSellMarketDistributor(nil, taskRepo),
+		NewMarketLocator(marketRepo, nil, nil, nil),
+		nil, // storageOpRepo
+		nil, // eventPublisher
+		time.Minute,
+		1,
+	)
+}
+
+// A DEFERRED construction task (no source, no factory) must NOT be dispatched
+// with an empty source. When its material's supply regenerates, the supply
+// monitor re-sources it (buy source located) and only then marks it READY -
+// mirroring how supply-gated ACQUIRE_DELIVER tasks recover, with no re-invocation
+// of the planner.
+func TestPollOnce_ReSourcesDeferredConstructionTaskWhenSupplyRegenerates(t *testing.T) {
+	pipeline := newExecutingConstructionPipeline(t) // site X1-TEST-I67
+	const recoveredMarket = "X1-TEST-D45"
+
+	// Deferred task: no source market, no factory - as staged by the planner.
+	deferred := manufacturing.NewDeliverToConstructionTask(
+		pipeline.ID(), 1, "ADVANCED_CIRCUITRY", "", "", "X1-TEST-I67", []string{},
+	)
+	if !deferred.IsDeferredConstruction() {
+		t.Fatal("precondition: task must start deferred")
+	}
+
+	// Supply regenerated: an EXPORT market now sells ADVANCED_CIRCUITRY at MODERATE.
+	marketRepo := &plannerStubMarketRepo{
+		marketWaypoints: []string{recoveredMarket},
+		markets: map[string]*market.Market{
+			recoveredMarket: newTradeTypeMarket(t, recoveredMarket, "ADVANCED_CIRCUITRY", "MODERATE", "RESTRICTED", market.TradeTypeExport, 5757),
+		},
+	}
+
+	taskRepo := &constructionStubTaskRepo{tasks: []*manufacturing.ManufacturingTask{deferred}}
+	pipelineRepo := &constructionStubPipelineRepo{
+		pipelines: map[string]*manufacturing.ManufacturingPipeline{pipeline.ID(): pipeline},
+	}
+	queue := NewTaskQueue()
+
+	monitor := newConstructionMonitorWithMarket(taskRepo, pipelineRepo, queue, marketRepo)
+	monitor.PollOnce(context.Background())
+
+	if deferred.SourceMarket() != recoveredMarket {
+		t.Errorf("expected deferred task re-sourced to %s, got %q", recoveredMarket, deferred.SourceMarket())
+	}
+	if deferred.Status() != manufacturing.TaskStatusReady {
+		t.Fatalf("expected re-sourced task READY, got %s", deferred.Status())
+	}
+	if queue.GetTask(deferred.ID()) == nil {
+		t.Fatal("expected re-sourced task to be enqueued")
+	}
+	if got := taskRepo.updated[deferred.ID()]; got != manufacturing.TaskStatusReady {
+		t.Fatalf("expected READY persisted, got %q", got)
+	}
+}
+
+// A DEFERRED construction task whose material is still unsourceable (only a
+// LIMITED exporter, no import stock) must stay PENDING with no source - it must
+// never be dispatched with an empty source.
+func TestPollOnce_DeferredConstructionTaskStaysPendingWhenStillUnsourceable(t *testing.T) {
+	pipeline := newExecutingConstructionPipeline(t)
+	const stillLimited = "X1-TEST-D40"
+
+	deferred := manufacturing.NewDeliverToConstructionTask(
+		pipeline.ID(), 1, "ADVANCED_CIRCUITRY", "", "", "X1-TEST-I67", []string{},
+	)
+
+	marketRepo := &plannerStubMarketRepo{
+		marketWaypoints: []string{stillLimited},
+		markets: map[string]*market.Market{
+			stillLimited: newTradeTypeMarket(t, stillLimited, "ADVANCED_CIRCUITRY", "LIMITED", "RESTRICTED", market.TradeTypeExport, 5757),
+		},
+	}
+
+	taskRepo := &constructionStubTaskRepo{tasks: []*manufacturing.ManufacturingTask{deferred}}
+	pipelineRepo := &constructionStubPipelineRepo{
+		pipelines: map[string]*manufacturing.ManufacturingPipeline{pipeline.ID(): pipeline},
+	}
+	queue := NewTaskQueue()
+
+	monitor := newConstructionMonitorWithMarket(taskRepo, pipelineRepo, queue, marketRepo)
+	monitor.PollOnce(context.Background())
+
+	if deferred.Status() != manufacturing.TaskStatusPending {
+		t.Fatalf("expected deferred task to stay PENDING while unsourceable, got %s", deferred.Status())
+	}
+	if deferred.SourceMarket() != "" {
+		t.Errorf("expected no source assigned, got %q", deferred.SourceMarket())
+	}
+	if queue.GetTask(deferred.ID()) != nil {
+		t.Fatal("deferred task with no source must not be enqueued")
 	}
 }
 

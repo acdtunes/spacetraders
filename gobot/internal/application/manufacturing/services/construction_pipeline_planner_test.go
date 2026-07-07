@@ -83,6 +83,8 @@ const (
 	plannerTestMarket = "X1-PZ28-F56"
 )
 
+func strptr(s string) *string { return &s }
+
 func newPlannerTestConstructionSite(t *testing.T) *manufacturing.ConstructionSite {
 	t.Helper()
 	return manufacturing.NewConstructionSite(plannerTestSite, "JUMP_GATE", []manufacturing.ConstructionMaterial{
@@ -287,6 +289,185 @@ func TestStartOrResume_ExistingPipelineWithIncompleteTasks_Resumes(t *testing.T)
 	}
 	if len(taskRepo.createdBatches) != 0 {
 		t.Errorf("expected no new tasks persisted, got %d batches", len(taskRepo.createdBatches))
+	}
+}
+
+// singleMaterialSite builds a construction site with one unfulfilled material.
+func singleMaterialSite(good string, quantity int) *manufacturing.ConstructionSite {
+	return manufacturing.NewConstructionSite(plannerTestSite, "JUMP_GATE", []manufacturing.ConstructionMaterial{
+		manufacturing.NewConstructionMaterial(good, quantity, 0),
+	}, false)
+}
+
+// findTaskByGood returns the first task in the pipeline for the given good.
+func findTaskByGood(pipeline *manufacturing.ManufacturingPipeline, good string) *manufacturing.ManufacturingTask {
+	for _, task := range pipeline.Tasks() {
+		if task.Good() == good {
+			return task
+		}
+	}
+	return nil
+}
+
+// Field case (sp-r900): a construction bill where one material is ABUNDANT and
+// sourceable (FAB_MATS) and another has no acceptable buy source
+// (ADVANCED_CIRCUITRY, only a LIMITED exporter, no import stock). The pipeline
+// must NOT fail all-or-nothing: it saves with a sourceable FAB_MATS task and a
+// DEFERRED circuitry task that will recover when supply regenerates.
+func TestStartOrResume_MixedSourceableAndUnsourceable_SavesWithDeferral(t *testing.T) {
+	const circuitryLimited = "X1-PZ28-D40"
+
+	marketRepo := &plannerStubMarketRepo{
+		marketWaypoints: []string{plannerTestMarket, circuitryLimited},
+		markets: map[string]*market.Market{
+			plannerTestMarket: newTradeTypeMarket(t, plannerTestMarket, "FAB_MATS", "ABUNDANT", "STRONG", market.TradeTypeExport, 100),
+			circuitryLimited:  newTradeTypeMarket(t, circuitryLimited, "ADVANCED_CIRCUITRY", "LIMITED", "RESTRICTED", market.TradeTypeExport, 5757),
+		},
+	}
+
+	pipelineRepo := &plannerStubPipelineRepo{}
+	taskRepo := &plannerStubTaskRepo{tasksByPipeline: map[string][]*manufacturing.ManufacturingTask{}}
+	planner := newPlannerUnderTest(pipelineRepo, taskRepo, marketRepo, newPlannerTestConstructionSite(t))
+
+	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 3, 5, "")
+	if err != nil {
+		t.Fatalf("StartOrResume must not fail when one material is unsourceable: %v", err)
+	}
+
+	if got := result.Pipeline.TaskCount(); got != 2 {
+		t.Fatalf("expected 2 tasks (1 sourceable + 1 deferred), got %d", got)
+	}
+
+	fabTask := findTaskByGood(result.Pipeline, "FAB_MATS")
+	if fabTask == nil {
+		t.Fatal("expected a FAB_MATS task")
+	}
+	if fabTask.SourceMarket() != plannerTestMarket {
+		t.Errorf("expected FAB_MATS sourced from %s, got %s", plannerTestMarket, fabTask.SourceMarket())
+	}
+	if fabTask.Status() != manufacturing.TaskStatusReady {
+		t.Errorf("expected sourceable FAB_MATS task READY, got %s", fabTask.Status())
+	}
+
+	circTask := findTaskByGood(result.Pipeline, "ADVANCED_CIRCUITRY")
+	if circTask == nil {
+		t.Fatal("expected a deferred ADVANCED_CIRCUITRY task (must be visible, not dropped)")
+	}
+	if circTask.Status() != manufacturing.TaskStatusPending {
+		t.Errorf("expected deferred circuitry task PENDING, got %s", circTask.Status())
+	}
+	if circTask.SourceMarket() != "" || circTask.FactorySymbol() != "" {
+		t.Errorf("expected deferred circuitry task to have no source yet, got source=%q factory=%q", circTask.SourceMarket(), circTask.FactorySymbol())
+	}
+	if !circTask.IsDeferredConstruction() {
+		t.Error("expected circuitry task to report IsDeferredConstruction()")
+	}
+
+	// The pipeline (with its sourceable task) must still be persisted and dispatched.
+	if len(pipelineRepo.created) != 1 {
+		t.Fatalf("expected pipeline to be saved, got %d created", len(pipelineRepo.created))
+	}
+	if len(taskRepo.createdBatches) == 0 || len(taskRepo.createdBatches[0]) != 2 {
+		t.Fatalf("expected both tasks persisted via CreateBatch")
+	}
+	if result.Pipeline.Status() != manufacturing.PipelineStatusExecuting {
+		t.Errorf("expected pipeline EXECUTING so the sourceable leg runs, got %s", result.Pipeline.Status())
+	}
+}
+
+// Per-material depth ceiling (sp-r900): at --depth 2 a material that is trivially
+// BUYABLE (FAB_MATS ABUNDANT) must be bought directly, NOT fabricated. The old
+// global switch fabricated FAB_MATS at depth 2 and died on its QUARTZ_SAND input.
+func TestStartOrResume_BuyableMaterialBoughtEvenAtDepth2(t *testing.T) {
+	marketRepo := &plannerStubMarketRepo{
+		marketWaypoints: []string{plannerTestMarket},
+		markets: map[string]*market.Market{
+			plannerTestMarket: newTradeTypeMarket(t, plannerTestMarket, "FAB_MATS", "ABUNDANT", "STRONG", market.TradeTypeExport, 100),
+		},
+	}
+
+	pipelineRepo := &plannerStubPipelineRepo{}
+	taskRepo := &plannerStubTaskRepo{tasksByPipeline: map[string][]*manufacturing.ManufacturingTask{}}
+	planner := newPlannerUnderTest(pipelineRepo, taskRepo, marketRepo, singleMaterialSite("FAB_MATS", 1600))
+
+	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 2, 5, "")
+	if err != nil {
+		t.Fatalf("StartOrResume at depth 2 must buy a buyable material: %v", err)
+	}
+
+	if got := result.Pipeline.TaskCount(); got != 1 {
+		t.Fatalf("expected exactly 1 buy task (no fabrication), got %d", got)
+	}
+	task := result.Pipeline.Tasks()[0]
+	if task.TaskType() != manufacturing.TaskTypeDeliverToConstruction {
+		t.Errorf("expected a direct DELIVER_TO_CONSTRUCTION buy, got %s", task.TaskType())
+	}
+	if task.SourceMarket() != plannerTestMarket {
+		t.Errorf("expected FAB_MATS bought from %s, got %s", plannerTestMarket, task.SourceMarket())
+	}
+	for _, tk := range result.Pipeline.Tasks() {
+		if tk.TaskType() == manufacturing.TaskTypeAcquireDeliver {
+			t.Errorf("buyable material must not be fabricated - unexpected ACQUIRE_DELIVER task for %s", tk.Good())
+		}
+	}
+}
+
+// Per-material depth ceiling (sp-r900): a material that is NOT buyable but IS
+// fabricable from sourceable inputs must be fabricated within the depth ceiling.
+// MACHINERY (not sold at MODERATE+) is fabricated from IRON (ABUNDANT) at depth 2.
+func TestStartOrResume_FabricableOnlyMaterialFabricatedWithinCeiling(t *testing.T) {
+	const factoryWp = "X1-PZ28-FAC"
+	const ironWp = "X1-PZ28-IRN"
+
+	// Factory: EXPORTS MACHINERY (LIMITED -> not buyable) and IMPORTS IRON.
+	machineryExport, err := market.NewTradeGood("MACHINERY", strptr("LIMITED"), strptr("RESTRICTED"), 110, 100, 40, market.TradeTypeExport)
+	if err != nil {
+		t.Fatalf("NewTradeGood(MACHINERY): %v", err)
+	}
+	ironImport, err := market.NewTradeGood("IRON", strptr("MODERATE"), strptr("WEAK"), 60, 50, 40, market.TradeTypeImport)
+	if err != nil {
+		t.Fatalf("NewTradeGood(IRON import): %v", err)
+	}
+	factoryMarket, err := market.NewMarket(factoryWp, []market.TradeGood{*machineryExport, *ironImport}, time.Now())
+	if err != nil {
+		t.Fatalf("NewMarket(factory): %v", err)
+	}
+
+	marketRepo := &plannerStubMarketRepo{
+		marketWaypoints: []string{factoryWp, ironWp},
+		markets: map[string]*market.Market{
+			factoryWp: factoryMarket,
+			ironWp:    newTradeTypeMarket(t, ironWp, "IRON", "ABUNDANT", "WEAK", market.TradeTypeExport, 45),
+		},
+	}
+
+	pipelineRepo := &plannerStubPipelineRepo{}
+	taskRepo := &plannerStubTaskRepo{tasksByPipeline: map[string][]*manufacturing.ManufacturingTask{}}
+	planner := newPlannerUnderTest(pipelineRepo, taskRepo, marketRepo, singleMaterialSite("MACHINERY", 50))
+
+	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 2, 5, "")
+	if err != nil {
+		t.Fatalf("StartOrResume must fabricate a fabricable-only material: %v", err)
+	}
+
+	ironAcquire := findTaskByGood(result.Pipeline, "IRON")
+	if ironAcquire == nil || ironAcquire.TaskType() != manufacturing.TaskTypeAcquireDeliver {
+		t.Fatalf("expected an ACQUIRE_DELIVER task for the IRON input, got %+v", ironAcquire)
+	}
+	if ironAcquire.SourceMarket() != ironWp || ironAcquire.FactorySymbol() != factoryWp {
+		t.Errorf("expected IRON acquired from %s and delivered to factory %s, got source=%s factory=%s",
+			ironWp, factoryWp, ironAcquire.SourceMarket(), ironAcquire.FactorySymbol())
+	}
+
+	machineryDeliver := findTaskByGood(result.Pipeline, "MACHINERY")
+	if machineryDeliver == nil || machineryDeliver.TaskType() != manufacturing.TaskTypeDeliverToConstruction {
+		t.Fatalf("expected a DELIVER_TO_CONSTRUCTION task for MACHINERY, got %+v", machineryDeliver)
+	}
+	if machineryDeliver.FactorySymbol() != factoryWp {
+		t.Errorf("expected MACHINERY collected from factory %s, got %s", factoryWp, machineryDeliver.FactorySymbol())
+	}
+	if machineryDeliver.IsDeferredConstruction() {
+		t.Error("fabricable material must not be deferred - it was fabricated within the ceiling")
 	}
 }
 

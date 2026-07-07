@@ -584,9 +584,11 @@ func (t *ManufacturingTask) SetTotalRevenue(revenue int) { t.totalRevenue = reve
 func (t *ManufacturingTask) SetPriority(priority int)    { t.priority = priority }
 func (t *ManufacturingTask) SetQuantity(qty int)         { t.quantity = qty }
 
-// UpdateSourceMarket changes the source market for ACQUIRE_DELIVER tasks.
+// UpdateSourceMarket changes the source market for ACQUIRE_DELIVER tasks or for
+// DELIVER_TO_CONSTRUCTION tasks that were deferred at planning time.
 // This is used by SupplyMonitor to re-source PENDING tasks when the original
-// source market's supply degrades and a better alternative is available.
+// source market's supply degrades (ACQUIRE_DELIVER) or when a deferred
+// construction material becomes sourceable again (DELIVER_TO_CONSTRUCTION).
 // Only allowed for PENDING tasks to prevent disrupting in-flight work.
 func (t *ManufacturingTask) UpdateSourceMarket(newSource string) error {
 	if t.status != TaskStatusPending {
@@ -597,11 +599,22 @@ func (t *ManufacturingTask) UpdateSourceMarket(newSource string) error {
 			Description: "can only update source market for PENDING tasks",
 		}
 	}
-	if t.taskType != TaskTypeAcquireDeliver {
-		return fmt.Errorf("can only update source market for ACQUIRE_DELIVER tasks, got %s", t.taskType)
+	if t.taskType != TaskTypeAcquireDeliver && t.taskType != TaskTypeDeliverToConstruction {
+		return fmt.Errorf("can only update source market for ACQUIRE_DELIVER or DELIVER_TO_CONSTRUCTION tasks, got %s", t.taskType)
 	}
 	t.sourceMarket = newSource
 	return nil
+}
+
+// IsDeferredConstruction reports whether this is a construction delivery whose
+// buy source could not be located at planning time (no export cleared the
+// MODERATE+ floor and no import held accumulated stock). Deferred tasks carry
+// neither a source market nor a factory, stay PENDING, and are re-sourced by the
+// supply monitor when market supply regenerates - mirroring how COLLECT_SELL and
+// supply-gated ACQUIRE_DELIVER tasks recover. They keep the deferred material
+// visible in pipeline/task state instead of dropping it.
+func (t *ManufacturingTask) IsDeferredConstruction() bool {
+	return t.taskType == TaskTypeDeliverToConstruction && t.sourceMarket == "" && t.factorySymbol == ""
 }
 
 // AddDependency adds a task ID to this task's dependencies

@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -9,6 +10,12 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/goods"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 )
+
+// errMaterialUnsourceable is an internal sentinel signalling that a material (or
+// one of its fabrication inputs) has no market with acceptable supply right now.
+// It is never returned to callers: planMaterial converts it into a DEFERRED task
+// so an unsourceable material never fails the whole pipeline.
+var errMaterialUnsourceable = errors.New("material not sourceable at current supply")
 
 // ConstructionPipelinePlanner creates and manages construction pipelines.
 // It handles:
@@ -164,11 +171,37 @@ func (p *ConstructionPipelinePlanner) StartOrResume(
 		systemSymbol = extractSystemSymbol(constructionSite)
 	}
 
-	// 7. Create tasks for each material
+	// 7. Plan each material INDEPENDENTLY. This is the core of sp-r900: planning
+	// is no longer all-or-nothing. A material that cannot be sourced right now is
+	// DEFERRED (a visible PENDING task), not a fatal error - so the pipeline still
+	// saves and dispatches every sourceable material while the deferred one waits.
+	// The SupplyMonitor re-sources deferred tasks when supply regenerates.
+	deferredMaterials := make([]string, 0)
 	for _, mat := range unfulfilledMaterials {
-		if err := p.createTasksForMaterial(ctx, pipeline, mat.TradeSymbol(), systemSymbol, constructionSite, supplyChainDepth, playerID); err != nil {
-			return nil, fmt.Errorf("failed to create tasks for %s: %w", mat.TradeSymbol(), err)
+		staged, deferred, err := p.planMaterial(ctx, pipeline.ID(), mat.TradeSymbol(), systemSymbol, constructionSite, supplyChainDepth, playerID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to plan material %s: %w", mat.TradeSymbol(), err)
 		}
+		for _, task := range staged {
+			if err := pipeline.AddTask(task); err != nil {
+				return nil, fmt.Errorf("failed to add task for %s: %w", mat.TradeSymbol(), err)
+			}
+		}
+		if deferred {
+			deferredMaterials = append(deferredMaterials, mat.TradeSymbol())
+			logger.Log("WARN", "Construction material deferred - no buy source yet, will recover when supply regenerates", map[string]interface{}{
+				"material":          mat.TradeSymbol(),
+				"construction_site": constructionSite,
+				"remaining":         mat.Remaining(),
+			})
+		}
+	}
+	if len(deferredMaterials) > 0 {
+		logger.Log("INFO", "Construction pipeline planned with deferred materials", map[string]interface{}{
+			"construction_site":  constructionSite,
+			"deferred_materials": deferredMaterials,
+			"sourceable_count":   len(unfulfilledMaterials) - len(deferredMaterials),
+		})
 	}
 
 	// 8. Start pipeline so dependency-free tasks become READY and the running
@@ -202,261 +235,226 @@ func (p *ConstructionPipelinePlanner) StartOrResume(
 	}, nil
 }
 
-// createTasksForMaterial creates tasks for producing and delivering a single material.
-// Based on supply chain depth:
-//   - 0: Full production (mine/produce everything)
-//   - 1: Buy raw materials only
-//   - 2: Buy intermediate goods
-//   - 3: Buy final product (no production)
-func (p *ConstructionPipelinePlanner) createTasksForMaterial(
+// planMaterial plans the tasks needed to source and deliver ONE construction
+// material, returning the staged tasks (added to the pipeline by the caller) and
+// whether the material had to be deferred.
+//
+// Depth is a per-material CEILING, not a global switch. For each material it
+// selects the cheapest SOURCEABLE path:
+//  1. BUY the final good directly when a buy source exists (an EXPORT market at
+//     MODERATE+, or - via FindConstructionSource - an IMPORT/EXCHANGE holding
+//     ABUNDANT/HIGH accumulated stock). This is preferred: one hop, no chain.
+//  2. Otherwise FABRICATE within the depth ceiling (only when depth < 3, the good
+//     is not raw, and every input is itself sourceable).
+//  3. Otherwise DEFER: stage a PENDING DELIVER_TO_CONSTRUCTION with no source
+//     that the SupplyMonitor re-sources when supply regenerates.
+//
+// A non-nil error is returned only for infrastructure failures; an unsourceable
+// material is reported via deferred=true, never as an error.
+func (p *ConstructionPipelinePlanner) planMaterial(
 	ctx context.Context,
-	pipeline *manufacturing.ManufacturingPipeline,
+	pipelineID string,
 	targetGood string,
 	systemSymbol string,
 	constructionSite string,
 	supplyChainDepth int,
 	playerID int,
-) error {
+) (staged []*manufacturing.ManufacturingTask, deferred bool, err error) {
 	logger := common.LoggerFromContext(ctx)
 
-	// For depth 3 (buy final product), just create DELIVER_TO_CONSTRUCTION directly
-	if supplyChainDepth >= 3 || goods.IsRawMaterial(targetGood) {
-		// Find market to buy from
-		market, err := p.marketLocator.FindExportMarketBySupplyPriority(ctx, targetGood, systemSymbol, playerID)
-		if err != nil {
-			return fmt.Errorf("failed to find market for %s: %w", targetGood, err)
-		}
-		if market == nil {
-			return fmt.Errorf("no market with good supply for %s", targetGood)
-		}
-
-		// Create DELIVER_TO_CONSTRUCTION task (buy from market, deliver to construction)
+	// 1. Prefer buying the final good directly (cheapest sourceable path),
+	//    regardless of the depth flag - depth only caps how deep we fabricate.
+	source, err := p.marketLocator.FindConstructionSource(ctx, targetGood, systemSymbol, playerID)
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to locate buy source for %s: %w", targetGood, err)
+	}
+	if source != nil {
 		task := manufacturing.NewDeliverToConstructionTask(
-			pipeline.ID(),
-			playerID,
-			targetGood,
-			market.WaypointSymbol, // sourceMarket
-			"",                    // factorySymbol (not used - buying from market)
+			pipelineID, playerID, targetGood,
+			source.WaypointSymbol, // sourceMarket (buy here)
+			"",                    // factorySymbol (not collecting from a factory)
 			constructionSite,
-			[]string{}, // No dependencies
+			[]string{}, // no dependencies
 		)
-		if err := pipeline.AddTask(task); err != nil {
-			return fmt.Errorf("failed to add task: %w", err)
-		}
-
-		logger.Log("DEBUG", "Created DELIVER_TO_CONSTRUCTION task (buy from market)", map[string]interface{}{
+		logger.Log("DEBUG", "Planned construction buy (direct)", map[string]interface{}{
 			"good":              targetGood,
-			"source_market":     market.WaypointSymbol,
+			"source_market":     source.WaypointSymbol,
+			"supply":            source.Supply,
 			"construction_site": constructionSite,
 		})
-
-		return nil
+		return []*manufacturing.ManufacturingTask{task}, false, nil
 	}
 
-	// For other depths, we need to walk the supply chain and create tasks
-	// This is a simplified version - for a complete implementation, we would
-	// need to track factory locations and dependencies more carefully
-
-	// Get required inputs for this good
-	inputs := goods.GetRequiredInputs(targetGood)
-	if len(inputs) == 0 {
-		// No inputs means this is a raw material - treat like depth 3
-		return p.createBuyAndDeliverTask(ctx, pipeline, targetGood, systemSymbol, constructionSite, playerID)
-	}
-
-	// Find factory that produces this good
-	factory, err := p.marketLocator.FindFactoryForProduction(ctx, targetGood, inputs, systemSymbol, playerID)
-	if err != nil {
-		return fmt.Errorf("failed to find factory for %s: %w", targetGood, err)
-	}
-
-	// Create ACQUIRE_DELIVER tasks for each input
-	inputTaskIDs := make([]string, 0, len(inputs))
-	for _, input := range inputs {
-		var inputTaskID string
-
-		// Recursively handle inputs based on depth
-		if supplyChainDepth >= 2 {
-			// Buy intermediate - just buy the input
-			inputTaskID, err = p.createAcquireDeliverTask(ctx, pipeline, input, systemSymbol, factory.WaypointSymbol, playerID)
-		} else if supplyChainDepth >= 1 {
-			// Buy raw only - check if input is raw or needs production
-			if goods.IsRawMaterial(input) {
-				inputTaskID, err = p.createAcquireDeliverTask(ctx, pipeline, input, systemSymbol, factory.WaypointSymbol, playerID)
-			} else {
-				// Input needs production - recurse
-				err = p.createProductionTasksForInput(ctx, pipeline, input, systemSymbol, factory.WaypointSymbol, supplyChainDepth, playerID, &inputTaskIDs)
-				// The task IDs are added by the recursive call
-				continue
-			}
-		} else {
-			// Full production (depth 0) - recurse for everything
-			err = p.createProductionTasksForInput(ctx, pipeline, input, systemSymbol, factory.WaypointSymbol, supplyChainDepth, playerID, &inputTaskIDs)
-			continue
+	// 2. Not buyable. Fabricate within the depth ceiling when permitted.
+	//    depth >= 3 is a "buy final only" ceiling; raw materials cannot be made.
+	if supplyChainDepth < 3 && !goods.IsRawMaterial(targetGood) {
+		fabTasks, ok, ferr := p.planFabrication(ctx, pipelineID, targetGood, systemSymbol, constructionSite, supplyChainDepth, playerID)
+		if ferr != nil {
+			return nil, false, ferr
 		}
-
-		if err != nil {
-			return fmt.Errorf("failed to create task for input %s: %w", input, err)
-		}
-		if inputTaskID != "" {
-			inputTaskIDs = append(inputTaskIDs, inputTaskID)
+		if ok {
+			logger.Log("DEBUG", "Planned construction material via fabrication", map[string]interface{}{
+				"good":              targetGood,
+				"tasks":             len(fabTasks),
+				"depth_ceiling":     supplyChainDepth,
+				"construction_site": constructionSite,
+			})
+			return fabTasks, false, nil
 		}
 	}
 
-	// Create DELIVER_TO_CONSTRUCTION task (collect from factory, deliver to construction)
-	task := manufacturing.NewDeliverToConstructionTask(
-		pipeline.ID(),
-		playerID,
-		targetGood,
-		"",                     // sourceMarket (not used - collecting from factory)
-		factory.WaypointSymbol, // factorySymbol
-		constructionSite,
-		inputTaskIDs, // Depends on input deliveries
-	)
-	if err := pipeline.AddTask(task); err != nil {
-		return fmt.Errorf("failed to add DELIVER_TO_CONSTRUCTION task: %w", err)
-	}
-
-	logger.Log("DEBUG", "Created DELIVER_TO_CONSTRUCTION task (from factory)", map[string]interface{}{
-		"good":              targetGood,
-		"factory":           factory.WaypointSymbol,
-		"construction_site": constructionSite,
-		"dependencies":      len(inputTaskIDs),
-	})
-
-	return nil
-}
-
-// createBuyAndDeliverTask creates a simple buy-and-deliver task for raw materials.
-func (p *ConstructionPipelinePlanner) createBuyAndDeliverTask(
-	ctx context.Context,
-	pipeline *manufacturing.ManufacturingPipeline,
-	good string,
-	systemSymbol string,
-	constructionSite string,
-	playerID int,
-) error {
-	market, err := p.marketLocator.FindExportMarketBySupplyPriority(ctx, good, systemSymbol, playerID)
-	if err != nil {
-		return fmt.Errorf("failed to find market for %s: %w", good, err)
-	}
-	if market == nil {
-		return fmt.Errorf("no market with good supply for %s", good)
-	}
-
-	task := manufacturing.NewDeliverToConstructionTask(
-		pipeline.ID(),
-		playerID,
-		good,
-		market.WaypointSymbol,
-		"",
+	// 3. Neither buyable nor fabricable now - DEFER with a visible PENDING task.
+	deferredTask := manufacturing.NewDeliverToConstructionTask(
+		pipelineID, playerID, targetGood,
+		"", // no source yet - SupplyMonitor re-sources when supply regenerates
+		"", // no factory
 		constructionSite,
 		[]string{},
 	)
-	return pipeline.AddTask(task)
+	return []*manufacturing.ManufacturingTask{deferredTask}, true, nil
 }
 
-// createAcquireDeliverTask creates an ACQUIRE_DELIVER task to buy from market and deliver to factory.
-func (p *ConstructionPipelinePlanner) createAcquireDeliverTask(
+// planFabrication stages the fabrication chain for targetGood into a local task
+// list. ok=false (with a nil error) means a factory or an input is not sourceable
+// right now, so the whole material should be deferred rather than partially
+// planned. Only infrastructure failures are returned as errors.
+func (p *ConstructionPipelinePlanner) planFabrication(
 	ctx context.Context,
-	pipeline *manufacturing.ManufacturingPipeline,
+	pipelineID string,
+	targetGood string,
+	systemSymbol string,
+	constructionSite string,
+	supplyChainDepth int,
+	playerID int,
+) (staged []*manufacturing.ManufacturingTask, ok bool, err error) {
+	inputs := goods.GetRequiredInputs(targetGood)
+	if len(inputs) == 0 {
+		return nil, false, nil // no recipe - not fabricable, defer
+	}
+
+	// The factory must EXPORT targetGood AND IMPORT every input. A missing factory
+	// (or a transient lookup miss) means we cannot fabricate now - defer.
+	factory, ferr := p.marketLocator.FindFactoryForProduction(ctx, targetGood, inputs, systemSymbol, playerID)
+	if ferr != nil {
+		return nil, false, nil
+	}
+
+	tasks := make([]*manufacturing.ManufacturingTask, 0, len(inputs)+1)
+	inputTaskIDs := make([]string, 0, len(inputs))
+	for _, input := range inputs {
+		ids, serr := p.stageInput(ctx, &tasks, pipelineID, input, systemSymbol, factory.WaypointSymbol, supplyChainDepth, playerID)
+		if serr != nil {
+			if errors.Is(serr, errMaterialUnsourceable) {
+				return nil, false, nil // an input is unsourceable - defer whole material
+			}
+			return nil, false, serr
+		}
+		inputTaskIDs = append(inputTaskIDs, ids...)
+	}
+
+	// Collect the fabricated good from the factory and deliver it to construction.
+	deliverTask := manufacturing.NewDeliverToConstructionTask(
+		pipelineID, playerID, targetGood,
+		"",                     // sourceMarket (collecting from factory, not buying)
+		factory.WaypointSymbol, // factorySymbol
+		constructionSite,
+		inputTaskIDs, // depends on the input deliveries
+	)
+	tasks = append(tasks, deliverTask)
+	return tasks, true, nil
+}
+
+// stageInput stages the acquisition of a single fabrication input. Within the
+// depth ceiling it either buys the input directly (raw, or depth >= 2 "buy
+// intermediates") or recurses to produce it. Returns errMaterialUnsourceable
+// when the input cannot be sourced.
+func (p *ConstructionPipelinePlanner) stageInput(
+	ctx context.Context,
+	tasks *[]*manufacturing.ManufacturingTask,
+	pipelineID string,
+	input string,
+	systemSymbol string,
+	factorySymbol string,
+	supplyChainDepth int,
+	playerID int,
+) ([]string, error) {
+	if goods.IsRawMaterial(input) || supplyChainDepth >= 2 {
+		id, err := p.stageAcquireDeliver(ctx, tasks, pipelineID, input, systemSymbol, factorySymbol, playerID)
+		if err != nil {
+			return nil, err
+		}
+		return []string{id}, nil
+	}
+	// depth < 2: produce the input from its own inputs (recurse).
+	return p.stageProduction(ctx, tasks, pipelineID, input, systemSymbol, factorySymbol, supplyChainDepth, playerID)
+}
+
+// stageAcquireDeliver stages an ACQUIRE_DELIVER task to buy an input from an
+// export market and deliver it to a factory. Returns errMaterialUnsourceable
+// when no market with acceptable supply exists.
+func (p *ConstructionPipelinePlanner) stageAcquireDeliver(
+	ctx context.Context,
+	tasks *[]*manufacturing.ManufacturingTask,
+	pipelineID string,
 	good string,
 	systemSymbol string,
 	factorySymbol string,
 	playerID int,
 ) (string, error) {
 	market, err := p.marketLocator.FindExportMarketBySupplyPriority(ctx, good, systemSymbol, playerID)
-	if err != nil {
-		return "", fmt.Errorf("failed to find market for %s: %w", good, err)
+	if err != nil || market == nil {
+		return "", errMaterialUnsourceable
 	}
-	if market == nil {
-		return "", fmt.Errorf("no market with good supply for %s", good)
-	}
-
-	task := manufacturing.NewAcquireDeliverTask(
-		pipeline.ID(),
-		playerID,
-		good,
-		market.WaypointSymbol,
-		factorySymbol,
-		nil, // No dependencies for raw acquisition
-	)
-	if err := pipeline.AddTask(task); err != nil {
-		return "", err
-	}
+	task := manufacturing.NewAcquireDeliverTask(pipelineID, playerID, good, market.WaypointSymbol, factorySymbol, nil)
+	*tasks = append(*tasks, task)
 	return task.ID(), nil
 }
 
-// createProductionTasksForInput recursively creates tasks for producing an intermediate good.
-func (p *ConstructionPipelinePlanner) createProductionTasksForInput(
+// stageProduction recursively stages the tasks to produce an intermediate good
+// and deliver it to deliveryDestination. Returns errMaterialUnsourceable when
+// any factory or input in the chain is not sourceable.
+func (p *ConstructionPipelinePlanner) stageProduction(
 	ctx context.Context,
-	pipeline *manufacturing.ManufacturingPipeline,
+	tasks *[]*manufacturing.ManufacturingTask,
+	pipelineID string,
 	good string,
 	systemSymbol string,
 	deliveryDestination string,
 	supplyChainDepth int,
 	playerID int,
-	parentTaskIDs *[]string,
-) error {
-	logger := common.LoggerFromContext(ctx)
-
+) ([]string, error) {
 	inputs := goods.GetRequiredInputs(good)
 	if len(inputs) == 0 {
-		// Raw material - just buy and deliver
-		taskID, err := p.createAcquireDeliverTask(ctx, pipeline, good, systemSymbol, deliveryDestination, playerID)
+		// Raw material - buy and deliver directly.
+		id, err := p.stageAcquireDeliver(ctx, tasks, pipelineID, good, systemSymbol, deliveryDestination, playerID)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		*parentTaskIDs = append(*parentTaskIDs, taskID)
-		return nil
+		return []string{id}, nil
 	}
 
-	// Find factory that produces this good
-	factory, err := p.marketLocator.FindFactoryForProduction(ctx, good, inputs, systemSymbol, playerID)
-	if err != nil {
-		return fmt.Errorf("failed to find factory for %s: %w", good, err)
+	factory, ferr := p.marketLocator.FindFactoryForProduction(ctx, good, inputs, systemSymbol, playerID)
+	if ferr != nil {
+		return nil, errMaterialUnsourceable
 	}
 
-	// Create tasks for each input
 	inputTaskIDs := make([]string, 0, len(inputs))
 	for _, input := range inputs {
-		if goods.IsRawMaterial(input) || supplyChainDepth >= 2 {
-			// Buy raw material or intermediate
-			taskID, err := p.createAcquireDeliverTask(ctx, pipeline, input, systemSymbol, factory.WaypointSymbol, playerID)
-			if err != nil {
-				return err
-			}
-			inputTaskIDs = append(inputTaskIDs, taskID)
-		} else {
-			// Recurse for production
-			if err := p.createProductionTasksForInput(ctx, pipeline, input, systemSymbol, factory.WaypointSymbol, supplyChainDepth, playerID, &inputTaskIDs); err != nil {
-				return err
-			}
+		ids, err := p.stageInput(ctx, tasks, pipelineID, input, systemSymbol, factory.WaypointSymbol, supplyChainDepth, playerID)
+		if err != nil {
+			return nil, err
 		}
+		inputTaskIDs = append(inputTaskIDs, ids...)
 	}
 
-	// Create ACQUIRE_DELIVER task to collect from this factory and deliver to next destination
 	collectTask := manufacturing.NewAcquireDeliverTask(
-		pipeline.ID(),
-		playerID,
-		good,
-		factory.WaypointSymbol, // Collect from factory
-		deliveryDestination,    // Deliver to next factory or construction site
-		inputTaskIDs,           // Wait for inputs
+		pipelineID, playerID, good,
+		factory.WaypointSymbol, // collect from this factory
+		deliveryDestination,    // deliver to next factory or construction site
+		inputTaskIDs,           // wait for inputs
 	)
-	if err := pipeline.AddTask(collectTask); err != nil {
-		return err
-	}
-	*parentTaskIDs = append(*parentTaskIDs, collectTask.ID())
-
-	logger.Log("DEBUG", "Created production task chain for intermediate good", map[string]interface{}{
-		"good":        good,
-		"factory":     factory.WaypointSymbol,
-		"destination": deliveryDestination,
-		"inputs":      len(inputs),
-	})
-
-	return nil
+	*tasks = append(*tasks, collectTask)
+	return []string{collectTask.ID()}, nil
 }
 
 // extractSystemSymbol extracts system from waypoint (e.g., "X1-FB5-I61" -> "X1-FB5").

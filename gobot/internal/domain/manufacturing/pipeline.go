@@ -336,6 +336,12 @@ func (p *ManufacturingPipeline) Start() error {
 			if task.TaskType() == TaskTypeCollectSell {
 				continue
 			}
+			// Skip DEFERRED construction deliveries - they have no buy source yet
+			// and are re-sourced by the SupplyMonitor when supply regenerates.
+			// Marking them ready would dispatch a task that cannot acquire goods.
+			if task.IsDeferredConstruction() {
+				continue
+			}
 			_ = task.MarkReady()
 		}
 	}

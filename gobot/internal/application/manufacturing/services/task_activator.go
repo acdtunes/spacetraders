@@ -281,6 +281,44 @@ func (a *TaskActivator) resourcePendingTask(ctx context.Context, task *manufactu
 	return betterSupply, true
 }
 
+// resourceDeferredConstructionTask attempts to locate a buy source for a
+// construction material that was deferred at planning time (no source found
+// then). It reuses the construction source locator (EXPORT MODERATE+, with the
+// IMPORT/EXCHANGE ABUNDANT/HIGH fallback). On success it assigns the source to
+// the task (keeping it PENDING) so the caller can mark it READY; on failure it
+// returns false and the task stays deferred for a later poll.
+func (a *TaskActivator) resourceDeferredConstructionTask(ctx context.Context, task *manufacturing.ManufacturingTask) bool {
+	logger := common.LoggerFromContext(ctx)
+
+	if a.marketLocator == nil {
+		return false
+	}
+
+	systemSymbol := extractSystem(task.ConstructionSite())
+	source, err := a.marketLocator.FindConstructionSource(ctx, task.Good(), systemSymbol, a.playerID)
+	if err != nil || source == nil {
+		return false
+	}
+
+	if err := task.UpdateSourceMarket(source.WaypointSymbol); err != nil {
+		logger.Log("WARN", "Failed to assign source to deferred construction task", map[string]interface{}{
+			"task_id": shortID(task.ID()),
+			"good":    task.Good(),
+			"error":   err.Error(),
+		})
+		return false
+	}
+
+	logger.Log("INFO", "Re-sourced deferred construction material - supply recovered", map[string]interface{}{
+		"task_id":           shortID(task.ID()),
+		"good":              task.Good(),
+		"source":            source.WaypointSymbol,
+		"supply":            source.Supply,
+		"construction_site": task.ConstructionSite(),
+	})
+	return true
+}
+
 // ActivateCollectionPipelineTasks activates PENDING and enqueues READY COLLECT_SELL tasks from COLLECTION pipelines.
 // COLLECTION pipelines have no factory states, so they're not handled by the normal factory polling.
 // This method ensures tasks (from recovery, retry, or un-saturated markets) get activated and enqueued.
@@ -448,6 +486,17 @@ func (a *TaskActivator) ActivateConstructionTasks(ctx context.Context) int {
 		// Wait for input deliveries (e.g., factory inputs) to complete first
 		if !a.checkDependenciesComplete(ctx, task) {
 			continue
+		}
+
+		// DEFERRED material recovery: a task planned with no buy source (supply was
+		// too low at planning time) must be re-sourced before it can go READY -
+		// dispatching it with an empty source would fail at execution. This mirrors
+		// the supply-gated re-sourcing of PENDING ACQUIRE_DELIVER tasks. If still
+		// unsourceable, the task stays PENDING (deferred, visible) for a later poll.
+		if task.IsDeferredConstruction() {
+			if !a.resourceDeferredConstructionTask(ctx, task) {
+				continue
+			}
 		}
 
 		if err := task.MarkReady(); err != nil {

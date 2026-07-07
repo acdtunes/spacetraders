@@ -306,6 +306,121 @@ func (l *MarketLocator) FindExportMarketBySupplyPriority(
 	}, nil
 }
 
+// FindConstructionSource finds a market to BUY a good from for delivery to a
+// construction site. It is the construction-scoped source locator used both at
+// planning time and by the poll-loop recovery of deferred construction tasks.
+//
+// Preference order:
+//  1. EXPORT market with MODERATE+ supply (cheapest, produced-to-order source) -
+//     ranked exactly like FindExportMarketBySupplyPriority.
+//  2. FALLBACK: when no EXPORT market clears the MODERATE+ floor, an IMPORT or
+//     EXCHANGE market holding ABUNDANT/HIGH accumulated stock, which it will sell
+//     back at its ask price. A LIMITED export that stalls indefinitely is worse
+//     than paying a modest premium at an oversupplied importer.
+//
+// Returns (nil, nil) when neither exists so the caller can DEFER the material
+// (create a PENDING task that recovers when supply regenerates) instead of
+// failing the whole pipeline.
+func (l *MarketLocator) FindConstructionSource(
+	ctx context.Context,
+	good string,
+	systemSymbol string,
+	playerID int,
+) (*MarketLocatorResult, error) {
+	// Ship types are sourced from shipyards, which have no supply levels.
+	if isShipType(good) {
+		return l.findShipyardSellingShip(ctx, good, systemSymbol, playerID)
+	}
+
+	marketWaypoints, err := l.marketRepo.FindAllMarketsInSystem(ctx, systemSymbol, playerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find markets: %w", err)
+	}
+
+	type sourceCandidate struct {
+		result        *MarketLocatorResult
+		supplyScore   int
+		activityScore int
+		price         int
+	}
+	var exportCandidates, importCandidates []sourceCandidate
+
+	for _, waypointSymbol := range marketWaypoints {
+		marketData, err := l.marketRepo.GetMarketData(ctx, waypointSymbol, playerID)
+		if err != nil || marketData == nil {
+			continue
+		}
+		tradeGood := marketData.FindGood(good)
+		if tradeGood == nil {
+			continue
+		}
+
+		supply := supplyOrEmpty(tradeGood)
+		activity := activityOrEmpty(tradeGood)
+		result := &MarketLocatorResult{
+			WaypointSymbol: waypointSymbol,
+			Activity:       activity,
+			Supply:         supply,
+			Price:          tradeGood.SellPrice(),
+			TradeVolume:    tradeGood.TradeVolume(),
+		}
+
+		switch tradeGood.TradeType() {
+		case market.TradeTypeExport:
+			// EXPORT: accept MODERATE+ (skip SCARCE/LIMITED to avoid overpaying).
+			supplyScore := manufacturing.SupplyLevel(supply).Order() - manufacturing.SupplyLevelLimited.Order()
+			if supplyScore < 1 {
+				continue
+			}
+			exportCandidates = append(exportCandidates, sourceCandidate{
+				result:        result,
+				supplyScore:   supplyScore,
+				activityScore: ExportActivityScore(activity),
+				price:         tradeGood.SellPrice(),
+			})
+		case market.TradeTypeImport, market.TradeTypeExchange:
+			// FALLBACK: only oversupplied importers/exchanges (HIGH/ABUNDANT) can
+			// serve as a reliable buy source for accumulated stock.
+			if !isHighOrAbundant(supply) {
+				continue
+			}
+			importCandidates = append(importCandidates, sourceCandidate{
+				result:      result,
+				supplyScore: manufacturing.SupplyLevel(supply).Order(),
+				price:       tradeGood.SellPrice(),
+			})
+		}
+	}
+
+	// Prefer EXPORT markets when any qualify.
+	if len(exportCandidates) > 0 {
+		sort.SliceStable(exportCandidates, func(i, j int) bool {
+			if exportCandidates[i].supplyScore != exportCandidates[j].supplyScore {
+				return exportCandidates[i].supplyScore > exportCandidates[j].supplyScore
+			}
+			if exportCandidates[i].activityScore != exportCandidates[j].activityScore {
+				return exportCandidates[i].activityScore > exportCandidates[j].activityScore
+			}
+			return exportCandidates[i].price < exportCandidates[j].price
+		})
+		return exportCandidates[0].result, nil
+	}
+
+	// Import/exchange fallback: highest accumulated supply, then cheapest ask.
+	if len(importCandidates) > 0 {
+		sort.SliceStable(importCandidates, func(i, j int) bool {
+			if importCandidates[i].supplyScore != importCandidates[j].supplyScore {
+				return importCandidates[i].supplyScore > importCandidates[j].supplyScore
+			}
+			return importCandidates[i].price < importCandidates[j].price
+		})
+		return importCandidates[0].result, nil
+	}
+
+	// No sourceable market - caller defers the material.
+	return nil, nil
+}
+
 // FindExportMarketWithGoodSupply finds a market that exports a good with HIGH or ABUNDANT supply.
 // This is used for supply-gated acquisitions to ensure we only buy when prices are favorable.
 // Returns nil if no market with good supply is available.
