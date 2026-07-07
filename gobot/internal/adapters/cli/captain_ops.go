@@ -229,6 +229,7 @@ Examples:
 
 	cmd.AddCommand(newCaptainEventsCommand())
 	cmd.AddCommand(newCaptainReportCommand())
+	cmd.AddCommand(newCaptainTokensCommand())
 	cmd.AddCommand(newCaptainWakeCommand())
 
 	return cmd

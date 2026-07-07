@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"text/tabwriter"
@@ -13,7 +14,9 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
+	adaptertelemetry "github.com/andrescamacho/spacetraders-go/internal/adapters/telemetry"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
+	telemetry "github.com/andrescamacho/spacetraders-go/internal/domain/telemetry"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 )
@@ -28,6 +31,21 @@ type EngineReport struct {
 	BacklogCount        int            `json:"backlog_count"`
 	BacklogOldestAgeSec float64        `json:"backlog_oldest_age_sec"`
 	PerType             map[string]int `json:"per_type"`
+	// TokenUsage is a compact per-wake/per-day token cost summary attached
+	// best-effort from the claude-session transcripts (sp-593x). It is omitted
+	// when token telemetry is unavailable (no `gc`, no transcripts) so the
+	// events report never depends on it. The full per-agent breakdown lives in
+	// `captain tokens`.
+	TokenUsage *TokenSummary `json:"token_usage,omitempty"`
+}
+
+// TokenSummary is the compact token block surfaced inside the captain report:
+// the two rates the surveyor ritual needs (tokens/day fleet burn, tokens/wake
+// captain per-activation cost) plus the all-in total over the window.
+type TokenSummary struct {
+	TotalTokens   int64   `json:"total_tokens"`
+	TokensPerDay  float64 `json:"tokens_per_day"`
+	TokensPerWake float64 `json:"tokens_per_wake"`
 }
 
 type reportEventSource interface {
@@ -125,24 +143,62 @@ func newReportEventSource() (reportEventSource, error) {
 	return &gormReportEventSource{db: db}, nil
 }
 
-func runEngineReport(ctx context.Context, source reportEventSource, playerID, days int, now time.Time, jsonOut bool) error {
+// newReportTokenCollector builds the live token collector and captain alias for
+// the report's best-effort token block. On any config failure it returns a nil
+// collector so the events report still renders — token telemetry is additive.
+func newReportTokenCollector() (tokenCollector, string) {
+	cfg, err := config.LoadConfig("")
+	if err != nil {
+		return nil, "captain"
+	}
+	collector := adaptertelemetry.NewLiveCollector(
+		gcBinOrDefault(cfg.Captain.GCBin),
+		cfg.Captain.CityDir,
+		os.Getenv("CLAUDE_PROJECTS_ROOT"),
+	)
+	return collector, captainAliasOrDefault(cfg.Captain.CaptainAgent)
+}
+
+func runEngineReport(ctx context.Context, source reportEventSource, tc tokenCollector, captainAlias string, playerID, days int, now time.Time, jsonOut bool, w io.Writer) error {
 	since := now.AddDate(0, 0, -days)
 	events, err := source.FindSince(ctx, playerID, since)
 	if err != nil {
 		return fmt.Errorf("failed to load captain events: %w", err)
 	}
 	report := computeEngineReport(events, playerID, days, now)
+	// Token telemetry is additive and best-effort: attach it when a collector
+	// is wired and succeeds, but never let its absence or failure (missing `gc`,
+	// no transcripts) fail the events report the captain relies on.
+	report.TokenUsage = collectTokenSummary(ctx, tc, captainAlias, days, since)
 
 	if jsonOut {
-		encoder := json.NewEncoder(os.Stdout)
+		encoder := json.NewEncoder(w)
 		encoder.SetIndent("", "  ")
 		return encoder.Encode(report)
 	}
-	return renderEngineReport(report)
+	return renderEngineReport(report, w)
 }
 
-func renderEngineReport(report EngineReport) error {
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+// collectTokenSummary returns the compact token block, or nil when no collector
+// is wired or collection fails. Errors are swallowed by design (see caller).
+func collectTokenSummary(ctx context.Context, tc tokenCollector, captainAlias string, days int, since time.Time) *TokenSummary {
+	if tc == nil {
+		return nil
+	}
+	sessions, err := tc.Collect(ctx, since)
+	if err != nil {
+		return nil
+	}
+	rep := telemetry.ComputeReport(sessions, captainAlias, days)
+	return &TokenSummary{
+		TotalTokens:   rep.TotalTokens,
+		TokensPerDay:  rep.TokensPerDay,
+		TokensPerWake: rep.TokensPerWake,
+	}
+}
+
+func renderEngineReport(report EngineReport, out io.Writer) error {
+	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 	fmt.Fprintf(w, "Player\t%d\n", report.PlayerID)
 	fmt.Fprintf(w, "Window (days)\t%d\n", report.WindowDays)
 	fmt.Fprintf(w, "Total events\t%d\n", report.TotalEvents)
@@ -151,6 +207,11 @@ func renderEngineReport(report EngineReport) error {
 	fmt.Fprintf(w, "Ack latency max (s)\t%.1f\n", report.AckLatencyMaxSec)
 	fmt.Fprintf(w, "Backlog count\t%d\n", report.BacklogCount)
 	fmt.Fprintf(w, "Backlog oldest age (s)\t%.1f\n", report.BacklogOldestAgeSec)
+	if report.TokenUsage != nil {
+		fmt.Fprintf(w, "Total tokens\t%d\n", report.TokenUsage.TotalTokens)
+		fmt.Fprintf(w, "Tokens/day\t%.0f\n", report.TokenUsage.TokensPerDay)
+		fmt.Fprintf(w, "Tokens/wake\t%.0f\n", report.TokenUsage.TokensPerWake)
+	}
 	if err := w.Flush(); err != nil {
 		return err
 	}
@@ -160,7 +221,7 @@ func renderEngineReport(report EngineReport) error {
 		types = append(types, t)
 	}
 	sort.Strings(types)
-	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "TYPE\tCOUNT")
 	for _, t := range types {
 		fmt.Fprintf(tw, "%s\t%d\n", t, report.PerType[t])
@@ -192,7 +253,8 @@ Examples:
 			if err != nil {
 				return err
 			}
-			return runEngineReport(context.Background(), source, playerID, days, time.Now(), jsonOut)
+			tc, captainAlias := newReportTokenCollector()
+			return runEngineReport(context.Background(), source, tc, captainAlias, playerID, days, time.Now(), jsonOut, os.Stdout)
 		},
 	}
 
