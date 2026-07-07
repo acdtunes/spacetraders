@@ -15,9 +15,15 @@ export const NOIR = {
   star: '#F5E9C8',
 } as const;
 
+export function noirRgb(hex: string): { r: number; g: number; b: number } {
+  return {
+    r: parseInt(hex.slice(1, 3), 16),
+    g: parseInt(hex.slice(3, 5), 16),
+    b: parseInt(hex.slice(5, 7), 16),
+  };
+}
+
 export function noirAlpha(hex: string, alpha: number): string {
-  const r = parseInt(hex.slice(1, 3), 16);
-  const g = parseInt(hex.slice(3, 5), 16);
-  const b = parseInt(hex.slice(5, 7), 16);
+  const { r, g, b } = noirRgb(hex);
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }

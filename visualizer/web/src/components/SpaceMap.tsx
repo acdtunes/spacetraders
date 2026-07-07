@@ -1249,6 +1249,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
                 {/* Marketplace ring */}
                 <WaypointSprite
                   assetPath={assetPath}
+                  type={waypoint.type}
                   x={x}
                   y={y}
                   radius={radius}
@@ -1330,7 +1331,7 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
             />
           )}
 
-          <ShipTrailLayer ships={filteredShips} trails={trails} animationFrame={animationFrame} />
+          <ShipTrailLayer ships={filteredShips} trails={trails} frameTimestamp={frameTimestamp} />
 
           {/* Active route indicators */}
           {showDestinationRoutes && RouteVectorsComponent && (

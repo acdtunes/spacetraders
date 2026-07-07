@@ -22,11 +22,14 @@ import type {
   OperationPLData,
 } from '../types/spacetraders';
 import { getTourId } from '../utils/tourHelpers';
+import { appendTrailPoint, TRAIL_MAX_POINTS as TRAIL_BUFFER_CAP } from './trails';
 
+// DRIFT/STEALTH leave no wake; CRUISE/BURN share the bounded fade buffer so a
+// long transit tapers over the fade window instead of being truncated early.
 const TRAIL_MAX_POINTS: Record<FlightMode, number> = {
   DRIFT: 0,
-  CRUISE: 9,
-  BURN: 16,
+  CRUISE: TRAIL_BUFFER_CAP,
+  BURN: TRAIL_BUFFER_CAP,
   STEALTH: 0,
 };
 
@@ -53,9 +56,9 @@ const addTrailPoint = (existing: ShipTrailPoint[] | undefined, point: ShipTrailP
     return existing;
   }
 
-  const sliceCount = Math.max(0, maxPoints - 1);
-  const pointsToKeep = existing.length ? existing.slice(-sliceCount) : [];
-  return [...pointsToKeep, point].slice(-maxPoints);
+  // Delegate the fade-window drop + cap to the shared, unit-tested buffer helper
+  // so this runtime path and the store tests exercise identical logic.
+  return appendTrailPoint(existing, point, maxPoints);
 };
 
 export interface AppState {

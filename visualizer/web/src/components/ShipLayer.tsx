@@ -194,7 +194,12 @@ export const ShipLayer = memo(function ShipLayer({
                   }
                 }}
               />
-              <ShipSprite assetPath={shipAssetPath} size={getShipSize(ship.registration.role)} />
+              <ShipSprite
+                assetPath={shipAssetPath}
+                size={getShipSize(ship.registration.role)}
+                inTransit={ship.nav.status === 'IN_TRANSIT'}
+                frameTimestamp={frameTimestamp}
+              />
             </Group>
 
             {showShipNames && labelInfo && (

@@ -1,8 +1,11 @@
 import { Circle, Group, Line, Image as KonvaImage } from 'react-konva';
 import { useCachedImage } from '../hooks/useCachedImage';
+import { NOIR, noirAlpha } from '../theme/noir';
+import { hasRimGlow } from '../utils/spriteGlow';
 
 interface WaypointSpriteProps {
   assetPath: string | null;
+  type: string;
   x: number;
   y: number;
   radius: number;
@@ -11,21 +14,38 @@ interface WaypointSpriteProps {
 
 const MIN_WORLD_SIZE = 1.2;
 
-export const WaypointSprite = ({ assetPath, x, y, radius, scale }: WaypointSpriteProps) => {
+export const WaypointSprite = ({ assetPath, type, x, y, radius, scale }: WaypointSpriteProps) => {
   const image = useCachedImage(assetPath);
   const size = Math.max(radius * 2, MIN_WORLD_SIZE);
   const half = size / 2;
 
+  // Thin atmosphere ring behind planets / gas giants — the glow is the stroke's shadow.
+  const rimGlow = hasRimGlow(type) ? (
+    <Circle
+      radius={half + 1}
+      stroke={noirAlpha(NOIR.accentSoft, 0.5)}
+      strokeWidth={0.8}
+      shadowColor={NOIR.accentSoft}
+      shadowBlur={5}
+      shadowOpacity={0.7}
+      perfectDrawEnabled={false}
+      listening={false}
+    />
+  ) : null;
+
   if (image && image.width > 0 && image.height > 0) {
     return (
-      <KonvaImage
-        image={image}
-        x={x - half}
-        y={y - half}
-        width={size}
-        height={size}
-        listening={false}
-      />
+      <Group x={x} y={y} listening={false}>
+        {rimGlow}
+        <KonvaImage
+          image={image}
+          x={-half}
+          y={-half}
+          width={size}
+          height={size}
+          listening={false}
+        />
+      </Group>
     );
   }
 
@@ -35,24 +55,25 @@ export const WaypointSprite = ({ assetPath, x, y, radius, scale }: WaypointSprit
 
   return (
     <Group x={x} y={y} listening={false}>
+      {rimGlow}
       <Circle
         radius={size / 2}
-        fill="#1f2937"
-        stroke="#ef4444"
+        fill={NOIR.panel}
+        stroke={NOIR.bad}
         strokeWidth={strokeWidth * 0.6}
         listening={false}
         opacity={0.4}
       />
       <Line
         points={[-crossHalf, -crossHalf, crossHalf, crossHalf]}
-        stroke="#f87171"
+        stroke={NOIR.bad}
         strokeWidth={strokeWidth}
         listening={false}
         lineCap="round"
       />
       <Line
         points={[-crossHalf, crossHalf, crossHalf, -crossHalf]}
-        stroke="#f87171"
+        stroke={NOIR.bad}
         strokeWidth={strokeWidth}
         listening={false}
         lineCap="round"

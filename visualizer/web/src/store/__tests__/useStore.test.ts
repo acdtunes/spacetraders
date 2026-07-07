@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { act } from '@testing-library/react';
 import { createAppStore } from '../useStore';
+import { TRAIL_MAX_POINTS as TRAIL_BUFFER_CAP, TRAIL_FADE_MS } from '../trails';
 import type { Agent, TaggedShip, Waypoint, WaypointRef, ShipTrailPoint, FlightMode } from '../../types/spacetraders';
 
 type AppStore = ReturnType<typeof createAppStore>;
@@ -196,6 +197,32 @@ describe('useStore', () => {
 
     act(() => clearTrail('SHIP-1'));
     expect(store.getState().trails.get('SHIP-1')).toBeUndefined();
+  });
+
+  it('caps the shipped trail buffer and drops points beyond the fade window', () => {
+    const { addTrailPosition } = store.getState();
+    const t0 = Date.now();
+
+    // Push well past the cap; each step clears the min-distance gate (5 world units).
+    act(() => {
+      for (let i = 0; i < TRAIL_BUFFER_CAP + 40; i++) {
+        addTrailPosition('SHIP-1', buildTrailPoint('CRUISE', { x: i * 5, y: 0, timestamp: t0 + i }));
+      }
+    });
+    const capped = store.getState().trails.get('SHIP-1');
+    expect(capped).toHaveLength(TRAIL_BUFFER_CAP);
+    expect(capped?.[0].x).toBe(40 * 5); // oldest 40 points fell off the cap
+
+    // A point far beyond the fade window drops every stale point before it.
+    act(() =>
+      addTrailPosition(
+        'SHIP-1',
+        buildTrailPoint('CRUISE', { x: 99_999, y: 0, timestamp: t0 + TRAIL_FADE_MS + 10_000 })
+      )
+    );
+    const faded = store.getState().trails.get('SHIP-1');
+    expect(faded).toHaveLength(1);
+    expect(faded?.[0].x).toBe(99_999);
   });
 
   it('queues ship focus requests with timestamp metadata', () => {

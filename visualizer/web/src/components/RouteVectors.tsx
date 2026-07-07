@@ -1,20 +1,18 @@
 import { useMemo } from 'react';
 import { Group, Line, Arrow } from 'react-konva';
-import type { TaggedShip, FlightMode, Waypoint as WaypointType } from '../types/spacetraders';
+import type { TaggedShip, Waypoint as WaypointType } from '../types/spacetraders';
 import { Ship } from '../domain/ship';
 import type { Position } from '../domain/ship';
 import { hashString } from '../utils/hash';
+import { NOIR, noirAlpha } from '../theme/noir';
 import { getRouteEndpoint } from './routeVectorsUtils';
 
 const ROUTE_ARROW_SPEED = 0.008;
 const ROUTE_ARROW_SEGMENT_LENGTH = 14;
 
-const ROUTE_COLORS: Record<FlightMode, { line: string; arrow: string }> = {
-  DRIFT: { line: 'rgba(148, 163, 184, 0.35)', arrow: '#f1f5f9' },
-  CRUISE: { line: 'rgba(59, 130, 246, 0.4)', arrow: '#93c5fd' },
-  BURN: { line: 'rgba(248, 113, 113, 0.45)', arrow: '#fca5a5' },
-  STEALTH: { line: 'rgba(129, 140, 248, 0.4)', arrow: '#c7d2fe' },
-};
+// Hairline Noir routes: a dim accent dashed line with a slightly brighter moving arrow.
+const ROUTE_LINE = noirAlpha(NOIR.accent, 0.35);
+const ROUTE_ARROW_COLOR = noirAlpha(NOIR.accentSoft, 0.7);
 
 export interface RouteVectorsProps {
   ships: TaggedShip[];
@@ -79,7 +77,6 @@ export function RouteVectors({
         const headX = renderPosition.x + unitX * arrowHeadDistance;
         const headY = renderPosition.y + unitY * arrowHeadDistance;
 
-        const colors = ROUTE_COLORS[ship.nav.flightMode] ?? ROUTE_COLORS.CRUISE;
         const strokeWidth = Math.max(0.8 / currentScale, 0.4);
         const dashOffset = -((animationFrame * 1.2) % 1000);
 
@@ -87,7 +84,7 @@ export function RouteVectors({
           <Group key={`route-${ship.symbol}`} listening={false}>
             <Line
               points={[renderPosition.x, renderPosition.y, endpoint.x, endpoint.y]}
-              stroke={colors.line}
+              stroke={ROUTE_LINE}
               strokeWidth={strokeWidth}
               dash={[12 / currentScale, 10 / currentScale]}
               dashOffset={dashOffset}
@@ -97,8 +94,8 @@ export function RouteVectors({
             />
             <Arrow
               points={[tailX, tailY, headX, headY]}
-              stroke={colors.arrow}
-              fill={colors.arrow}
+              stroke={ROUTE_ARROW_COLOR}
+              fill={ROUTE_ARROW_COLOR}
               strokeWidth={strokeWidth * 1.4}
               pointerLength={8 / currentScale}
               pointerWidth={6 / currentScale}
