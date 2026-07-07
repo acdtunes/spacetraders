@@ -216,6 +216,97 @@ func TestEvaluateWakeGate(t *testing.T) {
 	}
 }
 
+// TestWakeGateNextWakeAtIsOneShot covers sp-soh9: a captain-declared NextWakeAt
+// is a ONE-SHOT alarm, not a standing wake condition. It governs the next wake
+// only while UNSERVICED (still ahead of the last session that ran). Once a
+// session runs at or after the alarm instant (LastSession >= *NextWakeAt) the
+// alarm is spent and the heartbeat cadence resumes — otherwise a past alarm
+// left un-re-declared makes now >= *NextWakeAt true on every 30s tick and wakes
+// the captain each tick until the hourly cap trips (the live regression from
+// the sk68 merge). D2's guarantees are preserved: with no alarm an overdue
+// heartbeat still wakes, and a future alarm still defers per the D2 rules.
+func TestWakeGateNextWakeAtIsOneShot(t *testing.T) {
+	base := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name string
+		in   wakeGateInput
+		want bool
+	}{
+		{
+			// An alarm that has fired (now >= it) but has NOT been serviced
+			// (LastSession is still behind it) is live and must wake this tick.
+			name: "unserviced past alarm wakes",
+			in: wakeGateInput{
+				Now:              base,
+				LastSession:      base.Add(-30 * time.Minute),
+				HeartbeatMinutes: 45,
+				Policy:           WakePolicy{NextWakeAt: timePtr(base.Add(-5 * time.Minute))},
+			},
+			want: true,
+		},
+		{
+			// THE REGRESSION (RED against the pre-fix code): the same alarm one
+			// tick after a session serviced it (LastSession == alarm). The alarm
+			// is spent; the resumed heartbeat is nowhere near due, so this tick —
+			// and every subsequent tick — must NOT wake. The pre-fix code pins
+			// next=*NextWakeAt unconditionally, so now(base+1m) >= alarm(base)
+			// wakes on every tick.
+			name: "spent alarm (LastSession == alarm) does not re-fire",
+			in: wakeGateInput{
+				Now:              base.Add(time.Minute),
+				LastSession:      base,
+				HeartbeatMinutes: 45,
+				Policy:           WakePolicy{NextWakeAt: timePtr(base)},
+			},
+			want: false,
+		},
+		{
+			// A spent alarm falls back to the heartbeat cadence: no wake before
+			// LastSession+Heartbeat. Also RED against the pre-fix code (which
+			// still treats the past alarm as due).
+			name: "spent alarm resumes heartbeat cadence — not due before the interval",
+			in: wakeGateInput{
+				Now:              base.Add(44 * time.Minute),
+				LastSession:      base,
+				HeartbeatMinutes: 45,
+				Policy:           WakePolicy{NextWakeAt: timePtr(base)},
+			},
+			want: false,
+		},
+		{
+			// The resumed heartbeat fires exactly one interval past the serviced
+			// alarm (LastSession+45m), proving the fallback cadence is intact.
+			name: "spent alarm resumes heartbeat cadence — fires once the interval elapses",
+			in: wakeGateInput{
+				Now:              base.Add(45 * time.Minute),
+				LastSession:      base,
+				HeartbeatMinutes: 45,
+				Policy:           WakePolicy{NextWakeAt: timePtr(base)},
+			},
+			want: true,
+		},
+		{
+			// D2 guard: with NO alarm declared, an overdue heartbeat still wakes.
+			// The one-shot fix must not suppress the plain heartbeat path.
+			name: "no alarm: overdue heartbeat still wakes",
+			in: wakeGateInput{
+				Now:              base,
+				LastSession:      base.Add(-46 * time.Minute),
+				HeartbeatMinutes: 45,
+			},
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := evaluateWakeGate(tt.in)
+			require.Equal(t, tt.want, got.ShouldWake, "reason: %s", got.Reason)
+		})
+	}
+}
+
 // TestWakeGateAnchorsCadenceAndCeilingToDeclaredAt covers sp-sk68 D2: a
 // wake-policy declaration is positive proof the captain was alive at
 // DeclaredAt, so BOTH the heartbeat-derived next-wake and the never-wake

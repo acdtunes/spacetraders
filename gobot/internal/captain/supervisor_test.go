@@ -2,6 +2,7 @@ package captainsup
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -52,6 +53,36 @@ func TestTickDefersRoutineEventsWithoutWaking(t *testing.T) {
 	left, err := s.store.FindUnprocessed(context.Background(), s.playerID, 10)
 	require.NoError(t, err)
 	require.Len(t, left, 1, "the deferred event stays unprocessed, riding whichever wake fires next")
+}
+
+// sp-soh9 FIX B: when the wake gate keeps firing into a full hourly cap (as it
+// did every 30s during the one-shot-alarm regression), the "session cap
+// reached" line must NOT spam once per tick. It is rate-limited to one line per
+// cap engagement window, so three consecutive capped ticks emit it once — while
+// keeping the informative content intact.
+func TestCapReachedLogIsRateLimitedAcrossConsecutiveTicks(t *testing.T) {
+	sup, _, gw := newBridgeSupervisor(t)
+	now := time.Now()
+	for i := 0; i < 6; i++ {
+		sup.sessionStarts = append(sup.sessionStarts, now.Add(-time.Duration(i)*time.Minute))
+	}
+	// Overdue heartbeat: the gate wakes on every tick, and because the cap
+	// blocks bridgeWake, last_session never advances — so it stays overdue and
+	// keeps re-waking into the cap, exactly the live spam loop.
+	sup.lastSession = now.Add(-2 * time.Hour)
+
+	out := captureOutput(t, func() {
+		for k := 0; k < 3; k++ {
+			ran, err := sup.Tick(context.Background(), now.Add(time.Duration(k)*30*time.Second))
+			require.NoError(t, err)
+			require.False(t, ran, "the cap suppresses the wake on every tick")
+		}
+	})
+
+	require.Equal(t, 1, strings.Count(out, "session cap reached"),
+		"the cap-reached line must be emitted once per engagement, not once per tick")
+	require.Empty(t, gw.mails, "a capped tick never delivers")
+	require.Empty(t, gw.nudges)
 }
 
 func TestTickHourlyCapSuppressesEvenAnInterruptEvent(t *testing.T) {

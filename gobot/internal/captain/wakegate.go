@@ -62,8 +62,8 @@ func evaluateWakeGate(in wakeGateInput) wakeGateDecision {
 }
 
 // effectiveNextWake resolves the next-wake instant: the captain-declared
-// NextWakeAt when present (capped at the never-wake ceiling), else the
-// default heartbeat cadence from the anchor.
+// NextWakeAt while it is still a live one-shot alarm (capped at the never-wake
+// ceiling), else the default heartbeat cadence from the anchor.
 //
 // The anchor is later(LastSession, Policy.DeclaredAt), never LastSession
 // alone (sp-sk68 D2): a wake-policy declaration is positive proof the captain
@@ -72,6 +72,15 @@ func evaluateWakeGate(in wakeGateInput) wakeGateDecision {
 // alone let a wake-delivery outage — which freezes LastSession — make an
 // already-overdue heartbeat look due forever, or (with an accompanying
 // NextWakeAt defer) silently cancel it below a stale ceiling.
+//
+// NextWakeAt is a ONE-SHOT alarm, not a standing wake condition (sp-soh9): it
+// governs the next wake only while UNSERVICED — i.e. still ahead of the last
+// session that ran (*NextWakeAt > LastSession). Once a session runs at or after
+// the alarm instant the alarm is spent, and the heartbeat cadence resumes
+// exactly as when no alarm is set. Without this, a captain-declared alarm that
+// passed without being re-declared kept `now >= *NextWakeAt` true on every 30s
+// tick and woke the captain each tick until the hourly cap tripped (the live
+// regression from the sk68 merge).
 func effectiveNextWake(in wakeGateInput) time.Time {
 	maxInterval := in.MaxWakeIntervalMinutes
 	if maxInterval <= 0 {
@@ -84,7 +93,7 @@ func effectiveNextWake(in wakeGateInput) time.Time {
 	ceiling := base.Add(time.Duration(maxInterval) * time.Minute)
 
 	next := base.Add(time.Duration(in.HeartbeatMinutes) * time.Minute)
-	if in.Policy.NextWakeAt != nil {
+	if in.Policy.NextWakeAt != nil && in.Policy.NextWakeAt.After(in.LastSession) {
 		next = *in.Policy.NextWakeAt
 	}
 	if next.After(ceiling) {

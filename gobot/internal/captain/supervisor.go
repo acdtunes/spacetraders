@@ -13,6 +13,12 @@ import (
 
 const eventBatchLimit = 50
 
+// capLogInterval throttles the "session cap reached" line. When the wake gate
+// keeps firing into a full hourly cap it is re-evaluated every poll (30s), so
+// without a throttle the line spammed once per tick (sp-soh9). One line per
+// this window keeps a sustained cap visible without drowning the log.
+const capLogInterval = 10 * time.Minute
+
 // Supervisor is pure plumbing: it decides WHEN a session runs, never WHAT
 // the captain does (spec: Component 2).
 type Supervisor struct {
@@ -47,6 +53,9 @@ type Supervisor struct {
 	deliveryFailures      int
 	firstDeliveryFailure  time.Time
 	lastAttemptInterrupts map[int64]bool // interrupt event ids present at the last attempt
+	// lastCapLog throttles the per-tick "session cap reached" line (sp-soh9).
+	// In-memory only: a restart re-logging once is harmless.
+	lastCapLog time.Time
 	// Credit-gate satisfaction snapshot at the last delivery attempt (sp-sk68
 	// D4). A CreditsAbove/Below bound newly satisfied since the last attempt is
 	// a genuine edge that bypasses the delivery backoff; a still-satisfied
@@ -202,8 +211,11 @@ func (s *Supervisor) Tick(ctx context.Context, now time.Time) (bool, error) {
 		return false, nil
 	}
 	if s.sessionsInLastHour(now) >= s.cfg.MaxSessionsPerHour {
-		fmt.Printf("captain: session cap reached (%d/h), %d events queued\n",
-			s.cfg.MaxSessionsPerHour, len(events))
+		if now.Sub(s.lastCapLog) >= capLogInterval {
+			fmt.Printf("captain: session cap reached (%d/h), %d events queued\n",
+				s.cfg.MaxSessionsPerHour, len(events))
+			s.lastCapLog = now
+		}
 		return false, nil
 	}
 	s.rememberAttempt(events, policy)
