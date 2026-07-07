@@ -586,6 +586,25 @@ func (t *ManufacturingTask) ParkForResupply() error {
 	return nil
 }
 
+// ClearSourceForResupply drops the resolved buy source (both source market and
+// factory) from a DELIVER_TO_CONSTRUCTION task whose source turned out to be DRY at
+// execution time - the market was reachable but sold nothing. This reverts the task
+// to the deferred/unsourceable signature, so that once it is parked back to PENDING
+// (ParkForResupply) it reads as IsDeferredConstruction() and the SupplyMonitor
+// re-sources it when the market refills (sp-r900). Without dropping the dry source the
+// task would keep the same empty market and retry to permanent death, dead-stalling
+// its leg. This is the execution-time twin of the planner's no-source deferral: the
+// dry-market self-heal (sp-izh8), mirroring the no-source park path (sp-hs2j).
+// Construction-only: no other task type has the deferred-construction re-sourcing path.
+func (t *ManufacturingTask) ClearSourceForResupply() error {
+	if t.taskType != TaskTypeDeliverToConstruction {
+		return fmt.Errorf("can only clear source for resupply on DELIVER_TO_CONSTRUCTION tasks, got %s", t.taskType)
+	}
+	t.sourceMarket = ""
+	t.factorySymbol = ""
+	return nil
+}
+
 // Cancel marks the task as failed with a cancellation reason (used when pipeline is recycled).
 // Can cancel PENDING, READY, or ASSIGNED tasks - tasks that are executing should complete or fail.
 // Uses FAILED status since the database constraint doesn't include CANCELLED.

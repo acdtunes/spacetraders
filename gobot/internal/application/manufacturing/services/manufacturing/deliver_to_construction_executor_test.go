@@ -205,6 +205,45 @@ func TestDeliverToConstruction_NoSource_SignalsSupplyDeferral(t *testing.T) {
 	}
 }
 
+// A construction delivery whose source EXISTS but whose market is momentarily DRY
+// (the purchase loop buys nothing) must NOT retry toward permanent death - which,
+// once the retry budget is spent, dead-stalls the leg with no auto-replenish. Like
+// the no-source case above, the executor signals a supply deferral (ErrDeferToSupply)
+// AND drops the dry source so the parked task reverts to IsDeferredConstruction(),
+// letting the SupplyMonitor re-source it when the market refills - fully hands-off
+// self-heal for the dry-market dip (sp-izh8, the dry-market twin of sp-hs2j).
+func TestDeliverToConstruction_DryMarket_DefersAndClearsSource(t *testing.T) {
+	// Source market IS assigned, but the market is dry: the purchase loop returns 0.
+	task := manufacturing.NewDeliverToConstructionTask(
+		"pipeline-1", 1, "FAB_MATS", "X1-TEST-F45", "", "X1-TEST-I67", []string{},
+	)
+
+	navigator := &constructionFakeNavigator{ship: newConstructionTestShip(t)} // empty cargo
+	purchaser := &constructionFakePurchaser{unitsAdded: 0}                    // dry market: nothing bought
+	siteRepo := &constructionFakeSiteRepo{}
+
+	executor := NewDeliverToConstructionExecutor(navigator, purchaser, siteRepo, &constructionFakePipelineRepo{}, &recordingTaskRepo{})
+
+	err := executor.Execute(context.Background(), TaskExecutionParams{
+		Task:       task,
+		ShipSymbol: "TEST-1",
+		PlayerID:   shared.MustNewPlayerID(1),
+	})
+	if err == nil {
+		t.Fatalf("expected a supply-deferral signal when the source market is dry")
+	}
+	if !errors.Is(err, ErrDeferToSupply) {
+		t.Fatalf("expected a dry source to wrap ErrDeferToSupply (park, not retry-to-death), got %v", err)
+	}
+	if purchaser.params == nil {
+		t.Fatalf("expected the purchase loop to have run against the source market")
+	}
+	if !task.IsDeferredConstruction() {
+		t.Fatalf("a dry-source construction task must be cleared to IsDeferredConstruction() so the SupplyMonitor re-sources it; source=%q factory=%q",
+			task.SourceMarket(), task.FactorySymbol())
+	}
+}
+
 // newConstructionTestShipWithCargo builds an in-orbit ship already holding
 // `units` of `good`, so the executor skips the acquire phase and proceeds
 // straight to the construction supply step.

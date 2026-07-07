@@ -133,7 +133,16 @@ func (e *DeliverToConstructionExecutor) Execute(ctx context.Context, params Task
 			return err
 		}
 		if purchaseResult.TotalUnitsAdded == 0 {
-			return fmt.Errorf("DELIVER_TO_CONSTRUCTION: no goods acquired at %s - will retry", source)
+			// The source exists but its market is momentarily DRY (bought nothing). This
+			// is a transient supply gap, not a failure: retrying to permanent death would
+			// dead-stall this leg with no auto-replenish. Clear the dry source so the task
+			// reverts to IsDeferredConstruction(), then signal a supply deferral so the
+			// worker parks it (ParkForResupply) for the SupplyMonitor to re-source when the
+			// market refills - the dry-market twin of the no-source deferral above (sp-izh8).
+			if clearErr := task.ClearSourceForResupply(); clearErr != nil {
+				return fmt.Errorf("DELIVER_TO_CONSTRUCTION: no goods acquired at %s and could not defer for resupply: %w", source, clearErr)
+			}
+			return fmt.Errorf("%w: DELIVER_TO_CONSTRUCTION %s source %s is dry", ErrDeferToSupply, task.Good(), source)
 		}
 
 		cargoUnits = purchaseResult.TotalUnitsAdded

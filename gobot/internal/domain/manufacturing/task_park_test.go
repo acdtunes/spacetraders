@@ -56,6 +56,49 @@ func TestParkForResupply_DoesNotTouchRetryCount(t *testing.T) {
 	}
 }
 
+// A construction delivery whose source market turns out to be DRY at execution time
+// must be reverted to the deferred/unsourceable signature so the SupplyMonitor
+// re-sources it. ClearSourceForResupply drops both the source market and the factory,
+// making an otherwise-sourced construction task IsDeferredConstruction() (sp-izh8).
+func TestClearSourceForResupply_DropsSourceAndFactory_MakesDeferred(t *testing.T) {
+	task := NewDeliverToConstructionTask("pipeline-1", 1, "FAB_MATS", "X1-TEST-F45", "", "X1-TEST-I67", nil)
+	_ = task.MarkReady()
+	_ = task.AssignShip("SHIP-1")
+	_ = task.StartExecution()
+
+	if task.IsDeferredConstruction() {
+		t.Fatalf("precondition: a sourced construction task must not already be deferred")
+	}
+
+	if err := task.ClearSourceForResupply(); err != nil {
+		t.Fatalf("ClearSourceForResupply: %v", err)
+	}
+
+	if task.SourceMarket() != "" {
+		t.Fatalf("expected source market cleared, got %q", task.SourceMarket())
+	}
+	if task.FactorySymbol() != "" {
+		t.Fatalf("expected factory cleared, got %q", task.FactorySymbol())
+	}
+	if !task.IsDeferredConstruction() {
+		t.Fatalf("a source-cleared construction task must be IsDeferredConstruction() for the SupplyMonitor to re-source it")
+	}
+}
+
+// ClearSourceForResupply is a construction-only reversion: a non-construction task
+// (e.g. ACQUIRE_DELIVER) has no deferred-construction re-sourcing path and must be
+// rejected rather than silently stripped of its source.
+func TestClearSourceForResupply_RejectsNonConstructionTask(t *testing.T) {
+	task := NewAcquireDeliverTask("pipeline-1", 1, "IRON_ORE", "X1-TEST-F45", "X1-TEST-FAC", nil)
+
+	if err := task.ClearSourceForResupply(); err == nil {
+		t.Fatalf("expected ClearSourceForResupply to reject a non-construction task")
+	}
+	if task.SourceMarket() != "X1-TEST-F45" {
+		t.Fatalf("a rejected clear must not mutate the source, got %q", task.SourceMarket())
+	}
+}
+
 // Parking is only valid for in-flight tasks (EXECUTING or ASSIGNED). A terminal
 // (COMPLETED) task cannot be parked.
 func TestParkForResupply_RejectsTerminalTask(t *testing.T) {
