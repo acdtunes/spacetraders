@@ -193,6 +193,8 @@ Example:
 
 // newPlayerInfoCommand creates the player info subcommand
 func newPlayerInfoCommand() *cobra.Command {
+	var showToken bool
+
 	cmd := &cobra.Command{
 		Use:   "info",
 		Short: "Show detailed player information",
@@ -200,9 +202,13 @@ func newPlayerInfoCommand() *cobra.Command {
 
 Specify the player using either --player-id or --agent flag.
 
+The API token is masked by default so it does not accumulate in logs or
+transcripts. Pass --show-token to print the full token.
+
 Examples:
   spacetraders player info --player-id 1
-  spacetraders player info --agent ENDURANCE`,
+  spacetraders player info --agent ENDURANCE
+  spacetraders player info --show-token`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Load config and connect to database
 			cfg, err := config.LoadConfig("")
@@ -245,7 +251,7 @@ Examples:
 			// Display player info
 			fmt.Printf("Player Information\n")
 			fmt.Printf("==================\n\n")
-			fmt.Printf("Player ID:     %d\n", p.ID)
+			fmt.Printf("Player ID:     %d\n", p.ID.Value())
 			fmt.Printf("Agent Symbol:  %s\n", p.AgentSymbol)
 			fmt.Printf("Credits:       %d\n", p.Credits)
 
@@ -267,11 +273,32 @@ Examples:
 				}
 			}
 
-			fmt.Printf("\nToken: %s...\n", p.Token[:20])
+			fmt.Printf("\nToken: %s\n", maskToken(p.Token, showToken))
 
 			return nil
 		},
 	}
 
+	cmd.Flags().BoolVar(&showToken, "show-token", false, "Print the full API token instead of a masked prefix")
+
 	return cmd
+}
+
+// maskToken renders an API token for display. SpaceTraders tokens are long-lived
+// bearer credentials, so by default only a short prefix is shown to keep full
+// tokens out of logs and transcripts. Callers pass showFull (via --show-token)
+// to reveal the whole token when a human explicitly asks for it.
+func maskToken(token string, showFull bool) string {
+	if showFull {
+		return token
+	}
+
+	const prefixLen = 12
+	if len(token) <= prefixLen {
+		// Too short to reveal a prefix without exposing most of the secret;
+		// slicing would also panic, so hide it entirely.
+		return "..."
+	}
+
+	return token[:prefixLen] + "..."
 }
