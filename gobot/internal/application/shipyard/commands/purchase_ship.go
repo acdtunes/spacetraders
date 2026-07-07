@@ -363,8 +363,11 @@ func (h *PurchaseShipHandler) recordShipPurchaseTransaction(
 ) {
 	logger := logging.LoggerFromContext(ctx)
 
-	// Calculate balance after
-	balanceAfter := balanceBefore - purchaseResult.Transaction.Price
+	// balanceBefore comes from the pre-purchase GetAgent; balanceAfter is the
+	// agent's credits as reported in-band by the purchase response, which is
+	// the authoritative post-transaction balance the ledger anchors on.
+	authoritativeBalance := &purchaseResult.Agent.Credits
+	balanceAfter := purchaseResult.Agent.Credits
 
 	// Fetch player to get agent symbol
 	playerData, err := h.playerRepo.FindByID(ctx, cmd.PlayerID)
@@ -384,14 +387,15 @@ func (h *PurchaseShipHandler) recordShipPurchaseTransaction(
 
 	// Create record transaction command
 	recordCmd := &ledgerCommands.RecordTransactionCommand{
-		PlayerID:        cmd.PlayerID.Value(),
-		TransactionType: "PURCHASE_SHIP",
-		Amount:          -purchaseResult.Transaction.Price, // Negative for expense
-		BalanceBefore:   balanceBefore,
-		BalanceAfter:    balanceAfter,
-		Description:     fmt.Sprintf("Purchased %s ship at %s", cmd.ShipType, shipyardWaypoint),
-		Metadata:        metadata,
-		OperationType:   "fleet expansion", // Ship purchases are fleet expansion operations
+		PlayerID:             cmd.PlayerID.Value(),
+		TransactionType:      "PURCHASE_SHIP",
+		Amount:               -purchaseResult.Transaction.Price, // Negative for expense
+		BalanceBefore:        balanceBefore,
+		BalanceAfter:         balanceAfter,
+		AuthoritativeBalance: authoritativeBalance,
+		Description:          fmt.Sprintf("Purchased %s ship at %s", cmd.ShipType, shipyardWaypoint),
+		Metadata:             metadata,
+		OperationType:        "fleet expansion", // Ship purchases are fleet expansion operations
 	}
 
 	// Record transaction via mediator (use passed context, not Background)

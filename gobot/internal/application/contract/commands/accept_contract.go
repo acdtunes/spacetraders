@@ -61,18 +61,13 @@ func (h *AcceptContractHandler) Handle(ctx context.Context, request common.Reque
 		return nil, err
 	}
 
-	// Fetch balance before accepting
-	balanceBefore, err := h.fetchCurrentCredits(ctx, token)
+	// The accept response returns the agent's post-acceptance credits in-band.
+	// That authoritative balance replaces the old pre-fetched GetAgent snapshot,
+	// which could already be stale (re-anchoring the ledger to a wrong value)
+	// and, worse, caused the payment to be dropped from the ledger entirely
+	// whenever the fetch failed (sp-sc6u root cause #4).
+	contractData, err := h.callAcceptContractAPI(ctx, cmd.ContractID, token)
 	if err != nil {
-		// Log warning but don't fail the operation
-		logger := logging.LoggerFromContext(ctx)
-		logger.Log("WARN", "Failed to fetch credits before accepting contract, ledger entry will not be recorded", map[string]interface{}{
-			"error":       err.Error(),
-			"contract_id": cmd.ContractID,
-		})
-	}
-
-	if err := h.callAcceptContractAPI(ctx, cmd.ContractID, token); err != nil {
 		return nil, err
 	}
 
@@ -80,10 +75,14 @@ func (h *AcceptContractHandler) Handle(ctx context.Context, request common.Reque
 		return nil, err
 	}
 
-	// Record transaction asynchronously (non-blocking)
-	if balanceBefore > 0 {
-		go h.recordContractAcceptance(ctx, contract, balanceBefore)
+	// Record asynchronously (non-blocking). Always record: the acceptance
+	// payment is real income even if the API omitted the in-band balance, in
+	// which case the ledger reconstructs balance_after from the running chain.
+	var authoritativeBalance *int
+	if contractData != nil {
+		authoritativeBalance = contractData.AgentCredits
 	}
+	go h.recordContractAcceptance(ctx, contract, authoritativeBalance)
 
 	return &AcceptContractResponse{
 		Contract: contract,
@@ -102,12 +101,12 @@ func (h *AcceptContractHandler) acceptContractInDomain(contract *contract.Contra
 	return contract.Accept()
 }
 
-func (h *AcceptContractHandler) callAcceptContractAPI(ctx context.Context, contractID string, token string) error {
-	_, err := h.apiClient.AcceptContract(ctx, contractID, token)
+func (h *AcceptContractHandler) callAcceptContractAPI(ctx context.Context, contractID string, token string) (*domainPorts.ContractData, error) {
+	contractData, err := h.apiClient.AcceptContract(ctx, contractID, token)
 	if err != nil {
-		return fmt.Errorf("API error: %w", err)
+		return nil, fmt.Errorf("API error: %w", err)
 	}
-	return nil
+	return contractData, nil
 }
 
 func (h *AcceptContractHandler) saveContract(ctx context.Context, contract *contract.Contract) error {
@@ -117,24 +116,20 @@ func (h *AcceptContractHandler) saveContract(ctx context.Context, contract *cont
 	return nil
 }
 
-// fetchCurrentCredits fetches the player's current credits from the API
-func (h *AcceptContractHandler) fetchCurrentCredits(ctx context.Context, token string) (int, error) {
-	agent, err := h.apiClient.GetAgent(ctx, token)
-	if err != nil {
-		return 0, fmt.Errorf("failed to fetch agent credits: %w", err)
-	}
-	return agent.Credits, nil
-}
-
-// recordContractAcceptance records the contract acceptance payment in the ledger
+// recordContractAcceptance records the contract acceptance payment in the ledger.
+// authoritativeBalance, when non-nil, is the agent's post-acceptance credits as
+// reported in-band by the accept response; the ledger anchors on it. When nil
+// (API omitted it) the zero baseline makes the ledger reconstruct balance_after
+// from the running chain.
 func (h *AcceptContractHandler) recordContractAcceptance(
 	ctx context.Context,
 	contract *contract.Contract,
-	balanceBefore int,
+	authoritativeBalance *int,
 ) {
 	logger := logging.LoggerFromContext(ctx)
 
 	payment := contract.Terms().Payment.OnAccepted
+	const balanceBefore = 0
 	balanceAfter := balanceBefore + payment
 
 	// Fetch player to get agent symbol
@@ -154,16 +149,17 @@ func (h *AcceptContractHandler) recordContractAcceptance(
 
 	// Create record transaction command
 	recordCmd := &ledgerCommands.RecordTransactionCommand{
-		PlayerID:          contract.PlayerID().Value(),
-		TransactionType:   "CONTRACT_ACCEPTED",
-		Amount:            payment, // Positive for income
-		BalanceBefore:     balanceBefore,
-		BalanceAfter:      balanceAfter,
-		Description:       fmt.Sprintf("Accepted %s contract from %s", contract.Type(), contract.FactionSymbol()),
-		Metadata:          metadata,
-		RelatedEntityType: "contract",
-		RelatedEntityID:   contract.ContractID(),
-		OperationType:     "contract",
+		PlayerID:             contract.PlayerID().Value(),
+		TransactionType:      "CONTRACT_ACCEPTED",
+		Amount:               payment, // Positive for income
+		BalanceBefore:        balanceBefore,
+		BalanceAfter:         balanceAfter,
+		AuthoritativeBalance: authoritativeBalance,
+		Description:          fmt.Sprintf("Accepted %s contract from %s", contract.Type(), contract.FactionSymbol()),
+		Metadata:             metadata,
+		RelatedEntityType:    "contract",
+		RelatedEntityID:      contract.ContractID(),
+		OperationType:        "contract",
 	}
 
 	// Record transaction via mediator

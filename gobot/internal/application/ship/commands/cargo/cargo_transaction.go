@@ -242,15 +242,16 @@ func (h *CargoTransactionHandler) executeTransactions(ctx context.Context, cmd *
 			_ = ship.RemoveCargo(cmd.GoodSymbol, result.UnitsProcessed)
 		}
 
-		// Record ledger entry immediately after each successful batch
+		// Record ledger entry immediately after each successful batch.
+		// The API returns the agent's post-transaction credits in-band per
+		// batch; each recorded row re-anchors the ledger to that truth so the
+		// running balance can never fork from the live API (sp-sc6u).
 		batchResponse := &CargoTransactionResponse{
 			TotalAmount:      result.TotalAmount,
 			UnitsProcessed:   result.UnitsProcessed,
 			TransactionCount: 1,
 		}
-		h.recordCargoTransaction(ctx, cmd, waypointSymbol, batchResponse, runningBalance)
-
-		// Update running balance for next batch (approximate, without initial balance)
+		h.recordCargoTransaction(ctx, cmd, waypointSymbol, batchResponse, runningBalance, result.AgentCredits)
 	}
 
 	// Persist ship cargo changes to DB once after all batches
@@ -274,6 +275,7 @@ func (h *CargoTransactionHandler) recordCargoTransaction(
 	waypointSymbol string,
 	response *CargoTransactionResponse,
 	balanceBefore int,
+	authoritativeBalance *int,
 ) {
 	logger := logging.LoggerFromContext(ctx)
 
@@ -324,15 +326,18 @@ func (h *CargoTransactionHandler) recordCargoTransaction(
 		"waypoint":    waypointSymbol,
 	}
 
-	// Create record transaction command
+	// Create record transaction command. AuthoritativeBalance carries the
+	// in-band agent.credits (when present) so the ledger anchors on API truth
+	// rather than the zero-baseline reconstruction below.
 	recordCmd := &ledgerCommands.RecordTransactionCommand{
-		PlayerID:        cmd.PlayerID.Value(),
-		TransactionType: ledgerTxType,
-		Amount:          amount,
-		BalanceBefore:   balanceBefore,
-		BalanceAfter:    balanceAfter,
-		Description:     fmt.Sprintf("%s %d units of %s at %s", transactionTypeStr, response.UnitsProcessed, cmd.GoodSymbol, waypointSymbol),
-		Metadata:        metadata,
+		PlayerID:             cmd.PlayerID.Value(),
+		TransactionType:      ledgerTxType,
+		Amount:               amount,
+		BalanceBefore:        balanceBefore,
+		BalanceAfter:         balanceAfter,
+		AuthoritativeBalance: authoritativeBalance,
+		Description:          fmt.Sprintf("%s %d units of %s at %s", transactionTypeStr, response.UnitsProcessed, cmd.GoodSymbol, waypointSymbol),
+		Metadata:             metadata,
 	}
 
 	// Propagate operation context if present in the context

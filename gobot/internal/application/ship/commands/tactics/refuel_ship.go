@@ -74,9 +74,11 @@ func (h *RefuelShipHandler) Handle(ctx context.Context, request common.Request) 
 		response.FuelAdded,
 	)
 
-	// OPTIMIZATION: Skip balance fetch (saves 1 API call per refuel)
-	// Ledger entries will have balance=0 but transaction amounts are still tracked
-	go h.recordRefuelTransaction(ctx, cmd, response, 0)
+	// No separate balance fetch: the refuel response carries the agent's
+	// post-transaction credits in-band, which is the authoritative balance_after
+	// for the ledger. When absent (older API/mock) the ledger reconstructs from
+	// the running chain (balance_before=0 baseline).
+	go h.recordRefuelTransaction(ctx, cmd, response, refuelResult.AgentCredits)
 
 	return response, nil
 }
@@ -122,12 +124,14 @@ func (h *RefuelShipHandler) buildRefuelResponse(ship *navigation.Ship, fuelBefor
 	}
 }
 
-// recordRefuelTransaction records the refuel transaction in the ledger
+// recordRefuelTransaction records the refuel transaction in the ledger.
+// authoritativeBalance, when non-nil, is the agent's post-refuel credits as
+// reported in-band by the refuel API response; the ledger anchors on it.
 func (h *RefuelShipHandler) recordRefuelTransaction(
 	ctx context.Context,
 	cmd *types.RefuelShipCommand,
 	response *types.RefuelShipResponse,
-	balanceBefore int,
+	authoritativeBalance *int,
 ) {
 	logger := logging.LoggerFromContext(ctx)
 
@@ -141,7 +145,9 @@ func (h *RefuelShipHandler) recordRefuelTransaction(
 		return
 	}
 
-	// Calculate balance after
+	// Zero baseline: when authoritativeBalance is nil the ledger reconstructs
+	// balance_after from the running chain; when set it re-anchors to API truth.
+	const balanceBefore = 0
 	balanceAfter := balanceBefore - response.CreditsCost
 
 	// Fetch player to get agent symbol
@@ -160,13 +166,14 @@ func (h *RefuelShipHandler) recordRefuelTransaction(
 
 	// Create record transaction command
 	recordCmd := &ledgerCommands.RecordTransactionCommand{
-		PlayerID:        cmd.PlayerID.Value(),
-		TransactionType: "REFUEL",
-		Amount:          -response.CreditsCost, // Negative for expense
-		BalanceBefore:   balanceBefore,
-		BalanceAfter:    balanceAfter,
-		Description:     fmt.Sprintf("Refueled ship %s", cmd.ShipSymbol),
-		Metadata:        metadata,
+		PlayerID:             cmd.PlayerID.Value(),
+		TransactionType:      "REFUEL",
+		Amount:               -response.CreditsCost, // Negative for expense
+		BalanceBefore:        balanceBefore,
+		BalanceAfter:         balanceAfter,
+		AuthoritativeBalance: authoritativeBalance,
+		Description:          fmt.Sprintf("Refueled ship %s", cmd.ShipSymbol),
+		Metadata:             metadata,
 	}
 
 	// Propagate operation context if present in the context

@@ -36,6 +36,10 @@ type TransactionResult struct {
 	TotalAmount      int // Total credits (cost for purchase, revenue for sell)
 	UnitsProcessed   int // Total units (added for purchase, sold for sell)
 	TransactionCount int // Number of API transactions executed
+	// AgentCredits is the agent's post-transaction credit balance as reported
+	// in-band by the API (data.agent.credits). Nil when the response omits it.
+	// It is the authoritative balance_after for the ledger.
+	AgentCredits *int
 }
 
 // PurchaseStrategy implements cargo purchase operations.
@@ -63,6 +67,7 @@ func (s *PurchaseStrategy) Execute(ctx context.Context, shipSymbol, goodSymbol s
 	return &TransactionResult{
 		TotalAmount:    result.TotalCost,
 		UnitsProcessed: result.UnitsAdded,
+		AgentCredits:   result.AgentCredits,
 	}, nil
 }
 
@@ -105,6 +110,7 @@ func (s *SellStrategy) Execute(ctx context.Context, shipSymbol, goodSymbol strin
 	return &TransactionResult{
 		TotalAmount:    result.TotalRevenue,
 		UnitsProcessed: result.UnitsSold,
+		AgentCredits:   result.AgentCredits,
 	}, nil
 }
 

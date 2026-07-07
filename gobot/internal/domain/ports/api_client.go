@@ -98,6 +98,11 @@ type ContractData struct {
 	Terms         ContractTermsData
 	Accepted      bool
 	Fulfilled     bool
+	// AgentCredits is the agent's credit balance as reported in-band by an
+	// accept/fulfill response (data.agent.credits). Nil for reads or responses
+	// that omit it. It is the authoritative post-transaction balance for the
+	// ledger, replacing the stale pre-fetched GetAgent snapshot.
+	AgentCredits *int
 }
 
 type ContractTermsData struct {
@@ -123,11 +128,19 @@ type DeliveryData struct {
 type PurchaseResult struct {
 	TotalCost  int
 	UnitsAdded int
+	// AgentCredits is the agent's credit balance as reported in-band by the
+	// purchase response (data.agent.credits). Nil if the response omitted it.
+	// It is the authoritative post-transaction balance for the ledger.
+	AgentCredits *int
 }
 
 type SellResult struct {
 	TotalRevenue int
 	UnitsSold    int
+	// AgentCredits is the agent's credit balance as reported in-band by the
+	// sell response (data.agent.credits). Nil if the response omitted it.
+	// It is the authoritative post-transaction balance for the ledger.
+	AgentCredits *int
 }
 
 // ExtractionResult contains the result of extracting resources from an asteroid

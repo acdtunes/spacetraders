@@ -61,18 +61,13 @@ func (h *FulfillContractHandler) Handle(ctx context.Context, request common.Requ
 		return nil, err
 	}
 
-	// Fetch balance before fulfilling
-	balanceBefore, err := h.fetchCurrentCredits(ctx, token)
+	// The fulfill response returns the agent's post-fulfillment credits in-band.
+	// That authoritative balance replaces the old pre-fetched GetAgent snapshot,
+	// which could already be stale (re-anchoring the ledger to a wrong value)
+	// and, worse, caused the payment to be dropped from the ledger entirely
+	// whenever the fetch failed (sp-sc6u root cause #4).
+	contractData, err := h.callFulfillContractAPI(ctx, cmd.ContractID, token)
 	if err != nil {
-		// Log warning but don't fail the operation
-		logger := logging.LoggerFromContext(ctx)
-		logger.Log("WARN", "Failed to fetch credits before fulfilling contract, ledger entry will not be recorded", map[string]interface{}{
-			"error":       err.Error(),
-			"contract_id": cmd.ContractID,
-		})
-	}
-
-	if err := h.callFulfillContractAPI(ctx, cmd.ContractID, token); err != nil {
 		return nil, err
 	}
 
@@ -80,10 +75,14 @@ func (h *FulfillContractHandler) Handle(ctx context.Context, request common.Requ
 		return nil, err
 	}
 
-	// Record transaction asynchronously (non-blocking)
-	if balanceBefore > 0 {
-		go h.recordContractFulfillment(ctx, contract, balanceBefore)
+	// Record asynchronously (non-blocking). Always record: the fulfillment
+	// payment is real income even if the API omitted the in-band balance, in
+	// which case the ledger reconstructs balance_after from the running chain.
+	var authoritativeBalance *int
+	if contractData != nil {
+		authoritativeBalance = contractData.AgentCredits
 	}
+	go h.recordContractFulfillment(ctx, contract, authoritativeBalance)
 
 	return &FulfillContractResponse{
 		Contract: contract,
@@ -108,12 +107,12 @@ func (h *FulfillContractHandler) fulfillContractInDomain(contract *contract.Cont
 	return contract.Fulfill()
 }
 
-func (h *FulfillContractHandler) callFulfillContractAPI(ctx context.Context, contractID string, token string) error {
-	_, err := h.apiClient.FulfillContract(ctx, contractID, token)
+func (h *FulfillContractHandler) callFulfillContractAPI(ctx context.Context, contractID string, token string) (*domainPorts.ContractData, error) {
+	contractData, err := h.apiClient.FulfillContract(ctx, contractID, token)
 	if err != nil {
-		return fmt.Errorf("API error: %w", err)
+		return nil, fmt.Errorf("API error: %w", err)
 	}
-	return nil
+	return contractData, nil
 }
 
 func (h *FulfillContractHandler) saveContract(ctx context.Context, contract *contract.Contract) error {
@@ -123,24 +122,20 @@ func (h *FulfillContractHandler) saveContract(ctx context.Context, contract *con
 	return nil
 }
 
-// fetchCurrentCredits fetches the player's current credits from the API
-func (h *FulfillContractHandler) fetchCurrentCredits(ctx context.Context, token string) (int, error) {
-	agent, err := h.apiClient.GetAgent(ctx, token)
-	if err != nil {
-		return 0, fmt.Errorf("failed to fetch agent credits: %w", err)
-	}
-	return agent.Credits, nil
-}
-
-// recordContractFulfillment records the contract fulfillment payment in the ledger
+// recordContractFulfillment records the contract fulfillment payment in the ledger.
+// authoritativeBalance, when non-nil, is the agent's post-fulfillment credits as
+// reported in-band by the fulfill response; the ledger anchors on it. When nil
+// (API omitted it) the zero baseline makes the ledger reconstruct balance_after
+// from the running chain.
 func (h *FulfillContractHandler) recordContractFulfillment(
 	ctx context.Context,
 	contract *contract.Contract,
-	balanceBefore int,
+	authoritativeBalance *int,
 ) {
 	logger := logging.LoggerFromContext(ctx)
 
 	payment := contract.Terms().Payment.OnFulfilled
+	const balanceBefore = 0
 	balanceAfter := balanceBefore + payment
 
 	// Fetch player to get agent symbol
@@ -160,16 +155,17 @@ func (h *FulfillContractHandler) recordContractFulfillment(
 
 	// Create record transaction command
 	recordCmd := &ledgerCommands.RecordTransactionCommand{
-		PlayerID:          contract.PlayerID().Value(),
-		TransactionType:   "CONTRACT_FULFILLED",
-		Amount:            payment, // Positive for income
-		BalanceBefore:     balanceBefore,
-		BalanceAfter:      balanceAfter,
-		Description:       fmt.Sprintf("Fulfilled %s contract from %s", contract.Type(), contract.FactionSymbol()),
-		Metadata:          metadata,
-		RelatedEntityType: "contract",
-		RelatedEntityID:   contract.ContractID(),
-		OperationType:     "contract",
+		PlayerID:             contract.PlayerID().Value(),
+		TransactionType:      "CONTRACT_FULFILLED",
+		Amount:               payment, // Positive for income
+		BalanceBefore:        balanceBefore,
+		BalanceAfter:         balanceAfter,
+		AuthoritativeBalance: authoritativeBalance,
+		Description:          fmt.Sprintf("Fulfilled %s contract from %s", contract.Type(), contract.FactionSymbol()),
+		Metadata:             metadata,
+		RelatedEntityType:    "contract",
+		RelatedEntityID:      contract.ContractID(),
+		OperationType:        "contract",
 	}
 
 	// Record transaction via mediator

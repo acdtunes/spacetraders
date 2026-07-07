@@ -260,6 +260,12 @@ func (c *SpaceTradersClient) RefuelShip(ctx context.Context, symbol, token strin
 
 	var response struct {
 		Data struct {
+			// Agent is a pointer so an omitted block (nil) is distinguishable
+			// from a real zero balance; the in-band credits are the ledger's
+			// authoritative post-transaction balance.
+			Agent *struct {
+				Credits int `json:"credits"`
+			} `json:"agent"`
 			Fuel struct {
 				Current  int `json:"current"`
 				Capacity int `json:"capacity"`
@@ -275,12 +281,17 @@ func (c *SpaceTradersClient) RefuelShip(ctx context.Context, symbol, token strin
 		return nil, fmt.Errorf("failed to refuel ship: %w", err)
 	}
 
-	return &navigation.RefuelResult{
+	result := &navigation.RefuelResult{
 		FuelAdded:    response.Data.Transaction.Units,
 		CreditsCost:  response.Data.Transaction.TotalPrice,
 		FuelCurrent:  response.Data.Fuel.Current,
 		FuelCapacity: response.Data.Fuel.Capacity,
-	}, nil
+	}
+	if response.Data.Agent != nil {
+		credits := response.Data.Agent.Credits
+		result.AgentCredits = &credits
+	}
+	return result, nil
 }
 
 // SetFlightMode sets the flight mode for a ship
@@ -509,6 +520,11 @@ func (c *SpaceTradersClient) AcceptContract(ctx context.Context, contractID, tok
 
 	var response struct {
 		Data struct {
+			// Agent carries the post-acceptance credits in-band; the ledger
+			// prefers it over a separately-fetched (stale) GetAgent snapshot.
+			Agent *struct {
+				Credits int `json:"credits"`
+			} `json:"agent"`
 			Contract map[string]interface{} `json:"contract"`
 		} `json:"data"`
 	}
@@ -519,7 +535,15 @@ func (c *SpaceTradersClient) AcceptContract(ctx context.Context, contractID, tok
 		return nil, fmt.Errorf("failed to accept contract: %w", err)
 	}
 
-	return c.parseContractData(response.Data.Contract)
+	contractData, err := c.parseContractData(response.Data.Contract)
+	if err != nil {
+		return nil, err
+	}
+	if response.Data.Agent != nil {
+		credits := response.Data.Agent.Credits
+		contractData.AgentCredits = &credits
+	}
+	return contractData, nil
 }
 
 // DeliverContract delivers cargo to a contract
@@ -551,6 +575,11 @@ func (c *SpaceTradersClient) FulfillContract(ctx context.Context, contractID, to
 
 	var response struct {
 		Data struct {
+			// Agent carries the post-fulfillment credits in-band; the ledger
+			// prefers it over a separately-fetched (stale) GetAgent snapshot.
+			Agent *struct {
+				Credits int `json:"credits"`
+			} `json:"agent"`
 			Contract map[string]interface{} `json:"contract"`
 		} `json:"data"`
 	}
@@ -561,7 +590,15 @@ func (c *SpaceTradersClient) FulfillContract(ctx context.Context, contractID, to
 		return nil, fmt.Errorf("failed to fulfill contract: %w", err)
 	}
 
-	return c.parseContractData(response.Data.Contract)
+	contractData, err := c.parseContractData(response.Data.Contract)
+	if err != nil {
+		return nil, err
+	}
+	if response.Data.Agent != nil {
+		credits := response.Data.Agent.Credits
+		contractData.AgentCredits = &credits
+	}
+	return contractData, nil
 }
 
 // PurchaseCargo purchases cargo at the current market
@@ -575,6 +612,12 @@ func (c *SpaceTradersClient) PurchaseCargo(ctx context.Context, shipSymbol, good
 
 	var response struct {
 		Data struct {
+			// Agent is a pointer so an omitted block (nil) is distinguishable
+			// from a real zero balance; the in-band credits are the ledger's
+			// authoritative post-transaction balance.
+			Agent *struct {
+				Credits int `json:"credits"`
+			} `json:"agent"`
 			Transaction struct {
 				TotalPrice int `json:"totalPrice"`
 				Units      int `json:"units"`
@@ -586,10 +629,15 @@ func (c *SpaceTradersClient) PurchaseCargo(ctx context.Context, shipSymbol, good
 		return nil, fmt.Errorf("failed to purchase cargo: %w", err)
 	}
 
-	return &domainPorts.PurchaseResult{
+	result := &domainPorts.PurchaseResult{
 		TotalCost:  response.Data.Transaction.TotalPrice,
 		UnitsAdded: response.Data.Transaction.Units,
-	}, nil
+	}
+	if response.Data.Agent != nil {
+		credits := response.Data.Agent.Credits
+		result.AgentCredits = &credits
+	}
+	return result, nil
 }
 
 // SellCargo sells cargo from the ship
@@ -603,6 +651,12 @@ func (c *SpaceTradersClient) SellCargo(ctx context.Context, shipSymbol, goodSymb
 
 	var response struct {
 		Data struct {
+			// Agent is a pointer so an omitted block (nil) is distinguishable
+			// from a real zero balance; the in-band credits are the ledger's
+			// authoritative post-transaction balance.
+			Agent *struct {
+				Credits int `json:"credits"`
+			} `json:"agent"`
 			Transaction struct {
 				TotalPrice int `json:"totalPrice"`
 				Units      int `json:"units"`
@@ -614,10 +668,15 @@ func (c *SpaceTradersClient) SellCargo(ctx context.Context, shipSymbol, goodSymb
 		return nil, fmt.Errorf("failed to sell cargo: %w", err)
 	}
 
-	return &domainPorts.SellResult{
+	result := &domainPorts.SellResult{
 		TotalRevenue: response.Data.Transaction.TotalPrice,
 		UnitsSold:    response.Data.Transaction.Units,
-	}, nil
+	}
+	if response.Data.Agent != nil {
+		credits := response.Data.Agent.Credits
+		result.AgentCredits = &credits
+	}
+	return result, nil
 }
 
 // JettisonCargo jettisons cargo from the ship

@@ -25,6 +25,15 @@ type RecordTransactionCommand struct {
 	RelatedEntityID   string
 	OperationType     string     // Optional: operation type (e.g., "contract", "arbitrage", "rebalancing", "factory")
 	Timestamp         *time.Time // Optional: if provided, use this timestamp; otherwise use current time
+
+	// AuthoritativeBalance, when non-nil, is the agent's credit balance as
+	// returned in-band by this transaction's OWN API response
+	// (data.agent.credits from purchase/sell/refuel/accept/fulfill). It is
+	// ground truth for balance_after and re-anchors the running chain to the
+	// API. Prefer it over any reconstructed or separately-fetched balance:
+	// a stale GetAgent snapshot must never overwrite the chain, but the
+	// credits the server reports alongside the transaction always may.
+	AuthoritativeBalance *int
 }
 
 // RecordTransactionResponse represents the result of recording a transaction
@@ -102,25 +111,35 @@ func (h *RecordTransactionHandler) Handle(ctx context.Context, request common.Re
 	mu.Lock()
 	defer mu.Unlock()
 
-	// Some callers skip the balance fetch and pass before=0, after=amount
-	// (an old API-call-saving optimization). That corrupts the running
-	// balance every consumer of balance_after relies on, so rebase such
-	// records onto the last transaction's balance. A genuine first
-	// transaction (no prior ledger rows) keeps its zero baseline.
+	// Single-writer balance derivation. Three sources, in strict order of
+	// authority (this is the sp-sc6u fix — balance_after had forked +~470k from
+	// the live API by trusting reconstructed/stale values over API truth):
+	//
+	//  1. AuthoritativeBalance — the agent's credits as returned in-band by
+	//     this transaction's OWN API response (data.agent.credits). Ground
+	//     truth; it re-anchors the running chain to the API.
+	//  2. Reconstruction — callers that skip the balance fetch pass
+	//     balance_before=0. Chain balance_after off the last recorded balance.
+	//     A zero balance_before with a nonzero amount is arithmetically
+	//     impossible for a real transaction, so it unambiguously means "derive
+	//     it for me": manufacturing sends 0/0, cargo/refuel send 0/amount —
+	//     both reconstruct rather than corrupt or zero the chain.
+	//  3. Explicit — caller supplied a self-consistent before/after pair it is
+	//     sure of (no production caller does this anymore; retained for a
+	//     genuine first-ever transaction and for callers that fetched truth).
+	//
+	// The serialized writer keeps the running balance in memory because
+	// same-instant rows cannot be ordered reliably in the DB (random UUID ids
+	// tie-break identical timestamps); the DB read only warms the cache.
 	balanceBefore, balanceAfter := cmd.BalanceBefore, cmd.BalanceAfter
-	if balanceBefore == 0 && balanceAfter == cmd.Amount && cmd.Amount != 0 {
-		if !h.balanceWarm[cmd.PlayerID] {
-			if last, err := h.transactionRepo.FindByPlayer(ctx, playerID, ledger.QueryOptions{
-				Limit: 1, OrderBy: "timestamp DESC, created_at DESC, id DESC",
-			}); err == nil && len(last) == 1 {
-				h.lastBalance[cmd.PlayerID] = last[0].BalanceAfter()
-				h.balanceWarm[cmd.PlayerID] = true
-			}
-		}
-		if h.balanceWarm[cmd.PlayerID] {
-			balanceBefore = h.lastBalance[cmd.PlayerID]
-			balanceAfter = balanceBefore + cmd.Amount
-		}
+	switch {
+	case cmd.AuthoritativeBalance != nil:
+		balanceAfter = *cmd.AuthoritativeBalance
+		balanceBefore = balanceAfter - cmd.Amount
+	case balanceBefore == 0 && cmd.Amount != 0:
+		h.warmBalance(ctx, cmd.PlayerID, playerID)
+		balanceBefore = h.lastBalance[cmd.PlayerID]
+		balanceAfter = balanceBefore + cmd.Amount
 	}
 
 	// Create transaction entity
@@ -145,7 +164,10 @@ func (h *RecordTransactionHandler) Handle(ctx context.Context, request common.Re
 	if err := h.transactionRepo.Create(ctx, transaction); err != nil {
 		return nil, fmt.Errorf("failed to persist transaction: %w", err)
 	}
-	// Callers that fetched real balances re-anchor the chain to API truth.
+	// The serialized writer is now authoritative for this player's running
+	// balance until the process dies. Whether the value came from in-band
+	// credits, reconstruction, or an explicit pair, the persisted balance_after
+	// is what the next record chains from.
 	h.lastBalance[cmd.PlayerID] = balanceAfter
 	h.balanceWarm[cmd.PlayerID] = true
 
@@ -182,6 +204,22 @@ func (h *RecordTransactionHandler) Handle(ctx context.Context, request common.Re
 		TransactionID: transaction.ID().String(),
 		Timestamp:     transaction.Timestamp(),
 	}, nil
+}
+
+// warmBalance lazily seeds the in-memory running balance from the last persisted
+// row after a restart. Caller must hold the player lock. It runs at most once
+// per player per process (the DB read only warms a cold cache); every recorded
+// transaction thereafter keeps lastBalance current in memory.
+func (h *RecordTransactionHandler) warmBalance(ctx context.Context, playerIDInt int, playerID shared.PlayerID) {
+	if h.balanceWarm[playerIDInt] {
+		return
+	}
+	if last, err := h.transactionRepo.FindByPlayer(ctx, playerID, ledger.QueryOptions{
+		Limit: 1, OrderBy: "timestamp DESC, created_at DESC, id DESC",
+	}); err == nil && len(last) == 1 {
+		h.lastBalance[playerIDInt] = last[0].BalanceAfter()
+	}
+	h.balanceWarm[playerIDInt] = true
 }
 
 func (h *RecordTransactionHandler) playerLock(playerID int) *sync.Mutex {

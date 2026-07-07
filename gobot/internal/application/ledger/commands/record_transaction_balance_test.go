@@ -50,6 +50,94 @@ func TestZeroBalancesAreDerivedFromLedgerChain(t *testing.T) {
 	require.Equal(t, 176331, txs[0].BalanceAfter())
 }
 
+// In-band agent.credits returned by a transaction's own API response is ground
+// truth: it must re-anchor the running chain even when the reconstructed value
+// would differ. This is the fix for balance_after forking away from the API
+// (sp-sc6u): purchase/sell/refuel/contract responses carry data.agent.credits,
+// and the ledger must prefer it over lastBalance+amount reconstruction.
+func TestAuthoritativeBalanceReanchorsTheChain(t *testing.T) {
+	db, err := database.NewTestConnection()
+	require.NoError(t, err)
+	p := persistence.PlayerModel{AgentSymbol: "AGT5", Token: "tok", CreatedAt: time.Now()}
+	require.NoError(t, db.Create(&p).Error)
+	repo := persistence.NewGormTransactionRepository(db)
+	h := NewRecordTransactionHandler(repo, nil)
+	ctx := context.Background()
+
+	// Anchor the in-memory chain at 100000 via reconstruction.
+	_, err = h.Handle(ctx, &RecordTransactionCommand{
+		PlayerID: p.ID, TransactionType: "CONTRACT_ACCEPTED", Amount: 100000,
+		BalanceBefore: 0, BalanceAfter: 100000, Description: "anchor",
+	})
+	require.NoError(t, err)
+
+	// The reconstructed chain would say 100000-5000 = 95000, but the API
+	// reported the agent actually holds 130000 after this purchase (another
+	// income landed out-of-band). The authoritative value must win.
+	authoritative := 130000
+	_, err = h.Handle(ctx, &RecordTransactionCommand{
+		PlayerID: p.ID, TransactionType: "PURCHASE_CARGO", Amount: -5000,
+		BalanceBefore: 0, BalanceAfter: -5000, // caller's zero-baseline hack
+		AuthoritativeBalance: &authoritative,
+		Description:          "purchase with in-band credits",
+	})
+	require.NoError(t, err)
+
+	pid, _ := shared.NewPlayerID(p.ID)
+	txs, err := repo.FindByPlayer(ctx, pid, ledger.QueryOptions{Limit: 1, OrderBy: "timestamp DESC, created_at DESC, id DESC"})
+	require.NoError(t, err)
+	require.Len(t, txs, 1)
+	require.Equal(t, 130000, txs[0].BalanceAfter(), "balance_after must equal in-band agent.credits")
+	require.Equal(t, 135000, txs[0].BalanceBefore(), "balance_before derived as credits - amount")
+
+	// A subsequent reconstruction chains off the re-anchored (authoritative) value.
+	_, err = h.Handle(ctx, &RecordTransactionCommand{
+		PlayerID: p.ID, TransactionType: "REFUEL", Amount: -1000,
+		BalanceBefore: 0, BalanceAfter: -1000, Description: "refuel after re-anchor",
+	})
+	require.NoError(t, err)
+	txs, err = repo.FindByPlayer(ctx, pid, ledger.QueryOptions{Limit: 1, OrderBy: "timestamp DESC, created_at DESC, id DESC"})
+	require.NoError(t, err)
+	require.Equal(t, 129000, txs[0].BalanceAfter(), "reconstruction chains off the authoritative anchor")
+}
+
+// Manufacturing records send no balance fields at all (BalanceBefore=0,
+// BalanceAfter=0). The old heuristic only reconstructed when after==amount, so
+// 0/0 fell through to the "explicit" path and either violated the balance
+// invariant or reset the running balance to zero (sp-sc6u root cause #2). A
+// zero balance_before with a nonzero amount must always reconstruct from the
+// chain, never zero it.
+func TestZeroZeroManufacturingRecordReconstructsInsteadOfZeroing(t *testing.T) {
+	db, err := database.NewTestConnection()
+	require.NoError(t, err)
+	p := persistence.PlayerModel{AgentSymbol: "AGT6", Token: "tok", CreatedAt: time.Now()}
+	require.NoError(t, db.Create(&p).Error)
+	repo := persistence.NewGormTransactionRepository(db)
+	h := NewRecordTransactionHandler(repo, nil)
+	ctx := context.Background()
+
+	// Establish a running balance.
+	_, err = h.Handle(ctx, &RecordTransactionCommand{
+		PlayerID: p.ID, TransactionType: "CONTRACT_ACCEPTED", Amount: 200000,
+		BalanceBefore: 0, BalanceAfter: 200000, Description: "anchor",
+	})
+	require.NoError(t, err)
+
+	// Manufacturing purchase: amount only, both balance fields zero.
+	_, err = h.Handle(ctx, &RecordTransactionCommand{
+		PlayerID: p.ID, TransactionType: "PURCHASE_CARGO", Amount: -5000,
+		BalanceBefore: 0, BalanceAfter: 0, Description: "mfg: buy 10 IRON_ORE",
+	})
+	require.NoError(t, err)
+
+	pid, _ := shared.NewPlayerID(p.ID)
+	txs, err := repo.FindByPlayer(ctx, pid, ledger.QueryOptions{Limit: 1, OrderBy: "timestamp DESC, created_at DESC, id DESC"})
+	require.NoError(t, err)
+	require.Len(t, txs, 1)
+	require.Equal(t, 200000, txs[0].BalanceBefore(), "chain from last balance, not zero")
+	require.Equal(t, 195000, txs[0].BalanceAfter(), "must not collapse the running balance to zero")
+}
+
 func TestFirstEverTransactionWithNoPriorChainKeepsZeroBasedBalances(t *testing.T) {
 	db, err := database.NewTestConnection()
 	require.NoError(t, err)

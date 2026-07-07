@@ -227,4 +227,8 @@ type RefuelResult struct {
 	// Fuel state from API response (avoids separate GetShip call)
 	FuelCurrent  int
 	FuelCapacity int
+	// AgentCredits is the agent's credit balance as reported in-band by the
+	// refuel response (data.agent.credits). Nil if the response omitted it.
+	// It is the authoritative post-transaction balance for the ledger.
+	AgentCredits *int
 }

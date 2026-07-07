@@ -244,6 +244,31 @@ func TestPurchaseCargoErrorsWhenInsufficientCredits(t *testing.T) {
 	require.Empty(t, med.recorded, "no ledger entry when purchase fails")
 }
 
+// The purchase response carries the agent's post-transaction credits in-band
+// (data.agent.credits). The handler must forward that authoritative balance to
+// the ledger so balance_after anchors on API truth instead of a reconstructed
+// value that drifts (sp-sc6u).
+func TestPurchaseCargoForwardsInBandAgentCreditsToLedger(t *testing.T) {
+	ship := newDockedBuyer(t, 40, 0, navigation.NavStatusDocked)
+	credits := 654321
+	api := &buyFakeAPIClient{result: &domainPorts.PurchaseResult{TotalCost: 500, UnitsAdded: 10, AgentCredits: &credits}}
+	med := &buyRecordingMediator{}
+	handler, _ := newBuyHandler(ship, api, med)
+
+	_, err := handler.Handle(buyCtx(), &PurchaseCargoCommand{
+		ShipSymbol: testBuyShip,
+		GoodSymbol: testBuyGood,
+		Units:      10,
+		PlayerID:   shared.MustNewPlayerID(1),
+	})
+	require.NoError(t, err)
+
+	require.Len(t, med.recorded, 1)
+	tx := med.recorded[0]
+	require.NotNil(t, tx.AuthoritativeBalance, "in-band agent.credits must reach the ledger command")
+	require.Equal(t, 654321, *tx.AuthoritativeBalance)
+}
+
 func TestPurchaseCargoErrorsWhenExceedsCargoCapacity(t *testing.T) {
 	// Capacity 40, 35 already used -> only 5 free, requesting 10.
 	ship := newDockedBuyer(t, 40, 35, navigation.NavStatusDocked)
