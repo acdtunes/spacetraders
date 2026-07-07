@@ -153,7 +153,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			logger.Log("INFO", "No ships available, waiting for completion...", nil)
 			select {
 			case event := <-workerCompletedCh:
-				logger.Log("INFO", fmt.Sprintf("Ship %s completed, back in pool", event.ShipSymbol), nil)
+				recordWorkerCompletion(logger, event, fmt.Sprintf("Ship %s completed, back in pool", event.ShipSymbol))
 				activeWorkerContainerID = "" // Worker completed
 				// Loop immediately to assign next contract
 			case <-time.After(30 * time.Second):
@@ -174,7 +174,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			logger.Log("WARNING", fmt.Sprintf("Found %d active CONTRACT_WORKFLOW workers - waiting instead of creating new worker", len(existingActiveWorkers)), nil)
 			select {
 			case event := <-workerCompletedCh:
-				logger.Log("INFO", fmt.Sprintf("Active worker completed for ship %s", event.ShipSymbol), nil)
+				recordWorkerCompletion(logger, event, fmt.Sprintf("Active worker completed for ship %s", event.ShipSymbol))
 				activeWorkerContainerID = "" // Worker completed
 				// Loop back to create new worker
 			case <-time.After(1 * time.Minute):
@@ -262,7 +262,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			// Wait for worker completion
 			select {
 			case event := <-workerCompletedCh:
-				logger.Log("INFO", fmt.Sprintf("Active worker completed for ship %s", event.ShipSymbol), nil)
+				recordWorkerCompletion(logger, event, fmt.Sprintf("Active worker completed for ship %s", event.ShipSymbol))
 				activeWorkerContainerID = "" // Worker completed
 				// Loop back to check contract status
 			case <-time.After(1 * time.Minute):
@@ -338,8 +338,9 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 		logger.Log("INFO", fmt.Sprintf("Waiting for %s to complete contract...", selectedShip), nil)
 		select {
 		case event := <-workerCompletedCh:
-			logger.Log("INFO", fmt.Sprintf("Contract completed by %s", event.ShipSymbol), nil)
-			result.ContractsCompleted++
+			if recordWorkerCompletion(logger, event, fmt.Sprintf("Contract completed by %s", event.ShipSymbol)) {
+				result.ContractsCompleted++
+			}
 			activeWorkerContainerID = ""
 
 			// Ship will no longer be transferred back to coordinator - it's automatically available
@@ -364,6 +365,21 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			return result, ctx.Err()
 		}
 	}
+}
+
+// recordWorkerCompletion logs the outcome of a worker-completion event honestly
+// and reports whether it should count toward the completed-contracts metric.
+// A successful worker is logged at INFO with successMsg and counts; a crashed
+// worker is logged at ERROR carrying event.Error and does NOT count — so the
+// logs and the ContractsCompleted metric never treat a failure as a completion
+// (sp-2q2w). Every worker-completion receive site funnels through here.
+func recordWorkerCompletion(logger common.ContainerLogger, event navigation.WorkerCompletedEvent, successMsg string) (succeeded bool) {
+	if event.Success {
+		logger.Log("INFO", successMsg, nil)
+		return true
+	}
+	logger.Log("ERROR", fmt.Sprintf("Worker for ship %s failed: %s", event.ShipSymbol, event.Error), nil)
+	return false
 }
 
 func (h *RunFleetCoordinatorHandler) spawnContractWorker(
