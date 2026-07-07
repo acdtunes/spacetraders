@@ -29,6 +29,7 @@ Examples:
 	cmd.AddCommand(newWorkflowBatchContractCommand())
 	cmd.AddCommand(newWorkflowScoutMarketsCommand())
 	cmd.AddCommand(newWorkflowScoutAllMarketsCommand())
+	cmd.AddCommand(newWorkflowTradeRouteCommand())
 
 	return cmd
 }
