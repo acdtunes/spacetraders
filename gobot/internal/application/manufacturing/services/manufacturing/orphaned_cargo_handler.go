@@ -86,12 +86,23 @@ func (h *OrphanedCargoHandler) HandleShipsWithExistingCargo(
 		return params.IdleShips, nil
 	}
 
-	// Find ships with cargo
+	// Find ships with cargo. A cached non-empty hold can be a PHANTOM foreign-
+	// cargo desync (cluster lesson L47): the server hold is actually empty, and
+	// trusting the stale cache benches the hauler out of the eligible pool onto
+	// a liquidate/delivery task it can never complete. Reconcile each candidate
+	// against the server (force GET /my/ships) before diverting it; a ship the
+	// server reports empty stays in the idle pool and re-arms for normal work.
 	shipsWithCargo := make(map[string]*navigation.Ship)
 	for symbol, ship := range params.IdleShips {
-		if ship.CargoUnits() > 0 {
-			shipsWithCargo[symbol] = ship
+		if ship.CargoUnits() == 0 {
+			continue
 		}
+		fresh, stillHasCargo := h.reconcileCargoBeforeBenching(ctx, symbol, ship, params.PlayerID)
+		params.IdleShips[symbol] = fresh // heal the pool entry with server-true state
+		if !stillHasCargo {
+			continue // phantom hold: hauler stays in the eligible pool
+		}
+		shipsWithCargo[symbol] = fresh
 	}
 
 	if len(shipsWithCargo) == 0 {
@@ -340,6 +351,49 @@ func (h *OrphanedCargoHandler) jettisonLowValueCargo(
 			"cargo_value": cargoValue,
 		})
 	}
+}
+
+// reconcileCargoBeforeBenching reconciles a cargo-bearing idle ship against the
+// server before it is diverted out of the eligible pool for orphaned-cargo
+// handling. It returns the reconciled ship and whether the server confirms the
+// ship still holds cargo. A ship whose server hold is empty is a phantom
+// foreign-cargo desync (L47): reporting stillHasCargo=false keeps the hauler in
+// the idle pool instead of benching it onto work it can never complete. A
+// refresh failure falls back to trusting the cache (stillHasCargo=true) so a
+// transient API hiccup never strands a genuinely loaded ship.
+func (h *OrphanedCargoHandler) reconcileCargoBeforeBenching(
+	ctx context.Context,
+	shipSymbol string,
+	cachedShip *navigation.Ship,
+	playerID int,
+) (*navigation.Ship, bool) {
+	logger := common.LoggerFromContext(ctx)
+
+	if h.shipRepo == nil {
+		return cachedShip, true
+	}
+
+	freshShip, err := h.shipRepo.SyncShipFromAPI(ctx, shipSymbol, shared.MustNewPlayerID(playerID))
+	if err != nil {
+		logger.Log("WARN", "Failed to reconcile idle-ship cargo against API; trusting cache", map[string]interface{}{
+			"ship":    shipSymbol,
+			"trigger": "foreign_cargo_phantom",
+			"error":   err.Error(),
+		})
+		return cachedShip, true
+	}
+
+	if freshShip.CargoUnits() == 0 {
+		logger.Log("INFO", "Auto-refreshed phantom foreign-cargo hauler back into eligible pool", map[string]interface{}{
+			"ship":         shipSymbol,
+			"trigger":      "foreign_cargo_phantom",
+			"cached_units": cachedShip.CargoUnits(),
+			"api_units":    0,
+		})
+		return freshShip, false
+	}
+
+	return freshShip, true
 }
 
 func (h *OrphanedCargoHandler) verifyCargoAgainstAPI(ctx context.Context, shipSymbol, good string, units, playerID int) (int, bool) {

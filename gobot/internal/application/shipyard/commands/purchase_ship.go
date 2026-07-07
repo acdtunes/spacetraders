@@ -137,6 +137,11 @@ func (h *PurchaseShipHandler) Handle(ctx context.Context, request common.Request
 		return nil, fmt.Errorf("failed to create ship assignment: %w", err)
 	}
 
+	// Auto-heal the cache the moment the ship exists: force GET /my/ships so a
+	// freshly purchased ship never lingers with an empty Role (invisible to
+	// role-based coordinators) or phantom cargo/nav state (cluster lesson L50).
+	h.refreshPurchasedShip(ctx, newShip.ShipSymbol(), cmd.PlayerID)
+
 	// Record transaction synchronously to ensure it's saved
 	h.recordShipPurchaseTransaction(ctx, cmd, shipyardWaypoint, purchaseResult, balanceBefore)
 
@@ -621,6 +626,35 @@ func (h *PurchaseShipHandler) createShipValueObjects(
 	navStatus := navigation.NavStatus(shipData.NavStatus)
 
 	return cargo, fuel, navStatus, nil
+}
+
+// refreshPurchasedShip forces an authoritative GET /my/ships for a freshly
+// purchased ship, reconciling the daemon cache against the server the moment
+// the ship exists. A brand-new ship can cache with an empty Role (invisible to
+// role-based coordinators) or phantom cargo, and the stale entry never self-
+// heals on its own. Best-effort by design: the ship is already bought and
+// persisted, so a refresh failure must not fail the purchase — the next pool
+// sync reconciles it. Logs the auto-refresh at INFO with the trigger.
+func (h *PurchaseShipHandler) refreshPurchasedShip(
+	ctx context.Context,
+	shipSymbol string,
+	playerID shared.PlayerID,
+) {
+	logger := logging.LoggerFromContext(ctx)
+
+	if _, err := h.shipRepo.SyncShipFromAPI(ctx, shipSymbol, playerID); err != nil {
+		logger.Log("WARN", "Post-purchase ship refresh failed (cache self-heals on next pool sync)", map[string]interface{}{
+			"ship_symbol": shipSymbol,
+			"trigger":     "post_purchase",
+			"error":       err.Error(),
+		})
+		return
+	}
+
+	logger.Log("INFO", "Auto-refreshed ship state after purchase", map[string]interface{}{
+		"ship_symbol": shipSymbol,
+		"trigger":     "post_purchase",
+	})
 }
 
 // createIdleAssignment creates an idle ship assignment for a newly purchased ship

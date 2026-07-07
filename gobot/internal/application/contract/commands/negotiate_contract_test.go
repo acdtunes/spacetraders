@@ -17,20 +17,27 @@ import (
 type negotiateStubShipRepo struct {
 	navigation.ShipRepository
 
-	cachedShip     *navigation.Ship // stale daemon-cache state (FindBySymbol)
-	serverShip     *navigation.Ship // server-true state (SyncShipFromAPI)
+	cachedShip     *navigation.Ship // stale daemon-cache state (FindBySymbol before sync)
+	serverShip     *navigation.Ship // server-true state (FindBySymbol after pool sync)
 	dockCalled     int
-	syncCalled     int
+	syncAllCalled  int  // fleet-wide reconcile (SyncAllFromAPI)
+	poolSynced     bool // once the pool syncs, the DB is the source of truth
 	onServerDocked func() // invoked when Dock succeeds, so the API stub can flip state
 }
 
 func (s *negotiateStubShipRepo) FindBySymbol(_ context.Context, _ string, _ shared.PlayerID) (*navigation.Ship, error) {
+	// After a fleet-wide sync the DB is authoritative, so a reload returns the
+	// server-true ship; before it, the stale daemon cache.
+	if s.poolSynced {
+		return s.serverShip, nil
+	}
 	return s.cachedShip, nil
 }
 
-func (s *negotiateStubShipRepo) SyncShipFromAPI(_ context.Context, _ string, _ shared.PlayerID) (*navigation.Ship, error) {
-	s.syncCalled++
-	return s.serverShip, nil
+func (s *negotiateStubShipRepo) SyncAllFromAPI(_ context.Context, _ shared.PlayerID) (int, error) {
+	s.syncAllCalled++
+	s.poolSynced = true
+	return 1, nil
 }
 
 func (s *negotiateStubShipRepo) Dock(_ context.Context, _ *navigation.Ship, _ shared.PlayerID) error {
@@ -122,11 +129,13 @@ func newNegotiateTestShip(t *testing.T, status navigation.NavStatus) *navigation
 
 // Reproduces the 2026-07-05 coordinator deadlock: the server rejects negotiate
 // with 4214 (ship not docked, actually IN_ORBIT), but the daemon cache says
-// DOCKED. The dock-retry path must reconcile ship state from the server before
-// docking — trusting the stale cache makes EnsureDocked a no-op, the retry is
-// byte-identical to the first attempt, and negotiation fails forever with
-// "API returned nil result or contract".
-func TestNegotiateContract_NotDockedError_ReconcilesStaleCacheAndDocksForReal(t *testing.T) {
+// DOCKED. A negotiate error naming ship state is a cache-desync signature, and
+// desyncs strike fleet-wide — so the dock-retry path must reconcile the WHOLE
+// pool from the server (one GET /my/ships) before docking. Trusting the stale
+// cache makes EnsureDocked a no-op, the retry is byte-identical to the first
+// attempt, and negotiation fails forever with "API returned nil result or
+// contract" (cluster lesson L61).
+func TestNegotiateContract_NotDockedError_ReconcilesWholePoolAndDocksForReal(t *testing.T) {
 	shipRepo := &negotiateStubShipRepo{
 		cachedShip: newNegotiateTestShip(t, navigation.NavStatusDocked),  // stale cache
 		serverShip: newNegotiateTestShip(t, navigation.NavStatusInOrbit), // server truth
@@ -146,8 +155,8 @@ func TestNegotiateContract_NotDockedError_ReconcilesStaleCacheAndDocksForReal(t 
 		t.Fatalf("expected negotiation to self-heal after dock-retry, got: %v", err)
 	}
 
-	if shipRepo.syncCalled == 0 {
-		t.Fatalf("expected ship state to be reconciled from server (SyncShipFromAPI), got %d calls", shipRepo.syncCalled)
+	if shipRepo.syncAllCalled != 1 {
+		t.Fatalf("expected exactly one fleet-wide pool refresh on the negotiate desync signal (SyncAllFromAPI), got %d", shipRepo.syncAllCalled)
 	}
 	if shipRepo.dockCalled != 1 {
 		t.Fatalf("expected exactly one real Dock API call, got %d", shipRepo.dockCalled)

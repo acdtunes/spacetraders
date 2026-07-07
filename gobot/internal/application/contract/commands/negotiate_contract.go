@@ -59,12 +59,16 @@ func (h *NegotiateContractHandler) Handle(ctx context.Context, request common.Re
 
 	// Handle "ship must be docked" error (4214 or 4244) reactively
 	if result != nil && (result.ErrorCode == 4214 || result.ErrorCode == 4244) {
-		// The server says the ship is not docked, so the local cache cannot be
-		// trusted here (a stale DOCKED entry would make EnsureDocked a no-op and
-		// the retry byte-identical). Reconcile from the API, then dock for real.
-		ship, loadErr := h.shipRepo.SyncShipFromAPI(ctx, cmd.ShipSymbol, cmd.PlayerID)
+		// A negotiate error naming ship state is a cache-desync signature, and
+		// desyncs strike fleet-wide: the local cache cannot be trusted here (a
+		// stale DOCKED entry would make EnsureDocked a no-op and the retry
+		// byte-identical), and healing only this one ship leaves the rest of the
+		// pool poisoned so their next dock-retry can never self-heal. Reconcile
+		// the WHOLE pool from the server, reload the now-fresh ship, then dock it
+		// for real.
+		ship, loadErr := h.refreshPoolAndReload(ctx, cmd.ShipSymbol, cmd.PlayerID)
 		if loadErr != nil {
-			return nil, fmt.Errorf("failed to refresh ship from API: %w", loadErr)
+			return nil, loadErr
 		}
 		if dockErr := h.ensureShipDocked(ctx, ship, cmd.PlayerID); dockErr != nil {
 			return nil, dockErr
@@ -100,6 +104,38 @@ func (h *NegotiateContractHandler) Handle(ctx context.Context, request common.Re
 		Contract:      newContract,
 		WasNegotiated: true,
 	}, nil
+}
+
+// refreshPoolAndReload reconciles the ENTIRE ship pool from the server (one GET
+// /my/ships) on a cache-desync signal, then returns the freshly reconciled
+// negotiating ship. A desync that surfaces on one ship (here a stale nav state
+// rejected with 4214/4244 "must be docked") is rarely isolated — the whole
+// pool's cached nav/cargo can be stale, and the dock-retry trusts the cache, so
+// healing only the named ship leaves the rest unable to self-heal (cluster
+// lesson L61). A pool-wide sync self-heals every ship in a single API round trip.
+func (h *NegotiateContractHandler) refreshPoolAndReload(
+	ctx context.Context,
+	shipSymbol string,
+	playerID shared.PlayerID,
+) (*navigation.Ship, error) {
+	logger := common.LoggerFromContext(ctx)
+
+	count, err := h.shipRepo.SyncAllFromAPI(ctx, playerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to refresh ship pool from API: %w", err)
+	}
+
+	logger.Log("INFO", "Auto-refreshed ship pool on negotiate desync signal", map[string]interface{}{
+		"ship_symbol":  shipSymbol,
+		"trigger":      "negotiate_ship_state_error",
+		"ships_synced": count,
+	})
+
+	ship, err := h.shipRepo.FindBySymbol(ctx, shipSymbol, playerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to reload ship after pool refresh: %w", err)
+	}
+	return ship, nil
 }
 
 func (h *NegotiateContractHandler) ensureShipDocked(ctx context.Context, ship *navigation.Ship, playerID shared.PlayerID) error {
