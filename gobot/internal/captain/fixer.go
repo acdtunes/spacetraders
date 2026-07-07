@@ -94,5 +94,32 @@ func ProvisionWorktree(dir string) error {
 			return err
 		}
 	}
-	return nil
+	return wireWorktreeBeads(dir, repoRoot)
+}
+
+// wireWorktreeBeads points a worktree's bd (beads) at the main checkout's
+// database. A git worktree checks out the tracked .beads/ files (config.yaml,
+// metadata.json, issues.jsonl) but NOT the gitignored Dolt database itself
+// (embeddeddolt/), which lives only in the main checkout. Without this, bd run
+// from the worktree resolves to an empty/phantom database and reports "no issue
+// found" for beads that exist — a fix session stalled this way, unable to find
+// sp-sk68. bd's redirect file makes the resolution explicit rather than relying
+// on bd's implicit git-worktree heuristic (which is version-dependent and does
+// not fire for a non-worktree checkout). An absolute target is used because the
+// file is gitignored and regenerated per worktree, so it is never shared across
+// clones. chmod 0700 matches bd's recommended permissions and silences its
+// per-invocation permissions warning.
+func wireWorktreeBeads(worktreeDir, repoRoot string) error {
+	mainBeads := filepath.Join(repoRoot, ".beads")
+	if info, err := os.Stat(mainBeads); err != nil || !info.IsDir() {
+		return nil // repo does not use beads — nothing to wire
+	}
+	wtBeads := filepath.Join(worktreeDir, ".beads")
+	if err := os.MkdirAll(wtBeads, 0o700); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(wtBeads, "redirect"), []byte(mainBeads+"\n"), 0o600); err != nil {
+		return err
+	}
+	return os.Chmod(wtBeads, 0o700)
 }
