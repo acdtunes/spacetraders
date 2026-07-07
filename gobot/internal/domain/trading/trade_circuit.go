@@ -12,6 +12,16 @@ package trading
 const (
 	TrancheCap   = 18
 	MinBidMargin = 1000
+
+	// StaleAskMovePercent bounds how far the source ask may have drifted, as a
+	// percentage of the basis the lane was RANKED on, before the circuit refuses to
+	// buy. Lanes are ranked from a market cache that can be many minutes stale; if a
+	// live re-read shows the ask has run away from that basis, the ranked spread is
+	// fiction and buying on it can realise a large loss (a -196k manual precedent).
+	// 30% tolerates ordinary tick drift while catching a basis that has moved (e.g. a
+	// 3.6x ask jump). The move is measured in EITHER direction: a large swing either
+	// way means the ranking premise is stale and the run should re-scan, not execute.
+	StaleAskMovePercent = 30
 )
 
 // MarginAlive reports whether a destination bid still clears the bid-floor over
@@ -19,6 +29,22 @@ const (
 // The circuit loops while this holds and stops the moment it fails.
 func MarginAlive(bid, basis int) bool {
 	return bid >= basis+MinBidMargin
+}
+
+// AskMovedBeyondTolerance reports whether a freshly-read source ask has drifted
+// more than StaleAskMovePercent from the basis the lane was ranked on, in either
+// direction. A degenerate basis (<= 0) never trips the guard — there is nothing
+// meaningful to compare against. Integer math avoids float rounding at the boundary:
+// the move trips strictly ABOVE the tolerance (exactly StaleAskMovePercent is allowed).
+func AskMovedBeyondTolerance(liveAsk, rankedBasis int) bool {
+	if rankedBasis <= 0 {
+		return false
+	}
+	diff := liveAsk - rankedBasis
+	if diff < 0 {
+		diff = -diff
+	}
+	return diff*100 > rankedBasis*StaleAskMovePercent
 }
 
 // VisitTranche returns how many units to move in a single market visit, bounded

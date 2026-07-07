@@ -39,6 +39,16 @@ type ContainerRepository interface {
 	Remove(ctx context.Context, containerID string, playerID int) error
 }
 
+// MarketRefresher live-refreshes one waypoint's market from the API into the cache.
+// The coordinator uses it once, before the first buy, to re-read the source ask live
+// and abort if it has run away from the stale basis the lane was ranked on (hazard b,
+// sp-2sam). Kept as a narrow port (not an import of the ship package) to avoid a cycle
+// — the CLI composition root injects the concrete MarketScanner. A nil refresher
+// disables the guard, so callers that cannot scan (e.g. tests) simply skip it.
+type MarketRefresher interface {
+	ScanAndSaveMarket(ctx context.Context, playerID uint, waypointSymbol string) error
+}
+
 // RunTradeRouteCoordinatorCommand asks the coordinator to fly one idle hull
 // through the top-ranked arbitrage circuit in a system until the margin dies.
 type RunTradeRouteCoordinatorCommand struct {
@@ -72,6 +82,23 @@ type RunTradeRouteCoordinatorResponse struct {
 	// BestSubFloorSpread is the highest per-unit spread among the ranked lanes when
 	// NoDisciplinedLane is set: how close the best standing lane came to the floor.
 	BestSubFloorSpread int
+	// StaleAskAbort is set when a live re-read of the source ask (taken at the source
+	// before the first buy) had moved beyond trading.StaleAskMovePercent from the basis
+	// the lane was ranked on. The lane's ranked spread was stale, so the run aborted
+	// before buying rather than risk a bad fill (sp-2sam hazard b, a -196k precedent).
+	// A selected lane that aborts this way is NOT a silent zero — it reports WHY.
+	StaleAskAbort bool
+	// RankedSourceAsk and LiveSourceAsk are the basis the lane was ranked on and the
+	// live ask read at the source, populated when StaleAskAbort is set.
+	RankedSourceAsk int
+	LiveSourceAsk   int
+	// AbortReason explains why a SELECTED lane (Good set) flew fewer visits than the
+	// margin would allow — a navigate/dock/buy/sell leg failed mid-circuit. It exists
+	// because three successive zero-visit bugs (r3cl, sh6w, sp-2sam) each needed a live
+	// re-run to discover WHY the loop stopped: the failing leg's reason was logged but
+	// never surfaced to the caller, so the printed result was a bare 'Visits: 0'. With
+	// this, the next occurrence is self-diagnosing. Empty on a clean margin-death stop.
+	AbortReason string
 }
 
 // RunTradeRouteCoordinatorHandler runs a pure-arbitrage circuit on a single idle
@@ -86,32 +113,37 @@ type RunTradeRouteCoordinatorResponse struct {
 // navigate/dock/purchase/sell, ship + market repositories, clock), so ship
 // movement and trades go through the exact command handlers the daemon uses.
 type RunTradeRouteCoordinatorHandler struct {
-	mediator      common.Mediator
-	shipRepo      navigation.ShipRepository
-	marketRepo    market.MarketRepository
-	containerRepo ContainerRepository
-	clock         shared.Clock
+	mediator        common.Mediator
+	shipRepo        navigation.ShipRepository
+	marketRepo      market.MarketRepository
+	containerRepo   ContainerRepository
+	clock           shared.Clock
+	marketRefresher MarketRefresher // optional; nil disables the live stale-ask guard
 }
 
 // NewRunTradeRouteCoordinatorHandler wires the coordinator. Following the sibling
 // coordinators' convention (main.go: "nil = use RealClock"), a nil clock is
-// substituted with a RealClock so the claim path never dereferences a nil clock.
+// substituted with a RealClock so the claim path never dereferences a nil clock. A
+// nil marketRefresher disables the live stale-ask guard (the circuit still runs on
+// the ranked basis); the CLI injects a real MarketScanner so the guard is active.
 func NewRunTradeRouteCoordinatorHandler(
 	mediator common.Mediator,
 	shipRepo navigation.ShipRepository,
 	marketRepo market.MarketRepository,
 	containerRepo ContainerRepository,
 	clock shared.Clock,
+	marketRefresher MarketRefresher,
 ) *RunTradeRouteCoordinatorHandler {
 	if clock == nil {
 		clock = shared.NewRealClock()
 	}
 	return &RunTradeRouteCoordinatorHandler{
-		mediator:      mediator,
-		shipRepo:      shipRepo,
-		marketRepo:    marketRepo,
-		containerRepo: containerRepo,
-		clock:         clock,
+		mediator:        mediator,
+		shipRepo:        shipRepo,
+		marketRepo:      marketRepo,
+		containerRepo:   containerRepo,
+		clock:           clock,
+		marketRefresher: marketRefresher,
 	}
 }
 
@@ -267,7 +299,15 @@ func (h *RunTradeRouteCoordinatorHandler) runCircuit(
 			return
 		}
 
-		cargoSpace := ship.CargoCapacity() - held
+		// Size the tranche to the hull's AVAILABLE hold, not its total capacity: an idle
+		// hull is not necessarily empty (a factory hauler benched mid-task, a pool hull
+		// with leftover cargo), and the buy executor refuses any tranche larger than
+		// AvailableCargoSpace. Sizing by CargoCapacity would overshoot the free hold on a
+		// non-empty hull and get the buy rejected — a distinct zero-visit path from the
+		// sp-2sam root cause (the navigate self-collision, fixed in the CLI runner), hardened
+		// here so a residual-cargo hull still flies. AvailableCargoSpace already nets out the
+		// residual cargo; held is this run's own bought-not-yet-sold units on top.
+		cargoSpace := ship.AvailableCargoSpace() - held
 		buyUnits := trading.VisitTranche(srcGood.TradeVolume(), cargoSpace)
 		if buyUnits <= 0 {
 			logger.Log("INFO", "No tranche to buy (volume or hold exhausted) - stopping circuit", map[string]interface{}{
@@ -278,15 +318,29 @@ func (h *RunTradeRouteCoordinatorHandler) runCircuit(
 
 		// Leg 1: buy a tranche at the source (exporter).
 		if err := h.navigate(ctx, ship, lane.SourceWaypoint, playerID); err != nil {
+			response.AbortReason = fmt.Sprintf("navigation to source %s failed: %v", lane.SourceWaypoint, err)
 			logger.Log("WARNING", "Navigation to source failed - ending circuit", map[string]interface{}{"error": err.Error()})
 			return
 		}
 		if err := h.dock(ctx, ship, playerID); err != nil {
+			response.AbortReason = fmt.Sprintf("dock at source %s failed: %v", lane.SourceWaypoint, err)
 			logger.Log("WARNING", "Dock at source failed - ending circuit", map[string]interface{}{"error": err.Error()})
 			return
 		}
+
+		// Live-verify the ranked basis before the FIRST buy (hazard b): the lane was
+		// ranked from a market cache that can be many minutes stale. Now that the hull
+		// is docked at the source (the API returns live prices only with a ship present),
+		// re-read the source ask and abort if it has run away from the basis the lane
+		// was ranked on — buying on a stale basis has realised a large loss (a -196k
+		// precedent). Only the first visit re-verifies; later visits already re-observe.
+		if i == 0 && h.staleAskAborts(ctx, lane, playerID, response) {
+			return
+		}
+
 		buyResp, err := h.purchase(ctx, ship.ShipSymbol(), lane.Good, buyUnits, playerID)
 		if err != nil {
+			response.AbortReason = fmt.Sprintf("purchase of %d %s at source %s failed: %v", buyUnits, lane.Good, lane.SourceWaypoint, err)
 			logger.Log("WARNING", "Purchase failed - ending circuit", map[string]interface{}{"error": err.Error()})
 			return
 		}
@@ -295,19 +349,29 @@ func (h *RunTradeRouteCoordinatorHandler) runCircuit(
 
 		// Leg 2: sell what we hold at the destination (importer).
 		if err := h.navigate(ctx, ship, lane.DestWaypoint, playerID); err != nil {
+			response.AbortReason = fmt.Sprintf("navigation to destination %s failed (cargo aboard): %v", lane.DestWaypoint, err)
 			logger.Log("WARNING", "Navigation to destination failed - ending circuit with cargo aboard", map[string]interface{}{"error": err.Error()})
 			return
 		}
 		if err := h.dock(ctx, ship, playerID); err != nil {
+			response.AbortReason = fmt.Sprintf("dock at destination %s failed (cargo aboard): %v", lane.DestWaypoint, err)
 			logger.Log("WARNING", "Dock at destination failed - ending circuit with cargo aboard", map[string]interface{}{"error": err.Error()})
 			return
 		}
 		sellUnits := trading.VisitTranche(dstGood.TradeVolume(), held)
 		if sellUnits <= 0 {
+			// The importer has no tradable volume this tick while we hold cargo: not a
+			// clean margin-death, so surface it rather than return silently (the one
+			// early-return that used to vanish without a trace).
+			response.AbortReason = fmt.Sprintf("destination %s has no sellable volume for %s while holding %d units", lane.DestWaypoint, lane.Good, held)
+			logger.Log("INFO", "No sellable tranche at destination (importer volume exhausted) - ending circuit with cargo aboard", map[string]interface{}{
+				"good": lane.Good, "dest_volume": dstGood.TradeVolume(), "held": held,
+			})
 			return
 		}
 		sellResp, err := h.sell(ctx, ship.ShipSymbol(), lane.Good, sellUnits, playerID)
 		if err != nil {
+			response.AbortReason = fmt.Sprintf("sell of %d %s at destination %s failed (cargo aboard): %v", sellUnits, lane.Good, lane.DestWaypoint, err)
 			logger.Log("WARNING", "Sell failed - ending circuit with cargo aboard", map[string]interface{}{"error": err.Error()})
 			return
 		}
@@ -320,6 +384,62 @@ func (h *RunTradeRouteCoordinatorHandler) runCircuit(
 	logger.Log("INFO", "Trade-route hit the max-visit safety bound", map[string]interface{}{
 		"good": lane.Good, "max_visits": maxVisits,
 	})
+}
+
+// staleAskAborts live-verifies the source ask before the first buy and reports
+// whether the circuit must abort because the ask has moved beyond
+// trading.StaleAskMovePercent from the basis the lane was ranked on (hazard b). The
+// lane is ranked from a cache that can be many minutes stale; executing on a moved
+// basis has realised large losses. It refreshes the source market from the API (the
+// hull is docked there, so the API returns live prices), re-reads the ask, and
+// compares it to lane.SourceAsk.
+//
+// Fail-open on infrastructure gaps, fail-closed only on a CONFIRMED move: with no
+// refresher wired, or when the refresh/read itself fails, it proceeds on the ranked
+// basis (a transient scan hiccup must not strand an otherwise-good circuit). Only a
+// live ask that is actually present AND beyond tolerance aborts the run.
+func (h *RunTradeRouteCoordinatorHandler) staleAskAborts(
+	ctx context.Context,
+	lane trading.ArbitrageLane,
+	playerID int,
+	response *RunTradeRouteCoordinatorResponse,
+) bool {
+	logger := common.LoggerFromContext(ctx)
+	if h.marketRefresher == nil {
+		return false
+	}
+
+	if err := h.marketRefresher.ScanAndSaveMarket(ctx, uint(playerID), lane.SourceWaypoint); err != nil {
+		logger.Log("WARNING", "Could not refresh source market to live-verify basis - proceeding on ranked basis", map[string]interface{}{
+			"waypoint": lane.SourceWaypoint, "good": lane.Good, "error": err.Error(),
+		})
+		return false
+	}
+
+	liveSrc, err := h.observeGood(ctx, lane.SourceWaypoint, lane.Good, playerID)
+	if err != nil {
+		logger.Log("WARNING", "Could not read live source ask after refresh - proceeding on ranked basis", map[string]interface{}{
+			"waypoint": lane.SourceWaypoint, "good": lane.Good, "error": err.Error(),
+		})
+		return false
+	}
+
+	liveAsk := liveSrc.SellPrice()
+	if trading.AskMovedBeyondTolerance(liveAsk, lane.SourceAsk) {
+		response.StaleAskAbort = true
+		response.RankedSourceAsk = lane.SourceAsk
+		response.LiveSourceAsk = liveAsk
+		logger.Log("WARNING", "Source ask moved beyond tolerance since the lane was ranked - aborting circuit before first buy", map[string]interface{}{
+			"good": lane.Good, "source": lane.SourceWaypoint,
+			"ranked_ask": lane.SourceAsk, "live_ask": liveAsk, "tolerance_pct": trading.StaleAskMovePercent,
+		})
+		return true
+	}
+
+	logger.Log("INFO", "Live-verified source ask within tolerance - proceeding with the circuit", map[string]interface{}{
+		"good": lane.Good, "source": lane.SourceWaypoint, "ranked_ask": lane.SourceAsk, "live_ask": liveAsk,
+	})
+	return false
 }
 
 // claimShip loads the named hull and, only if it is genuinely idle, assigns it to

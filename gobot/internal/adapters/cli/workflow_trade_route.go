@@ -15,6 +15,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/mediator"
 	"github.com/andrescamacho/spacetraders-go/internal/application/player"
 	"github.com/andrescamacho/spacetraders-go/internal/application/setup"
+	"github.com/andrescamacho/spacetraders-go/internal/application/ship"
 	shipCargo "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/cargo"
 	navCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/tactics"
@@ -27,39 +28,45 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 )
 
-// daemonNavHandler adapts NavigateRouteCommand onto the daemon's existing
-// NavigateShip RPC and blocks until the ship arrives.
+// inProcessNavHandler executes each trade-route navigation leg IN PROCESS on the
+// hull the coordinator has already claimed, then polls until it arrives.
 //
-// Ship movement is daemon-owned in this architecture (routing, refuel planning
-// and event-driven arrival all live in the daemon), so the CLI-driven
-// trade-route delegates each navigation leg to the daemon rather than rebuilding
-// that runtime in-process. NavigateShip returns as soon as the leg is dispatched,
-// so this handler polls the (API-backed) ship repository until the hull is no
-// longer IN_TRANSIT before letting the coordinator dock and trade.
-type daemonNavHandler struct {
-	client       *DaemonClient
+// Why not delegate to the daemon: the coordinator claims the hull into its own
+// trade-route container. Routing a leg through the daemon's NavigateShip RPC spawns
+// a CHILD navigate container that tries to RE-CLAIM the same hull, and the daemon
+// rejects the double-claim ("ship X is already assigned to container trade-route-…").
+// The navigate leg then errors and the circuit flies zero visits — the sp-2sam
+// self-collision seen live in daemon.log. Instead we move the already-claimed hull
+// with the atomic NavigateDirect command, which assigns NO container (mirroring how
+// the mfg task worker and balance_ship_position move a hull their parent already
+// owns), so there is nothing to collide with. NavigateDirect returns as soon as the
+// hop is dispatched, so we poll the API-backed ship repo until the hull is no longer
+// IN_TRANSIT before letting the coordinator dock and trade. An idle claimed hull is
+// excluded from the daemon's scheduler, so moving it in process is single-writer-safe
+// and no longer requires the daemon to be running.
+type inProcessNavHandler struct {
+	mediator     common.Mediator
 	shipRepo     domainNav.ShipRepository
 	playerID     int
-	agentSymbol  string
 	pollInterval time.Duration
 	timeout      time.Duration
 }
 
-func (h *daemonNavHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {
+func (h *inProcessNavHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {
 	navReq, ok := request.(*navCmd.NavigateRouteCommand)
 	if !ok {
-		return nil, fmt.Errorf("daemonNavHandler: invalid request type %T", request)
+		return nil, fmt.Errorf("inProcessNavHandler: invalid request type %T", request)
 	}
 
-	// Already parked at the destination? Nothing to do.
-	if ship, err := h.shipRepo.FindBySymbol(ctx, navReq.ShipSymbol, shared.MustNewPlayerID(h.playerID)); err == nil &&
-		ship != nil && ship.NavStatus() != domainNav.NavStatusInTransit &&
-		ship.CurrentLocation() != nil && ship.CurrentLocation().Symbol == navReq.Destination {
-		return &navCmd.NavigateRouteResponse{Status: "already_at_destination", CurrentLocation: navReq.Destination}, nil
-	}
-
-	if _, err := h.client.NavigateShip(ctx, navReq.ShipSymbol, navReq.Destination, h.playerID, h.agentSymbol); err != nil {
-		return nil, fmt.Errorf("daemon navigation of %s to %s failed: %w", navReq.ShipSymbol, navReq.Destination, err)
+	// Move the ALREADY-CLAIMED hull directly. NavigateDirect assigns no container, so
+	// it cannot self-collide with the parent trade-route claim, and it short-circuits
+	// cleanly when the hull is already at the destination.
+	if _, err := h.mediator.Send(ctx, &shipTypes.NavigateDirectCommand{
+		ShipSymbol:  navReq.ShipSymbol,
+		Destination: navReq.Destination,
+		PlayerID:    navReq.PlayerID,
+	}); err != nil {
+		return nil, fmt.Errorf("in-process navigation of %s to %s failed: %w", navReq.ShipSymbol, navReq.Destination, err)
 	}
 
 	if err := h.waitForArrival(ctx, navReq.ShipSymbol, navReq.Destination); err != nil {
@@ -68,7 +75,7 @@ func (h *daemonNavHandler) Handle(ctx context.Context, request common.Request) (
 	return &navCmd.NavigateRouteResponse{Status: "completed", CurrentLocation: navReq.Destination}, nil
 }
 
-func (h *daemonNavHandler) waitForArrival(ctx context.Context, shipSymbol, destination string) error {
+func (h *inProcessNavHandler) waitForArrival(ctx context.Context, shipSymbol, destination string) error {
 	deadline := time.Now().Add(h.timeout)
 	for {
 		ship, err := h.shipRepo.FindBySymbol(ctx, shipSymbol, shared.MustNewPlayerID(h.playerID))
@@ -108,10 +115,11 @@ targets: trade-route exploits the standing buy-export/sell-import spreads nobody
 else works, using idle-gap hulls (a contract-pool hauler between contracts, a
 factory hauler between tasks) as free capacity.
 
-Execution model: the trade legs (buy/sell) run in-process against the API; the
-navigation legs are delegated to the running daemon (ship movement is
-daemon-owned). Run this only on a genuinely idle hull the daemon is not actively
-flying. The daemon must be running.
+Execution model: the whole circuit runs in-process against the API - trade legs
+(buy/sell) and navigation legs alike. Each leg moves the hull the run has already
+claimed with a direct navigate (no re-claiming child container), so it never
+self-collides with its own claim. Run this only on a genuinely idle hull; the
+claim excludes it from the daemon's scheduler, so the daemon need not be running.
 
 Examples:
   spacetraders workflow trade-route --ship ENDURANCE-7 --system X1-GZ7 --agent ENDURANCE
@@ -192,17 +200,20 @@ Examples:
 				return fmt.Errorf("failed to register dock handler: %w", err)
 			}
 
-			daemonClient, err := connectDaemon()
-			if err != nil {
-				return fmt.Errorf("trade-route needs the daemon running for ship movement: %w", err)
+			// Register the atomic direct-navigate handler and route every NavigateRoute
+			// leg through it IN PROCESS: this moves the hull the coordinator already
+			// claimed without spawning a re-claiming child navigate container (the
+			// sp-2sam self-collision that failed leg 1 and flew zero visits). Ship
+			// movement no longer needs the daemon RPC.
+			navigateDirectHandler := navCmd.NewNavigateDirectHandler(shipRepo, waypointRepo)
+			if err := mediator.RegisterHandler[*shipTypes.NavigateDirectCommand](m, navigateDirectHandler); err != nil {
+				return fmt.Errorf("failed to register navigate-direct handler: %w", err)
 			}
-			defer daemonClient.Close()
 
-			navHandler := &daemonNavHandler{
-				client:       daemonClient,
+			navHandler := &inProcessNavHandler{
+				mediator:     m,
 				shipRepo:     shipRepo,
 				playerID:     resolvedPlayerID,
-				agentSymbol:  playerIdent.AgentSymbol,
 				pollInterval: 3 * time.Second,
 				timeout:      5 * time.Minute,
 			}
@@ -211,7 +222,14 @@ Examples:
 			}
 
 			containerRepo := persistence.NewContainerRepository(db)
-			coordinator := tradingCmd.NewRunTradeRouteCoordinatorHandler(m, shipRepo, marketRepo, containerRepo, nil)
+
+			// Market scanner lets the coordinator live-verify the source ask before the
+			// first buy (stale-ask guard, sp-2sam hazard b): the lane is ranked from a
+			// cache that can be minutes stale, and a moved basis has realised large
+			// losses. Wired here at the composition root so the guard is active on the
+			// live path (unit tests pass nil to disable it).
+			marketScanner := ship.NewMarketScanner(apiClient, marketRepo, playerRepo, nil)
+			coordinator := tradingCmd.NewRunTradeRouteCoordinatorHandler(m, shipRepo, marketRepo, containerRepo, nil, marketScanner)
 
 			fmt.Printf("Running trade-route for %s in %s (max %d visits)...\n\n", shipSymbol, systemSymbol, maxVisits)
 
@@ -243,6 +261,12 @@ Examples:
 }
 
 func printTradeRouteResult(result *tradingCmd.RunTradeRouteCoordinatorResponse) {
+	if result.StaleAskAbort {
+		fmt.Printf("Source ask moved %d -> %d (beyond %d%%) since the lane was ranked - %s released, nothing bought "+
+			"(stale basis; aborted before the first buy to avoid a bad fill).\n",
+			result.RankedSourceAsk, result.LiveSourceAsk, trading.StaleAskMovePercent, result.ShipSymbol)
+		return
+	}
 	if result.NoDisciplinedLane {
 		fmt.Printf("No lane clears the discipline floor (best standing spread %d/u < floor %d/u) - %s released, nothing traded.\n",
 			result.BestSubFloorSpread, trading.MinBidMargin, result.ShipSymbol)
@@ -254,6 +278,11 @@ func printTradeRouteResult(result *tradingCmd.RunTradeRouteCoordinatorResponse) 
 	}
 
 	fmt.Println("=== Trade-route complete ===")
+	if result.AbortReason != "" {
+		// A selected lane that stopped short of margin-death — surface WHY here rather
+		// than leave a bare 'Visits: 0' to be diagnosed by a live re-run (sp-2sam).
+		fmt.Printf("  Aborted:       circuit stopped early — %s\n", result.AbortReason)
+	}
 	fmt.Printf("  Ship:          %s\n", result.ShipSymbol)
 	fmt.Printf("  Good:          %s\n", result.Good)
 	fmt.Printf("  Circuit:       %s (buy) -> %s (sell)\n", result.SourceWaypoint, result.DestWaypoint)
