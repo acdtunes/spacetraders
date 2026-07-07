@@ -38,6 +38,8 @@ import (
 	shipyardQuery "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/queries"
 	storageApp "github.com/andrescamacho/spacetraders-go/internal/application/storage"
 	systemQuery "github.com/andrescamacho/spacetraders-go/internal/application/system/queries"
+	watchkeeper "github.com/andrescamacho/spacetraders-go/internal/captain"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/goods"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
@@ -223,7 +225,13 @@ func run(cfg *config.Config) error {
 	fmt.Println("Ship event bus initialized")
 
 	captainEventRepo := persistence.NewGormCaptainEventRepository(db)
-	grpc.SetCaptainEventRecorder(captainEventRepo)
+	// Burst-group retry-storm event types at emission so one incident is one
+	// event in the captain's attention budget, not one per retry (sp-kb61). Raw
+	// per-retry rows still land in the container logs. container.crashed is
+	// intentionally excluded: it stays one-row-per-death for detectCrashLoops.
+	captainRecorder := watchkeeper.NewBurstGroupingRecorder(
+		captainEventRepo, watchkeeper.DefaultBurstWindow, captain.EventWorkflowFailed)
+	grpc.SetCaptainEventRecorder(captainRecorder)
 	grpc.SetDefaultWorkerEventPublisher(shipEventBus)
 	fmt.Println("Captain event outbox initialized")
 
