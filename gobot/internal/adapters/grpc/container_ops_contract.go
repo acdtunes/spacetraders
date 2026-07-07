@@ -10,14 +10,15 @@ import (
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )
 
-// BatchContractWorkflow handles batch contract workflow requests
-func (s *DaemonServer) BatchContractWorkflow(ctx context.Context, shipSymbol string, iterations, playerID int) (string, error) {
+// BatchContractWorkflow handles batch contract workflow requests.
+// It runs a single contract to completion; continuous, multi-contract operation
+// is served by the contract fleet coordinator (see ContractFleetCoordinator /
+// the `contract start` CLI verb).
+func (s *DaemonServer) BatchContractWorkflow(ctx context.Context, shipSymbol string, playerID int) (string, error) {
 	// Create container ID
 	containerID := utils.GenerateContainerID("batch_contract_workflow", shipSymbol)
 
-	// Delegate to ContractWorkflow
-	// Note: iterations parameter is ignored for now - ContractWorkflow always does 1 iteration
-	// TODO: Support multiple iterations by updating container metadata
+	// Delegate to ContractWorkflow (single iteration)
 	return s.ContractWorkflow(ctx, containerID, shipSymbol, playerID, "")
 }
 

@@ -218,7 +218,7 @@ func (s *daemonServiceImpl) BatchContractWorkflow(ctx context.Context, req *pb.B
 		return nil, fmt.Errorf("failed to resolve player: %w", err)
 	}
 
-	containerID, err := s.daemon.BatchContractWorkflow(ctx, req.ShipSymbol, int(req.Iterations), playerID)
+	containerID, err := s.daemon.BatchContractWorkflow(ctx, req.ShipSymbol, playerID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start batch contract workflow: %w", err)
 	}
@@ -226,7 +226,6 @@ func (s *daemonServiceImpl) BatchContractWorkflow(ctx context.Context, req *pb.B
 	response := &pb.BatchContractWorkflowResponse{
 		ContainerId: containerID,
 		ShipSymbol:  req.ShipSymbol,
-		Iterations:  req.Iterations,
 		Status:      "RUNNING",
 	}
 

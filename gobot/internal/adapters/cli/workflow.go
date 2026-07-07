@@ -21,7 +21,7 @@ into automated tasks. All workflows run in background containers that can be
 monitored using the container commands.
 
 Examples:
-  spacetraders workflow batch-contract --ship SHIP-1 --iterations 5
+  spacetraders workflow batch-contract --ship SHIP-1
   spacetraders workflow scout-markets --ships SCOUT-1,SCOUT-2 --system X1-GZ7 --markets X1-GZ7-A1,X1-GZ7-B2`,
 	}
 
@@ -37,7 +37,6 @@ Examples:
 func newWorkflowBatchContractCommand() *cobra.Command {
 	var (
 		shipSymbol string
-		iterations int
 	)
 
 	cmd := &cobra.Command{
@@ -55,17 +54,17 @@ The daemon will automatically:
 - Fulfill contracts
 - Return a container ID for tracking progress
 
+This runs a single contract to completion. For continuous, multi-contract
+operation across all idle light hauler ships, use 'spacetraders contract start'
+instead.
+
 Examples:
-  spacetraders workflow batch-contract --ship SHIP-1 --iterations 5 --player-id 1
-  spacetraders workflow batch-contract --ship SHIP-1 --iterations 10 --agent ENDURANCE
-  spacetraders workflow batch-contract --ship CARGO-1 --iterations -1  # Infinite loop`,
+  spacetraders workflow batch-contract --ship SHIP-1 --player-id 1
+  spacetraders workflow batch-contract --ship SHIP-1 --agent ENDURANCE`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Validate flags
 			if shipSymbol == "" {
 				return fmt.Errorf("--ship flag is required")
-			}
-			if iterations == 0 {
-				return fmt.Errorf("--iterations cannot be 0 (use -1 for infinite)")
 			}
 
 			// Resolve player from flags or defaults
@@ -85,7 +84,7 @@ Examples:
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 
-			result, err := client.BatchContractWorkflow(ctx, shipSymbol, iterations, playerIdent.PlayerID, playerIdent.AgentSymbol)
+			result, err := client.BatchContractWorkflow(ctx, shipSymbol, playerIdent.PlayerID, playerIdent.AgentSymbol)
 			if err != nil {
 				return fmt.Errorf("batch contract workflow failed: %w", err)
 			}
@@ -95,11 +94,6 @@ Examples:
 			fmt.Printf("  Container ID:     %s\n", result.ContainerID)
 			fmt.Printf("  Ship:             %s\n", result.ShipSymbol)
 			fmt.Printf("  Agent:            %s (player %d)\n", playerIdent.AgentSymbol, playerIdent.PlayerID)
-			fmt.Printf("  Iterations:       %d", result.Iterations)
-			if result.Iterations == -1 {
-				fmt.Print(" (infinite)")
-			}
-			fmt.Println()
 			fmt.Printf("  Status:           %s\n", result.Status)
 			fmt.Printf("\nTrack progress with: spacetraders container logs %s\n", result.ContainerID)
 
@@ -109,7 +103,6 @@ Examples:
 
 	// Command-specific flags
 	cmd.Flags().StringVar(&shipSymbol, "ship", "", "Ship symbol to use for contracts (required)")
-	cmd.Flags().IntVar(&iterations, "iterations", 1, "Number of contracts to process (default: 1, use -1 for infinite)")
 
 	return cmd
 }

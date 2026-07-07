@@ -72,7 +72,6 @@ type JettisonResponse struct {
 type BatchContractWorkflowResponse struct {
 	ContainerID string
 	ShipSymbol  string
-	Iterations  int
 	Status      string
 }
 
@@ -363,13 +362,11 @@ func (c *DaemonClient) JettisonCargo(
 func (c *DaemonClient) BatchContractWorkflow(
 	ctx context.Context,
 	shipSymbol string,
-	iterations int,
 	playerID int,
 	agentSymbol string,
 ) (*BatchContractWorkflowResponse, error) {
 	req := &pb.BatchContractWorkflowRequest{
 		ShipSymbol: shipSymbol,
-		Iterations: int32(iterations),
 		PlayerId:   int32(playerID),
 	}
 	if agentSymbol != "" {
@@ -384,7 +381,6 @@ func (c *DaemonClient) BatchContractWorkflow(
 	return &BatchContractWorkflowResponse{
 		ContainerID: resp.ContainerId,
 		ShipSymbol:  resp.ShipSymbol,
-		Iterations:  int(resp.Iterations),
 		Status:      resp.Status,
 	}, nil
 }
