@@ -42,7 +42,9 @@ type GetConstructionStatusResult struct {
 }
 
 // StartConstructionPipeline starts or resumes a construction pipeline for a construction site.
-func (s *DaemonServer) StartConstructionPipeline(ctx context.Context, constructionSite string, playerID int, supplyChainDepth int, maxWorkers int, systemSymbol string) (*StartConstructionPipelineResult, error) {
+// minSupply is the caller-set EXPORT sourcing floor (sp-ezz9), e.g. "SCARCE";
+// empty string means unset, preserving the original MODERATE default.
+func (s *DaemonServer) StartConstructionPipeline(ctx context.Context, constructionSite string, playerID int, supplyChainDepth int, maxWorkers int, systemSymbol string, minSupply string) (*StartConstructionPipelineResult, error) {
 	// Create dependencies for ConstructionPipelinePlanner
 	pipelineRepo := persistence.NewGormManufacturingPipelineRepository(s.db)
 	taskRepo := persistence.NewGormManufacturingTaskRepository(s.db)
@@ -67,7 +69,7 @@ func (s *DaemonServer) StartConstructionPipeline(ctx context.Context, constructi
 	)
 
 	// Start or resume pipeline
-	result, err := planner.StartOrResume(ctx, playerID, constructionSite, supplyChainDepth, maxWorkers, systemSymbol)
+	result, err := planner.StartOrResume(ctx, playerID, constructionSite, supplyChainDepth, maxWorkers, systemSymbol, minSupply)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start construction pipeline: %w", err)
 	}

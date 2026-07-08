@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 )
 
@@ -87,7 +88,7 @@ func TestFindConstructionSource_FallsBackToAbundantImportMarket(t *testing.T) {
 	}
 	locator := NewMarketLocator(repo, nil, nil, nil)
 
-	result, err := locator.FindConstructionSource(context.Background(), "ADVANCED_CIRCUITRY", "X1-KA42", 1)
+	result, err := locator.FindConstructionSource(context.Background(), "ADVANCED_CIRCUITRY", "X1-KA42", 1, "")
 	if err != nil {
 		t.Fatalf("FindConstructionSource: %v", err)
 	}
@@ -114,7 +115,7 @@ func TestFindConstructionSource_PrefersExportOverImport(t *testing.T) {
 	}
 	locator := NewMarketLocator(repo, nil, nil, nil)
 
-	result, err := locator.FindConstructionSource(context.Background(), "ADVANCED_CIRCUITRY", "X1-KA42", 1)
+	result, err := locator.FindConstructionSource(context.Background(), "ADVANCED_CIRCUITRY", "X1-KA42", 1, "")
 	if err != nil {
 		t.Fatalf("FindConstructionSource: %v", err)
 	}
@@ -137,11 +138,62 @@ func TestFindConstructionSource_NoQualifyingMarket_ReturnsNil(t *testing.T) {
 	}
 	locator := NewMarketLocator(repo, nil, nil, nil)
 
-	result, err := locator.FindConstructionSource(context.Background(), "ADVANCED_CIRCUITRY", "X1-KA42", 1)
+	result, err := locator.FindConstructionSource(context.Background(), "ADVANCED_CIRCUITRY", "X1-KA42", 1, "")
 	if err != nil {
 		t.Fatalf("FindConstructionSource: %v", err)
 	}
 	if result != nil {
 		t.Fatalf("expected nil source (defer), got %+v", result)
+	}
+}
+
+// sp-ezz9: construction start gains --min-supply, letting the caller lower the
+// EXPORT acceptance floor below the default MODERATE baseline. The locator
+// reuses its existing Order()-based tolerance ladder - no new ladder, no new
+// sourcing logic - the caller just moves the floor.
+
+// Without a floor (the CLI flag unset threads through as the zero value ""),
+// behavior is UNCHANGED: a SCARCE-only EXPORT market is still rejected exactly
+// like the pre-existing MODERATE default.
+func TestFindConstructionSource_NoFloor_StillRejectsScarceExport(t *testing.T) {
+	const scarceExport = "X1-KA42-D40"
+
+	repo := &plannerStubMarketRepo{
+		marketWaypoints: []string{scarceExport},
+		markets: map[string]*market.Market{
+			scarceExport: newTradeTypeMarket(t, scarceExport, "FAB_MATS", "SCARCE", "RESTRICTED", market.TradeTypeExport, 5757),
+		},
+	}
+	locator := NewMarketLocator(repo, nil, nil, nil)
+
+	result, err := locator.FindConstructionSource(context.Background(), "FAB_MATS", "X1-KA42", 1, "")
+	if err != nil {
+		t.Fatalf("FindConstructionSource: %v", err)
+	}
+	if result != nil {
+		t.Fatalf("expected nil source (SCARCE stays rejected under the default floor), got %+v", result)
+	}
+}
+
+// With floor=SCARCE, the caller-set floor lowers acceptance all the way down
+// the existing ladder, so the same SCARCE-only EXPORT market that the default
+// floor rejects is now accepted as a buy source.
+func TestFindConstructionSource_ScarceFloor_AcceptsScarceExport(t *testing.T) {
+	const scarceExport = "X1-KA42-D40"
+
+	repo := &plannerStubMarketRepo{
+		marketWaypoints: []string{scarceExport},
+		markets: map[string]*market.Market{
+			scarceExport: newTradeTypeMarket(t, scarceExport, "FAB_MATS", "SCARCE", "RESTRICTED", market.TradeTypeExport, 5757),
+		},
+	}
+	locator := NewMarketLocator(repo, nil, nil, nil)
+
+	result, err := locator.FindConstructionSource(context.Background(), "FAB_MATS", "X1-KA42", 1, manufacturing.SupplyLevelScarce)
+	if err != nil {
+		t.Fatalf("FindConstructionSource: %v", err)
+	}
+	if result == nil || result.WaypointSymbol != scarceExport {
+		t.Fatalf("expected SCARCE export market %s accepted with floor=SCARCE, got %+v", scarceExport, result)
 	}
 }

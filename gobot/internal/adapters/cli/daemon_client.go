@@ -1121,6 +1121,7 @@ func (c *DaemonClient) StartConstructionPipeline(
 	supplyChainDepth int32,
 	maxWorkers int32,
 	systemSymbol *string,
+	minSupply *string,
 ) (*StartConstructionPipelineResponse, error) {
 	req := &pb.StartConstructionPipelineRequest{
 		ConstructionSite: constructionSite,
@@ -1129,6 +1130,7 @@ func (c *DaemonClient) StartConstructionPipeline(
 		SupplyChainDepth: supplyChainDepth,
 		MaxWorkers:       maxWorkers,
 		SystemSymbol:     systemSymbol,
+		MinSupply:        minSupply,
 	}
 
 	resp, err := c.client.StartConstructionPipeline(ctx, req)

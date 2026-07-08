@@ -311,12 +311,19 @@ func (l *MarketLocator) FindExportMarketBySupplyPriority(
 // planning time and by the poll-loop recovery of deferred construction tasks.
 //
 // Preference order:
-//  1. EXPORT market with MODERATE+ supply (cheapest, produced-to-order source) -
+//  1. EXPORT market at or above minSupply (cheapest, produced-to-order source) -
 //     ranked exactly like FindExportMarketBySupplyPriority.
-//  2. FALLBACK: when no EXPORT market clears the MODERATE+ floor, an IMPORT or
-//     EXCHANGE market holding ABUNDANT/HIGH accumulated stock, which it will sell
-//     back at its ask price. A LIMITED export that stalls indefinitely is worse
-//     than paying a modest premium at an oversupplied importer.
+//  2. FALLBACK: when no EXPORT market clears the floor, an IMPORT or EXCHANGE
+//     market holding ABUNDANT/HIGH accumulated stock, which it will sell back at
+//     its ask price. A LIMITED export that stalls indefinitely is worse than
+//     paying a modest premium at an oversupplied importer.
+//
+// minSupply is the caller-set EXPORT acceptance floor (sp-ezz9). It reuses the
+// existing supply-state tolerance ladder (Order()) - passing the zero value ""
+// defaults to the original MODERATE floor, leaving unset-flag behavior exactly
+// unchanged. Passing a lower state (e.g. SCARCE) lets the caller buy down to
+// that floor when a pipeline needs to source materials the default floor would
+// otherwise defer indefinitely.
 //
 // Returns (nil, nil) when neither exists so the caller can DEFER the material
 // (create a PENDING task that recovers when supply regenerates) instead of
@@ -326,10 +333,16 @@ func (l *MarketLocator) FindConstructionSource(
 	good string,
 	systemSymbol string,
 	playerID int,
+	minSupply manufacturing.SupplyLevel,
 ) (*MarketLocatorResult, error) {
 	// Ship types are sourced from shipyards, which have no supply levels.
 	if isShipType(good) {
 		return l.findShipyardSellingShip(ctx, good, systemSymbol, playerID)
+	}
+
+	floor := minSupply
+	if floor == "" {
+		floor = manufacturing.SupplyLevelModerate
 	}
 
 	marketWaypoints, err := l.marketRepo.FindAllMarketsInSystem(ctx, systemSymbol, playerID)
@@ -367,8 +380,9 @@ func (l *MarketLocator) FindConstructionSource(
 
 		switch tradeGood.TradeType() {
 		case market.TradeTypeExport:
-			// EXPORT: accept MODERATE+ (skip SCARCE/LIMITED to avoid overpaying).
-			supplyScore := manufacturing.SupplyLevel(supply).Order() - manufacturing.SupplyLevelLimited.Order()
+			// EXPORT: accept floor+ (default MODERATE+, skipping SCARCE/LIMITED
+			// to avoid overpaying, unless the caller lowered the floor).
+			supplyScore := manufacturing.SupplyLevel(supply).Order() - floor.Order() + 1
 			if supplyScore < 1 {
 				continue
 			}

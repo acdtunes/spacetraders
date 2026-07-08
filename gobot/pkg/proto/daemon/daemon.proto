@@ -749,6 +749,11 @@ message StartConstructionPipelineRequest {
   int32 max_workers = 5;
   // Optional system symbol (defaults to deriving from construction_site)
   optional string system_symbol = 6;
+  // Optional caller-set EXPORT sourcing floor (sp-ezz9), e.g. "SCARCE".
+  // Lowers the supply-priority locator's acceptance floor below the default
+  // MODERATE using its existing tolerance ladder. Unset preserves the
+  // original MODERATE-floor behavior unchanged.
+  optional string min_supply = 7;
 }
 
 // StartConstructionPipelineResponse returns the result of starting a construction pipeline

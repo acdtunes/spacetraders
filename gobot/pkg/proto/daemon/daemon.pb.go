@@ -5338,7 +5338,12 @@ type StartConstructionPipelineRequest struct {
 	// Maximum parallel workers (default 5)
 	MaxWorkers int32 `protobuf:"varint,5,opt,name=max_workers,json=maxWorkers,proto3" json:"max_workers,omitempty"`
 	// Optional system symbol (defaults to deriving from construction_site)
-	SystemSymbol  *string `protobuf:"bytes,6,opt,name=system_symbol,json=systemSymbol,proto3,oneof" json:"system_symbol,omitempty"`
+	SystemSymbol *string `protobuf:"bytes,6,opt,name=system_symbol,json=systemSymbol,proto3,oneof" json:"system_symbol,omitempty"`
+	// Optional caller-set EXPORT sourcing floor (sp-ezz9), e.g. "SCARCE".
+	// Lowers the supply-priority locator's acceptance floor below the default
+	// MODERATE using its existing tolerance ladder. Unset preserves the
+	// original MODERATE-floor behavior unchanged.
+	MinSupply     *string `protobuf:"bytes,7,opt,name=min_supply,json=minSupply,proto3,oneof" json:"min_supply,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -5411,6 +5416,13 @@ func (x *StartConstructionPipelineRequest) GetMaxWorkers() int32 {
 func (x *StartConstructionPipelineRequest) GetSystemSymbol() string {
 	if x != nil && x.SystemSymbol != nil {
 		return *x.SystemSymbol
+	}
+	return ""
+}
+
+func (x *StartConstructionPipelineRequest) GetMinSupply() string {
+	if x != nil && x.MinSupply != nil {
+		return *x.MinSupply
 	}
 	return ""
 }
@@ -6273,7 +6285,7 @@ const file_pkg_proto_daemon_daemon_proto_rawDesc = "" +
 	"\x06status\x18\x05 \x01(\tR\x06status\x122\n" +
 	"\vship_routes\x18\x06 \x03(\v2\x11.daemon.ShipRouteR\n" +
 	"shipRoutes\x12\x16\n" +
-	"\x06errors\x18\a \x03(\tR\x06errors\"\xb0\x02\n" +
+	"\x06errors\x18\a \x03(\tR\x06errors\"\xe3\x02\n" +
 	" StartConstructionPipelineRequest\x12+\n" +
 	"\x11construction_site\x18\x01 \x01(\tR\x10constructionSite\x12\x1b\n" +
 	"\tplayer_id\x18\x02 \x01(\x05R\bplayerId\x12&\n" +
@@ -6281,9 +6293,12 @@ const file_pkg_proto_daemon_daemon_proto_rawDesc = "" +
 	"\x12supply_chain_depth\x18\x04 \x01(\x05R\x10supplyChainDepth\x12\x1f\n" +
 	"\vmax_workers\x18\x05 \x01(\x05R\n" +
 	"maxWorkers\x12(\n" +
-	"\rsystem_symbol\x18\x06 \x01(\tH\x01R\fsystemSymbol\x88\x01\x01B\x0f\n" +
+	"\rsystem_symbol\x18\x06 \x01(\tH\x01R\fsystemSymbol\x88\x01\x01\x12\"\n" +
+	"\n" +
+	"min_supply\x18\a \x01(\tH\x02R\tminSupply\x88\x01\x01B\x0f\n" +
 	"\r_agent_symbolB\x10\n" +
-	"\x0e_system_symbol\"\x9d\x02\n" +
+	"\x0e_system_symbolB\r\n" +
+	"\v_min_supply\"\x9d\x02\n" +
 	"!StartConstructionPipelineResponse\x12\x1f\n" +
 	"\vpipeline_id\x18\x01 \x01(\tR\n" +
 	"pipelineId\x12+\n" +

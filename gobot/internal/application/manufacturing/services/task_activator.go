@@ -295,7 +295,12 @@ func (a *TaskActivator) resourceDeferredConstructionTask(ctx context.Context, ta
 	}
 
 	systemSymbol := extractSystem(task.ConstructionSite())
-	source, err := a.marketLocator.FindConstructionSource(ctx, task.Good(), systemSymbol, a.playerID)
+	// sp-ezz9: recovery always uses the default MODERATE floor ("" = unset).
+	// The caller-set --min-supply floor only applies at initial planning time
+	// (ConstructionPipelinePlanner.StartOrResume); re-running `construction
+	// start --min-supply X` against an already in-progress pipeline does not
+	// change the floor used here for tasks deferred before the flag was set.
+	source, err := a.marketLocator.FindConstructionSource(ctx, task.Good(), systemSymbol, a.playerID, "")
 	if err != nil || source == nil {
 		return false
 	}

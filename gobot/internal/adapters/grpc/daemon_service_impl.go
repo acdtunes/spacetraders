@@ -964,8 +964,15 @@ func (s *daemonServiceImpl) StartConstructionPipeline(ctx context.Context, req *
 		systemSymbol = *req.SystemSymbol
 	}
 
+	// Get min-supply floor (nil pointer means unset - preserves the default
+	// MODERATE floor unchanged; sp-ezz9)
+	var minSupply string
+	if req.MinSupply != nil {
+		minSupply = *req.MinSupply
+	}
+
 	// Call daemon's StartConstructionPipeline method
-	result, err := s.daemon.StartConstructionPipeline(ctx, req.ConstructionSite, playerID, int(req.SupplyChainDepth), int(req.MaxWorkers), systemSymbol)
+	result, err := s.daemon.StartConstructionPipeline(ctx, req.ConstructionSite, playerID, int(req.SupplyChainDepth), int(req.MaxWorkers), systemSymbol, minSupply)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start construction pipeline: %w", err)
 	}

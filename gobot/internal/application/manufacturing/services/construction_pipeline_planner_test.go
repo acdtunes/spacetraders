@@ -140,7 +140,7 @@ func TestStartOrResume_EmptyExistingPipeline_TerminalizesAndRePlans(t *testing.T
 	taskRepo := &plannerStubTaskRepo{tasksByPipeline: map[string][]*manufacturing.ManufacturingTask{}}
 	planner := newPlannerUnderTest(pipelineRepo, taskRepo, newPlannerTestMarketRepo(t), newPlannerTestConstructionSite(t))
 
-	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 3, 5, "")
+	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 3, 5, "", "")
 	if err != nil {
 		t.Fatalf("StartOrResume: %v", err)
 	}
@@ -230,7 +230,7 @@ func TestStartOrResume_ModerateSupplyOnlyExporter_CreatesDeliverTask(t *testing.
 	taskRepo := &plannerStubTaskRepo{tasksByPipeline: map[string][]*manufacturing.ManufacturingTask{}}
 	planner := newPlannerUnderTest(pipelineRepo, taskRepo, marketRepo, newPlannerTestConstructionSite(t))
 
-	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 3, 5, "")
+	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 3, 5, "", "")
 	if err != nil {
 		t.Fatalf("StartOrResume must tolerate MODERATE supply for construction buys: %v", err)
 	}
@@ -267,7 +267,7 @@ func TestStartOrResume_ExistingPipelineWithIncompleteTasks_Resumes(t *testing.T)
 	}}
 	planner := newPlannerUnderTest(pipelineRepo, taskRepo, newPlannerTestMarketRepo(t), newPlannerTestConstructionSite(t))
 
-	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 3, 5, "")
+	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 3, 5, "", "")
 	if err != nil {
 		t.Fatalf("StartOrResume: %v", err)
 	}
@@ -329,7 +329,7 @@ func TestStartOrResume_MixedSourceableAndUnsourceable_SavesWithDeferral(t *testi
 	taskRepo := &plannerStubTaskRepo{tasksByPipeline: map[string][]*manufacturing.ManufacturingTask{}}
 	planner := newPlannerUnderTest(pipelineRepo, taskRepo, marketRepo, newPlannerTestConstructionSite(t))
 
-	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 3, 5, "")
+	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 3, 5, "", "")
 	if err != nil {
 		t.Fatalf("StartOrResume must not fail when one material is unsourceable: %v", err)
 	}
@@ -375,6 +375,49 @@ func TestStartOrResume_MixedSourceableAndUnsourceable_SavesWithDeferral(t *testi
 	}
 }
 
+// sp-ezz9: proves --min-supply threads all the way from StartOrResume down to
+// the locator, not just that FindConstructionSource itself honors a floor in
+// isolation (see market_locator_test.go). Same shape as
+// TestStartOrResume_MixedSourceableAndUnsourceable_SavesWithDeferral above,
+// but the circuitry market is SCARCE (below even that test's LIMITED, and
+// below the default MODERATE floor) and StartOrResume is called with
+// minSupply="SCARCE". Without the flag this market would defer exactly like
+// the LIMITED case above; with the flag it must be sourced and READY instead.
+func TestStartOrResume_MinSupplyFloor_ScarceExportSourcedInsteadOfDeferred(t *testing.T) {
+	const circuitryScarce = "X1-PZ28-D40"
+
+	marketRepo := &plannerStubMarketRepo{
+		marketWaypoints: []string{plannerTestMarket, circuitryScarce},
+		markets: map[string]*market.Market{
+			plannerTestMarket: newTradeTypeMarket(t, plannerTestMarket, "FAB_MATS", "ABUNDANT", "STRONG", market.TradeTypeExport, 100),
+			circuitryScarce:   newTradeTypeMarket(t, circuitryScarce, "ADVANCED_CIRCUITRY", "SCARCE", "RESTRICTED", market.TradeTypeExport, 5757),
+		},
+	}
+
+	pipelineRepo := &plannerStubPipelineRepo{}
+	taskRepo := &plannerStubTaskRepo{tasksByPipeline: map[string][]*manufacturing.ManufacturingTask{}}
+	planner := newPlannerUnderTest(pipelineRepo, taskRepo, marketRepo, newPlannerTestConstructionSite(t))
+
+	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 3, 5, "", "SCARCE")
+	if err != nil {
+		t.Fatalf("StartOrResume must accept a SCARCE export source when minSupply=SCARCE: %v", err)
+	}
+
+	circTask := findTaskByGood(result.Pipeline, "ADVANCED_CIRCUITRY")
+	if circTask == nil {
+		t.Fatal("expected an ADVANCED_CIRCUITRY task")
+	}
+	if circTask.SourceMarket() != circuitryScarce {
+		t.Errorf("expected ADVANCED_CIRCUITRY sourced from the SCARCE exporter %s, got %q", circuitryScarce, circTask.SourceMarket())
+	}
+	if circTask.Status() != manufacturing.TaskStatusReady {
+		t.Errorf("expected ADVANCED_CIRCUITRY task READY (not deferred) with minSupply=SCARCE, got %s", circTask.Status())
+	}
+	if circTask.IsDeferredConstruction() {
+		t.Error("expected ADVANCED_CIRCUITRY task to NOT report IsDeferredConstruction() when the SCARCE floor accepts it")
+	}
+}
+
 // Per-material depth ceiling (sp-r900): at --depth 2 a material that is trivially
 // BUYABLE (FAB_MATS ABUNDANT) must be bought directly, NOT fabricated. The old
 // global switch fabricated FAB_MATS at depth 2 and died on its QUARTZ_SAND input.
@@ -390,7 +433,7 @@ func TestStartOrResume_BuyableMaterialBoughtEvenAtDepth2(t *testing.T) {
 	taskRepo := &plannerStubTaskRepo{tasksByPipeline: map[string][]*manufacturing.ManufacturingTask{}}
 	planner := newPlannerUnderTest(pipelineRepo, taskRepo, marketRepo, singleMaterialSite("FAB_MATS", 1600))
 
-	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 2, 5, "")
+	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 2, 5, "", "")
 	if err != nil {
 		t.Fatalf("StartOrResume at depth 2 must buy a buyable material: %v", err)
 	}
@@ -445,7 +488,7 @@ func TestStartOrResume_FabricableOnlyMaterialFabricatedWithinCeiling(t *testing.
 	taskRepo := &plannerStubTaskRepo{tasksByPipeline: map[string][]*manufacturing.ManufacturingTask{}}
 	planner := newPlannerUnderTest(pipelineRepo, taskRepo, marketRepo, singleMaterialSite("MACHINERY", 50))
 
-	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 2, 5, "")
+	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 2, 5, "", "")
 	if err != nil {
 		t.Fatalf("StartOrResume must fabricate a fabricable-only material: %v", err)
 	}
@@ -476,7 +519,7 @@ func TestStartOrResume_NewPipeline_PersistsAndStartsTasks(t *testing.T) {
 	taskRepo := &plannerStubTaskRepo{tasksByPipeline: map[string][]*manufacturing.ManufacturingTask{}}
 	planner := newPlannerUnderTest(pipelineRepo, taskRepo, newPlannerTestMarketRepo(t), newPlannerTestConstructionSite(t))
 
-	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 3, 5, "")
+	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 3, 5, "", "")
 	if err != nil {
 		t.Fatalf("StartOrResume: %v", err)
 	}

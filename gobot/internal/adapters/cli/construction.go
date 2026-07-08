@@ -5,8 +5,37 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 	"github.com/spf13/cobra"
 )
+
+// validMinSupplyLevels enumerates the actual manufacturing.SupplyLevel values
+// accepted by --min-supply (sp-ezz9). Kept separate from
+// manufacturing.ParseSupplyLevel, which is intentionally lenient (it defaults
+// unrecognized strings to MODERATE for parsing scanned market data) - CLI
+// input instead gets strict validation with a clear rejection error.
+var validMinSupplyLevels = []manufacturing.SupplyLevel{
+	manufacturing.SupplyLevelAbundant,
+	manufacturing.SupplyLevelHigh,
+	manufacturing.SupplyLevelModerate,
+	manufacturing.SupplyLevelLimited,
+	manufacturing.SupplyLevelScarce,
+}
+
+// parseMinSupplyFlag strictly validates the --min-supply flag value against
+// the real manufacturing.SupplyLevel enum. An empty string means unset and is
+// always valid, preserving the default MODERATE sourcing floor unchanged.
+func parseMinSupplyFlag(s string) (manufacturing.SupplyLevel, error) {
+	if s == "" {
+		return "", nil
+	}
+	for _, lvl := range validMinSupplyLevels {
+		if manufacturing.SupplyLevel(s) == lvl {
+			return lvl, nil
+		}
+	}
+	return "", fmt.Errorf("invalid --min-supply value %q: must be one of ABUNDANT, HIGH, MODERATE, LIMITED, SCARCE", s)
+}
 
 // NewConstructionCommand creates the construction command with subcommands
 func NewConstructionCommand() *cobra.Command {
@@ -36,6 +65,7 @@ func newConstructionStartCommand() *cobra.Command {
 	var supplyChainDepth int
 	var maxWorkers int
 	var systemSymbol string
+	var minSupply string
 
 	cmd := &cobra.Command{
 		Use:   "start <construction-site>",
@@ -54,14 +84,32 @@ Supply chain depth controls how much to produce:
   2 - Buy intermediate goods (only final assembly)
   3 - Buy final product (no production, just delivery)
 
+--min-supply lowers the floor the sourcing locator will buy EXPORT
+materials down to (default floor: MODERATE). For example, --min-supply
+SCARCE lets the pipeline source from a market even when its supply has
+dropped all the way to SCARCE, instead of waiting for it to recover to
+MODERATE or better. Only ABUNDANT, HIGH, MODERATE, LIMITED, and SCARCE
+are accepted. Left unset, behavior is unchanged from the MODERATE default.
+This only affects the initial planning pass for a NEW pipeline - it does
+not change the floor used to recover materials already deferred on an
+existing, in-progress pipeline.
+
 The pipeline is IDEMPOTENT - running this command again will resume
 an existing pipeline instead of creating a new one.
 
 Examples:
   spacetraders construction start X1-FB5-I61 --player-id 1
-  spacetraders construction start X1-FB5-I61 --system X1-FB5 --depth 3 --player-id 1`,
+  spacetraders construction start X1-FB5-I61 --system X1-FB5 --depth 3 --player-id 1
+  spacetraders construction start X1-FB5-I61 --min-supply SCARCE --player-id 1`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Validate --min-supply before touching any infrastructure (mirrors
+			// newShipBuyCommand's flag-validation-first pattern).
+			minSupplyLevel, err := parseMinSupplyFlag(minSupply)
+			if err != nil {
+				return err
+			}
+
 			constructionSite := args[0]
 
 			// Resolve player from flags or defaults
@@ -87,6 +135,13 @@ Examples:
 				systemSymbolPtr = &systemSymbol
 			}
 
+			// Convert minSupply to pointer (nil if unset)
+			var minSupplyPtr *string
+			if minSupplyLevel != "" {
+				s := string(minSupplyLevel)
+				minSupplyPtr = &s
+			}
+
 			result, err := client.StartConstructionPipeline(
 				ctx,
 				constructionSite,
@@ -95,6 +150,7 @@ Examples:
 				int32(supplyChainDepth),
 				int32(maxWorkers),
 				systemSymbolPtr,
+				minSupplyPtr,
 			)
 			if err != nil {
 				return fmt.Errorf("failed to start construction pipeline: %w", err)
@@ -134,6 +190,7 @@ Examples:
 	cmd.Flags().IntVar(&supplyChainDepth, "depth", 3, "Supply chain depth (0=full, 1=raw, 2=intermediate, 3=buy final)")
 	cmd.Flags().IntVar(&maxWorkers, "max-workers", 5, "Maximum parallel workers")
 	cmd.Flags().StringVar(&systemSymbol, "system", "", "System symbol for market lookups (defaults to deriving from construction site)")
+	cmd.Flags().StringVar(&minSupply, "min-supply", "", "Lower the EXPORT sourcing floor below the default MODERATE (one of ABUNDANT, HIGH, MODERATE, LIMITED, SCARCE)")
 
 	return cmd
 }

@@ -60,6 +60,10 @@ type StartOrResumeResult struct {
 //   - supplyChainDepth: How deep to go in the supply chain (0=full, 1=raw only, 2=intermediates, 3=buy final)
 //   - maxWorkers: Maximum parallel workers (0=unlimited, default 5)
 //   - systemSymbol: System to search for markets (empty string = derive from constructionSite)
+//   - minSupply: caller-set EXPORT sourcing floor (sp-ezz9), e.g. "SCARCE". Empty
+//     string = unset, preserving the original MODERATE default unchanged. Only
+//     applies to this initial planning pass, not to later recovery of already
+//     deferred tasks (see task_activator.go).
 func (p *ConstructionPipelinePlanner) StartOrResume(
 	ctx context.Context,
 	playerID int,
@@ -67,6 +71,7 @@ func (p *ConstructionPipelinePlanner) StartOrResume(
 	supplyChainDepth int,
 	maxWorkers int,
 	systemSymbol string,
+	minSupply string,
 ) (*StartOrResumeResult, error) {
 	logger := common.LoggerFromContext(ctx)
 
@@ -178,7 +183,7 @@ func (p *ConstructionPipelinePlanner) StartOrResume(
 	// The SupplyMonitor re-sources deferred tasks when supply regenerates.
 	deferredMaterials := make([]string, 0)
 	for _, mat := range unfulfilledMaterials {
-		staged, deferred, err := p.planMaterial(ctx, pipeline.ID(), mat.TradeSymbol(), systemSymbol, constructionSite, supplyChainDepth, playerID)
+		staged, deferred, err := p.planMaterial(ctx, pipeline.ID(), mat.TradeSymbol(), systemSymbol, constructionSite, supplyChainDepth, playerID, minSupply)
 		if err != nil {
 			return nil, fmt.Errorf("failed to plan material %s: %w", mat.TradeSymbol(), err)
 		}
@@ -259,12 +264,13 @@ func (p *ConstructionPipelinePlanner) planMaterial(
 	constructionSite string,
 	supplyChainDepth int,
 	playerID int,
+	minSupply string,
 ) (staged []*manufacturing.ManufacturingTask, deferred bool, err error) {
 	logger := common.LoggerFromContext(ctx)
 
 	// 1. Prefer buying the final good directly (cheapest sourceable path),
 	//    regardless of the depth flag - depth only caps how deep we fabricate.
-	source, err := p.marketLocator.FindConstructionSource(ctx, targetGood, systemSymbol, playerID)
+	source, err := p.marketLocator.FindConstructionSource(ctx, targetGood, systemSymbol, playerID, manufacturing.SupplyLevel(minSupply))
 	if err != nil {
 		return nil, false, fmt.Errorf("failed to locate buy source for %s: %w", targetGood, err)
 	}
