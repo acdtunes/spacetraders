@@ -24,6 +24,17 @@ const pool = new Pool({
   connectionString: process.env.DATABASE_URL || 'postgresql://spacetraders:dev_password@localhost:5432/spacetraders'
 });
 
+// node-pg emits 'error' on the POOL when an IDLE client's backend connection
+// drops (e.g. PostgreSQL restarts mid-session). With no listener, Node rethrows
+// it as an uncaught exception and kills the process — and S4's always-on polling
+// keeps idle clients warm, so a DB restart would become the crash-loop the
+// acceptance forbids (via process death instead of a 500). Swallow it: the idle
+// client is discarded and re-established on the next connect(), which preserves
+// the 503 degrade path.
+pool.on('error', (err) => {
+  console.error('pg pool idle-client error (DB likely restarting):', err.message);
+});
+
 // Get all ship assignments (Go bot - uses ships table as source of truth)
 router.get('/assignments', async (req, res) => {
   const client = await pool.connect();
@@ -1250,6 +1261,102 @@ router.get('/ledger/balance-history', async (req, res) => {
     res.status(500).json({ error: 'Failed to fetch balance history' });
   } finally {
     client.release();
+  }
+});
+
+// ==================== Operational Pulse (S4) ====================
+// READ-ONLY endpoints consumed by the always-on visualizer client. Unlike the
+// routes above (which return 500 on failure), ANY database error here — including
+// the pool failing to connect while PostgreSQL is down — must degrade to
+// HTTP 503 { error: 'db_unavailable' } rather than a 500 crash-loop. pool.connect()
+// is therefore INSIDE the try: a down DB throws at connect time, not at query time.
+
+// Get recent captain (fleet) events, newest-first
+router.get('/events', async (req, res) => {
+  let client;
+  try {
+    client = await pool.connect();
+
+    // Optional cursor: only return events newer than this id. Absent/invalid -> no filter.
+    const after = req.query.after && Number.isInteger(Number(req.query.after))
+      ? Number(req.query.after)
+      : null;
+    // Default 50, hard-capped at 200 by LEAST() in the query.
+    const limit = parseInt(req.query.limit as string, 10) || 50;
+
+    const result = await client.query(`
+      SELECT
+        id,
+        type,
+        ship,
+        created_at AS "createdAt",
+        (processed_at IS NOT NULL) AS processed
+      FROM captain_events
+      WHERE ($1::bigint IS NULL OR id > $1)
+      ORDER BY id DESC
+      LIMIT LEAST($2::int, 200)
+    `, [after, limit]);
+
+    res.json({ events: result.rows });
+  } catch (error) {
+    console.error('Failed to fetch events:', error);
+    res.status(503).json({ error: 'db_unavailable' });
+  } finally {
+    if (client) client.release();
+  }
+});
+
+// Get construction progress for a waypoint (jump-gate / construction site)
+router.get('/construction/:waypointSymbol', async (req, res) => {
+  let client;
+  try {
+    client = await pool.connect();
+
+    const waypointSymbol = req.params.waypointSymbol;
+
+    // A single construction site can accumulate many CONSTRUCTION pipelines over
+    // its lifetime (failed retries + a completed one + the live attempt). Select the
+    // single authoritative pipeline — the active (EXECUTING) attempt, else the
+    // COMPLETED one, else the most recent — so progress reflects the current build
+    // rather than the inflated sum of every historical retry.
+    const result = await client.query(`
+      SELECT materials
+      FROM manufacturing_pipelines
+      WHERE pipeline_type = 'CONSTRUCTION' AND construction_site = $1
+      ORDER BY
+        (status = 'EXECUTING') DESC,
+        (status = 'COMPLETED') DESC,
+        created_at DESC
+      LIMIT 1
+    `, [waypointSymbol]);
+
+    if (result.rows.length === 0) {
+      return res.json({ progress: null, materials: [] });
+    }
+
+    // materials is a JSONB array of { tradeSymbol, targetQuantity, deliveredQuantity }
+    // (migration 027). node-pg returns jsonb pre-parsed; tolerate a string column too.
+    const raw = result.rows[0].materials;
+    const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    const items: any[] = Array.isArray(parsed) ? parsed : [];
+
+    const materials = items.map((m) => ({
+      tradeSymbol: m.tradeSymbol,
+      required: Number(m.targetQuantity) || 0,
+      fulfilled: Number(m.deliveredQuantity) || 0,
+    }));
+
+    // progress = 100 * SUM(fulfilled) / SUM(required); null when nothing is required.
+    const totalRequired = materials.reduce((sum, m) => sum + m.required, 0);
+    const totalFulfilled = materials.reduce((sum, m) => sum + m.fulfilled, 0);
+    const progress = totalRequired > 0 ? (100 * totalFulfilled) / totalRequired : null;
+
+    res.json({ progress, materials });
+  } catch (error) {
+    console.error('Failed to fetch construction progress:', error);
+    res.status(503).json({ error: 'db_unavailable' });
+  } finally {
+    if (client) client.release();
   }
 });
 

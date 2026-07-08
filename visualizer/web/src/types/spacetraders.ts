@@ -302,6 +302,34 @@ export interface PlayerMapping {
   agent_symbol: string;
 }
 
+// Operational Pulse types (fleet events + jump-gate construction)
+//
+// FleetEvent mirrors a row from the gobot `captain_events` table as reshaped by
+// GET /api/bot/events: newest-first, cursor-paginated by `id`. `type` is a raw
+// gobot event string (e.g. 'workflow.finished', 'contract.completed',
+// 'credits.threshold'); `ship` is null for fleet-wide events.
+export interface FleetEvent {
+  id: number;
+  type: string;
+  ship: string | null;
+  createdAt: string;
+  processed: boolean;
+}
+
+// A single material line of a construction/jump-gate bill.
+export interface GateMaterial {
+  tradeSymbol: string;
+  required: number;
+  fulfilled: number;
+}
+
+// Aggregate construction progress for a waypoint. `progress` is a 0-100
+// percentage, or null when nothing is required yet (empty/unstarted bill).
+export interface GateProgress {
+  progress: number | null;
+  materials: GateMaterial[];
+}
+
 // Financial Ledger types
 export type TransactionType =
   | 'REFUEL'

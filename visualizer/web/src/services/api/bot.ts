@@ -16,6 +16,8 @@ import type {
   ProfitLossData,
   BalanceHistoryData,
   OperationPLData,
+  FleetEvent,
+  GateProgress,
 } from '../../types/spacetraders';
 
 /**
@@ -136,6 +138,30 @@ export async function getMarketTransactions(systemSymbol: string, limit: number 
     `/bot/transactions/${systemSymbol}?limit=${limit}`
   );
   return response.transactions;
+}
+
+/**
+ * Get recent captain (fleet) events, newest-first.
+ *
+ * `afterId` is a cursor: only events with a higher id are returned, so callers
+ * can pass the highest id they have already ingested to fetch just the delta.
+ * The server hard-caps `limit` at 200.
+ */
+export async function getFleetEvents(afterId?: number, limit: number = 50): Promise<FleetEvent[]> {
+  const params = new URLSearchParams();
+  if (afterId !== undefined) params.append('after', afterId.toString());
+  params.append('limit', limit.toString());
+  const response = await fetchApi<{ events: FleetEvent[] }>(`/bot/events?${params.toString()}`);
+  return response.events;
+}
+
+/**
+ * Get construction progress for a waypoint (jump-gate / construction site).
+ * Returns the aggregate percentage and per-material fulfillment.
+ */
+export async function getGateProgress(waypointSymbol: string): Promise<GateProgress> {
+  const response = await fetchApi<GateProgress>(`/bot/construction/${waypointSymbol}`);
+  return { progress: response.progress, materials: response.materials };
 }
 
 /**

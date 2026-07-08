@@ -2,7 +2,16 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { act } from '@testing-library/react';
 import { createAppStore } from '../useStore';
 import { TRAIL_MAX_POINTS as TRAIL_BUFFER_CAP, TRAIL_FADE_MS } from '../trails';
-import type { Agent, TaggedShip, Waypoint, WaypointRef, ShipTrailPoint, FlightMode } from '../../types/spacetraders';
+import type { Agent, TaggedShip, Waypoint, WaypointRef, ShipTrailPoint, FlightMode, FleetEvent } from '../../types/spacetraders';
+
+const buildEvent = (id: number, overrides: Partial<FleetEvent> = {}): FleetEvent => ({
+  id,
+  type: 'workflow.finished',
+  ship: 'SHIP-1',
+  createdAt: new Date(id).toISOString(),
+  processed: false,
+  ...overrides,
+});
 
 type AppStore = ReturnType<typeof createAppStore>;
 
@@ -237,5 +246,52 @@ describe('useStore', () => {
 
     act(() => clearShipFocusRequest());
     expect(store.getState().shipFocusRequest).toBeNull();
+  });
+
+  it('ingests fleet events newest-first and hard-caps the buffer at 100', () => {
+    const { ingestEvents } = store.getState();
+
+    // Ingest 150 events across two batches, out of order, to exercise the merge.
+    act(() => ingestEvents(Array.from({ length: 80 }, (_, i) => buildEvent(i + 1))));
+    act(() => ingestEvents(Array.from({ length: 70 }, (_, i) => buildEvent(i + 81))));
+
+    const events = store.getState().fleetEvents;
+    // Hard cap: never more than 100 entries even though 150 were ingested.
+    expect(events).toHaveLength(100);
+    // Newest-first: the highest id survives at the head, the cap dropped the oldest.
+    expect(events[0].id).toBe(150);
+    expect(events[events.length - 1].id).toBe(51);
+    // Strictly descending by id (no duplicates, correct order).
+    for (let i = 1; i < events.length; i++) {
+      expect(events[i - 1].id).toBeGreaterThan(events[i].id);
+    }
+  });
+
+  it('dedupes fleet events by id, letting re-fetched events overwrite (e.g. processed flips)', () => {
+    const { ingestEvents } = store.getState();
+
+    act(() => ingestEvents([buildEvent(5, { processed: false }), buildEvent(6)]));
+    act(() => ingestEvents([buildEvent(5, { processed: true })]));
+
+    const events = store.getState().fleetEvents;
+    expect(events).toHaveLength(2);
+    expect(events[0].id).toBe(6);
+    expect(events.find((e) => e.id === 5)?.processed).toBe(true);
+  });
+
+  it('replaces gate progress and merges connection updates preserving last contact', () => {
+    const { setGate, setConnection } = store.getState();
+
+    act(() => setGate({ progress: 42, materials: [{ tradeSymbol: 'FAB_MATS', required: 100, fulfilled: 42 }] }));
+    expect(store.getState().gate.progress).toBe(42);
+    expect(store.getState().gate.materials).toHaveLength(1);
+
+    // A successful contact stamps both status and lastContactAt.
+    act(() => setConnection({ status: 'ok', lastContactAt: 1_000 }));
+    expect(store.getState().connection).toEqual({ status: 'ok', lastContactAt: 1_000 });
+
+    // A loss flips status but preserves the last known contact time (partial merge).
+    act(() => setConnection({ status: 'lost' }));
+    expect(store.getState().connection).toEqual({ status: 'lost', lastContactAt: 1_000 });
   });
 });

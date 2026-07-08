@@ -20,7 +20,11 @@ app.use('/api/systems', systemsRouter);
 try {
   const { default: botRouter } = await import('./routes/bot.js');
   app.use('/api/bot', botRouter);
-  console.log('✓ Bot routes enabled (PostgreSQL connected)');
+  // Importing bot.js only constructs the pg Pool (lazy) — it does NOT open a
+  // connection, so this is not proof PostgreSQL is up. Routes mount regardless;
+  // a down DB surfaces as a 503 from the endpoints, not a 404. Only a module-load
+  // failure lands in the catch below.
+  console.log('✓ Bot routes mounted (PostgreSQL connection is lazy/unchecked)');
 } catch (error) {
   console.warn('⚠ Bot routes disabled (PostgreSQL not available)');
   console.warn('  To enable bot features, start PostgreSQL on port 5432');

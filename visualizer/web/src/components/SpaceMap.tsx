@@ -11,6 +11,7 @@ import { hashString } from '../utils/hash';
 import { WaypointSprite } from './WaypointSprite';
 import { ShipLayer } from './ShipLayer';
 import { MiningLaserLayer } from './MiningLaserLayer';
+import { EventFxLayer } from './EventFxLayer';
 import { ShipTrailLayer } from './ShipTrailLayer';
 import { MarketFreshnessRing } from './MarketFreshnessRing';
 import { ScoutTourLayer } from './ScoutTourLayer';
@@ -1465,6 +1466,16 @@ const SpaceMap = forwardRef<SpaceMapRef>((_props, ref) => {
           />
 
           <MiningLaserLayer
+            ships={filteredShips}
+            waypoints={waypoints}
+            animationFrame={animationFrame}
+            frameTimestamp={frameTimestamp}
+            getShipRenderPosition={getShipRenderPosition}
+            getWaypointPosition={getWaypointDisplayPosition}
+          />
+
+          {/* Event drama: captain-event scene FX (arrival ripples, gate flashes, income pings) */}
+          <EventFxLayer
             ships={filteredShips}
             waypoints={waypoints}
             animationFrame={animationFrame}

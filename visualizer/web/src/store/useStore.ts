@@ -14,6 +14,8 @@ import type {
   MarketData,
   ScoutTour,
   TradeOpportunityData,
+  FleetEvent,
+  GateProgress,
   FinancialTransaction,
   TransactionCategory,
   TransactionType,
@@ -34,6 +36,29 @@ const TRAIL_MAX_POINTS: Record<FlightMode, number> = {
 };
 
 const TRAIL_MIN_DISTANCE = 2;
+
+// Operational Pulse fleet-event buffer is hard-capped so an always-on client
+// can run indefinitely without the event slice growing without bound.
+const FLEET_EVENTS_CAP = 100;
+
+// Merge incoming fleet events into the existing buffer: dedupe by id (incoming
+// wins, so a re-fetched event's `processed` flip propagates), order newest-first
+// by id, and hard-cap the result at FLEET_EVENTS_CAP.
+const mergeFleetEvents = (existing: FleetEvent[], incoming: FleetEvent[]): FleetEvent[] => {
+  const byId = new Map<number, FleetEvent>();
+  for (const event of existing) byId.set(event.id, event);
+  for (const event of incoming) byId.set(event.id, event);
+  return Array.from(byId.values())
+    .sort((a, b) => b.id - a.id)
+    .slice(0, FLEET_EVENTS_CAP);
+};
+
+// Backend connectivity as tracked by the polling heartbeat. `lastContactAt` is
+// preserved across a loss (setConnection merges) so the HUD can show "last seen".
+export interface ConnectionState {
+  status: 'ok' | 'lost';
+  lastContactAt: number | null;
+}
 
 const initializeWaypointMap = (waypoints: Waypoint[]) => new Map(waypoints.map((waypoint) => [
   waypoint.symbol,
@@ -149,6 +174,14 @@ export interface AppState {
   setScoutTours: (tours: ScoutTour[]) => void;
   tradeOpportunities: TradeOpportunityData[];
   setTradeOpportunities: (opportunities: TradeOpportunityData[]) => void;
+
+  // Operational Pulse
+  fleetEvents: FleetEvent[];
+  ingestEvents: (events: FleetEvent[]) => void;
+  gate: GateProgress;
+  setGate: (gate: GateProgress) => void;
+  connection: ConnectionState;
+  setConnection: (update: Partial<ConnectionState>) => void;
 
   // Bot visualization toggles
   showScoutTours: boolean;
@@ -401,6 +434,18 @@ const storeInitializer: StateCreator<AppState, [], []> = (set) => ({
     }),
   tradeOpportunities: [],
   setTradeOpportunities: (opportunities) => set({ tradeOpportunities: opportunities }),
+
+  // Operational Pulse
+  fleetEvents: [],
+  ingestEvents: (events) =>
+    set((state) => ({ fleetEvents: mergeFleetEvents(state.fleetEvents, events) })),
+  gate: { progress: null, materials: [] },
+  setGate: (gate) => set({ gate }),
+  // Start optimistic so a fresh page load does not read as 'lost' before the
+  // first poll cycle lands; the heartbeat flips this on the first success/failure.
+  connection: { status: 'ok', lastContactAt: null },
+  setConnection: (update) =>
+    set((state) => ({ connection: { ...state.connection, ...update } })),
 
   // Bot visualization toggles
   showScoutTours: true,

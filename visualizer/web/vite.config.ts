@@ -48,7 +48,10 @@ export default defineConfig(({ mode }) => {
       exclude: [
         'dist/**',
         'node_modules/**',
-        'src/mocks/**',
+        // Mock scenario/demo sources are not test files, but their OWN unit
+        // tests (src/mocks/__tests__/) must run — so exclude only the modules,
+        // never the whole directory.
+        'src/mocks/*.ts',
       ],
     },
   };
