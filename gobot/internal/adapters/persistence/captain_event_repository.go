@@ -2,6 +2,7 @@ package persistence
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"gorm.io/gorm"
@@ -91,4 +92,24 @@ func (r *GormCaptainEventRepository) HasSince(ctx context.Context, playerID int,
 		Where("player_id = ? AND type = ? AND ship = ? AND created_at > ?", playerID, string(t), ship, since).
 		Count(&count).Error
 	return count > 0, err
+}
+
+// LatestByType returns the most recently created event of type t for the
+// player, tie-broken by ID (CreatedAt precision alone cannot be trusted to
+// order two inserts issued in quick succession), or (nil, nil) if none
+// exists — a clean, error-free "no baseline yet" signal for callers like
+// RecordDeployIfChanged's first-boot case.
+func (r *GormCaptainEventRepository) LatestByType(ctx context.Context, playerID int, t captain.EventType) (*captain.Event, error) {
+	var model CaptainEventModel
+	err := r.db.WithContext(ctx).
+		Where("player_id = ? AND type = ?", playerID, string(t)).
+		Order("created_at DESC, id DESC").
+		First(&model).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return modelToCaptainEvent(&model), nil
 }

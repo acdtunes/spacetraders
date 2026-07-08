@@ -66,3 +66,43 @@ func TestFindUnprocessedOrdersOldestFirstAndScopesPlayer(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, other)
 }
+
+// TestLatestByTypeReturnsNilWhenNoneExists proves the zero-migration baseline
+// query (sp-ess3) signals "no prior event" as (nil, nil) rather than an error,
+// so RecordDeployIfChanged can treat a fresh player/event-type pair as a
+// first-boot case cleanly.
+func TestLatestByTypeReturnsNilWhenNoneExists(t *testing.T) {
+	repo, playerID := setupCaptainEventRepo(t)
+	ctx := context.Background()
+
+	got, err := repo.LatestByType(ctx, playerID, captain.EventDeployCompleted)
+	require.NoError(t, err)
+	require.Nil(t, got)
+}
+
+// TestLatestByTypeReturnsNewestAndScopesByPlayerAndType proves LatestByType
+// picks the most recently created row (not first-inserted, tie-broken by ID
+// since CreatedAt precision alone is not reliable across fast inserts),
+// ignores other event types, and ignores other players' events of the same
+// type — the three properties RecordDeployIfChanged's baseline comparison
+// depends on.
+func TestLatestByTypeReturnsNewestAndScopesByPlayerAndType(t *testing.T) {
+	db, err := database.NewTestConnection()
+	require.NoError(t, err)
+	player := persistence.PlayerModel{AgentSymbol: "TEST-AGENT", Token: "tok", CreatedAt: time.Now()}
+	require.NoError(t, db.Create(&player).Error)
+	other := persistence.PlayerModel{AgentSymbol: "OTHER-AGENT", Token: "tok2", CreatedAt: time.Now()}
+	require.NoError(t, db.Create(&other).Error)
+	repo := persistence.NewGormCaptainEventRepository(db)
+	ctx := context.Background()
+
+	require.NoError(t, repo.Record(ctx, &captain.Event{Type: captain.EventDeployCompleted, PlayerID: player.ID, Payload: `{"commit":"aaa"}`}))
+	require.NoError(t, repo.Record(ctx, &captain.Event{Type: captain.EventShipIdle, Ship: "X", PlayerID: player.ID}))
+	require.NoError(t, repo.Record(ctx, &captain.Event{Type: captain.EventDeployCompleted, PlayerID: player.ID, Payload: `{"commit":"bbb"}`}))
+	require.NoError(t, repo.Record(ctx, &captain.Event{Type: captain.EventDeployCompleted, PlayerID: other.ID, Payload: `{"commit":"zzz"}`}))
+
+	got, err := repo.LatestByType(ctx, player.ID, captain.EventDeployCompleted)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.Equal(t, `{"commit":"bbb"}`, got.Payload, "must return the newest deploy.completed for this player, not the first, an unrelated type, or another player's")
+}

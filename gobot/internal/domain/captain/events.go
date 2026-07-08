@@ -21,6 +21,16 @@ const (
 	EventContractFailed     EventType = "contract.failed"
 	EventIncomeStalled      EventType = "income.stalled"
 	EventStreamDown         EventType = "stream.down"
+
+	// EventDeployCompleted marks a daemon boot running a different commit than
+	// the last one recorded (sp-ess3): the one honest in-process "a deploy
+	// happened" signal, since there is no distinct Go merge-deploy path — the
+	// gate only gates+merges, and rebuild+restart happens out-of-process. It is
+	// deferred class (rides the next wake, NOT in DefaultInterruptTypes) and is
+	// what the crash-loop-resumes-on-deploy doctrine keys on: a job crash-
+	// looping on a known defect with a fix in flight resumes on this event
+	// instead of being re-rolled every heartbeat.
+	EventDeployCompleted EventType = "deploy.completed"
 )
 
 // DefaultInterruptTypes returns the built-in set of event types that force
@@ -89,4 +99,9 @@ type EventStore interface {
 	// cooldown so persistent states (an idle ship) do not re-trigger a
 	// session on every poll after each event is processed.
 	HasSince(ctx context.Context, playerID int, t EventType, ship string, since time.Time) (bool, error)
+	// LatestByType returns the most recently created event of type t for the
+	// player (by CreatedAt, ties broken by ID), or nil if none exists. Used as
+	// a zero-migration baseline: e.g. RecordDeployIfChanged reads the latest
+	// deploy.completed event instead of a dedicated "last deploy" column.
+	LatestByType(ctx context.Context, playerID int, t EventType) (*Event, error)
 }

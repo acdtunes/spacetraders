@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -238,6 +239,17 @@ func run(cfg *config.Config) error {
 	grpc.SetCaptainEventRecorder(captainRecorder)
 	grpc.SetDefaultWorkerEventPublisher(shipEventBus)
 	fmt.Println("Captain event outbox initialized")
+
+	// Deploy-completed signal (sp-ess3): there is no distinct Go merge-deploy
+	// path in this codebase, so a fresh boot running a different commit than
+	// the last recorded deploy.completed IS the honest deploy signal the
+	// crash-loop-resumes-on-deploy doctrine keys on. Best-effort bead id from
+	// HEAD; a failure here is logged and never blocks the daemon boot.
+	if err := watchkeeper.RecordDeployIfChanged(
+		context.Background(), captainEventRepo, cfg.Captain.PlayerID,
+		buildinfo.Get(), watchkeeper.BeadIDFromHEAD(".")); err != nil {
+		fmt.Printf("watchkeeper: deploy.completed check failed (continuing): %v\n", err)
+	}
 
 	routeExecutor := ship.NewRouteExecutor(shipRepo, med, nil, marketScanner, nil, shipEventBus) // nil = use RealClock and default refuel strategy
 

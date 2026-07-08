@@ -28,6 +28,9 @@ func (detectorErrStore) HasUnprocessed(context.Context, int, captain.EventType, 
 func (detectorErrStore) HasSince(context.Context, int, captain.EventType, string, time.Time) (bool, error) {
 	return false, errors.New("detector store down")
 }
+func (detectorErrStore) LatestByType(context.Context, int, captain.EventType) (*captain.Event, error) {
+	return nil, nil
+}
 
 // D4 (1): a transient detector/DB error must NOT abort the whole tick. The old
 // `return false, fmt.Errorf("detectors: %w", err)` skipped cadence/interrupt/
