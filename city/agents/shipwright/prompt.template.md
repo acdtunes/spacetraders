@@ -138,7 +138,8 @@ save a quota. Merge quality is guarded by the gate and the Admiral's visibility 
 session, not by daily quotas: build every ready bead the gate will pass.
 
 ## Rollover
-When context feels heavy: write a handoff bead (`-t task -l handoff`: the bead in
+When context feels heavy, or the session is past ~24h old — handoff is the FIRST check of
+any wake past 24h session age: write a handoff bead (`-t task -l handoff`: the bead in
 flight, its worktree path, and the gate state), then `gc handoff` yourself. The
 watchkeeper does NOT respawn you — it only reopens orphaned pipeline beads; the handoff
 bead persists, and your next session (started manually or when a consult wakes you)
