@@ -17,6 +17,7 @@ type refreshStubShipRepo struct {
 	syncedShip      *navigation.Ship
 	syncCalledCount int
 	findCalledCount int
+	savedShips      []*navigation.Ship
 }
 
 func (s *refreshStubShipRepo) SyncShipFromAPI(_ context.Context, _ string, _ shared.PlayerID) (*navigation.Ship, error) {
@@ -27,6 +28,42 @@ func (s *refreshStubShipRepo) SyncShipFromAPI(_ context.Context, _ string, _ sha
 func (s *refreshStubShipRepo) FindBySymbol(_ context.Context, _ string, _ shared.PlayerID) (*navigation.Ship, error) {
 	s.findCalledCount++
 	return nil, nil
+}
+
+// Save captures the freed hull so reconciliation tests can assert on the
+// persisted, released aggregate.
+func (s *refreshStubShipRepo) Save(_ context.Context, ship *navigation.Ship) error {
+	s.savedShips = append(s.savedShips, ship)
+	return nil
+}
+
+// stubContainerStatusReader reports a fixed container status so the handler's
+// orphaned-claim predicate can be exercised for each owner state.
+type stubContainerStatusReader struct {
+	status         string
+	found          bool
+	err            error
+	callCount      int
+	askedContainer string
+}
+
+func (r *stubContainerStatusReader) ContainerStatus(_ context.Context, containerID string, _ shared.PlayerID) (string, bool, error) {
+	r.callCount++
+	r.askedContainer = containerID
+	return r.status, r.found, r.err
+}
+
+// newAssignedRefreshTestShip builds a cargo-laden ship already claimed by a
+// container, mirroring TORWIND-3's deadlocked state (18 units aboard, claimed by
+// a trade-route container) in sp-vjwb.
+func newAssignedRefreshTestShip(t *testing.T, symbol, containerID string) *navigation.Ship {
+	t.Helper()
+	location, _ := shared.NewWaypoint("X1-AU21-K82", 0, 0)
+	ship := newRefreshTestShip(t, symbol, location, 18)
+	if err := ship.AssignToContainer(containerID, shared.NewRealClock()); err != nil {
+		t.Fatalf("AssignToContainer: %v", err)
+	}
+	return ship
 }
 
 func newRefreshTestShip(t *testing.T, symbol string, location *shared.Waypoint, cargoUnits int) *navigation.Ship {
@@ -76,7 +113,7 @@ func TestRefreshShip_ForcesWriteThroughAndReturnsServerState(t *testing.T) {
 
 	repo := &refreshStubShipRepo{syncedShip: serverTrue}
 
-	handler := NewRefreshShipHandler(repo, nil)
+	handler := NewRefreshShipHandler(repo, nil, nil, nil)
 
 	pid := 1
 	resp, err := handler.Handle(context.Background(), &RefreshShipQuery{
@@ -99,5 +136,118 @@ func TestRefreshShip_ForcesWriteThroughAndReturnsServerState(t *testing.T) {
 	}
 	if refreshResp.Ship.CargoUnits() != 0 {
 		t.Fatalf("expected reconciled cargo of 0 units, got %d", refreshResp.Ship.CargoUnits())
+	}
+}
+
+// dispatchRefresh runs the handler and returns the refreshed ship, failing the
+// test on any error or unexpected response type.
+func dispatchRefresh(t *testing.T, handler *RefreshShipHandler, shipSymbol string) *navigation.Ship {
+	t.Helper()
+	pid := 1
+	resp, err := handler.Handle(context.Background(), &RefreshShipQuery{
+		ShipSymbol: shipSymbol,
+		PlayerID:   &pid,
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	refreshResp, ok := resp.(*RefreshShipResponse)
+	if !ok {
+		t.Fatalf("unexpected response type: %T", resp)
+	}
+	return refreshResp.Ship
+}
+
+// The trade-route CLI runner died after persisting a claim, then its PENDING
+// container row was reaped — the ships row references a container that no longer
+// exists. Refresh must recognise the dangling reference as orphaned and free the
+// hull (sp-vjwb).
+func TestRefreshShip_ClearsClaimWhenOwningContainerIsGone(t *testing.T) {
+	ship := newAssignedRefreshTestShip(t, "TORWIND-3", "trade-route-TORWIND-3-78dd6806")
+	repo := &refreshStubShipRepo{syncedShip: ship}
+	reader := &stubContainerStatusReader{found: false} // container row does not exist
+
+	handler := NewRefreshShipHandler(repo, nil, reader, nil)
+
+	refreshed := dispatchRefresh(t, handler, "TORWIND-3")
+
+	if reader.callCount != 1 {
+		t.Fatalf("expected the owning container to be checked once, got %d", reader.callCount)
+	}
+	if reader.askedContainer != "trade-route-TORWIND-3-78dd6806" {
+		t.Fatalf("expected the ship's claimed container to be checked, got %q", reader.askedContainer)
+	}
+	if len(repo.savedShips) != 1 {
+		t.Fatalf("expected the freed hull to be persisted exactly once, got %d Save calls", len(repo.savedShips))
+	}
+	if refreshed.IsAssigned() {
+		t.Fatalf("expected the claim cleared, but ship is still assigned to %q", refreshed.ContainerID())
+	}
+}
+
+// The classic sp-vjwb deadlock: the ships row still references the trade-route
+// container, and that container row survives but is PENDING — never adopted by
+// the daemon, invisible to restart recovery, a dead CLI-runner artifact. Refresh
+// must treat PENDING-with-claim as orphaned and free the hull.
+func TestRefreshShip_ClearsClaimWhenOwningContainerIsPending(t *testing.T) {
+	ship := newAssignedRefreshTestShip(t, "TORWIND-3", "trade-route-TORWIND-3-78dd6806")
+	repo := &refreshStubShipRepo{syncedShip: ship}
+	reader := &stubContainerStatusReader{status: "PENDING", found: true}
+
+	handler := NewRefreshShipHandler(repo, nil, reader, nil)
+
+	refreshed := dispatchRefresh(t, handler, "TORWIND-3")
+
+	if len(repo.savedShips) != 1 {
+		t.Fatalf("expected the freed hull to be persisted exactly once, got %d Save calls", len(repo.savedShips))
+	}
+	if refreshed.IsAssigned() {
+		t.Fatalf("expected the PENDING-owned claim cleared, but ship is still assigned to %q", refreshed.ContainerID())
+	}
+}
+
+// Safety: a RUNNING container is a live daemon worker actively using the ship.
+// Refresh must NOT clear its claim — doing so would rip the hull out from under
+// an active worker mid-operation.
+func TestRefreshShip_KeepsClaimWhenOwningContainerIsRunning(t *testing.T) {
+	ship := newAssignedRefreshTestShip(t, "TORWIND-5", "gas_siphon_worker-TORWIND-5")
+	repo := &refreshStubShipRepo{syncedShip: ship}
+	reader := &stubContainerStatusReader{status: "RUNNING", found: true}
+
+	handler := NewRefreshShipHandler(repo, nil, reader, nil)
+
+	refreshed := dispatchRefresh(t, handler, "TORWIND-5")
+
+	if len(repo.savedShips) != 0 {
+		t.Fatalf("a live RUNNING worker's ship must never be released, got %d Save calls", len(repo.savedShips))
+	}
+	if !refreshed.IsAssigned() {
+		t.Fatalf("expected the live claim preserved, but ship was released")
+	}
+	if refreshed.ContainerID() != "gas_siphon_worker-TORWIND-5" {
+		t.Fatalf("expected the ship to keep its container claim, got %q", refreshed.ContainerID())
+	}
+}
+
+// An idle, unassigned ship has no claim to reconcile: refresh must not even look
+// up a container, and must never write the ship back.
+func TestRefreshShip_IdleShipUnaffectedByReconciliation(t *testing.T) {
+	location, _ := shared.NewWaypoint("X1-AU21-K82", 0, 0)
+	idle := newRefreshTestShip(t, "TORWIND-1", location, 0) // not assigned
+	repo := &refreshStubShipRepo{syncedShip: idle}
+	reader := &stubContainerStatusReader{status: "RUNNING", found: true}
+
+	handler := NewRefreshShipHandler(repo, nil, reader, nil)
+
+	refreshed := dispatchRefresh(t, handler, "TORWIND-1")
+
+	if reader.callCount != 0 {
+		t.Fatalf("an unassigned ship must not trigger a container-status lookup, got %d", reader.callCount)
+	}
+	if len(repo.savedShips) != 0 {
+		t.Fatalf("an unassigned ship must not be written back, got %d Save calls", len(repo.savedShips))
+	}
+	if refreshed.IsAssigned() {
+		t.Fatalf("expected the ship to remain unassigned")
 	}
 }

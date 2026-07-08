@@ -298,7 +298,10 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to register GetShip handler: %w", err)
 	}
 
-	refreshShipHandler := shipQuery.NewRefreshShipHandler(shipRepo, playerRepo)
+	// containerRepo satisfies ContainerStatusReader so refresh can reconcile a
+	// stale claim left by a dead trade-route CLI runner (sp-vjwb); nil clock =
+	// RealClock.
+	refreshShipHandler := shipQuery.NewRefreshShipHandler(shipRepo, playerRepo, containerRepo, nil)
 	if err := mediator.RegisterHandler[*shipQuery.RefreshShipQuery](med, refreshShipHandler); err != nil {
 		return fmt.Errorf("failed to register RefreshShip handler: %w", err)
 	}

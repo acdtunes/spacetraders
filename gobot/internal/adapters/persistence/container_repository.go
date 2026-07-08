@@ -3,12 +3,14 @@ package persistence
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
 	"gorm.io/gorm"
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
 const (
@@ -132,6 +134,31 @@ func (r *ContainerRepositoryGORM) Get(
 	}
 
 	return &model, nil
+}
+
+// ContainerStatus returns the lifecycle status of a container and whether the
+// container row exists. It backs the ship-refresh stale-claim reconciler
+// (internal/application/ship/queries.ContainerStatusReader): found=false lets the
+// reconciler treat a ship claim whose container row is gone as orphaned, while a
+// live PENDING/RUNNING status lets it distinguish a dead CLI-runner artifact from
+// an active daemon worker.
+func (r *ContainerRepositoryGORM) ContainerStatus(
+	ctx context.Context,
+	containerID string,
+	playerID shared.PlayerID,
+) (string, bool, error) {
+	var model ContainerModel
+	err := r.db.WithContext(ctx).
+		Select("status").
+		Where("id = ? AND player_id = ?", containerID, playerID.Value()).
+		First(&model).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("failed to read container status: %w", err)
+	}
+	return model.Status, true, nil
 }
 
 // ListByStatus lists all containers with a specific status
