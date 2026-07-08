@@ -124,6 +124,11 @@ type ShipModel struct {
 	ReleasedAt       *time.Time      `gorm:"column:released_at"`
 	ReleaseReason    string          `gorm:"column:release_reason"`
 
+	// Assignment owner (sp-i1ku): distinguishes a coordinator container claim
+	// from a captain reservation. "container" (default) or "captain".
+	AssignmentOwner  string `gorm:"column:assignment_owner;default:'container'"`
+	AssignmentReason string `gorm:"column:assignment_reason"`
+
 	// Sync metadata
 	SyncedAt time.Time `gorm:"column:synced_at;autoCreateTime"`
 	Version  int       `gorm:"column:version;default:1"`

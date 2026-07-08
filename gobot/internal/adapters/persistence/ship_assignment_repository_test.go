@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 	"gorm.io/gorm"
 )
@@ -107,4 +108,42 @@ func TestReleaseAllActiveScopesToPlayer(t *testing.T) {
 	var other persistence.ShipModel
 	require.NoError(t, db.Where("ship_symbol = ? AND player_id = ?", "SHIP-9", otherPlayer.ID).First(&other).Error)
 	require.Equal(t, "active", other.AssignmentStatus, "other player's assignment must NOT be touched")
+}
+
+// TestReleaseAllActiveExcludesCaptainReservations is a regression test for
+// sp-i1ku: a captain reservation is persisted as an assignment row with
+// assignment_status="active" (the same status a live coordinator claim uses),
+// so an owner-blind bulk release would silently flip a captain-reserved hull
+// back to idle. This proves ReleaseAllActive releases a zombie container claim
+// but leaves a captain reservation untouched.
+func TestReleaseAllActiveExcludesCaptainReservations(t *testing.T) {
+	repo, playerID, db := setupShipAssignmentRepo(t)
+	ctx := context.Background()
+
+	containerID := "CTR-1"
+	require.NoError(t, db.Create(&persistence.ShipModel{
+		ShipSymbol: "SHIP-CONTAINER", PlayerID: playerID, Role: "HAULER",
+		ContainerID: &containerID, AssignmentStatus: "active", SyncedAt: time.Now(),
+		AssignmentOwner: string(navigation.AssignmentOwnerContainer),
+	}).Error)
+	require.NoError(t, db.Create(&persistence.ShipModel{
+		ShipSymbol: "SHIP-RESERVED", PlayerID: playerID, Role: "HAULER",
+		AssignmentStatus: "active", SyncedAt: time.Now(),
+		AssignmentOwner:  string(navigation.AssignmentOwnerCaptain),
+		AssignmentReason: "manual gate-supply errand",
+	}).Error)
+
+	count, err := repo.ReleaseAllActive(ctx, playerID, "daemon_restart")
+	require.NoError(t, err)
+	require.Equal(t, 1, count, "should only release the container-claimed ship, not the captain reservation")
+
+	var containerShip persistence.ShipModel
+	require.NoError(t, db.Where("ship_symbol = ?", "SHIP-CONTAINER").First(&containerShip).Error)
+	require.Equal(t, "idle", containerShip.AssignmentStatus, "zombie container claim should be released to idle")
+
+	var reservedShip persistence.ShipModel
+	require.NoError(t, db.Where("ship_symbol = ?", "SHIP-RESERVED").First(&reservedShip).Error)
+	require.Equal(t, "active", reservedShip.AssignmentStatus, "captain reservation must survive a daemon restart")
+	require.Equal(t, string(navigation.AssignmentOwnerCaptain), reservedShip.AssignmentOwner, "captain ownership must be untouched")
+	require.Equal(t, "manual gate-supply errand", reservedShip.AssignmentReason, "reservation reason must be untouched")
 }

@@ -66,6 +66,18 @@ func newAssignedRefreshTestShip(t *testing.T, symbol, containerID string) *navig
 	return ship
 }
 
+// newCaptainReservedRefreshTestShip builds a ship reserved by the captain
+// directly (sp-i1ku) rather than claimed by any container.
+func newCaptainReservedRefreshTestShip(t *testing.T, symbol, reason string) *navigation.Ship {
+	t.Helper()
+	location, _ := shared.NewWaypoint("X1-AU21-K82", 0, 0)
+	ship := newRefreshTestShip(t, symbol, location, 0)
+	if err := ship.ReserveByCaptain(reason, shared.NewRealClock()); err != nil {
+		t.Fatalf("ReserveByCaptain: %v", err)
+	}
+	return ship
+}
+
 func newRefreshTestShip(t *testing.T, symbol string, location *shared.Waypoint, cargoUnits int) *navigation.Ship {
 	t.Helper()
 	fuel, err := shared.NewFuel(0, 0)
@@ -249,5 +261,35 @@ func TestRefreshShip_IdleShipUnaffectedByReconciliation(t *testing.T) {
 	}
 	if refreshed.IsAssigned() {
 		t.Fatalf("expected the ship to remain unassigned")
+	}
+}
+
+// This is the subtle safety-relevant case sp-i1ku exists to protect: a captain
+// reservation has no container_id (it was never a container claim), so an
+// unguarded reconciliation pass would ask the container reader about an empty
+// ID, get back "not found", and treat that as orphan evidence exactly like the
+// dead-CLI-runner case in TestRefreshShip_ClearsClaimWhenOwningContainerIsGone
+// — reaping a reservation the captain is actively relying on. Reconciliation
+// must recognise a captain reservation and never even perform the lookup.
+func TestRefreshShip_KeepsCaptainReservationEvenWhenContainerLookupWouldOrphanIt(t *testing.T) {
+	ship := newCaptainReservedRefreshTestShip(t, "TORWIND-7", "manual gate-supply errand")
+	repo := &refreshStubShipRepo{syncedShip: ship}
+	reader := &stubContainerStatusReader{found: false} // would read as orphaned if ever asked
+
+	handler := NewRefreshShipHandler(repo, nil, reader, nil)
+
+	refreshed := dispatchRefresh(t, handler, "TORWIND-7")
+
+	if reader.callCount != 0 {
+		t.Fatalf("a captain reservation must never trigger a container-status lookup, got %d", reader.callCount)
+	}
+	if len(repo.savedShips) != 0 {
+		t.Fatalf("a captain reservation must survive reconciliation untouched, got %d Save calls", len(repo.savedShips))
+	}
+	if !refreshed.IsReservedByCaptain() {
+		t.Fatalf("expected the captain reservation to remain intact across refresh")
+	}
+	if refreshed.CaptainReservationReason() != "manual gate-supply errand" {
+		t.Fatalf("expected reservation reason preserved, got %q", refreshed.CaptainReservationReason())
 	}
 }

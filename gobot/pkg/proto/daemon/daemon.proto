@@ -61,6 +61,14 @@ service DaemonService {
   // RefreshShip forces a resync of a ship from the API, overwriting the cache
   rpc RefreshShip(RefreshShipRequest) returns (RefreshShipResponse);
 
+  // ReserveShip reserves a ship for the captain's direct manual use, hiding
+  // it from every coordinator's assignment discovery (sp-i1ku)
+  rpc ReserveShip(ReserveShipRequest) returns (ReserveShipResponse);
+
+  // ReleaseShip clears a captain reservation, returning the ship to idle so
+  // normal coordinator discovery can claim it again (sp-i1ku)
+  rpc ReleaseShip(ReleaseShipRequest) returns (ReleaseShipResponse);
+
   // ListWaypoints lists the waypoints of a system from the daemon's waypoint cache
   rpc ListWaypoints(ListWaypointsRequest) returns (ListWaypointsResponse);
 
@@ -411,6 +419,34 @@ message RefreshShipRequest {
 
 message RefreshShipResponse {
   ShipDetail ship = 1;
+}
+
+// ReserveShipRequest reserves a ship for the captain's direct manual use
+message ReserveShipRequest {
+  string ship_symbol = 1;
+  optional string reason = 2;
+  optional int32 player_id = 3;
+  optional string agent_symbol = 4;
+}
+
+message ReserveShipResponse {
+  string ship_symbol = 1;
+  string reason = 2;
+  // warning is non-empty if reserving this ship left zero other idle ships
+  // sharing its role. Advisory only — the reservation already succeeded.
+  string warning = 3;
+}
+
+// ReleaseShipRequest clears a captain reservation on a ship
+message ReleaseShipRequest {
+  string ship_symbol = 1;
+  optional string reason = 2;
+  optional int32 player_id = 3;
+  optional string agent_symbol = 4;
+}
+
+message ReleaseShipResponse {
+  string ship_symbol = 1;
 }
 
 // ListWaypointsRequest lists the waypoints of a system from the waypoint cache

@@ -116,6 +116,17 @@ func (h *RefreshShipHandler) reconcileStaleClaim(ctx context.Context, ship *navi
 		return nil
 	}
 
+	// sp-i1ku: a captain reservation is an active assignment with no
+	// container_id — it was never a container claim. Without this guard it
+	// would fall straight into the lookup below, ask the container reader
+	// about an empty ID, get back "not found", and get reaped by
+	// isClaimOrphaned exactly like a dead CLI-runner's claim. A captain
+	// reservation has no container to go stale, so it is excluded before the
+	// lookup ever happens, not just from the orphan verdict.
+	if ship.IsReservedByCaptain() {
+		return nil
+	}
+
 	status, found, err := h.containerReader.ContainerStatus(ctx, ship.ContainerID(), playerID)
 	if err != nil {
 		// Can't determine the owner's state — conservatively keep the claim. The

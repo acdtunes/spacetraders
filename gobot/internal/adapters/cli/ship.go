@@ -17,6 +17,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/player"
 	"github.com/andrescamacho/spacetraders-go/internal/application/setup"
 	shipCargo "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/cargo"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
@@ -46,6 +47,8 @@ Examples:
 	cmd.AddCommand(newShipListCommand())
 	cmd.AddCommand(newShipInfoCommand())
 	cmd.AddCommand(newShipRefreshCommand())
+	cmd.AddCommand(newShipReserveCommand())
+	cmd.AddCommand(newShipReleaseCommand())
 	cmd.AddCommand(newShipNavigateCommand())
 	cmd.AddCommand(newShipDockCommand())
 	cmd.AddCommand(newShipOrbitCommand())
@@ -127,7 +130,19 @@ func buildShipRows(ships []*pb.ShipInfo, infos map[string]persistence.ShipAssign
 			if info.Role != "" {
 				row.Role = info.Role
 			}
-			if info.ContainerID != "" {
+			switch {
+			case info.AssignmentOwner == string(navigation.AssignmentOwnerCaptain):
+				// sp-i1ku: a captain reservation has no ContainerID (it was
+				// never a container claim), so without this branch it would
+				// fall through to "-" and look identical to a genuinely idle,
+				// unassigned ship. Show the reservation itself, plus the
+				// reason when the captain gave one.
+				if info.AssignmentReason != "" {
+					row.Assignment = fmt.Sprintf("captain (%s)", info.AssignmentReason)
+				} else {
+					row.Assignment = "captain"
+				}
+			case info.ContainerID != "":
 				row.Assignment = info.ContainerID
 			}
 			if !info.SyncedAt.IsZero() {
@@ -431,6 +446,141 @@ Examples:
 	}
 
 	cmd.Flags().StringVar(&shipSymbol, "ship", "", "Ship symbol (required)")
+
+	return cmd
+}
+
+// newShipReserveCommand creates the ship reserve subcommand
+func newShipReserveCommand() *cobra.Command {
+	var (
+		shipSymbol string
+		reason     string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "reserve",
+		Short: "Reserve a ship for the captain's direct manual use",
+		Long: `Reserve a ship for the captain's own direct, manual use, hiding it from
+every coordinator's assignment discovery (mfg, contracts, scouting, trade
+routes, etc.).
+
+A captain reservation is persisted as an assignment row, so it survives
+daemon restarts and is excluded from the stale-claim reconciliation pass —
+no coordinator can claim a reserved hull out from under you, and refreshing
+the ship's cache will never release the reservation on your behalf. Use
+'ship release' when you're done with it.
+
+If the reserved hull was the last idle ship of its role, a warning is
+printed — the reservation still succeeds; the warning is advisory only.
+
+Examples:
+  spacetraders ship reserve --ship ENDURANCE-1 --reason "manual gate-supply errand"
+  spacetraders ship reserve --ship ENDURANCE-1 --agent ENDURANCE`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if shipSymbol == "" {
+				return fmt.Errorf("--ship flag is required")
+			}
+
+			client, err := connectDaemon()
+			if err != nil {
+				return err
+			}
+			defer client.Close()
+
+			playerIdent, err := resolvePlayerIdentifier()
+			if err != nil {
+				return err
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			playerID, agentSymbol := playerPointers(playerIdent)
+
+			var reasonPtr *string
+			if reason != "" {
+				reasonPtr = &reason
+			}
+
+			response, err := client.ReserveShip(ctx, shipSymbol, reasonPtr, playerID, agentSymbol)
+			if err != nil {
+				return fmt.Errorf("failed to reserve ship: %w", err)
+			}
+
+			fmt.Printf("✓ %s reserved for captain use\n", response.ShipSymbol)
+			if response.Reason != "" {
+				fmt.Printf("  Reason: %s\n", response.Reason)
+			}
+			if response.Warning != "" {
+				fmt.Printf("  Warning: %s\n", response.Warning)
+			}
+
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&shipSymbol, "ship", "", "Ship symbol (required)")
+	cmd.Flags().StringVar(&reason, "reason", "", "Free-text reason, shown in 'ship list' (optional)")
+
+	return cmd
+}
+
+// newShipReleaseCommand creates the ship release subcommand
+func newShipReleaseCommand() *cobra.Command {
+	var (
+		shipSymbol string
+		reason     string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "release",
+		Short: "Clear a captain reservation on a ship",
+		Long: `Clear a captain reservation, returning the ship to idle so normal
+coordinator discovery (mfg, contracts, scouting, trade routes, etc.) can
+claim it again.
+
+Examples:
+  spacetraders ship release --ship ENDURANCE-1
+  spacetraders ship release --ship ENDURANCE-1 --reason "errand complete"`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if shipSymbol == "" {
+				return fmt.Errorf("--ship flag is required")
+			}
+
+			client, err := connectDaemon()
+			if err != nil {
+				return err
+			}
+			defer client.Close()
+
+			playerIdent, err := resolvePlayerIdentifier()
+			if err != nil {
+				return err
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			playerID, agentSymbol := playerPointers(playerIdent)
+
+			var reasonPtr *string
+			if reason != "" {
+				reasonPtr = &reason
+			}
+
+			response, err := client.ReleaseShip(ctx, shipSymbol, reasonPtr, playerID, agentSymbol)
+			if err != nil {
+				return fmt.Errorf("failed to release ship: %w", err)
+			}
+
+			fmt.Printf("✓ %s reservation released — available for coordinator discovery again\n", response.ShipSymbol)
+
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&shipSymbol, "ship", "", "Ship symbol (required)")
+	cmd.Flags().StringVar(&reason, "reason", "", "Free-text release reason (optional)")
 
 	return cmd
 }

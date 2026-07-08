@@ -91,6 +91,19 @@ type ShipRepository interface {
 	// ship will not cause race conditions.
 	ClaimShip(ctx context.Context, shipSymbol string, containerID string, playerID shared.PlayerID) error
 
+	// ReserveForCaptain atomically reserves an idle ship for the captain's direct,
+	// manual use, hiding it from coordinator discovery (sp-i1ku). Uses the same
+	// row-level locking as ClaimShip so a concurrent coordinator claim can never
+	// be silently overwritten by a captain reservation, or vice versa. Returns
+	// ShipAlreadyAssignedError if a container already holds the claim.
+	ReserveForCaptain(ctx context.Context, shipSymbol string, reason string, playerID shared.PlayerID) error
+
+	// ReleaseCaptainReservation atomically clears a captain reservation, returning
+	// the ship to idle so normal coordinator discovery can claim it again
+	// (sp-i1ku). Returns ShipNotReservedError if the ship is not currently
+	// reserved by the captain.
+	ReleaseCaptainReservation(ctx context.Context, shipSymbol string, reason string, playerID shared.PlayerID) error
+
 	// Sync methods (API -> Database)
 	SyncAllFromAPI(ctx context.Context, playerID shared.PlayerID) (int, error)
 	SyncShipFromAPI(ctx context.Context, symbol string, playerID shared.PlayerID) (*Ship, error)

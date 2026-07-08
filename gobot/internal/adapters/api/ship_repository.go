@@ -608,12 +608,26 @@ func (r *ShipRepository) modelToAssignment(model *persistence.ShipModel) *naviga
 		assignedAt = *model.AssignedAt
 	}
 
+	// Default to "container" for rows written before sp-i1ku's migration
+	// backfilled this column.
+	owner := navigation.AssignmentOwner(model.AssignmentOwner)
+	if owner == "" {
+		owner = navigation.AssignmentOwnerContainer
+	}
+
+	var reservationReason *string
+	if model.AssignmentReason != "" {
+		reservationReason = &model.AssignmentReason
+	}
+
 	return navigation.ReconstructAssignment(
 		containerID,
 		navigation.AssignmentStatus(model.AssignmentStatus),
 		assignedAt,
 		model.ReleasedAt,
 		&model.ReleaseReason,
+		owner,
+		reservationReason,
 	)
 }
 
@@ -686,6 +700,7 @@ func (r *ShipRepository) shipToModel(ship *navigation.Ship) persistence.ShipMode
 	model.CooldownExpiration = ship.CooldownExpiration()
 
 	// Assignment
+	model.AssignmentOwner = string(navigation.AssignmentOwnerContainer)
 	if ship.Assignment() != nil {
 		assignment := ship.Assignment()
 		model.AssignmentStatus = string(assignment.Status())
@@ -706,6 +721,15 @@ func (r *ShipRepository) shipToModel(ship *navigation.Ship) persistence.ShipMode
 
 		if assignment.ReleaseReason() != nil {
 			model.ReleaseReason = *assignment.ReleaseReason()
+		}
+
+		// sp-i1ku: persist who holds the assignment (container vs captain) and
+		// the captain's free-text reservation reason, if any.
+		if assignment.Owner() != "" {
+			model.AssignmentOwner = string(assignment.Owner())
+		}
+		if assignment.ReservationReason() != nil {
+			model.AssignmentReason = *assignment.ReservationReason()
 		}
 	}
 
@@ -848,7 +872,13 @@ func (r *ShipRepository) CountByContainerPrefix(ctx context.Context, prefix stri
 }
 
 // ReleaseAllActive releases all active ship assignments for the given player (bulk operation)
-// Used during daemon startup to clean up zombie assignments from previous runs
+// Used during daemon startup to clean up zombie assignments from previous runs.
+//
+// Captain reservations (assignment_owner="captain") are deliberately excluded:
+// they use the same assignment_status="active" as a live coordinator claim, but
+// a reservation's whole purpose (sp-i1ku) is to survive daemon restarts, so an
+// owner-blind release here would silently un-reserve a captain-held hull on
+// every restart.
 func (r *ShipRepository) ReleaseAllActive(ctx context.Context, playerID shared.PlayerID, reason string) (int, error) {
 	if r.db == nil {
 		return 0, fmt.Errorf("database not configured")
@@ -859,6 +889,7 @@ func (r *ShipRepository) ReleaseAllActive(ctx context.Context, playerID shared.P
 		Model(&persistence.ShipModel{}).
 		Where("player_id = ?", playerID.Value()).
 		Where("assignment_status = ?", "active").
+		Where("assignment_owner IS NULL OR assignment_owner != ?", string(navigation.AssignmentOwnerCaptain)).
 		Updates(map[string]interface{}{
 			"assignment_status": "idle",
 			"container_id":      nil,
@@ -895,6 +926,15 @@ func (r *ShipRepository) ClaimShip(ctx context.Context, shipSymbol string, conta
 			return fmt.Errorf("failed to lock ship: %w", err)
 		}
 
+		// sp-i1ku: a captain reservation has no container_id (it was never a
+		// container claim), so it would otherwise fall through both of the
+		// container-comparison guards below and get silently overwritten by
+		// the unconditional assign-to-container update. Reject it explicitly,
+		// before either guard runs.
+		if model.AssignmentStatus == "active" && model.AssignmentOwner == string(navigation.AssignmentOwnerCaptain) {
+			return shared.NewShipReservedByCaptainError(shipSymbol, model.AssignmentReason)
+		}
+
 		// Check if already assigned to another container
 		if model.AssignmentStatus == "active" && model.ContainerID != nil && *model.ContainerID != containerID {
 			return shared.NewShipAlreadyAssignedError(shipSymbol, *model.ContainerID)
@@ -913,10 +953,131 @@ func (r *ShipRepository) ClaimShip(ctx context.Context, shipSymbol string, conta
 			"assigned_at":       now,
 			"released_at":       nil,
 			"release_reason":    "",
+			"assignment_owner":  string(navigation.AssignmentOwnerContainer),
+			"assignment_reason": "",
 		}).Error
 
 		if err != nil {
 			return fmt.Errorf("failed to assign ship: %w", err)
+		}
+
+		// Invalidate cache since assignment changed
+		r.shipListCache.Delete(playerID.Value())
+
+		return nil
+	})
+}
+
+// ReserveForCaptain atomically reserves an idle ship for the captain's direct,
+// manual use, using the same row-level locking as ClaimShip so a concurrent
+// coordinator claim can never be silently overwritten by a captain reservation,
+// or vice versa (sp-i1ku). This is the exact claim-race class the bead exists to
+// kill, applied to the write path: a plain FindBySymbol + Save read-modify-write
+// would have a TOCTOU window where a coordinator's ClaimShip could commit between
+// the read and the write, and the reservation's Save (a full-row upsert) would
+// silently clobber it. Returns ShipAlreadyAssignedError if a container already
+// holds the claim.
+func (r *ShipRepository) ReserveForCaptain(ctx context.Context, shipSymbol string, reason string, playerID shared.PlayerID) error {
+	if r.db == nil {
+		return fmt.Errorf("database not configured")
+	}
+
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var model persistence.ShipModel
+
+		// Lock the row with SELECT FOR UPDATE to prevent race conditions
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("ship_symbol = ? AND player_id = ?", shipSymbol, playerID.Value()).
+			First(&model).Error
+
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("ship %s not found for player %d", shipSymbol, playerID.Value())
+		}
+		if err != nil {
+			return fmt.Errorf("failed to lock ship: %w", err)
+		}
+
+		// Already reserved by the captain - reject rather than silently update the
+		// reason. Mirrors Ship.ReserveByCaptain's domain rule: change the reason via
+		// release + reserve, so `ship reserve`'s CLI output always means "this just
+		// took effect," never a possible no-op.
+		if model.AssignmentStatus == "active" && model.AssignmentOwner == string(navigation.AssignmentOwnerCaptain) {
+			return fmt.Errorf("ship %s is already reserved by the captain", shipSymbol)
+		}
+
+		// Held by a container - reject. The captain must let the coordinator
+		// release it first, never silently steal an active claim out from under a
+		// running worker.
+		if model.AssignmentStatus == "active" && model.ContainerID != nil {
+			return shared.NewShipAlreadyAssignedError(shipSymbol, *model.ContainerID)
+		}
+
+		// Reserve for the captain
+		now := r.clock.Now()
+		err = tx.Model(&model).Updates(map[string]interface{}{
+			"container_id":      nil,
+			"assignment_status": "active",
+			"assigned_at":       now,
+			"released_at":       nil,
+			"release_reason":    "",
+			"assignment_owner":  string(navigation.AssignmentOwnerCaptain),
+			"assignment_reason": reason,
+		}).Error
+
+		if err != nil {
+			return fmt.Errorf("failed to reserve ship: %w", err)
+		}
+
+		// Invalidate cache since assignment changed
+		r.shipListCache.Delete(playerID.Value())
+
+		return nil
+	})
+}
+
+// ReleaseCaptainReservation atomically clears a captain reservation, returning
+// the ship to idle so normal coordinator discovery can claim it again. Uses the
+// same row-level locking as ClaimShip/ReserveForCaptain (sp-i1ku).
+// Returns ShipNotReservedError if the ship is not currently reserved by the
+// captain — release is specifically for captain reservations, not a generic
+// "clear any assignment" escape hatch (that already exists as ReleaseAllActive /
+// ForceRelease for the reconciliation path).
+func (r *ShipRepository) ReleaseCaptainReservation(ctx context.Context, shipSymbol string, reason string, playerID shared.PlayerID) error {
+	if r.db == nil {
+		return fmt.Errorf("database not configured")
+	}
+
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var model persistence.ShipModel
+
+		// Lock the row with SELECT FOR UPDATE to prevent race conditions
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("ship_symbol = ? AND player_id = ?", shipSymbol, playerID.Value()).
+			First(&model).Error
+
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("ship %s not found for player %d", shipSymbol, playerID.Value())
+		}
+		if err != nil {
+			return fmt.Errorf("failed to lock ship: %w", err)
+		}
+
+		if model.AssignmentStatus != "active" || model.AssignmentOwner != string(navigation.AssignmentOwnerCaptain) {
+			return shared.NewShipNotReservedError(shipSymbol)
+		}
+
+		now := r.clock.Now()
+		err = tx.Model(&model).Updates(map[string]interface{}{
+			"assignment_status": "idle",
+			"container_id":      nil,
+			"released_at":       now,
+			"release_reason":    reason,
+			"assignment_owner":  string(navigation.AssignmentOwnerContainer),
+			"assignment_reason": "",
+		}).Error
+
+		if err != nil {
+			return fmt.Errorf("failed to release captain reservation: %w", err)
 		}
 
 		// Invalidate cache since assignment changed

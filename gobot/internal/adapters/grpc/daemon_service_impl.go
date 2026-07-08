@@ -533,6 +533,48 @@ func (s *daemonServiceImpl) RefreshShip(ctx context.Context, req *pb.RefreshShip
 	}, nil
 }
 
+func (s *daemonServiceImpl) ReserveShip(ctx context.Context, req *pb.ReserveShipRequest) (*pb.ReserveShipResponse, error) {
+	var playerID *int
+	if req.PlayerId != nil {
+		pid := FromProtobufPlayerID(*req.PlayerId)
+		playerID = &pid
+	}
+
+	agentSymbol := stringValue(req.AgentSymbol)
+	reason := stringValue(req.Reason)
+
+	shipSymbol, respReason, warning, err := s.daemon.ReserveShip(ctx, req.ShipSymbol, reason, playerID, agentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to reserve ship: %w", err)
+	}
+
+	return &pb.ReserveShipResponse{
+		ShipSymbol: shipSymbol,
+		Reason:     respReason,
+		Warning:    warning,
+	}, nil
+}
+
+func (s *daemonServiceImpl) ReleaseShip(ctx context.Context, req *pb.ReleaseShipRequest) (*pb.ReleaseShipResponse, error) {
+	var playerID *int
+	if req.PlayerId != nil {
+		pid := FromProtobufPlayerID(*req.PlayerId)
+		playerID = &pid
+	}
+
+	agentSymbol := stringValue(req.AgentSymbol)
+	reason := stringValue(req.Reason)
+
+	shipSymbol, err := s.daemon.ReleaseShip(ctx, req.ShipSymbol, reason, playerID, agentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to release ship: %w", err)
+	}
+
+	return &pb.ReleaseShipResponse{
+		ShipSymbol: shipSymbol,
+	}, nil
+}
+
 func (s *daemonServiceImpl) ListWaypoints(ctx context.Context, req *pb.ListWaypointsRequest) (*pb.ListWaypointsResponse, error) {
 	var playerID *int
 	if req.PlayerId != nil {

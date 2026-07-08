@@ -678,6 +678,42 @@ func (c *DaemonClient) RefreshShip(ctx context.Context, shipSymbol string, playe
 	return resp, nil
 }
 
+// ReserveShip reserves a ship for the captain's direct manual use, hiding it
+// from every coordinator's assignment discovery (sp-i1ku)
+func (c *DaemonClient) ReserveShip(ctx context.Context, shipSymbol string, reason *string, playerID *int32, agentSymbol *string) (*pb.ReserveShipResponse, error) {
+	req := &pb.ReserveShipRequest{
+		ShipSymbol:  shipSymbol,
+		Reason:      reason,
+		PlayerId:    playerID,
+		AgentSymbol: agentSymbol,
+	}
+
+	resp, err := c.client.ReserveShip(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf(grpcCallFailed, err)
+	}
+
+	return resp, nil
+}
+
+// ReleaseShip clears a captain reservation, returning the ship to idle so
+// normal coordinator discovery can claim it again (sp-i1ku)
+func (c *DaemonClient) ReleaseShip(ctx context.Context, shipSymbol string, reason *string, playerID *int32, agentSymbol *string) (*pb.ReleaseShipResponse, error) {
+	req := &pb.ReleaseShipRequest{
+		ShipSymbol:  shipSymbol,
+		Reason:      reason,
+		PlayerId:    playerID,
+		AgentSymbol: agentSymbol,
+	}
+
+	resp, err := c.client.ReleaseShip(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf(grpcCallFailed, err)
+	}
+
+	return resp, nil
+}
+
 // ListWaypoints lists the waypoints of a system from the daemon's waypoint cache
 func (c *DaemonClient) ListWaypoints(ctx context.Context, systemSymbol string, trait, waypointType *string, playerID *int32, agentSymbol *string) (*pb.ListWaypointsResponse, error) {
 	req := &pb.ListWaypointsRequest{

@@ -13,6 +13,20 @@ const (
 	AssignmentStatusIdle AssignmentStatus = "idle"
 )
 
+// AssignmentOwner distinguishes who holds an active assignment: a coordinator
+// container, or the captain directly (sp-i1ku).
+type AssignmentOwner string
+
+const (
+	// AssignmentOwnerContainer indicates a coordinator container holds the
+	// assignment. This is the default for all pre-sp-i1ku assignments.
+	AssignmentOwnerContainer AssignmentOwner = "container"
+
+	// AssignmentOwnerCaptain indicates the captain holds the assignment directly
+	// for manual, hands-on use — invisible to coordinator discovery (sp-i1ku).
+	AssignmentOwnerCaptain AssignmentOwner = "captain"
+)
+
 // ShipAssignment is a value object representing a ship's current container assignment.
 // It is owned by the Ship aggregate and managed through Ship methods.
 //
@@ -21,11 +35,13 @@ const (
 // - No identity - compared by attributes
 // - Lifecycle bound to Ship aggregate
 type ShipAssignment struct {
-	containerID   string
-	status        AssignmentStatus
-	assignedAt    time.Time
-	releasedAt    *time.Time
-	releaseReason *string
+	containerID       string
+	status            AssignmentStatus
+	assignedAt        time.Time
+	releasedAt        *time.Time
+	releaseReason     *string
+	owner             AssignmentOwner
+	reservationReason *string
 }
 
 // NewActiveAssignment creates a new active assignment to a container
@@ -34,6 +50,7 @@ func NewActiveAssignment(containerID string, assignedAt time.Time) *ShipAssignme
 		containerID: containerID,
 		status:      AssignmentStatusActive,
 		assignedAt:  assignedAt,
+		owner:       AssignmentOwnerContainer,
 	}
 }
 
@@ -41,6 +58,24 @@ func NewActiveAssignment(containerID string, assignedAt time.Time) *ShipAssignme
 func NewIdleAssignment() *ShipAssignment {
 	return &ShipAssignment{
 		status: AssignmentStatusIdle,
+	}
+}
+
+// NewCaptainReservation creates a new active assignment held by the captain
+// directly rather than a container. It intentionally leaves containerID empty
+// — a captain reservation is never a container claim, so it is invisible to
+// every container-keyed lookup by construction (sp-i1ku). An empty reason is
+// stored as no reason (nil), not an empty string.
+func NewCaptainReservation(reason string, reservedAt time.Time) *ShipAssignment {
+	var reasonPtr *string
+	if reason != "" {
+		reasonPtr = &reason
+	}
+	return &ShipAssignment{
+		status:            AssignmentStatusActive,
+		owner:             AssignmentOwnerCaptain,
+		assignedAt:        reservedAt,
+		reservationReason: reasonPtr,
 	}
 }
 
@@ -52,23 +87,29 @@ func ReconstructAssignment(
 	assignedAt time.Time,
 	releasedAt *time.Time,
 	releaseReason *string,
+	owner AssignmentOwner,
+	reservationReason *string,
 ) *ShipAssignment {
 	return &ShipAssignment{
-		containerID:   containerID,
-		status:        status,
-		assignedAt:    assignedAt,
-		releasedAt:    releasedAt,
-		releaseReason: releaseReason,
+		containerID:       containerID,
+		status:            status,
+		assignedAt:        assignedAt,
+		releasedAt:        releasedAt,
+		releaseReason:     releaseReason,
+		owner:             owner,
+		reservationReason: reservationReason,
 	}
 }
 
 // Getters - value objects expose their data through getters
 
-func (a *ShipAssignment) ContainerID() string      { return a.containerID }
-func (a *ShipAssignment) Status() AssignmentStatus { return a.status }
-func (a *ShipAssignment) AssignedAt() time.Time    { return a.assignedAt }
-func (a *ShipAssignment) ReleasedAt() *time.Time   { return a.releasedAt }
-func (a *ShipAssignment) ReleaseReason() *string   { return a.releaseReason }
+func (a *ShipAssignment) ContainerID() string        { return a.containerID }
+func (a *ShipAssignment) Status() AssignmentStatus   { return a.status }
+func (a *ShipAssignment) AssignedAt() time.Time      { return a.assignedAt }
+func (a *ShipAssignment) ReleasedAt() *time.Time     { return a.releasedAt }
+func (a *ShipAssignment) ReleaseReason() *string     { return a.releaseReason }
+func (a *ShipAssignment) Owner() AssignmentOwner     { return a.owner }
+func (a *ShipAssignment) ReservationReason() *string { return a.reservationReason }
 
 // IsActive returns true if the ship is currently assigned to a container
 func (a *ShipAssignment) IsActive() bool {
@@ -78,6 +119,12 @@ func (a *ShipAssignment) IsActive() bool {
 // IsIdle returns true if the ship is not assigned to any container
 func (a *ShipAssignment) IsIdle() bool {
 	return a.status == AssignmentStatusIdle
+}
+
+// IsCaptainReservation returns true if this is an active assignment held by
+// the captain directly, rather than any coordinator container (sp-i1ku).
+func (a *ShipAssignment) IsCaptainReservation() bool {
+	return a.status == AssignmentStatusActive && a.owner == AssignmentOwnerCaptain
 }
 
 // Released returns a new ShipAssignment in idle state with release metadata.
@@ -93,11 +140,15 @@ func (a *ShipAssignment) Released(reason string, releasedAt time.Time) *ShipAssi
 }
 
 // TransferredTo returns a new ShipAssignment for a different container.
-// Preserves active status but updates container and assignment time.
+// Preserves active status but updates container and assignment time. Not
+// reachable for captain reservations: ReserveByCaptain already refuses to
+// reserve a ship that is assigned to anything, so no container can ever
+// transfer-claim a captain-reserved ship (sp-i1ku).
 func (a *ShipAssignment) TransferredTo(newContainerID string, transferredAt time.Time) *ShipAssignment {
 	return &ShipAssignment{
 		containerID: newContainerID,
 		status:      AssignmentStatusActive,
 		assignedAt:  transferredAt,
+		owner:       AssignmentOwnerContainer,
 	}
 }

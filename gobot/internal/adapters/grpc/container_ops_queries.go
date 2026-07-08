@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	shipAssignmentCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/assignment"
 	shipQuery "github.com/andrescamacho/spacetraders-go/internal/application/ship/queries"
 	shipyardQuery "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/queries"
 	systemQuery "github.com/andrescamacho/spacetraders-go/internal/application/system/queries"
@@ -148,6 +149,54 @@ func (s *DaemonServer) RefreshShip(ctx context.Context, shipSymbol string, playe
 	}
 
 	return shipDetail, nil
+}
+
+// ReserveShip reserves a ship for the captain's direct manual use, hiding it
+// from every coordinator's assignment discovery (sp-i1ku). Returns the
+// ship's own reservation reason (defaulted server-side if the caller gave
+// none) plus an advisory warning when the reserved hull was idle-critical.
+func (s *DaemonServer) ReserveShip(ctx context.Context, shipSymbol, reason string, playerID *int, agentSymbol string) (string, string, string, error) {
+	cmd := &shipAssignmentCmd.ReserveShipCommand{
+		ShipSymbol:  shipSymbol,
+		Reason:      reason,
+		PlayerID:    playerID,
+		AgentSymbol: agentSymbol,
+	}
+
+	response, err := s.mediator.Send(ctx, cmd)
+	if err != nil {
+		return "", "", "", fmt.Errorf("failed to reserve ship: %w", err)
+	}
+
+	reserveResp, ok := response.(*shipAssignmentCmd.ReserveShipResponse)
+	if !ok {
+		return "", "", "", fmt.Errorf("unexpected response type")
+	}
+
+	return reserveResp.ShipSymbol, reserveResp.Reason, reserveResp.Warning, nil
+}
+
+// ReleaseShip clears a captain reservation, returning the ship to idle so
+// normal coordinator discovery can claim it again (sp-i1ku).
+func (s *DaemonServer) ReleaseShip(ctx context.Context, shipSymbol, reason string, playerID *int, agentSymbol string) (string, error) {
+	cmd := &shipAssignmentCmd.ReleaseShipCommand{
+		ShipSymbol:  shipSymbol,
+		Reason:      reason,
+		PlayerID:    playerID,
+		AgentSymbol: agentSymbol,
+	}
+
+	response, err := s.mediator.Send(ctx, cmd)
+	if err != nil {
+		return "", fmt.Errorf("failed to release ship: %w", err)
+	}
+
+	releaseResp, ok := response.(*shipAssignmentCmd.ReleaseShipResponse)
+	if !ok {
+		return "", fmt.Errorf("unexpected response type")
+	}
+
+	return releaseResp.ShipSymbol, nil
 }
 
 // waypointToDetail converts a domain waypoint into its proto representation.

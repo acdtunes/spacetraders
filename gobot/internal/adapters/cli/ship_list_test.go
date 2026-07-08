@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	pb "github.com/andrescamacho/spacetraders-go/pkg/proto/daemon"
 )
 
@@ -65,6 +66,53 @@ func TestBuildShipRowsMergesRoleAssignmentAndCacheAge(t *testing.T) {
 	require.Equal(t, "-", rows[1].Role)
 	require.Equal(t, "-", rows[1].Assignment)
 	require.Equal(t, "-", rows[1].CacheAge)
+}
+
+// A captain reservation has no ContainerID (sp-i1ku: it was never a container
+// claim), so without dedicated rendering it would fall back to "-" and be
+// indistinguishable from a genuinely idle, unassigned ship. The ASSIGNMENT
+// column must show the reservation itself, plus the reason when one was given.
+func TestBuildShipRowsShowsCaptainReservationWithReason(t *testing.T) {
+	now := time.Now()
+	ships := []*pb.ShipInfo{
+		{Symbol: "SHIP-1", Location: "X1-A1", NavStatus: "IN_ORBIT"},
+	}
+	infos := map[string]persistence.ShipAssignmentInfo{
+		"SHIP-1": {
+			ShipSymbol:       "SHIP-1",
+			Role:             "HAULER",
+			AssignmentOwner:  string(navigation.AssignmentOwnerCaptain),
+			AssignmentReason: "manual gate-supply errand",
+			SyncedAt:         now.Add(-90 * time.Second),
+		},
+	}
+
+	rows := buildShipRows(ships, infos, now)
+
+	require.Len(t, rows, 1)
+	require.Equal(t, "captain (manual gate-supply errand)", rows[0].Assignment)
+}
+
+// A reservation taken with no explicit reason must still render as a
+// reservation, not "-" — omitting the reason must never make it look idle.
+func TestBuildShipRowsShowsCaptainReservationWithoutReason(t *testing.T) {
+	now := time.Now()
+	ships := []*pb.ShipInfo{
+		{Symbol: "SHIP-1", Location: "X1-A1", NavStatus: "IN_ORBIT"},
+	}
+	infos := map[string]persistence.ShipAssignmentInfo{
+		"SHIP-1": {
+			ShipSymbol:      "SHIP-1",
+			Role:            "HAULER",
+			AssignmentOwner: string(navigation.AssignmentOwnerCaptain),
+			SyncedAt:        now.Add(-90 * time.Second),
+		},
+	}
+
+	rows := buildShipRows(ships, infos, now)
+
+	require.Len(t, rows, 1)
+	require.Equal(t, "captain", rows[0].Assignment)
 }
 
 func TestRunShipListPropagatesListerError(t *testing.T) {

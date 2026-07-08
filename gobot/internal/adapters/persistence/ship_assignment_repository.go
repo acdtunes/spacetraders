@@ -9,6 +9,7 @@ import (
 	"gorm.io/gorm/clause"
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 )
 
 // ShipAssignmentRepositoryGORM implements ship assignment persistence using GORM
@@ -223,6 +224,12 @@ func (r *ShipAssignmentRepositoryGORM) ReleaseByContainer(
 // ReleaseAllActive releases all active ship assignments for the given player
 // Used during daemon startup to clean up zombie assignments from previous runs
 // Returns the number of assignments released
+//
+// Captain reservations (assignment_owner="captain") are deliberately excluded:
+// they use the same assignment_status="active" as a live coordinator claim, but
+// a reservation's whole purpose (sp-i1ku) is to survive daemon restarts, so an
+// owner-blind release here would silently un-reserve a captain-held hull on
+// every restart.
 func (r *ShipAssignmentRepositoryGORM) ReleaseAllActive(
 	ctx context.Context,
 	playerID int,
@@ -233,6 +240,7 @@ func (r *ShipAssignmentRepositoryGORM) ReleaseAllActive(
 	result := r.db.WithContext(ctx).
 		Model(&ShipModel{}).
 		Where("player_id = ? AND assignment_status = ?", playerID, "active").
+		Where("assignment_owner IS NULL OR assignment_owner != ?", string(navigation.AssignmentOwnerCaptain)).
 		Updates(map[string]interface{}{
 			"assignment_status": "idle",
 			"container_id":      nil,
@@ -255,6 +263,17 @@ type ShipAssignmentInfo struct {
 	Role        string
 	ContainerID string // empty when the ship is idle
 	SyncedAt    time.Time
+
+	// AssignmentOwner is "captain" for a captain reservation (sp-i1ku), or
+	// "container"/"" otherwise. ContainerID is always empty for a captain
+	// reservation, so callers must check this field to distinguish "reserved
+	// by the captain" from "genuinely idle" — both would otherwise render
+	// identically as an empty ContainerID.
+	AssignmentOwner string
+	// AssignmentReason is the free-text reason recorded at reserve time
+	// (sp-i1ku). Empty when the ship isn't captain-reserved, or when the
+	// captain gave no reason.
+	AssignmentReason string
 }
 
 // ListActive returns role/assignment/cache-age info for every ship owned by a
@@ -275,10 +294,12 @@ func (r *ShipAssignmentRepositoryGORM) ListActive(
 	infos := make([]ShipAssignmentInfo, 0, len(models))
 	for _, model := range models {
 		infos = append(infos, ShipAssignmentInfo{
-			ShipSymbol:  model.ShipSymbol,
-			Role:        model.Role,
-			ContainerID: derefString(model.ContainerID),
-			SyncedAt:    model.SyncedAt,
+			ShipSymbol:       model.ShipSymbol,
+			Role:             model.Role,
+			ContainerID:      derefString(model.ContainerID),
+			SyncedAt:         model.SyncedAt,
+			AssignmentOwner:  model.AssignmentOwner,
+			AssignmentReason: model.AssignmentReason,
 		})
 	}
 

@@ -30,6 +30,7 @@ import (
 	scoutingCmd "github.com/andrescamacho/spacetraders-go/internal/application/scouting/commands"
 	scoutingQuery "github.com/andrescamacho/spacetraders-go/internal/application/scouting/queries"
 	ship "github.com/andrescamacho/spacetraders-go/internal/application/ship"
+	shipAssignment "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/assignment"
 	shipCargo "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/cargo"
 	shipNav "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
 	shipTactics "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/tactics"
@@ -305,6 +306,19 @@ func run(cfg *config.Config) error {
 	refreshShipHandler := shipQuery.NewRefreshShipHandler(shipRepo, playerRepo, containerRepo, nil)
 	if err := mediator.RegisterHandler[*shipQuery.RefreshShipQuery](med, refreshShipHandler); err != nil {
 		return fmt.Errorf("failed to register RefreshShip handler: %w", err)
+	}
+
+	// Captain-reservation command handlers: reserve/release a hull for the
+	// captain's direct manual use, hiding it from coordinator discovery
+	// (sp-i1ku).
+	reserveShipHandler := shipAssignment.NewReserveShipHandler(shipRepo, playerRepo)
+	if err := mediator.RegisterHandler[*shipAssignment.ReserveShipCommand](med, reserveShipHandler); err != nil {
+		return fmt.Errorf("failed to register ReserveShip handler: %w", err)
+	}
+
+	releaseShipHandler := shipAssignment.NewReleaseShipHandler(shipRepo, playerRepo)
+	if err := mediator.RegisterHandler[*shipAssignment.ReleaseShipCommand](med, releaseShipHandler); err != nil {
+		return fmt.Errorf("failed to register ReleaseShip handler: %w", err)
 	}
 
 	// Waypoint discovery query handlers (graphService implements both the

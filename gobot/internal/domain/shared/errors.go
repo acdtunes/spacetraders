@@ -95,3 +95,39 @@ func NewShipAlreadyAssignedError(shipSymbol, currentContainerID string) *ShipAlr
 		),
 	}
 }
+
+// ShipReservedByCaptainError indicates an attempt to assign a ship to a
+// container was rejected because the captain has reserved it for direct,
+// manual use (sp-i1ku). Reason is the free-text reason given at reserve time
+// (may be empty).
+type ShipReservedByCaptainError struct {
+	*ShipAssignmentError
+	Reason string
+}
+
+func NewShipReservedByCaptainError(shipSymbol, reason string) *ShipReservedByCaptainError {
+	msg := fmt.Sprintf("ship %s is reserved by the captain", shipSymbol)
+	if reason != "" {
+		msg = fmt.Sprintf("%s: %s", msg, reason)
+	}
+	return &ShipReservedByCaptainError{
+		ShipAssignmentError: NewShipAssignmentError(msg, shipSymbol, ""),
+		Reason:              reason,
+	}
+}
+
+// ShipNotReservedError indicates `ship release` was called on a hull that is
+// not currently reserved by the captain (sp-i1ku).
+type ShipNotReservedError struct {
+	*ShipAssignmentError
+}
+
+func NewShipNotReservedError(shipSymbol string) *ShipNotReservedError {
+	return &ShipNotReservedError{
+		ShipAssignmentError: NewShipAssignmentError(
+			fmt.Sprintf("ship %s is not reserved by the captain", shipSymbol),
+			shipSymbol,
+			"",
+		),
+	}
+}
