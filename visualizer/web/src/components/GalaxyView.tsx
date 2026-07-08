@@ -10,6 +10,10 @@ const GalaxyView = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [hoveredSystem, setHoveredSystem] = useState<string | null>(null);
   const stageRef = useRef<Konva.Stage>(null);
+  // Tracks the last system-set (+viewport size) we centered on, so identical
+  // `systems` array references from unrelated re-renders (e.g. the 15s ship
+  // poll re-deriving the array in MapView) don't hard-reset the camera.
+  const centeredKeyRef = useRef<string | null>(null);
 
   const width = window.innerWidth - 256;
   const height = window.innerHeight - 64;
@@ -40,6 +44,13 @@ const GalaxyView = () => {
   // Center view on systems with ships when systems load
   useEffect(() => {
     if (!stageRef.current || systems.length === 0) return;
+
+    // Re-center only when the system SET or the viewport size actually
+    // changes — not on every new `systems` array reference (the ship poll
+    // re-derives that array every ~15s with the same symbols).
+    const key = `${systems.map((s) => s.symbol).sort().join(',')}|${width}x${height}`;
+    if (centeredKeyRef.current === key) return;
+    centeredKeyRef.current = key;
 
     const stage = stageRef.current;
     const systemsWithShips = systems.filter((s) => shipCounts.has(s.symbol));
@@ -146,10 +157,18 @@ const GalaxyView = () => {
                 <Circle
                   x={system.x}
                   y={system.y}
-                  radius={radius + 3}
+                  radius={Math.max(radius + 3, 12)}
                   fill="transparent"
-                  onMouseEnter={() => setHoveredSystem(system.symbol)}
-                  onMouseLeave={() => setHoveredSystem(null)}
+                  onMouseEnter={(e) => {
+                    setHoveredSystem(system.symbol);
+                    const container = e.target.getStage()?.container();
+                    if (container) container.style.cursor = 'pointer';
+                  }}
+                  onMouseLeave={(e) => {
+                    setHoveredSystem(null);
+                    const container = e.target.getStage()?.container();
+                    if (container) container.style.cursor = 'default';
+                  }}
                   onClick={() => {
                     setCurrentSystem(system.symbol);
                     setViewMode('system');
