@@ -20,6 +20,13 @@ import (
 // stop; this is only a safety rail.
 const defaultMaxVisits = 50
 
+// tradeRouteDockRetryLimit bounds how many times h.dock resyncs the ship from the
+// API and re-issues the dock while waiting for the nav-cache race to clear (the
+// arrival event flipping a stale IN_TRANSIT to IN_ORBIT). Bounded so a genuinely
+// undockable ship can never spin forever — it aborts the circuit cleanly with the
+// verbatim cause instead (sp-ynuf, mirroring the goods-factory dock race sp-n7yp).
+const tradeRouteDockRetryLimit = 3
+
 // MarketRefresher live-refreshes one waypoint's market from the API into the cache.
 // The coordinator uses it once, before the first buy, to re-read the source ask live
 // and abort if it has run away from the stale basis the lane was ranked on (hazard b,
@@ -306,7 +313,10 @@ func (h *RunTradeRouteCoordinatorHandler) runCircuit(
 		}
 		if err := h.dock(ctx, ship, playerID); err != nil {
 			response.AbortReason = fmt.Sprintf("dock at source %s failed: %v", lane.SourceWaypoint, err)
-			logger.Log("WARNING", "Dock at source failed - ending circuit", map[string]interface{}{"error": err.Error()})
+			// Put the verbatim cause in the MESSAGE — the container-log renderer drops the
+			// metadata map, so a cause hidden in {"error": ...} never reaches an operator
+			// (sp-ynuf defect 1, the sp-iqyq class). A blind dock failure now names itself.
+			logger.Log("WARNING", fmt.Sprintf("Dock at source %s failed: %v - ending circuit", lane.SourceWaypoint, err), map[string]interface{}{"error": err.Error()})
 			return
 		}
 
@@ -337,7 +347,9 @@ func (h *RunTradeRouteCoordinatorHandler) runCircuit(
 		}
 		if err := h.dock(ctx, ship, playerID); err != nil {
 			response.AbortReason = fmt.Sprintf("dock at destination %s failed (cargo aboard): %v", lane.DestWaypoint, err)
-			logger.Log("WARNING", "Dock at destination failed - ending circuit with cargo aboard", map[string]interface{}{"error": err.Error()})
+			// Verbatim cause in the MESSAGE (not the dropped metadata field) so a blind
+			// dock-at-destination failure names itself — same defect-1 fix as the source leg.
+			logger.Log("WARNING", fmt.Sprintf("Dock at destination %s failed (cargo aboard): %v - ending circuit", lane.DestWaypoint, err), map[string]interface{}{"error": err.Error()})
 			return
 		}
 		sellUnits := trading.VisitTranche(dstGood.TradeVolume(), held)
@@ -511,12 +523,49 @@ func (h *RunTradeRouteCoordinatorHandler) navigate(ctx context.Context, ship *na
 	return err
 }
 
+// dock docks the hull at its current waypoint, surviving the nav-cache race the goods
+// factory hit (sp-n7yp): right after arrival the ship's cached nav_status can still
+// read IN_TRANSIT, so the domain EnsureDocked rejects the dock ("cannot dock while in
+// transit"). Rather than fail — and strand the circuit at zero visits — it reconciles
+// the hull against the live API (SyncShipFromAPI clears the stale IN_TRANSIT once the
+// arrival has actually landed) and retries, bounded by tradeRouteDockRetryLimit so a
+// genuinely-undockable hull can never spin forever.
+//
+// Every attempt is dispatched by SHIP SYMBOL (nil Ship), never the coordinator's
+// cached hull: passing the cached ship makes LoadShip return the stale IN_TRANSIT
+// snapshot and the resync a no-op (the exact subtlety sp-n7yp's dockAndConfirm
+// documents) — by symbol the handler reloads the freshly-synced nav_status each try.
+// A dock that keeps failing returns its cause VERBATIM so the caller aborts the
+// circuit self-diagnosingly instead of swallowing it (sp-ynuf).
 func (h *RunTradeRouteCoordinatorHandler) dock(ctx context.Context, ship *navigation.Ship, playerID int) error {
-	_, err := h.mediator.Send(ctx, &shipTypes.DockShipCommand{
-		Ship:     ship,
-		PlayerID: shared.MustNewPlayerID(playerID),
-	})
-	return err
+	logger := common.LoggerFromContext(ctx)
+	pid := shared.MustNewPlayerID(playerID)
+	shipSymbol := ship.ShipSymbol()
+
+	var lastErr error
+	for attempt := 0; attempt <= tradeRouteDockRetryLimit; attempt++ {
+		_, err := h.mediator.Send(ctx, &shipTypes.DockShipCommand{
+			ShipSymbol: shipSymbol, // nil Ship: force a fresh reload of the true persisted nav_status
+			PlayerID:   pid,
+		})
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if attempt == tradeRouteDockRetryLimit {
+			break
+		}
+		// Most likely the nav-cache race: the arrival event has not yet flipped the
+		// cached IN_TRANSIT to IN_ORBIT. Reconcile against the live API to refresh
+		// nav_status, then retry. Bounded, so a genuine failure still surfaces below.
+		logger.Log("WARNING", fmt.Sprintf("Dock of %s failed (attempt %d/%d): %v - resyncing from API and retrying", shipSymbol, attempt+1, tradeRouteDockRetryLimit+1, err), map[string]interface{}{
+			"ship_symbol": shipSymbol, "attempt": attempt + 1, "error": err.Error(),
+		})
+		if _, serr := h.shipRepo.SyncShipFromAPI(ctx, shipSymbol, pid); serr != nil {
+			return fmt.Errorf("dock of %s failed (%v); resync from API also failed: %w", shipSymbol, err, serr)
+		}
+	}
+	return fmt.Errorf("dock of %s still failing after %d resync retries: %w", shipSymbol, tradeRouteDockRetryLimit, lastErr)
 }
 
 func (h *RunTradeRouteCoordinatorHandler) purchase(ctx context.Context, shipSymbol, good string, units, playerID int) (*shipCargo.PurchaseCargoResponse, error) {
