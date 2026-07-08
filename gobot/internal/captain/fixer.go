@@ -1,8 +1,9 @@
 package watchkeeper
 
 import (
+	"bytes"
+	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -90,11 +91,51 @@ func ProvisionWorktree(dir string) error {
 		if _, err := os.Stat(src); err != nil {
 			continue
 		}
-		if err := exec.Command("cp", "-r", src, filepath.Join(dir, filepath.Dir(sub))+"/").Run(); err != nil {
+		if err := copyMissingOrIdentical(src, filepath.Join(dir, sub)); err != nil {
 			return err
 		}
 	}
 	return wireWorktreeBeads(dir, repoRoot)
+}
+
+// copyMissingOrIdentical recursively copies src's files into dst, but never
+// overwrites a dst file that already exists and differs from its src
+// counterpart.
+//
+// ProvisionWorktree's job is to supply gitignored build artifacts a worktree
+// LACKS — never to revert a tracked file the branch intentionally changed. A
+// worktree that regenerated proto in-branch (e.g. a new daemon RPC field) has
+// a dst that differs from repoRoot's stale copy; unconditionally overwriting
+// it reverted the branch's own regenerated proto back to main's stale
+// version, breaking the build for every proto-changing bead (sp-a3r9 — bit
+// q02m and sp-ezz9). A dst that is missing or byte-identical to src is safe
+// to (re)write, matching the original behavior.
+func copyMissingOrIdentical(src, dst string) error {
+	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		if d.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		srcBytes, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if dstBytes, err := os.ReadFile(target); err == nil && !bytes.Equal(srcBytes, dstBytes) {
+			return nil // worktree has its own regenerated version — never clobber it
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(target, srcBytes, info.Mode().Perm())
+	})
 }
 
 // wireWorktreeBeads points a worktree's bd (beads) at the main checkout's
