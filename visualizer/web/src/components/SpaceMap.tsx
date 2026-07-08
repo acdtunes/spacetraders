@@ -79,7 +79,7 @@ const SHIP_ASSET_VARIANTS: Record<string, string[]> = {
 const DEFAULT_WAYPOINT_ASSET = 'waypoint-planet-rocky-1.png';
 const DEFAULT_SHIP_ASSET = 'ship-command-frigate-2.png';
 const DEFAULT_SHIP_SPRITE_SIZE = 18;
-const BASE_SHIP_SIZE = DEFAULT_SHIP_SPRITE_SIZE;
+const BASE_SHIP_SIZE = DEFAULT_SHIP_SPRITE_SIZE / 10;
 
 const getShipSize = (role: string | undefined): number => {
   if (role === 'EXPLORER') {
