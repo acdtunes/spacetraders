@@ -241,6 +241,67 @@ func TestRefreshShip_KeepsClaimWhenOwningContainerIsRunning(t *testing.T) {
 	}
 }
 
+// Safety regression (sp-9xc0): INTERRUPTED means the container was RUNNING when
+// the daemon stopped and is resurrected by restart recovery — it is a live,
+// recoverable owner, not a terminal one. The terminal-state extension below must
+// not sweep INTERRUPTED in alongside COMPLETED/FAILED/STOPPED.
+func TestRefreshShip_KeepsClaimWhenOwningContainerIsInterrupted(t *testing.T) {
+	ship := newAssignedRefreshTestShip(t, "TORWIND-8", "mfg_coordinator-TORWIND-8")
+	repo := &refreshStubShipRepo{syncedShip: ship}
+	reader := &stubContainerStatusReader{status: "INTERRUPTED", found: true}
+
+	handler := NewRefreshShipHandler(repo, nil, reader, nil)
+
+	refreshed := dispatchRefresh(t, handler, "TORWIND-8")
+
+	if len(repo.savedShips) != 0 {
+		t.Fatalf("a recoverable INTERRUPTED owner's ship must never be released, got %d Save calls", len(repo.savedShips))
+	}
+	if !refreshed.IsAssigned() {
+		t.Fatalf("expected the claim preserved for an INTERRUPTED (recoverable) owner, but ship was released")
+	}
+}
+
+// sp-9xc0: dock-TORWIND-6-e592be41 reached COMPLETED without ever firing its
+// claim release, so ship T6 stayed pinned at F45 with 43 FAB_MATS aboard —
+// forever, since 'container stop' also refuses a container already in a
+// terminal state, leaving no manual escape. A terminal container (COMPLETED,
+// FAILED, or STOPPED) can never resume running, so any claim it still owns is
+// stale by definition, exactly like the GONE and PENDING cases above. Refresh
+// must free the hull for each terminal status.
+func TestRefreshShip_ClearsClaimWhenOwningContainerIsCompleted(t *testing.T) {
+	assertTerminalContainerClaimCleared(t, "COMPLETED")
+}
+
+func TestRefreshShip_ClearsClaimWhenOwningContainerIsFailed(t *testing.T) {
+	assertTerminalContainerClaimCleared(t, "FAILED")
+}
+
+func TestRefreshShip_ClearsClaimWhenOwningContainerIsStopped(t *testing.T) {
+	assertTerminalContainerClaimCleared(t, "STOPPED")
+}
+
+// assertTerminalContainerClaimCleared drives RefreshShip for a ship whose
+// claiming container reports the given terminal status and asserts the claim
+// was released exactly once (sp-9xc0).
+func assertTerminalContainerClaimCleared(t *testing.T, status string) {
+	t.Helper()
+	ship := newAssignedRefreshTestShip(t, "TORWIND-6", "dock-TORWIND-6-e592be41")
+	repo := &refreshStubShipRepo{syncedShip: ship}
+	reader := &stubContainerStatusReader{status: status, found: true}
+
+	handler := NewRefreshShipHandler(repo, nil, reader, nil)
+
+	refreshed := dispatchRefresh(t, handler, "TORWIND-6")
+
+	if len(repo.savedShips) != 1 {
+		t.Fatalf("expected the freed hull to be persisted exactly once for a %s owner, got %d Save calls", status, len(repo.savedShips))
+	}
+	if refreshed.IsAssigned() {
+		t.Fatalf("expected the %s-owned claim cleared, but ship is still assigned to %q", status, refreshed.ContainerID())
+	}
+}
+
 // An idle, unassigned ship has no claim to reconcile: refresh must not even look
 // up a container, and must never write the ship back.
 func TestRefreshShip_IdleShipUnaffectedByReconciliation(t *testing.T) {

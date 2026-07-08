@@ -153,16 +153,34 @@ func (h *RefreshShipHandler) reconcileStaleClaim(ctx context.Context, ship *navi
 // isClaimOrphaned reports whether a ship claim whose owning container has the
 // given (status, found) is a stale artifact that is safe to clear.
 //
-// Orphaned iff the container row is GONE, or the container is PENDING. A PENDING
-// container holding a claim is by definition a dead trade-route CLI-runner
-// artifact: daemon workers persist RUNNING *before* they claim a ship
+// Orphaned iff the container row is GONE, the container is PENDING, or the
+// container has reached a TERMINAL state (COMPLETED/FAILED/STOPPED).
+//
+// A PENDING container holding a claim is by definition a dead trade-route
+// CLI-runner artifact: daemon workers persist RUNNING *before* they claim a ship
 // (ContainerRunner.Start), and restart recovery resurrects only RUNNING /
 // INTERRUPTED containers — so no live or recoverable daemon worker ever owns a
-// claim through a PENDING container. RUNNING / INTERRUPTED are live or
-// recoverable and are never cleared.
+// claim through a PENDING container.
+//
+// A TERMINAL container can never resume running, so any claim it still owns is
+// stale by definition — most often a release that should have fired on
+// completion but didn't (sp-9xc0: dock-TORWIND-6-e592be41 reached COMPLETED
+// without releasing, pinning the ship forever, since 'container stop' also
+// refuses an already-terminal container, leaving no manual escape).
+//
+// RUNNING / INTERRUPTED / STOPPING are live or recoverable — a claim through one
+// of those is never cleared.
 func isClaimOrphaned(status string, found bool) bool {
 	if !found {
 		return true
 	}
-	return status == string(container.ContainerStatusPending)
+	switch status {
+	case string(container.ContainerStatusPending),
+		string(container.ContainerStatusCompleted),
+		string(container.ContainerStatusFailed),
+		string(container.ContainerStatusStopped):
+		return true
+	default:
+		return false
+	}
 }
