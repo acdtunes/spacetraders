@@ -802,6 +802,36 @@ func (c *DaemonClient) ContractFleetCoordinator(
 }
 
 // StartGoodsFactory starts a goods factory for automated production
+// StartTradeRoute launches a single-hull pure-arbitrage circuit as a recovery-safe
+// daemon container (sp-zewt). Replaces the old in-process CLI runner.
+func (c *DaemonClient) StartTradeRoute(
+	ctx context.Context,
+	shipSymbol string,
+	systemSymbol string,
+	playerID int,
+	agentSymbol *string,
+	maxVisits *int32,
+) (*StartTradeRouteResult, error) {
+	resp, err := c.client.StartTradeRoute(ctx, &pb.StartTradeRouteRequest{
+		PlayerId:     int32(playerID),
+		ShipSymbol:   shipSymbol,
+		SystemSymbol: systemSymbol,
+		AgentSymbol:  agentSymbol,
+		MaxVisits:    maxVisits,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &StartTradeRouteResult{
+		ContainerID:  resp.ContainerId,
+		ShipSymbol:   resp.ShipSymbol,
+		SystemSymbol: resp.SystemSymbol,
+		Status:       resp.Status,
+		Message:      resp.Message,
+	}, nil
+}
+
 func (c *DaemonClient) StartGoodsFactory(
 	ctx context.Context,
 	targetGood string,
@@ -891,6 +921,15 @@ type StartGoodsFactoryResult struct {
 	Status     string
 	Message    string
 	NodesTotal int
+}
+
+// StartTradeRouteResult contains the result of starting a trade-route container
+type StartTradeRouteResult struct {
+	ContainerID  string
+	ShipSymbol   string
+	SystemSymbol string
+	Status       string
+	Message      string
 }
 
 // StopGoodsFactoryResult contains the result of stopping a goods factory

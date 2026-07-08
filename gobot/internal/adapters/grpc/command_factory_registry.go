@@ -9,6 +9,7 @@ import (
 	goodsCmd "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/commands"
 	scoutingCmd "github.com/andrescamacho/spacetraders-go/internal/application/scouting/commands"
 	shipyardCmd "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/commands"
+	tradingCmd "github.com/andrescamacho/spacetraders-go/internal/application/trading/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
@@ -159,6 +160,7 @@ func containerSpecList() []ContainerSpec {
 		{CommandType: "goods_factory_coordinator", build: buildGoodsFactoryCoordinatorCommand},
 		{CommandType: "manufacturing_coordinator", build: buildManufacturingCoordinatorCommand},
 		{CommandType: "gas_coordinator", build: buildGasCoordinatorCommand},
+		{CommandType: "trade_route", build: buildTradeRouteCoordinatorCommand},
 		{CommandType: "manufacturing_task_worker", IsWorker: true},
 		{CommandType: "gas_siphon_worker", IsWorker: true},
 		{CommandType: "storage_ship", IsWorker: true},
@@ -259,5 +261,21 @@ func buildGasCoordinatorCommand(cfg *configReader, playerID int, containerID str
 		ContainerID:    cfg.RequiredString("container_id"),
 		Force:          cfg.OptionalBool("force"),
 		DryRun:         cfg.OptionalBool("dry_run"),
+	}
+}
+
+// buildTradeRouteCoordinatorCommand rebuilds the single-hull arbitrage circuit
+// command from a persisted launch config so restart recovery can resume a RUNNING
+// trade_route container (sp-zewt). ContainerID is taken from the recovery-supplied
+// containerID (the persisted row's ID), mirroring contract_workflow, so the operation
+// context and the runner's ship claim stay pinned to the same container across a
+// restart. MaxVisits defaults to 0 (the coordinator's own default-50 safety bound).
+func buildTradeRouteCoordinatorCommand(cfg *configReader, playerID int, containerID string) interface{} {
+	return &tradingCmd.RunTradeRouteCoordinatorCommand{
+		ShipSymbol:   cfg.RequiredString("ship_symbol"),
+		SystemSymbol: cfg.RequiredString("system_symbol"),
+		PlayerID:     playerID,
+		ContainerID:  containerID,
+		MaxVisits:    cfg.OptionalInt("max_visits", 0),
 	}
 }

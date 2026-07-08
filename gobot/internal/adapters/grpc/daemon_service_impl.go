@@ -717,6 +717,41 @@ func (s *daemonServiceImpl) StartGoodsFactory(ctx context.Context, req *pb.Start
 	}, nil
 }
 
+// StartTradeRoute implements the StartTradeRoute RPC: it launches a single-hull
+// pure-arbitrage circuit as a recovery-safe daemon container (sp-zewt), delegating to
+// DaemonServer.StartTradeRoute which enforces the idle-gap discipline and owns the
+// container lifecycle.
+func (s *daemonServiceImpl) StartTradeRoute(ctx context.Context, req *pb.StartTradeRouteRequest) (*pb.StartTradeRouteResponse, error) {
+	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve player: %w", err)
+	}
+	if req.ShipSymbol == "" {
+		return nil, fmt.Errorf("ship_symbol is required")
+	}
+	if req.SystemSymbol == "" {
+		return nil, fmt.Errorf("system_symbol is required")
+	}
+
+	maxVisits := 0
+	if req.MaxVisits != nil {
+		maxVisits = int(*req.MaxVisits)
+	}
+
+	result, err := s.daemon.StartTradeRoute(ctx, req.ShipSymbol, req.SystemSymbol, maxVisits, playerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to start trade-route: %w", err)
+	}
+
+	return &pb.StartTradeRouteResponse{
+		ContainerId:  result.ContainerID,
+		ShipSymbol:   result.ShipSymbol,
+		SystemSymbol: result.SystemSymbol,
+		Status:       "RUNNING",
+		Message:      fmt.Sprintf("Trade-route circuit started for %s in %s", req.ShipSymbol, req.SystemSymbol),
+	}, nil
+}
+
 // StopGoodsFactory implements the StopGoodsFactory RPC
 func (s *daemonServiceImpl) StopGoodsFactory(ctx context.Context, req *pb.StopGoodsFactoryRequest) (*pb.StopGoodsFactoryResponse, error) {
 	// Resolve player ID

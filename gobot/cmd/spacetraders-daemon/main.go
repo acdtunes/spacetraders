@@ -39,6 +39,7 @@ import (
 	shipyardQuery "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/queries"
 	storageApp "github.com/andrescamacho/spacetraders-go/internal/application/storage"
 	systemQuery "github.com/andrescamacho/spacetraders-go/internal/application/system/queries"
+	tradeRouteCmd "github.com/andrescamacho/spacetraders-go/internal/application/trading/commands"
 	watchkeeper "github.com/andrescamacho/spacetraders-go/internal/captain"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/goods"
@@ -465,6 +466,19 @@ func run(cfg *config.Config) error {
 	)
 	if err := mediator.RegisterHandler[*goodsCmd.RunFactoryCoordinatorCommand](med, factoryCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register GoodsFactoryCoordinator handler: %w", err)
+	}
+
+	// Trade-route coordinator (sp-zewt): a single-hull pure-arbitrage circuit that runs
+	// as a recovery-safe daemon container. Registered in the daemon mediator so its
+	// NavigateRouteCommand legs resolve to the RouteExecutor-backed handler (orbit →
+	// refuel → NavigateDirect → arrival events) instead of the CLI runner's hand-rolled
+	// in-process nav — subsuming the 2sam/sj7p patches. marketScanner drives the live
+	// stale-ask guard (2sam hazard b). DaemonServer.StartTradeRoute launches the container.
+	tradeRouteCoordinatorHandler := tradeRouteCmd.NewRunTradeRouteCoordinatorHandler(
+		med, shipRepo, marketRepo, marketScanner,
+	)
+	if err := mediator.RegisterHandler[*tradeRouteCmd.RunTradeRouteCoordinatorCommand](med, tradeRouteCoordinatorHandler); err != nil {
+		return fmt.Errorf("failed to register TradeRouteCoordinator handler: %w", err)
 	}
 
 	// Gas extraction handlers (depend on daemonClientLocal and storageCoordinator)

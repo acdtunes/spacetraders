@@ -2,7 +2,6 @@ package commands
 
 import (
 	"context"
-	"fmt"
 	"reflect"
 	"sync"
 	"testing"
@@ -10,7 +9,6 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	shipCargo "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/cargo"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
@@ -128,55 +126,14 @@ type trFakeClock struct{}
 func (c *trFakeClock) Now() time.Time        { return time.Now() }
 func (c *trFakeClock) Sleep(d time.Duration) {}
 
-// trFakeContainerRepo models the containers table for the FK check below: Add
-// inserts a row (so a later ship save that points at it passes the constraint),
-// Remove deletes it. It records the order of Adds and Removes so a test can prove
-// the container is inserted before the claim and dropped on release.
-type trFakeContainerRepo struct {
-	mu       sync.Mutex
-	existing map[string]bool
-	added    []string
-	removed  []string
-}
-
-func newTrFakeContainerRepo() *trFakeContainerRepo {
-	return &trFakeContainerRepo{existing: map[string]bool{}}
-}
-
-func (r *trFakeContainerRepo) Add(ctx context.Context, c *container.Container, commandType string) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.existing[c.ID()] = true
-	r.added = append(r.added, c.ID())
-	return nil
-}
-
-func (r *trFakeContainerRepo) Remove(ctx context.Context, containerID string, playerID int) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	delete(r.existing, containerID)
-	r.removed = append(r.removed, containerID)
-	return nil
-}
-
-func (r *trFakeContainerRepo) has(id string) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.existing[id]
-}
-
-// trFakeShipRepo returns one hull and records the container each Save observed, so
-// a test can prove the ship was claimed (container set) then released (""). Its
-// Save enforces the ships.container_id -> containers.id FK the way real Postgres
-// does: a save that points at a container row absent from the shared container
-// repo is rejected with the exact SQLSTATE 23503 the live run hit — the in-memory
-// fakes used to skip this, which is why the bug survived to first exercise (L42).
+// trFakeShipRepo returns the one hull the daemon container runner has already claimed
+// for the circuit. Post sp-zewt the coordinator no longer claims or releases the hull
+// itself (the runner owns that lifecycle via the container's ship_symbol metadata), so
+// this fake only needs to serve the ship on FindBySymbol; Save is a no-op the circuit
+// never calls.
 type trFakeShipRepo struct {
 	navigation.ShipRepository
-	mu              sync.Mutex
-	ship            *navigation.Ship
-	savedContainers []string
-	containers      *trFakeContainerRepo
+	ship *navigation.Ship
 }
 
 func (r *trFakeShipRepo) FindBySymbol(ctx context.Context, symbol string, playerID shared.PlayerID) (*navigation.Ship, error) {
@@ -184,12 +141,6 @@ func (r *trFakeShipRepo) FindBySymbol(ctx context.Context, symbol string, player
 }
 
 func (r *trFakeShipRepo) Save(ctx context.Context, ship *navigation.Ship) error {
-	r.mu.Lock()
-	r.savedContainers = append(r.savedContainers, ship.ContainerID())
-	r.mu.Unlock()
-	if cid := ship.ContainerID(); cid != "" && r.containers != nil && !r.containers.has(cid) {
-		return fmt.Errorf("insert or update on table \"ships\" violates foreign key constraint \"fk_ships_container\" (SQLSTATE 23503)")
-	}
 	return nil
 }
 
@@ -218,11 +169,10 @@ func newTradeHauler(t *testing.T, symbol string) *navigation.Ship {
 }
 
 type trHarness struct {
-	handler       *RunTradeRouteCoordinatorHandler
-	mediator      *trFakeMediator
-	shipRepo      *trFakeShipRepo
-	containerRepo *trFakeContainerRepo
-	ship          *navigation.Ship
+	handler  *RunTradeRouteCoordinatorHandler
+	mediator *trFakeMediator
+	shipRepo *trFakeShipRepo
+	ship     *navigation.Ship
 }
 
 func newTradeHarness(t *testing.T, ship *navigation.Ship) *trHarness {
@@ -230,10 +180,9 @@ func newTradeHarness(t *testing.T, ship *navigation.Ship) *trHarness {
 	fixture := &trFixture{}
 	mediator := &trFakeMediator{fixture: fixture}
 	marketRepo := &trFakeMarketRepo{fixture: fixture}
-	containerRepo := newTrFakeContainerRepo()
-	shipRepo := &trFakeShipRepo{ship: ship, containers: containerRepo}
-	handler := NewRunTradeRouteCoordinatorHandler(mediator, shipRepo, marketRepo, containerRepo, &trFakeClock{}, nil)
-	return &trHarness{handler: handler, mediator: mediator, shipRepo: shipRepo, containerRepo: containerRepo, ship: ship}
+	shipRepo := &trFakeShipRepo{ship: ship}
+	handler := NewRunTradeRouteCoordinatorHandler(mediator, shipRepo, marketRepo, nil)
+	return &trHarness{handler: handler, mediator: mediator, shipRepo: shipRepo, ship: ship}
 }
 
 // The circuit must fly the top lane in ≤18u tranches, loop while the importer bid
@@ -295,105 +244,20 @@ func TestTradeRouteCoordinator_RunsDisciplinedCircuitUntilMarginDies(t *testing.
 		t.Fatalf("expected net 81000, got %d", coord.NetProfit)
 	}
 
-	// The hull must be claimed (a container set) then released (idle) at the end.
-	if !ship.IsIdle() {
-		t.Fatalf("expected the ship released to idle after the run, still assigned to %q", ship.ContainerID())
-	}
-	if len(h.shipRepo.savedContainers) < 2 {
-		t.Fatalf("expected at least a claim save and a release save, got %v", h.shipRepo.savedContainers)
-	}
-	if h.shipRepo.savedContainers[0] == "" {
-		t.Fatalf("first save must record the claimed container id, got empty")
-	}
-	if last := h.shipRepo.savedContainers[len(h.shipRepo.savedContainers)-1]; last != "" {
-		t.Fatalf("last save must record the release (empty container), got %q", last)
-	}
+	// NOTE: post sp-zewt the hull claim/release is the daemon container runner's job
+	// (createShipAssignments/releaseShipAssignments via the container's ship_symbol
+	// metadata), not this handler's. Release-on-death is covered by the grpc-package
+	// container tests; here we only assert the circuit economics.
 }
 
-// Regression for sp-r3cl. On real Postgres the composite FK fk_ships_container
-// (ships.(container_id, player_id) -> containers.(id, player_id)) rejects a claim
-// that points at a container row that was never inserted. This coordinator is
-// CLI-driven, so — unlike the daemon coordinators, whose row is created by the
-// container runner before ship assignment — nothing else creates its container. It
-// must insert its own container row BEFORE saving the ship claim, and drop that row
-// on release so restart recovery cannot adopt a leftover. The FK-enforcing fake
-// ship repo reproduces the production 23503 the unit fakes previously hid.
-func TestTradeRouteCoordinator_PersistsContainerBeforeClaim_FKSafe(t *testing.T) {
-	ship := newTradeHauler(t, "TORWIND-1")
-	h := newTradeHarness(t, ship)
-
-	_, err := h.handler.Handle(context.Background(), &RunTradeRouteCoordinatorCommand{
-		ShipSymbol:   ship.ShipSymbol(),
-		SystemSymbol: trSystem,
-		PlayerID:     1,
-	})
-	// With the ordering bug (claim saved before its container row exists) the
-	// FK-enforcing ship repo rejects the claim exactly as Postgres does, and the
-	// run errors out. The fix must insert the container first so the claim persists.
-	if err != nil {
-		t.Fatalf("trade-route claim violated the ships->containers FK (container not persisted before claim): %v", err)
-	}
-
-	// The claimed container must have been inserted (not merely skipped). The FK
-	// check above already guarantees it existed at the moment of the claim save;
-	// this pins down that the very row the ship was assigned to is the one created.
-	if len(h.shipRepo.savedContainers) == 0 {
-		t.Fatal("ship was never saved")
-	}
-	claimed := h.shipRepo.savedContainers[0]
-	if claimed == "" {
-		t.Fatal("first ship save recorded no container id — the ship was not claimed")
-	}
-	if len(h.containerRepo.added) == 0 || h.containerRepo.added[0] != claimed {
-		t.Fatalf("container %q was not inserted before the ship claim (added=%v)", claimed, h.containerRepo.added)
-	}
-
-	// Recovery-safe release: the trade-route container row must be removed on
-	// release. It is only ever PENDING (never RUNNING), so era-scoped restart
-	// recovery (sp-njpu) — which resurrects only RUNNING/INTERRUPTED containers —
-	// skips it even if the process dies before this Remove; removing it as well
-	// keeps orphan rows from accumulating and closes the adoption (hkfb) window.
-	if !containsStr(h.containerRepo.removed, claimed) {
-		t.Fatalf("trade-route container %q was not removed on release (removed=%v)", claimed, h.containerRepo.removed)
-	}
-	if h.containerRepo.has(claimed) {
-		t.Fatalf("trade-route container %q still present after release — restart recovery could adopt it", claimed)
-	}
-}
-
-func containsStr(xs []string, want string) bool {
-	for _, x := range xs {
-		if x == want {
-			return true
-		}
-	}
-	return false
-}
-
-// A ship already assigned to another coordinator must be refused, not stolen, and
-// no trades may fire.
-func TestTradeRouteCoordinator_RefusesNonIdleShip(t *testing.T) {
-	ship := newTradeHauler(t, "TRADER-3")
-	if err := ship.AssignToContainer("goods_factory-OTHER", shared.NewRealClock()); err != nil {
-		t.Fatalf("pre-assign: %v", err)
-	}
-	h := newTradeHarness(t, ship)
-
-	_, err := h.handler.Handle(context.Background(), &RunTradeRouteCoordinatorCommand{
-		ShipSymbol:   ship.ShipSymbol(),
-		SystemSymbol: trSystem,
-		PlayerID:     1,
-	})
-	if err == nil {
-		t.Fatal("expected an error claiming a non-idle ship")
-	}
-	if len(h.mediator.purchases) != 0 || len(h.mediator.sells) != 0 {
-		t.Fatalf("a refused claim must not trade: %d buys / %d sells", len(h.mediator.purchases), len(h.mediator.sells))
-	}
-	if ship.ContainerID() != "goods_factory-OTHER" {
-		t.Fatalf("trade-route clobbered another coordinator's assignment: now %q", ship.ContainerID())
-	}
-}
+// NOTE (sp-zewt): two behaviors that used to live here moved out of this handler:
+//   - The FK-safe self-claim ordering (sp-r3cl) is retired — the daemon container
+//     runner now persists the container row and assigns the hull before this handler
+//     runs, so there is no CLI-side self-claim to order against the FK.
+//   - Refusing a non-idle hull (the idle-gap discipline) moved to the container-start
+//     boundary, DaemonServer.StartTradeRoute, which checks IsIdle before persisting
+//     the container. See the grpc-package tests TestStartTradeRoute_* and
+//     TestRecoveryRestartsTradeRouteContainer.
 
 // trEmptyMarketRepo has no markets, so no lane can be ranked.
 type trEmptyMarketRepo struct {
@@ -404,15 +268,14 @@ func (r *trEmptyMarketRepo) FindAllMarketsInSystem(ctx context.Context, systemSy
 	return nil, nil
 }
 
-// With no profitable lane in cache the coordinator must complete cleanly, trade
-// nothing, and still release the hull it claimed.
-func TestTradeRouteCoordinator_NoLane_ReleasesShipWithoutTrading(t *testing.T) {
+// With no profitable lane in cache the coordinator must complete cleanly and trade
+// nothing (the hull is released by the container runner on completion, not here).
+func TestTradeRouteCoordinator_NoLane_CompletesWithoutTrading(t *testing.T) {
 	ship := newTradeHauler(t, "TRADER-4")
 	fixture := &trFixture{}
 	mediator := &trFakeMediator{fixture: fixture}
-	containerRepo := newTrFakeContainerRepo()
-	shipRepo := &trFakeShipRepo{ship: ship, containers: containerRepo}
-	handler := NewRunTradeRouteCoordinatorHandler(mediator, shipRepo, &trEmptyMarketRepo{}, containerRepo, &trFakeClock{}, nil)
+	shipRepo := &trFakeShipRepo{ship: ship}
+	handler := NewRunTradeRouteCoordinatorHandler(mediator, shipRepo, &trEmptyMarketRepo{}, nil)
 
 	resp, err := handler.Handle(context.Background(), &RunTradeRouteCoordinatorCommand{
 		ShipSymbol:   ship.ShipSymbol(),
@@ -428,8 +291,5 @@ func TestTradeRouteCoordinator_NoLane_ReleasesShipWithoutTrading(t *testing.T) {
 	}
 	if len(mediator.purchases) != 0 || len(mediator.sells) != 0 {
 		t.Fatal("no lane must mean no trades")
-	}
-	if !ship.IsIdle() {
-		t.Fatalf("ship must be released even when no lane is found, still on %q", ship.ContainerID())
 	}
 }

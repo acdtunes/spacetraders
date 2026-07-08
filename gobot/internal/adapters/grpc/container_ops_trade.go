@@ -1,0 +1,116 @@
+package grpc
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	"github.com/andrescamacho/spacetraders-go/pkg/utils"
+)
+
+// TradeRouteOperationResult reports the container started for a single-hull arbitrage
+// circuit.
+type TradeRouteOperationResult struct {
+	ContainerID  string
+	ShipSymbol   string
+	SystemSymbol string
+}
+
+// StartTradeRoute launches a single-hull pure-arbitrage circuit as a recovery-safe
+// daemon container (sp-zewt), replacing the CLI in-process runner that produced five
+// live-only bugs (r3cl/sh6w/2sam/sj7p + the vjwb orphan-on-death). Templated on the
+// gas/factory coordinator start path:
+//
+//   - Idle-gap discipline: it refuses any hull that is not genuinely idle BEFORE
+//     persisting anything, so a refused start has no side effects and never steals a
+//     hull the daemon is actively flying (the old CLI claimShip refusal, moved to the
+//     start boundary). The ContainerRunner's AssignToContainer is the secondary guard
+//     for the narrow check→assign race.
+//   - Single-writer + release-on-death: the ContainerRunner claims the hull through the
+//     normal lifecycle (createShipAssignments via the ship_symbol metadata) and
+//     force-releases it on every terminal path (completion, crash, cancel), so the hull
+//     is never stranded — retiring vjwb.
+//   - Recovery-safe: the row is created RUNNING (runner.Start transitions PENDING→RUNNING),
+//     and "trade_route" is registered in the command factory, so a daemon restart rebuilds
+//     the circuit from its launch config or cleanly releases the hull. The CLI runner's
+//     PENDING row was invisible to recovery, which is exactly what stranded vjwb.
+//
+// Ship movement inside the circuit goes through the daemon mediator's NavigateRouteCommand
+// handler, which is backed by the RouteExecutor (orbit → refuel → NavigateDirect →
+// arrival events) — so the container never spawns a re-claiming child navigate, and the
+// four CLI nav patches (2sam self-collision, sj7p orbit-before-nav) are subsumed for free.
+func (s *DaemonServer) StartTradeRoute(
+	ctx context.Context,
+	shipSymbol string,
+	systemSymbol string,
+	maxVisits int,
+	playerID int,
+) (*TradeRouteOperationResult, error) {
+	if shipSymbol == "" {
+		return nil, fmt.Errorf("ship symbol is required")
+	}
+	if systemSymbol == "" {
+		return nil, fmt.Errorf("system symbol is required")
+	}
+
+	// Idle-gap discipline: only fly a genuinely idle hull, never steal one mid-task.
+	ship, err := s.shipRepo.FindBySymbol(ctx, shipSymbol, shared.MustNewPlayerID(playerID))
+	if err != nil {
+		return nil, fmt.Errorf("failed to load ship %s: %w", shipSymbol, err)
+	}
+	if ship == nil {
+		return nil, fmt.Errorf("ship %s not found", shipSymbol)
+	}
+	if !ship.IsIdle() {
+		return nil, fmt.Errorf("ship %s is not idle (assigned to %q) - trade-route only takes idle-gap hulls", shipSymbol, ship.ContainerID())
+	}
+
+	containerID := utils.GenerateContainerID("trade-route", shipSymbol)
+	config := map[string]interface{}{
+		"ship_symbol":   shipSymbol,
+		"system_symbol": systemSymbol,
+		"container_id":  containerID,
+		"max_visits":    maxVisits,
+	}
+
+	// Build the circuit command through the same factory recovery uses, so the launch
+	// config and the recovery rebuild can never drift.
+	cmd, err := s.buildCommandForType("trade_route", config, playerID, containerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create trade-route command: %w", err)
+	}
+
+	// A trade-route runs ONE circuit to margin-death and completes (the runner then
+	// releases the hull): iterations=1, not the daemon coordinators' infinite loop.
+	containerEntity := container.NewContainer(
+		containerID,
+		container.ContainerTypeTrading,
+		playerID,
+		1,   // single circuit run
+		nil, // no parent — this is a top-level coordinator, recovered independently
+		config,
+		nil, // default RealClock
+	)
+
+	if err := s.containerRepo.Add(ctx, containerEntity, "trade_route"); err != nil {
+		return nil, fmt.Errorf("failed to persist trade-route container: %w", err)
+	}
+
+	// The runner claims the hull (ship_symbol metadata), flips the row to RUNNING, and
+	// owns release-on-death.
+	runner := NewContainerRunner(containerEntity, s.mediator, cmd, s.logRepo, s.containerRepo, s.shipRepo, s.clock)
+	s.registerContainer(containerID, runner)
+
+	go func() {
+		if err := runner.Start(); err != nil {
+			fmt.Printf("Trade-route container %s failed: %v\n", containerID, err)
+		}
+	}()
+
+	return &TradeRouteOperationResult{
+		ContainerID:  containerID,
+		ShipSymbol:   shipSymbol,
+		SystemSymbol: systemSymbol,
+	}, nil
+}

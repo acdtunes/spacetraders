@@ -12,32 +12,29 @@ import (
 	shipCargo "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/cargo"
 	navCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
-	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// sp-2sam ROOT CAUSE reproduction — the ship-assignment SELF-COLLISION.
+// sp-2sam lasting guard — a failed navigate leg must be SELF-DIAGNOSING.
 //
-// Live daemon.log: "[navigate-TORWIND-8-c4b5509c] ERROR: failed to assign ship
-// TORWIND-8: ship TORWIND-8 is already assigned to container trade-route-…". The
-// coordinator claims the hull into its trade-route container, then its navigate leg
-// went through the daemon's NavigateShip RPC, which spawns a CHILD navigate container
-// that RE-CLAIMS the same hull. The domain refuses the double-claim (Ship.
-// AssignToContainer errors when already assigned), the navigate leg fails, and the
-// circuit exits at the first navigate with zero visits — regardless of hull position
-// or --max-visits. The fix routes each leg through NavigateDirect (assigns no
-// container), so there is nothing to collide with.
+// The original bug: the CLI runner claimed the hull into its trade-route container,
+// then its navigate leg went through the daemon's NavigateShip RPC, which spawned a
+// CHILD navigate container that RE-CLAIMED the same hull; the domain refused the
+// double-claim and the circuit flew zero, with only a bare "Visits: 0" to explain it.
+// sp-zewt eliminates that self-collision class entirely: as a daemon container the
+// circuit's NavigateRouteCommand resolves to the RouteExecutor-backed handler, which
+// moves the already-claimed hull in-process (orbit → NavigateDirect → arrival events)
+// and never spawns a re-claiming child. So the collision can no longer happen.
 //
-// This fake reproduces the collision at the coordinator boundary: its navigate branch
-// spawns a re-claiming navigate container exactly as the daemon RPC did. With
-// reclaim=true the run flies zero (RED, the captain's symptom); with reclaim=false
-// (legs routed under the parent claim, no re-assignment) it flies (GREEN).
+// What still matters — and what these tests pin — is the self-diagnosing abort: if any
+// navigate leg fails for ANY reason, the selected lane must surface AbortReason naming
+// the failed leg (never a silent zero-visit run), and when navigation succeeds the same
+// hull flies its profitable visits. The mediator's failNav flag models a navigate leg
+// that errors (a RouteExecutor leg failure, an API 4236, etc.).
 
 type collisionMediator struct {
 	mu          sync.Mutex
-	ship        *navigation.Ship
-	clock       shared.Clock
 	fixture     *zvFixture
-	reclaim     bool // true: navigate spawns a re-claiming child container (the bug)
+	failNav     bool // true: the navigate leg returns an error (models any nav failure)
 	navAttempts int
 	purchases   int
 	sells       int
@@ -49,14 +46,11 @@ func (m *collisionMediator) Send(ctx context.Context, request common.Request) (c
 		m.mu.Lock()
 		m.navAttempts++
 		m.mu.Unlock()
-		if m.reclaim {
-			// Model the daemon's NavigateShip RPC: it creates a navigate container and
-			// assigns the ship to it. The hull is already in the trade-route container,
-			// so this is the exact double-claim the live run hit.
-			navContainerID := fmt.Sprintf("navigate-%s-c4b5509c", cmd.ShipSymbol)
-			if err := m.ship.AssignToContainer(navContainerID, m.clock); err != nil {
-				return nil, fmt.Errorf("failed to assign ship %s: %w", cmd.ShipSymbol, err)
-			}
+		if m.failNav {
+			// Model a navigate leg that fails (in the container world this is a
+			// RouteExecutor leg error, not the old re-claim). The circuit must abort
+			// cleanly and surface WHY, not return a handler error.
+			return nil, fmt.Errorf("navigate leg to %s failed: simulated route failure", cmd.Destination)
 		}
 		return &navCmd.NavigateRouteResponse{Status: "completed", CurrentLocation: cmd.Destination}, nil
 	case *shipCargo.PurchaseCargoCommand:
@@ -81,24 +75,21 @@ func (m *collisionMediator) Register(requestType reflect.Type, handler common.Re
 }
 func (m *collisionMediator) RegisterMiddleware(middleware common.Middleware) {}
 
-func newCollisionHarness(t *testing.T, ship *navigation.Ship, reclaim bool) (*RunTradeRouteCoordinatorHandler, *collisionMediator) {
+func newCollisionHarness(t *testing.T, ship *navigation.Ship, failNav bool) (*RunTradeRouteCoordinatorHandler, *collisionMediator) {
 	t.Helper()
-	clock := &trFakeClock{}
 	fixture := &zvFixture{capacity: ship.CargoCapacity(), onboard: 0}
-	mediator := &collisionMediator{ship: ship, clock: clock, fixture: fixture, reclaim: reclaim}
+	mediator := &collisionMediator{fixture: fixture, failNav: failNav}
 	marketRepo := &zvMarketRepo{fixture: fixture}
-	containerRepo := newTrFakeContainerRepo()
-	shipRepo := &trFakeShipRepo{ship: ship, containers: containerRepo}
-	handler := NewRunTradeRouteCoordinatorHandler(mediator, shipRepo, marketRepo, containerRepo, clock, nil)
+	shipRepo := &trFakeShipRepo{ship: ship}
+	handler := NewRunTradeRouteCoordinatorHandler(mediator, shipRepo, marketRepo, nil)
 	return handler, mediator
 }
 
-// RED: when navigating the claimed hull re-claims it into a child navigate container,
-// the very first navigate leg fails with the daemon's exact assignment error and the
-// circuit flies zero visits — the captain's live symptom. The hull is docked at a
-// NEUTRAL waypoint (not the source), so the first leg is a real move: this proves the
-// failure is position-independent (it is the re-claim, not the hop).
-func TestTradeRouteCoordinator_NavigateReclaimsClaimedHull_FliesZero(t *testing.T) {
+// RED value (sp-2sam): a selected lane whose first navigate leg fails must fly zero
+// visits AND report AbortReason naming the failed navigate — never a silent zero. The
+// hull is docked AWAY from the source, so the first leg is a real move, proving the
+// abort is surfaced regardless of position.
+func TestTradeRouteCoordinator_NavigateLegFails_FliesZeroWithAbortReason(t *testing.T) {
 	ship := newDiscHauler(t, "TORWIND-8", "X1-ZV-DOCK") // idle, empty, AWAY from the source
 	handler, mediator := newCollisionHarness(t, ship, true)
 
@@ -108,7 +99,7 @@ func TestTradeRouteCoordinator_NavigateReclaimsClaimedHull_FliesZero(t *testing.
 		PlayerID:     1,
 	})
 	if err != nil {
-		t.Fatalf("a navigate self-collision must be a clean exit, not a handler error: %v", err)
+		t.Fatalf("a failed navigate leg must be a clean exit, not a handler error: %v", err)
 	}
 	coord := resp.(*RunTradeRouteCoordinatorResponse)
 
@@ -117,29 +108,25 @@ func TestTradeRouteCoordinator_NavigateReclaimsClaimedHull_FliesZero(t *testing.
 		t.Fatalf("expected the ranked lane %q selected, got %q", zvGood, coord.Good)
 	}
 	if coord.Visits != 0 || coord.UnitsTraded != 0 {
-		t.Fatalf("expected the self-collision to fly zero, got %d visits / %d units", coord.Visits, coord.UnitsTraded)
+		t.Fatalf("expected the failed nav to fly zero, got %d visits / %d units", coord.Visits, coord.UnitsTraded)
 	}
 	if mediator.purchases != 0 {
-		t.Fatalf("the circuit must not reach the buy leg — navigate collided first, got %d purchases", mediator.purchases)
+		t.Fatalf("the circuit must not reach the buy leg — navigate failed first, got %d purchases", mediator.purchases)
 	}
-	// The self-diagnosing reason must name the failed navigate leg AND carry the exact
-	// daemon assignment collision, so this can never again need a live re-run to explain.
+	// The self-diagnosing reason must name the failed navigate leg, so a zero-visit run
+	// can never again need a live re-run to explain.
 	if coord.AbortReason == "" {
 		t.Fatal("a selected lane that flew zero MUST report AbortReason (sp-2sam)")
 	}
-	if !strings.Contains(coord.AbortReason, "navigation to source") ||
-		!strings.Contains(coord.AbortReason, "already assigned to container") {
-		t.Fatalf("AbortReason must surface the navigate self-collision, got %q", coord.AbortReason)
-	}
-	if !ship.IsIdle() {
-		t.Fatalf("the hull must be released after the aborted run, still on %q", ship.ContainerID())
+	if !strings.Contains(coord.AbortReason, "navigation to source") {
+		t.Fatalf("AbortReason must name the failed navigate leg, got %q", coord.AbortReason)
 	}
 }
 
-// GREEN: routing the legs under the parent claim (navigate assigns NO child
-// container, as NavigateDirect does) removes the collision, and the same coordinator
-// on the same hull flies its profitable visits.
-func TestTradeRouteCoordinator_NavigateUnderParentClaim_Flies(t *testing.T) {
+// GREEN: when navigation succeeds, the same coordinator on the same hull flies its
+// profitable visits. (In the daemon this is RouteExecutor moving the already-claimed
+// hull with no re-claiming child container — the sp-2sam collision cannot recur.)
+func TestTradeRouteCoordinator_CircuitFliesWhenNavSucceeds(t *testing.T) {
 	ship := newDiscHauler(t, "TORWIND-8", "X1-ZV-DOCK")
 	handler, mediator := newCollisionHarness(t, ship, false)
 
@@ -153,15 +140,12 @@ func TestTradeRouteCoordinator_NavigateUnderParentClaim_Flies(t *testing.T) {
 	}
 	coord := resp.(*RunTradeRouteCoordinatorResponse)
 	if coord.AbortReason != "" {
-		t.Fatalf("navigating under the parent claim must not abort, got reason %q", coord.AbortReason)
+		t.Fatalf("a successful circuit must not abort, got reason %q", coord.AbortReason)
 	}
 	if coord.Visits < 1 || mediator.purchases < 1 {
-		t.Fatalf("routing under the parent claim must let the circuit fly, got %d visits / %d purchases", coord.Visits, mediator.purchases)
+		t.Fatalf("a successful nav must let the circuit fly, got %d visits / %d purchases", coord.Visits, mediator.purchases)
 	}
 	if coord.NetProfit <= 0 {
 		t.Fatalf("expected a net-positive circuit, got net %d", coord.NetProfit)
-	}
-	if !ship.IsIdle() {
-		t.Fatalf("expected the ship released to idle, still on %q", ship.ContainerID())
 	}
 }

@@ -11,6 +11,7 @@ import (
 	goodsCmd "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/commands"
 	scoutingCmd "github.com/andrescamacho/spacetraders-go/internal/application/scouting/commands"
 	shipyardCmd "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/commands"
+	tradingCmd "github.com/andrescamacho/spacetraders-go/internal/application/trading/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
@@ -228,6 +229,46 @@ func TestRecoveryFactoryRebuildsCommandFromLaunchConfig(t *testing.T) {
 				DryRun:         true,
 			},
 		},
+		{
+			// sp-zewt: a RUNNING trade_route container must rebuild from its launch
+			// config on restart. Without this registry entry recovery fails with
+			// "unknown command type" and the hull is force-released (the vjwb orphan);
+			// with it, the circuit resumes. ContainerID comes from the recovery-supplied
+			// containerID param (like contract_workflow), not the config map.
+			name:        "trade_route",
+			commandType: "trade_route",
+			containerID: "trade-1",
+			launchConfig: map[string]interface{}{
+				"ship_symbol":   "SHIP-A",
+				"system_symbol": "X1-TR",
+				"container_id":  "trade-1",
+				"max_visits":    20,
+			},
+			want: &tradingCmd.RunTradeRouteCoordinatorCommand{
+				ShipSymbol:   "SHIP-A",
+				SystemSymbol: "X1-TR",
+				PlayerID:     playerID,
+				ContainerID:  "trade-1",
+				MaxVisits:    20,
+			},
+		},
+		{
+			name:        "trade_route defaults max_visits",
+			commandType: "trade_route",
+			containerID: "trade-2",
+			launchConfig: map[string]interface{}{
+				"ship_symbol":   "SHIP-B",
+				"system_symbol": "X1-TR",
+				"container_id":  "trade-2",
+			},
+			want: &tradingCmd.RunTradeRouteCoordinatorCommand{
+				ShipSymbol:   "SHIP-B",
+				SystemSymbol: "X1-TR",
+				PlayerID:     playerID,
+				ContainerID:  "trade-2",
+				MaxVisits:    0,
+			},
+		},
 	}
 
 	for _, tc := range cases {
@@ -269,6 +310,8 @@ func TestRecoveryFactoryRejectsMissingOrWrongTypedFields(t *testing.T) {
 		{"gas missing siphon_ships", "gas_coordinator", map[string]interface{}{"gas_operation_id": "o", "gas_giant": "G", "container_id": "c", "storage_ships": []interface{}{"B"}}, "siphon"},
 		{"gas siphon entry wrong type", "gas_coordinator", map[string]interface{}{"gas_operation_id": "o", "gas_giant": "G", "container_id": "c", "siphon_ships": []interface{}{1.0}, "storage_ships": []interface{}{"B"}}, "siphon"},
 		{"gas missing storage and transport ships", "gas_coordinator", map[string]interface{}{"gas_operation_id": "o", "gas_giant": "G", "container_id": "c", "siphon_ships": []interface{}{"A"}}, "storage_ships"},
+		{"trade_route missing ship_symbol", "trade_route", map[string]interface{}{"system_symbol": "X1-TR"}, "ship_symbol"},
+		{"trade_route missing system_symbol", "trade_route", map[string]interface{}{"ship_symbol": "SHIP-A"}, "system_symbol"},
 	}
 
 	for _, tc := range cases {

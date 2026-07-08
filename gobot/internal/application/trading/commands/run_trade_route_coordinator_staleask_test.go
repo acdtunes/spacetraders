@@ -155,9 +155,8 @@ func newStaleHarness(t *testing.T, ship *navigation.Ship, fixture *staleFixture,
 	t.Helper()
 	mediator := &staleMediator{fixture: fixture}
 	marketRepo := &staleMarketRepo{fixture: fixture}
-	containerRepo := newTrFakeContainerRepo()
-	shipRepo := &trFakeShipRepo{ship: ship, containers: containerRepo}
-	handler := NewRunTradeRouteCoordinatorHandler(mediator, shipRepo, marketRepo, containerRepo, &trFakeClock{}, refresher)
+	shipRepo := &trFakeShipRepo{ship: ship}
+	handler := NewRunTradeRouteCoordinatorHandler(mediator, shipRepo, marketRepo, refresher)
 	return handler, mediator
 }
 

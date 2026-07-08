@@ -100,6 +100,9 @@ service DaemonService {
   // GasExtractionOperation starts a gas extraction operation with siphon and transport ships
   rpc GasExtractionOperation(GasExtractionOperationRequest) returns (GasExtractionOperationResponse);
 
+  // StartTradeRoute launches a single-hull pure-arbitrage circuit as a recovery-safe daemon container
+  rpc StartTradeRoute(StartTradeRouteRequest) returns (StartTradeRouteResponse);
+
   // StartConstructionPipeline starts a pipeline to supply materials to a construction site
   rpc StartConstructionPipeline(StartConstructionPipelineRequest) returns (StartConstructionPipelineResponse);
 
@@ -688,6 +691,24 @@ message JettisonCargoResponse {
   int32 units_jettisoned = 4;
   string status = 5;
   string message = 6;
+}
+
+// StartTradeRouteRequest launches a single-hull pure-arbitrage circuit on an idle hull
+message StartTradeRouteRequest {
+  int32 player_id = 1;
+  string ship_symbol = 2;             // Idle hull to fly the circuit
+  string system_symbol = 3;           // System to scan for arbitrage lanes
+  optional string agent_symbol = 4;
+  optional int32 max_visits = 5;      // Safety bound on circuit visits (0 = default 50)
+}
+
+// StartTradeRouteResponse returns the started trade-route container
+message StartTradeRouteResponse {
+  string container_id = 1;
+  string ship_symbol = 2;
+  string system_symbol = 3;
+  string status = 4;
+  string message = 5;
 }
 
 // GasExtractionOperationRequest starts a gas extraction operation with siphon and transport ships
