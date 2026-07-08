@@ -34,9 +34,14 @@ type PurchaseShipCommand struct {
 
 // PurchaseShipResponse contains the newly purchased ship
 type PurchaseShipResponse struct {
-	Ship            *navigation.Ship
-	PurchasePrice   int
-	AgentCredits    int
+	Ship          *navigation.Ship
+	PurchasePrice int
+	AgentCredits  int
+	// ShipType is the authoritative type actually purchased, echoed by the
+	// shipyard transaction. Batch orchestration verifies this against the
+	// requested type as a money-integrity floor so a yard can never silently
+	// substitute a different in-stock ship for the one asked for (sp-e7je).
+	ShipType        string
 	TransactionTime string
 }
 
@@ -149,6 +154,7 @@ func (h *PurchaseShipHandler) Handle(ctx context.Context, request common.Request
 		Ship:            newShip,
 		PurchasePrice:   purchaseResult.Transaction.Price,
 		AgentCredits:    purchaseResult.Agent.Credits,
+		ShipType:        purchaseResult.Transaction.ShipType,
 		TransactionTime: purchaseResult.Transaction.Timestamp,
 	}, nil
 }

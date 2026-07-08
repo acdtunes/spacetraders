@@ -241,6 +241,21 @@ func (h *BatchPurchaseShipsHandler) executePurchaseLoop(
 			return nil, 0, fmt.Errorf("failed to purchase ship %d of %d: %w", i+1, purchasableCount, err)
 		}
 
+		// Money-integrity floor (sp-e7je): the batch boundary must never accept a
+		// ship the yard substituted for the requested type. The per-ship purchase
+		// echoes the authoritative purchased type; if it is not what we asked for,
+		// a yard sold us the wrong asset. Abort LOUDLY with zero spend reported and
+		// stop immediately — never accumulate wrong-typed ships the way the incident
+		// did (3 substitutes, ~105k credits, silent). This is a hard failure, not a
+		// partial success: a substitution signals a broken purchase path, so we do
+		// not keep the earlier ships or spend on any more.
+		if purchaseResp.ShipType != cmd.ShipType {
+			return nil, 0, fmt.Errorf(
+				"money-integrity abort: requested %s but yard %s delivered %s on purchase %d of %d — refusing to substitute yard stock for the requested type",
+				cmd.ShipType, shipyardWaypoint, purchaseResp.ShipType, i+1, purchasableCount,
+			)
+		}
+
 		purchasedShips = append(purchasedShips, purchaseResp.Ship)
 		totalSpent += purchaseResp.PurchasePrice
 
