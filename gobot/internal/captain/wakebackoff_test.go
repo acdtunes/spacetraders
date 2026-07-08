@@ -43,6 +43,11 @@ func (g *flakyGateway) Nudge(_ context.Context, alias, text string) error {
 
 func (g *flakyGateway) SessionAlive(_ context.Context, _ string) (bool, error) { return true, nil }
 
+// ListSessions returns no sessions, so nudgeRolloverOnAge (sp-0zx9) is also a
+// clean no-op here and never pollutes the wake-attempt counts this fake
+// exists to measure.
+func (g *flakyGateway) ListSessions(_ context.Context) ([]SessionInfo, error) { return nil, nil }
+
 // attempts counts total gateway delivery calls. While failing, each bridgeWake
 // attempt makes exactly one call (the first Send errors and returns), so this
 // equals the number of delivery attempts.

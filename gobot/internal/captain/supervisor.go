@@ -97,6 +97,15 @@ type Supervisor struct {
 	// once is harmless and, in fact, desirable — a fresh process SHOULD re-state
 	// what is down.
 	sessionDownAlerted map[string]time.Time
+
+	// rolloverNudged throttles the per-session "rollover due" nudge (sp-0zx9),
+	// keyed by session alias → last-nudged time. In-memory only, mirroring
+	// sessionDownAlerted's rationale: a process restart re-nudging an
+	// already-overdue session once is harmless. Unlike lastSurveyorNudge (a
+	// single persisted cadence timer for one fixed agent), this is per-alias and
+	// grounded in each session's own external age, so it deliberately is NOT
+	// armed one interval out at construction — see nudgeRolloverOnAge.
+	rolloverNudged map[string]time.Time
 }
 
 func NewSupervisor(db *gorm.DB, store captain.EventStore, ws Workspace, cfg config.CaptainConfig) (*Supervisor, error) {
@@ -166,6 +175,7 @@ func (s *Supervisor) Tick(ctx context.Context, now time.Time) (bool, error) {
 	if s.gw != nil {
 		s.ensureCaptainAlive(ctx, now)
 		s.nudgeSurveyorOnCadence(ctx, now)
+		s.nudgeRolloverOnAge(ctx, now)
 		s.requeueOrphanedPipelineBeads(ctx)
 	}
 

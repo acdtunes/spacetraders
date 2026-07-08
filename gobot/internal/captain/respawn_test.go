@@ -34,6 +34,14 @@ func (g *respawnGateway) SessionAlive(_ context.Context, alias string) (bool, er
 	return g.alive[alias], nil
 }
 
+// ListSessions is a no-op stub: respawn_test.go/preflight_test.go exercise
+// captain-liveness/respawn alerting, not the rollover-due nudge (sp-0zx9),
+// which is the only caller of this method. Satisfies the cityGateway
+// interface so this fake still compiles after ListSessions was added to it.
+func (g *respawnGateway) ListSessions(_ context.Context) ([]SessionInfo, error) {
+	return nil, nil
+}
+
 type fakeBeads struct {
 	inProgress []PipelineBead
 	reopened   [][]string

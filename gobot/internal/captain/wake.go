@@ -16,6 +16,17 @@ type cityGateway interface {
 	SendMail(ctx context.Context, to, subject, body string) error
 	Nudge(ctx context.Context, alias, text string) error
 	SessionAlive(ctx context.Context, alias string) (bool, error)
+	ListSessions(ctx context.Context) ([]SessionInfo, error)
+}
+
+// SessionInfo is one gc-managed session as reported by `gc session list`,
+// carrying the fields the rollover-due nudge (sp-0zx9) needs to judge a
+// session's age: its own creation time, independent of any watchkeeper-side
+// bookkeeping.
+type SessionInfo struct {
+	Alias     string
+	State     string
+	CreatedAt time.Time
 }
 
 // SetCity wires the city adapters for bridge mode without changing the

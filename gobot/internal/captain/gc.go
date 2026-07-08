@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 type Execer func(ctx context.Context, name string, args ...string) (stdout string, err error)
@@ -86,6 +87,33 @@ func (g *CityGateway) SessionAlive(ctx context.Context, alias string) (bool, err
 		}
 	}
 	return false, nil
+}
+
+// ListSessions returns every gc-managed session with its reported creation
+// time, so callers (the rollover-due nudge, sp-0zx9) can judge a session's own
+// age instead of relying on watchkeeper-side bookkeeping. Deliberately a
+// separate parse of the same `gc session list --json` output rather than a
+// refactor of SessionAlive: the two commands share a source but have distinct
+// output shapes (bool vs a full list), and keeping them independent limits the
+// blast radius of this change on SessionAlive's existing callers/tests.
+func (g *CityGateway) ListSessions(ctx context.Context) ([]SessionInfo, error) {
+	out, err := g.Exec(ctx, g.GCBin, "session", "list", "--json")
+	if err != nil {
+		return nil, err
+	}
+	var sessions []struct {
+		Alias     string
+		State     string
+		CreatedAt time.Time
+	}
+	if err := json.Unmarshal([]byte(out), &sessions); err != nil {
+		return nil, fmt.Errorf("parse session list: %w", err)
+	}
+	infos := make([]SessionInfo, 0, len(sessions))
+	for _, s := range sessions {
+		infos = append(infos, SessionInfo{Alias: s.Alias, State: s.State, CreatedAt: s.CreatedAt})
+	}
+	return infos, nil
 }
 
 type BeadsClient struct {
