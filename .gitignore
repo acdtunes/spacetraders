@@ -81,3 +81,8 @@ htmlcov/
 # Logs
 *.log
 logs/
+
+# Beads: a stray worktree-root export must never be committable. Anchored to the
+# repo root so tracked beads DBs (.beads/issues.jsonl, city/.beads/issues.jsonl)
+# are unaffected.
+/issues.jsonl
