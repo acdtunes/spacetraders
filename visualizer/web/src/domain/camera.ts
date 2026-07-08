@@ -7,16 +7,16 @@ export interface CameraPose { x: number; y: number; scale: number }
 // Idle-drift envelope: the camera never wanders more than ±DRIFT_X / ±DRIFT_Y
 // px from the base pose, and the breathing zoom stays within
 // [base·(1-BREATH_AMP), base·(1+BREATH_AMP)] — a zero-mean swing centred on base.
-export const DRIFT_X = 32;
-export const DRIFT_Y = 22;
-export const DRIFT_PERIOD_MS = 90_000;
-export const BREATH_PERIOD_MS = 47_000;
+export const DRIFT_X = 44;
+export const DRIFT_Y = 30;
+export const DRIFT_PERIOD_MS = 55_000;
+export const BREATH_PERIOD_MS = 34_000;
 // Maximum fractional zoom deviation on *either* side of base. Kept symmetric
 // rather than the old one-sided [base, base·(1+amp)]: one-sided breathing let
 // every re-anchor that captured a drifted pose bake the peak zoom in, ratcheting
 // base scale upward across idle/select/manual cycles. (Value is half the former
 // one-sided amp, so the peak-to-peak breath depth is unchanged.)
-export const BREATH_AMP = 0.0175;
+export const BREATH_AMP = 0.0275;
 
 // A slow wander around `base` on two axes with different periods, plus an
 // out-of-phase breathing zoom. Every component is individually bounded and

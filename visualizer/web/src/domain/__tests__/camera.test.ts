@@ -23,8 +23,8 @@ describe('camera math', () => {
       // includes a full day and beyond — sin is always bounded so drift can never run away
       for (const t of [0, 10_000, 60_000, 3_600_000, 8.64e7, 1e9]) {
         const p = idleDrift(t, base);
-        expect(Math.abs(p.x)).toBeLessThanOrEqual(40);
-        expect(Math.abs(p.y)).toBeLessThanOrEqual(40);
+        expect(Math.abs(p.x)).toBeLessThanOrEqual(50);
+        expect(Math.abs(p.y)).toBeLessThanOrEqual(50);
         expect(p.scale).toBeGreaterThanOrEqual(0.97);
         expect(p.scale).toBeLessThanOrEqual(1.08);
         expect(Number.isFinite(p.x)).toBe(true);
@@ -105,6 +105,15 @@ describe('camera math', () => {
       expect(idleDrift(0, base)).toEqual(base);
       const b: CameraPose = { x: 128, y: -64, scale: 1.5 };
       expect(idleDrift(0, b)).toEqual(b);
+    });
+
+    it('is perceptible within a few seconds — the noticeable profile clears the old near-imperceptible one by a wide margin', () => {
+      // S3 tuning target: ~24px excursion 5s into idling (vs ~11px on the prior
+      // profile). Assert against the prior profile's shape directly so this test
+      // fails loudly if the constants ever regress toward the old, too-subtle feel.
+      const p = idleDrift(5_000, base);
+      const excursion = Math.hypot(p.x - base.x, p.y - base.y);
+      expect(excursion).toBeGreaterThan(20); // old profile managed ~12px at the same instant
     });
 
     it('breathes zero-mean around base — dips below and rises above, so re-anchor cannot ratchet zoom', () => {
