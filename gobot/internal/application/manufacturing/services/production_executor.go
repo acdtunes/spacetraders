@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
@@ -14,6 +15,18 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
+
+// productionDockConfirmAttempts bounds how many times NavigateAndDock will reload
+// and re-issue a dock while waiting for the ship to reach a confirmed DOCKED
+// state (arrival + persisted dock). Bounded so a wedged ship can never spin
+// forever.
+const productionDockConfirmAttempts = 10
+
+// productionDockRetryLimit bounds how many times a cargo transaction that fails
+// with a transient "must be docked" signal is re-docked and retried before the
+// error is surfaced. Bounded so a genuinely undockable ship can never infinite
+// loop (sp-n7yp feeder crash #3).
+const productionDockRetryLimit = 3
 
 // ProductionExecutor orchestrates the production of goods by coordinating ship operations.
 // It handles both purchasing goods from markets (BUY) and manufacturing them (FABRICATE).
@@ -152,15 +165,11 @@ func (e *ProductionExecutor) buyGood(
 		PlayerID:   playerIDValue,
 	}
 
-	purchaseResp, err := e.mediator.Send(ctx, purchaseCmd)
+	// Dispatch through the dock-retry wrapper: a transient "must be docked" at the
+	// buy step re-docks and retries instead of crashing the container (sp-n7yp).
+	response, err := e.purchaseWithDockRetry(ctx, purchaseCmd)
 	if err != nil {
 		return nil, fmt.Errorf("failed to purchase cargo: %w", err)
-	}
-
-	// Extract purchase results
-	response, ok := purchaseResp.(*shipCargo.PurchaseCargoResponse)
-	if !ok {
-		return nil, fmt.Errorf("unexpected response type from purchase command")
 	}
 
 	logger.Log("INFO", fmt.Sprintf("Purchased %d units of %s for %d credits", response.UnitsAdded, node.Good, response.TotalCost), map[string]interface{}{
@@ -437,14 +446,11 @@ func (e *ProductionExecutor) purchaseFabricatedOutput(
 		PlayerID:   playerID,
 	}
 
-	purchaseResp, err := e.mediator.Send(ctx, purchaseCmd)
+	// Same dock-retry guard as the raw-buy path: a transient "must be docked"
+	// re-docks and retries rather than crashing the container (sp-n7yp).
+	response, err := e.purchaseWithDockRetry(ctx, purchaseCmd)
 	if err != nil {
 		return 0, 0, fmt.Errorf("failed to purchase fabricated output: %w", err)
-	}
-
-	response, ok := purchaseResp.(*shipCargo.PurchaseCargoResponse)
-	if !ok {
-		return 0, 0, fmt.Errorf("unexpected response type from purchase command")
 	}
 
 	logger.Log("INFO", fmt.Sprintf("Purchased fabricated output: %d units of %s for %d credits", response.UnitsAdded, good, response.TotalCost), map[string]interface{}{
@@ -457,83 +463,177 @@ func (e *ProductionExecutor) purchaseFabricatedOutput(
 	return response.UnitsAdded, response.TotalCost, nil
 }
 
-// NavigateAndDock navigates to a waypoint and docks the ship
+// NavigateAndDock navigates to a waypoint and returns the ship only once it is
+// CONFIRMED docked — the dock is actually persisted via the API, not merely
+// flipped to DOCKED in memory.
+//
+// The previous implementation pre-mutated the reloaded ship with EnsureDocked in
+// its arrival poll, then handed that already-DOCKED ship to DockShipCommand. That
+// made the dock a no-op: runStateTransition sees EnsureDocked report "no change"
+// and short-circuits before calling the API, so the ship stayed IN_ORBIT in the
+// DB while the code believed it was docked. The very next PurchaseCargoCommand
+// reloaded IN_ORBIT and crashed the container with "ship must be docked"
+// (sp-n7yp feeder crash #3). We now detect arrival WITHOUT mutating the ship and
+// dock via a symbol-only command so the handler reloads the real IN_ORBIT state
+// and the API dock actually fires, then re-read and assert DOCKED before
+// returning.
 func (e *ProductionExecutor) NavigateAndDock(
 	ctx context.Context,
 	shipSymbol string,
 	destination string,
 	playerID shared.PlayerID,
 ) (*navigation.Ship, error) {
-	// Navigate to destination using high-level command
 	navigateCmd := &shipNav.NavigateRouteCommand{
 		ShipSymbol:  shipSymbol,
 		Destination: destination,
 		PlayerID:    playerID,
 	}
-
-	_, err := e.mediator.Send(ctx, navigateCmd)
-	if err != nil {
+	if _, err := e.mediator.Send(ctx, navigateCmd); err != nil {
 		return nil, fmt.Errorf("failed to navigate to %s: %w", destination, err)
 	}
 
-	// Poll for ship arrival and dock using domain layer
-	// NavigateRouteCommand already waited for travel time, this is just a safety check
-	// for any API/database propagation delays (should only take a few seconds at most)
+	return e.dockAndConfirm(ctx, shipSymbol, destination, playerID)
+}
+
+// dockAndConfirm waits for the ship to arrive, issues a real (API-backed) dock,
+// and returns only after re-reading a persisted DOCKED state. Bounded by
+// productionDockConfirmAttempts so a wedged ship can never spin forever.
+//
+// Critically, it never acts on a ship it mutated in memory: each attempt reloads
+// a fresh ship, and the dock is issued via a symbol-only DockShipCommand so the
+// handler loads the true (IN_ORBIT) state and EnsureDocked reports a real change
+// — otherwise the dock short-circuits to a no-op and the buy races an unpersisted
+// dock (sp-n7yp).
+func (e *ProductionExecutor) dockAndConfirm(
+	ctx context.Context,
+	shipSymbol string,
+	destination string,
+	playerID shared.PlayerID,
+) (*navigation.Ship, error) {
 	var ship *navigation.Ship
-	maxAttempts := 10 // 10 seconds timeout (1 sec per poll)
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		// Reload ship from API
-		ship, err = e.shipRepo.FindBySymbol(ctx, shipSymbol, playerID)
+	for attempt := 0; attempt < productionDockConfirmAttempts; attempt++ {
+		reloaded, err := e.shipRepo.FindBySymbol(ctx, shipSymbol, playerID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to reload ship after navigation: %w", err)
 		}
+		ship = reloaded
 
-		// Try to dock using domain's idempotent EnsureDocked
-		_, dockErr := ship.EnsureDocked()
-		if dockErr == nil {
-			// Successfully docked (or was already docked)
+		if ship.IsDocked() {
+			return ship, nil // confirmed: persisted DOCKED
+		}
+
+		if ship.IsInTransit() {
+			// Still travelling — wait for arrival, then re-read.
+			select {
+			case <-ctx.Done():
+				return nil, fmt.Errorf("dock wait cancelled: %w", ctx.Err())
+			default:
+				e.clock.Sleep(1 * time.Second)
+			}
+			continue
+		}
+
+		// Arrived and in orbit: issue a real dock. Pass ShipSymbol (nil Ship) so
+		// DockShipHandler loads the true IN_ORBIT state, EnsureDocked reports a
+		// change, and the API dock actually fires + persists.
+		if _, err := e.mediator.Send(ctx, &shipTypes.DockShipCommand{
+			ShipSymbol: shipSymbol,
+			PlayerID:   playerID,
+		}); err != nil {
+			return nil, fmt.Errorf("failed to dock ship %s: %w", shipSymbol, err)
+		}
+		// Honor cancellation between issuing the dock and re-reading; loop back
+		// immediately to confirm the persisted state (no mandatory sleep on the
+		// happy path).
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("dock wait cancelled: %w", err)
+		}
+	}
+
+	if ship != nil && ship.IsInTransit() {
+		return nil, fmt.Errorf("ship %s still in transit after %d attempts", shipSymbol, productionDockConfirmAttempts)
+	}
+	return nil, fmt.Errorf("ship %s did not reach a confirmed DOCKED state at %s after %d attempts", shipSymbol, destination, productionDockConfirmAttempts)
+}
+
+// isTransientDockStateError reports whether err is the recoverable "ship must be
+// docked" signal — the local precondition error (cargo_transaction.go) or the
+// API's 4214/4244 codes — rather than a genuine failure (insufficient funds, no
+// cargo space, ...). Only these are safe to retry after re-docking.
+func isTransientDockStateError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "must be docked") ||
+		strings.Contains(msg, "4214") ||
+		strings.Contains(msg, "4244")
+}
+
+// purchaseWithDockRetry dispatches a PurchaseCargoCommand and, if it fails with a
+// transient dock-state signal, reconciles the ship from the API (clearing any
+// stale DOCKED cache entry that would make a re-dock a no-op — the subtlety
+// NegotiateContractHandler documents), re-docks, and retries. Bounded by
+// productionDockRetryLimit. A transient dock state must never crash the container
+// (sp-n7yp feeder crash #3); genuine failures surface immediately, unretried.
+func (e *ProductionExecutor) purchaseWithDockRetry(
+	ctx context.Context,
+	cmd *shipCargo.PurchaseCargoCommand,
+) (*shipCargo.PurchaseCargoResponse, error) {
+	logger := common.LoggerFromContext(ctx)
+	var lastErr error
+	for attempt := 0; attempt <= productionDockRetryLimit; attempt++ {
+		resp, err := e.mediator.Send(ctx, cmd)
+		if err == nil {
+			response, ok := resp.(*shipCargo.PurchaseCargoResponse)
+			if !ok {
+				return nil, fmt.Errorf("unexpected response type from purchase command")
+			}
+			return response, nil
+		}
+
+		if !isTransientDockStateError(err) {
+			return nil, err // genuine failure — surface immediately
+		}
+
+		lastErr = err
+		if attempt == productionDockRetryLimit {
 			break
 		}
 
-		// If error is "in transit", wait and retry
-		// If error is something else, fail immediately
-		if ship.NavStatus() != navigation.NavStatusInTransit {
-			return nil, fmt.Errorf("unexpected dock error: %w", dockErr)
-		}
-
-		// Ship still in transit, wait before retry
-		// Check for context cancellation
-		select {
-		case <-ctx.Done():
-			return nil, fmt.Errorf("dock wait cancelled: %w", ctx.Err())
-		default:
-			e.clock.Sleep(1 * time.Second)
+		logger.Log("WARN", "Purchase hit a transient dock-state error; re-docking and retrying", map[string]interface{}{
+			"ship":    cmd.ShipSymbol,
+			"good":    cmd.GoodSymbol,
+			"attempt": attempt + 1,
+			"error":   err.Error(),
+		})
+		if rerr := e.redockFromAPI(ctx, cmd.ShipSymbol, cmd.PlayerID); rerr != nil {
+			return nil, fmt.Errorf("failed to re-dock after transient dock error: %w", rerr)
 		}
 	}
 
-	// Final check - if still in transit after timeout, return error
-	if ship.NavStatus() == navigation.NavStatusInTransit {
-		return nil, fmt.Errorf("ship %s still in transit after %d seconds", shipSymbol, maxAttempts)
-	}
+	return nil, fmt.Errorf("purchase still failing after %d dock retries: %w", productionDockRetryLimit, lastErr)
+}
 
-	// Persist dock state to API
-	dockCmd := &shipTypes.DockShipCommand{
-		Ship:     ship,
-		PlayerID: playerID,
+// redockFromAPI reconciles the ship against the server (SyncShipFromAPI) so a
+// stale DOCKED cache entry cannot make EnsureDocked a no-op, then issues a real
+// dock via a symbol-only command. Mirrors the reactive re-dock in
+// NegotiateContractHandler.
+func (e *ProductionExecutor) redockFromAPI(
+	ctx context.Context,
+	shipSymbol string,
+	playerID shared.PlayerID,
+) error {
+	if _, err := e.shipRepo.SyncShipFromAPI(ctx, shipSymbol, playerID); err != nil {
+		return fmt.Errorf("failed to refresh ship %s from API: %w", shipSymbol, err)
 	}
-
-	_, err = e.mediator.Send(ctx, dockCmd)
-	if err != nil {
-		return nil, fmt.Errorf("failed to persist dock state: %w", err)
+	if _, err := e.mediator.Send(ctx, &shipTypes.DockShipCommand{
+		ShipSymbol: shipSymbol,
+		PlayerID:   playerID,
+	}); err != nil {
+		return fmt.Errorf("failed to dock ship %s: %w", shipSymbol, err)
 	}
-
-	// Reload ship again to get docked state
-	ship, err = e.shipRepo.FindBySymbol(ctx, shipSymbol, playerID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to reload ship after docking: %w", err)
-	}
-
-	return ship, nil
+	return nil
 }
 
 // deliverInputs sells all cargo (inputs) at the current location
