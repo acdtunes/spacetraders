@@ -58,6 +58,20 @@ func (h *inProcessNavHandler) Handle(ctx context.Context, request common.Request
 		return nil, fmt.Errorf("inProcessNavHandler: invalid request type %T", request)
 	}
 
+	// The preceding buy leaves the hull DOCKED (cargo transactions require docked), and
+	// the API rejects a navigate from a docked hull with 4236 (not in orbit) — the live
+	// sp-sj7p failure. Orbit first so the hull departs. OrbitShip is idempotent: an
+	// already-in-orbit hull (a later leg that arrived and did not dock) short-circuits to
+	// already_in_orbit with no API call or error (tactics.OrbitShipHandler / Ship.EnsureInOrbit),
+	// so it is safe to dispatch unconditionally — mirroring RouteExecutor.ensureShipInOrbit,
+	// which orbits before every departure.
+	if _, err := h.mediator.Send(ctx, &shipTypes.OrbitShipCommand{
+		ShipSymbol: navReq.ShipSymbol,
+		PlayerID:   navReq.PlayerID,
+	}); err != nil {
+		return nil, fmt.Errorf("in-process orbit of %s before navigate failed: %w", navReq.ShipSymbol, err)
+	}
+
 	// Move the ALREADY-CLAIMED hull directly. NavigateDirect assigns no container, so
 	// it cannot self-collide with the parent trade-route claim, and it short-circuits
 	// cleanly when the hull is already at the destination.
@@ -190,6 +204,7 @@ Examples:
 			purchaseHandler := shipCargo.NewPurchaseCargoHandler(shipRepo, playerRepo, apiClient, marketRepo, m, nil)
 			sellHandler := shipCargo.NewSellCargoHandler(shipRepo, playerRepo, apiClient, marketRepo, m, nil)
 			dockHandler := tactics.NewDockShipHandler(shipRepo)
+			orbitHandler := tactics.NewOrbitShipHandler(shipRepo)
 			if err := mediator.RegisterHandler[*shipCargo.PurchaseCargoCommand](m, purchaseHandler); err != nil {
 				return fmt.Errorf("failed to register purchase handler: %w", err)
 			}
@@ -198,6 +213,11 @@ Examples:
 			}
 			if err := mediator.RegisterHandler[*shipTypes.DockShipCommand](m, dockHandler); err != nil {
 				return fmt.Errorf("failed to register dock handler: %w", err)
+			}
+			// The in-process nav leg orbits the hull (DOCKED from the preceding buy)
+			// before navigating; register the orbit handler so that dispatch resolves.
+			if err := mediator.RegisterHandler[*shipTypes.OrbitShipCommand](m, orbitHandler); err != nil {
+				return fmt.Errorf("failed to register orbit handler: %w", err)
 			}
 
 			// Register the atomic direct-navigate handler and route every NavigateRoute
