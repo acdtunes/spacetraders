@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
 import type Konva from 'konva';
 import { useCinematicCamera } from '../useCinematicCamera';
-import { DRIFT_X, DRIFT_Y } from '../../domain/camera';
+import { DRIFT_X, DRIFT_Y, BREATH_AMP } from '../../domain/camera';
 
 // A minimal Konva-node stand-in: position()/scale() act as getter+setter and
 // record every setter call so a test can prove the camera wrote (or did not
@@ -53,8 +53,8 @@ describe('useCinematicCamera', () => {
     for (const x of xs) expect(Math.abs(x)).toBeLessThanOrEqual(DRIFT_X + 1);
     for (const y of ys) expect(Math.abs(y)).toBeLessThanOrEqual(DRIFT_Y + 1);
     for (const s of scales) {
-      expect(s).toBeGreaterThanOrEqual(0.97);
-      expect(s).toBeLessThanOrEqual(1.08);
+      expect(s).toBeGreaterThanOrEqual(1 - BREATH_AMP);
+      expect(s).toBeLessThanOrEqual(1 + BREATH_AMP);
     }
     // And it genuinely moves — not pinned at the base pose.
     expect(Math.max(...xs.map(Math.abs))).toBeGreaterThan(5);

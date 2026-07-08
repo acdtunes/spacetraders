@@ -23,10 +23,10 @@ describe('camera math', () => {
       // includes a full day and beyond — sin is always bounded so drift can never run away
       for (const t of [0, 10_000, 60_000, 3_600_000, 8.64e7, 1e9]) {
         const p = idleDrift(t, base);
-        expect(Math.abs(p.x)).toBeLessThanOrEqual(50);
-        expect(Math.abs(p.y)).toBeLessThanOrEqual(50);
-        expect(p.scale).toBeGreaterThanOrEqual(0.97);
-        expect(p.scale).toBeLessThanOrEqual(1.08);
+        expect(Math.abs(p.x)).toBeLessThanOrEqual(DRIFT_X);
+        expect(Math.abs(p.y)).toBeLessThanOrEqual(DRIFT_Y);
+        expect(p.scale).toBeGreaterThanOrEqual(base.scale * (1 - BREATH_AMP));
+        expect(p.scale).toBeLessThanOrEqual(base.scale * (1 + BREATH_AMP));
         expect(Number.isFinite(p.x)).toBe(true);
         expect(Number.isFinite(p.y)).toBe(true);
         expect(Number.isFinite(p.scale)).toBe(true);
@@ -62,12 +62,20 @@ describe('camera math', () => {
     });
 
     it('is continuous — no jumps between adjacent frames', () => {
+      // Per-step ceiling from the Lipschitz bound of sin (|sin'| ≤ 1): amplitude ×
+      // angular rate × dt. Derived from the constants — rather than a fixed px
+      // number — so this test stays meaningful after future retuning instead of
+      // silently failing on it (as a fixed 0.5px bound did once drift got bolder/faster).
+      const STEP_MS = 50;
+      const maxDx = (DRIFT_X * 2 * Math.PI * STEP_MS) / DRIFT_PERIOD_MS;
+      const maxDy = (DRIFT_Y * 2 * Math.PI * 0.7 * STEP_MS) / DRIFT_PERIOD_MS;
+      const maxDScale = (BREATH_AMP * 2 * Math.PI * STEP_MS) / BREATH_PERIOD_MS;
       let prev = idleDrift(0, base);
-      for (let t = 50; t <= 300_000; t += 50) {
+      for (let t = STEP_MS; t <= 300_000; t += STEP_MS) {
         const p = idleDrift(t, base);
-        expect(Math.abs(p.x - prev.x)).toBeLessThan(0.5);
-        expect(Math.abs(p.y - prev.y)).toBeLessThan(0.5);
-        expect(Math.abs(p.scale - prev.scale)).toBeLessThan(0.01);
+        expect(Math.abs(p.x - prev.x)).toBeLessThanOrEqual(maxDx + 1e-9);
+        expect(Math.abs(p.y - prev.y)).toBeLessThanOrEqual(maxDy + 1e-9);
+        expect(Math.abs(p.scale - prev.scale)).toBeLessThanOrEqual(maxDScale + 1e-9);
         prev = p;
       }
     });
