@@ -232,6 +232,7 @@ func buildGoodsFactoryCoordinatorCommand(cfg *configReader, playerID int, contai
 		SystemSymbol:  cfg.RequiredString("system_symbol"),
 		ContainerID:   cfg.RequiredString("container_id"),
 		MaxIterations: cfg.OptionalInt("max_iterations", 1),
+		InputsOnly:    cfg.OptionalBool("inputs_only"),
 	}
 }
 

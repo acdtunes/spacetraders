@@ -39,6 +39,7 @@ Examples:
 func newGoodsProduceCommand() *cobra.Command {
 	var systemSymbol string
 	var iterations int
+	var inputsOnly bool
 
 	cmd := &cobra.Command{
 		Use:   "produce <good>",
@@ -91,7 +92,7 @@ Examples:
 				maxIterations = &iter
 			}
 
-			result, err := client.StartGoodsFactory(ctx, targetGood, &systemSymbol, playerIdent.PlayerID, &playerIdent.AgentSymbol, maxIterations)
+			result, err := client.StartGoodsFactory(ctx, targetGood, &systemSymbol, playerIdent.PlayerID, &playerIdent.AgentSymbol, maxIterations, inputsOnly)
 			if err != nil {
 				return fmt.Errorf("failed to start goods factory: %w", err)
 			}
@@ -116,6 +117,7 @@ Examples:
 
 	cmd.Flags().StringVar(&systemSymbol, "system", "", "System symbol where production will occur (required)")
 	cmd.Flags().IntVar(&iterations, "iterations", 1, "Number of production iterations (-1 for infinite, 0 or 1 for single run, >1 for specific count)")
+	cmd.Flags().BoolVar(&inputsOnly, "inputs-only", false, "Construction-support mode: feed the dependency tree but do NOT harvest the fabricated output — leave it in factory stock for a construction pipeline to source")
 
 	return cmd
 }

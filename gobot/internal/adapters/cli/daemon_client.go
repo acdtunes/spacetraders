@@ -809,6 +809,7 @@ func (c *DaemonClient) StartGoodsFactory(
 	playerID int,
 	agentSymbol *string,
 	maxIterations *int32,
+	inputsOnly bool,
 ) (*StartGoodsFactoryResult, error) {
 	resp, err := c.client.StartGoodsFactory(ctx, &pb.StartGoodsFactoryRequest{
 		PlayerId:      int32(playerID),
@@ -816,6 +817,7 @@ func (c *DaemonClient) StartGoodsFactory(
 		SystemSymbol:  systemSymbol,
 		AgentSymbol:   agentSymbol,
 		MaxIterations: maxIterations,
+		InputsOnly:    inputsOnly,
 	})
 	if err != nil {
 		return nil, err

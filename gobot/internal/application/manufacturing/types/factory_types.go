@@ -39,6 +39,12 @@ type RunFactoryCoordinatorCommand struct {
 	SystemSymbol  string // Where to produce (defaults to current system)
 	ContainerID   string // Container ID for ship assignment tracking
 	MaxIterations int    // Maximum iterations to run (-1 for infinite, 0 for single run, >0 for specific count)
+	// InputsOnly, when true, feeds the dependency tree but does NOT harvest the
+	// fabricated output: the factory produces the target good and leaves it in its
+	// export stock for a construction pipeline to source. This is the era-2 gate-fill
+	// fix — a harvesting factory bought back its own 149 FAB_MATS and froze the fill
+	// (sp-q02m). Default (false) preserves the original harvest-the-output behavior.
+	InputsOnly bool
 }
 
 // RunFactoryCoordinatorResponse contains the result of the coordinator operation

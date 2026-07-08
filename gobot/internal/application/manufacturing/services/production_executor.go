@@ -28,6 +28,18 @@ const productionDockConfirmAttempts = 10
 // loop (sp-n7yp feeder crash #3).
 const productionDockRetryLimit = 3
 
+// productionEmptyTrancheRetryLimit bounds how many times an input buy that comes
+// back empty ("partial failure: ... 0 units processed" / API 400 — a market drained
+// between the scout read and the buy) is retried before the tranche is skipped so the
+// feeder run can continue. Bounded so a structurally-empty market can never
+// infinite-loop (sp-q02m feeder crash #4).
+const productionEmptyTrancheRetryLimit = 3
+
+// productionEmptyTrancheRetryDelay is the backoff between empty-tranche retries,
+// giving the market a chance to refill. It runs on the injected clock, so it is a
+// no-op under the test clock.
+const productionEmptyTrancheRetryDelay = 2 * time.Second
+
 // ProductionExecutor orchestrates the production of goods by coordinating ship operations.
 // It handles both purchasing goods from markets (BUY) and manufacturing them (FABRICATE).
 type ProductionExecutor struct {
@@ -87,6 +99,13 @@ type ProductionResult struct {
 // For BUY nodes: finds market, navigates, purchases whatever is available.
 // For FABRICATE nodes: recursively produces inputs, delivers them, polls for output, purchases output.
 // Returns the quantity acquired and total cost.
+//
+// inputsOnly applies to the OUTPUT of this node only: when true and this node is
+// fabricated, its finished output is left in factory stock instead of being
+// harvested (sp-q02m). It never suppresses an input buy — the raw materials still
+// have to be acquired and delivered — so buyGood ignores it, and fabricateGood
+// forces it off when recursing into children (an intermediate fabricated input must
+// be harvested so it can be delivered to the parent factory).
 func (e *ProductionExecutor) ProduceGood(
 	ctx context.Context,
 	ship *navigation.Ship,
@@ -94,6 +113,7 @@ func (e *ProductionExecutor) ProduceGood(
 	systemSymbol string,
 	playerID int,
 	opContext *shared.OperationContext, // Operation context for transaction linking
+	inputsOnly bool,
 ) (*ProductionResult, error) {
 	// Add operation context to Go context for transaction tagging
 	if opContext != nil && opContext.IsValid() {
@@ -104,7 +124,7 @@ func (e *ProductionExecutor) ProduceGood(
 	case goods.AcquisitionBuy:
 		return e.buyGood(ctx, ship, node, systemSymbol, playerID, opContext)
 	case goods.AcquisitionFabricate:
-		return e.fabricateGood(ctx, ship, node, systemSymbol, playerID, opContext)
+		return e.fabricateGood(ctx, ship, node, systemSymbol, playerID, opContext, inputsOnly)
 	default:
 		return nil, fmt.Errorf("unknown acquisition method: %s", node.AcquisitionMethod)
 	}
@@ -165,11 +185,26 @@ func (e *ProductionExecutor) buyGood(
 		PlayerID:   playerIDValue,
 	}
 
-	// Dispatch through the dock-retry wrapper: a transient "must be docked" at the
-	// buy step re-docks and retries instead of crashing the container (sp-n7yp).
-	response, err := e.purchaseWithDockRetry(ctx, purchaseCmd)
+	// Dispatch through the empty-tranche guard: a transient "must be docked" is still
+	// re-docked and retried inside (sp-n7yp); an empty / zero-volume tranche
+	// ("partial failure: ... 0 units processed" / API 400) is bounded-retried then
+	// skipped so the feeder survives instead of crashing the container (sp-q02m crash #4).
+	response, err := e.purchaseInputWithEmptyTrancheGuard(ctx, purchaseCmd)
 	if err != nil {
 		return nil, fmt.Errorf("failed to purchase cargo: %w", err)
+	}
+	if response == nil {
+		// Empty tranche persisted across the retry bound: skip this input with a
+		// zero-unit result and let the run continue rather than crashing the container.
+		logger.Log("WARN", fmt.Sprintf("Skipped empty tranche for %s at %s — market sold 0 units; feeder continues", node.Good, marketResult.WaypointSymbol), map[string]interface{}{
+			"good":   node.Good,
+			"market": marketResult.WaypointSymbol,
+		})
+		return &ProductionResult{
+			QuantityAcquired: 0,
+			TotalCost:        0,
+			WaypointSymbol:   marketResult.WaypointSymbol,
+		}, nil
 	}
 
 	logger.Log("INFO", fmt.Sprintf("Purchased %d units of %s for %d credits", response.UnitsAdded, node.Good, response.TotalCost), map[string]interface{}{
@@ -194,6 +229,7 @@ func (e *ProductionExecutor) fabricateGood(
 	systemSymbol string,
 	playerID int,
 	opContext *shared.OperationContext, // Operation context for transaction linking
+	inputsOnly bool,
 ) (*ProductionResult, error) {
 	logger := common.LoggerFromContext(ctx)
 	totalCost := 0
@@ -207,7 +243,7 @@ func (e *ProductionExecutor) fabricateGood(
 
 	// Check current supply at factory
 	playerIDValue := shared.MustNewPlayerID(playerID)
-	stockedResult, err := e.collectExistingFactorySupply(ctx, ship, node, factoryMarket, playerIDValue, opContext)
+	stockedResult, err := e.collectExistingFactorySupply(ctx, ship, node, factoryMarket, playerIDValue, opContext, inputsOnly)
 	if err != nil {
 		return nil, err
 	}
@@ -222,7 +258,9 @@ func (e *ProductionExecutor) fabricateGood(
 	})
 
 	for _, child := range node.Children {
-		result, err := e.ProduceGood(ctx, ship, child, systemSymbol, playerID, opContext)
+		// Children are inputs that must be harvested and delivered to THIS factory —
+		// inputs-only never suppresses their acquisition, so force it off here.
+		result, err := e.ProduceGood(ctx, ship, child, systemSymbol, playerID, opContext, false)
 		if err != nil {
 			return nil, fmt.Errorf("failed to produce input %s: %w", child.Good, err)
 		}
@@ -266,8 +304,10 @@ func (e *ProductionExecutor) fabricateGood(
 	})
 
 	// Step 5: Poll for production until output good supply increases, then purchase
-	// The factory EXPORTS the finished good (we buy from them at their sell price)
-	quantity, cost, err := e.PollForProduction(ctx, node.Good, factoryMarket.WaypointSymbol, updatedShip.ShipSymbol(), playerIDValue, opContext)
+	// The factory EXPORTS the finished good (we buy from them at their sell price).
+	// In inputs-only mode the poll still confirms the output was produced, but the
+	// harvest is skipped so the good is left in factory stock (sp-q02m).
+	quantity, cost, err := e.PollForProduction(ctx, node.Good, factoryMarket.WaypointSymbol, updatedShip.ShipSymbol(), playerIDValue, opContext, inputsOnly)
 	if err != nil {
 		return nil, fmt.Errorf("failed during production polling: %w", err)
 	}
@@ -288,6 +328,7 @@ func (e *ProductionExecutor) collectExistingFactorySupply(
 	factoryMarket *MarketLocatorResult,
 	playerIDValue shared.PlayerID,
 	opContext *shared.OperationContext,
+	inputsOnly bool,
 ) (*ProductionResult, error) {
 	logger := common.LoggerFromContext(ctx)
 
@@ -316,8 +357,9 @@ func (e *ProductionExecutor) collectExistingFactorySupply(
 		return nil, fmt.Errorf("failed to navigate to factory: %w", err)
 	}
 
-	// Purchase the goods directly (PollForProduction will find them immediately since supply is HIGH/ABUNDANT)
-	quantity, cost, err := e.PollForProduction(ctx, node.Good, factoryMarket.WaypointSymbol, updatedShip.ShipSymbol(), playerIDValue, opContext)
+	// Purchase the goods directly (PollForProduction will find them immediately since supply is HIGH/ABUNDANT).
+	// In inputs-only mode the harvest is skipped, so the already-abundant stock is left for construction to source.
+	quantity, cost, err := e.PollForProduction(ctx, node.Good, factoryMarket.WaypointSymbol, updatedShip.ShipSymbol(), playerIDValue, opContext, inputsOnly)
 	if err != nil {
 		return nil, fmt.Errorf("failed to purchase from factory: %w", err)
 	}
@@ -339,6 +381,7 @@ func (e *ProductionExecutor) PollForProduction(
 	shipSymbol string,
 	playerID shared.PlayerID,
 	opContext *shared.OperationContext, // Operation context for transaction linking
+	inputsOnly bool, // when true, confirm production then LEAVE the output in factory stock (skip the harvest)
 ) (int, int, error) {
 	logger := common.LoggerFromContext(ctx)
 
@@ -376,6 +419,19 @@ func (e *ProductionExecutor) PollForProduction(
 				"poll_attempts": attempt + 1,
 				"sell_price":    tradeGood.SellPrice(),
 			})
+
+			// Construction-support (inputs-only) mode: production is confirmed and the
+			// output now sits in the factory's export stock. Do NOT harvest it — leave
+			// it for the construction pipeline to be the sole buyer. Harvesting here is
+			// exactly what starved the era-2 gate fill: the factory bought back its own
+			// 149 FAB_MATS and froze the fill at 898/1600 for ~6h (sp-q02m).
+			if inputsOnly {
+				logger.Log("INFO", fmt.Sprintf("inputs-only: %s produced and left in factory stock at %s — harvest skipped", good, waypointSymbol), map[string]interface{}{
+					"good":     good,
+					"waypoint": waypointSymbol,
+				})
+				return 0, 0, nil
+			}
 
 			return e.purchaseFabricatedOutput(ctx, good, waypointSymbol, shipSymbol, playerID, tradeGood.TradeVolume())
 		}
@@ -570,6 +626,31 @@ func isTransientDockStateError(err error) bool {
 		strings.Contains(msg, "4244")
 }
 
+// isEmptyTrancheError reports whether err is the "bought nothing" signal from an
+// input buy — the cargo handler's "partial failure: ... 0 units processed" wrapper
+// (cargo_transaction.go), raised when the first tranche's API call fails because the
+// market's supply was drained between the scout read and the buy (an empty /
+// zero-volume tranche, surfaced by the API as a 400).
+//
+// A genuine funds shortfall also processes zero units, so it too carries that phrase
+// — but it is NOT an empty tranche and must surface as a real failure (mirroring how
+// this file treats insufficient funds elsewhere). We therefore explicitly exclude it,
+// so only a truly empty/zero-volume tranche is eligible for retry-then-skip
+// (sp-q02m feeder crash #4).
+func isEmptyTrancheError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "0 units processed") {
+		return false
+	}
+	if strings.Contains(msg, "insufficient") {
+		return false // genuine funds failure — must surface, never be silently skipped
+	}
+	return true
+}
+
 // purchaseWithDockRetry dispatches a PurchaseCargoCommand and, if it fails with a
 // transient dock-state signal, reconciles the ship from the API (clearing any
 // stale DOCKED cache entry that would make a re-dock a no-op — the subtlety
@@ -613,6 +694,65 @@ func (e *ProductionExecutor) purchaseWithDockRetry(
 	}
 
 	return nil, fmt.Errorf("purchase still failing after %d dock retries: %w", productionDockRetryLimit, lastErr)
+}
+
+// purchaseInputWithEmptyTrancheGuard dispatches an input buy and survives an empty /
+// zero-volume tranche instead of crashing the container (sp-q02m feeder crash #4).
+//
+// Dock-state transients are still absorbed by the inner purchaseWithDockRetry. If the
+// buy comes back empty ("partial failure: ... 0 units processed" / API 400 — the
+// market drained between the scout read and the buy), we bounded-retry in case the
+// supply refills, then report a SKIP so the caller can continue with a zero-unit
+// result rather than dying unrecoverably. Genuine failures (insufficient funds,
+// no cargo space, exhausted dock retries) surface immediately.
+//
+// Returns:
+//   - (resp, nil): a successful buy
+//   - (nil,  nil): the tranche stayed empty across the retry bound — SKIP and continue
+//   - (nil,  err): a genuine failure
+func (e *ProductionExecutor) purchaseInputWithEmptyTrancheGuard(
+	ctx context.Context,
+	cmd *shipCargo.PurchaseCargoCommand,
+) (*shipCargo.PurchaseCargoResponse, error) {
+	logger := common.LoggerFromContext(ctx)
+	var lastErr error
+	for attempt := 0; attempt <= productionEmptyTrancheRetryLimit; attempt++ {
+		// Honour container shutdown between attempts.
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		resp, err := e.purchaseWithDockRetry(ctx, cmd)
+		if err == nil {
+			return resp, nil
+		}
+		if !isEmptyTrancheError(err) {
+			return nil, err // genuine failure — surface immediately, unretried
+		}
+
+		lastErr = err
+		if attempt == productionEmptyTrancheRetryLimit {
+			break
+		}
+
+		logger.Log("WARN", "Input buy hit an empty/zero-volume tranche; retrying in case supply refills", map[string]interface{}{
+			"ship":    cmd.ShipSymbol,
+			"good":    cmd.GoodSymbol,
+			"attempt": attempt + 1,
+			"error":   err.Error(),
+		})
+		e.clock.Sleep(productionEmptyTrancheRetryDelay)
+	}
+
+	// The tranche stayed empty across the bound: report a skip so the feeder survives
+	// (a permanently-empty market must not crash the container or infinite-loop).
+	logger.Log("WARN", "Input tranche still empty after bounded retries — skipping to keep the feeder alive", map[string]interface{}{
+		"ship":    cmd.ShipSymbol,
+		"good":    cmd.GoodSymbol,
+		"retries": productionEmptyTrancheRetryLimit,
+		"error":   lastErr.Error(),
+	})
+	return nil, nil
 }
 
 // redockFromAPI reconciles the ship against the server (SyncShipFromAPI) so a

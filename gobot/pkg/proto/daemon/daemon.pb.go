@@ -3708,6 +3708,7 @@ type StartGoodsFactoryRequest struct {
 	SystemSymbol  *string                `protobuf:"bytes,3,opt,name=system_symbol,json=systemSymbol,proto3,oneof" json:"system_symbol,omitempty"` // Optional: defaults to current system
 	AgentSymbol   *string                `protobuf:"bytes,4,opt,name=agent_symbol,json=agentSymbol,proto3,oneof" json:"agent_symbol,omitempty"`
 	MaxIterations *int32                 `protobuf:"varint,5,opt,name=max_iterations,json=maxIterations,proto3,oneof" json:"max_iterations,omitempty"` // Optional: -1 for infinite, 0 or unset for single run, >0 for specific count
+	InputsOnly    bool                   `protobuf:"varint,6,opt,name=inputs_only,json=inputsOnly,proto3" json:"inputs_only,omitempty"`                // If true: feed the dependency tree but do NOT harvest the fabricated output — leave it in factory stock for a construction pipeline to source
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3775,6 +3776,13 @@ func (x *StartGoodsFactoryRequest) GetMaxIterations() int32 {
 		return *x.MaxIterations
 	}
 	return 0
+}
+
+func (x *StartGoodsFactoryRequest) GetInputsOnly() bool {
+	if x != nil {
+		return x.InputsOnly
+	}
+	return false
 }
 
 // StartGoodsFactoryResponse returns factory details
@@ -5929,14 +5937,16 @@ const file_pkg_proto_daemon_daemon_proto_rawDesc = "" +
 	"\n" +
 	"total_fuel\x18\x04 \x01(\x05R\ttotalFuel\x12\x1d\n" +
 	"\n" +
-	"total_time\x18\x05 \x01(\x05R\ttotalTime\"\x8c\x02\n" +
+	"total_time\x18\x05 \x01(\x05R\ttotalTime\"\xad\x02\n" +
 	"\x18StartGoodsFactoryRequest\x12\x1b\n" +
 	"\tplayer_id\x18\x01 \x01(\x05R\bplayerId\x12\x1f\n" +
 	"\vtarget_good\x18\x02 \x01(\tR\n" +
 	"targetGood\x12(\n" +
 	"\rsystem_symbol\x18\x03 \x01(\tH\x00R\fsystemSymbol\x88\x01\x01\x12&\n" +
 	"\fagent_symbol\x18\x04 \x01(\tH\x01R\vagentSymbol\x88\x01\x01\x12*\n" +
-	"\x0emax_iterations\x18\x05 \x01(\x05H\x02R\rmaxIterations\x88\x01\x01B\x10\n" +
+	"\x0emax_iterations\x18\x05 \x01(\x05H\x02R\rmaxIterations\x88\x01\x01\x12\x1f\n" +
+	"\vinputs_only\x18\x06 \x01(\bR\n" +
+	"inputsOnlyB\x10\n" +
 	"\x0e_system_symbolB\x0f\n" +
 	"\r_agent_symbolB\x11\n" +
 	"\x0f_max_iterations\"\xae\x01\n" +

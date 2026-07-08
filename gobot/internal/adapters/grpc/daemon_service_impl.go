@@ -700,8 +700,10 @@ func (s *daemonServiceImpl) StartGoodsFactory(ctx context.Context, req *pb.Start
 		maxIterations = int(*req.MaxIterations)
 	}
 
-	// Start goods factory
-	result, err := s.daemon.StartGoodsFactory(ctx, req.TargetGood, systemSymbol, playerID, maxIterations)
+	// Start goods factory. inputs_only (default false) requests production-only mode:
+	// feed the dependency tree but leave the fabricated output in factory stock for a
+	// construction pipeline to source, rather than harvesting it (sp-q02m).
+	result, err := s.daemon.StartGoodsFactory(ctx, req.TargetGood, systemSymbol, playerID, maxIterations, req.GetInputsOnly())
 	if err != nil {
 		return nil, fmt.Errorf("failed to start goods factory: %w", err)
 	}

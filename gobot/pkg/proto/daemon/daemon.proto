@@ -547,6 +547,7 @@ message StartGoodsFactoryRequest {
   optional string system_symbol = 3; // Optional: defaults to current system
   optional string agent_symbol = 4;
   optional int32 max_iterations = 5; // Optional: -1 for infinite, 0 or unset for single run, >0 for specific count
+  bool inputs_only = 6; // If true: feed the dependency tree but do NOT harvest the fabricated output — leave it in factory stock for a construction pipeline to source
 }
 
 // StartGoodsFactoryResponse returns factory details

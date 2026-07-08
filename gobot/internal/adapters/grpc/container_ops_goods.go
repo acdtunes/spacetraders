@@ -40,6 +40,7 @@ func (s *DaemonServer) StartGoodsFactory(
 	systemSymbol string,
 	playerID int,
 	maxIterations int,
+	inputsOnly bool,
 ) (*GoodsFactoryResult, error) {
 	// Default to 1 iteration if not specified (0 or negative values except -1)
 	if maxIterations == 0 {
@@ -55,6 +56,7 @@ func (s *DaemonServer) StartGoodsFactory(
 		"system_symbol":  systemSymbol,
 		"container_id":   containerID,
 		"max_iterations": maxIterations,
+		"inputs_only":    inputsOnly,
 	}
 
 	// Create factory coordinator command from the launch config

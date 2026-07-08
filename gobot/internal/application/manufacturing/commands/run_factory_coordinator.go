@@ -317,6 +317,10 @@ func (h *RunFactoryCoordinatorHandler) executeParallelProduction(
 			"nodes_count": len(level.Nodes),
 		})
 
+		// Only the root level (the last, top-of-tree level) leaves its output in
+		// factory stock under inputs-only; every lower level's output is an input to
+		// the level above and must still be harvested + delivered.
+		isRootLevel := levelIdx == len(levels)-1
 		exec := levelExecution{
 			cmd:                  cmd,
 			shipPool:             shipPool,
@@ -324,6 +328,7 @@ func (h *RunFactoryCoordinatorHandler) executeParallelProduction(
 			shipsUsedMutex:       &shipsUsedMutex,
 			deliveryDestinations: h.mapDeliveryDestinations(ctx, cmd, levels, levelIdx),
 			opContext:            opContext,
+			inputsOnly:           cmd.InputsOnly && isRootLevel,
 		}
 
 		// Execute all nodes in this level in parallel
@@ -508,6 +513,10 @@ type levelExecution struct {
 	shipsUsedMutex       *sync.Mutex
 	deliveryDestinations map[string]string
 	opContext            *shared.OperationContext
+	// inputsOnly is set only for the root level (the target good). An intermediate
+	// fabricated good must still be harvested so it can be delivered to the level
+	// above it — only the terminal output is left in factory stock (sp-q02m).
+	inputsOnly bool
 }
 
 // executeLevelParallel executes all nodes in a level in parallel using goroutines
@@ -638,7 +647,7 @@ func (h *RunFactoryCoordinatorHandler) runNodeWorker(
 	if hasNeededCargo && deliveryDest != "" {
 		return h.deliverExistingCargo(ctx, ship, n.Good, deliveryDest, exec.cmd.PlayerID)
 	}
-	return h.produceNodeOnly(ctx, ship, n, exec.cmd.SystemSymbol, exec.cmd.PlayerID, deliveryDest, exec.opContext)
+	return h.produceNodeOnly(ctx, ship, n, exec.cmd.SystemSymbol, exec.cmd.PlayerID, deliveryDest, exec.opContext, exec.inputsOnly)
 }
 
 func (h *RunFactoryCoordinatorHandler) detectOnboardCargo(ctx context.Context, n *goods.SupplyChainNode, ship *navigation.Ship) bool {
@@ -738,19 +747,25 @@ func (h *RunFactoryCoordinatorHandler) produceNodeOnly(
 	playerID int,
 	deliveryDest string,
 	opContext *shared.OperationContext, // Operation context for transaction linking
+	inputsOnly bool, // when true (root level only), the fabricated output is left in factory stock
 ) (*mfgServices.ProductionResult, error) {
 	logger := common.LoggerFromContext(ctx)
 
-	// For leaf nodes (BUY), purchase and optionally deliver
+	// For leaf nodes (BUY), purchase and optionally deliver. A leaf is an input buy,
+	// so it is always harvested (inputs-only never suppresses input acquisition).
 	if node.IsLeaf() {
 		// First, buy the goods
-		result, err := h.productionExecutor.ProduceGood(ctx, ship, node, systemSymbol, playerID, opContext)
+		result, err := h.productionExecutor.ProduceGood(ctx, ship, node, systemSymbol, playerID, opContext, false)
 		if err != nil {
 			return nil, err
 		}
 
-		// If there's a delivery destination, deliver the cargo there
-		if deliveryDest != "" {
+		// If there's a delivery destination, deliver the cargo there — but only if the
+		// buy actually acquired units. An empty-tranche skip (sp-q02m crash #4) yields a
+		// 0-unit result; attempting to deliver nothing errors in deliverCargo ("no X in
+		// cargo") and would re-crash the very run we just kept alive, so we skip delivery
+		// and let the node complete with zero units.
+		if deliveryDest != "" && result.QuantityAcquired > 0 {
 			logger.Log("INFO", fmt.Sprintf("Delivering %d units of %s to %s", result.QuantityAcquired, node.Good, deliveryDest), map[string]interface{}{
 				"good":        node.Good,
 				"quantity":    result.QuantityAcquired,
@@ -807,8 +822,10 @@ func (h *RunFactoryCoordinatorHandler) produceNodeOnly(
 		}
 	}
 
-	// Poll for production and purchase output
-	quantity, cost, err := h.productionExecutor.PollForProduction(ctx, node.Good, exportMarket.WaypointSymbol, updatedShip.ShipSymbol(), playerIDValue, opContext)
+	// Poll for production and purchase output. In inputs-only mode (root level only)
+	// the poll confirms the output was fabricated but the harvest is skipped, leaving
+	// the good in factory stock for a construction pipeline to source (sp-q02m).
+	quantity, cost, err := h.productionExecutor.PollForProduction(ctx, node.Good, exportMarket.WaypointSymbol, updatedShip.ShipSymbol(), playerIDValue, opContext, inputsOnly)
 	if err != nil {
 		return nil, err
 	}

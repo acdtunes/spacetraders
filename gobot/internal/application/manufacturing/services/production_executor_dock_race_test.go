@@ -304,7 +304,7 @@ func TestBuyGood_TransientMustBeDocked_RedocksAndRetries(t *testing.T) {
 	executor, repo, mediator := newDockRaceExecutor(t, script)
 
 	node := goods.NewSupplyChainNode(dockRaceGood, goods.AcquisitionBuy)
-	result, err := executor.ProduceGood(context.Background(), repo.buildShip(), node, "X1-DR", 1, nil)
+	result, err := executor.ProduceGood(context.Background(), repo.buildShip(), node, "X1-DR", 1, nil, false)
 	if err != nil {
 		t.Fatalf("ProduceGood must recover from a transient dock error, got: %v", err)
 	}
@@ -326,7 +326,7 @@ func TestBuyGood_GenuineFailure_NotRetried(t *testing.T) {
 	executor, repo, mediator := newDockRaceExecutor(t, script)
 
 	node := goods.NewSupplyChainNode(dockRaceGood, goods.AcquisitionBuy)
-	_, err := executor.ProduceGood(context.Background(), repo.buildShip(), node, "X1-DR", 1, nil)
+	_, err := executor.ProduceGood(context.Background(), repo.buildShip(), node, "X1-DR", 1, nil, false)
 	if err == nil {
 		t.Fatalf("expected a genuine purchase failure to surface, got nil")
 	}
@@ -352,7 +352,7 @@ func TestBuyGood_PersistentMustBeDocked_BoundedRetries(t *testing.T) {
 	executor, repo, mediator := newDockRaceExecutor(t, script)
 
 	node := goods.NewSupplyChainNode(dockRaceGood, goods.AcquisitionBuy)
-	_, err := executor.ProduceGood(context.Background(), repo.buildShip(), node, "X1-DR", 1, nil)
+	_, err := executor.ProduceGood(context.Background(), repo.buildShip(), node, "X1-DR", 1, nil, false)
 	if err == nil {
 		t.Fatalf("expected an error after exhausting bounded dock retries, got nil")
 	}
