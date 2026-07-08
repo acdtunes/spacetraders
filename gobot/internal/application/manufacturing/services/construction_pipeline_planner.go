@@ -60,10 +60,12 @@ type StartOrResumeResult struct {
 //   - supplyChainDepth: How deep to go in the supply chain (0=full, 1=raw only, 2=intermediates, 3=buy final)
 //   - maxWorkers: Maximum parallel workers (0=unlimited, default 5)
 //   - systemSymbol: System to search for markets (empty string = derive from constructionSite)
-//   - minSupply: caller-set EXPORT sourcing floor (sp-ezz9), e.g. "SCARCE". Empty
-//     string = unset, preserving the original MODERATE default unchanged. Only
-//     applies to this initial planning pass, not to later recovery of already
-//     deferred tasks (see task_activator.go).
+//   - minSupply: caller-set EXPORT sourcing floor (sp-ezz9/sp-j2hq), e.g.
+//     "SCARCE". Empty string = "flag not passed this call" and never clobbers
+//     an already-persisted floor; it does NOT mean "reset to MODERATE". The
+//     floor is persisted on the pipeline (both for a new plan and when
+//     resuming an existing one) so the deferred-material recovery poll-loop
+//     (task_activator.go) can read it later, not just this initial pass.
 func (p *ConstructionPipelinePlanner) StartOrResume(
 	ctx context.Context,
 	playerID int,
@@ -101,6 +103,15 @@ func (p *ConstructionPipelinePlanner) StartOrResume(
 
 		if hasIncompleteTasks {
 			existingPipeline.SetTasks(persistedTasks)
+			// Only touch the persisted floor when the caller supplied a genuine,
+			// changed value: an empty minSupply means "the flag wasn't passed on
+			// this resume call" and must not clobber a floor set earlier.
+			if minSupply != "" && minSupply != existingPipeline.MinSupply() {
+				existingPipeline.SetMinSupply(minSupply)
+				if err := p.pipelineRepo.Update(ctx, existingPipeline); err != nil {
+					return nil, fmt.Errorf("failed to persist updated min-supply floor for pipeline %s: %w", existingPipeline.ID(), err)
+				}
+			}
 			logger.Log("INFO", "Resuming existing construction pipeline", map[string]interface{}{
 				"pipeline_id":       existingPipeline.ID(),
 				"construction_site": constructionSite,
@@ -156,6 +167,10 @@ func (p *ConstructionPipelinePlanner) StartOrResume(
 
 	// 4. Create pipeline
 	pipeline := manufacturing.NewConstructionPipeline(constructionSite, playerID, supplyChainDepth, maxWorkers)
+	// Persist the floor on the entity itself (sp-j2hq), not just pass it
+	// transiently to planMaterial below - a material that defers during THIS
+	// pass is recovered later by reading the floor back off the pipeline row.
+	pipeline.SetMinSupply(minSupply)
 
 	// 5. Add material targets to pipeline
 	for _, mat := range unfulfilledMaterials {

@@ -24,6 +24,24 @@ func driveTaskToCompleted(t *testing.T, task *ManufacturingTask) {
 	}
 }
 
+// sp-j2hq: a construction pipeline must remember the caller-set --min-supply
+// EXPORT sourcing floor so it can be re-read later (by the deferred-material
+// recovery poll-loop and by a resumed StartOrResume call), not just consumed
+// once during the initial planning pass.
+func TestConstructionPipelineMinSupplyDefaultsUnsetThenSettable(t *testing.T) {
+	p := NewConstructionPipeline("X1-TEST-I1", 1, 3, 5)
+
+	if got := p.MinSupply(); got != "" {
+		t.Fatalf("expected a new construction pipeline to default MinSupply to \"\" (unset), got %q", got)
+	}
+
+	p.SetMinSupply("SCARCE")
+
+	if got := p.MinSupply(); got != "SCARCE" {
+		t.Fatalf("expected SetMinSupply(\"SCARCE\") to persist, got %q", got)
+	}
+}
+
 func TestPipelineTaskStatsReflectTaskStatesAfterCompletion(t *testing.T) {
 	p := NewPipeline("LASER_RIFLES", "MARKET-SELL", 100, 1)
 	first := addNoDependencyTask(t, p)

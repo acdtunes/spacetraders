@@ -90,9 +90,9 @@ SCARCE lets the pipeline source from a market even when its supply has
 dropped all the way to SCARCE, instead of waiting for it to recover to
 MODERATE or better. Only ABUNDANT, HIGH, MODERATE, LIMITED, and SCARCE
 are accepted. Left unset, behavior is unchanged from the MODERATE default.
-This only affects the initial planning pass for a NEW pipeline - it does
-not change the floor used to recover materials already deferred on an
-existing, in-progress pipeline.
+The floor is persisted on the pipeline, so it also applies when resuming
+an existing, in-progress pipeline and when recovering materials that were
+deferred because no market met the floor at the time.
 
 The pipeline is IDEMPOTENT - running this command again will resume
 an existing pipeline instead of creating a new one.

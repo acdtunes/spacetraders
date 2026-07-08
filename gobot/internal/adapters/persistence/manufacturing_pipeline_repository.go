@@ -275,6 +275,7 @@ func (r *GormManufacturingPipelineRepository) pipelineToModel(p *manufacturing.M
 		Materials:        materialsJSON,
 		SupplyChainDepth: p.SupplyChainDepth(),
 		MaxWorkers:       p.MaxWorkers(),
+		MinSupply:        p.MinSupply(),
 	}
 }
 
@@ -299,6 +300,7 @@ func (r *GormManufacturingPipelineRepository) modelToPipeline(m *ManufacturingPi
 		derefString(m.ConstructionSite),
 		m.SupplyChainDepth,
 		m.MaxWorkers,
+		m.MinSupply,
 	)
 
 	// Parse and set materials for construction pipelines

@@ -295,12 +295,13 @@ func (a *TaskActivator) resourceDeferredConstructionTask(ctx context.Context, ta
 	}
 
 	systemSymbol := extractSystem(task.ConstructionSite())
-	// sp-ezz9: recovery always uses the default MODERATE floor ("" = unset).
-	// The caller-set --min-supply floor only applies at initial planning time
-	// (ConstructionPipelinePlanner.StartOrResume); re-running `construction
-	// start --min-supply X` against an already in-progress pipeline does not
-	// change the floor used here for tasks deferred before the flag was set.
-	source, err := a.marketLocator.FindConstructionSource(ctx, task.Good(), systemSymbol, a.playerID, "")
+	// sp-j2hq: read the caller-set --min-supply floor back off the persisted
+	// pipeline, so a floor set at planning time (or updated later via a
+	// resumed `construction start --min-supply X` call) is honored here too,
+	// not just during the initial planning pass. An unset/unreadable floor
+	// still resolves to "" and FindConstructionSource treats that as MODERATE.
+	minSupply := a.pipelineMinSupply(ctx, task.PipelineID())
+	source, err := a.marketLocator.FindConstructionSource(ctx, task.Good(), systemSymbol, a.playerID, manufacturing.SupplyLevel(minSupply))
 	if err != nil || source == nil {
 		return false
 	}
@@ -322,6 +323,21 @@ func (a *TaskActivator) resourceDeferredConstructionTask(ctx context.Context, ta
 		"construction_site": task.ConstructionSite(),
 	})
 	return true
+}
+
+// pipelineMinSupply reads the caller-set --min-supply EXPORT sourcing floor
+// persisted on a construction pipeline (sp-j2hq). Returns "" (unset) if the
+// pipeline repo is unavailable or the pipeline can't be loaded, which
+// FindConstructionSource treats as the default MODERATE floor.
+func (a *TaskActivator) pipelineMinSupply(ctx context.Context, pipelineID string) string {
+	if a.pipelineRepo == nil {
+		return ""
+	}
+	pipeline, err := a.pipelineRepo.FindByID(ctx, pipelineID)
+	if err != nil || pipeline == nil {
+		return ""
+	}
+	return pipeline.MinSupply()
 }
 
 // ActivateCollectionPipelineTasks activates PENDING and enqueues READY COLLECT_SELL tasks from COLLECTION pipelines.

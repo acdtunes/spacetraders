@@ -292,6 +292,118 @@ func TestStartOrResume_ExistingPipelineWithIncompleteTasks_Resumes(t *testing.T)
 	}
 }
 
+// sp-j2hq: StartOrResume's resume branch must persist an updated --min-supply
+// floor onto the EXISTING pipeline, not just consume it once during the
+// initial planning pass (sp-ezz9 only wired the new-pipeline path). Without
+// this, a floor supplied on a later `construction start` call against an
+// already-EXECUTING pipeline is silently dropped, so the deferred-material
+// recovery poll-loop (task_activator.go) can never observe it.
+func TestStartOrResume_ResumeWithNewMinSupply_PersistsFloorOnExistingPipeline(t *testing.T) {
+	existing := manufacturing.NewConstructionPipeline(plannerTestSite, 1, 3, 5)
+	if err := existing.Start(); err != nil {
+		t.Fatalf("existing.Start: %v", err)
+	}
+	pendingTask := manufacturing.NewDeliverToConstructionTask(
+		existing.ID(), 1, "FAB_MATS", plannerTestMarket, "", plannerTestSite, nil,
+	)
+
+	pipelineRepo := &plannerStubPipelineRepo{existing: existing}
+	taskRepo := &plannerStubTaskRepo{tasksByPipeline: map[string][]*manufacturing.ManufacturingTask{
+		existing.ID(): {pendingTask},
+	}}
+	planner := newPlannerUnderTest(pipelineRepo, taskRepo, newPlannerTestMarketRepo(t), newPlannerTestConstructionSite(t))
+
+	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 3, 5, "", "SCARCE")
+	if err != nil {
+		t.Fatalf("StartOrResume: %v", err)
+	}
+
+	if !result.IsResumed {
+		t.Fatal("expected IsResumed=true for a pipeline with incomplete tasks")
+	}
+	if got := result.Pipeline.MinSupply(); got != "SCARCE" {
+		t.Errorf("expected resumed pipeline's MinSupply floor to be updated to SCARCE, got %q", got)
+	}
+	foundUpdate := false
+	for _, p := range pipelineRepo.updated {
+		if p.ID() == existing.ID() && p.MinSupply() == "SCARCE" {
+			foundUpdate = true
+		}
+	}
+	if !foundUpdate {
+		t.Error("expected the updated MinSupply floor to be persisted via pipelineRepo.Update so recovery can see it")
+	}
+}
+
+// Companion regression test: resuming WITHOUT specifying --min-supply (the
+// CLI flag unset threads through as "") must NOT wipe out a floor that was
+// set earlier - the resumed pipeline keeps sourcing at its original floor.
+func TestStartOrResume_ResumeWithEmptyMinSupply_DoesNotClobberExistingFloor(t *testing.T) {
+	existing := manufacturing.NewConstructionPipeline(plannerTestSite, 1, 3, 5)
+	existing.SetMinSupply("SCARCE")
+	if err := existing.Start(); err != nil {
+		t.Fatalf("existing.Start: %v", err)
+	}
+	pendingTask := manufacturing.NewDeliverToConstructionTask(
+		existing.ID(), 1, "FAB_MATS", plannerTestMarket, "", plannerTestSite, nil,
+	)
+
+	pipelineRepo := &plannerStubPipelineRepo{existing: existing}
+	taskRepo := &plannerStubTaskRepo{tasksByPipeline: map[string][]*manufacturing.ManufacturingTask{
+		existing.ID(): {pendingTask},
+	}}
+	planner := newPlannerUnderTest(pipelineRepo, taskRepo, newPlannerTestMarketRepo(t), newPlannerTestConstructionSite(t))
+
+	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 3, 5, "", "")
+	if err != nil {
+		t.Fatalf("StartOrResume: %v", err)
+	}
+
+	if !result.IsResumed {
+		t.Fatal("expected IsResumed=true for a pipeline with incomplete tasks")
+	}
+	if got := result.Pipeline.MinSupply(); got != "SCARCE" {
+		t.Errorf("expected resuming with an empty minSupply to leave the existing SCARCE floor untouched, got %q", got)
+	}
+}
+
+// sp-j2hq: a brand-new pipeline must also persist its caller-set --min-supply
+// floor onto the entity (not just use it transiently while sourcing the
+// initial materials) - otherwise a material that defers during THIS SAME
+// initial planning pass would recover later at the wrong (default MODERATE)
+// floor, because the deferred-material poll-loop reads the floor back off
+// the persisted pipeline, not off this call's local minSupply argument.
+func TestStartOrResume_NewPipeline_PersistsMinSupplyFloorForLaterRecovery(t *testing.T) {
+	const circuitryScarce = "X1-PZ28-D40"
+
+	marketRepo := &plannerStubMarketRepo{
+		marketWaypoints: []string{plannerTestMarket, circuitryScarce},
+		markets: map[string]*market.Market{
+			plannerTestMarket: newTradeTypeMarket(t, plannerTestMarket, "FAB_MATS", "ABUNDANT", "STRONG", market.TradeTypeExport, 100),
+			circuitryScarce:   newTradeTypeMarket(t, circuitryScarce, "ADVANCED_CIRCUITRY", "SCARCE", "RESTRICTED", market.TradeTypeExport, 5757),
+		},
+	}
+
+	pipelineRepo := &plannerStubPipelineRepo{}
+	taskRepo := &plannerStubTaskRepo{tasksByPipeline: map[string][]*manufacturing.ManufacturingTask{}}
+	planner := newPlannerUnderTest(pipelineRepo, taskRepo, marketRepo, newPlannerTestConstructionSite(t))
+
+	result, err := planner.StartOrResume(context.Background(), 1, plannerTestSite, 3, 5, "", "SCARCE")
+	if err != nil {
+		t.Fatalf("StartOrResume: %v", err)
+	}
+
+	if got := result.Pipeline.MinSupply(); got != "SCARCE" {
+		t.Errorf("expected the new pipeline's MinSupply to be set to SCARCE, got %q", got)
+	}
+	if len(pipelineRepo.created) != 1 {
+		t.Fatalf("expected exactly 1 pipeline persisted, got %d", len(pipelineRepo.created))
+	}
+	if got := pipelineRepo.created[0].MinSupply(); got != "SCARCE" {
+		t.Errorf("expected the persisted pipeline row to carry MinSupply=SCARCE so later recovery can read it, got %q", got)
+	}
+}
+
 // singleMaterialSite builds a construction site with one unfulfilled material.
 func singleMaterialSite(good string, quantity int) *manufacturing.ConstructionSite {
 	return manufacturing.NewConstructionSite(plannerTestSite, "JUMP_GATE", []manufacturing.ConstructionMaterial{

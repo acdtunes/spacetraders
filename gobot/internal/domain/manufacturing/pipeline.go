@@ -92,6 +92,7 @@ type ManufacturingPipeline struct {
 	materials        []*ConstructionMaterialTarget // Materials to deliver with their quantities
 	supplyChainDepth int                           // How deep to go in supply chain (0=full, 1=raw, 2=intermediate)
 	maxWorkers       int                           // Maximum parallel workers (0=unlimited, default 5)
+	minSupply        string                        // Caller-set EXPORT sourcing floor (sp-ezz9/sp-j2hq), e.g. "SCARCE". Empty = unset (defaults to MODERATE).
 }
 
 // NewPipeline creates a new fabrication pipeline (counted toward max_pipelines limit)
@@ -212,6 +213,17 @@ func (p *ManufacturingPipeline) SupplyChainDepth() int { return p.supplyChainDep
 // MaxWorkers returns the maximum parallel workers for this pipeline (CONSTRUCTION pipelines only)
 // 0 = unlimited, default is 5
 func (p *ManufacturingPipeline) MaxWorkers() int { return p.maxWorkers }
+
+// MinSupply returns the caller-set EXPORT sourcing floor for this construction
+// pipeline (e.g. "SCARCE"), CONSTRUCTION pipelines only. Empty string means
+// unset, which callers (MarketLocator.FindConstructionSource) treat as the
+// default MODERATE floor.
+func (p *ManufacturingPipeline) MinSupply() string { return p.minSupply }
+
+// SetMinSupply sets the caller-set EXPORT sourcing floor for this construction
+// pipeline. Used both when planning a new pipeline and when resuming an
+// existing one with an updated --min-supply flag (sp-j2hq).
+func (p *ManufacturingPipeline) SetMinSupply(minSupply string) { p.minSupply = minSupply }
 
 // AddMaterial adds a material target to the construction pipeline
 func (p *ManufacturingPipeline) AddMaterial(material *ConstructionMaterialTarget) error {
@@ -474,6 +486,7 @@ func ReconstitutePipeline(
 	constructionSite string,
 	supplyChainDepth int,
 	maxWorkers int,
+	minSupply string,
 ) *ManufacturingPipeline {
 	// Default to FABRICATION if not specified (for backward compatibility)
 	if pipelineType == "" {
@@ -501,5 +514,6 @@ func ReconstitutePipeline(
 		materials:        make([]*ConstructionMaterialTarget, 0), // Set via SetMaterials after reconstruction
 		supplyChainDepth: supplyChainDepth,
 		maxWorkers:       maxWorkers,
+		minSupply:        minSupply,
 	}
 }

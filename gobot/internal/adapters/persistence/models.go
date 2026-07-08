@@ -337,6 +337,7 @@ type ManufacturingPipelineModel struct {
 	Materials        string  `gorm:"column:materials;type:jsonb;default:'[]'"`
 	SupplyChainDepth int     `gorm:"column:supply_chain_depth;default:0"`
 	MaxWorkers       int     `gorm:"column:max_workers;default:5"`
+	MinSupply        string  `gorm:"column:min_supply;size:20;default:''"`
 }
 
 func (ManufacturingPipelineModel) TableName() string {
