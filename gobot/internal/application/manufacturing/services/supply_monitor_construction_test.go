@@ -67,6 +67,7 @@ func newConstructionMonitor(taskRepo *constructionStubTaskRepo, pipelineRepo *co
 		NewSellMarketDistributor(nil, taskRepo),
 		nil, // marketLocator
 		nil, // storageOpRepo
+		nil, // containerReader
 		nil, // eventPublisher
 		time.Minute,
 		1,
@@ -211,6 +212,7 @@ func newConstructionMonitorWithMarket(taskRepo *constructionStubTaskRepo, pipeli
 		NewSellMarketDistributor(nil, taskRepo),
 		NewMarketLocator(marketRepo, nil, nil, nil),
 		nil, // storageOpRepo
+		nil, // containerReader
 		nil, // eventPublisher
 		time.Minute,
 		1,

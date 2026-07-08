@@ -21,19 +21,26 @@ import (
 // This atomic approach prevents the "orphaned cargo" bug where a ship buys goods
 // but a different ship gets assigned to deliver them.
 type PipelinePlanner struct {
-	marketLocator  *MarketLocator
-	storageSources *StorageSourceFinder // Optional: enables STORAGE_ACQUIRE_DELIVER tasks
+	marketLocator   *MarketLocator
+	storageSources  *StorageSourceFinder  // Optional: enables STORAGE_ACQUIRE_DELIVER tasks
+	containerReader ContainerStatusReader // Optional: gates STORAGE_ACQUIRE_DELIVER on coordinator liveness (sp-86yb)
 }
 
-// NewPipelinePlanner creates a new pipeline planner
-// storageOpRepo is optional - if nil, only ACQUIRE_DELIVER tasks will be created
+// NewPipelinePlanner creates a new pipeline planner.
+// storageOpRepo is optional - if nil, only ACQUIRE_DELIVER tasks will be created.
+// containerReader is optional - if nil, storage sources are trusted on row status
+// alone (pre-sp-86yb behavior); wiring it adds a coordinator-liveness gate so a
+// storage source whose coordinator container already died/stopped is skipped even
+// if its storage_operations row is still (stale-)RUNNING.
 func NewPipelinePlanner(
 	marketLocator *MarketLocator,
 	storageOpRepo storage.StorageOperationRepository,
+	containerReader ContainerStatusReader,
 ) *PipelinePlanner {
 	return &PipelinePlanner{
-		marketLocator:  marketLocator,
-		storageSources: NewStorageSourceFinder(storageOpRepo),
+		marketLocator:   marketLocator,
+		storageSources:  NewStorageSourceFinder(storageOpRepo, containerReader),
+		containerReader: containerReader,
 	}
 }
 
@@ -47,7 +54,7 @@ func (p *PipelinePlanner) MarketLocator() *MarketLocator {
 // This enables STORAGE_ACQUIRE_DELIVER tasks for goods available from
 // running storage operations (e.g., gas siphoning for LIQUID_HYDROGEN).
 func (p *PipelinePlanner) SetStorageOperationRepository(repo storage.StorageOperationRepository) {
-	p.storageSources = NewStorageSourceFinder(repo)
+	p.storageSources = NewStorageSourceFinder(repo, p.containerReader)
 }
 
 // PlanningContext holds state during pipeline planning

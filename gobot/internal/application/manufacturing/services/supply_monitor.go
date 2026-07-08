@@ -24,6 +24,8 @@ type SupplyMonitor struct {
 // NewSupplyMonitor creates a new supply monitor.
 // The sell market distributor and event publisher are supplied by the
 // composition root; eventPublisher may be nil when no coordination is needed.
+// containerReader may be nil to disable the coordinator-liveness check on
+// storage sources (sp-86yb defense-in-depth; see StorageSourceFinder).
 func NewSupplyMonitor(
 	marketRepo market.MarketRepository,
 	factoryTracker *manufacturing.FactoryStateTracker,
@@ -34,6 +36,7 @@ func NewSupplyMonitor(
 	sellMarketDistrib *SellMarketDistributor,
 	marketLocator *MarketLocator,
 	storageOpRepo storage.StorageOperationRepository,
+	containerReader ContainerStatusReader,
 	eventPublisher navigation.ShipEventPublisher,
 	pollInterval time.Duration,
 	playerID int,
@@ -55,7 +58,7 @@ func NewSupplyMonitor(
 		taskQueue:      taskQueue,
 		pipelineRepo:   pipelineRepo,
 		marketLocator:  marketLocator,
-		storageSources: NewStorageSourceFinder(storageOpRepo),
+		storageSources: NewStorageSourceFinder(storageOpRepo, containerReader),
 		supply:         supply,
 		playerID:       playerID,
 		notifier:       notifier,

@@ -527,8 +527,10 @@ func run(cfg *config.Config) error {
 	factoryTracker := manufacturing.NewFactoryStateTracker()
 
 	// Create pipeline planner
-	// Note: storageOperationRepo enables STORAGE_ACQUIRE_DELIVER tasks for gas goods
-	pipelinePlanner := tradingServices.NewPipelinePlanner(goodsMarketLocator, storageOperationRepo)
+	// Note: storageOperationRepo enables STORAGE_ACQUIRE_DELIVER tasks for gas goods.
+	// containerRepo gates those tasks on the storage coordinator's container actually
+	// being alive, not just its storage_operations row status (sp-86yb defense-in-depth).
+	pipelinePlanner := tradingServices.NewPipelinePlanner(goodsMarketLocator, storageOperationRepo, containerRepo)
 
 	// Manufacturing task worker services - using strategy pattern for task execution
 	mfgNavigator := mfgServices.NewManufacturingNavigator(med, shipRepo)
@@ -616,6 +618,9 @@ func run(cfg *config.Config) error {
 	parallelManufacturingCoordinatorHandler.SetStorageRecoveryService(storageRecoveryService)
 	// Enable STORAGE_ACQUIRE_DELIVER task creation for goods produced by storage operations
 	parallelManufacturingCoordinatorHandler.SetStorageOperationRepository(storageOperationRepo)
+	// Gate SupplyMonitor's ongoing storage-source lookups on coordinator liveness too
+	// (sp-86yb defense-in-depth; pipelinePlanner's own check was wired at construction).
+	parallelManufacturingCoordinatorHandler.SetContainerStatusReader(containerRepo)
 	if err := mediator.RegisterHandler[*tradingCmd.RunParallelManufacturingCoordinatorCommand](med, parallelManufacturingCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register RunParallelManufacturingCoordinator handler: %w", err)
 	}

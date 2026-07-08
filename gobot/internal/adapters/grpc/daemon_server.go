@@ -956,7 +956,48 @@ func (s *DaemonServer) StopContainer(containerID string) error {
 	}
 
 	// Now stop the parent container
-	return runner.Stop()
+	stopErr := runner.Stop()
+
+	// sp-86yb: a gas coordinator's storage_operations row must be terminalized
+	// alongside its container. Left at RUNNING, every manufacturing coordinator
+	// keeps discovering an "active" storage source at a now-dead coordinator and
+	// spawns STORAGE_ACQUIRE_DELIVER tasks against ships that are no longer there
+	// - the recurring storage wedge. ctx is still live here (unlike the stopped
+	// container's own cancelled ctx), so this write isn't racing shutdown.
+	if runner.containerEntity.Type() == container.ContainerTypeGasCoordinator {
+		s.terminalizeStorageOperation(ctx, containerID)
+	}
+
+	return stopErr
+}
+
+// terminalizeStorageOperation moves a gas coordinator's storage_operations row to
+// a terminal status when its container is stopped (sp-86yb). No-ops if there's no
+// matching row, or it already reached a terminal status (idempotent - never
+// clobbers e.g. an already-COMPLETED row back to STOPPED).
+func (s *DaemonServer) terminalizeStorageOperation(ctx context.Context, operationID string) {
+	if s.db == nil {
+		return
+	}
+
+	storageOpRepo := persistence.NewStorageOperationRepository(s.db, s.clock)
+	op, err := storageOpRepo.FindByID(ctx, operationID)
+	if err != nil {
+		fmt.Printf("Warning: failed to load storage operation %s for terminalization: %v\n", operationID, err)
+		return
+	}
+	if op == nil || op.IsFinished() {
+		return
+	}
+
+	if err := op.Stop(); err != nil {
+		fmt.Printf("Warning: failed to transition storage operation %s to stopped: %v\n", operationID, err)
+		return
+	}
+
+	if err := storageOpRepo.Update(ctx, op); err != nil {
+		fmt.Printf("Warning: failed to persist stopped storage operation %s: %v\n", operationID, err)
+	}
 }
 
 // DeleteContainer deletes a container from the database

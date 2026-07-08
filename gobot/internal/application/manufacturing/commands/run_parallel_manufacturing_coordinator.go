@@ -80,6 +80,11 @@ type RunParallelManufacturingCoordinatorHandler struct {
 	storageOpRepo    storage.StorageOperationRepository
 	containerRemover ContainerRemover
 
+	// containerStatusReader gates SupplyMonitor's storage-source lookups on
+	// coordinator liveness (sp-86yb defense-in-depth). Optional - nil disables
+	// the check, trusting the storage_operations row status alone.
+	containerStatusReader services.ContainerStatusReader
+
 	// Infrastructure
 	mediator         common.Mediator
 	daemonClient     daemon.DaemonClient
@@ -171,6 +176,15 @@ func (h *RunParallelManufacturingCoordinatorHandler) SetStorageOperationReposito
 	if h.pipelinePlanner != nil {
 		h.pipelinePlanner.SetStorageOperationRepository(repo)
 	}
+}
+
+// SetContainerStatusReader sets the optional container status reader.
+// This gates STORAGE_ACQUIRE_DELIVER task creation (both initial pipeline
+// planning and SupplyMonitor's ongoing replenishment) on the storage
+// coordinator's container actually being alive, not just its
+// storage_operations row status (sp-86yb defense-in-depth).
+func (h *RunParallelManufacturingCoordinatorHandler) SetContainerStatusReader(reader services.ContainerStatusReader) {
+	h.containerStatusReader = reader
 }
 
 // Handle executes the coordinator command
@@ -578,7 +592,8 @@ func (h *RunParallelManufacturingCoordinatorHandler) startSupplyMonitor(ctx cont
 		h.taskRepo,
 		services.NewSellMarketDistributor(h.marketRepo, h.taskRepo),
 		h.pipelinePlanner.MarketLocator(),
-		h.storageOpRepo, // For creating STORAGE_ACQUIRE_DELIVER tasks
+		h.storageOpRepo,         // For creating STORAGE_ACQUIRE_DELIVER tasks
+		h.containerStatusReader, // Gates storage sources on coordinator liveness (sp-86yb)
 		h.eventPublisher,
 		pollInterval,
 		playerID,

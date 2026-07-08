@@ -139,6 +139,7 @@ func newPinMonitor(f *pinMonitorFixture) *SupplyMonitor {
 		NewSellMarketDistributor(marketRepo, taskRepo),
 		f.locator,
 		storageOps,
+		nil, // containerReader
 		publisher,
 		time.Minute,
 		1,
