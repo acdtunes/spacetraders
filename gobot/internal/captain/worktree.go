@@ -3,6 +3,7 @@ package watchkeeper
 import (
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -26,8 +27,18 @@ type Worktree struct {
 }
 
 func gitRun(dir string, args ...string) (string, error) {
+	return gitRunEnv(dir, nil, args...)
+}
+
+// gitRunEnv runs git with extra environment variables appended to the process
+// environment — used to point plumbing at a private GIT_INDEX_FILE so tree
+// construction never reads or writes the shared checkout's real index.
+func gitRunEnv(dir string, extraEnv []string, args ...string) (string, error) {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
+	if len(extraEnv) > 0 {
+		cmd.Env = append(os.Environ(), extraEnv...)
+	}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return string(out), fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, out)
@@ -136,11 +147,13 @@ func worktreeStatusPath(porcelainLine string) string {
 
 // beadsExportNoise reports whether a path is a beads issues.jsonl export — the
 // repo root's, .beads/, or a nested city .beads/. The beads pre-commit hook
-// re-exports and re-stages these on every shared-checkout commit, so the pre-gate
-// dirty check must ignore them. This is deliberately broader than
-// beadsIssuesExempt (which, for the foreign-staged guard, does NOT exempt a stray
-// worktree-root issues.jsonl): the sp-k0di spec lists both root and .beads/
-// issues.jsonl as dirty-noise.
+// re-exports and re-stages these on every shared-checkout commit, so they are
+// perpetual noise, never an agent's fix. Every gate stage treats them as such: the
+// pre-gate dirty check ignores them (WorktreeDirty), the foreign-staged guard
+// exempts them (assertNoForeignStaged), and the squash pins them to main's version
+// so none can ride into a merge (branchTreePinnedToMain). Covers both the root and
+// .beads/ issues.jsonl, per the sp-k0di dirty-noise list (sp-jgtw folded the stray
+// root export — once deliberately surfaced — into the same uniform noise handling).
 func beadsExportNoise(path string) bool {
 	return path == "issues.jsonl" || strings.HasSuffix(path, "/issues.jsonl")
 }
@@ -188,21 +201,19 @@ func SquashMerge(repoDir, branch, message string) error {
 	return squashMergeClean(repoDir, branch, message)
 }
 
-// beadsIssuesExempt reports whether a staged path is a beads issues.jsonl export.
-// The beads pre-commit hook (core.hooksPath=.beads/hooks) re-exports and stages it
-// on every commit in the shared checkout, so aborting on it would brick every
-// gated merge. Nested beads databases (e.g. city/.beads/issues.jsonl) are staged
-// by the same hook and are exempt too. A stray worktree-root issues.jsonl is NOT
-// exempt: it signals the export misfire and should surface, not pass silently.
-func beadsIssuesExempt(path string) bool {
-	return path == ".beads/issues.jsonl" || strings.HasSuffix(path, "/.beads/issues.jsonl")
-}
-
-// assertNoForeignStaged fails if the shared checkout's index holds any staged file
-// other than the exempt beads export. A pathspec-less commit would sweep exactly
-// these staged files into the merge commit, so the gate refuses and names them
-// rather than contaminating main. Unstaged/untracked dirt is harmless to a
-// pathspec-less commit (it commits the index, not the worktree) and never aborts.
+// assertNoForeignStaged fails LOUDLY if the shared checkout's index holds a staged
+// file that is neither the branch's own work nor beads-export noise — a signal that
+// something is wrong in the shared checkout (a peer's half-staged edit). It is an
+// early, actionable abort: squashMergeClean can no longer sweep the index (it builds
+// the commit from the branch tree in a private index), so this guard exists purely to
+// surface genuinely foreign staged files rather than merge silently around them.
+//
+// Beads issues.jsonl exports (root, .beads/, or nested — anything beadsExportNoise
+// matches) are EXEMPT: the beads pre-commit hook re-exports and stages them on every
+// commit in the shared city, so aborting on them would self-brick every gated merge.
+// Unlike the pre-sp-jgtw guard, a stray ROOT issues.jsonl is exempt too — a racing
+// beads auto-committer legitimately stages it, and squashMergeClean pins every export
+// path to main's version so none can ride in regardless.
 func assertNoForeignStaged(repoDir string) error {
 	out, err := gitRun(repoDir, "diff", "--cached", "--name-only")
 	if err != nil {
@@ -211,7 +222,7 @@ func assertNoForeignStaged(repoDir string) error {
 	var foreign []string
 	for _, line := range strings.Split(out, "\n") {
 		path := strings.TrimSpace(line)
-		if path == "" || beadsIssuesExempt(path) {
+		if path == "" || beadsExportNoise(path) {
 			continue
 		}
 		foreign = append(foreign, path)
@@ -222,15 +233,15 @@ func assertNoForeignStaged(repoDir string) error {
 	return nil
 }
 
-// squashMergeClean builds the squash commit from the branch's own tree and
-// fast-forwards main to it, never reading the shared index or firing the beads
-// pre-commit hook.
+// squashMergeClean builds the squash commit from the branch's own tree (with beads
+// exports pinned to main — see branchTreePinnedToMain) and fast-forwards main to it,
+// never reading the shared index or firing the beads pre-commit hook.
 //
 // Precondition: main is an ancestor of branch (enforced upstream by the staleness
-// gate, and re-asserted here). When it holds, the squash-merge result tree is
-// exactly the branch tree, so we name it directly via commit-tree instead of
-// merging into the shared index. Committing the branch tree onto a main that has
-// advanced past the branch would REVERT main's newer commits (observed
+// gate, and re-asserted here). When it holds, the squash-merge result tree is the
+// branch tree (minus beads-export churn), so we name it directly via commit-tree
+// instead of merging into the shared index. Committing the branch tree onto a main
+// that has advanced past the branch would REVERT main's newer commits (observed
 // 2026-07-03), so a stale branch is refused rather than merged.
 //
 // The final fast-forward moves the main ref and syncs the working tree WITHOUT a
@@ -260,11 +271,20 @@ func squashMergeClean(repoDir, branch, message string) error {
 		return fmt.Errorf("%w: branch %s has no commits ahead of main — nothing to merge (commit your worktree changes first)", errEmptyMerge, branch)
 	}
 
-	tree, err := gitRun(repoDir, "rev-parse", branch+"^{tree}")
+	// Build the squash tree from the BRANCH's tree alone, then pin every beads-export
+	// path (issues.jsonl anywhere) to main's version. In the shared city the beads
+	// pre-commit hook re-exports and stages issues.jsonl INTO the worktree fix commit,
+	// so branch^{tree} ITSELF carries a churn the agent never intended (sp-jgtw;
+	// evidence 6947af6 rode a 119-line root issues.jsonl in as a 9th file). Pinning to
+	// the parent makes the squash change issues.jsonl by exactly nothing, so no stray —
+	// from the branch tree OR a racing auto-committer — can ride in. The tree is
+	// assembled in a PRIVATE index (GIT_INDEX_FILE) so the shared checkout's index and
+	// working tree are never read or written.
+	tree, err := branchTreePinnedToMain(repoDir, branch, parent)
 	if err != nil {
 		return err
 	}
-	commit, err := gitRun(repoDir, "commit-tree", strings.TrimSpace(tree), "-p", parent, "-m", message)
+	commit, err := gitRun(repoDir, "commit-tree", tree, "-p", parent, "-m", message)
 	if err != nil {
 		return err
 	}
@@ -304,4 +324,100 @@ func squashMergeClean(repoDir, branch, message string) error {
 func BranchContainsMain(repoDir, branch string) bool {
 	_, err := gitRun(repoDir, "merge-base", "--is-ancestor", "main", branch)
 	return err == nil
+}
+
+// treeBlob is a single tree entry's mode and blob object, enough to restore a path
+// to a known version via `git update-index --cacheinfo`.
+type treeBlob struct{ mode, sha string }
+
+// branchTreePinnedToMain writes a tree equal to branch^{tree} EXCEPT that every
+// beads-export path (issues.jsonl, anywhere) is forced to main's (parent's) version:
+// present in parent -> parent's blob, absent from parent -> removed. This strips the
+// beads pre-commit hook's issues.jsonl churn that rides inside branch^{tree} in the
+// shared city, so the resulting squash commit's diff is exactly the branch's real
+// change and nothing else.
+//
+// The tree is assembled in a PRIVATE index file (GIT_INDEX_FILE) so the shared
+// checkout's own index and working tree are never read or written: a concurrent beads
+// auto-committer staging issues.jsonl in the checkout cannot contribute, and the
+// caller's staged/unstaged work is left undisturbed. Returns the written tree's SHA.
+func branchTreePinnedToMain(repoDir, branch, parent string) (string, error) {
+	branchTree, err := gitRun(repoDir, "rev-parse", branch+"^{tree}")
+	if err != nil {
+		return "", err
+	}
+	branchTree = strings.TrimSpace(branchTree)
+
+	idxFile, err := os.CreateTemp("", "captain-squash-index-*")
+	if err != nil {
+		return "", err
+	}
+	idxPath := idxFile.Name()
+	_ = idxFile.Close()
+	_ = os.Remove(idxPath) // let git create a fresh index at this path
+	defer func() { _ = os.Remove(idxPath) }()
+	env := []string{"GIT_INDEX_FILE=" + idxPath}
+
+	if _, err := gitRunEnv(repoDir, env, "read-tree", branchTree); err != nil {
+		return "", err
+	}
+
+	parentBeads, err := beadsExportBlobs(repoDir, parent+"^{tree}")
+	if err != nil {
+		return "", err
+	}
+	branchBeads, err := beadsExportBlobs(repoDir, branchTree)
+	if err != nil {
+		return "", err
+	}
+	// Normalize every beads-export path seen in EITHER tree to main's version, so the
+	// pinned tree agrees with main on all of them regardless of what the branch did.
+	seen := map[string]struct{}{}
+	for path := range parentBeads {
+		seen[path] = struct{}{}
+	}
+	for path := range branchBeads {
+		seen[path] = struct{}{}
+	}
+	for path := range seen {
+		if pb, ok := parentBeads[path]; ok {
+			if _, err := gitRunEnv(repoDir, env, "update-index", "--add", "--cacheinfo", pb.mode+","+pb.sha+","+path); err != nil {
+				return "", err
+			}
+		} else if _, err := gitRunEnv(repoDir, env, "update-index", "--force-remove", path); err != nil {
+			return "", err
+		}
+	}
+
+	tree, err := gitRunEnv(repoDir, env, "write-tree")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(tree), nil
+}
+
+// beadsExportBlobs lists the beads-export paths (issues.jsonl anywhere,
+// per beadsExportNoise) in a tree, mapped to their mode+blob so the squash can pin
+// each to a known version.
+func beadsExportBlobs(repoDir, tree string) (map[string]treeBlob, error) {
+	out, err := gitRun(repoDir, "ls-tree", "-r", tree)
+	if err != nil {
+		return nil, err
+	}
+	blobs := map[string]treeBlob{}
+	for _, line := range strings.Split(out, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		meta, path, ok := strings.Cut(line, "\t")
+		if !ok || !beadsExportNoise(path) {
+			continue
+		}
+		fields := strings.Fields(meta) // <mode> <type> <sha>
+		if len(fields) < 3 {
+			continue
+		}
+		blobs[path] = treeBlob{mode: fields[0], sha: fields[2]}
+	}
+	return blobs, nil
 }

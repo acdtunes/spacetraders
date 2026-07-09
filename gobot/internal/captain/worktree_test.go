@@ -337,3 +337,78 @@ func TestSquashMergeRollsBackEmptyDiffMerge(t *testing.T) {
 	require.Equal(t, headBefore, gitOut(t, repo, "rev-parse", "HEAD"),
 		"the post-squash safety net must roll main back to pre-merge")
 }
+
+// sp-jgtw: the real stray-sweep vector k0di's smoke tests missed. In the shared
+// city the beads pre-commit hook re-exports and stages the ROOT issues.jsonl INTO
+// the fix commit made in the worktree, so branch^{tree} ITSELF carries a churn the
+// agent never intended. A verbatim `commit-tree branch^{tree}` squash rides that
+// stray straight into the merge (evidence: 6947af6 carried a 119-line root
+// issues.jsonl in as a 9th file). The squash must pin every beads-export path to
+// main's version so the merge commit's diff is exactly the branch's real change.
+func TestSquashMergeStripsBranchTreeBeadsExport(t *testing.T) {
+	t.Parallel()
+	repo := initScratchRepo(t)
+	// main already tracks a root issues.jsonl export.
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "issues.jsonl"), []byte("MAIN-EXPORT\n"), 0o644))
+	runGit(t, repo, "add", "issues.jsonl")
+	runGit(t, repo, "commit", "-m", "track root issues.jsonl")
+
+	wt, err := CreateWorktree(repo, "captain/branch-stray")
+	require.NoError(t, err)
+	defer func() { _ = wt.Remove(repo) }()
+
+	// The fix commit carries a real code change AND a beads-hook churn of the root
+	// issues.jsonl — exactly what lands in branch^{tree} when the hook fires on commit.
+	require.NoError(t, os.WriteFile(filepath.Join(wt.Dir, "fix.go"),
+		[]byte("package main\n\n// Fixed is the fix.\nfunc Fixed() bool { return true }\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(wt.Dir, "issues.jsonl"), []byte("BRANCH-HOOK-CHURN\n"), 0o644))
+	runGit(t, wt.Dir, "add", "-A")
+	runGit(t, wt.Dir, "commit", "-m", "fix + beads hook churn")
+
+	require.NoError(t, SquashMerge(repo, "captain/branch-stray", "fix: real diff only"))
+
+	// The merge keeps main's issues.jsonl, not the branch's beads-hook churn, and the
+	// export is absent from the squash commit's own diff.
+	require.Equal(t, "MAIN-EXPORT", strings.TrimSpace(gitOut(t, repo, "show", "HEAD:issues.jsonl")),
+		"the merge must keep main's issues.jsonl, not the branch's beads-hook churn")
+	changed := gitOut(t, repo, "show", "HEAD", "--name-only", "--format=")
+	require.Contains(t, changed, "fix.go", "the real fix must be in the squash commit")
+	require.NotContains(t, changed, "issues.jsonl", "no beads export may ride into the squash commit")
+}
+
+// sp-jgtw acceptance: a merge produced while the MAIN checkout is dirty with a stray
+// root issues.jsonl (modified AND staged — e.g. a racing beads auto-committer)
+// contains ONLY the branch's files. The stray neither aborts the merge nor rides
+// into it, and the checkout's local state (working tree + index) is left untouched.
+func TestSquashMergeIgnoresDirtyRepoCheckoutBeadsStray(t *testing.T) {
+	t.Parallel()
+	repo := initScratchRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "issues.jsonl"), []byte("MAIN-EXPORT\n"), 0o644))
+	runGit(t, repo, "add", "issues.jsonl")
+	runGit(t, repo, "commit", "-m", "track root issues.jsonl")
+
+	wt := branchWithFix(t, repo, "captain/dirty-repo-stray")
+	defer func() { _ = wt.Remove(repo) }()
+
+	// The main checkout drifts: root issues.jsonl modified AND staged (the sweep vector).
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "issues.jsonl"), []byte("LOCAL-DRIFT\n"), 0o644))
+	runGit(t, repo, "add", "issues.jsonl")
+
+	require.NoError(t, SquashMerge(repo, "captain/dirty-repo-stray", "fix: clean of repo drift"),
+		"a dirty root issues.jsonl in the checkout must not abort the merge")
+
+	// Only the branch's file is in the squash commit; the stray drift is not.
+	require.Equal(t, "MAIN-EXPORT", strings.TrimSpace(gitOut(t, repo, "show", "HEAD:issues.jsonl")),
+		"the squash commit must carry main's issues.jsonl, not the checkout's local drift")
+	changed := gitOut(t, repo, "show", "HEAD", "--name-only", "--format=")
+	require.Contains(t, changed, "fix.go")
+	require.NotContains(t, changed, "issues.jsonl",
+		"the checkout's stray drift must not ride into the merge")
+
+	// The checkout's local drift is left exactly as it was — working tree AND index.
+	got, err := os.ReadFile(filepath.Join(repo, "issues.jsonl"))
+	require.NoError(t, err)
+	require.Equal(t, "LOCAL-DRIFT\n", string(got), "the checkout's working-tree drift must be untouched")
+	require.Contains(t, gitOut(t, repo, "diff", "--cached", "--name-only"), "issues.jsonl",
+		"the checkout's staged drift must remain staged/undisturbed")
+}
