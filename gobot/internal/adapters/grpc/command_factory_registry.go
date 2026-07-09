@@ -224,6 +224,16 @@ func buildContractFleetCoordinatorCommand(cfg *configReader, playerID int, conta
 		ContainerID:     cfg.RequiredString("container_id"),
 		DedicatedShips:  cfg.OptionalStringSlice("dedicated_ships"),
 		StandbyStations: cfg.OptionalStringSlice("standby_stations"),
+		// Idle-gap arb knobs (sp-1z2h): absent keys → 0 → the contract
+		// package's documented defaults (IdleArbConfig.WithDefaults). The
+		// escape hatch and every parameter live in the persisted launch
+		// config so a restart recovers the same harvest behavior.
+		IdleArbDisabled:     cfg.OptionalBool("idle_arb_disabled"),
+		IdleArbReserveHulls: cfg.OptionalInt("idle_arb_reserve_hulls", 0),
+		IdleArbHubRadius:    float64(cfg.OptionalInt("idle_arb_hub_radius", 0)),
+		IdleArbMaxSpend:     cfg.OptionalInt("idle_arb_max_spend", 0),
+		IdleArbMinMargin:    cfg.OptionalInt("idle_arb_min_margin", 0),
+		IdleArbIntervalSecs: cfg.OptionalInt("idle_arb_interval_secs", 0),
 	}
 }
 

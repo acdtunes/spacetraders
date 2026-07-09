@@ -39,6 +39,11 @@ type RunFleetCoordinatorHandler struct {
 
 	// Event bus for inter-container communication
 	eventSubscriber navigation.ShipEventSubscriber
+
+	// idleArbLauncher (sp-1z2h) starts recovery-safe one-shot arb containers
+	// for the idle-gap dispatcher. Wired at daemon startup like the event
+	// subscriber; nil (e.g. in tests) leaves the harvest off entirely.
+	idleArbLauncher appContract.IdleArbLauncher
 }
 
 // NewRunFleetCoordinatorHandler creates a new fleet coordinator handler
@@ -84,6 +89,13 @@ func (h *RunFleetCoordinatorHandler) SetEventSubscriber(subscriber navigation.Sh
 	h.eventSubscriber = subscriber
 }
 
+// SetIdleArbLauncher wires the daemon-server launcher the idle-gap arb
+// dispatcher (sp-1z2h) spawns its one-shot legs through. Optional: without it
+// the coordinator runs exactly as before, no harvest.
+func (h *RunFleetCoordinatorHandler) SetIdleArbLauncher(launcher appContract.IdleArbLauncher) {
+	h.idleArbLauncher = launcher
+}
+
 // Handle executes the fleet coordinator command
 func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {
 	logger := common.LoggerFromContext(ctx)
@@ -118,6 +130,31 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 	}
 	workerCompletedCh := h.eventSubscriber.SubscribeWorkerCompleted(cmd.ContainerID)
 	defer h.eventSubscriber.UnsubscribeWorkerCompleted(cmd.ContainerID, workerCompletedCh)
+
+	// IDLE-GAP ARB (sp-1z2h): harvest the dedicated fleet's 89% idle time with
+	// hub-local one-shot guarded arb legs. The dispatcher's reserve rule keeps
+	// contract claims instant (see contract.IdleArbDispatcher); its life is
+	// bounded by this coordinator's ctx, and it is inert when no dedicated
+	// fleet exists or no launcher is wired.
+	if h.idleArbLauncher != nil && !cmd.IdleArbDisabled {
+		dispatcher := appContract.NewIdleArbDispatcher(
+			h.shipRepo,
+			h.marketRepo,
+			h.graphProvider,
+			h.idleArbLauncher,
+			h.clock,
+			cmd.PlayerID,
+			dedicatedFleetContract,
+			appContract.IdleArbConfig{
+				ReserveHulls:     cmd.IdleArbReserveHulls,
+				HubRadius:        cmd.IdleArbHubRadius,
+				MaxSpendPerLeg:   cmd.IdleArbMaxSpend,
+				MinMarginPerUnit: cmd.IdleArbMinMargin,
+				Interval:         time.Duration(cmd.IdleArbIntervalSecs) * time.Second,
+			},
+		)
+		go dispatcher.Run(ctx)
+	}
 
 	if err := h.workerLifecycleManager.StopExistingWorkers(ctx, cmd.PlayerID.Value()); err != nil {
 		logger.Log("WARNING", fmt.Sprintf("Failed during existing worker cleanup: %v", err), nil)

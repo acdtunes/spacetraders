@@ -495,6 +495,9 @@ func run(cfg *config.Config) error {
 
 	contractFleetCoordinatorHandler := contractCmd.NewRunFleetCoordinatorHandler(med, shipRepo, contractRepo, tradingMarketRepo, daemonClientLocal, graphService, waypointConverter, containerRepo, nil, captainEventRepo)
 	contractFleetCoordinatorHandler.SetEventSubscriber(shipEventBus)
+	// Idle-gap arb (sp-1z2h): the coordinator's dispatcher launches its
+	// one-shot legs through the daemon server (claim-first, recovery-safe).
+	contractFleetCoordinatorHandler.SetIdleArbLauncher(daemonServer)
 	if err := mediator.RegisterHandler[*contractCmd.RunFleetCoordinatorCommand](med, contractFleetCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register ContractFleetCoordinator handler: %w", err)
 	}

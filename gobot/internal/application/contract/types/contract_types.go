@@ -125,6 +125,18 @@ type RunFleetCoordinatorCommand struct {
 	// --standby-stations. An empty list disables homing (dedicated ships
 	// still get the claim-filter, they just don't relocate when idle).
 	StandbyStations []string
+
+	// Idle-gap arb (sp-1z2h): harvest the dedicated fleet's idle time with
+	// hub-local one-shot arb legs (see contract.IdleArbDispatcher). All knobs
+	// flow from the persisted launch config (RULINGS #5); zero values take the
+	// contract package's documented defaults. IdleArbDisabled is the escape
+	// hatch — the harvest is ON by default wherever a dedicated fleet exists.
+	IdleArbDisabled     bool
+	IdleArbReserveHulls int     // idle hulls never leased to arb (default 1)
+	IdleArbHubRadius    float64 // max sell-leg distance from the hub (default 250)
+	IdleArbMaxSpend     int     // per-leg spend cap (default 100k)
+	IdleArbMinMargin    int     // per-unit margin floor (default 1)
+	IdleArbIntervalSecs int     // dispatch tick in seconds (default 90)
 }
 
 // RunFleetCoordinatorResponse contains fleet coordination results.
