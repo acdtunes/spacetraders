@@ -784,6 +784,15 @@ func (h *RunFactoryCoordinatorHandler) detectOnboardCargo(ctx context.Context, n
 	return false
 }
 
+// operationManufacturing is the factory coordinator's fleet identity for the
+// atomic ClaimShip dedication check (sp-l7h2 Phase 2). The goods factory is
+// part of the manufacturing family, so it claims under the same operation
+// name the manufacturing task workers use (worker_lifecycle_manager.go's
+// package-local constant of the same name and value): a hull the captain
+// pins with `fleet assign --fleet manufacturing` is claimable by both, and
+// by nothing else.
+const operationManufacturing = "manufacturing"
+
 // claimShipForFactory attempts to claim a ship for the factory container and
 // reports whether the ship is usable by the caller.
 //
@@ -791,6 +800,13 @@ func (h *RunFactoryCoordinatorHandler) detectOnboardCargo(ctx context.Context, n
 // claim time (another coordinator grabbed it since discovery — a stale-snapshot
 // TOCTOU), is skipped with a WARNING and reported unclaimable, so a bad claim
 // degrades to a skipped node instead of SIGSEGV'ing the whole fleet (sp-bt6o).
+//
+// The claim write itself is ShipRepository.ClaimShip (sp-l7h2 Phase 2): a
+// row-locked transaction that re-checks assignment AND fleet dedication
+// atomically, so a hull pinned to another fleet — or grabbed by another
+// coordinator after the in-memory checks below — is rejected at the DB, not
+// clobbered. The IsIdle check below stays as the cheap layer-1 pre-filter;
+// ClaimShip is the layer-2 guarantee.
 func (h *RunFactoryCoordinatorHandler) claimShipForFactory(
 	ctx context.Context,
 	containerID string,
@@ -827,19 +843,27 @@ func (h *RunFactoryCoordinatorHandler) claimShipForFactory(
 		return false
 	}
 
-	if err := ship.AssignToContainer(containerID, h.clock); err != nil {
-		logger.Log("WARNING", "Failed to assign ship to container", map[string]interface{}{
+	// Atomic claim (sp-l7h2 Phase 2): assignment + dedication are re-checked
+	// inside ClaimShip's row-locked transaction, replacing the old read-modify-
+	// write AssignToContainer+Save whose TOCTOU let the factory clobber claims
+	// and poach fleet-dedicated hulls.
+	if err := h.shipRepo.ClaimShip(ctx, ship.ShipSymbol(), containerID, ship.PlayerID(), operationManufacturing); err != nil {
+		logger.Log("WARNING", "Failed to claim ship for factory", map[string]interface{}{
 			"ship_symbol": ship.ShipSymbol(),
 			"error":       err.Error(),
 		})
 		return false
 	}
-	if err := h.shipRepo.Save(ctx, ship); err != nil {
-		logger.Log("WARNING", "Failed to persist ship assignment", map[string]interface{}{
+
+	// Update the Ship domain entity for in-memory consistency (the DB claim is
+	// already committed). Mirrors the manufacturing worker path: a sync failure
+	// here is a WARN, not an unclaim — returning false would orphan the DB
+	// claim with no holder ever releasing it.
+	if err := ship.AssignToContainer(containerID, h.clock); err != nil {
+		logger.Log("WARNING", "Failed to update ship domain entity (DB claim already committed)", map[string]interface{}{
 			"ship_symbol": ship.ShipSymbol(),
 			"error":       err.Error(),
 		})
-		return false
 	}
 
 	shipsUsedMutex.Lock()

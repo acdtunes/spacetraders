@@ -52,6 +52,68 @@ func TestStartTerminalizesRowWhenShipClaimFails(t *testing.T) {
 	require.Nil(t, s.registeredRunner(containerID))
 }
 
+// sp-l7h2 Phase 2: a container carrying an "operation" metadata key claims its
+// hull through the atomic operation-checked ClaimShip. A hull dedicated to a
+// foreign fleet is rejected INSIDE that call's locked transaction — here the
+// rejection must ride the same sp-cr86 terminal path as any other claim
+// failure (row FAILED claim_failed, no stolen hull, no zombie runner).
+func TestStartTerminalizesRowWhenOperationClaimIsRejected(t *testing.T) {
+	s, db, playerID := newRecoveryTestServer(t)
+
+	pinnedShip := newIdleTradeShip(t, "SHIP-PINNED", playerID)
+	repo := &tradeRouteShipRepo{
+		ships:    map[string]*navigation.Ship{"SHIP-PINNED": pinnedShip},
+		claimErr: shared.NewShipDedicatedToOtherFleetError("SHIP-PINNED", "contract", "trade"),
+	}
+	s.shipRepo = repo
+
+	const containerID = "trade-route-SHIP-PINNED"
+	entity := container.NewContainer(containerID, container.ContainerTypeTrading, playerID, 1, nil,
+		map[string]interface{}{"ship_symbol": "SHIP-PINNED", "operation": "trade"}, nil)
+	require.NoError(t, s.containerRepo.Add(context.Background(), entity, "trade_route"))
+
+	runner := NewContainerRunner(entity, s.mediator, nil, s.logRepo, s.containerRepo, s.shipRepo, s.clock)
+
+	err := runner.Start()
+
+	require.Error(t, err, "a hull dedicated to another fleet must fail the operation claim")
+	requireContainerState(t, db, containerID, "FAILED", "claim_failed")
+	// The pinned hull must be untouched: not assigned by us, not force-released by
+	// our cleanup, and no legacy read-modify-write may have slipped past the claim.
+	require.False(t, pinnedShip.IsAssigned())
+	require.Empty(t, repo.recordedClaims())
+	require.Nil(t, s.registeredRunner(containerID))
+}
+
+// sp-l7h2 Phase 2 happy path: an operation-carrying container claims through
+// ClaimShip under its fleet identity — the claim is recorded with the exact
+// operation string, the hull ends up assigned, and the row lands RUNNING.
+func TestStartClaimsUnderOperationWhenMetadataPresent(t *testing.T) {
+	s, db, playerID := newRecoveryTestServer(t)
+
+	idleShip := newIdleTradeShip(t, "SHIP-TRADE", playerID)
+	repo := &tradeRouteShipRepo{ships: map[string]*navigation.Ship{"SHIP-TRADE": idleShip}}
+	s.shipRepo = repo
+
+	const containerID = "trade-route-SHIP-TRADE"
+	entity := container.NewContainer(containerID, container.ContainerTypeTrading, playerID, 1, nil,
+		map[string]interface{}{"ship_symbol": "SHIP-TRADE", "operation": "trade"}, nil)
+	require.NoError(t, s.containerRepo.Add(context.Background(), entity, "trade_route"))
+
+	runner := NewContainerRunner(entity, s.mediator, nil, s.logRepo, s.containerRepo, s.shipRepo, s.clock)
+	defer runner.cancelFunc()
+
+	err := runner.Start()
+
+	require.NoError(t, err)
+	requireContainerState(t, db, containerID, "RUNNING", "")
+	claims := repo.recordedClaims()
+	require.Len(t, claims, 1)
+	require.Equal(t, tradeShipClaim{symbol: "SHIP-TRADE", containerID: containerID, operation: "trade"}, claims[0])
+	require.True(t, idleShip.IsAssigned())
+	require.Equal(t, containerID, idleShip.ContainerID())
+}
+
 // Regression guard: a normal claim+run must be entirely unaffected by the new
 // claim-failure path - the row still lands RUNNING (not accidentally terminalized)
 // and the ship ends up assigned to the new container.

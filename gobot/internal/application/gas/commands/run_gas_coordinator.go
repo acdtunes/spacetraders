@@ -330,8 +330,18 @@ func (h *RunGasCoordinatorHandler) getOrCreateStorageOperation(
 	return operation, nil
 }
 
-// createPoolAssignments creates ship assignments for all ships
-// It first releases any existing assignments from previous runs
+// operationGas is the gas coordinator's fleet identity for the atomic
+// ClaimShip dedication check (sp-l7h2 Phase 2): a hull the captain pins to
+// another fleet is rejected inside ClaimShip's locked transaction, while a
+// hull pinned "gas" (or unpinned) claims normally.
+const operationGas = "gas"
+
+// createPoolAssignments creates ship assignments for all ships.
+// It first releases any existing assignment from previous runs, then claims
+// each hull through ShipRepository.ClaimShip (sp-l7h2 Phase 2) — the atomic,
+// operation-checked write — instead of the old read-modify-write
+// AssignToContainer+Save, so a hull pinned to a foreign fleet can never be
+// pulled into the gas pool, even by a racing claim.
 func (h *RunGasCoordinatorHandler) createPoolAssignments(
 	ctx context.Context,
 	ships []string,
@@ -345,18 +355,23 @@ func (h *RunGasCoordinatorHandler) createPoolAssignments(
 			return fmt.Errorf("failed to load ship %s: %w", shipSymbol, err)
 		}
 
-		// Release any existing assignment from previous runs
-		// This handles recovery scenarios where ships are still assigned to old containers
-		ship.ForceRelease("reassigning to new coordinator", h.clock)
-
-		// Create new assignment
-		if err := ship.AssignToContainer(containerID, h.clock); err != nil {
-			return fmt.Errorf("failed to assign %s: %w", shipSymbol, err)
+		// Release any existing assignment from a previous run's container —
+		// gas ships are explicitly configured, so a stale claim is force-taken
+		// (recovery semantics, unchanged). Only released when actually held by
+		// another container: an idle (or pinned-elsewhere-but-idle) hull gets
+		// no gratuitous release write before the claim verdict below.
+		if ship.IsAssigned() && ship.ContainerID() != containerID {
+			ship.ForceRelease("reassigning to new coordinator", h.clock)
+			if err := h.shipRepo.Save(ctx, ship); err != nil {
+				return fmt.Errorf("failed to save release for %s: %w", shipSymbol, err)
+			}
 		}
 
-		// Persist the assignment
-		if err := h.shipRepo.Save(ctx, ship); err != nil {
-			return fmt.Errorf("failed to save assignment for %s: %w", shipSymbol, err)
+		// Atomic claim: assignment + fleet dedication checked in one locked
+		// transaction. Idempotent when the hull already belongs to this
+		// coordinator container (recovery re-run).
+		if err := h.shipRepo.ClaimShip(ctx, shipSymbol, containerID, playerID, operationGas); err != nil {
+			return fmt.Errorf("failed to claim %s for gas pool: %w", shipSymbol, err)
 		}
 	}
 	return nil
@@ -388,7 +403,7 @@ func (h *RunGasCoordinatorHandler) releasePoolAssignments(
 
 type gasWorkerSpawnSpec struct {
 	idPrefix         string
-	releaseFirst     bool
+	acquire          bool // hull ENTERS the gas operation here (not handed off from the pool)
 	preReleaseReason string
 	persistLogMsg    string
 	persistLogAction string
@@ -412,12 +427,11 @@ func (h *RunGasCoordinatorHandler) spawnWorker(
 	workerContainerID := utils.GenerateContainerID(spec.idPrefix, shipSymbol)
 
 	var ship *navigation.Ship
-	if spec.releaseFirst {
+	if spec.acquire {
 		loaded, err := h.shipRepo.FindBySymbol(ctx, shipSymbol, playerID)
 		if err != nil {
 			return "", fmt.Errorf("failed to load ship: %w", err)
 		}
-		loaded.ForceRelease(spec.preReleaseReason, h.clock)
 		ship = loaded
 	}
 
@@ -430,22 +444,49 @@ func (h *RunGasCoordinatorHandler) spawnWorker(
 		return "", fmt.Errorf("failed to persist worker: %w", err)
 	}
 
-	if !spec.releaseFirst {
+	if spec.acquire {
+		// Acquisition boundary (sp-l7h2 Phase 2): this hull enters the gas
+		// operation here (it was never pooled by createPoolAssignments), so it
+		// is claimed through the atomic operation-checked ClaimShip instead of
+		// the old ForceRelease+AssignToContainer+Save read-modify-write — a
+		// hull pinned to a foreign fleet is rejected inside the locked
+		// transaction, not clobbered.
+		//
+		// A stale claim from a previous run's container is still force-taken
+		// first (config-listed hull, recovery semantics unchanged) — but only
+		// when actually held, so an idle hull gets no gratuitous release write
+		// before the claim verdict.
+		if ship.IsAssigned() && ship.ContainerID() != workerContainerID {
+			ship.ForceRelease(spec.preReleaseReason, h.clock)
+			if err := h.shipRepo.Save(ctx, ship); err != nil {
+				_ = h.daemonClient.StopContainer(ctx, workerContainerID)
+				return "", fmt.Errorf("failed to save pre-claim release: %w", err)
+			}
+		}
+		if err := h.shipRepo.ClaimShip(ctx, shipSymbol, workerContainerID, playerID, operationGas); err != nil {
+			_ = h.daemonClient.StopContainer(ctx, workerContainerID)
+			return "", fmt.Errorf("failed to claim %s for worker: %w", shipSymbol, err)
+		}
+	} else {
+		// Intra-operation handoff: the hull already belongs to this gas
+		// operation (claimed at the boundary by createPoolAssignments); moving
+		// it pool→worker is a transfer within the same owner, not a new
+		// acquisition, so it stays on the attach+Save path.
 		loaded, err := h.shipRepo.FindBySymbol(ctx, shipSymbol, playerID)
 		if err != nil {
 			_ = h.daemonClient.StopContainer(ctx, workerContainerID)
 			return "", fmt.Errorf("failed to load ship: %w", err)
 		}
 		ship = loaded
-	}
 
-	if err := spec.attach(ship, workerContainerID); err != nil {
-		_ = h.daemonClient.StopContainer(ctx, workerContainerID)
-		return "", err
-	}
-	if err := h.shipRepo.Save(ctx, ship); err != nil {
-		_ = h.daemonClient.StopContainer(ctx, workerContainerID)
-		return "", fmt.Errorf("%s: %w", spec.saveErrContext, err)
+		if err := spec.attach(ship, workerContainerID); err != nil {
+			_ = h.daemonClient.StopContainer(ctx, workerContainerID)
+			return "", err
+		}
+		if err := h.shipRepo.Save(ctx, ship); err != nil {
+			_ = h.daemonClient.StopContainer(ctx, workerContainerID)
+			return "", fmt.Errorf("%s: %w", spec.saveErrContext, err)
+		}
 	}
 
 	if err := spec.start(ctx, workerContainerID); err != nil {
@@ -480,7 +521,7 @@ func (h *RunGasCoordinatorHandler) spawnSiphonWorker(
 
 	spec := gasWorkerSpawnSpec{
 		idPrefix:         "siphon-worker",
-		releaseFirst:     false,
+		acquire:          false, // pool→worker handoff: the pool claimed this hull at the operation boundary
 		persistLogMsg:    "Siphon worker container persisting",
 		persistLogAction: "persist_siphon_worker",
 		successLogMsg:    "Siphon worker started successfully",
@@ -523,24 +564,17 @@ func (h *RunGasCoordinatorHandler) spawnStorageShipWorker(
 
 	spec := gasWorkerSpawnSpec{
 		idPrefix:         "storage-ship",
-		releaseFirst:     true,
+		acquire:          true, // storage ships are never pooled: they enter the operation at this spawn
 		preReleaseReason: "reassigning to storage ship container",
 		persistLogMsg:    "Storage ship worker container persisting",
 		persistLogAction: "persist_storage_ship_worker",
 		successLogMsg:    "Storage ship worker started successfully",
 		successLogAction: "start_storage_ship_worker",
-		saveErrContext:   "failed to save ship assignment",
 		persist: func(ctx context.Context, containerID string) error {
 			return h.daemonClient.PersistContainer(ctx, daemon.ContainerKindStorageShip, containerID, uint(cmd.PlayerID.Value()), workerCmd)
 		},
 		start: func(ctx context.Context, containerID string) error {
 			return h.daemonClient.StartContainer(ctx, daemon.ContainerKindStorageShip, containerID)
-		},
-		attach: func(ship *navigation.Ship, containerID string) error {
-			if err := ship.AssignToContainer(containerID, h.clock); err != nil {
-				return fmt.Errorf("failed to assign storage ship: %w", err)
-			}
-			return nil
 		},
 		rollback: func(ship *navigation.Ship) {
 			ship.ForceRelease("failed to start container", h.clock)

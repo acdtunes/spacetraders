@@ -17,6 +17,14 @@ type TradeRouteOperationResult struct {
 	SystemSymbol string
 }
 
+// operationTrade is the trade-route daemon's fleet identity for the atomic
+// ClaimShip dedication check (sp-l7h2 Phase 2). It matches the live fleet
+// vocabulary the captain pins with (`fleet assign --fleet trade` — e.g. the
+// bulk-circuit heavy freighter), so a trade-pinned hull is claimable by its
+// own circuits and by nothing else, and a hull pinned to any other fleet is
+// rejected inside ClaimShip's locked transaction.
+const operationTrade = "trade"
+
 // StartTradeRoute launches a single-hull pure-arbitrage circuit as a recovery-safe
 // daemon container (sp-zewt), replacing the CLI in-process runner that produced five
 // live-only bugs (r3cl/sh6w/2sam/sj7p + the vjwb orphan-on-death). Templated on the
@@ -80,6 +88,11 @@ func (s *DaemonServer) StartTradeRoute(
 		"container_id":  containerID,
 		"max_visits":    maxVisits,
 		"dest_waypoint": destWaypoint,
+		// The runner claims the hull through the atomic operation-checked
+		// ClaimShip when this key is present (sp-l7h2 Phase 2). Persisted in
+		// the launch config so a recovery rebuild claims under the same fleet
+		// identity.
+		"operation": operationTrade,
 	}
 
 	// Build the circuit command through the same factory recovery uses, so the launch

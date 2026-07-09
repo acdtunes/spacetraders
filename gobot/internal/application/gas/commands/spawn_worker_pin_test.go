@@ -19,13 +19,21 @@ type spawnShipSnapshot struct {
 	assigned    bool
 }
 
+type spawnShipClaim struct {
+	symbol      string
+	containerID string
+	operation   string
+}
+
 type spawnFakeShipRepo struct {
 	navigation.ShipRepository
 
-	ship    *navigation.Ship
-	findErr error
-	saveErr error
-	saves   []spawnShipSnapshot
+	ship     *navigation.Ship
+	findErr  error
+	saveErr  error
+	claimErr error // injected ClaimShip rejection (e.g. fleet dedication)
+	saves    []spawnShipSnapshot
+	claims   []spawnShipClaim // successful ClaimShip calls, in order
 }
 
 func (r *spawnFakeShipRepo) FindBySymbol(_ context.Context, _ string, _ shared.PlayerID) (*navigation.Ship, error) {
@@ -43,12 +51,32 @@ func (r *spawnFakeShipRepo) Save(_ context.Context, ship *navigation.Ship) error
 	return nil
 }
 
+// ClaimShip records the atomic operation-checked claim at the port boundary
+// (sp-l7h2 Phase 2). Guard logic itself lives in the real repository and is
+// covered by ship_repository_claim_dedication_test.go; rejections here are
+// injected via claimErr.
+func (r *spawnFakeShipRepo) ClaimShip(_ context.Context, symbol string, containerID string, _ shared.PlayerID, operation string) error {
+	if r.claimErr != nil {
+		return r.claimErr
+	}
+	r.claims = append(r.claims, spawnShipClaim{symbol: symbol, containerID: containerID, operation: operation})
+	return nil
+}
+
 func (r *spawnFakeShipRepo) lastSave(t *testing.T) spawnShipSnapshot {
 	t.Helper()
 	if len(r.saves) == 0 {
 		t.Fatalf("expected at least one ship Save, got none")
 	}
 	return r.saves[len(r.saves)-1]
+}
+
+func (r *spawnFakeShipRepo) lastClaim(t *testing.T) spawnShipClaim {
+	t.Helper()
+	if len(r.claims) == 0 {
+		t.Fatalf("expected at least one ClaimShip call, got none")
+	}
+	return r.claims[len(r.claims)-1]
 }
 
 type spawnFakeDaemonClient struct {
@@ -230,7 +258,7 @@ func TestSpawnSiphonWorker_StartFails_ShipTransferredBackToCoordinator(t *testin
 
 // --- storage ship worker pins ------------------------------------------------
 
-func TestSpawnStorageShipWorker_HappyPath_PersistsAssignsStarts(t *testing.T) {
+func TestSpawnStorageShipWorker_HappyPath_PersistsClaimsStarts(t *testing.T) {
 	ship := newSpawnTestShip(t, "AGENT-STORAGE-1")
 	_ = ship.AssignToContainer("old-container", shared.NewRealClock())
 	repo := &spawnFakeShipRepo{ship: ship}
@@ -253,11 +281,68 @@ func TestSpawnStorageShipWorker_HappyPath_PersistsAssignsStarts(t *testing.T) {
 	if daemon.persistedKind[0] != daemonPort.ContainerKindStorageShip || daemon.startedKind[0] != daemonPort.ContainerKindStorageShip {
 		t.Fatalf("expected storage ship kind, got persist=%v start=%v", daemon.persistedKind, daemon.startedKind)
 	}
-	if snap := repo.lastSave(t); snap.containerID != id || !snap.assigned {
-		t.Fatalf("expected ship saved assigned to %q, got %+v", id, snap)
+	// The stale claim from a previous run is force-released (persisted), and the
+	// acquisition itself goes through the atomic operation-checked ClaimShip
+	// (sp-l7h2 Phase 2) — not an AssignToContainer+Save read-modify-write.
+	if snap := repo.lastSave(t); snap.assigned {
+		t.Fatalf("expected the persisted Save to be the pre-claim release, got %+v", snap)
+	}
+	if claim := repo.lastClaim(t); claim.symbol != "AGENT-STORAGE-1" || claim.containerID != id || claim.operation != "gas" {
+		t.Fatalf("expected atomic claim of AGENT-STORAGE-1 by %q under operation gas, got %+v", id, claim)
 	}
 	if len(daemon.stopped) != 0 {
 		t.Fatalf("expected no StopContainer on happy path, got %v", daemon.stopped)
+	}
+}
+
+// A genuinely idle storage hull needs no pre-claim release at all: the spawn
+// must issue exactly one write — the atomic claim — and zero Saves, so there
+// is no release-churn on hulls nobody held.
+func TestSpawnStorageShipWorker_IdleHull_ClaimedWithoutPreRelease(t *testing.T) {
+	repo := &spawnFakeShipRepo{ship: newSpawnTestShip(t, "AGENT-STORAGE-1")}
+	daemon := &spawnFakeDaemonClient{}
+	handler := newGasSpawnHandler(repo, daemon)
+
+	id, err := handler.spawnStorageShipWorker(context.Background(), gasSpawnCommand(), "AGENT-STORAGE-1")
+	if err != nil {
+		t.Fatalf("expected happy path, got error: %v", err)
+	}
+	if len(repo.saves) != 0 {
+		t.Fatalf("expected no Save for an idle hull (claim only), got %v", repo.saves)
+	}
+	if claim := repo.lastClaim(t); claim.containerID != id || claim.operation != "gas" {
+		t.Fatalf("expected atomic claim by %q under operation gas, got %+v", id, claim)
+	}
+}
+
+// sp-l7h2 Phase 2: a hull the captain dedicated to another fleet must be
+// rejected at the acquisition boundary — spawn fails loudly, the persisted
+// worker container is stopped, and the idle hull is never touched (no release
+// write, no assignment).
+func TestSpawnStorageShipWorker_DedicatedToOtherFleet_RejectedNotStomped(t *testing.T) {
+	repo := &spawnFakeShipRepo{
+		ship:     newSpawnTestShip(t, "AGENT-STORAGE-1"),
+		claimErr: shared.NewShipDedicatedToOtherFleetError("AGENT-STORAGE-1", "contract", "gas"),
+	}
+	daemon := &spawnFakeDaemonClient{}
+	handler := newGasSpawnHandler(repo, daemon)
+
+	_, err := handler.spawnStorageShipWorker(context.Background(), gasSpawnCommand(), "AGENT-STORAGE-1")
+	if err == nil {
+		t.Fatalf("expected dedication rejection to fail the spawn")
+	}
+	var dedicated *shared.ShipDedicatedToOtherFleetError
+	if !errors.As(err, &dedicated) {
+		t.Fatalf("expected ShipDedicatedToOtherFleetError to surface verbatim, got %v", err)
+	}
+	if len(repo.saves) != 0 {
+		t.Fatalf("expected the foreign-pinned idle hull untouched (no release/assign writes), got %v", repo.saves)
+	}
+	if len(daemon.stopped) != 1 {
+		t.Fatalf("expected the persisted worker container stopped exactly once, got %v", daemon.stopped)
+	}
+	if len(daemon.started) != 0 {
+		t.Fatalf("expected worker not started on claim rejection, got %v", daemon.started)
 	}
 }
 
@@ -316,5 +401,71 @@ func TestSpawnStorageShipWorker_StartFails_ShipReleased(t *testing.T) {
 	}
 	if len(daemon.stopped) != 1 {
 		t.Fatalf("expected persisted container stopped exactly once on start failure, got %v", daemon.stopped)
+	}
+}
+
+// --- siphon pool acquisition (createPoolAssignments) --------------------------
+
+// The gas pool is the operation's acquisition boundary for siphon hulls: every
+// configured ship is claimed through the atomic operation-checked ClaimShip
+// under the gas fleet identity (sp-l7h2 Phase 2). An idle hull takes exactly
+// one write — the claim — with no gratuitous release Save in front of it.
+func TestCreatePoolAssignments_IdleHull_ClaimedUnderGasOperation(t *testing.T) {
+	repo := &spawnFakeShipRepo{ship: newSpawnTestShip(t, "AGENT-SIPHON-1")}
+	handler := newGasSpawnHandler(repo, &spawnFakeDaemonClient{})
+
+	err := handler.createPoolAssignments(context.Background(), []string{"AGENT-SIPHON-1"}, "gas-coordinator-1", shared.MustNewPlayerID(1))
+	if err != nil {
+		t.Fatalf("expected idle hull pooled, got error: %v", err)
+	}
+	if claim := repo.lastClaim(t); claim.symbol != "AGENT-SIPHON-1" || claim.containerID != "gas-coordinator-1" || claim.operation != "gas" {
+		t.Fatalf("expected atomic claim by the coordinator under operation gas, got %+v", claim)
+	}
+	if len(repo.saves) != 0 {
+		t.Fatalf("expected no Save for an idle hull (claim only), got %v", repo.saves)
+	}
+}
+
+// Recovery semantics preserved: a configured hull still held by a previous
+// run's container is force-taken — released (persisted) and then re-claimed
+// atomically by the new coordinator.
+func TestCreatePoolAssignments_StaleClaim_ForceTakenThenClaimed(t *testing.T) {
+	ship := newSpawnTestShip(t, "AGENT-SIPHON-1")
+	_ = ship.AssignToContainer("gas-coordinator-OLD", shared.NewRealClock())
+	repo := &spawnFakeShipRepo{ship: ship}
+	handler := newGasSpawnHandler(repo, &spawnFakeDaemonClient{})
+
+	err := handler.createPoolAssignments(context.Background(), []string{"AGENT-SIPHON-1"}, "gas-coordinator-1", shared.MustNewPlayerID(1))
+	if err != nil {
+		t.Fatalf("expected stale claim force-taken, got error: %v", err)
+	}
+	if snap := repo.lastSave(t); snap.assigned {
+		t.Fatalf("expected the persisted Save to be the stale-claim release, got %+v", snap)
+	}
+	if claim := repo.lastClaim(t); claim.containerID != "gas-coordinator-1" || claim.operation != "gas" {
+		t.Fatalf("expected re-claim by the new coordinator under operation gas, got %+v", claim)
+	}
+}
+
+// sp-l7h2 Phase 2: a configured hull the captain dedicated to another fleet is
+// rejected inside ClaimShip's locked transaction — pooling fails loudly, and an
+// idle foreign-pinned hull is never written to at all.
+func TestCreatePoolAssignments_DedicatedToOtherFleet_Rejected(t *testing.T) {
+	repo := &spawnFakeShipRepo{
+		ship:     newSpawnTestShip(t, "AGENT-SIPHON-1"),
+		claimErr: shared.NewShipDedicatedToOtherFleetError("AGENT-SIPHON-1", "contract", "gas"),
+	}
+	handler := newGasSpawnHandler(repo, &spawnFakeDaemonClient{})
+
+	err := handler.createPoolAssignments(context.Background(), []string{"AGENT-SIPHON-1"}, "gas-coordinator-1", shared.MustNewPlayerID(1))
+	if err == nil {
+		t.Fatalf("expected dedication rejection to fail pooling")
+	}
+	var dedicated *shared.ShipDedicatedToOtherFleetError
+	if !errors.As(err, &dedicated) {
+		t.Fatalf("expected ShipDedicatedToOtherFleetError to surface verbatim, got %v", err)
+	}
+	if len(repo.saves) != 0 {
+		t.Fatalf("expected the foreign-pinned idle hull untouched, got %v", repo.saves)
 	}
 }

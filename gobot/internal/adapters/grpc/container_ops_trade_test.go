@@ -13,13 +13,49 @@ import (
 )
 
 // tradeRouteShipRepo is an in-memory ship repository for the trade-route container
-// tests: FindBySymbol serves the hull, Save persists it, and FindByContainer supports
-// the ContainerRunner's release path. It lets a test drive DaemonServer.StartTradeRoute
-// and recovery without the live ship repo.
+// tests: FindBySymbol serves the hull, Save persists it, FindByContainer supports
+// the ContainerRunner's release path, and ClaimShip records the atomic
+// operation-checked claims the runner issues for operation-carrying containers
+// (sp-l7h2 Phase 2). It lets a test drive DaemonServer.StartTradeRoute and
+// recovery without the live ship repo.
 type tradeRouteShipRepo struct {
 	navigation.ShipRepository
 	mu    sync.Mutex
 	ships map[string]*navigation.Ship
+
+	claimErr error            // injected ClaimShip rejection (e.g. dedication)
+	claims   []tradeShipClaim // successful ClaimShip calls, in order
+}
+
+// tradeShipClaim records one ClaimShip call at the port boundary.
+type tradeShipClaim struct {
+	symbol      string
+	containerID string
+	operation   string
+}
+
+// ClaimShip mirrors the real repo's observable effect (the hull ends up
+// assigned to the container) without duplicating its guard logic — rejection
+// cases are injected via claimErr, and the dedication/assignment guards
+// themselves are covered by the repository's own tests
+// (ship_repository_claim_dedication_test.go).
+func (r *tradeRouteShipRepo) ClaimShip(ctx context.Context, symbol string, containerID string, playerID shared.PlayerID, operation string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.claimErr != nil {
+		return r.claimErr
+	}
+	r.claims = append(r.claims, tradeShipClaim{symbol: symbol, containerID: containerID, operation: operation})
+	if ship, ok := r.ships[symbol]; ok && !ship.IsAssigned() {
+		_ = ship.AssignToContainer(containerID, shared.NewRealClock())
+	}
+	return nil
+}
+
+func (r *tradeRouteShipRepo) recordedClaims() []tradeShipClaim {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]tradeShipClaim(nil), r.claims...)
 }
 
 func (r *tradeRouteShipRepo) FindBySymbol(ctx context.Context, symbol string, playerID shared.PlayerID) (*navigation.Ship, error) {
@@ -122,6 +158,9 @@ func TestStartTradeRoute_IdleShip_PersistsRecoveryVisibleContainer(t *testing.T)
 	require.Contains(t, model.Config, "TRADER-1")
 	require.Contains(t, model.Config, "X1-TR")
 	require.Contains(t, model.Config, "max_visits")
+	// The fleet identity rides in the launch config (sp-l7h2 Phase 2), so both the
+	// fresh start AND a recovery rebuild claim the hull under the trade operation.
+	require.Contains(t, model.Config, `"operation":"trade"`)
 }
 
 // Recovery must ADOPT a RUNNING trade_route container as a top-level coordinator (not

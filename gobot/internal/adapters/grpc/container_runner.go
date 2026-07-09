@@ -642,6 +642,16 @@ func (r *ContainerRunner) GetLogs(limit *int, level *string) []LogEntry {
 // createShipAssignments creates ship assignments from container metadata
 // Checks for "ship_symbol" (single ship) in the metadata map
 // This prevents concurrent containers from operating on the same ship
+//
+// Containers that also carry an "operation" metadata key (the launcher's fleet
+// identity, e.g. StartTradeRoute's "trade") claim through the atomic
+// operation-checked ShipRepository.ClaimShip (sp-l7h2 Phase 2): assignment and
+// fleet dedication are re-checked inside one row-locked transaction, so a hull
+// pinned to a foreign fleet — or grabbed between discovery and this write — is
+// rejected, never clobbered. Containers without the key (pre-change persisted
+// rows, and every kind whose coordinator claims the hull BEFORE starting the
+// runner) keep the legacy read-modify-write path, where the
+// already-assigned-to-this-container check makes the call a no-op.
 func (r *ContainerRunner) createShipAssignments() error {
 	if r.shipRepo == nil {
 		return nil
@@ -655,6 +665,18 @@ func (r *ContainerRunner) createShipAssignments() error {
 		defer cancel()
 
 		playerID := shared.MustNewPlayerID(r.containerEntity.PlayerID())
+
+		// Atomic operation-checked claim (sp-l7h2 Phase 2). Idempotent when the
+		// hull is already assigned to this container (recovered container), so
+		// recovery needs no special-casing here.
+		if operation, ok := metadata["operation"].(string); ok && operation != "" {
+			if err := r.shipRepo.ClaimShip(ctx, shipSymbol, r.containerEntity.ID(), playerID, operation); err != nil {
+				return fmt.Errorf("failed to claim ship %s: %w", shipSymbol, err)
+			}
+			r.log("INFO", fmt.Sprintf("Claimed ship %s for container (operation %s)", shipSymbol, operation), nil)
+			return nil
+		}
+
 		ship, err := r.shipRepo.FindBySymbol(ctx, shipSymbol, playerID)
 		if err != nil {
 			return fmt.Errorf("failed to load ship %s: %w", shipSymbol, err)

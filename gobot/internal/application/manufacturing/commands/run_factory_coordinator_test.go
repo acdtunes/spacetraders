@@ -110,6 +110,40 @@ type factoryFakeShipRepo struct {
 	emptyUntilCall int              // report an empty fleet while findAllCalls <= this
 	alwaysEmpty    bool             // report an empty fleet on every call
 	onFindAll      func(callNum int) // hook fired on each call (e.g. to cancel ctx)
+
+	claimErr error             // injected ClaimShip rejection (e.g. fleet dedication)
+	claims   []factoryShipClaim // successful ClaimShip calls, in order
+}
+
+// factoryShipClaim records one atomic ClaimShip call at the port boundary
+// (sp-l7h2 Phase 2).
+type factoryShipClaim struct {
+	symbol      string
+	containerID string
+	operation   string
+}
+
+// ClaimShip records the claim; guard logic (assignment + dedication) lives in
+// the real repository and is covered by ship_repository_claim_dedication_test.go.
+// Rejections are injected via claimErr.
+func (r *factoryFakeShipRepo) ClaimShip(_ context.Context, symbol string, containerID string, _ shared.PlayerID, operation string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.claimErr != nil {
+		return r.claimErr
+	}
+	r.claims = append(r.claims, factoryShipClaim{symbol: symbol, containerID: containerID, operation: operation})
+	return nil
+}
+
+func (r *factoryFakeShipRepo) lastClaim(t *testing.T) factoryShipClaim {
+	t.Helper()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.claims) == 0 {
+		t.Fatalf("expected at least one ClaimShip call, got none")
+	}
+	return r.claims[len(r.claims)-1]
 }
 
 func (r *factoryFakeShipRepo) FindAllByPlayer(ctx context.Context, playerID shared.PlayerID) ([]*navigation.Ship, error) {
@@ -433,6 +467,14 @@ func TestFactoryCoordinator_ZeroIdleHaulersAtLaunch_WaitsAndAcquires(t *testing.
 // coordinator honours by substituting a RealClock in its constructor.
 func newFactoryHandlerWithClock(t *testing.T, clock shared.Clock) *RunFactoryCoordinatorHandler {
 	t.Helper()
+	handler, _ := newFactoryHandlerAndShipRepo(t, clock)
+	return handler
+}
+
+// newFactoryHandlerAndShipRepo is newFactoryHandlerWithClock exposing the ship
+// repo fake, for tests that assert on (or reject) the atomic claim itself.
+func newFactoryHandlerAndShipRepo(t *testing.T, clock shared.Clock) (*RunFactoryCoordinatorHandler, *factoryFakeShipRepo) {
+	t.Helper()
 	marketRepo := &factoryFakeMarketRepo{}
 	shipRepo := &factoryFakeShipRepo{ships: map[string]*navigation.Ship{}}
 	resolver := mfgServices.NewSupplyChainResolver(
@@ -447,7 +489,7 @@ func newFactoryHandlerWithClock(t *testing.T, clock shared.Clock) *RunFactoryCoo
 		resolver,
 		marketLocator,
 		clock,
-	)
+	), shipRepo
 }
 
 // P0 regression (sp-bt6o): the daemon wires the factory coordinator with a nil
@@ -532,6 +574,51 @@ func TestClaimShipForFactory_IdleShip_Claimed(t *testing.T) {
 	}
 	if !shipsUsed[ship.ShipSymbol()] {
 		t.Fatal("expected the claimed hauler to be recorded in shipsUsed")
+	}
+}
+
+// sp-l7h2 Phase 2: the factory's claim write is the atomic operation-checked
+// ClaimShip under the manufacturing fleet identity — the same operation name
+// the manufacturing task workers claim with, so a hull pinned
+// `--fleet manufacturing` serves the whole family and nothing else.
+func TestClaimShipForFactory_ClaimsUnderManufacturingOperation(t *testing.T) {
+	handler, shipRepo := newFactoryHandlerAndShipRepo(t, &factoryFakeClock{})
+	ship := newTestHauler(t, "CRAFTY-3", nil)
+	shipsUsed := map[string]bool{}
+	var mu sync.Mutex
+
+	claimed := handler.claimShipForFactory(context.Background(), testContainerID, ship, shipsUsed, &mu)
+
+	if !claimed {
+		t.Fatal("expected the idle hauler claimed through ClaimShip")
+	}
+	claim := shipRepo.lastClaim(t)
+	if claim.symbol != "CRAFTY-3" || claim.containerID != testContainerID || claim.operation != "manufacturing" {
+		t.Fatalf("expected atomic claim of CRAFTY-3 by %q under operation manufacturing, got %+v", testContainerID, claim)
+	}
+}
+
+// sp-l7h2 Phase 2: a hull the captain dedicated to another fleet is rejected
+// inside ClaimShip's locked transaction — the factory must report it
+// unclaimable and leave it untouched, exactly like any other failed claim
+// (skipped node, no clobber, no panic).
+func TestClaimShipForFactory_DedicatedToOtherFleet_SkippedNotPoached(t *testing.T) {
+	handler, shipRepo := newFactoryHandlerAndShipRepo(t, &factoryFakeClock{})
+	shipRepo.claimErr = shared.NewShipDedicatedToOtherFleetError("CRAFTY-19", "trade", "manufacturing")
+	ship := newTestHauler(t, "CRAFTY-19", nil) // idle, but pinned to the trade fleet in the DB
+	shipsUsed := map[string]bool{}
+	var mu sync.Mutex
+
+	claimed := handler.claimShipForFactory(context.Background(), testContainerID, ship, shipsUsed, &mu)
+
+	if claimed {
+		t.Fatal("a hull dedicated to another fleet must not be claimed by the factory")
+	}
+	if ship.IsAssigned() {
+		t.Fatalf("factory mutated a hull it failed to claim: assigned to %q", ship.ContainerID())
+	}
+	if shipsUsed["CRAFTY-19"] {
+		t.Fatal("a rejected hull must not be recorded in shipsUsed")
 	}
 }
 
