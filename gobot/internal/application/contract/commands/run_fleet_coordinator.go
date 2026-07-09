@@ -719,7 +719,28 @@ func (h *RunFleetCoordinatorHandler) spawnContractWorker(
 }
 
 // calculateInFlightCargo calculates the total cargo of a specific trade symbol
-// that is currently held by ships working on active contract workflows.
+// that is currently held by ships working on active contract workflows, plus
+// cargo still aboard ships whose contract worker was interrupted (marked
+// FAILED) but hasn't been reclaimed to idle yet (sp-u20w). Without the second
+// source, a partially-laden hull orphaned by a dead worker read as 0 in-flight
+// the moment its worker died, letting the coordinator purchase units
+// redundant with what that hull is still physically holding.
+//
+// Ordering rules out double-counting: readoptInterruptedDeliveries (sp-tgp5)
+// runs once, before the main loop starts, and moves any successfully
+// re-adopted ship onto a fresh RUNNING container before this function is ever
+// called from inside the loop. That ship is therefore picked up exactly once,
+// by the RUNNING-workers pass below, and no longer matches
+// FindInterruptedWorkerShipsWithCargo's query (it queries by container ID,
+// and the ship has moved off the dead one — the dead container's own row can
+// still be sitting in the FAILED list, but nothing on it matches anymore). A
+// ship that is NOT re-adopted (readoption only re-adopts one hull per
+// startup) stays attached to its FAILED container - a transient state the
+// loop's unconditional ReclaimShipsFromInterruptedWorkers pass forces closed
+// on its very next iteration - so counting it here can delay, but never
+// permanently stall, the coordinator, unlike counting arbitrary idle-ship
+// cargo would.
+//
 // This is used during restart recovery to prevent duplicate cargo purchases.
 func (h *RunFleetCoordinatorHandler) calculateInFlightCargo(
 	ctx context.Context,
@@ -732,10 +753,6 @@ func (h *RunFleetCoordinatorHandler) calculateInFlightCargo(
 	activeWorkers, err := h.workerLifecycleManager.FindExistingWorkers(ctx, playerID)
 	if err != nil {
 		return 0, fmt.Errorf("failed to find existing workers: %w", err)
-	}
-
-	if len(activeWorkers) == 0 {
-		return 0, nil
 	}
 
 	totalInFlight := 0
@@ -755,6 +772,29 @@ func (h *RunFleetCoordinatorHandler) calculateInFlightCargo(
 					totalInFlight += item.Units
 					logger.Log("INFO", fmt.Sprintf("Found %d units of %s in ship %s cargo (worker %s)",
 						item.Units, tradeSymbol, ship.ShipSymbol(), worker.ID), nil)
+				}
+			}
+		}
+	}
+
+	// Also count cargo still aboard ships whose contract worker was
+	// interrupted (marked FAILED) but hasn't been reclaimed to idle yet
+	// (sp-u20w). Reuses FindInterruptedWorkerShipsWithCargo (sp-tgp5) rather
+	// than a new query, so this always agrees with readoptInterruptedDeliveries
+	// about which ships are "interrupted with cargo to salvage." A failure
+	// here is logged and swallowed, matching this function's existing
+	// "better to risk duplication than block indefinitely" contract with its
+	// caller — the RUNNING-workers total above is still valid on its own.
+	interruptedShips, err := h.workerLifecycleManager.FindInterruptedWorkerShipsWithCargo(ctx, playerID)
+	if err != nil {
+		logger.Log("WARNING", fmt.Sprintf("Failed to find interrupted-worker ships for in-flight cargo count: %v", err), nil)
+	} else {
+		for _, ship := range interruptedShips {
+			for _, item := range ship.Cargo().Inventory {
+				if item.Symbol == tradeSymbol {
+					totalInFlight += item.Units
+					logger.Log("INFO", fmt.Sprintf("Found %d units of %s in interrupted ship %s cargo (worker dead, not yet reclaimed)",
+						item.Units, tradeSymbol, ship.ShipSymbol()), nil)
 				}
 			}
 		}
