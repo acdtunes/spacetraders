@@ -461,6 +461,27 @@ func (r *ContainerRunner) signalCompletionWithStatus(success bool, errMsg string
 		"error":        errMsg,
 	})
 
+	// A contract workflow reaching a terminal state is a first-class strategic
+	// signal, not merely "a workflow finished": in ADDITION to the generic
+	// event above, emit contract.completed / contract.failed (sp-82qs) so the
+	// watchkeeper receives a contract-grade signal instead of a low-fidelity
+	// workflow.finished. Credits and contract-id are not available at this site
+	// (the container carries only container/coordinator ids) and are
+	// deliberately omitted; payout enrichment is a follow-up.
+	if r.containerEntity.Type() == container.ContainerTypeContractWorkflow {
+		contractEvent := captain.EventContractCompleted
+		if !success {
+			contractEvent = captain.EventContractFailed
+		}
+		coordinatorID, _ := metadata["coordinator_id"].(string)
+		recordCaptainEvent(contractEvent, shipSymbol, playerID, map[string]any{
+			"container_id":   containerID,
+			"coordinator_id": coordinatorID,
+			"success":        success,
+			"error":          errMsg,
+		})
+	}
+
 	publisher := resolveWorkerPublisher(r.eventPublisher)
 	if publisher == nil {
 		return
