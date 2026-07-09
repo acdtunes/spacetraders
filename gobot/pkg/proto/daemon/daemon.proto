@@ -116,6 +116,9 @@ service DaemonService {
 
   // GetConstructionStatus retrieves the status of a construction site
   rpc GetConstructionStatus(GetConstructionStatusRequest) returns (GetConstructionStatusResponse);
+
+  // StopConstructionPipeline cancels the active construction pipeline for a site (sp-yzrv)
+  rpc StopConstructionPipeline(StopConstructionPipelineRequest) returns (StopConstructionPipelineResponse);
 }
 
 // NavigateShipRequest initiates ship navigation
@@ -829,4 +832,20 @@ message GetConstructionStatusResponse {
   optional string pipeline_id = 5;
   optional string pipeline_status = 6;
   optional double pipeline_progress = 7;
+}
+
+// StopConstructionPipelineRequest cancels the active construction pipeline for a site
+message StopConstructionPipelineRequest {
+  string construction_site = 1;
+  int32 player_id = 2;
+  optional string agent_symbol = 3;
+}
+
+// StopConstructionPipelineResponse returns the result of stopping a construction pipeline
+message StopConstructionPipelineResponse {
+  string pipeline_id = 1;
+  string construction_site = 2;
+  string status = 3;         // pipeline status after cancellation (CANCELLED)
+  int32 tasks_cancelled = 4;
+  string message = 5;
 }

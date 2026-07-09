@@ -1077,3 +1077,26 @@ func (s *daemonServiceImpl) GetConstructionStatus(ctx context.Context, req *pb.G
 		PipelineProgress: result.PipelineProgress,
 	}, nil
 }
+
+// StopConstructionPipeline cancels the active construction pipeline for a site (sp-yzrv)
+func (s *daemonServiceImpl) StopConstructionPipeline(ctx context.Context, req *pb.StopConstructionPipelineRequest) (*pb.StopConstructionPipelineResponse, error) {
+	// Resolve player ID from request
+	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve player: %w", err)
+	}
+
+	// Call daemon's StopConstructionPipeline method
+	result, err := s.daemon.StopConstructionPipeline(ctx, req.ConstructionSite, playerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to stop construction pipeline: %w", err)
+	}
+
+	return &pb.StopConstructionPipelineResponse{
+		PipelineId:       result.PipelineID,
+		ConstructionSite: result.ConstructionSite,
+		Status:           result.Status,
+		TasksCancelled:   result.TasksCancelled,
+		Message:          result.Message,
+	}, nil
+}

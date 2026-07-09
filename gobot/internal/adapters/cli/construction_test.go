@@ -64,3 +64,22 @@ func TestParseMinSupplyFlag_RejectsUnknownValue(t *testing.T) {
 	require.Contains(t, err.Error(), "invalid --min-supply value")
 	require.Contains(t, err.Error(), "NOT_A_REAL_LEVEL")
 }
+
+// TestConstructionStopIsRegisteredWithExactlyOneArg pins the wiring for the
+// `construction stop <site>` verb (bead sp-yzrv): the construction command
+// surface was start/status only, so a misplanned pipeline had no way to be
+// stopped. This guards the registration itself - unlike `start`, `stop` has
+// no flags/pre-infrastructure validation logic of its own to unit test, so
+// there is nothing else here worth asserting without invoking RunE's happy
+// path, which dials a real daemon via connectDaemon() (see file comment above).
+func TestConstructionStopIsRegisteredWithExactlyOneArg(t *testing.T) {
+	root := NewConstructionCommand()
+
+	stop, _, err := root.Find([]string{"stop"})
+	require.NoError(t, err)
+	require.Equal(t, "stop <construction-site>", stop.Use)
+
+	require.NoError(t, stop.Args(stop, []string{"X1-TEST-A1"}))
+	require.Error(t, stop.Args(stop, []string{}))
+	require.Error(t, stop.Args(stop, []string{"X1-TEST-A1", "extra"}))
+}

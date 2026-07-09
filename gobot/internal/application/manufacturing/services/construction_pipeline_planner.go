@@ -9,6 +9,8 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/goods"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
 // errMaterialUnsourceable is an internal sentinel signalling that a material (or
@@ -28,20 +30,32 @@ type ConstructionPipelinePlanner struct {
 	taskRepo         manufacturing.TaskRepository
 	constructionRepo manufacturing.ConstructionSiteRepository
 	marketLocator    *MarketLocator
+	shipRepo         navigation.ShipRepository
+	clock            shared.Clock
 }
 
 // NewConstructionPipelinePlanner creates a new construction pipeline planner.
+// shipRepo and clock are only exercised by Stop() (to force-release ships an
+// ASSIGNED task had claimed); callers that never call Stop() may pass nil for
+// shipRepo. clock defaults to the real system clock when nil.
 func NewConstructionPipelinePlanner(
 	pipelineRepo manufacturing.PipelineRepository,
 	taskRepo manufacturing.TaskRepository,
 	constructionRepo manufacturing.ConstructionSiteRepository,
 	marketLocator *MarketLocator,
+	shipRepo navigation.ShipRepository,
+	clock shared.Clock,
 ) *ConstructionPipelinePlanner {
+	if clock == nil {
+		clock = shared.NewRealClock()
+	}
 	return &ConstructionPipelinePlanner{
 		pipelineRepo:     pipelineRepo,
 		taskRepo:         taskRepo,
 		constructionRepo: constructionRepo,
 		marketLocator:    marketLocator,
+		shipRepo:         shipRepo,
+		clock:            clock,
 	}
 }
 
@@ -253,6 +267,111 @@ func (p *ConstructionPipelinePlanner) StartOrResume(
 		Pipeline:  pipeline,
 		IsResumed: false,
 	}, nil
+}
+
+// StopResult contains the result of stopping a construction pipeline.
+type StopResult struct {
+	Pipeline       *manufacturing.ManufacturingPipeline
+	TasksCancelled int
+}
+
+// Stop cancels the active construction pipeline for a site (sp-yzrv). It:
+//  1. Looks up the active (non-terminal) CONSTRUCTION pipeline for the site -
+//     FindByConstructionSite only ever returns PLANNING/EXECUTING pipelines,
+//     so "no pipeline" and "already stopped" both surface as the same clear
+//     error here, which is the idempotency guard the caller needs.
+//  2. Cancels every cancellable task (PENDING/READY/ASSIGNED) belonging to
+//     THIS pipeline only - construction pipelines share the mfg coordinator
+//     with FABRICATION/COLLECTION pipelines, so Stop must never reach beyond
+//     tasks keyed under this exact pipeline ID. A task already EXECUTING is
+//     left alone to finish or fail naturally, mirroring PipelineRecycler.
+//  3. Force-releases any ship an ASSIGNED (now-cancelled) task had claimed,
+//     so the ship re-enters coordinator discovery immediately.
+//  4. Cancels the pipeline itself, which is the authoritative signal that
+//     stops new tasks from being spawned.
+//
+// Task/ship cleanup failures are logged and soft-failed (best-effort) - the
+// core "stop" contract is satisfied by cancelling the pipeline, which is a
+// hard error since it is what actually halts new task spawning.
+func (p *ConstructionPipelinePlanner) Stop(ctx context.Context, playerID int, constructionSite string) (*StopResult, error) {
+	logger := common.LoggerFromContext(ctx)
+
+	pipeline, err := p.pipelineRepo.FindByConstructionSite(ctx, constructionSite, playerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to look up construction pipeline for %s: %w", constructionSite, err)
+	}
+	if pipeline == nil {
+		return nil, fmt.Errorf("no active construction pipeline for site %s", constructionSite)
+	}
+
+	tasksCancelled := 0
+	tasks, err := p.taskRepo.FindByPipelineID(ctx, pipeline.ID())
+	if err != nil {
+		logger.Log("WARN", fmt.Sprintf("failed to load tasks for construction pipeline %s: %v", pipeline.ID(), err), nil)
+	}
+	for _, task := range tasks {
+		if !isCancellableConstructionTask(task) {
+			continue
+		}
+		if shipSymbol := task.AssignedShip(); shipSymbol != "" {
+			p.releaseShip(ctx, shipSymbol, playerID, "construction pipeline stopped")
+		}
+		if err := task.Cancel("construction pipeline stopped"); err != nil {
+			logger.Log("WARN", fmt.Sprintf("failed to cancel construction task %s: %v", task.ID(), err), nil)
+			continue
+		}
+		if err := p.taskRepo.Update(ctx, task); err != nil {
+			logger.Log("WARN", fmt.Sprintf("failed to persist cancelled construction task %s: %v", task.ID(), err), nil)
+			continue
+		}
+		tasksCancelled++
+	}
+
+	if err := pipeline.Cancel(); err != nil {
+		return nil, fmt.Errorf("failed to cancel construction pipeline %s: %w", pipeline.ID(), err)
+	}
+	if err := p.pipelineRepo.Update(ctx, pipeline); err != nil {
+		return nil, fmt.Errorf("failed to persist cancelled construction pipeline %s: %w", pipeline.ID(), err)
+	}
+
+	logger.Log("INFO", "Stopped construction pipeline", map[string]interface{}{
+		"pipeline_id":       pipeline.ID(),
+		"construction_site": constructionSite,
+		"tasks_cancelled":   tasksCancelled,
+	})
+
+	return &StopResult{Pipeline: pipeline, TasksCancelled: tasksCancelled}, nil
+}
+
+// isCancellableConstructionTask reports whether a task is safe to cancel:
+// PENDING, READY, and ASSIGNED tasks haven't started irreversible work yet.
+// EXECUTING tasks are deliberately left to complete or fail naturally.
+func isCancellableConstructionTask(task *manufacturing.ManufacturingTask) bool {
+	switch task.Status() {
+	case manufacturing.TaskStatusPending, manufacturing.TaskStatusReady, manufacturing.TaskStatusAssigned:
+		return true
+	default:
+		return false
+	}
+}
+
+// releaseShip force-releases a ship from its current assignment. Best-effort:
+// failures are logged, not propagated, since the pipeline/task cancellation
+// already satisfies the core "stop" contract.
+func (p *ConstructionPipelinePlanner) releaseShip(ctx context.Context, shipSymbol string, playerID int, reason string) {
+	logger := common.LoggerFromContext(ctx)
+	if p.shipRepo == nil {
+		return
+	}
+	ship, err := p.shipRepo.FindBySymbol(ctx, shipSymbol, shared.MustNewPlayerID(playerID))
+	if err != nil {
+		logger.Log("WARN", fmt.Sprintf("failed to load ship %s for release: %v", shipSymbol, err), nil)
+		return
+	}
+	ship.ForceRelease(reason, p.clock)
+	if err := p.shipRepo.Save(ctx, ship); err != nil {
+		logger.Log("WARN", fmt.Sprintf("failed to save ship %s release: %v", shipSymbol, err), nil)
+	}
 }
 
 // planMaterial plans the tasks needed to source and deliver ONE construction

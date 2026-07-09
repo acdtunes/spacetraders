@@ -5996,6 +5996,144 @@ func (x *GetConstructionStatusResponse) GetPipelineProgress() float64 {
 	return 0
 }
 
+// StopConstructionPipelineRequest cancels the active construction pipeline for a site
+type StopConstructionPipelineRequest struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	ConstructionSite string                 `protobuf:"bytes,1,opt,name=construction_site,json=constructionSite,proto3" json:"construction_site,omitempty"`
+	PlayerId         int32                  `protobuf:"varint,2,opt,name=player_id,json=playerId,proto3" json:"player_id,omitempty"`
+	AgentSymbol      *string                `protobuf:"bytes,3,opt,name=agent_symbol,json=agentSymbol,proto3,oneof" json:"agent_symbol,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *StopConstructionPipelineRequest) Reset() {
+	*x = StopConstructionPipelineRequest{}
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[84]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StopConstructionPipelineRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StopConstructionPipelineRequest) ProtoMessage() {}
+
+func (x *StopConstructionPipelineRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[84]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StopConstructionPipelineRequest.ProtoReflect.Descriptor instead.
+func (*StopConstructionPipelineRequest) Descriptor() ([]byte, []int) {
+	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{84}
+}
+
+func (x *StopConstructionPipelineRequest) GetConstructionSite() string {
+	if x != nil {
+		return x.ConstructionSite
+	}
+	return ""
+}
+
+func (x *StopConstructionPipelineRequest) GetPlayerId() int32 {
+	if x != nil {
+		return x.PlayerId
+	}
+	return 0
+}
+
+func (x *StopConstructionPipelineRequest) GetAgentSymbol() string {
+	if x != nil && x.AgentSymbol != nil {
+		return *x.AgentSymbol
+	}
+	return ""
+}
+
+// StopConstructionPipelineResponse returns the result of stopping a construction pipeline
+type StopConstructionPipelineResponse struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	PipelineId       string                 `protobuf:"bytes,1,opt,name=pipeline_id,json=pipelineId,proto3" json:"pipeline_id,omitempty"`
+	ConstructionSite string                 `protobuf:"bytes,2,opt,name=construction_site,json=constructionSite,proto3" json:"construction_site,omitempty"`
+	Status           string                 `protobuf:"bytes,3,opt,name=status,proto3" json:"status,omitempty"` // pipeline status after cancellation (CANCELLED)
+	TasksCancelled   int32                  `protobuf:"varint,4,opt,name=tasks_cancelled,json=tasksCancelled,proto3" json:"tasks_cancelled,omitempty"`
+	Message          string                 `protobuf:"bytes,5,opt,name=message,proto3" json:"message,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *StopConstructionPipelineResponse) Reset() {
+	*x = StopConstructionPipelineResponse{}
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[85]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StopConstructionPipelineResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StopConstructionPipelineResponse) ProtoMessage() {}
+
+func (x *StopConstructionPipelineResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_proto_daemon_daemon_proto_msgTypes[85]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StopConstructionPipelineResponse.ProtoReflect.Descriptor instead.
+func (*StopConstructionPipelineResponse) Descriptor() ([]byte, []int) {
+	return file_pkg_proto_daemon_daemon_proto_rawDescGZIP(), []int{85}
+}
+
+func (x *StopConstructionPipelineResponse) GetPipelineId() string {
+	if x != nil {
+		return x.PipelineId
+	}
+	return ""
+}
+
+func (x *StopConstructionPipelineResponse) GetConstructionSite() string {
+	if x != nil {
+		return x.ConstructionSite
+	}
+	return ""
+}
+
+func (x *StopConstructionPipelineResponse) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *StopConstructionPipelineResponse) GetTasksCancelled() int32 {
+	if x != nil {
+		return x.TasksCancelled
+	}
+	return 0
+}
+
+func (x *StopConstructionPipelineResponse) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
 var File_pkg_proto_daemon_daemon_proto protoreflect.FileDescriptor
 
 const file_pkg_proto_daemon_daemon_proto_rawDesc = "" +
@@ -6605,7 +6743,19 @@ const file_pkg_proto_daemon_daemon_proto_rawDesc = "" +
 	"\x11pipeline_progress\x18\a \x01(\x01H\x02R\x10pipelineProgress\x88\x01\x01B\x0e\n" +
 	"\f_pipeline_idB\x12\n" +
 	"\x10_pipeline_statusB\x14\n" +
-	"\x12_pipeline_progress2\x87\x18\n" +
+	"\x12_pipeline_progress\"\xa4\x01\n" +
+	"\x1fStopConstructionPipelineRequest\x12+\n" +
+	"\x11construction_site\x18\x01 \x01(\tR\x10constructionSite\x12\x1b\n" +
+	"\tplayer_id\x18\x02 \x01(\x05R\bplayerId\x12&\n" +
+	"\fagent_symbol\x18\x03 \x01(\tH\x00R\vagentSymbol\x88\x01\x01B\x0f\n" +
+	"\r_agent_symbol\"\xcb\x01\n" +
+	" StopConstructionPipelineResponse\x12\x1f\n" +
+	"\vpipeline_id\x18\x01 \x01(\tR\n" +
+	"pipelineId\x12+\n" +
+	"\x11construction_site\x18\x02 \x01(\tR\x10constructionSite\x12\x16\n" +
+	"\x06status\x18\x03 \x01(\tR\x06status\x12'\n" +
+	"\x0ftasks_cancelled\x18\x04 \x01(\x05R\x0etasksCancelled\x12\x18\n" +
+	"\amessage\x18\x05 \x01(\tR\amessage2\xf6\x18\n" +
 	"\rDaemonService\x12I\n" +
 	"\fNavigateShip\x12\x1b.daemon.NavigateShipRequest\x1a\x1c.daemon.NavigateShipResponse\x12=\n" +
 	"\bDockShip\x12\x17.daemon.DockShipRequest\x1a\x18.daemon.DockShipResponse\x12@\n" +
@@ -6643,7 +6793,8 @@ const file_pkg_proto_daemon_daemon_proto_rawDesc = "" +
 	"\x16GasExtractionOperation\x12%.daemon.GasExtractionOperationRequest\x1a&.daemon.GasExtractionOperationResponse\x12R\n" +
 	"\x0fStartTradeRoute\x12\x1e.daemon.StartTradeRouteRequest\x1a\x1f.daemon.StartTradeRouteResponse\x12p\n" +
 	"\x19StartConstructionPipeline\x12(.daemon.StartConstructionPipelineRequest\x1a).daemon.StartConstructionPipelineResponse\x12d\n" +
-	"\x15GetConstructionStatus\x12$.daemon.GetConstructionStatusRequest\x1a%.daemon.GetConstructionStatusResponseB;Z9github.com/andrescamacho/spacetraders-go/pkg/proto/daemonb\x06proto3"
+	"\x15GetConstructionStatus\x12$.daemon.GetConstructionStatusRequest\x1a%.daemon.GetConstructionStatusResponse\x12m\n" +
+	"\x18StopConstructionPipeline\x12'.daemon.StopConstructionPipelineRequest\x1a(.daemon.StopConstructionPipelineResponseB;Z9github.com/andrescamacho/spacetraders-go/pkg/proto/daemonb\x06proto3"
 
 var (
 	file_pkg_proto_daemon_daemon_proto_rawDescOnce sync.Once
@@ -6657,7 +6808,7 @@ func file_pkg_proto_daemon_daemon_proto_rawDescGZIP() []byte {
 	return file_pkg_proto_daemon_daemon_proto_rawDescData
 }
 
-var file_pkg_proto_daemon_daemon_proto_msgTypes = make([]protoimpl.MessageInfo, 85)
+var file_pkg_proto_daemon_daemon_proto_msgTypes = make([]protoimpl.MessageInfo, 87)
 var file_pkg_proto_daemon_daemon_proto_goTypes = []any{
 	(*NavigateShipRequest)(nil),                           // 0: daemon.NavigateShipRequest
 	(*NavigateShipResponse)(nil),                          // 1: daemon.NavigateShipResponse
@@ -6743,10 +6894,12 @@ var file_pkg_proto_daemon_daemon_proto_goTypes = []any{
 	(*ConstructionMaterial)(nil),                          // 81: daemon.ConstructionMaterial
 	(*GetConstructionStatusRequest)(nil),                  // 82: daemon.GetConstructionStatusRequest
 	(*GetConstructionStatusResponse)(nil),                 // 83: daemon.GetConstructionStatusResponse
-	nil,                                                   // 84: daemon.ScoutMarketsResponse.AssignmentsEntry
+	(*StopConstructionPipelineRequest)(nil),               // 84: daemon.StopConstructionPipelineRequest
+	(*StopConstructionPipelineResponse)(nil),              // 85: daemon.StopConstructionPipelineResponse
+	nil,                                                   // 86: daemon.ScoutMarketsResponse.AssignmentsEntry
 }
 var file_pkg_proto_daemon_daemon_proto_depIdxs = []int32{
-	84, // 0: daemon.ScoutMarketsResponse.assignments:type_name -> daemon.ScoutMarketsResponse.AssignmentsEntry
+	86, // 0: daemon.ScoutMarketsResponse.assignments:type_name -> daemon.ScoutMarketsResponse.AssignmentsEntry
 	23, // 1: daemon.ListContainersResponse.containers:type_name -> daemon.ContainerInfo
 	23, // 2: daemon.GetContainerResponse.container:type_name -> daemon.ContainerInfo
 	30, // 3: daemon.GetContainerLogsResponse.logs:type_name -> daemon.LogEntry
@@ -6799,44 +6952,46 @@ var file_pkg_proto_daemon_daemon_proto_depIdxs = []int32{
 	75, // 50: daemon.DaemonService.StartTradeRoute:input_type -> daemon.StartTradeRouteRequest
 	79, // 51: daemon.DaemonService.StartConstructionPipeline:input_type -> daemon.StartConstructionPipelineRequest
 	82, // 52: daemon.DaemonService.GetConstructionStatus:input_type -> daemon.GetConstructionStatusRequest
-	1,  // 53: daemon.DaemonService.NavigateShip:output_type -> daemon.NavigateShipResponse
-	3,  // 54: daemon.DaemonService.DockShip:output_type -> daemon.DockShipResponse
-	5,  // 55: daemon.DaemonService.OrbitShip:output_type -> daemon.OrbitShipResponse
-	7,  // 56: daemon.DaemonService.RefuelShip:output_type -> daemon.RefuelShipResponse
-	9,  // 57: daemon.DaemonService.JumpShip:output_type -> daemon.JumpShipResponse
-	11, // 58: daemon.DaemonService.BatchContractWorkflow:output_type -> daemon.BatchContractWorkflowResponse
-	13, // 59: daemon.DaemonService.ContractFleetCoordinator:output_type -> daemon.ContractFleetCoordinatorResponse
-	15, // 60: daemon.DaemonService.ScoutTour:output_type -> daemon.ScoutTourResponse
-	17, // 61: daemon.DaemonService.ScoutMarkets:output_type -> daemon.ScoutMarketsResponse
-	20, // 62: daemon.DaemonService.AssignScoutingFleet:output_type -> daemon.AssignScoutingFleetResponse
-	22, // 63: daemon.DaemonService.ListContainers:output_type -> daemon.ListContainersResponse
-	25, // 64: daemon.DaemonService.GetContainer:output_type -> daemon.GetContainerResponse
-	27, // 65: daemon.DaemonService.StopContainer:output_type -> daemon.StopContainerResponse
-	29, // 66: daemon.DaemonService.GetContainerLogs:output_type -> daemon.GetContainerLogsResponse
-	32, // 67: daemon.DaemonService.HealthCheck:output_type -> daemon.HealthCheckResponse
-	34, // 68: daemon.DaemonService.ListShips:output_type -> daemon.ListShipsResponse
-	37, // 69: daemon.DaemonService.GetShip:output_type -> daemon.GetShipResponse
-	39, // 70: daemon.DaemonService.RefreshShip:output_type -> daemon.RefreshShipResponse
-	41, // 71: daemon.DaemonService.ReserveShip:output_type -> daemon.ReserveShipResponse
-	43, // 72: daemon.DaemonService.ReleaseShip:output_type -> daemon.ReleaseShipResponse
-	45, // 73: daemon.DaemonService.ListWaypoints:output_type -> daemon.ListWaypointsResponse
-	47, // 74: daemon.DaemonService.GetWaypoint:output_type -> daemon.GetWaypointResponse
-	51, // 75: daemon.DaemonService.PurchaseShip:output_type -> daemon.PurchaseShipResponse
-	53, // 76: daemon.DaemonService.BatchPurchaseShips:output_type -> daemon.BatchPurchaseShipsResponse
-	55, // 77: daemon.DaemonService.GetShipyardListings:output_type -> daemon.GetShipyardListingsResponse
-	61, // 78: daemon.DaemonService.StartGoodsFactory:output_type -> daemon.StartGoodsFactoryResponse
-	63, // 79: daemon.DaemonService.StopGoodsFactory:output_type -> daemon.StopGoodsFactoryResponse
-	65, // 80: daemon.DaemonService.GetFactoryStatus:output_type -> daemon.GetFactoryStatusResponse
-	68, // 81: daemon.DaemonService.ScanArbitrageOpportunities:output_type -> daemon.ScanArbitrageOpportunitiesResponse
-	70, // 82: daemon.DaemonService.StartArbitrageCoordinator:output_type -> daemon.StartArbitrageCoordinatorResponse
-	72, // 83: daemon.DaemonService.StartParallelManufacturingCoordinator:output_type -> daemon.StartParallelManufacturingCoordinatorResponse
-	74, // 84: daemon.DaemonService.JettisonCargo:output_type -> daemon.JettisonCargoResponse
-	78, // 85: daemon.DaemonService.GasExtractionOperation:output_type -> daemon.GasExtractionOperationResponse
-	76, // 86: daemon.DaemonService.StartTradeRoute:output_type -> daemon.StartTradeRouteResponse
-	80, // 87: daemon.DaemonService.StartConstructionPipeline:output_type -> daemon.StartConstructionPipelineResponse
-	83, // 88: daemon.DaemonService.GetConstructionStatus:output_type -> daemon.GetConstructionStatusResponse
-	53, // [53:89] is the sub-list for method output_type
-	17, // [17:53] is the sub-list for method input_type
+	84, // 53: daemon.DaemonService.StopConstructionPipeline:input_type -> daemon.StopConstructionPipelineRequest
+	1,  // 54: daemon.DaemonService.NavigateShip:output_type -> daemon.NavigateShipResponse
+	3,  // 55: daemon.DaemonService.DockShip:output_type -> daemon.DockShipResponse
+	5,  // 56: daemon.DaemonService.OrbitShip:output_type -> daemon.OrbitShipResponse
+	7,  // 57: daemon.DaemonService.RefuelShip:output_type -> daemon.RefuelShipResponse
+	9,  // 58: daemon.DaemonService.JumpShip:output_type -> daemon.JumpShipResponse
+	11, // 59: daemon.DaemonService.BatchContractWorkflow:output_type -> daemon.BatchContractWorkflowResponse
+	13, // 60: daemon.DaemonService.ContractFleetCoordinator:output_type -> daemon.ContractFleetCoordinatorResponse
+	15, // 61: daemon.DaemonService.ScoutTour:output_type -> daemon.ScoutTourResponse
+	17, // 62: daemon.DaemonService.ScoutMarkets:output_type -> daemon.ScoutMarketsResponse
+	20, // 63: daemon.DaemonService.AssignScoutingFleet:output_type -> daemon.AssignScoutingFleetResponse
+	22, // 64: daemon.DaemonService.ListContainers:output_type -> daemon.ListContainersResponse
+	25, // 65: daemon.DaemonService.GetContainer:output_type -> daemon.GetContainerResponse
+	27, // 66: daemon.DaemonService.StopContainer:output_type -> daemon.StopContainerResponse
+	29, // 67: daemon.DaemonService.GetContainerLogs:output_type -> daemon.GetContainerLogsResponse
+	32, // 68: daemon.DaemonService.HealthCheck:output_type -> daemon.HealthCheckResponse
+	34, // 69: daemon.DaemonService.ListShips:output_type -> daemon.ListShipsResponse
+	37, // 70: daemon.DaemonService.GetShip:output_type -> daemon.GetShipResponse
+	39, // 71: daemon.DaemonService.RefreshShip:output_type -> daemon.RefreshShipResponse
+	41, // 72: daemon.DaemonService.ReserveShip:output_type -> daemon.ReserveShipResponse
+	43, // 73: daemon.DaemonService.ReleaseShip:output_type -> daemon.ReleaseShipResponse
+	45, // 74: daemon.DaemonService.ListWaypoints:output_type -> daemon.ListWaypointsResponse
+	47, // 75: daemon.DaemonService.GetWaypoint:output_type -> daemon.GetWaypointResponse
+	51, // 76: daemon.DaemonService.PurchaseShip:output_type -> daemon.PurchaseShipResponse
+	53, // 77: daemon.DaemonService.BatchPurchaseShips:output_type -> daemon.BatchPurchaseShipsResponse
+	55, // 78: daemon.DaemonService.GetShipyardListings:output_type -> daemon.GetShipyardListingsResponse
+	61, // 79: daemon.DaemonService.StartGoodsFactory:output_type -> daemon.StartGoodsFactoryResponse
+	63, // 80: daemon.DaemonService.StopGoodsFactory:output_type -> daemon.StopGoodsFactoryResponse
+	65, // 81: daemon.DaemonService.GetFactoryStatus:output_type -> daemon.GetFactoryStatusResponse
+	68, // 82: daemon.DaemonService.ScanArbitrageOpportunities:output_type -> daemon.ScanArbitrageOpportunitiesResponse
+	70, // 83: daemon.DaemonService.StartArbitrageCoordinator:output_type -> daemon.StartArbitrageCoordinatorResponse
+	72, // 84: daemon.DaemonService.StartParallelManufacturingCoordinator:output_type -> daemon.StartParallelManufacturingCoordinatorResponse
+	74, // 85: daemon.DaemonService.JettisonCargo:output_type -> daemon.JettisonCargoResponse
+	78, // 86: daemon.DaemonService.GasExtractionOperation:output_type -> daemon.GasExtractionOperationResponse
+	76, // 87: daemon.DaemonService.StartTradeRoute:output_type -> daemon.StartTradeRouteResponse
+	80, // 88: daemon.DaemonService.StartConstructionPipeline:output_type -> daemon.StartConstructionPipelineResponse
+	83, // 89: daemon.DaemonService.GetConstructionStatus:output_type -> daemon.GetConstructionStatusResponse
+	85, // 90: daemon.DaemonService.StopConstructionPipeline:output_type -> daemon.StopConstructionPipelineResponse
+	54, // [54:91] is the sub-list for method output_type
+	17, // [17:54] is the sub-list for method input_type
 	17, // [17:17] is the sub-list for extension type_name
 	17, // [17:17] is the sub-list for extension extendee
 	0,  // [0:17] is the sub-list for field type_name
@@ -6877,13 +7032,14 @@ func file_pkg_proto_daemon_daemon_proto_init() {
 	file_pkg_proto_daemon_daemon_proto_msgTypes[79].OneofWrappers = []any{}
 	file_pkg_proto_daemon_daemon_proto_msgTypes[82].OneofWrappers = []any{}
 	file_pkg_proto_daemon_daemon_proto_msgTypes[83].OneofWrappers = []any{}
+	file_pkg_proto_daemon_daemon_proto_msgTypes[84].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pkg_proto_daemon_daemon_proto_rawDesc), len(file_pkg_proto_daemon_daemon_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   85,
+			NumMessages:   87,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

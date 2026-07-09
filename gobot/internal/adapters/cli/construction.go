@@ -56,6 +56,7 @@ Examples:
 	// Add subcommands
 	cmd.AddCommand(newConstructionStartCommand())
 	cmd.AddCommand(newConstructionStatusCommand())
+	cmd.AddCommand(newConstructionStopCommand())
 
 	return cmd
 }
@@ -275,6 +276,71 @@ Examples:
 				if result.PipelineProgress != nil {
 					fmt.Printf("  Progress: %.1f%%\n", *result.PipelineProgress)
 				}
+			}
+
+			return nil
+		},
+	}
+
+	return cmd
+}
+
+// newConstructionStopCommand creates the construction stop subcommand
+func newConstructionStopCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "stop <construction-site>",
+		Short: "Stop the active construction pipeline for a site",
+		Long: `Stop the active construction pipeline for a construction site.
+
+This command cancels the pipeline (so it stops spawning new tasks) and
+cancels any not-yet-started tasks (PENDING/READY/ASSIGNED). Tasks already
+EXECUTING are left to finish or fail naturally. Ships claimed by a
+now-cancelled task are released so they re-enter fleet discovery.
+
+Returns a clear error if there is no active construction pipeline for the
+site (never started, or already stopped).
+
+Examples:
+  spacetraders construction stop X1-FB5-I61 --player-id 1`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			constructionSite := args[0]
+
+			// Resolve player from flags or defaults
+			playerIdent, err := resolvePlayerIdentifier()
+			if err != nil {
+				return err
+			}
+
+			// Create gRPC client
+			client, err := connectDaemon()
+			if err != nil {
+				return err
+			}
+			defer client.Close()
+
+			// Stop construction pipeline
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			result, err := client.StopConstructionPipeline(
+				ctx,
+				constructionSite,
+				int32(playerIdent.PlayerID),
+				&playerIdent.AgentSymbol,
+			)
+			if err != nil {
+				return fmt.Errorf("failed to stop construction pipeline: %w", err)
+			}
+
+			fmt.Println("Stopped construction pipeline")
+			fmt.Printf("  Pipeline ID: %s\n", result.PipelineID)
+			fmt.Printf("  Construction Site: %s\n", result.ConstructionSite)
+			fmt.Printf("  Status: %s\n", result.Status)
+			fmt.Printf("  Tasks Cancelled: %d\n", result.TasksCancelled)
+
+			if result.Message != "" {
+				fmt.Printf("\n%s\n", result.Message)
 			}
 
 			return nil

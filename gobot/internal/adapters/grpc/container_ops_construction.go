@@ -66,6 +66,8 @@ func (s *DaemonServer) StartConstructionPipeline(ctx context.Context, constructi
 		taskRepo,
 		constructionRepo,
 		marketLocator,
+		s.shipRepo,
+		s.clock,
 	)
 
 	// Start or resume pipeline
@@ -157,6 +159,45 @@ func (s *DaemonServer) GetConstructionStatus(ctx context.Context, constructionSi
 	}
 
 	return result, nil
+}
+
+// StopConstructionPipelineResult contains the result of stopping a construction pipeline.
+type StopConstructionPipelineResult struct {
+	PipelineID       string
+	ConstructionSite string
+	Status           string
+	TasksCancelled   int32
+	Message          string
+}
+
+// StopConstructionPipeline cancels the active construction pipeline for a site (sp-yzrv).
+// Returns a clear error if no active (non-terminal) construction pipeline exists for
+// the site - this covers both "never started" and "already stopped" uniformly.
+func (s *DaemonServer) StopConstructionPipeline(ctx context.Context, constructionSite string, playerID int) (*StopConstructionPipelineResult, error) {
+	pipelineRepo := persistence.NewGormManufacturingPipelineRepository(s.db)
+	taskRepo := persistence.NewGormManufacturingTaskRepository(s.db)
+
+	planner := services.NewConstructionPipelinePlanner(
+		pipelineRepo,
+		taskRepo,
+		nil,
+		nil,
+		s.shipRepo,
+		s.clock,
+	)
+
+	result, err := planner.Stop(ctx, playerID, constructionSite)
+	if err != nil {
+		return nil, fmt.Errorf("failed to stop construction pipeline: %w", err)
+	}
+
+	return &StopConstructionPipelineResult{
+		PipelineID:       result.Pipeline.ID(),
+		ConstructionSite: constructionSite,
+		Status:           string(result.Pipeline.Status()),
+		TasksCancelled:   int32(result.TasksCancelled),
+		Message:          fmt.Sprintf("Stopped construction pipeline for %s (%d tasks cancelled)", constructionSite, result.TasksCancelled),
+	}, nil
 }
 
 // getAPIClient returns the shared API client for construction operations.

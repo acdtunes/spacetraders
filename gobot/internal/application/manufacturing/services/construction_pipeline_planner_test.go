@@ -42,6 +42,7 @@ type plannerStubTaskRepo struct {
 
 	tasksByPipeline map[string][]*manufacturing.ManufacturingTask
 	createdBatches  [][]*manufacturing.ManufacturingTask
+	updated         []*manufacturing.ManufacturingTask
 }
 
 func (r *plannerStubTaskRepo) FindByPipelineID(_ context.Context, pipelineID string) ([]*manufacturing.ManufacturingTask, error) {
@@ -50,6 +51,11 @@ func (r *plannerStubTaskRepo) FindByPipelineID(_ context.Context, pipelineID str
 
 func (r *plannerStubTaskRepo) CreateBatch(_ context.Context, tasks []*manufacturing.ManufacturingTask) error {
 	r.createdBatches = append(r.createdBatches, tasks)
+	return nil
+}
+
+func (r *plannerStubTaskRepo) Update(_ context.Context, task *manufacturing.ManufacturingTask) error {
+	r.updated = append(r.updated, task)
 	return nil
 }
 
@@ -124,6 +130,8 @@ func newPlannerUnderTest(pipelineRepo *plannerStubPipelineRepo, taskRepo *planne
 		taskRepo,
 		&plannerStubConstructionRepo{site: site},
 		NewMarketLocator(marketRepo, nil, nil, nil),
+		nil,
+		nil,
 	)
 }
 

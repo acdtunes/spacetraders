@@ -1237,3 +1237,39 @@ func (c *DaemonClient) GetConstructionStatus(
 		PipelineProgress: resp.PipelineProgress,
 	}, nil
 }
+
+// StopConstructionPipelineResponse contains the result of stopping a construction pipeline
+type StopConstructionPipelineResponse struct {
+	PipelineID       string
+	ConstructionSite string
+	Status           string
+	TasksCancelled   int32
+	Message          string
+}
+
+// StopConstructionPipeline cancels the active construction pipeline for a site (sp-yzrv)
+func (c *DaemonClient) StopConstructionPipeline(
+	ctx context.Context,
+	constructionSite string,
+	playerID int32,
+	agentSymbol *string,
+) (*StopConstructionPipelineResponse, error) {
+	req := &pb.StopConstructionPipelineRequest{
+		ConstructionSite: constructionSite,
+		PlayerId:         playerID,
+		AgentSymbol:      agentSymbol,
+	}
+
+	resp, err := c.client.StopConstructionPipeline(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf(grpcCallFailed, err)
+	}
+
+	return &StopConstructionPipelineResponse{
+		PipelineID:       resp.PipelineId,
+		ConstructionSite: resp.ConstructionSite,
+		Status:           resp.Status,
+		TasksCancelled:   resp.TasksCancelled,
+		Message:          resp.Message,
+	}, nil
+}

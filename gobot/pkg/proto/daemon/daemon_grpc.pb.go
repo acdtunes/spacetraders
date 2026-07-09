@@ -55,6 +55,7 @@ const (
 	DaemonService_StartTradeRoute_FullMethodName                       = "/daemon.DaemonService/StartTradeRoute"
 	DaemonService_StartConstructionPipeline_FullMethodName             = "/daemon.DaemonService/StartConstructionPipeline"
 	DaemonService_GetConstructionStatus_FullMethodName                 = "/daemon.DaemonService/GetConstructionStatus"
+	DaemonService_StopConstructionPipeline_FullMethodName              = "/daemon.DaemonService/StopConstructionPipeline"
 )
 
 // DaemonServiceClient is the client API for DaemonService service.
@@ -138,6 +139,8 @@ type DaemonServiceClient interface {
 	StartConstructionPipeline(ctx context.Context, in *StartConstructionPipelineRequest, opts ...grpc.CallOption) (*StartConstructionPipelineResponse, error)
 	// GetConstructionStatus retrieves the status of a construction site
 	GetConstructionStatus(ctx context.Context, in *GetConstructionStatusRequest, opts ...grpc.CallOption) (*GetConstructionStatusResponse, error)
+	// StopConstructionPipeline cancels the active construction pipeline for a site (sp-yzrv)
+	StopConstructionPipeline(ctx context.Context, in *StopConstructionPipelineRequest, opts ...grpc.CallOption) (*StopConstructionPipelineResponse, error)
 }
 
 type daemonServiceClient struct {
@@ -508,6 +511,16 @@ func (c *daemonServiceClient) GetConstructionStatus(ctx context.Context, in *Get
 	return out, nil
 }
 
+func (c *daemonServiceClient) StopConstructionPipeline(ctx context.Context, in *StopConstructionPipelineRequest, opts ...grpc.CallOption) (*StopConstructionPipelineResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(StopConstructionPipelineResponse)
+	err := c.cc.Invoke(ctx, DaemonService_StopConstructionPipeline_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // DaemonServiceServer is the server API for DaemonService service.
 // All implementations must embed UnimplementedDaemonServiceServer
 // for forward compatibility.
@@ -589,6 +602,8 @@ type DaemonServiceServer interface {
 	StartConstructionPipeline(context.Context, *StartConstructionPipelineRequest) (*StartConstructionPipelineResponse, error)
 	// GetConstructionStatus retrieves the status of a construction site
 	GetConstructionStatus(context.Context, *GetConstructionStatusRequest) (*GetConstructionStatusResponse, error)
+	// StopConstructionPipeline cancels the active construction pipeline for a site (sp-yzrv)
+	StopConstructionPipeline(context.Context, *StopConstructionPipelineRequest) (*StopConstructionPipelineResponse, error)
 	mustEmbedUnimplementedDaemonServiceServer()
 }
 
@@ -706,6 +721,9 @@ func (UnimplementedDaemonServiceServer) StartConstructionPipeline(context.Contex
 }
 func (UnimplementedDaemonServiceServer) GetConstructionStatus(context.Context, *GetConstructionStatusRequest) (*GetConstructionStatusResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetConstructionStatus not implemented")
+}
+func (UnimplementedDaemonServiceServer) StopConstructionPipeline(context.Context, *StopConstructionPipelineRequest) (*StopConstructionPipelineResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method StopConstructionPipeline not implemented")
 }
 func (UnimplementedDaemonServiceServer) mustEmbedUnimplementedDaemonServiceServer() {}
 func (UnimplementedDaemonServiceServer) testEmbeddedByValue()                       {}
@@ -1376,6 +1394,24 @@ func _DaemonService_GetConstructionStatus_Handler(srv interface{}, ctx context.C
 	return interceptor(ctx, in, info, handler)
 }
 
+func _DaemonService_StopConstructionPipeline_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(StopConstructionPipelineRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).StopConstructionPipeline(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_StopConstructionPipeline_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).StopConstructionPipeline(ctx, req.(*StopConstructionPipelineRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // DaemonService_ServiceDesc is the grpc.ServiceDesc for DaemonService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1526,6 +1562,10 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetConstructionStatus",
 			Handler:    _DaemonService_GetConstructionStatus_Handler,
+		},
+		{
+			MethodName: "StopConstructionPipeline",
+			Handler:    _DaemonService_StopConstructionPipeline_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
