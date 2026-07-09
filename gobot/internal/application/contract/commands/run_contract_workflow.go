@@ -135,5 +135,57 @@ func (h *RunWorkflowHandler) executeWorkflow(
 
 	result.TotalProfit += h.lifecycleService.CalculateTotalProfit(contract)
 
+	// Claim this ship's NEXT contract immediately, at whatever waypoint the
+	// last delivery already left it docked at - no deadhead trip back to
+	// base first. Before this, a fulfilled ship had no path to claim its own
+	// next contract: it released back to the fleet coordinator and waited to
+	// be rediscovered, which measured fleet-wide as 74 ship-hours/day of idle
+	// time between fulfillment and next acceptance (sp-qpmi). This is a
+	// latency optimization on top of an already-successful fulfillment, so
+	// failure here is non-fatal and never turns this result into an error -
+	// it just falls back to the coordinator's normal discovery pass.
+	h.negotiateNextContractBestEffort(ctx, cmd)
+
 	return nil
+}
+
+// negotiateNextContractBestEffort reuses the same idempotent lifecycle calls
+// FindOrNegotiateContract makes for a fresh worker (FindActiveContracts
+// first, so it never re-negotiates a contract another path already claimed)
+// to negotiate and accept this ship's next contract right after fulfillment.
+// Neither negotiate nor accept require any particular ship location - only
+// DOCKED state for negotiate, which already holds because DeliverCargo always
+// navigates-and-docks the ship at the delivery waypoint first. Any failure is
+// logged and swallowed: the coordinator's normal discovery pass remains the
+// fallback path, so a transient error here cannot regress contract success
+// rate.
+func (h *RunWorkflowHandler) negotiateNextContractBestEffort(ctx context.Context, cmd *RunWorkflowCommand) {
+	logger := common.LoggerFromContext(ctx)
+
+	nextContract, wasNegotiated, err := h.lifecycleService.FindOrNegotiateContract(ctx, cmd.ShipSymbol, cmd.PlayerID)
+	if err != nil {
+		logger.Log("WARNING", "Best-effort next-contract negotiation failed; falling back to coordinator discovery", map[string]interface{}{
+			"ship_symbol": cmd.ShipSymbol,
+			"action":      "negotiate_next_contract",
+			"error":       err.Error(),
+		})
+		return
+	}
+
+	if _, _, err := h.lifecycleService.AcceptContractIfNeeded(ctx, nextContract, cmd.PlayerID); err != nil {
+		logger.Log("WARNING", "Best-effort next-contract acceptance failed; falling back to coordinator discovery", map[string]interface{}{
+			"ship_symbol": cmd.ShipSymbol,
+			"action":      "accept_next_contract",
+			"contract_id": nextContract.ContractID(),
+			"error":       err.Error(),
+		})
+		return
+	}
+
+	logger.Log("INFO", "Claimed next contract immediately after fulfillment, without returning to base", map[string]interface{}{
+		"ship_symbol":    cmd.ShipSymbol,
+		"action":         "negotiate_on_delivery",
+		"contract_id":    nextContract.ContractID(),
+		"was_negotiated": wasNegotiated,
+	})
 }
