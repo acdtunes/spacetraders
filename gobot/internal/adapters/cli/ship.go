@@ -56,7 +56,7 @@ Examples:
 	cmd.AddCommand(newShipJumpCommand())
 	cmd.AddCommand(newShipSellCommand())
 	cmd.AddCommand(newShipBuyCommand())
-	// cmd.AddCommand(newShipJettisonCommand()) // TODO: implement jettison command
+	cmd.AddCommand(newShipJettisonCommand())
 
 	return cmd
 }
@@ -1176,6 +1176,76 @@ Examples:
 	cmd.Flags().StringVar(&shipSymbol, "ship", "", "Ship symbol to buy for (required)")
 	cmd.Flags().StringVar(&goodSymbol, "good", "", "Trade good symbol to buy (required)")
 	cmd.Flags().IntVar(&units, "units", 0, "Number of units to buy (required)")
+
+	return cmd
+}
+
+// newShipJettisonCommand creates the ship jettison subcommand
+func newShipJettisonCommand() *cobra.Command {
+	var (
+		shipSymbol string
+		goodSymbol string
+		units      int
+	)
+
+	cmd := &cobra.Command{
+		Use:   "jettison",
+		Short: "Jettison cargo from a ship into space",
+		Long: `Jettison cargo from a ship, permanently discarding it.
+
+Use this to dispose of stranded or unsellable cargo (e.g. bait/leftover units
+blocking a hull) when no reachable market buys the good — the last resort
+when a direct sell isn't possible. The ship is automatically moved to orbit
+first if it is currently docked, since jettisoning requires orbit.
+
+Examples:
+  spacetraders ship jettison --ship AGENT-1 --good IRON_ORE --units 50 --player-id 1
+  spacetraders ship jettison --ship ENDURANCE-1 --good GAS --units 12 --agent ENDURANCE`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if shipSymbol == "" {
+				return fmt.Errorf("--ship flag is required")
+			}
+			if goodSymbol == "" {
+				return fmt.Errorf("--good flag is required")
+			}
+			if units <= 0 {
+				return fmt.Errorf("--units must be greater than 0")
+			}
+
+			// Resolve player from flags or defaults
+			playerIdent, err := resolvePlayerIdentifier()
+			if err != nil {
+				return err
+			}
+
+			client, err := connectDaemon()
+			if err != nil {
+				return err
+			}
+			defer client.Close()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			result, err := client.JettisonCargo(ctx, shipSymbol, goodSymbol, units, playerIdent.PlayerID, playerIdent.AgentSymbol)
+			if err != nil {
+				return fmt.Errorf("jettison failed: %w", err)
+			}
+
+			fmt.Println("✓ Jettison operation started")
+			fmt.Printf("  Container ID:     %s\n", result.ContainerID)
+			fmt.Printf("  Ship:             %s\n", result.ShipSymbol)
+			fmt.Printf("  Good:             %s\n", result.GoodSymbol)
+			fmt.Printf("  Units Discarded:  %d\n", result.UnitsJettisoned)
+			fmt.Printf("  Status:           %s\n", result.Status)
+
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&shipSymbol, "ship", "", "Ship symbol to jettison cargo from (required)")
+	cmd.Flags().StringVar(&goodSymbol, "good", "", "Trade good symbol to jettison (required)")
+	cmd.Flags().IntVar(&units, "units", 0, "Number of units to jettison (required)")
 
 	return cmd
 }
