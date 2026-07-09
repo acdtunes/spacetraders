@@ -23,8 +23,9 @@ type tradeRouteShipRepo struct {
 	mu    sync.Mutex
 	ships map[string]*navigation.Ship
 
-	claimErr error            // injected ClaimShip rejection (e.g. dedication)
-	claims   []tradeShipClaim // successful ClaimShip calls, in order
+	claimErr   error            // injected ClaimShip rejection (e.g. dedication)
+	claims     []tradeShipClaim // successful ClaimShip calls, in order
+	claimCalls int              // total ClaimShip invocations, incl. rejected (sp-ku8e: proves a permanent rejection is not retried)
 }
 
 // tradeShipClaim records one ClaimShip call at the port boundary.
@@ -42,6 +43,7 @@ type tradeShipClaim struct {
 func (r *tradeRouteShipRepo) ClaimShip(ctx context.Context, symbol string, containerID string, playerID shared.PlayerID, operation string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.claimCalls++
 	if r.claimErr != nil {
 		return r.claimErr
 	}
@@ -56,6 +58,12 @@ func (r *tradeRouteShipRepo) recordedClaims() []tradeShipClaim {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]tradeShipClaim(nil), r.claims...)
+}
+
+func (r *tradeRouteShipRepo) claimCallCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.claimCalls
 }
 
 func (r *tradeRouteShipRepo) FindBySymbol(ctx context.Context, symbol string, playerID shared.PlayerID) (*navigation.Ship, error) {

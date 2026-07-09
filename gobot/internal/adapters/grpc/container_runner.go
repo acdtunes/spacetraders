@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand"
 	"sync"
@@ -18,6 +19,24 @@ import (
 )
 
 const dbOperationTimeout = 5 * time.Second
+
+// sp-ku8e: a captain CLI chain like `ship orbit` then `ship navigate` issued
+// ~1s apart spawns back-to-back containers on the same hull. The second
+// container's claim can land in the sub-second window before the first's
+// synchronous release has been persisted, surfacing as a *transient*
+// ShipAlreadyAssignedError. createShipAssignments retries exactly that failure a
+// bounded number of times with growing backoff to absorb the handoff window,
+// instead of failing to the captain and forcing a manual retry. A *permanent*
+// rejection (captain reservation or foreign-fleet dedication, sp-l7h2) is never
+// retried — no amount of waiting clears it. The bound keeps a genuinely-held
+// hull from causing a retry storm; the growing backoff (200ms → 3s cap, ~9s
+// worst case over the whole budget) resolves the common sub-second race on the
+// first short retry while still tolerating a slightly slower release.
+const (
+	claimRetryMaxAttempts = 7
+	claimRetryBaseBackoff = 200 * time.Millisecond
+	claimRetryMaxBackoff  = 3 * time.Second
+)
 
 // ContainerRunner executes a container operation in a background goroutine
 // Manages the lifecycle of a single container including error handling and restarts
@@ -693,19 +712,17 @@ func (r *ContainerRunner) GetLogs(limit *int, level *string) []LogEntry {
 	return filtered
 }
 
-// createShipAssignments creates ship assignments from container metadata
-// Checks for "ship_symbol" (single ship) in the metadata map
-// This prevents concurrent containers from operating on the same ship
+// createShipAssignments claims the hull named in the container metadata
+// ("ship_symbol") for this container, so concurrent containers can't operate on
+// the same ship. It is a no-op for containers that carry no "ship_symbol" (e.g.
+// scout-fleet-assignment).
 //
-// Containers that also carry an "operation" metadata key (the launcher's fleet
-// identity, e.g. StartTradeRoute's "trade") claim through the atomic
-// operation-checked ShipRepository.ClaimShip (sp-l7h2 Phase 2): assignment and
-// fleet dedication are re-checked inside one row-locked transaction, so a hull
-// pinned to a foreign fleet — or grabbed between discovery and this write — is
-// rejected, never clobbered. Containers without the key (pre-change persisted
-// rows, and every kind whose coordinator claims the hull BEFORE starting the
-// runner) keep the legacy read-modify-write path, where the
-// already-assigned-to-this-container check makes the call a no-op.
+// The claim is retried briefly on the transient claim-handoff race (sp-ku8e): a
+// captain CLI chain (orbit then navigate ~1s apart) can have navigate's claim
+// land before orbit's synchronous release has been persisted, surfacing as a
+// ShipAlreadyAssignedError. Retrying absorbs that window instead of failing to
+// the captain. A permanent rejection — captain reservation or foreign-fleet
+// dedication (sp-l7h2) — is returned on the first attempt, never retried.
 func (r *ContainerRunner) createShipAssignments() error {
 	if r.shipRepo == nil {
 		return nil
@@ -713,49 +730,125 @@ func (r *ContainerRunner) createShipAssignments() error {
 
 	metadata := r.containerEntity.Metadata()
 
-	// Check for single ship
-	if shipSymbol, ok := metadata["ship_symbol"].(string); ok {
-		ctx, cancel := context.WithTimeout(context.Background(), dbOperationTimeout)
-		defer cancel()
-
-		playerID := shared.MustNewPlayerID(r.containerEntity.PlayerID())
-
-		// Atomic operation-checked claim (sp-l7h2 Phase 2). Idempotent when the
-		// hull is already assigned to this container (recovered container), so
-		// recovery needs no special-casing here.
-		if operation, ok := metadata["operation"].(string); ok && operation != "" {
-			if err := r.shipRepo.ClaimShip(ctx, shipSymbol, r.containerEntity.ID(), playerID, operation); err != nil {
-				return fmt.Errorf("failed to claim ship %s: %w", shipSymbol, err)
-			}
-			r.log("INFO", fmt.Sprintf("Claimed ship %s for container (operation %s)", shipSymbol, operation), nil)
-			return nil
-		}
-
-		ship, err := r.shipRepo.FindBySymbol(ctx, shipSymbol, playerID)
-		if err != nil {
-			return fmt.Errorf("failed to load ship %s: %w", shipSymbol, err)
-		}
-
-		// Check if ship is already assigned to THIS container (recovered container)
-		if ship.IsAssigned() && ship.ContainerID() == r.containerEntity.ID() {
-			r.log("INFO", fmt.Sprintf("Ship %s already assigned to this container (recovered)", shipSymbol), nil)
-			return nil
-		}
-
-		// Assign ship to container using Ship aggregate
-		if err := ship.AssignToContainer(r.containerEntity.ID(), r.clock); err != nil {
-			return fmt.Errorf("failed to assign ship %s: %w", shipSymbol, err)
-		}
-
-		if err := r.shipRepo.Save(ctx, ship); err != nil {
-			return fmt.Errorf("failed to persist ship %s assignment: %w", shipSymbol, err)
-		}
-
-		r.log("INFO", fmt.Sprintf("Assigned ship %s to container", shipSymbol), nil)
+	shipSymbol, ok := metadata["ship_symbol"].(string)
+	if !ok {
+		// No ship_symbol in config = no ships to assign (e.g. scout-fleet-assignment).
+		return nil
 	}
 
-	// No ship_symbol in config = no ships to assign (e.g., scout-fleet-assignment)
+	playerID := shared.MustNewPlayerID(r.containerEntity.PlayerID())
+	operation, _ := metadata["operation"].(string)
+
+	backoff := claimRetryBaseBackoff
+	for attempt := 1; ; attempt++ {
+		err := r.attemptClaimShip(shipSymbol, operation, playerID)
+		if err == nil {
+			if attempt > 1 {
+				r.log("INFO", fmt.Sprintf("Claimed ship %s on attempt %d — transient claim-handoff race cleared", shipSymbol, attempt), nil)
+			}
+			return nil
+		}
+
+		// Only the transient handoff race is worth waiting on; a permanent
+		// rejection (dedication / captain reservation / DB error) fails fast, and
+		// the bounded attempt count keeps a genuinely-held hull from a retry storm.
+		if !isTransientClaimError(err) || attempt >= claimRetryMaxAttempts {
+			return err
+		}
+
+		r.log("INFO", fmt.Sprintf("Ship %s lost the claim-handoff race (attempt %d/%d), retrying in %s: %v",
+			shipSymbol, attempt, claimRetryMaxAttempts, backoff, err), nil)
+
+		if waitErr := r.waitBeforeClaimRetry(backoff); waitErr != nil {
+			return fmt.Errorf("failed to claim ship %s: retry canceled: %w", shipSymbol, waitErr)
+		}
+
+		backoff *= 2
+		if backoff > claimRetryMaxBackoff {
+			backoff = claimRetryMaxBackoff
+		}
+	}
+}
+
+// attemptClaimShip performs a single claim of the hull for this container — the
+// retryable unit of createShipAssignments. Containers carrying an "operation"
+// metadata key (the launcher's fleet identity, e.g. StartTradeRoute's "trade")
+// claim through the atomic operation-checked ShipRepository.ClaimShip (sp-l7h2
+// Phase 2): assignment and fleet dedication are re-checked inside one row-locked
+// transaction, so a hull pinned to a foreign fleet — or grabbed between discovery
+// and this write — is rejected, never clobbered. Containers without the key
+// (pre-change persisted rows, and every kind whose coordinator claims the hull
+// BEFORE starting the runner) keep the legacy read-modify-write path, where the
+// already-assigned-to-this-container check makes a recovered container's re-claim
+// a no-op. Both paths surface a transient *shared.ShipAlreadyAssignedError when
+// the hull is momentarily still held by a just-finished container; a permanent
+// rejection is returned unchanged for createShipAssignments to classify.
+func (r *ContainerRunner) attemptClaimShip(shipSymbol, operation string, playerID shared.PlayerID) error {
+	ctx, cancel := context.WithTimeout(context.Background(), dbOperationTimeout)
+	defer cancel()
+
+	if operation != "" {
+		if err := r.shipRepo.ClaimShip(ctx, shipSymbol, r.containerEntity.ID(), playerID, operation); err != nil {
+			return fmt.Errorf("failed to claim ship %s: %w", shipSymbol, err)
+		}
+		r.log("INFO", fmt.Sprintf("Claimed ship %s for container (operation %s)", shipSymbol, operation), nil)
+		return nil
+	}
+
+	ship, err := r.shipRepo.FindBySymbol(ctx, shipSymbol, playerID)
+	if err != nil {
+		return fmt.Errorf("failed to load ship %s: %w", shipSymbol, err)
+	}
+
+	// Idempotent for a recovered container that already holds this claim.
+	if ship.IsAssigned() && ship.ContainerID() == r.containerEntity.ID() {
+		r.log("INFO", fmt.Sprintf("Ship %s already assigned to this container (recovered)", shipSymbol), nil)
+		return nil
+	}
+
+	if err := ship.AssignToContainer(r.containerEntity.ID(), r.clock); err != nil {
+		return fmt.Errorf("failed to assign ship %s: %w", shipSymbol, err)
+	}
+
+	if err := r.shipRepo.Save(ctx, ship); err != nil {
+		return fmt.Errorf("failed to persist ship %s assignment: %w", shipSymbol, err)
+	}
+
+	r.log("INFO", fmt.Sprintf("Assigned ship %s to container", shipSymbol), nil)
 	return nil
+}
+
+// isTransientClaimError reports whether a claim failure is the transient
+// claim-handoff race (sp-ku8e) — the hull is momentarily still assigned to
+// another, just-finished container — and is therefore worth a brief retry. A
+// captain reservation (ShipReservedByCaptainError) and a foreign-fleet
+// dedication (ShipDedicatedToOtherFleetError, sp-l7h2) are standing rejections
+// that no wait will clear, so those — and every other error, e.g. a DB failure —
+// are permanent and returned to the caller immediately.
+func isTransientClaimError(err error) bool {
+	var alreadyAssigned *shared.ShipAlreadyAssignedError
+	return errors.As(err, &alreadyAssigned)
+}
+
+// waitBeforeClaimRetry blocks for one claim-retry backoff, returning early if the
+// container's context is canceled (Stop). r.clock.Sleep is instant under the test
+// MockClock and a real sleep in production; racing it against ctx.Done keeps a
+// Stop during the claim window from having to wait the backoff out (sp-ku8e). The
+// detached sleeper goroutine outlives an early return by at most one backoff
+// before exiting, so it cannot leak.
+func (r *ContainerRunner) waitBeforeClaimRetry(d time.Duration) error {
+	slept := make(chan struct{})
+	go func() {
+		r.clock.Sleep(d)
+		close(slept)
+	}()
+
+	select {
+	case <-r.ctx.Done():
+		return r.ctx.Err()
+	case <-slept:
+		return nil
+	}
 }
 
 // releaseShipAssignments releases all ship assignments for this container

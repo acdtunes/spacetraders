@@ -444,17 +444,19 @@ func (s *Ship) ContainerID() string {
 }
 
 // AssignToContainer assigns the ship to a container operation.
-// Returns error if ship is already assigned to another container, or a
-// ShipReservedByCaptainError if the captain has reserved the ship for direct
-// manual use (sp-i1ku) — coordinators must not silently steal a captain
-// reservation.
+// Returns a *shared.ShipAlreadyAssignedError if the ship is already assigned to
+// another container, or a *shared.ShipReservedByCaptainError if the captain has
+// reserved the ship for direct manual use (sp-i1ku) — coordinators must not
+// silently steal a captain reservation. The two are distinct types on purpose:
+// the already-assigned case can be a transient claim-handoff race that clears
+// on a brief retry (sp-ku8e), whereas a captain reservation is a standing
+// rejection the caller must honour immediately.
 func (s *Ship) AssignToContainer(containerID string, clock shared.Clock) error {
 	if s.IsAssigned() {
 		if s.assignment.IsCaptainReservation() {
 			return shared.NewShipReservedByCaptainError(s.shipSymbol, s.CaptainReservationReason())
 		}
-		return fmt.Errorf("ship %s is already assigned to container %s",
-			s.shipSymbol, s.assignment.ContainerID())
+		return shared.NewShipAlreadyAssignedError(s.shipSymbol, s.assignment.ContainerID())
 	}
 
 	s.assignment = NewActiveAssignment(containerID, clock.Now())

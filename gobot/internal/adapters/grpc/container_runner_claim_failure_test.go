@@ -2,7 +2,9 @@ package grpc
 
 import (
 	"context"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -26,9 +28,10 @@ import (
 func TestStartTerminalizesRowWhenShipClaimFails(t *testing.T) {
 	s, db, playerID := newRecoveryTestServer(t)
 
-	// SHIP-BUSY is already flying for a different container (e.g. an orbit container
-	// that hasn't released it yet) - exactly the "already assigned to container" claim
-	// failure the bead reports.
+	// SHIP-BUSY is already flying for a different container that never releases it,
+	// so the claim can never succeed. sp-ku8e retries the transient handoff race
+	// briefly first, but once the bounded budget is exhausted the row must still
+	// terminalize (FAILED) exactly as sp-cr86 requires — not linger at RUNNING.
 	busyShip := newIdleTradeShip(t, "SHIP-BUSY", playerID)
 	require.NoError(t, busyShip.AssignToContainer("orbit-SHIP-BUSY", shared.NewRealClock()))
 	s.shipRepo = &tradeRouteShipRepo{ships: map[string]*navigation.Ship{"SHIP-BUSY": busyShip}}
@@ -38,11 +41,12 @@ func TestStartTerminalizesRowWhenShipClaimFails(t *testing.T) {
 		map[string]interface{}{"ship_symbol": "SHIP-BUSY"}, nil)
 	require.NoError(t, s.containerRepo.Add(context.Background(), entity, "navigate_ship"))
 
-	runner := NewContainerRunner(entity, s.mediator, nil, s.logRepo, s.containerRepo, s.shipRepo, s.clock)
+	// MockClock makes the sp-ku8e retry backoff instant.
+	runner := NewContainerRunner(entity, s.mediator, nil, s.logRepo, s.containerRepo, s.shipRepo, claimTestClock())
 
 	err := runner.Start()
 
-	require.Error(t, err, "a ship claimed by another container must still fail Start()")
+	require.Error(t, err, "a ship held by another container for the whole retry budget must still fail Start()")
 	requireContainerState(t, db, containerID, "FAILED", "claim_failed")
 	// The other container's claim must be untouched by our failed attempt - we must
 	// not have stolen it, and our cleanup must not have force-released it either.
@@ -82,6 +86,9 @@ func TestStartTerminalizesRowWhenOperationClaimIsRejected(t *testing.T) {
 	// our cleanup, and no legacy read-modify-write may have slipped past the claim.
 	require.False(t, pinnedShip.IsAssigned())
 	require.Empty(t, repo.recordedClaims())
+	// sp-ku8e: a dedication rejection is permanent — it must fail fast on the first
+	// attempt, never enter the transient handoff-race retry loop.
+	require.Equal(t, 1, repo.claimCallCount(), "a dedication rejection must not be retried")
 	require.Nil(t, s.registeredRunner(containerID))
 }
 
@@ -137,4 +144,143 @@ func TestStartLeavesRowRunningWhenClaimSucceeds(t *testing.T) {
 	requireContainerState(t, db, containerID, "RUNNING", "")
 	require.True(t, idleShip.IsAssigned())
 	require.Equal(t, containerID, idleShip.ContainerID())
+}
+
+// claimTestClock returns a MockClock whose Sleep advances virtual time instantly,
+// so the sp-ku8e claim-retry backoff adds no real delay to these tests while the
+// production RealClock still sleeps for real.
+func claimTestClock() *shared.MockClock {
+	return &shared.MockClock{CurrentTime: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+}
+
+// handoffRaceShipRepo models the sp-ku8e claim-handoff race for the legacy
+// (non-operation) assign path: FindBySymbol serves a hull still held by a
+// just-finished container for the first releaseAfterFinds reads, then serves it
+// released — exactly the sub-second window where navigate's claim outruns orbit's
+// synchronous release. Set releaseAfterFinds beyond the retry budget to model a
+// hull that never frees up. Save records the eventual assignment.
+type handoffRaceShipRepo struct {
+	navigation.ShipRepository
+	mu                sync.Mutex
+	held              *navigation.Ship // still assigned to the dying container
+	released          *navigation.Ship // same hull, now idle
+	releaseAfterFinds int
+	finds             int
+	saved             *navigation.Ship
+}
+
+func (r *handoffRaceShipRepo) FindBySymbol(ctx context.Context, symbol string, playerID shared.PlayerID) (*navigation.Ship, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.finds++
+	if r.finds <= r.releaseAfterFinds {
+		return r.held, nil
+	}
+	return r.released, nil
+}
+
+func (r *handoffRaceShipRepo) Save(ctx context.Context, ship *navigation.Ship) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.saved = ship
+	return nil
+}
+
+// FindByContainer backs the release path; these tests never leave a ship assigned
+// to the runner's own container, so it has nothing to release.
+func (r *handoffRaceShipRepo) FindByContainer(ctx context.Context, containerID string, playerID shared.PlayerID) ([]*navigation.Ship, error) {
+	return nil, nil
+}
+
+func (r *handoffRaceShipRepo) findCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.finds
+}
+
+// sp-ku8e core acceptance: a captain CLI chain (orbit then navigate ~1s apart)
+// races on the claim handoff — navigate's claim lands while orbit's synchronous
+// release is still in flight, surfacing as a transient ShipAlreadyAssignedError.
+// The claim must retry briefly and succeed once the release lands, WITHOUT a
+// manual retry from the captain.
+func TestStartRetriesTransientClaimHandoffRaceThenSucceeds(t *testing.T) {
+	s, db, playerID := newRecoveryTestServer(t)
+
+	held := newIdleTradeShip(t, "SHIP-RACE", playerID)
+	require.NoError(t, held.AssignToContainer("orbit-SHIP-RACE", shared.NewRealClock()))
+	released := newIdleTradeShip(t, "SHIP-RACE", playerID)
+	repo := &handoffRaceShipRepo{held: held, released: released, releaseAfterFinds: 1}
+	s.shipRepo = repo
+
+	const containerID = "navigate-SHIP-RACE"
+	entity := container.NewContainer(containerID, container.ContainerTypeNavigate, playerID, 1, nil,
+		map[string]interface{}{"ship_symbol": "SHIP-RACE"}, nil)
+	require.NoError(t, s.containerRepo.Add(context.Background(), entity, "navigate_ship"))
+
+	runner := NewContainerRunner(entity, s.mediator, nil, s.logRepo, s.containerRepo, s.shipRepo, claimTestClock())
+	defer runner.cancelFunc()
+
+	err := runner.Start()
+
+	require.NoError(t, err, "navigate must succeed once orbit's release lands, without a manual retry")
+	requireContainerState(t, db, containerID, "RUNNING", "")
+	require.GreaterOrEqual(t, repo.findCount(), 2, "the claim must have been retried at least once")
+	require.NotNil(t, repo.saved)
+	require.True(t, repo.saved.IsAssigned())
+	require.Equal(t, containerID, repo.saved.ContainerID())
+}
+
+// sp-ku8e / sp-l7h2: a captain reservation is a standing rejection, not a transient
+// handoff race — assigning a captain-reserved hull to a container must fail fast on
+// the FIRST attempt (no retry), and still terminalize the row like any claim failure.
+func TestStartFailsFastWhenHullIsCaptainReserved(t *testing.T) {
+	s, db, playerID := newRecoveryTestServer(t)
+
+	reserved := newIdleTradeShip(t, "SHIP-RESERVED", playerID)
+	require.NoError(t, reserved.ReserveByCaptain("captain manual survey", shared.NewRealClock()))
+	repo := &handoffRaceShipRepo{held: reserved, released: reserved, releaseAfterFinds: claimRetryMaxAttempts + 5}
+	s.shipRepo = repo
+
+	const containerID = "navigate-SHIP-RESERVED"
+	entity := container.NewContainer(containerID, container.ContainerTypeNavigate, playerID, 1, nil,
+		map[string]interface{}{"ship_symbol": "SHIP-RESERVED"}, nil)
+	require.NoError(t, s.containerRepo.Add(context.Background(), entity, "navigate_ship"))
+
+	runner := NewContainerRunner(entity, s.mediator, nil, s.logRepo, s.containerRepo, s.shipRepo, claimTestClock())
+
+	err := runner.Start()
+
+	require.Error(t, err, "a captain-reserved hull must fail the claim")
+	requireContainerState(t, db, containerID, "FAILED", "claim_failed")
+	require.Equal(t, 1, repo.findCount(), "a captain reservation is permanent — it must not be retried")
+	require.True(t, reserved.IsReservedByCaptain(), "the captain reservation must be untouched")
+	require.Nil(t, s.registeredRunner(containerID))
+}
+
+// sp-ku8e: the transient-race retry must be BOUNDED — a hull held by a live
+// container for the whole budget must make the claim give up after exactly
+// claimRetryMaxAttempts attempts (no retry storm) and terminalize the row.
+func TestStartStopsRetryingClaimAfterBoundedAttempts(t *testing.T) {
+	s, db, playerID := newRecoveryTestServer(t)
+
+	held := newIdleTradeShip(t, "SHIP-STUCK", playerID)
+	require.NoError(t, held.AssignToContainer("worker-SHIP-STUCK", shared.NewRealClock()))
+	// releaseAfterFinds beyond the budget => the hull never frees up.
+	repo := &handoffRaceShipRepo{held: held, released: held, releaseAfterFinds: claimRetryMaxAttempts + 5}
+	s.shipRepo = repo
+
+	const containerID = "navigate-SHIP-STUCK"
+	entity := container.NewContainer(containerID, container.ContainerTypeNavigate, playerID, 1, nil,
+		map[string]interface{}{"ship_symbol": "SHIP-STUCK"}, nil)
+	require.NoError(t, s.containerRepo.Add(context.Background(), entity, "navigate_ship"))
+
+	runner := NewContainerRunner(entity, s.mediator, nil, s.logRepo, s.containerRepo, s.shipRepo, claimTestClock())
+
+	err := runner.Start()
+
+	require.Error(t, err, "a hull held for the whole retry budget must fail Start()")
+	requireContainerState(t, db, containerID, "FAILED", "claim_failed")
+	require.Equal(t, claimRetryMaxAttempts, repo.findCount(), "must try exactly the bounded number of attempts, then stop")
+	require.Equal(t, "worker-SHIP-STUCK", held.ContainerID(), "the holder's claim must be untouched")
+	require.Nil(t, s.registeredRunner(containerID))
 }
