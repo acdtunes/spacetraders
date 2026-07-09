@@ -6101,12 +6101,18 @@ func (x *JettisonCargoResponse) GetMessage() string {
 
 // StartTradeRouteRequest launches a single-hull pure-arbitrage circuit on an idle hull
 type StartTradeRouteRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	PlayerId      int32                  `protobuf:"varint,1,opt,name=player_id,json=playerId,proto3" json:"player_id,omitempty"`
-	ShipSymbol    string                 `protobuf:"bytes,2,opt,name=ship_symbol,json=shipSymbol,proto3" json:"ship_symbol,omitempty"`       // Idle hull to fly the circuit
-	SystemSymbol  string                 `protobuf:"bytes,3,opt,name=system_symbol,json=systemSymbol,proto3" json:"system_symbol,omitempty"` // System to scan for arbitrage lanes
-	AgentSymbol   *string                `protobuf:"bytes,4,opt,name=agent_symbol,json=agentSymbol,proto3,oneof" json:"agent_symbol,omitempty"`
-	MaxVisits     *int32                 `protobuf:"varint,5,opt,name=max_visits,json=maxVisits,proto3,oneof" json:"max_visits,omitempty"` // Safety bound on circuit visits (0 = default 50)
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	PlayerId     int32                  `protobuf:"varint,1,opt,name=player_id,json=playerId,proto3" json:"player_id,omitempty"`
+	ShipSymbol   string                 `protobuf:"bytes,2,opt,name=ship_symbol,json=shipSymbol,proto3" json:"ship_symbol,omitempty"`       // Idle hull to fly the circuit
+	SystemSymbol string                 `protobuf:"bytes,3,opt,name=system_symbol,json=systemSymbol,proto3" json:"system_symbol,omitempty"` // System to scan for arbitrage lanes
+	AgentSymbol  *string                `protobuf:"bytes,4,opt,name=agent_symbol,json=agentSymbol,proto3,oneof" json:"agent_symbol,omitempty"`
+	MaxVisits    *int32                 `protobuf:"varint,5,opt,name=max_visits,json=maxVisits,proto3,oneof" json:"max_visits,omitempty"` // Safety bound on circuit visits (0 = default 50)
+	// Optional lane-targeting override (sp-xwa1): a destination waypoint or
+	// system symbol to pin the circuit to, instead of letting the ranker
+	// auto-select a lane. Also waives the cross-system gate-crossing ranking
+	// penalty for the targeted lane alone. Unset preserves the original
+	// undirected auto-scan behavior unchanged.
+	DestWaypoint  *string `protobuf:"bytes,6,opt,name=dest_waypoint,json=destWaypoint,proto3,oneof" json:"dest_waypoint,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -6174,6 +6180,13 @@ func (x *StartTradeRouteRequest) GetMaxVisits() int32 {
 		return *x.MaxVisits
 	}
 	return 0
+}
+
+func (x *StartTradeRouteRequest) GetDestWaypoint() string {
+	if x != nil && x.DestWaypoint != nil {
+		return *x.DestWaypoint
+	}
+	return ""
 }
 
 // StartTradeRouteResponse returns the started trade-route container
@@ -7631,7 +7644,7 @@ const file_pkg_proto_daemon_daemon_proto_rawDesc = "" +
 	"goodSymbol\x12)\n" +
 	"\x10units_jettisoned\x18\x04 \x01(\x05R\x0funitsJettisoned\x12\x16\n" +
 	"\x06status\x18\x05 \x01(\tR\x06status\x12\x18\n" +
-	"\amessage\x18\x06 \x01(\tR\amessage\"\xe7\x01\n" +
+	"\amessage\x18\x06 \x01(\tR\amessage\"\xa3\x02\n" +
 	"\x16StartTradeRouteRequest\x12\x1b\n" +
 	"\tplayer_id\x18\x01 \x01(\x05R\bplayerId\x12\x1f\n" +
 	"\vship_symbol\x18\x02 \x01(\tR\n" +
@@ -7639,9 +7652,11 @@ const file_pkg_proto_daemon_daemon_proto_rawDesc = "" +
 	"\rsystem_symbol\x18\x03 \x01(\tR\fsystemSymbol\x12&\n" +
 	"\fagent_symbol\x18\x04 \x01(\tH\x00R\vagentSymbol\x88\x01\x01\x12\"\n" +
 	"\n" +
-	"max_visits\x18\x05 \x01(\x05H\x01R\tmaxVisits\x88\x01\x01B\x0f\n" +
+	"max_visits\x18\x05 \x01(\x05H\x01R\tmaxVisits\x88\x01\x01\x12(\n" +
+	"\rdest_waypoint\x18\x06 \x01(\tH\x02R\fdestWaypoint\x88\x01\x01B\x0f\n" +
 	"\r_agent_symbolB\r\n" +
-	"\v_max_visits\"\xb4\x01\n" +
+	"\v_max_visitsB\x10\n" +
+	"\x0e_dest_waypoint\"\xb4\x01\n" +
 	"\x17StartTradeRouteResponse\x12!\n" +
 	"\fcontainer_id\x18\x01 \x01(\tR\vcontainerId\x12\x1f\n" +
 	"\vship_symbol\x18\x02 \x01(\tR\n" +

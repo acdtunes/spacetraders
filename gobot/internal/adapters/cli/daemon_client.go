@@ -919,6 +919,7 @@ func (c *DaemonClient) StartTradeRoute(
 	playerID int,
 	agentSymbol *string,
 	maxVisits *int32,
+	destWaypoint *string,
 ) (*StartTradeRouteResult, error) {
 	resp, err := c.client.StartTradeRoute(ctx, &pb.StartTradeRouteRequest{
 		PlayerId:     int32(playerID),
@@ -926,6 +927,7 @@ func (c *DaemonClient) StartTradeRoute(
 		SystemSymbol: systemSymbol,
 		AgentSymbol:  agentSymbol,
 		MaxVisits:    maxVisits,
+		DestWaypoint: destWaypoint,
 	})
 	if err != nil {
 		return nil, err

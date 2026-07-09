@@ -169,7 +169,17 @@ const crossSystemRankingPenaltyPerUnit = 200
 // only ordering changes, mirroring RankSpreads' own tie-break chain (score
 // desc, then the lane's REAL unpenalized SpreadPerUnit desc, then Good asc)
 // with the adjusted score substituted as the primary key only.
-func rankLanesWithGatePenalty(lanes []trading.ArbitrageLane, shipCapacity int) []trading.ArbitrageLane {
+//
+// targetDest (sp-xwa1's --dest override) waives the cross-system penalty for
+// whichever lane laneMatchesTarget reports as the operator-directed one: a
+// directed lane already carries the extra jump-gate time cost the penalty
+// exists to warn against, so re-penalizing it in its own score would fight
+// the operator's explicit choice. Every other cross-system lane is still
+// penalized unchanged - targetDest narrows the exemption to the one lane
+// asked for, it does not disable the penalty generally. targetDest=="" (the
+// undirected auto-scan path) matches nothing, so behavior is byte-for-byte
+// identical to before this lever existed.
+func rankLanesWithGatePenalty(lanes []trading.ArbitrageLane, shipCapacity int, targetDest string) []trading.ArbitrageLane {
 	type scoredLane struct {
 		lane  trading.ArbitrageLane
 		score float64
@@ -178,7 +188,8 @@ func rankLanesWithGatePenalty(lanes []trading.ArbitrageLane, shipCapacity int) [
 	scored := make([]scoredLane, len(lanes))
 	for i, lane := range lanes {
 		effectiveSpread := lane.SpreadPerUnit
-		if shared.ExtractSystemSymbol(lane.SourceWaypoint) != shared.ExtractSystemSymbol(lane.DestWaypoint) {
+		crossSystem := shared.ExtractSystemSymbol(lane.SourceWaypoint) != shared.ExtractSystemSymbol(lane.DestWaypoint)
+		if crossSystem && !laneMatchesTarget(lane, targetDest) {
 			effectiveSpread -= crossSystemRankingPenaltyPerUnit
 		}
 		weight := 1.0
@@ -203,4 +214,48 @@ func rankLanesWithGatePenalty(lanes []trading.ArbitrageLane, shipCapacity int) [
 		result[i] = s.lane
 	}
 	return result
+}
+
+// --- lane-targeting override (sp-xwa1) ---
+
+// laneMatchesTarget reports whether lane is the operator-directed destination
+// requested via --dest (RunTradeRouteCoordinatorCommand.TargetDest). An empty
+// target never matches anything - the zero value means "no directive", not
+// "match every lane" - so every caller can treat target=="" as the plain
+// undirected path without a separate branch. A non-empty target matches
+// either the lane's exact destination waypoint or just its destination
+// SYSTEM, so an operator can aim at a whole system ("X1-ABC") without knowing
+// which waypoint inside it currently carries the best market, or pin an exact
+// waypoint for precision.
+func laneMatchesTarget(lane trading.ArbitrageLane, target string) bool {
+	if target == "" {
+		return false
+	}
+	return lane.DestWaypoint == target || shared.ExtractSystemSymbol(lane.DestWaypoint) == shared.ExtractSystemSymbol(target)
+}
+
+// selectLane is the single lane-selection entry point for both the undirected
+// auto-scan and the directed --dest override, so callers never duplicate the
+// branch. Undirected (target=="") defers entirely to
+// trading.FirstDisciplinedLane's existing ranked-order walk, unchanged.
+// Directed (target!="") PINS to the first target-matching lane that clears
+// the floor (ClearsFloor - the same discipline FirstDisciplinedLane enforces
+// on the undirected path), walking the caller-supplied order rather than
+// searching for the single highest-ranked lane overall: an operator who names
+// a destination gets that destination if it is flyable at all, never a
+// silent substitute the ranker would have preferred instead. If no
+// target-matching lane clears the floor, it reports ok=false rather than
+// falling back to an auto-picked lane the operator didn't ask for (the same
+// "fail rather than silently substitute" contract the batch-purchase
+// ship-type guard already established, sp-e7je).
+func selectLane(lanes []trading.ArbitrageLane, target string) (trading.ArbitrageLane, bool) {
+	if target == "" {
+		return trading.FirstDisciplinedLane(lanes)
+	}
+	for _, l := range lanes {
+		if laneMatchesTarget(l, target) && l.ClearsFloor() {
+			return l, true
+		}
+	}
+	return trading.ArbitrageLane{}, false
 }

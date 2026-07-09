@@ -884,7 +884,12 @@ func (s *daemonServiceImpl) StartTradeRoute(ctx context.Context, req *pb.StartTr
 		maxVisits = int(*req.MaxVisits)
 	}
 
-	result, err := s.daemon.StartTradeRoute(ctx, req.ShipSymbol, req.SystemSymbol, maxVisits, playerID)
+	destWaypoint := ""
+	if req.DestWaypoint != nil {
+		destWaypoint = *req.DestWaypoint
+	}
+
+	result, err := s.daemon.StartTradeRoute(ctx, req.ShipSymbol, req.SystemSymbol, maxVisits, playerID, destWaypoint)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start trade-route: %w", err)
 	}

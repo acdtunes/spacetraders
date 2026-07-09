@@ -40,12 +40,19 @@ type TradeRouteOperationResult struct {
 // handler, which is backed by the RouteExecutor (orbit → refuel → NavigateDirect →
 // arrival events) — so the container never spawns a re-claiming child navigate, and the
 // four CLI nav patches (2sam self-collision, sj7p orbit-before-nav) are subsumed for free.
+//
+// destWaypoint is the optional --dest lane-targeting override (sp-xwa1): a destination
+// waypoint or system symbol that pins the circuit to that lane instead of the ranker's
+// auto-selected one. Empty preserves the original undirected auto-scan unchanged; it is
+// threaded into the persisted launch config (dest_waypoint) so a recovery rebuild resumes
+// the same directed lane rather than reverting to auto-scan.
 func (s *DaemonServer) StartTradeRoute(
 	ctx context.Context,
 	shipSymbol string,
 	systemSymbol string,
 	maxVisits int,
 	playerID int,
+	destWaypoint string,
 ) (*TradeRouteOperationResult, error) {
 	if shipSymbol == "" {
 		return nil, fmt.Errorf("ship symbol is required")
@@ -72,6 +79,7 @@ func (s *DaemonServer) StartTradeRoute(
 		"system_symbol": systemSymbol,
 		"container_id":  containerID,
 		"max_visits":    maxVisits,
+		"dest_waypoint": destWaypoint,
 	}
 
 	// Build the circuit command through the same factory recovery uses, so the launch

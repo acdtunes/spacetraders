@@ -100,7 +100,7 @@ func TestScanLanes_MultiSystem_AggregatesNeighborListings(t *testing.T) {
 	mediator := &msMediator{connections: map[string][]string{"X1-HOME": {"X1-NEAR"}}}
 	handler := NewRunTradeRouteCoordinatorHandler(mediator, nil, marketRepo, nil, nil, nil)
 
-	lanes, err := handler.scanLanes(context.Background(), "X1-HOME", 1, 0)
+	lanes, err := handler.scanLanes(context.Background(), "X1-HOME", 1, 0, "")
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestScanLanes_NeighborQueryFails_FailsOpenToHomeSystemOnly(t *testing.T) {
 	mediator := &msMediator{queryErr: fmt.Errorf("no jump gate in this system")}
 	handler := NewRunTradeRouteCoordinatorHandler(mediator, nil, marketRepo, nil, nil, nil)
 
-	lanes, err := handler.scanLanes(context.Background(), "X1-HOME", 1, 0)
+	lanes, err := handler.scanLanes(context.Background(), "X1-HOME", 1, 0, "")
 	if err != nil {
 		t.Fatalf("a neighbor-discovery failure must fail OPEN, not abort the scan: %v", err)
 	}
@@ -164,7 +164,7 @@ func TestScanLanes_CrossSystemLane_PenaltyCanLoseToSameSystemLane(t *testing.T) 
 	mediator := &msMediator{connections: map[string][]string{"X1-HOME": {"X1-NEAR"}}}
 	handler := NewRunTradeRouteCoordinatorHandler(mediator, nil, marketRepo, nil, nil, nil)
 
-	lanes, err := handler.scanLanes(context.Background(), "X1-HOME", 1, 0)
+	lanes, err := handler.scanLanes(context.Background(), "X1-HOME", 1, 0, "")
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}

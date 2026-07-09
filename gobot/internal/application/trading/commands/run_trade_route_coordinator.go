@@ -121,6 +121,12 @@ type RunTradeRouteCoordinatorCommand struct {
 	MaxVisits    int // 0 → defaultMaxVisits
 	// WorkingCapitalReserve is the hard spend floor (sp-bp6f): 0 → defaultWorkingCapitalReserve.
 	WorkingCapitalReserve int
+	// TargetDest is the operator-directed lane override (sp-xwa1, the CLI's
+	// --dest flag): a destination waypoint (e.g. "X1-ABC-D1") or bare system
+	// symbol (e.g. "X1-ABC") the coordinator must target instead of letting
+	// the ranker auto-pick. Empty → undirected auto-scan, unchanged. See
+	// selectLane/laneMatchesTarget in run_trade_route_coordinator_travel.go.
+	TargetDest string
 }
 
 // RunTradeRouteCoordinatorResponse reports the realised circuit economics. Net
@@ -309,7 +315,7 @@ func (h *RunTradeRouteCoordinatorHandler) execute(
 	exitReason := ""
 
 	for circuitNum := 0; circuitNum < defaultMaxCircuits; circuitNum++ {
-		lanes, err := h.scanLanes(ctx, cmd.SystemSymbol, playerID, ship.CargoCapacity())
+		lanes, err := h.scanLanes(ctx, cmd.SystemSymbol, playerID, ship.CargoCapacity(), cmd.TargetDest)
 		if err != nil {
 			return fmt.Errorf("failed to scan arbitrage lanes: %w", err)
 		}
@@ -327,8 +333,10 @@ func (h *RunTradeRouteCoordinatorHandler) execute(
 		// lane whose per-unit spread is below MinBidMargin (runCircuit's MarginAlive gate)
 		// — so the top capped-spread lane can be one that flies ZERO visits. Select the
 		// DEEPEST lane that actually clears the discipline floor, so a selected lane always
-		// flies >=1 visit instead of a silent zero-visit run (sp-sh6w).
-		lane, ok := trading.FirstDisciplinedLane(lanes)
+		// flies >=1 visit instead of a silent zero-visit run (sp-sh6w). When cmd.TargetDest
+		// is set (sp-xwa1's --dest override), selectLane pins to that directed lane instead
+		// of the ranker's top pick; see selectLane's doc for the full contract.
+		lane, ok := selectLane(lanes, cmd.TargetDest)
 		if !ok {
 			exitReason = exitReasonMarginExhausted
 			// Only report "nothing to fly" if this run never flew anything at all — a
@@ -775,6 +783,7 @@ func (h *RunTradeRouteCoordinatorHandler) scanLanes(
 	systemSymbol string,
 	playerID int,
 	shipCapacity int,
+	targetDest string,
 ) ([]trading.ArbitrageLane, error) {
 	listings, err := h.collectSystemListings(ctx, systemSymbol, playerID)
 	if err != nil {
@@ -796,8 +805,10 @@ func (h *RunTradeRouteCoordinatorHandler) scanLanes(
 	// fields, ignoring input order, so composing them as funcB(funcA(lanes))
 	// would let funcB silently discard funcA's reordering. Start from the
 	// plain trading.RankSpreads order (not RankSpreadsForHold) since hold-fit
-	// weighting is applied here via shipCapacity instead.
-	return rankLanesWithGatePenalty(trading.RankSpreads(listings), shipCapacity), nil
+	// weighting is applied here via shipCapacity instead. targetDest (sp-xwa1)
+	// waives the cross-system penalty for the operator-directed lane only —
+	// see rankLanesWithGatePenalty's doc.
+	return rankLanesWithGatePenalty(trading.RankSpreads(listings), shipCapacity, targetDest), nil
 }
 
 // collectSystemListings reads every cached market in one system into flat

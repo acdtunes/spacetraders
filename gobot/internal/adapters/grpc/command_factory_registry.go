@@ -291,7 +291,10 @@ func buildGasCoordinatorCommand(cfg *configReader, playerID int, containerID str
 // restart. MaxVisits defaults to 0 (the coordinator's own default-50 safety bound).
 // WorkingCapitalReserve defaults to 0 (the coordinator's own defaultWorkingCapitalReserve
 // floor, sp-bp6f) but is exposed as a launch-config knob so a captain can raise the
-// reserve for a specific circuit without a redeploy.
+// reserve for a specific circuit without a redeploy. TargetDest defaults to "" (the
+// undirected auto-scan) but is exposed as a launch-config knob so a captain can pin
+// the circuit to a specific lane via --dest (sp-xwa1); an empty value preserves the
+// original auto-selected behavior unchanged across a recovery rebuild.
 func buildTradeRouteCoordinatorCommand(cfg *configReader, playerID int, containerID string) interface{} {
 	return &tradingCmd.RunTradeRouteCoordinatorCommand{
 		ShipSymbol:            cfg.RequiredString("ship_symbol"),
@@ -300,5 +303,6 @@ func buildTradeRouteCoordinatorCommand(cfg *configReader, playerID int, containe
 		ContainerID:           containerID,
 		MaxVisits:             cfg.OptionalInt("max_visits", 0),
 		WorkingCapitalReserve: cfg.OptionalInt("working_capital_reserve", 0),
+		TargetDest:            cfg.OptionalString("dest_waypoint"),
 	}
 }

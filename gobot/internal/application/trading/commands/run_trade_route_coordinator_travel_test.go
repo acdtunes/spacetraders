@@ -72,7 +72,7 @@ func TestRankLanesWithGatePenalty_AllSameSystem_OrderUnchanged(t *testing.T) {
 		{Good: "B", SourceWaypoint: "X1-AAA-3", DestWaypoint: "X1-AAA-4", SpreadPerUnit: 400, VolumeCap: 20, CappedSpread: 8000},
 	}
 
-	got := rankLanesWithGatePenalty(lanes, 0)
+	got := rankLanesWithGatePenalty(lanes, 0, "")
 
 	if len(got) != 2 || got[0].Good != "A" || got[1].Good != "B" {
 		t.Fatalf("expected order [A, B] unchanged, got %+v", got)
@@ -93,7 +93,7 @@ func TestRankLanesWithGatePenalty_CloseCall_SameSystemLaneWins(t *testing.T) {
 		{Good: "Y", SourceWaypoint: "X1-AAA-2", DestWaypoint: "X1-AAA-3", SpreadPerUnit: 400, VolumeCap: 20, CappedSpread: 8000},
 	}
 
-	got := rankLanesWithGatePenalty(lanes, 0)
+	got := rankLanesWithGatePenalty(lanes, 0, "")
 
 	if len(got) != 2 || got[0].Good != "Y" || got[1].Good != "X" {
 		t.Fatalf("expected penalty to flip order to [Y, X], got %+v", got)
@@ -115,7 +115,7 @@ func TestRankLanesWithGatePenalty_OverwhelmingLead_CrossSystemStillWins(t *testi
 		{Good: "Y", SourceWaypoint: "X1-AAA-2", DestWaypoint: "X1-AAA-3", SpreadPerUnit: 400, VolumeCap: 20, CappedSpread: 8000},
 	}
 
-	got := rankLanesWithGatePenalty(lanes, 0)
+	got := rankLanesWithGatePenalty(lanes, 0, "")
 
 	if len(got) != 2 || got[0].Good != "X" || got[1].Good != "Y" {
 		t.Fatalf("expected cross-system lane to still win despite penalty, got %+v", got)

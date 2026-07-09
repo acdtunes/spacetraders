@@ -78,7 +78,7 @@ func TestStartTradeRoute_RefusesNonIdleShip(t *testing.T) {
 	}
 	s.registerContainerSpecs()
 
-	result, err := s.StartTradeRoute(context.Background(), "TRADER-BUSY", "X1-TR", 0, 1)
+	result, err := s.StartTradeRoute(context.Background(), "TRADER-BUSY", "X1-TR", 0, 1, "")
 	require.Error(t, err)
 	require.Nil(t, result)
 	require.Contains(t, err.Error(), "not idle")
@@ -101,7 +101,7 @@ func TestStartTradeRoute_IdleShip_PersistsRecoveryVisibleContainer(t *testing.T)
 	ship := newIdleTradeShip(t, "TRADER-1", playerID)
 	s.shipRepo = &tradeRouteShipRepo{ships: map[string]*navigation.Ship{"TRADER-1": ship}}
 
-	result, err := s.StartTradeRoute(context.Background(), "TRADER-1", "X1-TR", 20, playerID)
+	result, err := s.StartTradeRoute(context.Background(), "TRADER-1", "X1-TR", 20, playerID, "")
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.NotEmpty(t, result.ContainerID)

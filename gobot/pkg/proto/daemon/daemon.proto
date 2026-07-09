@@ -866,6 +866,12 @@ message StartTradeRouteRequest {
   string system_symbol = 3;           // System to scan for arbitrage lanes
   optional string agent_symbol = 4;
   optional int32 max_visits = 5;      // Safety bound on circuit visits (0 = default 50)
+  // Optional lane-targeting override (sp-xwa1): a destination waypoint or
+  // system symbol to pin the circuit to, instead of letting the ranker
+  // auto-select a lane. Also waives the cross-system gate-crossing ranking
+  // penalty for the targeted lane alone. Unset preserves the original
+  // undirected auto-scan behavior unchanged.
+  optional string dest_waypoint = 6;
 }
 
 // StartTradeRouteResponse returns the started trade-route container

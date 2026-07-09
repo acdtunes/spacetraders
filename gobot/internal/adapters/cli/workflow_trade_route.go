@@ -32,6 +32,7 @@ func newWorkflowTradeRouteCommand() *cobra.Command {
 		shipSymbol   string
 		systemSymbol string
 		maxVisits    int
+		destWaypoint string
 	)
 
 	cmd := &cobra.Command{
@@ -57,7 +58,8 @@ hull it is actively flying.
 
 Examples:
   spacetraders workflow trade-route --ship ENDURANCE-7 --system X1-GZ7 --agent ENDURANCE
-  spacetraders workflow trade-route --ship ENDURANCE-7 --system X1-GZ7 --max-visits 20 --player-id 1`,
+  spacetraders workflow trade-route --ship ENDURANCE-7 --system X1-GZ7 --max-visits 20 --player-id 1
+  spacetraders workflow trade-route --ship ENDURANCE-7 --system X1-GZ7 --dest X1-ABC-STATION --agent ENDURANCE`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if shipSymbol == "" {
 				return fmt.Errorf("--ship flag is required")
@@ -87,7 +89,15 @@ Examples:
 				maxVisitsArg = &mv
 			}
 
-			result, err := client.StartTradeRoute(ctx, shipSymbol, systemSymbol, playerIdent.PlayerID, &playerIdent.AgentSymbol, maxVisitsArg)
+			// --dest (sp-xwa1): a destination waypoint or system symbol that pins the
+			// circuit to that lane instead of the ranker's auto-selected one. nil (flag
+			// unset) preserves the original undirected auto-scan behavior unchanged.
+			var destWaypointArg *string
+			if destWaypoint != "" {
+				destWaypointArg = &destWaypoint
+			}
+
+			result, err := client.StartTradeRoute(ctx, shipSymbol, systemSymbol, playerIdent.PlayerID, &playerIdent.AgentSymbol, maxVisitsArg, destWaypointArg)
 			if err != nil {
 				return fmt.Errorf("failed to start trade-route: %w", err)
 			}
@@ -109,6 +119,7 @@ Examples:
 	cmd.Flags().StringVar(&shipSymbol, "ship", "", "Idle hull to fly the circuit (required)")
 	cmd.Flags().StringVar(&systemSymbol, "system", "", "System to scan for arbitrage lanes (required)")
 	cmd.Flags().IntVar(&maxVisits, "max-visits", 0, "Safety bound on circuit visits (0 = default 50)")
+	cmd.Flags().StringVar(&destWaypoint, "dest", "", "Pin the circuit to this destination waypoint or system, instead of auto-selecting a lane (waives the cross-system gate penalty for the targeted lane only)")
 
 	return cmd
 }
