@@ -116,3 +116,41 @@ func TestSignalCompletion_NonContractContainer_EmitsNoContractEvents(t *testing.
 	require.Equal(t, 1, countEvents(rec.events, captain.EventWorkflowFinished),
 		"the generic workflow.finished must still fire for non-contract containers")
 }
+
+// (d) A contract workflow that PARKED on insufficient credits (sp-vwhi)
+// resolves RunWorkflowHandler.Handle() as (result, nil) by design — a clean,
+// recoverable loop exit so the container never crashloops. Without a way to
+// tell "parked" apart from "actually fulfilled," that clean exit reaches
+// signalCompletionWithStatus(success=true) exactly like a real completion and
+// would emit a phantom contract.completed, corrupting the captain's
+// income-stall detection (sp-82qs) at the exact moment credits are short.
+// A parked run must therefore emit ZERO contract.completed and ZERO
+// contract.failed — while the generic workflow.finished (a park IS a clean
+// iteration from the runner's point of view) still fires exactly once.
+func TestSignalCompletion_ContractWorkflowParked_EmitsNoBareContractCompleted(t *testing.T) {
+	rec := &fakeRecorder{}
+	SetCaptainEventRecorder(rec)
+	defer SetCaptainEventRecorder(nil)
+
+	r := newContractEventRunner(t, container.ContainerTypeContractWorkflow)
+
+	// Mirrors what executeIteration() does when the mediator returns
+	// (&contractCmd.RunWorkflowResponse{Fulfilled: false}, nil): it flips this
+	// flag before the loop reaches its clean-exit signalCompletion() call.
+	r.mu.Lock()
+	r.contractRunParked = true
+	r.mu.Unlock()
+
+	r.signalCompletionWithStatus(true, "")
+
+	require.Zero(t, countEvents(rec.events, captain.EventContractCompleted),
+		"a parked run must not be reported as a bare contract.completed-as-fulfilled")
+	require.Zero(t, countEvents(rec.events, captain.EventContractFailed),
+		"a parked run is not a failure either — it must not emit contract.failed")
+
+	// Additive: the generic workflow.finished still fires even when the
+	// contract-grade event is suppressed, so generic health/liveness signals
+	// are unaffected by the park-detection fix.
+	require.Equal(t, 1, countEvents(rec.events, captain.EventWorkflowFinished),
+		"the generic workflow.finished must still fire for a parked run")
+}

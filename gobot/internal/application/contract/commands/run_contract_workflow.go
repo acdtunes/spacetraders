@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
@@ -80,6 +81,19 @@ func (h *RunWorkflowHandler) Handle(ctx context.Context, request common.Request)
 
 	// Execute workflow
 	if err := h.executeWorkflow(ctx, cmd, result); err != nil {
+		// PARK, don't crash (sp-vwhi): insufficient-credits during purchase
+		// is a clean recoverable exit, not a container crash. A nil Go
+		// error here means the container runner does NOT count this as a
+		// failure/restart - the dynamic-discovery fleet coordinator simply
+		// re-picks-up this ship's unfulfilled contract on its next pass,
+		// once the treasury recovers. Every other executeWorkflow error
+		// keeps the existing crash-and-restart behavior unchanged.
+		var insufficientErr *contractServices.ErrInsufficientCredits
+		if errors.As(err, &insufficientErr) {
+			result.Error = insufficientErr.Error()
+			return result, nil
+		}
+
 		result.Error = err.Error()
 		return result, err
 	}

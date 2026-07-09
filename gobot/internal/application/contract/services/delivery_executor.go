@@ -2,12 +2,14 @@ package services
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	contractQueries "github.com/andrescamacho/spacetraders-go/internal/application/contract/queries"
 	contractTypes "github.com/andrescamacho/spacetraders-go/internal/application/contract/types"
+	playerQueries "github.com/andrescamacho/spacetraders-go/internal/application/player/queries"
 	shipCargo "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/cargo"
 	shipNav "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
 	shipTypes "github.com/andrescamacho/spacetraders-go/internal/application/ship/types"
@@ -134,6 +136,28 @@ func (e *DeliveryExecutor) ProcessSingleDelivery(
 		}
 		ship, err = e.ExecutePurchaseLoop(ctx, shipSymbol, playerID, ship, delivery.TradeSymbol, unitsToPurchase, profitResult.CheapestMarketWaypoint, result, opContext)
 		if err != nil {
+			// PARK, don't crash (sp-vwhi): a 4600 mid-purchase is a treasury
+			// state, not a bug. Enrich the sentinel with the numbers an
+			// operator needs and log ONCE at WARNING before returning it
+			// unchanged - RunWorkflowHandler.Handle converts this into a
+			// clean (nil-error) exit so the container doesn't crashloop.
+			// The dynamic-discovery fleet coordinator re-picks-up this
+			// contract on its next pass, which is the resume mechanism.
+			var insufficientErr *ErrInsufficientCredits
+			if errors.As(err, &insufficientErr) {
+				insufficientErr.CreditsNeeded = profitResult.PurchaseCost
+				insufficientErr.CreditsAvailable = e.lookupLiveCredits(ctx, playerID)
+				logger := common.LoggerFromContext(ctx)
+				logger.Log("WARNING", insufficientErr.Error(), map[string]interface{}{
+					"ship_symbol":       shipSymbol,
+					"action":            "parked",
+					"reason":            "insufficient_credits",
+					"trade_symbol":      delivery.TradeSymbol,
+					"units_attempted":   insufficientErr.UnitsAttempted,
+					"credits_needed":    insufficientErr.CreditsNeeded,
+					"credits_available": insufficientErr.CreditsAvailable,
+				})
+			}
 			return nil, err
 		}
 	}
@@ -144,6 +168,23 @@ func (e *DeliveryExecutor) ProcessSingleDelivery(
 	}
 
 	return contract, nil
+}
+
+// lookupLiveCredits fetches a fresh treasury snapshot for the WARNING log
+// enrichment above. Returns -1 if the live lookup itself fails, so the log
+// message still emits (with an explicit sentinel value) rather than being
+// lost to a second error.
+func (e *DeliveryExecutor) lookupLiveCredits(ctx context.Context, playerID shared.PlayerID) int {
+	pid := playerID.Value()
+	resp, err := e.mediator.Send(ctx, &playerQueries.GetPlayerQuery{PlayerID: &pid})
+	if err != nil {
+		return -1
+	}
+	playerResp, ok := resp.(*playerQueries.GetPlayerResponse)
+	if !ok || playerResp.Player == nil {
+		return -1
+	}
+	return playerResp.Player.Credits
 }
 
 // ExecutePurchaseLoop executes the multi-trip purchase loop
@@ -231,6 +272,14 @@ func (e *DeliveryExecutor) executeSinglePurchaseTrip(
 
 	_, err = e.mediator.Send(ctx, purchaseCmd)
 	if err != nil {
+		if IsInsufficientCreditsError(err) {
+			return nil, 0, false, &ErrInsufficientCredits{
+				ShipSymbol:     shipSymbol,
+				TradeSymbol:    tradeSymbol,
+				UnitsAttempted: unitsThisTrip,
+				Cause:          err,
+			}
+		}
 		return nil, 0, false, fmt.Errorf("failed to purchase cargo: %w", err)
 	}
 

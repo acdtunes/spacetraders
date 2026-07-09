@@ -10,6 +10,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/metrics"
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	contractCmd "github.com/andrescamacho/spacetraders-go/internal/application/contract/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/container"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
@@ -34,6 +35,15 @@ type ContainerRunner struct {
 	cancelFunc context.CancelFunc
 	done       chan struct{}
 	mu         sync.RWMutex
+
+	// contractRunParked records whether the most recent iteration returned a
+	// contract RunWorkflowResponse with Fulfilled=false and a nil Go error —
+	// i.e. the credits-park path (sp-vwhi) rather than a true completion. A nil
+	// error always drives the loop to a clean exit and signalCompletion(success
+	// =true), so without this flag a parked run would be misreported as
+	// contract.completed to the captain's income-stall detection (sp-82qs).
+	// Guarded by mu like the other execution-control fields.
+	contractRunParked bool
 
 	// Heartbeat control
 	heartbeatStop chan struct{} // Signal to stop heartbeat goroutine
@@ -468,7 +478,19 @@ func (r *ContainerRunner) signalCompletionWithStatus(success bool, errMsg string
 	// workflow.finished. Credits and contract-id are not available at this site
 	// (the container carries only container/coordinator ids) and are
 	// deliberately omitted; payout enrichment is a follow-up.
-	if r.containerEntity.Type() == container.ContainerTypeContractWorkflow {
+	r.mu.RLock()
+	parked := r.contractRunParked
+	r.mu.RUnlock()
+
+	// A parked run (sp-vwhi credits-park) reaches this success=true path via a
+	// clean, deliberate loop exit — it is neither a true completion nor a true
+	// failure, so contract.completed/contract.failed are both suppressed here.
+	// The generic EventWorkflowFinished above still fires (a park IS a clean
+	// iteration from the runner's point of view), and the earlier structured
+	// WARNING log (credits_needed/credits_available/action=parked) already
+	// gives the captain full diagnostic visibility on why no contract event
+	// was recorded.
+	if r.containerEntity.Type() == container.ContainerTypeContractWorkflow && !(success && parked) {
 		contractEvent := captain.EventContractCompleted
 		if !success {
 			contractEvent = captain.EventContractFailed
@@ -524,6 +546,17 @@ func (r *ContainerRunner) executeIteration() error {
 
 	// Log command result
 	r.log("INFO", fmt.Sprintf("Command executed, result type: %T", result), nil)
+
+	// A contract workflow that parked on insufficient credits (sp-vwhi) returns
+	// (result, nil) by design — a clean loop exit so CanRestart's no-backoff
+	// continue never sees a Go error to crashloop on. Capture the park here so
+	// signalCompletionWithStatus can tell "parked" apart from "actually
+	// fulfilled" instead of reporting every nil-error exit as contract.completed.
+	if resp, ok := result.(*contractCmd.RunWorkflowResponse); ok && !resp.Fulfilled {
+		r.mu.Lock()
+		r.contractRunParked = true
+		r.mu.Unlock()
+	}
 
 	return nil
 }
