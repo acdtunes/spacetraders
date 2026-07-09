@@ -58,6 +58,7 @@ type RunFactoryCoordinatorHandler struct {
 	marketLocator      *mfgServices.MarketLocator
 	productionExecutor *mfgServices.ProductionExecutor
 	dependencyAnalyzer *mfgServices.DependencyAnalyzer
+	chainMarginGuard   *mfgServices.ChainMarginGuard
 	clock              shared.Clock
 }
 
@@ -89,6 +90,10 @@ func NewRunFactoryCoordinatorHandler(
 
 	dependencyAnalyzer := mfgServices.NewDependencyAnalyzer()
 
+	// sp-2dv4: pre-spend chain-margin + absorption guard, built from the same
+	// market accessors the coordinator already holds — no wiring change upstream.
+	chainMarginGuard := mfgServices.NewChainMarginGuard(marketLocator, marketRepo)
+
 	return &RunFactoryCoordinatorHandler{
 		mediator:           mediator,
 		shipRepo:           shipRepo,
@@ -97,6 +102,7 @@ func NewRunFactoryCoordinatorHandler(
 		marketLocator:      marketLocator,
 		productionExecutor: productionExecutor,
 		dependencyAnalyzer: dependencyAnalyzer,
+		chainMarginGuard:   chainMarginGuard,
 		clock:              clock,
 	}
 }
@@ -168,6 +174,25 @@ func (h *RunFactoryCoordinatorHandler) executeCoordination(
 		"buy_nodes":       countNodesByMethod(nodes, goods.AcquisitionBuy),
 		"fabricate_nodes": countNodesByMethod(nodes, goods.AcquisitionFabricate),
 	})
+
+	// Step 2.5: Pre-spend chain-margin + absorption guard (sp-2dv4, money-integrity
+	// #3). Project the whole chain's LIVE P&L and the final sink's absorption BEFORE
+	// committing a single feed buy. A factory started against crushed feed import
+	// bids (negative projected margin) — or one whose resale sink is too small to
+	// ever absorb the feed spend — PARKS pre-spend (zero credits committed) instead
+	// of bleeding, mirroring the 9aoc solvency floor's fail-closed discipline and
+	// reusing the clean partial-success contract (return nil, no error). Scoped to
+	// resale runs: inputs-only construction supply has no resale sink and is left to
+	// the construction pipeline's own economics + the bp6f #3 harvest guard. This
+	// guard is additive and touches none of those existing park/floor paths.
+	if !cmd.InputsOnly {
+		proj := h.chainMarginGuard.Evaluate(ctx, dependencyTree, cmd.SystemSymbol, cmd.PlayerID)
+		if !proj.Proceed {
+			logger.Log("WARNING", proj.ParkMessage(), proj.LogFields(response.FactoryID))
+			return nil
+		}
+		logger.Log("INFO", proj.ProceedMessage(), proj.LogFields(response.FactoryID))
+	}
 
 	// Step 3: Wait for an idle hauler.
 	//

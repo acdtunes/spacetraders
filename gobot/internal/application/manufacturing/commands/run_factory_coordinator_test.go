@@ -106,9 +106,9 @@ type factoryFakeShipRepo struct {
 	ships map[string]*navigation.Ship
 	order []string
 
-	findAllCalls   int              // number of FindAllByPlayer calls so far
-	emptyUntilCall int              // report an empty fleet while findAllCalls <= this
-	alwaysEmpty    bool             // report an empty fleet on every call
+	findAllCalls   int               // number of FindAllByPlayer calls so far
+	emptyUntilCall int               // report an empty fleet while findAllCalls <= this
+	alwaysEmpty    bool              // report an empty fleet on every call
 	onFindAll      func(callNum int) // hook fired on each call (e.g. to cancel ctx)
 
 	claimErr error             // injected ClaimShip rejection (e.g. fleet dedication)
@@ -245,7 +245,18 @@ func (r *factoryFakeMarketRepo) GetMarketData(ctx context.Context, waypointSymbo
 		if err != nil {
 			return nil, err
 		}
-		return market.NewMarket(waypointSymbol, []market.TradeGood{*output}, time.Now())
+		// The fab IMPORTS its feed (IRON): its import bid is what a hauler is paid
+		// for delivering IRON here. sp-2dv4's pre-spend chain-margin guard reads
+		// this to price the feed leg. A bid (30) comfortably above IRON's source
+		// ask (10) keeps the FAB_PLATE <- IRON chain clearly profitable so the
+		// guard proceeds and these tests exercise their real concern exactly as
+		// before. (Before the guard nothing read the fab's import side, so the
+		// fake omitted it; a real fab always imports its inputs.)
+		ironImport, err := market.NewTradeGood(testInputGood, &supply, &activity, 30, 32, 20, market.TradeTypeImport)
+		if err != nil {
+			return nil, err
+		}
+		return market.NewMarket(waypointSymbol, []market.TradeGood{*output, *ironImport}, time.Now())
 	case testIronWaypoint:
 		input, err := market.NewTradeGood(testInputGood, &supply, &activity, 8, 10, 10, market.TradeTypeExport)
 		if err != nil {
