@@ -58,4 +58,10 @@ type RunFactoryCoordinatorResponse struct {
 	ShipsUsed        int
 	Completed        bool
 	Error            string
+	// NoWorkReason is set when the iteration completed cleanly (Error == "")
+	// but performed no work at all — pre-spend guard park, or every claimable
+	// node parked for lack of a claimable hull (sp-2q2o). A -1 (infinite)
+	// caller uses this to back off before the next iteration instead of
+	// spinning; it stays empty on any iteration that produced something.
+	NoWorkReason string
 }

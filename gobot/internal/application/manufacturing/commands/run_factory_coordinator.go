@@ -31,6 +31,24 @@ type RunFactoryCoordinatorResponse = mfgTypes.RunFactoryCoordinatorResponse
 const (
 	shipDiscoveryInterval  = 30 * time.Second
 	shipPoolCapacityFactor = 2
+
+	// noWorkIterationDelay throttles a -1 (infinite) coordinator's next
+	// iteration after one that performed no work at all — the sp-2dv4
+	// chain-margin guard parked pre-spend, or every claimable node parked
+	// (sp-vsfn catch-all) for lack of a claimable in-system hull. Handle()
+	// otherwise returns clean and instant, and the container runner
+	// (container_runner.go) re-invokes it immediately: a starved factory was
+	// clocked at ~280 no-op iterations/sec (8,377 in 30s, sp-2q2o), fast
+	// enough to rotate the guard's own park verdict out of the per-container
+	// log ring before an operator could read it. 45s sits inside the bead's
+	// mandated 30-60s band, deliberately off the 30s shipDiscoveryInterval
+	// cadence above so the two polls don't beat together.
+	noWorkIterationDelay = 45 * time.Second
+
+	// noWorkHeartbeatInterval re-logs the current no-work reason on a slow
+	// cadence so a long-parked factory still proves it's alive (and why) in
+	// the log window, without repeating the line on every ~45s iteration.
+	noWorkHeartbeatInterval = 10 * time.Minute
 )
 
 // RunFactoryCoordinatorHandler orchestrates fleet-based goods production.
@@ -61,6 +79,21 @@ type RunFactoryCoordinatorHandler struct {
 	dependencyAnalyzer *mfgServices.DependencyAnalyzer
 	chainMarginGuard   *mfgServices.ChainMarginGuard
 	clock              shared.Clock
+
+	// noWorkMu guards noWorkState. This handler is a singleton shared across
+	// every concurrent goods_factory container (main.go constructs it once),
+	// so the no-work log-dedup state is keyed by ContainerID to keep sibling
+	// factories from contaminating each other's state (sp-2q2o).
+	noWorkMu    sync.Mutex
+	noWorkState map[string]*noWorkTracker
+}
+
+// noWorkTracker remembers one container's last-logged no-work reason and
+// when it was logged, so backoffNoWork can log a state change once (plus a
+// slow heartbeat) instead of on every throttled iteration.
+type noWorkTracker struct {
+	reason   string
+	loggedAt time.Time
 }
 
 // NewRunFactoryCoordinatorHandler creates a new factory coordinator handler
@@ -107,6 +140,7 @@ func NewRunFactoryCoordinatorHandler(
 		dependencyAnalyzer: dependencyAnalyzer,
 		chainMarginGuard:   chainMarginGuard,
 		clock:              clock,
+		noWorkState:        make(map[string]*noWorkTracker),
 	}
 }
 
@@ -144,7 +178,69 @@ func (h *RunFactoryCoordinatorHandler) Handle(ctx context.Context, request commo
 	}
 
 	response.Completed = true
+
+	// sp-2q2o: a -1 (infinite) container's runner re-invokes Handle() the
+	// instant it returns, so an iteration that did no work must not return
+	// instantly or the container spins hundreds of times a second. A bounded
+	// run (MaxIterations >= 0 - a one-shot CLI invocation, a fixed count, or
+	// a test) is left alone: it terminates on its own and returning fast is
+	// exactly what it should do.
+	if response.NoWorkReason != "" && cmd.MaxIterations == -1 {
+		h.backoffNoWork(ctx, cmd.ContainerID, response.NoWorkReason)
+	}
+
 	return response, nil
+}
+
+// backoffNoWork throttles a -1 container's next iteration after one that did
+// no work, logging the reason once per state change (plus a slow heartbeat)
+// rather than on every iteration (sp-2q2o). This handler is a singleton
+// shared across every concurrent goods_factory container, so dedup state is
+// keyed by containerID and mutex-guarded.
+func (h *RunFactoryCoordinatorHandler) backoffNoWork(ctx context.Context, containerID, reason string) {
+	now := h.clock.Now()
+
+	h.noWorkMu.Lock()
+	tracker, exists := h.noWorkState[containerID]
+	stateChanged := !exists || tracker.reason != reason
+	heartbeatDue := exists && !stateChanged && now.Sub(tracker.loggedAt) >= noWorkHeartbeatInterval
+	shouldLog := stateChanged || heartbeatDue
+	if shouldLog {
+		h.noWorkState[containerID] = &noWorkTracker{reason: reason, loggedAt: now}
+	}
+	h.noWorkMu.Unlock()
+
+	if shouldLog {
+		logger := common.LoggerFromContext(ctx)
+		logger.Log("INFO", "Factory idle - waiting for workers", map[string]interface{}{
+			"container_id": containerID,
+			"reason":       reason,
+			"backoff":      noWorkIterationDelay.String(),
+		})
+	}
+
+	h.sleepInterruptibly(ctx, noWorkIterationDelay)
+}
+
+// sleepInterruptibly blocks for d via the handler's injected clock (so tests
+// can fake it with a MockClock) while still honouring context cancellation.
+// shared.Clock has no cancellation of its own - RealClock.Sleep is a plain
+// blocking time.Sleep - so the actual sleep runs on a background goroutine
+// and this races it against ctx.Done(). A cancelled container therefore
+// returns immediately instead of hanging for up to noWorkIterationDelay; the
+// abandoned goroutine finishes sleeping in the background and exits cleanly
+// on its own, holding no resources worth cancelling.
+func (h *RunFactoryCoordinatorHandler) sleepInterruptibly(ctx context.Context, d time.Duration) {
+	done := make(chan struct{})
+	go func() {
+		h.clock.Sleep(d)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-ctx.Done():
+	}
 }
 
 // executeCoordination orchestrates the complete fleet-based production workflow
@@ -200,6 +296,7 @@ func (h *RunFactoryCoordinatorHandler) executeCoordination(
 		proj := h.chainMarginGuard.Evaluate(ctx, dependencyTree, cmd.SystemSymbol, cmd.PlayerID)
 		if !proj.Proceed {
 			logger.Log("WARNING", proj.ParkMessage(), proj.LogFields(response.FactoryID))
+			response.NoWorkReason = proj.ParkMessage()
 			return nil
 		}
 		logger.Log("INFO", proj.ProceedMessage(), proj.LogFields(response.FactoryID))
@@ -241,6 +338,16 @@ func (h *RunFactoryCoordinatorHandler) executeCoordination(
 		// Release all ship assignments on error
 		h.releaseAllShipAssignments(ctx, cmd.ContainerID, cmd.PlayerID, "production_failed")
 		return fmt.Errorf("parallel production failed: %w", err)
+	}
+
+	// sp-2q2o: executeLevelParallel's sp-vsfn catch-all parks (excludes from
+	// results, doesn't abort the run) every node whose worker failed -
+	// including "no claimable ship for %s %s" when the in-system fleet has
+	// nothing free. If EVERY node parked this way, the run just completed
+	// clean, fast, and having done nothing; flag it so Handle can back off
+	// instead of the runner re-invoking instantly.
+	if response.NodesTotal > 0 && response.NodesCompleted == 0 {
+		response.NoWorkReason = "no nodes completed - every claimable node parked (no claimable in-system hull or worker failure)"
 	}
 
 	// Step 6: Release all ship assignments on successful completion
