@@ -269,7 +269,7 @@ func run(cfg *config.Config) error {
 
 	// Jump handler (sp-n0x7: was never registered, so dispatching
 	// JumpShipCommand always failed with "no handler registered")
-	jumpShipHandler := shipNav.NewJumpShipHandler(shipRepo, playerRepo, apiClient, med, containerRepo, nil) // nil = use RealClock
+	jumpShipHandler := shipNav.NewJumpShipHandler(shipRepo, playerRepo, apiClient, med, containerRepo, api.NewConstructionSiteRepository(apiClient, playerRepo), nil) // constructionRepo enables the at-complete-gate driveless-jump check; nil clock = RealClock
 	if err := mediator.RegisterHandler[*shipNav.JumpShipCommand](med, jumpShipHandler); err != nil {
 		return fmt.Errorf("failed to register JumpShip handler: %w", err)
 	}

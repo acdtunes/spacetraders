@@ -9,6 +9,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	"github.com/andrescamacho/spacetraders-go/internal/application/ship/queries"
 	domainContainer "github.com/andrescamacho/spacetraders-go/internal/domain/container"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 	domainNavigation "github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/ports"
@@ -47,36 +48,41 @@ type ContainerRepository interface {
 
 // JumpShipHandler handles the JumpShip command with auto-navigation
 type JumpShipHandler struct {
-	shipRepo       domainNavigation.ShipRepository
-	playerRepo     player.PlayerRepository
-	apiClient      ports.APIClient
-	mediator       common.Mediator
-	containerRepo  ContainerRepository
-	clock          shared.Clock
-	playerResolver *common.PlayerResolver
+	shipRepo         domainNavigation.ShipRepository
+	playerRepo       player.PlayerRepository
+	apiClient        ports.APIClient
+	mediator         common.Mediator
+	containerRepo    ContainerRepository
+	constructionRepo manufacturing.ConstructionSiteRepository
+	clock            shared.Clock
+	playerResolver   *common.PlayerResolver
 }
 
 // NewJumpShipHandler creates a new JumpShipHandler. If clock is nil, uses
-// RealClock (production default).
+// RealClock (production default). constructionRepo may be nil; if so, the
+// source-gate construction-completeness check is skipped and the fail-open
+// path (defer to the live jump API) is always taken for driveless jumps.
 func NewJumpShipHandler(
 	shipRepo domainNavigation.ShipRepository,
 	playerRepo player.PlayerRepository,
 	apiClient ports.APIClient,
 	mediator common.Mediator,
 	containerRepo ContainerRepository,
+	constructionRepo manufacturing.ConstructionSiteRepository,
 	clock shared.Clock,
 ) *JumpShipHandler {
 	if clock == nil {
 		clock = shared.NewRealClock()
 	}
 	return &JumpShipHandler{
-		shipRepo:       shipRepo,
-		playerRepo:     playerRepo,
-		apiClient:      apiClient,
-		mediator:       mediator,
-		containerRepo:  containerRepo,
-		clock:          clock,
-		playerResolver: common.NewPlayerResolver(playerRepo),
+		shipRepo:         shipRepo,
+		playerRepo:       playerRepo,
+		apiClient:        apiClient,
+		mediator:         mediator,
+		containerRepo:    containerRepo,
+		constructionRepo: constructionRepo,
+		clock:            clock,
+		playerResolver:   common.NewPlayerResolver(playerRepo),
 	}
 }
 
@@ -112,17 +118,43 @@ func (h *JumpShipHandler) Handle(ctx context.Context, request common.Request) (c
 		return nil, fmt.Errorf("failed to get ship: %w", err)
 	}
 
-	// 2. Validate ship has jump drive module
-	if !ship.HasJumpDrive() {
-		return nil, fmt.Errorf("ship %s does not have a jump drive module", cmd.ShipSymbol)
+	currentLocation := ship.CurrentLocation()
+
+	// 2. Validate the ship can jump. SpaceTraders rule: a ship with a
+	// jump-drive module can jump from anywhere; a ship WITHOUT a drive can
+	// only jump if it is currently at a COMPLETE jump gate - gate-adjacent
+	// driveless jumps are legal (sp-n0x7), but a gate still under
+	// construction is not a valid source.
+	if ship.HasJumpDrive() {
+		logger.Log("INFO", "Ship has jump drive", map[string]interface{}{
+			"range": ship.GetJumpDriveRange(),
+		})
+	} else {
+		if !currentLocation.IsJumpGate() {
+			return nil, fmt.Errorf("ship %s cannot jump: no jump drive module and not at a jump gate", cmd.ShipSymbol)
+		}
+
+		complete, err := h.sourceGateComplete(ctx, currentLocation.Symbol, playerID.Value())
+		if err != nil {
+			// Fail open: if we can't verify construction status, don't block
+			// an otherwise-legal jump on a repository/API hiccup - the live
+			// jump API is the final, authoritative arbiter and will reject
+			// it if it's actually still under construction (mirrors the
+			// existing 4262 destination-gate handling below).
+			logger.Log("WARN", "could not verify source jump gate construction status, proceeding", map[string]interface{}{
+				"gate":  currentLocation.Symbol,
+				"error": err.Error(),
+			})
+		} else if !complete {
+			return nil, fmt.Errorf("ship %s cannot jump: jump gate %s is still under construction", cmd.ShipSymbol, currentLocation.Symbol)
+		}
+
+		logger.Log("INFO", "Ship is driveless but at a complete jump gate", map[string]interface{}{
+			"gate": currentLocation.Symbol,
+		})
 	}
 
-	logger.Log("INFO", "Ship has jump drive", map[string]interface{}{
-		"range": ship.GetJumpDriveRange(),
-	})
-
 	// 3. Check if ship is at a jump gate
-	currentLocation := ship.CurrentLocation()
 	currentSystem := currentLocation.SystemSymbol
 	navigatedToGate := false
 	jumpGateSymbol := currentLocation.Symbol
@@ -288,4 +320,20 @@ func isDestinationGateUnderConstructionError(err error) bool {
 	}
 	msg := err.Error()
 	return strings.Contains(msg, "4262") || strings.Contains(msg, "under construction")
+}
+
+// sourceGateComplete reports whether the jump gate at waypointSymbol has
+// finished construction, i.e. is a valid SOURCE gate for a driveless jump.
+// Returns an error if construction status could not be determined (no
+// repository configured, or the lookup itself failed) - callers should fail
+// open on error rather than block an otherwise-legal jump.
+func (h *JumpShipHandler) sourceGateComplete(ctx context.Context, waypointSymbol string, playerID int) (bool, error) {
+	if h.constructionRepo == nil {
+		return false, fmt.Errorf("construction repository not configured")
+	}
+	site, err := h.constructionRepo.FindByWaypoint(ctx, waypointSymbol, playerID)
+	if err != nil {
+		return false, err
+	}
+	return site.IsComplete(), nil
 }

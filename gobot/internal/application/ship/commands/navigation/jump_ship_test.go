@@ -8,6 +8,7 @@ import (
 	"time"
 
 	domainContainer "github.com/andrescamacho/spacetraders-go/internal/domain/container"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/manufacturing"
 	domainNavigation "github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/ports"
@@ -94,7 +95,38 @@ func (s *stubJumpContainerRepo) Remove(_ context.Context, containerID string, _ 
 	return nil
 }
 
+// stubJumpConstructionRepo embeds the domain interface so we only implement
+// FindByWaypoint. site/err let a test control whether the queried gate
+// reports as complete, still under construction, or unreachable (repo
+// error) - the latter exercises the fail-open path, where the handler
+// cannot verify status and defers the decision to the live jump API rather
+// than blocking an otherwise-legal jump on a repository hiccup.
+type stubJumpConstructionRepo struct {
+	manufacturing.ConstructionSiteRepository
+
+	site *manufacturing.ConstructionSite
+	err  error
+}
+
+func (s *stubJumpConstructionRepo) FindByWaypoint(_ context.Context, _ string, _ int) (*manufacturing.ConstructionSite, error) {
+	return s.site, s.err
+}
+
 func newJumpTestShip(t *testing.T, symbol string, location *shared.Waypoint) *domainNavigation.Ship {
+	t.Helper()
+	jumpDrive := domainNavigation.NewShipModule("MODULE_JUMP_DRIVE_I", 0, 500)
+	return newJumpTestShipWithModules(t, symbol, location, []*domainNavigation.ShipModule{jumpDrive})
+}
+
+// newDrivelessJumpTestShip builds a ship with no jump drive module, used to
+// exercise the gate-adjacent driveless-jump precondition (sp-n0x7): such a
+// ship may only jump if it is currently at a COMPLETE jump gate.
+func newDrivelessJumpTestShip(t *testing.T, symbol string, location *shared.Waypoint) *domainNavigation.Ship {
+	t.Helper()
+	return newJumpTestShipWithModules(t, symbol, location, nil)
+}
+
+func newJumpTestShipWithModules(t *testing.T, symbol string, location *shared.Waypoint, modules []*domainNavigation.ShipModule) *domainNavigation.Ship {
 	t.Helper()
 	fuel, err := shared.NewFuel(0, 0)
 	if err != nil {
@@ -104,7 +136,6 @@ func newJumpTestShip(t *testing.T, symbol string, location *shared.Waypoint) *do
 	if err != nil {
 		t.Fatalf("NewCargo: %v", err)
 	}
-	jumpDrive := domainNavigation.NewShipModule("MODULE_JUMP_DRIVE_I", 0, 500)
 	ship, err := domainNavigation.NewShip(
 		symbol,
 		shared.MustNewPlayerID(1),
@@ -116,7 +147,7 @@ func newJumpTestShip(t *testing.T, symbol string, location *shared.Waypoint) *do
 		9,
 		"FRAME_PROBE",
 		"SATELLITE",
-		[]*domainNavigation.ShipModule{jumpDrive},
+		modules,
 		domainNavigation.NavStatusInOrbit,
 	)
 	if err != nil {
@@ -132,6 +163,18 @@ func newJumpGateWaypoint(t *testing.T, symbol string) *shared.Waypoint {
 		t.Fatalf("NewWaypoint: %v", err)
 	}
 	wp.Type = "JUMP_GATE"
+	return wp
+}
+
+// newNonGateWaypoint builds an ordinary (non jump-gate) waypoint, used to
+// prove a driveless ship away from any gate is rejected.
+func newNonGateWaypoint(t *testing.T, symbol string) *shared.Waypoint {
+	t.Helper()
+	wp, err := shared.NewWaypoint(symbol, 0, 0)
+	if err != nil {
+		t.Fatalf("NewWaypoint: %v", err)
+	}
+	wp.Type = "PLANET"
 	return wp
 }
 
@@ -156,7 +199,7 @@ func TestJumpShip_SuccessfulJump_SyncsShipStateAndReleasesClaim(t *testing.T) {
 	}
 	clock := &shared.MockClock{CurrentTime: time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC)}
 
-	handler := NewJumpShipHandler(shipRepo, playerRepo, apiClient, nil, containerRepo, clock)
+	handler := NewJumpShipHandler(shipRepo, playerRepo, apiClient, nil, containerRepo, nil, clock)
 
 	playerIDInt := 1
 	cmd := &JumpShipCommand{
@@ -256,7 +299,7 @@ func TestJumpShip_DestinationGateUnderConstruction4262_SurfacesCleanError(t *tes
 	}
 	clock := &shared.MockClock{CurrentTime: time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC)}
 
-	handler := NewJumpShipHandler(shipRepo, playerRepo, apiClient, nil, containerRepo, clock)
+	handler := NewJumpShipHandler(shipRepo, playerRepo, apiClient, nil, containerRepo, nil, clock)
 
 	playerIDInt := 1
 	cmd := &JumpShipCommand{
@@ -283,5 +326,160 @@ func TestJumpShip_DestinationGateUnderConstruction4262_SurfacesCleanError(t *tes
 	}
 	if len(containerRepo.removed) != 1 {
 		t.Fatalf("expected container record removed even on failure, got %d", len(containerRepo.removed))
+	}
+}
+
+// SpaceTraders rule (sp-n0x7): gate-adjacent driveless jumps are legal - a
+// ship with NO jump drive module can still jump if it is currently at a
+// COMPLETE jump gate. The precondition must not hard-require a jump drive.
+func TestJumpShip_DrivelessShipAtCompleteGate_PassesPrecondition(t *testing.T) {
+	gate := newJumpGateWaypoint(t, "X1-AB12-GATE")
+	ship := newDrivelessJumpTestShip(t, "PROBE-2", gate)
+
+	shipRepo := &stubJumpShipRepo{ship: ship}
+	playerRepo := &stubJumpPlayerRepo{playerEntity: player.NewPlayer(shared.MustNewPlayerID(1), "AGENT", "test-token")}
+	containerRepo := &stubJumpContainerRepo{}
+	constructionRepo := &stubJumpConstructionRepo{
+		site: manufacturing.NewConstructionSite("X1-AB12-GATE", "JUMP_GATE", nil, true),
+	}
+	apiClient := &stubJumpAPIClient{
+		result: &ports.JumpResult{
+			DestinationSystem:   "X1-CD34",
+			DestinationWaypoint: "X1-CD34-GATE",
+			CooldownSeconds:     60,
+		},
+	}
+	clock := &shared.MockClock{CurrentTime: time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC)}
+
+	handler := NewJumpShipHandler(shipRepo, playerRepo, apiClient, nil, containerRepo, constructionRepo, clock)
+
+	playerIDInt := 1
+	cmd := &JumpShipCommand{
+		ShipSymbol:        "PROBE-2",
+		DestinationSystem: "X1-CD34",
+		PlayerID:          &playerIDInt,
+	}
+
+	resp, err := handler.Handle(context.Background(), cmd)
+	if err != nil {
+		t.Fatalf("expected a driveless ship at a complete jump gate to pass the precondition, got error: %v", err)
+	}
+	jumpResp, ok := resp.(*JumpShipResponse)
+	if !ok || !jumpResp.Success {
+		t.Fatalf("expected a successful jump response, got %+v (ok=%v)", resp, ok)
+	}
+}
+
+// A driveless ship that is NOT at a jump gate at all has no legal way to
+// jump (no drive, and no gate-adjacency to fall back on) and must be
+// rejected with a clear error before any API call is attempted.
+func TestJumpShip_DrivelessShipNotAtGate_RejectedWithClearError(t *testing.T) {
+	notAGate := newNonGateWaypoint(t, "X1-AB12-ROCK")
+	ship := newDrivelessJumpTestShip(t, "PROBE-3", notAGate)
+
+	shipRepo := &stubJumpShipRepo{ship: ship}
+	playerRepo := &stubJumpPlayerRepo{playerEntity: player.NewPlayer(shared.MustNewPlayerID(1), "AGENT", "test-token")}
+	containerRepo := &stubJumpContainerRepo{}
+	constructionRepo := &stubJumpConstructionRepo{}
+	apiClient := &stubJumpAPIClient{}
+	clock := &shared.MockClock{CurrentTime: time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC)}
+
+	handler := NewJumpShipHandler(shipRepo, playerRepo, apiClient, nil, containerRepo, constructionRepo, clock)
+
+	playerIDInt := 1
+	cmd := &JumpShipCommand{
+		ShipSymbol:        "PROBE-3",
+		DestinationSystem: "X1-CD34",
+		PlayerID:          &playerIDInt,
+	}
+
+	_, err := handler.Handle(context.Background(), cmd)
+	if err == nil {
+		t.Fatalf("expected an error for a driveless ship that is not at a jump gate")
+	}
+	if !strings.Contains(err.Error(), "jump drive") || !strings.Contains(err.Error(), "jump gate") {
+		t.Fatalf("expected a clear error mentioning both jump drive and jump gate, got: %v", err)
+	}
+
+	// The precondition must reject before any claim is taken or API call is
+	// attempted - no side effects for an ineligible jump.
+	if len(containerRepo.added) != 0 {
+		t.Fatalf("expected no container claim to be taken for a rejected precondition, got %d", len(containerRepo.added))
+	}
+}
+
+// A gate still UNDER_CONSTRUCTION is not a valid source for a driveless
+// jump, even though it is a JUMP_GATE-typed waypoint.
+func TestJumpShip_DrivelessShipAtUnderConstructionGate_RejectedWithClearError(t *testing.T) {
+	gate := newJumpGateWaypoint(t, "X1-AB12-GATE")
+	ship := newDrivelessJumpTestShip(t, "PROBE-4", gate)
+
+	shipRepo := &stubJumpShipRepo{ship: ship}
+	playerRepo := &stubJumpPlayerRepo{playerEntity: player.NewPlayer(shared.MustNewPlayerID(1), "AGENT", "test-token")}
+	containerRepo := &stubJumpContainerRepo{}
+	constructionRepo := &stubJumpConstructionRepo{
+		site: manufacturing.NewConstructionSite("X1-AB12-GATE", "JUMP_GATE", nil, false),
+	}
+	apiClient := &stubJumpAPIClient{}
+	clock := &shared.MockClock{CurrentTime: time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC)}
+
+	handler := NewJumpShipHandler(shipRepo, playerRepo, apiClient, nil, containerRepo, constructionRepo, clock)
+
+	playerIDInt := 1
+	cmd := &JumpShipCommand{
+		ShipSymbol:        "PROBE-4",
+		DestinationSystem: "X1-CD34",
+		PlayerID:          &playerIDInt,
+	}
+
+	_, err := handler.Handle(context.Background(), cmd)
+	if err == nil {
+		t.Fatalf("expected an error for a driveless ship at an under-construction gate")
+	}
+	if !strings.Contains(err.Error(), "under construction") {
+		t.Fatalf("expected error to mention the gate is under construction, got: %v", err)
+	}
+	if len(containerRepo.added) != 0 {
+		t.Fatalf("expected no container claim to be taken for a rejected precondition, got %d", len(containerRepo.added))
+	}
+}
+
+// If the construction-status lookup itself fails (e.g. API hiccup), the
+// handler must fail OPEN and let the live jump API make the final call,
+// mirroring the existing 4262 destination-gate pattern - a repository
+// hiccup must never block an otherwise-legal driveless gate jump.
+func TestJumpShip_DrivelessShipAtGate_ConstructionLookupFails_FailsOpenAndProceeds(t *testing.T) {
+	gate := newJumpGateWaypoint(t, "X1-AB12-GATE")
+	ship := newDrivelessJumpTestShip(t, "PROBE-5", gate)
+
+	shipRepo := &stubJumpShipRepo{ship: ship}
+	playerRepo := &stubJumpPlayerRepo{playerEntity: player.NewPlayer(shared.MustNewPlayerID(1), "AGENT", "test-token")}
+	containerRepo := &stubJumpContainerRepo{}
+	constructionRepo := &stubJumpConstructionRepo{err: fmt.Errorf("construction lookup unavailable")}
+	apiClient := &stubJumpAPIClient{
+		result: &ports.JumpResult{
+			DestinationSystem:   "X1-CD34",
+			DestinationWaypoint: "X1-CD34-GATE",
+			CooldownSeconds:     60,
+		},
+	}
+	clock := &shared.MockClock{CurrentTime: time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC)}
+
+	handler := NewJumpShipHandler(shipRepo, playerRepo, apiClient, nil, containerRepo, constructionRepo, clock)
+
+	playerIDInt := 1
+	cmd := &JumpShipCommand{
+		ShipSymbol:        "PROBE-5",
+		DestinationSystem: "X1-CD34",
+		PlayerID:          &playerIDInt,
+	}
+
+	resp, err := handler.Handle(context.Background(), cmd)
+	if err != nil {
+		t.Fatalf("expected fail-open (proceed to live API) when construction status can't be verified, got error: %v", err)
+	}
+	jumpResp, ok := resp.(*JumpShipResponse)
+	if !ok || !jumpResp.Success {
+		t.Fatalf("expected a successful jump response, got %+v (ok=%v)", resp, ok)
 	}
 }
