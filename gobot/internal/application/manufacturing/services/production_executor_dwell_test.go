@@ -118,6 +118,7 @@ func TestPollForProduction_DwellPastThreshold_EscalatesToWarnEveryAttempt(t *tes
 		shared.MustNewPlayerID(1),
 		nil,
 		true, // inputsOnly
+		"X1-DR",
 	)
 	if err != nil {
 		t.Fatalf("expected eventual success once the market reports the good, got error: %v", err)
@@ -172,6 +173,7 @@ func TestPollForProduction_BeforeThreshold_NoWarnEscalation(t *testing.T) {
 		shared.MustNewPlayerID(1),
 		nil,
 		true,
+		"X1-DR",
 	)
 	if err != nil {
 		t.Fatalf("expected eventual success, got error: %v", err)

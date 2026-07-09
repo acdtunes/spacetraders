@@ -281,7 +281,7 @@ func (e *ProductionExecutor) fabricateGood(
 
 	// Check current supply at factory
 	playerIDValue := shared.MustNewPlayerID(playerID)
-	stockedResult, err := e.collectExistingFactorySupply(ctx, ship, node, factoryMarket, playerIDValue, opContext, inputsOnly)
+	stockedResult, err := e.collectExistingFactorySupply(ctx, ship, node, factoryMarket, playerIDValue, opContext, inputsOnly, systemSymbol)
 	if err != nil {
 		return nil, err
 	}
@@ -345,7 +345,7 @@ func (e *ProductionExecutor) fabricateGood(
 	// The factory EXPORTS the finished good (we buy from them at their sell price).
 	// In inputs-only mode the poll still confirms the output was produced, but the
 	// harvest is skipped so the good is left in factory stock (sp-q02m).
-	quantity, cost, err := e.PollForProduction(ctx, node.Good, factoryMarket.WaypointSymbol, updatedShip.ShipSymbol(), playerIDValue, opContext, inputsOnly)
+	quantity, cost, err := e.PollForProduction(ctx, node.Good, factoryMarket.WaypointSymbol, updatedShip.ShipSymbol(), playerIDValue, opContext, inputsOnly, systemSymbol)
 	if err != nil {
 		return nil, fmt.Errorf("failed during production polling: %w", err)
 	}
@@ -367,6 +367,7 @@ func (e *ProductionExecutor) collectExistingFactorySupply(
 	playerIDValue shared.PlayerID,
 	opContext *shared.OperationContext,
 	inputsOnly bool,
+	systemSymbol string,
 ) (*ProductionResult, error) {
 	logger := common.LoggerFromContext(ctx)
 
@@ -397,7 +398,7 @@ func (e *ProductionExecutor) collectExistingFactorySupply(
 
 	// Purchase the goods directly (PollForProduction will find them immediately since supply is HIGH/ABUNDANT).
 	// In inputs-only mode the harvest is skipped, so the already-abundant stock is left for construction to source.
-	quantity, cost, err := e.PollForProduction(ctx, node.Good, factoryMarket.WaypointSymbol, updatedShip.ShipSymbol(), playerIDValue, opContext, inputsOnly)
+	quantity, cost, err := e.PollForProduction(ctx, node.Good, factoryMarket.WaypointSymbol, updatedShip.ShipSymbol(), playerIDValue, opContext, inputsOnly, systemSymbol)
 	if err != nil {
 		return nil, fmt.Errorf("failed to purchase from factory: %w", err)
 	}
@@ -420,6 +421,7 @@ func (e *ProductionExecutor) PollForProduction(
 	playerID shared.PlayerID,
 	opContext *shared.OperationContext, // Operation context for transaction linking
 	inputsOnly bool, // when true, confirm production then LEAVE the output in factory stock (skip the harvest)
+	systemSymbol string, // system to search for a resale sink when checking the crushed-sink guard (bp6f #3)
 ) (int, int, error) {
 	logger := common.LoggerFromContext(ctx)
 
@@ -470,6 +472,33 @@ func (e *ProductionExecutor) PollForProduction(
 					"waypoint": waypointSymbol,
 				})
 				return 0, 0, nil
+			}
+
+			// bp6f #3: the trade crisis (over-buying + emergency liquidation) crushed
+			// home sinks - e.g. D40 ADV_CIRC's bid fell 7000->2191 - so factories kept
+			// harvesting output and reselling it below their own harvest cost:
+			// loss-making production on every cycle. Compare the downstream resale bid
+			// against what we're about to pay to harvest (tradeGood.SellPrice, the
+			// factory's own ask). Fail OPEN (harvest anyway) if no sink can be found at
+			// all - that's normal for goods with no direct resale market, not a signal
+			// to stop production.
+			if sink, sinkErr := e.marketLocator.FindImportMarket(ctx, good, systemSymbol, playerID.Value()); sinkErr == nil && sink != nil {
+				harvestCost := tradeGood.SellPrice()
+				if sink.Price < harvestCost {
+					logger.Log("WARNING", fmt.Sprintf(
+						"Parking %s at %s: crushed sink - resale bid %d at %s is below harvest cost %d, producing would lose money",
+						good, waypointSymbol, sink.Price, sink.WaypointSymbol, harvestCost,
+					), map[string]interface{}{
+						"action":       "factory_parked",
+						"reason":       "crushed_sink",
+						"good":         good,
+						"waypoint":     waypointSymbol,
+						"sink":         sink.WaypointSymbol,
+						"sink_bid":     sink.Price,
+						"harvest_cost": harvestCost,
+					})
+					return 0, 0, nil
+				}
 			}
 
 			return e.purchaseFabricatedOutput(ctx, good, waypointSymbol, shipSymbol, playerID, tradeGood.TradeVolume())

@@ -304,6 +304,23 @@ func (r *dockRaceMarketRepo) GetMarketData(ctx context.Context, waypointSymbol s
 	return market.NewMarket(waypointSymbol, []market.TradeGood{*good}, time.Now())
 }
 
+// FindBestMarketBuying backs the crushed-sink guard's resale-bid lookup
+// (bp6f #3). This harness's harvest cost is fixed at 10/unit (GetMarketData
+// above); a bid of 100 keeps every pre-existing harvest-mode test in this
+// package (which know nothing about the guard) clearly profitable, so they
+// continue to harvest exactly as before it existed.
+func (r *dockRaceMarketRepo) FindBestMarketBuying(ctx context.Context, goodSymbol, systemSymbol string, playerID int) (*market.BestMarketBuyingResult, error) {
+	if goodSymbol == dockRaceGood {
+		return &market.BestMarketBuyingResult{
+			WaypointSymbol: dockRaceMarketWP,
+			TradeSymbol:    goodSymbol,
+			PurchasePrice:  100,
+			Supply:         "HIGH",
+		}, nil
+	}
+	return nil, nil
+}
+
 type dockRaceClock struct{}
 
 func (c *dockRaceClock) Now() time.Time        { return time.Now() }

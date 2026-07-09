@@ -16,16 +16,16 @@ import (
 // sp-pafv's arrival-wait park pattern: ErrArrivalWaitExhausted). sp-npyr asks
 // this coordinator to catch it the same way sp-pafv's callers do.
 //
-// It already does, generically: executeCoordination's error path
-// unconditionally releases every ship assignment before returning any worker
-// error (never crashes, never leaves a zombie claim), and this coordinator
-// carries no persistent in-memory chain state beyond ship DB rows to
-// preserve. What was missing was purely observability — executeLevelParallel
-// logged every worker failure identically ("Worker failed", ERROR, cause
-// buried in a metadata field), giving no way to tell a transient refuel
-// exhaustion (which resolves itself once the ship is re-claimed on a later
-// run) apart from a genuine production bug. This test proves an unrecoverable
-// refuel now gets a distinct, verbatim-named WARNING instead.
+// executeLevelParallel's collection loop parks (excludes from results, does
+// NOT abort the level or the run for) every worker error except a container
+// shutdown signal (see isContainerShutdownSignal) — a catch-all, not an
+// allow-list, so the next unclassified transient (like the
+// orbit-while-in-transit 400/4214 race that reopened this issue once
+// already) is parked too instead of re-crashing the coordinator. This test
+// proves an unrecoverable refuel (a) no longer fails the coordinator run at
+// all — Handle returns a completed, error-free response — and (b) still gets
+// a distinct, verbatim-named WARNING instead of the opaque generic "Worker
+// failed" ERROR, so the park remains diagnosable at a glance.
 func TestExecuteLevelParallel_RefuelUnrecoverable_LogsDistinctParkWarning(t *testing.T) {
 	f := newFactoryFixture(t)
 	f.mediator.navigateRouteErr = &ship.ErrRefuelUnrecoverable{
@@ -38,14 +38,13 @@ func TestExecuteLevelParallel_RefuelUnrecoverable_LogsDistinctParkWarning(t *tes
 	logger := &capturingLogger{}
 	ctx := common.WithLogger(context.Background(), logger)
 
-	_, err := f.handler.Handle(ctx, f.cmd)
-	if err == nil {
-		t.Fatal("expected the coordinator to surface the unrecoverable refuel failure, got nil error")
+	resp, err := f.handler.Handle(ctx, f.cmd)
+	if err != nil {
+		t.Fatalf("expected the coordinator to PARK the unrecoverable refuel and complete cleanly, got error: %v", err)
 	}
-
-	var refuelErr *ship.ErrRefuelUnrecoverable
-	if !errors.As(err, &refuelErr) {
-		t.Fatalf("expected the propagated error to unwrap to *ship.ErrRefuelUnrecoverable, got: %v", err)
+	coordResp, ok := resp.(*RunFactoryCoordinatorResponse)
+	if !ok || !coordResp.Completed {
+		t.Fatalf("expected a completed response despite the parked node, got: %+v", resp)
 	}
 
 	foundParkWarning := false
@@ -66,10 +65,14 @@ func TestExecuteLevelParallel_RefuelUnrecoverable_LogsDistinctParkWarning(t *tes
 	}
 }
 
-// Regression: an ordinary worker failure (not an unrecoverable refuel) must
-// keep logging through the original generic "Worker failed" ERROR path -
-// this fix narrows to ErrRefuelUnrecoverable only, it does not touch any
-// other failure's observability.
+// Regression: an ordinary, unclassified worker failure (not an unrecoverable
+// refuel, arrival-wait exhaustion, or cargo-space error) is ALSO parked by
+// the sp-vsfn catch-all, not just the specifically classified error types. It
+// keeps logging through the original generic "Worker failed" ERROR path (the
+// switch's default case in executeLevelParallel) — so an unrecognized
+// failure stays visible as a candidate for its own classified branch later —
+// but per the catch-all design it must NOT fail the coordinator run: Handle
+// still returns a completed, error-free response.
 func TestExecuteLevelParallel_OrdinaryWorkerFailure_KeepsGenericErrorLog(t *testing.T) {
 	f := newFactoryFixture(t)
 	f.mediator.navigateRouteErr = errors.New("boom: unrelated navigation failure")
@@ -77,14 +80,13 @@ func TestExecuteLevelParallel_OrdinaryWorkerFailure_KeepsGenericErrorLog(t *test
 	logger := &capturingLogger{}
 	ctx := common.WithLogger(context.Background(), logger)
 
-	_, err := f.handler.Handle(ctx, f.cmd)
-	if err == nil {
-		t.Fatal("expected the coordinator to surface the ordinary worker failure, got nil error")
+	resp, err := f.handler.Handle(ctx, f.cmd)
+	if err != nil {
+		t.Fatalf("expected the coordinator to PARK the ordinary worker failure and complete cleanly, got error: %v", err)
 	}
-
-	var refuelErr *ship.ErrRefuelUnrecoverable
-	if errors.As(err, &refuelErr) {
-		t.Fatalf("did not expect an ordinary error to unwrap to *ship.ErrRefuelUnrecoverable, got: %v", err)
+	coordResp, ok := resp.(*RunFactoryCoordinatorResponse)
+	if !ok || !coordResp.Completed {
+		t.Fatalf("expected a completed response despite the parked node, got: %+v", resp)
 	}
 
 	foundGenericFailure := false

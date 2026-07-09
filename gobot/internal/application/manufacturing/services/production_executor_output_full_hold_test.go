@@ -54,6 +54,7 @@ func TestPurchaseFabricatedOutput_FullHold_UnloadsExistingCargoThenPurchases(t *
 		shared.MustNewPlayerID(1),
 		nil,
 		false, // harvest (not inputs-only)
+		"X1-DR",
 	)
 	if err != nil {
 		t.Fatalf("a full hold that CAN be unloaded must not crash the harvest: got %v", err)
@@ -82,6 +83,7 @@ func TestPurchaseFabricatedOutput_FullHold_UnsellableCargo_SkipsGracefully(t *te
 		shared.MustNewPlayerID(1),
 		nil,
 		false, // harvest (not inputs-only)
+		"X1-DR",
 	)
 	if err != nil {
 		t.Fatalf("an unsellable full hold must be skipped, not crash the harvest: got %v", err)

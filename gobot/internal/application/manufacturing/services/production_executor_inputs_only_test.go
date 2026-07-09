@@ -33,6 +33,7 @@ func TestPollForProduction_InputsOnly_LeavesOutputInFactory(t *testing.T) {
 		shared.MustNewPlayerID(1),
 		nil,
 		true, // inputsOnly
+		"X1-DR",
 	)
 	if err != nil {
 		t.Fatalf("inputs-only poll must succeed (production confirmed), got error: %v", err)
@@ -60,6 +61,7 @@ func TestPollForProduction_Default_HarvestsOutput(t *testing.T) {
 		shared.MustNewPlayerID(1),
 		nil,
 		false, // default: harvest
+		"X1-DR",
 	)
 	if err != nil {
 		t.Fatalf("default poll must succeed and harvest, got error: %v", err)

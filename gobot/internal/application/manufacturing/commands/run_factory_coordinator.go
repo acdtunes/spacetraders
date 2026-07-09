@@ -596,27 +596,59 @@ func (h *RunFactoryCoordinatorHandler) executeLevelParallel(
 
 			if err != nil {
 				var refuelErr *shipapp.ErrRefuelUnrecoverable
-				if errors.As(err, &refuelErr) {
-					// sp-vsfn's refuel retry/reroute budget is exhausted for
-					// this ship. executeCoordination's caller already parks
-					// on ANY worker error generically (releases every ship
-					// assignment, returns cleanly, never crashes or corrupts
-					// ship DB state — the same "preserve state, don't crash"
-					// contract sp-pafv's ErrArrivalWaitExhausted callers
-					// honor). This branch only makes that specific cause
-					// visible in the log message text instead of the opaque
-					// generic "Worker failed", so a transient refuel
-					// exhaustion (self-resolves once the ship is re-claimed
-					// on a later run) is distinguishable at a glance from a
-					// genuine production bug (sp-npyr).
-					logger.Log("WARNING", "Worker parked on unrecoverable refuel failure", map[string]interface{}{
+				var arrivalErr *shipapp.ErrArrivalWaitExhausted
+				var cargoErr *goods.ErrInsufficientCargo
+				switch {
+				case errors.As(err, &refuelErr):
+					// sp-vsfn: this ship's refuel retry/reroute budget is
+					// exhausted. The collection loop below parks this node
+					// (does not abort the level/run) rather than crashing —
+					// this branch only makes that specific cause visible in
+					// the log message text instead of the opaque generic
+					// "Worker failed", so a transient refuel exhaustion
+					// (self-resolves once the ship is re-claimed on a later
+					// run) is distinguishable at a glance from a genuine
+					// production bug (sp-npyr).
+					logger.Log("WARNING", fmt.Sprintf("Worker parked on unrecoverable refuel failure: ship %s at %s after %d attempt(s)", refuelErr.ShipSymbol, refuelErr.Waypoint, refuelErr.Attempts), map[string]interface{}{
 						"good":        n.Good,
 						"ship_symbol": refuelErr.ShipSymbol,
 						"waypoint":    refuelErr.Waypoint,
 						"attempts":    refuelErr.Attempts,
 						"error":       err.Error(),
 					})
-				} else {
+				case errors.As(err, &arrivalErr):
+					// sp-vsfn: the ship's arrival wait gave up — the ARRIVED
+					// event never arrived and repeated resyncs kept showing
+					// IN_TRANSIT. Parked, not crashed: a later run re-syncs
+					// against the ship repository and retries.
+					logger.Log("WARNING", fmt.Sprintf("Worker parked on arrival wait exhaustion: ship %s after %d attempt(s)", arrivalErr.ShipSymbol, arrivalErr.Attempts), map[string]interface{}{
+						"good":        n.Good,
+						"ship_symbol": arrivalErr.ShipSymbol,
+						"attempts":    arrivalErr.Attempts,
+						"error":       err.Error(),
+					})
+				case errors.As(err, &cargoErr):
+					// sp-vsfn: the ship couldn't hold the required goods.
+					// Parked, not crashed: a later run may claim a hull with
+					// more free space, or this hull's hold may have cleared.
+					logger.Log("WARNING", fmt.Sprintf("Worker parked on insufficient cargo space: ship %s needs %d, has %d", cargoErr.ShipSymbol, cargoErr.RequiredSpace, cargoErr.AvailableSpace), map[string]interface{}{
+						"good":            n.Good,
+						"ship_symbol":     cargoErr.ShipSymbol,
+						"required_space":  cargoErr.RequiredSpace,
+						"available_space": cargoErr.AvailableSpace,
+						"error":           err.Error(),
+					})
+				default:
+					// sp-vsfn catch-all: any OTHER worker error — including
+					// novel, not-yet-classified transients such as the
+					// orbit-while-in-transit 400/4214 race that reopened this
+					// issue — still PARKS this node rather than crashing the
+					// whole run (see the collection loop below). It keeps the
+					// generic ERROR level/message so it stays visible,
+					// greppable and alertable as a candidate for its own
+					// classified branch later, instead of silently blending
+					// into the WARNING-level "known and expected" causes
+					// above.
 					logger.Log("ERROR", "Worker failed", map[string]interface{}{
 						"good":  n.Good,
 						"error": err.Error(),
@@ -638,13 +670,25 @@ func (h *RunFactoryCoordinatorHandler) executeLevelParallel(
 		close(resultChan)
 	}()
 
-	// Collect results
+	// Collect results. sp-vsfn (catch-all park+resume): a worker error PARKS
+	// that node — excluded from results, but does NOT abort the level or the
+	// run — UNLESS the error is a container shutdown signal (context
+	// cancellation/deadline), the one case where silently continuing would
+	// misreport a killed run as a clean, partially-completed success. This
+	// treats "everything except shutdown" as parkable rather than matching a
+	// fixed allow-list of known transient error types: the prior allow-list
+	// -style fix (refuel only) was reopened the moment a new, unclassified
+	// trigger (orbit-while-in-transit 400/4214) appeared, so a deny-list of
+	// exactly the one case that must NOT be parked is the design that doesn't
+	// need a follow-up patch for the next new trigger.
 	results := make([]*mfgServices.ProductionResult, 0, len(nodes))
 	var firstError error
 
 	for wr := range resultChan {
-		if wr.err != nil && firstError == nil {
-			firstError = wr.err
+		if wr.err != nil {
+			if isContainerShutdownSignal(wr.err) && firstError == nil {
+				firstError = wr.err
+			}
 		}
 		if wr.result != nil {
 			results = append(results, wr.result)
@@ -658,6 +702,16 @@ func (h *RunFactoryCoordinatorHandler) executeLevelParallel(
 	}
 
 	return results, nil
+}
+
+// isContainerShutdownSignal reports whether err is a context
+// cancellation/deadline signal — i.e. the container itself is shutting down
+// — as opposed to a transient worker failure. executeLevelParallel parks
+// (does not abort the run for) every worker error EXCEPT this one:
+// continuing past a genuine shutdown signal would misreport a killed run as
+// a clean, partially-completed success (sp-vsfn).
+func isContainerShutdownSignal(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 func (h *RunFactoryCoordinatorHandler) runNodeWorker(
@@ -887,7 +941,7 @@ func (h *RunFactoryCoordinatorHandler) produceNodeOnly(
 	// Poll for production and purchase output. In inputs-only mode (root level only)
 	// the poll confirms the output was fabricated but the harvest is skipped, leaving
 	// the good in factory stock for a construction pipeline to source (sp-q02m).
-	quantity, cost, err := h.productionExecutor.PollForProduction(ctx, node.Good, exportMarket.WaypointSymbol, updatedShip.ShipSymbol(), playerIDValue, opContext, inputsOnly)
+	quantity, cost, err := h.productionExecutor.PollForProduction(ctx, node.Good, exportMarket.WaypointSymbol, updatedShip.ShipSymbol(), playerIDValue, opContext, inputsOnly, systemSymbol)
 	if err != nil {
 		return nil, err
 	}

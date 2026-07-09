@@ -222,6 +222,26 @@ func (r *factoryFakeMarketRepo) GetMarketData(ctx context.Context, waypointSymbo
 	return nil, nil
 }
 
+// FindBestMarketBuying backs the crushed-sink guard's resale-bid lookup
+// (bp6f #3). testOutputGood's harvest cost is fixed at 100/unit (see
+// FindCheapestMarketSelling/GetMarketData above); a bid of 150 keeps every
+// pre-existing harvest-mode test in this package (which know nothing about
+// the guard) clearly profitable, so they continue to harvest exactly as
+// before it existed. Other goods return (nil, nil), which drives
+// MarketLocator.FindImportMarket's no-sink-found error path — exercising the
+// guard's already-tested fail-open behavior rather than a second panic risk.
+func (r *factoryFakeMarketRepo) FindBestMarketBuying(ctx context.Context, goodSymbol, systemSymbol string, playerID int) (*market.BestMarketBuyingResult, error) {
+	if goodSymbol == testOutputGood {
+		return &market.BestMarketBuyingResult{
+			WaypointSymbol: testFactoryWaypoint,
+			TradeSymbol:    goodSymbol,
+			PurchasePrice:  150,
+			Supply:         "HIGH",
+		}, nil
+	}
+	return nil, nil
+}
+
 type factoryFakeClock struct{}
 
 func (c *factoryFakeClock) Now() time.Time        { return time.Now() }
