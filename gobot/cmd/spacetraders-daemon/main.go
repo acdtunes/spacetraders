@@ -521,6 +521,11 @@ func run(cfg *config.Config) error {
 		med, shipRepo, marketRepoAdapter, goodsResolver, goodsMarketLocator, nil, // nil = use RealClock
 		apiClient, // sp-9aoc: live treasury for the factory input-buy working-capital spend floor
 	)
+	// sp-w3he: HARD cross-container concurrent spend cap. The per-buy floor (sp-9aoc) above is
+	// per-container, so N factory containers can each clear it inside their own check->buy window
+	// and collectively breach the reserve. This DB-backed reservation ledger (shared across all
+	// factory containers) serializes their in-flight input spend and closes that race.
+	factoryCoordinatorHandler.SetSpendLedger(persistence.NewSpendReservationLedger(db))
 	if err := mediator.RegisterHandler[*goodsCmd.RunFactoryCoordinatorCommand](med, factoryCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register GoodsFactoryCoordinator handler: %w", err)
 	}

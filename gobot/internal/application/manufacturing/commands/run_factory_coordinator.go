@@ -110,6 +110,14 @@ func NewRunFactoryCoordinatorHandler(
 	}
 }
 
+// SetSpendLedger wires the cross-container concurrent factory-input spend cap (sp-w3he)
+// into the production executor. The daemon calls this after construction (main.go), the
+// same setter-injection pattern as SetEventSubscriber on the contract coordinator; left
+// unset the cap is fail-open, which is exactly what every test caller wants.
+func (h *RunFactoryCoordinatorHandler) SetSpendLedger(ledger mfgServices.SpendReservationLedger) {
+	h.productionExecutor.SetSpendLedger(ledger)
+}
+
 // Handle executes the factory coordinator command
 func (h *RunFactoryCoordinatorHandler) Handle(ctx context.Context, request common.Request) (common.Response, error) {
 	cmd, ok := request.(*RunFactoryCoordinatorCommand)

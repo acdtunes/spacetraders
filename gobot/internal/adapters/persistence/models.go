@@ -457,6 +457,30 @@ func (EraModel) TableName() string {
 	return "eras"
 }
 
+// SpendReservationModel is one in-flight factory-input spend intent, the shared-state
+// substrate of the cross-container concurrent spend cap (sp-w3he). Each factory
+// container INSERTs a row before an input buy and the ledger checks that live treasury
+// minus the SUM of all active rows stays at/above the working-capital reserve — closing
+// the check->buy race the per-buy floor (sp-9aoc) leaves open when N factories buy at once.
+// Rows are deleted after each buy (success or failure) and swept on staleness.
+//
+// Deliberately NO players foreign key / association: these are ephemeral operational rows
+// (a row lives only for the seconds of one buy dispatch, then is deleted), so referential
+// integrity buys nothing and a hard FK would only add fixture friction. player_id is a
+// plain indexed column — the ledger scopes its SUM to it; created_at is indexed for the
+// staleness sweep.
+type SpendReservationModel struct {
+	ID            string    `gorm:"column:id;primaryKey;not null"`
+	PlayerID      int       `gorm:"column:player_id;not null;index:idx_spend_reservations_player"`
+	ContainerID   string    `gorm:"column:container_id;not null"`
+	ProjectedCost int       `gorm:"column:projected_cost;not null"`
+	CreatedAt     time.Time `gorm:"column:created_at;not null;index:idx_spend_reservations_created"`
+}
+
+func (SpendReservationModel) TableName() string {
+	return "factory_spend_reservations"
+}
+
 // AllModels is the single canonical registry of every persisted model struct.
 // AutoMigrate and any test/tooling that needs the full model set must consume
 // this slice instead of maintaining a parallel hand-written list, so newly
@@ -482,5 +506,6 @@ func AllModels() []any {
 		&ManufacturingTaskDependencyModel{},
 		&ManufacturingFactoryStateModel{},
 		&EraModel{},
+		&SpendReservationModel{},
 	}
 }

@@ -60,6 +60,22 @@ const productionDwellWarnThreshold = 5 * time.Minute
 // exactly the lever an over-eager re-enable would zero out.
 const defaultWorkingCapitalReserve = 50000
 
+// SpendReservationLedger is the cross-container concurrent factory-input spend cap
+// (sp-w3he). The per-buy floor (sp-9aoc) checks live treasury per container, but N factory
+// containers can each pass that independent check inside the check->buy window and
+// collectively dip below the reserve. This ledger closes that race using shared DB state:
+// a factory records its spend intent and, in one serialized atomic step, verifies live
+// treasury minus the SUM of all active in-flight reservations still clears the reserve.
+//
+// Reserve reports ok==false when the combined spend would breach (caller PARKS) and rolls
+// the reservation back. On ok==true the caller Releases the returned id after the buy.
+// ExpireStale reclaims reservations a dead container never released.
+type SpendReservationLedger interface {
+	Reserve(ctx context.Context, playerID int, containerID string, projectedCost, liveCredits, reserveFloor int) (reservationID string, ok bool, err error)
+	Release(ctx context.Context, reservationID string) error
+	ExpireStale(ctx context.Context, maxAge time.Duration) (int, error)
+}
+
 // ProductionExecutor orchestrates the production of goods by coordinating ship operations.
 // It handles both purchasing goods from markets (BUY) and manufacturing them (FABRICATE).
 type ProductionExecutor struct {
@@ -73,6 +89,18 @@ type ProductionExecutor struct {
 	// nil disables the floor — the fail-OPEN contract for the package's test fixtures
 	// that cannot supply a live client; the daemon always wires the real one (main.go).
 	apiClient domainPorts.APIClient
+	// spendLedger is the cross-container concurrent spend cap (sp-w3he). nil disables it —
+	// the same optional-port fail-OPEN contract as apiClient (tests pass nothing; the daemon
+	// wires the real DB-backed ledger via SetSpendLedger). Injected by setter, not constructor,
+	// so the package's existing test fixtures and the executor's many call sites stay untouched.
+	spendLedger SpendReservationLedger
+}
+
+// SetSpendLedger wires the cross-container concurrent spend cap (sp-w3he). The daemon calls
+// this after construction (main.go, via the coordinator handler); leaving it unset keeps the
+// cap fail-open, which is exactly what every non-daemon caller wants.
+func (e *ProductionExecutor) SetSpendLedger(ledger SpendReservationLedger) {
+	e.spendLedger = ledger
 }
 
 // NewProductionExecutor creates a new production executor with default polling intervals
@@ -260,6 +288,26 @@ func (e *ProductionExecutor) buyGood(
 		}, nil
 	}
 
+	// Cross-container concurrent spend cap (sp-w3he): the floor above is a PER-CONTAINER
+	// live check, so N factory containers can each clear it inside their own check->buy
+	// window and collectively breach the reserve. This HARD cap serializes all factories'
+	// in-flight input spend through a shared DB ledger — it records this buy's intent and
+	// PARKS if the combined exposure would breach. Kept as a SECOND gate (not folded into
+	// the floor) so each guard owns a distinct, legible park reason and sp-9aoc stays intact.
+	reservationID, parked := e.reserveConcurrentSpendOrPark(ctx, playerID, projectedCost, marketResult.WaypointSymbol, node.Good)
+	if parked {
+		return &ProductionResult{
+			QuantityAcquired: 0,
+			TotalCost:        0,
+			WaypointSymbol:   marketResult.WaypointSymbol,
+		}, nil
+	}
+	if reservationID != "" {
+		// Release on EVERY exit below (success, empty-tranche skip, or error) — defer covers
+		// them all. A failed release only leaks until the staleness sweep reclaims it.
+		defer e.releaseSpendReservation(ctx, reservationID)
+	}
+
 	// Purchase cargo (capped by trade volume)
 	purchaseCmd := &shipCargo.PurchaseCargoCommand{
 		ShipSymbol: updatedShip.ShipSymbol(),
@@ -349,6 +397,92 @@ func (e *ProductionExecutor) spendFloorBreached(ctx context.Context, projectedCo
 	}
 
 	return false
+}
+
+// reserveConcurrentSpendOrPark records this input buy's spend intent in the shared ledger
+// and reports whether it must PARK because the COMBINED in-flight factory spend would
+// breach the reserve (sp-w3he). On the proceed path it returns the reservation id the
+// caller must Release after the buy.
+//
+// Fails OPEN when the cap is unavailable (no ledger wired, or no apiClient to read live
+// treasury) — the same optional-port contract as the per-buy floor, so every non-daemon
+// caller is unaffected. Fails CLOSED (parks) on any live-read or ledger error: a cap whose
+// job is protecting the reserve must never let a buy through blind.
+//
+// The live treasury read here is deliberately independent of spendFloorBreached (sp-9aoc,
+// left unchanged): factory input buys are low-frequency — one per market visit, after a
+// multi-second navigate+dock — so the second read is negligible next to keeping the two
+// guards decoupled, each with its own legible park reason. The read stays OUTSIDE the
+// ledger transaction (passed in as a value) so the DB is never held open across the API call.
+func (e *ProductionExecutor) reserveConcurrentSpendOrPark(ctx context.Context, playerID, projectedCost int, market, good string) (reservationID string, parked bool) {
+	logger := common.LoggerFromContext(ctx)
+	if e.spendLedger == nil || e.apiClient == nil {
+		return "", false
+	}
+
+	token, err := common.PlayerTokenFromContext(ctx)
+	if err != nil {
+		logger.Log("WARNING", fmt.Sprintf("Could not resolve player token for factory concurrent-spend-cap check — parking input buy (fail-closed): %v", err), map[string]interface{}{
+			"error": err.Error(),
+		})
+		return "", true
+	}
+
+	agentData, err := e.apiClient.GetAgent(ctx, token)
+	if err != nil {
+		logger.Log("WARNING", fmt.Sprintf("Could not read live treasury for factory concurrent-spend-cap check — parking input buy (fail-closed): %v", err), map[string]interface{}{
+			"error": err.Error(),
+		})
+		return "", true
+	}
+
+	// Container id attributes the reservation to the owning factory (already threaded into
+	// ctx by the coordinator, sp-9aoc's operation context). Best-effort: the staleness sweep
+	// is time-based, so a missing id never affects correctness, only log/debug attribution.
+	containerID := "factory-unknown"
+	if opCtx := shared.OperationContextFromContext(ctx); opCtx != nil && opCtx.ContainerID != "" {
+		containerID = opCtx.ContainerID
+	}
+
+	resID, ok, err := e.spendLedger.Reserve(ctx, playerID, containerID, projectedCost, agentData.Credits, defaultWorkingCapitalReserve)
+	if err != nil {
+		logger.Log("WARNING", fmt.Sprintf("Factory concurrent-spend-cap ledger error — parking input buy (fail-closed): %v", err), map[string]interface{}{
+			"error": err.Error(),
+		})
+		return "", true
+	}
+	if !ok {
+		// Numbers in the MESSAGE (sp-iqyq): the container log renderer drops the metadata map,
+		// so the cause — combined in-flight factory spend breaching the reserve — must be legible
+		// in the text or an operator never sees why this factory parked.
+		logger.Log("WARNING", fmt.Sprintf("Parked input purchase of %s at %s — cross-container concurrent spend cap: live treasury %d minus in-flight factory reservations would breach the working-capital reserve %d (this buy %d)", good, market, agentData.Credits, defaultWorkingCapitalReserve, projectedCost), map[string]interface{}{
+			"good":           good,
+			"market":         market,
+			"projected_cost": projectedCost,
+			"treasury":       agentData.Credits,
+			"reserve":        defaultWorkingCapitalReserve,
+			"action":         "factory_parked",
+			"reason":         "concurrent_spend_cap",
+		})
+		return "", true
+	}
+
+	return resID, false
+}
+
+// releaseSpendReservation consumes a spend reservation after its buy completes (success or
+// failure). A failed release is logged, never surfaced: the reservation simply leaks until
+// the staleness sweep reclaims it, so cleanup can never fail an otherwise-successful buy.
+func (e *ProductionExecutor) releaseSpendReservation(ctx context.Context, reservationID string) {
+	if e.spendLedger == nil || reservationID == "" {
+		return
+	}
+	if err := e.spendLedger.Release(ctx, reservationID); err != nil {
+		common.LoggerFromContext(ctx).Log("WARNING", fmt.Sprintf("Failed to release factory spend reservation %s (staleness sweep will reclaim it): %v", reservationID, err), map[string]interface{}{
+			"reservation_id": reservationID,
+			"error":          err.Error(),
+		})
+	}
 }
 
 // fabricateGood manufactures a good by producing inputs and delivering them to a manufacturing waypoint
