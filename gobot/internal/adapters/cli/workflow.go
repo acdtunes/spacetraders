@@ -233,7 +233,7 @@ Examples:
 	cmd.Flags().StringVar(&shipsCsv, "ships", "", "Comma-separated list of ship symbols (required)")
 	cmd.Flags().StringVar(&system, "system", "", "System symbol (required)")
 	cmd.Flags().StringVar(&marketsCsv, "markets", "", "Comma-separated list of market waypoints (required)")
-	cmd.Flags().IntVar(&iterations, "iterations", 1, "Number of complete tours (default: 1, use -1 for infinite)")
+	cmd.Flags().IntVar(&iterations, "iterations", 1, "Number of complete tours (-1 = infinite, 0 = the default of 1; N tours otherwise)")
 
 	return cmd
 }

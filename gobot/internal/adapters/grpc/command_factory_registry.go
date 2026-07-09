@@ -8,6 +8,9 @@ import (
 	gasCmd "github.com/andrescamacho/spacetraders-go/internal/application/gas/commands"
 	goodsCmd "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/commands"
 	scoutingCmd "github.com/andrescamacho/spacetraders-go/internal/application/scouting/commands"
+	shipCargoCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/cargo"
+	shipNavCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
+	shipTypesCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/types"
 	shipyardCmd "github.com/andrescamacho/spacetraders-go/internal/application/shipyard/commands"
 	tradingCmd "github.com/andrescamacho/spacetraders-go/internal/application/trading/commands"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
@@ -76,6 +79,14 @@ func (r *configReader) RequiredInt(key string) int {
 		r.fail(key)
 	}
 	return value
+}
+
+// PresentInt reads an int value and reports whether the key was present and
+// valid — for genuinely optional numeric knobs whose ABSENCE means something
+// (RefuelShip's nil-units = full tank), where OptionalInt's fallback would
+// erase the present-vs-absent distinction.
+func (r *configReader) PresentInt(key string) (int, bool) {
+	return intValue(r.values[key])
 }
 
 func (r *configReader) OptionalInt(key string, fallback int) int {
@@ -152,7 +163,18 @@ func stringSliceValue(raw interface{}) ([]string, bool) {
 type ContainerSpec struct {
 	CommandType string
 	IsWorker    bool
-	build       func(cfg *configReader, playerID int, containerID string) interface{}
+	// CoordinatorOwnsIterations declares the type's iteration model (sp-7yej
+	// invariant 3): true means the command's handler owns the WHOLE run
+	// internally (trade-route's visit budget, scout_tour's tour count, arb's
+	// one-shot leg) and the container wrapper must run exactly ONE iteration —
+	// re-entering the handler would double-loop the budget (the scout N×N
+	// defect) or re-run a non-resumable task. False is the runner-loop model:
+	// the container's maxIterations drives repeated Handle() calls, each one
+	// unit of work (goods_factory cycles). recoverContainer consults this so a
+	// restart rebuild can never hand a coordinator-owned budget to the runner
+	// loop. See containerSpecList for the full per-type semantics table.
+	CoordinatorOwnsIterations bool
+	build                     func(cfg *configReader, playerID int, containerID string) interface{}
 }
 
 func (spec ContainerSpec) BuildCommand(config map[string]interface{}, playerID int, containerID string) (interface{}, error) {
@@ -167,9 +189,62 @@ func (spec ContainerSpec) BuildCommand(config map[string]interface{}, playerID i
 	return cmd, nil
 }
 
+// containerSpecList is the registry AND the container lifecycle contract's
+// per-type semantics table (sp-7yej invariants 3+4). Every container type the
+// daemon creates MUST appear here — a type absent from this list is marked
+// FAILED at restart recovery ("unknown command type") and its in-flight work is
+// abandoned, which is exactly how the TORWIND-18/12 navigates orphaned.
+//
+// ITERATION SEMANTICS (invariant 3) — one operator-facing meaning everywhere:
+//
+//	-1  = infinite: run until stopped/margin-death.
+//	N>0 = exactly N units of the type's own work unit (see table).
+//	 0  = the type's documented default — NEVER "zero work". (scout_tour: 1
+//	      tour, normalized in buildScoutTourCommand; goods_factory: 1 cycle,
+//	      cfg default; trade_route max_visits: the coordinator's default 50.)
+//
+// Who loops is declared per type via CoordinatorOwnsIterations:
+//
+//	type                        unit of work      loop owner    restart behavior
+//	--------------------------  ----------------  ------------  ---------------------------------
+//	scout_tour                  one full tour     coordinator   re-adopts; finite tour re-runs
+//	                                                            from scratch (progress not
+//	                                                            persisted), ∞ resumes
+//	contract_workflow           one contract      coordinator   re-adopts standalone; worker
+//	                                                            (coordinator_id) waits for parent
+//	contract_fleet_coordinator  ∞ internal loop   coordinator   re-adopts
+//	purchase_ship               one purchase      coordinator   re-adopts (idempotence at API)
+//	batch_purchase_ships        one batch         coordinator   re-adopts
+//	goods_factory_coordinator   one cycle         RUNNER        re-adopts with persisted budget
+//	                                                            (sp-perx); -1 uses 2q2o backoff
+//	manufacturing_coordinator   ∞ internal loop   coordinator   re-adopts
+//	gas_coordinator             ∞ internal loop   coordinator   re-adopts
+//	trade_route                 visit budget      coordinator   re-adopts; laden exit is a
+//	                            (max_visits)                    FAILURE (sp-1hj5, invariant 2)
+//	arb_run                     one directed leg  coordinator   re-adopts; resumes past the buy
+//	                                                            (sp-5nqx), strand = failure
+//	navigate_ship               one route         coordinator   re-adopts; RouteExecutor waits
+//	                                                            out / resumes the live transit
+//	dock_ship / orbit_ship /    one ship op       coordinator   re-adopts; the op is idempotent
+//	refuel_ship                                                 (already-done → no-op)
+//	jettison_cargo              one jettison      coordinator   re-adopts; an already-jettisoned
+//	                                                            load fails HONESTLY (no re-buy)
+//	scout_fleet_assignment      one VRP pass      coordinator   re-adopts; re-runs the assignment
+//	workers (manufacturing_     one task          coordinator   NOT recovered standalone —
+//	task_worker, gas_siphon_                      (parent)      markWorkerInterrupted preserves
+//	worker, storage_ship)                                       the claim; parent re-adopts (tgp5)
+//
+// HONEST COMPLETION (invariant 2): any coordinator whose run can end holding
+// cargo bought that run, or with its task incomplete, threads that through its
+// response's common.CompletionReporter — the runner's finishCleanExit refuses
+// success=true (trade_route adopted; arb_run reports via non-nil error, valid
+// because its fixed lane resumes across retries). New cargo-leg coordinators
+// MUST adopt one of those two shapes and funnel every laden exit through a
+// single epilogue (invariant 1's finish-current-leg rule; see
+// run_trade_route_coordinator.go's runCircuit for the reference pattern).
 func containerSpecList() []ContainerSpec {
 	return []ContainerSpec{
-		{CommandType: "scout_tour", build: buildScoutTourCommand},
+		{CommandType: "scout_tour", build: buildScoutTourCommand, CoordinatorOwnsIterations: true},
 		{CommandType: "contract_workflow", build: buildContractWorkflowCommand},
 		{CommandType: "contract_fleet_coordinator", build: buildContractFleetCoordinatorCommand},
 		{CommandType: "purchase_ship", build: buildPurchaseShipCommand},
@@ -177,8 +252,22 @@ func containerSpecList() []ContainerSpec {
 		{CommandType: "goods_factory_coordinator", build: buildGoodsFactoryCoordinatorCommand},
 		{CommandType: "manufacturing_coordinator", build: buildManufacturingCoordinatorCommand},
 		{CommandType: "gas_coordinator", build: buildGasCoordinatorCommand},
-		{CommandType: "trade_route", build: buildTradeRouteCoordinatorCommand},
-		{CommandType: "arb_run", build: buildArbCoordinatorCommand},
+		{CommandType: "trade_route", build: buildTradeRouteCoordinatorCommand, CoordinatorOwnsIterations: true},
+		{CommandType: "arb_run", build: buildArbCoordinatorCommand, CoordinatorOwnsIterations: true},
+		// One-shot ship operations (sp-7yej invariant 4): these were created by
+		// container_ops_ship.go but never registered, so a daemon restart
+		// mid-operation marked them FAILED ("unknown command type") and dropped
+		// the work on the floor — the TORWIND-18/12 orphaned navigates. Each
+		// rebuilds trivially from its persisted config and is safe to re-run:
+		// navigate resumes/waits out the live transit via RouteExecutor,
+		// dock/orbit/refuel no-op when already done, and a re-run jettison of
+		// already-jettisoned cargo fails honestly rather than silently.
+		{CommandType: "navigate_ship", build: buildNavigateShipCommand, CoordinatorOwnsIterations: true},
+		{CommandType: "dock_ship", build: buildDockShipCommand, CoordinatorOwnsIterations: true},
+		{CommandType: "orbit_ship", build: buildOrbitShipCommand, CoordinatorOwnsIterations: true},
+		{CommandType: "refuel_ship", build: buildRefuelShipCommand, CoordinatorOwnsIterations: true},
+		{CommandType: "jettison_cargo", build: buildJettisonCargoCommand, CoordinatorOwnsIterations: true},
+		{CommandType: "scout_fleet_assignment", build: buildScoutFleetAssignmentCommand, CoordinatorOwnsIterations: true},
 		{CommandType: "manufacturing_task_worker", IsWorker: true},
 		{CommandType: "gas_siphon_worker", IsWorker: true},
 		{CommandType: "storage_ship", IsWorker: true},
@@ -200,11 +289,93 @@ func (s *DaemonServer) buildCommandForType(commandType string, config map[string
 }
 
 func buildScoutTourCommand(cfg *configReader, playerID int, containerID string) interface{} {
+	// Unified iteration semantics (sp-7yej invariant 3): 0 means "the type's
+	// default" (one tour, matching the CLI flag's default), never "zero work".
+	// Before this, iterations=0 completed the container instantly without
+	// scouting anything — the "0 tours vanished" half of tonight's scout
+	// divergence. Normalized here so creation and restart recovery (both build
+	// through this factory) agree.
+	iterations := cfg.RequiredInt("iterations")
+	if iterations == 0 {
+		iterations = 1
+	}
 	return &scoutingCmd.ScoutTourCommand{
 		PlayerID:   shared.MustNewPlayerID(playerID),
 		ShipSymbol: cfg.RequiredString("ship_symbol"),
 		Markets:    cfg.RequiredStringSlice("markets"),
-		Iterations: cfg.RequiredInt("iterations"),
+		Iterations: iterations,
+	}
+}
+
+// buildNavigateShipCommand rebuilds a one-shot navigate from its persisted
+// launch config so restart recovery re-adopts a RUNNING navigate instead of
+// orphaning it (sp-7yej invariant 4 — the TORWIND-18/12 incident: daemon
+// restarted mid-transit, recovery hit "unknown command type 'navigate_ship'",
+// the hull was released and the flight abandoned). Re-running the command is
+// safe: NavigateRoute no-ops when the ship is already at the destination and
+// the RouteExecutor waits out a transit already in progress (the boot-time
+// ShipStateScheduler.ScheduleAllPending re-arms the arrival timer).
+func buildNavigateShipCommand(cfg *configReader, playerID int, containerID string) interface{} {
+	return &shipNavCmd.NavigateRouteCommand{
+		ShipSymbol:  cfg.RequiredString("ship_symbol"),
+		Destination: cfg.RequiredString("destination"),
+		PlayerID:    shared.MustNewPlayerID(playerID),
+	}
+}
+
+// buildDockShipCommand / buildOrbitShipCommand / buildRefuelShipCommand rebuild
+// the remaining one-shot ship ops (sp-7yej invariant 4). All are idempotent to
+// re-run after a restart: docking a docked ship, orbiting an orbiting ship and
+// refueling a full tank are no-ops at the domain/API layer, so the recovered
+// container simply finishes the op (or confirms it already happened) and
+// releases the hull through the normal runner lifecycle.
+func buildDockShipCommand(cfg *configReader, playerID int, containerID string) interface{} {
+	return &shipTypesCmd.DockShipCommand{
+		ShipSymbol: cfg.RequiredString("ship_symbol"),
+		PlayerID:   shared.MustNewPlayerID(playerID),
+	}
+}
+
+func buildOrbitShipCommand(cfg *configReader, playerID int, containerID string) interface{} {
+	return &shipTypesCmd.OrbitShipCommand{
+		ShipSymbol: cfg.RequiredString("ship_symbol"),
+		PlayerID:   shared.MustNewPlayerID(playerID),
+	}
+}
+
+func buildRefuelShipCommand(cfg *configReader, playerID int, containerID string) interface{} {
+	cmd := &shipTypesCmd.RefuelShipCommand{
+		ShipSymbol: cfg.RequiredString("ship_symbol"),
+		PlayerID:   shared.MustNewPlayerID(playerID),
+	}
+	// "units" is persisted only when the caller requested a partial refuel
+	// (RefuelShip's *int contract: nil = full tank). Absent key → nil stays.
+	if units, ok := cfg.PresentInt("units"); ok {
+		cmd.Units = &units
+	}
+	return cmd
+}
+
+// buildJettisonCargoCommand rebuilds a one-shot jettison (sp-7yej invariant 4).
+// A re-run after a restart either performs the jettison (it never happened) or
+// fails HONESTLY because the cargo is already gone — a visible FAILED container
+// with the verbatim API cause, never a silently-orphaned hull.
+func buildJettisonCargoCommand(cfg *configReader, playerID int, containerID string) interface{} {
+	return &shipCargoCmd.JettisonCargoCommand{
+		ShipSymbol: cfg.RequiredString("ship_symbol"),
+		PlayerID:   shared.MustNewPlayerID(playerID),
+		GoodSymbol: cfg.RequiredString("good_symbol"),
+		Units:      cfg.RequiredInt("units"),
+	}
+}
+
+// buildScoutFleetAssignmentCommand rebuilds the async VRP fleet-assignment pass
+// (sp-7yej invariant 4). Re-running the assignment after a restart is safe —
+// it recomputes routes from current fleet/market state and claims no hull.
+func buildScoutFleetAssignmentCommand(cfg *configReader, playerID int, containerID string) interface{} {
+	return &scoutingCmd.AssignScoutingFleetCommand{
+		PlayerID:     shared.MustNewPlayerID(playerID),
+		SystemSymbol: cfg.RequiredString("system_symbol"),
 	}
 }
 

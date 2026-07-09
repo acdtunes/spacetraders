@@ -331,7 +331,17 @@ func (r *ContainerRunner) stopHeartbeat() {
 	})
 }
 
-// execute runs the container operation loop
+// execute runs the container operation loop.
+//
+// ITERATION SEMANTICS (sp-7yej invariant 3): the loop below is the RUNNER-LOOP
+// model — each iteration is one Handle() of the command, and the container's
+// maxIterations is the work budget (-1 = infinite). Types whose command owns
+// the whole run internally (trade_route's visit budget, scout_tour's tour
+// count, the one-shot ship ops) are created and recovered with maxIterations=1
+// and MUST NOT be re-entered — their ContainerSpec declares
+// CoordinatorOwnsIterations. The full per-type table (unit of work, loop
+// owner, restart behavior) lives on containerSpecList in
+// command_factory_registry.go.
 func (r *ContainerRunner) execute() {
 	defer close(r.done)
 

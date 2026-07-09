@@ -168,9 +168,11 @@ func TestWaitForShipArrivalCore_EventLost_ResyncConfirmsArrival(t *testing.T) {
 // with an ArrivalTime still in the future (a legitimately long transit, e.g.
 // the real-world navigate-TORWIND-F-a36d793d 23-minute DF9E->B10D leg that
 // sp-pafv's fixed 3*30s=~90s budget aborted at ~2 minutes). The wait must
-// keep polling well past what the OLD fixed-attempt budget allowed, and only
-// stop once the ship actually leaves transit - it must NOT park just because
-// a fixed attempt count was reached while the ship was still healthy.
+// keep polling until the ship actually leaves transit - it must NOT park just
+// because attempts accumulated while the ship was still healthy. Under the
+// ETA-aligned schedule (sp-7yej invariant 5) each still-future resync sleeps
+// to the snapshot's own ArrivalTime plus one grace of slack, so the fixture
+// keeps that ETA a short, freshly-computed step ahead on every call.
 func TestWaitForShipArrivalCore_ResyncStillInTransitFutureETA_KeepsWaitingUntilArrival(t *testing.T) {
 	ship := newArrivalWaitTestShip(t, domainNavigation.NavStatusInTransit)
 	sub := &fakeArrivalSubscriber{ch: make(chan domainNavigation.ShipArrivedEvent, 1)} // never fed: event lost for the whole wait
@@ -179,19 +181,21 @@ func TestWaitForShipArrivalCore_ResyncStillInTransitFutureETA_KeepsWaitingUntilA
 	repo := &fakeShipQueryRepo{}
 	repo.findBySymbolFunc = func() (*domainNavigation.Ship, error) {
 		if repo.calls < callsUntilArrival {
-			// Still genuinely in flight - ETA is comfortably in the future,
-			// so this must NOT be treated as a lost/past-ETA event.
-			return newArrivalWaitTestShipWithArrival(t, domainNavigation.NavStatusInTransit, time.Now().Add(time.Hour)), nil
+			// Still genuinely in flight - the ETA is ahead of "now" on every
+			// resync (a transit whose arrival keeps being a beat away), so
+			// this must NOT be treated as a lost/past-ETA event, and each
+			// poll re-aims at this fresh ETA.
+			return newArrivalWaitTestShipWithArrival(t, domainNavigation.NavStatusInTransit, time.Now().Add(25*time.Millisecond)), nil
 		}
 		return newArrivalWaitTestShip(t, domainNavigation.NavStatusInOrbit), nil
 	}
 
-	// gracePeriod is tiny so callsUntilArrival resyncs happen fast in test
-	// time; budget is generous (1s) relative to gracePeriod*callsUntilArrival
-	// (30ms) so the wait is never at risk of exhausting on wall-clock alone -
-	// this test is about NOT parking early on a future ETA, not about budget
-	// sizing (that's calculateArrivalWaitBudget's own test below).
-	err := waitForShipArrivalCore(context.Background(), repo, sub, ship, shared.MustNewPlayerID(1), 1500, noopLogger{}, 5*time.Millisecond, time.Second)
+	// gracePeriod is tiny so the ETA-aligned resyncs happen fast in test time;
+	// budget is generous (2s) relative to callsUntilArrival*(25+5)ms so the
+	// wait is never at risk of exhausting on wall-clock alone - this test is
+	// about NOT parking early on a future ETA, not about budget sizing (that's
+	// calculateArrivalWaitBudget's own test below).
+	err := waitForShipArrivalCore(context.Background(), repo, sub, ship, shared.MustNewPlayerID(1), 1500, noopLogger{}, 5*time.Millisecond, 2*time.Second)
 	if err != nil {
 		t.Fatalf("expected the wait to survive past the old fixed-attempt budget and eventually succeed, got: %v", err)
 	}
@@ -200,6 +204,41 @@ func TestWaitForShipArrivalCore_ResyncStillInTransitFutureETA_KeepsWaitingUntilA
 	}
 	if repo.calls != callsUntilArrival {
 		t.Fatalf("expected exactly %d resync attempts before success, got %d", callsUntilArrival, repo.calls)
+	}
+}
+
+// TestWaitForShipArrivalCore_HealthyTransit_PollsAreETAAligned pins sp-7yej
+// invariant 5's schedule contract: during a healthy transit the wait must NOT
+// wake every grace period (the old behavior — ~46 resyncs and ~46 WARNING
+// lines for a 23-minute leg); after the one fast first poll it sleeps to the
+// ship's own expected arrival in a single tick. A ~200ms transit with a 5ms
+// grace would have cost ~40 polls under the old fixed cadence; ETA-aligned it
+// costs exactly 2 (the fast first check + the one aimed at the ETA).
+func TestWaitForShipArrivalCore_HealthyTransit_PollsAreETAAligned(t *testing.T) {
+	ship := newArrivalWaitTestShip(t, domainNavigation.NavStatusInTransit)
+	sub := &fakeArrivalSubscriber{ch: make(chan domainNavigation.ShipArrivedEvent, 1)} // event lost; resync must still be cheap
+
+	arrival := time.Now().Add(200 * time.Millisecond)
+	repo := &fakeShipQueryRepo{}
+	repo.findBySymbolFunc = func() (*domainNavigation.Ship, error) {
+		if time.Now().Before(arrival) {
+			return newArrivalWaitTestShipWithArrival(t, domainNavigation.NavStatusInTransit, arrival), nil
+		}
+		return newArrivalWaitTestShip(t, domainNavigation.NavStatusInOrbit), nil
+	}
+
+	err := waitForShipArrivalCore(context.Background(), repo, sub, ship, shared.MustNewPlayerID(1), 0, noopLogger{}, 5*time.Millisecond, 5*time.Second)
+	if err != nil {
+		t.Fatalf("expected the resync to confirm arrival, got: %v", err)
+	}
+	if ship.NavStatus() != domainNavigation.NavStatusInOrbit {
+		t.Fatalf("expected ship to have Arrive()'d, got status %s", ship.NavStatus())
+	}
+	// The schedule contract: one fast first poll + one ETA-aligned poll. A few
+	// extra ticks of scheduler slop are tolerated; the old fixed cadence would
+	// have burned ~40.
+	if repo.calls > 4 {
+		t.Fatalf("expected ETA-aligned polling (~2 resyncs for this transit), got %d — the wait is ticking at the grace period during a healthy transit again", repo.calls)
 	}
 }
 

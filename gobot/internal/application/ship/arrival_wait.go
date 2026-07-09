@@ -27,8 +27,14 @@ import (
 // minutes). sp-ht1f replaces the fixed attempt count with a budget that
 // scales with the route's own ETA - see calculateArrivalWaitBudget.
 const (
-	// DefaultArrivalGracePeriod is the poll interval between resyncs while
-	// waiting for the ARRIVED event.
+	// DefaultArrivalGracePeriod is the poll cadence once the arrival is due
+	// (or its ETA unknown), the delay of the FIRST safety poll (the fast check
+	// for an event lost before the subscription existed), and the slack added
+	// past the expected arrival before polling. While the arrival is still
+	// ahead, polls are ETA-ALIGNED — one sleep to arrival+grace — not fired
+	// every grace period (sp-7yej invariant 5: the event path is the norm,
+	// the poll the exception; the old fixed 30s tick logged every healthy
+	// minutes-long transit as a stream of WARNING "event not received").
 	DefaultArrivalGracePeriod = 30 * time.Second
 
 	// DefaultArrivalMarginFactor and DefaultArrivalMinMargin size the safety
@@ -149,6 +155,27 @@ func waitForShipArrivalCore(
 		"budget_seconds":   budget.Seconds(),
 	})
 
+	// expectedArrival is the best current estimate of when the ship actually
+	// lands: seeded from the caller's ETA, refined to the resynced ship's own
+	// ArrivalTime after each safety poll. It drives two things (sp-7yej
+	// invariant 5 — the event path is the norm, the poll the exception):
+	//
+	//   - the poll SCHEDULE: the first poll fires after one gracePeriod (the
+	//     fast check for an event lost BEFORE this subscription existed), then
+	//     each subsequent poll sleeps all the way to expectedArrival plus one
+	//     gracePeriod of slack in a single tick instead of waking every 30s of
+	//     a minutes-long transit. A healthy 23-minute leg now costs ~2 resyncs
+	//     instead of ~46 — and the event, which the select still watches
+	//     throughout, interrupts any of these sleeps the instant it lands.
+	//   - the poll SEVERITY: a poll while the arrival is not yet due is routine
+	//     (INFO); only a poll past the expected arrival means the event is
+	//     genuinely overdue and worth a WARNING. The old code logged every
+	//     30-second tick of every healthy transit as a WARNING "event not
+	//     received", drowning the real lost-event signal in ~46 false alarms
+	//     per leg.
+	expectedArrival := time.Now().Add(time.Duration(waitTimeSeconds) * time.Second)
+	nextTick := gracePeriod
+
 	attempt := 0
 	for {
 		select {
@@ -167,17 +194,29 @@ func waitForShipArrivalCore(
 		case <-ctx.Done():
 			return ctx.Err()
 
-		case <-time.After(gracePeriod):
+		case <-time.After(nextTick):
 			attempt++
-			// No event within the grace period: resync against the source of
-			// truth instead of assuming the event is merely slow - it may
-			// have been dropped by ShipEventBus's non-blocking, non-replaying
-			// send (lost if PublishArrived raced ahead of SubscribeArrived).
-			logger.Log("WARNING", "Ship arrival event not received within grace period, resyncing", map[string]interface{}{
-				"ship_symbol": shipSymbol,
-				"action":      "arrival_wait_resync",
-				"attempt":     attempt,
-			})
+			// No event yet: resync against the source of truth instead of
+			// assuming the event is merely slow - it may have been dropped by
+			// ShipEventBus's non-blocking, non-replaying send (lost if
+			// PublishArrived raced ahead of SubscribeArrived). Severity tracks
+			// whether the arrival is actually due (see expectedArrival above).
+			dueIn := time.Until(expectedArrival)
+			if dueIn > 0 {
+				logger.Log("INFO", "Arrival not due yet - safety resync while in transit", map[string]interface{}{
+					"ship_symbol":    shipSymbol,
+					"action":         "arrival_wait_resync",
+					"attempt":        attempt,
+					"due_in_seconds": int(dueIn.Seconds()),
+				})
+			} else {
+				logger.Log("WARNING", "Ship arrival event overdue - resyncing", map[string]interface{}{
+					"ship_symbol":     shipSymbol,
+					"action":          "arrival_wait_resync",
+					"attempt":         attempt,
+					"overdue_seconds": int((-dueIn).Seconds()),
+				})
+			}
 			fresh, err := shipRepo.FindBySymbol(ctx, shipSymbol, playerID)
 			switch {
 			case err != nil:
@@ -213,7 +252,12 @@ func waitForShipArrivalCore(
 				// is healthy and legitimately still travelling. Keep
 				// waiting rather than parking - this is the sp-ht1f fix.
 				// sp-pafv's fixed grace*maxAttempts budget parked here
-				// regardless of how far away the real arrival was.
+				// regardless of how far away the real arrival was. The
+				// resynced ship's own ArrivalTime is the authoritative ETA,
+				// so it refines the poll schedule below.
+				if arrival := fresh.ArrivalTime(); arrival != nil {
+					expectedArrival = *arrival
+				}
 				logger.Log("INFO", "Arrival resync still shows IN_TRANSIT with a future ETA, continuing to wait", map[string]interface{}{
 					"ship_symbol": shipSymbol,
 					"action":      "arrival_wait_resync_still_future",
@@ -229,6 +273,20 @@ func waitForShipArrivalCore(
 					"budget_seconds": budget.Seconds(),
 				})
 				return &ErrArrivalWaitExhausted{ShipSymbol: shipSymbol, Attempts: attempt}
+			}
+
+			// ETA-aligned schedule (sp-7yej invariant 5): while the arrival is
+			// still ahead, sleep to just past it in ONE tick — the event wins
+			// the select the moment it lands, so a long sleep never delays the
+			// happy path. Once at/past the ETA (or when it is unknown), poll at
+			// the gracePeriod cadence. Capped so a tick never sleeps far past
+			// the budget deadline — the check above must get its turn.
+			nextTick = gracePeriod
+			if remaining := time.Until(expectedArrival) + gracePeriod; remaining > nextTick {
+				nextTick = remaining
+			}
+			if untilDeadline := time.Until(deadline) + gracePeriod; nextTick > untilDeadline {
+				nextTick = untilDeadline
 			}
 		}
 	}

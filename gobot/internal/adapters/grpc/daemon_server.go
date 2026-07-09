@@ -827,13 +827,23 @@ func (s *DaemonServer) recoverContainer(ctx context.Context, containerModel *per
 		}
 	}
 
-	// Extract iterations from config. Most container types persist this under
-	// "iterations" (scout_tour, trade_route), but goods_factory_coordinator persists
-	// it under "max_iterations" (see StartGoodsFactory) — check both so a recovered
-	// factory resumes with its actual budget instead of silently collapsing to the
-	// single-iteration default (sp-perx).
+	// Extract iterations from config. Runner-loop types persist their budget
+	// under "iterations", except goods_factory_coordinator which persists it
+	// under "max_iterations" (see StartGoodsFactory) — check both so a recovered
+	// factory resumes with its actual budget instead of silently collapsing to
+	// the single-iteration default (sp-perx).
+	//
+	// COORDINATOR-OWNED types are pinned to 1 regardless of config (sp-7yej
+	// invariant 3): their command's handler owns the whole run internally
+	// (scout_tour's tour count, trade_route's visit budget), so feeding the
+	// config budget to the CONTAINER as well would double-loop it on recovery —
+	// a rebuilt scout_tour with iterations=3 would fly 3 runner iterations × 3
+	// tours each. The config value still reaches the command through the
+	// factory builder, which is the loop that actually owns it.
 	iterations := 1 // Default
-	if iter, ok := config["iterations"].(float64); ok {
+	if spec, ok := s.containerSpecs[containerModel.CommandType]; ok && spec.CoordinatorOwnsIterations {
+		// pinned: one runner iteration wraps the whole coordinator-owned run
+	} else if iter, ok := config["iterations"].(float64); ok {
 		iterations = int(iter)
 	} else if iter, ok := config["max_iterations"].(float64); ok {
 		iterations = int(iter)
