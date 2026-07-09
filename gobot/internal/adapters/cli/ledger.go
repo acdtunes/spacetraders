@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"text/tabwriter"
 	"time"
@@ -51,6 +52,7 @@ func newLedgerListCommand() *cobra.Command {
 		limit     int
 		offset    int
 		orderBy   string
+		jsonOut   bool
 	)
 
 	cmd := &cobra.Command{
@@ -81,7 +83,7 @@ Examples:
   spacetraders ledger list --category FUEL_COSTS
   spacetraders ledger list --start-date 2024-01-15 --end-date 2024-01-22`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runLedgerList(playerID, startDate, endDate, category, txType, limit, offset, orderBy)
+			return runLedgerList(playerID, startDate, endDate, category, txType, limit, offset, orderBy, jsonOut)
 		},
 	}
 
@@ -92,6 +94,7 @@ Examples:
 	cmd.Flags().IntVar(&limit, "limit", 50, "Maximum number of transactions to return")
 	cmd.Flags().IntVar(&offset, "offset", 0, "Number of transactions to skip")
 	cmd.Flags().StringVar(&orderBy, "order-by", "timestamp DESC", "Sort order")
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "Output as JSON (full entry fields including good/ship/waypoint attribution)")
 
 	return cmd
 }
@@ -187,7 +190,7 @@ Example:
 }
 
 // runLedgerList executes the ledger list command
-func runLedgerList(playerID int, startDate, endDate, category, txType string, limit, offset int, orderBy string) error {
+func runLedgerList(playerID int, startDate, endDate, category, txType string, limit, offset int, orderBy string, jsonOut bool) error {
 	// Load config and connect to database
 	cfg, err := config.LoadConfig("")
 	if err != nil {
@@ -259,9 +262,7 @@ func runLedgerList(playerID int, startDate, endDate, category, txType string, li
 	response := result.(*queries.GetTransactionsResponse)
 
 	// Display results
-	displayTransactionList(response)
-
-	return nil
+	return renderTransactionList(os.Stdout, response, jsonOut)
 }
 
 // runProfitLoss executes the profit & loss report command
@@ -369,37 +370,116 @@ func runCashFlow(playerID int, startDate, endDate, groupBy string) error {
 	return nil
 }
 
-// displayTransactionList formats and displays transaction list
-func displayTransactionList(response *queries.GetTransactionsResponse) {
-	if len(response.Transactions) == 0 {
-		fmt.Println("No transactions found")
-		return
+// renderTransactionList writes the transaction list to out, either as a table
+// (with good/ship/waypoint attribution columns) or, when jsonOut is set, as
+// machine-readable JSON carrying the full entry fields.
+func renderTransactionList(out io.Writer, response *queries.GetTransactionsResponse, jsonOut bool) error {
+	if jsonOut {
+		return writeJSON(out, toLedgerJSON(response))
 	}
 
-	fmt.Printf("\nTRANSACTIONS (Showing %d of %d total)\n", len(response.Transactions), response.Total)
-	fmt.Println("─────────────────────────────────────────────────────────────────────────────")
+	if len(response.Transactions) == 0 {
+		fmt.Fprintln(out, "No transactions found")
+		return nil
+	}
 
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "Timestamp\tType\tCategory\tAmount\tBalance")
-	fmt.Fprintln(w, "─────────\t────\t────────\t──────\t───────")
+	fmt.Fprintf(out, "\nTRANSACTIONS (Showing %d of %d total)\n", len(response.Transactions), response.Total)
+	fmt.Fprintln(out, "─────────────────────────────────────────────────────────────────────────────")
+
+	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "Timestamp\tType\tCategory\tGood\tShip\tWaypoint\tAmount\tBalance")
+	fmt.Fprintln(w, "─────────\t────\t────────\t────\t────\t────────\t──────\t───────")
 
 	for _, tx := range response.Transactions {
-		timestamp := tx.Timestamp.Format("2006-01-02 15:04:05")
-		amount := formatAmount(tx.Amount)
-		balance := formatCredits(tx.BalanceAfter)
-
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
-			timestamp,
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			tx.Timestamp.Format("2006-01-02 15:04:05"),
 			tx.Type,
 			tx.Category,
-			amount,
-			balance,
+			orDash(metaString(tx.Metadata, "good_symbol")),
+			orDash(metaString(tx.Metadata, "ship_symbol")),
+			orDash(metaString(tx.Metadata, "waypoint")),
+			formatAmount(tx.Amount),
+			formatCredits(tx.BalanceAfter),
 		)
 	}
 
 	w.Flush()
-	fmt.Println("─────────────────────────────────────────────────────────────────────────────")
-	fmt.Printf("Total: %d transactions\n\n", response.Total)
+	fmt.Fprintln(out, "─────────────────────────────────────────────────────────────────────────────")
+	fmt.Fprintf(out, "Total: %d transactions\n\n", response.Total)
+	return nil
+}
+
+// ledgerJSONEntry is the machine-readable form of a ledger transaction. The
+// attribution fields (good/ship/waypoint) are hoisted out of metadata to the
+// top level for easy piping (e.g. `jq`), while the full metadata map is
+// preserved so no recorded field is dropped.
+type ledgerJSONEntry struct {
+	ID            string                 `json:"id"`
+	Timestamp     time.Time              `json:"timestamp"`
+	Type          string                 `json:"type"`
+	Category      string                 `json:"category"`
+	Good          string                 `json:"good,omitempty"`
+	Ship          string                 `json:"ship,omitempty"`
+	Waypoint      string                 `json:"waypoint,omitempty"`
+	Amount        int                    `json:"amount"`
+	BalanceBefore int                    `json:"balance_before"`
+	BalanceAfter  int                    `json:"balance_after"`
+	Description   string                 `json:"description,omitempty"`
+	Metadata      map[string]interface{} `json:"metadata,omitempty"`
+}
+
+// ledgerJSONOutput is the top-level JSON envelope for `ledger list --json`.
+type ledgerJSONOutput struct {
+	Total        int               `json:"total"`
+	Shown        int               `json:"shown"`
+	Transactions []ledgerJSONEntry `json:"transactions"`
+}
+
+// toLedgerJSON maps a transactions response to its JSON envelope.
+func toLedgerJSON(response *queries.GetTransactionsResponse) ledgerJSONOutput {
+	entries := make([]ledgerJSONEntry, 0, len(response.Transactions))
+	for _, tx := range response.Transactions {
+		entries = append(entries, ledgerJSONEntry{
+			ID:            tx.ID,
+			Timestamp:     tx.Timestamp,
+			Type:          tx.Type,
+			Category:      tx.Category,
+			Good:          metaString(tx.Metadata, "good_symbol"),
+			Ship:          metaString(tx.Metadata, "ship_symbol"),
+			Waypoint:      metaString(tx.Metadata, "waypoint"),
+			Amount:        tx.Amount,
+			BalanceBefore: tx.BalanceBefore,
+			BalanceAfter:  tx.BalanceAfter,
+			Description:   tx.Description,
+			Metadata:      tx.Metadata,
+		})
+	}
+	return ledgerJSONOutput{
+		Total:        response.Total,
+		Shown:        len(response.Transactions),
+		Transactions: entries,
+	}
+}
+
+// metaString extracts a string value from transaction metadata, returning ""
+// when the key is absent or not a string. Non-trade entries (refuel, contracts)
+// legitimately lack good/waypoint keys, so callers treat "" as "not attributed".
+func metaString(metadata map[string]interface{}, key string) string {
+	if metadata == nil {
+		return ""
+	}
+	if v, ok := metadata[key].(string); ok {
+		return v
+	}
+	return ""
+}
+
+// orDash renders empty attribution cells as "-" so table columns stay aligned.
+func orDash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
 }
 
 // displayProfitLoss formats and displays P&L report
