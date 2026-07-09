@@ -25,6 +25,8 @@ import (
 //   - converter: For converting graph waypoint data to domain objects
 //   - targetWaypointSymbol: The destination waypoint symbol
 //   - requiredCargoSymbol: The cargo needed for delivery (optional, for prioritization)
+//   - unitsNeeded: Units still required for the delivery - used for hull
+//     right-sizing (sp-snmb), estimating round trips per candidate hull
 //   - playerID: Player ID for ship lookups
 //
 // Returns:
@@ -39,6 +41,7 @@ func SelectClosestShip(
 	converter system.IWaypointConverter,
 	targetWaypointSymbol string,
 	requiredCargoSymbol string,
+	unitsNeeded int,
 	playerID int,
 ) (string, float64, error) {
 	logger := common.LoggerFromContext(ctx)
@@ -94,7 +97,7 @@ func SelectClosestShip(
 
 	// 3. Delegate to domain service for selection logic
 	selector := domainContract.NewShipSelector()
-	result, err := selector.SelectOptimalShip(ships, targetWaypoint, requiredCargoSymbol)
+	result, err := selector.SelectOptimalShip(ships, targetWaypoint, requiredCargoSymbol, unitsNeeded)
 	if err != nil {
 		return "", 0, err
 	}

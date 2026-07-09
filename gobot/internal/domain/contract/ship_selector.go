@@ -28,12 +28,18 @@ func NewShipSelector() *ShipSelector {
 // Business Rules:
 // 1. Ships with required cargo have absolute priority (even if in transit)
 // 2. Ships in transit are excluded (unless they have cargo)
-// 3. Select closest ship by Euclidean distance as fallback
+// 3. Fallback: select the hull with the lowest estimated completion time -
+//    right-sized for the job, not just the closest (sp-snmb). A fast,
+//    adequately-sized ship can beat a closer slow one for a small delivery;
+//    a big-cargo hull is reserved for deliveries that actually need the hold,
+//    since an undersized hull pays for extra distance in extra round trips.
 //
 // Parameters:
 //   - ships: Available ships to choose from
 //   - targetWaypoint: Destination waypoint
 //   - requiredCargoSymbol: Optional cargo type for priority selection
+//   - unitsNeeded: Units still required for the delivery, used to estimate
+//     how many round trips each candidate hull would need
 //
 // Returns:
 //   - SelectionResult with selected ship, distance, and reason
@@ -42,6 +48,7 @@ func (s *ShipSelector) SelectOptimalShip(
 	ships []*navigation.Ship,
 	targetWaypoint *shared.Waypoint,
 	requiredCargoSymbol string,
+	unitsNeeded int,
 ) (*SelectionResult, error) {
 	if len(ships) == 0 {
 		return nil, fmt.Errorf("no ships available for selection")
@@ -51,8 +58,9 @@ func (s *ShipSelector) SelectOptimalShip(
 		return nil, fmt.Errorf("target waypoint cannot be nil")
 	}
 
-	var closestShip *navigation.Ship
-	minDistance := math.MaxFloat64
+	var fastestShip *navigation.Ship
+	var fastestDistance float64
+	minTotalTime := math.MaxFloat64
 	var shipWithCargo *navigation.Ship
 
 	for _, ship := range ships {
@@ -64,18 +72,18 @@ func (s *ShipSelector) SelectOptimalShip(
 			continue
 		}
 
-		closestShip, minDistance = s.updateClosestShip(ship, targetWaypoint, closestShip, minDistance)
+		fastestShip, fastestDistance, minTotalTime = s.updateFastestAdequateShip(ship, targetWaypoint, unitsNeeded, fastestShip, fastestDistance, minTotalTime)
 	}
 
 	if shipWithCargo != nil {
 		return s.buildCargoSelectionResult(shipWithCargo, requiredCargoSymbol), nil
 	}
 
-	if closestShip == nil {
+	if fastestShip == nil {
 		return nil, fmt.Errorf("no available ships found (all are in transit)")
 	}
 
-	return s.buildDistanceSelectionResult(closestShip, minDistance), nil
+	return s.buildDistanceSelectionResult(fastestShip, fastestDistance), nil
 }
 
 func (s *ShipSelector) hasRequiredCargo(ship *navigation.Ship, requiredCargoSymbol string) bool {
@@ -90,20 +98,48 @@ func (s *ShipSelector) shouldSkipShipInTransit(ship *navigation.Ship, shipWithCa
 	return ship.NavStatus() == navigation.NavStatusInTransit && shipWithCargo != ship
 }
 
-func (s *ShipSelector) updateClosestShip(
+// updateFastestAdequateShip ranks a candidate by estimated total completion
+// time (round trips required x travel time per trip) rather than raw
+// distance, so hull right-sizing (sp-snmb) can prefer a fast, adequately
+// sized ship over a closer but slower or over/under-sized one.
+func (s *ShipSelector) updateFastestAdequateShip(
 	ship *navigation.Ship,
 	targetWaypoint *shared.Waypoint,
-	currentClosest *navigation.Ship,
-	currentMinDistance float64,
-) (*navigation.Ship, float64) {
+	unitsNeeded int,
+	currentFastest *navigation.Ship,
+	currentDistance float64,
+	currentMinTotalTime float64,
+) (*navigation.Ship, float64, float64) {
 	currentLocation := ship.CurrentLocation()
 	distance := currentLocation.DistanceTo(targetWaypoint)
+	totalTime := s.estimatedCompletionTime(ship, distance, unitsNeeded)
 
-	if distance < currentMinDistance {
-		return ship, distance
+	if totalTime < currentMinTotalTime {
+		return ship, distance, totalTime
 	}
 
-	return currentClosest, currentMinDistance
+	return currentFastest, currentDistance, currentMinTotalTime
+}
+
+// estimatedCompletionTime estimates how long it would take a ship, at the
+// given distance from the target, to deliver unitsNeeded units - factoring in
+// both travel speed and cargo capacity. A small-cargo ship needs more round
+// trips for a large delivery, so a fast hull only wins when its speed
+// advantage isn't erased by extra trips (sp-snmb hull right-sizing).
+func (s *ShipSelector) estimatedCompletionTime(ship *navigation.Ship, distance float64, unitsNeeded int) float64 {
+	units := unitsNeeded
+	if units < 1 {
+		units = 1
+	}
+	capacity := ship.CargoCapacity()
+	if capacity < 1 {
+		capacity = 1
+	}
+	// ceil(units/capacity) with units>=1 and capacity>=1 is always >= 1, so no
+	// extra floor guard is needed here.
+	trips := int(math.Ceil(float64(units) / float64(capacity)))
+	travelTime := shared.FlightModeCruise.TravelTime(distance, ship.EngineSpeed())
+	return float64(trips) * float64(travelTime)
 }
 
 func (s *ShipSelector) buildCargoSelectionResult(ship *navigation.Ship, requiredCargoSymbol string) *SelectionResult {
@@ -118,6 +154,6 @@ func (s *ShipSelector) buildDistanceSelectionResult(ship *navigation.Ship, dista
 	return &SelectionResult{
 		Ship:     ship,
 		Distance: distance,
-		Reason:   fmt.Sprintf("closest by distance (%.2f units)", distance),
+		Reason:   fmt.Sprintf("fastest adequate hull (%.2f units away)", distance),
 	}
 }

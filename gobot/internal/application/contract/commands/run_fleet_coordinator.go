@@ -310,6 +310,7 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			h.converter,
 			purchaseMarket,
 			requiredCargo,
+			unitsNeeded,
 			cmd.PlayerID.Value(),
 		)
 		if err != nil {
