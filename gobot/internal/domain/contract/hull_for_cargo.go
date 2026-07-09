@@ -33,13 +33,18 @@ type hullFit struct {
 
 // SelectHullForCargo picks the hull whose hold matches the load - the shared
 // cargo-fit selection policy for coordinators assigning haul work (l7h2
-// Phase 3). Proximity-first selection sent 225-hold heavies on 40-unit legs
-// while lights idled; this ladder right-sizes instead:
+// Phase 3, ranking refined by sp-f66z). Pure proximity-first sent 225-hold
+// heavies on 40-unit legs while lights idled; pure smallest-fit then claimed a
+// far small hull while a nearer adequate one idled at a hub (5/8 stall-tails).
+// This ladder ranks the ADEQUATE hulls by proximity and uses hold size only to
+// break ties:
 //
-//	Tier 1: the SMALLEST regular hull whose capacity fits the whole load.
-//	        Equal capacities tie-break on shortest cruise travel time, so a
-//	        fast fitting hull still beats a slow one of the same size
-//	        (sp-snmb's speed-awareness, kept within the tier).
+//	Tier 1: among regular hulls whose capacity fits the whole load, the
+//	        NEAREST by cruise travel time. Equal travel times tie-break on the
+//	        smallest fitting hold, so a nearer adequate hull beats a farther
+//	        smaller one (sp-f66z) while two equidistant hulls still right-size
+//	        (l7h2 P3). Travel time is speed-aware, so a fast hull that clears
+//	        the leg sooner outranks a slow one nominally as close (sp-snmb).
 //	Tier 2: the command frigate, only when NO regular hull fits. It stays an
 //	        eligible candidate (sp-4a4e) but is drafted strictly last-resort -
 //	        mirroring how IncludeCommandShip already gates its pool entry.
@@ -79,9 +84,9 @@ func SelectHullForCargo(
 
 	fitsWholeLoad := func(f hullFit) bool { return f.capacity >= units }
 
-	// Tier 1: smallest fitting regular hull.
-	if best, ok := minFit(filterFits(regular, fitsWholeLoad), bySmallestCapacity); ok {
-		return fitSelectionResult(best, fmt.Sprintf("smallest fitting hull (%d-hold for %d units)", best.capacity, units)), nil
+	// Tier 1: nearest adequate regular hull (smallest hold breaks a tie).
+	if best, ok := minFit(filterFits(regular, fitsWholeLoad), byNearestThenSmallest); ok {
+		return fitSelectionResult(best, fmt.Sprintf("nearest fitting hull (%d-hold for %d units)", best.capacity, units)), nil
 	}
 	// Tier 2: the command frigate fits and nothing else does.
 	if best, ok := minFit(filterFits(command, fitsWholeLoad), bySmallestCapacity); ok {
@@ -126,8 +131,22 @@ func filterFits(fits []hullFit, keep func(hullFit) bool) []hullFit {
 	return out
 }
 
-// bySmallestCapacity orders fitting hulls: smallest hold first, faster of two
-// equal holds first.
+// byNearestThenSmallest orders adequate hulls (Tier 1): shortest cruise travel
+// time first, smallest fitting hold breaking a tie. Proximity is the primary
+// key so a nearer adequate hull beats a farther smaller one - the far-source
+// claim that ate 5/8 stall-tails (sp-f66z). Size-fit is subordinated to
+// distance, not the other way round.
+func byNearestThenSmallest(a, b hullFit) bool {
+	if a.travelTime != b.travelTime {
+		return a.travelTime < b.travelTime
+	}
+	return a.capacity < b.capacity
+}
+
+// bySmallestCapacity orders fitting command hulls (Tier 2): smallest hold
+// first, faster of two equal holds first. Regular Tier-1 selection now leads
+// with proximity (byNearestThenSmallest); this stays size-first for the
+// last-resort frigate pool, which sp-f66z leaves unchanged.
 func bySmallestCapacity(a, b hullFit) bool {
 	if a.capacity != b.capacity {
 		return a.capacity < b.capacity

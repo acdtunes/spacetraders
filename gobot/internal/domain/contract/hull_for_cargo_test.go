@@ -26,32 +26,52 @@ func selectHull(t *testing.T, ships []*navigation.Ship, units int) *SelectionRes
 	return result
 }
 
-// Tier 1: a light hull that fits the load must win over a heavier hull even
-// when the heavy is closer - the exact waste the ladder exists to stop
-// (a 225-hold heavy crossing the system for a 40-unit leg while a light
-// idles). Both are regular haulers; only hold size and position differ.
-func TestSelectHullForCargo_SmallestFittingHullBeatsCloserHeavy(t *testing.T) {
-	heavy := newSelectorTestShipWithHull(t, "TORWIND-7", "HAULER", 10, 0, 30, 120)
-	light := newSelectorTestShipWithHull(t, "TORWIND-3", "HAULER", 200, 0, 30, 40)
+// Tier 1 (sp-f66z): among hulls that FIT the load, the NEAREST wins even when
+// a farther hull is smaller - the exact far-source claim the ladder used to
+// make. Smallest-fit-anywhere let the coordinator claim a far small hull while
+// a nearer adequate hull idled at a hub (5/8 stall-tails); nearest-adequate-
+// first stops it. Both are regular haulers at the same speed, so only hold size
+// and distance differ and travel time isolates proximity. (Was
+// SmallestFittingHullBeatsCloserHeavy: the captain+analyst doctrine change
+// inverts that expected pick.)
+func TestSelectHullForCargo_NearestAdequateHullBeatsFartherSmaller(t *testing.T) {
+	nearHeavy := newSelectorTestShipWithHull(t, "TORWIND-7", "HAULER", 10, 0, 30, 120)
+	farLight := newSelectorTestShipWithHull(t, "TORWIND-3", "HAULER", 200, 0, 30, 40)
 
-	result := selectHull(t, []*navigation.Ship{heavy, light}, 30)
+	result := selectHull(t, []*navigation.Ship{nearHeavy, farLight}, 30)
 
-	if result.Ship.ShipSymbol() != "TORWIND-3" {
-		t.Fatalf("expected the smallest fitting hull TORWIND-3 (40-hold) to beat the closer heavy, got %s (%s)", result.Ship.ShipSymbol(), result.Reason)
+	if result.Ship.ShipSymbol() != "TORWIND-7" {
+		t.Fatalf("expected the nearest adequate hull TORWIND-7 (10 away, 120-hold) to beat the farther smaller TORWIND-3 (200 away, 40-hold), got %s (%s)", result.Ship.ShipSymbol(), result.Reason)
 	}
 }
 
-// Tier 1 tie-break: two fitting hulls of the same hold size are split by
-// cruise travel time, keeping sp-snmb's speed-awareness inside the tier - a
-// fast hull at the same distance clears the leg sooner.
-func TestSelectHullForCargo_EqualHoldsTieBreakOnTravelTime(t *testing.T) {
+// Tier 1 (sp-f66z): proximity is measured by cruise travel time, which is
+// speed-aware - two equal-hold hulls at the same distance are split by engine
+// speed, so the faster hull that clears the leg sooner is the "nearer" one
+// (sp-snmb, now the primary key rather than a within-capacity-tier tie-break).
+func TestSelectHullForCargo_NearestByTravelTimeIsSpeedAware(t *testing.T) {
 	slow := newSelectorTestShipWithHull(t, "TORWIND-3", "HAULER", 100, 0, 10, 40)
 	fast := newSelectorTestShipWithHull(t, "TORWIND-4", "HAULER", 100, 0, 30, 40)
 
 	result := selectHull(t, []*navigation.Ship{slow, fast}, 30)
 
 	if result.Ship.ShipSymbol() != "TORWIND-4" {
-		t.Fatalf("expected the faster of two equal-hold hulls to win, got %s (%s)", result.Ship.ShipSymbol(), result.Reason)
+		t.Fatalf("expected the faster of two equal-hold hulls to be nearest by travel time, got %s (%s)", result.Ship.ShipSymbol(), result.Reason)
+	}
+}
+
+// Tier 1 tie-break (sp-f66z): when two adequate hulls are equidistant (same
+// travel time), the smaller fitting hold wins - hold-size right-sizing is kept
+// as the SECONDARY key, so l7h2 P3's anti-waste survives wherever proximity
+// does not decide.
+func TestSelectHullForCargo_EqualDistanceTieBreaksOnSmallerHold(t *testing.T) {
+	bigHold := newSelectorTestShipWithHull(t, "TORWIND-7", "HAULER", 100, 0, 30, 120)
+	smallHold := newSelectorTestShipWithHull(t, "TORWIND-3", "HAULER", 100, 0, 30, 40)
+
+	result := selectHull(t, []*navigation.Ship{bigHold, smallHold}, 30)
+
+	if result.Ship.ShipSymbol() != "TORWIND-3" {
+		t.Fatalf("expected the smaller equidistant hold TORWIND-3 (40-hold) to win the tie-break over TORWIND-7 (120-hold), got %s (%s)", result.Ship.ShipSymbol(), result.Reason)
 	}
 }
 

@@ -27,12 +27,13 @@ func NewShipSelector() *ShipSelector {
 // Business Rules:
 //  1. Ships with required cargo have absolute priority (even if in transit)
 //  2. Ships in transit are excluded (unless they have cargo)
-//  3. Fallback: cargo-fit hull selection via SelectHullForCargo (l7h2 Phase 3):
-//     the smallest hull whose hold fits the load, the command frigate strictly
-//     last-resort, fewest-round-trips when nothing fits in one trip. This
-//     right-sizes the hull for the job (sp-snmb's goal) with a deterministic
-//     fit ladder instead of the earlier completion-time estimate, so a fitting
-//     light hull wins even when a heavy is idle and closer.
+//  3. Fallback: cargo-fit hull selection via SelectHullForCargo (l7h2 Phase 3,
+//     ranking refined by sp-f66z): among hulls whose hold fits the load, the
+//     NEAREST by cruise travel time (smallest fitting hold breaks a tie), the
+//     command frigate strictly last-resort, fewest-round-trips when nothing
+//     fits in one trip. This assigns the job to the nearest adequate hull
+//     rather than the smallest anywhere, so a nearer fitting hull is not passed
+//     over for a far smaller one idling at a hub.
 //
 // Parameters:
 //   - ships: Available ships to choose from
