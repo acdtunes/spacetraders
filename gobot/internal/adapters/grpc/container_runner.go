@@ -133,8 +133,15 @@ func (r *ContainerRunner) Start() error {
 	// Create ship assignments if this container uses ships
 	// This prevents concurrent containers from operating on the same ship
 	if err := r.createShipAssignments(); err != nil {
-		r.log("ERROR", fmt.Sprintf("Failed to create ship assignments: %v", err), nil)
-		return fmt.Errorf("failed to create ship assignments: %w", err)
+		wrapped := fmt.Errorf("failed to create ship assignments: %w", err)
+		r.log("ERROR", wrapped.Error(), nil)
+		// sp-cr86: the row above was just persisted as RUNNING, and the heartbeat
+		// goroutine (started below, on the success path only) never gets to run on
+		// this exit - so without terminalizing here, the row is stuck RUNNING with a
+		// heartbeat_at that never advances, and the watchkeeper spams heartbeat_lost
+		// for it forever. Terminalize now, the same way a normal failure does.
+		r.terminalizeClaimFailure(wrapped)
+		return wrapped
 	}
 
 	// Start heartbeat goroutine to update heartbeat_at periodically
@@ -145,6 +152,46 @@ func (r *ContainerRunner) Start() error {
 	go r.execute()
 
 	return nil
+}
+
+// terminalizeClaimFailure marks the container row FAILED when Start() cannot claim
+// its ship (already assigned to a different container, or reserved by the captain).
+// This is the claim-failure exit path: the row was just persisted RUNNING above, but
+// neither the heartbeat nor the execute goroutine ever starts on this path - so
+// without this, the row is a zombie stuck at RUNNING with a heartbeat_at that never
+// advances again, and the watchkeeper spams heartbeat_lost for it forever (sp-cr86).
+// Mirrors handleError's terminalization pattern, releases any partial ship state
+// (idempotent no-op if nothing was assigned), and signals the coordinator (if any) so
+// it doesn't wait forever on a worker that never actually started.
+func (r *ContainerRunner) terminalizeClaimFailure(err error) {
+	r.mu.Lock()
+	r.containerEntity.Fail(err)
+	r.mu.Unlock()
+
+	metrics.RecordContainerCompletion(r.containerEntity)
+
+	if r.containerRepo != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), dbOperationTimeout)
+		defer cancel()
+
+		now := time.Now()
+		exitCode := 1
+
+		if dbErr := r.containerRepo.UpdateStatus(
+			ctx,
+			r.containerEntity.ID(),
+			r.containerEntity.PlayerID(),
+			container.ContainerStatusFailed,
+			&now,
+			&exitCode,
+			fmt.Sprintf("claim_failed: %s", err.Error()),
+		); dbErr != nil {
+			r.log("ERROR", fmt.Sprintf("Failed to persist FAILED status after claim failure: %v", dbErr), nil)
+		}
+	}
+
+	r.releaseShipAssignments("claim_failed")
+	r.signalCompletionWithStatus(false, err.Error())
 }
 
 // Stop gracefully stops the container

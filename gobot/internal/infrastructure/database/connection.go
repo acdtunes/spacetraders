@@ -59,6 +59,23 @@ func NewConnection(cfg *config.DatabaseConfig) (*gorm.DB, error) {
 		sqlDB.SetConnMaxLifetime(cfg.Pool.MaxLifetime)
 	}
 
+	// SQLite has no true concurrent-writer support (it serializes writes at the
+	// file-lock level regardless), and a bare ":memory:" DSN gives each physical
+	// connection its OWN separate, empty database unless cache=shared is set. Left
+	// at Go's default (unbounded) pool, concurrent callers can open more than one
+	// physical connection and land on one that never saw AutoMigrate, surfacing as
+	// intermittent "no such table" errors. Pinning to a single physical connection
+	// makes every caller share the one migrated connection, for :memory: and
+	// file-based SQLite alike.
+	if cfg.Type == "sqlite" {
+		sqlDB, err := db.DB()
+		if err != nil {
+			return nil, fmt.Errorf("failed to get underlying db: %w", err)
+		}
+
+		sqlDB.SetMaxOpenConns(1)
+	}
+
 	return db, nil
 }
 
