@@ -22,6 +22,7 @@ type readoptFakeShipRepo struct {
 	ship   *navigation.Ship
 	onSave func()
 	saves  []contractShipSnapshot
+	claims []contractShipClaim // atomic ClaimShip calls the re-adoption issues (sp-lprs)
 }
 
 func (r *readoptFakeShipRepo) FindAllByPlayer(_ context.Context, _ shared.PlayerID) ([]*navigation.Ship, error) {
@@ -45,6 +46,23 @@ func (r *readoptFakeShipRepo) Save(_ context.Context, ship *navigation.Ship) err
 		r.onSave()
 	}
 	return nil
+}
+
+// ClaimShip records the atomic operation-checked claim spawnContractWorker now
+// issues to acquire the re-adopted hull for the fresh worker (sp-lprs). The old
+// AssignToContainer+Save happy path is gone, so the ship's final assignment is
+// observed here (and on the in-memory entity), not via a Save.
+func (r *readoptFakeShipRepo) ClaimShip(_ context.Context, symbol string, containerID string, _ shared.PlayerID, operation string) error {
+	r.claims = append(r.claims, contractShipClaim{symbol: symbol, containerID: containerID, operation: operation})
+	return nil
+}
+
+func (r *readoptFakeShipRepo) lastClaim(t *testing.T) contractShipClaim {
+	t.Helper()
+	if len(r.claims) == 0 {
+		t.Fatalf("expected at least one ClaimShip call, got none")
+	}
+	return r.claims[len(r.claims)-1]
 }
 
 func newReadoptHandler(repo *readoptFakeShipRepo, containerRepo *reclaimFakeContainerRepo, daemonClient *spawnContractFakeDaemonClient) *RunFleetCoordinatorHandler {
@@ -126,20 +144,25 @@ func TestFleetCoordinator_ReadoptsInFlightDelivery_ResumesWithoutReNegotiation(t
 	if len(daemonClient.started) != 1 || !strings.HasPrefix(daemonClient.started[0], "contract-work-") {
 		t.Fatalf("expected a re-adopted contract-work worker to be started, got %v", daemonClient.started)
 	}
-	// The ship ends up assigned to the NEW worker (not idle, not the dead container),
-	// so it resumes the delivery leg instead of returning to blind discovery.
-	if len(repo.saves) == 0 {
-		t.Fatalf("expected the re-adopted ship to be saved, got no saves")
+	// The ship ends up assigned to the NEW worker (not idle, not the dead
+	// container), so it resumes the delivery leg instead of returning to blind
+	// discovery. Post-sp-lprs the acquisition is the atomic operation-checked
+	// ClaimShip under the contract fleet identity — not an AssignToContainer+Save
+	// — so the final assignment is observed on the claim and the in-memory entity
+	// rather than a happy-path Save.
+	claim := repo.lastClaim(t)
+	if claim.symbol != "TORWIND-6" || claim.operation != "contract" {
+		t.Fatalf("expected the re-adopted ship claimed under operation contract, got %+v", claim)
 	}
-	last := repo.saves[len(repo.saves)-1]
-	if !last.assigned {
-		t.Fatalf("expected ship re-assigned to the re-adopted worker, got idle: %+v", last)
+	if claim.containerID != daemonClient.started[0] {
+		t.Fatalf("expected ship claimed by the re-adopted worker %q, got %q", daemonClient.started[0], claim.containerID)
 	}
-	if last.containerID != daemonClient.started[0] {
-		t.Fatalf("expected ship assigned to re-adopted worker %q, got %q", daemonClient.started[0], last.containerID)
+	if claim.containerID == "contract-work-TORWIND-6-dead" {
+		t.Fatalf("expected ship moved off the dead worker container, still on it: %q", claim.containerID)
 	}
-	if last.containerID == "contract-work-TORWIND-6-dead" {
-		t.Fatalf("expected ship moved off the dead worker container, still on it: %q", last.containerID)
+	if !ship.IsAssigned() || ship.ContainerID() != daemonClient.started[0] {
+		t.Fatalf("expected the re-adopted ship assigned in-memory to worker %q, got assigned=%v container=%q",
+			daemonClient.started[0], ship.IsAssigned(), ship.ContainerID())
 	}
 }
 

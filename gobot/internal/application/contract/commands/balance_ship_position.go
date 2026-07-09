@@ -119,20 +119,31 @@ func (h *BalanceShipPositionHandler) Handle(ctx context.Context, request common.
 		return nil, fmt.Errorf("failed to load ship %s: %w", cmd.ShipSymbol, err)
 	}
 
-	// Create temporary assignment to prevent this ship from being selected elsewhere
-	if err := ship.AssignToContainer(balancingContainerID, h.clock); err != nil {
-		logger.Log("WARNING", fmt.Sprintf("Failed to create balancing assignment: %v", err), nil)
-		// Continue anyway - balancing is best-effort
-	} else {
-		if err := h.shipRepo.Save(ctx, ship); err != nil {
-			logger.Log("WARNING", fmt.Sprintf("Failed to save balancing assignment: %v", err), nil)
-		}
+	// Atomic claim (sp-lprs, l7h2 Phase 2.5): reserve the hull for balancing
+	// through the operation-checked ClaimShip instead of the old non-atomic
+	// AssignToContainer+Save. A hull pinned to a foreign fleet (e.g. the command
+	// frigate's "command" pin), reserved by the captain, or already owned by
+	// another container is rejected inside ClaimShip's locked transaction.
+	// Balancing is best-effort repositioning, so a rejected claim skips this ship
+	// rather than poaching it via navigation. Crucially, the release defer is
+	// armed only AFTER a successful claim, so a hull we never claimed is never
+	// force-released out from under its real owner (the old code released
+	// unconditionally).
+	if err := h.shipRepo.ClaimShip(ctx, cmd.ShipSymbol, balancingContainerID, cmd.PlayerID, dedicatedFleetContract); err != nil {
+		logger.Log("WARNING", fmt.Sprintf("Skipping balance for %s: could not claim ship: %v", cmd.ShipSymbol, err), nil)
+		return &BalanceShipPositionResponse{Navigated: false}, nil
 	}
-	// Ensure assignment is released on exit (success or failure)
+	// DB claim committed — release it on exit (success or failure).
 	defer func() {
 		ship.ForceRelease("balancing_complete", h.clock)
 		_ = h.shipRepo.Save(ctx, ship)
 	}()
+	// Mirror the claim into the in-memory entity (best-effort: the DB claim
+	// already holds the reservation, and the release defer's ForceRelease+Save
+	// clears it regardless of this in-memory state).
+	if err := ship.AssignToContainer(balancingContainerID, h.clock); err != nil {
+		logger.Log("WARNING", fmt.Sprintf("Ship %s claimed in DB but in-memory assign failed (claim stands): %v", cmd.ShipSymbol, err), nil)
+	}
 
 	systemSymbol := ship.CurrentLocation().SystemSymbol
 	marketSymbols, err := h.marketRepo.FindAllMarketsInSystem(ctx, systemSymbol, cmd.PlayerID.Value())

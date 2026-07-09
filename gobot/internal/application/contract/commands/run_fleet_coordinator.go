@@ -678,13 +678,31 @@ func (h *RunFleetCoordinatorHandler) spawnContractWorker(
 		_ = h.workerLifecycleManager.StopWorkerContainer(ctx, workerContainerID)
 		return "", fmt.Errorf("Failed to load ship %s: %v", selectedShip, err)
 	}
-	if err := ship.AssignToContainer(workerContainerID, h.clock); err != nil {
+
+	// Atomic claim (sp-lprs, l7h2 Phase 2.5): assignment AND fleet dedication are
+	// re-checked inside ClaimShip's row-locked transaction, replacing the old
+	// FindBySymbol+AssignToContainer+Save read-modify-write whose TOCTOU let a
+	// `fleet assign` racing discovery slip a foreign-pinned hull — including the
+	// command frigate under its "command" pin — into a contract worker. A hull
+	// pinned to a fleet other than dedicatedFleetContract ("contract") is
+	// rejected at the DB, not clobbered; a contract-pinned or unpinned hull
+	// claims normally. Both callers hand this an idle ship: the main loop selects
+	// from idle candidates, and readoptInterruptedDeliveries force-releases the
+	// dead worker's hull to idle before re-adopting it.
+	if err := h.shipRepo.ClaimShip(ctx, selectedShip, workerContainerID, cmd.PlayerID, dedicatedFleetContract); err != nil {
 		_ = h.workerLifecycleManager.StopWorkerContainer(ctx, workerContainerID)
-		return "", fmt.Errorf("Failed to assign ship %s: %v", selectedShip, err)
+		// %w so callers (and the poach-vector test) can distinguish a fleet-
+		// dedication rejection from a transient failure; the string is identical.
+		return "", fmt.Errorf("Failed to claim ship %s: %w", selectedShip, err)
 	}
-	if err := h.shipRepo.Save(ctx, ship); err != nil {
-		_ = h.workerLifecycleManager.StopWorkerContainer(ctx, workerContainerID)
-		return "", fmt.Errorf("Failed to save ship assignment %s: %v", selectedShip, err)
+
+	// Mirror the committed claim into the in-memory entity so the start-failure
+	// rollback below (and any later read of `ship`) sees the assignment. A sync
+	// failure here is a WARN, not an unclaim: the DB claim already holds the
+	// ship, so returning an error would orphan a committed claim with no holder
+	// to release it (matches the factory/gas Phase 2 migration).
+	if err := ship.AssignToContainer(workerContainerID, h.clock); err != nil {
+		logger.Log("WARNING", fmt.Sprintf("Ship %s claimed in DB but in-memory assign failed (claim stands): %v", selectedShip, err), nil)
 	}
 
 	logger.Log("INFO", fmt.Sprintf("Starting worker container for %s", selectedShip), nil)
