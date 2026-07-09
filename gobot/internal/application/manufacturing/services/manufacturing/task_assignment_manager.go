@@ -135,8 +135,10 @@ func (m *TaskAssignmentManager) AssignTasks(ctx context.Context, params AssignPa
 		})
 	}
 
-	// Get ready tasks
-	readyTasks := m.taskQueue.GetReadyTasks()
+	// Get ready tasks. Construction (gate/mission-critical) tasks are hoisted
+	// ahead of manufacturing (income) tasks so an aged manufacturing backlog
+	// can't starve the gate of workers - see prioritizeConstructionTasks.
+	readyTasks := prioritizeConstructionTasks(m.taskQueue.GetReadyTasks())
 	if len(readyTasks) == 0 || len(idleShips) == 0 {
 		return 0, nil
 	}
@@ -214,6 +216,45 @@ func (m *TaskAssignmentManager) AssignTasks(ctx context.Context, params AssignPa
 	}
 
 	return tasksAssigned, nil
+}
+
+// prioritizeConstructionTasks partitions ready tasks so DELIVER_TO_CONSTRUCTION
+// (gate/mission-critical) tasks are assigned ahead of manufacturing (income)
+// tasks, regardless of the priority+aging order GetReadyTasks() returns them in.
+//
+// sp-q0xm: GetReadyTasks() sorts strictly by effective priority (base priority +
+// an aging bonus that accrues independently per task off its own ReadyAt(),
+// capped at +100 - see task.go). Because aging is per-task, an old COLLECT_SELL
+// backlog (base priority 50) can out-age a freshly-ready DELIVER_TO_CONSTRUCTION
+// task (base priority 75, no aging yet) once it has waited long enough. The
+// assignment loop below then hands idle ships to readyTasks strictly in that
+// order, so a large aged manufacturing backlog (bead: "10-14 queued COLLECT_SELL
+// tasks") can starve the gate-build tasks of workers even though construction is
+// the higher mission priority.
+//
+// This is a stable partition: relative order is preserved within each tier, so
+// the existing priority+aging order among manufacturing tasks (and among
+// construction tasks, if several are ready) is unaffected - only construction is
+// hoisted to the front as a group.
+func prioritizeConstructionTasks(tasks []*manufacturing.ManufacturingTask) []*manufacturing.ManufacturingTask {
+	construction := make([]*manufacturing.ManufacturingTask, 0, len(tasks))
+	rest := make([]*manufacturing.ManufacturingTask, 0, len(tasks))
+	hasConstruction := false
+
+	for _, task := range tasks {
+		if task.TaskType() == manufacturing.TaskTypeDeliverToConstruction {
+			construction = append(construction, task)
+			hasConstruction = true
+		} else {
+			rest = append(rest, task)
+		}
+	}
+
+	if !hasConstruction {
+		return tasks
+	}
+
+	return append(construction, rest...)
 }
 
 func factoryGoodKey(task *manufacturing.ManufacturingTask) string {
