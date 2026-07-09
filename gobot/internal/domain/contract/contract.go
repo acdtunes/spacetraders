@@ -78,16 +78,6 @@ func (c *Contract) Terms() Terms              { return c.terms }
 func (c *Contract) Accepted() bool            { return c.accepted }
 func (c *Contract) Fulfilled() bool           { return c.fulfilled }
 
-// TotalPayout returns the contract's total gross credit payout: the upfront
-// on-accepted payment plus the on-fulfilled completion payment. It is a
-// simple size signal (independent of ContractProfitabilityService's net
-// margin/opportunity-cost evaluation) used by a value-floor gate to decide
-// whether a contract is worth spending a full negotiate/accept/deliver/
-// fulfill cycle's ship-hours on (sp-snmb).
-func (c *Contract) TotalPayout() int {
-	return c.terms.Payment.OnAccepted + c.terms.Payment.OnFulfilled
-}
-
 // Accept accepts the contract (MUTABLE - modifies in place)
 func (c *Contract) Accept() error {
 	if c.fulfilled {

@@ -116,15 +116,3 @@ captain:
   max_feature_diff_lines: 400
   repo_dir: .                  # gobot repo root (worktrees are created under it)
   restart_cmd: make restart-daemon
-
-# Contract economics (sp-snmb)
-contract:
-  # Minimum total contract payout (on-accepted + on-fulfilled, in credits)
-  # required before the workflow will accept a negotiated contract. A full
-  # negotiate/accept/deliver/fulfill cycle burns roughly the same ship-hours
-  # regardless of payout, so contracts below this floor are left unaccepted
-  # (and therefore can never be fulfilled) rather than wasting a cycle on
-  # them. Retune upward if the fleet's contract $/ship-hour still looks low
-  # after this default; retune downward only if legitimate contracts are
-  # being skipped.
-  value_floor: 10000

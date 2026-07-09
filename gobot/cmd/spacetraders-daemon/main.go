@@ -431,7 +431,7 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to register EvaluateContractProfitability handler: %w", err)
 	}
 
-	contractWorkflowHandler := contractCmd.NewRunWorkflowHandler(med, shipRepo, contractRepo, nil, cfg.Contract.ValueFloor)
+	contractWorkflowHandler := contractCmd.NewRunWorkflowHandler(med, shipRepo, contractRepo, nil)
 	if err := mediator.RegisterHandler[*contractCmd.RunWorkflowCommand](med, contractWorkflowHandler); err != nil {
 		return fmt.Errorf("failed to register ContractWorkflow handler: %w", err)
 	}
