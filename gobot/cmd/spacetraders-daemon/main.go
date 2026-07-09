@@ -267,6 +267,13 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to register NavigateRoute handler: %w", err)
 	}
 
+	// Jump handler (sp-n0x7: was never registered, so dispatching
+	// JumpShipCommand always failed with "no handler registered")
+	jumpShipHandler := shipNav.NewJumpShipHandler(shipRepo, playerRepo, apiClient, med, containerRepo, nil) // nil = use RealClock
+	if err := mediator.RegisterHandler[*shipNav.JumpShipCommand](med, jumpShipHandler); err != nil {
+		return fmt.Errorf("failed to register JumpShip handler: %w", err)
+	}
+
 	// Market scouting handlers
 	scoutTourHandler := scoutingCmd.NewScoutTourHandler(shipRepo, med, marketScanner)
 	if err := mediator.RegisterHandler[*scoutingCmd.ScoutTourCommand](med, scoutTourHandler); err != nil {

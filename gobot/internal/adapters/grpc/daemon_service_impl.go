@@ -7,6 +7,7 @@ import (
 
 	playerQuery "github.com/andrescamacho/spacetraders-go/internal/application/player/queries"
 	shipNav "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
 	pb "github.com/andrescamacho/spacetraders-go/pkg/proto/daemon"
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )
@@ -185,6 +186,15 @@ func (s *daemonServiceImpl) JumpShip(ctx context.Context, req *pb.JumpShipReques
 
 	result, err := s.daemon.mediator.Send(ctx, cmd)
 	if err != nil {
+		// sp-n0x7: surface a workflow.failed event so the watchkeeper sees
+		// jump attempts, mirroring container_runner.go's
+		// signalCompletionWithStatus for ContainerRunner-driven workflows.
+		recordCaptainEvent(captain.EventWorkflowFailed, req.ShipSymbol, playerID, map[string]any{
+			"command_type":       "jump_ship",
+			"destination_system": req.DestinationSystem,
+			"success":            false,
+			"error":              err.Error(),
+		})
 		return &pb.JumpShipResponse{
 			Success: false,
 			Error:   err.Error(),
@@ -193,11 +203,24 @@ func (s *daemonServiceImpl) JumpShip(ctx context.Context, req *pb.JumpShipReques
 
 	resp, ok := result.(*shipNav.JumpShipResponse)
 	if !ok {
+		recordCaptainEvent(captain.EventWorkflowFailed, req.ShipSymbol, playerID, map[string]any{
+			"command_type":       "jump_ship",
+			"destination_system": req.DestinationSystem,
+			"success":            false,
+			"error":              "unexpected response type from JumpShipCommand",
+		})
 		return &pb.JumpShipResponse{
 			Success: false,
 			Error:   "unexpected response type from JumpShipCommand",
 		}, nil
 	}
+
+	recordCaptainEvent(captain.EventWorkflowFinished, req.ShipSymbol, playerID, map[string]any{
+		"command_type":       "jump_ship",
+		"destination_system": resp.DestinationSystem,
+		"success":            true,
+		"cooldown_seconds":   resp.CooldownSeconds,
+	})
 
 	return &pb.JumpShipResponse{
 		Success:           resp.Success,
