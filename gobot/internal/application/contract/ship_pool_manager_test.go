@@ -57,6 +57,47 @@ func newCandidateShip(t *testing.T, symbol, role string, cargoCap int, x, y floa
 	return ship
 }
 
+// newCandidateShipWithCargo builds an idle, docked ship already carrying the
+// given inventory - newCandidateShip always builds an empty hold, which
+// can't exercise the NO-CARGO-DUMP CLAIM GUARD (sp-wq7r).
+func newCandidateShipWithCargo(t *testing.T, symbol, role string, cargoCap int, x, y float64, inventory []*shared.CargoItem) *navigation.Ship {
+	t.Helper()
+	units := 0
+	for _, item := range inventory {
+		units += item.Units
+	}
+	cargo, err := shared.NewCargo(cargoCap, units, inventory)
+	if err != nil {
+		t.Fatalf("build cargo: %v", err)
+	}
+	fuel, err := shared.NewFuel(100, 100)
+	if err != nil {
+		t.Fatalf("build fuel: %v", err)
+	}
+	wp, err := shared.NewWaypoint("X1-TW-A2", x, y)
+	if err != nil {
+		t.Fatalf("build waypoint: %v", err)
+	}
+	ship, err := navigation.NewShip(
+		symbol,
+		shared.MustNewPlayerID(1),
+		wp,
+		fuel,
+		100,
+		cargoCap,
+		cargo,
+		30,
+		"FRAME_FRIGATE",
+		role,
+		nil,
+		navigation.NavStatusDocked,
+	)
+	if err != nil {
+		t.Fatalf("build ship: %v", err)
+	}
+	return ship
+}
+
 func containsSymbol(symbols []string, want string) bool {
 	for _, s := range symbols {
 		if s == want {
@@ -238,5 +279,236 @@ func TestFindIdleShipsByFleet_EmptyFleetName_ReturnsNothing(t *testing.T) {
 
 	if len(symbols) != 0 {
 		t.Fatalf("expected an empty fleet name to return nothing, got %v", symbols)
+	}
+}
+
+// ============================================================================
+// EXCLUSIVE MODE (sp-wq7r)
+//
+// Bug: with a dedicated fleet configured, the coordinator still combined
+// FindIdleLightHaulers' general pool with FindIdleShipsByFleet's dedicated
+// pool unconditionally (availableShips := append(generalShips,
+// dedicatedIdleShips...)), so it drafted idle non-dedicated hulls by
+// distance - the "dedicated" fleet was never actually exclusive. Fixed by
+// FleetHasMembers (does an exclusive fleet exist at all right now, busy
+// members included) gating SelectAvailableShips (seals the pool to
+// dedicated-only candidates when a fleet is active).
+// ============================================================================
+
+// FleetHasMembers answers "does this coordinator have an exclusive fleet at
+// all right now" - a broader question than FindIdleShipsByFleet's
+// dispatchable-only view. An idle tagged member is the simplest case.
+func TestFleetHasMembers_IdleMember_ReturnsTrue(t *testing.T) {
+	member := newCandidateShip(t, "TORWIND-4", "HAULER", 30, 10, 0)
+	member.SetDedicatedFleet("contract")
+	repo := &stubShipRepo{ships: []*navigation.Ship{member}}
+
+	hasMembers, err := FleetHasMembers(context.Background(), shared.MustNewPlayerID(1), repo, "contract")
+	if err != nil {
+		t.Fatalf("FleetHasMembers: %v", err)
+	}
+	if !hasMembers {
+		t.Fatalf("expected an idle tagged member to count as a fleet member")
+	}
+}
+
+// The critical case: a dedicated fleet that is entirely busy must still
+// report having members, so EXCLUSIVE MODE keeps the coordinator sealed to
+// its own fleet instead of falling back to the general pool the moment
+// every dedicated hull happens to be mid-delivery.
+func TestFleetHasMembers_OnlyBusyMember_ReturnsTrue(t *testing.T) {
+	busy := newCandidateShip(t, "TORWIND-5", "HAULER", 30, 10, 0)
+	busy.SetDedicatedFleet("contract")
+	if err := busy.AssignToContainer("contract-worker-TORWIND-5", shared.NewRealClock()); err != nil {
+		t.Fatalf("assign busy dedicated ship: %v", err)
+	}
+	repo := &stubShipRepo{ships: []*navigation.Ship{busy}}
+
+	hasMembers, err := FleetHasMembers(context.Background(), shared.MustNewPlayerID(1), repo, "contract")
+	if err != nil {
+		t.Fatalf("FleetHasMembers: %v", err)
+	}
+	if !hasMembers {
+		t.Fatalf("a fully-busy dedicated fleet must still report having members - otherwise the coordinator falls back to the general pool the moment every dedicated hull is working")
+	}
+}
+
+func TestFleetHasMembers_NoTaggedShips_ReturnsFalse(t *testing.T) {
+	untagged := newCandidateShip(t, "TORWIND-3", "HAULER", 30, 700, 0)
+	repo := &stubShipRepo{ships: []*navigation.Ship{untagged}}
+
+	hasMembers, err := FleetHasMembers(context.Background(), shared.MustNewPlayerID(1), repo, "contract")
+	if err != nil {
+		t.Fatalf("FleetHasMembers: %v", err)
+	}
+	if hasMembers {
+		t.Fatalf("expected no dedicated fleet members when no ship carries the tag")
+	}
+}
+
+func TestFleetHasMembers_EmptyFleetName_ReturnsFalse(t *testing.T) {
+	untagged := newCandidateShip(t, "TORWIND-3", "HAULER", 30, 700, 0)
+	repo := &stubShipRepo{ships: []*navigation.Ship{untagged}}
+
+	hasMembers, err := FleetHasMembers(context.Background(), shared.MustNewPlayerID(1), repo, "")
+	if err != nil {
+		t.Fatalf("FleetHasMembers: %v", err)
+	}
+	if hasMembers {
+		t.Fatalf("an empty fleet name must never report members - it means 'no dedicated fleet', mirroring FindIdleShipsByFleet")
+	}
+}
+
+// SelectAvailableShips is the exact combine point of the original bug: with
+// a dedicated fleet active, the general pool - including the command ship,
+// which IncludeCommandShip makes a first-class hauler candidate - must
+// never appear in the result, even when mixed in alongside dedicated ships.
+func TestSelectAvailableShips(t *testing.T) {
+	tests := []struct {
+		name                 string
+		generalShips         []string
+		dedicatedIdleShips   []string
+		dedicatedFleetActive bool
+		want                 []string
+	}{
+		{
+			name:                 "exclusive mode returns only dedicated ships - general pool and command ship excluded",
+			generalShips:         []string{"TORWIND-1", "TORWIND-3"}, // TORWIND-1 follows the *-1 command ship convention
+			dedicatedIdleShips:   []string{"TORWIND-4", "TORWIND-8"},
+			dedicatedFleetActive: true,
+			want:                 []string{"TORWIND-4", "TORWIND-8"},
+		},
+		{
+			name:                 "exclusive mode with every dedicated ship busy returns empty - never falls back to the general pool",
+			generalShips:         []string{"TORWIND-1", "TORWIND-3"},
+			dedicatedIdleShips:   nil,
+			dedicatedFleetActive: true,
+			want:                 nil,
+		},
+		{
+			name:                 "no dedicated fleet combines both pools same as before the fix",
+			generalShips:         []string{"TORWIND-1", "TORWIND-3"},
+			dedicatedIdleShips:   nil,
+			dedicatedFleetActive: false,
+			want:                 []string{"TORWIND-1", "TORWIND-3"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := SelectAvailableShips(tt.generalShips, tt.dedicatedIdleShips, tt.dedicatedFleetActive)
+			if len(got) != len(tt.want) {
+				t.Fatalf("SelectAvailableShips() = %v, want %v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Fatalf("SelectAvailableShips() = %v, want %v", got, tt.want)
+				}
+			}
+		})
+	}
+}
+
+// ============================================================================
+// NO-CARGO-DUMP CLAIM GUARD (sp-wq7r)
+//
+// Bug: the coordinator selected candidates by distance alone, leaving the
+// worker's jettison step (CargoManager.JettisonWrongCargoIfNeeded) to
+// silently dump whatever a claimed hull was carrying to make room - in
+// production this destroyed 43 units of EQUIPMENT the captain was
+// mid-liquidating on a borrowed pool hull, for a LIQUID_NITROGEN contract.
+// FilterUnrelatedCargo runs at selection time, before a hull is ever
+// claimed, so cargo unrelated to the delivery is never at risk.
+// ============================================================================
+
+func TestFilterUnrelatedCargo_EmptyCargo_Claimable(t *testing.T) {
+	empty := newCandidateShip(t, "TORWIND-3", "HAULER", 40, 10, 0)
+	repo := &stubShipRepo{ships: []*navigation.Ship{empty}}
+
+	claimable, parked, err := FilterUnrelatedCargo(context.Background(), shared.MustNewPlayerID(1), repo, []string{"TORWIND-3"}, "LIQUID_NITROGEN")
+	if err != nil {
+		t.Fatalf("FilterUnrelatedCargo: %v", err)
+	}
+	if !containsSymbol(claimable, "TORWIND-3") {
+		t.Fatalf("expected empty-hold ship to be claimable, got claimable=%v parked=%v", claimable, parked)
+	}
+	if len(parked) != 0 {
+		t.Fatalf("expected nothing parked, got %v", parked)
+	}
+}
+
+func TestFilterUnrelatedCargo_OnlyRequiredCargoAlreadyAboard_Claimable(t *testing.T) {
+	item, err := shared.NewCargoItem("LIQUID_NITROGEN", "Liquid Nitrogen", "", 10)
+	if err != nil {
+		t.Fatalf("build cargo item: %v", err)
+	}
+	partial := newCandidateShipWithCargo(t, "TORWIND-3", "HAULER", 40, 10, 0, []*shared.CargoItem{item})
+	repo := &stubShipRepo{ships: []*navigation.Ship{partial}}
+
+	claimable, parked, err := FilterUnrelatedCargo(context.Background(), shared.MustNewPlayerID(1), repo, []string{"TORWIND-3"}, "LIQUID_NITROGEN")
+	if err != nil {
+		t.Fatalf("FilterUnrelatedCargo: %v", err)
+	}
+	if !containsSymbol(claimable, "TORWIND-3") {
+		t.Fatalf("a hull already holding only the required cargo (resumed partial delivery) must be claimable, got claimable=%v parked=%v", claimable, parked)
+	}
+	if len(parked) != 0 {
+		t.Fatalf("expected nothing parked, got %v", parked)
+	}
+}
+
+// The regression case: a pool hull mid-liquidation of unrelated cargo must
+// never be claimed for an unrelated contract - not claimed and silently
+// jettisoned by the worker, which is what happened before this fix.
+func TestFilterUnrelatedCargo_UnrelatedCargoAboard_Parked_NotClaimable(t *testing.T) {
+	item, err := shared.NewCargoItem("EQUIPMENT", "Equipment", "", 43)
+	if err != nil {
+		t.Fatalf("build cargo item: %v", err)
+	}
+	loaded := newCandidateShipWithCargo(t, "TORWIND-B", "HAULER", 60, 10, 0, []*shared.CargoItem{item})
+	repo := &stubShipRepo{ships: []*navigation.Ship{loaded}}
+
+	claimable, parked, err := FilterUnrelatedCargo(context.Background(), shared.MustNewPlayerID(1), repo, []string{"TORWIND-B"}, "LIQUID_NITROGEN")
+	if err != nil {
+		t.Fatalf("FilterUnrelatedCargo: %v", err)
+	}
+	if containsSymbol(claimable, "TORWIND-B") {
+		t.Fatalf("a hull holding unrelated EQUIPMENT cargo must never be claimable for a LIQUID_NITROGEN contract, got claimable=%v", claimable)
+	}
+	if !containsSymbol(parked, "TORWIND-B") {
+		t.Fatalf("expected TORWIND-B parked for holding unrelated cargo, got parked=%v", parked)
+	}
+}
+
+func TestFilterUnrelatedCargo_MixedCandidates_SplitsCleanAndParked(t *testing.T) {
+	clean := newCandidateShip(t, "TORWIND-3", "HAULER", 40, 10, 0)
+	item, err := shared.NewCargoItem("EQUIPMENT", "Equipment", "", 43)
+	if err != nil {
+		t.Fatalf("build cargo item: %v", err)
+	}
+	loaded := newCandidateShipWithCargo(t, "TORWIND-B", "HAULER", 60, 10, 0, []*shared.CargoItem{item})
+	repo := &stubShipRepo{ships: []*navigation.Ship{clean, loaded}}
+
+	claimable, parked, err := FilterUnrelatedCargo(context.Background(), shared.MustNewPlayerID(1), repo, []string{"TORWIND-3", "TORWIND-B"}, "LIQUID_NITROGEN")
+	if err != nil {
+		t.Fatalf("FilterUnrelatedCargo: %v", err)
+	}
+	if !containsSymbol(claimable, "TORWIND-3") || containsSymbol(claimable, "TORWIND-B") {
+		t.Fatalf("expected only TORWIND-3 claimable, got %v", claimable)
+	}
+	if !containsSymbol(parked, "TORWIND-B") || containsSymbol(parked, "TORWIND-3") {
+		t.Fatalf("expected only TORWIND-B parked, got %v", parked)
+	}
+}
+
+func TestFilterUnrelatedCargo_SymbolNotInFleetSnapshot_SkippedSilently(t *testing.T) {
+	repo := &stubShipRepo{ships: []*navigation.Ship{}}
+
+	claimable, parked, err := FilterUnrelatedCargo(context.Background(), shared.MustNewPlayerID(1), repo, []string{"TORWIND-GONE"}, "LIQUID_NITROGEN")
+	if err != nil {
+		t.Fatalf("FilterUnrelatedCargo: %v", err)
+	}
+	if len(claimable) != 0 || len(parked) != 0 {
+		t.Fatalf("a candidate missing from the fleet snapshot must appear in neither list, got claimable=%v parked=%v", claimable, parked)
 	}
 }

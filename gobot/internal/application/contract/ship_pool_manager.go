@@ -258,6 +258,149 @@ func FindIdleShipsByFleet(
 	return idleShips, idleSymbols, nil
 }
 
+// FleetHasMembers reports whether ANY ship - idle, busy, or in transit -
+// currently carries the given DedicatedFleet tag. Unlike FindIdleShipsByFleet,
+// which only surfaces dispatchable members, this answers a different
+// question: does this coordinator have an exclusive fleet AT ALL right now?
+//
+// That distinction is what makes EXCLUSIVE MODE (sp-wq7r) correct: a
+// dedicated fleet that is fully busy must still block the coordinator from
+// raiding the general pool. Only the absence of ANY tagged member falls
+// back to shared hulls. Reading the persisted tag on every call (rather than
+// trusting a remembered --dedicated-ships list) keeps this live with the
+// same "no restart needed" guarantee FindIdleShipsByFleet already gives
+// `fleet assign`/`unassign` (sp-l7h2).
+//
+// Parameters:
+//   - fleet: The fleet name to look up; "" always returns false, mirroring
+//     FindIdleShipsByFleet's "no dedicated fleet" convention.
+//
+// Returns:
+//   - hasMembers: true if at least one ship carries the fleet tag
+//   - error: Any error encountered
+func FleetHasMembers(
+	ctx context.Context,
+	playerID shared.PlayerID,
+	shipRepo navigation.ShipRepository,
+	fleet string,
+) (bool, error) {
+	if fleet == "" {
+		return false, nil
+	}
+
+	allShips, err := shipRepo.FindAllByPlayer(ctx, playerID)
+	if err != nil {
+		return false, fmt.Errorf("failed to fetch ships: %w", err)
+	}
+
+	for _, ship := range allShips {
+		if ship.DedicatedFleet() == fleet {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// SelectAvailableShips combines the general and dedicated-fleet candidate
+// pools into the coordinator's working set for one discovery pass.
+//
+// EXCLUSIVE MODE (sp-wq7r): when dedicatedFleetActive is true, the general
+// pool is dropped entirely - the coordinator draws ONLY from
+// dedicatedIdleShips, even when that is empty because every dedicated
+// member is busy, rather than falling back to idle non-dedicated hulls by
+// distance. Before this fix the two pools were unconditionally combined
+// (append(generalShips, dedicatedIdleShips...)) regardless of dedication
+// state, so a coordinator configured with a dedicated fleet still drafted
+// idle pool hulls - once displacing cargo the captain was mid-liquidating
+// on a borrowed hull. "Dedicated" was never actually exclusive.
+//
+// When dedicatedFleetActive is false, the two pools are combined exactly as
+// before this fix (dedicatedIdleShips is normally empty in this branch,
+// since the caller's dedication check already says no fleet is tagged).
+func SelectAvailableShips(generalShips, dedicatedIdleShips []string, dedicatedFleetActive bool) []string {
+	if dedicatedFleetActive {
+		return dedicatedIdleShips
+	}
+	return append(generalShips, dedicatedIdleShips...)
+}
+
+// FilterUnrelatedCargo splits candidate ship symbols into those safe to
+// claim for a delivery of requiredCargo and those that must be parked
+// instead.
+//
+// NO-CARGO-DUMP CLAIM GUARD (sp-wq7r): a hull already holding cargo that is
+// NOT part of this delivery is never claimed. Before this fix the
+// coordinator picked candidates by distance alone and left the worker's
+// jettison step (CargoManager.JettisonWrongCargoIfNeeded) to silently dump
+// whatever the hull was carrying to make room - once destroying 43 units of
+// EQUIPMENT the captain was mid-liquidating on a borrowed pool hull. The
+// guard runs at selection time, before a hull is ever assigned, so
+// unrelated cargo is never at risk of being jettisoned by this
+// coordinator's own workers.
+//
+// A ship whose hold is empty, or whose hold contains only requiredCargo
+// (e.g. a partial delivery resumed after a restart), is claimable. A
+// candidate symbol not found in the current fleet snapshot is skipped
+// silently - matching FindIdleShipsByFleet's tolerance for fleet
+// composition that varies between passes - and appears in neither returned
+// list.
+//
+// Parameters:
+//   - symbols: Candidate ship symbols to classify (already idle/dedication
+//     filtered by the caller)
+//   - requiredCargo: The trade symbol this delivery needs; a hull carrying
+//     ONLY this symbol is not considered "unrelated" cargo
+//
+// Returns:
+//   - claimable: Symbols safe to hand to SelectClosestShip
+//   - parked: Symbols excluded because they hold unrelated cargo
+//   - error: Any error encountered
+func FilterUnrelatedCargo(
+	ctx context.Context,
+	playerID shared.PlayerID,
+	shipRepo navigation.ShipRepository,
+	symbols []string,
+	requiredCargo string,
+) ([]string, []string, error) {
+	logger := common.LoggerFromContext(ctx)
+
+	allShips, err := shipRepo.FindAllByPlayer(ctx, playerID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to fetch ships: %w", err)
+	}
+	bySymbol := make(map[string]*navigation.Ship, len(allShips))
+	for _, ship := range allShips {
+		bySymbol[ship.ShipSymbol()] = ship
+	}
+
+	var claimable []string
+	var parked []string
+	for _, symbol := range symbols {
+		ship, ok := bySymbol[symbol]
+		if !ok {
+			// Not in the current fleet snapshot (sold, renamed since
+			// discovery) - excluded from both lists rather than guessed at.
+			continue
+		}
+		if ship.Cargo().HasItemsOtherThan(requiredCargo) {
+			parked = append(parked, symbol)
+			continue
+		}
+		claimable = append(claimable, symbol)
+	}
+
+	if len(parked) > 0 {
+		logger.Log("INFO", "Parked candidates holding unrelated cargo", map[string]interface{}{
+			"action":          "filter_unrelated_cargo",
+			"required_cargo":  requiredCargo,
+			"parked_ships":    parked,
+			"claimable_ships": claimable,
+		})
+	}
+
+	return claimable, parked, nil
+}
+
 // isCommandShip checks if a ship symbol represents the command ship (ship #1).
 //
 // Ship symbols ending in "-1" are considered command ships (e.g., "TORWIND-1", "AGENT-1").

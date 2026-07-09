@@ -187,15 +187,10 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 
 		// The coordinator's own dedicated fleet (sp-snmb) is invisible to
 		// FindIdleLightHaulers via the claim-filter, so it is looked up
-		// separately here and folded into the same candidate pool - dedicated
-		// ships still do contract work, they're just exclusive to this
-		// coordinator. Looked up by fleet NAME from the persisted tag
+		// separately here. Looked up by fleet NAME from the persisted tag
 		// (sp-l7h2), not the remembered --dedicated-ships list: a `fleet
 		// assign`/`unassign` while this coordinator runs takes effect on the
-		// very next pass, no restart needed. The two pools are disjoint by
-		// construction — FindIdleLightHaulers excludes every tagged hull,
-		// this returns only hulls tagged "contract" — so the append can
-		// never double-count a ship.
+		// very next pass, no restart needed.
 		_, dedicatedIdleShips, err := appContract.FindIdleShipsByFleet(ctx, cmd.PlayerID, h.shipRepo, dedicatedFleetContract)
 		if err != nil {
 			errMsg := fmt.Sprintf("Failed to find idle dedicated ships: %v", err)
@@ -204,7 +199,25 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			h.clock.Sleep(10 * time.Second)
 			continue
 		}
-		availableShips := append(generalShips, dedicatedIdleShips...)
+
+		// EXCLUSIVE MODE (sp-wq7r): a dedicated fleet, once tagged (via
+		// --dedicated-ships at startup or a live `fleet assign` with no
+		// restart, sp-l7h2), is sealed - the coordinator draws ONLY from its
+		// own idle members, even when that set is empty because every member
+		// is busy. Before this fix the two pools were unconditionally
+		// combined regardless of dedication state, so a coordinator with a
+		// dedicated fleet still drafted idle non-dedicated pool hulls by
+		// distance and could displace whatever cargo they were
+		// mid-liquidating - "dedicated" was never actually exclusive.
+		dedicatedFleetActive, err := appContract.FleetHasMembers(ctx, cmd.PlayerID, h.shipRepo, dedicatedFleetContract)
+		if err != nil {
+			errMsg := fmt.Sprintf("Failed to check dedicated fleet membership: %v", err)
+			logger.Log("ERROR", errMsg, nil)
+			result.Errors = append(result.Errors, errMsg)
+			h.clock.Sleep(10 * time.Second)
+			continue
+		}
+		availableShips := appContract.SelectAvailableShips(generalShips, dedicatedIdleShips, dedicatedFleetActive)
 
 		// If no ships available, wait for completion signal. (The interrupted-
 		// worker reclaim pass already ran unconditionally at the top of this
@@ -345,11 +358,42 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 				unitsNeeded-inFlightCargo, requiredCargo, inFlightCargo, unitsNeeded+contract.Terms().Deliveries[0].UnitsFulfilled, contract.Terms().Deliveries[0].UnitsFulfilled), nil)
 		}
 
+		// NO-CARGO-DUMP CLAIM GUARD (sp-wq7r): a candidate hull already
+		// holding cargo unrelated to this contract's delivery good must be
+		// parked, never claimed - claiming it would let downstream cargo
+		// handling jettison whatever it was carrying (e.g. mid-liquidation
+		// EQUIPMENT dumped to make room for LIQUID_NITROGEN) to satisfy a
+		// contract that has nothing to do with that cargo. Filter BEFORE
+		// SelectClosestShip so an unrelated-cargo hull is never even
+		// distance-ranked as the winner.
+		claimableShips, parkedShips, err := appContract.FilterUnrelatedCargo(ctx, cmd.PlayerID, h.shipRepo, availableShips, requiredCargo)
+		if err != nil {
+			errMsg := fmt.Sprintf("Failed to filter candidates by cargo: %v", err)
+			logger.Log("ERROR", errMsg, nil)
+			result.Errors = append(result.Errors, errMsg)
+			h.clock.Sleep(10 * time.Second)
+			continue
+		}
+		if len(claimableShips) == 0 {
+			logger.Log("INFO", fmt.Sprintf("No claimable ships - %d candidate(s) hold unrelated cargo, waiting for completion...", len(parkedShips)), nil)
+			select {
+			case event := <-workerCompletedCh:
+				recordWorkerCompletion(logger, event, fmt.Sprintf("Ship %s completed, back in pool", event.ShipSymbol))
+				activeWorkerContainerID = "" // Worker completed
+			case <-time.After(30 * time.Second):
+				// Timeout, check again
+			case <-ctx.Done():
+				h.stopActiveWorker(ctx, activeWorkerContainerID)
+				return result, ctx.Err()
+			}
+			continue
+		}
+
 		// Select closest ship to purchase market (prioritizes ships with required cargo)
 		logger.Log("INFO", fmt.Sprintf("Selecting closest ship (required cargo: %s)...", requiredCargo), nil)
 		selectedShip, distance, err := appContract.SelectClosestShip(
 			ctx,
-			availableShips,
+			claimableShips,
 			h.shipRepo,
 			h.graphProvider,
 			h.converter,
