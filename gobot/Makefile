@@ -270,6 +270,10 @@ run-with-routing: build-daemon build-routing-service
 	@echo "Starting daemon with routing service..."
 	@ROUTING_SERVICE_ADDR=localhost:50051 ./bin/spacetraders-daemon
 
+# Calibrate the market model artifact (sp-1ek0 P0)
+calibrate-market-model:
+	@cd services/routing-service && ./venv/bin/python -m model.calibrate
+
 # Run CLI (example: make run-cli CMD="ship list")
 run-cli:
 	@./bin/spacetraders $(CMD)
