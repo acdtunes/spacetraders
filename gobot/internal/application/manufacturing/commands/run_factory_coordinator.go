@@ -478,6 +478,7 @@ func (h *RunFactoryCoordinatorHandler) executeParallelProduction(
 			deliveryDestinations: h.mapDeliveryDestinations(ctx, cmd, levels, levelIdx),
 			opContext:            opContext,
 			inputsOnly:           cmd.InputsOnly && isRootLevel,
+			isRootLevel:          isRootLevel,
 		}
 
 		// Execute all nodes in this level in parallel
@@ -699,6 +700,11 @@ type levelExecution struct {
 	// fabricated good must still be harvested so it can be delivered to the level
 	// above it — only the terminal output is left in factory stock (sp-q02m).
 	inputsOnly bool
+	// isRootLevel marks the top-of-tree level whose node is the terminal product.
+	// On a resale run (not inputsOnly) that product's harvested output is flown to
+	// the guard's resale sink and sold there (sp-rqwm) — intermediate levels' output
+	// is a feed for the level above and is never resold at an import sink.
+	isRootLevel bool
 }
 
 // executeLevelParallel executes all nodes in a level in parallel using goroutines
@@ -906,7 +912,7 @@ func (h *RunFactoryCoordinatorHandler) runNodeWorker(
 	if hasNeededCargo && deliveryDest != "" {
 		return h.deliverExistingCargo(ctx, ship, n.Good, deliveryDest, exec.cmd.PlayerID)
 	}
-	return h.produceNodeOnly(ctx, ship, n, exec.cmd.SystemSymbol, exec.cmd.PlayerID, deliveryDest, exec.opContext, exec.inputsOnly)
+	return h.produceNodeOnly(ctx, ship, n, exec.cmd.SystemSymbol, exec.cmd.PlayerID, deliveryDest, exec.opContext, exec.inputsOnly, exec.isRootLevel)
 }
 
 func (h *RunFactoryCoordinatorHandler) detectOnboardCargo(ctx context.Context, n *goods.SupplyChainNode, ship *navigation.Ship) bool {
@@ -1031,6 +1037,7 @@ func (h *RunFactoryCoordinatorHandler) produceNodeOnly(
 	deliveryDest string,
 	opContext *shared.OperationContext, // Operation context for transaction linking
 	inputsOnly bool, // when true (root level only), the fabricated output is left in factory stock
+	isRootLevel bool, // when true, the terminal product's output is sold at the guard's resale sink (sp-rqwm)
 ) (*mfgServices.ProductionResult, error) {
 	logger := common.LoggerFromContext(ctx)
 
@@ -1114,6 +1121,23 @@ func (h *RunFactoryCoordinatorHandler) produceNodeOnly(
 	}
 
 	totalCost += cost
+
+	// sp-rqwm: BIND the output sale to the guard's resale sink. Only the terminal
+	// product (root level, resale run) is flown to the import sink the chain-margin
+	// guard priced and sold THERE — never dumped at the factory/buy market. The basis
+	// for the bid>=basis loss floor is the factory ask we paid to harvest
+	// (exportMarket.Price). Intermediate feeds are delivered to their parent fab and
+	// inputs-only leaves output in factory stock, so both skip this leg. A sink below
+	// the floor (or none) HOLDS the output onboard rather than dumping it.
+	if isRootLevel && !inputsOnly {
+		revenue, sellErr := h.productionExecutor.SellFabricatedOutputAtSink(
+			ctx, updatedShip.ShipSymbol(), node.Good, exportMarket.Price, systemSymbol, playerIDValue, opContext,
+		)
+		if sellErr != nil {
+			return nil, fmt.Errorf("failed to sell fabricated %s at resale sink: %w", node.Good, sellErr)
+		}
+		totalCost -= revenue
+	}
 
 	return &mfgServices.ProductionResult{
 		QuantityAcquired: quantity,

@@ -50,6 +50,19 @@ const productionEmptyTrancheRetryDelay = 2 * time.Second
 // the logs at the true claim-holding site.
 const productionDwellWarnThreshold = 5 * time.Minute
 
+// minOutputSellMarginFactor is the bid>=basis loss floor enforced on every
+// fabricated-OUTPUT sale (sp-rqwm). The harvested product is sold at the resale
+// sink the chain-margin guard priced only if that sink's live bid is at least the
+// unit basis — the factory ask we paid to harvest — times this factor. 1.0 = strict
+// breakeven: the output leg never realizes a loss. It is the last-line backstop to
+// the sp-2dv4 chain-margin guard and the bp6f #3 crushed-sink harvest guard, checked
+// at the actual point of the output sale where the sink bid may have decayed since
+// production started (the −258k MEDICINE incident: guard cleared vs sink A1@5,248, the
+// worker instead dumped the output at the factory's own ~1,560 bid). Below the floor
+// the output is HELD (parked), never dumped. Tunable per ruling #5; kept at breakeven
+// so a healthy sink is never over-restricted.
+const minOutputSellMarginFactor = 1.0
+
 // defaultWorkingCapitalReserve is the hard working-capital spend floor applied to
 // factory INPUT purchases (sp-9aoc): a factory input buy must never drop live
 // treasury below this. It mirrors bp6f's trade-circuit floor (the identically-named
@@ -226,7 +239,13 @@ func (e *ProductionExecutor) buyGood(
 		// already docked at this market, so try to sell whatever is onboard to
 		// free space before giving up — a factory that didn't unload its last
 		// output before buying the next input should recover, not die.
-		freedShip, sellErr := e.freeCargoSpace(ctx, updatedShip, playerIDValue)
+		//
+		// sp-rqwm: no protectGood here. This is an INPUT market (where a feed is
+		// bought), never the terminal product's factory/buy market; the output is
+		// drained at its resale sink before the next input run, so it is not carried
+		// here, and the acceptance ("zero sells at the lift's buy market") concerns
+		// the factory, not input markets.
+		freedShip, sellErr := e.freeCargoSpace(ctx, updatedShip, playerIDValue, "")
 		if sellErr != nil {
 			logger.Log("WARN", fmt.Sprintf("Hold full and could not unload existing cargo — skipping this input purchase of %s", node.Good), map[string]interface{}{
 				"good":  node.Good,
@@ -802,7 +821,12 @@ func (e *ProductionExecutor) purchaseFabricatedOutput(
 		// first. Unlike a skipped INPUT purchase, a skipped output harvest loses
 		// nothing: the fabricated good stays in the factory's export stock and is
 		// picked up on a later pass, so skip gracefully rather than die.
-		freedShip, sellErr := e.freeCargoSpace(ctx, ship, playerID)
+		//
+		// sp-rqwm: protect `good` — the fabricated output. We are docked at the
+		// factory (the buy market) to harvest; dumping already-held output here to
+		// make room is the −258k incident. Skipping it means a parked resale sink
+		// holds the output onboard rather than deferring into a make-room dump.
+		freedShip, sellErr := e.freeCargoSpace(ctx, ship, playerID, good)
 		if sellErr != nil {
 			logger.Log("WARN", fmt.Sprintf("Hold full and could not unload existing cargo — skipping this output harvest of %s", good), map[string]interface{}{
 				"good":  good,
@@ -851,6 +875,126 @@ func (e *ProductionExecutor) purchaseFabricatedOutput(
 	})
 
 	return response.UnitsAdded, response.TotalCost, nil
+}
+
+// SellFabricatedOutputAtSink binds the fabricated OUTPUT sale to the resale sink the
+// chain-margin guard (sp-2dv4) priced — NEVER the factory/buy market — closing the
+// guard-vs-execution divergence that bled −258k on MEDICINE (sp-rqwm): the guard
+// cleared a chain against sink A1@5,248 while execution accumulated the output at the
+// factory D39 and dumped it THERE via the make-room path, laddering D39's own bid down
+// to ~1,560 (far below the ~3,100 harvest cost) and re-buying.
+//
+// The sink is re-derived LIVE at sell time via the IDENTICAL MarketLocator.FindImportMarket
+// call the guard and the bp6f #3 harvest guard use, so execution sells where the guard
+// planned rather than at the ship's current market. It enforces the bid>=basis loss floor
+// (minOutputSellMarginFactor): if no sink can be priced, or the sink's live bid is below
+// the unit basis (the factory ask we paid to harvest) times the floor, the output is HELD
+// onboard (parked, zero sold) with the numbers in the message text — the fabricated good
+// is retried on a later pass, never dumped at a loss. It never falls back to the current market.
+//
+// Only the FINAL product is sold this way (the coordinator calls it for the root
+// fabrication node on a resale run); an intermediate feed is delivered to its parent fab
+// and inputs-only leaves the output in factory stock, so both skip this leg. It also
+// drains any output a prior parked sell left onboard, so a recovered sink clears the
+// backlog. Returns realized sell revenue (0 when parked).
+func (e *ProductionExecutor) SellFabricatedOutputAtSink(
+	ctx context.Context,
+	shipSymbol string,
+	good string,
+	unitBasis int, // credits paid per unit to harvest (the factory ask) — the loss-floor basis
+	systemSymbol string,
+	playerID shared.PlayerID,
+	opContext *shared.OperationContext,
+) (int, error) {
+	logger := common.LoggerFromContext(ctx)
+	if opContext != nil && opContext.IsValid() {
+		ctx = shared.WithOperationContext(ctx, opContext)
+	}
+
+	// Units of the output actually onboard right now — this cycle's fresh harvest plus
+	// any the ship still carries from a prior parked sell.
+	ship, err := e.shipRepo.FindBySymbol(ctx, shipSymbol, playerID)
+	if err != nil {
+		return 0, fmt.Errorf("failed to reload ship before output sale: %w", err)
+	}
+	units := onboardUnits(ship, good)
+	if units <= 0 {
+		return 0, nil // nothing harvested to sell (e.g. inputs-only, or a skipped harvest)
+	}
+
+	// Re-derive the resale sink LIVE — the same call the guard priced against. A
+	// vanished/unpriceable sink PARKS the output (held, not dumped): we NEVER fall back
+	// to selling at the current (factory/buy) market.
+	sink, err := e.marketLocator.FindImportMarket(ctx, good, systemSymbol, playerID.Value())
+	if err != nil || sink == nil {
+		logger.Log("WARNING", fmt.Sprintf(
+			"Holding %d %s onboard: no priceable resale sink (basis %d/u) — NOT selling at the factory/buy market, will retry next pass: %v",
+			units, good, unitBasis, err,
+		), map[string]interface{}{
+			"action": "output_sell_parked", "reason": "no_sink", "good": good, "units": units, "basis": unitBasis,
+		})
+		return 0, nil
+	}
+
+	// Bid>=basis loss floor (sp-rqwm fix b) — the guard on the output SELL dispatch.
+	floor := int(float64(unitBasis) * minOutputSellMarginFactor)
+	if sink.Price < floor {
+		logger.Log("WARNING", fmt.Sprintf(
+			"Holding %d %s onboard: resale sink %s bid %d below loss floor %d (basis %d/u × %.2f) — parking, NOT dumping at the factory. stages[hold %s bid%d<floor%d]",
+			units, good, sink.WaypointSymbol, sink.Price, floor, unitBasis, minOutputSellMarginFactor, good, sink.Price, floor,
+		), map[string]interface{}{
+			"action": "output_sell_parked", "reason": "bid_below_basis",
+			"good": good, "units": units, "sink": sink.WaypointSymbol, "sink_bid": sink.Price, "basis": unitBasis, "floor": floor,
+		})
+		return 0, nil
+	}
+
+	// Fly the sell leg to the sink and sell THERE. Factory legs are in-system by design,
+	// so this is a NavigateAndDock (never a jump).
+	docked, err := e.NavigateAndDock(ctx, shipSymbol, sink.WaypointSymbol, playerID)
+	if err != nil {
+		return 0, fmt.Errorf("failed to navigate to resale sink %s for %s: %w", sink.WaypointSymbol, good, err)
+	}
+
+	sellUnits := onboardUnits(docked, good)
+	if sellUnits <= 0 {
+		return 0, nil
+	}
+
+	sellCmd := &shipCargo.SellCargoCommand{
+		ShipSymbol: shipSymbol,
+		GoodSymbol: good,
+		Units:      sellUnits,
+		PlayerID:   playerID,
+	}
+	resp, err := e.mediator.Send(ctx, sellCmd)
+	if err != nil {
+		return 0, fmt.Errorf("failed to sell %s at resale sink %s: %w", good, sink.WaypointSymbol, err)
+	}
+	sellResp, ok := resp.(*shipCargo.SellCargoResponse)
+	if !ok {
+		return 0, fmt.Errorf("unexpected response type selling %s at resale sink %s", good, sink.WaypointSymbol)
+	}
+
+	logger.Log("INFO", fmt.Sprintf(
+		"Sold %d %s at resale sink %s for %d credits (bid %d/u >= basis %d/u) — bound to the guard's sink, not the factory market",
+		sellResp.UnitsSold, good, sink.WaypointSymbol, sellResp.TotalRevenue, sink.Price, unitBasis,
+	), map[string]interface{}{
+		"good": good, "units": sellResp.UnitsSold, "revenue": sellResp.TotalRevenue,
+		"sink": sink.WaypointSymbol, "sink_bid": sink.Price, "basis": unitBasis,
+	})
+	return sellResp.TotalRevenue, nil
+}
+
+// onboardUnits sums how many units of good the ship currently holds.
+func onboardUnits(ship *navigation.Ship, good string) int {
+	units := 0
+	for _, item := range ship.Cargo().Inventory {
+		if item.Symbol == good {
+			units += item.Units
+		}
+	}
+	return units
 }
 
 // NavigateAndDock navigates to a waypoint and returns the ship only once it is
@@ -1158,10 +1302,19 @@ func (e *ProductionExecutor) deliverInputs(
 // rather than aborting the whole attempt, since the goal here is only to make
 // room, not to guarantee every item sells. Returns the reloaded ship
 // reflecting whatever did sell.
+//
+// protectGood (sp-rqwm) is a good this make-room path must NEVER sell here — the
+// fabricated OUTPUT. The output is sold ONLY at the guard's resale sink
+// (SellFabricatedOutputAtSink); dumping it at the current (factory/buy) market to
+// make room is exactly the −258k MEDICINE incident, so the harvest path passes the
+// output good and it is skipped. A parked sink therefore holds the output onboard
+// instead of the next cycle's make-room silently dumping it. Empty string protects
+// nothing (the input-buy path, which never carries the terminal product here).
 func (e *ProductionExecutor) freeCargoSpace(
 	ctx context.Context,
 	ship *navigation.Ship,
 	playerID shared.PlayerID,
+	protectGood string,
 ) (*navigation.Ship, error) {
 	logger := common.LoggerFromContext(ctx)
 
@@ -1171,6 +1324,15 @@ func (e *ProductionExecutor) freeCargoSpace(
 
 	sold := 0
 	for _, item := range ship.Cargo().Inventory {
+		// sp-rqwm: never dump the fabricated output at the current/buy market to make
+		// room — it is sold only at the guard's resale sink. Skip it here.
+		if protectGood != "" && item.Symbol == protectGood {
+			logger.Log("INFO", fmt.Sprintf("Not unloading %d units of %s here to free space — the fabricated output is sold only at its resale sink, never dumped at the factory/buy market", item.Units, item.Symbol), map[string]interface{}{
+				"good": item.Symbol,
+				"ship": ship.ShipSymbol(),
+			})
+			continue
+		}
 		sellCmd := &shipCargo.SellCargoCommand{
 			ShipSymbol: ship.ShipSymbol(),
 			GoodSymbol: item.Symbol,
