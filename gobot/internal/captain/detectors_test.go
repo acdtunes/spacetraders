@@ -253,6 +253,89 @@ func TestDetectIncomeStallSilentWhenIncomeFlowing(t *testing.T) {
 	require.Empty(t, events)
 }
 
+// TestDetectEngineIncomeStallFiresForContractWhileTradingHealthy is the sp-2cdu
+// acceptance criterion verbatim: kill the contract coordinator with factories/
+// trading running -> a contract-line stall fires within one detection window,
+// even though the aggregate ledger looks healthy (real 2026-07-09 incident: the
+// contract engine flatlined at 42k/4h while TRADING_REVENUE kept flowing at
+// +1.13M/4h, and the old aggregate-only detectIncomeStall never fired because
+// SOME income existed system-wide).
+func TestDetectEngineIncomeStallFiresForContractWhileTradingHealthy(t *testing.T) {
+	db, playerID, store := setupDB(t)
+	now := time.Now()
+	started := now.Add(-3 * time.Hour)
+
+	// Contract engine's coordinator is running, established well past the
+	// stall window, but has fulfilled nothing recently.
+	require.NoError(t, db.Create(&persistence.ContainerModel{
+		ID: "contract-coord", PlayerID: playerID, Status: "RUNNING",
+		ContainerType: "CONTRACT_FLEET_COORDINATOR", StartedAt: &started,
+	}).Error)
+	// Trading engine is running and healthy -> masks the collapse in the
+	// aggregate (any amount>0 transaction silences the old detector).
+	require.NoError(t, db.Create(&persistence.ContainerModel{
+		ID: "trade-coord", PlayerID: playerID, Status: "RUNNING",
+		ContainerType: "TRADING", StartedAt: &started,
+	}).Error)
+	require.NoError(t, db.Create(&persistence.TransactionModel{
+		ID: "t-trade", PlayerID: playerID, Timestamp: now.Add(-30 * time.Minute),
+		TransactionType: "SELL_CARGO", Category: "TRADING_REVENUE", OperationType: "trade_route",
+		Amount: 50000, BalanceBefore: 100000, BalanceAfter: 150000,
+	}).Error)
+
+	cfg := DetectorConfig{PlayerID: playerID, StaleHeartbeat: time.Hour, ShipIdle: time.Hour,
+		IncomeStall: 2 * time.Hour}
+	require.NoError(t, RunDetectors(context.Background(), db, store, cfg, now))
+
+	events, err := store.FindUnprocessed(context.Background(), playerID, 10)
+	require.NoError(t, err)
+	require.Len(t, events, 1, "aggregate income is healthy (trading), but the contract line must still stall independently")
+	require.Equal(t, captain.EventIncomeStalled, events[0].Type)
+	require.Equal(t, "income:contract", events[0].Ship)
+	require.Contains(t, events[0].Payload, "contract")
+}
+
+// TestDetectEngineIncomeStallSilentForManufacturingViaWorkerPath guards the
+// engine's operation_type filter against a normalization mismatch: the
+// manufacturing task worker tags its ctx with the RAW operation type
+// "manufacturing_worker" (run_manufacturing_task_worker.go), but that raw
+// string is never what lands in the transactions table. OperationContext.
+// NormalizedOperationType() has an explicit switch case for it
+// ("manufacturing_worker" -> "manufacturing"), and cargo_transaction.go
+// persists the NORMALIZED value (recordCmd.OperationType =
+// opCtx.NormalizedOperationType()) - so every real sale a manufacturing
+// worker makes (via ManufacturingSeller.SellCargo, e.g. the COLLECT_SELL
+// task type) is recorded with operation_type="manufacturing", never
+// "manufacturing_worker". A detector that filters on the raw string would
+// never see this income and would cry wolf on every healthy manufacturing
+// engine once it has run longer than the stall window - the false-positive
+// failure mode, not the false-negative one this bead targets.
+func TestDetectEngineIncomeStallSilentForManufacturingViaWorkerPath(t *testing.T) {
+	db, playerID, store := setupDB(t)
+	now := time.Now()
+	started := now.Add(-3 * time.Hour)
+
+	require.NoError(t, db.Create(&persistence.ContainerModel{
+		ID: "mfg-coord", PlayerID: playerID, Status: "RUNNING",
+		ContainerType: "MANUFACTURING_COORDINATOR", StartedAt: &started,
+	}).Error)
+	// The real, normalized operation_type a manufacturing worker's cargo sale
+	// persists as - NOT the raw "manufacturing_worker" context string.
+	require.NoError(t, db.Create(&persistence.TransactionModel{
+		ID: "t-mfg", PlayerID: playerID, Timestamp: now.Add(-30 * time.Minute),
+		TransactionType: "SELL_CARGO", Category: "TRADING_REVENUE", OperationType: "manufacturing",
+		Amount: 75000, BalanceBefore: 100000, BalanceAfter: 175000,
+	}).Error)
+
+	cfg := DetectorConfig{PlayerID: playerID, StaleHeartbeat: time.Hour, ShipIdle: time.Hour,
+		IncomeStall: 2 * time.Hour}
+	require.NoError(t, RunDetectors(context.Background(), db, store, cfg, now))
+
+	events, err := store.FindUnprocessed(context.Background(), playerID, 10)
+	require.NoError(t, err)
+	require.Empty(t, events, "manufacturing income is flowing under its real normalized operation_type - must not stall")
+}
+
 func TestDetectStreamDownEmitsPerMissingStream(t *testing.T) {
 	db, playerID, store := setupDB(t)
 	now := time.Now()

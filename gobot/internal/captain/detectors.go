@@ -62,6 +62,9 @@ func RunDetectors(ctx context.Context, db *gorm.DB, store captain.EventStore, cf
 	if err := detectIncomeStall(ctx, db, store, cfg, now); err != nil {
 		return err
 	}
+	if err := detectEngineIncomeStall(ctx, db, store, cfg, now); err != nil {
+		return err
+	}
 	if err := detectStreamDown(ctx, db, store, cfg, now); err != nil {
 		return err
 	}
@@ -218,6 +221,130 @@ func detectIncomeStall(ctx context.Context, db *gorm.DB, store captain.EventStor
 		Payload: fmt.Sprintf(`{"stall_hours":%.1f,"running_coordinators":%d}`,
 			cfg.IncomeStall.Hours(), runningCoordinators),
 	})
+}
+
+// incomeEngine names one earning line for per-engine stall detection
+// (sp-2cdu): its coordinator's container_type (the "is this engine even
+// active" gate, scoped to ONE engine instead of detectIncomeStall's any-
+// container '%coordinator%' match) and the ledger category/operation_type
+// combination that identifies its income transactions.
+//
+// category alone identifies contract income unambiguously: CONTRACT_REVENUE
+// is only ever produced by contract fulfillment (see
+// ledger.TypeToCategoryMap). It does NOT distinguish trading from
+// manufacturing - both post SELL_CARGO transactions under the same
+// TRADING_REVENUE category, which is exactly how the real 2026-07-09
+// incident's healthy aggregate TRADING_REVENUE flow hid a fully dead
+// contract line: the missing signal was never visible in Category, so
+// operationTypes disambiguates within it.
+//
+// operationTypes hold the REAL values that land in the operation_type column
+// today - cargo_transaction.go/refuel_ship.go persist
+// opCtx.NormalizedOperationType(), the NORMALIZED value, not the raw
+// OperationContext string a coordinator/worker sets on ctx. The two only
+// coincide when the raw string has no case in that switch: "trade_route"
+// (run_trade_route_coordinator.go) and "factory_workflow"
+// (run_factory_coordinator.go) fall through its default case and persist
+// unnormalized. "manufacturing_worker" (run_manufacturing_task_worker.go) is
+// NOT one of those - the switch has an explicit
+// case "manufacturing_worker": return "manufacturing", so every sale a
+// manufacturing task makes (e.g. ManufacturingSeller.SellCargo from the
+// COLLECT_SELL task type) persists as operation_type="manufacturing". This
+// detector bucket on the real persisted values, not the pre-normalization
+// context strings, so it is grounded in what actually lands in the column
+// (a separate follow-up tracks reconciling the mapping's dead
+// "goods_factory_coordinator"/"arbitrage_worker" cases - no caller passes
+// those - fleet-wide; that's well beyond this detector's blast radius).
+type incomeEngine struct {
+	name           string   // dedup-key suffix ("income:<name>") and payload "engine" field
+	containerType  string   // container_type of this engine's top-level coordinator
+	category       string   // ledger category of this engine's income transactions
+	operationTypes []string // empty = category alone is unambiguous (contract)
+}
+
+var incomeEngines = []incomeEngine{
+	{name: "contract", containerType: "CONTRACT_FLEET_COORDINATOR", category: "CONTRACT_REVENUE"},
+	{name: "trading", containerType: "TRADING", category: "TRADING_REVENUE",
+		operationTypes: []string{"trade_route"}},
+	{name: "manufacturing", containerType: "MANUFACTURING_COORDINATOR", category: "TRADING_REVENUE",
+		operationTypes: []string{"factory_workflow", "manufacturing"}},
+}
+
+// detectEngineIncomeStall runs detectIncomeStall's same "coordinator running
+// but nothing came in" test per earning line instead of in aggregate
+// (sp-2cdu): a single engine can flatline for hours while a DIFFERENT
+// engine's healthy income keeps detectIncomeStall's system-wide amount>0
+// check satisfied, exactly the failure mode that let a real 4h contract-
+// engine collapse ride through undetected while manufacturing/trading kept
+// the aggregate ledger flowing (contract: 42k/4h vs ~1.6M expected, while
+// TRADING_REVENUE posted +1.13M/4h).
+//
+// Reuses cfg.IncomeStall (no new tunable) and the existing EventIncomeStalled
+// type (already interrupt-class - see events.go DefaultInterruptTypes) so
+// current consumers wake on it unchanged; a per-engine dedup key and a
+// payload "engine" field are the only additions. detectIncomeStall itself is
+// untouched - this runs alongside it, not instead of it.
+//
+// Deliberately a zero-income-in-window threshold (matching
+// detectIncomeStall's own model), not a trailing-rate/percentage-drop
+// comparison: it fully covers the acceptance criterion (killing a
+// coordinator produces exactly zero income, not a partial reduction), and
+// contract payouts in particular are lumpy/infrequent even when healthy - a
+// trailing-rate ratio would likely raise the false-positive rate this
+// detector must avoid, not lower it.
+func detectEngineIncomeStall(ctx context.Context, db *gorm.DB, store captain.EventStore, cfg DetectorConfig, now time.Time) error {
+	if cfg.IncomeStall <= 0 {
+		return nil
+	}
+	cutoff := now.Add(-cfg.IncomeStall)
+
+	for _, engine := range incomeEngines {
+		var runningCount int64
+		if err := db.WithContext(ctx).Model(&persistence.ContainerModel{}).
+			Where("player_id = ? AND status = ? AND container_type = ? AND started_at IS NOT NULL AND started_at <= ?",
+				cfg.PlayerID, "RUNNING", engine.containerType, cutoff).
+			Count(&runningCount).Error; err != nil {
+			return err
+		}
+		if runningCount == 0 {
+			// Engine isn't active - silence is correct, not a stall. Mirrors
+			// detectIncomeStall's own "no coordinators -> nil" gate and
+			// detectStreamDown's never-run exemption: an engine that was
+			// never started cannot have collapsed.
+			continue
+		}
+
+		query := db.WithContext(ctx).Model(&persistence.TransactionModel{}).
+			Where("player_id = ? AND amount > 0 AND category = ? AND timestamp >= ?",
+				cfg.PlayerID, engine.category, cutoff)
+		if len(engine.operationTypes) > 0 {
+			query = query.Where("operation_type IN ?", engine.operationTypes)
+		}
+		var incoming int64
+		if err := query.Count(&incoming).Error; err != nil {
+			return err
+		}
+		if incoming > 0 {
+			continue
+		}
+
+		dedupKey := "income:" + engine.name
+		recent, err := store.HasSince(ctx, cfg.PlayerID, captain.EventIncomeStalled, dedupKey, now.Add(-cfg.IncomeStall))
+		if err != nil {
+			return err
+		}
+		if recent {
+			continue
+		}
+		if err := store.Record(ctx, &captain.Event{
+			Type: captain.EventIncomeStalled, Ship: dedupKey, PlayerID: cfg.PlayerID,
+			Payload: fmt.Sprintf(`{"engine":%q,"stall_hours":%.1f,"running_coordinators":%d}`,
+				engine.name, cfg.IncomeStall.Hours(), runningCount),
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func detectStreamDown(ctx context.Context, db *gorm.DB, store captain.EventStore, cfg DetectorConfig, now time.Time) error {
