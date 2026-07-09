@@ -81,9 +81,17 @@ already analyzed with pandas/numpy). Output consumed by the planner.
 provenance), checked into the repo, loaded by the planner at startup. Planner logs the
 model version into every plan.
 
-**Validation gate (hard):** the fitted model must predict the held-out D39 ladder and K79
-churn realized prices within ±20% before the artifact is accepted. This gate is a test in
-the pipeline, run by CI/captain-gate.
+**Validation gate (hard — revised 2026-07-09, Admiral decision):** two checks, both
+required before the artifact is accepted:
+1. *Form:* the D39 ladder is injected into the validation step as a held-out fixture with
+   its known at-the-time tier; the fit machinery must recover ~0.947/step within ±20% from
+   those rows (proves the pipeline on the known incident).
+2. *Coverage:* every fleet-relevant tier (n_obs ≥ 30) must fit within sane decay bounds
+   (sell decay in [0.85, 1.0], buy growth in [1.0, 1.18]).
+Rationale: tier labels in the live fit are tier-NOW (market_data snapshot), so a bygone
+incident cannot anchor a live-tier assertion — 204 severe historical sell-steps all carry
+today's RESTRICTED-era tags (sp-hqrb finding). sp-pf60 (record supply/activity on
+market_price_history at capture time) restores a true live-incident gate for future fits.
 
 ## Planner — `OptimizeTradeTour` RPC
 
