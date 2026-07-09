@@ -11,6 +11,7 @@ import (
 )
 
 func TestProvisionWorktreeWiresBeadsRedirect(t *testing.T) {
+	t.Parallel()
 	repo := initScratchRepo(t)
 
 	// The beads database lives in the main checkout's .beads/. config.yaml is
@@ -46,6 +47,7 @@ func TestProvisionWorktreeWiresBeadsRedirect(t *testing.T) {
 }
 
 func TestProvisionWorktreeSkipsBeadsWhenAbsent(t *testing.T) {
+	t.Parallel()
 	// A repo that does not use beads must provision without error and without
 	// fabricating a .beads/ dir in the worktree.
 	repo := initScratchRepo(t)
@@ -65,6 +67,7 @@ func TestProvisionWorktreeSkipsBeadsWhenAbsent(t *testing.T) {
 // alone instead of clobbering it with repoRoot's copy (bit q02m and sp-ezz9:
 // "GetInputsOnly undefined" / "unknown field MinSupply" after provision).
 func TestProvisionWorktreePreservesRegeneratedProto(t *testing.T) {
+	t.Parallel()
 	repo := initScratchRepo(t)
 
 	protoDir := filepath.Join(repo, "gobot", "pkg", "proto", "daemon")
@@ -96,6 +99,7 @@ func TestProvisionWorktreePreservesRegeneratedProto(t *testing.T) {
 // purpose: a genuinely-gitignored artifact the worktree checkout never
 // received must still be supplied from repoRoot.
 func TestProvisionWorktreeCopiesMissingProto(t *testing.T) {
+	t.Parallel()
 	repo := initScratchRepo(t)
 
 	protoDir := filepath.Join(repo, "gobot", "pkg", "proto", "daemon")
@@ -127,6 +131,7 @@ func TestProvisionWorktreeCopiesMissingProto(t *testing.T) {
 // here by an mtime bump, since content equality alone can't distinguish a
 // real copy from a no-op skip.
 func TestProvisionWorktreeRewritesIdenticalProto(t *testing.T) {
+	t.Parallel()
 	repo := initScratchRepo(t)
 
 	protoDir := filepath.Join(repo, "gobot", "pkg", "proto", "daemon")

@@ -34,6 +34,7 @@ func initScratchRepo(t *testing.T) string {
 }
 
 func TestWorktreeCreateModifyGateMerge(t *testing.T) {
+	t.Parallel()
 	repo := initScratchRepo(t)
 
 	wt, err := CreateWorktree(repo, "captain/fix-test")
@@ -61,6 +62,7 @@ func TestWorktreeCreateModifyGateMerge(t *testing.T) {
 }
 
 func TestRunGateFailsOnBrokenCode(t *testing.T) {
+	t.Parallel()
 	repo := initScratchRepo(t)
 	require.NoError(t, os.WriteFile(filepath.Join(repo, "broken.go"),
 		[]byte("package main\n\nfunc broken() { undefinedCall() }\n"), 0o644))
@@ -81,6 +83,7 @@ func runGit(t *testing.T, dir string, args ...string) {
 }
 
 func TestBranchContainsMain(t *testing.T) {
+	t.Parallel()
 	repo := initScratchRepo(t)
 	wt, err := CreateWorktree(repo, "captain/fix-fresh")
 	require.NoError(t, err)
@@ -124,6 +127,7 @@ func branchWithFix(t *testing.T, repo, branch string) Worktree {
 // unrelated file staged in the shared checkout — a pathspec-less commit would
 // otherwise sweep it into the merge commit (realized: Frankenstein commit 71221b2).
 func TestSquashMergeGuardAbortsOnForeignStaged(t *testing.T) {
+	t.Parallel()
 	repo := initScratchRepo(t)
 	wt := branchWithFix(t, repo, "captain/fix-guard")
 	defer func() { _ = wt.Remove(repo) }()
@@ -146,6 +150,7 @@ func TestSquashMergeGuardAbortsOnForeignStaged(t *testing.T) {
 // beads pre-commit hook stages it on every commit, so aborting on it would
 // self-brick every gated merge.
 func TestSquashMergeGuardProceedsOnBeadsIssuesJsonl(t *testing.T) {
+	t.Parallel()
 	repo := initScratchRepo(t)
 	require.NoError(t, os.MkdirAll(filepath.Join(repo, ".beads"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(repo, ".beads", "issues.jsonl"), []byte("v0\n"), 0o644))
@@ -167,6 +172,7 @@ func TestSquashMergeGuardProceedsOnBeadsIssuesJsonl(t *testing.T) {
 // (d) A staged issues.jsonl churn does NOT ride along into the merge commit, and
 // the staged churn is left undisturbed in the checkout.
 func TestSquashMergeDoesNotCommitStagedBeadsIssues(t *testing.T) {
+	t.Parallel()
 	repo := initScratchRepo(t)
 	require.NoError(t, os.MkdirAll(filepath.Join(repo, ".beads"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(repo, ".beads", "issues.jsonl"), []byte("V0"), 0o644))
@@ -192,6 +198,7 @@ func TestSquashMergeDoesNotCommitStagedBeadsIssues(t *testing.T) {
 // the shared checkout, the isolated squash commits ONLY the branch diff and leaves
 // the peer's staged work undisturbed. This is defense-in-depth behind the guard.
 func TestSquashMergeCleanLeavesForeignStagedUndisturbed(t *testing.T) {
+	t.Parallel()
 	repo := initScratchRepo(t)
 	wt := branchWithFix(t, repo, "captain/fix-iso")
 	defer func() { _ = wt.Remove(repo) }()
