@@ -102,13 +102,19 @@ func (s *DaemonServer) StartTradeRoute(
 		return nil, fmt.Errorf("failed to create trade-route command: %w", err)
 	}
 
-	// A trade-route runs ONE circuit to margin-death and completes (the runner then
-	// releases the hull): iterations=1, not the daemon coordinators' infinite loop.
+	// A trade-route is ONE runner iteration that owns the whole run (sp-1hj5):
+	// the coordinator loops circuits internally until its RUN-scoped visit
+	// budget (max_visits) is consumed or a margin/starvation/error exit fires,
+	// then returns once — iterations=1, not the daemon coordinators' infinite
+	// loop. The iteration wrapper must never re-enter the coordinator: a re-run
+	// cannot resume the dynamically-ranked lane, which is why a laden exit is
+	// threaded back as an honest FAILURE via the response's CompletionOutcome
+	// (sp-7yej invariant 2) instead of a retryable error.
 	containerEntity := container.NewContainer(
 		containerID,
 		container.ContainerTypeTrading,
 		playerID,
-		1,   // single circuit run
+		1,   // one iteration = the whole run; the coordinator owns max_visits
 		nil, // no parent — this is a top-level coordinator, recovered independently
 		config,
 		nil, // default RealClock

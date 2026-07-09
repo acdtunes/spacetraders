@@ -118,7 +118,7 @@ Examples:
 
 	cmd.Flags().StringVar(&shipSymbol, "ship", "", "Idle hull to fly the circuit (required)")
 	cmd.Flags().StringVar(&systemSymbol, "system", "", "System to scan for arbitrage lanes (required)")
-	cmd.Flags().IntVar(&maxVisits, "max-visits", 0, "Safety bound on circuit visits (0 = default 50)")
+	cmd.Flags().IntVar(&maxVisits, "max-visits", 0, "The RUN's total visit budget across every lane it commits to (0 = default 50); the run only stops early on a margin/starvation/error exit, and always at a leg boundary with the hold empty (sp-1hj5)")
 	cmd.Flags().StringVar(&destWaypoint, "dest", "", "Pin the circuit to this destination waypoint or system, instead of auto-selecting a lane (waives the cross-system gate penalty for the targeted lane only)")
 
 	return cmd

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	shipCargo "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/cargo"
@@ -18,10 +19,28 @@ import (
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
 )
 
-// defaultMaxVisits bounds the circuit loop so a lane whose bid never decays (or a
-// mispriced fake) can never spin forever. The bid-floor discipline is the real
-// stop; this is only a safety rail.
+// defaultMaxVisits is the RUN's total visit budget when the command does not set
+// one (sp-1hj5: one run OWNS its --max-visits). The budget spans the whole run —
+// every circuit the outer loop commits to draws from the same allowance, so
+// "--max-visits 12" means twelve buy+sell visits in total, not twelve per lane —
+// and the run may not end while budget remains unless a margin/starvation/error
+// exit fires. It also keeps a lane whose bid never decays (or a mispriced fake)
+// from spinning forever; the bid-floor discipline is the real per-lane stop.
 const defaultMaxVisits = 50
+
+// Finish-current-leg bounds (sp-1hj5, sp-7yej invariant 1): once a leg's buy has
+// filled the hold, the run must not end without a real attempt to complete the
+// leg's sell. liquidateHeld retries the deliver+sell half until the hold is
+// empty or liquidationMaxFailures CONSECUTIVE attempts fail (any sold tranche
+// resets the count — partial progress is progress), sleeping
+// liquidationRetryBackoff between failed attempts so a transient cause (the
+// incident's instant jump failure, a nav-cache race, an importer volume tick)
+// has time to clear. Bounded so a genuinely-unsellable load still exits — as an
+// HONEST failure (CargoStranded → success=false), never a laden success=true.
+const (
+	liquidationMaxFailures  = 3
+	liquidationRetryBackoff = 20 * time.Second
+)
 
 // tradeRouteDockRetryLimit bounds how many times h.dock resyncs the ship from the
 // API and re-issues the dock while waiting for the nav-cache race to clear (the
@@ -105,6 +124,16 @@ const (
 	// a structured reason instead of burning starvation circuits or buying a
 	// sliver mid-buy; see CargoBlocked/CargoBlockReason.
 	exitReasonCargoBlocked = "cargo_blocked"
+	// exitReasonMaxVisits: the RUN consumed its whole visit budget
+	// (cmd.MaxVisits, default defaultMaxVisits) — a clean stop at a leg
+	// boundary with the hold empty (sp-1hj5: one run owns its --max-visits).
+	exitReasonMaxVisits = "max_visits"
+	// exitReasonCargoStranded: the run ended still holding cargo bought this
+	// run after the bounded finish-current-leg liquidation failed to sell it
+	// (sp-1hj5). This exit is a container FAILURE — the response's
+	// CompletionOutcome vetoes the runner's success=true (sp-7yej invariant 2);
+	// see CargoStranded/CargoStrandedUnits/CargoStrandedReason.
+	exitReasonCargoStranded = "cargo_stranded"
 )
 
 // minFreeCargoForCircuit is the smallest free hold (in units) a hull must have
@@ -132,7 +161,12 @@ type RunTradeRouteCoordinatorCommand struct {
 	SystemSymbol string
 	PlayerID     int
 	ContainerID  string
-	MaxVisits    int // 0 → defaultMaxVisits
+	// MaxVisits is the RUN's total visit budget (0 → defaultMaxVisits): the
+	// whole run — across every circuit the outer loop commits to — flies at
+	// most this many buy+sell visits, and may not stop early while budget
+	// remains unless a margin/starvation/error exit fires (sp-1hj5: one run
+	// owns its --max-visits; it is not a per-lane bound).
+	MaxVisits int
 	// WorkingCapitalReserve is the hard spend floor (sp-bp6f): 0 → defaultWorkingCapitalReserve.
 	WorkingCapitalReserve int
 	// TargetDest is the operator-directed lane override (sp-xwa1, the CLI's
@@ -215,7 +249,35 @@ type RunTradeRouteCoordinatorResponse struct {
 	// Circuits counts how many distinct lanes the outer loop committed to and
 	// attempted this run, regardless of whether each one was productive.
 	Circuits int
+	// CargoStranded is set when the run ended still holding cargo it bought
+	// this run, after the bounded finish-current-leg liquidation could not
+	// sell it down (sp-1hj5). A stranded run is a container FAILURE: the
+	// runner reads it through CompletionOutcome (sp-7yej invariant 2) and
+	// refuses success=true — the exact laden success=true that released
+	// TORWIND-19 holding 18 lab_instruments. CargoStrandedUnits is how many
+	// units remain aboard; CargoStrandedReason is the failure signature
+	// (embedding the leg failure's verbatim cause) the runner reports.
+	CargoStranded       bool
+	CargoStrandedUnits  int
+	CargoStrandedReason string
 }
+
+// CompletionOutcome implements common.CompletionReporter (sp-7yej invariant 2,
+// honest completion): the container runner refuses success=true when the run
+// ended holding cargo bought this run. Deliberately threaded via the response
+// (not a non-nil Go error, arb-run's sp-5nqx shape) so the runner's restart
+// loop never re-runs the coordinator against a stranded hold — a re-run cannot
+// resume the dynamically-ranked lane and would trade AROUND the stranded cargo.
+func (r *RunTradeRouteCoordinatorResponse) CompletionOutcome() (bool, string) {
+	if r.CargoStranded {
+		return false, r.CargoStrandedReason
+	}
+	return true, ""
+}
+
+// Compile-time pin: the trade-route response participates in the runner's
+// honest-completion contract.
+var _ common.CompletionReporter = (*RunTradeRouteCoordinatorResponse)(nil)
 
 // RunTradeRouteCoordinatorHandler runs a pure-arbitrage circuit on a single hull:
 // it loads the named ship (already claimed for it by the daemon container runner via
@@ -336,7 +398,29 @@ func (h *RunTradeRouteCoordinatorHandler) execute(
 	noProgressStreak := 0
 	exitReason := ""
 
+	// The RUN owns its visit budget (sp-1hj5): resolved once here, drawn down by
+	// every circuit's visits. The old per-circuit reading of MaxVisits let a
+	// 12-visit grant fly 12 visits per LANE (unbounded across re-ranks) while any
+	// mid-leg abort ended the run after a fraction of the grant.
+	runMaxVisits := cmd.MaxVisits
+	if runMaxVisits <= 0 {
+		runMaxVisits = defaultMaxVisits
+	}
+
 	for circuitNum := 0; circuitNum < defaultMaxCircuits; circuitNum++ {
+		// Budget check at the leg boundary: a run whose visits consumed the
+		// grant stops CLEANLY and EMPTY here — never mid-leg (sp-7yej
+		// invariant 1: safe-exit points only).
+		if response.Visits >= runMaxVisits {
+			exitReason = exitReasonMaxVisits
+			logger.Log("INFO", fmt.Sprintf("Run visit budget consumed (%d/%d) - ending run at the leg boundary", response.Visits, runMaxVisits), map[string]interface{}{
+				"ship_symbol": cmd.ShipSymbol,
+				"visits":      response.Visits,
+				"max_visits":  runMaxVisits,
+			})
+			break
+		}
+
 		lanes, err := h.scanLanes(ctx, cmd.SystemSymbol, playerID, ship.CargoCapacity(), cmd.TargetDest)
 		if err != nil {
 			return fmt.Errorf("failed to scan arbitrage lanes: %w", err)
@@ -418,8 +502,18 @@ func (h *RunTradeRouteCoordinatorHandler) execute(
 		logger.Log("INFO", laneSelectionMessage(lane, lanes), selectionPayload)
 
 		visitsBefore := response.Visits
-		ship = h.runCircuit(ctx, cmd, lane, ship, response)
+		ship = h.runCircuit(ctx, cmd, lane, ship, response, runMaxVisits)
 
+		if response.CargoStranded {
+			// The circuit ended laden and the bounded finish-current-leg
+			// liquidation could not empty the hold (sp-1hj5). Checked before
+			// AbortReason: a stranded exit usually carries the failed leg's
+			// AbortReason too, and stranded is the truth that matters — this
+			// run is a FAILURE (CompletionOutcome vetoes the runner's
+			// success=true, sp-7yej invariant 2).
+			exitReason = exitReasonCargoStranded
+			break
+		}
 		if response.AbortReason != "" {
 			exitReason = exitReasonError
 			break
@@ -477,9 +571,18 @@ func (h *RunTradeRouteCoordinatorHandler) execute(
 	return nil
 }
 
-// runCircuit flies disciplined tranches of the lane until the destination bid
-// falls below basis+1000, tradable volume dries up, or the safety bound trips.
-// Each visit re-observes both markets so a decaying importer bid ends the loop.
+// runCircuit flies one lane commitment and ENFORCES the finish-current-leg rule
+// (sp-1hj5, sp-7yej invariant 1) at its single exit: however the visit loop
+// stopped — budget consumed, margin death, a failed leg, volume exhaustion —
+// cargo bought this run may still be aboard (a leg interrupted between its buy
+// and its sell, or a partial sell's carryover). Before the circuit may return,
+// liquidateHeld makes a bounded deliver+sell effort to empty the hold; if cargo
+// STILL remains, the run is marked CargoStranded so the container runner
+// terminates it as a FAILURE (invariant 2: honest completion) instead of the
+// laden success=true of the incident. Structurally, every exit path from the
+// visit loop funnels through this epilogue — a future exit condition cannot
+// bypass the laden check.
+//
 // It returns the ship pointer current as of wherever the circuit ended: travel()
 // may return a freshly-reloaded pointer after a cross-system jump, so the outer
 // loop (sp-wlev) must carry this forward into its next circuit rather than reuse
@@ -490,13 +593,165 @@ func (h *RunTradeRouteCoordinatorHandler) runCircuit(
 	lane trading.ArbitrageLane,
 	ship *navigation.Ship,
 	response *RunTradeRouteCoordinatorResponse,
+	runMaxVisits int,
 ) *navigation.Ship {
 	logger := common.LoggerFromContext(ctx)
-	playerID := cmd.PlayerID
-	maxVisits := cmd.MaxVisits
-	if maxVisits <= 0 {
-		maxVisits = defaultMaxVisits
+
+	ship, held := h.flyVisits(ctx, cmd, lane, ship, response, runMaxVisits)
+	if held == 0 {
+		return ship
 	}
+
+	// FINISH-CURRENT-LEG (sp-1hj5): the loop stopped between a buy and the sell
+	// that closes it. Complete the leg before the run may end.
+	logger.Log("WARNING", fmt.Sprintf(
+		"Circuit stopped holding %d %s bought this run - finishing the current leg before the run may end (%s)",
+		held, lane.Good, exitCause(response)), map[string]interface{}{
+		"action": "finish_current_leg",
+		"good":   lane.Good,
+		"held":   held,
+		"dest":   lane.DestWaypoint,
+	})
+	ship, held = h.liquidateHeld(ctx, cmd, lane, ship, response, held)
+	if held == 0 {
+		logger.Log("INFO", "Current leg finished: held cargo fully sold at destination - run exits empty", map[string]interface{}{
+			"action": "finish_current_leg_done",
+			"good":   lane.Good,
+			"dest":   lane.DestWaypoint,
+		})
+		return ship
+	}
+
+	// HONEST COMPLETION (sp-7yej invariant 2): still laden after the bounded
+	// effort. Mark the run stranded — the runner reads this through
+	// CompletionOutcome and refuses success=true — and emit the one structured
+	// cargo_aboard_exit record every laden exit shares (sp-149h).
+	response.CargoStranded = true
+	response.CargoStrandedUnits = held
+	response.CargoStrandedReason = fmt.Sprintf(
+		"stranded cargo: %d unsold units of %s aboard %s (lane %s -> %s): %s",
+		held, lane.Good, cmd.ShipSymbol, lane.SourceWaypoint, lane.DestWaypoint, exitCause(response))
+	cargoAboardExitLog(logger, "ERROR", lane, held, response.CargoStrandedReason)
+	return ship
+}
+
+// exitCause names why the visit loop stopped, for the finish-current-leg and
+// stranded records: the failed leg's verbatim cause when one aborted, otherwise
+// the orderly-exit shape (so a margin-death exit with carryover aboard still
+// reports something meaningful).
+func exitCause(response *RunTradeRouteCoordinatorResponse) string {
+	if response.AbortReason != "" {
+		return response.AbortReason
+	}
+	return "orderly circuit exit with cargo aboard"
+}
+
+// liquidateHeld is the finish-current-leg engine (sp-1hj5, sp-7yej invariant 1):
+// deliver the held cargo to the lane's destination and sell it down to empty.
+// Each attempt re-runs the full sell half — travel (idempotent when already
+// there), dock, re-observe the importer, sell one tranche — so it recovers from
+// exactly the failures that interrupt a leg: a transient jump/navigate error
+// (the incident's 'Starting jump operation' → instant failure), the nav-cache
+// dock race, an importer volume tick at zero. Consecutive-failure bounded
+// (liquidationMaxFailures) with a clock backoff between failures; any sold
+// tranche resets the count, so a deep hold draining 10 units a tick is progress,
+// not failure. Sells here are liquidation of already-bought cargo — sunk cost
+// being recovered — so the bid-floor discipline (a BUY gate) deliberately does
+// not apply; revenue and units still land on the run's ledger.
+func (h *RunTradeRouteCoordinatorHandler) liquidateHeld(
+	ctx context.Context,
+	cmd *RunTradeRouteCoordinatorCommand,
+	lane trading.ArbitrageLane,
+	ship *navigation.Ship,
+	response *RunTradeRouteCoordinatorResponse,
+	held int,
+) (*navigation.Ship, int) {
+	logger := common.LoggerFromContext(ctx)
+	playerID := cmd.PlayerID
+
+	failures := 0
+	attemptFailed := func(stage string, cause error) {
+		failures++
+		outcome := "backing off and retrying"
+		if failures >= liquidationMaxFailures {
+			outcome = "giving up"
+		}
+		// Verbatim cause in the MESSAGE, not just the metadata the container-log
+		// renderer drops (sp-ynuf/sp-iqyq convention).
+		logger.Log("WARNING", fmt.Sprintf(
+			"Finish-current-leg %s failed (attempt %d/%d): %v - %s",
+			stage, failures, liquidationMaxFailures, cause, outcome),
+			map[string]interface{}{
+				"action": "finish_current_leg_retry",
+				"stage":  stage,
+				"held":   held,
+				"error":  cause.Error(),
+			})
+		if failures < liquidationMaxFailures {
+			h.clock.Sleep(liquidationRetryBackoff)
+		}
+	}
+
+	for held > 0 && failures < liquidationMaxFailures {
+		var err error
+		ship, err = h.travel(ctx, ship, lane.DestWaypoint, playerID)
+		if err != nil {
+			attemptFailed("travel to destination", err)
+			continue
+		}
+		if err := h.dock(ctx, ship, playerID); err != nil {
+			attemptFailed("dock at destination", err)
+			continue
+		}
+		dstGood, err := h.observeGood(ctx, lane.DestWaypoint, lane.Good, playerID)
+		if err != nil {
+			attemptFailed("re-observe destination", err)
+			continue
+		}
+		tranche := trading.VisitTranche(dstGood.TradeVolume(), held)
+		if tranche <= 0 {
+			attemptFailed("sell", fmt.Errorf("importer trade volume exhausted (%d) while holding %d %s", dstGood.TradeVolume(), held, lane.Good))
+			continue
+		}
+		sellResp, err := h.sell(ctx, ship.ShipSymbol(), lane.Good, tranche, playerID)
+		if err != nil {
+			attemptFailed("sell", err)
+			continue
+		}
+		if sellResp.UnitsSold <= 0 {
+			attemptFailed("sell", fmt.Errorf("sell of %d %s reported zero units sold", tranche, lane.Good))
+			continue
+		}
+		held -= sellResp.UnitsSold
+		response.TotalRevenue += sellResp.TotalRevenue
+		response.UnitsTraded += sellResp.UnitsSold
+		failures = 0 // progress resets the failure budget
+		logger.Log("INFO", fmt.Sprintf("Finish-current-leg sold %d %s at %s (%d still aboard)",
+			sellResp.UnitsSold, lane.Good, lane.DestWaypoint, held), map[string]interface{}{
+			"action": "finish_current_leg_sell",
+			"good":   lane.Good,
+			"sold":   sellResp.UnitsSold,
+			"held":   held,
+		})
+	}
+	return ship, held
+}
+
+// flyVisits is the lane's visit loop: disciplined tranches until the destination
+// bid falls below basis+1000, tradable volume dries up, the RUN's remaining
+// visit budget is consumed, or a leg fails. It returns the current ship pointer
+// and how many units bought this run are still aboard — the caller (runCircuit)
+// owns what a non-empty hold means; no exit path here may claim the run.
+func (h *RunTradeRouteCoordinatorHandler) flyVisits(
+	ctx context.Context,
+	cmd *RunTradeRouteCoordinatorCommand,
+	lane trading.ArbitrageLane,
+	ship *navigation.Ship,
+	response *RunTradeRouteCoordinatorResponse,
+	runMaxVisits int,
+) (*navigation.Ship, int) {
+	logger := common.LoggerFromContext(ctx)
+	playerID := cmd.PlayerID
 	reserve := cmd.WorkingCapitalReserve
 	if reserve <= 0 {
 		reserve = defaultWorkingCapitalReserve
@@ -504,21 +759,26 @@ func (h *RunTradeRouteCoordinatorHandler) runCircuit(
 
 	held := 0
 	circuitNetMargin := 0 // this circuit's own sell revenue minus its own buy cost (sp-bp6f fix #2)
-	for i := 0; i < maxVisits; i++ {
+	// The loop draws down the RUN's budget (response.Visits is run-cumulative,
+	// sp-1hj5), not a per-lane allowance; i still indexes this circuit's own
+	// attempts for the first-visit stale-ask check and the realized-margin gate.
+	// Termination: every iteration either returns or completes a sell
+	// (response.Visits++), so the condition strictly progresses.
+	for i := 0; response.Visits < runMaxVisits; i++ {
 		// Re-observe both ends: basis (source ask we pay) and the live dest bid.
 		srcGood, err := h.observeGood(ctx, lane.SourceWaypoint, lane.Good, playerID)
 		if err != nil {
 			logger.Log("INFO", "Source market no longer readable - ending circuit", map[string]interface{}{
 				"waypoint": lane.SourceWaypoint, "good": lane.Good, "error": err.Error(),
 			})
-			return ship
+			return ship, held
 		}
 		dstGood, err := h.observeGood(ctx, lane.DestWaypoint, lane.Good, playerID)
 		if err != nil {
 			logger.Log("INFO", "Destination market no longer readable - ending circuit", map[string]interface{}{
 				"waypoint": lane.DestWaypoint, "good": lane.Good, "error": err.Error(),
 			})
-			return ship
+			return ship, held
 		}
 
 		basis := srcGood.SellPrice()       // ask: what we PAY buying from the source
@@ -530,7 +790,7 @@ func (h *RunTradeRouteCoordinatorHandler) runCircuit(
 			logger.Log("INFO", "Margin dead - stopping circuit at the bid-floor", map[string]interface{}{
 				"good": lane.Good, "dest_bid": destBid, "basis": basis, "floor": basis + trading.MinBidMargin,
 			})
-			return ship
+			return ship, held
 		}
 
 		// Size the tranche to the hull's AVAILABLE hold, not its total capacity: an idle
@@ -555,14 +815,14 @@ func (h *RunTradeRouteCoordinatorHandler) runCircuit(
 				"hull has %d free cargo unit(s) (holding %d bought this circuit), needs >=%d for %s",
 				cargoSpace, held, minFreeCargoForCircuit, lane.Good)
 			cargoBlockedLog(logger, lane.Good, minFreeCargoForCircuit, cargoSpace, "hold filled with cargo bought this circuit")
-			return ship
+			return ship, held
 		}
 		buyUnits := trading.VisitTranche(srcGood.TradeVolume(), cargoSpace)
 		if buyUnits <= 0 {
 			logger.Log("INFO", "No tranche to buy (source market volume exhausted) - stopping circuit", map[string]interface{}{
 				"good": lane.Good, "source_volume": srcGood.TradeVolume(), "cargo_space": cargoSpace,
 			})
-			return ship
+			return ship, held
 		}
 
 		// Working-capital spend floor (sp-bp6f): refuse the buy BEFORE traveling,
@@ -573,7 +833,7 @@ func (h *RunTradeRouteCoordinatorHandler) runCircuit(
 		// not lane.SourceAsk (the STALE ranked basis), so the projected cost
 		// reflects what the circuit is actually about to pay right now.
 		if h.spendFloorBreached(ctx, buyUnits*basis, reserve, response) {
-			return ship
+			return ship, held
 		}
 
 		// Leg 1: buy a tranche at the source (exporter). A cross-system lane
@@ -583,7 +843,7 @@ func (h *RunTradeRouteCoordinatorHandler) runCircuit(
 		if err != nil {
 			response.AbortReason = fmt.Sprintf("travel to source %s failed: %v", lane.SourceWaypoint, err)
 			logger.Log("WARNING", "Travel to source failed - ending circuit", map[string]interface{}{"error": err.Error()})
-			return ship
+			return ship, held
 		}
 		if err := h.dock(ctx, ship, playerID); err != nil {
 			response.AbortReason = fmt.Sprintf("dock at source %s failed: %v", lane.SourceWaypoint, err)
@@ -591,7 +851,7 @@ func (h *RunTradeRouteCoordinatorHandler) runCircuit(
 			// metadata map, so a cause hidden in {"error": ...} never reaches an operator
 			// (sp-ynuf defect 1, the sp-iqyq class). A blind dock failure now names itself.
 			logger.Log("WARNING", fmt.Sprintf("Dock at source %s failed: %v - ending circuit", lane.SourceWaypoint, err), map[string]interface{}{"error": err.Error()})
-			return ship
+			return ship, held
 		}
 
 		// Live-verify the ranked basis before the FIRST buy (hazard b): the lane was
@@ -601,14 +861,14 @@ func (h *RunTradeRouteCoordinatorHandler) runCircuit(
 		// was ranked on — buying on a stale basis has realised a large loss (a -196k
 		// precedent). Only the first visit re-verifies; later visits already re-observe.
 		if i == 0 && h.staleAskAborts(ctx, lane, playerID, response) {
-			return ship
+			return ship, held
 		}
 
 		buyResp, err := h.purchase(ctx, ship.ShipSymbol(), lane.Good, buyUnits, playerID)
 		if err != nil {
 			response.AbortReason = fmt.Sprintf("purchase of %d %s at source %s failed: %v", buyUnits, lane.Good, lane.SourceWaypoint, err)
 			logger.Log("WARNING", "Purchase failed - ending circuit", map[string]interface{}{"error": err.Error()})
-			return ship
+			return ship, held
 		}
 		held += buyResp.UnitsAdded
 		response.TotalCost += buyResp.TotalCost
@@ -619,15 +879,18 @@ func (h *RunTradeRouteCoordinatorHandler) runCircuit(
 		ship, err = h.travel(ctx, ship, lane.DestWaypoint, playerID)
 		if err != nil {
 			response.AbortReason = fmt.Sprintf("travel to destination %s failed (cargo aboard): %v", lane.DestWaypoint, err)
-			cargoAboardExitLog(logger, "WARNING", lane, held, fmt.Sprintf("travel to destination failed: %v", err))
-			return ship
+			// Verbatim cause in the MESSAGE (sp-ynuf); the finish-current-leg
+			// epilogue owns whether this becomes a recovered leg or the one
+			// structured cargo_aboard_exit strand record (sp-1hj5).
+			logger.Log("WARNING", fmt.Sprintf("Travel to destination %s failed with %d %s aboard: %v - finishing leg via liquidation", lane.DestWaypoint, held, lane.Good, err), map[string]interface{}{"error": err.Error()})
+			return ship, held
 		}
 		if err := h.dock(ctx, ship, playerID); err != nil {
 			response.AbortReason = fmt.Sprintf("dock at destination %s failed (cargo aboard): %v", lane.DestWaypoint, err)
 			// Verbatim cause in the MESSAGE (not the dropped metadata field) so a blind
 			// dock-at-destination failure names itself — same defect-1 fix as the source leg.
 			logger.Log("WARNING", fmt.Sprintf("Dock at destination %s failed (cargo aboard): %v - ending circuit", lane.DestWaypoint, err), map[string]interface{}{"error": err.Error()})
-			return ship
+			return ship, held
 		}
 		sellUnits := trading.VisitTranche(dstGood.TradeVolume(), held)
 		if sellUnits <= 0 {
@@ -635,14 +898,14 @@ func (h *RunTradeRouteCoordinatorHandler) runCircuit(
 			// clean margin-death, so surface it rather than return silently (the one
 			// early-return that used to vanish without a trace).
 			response.AbortReason = fmt.Sprintf("destination %s has no sellable volume for %s while holding %d units", lane.DestWaypoint, lane.Good, held)
-			cargoAboardExitLog(logger, "INFO", lane, held, fmt.Sprintf("no sellable tranche at destination (importer trade volume %d exhausted)", dstGood.TradeVolume()))
-			return ship
+			logger.Log("INFO", fmt.Sprintf("No sellable tranche at destination %s (importer trade volume %d exhausted) with %d %s aboard - finishing leg via liquidation", lane.DestWaypoint, dstGood.TradeVolume(), held, lane.Good), nil)
+			return ship, held
 		}
 		sellResp, err := h.sell(ctx, ship.ShipSymbol(), lane.Good, sellUnits, playerID)
 		if err != nil {
 			response.AbortReason = fmt.Sprintf("sell of %d %s at destination %s failed (cargo aboard): %v", sellUnits, lane.Good, lane.DestWaypoint, err)
-			cargoAboardExitLog(logger, "WARNING", lane, held, fmt.Sprintf("sell of %d %s failed: %v", sellUnits, lane.Good, err))
-			return ship
+			logger.Log("WARNING", fmt.Sprintf("Sell of %d %s at destination %s failed with %d aboard: %v - finishing leg via liquidation", sellUnits, lane.Good, lane.DestWaypoint, held, err), map[string]interface{}{"error": err.Error()})
+			return ship, held
 		}
 		held -= sellResp.UnitsSold
 		response.TotalRevenue += sellResp.TotalRevenue
@@ -663,14 +926,17 @@ func (h *RunTradeRouteCoordinatorHandler) runCircuit(
 			logger.Log("WARNING", "Circuit realized margin ran negative - aborting before it compounds", map[string]interface{}{
 				"good": lane.Good, "visits": response.Visits, "realized_margin": circuitNetMargin,
 			})
-			return ship
+			return ship, held
 		}
 	}
 
-	logger.Log("INFO", "Trade-route hit the max-visit safety bound", map[string]interface{}{
-		"good": lane.Good, "max_visits": maxVisits,
+	// The loop condition ran out: the RUN's visit budget is consumed. This is a
+	// leg boundary (Visits only advances on a completed sell); the outer loop's
+	// budget check turns it into the clean exitReasonMaxVisits stop (sp-1hj5).
+	logger.Log("INFO", "Run visit budget consumed - ending circuit at the leg boundary", map[string]interface{}{
+		"good": lane.Good, "visits": response.Visits, "max_visits": runMaxVisits,
 	})
-	return ship
+	return ship, held
 }
 
 // spendFloorBreached live-checks whether spending projectedCost right now would

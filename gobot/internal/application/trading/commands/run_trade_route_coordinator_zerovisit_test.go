@@ -204,7 +204,9 @@ func newZvHarness(t *testing.T, ship *navigation.Ship, residualUnits int) (*RunT
 	mediator := &zvMediator{fixture: fixture}
 	marketRepo := &zvMarketRepo{fixture: fixture}
 	shipRepo := &trFakeShipRepo{ship: ship}
-	handler := NewRunTradeRouteCoordinatorHandler(mediator, shipRepo, marketRepo, nil, nil, nil)
+	// MockClock so the finish-current-leg liquidation backoff (sp-1hj5) and the
+	// jump-cooldown wait are instant instead of real sleeps.
+	handler := NewRunTradeRouteCoordinatorHandler(mediator, shipRepo, marketRepo, nil, &shared.MockClock{CurrentTime: time.Now()}, nil)
 	return handler, mediator
 }
 

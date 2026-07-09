@@ -64,6 +64,17 @@ type ContainerRunner struct {
 	// Guarded by mu like the other execution-control fields.
 	contractRunParked bool
 
+	// taskIncomplete/taskIncompleteReason record the honest-completion veto
+	// (sp-7yej invariant 2): the most recent iteration's response implemented
+	// common.CompletionReporter and reported ok=false — the run ended
+	// deliberately (nil Go error, so the restart loop stays out of it) but did
+	// NOT honestly complete (e.g. cargo bought this run is still aboard,
+	// sp-1hj5). finishCleanExit refuses success=true for such a run. The last
+	// iteration governs: an implementing response that reports ok=true clears
+	// any earlier veto. Guarded by mu like contractRunParked.
+	taskIncomplete       bool
+	taskIncompleteReason string
+
 	// Heartbeat control
 	heartbeatStop chan struct{} // Signal to stop heartbeat goroutine
 	heartbeatDone chan struct{} // Signal that heartbeat goroutine has stopped
@@ -415,8 +426,41 @@ func (r *ContainerRunner) execute() {
 		}
 	}
 
-	// Stop heartbeat before marking as completed
+	r.finishCleanExit()
+}
+
+// finishCleanExit terminalizes a container whose iteration loop ended without
+// an unrecoverable error. Honest completion (sp-7yej invariant 2) is enforced
+// HERE, at the single clean-exit choke point: if the last iteration's response
+// vetoed success (common.CompletionReporter reporting ok=false — e.g. a
+// trade-route run ending with cargo bought this run still aboard, sp-1hj5),
+// the container is terminalized FAILED with the veto reason as its failure
+// signature and completion is signaled success=false. The veto path is
+// deliberately nil-error (never routed through the restart loop): a
+// dynamically-selected task cannot be resumed by a re-run, so retrying would
+// work AROUND the incomplete task rather than finish it.
+func (r *ContainerRunner) finishCleanExit() {
+	// Stop heartbeat before marking as terminal
 	r.stopHeartbeat()
+
+	r.mu.RLock()
+	incomplete, incompleteReason := r.taskIncomplete, r.taskIncompleteReason
+	r.mu.RUnlock()
+
+	if incomplete {
+		// handleError owns the shared failure bookkeeping: ERROR log, Fail()
+		// transition, failure metrics, FAILED row (exit code 1). Not a crash —
+		// recordCrash is deliberately NOT called (the run ended at a safe exit
+		// point; it just may not claim success).
+		r.handleError(fmt.Errorf("completion refused (honest-completion contract): %s", incompleteReason))
+
+		// Release before signaling, mirroring the completed path's ordering
+		// (the coordinator must never discover a still-claimed hull after the
+		// completion event lands).
+		r.releaseShipAssignments("failed")
+		r.signalCompletionWithStatus(false, incompleteReason)
+		return
+	}
 
 	// Mark as completed
 	r.mu.Lock()
@@ -574,6 +618,20 @@ func (r *ContainerRunner) executeIteration() error {
 	if resp, ok := result.(*contractCmd.RunWorkflowResponse); ok && !resp.Fulfilled {
 		r.mu.Lock()
 		r.contractRunParked = true
+		r.mu.Unlock()
+	}
+
+	// Honest completion (sp-7yej invariant 2): a response that implements
+	// common.CompletionReporter can veto the clean-exit success=true — a
+	// deliberate nil-error exit (so CanRestart never crashloops it) that
+	// nevertheless left its task incomplete, e.g. cargo bought this run still
+	// aboard (trade-route, sp-1hj5). Recorded per iteration, last one governs;
+	// finishCleanExit turns a standing veto into a FAILED terminalization.
+	if rep, ok := result.(common.CompletionReporter); ok {
+		outcomeOK, reason := rep.CompletionOutcome()
+		r.mu.Lock()
+		r.taskIncomplete = !outcomeOK
+		r.taskIncompleteReason = reason
 		r.mu.Unlock()
 	}
 
