@@ -97,11 +97,17 @@ tradeVolume, supply, activity, ObservedAt), ship (position, hold capacity, curre
 fuel), constraints (maxHops ≤ 6, maxSpend, minMarginPerUnit, workingCapitalReserve,
 allowedSystems), model artifact version expected (mismatch → error, not silent fallback).
 
-**Multi-system tours are first-class.** Default `allowedSystems` = every system with
-fresh market data in the snapshot (the captain restricts with a flag if wanted). Cross-gate
-hops compete on the $/hr objective net of jump + cooldown time — no penalty term, no
-special-casing. Practical consequence: a system without fresh scans (all rows past the
-75-min age-cap) is invisible to the planner — probe scan coverage is the effective
+**Multi-system tours are first-class but scoped to 2 gate-adjacent systems (Admiral
+simplification, 2026-07-09).** A tour spans at most `maxTourSystems = 2` (named constant,
+config-overridable later): multi-hop within the start system, at most one outbound gate
+crossing into a direct neighbor, multi-hop there, at most one return crossing. This
+collapses the beam's graph to the proven lane pattern (NK36→GQ92, +385k hand-flown)
+generalized to multi-hop on each side. Cross-gate hops compete on the $/hr objective net
+of jump + cooldown time — no penalty term. Default `allowedSystems` = the start system +
+its gate neighbors having fresh market data; the captain restricts further by flag.
+Market census (2026-07-09): KA42 27 markets, GQ92 23, JP61 15, NK36 (home) 10, ZC66 6 —
+NK36↔GQ92 alone is a 33-market tour graph. A system without fresh scans (all rows past
+the 75-min age-cap) is invisible to the planner — probe scan coverage is the effective
 boundary of the tour graph (see prereqs: probe flock, st-wisp-onno).
 
 **Solve:**
