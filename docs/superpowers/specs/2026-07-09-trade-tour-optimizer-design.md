@@ -97,6 +97,13 @@ tradeVolume, supply, activity, ObservedAt), ship (position, hold capacity, curre
 fuel), constraints (maxHops ≤ 6, maxSpend, minMarginPerUnit, workingCapitalReserve,
 allowedSystems), model artifact version expected (mismatch → error, not silent fallback).
 
+**Multi-system tours are first-class.** Default `allowedSystems` = every system with
+fresh market data in the snapshot (the captain restricts with a flag if wanted). Cross-gate
+hops compete on the $/hr objective net of jump + cooldown time — no penalty term, no
+special-casing. Practical consequence: a system without fresh scans (all rows past the
+75-min age-cap) is invisible to the planner — probe scan coverage is the effective
+boundary of the tour graph (see prereqs: probe flock, st-wisp-onno).
+
 **Solve:**
 1. Filter snapshot rows older than the age-cap (75 min — same constant as lane ranking;
    staleness discipline is shared, not reinvented).
