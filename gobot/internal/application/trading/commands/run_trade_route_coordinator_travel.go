@@ -9,6 +9,7 @@ import (
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	navCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
+	shipQueries "github.com/andrescamacho/spacetraders-go/internal/application/ship/queries"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
@@ -101,6 +102,33 @@ func (h *RunTradeRouteCoordinatorHandler) travel(
 			return ship, err
 		}
 		return ship, nil
+	}
+
+	// sp-5nqx departure hop — the SOURCE-side mirror of the sp-vzxu gate->waypoint
+	// arrival hop below. The jump verb requires a DRIVELESS hull (which the arb/
+	// trade haulers are) to already be sitting ON a jump gate: jump_ship.go rejects
+	// "no jump drive module and not at a jump gate" for a driveless hull UP FRONT,
+	// before its own find-nearest-gate hop can run (that hop only rescues drive-
+	// equipped hulls). So a cross-system leg that starts at a market waypoint (e.g.
+	// K79) must fly the waypoint->gate hop HERE first, or the jump fails and the
+	// bought tranche strands at the source (the live sp-5nqx incident). GUARDED: a
+	// hull already sitting on a jump gate skips the hop entirely, so a gate-origin
+	// lane still costs exactly one jump and zero extra navigates.
+	if !ship.CurrentLocation().IsJumpGate() {
+		gateResp, gerr := h.mediator.Send(ctx, &shipQueries.FindNearestJumpGateQuery{
+			ShipSymbol: ship.ShipSymbol(),
+			PlayerID:   &playerID,
+		})
+		if gerr != nil {
+			return ship, fmt.Errorf("find source jump gate for %s in %s failed: %w", ship.ShipSymbol(), currentSystem, gerr)
+		}
+		gate, ok := gateResp.(*shipQueries.FindNearestJumpGateResponse)
+		if !ok || gate.JumpGate == nil {
+			return ship, fmt.Errorf("no source jump gate resolved for %s in %s (response %T)", ship.ShipSymbol(), currentSystem, gateResp)
+		}
+		if err := h.navigate(ctx, ship, gate.JumpGate.Symbol, playerID); err != nil {
+			return ship, fmt.Errorf("navigate %s from %s to source jump gate %s failed: %w", ship.ShipSymbol(), ship.CurrentLocation().Symbol, gate.JumpGate.Symbol, err)
+		}
 	}
 
 	resp, err := h.mediator.Send(ctx, &navCmd.JumpShipCommand{

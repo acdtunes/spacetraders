@@ -179,6 +179,113 @@ func (h *RunArbCoordinatorHandler) execute(
 		return err
 	}
 
+	// sp-5nqx retry safety — resume from the failed step, NEVER re-buy. The daemon
+	// container runner retries a failed run by RE-RUNNING THE WHOLE iteration
+	// (buy→travel→sell), so before this guard a post-buy failure (the missing
+	// departure hop failing the jump) sent every retry back through the buy and blew
+	// past --max-spend: the live incident bought 3× (−39,468/−39,624/−39,780 =
+	// 118,872) against a 40k cap. The tranche a prior attempt already bought is
+	// physically in the hull's hold, so if the hull is already holding this good we
+	// treat the buy as DONE and resume at travel→sell — never re-buying, and never
+	// re-running the pre-buy guards (re-gating could abort on a since-collapsed margin
+	// and STRAND the very cargo we must deliver). For a one-shot run this IS the
+	// cumulative-actuals cap: once any tranche is aboard, additional spend and units
+	// are capped at zero. A fresh run (holding none of the good) runs the four guards
+	// and buys exactly as before.
+	tranche := unitsOfGoodAboard(ship, cmd.Good)
+	if tranche > 0 {
+		response.UnitsTraded = tranche
+		logger.Log("INFO", fmt.Sprintf(
+			"Resuming arb: %d units of %s already aboard from a prior attempt — skipping the buy, delivering to %s (retry-safe, no re-buy)",
+			tranche, cmd.Good, cmd.SellAt,
+		), map[string]interface{}{
+			"action": "arb_resume_no_rebuy", "ship_symbol": cmd.ShipSymbol,
+			"good": cmd.Good, "held": tranche, "dest": cmd.SellAt,
+		})
+	} else {
+		buyUnits, berr := h.guardAndBuy(ctx, cmd, response, reserve, ship)
+		if berr != nil {
+			return berr
+		}
+		if response.Aborted {
+			return nil
+		}
+		tranche = buyUnits
+	}
+
+	// --- past the buy (fresh) or resuming a prior one: reload → travel → dock → sell ---
+
+	// Reload the hull so travel routes from the freshly-persisted post-dock/buy state,
+	// then travel to the destination (cross-gate: source waypoint→gate hop, jump +
+	// cooldown, then the gate→waypoint hop). travel returns the reloaded hull after a jump.
+	ship, err = h.legs.loadShip(ctx, cmd.ShipSymbol, cmd.PlayerID)
+	if err != nil {
+		response.AbortReason = fmt.Sprintf("could not reload ship %s before travel: %v", cmd.ShipSymbol, err)
+		return err
+	}
+	ship, err = h.legs.travel(ctx, ship, cmd.SellAt, cmd.PlayerID)
+	if err != nil {
+		response.AbortReason = fmt.Sprintf("travel of %s to %s failed: %v", cmd.ShipSymbol, cmd.SellAt, err)
+		return err
+	}
+
+	// Dock at the destination and sell the whole tranche.
+	if err := h.legs.dock(ctx, ship, cmd.PlayerID); err != nil {
+		response.AbortReason = fmt.Sprintf("dock at destination %s failed: %v", cmd.SellAt, err)
+		return err
+	}
+	sellResp, err := h.legs.sell(ctx, cmd.ShipSymbol, cmd.Good, tranche, cmd.PlayerID)
+	if err != nil {
+		response.AbortReason = fmt.Sprintf("sell of %d %s at %s failed: %v", tranche, cmd.Good, cmd.SellAt, err)
+		return err
+	}
+	response.TotalRevenue = sellResp.TotalRevenue
+	response.UnitsTraded = sellResp.UnitsSold
+	response.NetProfit = sellResp.TotalRevenue - response.TotalCost
+
+	// sp-5nqx fix (c) — stranded cargo is a FAILURE, never a false success. A run that
+	// bought a tranche but could not offload all of it (the destination could not
+	// absorb the whole load) ends holding unsold units of the good it bought; that must
+	// reflect as a container failure (a non-nil error here → the runner's
+	// signalCompletionWithStatus(false)), NOT the success=true the incident logged with
+	// 36 units stranded. The message carries good/units/location so the strand is
+	// greppable and hand-recoverable.
+	if stranded := tranche - sellResp.UnitsSold; stranded > 0 {
+		response.AbortReason = fmt.Sprintf(
+			"stranded cargo: %d unsold units of %s at %s (sold %d of %d) - reporting failure",
+			stranded, cmd.Good, cmd.SellAt, sellResp.UnitsSold, tranche,
+		)
+		logger.Log("ERROR", response.AbortReason, map[string]interface{}{
+			"action": "arb_stranded_cargo", "ship_symbol": cmd.ShipSymbol,
+			"good": cmd.Good, "stranded": stranded, "sold": sellResp.UnitsSold,
+			"tranche": tranche, "location": cmd.SellAt,
+		})
+		return fmt.Errorf("%s", response.AbortReason)
+	}
+
+	logger.Log("INFO", "One-shot arb complete", map[string]interface{}{
+		"ship_symbol": cmd.ShipSymbol, "good": cmd.Good, "source": cmd.BuyAt, "dest": cmd.SellAt,
+		"units": response.UnitsTraded, "cost": response.TotalCost, "revenue": response.TotalRevenue, "net": response.NetProfit,
+	})
+	// One shot: no loop. The container runner releases the hull on this return.
+	return nil
+}
+
+// guardAndBuy runs the four pre-buy guards (location, min-margin, caps, spend-floor)
+// and, if all clear, executes the one-shot buy, returning the units bought. A guarded
+// refusal sets response.Aborted (+ the matching *Abort flag) and returns (0, nil) — a
+// clean "did not trade" the caller surfaces as an abort. An operational failure returns
+// a non-nil error. It runs ONLY on a FRESH attempt: a retry that already holds the good
+// resumes past it (sp-5nqx) so a completed buy is never re-run.
+func (h *RunArbCoordinatorHandler) guardAndBuy(
+	ctx context.Context,
+	cmd *RunArbCoordinatorCommand,
+	response *RunArbCoordinatorResponse,
+	reserve int,
+	ship *navigation.Ship,
+) (int, error) {
+	logger := common.LoggerFromContext(ctx)
+
 	// Guard 1 — location: never buy unless the hull is actually at BuyAt. A hull that
 	// drifted (or was mis-specified) must not silently buy at the wrong market.
 	actual := ship.CurrentLocation().Symbol
@@ -191,14 +298,14 @@ func (h *RunArbCoordinatorHandler) execute(
 		logger.Log("WARNING", response.AbortReason, map[string]interface{}{
 			"ship_symbol": cmd.ShipSymbol, "actual": actual, "expected": cmd.BuyAt,
 		})
-		return nil
+		return 0, nil
 	}
 
 	// Dock at the source so the buy can execute and the live source market read
 	// returns docked-market prices (dock survives the post-arrival nav-cache race).
 	if err := h.legs.dock(ctx, ship, cmd.PlayerID); err != nil {
 		response.AbortReason = fmt.Sprintf("dock at source %s failed: %v", cmd.BuyAt, err)
-		return err
+		return 0, err
 	}
 
 	// Guard 2 — min-margin: re-read prices at buy time and refuse a buy whose spread
@@ -216,7 +323,7 @@ func (h *RunArbCoordinatorHandler) execute(
 			logger.Log("WARNING", response.AbortReason, map[string]interface{}{
 				"waypoint": cmd.BuyAt, "good": cmd.Good, "error": rerr.Error(),
 			})
-			return nil
+			return 0, nil
 		}
 	}
 
@@ -226,7 +333,7 @@ func (h *RunArbCoordinatorHandler) execute(
 		response.Aborted = true
 		response.MarginAbort = true
 		response.AbortReason = fmt.Sprintf("could not read source ask for %s at %s - aborting before buy (fail-closed): %v", cmd.Good, cmd.BuyAt, err)
-		return nil
+		return 0, nil
 	}
 	dstGood, err := h.legs.observeGood(ctx, cmd.SellAt, cmd.Good, cmd.PlayerID)
 	if err != nil {
@@ -234,7 +341,7 @@ func (h *RunArbCoordinatorHandler) execute(
 		response.Aborted = true
 		response.MarginAbort = true
 		response.AbortReason = fmt.Sprintf("could not read destination bid for %s at %s - aborting before buy (fail-closed): %v", cmd.Good, cmd.SellAt, err)
-		return nil
+		return 0, nil
 	}
 
 	sourceAsk := srcGood.SellPrice()   // what the hull PAYS to buy at the source
@@ -255,7 +362,7 @@ func (h *RunArbCoordinatorHandler) execute(
 			"good": cmd.Good, "source": cmd.BuyAt, "dest": cmd.SellAt,
 			"source_ask": sourceAsk, "dest_bid": destBid, "margin": marginPerUnit, "min_margin": cmd.MinMargin,
 		})
-		return nil
+		return 0, nil
 	}
 
 	// Guard 3 — caps: size the tranche to the tightest of hold space, MaxUnits, and
@@ -276,7 +383,7 @@ func (h *RunArbCoordinatorHandler) execute(
 		logger.Log("WARNING", response.AbortReason, map[string]interface{}{
 			"hold_space": ship.AvailableCargoSpace(), "max_units": cmd.MaxUnits, "max_spend": cmd.MaxSpend, "source_ask": sourceAsk,
 		})
-		return nil
+		return 0, nil
 	}
 
 	// Guard 4 — spend-floor (mirrors sp-bp6f): never execute a buy that would drop
@@ -288,53 +395,29 @@ func (h *RunArbCoordinatorHandler) execute(
 		if response.AbortReason == "" {
 			response.AbortReason = fmt.Sprintf("buy of %d @ %d (=%d) would breach the working-capital floor %d - aborting before spending", units, sourceAsk, projectedCost, reserve)
 		}
-		return nil
+		return 0, nil
 	}
 
-	// --- past every guard: execute the one-shot buy → travel → sell ---
-
+	// --- past every guard: execute the one-shot buy ---
 	buyResp, err := h.legs.purchase(ctx, cmd.ShipSymbol, cmd.Good, units, cmd.PlayerID)
 	if err != nil {
 		response.AbortReason = fmt.Sprintf("purchase of %d %s at %s failed: %v", units, cmd.Good, cmd.BuyAt, err)
-		return err
+		return 0, err
 	}
 	response.UnitsTraded = buyResp.UnitsAdded
 	response.TotalCost = buyResp.TotalCost
+	return buyResp.UnitsAdded, nil
+}
 
-	// Reload the hull so travel routes from the freshly-persisted post-dock/buy state,
-	// then travel to the destination (cross-gate: jump + cooldown, then the in-system
-	// hop to the waypoint). travel returns the reloaded hull after a jump.
-	ship, err = h.legs.loadShip(ctx, cmd.ShipSymbol, cmd.PlayerID)
-	if err != nil {
-		response.AbortReason = fmt.Sprintf("could not reload ship %s before travel: %v", cmd.ShipSymbol, err)
-		return err
+// unitsOfGoodAboard reports how many units of good the hull currently holds (0 if the
+// hold is empty or holds none of it) — the cumulative ACTUAL a retry reads to know it
+// has already bought this tranche and must not buy it again (sp-5nqx).
+func unitsOfGoodAboard(ship *navigation.Ship, good string) int {
+	cargo := ship.Cargo()
+	if cargo == nil {
+		return 0
 	}
-	ship, err = h.legs.travel(ctx, ship, cmd.SellAt, cmd.PlayerID)
-	if err != nil {
-		response.AbortReason = fmt.Sprintf("travel of %s to %s failed: %v", cmd.ShipSymbol, cmd.SellAt, err)
-		return err
-	}
-
-	// Dock at the destination and sell the whole tranche.
-	if err := h.legs.dock(ctx, ship, cmd.PlayerID); err != nil {
-		response.AbortReason = fmt.Sprintf("dock at destination %s failed: %v", cmd.SellAt, err)
-		return err
-	}
-	sellResp, err := h.legs.sell(ctx, cmd.ShipSymbol, cmd.Good, buyResp.UnitsAdded, cmd.PlayerID)
-	if err != nil {
-		response.AbortReason = fmt.Sprintf("sell of %d %s at %s failed: %v", buyResp.UnitsAdded, cmd.Good, cmd.SellAt, err)
-		return err
-	}
-	response.TotalRevenue = sellResp.TotalRevenue
-	response.UnitsTraded = sellResp.UnitsSold
-	response.NetProfit = sellResp.TotalRevenue - buyResp.TotalCost
-
-	logger.Log("INFO", "One-shot arb complete", map[string]interface{}{
-		"ship_symbol": cmd.ShipSymbol, "good": cmd.Good, "source": cmd.BuyAt, "dest": cmd.SellAt,
-		"units": response.UnitsTraded, "cost": response.TotalCost, "revenue": response.TotalRevenue, "net": response.NetProfit,
-	})
-	// One shot: no loop. The container runner releases the hull on this return.
-	return nil
+	return cargo.GetItemUnits(good)
 }
 
 // spendFloorBreached mirrors the trade-route working-capital guard (sp-bp6f) for the

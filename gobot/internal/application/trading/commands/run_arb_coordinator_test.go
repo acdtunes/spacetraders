@@ -2,11 +2,18 @@ package commands
 
 import (
 	"context"
+	"fmt"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/auth"
+	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	shipCargo "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/cargo"
+	navCmd "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
 // newArbHandler wires the one-shot arb coordinator onto the SAME lane economics the
@@ -296,5 +303,218 @@ func TestArbCoordinator_LocationGuardAbortsWhenNotAtSource(t *testing.T) {
 	}
 	if len(mediator.purchases) != 0 {
 		t.Fatalf("expected zero buys on a location abort, got %d", len(mediator.purchases))
+	}
+}
+
+// --- sp-5nqx: retry never re-buys, stranded cargo is a failure ---
+
+// arbFaultMediator drives the buy→travel→sell legs for the retry-safety cases. Unlike
+// trFakeMediator it MUTATES the repo hull's cargo on buy/sell — mirroring the real
+// PurchaseCargo/SellCargo handlers persisting the hold — so a reload on the NEXT Handle
+// sees exactly what a prior attempt physically left aboard: the cumulative ACTUAL the
+// sp-5nqx resume guard reads. navFailsRemaining forces the first N travel legs to fail
+// AFTER the buy has already persisted, reproducing the incident's post-buy jump failure
+// (here a same-system navigate stands in for the cross-gate jump; the resume guard keys
+// on cargo-aboard, not on which downstream leg failed).
+type arbFaultMediator struct {
+	ship              *navigation.Ship
+	purchases         []*shipCargo.PurchaseCargoCommand
+	sells             []*shipCargo.SellCargoCommand
+	navFailsRemaining int
+}
+
+func (m *arbFaultMediator) Send(ctx context.Context, request common.Request) (common.Response, error) {
+	switch cmd := request.(type) {
+	case *shipCargo.PurchaseCargoCommand:
+		m.purchases = append(m.purchases, cmd)
+		_ = m.ship.ReceiveCargo(&shared.CargoItem{Symbol: cmd.GoodSymbol, Units: cmd.Units})
+		return &shipCargo.PurchaseCargoResponse{TotalCost: cmd.Units * trSourceAsk, UnitsAdded: cmd.Units, TransactionCount: 1}, nil
+	case *navCmd.NavigateRouteCommand:
+		if m.navFailsRemaining > 0 {
+			m.navFailsRemaining--
+			return nil, fmt.Errorf("injected post-buy travel failure (stands in for the sp-5nqx jump rejection)")
+		}
+		return nil, nil
+	case *shipCargo.SellCargoCommand:
+		m.sells = append(m.sells, cmd)
+		_ = m.ship.RemoveCargo(cmd.GoodSymbol, cmd.Units)
+		return &shipCargo.SellCargoResponse{TotalRevenue: cmd.Units * trSellRevenue, UnitsSold: cmd.Units, TransactionCount: 1}, nil
+	default:
+		return nil, nil // dock, etc. succeed silently
+	}
+}
+
+func (m *arbFaultMediator) Register(reflect.Type, common.RequestHandler) error { return nil }
+func (m *arbFaultMediator) RegisterMiddleware(common.Middleware)               {}
+
+// arbPartialSellMediator lets the destination absorb at most sellCap units per sell, so a
+// run that bought a full tranche ends still holding the remainder — the sp-5nqx
+// stranded-cargo case. The buy is recorded and reported in full (the tranche the run
+// committed to), so the coordinator's stranded check sees bought > sold.
+type arbPartialSellMediator struct {
+	purchases []*shipCargo.PurchaseCargoCommand
+	sells     []*shipCargo.SellCargoCommand
+	sellCap   int
+}
+
+func (m *arbPartialSellMediator) Send(ctx context.Context, request common.Request) (common.Response, error) {
+	switch cmd := request.(type) {
+	case *shipCargo.PurchaseCargoCommand:
+		m.purchases = append(m.purchases, cmd)
+		return &shipCargo.PurchaseCargoResponse{TotalCost: cmd.Units * trSourceAsk, UnitsAdded: cmd.Units, TransactionCount: 1}, nil
+	case *shipCargo.SellCargoCommand:
+		m.sells = append(m.sells, cmd)
+		sold := cmd.Units
+		if sold > m.sellCap {
+			sold = m.sellCap
+		}
+		return &shipCargo.SellCargoResponse{TotalRevenue: sold * trSellRevenue, UnitsSold: sold, TransactionCount: 1}, nil
+	default:
+		return nil, nil
+	}
+}
+
+func (m *arbPartialSellMediator) Register(reflect.Type, common.RequestHandler) error { return nil }
+func (m *arbPartialSellMediator) RegisterMiddleware(common.Middleware)               {}
+
+// arbHandlerWith wires the arb coordinator onto a caller-supplied mediator (so a test can
+// inject faults) but the SAME market economics and single-hull repo the other cases use.
+func arbHandlerWith(mediator common.Mediator, ship *navigation.Ship) *RunArbCoordinatorHandler {
+	fixture := &trFixture{}
+	marketRepo := &trFakeMarketRepo{fixture: fixture}
+	shipRepo := &trFakeShipRepo{ship: ship}
+	return NewRunArbCoordinatorHandler(mediator, shipRepo, marketRepo, nil, nil, nil)
+}
+
+// THE incident, fixed: the container runner retries a failed run by re-running the whole
+// Handle. Before sp-5nqx that re-ran the buy every time (the live drill bought 3× =
+// 118,872 against a 40k cap). Now attempt 1 buys then fails at travel (post-buy), and the
+// retry finds the tranche already aboard, SKIPS the buy, and delivers it — so the buy
+// fires EXACTLY ONCE and total spend stays under the cap no matter how many retries run.
+func TestArbCoordinator_RetryAfterPostBuyFailure_NeverRebuys_SpendStaysUnderCap(t *testing.T) {
+	const maxSpend = 100000
+	ship := newTradeHauler(t, "ARB-RETRY") // at trSource, empty 40u hold
+	mediator := &arbFaultMediator{ship: ship, navFailsRemaining: 1}
+	h := arbHandlerWith(mediator, ship)
+
+	cmd := &RunArbCoordinatorCommand{
+		ShipSymbol: ship.ShipSymbol(),
+		Good:       trGood,
+		BuyAt:      trSource,
+		SellAt:     trDest,
+		MaxSpend:   maxSpend,
+		PlayerID:   1,
+	}
+
+	// Attempt 1: buys the tranche, then the travel leg fails (the missing-departure-hop
+	// jump rejection in the live incident) — an operational failure, not a guarded refusal.
+	if _, err := h.Handle(context.Background(), cmd); err == nil {
+		t.Fatal("attempt 1 must fail at the post-buy travel leg")
+	}
+	if len(mediator.purchases) != 1 {
+		t.Fatalf("attempt 1 must buy exactly once, got %d", len(mediator.purchases))
+	}
+
+	// Attempt 2 (the runner's retry): the tranche is physically aboard, so the buy is
+	// skipped and the run resumes at travel→sell and completes.
+	resp, err := h.Handle(context.Background(), cmd)
+	if err != nil {
+		t.Fatalf("the retry must resume and complete, got error: %v", err)
+	}
+	arb := arbResponse(t, resp)
+	if !arb.Completed || arb.Aborted {
+		t.Fatalf("the retry must complete the delivery, got %+v", arb)
+	}
+
+	// THE cap contract: across BOTH attempts the buy fired exactly once and total spend
+	// never exceeded --max-spend. Under the old blind re-buy this would be 2 purchases /
+	// 160,000 spend — over the cap, the exact defect sp-5nqx closes.
+	if len(mediator.purchases) != 1 {
+		t.Fatalf("the retry must NEVER re-buy: expected exactly 1 purchase across all attempts, got %d", len(mediator.purchases))
+	}
+	totalSpend := 0
+	for _, p := range mediator.purchases {
+		totalSpend += p.Units * trSourceAsk
+	}
+	if totalSpend > maxSpend {
+		t.Fatalf("total spend across all retries (%d) breached --max-spend %d", totalSpend, maxSpend)
+	}
+	if len(mediator.sells) != 1 || arb.UnitsTraded != 40 {
+		t.Fatalf("the resumed tranche must be delivered once in full: got %d sells, %d units", len(mediator.sells), arb.UnitsTraded)
+	}
+}
+
+// The resume guard in isolation: a run that STARTS holding the good (as a prior attempt's
+// persisted buy would leave the hull) must not buy again — it resumes straight to the
+// sell. Uses the default fakes, so the only thing under test is the cargo-aboard skip.
+func TestArbCoordinator_ResumeCargoAboard_SkipsBuyAndDelivers(t *testing.T) {
+	ship := newTradeHauler(t, "ARB-RESUME")
+	if err := ship.ReceiveCargo(&shared.CargoItem{Symbol: trGood, Units: 12}); err != nil {
+		t.Fatalf("preload cargo: %v", err)
+	}
+	h, mediator := newArbHandler(ship, nil)
+
+	resp, err := h.Handle(context.Background(), &RunArbCoordinatorCommand{
+		ShipSymbol: ship.ShipSymbol(),
+		Good:       trGood,
+		BuyAt:      trSource,
+		SellAt:     trDest,
+		PlayerID:   1,
+	})
+	if err != nil {
+		t.Fatalf("resume must not error, got: %v", err)
+	}
+	arb := arbResponse(t, resp)
+
+	if !arb.Completed {
+		t.Fatalf("a resumed run that delivers its held tranche must complete, got %+v", arb)
+	}
+	if len(mediator.purchases) != 0 {
+		t.Fatalf("a hull already holding the good must NEVER re-buy, got %d purchases", len(mediator.purchases))
+	}
+	if len(mediator.sells) != 1 || mediator.sells[0].Units != 12 {
+		t.Fatalf("expected exactly one sell of the 12u already aboard, got %+v", mediator.sells)
+	}
+	if arb.UnitsTraded != 12 {
+		t.Fatalf("expected the 12 held units delivered, got %d", arb.UnitsTraded)
+	}
+}
+
+// sp-5nqx fix (c): a run that buys a tranche it cannot fully offload ends holding unsold
+// units of the good — that is a FAILURE, not the false success=true the incident logged
+// with 36 units stranded. It must surface a non-nil error (→ the runner's
+// signalCompletionWithStatus(false)) whose message carries good, unsold count, and location.
+func TestArbCoordinator_StrandedCargo_ReportsFailure(t *testing.T) {
+	ship := newTradeHauler(t, "ARB-STRAND") // buys the full 40u hold
+	mediator := &arbPartialSellMediator{sellCap: 30}
+	h := arbHandlerWith(mediator, ship)
+
+	resp, err := h.Handle(context.Background(), &RunArbCoordinatorCommand{
+		ShipSymbol: ship.ShipSymbol(),
+		Good:       trGood,
+		BuyAt:      trSource,
+		SellAt:     trDest,
+		PlayerID:   1,
+	})
+	if err == nil {
+		t.Fatal("a run ending with unsold bought cargo must return an error, not a silent success")
+	}
+	arb := arbResponse(t, resp)
+
+	if arb.Completed {
+		t.Fatalf("a stranded-cargo run must NOT report Completed, got %+v", arb)
+	}
+	if arb.Error == "" {
+		t.Fatalf("the failure must be surfaced on the response, got %+v", arb)
+	}
+	// 40 bought, 30 sold → 10 stranded; the message must name the strand so it is greppable
+	// and hand-recoverable (good, unsold units, and where they are stuck).
+	for _, want := range []string{"stranded", trGood, trDest} {
+		if !strings.Contains(arb.AbortReason, want) {
+			t.Fatalf("stranded failure message %q must mention %q", arb.AbortReason, want)
+		}
+	}
+	if len(mediator.purchases) != 1 {
+		t.Fatalf("expected the single tranche buy, got %d purchases", len(mediator.purchases))
 	}
 }
