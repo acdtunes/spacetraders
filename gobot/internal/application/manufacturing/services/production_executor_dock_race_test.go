@@ -41,11 +41,14 @@ const (
 // interface makes any unused method panic, keeping the fake honest.
 type dockRaceShipRepo struct {
 	navigation.ShipRepository
-	mu           sync.Mutex
-	location     string
-	navStatus    navigation.NavStatus
-	dockAPICalls int
-	syncAPICalls int
+	mu             sync.Mutex
+	location       string
+	navStatus      navigation.NavStatus
+	dockAPICalls   int
+	syncAPICalls   int
+	cargoUnits     int
+	cargoCapacity  int
+	cargoInventory []*shared.CargoItem
 }
 
 func (r *dockRaceShipRepo) buildShip() *navigation.Ship {
@@ -57,7 +60,7 @@ func (r *dockRaceShipRepo) buildShip() *navigation.Ship {
 	if err != nil {
 		panic(err)
 	}
-	cargo, err := shared.NewCargo(40, 0, nil)
+	cargo, err := shared.NewCargo(r.cargoCapacity, r.cargoUnits, r.cargoInventory)
 	if err != nil {
 		panic(err)
 	}
@@ -135,6 +138,48 @@ func (r *dockRaceShipRepo) syncCalls() int {
 	return r.syncAPICalls
 }
 
+// fillCargo (sp-mu6u) preloads the hold with the given items so buildShip
+// reports a full/partially-full cargo hold, reproducing the crash precondition:
+// an input BUY attempted while the hull is already carrying cargo.
+func (r *dockRaceShipRepo) fillCargo(items []*shared.CargoItem) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.cargoInventory = items
+	units := 0
+	for _, item := range items {
+		units += item.Units
+	}
+	r.cargoUnits = units
+}
+
+// removeCargo (sp-mu6u) mirrors a successful sell: it mutates the persisted
+// inventory/units the same way the real API would, so a follow-up
+// FindBySymbol/buildShip reflects the freed space.
+func (r *dockRaceShipRepo) removeCargo(symbol string, units int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	remaining := make([]*shared.CargoItem, 0, len(r.cargoInventory))
+	for _, item := range r.cargoInventory {
+		if item.Symbol != symbol {
+			remaining = append(remaining, item)
+			continue
+		}
+		left := item.Units - units
+		if left > 0 {
+			updated, err := shared.NewCargoItem(item.Symbol, item.Name, item.Description, left)
+			if err != nil {
+				panic(err)
+			}
+			remaining = append(remaining, updated)
+		}
+	}
+	r.cargoInventory = remaining
+	r.cargoUnits -= units
+	if r.cargoUnits < 0 {
+		r.cargoUnits = 0
+	}
+}
+
 // dockRaceMediator routes DockShipCommand to the REAL DockShipHandler (so the
 // stale-in-memory-DOCKED no-op is exercised for real), models navigation arrival
 // as "in orbit at destination", and answers PurchaseCargoCommand either by
@@ -147,6 +192,8 @@ type dockRaceMediator struct {
 	navCalls       int
 	purchaseCalls  int
 	purchaseScript []error // per-attempt outcome; nil entry = success, missing = model real precondition
+	sellCalls      int
+	sellShouldFail bool // sp-mu6u: model a market that won't import the onboard good
 }
 
 func (m *dockRaceMediator) Send(ctx context.Context, request common.Request) (common.Response, error) {
@@ -192,6 +239,18 @@ func (m *dockRaceMediator) Send(ctx context.Context, request common.Request) (co
 		}
 		return &shipCargo.PurchaseCargoResponse{TotalCost: cmd.Units * 10, UnitsAdded: cmd.Units, TransactionCount: 1}, nil
 
+	case *shipCargo.SellCargoCommand:
+		m.mu.Lock()
+		m.sellCalls++
+		shouldFail := m.sellShouldFail
+		m.mu.Unlock()
+
+		if shouldFail {
+			return nil, fmt.Errorf("market does not import %s", cmd.GoodSymbol)
+		}
+		m.repo.removeCargo(cmd.GoodSymbol, cmd.Units)
+		return &shipCargo.SellCargoResponse{TotalRevenue: cmd.Units * 5, UnitsSold: cmd.Units, TransactionCount: 1}, nil
+
 	default:
 		return nil, nil
 	}
@@ -207,6 +266,12 @@ func (m *dockRaceMediator) purchaseAttempts() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.purchaseCalls
+}
+
+func (m *dockRaceMediator) sellAttempts() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.sellCalls
 }
 
 // dockRaceMarketRepo serves a single raw market selling dockRaceGood.
@@ -248,8 +313,9 @@ func newDockRaceExecutor(t *testing.T, purchaseScript []error) (*ProductionExecu
 	t.Helper()
 
 	repo := &dockRaceShipRepo{
-		location:  dockRaceOrigin,
-		navStatus: navigation.NavStatusDocked,
+		location:      dockRaceOrigin,
+		navStatus:     navigation.NavStatusDocked,
+		cargoCapacity: 40,
 	}
 	mediator := &dockRaceMediator{
 		repo:           repo,

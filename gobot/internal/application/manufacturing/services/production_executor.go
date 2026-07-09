@@ -175,7 +175,36 @@ func (e *ProductionExecutor) buyGood(
 	// Calculate purchase quantity (capped by cargo space and trade volume)
 	availableSpace := updatedShip.Cargo().Capacity - updatedShip.Cargo().Units
 	if availableSpace <= 0 {
-		return nil, fmt.Errorf("no cargo space available for purchase")
+		// sp-mu6u: a full hold used to crash the feeder outright here. We're
+		// already docked at this market, so try to sell whatever is onboard to
+		// free space before giving up — a factory that didn't unload its last
+		// output before buying the next input should recover, not die.
+		freedShip, sellErr := e.freeCargoSpace(ctx, updatedShip, playerIDValue)
+		if sellErr != nil {
+			logger.Log("WARN", fmt.Sprintf("Hold full and could not unload existing cargo — skipping this input purchase of %s", node.Good), map[string]interface{}{
+				"good":  node.Good,
+				"ship":  updatedShip.ShipSymbol(),
+				"error": sellErr.Error(),
+			})
+			return &ProductionResult{
+				QuantityAcquired: 0,
+				TotalCost:        0,
+				WaypointSymbol:   marketResult.WaypointSymbol,
+			}, nil
+		}
+		updatedShip = freedShip
+		availableSpace = updatedShip.Cargo().Capacity - updatedShip.Cargo().Units
+		if availableSpace <= 0 {
+			logger.Log("WARN", fmt.Sprintf("Hold still full after unloading existing cargo — skipping this input purchase of %s", node.Good), map[string]interface{}{
+				"good": node.Good,
+				"ship": updatedShip.ShipSymbol(),
+			})
+			return &ProductionResult{
+				QuantityAcquired: 0,
+				TotalCost:        0,
+				WaypointSymbol:   marketResult.WaypointSymbol,
+			}, nil
+		}
 	}
 
 	// Cap at trade volume to leave room for other inputs
@@ -842,4 +871,62 @@ func (e *ProductionExecutor) deliverInputs(
 	}
 
 	return totalRevenue, nil
+}
+
+// freeCargoSpace sells whatever is currently in the ship's hold at its current
+// docked market so a full hold does not block an input purchase (sp-mu6u).
+// Unlike deliverInputs (which hard-fails on the first item this market won't
+// buy), this is best-effort: an item this market doesn't import is skipped
+// rather than aborting the whole attempt, since the goal here is only to make
+// room, not to guarantee every item sells. Returns the reloaded ship
+// reflecting whatever did sell.
+func (e *ProductionExecutor) freeCargoSpace(
+	ctx context.Context,
+	ship *navigation.Ship,
+	playerID shared.PlayerID,
+) (*navigation.Ship, error) {
+	logger := common.LoggerFromContext(ctx)
+
+	if ship.Cargo().IsEmpty() {
+		return nil, fmt.Errorf("hold reports full but carries no inventory (capacity %d) — nothing to unload", ship.Cargo().Capacity)
+	}
+
+	sold := 0
+	for _, item := range ship.Cargo().Inventory {
+		sellCmd := &shipCargo.SellCargoCommand{
+			ShipSymbol: ship.ShipSymbol(),
+			GoodSymbol: item.Symbol,
+			Units:      item.Units,
+			PlayerID:   playerID,
+		}
+		resp, err := e.mediator.Send(ctx, sellCmd)
+		if err != nil {
+			logger.Log("WARN", fmt.Sprintf("Could not unload %s to free cargo space — market may not import it", item.Symbol), map[string]interface{}{
+				"good":  item.Symbol,
+				"ship":  ship.ShipSymbol(),
+				"error": err.Error(),
+			})
+			continue
+		}
+		response, ok := resp.(*shipCargo.SellCargoResponse)
+		if !ok {
+			continue
+		}
+		sold += response.UnitsSold
+		logger.Log("INFO", fmt.Sprintf("Unloaded %d units of %s to free cargo space", response.UnitsSold, item.Symbol), map[string]interface{}{
+			"good":     item.Symbol,
+			"quantity": response.UnitsSold,
+			"revenue":  response.TotalRevenue,
+		})
+	}
+
+	if sold == 0 {
+		return nil, fmt.Errorf("market would not buy any of the %d onboard item(s)", len(ship.Cargo().Inventory))
+	}
+
+	reloaded, err := e.shipRepo.FindBySymbol(ctx, ship.ShipSymbol(), playerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to reload ship after unloading cargo: %w", err)
+	}
+	return reloaded, nil
 }
