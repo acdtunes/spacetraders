@@ -28,6 +28,44 @@ const defaultMaxVisits = 50
 // verbatim cause instead (sp-ynuf, mirroring the goods-factory dock race sp-n7yp).
 const tradeRouteDockRetryLimit = 3
 
+// defaultMaxCircuits bounds the OUTER loop (sp-wlev scope amendment): how many
+// distinct lanes a single run will commit to before stopping regardless of
+// margin. The bid-floor discipline and starvation detection are the real stops;
+// this is only a safety rail against a persistently-wrong ranking cycling
+// forever.
+const defaultMaxCircuits = 20
+
+// noProgressStarvationLimit bounds how many consecutive circuits may commit to
+// a lane and fly zero visits before the run calls it starvation and stops. One
+// zero-visit circuit can be a transient live-recheck miss; several in a row
+// means the system has nothing left worth absorbing a hull into.
+const noProgressStarvationLimit = 3
+
+// exitReason* enumerates why the outer circuit loop stopped (sp-wlev: circuits
+// must loop until a margin-exit or starvation-exit, never one-and-done — a
+// hull that flies one lane and idles wastes duty cycle, the 20x gap this
+// feature targets).
+const (
+	// exitReasonMarginExhausted: a fresh re-scan found nothing that clears the
+	// discipline floor — every lane in the system (and its jump-gate neighbors)
+	// is currently sub-floor.
+	exitReasonMarginExhausted = "margin_exhausted"
+	// exitReasonStarvation: repeated re-scans kept committing to a lane that flew
+	// zero visits — the system has stopped absorbing new circuits.
+	exitReasonStarvation = "starvation"
+	// exitReasonMaxCircuits: the outer safety bound (defaultMaxCircuits) tripped
+	// while the run was still productive.
+	exitReasonMaxCircuits = "max_circuits"
+	// exitReasonError: a navigate/dock/buy/sell leg failed mid-circuit; see
+	// AbortReason for the verbatim cause.
+	exitReasonError = "error"
+	// exitReasonStaleAsk: the live source ask moved beyond tolerance of the
+	// ranked basis just before the first buy; see RankedSourceAsk/LiveSourceAsk.
+	exitReasonStaleAsk = "stale_ask"
+	// exitReasonNoLanes: the market cache had nothing to rank at all.
+	exitReasonNoLanes = "no_lanes"
+)
+
 // MarketRefresher live-refreshes one waypoint's market from the API into the cache.
 // The coordinator uses it once, before the first buy, to re-read the source ask live
 // and abort if it has run away from the stale basis the lane was ranked on (hazard b,
@@ -88,6 +126,13 @@ type RunTradeRouteCoordinatorResponse struct {
 	// never surfaced to the caller, so the printed result was a bare 'Visits: 0'. With
 	// this, the next occurrence is self-diagnosing. Empty on a clean margin-death stop.
 	AbortReason string
+	// ExitReason explains why the OUTER circuit loop stopped (sp-wlev scope
+	// amendment: circuits loop until a margin-exit or starvation-exit, never
+	// one-and-done). See the exitReason* constants for the full set.
+	ExitReason string
+	// Circuits counts how many distinct lanes the outer loop committed to and
+	// attempted this run, regardless of whether each one was productive.
+	Circuits int
 }
 
 // RunTradeRouteCoordinatorHandler runs a pure-arbitrage circuit on a single hull:
@@ -188,59 +233,108 @@ func (h *RunTradeRouteCoordinatorHandler) execute(
 		return err
 	}
 
-	// Step 2: rank lanes from cache and pick the deepest that clears the floor.
-	lanes, err := h.scanLanes(ctx, cmd.SystemSymbol, playerID)
-	if err != nil {
-		return fmt.Errorf("failed to scan arbitrage lanes: %w", err)
-	}
-	if len(lanes) == 0 {
-		logger.Log("INFO", "No profitable arbitrage lane in cache - releasing ship", map[string]interface{}{
-			"ship_symbol": cmd.ShipSymbol,
-			"system":      cmd.SystemSymbol,
+	// Step 2+3: loop the circuit — sp-wlev scope amendment. A hull that flies one
+	// lane to its bid-floor and then idles wastes duty cycle (the 20x gap this
+	// feature targets is DUTY CYCLE, not per-trade economics), so re-rank lanes
+	// from fresh cache after every circuit and keep committing to whichever lane
+	// still clears the discipline floor until margins collapse everywhere, the
+	// system stops absorbing new circuits (starvation), a leg errors, a stale ask
+	// aborts, or the safety bound trips.
+	noProgressStreak := 0
+	exitReason := ""
+
+	for circuitNum := 0; circuitNum < defaultMaxCircuits; circuitNum++ {
+		lanes, err := h.scanLanes(ctx, cmd.SystemSymbol, playerID)
+		if err != nil {
+			return fmt.Errorf("failed to scan arbitrage lanes: %w", err)
+		}
+		if len(lanes) == 0 {
+			exitReason = exitReasonNoLanes
+			logger.Log("INFO", "No profitable arbitrage lane in cache - releasing ship", map[string]interface{}{
+				"ship_symbol": cmd.ShipSymbol,
+				"system":      cmd.SystemSymbol,
+			})
+			break
+		}
+
+		// The scan ranks lanes by volume-capped spread and deliberately keeps sub-floor
+		// lanes visible (it is an observation tool). The executor, however, refuses any
+		// lane whose per-unit spread is below MinBidMargin (runCircuit's MarginAlive gate)
+		// — so the top capped-spread lane can be one that flies ZERO visits. Select the
+		// DEEPEST lane that actually clears the discipline floor, so a selected lane always
+		// flies >=1 visit instead of a silent zero-visit run (sp-sh6w).
+		lane, ok := trading.FirstDisciplinedLane(lanes)
+		if !ok {
+			exitReason = exitReasonMarginExhausted
+			// Only report "nothing to fly" if this run never flew anything at all — a
+			// later re-scan finding nothing (after earlier circuits DID trade) is a clean
+			// margin-exhausted stop, not the "no lane at all" case (sp-wlev).
+			if response.Good == "" {
+				response.NoDisciplinedLane = true
+				response.BestSubFloorSpread = bestSpreadPerUnit(lanes)
+			}
+			logger.Log("INFO", "No lane clears the discipline floor - releasing ship without trading", map[string]interface{}{
+				"ship_symbol":           cmd.ShipSymbol,
+				"system":                cmd.SystemSymbol,
+				"floor":                 trading.MinBidMargin,
+				"best_sub_floor_spread": bestSpreadPerUnit(lanes),
+				"ranked_lane_count":     len(lanes),
+				"circuits_flown":        response.Circuits,
+			})
+			break
+		}
+		response.Good = lane.Good
+		response.SourceWaypoint = lane.SourceWaypoint
+		response.DestWaypoint = lane.DestWaypoint
+		response.Circuits++
+
+		logger.Log("INFO", "Selected top disciplined arbitrage lane", map[string]interface{}{
+			"ship_symbol":   cmd.ShipSymbol,
+			"good":          lane.Good,
+			"source":        lane.SourceWaypoint,
+			"dest":          lane.DestWaypoint,
+			"spread_per_u":  lane.SpreadPerUnit,
+			"volume_cap":    lane.VolumeCap,
+			"capped_spread": lane.CappedSpread,
+			"circuit":       response.Circuits,
 		})
-		return nil
+
+		visitsBefore := response.Visits
+		ship = h.runCircuit(ctx, cmd, lane, ship, response)
+
+		if response.AbortReason != "" {
+			exitReason = exitReasonError
+			break
+		}
+		if response.StaleAskAbort {
+			exitReason = exitReasonStaleAsk
+			break
+		}
+		if response.Visits == visitsBefore {
+			// The ranked lane flew zero visits (e.g. the live re-check killed it
+			// immediately). Bound how many consecutive commitments can go nowhere
+			// before calling it starvation, so a persistently-wrong ranking can't
+			// spin forever re-selecting the same dead lane.
+			noProgressStreak++
+			if noProgressStreak >= noProgressStarvationLimit {
+				exitReason = exitReasonStarvation
+				break
+			}
+			continue
+		}
+		noProgressStreak = 0
 	}
-
-	// The scan ranks lanes by volume-capped spread and deliberately keeps sub-floor
-	// lanes visible (it is an observation tool). The executor, however, refuses any
-	// lane whose per-unit spread is below MinBidMargin (runCircuit's MarginAlive gate)
-	// — so the top capped-spread lane can be one that flies ZERO visits. Select the
-	// DEEPEST lane that actually clears the discipline floor, so a selected lane always
-	// flies >=1 visit instead of a silent zero-visit run (sp-sh6w).
-	lane, ok := trading.FirstDisciplinedLane(lanes)
-	if !ok {
-		response.NoDisciplinedLane = true
-		response.BestSubFloorSpread = bestSpreadPerUnit(lanes)
-		logger.Log("INFO", "No lane clears the discipline floor - releasing ship without trading", map[string]interface{}{
-			"ship_symbol":           cmd.ShipSymbol,
-			"system":                cmd.SystemSymbol,
-			"floor":                 trading.MinBidMargin,
-			"best_sub_floor_spread": response.BestSubFloorSpread,
-			"ranked_lane_count":     len(lanes),
-		})
-		return nil
+	if exitReason == "" {
+		exitReason = exitReasonMaxCircuits
 	}
-	response.Good = lane.Good
-	response.SourceWaypoint = lane.SourceWaypoint
-	response.DestWaypoint = lane.DestWaypoint
-
-	logger.Log("INFO", "Selected top disciplined arbitrage lane", map[string]interface{}{
-		"ship_symbol":   cmd.ShipSymbol,
-		"good":          lane.Good,
-		"source":        lane.SourceWaypoint,
-		"dest":          lane.DestWaypoint,
-		"spread_per_u":  lane.SpreadPerUnit,
-		"volume_cap":    lane.VolumeCap,
-		"capped_spread": lane.CappedSpread,
-	})
-
-	// Step 3: run the circuit until the margin dies.
-	h.runCircuit(ctx, cmd, lane, ship, response)
+	response.ExitReason = exitReason
 
 	response.NetProfit = response.TotalRevenue - response.TotalCost
-	logger.Log("INFO", "Trade-route circuit complete", map[string]interface{}{
+	logger.Log("INFO", "Trade-route run complete", map[string]interface{}{
 		"ship_symbol":   cmd.ShipSymbol,
-		"good":          lane.Good,
+		"good":          response.Good,
+		"circuits":      response.Circuits,
+		"exit_reason":   response.ExitReason,
 		"visits":        response.Visits,
 		"units_traded":  response.UnitsTraded,
 		"total_cost":    response.TotalCost,
@@ -253,13 +347,17 @@ func (h *RunTradeRouteCoordinatorHandler) execute(
 // runCircuit flies disciplined tranches of the lane until the destination bid
 // falls below basis+1000, tradable volume dries up, or the safety bound trips.
 // Each visit re-observes both markets so a decaying importer bid ends the loop.
+// It returns the ship pointer current as of wherever the circuit ended: travel()
+// may return a freshly-reloaded pointer after a cross-system jump, so the outer
+// loop (sp-wlev) must carry this forward into its next circuit rather than reuse
+// its own now-stale reference.
 func (h *RunTradeRouteCoordinatorHandler) runCircuit(
 	ctx context.Context,
 	cmd *RunTradeRouteCoordinatorCommand,
 	lane trading.ArbitrageLane,
 	ship *navigation.Ship,
 	response *RunTradeRouteCoordinatorResponse,
-) {
+) *navigation.Ship {
 	logger := common.LoggerFromContext(ctx)
 	playerID := cmd.PlayerID
 	maxVisits := cmd.MaxVisits
@@ -275,14 +373,14 @@ func (h *RunTradeRouteCoordinatorHandler) runCircuit(
 			logger.Log("INFO", "Source market no longer readable - ending circuit", map[string]interface{}{
 				"waypoint": lane.SourceWaypoint, "good": lane.Good, "error": err.Error(),
 			})
-			return
+			return ship
 		}
 		dstGood, err := h.observeGood(ctx, lane.DestWaypoint, lane.Good, playerID)
 		if err != nil {
 			logger.Log("INFO", "Destination market no longer readable - ending circuit", map[string]interface{}{
 				"waypoint": lane.DestWaypoint, "good": lane.Good, "error": err.Error(),
 			})
-			return
+			return ship
 		}
 
 		basis := srcGood.SellPrice()       // ask: what we PAY buying from the source
@@ -294,7 +392,7 @@ func (h *RunTradeRouteCoordinatorHandler) runCircuit(
 			logger.Log("INFO", "Margin dead - stopping circuit at the bid-floor", map[string]interface{}{
 				"good": lane.Good, "dest_bid": destBid, "basis": basis, "floor": basis + trading.MinBidMargin,
 			})
-			return
+			return ship
 		}
 
 		// Size the tranche to the hull's AVAILABLE hold, not its total capacity: an idle
@@ -311,7 +409,7 @@ func (h *RunTradeRouteCoordinatorHandler) runCircuit(
 			logger.Log("INFO", "No tranche to buy (volume or hold exhausted) - stopping circuit", map[string]interface{}{
 				"good": lane.Good, "source_volume": srcGood.TradeVolume(), "cargo_space": cargoSpace,
 			})
-			return
+			return ship
 		}
 
 		// Leg 1: buy a tranche at the source (exporter). A cross-system lane
@@ -321,7 +419,7 @@ func (h *RunTradeRouteCoordinatorHandler) runCircuit(
 		if err != nil {
 			response.AbortReason = fmt.Sprintf("travel to source %s failed: %v", lane.SourceWaypoint, err)
 			logger.Log("WARNING", "Travel to source failed - ending circuit", map[string]interface{}{"error": err.Error()})
-			return
+			return ship
 		}
 		if err := h.dock(ctx, ship, playerID); err != nil {
 			response.AbortReason = fmt.Sprintf("dock at source %s failed: %v", lane.SourceWaypoint, err)
@@ -329,7 +427,7 @@ func (h *RunTradeRouteCoordinatorHandler) runCircuit(
 			// metadata map, so a cause hidden in {"error": ...} never reaches an operator
 			// (sp-ynuf defect 1, the sp-iqyq class). A blind dock failure now names itself.
 			logger.Log("WARNING", fmt.Sprintf("Dock at source %s failed: %v - ending circuit", lane.SourceWaypoint, err), map[string]interface{}{"error": err.Error()})
-			return
+			return ship
 		}
 
 		// Live-verify the ranked basis before the FIRST buy (hazard b): the lane was
@@ -339,14 +437,14 @@ func (h *RunTradeRouteCoordinatorHandler) runCircuit(
 		// was ranked on — buying on a stale basis has realised a large loss (a -196k
 		// precedent). Only the first visit re-verifies; later visits already re-observe.
 		if i == 0 && h.staleAskAborts(ctx, lane, playerID, response) {
-			return
+			return ship
 		}
 
 		buyResp, err := h.purchase(ctx, ship.ShipSymbol(), lane.Good, buyUnits, playerID)
 		if err != nil {
 			response.AbortReason = fmt.Sprintf("purchase of %d %s at source %s failed: %v", buyUnits, lane.Good, lane.SourceWaypoint, err)
 			logger.Log("WARNING", "Purchase failed - ending circuit", map[string]interface{}{"error": err.Error()})
-			return
+			return ship
 		}
 		held += buyResp.UnitsAdded
 		response.TotalCost += buyResp.TotalCost
@@ -357,14 +455,14 @@ func (h *RunTradeRouteCoordinatorHandler) runCircuit(
 		if err != nil {
 			response.AbortReason = fmt.Sprintf("travel to destination %s failed (cargo aboard): %v", lane.DestWaypoint, err)
 			logger.Log("WARNING", "Travel to destination failed - ending circuit with cargo aboard", map[string]interface{}{"error": err.Error()})
-			return
+			return ship
 		}
 		if err := h.dock(ctx, ship, playerID); err != nil {
 			response.AbortReason = fmt.Sprintf("dock at destination %s failed (cargo aboard): %v", lane.DestWaypoint, err)
 			// Verbatim cause in the MESSAGE (not the dropped metadata field) so a blind
 			// dock-at-destination failure names itself — same defect-1 fix as the source leg.
 			logger.Log("WARNING", fmt.Sprintf("Dock at destination %s failed (cargo aboard): %v - ending circuit", lane.DestWaypoint, err), map[string]interface{}{"error": err.Error()})
-			return
+			return ship
 		}
 		sellUnits := trading.VisitTranche(dstGood.TradeVolume(), held)
 		if sellUnits <= 0 {
@@ -375,13 +473,13 @@ func (h *RunTradeRouteCoordinatorHandler) runCircuit(
 			logger.Log("INFO", "No sellable tranche at destination (importer volume exhausted) - ending circuit with cargo aboard", map[string]interface{}{
 				"good": lane.Good, "dest_volume": dstGood.TradeVolume(), "held": held,
 			})
-			return
+			return ship
 		}
 		sellResp, err := h.sell(ctx, ship.ShipSymbol(), lane.Good, sellUnits, playerID)
 		if err != nil {
 			response.AbortReason = fmt.Sprintf("sell of %d %s at destination %s failed (cargo aboard): %v", sellUnits, lane.Good, lane.DestWaypoint, err)
 			logger.Log("WARNING", "Sell failed - ending circuit with cargo aboard", map[string]interface{}{"error": err.Error()})
-			return
+			return ship
 		}
 		held -= sellResp.UnitsSold
 		response.TotalRevenue += sellResp.TotalRevenue
@@ -392,6 +490,7 @@ func (h *RunTradeRouteCoordinatorHandler) runCircuit(
 	logger.Log("INFO", "Trade-route hit the max-visit safety bound", map[string]interface{}{
 		"good": lane.Good, "max_visits": maxVisits,
 	})
+	return ship
 }
 
 // staleAskAborts live-verifies the source ask before the first buy and reports
