@@ -149,6 +149,24 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			// Continue with contract assignment
 		}
 
+		// Reclaim ships orphaned by a restart-killed worker (sp-tgp5) on every
+		// pass, unconditionally - not only when the whole fleet is starved.
+		// markWorkerInterrupted deliberately preserves ship assignment when a
+		// worker container is marked FAILED during restart recovery, so an
+		// orphaned ship stays IsAssigned()==true forever unless something
+		// proactively releases it. Gating this behind "len(availableShips) ==
+		// 0" (as st-anu's original fix did) meant the reclaim never fired
+		// whenever the rest of the fleet had even one other idle hull -
+		// exactly the common case, not the rare one. Running it here, first,
+		// every iteration, means an orphan is freed on the coordinator's very
+		// next pass regardless of what the rest of the fleet is doing.
+		if reclaimed, reclaimErr := h.workerLifecycleManager.ReclaimShipsFromInterruptedWorkers(ctx, cmd.PlayerID.Value(), h.clock); reclaimErr != nil {
+			logger.Log("WARNING", fmt.Sprintf("Failed to reclaim ships from interrupted workers: %v", reclaimErr), nil)
+		} else if reclaimed > 0 {
+			logger.Log("INFO", fmt.Sprintf("Reclaimed %d ship(s) from interrupted workers", reclaimed), nil)
+			continue // Re-check ctx.Done() and re-discover candidates with the freed ship(s)
+		}
+
 		// Dynamically discover idle haul candidates. Contracts include the
 		// command ship as a first-class candidate (sp-4a4e): it hauls contract
 		// legs fine and is often the fastest, largest hull owned, so it competes
@@ -188,16 +206,11 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 		}
 		availableShips := append(generalShips, dedicatedIdleShips...)
 
-		// If no ships available, wait for completion signal
+		// If no ships available, wait for completion signal. (The interrupted-
+		// worker reclaim pass already ran unconditionally at the top of this
+		// loop iteration - see above - so by this point any orphan has
+		// already been freed if one existed.)
 		if len(availableShips) == 0 {
-			reclaimed, reclaimErr := h.workerLifecycleManager.ReclaimShipsFromInterruptedWorkers(ctx, cmd.PlayerID.Value(), h.clock)
-			if reclaimErr != nil {
-				logger.Log("WARNING", fmt.Sprintf("Failed to reclaim ships from interrupted workers: %v", reclaimErr), nil)
-			}
-			if reclaimed > 0 {
-				logger.Log("INFO", fmt.Sprintf("Reclaimed %d ship(s) from interrupted workers", reclaimed), nil)
-				continue
-			}
 			logger.Log("INFO", "No ships available, waiting for completion...", nil)
 			select {
 			case event := <-workerCompletedCh:

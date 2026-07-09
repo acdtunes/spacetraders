@@ -1381,6 +1381,16 @@ func (r *ShipRepository) SyncAllFromAPI(ctx context.Context, playerID shared.Pla
 			model.AssignedAt = existingModel.AssignedAt
 			model.ReleasedAt = existingModel.ReleasedAt
 			model.ReleaseReason = existingModel.ReleaseReason
+			// sp-w870: AssignmentOwner/AssignmentReason must also be preserved.
+			// shipDataToModel builds the fresh model from raw API data, which has
+			// no concept of captain reservations, so these are left at their Go
+			// zero value on every ship synced from the API. Without copying them
+			// here, the UpdateAll upsert below silently clobbers a captain
+			// reservation's ownership back to the "container" default on every
+			// daemon restart (syncAllShipsOnStartup runs this unconditionally,
+			// immediately after ReleaseAllActive correctly leaves it alone).
+			model.AssignmentOwner = existingModel.AssignmentOwner
+			model.AssignmentReason = existingModel.AssignmentReason
 		}
 
 		models = append(models, *model)
@@ -1436,6 +1446,11 @@ func (r *ShipRepository) SyncShipFromAPI(ctx context.Context, symbol string, pla
 		model.AssignedAt = existingModel.AssignedAt
 		model.ReleasedAt = existingModel.ReleasedAt
 		model.ReleaseReason = existingModel.ReleaseReason
+		// sp-w870: see matching comment in SyncAllFromAPI - without this, a
+		// captain reservation's ownership is silently clobbered back to the
+		// "container" default the next time this ship is synced from the API.
+		model.AssignmentOwner = existingModel.AssignmentOwner
+		model.AssignmentReason = existingModel.AssignmentReason
 	}
 
 	err = r.db.WithContext(ctx).
