@@ -307,9 +307,11 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			continue
 		}
 
-		// Find purchase market for contract
-		logger.Log("INFO", "Finding purchase market...", nil)
-		purchaseMarket, err := appContract.FindPurchaseMarket(ctx, contract, h.marketRepo, cmd.PlayerID.Value())
+		// Find the cheapest REACHABLE purchase market for the contract —
+		// in-system plus cross-gate candidates, weighed by effective cost
+		// (sp-1z2h sourcing cost-optimizer).
+		logger.Log("INFO", "Planning sourcing (cheapest reachable market)...", nil)
+		plan, err := appContract.PlanSourcing(ctx, contract, h.marketRepo, cmd.PlayerID.Value())
 		if err != nil {
 			// Market data not yet available - this is expected while scouts are scanning
 			logger.Log("INFO", "Purchase market not yet available - waiting for scouts to scan market data", map[string]interface{}{
@@ -320,8 +322,51 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			h.clock.Sleep(30 * time.Second)
 			continue
 		}
+		purchaseMarket := plan.Market
 
-		logger.Log("INFO", "Cheapest market found", nil)
+		// SOURCING DEFER GATE (sp-1z2h): never EXECUTE a sourcing run whose
+		// projected net is worse than −20% of payout while deadline runway
+		// remains — park and re-project next pass instead. The contract is
+		// ACCEPTED before parking (accept-now-sequence-smart): acceptance is
+		// what makes NegotiateContract resume it on the next pass, and an
+		// unaccepted contract parked past its accept-by deadline would be a
+		// skip — the exact RULINGS #1 violation this gate must never commit.
+		decision := appContract.EvaluateSourcingDefer(plan, contract, h.clock.Now())
+		if decision.Defer {
+			accepted, acceptErr := h.contractMarketService.EnsureAccepted(ctx, contract, cmd.PlayerID)
+			if acceptErr != nil {
+				// Without acceptance a defer is not safe (see above) — source
+				// this pass instead of parking, and say why.
+				logger.Log("WARNING", fmt.Sprintf(
+					"Sourcing defer wanted but contract %s could not be accepted first (%v) - sourcing this pass instead of parking (never-skip)",
+					contract.ContractID(), acceptErr), nil)
+			} else {
+				contract = accepted
+				logger.Log("WARNING", decision.DeferMessage(plan), map[string]interface{}{
+					"action":        "sourcing_deferred",
+					"contract_id":   contract.ContractID(),
+					"projected_net": decision.ProjectedNet,
+					"payout":        decision.Payout,
+					"threshold":     decision.Threshold,
+					"unit_ask":      plan.UnitAsk,
+					"market":        plan.Market,
+					"trade_symbol":  plan.Good,
+				})
+				h.clock.Sleep(appContract.SourcingDeferRecheckInterval)
+				continue
+			}
+		} else if decision.Overridden {
+			logger.Log("WARNING", decision.OverrideMessage(plan), map[string]interface{}{
+				"action":        "sourcing_defer_overridden",
+				"contract_id":   contract.ContractID(),
+				"projected_net": decision.ProjectedNet,
+				"payout":        decision.Payout,
+				"threshold":     decision.Threshold,
+				"unit_ask":      plan.UnitAsk,
+				"market":        plan.Market,
+				"trade_symbol":  plan.Good,
+			})
+		}
 
 		// Extract required cargo for delivery (for ship selection prioritization)
 		var requiredCargo string

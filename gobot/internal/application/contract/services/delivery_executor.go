@@ -7,6 +7,7 @@ import (
 	"math"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	appContract "github.com/andrescamacho/spacetraders-go/internal/application/contract"
 	contractQueries "github.com/andrescamacho/spacetraders-go/internal/application/contract/queries"
 	contractTypes "github.com/andrescamacho/spacetraders-go/internal/application/contract/types"
 	playerQueries "github.com/andrescamacho/spacetraders-go/internal/application/player/queries"
@@ -134,7 +135,11 @@ func (e *DeliveryExecutor) ProcessSingleDelivery(
 		if err != nil {
 			return nil, err
 		}
-		ship, err = e.ExecutePurchaseLoop(ctx, shipSymbol, playerID, ship, delivery.TradeSymbol, unitsToPurchase, profitResult.CheapestMarketWaypoint, result, opContext)
+		// The evaluation's cached ask for this good is the basis the sourcing
+		// defer gate projected against; the purchase loop's ladder cap
+		// (sp-1z2h) stops buying when realized prices run away from it.
+		projectedUnitAsk := profitResult.MarketPrices[delivery.TradeSymbol]
+		ship, err = e.ExecutePurchaseLoop(ctx, shipSymbol, playerID, ship, delivery.TradeSymbol, unitsToPurchase, profitResult.CheapestMarketWaypoint, projectedUnitAsk, result, opContext)
 		if err != nil {
 			// PARK, don't crash (sp-vwhi): a 4600 mid-purchase is a treasury
 			// state, not a bug. Enrich the sentinel with the numbers an
@@ -187,7 +192,17 @@ func (e *DeliveryExecutor) lookupLiveCredits(ctx context.Context, playerID share
 	return playerResp.Player.Credits
 }
 
-// ExecutePurchaseLoop executes the multi-trip purchase loop
+// ExecutePurchaseLoop executes the multi-trip purchase loop.
+//
+// projectedUnitAsk is the cached ask the profitability evaluation (and the
+// coordinator's sourcing defer gate, sp-1z2h) based its projection on; 0
+// disables the ladder cap (no basis to compare against). When a trip realizes
+// worse than SourcingLadderCapNumer/Denom (1.5×) of that basis, the loop stops
+// buying and delivers what is aboard — the −891k ELECTRONICS incident was
+// exactly this shape, a buyer laddering a SCARCE ask upward tranche after
+// tranche until the contract filled at any price. The undelivered remainder is
+// re-picked-up by the coordinator's next pass, where the defer gate re-projects
+// it at live prices (and parks it if still negative). Nothing is skipped.
 func (e *DeliveryExecutor) ExecutePurchaseLoop(
 	ctx context.Context,
 	shipSymbol string,
@@ -196,6 +211,7 @@ func (e *DeliveryExecutor) ExecutePurchaseLoop(
 	tradeSymbol string,
 	unitsToPurchase int,
 	cheapestMarket string,
+	projectedUnitAsk int,
 	result *RunWorkflowResponse,
 	opContext *shared.OperationContext, // Operation context for transaction linking
 ) (*navigation.Ship, error) {
@@ -220,7 +236,7 @@ func (e *DeliveryExecutor) ExecutePurchaseLoop(
 	for trip := 0; trip < trips; trip++ {
 		var shouldBreak bool
 		var err error
-		ship, unitsToPurchase, shouldBreak, err = e.executeSinglePurchaseTrip(ctx, shipSymbol, playerID, ship, tradeSymbol, cheapestMarket, unitsToPurchase, opContext)
+		ship, unitsToPurchase, shouldBreak, err = e.executeSinglePurchaseTrip(ctx, shipSymbol, playerID, ship, tradeSymbol, cheapestMarket, unitsToPurchase, projectedUnitAsk, opContext)
 		if err != nil {
 			return nil, err
 		}
@@ -232,7 +248,10 @@ func (e *DeliveryExecutor) ExecutePurchaseLoop(
 	return ship, nil
 }
 
-// executeSinglePurchaseTrip executes a single purchase trip
+// executeSinglePurchaseTrip executes a single purchase trip. A trip whose
+// realized per-unit price breaches the ladder cap (see ExecutePurchaseLoop)
+// keeps its tranche — the cargo is aboard and will be delivered — but signals
+// the loop to stop buying more.
 func (e *DeliveryExecutor) executeSinglePurchaseTrip(
 	ctx context.Context,
 	shipSymbol string,
@@ -241,6 +260,7 @@ func (e *DeliveryExecutor) executeSinglePurchaseTrip(
 	tradeSymbol string,
 	cheapestMarket string,
 	unitsToPurchase int,
+	projectedUnitAsk int,
 	opContext *shared.OperationContext, // Operation context for transaction linking
 ) (*navigation.Ship, int, bool, error) {
 	logger := common.LoggerFromContext(ctx)
@@ -270,7 +290,7 @@ func (e *DeliveryExecutor) executeSinglePurchaseTrip(
 		PlayerID:   playerID,
 	}
 
-	_, err = e.mediator.Send(ctx, purchaseCmd)
+	purchaseResp, err := e.mediator.Send(ctx, purchaseCmd)
 	if err != nil {
 		if IsInsufficientCreditsError(err) {
 			return nil, 0, false, &ErrInsufficientCredits{
@@ -285,12 +305,49 @@ func (e *DeliveryExecutor) executeSinglePurchaseTrip(
 
 	unitsToPurchase -= unitsThisTrip
 
+	// SOURCING LADDER CAP (sp-1z2h): stop feeding an ask that has run away
+	// from the projected basis. The tranche just bought stays aboard and gets
+	// delivered; only FURTHER buying stops (shouldBreak) — the remainder
+	// re-gates through the coordinator's defer projection at live prices.
+	ladderBreached, realizedPerUnit := sourcingLadderBreached(purchaseResp, projectedUnitAsk)
+	if ladderBreached {
+		logger.Log("WARNING", fmt.Sprintf(
+			"Sourcing ladder cap: trip realized %d/unit exceeds %d/%dx projected ask %d for %s at %s - halting purchases with %d units still unsourced, delivering partial load (remainder re-projects through the defer gate next coordinator pass; never-skip stands)",
+			realizedPerUnit, appContract.SourcingLadderCapNumer, appContract.SourcingLadderCapDenom,
+			projectedUnitAsk, tradeSymbol, cheapestMarket, unitsToPurchase,
+		), map[string]interface{}{
+			"ship_symbol":      shipSymbol,
+			"action":           "sourcing_ladder_cap",
+			"trade_symbol":     tradeSymbol,
+			"market":           cheapestMarket,
+			"realized_per_unit": realizedPerUnit,
+			"projected_ask":    projectedUnitAsk,
+			"units_unsourced":  unitsToPurchase,
+		})
+	}
+
 	ship, err = e.shipRepo.FindBySymbol(ctx, shipSymbol, playerID)
 	if err != nil {
 		return nil, 0, false, fmt.Errorf("failed to reload ship after purchase: %w", err)
 	}
 
-	return ship, unitsToPurchase, false, nil
+	return ship, unitsToPurchase, ladderBreached, nil
+}
+
+// sourcingLadderBreached reports whether the trip's realized per-unit price ran
+// past SourcingLadderCapNumer/Denom (1.5×) of the projected ask, and what it
+// realized. A zero/unknown basis, a non-PurchaseCargoResponse, or a zero-unit
+// buy never breach (nothing meaningful to compare).
+func sourcingLadderBreached(purchaseResp common.Response, projectedUnitAsk int) (bool, int) {
+	if projectedUnitAsk <= 0 {
+		return false, 0
+	}
+	resp, ok := purchaseResp.(*shipCargo.PurchaseCargoResponse)
+	if !ok || resp == nil || resp.UnitsAdded <= 0 {
+		return false, 0
+	}
+	realizedPerUnit := resp.TotalCost / resp.UnitsAdded
+	return realizedPerUnit*appContract.SourcingLadderCapDenom > projectedUnitAsk*appContract.SourcingLadderCapNumer, realizedPerUnit
 }
 
 // DeliverContractCargo delivers cargo to the contract destination

@@ -27,6 +27,35 @@ func NewContractMarketService(
 	}
 }
 
+// EnsureAccepted accepts the contract if it isn't already, returning the
+// (possibly refreshed) contract. The sourcing defer gate (sp-1z2h) calls this
+// BEFORE parking a projected-negative contract: acceptance is what keeps a
+// deferred contract discoverable by FindActiveContracts on the next pass and
+// protects its accept-by deadline — deferral without acceptance would rot into
+// a skip (RULINGS #1). Idempotent for an already-accepted contract.
+func (s *ContractMarketService) EnsureAccepted(
+	ctx context.Context,
+	contract *domainContract.Contract,
+	playerID shared.PlayerID,
+) (*domainContract.Contract, error) {
+	if contract.Accepted() {
+		return contract, nil
+	}
+
+	acceptCmd := &contractTypes.AcceptContractCommand{
+		ContractID: contract.ContractID(),
+		PlayerID:   playerID,
+	}
+
+	acceptResp, err := s.mediator.Send(ctx, acceptCmd)
+	if err != nil {
+		return nil, fmt.Errorf("failed to accept contract: %w", err)
+	}
+
+	acceptResult := acceptResp.(*contractTypes.AcceptContractResponse)
+	return acceptResult.Contract, nil
+}
+
 // FulfillContract fulfills a completed contract to claim rewards
 func (s *ContractMarketService) FulfillContract(
 	ctx context.Context,

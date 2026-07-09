@@ -220,6 +220,52 @@ func (r *MarketRepositoryGORM) FindCheapestMarketSelling(
 	}, nil
 }
 
+// FindCheapestMarketsSellingAllSystems returns up to limit markets selling the
+// good across ALL systems with scanned data, cheapest first (sp-1z2h sourcing
+// cost-optimizer: cross-gate candidates). Scouts only scan systems the fleet
+// can fly, so "has market data" doubles as the reachability filter. Implements
+// contract.CrossSystemMarketFinder as an optional repository upgrade — it is
+// deliberately NOT on the MarketRepository interface so existing fakes keep
+// compiling and fall back to in-system sourcing.
+func (r *MarketRepositoryGORM) FindCheapestMarketsSellingAllSystems(
+	ctx context.Context,
+	goodSymbol string,
+	playerID int,
+	limit int,
+) ([]market.CheapestMarketResult, error) {
+	var rows []struct {
+		WaypointSymbol string
+		TradeSymbol    string
+		SellPrice      int
+		Supply         *string
+	}
+
+	err := r.db.WithContext(ctx).
+		Table(marketDataTable).
+		Select("waypoint_symbol, good_symbol as trade_symbol, sell_price, supply").
+		Where("player_id = ?", playerID).
+		Where("good_symbol = ?", goodSymbol).
+		Order("sell_price ASC").
+		Limit(limit).
+		Scan(&rows).Error
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to find cheapest markets across systems: %w", err)
+	}
+
+	results := make([]market.CheapestMarketResult, 0, len(rows))
+	for _, row := range rows {
+		results = append(results, market.CheapestMarketResult{
+			WaypointSymbol: row.WaypointSymbol,
+			TradeSymbol:    row.TradeSymbol,
+			SellPrice:      row.SellPrice,
+			Supply:         derefString(row.Supply),
+		})
+	}
+
+	return results, nil
+}
+
 // FindCheapestMarketSellingWithSupply finds the cheapest market with a specific supply level.
 // This enables supply-priority selection for raw materials: ABUNDANT > HIGH > MODERATE.
 // Returns nil if no market exists with the specified supply level.

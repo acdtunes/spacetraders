@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
+	appContract "github.com/andrescamacho/spacetraders-go/internal/application/contract"
 	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
@@ -27,6 +28,12 @@ type ProfitabilityResult struct {
 	TripsRequired          int
 	CheapestMarketWaypoint string
 	Reason                 string
+
+	// MarketPrices echoes the per-good unit asks this evaluation was computed
+	// from (the chosen market's cached ask per trade symbol). The delivery
+	// executor's ladder cap (sp-1z2h) compares each purchase trip's realized
+	// per-unit price against this basis to stop an intra-run ask ladder.
+	MarketPrices map[string]int
 }
 
 // EvaluateContractProfitabilityHandler evaluates contract profitability
@@ -74,7 +81,9 @@ func (h *EvaluateContractProfitabilityHandler) Handle(ctx context.Context, reque
 		return nil, err
 	}
 
-	return h.convertToApplicationDTO(evaluation), nil
+	result := h.convertToApplicationDTO(evaluation)
+	result.MarketPrices = marketPrices
+	return result, nil
 }
 
 func (h *EvaluateContractProfitabilityHandler) fetchShip(ctx context.Context, shipSymbol string, playerID shared.PlayerID) (*navigation.Ship, error) {
@@ -85,6 +94,12 @@ func (h *EvaluateContractProfitabilityHandler) fetchShip(ctx context.Context, sh
 	return ship, nil
 }
 
+// buildMarketPricesMap prices each unfulfilled delivery at the market
+// PlanSourcing would choose (sp-1z2h): cheapest REACHABLE, cross-gate included.
+// Routing the worker's evaluation through the same selection keeps the
+// projector and the executor pointed at the same market — the executor
+// navigates to CheapestMarketWaypoint, so a divergent pick here would send the
+// hull to a market the coordinator never costed.
 func (h *EvaluateContractProfitabilityHandler) buildMarketPricesMap(ctx context.Context, query *EvaluateContractProfitabilityQuery) (map[string]int, string, error) {
 	marketPrices := make(map[string]int)
 	var cheapestMarketWaypoint string
@@ -95,32 +110,19 @@ func (h *EvaluateContractProfitabilityHandler) buildMarketPricesMap(ctx context.
 			continue
 		}
 
-		systemSymbol := shared.ExtractSystemSymbol(delivery.DestinationSymbol)
-
-		cheapestMarket, err := h.findCheapestMarket(ctx, delivery.TradeSymbol, systemSymbol, query.PlayerID.Value())
+		plan, err := appContract.PlanDeliverySourcing(ctx, delivery, h.marketRepo, query.PlayerID.Value())
 		if err != nil {
 			return nil, "", err
 		}
 
-		marketPrices[delivery.TradeSymbol] = cheapestMarket.SellPrice
+		marketPrices[delivery.TradeSymbol] = plan.UnitAsk
 
 		if cheapestMarketWaypoint == "" {
-			cheapestMarketWaypoint = cheapestMarket.WaypointSymbol
+			cheapestMarketWaypoint = plan.Market
 		}
 	}
 
 	return marketPrices, cheapestMarketWaypoint, nil
-}
-
-func (h *EvaluateContractProfitabilityHandler) findCheapestMarket(ctx context.Context, tradeSymbol string, systemSymbol string, playerID int) (*market.CheapestMarketResult, error) {
-	cheapestMarket, err := h.marketRepo.FindCheapestMarketSelling(ctx, tradeSymbol, systemSymbol, playerID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to find market for %s: %w", tradeSymbol, err)
-	}
-	if cheapestMarket == nil {
-		return nil, fmt.Errorf("no market found selling %s in system %s", tradeSymbol, systemSymbol)
-	}
-	return cheapestMarket, nil
 }
 
 func (h *EvaluateContractProfitabilityHandler) buildProfitabilityContext(ship *navigation.Ship, marketPrices map[string]int, cheapestMarketWaypoint string, fuelCostPerTrip int) domainContract.ProfitabilityContext {
