@@ -1,6 +1,7 @@
 package watchkeeper
 
 import (
+	"errors"
 	"fmt"
 	"os/exec"
 	"path/filepath"
@@ -9,6 +10,13 @@ import (
 	"strings"
 	"time"
 )
+
+// errEmptyMerge marks a squash-merge refusal because the merge would (or did)
+// change nothing on main: a branch with no commits ahead, or one whose net tree
+// equals main's. gateAndMergeWith surfaces it as GateResult.EmptyMerge. Before
+// sp-k0di such a merge produced a message-only commit and reported Merged=true,
+// silently losing the agent's (uncommitted) fix.
+var errEmptyMerge = errors.New("empty merge")
 
 const worktreeRoot = ".captain-worktrees"
 
@@ -72,6 +80,69 @@ func RunGate(dir string, timeout time.Duration) (bool, string) {
 		}
 	}
 	return true, combined.String()
+}
+
+// WorktreeDirty reports whether the worktree holds uncommitted (staged or
+// unstaged) or untracked source changes that a squash-merge would silently drop.
+// The gate merges COMMITS, not working-tree files: an agent that edits files but
+// never commits leaves a branch with zero commits ahead of main, which
+// squash-merges to a message-only commit (sp-k0di — three fixes lost exactly this
+// way, gated green then merged empty). Refusing a dirty worktree PRE-gate forces
+// the runner to commit first. The returned detail lists the offending porcelain
+// lines for a loud, actionable error.
+//
+// Beads issue exports (issues.jsonl anywhere) are excluded: the beads pre-commit
+// hook re-exports and re-stages them on every commit in the shared city, so they
+// are perpetual noise, not the agent's fix. Gitignored provisioning artifacts
+// (regenerated proto, .beads/redirect) never appear in --porcelain, so they need
+// no exemption.
+func WorktreeDirty(worktreeDir string) (bool, string, error) {
+	out, err := gitRun(worktreeDir, "status", "--porcelain")
+	if err != nil {
+		return false, "", err
+	}
+	var dirty []string
+	for _, line := range strings.Split(out, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if beadsExportNoise(worktreeStatusPath(line)) {
+			continue
+		}
+		dirty = append(dirty, strings.TrimSpace(line))
+	}
+	if len(dirty) > 0 {
+		return true, strings.Join(dirty, "\n"), nil
+	}
+	return false, "", nil
+}
+
+// worktreeStatusPath extracts the (possibly renamed-to) path from a
+// `git status --porcelain` v1 line: the first two columns are status codes, then
+// a space, then the path — or `ORIG -> NEW` for a rename/copy, where NEW is what
+// lands on disk. Quoted paths (those with special chars) are left quoted, which
+// only makes them fail the beads-noise exemption and be reported — the safe
+// direction for a dirty check.
+func worktreeStatusPath(porcelainLine string) string {
+	if len(porcelainLine) < 4 {
+		return strings.TrimSpace(porcelainLine)
+	}
+	p := strings.TrimSpace(porcelainLine[3:])
+	if i := strings.Index(p, " -> "); i >= 0 {
+		p = p[i+len(" -> "):]
+	}
+	return p
+}
+
+// beadsExportNoise reports whether a path is a beads issues.jsonl export — the
+// repo root's, .beads/, or a nested city .beads/. The beads pre-commit hook
+// re-exports and re-stages these on every shared-checkout commit, so the pre-gate
+// dirty check must ignore them. This is deliberately broader than
+// beadsIssuesExempt (which, for the foreign-staged guard, does NOT exempt a stray
+// worktree-root issues.jsonl): the sp-k0di spec lists both root and .beads/
+// issues.jsonl as dirty-noise.
+func beadsExportNoise(path string) bool {
+	return path == "issues.jsonl" || strings.HasSuffix(path, "/issues.jsonl")
 }
 
 var shortstatRe = regexp.MustCompile(`(\d+) insertion|(\d+) deletion`)
@@ -174,16 +245,54 @@ func squashMergeClean(repoDir, branch, message string) error {
 	if err != nil {
 		return err
 	}
+	parent = strings.TrimSpace(parent)
+
+	// PRE-MERGE (sp-k0di check 2): the branch must add at least one commit on top
+	// of main. A branch with zero commits ahead squashes main's OWN tree back onto
+	// main — a message-only commit with no file changes. This is the exact hole
+	// that lost three fixes: agents edited files but never committed, so the branch
+	// had nothing to squash. Fail loudly before building the commit.
+	ahead, err := gitRun(repoDir, "rev-list", "--count", parent+".."+branch)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(ahead) == "0" {
+		return fmt.Errorf("%w: branch %s has no commits ahead of main — nothing to merge (commit your worktree changes first)", errEmptyMerge, branch)
+	}
+
 	tree, err := gitRun(repoDir, "rev-parse", branch+"^{tree}")
 	if err != nil {
 		return err
 	}
-	commit, err := gitRun(repoDir, "commit-tree", strings.TrimSpace(tree), "-p", strings.TrimSpace(parent), "-m", message)
+	commit, err := gitRun(repoDir, "commit-tree", strings.TrimSpace(tree), "-p", parent, "-m", message)
 	if err != nil {
 		return err
 	}
-	if _, err := gitRun(repoDir, "merge", "--ff-only", strings.TrimSpace(commit)); err != nil {
+	commit = strings.TrimSpace(commit)
+	if _, err := gitRun(repoDir, "merge", "--ff-only", commit); err != nil {
 		return err
+	}
+
+	// POST-SQUASH SAFETY NET (sp-k0di check 3): belt-and-suspenders behind check 2.
+	// Even with commits ahead, a branch whose net tree equals main's (an
+	// --allow-empty commit, or an add+revert) squashes to an empty diff. Verify the
+	// merged commit actually changed main; if not, roll the main ref back to
+	// pre-merge and fail. `reset --soft` moves only the ref (not the index or
+	// working tree), so peers' unstaged work in the shared checkout is untouched —
+	// safe because the empty ff changed no files by definition.
+	newTree, err := gitRun(repoDir, "rev-parse", "HEAD^{tree}")
+	if err != nil {
+		return err
+	}
+	parentTree, err := gitRun(repoDir, "rev-parse", parent+"^{tree}")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(newTree) == strings.TrimSpace(parentTree) {
+		if _, rbErr := gitRun(repoDir, "reset", "--soft", parent); rbErr != nil {
+			return fmt.Errorf("%w: squash of %s changed nothing vs main AND rollback failed: %v", errEmptyMerge, branch, rbErr)
+		}
+		return fmt.Errorf("%w: squash of %s produced no change vs main — rolled main back to %s", errEmptyMerge, branch, parent)
 	}
 	return nil
 }

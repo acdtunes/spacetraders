@@ -2,6 +2,7 @@ package watchkeeper
 
 import (
 	"bytes"
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -14,6 +15,13 @@ type GateResult struct {
 	GatePassed bool
 	Stale      bool
 	Merged     bool
+	// Dirty is set when the worktree held uncommitted/untracked source changes and
+	// the gate refused before building. Merging files that were never committed
+	// produced empty message-only merges (sp-k0di).
+	Dirty bool
+	// EmptyMerge is set when the branch had no commits ahead of main, or the squash
+	// produced a diff-empty result that was rolled back — nothing reached main.
+	EmptyMerge bool
 	Log        string
 }
 
@@ -24,6 +32,7 @@ func GateAndMerge(repoDir, worktreeDir, branch, commitMsg string, timeout time.D
 	var mergeErr error
 	result := gateAndMergeWith(
 		RunGate,
+		WorktreeDirty,
 		func(b string) (bool, error) { return !BranchContainsMain(repoDir, b), nil },
 		func(rd, b, m string) error {
 			if err := SquashMerge(rd, b, m); err != nil {
@@ -40,11 +49,26 @@ func GateAndMerge(repoDir, worktreeDir, branch, commitMsg string, timeout time.D
 // injected functions so the sequence is testable without shelling out.
 func gateAndMergeWith(
 	runGate func(string, time.Duration) (bool, string),
+	worktreeDirty func(string) (bool, string, error),
 	isStale func(string) (bool, error),
 	squashMerge func(string, string, string) error,
 	repoDir, worktreeDir, branch, commitMsg string,
 	timeout time.Duration, merge bool,
 ) GateResult {
+	// PRE-GATE (sp-k0di check 1): refuse a dirty worktree before building. The gate
+	// merges COMMITS, not files; a worktree with uncommitted/untracked source
+	// changes would gate its working files green then squash a branch that lacks
+	// those commits — a message-only merge that silently loses the fix. Fail here so
+	// the runner commits first. A dirty-check failure is treated as fail-closed: we
+	// never proceed to merge when we cannot confirm the worktree is clean.
+	if dirty, detail, err := worktreeDirty(worktreeDir); err != nil {
+		return GateResult{Log: "worktree dirty-check failed: " + err.Error()}
+	} else if dirty {
+		return GateResult{
+			Dirty: true,
+			Log:   "worktree has uncommitted changes — commit them first; the gate merges COMMITS, not files:\n" + detail,
+		}
+	}
 	moduleDir := gateDir(worktreeDir)
 	pass, log := runGate(moduleDir, timeout)
 	result := GateResult{GatePassed: pass, Log: log}
@@ -60,6 +84,9 @@ func gateAndMergeWith(
 		return result
 	}
 	if err := squashMerge(repoDir, branch, commitMsg); err != nil {
+		if errors.Is(err, errEmptyMerge) {
+			result.EmptyMerge = true
+		}
 		return result
 	}
 	result.Merged = true

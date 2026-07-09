@@ -1,6 +1,7 @@
 package watchkeeper
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -218,4 +219,121 @@ func TestSquashMergeCleanLeavesForeignStagedUndisturbed(t *testing.T) {
 
 	require.Equal(t, "2", gitOut(t, repo, "rev-list", "--count", "HEAD"),
 		"a successful merge advances main to exactly one squash commit on the base")
+}
+
+// sp-k0di check 1: a worktree with an uncommitted source edit is dirty, and the
+// detail names the offending file so the runner knows what to commit.
+func TestWorktreeDirtyDetectsUncommittedSource(t *testing.T) {
+	t.Parallel()
+	repo := initScratchRepo(t)
+	wt, err := CreateWorktree(repo, "captain/dirty-src")
+	require.NoError(t, err)
+	defer func() { _ = wt.Remove(repo) }()
+
+	// Edit but never commit — exactly the sp-k0di failure: files, not commits.
+	require.NoError(t, os.WriteFile(filepath.Join(wt.Dir, "fix.go"),
+		[]byte("package main\n\nfunc Fixed() bool { return true }\n"), 0o644))
+
+	dirty, detail, err := WorktreeDirty(wt.Dir)
+	require.NoError(t, err)
+	require.True(t, dirty, "uncommitted source edit must read dirty")
+	require.Contains(t, detail, "fix.go")
+}
+
+// A staged-but-uncommitted edit is also dirty: staging is not committing, and the
+// squash merges commits.
+func TestWorktreeDirtyDetectsStagedUncommitted(t *testing.T) {
+	t.Parallel()
+	repo := initScratchRepo(t)
+	wt, err := CreateWorktree(repo, "captain/dirty-staged")
+	require.NoError(t, err)
+	defer func() { _ = wt.Remove(repo) }()
+
+	require.NoError(t, os.WriteFile(filepath.Join(wt.Dir, "fix.go"),
+		[]byte("package main\n\nfunc Fixed() bool { return true }\n"), 0o644))
+	runGit(t, wt.Dir, "add", "fix.go")
+
+	dirty, detail, err := WorktreeDirty(wt.Dir)
+	require.NoError(t, err)
+	require.True(t, dirty, "staged-but-uncommitted edit must read dirty")
+	require.Contains(t, detail, "fix.go")
+}
+
+// The beads issues.jsonl export is dirty-noise (the beads hook re-exports it every
+// commit) and must NOT, on its own, make a worktree read dirty — else the pre-gate
+// check would self-brick every merge in the shared city. Mirrors production: the
+// export is a TRACKED file the hook modifies, so git reports it as ` M
+// .beads/issues.jsonl` (a fully-untracked .beads/ never occurs — config.yaml and
+// metadata.json are always committed).
+func TestWorktreeDirtyIgnoresBeadsExport(t *testing.T) {
+	t.Parallel()
+	repo := initScratchRepo(t)
+	wt, err := CreateWorktree(repo, "captain/dirty-beads")
+	require.NoError(t, err)
+	defer func() { _ = wt.Remove(repo) }()
+
+	require.NoError(t, os.MkdirAll(filepath.Join(wt.Dir, ".beads"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(wt.Dir, ".beads", "issues.jsonl"), []byte("v0\n"), 0o644))
+	runGit(t, wt.Dir, "add", ".beads/issues.jsonl")
+	runGit(t, wt.Dir, "commit", "-m", "track beads export")
+	// The beads hook re-exports the tracked file: a modification, not a new file.
+	require.NoError(t, os.WriteFile(filepath.Join(wt.Dir, ".beads", "issues.jsonl"), []byte("v1-hook-churn\n"), 0o644))
+
+	dirty, detail, err := WorktreeDirty(wt.Dir)
+	require.NoError(t, err)
+	require.False(t, dirty, "beads issues.jsonl export churn alone must not read dirty: %s", detail)
+}
+
+// A committed worktree is clean — the happy path the gate is meant to proceed on.
+func TestWorktreeDirtyCleanWhenCommitted(t *testing.T) {
+	t.Parallel()
+	repo := initScratchRepo(t)
+	wt := branchWithFix(t, repo, "captain/dirty-clean")
+	defer func() { _ = wt.Remove(repo) }()
+
+	dirty, detail, err := WorktreeDirty(wt.Dir)
+	require.NoError(t, err)
+	require.False(t, dirty, "committed worktree must read clean: %s", detail)
+}
+
+// sp-k0di check 2: a branch with zero commits ahead of main squashes main's own
+// tree back onto main — a message-only commit. The guard refuses it as an empty
+// merge and leaves main untouched, instead of reporting Merged=true (the exact bug
+// that lost three fixes).
+func TestSquashMergeRefusesBranchWithNoCommits(t *testing.T) {
+	t.Parallel()
+	repo := initScratchRepo(t)
+	wt, err := CreateWorktree(repo, "captain/no-commits")
+	require.NoError(t, err)
+	defer func() { _ = wt.Remove(repo) }()
+
+	headBefore := gitOut(t, repo, "rev-parse", "HEAD")
+	err = SquashMerge(repo, "captain/no-commits", "fix: nothing committed")
+	require.Error(t, err, "a branch with no commits ahead must be refused")
+	require.True(t, errors.Is(err, errEmptyMerge), "must be an empty-merge refusal: %v", err)
+	require.Contains(t, err.Error(), "no commits ahead")
+	require.Equal(t, headBefore, gitOut(t, repo, "rev-parse", "HEAD"),
+		"an empty merge must not advance main")
+}
+
+// sp-k0di check 3 (belt-and-suspenders): a branch WITH a commit ahead whose net
+// tree still equals main's (an --allow-empty commit) squashes to a diff-empty
+// result. The post-squash net rolls main back to pre-merge and reports the empty
+// merge, so no message-only commit survives on main.
+func TestSquashMergeRollsBackEmptyDiffMerge(t *testing.T) {
+	t.Parallel()
+	repo := initScratchRepo(t)
+	wt, err := CreateWorktree(repo, "captain/empty-diff")
+	require.NoError(t, err)
+	defer func() { _ = wt.Remove(repo) }()
+
+	// A real commit ahead of main (passes check 2) but with no file changes.
+	runGit(t, wt.Dir, "commit", "--allow-empty", "-m", "empty commit ahead")
+
+	headBefore := gitOut(t, repo, "rev-parse", "HEAD")
+	err = SquashMerge(repo, "captain/empty-diff", "fix: net-empty branch")
+	require.Error(t, err, "a net-empty squash must be refused")
+	require.True(t, errors.Is(err, errEmptyMerge), "must be an empty-merge refusal: %v", err)
+	require.Equal(t, headBefore, gitOut(t, repo, "rev-parse", "HEAD"),
+		"the post-squash safety net must roll main back to pre-merge")
 }

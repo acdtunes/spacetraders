@@ -47,7 +47,7 @@ func main() {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "captain-gate: %v\n", err)
 	}
-	if !result.GatePassed || (*merge && !result.Merged) {
+	if !result.GatePassed || result.Dirty || result.EmptyMerge || (*merge && !result.Merged) {
 		os.Exit(1)
 	}
 }
