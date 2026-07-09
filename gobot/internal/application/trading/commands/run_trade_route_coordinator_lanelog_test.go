@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
@@ -35,12 +36,14 @@ func (l *laneLogCapturingLogger) Log(level, message string, metadata map[string]
 }
 
 // selectionEntry returns the single "Selected top disciplined arbitrage lane"
-// entry, failing the test if it is missing or duplicated.
+// entry, failing the test if it is missing or duplicated. Matches by PREFIX: the
+// message now carries the lane payload in its text (sp-149h), appended after the
+// stable prefix, so an exact-string match would no longer find it.
 func (l *laneLogCapturingLogger) selectionEntry(t *testing.T) laneLogEntry {
 	t.Helper()
 	var found []laneLogEntry
 	for _, e := range l.entries {
-		if e.message == "Selected top disciplined arbitrage lane" {
+		if strings.HasPrefix(e.message, "Selected top disciplined arbitrage lane") {
 			found = append(found, e)
 		}
 	}
@@ -221,5 +224,61 @@ func TestTradeRouteCoordinator_SelectedLaneLog_CarriesPayloadAndCrossSystemCandi
 	}
 	if !sawCrossSystemCandidate {
 		t.Fatalf("expected the penalized cross-system lane GOOD_B to still appear among the logged candidates, got %+v", candidates)
+	}
+}
+
+// sp-149h: the whole point is that `container logs` DROPS the structured metadata
+// map, so the payload the previous test reads from meta[...] is invisible in the CLI
+// the captain actually greps. This test pins the fix on the MESSAGE TEXT itself — the
+// chosen lane's good, both endpoints, and per-unit margin, plus the top-candidates
+// shortlist (including the penalized cross-system lane) must all be greppable in the
+// line's text, not just its metadata.
+func TestTradeRouteCoordinator_SelectedLaneLog_MessageTextCarriesFields(t *testing.T) {
+	ship := newTradeHauler(t, "TRADER-MSG")
+	marketRepo := &msMarketRepo{
+		waypointsBySystem: map[string][]string{
+			"X1-TR":  {"X1-TR-A1", "X1-TR-A2", "X1-TR-B1"},
+			"X1-TR2": {"X1-TR2-B2"},
+		},
+		goods: map[string]msGood{
+			// GOOD_A same-system, spread 1500 (1600-100) — wins the selection.
+			"X1-TR-A1": {symbol: "GOOD_A", bid: 50, ask: 100, volume: 60, tradeType: market.TradeTypeExport},
+			"X1-TR-A2": {symbol: "GOOD_A", bid: 1600, ask: 1650, volume: 60, tradeType: market.TradeTypeImport},
+			// GOOD_B cross-system, raw spread 1650 — clears the floor but loses the
+			// ranking to the gate penalty; still a logged candidate.
+			"X1-TR-B1":  {symbol: "GOOD_B", bid: 50, ask: 100, volume: 60, tradeType: market.TradeTypeExport},
+			"X1-TR2-B2": {symbol: "GOOD_B", bid: 1750, ask: 1800, volume: 60, tradeType: market.TradeTypeImport},
+		},
+	}
+	mediator := &msMediator{connections: map[string][]string{"X1-TR": {"X1-TR2"}}}
+	shipRepo := &trFakeShipRepo{ship: ship}
+	handler := NewRunTradeRouteCoordinatorHandler(mediator, shipRepo, marketRepo, nil, nil, nil)
+
+	logger := &laneLogCapturingLogger{}
+	ctx := common.WithLogger(context.Background(), logger)
+
+	if _, err := handler.Handle(ctx, &RunTradeRouteCoordinatorCommand{
+		ShipSymbol:   ship.ShipSymbol(),
+		SystemSymbol: "X1-TR",
+		PlayerID:     1,
+	}); err != nil {
+		t.Fatalf("coordinator returned error: %v", err)
+	}
+
+	msg := logger.selectionEntry(t).message
+
+	// Chosen lane identity in the TEXT: good, both endpoints, per-unit margin.
+	for _, want := range []string{"GOOD_A", "X1-TR-A1", "X1-TR-A2", "m=1500"} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("expected selection message TEXT to contain %q, got: %s", want, msg)
+		}
+	}
+	// Top-candidates shortlist present, and the penalized cross-system lane GOOD_B is
+	// verifiable in the text (flagged cross) — cross-system scanning greppable, not inferred.
+	if !strings.Contains(msg, "top") {
+		t.Fatalf("expected a top-candidates shortlist in the message, got: %s", msg)
+	}
+	if !strings.Contains(msg, "GOOD_B") || !strings.Contains(msg, "cross") {
+		t.Fatalf("expected the cross-system candidate GOOD_B flagged 'cross' in the message text, got: %s", msg)
 	}
 }

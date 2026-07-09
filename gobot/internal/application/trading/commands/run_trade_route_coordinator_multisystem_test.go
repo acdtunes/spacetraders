@@ -63,6 +63,10 @@ type msMarketRepo struct {
 	market.MarketRepository
 	waypointsBySystem map[string][]string
 	goods             map[string]msGood // waypoint -> its listing
+	// observedAt optionally overrides a waypoint's market LastUpdated timestamp so
+	// age-cap tests (sp-xwa1) can mark a market stale. Nil / missing key -> time.Now()
+	// (fresh), so every existing fixture that omits it ranks unchanged.
+	observedAt map[string]time.Time
 }
 
 func (r *msMarketRepo) FindAllMarketsInSystem(ctx context.Context, systemSymbol string, playerID int) ([]string, error) {
@@ -80,7 +84,11 @@ func (r *msMarketRepo) GetMarketData(ctx context.Context, waypointSymbol string,
 	if err != nil {
 		return nil, err
 	}
-	return market.NewMarket(waypointSymbol, []market.TradeGood{*good}, time.Now())
+	updated := time.Now()
+	if ts, ok := r.observedAt[waypointSymbol]; ok {
+		updated = ts
+	}
+	return market.NewMarket(waypointSymbol, []market.TradeGood{*good}, updated)
 }
 
 // Neither system alone carries both sides of WIDGET (X1-HOME only exports it,

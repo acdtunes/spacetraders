@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
@@ -149,6 +150,54 @@ func (h *RunTradeRouteCoordinatorHandler) travel(
 // lane's own untouched values), so a cross-system lane that wins the
 // ranking is still evaluated for floor-discipline on its true numbers.
 const crossSystemRankingPenaltyPerUnit = 200
+
+// maxListingAge bounds how old a cached market observation may be and still feed
+// UNDIRECTED lane ranking (sp-xwa1). The ranker scores lanes off cached prices; a
+// lane priced from an observation this stale can already have moved, so ranking it
+// chases a spread that no longer exists (the analyst's arb-board finding: the
+// ranker "picks lanes that already moved"). 75 minutes is deliberately generous —
+// a frontier market a hull hasn't visited in over an hour is genuinely unreliable,
+// while a lane re-observed within the hour (every completed trade refreshes its
+// own two markets, see scanLanes' refreshMarketData note) stays eligible. It gates
+// only undirected auto-scan: an operator-directed --dest lane is re-verified LIVE
+// at execution (staleAskAborts + the per-visit margin re-check), so staleness must
+// not silently veto it — see scanLanes.
+const maxListingAge = 75 * time.Minute
+
+// partitionListingsByAge splits listings into those observed within maxAge of now
+// (fresh) and those older (stale), preserving input order in each. A listing with a
+// zero ObservedAt is treated as FRESH — an unknown age is not evidence of staleness,
+// and callers that never populate the timestamp (older tests, non-cache sources)
+// must rank unchanged. Pure and now-injected so the age gate is unit-testable
+// without a clock; scanLanes supplies h.clock.Now().
+func partitionListingsByAge(listings []trading.GoodListing, now time.Time, maxAge time.Duration) (fresh, stale []trading.GoodListing) {
+	for _, l := range listings {
+		if !l.ObservedAt.IsZero() && now.Sub(l.ObservedAt) > maxAge {
+			stale = append(stale, l)
+			continue
+		}
+		fresh = append(fresh, l)
+	}
+	return fresh, stale
+}
+
+// staleListingSummary renders up to a few stale listings into a compact,
+// message-text one-liner (waypoint:good) so the exclusion is greppable in
+// `container logs`, which drops the structured metadata map (the sp-149h/sp-iqyq
+// renderer defect). Bounded so a system-wide staleness event doesn't flood one log
+// line with every excluded row.
+func staleListingSummary(stale []trading.GoodListing) string {
+	const sampleLimit = 5
+	parts := make([]string, 0, sampleLimit)
+	for i, l := range stale {
+		if i >= sampleLimit {
+			parts = append(parts, fmt.Sprintf("+%d more", len(stale)-sampleLimit))
+			break
+		}
+		parts = append(parts, fmt.Sprintf("%s:%s", l.Waypoint, l.Good))
+	}
+	return strings.Join(parts, ", ")
+}
 
 // rankLanesWithGatePenalty re-orders lanes already ranked by trading.RankSpreads
 // into ONE unified score that folds in two independent ranking-only adjustments

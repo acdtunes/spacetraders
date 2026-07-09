@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	shipCargo "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/cargo"
@@ -99,7 +100,20 @@ const (
 	// its actual recent fills, not just a stale ranked spread (sp-bp6f); see
 	// NegativeMarginAbort/RealizedCircuitMargin.
 	exitReasonNegativeMargin = "negative_margin"
+	// exitReasonCargoBlocked: the hull had no free cargo hold to buy a tranche
+	// (sp-xwa1) — a non-empty hull can't trade at all, so it parks pre-flight with
+	// a structured reason instead of burning starvation circuits or buying a
+	// sliver mid-buy; see CargoBlocked/CargoBlockReason.
+	exitReasonCargoBlocked = "cargo_blocked"
 )
+
+// minFreeCargoForCircuit is the smallest free hold (in units) a hull must have
+// before a circuit will fly it (sp-xwa1). Below this the hull cannot buy even a
+// one-unit tranche, so flying it wastes a cross-system round trip on nothing — the
+// exact non-empty-hull starvation the pre-flight cargo check exists to catch. Held
+// at 1 (i.e. "any free hold at all"): sub-viable slivers above zero are left to the
+// tranche sizing (trading.VisitTranche) rather than an arbitrary larger threshold.
+const minFreeCargoForCircuit = 1
 
 // MarketRefresher live-refreshes one waypoint's market from the API into the cache.
 // The coordinator uses it once, before the first buy, to re-read the source ask live
@@ -179,6 +193,14 @@ type RunTradeRouteCoordinatorResponse struct {
 	// RealizedCircuitMargin is that circuit-local net margin when it was set.
 	NegativeMarginAbort   bool
 	RealizedCircuitMargin int
+	// CargoBlocked is set when the hull had no free cargo hold to buy a tranche
+	// (sp-xwa1) — either detected pre-flight (a non-empty hull the run never should
+	// have flown) or before a buy leg once accumulated cargo fills the hold. The hull
+	// parks rather than failing mid-buy or buying a useless sliver. CargoBlockReason
+	// is the operator-facing prose (good/needed/free); the structured park is also
+	// logged in the message text so `container logs` shows WHY (renderer drops metadata).
+	CargoBlocked     bool
+	CargoBlockReason string
 	// AbortReason explains why a SELECTED lane (Good set) flew fewer visits than the
 	// margin would allow — a navigate/dock/buy/sell leg failed mid-circuit. It exists
 	// because three successive zero-visit bugs (r3cl, sh6w, sp-2sam) each needed a live
@@ -356,6 +378,24 @@ func (h *RunTradeRouteCoordinatorHandler) execute(
 			})
 			break
 		}
+
+		// Pre-flight cargo gate (sp-xwa1): a hull with no free hold cannot buy a
+		// tranche, so park BEFORE committing the circuit rather than burning
+		// starvation cycles on a non-empty hull or flying a cross-system round trip
+		// to buy nothing (the exact zero-tranche starvation the root cause named).
+		// Checked here, once a lane is chosen, so the park reason names the good the
+		// hull would have traded; runCircuit re-checks before each buy leg as
+		// accumulated cargo fills the hold, covering mid-circuit fills this can't see.
+		if free := ship.AvailableCargoSpace(); free < minFreeCargoForCircuit {
+			exitReason = exitReasonCargoBlocked
+			response.CargoBlocked = true
+			response.CargoBlockReason = fmt.Sprintf(
+				"hull has %d free cargo unit(s), needs >=%d to buy %s at %s",
+				free, minFreeCargoForCircuit, lane.Good, lane.SourceWaypoint)
+			cargoBlockedLog(logger, lane.Good, minFreeCargoForCircuit, free, "hull has no free hold to buy a tranche")
+			break
+		}
+
 		response.Good = lane.Good
 		response.SourceWaypoint = lane.SourceWaypoint
 		response.DestWaypoint = lane.DestWaypoint
@@ -372,7 +412,10 @@ func (h *RunTradeRouteCoordinatorHandler) execute(
 		selectionPayload["ship_symbol"] = cmd.ShipSymbol
 		selectionPayload["circuit"] = response.Circuits
 		selectionPayload["candidates"] = laneLogCandidates(lanes)
-		logger.Log("INFO", "Selected top disciplined arbitrage lane", selectionPayload)
+		// sp-149h: put the payload in the MESSAGE TEXT, not just the metadata map the
+		// `container logs` renderer drops — the captain greps the CLI output to verify
+		// which lane (and whether a cross-system one) was picked and at what margin.
+		logger.Log("INFO", laneSelectionMessage(lane, lanes), selectionPayload)
 
 		visitsBefore := response.Visits
 		ship = h.runCircuit(ctx, cmd, lane, ship, response)
@@ -391,6 +434,13 @@ func (h *RunTradeRouteCoordinatorHandler) execute(
 		}
 		if response.NegativeMarginAbort {
 			exitReason = exitReasonNegativeMargin
+			break
+		}
+		if response.CargoBlocked {
+			// A buy leg found the hold filled with cargo bought this circuit (the
+			// pre-flight gate above catches a hull that starts non-empty). Either way
+			// the hull can't buy — stop the run, don't re-select into the same wall.
+			exitReason = exitReasonCargoBlocked
 			break
 		}
 		if response.Visits == visitsBefore {
@@ -492,9 +542,24 @@ func (h *RunTradeRouteCoordinatorHandler) runCircuit(
 		// here so a residual-cargo hull still flies. AvailableCargoSpace already nets out the
 		// residual cargo; held is this run's own bought-not-yet-sold units on top.
 		cargoSpace := ship.AvailableCargoSpace() - held
+		// Split the old "volume or hold exhausted" guard into its two distinct causes
+		// (sp-xwa1). A HULL-side stall (no free hold) and a MARKET-side one (source
+		// volume dried up) used to share one indistinguishable line, hiding WHICH it
+		// was — the silent-cause defect the root cause named. Check the hold first: a
+		// pre-buy cargo park is the same class as the pre-flight gate, parking with a
+		// structured reason rather than buying a useless sliver as accumulated cargo
+		// fills the hold. The outer loop reads CargoBlocked and stops the run.
+		if cargoSpace < minFreeCargoForCircuit {
+			response.CargoBlocked = true
+			response.CargoBlockReason = fmt.Sprintf(
+				"hull has %d free cargo unit(s) (holding %d bought this circuit), needs >=%d for %s",
+				cargoSpace, held, minFreeCargoForCircuit, lane.Good)
+			cargoBlockedLog(logger, lane.Good, minFreeCargoForCircuit, cargoSpace, "hold filled with cargo bought this circuit")
+			return ship
+		}
 		buyUnits := trading.VisitTranche(srcGood.TradeVolume(), cargoSpace)
 		if buyUnits <= 0 {
-			logger.Log("INFO", "No tranche to buy (volume or hold exhausted) - stopping circuit", map[string]interface{}{
+			logger.Log("INFO", "No tranche to buy (source market volume exhausted) - stopping circuit", map[string]interface{}{
 				"good": lane.Good, "source_volume": srcGood.TradeVolume(), "cargo_space": cargoSpace,
 			})
 			return ship
@@ -796,6 +861,43 @@ func (h *RunTradeRouteCoordinatorHandler) scanLanes(
 		listings = append(listings, neighborListings...)
 	}
 
+	// Ranker age-cap (sp-xwa1): a lane priced from a market observation older than
+	// maxListingAge can already have moved, so ranking it chases a spread that no
+	// longer exists. An UNDIRECTED auto-scan drops stale rows before ranking so a
+	// stale lane can't win selection and execute at moved prices. A DIRECTED --dest
+	// scan keeps every row — the operator's lane is re-verified LIVE at execution
+	// (staleAskAborts + the per-visit margin re-check), so staleness must never
+	// SILENTLY veto it — but logs the retained stale rows so the reliance on live
+	// re-verification is visible. Either way the exclusion/retention is put in the
+	// MESSAGE TEXT (staleListingSummary), which `container logs` keeps even though it
+	// drops the metadata map (sp-149h/sp-iqyq renderer defect).
+	logger := common.LoggerFromContext(ctx)
+	fresh, stale := partitionListingsByAge(listings, h.clock.Now(), maxListingAge)
+	if len(stale) > 0 {
+		if targetDest == "" {
+			logger.Log("INFO", fmt.Sprintf(
+				"Excluded %d stale market listing(s) older than %s from undirected lane ranking: %s",
+				len(stale), maxListingAge, staleListingSummary(stale)),
+				map[string]interface{}{
+					"action":          "stale_listings_excluded",
+					"count":           len(stale),
+					"max_age_minutes": int(maxListingAge.Minutes()),
+				})
+			listings = fresh
+		} else {
+			logger.Log("INFO", fmt.Sprintf(
+				"Retained %d stale market listing(s) for directed --dest %q (re-verified live at execution, not vetoed): %s",
+				len(stale), targetDest, staleListingSummary(stale)),
+				map[string]interface{}{
+					"action":          "stale_listings_retained_directed",
+					"count":           len(stale),
+					"target_dest":     targetDest,
+					"max_age_minutes": int(maxListingAge.Minutes()),
+				})
+			// listings unchanged: the directed path ranks all rows; live re-verify guards it.
+		}
+	}
+
 	// Hold-vs-absorption weighting (sp-pnx0) and the cross-system jump-gate
 	// penalty are folded into ONE scoring pass inside rankLanesWithGatePenalty,
 	// not chained as two sequential re-rankings: both are "recompute-from-
@@ -838,6 +940,10 @@ func (h *RunTradeRouteCoordinatorHandler) collectSystemListings(
 				Supply:    derefString(g.Supply()),
 				Activity:  derefString(g.Activity()),
 				Volume:    g.TradeVolume(),
+				// Stamp each row with the market snapshot's freshness so the ranker can
+				// reject stale-priced lanes (sp-xwa1). One timestamp covers all of a
+				// waypoint's goods — a market scan observes the whole board at once.
+				ObservedAt: mkt.LastUpdated(),
 			})
 		}
 	}
@@ -913,6 +1019,27 @@ func cargoAboardExitLog(logger common.ContainerLogger, level string, lane tradin
 		"held":   held,
 		"reason": reason,
 	})
+}
+
+// cargoBlockedLog emits the structured pre-flight/pre-buy cargo park (sp-xwa1): the
+// hull has too little free hold to buy a tranche, so it parks rather than failing
+// mid-buy or buying a useless sliver. The good/needed/free/action/reason fields go in
+// the MESSAGE TEXT — `container logs` drops the metadata map (the sp-149h/sp-iqyq
+// renderer defect), so an operator reading the CLI must see WHY the hull parked on the
+// line itself, not in a discarded map. reason distinguishes this HULL-side stop
+// ("no free hold") from a market-side one ("source volume exhausted"), which the two
+// causes used to share behind one indistinguishable "volume or hold exhausted" line.
+func cargoBlockedLog(logger common.ContainerLogger, good string, needed, free int, reason string) {
+	logger.Log("WARNING", fmt.Sprintf(
+		"Pre-flight cargo check parked hull: good=%s needed>=%d free=%d action=empty-residual-cargo-before-trading reason=%s",
+		good, needed, free, reason),
+		map[string]interface{}{
+			"action": "cargo_blocked",
+			"good":   good,
+			"needed": needed,
+			"free":   free,
+			"reason": reason,
+		})
 }
 
 // dock docks the hull at its current waypoint, surviving the nav-cache race the goods
@@ -1057,4 +1184,46 @@ func laneLogPayload(l trading.ArbitrageLane) map[string]interface{} {
 		"volume_cap":    l.VolumeCap,
 		"capped_spread": l.CappedSpread,
 	}
+}
+
+// laneSelectionOneLiner renders one lane into a compact
+// "GOOD SRC(SRCSYS)->DST(DSTSYS) m=SPREAD <same|cross>" token for the selection log
+// message text (sp-149h). m is the per-unit margin (SpreadPerUnit); the same/cross
+// tag makes a gate-crossing lane greppable without parsing the two system codes.
+func laneSelectionOneLiner(l trading.ArbitrageLane) string {
+	srcSys := shared.ExtractSystemSymbol(l.SourceWaypoint)
+	dstSys := shared.ExtractSystemSymbol(l.DestWaypoint)
+	scope := "same"
+	if srcSys != dstSys {
+		scope = "cross"
+	}
+	return fmt.Sprintf("%s %s(%s)->%s(%s) m=%d %s", l.Good, l.SourceWaypoint, srcSys, l.DestWaypoint, dstSys, l.SpreadPerUnit, scope)
+}
+
+// laneSelectionCandidateLimit bounds how many ranked candidates the selection log
+// MESSAGE lists (sp-149h) — the captain's ask was "chosen lane + top-3 candidates one-
+// liner". Kept smaller than laneCandidateLogLimit (the fuller metadata shortlist) so
+// the message line stays a scannable one-liner, not a wall of every ranked lane.
+const laneSelectionCandidateLimit = 3
+
+// laneSelectionMessage builds the lane-selection LOG MESSAGE with the chosen lane's
+// identity and the top-N candidate shortlist embedded in the TEXT (sp-149h). The
+// structured payload is still attached as metadata for structured consumers, but the
+// CLI `container logs` view drops the metadata map — so the captain grepping that
+// output must see good/source/dest/margin on the line itself, not in a discarded map
+// (the same sp-iqyq renderer defect the dock-failure and cargo-aboard legs already
+// route around by putting the cause in the message). The stable prefix "Selected top
+// disciplined arbitrage lane" is preserved — existing greps/tests that match it keep
+// working — with the payload appended after a colon.
+func laneSelectionMessage(chosen trading.ArbitrageLane, ranked []trading.ArbitrageLane) string {
+	limit := laneSelectionCandidateLimit
+	if len(ranked) < limit {
+		limit = len(ranked)
+	}
+	tops := make([]string, 0, limit)
+	for _, l := range ranked[:limit] {
+		tops = append(tops, laneSelectionOneLiner(l))
+	}
+	return fmt.Sprintf("Selected top disciplined arbitrage lane: %s | top%d: %s",
+		laneSelectionOneLiner(chosen), limit, strings.Join(tops, "; "))
 }

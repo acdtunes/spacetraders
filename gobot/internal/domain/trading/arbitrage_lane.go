@@ -1,6 +1,9 @@
 package trading
 
-import "sort"
+import (
+	"sort"
+	"time"
+)
 
 // GoodListing is one cached market's trade data for a single good, expressed in
 // SpaceTraders' MARKET-perspective column semantics — the "inverted-margin trap"
@@ -23,6 +26,13 @@ type GoodListing struct {
 	Supply    string
 	Activity  string
 	Volume    int
+	// ObservedAt is when the source market snapshot these prices came from was
+	// last refreshed into the cache (market.Market.LastUpdated). The ranker uses
+	// it to reject lanes priced from observations older than maxListingAge, so a
+	// lane whose cached spread has since moved cannot win selection and execute at
+	// stale prices (sp-xwa1). Zero value means "unknown age" — treated as fresh so
+	// callers that don't populate it (older tests) rank unchanged.
+	ObservedAt time.Time
 }
 
 // ArbitrageLane is the best buy-here / sell-there circuit for a single good
