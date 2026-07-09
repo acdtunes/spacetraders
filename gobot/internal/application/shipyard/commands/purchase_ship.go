@@ -628,7 +628,10 @@ func (h *PurchaseShipHandler) createShipValueObjects(
 		return nil, nil, "", fmt.Errorf("failed to create cargo: %w", err)
 	}
 
-	fuel, err := shared.NewFuel(shipData.FuelCurrent, shipData.FuelCapacity)
+	// Authoritative API snapshot: clamp a transient current>capacity over-report
+	// to capacity rather than reject, so a freshly-purchased hull isn't dropped
+	// on ingest (sp-xxhn).
+	fuel, err := shared.ReconstructFuel(shipData.FuelCurrent, shipData.FuelCapacity)
 	if err != nil {
 		return nil, nil, "", fmt.Errorf("failed to create fuel: %w", err)
 	}

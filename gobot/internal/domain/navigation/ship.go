@@ -194,8 +194,12 @@ func (s *Ship) FuelCapacity() int {
 
 // UpdateFuelFromAPI updates the ship's fuel state from API response data.
 // This allows avoiding a separate GetShip API call after navigation/refuel.
+// The API is authoritative and can over-report current fuel against a shrunk
+// capacity; that snapshot is clamped to capacity rather than rejected so a
+// transient value never leaves stale fuel driving routing (sp-xxhn). Genuinely
+// invalid data (negative values) still surfaces an error (#12).
 func (s *Ship) UpdateFuelFromAPI(current, capacity int) error {
-	fuel, err := shared.NewFuel(current, capacity)
+	fuel, err := shared.ReconstructFuel(current, capacity)
 	if err != nil {
 		return err
 	}

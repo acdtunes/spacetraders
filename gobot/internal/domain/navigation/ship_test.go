@@ -72,3 +72,20 @@ func TestUpdateFuelFromAPI_UpdatesOnValidData(t *testing.T) {
 		t.Fatalf("expected fuel capacity 120, got %d", ship.FuelCapacity())
 	}
 }
+
+// sp-xxhn: the API is authoritative and can over-report current fuel against a
+// shrunk capacity (e.g. post frame-swap). Ingesting that snapshot must clamp to
+// capacity, not fail — a spurious error here would leave stale fuel driving
+// routing decisions. Negative/invalid data still errors (see #12 above).
+func TestUpdateFuelFromAPI_ClampsCurrentExceedingCapacity(t *testing.T) {
+	ship := newFuelTestShip(t, 80, 100)
+
+	err := ship.UpdateFuelFromAPI(120, 100)
+
+	if err != nil {
+		t.Fatalf("expected no error clamping over-reported fuel, got: %v", err)
+	}
+	if ship.Fuel().Current != 100 || ship.Fuel().Capacity != 100 {
+		t.Fatalf("expected fuel clamped to 100/100, got %d/%d", ship.Fuel().Current, ship.Fuel().Capacity)
+	}
+}

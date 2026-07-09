@@ -461,8 +461,10 @@ func (r *ShipRepository) shipDataToDomain(ctx context.Context, data *navigation.
 		return nil, fmt.Errorf("failed to get location waypoint %s: %w", data.Location, err)
 	}
 
-	// Create fuel value object
-	fuel, err := shared.NewFuel(data.FuelCurrent, data.FuelCapacity)
+	// Create fuel value object from the authoritative API snapshot, clamping a
+	// transient current>capacity over-report to capacity so it doesn't sideline
+	// the hull (sp-xxhn).
+	fuel, err := shared.ReconstructFuel(data.FuelCurrent, data.FuelCapacity)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create fuel: %w", err)
 	}
@@ -1188,8 +1190,10 @@ func (r *ShipRepository) modelToDomain(ctx context.Context, model *persistence.S
 		}
 	}
 
-	// Create fuel value object
-	fuel, err := shared.NewFuel(model.FuelCurrent, model.FuelCapacity)
+	// Create fuel value object from the persisted (API-derived) snapshot,
+	// clamping a stored current>capacity to capacity so restart ship-refresh
+	// doesn't sideline the hull (sp-xxhn).
+	fuel, err := shared.ReconstructFuel(model.FuelCurrent, model.FuelCapacity)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create fuel: %w", err)
 	}
@@ -1304,8 +1308,9 @@ func (r *ShipRepository) shipDataToModel(ctx context.Context, data *navigation.S
 		model.LocationY = waypoint.Y
 	}
 
-	// Fuel
-	model.FuelCurrent = data.FuelCurrent
+	// Fuel — clamp a transient API over-report (current>capacity) at the
+	// persistence boundary so we never store an invariant-violating row (sp-xxhn).
+	model.FuelCurrent = min(data.FuelCurrent, data.FuelCapacity)
 	model.FuelCapacity = data.FuelCapacity
 
 	// Cargo

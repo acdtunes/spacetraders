@@ -26,6 +26,27 @@ func NewFuel(current, capacity int) (*Fuel, error) {
 	}, nil
 }
 
+// ReconstructFuel rehydrates a Fuel value object from an authoritative external
+// source (the SpaceTraders API or a DB row mirroring it), where capacity is the
+// source of truth for tank size. Unlike NewFuel, it clamps current down to
+// capacity instead of rejecting current>capacity: the API can transiently
+// over-report fuel against a shrunk capacity (e.g. right after a frame swap),
+// and rejecting the whole ship would sideline an otherwise-usable hull (sp-xxhn).
+// Genuinely invalid data (negative values) still errors, so callers ingesting an
+// authoritative snapshot never silently keep stale fuel.
+func ReconstructFuel(current, capacity int) (*Fuel, error) {
+	if current < 0 {
+		return nil, fmt.Errorf("current fuel cannot be negative")
+	}
+	if capacity < 0 {
+		return nil, fmt.Errorf("fuel capacity cannot be negative")
+	}
+	return &Fuel{
+		Current:  min(current, capacity),
+		Capacity: capacity,
+	}, nil
+}
+
 // Percentage returns fuel as percentage of capacity
 func (f *Fuel) Percentage() float64 {
 	if f.Capacity == 0 {
