@@ -136,19 +136,43 @@ func (h *RunTradeRouteCoordinatorHandler) travel(
 // ranking is still evaluated for floor-discipline on its true numbers.
 const crossSystemRankingPenaltyPerUnit = 200
 
-// rankLanesWithGatePenalty re-orders lanes already ranked by
-// trading.RankSpreads so cross-system lanes must clear a materially higher
-// bar than same-system ones before being preferred - reflecting the extra
-// time cost of a jump plus cooldown that RankSpreads' pure per-unit-spread
-// view can't see. It returns a NEW slice of the original, unmodified
-// ArbitrageLane values; only ordering changes, mirroring RankSpreads' own
-// tie-break chain (score desc, then the lane's REAL unpenalized
-// SpreadPerUnit desc, then Good asc) with the penalty-adjusted score
-// substituted as the primary key only.
-func rankLanesWithGatePenalty(lanes []trading.ArbitrageLane) []trading.ArbitrageLane {
+// rankLanesWithGatePenalty re-orders lanes already ranked by trading.RankSpreads
+// into ONE unified score that folds in two independent ranking-only adjustments
+// the pure per-unit-spread view can't see:
+//
+//   - a cross-system gate penalty: cross-system lanes must clear a materially
+//     higher bar than same-system ones, reflecting the extra time cost of a
+//     jump plus cooldown.
+//   - hold-fit weighting (sp-pnx0): a lane's VolumeCap is a market-absorption
+//     bound, not a hold-sized one - a hull far bigger than VolumeCap will not
+//     clear a single tranche at that depth before moving the price.
+//     trading.HoldFitWeight scores how much of a lane's cap the hull can
+//     actually absorb, saturating to 1.0 once the cap meets or exceeds the
+//     hold. shipCapacity <= 0 (no ship context) disables this term entirely
+//     (weight 1.0 for every lane), matching trading.RankSpreadsForHold's own
+//     "zero disables" convention.
+//
+// These two adjustments MUST be folded into a single score computation rather
+// than chained as two sequential re-rankings: this function and
+// trading.RankSpreadsForHold/reorderByHoldFit are both "recompute-from-scratch"
+// rankers that derive their score purely from each lane's own persistent
+// fields, never from the order of the slice passed in. Composing them as
+// funcB(funcA(lanes)) does not combine their effects - funcB completely
+// overrides funcA's reordering, since funcB re-derives its own ranking from
+// scratch using only the lanes' raw fields. (This is exactly the bug an earlier
+// version of this call site had: scanLanes wrapped this function around
+// trading.RankSpreadsForHold's already hold-weighted output, but silently
+// discarded that weighting because this function's own score ignored input
+// order entirely.)
+//
+// It returns a NEW slice of the original, unmodified ArbitrageLane values;
+// only ordering changes, mirroring RankSpreads' own tie-break chain (score
+// desc, then the lane's REAL unpenalized SpreadPerUnit desc, then Good asc)
+// with the adjusted score substituted as the primary key only.
+func rankLanesWithGatePenalty(lanes []trading.ArbitrageLane, shipCapacity int) []trading.ArbitrageLane {
 	type scoredLane struct {
 		lane  trading.ArbitrageLane
-		score int
+		score float64
 	}
 
 	scored := make([]scoredLane, len(lanes))
@@ -157,7 +181,11 @@ func rankLanesWithGatePenalty(lanes []trading.ArbitrageLane) []trading.Arbitrage
 		if shared.ExtractSystemSymbol(lane.SourceWaypoint) != shared.ExtractSystemSymbol(lane.DestWaypoint) {
 			effectiveSpread -= crossSystemRankingPenaltyPerUnit
 		}
-		scored[i] = scoredLane{lane: lane, score: effectiveSpread * lane.VolumeCap}
+		weight := 1.0
+		if shipCapacity > 0 {
+			weight = trading.HoldFitWeight(lane.VolumeCap, shipCapacity)
+		}
+		scored[i] = scoredLane{lane: lane, score: float64(effectiveSpread*lane.VolumeCap) * weight}
 	}
 
 	sort.SliceStable(scored, func(i, j int) bool {

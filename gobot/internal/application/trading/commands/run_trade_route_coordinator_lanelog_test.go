@@ -174,7 +174,7 @@ func TestTradeRouteCoordinator_SelectedLaneLog_CarriesPayloadAndCrossSystemCandi
 	}
 	mediator := &msMediator{connections: map[string][]string{"X1-TR": {"X1-TR2"}}}
 	shipRepo := &trFakeShipRepo{ship: ship}
-	handler := NewRunTradeRouteCoordinatorHandler(mediator, shipRepo, marketRepo, nil, nil)
+	handler := NewRunTradeRouteCoordinatorHandler(mediator, shipRepo, marketRepo, nil, nil, nil)
 
 	logger := &laneLogCapturingLogger{}
 	ctx := common.WithLogger(context.Background(), logger)

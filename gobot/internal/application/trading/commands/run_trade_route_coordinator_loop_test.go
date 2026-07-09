@@ -171,7 +171,7 @@ func newLoopHarness(t *testing.T, ship *navigation.Ship) (*RunTradeRouteCoordina
 	mediator := &loopMediator{fixture: fixture}
 	marketRepo := &loopMarketRepo{fixture: fixture}
 	shipRepo := &trFakeShipRepo{ship: ship}
-	handler := NewRunTradeRouteCoordinatorHandler(mediator, shipRepo, marketRepo, nil, nil)
+	handler := NewRunTradeRouteCoordinatorHandler(mediator, shipRepo, marketRepo, nil, nil, nil)
 	return handler, mediator
 }
 

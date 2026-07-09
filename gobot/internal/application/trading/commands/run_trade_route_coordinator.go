@@ -11,6 +11,7 @@ import (
 	shipTypes "github.com/andrescamacho/spacetraders-go/internal/application/ship/types"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/trading"
 	"github.com/andrescamacho/spacetraders-go/pkg/utils"
@@ -41,6 +42,31 @@ const defaultMaxCircuits = 20
 // means the system has nothing left worth absorbing a hull into.
 const noProgressStarvationLimit = 3
 
+// defaultWorkingCapitalReserve is the fallback hard spend floor (sp-bp6f): a
+// circuit must not execute a buy that would drop LIVE treasury below this
+// line. Sized to the exact level the 2026-07-09 incident called "danger" —
+// treasury bottomed at 43,041 and briefly went negative (-30,537) before the
+// captain intervened — so a circuit now stops BEFORE crossing back into that
+// zone instead of the failure being discovered after the fact. Overridable
+// per-run via RunTradeRouteCoordinatorCommand.WorkingCapitalReserve (0 → this
+// default) and via the daemon's "working_capital_reserve" launch-config key
+// (mirroring max_visits' own "0 → coordinator default" convention), so the
+// captain can raise or lower the floor operationally — e.g. to the current
+// contract+factory working-capital need the incident notes called out —
+// without a redeploy.
+const defaultWorkingCapitalReserve = 50000
+
+// negativeMarginAbortVisits bounds how many visits a circuit's OWN realized
+// margin (this circuit's sell revenue minus its buy cost, reset to zero every
+// fresh lane commitment) may run negative before the circuit aborts (sp-bp6f
+// fix #2). This is the exact incident shape: repeated tranches walk the
+// source ask up while the destination bid gets crushed, so the STALE ranked
+// spread still looks positive long after the circuit's actual fills have
+// turned loss-making. Small enough to catch the pattern within a circuit's
+// early visits before it compounds; not so small that a single noisy fill
+// (e.g. one visit's fees) trips it.
+const negativeMarginAbortVisits = 3
+
 // exitReason* enumerates why the outer circuit loop stopped (sp-wlev: circuits
 // must loop until a margin-exit or starvation-exit, never one-and-done — a
 // hull that flies one lane and idles wastes duty cycle, the 20x gap this
@@ -64,6 +90,15 @@ const (
 	exitReasonStaleAsk = "stale_ask"
 	// exitReasonNoLanes: the market cache had nothing to rank at all.
 	exitReasonNoLanes = "no_lanes"
+	// exitReasonSpendFloor: a circuit was about to buy a tranche that would drop
+	// live treasury below the working-capital reserve floor (sp-bp6f); see
+	// SpendFloorAbort/TreasuryAtAbort/ReserveFloor.
+	exitReasonSpendFloor = "spend_floor"
+	// exitReasonNegativeMargin: a circuit's own realized margin ran negative for
+	// negativeMarginAbortVisits consecutive visits - the lane is losing money on
+	// its actual recent fills, not just a stale ranked spread (sp-bp6f); see
+	// NegativeMarginAbort/RealizedCircuitMargin.
+	exitReasonNegativeMargin = "negative_margin"
 )
 
 // MarketRefresher live-refreshes one waypoint's market from the API into the cache.
@@ -84,6 +119,8 @@ type RunTradeRouteCoordinatorCommand struct {
 	PlayerID     int
 	ContainerID  string
 	MaxVisits    int // 0 → defaultMaxVisits
+	// WorkingCapitalReserve is the hard spend floor (sp-bp6f): 0 → defaultWorkingCapitalReserve.
+	WorkingCapitalReserve int
 }
 
 // RunTradeRouteCoordinatorResponse reports the realised circuit economics. Net
@@ -119,6 +156,23 @@ type RunTradeRouteCoordinatorResponse struct {
 	// live ask read at the source, populated when StaleAskAbort is set.
 	RankedSourceAsk int
 	LiveSourceAsk   int
+	// SpendFloorAbort is set when a circuit was about to buy a tranche that would
+	// drop live treasury below the working-capital reserve floor (sp-bp6f) — the
+	// buy was skipped and the circuit stopped BEFORE spending past the line,
+	// rather than the breach being discovered after the fact. TreasuryAtAbort and
+	// ReserveFloor are the live credits observed and the reserve in effect; a
+	// fail-closed abort (the live treasury read itself failed) leaves
+	// TreasuryAtAbort at zero since no live figure was actually obtained.
+	SpendFloorAbort bool
+	TreasuryAtAbort int
+	ReserveFloor    int
+	// NegativeMarginAbort is set when THIS circuit's own realized margin (its
+	// sell revenue minus its buy cost, not the cross-run cumulative totals) ran
+	// negative for negativeMarginAbortVisits consecutive visits — the lane is
+	// actively losing money on its recent fills (sp-bp6f fix #2).
+	// RealizedCircuitMargin is that circuit-local net margin when it was set.
+	NegativeMarginAbort   bool
+	RealizedCircuitMargin int
 	// AbortReason explains why a SELECTED lane (Good set) flew fewer visits than the
 	// margin would allow — a navigate/dock/buy/sell leg failed mid-circuit. It exists
 	// because three successive zero-visit bugs (r3cl, sh6w, sp-2sam) each needed a live
@@ -158,6 +212,12 @@ type RunTradeRouteCoordinatorHandler struct {
 	marketRepo      market.MarketRepository
 	marketRefresher MarketRefresher // optional; nil disables the live stale-ask guard
 	clock           shared.Clock    // used only for the cross-system jump-cooldown wait (sp-wlev)
+	// apiClient is used only to live-read treasury for the working-capital spend
+	// floor (sp-bp6f). Optional; nil disables the guard entirely (fails OPEN,
+	// mirroring marketRefresher's own optional-port contract) rather than
+	// defaulting to a real client the way clock defaults to RealClock — a caller
+	// that cannot supply one (e.g. most tests) simply runs without the guard.
+	apiClient domainPorts.APIClient
 }
 
 // NewRunTradeRouteCoordinatorHandler wires the coordinator. It does not own a
@@ -168,13 +228,17 @@ type RunTradeRouteCoordinatorHandler struct {
 // stale-ask guard (the circuit still runs on the ranked basis); the daemon injects a
 // real MarketScanner so the guard is active. A nil clock defaults to shared.RealClock;
 // tests inject a shared.MockClock so the cross-system jump-cooldown wait (sp-wlev) is
-// instant instead of a real sleep.
+// instant instead of a real sleep. A nil apiClient disables the working-capital
+// spend-floor guard (sp-bp6f) — the circuit runs without live-checking treasury
+// before each buy; the daemon injects the real APIClient so the guard is active in
+// production, the same fail-open contract marketRefresher already uses.
 func NewRunTradeRouteCoordinatorHandler(
 	mediator common.Mediator,
 	shipRepo navigation.ShipRepository,
 	marketRepo market.MarketRepository,
 	marketRefresher MarketRefresher,
 	clock shared.Clock,
+	apiClient domainPorts.APIClient,
 ) *RunTradeRouteCoordinatorHandler {
 	if clock == nil {
 		clock = shared.NewRealClock()
@@ -185,6 +249,7 @@ func NewRunTradeRouteCoordinatorHandler(
 		marketRepo:      marketRepo,
 		marketRefresher: marketRefresher,
 		clock:           clock,
+		apiClient:       apiClient,
 	}
 }
 
@@ -244,7 +309,7 @@ func (h *RunTradeRouteCoordinatorHandler) execute(
 	exitReason := ""
 
 	for circuitNum := 0; circuitNum < defaultMaxCircuits; circuitNum++ {
-		lanes, err := h.scanLanes(ctx, cmd.SystemSymbol, playerID)
+		lanes, err := h.scanLanes(ctx, cmd.SystemSymbol, playerID, ship.CargoCapacity())
 		if err != nil {
 			return fmt.Errorf("failed to scan arbitrage lanes: %w", err)
 		}
@@ -312,6 +377,14 @@ func (h *RunTradeRouteCoordinatorHandler) execute(
 			exitReason = exitReasonStaleAsk
 			break
 		}
+		if response.SpendFloorAbort {
+			exitReason = exitReasonSpendFloor
+			break
+		}
+		if response.NegativeMarginAbort {
+			exitReason = exitReasonNegativeMargin
+			break
+		}
 		if response.Visits == visitsBefore {
 			// The ranked lane flew zero visits (e.g. the live re-check killed it
 			// immediately). Bound how many consecutive commitments can go nowhere
@@ -366,8 +439,13 @@ func (h *RunTradeRouteCoordinatorHandler) runCircuit(
 	if maxVisits <= 0 {
 		maxVisits = defaultMaxVisits
 	}
+	reserve := cmd.WorkingCapitalReserve
+	if reserve <= 0 {
+		reserve = defaultWorkingCapitalReserve
+	}
 
 	held := 0
+	circuitNetMargin := 0 // this circuit's own sell revenue minus its own buy cost (sp-bp6f fix #2)
 	for i := 0; i < maxVisits; i++ {
 		// Re-observe both ends: basis (source ask we pay) and the live dest bid.
 		srcGood, err := h.observeGood(ctx, lane.SourceWaypoint, lane.Good, playerID)
@@ -414,6 +492,17 @@ func (h *RunTradeRouteCoordinatorHandler) runCircuit(
 			return ship
 		}
 
+		// Working-capital spend floor (sp-bp6f): refuse the buy BEFORE traveling,
+		// docking, or purchasing if it would drop live treasury below the reserve.
+		// Must run here, ahead of Leg 1 committing to anything — a circuit that
+		// already docked and spent before checking has defeated the floor's whole
+		// purpose. Uses basis (this visit's live source ask, re-observed above),
+		// not lane.SourceAsk (the STALE ranked basis), so the projected cost
+		// reflects what the circuit is actually about to pay right now.
+		if h.spendFloorBreached(ctx, buyUnits*basis, reserve, response) {
+			return ship
+		}
+
 		// Leg 1: buy a tranche at the source (exporter). A cross-system lane
 		// jumps instead of navigating (sp-wlev); travel reloads the ship
 		// afterward so this pointer reflects its post-jump state.
@@ -450,6 +539,7 @@ func (h *RunTradeRouteCoordinatorHandler) runCircuit(
 		}
 		held += buyResp.UnitsAdded
 		response.TotalCost += buyResp.TotalCost
+		circuitNetMargin -= buyResp.TotalCost
 
 		// Leg 2: sell what we hold at the destination (importer). A
 		// cross-system lane jumps instead of navigating (sp-wlev).
@@ -486,13 +576,88 @@ func (h *RunTradeRouteCoordinatorHandler) runCircuit(
 		held -= sellResp.UnitsSold
 		response.TotalRevenue += sellResp.TotalRevenue
 		response.UnitsTraded += sellResp.UnitsSold
+		circuitNetMargin += sellResp.TotalRevenue
 		response.Visits++
+
+		// Per-circuit negative-margin abort (sp-bp6f fix #2): this circuit's own
+		// realized fills - not the stale ranked spread - are what matter once
+		// trading has actually started. Gate on i+1 (visit count) so one noisy
+		// early fill can't trip it; negativeMarginAbortVisits consecutive visits
+		// of net-negative realized margin means the lane itself has turned
+		// loss-making, e.g. the incident's repeated tranches walking the source
+		// ask up while the destination bid gets crushed.
+		if i+1 >= negativeMarginAbortVisits && circuitNetMargin < 0 {
+			response.NegativeMarginAbort = true
+			response.RealizedCircuitMargin = circuitNetMargin
+			logger.Log("WARNING", "Circuit realized margin ran negative - aborting before it compounds", map[string]interface{}{
+				"good": lane.Good, "visits": response.Visits, "realized_margin": circuitNetMargin,
+			})
+			return ship
+		}
 	}
 
 	logger.Log("INFO", "Trade-route hit the max-visit safety bound", map[string]interface{}{
 		"good": lane.Good, "max_visits": maxVisits,
 	})
 	return ship
+}
+
+// spendFloorBreached live-checks whether spending projectedCost right now would
+// drop treasury below reserve (sp-bp6f), setting the abort fields on response
+// and returning true if so — the caller must not proceed with the buy.
+//
+// Fails OPEN when no apiClient is wired (h.apiClient == nil): the guard is
+// simply unavailable, the same optional-port contract staleAskAborts already
+// uses for marketRefresher, so callers that cannot supply a live API client
+// (most tests) run without it rather than being forced to fake one.
+//
+// Fails CLOSED on every live-read failure (an unresolvable player token, or the
+// GetAgent call itself erroring): unlike staleAskAborts' infrastructure-gap
+// tolerance, a guard whose entire job is stopping the treasury from going
+// negative must never let a buy through just because it went blind. An API
+// hiccup here aborts the circuit instead of silently trading past the floor.
+func (h *RunTradeRouteCoordinatorHandler) spendFloorBreached(
+	ctx context.Context,
+	projectedCost int,
+	reserve int,
+	response *RunTradeRouteCoordinatorResponse,
+) bool {
+	logger := common.LoggerFromContext(ctx)
+	if h.apiClient == nil {
+		return false
+	}
+
+	token, err := common.PlayerTokenFromContext(ctx)
+	if err != nil {
+		logger.Log("WARNING", "Could not resolve player token for spend-floor check - aborting circuit (fail-closed)", map[string]interface{}{
+			"error": err.Error(),
+		})
+		response.SpendFloorAbort = true
+		response.ReserveFloor = reserve
+		return true
+	}
+
+	agentData, err := h.apiClient.GetAgent(ctx, token)
+	if err != nil {
+		logger.Log("WARNING", "Could not read live treasury for spend-floor check - aborting circuit (fail-closed)", map[string]interface{}{
+			"error": err.Error(),
+		})
+		response.SpendFloorAbort = true
+		response.ReserveFloor = reserve
+		return true
+	}
+
+	if agentData.Credits-projectedCost < reserve {
+		logger.Log("WARNING", "Buy would breach the working-capital reserve floor - aborting circuit before spending", map[string]interface{}{
+			"treasury": agentData.Credits, "projected_cost": projectedCost, "reserve": reserve,
+		})
+		response.SpendFloorAbort = true
+		response.TreasuryAtAbort = agentData.Credits
+		response.ReserveFloor = reserve
+		return true
+	}
+
+	return false
 }
 
 // staleAskAborts live-verifies the source ask before the first buy and reports
@@ -609,6 +774,7 @@ func (h *RunTradeRouteCoordinatorHandler) scanLanes(
 	ctx context.Context,
 	systemSymbol string,
 	playerID int,
+	shipCapacity int,
 ) ([]trading.ArbitrageLane, error) {
 	listings, err := h.collectSystemListings(ctx, systemSymbol, playerID)
 	if err != nil {
@@ -623,7 +789,15 @@ func (h *RunTradeRouteCoordinatorHandler) scanLanes(
 		listings = append(listings, neighborListings...)
 	}
 
-	return rankLanesWithGatePenalty(trading.RankSpreads(listings)), nil
+	// Hold-vs-absorption weighting (sp-pnx0) and the cross-system jump-gate
+	// penalty are folded into ONE scoring pass inside rankLanesWithGatePenalty,
+	// not chained as two sequential re-rankings: both are "recompute-from-
+	// scratch" rankers that derive their score purely from each lane's own
+	// fields, ignoring input order, so composing them as funcB(funcA(lanes))
+	// would let funcB silently discard funcA's reordering. Start from the
+	// plain trading.RankSpreads order (not RankSpreadsForHold) since hold-fit
+	// weighting is applied here via shipCapacity instead.
+	return rankLanesWithGatePenalty(trading.RankSpreads(listings), shipCapacity), nil
 }
 
 // collectSystemListings reads every cached market in one system into flat

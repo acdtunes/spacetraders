@@ -143,6 +143,95 @@ func TestFirstDisciplinedLane_NoneClearFloor(t *testing.T) {
 	}
 }
 
+// holdWeightFixture reproduces the sp-pnx0 incident shape: one THIN lane (deep
+// per-unit spread, shallow volume cap — a light ship's ideal lane) and one DEEP
+// lane (modest per-unit spread, deep volume cap — what a heavy hull actually
+// needs to avoid crushing the market). Unweighted RankSpreads ranks purely by
+// CappedSpread and picks THINGOOD every time, regardless of which hull will fly
+// it — the exact defect: a 225-cargo heavy sent onto a vol-20 lane.
+//
+//	THINGOOD: source Ask 1000, dest Bid 9000 -> spread/u 8000; volumes 20/500 -> cap 20;  capped = 160000.
+//	DEEPGOOD: source Ask  500, dest Bid 1500 -> spread/u 1000; volumes 150/150 -> cap 150; capped = 150000.
+func holdWeightFixture() []GoodListing {
+	return []GoodListing{
+		{Good: "THINGOOD", Waypoint: "X1-SYS-T1", TradeType: "EXPORT", Bid: 950, Ask: 1000, Volume: 20},
+		{Good: "THINGOOD", Waypoint: "X1-SYS-T2", TradeType: "IMPORT", Bid: 9000, Ask: 9050, Volume: 500},
+		{Good: "DEEPGOOD", Waypoint: "X1-SYS-D1", TradeType: "EXPORT", Bid: 450, Ask: 500, Volume: 150},
+		{Good: "DEEPGOOD", Waypoint: "X1-SYS-D2", TradeType: "IMPORT", Bid: 1500, Ask: 1550, Volume: 150},
+	}
+}
+
+// TestRankSpreads_UnweightedPicksThinLaneRegardlessOfHull pins the PRE-EXISTING
+// (unweighted) behavior on the fixture: THINGOOD's deeper CappedSpread
+// (160000 > 150000) wins regardless of hull size. This is the defect sp-pnx0
+// fixes — RankSpreads itself is untouched, so this must keep passing.
+func TestRankSpreads_UnweightedPicksThinLaneRegardlessOfHull(t *testing.T) {
+	lanes := RankSpreads(holdWeightFixture())
+	if len(lanes) != 2 || lanes[0].Good != "THINGOOD" {
+		t.Fatalf("expected unweighted RankSpreads to rank THINGOOD first (capped 160000 > DEEPGOOD 150000), got %+v", lanes)
+	}
+}
+
+// TestRankSpreadsForHold_HeavyHullPrefersDeepLaneOverThinOne is the sp-pnx0 fix
+// itself: a 225-cargo heavy hull must rank DEEPGOOD above THINGOOD, because
+// THINGOOD's volume cap (20) is a small fraction of the hold (225) while
+// DEEPGOOD's (150) covers most of it.
+//
+//	holdFitWeight(20,225)  = 20/225  = 0.0889 -> THINGOOD weighted = 160000*0.0889 = 14222
+//	holdFitWeight(150,225) = 150/225 = 0.6667 -> DEEPGOOD weighted = 150000*0.6667 = 100000
+//
+// DEEPGOOD (100000) > THINGOOD (14222): the ranking flips.
+func TestRankSpreadsForHold_HeavyHullPrefersDeepLaneOverThinOne(t *testing.T) {
+	lanes := RankSpreadsForHold(holdWeightFixture(), 225)
+	if len(lanes) != 2 {
+		t.Fatalf("expected both lanes still present (weighting reorders, never filters), got %d: %+v", len(lanes), lanes)
+	}
+	if lanes[0].Good != "DEEPGOOD" {
+		t.Fatalf("expected a 225-hold heavy to rank DEEPGOOD first (thin THINGOOD would crush the vol-20 lane), got %q first: %+v", lanes[0].Good, lanes)
+	}
+	if lanes[1].Good != "THINGOOD" {
+		t.Fatalf("expected THINGOOD to still be present, just ranked second, got %+v", lanes)
+	}
+
+	// Weighting must never mutate the lane's real, unpenalized economics - the
+	// same "ranking-only adjustment" contract rankLanesWithGatePenalty upholds.
+	for _, l := range lanes {
+		if l.Good == "THINGOOD" && (l.SpreadPerUnit != 8000 || l.CappedSpread != 160000) {
+			t.Fatalf("THINGOOD's real economics must be untouched, got spread/u=%d capped=%d", l.SpreadPerUnit, l.CappedSpread)
+		}
+		if l.Good == "DEEPGOOD" && (l.SpreadPerUnit != 1000 || l.CappedSpread != 150000) {
+			t.Fatalf("DEEPGOOD's real economics must be untouched, got spread/u=%d capped=%d", l.SpreadPerUnit, l.CappedSpread)
+		}
+	}
+}
+
+// TestRankSpreadsForHold_LightHullStillPrefersThinLane proves the formula does
+// not simply invert the ranking: a light ship whose hold (20) matches THINGOOD's
+// volume cap exactly saturates holdFitWeight to 1.0 for BOTH lanes (DEEPGOOD's
+// 150-cap also exceeds a 20-hold), so the ORIGINAL CappedSpread order decides -
+// THINGOOD (160000) still wins. A hold-mismatched heavy is redirected; a hull
+// that genuinely fits the thin lane is not punished for it.
+func TestRankSpreadsForHold_LightHullStillPrefersThinLane(t *testing.T) {
+	lanes := RankSpreadsForHold(holdWeightFixture(), 20)
+	if len(lanes) != 2 || lanes[0].Good != "THINGOOD" {
+		t.Fatalf("expected a 20-hold light ship to still prefer THINGOOD (both lanes saturate holdFitWeight to 1.0, real CappedSpread order holds), got %+v", lanes)
+	}
+}
+
+// TestRankSpreadsForHold_NonPositiveCapacityFallsBackToUnweighted proves an
+// unknown/zero/negative hull capacity (e.g. a caller with no ship context)
+// degrades to plain RankSpreads ordering rather than dividing by zero or
+// producing a meaningless weight.
+func TestRankSpreadsForHold_NonPositiveCapacityFallsBackToUnweighted(t *testing.T) {
+	for _, capacity := range []int{0, -1} {
+		weighted := RankSpreadsForHold(holdWeightFixture(), capacity)
+		unweighted := RankSpreads(holdWeightFixture())
+		if len(weighted) != len(unweighted) || weighted[0].Good != unweighted[0].Good || weighted[1].Good != unweighted[1].Good {
+			t.Fatalf("capacity %d: expected fallback to unweighted RankSpreads order, got %+v want order like %+v", capacity, weighted, unweighted)
+		}
+	}
+}
+
 // TestRankSpreads_InvertedColumnGuard is the inverted-margin-trap sentinel. With
 // the CORRECT column semantics, FIREARMS' spread/unit is destBid(900) −
 // sourceAsk(300) = 600. An implementation that reads the columns backwards —

@@ -194,7 +194,7 @@ func newDiscHarness(t *testing.T, ship *navigation.Ship, subFloorOnly bool) *dis
 	mediator := &discMediator{fixture: fixture}
 	marketRepo := &discMarketRepo{fixture: fixture, subFloorOnly: subFloorOnly}
 	shipRepo := &trFakeShipRepo{ship: ship}
-	handler := NewRunTradeRouteCoordinatorHandler(mediator, shipRepo, marketRepo, nil, nil)
+	handler := NewRunTradeRouteCoordinatorHandler(mediator, shipRepo, marketRepo, nil, nil, nil)
 	return &discHarness{handler: handler, mediator: mediator, shipRepo: shipRepo, ship: ship}
 }
 

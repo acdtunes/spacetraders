@@ -531,7 +531,7 @@ func run(cfg *config.Config) error {
 	// in-process nav — subsuming the 2sam/sj7p patches. marketScanner drives the live
 	// stale-ask guard (2sam hazard b). DaemonServer.StartTradeRoute launches the container.
 	tradeRouteCoordinatorHandler := tradeRouteCmd.NewRunTradeRouteCoordinatorHandler(
-		med, shipRepo, marketRepo, marketScanner, nil,
+		med, shipRepo, marketRepo, marketScanner, nil, apiClient,
 	)
 	if err := mediator.RegisterHandler[*tradeRouteCmd.RunTradeRouteCoordinatorCommand](med, tradeRouteCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register TradeRouteCoordinator handler: %w", err)

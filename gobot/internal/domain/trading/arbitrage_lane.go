@@ -110,6 +110,95 @@ func RankSpreads(listings []GoodListing) []ArbitrageLane {
 	return lanes
 }
 
+// RankSpreadsForHold ranks lanes exactly as RankSpreads does, then re-orders them
+// by a hold-fit-weighted score so a big hull is not sent to crush a lane far
+// shallower than its hold (sp-pnx0 — a 225-cargo heavy on a vol-20 lane bought
+// loads that drove the source price up and crushed the destination sink, earning
+// like a light ship while risking the treasury like a heavy one).
+//
+// RankSpreads alone ranks by raw CappedSpread (SpreadPerUnit × VolumeCap), which
+// rewards a thin, deep-spread lane exactly as if any hull could fill it — but a
+// lane's VolumeCap is a market-absorption bound, not a hold-sized one. A hull far
+// bigger than VolumeCap will not clear a single tranche at that depth before
+// moving the price; a lane whose cap is a large fraction of the hold is the one
+// the hull can actually absorb. shipCapacity <= 0 (no ship context) falls back to
+// plain RankSpreads ordering unchanged.
+//
+// This is a standalone, single-system convenience path (and the direct subject of
+// this package's hold-fit tests below). The production multi-system coordinator
+// does NOT compose this function — it calls HoldFitWeight directly inside its own
+// unified ranking pass (application-layer rankLanesWithGatePenalty), because that
+// pass must ALSO apply a cross-system gate penalty, and two independent
+// from-scratch re-rankings cannot be chained (each recomputes its score purely
+// from a lane's own fields, so whichever runs last silently discards the other's
+// reordering). Keep this wrapper's behavior correct in isolation, but do not
+// assume it is the code path actually exercised in production lane selection.
+func RankSpreadsForHold(listings []GoodListing, shipCapacity int) []ArbitrageLane {
+	ranked := RankSpreads(listings)
+	if shipCapacity <= 0 {
+		return ranked
+	}
+	return reorderByHoldFit(ranked, shipCapacity)
+}
+
+// HoldFitWeight scores how much of a lane's volume cap the hull can actually
+// absorb, as a fraction of the hold: min(volumeCap, shipCapacity) / shipCapacity.
+// A lane whose cap meets or exceeds the hold saturates to 1.0 (full hold-fit); a
+// lane whose cap is a small sliver of the hold scores close to 0.
+//
+// Exported so the application-layer coordinator can fold hold-fit directly into
+// its own unified ranking pass (rankLanesWithGatePenalty) alongside the
+// cross-system gate penalty, rather than chaining two separate from-scratch
+// re-rankings that would silently cancel each other out. Callers must guard
+// shipCapacity > 0 themselves; this function does not special-case shipCapacity
+// <= 0 (reorderByHoldFit's caller, RankSpreadsForHold, guarantees it here).
+func HoldFitWeight(volumeCap, shipCapacity int) float64 {
+	effective := volumeCap
+	if effective > shipCapacity {
+		effective = shipCapacity
+	}
+	if effective < 0 {
+		effective = 0
+	}
+	return float64(effective) / float64(shipCapacity)
+}
+
+// reorderByHoldFit re-ranks lanes by CappedSpread × HoldFitWeight, descending,
+// tie-broken by the lane's real SpreadPerUnit desc then Good asc — the same
+// ranking-only-adjustment contract rankLanesWithGatePenalty follows elsewhere: it
+// reorders the slice but never mutates a lane's real, unpenalized economics
+// (SpreadPerUnit, VolumeCap, CappedSpread all pass through untouched).
+func reorderByHoldFit(lanes []ArbitrageLane, shipCapacity int) []ArbitrageLane {
+	type scoredLane struct {
+		lane  ArbitrageLane
+		score float64
+	}
+
+	scored := make([]scoredLane, len(lanes))
+	for i, l := range lanes {
+		scored[i] = scoredLane{
+			lane:  l,
+			score: float64(l.CappedSpread) * HoldFitWeight(l.VolumeCap, shipCapacity),
+		}
+	}
+
+	sort.SliceStable(scored, func(i, j int) bool {
+		if scored[i].score != scored[j].score {
+			return scored[i].score > scored[j].score
+		}
+		if scored[i].lane.SpreadPerUnit != scored[j].lane.SpreadPerUnit {
+			return scored[i].lane.SpreadPerUnit > scored[j].lane.SpreadPerUnit
+		}
+		return scored[i].lane.Good < scored[j].lane.Good
+	})
+
+	result := make([]ArbitrageLane, len(scored))
+	for i, s := range scored {
+		result[i] = s.lane
+	}
+	return result
+}
+
 // bestLaneForGood picks the ordered (source, dest) market pair, source waypoint ≠
 // dest waypoint, that maximises the volume-capped spread for a single good. It
 // returns ok=false when the good trades in fewer than two distinct markets or no
