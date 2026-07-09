@@ -40,6 +40,16 @@ const (
 	// a price crossing is worth reconsidering next time the captain is up,
 	// not worth forcing a wake on its own.
 	EventMarketRegimeShift EventType = "market.regime_shift"
+
+	// EventCoordinatorErrorLoop fires when a coordinator's internal retry
+	// loop hits the identical error N times in a row at the same checkpoint
+	// (sp-e2l1). Distinct from workflow.failed: the coordinator's container
+	// is still RUNNING and retrying, not exited, so reusing workflow.failed
+	// would misrepresent container state to consumers. It is interrupt
+	// class: the whole point is that a stuck-but-silent loop (the 2026-07-05
+	// negotiate-nil incident ran 18h and emitted nothing) must force a wake
+	// instead of riding the next one.
+	EventCoordinatorErrorLoop EventType = "coordinator.error_loop"
 )
 
 // DefaultInterruptTypes returns the built-in set of event types that force
@@ -59,6 +69,7 @@ func DefaultInterruptTypes() []EventType {
 		EventContractFailed,
 		EventIncomeStalled,
 		EventStreamDown,
+		EventCoordinatorErrorLoop,
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	appContract "github.com/andrescamacho/spacetraders-go/internal/application/contract"
 	contractServices "github.com/andrescamacho/spacetraders-go/internal/application/contract/services"
 	contractTypes "github.com/andrescamacho/spacetraders-go/internal/application/contract/types"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
 	domainContract "github.com/andrescamacho/spacetraders-go/internal/domain/contract"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/daemon"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
@@ -33,6 +34,7 @@ type RunFleetCoordinatorHandler struct {
 	graphProvider          system.ISystemGraphProvider
 	converter              system.IWaypointConverter
 	clock                  shared.Clock
+	captainEvents          captain.EventRecorder
 
 	// Event bus for inter-container communication
 	eventSubscriber navigation.ShipEventSubscriber
@@ -50,6 +52,7 @@ func NewRunFleetCoordinatorHandler(
 	converter system.IWaypointConverter,
 	containerRepo contractServices.ContainerRepository,
 	clock shared.Clock,
+	captainEvents captain.EventRecorder,
 ) *RunFleetCoordinatorHandler {
 	// Default to RealClock if not provided
 	if clock == nil {
@@ -70,6 +73,7 @@ func NewRunFleetCoordinatorHandler(
 		graphProvider:          graphProvider,
 		converter:              converter,
 		clock:                  clock,
+		captainEvents:          captainEvents,
 	}
 }
 
@@ -114,6 +118,14 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 	// Track previous ship for balancing logic
 	var previousShipSymbol string
 
+	// errMon watches each retry checkpoint below for a long streak of the
+	// identical error (sp-e2l1): the 2026-07-05 negotiate-nil incident ran
+	// for 18h retrying the same failure every 60s and never emitted a
+	// single event, so nothing outside the container's own logs could see
+	// it was stuck. errMon makes that observable — edge-triggered, once per
+	// streak crossing, not once per iteration.
+	errMon := newCoordinatorErrorMonitor(coordinatorErrorStreakThreshold)
+
 	// Step 4: Main coordinator loop (infinite)
 	// Execute one contract at a time (game constraint: one active contract per player)
 	for {
@@ -136,9 +148,13 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			errMsg := fmt.Sprintf("Failed to find idle haulers: %v", err)
 			logger.Log("ERROR", errMsg, nil)
 			result.Errors = append(result.Errors, errMsg)
+			if streak, crossed := errMon.Note("find_idle_haulers", err.Error()); crossed {
+				h.recordErrorLoopEvent(ctx, cmd, "find_idle_haulers", err, streak)
+			}
 			h.clock.Sleep(10 * time.Second)
 			continue
 		}
+		errMon.Note("find_idle_haulers", "")
 
 		// If no ships available, wait for completion signal
 		if len(availableShips) == 0 {
@@ -193,9 +209,13 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			errMsg := fmt.Sprintf("Failed to negotiate contract: %v", err)
 			logger.Log("ERROR", errMsg, nil)
 			result.Errors = append(result.Errors, errMsg)
+			if streak, crossed := errMon.Note("negotiate_contract", err.Error()); crossed {
+				h.recordErrorLoopEvent(ctx, cmd, "negotiate_contract", err, streak)
+			}
 			h.clock.Sleep(30 * time.Second)
 			continue
 		}
+		errMon.Note("negotiate_contract", "")
 
 		// Check if contract is already complete (all deliveries fulfilled)
 		allDeliveriesFulfilled := true
@@ -296,9 +316,13 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 			errMsg := fmt.Sprintf("Failed to select ship: %v", err)
 			logger.Log("ERROR", errMsg, nil)
 			result.Errors = append(result.Errors, errMsg)
+			if streak, crossed := errMon.Note("select_closest_ship", err.Error()); crossed {
+				h.recordErrorLoopEvent(ctx, cmd, "select_closest_ship", err, streak)
+			}
 			h.clock.Sleep(10 * time.Second)
 			continue
 		}
+		errMon.Note("select_closest_ship", "")
 
 		logger.Log("INFO", fmt.Sprintf("Selected %s (distance: %.2f units)", selectedShip, distance), nil)
 
@@ -328,9 +352,13 @@ func (h *RunFleetCoordinatorHandler) Handle(ctx context.Context, request common.
 		if err != nil {
 			logger.Log("ERROR", err.Error(), nil)
 			result.Errors = append(result.Errors, err.Error())
+			if streak, crossed := errMon.Note("spawn_contract_worker", err.Error()); crossed {
+				h.recordErrorLoopEvent(ctx, cmd, "spawn_contract_worker", err, streak)
+			}
 			h.clock.Sleep(10 * time.Second)
 			continue
 		}
+		errMon.Note("spawn_contract_worker", "")
 
 		activeWorkerContainerID = workerContainerID
 
@@ -476,6 +504,26 @@ func (h *RunFleetCoordinatorHandler) calculateInFlightCargo(
 	}
 
 	return totalInFlight, nil
+}
+
+// recordErrorLoopEvent emits the captain outbox event for a checkpoint's
+// error streak crossing (sp-e2l1). Fire-and-forget with its own short
+// timeout, mirroring internal/adapters/grpc/captain_recorder.go's idiom: an
+// outbox failure must never break the coordinator's retry loop, so errors
+// are logged at WARNING and swallowed. A nil captainEvents (not wired —
+// tests, or a daemon boot before main finishes DI) silently disables
+// recording rather than panicking.
+func (h *RunFleetCoordinatorHandler) recordErrorLoopEvent(ctx context.Context, cmd *RunFleetCoordinatorCommand, checkpoint string, cause error, streak int) {
+	if h.captainEvents == nil {
+		return
+	}
+	logger := common.LoggerFromContext(ctx)
+	event := buildErrorLoopEvent(cmd.ContainerID, cmd.PlayerID.Value(), checkpoint, cause, streak)
+	recordCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := h.captainEvents.Record(recordCtx, event); err != nil {
+		logger.Log("WARNING", fmt.Sprintf("captain outbox: failed to record %s for checkpoint %s: %v", captain.EventCoordinatorErrorLoop, checkpoint, err), nil)
+	}
 }
 
 func (h *RunFleetCoordinatorHandler) stopActiveWorker(ctx context.Context, activeWorkerContainerID string) {
