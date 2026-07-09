@@ -310,12 +310,16 @@ func (c *SpaceTradersClient) SetFlightMode(ctx context.Context, symbol, flightMo
 	return nil
 }
 
-// JumpShip executes a jump through a jump gate to a different system
-func (c *SpaceTradersClient) JumpShip(ctx context.Context, shipSymbol, systemSymbol, token string) (*domainPorts.JumpResult, error) {
+// JumpShip executes a jump through a jump gate to a different system.
+// waypointSymbol must be the destination JUMP_GATE waypoint symbol (e.g.
+// "X1-GQ92-I51") - not a bare system symbol. The live SpaceTraders API
+// requires "waypointSymbol" in the request body and 422s with
+// "waypointSymbol Required, received undefined" otherwise (sp-n0x7 round 2).
+func (c *SpaceTradersClient) JumpShip(ctx context.Context, shipSymbol, waypointSymbol, token string) (*domainPorts.JumpResult, error) {
 	path := fmt.Sprintf("/my/ships/%s/jump", shipSymbol)
 
 	body := map[string]string{
-		"systemSymbol": systemSymbol,
+		"waypointSymbol": waypointSymbol,
 	}
 
 	var response struct {

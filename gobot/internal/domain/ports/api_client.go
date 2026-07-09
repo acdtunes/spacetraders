@@ -42,7 +42,10 @@ type APIClient interface {
 	DockShip(ctx context.Context, symbol, token string) error
 	RefuelShip(ctx context.Context, symbol, token string, units *int) (*navigation.RefuelResult, error)
 	SetFlightMode(ctx context.Context, symbol, flightMode, token string) error
-	JumpShip(ctx context.Context, shipSymbol, systemSymbol, token string) (*JumpResult, error)
+	// JumpShip executes a jump through a jump gate. waypointSymbol must be
+	// the destination JUMP_GATE waypoint (not a bare system symbol) - the
+	// live SpaceTraders API requires "waypointSymbol" in the request body.
+	JumpShip(ctx context.Context, shipSymbol, waypointSymbol, token string) (*JumpResult, error)
 
 	// Jump gate operations
 	GetJumpGate(ctx context.Context, systemSymbol, waypointSymbol, token string) (*JumpGateData, error)

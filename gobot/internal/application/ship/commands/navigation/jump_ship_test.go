@@ -64,16 +64,31 @@ func (s *stubJumpPlayerRepo) FindByID(_ context.Context, _ shared.PlayerID) (*pl
 	return s.playerEntity, nil
 }
 
-// stubJumpAPIClient embeds the domain interface so we only implement JumpShip.
+// stubJumpAPIClient embeds the domain interface so we only implement
+// JumpShip and GetJumpGate. It captures the waypoint argument JumpShip was
+// called with (the value that crosses the port boundary into the live
+// jump API's request body) so tests can assert the handler resolved a
+// destination GATE WAYPOINT rather than forwarding the bare destination
+// SYSTEM symbol (sp-n0x7 round 2).
 type stubJumpAPIClient struct {
 	ports.APIClient
 
 	result *ports.JumpResult
 	err    error
+
+	gateData *ports.JumpGateData
+	gateErr  error
+
+	jumpShipWaypointArg string
 }
 
-func (s *stubJumpAPIClient) JumpShip(_ context.Context, _, _, _ string) (*ports.JumpResult, error) {
+func (s *stubJumpAPIClient) JumpShip(_ context.Context, _ string, waypointSymbol string, _ string) (*ports.JumpResult, error) {
+	s.jumpShipWaypointArg = waypointSymbol
 	return s.result, s.err
+}
+
+func (s *stubJumpAPIClient) GetJumpGate(_ context.Context, _, _, _ string) (*ports.JumpGateData, error) {
+	return s.gateData, s.gateErr
 }
 
 // stubJumpContainerRepo records claim-lifecycle calls (Add when the claim is
@@ -191,6 +206,10 @@ func TestJumpShip_SuccessfulJump_SyncsShipStateAndReleasesClaim(t *testing.T) {
 	playerRepo := &stubJumpPlayerRepo{playerEntity: player.NewPlayer(shared.MustNewPlayerID(1), "AGENT", "test-token")}
 	containerRepo := &stubJumpContainerRepo{}
 	apiClient := &stubJumpAPIClient{
+		gateData: &ports.JumpGateData{
+			Symbol:      "X1-AB12-GATE",
+			Connections: []string{"X1-CD34-GATE"},
+		},
 		result: &ports.JumpResult{
 			DestinationSystem:   "X1-CD34",
 			DestinationWaypoint: "X1-CD34-GATE",
@@ -294,6 +313,10 @@ func TestJumpShip_DestinationGateUnderConstruction4262_SurfacesCleanError(t *tes
 	playerRepo := &stubJumpPlayerRepo{playerEntity: player.NewPlayer(shared.MustNewPlayerID(1), "AGENT", "test-token")}
 	containerRepo := &stubJumpContainerRepo{}
 	apiClient := &stubJumpAPIClient{
+		gateData: &ports.JumpGateData{
+			Symbol:      "X1-AB12-GATE",
+			Connections: []string{"X1-CD34-GATE"},
+		},
 		err: fmt.Errorf("failed to jump ship: max retries exceeded: " +
 			`API error (status 400): {"error":{"code":4262,"message":"Jump failed. Destination jump gate X1-CD34-GATE is under construction."}}`),
 	}
@@ -343,6 +366,10 @@ func TestJumpShip_DrivelessShipAtCompleteGate_PassesPrecondition(t *testing.T) {
 		site: manufacturing.NewConstructionSite("X1-AB12-GATE", "JUMP_GATE", nil, true),
 	}
 	apiClient := &stubJumpAPIClient{
+		gateData: &ports.JumpGateData{
+			Symbol:      "X1-AB12-GATE",
+			Connections: []string{"X1-CD34-GATE"},
+		},
 		result: &ports.JumpResult{
 			DestinationSystem:   "X1-CD34",
 			DestinationWaypoint: "X1-CD34-GATE",
@@ -457,6 +484,10 @@ func TestJumpShip_DrivelessShipAtGate_ConstructionLookupFails_FailsOpenAndProcee
 	containerRepo := &stubJumpContainerRepo{}
 	constructionRepo := &stubJumpConstructionRepo{err: fmt.Errorf("construction lookup unavailable")}
 	apiClient := &stubJumpAPIClient{
+		gateData: &ports.JumpGateData{
+			Symbol:      "X1-AB12-GATE",
+			Connections: []string{"X1-CD34-GATE"},
+		},
 		result: &ports.JumpResult{
 			DestinationSystem:   "X1-CD34",
 			DestinationWaypoint: "X1-CD34-GATE",
@@ -481,5 +512,99 @@ func TestJumpShip_DrivelessShipAtGate_ConstructionLookupFails_FailsOpenAndProcee
 	jumpResp, ok := resp.(*JumpShipResponse)
 	if !ok || !jumpResp.Success {
 		t.Fatalf("expected a successful jump response, got %+v (ok=%v)", resp, ok)
+	}
+}
+
+// sp-n0x7 round 2: the live jump API requires the destination JUMP GATE
+// WAYPOINT in the request body, not the bare destination SYSTEM symbol -
+// posting the system symbol 422s with "waypointSymbol Required, received
+// undefined". The handler must resolve cmd.DestinationSystem to a gate
+// waypoint via the origin gate's connections list (which carries full
+// waypoint symbols, e.g. "X1-GQ92-I51") and pass THAT - not
+// cmd.DestinationSystem - across the APIClient port boundary.
+func TestJumpShip_ResolvesDestinationSystemToGateWaypoint_BeforeCallingJumpAPI(t *testing.T) {
+	gate := newJumpGateWaypoint(t, "X1-PA3-B10D")
+	ship := newJumpTestShip(t, "PROBE-1", gate)
+
+	shipRepo := &stubJumpShipRepo{ship: ship}
+	playerRepo := &stubJumpPlayerRepo{playerEntity: player.NewPlayer(shared.MustNewPlayerID(1), "AGENT", "test-token")}
+	containerRepo := &stubJumpContainerRepo{}
+	apiClient := &stubJumpAPIClient{
+		gateData: &ports.JumpGateData{
+			Symbol:      "X1-PA3-B10D",
+			Connections: []string{"X1-ZC66-A40D", "X1-GQ92-I51", "X1-UQ16-D16D"},
+		},
+		result: &ports.JumpResult{
+			DestinationSystem:   "X1-GQ92",
+			DestinationWaypoint: "X1-GQ92-I51",
+			CooldownSeconds:     60,
+		},
+	}
+	clock := &shared.MockClock{CurrentTime: time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC)}
+
+	handler := NewJumpShipHandler(shipRepo, playerRepo, apiClient, nil, containerRepo, nil, clock)
+
+	playerIDInt := 1
+	cmd := &JumpShipCommand{
+		ShipSymbol:        "PROBE-1",
+		DestinationSystem: "X1-GQ92",
+		PlayerID:          &playerIDInt,
+	}
+
+	_, err := handler.Handle(context.Background(), cmd)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	if apiClient.jumpShipWaypointArg != "X1-GQ92-I51" {
+		t.Fatalf("expected JumpShip to be called with the resolved gate waypoint X1-GQ92-I51, got %q", apiClient.jumpShipWaypointArg)
+	}
+}
+
+// If the origin gate has no connection into the requested destination
+// system, the handler must reject with a clear, actionable error instead
+// of forwarding an empty/wrong value to the live jump API.
+func TestJumpShip_NoGateConnectionToDestinationSystem_RejectedWithClearError(t *testing.T) {
+	gate := newJumpGateWaypoint(t, "X1-PA3-B10D")
+	ship := newJumpTestShip(t, "PROBE-1", gate)
+
+	shipRepo := &stubJumpShipRepo{ship: ship}
+	playerRepo := &stubJumpPlayerRepo{playerEntity: player.NewPlayer(shared.MustNewPlayerID(1), "AGENT", "test-token")}
+	containerRepo := &stubJumpContainerRepo{}
+	apiClient := &stubJumpAPIClient{
+		gateData: &ports.JumpGateData{
+			Symbol:      "X1-PA3-B10D",
+			Connections: []string{"X1-ZC66-A40D"},
+		},
+	}
+	clock := &shared.MockClock{CurrentTime: time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC)}
+
+	handler := NewJumpShipHandler(shipRepo, playerRepo, apiClient, nil, containerRepo, nil, clock)
+
+	playerIDInt := 1
+	cmd := &JumpShipCommand{
+		ShipSymbol:        "PROBE-1",
+		DestinationSystem: "X1-UNREACHABLE",
+		PlayerID:          &playerIDInt,
+	}
+
+	_, err := handler.Handle(context.Background(), cmd)
+	if err == nil {
+		t.Fatalf("expected an error when the origin gate has no connection to the destination system")
+	}
+	if !strings.Contains(err.Error(), "X1-UNREACHABLE") {
+		t.Fatalf("expected error to mention the unreachable destination system, got: %v", err)
+	}
+
+	// Must fail before ever forwarding a bad value to the live jump API.
+	if apiClient.jumpShipWaypointArg != "" {
+		t.Fatalf("expected JumpShip not to be called when no gate connection exists, got waypoint arg %q", apiClient.jumpShipWaypointArg)
+	}
+
+	// The claim taken to satisfy the FK constraint must still be released
+	// even though resolution failed - mirrors the existing 4262
+	// under-construction failure test.
+	if ship.IsAssigned() {
+		t.Fatalf("expected ship claim to be released even after a failed resolution")
 	}
 }

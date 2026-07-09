@@ -265,12 +265,28 @@ func (h *JumpShipHandler) Handle(ctx context.Context, request common.Request) (c
 		return nil, fmt.Errorf("failed to get player: %w", err)
 	}
 
+	// The live jump API requires the destination JUMP GATE WAYPOINT, not the
+	// bare destination system symbol (sp-n0x7 round 2) - posting the system
+	// symbol 422s with "waypointSymbol Required, received undefined".
+	// Resolve it via the origin gate's connections list, which carries the
+	// full waypoint symbol of every system it's linked to.
+	originGateSymbol := ship.CurrentLocation().Symbol
+	gateData, err := h.apiClient.GetJumpGate(ctx, shared.ExtractSystemSymbol(originGateSymbol), originGateSymbol, playerEntity.Token)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve jump gate connections for %s: %w", originGateSymbol, err)
+	}
+	destinationGateWaypointSymbol, err := destinationGateWaypoint(gateData.Connections, cmd.DestinationSystem)
+	if err != nil {
+		return nil, err
+	}
+
 	logger.Log("INFO", "Executing jump", map[string]interface{}{
-		"from": currentSystem,
-		"to":   cmd.DestinationSystem,
+		"from":                      currentSystem,
+		"to":                        cmd.DestinationSystem,
+		"destination_gate_waypoint": destinationGateWaypointSymbol,
 	})
 
-	jumpResult, err := h.apiClient.JumpShip(ctx, cmd.ShipSymbol, cmd.DestinationSystem, playerEntity.Token)
+	jumpResult, err := h.apiClient.JumpShip(ctx, cmd.ShipSymbol, destinationGateWaypointSymbol, playerEntity.Token)
 	if err != nil {
 		// The server reports error 4262 when the destination system's jump
 		// gate is still under construction. Surface this as a clean,
@@ -320,6 +336,20 @@ func isDestinationGateUnderConstructionError(err error) bool {
 	}
 	msg := err.Error()
 	return strings.Contains(msg, "4262") || strings.Contains(msg, "under construction")
+}
+
+// destinationGateWaypoint finds the connection in a jump gate's connections
+// list whose system matches destinationSystem, returning its full waypoint
+// symbol (e.g. "X1-GQ92-I51"). The live SpaceTraders jump API requires this
+// WAYPOINT - not the bare system symbol - as waypointSymbol in the request
+// body (sp-n0x7 round 2).
+func destinationGateWaypoint(connections []string, destinationSystem string) (string, error) {
+	for _, conn := range connections {
+		if shared.ExtractSystemSymbol(conn) == destinationSystem {
+			return conn, nil
+		}
+	}
+	return "", fmt.Errorf("no jump gate connection from origin gate to system %s", destinationSystem)
 }
 
 // sourceGateComplete reports whether the jump gate at waypointSymbol has
