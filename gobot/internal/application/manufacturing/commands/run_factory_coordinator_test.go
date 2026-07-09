@@ -12,6 +12,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/common"
 	mfgServices "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/services"
 	shipCargo "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/cargo"
+	shipNav "github.com/andrescamacho/spacetraders-go/internal/application/ship/commands/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
@@ -34,6 +35,13 @@ type factoryFakeMediator struct {
 	purchases    []*shipCargo.PurchaseCargoCommand
 	sells        []*shipCargo.SellCargoCommand
 	sellContexts []context.Context
+
+	// navigateRouteErr, when set, is returned by every NavigateRouteCommand
+	// instead of the default silent success — sp-npyr Fix 3's hook for
+	// scripting an unrecoverable-refuel failure mid-run. Unset (nil) by
+	// default so every pre-existing test keeps its original silent-navigate
+	// behavior unchanged.
+	navigateRouteErr error
 }
 
 func (m *factoryFakeMediator) Send(ctx context.Context, request common.Request) (common.Response, error) {
@@ -56,6 +64,11 @@ func (m *factoryFakeMediator) Send(ctx context.Context, request common.Request) 
 			UnitsSold:        cmd.Units,
 			TransactionCount: 1,
 		}, nil
+	case *shipNav.NavigateRouteCommand:
+		if m.navigateRouteErr != nil {
+			return nil, m.navigateRouteErr
+		}
+		return nil, nil
 	default:
 		// Navigation, docking, etc. succeed silently.
 		return nil, nil

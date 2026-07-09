@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -10,6 +11,11 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/contract"
 	mfgServices "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/services"
 	mfgTypes "github.com/andrescamacho/spacetraders-go/internal/application/manufacturing/types"
+	// aliased: this file's executeLevelParallel goroutine already binds a
+	// local variable named "ship" (ship := <-exec.shipPool), which would
+	// shadow the bare package name — same alias siphon_resources.go uses for
+	// the identical reason.
+	shipapp "github.com/andrescamacho/spacetraders-go/internal/application/ship"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/goods"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
@@ -452,58 +458,91 @@ func (h *RunFactoryCoordinatorHandler) shipPoolRefresher(
 			return
 
 		case <-ticker.C:
-			// Re-discover idle ships
-			newIdleShips, _, err := contract.FindIdleLightHaulers(
-				ctx,
-				playerIDValue,
-				h.shipRepo,
-			)
-			if err != nil {
-				logger.Log("WARNING", "Failed to refresh ship pool", map[string]interface{}{
-					"error": err.Error(),
-				})
-				continue
-			}
-
-			// Add newly discovered ships to pool (non-blocking)
-			addedCount := 0
-			addedShips := make([]string, 0)
-
-			for _, ship := range newIdleShips {
-				// Skip if ship already in use by this factory (check with lock)
-				shipsUsedMutex.Lock()
-				alreadyUsed := shipsUsed[ship.ShipSymbol()]
-				shipsUsedMutex.Unlock()
-
-				if alreadyUsed {
-					continue
-				}
-
-				// Attempt non-blocking send to pool
-				select {
-				case shipPool <- ship:
-					shipsUsedMutex.Lock()
-					shipsUsed[ship.ShipSymbol()] = true
-					shipsUsedMutex.Unlock()
-					addedShips = append(addedShips, ship.ShipSymbol())
-					addedCount++
-				default:
-					// Channel full, skip this ship
-					// Will retry on next tick if ship still idle
-				}
-			}
-
-			if addedCount > 0 {
-				discoveryCount += addedCount
-				logger.Log("INFO", "Added new ships to pool", map[string]interface{}{
-					"added_count":        addedCount,
-					"added_ships":        addedShips,
-					"total_discoveries":  discoveryCount,
-					"pool_capacity_used": fmt.Sprintf("%d/%d", len(shipsUsed), cap(shipPool)),
-				})
-			}
+			discoveryCount = h.refreshShipPoolOnce(ctx, playerIDValue, shipPool, shipsUsed, shipsUsedMutex, discoveryCount)
 		}
 	}
+}
+
+// refreshShipPoolOnce runs a single ship-pool discovery tick: the body of
+// shipPoolRefresher's ticker case, extracted so it can be driven directly by
+// tests without waiting on the real 30-second ticker. Returns the updated
+// discoveryCount (unchanged if the discovery call itself failed or found
+// nothing to add).
+//
+// sp-npyr: contract.FindIdleLightHaulers logs "Idle light haulers discovered"
+// unconditionally on every call, fleet-wide, whether or not any of those
+// ships are new capacity for THIS factory run. Once a run's initial ships are
+// claimed, every subsequent tick re-finds the same already-tracked idle
+// haulers (they stay DB-idle until a worker actually pulls them off shipPool
+// and claims them — see claimShipForFactory) and silently adds nothing,
+// reading from the outside as unexplained 30s-cadence noise with zero
+// followup. The `else if` branch below names that steady state explicitly.
+func (h *RunFactoryCoordinatorHandler) refreshShipPoolOnce(
+	ctx context.Context,
+	playerIDValue shared.PlayerID,
+	shipPool chan *navigation.Ship,
+	shipsUsed map[string]bool,
+	shipsUsedMutex *sync.Mutex,
+	discoveryCount int,
+) int {
+	logger := common.LoggerFromContext(ctx)
+
+	// Re-discover idle ships
+	newIdleShips, _, err := contract.FindIdleLightHaulers(
+		ctx,
+		playerIDValue,
+		h.shipRepo,
+	)
+	if err != nil {
+		logger.Log("WARNING", "Failed to refresh ship pool", map[string]interface{}{
+			"error": err.Error(),
+		})
+		return discoveryCount
+	}
+
+	// Add newly discovered ships to pool (non-blocking)
+	addedCount := 0
+	addedShips := make([]string, 0)
+
+	for _, ship := range newIdleShips {
+		// Skip if ship already in use by this factory (check with lock)
+		shipsUsedMutex.Lock()
+		alreadyUsed := shipsUsed[ship.ShipSymbol()]
+		shipsUsedMutex.Unlock()
+
+		if alreadyUsed {
+			continue
+		}
+
+		// Attempt non-blocking send to pool
+		select {
+		case shipPool <- ship:
+			shipsUsedMutex.Lock()
+			shipsUsed[ship.ShipSymbol()] = true
+			shipsUsedMutex.Unlock()
+			addedShips = append(addedShips, ship.ShipSymbol())
+			addedCount++
+		default:
+			// Channel full, skip this ship
+			// Will retry on next tick if ship still idle
+		}
+	}
+
+	if addedCount > 0 {
+		discoveryCount += addedCount
+		logger.Log("INFO", "Added new ships to pool", map[string]interface{}{
+			"added_count":        addedCount,
+			"added_ships":        addedShips,
+			"total_discoveries":  discoveryCount,
+			"pool_capacity_used": fmt.Sprintf("%d/%d", len(shipsUsed), cap(shipPool)),
+		})
+	} else if len(newIdleShips) > 0 {
+		logger.Log("INFO", "Idle haulers found but already claimed for this run - no new capacity added", map[string]interface{}{
+			"idle_count": len(newIdleShips),
+		})
+	}
+
+	return discoveryCount
 }
 
 type levelExecution struct {
@@ -556,10 +595,33 @@ func (h *RunFactoryCoordinatorHandler) executeLevelParallel(
 			}
 
 			if err != nil {
-				logger.Log("ERROR", "Worker failed", map[string]interface{}{
-					"good":  n.Good,
-					"error": err.Error(),
-				})
+				var refuelErr *shipapp.ErrRefuelUnrecoverable
+				if errors.As(err, &refuelErr) {
+					// sp-vsfn's refuel retry/reroute budget is exhausted for
+					// this ship. executeCoordination's caller already parks
+					// on ANY worker error generically (releases every ship
+					// assignment, returns cleanly, never crashes or corrupts
+					// ship DB state — the same "preserve state, don't crash"
+					// contract sp-pafv's ErrArrivalWaitExhausted callers
+					// honor). This branch only makes that specific cause
+					// visible in the log message text instead of the opaque
+					// generic "Worker failed", so a transient refuel
+					// exhaustion (self-resolves once the ship is re-claimed
+					// on a later run) is distinguishable at a glance from a
+					// genuine production bug (sp-npyr).
+					logger.Log("WARNING", "Worker parked on unrecoverable refuel failure", map[string]interface{}{
+						"good":        n.Good,
+						"ship_symbol": refuelErr.ShipSymbol,
+						"waypoint":    refuelErr.Waypoint,
+						"attempts":    refuelErr.Attempts,
+						"error":       err.Error(),
+					})
+				} else {
+					logger.Log("ERROR", "Worker failed", map[string]interface{}{
+						"good":  n.Good,
+						"error": err.Error(),
+					})
+				}
 			} else {
 				logger.Log("INFO", fmt.Sprintf("Worker completed: %s %s (%d units, %d credits)", n.AcquisitionMethod, n.Good, result.QuantityAcquired, result.TotalCost), map[string]interface{}{
 					"good":     n.Good,

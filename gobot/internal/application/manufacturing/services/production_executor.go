@@ -40,6 +40,15 @@ const productionEmptyTrancheRetryLimit = 3
 // no-op under the test clock.
 const productionEmptyTrancheRetryDelay = 2 * time.Second
 
+// productionDwellWarnThreshold bounds how long PollForProduction can wait on a
+// fabrication without escalating its logging. Below this, the existing sparse
+// "every 5th attempt" INFO cadence is enough; past it, a WARNING fires on
+// EVERY attempt so a factory holding docked hull claims for tens of minutes
+// (sp-npyr: SHIP_PARTS held TORWIND-3/6 for 40+ min with only sparse logging,
+// reading as a silent stall from the outside) has its wait reason visible in
+// the logs at the true claim-holding site.
+const productionDwellWarnThreshold = 5 * time.Minute
+
 // ProductionExecutor orchestrates the production of goods by coordinating ship operations.
 // It handles both purchasing goods from markets (BUY) and manufacturing them (FABRICATE).
 type ProductionExecutor struct {
@@ -395,6 +404,7 @@ func (e *ProductionExecutor) PollForProduction(
 	}
 
 	attempt := 0
+	pollStart := e.clock.Now()
 	for {
 		// Check for context cancellation (daemon stop, user command, etc.)
 		select {
@@ -436,8 +446,25 @@ func (e *ProductionExecutor) PollForProduction(
 			return e.purchaseFabricatedOutput(ctx, good, waypointSymbol, shipSymbol, playerID, tradeGood.TradeVolume())
 		}
 
-		// Log polling attempt
-		if attempt == 0 || attempt%5 == 0 { // Log every 5th attempt to reduce noise
+		// Log polling attempt. Past productionDwellWarnThreshold, escalate to a
+		// WARNING on EVERY attempt with the elapsed dwell stated in the message
+		// text itself (the container-log renderer prints only level+message and
+		// drops metadata, sp-iqyq) so a long fabrication wait is observable
+		// rather than reading as a silent stall (sp-npyr).
+		elapsed := e.clock.Now().Sub(pollStart)
+		if elapsed >= productionDwellWarnThreshold {
+			logger.Log("WARNING", fmt.Sprintf(
+				"Still waiting on %s at %s after %s (ship %s, attempt %d) — fabrication in progress, not stalled",
+				good, waypointSymbol, elapsed.Round(time.Second), shipSymbol, attempt+1,
+			), map[string]interface{}{
+				"good":          good,
+				"waypoint":      waypointSymbol,
+				"ship":          shipSymbol,
+				"attempt":       attempt + 1,
+				"elapsed_sec":   elapsed.Seconds(),
+				"next_wait_sec": intervals[min(attempt, len(intervals)-1)].Seconds(),
+			})
+		} else if attempt == 0 || attempt%5 == 0 { // Log every 5th attempt to reduce noise
 			logger.Log("INFO", "Polling for production completion", map[string]interface{}{
 				"good":          good,
 				"waypoint":      waypointSymbol,
