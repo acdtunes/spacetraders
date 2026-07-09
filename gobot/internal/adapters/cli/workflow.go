@@ -30,6 +30,7 @@ Examples:
 	cmd.AddCommand(newWorkflowScoutMarketsCommand())
 	cmd.AddCommand(newWorkflowScoutAllMarketsCommand())
 	cmd.AddCommand(newWorkflowTradeRouteCommand())
+	cmd.AddCommand(newWorkflowArbRunCommand())
 
 	return cmd
 }

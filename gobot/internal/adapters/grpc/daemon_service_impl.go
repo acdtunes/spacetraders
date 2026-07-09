@@ -903,6 +903,61 @@ func (s *daemonServiceImpl) StartTradeRoute(ctx context.Context, req *pb.StartTr
 	}, nil
 }
 
+// StartArbRun implements the StartArbRun RPC: it launches a one-shot, captain-directed,
+// guarded arbitrage run as a recovery-safe daemon container (sp-p4ua), delegating to
+// DaemonServer.StartArbRun which enforces the idle-gap discipline and owns the container
+// lifecycle.
+func (s *daemonServiceImpl) StartArbRun(ctx context.Context, req *pb.StartArbRunRequest) (*pb.StartArbRunResponse, error) {
+	playerID, err := s.resolvePlayerID(ctx, req.PlayerId, req.AgentSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve player: %w", err)
+	}
+	if req.ShipSymbol == "" {
+		return nil, fmt.Errorf("ship_symbol is required")
+	}
+	if req.Good == "" {
+		return nil, fmt.Errorf("good is required")
+	}
+	if req.BuyAt == "" {
+		return nil, fmt.Errorf("buy_at is required")
+	}
+	if req.SellAt == "" {
+		return nil, fmt.Errorf("sell_at is required")
+	}
+
+	maxUnits := 0
+	if req.MaxUnits != nil {
+		maxUnits = int(*req.MaxUnits)
+	}
+	maxSpend := 0
+	if req.MaxSpend != nil {
+		maxSpend = int(*req.MaxSpend)
+	}
+	minMargin := 0
+	if req.MinMargin != nil {
+		minMargin = int(*req.MinMargin)
+	}
+	workingCapitalReserve := 0
+	if req.WorkingCapitalReserve != nil {
+		workingCapitalReserve = int(*req.WorkingCapitalReserve)
+	}
+
+	result, err := s.daemon.StartArbRun(ctx, req.ShipSymbol, req.Good, req.BuyAt, req.SellAt, maxUnits, maxSpend, minMargin, workingCapitalReserve, playerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to start arb-run: %w", err)
+	}
+
+	return &pb.StartArbRunResponse{
+		ContainerId: result.ContainerID,
+		ShipSymbol:  result.ShipSymbol,
+		Good:        result.Good,
+		BuyAt:       result.BuyAt,
+		SellAt:      result.SellAt,
+		Status:      "RUNNING",
+		Message:     fmt.Sprintf("Arb-run started for %s: buy %s at %s, sell at %s", req.ShipSymbol, req.Good, req.BuyAt, req.SellAt),
+	}, nil
+}
+
 // StopGoodsFactory implements the StopGoodsFactory RPC
 func (s *daemonServiceImpl) StopGoodsFactory(ctx context.Context, req *pb.StopGoodsFactoryRequest) (*pb.StopGoodsFactoryResponse, error) {
 	// Resolve player ID

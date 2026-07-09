@@ -942,6 +942,61 @@ func (c *DaemonClient) StartTradeRoute(
 	}, nil
 }
 
+// StartArbRunResult reports the container started for a one-shot guarded arb run (sp-p4ua).
+type StartArbRunResult struct {
+	ContainerID string
+	ShipSymbol  string
+	Good        string
+	BuyAt       string
+	SellAt      string
+	Status      string
+	Message     string
+}
+
+// StartArbRun asks the daemon to launch a one-shot, captain-directed, guarded arbitrage
+// run as a recovery-safe container (sp-p4ua). maxUnits/maxSpend/minMargin/workingCapitalReserve
+// are optional guards: pass nil to leave each unset (the coordinator's own default/disabled
+// semantics apply per guard).
+func (c *DaemonClient) StartArbRun(
+	ctx context.Context,
+	shipSymbol string,
+	good string,
+	buyAt string,
+	sellAt string,
+	playerID int,
+	agentSymbol *string,
+	maxUnits *int32,
+	maxSpend *int32,
+	minMargin *int32,
+	workingCapitalReserve *int32,
+) (*StartArbRunResult, error) {
+	resp, err := c.client.StartArbRun(ctx, &pb.StartArbRunRequest{
+		PlayerId:              int32(playerID),
+		ShipSymbol:            shipSymbol,
+		Good:                  good,
+		BuyAt:                 buyAt,
+		SellAt:                sellAt,
+		AgentSymbol:           agentSymbol,
+		MaxUnits:              maxUnits,
+		MaxSpend:              maxSpend,
+		MinMargin:             minMargin,
+		WorkingCapitalReserve: workingCapitalReserve,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &StartArbRunResult{
+		ContainerID: resp.ContainerId,
+		ShipSymbol:  resp.ShipSymbol,
+		Good:        resp.Good,
+		BuyAt:       resp.BuyAt,
+		SellAt:      resp.SellAt,
+		Status:      resp.Status,
+		Message:     resp.Message,
+	}, nil
+}
+
 func (c *DaemonClient) StartGoodsFactory(
 	ctx context.Context,
 	targetGood string,

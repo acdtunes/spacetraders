@@ -128,6 +128,10 @@ service DaemonService {
   // StartTradeRoute launches a single-hull pure-arbitrage circuit as a recovery-safe daemon container
   rpc StartTradeRoute(StartTradeRouteRequest) returns (StartTradeRouteResponse);
 
+  // StartArbRun launches a ONE-SHOT, captain-directed, guarded arbitrage run (sp-p4ua):
+  // buy a named good at a source waypoint, route (cross-gate) to a destination, sell once, stop.
+  rpc StartArbRun(StartArbRunRequest) returns (StartArbRunResponse);
+
   // StartConstructionPipeline starts a pipeline to supply materials to a construction site
   rpc StartConstructionPipeline(StartConstructionPipelineRequest) returns (StartConstructionPipelineResponse);
 
@@ -881,6 +885,31 @@ message StartTradeRouteResponse {
   string system_symbol = 3;
   string status = 4;
   string message = 5;
+}
+
+// StartArbRunRequest starts a one-shot, captain-directed, guarded arbitrage run (sp-p4ua):
+// fly THIS hull on THIS lane, ONCE, safely. All caps/floors are optional guards.
+message StartArbRunRequest {
+  int32 player_id = 1;
+  string ship_symbol = 2;              // Idle hull that must already be at buy_at
+  string good = 3;                     // The good to buy at the source and sell at the destination
+  string buy_at = 4;                   // Source waypoint (the hull must already be here)
+  string sell_at = 5;                  // Destination waypoint (may be in another system → gate+jump+refuel)
+  optional string agent_symbol = 6;
+  optional int32 max_units = 7;                // Hold-cap on the tranche (0/unset = full available cargo)
+  optional int32 max_spend = 8;                // Working-capital cap on the buy (0/unset = no explicit cap)
+  optional int32 min_margin = 9;               // Per-unit margin floor: abort if (destBid - sourceAsk) < this
+  optional int32 working_capital_reserve = 10; // Hard spend floor (0/unset = coordinator default)
+}
+
+message StartArbRunResponse {
+  string container_id = 1;
+  string ship_symbol = 2;
+  string good = 3;
+  string buy_at = 4;
+  string sell_at = 5;
+  string status = 6;
+  string message = 7;
 }
 
 // GasExtractionOperationRequest starts a gas extraction operation with siphon and transport ships

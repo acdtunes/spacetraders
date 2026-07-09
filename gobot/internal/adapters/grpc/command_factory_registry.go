@@ -178,6 +178,7 @@ func containerSpecList() []ContainerSpec {
 		{CommandType: "manufacturing_coordinator", build: buildManufacturingCoordinatorCommand},
 		{CommandType: "gas_coordinator", build: buildGasCoordinatorCommand},
 		{CommandType: "trade_route", build: buildTradeRouteCoordinatorCommand},
+		{CommandType: "arb_run", build: buildArbCoordinatorCommand},
 		{CommandType: "manufacturing_task_worker", IsWorker: true},
 		{CommandType: "gas_siphon_worker", IsWorker: true},
 		{CommandType: "storage_ship", IsWorker: true},
@@ -304,5 +305,28 @@ func buildTradeRouteCoordinatorCommand(cfg *configReader, playerID int, containe
 		MaxVisits:             cfg.OptionalInt("max_visits", 0),
 		WorkingCapitalReserve: cfg.OptionalInt("working_capital_reserve", 0),
 		TargetDest:            cfg.OptionalString("dest_waypoint"),
+	}
+}
+
+// buildArbCoordinatorCommand rebuilds the one-shot guarded arb command (sp-p4ua) from a
+// persisted launch config so restart recovery can resume a RUNNING arb_run container.
+// ContainerID is taken from the recovery-supplied containerID (the persisted row's ID),
+// mirroring trade_route so the operation context and the runner's ship claim stay pinned
+// across a restart. good/buy_at/sell_at are required (the lane the captain directed);
+// max_units/max_spend/min_margin/working_capital_reserve default to 0 (the coordinator's
+// own "0 → unset/default" semantics for each guard), and are persisted as launch-config
+// knobs so a recovery rebuild resumes the same directed run with the same caps.
+func buildArbCoordinatorCommand(cfg *configReader, playerID int, containerID string) interface{} {
+	return &tradingCmd.RunArbCoordinatorCommand{
+		ShipSymbol:            cfg.RequiredString("ship_symbol"),
+		Good:                  cfg.RequiredNonEmptyString("good"),
+		BuyAt:                 cfg.RequiredNonEmptyString("buy_at"),
+		SellAt:                cfg.RequiredNonEmptyString("sell_at"),
+		PlayerID:              playerID,
+		ContainerID:           containerID,
+		MaxUnits:              cfg.OptionalInt("max_units", 0),
+		MaxSpend:              cfg.OptionalInt("max_spend", 0),
+		MinMargin:             cfg.OptionalInt("min_margin", 0),
+		WorkingCapitalReserve: cfg.OptionalInt("working_capital_reserve", 0),
 	}
 }

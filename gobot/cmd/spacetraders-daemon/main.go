@@ -537,6 +537,19 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("failed to register TradeRouteCoordinator handler: %w", err)
 	}
 
+	// Arb-run coordinator (sp-p4ua): a one-shot, captain-directed, guarded arbitrage run
+	// (buy@source → cross-gate → sell@dest, ONCE, capped + floor-guarded). Wired with the
+	// same ports as trade-route so its buy/sell/navigate legs resolve to the identical
+	// daemon handlers (RouteExecutor-backed travel); marketScanner drives the pre-buy
+	// live source-market refresh and apiClient the working-capital spend floor.
+	// DaemonServer.StartArbRun launches the container.
+	arbCoordinatorHandler := tradeRouteCmd.NewRunArbCoordinatorHandler(
+		med, shipRepo, marketRepo, marketScanner, nil, apiClient,
+	)
+	if err := mediator.RegisterHandler[*tradeRouteCmd.RunArbCoordinatorCommand](med, arbCoordinatorHandler); err != nil {
+		return fmt.Errorf("failed to register ArbCoordinator handler: %w", err)
+	}
+
 	// Gas extraction handlers (depend on daemonClientLocal and storageCoordinator)
 	// NOTE: Storage coordinator is created below (after manufacturing setup) and passed here.
 	// We'll register these handlers after storage coordinator is created.

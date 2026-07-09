@@ -57,6 +57,7 @@ const (
 	DaemonService_JettisonCargo_FullMethodName                         = "/daemon.DaemonService/JettisonCargo"
 	DaemonService_GasExtractionOperation_FullMethodName                = "/daemon.DaemonService/GasExtractionOperation"
 	DaemonService_StartTradeRoute_FullMethodName                       = "/daemon.DaemonService/StartTradeRoute"
+	DaemonService_StartArbRun_FullMethodName                           = "/daemon.DaemonService/StartArbRun"
 	DaemonService_StartConstructionPipeline_FullMethodName             = "/daemon.DaemonService/StartConstructionPipeline"
 	DaemonService_GetConstructionStatus_FullMethodName                 = "/daemon.DaemonService/GetConstructionStatus"
 	DaemonService_StopConstructionPipeline_FullMethodName              = "/daemon.DaemonService/StopConstructionPipeline"
@@ -152,6 +153,9 @@ type DaemonServiceClient interface {
 	GasExtractionOperation(ctx context.Context, in *GasExtractionOperationRequest, opts ...grpc.CallOption) (*GasExtractionOperationResponse, error)
 	// StartTradeRoute launches a single-hull pure-arbitrage circuit as a recovery-safe daemon container
 	StartTradeRoute(ctx context.Context, in *StartTradeRouteRequest, opts ...grpc.CallOption) (*StartTradeRouteResponse, error)
+	// StartArbRun launches a ONE-SHOT, captain-directed, guarded arbitrage run (sp-p4ua):
+	// buy a named good at a source waypoint, route (cross-gate) to a destination, sell once, stop.
+	StartArbRun(ctx context.Context, in *StartArbRunRequest, opts ...grpc.CallOption) (*StartArbRunResponse, error)
 	// StartConstructionPipeline starts a pipeline to supply materials to a construction site
 	StartConstructionPipeline(ctx context.Context, in *StartConstructionPipelineRequest, opts ...grpc.CallOption) (*StartConstructionPipelineResponse, error)
 	// GetConstructionStatus retrieves the status of a construction site
@@ -548,6 +552,16 @@ func (c *daemonServiceClient) StartTradeRoute(ctx context.Context, in *StartTrad
 	return out, nil
 }
 
+func (c *daemonServiceClient) StartArbRun(ctx context.Context, in *StartArbRunRequest, opts ...grpc.CallOption) (*StartArbRunResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(StartArbRunResponse)
+	err := c.cc.Invoke(ctx, DaemonService_StartArbRun_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *daemonServiceClient) StartConstructionPipeline(ctx context.Context, in *StartConstructionPipelineRequest, opts ...grpc.CallOption) (*StartConstructionPipelineResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(StartConstructionPipelineResponse)
@@ -668,6 +682,9 @@ type DaemonServiceServer interface {
 	GasExtractionOperation(context.Context, *GasExtractionOperationRequest) (*GasExtractionOperationResponse, error)
 	// StartTradeRoute launches a single-hull pure-arbitrage circuit as a recovery-safe daemon container
 	StartTradeRoute(context.Context, *StartTradeRouteRequest) (*StartTradeRouteResponse, error)
+	// StartArbRun launches a ONE-SHOT, captain-directed, guarded arbitrage run (sp-p4ua):
+	// buy a named good at a source waypoint, route (cross-gate) to a destination, sell once, stop.
+	StartArbRun(context.Context, *StartArbRunRequest) (*StartArbRunResponse, error)
 	// StartConstructionPipeline starts a pipeline to supply materials to a construction site
 	StartConstructionPipeline(context.Context, *StartConstructionPipelineRequest) (*StartConstructionPipelineResponse, error)
 	// GetConstructionStatus retrieves the status of a construction site
@@ -797,6 +814,9 @@ func (UnimplementedDaemonServiceServer) GasExtractionOperation(context.Context, 
 }
 func (UnimplementedDaemonServiceServer) StartTradeRoute(context.Context, *StartTradeRouteRequest) (*StartTradeRouteResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method StartTradeRoute not implemented")
+}
+func (UnimplementedDaemonServiceServer) StartArbRun(context.Context, *StartArbRunRequest) (*StartArbRunResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method StartArbRun not implemented")
 }
 func (UnimplementedDaemonServiceServer) StartConstructionPipeline(context.Context, *StartConstructionPipelineRequest) (*StartConstructionPipelineResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method StartConstructionPipeline not implemented")
@@ -1512,6 +1532,24 @@ func _DaemonService_StartTradeRoute_Handler(srv interface{}, ctx context.Context
 	return interceptor(ctx, in, info, handler)
 }
 
+func _DaemonService_StartArbRun_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(StartArbRunRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).StartArbRun(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_StartArbRun_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).StartArbRun(ctx, req.(*StartArbRunRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _DaemonService_StartConstructionPipeline_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(StartConstructionPipelineRequest)
 	if err := dec(in); err != nil {
@@ -1724,6 +1762,10 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "StartTradeRoute",
 			Handler:    _DaemonService_StartTradeRoute_Handler,
+		},
+		{
+			MethodName: "StartArbRun",
+			Handler:    _DaemonService_StartArbRun_Handler,
 		},
 		{
 			MethodName: "StartConstructionPipeline",
