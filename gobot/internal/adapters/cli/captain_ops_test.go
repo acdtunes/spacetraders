@@ -10,14 +10,21 @@ import (
 
 	watchkeeper "github.com/andrescamacho/spacetraders-go/internal/captain"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
 type fakeEventStore struct {
 	unprocessed []*captain.Event
 	marked      []int64
+	// lastPlayerID records the playerID FindUnprocessed was most recently
+	// called with, so tests can assert a resolved --agent flag reached the
+	// store as a concrete numeric ID (sp-yr3f).
+	lastPlayerID int
 }
 
 func (f *fakeEventStore) FindUnprocessed(ctx context.Context, playerID, limit int) ([]*captain.Event, error) {
+	f.lastPlayerID = playerID
 	return f.unprocessed, nil
 }
 
@@ -37,6 +44,87 @@ func TestCaptainEventsAckRejectsGarbage(t *testing.T) {
 	fs := &fakeEventStore{}
 	err := runEventsAck(context.Background(), fs, "12,abc")
 	require.Error(t, err)
+	require.Empty(t, fs.marked)
+}
+
+// --- sp-yr3f: captain events/report honor global --agent ---
+
+// TestCaptainEventsListResolvedHonorsAgentFlagWithoutPlayerID reproduces the
+// verified repro ("captain events list --agent TORWIND" -> "--player-id flag
+// is required"): with only --agent set, resolution must succeed and the
+// store must be queried with the resolved numeric player ID.
+func TestCaptainEventsListResolvedHonorsAgentFlagWithoutPlayerID(t *testing.T) {
+	setPlayerFlags(t, 0, "TORWIND")
+	fs := &fakeEventStore{}
+	repo := &fakePlayerRepo{bySymbol: map[string]*player.Player{
+		"TORWIND": player.NewPlayer(shared.MustNewPlayerID(9), "TORWIND", "TOKEN-9"),
+	}}
+
+	err := runEventsListResolved(context.Background(), fs, repo, false)
+
+	require.NoError(t, err)
+	require.Equal(t, 9, fs.lastPlayerID)
+}
+
+// TestCaptainEventsListResolvedErrorsWhenNoPlayerIdentifiable confirms the
+// helpful error remains when neither --player-id, --agent, nor a persisted
+// default identifies a player.
+func TestCaptainEventsListResolvedErrorsWhenNoPlayerIdentifiable(t *testing.T) {
+	setPlayerFlags(t, 0, "")
+	t.Setenv("HOME", t.TempDir())
+	fs := &fakeEventStore{}
+	repo := &fakePlayerRepo{}
+
+	err := runEventsListResolved(context.Background(), fs, repo, false)
+
+	require.Error(t, err)
+}
+
+// --- sp-yr3f: `captain events ack --all` / `--before` batch flags ---
+
+func TestCaptainEventsAckAllMarksEveryUnprocessedEvent(t *testing.T) {
+	fs := &fakeEventStore{unprocessed: []*captain.Event{{ID: 1}, {ID: 2}, {ID: 3}}}
+
+	err := runEventsAckAll(context.Background(), fs, 7)
+
+	require.NoError(t, err)
+	require.Equal(t, 7, fs.lastPlayerID)
+	require.ElementsMatch(t, []int64{1, 2, 3}, fs.marked)
+}
+
+func TestCaptainEventsAckAllNoPendingEventsIsNoop(t *testing.T) {
+	fs := &fakeEventStore{}
+
+	err := runEventsAckAll(context.Background(), fs, 7)
+
+	require.NoError(t, err)
+	require.Empty(t, fs.marked)
+}
+
+func TestCaptainEventsAckBeforeMarksOnlyOlderEvents(t *testing.T) {
+	cutoff := time.Date(2026, 7, 8, 0, 0, 0, 0, time.UTC)
+	fs := &fakeEventStore{unprocessed: []*captain.Event{
+		{ID: 1, CreatedAt: cutoff.Add(-2 * time.Hour)},
+		{ID: 2, CreatedAt: cutoff.Add(-1 * time.Hour)},
+		{ID: 3, CreatedAt: cutoff.Add(1 * time.Hour)},
+	}}
+
+	err := runEventsAckBefore(context.Background(), fs, 7, cutoff)
+
+	require.NoError(t, err)
+	require.ElementsMatch(t, []int64{1, 2}, fs.marked)
+}
+
+func TestCaptainEventsAckBeforeExcludesEventsAtOrAfterCutoff(t *testing.T) {
+	cutoff := time.Date(2026, 7, 8, 0, 0, 0, 0, time.UTC)
+	fs := &fakeEventStore{unprocessed: []*captain.Event{
+		{ID: 1, CreatedAt: cutoff},
+		{ID: 2, CreatedAt: cutoff.Add(time.Hour)},
+	}}
+
+	err := runEventsAckBefore(context.Background(), fs, 7, cutoff)
+
+	require.NoError(t, err)
 	require.Empty(t, fs.marked)
 }
 

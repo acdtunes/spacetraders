@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"testing"
 	"time"
@@ -8,7 +10,23 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
+
+// fakeReportEventSource is a reportEventSource test double that records the
+// playerID it was queried with, so tests can assert a resolved --agent flag
+// (sp-yr3f) reached the source as a concrete numeric ID.
+type fakeReportEventSource struct {
+	events       []*captain.Event
+	err          error
+	lastPlayerID int
+}
+
+func (f *fakeReportEventSource) FindSince(ctx context.Context, playerID int, since time.Time) ([]*captain.Event, error) {
+	f.lastPlayerID = playerID
+	return f.events, f.err
+}
 
 func processedAt(t time.Time) *time.Time { return &t }
 
@@ -58,4 +76,40 @@ func TestEngineReportJSONShapeIsPinned(t *testing.T) {
 	}
 	require.Equal(t, float64(1), decoded["player_id"])
 	require.Equal(t, float64(7), decoded["window_days"])
+}
+
+// --- sp-yr3f: `captain report` honors global --agent ---
+
+// TestCaptainReportResolvedHonorsAgentFlagWithoutPlayerID reproduces the
+// verified repro pattern for "captain report --agent TORWIND" (previously
+// "--player-id flag is required" even though --agent was set): with only
+// --agent set, resolution must succeed and the source must be queried with
+// the resolved numeric player ID.
+func TestCaptainReportResolvedHonorsAgentFlagWithoutPlayerID(t *testing.T) {
+	setPlayerFlags(t, 0, "TORWIND")
+	repo := &fakePlayerRepo{bySymbol: map[string]*player.Player{
+		"TORWIND": player.NewPlayer(shared.MustNewPlayerID(9), "TORWIND", "TOKEN-9"),
+	}}
+	source := &fakeReportEventSource{}
+	var buf bytes.Buffer
+
+	err := runEngineReportResolved(context.Background(), repo, source, nil, "", 7, time.Now(), 0, 0, true, &buf)
+
+	require.NoError(t, err)
+	require.Equal(t, 9, source.lastPlayerID)
+}
+
+// TestCaptainReportResolvedErrorsWhenNoPlayerIdentifiable confirms the
+// helpful error remains when neither --player-id, --agent, nor a persisted
+// default identifies a player.
+func TestCaptainReportResolvedErrorsWhenNoPlayerIdentifiable(t *testing.T) {
+	setPlayerFlags(t, 0, "")
+	t.Setenv("HOME", t.TempDir())
+	repo := &fakePlayerRepo{}
+	source := &fakeReportEventSource{}
+	var buf bytes.Buffer
+
+	err := runEngineReportResolved(context.Background(), repo, source, nil, "", 7, time.Now(), 0, 0, true, &buf)
+
+	require.Error(t, err)
 }

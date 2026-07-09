@@ -16,6 +16,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	adaptertelemetry "github.com/andrescamacho/spacetraders-go/internal/adapters/telemetry"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	telemetry "github.com/andrescamacho/spacetraders-go/internal/domain/telemetry"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
@@ -189,6 +190,19 @@ func runEngineReport(ctx context.Context, source reportEventSource, tc tokenColl
 	return renderEngineReport(report, w)
 }
 
+// runEngineReportResolved resolves the effective player — --player-id,
+// --agent, or the persisted default, via the shared resolver — before
+// delegating to runEngineReport. Replaces a hard "--player-id is required"
+// error with the same fallback chain "captain events list" now honors
+// (sp-yr3f).
+func runEngineReportResolved(ctx context.Context, playerRepo player.PlayerRepository, source reportEventSource, tc tokenCollector, captainAlias string, days int, now time.Time, budgetTokens int64, alertThresholdPct int, jsonOut bool, w io.Writer) error {
+	resolved, err := resolveDefaultPlayer(ctx, playerRepo)
+	if err != nil {
+		return err
+	}
+	return runEngineReport(ctx, source, tc, captainAlias, resolved.ID.Value(), days, now, budgetTokens, alertThresholdPct, jsonOut, w)
+}
+
 // collectTokenSummary returns the compact token block, or nil when no collector
 // is wired or collection fails. Errors are swallowed by design (see caller).
 func collectTokenSummary(ctx context.Context, tc tokenCollector, captainAlias string, days int, since time.Time, budgetTokens int64, alertThresholdPct int) *TokenSummary {
@@ -257,13 +271,13 @@ func newCaptainReportCommand() *cobra.Command {
 		Long: `Report captain-engine telemetry over a recent window: event volume,
 acknowledgement latency, unprocessed backlog, and per-type counts.
 
+Player is resolved from --player-id, --agent, or the persisted default (in
+that order) — the same fallback chain "captain events list" uses.
+
 Examples:
   spacetraders captain report --player-id 1
-  spacetraders captain report --player-id 1 --days 14 --json`,
+  spacetraders captain report --agent TORWIND --days 14 --json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if playerID <= 0 {
-				return fmt.Errorf("--player-id flag is required")
-			}
 			if days <= 0 {
 				return fmt.Errorf("--days must be positive")
 			}
@@ -271,8 +285,12 @@ Examples:
 			if err != nil {
 				return err
 			}
+			playerRepo, err := newCaptainPlayerRepo()
+			if err != nil {
+				return err
+			}
 			tc, captainAlias, budgetTokens, alertThresholdPct := newReportTokenCollector()
-			return runEngineReport(context.Background(), source, tc, captainAlias, playerID, days, time.Now(), budgetTokens, alertThresholdPct, jsonOut, os.Stdout)
+			return runEngineReportResolved(context.Background(), playerRepo, source, tc, captainAlias, days, time.Now(), budgetTokens, alertThresholdPct, jsonOut, os.Stdout)
 		},
 	}
 

@@ -16,6 +16,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/adapters/persistence"
 	watchkeeper "github.com/andrescamacho/spacetraders-go/internal/captain"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/captain"
+	"github.com/andrescamacho/spacetraders-go/internal/domain/player"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/config"
 	"github.com/andrescamacho/spacetraders-go/internal/infrastructure/database"
 )
@@ -42,6 +43,40 @@ func runEventsAck(ctx context.Context, store eventStore, csv string) error {
 	return store.MarkProcessed(ctx, ids, time.Now())
 }
 
+// runEventsAckMatching acks the subset of playerID's unprocessed events
+// selected by matches (sp-yr3f: batch ack via --all/--before, so a large
+// wake backlog doesn't need a hand-built --ids CSV). No matches is a no-op,
+// not an error — acking an already-clear backlog is harmless.
+func runEventsAckMatching(ctx context.Context, store eventStore, playerID int, matches func(*captain.Event) bool) error {
+	events, err := store.FindUnprocessed(ctx, playerID, 0)
+	if err != nil {
+		return fmt.Errorf("failed to list events: %w", err)
+	}
+	ids := make([]int64, 0, len(events))
+	for _, e := range events {
+		if matches(e) {
+			ids = append(ids, e.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	return store.MarkProcessed(ctx, ids, time.Now())
+}
+
+// runEventsAckAll marks every unprocessed event for playerID as processed.
+func runEventsAckAll(ctx context.Context, store eventStore, playerID int) error {
+	return runEventsAckMatching(ctx, store, playerID, func(*captain.Event) bool { return true })
+}
+
+// runEventsAckBefore marks unprocessed events for playerID created before
+// cutoff as processed, leaving newer pending events untouched.
+func runEventsAckBefore(ctx context.Context, store eventStore, playerID int, cutoff time.Time) error {
+	return runEventsAckMatching(ctx, store, playerID, func(e *captain.Event) bool {
+		return e.CreatedAt.Before(cutoff)
+	})
+}
+
 // runEventsList prints the unprocessed events for a player, as a table or JSON.
 func runEventsList(ctx context.Context, store eventStore, playerID int, jsonOut bool) error {
 	events, err := store.FindUnprocessed(ctx, playerID, 0)
@@ -66,6 +101,19 @@ func runEventsList(ctx context.Context, store eventStore, playerID int, jsonOut 
 		fmt.Fprintf(w, "%d\t%s\t%s\t%s\n", e.ID, e.Type, e.Ship, e.CreatedAt.Format(time.RFC3339))
 	}
 	return w.Flush()
+}
+
+// runEventsListResolved resolves the effective player — --player-id,
+// --agent, or the persisted default, via the shared resolver — before
+// listing their unprocessed events. Replaces a hard "--player-id is
+// required" error with the same fallback chain "captain report" and other
+// captain-aware commands already honor (sp-yr3f).
+func runEventsListResolved(ctx context.Context, store eventStore, playerRepo player.PlayerRepository, jsonOut bool) error {
+	resolved, err := resolveDefaultPlayer(ctx, playerRepo)
+	if err != nil {
+		return err
+	}
+	return runEventsList(ctx, store, resolved.ID.Value(), jsonOut)
 }
 
 // wakePolicyStore is the subset of captain wake-policy persistence the CLI
@@ -213,6 +261,26 @@ func newCaptainEventStore() (eventStore, error) {
 	return persistence.NewGormCaptainEventRepository(db), nil
 }
 
+// newCaptainPlayerRepo connects to the database and returns a player
+// repository, so captain events/report commands can resolve --player-id/
+// --agent (sp-yr3f) via the shared resolveDefaultPlayer helper instead of
+// hard-requiring --player-id. It opens its own connection independent of
+// newCaptainEventStore/newReportEventSource, matching this package's
+// established one-connection-per-factory convention (see ledger.go).
+func newCaptainPlayerRepo() (player.PlayerRepository, error) {
+	cfg, err := config.LoadConfig("")
+	if err != nil {
+		return nil, fmt.Errorf("failed to load config: %w", err)
+	}
+
+	db, err := database.NewConnection(&cfg.Database)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to database: %w", err)
+	}
+
+	return persistence.NewGormPlayerRepository(db), nil
+}
+
 // NewCaptainCommand creates the captain command with subcommands.
 func NewCaptainCommand() *cobra.Command {
 	cmd := &cobra.Command{
@@ -221,10 +289,14 @@ func NewCaptainCommand() *cobra.Command {
 		Long: `Inspect and acknowledge the strategic-event queue the autonomous
 captain consumes during its wake ritual.
 
+Player is resolved the same way everywhere: --player-id, or --agent (which
+survives across era resets, unlike --player-id), or the persisted default.
+
 Examples:
   spacetraders captain events list --player-id 1
-  spacetraders captain events list --player-id 1 --json
-  spacetraders captain events ack --player-id 1 --ids 12,13,14`,
+  spacetraders captain events list --agent TORWIND --json
+  spacetraders captain events ack --player-id 1 --ids 12,13,14
+  spacetraders captain events ack --agent TORWIND --all`,
 	}
 
 	cmd.AddCommand(newCaptainEventsCommand())
@@ -365,20 +437,24 @@ func newCaptainEventsListCommand() *cobra.Command {
 		Short: "List unprocessed captain events for a player",
 		Long: `List the unprocessed strategic events queued for the captain.
 
+Player is resolved from --player-id, --agent, or the persisted default (in
+that order) — the same fallback chain "player info" and "ledger" use.
+
 Examples:
   spacetraders captain events list --player-id 1
-  spacetraders captain events list --player-id 1 --json`,
+  spacetraders captain events list --agent TORWIND
+  spacetraders captain events list --agent TORWIND --json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if playerID <= 0 {
-				return fmt.Errorf("--player-id flag is required")
-			}
-
 			store, err := newCaptainEventStore()
 			if err != nil {
 				return err
 			}
+			playerRepo, err := newCaptainPlayerRepo()
+			if err != nil {
+				return err
+			}
 
-			return runEventsList(context.Background(), store, playerID, jsonOut)
+			return runEventsListResolved(context.Background(), store, playerRepo, jsonOut)
 		},
 	}
 
@@ -389,29 +465,74 @@ Examples:
 
 func newCaptainEventsAckCommand() *cobra.Command {
 	var ids string
+	var all bool
+	var before string
 
 	cmd := &cobra.Command{
 		Use:   "ack",
-		Short: "Acknowledge captain events by ID",
-		Long: `Mark captain events processed by their IDs (comma-separated).
+		Short: "Acknowledge captain events by ID, or in bulk with --all/--before",
+		Long: `Mark captain events processed, either by explicit IDs or in bulk.
+
+Exactly one of --ids, --all, or --before is required. --all and --before
+resolve the player from --player-id, --agent, or the persisted default (in
+that order), same as "captain events list".
 
 Examples:
-  spacetraders captain events ack --player-id 1 --ids 12,13,14`,
+  spacetraders captain events ack --player-id 1 --ids 12,13,14
+  spacetraders captain events ack --agent TORWIND --all
+  spacetraders captain events ack --agent TORWIND --before 2026-07-08T00:00:00Z`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if ids == "" {
-				return fmt.Errorf("--ids flag is required")
+			modes := 0
+			if ids != "" {
+				modes++
+			}
+			if all {
+				modes++
+			}
+			if before != "" {
+				modes++
+			}
+			if modes == 0 {
+				return fmt.Errorf("one of --ids, --all, or --before is required")
+			}
+			if modes > 1 {
+				return fmt.Errorf("--ids, --all, and --before are mutually exclusive")
 			}
 
 			store, err := newCaptainEventStore()
 			if err != nil {
 				return err
 			}
+			ctx := context.Background()
 
-			return runEventsAck(context.Background(), store, ids)
+			if ids != "" {
+				return runEventsAck(ctx, store, ids)
+			}
+
+			playerRepo, err := newCaptainPlayerRepo()
+			if err != nil {
+				return err
+			}
+			resolved, err := resolveDefaultPlayer(ctx, playerRepo)
+			if err != nil {
+				return err
+			}
+
+			if all {
+				return runEventsAckAll(ctx, store, resolved.ID.Value())
+			}
+
+			cutoff, err := time.Parse(time.RFC3339, before)
+			if err != nil {
+				return fmt.Errorf("--before: %q must be an RFC3339 timestamp: %w", before, err)
+			}
+			return runEventsAckBefore(ctx, store, resolved.ID.Value(), cutoff)
 		},
 	}
 
-	cmd.Flags().StringVar(&ids, "ids", "", "Comma-separated event IDs to acknowledge (required)")
+	cmd.Flags().StringVar(&ids, "ids", "", "Comma-separated event IDs to acknowledge")
+	cmd.Flags().BoolVar(&all, "all", false, "Acknowledge every pending event for the resolved player")
+	cmd.Flags().StringVar(&before, "before", "", "Acknowledge pending events created before this RFC3339 timestamp")
 
 	return cmd
 }
