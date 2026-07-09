@@ -19,6 +19,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/goods"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 	"github.com/google/uuid"
 )
@@ -70,6 +71,7 @@ func NewRunFactoryCoordinatorHandler(
 	resolver *mfgServices.SupplyChainResolver,
 	marketLocator *mfgServices.MarketLocator,
 	clock shared.Clock,
+	apiClient domainPorts.APIClient, // live treasury reads for the factory input-buy spend floor (sp-9aoc); nil disables it (tests)
 ) *RunFactoryCoordinatorHandler {
 	// Honour the "nil = use RealClock" wiring convention (main.go) that every
 	// sibling coordinator follows (run_parallel_manufacturing_coordinator.go,
@@ -86,6 +88,7 @@ func NewRunFactoryCoordinatorHandler(
 		marketRepo,
 		marketLocator,
 		clock,
+		apiClient, // sp-9aoc: threads the live client to buyGood's working-capital spend floor
 	)
 
 	dependencyAnalyzer := mfgServices.NewDependencyAnalyzer()

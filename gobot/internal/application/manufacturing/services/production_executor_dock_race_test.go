@@ -349,6 +349,7 @@ func newDockRaceExecutor(t *testing.T, purchaseScript []error) (*ProductionExecu
 		marketLocator,
 		&dockRaceClock{},
 		[]time.Duration{time.Millisecond},
+		nil, // apiClient: this harness's tests predate the spend floor; nil keeps it disabled
 	)
 	return executor, repo, mediator
 }

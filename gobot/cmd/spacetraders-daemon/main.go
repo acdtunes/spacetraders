@@ -519,6 +519,7 @@ func run(cfg *config.Config) error {
 
 	factoryCoordinatorHandler := goodsCmd.NewRunFactoryCoordinatorHandler(
 		med, shipRepo, marketRepoAdapter, goodsResolver, goodsMarketLocator, nil, // nil = use RealClock
+		apiClient, // sp-9aoc: live treasury for the factory input-buy working-capital spend floor
 	)
 	if err := mediator.RegisterHandler[*goodsCmd.RunFactoryCoordinatorCommand](med, factoryCoordinatorHandler); err != nil {
 		return fmt.Errorf("failed to register GoodsFactoryCoordinator handler: %w", err)

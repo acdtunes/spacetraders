@@ -98,6 +98,7 @@ func newCrushedSinkExecutor(t *testing.T, harvestSellPrice, sinkBidPrice int, fi
 		marketLocator,
 		&dockRaceClock{},
 		[]time.Duration{time.Millisecond},
+		nil, // apiClient: crushed-sink guards the harvest path, not the input buy; floor stays disabled here
 	)
 	return executor, repo, mediator
 }

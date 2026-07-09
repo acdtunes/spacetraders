@@ -378,6 +378,7 @@ func newFactoryFixture(t *testing.T) *factoryFixture {
 		resolver,
 		marketLocator,
 		clock,
+		nil, // apiClient: spend floor disabled in the coordinator flow test
 	)
 
 	cmd := &RunFactoryCoordinatorCommand{
@@ -500,6 +501,7 @@ func newFactoryHandlerAndShipRepo(t *testing.T, clock shared.Clock) (*RunFactory
 		resolver,
 		marketLocator,
 		clock,
+		nil, // apiClient: spend floor disabled in this coordinator fixture
 	), shipRepo
 }
 

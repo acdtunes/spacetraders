@@ -13,6 +13,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/goods"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/market"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
+	domainPorts "github.com/andrescamacho/spacetraders-go/internal/domain/ports"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
@@ -49,6 +50,16 @@ const productionEmptyTrancheRetryDelay = 2 * time.Second
 // the logs at the true claim-holding site.
 const productionDwellWarnThreshold = 5 * time.Minute
 
+// defaultWorkingCapitalReserve is the hard working-capital spend floor applied to
+// factory INPUT purchases (sp-9aoc): a factory input buy must never drop live
+// treasury below this. It mirrors bp6f's trade-circuit floor (the identically-named
+// const in run_trade_route_coordinator.go) and closes the same drain class one layer
+// over — re-enabling 4 goods factories at ~848k drained the float to 23k in ~1min
+// because bp6f guarded trade circuits but NOT factory input buys. Hard floor, not
+// tunable per-run: the incident was a concurrent-factory drain, and a per-run knob is
+// exactly the lever an over-eager re-enable would zero out.
+const defaultWorkingCapitalReserve = 50000
+
 // ProductionExecutor orchestrates the production of goods by coordinating ship operations.
 // It handles both purchasing goods from markets (BUY) and manufacturing them (FABRICATE).
 type ProductionExecutor struct {
@@ -58,6 +69,10 @@ type ProductionExecutor struct {
 	marketLocator    *MarketLocator
 	clock            shared.Clock
 	pollingIntervals []time.Duration // Configurable polling intervals
+	// apiClient live-reads treasury for the working-capital spend floor (sp-9aoc).
+	// nil disables the floor — the fail-OPEN contract for the package's test fixtures
+	// that cannot supply a live client; the daemon always wires the real one (main.go).
+	apiClient domainPorts.APIClient
 }
 
 // NewProductionExecutor creates a new production executor with default polling intervals
@@ -67,6 +82,7 @@ func NewProductionExecutor(
 	marketRepo market.MarketRepository,
 	marketLocator *MarketLocator,
 	clock shared.Clock,
+	apiClient domainPorts.APIClient,
 ) *ProductionExecutor {
 	return NewProductionExecutorWithConfig(
 		mediator,
@@ -75,6 +91,7 @@ func NewProductionExecutor(
 		marketLocator,
 		clock,
 		[]time.Duration{30 * time.Second, 60 * time.Second}, // Default intervals
+		apiClient,
 	)
 }
 
@@ -86,6 +103,7 @@ func NewProductionExecutorWithConfig(
 	marketLocator *MarketLocator,
 	clock shared.Clock,
 	pollingIntervals []time.Duration,
+	apiClient domainPorts.APIClient,
 ) *ProductionExecutor {
 	return &ProductionExecutor{
 		mediator:         mediator,
@@ -94,6 +112,7 @@ func NewProductionExecutorWithConfig(
 		marketLocator:    marketLocator,
 		clock:            clock,
 		pollingIntervals: pollingIntervals,
+		apiClient:        apiClient,
 	}
 }
 
@@ -215,6 +234,32 @@ func (e *ProductionExecutor) buyGood(
 
 	logger.Log("INFO", fmt.Sprintf("Purchasing %d units of %s (cargo: %d, trade_volume: %d)", purchaseQty, node.Good, availableSpace, marketResult.TradeVolume), nil)
 
+	// Working-capital spend floor (sp-9aoc): refuse this input buy BEFORE it dispatches
+	// if paying for it would drop live treasury below the reserve. This is the per-buy
+	// backstop to bp6f's circuit-level floor — 4 goods factories buying inputs
+	// concurrently with no floor drained 848k→23k in ~1min, the same drain class the
+	// trade incident had. chain_margin_guard (sp-2dv4) sits UPSTREAM at the coordinator
+	// on projected chain margin; this is the last-line check at the actual point of spend.
+	projectedCost := purchaseQty * marketResult.Price
+	if e.spendFloorBreached(ctx, projectedCost) {
+		// PARK: zero-spend result, mirroring the recoverable-condition returns above
+		// (full-hold skip, empty-tranche skip). The numbers go IN THE MESSAGE too
+		// (sp-iqyq) — the container log renderer drops the metadata map, so a park
+		// hidden only in {"projected_cost": ...} never reaches an operator.
+		logger.Log("WARNING", fmt.Sprintf("Parked input purchase of %s at %s — would breach working-capital reserve (projected cost %d, reserve %d)", node.Good, marketResult.WaypointSymbol, projectedCost, defaultWorkingCapitalReserve), map[string]interface{}{
+			"good":           node.Good,
+			"market":         marketResult.WaypointSymbol,
+			"projected_cost": projectedCost,
+			"action":         "factory_parked",
+			"reason":         "spend_floor",
+		})
+		return &ProductionResult{
+			QuantityAcquired: 0,
+			TotalCost:        0,
+			WaypointSymbol:   marketResult.WaypointSymbol,
+		}, nil
+	}
+
 	// Purchase cargo (capped by trade volume)
 	purchaseCmd := &shipCargo.PurchaseCargoCommand{
 		ShipSymbol: updatedShip.ShipSymbol(),
@@ -257,6 +302,53 @@ func (e *ProductionExecutor) buyGood(
 		TotalCost:        response.TotalCost,
 		WaypointSymbol:   marketResult.WaypointSymbol,
 	}, nil
+}
+
+// spendFloorBreached reports whether buying an input tranche costing projectedCost
+// would drop live treasury below defaultWorkingCapitalReserve. It mirrors bp6f's trade
+// floor (spendFloorBreached in run_trade_route_coordinator.go): a live GetAgent read
+// checked right before the buy commits, so the caller can PARK instead of spending.
+//
+// Fails OPEN when no apiClient is wired (e.apiClient == nil): the guard is simply
+// unavailable — the optional-port contract the package's test fixtures rely on (they
+// pass nil), never the daemon, which always wires the real client.
+//
+// Fails CLOSED on every live-read failure (an unresolvable player token, or GetAgent
+// itself erroring): a guard whose whole job is keeping treasury above the reserve must
+// never let a buy through just because it went blind. An API hiccup here parks the
+// input rather than spending unseen — the factory-side analogue of bp6f's fail-closed.
+func (e *ProductionExecutor) spendFloorBreached(ctx context.Context, projectedCost int) bool {
+	logger := common.LoggerFromContext(ctx)
+	if e.apiClient == nil {
+		return false
+	}
+
+	token, err := common.PlayerTokenFromContext(ctx)
+	if err != nil {
+		// Numbers/cause in the MESSAGE (sp-iqyq): the container log renderer drops the
+		// metadata map, so a blind fail-closed park must name its cause in the text.
+		logger.Log("WARNING", fmt.Sprintf("Could not resolve player token for factory spend-floor check — parking input buy (fail-closed): %v", err), map[string]interface{}{
+			"error": err.Error(),
+		})
+		return true
+	}
+
+	agentData, err := e.apiClient.GetAgent(ctx, token)
+	if err != nil {
+		logger.Log("WARNING", fmt.Sprintf("Could not read live treasury for factory spend-floor check — parking input buy (fail-closed): %v", err), map[string]interface{}{
+			"error": err.Error(),
+		})
+		return true
+	}
+
+	if agentData.Credits-projectedCost < defaultWorkingCapitalReserve {
+		logger.Log("WARNING", fmt.Sprintf("Factory input buy would breach the working-capital reserve — treasury %d, projected cost %d, reserve %d", agentData.Credits, projectedCost, defaultWorkingCapitalReserve), map[string]interface{}{
+			"treasury": agentData.Credits, "projected_cost": projectedCost, "reserve": defaultWorkingCapitalReserve,
+		})
+		return true
+	}
+
+	return false
 }
 
 // fabricateGood manufactures a good by producing inputs and delivering them to a manufacturing waypoint

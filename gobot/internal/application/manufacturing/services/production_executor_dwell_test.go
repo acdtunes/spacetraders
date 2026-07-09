@@ -108,6 +108,7 @@ func TestPollForProduction_DwellPastThreshold_EscalatesToWarnEveryAttempt(t *tes
 		nil, // marketLocator: unused by PollForProduction
 		clock,
 		[]time.Duration{time.Millisecond}, // keep the real inter-poll timer fast
+		nil,                               // apiClient: unused — inputsOnly=true skips the buy/spend-floor path
 	)
 
 	_, _, err := executor.PollForProduction(
@@ -163,6 +164,7 @@ func TestPollForProduction_BeforeThreshold_NoWarnEscalation(t *testing.T) {
 	executor := NewProductionExecutorWithConfig(
 		nil, nil, marketRepo, nil, clock,
 		[]time.Duration{time.Millisecond},
+		nil, // apiClient: unused — inputsOnly=true skips the buy/spend-floor path
 	)
 
 	_, _, err := executor.PollForProduction(

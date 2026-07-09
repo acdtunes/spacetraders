@@ -42,6 +42,7 @@ func TestRefreshShipPoolOnce_IdleShipsAlreadyTracked_LogsClarifyingReason(t *tes
 	marketLocator := mfgServices.NewMarketLocator(marketRepo, nil, nil, nil)
 	handler := NewRunFactoryCoordinatorHandler(
 		&factoryFakeMediator{}, shipRepo, marketRepo, resolver, marketLocator, &factoryFakeClock{},
+		nil, // apiClient: pool-refresh path never buys, so the spend floor is irrelevant here
 	)
 
 	logger := &capturingLogger{}
@@ -86,6 +87,7 @@ func TestRefreshShipPoolOnce_NewIdleShip_AddedToPoolAndLogged(t *testing.T) {
 	marketLocator := mfgServices.NewMarketLocator(marketRepo, nil, nil, nil)
 	handler := NewRunFactoryCoordinatorHandler(
 		&factoryFakeMediator{}, shipRepo, marketRepo, resolver, marketLocator, &factoryFakeClock{},
+		nil, // apiClient: pool-refresh path never buys, so the spend floor is irrelevant here
 	)
 
 	logger := &capturingLogger{}
