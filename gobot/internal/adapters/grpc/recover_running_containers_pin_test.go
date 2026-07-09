@@ -177,6 +177,62 @@ func TestRecoveryRestartsTopLevelCoordinator(t *testing.T) {
 	runner.cancelFunc()
 }
 
+// TestRecoveryRestoresFactoryIterationBudgetFromMaxIterationsKey is the sp-perx
+// regression: StartGoodsFactory persists a factory's iteration budget under the
+// "max_iterations" config key (see container_ops_goods.go), but recoverContainer
+// only ever read "iterations" when reconstructing the container entity on restart.
+// Every recovered factory silently collapsed to the hardcoded default of 1, ran one
+// more production cycle, then self-completed (Container.ShouldContinue is false once
+// currentIteration reaches 1) — indistinguishable from "didn't survive restart" to
+// the captain, even though the persisted budget said run forever (-1) or for N more
+// cycles. Unlike goods_factory_coordinator, contract_fleet_coordinator and
+// manufacturing_coordinator loop forever inside a single Handle() call, so the same
+// stale-budget bug is latent but harmless for them; this only bites handlers that
+// return after one cycle and rely on the container-level budget to keep going.
+func TestRecoveryRestoresFactoryIterationBudgetFromMaxIterationsKey(t *testing.T) {
+	cases := []struct {
+		name   string
+		id     string
+		config string
+		want   int
+	}{
+		{
+			name:   "infinite budget survives restart",
+			id:     "goods-inf",
+			config: `{"target_good":"MICROPROCESSORS","system_symbol":"X1-TEST","container_id":"goods-inf","max_iterations":-1}`,
+			want:   -1,
+		},
+		{
+			name:   "finite budget survives restart",
+			id:     "goods-20",
+			config: `{"target_good":"MICROPROCESSORS","system_symbol":"X1-TEST","container_id":"goods-20","max_iterations":20}`,
+			want:   20,
+		},
+		{
+			name:   "absent max_iterations still defaults to 1",
+			id:     "goods-def",
+			config: `{"target_good":"MICROPROCESSORS","system_symbol":"X1-TEST","container_id":"goods-def"}`,
+			want:   1,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s, db, playerID := newRecoveryTestServer(t)
+			insertRunningContainer(t, db, tc.id, "goods_factory_coordinator", "goods_factory_coordinator",
+				tc.config, playerID, nil)
+
+			require.NoError(t, s.RecoverRunningContainers(context.Background()))
+
+			runner := s.registeredRunner(tc.id)
+			require.NotNil(t, runner)
+			require.Equal(t, tc.want, runner.Container().MaxIterations(),
+				"recovered factory's iteration budget must match what was persisted")
+			runner.cancelFunc()
+		})
+	}
+}
+
 func TestRecoveryFailsUnknownCommandType(t *testing.T) {
 	s, db, playerID := newRecoveryTestServer(t)
 	insertRunningContainer(t, db, "mystery-1", "mystery_op", "MYSTERY", `{}`, playerID, nil)

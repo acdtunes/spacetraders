@@ -827,9 +827,15 @@ func (s *DaemonServer) recoverContainer(ctx context.Context, containerModel *per
 		}
 	}
 
-	// Extract iterations from config
+	// Extract iterations from config. Most container types persist this under
+	// "iterations" (scout_tour, trade_route), but goods_factory_coordinator persists
+	// it under "max_iterations" (see StartGoodsFactory) — check both so a recovered
+	// factory resumes with its actual budget instead of silently collapsing to the
+	// single-iteration default (sp-perx).
 	iterations := 1 // Default
 	if iter, ok := config["iterations"].(float64); ok {
+		iterations = int(iter)
+	} else if iter, ok := config["max_iterations"].(float64); ok {
 		iterations = int(iter)
 	}
 
