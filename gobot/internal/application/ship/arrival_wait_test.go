@@ -102,6 +102,16 @@ func newArrivalWaitTestShip(t *testing.T, navStatus domainNavigation.NavStatus) 
 	return ship
 }
 
+// newArrivalWaitTestShipWithArrival is newArrivalWaitTestShip plus the
+// resync snapshot's own ArrivalTime set, so tests can drive the
+// future-vs-past-ETA distinction (sp-ht1f) on the ship a resync returns.
+func newArrivalWaitTestShipWithArrival(t *testing.T, navStatus domainNavigation.NavStatus, arrival time.Time) *domainNavigation.Ship {
+	t.Helper()
+	ship := newArrivalWaitTestShip(t, navStatus)
+	ship.SetArrivalTime(arrival)
+	return ship
+}
+
 // --- Tests -------------------------------------------------------------------
 
 // TestWaitForShipArrivalCore_EventArrives_HappyPathUnchanged pins the existing
@@ -120,7 +130,7 @@ func TestWaitForShipArrivalCore_EventArrives_HappyPathUnchanged(t *testing.T) {
 		return nil, nil
 	}}
 
-	err := waitForShipArrivalCore(context.Background(), repo, sub, ship, shared.MustNewPlayerID(1), 5, noopLogger{}, 50*time.Millisecond, 2)
+	err := waitForShipArrivalCore(context.Background(), repo, sub, ship, shared.MustNewPlayerID(1), 5, noopLogger{}, 50*time.Millisecond, 200*time.Millisecond)
 	if err != nil {
 		t.Fatalf("expected success on event arrival, got: %v", err)
 	}
@@ -141,7 +151,7 @@ func TestWaitForShipArrivalCore_EventLost_ResyncConfirmsArrival(t *testing.T) {
 		return newArrivalWaitTestShip(t, domainNavigation.NavStatusInOrbit), nil
 	}}
 
-	err := waitForShipArrivalCore(context.Background(), repo, sub, ship, shared.MustNewPlayerID(1), 5, noopLogger{}, 20*time.Millisecond, 3)
+	err := waitForShipArrivalCore(context.Background(), repo, sub, ship, shared.MustNewPlayerID(1), 5, noopLogger{}, 20*time.Millisecond, 200*time.Millisecond)
 	if err != nil {
 		t.Fatalf("expected resync to recover from a lost event, got: %v", err)
 	}
@@ -153,19 +163,100 @@ func TestWaitForShipArrivalCore_EventLost_ResyncConfirmsArrival(t *testing.T) {
 	}
 }
 
-// TestWaitForShipArrivalCore_EventLostRepeatedly_ExhaustsToTypedError proves the
-// wait does NOT hang forever: if the event never arrives AND every resync still
-// shows IN_TRANSIT, the wait gives up after maxAttempts with a typed error
-// instead of blocking indefinitely.
-func TestWaitForShipArrivalCore_EventLostRepeatedly_ExhaustsToTypedError(t *testing.T) {
+// TestWaitForShipArrivalCore_ResyncStillInTransitFutureETA_KeepsWaitingUntilArrival
+// is sp-ht1f's headline regression case: a resync keeps showing IN_TRANSIT
+// with an ArrivalTime still in the future (a legitimately long transit, e.g.
+// the real-world navigate-TORWIND-F-a36d793d 23-minute DF9E->B10D leg that
+// sp-pafv's fixed 3*30s=~90s budget aborted at ~2 minutes). The wait must
+// keep polling well past what the OLD fixed-attempt budget allowed, and only
+// stop once the ship actually leaves transit - it must NOT park just because
+// a fixed attempt count was reached while the ship was still healthy.
+func TestWaitForShipArrivalCore_ResyncStillInTransitFutureETA_KeepsWaitingUntilArrival(t *testing.T) {
+	ship := newArrivalWaitTestShip(t, domainNavigation.NavStatusInTransit)
+	sub := &fakeArrivalSubscriber{ch: make(chan domainNavigation.ShipArrivedEvent, 1)} // never fed: event lost for the whole wait
+
+	const callsUntilArrival = 6 // more than sp-pafv's old fixed DefaultArrivalMaxAttempts=3
+	repo := &fakeShipQueryRepo{}
+	repo.findBySymbolFunc = func() (*domainNavigation.Ship, error) {
+		if repo.calls < callsUntilArrival {
+			// Still genuinely in flight - ETA is comfortably in the future,
+			// so this must NOT be treated as a lost/past-ETA event.
+			return newArrivalWaitTestShipWithArrival(t, domainNavigation.NavStatusInTransit, time.Now().Add(time.Hour)), nil
+		}
+		return newArrivalWaitTestShip(t, domainNavigation.NavStatusInOrbit), nil
+	}
+
+	// gracePeriod is tiny so callsUntilArrival resyncs happen fast in test
+	// time; budget is generous (1s) relative to gracePeriod*callsUntilArrival
+	// (30ms) so the wait is never at risk of exhausting on wall-clock alone -
+	// this test is about NOT parking early on a future ETA, not about budget
+	// sizing (that's calculateArrivalWaitBudget's own test below).
+	err := waitForShipArrivalCore(context.Background(), repo, sub, ship, shared.MustNewPlayerID(1), 1500, noopLogger{}, 5*time.Millisecond, time.Second)
+	if err != nil {
+		t.Fatalf("expected the wait to survive past the old fixed-attempt budget and eventually succeed, got: %v", err)
+	}
+	if ship.NavStatus() != domainNavigation.NavStatusInOrbit {
+		t.Fatalf("expected ship to have Arrive()'d, got status %s", ship.NavStatus())
+	}
+	if repo.calls != callsUntilArrival {
+		t.Fatalf("expected exactly %d resync attempts before success, got %d", callsUntilArrival, repo.calls)
+	}
+}
+
+// TestWaitForShipArrivalCore_ResyncStillInTransitPastETA_ParksWithinOneResync
+// is the genuine lost-event case sp-pafv originally targeted, now
+// distinguished explicitly (sp-ht1f) from a healthy future-ETA transit: a
+// resync shows IN_TRANSIT but the ship's own ArrivalTime has already passed.
+// Waiting out the rest of a large budget cannot help - the event is gone -
+// so the wait must park immediately on this first resync rather than
+// burning through the whole remaining budget first.
+func TestWaitForShipArrivalCore_ResyncStillInTransitPastETA_ParksWithinOneResync(t *testing.T) {
 	ship := newArrivalWaitTestShip(t, domainNavigation.NavStatusInTransit)
 	sub := &fakeArrivalSubscriber{ch: make(chan domainNavigation.ShipArrivedEvent, 1)} // never fed
 	repo := &fakeShipQueryRepo{findBySymbolFunc: func() (*domainNavigation.Ship, error) {
-		// Source of truth still shows IN_TRANSIT on every resync attempt.
+		// Source of truth still shows IN_TRANSIT, but its own ETA is already
+		// a minute in the past - the event was genuinely lost/dropped.
+		return newArrivalWaitTestShipWithArrival(t, domainNavigation.NavStatusInTransit, time.Now().Add(-time.Minute)), nil
+	}}
+
+	// budget is deliberately large (5s) to prove parking happens because the
+	// ETA is past, not because the budget ran out.
+	err := waitForShipArrivalCore(context.Background(), repo, sub, ship, shared.MustNewPlayerID(1), 5, noopLogger{}, 10*time.Millisecond, 5*time.Second)
+	if err == nil {
+		t.Fatalf("expected exhaustion error, got nil (a past-ETA IN_TRANSIT resync must not succeed silently)")
+	}
+	var exhausted *ErrArrivalWaitExhausted
+	if !errors.As(err, &exhausted) {
+		t.Fatalf("expected *ErrArrivalWaitExhausted, got %T: %v", err, err)
+	}
+	if repo.calls != 1 {
+		t.Fatalf("expected parking within exactly one resync once ETA is confirmed past, got %d calls", repo.calls)
+	}
+	if exhausted.Attempts != 1 {
+		t.Fatalf("expected Attempts=1, got %d", exhausted.Attempts)
+	}
+	if ship.NavStatus() != domainNavigation.NavStatusInTransit {
+		t.Fatalf("ship state must be untouched on exhaustion, got %s", ship.NavStatus())
+	}
+}
+
+// TestWaitForShipArrivalCore_BudgetExhausted_NoResolvingSignal_ParksWithTypedError
+// proves the wait still does NOT hang forever (sp-pafv's original guarantee):
+// if the event never arrives AND every resync shows IN_TRANSIT with no ETA
+// that can be proven past (unknown/nil ArrivalTime on the resync snapshot),
+// the only backstop left is the overall wait budget itself. This is the
+// genuine-exhaustion path, now driven by a deadline instead of a fixed
+// attempt count (sp-ht1f).
+func TestWaitForShipArrivalCore_BudgetExhausted_NoResolvingSignal_ParksWithTypedError(t *testing.T) {
+	ship := newArrivalWaitTestShip(t, domainNavigation.NavStatusInTransit)
+	sub := &fakeArrivalSubscriber{ch: make(chan domainNavigation.ShipArrivedEvent, 1)} // never fed
+	repo := &fakeShipQueryRepo{findBySymbolFunc: func() (*domainNavigation.Ship, error) {
+		// Source of truth still shows IN_TRANSIT on every resync attempt,
+		// with no ArrivalTime to prove the event was lost vs merely pending.
 		return newArrivalWaitTestShip(t, domainNavigation.NavStatusInTransit), nil
 	}}
 
-	err := waitForShipArrivalCore(context.Background(), repo, sub, ship, shared.MustNewPlayerID(1), 5, noopLogger{}, 10*time.Millisecond, 3)
+	err := waitForShipArrivalCore(context.Background(), repo, sub, ship, shared.MustNewPlayerID(1), 5, noopLogger{}, 15*time.Millisecond, 40*time.Millisecond)
 	if err == nil {
 		t.Fatalf("expected exhaustion error, got nil (wait must not silently succeed while still IN_TRANSIT)")
 	}
@@ -173,8 +264,8 @@ func TestWaitForShipArrivalCore_EventLostRepeatedly_ExhaustsToTypedError(t *test
 	if !errors.As(err, &exhausted) {
 		t.Fatalf("expected *ErrArrivalWaitExhausted, got %T: %v", err, err)
 	}
-	if repo.calls != 3 {
-		t.Fatalf("expected exactly maxAttempts=3 resync attempts, got %d", repo.calls)
+	if repo.calls < 2 {
+		t.Fatalf("expected more than one resync attempt before exhausting the budget (not an immediate past-ETA park), got %d", repo.calls)
 	}
 	if ship.NavStatus() != domainNavigation.NavStatusInTransit {
 		t.Fatalf("ship state must be untouched on exhaustion, got %s", ship.NavStatus())
@@ -195,8 +286,62 @@ func TestWaitForShipArrivalCore_ContextCancelled_ReturnsCtxErrImmediately(t *tes
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := waitForShipArrivalCore(ctx, repo, sub, ship, shared.MustNewPlayerID(1), 5, noopLogger{}, 50*time.Millisecond, 3)
+	err := waitForShipArrivalCore(ctx, repo, sub, ship, shared.MustNewPlayerID(1), 5, noopLogger{}, 50*time.Millisecond, time.Second)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context.Canceled, got: %v", err)
+	}
+}
+
+// --- calculateArrivalWaitBudget ----------------------------------------------
+
+// TestCalculateArrivalWaitBudget_ScalesWithETA pins the sp-ht1f budget
+// formula: budget = max(eta*marginFactor, eta+minMargin). This is what
+// replaces sp-pafv's fixed grace*maxAttempts (~90s) budget that aborted
+// every transit longer than ~90s regardless of its real ETA - the direct
+// root cause of sp-ht1f (waitTimeSeconds was computed correctly by every
+// call site but only ever used in a log line, never in the wait budget).
+func TestCalculateArrivalWaitBudget_ScalesWithETA(t *testing.T) {
+	const marginFactor = 1.25
+	const minMargin = 2 * time.Minute
+
+	tests := []struct {
+		name string
+		eta  time.Duration
+		want time.Duration
+	}{
+		{
+			name: "zero ETA floors to minMargin",
+			eta:  0,
+			want: 2 * time.Minute,
+		},
+		{
+			name: "short ETA floors to eta+minMargin (flat margin dominates)",
+			eta:  time.Minute,
+			want: 3 * time.Minute, // eta*1.25=75s vs eta+2min=180s -> 180s wins
+		},
+		{
+			name: "long ETA scales proportionally (percentage margin dominates)",
+			eta:  25 * time.Minute,
+			want: 31*time.Minute + 15*time.Second, // 25min*1.25=31.25min vs 25min+2min=27min -> 31.25min wins
+		},
+		{
+			name: "the real-world regression case: ~23 minute transit",
+			eta:  23 * time.Minute,
+			want: 28*time.Minute + 45*time.Second, // 23min*1.25=28.75min vs 23min+2min=25min -> 28.75min wins
+		},
+		{
+			name: "negative ETA (already overdue per API clock skew) clamps to zero before flooring",
+			eta:  -30 * time.Second,
+			want: 2 * time.Minute,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := calculateArrivalWaitBudget(tc.eta, marginFactor, minMargin)
+			if got != tc.want {
+				t.Fatalf("calculateArrivalWaitBudget(%v, %v, %v) = %v, want %v", tc.eta, marginFactor, minMargin, got, tc.want)
+			}
+		})
 	}
 }

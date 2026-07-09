@@ -10,7 +10,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
 )
 
-// Default grace period and attempt budget for WaitForShipArrival's
+// Default grace period and wait-budget margin for WaitForShipArrival's
 // timeout->resync->park backstop (sp-pafv). ShipEventBus delivers ARRIVED
 // events via a non-blocking, non-replaying send (PublishArrived): if
 // PublishArrived races ahead of SubscribeArrived, or a subscriber's buffered
@@ -18,15 +18,37 @@ import (
 // Without a bound, a lost/raced event stalls the waiting worker/coordinator
 // permanently. These defaults only govern the timeout leg - the happy path
 // (event arrives) is unaffected and still returns as soon as the event shows up.
+//
+// sp-pafv originally shipped this as a FIXED grace*maxAttempts budget
+// (~90s total) regardless of the ship's actual route ETA, so every transit
+// longer than ~90s aborted early even though it was legitimately still
+// IN_TRANSIT with the real arrival simply not due yet (e.g. the real-world
+// navigate-TORWIND-F-a36d793d 23-minute DF9E->B10D leg, aborted at ~2
+// minutes). sp-ht1f replaces the fixed attempt count with a budget that
+// scales with the route's own ETA - see calculateArrivalWaitBudget.
 const (
+	// DefaultArrivalGracePeriod is the poll interval between resyncs while
+	// waiting for the ARRIVED event.
 	DefaultArrivalGracePeriod = 30 * time.Second
-	DefaultArrivalMaxAttempts = 3
+
+	// DefaultArrivalMarginFactor and DefaultArrivalMinMargin size the safety
+	// margin layered on top of a route's own ETA to form the total wait
+	// budget: budget = max(eta*DefaultArrivalMarginFactor,
+	// eta+DefaultArrivalMinMargin). The margin absorbs scheduler jitter and
+	// API latency around the real arrival instant - it is not, by itself,
+	// what keeps a healthy transit from being parked early; see
+	// arrivalIsPast for the earlier, ETA-driven park on a genuinely lost
+	// event.
+	DefaultArrivalMarginFactor = 1.25
+	DefaultArrivalMinMargin    = 2 * time.Minute
 )
 
 // ErrArrivalWaitExhausted is returned when a ship-arrival wait gives up: the
 // ARRIVED event never arrived AND repeated resyncs against the ship
-// repository kept showing the ship still IN_TRANSIT. Callers should park or
-// defer the task rather than retry inline.
+// repository kept showing the ship still IN_TRANSIT without a resolving
+// signal (either a status change or a provably-past ETA) before the wait
+// budget ran out. Callers should park or defer the task rather than retry
+// inline.
 type ErrArrivalWaitExhausted struct {
 	ShipSymbol string
 	Attempts   int
@@ -47,6 +69,14 @@ func (e *ErrArrivalWaitExhausted) Error() string {
 // This is the shared safety net for every evented arrival wait in the
 // codebase (sp-pafv).
 //
+// The overall wait budget scales with waitTimeSeconds (the route's own ETA)
+// via calculateArrivalWaitBudget, so a legitimately long transit is not
+// parked early just because a fixed number of grace periods elapsed
+// (sp-ht1f). Within that budget, a resync that still shows IN_TRANSIT is
+// only treated as a genuinely lost event - and parked immediately - once the
+// ship's own ArrivalTime has passed; a future ArrivalTime means the wait
+// keeps polling.
+//
 // On success, ship's own NavStatus is transitioned via Arrive() so the
 // caller's existing pointer reflects the new state - callers do not need to
 // discard ship and switch to a freshly reloaded copy.
@@ -59,14 +89,39 @@ func WaitForShipArrival(
 	waitTimeSeconds int,
 	logger common.ContainerLogger,
 ) error {
+	budget := calculateArrivalWaitBudget(
+		time.Duration(waitTimeSeconds)*time.Second,
+		DefaultArrivalMarginFactor,
+		DefaultArrivalMinMargin,
+	)
 	return waitForShipArrivalCore(
 		ctx, shipRepo, subscriber, ship, playerID, waitTimeSeconds, logger,
-		DefaultArrivalGracePeriod, DefaultArrivalMaxAttempts,
+		DefaultArrivalGracePeriod, budget,
 	)
 }
 
+// calculateArrivalWaitBudget returns the total time WaitForShipArrival keeps
+// waiting/resyncing for a ship whose route ETA is eta. The budget is always
+// at least eta+minMargin, so short or unknown ETAs still get a sane floor,
+// and it grows proportionally with eta via marginFactor, so long transits
+// get a proportionally larger absolute cushion against scheduler jitter and
+// API latency around the real arrival instant (sp-ht1f). A negative eta
+// (e.g. from API/clock skew already putting "now" past the reported arrival)
+// is clamped to zero before either term is computed.
+func calculateArrivalWaitBudget(eta time.Duration, marginFactor float64, minMargin time.Duration) time.Duration {
+	if eta < 0 {
+		eta = 0
+	}
+	scaled := time.Duration(float64(eta) * marginFactor)
+	floor := eta + minMargin
+	if scaled > floor {
+		return scaled
+	}
+	return floor
+}
+
 // waitForShipArrivalCore is WaitForShipArrival's configurable core. Tests
-// inject a tiny gracePeriod and small maxAttempts to exercise the
+// inject a tiny gracePeriod and small budget to exercise the
 // timeout->resync->park backstop without slowing down the suite; production
 // always goes through WaitForShipArrival's fixed defaults above.
 func waitForShipArrivalCore(
@@ -78,20 +133,24 @@ func waitForShipArrivalCore(
 	waitTimeSeconds int,
 	logger common.ContainerLogger,
 	gracePeriod time.Duration,
-	maxAttempts int,
+	budget time.Duration,
 ) error {
 	shipSymbol := ship.ShipSymbol()
 
 	arrivedCh := subscriber.SubscribeArrived(shipSymbol)
 	defer subscriber.UnsubscribeArrived(shipSymbol, arrivedCh)
 
+	deadline := time.Now().Add(budget)
+
 	logger.Log("INFO", "Waiting for ship arrival event", map[string]interface{}{
 		"ship_symbol":      shipSymbol,
 		"action":           "wait_arrival_event",
 		"expected_seconds": waitTimeSeconds,
+		"budget_seconds":   budget.Seconds(),
 	})
 
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
+	attempt := 0
+	for {
 		select {
 		case event := <-arrivedCh:
 			// Ship arrived - update domain state to match. Domain state is
@@ -109,45 +168,81 @@ func waitForShipArrivalCore(
 			return ctx.Err()
 
 		case <-time.After(gracePeriod):
+			attempt++
 			// No event within the grace period: resync against the source of
 			// truth instead of assuming the event is merely slow - it may
 			// have been dropped by ShipEventBus's non-blocking, non-replaying
 			// send (lost if PublishArrived raced ahead of SubscribeArrived).
 			logger.Log("WARNING", "Ship arrival event not received within grace period, resyncing", map[string]interface{}{
-				"ship_symbol":  shipSymbol,
-				"action":       "arrival_wait_resync",
-				"attempt":      attempt,
-				"max_attempts": maxAttempts,
+				"ship_symbol": shipSymbol,
+				"action":      "arrival_wait_resync",
+				"attempt":     attempt,
 			})
 			fresh, err := shipRepo.FindBySymbol(ctx, shipSymbol, playerID)
-			if err != nil {
+			switch {
+			case err != nil:
 				logger.Log("WARNING", "Arrival resync lookup failed, will retry", map[string]interface{}{
 					"ship_symbol": shipSymbol,
 					"attempt":     attempt,
 					"error":       err.Error(),
 				})
-				continue
-			}
-			if fresh.NavStatus() != domainNavigation.NavStatusInTransit {
+
+			case fresh.NavStatus() != domainNavigation.NavStatusInTransit:
 				logger.Log("INFO", "Arrival resync confirmed ship left transit", map[string]interface{}{
 					"ship_symbol": shipSymbol,
 					"action":      "arrival_wait_resync_confirmed",
 					"status":      string(fresh.NavStatus()),
 				})
 				return applyArrival(ship)
+
+			case arrivalIsPast(fresh, time.Now()):
+				// Still IN_TRANSIT but the ship's own ETA has already passed:
+				// the genuine lost/raced-event case sp-pafv targeted. Park
+				// now instead of waiting out the rest of the budget -
+				// waiting longer cannot recover an event that is already
+				// gone (sp-ht1f).
+				logger.Log("ERROR", "Arrival resync still IN_TRANSIT past its own ETA - lost event, parking", map[string]interface{}{
+					"ship_symbol": shipSymbol,
+					"action":      "arrival_wait_past_eta_parked",
+					"attempt":     attempt,
+				})
+				return &ErrArrivalWaitExhausted{ShipSymbol: shipSymbol, Attempts: attempt}
+
+			default:
+				// Still IN_TRANSIT with a future (or unknown) ETA: the ship
+				// is healthy and legitimately still travelling. Keep
+				// waiting rather than parking - this is the sp-ht1f fix.
+				// sp-pafv's fixed grace*maxAttempts budget parked here
+				// regardless of how far away the real arrival was.
+				logger.Log("INFO", "Arrival resync still shows IN_TRANSIT with a future ETA, continuing to wait", map[string]interface{}{
+					"ship_symbol": shipSymbol,
+					"action":      "arrival_wait_resync_still_future",
+					"attempt":     attempt,
+				})
 			}
-			// Source of truth still shows IN_TRANSIT: the ship legitimately
-			// has not arrived yet (or the event was lost but arrival is
-			// still pending). Loop back for another grace period.
+
+			if !time.Now().Before(deadline) {
+				logger.Log("ERROR", "Ship arrival wait budget exhausted, parking", map[string]interface{}{
+					"ship_symbol":    shipSymbol,
+					"action":         "arrival_wait_exhausted",
+					"attempts":       attempt,
+					"budget_seconds": budget.Seconds(),
+				})
+				return &ErrArrivalWaitExhausted{ShipSymbol: shipSymbol, Attempts: attempt}
+			}
 		}
 	}
+}
 
-	logger.Log("ERROR", "Ship arrival wait exhausted, parking", map[string]interface{}{
-		"ship_symbol":  shipSymbol,
-		"action":       "arrival_wait_exhausted",
-		"max_attempts": maxAttempts,
-	})
-	return &ErrArrivalWaitExhausted{ShipSymbol: shipSymbol, Attempts: maxAttempts}
+// arrivalIsPast reports whether fresh's own ArrivalTime is already behind
+// now while fresh is still IN_TRANSIT - the signature of a genuinely
+// lost/raced ARRIVED event (sp-pafv's original target) as opposed to a
+// healthy transit that simply is not finished yet. An unknown ArrivalTime
+// (nil) cannot be proven past, so it is treated as "not yet due" and the
+// wait falls back to the overall budget deadline instead (sp-ht1f).
+func arrivalIsPast(fresh *domainNavigation.Ship, now time.Time) bool {
+	arrival := fresh.ArrivalTime()
+	return arrival != nil && now.After(*arrival)
 }
 
 // applyArrival transitions ship's local NavStatus via Arrive() when it is
