@@ -253,7 +253,7 @@ func run(cfg *config.Config) error {
 		fmt.Printf("watchkeeper: deploy.completed check failed (continuing): %v\n", err)
 	}
 
-	routeExecutor := ship.NewRouteExecutor(shipRepo, med, nil, marketScanner, nil, shipEventBus) // nil = use RealClock and default refuel strategy
+	routeExecutor := ship.NewRouteExecutor(shipRepo, med, nil, marketScanner, nil, waypointRepo, shipEventBus) // nil = use RealClock and default refuel strategy
 
 	// NavigateRoute handler (now uses extracted services)
 	navigateRouteHandler := shipNav.NewNavigateRouteHandler(

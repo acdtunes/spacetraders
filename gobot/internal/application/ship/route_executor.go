@@ -11,6 +11,7 @@ import (
 	"github.com/andrescamacho/spacetraders-go/internal/application/ship/types"
 	domainNavigation "github.com/andrescamacho/spacetraders-go/internal/domain/navigation"
 	"github.com/andrescamacho/spacetraders-go/internal/domain/shared"
+	domainSystem "github.com/andrescamacho/spacetraders-go/internal/domain/system"
 )
 
 // RouteExecutor executes routes by orchestrating atomic ship commands via mediator
@@ -46,6 +47,7 @@ type RouteExecutor struct {
 	clock               shared.Clock
 	marketScanner       *MarketScanner
 	refuelStrategy      strategies.RefuelStrategy
+	waypointRepo        domainSystem.WaypointRepository
 	shipEventSubscriber domainNavigation.ShipEventSubscriber
 }
 
@@ -53,6 +55,9 @@ type RouteExecutor struct {
 // If clock is nil, uses RealClock (production behavior)
 // If marketScanner is nil, disables automatic market scanning
 // If refuelStrategy is nil, uses default ConservativeRefuelStrategy (90% threshold)
+// If waypointRepo is nil, refuelShipWithRetry's alternate-fuel-stop reroute
+// (sp-vsfn) is disabled and a retry-exhausted refuel fails outright instead
+// of rerouting - retry-with-backoff at the original waypoint still applies.
 // shipEventSubscriber is required for event-based arrival waiting
 func NewRouteExecutor(
 	shipRepo domainNavigation.ShipRepository,
@@ -60,6 +65,7 @@ func NewRouteExecutor(
 	clock shared.Clock,
 	marketScanner *MarketScanner,
 	refuelStrategy strategies.RefuelStrategy,
+	waypointRepo domainSystem.WaypointRepository,
 	shipEventSubscriber domainNavigation.ShipEventSubscriber,
 ) *RouteExecutor {
 	if clock == nil {
@@ -77,6 +83,7 @@ func NewRouteExecutor(
 		clock:               clock,
 		marketScanner:       marketScanner,
 		refuelStrategy:      refuelStrategy,
+		waypointRepo:        waypointRepo,
 		shipEventSubscriber: shipEventSubscriber,
 	}
 }
@@ -288,7 +295,7 @@ func (e *RouteExecutor) handlePreDepartureRefuel(ctx context.Context, segment *d
 			"reason":          "strategy_decision",
 			"refuel_strategy": e.refuelStrategy.GetStrategyName(),
 		})
-		if err := e.refuelShip(ctx, ship, playerID); err != nil {
+		if err := e.refuelShipWithRetry(ctx, ship, playerID); err != nil {
 			return err
 		}
 	}
@@ -399,7 +406,7 @@ func (e *RouteExecutor) ensureAffordableFlightMode(
 		"waypoint":     segment.FromWaypoint.Symbol,
 	})
 
-	if err := e.refuelShip(ctx, ship, playerID); err != nil {
+	if err := e.refuelShipWithRetry(ctx, ship, playerID); err != nil {
 		return flightMode, err
 	}
 
@@ -508,7 +515,7 @@ func (e *RouteExecutor) handlePostArrivalRefueling(ctx context.Context, segment 
 			"waypoint":        segment.ToWaypoint.Symbol,
 			"refuel_strategy": e.refuelStrategy.GetStrategyName(),
 		})
-		if err := e.refuelShip(ctx, ship, playerID); err != nil {
+		if err := e.refuelShipWithRetry(ctx, ship, playerID); err != nil {
 			return err
 		}
 	}
@@ -520,7 +527,7 @@ func (e *RouteExecutor) handlePostArrivalRefueling(ctx context.Context, segment 
 			"action":      "planned_refuel",
 			"waypoint":    segment.ToWaypoint.Symbol,
 		})
-		if err := e.refuelShip(ctx, ship, playerID); err != nil {
+		if err := e.refuelShipWithRetry(ctx, ship, playerID); err != nil {
 			return err
 		}
 	}
@@ -610,65 +617,17 @@ func (e *RouteExecutor) waitForCurrentTransit(
 	return nil
 }
 
-// refuelBeforeDeparture refuels ship before starting the journey
+// refuelBeforeDeparture refuels ship before starting the journey, retrying a
+// transient failure with backoff and rerouting to an alternate fuel-capable
+// waypoint if needed (sp-vsfn). Previously duplicated refuelShip's
+// dock+refuel+orbit sequence inline; now delegates so both entry points share
+// the same retry/reroute behavior instead of drifting apart.
 func (e *RouteExecutor) refuelBeforeDeparture(
 	ctx context.Context,
 	ship *domainNavigation.Ship,
 	playerID shared.PlayerID,
 ) error {
-	// Extract logger from context
-	logger := common.LoggerFromContext(ctx)
-
-	// GRACEFUL DEGRADATION: Skip refuel if current location has no fuel station
-	// This handles stale waypoint cache data or routing service errors
-	if !ship.CurrentLocation().HasFuel {
-		logger.Log("WARNING", "Ship cannot refuel before departure - no fuel station at current location", map[string]interface{}{
-			"ship_symbol": ship.ShipSymbol(),
-			"action":      "refuel_before_departure_skipped",
-			"waypoint":    ship.CurrentLocation().Symbol,
-			"reason":      "no_fuel_station",
-		})
-		return nil // Skip refuel gracefully
-	}
-
-	logger.Log("INFO", "Ship refueling before departure", map[string]interface{}{
-		"ship_symbol": ship.ShipSymbol(),
-		"action":      "refuel_before_departure",
-		"waypoint":    ship.CurrentLocation().Symbol,
-	})
-
-	// Dock for refuel (via DockShipCommand)
-	// Command handler updates ship state in memory
-	dockCmd := &types.DockShipCommand{
-		Ship:     ship,
-		PlayerID: playerID,
-	}
-	if _, err := e.mediator.Send(ctx, dockCmd); err != nil {
-		return fmt.Errorf("failed to dock for refuel: %w", err)
-	}
-
-	// Refuel (via RefuelShipCommand)
-	// Command handler updates ship state in memory
-	refuelCmd := &types.RefuelShipCommand{
-		Ship:     ship,
-		PlayerID: playerID,
-		Units:    nil, // Full refuel
-	}
-	if _, err := e.mediator.Send(ctx, refuelCmd); err != nil {
-		return fmt.Errorf("failed to refuel: %w", err)
-	}
-
-	// Return to orbit (via OrbitShipCommand)
-	// Command handler updates ship state in memory
-	orbitCmd := &types.OrbitShipCommand{
-		Ship:     ship,
-		PlayerID: playerID,
-	}
-	if _, err := e.mediator.Send(ctx, orbitCmd); err != nil {
-		return fmt.Errorf("failed to orbit after refuel: %w", err)
-	}
-
-	return nil
+	return e.refuelShipWithRetry(ctx, ship, playerID)
 }
 
 // refuelShip refuels ship at current location
