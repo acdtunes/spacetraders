@@ -525,13 +525,22 @@ func isAlreadyDockedError(err error) bool {
 
 // isAlreadyInOrbitError checks if the error is due to ship already being in orbit
 // API returns error code when trying to orbit an already orbiting ship
+//
+// sp-423c: the old fallback also matched the bare substring "in orbit", which
+// "already in orbit" is trivially a superset of (making the fallback both
+// redundant for the true positive AND a false-positive risk for any other
+// real API error that merely mentions orbit as a precondition, e.g. "Ship
+// must be in orbit to jettison cargo"). Orbit() (ship_repository.go) treats a
+// true result as "not a real error, proceed as success", so the broad match
+// could have silently swallowed a genuine failure - exactly the class of
+// real-API-contract mismatch this gate exists to catch.
 func isAlreadyInOrbitError(err error) bool {
 	if err == nil {
 		return false
 	}
 	// Check if error message contains indication that ship is already in orbit
 	errMsg := err.Error()
-	return strings.Contains(errMsg, "already in orbit") || strings.Contains(errMsg, "in orbit")
+	return strings.Contains(errMsg, "already in orbit")
 }
 
 // =============================================================================
