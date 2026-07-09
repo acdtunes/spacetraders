@@ -541,7 +541,30 @@ func (e *ProductionExecutor) purchaseFabricatedOutput(
 
 	availableSpace := ship.Cargo().Capacity - ship.Cargo().Units
 	if availableSpace <= 0 {
-		return 0, 0, fmt.Errorf("no cargo space available for output")
+		// sp-wwhu: sibling of sp-mu6u's crash, on the harvest side — a full hold
+		// used to crash the container outright here. We're already docked at this
+		// market to harvest, so try to sell whatever is onboard to free space
+		// first. Unlike a skipped INPUT purchase, a skipped output harvest loses
+		// nothing: the fabricated good stays in the factory's export stock and is
+		// picked up on a later pass, so skip gracefully rather than die.
+		freedShip, sellErr := e.freeCargoSpace(ctx, ship, playerID)
+		if sellErr != nil {
+			logger.Log("WARN", fmt.Sprintf("Hold full and could not unload existing cargo — skipping this output harvest of %s", good), map[string]interface{}{
+				"good":  good,
+				"ship":  ship.ShipSymbol(),
+				"error": sellErr.Error(),
+			})
+			return 0, 0, nil
+		}
+		ship = freedShip
+		availableSpace = ship.Cargo().Capacity - ship.Cargo().Units
+		if availableSpace <= 0 {
+			logger.Log("WARN", fmt.Sprintf("Hold still full after unloading existing cargo — skipping this output harvest of %s", good), map[string]interface{}{
+				"good": good,
+				"ship": ship.ShipSymbol(),
+			})
+			return 0, 0, nil
+		}
 	}
 
 	purchaseQty := min(availableSpace, tradeVolume)
