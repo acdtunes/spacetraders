@@ -82,6 +82,10 @@ func (s *Supervisor) alertSessionDown(ctx context.Context, now time.Time, agent,
 // requeueOrphanedPipelineBeads reopens shipwright bug/feature beads whose
 // claiming session has died, carrying the legacy fixer's at-least-once orphan
 // recovery onto the beads pipeline. Idempotent — cheap to run every tick.
+// Always logs a count line, including the zero case (sp-vvnw): this is the
+// pass's only externally-visible signal, so its go-live (and every
+// subsequent run) must be a grep of the log, not a guess from absence of
+// effect.
 func (s *Supervisor) requeueOrphanedPipelineBeads(ctx context.Context) {
 	if s.bc == nil {
 		return
@@ -90,11 +94,17 @@ func (s *Supervisor) requeueOrphanedPipelineBeads(ctx context.Context) {
 	if err != nil {
 		return
 	}
+	orphaned, reset := 0, 0
 	for _, b := range beads {
 		alive, err := s.gw.SessionAlive(ctx, b.Assignee)
 		if err != nil || alive {
 			continue
 		}
-		_ = s.bc.Reopen(ctx, b.ID, "session died")
+		orphaned++
+		if err := s.bc.Reopen(ctx, b.ID, "session died"); err == nil {
+			reset++
+		}
 	}
+	fmt.Printf("watchkeeper: requeueOrphanedPipelineBeads: checked %d in-progress pipeline bead(s), found %d orphaned, reset %d\n",
+		len(beads), orphaned, reset)
 }

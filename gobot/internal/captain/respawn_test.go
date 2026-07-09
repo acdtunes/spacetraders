@@ -158,10 +158,32 @@ func TestRequeueReopensBeadsWithDeadAssignee(t *testing.T) {
 	}}
 	sup := &Supervisor{cfg: config.CaptainConfig{}, gw: gw, bc: beads}
 
-	sup.requeueOrphanedPipelineBeads(context.Background())
+	out := captureOutput(t, func() {
+		sup.requeueOrphanedPipelineBeads(context.Background())
+	})
 
 	require.Equal(t, [][]string{{"sp-1", "session died"}}, beads.reopened,
 		"only the bead with a dead assignee is re-queued")
+	require.Contains(t, out, "requeueOrphanedPipelineBeads: checked 2 in-progress pipeline bead(s), found 1 orphaned, reset 1",
+		"the pass must log a grep-able count of what it found and reset (sp-vvnw)")
+}
+
+// TestRequeueLogsZeroOrphansSoGoLiveIsAGrepNotAGuess is the sp-vvnw fix: on a
+// fresh era there are typically zero stranded in-progress beads, and absence
+// of effect must not read as absence of the pass having run. The line fires
+// even when nothing was found or reset.
+func TestRequeueLogsZeroOrphansSoGoLiveIsAGrepNotAGuess(t *testing.T) {
+	gw := &respawnGateway{}
+	beads := &fakeBeads{}
+	sup := &Supervisor{cfg: config.CaptainConfig{}, gw: gw, bc: beads}
+
+	out := captureOutput(t, func() {
+		sup.requeueOrphanedPipelineBeads(context.Background())
+	})
+
+	require.Empty(t, beads.reopened, "nothing in progress means nothing to reopen")
+	require.Contains(t, out, "requeueOrphanedPipelineBeads: checked 0 in-progress pipeline bead(s), found 0 orphaned, reset 0",
+		"the zero case must still emit the count line — its absence is what makes go-live unverifiable")
 }
 
 func TestWatchkeeperRespectsKillSwitch(t *testing.T) {
