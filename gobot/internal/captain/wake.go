@@ -71,7 +71,7 @@ func (s *Supervisor) firstWake(ctx context.Context, now time.Time, agent string,
 			s.renudges[e.ID] = 0
 		}
 	}
-	s.recordWake(now)
+	s.recordNewSession(now)
 	return true, nil
 }
 
@@ -137,16 +137,22 @@ func (s *Supervisor) hasUnmailedEvents(events []*captain.Event) bool {
 	return false
 }
 
-// recordWake counts the wake against the hourly cap and resets the heartbeat
-// clock, exactly as a legacy session start did. It also persists scheduling
-// state so a process restart picks up where this one left off instead of
-// treating the heartbeat/renudge/escalation clocks as freshly zeroed.
+// recordWake resets the heartbeat/backoff clocks and persists scheduling
+// state, exactly as a legacy session start did. It is called on every
+// successful wake delivery — firstWake, renudge, and the empty-heartbeat
+// nudge alike — so it also clears the delivery-failure backoff (sp-sk68 D1):
+// any delivered wake proves the channel is healthy again, regardless of
+// whether it carried a new event.
 //
-// recordWake is the ONLY success signal for wake delivery, so it also clears
-// the delivery-failure backoff (sp-sk68 D1): a delivered wake proves the
-// channel is healthy again.
+// recordWake deliberately does NOT charge the hourly session cap. Only a
+// genuinely new event batch does that — see recordNewSession (sp-ftgq): a
+// re-nudge of an already-mailed event or a no-op heartbeat is not a new
+// captain session, and must not compete with genuinely new events for the
+// cap that exists to bound runaway NEW-session creation. Before this split,
+// every wake delivery charged the cap, so a backlog of unacked events being
+// re-nudged (or a quiet fleet's heartbeats) could exhaust it on its own and
+// starve a brand-new event of ever waking the captain.
 func (s *Supervisor) recordWake(now time.Time) {
-	s.sessionStarts = append(s.sessionStarts, now)
 	s.lastSession = now
 	s.deliveryFailures = 0
 	s.firstDeliveryFailure = time.Time{}
@@ -155,6 +161,17 @@ func (s *Supervisor) recordWake(now time.Time) {
 	s.lastAttemptCreditsAbove = false
 	s.lastAttemptCreditsBelow = false
 	s.saveState()
+}
+
+// recordNewSession charges one hourly session-cap slot in addition to
+// everything recordWake does. Call this ONLY for the delivery of a
+// genuinely new (never-before-mailed) event batch — i.e. firstWake — so the
+// cap tracks what it is meant to bound: new captain sessions, not the
+// re-nudge/heartbeat traffic that keeps an already-notified captain honest
+// (sp-ftgq).
+func (s *Supervisor) recordNewSession(now time.Time) {
+	s.sessionStarts = append(s.sessionStarts, now)
+	s.recordWake(now)
 }
 
 // deliveryThrottled reports whether this tick's wake attempt should be skipped

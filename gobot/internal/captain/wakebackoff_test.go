@@ -136,8 +136,13 @@ func TestNewInterruptEventBypassesWakeBackoff(t *testing.T) {
 }
 
 // D1 part (4): once the channel recovers, a successful wake records progress
-// (last_session advances, hourly cap charged) and zeroes the failure counter,
-// so the next overdue cadence attempts immediately with no residual backoff.
+// (last_session advances) and zeroes the failure counter, so the next overdue
+// cadence attempts immediately with no residual backoff. This test's wake is
+// a zero-event heartbeat recovery (no event is ever recorded here), so per
+// sp-ftgq it must NOT charge the hourly session cap — only a genuinely new
+// event's firstWake does that. The cap-accounting split (recordWake vs.
+// recordNewSession) is orthogonal to the backoff/recovery bookkeeping this
+// test exists to guard.
 func TestWakeDeliveryRecoveryResetsBackoffAndRecordsWake(t *testing.T) {
 	sup, _, _ := newBridgeSupervisor(t)
 	gw := &flakyGateway{fail: true}
@@ -164,7 +169,8 @@ func TestWakeDeliveryRecoveryResetsBackoffAndRecordsWake(t *testing.T) {
 	})
 	require.Equal(t, recoverAt, sup.lastSession, "a successful wake advances last_session")
 	require.Equal(t, 0, sup.deliveryFailures, "recovery zeroes the failure counter")
-	require.Len(t, sup.sessionStarts, 1, "the successful wake is charged to the hourly cap")
+	require.Empty(t, sup.sessionStarts,
+		"a recovered HEARTBEAT wake (no events here) must not be charged to the hourly cap (sp-ftgq)")
 
 	// Immediately overdue again: with the counter reset there is no residual
 	// backoff, so the next cadence wake attempts on the very next tick.

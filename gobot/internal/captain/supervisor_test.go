@@ -103,3 +103,118 @@ func TestTickHourlyCapSuppressesEvenAnInterruptEvent(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, left, 1, "the interrupt event stays queued, to be delivered once the cap allows a session")
 }
+
+// --- sp-ftgq: the hourly cap must track NEW sessions only ---
+//
+// Bug: recordWake charged every wake DELIVERY — firstWake (a genuinely new
+// event), renudge (re-poking the captain about an event already mailed),
+// and the empty-heartbeat nudge — against the very same hourly cap. A
+// backlog of unacked events kept re-nudging (or a quiet fleet kept
+// heartbeating) and that traffic ALONE could exhaust the cap, at which
+// point Tick's cap gate blocked bridgeWake entirely — including a brand
+// new event's firstWake — so genuinely new events sat queued forever even
+// though no runaway NEW-session creation was actually happening.
+//
+// Fix: only firstWake (delivery of a never-before-mailed event batch)
+// charges the cap now, via recordNewSession. renudge and the heartbeat
+// path still call recordWake for their cadence/backoff bookkeeping, but
+// recordWake no longer appends to sessionStarts.
+
+func TestNewEventWakeNotStarvedByRenudgeBacklog(t *testing.T) {
+	sup, s, gw := newBridgeSupervisor(t)
+	sup.cfg.MaxSessionsPerHour = 2 // tight: two old-accounting renudges alone would have exhausted this
+	recordEvent(t, s, captain.EventWorkflowFailed)
+
+	t0 := time.Now()
+	sup.lastSession = t0
+	ran, err := sup.Tick(context.Background(), t0)
+	require.NoError(t, err)
+	require.True(t, ran, "first wake for the new event")
+	require.Len(t, gw.mails, 1)
+
+	// Two re-nudge cycles of the SAME still-unacked event, each past the ack
+	// timeout. Under the old accounting these alone fill the 2-session cap.
+	_, err = sup.Tick(context.Background(), t0.Add(11*time.Minute))
+	require.NoError(t, err)
+	_, err = sup.Tick(context.Background(), t0.Add(22*time.Minute))
+	require.NoError(t, err)
+	require.Len(t, gw.nudges, 3, "initial wake + two re-nudges must all actually fire")
+
+	// A genuinely new, distinct event arrives. It must be delivered, not
+	// starved by the re-nudge traffic above.
+	recordEvent(t, s, captain.EventContainerCrashLoop)
+	ran, err = sup.Tick(context.Background(), t0.Add(23*time.Minute))
+	require.NoError(t, err)
+	require.True(t, ran, "a genuinely new event must wake the captain even though re-nudges ran twice")
+	require.Len(t, gw.mails, 2, "the new event is mailed, not silently dropped")
+}
+
+func TestRenudgeCyclesDoNotConsumeHourlyCap(t *testing.T) {
+	sup, s, gw := newBridgeSupervisor(t)
+	recordEvent(t, s, captain.EventWorkflowFailed)
+
+	t0 := time.Now()
+	sup.lastSession = t0
+	_, err := sup.Tick(context.Background(), t0)
+	require.NoError(t, err)
+	require.Len(t, sup.sessionStarts, 1, "the first wake charges exactly one cap slot")
+
+	for i := 1; i <= 10; i++ {
+		_, err = sup.Tick(context.Background(), t0.Add(time.Duration(i)*11*time.Minute))
+		require.NoError(t, err)
+		// Checked after every cycle, not just at the end: sessionsInLastHour
+		// prunes entries older than an hour, so a naive post-loop check (110
+		// minutes elapsed) would trivially "pass" once the original charge
+		// ages out on its own. The real invariant is that a re-nudge never
+		// ADDS to the count, at any point along the way.
+		require.LessOrEqual(t, len(sup.sessionStarts), 1,
+			"a re-nudge cycle must never grow the hourly-cap count beyond the original new-session charge")
+	}
+	require.Greater(t, len(gw.nudges), 1, "re-nudges still actually fire")
+}
+
+func TestHeartbeatsDoNotConsumeHourlyCap(t *testing.T) {
+	sup, _, gw := newBridgeSupervisor(t)
+	sup.cfg.HeartbeatMinutes = 1
+
+	t0 := time.Now()
+	sup.lastSession = t0.Add(-2 * time.Hour) // heartbeat overdue immediately
+
+	for i := 0; i < 7; i++ {
+		ran, err := sup.Tick(context.Background(), t0.Add(time.Duration(i)*2*time.Minute))
+		require.NoError(t, err)
+		require.True(t, ran, "heartbeat %d must fire: no events, cap untouched by heartbeats", i)
+	}
+	require.Len(t, gw.nudges, 7, "all seven heartbeats delivered")
+	require.Empty(t, gw.mails)
+	require.Empty(t, sup.sessionStarts, "heartbeats must never charge the hourly session cap")
+}
+
+func TestHourlyCapStillBoundsGenuinelyNewSessions(t *testing.T) {
+	sup, s, gw := newBridgeSupervisor(t)
+	sup.cfg.MaxSessionsPerHour = 2
+	t0 := time.Now()
+	sup.lastSession = t0
+
+	recordEvent(t, s, captain.EventWorkflowFailed)
+	ran, err := sup.Tick(context.Background(), t0)
+	require.NoError(t, err)
+	require.True(t, ran)
+	require.Len(t, gw.mails, 1)
+
+	recordEvent(t, s, captain.EventContainerCrashLoop)
+	ran, err = sup.Tick(context.Background(), t0.Add(time.Minute))
+	require.NoError(t, err)
+	require.True(t, ran, "second genuinely new event still within the cap")
+	require.Len(t, gw.mails, 2)
+
+	recordEvent(t, s, captain.EventWorkflowFailed) // a third distinct new event
+	ran, err = sup.Tick(context.Background(), t0.Add(2*time.Minute))
+	require.NoError(t, err)
+	require.False(t, ran, "the cap must still block a third genuinely new session within the hour")
+	require.Len(t, gw.mails, 2, "the third event is not delivered while capped")
+
+	left, err := s.store.FindUnprocessed(context.Background(), s.playerID, 10)
+	require.NoError(t, err)
+	require.Len(t, left, 3, "all three events remain queued: two delivered-but-unacked, one capped")
+}
