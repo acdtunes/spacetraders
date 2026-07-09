@@ -1,8 +1,10 @@
-grpcio>=1.60.0
-grpcio-tools>=1.60.0
-protobuf>=4.25.0
-ortools>=9.8.0
-pandas>=2.0.0
-numpy>=1.24.0
-sqlalchemy>=2.0.0
-pytest>=7.4.0
+# Routing gRPC service dependencies — PINNED to the proven-live versions
+# (captured from the running service's venv; sp-4xn4). Pinning keeps launchd
+# restarts reproducible: left unpinned, pip backtracks ortools DOWN to 9.10
+# because grpcio-tools-latest pulls protobuf 7.x while ortools 9.15 needs 6.x.
+# Model-pipeline deps (pandas/numpy/sqlalchemy/pytest/...) live in requirements-model.txt.
+# NOTE: ortools 9.15 pulls pandas+numpy transitively — that is expected.
+grpcio==1.81.1
+grpcio-tools==1.81.1
+protobuf==6.33.6
+ortools==9.15.6755

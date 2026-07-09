@@ -118,6 +118,8 @@ pip install -r requirements.txt
 bash generate_protos.sh
 ```
 
+> **Dependency files:** `requirements.txt` feeds the routing gRPC service venv (`venv/`, created by `run.sh`). The market-model pipeline under `model/` has its own deps in `requirements-model.txt`, which feed the model venv (`.venv-p0/`). Keeping them split keeps routing restarts reproducible.
+
 ## Running the Service
 
 ### Option 1: Direct Python Execution

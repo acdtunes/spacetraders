@@ -1,0 +1,9 @@
+# Market-model pipeline dependencies (gobot/services/routing-service/model/).
+# Feeds the MODEL venv (.venv-p0/), NOT the routing gRPC service venv (venv/).
+# Split out of requirements.txt (sp-4xn4) so routing restarts stay reproducible.
+# Pins = the versions the model venv (.venv-p0) actually resolved.
+pandas==3.0.3
+numpy==2.5.1
+sqlalchemy==2.0.51
+psycopg2-binary==2.9.12
+pytest==9.1.1
